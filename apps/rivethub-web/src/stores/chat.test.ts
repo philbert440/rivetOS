@@ -63,6 +63,7 @@ beforeEach(() => {
     agentStatus: {},
     prompts: {},
     liveSource: {},
+    liveFloor: {},
     opened: [],
     drafts: [],
     draftCreatedAt: {},
@@ -248,15 +249,46 @@ describe('outbound sends across rekey', () => {
     },
   )
 
-  it('clears aliases and the pending module pump when a thread is cleared', async () => {
+  it('Round 3: empty resync preserves aliases, queue, bubbles and the running pump', async () => {
     const t = setup('A', outboundPumpFor)
     state().rekey('A', 'B')
-    state().replace('B', [])
-    expect(state().sessionAliases).toEqual({})
-    expect(outboundPumpFor('B')).not.toBe(t.entry)
+    state().replace('A', [])
+    expect(state().sessionAliases).toEqual({ A: 'B' })
+    expect(outboundPumpFor('B')).toBe(t.entry)
+    expect(state().outbound.B?.[0]).toMatchObject({ id: t.id, status: 'sending' })
+    expect(state().messages.B?.map((m) => m.id)).toEqual([t.id])
     t.resolve()
+    await vi.advanceTimersByTimeAsync(INJECT_LATCH_MS)
     await t.pending
+    expect(state().outbound.B).toEqual([])
+    expect(state().live.B).toBeUndefined()
+  })
+
+  it('Round 3: sends, recalls and retries through the stale view key after rekey', async () => {
+    state().addDraft('A')
+    const entry = outboundPumpFor('A')
+    state().rekey('A', 'B')
+    const id = state().enqueueOutbound('A', 'after move')
+    expect(state().outbound.B?.map((o) => o.id)).toEqual([id])
     expect(state().outbound.A).toBeUndefined()
+    expect(state().queueFor('A')).toBe(state().outbound.B)
+    const inject = vi.fn().mockRejectedValueOnce(new Error('offline')).mockResolvedValue(undefined)
+    entry.sink.current = inject
+    await expect(outboundPumpFor('A').pump.pump()).rejects.toThrow('offline')
+    expect(state().messages.B?.[0]).toMatchObject({ id, sessionId: 'B', text: 'after move' })
+    expect(state().outbound.B?.[0].status).toBe('failed')
+    expect(state().queueFor('A')?.[0].status).toBe('failed')
+    expect(state().messagesFor('A')).toBe(state().messages.B)
+    const retry = outboundPumpFor('A').pump.pump({ forceId: id })
+    await vi.advanceTimersByTimeAsync(INJECT_LATCH_MS)
+    await retry
+    expect(inject).toHaveBeenCalledTimes(2)
+    expect(state().outbound.B).toEqual([])
+    const recalled = state().enqueueOutbound('A', 'recall me')
+    state().markOutboundSending('A', recalled)
+    state().cancelOutbound('A', recalled)
+    expect(state().outbound.B).toEqual([])
+    expect(state().messages.B?.some((m) => m.id === recalled)).toBe(false)
     expect(state().messages.A).toBeUndefined()
   })
 
@@ -522,4 +554,48 @@ describe('session alias lifetime', () => {
       expect(state().sessionAliases).toEqual({})
     },
   )
+})
+
+describe('Round 3 store boundaries', () => {
+  it('preserves a bound, turnless destination and its destination-only slices', () => {
+    const chat = useChat.getState()
+    chat.addDraft('A')
+    chat.bindHarness('B', 'claude-code')
+    chat.applyAgentStatus('B', { status: 'idle' } as Parameters<typeof chat.applyAgentStatus>[1])
+    useChat.setState({ liveSource: { B: 'transcript' }, approvals: { B: [] }, prompts: { B: [] } })
+    const before = useChat.getState()
+    expect(chat.rekey('A', 'B')).toBe(true)
+    const after = useChat.getState()
+    for (const slice of [
+      'harnessBound',
+      'transcripts',
+      'agentStatus',
+      'liveSource',
+      'approvals',
+      'prompts',
+      'liveFloor',
+    ] as const) {
+      expect(after[slice].B, slice).toEqual(before[slice].B)
+    }
+  })
+
+  it('routes selection, draft, live and harness actions through an old key', () => {
+    const chat = useChat.getState()
+    chat.addDraft('A')
+    chat.rekey('A', 'B')
+    chat.setActive('A')
+    expect(useChat.getState().active).toBe('B')
+    chat.addDraft('A')
+    expect(useChat.getState().drafts).toEqual(['B'])
+    chat.beginLive('A')
+    expect(useChat.getState().live.B).toBeDefined()
+    chat.clearLive('A')
+    expect(useChat.getState().live.B).toBeUndefined()
+    chat.bindHarness('A', 'claude-code')
+    chat.syncHarnessTranscript('A', [{ role: 'user', text: 'canonical' }])
+    expect(useChat.getState().messages.B?.[0].sessionId).toBe('B')
+    expect(useChat.getState().harnessBound.A).toBeUndefined()
+    chat.unbindHarness('A')
+    expect(useChat.getState().harnessBound.B).toBeUndefined()
+  })
 })

@@ -107,6 +107,8 @@ interface ChatState {
    * Removing/clearing a thread must prune all its predecessors too. */
   sessionAliases: Record<string, string>
   resolveSessionKey: (sessionId: string) => string
+  queueFor: (sessionId: string) => OutboundItem[] | undefined
+  messagesFor: (sessionId: string) => SessionMessage[] | undefined
   /** Queued turns live in the strip; sending/failed turns also have bubbles. */
   outbound: Record<string, OutboundItem[] | undefined>
   /**
@@ -156,7 +158,8 @@ interface ChatState {
   /** Hard-resync: replace the session transcript wholesale and clear live
    *  turn state (Android resyncTranscriptToConversation). Does not merge.
    *  `preserveOutbound` keeps the inject queue + its optimistic bubbles
-   *  (auto-sync from TUI must not wipe messages the user just queued). */
+   *  (auto-sync from TUI must not wipe messages the user just queued).
+   *  Empty resyncs always preserve outbound state; removeDraft removes threads. */
   replace: (
     sessionId: string,
     messages: SessionMessage[],
@@ -296,7 +299,7 @@ function releaseWatch(sessionId: string): void {
  * Rebuild a session's solid messages from a full turn array and reconcile the
  * optimistic outbound bubbles: a user turn the store now carries supersedes
  * its optimistic copy — first match only, so two identical queued turns don't
- * collapse. Only bubbles with NO outbound entry are eligible — queued means
+ * collapse. Bubbles with no outbound entry or a failed entry are eligible — queued means
  * not injected yet (a matching store turn is a TUI-typed twin), and sending
  * means the pump hasn't observed success/failure, so eating the bubble early
  * could leave a failed inject with no retry cue (grok review).
@@ -327,14 +330,16 @@ function transcriptPatch(
   const outbound = s.outbound[sid] ?? []
   const newUserTexts = changed.filter((t) => t.role === 'user').map((t) => t.text)
   const keptBubbles: SessionMessage[] = []
+  const retired = new Set<string>()
   for (const bubble of optimBubbles) {
     // Newest match, not oldest: a bubble the user just sent is the tail of the
     // conversation, and pairing it with an identical turn from an hour ago
     // would retire the wrong one (and flicker the new turn in behind it).
     const hit = newUserTexts.lastIndexOf(bubble.text)
-    const inQueue = outbound.some((o) => o.id === bubble.id)
+    const inQueue = outbound.some((o) => o.id === bubble.id && o.status !== 'failed')
     if (hit >= 0 && !inQueue) {
       newUserTexts.splice(hit, 1)
+      retired.add(bubble.id)
     } else {
       keptBubbles.push(bubble)
     }
@@ -354,6 +359,10 @@ function transcriptPatch(
       },
     },
     messages: { ...s.messages, [sid]: [...mapped, ...keptBubbles] },
+    outbound:
+      retired.size > 0
+        ? { ...s.outbound, [sid]: outbound.filter((o) => !retired.has(o.id)) }
+        : s.outbound,
   }
 }
 
@@ -504,6 +513,11 @@ function threadKeys(aliases: Record<string, string>, id: string): Set<string> {
   return keys
 }
 
+/** All session lookups share the same alias boundary. */
+function keyOf(sessionId: string): string {
+  return resolveAlias(useChat.getState().sessionAliases, sessionId)
+}
+
 export const useChat = create<ChatState>()(
   persist(
     (set, get) => ({
@@ -514,7 +528,9 @@ export const useChat = create<ChatState>()(
       liveTs: {},
       ask: {},
       sessionAliases: {},
-      resolveSessionKey: (id) => resolveAlias(get().sessionAliases, id),
+      resolveSessionKey: keyOf,
+      queueFor: (sessionId) => get().outbound[keyOf(sessionId)],
+      messagesFor: (sessionId) => get().messages[keyOf(sessionId)],
       outbound: {},
       harnessBound: {},
       approvals: {},
@@ -528,8 +544,9 @@ export const useChat = create<ChatState>()(
       drafts: [],
       draftCreatedAt: {},
 
-      seed: (sessionId, msgs) =>
-        set((s) => {
+      seed: (sessionId, msgs) => {
+        sessionId = keyOf(sessionId)
+        return set((s) => {
           const existing = s.messages[sessionId] ?? []
           // Keep WS frames that raced ahead of the HTTP backfill. Safe to merge
           // unconditionally: state is reset on endpoint change, so everything
@@ -538,15 +555,13 @@ export const useChat = create<ChatState>()(
           for (const m of existing) if (!merged.some((x) => x.id === m.id)) merged.push(m)
           merged.sort((a, b) => a.ts - b.ts)
           return { messages: { ...s.messages, [sessionId]: merged } }
-        }),
+        })
+      },
 
       replace: (sessionId, msgs, opts) => {
-        sessionId = get().resolveSessionKey(sessionId)
-        const cleared = !opts?.preserveOutbound && msgs.length === 0
-        const keys = threadKeys(get().sessionAliases, sessionId)
-        if (cleared) notifyThread({ type: 'remove', keys })
+        sessionId = keyOf(sessionId)
         set((s) => {
-          const preserve = opts?.preserveOutbound === true
+          const preserve = opts?.preserveOutbound === true || msgs.length === 0
           const outbound = s.outbound[sessionId] ?? []
           let next = [...msgs]
           if (preserve && outbound.length > 0) {
@@ -561,15 +576,6 @@ export const useChat = create<ChatState>()(
             next = [...byId.values()].sort((a, b) => a.ts - b.ts)
           }
           return {
-            ...(cleared
-              ? {
-                  sessionAliases: Object.fromEntries(
-                    Object.entries(s.sessionAliases).filter(
-                      ([key, target]) => !keys.has(key) && !keys.has(target),
-                    ),
-                  ),
-                }
-              : {}),
             messages: { ...s.messages, [sessionId]: next },
             // messages and the turn cache must clear together, or the next
             // transcript frame reconciles fresh rows against stale turns
@@ -585,8 +591,9 @@ export const useChat = create<ChatState>()(
         })
       },
 
-      addDraft: (sessionId) =>
-        set((s) => {
+      addDraft: (sessionId) => {
+        sessionId = keyOf(sessionId)
+        return set((s) => {
           const already = s.drafts.includes(sessionId)
           return {
             drafts: already ? s.drafts : [sessionId, ...s.drafts],
@@ -595,9 +602,11 @@ export const useChat = create<ChatState>()(
               ? s.draftCreatedAt
               : { ...s.draftCreatedAt, [sessionId]: Date.now() },
           }
-        }),
+        })
+      },
 
       removeDraft: (sessionId) => {
+        sessionId = keyOf(sessionId)
         const keys = threadKeys(get().sessionAliases, sessionId)
         notifyThread({ type: 'remove', keys })
         for (const key of keys) releaseWatch(key)
@@ -634,6 +643,9 @@ export const useChat = create<ChatState>()(
       },
 
       rekey: (from, to) => {
+        from = keyOf(from)
+        // `to` is a newly assigned identity, not a lookup. Keep it literal so
+        // a native id can rotate back to a formerly retired key.
         if (from === to) return false
         // Decide before mutating, so the updater below stays a pure reducer.
         // Destination already live: keep its records rather than clobber a real
@@ -673,8 +685,9 @@ export const useChat = create<ChatState>()(
           }
           if (!moved) return retarget
           const move = <T>(m: Record<string, T | undefined>): Record<string, T | undefined> => {
-            // Empty destination leftovers are absent, including slices the source lacks.
-            const { [from]: value, [to]: _leftover, ...rest } = m
+            // A turnless destination may already own a binding, prompts or status.
+            // Preserve its value when this source has no value for that slice.
+            const { [from]: value, ...rest } = m
             return value === undefined ? rest : { ...rest, [to]: value }
           }
           return {
@@ -709,6 +722,8 @@ export const useChat = create<ChatState>()(
       },
 
       adoptSessionKey: (canonical, previous) => {
+        // Like rekey's destination, canonical names the new identity literally.
+        if (previous !== undefined) previous = keyOf(previous)
         const tracked = (id: string): boolean => {
           const s = get()
           return (
@@ -745,6 +760,7 @@ export const useChat = create<ChatState>()(
       },
 
       addOptimisticUser: (sessionId, text, id) => {
+        sessionId = keyOf(sessionId)
         const msgId = id ?? `optim:${uuidv4()}`
         set((s) => {
           const msg: SessionMessage = {
@@ -762,6 +778,7 @@ export const useChat = create<ChatState>()(
       },
 
       enqueueOutbound: (sessionId, text, attachments) => {
+        sessionId = keyOf(sessionId)
         const id = `optim:${uuidv4()}`
         set((s) => ({
           outbound: {
@@ -778,7 +795,7 @@ export const useChat = create<ChatState>()(
       },
 
       markOutboundSending: (sessionId, id) => {
-        sessionId = get().resolveSessionKey(sessionId)
+        sessionId = keyOf(sessionId)
         const item = get().outbound[sessionId]?.find((o) => o.id === id)
         if (!item) return
         const text =
@@ -798,9 +815,9 @@ export const useChat = create<ChatState>()(
         }))
       },
 
-      requeueOutbound: (sessionId, id) =>
-        set((s) => {
-          sessionId = s.resolveSessionKey(sessionId)
+      requeueOutbound: (sessionId, id) => {
+        sessionId = keyOf(sessionId)
+        return set((s) => {
           if (!s.outbound[sessionId]?.some((o) => o.id === id)) return s
           return {
             outbound: {
@@ -816,11 +833,12 @@ export const useChat = create<ChatState>()(
               [sessionId]: (s.messages[sessionId] ?? []).filter((m) => m.id !== id),
             },
           }
-        }),
+        })
+      },
 
-      dequeueOutbound: (sessionId, id) =>
-        set((s) => {
-          sessionId = s.resolveSessionKey(sessionId)
+      dequeueOutbound: (sessionId, id) => {
+        sessionId = keyOf(sessionId)
+        return set((s) => {
           if (!s.outbound[sessionId]?.some((o) => o.id === id)) return s
           return {
             outbound: {
@@ -828,13 +846,14 @@ export const useChat = create<ChatState>()(
               [sessionId]: (s.outbound[sessionId] ?? []).filter((o) => o.id !== id),
             },
           }
-        }),
+        })
+      },
 
       // Failed turns do not block later queued turns. Manual retry deliberately
       // injects after any later turns already sent, using the original item id.
-      failOutbound: (sessionId, id) =>
-        set((s) => {
-          sessionId = s.resolveSessionKey(sessionId)
+      failOutbound: (sessionId, id) => {
+        sessionId = keyOf(sessionId)
+        return set((s) => {
           if (!s.outbound[sessionId]?.some((o) => o.id === id)) return s
           return {
             outbound: {
@@ -844,10 +863,11 @@ export const useChat = create<ChatState>()(
               ),
             },
           }
-        }),
+        })
+      },
 
       cancelOutbound: (sessionId, id) => {
-        sessionId = get().resolveSessionKey(sessionId)
+        sessionId = keyOf(sessionId)
         if (!get().outbound[sessionId]?.some((o) => o.id === id)) return
         get().dequeueOutbound(sessionId, id)
         set((s) => ({
@@ -861,8 +881,9 @@ export const useChat = create<ChatState>()(
         }))
       },
 
-      beginLive: (sessionId, activity = 'processing…') =>
-        set((s) => {
+      beginLive: (sessionId, activity = 'processing…') => {
+        sessionId = keyOf(sessionId)
+        return set((s) => {
           // Don't clobber an already-streaming turn (tool stack / partial text).
           const existing = s.live[sessionId]
           if (existing && (existing.text || existing.tools.length > 0 || existing.reasoningText)) {
@@ -876,10 +897,12 @@ export const useChat = create<ChatState>()(
                 : { text: '', reasoning: false, reasoningText: '', tools: [], activity },
             },
           }
-        }),
+        })
+      },
 
-      setLive: (sessionId, turn) =>
-        set((s) => {
+      setLive: (sessionId, turn) => {
+        sessionId = keyOf(sessionId)
+        return set((s) => {
           // Transcript-sourced sessions get ask cards from `prompts`, not a
           // tool-stack stash. Hook-sourced (and legacy) still stash.
           if (s.liveSource[sessionId] === 'transcript') {
@@ -900,14 +923,18 @@ export const useChat = create<ChatState>()(
             liveTs: { ...s.liveTs, [sessionId]: Date.now() },
             ask: stashed.length > 0 ? { ...s.ask, [sessionId]: stashed } : s.ask,
           }
-        }),
+        })
+      },
 
-      clearLive: (sessionId) =>
-        set((s) => ({
+      clearLive: (sessionId) => {
+        sessionId = keyOf(sessionId)
+        return set((s) => ({
           live: { ...s.live, [sessionId]: undefined },
-        })),
+        }))
+      },
 
       liveIsBusy: (sessionId) => {
+        sessionId = keyOf(sessionId)
         if (get().liveSource[sessionId] === 'transcript') {
           const st = get().agentStatus[sessionId]?.status
           return st === 'working' || st === 'blocked'
@@ -919,11 +946,15 @@ export const useChat = create<ChatState>()(
         return !!(L.text || L.tools.length > 0 || L.reasoningText)
       },
 
-      dismissAsk: (sessionId) => set((s) => ({ ask: { ...s.ask, [sessionId]: undefined } })),
+      dismissAsk: (sessionId) => {
+        sessionId = keyOf(sessionId)
+        return set((s) => ({ ask: { ...s.ask, [sessionId]: undefined } }))
+      },
 
       setActive: (sessionId) =>
         set((s) => {
           if (sessionId === undefined) return { active: undefined }
+          sessionId = keyOf(sessionId)
           return {
             active: sessionId,
             // Instant-resume pointer (narrow launch reopens the last thread
@@ -937,6 +968,7 @@ export const useChat = create<ChatState>()(
       clearLastActive: () => set({ lastActive: undefined }),
 
       watchTranscript: (sessionId) => {
+        sessionId = keyOf(sessionId)
         set((s) => ({
           opened: s.opened.includes(sessionId) ? s.opened : [...s.opened, sessionId],
         }))
@@ -951,26 +983,38 @@ export const useChat = create<ChatState>()(
         // not-open sends are fine — the onStatus('open') hook re-sends the set
       },
 
-      unwatchTranscript: (sessionId) => releaseWatch(sessionId),
+      unwatchTranscript: (sessionId) => {
+        sessionId = keyOf(sessionId)
+        return releaseWatch(sessionId)
+      },
 
-      bindHarness: (sessionId, harnessId) =>
-        set((s) => ({
-          harnessBound: { ...s.harnessBound, [sessionId]: true },
-          // A fresh binding starts with no settled floor; the first idle sets it.
-          liveFloor: { ...s.liveFloor, [sessionId]: undefined },
-          opened: s.opened.includes(sessionId) ? s.opened : [...s.opened, sessionId],
-          // Mark the session store-backed straight away: the transcript is the
-          // source of truth for solid messages, so nothing else may append.
-          transcripts: s.transcripts[sessionId]
-            ? { ...s.transcripts, [sessionId]: { ...s.transcripts[sessionId], command: harnessId } }
-            : {
-                ...s.transcripts,
-                [sessionId]: { rev: 0, turns: [], command: harnessId, offset: 0 },
-              },
-        })),
+      bindHarness: (sessionId, harnessId) => {
+        sessionId = keyOf(sessionId)
+        return set((s) => {
+          const transcript = s.transcripts[sessionId]
+          return {
+            harnessBound: { ...s.harnessBound, [sessionId]: true },
+            // A fresh binding starts with no settled floor; the first idle sets it.
+            liveFloor: { ...s.liveFloor, [sessionId]: undefined },
+            opened: s.opened.includes(sessionId) ? s.opened : [...s.opened, sessionId],
+            // Mark the session store-backed straight away: the transcript is the
+            // source of truth for solid messages, so nothing else may append.
+            transcripts: transcript
+              ? {
+                  ...s.transcripts,
+                  [sessionId]: { ...transcript, command: harnessId },
+                }
+              : {
+                  ...s.transcripts,
+                  [sessionId]: { rev: 0, turns: [], command: harnessId, offset: 0 },
+                },
+          }
+        })
+      },
 
-      unbindHarness: (sessionId) =>
-        set((s) => {
+      unbindHarness: (sessionId) => {
+        sessionId = keyOf(sessionId)
+        return set((s) => {
           const { [sessionId]: _bound, ...harnessBound } = s.harnessBound
           return {
             harnessBound,
@@ -979,10 +1023,12 @@ export const useChat = create<ChatState>()(
             agentStatus: { ...s.agentStatus, [sessionId]: undefined },
             liveSource: { ...s.liveSource, [sessionId]: undefined },
           }
-        }),
+        })
+      },
 
-      syncHarnessTranscript: (sessionId, turns, ctx) =>
-        set((s) => {
+      syncHarnessTranscript: (sessionId, turns, ctx) => {
+        sessionId = keyOf(sessionId)
+        return set((s) => {
           // A resync carries no "what changed", so derive it: everything past the
           // common prefix with what we already hold. That keeps bubble
           // reconciliation pointed at the tail instead of the whole history, where
@@ -1013,10 +1059,12 @@ export const useChat = create<ChatState>()(
           return turns.at(-1)?.role === 'user'
             ? { ...patch, ask: { ...s.ask, [sessionId]: undefined } }
             : patch
-        }),
+        })
+      },
 
-      applyApprovalEvent: (sessionId, event) =>
-        set((s) => {
+      applyApprovalEvent: (sessionId, event) => {
+        sessionId = keyOf(sessionId)
+        return set((s) => {
           const pending = s.approvals[sessionId] ?? []
           if (event.type === 'approval-resolved') {
             return {
@@ -1028,9 +1076,11 @@ export const useChat = create<ChatState>()(
           }
           if (pending.some((p) => p.requestId === event.requestId)) return s
           return { approvals: { ...s.approvals, [sessionId]: [...pending, event] } }
-        }),
+        })
+      },
 
       applyHarnessTranscriptEvent: (sessionId, event) => {
+        sessionId = keyOf(sessionId)
         const frame: TranscriptWsFrame = {
           kind: 'transcript',
           session: sessionId,
@@ -1064,8 +1114,9 @@ export const useChat = create<ChatState>()(
         return true
       },
 
-      applyPromptEvent: (sessionId, event) =>
-        set((s) => {
+      applyPromptEvent: (sessionId, event) => {
+        sessionId = keyOf(sessionId)
+        return set((s) => {
           const pending = s.prompts[sessionId] ?? []
           if (event.resolved) {
             return {
@@ -1078,16 +1129,20 @@ export const useChat = create<ChatState>()(
           // Idempotent by promptId — replay of an already-open card is a no-op.
           if (pending.some((p) => p.promptId === event.promptId)) return s
           return { prompts: { ...s.prompts, [sessionId]: [...pending, event] } }
-        }),
+        })
+      },
 
-      clearHarnessPrompts: (sessionId) =>
-        set((s) => ({
+      clearHarnessPrompts: (sessionId) => {
+        sessionId = keyOf(sessionId)
+        return set((s) => ({
           prompts: { ...s.prompts, [sessionId]: undefined },
           approvals: { ...s.approvals, [sessionId]: undefined },
-        })),
+        }))
+      },
 
-      applyAgentStatus: (sessionId, event) =>
-        set((s) =>
+      applyAgentStatus: (sessionId, event) => {
+        sessionId = keyOf(sessionId)
+        return set((s) =>
           overlayTranscriptLive(s, sessionId, {
             agentStatus: { ...s.agentStatus, [sessionId]: event },
             // The INCOMING idle settles the floor — not the cached status, which
@@ -1102,15 +1157,18 @@ export const useChat = create<ChatState>()(
                 }
               : {}),
           }),
-        ),
+        )
+      },
 
-      clearApproval: (sessionId, requestId) =>
-        set((s) => ({
+      clearApproval: (sessionId, requestId) => {
+        sessionId = keyOf(sessionId)
+        return set((s) => ({
           approvals: {
             ...s.approvals,
             [sessionId]: (s.approvals[sessionId] ?? []).filter((p) => p.requestId !== requestId),
           },
-        })),
+        }))
+      },
 
       connect: (endpointKey) => {
         subscription?.close()

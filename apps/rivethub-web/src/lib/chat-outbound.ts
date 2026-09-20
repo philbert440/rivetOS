@@ -7,8 +7,8 @@ import { isTurnInFlight } from './harness-chat.js'
  *  latest queue/live state. */
 const pumpStore: OutboundPumpStore = {
   resolveSessionKey: (sid) => useChat.getState().resolveSessionKey(sid),
-  queue: (sid) => useChat.getState().outbound[sid],
-  liveIsBusy: (sid) => useChat.getState().liveIsBusy(useChat.getState().resolveSessionKey(sid)),
+  queue: (sid) => useChat.getState().queueFor(sid),
+  liveIsBusy: (sid) => useChat.getState().liveIsBusy(sid),
   markSending: (sid, id) => useChat.getState().markOutboundSending(sid, id),
   dequeue: (sid, id) => useChat.getState().dequeueOutbound(sid, id),
   requeue: (sid, id) => useChat.getState().requeueOutbound(sid, id),
@@ -17,7 +17,7 @@ const pumpStore: OutboundPumpStore = {
   clearLive: (sid) => useChat.getState().clearLive(sid),
   awaitBusy: (sid, ms) =>
     new Promise((resolve) => {
-      if (useChat.getState().liveIsBusy(useChat.getState().resolveSessionKey(sid))) {
+      if (useChat.getState().liveIsBusy(sid)) {
         resolve()
         return
       }
@@ -30,7 +30,7 @@ const pumpStore: OutboundPumpStore = {
         resolve()
       }
       const unsub = useChat.subscribe(() => {
-        if (useChat.getState().liveIsBusy(useChat.getState().resolveSessionKey(sid))) finish()
+        if (useChat.getState().liveIsBusy(sid)) finish()
       })
       const timer = setTimeout(finish, ms)
     }),

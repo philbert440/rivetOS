@@ -256,7 +256,7 @@ const Bubble = memo(function Bubble(props: {
   accent?: string
   /** Deep-history row: allowed to skip offscreen layout/paint. */
   offscreenSkip?: boolean
-  /** Outbound status for optimistic user turns — sending only (queued lives in QueuedStrip). */
+  /** Outbound status for optimistic user turns — sending or failed (queued lives in QueuedStrip). */
   outboundStatus?: 'sending' | 'failed'
 }): JSX.Element {
   const mine = props.msg.role === 'user'
