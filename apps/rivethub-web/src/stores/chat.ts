@@ -282,6 +282,48 @@ function appendMessage(list: SessionMessage[] | undefined, msg: SessionMessage):
   return [...prev, msg]
 }
 
+/**
+ * Where an optimistic bubble sits in the commit-match order for a committed
+ * user turn that carries no id: an ACCEPTED send first (its outbound entry was
+ * dequeued on HTTP acceptance, so this commit is its echo), then a `sending`
+ * item, then a `queued` one, and a `failed` item last.
+ *
+ * The order is load-bearing when the user sends the same text twice. Matching
+ * by text alone, oldest bubble first, let a failed twin consume the commit of
+ * the later send, so that send's own bubble never retired (rekey review).
+ */
+function outboundRank(outbound: OutboundItem[], id: string): number {
+  const item = outbound.find((o) => o.id === id)
+  if (item === undefined) return 3
+  if (item.status === 'sending') return 2
+  if (item.status === 'queued') return 1
+  return 0 // failed
+}
+
+/**
+ * Index of the optimistic bubble a committed user text belongs to, or -1.
+ * Ranks candidates by `outboundRank`; ties keep the oldest bubble.
+ */
+function bestOptimMatch(
+  list: SessionMessage[],
+  outbound: OutboundItem[] | undefined,
+  text: string,
+): number {
+  const items = outbound ?? []
+  let best = -1
+  let bestRank = -1
+  for (let i = 0; i < list.length; i += 1) {
+    const m = list[i]
+    if (!m.id.startsWith('optim:') || m.text !== text) continue
+    const rank = outboundRank(items, m.id)
+    if (rank > bestRank) {
+      best = i
+      bestRank = rank
+    }
+  }
+  return best
+}
+
 let subscription: Subscription | undefined
 let currentEndpoint: string | undefined
 /** Sessions with an active transcript watch — re-sent on every reconnect
@@ -297,12 +339,17 @@ function releaseWatch(sessionId: string): void {
 
 /**
  * Rebuild a session's solid messages from a full turn array and reconcile the
- * optimistic outbound bubbles: a user turn the store now carries supersedes
- * its optimistic copy — first match only, so two identical queued turns don't
- * collapse. Bubbles with no outbound entry or a failed entry are eligible — queued means
- * not injected yet (a matching store turn is a TUI-typed twin), and sending
- * means the pump hasn't observed success/failure, so eating the bubble early
- * could leave a failed inject with no retry cue (grok review).
+ * optimistic outbound bubbles: a committed user turn the store now carries
+ * supersedes ONE optimistic copy, so two identical queued turns don't collapse.
+ *
+ * A `HarnessTranscriptTurn` carries no id (@rivetos/types), so the match here
+ * is text-only and ranked (see `outboundRank`): the accepted send claims a turn
+ * before a `sending` item, which claims it before a `queued` one, which claims
+ * it before a `failed` twin. Only accepted and failed bubbles are retired —
+ * `sending`/`queued` keep their bubble (the pump hasn't observed success or
+ * failure, so eating it early could leave a failed inject with no retry cue)
+ * but still consume the turn. A `failed` item is therefore retired by text only
+ * when no accepted/sending/queued item shares that text (rekey review).
  *
  * `changed` is the window to reconcile against: the delta's own turns for a
  * pushed frame, every turn for a control-plane hard resync (which has no
@@ -329,21 +376,25 @@ function transcriptPatch(
   const optimBubbles = existing.filter((m) => m.id.startsWith('optim:'))
   const outbound = s.outbound[sid] ?? []
   const newUserTexts = changed.filter((t) => t.role === 'user').map((t) => t.text)
-  const keptBubbles: SessionMessage[] = []
   const retired = new Set<string>()
-  for (const bubble of optimBubbles) {
-    // Newest match, not oldest: a bubble the user just sent is the tail of the
-    // conversation, and pairing it with an identical turn from an hour ago
-    // would retire the wrong one (and flicker the new turn in behind it).
-    const hit = newUserTexts.lastIndexOf(bubble.text)
-    const inQueue = outbound.some((o) => o.id === bubble.id && o.status !== 'failed')
-    if (hit >= 0 && !inQueue) {
+  // Highest rank first so the bubble that owns the committed turn claims it
+  // before a lower-ranked twin can spend the match. Within a rank, keep the
+  // chronological order (candidate sets are small; outboundRank is cheap).
+  for (const rank of [3, 2, 1, 0]) {
+    for (const bubble of optimBubbles) {
+      if (outboundRank(outbound, bubble.id) !== rank) continue
+      // Newest match, not oldest: a bubble the user just sent is the tail of
+      // the conversation, and pairing it with an identical turn from an hour
+      // ago would retire the wrong one (and flicker the new turn in behind it).
+      const hit = newUserTexts.lastIndexOf(bubble.text)
+      if (hit < 0) continue
       newUserTexts.splice(hit, 1)
-      retired.add(bubble.id)
-    } else {
-      keptBubbles.push(bubble)
+      // Sending/queued consumed the occurrence but keep their bubble; accepted
+      // (rank 3) and failed (rank 0) are retired outright.
+      if (rank === 3 || rank === 0) retired.add(bubble.id)
     }
   }
+  const keptBubbles = optimBubbles.filter((b) => !retired.has(b.id))
   const prev = s.transcripts[sid]
   return {
     transcripts: {
@@ -1255,12 +1306,18 @@ export const useChat = create<ChatState>()(
               if (!isOpen(msg.sessionId)) return
               set((s) => {
                 let list = s.messages[msg.sessionId] ?? []
-                // the real user frame supersedes ONE optimistic bubble of the same
-                // text — remove only the first match so two identical turns
-                // ("yes" then "yes") don't collapse to one.
                 let outbound = s.outbound[msg.sessionId]
                 if (msg.role === 'user') {
-                  const i = list.findIndex((m) => m.id.startsWith('optim:') && m.text === msg.text)
+                  // Identity first: the echo is the only carrier that HAS an id
+                  // (@rivetos/types SessionMessage.id — a HarnessTranscriptTurn
+                  // carries none), so when it is our optimistic id, retire
+                  // exactly that bubble instead of guessing by text.
+                  let i = list.findIndex((m) => m.id === msg.id && m.id.startsWith('optim:'))
+                  // Otherwise the real user frame supersedes ONE optimistic
+                  // bubble of the same text, ranked accepted > sending > queued
+                  // > failed (see `outboundRank`) so two identical turns ("yes"
+                  // then "yes") can't retire each other's bubble.
+                  if (i < 0) i = bestOptimMatch(list, outbound, msg.text)
                   if (i >= 0) {
                     const optimId = list[i].id
                     list = [...list.slice(0, i), ...list.slice(i + 1)]
