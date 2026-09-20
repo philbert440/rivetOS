@@ -406,6 +406,108 @@ assert_warns 'RIVETOS_ROOT=$(echo s3cret-cmd)' RIVETOS_ROOT 's3cret-cmd' 'comman
 assert_warns 'RIVETOS_ROOT="$(echo s3cret-dq)"' RIVETOS_ROOT 's3cret-dq' 'double-quoted command substitution'
 assert_warns 'RIVETOS_ROOT=`echo s3cret-tick`' RIVETOS_ROOT 's3cret-tick' 'backticks'
 
+# 21. Claude userConfig placeholder does not shadow .env
+with_envfile 'RIVETOS_PG_URL=postgres://from-env.example/db'
+export RIVETOS_PLUGIN_ENV=1
+export RIVETOS_PG_URL='${user_config.RIVETOS_PG_URL}'
+rivetos_load_env
+if [ "$RIVETOS_PG_URL" = 'postgres://from-env.example/db' ]; then
+  pass 'user_config placeholder falls back to .env'
+else
+  fail 'user_config placeholder should count as unset'
+fi
+cleanup_env
+
+# 22. npm pin is a single constant and must be ≥ 0.5.0 (0.4.0-beta has no stdio)
+pin_line=""
+while IFS= read -r line || [ -n "$line" ]; do
+  case "$line" in
+    RIVETOS_MCP_SIDECAR_VERSION=*) pin_line="$line" ;;
+  esac
+done <"$ROOT/rivet-paths.sh"
+if [ -z "$pin_line" ]; then
+  fail 'RIVETOS_MCP_SIDECAR_VERSION assignment missing'
+else
+  pass 'pin assignment present'
+fi
+pin="${RIVETOS_MCP_SIDECAR_VERSION:-}"
+if [ -z "$pin" ]; then
+  fail 'pin constant empty after source'
+else
+  maj="${pin%%.*}"
+  rest="${pin#*.}"
+  min="${rest%%.*}"
+  min="${min%%-*}"
+  if [ "$maj" -gt 0 ] 2>/dev/null || { [ "$maj" -eq 0 ] && [ "$min" -ge 5 ]; }; then
+    pass "pin $pin is >= 0.5.0"
+  else
+    fail "pin $pin is < 0.5.0 (0.4.0-beta has no stdio mode)"
+  fi
+fi
+if grep -q 'Requires a release ≥ 0.5.0' "$ROOT/rivet-paths.sh" \
+   || grep -q 'Requires a release >= 0.5.0' "$ROOT/rivet-paths.sh"; then
+  pass 'pin comment requires >= 0.5.0'
+else
+  fail 'pin comment must say it requires a release >= 0.5.0'
+fi
+
+# Explicit key lists distinguish plugin settings from inherited process values.
+for scenario in inherited plugin placeholder empty nofile absent inherited_hub; do
+  if (
+    cleanup_env
+    with_envfile 'RIVETOS_PG_URL=postgres://file.example/db
+RIVETOS_ROOT=/file/root
+RIVETOS_MODE=workspace
+RIVETOS_DATAHUB_URL=postgres://file-hub.example/db
+RIVETOS_CLOUD_TOKEN=file-token'
+    export RIVETOS_PLUGIN_ENV=1 RIVETOS_PLUGIN_KEYS=''
+    export RIVETOS_PG_URL=postgres://proc.example/db RIVETOS_ROOT=/proc/root
+    export RIVETOS_DATAHUB_URL=postgres://proc-hub.example/db
+    export RIVETOS_MODE=local RIVETOS_CLOUD_TOKEN=proc-token
+    case "$scenario" in
+      plugin|placeholder|empty)
+        export RIVETOS_PLUGIN_KEYS='RIVETOS_DATAHUB_URL RIVETOS_MODE RIVETOS_CLOUD_TOKEN'
+        if [ "$scenario" = placeholder ]; then
+          export RIVETOS_DATAHUB_URL='${user_config.RIVETOS_DATAHUB_URL}'
+          export RIVETOS_MODE='${user_config.RIVETOS_MODE}' RIVETOS_CLOUD_TOKEN='${user_config.RIVETOS_CLOUD_TOKEN}'
+        elif [ "$scenario" = empty ]; then
+          export RIVETOS_DATAHUB_URL='' RIVETOS_MODE='' RIVETOS_CLOUD_TOKEN=''
+        fi ;;
+      nofile) rm "$RIVETOS_ENV_FILE" ;;
+      absent) : >"$RIVETOS_ENV_FILE" ;;
+      inherited_hub) printf 'RIVETOS_PG_URL=postgres://file.example/db\nRIVETOS_ROOT=/file/root\nRIVETOS_MODE=workspace\nRIVETOS_CLOUD_TOKEN=file-token\n' >"$RIVETOS_ENV_FILE" ;;
+    esac
+    rivetos_load_env
+    case "$scenario" in
+      plugin) [ "$RIVETOS_PG_URL" = postgres://proc-hub.example/db ] && [ "$RIVETOS_MODE" = local ] && [ "$RIVETOS_CLOUD_TOKEN" = proc-token ] && [ "$RIVETOS_ROOT" = /file/root ] ;;
+      nofile|absent) [ "$RIVETOS_PG_URL" = postgres://proc.example/db ] && [ "$RIVETOS_ROOT" = /proc/root ] ;;
+      *) [ "$RIVETOS_PG_URL" = postgres://file.example/db ] && [ "$RIVETOS_ROOT" = /file/root ] && [ "$RIVETOS_MODE" = workspace ] && [ "$RIVETOS_CLOUD_TOKEN" = file-token ] ;;
+    esac
+    result=$?
+    cleanup_env
+    exit "$result"
+  ); then pass "explicit plugin keys: $scenario"; else fail "explicit plugin keys: $scenario"; fi
+done
+
+# Marketplace copies must stay in sync even when only shared tests run.
+kit="$ROOT/../claude-code/rivet-memory"
+if [ ! -d "$kit" ]; then
+  pass "plugin lib drift guard # SKIP kit directory absent"
+else
+  for name in rivet-paths.sh rivetos-onboard-persist.sh rivetos-status.sh; do
+    if cmp -s "$ROOT/$name" "$kit/lib/$name"; then
+      pass "plugin lib/$name matches shared"
+    else
+      fail "plugin lib/$name missing or drifted from shared"
+    fi
+  done
+  for copy in "$kit"/lib/*.sh; do
+    if ! cmp -s "$copy" "$ROOT/${copy##*/}"; then
+      fail "plugin lib/${copy##*/} has no matching shared original"
+    fi
+  done
+fi
+
 if [ "$failed" -ne 0 ]; then
   echo "$failed rivet-paths test(s) failed" >&2
   exit 1
