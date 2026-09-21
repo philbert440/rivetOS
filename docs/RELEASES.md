@@ -77,3 +77,18 @@ Pre-release versions (for example `0.4.0-beta.6` on individual packages) are not
 ## What we do not promise
 
 No LTS, no `lts/X.Y` branches, no backport window. A working tag stays that commit; it does not keep receiving fixes. Upgrade to the next `vX.Y.Z` for patches.
+
+---
+
+## When the stable pin moves
+
+Public pages name the tools the pinned installer wires. When `local_ref` moves to a new tag, re-check these against that tag's `integrations/` and `plugins/providers/`:
+
+- `README.md` (quick start step 1)
+- `docs/HUB-SETUP.md` (pin sentence; then run the docs sync for the site copy)
+- `apps/site/src/content/docs/guides/introduction.md` (harness examples)
+- `apps/site/src/pages/index.astro` (provider chips, source-checkout lines)
+- `apps/rivethub-site/public/index.html` (hero, "Here today", FAQ)
+- `apps/rivethub-site/public/install-local.html` (supported-tools table, including each row's "how it records" text)
+- `apps/rivethub-site/public/llms.txt` (shipped tools line)
+- `apps/rivethub-site/public/omarchy.html` (harness strip)
