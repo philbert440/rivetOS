@@ -84,11 +84,15 @@ describe('claudeSheet', () => {
   })
 
   it('declares launchModel — the model is chosen at spawn (#814)', () => {
-    // claude-code takes --model at launch and has no per-turn switch, so a
-    // spawn-time picker (not turnOptions) is the right surface.
-    expect(claudeSheet().launchModel).toBe(true)
-    // A fixed-model sheet does not: codex has no model choice at all.
-    expect(codexSheet().launchModel).toBeUndefined()
+    // sheetForHarness stamps launchModel for harnesses that apply --model at
+    // launch and have no per-turn switch. The bare sheet builders don't set it.
+    expect(claudeSheet().launchModel).toBeUndefined()
+    for (const id of ['claude-code', 'grok-build', 'kimi-code', 'opencode', 'pi', 'qwen-code'] as const) {
+      expect(sheetForHarness(id).launchModel).toBe(true)
+    }
+    // codex uses the per-turn turnOptions path; hermes has no model choice.
+    expect(sheetForHarness('codex').launchModel).toBeUndefined()
+    expect(sheetForHarness('hermes').launchModel).toBeUndefined()
   })
 })
 

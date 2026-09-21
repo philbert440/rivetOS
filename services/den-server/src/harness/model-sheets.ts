@@ -204,9 +204,6 @@ export function claudeSheet(): ModelSheet {
     efforts: CLAUDE_EFFORTS,
     modelFlag: '--model',
     effortFlag: '--effort',
-    // Claude Code takes `--model <id>` at launch and has no per-turn switch
-    // (`turnOptions` absent), so the model is chosen once, at spawn.
-    launchModel: true,
   }
 }
 
@@ -654,28 +651,50 @@ function piModelsFromStore(readJson: ReadJson, path: string): HarnessModelOption
   return out
 }
 
+/**
+ * Harnesses that apply their `modelFlag` model at SPAWN (`launchModel`, #814).
+ * They take `--model <id>` (or `-m`) at launch and have no per-turn switch, so
+ * the model is chosen once, before the session binds. `codex` is excluded (it
+ * uses the per-turn `turnOptions` path, not a spawn flag) and `hermes` too
+ * (`models: []` — the running server fixes the model). The composer shows a
+ * spawn picker only when the resolved sheet also has models, so config-driven
+ * harnesses (kimi/opencode/pi/qwen) show nothing until they are configured.
+ */
+const LAUNCH_MODEL_HARNESSES: ReadonlySet<HarnessId> = new Set([
+  'claude-code',
+  'grok-build',
+  'kimi-code',
+  'opencode',
+  'pi',
+  'qwen-code',
+])
+
 export function sheetForHarness(harnessId: HarnessId, readers?: SheetReaders): ModelSheet {
   const home = readers?.home
   const readJson = readers?.readJson
   const readText = readers?.readText
-  switch (harnessId) {
-    case 'claude-code':
-      return claudeSheet()
-    case 'grok-build':
-      return grokSheet(readJson, home)
-    case 'kimi-code':
-      return kimiSheet(readText, home)
-    case 'hermes':
-      return hermesSheet()
-    case 'codex':
-      return codexSheet()
-    case 'opencode':
-      return opencodeSheet(readJson, home)
-    case 'pi':
-      return piSheet(readJson, home)
-    case 'qwen-code':
-      return qwenCodeSheet(readJson, home)
-  }
+  const sheet = ((): ModelSheet => {
+    switch (harnessId) {
+      case 'claude-code':
+        return claudeSheet()
+      case 'grok-build':
+        return grokSheet(readJson, home)
+      case 'kimi-code':
+        return kimiSheet(readText, home)
+      case 'hermes':
+        return hermesSheet()
+      case 'codex':
+        return codexSheet()
+      case 'opencode':
+        return opencodeSheet(readJson, home)
+      case 'pi':
+        return piSheet(readJson, home)
+      case 'qwen-code':
+        return qwenCodeSheet(readJson, home)
+    }
+  })()
+  if (LAUNCH_MODEL_HARNESSES.has(harnessId)) sheet.launchModel = true
+  return sheet
 }
 
 export function sheetForRosterCommand(
