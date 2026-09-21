@@ -257,6 +257,88 @@ describe('term manager', () => {
     expect(noFlag.spawns[0].argv).toEqual(['claude'])
   })
 
+  it('appends model flags only when the roster key still runs its built-in program', () => {
+    const spawnModel = (roster?: TermRoster) => {
+      const harness = makeManager({}, roster ? { roster } : {})
+      harness.manager.spawn(
+        'claude',
+        80,
+        24,
+        '',
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        'opus',
+      )
+      return harness
+    }
+    const builtin = spawnModel()
+    expect(builtin.spawns[0].argv).toEqual(['claude', '--model', 'opus'])
+    expect(builtin.logs.some((l) => l.includes('model/effort flags were skipped'))).toBe(false)
+
+    const base = defaultRoster()
+    const relocated = spawnModel({
+      ...base,
+      commands: {
+        ...base.commands,
+        claude: { label: 'Claude Code', cmd: ['/opt/x/claude', '--foo'], room: true },
+      },
+    })
+    expect(relocated.spawns[0].argv).toEqual(['/opt/x/claude', '--foo', '--model', 'opus'])
+    expect(relocated.logs.some((l) => l.includes('model/effort flags were skipped'))).toBe(false)
+
+    const repurposed = spawnModel({
+      ...base,
+      commands: {
+        ...base.commands,
+        claude: { label: 'Other', cmd: ['other-bin'], room: true },
+      },
+    })
+    expect(repurposed.spawns[0].argv).toEqual(['other-bin'])
+    expect(repurposed.spawns[0].argv).not.toContain('--model')
+    const skipped = repurposed.logs.filter((l) => l.includes('model/effort flags were skipped'))
+    expect(skipped).toHaveLength(1)
+    expect(skipped[0]).toContain('claude')
+    expect(skipped[0]).not.toContain('opus')
+
+    const custom = makeManager(
+      {},
+      {
+        roster: {
+          default: 'mytool',
+          cwd: '/tmp',
+          env: {},
+          commands: { mytool: { label: 'Mine', cmd: ['mytool'], room: false } },
+        },
+      },
+    )
+    custom.manager.spawn('mytool', 80, 24, '', undefined, undefined, undefined, undefined, 'opus')
+    expect(custom.spawns[0].argv).toEqual(['mytool'])
+    expect(custom.logs.some((l) => l.includes('model/effort flags were skipped'))).toBe(false)
+
+    // Injected sheets are the test/DI seam — they skip the built-in check.
+    const injected = makeManager(
+      {},
+      {
+        roster: {
+          ...base,
+          commands: {
+            ...base.commands,
+            claude: { label: 'Other', cmd: ['other-bin'], room: true },
+          },
+        },
+        modelSheetFor: () => ({
+          models: [{ id: 'opus', label: 'Opus' }],
+          modelFlag: '--model',
+        }),
+      },
+    )
+    injected.manager.spawn('claude', 80, 24, '', undefined, undefined, undefined, undefined, 'opus')
+    expect(injected.spawns[0].argv).toEqual(['other-bin', '--model', 'opus'])
+    expect(injected.logs.some((l) => l.includes('model/effort flags were skipped'))).toBe(false)
+  })
+
   it('stamps contextWindow from the spawn model option (fable 200k / fable[1m] 1M)', () => {
     const sheet = {
       models: [

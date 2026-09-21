@@ -84,12 +84,13 @@ export function rowPillText(
 /**
  * POST /term `model` / `effort` for a thread.
  *
- * `model` is sent whenever it is explicitly set — a preset-opened thread OR
- * the pre-spawn pick (#814), which stores it on `model` without a harness
- * preset. `effort` stays preset-only: a catalog chat-loop thread (agent:
- * "claude", no harnessId) must not inherit `--effort medium`. The den
- * validates either token against the resolved sheet and drops what it does
- * not offer.
+ * Preset threads (`harnessId` set) are unchanged: a non-empty model is sent
+ * as stored, and effort comes from the preset. A thread without a harnessId
+ * sends `model` only when the trimmed id is one of `vettedModelIds` — the
+ * ids on the conversation's resolved `launchModel` sheet, the same list
+ * `launchModelOptions` returns. Pass `undefined` (registry pending, errored,
+ * or no row) to send no model: the harness default launches. `effort` stays
+ * preset-only either way.
  */
 export function spawnModelEffort(
   settings:
@@ -100,8 +101,17 @@ export function spawnModelEffort(
         effort?: string
       }
     | undefined,
+  vettedModelIds?: readonly string[],
 ): { model?: string; effort?: string } {
-  const model = settings?.model?.trim() || undefined
+  const trimmed = settings?.model?.trim() || undefined
+  // No harnessId → the id must be on this conversation's own sheet. Anything
+  // else (off-sheet, malformed, registry not settled) is omitted so a stored
+  // token cannot turn a default spawn into HTTP 400.
+  const model = settings?.harnessId
+    ? trimmed
+    : trimmed && vettedModelIds?.includes(trimmed)
+      ? trimmed
+      : undefined
   const effort = settings?.harnessId
     ? settings.harnessEffort?.trim() ||
       (settings.effort && settings.effort !== 'off' ? settings.effort : undefined) ||

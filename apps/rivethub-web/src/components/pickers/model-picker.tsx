@@ -66,7 +66,11 @@ export function ModelPicker(props: {
               <button
                 key={o.value}
                 type="button"
+                // A popover that was already open when the picker became
+                // disabled stays closable (above) but must not select.
+                disabled={props.disabled}
                 onClick={() => {
+                  if (props.disabled) return
                   props.onChange(o.value)
                   setOpen(false)
                 }}

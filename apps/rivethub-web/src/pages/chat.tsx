@@ -1,7 +1,10 @@
 import {
+  conversationLaunch,
   conversationModelOptions,
   conversationProtocolOwnership,
-  launchModelOptions,
+  isPreBind,
+  needsRegistryBeforeSpawn,
+  shouldPersistLaunchLatch,
 } from '../lib/conversation-model-options.js'
 import { withAttachmentText } from '../lib/attachments.js'
 /**
@@ -74,7 +77,7 @@ import { GatewayError } from '@rivetos/gateway-client'
 import { useConnection } from '../stores/connection.js'
 import { NotConnected, useGatewayReady } from '../components/not-connected.js'
 import { lastActiveFor, useChat, type LiveToolEntry, type OutboundItem } from '../stores/chat.js'
-import { useChatSettings } from '../stores/chat-settings.js'
+import { launchStateWrite, useChatSettings } from '../stores/chat-settings.js'
 import { Transcript } from '../components/transcript.js'
 import { QueuedStrip } from '../components/queued-strip.js'
 import { Composer, type ComposerHandle } from '../components/composer.js'
@@ -95,7 +98,6 @@ import {
   denRoomKey,
   fetchHarnessPlaneSessions,
   findChatItem,
-  harnessForRosterCommand,
   harnessGate,
   nativeIdOf,
   rosterCommandFor,
@@ -104,7 +106,7 @@ import {
   type ChatItem,
   type HarnessGate,
 } from '../lib/harness-chat.js'
-import { rowPillText, spawnModelEffort } from '../lib/harness-options.js'
+import { rowPillText } from '../lib/harness-options.js'
 import { DenBot } from '../components/den-bot.js'
 import { ContextBar } from '../components/context-bar.js'
 import { SegmentedControl } from '../components/segmented-control.js'
@@ -1021,9 +1023,14 @@ function ActiveSession(props: {
     enabled: isRemote,
     retry: 1,
   })
+  const registryQueryKey = isRemote
+    ? (['harnesses', sessionBase, epochForNode] as const)
+    : (['harnesses', sessionBase] as const)
+  const registryQueryFn = ({ signal }: { signal: AbortSignal }) =>
+    gatewayFor(sessionBase).then((gw) => gw.harnesses(signal))
   const remoteRegistry = useQuery({
-    queryKey: isRemote ? ['harnesses', sessionBase, epochForNode] : ['harnesses', sessionBase],
-    queryFn: async ({ signal }) => (await gatewayFor(sessionBase)).harnesses(signal),
+    queryKey: registryQueryKey,
+    queryFn: registryQueryFn,
     staleTime: 300_000,
   })
   // A definitive 404 means the thread's session is gone on its node — except
@@ -1110,6 +1117,11 @@ function ActiveSession(props: {
     remoteRegistry.status,
   )
   const [termPtyId, setTermPtyId] = useState<string | undefined>()
+  // The selector is locked for the duration of a spawn request so the
+  // conversation's agent cannot change under an in-flight launch. A request
+  // that never settles keeps it locked until the view remounts (per-instance
+  // state).
+  const [spawnInFlight, setSpawnInFlight] = useState(false)
   const [termError, setTermError] = useState<string | undefined>()
   // ref mirrors termPtyId so the unmount cleanup can kill the current PTY
   // (state is captured stale in an unmount-only effect)
@@ -1174,20 +1186,36 @@ function ActiveSession(props: {
     protocolOwned,
     item?.model,
   )
-  // Spawn-time model selection (#814). Offered only before the conversation is
-  // bound to a live harness session and has no live PTY yet, and only when the
-  // conversation's OWN resolved harness sheet declares `launchModel`. The
-  // resolved harness falls back to the agent's roster command for a draft.
-  const preBind = !gate.bound && !termPtyId
-  const launchHarnessId =
-    item?.harnessId ?? settings?.harnessId ?? harnessForRosterCommand(settings?.agent)
-  const launchOptions = launchModelOptions({
-    preBind,
-    harnessId: launchHarnessId,
-    registry: remoteRegistry.data?.harnesses,
-    model: settings?.model,
+  // Spawn-time model selection (#814). The picker is open only before this
+  // conversation's first successful spawn, and not while that spawn is in
+  // flight. `launched` lives on chat settings so a reload, a PTY drop, or a
+  // legacy row that never becomes bound cannot reopen it.
+  const preBind = isPreBind({
+    bound: gate.bound,
+    hasPty: termPtyId !== undefined,
+    launched: settings?.launched === true,
+    spawnInFlight,
   })
+  const launch = conversationLaunch({
+    itemHarnessId: item?.harnessId,
+    settings,
+    registry: remoteRegistry.data?.harnesses,
+    preBind,
+  })
+  const launchOptions = launch.options
   const setSetting = useChatSettings((s) => s.set)
+  // Launch-state writes (latch, picker, stale clear). A canonical miss with a
+  // legacy fallback migrates that record; anything else is the patch alone.
+  const writeLaunchState = useCallback(
+    (patch: Parameters<typeof setSetting>[1]) => {
+      const byKey = useChatSettings.getState().byKey
+      setSetting(
+        settingsKey,
+        launchStateWrite(byKey[settingsKey], persisted(byKey, sessionBase, props.sessionId), patch),
+      )
+    },
+    [setSetting, settingsKey, sessionBase, props.sessionId],
+  )
   const retainedModel = turnOptions.retainedPick?.model
   const retainedEffort = turnOptions.retainedPick?.effort
   useEffect(() => {
@@ -1207,11 +1235,12 @@ function ActiveSession(props: {
     settingsKey,
     setSetting,
   ])
-  // A settled `launchModel` sheet that no longer offers the stored spawn model
-  // drops it so the next spawn falls back to the harness default (#814).
+  // Before the first spawn, a settled `launchModel` sheet that no longer offers
+  // the stored model drops it so the spawn falls back to the harness default.
+  // A launched conversation keeps the model it spawned with (#814).
   useEffect(() => {
-    if (launchOptions.clearModel) setSetting(settingsKey, { model: undefined })
-  }, [launchOptions.clearModel, settingsKey, setSetting])
+    if (launchOptions.clearModel) writeLaunchState({ model: undefined })
+  }, [launchOptions.clearModel, writeLaunchState])
 
   // ---- Transcript binding ---------------------------------------------------
   //
@@ -1377,34 +1406,88 @@ function ActiveSession(props: {
     if (sessionBase !== baseUrl && !rosterUrls.includes(sessionBase)) {
       throw new Error(`can't reach ${urlLabel(sessionBase)}`)
     }
-    const gw = await sessionGateway()
-    // A harness session (already in the store) resumes; a fresh conversation
-    // pins its id (--session-id, via the join key) so its store file lines up.
-    // Command: the harness's own for a resume, else the model dropdown.
-    const command =
-      harnessCommand ||
-      (settings?.harnessId ? rosterCommandFor(settings.harnessId) : undefined) ||
-      settings?.agent ||
-      undefined
-    const body = {
-      session: props.sessionId,
-      ...(command ? { command } : {}),
-      ...(harnessCommand ? { resume: props.sessionId } : {}),
-      ...spawnModelEffort(settings),
-    }
-    // An API-only agent has no roster command → fall back to the node default
-    // rather than 404 (keeps the session id via --session-id if a UUID).
-    const p = command
-      ? await gw.termSpawn(body).catch((error: unknown) => {
-          if (error instanceof GatewayError && error.status === 404 && !settings?.harnessId)
-            return gw.termSpawn({ session: props.sessionId })
-          throw error
+    // Close the picker for the whole request, including a registry wait,
+    // before a pty id exists. A failed spawn clears this in `finally` so the
+    // picker can open again; success latches `launched` first.
+    setSpawnInFlight(true)
+    const capturedLaunchIdentity = { agent: settings?.agent, harnessId: settings?.harnessId }
+    try {
+      // Threads with a stored model and no preset harness wait for the same
+      // registry query the view already uses, then recompute. Do not send the
+      // render closure's launch.spawn on that path — it was built while the
+      // sheet was still unsettled. An error (older nodes have no registry)
+      // sends no model and still spawns. spawnInFlight stays set across the wait.
+      let settledLaunch = launch
+      if (
+        needsRegistryBeforeSpawn({
+          model: settings?.model,
+          harnessId: settings?.harnessId,
+          registrySettled: !remoteRegistry.isPending,
         })
-      : await gw.termSpawn(body)
-    protocolSessionRef.current = p.harnessSessionId
-    setTermPtyId(p.id)
-    termPtyRef.current = p.id
-    return p.id
+      ) {
+        let registryRows: Parameters<typeof conversationLaunch>[0]['registry']
+        try {
+          const settled = await queryClient.fetchQuery({
+            queryKey: registryQueryKey,
+            queryFn: registryQueryFn,
+            staleTime: 300_000,
+          })
+          registryRows = settled.harnesses
+        } catch {
+          registryRows = undefined
+        }
+        settledLaunch = conversationLaunch({
+          itemHarnessId: item?.harnessId,
+          settings,
+          registry: registryRows,
+          preBind,
+        })
+      }
+      const gw = await sessionGateway()
+      // A harness session (already in the store) resumes; a fresh conversation
+      // pins its id (--session-id, via the join key) so its store file lines up.
+      // Command: the harness's own for a resume, else the model dropdown.
+      const command =
+        harnessCommand ||
+        (settings?.harnessId ? rosterCommandFor(settings.harnessId) : undefined) ||
+        settings?.agent ||
+        undefined
+      const body = {
+        session: props.sessionId,
+        ...(command ? { command } : {}),
+        ...(harnessCommand ? { resume: props.sessionId } : {}),
+        ...settledLaunch.spawn,
+      }
+      // An API-only agent has no roster command → fall back to the node default
+      // rather than 404 (keeps the session id via --session-id if a UUID).
+      const p = command
+        ? await gw.termSpawn(body).catch((error: unknown) => {
+            if (error instanceof GatewayError && error.status === 404 && !settings?.harnessId)
+              return gw.termSpawn({ session: props.sessionId })
+            throw error
+          })
+        : await gw.termSpawn(body)
+      // Latch after the first successful spawn, unless this harness already
+      // latched or the conversation's agent/harness changed while we were in
+      // flight. Persisted on chat settings so the picker stays shut when this
+      // PTY is dropped (inject 409) or the view remounts — `gate.bound` stays
+      // false for legacy rows.
+      const currentSettings = persisted(
+        useChatSettings.getState().byKey,
+        sessionBase,
+        props.sessionId,
+      )
+      // Rekey during this spawn can still land the latch on the retired key.
+      if (shouldPersistLaunchLatch(capturedLaunchIdentity, currentSettings)) {
+        writeLaunchState({ launched: true })
+      }
+      protocolSessionRef.current = p.harnessSessionId
+      setTermPtyId(p.id)
+      termPtyRef.current = p.id
+      return p.id
+    } finally {
+      setSpawnInFlight(false)
+    }
   }
   const spawnPtyRef = useRef(spawnPty)
   spawnPtyRef.current = spawnPty
@@ -1865,12 +1948,13 @@ function ActiveSession(props: {
                 : undefined
             }
             launchOptions={launchOptions}
-            onLaunchModel={(model) => setSetting(settingsKey, { model })}
+            onLaunchModel={(model) => writeLaunchState({ model })}
             sessionId={props.sessionId}
             wsStatus={wsStatus}
             settingsKey={settingsKey}
             gatewayBase={isRemote ? sessionBase : undefined}
             agent={settings?.agent || undefined}
+            agentLocked={spawnInFlight}
             effort={settings?.effort ?? 'medium'}
             systemPrompt={settings?.systemPrompt}
             onSetting={(patch) => setSetting(settingsKey, patch)}

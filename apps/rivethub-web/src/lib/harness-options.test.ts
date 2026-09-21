@@ -97,18 +97,29 @@ describe('CODEX_SHEET', () => {
 })
 
 describe('spawnModelEffort', () => {
+  const sheet = ['fable', 'opus']
+
   it('sends nothing when settings are absent or carry no model/effort', () => {
     expect(spawnModelEffort(undefined)).toEqual({})
-    expect(spawnModelEffort({ effort: 'medium', harnessEffort: 'max' })).toEqual({})
+    expect(spawnModelEffort({ effort: 'medium', harnessEffort: 'max' }, sheet)).toEqual({})
   })
 
-  it('sends the launch model WITHOUT a harnessId (pre-spawn pick, #814) but keeps effort preset-only', () => {
-    // A catalog chat-loop thread (agent picked, no harness preset) now carries
-    // the pre-spawn model but must NOT inherit `--effort` from the UI default.
-    expect(spawnModelEffort({ model: 'fable', effort: 'medium', harnessEffort: 'max' })).toEqual({
-      model: 'fable',
-    })
-    expect(spawnModelEffort({ agent: 'claude', model: 'opus' })).toEqual({ model: 'opus' })
+  it('sends an on-sheet launch model without a harnessId, and never an unvetted one', () => {
+    // A catalog thread carries the pre-spawn model only when that id is on the
+    // resolved launchModel sheet, and must NOT inherit `--effort`.
+    expect(
+      spawnModelEffort({ model: 'opus', effort: 'medium', harnessEffort: 'max' }, sheet),
+    ).toEqual({ model: 'opus' })
+    expect(spawnModelEffort({ model: '  fable  ' }, sheet)).toEqual({ model: 'fable' })
+    // Off the sheet.
+    expect(spawnModelEffort({ model: 'sonnet' }, sheet)).toEqual({})
+    // Malformed tokens the den would 400 (space, over 64 chars, `..`).
+    expect(spawnModelEffort({ model: 'provider model' }, sheet)).toEqual({})
+    expect(spawnModelEffort({ model: 'a'.repeat(65) }, sheet)).toEqual({})
+    expect(spawnModelEffort({ model: 'foo..bar' }, sheet)).toEqual({})
+    // Registry pending/errored/row missing → no vetted ids → harness default.
+    expect(spawnModelEffort({ model: 'opus' })).toEqual({})
+    expect(spawnModelEffort({ model: 'opus' }, undefined)).toEqual({})
   })
 
   it('sends effort when the preset thread has harnessEffort', () => {
@@ -117,10 +128,23 @@ describe('spawnModelEffort', () => {
     })
   })
 
-  it('sends model and effort together when both are set', () => {
+  it('preset threads still send model and effort without a sheet check', () => {
     expect(
-      spawnModelEffort({ harnessId: 'claude-code', model: 'fable', harnessEffort: 'high' }),
+      spawnModelEffort({ harnessId: 'claude-code', model: 'fable', harnessEffort: 'high' }, sheet),
     ).toEqual({ model: 'fable', effort: 'high' })
+    // Off-sheet and malformed stay as they are today for a preset.
+    expect(
+      spawnModelEffort({ harnessId: 'claude-code', model: 'provider model', harnessEffort: 'max' }),
+    ).toEqual({ model: 'provider model', effort: 'max' })
+    expect(
+      spawnModelEffort(
+        { harnessId: 'claude-code', model: 'foo..bar', harnessEffort: 'low' },
+        sheet,
+      ),
+    ).toEqual({ model: 'foo..bar', effort: 'low' })
+    expect(spawnModelEffort({ harnessId: 'claude-code', model: 'a'.repeat(65) }, sheet)).toEqual({
+      model: 'a'.repeat(65),
+    })
   })
 })
 

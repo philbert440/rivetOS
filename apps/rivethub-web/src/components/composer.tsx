@@ -70,15 +70,17 @@ export function Composer(props: {
   turnOptions?: ReturnType<typeof conversationModelOptions>
   onTurnPick?: (pick: { model?: string; effort?: string }) => void
   /**
-   * Spawn-time model selection (#814) — the pre-bind picker, rendered only
-   * when the helper's `models` is non-empty (it already encodes the
-   * not-yet-bound + `launchModel` gates). `value` is '' = harness default.
+   * Spawn-time model selection (#814). Rendered only when `models` is
+   * non-empty — the helper already applies the pre-spawn `launchModel` gate.
+   * Empty value = harness default (`defaultModelLabel`).
    */
   launchOptions?: ReturnType<typeof launchModelOptions>
   onLaunchModel?: (model?: string) => void
   wsStatus: WsStatus
   settingsKey: string
   agent?: string
+  /** When true, the agent selector cannot change (a spawn is in flight). */
+  agentLocked?: boolean
   effort: ThinkingLevel
   /** Agent-preset system prompt; sent on the chat-loop POST path. */
   systemPrompt?: string
@@ -490,7 +492,7 @@ export function Composer(props: {
               value={props.agent ?? ''}
               options={models}
               onChange={(v) => props.onSetting({ agent: v })}
-              disabled={catalog.isError}
+              disabled={catalog.isError || props.agentLocked === true}
               unavailable={catalog.isError}
             />
           )}
@@ -500,10 +502,13 @@ export function Composer(props: {
           {!!props.launchOptions?.models.length && (
             <Select
               value={props.launchOptions.value}
-              options={[{ value: '', label: 'Default model' }, ...props.launchOptions.models]}
+              options={[
+                { value: '', label: props.launchOptions.defaultModelLabel },
+                ...props.launchOptions.models,
+              ]}
               onChange={(model) => props.onLaunchModel?.(model || undefined)}
               label="Model for this conversation"
-              title={`Model: ${props.launchOptions.models.find((m) => m.value === props.launchOptions?.value)?.label ?? 'Default'}`}
+              title={`Model: ${props.launchOptions.models.find((m) => m.value === props.launchOptions?.value)?.label ?? props.launchOptions.defaultModelLabel}`}
               aria-label="Model for this conversation"
               className="max-w-[12rem] min-w-0 rounded-full"
             />

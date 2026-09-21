@@ -1,12 +1,16 @@
 import { describe, expect, it } from 'vitest'
 import {
+  conversationLaunch,
   conversationModelOptions as resolveOptions,
   conversationProtocolOwnership,
+  isPreBind,
   launchModelOptions,
+  needsRegistryBeforeSpawn,
+  shouldPersistLaunchLatch,
   type ConversationTurnPick,
 } from './conversation-model-options.js'
 import { spawnModelEffort } from './harness-options.js'
-import { mergeChatSettings, type ChatSettings } from '../stores/chat-settings.js'
+import { launchStateWrite, mergeChatSettings, type ChatSettings } from '../stores/chat-settings.js'
 
 // Existing cases describe protocol-owned conversations.
 const conversationModelOptions = (
@@ -110,19 +114,30 @@ describe('launchModelOptions (spawn-time, #814)', () => {
     },
   ]
   it('lists the harness’s own models only when declared and pre-bind', () => {
-    const r = launchModelOptions({ preBind: true, harnessId: 'claude-code', registry: launchRegistry })
+    const r = launchModelOptions({
+      preBind: true,
+      harnessId: 'claude-code',
+      registry: launchRegistry,
+    })
     expect(r.models.map((m) => m.value)).toEqual(['fable', 'opus'])
     expect(r.value).toBe('')
     expect(r.clearModel).toBe(false)
+    expect(r.vettedModelIds).toEqual(['fable', 'opus'])
+    expect(r.defaultModelLabel).toBe('Harness default (Fable)')
   })
   it('never offers a turn-only sheet’s models or a sheet without the flag', () => {
     expect(
       launchModelOptions({ preBind: true, harnessId: 'codex', registry: launchRegistry }).models,
     ).toEqual([])
     const noFlag = [
-      { harnessId: 'claude-code' as const, capabilities: { models: [{ id: 'opus', label: 'Opus' }] } },
+      {
+        harnessId: 'claude-code' as const,
+        capabilities: { models: [{ id: 'opus', label: 'Opus' }] },
+      },
     ]
-    expect(launchModelOptions({ preBind: true, harnessId: 'claude-code', registry: noFlag }).models).toEqual([])
+    expect(
+      launchModelOptions({ preBind: true, harnessId: 'claude-code', registry: noFlag }).models,
+    ).toEqual([])
   })
   it('hides the picker once bound, even with a stored model (which it keeps)', () => {
     const r = launchModelOptions({
@@ -136,6 +151,8 @@ describe('launchModelOptions (spawn-time, #814)', () => {
     expect(r.models).toEqual([])
     expect(r.value).toBe('opus')
     expect(r.clearModel).toBe(false)
+    // Ids stay vetted after the picker closes so a respawn can still send one.
+    expect(r.vettedModelIds).toEqual(['fable', 'opus'])
   })
   it('keeps a valid stored model as the value', () => {
     const r = launchModelOptions({
@@ -147,29 +164,172 @@ describe('launchModelOptions (spawn-time, #814)', () => {
     expect(r.value).toBe('opus')
     expect(r.clearModel).toBe(false)
   })
-  it('ignores and clears a stored model the settled sheet no longer offers (bound or not)', () => {
-    for (const preBind of [true, false]) {
-      const r = launchModelOptions({
-        preBind,
+  it('clears an off-sheet stored model only before launch', () => {
+    const pre = launchModelOptions({
+      preBind: true,
+      harnessId: 'claude-code',
+      registry: launchRegistry,
+      model: 'removed',
+    })
+    expect(pre.value).toBe('')
+    expect(pre.clearModel).toBe(true)
+    // A bound or already-launched conversation keeps the model it spawned with.
+    const launched = launchModelOptions({
+      preBind: false,
+      harnessId: 'claude-code',
+      registry: launchRegistry,
+      model: 'removed',
+    })
+    expect(launched.models).toEqual([])
+    expect(launched.value).toBe('removed')
+    expect(launched.clearModel).toBe(false)
+    expect(launched.vettedModelIds).toEqual(['fable', 'opus'])
+  })
+  it('names the marked default, else the first model, else a bare label', () => {
+    const marked = [
+      {
+        harnessId: 'claude-code' as const,
+        capabilities: {
+          launchModel: true,
+          models: [
+            { id: 'opus', label: 'Opus 5' },
+            { id: 'fable', label: 'Fable 5.1', default: true },
+          ],
+        },
+      },
+    ]
+    expect(
+      launchModelOptions({ preBind: true, harnessId: 'claude-code', registry: marked })
+        .defaultModelLabel,
+    ).toBe('Harness default (Fable 5.1)')
+    expect(
+      launchModelOptions({ preBind: true, harnessId: 'claude-code', registry: undefined })
+        .defaultModelLabel,
+    ).toBe('Harness default')
+    expect(
+      launchModelOptions({
+        preBind: true,
         harnessId: 'claude-code',
-        registry: launchRegistry,
-        model: 'removed',
-      })
-      expect(r.value).toBe('')
-      expect(r.clearModel).toBe(true)
-    }
+        registry: [{ harnessId: 'claude-code', capabilities: { launchModel: true, models: [] } }],
+      }).defaultModelLabel,
+    ).toBe('Harness default')
   })
   it('preserves a stored model while the registry is pending, errored, or the row is missing', () => {
-    // registry undefined (pending/errored) → preserve, do not clear.
+    // registry undefined (pending/errored) → sheet did not settle → preserve.
+    // No separate `registry !== undefined` guard: unresolved means no vetted ids.
     expect(
-      launchModelOptions({ preBind: true, harnessId: 'claude-code', registry: undefined, model: 'opus' }),
-    ).toEqual({ models: [], value: 'opus', clearModel: false })
-    // empty registry / unknown harness id → row missing → preserve.
-    for (const harnessId of ['claude-code', 'grok-build']) {
+      launchModelOptions({
+        preBind: true,
+        harnessId: 'claude-code',
+        registry: undefined,
+        model: 'opus',
+      }),
+    ).toEqual({
+      models: [],
+      value: 'opus',
+      clearModel: false,
+      defaultModelLabel: 'Harness default',
+      vettedModelIds: undefined,
+    })
+    // empty registry / unknown harness id → row missing → preserve, send nothing.
+    for (const harnessId of ['claude-code', 'grok-build'] as const) {
       const r = launchModelOptions({ preBind: true, harnessId, registry: [], model: 'opus' })
       expect(r.clearModel).toBe(false)
       expect(r.value).toBe('opus')
+      expect(r.vettedModelIds).toBeUndefined()
     }
+  })
+})
+
+describe('isPreBind', () => {
+  const open = { bound: false, hasPty: false, launched: false, spawnInFlight: false }
+  it('is open only before the first spawn, with no pty and no request in flight', () => {
+    expect(isPreBind(open)).toBe(true)
+    expect(isPreBind({ ...open, spawnInFlight: true })).toBe(false)
+    // Inject 409 clears the pty; a conversation that already launched stays shut.
+    expect(isPreBind({ ...open, launched: true })).toBe(false)
+    expect(isPreBind({ ...open, bound: true })).toBe(false)
+    expect(isPreBind({ ...open, hasPty: true })).toBe(false)
+  })
+})
+
+describe('conversationLaunch', () => {
+  const registry = [
+    {
+      harnessId: 'claude-code' as const,
+      capabilities: {
+        launchModel: true,
+        models: [
+          { id: 'fable', label: 'Fable 5.1', default: true },
+          { id: 'opus', label: 'Opus 5' },
+        ],
+      },
+    },
+  ]
+  it('resolves an agent-only claude draft onto its sheet and sends an on-sheet pick', () => {
+    const r = conversationLaunch({
+      settings: { agent: 'claude', model: 'opus', effort: 'medium', harnessEffort: 'max' },
+      registry,
+      preBind: true,
+    })
+    expect(r.harnessId).toBe('claude-code')
+    expect(r.options.models.map((m) => m.value)).toEqual(['fable', 'opus'])
+    expect(r.options.defaultModelLabel).toBe('Harness default (Fable 5.1)')
+    // effort stays preset-only.
+    expect(r.spawn).toEqual({ model: 'opus' })
+  })
+  it('prefers the row harness over the roster command', () => {
+    const r = conversationLaunch({
+      itemHarnessId: 'claude-code',
+      settings: { agent: 'grok-fast', model: 'opus' },
+      registry,
+      preBind: true,
+    })
+    expect(r.harnessId).toBe('claude-code')
+    expect(r.options.models.map((m) => m.value)).toEqual(['fable', 'opus'])
+    expect(r.spawn).toEqual({ model: 'opus' })
+  })
+  it('offers no picker and sends no model for an agent with no harness', () => {
+    const r = conversationLaunch({
+      settings: { agent: 'grok-fast', model: 'opus', effort: 'medium' },
+      registry,
+      preBind: true,
+    })
+    expect(r.harnessId).toBeUndefined()
+    expect(r.options.models).toEqual([])
+    expect(r.spawn).toEqual({})
+  })
+  it('leaves a preset thread spawn flags unchanged', () => {
+    const r = conversationLaunch({
+      settings: {
+        agent: 'claude',
+        harnessId: 'claude-code',
+        model: 'provider model',
+        effort: 'medium',
+        harnessEffort: 'high',
+      },
+      registry,
+      preBind: true,
+    })
+    expect(r.harnessId).toBe('claude-code')
+    expect(r.options.models.map((m) => m.value)).toEqual(['fable', 'opus'])
+    expect(r.spawn).toEqual({ model: 'provider model', effort: 'high' })
+  })
+  it('still sends an on-sheet model after the picker closes, and nothing while the registry is pending', () => {
+    const closed = conversationLaunch({
+      settings: { agent: 'claude', model: 'opus' },
+      registry,
+      preBind: false,
+    })
+    expect(closed.options.models).toEqual([])
+    expect(closed.spawn).toEqual({ model: 'opus' })
+    expect(
+      conversationLaunch({
+        settings: { agent: 'claude', model: 'opus' },
+        registry: undefined,
+        preBind: true,
+      }).spawn,
+    ).toEqual({})
   })
 })
 
@@ -204,7 +364,109 @@ describe('per-conversation settings', () => {
     expect(mergeChatSettings(current, { effort: 'high' }).model).toBe(launch.model)
   })
   it('clears the launch model on agent change even with no turn pick stored', () => {
-    expect(mergeChatSettings({ agent: 'claude', effort: 'medium', model: 'opus' }, { agent: 'grok' }).model).toBeUndefined()
+    expect(
+      mergeChatSettings({ agent: 'claude', effort: 'medium', model: 'opus' }, { agent: 'grok' })
+        .model,
+    ).toBeUndefined()
+  })
+  it('keeps a model the same patch sets when the agent or harness changes (#821)', () => {
+    const current: ChatSettings = {
+      agent: 'claude',
+      effort: 'medium',
+      harnessId: 'claude-code',
+      model: 'fable',
+      turnPick: pick,
+    }
+    const next = mergeChatSettings(current, { harnessId: 'grok-build', model: 'grok-4' })
+    expect(next.model).toBe('grok-4')
+    expect(next.harnessId).toBe('grok-build')
+    // Turn overrides still drop; only an explicit model survives the clear.
+    expect(next.turnPick).toBeUndefined()
+    expect(mergeChatSettings(current, { harnessId: 'grok-build' }).model).toBeUndefined()
+    expect(mergeChatSettings(current, { agent: 'grok', model: 'grok-4' }).model).toBe('grok-4')
+  })
+  it('resets launched on an agent or harness change and keeps it otherwise', () => {
+    const current: ChatSettings = {
+      agent: 'codex',
+      effort: 'medium',
+      model: 'opus',
+      launched: true,
+    }
+    const switched = mergeChatSettings(current, { agent: 'claude' })
+    expect(switched.launched).toBeUndefined()
+    expect(switched.model).toBeUndefined()
+    expect(switched.agent).toBe('claude')
+    // A patch must not carry the latch across the identity change.
+    expect(mergeChatSettings(current, { agent: 'claude', launched: true }).launched).toBeUndefined()
+    expect(mergeChatSettings(current, { launched: true }).launched).toBe(true)
+    expect(mergeChatSettings(current, { agent: 'codex' }).launched).toBe(true)
+    expect(mergeChatSettings(current, { agent: 'codex' }).model).toBe('opus')
+    expect(mergeChatSettings(current, { harnessId: 'grok-build' }).launched).toBeUndefined()
+  })
+})
+
+describe('registry wait before spawn', () => {
+  it('waits only for a stored model with no harness while the registry is unsettled', () => {
+    expect(
+      needsRegistryBeforeSpawn({
+        model: 'opus',
+        harnessId: undefined,
+        registrySettled: false,
+      }),
+    ).toBe(true)
+    expect(
+      needsRegistryBeforeSpawn({ model: '  ', harnessId: undefined, registrySettled: false }),
+    ).toBe(false)
+    expect(needsRegistryBeforeSpawn({ model: undefined, registrySettled: false })).toBe(false)
+    expect(
+      needsRegistryBeforeSpawn({
+        model: 'opus',
+        harnessId: 'claude-code',
+        registrySettled: false,
+      }),
+    ).toBe(false)
+    expect(
+      needsRegistryBeforeSpawn({ model: 'opus', harnessId: undefined, registrySettled: true }),
+    ).toBe(false)
+  })
+})
+
+describe('launch latch identity', () => {
+  it('latches only when the captured agent and harness are still current', () => {
+    const captured = { agent: 'codex', harnessId: 'codex' as const }
+    expect(shouldPersistLaunchLatch(captured, { ...captured, launched: false })).toBe(true)
+    expect(shouldPersistLaunchLatch(captured, { ...captured, launched: true })).toBe(false)
+    expect(shouldPersistLaunchLatch(captured, { agent: 'claude', harnessId: 'codex' })).toBe(false)
+    expect(shouldPersistLaunchLatch(captured, { agent: 'codex', harnessId: 'grok-build' })).toBe(
+      false,
+    )
+    expect(shouldPersistLaunchLatch({ agent: 'codex' }, { agent: 'codex', launched: true })).toBe(
+      false,
+    )
+    // Same agent re-selected is not a change; a missing record matches a missing agent.
+    expect(shouldPersistLaunchLatch({ agent: 'codex' }, { agent: 'codex' })).toBe(true)
+    expect(shouldPersistLaunchLatch({}, undefined)).toBe(true)
+    expect(shouldPersistLaunchLatch({ agent: undefined }, { agent: '' })).toBe(true)
+  })
+})
+
+describe('launch-state writes', () => {
+  const legacy: ChatSettings = {
+    agent: 'claude',
+    effort: 'high',
+    model: 'opus',
+    harnessId: 'claude-code',
+    systemPrompt: 'be brief',
+  }
+  const patch = { launched: true as const }
+  it('migrates a legacy record when the canonical key is absent', () => {
+    expect(launchStateWrite(undefined, legacy, patch)).toEqual({ ...legacy, ...patch })
+  })
+  it('uses the patch alone when a canonical record exists', () => {
+    expect(launchStateWrite(legacy, legacy, patch)).toBe(patch)
+  })
+  it('uses the patch alone when neither record exists', () => {
+    expect(launchStateWrite(undefined, undefined, patch)).toBe(patch)
   })
 })
 

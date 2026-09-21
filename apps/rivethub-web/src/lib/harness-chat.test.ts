@@ -14,6 +14,7 @@ import {
   findChatItem,
   harnessForRosterCommand,
   harnessGate,
+  rosterCommandFor,
   isTurnInFlight,
   listableHarnesses,
   mergeSessionCreated,
@@ -431,6 +432,14 @@ describe('typed-error and id helpers', () => {
     expect(harnessForRosterCommand('kimi')).toBe('kimi-code')
     expect(harnessForRosterCommand('opencode')).toBe('opencode')
     expect(harnessForRosterCommand('qwen')).toBe('qwen-code')
+  })
+
+  it('round-trips every roster command, and the command values are distinct', () => {
+    const commands = Object.values(ROSTER_COMMAND)
+    expect(new Set(commands).size).toBe(commands.length)
+    for (const id of Object.keys(ROSTER_COMMAND)) {
+      expect(harnessForRosterCommand(rosterCommandFor(id))).toBe(id)
+    }
   })
 
   it('returns undefined for a command with no harness (grok-fast) or absent input', () => {
