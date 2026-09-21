@@ -25,6 +25,7 @@
 **Primary interactive path:** harness sessions on the node
 (`claude-code`, `grok-build`, `kimi-code`, `hermes`, `codex`, `opencode`, `pi`, `qwen-code`)
 via the gateway contract. A driver on the control plane is not a task executor.
+The live RivetHub installer pin may lag this source-build list — the current pin ships Claude Code, Codex, Grok Build, Kimi Code, and Hermes.
 
 **Removed (Phase 5):** Telegram / Discord / voice-discord channel plugins are gone. Hub is the product path. Leftover `channels.telegram:` in config is a validation warning only (no crash-loop).
 
