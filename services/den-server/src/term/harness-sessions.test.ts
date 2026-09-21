@@ -1260,6 +1260,28 @@ describe('readHarnessTranscript', () => {
     expect(stripPastedContentWrapper('there we go, working?')).toBe('there we go, working?')
     expect(stripPastedContentWrapper('a <pasted_content> b')).toBe('a <pasted_content> b')
 
+    // Paired + id-anchored: literal user text that merely mentions a tag is left
+    // alone (an unpaired global strip would edit it and reintroduce the dup).
+    expect(stripPastedContentWrapper('see <pasted_content id="x"> as the shape')).toBe(
+      'see <pasted_content id="x"> as the shape',
+    )
+    // Mismatched ids are not a real paste block → untouched.
+    expect(stripPastedContentWrapper('<pasted_content id="a">\nx\n</pasted_content id="b">')).toBe(
+      '<pasted_content id="a">\nx\n</pasted_content id="b">',
+    )
+    // Claude sometimes writes an attribute-less close — still a real block.
+    expect(stripPastedContentWrapper('<pasted_content id="a1">\nhi\n</pasted_content>')).toBe('hi')
+    // A typed prefix and the paste's internal indentation survive.
+    expect(
+      stripPastedContentWrapper('note:\n<pasted_content id="x">\n  indented\n</pasted_content id="x">'),
+    ).toBe('note:\n  indented')
+    // Two pastes in one turn: both unwrapped, the between-newline kept.
+    expect(
+      stripPastedContentWrapper(
+        '<pasted_content id="a">\none\n</pasted_content id="a">\n<pasted_content id="b">\ntwo\n</pasted_content id="b">',
+      ),
+    ).toBe('one\ntwo')
+
     // End-to-end: the parsed transcript turn carries the clean text, not the tags.
     const turns = claudeTurnsFromLines([
       { type: 'user', message: { role: 'user', content: wrapped } },

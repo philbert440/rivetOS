@@ -71,15 +71,25 @@ export function isBareSlashCommand(text: string): boolean {
  * AND, because the web client retires an optimistic bubble by exact-text match
  * with no id to fall back on, defeats de-duplication so the turn shows twice.
  *
- * Strip Claude Code's own paste markers (opening and the attribute-bearing
- * closing tag it emits) back to the text the user actually sent. The id-bearing
- * `</pasted_content id="…">` closing form is specific to this framing, so a real
- * message is not going to carry it by accident. Whitespace the framing adds
- * around the block is trimmed; a message with no such wrapper is returned as-is.
+ * Strip Claude Code's paste markers back to the text the user actually sent.
+ * The match is PAIRED and id-anchored: an opening `<pasted_content id="X">`
+ * must be closed by `</pasted_content id="X">` (the id-bearing form this framing
+ * emits) or the attribute-less `</pasted_content>` Claude sometimes writes — and
+ * only the block between them is unwrapped. An unpaired global strip is wrong
+ * here: it edits real user text (a quoted `<pasted_content id="x">` in prose, or
+ * an attribute-less close, would be deleted or half-deleted, reintroducing the
+ * duplicate this guards against). A lone tag, a mismatched-id pair, or a bare
+ * `<pasted_content>` is therefore left untouched — that is literal user text.
+ * The framing's own newlines around the block are absorbed; a typed prefix and
+ * the paste's internal indentation are preserved. A message that matches nothing
+ * is returned byte-for-byte, so the web client's exact-text bubble match holds.
  */
 export function stripPastedContentWrapper(text: string): string {
   if (!text.includes('pasted_content')) return text
-  const stripped = text.replace(/<\/?pasted_content id="[^"]*">/g, '')
+  const stripped = text.replace(
+    /<pasted_content id="([^"]*)">\n?([\s\S]*?)\n?<\/pasted_content(?: id="\1")?>/g,
+    '$2',
+  )
   return stripped === text ? text : stripped.trim()
 }
 
