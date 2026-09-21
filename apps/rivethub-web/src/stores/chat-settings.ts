@@ -26,7 +26,13 @@ export interface ChatSettings {
   systemPrompt?: string
 }
 
-/** Agent/harness changes invalidate overrides even when supplied in the same patch. */
+/**
+ * Agent/harness changes invalidate per-turn overrides even when supplied in
+ * the same patch. They also clear the LAUNCH model (#814): it names a
+ * harness's model, so a changed harness invalidates it. (Re-selecting the
+ * SAME agent/harness re-applies without clobbering — `applyAgentSettings`
+ * always re-sends the model in that patch on a fresh thread.)
+ */
 export function mergeChatSettings(
   current: ChatSettings | undefined,
   patch: Partial<ChatSettings>,
@@ -35,7 +41,12 @@ export function mergeChatSettings(
     current !== undefined &&
     (('agent' in patch && patch.agent !== current.agent) ||
       ('harnessId' in patch && patch.harnessId !== current.harnessId))
-  return { ...DEFAULT, ...current, ...patch, ...(changed ? { turnPick: undefined } : {}) }
+  return {
+    ...DEFAULT,
+    ...current,
+    ...patch,
+    ...(changed ? { turnPick: undefined, model: undefined } : {}),
+  }
 }
 
 const KEY = 'rivethub.chatSettings'

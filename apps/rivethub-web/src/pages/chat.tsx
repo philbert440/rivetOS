@@ -1,6 +1,7 @@
 import {
   conversationModelOptions,
   conversationProtocolOwnership,
+  launchModelOptions,
 } from '../lib/conversation-model-options.js'
 import { withAttachmentText } from '../lib/attachments.js'
 /**
@@ -94,6 +95,7 @@ import {
   denRoomKey,
   fetchHarnessPlaneSessions,
   findChatItem,
+  harnessForRosterCommand,
   harnessGate,
   nativeIdOf,
   rosterCommandFor,
@@ -1172,6 +1174,19 @@ function ActiveSession(props: {
     protocolOwned,
     item?.model,
   )
+  // Spawn-time model selection (#814). Offered only before the conversation is
+  // bound to a live harness session and has no live PTY yet, and only when the
+  // conversation's OWN resolved harness sheet declares `launchModel`. The
+  // resolved harness falls back to the agent's roster command for a draft.
+  const preBind = !gate.bound && !termPtyId
+  const launchHarnessId =
+    item?.harnessId ?? settings?.harnessId ?? harnessForRosterCommand(settings?.agent)
+  const launchOptions = launchModelOptions({
+    preBind,
+    harnessId: launchHarnessId,
+    registry: remoteRegistry.data?.harnesses,
+    model: settings?.model,
+  })
   const setSetting = useChatSettings((s) => s.set)
   const retainedModel = turnOptions.retainedPick?.model
   const retainedEffort = turnOptions.retainedPick?.effort
@@ -1192,6 +1207,11 @@ function ActiveSession(props: {
     settingsKey,
     setSetting,
   ])
+  // A settled `launchModel` sheet that no longer offers the stored spawn model
+  // drops it so the next spawn falls back to the harness default (#814).
+  useEffect(() => {
+    if (launchOptions.clearModel) setSetting(settingsKey, { model: undefined })
+  }, [launchOptions.clearModel, settingsKey, setSetting])
 
   // ---- Transcript binding ---------------------------------------------------
   //
@@ -1844,6 +1864,8 @@ function ActiveSession(props: {
                     setSetting(settingsKey, { turnPick: { harnessId: nativeHarnessId, ...pick } })
                 : undefined
             }
+            launchOptions={launchOptions}
+            onLaunchModel={(model) => setSetting(settingsKey, { model })}
             sessionId={props.sessionId}
             wsStatus={wsStatus}
             settingsKey={settingsKey}

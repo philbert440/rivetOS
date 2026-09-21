@@ -97,9 +97,18 @@ describe('CODEX_SHEET', () => {
 })
 
 describe('spawnModelEffort', () => {
-  it('sends nothing without a harnessId', () => {
+  it('sends nothing when settings are absent or carry no model/effort', () => {
     expect(spawnModelEffort(undefined)).toEqual({})
-    expect(spawnModelEffort({ model: 'fable', effort: 'medium', harnessEffort: 'max' })).toEqual({})
+    expect(spawnModelEffort({ effort: 'medium', harnessEffort: 'max' })).toEqual({})
+  })
+
+  it('sends the launch model WITHOUT a harnessId (pre-spawn pick, #814) but keeps effort preset-only', () => {
+    // A catalog chat-loop thread (agent picked, no harness preset) now carries
+    // the pre-spawn model but must NOT inherit `--effort` from the UI default.
+    expect(spawnModelEffort({ model: 'fable', effort: 'medium', harnessEffort: 'max' })).toEqual({
+      model: 'fable',
+    })
+    expect(spawnModelEffort({ agent: 'claude', model: 'opus' })).toEqual({ model: 'opus' })
   })
 
   it('sends effort when the preset thread has harnessEffort', () => {

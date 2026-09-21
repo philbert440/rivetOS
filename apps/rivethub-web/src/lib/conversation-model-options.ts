@@ -26,6 +26,62 @@ export function conversationProtocolOwnership({
   return bound && transport === 'protocol'
 }
 
+/**
+ * Spawn-time model selection (#814) — the pre-bind twin of
+ * `conversationModelOptions` (which covers per-turn picks after launch).
+ *
+ * Offered only while the conversation is NOT yet bound to a harness session
+ * (draft, not spawned), and only when the conversation's own resolved harness
+ * sheet declares `launchModel`. The options come from that sheet alone —
+ * never a catalog default, never another harness's models. The pick rides
+ * `POST /term { model }`, which the den validates against the sheet; once the
+ * conversation is bound the launch model is fixed for its life (live switching
+ * stays the separate `turnOptions` path; a harness may declare both).
+ *
+ * Unknown registry (pending/errored) or an unregistered harness preserves a
+ * stored model — the den still validates the spawn against its own sheet.
+ */
+export function launchModelOptions({
+  preBind,
+  harnessId,
+  registry,
+  model,
+}: {
+  preBind: boolean
+  harnessId?: HarnessId
+  registry?: readonly {
+    harnessId: HarnessId
+    capabilities: Pick<HarnessCapabilities, 'launchModel' | 'models'>
+  }[]
+  model?: string
+}): {
+  models: SelectOption[]
+  value: string
+  clearModel: boolean
+} {
+  const sheet = registry?.find((row) => row.harnessId === harnessId)?.capabilities
+  const sheetModels = sheet?.models ?? []
+  // The picker only offers the sheet's models while NOT bound and only when
+  // the sheet declares `launchModel`; a bound conversation keeps the launch
+  // model it spawned with (live switching is the separate `turnOptions` path).
+  const listed = preBind && sheet?.launchModel ? sheetModels : []
+  const stored = model?.trim() || undefined
+  // A stored model a SETTLED `launchModel` sheet no longer offers is ignored
+  // and cleared (checked against the sheet's full list, independent of the
+  // pre-bind gate, so a bound conversation's launch model is invalidated too);
+  // a missing row or an unloaded registry leaves the stored model alone.
+  const stale =
+    registry !== undefined &&
+    sheet?.launchModel === true &&
+    !!stored &&
+    !sheetModels.some((row) => row.id === stored)
+  return {
+    models: listed.map((row) => ({ value: row.id, label: row.label })),
+    value: stored && !stale ? stored : '',
+    clearModel: stale,
+  }
+}
+
 /** Resolve only the conversation's harness, never an agent catalog default. */
 export function conversationModelOptions(
   harnessId: HarnessId | undefined,

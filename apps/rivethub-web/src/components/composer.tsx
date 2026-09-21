@@ -3,7 +3,10 @@ import { useQuery } from '@tanstack/react-query'
 import { ArrowUp, Mic, Paperclip, Volume2, VolumeX, X } from 'lucide-react'
 import type { CatalogAgent, ThinkingLevel } from '@rivetos/types'
 import { Select, type SelectOption } from './select.js'
-import type { conversationModelOptions } from '../lib/conversation-model-options.js'
+import type {
+  conversationModelOptions,
+  launchModelOptions,
+} from '../lib/conversation-model-options.js'
 import type { WsStatus } from '../stores/chat.js'
 import type { ChatSettings } from '../stores/chat-settings.js'
 import type { AskQuestion, AskScreen } from '../lib/ask-user.js'
@@ -66,6 +69,13 @@ export function Composer(props: {
   nativeControls?: boolean
   turnOptions?: ReturnType<typeof conversationModelOptions>
   onTurnPick?: (pick: { model?: string; effort?: string }) => void
+  /**
+   * Spawn-time model selection (#814) — the pre-bind picker, rendered only
+   * when the helper's `models` is non-empty (it already encodes the
+   * not-yet-bound + `launchModel` gates). `value` is '' = harness default.
+   */
+  launchOptions?: ReturnType<typeof launchModelOptions>
+  onLaunchModel?: (model?: string) => void
   wsStatus: WsStatus
   settingsKey: string
   agent?: string
@@ -486,6 +496,17 @@ export function Composer(props: {
           )}
           {!props.nativeControls && (
             <EffortPicker value={props.effort} onChange={(v) => props.onSetting({ effort: v })} />
+          )}
+          {!!props.launchOptions?.models.length && (
+            <Select
+              value={props.launchOptions.value}
+              options={[{ value: '', label: 'Default model' }, ...props.launchOptions.models]}
+              onChange={(model) => props.onLaunchModel?.(model || undefined)}
+              label="Model for this conversation"
+              title={`Model: ${props.launchOptions.models.find((m) => m.value === props.launchOptions?.value)?.label ?? 'Default'}`}
+              aria-label="Model for this conversation"
+              className="max-w-[12rem] min-w-0 rounded-full"
+            />
           )}
           {!!props.turnOptions?.models.length && (
             <Select

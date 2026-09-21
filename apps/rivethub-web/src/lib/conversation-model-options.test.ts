@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest'
 import {
   conversationModelOptions as resolveOptions,
   conversationProtocolOwnership,
+  launchModelOptions,
   type ConversationTurnPick,
 } from './conversation-model-options.js'
 import { spawnModelEffort } from './harness-options.js'
@@ -87,6 +88,91 @@ describe('conversationModelOptions', () => {
   })
 })
 
+describe('launchModelOptions (spawn-time, #814)', () => {
+  const launchRegistry = [
+    {
+      harnessId: 'claude-code' as const,
+      capabilities: {
+        launchModel: true,
+        models: [
+          { id: 'fable', label: 'Fable' },
+          { id: 'opus', label: 'Opus' },
+        ],
+      },
+    },
+    {
+      // A turn-only sheet (per-turn picker) must never feed the launch picker.
+      harnessId: 'codex' as const,
+      capabilities: {
+        turnOptions: true,
+        models: [{ id: 'a', label: 'Model A' }],
+      },
+    },
+  ]
+  it('lists the harness’s own models only when declared and pre-bind', () => {
+    const r = launchModelOptions({ preBind: true, harnessId: 'claude-code', registry: launchRegistry })
+    expect(r.models.map((m) => m.value)).toEqual(['fable', 'opus'])
+    expect(r.value).toBe('')
+    expect(r.clearModel).toBe(false)
+  })
+  it('never offers a turn-only sheet’s models or a sheet without the flag', () => {
+    expect(
+      launchModelOptions({ preBind: true, harnessId: 'codex', registry: launchRegistry }).models,
+    ).toEqual([])
+    const noFlag = [
+      { harnessId: 'claude-code' as const, capabilities: { models: [{ id: 'opus', label: 'Opus' }] } },
+    ]
+    expect(launchModelOptions({ preBind: true, harnessId: 'claude-code', registry: noFlag }).models).toEqual([])
+  })
+  it('hides the picker once bound, even with a stored model (which it keeps)', () => {
+    const r = launchModelOptions({
+      preBind: false,
+      harnessId: 'claude-code',
+      registry: launchRegistry,
+      model: 'opus',
+    })
+    // No picker offered once bound, but the launch model it spawned with is
+    // retained (value) rather than erased.
+    expect(r.models).toEqual([])
+    expect(r.value).toBe('opus')
+    expect(r.clearModel).toBe(false)
+  })
+  it('keeps a valid stored model as the value', () => {
+    const r = launchModelOptions({
+      preBind: true,
+      harnessId: 'claude-code',
+      registry: launchRegistry,
+      model: 'opus',
+    })
+    expect(r.value).toBe('opus')
+    expect(r.clearModel).toBe(false)
+  })
+  it('ignores and clears a stored model the settled sheet no longer offers (bound or not)', () => {
+    for (const preBind of [true, false]) {
+      const r = launchModelOptions({
+        preBind,
+        harnessId: 'claude-code',
+        registry: launchRegistry,
+        model: 'removed',
+      })
+      expect(r.value).toBe('')
+      expect(r.clearModel).toBe(true)
+    }
+  })
+  it('preserves a stored model while the registry is pending, errored, or the row is missing', () => {
+    // registry undefined (pending/errored) → preserve, do not clear.
+    expect(
+      launchModelOptions({ preBind: true, harnessId: 'claude-code', registry: undefined, model: 'opus' }),
+    ).toEqual({ models: [], value: 'opus', clearModel: false })
+    // empty registry / unknown harness id → row missing → preserve.
+    for (const harnessId of ['claude-code', 'grok-build']) {
+      const r = launchModelOptions({ preBind: true, harnessId, registry: [], model: 'opus' })
+      expect(r.clearModel).toBe(false)
+      expect(r.value).toBe('opus')
+    }
+  })
+})
+
 describe('per-conversation settings', () => {
   const launch: ChatSettings = {
     agent: 'codex',
@@ -105,12 +191,20 @@ describe('per-conversation settings', () => {
   it('preserves overrides when a conversation is rekeyed to a new settings key', () => {
     expect(mergeChatSettings(undefined, { ...launch, turnPick: pick }).turnPick).toEqual(pick)
   })
-  it('agent or harness changes clear both turn overrides', () => {
+  it('agent or harness changes clear turn overrides AND the launch model (#814)', () => {
     const current = { ...launch, turnPick: pick }
     expect(mergeChatSettings(current, { agent: 'grok' }).turnPick).toBeUndefined()
+    expect(mergeChatSettings(current, { agent: 'grok' }).model).toBeUndefined()
     expect(mergeChatSettings(current, { harnessId: 'grok-build' }).turnPick).toBeUndefined()
+    expect(mergeChatSettings(current, { harnessId: 'grok-build' }).model).toBeUndefined()
+    // Same agent/harness (re-apply) or an unrelated field keeps both.
     expect(mergeChatSettings(current, { agent: 'codex' }).turnPick).toEqual(pick)
+    expect(mergeChatSettings(current, { agent: 'codex' }).model).toBe(launch.model)
     expect(mergeChatSettings(current, { effort: 'high' }).turnPick).toEqual(pick)
+    expect(mergeChatSettings(current, { effort: 'high' }).model).toBe(launch.model)
+  })
+  it('clears the launch model on agent change even with no turn pick stored', () => {
+    expect(mergeChatSettings({ agent: 'claude', effort: 'medium', model: 'opus' }, { agent: 'grok' }).model).toBeUndefined()
   })
 })
 

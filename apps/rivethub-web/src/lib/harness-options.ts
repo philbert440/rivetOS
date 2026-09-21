@@ -82,9 +82,14 @@ export function rowPillText(
 }
 
 /**
- * POST /term `model` / `effort` for a thread. Only a preset-opened thread
- * (settings carry `harnessId`) sends flags; a catalog chat-loop thread
- * must not inherit `--effort medium`.
+ * POST /term `model` / `effort` for a thread.
+ *
+ * `model` is sent whenever it is explicitly set — a preset-opened thread OR
+ * the pre-spawn pick (#814), which stores it on `model` without a harness
+ * preset. `effort` stays preset-only: a catalog chat-loop thread (agent:
+ * "claude", no harnessId) must not inherit `--effort medium`. The den
+ * validates either token against the resolved sheet and drops what it does
+ * not offer.
  */
 export function spawnModelEffort(
   settings:
@@ -96,12 +101,12 @@ export function spawnModelEffort(
       }
     | undefined,
 ): { model?: string; effort?: string } {
-  if (!settings?.harnessId) return {}
-  const model = settings.model?.trim() || undefined
-  const effort =
-    settings.harnessEffort?.trim() ||
-    (settings.effort && settings.effort !== 'off' ? settings.effort : undefined) ||
-    undefined
+  const model = settings?.model?.trim() || undefined
+  const effort = settings?.harnessId
+    ? settings.harnessEffort?.trim() ||
+      (settings.effort && settings.effort !== 'off' ? settings.effort : undefined) ||
+      undefined
+    : undefined
   return {
     ...(model ? { model } : {}),
     ...(effort ? { effort } : {}),
