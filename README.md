@@ -38,7 +38,7 @@ RivetOS is a personal AI agent runtime built for reliability. A tiny, stable cor
 
 **One happy path** — laptop node + first captured chat. Mesh, Docker, Proxmox, and `rivetos init` come later.
 
-1. Have a supported coding tool on PATH (Claude Code is the reference; Codex, Grok, Kimi, Hermes, opencode, pi, and qwen-code also wire in).
+1. Have a supported coding tool on PATH (Claude Code is the reference; Codex, Grok, Kimi, and Hermes also wire in; opencode, pi, and qwen-code are in the source tree but not yet in the installer).
 2. Install the node:
 
 ```bash

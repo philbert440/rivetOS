@@ -23,7 +23,7 @@ RivetOS is an open-source runtime for deploying AI agents as persistent, contain
 An agent is a configured AI model with access to specific channels, tools, and memory. Each agent runs in its own container with its own workspace.
 
 ### Harnesses
-The interactive coding loop. RivetOS adapts external coding hosts (Claude Code, Grok Build, Kimi Code, Hermes) through per-harness drivers; humans reach them through RivetHub via the node gateway. Agent-to-agent HTTP (the mesh channel) handles cross-node messaging; the old social channels (Discord, Telegram, voice) were removed in Phase 5.
+The interactive coding loop. RivetOS adapts external coding hosts (Claude Code, Codex, Grok Build, Kimi Code, Hermes) through per-harness drivers; humans reach them through RivetHub via the node gateway. Agent-to-agent HTTP (the mesh channel) handles cross-node messaging; the old social channels (Discord, Telegram, voice) were removed in Phase 5.
 
 ### Providers
 The AI model backend. Anthropic, xAI, Google, Ollama (local), or llama.cpp server (native).

@@ -62,6 +62,37 @@ export function isBareSlashCommand(text: string): boolean {
   return /^\/[A-Za-z][\w:-]*(?:[ \t][^\n]*)?$/.test(text)
 }
 
+/**
+ * The den injects a chat turn into the harness PTY as a bracketed paste (so
+ * multi-line text lands atomically), and Claude Code's TUI frames any
+ * bracketed-paste input as a `<pasted_content id="XXXX">…</pasted_content
+ * id="XXXX">` block — which it then stores verbatim in the session JSONL. Left
+ * as-is, that wrapper leaks into the transcript (raw tags in the user bubble)
+ * AND, because the web client retires an optimistic bubble by exact-text match
+ * with no id to fall back on, defeats de-duplication so the turn shows twice.
+ *
+ * Strip Claude Code's paste markers back to the text the user actually sent.
+ * The match is PAIRED and id-anchored: an opening `<pasted_content id="X">`
+ * must be closed by `</pasted_content id="X">` (the id-bearing form this framing
+ * emits) or the attribute-less `</pasted_content>` Claude sometimes writes — and
+ * only the block between them is unwrapped. An unpaired global strip is wrong
+ * here: it edits real user text (a quoted `<pasted_content id="x">` in prose, or
+ * an attribute-less close, would be deleted or half-deleted, reintroducing the
+ * duplicate this guards against). A lone tag, a mismatched-id pair, or a bare
+ * `<pasted_content>` is therefore left untouched — that is literal user text.
+ * The framing's own newlines around the block are absorbed; a typed prefix and
+ * the paste's internal indentation are preserved. A message that matches nothing
+ * is returned byte-for-byte, so the web client's exact-text bubble match holds.
+ */
+export function stripPastedContentWrapper(text: string): string {
+  if (!text.includes('pasted_content')) return text
+  const stripped = text.replace(
+    /<pasted_content id="([^"]*)">\n?([\s\S]*?)\n?<\/pasted_content(?: id="\1")?>/g,
+    '$2',
+  )
+  return stripped === text ? text : stripped.trim()
+}
+
 /** `system`/`compact_boundary` → a complete assistant marker turn carrying the post-compaction context size. */
 function compactMarker(meta: unknown): HarnessTurn {
   const m = (meta ?? {}) as { postTokens?: unknown; preTokens?: unknown }
@@ -181,7 +212,8 @@ export function claudeTurnsFromLines(lines: Record<string, unknown>[]): HarnessT
           }
         }
       }
-      const text = extractTurnText(content, 'user')
+      const raw = extractTurnText(content, 'user')
+      const text = raw === null ? null : stripPastedContentWrapper(raw)
       if (text && !isBareSlashCommand(text)) {
         finishAssistant()
         turns.push({ role: 'user', text })
