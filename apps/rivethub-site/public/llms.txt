@@ -24,7 +24,7 @@ Detail pages: [laptop quickstart](https://rivethub.io/install-local.html), [Omar
 
 The local hub installer supports Linux and macOS. Windows has a client, not a native local-hub installer. There is an Android app. There is no iPhone app. Enrollment QR codes are for Android. The macOS desktop app is planned. Use the browser on macOS.
 
-Shipped tools: Claude Code, Codex, Grok Build, Kimi Code, Hermes, OpenCode, and pi.
+Shipped tools: Claude Code, Codex, Grok Build, Kimi Code, and Hermes.
 
 Full-text and fuzzy search work without an embedding endpoint. Semantic search needs an optional embedding service. Collection is local, but configured agent, embedding, and compaction providers process the inputs sent to them. Do not infer that all processing is offline or that every integration is connected merely because it is supported.
 
