@@ -127,6 +127,37 @@ export function Composer(props: {
     }
   }, [handleRef])
 
+  // Autofocus the composer on landing in a conversation and when switching to
+  // another (the session subtree remounts per session, so a new/opened chat
+  // hits this too) — type immediately, no click first. The textarea is
+  // disabled while the socket reconnects, so wait for `connected`; the ref
+  // latches once per session (sessionId is fixed within a mount) so a later
+  // reconnect can't steal focus mid-scroll.
+  //
+  // Two guards keep the steal from hurting:
+  //  1. Only take focus when nothing else owns it. `connected` flips true a
+  //     beat after the page renders, and in that window the drawer is
+  //     interactive: an inline rename input commits on blur (a steal would
+  //     save a half-typed name), the filter input, a dialog focus trap, an
+  //     in-progress transcript selection, and a terminal a legacy row is still
+  //     showing before it flips to Chat must all be left alone.
+  //  2. Skip on coarse-pointer (touch). Programmatic focus is NOT suppressed on
+  //     Android Chrome/WebView (only iOS Safari), so on a tap that remounts the
+  //     composer the keyboard would rise over the transcript — don't. A real
+  //     tap on the textarea still focuses it. The latch is set only after a
+  //     real focus() so a skipped/no-op attempt isn't latched forever.
+  const autoFocusedFor = useRef<string | undefined>(undefined)
+  useEffect(() => {
+    if (!connected || autoFocusedFor.current === props.sessionId) return
+    if (typeof window !== 'undefined' && window.matchMedia?.('(pointer: coarse)').matches) return
+    const active = document.activeElement
+    if (active && active !== document.body) return
+    const ta = taRef.current
+    if (!ta) return
+    ta.focus()
+    autoFocusedFor.current = props.sessionId
+  }, [connected, props.sessionId])
+
   // Drop the mic on unmount (or a superseded start still resolving) — never
   // leave a tab holding the capture device.
   const micToken = useRef(0)
