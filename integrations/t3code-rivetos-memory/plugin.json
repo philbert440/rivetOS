@@ -1,0 +1,28 @@
+{
+  "name": "rivetos-memory",
+  "version": "0.1.0",
+  "description": "Prototype: RivetOS memory tools for T3 Code via the closest supported MCP registration surface. T3 has no first-class external plugin API on current main.",
+  "keywords": ["memory", "recall", "rivetos", "mcp", "t3code", "prototype"],
+  "homepage": "https://github.com/philbert440/rivetOS",
+  "repository": "https://github.com/philbert440/rivetOS",
+  "license": "Apache-2.0",
+  "author": {
+    "name": "RivetOS"
+  },
+  "t3code": {
+    "status": "closest-supported-extension-point",
+    "firstClassPluginApi": false,
+    "contextInjectionHooks": false,
+    "registration": {
+      "working": "harness-native-mcp",
+      "proposed": "http-mcp-url"
+    },
+    "mcpServer": "rivetos",
+    "toolPrefix": "mcp__rivetos__",
+    "http": {
+      "type": "http",
+      "path": "/mcp",
+      "headers": false
+    }
+  }
+}

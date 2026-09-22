@@ -1,0 +1,7 @@
+{
+  "name": "rivetos-memory",
+  "title": "RivetOS Memory",
+  "description": "RivetOS persistent memory for T3 Code threads. Tools come from the existing mcp-sidecar.",
+  "url": "http://127.0.0.1:5700/",
+  "mcpUrl": "http://127.0.0.1:5700/mcp"
+}

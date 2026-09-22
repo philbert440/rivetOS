@@ -1,0 +1,11 @@
+{
+  "name": "@rivetos/t3code-rivetos-memory",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Prototype: expose RivetOS memory tools to T3 Code via harness MCP registration and a T3-shaped HTTP mcpUrl.",
+  "license": "Apache-2.0",
+  "scripts": {
+    "test": "tsx test/smoke.test.ts && bash test/standalone.test.sh"
+  }
+}

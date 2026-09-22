@@ -1,0 +1,10 @@
+{
+  "mcpServers": {
+    "rivetos": {
+      "command": "bash",
+      "args": [
+        "/opt/rivetos/integrations/t3code-rivetos-memory/bin/rivet-memory-mcp.sh"
+      ]
+    }
+  }
+}
