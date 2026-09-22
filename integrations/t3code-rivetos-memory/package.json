@@ -6,6 +6,6 @@
   "description": "Prototype: expose RivetOS memory tools to T3 Code via harness MCP registration and a T3-shaped HTTP mcpUrl.",
   "license": "Apache-2.0",
   "scripts": {
-    "test": "tsx test/smoke.test.ts && bash test/standalone.test.sh"
+    "test": "node test/smoke.test.mjs && bash test/standalone.test.sh"
   }
 }

@@ -12,7 +12,7 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
 _rivet_paths=""
 for _rivet_candidate in \
-  "$SCRIPT_DIR/../../../shared/rivet-paths.sh" \
+  "$SCRIPT_DIR/../../shared/rivet-paths.sh" \
   "${RIVETOS_ROOT:-/opt/rivetos}/integrations/shared/rivet-paths.sh"; do
   if [ -f "$_rivet_candidate" ]; then
     _rivet_paths="$_rivet_candidate"
@@ -20,7 +20,7 @@ for _rivet_candidate in \
   fi
 done
 if [ -z "$_rivet_paths" ]; then
-  echo "rivet-memory-mcp-http: rivet-paths.sh not found (tried $SCRIPT_DIR/../../../shared/ and ${RIVETOS_ROOT:-/opt/rivetos}/integrations/shared/)" >&2
+  echo "rivet-memory-mcp-http: rivet-paths.sh not found (tried $SCRIPT_DIR/../../shared/ and ${RIVETOS_ROOT:-/opt/rivetos}/integrations/shared/)" >&2
   exit 1
 fi
 . "$_rivet_paths"

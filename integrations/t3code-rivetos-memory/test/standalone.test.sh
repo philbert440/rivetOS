@@ -4,8 +4,8 @@
 set -euo pipefail
 
 KIT="$(cd "$(dirname "$0")/.." && pwd -P)"
-SHARED="$(cd "$KIT/../../shared" && pwd -P)"
-REPO="$(cd "$KIT/../../.." && pwd -P)"
+SHARED="$(cd "$KIT/../shared" && pwd -P)"
+REPO="$(cd "$KIT/../.." && pwd -P)"
 
 failed=0
 pass() { echo "ok - $1"; }

@@ -71,7 +71,7 @@ See `src/tool-map.mjs` and `workspace-templates/MEMORY.md`.
 2. Put DataHub credentials in `~/.rivetos/.env` (never in this repo):
 
    ```bash
-   RIVETOS_PG_URL=postgres://USER:PASS@HOST:5432/DB
+   RIVETOS_PG_URL=  # postgres URL from your DataHub; do not commit it
    # optional hybrid search:
    # RIVETOS_EMBED_URL=https://…
    # RIVETOS_EMBED_MODEL=text-embedding-3-small
@@ -110,13 +110,14 @@ See `src/tool-map.mjs` and `workspace-templates/MEMORY.md`.
    ```bash
    npm test --prefix integrations/t3code-rivetos-memory
    # or from the repo root:
-   npx tsx integrations/t3code-rivetos-memory/test/smoke.test.ts
+   node integrations/t3code-rivetos-memory/test/smoke.test.mjs
    integrations/t3code-rivetos-memory/test/standalone.test.sh
    ```
 
-   The smoke test stands up the real RivetOS MCP HTTP mount with a
-   `memory_search` tool, calls `recallIntoContext`, and asserts the result
-   is formatted for agent context.
+   The smoke test always checks mapping, registration artifacts, and the
+   recall-to-context formatter. When workspace packages are installed it
+   also stands up the RivetOS MCP HTTP mount with a `memory_search` tool
+   and asserts the formatted context block.
 
 ### Env reference
 

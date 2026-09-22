@@ -17,7 +17,7 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PLUGIN_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
-RIVETOS_ROOT="${RIVETOS_ROOT:-$(cd "$PLUGIN_DIR/../../.." && pwd)}"
+RIVETOS_ROOT="${RIVETOS_ROOT:-$(cd "$PLUGIN_DIR/../.." && pwd)}"
 PLUGIN_PATH="$RIVETOS_ROOT/integrations/t3code-rivetos-memory"
 LAUNCHER="$PLUGIN_PATH/bin/rivet-memory-mcp.sh"
 HTTP_LAUNCHER="$PLUGIN_PATH/bin/rivet-memory-mcp-http.sh"
