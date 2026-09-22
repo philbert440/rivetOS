@@ -34,6 +34,7 @@ import {
   qwenCodeTurnsFromLines,
 } from '../harness/adapters/index.js'
 import { extractTurnText } from '../harness/adapters/parse-helpers.js'
+import { stripPastedContentWrapper } from '../harness/adapters/claude.js'
 import type { HarnessStoreRef } from '../harness/adapters/types.js'
 import { hermesDbPath, openHermesDb } from './hermes-db.js'
 import { opencodeDataDir, opencodeDbPath, openOpencodeDb } from './opencode-db.js'
@@ -122,7 +123,9 @@ async function sessionTitle(file: string): Promise<string> {
                   )
                   .join('')
               : ''
-        if (txt.trim()) return txt.trim().slice(0, 120)
+        // A chat-started session's first user turn can be a den bracketed-paste;
+        // strip the wrapper so the drawer title is the text, not the raw tags.
+        if (txt.trim()) return stripPastedContentWrapper(txt).trim().slice(0, 120)
       }
     }
   } finally {
