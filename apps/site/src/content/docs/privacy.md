@@ -9,7 +9,7 @@ sidebar:
 
 ## Marketing sites
 
-rivetos.dev and [rivethub.io](https://rivethub.io/privacy.html) are static marketing and documentation sites. When a PostHog project key is configured at build time, they record pageviews — which page was opened, and when the visitor leaves — so we can see which docs and landing pages are useful. There is no RivetOS account, and we do not collect names, emails, or other account data on these sites. Anonymous visitors are not turned into marketing profiles.
+rivetos.dev and [rivethub.io](https://rivethub.io/privacy.html) are static marketing and documentation sites. When a PostHog project key is configured at build time, they record pageviews — which page was opened, and when the visitor leaves — so we can see which docs and landing pages are useful. rivethub.io also records a small set of named install-CTA clicks (`cta_setup_agent`, `cta_install_local`, `cta_install_server`, `path_local`, `path_datahub`) with the page path only. There is no RivetOS account, and we do not collect names, emails, form fields, or other account data on these sites. Anonymous visitors are not turned into marketing profiles. There is no session recording.
 
 This is website analytics only. It is not RivetOS runtime telemetry, and it is not enabled in the Hub desktop or Android apps.
 

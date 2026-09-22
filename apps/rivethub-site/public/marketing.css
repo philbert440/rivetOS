@@ -12,7 +12,9 @@
 .landing .story-controls button[aria-pressed=true] { color:var(--paper); }
 .landing .story-stage { border-color:var(--rule); }
 .landing .setup-section { background:var(--band); }
-.landing .installer-card,.landing .use-grid article { background:var(--surface);border-color:var(--rule); }
+.landing .installer-card,.landing .use-grid article,.landing .now-grid article,.landing .proof-grid article { background:var(--surface);border-color:var(--rule); }
+.landing .sticky-cta { background:var(--paper);border-color:var(--rule); }
+.landing .button:not(.primary) { color:var(--green);border-color:var(--rule); }
 .landing .settings-preview { background:var(--mint);border-color:var(--rule); }
 .landing .final-section { background:var(--mint); }
 .landing .scene-copy .pill,.landing .step-number,.landing .setup-after,.landing .nav-start { border-color:var(--rule); }

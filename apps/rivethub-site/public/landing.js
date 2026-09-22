@@ -12,3 +12,18 @@ function connectChoices(buttonSelector, panelSelector, buttonKey, panelKey) {
 }
 connectChoices('[data-scene]', '[data-panel]', 'scene', 'panel');
 connectChoices('[data-platform-choice]', '[data-install-panel]', 'platformChoice', 'installPanel');
+
+(function () {
+  var bar = document.querySelector('[data-sticky-cta]');
+  var hero = document.querySelector('.hero');
+  if (!bar || !hero) return;
+  if (!('IntersectionObserver' in window)) {
+    bar.hidden = false;
+    return;
+  }
+  var observer = new IntersectionObserver(function (entries) {
+    var heroVisible = entries.some(function (entry) { return entry.isIntersecting; });
+    bar.hidden = heroVisible;
+  }, { threshold: 0.08 });
+  observer.observe(hero);
+})();
