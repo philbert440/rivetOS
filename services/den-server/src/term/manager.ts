@@ -97,7 +97,7 @@ import {
   herdrEventNamedAgent,
   herdrEventPaneId,
   herdrEventTimestamp,
-  herdrKindForCommand,
+  herdrKindForArgv0,
   herdrPaneAgentLive,
   herdrStatusToFrame,
   herdrSessionName,
@@ -892,6 +892,12 @@ export function createTermManager(config: DenConfig, deps: TermManagerDeps): Ter
         // sessions den didn't create in this process (restart survivors):
         // track first sighting so GC eligibility runs from then, never from
         // before den was even up.
+        // Restart survivors carry the roster KEY in @rivet_command, so the kind
+        // has to come from that entry's argv[0] — same resolution as a fresh
+        // spawn, or a renamed key would silently lose its status subscription
+        // across a den restart. Resolved once per tick: roster() stats the
+        // file on every call.
+        const sweepRoster = herdr ? deps.roster() : undefined
         for (const s of sessions) {
           if (!knownTmux.has(s.name)) {
             knownTmux.set(s.name, {
@@ -902,7 +908,8 @@ export function createTermManager(config: DenConfig, deps: TermManagerDeps): Ter
               firstSeenTs: now(),
               endSent: false,
             })
-            if (herdr && herdrKindForCommand(s.command || '')) {
+            const taggedCmd = s.command ? sweepRoster?.commands[s.command]?.cmd[0] : undefined
+            if (herdr && herdrKindForArgv0(taggedCmd ?? '')) {
               statusHub?.retain(s.name, denKeyOf(s))
             }
           }
@@ -2161,7 +2168,7 @@ export function createTermManager(config: DenConfig, deps: TermManagerDeps): Ter
             argv,
             env: herdrEnv,
             cwd,
-            kind: herdrKindForCommand(key),
+            kind: herdrKindForArgv0(argv[0] ?? ''),
             command: key,
             user: routedUser ?? 'owner',
             cols,
@@ -2333,6 +2340,11 @@ export function createTermManager(config: DenConfig, deps: TermManagerDeps): Ter
           : stampFromSpawn(model, key)
         rememberSessionContext(denSession, ctxStamp)
 
+        // herdr agent pane: kind comes from argv[0] (what herdr actually
+        // launches), not the roster key. Computed once — the record, the
+        // ready-gate and the degradation warning must not disagree.
+        const herdrKind = herdrKindForArgv0(argv[0] ?? '')
+        const isAgentPane = Boolean(herdr) && herdrUseAgent(herdrKind, argv[0] ?? '')
         const r: PtyRecord = {
           id,
           denSession,
@@ -2348,7 +2360,7 @@ export function createTermManager(config: DenConfig, deps: TermManagerDeps): Ter
           routedUser,
           tmuxName,
           muxKind: tmuxName ? (herdr ? 'herdr' : tmux ? 'tmux' : undefined) : undefined,
-          agentPane: Boolean(herdr) && herdrUseAgent(herdrKindForCommand(key), argv[0] ?? ''),
+          agentPane: isAgentPane,
           paneId:
             herdr && tmuxName
               ? (herdr.resolvePaneId?.(tmuxName) ??
@@ -2369,9 +2381,7 @@ export function createTermManager(config: DenConfig, deps: TermManagerDeps): Ter
           // harness pane is NOT ready until paneAgent (or a status frame)
           // proves an agent is present — otherwise chat injects the leftover
           // shell (#791).
-          ready:
-            persisted &&
-            !(Boolean(herdr) && herdrUseAgent(herdrKindForCommand(key), argv[0] ?? '')),
+          ready: persisted && !isAgentPane,
           injectBuffer: [],
           injectTimers: [],
           injectNextAtMs: 0,
@@ -2383,6 +2393,23 @@ export function createTermManager(config: DenConfig, deps: TermManagerDeps): Ter
         }
         records.set(id, r)
         bySession.set(denSession, id)
+        // A harness entry that is NOT an agent pane still works, but loses the
+        // agent-idle ready-gate and the first-turn confirm: it falls back to
+        // output quiescence alone. That is invisible until a first turn goes
+        // missing, so say it once at spawn. Wrapper scripts and PATH-less
+        // argv[0] cannot be agent panes by design (herdr's --kind would launch
+        // its own PATH binary instead of the pinned one) — a renamed roster
+        // key is the recoverable case.
+        if (r.room && herdr && !isAgentPane) {
+          const a0 = argv[0] ?? ''
+          const why = a0.includes('/')
+            ? `argv[0] '${a0}' is a path, not a bare command`
+            : `argv[0] '${a0}' is not a herdr agent kind`
+          deps.log(
+            `[den-server] term: '${recordKey}' has no agent-idle ready-gate — ${why}. ` +
+              `First-turn confirm is off; falling back to output quiescence.`,
+          )
+        }
         proc.onData((data) => {
           r.lastOutputTs = now()
           touchActivity(r)

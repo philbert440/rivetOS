@@ -396,10 +396,17 @@ export function isHerdrEventEnvelope(obj: unknown): boolean {
   return typeof obj === 'object' && obj !== null && 'event' in obj
 }
 
-/** Roster command → herdr `--kind`. Undefined = not in the closed enum
- *  (plain `shell`/`bash`, operator keys) → plain pane. */
-export function herdrKindForCommand(command: string): string | undefined {
-  if (HERDR_AGENT_KINDS.has(command)) return command
+/** Roster argv[0] → herdr `--kind`. Undefined = not in the closed enum
+ *  (plain `bash`, wrapper scripts, operator keys) → plain pane.
+ *
+ *  Resolve this from argv[0], never from the roster KEY. `--kind` names the
+ *  executable herdr launches from PATH, so it has to match what actually
+ *  runs: a key renamed away from its command (`claude-code` running `claude`)
+ *  is still an agent pane, and a key that keeps a harness name while running
+ *  something else is not. The two agreed only because the built-in roster
+ *  happens to name every entry after its own binary. */
+export function herdrKindForArgv0(argv0: string): string | undefined {
+  if (HERDR_AGENT_KINDS.has(argv0)) return argv0
   return undefined
 }
 

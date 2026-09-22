@@ -30,7 +30,7 @@ import {
   herdrMetaPath,
   herdrPaneAgentLive,
   parsePaneAgent,
-  herdrKindForCommand,
+  herdrKindForArgv0,
   herdrUseAgent,
   herdrRuntimeHash,
   herdrServerArgv,
@@ -49,6 +49,7 @@ import {
   type HerdrSessionInfo,
   type HerdrSpawn,
 } from './herdr.js'
+import { defaultRoster } from './roster.js'
 
 const sample: HerdrSessionInfo = {
   name: herdrSessionName('chat-f'),
@@ -122,14 +123,41 @@ describe('herdr argv builders', () => {
   })
 
   it("kind mapping returns undefined for anything outside herdr's closed enum", () => {
-    expect(herdrKindForCommand('claude')).toBe('claude')
-    expect(herdrKindForCommand('grok')).toBe('grok')
-    expect(herdrKindForCommand('kimi')).toBe('kimi')
-    expect(herdrKindForCommand('codex')).toBe('codex')
-    expect(herdrKindForCommand('hermes')).toBe('hermes')
-    expect(herdrKindForCommand('shell')).toBeUndefined()
-    expect(herdrKindForCommand('bash')).toBeUndefined()
-    expect(herdrKindForCommand('operator-key')).toBeUndefined()
+    expect(herdrKindForArgv0('claude')).toBe('claude')
+    expect(herdrKindForArgv0('grok')).toBe('grok')
+    expect(herdrKindForArgv0('kimi')).toBe('kimi')
+    expect(herdrKindForArgv0('codex')).toBe('codex')
+    expect(herdrKindForArgv0('hermes')).toBe('hermes')
+    expect(herdrKindForArgv0('shell')).toBeUndefined()
+    expect(herdrKindForArgv0('bash')).toBeUndefined()
+    expect(herdrKindForArgv0('operator-key')).toBeUndefined()
+  })
+
+  // Every room:true entry in defaultRoster() must resolve to a kind from its
+  // OWN argv[0]. These three were never pinned, so a herdr enum rename could
+  // drop one and only surface as a dropped first turn on that harness.
+  it('every built-in harness argv[0] is a herdr agent kind', () => {
+    const roster = defaultRoster()
+    const harnesses = Object.entries(roster.commands).filter(([, e]) => e.room)
+    expect(harnesses.length).toBe(8)
+    for (const [key, entry] of harnesses) {
+      const argv0 = entry.cmd[0] ?? ''
+      expect(herdrKindForArgv0(argv0), `${key} → ${argv0}`).toBe(argv0)
+      expect(herdrUseAgent(herdrKindForArgv0(argv0), argv0), `${key} is an agent pane`).toBe(true)
+    }
+    // the one non-harness entry must stay a plain pane
+    expect(herdrKindForArgv0(roster.commands.shell.cmd[0])).toBeUndefined()
+  })
+
+  it('kind follows argv[0], not the roster key', () => {
+    // A key renamed to the harness product id still runs `claude`: agent pane.
+    expect(herdrUseAgent(herdrKindForArgv0('claude'), 'claude')).toBe(true)
+    // A key that keeps a harness name while running something else is not.
+    expect(herdrUseAgent(herdrKindForArgv0('my-wrapper'), 'my-wrapper')).toBe(false)
+    // A pinned build stays a plain pane — --kind would launch PATH instead.
+    expect(herdrUseAgent(herdrKindForArgv0('/usr/local/bin/claude'), '/usr/local/bin/claude')).toBe(
+      false,
+    )
   })
 
   it('herdrUseAgent matches create(): kind === argv0 and no slash', () => {
