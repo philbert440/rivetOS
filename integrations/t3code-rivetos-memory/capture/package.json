@@ -13,6 +13,7 @@
     "build": "tsc -p tsconfig.json",
     "typecheck": "tsc --noEmit -p tsconfig.json",
     "test": "node --experimental-strip-types test/smoke.test.ts",
+    "lint": "eslint src/ package.json",
     "clean": "rm -rf dist"
   },
   "dependencies": {

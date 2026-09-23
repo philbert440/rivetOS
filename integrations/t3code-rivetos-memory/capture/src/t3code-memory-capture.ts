@@ -263,9 +263,7 @@ export function openT3Db(dbPath = t3StateSqlitePath()): SqliteDb | null {
 export function tableColumns(db: SqliteDb, table: string): string[] {
   try {
     const rows = db.prepare(`PRAGMA table_info(${table})`).all()
-    return rows
-      .map((r) => asString(r.name))
-      .filter((n): n is string => Boolean(n))
+    return rows.map((r) => asString(r.name)).filter((n): n is string => Boolean(n))
   } catch {
     return []
   }
@@ -298,7 +296,12 @@ function parseJson(value: unknown): Record<string, unknown> {
   }
 }
 
-function afterCursor(updatedAt: string, id: string, lastUpdatedAt: string, lastId: string): boolean {
+function afterCursor(
+  updatedAt: string,
+  id: string,
+  lastUpdatedAt: string,
+  lastId: string,
+): boolean {
   if (!lastUpdatedAt) return true
   if (updatedAt > lastUpdatedAt) return true
   if (updatedAt === lastUpdatedAt && id > lastId) return true
@@ -322,7 +325,11 @@ export function isToolActivity(tone: string, kind: string): boolean {
   return kind.startsWith('tool') || kind.includes('.tool')
 }
 
-export function extractToolFromActivity(payload: Record<string, unknown>, kind: string, summary: string): {
+export function extractToolFromActivity(
+  payload: Record<string, unknown>,
+  kind: string,
+  summary: string,
+): {
   toolName: string
   toolArgs: unknown
   toolResult: string | null
@@ -339,11 +346,7 @@ export function extractToolFromActivity(payload: Record<string, unknown>, kind: 
   const toolArgs = item.arguments ?? data.input ?? item.command ?? data.command ?? item
   const result = item.result ?? data.result ?? item.rawOutput ?? payload.detail ?? summary
   const toolResult =
-    typeof result === 'string'
-      ? result
-      : result == null
-        ? summary || null
-        : JSON.stringify(result)
+    typeof result === 'string' ? result : result == null ? summary || null : JSON.stringify(result)
   return { toolName, toolArgs, toolResult }
 }
 
@@ -470,7 +473,8 @@ export function foldCompletedThread(
       const kind = asString(r.kind) || ''
       if (!id || !isToolActivity(tone, kind)) continue
       const createdAt = isoOrEmpty(r.created_at)
-      if (!opts.ignoreCursor && !afterCursor(createdAt, id, actFloor, cursor.lastActivityId)) continue
+      if (!opts.ignoreCursor && !afterCursor(createdAt, id, actFloor, cursor.lastActivityId))
+        continue
       const payload = parseJson(r.payload_json)
       const tool = extractToolFromActivity(payload, kind, asString(r.summary) || '')
       messages.push({
@@ -565,15 +569,21 @@ export function advanceThreadCursor(
   folded: FoldedTurn,
   completedAt?: string | null,
 ): ThreadCursor {
-  let next = { ...cursor }
+  const next = { ...cursor }
   for (const m of folded.messages) {
     const ts = m.eventTs || m.createdAt || ''
     if (m.extra?.session_sqlite_activity_id) {
-      if (ts > next.lastActivityCreatedAt || (ts === next.lastActivityCreatedAt && m.eventId > next.lastActivityId)) {
+      if (
+        ts > next.lastActivityCreatedAt ||
+        (ts === next.lastActivityCreatedAt && m.eventId > next.lastActivityId)
+      ) {
         next.lastActivityCreatedAt = ts
         next.lastActivityId = m.eventId
       }
-    } else if (ts > next.lastMessageUpdatedAt || (ts === next.lastMessageUpdatedAt && m.eventId > next.lastMessageId)) {
+    } else if (
+      ts > next.lastMessageUpdatedAt ||
+      (ts === next.lastMessageUpdatedAt && m.eventId > next.lastMessageId)
+    ) {
       next.lastMessageUpdatedAt = ts
       next.lastMessageId = m.eventId
     }
@@ -623,12 +633,23 @@ async function findOrCreateConversation(
      VALUES ($1, $2, $3, $4, $5, $6, now(), now())
      ON CONFLICT (session_key, agent) DO UPDATE SET updated_at = now()
      RETURNING id, (xmax = 0) AS created`,
-    [sessionKey, agent, CAPTURE_CHANNEL, init.title.slice(0, 120), JSON.stringify(init.settings), init.active],
+    [
+      sessionKey,
+      agent,
+      CAPTURE_CHANNEL,
+      init.title.slice(0, 120),
+      JSON.stringify(init.settings),
+      init.active,
+    ],
   )
   return { id: String(conv.rows[0].id), created: conv.rows[0].created === true }
 }
 
-async function eventIdExists(client: Queryable, conversationId: string, eventId: string): Promise<boolean> {
+async function eventIdExists(
+  client: Queryable,
+  conversationId: string,
+  eventId: string,
+): Promise<boolean> {
   const r = await client.query(
     `SELECT 1 FROM ros_messages
       WHERE conversation_id = $1 AND metadata->>'event_id' = $2 LIMIT 1`,
@@ -652,12 +673,14 @@ export async function insertMessage(
 
   const rowId =
     (typeof m.extra?.session_sqlite_message_id === 'string' && m.extra.session_sqlite_message_id) ||
-    (typeof m.extra?.session_sqlite_activity_id === 'string' && m.extra.session_sqlite_activity_id) ||
+    (typeof m.extra?.session_sqlite_activity_id === 'string' &&
+      m.extra.session_sqlite_activity_id) ||
     m.eventId
   const pointer = { dbPath, rowId }
   const contentCap = capForStorage(m.content ?? '', pointer)
   let toolResultStored: string | null = null
-  if (typeof m.toolResult === 'string') toolResultStored = capForStorage(m.toolResult, pointer).stored
+  if (typeof m.toolResult === 'string')
+    toolResultStored = capForStorage(m.toolResult, pointer).stored
   let toolArgsStored: string | null = null
   if (m.toolArgs != null) {
     const raw = typeof m.toolArgs === 'string' ? m.toolArgs : JSON.stringify(m.toolArgs)
@@ -885,7 +908,9 @@ export async function withStateLock<T>(
   }
 }
 
-export async function runOnce(opts: { dbPath?: string; backfillDays?: number; source?: string } = {}): Promise<void> {
+export async function runOnce(
+  opts: { dbPath?: string; backfillDays?: number; source?: string } = {},
+): Promise<void> {
   const dbPath = opts.dbPath ?? t3StateSqlitePath()
   const stateFile = captureStatePath()
   try {
