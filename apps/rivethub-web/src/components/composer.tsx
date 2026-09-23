@@ -538,75 +538,75 @@ export function Composer(props: {
             }}
           />
           <div className="ml-auto flex items-center gap-1">
-          <button
-            type="button"
-            onClick={() => fileRef.current?.click()}
-            aria-label="attach files"
-            title="attach files (or drop / paste them)"
-            className="flex size-8 items-center justify-center rounded-full text-ink-dim transition-colors hover:text-em"
-          >
-            <Paperclip className="size-4" />
-          </button>
-          {voiceInputSupported() && (
             <button
               type="button"
-              onClick={toggleMic}
-              aria-label={
-                micState === 'recording'
-                  ? 'stop recording'
-                  : micState === 'transcribing'
-                    ? 'transcribing'
-                    : 'dictate'
-              }
-              title={
-                micState === 'recording'
-                  ? 'stop and transcribe'
-                  : micState === 'transcribing'
-                    ? 'transcribing…'
-                    : 'dictate (node ASR)'
-              }
-              disabled={micState === 'transcribing' || micState === 'starting'}
+              onClick={() => fileRef.current?.click()}
+              aria-label="attach files"
+              title="attach files (or drop / paste them)"
+              className="flex size-8 items-center justify-center rounded-full text-ink-dim transition-colors hover:text-em"
+            >
+              <Paperclip className="size-4" />
+            </button>
+            {voiceInputSupported() && (
+              <button
+                type="button"
+                onClick={toggleMic}
+                aria-label={
+                  micState === 'recording'
+                    ? 'stop recording'
+                    : micState === 'transcribing'
+                      ? 'transcribing'
+                      : 'dictate'
+                }
+                title={
+                  micState === 'recording'
+                    ? 'stop and transcribe'
+                    : micState === 'transcribing'
+                      ? 'transcribing…'
+                      : 'dictate (node ASR)'
+                }
+                disabled={micState === 'transcribing' || micState === 'starting'}
+                className={cn(
+                  'flex size-8 items-center justify-center rounded-full transition-colors',
+                  micState === 'recording'
+                    ? 'animate-pulse bg-red/20 text-red'
+                    : micState === 'transcribing'
+                      ? 'animate-pulse text-ink-dim'
+                      : 'text-ink-dim hover:text-em',
+                )}
+              >
+                <Mic className="size-4" />
+              </button>
+            )}
+            <button
+              type="button"
+              onClick={() => {
+                const next = !autoSpeak
+                setAutoSpeak(next)
+                setAutoSpeakState(next)
+              }}
+              aria-pressed={autoSpeak}
+              aria-label={autoSpeak ? 'disable auto-speak' : 'enable auto-speak'}
+              title={autoSpeak ? 'auto-speak replies: on' : 'auto-speak replies: off'}
               className={cn(
                 'flex size-8 items-center justify-center rounded-full transition-colors',
-                micState === 'recording'
-                  ? 'animate-pulse bg-red/20 text-red'
-                  : micState === 'transcribing'
-                    ? 'animate-pulse text-ink-dim'
-                    : 'text-ink-dim hover:text-em',
+                autoSpeak ? 'text-em' : 'text-ink-dim hover:text-em',
               )}
             >
-              <Mic className="size-4" />
+              {autoSpeak ? <Volume2 className="size-4" /> : <VolumeX className="size-4" />}
             </button>
-          )}
-          <button
-            type="button"
-            onClick={() => {
-              const next = !autoSpeak
-              setAutoSpeak(next)
-              setAutoSpeakState(next)
-            }}
-            aria-pressed={autoSpeak}
-            aria-label={autoSpeak ? 'disable auto-speak' : 'enable auto-speak'}
-            title={autoSpeak ? 'auto-speak replies: on' : 'auto-speak replies: off'}
-            className={cn(
-              'flex size-8 items-center justify-center rounded-full transition-colors',
-              autoSpeak ? 'text-em' : 'text-ink-dim hover:text-em',
-            )}
-          >
-            {autoSpeak ? <Volume2 className="size-4" /> : <VolumeX className="size-4" />}
-          </button>
-          <button
-            onClick={() => void send()}
-            disabled={!canSend}
-            aria-label="send"
-            title="send"
-            className={cn(
-              'flex size-8 items-center justify-center rounded-full transition-colors',
-              canSend ? 'bg-em-dim text-bg hover:bg-em' : 'bg-panel-2 text-ink-dim',
-            )}
-          >
-            <ArrowUp className="size-4" />
-          </button>
+            <button
+              onClick={() => void send()}
+              disabled={!canSend}
+              aria-label="send"
+              title="send"
+              className={cn(
+                'flex size-8 items-center justify-center rounded-full transition-colors',
+                canSend ? 'bg-em-dim text-bg hover:bg-em' : 'bg-panel-2 text-ink-dim',
+              )}
+            >
+              <ArrowUp className="size-4" />
+            </button>
           </div>
         </div>
       </div>
