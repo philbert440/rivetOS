@@ -86,6 +86,23 @@ describe('parseBlockingDialog', () => {
     })
   })
 
+  it('does not glue a numbered list from an earlier reply onto the dialog options', () => {
+    const reply = `\
+● Next steps:
+  1. Close RivetHub when you're not working on it.
+  2. Check whether Obsidian settles down.
+`
+    expect(parseBlockingDialog(reply + AUTO_MODE_DIALOG_SCREEN)).toEqual(AUTO_MODE_RESULT)
+  })
+
+  it('still detects the live dialog when an old ❯ row sits higher up the screen', () => {
+    const oldPicker = `\
+  ❯ 1. Red
+    2. Green
+`
+    expect(parseBlockingDialog(oldPicker + AUTO_MODE_DIALOG_SCREEN)).toEqual(AUTO_MODE_RESULT)
+  })
+
   it('returns undefined for an empty screen', () => {
     expect(parseBlockingDialog('')).toBeUndefined()
   })

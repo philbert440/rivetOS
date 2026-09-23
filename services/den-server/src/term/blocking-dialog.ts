@@ -61,19 +61,32 @@ export function parseBlockingDialog(screen: string): BlockingDialog | undefined 
   }
   if (lastOptionIdx < 0) return undefined
 
+  // Walk up the option block. Blank, separator and indented lines between two
+  // options are only skipped when they belong to the option above them: an
+  // indented line is that option's description only if it sits deeper than
+  // the option's number. The dialog's own title/body (and any reply above the
+  // dialog) is not, so the walk stops there instead of gluing in numbered
+  // lines — or an old `❯` row — from further up the screen.
   const options: { key: string; label: string }[] = []
   let pointers = 0
   let firstOptionIdx = lastOptionIdx
+  let gapIndent = Infinity
   for (let i = lastOptionIdx; i >= 0; i--) {
     const line = lines[i]
     const m = OPTION_LINE.exec(line)
     if (m) {
+      if (gapIndent <= line.search(/\d/)) break
       if (/^\s*❯/.test(line)) pointers += 1
       options.unshift({ key: m[1], label: m[2].trim() })
       firstOptionIdx = i
+      gapIndent = Infinity
       continue
     }
-    if (/^\s*$/.test(line) || SEPARATOR.test(line) || isWrap(line)) continue
+    if (/^\s*$/.test(line) || SEPARATOR.test(line)) continue
+    if (isWrap(line)) {
+      gapIndent = Math.min(gapIndent, line.search(/\S/))
+      continue
+    }
     break
   }
   if (options.length < 2 || pointers !== 1) return undefined
