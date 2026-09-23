@@ -10,7 +10,7 @@
 
 import { homedir } from 'node:os'
 import { join } from 'node:path'
-import { readFileSync } from 'node:fs'
+import { readFileSync, statSync } from 'node:fs'
 import type { EffortOption, HarnessId, HarnessModelOption } from '@rivetos/types'
 
 /**
@@ -194,27 +194,135 @@ export function applySheetOverride(
 }
 
 /**
- * `--model` is Claude Code's launch-time model switch and the sheet above is
- * the alias set the CLI accepts, so a pre-spawn pick is honored for the
- * session's life → `launchModel` (#814). The 1M-context variants are
- * request-side context flags on the same models, kept as first-class rows.
+ * Claude Code's global config file: `~/.claude.json`, or
+ * `$CLAUDE_CONFIG_DIR/.claude.json` when set (non-empty after trim).
  */
-export function claudeSheet(): ModelSheet {
+export function claudeGlobalConfigPath(home: string, env: NodeJS.ProcessEnv = process.env): string {
+  const configDir = env.CLAUDE_CONFIG_DIR?.trim()
+  return configDir ? join(configDir, '.claude.json') : join(home, '.claude.json')
+}
+
+/**
+ * Claude Code's model list. The base models (Opus/Sonnet/Haiku and their 1M
+ * variants, Fable) are baked into the installed CLI version, so the static list
+ * is the floor and no config file can drop below it. On top of that we merge
+ * Claude Code's own `additionalModelOptionsCache` from `~/.claude.json`, or
+ * `$CLAUDE_CONFIG_DIR/.claude.json` when set: the CLI writes account-specific
+ * extras it advertises (a new model can appear before this static list is
+ * bumped) and update-gated entries flagged `disabled`. The
+ * gated rows are skipped — never offered — so the picker cannot spawn a model
+ * this install can't run. Cache rows whose id already exists in the base are
+ * dropped; an unreadable file leaves the static list untouched.
+ *
+ * `--model` is Claude Code's launch-time model switch and this list is the
+ * alias set the CLI accepts, so a pre-spawn pick is honored for the session's
+ * life → `launchModel` (#814). The 1M-context variants are request-side
+ * context flags on the same models, kept as first-class rows.
+ */
+export function claudeSheet(
+  readJson: ReadJson = defaultReadJson,
+  home: string = homedir(),
+  env: NodeJS.ProcessEnv = process.env,
+): ModelSheet {
+  const models: HarnessModelOption[] = [
+    { id: 'fable', label: 'Fable 5.1', default: true },
+    { id: 'opus', label: 'Opus 5' },
+    { id: 'sonnet', label: 'Sonnet 5' },
+    { id: 'haiku', label: 'Haiku 4.5' },
+    { id: 'fable[1m]', label: 'Fable 5.1 1M context' },
+    { id: 'opus[1m]', label: 'Opus 5 1M context' },
+    { id: 'sonnet[1m]', label: 'Sonnet 5 1M context' },
+  ]
+  for (const extra of claudeCacheModelsFor(readJson, home, env)) {
+    if (!models.some((m) => m.id === extra.id)) models.push(extra)
+  }
   return {
-    models: [
-      { id: 'fable', label: 'Fable 5.1', default: true },
-      { id: 'opus', label: 'Opus 5' },
-      { id: 'sonnet', label: 'Sonnet 5' },
-      { id: 'haiku', label: 'Haiku 4.5' },
-      { id: 'fable[1m]', label: 'Fable 5.1 1M context' },
-      { id: 'opus[1m]', label: 'Opus 5 1M context' },
-      { id: 'sonnet[1m]', label: 'Sonnet 5 1M context' },
-    ],
+    models,
     efforts: CLAUDE_EFFORTS,
     modelFlag: '--model',
     effortFlag: '--effort',
     launchModel: true,
   }
+}
+
+/**
+ * Non-`disabled` `additionalModelOptionsCache` rows from `~/.claude.json`, or
+ * `$CLAUDE_CONFIG_DIR/.claude.json` when set, mapped to model options. Efforts
+ * are left off so each inherits the sheet's shared Claude effort set, exactly
+ * like the base rows. Malformed rows, gated (`disabled`) rows, invalid ids, and
+ * duplicates are dropped; an unreadable or unshaped file yields none.
+ */
+function claudeCacheModels(
+  readJson: ReadJson,
+  home: string,
+  env: NodeJS.ProcessEnv,
+): HarnessModelOption[] {
+  let raw: unknown
+  try {
+    raw = readJson(claudeGlobalConfigPath(home, env))
+  } catch {
+    return []
+  }
+  if (!isRecord(raw) || !Array.isArray(raw.additionalModelOptionsCache)) return []
+  const out: HarnessModelOption[] = []
+  const seen = new Set<string>()
+  for (const entry of raw.additionalModelOptionsCache) {
+    if (!isRecord(entry) || entry.disabled === true) continue
+    if (typeof entry.value !== 'string') continue
+    const id = entry.value.trim()
+    if (!MODEL_TOKEN_RE.test(id) || seen.has(id)) continue
+    seen.add(id)
+    const label = typeof entry.label === 'string' && entry.label.trim() ? entry.label.trim() : id
+    out.push({ id, label })
+  }
+  return out
+}
+
+/**
+ * Memoized `claudeCacheModels`. `~/.claude.json` accumulates per-project
+ * history and can be several MB, and the sheet is rebuilt on every terminal
+ * CREATE, so parsing it synchronously each spawn is wasteful. The resolved
+ * path keys the memo and the file's `mtimeMs`+`size` stand in for its content;
+ * a stat error means "no cache rows", matching an unreadable file even though
+ * nothing was read. Only the real file reader takes this path — an injected
+ * reader always runs so tests/DI stay deterministic.
+ */
+function claudeCacheModelsFor(
+  readJson: ReadJson,
+  home: string,
+  env: NodeJS.ProcessEnv,
+): HarnessModelOption[] {
+  if (readJson !== defaultReadJson) return claudeCacheModels(readJson, home, env)
+  const path = claudeGlobalConfigPath(home, env)
+  let mtimeMs: number
+  let size: number
+  try {
+    const stat = statSync(path)
+    mtimeMs = stat.mtimeMs
+    size = stat.size
+  } catch {
+    claudeCacheMemo.delete(path)
+    return []
+  }
+  const memo = claudeCacheMemo.get(path)
+  if (memo && memo.mtimeMs === mtimeMs && memo.size === size) return memo.models
+  const models = claudeCacheModels(defaultReadJson, home, env)
+  claudeCacheMemo.set(path, { mtimeMs, size, models })
+  return models
+}
+
+interface ClaudeCacheMemo {
+  mtimeMs: number
+  size: number
+  models: HarnessModelOption[]
+}
+
+/** One entry per resolved config path; a fresh file stat replaces it. */
+const claudeCacheMemo = new Map<string, ClaudeCacheMemo>()
+
+/** Drop the `~/.claude.json` cache-row memo (tests only). */
+export function __resetClaudeCacheMemoForTests(): void {
+  claudeCacheMemo.clear()
 }
 
 /**
@@ -667,7 +775,7 @@ export function sheetForHarness(harnessId: HarnessId, readers?: SheetReaders): M
   const readText = readers?.readText
   switch (harnessId) {
     case 'claude-code':
-      return claudeSheet()
+      return claudeSheet(readJson, home)
     case 'grok-build':
       return grokSheet(readJson, home)
     case 'kimi-code':
