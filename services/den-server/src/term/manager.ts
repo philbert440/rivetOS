@@ -48,7 +48,7 @@ import {
 } from 'node:fs'
 import { homedir, hostname } from 'node:os'
 import { randomBytes } from 'node:crypto'
-import { join, resolve } from 'node:path'
+import { basename, join, resolve } from 'node:path'
 import type { DenConfig } from '../config.js'
 import {
   appendModelEffortArgv,
@@ -63,7 +63,7 @@ import {
   type ContextSource,
 } from './context-window.js'
 import type { PtyProc, PtySpawn } from './pty.js'
-import type { TermRoster } from './roster.js'
+import { builtinRosterArgv0, type TermRoster } from './roster.js'
 import {
   classifyExistingTmuxSession,
   createRealTmuxCtl,
@@ -2110,7 +2110,27 @@ export function createTermManager(config: DenConfig, deps: TermManagerDeps): Ter
       // Model/effort flags only on CREATE — a reattach must not rewrite a
       // running harness's argv.
       if (!persisted) {
-        const sheet = deps.modelSheetFor?.(key) ?? sheetForRosterCommand(key, config.harnesses)
+        // deps.modelSheetFor is the test/DI seam and keeps the old resolution.
+        // Otherwise flags are appended only when this key still runs its
+        // built-in program (basename of argv[0]; extra args still count).
+        // A key with no built-in entry gets no sheet, as before. Den-wide
+        // harness identity (ROSTER_TO_HARNESS in server.ts and elsewhere) is
+        // a separate design — do not change those call sites from here.
+        let sheet: ModelSheet | undefined
+        if (deps.modelSheetFor) {
+          sheet = deps.modelSheetFor(key) ?? sheetForRosterCommand(key, config.harnesses)
+        } else {
+          const builtinArgv0 = builtinRosterArgv0(key)
+          const sameProgram =
+            builtinArgv0 !== undefined && basename(entry.cmd[0]) === basename(builtinArgv0)
+          if (sameProgram) {
+            sheet = sheetForRosterCommand(key, config.harnesses)
+          } else if (builtinArgv0 !== undefined) {
+            deps.log(
+              `[den-server] term: roster key ${key}: model/effort flags were skipped because the entry's command is not the built-in one`,
+            )
+          }
+        }
         argv = appendModelEffortArgv(argv, sheet, model, effort, deps.log)
         if (session) argv = deps.harnessArgv?.(key, session, argv) ?? argv
       }

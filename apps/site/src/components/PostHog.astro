@@ -85,6 +85,23 @@ const host = String(
         }
         document.addEventListener('astro:page-load', rivetPageview);
         rivetPageview();
+        var rivetNamedEvents = {
+          cta_setup_agent: 1,
+          cta_install_local: 1,
+          cta_install_server: 1,
+          path_local: 1,
+          path_datahub: 1,
+          cta_cloud: 1,
+        };
+        document.addEventListener('click', function (event) {
+          var target = event.target && event.target.closest
+            ? event.target.closest('[data-ph-event]')
+            : null;
+          if (!target) return;
+          var name = target.getAttribute('data-ph-event');
+          if (!rivetNamedEvents[name] || typeof posthog.capture !== 'function') return;
+          posthog.capture(name, { $current_url: rivetSafeUrl(location.href) });
+        });
       }
     </script>
   )

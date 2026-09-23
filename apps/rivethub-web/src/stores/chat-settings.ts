@@ -18,15 +18,35 @@ export interface ChatSettings {
   effort: ThinkingLevel
   /** Harness this thread should spawn. */
   harnessId?: HarnessId
-  /** Real model id passed to POST /term; empty = harness default. */
+  /**
+   * Launch model for this thread — preset-stamped or picked from this
+   * conversation's harness sheet before the first spawn — sent to `POST /term`.
+   * Empty or omitted = harness default.
+   */
   model?: string
+  /**
+   * True once `POST /term` has succeeded for this thread. Latches the pre-spawn
+   * model picker shut across PTY loss and remount: a legacy row never flips
+   * `bound`, and an inject-409 respawn clears the pty id, so neither can be
+   * the lock. Persisted here because chat settings are already the
+   * per-conversation record that survives a reload. The latch lives in this
+   * capped map, so it holds for the most recent 200 conversations.
+   */
+  launched?: boolean
   /** Effort id passed to POST /term when it is not a ThinkingLevel (e.g. max). */
   harnessEffort?: string
   /** Agent-preset system prompt for this thread; '' / omitted = none. */
   systemPrompt?: string
 }
 
-/** Agent/harness changes invalidate overrides even when supplied in the same patch. */
+/**
+ * An agent or harness change drops per-turn overrides even when the same
+ * patch supplies them. It also drops the launch model — unless this patch
+ * itself sets `model`, which always wins over that implicit clear (#821) —
+ * and clears `launched`, so the new harness gets its own pre-launch picker.
+ * A patch cannot carry `launched: true` across that change.
+ * Re-selecting the same agent or harness is not a change.
+ */
 export function mergeChatSettings(
   current: ChatSettings | undefined,
   patch: Partial<ChatSettings>,
@@ -35,7 +55,29 @@ export function mergeChatSettings(
     current !== undefined &&
     (('agent' in patch && patch.agent !== current.agent) ||
       ('harnessId' in patch && patch.harnessId !== current.harnessId))
-  return { ...DEFAULT, ...current, ...patch, ...(changed ? { turnPick: undefined } : {}) }
+  const clearModel = changed && !('model' in patch)
+  return {
+    ...DEFAULT,
+    ...current,
+    ...patch,
+    ...(changed ? { turnPick: undefined, launched: undefined } : {}),
+    ...(clearModel ? { model: undefined } : {}),
+  }
+}
+
+/**
+ * Patch for a launch-state write (latch, pre-spawn model pick, stale clear).
+ * When the canonical key has no record but the read-fallback settings do,
+ * merge them so the write migrates the record instead of shadowing it with
+ * defaults. A canonical record, or no record at all, takes the patch alone.
+ */
+export function launchStateWrite<T extends object>(
+  canonical: T | undefined,
+  effective: T | undefined,
+  patch: Partial<T>,
+): Partial<T> {
+  if (canonical === undefined && effective !== undefined) return { ...effective, ...patch }
+  return patch
 }
 
 const KEY = 'rivethub.chatSettings'
@@ -96,15 +138,23 @@ export const useChatSettings = create<SettingsState>()(
       get: (key) => getState().byKey[key] ?? DEFAULT,
       set: (key, patch) =>
         set((s) => {
-          let next = { ...s.byKey, [key]: mergeChatSettings(s.byKey[key], patch) }
-          // Cap growth: keep the most-recently-touched N (the updated key is
-          // re-inserted last, so slicing the tail keeps it) — #310 review.
+          const merged = mergeChatSettings(s.byKey[key], patch)
+          // Cap growth: keep the most-recently-touched N. Rebuild so the
+          // touched key is last — object spread keeps an existing key in
+          // place (#310 review).
+          const next: Record<string, ChatSettings | undefined> = {}
+          for (const existing of Object.keys(s.byKey)) {
+            if (existing !== key) next[existing] = s.byKey[existing]
+          }
+          next[key] = merged
           const MAX = 200
           const keys = Object.keys(next)
-          if (keys.length > MAX) {
-            next = Object.fromEntries(keys.slice(-MAX).map((k) => [k, next[k]]))
+          return {
+            byKey:
+              keys.length > MAX
+                ? Object.fromEntries(keys.slice(-MAX).map((k) => [k, next[k]]))
+                : next,
           }
-          return { byKey: next }
         }),
 
       clear: (key) =>

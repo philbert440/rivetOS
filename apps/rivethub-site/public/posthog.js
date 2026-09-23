@@ -66,4 +66,28 @@
       });
     },
   });
+  var rivetNamedEvents = {
+    cta_setup_agent: 1,
+    cta_install_local: 1,
+    cta_install_server: 1,
+    path_local: 1,
+    path_datahub: 1,
+    cta_cloud: 1,
+  };
+  function rivetCaptureNamed(name) {
+    if (!rivetNamedEvents[name]) return;
+    if (typeof posthog.capture !== 'function') return;
+    posthog.capture(name, {
+      $current_url: rivetSafeUrl(location.href),
+    });
+  }
+  if (document.addEventListener) {
+    document.addEventListener('click', function (event) {
+      var target = event.target && event.target.closest
+        ? event.target.closest('[data-ph-event]')
+        : null;
+      if (!target) return;
+      rivetCaptureNamed(target.getAttribute('data-ph-event'));
+    });
+  }
 })();

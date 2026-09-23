@@ -1,6 +1,10 @@
 import {
+  conversationLaunch,
   conversationModelOptions,
   conversationProtocolOwnership,
+  isPreBind,
+  needsRegistryBeforeSpawn,
+  shouldPersistLaunchLatch,
 } from '../lib/conversation-model-options.js'
 import { withAttachmentText } from '../lib/attachments.js'
 /**
@@ -73,7 +77,7 @@ import { GatewayError } from '@rivetos/gateway-client'
 import { useConnection } from '../stores/connection.js'
 import { NotConnected, useGatewayReady } from '../components/not-connected.js'
 import { lastActiveFor, useChat, type LiveToolEntry, type OutboundItem } from '../stores/chat.js'
-import { useChatSettings } from '../stores/chat-settings.js'
+import { launchStateWrite, useChatSettings } from '../stores/chat-settings.js'
 import { Transcript } from '../components/transcript.js'
 import { QueuedStrip } from '../components/queued-strip.js'
 import { Composer, type ComposerHandle } from '../components/composer.js'
@@ -84,7 +88,7 @@ import { isAskUserTool, questionsFromLiveTools } from '../lib/ask-user.js'
 import { accentFor } from '../lib/agent-accent.js'
 import { attachHarnessSession } from '../lib/harness-attach.js'
 import { statusActivity } from '../lib/harness-fold.js'
-import { agentStatusLine } from '../lib/harness-turns.js'
+import { deriveReplyWait, nextWaitClock, type ReplyWaitClock } from '../lib/harness-turns.js'
 import { createPtyEnsurer } from '../lib/pty-ensure.js'
 import { outboundPumpFor } from '../lib/chat-outbound.js'
 import {
@@ -102,7 +106,7 @@ import {
   type ChatItem,
   type HarnessGate,
 } from '../lib/harness-chat.js'
-import { rowPillText, spawnModelEffort } from '../lib/harness-options.js'
+import { rowPillText } from '../lib/harness-options.js'
 import { DenBot } from '../components/den-bot.js'
 import { ContextBar } from '../components/context-bar.js'
 import { SegmentedControl } from '../components/segmented-control.js'
@@ -1019,9 +1023,14 @@ function ActiveSession(props: {
     enabled: isRemote,
     retry: 1,
   })
+  const registryQueryKey = isRemote
+    ? (['harnesses', sessionBase, epochForNode] as const)
+    : (['harnesses', sessionBase] as const)
+  const registryQueryFn = ({ signal }: { signal: AbortSignal }) =>
+    gatewayFor(sessionBase).then((gw) => gw.harnesses(signal))
   const remoteRegistry = useQuery({
-    queryKey: isRemote ? ['harnesses', sessionBase, epochForNode] : ['harnesses', sessionBase],
-    queryFn: async ({ signal }) => (await gatewayFor(sessionBase)).harnesses(signal),
+    queryKey: registryQueryKey,
+    queryFn: registryQueryFn,
     staleTime: 300_000,
   })
   // A definitive 404 means the thread's session is gone on its node — except
@@ -1108,6 +1117,11 @@ function ActiveSession(props: {
     remoteRegistry.status,
   )
   const [termPtyId, setTermPtyId] = useState<string | undefined>()
+  // The selector is locked for the duration of a spawn request so the
+  // conversation's agent cannot change under an in-flight launch. A request
+  // that never settles keeps it locked until the view remounts (per-instance
+  // state).
+  const [spawnInFlight, setSpawnInFlight] = useState(false)
   const [termError, setTermError] = useState<string | undefined>()
   // ref mirrors termPtyId so the unmount cleanup can kill the current PTY
   // (state is captured stale in an unmount-only effect)
@@ -1117,6 +1131,15 @@ function ActiveSession(props: {
   // Selectors must return stable references when empty (see EMPTY_* above).
   const messages = useChat((s) => s.messagesFor(props.sessionId) ?? EMPTY_MESSAGES)
   const agentStatus = useChat((s) => s.agentStatus[s.resolveSessionKey(props.sessionId)])
+  // Local-send evidence follows the session through draft adoption.
+  const acceptedReply = useChat((s) => {
+    const marker = s.replyAcceptance[s.resolveSessionKey(props.sessionId)]
+    return marker?.accepted ? marker.id : undefined
+  })
+  const clearAcceptedReply = useCallback(() => {
+    useChat.getState().clearAcceptedReply(props.sessionId)
+  }, [props.sessionId])
+
   // The live turn changes identity on every streaming tick. Subscribe to the
   // full object only while it is actually rendered (chat mode); terminal
   // rides the boolean selectors below, so a busy stream doesn't repaint the
@@ -1172,7 +1195,36 @@ function ActiveSession(props: {
     protocolOwned,
     item?.model,
   )
+  // Spawn-time model selection (#814). The picker is open only before this
+  // conversation's first successful spawn, and not while that spawn is in
+  // flight. `launched` lives on chat settings so a reload, a PTY drop, or a
+  // legacy row that never becomes bound cannot reopen it.
+  const preBind = isPreBind({
+    bound: gate.bound,
+    hasPty: termPtyId !== undefined,
+    launched: settings?.launched === true,
+    spawnInFlight,
+  })
+  const launch = conversationLaunch({
+    itemHarnessId: item?.harnessId,
+    settings,
+    registry: remoteRegistry.data?.harnesses,
+    preBind,
+  })
+  const launchOptions = launch.options
   const setSetting = useChatSettings((s) => s.set)
+  // Launch-state writes (latch, picker, stale clear). A canonical miss with a
+  // legacy fallback migrates that record; anything else is the patch alone.
+  const writeLaunchState = useCallback(
+    (patch: Parameters<typeof setSetting>[1]) => {
+      const byKey = useChatSettings.getState().byKey
+      setSetting(
+        settingsKey,
+        launchStateWrite(byKey[settingsKey], persisted(byKey, sessionBase, props.sessionId), patch),
+      )
+    },
+    [setSetting, settingsKey, sessionBase, props.sessionId],
+  )
   const retainedModel = turnOptions.retainedPick?.model
   const retainedEffort = turnOptions.retainedPick?.effort
   useEffect(() => {
@@ -1192,6 +1244,12 @@ function ActiveSession(props: {
     settingsKey,
     setSetting,
   ])
+  // Before the first spawn, a settled `launchModel` sheet that no longer offers
+  // the stored model drops it so the spawn falls back to the harness default.
+  // A launched conversation keeps the model it spawned with (#814).
+  useEffect(() => {
+    if (launchOptions.clearModel) writeLaunchState({ model: undefined })
+  }, [launchOptions.clearModel, writeLaunchState])
 
   // ---- Transcript binding ---------------------------------------------------
   //
@@ -1232,9 +1290,20 @@ function ActiveSession(props: {
         },
         onPrompt: (ev) => useChat.getState().applyPromptEvent(props.sessionId, ev),
         onControlReset: () => useChat.getState().clearHarnessPrompts(props.sessionId),
-        onLive: (turn) => useChat.getState().setLive(props.sessionId, turn),
+        onLive: (turn, reason) => {
+          // A snapshot resets the overlay, not the in-flight send generation.
+          if (reason === 'resync') {
+            useChat.getState().clearLive(props.sessionId)
+            return
+          }
+          if (!turn) clearAcceptedReply()
+          useChat.getState().setLive(props.sessionId, turn)
+        },
         onApproval: (event) => useChat.getState().applyApprovalEvent(props.sessionId, event),
-        onTurnComplete: () => outboundPumpFor(props.sessionId).pump.onIdle(),
+        onTurnComplete: () => {
+          clearAcceptedReply()
+          outboundPumpFor(props.sessionId).pump.onIdle()
+        },
         onSessionUpdated: () => {
           void queryClient.invalidateQueries({
             queryKey: ['remote-session', sessionBase, props.sessionId],
@@ -1242,10 +1311,14 @@ function ActiveSession(props: {
         },
         liveSource: () =>
           useChat.getState().liveSource[useChat.getState().resolveSessionKey(props.sessionId)],
-        onError: (err) => setStreamError(err instanceof Error ? err.message : String(err)),
+        onError: (err) => {
+          clearAcceptedReply()
+          setStreamError(err instanceof Error ? err.message : String(err))
+        },
         // Terminal: the attachment has already stopped itself, so say so plainly
         // instead of leaving a banner that looks like it might clear.
         onFatal: (message) => {
+          clearAcceptedReply()
           useChat.getState().setLive(props.sessionId, undefined)
           setStreamError(`${message} — this session is no longer attachable`)
         },
@@ -1270,6 +1343,7 @@ function ActiveSession(props: {
     sessionGateway,
     sessionBase,
     queryClient,
+    clearAcceptedReply,
   ])
   const transcript = useChat((s) => s.transcripts[s.resolveSessionKey(props.sessionId)])
   const storeHasTurns = (transcript?.turns.length ?? 0) > 0
@@ -1357,34 +1431,88 @@ function ActiveSession(props: {
     if (sessionBase !== baseUrl && !rosterUrls.includes(sessionBase)) {
       throw new Error(`can't reach ${urlLabel(sessionBase)}`)
     }
-    const gw = await sessionGateway()
-    // A harness session (already in the store) resumes; a fresh conversation
-    // pins its id (--session-id, via the join key) so its store file lines up.
-    // Command: the harness's own for a resume, else the model dropdown.
-    const command =
-      harnessCommand ||
-      (settings?.harnessId ? rosterCommandFor(settings.harnessId) : undefined) ||
-      settings?.agent ||
-      undefined
-    const body = {
-      session: props.sessionId,
-      ...(command ? { command } : {}),
-      ...(harnessCommand ? { resume: props.sessionId } : {}),
-      ...spawnModelEffort(settings),
-    }
-    // An API-only agent has no roster command → fall back to the node default
-    // rather than 404 (keeps the session id via --session-id if a UUID).
-    const p = command
-      ? await gw.termSpawn(body).catch((error: unknown) => {
-          if (error instanceof GatewayError && error.status === 404 && !settings?.harnessId)
-            return gw.termSpawn({ session: props.sessionId })
-          throw error
+    // Close the picker for the whole request, including a registry wait,
+    // before a pty id exists. A failed spawn clears this in `finally` so the
+    // picker can open again; success latches `launched` first.
+    setSpawnInFlight(true)
+    const capturedLaunchIdentity = { agent: settings?.agent, harnessId: settings?.harnessId }
+    try {
+      // Threads with a stored model and no preset harness wait for the same
+      // registry query the view already uses, then recompute. Do not send the
+      // render closure's launch.spawn on that path — it was built while the
+      // sheet was still unsettled. An error (older nodes have no registry)
+      // sends no model and still spawns. spawnInFlight stays set across the wait.
+      let settledLaunch = launch
+      if (
+        needsRegistryBeforeSpawn({
+          model: settings?.model,
+          harnessId: settings?.harnessId,
+          registrySettled: !remoteRegistry.isPending,
         })
-      : await gw.termSpawn(body)
-    protocolSessionRef.current = p.harnessSessionId
-    setTermPtyId(p.id)
-    termPtyRef.current = p.id
-    return p.id
+      ) {
+        let registryRows: Parameters<typeof conversationLaunch>[0]['registry']
+        try {
+          const settled = await queryClient.fetchQuery({
+            queryKey: registryQueryKey,
+            queryFn: registryQueryFn,
+            staleTime: 300_000,
+          })
+          registryRows = settled.harnesses
+        } catch {
+          registryRows = undefined
+        }
+        settledLaunch = conversationLaunch({
+          itemHarnessId: item?.harnessId,
+          settings,
+          registry: registryRows,
+          preBind,
+        })
+      }
+      const gw = await sessionGateway()
+      // A harness session (already in the store) resumes; a fresh conversation
+      // pins its id (--session-id, via the join key) so its store file lines up.
+      // Command: the harness's own for a resume, else the model dropdown.
+      const command =
+        harnessCommand ||
+        (settings?.harnessId ? rosterCommandFor(settings.harnessId) : undefined) ||
+        settings?.agent ||
+        undefined
+      const body = {
+        session: props.sessionId,
+        ...(command ? { command } : {}),
+        ...(harnessCommand ? { resume: props.sessionId } : {}),
+        ...settledLaunch.spawn,
+      }
+      // An API-only agent has no roster command → fall back to the node default
+      // rather than 404 (keeps the session id via --session-id if a UUID).
+      const p = command
+        ? await gw.termSpawn(body).catch((error: unknown) => {
+            if (error instanceof GatewayError && error.status === 404 && !settings?.harnessId)
+              return gw.termSpawn({ session: props.sessionId })
+            throw error
+          })
+        : await gw.termSpawn(body)
+      // Latch after the first successful spawn, unless this harness already
+      // latched or the conversation's agent/harness changed while we were in
+      // flight. Persisted on chat settings so the picker stays shut when this
+      // PTY is dropped (inject 409) or the view remounts — `gate.bound` stays
+      // false for legacy rows.
+      const currentSettings = persisted(
+        useChatSettings.getState().byKey,
+        sessionBase,
+        props.sessionId,
+      )
+      // Rekey during this spawn can still land the latch on the retired key.
+      if (shouldPersistLaunchLatch(capturedLaunchIdentity, currentSettings)) {
+        writeLaunchState({ launched: true })
+      }
+      protocolSessionRef.current = p.harnessSessionId
+      setTermPtyId(p.id)
+      termPtyRef.current = p.id
+      return p.id
+    } finally {
+      setSpawnInFlight(false)
+    }
   }
   const spawnPtyRef = useRef(spawnPty)
   spawnPtyRef.current = spawnPty
@@ -1588,7 +1716,24 @@ function ActiveSession(props: {
     }
   }
 
-  pumpEntry.sink.current = injectOne
+  pumpEntry.sink.current = async (...args) => {
+    clearAcceptedReply()
+    const id = useChat
+      .getState()
+      .queueFor(props.sessionId)
+      ?.find((o) => o.status === 'sending')?.id
+    const generation = id ? useChat.getState().beginReply(props.sessionId, id) : undefined
+    try {
+      await injectOne(...args)
+      if (generation) useChat.getState().acceptReply(props.sessionId, generation)
+    } catch (err) {
+      const state = useChat.getState()
+      if (state.replyAcceptance[state.resolveSessionKey(props.sessionId)] === generation) {
+        clearAcceptedReply()
+      }
+      throw err
+    }
+  }
 
   const pumpOutbound = (opts?: { forceId?: string; interrupt?: boolean }): Promise<void> =>
     pumpEntry.pump.pump(opts)
@@ -1664,14 +1809,49 @@ function ActiveSession(props: {
       ),
     [outbound],
   )
-  // Thinking window (no block yet), blocked, prompt: one line under the
-  // transcript so the agent is never silently "working" (requirement 3).
-  const statusLine = agentStatusLine(live, agentStatus)
+  const [waitClock, setWaitClock] = useState<ReplyWaitClock>()
+  const [, setWaitTick] = useState(0)
+  const replyWait = deriveReplyWait({
+    outbound,
+    acceptedReply,
+    live,
+    status: agentStatus,
+    clock: waitClock,
+    now: Date.now(),
+  })
+  const waitKey = replyWait.waitKey
+  // A new outbound identity gets a fresh deadline. Each real status frame is
+  // also a heartbeat, including while the harness is waiting for its first token.
+  const previousWaitStatus = useRef(agentStatus)
+  useEffect(() => {
+    const next = nextWaitClock(
+      waitClock,
+      waitKey,
+      previousWaitStatus.current !== agentStatus,
+      Date.now(),
+    )
+    previousWaitStatus.current = agentStatus
+    if (next !== waitClock) setWaitClock(next)
+  }, [waitKey, agentStatus, waitClock])
+  const deadline = replyWait.deadline
+  useEffect(() => {
+    if (deadline === undefined) return
+    let id: ReturnType<typeof setTimeout>
+    const fire = () => {
+      const remaining = deadline - Date.now()
+      if (remaining > 0) id = setTimeout(fire, remaining)
+      else setWaitTick((n) => n + 1)
+    }
+    id = setTimeout(fire, Math.max(0, deadline - Date.now()))
+    return () => clearTimeout(id)
+  }, [deadline])
+  const { displayLive, statusLine } = replyWait
 
   // Capability-gated affordances. `canInterrupt` is the driver's own flag —
   // hidden rather than shown-and-501'd when the node has no interrupt path.
   const onInterrupt = (): void => {
     if (!canonicalId) return
+    clearAcceptedReply()
     void sessionGateway()
       .then((gw) => gw.interruptHarnessSession(canonicalId))
       .then(() => clearLive(props.sessionId))
@@ -1814,7 +1994,7 @@ function ActiveSession(props: {
               presetColor: props.item?.accent,
               command: harnessCommand ?? settings?.agent,
             })}
-            live={live}
+            live={displayLive}
             outbound={outboundStatus}
             statusLine={statusLine}
           />
@@ -1844,11 +2024,14 @@ function ActiveSession(props: {
                     setSetting(settingsKey, { turnPick: { harnessId: nativeHarnessId, ...pick } })
                 : undefined
             }
+            launchOptions={launchOptions}
+            onLaunchModel={(model) => writeLaunchState({ model })}
             sessionId={props.sessionId}
             wsStatus={wsStatus}
             settingsKey={settingsKey}
             gatewayBase={isRemote ? sessionBase : undefined}
             agent={settings?.agent || undefined}
+            agentLocked={spawnInFlight}
             effort={settings?.effort ?? 'medium'}
             systemPrompt={settings?.systemPrompt}
             onSetting={(patch) => setSetting(settingsKey, patch)}

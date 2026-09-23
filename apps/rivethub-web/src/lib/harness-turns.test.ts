@@ -2,6 +2,8 @@ import { describe, expect, it } from 'vitest'
 import type { HarnessStatusFrame, HarnessTranscriptTurn, SessionId } from '@rivetos/types'
 import {
   agentStatusLine,
+  deriveReplyWait,
+  nextWaitClock,
   foldHermesAssistant,
   isLiveTurnCommand,
   liveFromTranscript,
@@ -296,5 +298,126 @@ describe('agentStatusLine (the thinking window is never silent)', () => {
     expect(agentStatusLine(undefined, st({ status: 'idle' }))).toBeUndefined()
     const live = { text: 'x', reasoning: false, reasoningText: '', tools: [] }
     expect(agentStatusLine(live, st({ status: 'working' }))).toBeUndefined()
+  })
+  it('fills the awaiting-reply gap with "working…" (cold spawn or accept→stream void)', () => {
+    // No live turn and no status frame yet, but a reply is coming → animate.
+    expect(agentStatusLine(undefined, undefined, true)?.text).toBe('working…')
+    // Nothing awaited → still silent (unchanged behavior).
+    expect(agentStatusLine(undefined, undefined, false)).toBeUndefined()
+    expect(agentStatusLine(undefined, undefined)).toBeUndefined()
+  })
+  it('lets a live bubble or any status frame win over the awaiting-reply gap', () => {
+    const live = { text: 'x', reasoning: false, reasoningText: '', tools: [] }
+    expect(agentStatusLine(live, undefined, true)).toBeUndefined()
+    // Once the harness emits a frame the gap is over: idle stays silent,
+    // working/blocked take their own lines — awaitingReply never overrides.
+    expect(agentStatusLine(undefined, st({ status: 'idle' }), true)).toBeUndefined()
+    expect(agentStatusLine(undefined, st({ status: 'working' }), true)?.text).toBe('working…')
+    expect(agentStatusLine(undefined, st({ status: 'blocked' }), true)?.text).toBe(
+      'waiting for you',
+    )
+  })
+})
+
+describe('reply wait evidence and deadline', () => {
+  const clock = { key: 'first', startedAt: 0 }
+  const placeholder = { text: '', reasoning: false, reasoningText: '', tools: [] }
+  const content = { ...placeholder, text: 'Hello' }
+  const working = { status: 'working' } as HarnessStatusFrame
+  it.each([
+    { name: 'new send', outbound: [{ id: 'first', status: 'sending' }], line: 'working…' },
+    { name: 'queued send', outbound: [{ id: 'first', status: 'queued' }], line: 'working…' },
+    { name: 'accepted before first token', acceptedReply: 'first', line: 'working…' },
+    { name: 'first token clears acceptance', live: content },
+    { name: 'send failure', outbound: [{ id: 'first', status: 'failed' }] },
+    { name: 'interrupt clears acceptance' },
+    { name: 'wedged accepted turn', acceptedReply: 'first', now: 90_000, stale: true },
+    {
+      name: 'wedged placeholder',
+      acceptedReply: 'first',
+      live: placeholder,
+      now: 90_000,
+      stale: true,
+    },
+    {
+      name: 'second send after wedge',
+      clock: nextWaitClock(clock, 'second', false, 100_000),
+      outbound: [{ id: 'second', status: 'sending' }],
+      now: 100_000,
+      line: 'working…',
+    },
+    {
+      name: 'status heartbeat extends slow first token',
+      status: working,
+      clock: { key: 'status', startedAt: 80_000 },
+      now: 100_000,
+      line: 'working…',
+    },
+    {
+      name: 'one-shot working status survives deadline',
+      status: working,
+      clock: { key: 'status', startedAt: 0 },
+      now: 90_000,
+      stale: true,
+      line: 'working…',
+    },
+    ...(['blocked', 'prompt', 'thinking'] as const).map((phase) => ({
+      name: `one-shot ${phase} status survives deadline`,
+      status: {
+        status: phase === 'blocked' ? 'blocked' : 'working',
+        phase: phase === 'blocked' ? undefined : phase,
+      } as HarnessStatusFrame,
+      clock: { key: 'status', startedAt: 0 },
+      now: 90_000,
+      stale: true,
+      line: phase === 'thinking' ? 'thinking…' : 'waiting for you',
+    })),
+    { name: 'live content wins', acceptedReply: 'first', live: content, now: 100_000 },
+    {
+      name: 'idle frame wins',
+      acceptedReply: 'first',
+      status: { status: 'idle' } as HarnessStatusFrame,
+    },
+    {
+      name: 'prompt frame wins',
+      acceptedReply: 'first',
+      status: { status: 'working', phase: 'prompt' } as HarnessStatusFrame,
+      line: 'waiting for you',
+    },
+  ])('$name', ({ line, stale, ...input }) => {
+    const result = deriveReplyWait({ outbound: [], now: 0, clock, ...input })
+    if (input.name === 'second send after wedge') expect(result.deadline).toBe(190_000)
+    expect(result.statusLine?.text).toBe(line)
+    expect(result.stale).toBe(stale ?? false)
+    if (stale) expect(result.displayLive).toBeUndefined()
+  })
+})
+
+describe('nextWaitClock', () => {
+  const prev = { key: 'first', startedAt: 0 }
+  it.each([
+    {
+      name: 'new key resets',
+      key: 'second',
+      heartbeat: false,
+      expected: { key: 'second', startedAt: 100_000 },
+    },
+    {
+      name: 'status heartbeat resets',
+      key: 'first',
+      heartbeat: true,
+      expected: { key: 'first', startedAt: 100_000 },
+    },
+    { name: 'content clears', key: undefined, heartbeat: false, expected: undefined },
+    {
+      name: 'same key without heartbeat keeps identity',
+      key: 'first',
+      heartbeat: false,
+      expected: prev,
+    },
+  ])('$name', ({ key, heartbeat, expected }) => {
+    const result = nextWaitClock(prev, key, heartbeat, 100_000)
+    expect(result).toEqual(expected)
+    if (expected === prev) expect(result).toBe(prev)
   })
 })

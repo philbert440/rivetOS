@@ -3,7 +3,10 @@ import { useQuery } from '@tanstack/react-query'
 import { ArrowUp, Mic, Paperclip, Volume2, VolumeX, X } from 'lucide-react'
 import type { CatalogAgent, ThinkingLevel } from '@rivetos/types'
 import { Select, type SelectOption } from './select.js'
-import type { conversationModelOptions } from '../lib/conversation-model-options.js'
+import type {
+  conversationModelOptions,
+  launchModelOptions,
+} from '../lib/conversation-model-options.js'
 import type { WsStatus } from '../stores/chat.js'
 import type { ChatSettings } from '../stores/chat-settings.js'
 import type { AskQuestion, AskScreen } from '../lib/ask-user.js'
@@ -34,6 +37,7 @@ import { EffortPicker } from './pickers/effort-picker.js'
 import { ModelPicker } from './pickers/model-picker.js'
 import { NodePicker } from './pickers/node-picker.js'
 import { AskUserCard, type AskStructuredAnswer } from './ask-user-card.js'
+import { focusIsInUse } from '../lib/composer-autofocus.js'
 
 /** Imperative surface for the parent (chat page): cancelling a queued message
  *  recalls its text into the draft instead of discarding it. */
@@ -66,9 +70,18 @@ export function Composer(props: {
   nativeControls?: boolean
   turnOptions?: ReturnType<typeof conversationModelOptions>
   onTurnPick?: (pick: { model?: string; effort?: string }) => void
+  /**
+   * Spawn-time model selection (#814). Rendered only when `models` is
+   * non-empty — the helper already applies the pre-spawn `launchModel` gate.
+   * Empty value = harness default (`defaultModelLabel`).
+   */
+  launchOptions?: ReturnType<typeof launchModelOptions>
+  onLaunchModel?: (model?: string) => void
   wsStatus: WsStatus
   settingsKey: string
   agent?: string
+  /** When true, the agent selector cannot change (a spawn is in flight). */
+  agentLocked?: boolean
   effort: ThinkingLevel
   /** Agent-preset system prompt; sent on the chat-loop POST path. */
   systemPrompt?: string
@@ -126,6 +139,37 @@ export function Composer(props: {
       handleRef.current = null
     }
   }, [handleRef])
+
+  // Autofocus the composer on landing in a conversation and when switching to
+  // another (the session subtree remounts per session, so a new/opened chat
+  // hits this too) — type immediately, no click first. The textarea is
+  // disabled while the socket reconnects, so wait for `connected`; the ref
+  // latches once per session (sessionId is fixed within a mount) so a later
+  // reconnect can't steal focus mid-scroll.
+  //
+  // Two guards keep the steal from hurting:
+  //  1. Never take focus from something in use (`focusIsInUse`). `connected`
+  //     flips true a beat after the page renders, and in that window the
+  //     drawer is interactive: an inline rename input commits on blur (a steal
+  //     would save a half-typed name), the filter input, a dialog focus trap,
+  //     and a terminal a legacy row is still showing before it flips to Chat
+  //     must all be left alone. A focused button or link is NOT in use — it's
+  //     the sidebar row or new-chat button that was just clicked to get here.
+  //  2. Skip on coarse-pointer (touch). Programmatic focus is NOT suppressed on
+  //     Android Chrome/WebView (only iOS Safari), so on a tap that remounts the
+  //     composer the keyboard would rise over the transcript — don't. A real
+  //     tap on the textarea still focuses it. The latch is set only after a
+  //     real focus() so a skipped/no-op attempt isn't latched forever.
+  const autoFocusedFor = useRef<string | undefined>(undefined)
+  useEffect(() => {
+    if (!connected || autoFocusedFor.current === props.sessionId) return
+    if (typeof window !== 'undefined' && window.matchMedia?.('(pointer: coarse)').matches) return
+    if (focusIsInUse(document.activeElement)) return
+    const ta = taRef.current
+    if (!ta) return
+    ta.focus()
+    autoFocusedFor.current = props.sessionId
+  }, [connected, props.sessionId])
 
   // Drop the mic on unmount (or a superseded start still resolving) — never
   // leave a tab holding the capture device.
@@ -441,20 +485,39 @@ export function Composer(props: {
           className="px-2 pt-1"
         />
         {/* Picker row (node · model · effort) + attach/mic/speak + send —
-            Claude-app style, in the input shell, persisted per-conversation. */}
-        <div className="flex max-md:flex-wrap items-center gap-1">
+            Claude-app style, in the input shell, persisted per-conversation.
+            Wraps at any width (not just below md): a narrow window would
+            otherwise push the action cluster off the right edge and force
+            app-wide horizontal scroll. The actions stay one group so they
+            never split, and `ml-auto` keeps them right-aligned on whichever
+            line they land. */}
+        <div className="flex flex-wrap items-center gap-1">
           <NodePicker />
           {!props.nativeControls && (
             <ModelPicker
               value={props.agent ?? ''}
               options={models}
               onChange={(v) => props.onSetting({ agent: v })}
-              disabled={catalog.isError}
+              disabled={catalog.isError || props.agentLocked === true}
               unavailable={catalog.isError}
             />
           )}
           {!props.nativeControls && (
             <EffortPicker value={props.effort} onChange={(v) => props.onSetting({ effort: v })} />
+          )}
+          {!!props.launchOptions?.models.length && (
+            <Select
+              value={props.launchOptions.value}
+              options={[
+                { value: '', label: props.launchOptions.defaultModelLabel },
+                ...props.launchOptions.models,
+              ]}
+              onChange={(model) => props.onLaunchModel?.(model || undefined)}
+              label="Model for this conversation"
+              title={`Model: ${props.launchOptions.models.find((m) => m.value === props.launchOptions?.value)?.label ?? props.launchOptions.defaultModelLabel}`}
+              aria-label="Model for this conversation"
+              className="max-w-[12rem] min-w-0 rounded-full"
+            />
           )}
           {!!props.turnOptions?.models.length && (
             <Select
@@ -491,7 +554,6 @@ export function Composer(props: {
               className="max-w-[10rem] min-w-0 rounded-full"
             />
           )}
-          <div className="flex-1" />
           <input
             ref={fileRef}
             type="file"
@@ -502,75 +564,77 @@ export function Composer(props: {
               e.target.value = ''
             }}
           />
-          <button
-            type="button"
-            onClick={() => fileRef.current?.click()}
-            aria-label="attach files"
-            title="attach files (or drop / paste them)"
-            className="flex size-8 items-center justify-center rounded-full text-ink-dim transition-colors hover:text-em"
-          >
-            <Paperclip className="size-4" />
-          </button>
-          {voiceInputSupported() && (
+          <div className="ml-auto flex items-center gap-1">
             <button
               type="button"
-              onClick={toggleMic}
-              aria-label={
-                micState === 'recording'
-                  ? 'stop recording'
-                  : micState === 'transcribing'
-                    ? 'transcribing'
-                    : 'dictate'
-              }
-              title={
-                micState === 'recording'
-                  ? 'stop and transcribe'
-                  : micState === 'transcribing'
-                    ? 'transcribing…'
-                    : 'dictate (node ASR)'
-              }
-              disabled={micState === 'transcribing' || micState === 'starting'}
+              onClick={() => fileRef.current?.click()}
+              aria-label="attach files"
+              title="attach files (or drop / paste them)"
+              className="flex size-8 items-center justify-center rounded-full text-ink-dim transition-colors hover:text-em"
+            >
+              <Paperclip className="size-4" />
+            </button>
+            {voiceInputSupported() && (
+              <button
+                type="button"
+                onClick={toggleMic}
+                aria-label={
+                  micState === 'recording'
+                    ? 'stop recording'
+                    : micState === 'transcribing'
+                      ? 'transcribing'
+                      : 'dictate'
+                }
+                title={
+                  micState === 'recording'
+                    ? 'stop and transcribe'
+                    : micState === 'transcribing'
+                      ? 'transcribing…'
+                      : 'dictate (node ASR)'
+                }
+                disabled={micState === 'transcribing' || micState === 'starting'}
+                className={cn(
+                  'flex size-8 items-center justify-center rounded-full transition-colors',
+                  micState === 'recording'
+                    ? 'animate-pulse bg-red/20 text-red'
+                    : micState === 'transcribing'
+                      ? 'animate-pulse text-ink-dim'
+                      : 'text-ink-dim hover:text-em',
+                )}
+              >
+                <Mic className="size-4" />
+              </button>
+            )}
+            <button
+              type="button"
+              onClick={() => {
+                const next = !autoSpeak
+                setAutoSpeak(next)
+                setAutoSpeakState(next)
+              }}
+              aria-pressed={autoSpeak}
+              aria-label={autoSpeak ? 'disable auto-speak' : 'enable auto-speak'}
+              title={autoSpeak ? 'auto-speak replies: on' : 'auto-speak replies: off'}
               className={cn(
                 'flex size-8 items-center justify-center rounded-full transition-colors',
-                micState === 'recording'
-                  ? 'animate-pulse bg-red/20 text-red'
-                  : micState === 'transcribing'
-                    ? 'animate-pulse text-ink-dim'
-                    : 'text-ink-dim hover:text-em',
+                autoSpeak ? 'text-em' : 'text-ink-dim hover:text-em',
               )}
             >
-              <Mic className="size-4" />
+              {autoSpeak ? <Volume2 className="size-4" /> : <VolumeX className="size-4" />}
             </button>
-          )}
-          <button
-            type="button"
-            onClick={() => {
-              const next = !autoSpeak
-              setAutoSpeak(next)
-              setAutoSpeakState(next)
-            }}
-            aria-pressed={autoSpeak}
-            aria-label={autoSpeak ? 'disable auto-speak' : 'enable auto-speak'}
-            title={autoSpeak ? 'auto-speak replies: on' : 'auto-speak replies: off'}
-            className={cn(
-              'flex size-8 items-center justify-center rounded-full transition-colors',
-              autoSpeak ? 'text-em' : 'text-ink-dim hover:text-em',
-            )}
-          >
-            {autoSpeak ? <Volume2 className="size-4" /> : <VolumeX className="size-4" />}
-          </button>
-          <button
-            onClick={() => void send()}
-            disabled={!canSend}
-            aria-label="send"
-            title="send"
-            className={cn(
-              'flex size-8 items-center justify-center rounded-full transition-colors',
-              canSend ? 'bg-em-dim text-bg hover:bg-em' : 'bg-panel-2 text-ink-dim',
-            )}
-          >
-            <ArrowUp className="size-4" />
-          </button>
+            <button
+              onClick={() => void send()}
+              disabled={!canSend}
+              aria-label="send"
+              title="send"
+              className={cn(
+                'flex size-8 items-center justify-center rounded-full transition-colors',
+                canSend ? 'bg-em-dim text-bg hover:bg-em' : 'bg-panel-2 text-ink-dim',
+              )}
+            >
+              <ArrowUp className="size-4" />
+            </button>
+          </div>
         </div>
       </div>
     </div>
