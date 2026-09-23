@@ -13,11 +13,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - When a herdr-backed coding agent exits, den reaps the PTY and mux session after a short grace so chat inject 409s instead of writing into the leftover shell (#791). Adopted harness panes stay closed to inject until a pane-scoped `pane list`/`agent list` probe (or a working|idle|blocked frame, or `pane.agent_detected` with a live agent) proves a live agent; a fresh create stays not-ready and re-probes instead of killing a still-booting harness; `POST /term` during the grace mints a new pty immediately.
 - Term ready-gate waits for output quiescence or herdr agent-idle (not first-chunk + delay). The first buffered inject on an agent pane is confirmed only by a herdr `working` frame; unconfirmed turns are recorded on the pty and never retried (#796).
 - Claude transcript adapter strips Claude Code's `<pasted_content id="…">…</pasted_content id="…">` framing from a parsed user turn before it reaches the transcript, and from the session drawer title (#818). The den injects chat as a bracketed paste, which Claude Code wraps and stores verbatim; left as-is the wrapper showed as raw tags in the user bubble and, because the web client retires an optimistic bubble by exact-text match with no id, duplicated the turn. The strip is paired and id-anchored, so literal user text that merely mentions the tag is left untouched.
+- The harness model/effort sheet carries an explicit `launchModel` flag, and the PTY driver stamps it onto the advertised capabilities: `claude-code` sets it (its `--model` is the launch-time switch and the sheet's alias set is what the CLI accepts). A sheet with `models` + `modelFlag` does NOT imply it — the pre-spawn picker gates on the flag, not the sheet's shape (#814). `POST /term` still validates the model/effort tokens against the resolved sheet either way.
+- Model and effort flags are only added when the roster entry still runs the built-in program for that key.
 
 ### RivetHub client
 
 - Composer model picker for conversations whose harness supports choosing a model per turn.
 - `apps/rivethub-web`: the composer autofocuses on landing in a conversation and when switching to another, so you can type without clicking first. Waits for the socket (the textarea is disabled while reconnecting) and fires once per session. It never pulls focus from something you're already using — an inline rename, a filter, a dialog, or the terminal — and skips touch devices so a tap can't raise the keyboard over the transcript.
+- A model picker appears before a harness's first launch in a conversation. The choice is then fixed for that harness in that conversation. Switching the conversation's agent clears it and offers the new agent's models. claude-code only today (#814).
 - `apps/rivethub-web`: prevent sidebar and composer node pickers flashing while discovery is pending or failed with one saved node; keep multiple saved nodes available immediately (#809).
 - `apps/rivethub-web`: hide node pickers only when connected to the sole saved node (or the app origin with no saved nodes) and mesh discovery confirms no peers; keep discovery and first-peer saving available.
 
@@ -28,6 +31,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Harness
 
+- `claude-cli` provider: the `claude --version` availability probe is bounded (15 s, then SIGKILL, reported unavailable) and shared between concurrent callers. It had no timeout, and `Runtime.start()` awaits `router.healthCheck()` before starting channels, so a `claude` that never exits (e.g. a wrapper script whose `exec claude` resolves back to itself) held the gateway channel and health endpoint down indefinitely.
 - `pi` harness (earendil-works/pi, provider `pi-cli`, roster command `pi`) on RivetHub web + Android, with a commented `@rivetos/provider-pi-cli` config example (recommended default backend z.ai GLM).
 - feat(harness): add qwen-code — Qwen Code CLI as the eighth first-class harness (driver, provider, executor, hooks-driven memory capture via a qwen extension, web + Android).
 - RivetHub client — new chats and registered harness sessions open in Chat; legacy sessions wait for registry resolution and fall back to Terminal on failure, with the settled view remembered across navigation.

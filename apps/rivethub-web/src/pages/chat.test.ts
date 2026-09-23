@@ -9,6 +9,7 @@ import { describe, expect, it } from 'vitest'
 
 const chat = readFileSync(new URL('./chat.tsx', import.meta.url), 'utf8')
 const sidebar = readFileSync(new URL('../components/sidebar.tsx', import.meta.url), 'utf8')
+const composer = readFileSync(new URL('../components/composer.tsx', import.meta.url), 'utf8')
 
 describe('narrow full-screen list is gone', () => {
   it('showList is wide-only — narrow never renders the list as a screen', () => {
@@ -57,6 +58,23 @@ describe('session view integration', () => {
   it('does not mask native scan rows with command-less canonical placeholders', () => {
     expect(chat).toContain('!findChatItem(listed, active)')
     expect(chat).toContain('harnessId = parseSessionId(active).harnessId')
+  })
+
+  it('spreads conversationLaunch into the spawn body and shows the default model label', () => {
+    expect(chat).toContain('conversationLaunch(')
+    expect(chat).toContain('...settledLaunch.spawn')
+    expect(chat).toContain('needsRegistryBeforeSpawn(')
+    expect(chat).toContain('shouldPersistLaunchLatch(')
+    expect(chat).toContain('launchStateWrite(')
+    expect(chat).toContain('agentLocked={spawnInFlight}')
+    expect(composer).toContain('defaultModelLabel')
+    expect(composer).toContain('props.agentLocked')
+    // The lock must hold for a dropdown that was already open when it engaged.
+    const picker = readFileSync(
+      new URL('../components/pickers/model-picker.tsx', import.meta.url),
+      'utf8',
+    )
+    expect(picker).toContain('if (props.disabled) return')
   })
 })
 
