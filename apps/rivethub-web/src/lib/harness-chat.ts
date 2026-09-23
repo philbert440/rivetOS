@@ -105,6 +105,22 @@ export function rosterCommandFor(harnessId: string | undefined): string | undefi
   return (ROSTER_COMMAND as Record<string, string | undefined>)[harnessId]
 }
 
+/**
+ * Reverse of `ROSTER_COMMAND`: map a catalog roster command (the `agent`
+ * label, e.g. "claude") to the harness it spawns ("claude-code"). Used only to
+ * decide which harness's sheet gates the pre-spawn model picker (#814) for a
+ * conversation whose settings carry an agent but not a harnessId — never to
+ * choose a launch command or flags (the den resolves those). A command with
+ * no harness (e.g. "grok-fast") returns undefined → no picker.
+ */
+export function harnessForRosterCommand(command: string | undefined): HarnessId | undefined {
+  if (!command) return undefined
+  for (const [harnessId, roster] of Object.entries(ROSTER_COMMAND)) {
+    if (roster === command) return harnessId as HarnessId
+  }
+  return undefined
+}
+
 /** Native half of a canonical id; undefined when it doesn't parse. */
 export function nativeIdOf(sessionId: string): string | undefined {
   try {

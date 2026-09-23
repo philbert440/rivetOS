@@ -107,6 +107,13 @@ export function defaultRoster(): TermRoster {
   }
 }
 
+/** argv[0] of the built-in roster entry for `key`. Undefined when the key is not a built-in. */
+export function builtinRosterArgv0(key: string): string | undefined {
+  const commands = defaultRoster().commands
+  if (!Object.hasOwn(commands, key)) return undefined
+  return commands[key].cmd[0]
+}
+
 const isStringMap = (v: unknown): v is Record<string, string> =>
   typeof v === 'object' &&
   v !== null &&

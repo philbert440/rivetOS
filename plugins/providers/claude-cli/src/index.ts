@@ -37,6 +37,7 @@ import { spawn } from 'node:child_process'
 import type { Provider, PluginManifest } from '@rivetos/types'
 import type { ProviderAiSdkBridge, GetModelInput } from '@rivetos/aisdk'
 import { ClaudeCliModel, type ClaudeCliEffort } from './claude-cli-model.js'
+import { createLogger } from './log.js'
 
 // Real-time Claude Code session capture — hooks ingest interactive
 // transcripts into the memory DB. See transcript-capture.ts / hooks.ts.
@@ -121,6 +122,11 @@ function parseTimeoutMs(raw: unknown): number {
 
 const DEFAULT_TOOLS = 'Bash,Read,Edit,Grep,Glob,WebFetch,WebSearch,TodoWrite,Write'
 
+/** Upper bound on the `claude --version` availability probe (same as grok-cli). */
+export const PROBE_TIMEOUT_MS = 15_000
+
+const log = createLogger('claude-cli')
+
 /**
  * CRITICAL: scrub OAuth-impersonating env vars before any CLI invocation.
  * Mirrors the same scrub in claude-cli-model.ts; used here for `--version`
@@ -151,7 +157,7 @@ export class ClaudeCliProvider implements Provider {
   private contextWindow: number
   private outputTokenLimit: number
   private timeoutMs: number
-  private available: boolean | null = null
+  private availableProbe: Promise<boolean> | undefined
 
   constructor(config: ClaudeCliProviderConfig) {
     this.id = config.id ?? 'claude-cli'
@@ -185,29 +191,48 @@ export class ClaudeCliProvider implements Provider {
     return this.outputTokenLimit
   }
 
-  async isAvailable(): Promise<boolean> {
-    if (this.available !== null) return this.available
-    try {
-      await new Promise<void>((resolve, reject) => {
-        const proc = spawn(this.binary, ['--version'], {
+  /**
+   * `claude --version`, bounded by PROBE_TIMEOUT_MS. `Runtime.start()` awaits
+   * this (via `router.healthCheck()`) before starting channels, so a binary that
+   * never exits must not hang the gateway: kill it and report unavailable.
+   * Settles on `exit`, not `close` — a grandchild holding the pipes open would
+   * otherwise stall `close` past the kill. Concurrent callers share one probe.
+   */
+  isAvailable(): Promise<boolean> {
+    this.availableProbe ??= new Promise<boolean>((resolve) => {
+      let settled = false
+      let stderr = ''
+      let proc: ReturnType<typeof spawn> | undefined
+      const done = (ok: boolean, why?: string): void => {
+        if (settled) return
+        settled = true
+        clearTimeout(timer)
+        proc?.stderr?.destroy()
+        if (!ok) log.warn('claude.unavailable', { binary: this.binary, reason: why })
+        resolve(ok)
+      }
+      const timer = setTimeout(() => {
+        proc?.kill('SIGKILL')
+        done(false, `--version timed out after ${String(PROBE_TIMEOUT_MS)}ms`)
+      }, PROBE_TIMEOUT_MS)
+      timer.unref()
+      try {
+        proc = spawn(this.binary, ['--version'], {
           env: buildChildEnv(),
-          stdio: ['ignore', 'pipe', 'pipe'],
+          stdio: ['ignore', 'ignore', 'pipe'],
         })
-        let stderr = ''
-        proc.stderr.on('data', (d: Buffer) => {
+        proc.stderr?.on('data', (d: Buffer) => {
           stderr += d.toString()
         })
-        proc.on('error', reject)
-        proc.on('close', (code) => {
-          if (code === 0) resolve()
-          else reject(new Error(`claude --version exited ${String(code)}: ${stderr}`))
-        })
-      })
-      this.available = true
-    } catch {
-      this.available = false
-    }
-    return this.available
+        proc.once('error', (err) => done(false, err.message))
+        proc.once('exit', (code) =>
+          done(code === 0, code === 0 ? undefined : `exit ${String(code)}: ${stderr.trim()}`),
+        )
+      } catch (err: unknown) {
+        done(false, err instanceof Error ? err.message : String(err))
+      }
+    })
+    return this.availableProbe
   }
 
   // -----------------------------------------------------------------------
