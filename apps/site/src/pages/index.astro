@@ -1,17 +1,39 @@
 ---
-// rivetos.dev landing: custom page, brand design system (emerald-on-dark,
-// DM Sans + JetBrains Mono, blueprint grid). Docs remain Starlight; this
-// replaces only the splash. Assets self-hosted except Google Fonts.
+// rivetos.dev landing: custom page (docs stay Starlight). Scroll story that
+// follows the architecture: clients → node → harnesses → memory, then the mesh,
+// the plugin tree, and where to read next. Brand system: emerald on
+// a blueprint grid, DM Sans + JetBrains Mono. Assets self-hosted except Google Fonts.
 import robot from '../assets/robot.png'
 import PostHog from '../components/PostHog.astro'
 const GH = 'https://github.com/philbert440/rivetOS'
+const HUB = 'https://rivethub.io/'
+const CLOUD = 'https://rivetos.cloud/'
+const harnesses = ['claude-code', 'codex', 'grok-build', 'kimi-code', 'hermes']
+const inSource = ['opencode', 'pi', 'qwen-code']
+const plugins = [
+  { dir: 'providers', items: ['anthropic', 'xai', 'google', 'ollama', 'vllm', 'llama-server', 'claude-cli', 'codex-cli', 'grok-cli', 'hermes-cli', 'kimi-code', 'opencode-cli', 'pi-cli', 'qwen-code'] },
+  { dir: 'tools', items: ['shell', 'file', 'search', 'web-search', 'mcp-client', 'interaction'] },
+  { dir: 'memory', items: ['postgres'] },
+  { dir: 'transports', items: ['mcp-server'] },
+  { dir: 'channels', items: ['agent'] },
+]
+const guides = [
+  { href: '/guides/getting-started/', title: 'Quick Start', text: 'Get RivetOS running in under five minutes.' },
+  { href: '/reference/architecture/', title: 'Architecture', text: 'RivetOS as a harness-first, per-node control plane.' },
+  { href: '/reference/memory-design/', title: 'Memory System', text: 'Capture, compaction, and retrieval design.' },
+  { href: '/guides/mesh/', title: 'Mesh Networking', text: 'Multi-node mesh with mTLS delegation.' },
+  { href: '/guides/providers/', title: 'Provider Setup', text: 'API and local providers, plus harness CLIs.' },
+  { href: '/guides/plugins/', title: 'Plugin Development', text: 'Write providers, tools, memory backends, transports.' },
+  { href: '/guides/deployment/', title: 'Deployment', text: 'Docker, Proxmox, or bare metal.' },
+  { href: '/reference/config/', title: 'Configuration', text: 'Every option, in one reference.' },
+]
 ---
 
 <!doctype html>
 <html lang="en">
   <head>
     <meta charset="utf-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
     <title>RivetOS: run your own agents, own the memory they share</title>
     <meta
       name="description"
@@ -27,433 +49,792 @@ const GH = 'https://github.com/philbert440/rivetOS'
       href="https://fonts.googleapis.com/css2?family=DM+Sans:opsz,wght@9..40,400;9..40,500;9..40,700&family=JetBrains+Mono:wght@400;600&display=swap"
       rel="stylesheet"
     />
+    <script is:inline>
+      // Follow the docs' Starlight theme choice when there is one.
+      try {
+        var t = localStorage.getItem('starlight-theme')
+        if (t === 'light' || t === 'dark') document.documentElement.dataset.theme = t
+      } catch (e) {}
+    </script>
     <PostHog />
   </head>
   <body>
-    <nav>
-      <a class="brand" href="/">
-        <img src={robot.src} alt="" width="32" height="36" style="object-fit: contain; image-rendering: pixelated" />
-        <span>RivetOS</span>
-      </a>
-      <div class="nav-links">
-        <a href="https://rivethub.io/">RivetHub</a>
-        <a href="/guides/getting-started/">Docs</a>
-        <a href={GH}>GitHub</a>
+    <a class="skip" href="#main">Skip to content</a>
+    <header class="top">
+      <div class="wrap top-inner">
+        <a class="brand" href="/">
+          <img src={robot.src} alt="" width="26" height="30" />
+          <span>RivetOS</span>
+        </a>
+        <nav class="top-nav" aria-label="Main">
+          <a href="#runtime">Runtime</a>
+          <a href="#memory">Memory</a>
+          <a href="#mesh">Mesh</a>
+          <a href="/guides/getting-started/">Docs</a>
+          <a href={GH}>GitHub</a>
+          <a class="top-cta" href={HUB} data-ph-event="cta_setup_agent">Get RivetHub</a>
+        </nav>
       </div>
-    </nav>
-
-    <header class="hero">
-      <div class="hero-copy">
-        <h1>Run your own agents.<br /><em>Own the memory they share.</em></h1>
-        <p class="tagline">
-          RivetOS is a personal AI agent runtime and memory plane you run yourself — not a hosted
-          SaaS black box. Local-first memory, MCP-exposed to tools you choose, mesh between nodes
-          you enroll. RivetHub is the same product: the install you start with.
-        </p>
-        <div class="install">
-          <code><span class="prompt">$</span> curl -fsSL https://get.rivethub.io/local.sh | bash</code>
-        </div>
-        <div class="ctas">
-          <a class="btn primary" href="https://rivethub.io/" data-ph-event="cta_setup_agent">Get RivetHub</a>
-          <a class="btn" href="/guides/getting-started/">Docs</a>
-          <a class="btn" href={GH}>GitHub</a>
-        </div>
-        <p class="fine">
-          One product, one repo: <a href={GH}>philbert440/rivetOS</a>. Hub is get-started;
-          these docs are the deep reference. From a source checkout:
-          <code>npx rivetos local</code>.
-        </p>
-        <p class="fine">Apache 2.0 · no CLA · no Rivet account · your hardware</p>
-      </div>
+      <div class="progress" aria-hidden="true"><i></i></div>
     </header>
 
-    <main>
-      <section class="act">
-        <div class="act-copy">
-          <h2><span class="index">01</span> Runs on your hardware</h2>
-          <p>
-            You install it. Docker on a laptop, LXC on Proxmox, or the local one-liner on Linux
-            and macOS. Providers are plugins: Anthropic, xAI, Google, or fully local via Ollama,
-            vLLM, and llama.cpp. Your keys, your GPUs, your machines.
-          </p>
-        </div>
-        <div class="act-visual chips" aria-label="Providers, RivetHub, and mesh">
-          <span class="chip">anthropic</span><span class="chip">xai</span>
-          <span class="chip">google</span><span class="chip">ollama</span>
-          <span class="chip">vllm</span><span class="chip">llama.cpp</span>
-          <span class="chip">claude-cli</span><span class="chip">codex-cli</span>
-          <span class="chip alt">mcp</span><span class="chip alt">agent-http</span>
+    <main id="main">
+      <section class="hero" aria-labelledby="hero-title">
+        <div class="wrap hero-grid">
+          <div class="hero-copy">
+            <p class="kicker"><span class="live" aria-hidden="true"></span>Apache 2.0 · no CLA · no Rivet account</p>
+            <h1 id="hero-title">Run your own agents.<br /><em>Own the memory they share.</em></h1>
+            <p class="lede">
+              RivetOS is a personal AI agent runtime and memory plane you run yourself — not a hosted
+              SaaS black box. The harnesses you already use keep their coding loop; RivetOS gives them
+              one identity, one record, and one gateway, on machines you control.
+            </p>
+            <div class="term install">
+              <pre tabindex="0" data-copy="curl -fsSL https://get.rivethub.io/local.sh | bash"><code><span class="ps">$ </span>curl -fsSL https://get.rivethub.io/local.sh | bash</code></pre>
+            </div>
+            <div class="ctas">
+              <a class="btn primary" href={HUB} data-ph-event="cta_setup_agent">Get RivetHub</a>
+              <a class="btn" href="/guides/getting-started/">Read the docs</a>
+              <a class="btn ghost" href={GH}>GitHub</a>
+            </div>
+            <p class="fine">
+              One product, one repo: <a href={GH}>philbert440/rivetOS</a>. RivetHub is the install; these
+              docs are the deep reference. From a source checkout: <code>npx rivetos local</code>.
+            </p>
+          </div>
+          <figure class="hero-viz">
+            <canvas id="node-canvas" width="640" height="560" aria-hidden="true"></canvas>
+            <div class="readout" aria-hidden="true">
+              <span><b data-n="turns">0</b> turns</span>
+              <span><b data-n="captured">0</b> captured</span>
+              <span><b data-n="recalled">0</b> recalled</span>
+            </div>
+            <figcaption>
+              One node, live. Clients send turns through the gateway to a harness; every turn is
+              captured to memory (green); recalls flow back to whichever harness asks (brass).
+            </figcaption>
+          </figure>
         </div>
       </section>
 
-      <section class="act">
-        <div class="act-copy">
-          <h2><span class="index">02</span> Local-first memory</h2>
-          <p>
-            The memory plane lives on the hub you run: PGlite on one machine, or Postgres on a
-            datahub you enroll nodes into. Hybrid full-text + vector search, summary compaction,
-            cross-agent recall over MCP. The record is yours.
-          </p>
-        </div>
-        <div class="act-visual term" role="img" aria-label="Example memory search in a terminal">
-          <div class="term-bar"><i></i><i></i><i></i></div>
-          <pre><code><span class="prompt">rivet&gt;</span> memory_search "mesh CA decision?"
+      <div class="story">
+        <div class="spine" aria-hidden="true"><i></i></div>
+
+        <section class="chapter" id="runtime" aria-labelledby="runtime-title">
+          <div class="wrap">
+            <header class="chapter-head">
+              <span class="stud" aria-hidden="true"></span>
+              <p class="chapter-no">01 · The runtime</p>
+              <h2 id="runtime-title">The harness owns the loop. RivetOS owns everything around it.</h2>
+              <p class="chapter-lede">
+                RivetOS doesn't compete with your coding tools. It adapts them through per-harness drivers
+                and takes on the parts no single tool does well on its own.
+              </p>
+            </header>
+            <div class="owns">
+              <div class="owns-col">
+                <p class="owns-label">Harness</p>
+                <p class="owns-what">Coding loop: tools, model turns, approvals inside the TUI, interrupt, its native session store.</p>
+                <ul class="harness-list" aria-label="Harnesses the installer connects">
+                  {harnesses.map((h) => <li>{h}</li>)}
+                </ul>
+                <p class="owns-note">Also in the source tree, not yet in the installer: {inSource.join(', ')}.</p>
+              </div>
+              <div class="owns-join" aria-hidden="true"><span></span></div>
+              <div class="owns-col owns-rivet">
+                <p class="owns-label">RivetOS · this node</p>
+                <p class="owns-what">Session identity, capture and memory, mesh, tasks, and the gateway HTTP + WS contract that Hub, desktop and Android all speak.</p>
+                <p class="session-id"><span>session id</span><code>&lt;harness-id&gt;:&lt;native-session-id&gt;</code></p>
+                <p class="owns-note">One canonical id everywhere — capture, hub, tasks, gateway. No dual key schemes.</p>
+              </div>
+            </div>
+            <p class="chapter-foot">Runs where you put it: the local one-liner on Linux and macOS, Docker on a laptop, or LXC on Proxmox. <a href="/reference/architecture/">Architecture →</a></p>
+          </div>
+        </section>
+
+        <section class="chapter" id="memory" aria-labelledby="memory-title">
+          <div class="wrap">
+            <header class="chapter-head">
+              <span class="stud" aria-hidden="true"></span>
+              <p class="chapter-no">02 · Memory</p>
+              <h2 id="memory-title">Local-first memory. The record is yours.</h2>
+              <p class="chapter-lede">
+                The memory plane lives on the hub you run: PGlite on one machine, or Postgres on a datahub you
+                enroll nodes into. Exposed over MCP, so any connected agent can search it before it answers.
+              </p>
+            </header>
+            <div class="scrolly">
+              <ol class="steps">
+                <li class="step is-active" data-step="0">
+                  <p class="step-tag">capture</p>
+                  <h3>Every turn lands in the record.</h3>
+                  <p>Prompts, tool calls and results are written as the session runs, keyed by the canonical session id. Nothing to remember to save.</p>
+                </li>
+                <li class="step" data-step="1">
+                  <p class="step-tag">compact</p>
+                  <h3>Long history folds into summaries.</h3>
+                  <p>The compaction worker rolls messages up into leaf and branch summaries, so a month of work stays searchable without re-reading every transcript.</p>
+                </li>
+                <li class="step" data-step="2">
+                  <p class="step-tag">recall</p>
+                  <h3>Any agent asks; hybrid search answers.</h3>
+                  <p>Full-text, trigram and vector search fused together, with hits that expand back to their source messages. Ask what you decided three weeks ago.</p>
+                </li>
+              </ol>
+              <div class="stage">
+                <div class="stage-term">
+                  <div class="term-bar"><i></i><i></i><i></i><span>example output</span></div>
+                  <pre class="panel is-active" data-panel="0"><code><span class="k">capture</span> claude-code:7f3a2c…
+  <span class="ok">+</span> user        why does the mesh CA rotate?
+  <span class="ok">+</span> tool_call   shell  rg -n "rotate" packages/
+  <span class="ok">+</span> result      4 matches
+  <span class="ok">+</span> assistant   Rotation runs through update --mesh…
+<span class="dim">  → ros_messages  4 rows · embedding queued</span></code></pre>
+                  <pre class="panel" data-panel="1"><code><span class="k">compaction-worker</span> 2026-06-12
+  <span class="dim">leaf  </span>  42 msgs  → one root CA, per-node certs
+  <span class="dim">leaf  </span>  31 msgs  → rotation via update --mesh
+  <span class="dim">branch</span>  6 leaves → mesh trust model, week of 06-09
+<span class="dim">  → summaries link back to their source messages</span></code></pre>
+                  <pre class="panel" data-panel="2"><code><span class="k">rivet&gt;</span> memory_search "mesh CA decision?"
 <span class="ok">●</span> 3 hits · hybrid fts+vector · 48ms
   1. <span class="dim">06-12</span> one root CA, per-node certs
   2. <span class="dim">06-13</span> rotation via update --mesh
   3. <span class="dim">06-27</span> roster fix deployed fleet-wide</code></pre>
+                </div>
+                <p class="stage-note">Illustrative output. <a href="/reference/memory-design/">Memory design →</a></p>
+              </div>
+            </div>
+          </div>
+        </section>
+
+
+        <section class="chapter" id="mesh" aria-labelledby="mesh-title">
+          <div class="wrap">
+            <header class="chapter-head">
+              <span class="stud" aria-hidden="true"></span>
+              <p class="chapter-no">03 · Mesh</p>
+              <h2 id="mesh-title">A mesh you enroll. Not one you join.</h2>
+              <p class="chapter-lede">
+                One machine is enough. When you want more, put a datahub on a server and enroll agent nodes
+                into it. Every node shares one memory and can hand tasks to its peers. There is no
+                Rivet-operated mesh.
+              </p>
+            </header>
+            <div class="mesh-grid">
+              <svg class="mesh-svg" viewBox="0 -24 560 384" role="img" aria-labelledby="mesh-svg-title mesh-svg-desc">
+                <title id="mesh-svg-title">A datahub with three enrolled agent nodes</title>
+                <desc id="mesh-svg-desc">Three agent nodes delegate tasks to each other over mTLS on port 3000. Each node reads and writes memory in the datahub's Postgres and enrolled over SSH, receiving its certificate and the mesh registry from the datahub.</desc>
+                <g class="links">
+                  <path class="peer" d="M170 78 L230 78" />
+                  <path class="peer" d="M330 78 L390 78" />
+                  <path class="peer" d="M110 50 C 180 0, 380 0, 450 50" />
+                  <path class="hub" d="M110 106 C 110 190, 220 230, 250 262" />
+                  <path class="hub" d="M280 106 L280 256" />
+                  <path class="hub" d="M450 106 C 450 190, 340 230, 310 262" />
+                </g>
+                <g class="nodes">
+                  <rect x="50" y="50" width="120" height="56" rx="10" />
+                  <rect x="220" y="50" width="120" height="56" rx="10" />
+                  <rect x="390" y="50" width="120" height="56" rx="10" />
+                  <rect class="datahub" x="160" y="256" width="240" height="80" rx="12" />
+                </g>
+                <g class="labels">
+                  <text x="110" y="75">node-a</text><text class="small" x="110" y="93">rivetos · :3000</text>
+                  <text x="280" y="75">node-b</text><text class="small" x="280" y="93">rivetos · :3000</text>
+                  <text x="450" y="75">node-c</text><text class="small" x="450" y="93">rivetos · :3000</text>
+                  <text class="small peer-label" x="280" y="-8">delegation · mTLS · peer to peer</text>
+                  <text x="280" y="283">datahub</text>
+                  <text class="small" x="280" y="303">postgres + pgvector · memory</text>
+                  <text class="small" x="280" y="321">CA · mesh.json · no agents</text>
+                  <text class="small hub-label" x="290" y="146" text-anchor="start">memory (postgres)</text>
+                  <text class="small hub-label" x="290" y="162" text-anchor="start">enrolled over ssh</text>
+                </g>
+              </svg>
+              <dl class="mesh-facts">
+                <div><dt>A datahub at the center</dt><dd>Postgres with pgvector, the memory schema, and the certificate authority. No agents run on it.</dd></div>
+                <div><dt>Nodes enroll over SSH</dt><dd><code>node.sh --hub</code> runs the enrollment on the datahub. The node gets its certificate, the CA chain and <code>mesh.json</code> in one pass. The root CA key never leaves the datahub.</dd></div>
+                <div><dt>Peers delegate over mTLS</dt><dd>A node finds its peers in <code>mesh.json</code> and hands them tasks on port 3000. Every connection is mutual TLS; there is no plaintext fallback.</dd></div>
+              </dl>
+            </div>
+            <p class="chapter-foot"><a href="/guides/mesh/">Mesh networking →</a> · <a href="/guides/hub-setup/">Hub setup →</a> · <a href="/guides/mcp-auth/">MCP &amp; mesh auth →</a></p>
+          </div>
+        </section>
+
+        <section class="chapter" id="plugins" aria-labelledby="plugins-title">
+          <div class="wrap">
+            <header class="chapter-head">
+              <span class="stud" aria-hidden="true"></span>
+              <p class="chapter-no">04 · Plugins</p>
+              <h2 id="plugins-title">A small stable core. Everything else is a plugin.</h2>
+              <p class="chapter-lede">
+                Dependencies point inward: the core knows nothing about Anthropic or Postgres. Providers, tools,
+                memory and transports adapt the outside world — cloud APIs or fully local models, your keys, your GPUs.
+              </p>
+            </header>
+            <div class="tree" role="img" aria-label="The plugins directory: providers, tools, memory, transports, channels">
+              <p class="tree-root">plugins/</p>
+              {plugins.map((g) => (
+                <div class="tree-group">
+                  <p class="tree-dir">├─ {g.dir}/ <span>{g.items.length}</span></p>
+                  <p class="tree-items">{g.items.map((i) => <span>{i}</span>)}</p>
+                </div>
+              ))}
+            </div>
+            <p class="chapter-foot"><a href="/guides/plugins/">Write a plugin →</a></p>
+          </div>
+        </section>
+      </div>
+
+      <section class="run" aria-labelledby="run-title">
+        <div class="wrap">
+          <p class="kicker">Three ways to run it</p>
+          <h2 id="run-title">Start on your machine. Grow when you need to.</h2>
+          <div class="run-grid">
+            <a class="run-card" href={HUB} data-ph-event="cta_setup_agent">
+              <span class="run-where">Laptop</span>
+              <span class="run-what">RivetHub's local installer: hub and agents on one machine.</span>
+              <span class="run-go">rivethub.io →</span>
+            </a>
+            <a class="run-card" href="/guides/hub-setup/">
+              <span class="run-where">Datahub</span>
+              <span class="run-what">Postgres on a server you own; enroll nodes over SSH.</span>
+              <span class="run-go">Hub setup →</span>
+            </a>
+            <a class="run-card cloud" href={CLOUD}>
+              <span class="run-where">Rivet Cloud</span>
+              <span class="run-what">Hosted memory with export. Your agents still run on your machines.</span>
+              <span class="run-go">Rivet Cloud →</span>
+            </a>
+          </div>
         </div>
       </section>
 
-      <section class="act">
-        <div class="act-copy">
-          <h2><span class="index">03</span> A mesh you enroll</h2>
-          <p>
-            One machine is enough. Add nodes when you want them: different models, one shared
-            memory, mTLS between machines you control. Same runtime on every node. There is no
-            Rivet-operated mesh to join.
-          </p>
-        </div>
-        <div class="act-visual mesh" role="img" aria-label="Three agent nodes connected by a mesh, sharing one memory">
-          <svg viewBox="0 0 360 200" fill="none">
-            <g class="mesh-lines" stroke="#34d399" stroke-opacity="0.35">
-              <path d="M84 52 L276 52" /><path d="M84 52 L180 148" /><path d="M276 52 L180 148" />
-            </g>
-            <g font-family="JetBrains Mono, monospace" font-size="12">
-              <circle cx="84" cy="52" r="26" class="node" />
-              <text x="84" y="56" text-anchor="middle">opus</text>
-              <circle cx="276" cy="52" r="26" class="node" />
-              <text x="276" y="56" text-anchor="middle">grok</text>
-              <circle cx="180" cy="148" r="26" class="node" />
-              <text x="180" y="152" text-anchor="middle">local</text>
-              <text x="180" y="30" text-anchor="middle" class="label">delegation · mTLS</text>
-              <text x="180" y="188" text-anchor="middle" class="label">one shared memory</text>
-            </g>
-          </svg>
+      <section class="docs" aria-labelledby="docs-title">
+        <div class="wrap">
+          <h2 id="docs-title">Read next</h2>
+          <ul class="docs-grid">
+            {guides.map((g) => (
+              <li><a href={g.href}><span class="docs-title">{g.title}</span><span class="docs-text">{g.text}</span></a></li>
+            ))}
+          </ul>
         </div>
       </section>
 
-      <section class="closing">
-        <h2>Start on your machine. Read the rest here.</h2>
-        <div class="install big">
-          <code><span class="prompt">$</span> curl -fsSL https://get.rivethub.io/local.sh | bash</code>
+      <section class="closing" aria-labelledby="closing-title">
+        <div class="wrap">
+          <h2 id="closing-title">Start on your machine.<br /><em>Read the rest here.</em></h2>
+          <div class="term install">
+            <pre tabindex="0" data-copy="curl -fsSL https://get.rivethub.io/local.sh | bash"><code><span class="ps">$ </span>curl -fsSL https://get.rivethub.io/local.sh | bash</code></pre>
+          </div>
+          <div class="ctas">
+            <a class="btn primary" href={HUB} data-ph-event="cta_setup_agent">Get RivetHub</a>
+            <a class="btn" href="/guides/getting-started/">Getting started</a>
+          </div>
         </div>
-        <p>
-          <a href="https://rivethub.io/" data-ph-event="cta_setup_agent">RivetHub</a> is the get-started
-          surface (agent brief + local installer). From a source checkout, run
-          <code>npx rivetos local</code>. Docker, mesh, and a dedicated datahub are day-2.
-          <a href="/guides/getting-started/">Getting started →</a>
-        </p>
       </section>
     </main>
 
-    <footer>
-      <span>Apache 2.0</span>
-      <a href="https://rivethub.io/">RivetHub</a>
-      <a href="/guides/introduction/">Docs</a>
-      <a href="/reference/changelog/">Changelog</a>
-      <a href="/privacy/">Privacy</a>
-      <a href={GH}>GitHub</a>
+    <footer class="foot">
+      <div class="wrap foot-inner">
+        <span>Apache 2.0 · <a href={GH}>philbert440/rivetOS</a></span>
+        <nav aria-label="Footer">
+          <a href={HUB}>RivetHub</a>
+          <a href={CLOUD}>Rivet Cloud</a>
+          <a href="/guides/introduction/">Docs</a>
+          <a href="/reference/changelog/">Changelog</a>
+          <a href="/privacy/">Privacy</a>
+          <a href={GH}>GitHub</a>
+        </nav>
+      </div>
     </footer>
+
+    <script>
+      const root = document.documentElement
+      root.classList.add('js')
+      const reduce = matchMedia('(prefers-reduced-motion: reduce)').matches
+
+      // Copy buttons on commands.
+      document.querySelectorAll<HTMLPreElement>('pre[data-copy]').forEach((pre) => {
+        const b = document.createElement('button')
+        b.type = 'button'
+        b.className = 'copy'
+        b.textContent = 'copy'
+        b.setAttribute('aria-label', 'Copy command')
+        b.addEventListener('click', async () => {
+          try {
+            await navigator.clipboard.writeText(pre.dataset.copy || '')
+            b.textContent = 'copied'
+          } catch {
+            const r = document.createRange()
+            r.selectNodeContents(pre)
+            const s = getSelection()
+            s?.removeAllRanges()
+            s?.addRange(r)
+            b.textContent = 'select + copy'
+          }
+          setTimeout(() => (b.textContent = 'copy'), 2000)
+        })
+        pre.parentElement?.appendChild(b)
+      })
+
+      // Hero: one node, live.
+      const canvas = document.getElementById('node-canvas') as HTMLCanvasElement | null
+      if (canvas) {
+        const ctx = canvas.getContext('2d')!
+        const W = 640, H = 560
+        const dpr = Math.min(devicePixelRatio || 1, 2)
+        canvas.width = W * dpr
+        canvas.height = H * dpr
+        ctx.setTransform(dpr, 0, 0, dpr, 0, 0)
+        type P = { x: number; y: number }
+        const c: Record<string, string> = {}
+        const read = () => {
+          const cs = getComputedStyle(root)
+          for (const k of ['--accent', '--brass', '--rule', '--soft', '--faint', '--ink', '--surface', '--surface-2', '--wash'])
+            c[k] = cs.getPropertyValue(k).trim()
+        }
+        const clients = [{ label: 'web', x: 150 }, { label: 'desktop', x: 320 }, { label: 'android', x: 490 }]
+        const hs = ['claude-code', 'codex', 'grok-build', 'kimi-code', 'hermes']
+        const hPos = hs.map((label, i) => ({ label, x: 72 + i * 124, y: 480 }))
+        const node = { x: 240, y: 232, w: 250, h: 64 }
+        const mem = { x: 540, y: 232 }
+        const line = (a: P, b: P, n = 24): P[] => Array.from({ length: n + 1 }, (_, i) => ({ x: a.x + ((b.x - a.x) * i) / n, y: a.y + ((b.y - a.y) * i) / n }))
+        const quad = (a: P, k: P, b: P, n = 28): P[] =>
+          Array.from({ length: n + 1 }, (_, i) => {
+            const t = i / n, u = 1 - t
+            return { x: u * u * a.x + 2 * u * t * k.x + t * t * b.x, y: u * u * a.y + 2 * u * t * k.y + t * t * b.y }
+          })
+        const cToN = (ci: number) => line({ x: clients[ci].x, y: 78 }, { x: node.x + (clients[ci].x - 320) * 0.35, y: node.y - node.h / 2 })
+        const nToH = (hi: number) => {
+          const h = hPos[hi]
+          const top = h.y - 15
+          return quad({ x: node.x, y: node.y + node.h / 2 }, { x: node.x + (h.x - node.x) * 0.3, y: 380 }, { x: h.x, y: top })
+        }
+        const nToM = () => line({ x: node.x + node.w / 2, y: node.y }, { x: mem.x - 34, y: mem.y })
+        const rev = (p: P[]) => p.slice().reverse()
+        type Pk = { pts: P[]; t: number; v: number; kind: 'turn' | 'capture' | 'recall'; label: string; hi: number }
+        const pk: Pk[] = []
+        const n = { turns: 0, captured: 0, recalled: 0 }
+        const flash = new Array(hs.length).fill(0)
+        const spawn = (seed = false) => {
+          const r = Math.random()
+          const hi = Math.floor(Math.random() * hs.length)
+          let p: Pk
+          if (r < 0.4) p = { pts: [...cToN(Math.floor(Math.random() * 3)), ...nToH(hi)], t: 0, v: 0.004, kind: 'turn', label: 'turn', hi }
+          else if (r < 0.75) p = { pts: [...rev(nToH(hi)), ...nToM()], t: 0, v: 0.005, kind: 'capture', label: ['tool_call', 'result', 'prompt'][Math.floor(Math.random() * 3)], hi }
+          else p = { pts: [...rev(nToM()), ...nToH(hi)], t: 0, v: 0.006, kind: 'recall', label: 'memory_search', hi }
+          if (seed) p.t = Math.random() * 0.9
+          pk.push(p)
+        }
+        const at = (pts: P[], t: number): P => {
+          const f = t * (pts.length - 1), i = Math.floor(f), a = pts[i], b = pts[Math.min(i + 1, pts.length - 1)]
+          return { x: a.x + (b.x - a.x) * (f - i), y: a.y + (b.y - a.y) * (f - i) }
+        }
+        const rr = (x: number, y: number, w: number, h: number, r: number) => {
+          ctx.beginPath()
+          ctx.moveTo(x + r, y)
+          ctx.arcTo(x + w, y, x + w, y + h, r)
+          ctx.arcTo(x + w, y + h, x, y + h, r)
+          ctx.arcTo(x, y + h, x, y, r)
+          ctx.arcTo(x, y, x + w, y, r)
+          ctx.closePath()
+        }
+        const stroke = (pts: P[]) => {
+          ctx.beginPath()
+          pts.forEach((p, i) => (i ? ctx.lineTo(p.x, p.y) : ctx.moveTo(p.x, p.y)))
+          ctx.stroke()
+        }
+        const mono = (s: number, w = 400) => `${w} ${s}px "JetBrains Mono", ui-monospace, monospace`
+        const draw = () => {
+          ctx.clearRect(0, 0, W, H)
+          ctx.lineWidth = 1.5
+          ctx.strokeStyle = c['--rule']
+          clients.forEach((_, i) => stroke(cToN(i)))
+          hs.forEach((_, i) => stroke(nToH(i)))
+          ctx.setLineDash([5, 5]); stroke(nToM()); ctx.setLineDash([])
+          ctx.textAlign = 'center'
+          ctx.textBaseline = 'middle'
+          // tier labels
+          ctx.fillStyle = c['--faint']
+          ctx.font = mono(12)
+          ctx.fillText('CLIENTS · same gateway contract', 320, 30)
+          ctx.fillText('HARNESSES · wired by the installer', 320, 528)
+          clients.forEach((cl) => {
+            ctx.fillStyle = c['--surface']; ctx.strokeStyle = c['--rule']
+            rr(cl.x - 50, 60, 100, 30, 15); ctx.fill(); ctx.stroke()
+            ctx.fillStyle = c['--soft']; ctx.font = mono(14); ctx.fillText(cl.label, cl.x, 76)
+          })
+          ctx.fillStyle = c['--surface-2']; ctx.strokeStyle = c['--accent']; ctx.lineWidth = 2
+          rr(node.x - node.w / 2, node.y - node.h / 2, node.w, node.h, 12); ctx.fill(); ctx.stroke()
+          ctx.lineWidth = 1.5
+          ctx.fillStyle = c['--ink']; ctx.font = '700 19px "DM Sans", system-ui, sans-serif'
+          ctx.fillText('your node', node.x, node.y - 9)
+          ctx.fillStyle = c['--faint']; ctx.font = mono(12)
+          ctx.fillText('rivetos · gateway + capture', node.x, node.y + 13)
+          // memory cylinder
+          ctx.fillStyle = c['--wash']; ctx.strokeStyle = c['--accent']
+          ctx.beginPath(); ctx.ellipse(mem.x, mem.y + 24, 32, 9, 0, 0, Math.PI * 2); ctx.fill(); ctx.stroke()
+          ctx.fillRect(mem.x - 32, mem.y - 24, 64, 48)
+          ctx.beginPath(); ctx.moveTo(mem.x - 32, mem.y - 24); ctx.lineTo(mem.x - 32, mem.y + 24); ctx.moveTo(mem.x + 32, mem.y - 24); ctx.lineTo(mem.x + 32, mem.y + 24); ctx.stroke()
+          ctx.beginPath(); ctx.ellipse(mem.x, mem.y - 24, 32, 9, 0, 0, Math.PI * 2); ctx.fill(); ctx.stroke()
+          ctx.fillStyle = c['--ink']; ctx.font = '700 14px "DM Sans", system-ui, sans-serif'
+          ctx.fillText('memory', mem.x, mem.y + 5)
+          ctx.fillStyle = c['--faint']; ctx.font = mono(12); ctx.fillText('pglite · postgres', mem.x, mem.y + 52)
+          hPos.forEach((h, i) => {
+            const lit = flash[i] > 0
+            ctx.fillStyle = lit ? c['--wash'] : c['--surface']; ctx.strokeStyle = lit ? c['--brass'] : c['--rule']
+            rr(h.x - 58, h.y - 15, 116, 30, 8); ctx.fill(); ctx.stroke()
+            ctx.fillStyle = c['--soft']; ctx.font = mono(13); ctx.fillText(h.label, h.x, h.y + 1)
+            if (flash[i] > 0) flash[i]--
+          })
+          ctx.textAlign = 'left'
+          for (const p of pk) {
+            const q = at(p.pts, p.t)
+            const col = p.kind === 'recall' ? c['--brass'] : p.kind === 'capture' ? c['--accent'] : c['--soft']
+            ctx.fillStyle = col
+            ctx.beginPath(); ctx.arc(q.x, q.y, p.kind === 'turn' ? 3.5 : 4.5, 0, Math.PI * 2); ctx.fill()
+            if (p.kind !== 'turn' && p.t > 0.1 && p.t < 0.6) {
+              ctx.globalAlpha = Math.min(1, (0.6 - p.t) * 5)
+              ctx.font = mono(12); ctx.fillText(p.label, q.x + 8, q.y - 8)
+              ctx.globalAlpha = 1
+            }
+          }
+        }
+        const els = Object.fromEntries(['turns', 'captured', 'recalled'].map((k) => [k, document.querySelector(`[data-n="${k}"]`)]))
+        const step = () => {
+          for (let i = pk.length - 1; i >= 0; i--) {
+            const p = pk[i]
+            p.t += p.v
+            if (p.t >= 1) {
+              if (p.kind === 'turn') n.turns++
+              else if (p.kind === 'capture') n.captured++
+              else { n.recalled++; flash[p.hi] = 34 }
+              pk.splice(i, 1)
+            }
+          }
+          if (Math.random() < 0.06 && pk.length < 16) spawn()
+          for (const k of Object.keys(n) as (keyof typeof n)[]) if (els[k]) els[k]!.textContent = n[k].toLocaleString()
+        }
+        read()
+        for (let i = 0; i < 10; i++) spawn(true)
+        draw()
+        let raf = 0
+        const loop = () => { step(); draw(); raf = requestAnimationFrame(loop) }
+        if (!reduce) {
+          new IntersectionObserver(([e]) => {
+            cancelAnimationFrame(raf)
+            if (e.isIntersecting) raf = requestAnimationFrame(loop)
+          }).observe(canvas)
+        }
+        new MutationObserver(() => { read(); draw() }).observe(root, { attributes: true, attributeFilter: ['data-theme'] })
+        matchMedia('(prefers-color-scheme: dark)').addEventListener('change', () => { read(); draw() })
+        document.fonts?.ready.then(draw)
+      }
+
+      // Memory steps drive the sticky terminal.
+      const steps = [...document.querySelectorAll<HTMLElement>('.step')]
+      const panels = [...document.querySelectorAll<HTMLElement>('.panel')]
+      const activate = (i: number) => {
+        steps.forEach((s, j) => s.classList.toggle('is-active', i === j))
+        panels.forEach((p, j) => p.classList.toggle('is-active', i === j))
+      }
+      const so = new IntersectionObserver((es) => es.forEach((e) => e.isIntersecting && activate(+(e.target as HTMLElement).dataset.step!)), { rootMargin: '-45% 0px -45% 0px' })
+      steps.forEach((s) => so.observe(s))
+
+      // Mesh draws itself once seen.
+      const mesh = document.querySelector('.mesh-svg')
+      if (mesh) new IntersectionObserver(([e], o) => { if (e.isIntersecting) { mesh.classList.add('is-drawn'); o.disconnect() } }, { threshold: 0.4 }).observe(mesh)
+
+      // Scroll: header progress, spine fill, lit studs.
+      const bar = document.querySelector<HTMLElement>('.progress')
+      const story = document.querySelector<HTMLElement>('.story')
+      const spine = document.querySelector<HTMLElement>('.spine')
+      const chapters = [...document.querySelectorAll<HTMLElement>('.chapter')]
+      let ticking = false
+      const onScroll = () => {
+        ticking = false
+        const vh = innerHeight
+        const max = document.documentElement.scrollHeight - vh
+        bar?.style.setProperty('--p', String(max > 0 ? scrollY / max : 0))
+        if (story && spine) {
+          const r = story.getBoundingClientRect()
+          spine.style.setProperty('--fill', String(Math.min(1, Math.max(0, (vh * 0.55 - r.top) / r.height))))
+        }
+        chapters.forEach((ch) => {
+          const stud = ch.querySelector('.stud')
+          if (stud) ch.classList.toggle('is-lit', stud.getBoundingClientRect().top < vh * 0.55)
+        })
+      }
+      addEventListener('scroll', () => { if (!ticking) { ticking = true; requestAnimationFrame(onScroll) } }, { passive: true })
+      addEventListener('resize', onScroll)
+      onScroll()
+    </script>
   </body>
 </html>
 
-<style>
-  /* Rivet brand tokens (canonical; see design system) */
+<style is:global>
   :root {
-    --bg: #101412;
-    --fg: #e8ede5;
-    --surface: #151a16;
-    --surface-hover: #1b221c;
-    --muted: #93a390;
-    --border: #ffffff0f;
-    --accent: #34d399;
+    --bg: #f3f5f2;
+    --surface: #ffffff;
+    --surface-2: #e9efe9;
+    --ink: #151b17;
+    --soft: #52605a;
+    --faint: #7f8c85;
+    --rule: #d3dcd4;
+    --grid: rgba(21, 27, 23, 0.05);
+    --accent: #047857;
+    --accent-hi: #065f46;
+    --on-accent: #ffffff;
+    --wash: #d6efe2;
+    --brass: #946c24;
+    --sky: #266b93;
+    --term-bg: #121a15;
+    --term-ink: #e6ece2;
+    --term-dim: #85998d;
+    --shadow: 0 1px 0 rgba(21, 27, 23, 0.04), 0 18px 40px -24px rgba(21, 27, 23, 0.3);
     --font-sans: 'DM Sans', ui-sans-serif, system-ui, sans-serif;
-    --font-mono: 'JetBrains Mono', ui-monospace, monospace;
+    --font-mono: 'JetBrains Mono', ui-monospace, SFMono-Regular, Menlo, monospace;
+    --wrap: 1160px;
+    --gutter: clamp(16px, 4vw, 40px);
+    --spine-x: 22px;
+    --indent: clamp(34px, 5vw, 64px);
+    color-scheme: light;
   }
-  @media (prefers-color-scheme: light) {
-    :root {
-      --bg: #f4f6f4;
-      --fg: #1a1f1a;
-      --surface: #e8ece8;
-      --surface-hover: #dde3dd;
-      --muted: #5a665a;
-      --border: #d8e0d8;
-      --accent: #059669;
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme='light']) {
+      --bg: #0f1311; --surface: #151a16; --surface-2: #1b221c; --ink: #e8ede5; --soft: #a0af9d; --faint: #6d7b6b;
+      --rule: #25302a; --grid: rgba(255, 255, 255, 0.035); --accent: #34d399; --accent-hi: #6ee7b7; --on-accent: #08130d;
+      --wash: #12382a; --brass: #d9b36b; --sky: #8cc8ea; --term-bg: #0a0f0c; --term-dim: #78897a;
+      --shadow: 0 1px 0 rgba(0, 0, 0, 0.2), 0 24px 50px -26px rgba(0, 0, 0, 0.7);
+      color-scheme: dark;
     }
   }
-
-  * {
-    box-sizing: border-box;
-    margin: 0;
+  :root[data-theme='dark'] {
+    --bg: #0f1311; --surface: #151a16; --surface-2: #1b221c; --ink: #e8ede5; --soft: #a0af9d; --faint: #6d7b6b;
+    --rule: #25302a; --grid: rgba(255, 255, 255, 0.035); --accent: #34d399; --accent-hi: #6ee7b7; --on-accent: #08130d;
+    --wash: #12382a; --brass: #d9b36b; --sky: #8cc8ea; --term-bg: #0a0f0c; --term-dim: #78897a;
+    --shadow: 0 1px 0 rgba(0, 0, 0, 0.2), 0 24px 50px -26px rgba(0, 0, 0, 0.7);
+    color-scheme: dark;
   }
+
+  *, *::before, *::after { box-sizing: border-box; }
+  html { scroll-behavior: smooth; scroll-padding-top: 80px; }
   body {
-    background: var(--bg);
-    color: var(--fg);
-    font-family: var(--font-sans);
-    line-height: 1.6;
-    /* blueprint grid, the signature motif */
-    background-image:
-      linear-gradient(var(--border) 1px, transparent 1px),
-      linear-gradient(90deg, var(--border) 1px, transparent 1px);
+    margin: 0;
+    background-color: var(--bg);
+    background-image: linear-gradient(var(--grid) 1px, transparent 1px), linear-gradient(90deg, var(--grid) 1px, transparent 1px);
     background-size: 64px 64px;
     background-position: center top;
+    color: var(--ink);
+    font: 400 17px/1.6 var(--font-sans);
+    -webkit-font-smoothing: antialiased;
+    overflow-x: clip;
   }
-  ::selection {
-    background: #10b98140;
-  }
-  a {
-    color: var(--accent);
-    text-decoration: none;
-  }
-  code, pre, .chip {
-    font-family: var(--font-mono);
-  }
+  ::selection { background: color-mix(in srgb, var(--accent) 30%, transparent); }
+  img { max-width: 100%; height: auto; display: block; }
+  a { color: var(--accent); text-underline-offset: 3px; text-decoration: none; }
+  a:hover { color: var(--accent-hi); text-decoration: underline; }
+  p, h1, h2, h3, figure, dl, dd, ul, ol { margin: 0; }
+  h1, h2, h3 { text-wrap: balance; letter-spacing: -0.03em; line-height: 1.05; }
+  code { font-family: var(--font-mono); font-size: 0.86em; background: var(--surface-2); padding: 0.08em 0.35em; border-radius: 4px; }
+  :focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; border-radius: 4px; }
+  .wrap { max-width: var(--wrap); margin: 0 auto; padding-inline: var(--gutter); }
+  .skip { position: absolute; left: -999px; top: 8px; z-index: 50; background: var(--ink); color: var(--bg); padding: 8px 14px; }
+  .skip:focus { left: 16px; }
 
-  nav {
-    display: flex;
-    justify-content: space-between;
-    align-items: center;
-    max-width: 1100px;
-    margin: 0 auto;
-    padding: 20px 24px;
+  .kicker, .chapter-no, .step-tag, .owns-label, .run-where, .tree-root, .tree-dir, .term-bar span {
+    font-family: var(--font-mono); font-size: 12px; letter-spacing: 0.08em; text-transform: uppercase;
   }
-  .brand {
-    display: flex;
-    align-items: center;
-    gap: 10px;
-    color: var(--fg);
-    font-weight: 700;
-    font-size: 1.15rem;
-  }
-  .nav-links {
-    display: flex;
-    gap: 22px;
-  }
-  .nav-links a {
-    color: var(--muted);
-  }
-  .nav-links a:hover {
-    color: var(--accent);
-  }
+  .kicker { color: var(--soft); display: flex; align-items: center; gap: 10px; }
 
-  .hero {
-    display: grid;
-    grid-template-columns: 1fr;
-    gap: 48px;
-    align-items: center;
-    max-width: 1100px;
-    margin: 0 auto;
-    padding: 56px 24px 72px;
+  /* Header */
+  .top {
+    position: sticky; top: env(safe-area-inset-top, 0px); z-index: 20;
+    background: color-mix(in srgb, var(--bg) 86%, transparent);
+    backdrop-filter: blur(12px); -webkit-backdrop-filter: blur(12px);
+    border-bottom: 1px solid var(--rule);
   }
-  h1 {
-    font-size: clamp(2rem, 4.5vw, 3.1rem);
-    line-height: 1.12;
-    font-weight: 700;
-    letter-spacing: -0.02em;
-  }
-  h1 em {
-    font-style: normal;
-    color: var(--accent);
-  }
-  .tagline {
-    margin: 18px 0 26px;
-    color: var(--muted);
-    font-size: 1.05rem;
-    max-width: 46ch;
-  }
-  .install {
-    display: inline-block;
-    background: var(--surface);
-    border: 1px solid var(--border);
-    border-radius: 8px;
-    padding: 10px 18px;
-    margin-bottom: 22px;
-  }
-  .install code {
-    font-size: 0.95rem;
-  }
-  .prompt {
-    color: var(--accent);
-    user-select: none;
-  }
-  .tagline a {
-    color: var(--accent);
-  }
-  .ctas {
-    display: flex;
-    gap: 12px;
-    flex-wrap: wrap;
-  }
-  .btn {
-    display: inline-block;
-    padding: 10px 22px;
-    border-radius: 8px;
-    border: 1px solid var(--border);
-    color: var(--fg);
-    background: var(--surface);
-    font-weight: 500;
-  }
-  .btn:hover {
-    background: var(--surface-hover);
-  }
-  .btn.primary {
-    background: var(--accent);
-    border-color: var(--accent);
-    color: #08130d;
-  }
-  .btn.primary:hover {
-    filter: brightness(1.08);
-  }
-  .fine {
-    margin-top: 18px;
-    color: var(--muted);
-    font-size: 0.85rem;
-  }
+  .top-inner { display: flex; align-items: center; justify-content: space-between; gap: 16px; min-height: 60px; }
+  .brand { display: inline-flex; align-items: center; gap: 10px; color: var(--ink); font-weight: 700; font-size: 1.15rem; letter-spacing: -0.02em; }
+  .brand:hover { color: var(--ink); text-decoration: none; }
+  .brand img { width: 24px; object-fit: contain; image-rendering: pixelated; }
+  .top-nav { display: flex; align-items: center; gap: 22px; font-size: 15px; }
+  .top-nav a { color: var(--soft); }
+  .top-nav a:hover { color: var(--ink); text-decoration: none; }
+  .top-nav .top-cta { color: var(--on-accent); background: var(--accent); padding: 7px 14px; border-radius: 999px; font-weight: 500; }
+  .top-nav .top-cta:hover { color: var(--on-accent); background: var(--accent-hi); }
+  .progress { position: absolute; left: 0; right: 0; bottom: -1px; height: 2px; }
+  .progress i { display: block; height: 100%; background: var(--accent); transform-origin: left; transform: scaleX(var(--p, 0)); }
+  @media (max-width: 860px) { .top-nav a:not(.top-cta) { display: none; } }
 
-  main {
-    max-width: 1100px;
-    margin: 0 auto;
-    padding: 0 24px;
-  }
-  .act {
-    display: grid;
-    grid-template-columns: minmax(0, 5fr) minmax(0, 6fr);
-    gap: 48px;
-    align-items: center;
-    padding: 56px 0;
-    border-top: 1px solid var(--border);
-  }
-  .act:nth-of-type(2n) .act-copy {
-    order: 2;
-  }
-  .index {
-    color: var(--accent);
-    font-family: var(--font-mono);
-    font-size: 0.9em;
-    margin-right: 10px;
-  }
-  .act h2 {
-    font-size: 1.6rem;
-    letter-spacing: -0.01em;
-    margin-bottom: 12px;
-  }
-  .act p {
-    color: var(--muted);
-    max-width: 52ch;
-  }
+  /* Buttons + terminals */
+  .ctas { display: flex; flex-wrap: wrap; gap: 12px; align-items: center; }
+  .btn { display: inline-flex; align-items: center; padding: 11px 20px; border-radius: 999px; border: 1px solid var(--rule); background: var(--surface); color: var(--ink); font-weight: 500; transition: transform 0.15s, border-color 0.15s, background 0.15s; }
+  .btn:hover { color: var(--ink); border-color: var(--soft); transform: translateY(-1px); text-decoration: none; }
+  .btn.primary { background: var(--accent); border-color: var(--accent); color: var(--on-accent); }
+  .btn.primary:hover { background: var(--accent-hi); border-color: var(--accent-hi); color: var(--on-accent); }
+  .btn.ghost { background: transparent; }
+  .term { position: relative; background: var(--term-bg); color: var(--term-ink); border-radius: 12px; overflow: hidden; }
+  .term pre { margin: 0; padding: 13px 84px 13px 16px; overflow-x: auto; font: 14px/1.6 var(--font-mono); }
+  .term code { background: none; padding: 0; font-size: inherit; color: inherit; }
+  .ps { color: var(--term-dim); user-select: none; }
+  .copy { position: absolute; right: 10px; top: 50%; transform: translateY(-50%); font: 12px var(--font-mono); color: var(--term-ink); background: rgba(255, 255, 255, 0.08); border: 1px solid rgba(255, 255, 255, 0.14); border-radius: 6px; padding: 4px 9px; cursor: pointer; }
+  .copy:hover { background: rgba(255, 255, 255, 0.16); }
 
-  .chips {
-    display: flex;
-    flex-wrap: wrap;
-    gap: 10px;
-  }
-  .chip {
-    background: var(--surface);
-    border: 1px solid var(--border);
-    border-radius: 6px;
-    padding: 6px 14px;
-    font-size: 0.85rem;
-    color: var(--fg);
-  }
-  .chip.alt {
-    color: var(--accent);
-  }
+  /* Hero */
+  .hero { padding-block: clamp(40px, 7vw, 88px) clamp(56px, 8vw, 96px); }
+  .hero-grid { display: grid; grid-template-columns: minmax(0, 1.1fr) minmax(0, 0.9fr); gap: clamp(28px, 5vw, 64px); align-items: center; }
+  .live { width: 8px; height: 8px; border-radius: 50%; background: var(--accent); box-shadow: 0 0 0 4px var(--wash); animation: pulse 2.4s ease-in-out infinite; }
+  @keyframes pulse { 50% { box-shadow: 0 0 0 7px transparent; } }
+  .hero h1 { margin-top: 20px; font-size: clamp(2.5rem, 4.6vw, 4.2rem); font-weight: 700; letter-spacing: -0.045em; line-height: 0.98; }
+  .hero h1 em { font-style: normal; color: var(--accent); }
+  .lede { margin-top: 22px; max-width: 54ch; color: var(--soft); font-size: clamp(17px, 1.5vw, 19px); }
+  .hero .install { margin-top: 28px; max-width: 520px; }
+  .hero .ctas { margin-top: 20px; }
+  .fine { margin-top: 18px; color: var(--faint); font-size: 14px; max-width: 58ch; }
+  .hero-viz { position: relative; }
+  .hero-viz canvas { display: block; width: 100%; height: auto; aspect-ratio: 640 / 560; max-width: 100%; border-radius: 20px; background: var(--surface); border: 1px solid var(--rule); box-shadow: var(--shadow); }
+  .readout { position: absolute; left: 16px; bottom: calc(100% - 36px); display: none; }
+  .hero-viz figcaption { margin-top: 12px; font-size: 14px; color: var(--faint); }
+  .hero-viz .readout { position: static; display: flex; flex-wrap: wrap; gap: 4px 18px; margin-top: 12px; font: 12px var(--font-mono); color: var(--soft); font-variant-numeric: tabular-nums; }
+  .readout b { color: var(--ink); }
 
-  .term {
-    background: var(--surface);
-    border: 1px solid var(--border);
-    border-radius: 12px;
-    overflow: hidden;
-  }
-  .term-bar {
-    display: flex;
-    gap: 6px;
-    padding: 10px 14px;
-    border-bottom: 1px solid var(--border);
-  }
-  .term-bar i {
-    width: 10px;
-    height: 10px;
-    border-radius: 50%;
-    background: var(--muted);
-    opacity: 0.4;
-  }
-  .term pre {
-    padding: 16px 18px;
-    font-size: 0.82rem;
-    line-height: 1.7;
-    overflow-x: auto;
-  }
-  .term .ok {
-    color: var(--accent);
-  }
-  .term .dim {
-    color: var(--muted);
-  }
+  /* Story + spine */
+  .story { position: relative; border-top: 1px solid var(--rule); }
+  .spine { position: absolute; top: 0; bottom: 0; left: max(calc((100% - var(--wrap)) / 2 + var(--gutter) + var(--spine-x)), calc(var(--gutter) + var(--spine-x))); width: 2px; background: var(--rule); }
+  .spine i { position: absolute; inset: 0; background: linear-gradient(var(--accent), var(--accent) 70%, var(--brass)); transform-origin: top; transform: scaleY(var(--fill, 0)); }
+  .chapter { padding-block: clamp(72px, 10vw, 128px) 0; }
+  .chapter > .wrap { padding-left: calc(var(--gutter) + var(--spine-x) + var(--indent)); }
+  .chapter-head { position: relative; max-width: 800px; }
+  .stud { position: absolute; top: 2px; left: calc(-1 * var(--indent) - 8px); width: 18px; height: 18px; border-radius: 50%; background: var(--bg); border: 2px solid var(--rule); transition: background 0.4s, border-color 0.4s, box-shadow 0.4s; }
+  .chapter.is-lit .stud { background: var(--accent); border-color: var(--accent); box-shadow: 0 0 0 6px var(--wash); }
+  .chapter-no { color: var(--accent); }
+  .chapter-head h2 { margin-top: 12px; font-size: clamp(2rem, 4.4vw, 3.6rem); font-weight: 700; letter-spacing: -0.04em; }
+  .chapter-lede { margin-top: 18px; color: var(--soft); font-size: clamp(17px, 1.5vw, 19px); max-width: 62ch; }
+  .chapter-foot { margin-top: 28px; color: var(--soft); font-size: 15px; }
 
-  .mesh svg {
-    width: 100%;
-    max-width: 420px;
-    display: block;
-    margin: 0 auto;
-  }
-  .mesh .node {
-    fill: var(--surface);
-    stroke: var(--accent);
-    stroke-opacity: 0.6;
-  }
-  .mesh text {
-    fill: var(--fg);
-  }
-  .mesh .label {
-    fill: var(--muted);
-    font-size: 11px;
-  }
-  .mesh-lines path {
-    stroke-dasharray: 4 6;
-  }
+  /* 01 owns */
+  .owns { margin-top: clamp(36px, 5vw, 56px); display: grid; grid-template-columns: minmax(0, 1fr) 56px minmax(0, 1fr); align-items: stretch; }
+  .owns-col { padding: clamp(22px, 3vw, 30px); background: var(--surface); border: 1px solid var(--rule); border-radius: 16px; display: grid; gap: 14px; align-content: start; }
+  .owns-rivet { border-color: var(--accent); }
+  .owns-label { color: var(--faint); }
+  .owns-rivet .owns-label { color: var(--accent); }
+  .owns-what { font-size: 18px; letter-spacing: -0.01em; }
+  .owns-join { display: grid; place-items: center; }
+  .owns-join span { width: 100%; height: 2px; background: repeating-linear-gradient(90deg, var(--accent) 0 6px, transparent 6px 11px); }
+  .harness-list { list-style: none; padding: 0; display: flex; flex-wrap: wrap; gap: 6px; }
+  .harness-list li { font: 12.5px var(--font-mono); padding: 4px 10px; border-radius: 6px; background: var(--surface-2); color: var(--soft); }
+  .session-id { display: grid; gap: 6px; }
+  .session-id span { font: 11px var(--font-mono); text-transform: uppercase; letter-spacing: 0.08em; color: var(--faint); }
+  .session-id code { font-size: 14px; justify-self: start; }
+  .owns-note { color: var(--soft); font-size: 15px; }
 
-  .closing {
-    text-align: center;
-    padding: 72px 0 88px;
-    border-top: 1px solid var(--border);
-  }
-  .closing h2 {
-    font-size: 1.8rem;
-    margin-bottom: 22px;
-  }
-  .closing p {
-    color: var(--muted);
-    margin-top: 18px;
-  }
-  .install.big code {
-    font-size: 1.1rem;
-  }
+  /* 02 memory scrolly */
+  .scrolly { margin-top: clamp(36px, 5vw, 64px); display: grid; grid-template-columns: minmax(0, 0.85fr) minmax(0, 1.15fr); gap: clamp(28px, 5vw, 64px); }
+  .steps { list-style: none; padding: 0; }
+  .step { padding-block: clamp(28px, 12vh, 120px); border-top: 1px solid var(--rule); opacity: 0.45; transition: opacity 0.35s; }
+  .step:first-child { border-top: 0; padding-top: 6px; }
+  .step.is-active { opacity: 1; }
+  .step-tag { color: var(--accent); }
+  .step h3 { margin-top: 10px; font-size: clamp(1.5rem, 2.4vw, 2rem); font-weight: 700; }
+  .step p:last-child { margin-top: 12px; color: var(--soft); max-width: 46ch; }
+  .stage { position: sticky; top: 100px; align-self: start; }
+  .stage-term { background: var(--term-bg); color: var(--term-ink); border-radius: 14px; overflow: hidden; box-shadow: var(--shadow); min-height: 240px; display: grid; }
+  .stage-term .term-bar { display: flex; align-items: center; gap: 6px; padding: 11px 14px; border-bottom: 1px solid rgba(255, 255, 255, 0.07); }
+  .stage-term .term-bar i { width: 10px; height: 10px; border-radius: 50%; background: rgba(255, 255, 255, 0.18); }
+  .stage-term .term-bar span { margin-left: auto; color: var(--term-dim); font-size: 10.5px; }
+  .panel { grid-area: 2 / 1; margin: 0; padding: 18px 20px 22px; font: 13.5px/1.75 var(--font-mono); overflow-x: auto; opacity: 0; transform: translateY(6px); transition: opacity 0.4s, transform 0.4s; }
+  .panel.is-active { opacity: 1; transform: none; }
+  .panel code { background: none; padding: 0; font-size: inherit; color: inherit; }
+  .panel .k { color: #6ee7b7; }
+  .panel .ok { color: #34d399; }
+  .panel .dim { color: var(--term-dim); }
+  .stage-note { margin-top: 10px; font-size: 13px; color: var(--faint); }
+  :root:not(.js) .panel { opacity: 1; transform: none; grid-area: auto; }
+  :root:not(.js) .step { opacity: 1; }
 
-  footer {
-    display: flex;
-    justify-content: center;
-    gap: 26px;
-    padding: 26px 24px 40px;
-    border-top: 1px solid var(--border);
-    color: var(--muted);
-    font-size: 0.9rem;
-  }
+  /* 04 mesh */
+  .mesh-grid { margin-top: clamp(36px, 5vw, 56px); display: grid; grid-template-columns: minmax(0, 1.1fr) minmax(0, 0.9fr); gap: clamp(28px, 5vw, 56px); align-items: center; }
+  .mesh-svg { width: 100%; height: auto; max-width: 100%; }
+  .mesh-svg .links path { fill: none; stroke-width: 2; }
+  .mesh-svg .links .peer { stroke: var(--accent); stroke-dasharray: 6 7; }
+  .mesh-svg .links .hub { stroke: var(--brass); stroke-opacity: 0.8; }
+  .mesh-svg .nodes rect { fill: var(--surface); stroke: var(--accent); stroke-width: 2; }
+  .mesh-svg .nodes .datahub { stroke: var(--brass); fill: var(--surface-2); }
+  .mesh-svg text { fill: var(--ink); font: 600 14px var(--font-mono); text-anchor: middle; }
+  .mesh-svg text.small { fill: var(--faint); font-size: 11px; font-weight: 400; }
+  .mesh-svg text.peer-label { fill: var(--accent); }
+  .mesh-svg text.hub-label { fill: var(--brass); text-anchor: start; }
+  .js .mesh-svg .links .peer { animation: march 1.4s linear infinite; animation-play-state: paused; }
+  .js .mesh-svg.is-drawn .links .peer { animation-play-state: running; }
+  @keyframes march { to { stroke-dashoffset: -26; } }
+  .mesh-facts { display: grid; gap: 20px; }
+  .mesh-facts dt { font-weight: 700; font-size: 18px; letter-spacing: -0.02em; }
+  .mesh-facts dd { margin-top: 4px; color: var(--soft); font-size: 15px; }
 
-  @media (max-width: 840px) {
-    .hero,
-    .act {
-      grid-template-columns: 1fr;
-      gap: 28px;
-      padding-top: 36px;
-      padding-bottom: 36px;
-    }
-    .act:nth-of-type(2n) .act-copy {
-      order: 0;
-    }
-    .hero {
-      padding-top: 20px;
-    }
+  /* 05 plugins tree */
+  .tree { margin-top: clamp(36px, 5vw, 56px); padding: clamp(20px, 3vw, 30px); background: var(--term-bg); color: var(--term-ink); border-radius: 16px; display: grid; gap: 14px; overflow-x: auto; }
+  .tree-root { color: #6ee7b7; }
+  .tree-group { display: grid; grid-template-columns: 170px minmax(0, 1fr); gap: 8px 16px; align-items: baseline; }
+  .tree-dir { color: var(--term-ink); text-transform: none; letter-spacing: 0; font-size: 13.5px; }
+  .tree-dir span { color: var(--term-dim); margin-left: 6px; }
+  .tree-items { display: flex; flex-wrap: wrap; gap: 6px; }
+  .tree-items span { font: 12.5px var(--font-mono); padding: 3px 9px; border-radius: 6px; background: rgba(255, 255, 255, 0.06); color: #cfdad3; }
+
+  /* Run */
+  .run { margin-top: clamp(80px, 11vw, 140px); padding-block: clamp(56px, 8vw, 96px); border-block: 1px solid var(--rule); background: color-mix(in srgb, var(--surface-2) 70%, transparent); }
+  .run h2 { margin-top: 14px; font-size: clamp(2rem, 4.2vw, 3.2rem); font-weight: 700; max-width: 22ch; }
+  .run-grid { margin-top: clamp(28px, 4vw, 44px); display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 16px; }
+  .run-card { display: grid; gap: 8px; align-content: start; padding: 24px; border-radius: 16px; background: var(--surface); border: 1px solid var(--rule); color: var(--ink); transition: transform 0.15s, border-color 0.15s; }
+  .run-card:hover { color: var(--ink); text-decoration: none; transform: translateY(-2px); border-color: var(--accent); }
+  .run-where { color: var(--accent); }
+  .run-card.cloud .run-where { color: var(--sky); }
+  .run-card.cloud:hover { border-color: var(--sky); }
+  .run-what { color: var(--soft); font-size: 15px; }
+  .run-go { margin-top: 6px; font-weight: 500; }
+
+  /* Docs index */
+  .docs { padding-block: clamp(64px, 9vw, 112px) 0; }
+  .docs h2 { font-size: clamp(1.8rem, 3.4vw, 2.6rem); font-weight: 700; }
+  .docs-grid { list-style: none; padding: 0; margin-top: 24px; display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); border-top: 1px solid var(--rule); }
+  .docs-grid li { border-bottom: 1px solid var(--rule); }
+  .docs-grid a { display: grid; gap: 4px; padding: 18px 16px 18px 0; color: var(--ink); height: 100%; }
+  .docs-grid a:hover { text-decoration: none; }
+  .docs-grid a:hover .docs-title { color: var(--accent); }
+  .docs-title { font-weight: 700; letter-spacing: -0.01em; }
+  .docs-title::after { content: ' →'; color: var(--faint); }
+  .docs-text { color: var(--soft); font-size: 14px; }
+
+  /* Closing */
+  .closing { padding-block: clamp(72px, 10vw, 128px); }
+  .closing h2 { font-size: clamp(2.6rem, 6vw, 4.8rem); font-weight: 700; letter-spacing: -0.045em; line-height: 0.98; }
+  .closing h2 em { font-style: normal; color: var(--accent); }
+  .closing .install { margin-top: 32px; max-width: 560px; }
+  .closing .ctas { margin-top: 20px; }
+
+  .foot { border-top: 1px solid var(--rule); padding-block: 28px 40px; color: var(--soft); font-size: 14px; }
+  .foot-inner { display: flex; flex-wrap: wrap; justify-content: space-between; gap: 14px 28px; }
+  .foot nav { display: flex; flex-wrap: wrap; gap: 8px 22px; }
+  .foot nav a { color: var(--soft); }
+  .foot nav a:hover { color: var(--ink); }
+
+  @media (max-width: 960px) {
+    .hero-grid, .scrolly, .mesh-grid { grid-template-columns: minmax(0, 1fr); }
+    .stage { position: relative; top: 0; order: -1; }
+    .step { padding-block: 22px; opacity: 1; }
+    .docs-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+    .owns { grid-template-columns: minmax(0, 1fr); gap: 0; }
+    .owns-join { height: 36px; }
+    .owns-join span { width: 2px; height: 100%; background: repeating-linear-gradient(180deg, var(--accent) 0 6px, transparent 6px 11px); }
+  }
+  @media (max-width: 680px) {
+    .spine, .stud { display: none; }
+    .chapter > .wrap { padding-left: var(--gutter); }
+    .run-grid, .docs-grid { grid-template-columns: minmax(0, 1fr); }
+    .tree-group { grid-template-columns: minmax(0, 1fr); }
+  }
+  @media (prefers-reduced-motion: reduce) {
+    html { scroll-behavior: auto; }
+    *, *::before, *::after { animation: none !important; transition: none !important; }
   }
 </style>
