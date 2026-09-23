@@ -70,6 +70,9 @@ export type ClaudeStoreHost = Omit<HarnessStoreHost, 'exists'>
 export type ClaudeDriverDeps = PtyHarnessDriverDeps<ClaudeStoreHost>
 
 export class ClaudeCodeDriver extends PtyHarnessDriver<ClaudeStoreHost> {
+  /** `parseBlockingDialog` is fixtured only for Claude Code screens. */
+  protected override dialogGate = true
+
   constructor(deps: ClaudeDriverDeps) {
     super(
       {

@@ -377,6 +377,14 @@ export type UserTurn = {
    * Callers must cap at `SYSTEM_PROMPT_MAX_CHARS`.
    */
   systemPrompt?: string
+  /**
+   * User-initiated inject/retry only — never an automatic queue retry. The
+   * server still reads the screen. A detected dialog is dismissed with Esc
+   * before the paste, so the turn cannot confirm the highlighted option. No
+   * dialog: a normal paste. A copied-rule false positive also receives Esc
+   * before the paste.
+   */
+  bypassDialogGate?: boolean
 }
 
 /**
