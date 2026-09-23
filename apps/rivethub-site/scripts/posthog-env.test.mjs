@@ -199,12 +199,17 @@ describe('posthog cache digest', () => {
 
 function stubDocument() {
   const node = { parentNode: { insertBefore() {} } };
+  const listeners = {};
   return {
+    listeners,
     createElement() {
       return { type: '', crossOrigin: '', async: false, src: '' };
     },
     getElementsByTagName() {
       return [node];
+    },
+    addEventListener(type, fn) {
+      (listeners[type] ||= []).push(fn);
     },
   };
 }
@@ -212,7 +217,7 @@ function stubDocument() {
 function runHubTracker(key) {
   const href = 'https://rivethub.io/apps.html?utm_source=alice%40example.com';
   const url = new URL(href);
-  const captured = { init: null };
+  const captured = { init: null, events: [] };
   const context = {
     window: { RIVET_POSTHOG_KEY: key, RIVET_POSTHOG_HOST: 'https://us.i.posthog.com' },
     location: {
@@ -225,6 +230,9 @@ function runHubTracker(key) {
     posthog: {
       init(k, opts) {
         captured.init = { key: k, opts };
+      },
+      capture(name, props) {
+        captured.events.push({ name, props });
       },
     },
   };
@@ -341,5 +349,93 @@ describe('generated tracker snippets', () => {
     assert.equal(captured.init.key, 'phc_test');
     assert.equal(captured.init.opts.save_campaign_params, false);
     assertAllowlisted(captured.init.opts.sanitize_properties(leakyPayload()));
+  });
+
+  it('Hub snippet captures allowlisted data-ph-event names only', () => {
+    const { context, captured } = runHubTracker('phc_test');
+    const clicks = context.document.listeners.click;
+    assert.equal(clicks.length, 1);
+    clicks[0]({
+      target: {
+        closest() {
+          return { getAttribute() { return 'cta_setup_agent'; } };
+        },
+      },
+    });
+    clicks[0]({
+      target: {
+        closest() {
+          return { getAttribute() { return 'not_a_real_event'; } };
+        },
+      },
+    });
+    assert.deepEqual(
+      captured.events.map((event) => event.name),
+      ['cta_setup_agent'],
+    );
+    assert.equal(captured.events[0].props.$current_url, 'https://rivethub.io/apps.html');
+  });
+});
+
+describe('own-your-data landing', () => {
+  const html = readFileSync(join(publicDir, 'index.html'), 'utf8');
+  const privacy = readFileSync(join(publicDir, 'privacy.html'), 'utf8');
+  const astroHome = readFileSync(
+    join(dirname(fileURLToPath(import.meta.url)), '../../site/src/pages/index.astro'),
+    'utf8',
+  );
+
+  it('ships the ownership section map and two setup paths', () => {
+    for (const id of [
+      'not-a-black-box',
+      'proof',
+      'how-it-works',
+      'paths',
+      'path-local',
+      'path-datahub',
+      'grow',
+      'start',
+      'questions',
+      'final-cta',
+    ]) {
+      assert.match(html, new RegExp(`id="${id}"`), id);
+    }
+    assert.match(html, /Your agents/);
+    assert.match(html, /Your hardware/);
+    assert.match(html, /Not a hosted black box/);
+    assert.match(html, /Is this SaaS\?/);
+    assert.match(html, /Same repo as RivetOS\?/);
+    assert.match(html, /data-sticky-cta/);
+    assert.match(html, /Install on your laptop/);
+    assert.doesNotMatch(html, /Install on your laptop\./);
+    assert.doesNotMatch(html, /Maggie: voice-pass/);
+    assert.match(html, /og:image:alt"[^>]+Your agents\. Your memory\. Your hardware/);
+    assert.doesNotMatch(html, /Automatic memory\. Nothing to remember to write down/);
+  });
+
+  it('hooks primary CTAs with named PostHog events', () => {
+    for (const name of [
+      'cta_setup_agent',
+      'cta_install_local',
+      'cta_install_server',
+      'path_local',
+      'path_datahub',
+    ]) {
+      assert.match(html, new RegExp(`data-ph-event="${name}"`), name);
+    }
+  });
+
+  it('discloses named CTA events on the privacy page', () => {
+    assert.match(privacy, /cta_setup_agent/);
+    assert.match(privacy, /no session recording/i);
+  });
+
+  it('points rivetos.dev get-started at RivetHub', () => {
+    assert.match(astroHome, /Run your own agents/);
+    assert.match(astroHome, /Own the memory they share/);
+    assert.match(astroHome, /Get RivetHub/);
+    assert.match(astroHome, /https:\/\/rivethub\.io\//);
+    assert.match(astroHome, /data-ph-event="cta_setup_agent"/);
+    assert.match(astroHome, /philbert440\/rivetOS/);
   });
 });

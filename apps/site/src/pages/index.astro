@@ -12,13 +12,13 @@ const GH = 'https://github.com/philbert440/rivetOS'
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>RivetOS: run your own agents, watch them work</title>
+    <title>RivetOS: run your own agents, own the memory they share</title>
     <meta
       name="description"
-      content="A lightweight agent runtime you self-host. Persistent memory, a multi-agent mesh, pluggable providers, RivetHub, plus a live pixel diorama of your agent at work."
+      content="A personal AI agent runtime and memory plane you self-host. RivetHub is the install. Same repo: philbert440/rivetOS."
     />
     <meta property="og:title" content="RivetOS" />
-    <meta property="og:description" content="Run your own agents. Watch them work." />
+    <meta property="og:description" content="Run your own agents. Own the memory they share." />
     <meta property="og:image" content="https://rivetos.dev/og.png" />
     <link rel="icon" href="/favicon.png" type="image/png" />
     <link rel="preconnect" href="https://fonts.googleapis.com" />
@@ -36,6 +36,7 @@ const GH = 'https://github.com/philbert440/rivetOS'
         <span>RivetOS</span>
       </a>
       <div class="nav-links">
+        <a href="https://rivethub.io/">RivetHub</a>
         <a href="/guides/getting-started/">Docs</a>
         <a href={GH}>GitHub</a>
       </div>
@@ -43,25 +44,26 @@ const GH = 'https://github.com/philbert440/rivetOS'
 
     <header class="hero">
       <div class="hero-copy">
-        <h1>Run your own agents.<br /><em>Watch them work.</em></h1>
+        <h1>Run your own agents.<br /><em>Own the memory they share.</em></h1>
         <p class="tagline">
-          RivetOS is a lightweight agent runtime you self-host: a tiny stable core, everything
-          else a plugin. Persistent memory, a multi-agent mesh, LLM providers as plugins, and a live
-          diorama of what your agent is doing right now.
+          RivetOS is a personal AI agent runtime and memory plane you run yourself — not a hosted
+          SaaS black box. Local-first memory, MCP-exposed to tools you choose, mesh between nodes
+          you enroll. RivetHub is the same product: the install you start with.
         </p>
         <div class="install">
           <code><span class="prompt">$</span> curl -fsSL https://get.rivethub.io/local.sh | bash</code>
         </div>
         <div class="ctas">
-          <a class="btn primary" href="/guides/getting-started/">Get started</a>
-          <a class="btn" href={GH}>View on GitHub</a>
+          <a class="btn primary" href="https://rivethub.io/" data-ph-event="cta_setup_agent">Get RivetHub</a>
+          <a class="btn" href="/guides/getting-started/">Docs</a>
+          <a class="btn" href={GH}>GitHub</a>
         </div>
         <p class="fine">
-          Prefer a source checkout? After <code>git clone</code> and <code>npm install</code>, run
+          One product, one repo: <a href={GH}>philbert440/rivetOS</a>. Hub is get-started;
+          these docs are the deep reference. From a source checkout:
           <code>npx rivetos local</code>.
-          <a href="/guides/getting-started/">Getting started</a>
         </p>
-        <p class="fine">Apache 2.0 · no CLA · runs in a container on your hardware</p>
+        <p class="fine">Apache 2.0 · no CLA · no Rivet account · your hardware</p>
       </div>
     </header>
 
@@ -70,9 +72,9 @@ const GH = 'https://github.com/philbert440/rivetOS'
         <div class="act-copy">
           <h2><span class="index">01</span> Runs on your hardware</h2>
           <p>
-            The container is the product: Docker on a laptop, LXC on Proxmox, one config file.
-            Providers are plugins: Anthropic, xAI, Google, or fully local via Ollama, vLLM, and
-            llama.cpp. Your keys, your GPUs, your rules.
+            You install it. Docker on a laptop, LXC on Proxmox, or the local one-liner on Linux
+            and macOS. Providers are plugins: Anthropic, xAI, Google, or fully local via Ollama,
+            vLLM, and llama.cpp. Your keys, your GPUs, your machines.
           </p>
         </div>
         <div class="act-visual chips" aria-label="Providers, RivetHub, and mesh">
@@ -86,11 +88,11 @@ const GH = 'https://github.com/philbert440/rivetOS'
 
       <section class="act">
         <div class="act-copy">
-          <h2><span class="index">02</span> Remembers everything</h2>
+          <h2><span class="index">02</span> Local-first memory</h2>
           <p>
-            Postgres-backed memory with hybrid full-text + vector search, summary compaction, and
-            cross-agent recall. Ask what you decided three weeks ago; get the answer in
-            milliseconds, not a scroll through transcripts.
+            The memory plane lives on the hub you run: PGlite on one machine, or Postgres on a
+            datahub you enroll nodes into. Hybrid full-text + vector search, summary compaction,
+            cross-agent recall over MCP. The record is yours.
           </p>
         </div>
         <div class="act-visual term" role="img" aria-label="Example memory search in a terminal">
@@ -105,11 +107,11 @@ const GH = 'https://github.com/philbert440/rivetOS'
 
       <section class="act">
         <div class="act-copy">
-          <h2><span class="index">03</span> A fleet, not a bot</h2>
+          <h2><span class="index">03</span> A mesh you enroll</h2>
           <p>
-            Run one agent or several: different models, one shared memory. Agents delegate to
-            each other over an mTLS mesh: the reasoning model plans, the fast one executes, the
-            local one stays free. Same runtime on every node.
+            One machine is enough. Add nodes when you want them: different models, one shared
+            memory, mTLS between machines you control. Same runtime on every node. There is no
+            Rivet-operated mesh to join.
           </p>
         </div>
         <div class="act-visual mesh" role="img" aria-label="Three agent nodes connected by a mesh, sharing one memory">
@@ -132,12 +134,14 @@ const GH = 'https://github.com/philbert440/rivetOS'
       </section>
 
       <section class="closing">
-        <h2>Five minutes to a running agent</h2>
+        <h2>Start on your machine. Read the rest here.</h2>
         <div class="install big">
           <code><span class="prompt">$</span> curl -fsSL https://get.rivethub.io/local.sh | bash</code>
         </div>
         <p>
-          The installer sets up RivetHub on your machine. From a source checkout, run <code>npx rivetos local</code> (init is day-2 for Docker / mesh / datahub).
+          <a href="https://rivethub.io/" data-ph-event="cta_setup_agent">RivetHub</a> is the get-started
+          surface (agent brief + local installer). From a source checkout, run
+          <code>npx rivetos local</code>. Docker, mesh, and a dedicated datahub are day-2.
           <a href="/guides/getting-started/">Getting started →</a>
         </p>
       </section>
@@ -145,6 +149,7 @@ const GH = 'https://github.com/philbert440/rivetOS'
 
     <footer>
       <span>Apache 2.0</span>
+      <a href="https://rivethub.io/">RivetHub</a>
       <a href="/guides/introduction/">Docs</a>
       <a href="/reference/changelog/">Changelog</a>
       <a href="/privacy/">Privacy</a>
@@ -271,6 +276,9 @@ const GH = 'https://github.com/philbert440/rivetOS'
   .prompt {
     color: var(--accent);
     user-select: none;
+  }
+  .tagline a {
+    color: var(--accent);
   }
   .ctas {
     display: flex;
