@@ -17,8 +17,9 @@ export interface BlockingDialog {
   options: { key: string; label: string }[]
 }
 
-const OPTION_LINE = /^\s*(?:❯\s*)?(\d+)\.\s+(.+?)\s*$/
-const SEPARATOR = /^[\s─━-]+$/
+// `↑`/`↓` mark a scrolled list's first/last visible row (the /model picker).
+const OPTION_LINE = /^\s*(?:[❯↑↓]\s*)?(\d+)\.\s+(.+?)\s*$/
+const SEPARATOR = /^[\s─━▔▁-]+$/
 const FOOTER = /Enter to (confirm|select|continue)|Esc to (cancel|go back|exit)/
 const EMPTY_INPUT = /^\s*❯\s*$/
 const HINT = /⏵⏵|\? for shortcuts|shift\+tab to cycle|for agents/
@@ -52,7 +53,8 @@ export function parseBlockingDialog(screen: string): BlockingDialog | undefined 
   if (!afterFooterLive(lines, footerIdx)) return undefined
 
   let lastOptionIdx = -1
-  const earliest = Math.max(0, footerIdx - 3)
+  // Room for rows between the list and the footer (`… +1 model`, an effort row).
+  const earliest = Math.max(0, footerIdx - 5)
   for (let i = footerIdx - 1; i >= earliest; i--) {
     if (OPTION_LINE.test(lines[i])) {
       lastOptionIdx = i

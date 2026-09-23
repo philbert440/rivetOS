@@ -5,6 +5,7 @@ import {
   CLAUDE_PERM_SCREEN,
   CLAUDE_PICKER_SCREEN,
   IDLE_HARNESS_SCREEN,
+  MODEL_PICKER_SCREEN,
   OLD_DIALOG_SCROLLBACK_SCREEN,
 } from './tui-screen-fixtures.js'
 
@@ -101,6 +102,27 @@ describe('parseBlockingDialog', () => {
     2. Green
 `
     expect(parseBlockingDialog(oldPicker + AUTO_MODE_DIALOG_SCREEN)).toEqual(AUTO_MODE_RESULT)
+  })
+
+  it('detects the scrolled /model picker (↓ row, rows before the footer, ▔ border)', () => {
+    const dialog = parseBlockingDialog(MODEL_PICKER_SCREEN)
+    expect(dialog?.title).toBe('Select model')
+    expect(dialog?.options.map((o) => o.key)).toEqual([
+      '1',
+      '2',
+      '3',
+      '4',
+      '5',
+      '6',
+      '7',
+      '8',
+      '9',
+      '10',
+    ])
+    expect(dialog?.options[1]).toEqual({
+      key: '2',
+      label: 'Opus 5.5 ✔             Most capable for ambitious work',
+    })
   })
 
   it('returns undefined for an empty screen', () => {

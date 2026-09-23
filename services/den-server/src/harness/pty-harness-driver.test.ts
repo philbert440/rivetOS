@@ -34,6 +34,7 @@ import {
   CLAUDE_PERM_SCREEN,
   CLAUDE_PICKER_SCREEN,
   IDLE_HARNESS_SCREEN,
+  MODEL_PICKER_SCREEN,
   OLD_DIALOG_SCROLLBACK_SCREEN,
 } from '../term/tui-screen-fixtures.js'
 
@@ -1872,6 +1873,23 @@ describe('sendUserTurn gates on an open blocking dialog', () => {
     await expect(driver.sendUserTurn(sid, { text: 'hello' })).rejects.toMatchObject({
       code: 'turn_in_flight',
       context: { reason: 'harness_dialog' },
+    })
+    expect(pty.injects).toEqual([])
+    driver.close()
+  })
+
+  it('rejects while the /model picker is open, so the paste cannot pick a model', async () => {
+    const pty = fakePty()
+    const driver = new ClaudeCodeDriver({
+      store: fakeStore([]),
+      pty: () => Promise.resolve(pty.host),
+      turnQuietMs: 0,
+      screen: () => MODEL_PICKER_SCREEN,
+    })
+    await driver.startSession({ nativeSessionId: UUID })
+    await expect(driver.sendUserTurn(sid, { text: 'test 1' })).rejects.toMatchObject({
+      code: 'turn_in_flight',
+      context: { reason: 'harness_dialog', dialog: { title: 'Select model' } },
     })
     expect(pty.injects).toEqual([])
     driver.close()
