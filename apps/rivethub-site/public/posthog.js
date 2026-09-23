@@ -72,6 +72,7 @@
     cta_install_server: 1,
     path_local: 1,
     path_datahub: 1,
+    cta_cloud: 1,
   };
   function rivetCaptureNamed(name) {
     if (!rivetNamedEvents[name]) return;
