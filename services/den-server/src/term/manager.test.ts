@@ -630,6 +630,25 @@ describe('term manager', () => {
     expect(procs[1].kills).toEqual([])
   })
 
+  it('injectReady is false until the ready-gate opens and reports the ceiling', () => {
+    vi.useFakeTimers()
+    const { manager, procs } = makeManager({ injectReadyMs: 300, injectReadyMaxMs: 12_000 })
+    expect(manager.injectReady('chat-r')).toBeUndefined()
+    expect(manager.injectReadyMaxMs()).toBe(12_000)
+    const pty = manager.spawn('claude', 80, 24, '', 'chat-r')
+    expect(pty.denSession).toBe('chat-r')
+    expect(manager.injectReady('chat-r')).toBe(false)
+    procs[0].emitData('welcome to claude')
+    vi.advanceTimersByTime(299)
+    expect(manager.injectReady('chat-r')).toBe(false)
+    vi.advanceTimersByTime(1)
+    expect(manager.injectReady('chat-r')).toBe(true)
+    procs[0].emitExit(0)
+    expect(manager.injectReady('chat-r')).toBeUndefined()
+    manager.spawn('claude', 80, 24, '', 'chat-r')
+    expect(manager.injectReady('chat-r')).toBe(false)
+  })
+
   it('inject buffer is bounded before ready (#316)', () => {
     const { manager } = makeManager({ injectReadyMs: 500 })
     const pty = manager.spawn('claude', 80, 24, '', 'chat-cap')

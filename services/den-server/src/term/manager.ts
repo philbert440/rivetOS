@@ -360,6 +360,14 @@ export interface TermManager {
   get(id: string): PtyInfo | undefined
   /** PTY id linked to a den session, while its record exists. */
   ptyForSession(denSession: string): string | undefined
+  /**
+   * Ready-gate for a den session. `true` = an inject is written now,
+   * `false` = the record exists but the paste is still buffered,
+   * `undefined` = no running record.
+   */
+  injectReady(denSession: string): boolean | undefined
+  /** Resolved `term.injectReadyMaxMs` — the ready-gate ceiling. */
+  injectReadyMaxMs(): number
   /** True when the live record's roster entry has `room: true`.
    *  `POST /term/inject` uses this; a shell (`room: false`) is typed through
    *  the terminal websocket instead. On adopt/reattach of a tagged session,
@@ -2588,6 +2596,14 @@ export function createTermManager(config: DenConfig, deps: TermManagerDeps): Ter
       }
     },
     ptyForSession: (denSession) => bySession.get(denSession),
+    injectReady(denSession): boolean | undefined {
+      const id = bySession.get(denSession)
+      if (!id) return undefined
+      const r = records.get(id)
+      if (!r || r.state !== 'running') return undefined
+      return r.ready
+    },
+    injectReadyMaxMs: () => injectReadyMaxMs,
     isAgentHarness: (id) => records.get(id)?.room === true,
 
     kill(id): boolean {
