@@ -29,6 +29,13 @@ import {
   type HarnessPtyHost,
   type PtyHarnessDriver,
 } from './pty-harness-driver.js'
+import {
+  AUTO_MODE_DIALOG_SCREEN,
+  CLAUDE_PERM_SCREEN,
+  CLAUDE_PICKER_SCREEN,
+  IDLE_HARNESS_SCREEN,
+  OLD_DIALOG_SCROLLBACK_SCREEN,
+} from '../term/tui-screen-fixtures.js'
 
 const UUID = 'a1b2c3d4-1111-4222-8333-444455556666'
 /** hermes mints its own, and they are not uuids. */
@@ -1180,16 +1187,6 @@ describe('pty-harness-driver transcript tracker', () => {
   })
 })
 
-const CLAUDE_PERM_SCREEN = `\
- Bash command
-   mkdir -p zz && rm -r zz && echo done
- Do you want to proceed?
- ❯ 1. Yes
-   2. Yes, and don't ask again for mkdir
-   3. No
- Esc to cancel · Tab to amend
-`
-
 describe('pty-harness-driver permission prompts', () => {
   const sid = ClaudeCodeDriver.sessionId(UUID)
 
@@ -1652,20 +1649,6 @@ describe('pty-harness-driver permission prompts', () => {
   })
 })
 
-const CLAUDE_PICKER_SCREEN = `\
-Which color would you like?
-❯ 1. Red
-     The color red
-  2. Green
-     The color green
-  3. Blue
-     The color blue
-  4. Type something.
-────────────────────────────────────────────
-  5. Chat about this
-Enter to select · ↑/↓ to navigate · Esc to cancel
-`
-
 const CLAUDE_PICKER_MULTI_SCREEN = `\
 ←  ☐ Color  ☐ Toppings  ✔ Submit  →
 What color would you like?
@@ -1871,5 +1854,88 @@ describe('composePromptText fallback', () => {
         [{ question: 0, labels: ['API key'] }],
       ),
     ).toBe('API key')
+  })
+})
+
+describe('sendUserTurn gates on an open blocking dialog', () => {
+  const sid = ClaudeCodeDriver.sessionId(UUID)
+
+  it('rejects without injecting when a live dialog is on screen', async () => {
+    const pty = fakePty()
+    const driver = new ClaudeCodeDriver({
+      store: fakeStore([]),
+      pty: () => Promise.resolve(pty.host),
+      turnQuietMs: 0,
+      screen: () => AUTO_MODE_DIALOG_SCREEN,
+    })
+    await driver.startSession({ nativeSessionId: UUID })
+    await expect(driver.sendUserTurn(sid, { text: 'hello' })).rejects.toMatchObject({
+      code: 'turn_in_flight',
+      context: { reason: 'harness_dialog' },
+    })
+    expect(pty.injects).toEqual([])
+    driver.close()
+  })
+
+  it('releases the in-flight lock so a later send succeeds', async () => {
+    const pty = fakePty()
+    let screen = AUTO_MODE_DIALOG_SCREEN
+    const driver = new ClaudeCodeDriver({
+      store: fakeStore([]),
+      pty: () => Promise.resolve(pty.host),
+      turnQuietMs: 0,
+      screen: () => screen,
+    })
+    await driver.startSession({ nativeSessionId: UUID })
+    await expect(driver.sendUserTurn(sid, { text: 'hello' })).rejects.toMatchObject({
+      code: 'turn_in_flight',
+    })
+    screen = IDLE_HARNESS_SCREEN
+    await driver.sendUserTurn(sid, { text: 'hello' })
+    expect(pty.injects).toHaveLength(1)
+    driver.close()
+  })
+
+  it('fails open when screen capture throws', async () => {
+    const pty = fakePty()
+    const driver = new ClaudeCodeDriver({
+      store: fakeStore([]),
+      pty: () => Promise.resolve(pty.host),
+      turnQuietMs: 0,
+      screen: () => {
+        throw new Error('boom')
+      },
+    })
+    await driver.startSession({ nativeSessionId: UUID })
+    await driver.sendUserTurn(sid, { text: 'hello' })
+    expect(pty.injects).toHaveLength(1)
+    driver.close()
+  })
+
+  it('fails open with no screen dep', async () => {
+    const pty = fakePty()
+    const driver = new ClaudeCodeDriver({
+      store: fakeStore([]),
+      pty: () => Promise.resolve(pty.host),
+      turnQuietMs: 0,
+    })
+    await driver.startSession({ nativeSessionId: UUID })
+    await driver.sendUserTurn(sid, { text: 'hello' })
+    expect(pty.injects).toHaveLength(1)
+    driver.close()
+  })
+
+  it('does not block on an old dialog in scrollback', async () => {
+    const pty = fakePty()
+    const driver = new ClaudeCodeDriver({
+      store: fakeStore([]),
+      pty: () => Promise.resolve(pty.host),
+      turnQuietMs: 0,
+      screen: () => OLD_DIALOG_SCROLLBACK_SCREEN,
+    })
+    await driver.startSession({ nativeSessionId: UUID })
+    await driver.sendUserTurn(sid, { text: 'hello' })
+    expect(pty.injects).toHaveLength(1)
+    driver.close()
   })
 })

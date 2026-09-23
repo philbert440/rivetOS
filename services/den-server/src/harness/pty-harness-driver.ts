@@ -106,6 +106,7 @@ import {
 import type { HarnessSession } from '../term/harness-sessions.js'
 import { overlaySessionContext } from '../term/context-window.js'
 import { parseAskPicker } from '../term/ask-picker.js'
+import { parseBlockingDialog, type BlockingDialog } from '../term/blocking-dialog.js'
 import { parsePermissionPrompt } from '../term/permission-prompt.js'
 import type { TranscriptWatcher } from '../term/transcript-watch.js'
 import { adapterForCommand, type HarnessAdapter } from './adapters/index.js'
@@ -689,6 +690,14 @@ export abstract class PtyHarnessDriver<S extends HarnessStoreHost = HarnessStore
       const applySystemPrompt = !state.systemPromptApplied
       const injected = harnessTurnText(turn, applySystemPrompt)
       let ptyId = await this.ensurePty(pty, native)
+      const dialog = await this.openDialog(native)
+      if (dialog) {
+        throw new HarnessError(
+          'turn_in_flight',
+          `${this.harnessId} ${native} is showing a dialog; answer it in the terminal first`,
+          { harnessId: this.harnessId, sessionId, context: { reason: 'harness_dialog', dialog } },
+        )
+      }
       if (!pty.inject(ptyId, injected, true)) {
         // The term manager keeps its session→pty mapping until the EXITED
         // record is reaped (exitLingerMs), so a harness that just died still
@@ -1462,6 +1471,22 @@ export abstract class PtyHarnessDriver<S extends HarnessStoreHost = HarnessStore
    */
   protected onHerdrBlocked(native: string): void {
     void this.captureBlockedScreen(native)
+  }
+
+  /** Screen read before a paste. Fails open: no `screen` dep, a capture error, or an empty
+   *  screen all mean "no dialog", so a flaky capture can never block chat. */
+  protected async openDialog(native: string): Promise<BlockingDialog | undefined> {
+    try {
+      const raw = await this.deps.screen?.(this.room(native))
+      if (!raw) return undefined
+      return parseBlockingDialog(raw)
+    } catch (err) {
+      this.log(
+        `[den-server] harness: pre-send screen capture failed for ${this.harnessId}:${native}: ` +
+          (err instanceof Error ? err.message : String(err)),
+      )
+      return undefined
+    }
   }
 
   protected async captureBlockedScreen(native: string): Promise<void> {
