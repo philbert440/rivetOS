@@ -57,10 +57,30 @@ interface Injected {
   interrupt?: boolean
 }
 
-function fakePty(): { host: HarnessPtyHost; injects: Injected[]; spawns: number } {
+/** Mirrors the term manager's default ceiling. The driver must read it off the host. */
+const FAKE_INJECT_READY_MAX_MS = 15_000
+
+interface FakePtyOpts {
+  /** Ready-gate. Default true so existing tests stay on the warm path. */
+  ready?: boolean
+  /** First inject returns false so sendUserTurn takes the dead-pty respawn. */
+  deadOnce?: boolean
+  injectReadyMaxMs?: number
+}
+
+function fakePty(opts: FakePtyOpts = {}): {
+  host: HarnessPtyHost
+  injects: Injected[]
+  /** Accepted while the record was not ready — buffered, not written. */
+  buffered: Injected[]
+  spawns: number
+  setReady(): void
+} {
   const injects: Injected[] = []
+  const buffered: Injected[] = []
   const live = new Map<string, string>()
-  const state = { spawns: 0 }
+  const state = { spawns: 0, ready: opts.ready ?? true, deadOnce: opts.deadOnce ?? false }
+  const readyMax = opts.injectReadyMaxMs ?? FAKE_INJECT_READY_MAX_MS
   const host: HarnessPtyHost = {
     spawn: (_key, _cols, _rows, _remote, session) => {
       state.spawns += 1
@@ -69,14 +89,31 @@ function fakePty(): { host: HarnessPtyHost; injects: Injected[]; spawns: number 
       return { id, denSession: session ?? id }
     },
     ptyForSession: (denSession) => live.get(denSession),
+    injectReady: (denSession) => (live.has(denSession) ? state.ready : undefined),
+    injectReadyMaxMs: () => readyMax,
     inject: (id, text, submit, interrupt) => {
-      injects.push({ id, text, submit, interrupt })
+      if (state.deadOnce) {
+        state.deadOnce = false
+        state.ready = false
+        return false
+      }
+      const row = { id, text, submit, interrupt }
+      if (!state.ready) {
+        buffered.push(row)
+        return true
+      }
+      injects.push(row)
       return true
     },
   }
   return {
     host,
     injects,
+    buffered,
+    setReady() {
+      state.ready = true
+      injects.push(...buffered.splice(0))
+    },
     get spawns() {
       return state.spawns
     },
@@ -2022,7 +2059,9 @@ describe('sendUserTurn delivery confirm', () => {
 
   async function warm(opts: {
     screen?: () => string | Promise<string>
-    events?: (sink: (ev: { session: string; type: string; text?: string }) => void) => () => void
+    events?: (
+      sink: (ev: { session: string; type: string; text?: string; ts?: number }) => void,
+    ) => () => void
     transcript?: ReturnType<typeof fakeTranscript>
     herdrStatus?: boolean
   }): Promise<{
@@ -2110,7 +2149,12 @@ describe('sendUserTurn delivery confirm', () => {
     vi.useFakeTimers()
     const { driver, seen } = await warm({})
     await driver.sendUserTurn(sid, { text: TURN })
-    driver.applyHerdrStatus(UUID, { type: 'status', sessionId: sid, status: 'working', since: 1 })
+    driver.applyHerdrStatus(UUID, {
+      type: 'status',
+      sessionId: sid,
+      status: 'working',
+      since: Date.now(),
+    })
     await vi.advanceTimersByTimeAsync(20_000)
     expect(undelivered(seen)).toEqual([])
     driver.close()
@@ -2120,7 +2164,12 @@ describe('sendUserTurn delivery confirm', () => {
     vi.useFakeTimers()
     const { driver, seen } = await warm({})
     await driver.sendUserTurn(sid, { text: TURN })
-    driver.applyHerdrStatus(UUID, { type: 'status', sessionId: sid, status: 'blocked', since: 1 })
+    driver.applyHerdrStatus(UUID, {
+      type: 'status',
+      sessionId: sid,
+      status: 'blocked',
+      since: Date.now(),
+    })
     await vi.advanceTimersByTimeAsync(20_000)
     expect(undelivered(seen)).toEqual([])
     driver.close()
@@ -2163,7 +2212,7 @@ describe('sendUserTurn delivery confirm', () => {
     driver.close()
   })
 
-  it('a non-message.user den event is not delivery but sets hooksSeen', async () => {
+  it('a non-message.user den event is not delivery and does not shorten the deadline', async () => {
     vi.useFakeTimers()
     let emit!: (ev: { session: string; type: string; text?: string }) => void
     const { driver, seen } = await warm({
@@ -2178,12 +2227,41 @@ describe('sendUserTurn delivery confirm', () => {
     expect(undelivered(seen)).toEqual([])
     await vi.advanceTimersByTimeAsync(1)
     expect(undelivered(seen)).toHaveLength(1)
+    expect(undelivered(seen)[0]?.message).toMatch(/10s/)
+    seen.length = 0
+    await driver.sendUserTurn(sid, { text: 'second' })
+    await vi.advanceTimersByTimeAsync(9_999)
+    expect(undelivered(seen)).toEqual([])
+    await vi.advanceTimersByTimeAsync(1)
+    expect(undelivered(seen)).toHaveLength(1)
+    expect(undelivered(seen)[0]?.message).toMatch(/10s/)
+    driver.close()
+  })
+
+  it('message.user selects the short deadline for the next turn', async () => {
+    vi.useFakeTimers()
+    let emit!: (ev: { session: string; type: string; text?: string }) => void
+    const { driver, seen } = await warm({
+      events: (sink) => {
+        emit = sink
+        return () => undefined
+      },
+    })
+    emit({ session: UUID, type: 'session.start' })
+    await driver.sendUserTurn(sid, { text: TURN })
+    // A non-matching echo still proves the delivery hook is installed, but the
+    // deadline for THIS turn was already armed at the long fallback.
+    emit({ session: UUID, type: 'message.user', text: 'not the turn' })
+    await vi.advanceTimersByTimeAsync(9_999)
+    expect(undelivered(seen)).toEqual([])
+    await vi.advanceTimersByTimeAsync(1)
+    expect(undelivered(seen)[0]?.message).toMatch(/10s/)
     seen.length = 0
     await driver.sendUserTurn(sid, { text: 'second' })
     await vi.advanceTimersByTimeAsync(3_999)
     expect(undelivered(seen)).toEqual([])
     await vi.advanceTimersByTimeAsync(1)
-    expect(undelivered(seen)).toHaveLength(1)
+    expect(undelivered(seen)[0]?.message).toMatch(/4s/)
     driver.close()
   })
 
@@ -2234,14 +2312,14 @@ describe('sendUserTurn delivery confirm', () => {
 
   it('deadline with hooks seen is 4000ms', async () => {
     vi.useFakeTimers()
-    let emit!: (ev: { session: string; type: string }) => void
+    let emit!: (ev: { session: string; type: string; text?: string }) => void
     const { driver, seen } = await warm({
       events: (sink) => {
         emit = sink
         return () => undefined
       },
     })
-    emit({ session: UUID, type: 'session.start' })
+    emit({ session: UUID, type: 'message.user', text: 'earlier hook' })
     await driver.sendUserTurn(sid, { text: TURN })
     await vi.advanceTimersByTimeAsync(3_999)
     expect(undelivered(seen)).toEqual([])
@@ -2293,9 +2371,13 @@ describe('sendUserTurn delivery confirm', () => {
     const { driver, seen } = await warm({})
     await driver.sendUserTurn(sid, { text: TURN })
     await vi.advanceTimersByTimeAsync(10_000)
-    const types = seen.filter((e) => e.type === 'error' || e.type === 'turn-complete').map((e) => e.type)
+    const types = seen
+      .filter((e) => e.type === 'error' || e.type === 'turn-complete')
+      .map((e) => e.type)
     expect(types.slice(0, 2)).toEqual(['error', 'turn-complete'])
-    expect(seen.find((e) => e.type === 'turn-complete')).toMatchObject({ stopReason: 'undelivered' })
+    expect(seen.find((e) => e.type === 'turn-complete')).toMatchObject({
+      stopReason: 'undelivered',
+    })
     await driver.sendUserTurn(sid, { text: 'again' })
     driver.close()
   })
@@ -2326,6 +2408,464 @@ describe('sendUserTurn delivery confirm', () => {
     await vi.advanceTimersByTimeAsync(8_500)
     expect(undelivered(seen)).toHaveLength(1)
     driver.close()
+  })
+
+  it('a not-ready record is cold even when the pty already exists', async () => {
+    vi.useFakeTimers()
+    const pty = fakePty({ ready: false, injectReadyMaxMs: 20_000 })
+    let screens = 0
+    const driver = new ClaudeCodeDriver({
+      store: fakeStore([]),
+      pty: () => Promise.resolve(pty.host),
+      ...DELIVERY,
+      events: () => () => undefined,
+      screen: () => {
+        screens += 1
+        return IDLE_HARNESS_SCREEN
+      },
+    })
+    await driver.startSession({ nativeSessionId: UUID })
+    const seen: HarnessEvent[] = []
+    driver.subscribe(sid, (e) => seen.push(e))
+    await driver.sendUserTurn(sid, { text: TURN })
+    expect(pty.buffered).toHaveLength(1)
+    expect(pty.injects).toEqual([])
+    const afterSend = screens
+    await vi.advanceTimersByTimeAsync(1_500)
+    expect(screens).toBe(afterSend)
+    await vi.advanceTimersByTimeAsync(28_499)
+    expect(undelivered(seen)).toEqual([])
+    await vi.advanceTimersByTimeAsync(1)
+    expect(undelivered(seen)).toHaveLength(1)
+    expect(undelivered(seen)[0]?.message).toMatch(/30s/)
+    driver.close()
+  })
+
+  it('a dead-pty respawn is cold', async () => {
+    vi.useFakeTimers()
+    const pty = fakePty({ deadOnce: true, injectReadyMaxMs: 12_000 })
+    let screens = 0
+    const driver = new ClaudeCodeDriver({
+      store: fakeStore([]),
+      pty: () => Promise.resolve(pty.host),
+      ...DELIVERY,
+      events: () => () => undefined,
+      screen: () => {
+        screens += 1
+        return IDLE_HARNESS_SCREEN
+      },
+    })
+    await driver.startSession({ nativeSessionId: UUID })
+    const seen: HarnessEvent[] = []
+    driver.subscribe(sid, (e) => seen.push(e))
+    await driver.sendUserTurn(sid, { text: TURN })
+    expect(pty.spawns).toBe(2)
+    expect(pty.injects).toEqual([])
+    expect(pty.buffered).toHaveLength(1)
+    const afterSend = screens
+    await vi.advanceTimersByTimeAsync(1_500)
+    expect(screens).toBe(afterSend)
+    await vi.advanceTimersByTimeAsync(20_499)
+    expect(undelivered(seen)).toEqual([])
+    await vi.advanceTimersByTimeAsync(1)
+    expect(undelivered(seen)).toHaveLength(1)
+    expect(undelivered(seen)[0]?.message).toMatch(/22s/)
+    driver.close()
+  })
+
+  it('a message quoting pasted_content still matches its wrapped echo', async () => {
+    vi.useFakeTimers()
+    let emit!: (ev: { session: string; type: string; text?: string; ts?: number }) => void
+    const { driver, seen } = await warm({
+      events: (sink) => {
+        emit = sink
+        return () => undefined
+      },
+    })
+    const quoted = 'see <pasted_content id="x">\ncode\n</pasted_content id="x"> please'
+    await driver.sendUserTurn(sid, { text: quoted })
+    emit({
+      session: UUID,
+      type: 'message.user',
+      ts: Date.now(),
+      text: `<pasted_content id="y">\n${quoted}\n</pasted_content id="y">`,
+    })
+    await vi.advanceTimersByTimeAsync(20_000)
+    expect(undelivered(seen)).toEqual([])
+    driver.close()
+  })
+
+  it('matches on the first 80 characters, not the tail', async () => {
+    vi.useFakeTimers()
+    let emit!: (ev: { session: string; type: string; text?: string; ts?: number }) => void
+    const { driver, seen } = await warm({
+      events: (sink) => {
+        emit = sink
+        return () => undefined
+      },
+    })
+    const head = 'a'.repeat(80)
+    const turn = `${head}${' UNIQUE'.repeat(20)}`
+    await driver.sendUserTurn(sid, { text: turn })
+    emit({
+      session: UUID,
+      type: 'message.user',
+      ts: Date.now(),
+      text: `${'b'.repeat(80)}${' UNIQUE'.repeat(20)}`,
+    })
+    await vi.advanceTimersByTimeAsync(9_999)
+    expect(undelivered(seen)).toEqual([])
+    await vi.advanceTimersByTimeAsync(1)
+    expect(undelivered(seen)).toHaveLength(1)
+    driver.close()
+  })
+
+  it('an identical resend is not proved by the previous echo', async () => {
+    vi.useFakeTimers()
+    let emit!: (ev: { session: string; type: string; text?: string; ts?: number }) => void
+    const { driver, seen } = await warm({
+      events: (sink) => {
+        emit = sink
+        return () => undefined
+      },
+    })
+    const turn = `${'c'.repeat(80)} ONE ${'pad'.repeat(30)}`
+    await driver.sendUserTurn(sid, { text: turn })
+    const firstTs = Date.now()
+    emit({ session: UUID, type: 'message.user', text: turn, ts: firstTs })
+    emit({ session: UUID, type: 'turn.end' })
+    await vi.advanceTimersByTimeAsync(50)
+    await driver.sendUserTurn(sid, { text: turn })
+    emit({ session: UUID, type: 'message.user', text: turn, ts: firstTs })
+    await vi.advanceTimersByTimeAsync(3_999)
+    expect(undelivered(seen)).toEqual([])
+    await vi.advanceTimersByTimeAsync(1)
+    expect(undelivered(seen)).toHaveLength(1)
+    expect(undelivered(seen)[0]?.message).toMatch(/4s/)
+    driver.close()
+  })
+
+  it('a same-prefix resend needs its own echo', async () => {
+    vi.useFakeTimers()
+    let emit!: (ev: { session: string; type: string; text?: string; ts?: number }) => void
+    const { driver, seen } = await warm({
+      events: (sink) => {
+        emit = sink
+        return () => undefined
+      },
+    })
+    const head = 'd'.repeat(80)
+    const first = `${head} ALPHA`
+    const second = `${head} BETA`
+    await driver.sendUserTurn(sid, { text: first })
+    const firstTs = Date.now()
+    emit({ session: UUID, type: 'message.user', text: first, ts: firstTs })
+    emit({ session: UUID, type: 'turn.end' })
+    await vi.advanceTimersByTimeAsync(50)
+    await driver.sendUserTurn(sid, { text: second })
+    // Same 80-char prefix as this turn, but it is the previous turn's echo.
+    emit({ session: UUID, type: 'message.user', text: first, ts: firstTs })
+    await vi.advanceTimersByTimeAsync(3_999)
+    expect(undelivered(seen)).toEqual([])
+    await vi.advanceTimersByTimeAsync(1)
+    expect(undelivered(seen)).toHaveLength(1)
+    driver.close()
+  })
+
+  it('proves two turns in a row', async () => {
+    vi.useFakeTimers()
+    let emit!: (ev: { session: string; type: string; text?: string; ts?: number }) => void
+    const { driver, seen } = await warm({
+      events: (sink) => {
+        emit = sink
+        return () => undefined
+      },
+    })
+    await driver.sendUserTurn(sid, { text: 'one' })
+    emit({ session: UUID, type: 'message.user', text: 'one', ts: Date.now() })
+    emit({ session: UUID, type: 'turn.end' })
+    await driver.sendUserTurn(sid, { text: 'two' })
+    emit({ session: UUID, type: 'message.user', text: 'two', ts: Date.now() })
+    emit({ session: UUID, type: 'turn.end' })
+    await vi.advanceTimersByTimeAsync(20_000)
+    expect(undelivered(seen)).toEqual([])
+    expect(seen.filter((e) => e.type === 'turn-complete').map((e) => e.stopReason)).toEqual([
+      'end-turn',
+      'end-turn',
+    ])
+    driver.close()
+  })
+
+  it('transcript working while the claim is un-echoed is not delivery', async () => {
+    vi.useFakeTimers()
+    const tx = fakeTranscript()
+    const { driver, seen } = await warm({ transcript: tx })
+    tx.emit(sid, {
+      kind: 'transcript',
+      session: sid,
+      rev: 1,
+      command: 'claude',
+      from: 0,
+      total: 1,
+      turns: [{ role: 'assistant', text: 'done', complete: true }],
+    })
+    await driver.sendUserTurn(sid, { text: TURN })
+    tx.emit(sid, {
+      kind: 'transcript',
+      session: sid,
+      rev: 2,
+      command: 'claude',
+      from: 0,
+      total: 1,
+      turns: [{ role: 'user', text: 'previous question still the only row' }],
+    })
+    expect(
+      seen.some((e) => e.type === 'status' && e.status === 'working' && e.source === 'transcript'),
+    ).toBe(true)
+    await vi.advanceTimersByTimeAsync(9_999)
+    expect(undelivered(seen)).toEqual([])
+    await vi.advanceTimersByTimeAsync(1)
+    expect(undelivered(seen)).toHaveLength(1)
+    driver.close()
+  })
+
+  it('a herdr sample from before this inject is not delivery', async () => {
+    vi.useFakeTimers()
+    const { driver, seen } = await warm({})
+    await driver.sendUserTurn(sid, { text: TURN })
+    driver.applyHerdrStatus(UUID, {
+      type: 'status',
+      sessionId: sid,
+      status: 'working',
+      since: Date.now() - 5_000,
+    })
+    await vi.advanceTimersByTimeAsync(9_999)
+    expect(undelivered(seen)).toEqual([])
+    await vi.advanceTimersByTimeAsync(1)
+    expect(undelivered(seen)).toHaveLength(1)
+    driver.close()
+  })
+
+  it('close clears a pending delivery check', async () => {
+    vi.useFakeTimers()
+    const { driver, seen } = await warm({})
+    await driver.sendUserTurn(sid, { text: TURN })
+    expect(vi.getTimerCount()).toBeGreaterThan(0)
+    driver.close()
+    expect(vi.getTimerCount()).toBe(0)
+    await vi.advanceTimersByTimeAsync(20_000)
+    expect(undelivered(seen)).toEqual([])
+  })
+
+  it('late proof after undelivered does not emit a second turn-complete', async () => {
+    vi.useFakeTimers()
+    let emit!: (ev: { session: string; type: string; text?: string; ts?: number }) => void
+    const tx = fakeTranscript()
+    const { driver, seen } = await warm({
+      transcript: tx,
+      events: (sink) => {
+        emit = sink
+        return () => undefined
+      },
+    })
+    await driver.sendUserTurn(sid, { text: TURN })
+    await vi.advanceTimersByTimeAsync(10_000)
+    const completes = (): HarnessEvent[] => seen.filter((e) => e.type === 'turn-complete')
+    expect(completes()).toHaveLength(1)
+    expect(completes()[0]).toMatchObject({ stopReason: 'undelivered' })
+    emit({ session: UUID, type: 'message.user', text: TURN, ts: Date.now() })
+    driver.applyHerdrStatus(UUID, {
+      type: 'status',
+      sessionId: sid,
+      status: 'working',
+      since: Date.now(),
+    })
+    emit({ session: UUID, type: 'turn.end' })
+    tx.emit(sid, {
+      kind: 'transcript',
+      session: sid,
+      rev: 1,
+      command: 'claude',
+      from: 0,
+      total: 1,
+      turns: [{ role: 'user', text: TURN }],
+    })
+    await vi.advanceTimersByTimeAsync(1_000)
+    expect(completes()).toHaveLength(1)
+    await driver.sendUserTurn(sid, { text: 'next' })
+    driver.close()
+  })
+
+  it('a short turn does not own a pasted-text placeholder', async () => {
+    vi.useFakeTimers()
+    const { driver, seen } = await warm({
+      screen: () => composerScreen('[Pasted text #1 +12 lines]'),
+    })
+    await driver.sendUserTurn(sid, { text: TURN })
+    await vi.advanceTimersByTimeAsync(2_500)
+    expect(undelivered(seen)).toEqual([])
+    await vi.advanceTimersByTimeAsync(7_500)
+    expect(undelivered(seen)).toHaveLength(1)
+    expect(undelivered(seen)[0]?.message).toMatch(/10s/)
+    driver.close()
+  })
+
+  it('a collapsed paste of this turn fails as stuck input', async () => {
+    vi.useFakeTimers()
+    const long = `${'line of the paste\n'.repeat(5)}tail`
+    const { driver, seen } = await warm({
+      screen: () => composerScreen('[Pasted text #1 +12 lines]'),
+    })
+    await driver.sendUserTurn(sid, { text: long })
+    await vi.advanceTimersByTimeAsync(1_500)
+    expect(undelivered(seen)).toEqual([])
+    await vi.advanceTimersByTimeAsync(999)
+    expect(undelivered(seen)).toEqual([])
+    await vi.advanceTimersByTimeAsync(1)
+    expect(undelivered(seen)[0]?.message).toMatch(/input box/)
+    driver.close()
+  })
+
+  it('two pasted-text placeholders fall back to the deadline', async () => {
+    vi.useFakeTimers()
+    const long = 'x'.repeat(200)
+    const { driver, seen } = await warm({
+      screen: () => composerScreen('[Pasted text #1 +12 lines] [Pasted text #2 +4 lines]'),
+    })
+    await driver.sendUserTurn(sid, { text: long })
+    await vi.advanceTimersByTimeAsync(2_500)
+    expect(undelivered(seen)).toEqual([])
+    await vi.advanceTimersByTimeAsync(7_500)
+    expect(undelivered(seen)).toHaveLength(1)
+    expect(undelivered(seen)[0]?.message).toMatch(/10s/)
+    driver.close()
+  })
+
+  it('an untimestamped replay cannot prove an identical resend', async () => {
+    vi.useFakeTimers()
+    let emit!: (ev: { session: string; type: string; text?: string }) => void
+    const { driver, seen } = await warm({
+      events: (sink) => {
+        emit = sink
+        return () => undefined
+      },
+    })
+    await driver.sendUserTurn(sid, { text: TURN })
+    emit({ session: UUID, type: 'message.user', text: TURN })
+    emit({ session: UUID, type: 'turn.end' })
+    await driver.sendUserTurn(sid, { text: TURN })
+    emit({ session: UUID, type: 'message.user', text: TURN })
+    await vi.advanceTimersByTimeAsync(4_000)
+    expect(undelivered(seen)).toHaveLength(1)
+    driver.close()
+  })
+
+  it('a repeated herdr status after inject is not an edge', async () => {
+    vi.useFakeTimers()
+    const { driver, seen } = await warm({})
+    driver.applyHerdrStatus(UUID, {
+      type: 'status',
+      sessionId: sid,
+      status: 'idle',
+      since: Date.now(),
+    })
+    await driver.sendUserTurn(sid, { text: TURN })
+    driver.applyHerdrStatus(UUID, {
+      type: 'status',
+      sessionId: sid,
+      status: 'working',
+      since: Date.now() - 100,
+    })
+    driver.applyHerdrStatus(UUID, {
+      type: 'status',
+      sessionId: sid,
+      status: 'working',
+      since: Date.now(),
+    })
+    await vi.advanceTimersByTimeAsync(10_000)
+    expect(undelivered(seen)).toHaveLength(1)
+    driver.close()
+  })
+
+  it('a buffered paste flushes once and can prove delivery after the warm deadline', async () => {
+    vi.useFakeTimers()
+    const pty = fakePty({ ready: false, injectReadyMaxMs: 20_000 })
+    let emit!: (ev: { session: string; type: string; text?: string; ts?: number }) => void
+    const driver = new ClaudeCodeDriver({
+      store: fakeStore([]),
+      pty: () => Promise.resolve(pty.host),
+      ...DELIVERY,
+      events: (sink) => {
+        emit = sink
+        return () => undefined
+      },
+    })
+    await driver.startSession({ nativeSessionId: UUID })
+    const seen: HarnessEvent[] = []
+    driver.subscribe(sid, (e) => seen.push(e))
+    await driver.sendUserTurn(sid, { text: TURN })
+    await vi.advanceTimersByTimeAsync(20_000)
+    expect(undelivered(seen)).toEqual([])
+    await expect(driver.sendUserTurn(sid, { text: TURN })).rejects.toMatchObject({
+      code: 'turn_in_flight',
+    })
+    pty.setReady()
+    expect(pty.injects).toHaveLength(1)
+    expect(pty.buffered).toEqual([])
+    emit({ session: UUID, type: 'message.user', text: TURN, ts: Date.now() })
+    await vi.advanceTimersByTimeAsync(20_000)
+    expect(undelivered(seen)).toEqual([])
+    driver.close()
+  })
+
+  it('rotation preserves the remaining cold deadline', async () => {
+    vi.useFakeTimers()
+    class RotatingDriver extends ClaudeCodeDriver {
+      rekey(from: string, to: string): void {
+        this.rotate(from, to)
+      }
+    }
+    const pty = fakePty({ ready: false, injectReadyMaxMs: 20_000 })
+    const driver = new RotatingDriver({
+      events: () => () => undefined,
+      store: fakeStore([]),
+      pty: () => Promise.resolve(pty.host),
+      ...DELIVERY,
+    })
+    await driver.startSession({ nativeSessionId: UUID })
+    await driver.sendUserTurn(sid, { text: TURN })
+    await vi.advanceTimersByTimeAsync(5_000)
+    const next = 'b1b2c3d4-1111-4222-8333-444455556666'
+    driver.rekey(UUID, next)
+    const seen: HarnessEvent[] = []
+    driver.subscribe(ClaudeCodeDriver.sessionId(next), (e) => seen.push(e))
+    await vi.advanceTimersByTimeAsync(24_999)
+    expect(undelivered(seen)).toEqual([])
+    await vi.advanceTimersByTimeAsync(1)
+    expect(undelivered(seen)).toHaveLength(1)
+    driver.close()
+  })
+
+  it('close suppresses a delivery capture already awaiting its screen', async () => {
+    vi.useFakeTimers()
+    let resolve!: (screen: string) => void
+    let pending = false
+    const { driver, seen } = await warm({
+      screen: () =>
+        pending
+          ? new Promise<string>((done) => {
+              resolve = done
+            })
+          : IDLE_HARNESS_SCREEN,
+    })
+    await driver.sendUserTurn(sid, { text: TURN })
+    pending = true
+    await vi.advanceTimersByTimeAsync(1_500)
+    driver.close()
+    resolve(AUTO_MODE_DIALOG_SCREEN)
+    await vi.advanceTimersByTimeAsync(20_000)
+    expect(vi.getTimerCount()).toBe(0)
+    expect(undelivered(seen)).toEqual([])
   })
 
   it('deliveryConfirmMs 0 does not arm', async () => {

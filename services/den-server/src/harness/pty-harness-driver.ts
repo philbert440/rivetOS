@@ -146,6 +146,14 @@ export interface HarnessPtyHost {
   ): { id: string; denSession: string } | Promise<{ id: string; denSession: string }>
   ptyForSession(denSession: string): string | undefined
   inject(id: string, text: string, submit: boolean, interrupt?: boolean): boolean
+  /**
+   * Ready-gate for this den session, when the host tracks one.
+   * `true` = an inject is written now, `false` = the paste is buffered until
+   * the harness TUI is ready, `undefined` = no running record.
+   */
+  injectReady?(denSession: string): boolean | undefined
+  /** Resolved ready-gate ceiling (`term.injectReadyMaxMs`). Cold turns wait this out. */
+  injectReadyMaxMs?(): number
 }
 
 /** The slice of a harness's on-disk store these drivers need. */
@@ -194,12 +202,21 @@ export interface PtyHarnessDriverDeps<S extends HarnessStoreHost = HarnessStoreH
    * installed would otherwise wedge every later turn on `turn_in_flight`.
    */
   turnQuietMs?: number
-  /** Deadline for proof of delivery when this session's den hooks have been seen working.
-   *  0 disables the whole delivery check. */
+  /**
+   * Test seam, not operator config (nothing in config.ts reads it): deadline
+   * for proof of delivery once this session has seen a `message.user` hook.
+   * 0 disables the whole delivery check.
+   */
   deliveryConfirmMs?: number
-  /** Deadline when no den hook has ever been seen for this session. */
+  /**
+   * Test seam, not operator config: deadline when this session has not yet
+   * seen a `message.user` hook.
+   */
   deliveryFallbackMs?: number
-  /** When to do the early screen check after the paste. 0 = skip the screen check. */
+  /**
+   * Test seam, not operator config: delay before the warm-path screen peek.
+   * 0 skips the peek.
+   */
   deliveryPeekMs?: number
   now?: () => number
   log?: (msg: string) => void
@@ -238,8 +255,15 @@ const DEFAULT_TURN_QUIET_MS = 5 * 60_000
 const DEFAULT_DELIVERY_CONFIRM_MS = 4_000
 const DEFAULT_DELIVERY_FALLBACK_MS = 10_000
 const DEFAULT_DELIVERY_PEEK_MS = 1_500
-/** term/manager.ts injectReadyMaxMs — a cold spawn may buffer the paste this long. */
-const INJECT_READY_MAX_MS = 15_000
+/** Prefix compared between a turn and its hook echo. Slice before collapsing. */
+const DELIVERY_KEY_CHARS = 80
+/**
+ * Claude Code collapses a paste into `[Pasted text #N]` once it is too big for
+ * the composer (several lines, or at least this many characters). A shorter
+ * turn cannot own that placeholder.
+ */
+const PASTE_COLLAPSE_MIN_CHARS = 160
+const PASTE_COLLAPSE_MIN_LINES = 4
 /** Re-read grok/kimi sheets at most this often (`verifyCapabilities` is hot). */
 const SHEET_TTL_MS = 60_000
 /** Fresh PTYs get a sane default geometry; a real attach resizes immediately. */
@@ -319,11 +343,27 @@ export interface LiveState {
    *  the session idle, or fire turn-complete. Cleared on echo / endTurn. */
   claimAt?: number
   claimTurns?: number
-  /** Set once any den hook event arrives for this session; picks the fast deadline. Never cleared
-   *  for the life of the LiveState (carry it across rotation like other per-session flags). */
+  /** Set once a `message.user` hook is seen for this session — the delivery-relevant
+   *  hook, not any den event. Picks the short deadline. Never cleared; carried
+   *  across rotation like other per-session flags. */
   hooksSeen?: boolean
+  /** This claim already failed as undelivered. Late proof must not complete it again. */
+  deliveryFailed?: boolean
+  /** Last observed user echo, retained to reject replay across identical sends. */
+  lastUserEcho?: { key: string; ts?: number }
   delivery?: {
+    /** Normalised prefix of this turn. */
     key: string
+    /** Text passed to `armDeliveryCheck` (the user turn), for placeholder ownership. */
+    text: string
+    /** `now()` at arm time. Echoes and herdr samples before this are the previous turn. */
+    since: number
+    /** Previous herdr status, initially sampled at inject. Only a later edge counts. */
+    herdrBaseline?: 'working' | 'blocked' | 'idle'
+    deadlineAt: number
+    deadlineMs: number
+    peekAt?: number
+    priorEcho?: LiveState['lastUserEcho']
     deadline: ReturnType<typeof setTimeout>
     peek?: ReturnType<typeof setTimeout>
     stuckOnce?: boolean
@@ -342,9 +382,45 @@ export function harnessTurnText(turn: UserTurn, applySystemPrompt: boolean): str
   return prefixSystemPrompt(prompt, turn.text)
 }
 
-/** Whitespace-collapsed, wrapper-stripped text for comparing a turn with its hook echo. */
+/**
+ * Drop harness paste wrappers until the text is stable. One pass is not enough:
+ * the echo is an outer wrapper around the user text, and a message that quotes
+ * a `<pasted_content>` block has a second pair. A single replace removes only
+ * the outer pair (the inner one is inside the replacement) so the two sides
+ * never match. Iterating strips the same pairs from both.
+ */
+function unwrapDeliveryText(text: string): string {
+  let cur = text
+  for (let i = 0; i < 4; i++) {
+    const next = stripPastedContentWrapper(cur)
+    if (next === cur) return cur
+    cur = next
+  }
+  return cur
+}
+
+function escapeRegExp(text: string): string {
+  return text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+}
+
+/** Whitespace-collapsed prefix. Sliced before the collapse so a large paste is not rewritten whole. */
 function deliveryKey(text: string): string {
-  return stripPastedContentWrapper(text).replace(/\s+/g, ' ').trim()
+  return unwrapDeliveryText(text).slice(0, DELIVERY_KEY_CHARS).replace(/\s+/g, ' ').trim()
+}
+
+/** True when `echo` contains `key` with flexible whitespace, without collapsing the whole echo. */
+function deliveryEchoHasKey(echo: string, key: string): boolean {
+  if (!key) return false
+  const parts = key.split(' ').filter((part) => part.length > 0)
+  if (parts.length === 0) return false
+  const pattern = parts.map(escapeRegExp).join('\\s+')
+  return new RegExp(pattern).test(unwrapDeliveryText(echo))
+}
+
+function pasteWouldCollapse(text: string): boolean {
+  return (
+    text.split('\n').length >= PASTE_COLLAPSE_MIN_LINES || text.length >= PASTE_COLLAPSE_MIN_CHARS
+  )
 }
 
 /** Fallback AskUserQuestion answer: labels joined by ", "; multi-question
@@ -726,7 +802,12 @@ export abstract class PtyHarnessDriver<S extends HarnessStoreHost = HarnessStore
     // (and release) once the store has grown past it — see LiveState.claimAt.
     state.claimAt = this.now()
     state.claimTurns = state.turns?.length
-    const warm = Boolean(pty.ptyForSession(this.room(native)))
+    // Leave `deliveryFailed` set across the awaits. A late proof of the turn
+    // we just failed must not complete it while this send is still in flight;
+    // the flag is cleared only once the new paste is accepted.
+    const room = this.room(native)
+    const idBefore = pty.ptyForSession(room)
+    let createdOrRespawned = !idBefore
     try {
       const applySystemPrompt = !state.systemPromptApplied
       const injected = harnessTurnText(turn, applySystemPrompt)
@@ -737,6 +818,7 @@ export abstract class PtyHarnessDriver<S extends HarnessStoreHost = HarnessStore
           { harnessId: this.harnessId, sessionId, context: { reason: 'harness_dialog', dialog } },
         )
       let ptyId = await this.ensurePty(pty, native)
+      if (ptyId !== idBefore) createdOrRespawned = true
       // Snapshot, not a lock. A dialog can open after this read and still
       // receive the paste, and a fresh spawn's first capture can predate the
       // first paint — a startup dialog, or an early digit+Enter that selects
@@ -753,6 +835,7 @@ export abstract class PtyHarnessDriver<S extends HarnessStoreHost = HarnessStore
         // through the same `--resume` path a fully-reaped session takes and try
         // once more. Re-check the pane first: a dialog may have painted
         // between the pre-send snapshot and this retry.
+        createdOrRespawned = true
         ptyId = await this.spawnFor(pty, native, true)
         const retryDialog = await this.openDialog(native)
         if (retryDialog) throw dialogRejection(retryDialog)
@@ -773,10 +856,19 @@ export abstract class PtyHarnessDriver<S extends HarnessStoreHost = HarnessStore
       state.turnInFlight = false
       throw err
     }
+    state.deliveryFailed = false
+    // Cold when this call created or respawned the pty, or the term record is
+    // not ready yet (inject buffered the paste). A host that does not report
+    // readiness keeps the old "a record already existed" signal.
+    // Member calls, not extracted functions: optional methods are not `this: void`.
+    let ready: boolean | undefined
+    if (pty.injectReady) ready = pty.injectReady(room)
+    const warm = !createdOrRespawned && (pty.injectReady ? ready === true : true)
+    const readyMaxMs = pty.injectReadyMaxMs ? pty.injectReadyMaxMs() : 0
     // Announce it: `beginTurn` re-sets the flag (already ours), arms the
     // quiet-window failsafe and moves the session to `active`.
     this.beginTurn(native)
-    this.armDeliveryCheck(native, turn.text, warm)
+    this.armDeliveryCheck(native, turn.text, warm, readyMaxMs)
   }
 
   async interrupt(sessionId: SessionId): Promise<void> {
@@ -1314,20 +1406,29 @@ export abstract class PtyHarnessDriver<S extends HarnessStoreHost = HarnessStore
       clearTimeout(state.herdrIdleTimer)
       state.herdrIdleTimer = undefined
     }
+    const deliveryEdge = this.herdrProvesDelivery(state, frame)
+    if (state.delivery) state.delivery.herdrBaseline = frame.status
     state.herdrStatus = frame.status
     state.herdrSince = frame.since
+    // A failed delivery already released this turn. A late working|blocked
+    // frame must not put it back in flight (that is what emits a second
+    // turn-complete when the harness later ends the turn).
     if (frame.status === 'working') {
       state.blocked = false
-      state.turnInFlight = true
-      this.markDelivered(native)
-      this.armQuietWindow(native)
+      if (!state.deliveryFailed) {
+        state.turnInFlight = true
+        if (deliveryEdge) this.markDelivered(native)
+        this.armQuietWindow(native)
+      }
       this.setStatus(native, 'active')
       this.resolveExternalApproval(native)
       this.resolveScreenPrompt(native)
     } else if (frame.status === 'blocked') {
       state.blocked = true
-      state.turnInFlight = true
-      this.markDelivered(native)
+      if (!state.deliveryFailed) {
+        state.turnInFlight = true
+        if (deliveryEdge) this.markDelivered(native)
+      }
       this.setStatus(native, 'active')
       const pending = this.pendingPromptIds(state)
       if (pending.length > 0) {
@@ -1409,7 +1510,9 @@ export abstract class PtyHarnessDriver<S extends HarnessStoreHost = HarnessStore
       state.claimAt = carried.claimAt
       state.claimTurns = carried.claimTurns
       state.hooksSeen = carried.hooksSeen
-      const deliveryKeyCarried = carried.delivery?.key
+      state.lastUserEcho = carried.lastUserEcho
+      state.deliveryFailed = carried.deliveryFailed
+      const carriedDelivery = carried.delivery
       if (carried.delivery) this.clearDelivery(carried)
       if (carried.quietTimer) {
         clearTimeout(carried.quietTimer)
@@ -1427,7 +1530,26 @@ export abstract class PtyHarnessDriver<S extends HarnessStoreHost = HarnessStore
       carried.transcriptOff?.()
       carried.transcriptOff = undefined
       if (state.turnInFlight) this.armQuietWindow(next)
-      if (deliveryKeyCarried) this.armDeliveryCheck(next, deliveryKeyCarried, true)
+      if (carriedDelivery) {
+        // Preserve this turn's epoch, cold budget and peek progress across rekey.
+        state.delivery = carriedDelivery
+        carriedDelivery.deadline = setTimeout(
+          () => {
+            void this.deadlineDelivery(next, carriedDelivery.deadlineMs)
+          },
+          Math.max(0, carriedDelivery.deadlineAt - this.now()),
+        )
+        carriedDelivery.deadline.unref()
+        if (carriedDelivery.peekAt !== undefined) {
+          carriedDelivery.peek = setTimeout(
+            () => {
+              void this.peekDelivery(next)
+            },
+            Math.max(0, carriedDelivery.peekAt - this.now()),
+          )
+          carriedDelivery.peek.unref()
+        }
+      }
       this.live.delete(previous)
       // The chat must not go dark for the rest of a turn that spans a rotation:
       // re-subscribe under the successor id and re-arm the stale release.
@@ -1470,6 +1592,9 @@ export abstract class PtyHarnessDriver<S extends HarnessStoreHost = HarnessStore
   protected endTurn(native: string, stopReason: string, always = false): void {
     const state = this.live.get(native)
     if (!state) return
+    // `failDelivery` already emitted turn-complete for this claim. A later
+    // `turn.end`, herdr idle, or transcript completion must not emit another.
+    if (state.deliveryFailed && stopReason !== 'undelivered') return
     if (state.quietTimer) {
       clearTimeout(state.quietTimer)
       state.quietTimer = undefined
@@ -1566,33 +1691,77 @@ export abstract class PtyHarnessDriver<S extends HarnessStoreHost = HarnessStore
 
   protected markDelivered(native: string): void {
     const state = this.live.get(native)
-    if (state) this.clearDelivery(state)
+    if (!state || state.deliveryFailed) return
+    this.clearDelivery(state)
   }
 
-  protected armDeliveryCheck(native: string, text: string, warm: boolean): void {
+  /**
+   * herdr `working`/`blocked` proves this paste only as an edge after the
+   * inject: the status must differ from the preceding sample, and the sample's
+   * `since` must not predate the check. A repeat of the pre-inject status, or
+   * a frame that started before this turn, is the previous turn.
+   */
+  protected herdrProvesDelivery(state: LiveState, frame: HarnessStatusFrame): boolean {
+    const delivery = state.delivery
+    if (!delivery || state.deliveryFailed) return false
+    if (frame.status !== 'working' && frame.status !== 'blocked') return false
+    if (frame.status === delivery.herdrBaseline) return false
+    if (frame.since < delivery.since) return false
+    return true
+  }
+
+  /** `message.user` counts only when it matches this turn and is not an earlier echo. */
+  protected userEchoProvesDelivery(state: LiveState, ev: DenAgentEventLike): boolean {
+    const delivery = state.delivery
+    if (!delivery?.key || state.deliveryFailed) return false
+    const text = typeof ev.text === 'string' ? ev.text : ''
+    if (!deliveryEchoHasKey(text, delivery.key)) return false
+    const ts = typeof ev.ts === 'number' ? ev.ts : undefined
+    const prior = delivery.priorEcho
+    // A repeated, untimestamped echo cannot distinguish a resend from replay.
+    // Leave the other proof paths and deadline in charge in that case.
+    if (prior && deliveryEchoHasKey(text, prior.key)) {
+      if (ts === undefined || (prior.ts !== undefined && ts <= prior.ts)) return false
+    }
+    return ts === undefined || ts >= delivery.since
+  }
+
+  protected armDeliveryCheck(native: string, text: string, warm: boolean, readyMaxMs = 0): void {
     if (this.deliveryConfirmMs <= 0) return
     const state = this.ensureLive(native)
     this.clearDelivery(state)
-    const key = deliveryKey(text).slice(0, 80)
-    // Cold spawn: term manager may hold the paste until the TUI is ready
-    // (injectReadyMaxMs, 15s). Skip the screen check; a "written vs buffered"
-    // inject result is out of scope.
+    const key = deliveryKey(text)
+    // Cold: the manager may hold the paste until its ready-gate ceiling.
+    // That ceiling comes from the host (`injectReadyMaxMs`), not a copy of
+    // the default. Skip the screen peek — the paste is not on screen yet —
+    // and wait out the ceiling plus the normal no-hook fallback.
+    const ceiling = Number.isFinite(readyMaxMs) && readyMaxMs > 0 ? readyMaxMs : 0
     const deadlineMs = warm
       ? state.hooksSeen
         ? this.deliveryConfirmMs
         : this.deliveryFallbackMs
-      : this.deliveryFallbackMs + INJECT_READY_MAX_MS
+      : this.deliveryFallbackMs + ceiling
     const peekMs = warm ? this.deliveryPeekMs : 0
     const deadline = setTimeout(() => {
       void this.deadlineDelivery(native, deadlineMs)
     }, deadlineMs)
     deadline.unref()
-    const delivery: NonNullable<LiveState['delivery']> = { key, deadline }
+    const delivery: NonNullable<LiveState['delivery']> = {
+      key,
+      text,
+      since: this.now(),
+      herdrBaseline: state.herdrStatus,
+      priorEcho: state.lastUserEcho,
+      deadlineAt: this.now() + deadlineMs,
+      deadlineMs,
+      deadline,
+    }
     if (peekMs > 0) {
       const peek = setTimeout(() => {
         void this.peekDelivery(native)
       }, peekMs)
       peek.unref()
+      delivery.peekAt = this.now() + peekMs
       delivery.peek = peek
     }
     state.delivery = delivery
@@ -1610,20 +1779,37 @@ export abstract class PtyHarnessDriver<S extends HarnessStoreHost = HarnessStore
       message: why,
       retryable: true,
     })
+    // Set before endTurn so the undelivered completion is the one that emits,
+    // and every later completion for this claim is suppressed.
+    state.deliveryFailed = true
     this.endTurn(native, 'undelivered')
   }
 
-  protected inputHoldsTurn(raw: string, key: string): boolean {
+  protected inputHoldsTurn(raw: string, key: string, turnText: string): boolean {
     const input = parseComposerInput(raw)
     if (input === undefined) return false
-    if (/\[Pasted text #\d+/.test(input)) return true
+    if (/\[Pasted text #\d+/.test(input)) {
+      const marks = input.match(/\[Pasted text #\d+/g) ?? []
+      const sole = marks.length === 1 && /^\s*\[Pasted text #\d+[^\]]*\]\s*$/.test(input)
+      // A placeholder is this paste only when the turn was long enough for the
+      // TUI to collapse it and no other paste is sitting in the box. Anything
+      // else falls through to the deadline instead of failing the peek.
+      if (sole && pasteWouldCollapse(turnText)) return true
+      if (sole) return false
+    }
     if (!key) return false
     return deliveryKey(input).includes(key.slice(0, 30))
   }
 
   protected async peekDelivery(native: string): Promise<void> {
     const state = this.live.get(native)
-    if (!state?.delivery) return
+    const delivery = state?.delivery
+    if (!delivery) return
+    // Captured before the await: a check re-armed for a newer turn must not
+    // be judged against this screen, or against this turn's key.
+    delivery.peekAt = undefined
+    const key = delivery.key
+    const turnText = delivery.text
     let raw: string
     try {
       raw = (await this.deps.screen?.(this.room(native))) ?? ''
@@ -1634,7 +1820,7 @@ export abstract class PtyHarnessDriver<S extends HarnessStoreHost = HarnessStore
       )
       return
     }
-    if (!this.live.get(native)?.delivery) return
+    if (this.live.get(native)?.delivery !== delivery) return
     const dialog = parseBlockingDialog(raw)
     if (dialog) {
       const title = dialog.title ? ` (“${dialog.title}”)` : ''
@@ -1644,14 +1830,15 @@ export abstract class PtyHarnessDriver<S extends HarnessStoreHost = HarnessStore
       )
       return
     }
-    if (this.inputHoldsTurn(raw, state.delivery.key)) {
-      if (!state.delivery.stuckOnce) {
-        state.delivery.stuckOnce = true
+    if (this.inputHoldsTurn(raw, key, turnText)) {
+      if (!delivery.stuckOnce) {
+        delivery.stuckOnce = true
         const peek = setTimeout(() => {
           void this.peekDelivery(native)
         }, 1_000)
         peek.unref()
-        state.delivery.peek = peek
+        delivery.peekAt = this.now() + 1_000
+        delivery.peek = peek
         return
       }
       this.failDelivery(
@@ -1663,10 +1850,11 @@ export abstract class PtyHarnessDriver<S extends HarnessStoreHost = HarnessStore
 
   protected async deadlineDelivery(native: string, deadlineMs: number): Promise<void> {
     const state = this.live.get(native)
-    if (!state?.delivery || !state.turnInFlight) return
+    const delivery = state?.delivery
+    if (!delivery || !state.turnInFlight) return
     try {
       const raw = (await this.deps.screen?.(this.room(native))) ?? ''
-      if (!this.live.get(native)?.delivery) return
+      if (this.live.get(native)?.delivery !== delivery) return
       const dialog = parseBlockingDialog(raw)
       if (dialog) {
         const title = dialog.title ? ` (“${dialog.title}”)` : ''
@@ -1682,6 +1870,7 @@ export abstract class PtyHarnessDriver<S extends HarnessStoreHost = HarnessStore
           (err instanceof Error ? err.message : String(err)),
       )
     }
+    if (this.live.get(native)?.delivery !== delivery) return
     const secs = Math.round(deadlineMs / 1000)
     this.failDelivery(
       native,
@@ -2037,15 +2226,23 @@ export abstract class PtyHarnessDriver<S extends HarnessStoreHost = HarnessStore
       // so suppress an idle) but never release the lock from it.
       if (!(claimPending && edges.status.status === 'idle')) this.emit(native, statusEvent)
       if (edges.status.status === 'working') {
-        state.turnInFlight = true
-        this.markDelivered(native)
-        this.armQuietWindow(native)
-      } else if (!claimPending) {
+        // claimPending: the tracker can still be describing the previous turn
+        // (see the comment above). That edge must not prove THIS paste.
+        if (!state.deliveryFailed) {
+          state.turnInFlight = true
+          if (!claimPending) this.markDelivered(native)
+          this.armQuietWindow(native)
+        }
+      } else if (!claimPending && !state.deliveryFailed) {
         state.turnInFlight = false
       }
     }
-    if (edges?.turnCompleted && !claimPending) this.endTurn(native, 'end-turn', true)
-    else if (coalescedComplete) this.endTurn(native, 'end-turn', true)
+    // Late transcript proof after undelivered must not complete the turn again.
+    if (!state.deliveryFailed && edges?.turnCompleted && !claimPending) {
+      this.endTurn(native, 'end-turn', true)
+    } else if (!state.deliveryFailed && coalescedComplete) {
+      this.endTurn(native, 'end-turn', true)
+    }
     for (const p of edges?.promptsOpened ?? []) {
       state.pendingPrompts.set(p.promptId, { toolName: p.toolName, questions: p.questions })
       this.emit(native, {
@@ -2124,13 +2321,15 @@ export abstract class PtyHarnessDriver<S extends HarnessStoreHost = HarnessStore
     if (native === undefined) return
     if (!this.ownsEvent(native, ev)) return
     const state = this.ensureLive(native)
-    state.hooksSeen = true
-    if (
-      ev.type === 'message.user' &&
-      state.delivery?.key &&
-      deliveryKey(typeof ev.text === 'string' ? ev.text : '').includes(state.delivery.key)
-    ) {
-      this.markDelivered(native)
+    if (ev.type === 'message.user') {
+      state.hooksSeen = true
+      if (this.userEchoProvesDelivery(state, ev)) this.markDelivered(native)
+      if (typeof ev.text === 'string') {
+        state.lastUserEcho = {
+          key: deliveryKey(ev.text),
+          ts: typeof ev.ts === 'number' ? ev.ts : undefined,
+        }
+      }
     }
     if (state.turnInFlight) this.armQuietWindow(native)
     const sessionId = this.sid(native)
