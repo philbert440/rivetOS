@@ -62,9 +62,7 @@ function fakeGateway(): Harness {
 
 const flush = (): Promise<void> => new Promise((r) => setTimeout(r, 0))
 
-const snapshot = (
-  extra: Partial<HarnessTranscriptEvent> = {},
-): HarnessTranscriptEvent => ({
+const snapshot = (extra: Partial<HarnessTranscriptEvent> = {}): HarnessTranscriptEvent => ({
   type: 'transcript',
   sessionId: SID,
   rev: 1,
@@ -473,4 +471,18 @@ describe('sync re-arm', () => {
       vi.useRealTimers()
     }
   })
+})
+
+it('distinguishes a snapshot overlay reset from turn completion', () => {
+  const h = fakeGateway()
+  const onLive = vi.fn()
+  const att = attachHarnessSession({
+    gateway: h.gateway,
+    sessionId: SID,
+    onResync: () => {},
+    onLive,
+  })
+  h.emit(snapshot())
+  expect(onLive).toHaveBeenCalledWith(undefined, 'resync')
+  att.close()
 })

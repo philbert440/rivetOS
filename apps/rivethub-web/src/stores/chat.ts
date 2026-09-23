@@ -87,7 +87,16 @@ export interface TranscriptState {
  *  drivers reporting `approvals: false` never emit these). */
 export type PendingApproval = Extract<HarnessApprovalEvent, { type: 'approval-request' }>
 
+interface ReplyAcceptance {
+  id: string
+  accepted: boolean
+}
+
 interface ChatState {
+  replyAcceptance: Record<string, ReplyAcceptance | undefined>
+  beginReply: (sessionId: string, id: string) => ReplyAcceptance
+  acceptReply: (sessionId: string, generation: ReplyAcceptance) => void
+  clearAcceptedReply: (sessionId: string) => void
   /** transcripts keyed by sessionId; only sessions opened this visit */
   messages: Record<string, SessionMessage[] | undefined>
   /** Push-synced harness store transcripts (seamless modes v2). When a
@@ -589,6 +598,7 @@ export const useChat = create<ChatState>()(
       resolveSessionKey: keyOf,
       queueFor: (sessionId) => get().outbound[keyOf(sessionId)],
       messagesFor: (sessionId) => get().messages[keyOf(sessionId)],
+      replyAcceptance: {},
       outbound: {},
       harnessBound: {},
       approvals: {},
@@ -601,6 +611,27 @@ export const useChat = create<ChatState>()(
       wsEpoch: 0,
       drafts: [],
       draftCreatedAt: {},
+
+      beginReply: (sessionId, id) => {
+        const generation = { id, accepted: false }
+        set((s) => ({ replyAcceptance: { ...s.replyAcceptance, [keyOf(sessionId)]: generation } }))
+        return generation
+      },
+      acceptReply: (sessionId, generation) => {
+        const key = keyOf(sessionId)
+        const s = get()
+        if (
+          s.replyAcceptance[key] !== generation ||
+          !s.outbound[key]?.some((o) => o.id === generation.id && o.status === 'sending')
+        )
+          return
+        set({ replyAcceptance: { ...s.replyAcceptance, [key]: { ...generation, accepted: true } } })
+      },
+      clearAcceptedReply: (sessionId) => {
+        const key = keyOf(sessionId)
+        if (!get().replyAcceptance[key]) return
+        set((s) => ({ replyAcceptance: { ...s.replyAcceptance, [key]: undefined } }))
+      },
 
       seed: (sessionId, msgs) => {
         sessionId = keyOf(sessionId)
@@ -688,6 +719,7 @@ export const useChat = create<ChatState>()(
             live: drop(s.live),
             liveTs: drop(s.liveTs),
             ask: drop(s.ask),
+            replyAcceptance: drop(s.replyAcceptance),
             outbound: drop(s.outbound),
             harnessBound: drop(s.harnessBound),
             approvals: drop(s.approvals),
@@ -766,6 +798,7 @@ export const useChat = create<ChatState>()(
             live: move(s.live),
             liveTs: move(s.liveTs),
             ask: move(s.ask),
+            replyAcceptance: move(s.replyAcceptance),
             outbound: move(s.outbound),
             harnessBound: move(s.harnessBound),
             approvals: move(s.approvals),
@@ -1253,6 +1286,7 @@ export const useChat = create<ChatState>()(
             live: {},
             liveTs: {},
             ask: {},
+            replyAcceptance: {},
             outbound: {},
             sessionAliases: {},
             harnessBound: {},
@@ -1463,3 +1497,26 @@ export function lastActiveFor(
   if (lastActive === undefined || lastActive.baseUrl !== baseUrl) return undefined
   return lastActive.sessionId
 }
+
+// Store-owned evidence survives view remounts. Compare the old key on a move:
+// adoption itself is not a new status, assistant reply, or turn completion.
+useChat.subscribe((state, prev) => {
+  for (const [key, marker] of Object.entries(state.replyAcceptance)) {
+    if (!marker) continue
+    const previousKey = Object.keys(prev.replyAcceptance).find(
+      (k) => prev.replyAcceptance[k] === marker,
+    )
+    if (!previousKey) continue
+    const turn = state.live[key]
+    const content = !!(turn?.text || turn?.reasoningText || turn?.tools.length)
+    if (
+      (state.agentStatus[key] !== undefined &&
+        state.agentStatus[key] !== prev.agentStatus[previousKey]) ||
+      (turn !== prev.live[previousKey] && content) ||
+      (state.liveTs[key] !== prev.liveTs[previousKey] && !turn) ||
+      (state.messages[key] !== prev.messages[previousKey] &&
+        state.messages[key]?.at(-1)?.role === 'assistant')
+    )
+      state.clearAcceptedReply(key)
+  }
+})

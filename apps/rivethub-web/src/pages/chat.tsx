@@ -88,7 +88,7 @@ import { isAskUserTool, questionsFromLiveTools } from '../lib/ask-user.js'
 import { accentFor } from '../lib/agent-accent.js'
 import { attachHarnessSession } from '../lib/harness-attach.js'
 import { statusActivity } from '../lib/harness-fold.js'
-import { agentStatusLine } from '../lib/harness-turns.js'
+import { deriveReplyWait, nextWaitClock, type ReplyWaitClock } from '../lib/harness-turns.js'
 import { createPtyEnsurer } from '../lib/pty-ensure.js'
 import { outboundPumpFor } from '../lib/chat-outbound.js'
 import {
@@ -1131,6 +1131,15 @@ function ActiveSession(props: {
   // Selectors must return stable references when empty (see EMPTY_* above).
   const messages = useChat((s) => s.messagesFor(props.sessionId) ?? EMPTY_MESSAGES)
   const agentStatus = useChat((s) => s.agentStatus[s.resolveSessionKey(props.sessionId)])
+  // Local-send evidence follows the session through draft adoption.
+  const acceptedReply = useChat((s) => {
+    const marker = s.replyAcceptance[s.resolveSessionKey(props.sessionId)]
+    return marker?.accepted ? marker.id : undefined
+  })
+  const clearAcceptedReply = useCallback(() => {
+    useChat.getState().clearAcceptedReply(props.sessionId)
+  }, [props.sessionId])
+
   // The live turn changes identity on every streaming tick. Subscribe to the
   // full object only while it is actually rendered (chat mode); terminal
   // rides the boolean selectors below, so a busy stream doesn't repaint the
@@ -1279,11 +1288,22 @@ function ActiveSession(props: {
           useChat.getState().applyAgentStatus(props.sessionId, ev)
           if (ev.status === 'working') outboundPumpFor(props.sessionId).pump.onBusy()
         },
-        onTurnComplete: () => outboundPumpFor(props.sessionId).pump.onIdle(),
         onPrompt: (ev) => useChat.getState().applyPromptEvent(props.sessionId, ev),
         onControlReset: () => useChat.getState().clearHarnessPrompts(props.sessionId),
-        onLive: (turn) => useChat.getState().setLive(props.sessionId, turn),
+        onLive: (turn, reason) => {
+          // A snapshot resets the overlay, not the in-flight send generation.
+          if (reason === 'resync') {
+            useChat.getState().clearLive(props.sessionId)
+            return
+          }
+          if (!turn) clearAcceptedReply()
+          useChat.getState().setLive(props.sessionId, turn)
+        },
         onApproval: (event) => useChat.getState().applyApprovalEvent(props.sessionId, event),
+        onTurnComplete: () => {
+          clearAcceptedReply()
+          outboundPumpFor(props.sessionId).pump.onIdle()
+        },
         onSessionUpdated: () => {
           void queryClient.invalidateQueries({
             queryKey: ['remote-session', sessionBase, props.sessionId],
@@ -1291,12 +1311,16 @@ function ActiveSession(props: {
         },
         liveSource: () =>
           useChat.getState().liveSource[useChat.getState().resolveSessionKey(props.sessionId)],
-        onError: (err) => setStreamError(err instanceof Error ? err.message : String(err)),
+        onError: (err) => {
+          clearAcceptedReply()
+          setStreamError(err instanceof Error ? err.message : String(err))
+        },
         // Terminal: the attachment has already stopped itself, so say so plainly
         // instead of leaving a banner that looks like it might clear.
         onFatal: (message) => {
           outboundPumpFor(props.sessionId).pump.onDeliveryLost()
           outboundPumpFor(props.sessionId).closeObserver()
+          clearAcceptedReply()
           useChat.getState().setLive(props.sessionId, undefined)
           setStreamError(`${message} — this session is no longer attachable`)
         },
@@ -1321,6 +1345,7 @@ function ActiveSession(props: {
     sessionGateway,
     sessionBase,
     queryClient,
+    clearAcceptedReply,
   ])
   const transcript = useChat((s) => s.transcripts[s.resolveSessionKey(props.sessionId)])
   const storeHasTurns = (transcript?.turns.length ?? 0) > 0
@@ -1719,7 +1744,24 @@ function ActiveSession(props: {
     }
   }
 
-  pumpEntry.sink.current = injectOne
+  pumpEntry.sink.current = async (...args) => {
+    clearAcceptedReply()
+    const id = useChat
+      .getState()
+      .queueFor(props.sessionId)
+      ?.find((o) => o.status === 'sending')?.id
+    const generation = id ? useChat.getState().beginReply(props.sessionId, id) : undefined
+    try {
+      await injectOne(...args)
+      if (generation) useChat.getState().acceptReply(props.sessionId, generation)
+    } catch (err) {
+      const state = useChat.getState()
+      if (state.replyAcceptance[state.resolveSessionKey(props.sessionId)] === generation) {
+        clearAcceptedReply()
+      }
+      throw err
+    }
+  }
 
   const pumpOutbound = (opts?: { forceId?: string; interrupt?: boolean }): Promise<void> =>
     pumpEntry.pump.pump(opts)
@@ -1803,14 +1845,49 @@ function ActiveSession(props: {
     () => Object.fromEntries(outbound.flatMap((o) => (o.note ? [[o.id, o.note]] : []))),
     [outbound],
   )
-  // Thinking window (no block yet), blocked, prompt: one line under the
-  // transcript so the agent is never silently "working" (requirement 3).
-  const statusLine = agentStatusLine(live, agentStatus)
+  const [waitClock, setWaitClock] = useState<ReplyWaitClock>()
+  const [, setWaitTick] = useState(0)
+  const replyWait = deriveReplyWait({
+    outbound,
+    acceptedReply,
+    live,
+    status: agentStatus,
+    clock: waitClock,
+    now: Date.now(),
+  })
+  const waitKey = replyWait.waitKey
+  // A new outbound identity gets a fresh deadline. Each real status frame is
+  // also a heartbeat, including while the harness is waiting for its first token.
+  const previousWaitStatus = useRef(agentStatus)
+  useEffect(() => {
+    const next = nextWaitClock(
+      waitClock,
+      waitKey,
+      previousWaitStatus.current !== agentStatus,
+      Date.now(),
+    )
+    previousWaitStatus.current = agentStatus
+    if (next !== waitClock) setWaitClock(next)
+  }, [waitKey, agentStatus, waitClock])
+  const deadline = replyWait.deadline
+  useEffect(() => {
+    if (deadline === undefined) return
+    let id: ReturnType<typeof setTimeout>
+    const fire = () => {
+      const remaining = deadline - Date.now()
+      if (remaining > 0) id = setTimeout(fire, remaining)
+      else setWaitTick((n) => n + 1)
+    }
+    id = setTimeout(fire, Math.max(0, deadline - Date.now()))
+    return () => clearTimeout(id)
+  }, [deadline])
+  const { displayLive, statusLine } = replyWait
 
   // Capability-gated affordances. `canInterrupt` is the driver's own flag —
   // hidden rather than shown-and-501'd when the node has no interrupt path.
   const onInterrupt = (): void => {
     if (!canonicalId) return
+    clearAcceptedReply()
     void sessionGateway()
       .then((gw) => gw.interruptHarnessSession(canonicalId))
       .then(() => clearLive(props.sessionId))
@@ -1953,7 +2030,7 @@ function ActiveSession(props: {
               presetColor: props.item?.accent,
               command: harnessCommand ?? settings?.agent,
             })}
-            live={live}
+            live={displayLive}
             outbound={outboundStatus}
             outboundNotes={outboundNotes}
             statusLine={statusLine}
