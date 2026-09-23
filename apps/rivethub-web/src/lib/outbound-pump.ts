@@ -14,9 +14,14 @@
  *     EVER latches (no hooks / dead bridge) do we drop the placeholder and
  *     let the queue flow.
  *   - **`turn_in_flight` retry.** v1 drivers never queue, so a mid-turn send
- *     is simply "not yet": the turn goes back on the queue and retries once
- *     per `status idle` / `turn-complete` edge (`onIdle()`). After the
- *     attempt cap the user's inject button is the (interrupting) manual retry.
+ *     is simply "not yet": the turn goes back on the queue and retries on the
+ *     next `status idle` / `turn-complete` edge (`onIdle()`). A dialog
+ *     rejection never starts a turn, so that edge may never come — a bounded
+ *     backoff (3s, then 6s, then 12s) retries anyway, cancelled by a real idle
+ *     edge, a new send, or dispose. After TURN_RETRY_ATTEMPTS the user's
+ *     inject button is the manual retry: that send sets bypassDialogGate so
+ *     a copied-rule false positive can go through. Automatic retries never
+ *     set it. Interrupt (Esc a busy turn) is separate and is not the bypass.
  *   - **`turn_undelivered`.** den accepted the inject but the harness never
  *     took it. The pump keeps the last accepted item and `onUndelivered()`
  *     puts it back as failed (no auto-retry — a dialog may need answering).
@@ -39,6 +44,19 @@ export const INJECT_LATCH_MS = 6_000
  * worse than leaving the message queued with its inject button.
  */
 export const TURN_RETRY_ATTEMPTS = 6
+/**
+ * Timer retry when `turn_in_flight` is not followed by an idle edge (a
+ * harness dialog was dismissed in the terminal, so status never left `idle`).
+ * Doubles from 3s and caps at 12s. The attempt cap is still
+ * `TURN_RETRY_ATTEMPTS`.
+ */
+export const TURN_RETRY_BACKOFF_MS = [3_000, 6_000, 12_000] as const
+
+/** Delay before the timer retry that follows the `attempts`-th rejection. */
+export function turnRetryDelayMs(attempts: number): number {
+  const idx = Math.min(Math.max(attempts, 1), TURN_RETRY_BACKOFF_MS.length) - 1
+  return TURN_RETRY_BACKOFF_MS[idx]
+}
 
 /** The slice of the chat store the pump drives (also the test seam). */
 export interface OutboundPumpStore {
@@ -69,6 +87,8 @@ export interface OutboundPumpOptions {
     text: string,
     interrupt: boolean,
     attachments?: OutboundItem['attachments'],
+    /** True only for the user's inject button (`forceId`), never an auto-retry. */
+    bypassDialogGate?: boolean,
   ) => Promise<void>
   /** The driver's "a turn is already running" rejection. */
   isTurnInFlight: (err: unknown) => boolean
@@ -93,7 +113,8 @@ export interface OutboundPump {
   dispose(): void
   /**
    * `status idle` / `turn-complete` edge: retry a turn that was requeued for
-   * `turn_in_flight`, once per edge, up to TURN_RETRY_ATTEMPTS.
+   * `turn_in_flight`, once per edge, up to TURN_RETRY_ATTEMPTS. Cancels a
+   * pending backoff timer so the edge and the timer cannot both inject.
    */
   onIdle(): void
   /** den reported `turn_undelivered` for the last accepted inject; `note` says why. */
@@ -121,6 +142,27 @@ export function createOutboundPump(opts: OutboundPumpOptions): OutboundPump {
   /** Waiting for an idle/turn-complete edge to retry. */
   let awaitingIdle = false
   let lastAccepted: OutboundItem | undefined
+  /** Backoff retry for the same wait. Cleared by an idle edge, a new send, or dispose. */
+  let idleRetryTimer: ReturnType<typeof setTimeout> | undefined
+
+  const clearIdleRetryTimer = (): void => {
+    if (idleRetryTimer !== undefined) {
+      clearTimeout(idleRetryTimer)
+      idleRetryTimer = undefined
+    }
+  }
+
+  const armIdleRetryTimer = (attempts: number): void => {
+    clearIdleRetryTimer()
+    if (disposed || attempts > TURN_RETRY_ATTEMPTS) return
+    idleRetryTimer = setTimeout(() => {
+      idleRetryTimer = undefined
+      // Leave `awaitingIdle` set if this pump no-ops (still busy). The idle
+      // edge can still retry; re-arming here would poll a permission prompt.
+      if (disposed || !awaitingIdle) return
+      void pump().catch(() => undefined)
+    }, turnRetryDelayMs(attempts))
+  }
 
   const pump = async (pumpOpts?: { forceId?: string; interrupt?: boolean }): Promise<void> => {
     if (disposed || pumping) return
@@ -137,10 +179,19 @@ export function createOutboundPump(opts: OutboundPumpOptions): OutboundPump {
     inFlight = next.id
     const gen = generation
     const superseded = (): boolean => gen !== generation
+    // A new send owns the queue now. Drop the backoff so it cannot also fire.
+    clearIdleRetryTimer()
+    awaitingIdle = false
     store.markSending(sessionId(), next.id)
     store.beginLive(sessionId(), 'working…')
     try {
-      await opts.inject(next.text, pumpOpts?.interrupt === true, next.attachments)
+      await opts.inject(
+        next.text,
+        pumpOpts?.interrupt === true,
+        next.attachments,
+        // forceId is the user's inject button. Timer and idle retries omit it.
+        Boolean(pumpOpts?.forceId),
+      )
       // Cancelled/disposed mid-inject: a newer generation owns `pumping` and
       // the live slot — leave both alone.
       if (superseded()) return
@@ -149,6 +200,7 @@ export function createOutboundPump(opts: OutboundPumpOptions): OutboundPump {
       turnRetries.delete(next.id)
       inFlight = undefined
       awaitingIdle = false
+      clearIdleRetryTimer()
       // Hold the pump until the harness's stream latches busy (see header).
       await store.awaitBusy(sessionId(), INJECT_LATCH_MS)
       if (superseded()) return
@@ -162,8 +214,9 @@ export function createOutboundPump(opts: OutboundPumpOptions): OutboundPump {
       pumping = false
       inFlight = undefined
       if (opts.isTurnInFlight(err)) {
-        // Not a failure: put the turn back in the queue and retry on the
-        // next idle / turn-complete edge.
+        // Not a failure: put the turn back and retry on the next idle /
+        // turn-complete edge, or on the backoff timer if that edge never
+        // comes (a dialog was dismissed without a status change).
         store.requeue(sessionId(), next.id, sendBlockNote(err))
         // Only the pre-inject placeholder goes: a real streaming turn is
         // exactly WHY the driver said no, and dropping its bubble would blank
@@ -172,10 +225,13 @@ export function createOutboundPump(opts: OutboundPumpOptions): OutboundPump {
         const attempts = (turnRetries.get(next.id) ?? 0) + 1
         turnRetries.set(next.id, attempts)
         awaitingIdle = attempts <= TURN_RETRY_ATTEMPTS
+        if (awaitingIdle) armIdleRetryTimer(attempts)
+        else clearIdleRetryTimer()
         return
       }
       turnRetries.delete(next.id)
       awaitingIdle = false
+      clearIdleRetryTimer()
       store.fail(sessionId(), next.id, sendBlockNote(err))
       store.clearLive(sessionId())
       // Try the next queued message after a failure.
@@ -208,9 +264,11 @@ export function createOutboundPump(opts: OutboundPumpOptions): OutboundPump {
       pumping = false
       awaitingIdle = false
       lastAccepted = undefined
+      clearIdleRetryTimer()
     },
     onIdle: () => {
       if (disposed || !awaitingIdle) return
+      clearIdleRetryTimer()
       awaitingIdle = false
       void pump().catch(() => undefined)
     },
@@ -287,7 +345,8 @@ export function createOutboundPumpRegistry(
         currentSessionKey: () =>
           subscribe ? entry.key : (store.resolveSessionKey?.(entry.key) ?? entry.key),
         store,
-        inject: (text, interrupt, attachments) => sink.current(text, interrupt, attachments),
+        inject: (text, interrupt, attachments, bypassDialogGate) =>
+          sink.current(text, interrupt, attachments, bypassDialogGate),
         isTurnInFlight,
       }),
     }

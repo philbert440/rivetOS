@@ -3,9 +3,28 @@
  * Fixture-driven from Claude Code 2.1.280 ("Teach auto mode about your
  * environment?") plus the 2.1.263 permission / AskUserQuestion screens.
  *
- * Shape-based: numbered options with exactly one ❯, a confirm/cancel footer,
- * and nothing after the footer except separators, an empty input box, or a
- * status/hint line. Unknown screens return undefined (fail open).
+ * Claude-only. The driver gate is opt-in, and the legacy inject route checks
+ * the roster command — anything that is not Claude Code fails open. Codex's
+ * `Press enter to confirm or esc to cancel` and grok/kimi dialogs are not
+ * matched and not gated — this footer looks for capital-E `Enter to
+ * confirm|select|continue` / `Esc to cancel|go back|exit`, which those
+ * harnesses do not render.
+ *
+ * Shape-based: numbered options with exactly one ❯, consecutive keys
+ * (starting at 1 unless the first visible row has a scrolled-list `↑` marker), a confirm/cancel footer, and
+ * nothing after the footer except separators, an empty input box, or the
+ * composer status line. Unknown screens return undefined (fail open).
+ *
+ * The permission prompt and the AskUserQuestion picker replace the composer
+ * in the captures, but a live pane still has the composer tail under them.
+ * An empty `❯` between the footer and the status chrome is that tail — the
+ * same shape a reply has when it quotes a menu. A menu above it matches when
+ * a box-drawing rule frames the options (bounded walk: stop at the first
+ * blank above the question block, or 8 lines) or a question line sits in the
+ * option block's own body before any blank. Permission and AskUserQuestion
+ * have no box rule; the question line is what keeps them. A quote is split
+ * from the menu by a blank, so it does not match. A quote that copies the
+ * rule is not distinguishable from the live dialog.
  */
 
 import { screenLines } from './permission-prompt.js'
@@ -17,24 +36,116 @@ export interface BlockingDialog {
   options: { key: string; label: string }[]
 }
 
-// `↑`/`↓` mark a scrolled list's first/last visible row (the /model picker).
 const OPTION_LINE = /^\s*(?:[❯↑↓]\s*)?(\d+)\.\s+(.+?)\s*$/
-const SEPARATOR = /^[\s─━▔▁-]+$/
+/** A rule, not a list item. `- item` has other characters; `--` is too short. */
+const SEPARATOR = /^\s*[─━▔▁-]{3,}\s*$/
+/** Dialog frame in the fixtures. ASCII `---` is a separator, not this rule. */
+const DIALOG_RULE = /^\s*[─━▔▁]{3,}\s*$/
 const FOOTER = /Enter to (confirm|select|continue)|Esc to (cancel|go back|exit)/
 const EMPTY_INPUT = /^\s*❯\s*$/
-const HINT = /⏵⏵|\? for shortcuts|shift\+tab to cycle|for agents/
+/** Composer status chrome, not a reply that merely says "for agents". */
+const HINT = /^\s*⏵⏵ .+\(shift\+tab to cycle\) · ← for agents\s*$|^\s*\? for shortcuts\s*$/
 
 function isWrap(line: string): boolean {
   if (/^\s*$/.test(line) || SEPARATOR.test(line) || OPTION_LINE.test(line)) return false
   return /^\s+\S/.test(line)
 }
 
-function afterFooterLive(lines: string[], footerIdx: number): boolean {
+/** Next lower option key, walking up the block. `1` has none. */
+function predecessorKey(key: string): string | undefined {
+  const n = Number(key)
+  if (!Number.isInteger(n) || n <= 1) return undefined
+  return String(n - 1)
+}
+
+/** First post-footer line that is not live composer chrome. */
+function rejectingTailLine(lines: string[], footerIdx: number): string | undefined {
   for (let i = footerIdx + 1; i < lines.length; i++) {
     const line = lines[i]
     if (/^\s*$/.test(line)) continue
     if (SEPARATOR.test(line) || EMPTY_INPUT.test(line) || HINT.test(line)) continue
+    return line
+  }
+  return undefined
+}
+
+/** How far above the options a framing rule may sit. */
+const RULE_WALK_LIMIT = 8
+
+/** Dialog question (`Do you want to proceed?`, `Which color would you like?`).
+ *  A `●` reply that quotes a question is not one. */
+function isQuestionLine(line: string): boolean {
+  const text = line.trim()
+  if (!text.endsWith('?') || text.length > 160) return false
+  return !/^[●○]/.test(text)
+}
+
+/** Empty `❯` between the footer and the status chrome. A dialog that replaced
+ *  the composer has no such input, so the gate does not also demand a frame. */
+function composerBetweenFooterAndChrome(lines: string[], footerIdx: number): boolean {
+  for (let i = footerIdx + 1; i < lines.length; i++) {
+    const line = lines[i]
+    if (HINT.test(line)) return false
+    if (EMPTY_INPUT.test(line)) return true
+  }
+  return false
+}
+
+/** Question line in the option block's own body, before any blank.
+ *  Permission and AskUserQuestion have no box rule; the question sits on
+ *  the options. A quoted menu is separated from its prose by a blank. */
+function questionDirectlyAbove(lines: string[], firstOptionIdx: number): boolean {
+  for (let i = firstOptionIdx - 1; i >= 0; i--) {
+    const line = lines[i]
+    if (/^\s*$/.test(line)) return false
+    if (isQuestionLine(line)) return true
+    if (OPTION_LINE.test(line) || isWrap(line) || SEPARATOR.test(line)) continue
     return false
+  }
+  return false
+}
+
+/** Box rule above the options. Stops at the first blank above the question
+ *  block (the next line must be the rule) or after RULE_WALK_LIMIT lines, so
+ *  a rule copied into scrollback does not match. Option rows are skipped so
+ *  a stale `❯` inside the frame does not hide the rule. */
+function dialogRuleAbove(lines: string[], firstOptionIdx: number): boolean {
+  let seenTitle = false
+  let steps = 0
+  const step = (): boolean => {
+    steps += 1
+    return steps <= RULE_WALK_LIMIT
+  }
+  for (let i = firstOptionIdx - 1; i >= 0; i--) {
+    if (!step()) return false
+    const line = lines[i]
+    if (/^\s*$/.test(line)) {
+      if (!seenTitle) continue
+      for (let j = i - 1; j >= 0; j--) {
+        if (!step()) return false
+        const above = lines[j]
+        if (/^\s*$/.test(above)) return false
+        return DIALOG_RULE.test(above)
+      }
+      return false
+    }
+    if (DIALOG_RULE.test(line)) return true
+    if (isQuestionLine(line)) {
+      seenTitle = true
+      continue
+    }
+    if (isWrap(line) || OPTION_LINE.test(line)) continue
+    return false
+  }
+  return false
+}
+
+/** Consecutive keys start at 1 unless the first visible row marks a scrolled list. */
+function sequentialKeys(options: { key: string }[], firstRow: string): boolean {
+  const first = Number(options[0].key)
+  if (first < 1 || (first !== 1 && !/^\s*↑/.test(firstRow))) return false
+  for (let i = 0; i < options.length; i++) {
+    if (options[i].key !== String(first + i)) return false
   }
   return true
 }
@@ -50,48 +161,111 @@ export function parseBlockingDialog(screen: string): BlockingDialog | undefined 
     }
   }
   if (footerIdx < 0) return undefined
-  if (!afterFooterLive(lines, footerIdx)) return undefined
+  const tailLine = rejectingTailLine(lines, footerIdx)
+  if (tailLine !== undefined) {
+    // Dismissed dialogs in scrollback are routine. A new live status line can
+    // also reach this fail-open path, so retain a debug signal for UI changes.
+    console.debug(
+      `[den-server] blocking-dialog: footer matched but the post-footer check rejected the tail (${JSON.stringify(
+        tailLine.trim().slice(0, 80),
+      )}); gate fail-open`,
+    )
+    return undefined
+  }
 
   let lastOptionIdx = -1
-  // Room for rows between the list and the footer (`… +1 model`, an effort row).
-  const earliest = Math.max(0, footerIdx - 5)
+  // Scan up to the first option-like row. Ten lines covers the /model picker
+  // plus one extra chrome row; a menu buried further up in scrollback does not.
+  const earliest = Math.max(0, footerIdx - 10)
   for (let i = footerIdx - 1; i >= earliest; i--) {
     if (OPTION_LINE.test(lines[i])) {
       lastOptionIdx = i
       break
     }
   }
-  if (lastOptionIdx < 0) return undefined
+  if (lastOptionIdx < 0) {
+    console.debug(
+      '[den-server] blocking-dialog: footer matched but no option row within 10 lines above it; gate fail-open',
+    )
+    return undefined
+  }
 
-  // Walk up the option block. Blank, separator and indented lines between two
-  // options are only skipped when they belong to the option above them: an
-  // indented line is that option's description only if it sits deeper than
-  // the option's number. The dialog's own title/body (and any reply above the
-  // dialog) is not, so the walk stops there instead of gluing in numbered
-  // lines — or an old `❯` row — from further up the screen.
+  // One digit column, consecutive keys, and more deeply indented descriptions.
+  // A blank ends the block so stale pointers above a gap are excluded. A rule
+  // ends it unless the row above is the predecessor (the AskUserQuestion picker
+  // draws a rule between "Type something." and "Chat about this"). Column-0
+  // lists belong to a different column and cannot be glued onto the options.
   const options: { key: string; label: string }[] = []
   let pointers = 0
   let firstOptionIdx = lastOptionIdx
   let gapIndent = Infinity
+  let blockDigitCol = -1
+  let walkBreak: string | undefined
   for (let i = lastOptionIdx; i >= 0; i--) {
     const line = lines[i]
+    if (/^\s*$/.test(line)) break
     const m = OPTION_LINE.exec(line)
     if (m) {
-      if (gapIndent <= line.search(/\d/)) break
+      const digitCol = line.search(/\d/)
+      const top = options[0]
+      if (!top) {
+        blockDigitCol = digitCol
+      } else if (digitCol !== blockDigitCol || gapIndent <= digitCol) {
+        walkBreak = 'column'
+        break
+      } else {
+        const prev = predecessorKey(top.key)
+        if (prev === undefined || m[1] !== prev) {
+          walkBreak = 'predecessor'
+          break
+        }
+      }
       if (/^\s*❯/.test(line)) pointers += 1
       options.unshift({ key: m[1], label: m[2].trim() })
       firstOptionIdx = i
       gapIndent = Infinity
       continue
     }
-    if (/^\s*$/.test(line) || SEPARATOR.test(line)) continue
+    if (SEPARATOR.test(line)) {
+      const above = i > 0 ? lines[i - 1] : ''
+      const aboveMatch = OPTION_LINE.exec(above)
+      const top = options[0]
+      const prev = top ? predecessorKey(top.key) : undefined
+      if (
+        aboveMatch &&
+        prev !== undefined &&
+        aboveMatch[1] === prev &&
+        above.search(/\d/) === blockDigitCol
+      ) {
+        continue
+      }
+      walkBreak = 'separator'
+      break
+    }
     if (isWrap(line)) {
       gapIndent = Math.min(gapIndent, line.search(/\S/))
       continue
     }
+    walkBreak = 'content'
     break
   }
-  if (options.length < 2 || pointers !== 1) return undefined
+  if (options.length < 2 || pointers !== 1 || !sequentialKeys(options, lines[firstOptionIdx])) {
+    console.debug(
+      `[den-server] blocking-dialog: option walk rejected (${walkBreak ?? 'shape'}); gate fail-open`,
+    )
+    return undefined
+  }
+
+  if (
+    composerBetweenFooterAndChrome(lines, footerIdx) &&
+    !dialogRuleAbove(lines, firstOptionIdx) &&
+    !questionDirectlyAbove(lines, firstOptionIdx)
+  ) {
+    console.debug(
+      '[den-server] blocking-dialog: footer matched above a live input box but no dialog rule or question line frames the menu; gate fail-open',
+    )
+    return undefined
+  }
 
   let sepIdx = -1
   for (let i = firstOptionIdx - 1; i >= 0; i--) {
@@ -112,9 +286,8 @@ export function parseBlockingDialog(screen: string): BlockingDialog | undefined 
   return { title, options }
 }
 
-/** Read the screen and parse it, failing open: a read error or an empty screen means
- *  "no dialog", so a flaky capture never blocks chat. For callers without their own
- *  logging (the legacy `POST /term/inject` route). */
+/** Read and parse the screen, failing open for callers without their own logging
+ * (the legacy `POST /term/inject` route). */
 export async function dialogOnScreen(
   read: () => Promise<string> | string,
 ): Promise<BlockingDialog | undefined> {

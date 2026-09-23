@@ -1606,6 +1606,8 @@ function ActiveSession(props: {
     text: string,
     interrupt = false,
     attachments?: import('@rivetos/types').UserTurn['attachments'],
+    // Set only when the pump was started with forceId (the inject button).
+    bypassDialogGate = false,
   ): Promise<void> => {
     if (remoteDead) {
       throw new Error(`this thread's session no longer exists on ${urlLabel(sessionBase)}`)
@@ -1639,6 +1641,7 @@ function ActiveSession(props: {
         ...(nativeAttachments && attachments?.length ? { attachments } : {}),
         ...(harnessId === nativeHarnessId ? turnOptions.effective : {}),
         ...(prompt ? { systemPrompt: prompt } : {}),
+        ...(bypassDialogGate ? { bypassDialogGate: true } : {}),
       })
     }
     // A loaded harness summary can route a plain turn before descriptors arrive.
@@ -1677,6 +1680,7 @@ function ActiveSession(props: {
           session: props.sessionId,
           text: injectText,
           ...(interrupt ? { interrupt } : {}),
+          ...(bypassDialogGate ? { bypassDialogGate: true } : {}),
         })
       } catch {
         // The harness may have been LRU-evicted while we held a stale pty ref
@@ -1687,7 +1691,11 @@ function ActiveSession(props: {
         protocolSessionRef.current = undefined
         setTermPtyId(undefined)
         await ensurePty()
-        await gw.termInject({ session: props.sessionId, text: injectText })
+        await gw.termInject({
+          session: props.sessionId,
+          text: injectText,
+          ...(bypassDialogGate ? { bypassDialogGate: true } : {}),
+        })
       }
       if (prompt) markSystemPromptSent(props.sessionId)
     } catch (err) {
@@ -1727,7 +1735,9 @@ function ActiveSession(props: {
   const onInjectOutbound = useCallback(
     (id: string): void => {
       // Inject NOW means now: Esc the in-flight turn so the harness drops what
-      // it's doing and picks this message up. A failed turn's retry does not interrupt.
+      // it's doing and picks this message up. A failed turn's retry does not
+      // interrupt. forceId is also the dialog-gate bypass — only this button
+      // sets it, so a copied-rule false positive can be sent.
       const state = useChat.getState()
       const key = state.resolveSessionKey(props.sessionId)
       const failed = state.queueFor(props.sessionId)?.find((o) => o.id === id)?.status === 'failed'
