@@ -868,6 +868,38 @@ describe('HarnessError → HTTP status mapping', () => {
     expect(await res.json()).toMatchObject({ code, error: `boom: ${code}` })
   })
 
+  it('puts only the string harness_dialog reason on the 409 body without the pane', async () => {
+    const driver = new FakeDriver()
+    driver.add(SID)
+    const { base } = await start(driver)
+    const title = `Teach auto mode ${'x'.repeat(200)}`
+    driver.next = new HarnessError('turn_in_flight', 'showing a dialog', {
+      harnessId: 'claude-code',
+      sessionId: SID,
+      context: {
+        reason: 'harness_dialog',
+        dialog: {
+          title,
+          options: [
+            { key: '1', label: 'Yes' },
+            { key: '2', label: 'Not now' },
+          ],
+        },
+        pane: 'RAW PANE ❯ 1. Yes',
+      },
+    })
+    const res = await post(base, `/api/harness-sessions/${enc(SID)}/turns`, { text: 'x' })
+    expect(res.status).toBe(409)
+    const body = await res.json()
+    expect(body).toEqual({
+      error: 'showing a dialog',
+      code: 'turn_in_flight',
+      retryable: true,
+      reason: 'harness_dialog',
+    })
+    expect(JSON.stringify(body)).not.toContain('RAW PANE')
+  })
+
   it('forwards a string context.reason, and omits reason when there is none', async () => {
     const driver = new FakeDriver()
     driver.add(SID)
@@ -883,6 +915,23 @@ describe('HarnessError → HTTP status mapping', () => {
     const busy = await post(base, `/api/harness-sessions/${enc(SID)}/turns`, { text: 'x' })
     expect(await busy.json()).not.toHaveProperty('reason')
   })
+
+  it.each([null, 42, { pane: 'RAW PANE' }, ['harness_dialog']])(
+    'omits a non-string context.reason (%j)',
+    async (reason) => {
+      const driver = new FakeDriver()
+      driver.add(SID)
+      const { base } = await start(driver)
+      driver.next = new HarnessError('turn_in_flight', 'mid-turn', { context: { reason } })
+      const res = await post(base, `/api/harness-sessions/${enc(SID)}/turns`, { text: 'x' })
+      expect(res.status).toBe(409)
+      expect(await res.json()).toEqual({
+        error: 'mid-turn',
+        code: 'turn_in_flight',
+        retryable: true,
+      })
+    },
+  )
 
   it('500s a non-contract driver failure', async () => {
     const driver = new FakeDriver()

@@ -393,6 +393,12 @@ export abstract class PtyHarnessDriver<S extends HarnessStoreHost = HarnessStore
   protected readonly deliveryConfirmMs: number
   protected readonly deliveryFallbackMs: number
   protected readonly deliveryPeekMs: number
+  /**
+   * Pre-send blocking-dialog gate. Default off. Only a subclass whose screens
+   * are fixtured (Claude Code) opts in — a false positive 409s every send,
+   * including a manual inject, and there is no bypass.
+   */
+  protected dialogGate = false
 
   /** native id → live view (status, in-flight turn, open tool calls). */
   protected readonly live = new Map<string, LiveState>()
@@ -724,15 +730,20 @@ export abstract class PtyHarnessDriver<S extends HarnessStoreHost = HarnessStore
     try {
       const applySystemPrompt = !state.systemPromptApplied
       const injected = harnessTurnText(turn, applySystemPrompt)
-      let ptyId = await this.ensurePty(pty, native)
-      const dialog = await this.openDialog(native)
-      if (dialog) {
-        throw new HarnessError(
+      const dialogRejection = (dialog: BlockingDialog): HarnessError =>
+        new HarnessError(
           'turn_in_flight',
           `${this.harnessId} ${native} is showing a dialog; answer it in the terminal first`,
           { harnessId: this.harnessId, sessionId, context: { reason: 'harness_dialog', dialog } },
         )
-      }
+      let ptyId = await this.ensurePty(pty, native)
+      // Snapshot, not a lock. A dialog can open after this read and still
+      // receive the paste, and a fresh spawn's first capture can predate the
+      // first paint — a startup dialog, or an early digit+Enter that selects
+      // a menu option, can still race through. The dead-PTY retry below
+      // re-checks; it does not close this window.
+      const dialog = await this.openDialog(native)
+      if (dialog) throw dialogRejection(dialog)
       if (!pty.inject(ptyId, injected, true)) {
         // The term manager keeps its session→pty mapping until the EXITED
         // record is reaped (exitLingerMs), so a harness that just died still
@@ -740,8 +751,11 @@ export abstract class PtyHarnessDriver<S extends HarnessStoreHost = HarnessStore
         // `capability_unsupported` there would tell the client "this node
         // cannot do turns" — false, and a 501 is not retryable. Re-spawn
         // through the same `--resume` path a fully-reaped session takes and try
-        // once more.
+        // once more. Re-check the pane first: a dialog may have painted
+        // between the pre-send snapshot and this retry.
         ptyId = await this.spawnFor(pty, native, true)
+        const retryDialog = await this.openDialog(native)
+        if (retryDialog) throw dialogRejection(retryDialog)
         if (!pty.inject(ptyId, injected, true)) {
           // A live-but-unwritable harness means its pre-ready inject buffer is
           // full — genuinely transient, so say so instead of 501.
@@ -1517,9 +1531,19 @@ export abstract class PtyHarnessDriver<S extends HarnessStoreHost = HarnessStore
     void this.captureBlockedScreen(native)
   }
 
-  /** Screen read before a paste. Fails open: no `screen` dep, a capture error, or an empty
-   *  screen all mean "no dialog", so a flaky capture can never block chat. */
+  /**
+   * Screen read before a paste. Off unless `dialogGate` is set — only Claude
+   * Code screens are validated, and a false positive 409s every send with no
+   * bypass. Fails open: no `screen` dep, a capture error, or an empty screen
+   * all mean "no dialog", so a flaky capture can never block chat.
+   *
+   * `resolveApproval` and `answerPrompt` intentionally bypass this gate. They
+   * write the answer with `injectKeys` (a typed prompt answer uses `pty.inject`)
+   * instead of `sendUserTurn`. They are answering the dialog; running the gate
+   * there would 409 the answer.
+   */
   protected async openDialog(native: string): Promise<BlockingDialog | undefined> {
+    if (!this.dialogGate) return undefined
     try {
       const raw = await this.deps.screen?.(this.room(native))
       if (!raw) return undefined

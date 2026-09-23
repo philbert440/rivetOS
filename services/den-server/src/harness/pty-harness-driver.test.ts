@@ -1943,6 +1943,45 @@ describe('sendUserTurn gates on an open blocking dialog', () => {
     driver.close()
   })
 
+  it('does not gate a non-Claude PTY driver on a numbered-menu screen', async () => {
+    const pty = fakePty()
+    const driver = new GrokBuildDriver({
+      store: fakeStore([]),
+      pty: () => Promise.resolve(pty.host),
+      turnQuietMs: 0,
+      screen: () => AUTO_MODE_DIALOG_SCREEN,
+    })
+    await driver.startSession({ nativeSessionId: UUID })
+    await driver.sendUserTurn(GrokBuildDriver.sessionId(UUID), { text: 'hello' })
+    expect(pty.injects.map((i) => i.text)).toEqual(['hello'])
+    driver.close()
+  })
+
+  it('re-checks for a dialog before the dead-PTY respawn retry', async () => {
+    const pty = fakePty()
+    let injectAttempts = 0
+    pty.host.inject = (id, text, submit, interrupt) => {
+      injectAttempts += 1
+      if (injectAttempts === 1) return false
+      pty.injects.push({ id, text, submit, interrupt })
+      return true
+    }
+    const driver = new ClaudeCodeDriver({
+      store: fakeStore([]),
+      pty: () => Promise.resolve(pty.host),
+      turnQuietMs: 0,
+      screen: () => (injectAttempts === 0 ? IDLE_HARNESS_SCREEN : AUTO_MODE_DIALOG_SCREEN),
+    })
+    await driver.startSession({ nativeSessionId: UUID })
+    await expect(driver.sendUserTurn(sid, { text: 'hello' })).rejects.toMatchObject({
+      code: 'turn_in_flight',
+      context: { reason: 'harness_dialog' },
+    })
+    expect(injectAttempts).toBe(1)
+    expect(pty.injects).toEqual([])
+    driver.close()
+  })
+
   it('does not block on an old dialog in scrollback', async () => {
     const pty = fakePty()
     const driver = new ClaudeCodeDriver({

@@ -5,6 +5,8 @@ import {
   createOutboundPumpRegistry,
   INJECT_LATCH_MS,
   TURN_RETRY_ATTEMPTS,
+  TURN_RETRY_BACKOFF_MS,
+  turnRetryDelayMs,
   type OutboundPumpStore,
 } from './outbound-pump.js'
 
@@ -149,13 +151,125 @@ describe('createOutboundPump', () => {
     expect(s.calls).toContain('requeue:a')
     expect(injected).toEqual([])
     expect(failures).toBe(1)
-    // A timer must NOT retry — only the idle edge.
-    await vi.advanceTimersByTimeAsync(60_000)
+    // Backoff has not elapsed — the idle edge retries immediately and cancels the timer.
+    await vi.advanceTimersByTimeAsync(TURN_RETRY_BACKOFF_MS[0] - 1)
     expect(failures).toBe(1)
     pump.onIdle()
     await vi.advanceTimersByTimeAsync(INJECT_LATCH_MS + 1_000)
     expect(injected).toEqual(['a'])
     expect(s.items).toEqual([])
+    await vi.advanceTimersByTimeAsync(60_000)
+    expect(failures).toBe(1)
+    expect(injected).toEqual(['a'])
+  })
+
+  it('retries a turn_in_flight rejection on the backoff timer without an idle edge', async () => {
+    const s = fakeStore()
+    s.items = [queued('a')]
+    const injected: string[] = []
+    let failures = 0
+    const pump = createOutboundPump({
+      sessionId: SID,
+      store: s,
+      inject: (text) => {
+        if (failures < 1) {
+          failures += 1
+          return Promise.reject(TURN_IN_FLIGHT)
+        }
+        injected.push(text)
+        return Promise.resolve()
+      },
+      isTurnInFlight: (err) => err === TURN_IN_FLIGHT,
+    })
+    await pump.pump()
+    expect(failures).toBe(1)
+    expect(injected).toEqual([])
+    await vi.advanceTimersByTimeAsync(TURN_RETRY_BACKOFF_MS[0] - 1)
+    expect(injected).toEqual([])
+    await vi.advanceTimersByTimeAsync(1 + INJECT_LATCH_MS)
+    expect(injected).toEqual(['a'])
+    expect(s.items).toEqual([])
+  })
+
+  it('an idle edge cancels the turn_in_flight backoff timer', async () => {
+    const s = fakeStore()
+    s.items = [queued('a')]
+    const injected: string[] = []
+    let failures = 0
+    const pump = createOutboundPump({
+      sessionId: SID,
+      store: s,
+      inject: (text) => {
+        if (failures < 1) {
+          failures += 1
+          return Promise.reject(TURN_IN_FLIGHT)
+        }
+        injected.push(text)
+        return Promise.resolve()
+      },
+      isTurnInFlight: (err) => err === TURN_IN_FLIGHT,
+    })
+    await pump.pump()
+    pump.onIdle()
+    await vi.advanceTimersByTimeAsync(INJECT_LATCH_MS)
+    expect(injected).toEqual(['a'])
+    await vi.advanceTimersByTimeAsync(TURN_RETRY_BACKOFF_MS[0] + TURN_RETRY_BACKOFF_MS[1])
+    expect(injected).toEqual(['a'])
+    expect(failures).toBe(1)
+  })
+
+  it('a new send cancels the turn_in_flight backoff timer', async () => {
+    const s = fakeStore()
+    s.items = [queued('a')]
+    const injected: string[] = []
+    let failures = 0
+    const pump = createOutboundPump({
+      sessionId: SID,
+      store: s,
+      inject: (text) => {
+        if (failures < 1) {
+          failures += 1
+          return Promise.reject(TURN_IN_FLIGHT)
+        }
+        injected.push(text)
+        return Promise.resolve()
+      },
+      isTurnInFlight: (err) => err === TURN_IN_FLIGHT,
+    })
+    await pump.pump()
+    expect(failures).toBe(1)
+    const pending = pump.pump()
+    await vi.advanceTimersByTimeAsync(INJECT_LATCH_MS + TURN_RETRY_BACKOFF_MS[0])
+    await pending
+    expect(injected).toEqual(['a'])
+    expect(failures).toBe(1)
+  })
+
+  it('stops turn_in_flight timer retries after TURN_RETRY_ATTEMPTS', async () => {
+    const s = fakeStore()
+    s.items = [queued('a')]
+    let injects = 0
+    const pump = createOutboundPump({
+      sessionId: SID,
+      store: s,
+      inject: () => {
+        injects += 1
+        return Promise.reject(TURN_IN_FLIGHT)
+      },
+      isTurnInFlight: (err) => err === TURN_IN_FLIGHT,
+    })
+    await pump.pump()
+    expect(injects).toBe(1)
+    for (let attempt = 1; attempt <= TURN_RETRY_ATTEMPTS; attempt++) {
+      const delay = turnRetryDelayMs(attempt)
+      await vi.advanceTimersByTimeAsync(delay - 1)
+      expect(injects).toBe(attempt)
+      await vi.advanceTimersByTimeAsync(1)
+      expect(injects).toBe(attempt + 1)
+    }
+    await vi.advanceTimersByTimeAsync(120_000)
+    expect(injects).toBe(TURN_RETRY_ATTEMPTS + 1)
+    expect(s.items).toEqual([queued('a')])
   })
 
   it('gives up after TURN_RETRY_ATTEMPTS and leaves the turn queued', async () => {
@@ -283,7 +397,7 @@ describe('createOutboundPump', () => {
     expect(injects).toBe(1)
     pump.dispose()
     pump.onIdle()
-    await Promise.resolve()
+    await vi.advanceTimersByTimeAsync(60_000)
     expect(injects).toBe(1)
     expect(s.items).toEqual([queued('a')])
   })
