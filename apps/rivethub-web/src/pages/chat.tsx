@@ -7,7 +7,6 @@ import {
   shouldPersistLaunchLatch,
 } from '../lib/conversation-model-options.js'
 import { withAttachmentText } from '../lib/attachments.js'
-import { undeliveredNote } from '../lib/send-block-note.js'
 /**
  * Chat — the day-one job (phase-4 design doc). Layout mirrors
  * rivet-android: conversation drawer on the left, transcript + composer on
@@ -1278,17 +1277,11 @@ function ActiveSession(props: {
         onTranscript: (ev) => useChat.getState().applyHarnessTranscriptEvent(props.sessionId, ev),
         onAgentStatus: (ev) => {
           useChat.getState().applyAgentStatus(props.sessionId, ev)
-          if (ev.status === 'idle') outboundPumpFor(props.sessionId).pump.onIdle()
         },
         onPrompt: (ev) => useChat.getState().applyPromptEvent(props.sessionId, ev),
         onControlReset: () => useChat.getState().clearHarnessPrompts(props.sessionId),
         onLive: (turn) => useChat.getState().setLive(props.sessionId, turn),
         onApproval: (event) => useChat.getState().applyApprovalEvent(props.sessionId, event),
-        onTurnComplete: () => outboundPumpFor(props.sessionId).pump.onIdle(),
-        onUndelivered: (ev) =>
-          outboundPumpFor(props.sessionId).pump.onUndelivered(
-            undeliveredNote(ev.type === 'error' ? ev.message : undefined),
-          ),
         onSessionUpdated: () => {
           void queryClient.invalidateQueries({
             queryKey: ['remote-session', sessionBase, props.sessionId],
@@ -1608,6 +1601,7 @@ function ActiveSession(props: {
     attachments?: import('@rivetos/types').UserTurn['attachments'],
     // Set only when the pump was started with forceId (the inject button).
     bypassDialogGate = false,
+    deliveryId?: string,
   ): Promise<void> => {
     if (remoteDead) {
       throw new Error(`this thread's session no longer exists on ${urlLabel(sessionBase)}`)
@@ -1636,7 +1630,9 @@ function ActiveSession(props: {
         protocolOwned &&
         capabilities?.imageAttachments &&
         attachments?.every((a) => a.mime.startsWith('image/'))
+      await pumpEntry.observe(gw, sid)
       await gw.sendHarnessTurn(sid, {
+        deliveryId,
         text: nativeAttachments ? text : referenceText,
         ...(nativeAttachments && attachments?.length ? { attachments } : {}),
         ...(harnessId === nativeHarnessId ? turnOptions.effective : {}),

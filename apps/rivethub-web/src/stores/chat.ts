@@ -55,7 +55,8 @@ export type { LiveTurn, LiveToolEntry } from '../lib/fold-stream.js'
 export type WsStatus = 'connecting' | 'open' | 'closed'
 
 /** User turn waiting to be injected into the harness (or mid-inject).
- * Accepted: remove queue row, keep bubble. Failed: keep both. Cancel: remove both. */
+ * Accepted: remove queue row, keep bubble. Failed: retain or restore the row
+ * (restoreOutboundFailed) and keep the bubble for manual retry. Cancel: remove both. */
 export type OutboundStatus = 'queued' | 'sending' | 'failed'
 
 export interface OutboundItem {

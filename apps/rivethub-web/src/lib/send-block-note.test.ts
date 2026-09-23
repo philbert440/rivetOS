@@ -17,20 +17,18 @@ describe('sendBlockNote', () => {
 })
 
 describe('undeliveredNote', () => {
-  it("keeps den's reason and drops its trailing retry hint", () => {
+  it('uses fixed copy without captured pane text', () => {
     expect(
       undeliveredNote(
         'Claude Code is showing a dialog (“Select model”); answer it in the terminal, then retry',
       ),
-    ).toBe(
-      'not delivered: Claude Code is showing a dialog (“Select model”); answer it in the terminal',
-    )
+    ).toBe('not delivered: answer the picker or prompt in Terminal')
     expect(undeliveredNote("Claude Code didn't start working on the message within 4s")).toBe(
-      "not delivered: Claude Code didn't start working on the message within 4s",
+      'not delivered: the harness did not start working',
     )
   })
 
   it('falls back when there is no message', () => {
-    expect(undeliveredNote(undefined)).toBe('not delivered')
+    expect(undeliveredNote(undefined)).toBe('not delivered: check Terminal before retrying')
   })
 })

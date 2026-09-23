@@ -2239,12 +2239,13 @@ describe('sendUserTurn delivery confirm', () => {
         return () => undefined
       },
     })
-    await driver.sendUserTurn(sid, { text: TURN })
+    await driver.sendUserTurn(sid, { text: TURN, deliveryId: 'client-attempt-1' })
     emit({ session: UUID, type: 'message.user', text: 'something else entirely' })
     await vi.advanceTimersByTimeAsync(9_999)
     expect(undelivered(seen)).toEqual([])
     await vi.advanceTimersByTimeAsync(1)
     expect(undelivered(seen)).toHaveLength(1)
+    expect(undelivered(seen)[0]).toMatchObject({ deliveryId: 'client-attempt-1' })
     driver.close()
   })
 

@@ -16,9 +16,13 @@ export function sendBlockNote(err: unknown): string | undefined {
   return (body as { reason?: unknown }).reason === 'harness_dialog' ? DIALOG_NOTE : undefined
 }
 
-/** The note for a `turn_undelivered` event: den's own sentence, minus its
- *  trailing retry hint (the bubble adds one). */
+/** Only fixed copy reaches the UI: den's reason can contain captured pane text. */
 export function undeliveredNote(message: string | undefined): string {
-  const why = (message ?? '').replace(/[,;]?\s*then retry\.?$/i, '').trim()
-  return why ? `not delivered: ${why}` : 'not delivered'
+  if (message?.includes('is showing a dialog')) {
+    return 'not delivered: answer the picker or prompt in Terminal'
+  }
+  if (message?.includes("didn't start working")) {
+    return 'not delivered: the harness did not start working'
+  }
+  return 'not delivered: check Terminal before retrying'
 }

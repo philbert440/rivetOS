@@ -12,6 +12,10 @@ import {
 } from './outbound-pump.js'
 
 const SID = 'claude-code:a1b2c3d4-1111-4222-8333-444455556666'
+const DELIVERY_ID = '11111111-1111-4111-8111-111111111111'
+beforeEach(() => vi.spyOn(crypto, 'randomUUID').mockReturnValue(DELIVERY_ID))
+afterEach(() => vi.restoreAllMocks())
+
 const TURN_IN_FLIGHT = new Error('turn_in_flight')
 
 interface FakeStore extends OutboundPumpStore {
@@ -114,7 +118,7 @@ describe('createOutboundPump', () => {
     const pending = pump.pump()
     await vi.advanceTimersByTimeAsync(INJECT_LATCH_MS + 1_000)
     await pending
-    expect(inject).toHaveBeenCalledWith('caption', false, attachments, false)
+    expect(inject).toHaveBeenCalledWith('caption', false, attachments, false, DELIVERY_ID)
   })
 
   it('waits out a busy live turn instead of double-injecting', async () => {
@@ -530,7 +534,7 @@ describe('onUndelivered', () => {
     const p = pump.pump()
     await vi.advanceTimersByTimeAsync(0)
     await Promise.resolve()
-    pump.onUndelivered()
+    pump.onUndelivered(DELIVERY_ID)
     expect(s.calls.filter((c) => c.startsWith('restoreFailed'))).toEqual(['restoreFailed:a'])
     await vi.advanceTimersByTimeAsync(INJECT_LATCH_MS)
     await p
@@ -539,16 +543,134 @@ describe('onUndelivered', () => {
   it('does not restore after the turn went busy', async () => {
     const s = fakeStore()
     s.items = [queued('a')]
-    s.busy = true
     const pump = createOutboundPump({
       sessionId: SID,
       store: s,
       inject: () => Promise.resolve(),
       isTurnInFlight: () => false,
     })
-    await pump.pump()
-    pump.onUndelivered()
+    const pending = pump.pump()
+    await vi.advanceTimersByTimeAsync(0)
+    expect(s.calls).toContain('dequeue:a')
+    s.busy = true
+    await vi.advanceTimersByTimeAsync(INJECT_LATCH_MS)
+    await pending
+    pump.onUndelivered(DELIVERY_ID)
     expect(s.calls.filter((c) => c.startsWith('restoreFailed'))).toEqual([])
+  })
+
+  it.each(['dispose', 'idle', 'busy'] as const)(
+    'clears the accepted handle on %s',
+    async (edge) => {
+      const s = fakeStore()
+      s.items = [queued('a')]
+      const pump = createOutboundPump({
+        sessionId: SID,
+        store: s,
+        inject: async () => {},
+        isTurnInFlight: () => false,
+      })
+      const pending = pump.pump()
+      await vi.advanceTimersByTimeAsync(0)
+      expect(s.calls).toContain('dequeue:a')
+      if (edge === 'dispose') pump.dispose()
+      else if (edge === 'idle') pump.onIdle()
+      else pump.onBusy()
+      pump.onUndelivered(DELIVERY_ID)
+      expect(s.items).toEqual([])
+      await vi.advanceTimersByTimeAsync(INJECT_LATCH_MS)
+      await pending
+    },
+  )
+
+  it('ignores another attempt and restores once without automatic retry', async () => {
+    const s = fakeStore()
+    s.items = [queued('a')]
+    const inject = vi.fn(async () => {})
+    const pump = createOutboundPump({
+      sessionId: SID,
+      store: s,
+      inject,
+      isTurnInFlight: () => false,
+    })
+    const pending = pump.pump()
+    await vi.advanceTimersByTimeAsync(0)
+    pump.onUndelivered('another-client')
+    expect(s.items).toEqual([])
+    pump.onUndelivered(DELIVERY_ID)
+    pump.onUndelivered(DELIVERY_ID)
+    await vi.advanceTimersByTimeAsync(INJECT_LATCH_MS)
+    await pending
+    pump.onIdle()
+    await pump.pump()
+    expect(inject).toHaveBeenCalledTimes(1)
+    expect(s.calls.filter((c) => c.startsWith('restoreFailed'))).toEqual(['restoreFailed:a'])
+  })
+
+  it('keeps the accepted delivery when a subsequent queued send is refused', async () => {
+    vi.mocked(crypto.randomUUID)
+      .mockReturnValueOnce(DELIVERY_ID)
+      .mockReturnValueOnce('22222222-2222-4222-8222-222222222222')
+    const s = fakeStore()
+    s.items = [queued('a'), queued('b')]
+    const inject = vi.fn().mockResolvedValueOnce(undefined).mockRejectedValueOnce(TURN_IN_FLIGHT)
+    const pump = createOutboundPump({
+      sessionId: SID,
+      store: s,
+      inject,
+      isTurnInFlight: () => true,
+    })
+    const pending = pump.pump()
+    await vi.advanceTimersByTimeAsync(INJECT_LATCH_MS)
+    await pending
+    expect(inject).toHaveBeenCalledTimes(2)
+    pump.onUndelivered(DELIVERY_ID)
+    expect(s.items.find((item) => item.id === 'a')?.status).toBe('failed')
+    pump.dispose()
+  })
+
+  it('preserves a failure that beats HTTP acceptance', async () => {
+    const s = fakeStore()
+    s.items = [queued('a')]
+    let accept!: () => void
+    const pump = createOutboundPump({
+      sessionId: SID,
+      store: s,
+      inject: () =>
+        new Promise<void>((r) => {
+          accept = r
+        }),
+      isTurnInFlight: () => false,
+    })
+    const pending = pump.pump()
+    pump.onUndelivered(DELIVERY_ID, 'not delivered')
+    pump.onIdle()
+    accept()
+    await vi.advanceTimersByTimeAsync(INJECT_LATCH_MS)
+    await pending
+    expect(s.items[0]).toMatchObject({ id: 'a', status: 'failed', note: 'not delivered' })
+  })
+
+  it('a busy refusal of a manual failed retry stays failed on idle and timer edges', async () => {
+    const s = fakeStore()
+    s.items = [{ ...queued('a'), status: 'failed' }]
+    const inject = vi.fn(() => Promise.reject(TURN_IN_FLIGHT))
+    const pump = createOutboundPump({
+      sessionId: SID,
+      store: s,
+      inject,
+      isTurnInFlight: () => true,
+    })
+    await pump.pump({ forceId: 'a' })
+    expect(s.items[0]).toMatchObject({
+      status: 'failed',
+      note: 'not sent: a turn is still running',
+    })
+    pump.onIdle()
+    await vi.advanceTimersByTimeAsync(60_000)
+    await pump.pump()
+    expect(inject).toHaveBeenCalledTimes(1)
+    expect(s.calls).not.toContain('requeue:a')
   })
 
   it('is a no-op with nothing accepted', () => {
@@ -559,11 +681,11 @@ describe('onUndelivered', () => {
       inject: () => Promise.resolve(),
       isTurnInFlight: () => false,
     })
-    pump.onUndelivered()
+    pump.onUndelivered(DELIVERY_ID)
     expect(s.calls.filter((c) => c.startsWith('restoreFailed'))).toEqual([])
   })
 
-  it('restores only the latest accepted item', async () => {
+  it('replaces the pending handle on the next accepted send', async () => {
     const s = fakeStore()
     s.items = [queued('a'), queued('b')]
     const pump = createOutboundPump({
@@ -579,7 +701,7 @@ describe('onUndelivered', () => {
     const p2 = pump.pump()
     await vi.advanceTimersByTimeAsync(0)
     await Promise.resolve()
-    pump.onUndelivered()
+    pump.onUndelivered(DELIVERY_ID)
     expect(s.calls.filter((c) => c.startsWith('restoreFailed'))).toEqual(['restoreFailed:b'])
     await vi.advanceTimersByTimeAsync(INJECT_LATCH_MS)
     await p2
@@ -646,7 +768,7 @@ describe('failure notes', () => {
     const p = pump.pump()
     await vi.advanceTimersByTimeAsync(0)
     await Promise.resolve()
-    pump.onUndelivered('not delivered: Claude Code is showing a dialog')
+    pump.onUndelivered(DELIVERY_ID, 'not delivered: Claude Code is showing a dialog')
     expect(s.items[0]).toMatchObject({
       id: 'a',
       status: 'failed',
