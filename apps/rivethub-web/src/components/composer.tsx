@@ -485,8 +485,13 @@ export function Composer(props: {
           className="px-2 pt-1"
         />
         {/* Picker row (node · model · effort) + attach/mic/speak + send —
-            Claude-app style, in the input shell, persisted per-conversation. */}
-        <div className="flex max-md:flex-wrap items-center gap-1">
+            Claude-app style, in the input shell, persisted per-conversation.
+            Wraps at any width (not just below md): a narrow window would
+            otherwise push the action cluster off the right edge and force
+            app-wide horizontal scroll. The actions stay one group so they
+            never split, and `ml-auto` keeps them right-aligned on whichever
+            line they land. */}
+        <div className="flex flex-wrap items-center gap-1">
           <NodePicker />
           {!props.nativeControls && (
             <ModelPicker
@@ -549,7 +554,6 @@ export function Composer(props: {
               className="max-w-[10rem] min-w-0 rounded-full"
             />
           )}
-          <div className="flex-1" />
           <input
             ref={fileRef}
             type="file"
@@ -560,75 +564,77 @@ export function Composer(props: {
               e.target.value = ''
             }}
           />
-          <button
-            type="button"
-            onClick={() => fileRef.current?.click()}
-            aria-label="attach files"
-            title="attach files (or drop / paste them)"
-            className="flex size-8 items-center justify-center rounded-full text-ink-dim transition-colors hover:text-em"
-          >
-            <Paperclip className="size-4" />
-          </button>
-          {voiceInputSupported() && (
+          <div className="ml-auto flex items-center gap-1">
             <button
               type="button"
-              onClick={toggleMic}
-              aria-label={
-                micState === 'recording'
-                  ? 'stop recording'
-                  : micState === 'transcribing'
-                    ? 'transcribing'
-                    : 'dictate'
-              }
-              title={
-                micState === 'recording'
-                  ? 'stop and transcribe'
-                  : micState === 'transcribing'
-                    ? 'transcribing…'
-                    : 'dictate (node ASR)'
-              }
-              disabled={micState === 'transcribing' || micState === 'starting'}
+              onClick={() => fileRef.current?.click()}
+              aria-label="attach files"
+              title="attach files (or drop / paste them)"
+              className="flex size-8 items-center justify-center rounded-full text-ink-dim transition-colors hover:text-em"
+            >
+              <Paperclip className="size-4" />
+            </button>
+            {voiceInputSupported() && (
+              <button
+                type="button"
+                onClick={toggleMic}
+                aria-label={
+                  micState === 'recording'
+                    ? 'stop recording'
+                    : micState === 'transcribing'
+                      ? 'transcribing'
+                      : 'dictate'
+                }
+                title={
+                  micState === 'recording'
+                    ? 'stop and transcribe'
+                    : micState === 'transcribing'
+                      ? 'transcribing…'
+                      : 'dictate (node ASR)'
+                }
+                disabled={micState === 'transcribing' || micState === 'starting'}
+                className={cn(
+                  'flex size-8 items-center justify-center rounded-full transition-colors',
+                  micState === 'recording'
+                    ? 'animate-pulse bg-red/20 text-red'
+                    : micState === 'transcribing'
+                      ? 'animate-pulse text-ink-dim'
+                      : 'text-ink-dim hover:text-em',
+                )}
+              >
+                <Mic className="size-4" />
+              </button>
+            )}
+            <button
+              type="button"
+              onClick={() => {
+                const next = !autoSpeak
+                setAutoSpeak(next)
+                setAutoSpeakState(next)
+              }}
+              aria-pressed={autoSpeak}
+              aria-label={autoSpeak ? 'disable auto-speak' : 'enable auto-speak'}
+              title={autoSpeak ? 'auto-speak replies: on' : 'auto-speak replies: off'}
               className={cn(
                 'flex size-8 items-center justify-center rounded-full transition-colors',
-                micState === 'recording'
-                  ? 'animate-pulse bg-red/20 text-red'
-                  : micState === 'transcribing'
-                    ? 'animate-pulse text-ink-dim'
-                    : 'text-ink-dim hover:text-em',
+                autoSpeak ? 'text-em' : 'text-ink-dim hover:text-em',
               )}
             >
-              <Mic className="size-4" />
+              {autoSpeak ? <Volume2 className="size-4" /> : <VolumeX className="size-4" />}
             </button>
-          )}
-          <button
-            type="button"
-            onClick={() => {
-              const next = !autoSpeak
-              setAutoSpeak(next)
-              setAutoSpeakState(next)
-            }}
-            aria-pressed={autoSpeak}
-            aria-label={autoSpeak ? 'disable auto-speak' : 'enable auto-speak'}
-            title={autoSpeak ? 'auto-speak replies: on' : 'auto-speak replies: off'}
-            className={cn(
-              'flex size-8 items-center justify-center rounded-full transition-colors',
-              autoSpeak ? 'text-em' : 'text-ink-dim hover:text-em',
-            )}
-          >
-            {autoSpeak ? <Volume2 className="size-4" /> : <VolumeX className="size-4" />}
-          </button>
-          <button
-            onClick={() => void send()}
-            disabled={!canSend}
-            aria-label="send"
-            title="send"
-            className={cn(
-              'flex size-8 items-center justify-center rounded-full transition-colors',
-              canSend ? 'bg-em-dim text-bg hover:bg-em' : 'bg-panel-2 text-ink-dim',
-            )}
-          >
-            <ArrowUp className="size-4" />
-          </button>
+            <button
+              onClick={() => void send()}
+              disabled={!canSend}
+              aria-label="send"
+              title="send"
+              className={cn(
+                'flex size-8 items-center justify-center rounded-full transition-colors',
+                canSend ? 'bg-em-dim text-bg hover:bg-em' : 'bg-panel-2 text-ink-dim',
+              )}
+            >
+              <ArrowUp className="size-4" />
+            </button>
+          </div>
         </div>
       </div>
     </div>
