@@ -472,8 +472,13 @@ export function Composer(props: {
           className="px-2 pt-1"
         />
         {/* Picker row (node · model · effort) + attach/mic/speak + send —
-            Claude-app style, in the input shell, persisted per-conversation. */}
-        <div className="flex max-md:flex-wrap items-center gap-1">
+            Claude-app style, in the input shell, persisted per-conversation.
+            Wraps at any width (not just below md): a narrow window would
+            otherwise push the action cluster off the right edge and force
+            app-wide horizontal scroll. The actions stay one group so they
+            never split, and `ml-auto` keeps them right-aligned on whichever
+            line they land. */}
+        <div className="flex flex-wrap items-center gap-1">
           <NodePicker />
           {!props.nativeControls && (
             <ModelPicker
@@ -522,7 +527,6 @@ export function Composer(props: {
               className="max-w-[10rem] min-w-0 rounded-full"
             />
           )}
-          <div className="flex-1" />
           <input
             ref={fileRef}
             type="file"
@@ -533,6 +537,7 @@ export function Composer(props: {
               e.target.value = ''
             }}
           />
+          <div className="ml-auto flex items-center gap-1">
           <button
             type="button"
             onClick={() => fileRef.current?.click()}
@@ -602,6 +607,7 @@ export function Composer(props: {
           >
             <ArrowUp className="size-4" />
           </button>
+          </div>
         </div>
       </div>
     </div>
