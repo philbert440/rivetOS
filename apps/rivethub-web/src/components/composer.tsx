@@ -37,6 +37,7 @@ import { EffortPicker } from './pickers/effort-picker.js'
 import { ModelPicker } from './pickers/model-picker.js'
 import { NodePicker } from './pickers/node-picker.js'
 import { AskUserCard, type AskStructuredAnswer } from './ask-user-card.js'
+import { focusIsInUse } from '../lib/composer-autofocus.js'
 
 /** Imperative surface for the parent (chat page): cancelling a queued message
  *  recalls its text into the draft instead of discarding it. */
@@ -147,12 +148,13 @@ export function Composer(props: {
   // reconnect can't steal focus mid-scroll.
   //
   // Two guards keep the steal from hurting:
-  //  1. Only take focus when nothing else owns it. `connected` flips true a
-  //     beat after the page renders, and in that window the drawer is
-  //     interactive: an inline rename input commits on blur (a steal would
-  //     save a half-typed name), the filter input, a dialog focus trap, an
-  //     in-progress transcript selection, and a terminal a legacy row is still
-  //     showing before it flips to Chat must all be left alone.
+  //  1. Never take focus from something in use (`focusIsInUse`). `connected`
+  //     flips true a beat after the page renders, and in that window the
+  //     drawer is interactive: an inline rename input commits on blur (a steal
+  //     would save a half-typed name), the filter input, a dialog focus trap,
+  //     and a terminal a legacy row is still showing before it flips to Chat
+  //     must all be left alone. A focused button or link is NOT in use — it's
+  //     the sidebar row or new-chat button that was just clicked to get here.
   //  2. Skip on coarse-pointer (touch). Programmatic focus is NOT suppressed on
   //     Android Chrome/WebView (only iOS Safari), so on a tap that remounts the
   //     composer the keyboard would rise over the transcript — don't. A real
@@ -162,8 +164,7 @@ export function Composer(props: {
   useEffect(() => {
     if (!connected || autoFocusedFor.current === props.sessionId) return
     if (typeof window !== 'undefined' && window.matchMedia?.('(pointer: coarse)').matches) return
-    const active = document.activeElement
-    if (active && active !== document.body) return
+    if (focusIsInUse(document.activeElement)) return
     const ta = taRef.current
     if (!ta) return
     ta.focus()
