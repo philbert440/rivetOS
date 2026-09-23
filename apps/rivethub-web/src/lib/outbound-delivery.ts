@@ -2,7 +2,9 @@ import type { HarnessAttachGateway } from './harness-attach.js'
 import type { OutboundPump } from './outbound-pump.js'
 import { undeliveredNote } from './send-block-note.js'
 
-export type DeliveryGateway = Pick<HarnessAttachGateway, 'watchHarnessSession'>
+export type DeliveryGateway = Pick<HarnessAttachGateway, 'watchHarnessSession'> & {
+  config: { baseUrl: string }
+}
 
 /** Registry-owned live tail: survives view unmounts, closes with the thread.
  * Errors are not replayed, so a gap preserves the pending item as unconfirmed. */
@@ -14,20 +16,47 @@ export function watchOutboundDelivery(
   let open = false
   let closed = false
   let status: string | undefined
+  let warnedLegacyDen = false
   const waiters = new Set<(error?: Error) => void>()
+  const close = (): void => {
+    if (closed) return
+    closed = true
+    for (const done of waiters) done(new Error('delivery observer closed'))
+    // Some test transports deliver their initial frame synchronously.
+    queueMicrotask(() => sub.close())
+  }
   const sub = gateway.watchHarnessSession(
     sessionId,
     (event) => {
       if (closed) return
-      if (event.type === 'error' && event.code === 'turn_undelivered' && event.deliveryId) {
-        pump.onUndelivered(event.deliveryId, undeliveredNote(event.message))
+      if (
+        event.type === 'error' &&
+        [
+          'unknown_session',
+          'session_not_found',
+          'unknown_harness',
+          'invalid_session_id',
+          'capability_unsupported',
+        ].includes(event.code)
+      ) {
+        pump.onDeliveryLost()
+        close()
+        return
+      }
+      if (event.type === 'error' && event.code === 'turn_undelivered') {
+        if (event.deliveryId) {
+          pump.onUndelivered(event.deliveryId, undeliveredNote(event.message))
+        } else if (!warnedLegacyDen) {
+          warnedLegacyDen = true
+          console.warn('Den omitted deliveryId; upgrade den to enable correlated delivery failures')
+        }
       } else if (event.type === 'turn-complete') {
         pump.onIdle()
       } else if (event.type === 'status') {
         if (event.status === 'idle') {
           // The initial snapshot is not a turn-complete edge.
           if (status !== undefined && status !== 'idle') pump.onIdle()
-        } else {
+        } else if (event.status === 'working') {
           pump.onBusy()
         }
         status = event.status
@@ -64,15 +93,10 @@ export function watchOutboundDelivery(
           if (error) reject(error)
           else resolve()
         }
-        const timer = setTimeout(() => done(new Error('delivery observer unavailable')), 10_000)
+        const timer = setTimeout(() => done(new Error('delivery observer unavailable')), 750)
         waiters.add(done)
       })
     },
-    close: () => {
-      if (closed) return
-      closed = true
-      for (const done of waiters) done(new Error('delivery observer closed'))
-      sub.close()
-    },
+    close,
   }
 }

@@ -1277,7 +1277,9 @@ function ActiveSession(props: {
         onTranscript: (ev) => useChat.getState().applyHarnessTranscriptEvent(props.sessionId, ev),
         onAgentStatus: (ev) => {
           useChat.getState().applyAgentStatus(props.sessionId, ev)
+          if (ev.status === 'working') outboundPumpFor(props.sessionId).pump.onBusy()
         },
+        onTurnComplete: () => outboundPumpFor(props.sessionId).pump.onIdle(),
         onPrompt: (ev) => useChat.getState().applyPromptEvent(props.sessionId, ev),
         onControlReset: () => useChat.getState().clearHarnessPrompts(props.sessionId),
         onLive: (turn) => useChat.getState().setLive(props.sessionId, turn),
@@ -1293,6 +1295,8 @@ function ActiveSession(props: {
         // Terminal: the attachment has already stopped itself, so say so plainly
         // instead of leaving a banner that looks like it might clear.
         onFatal: (message) => {
+          outboundPumpFor(props.sessionId).pump.onDeliveryLost()
+          outboundPumpFor(props.sessionId).closeObserver()
           useChat.getState().setLive(props.sessionId, undefined)
           setStreamError(`${message} — this session is no longer attachable`)
         },
@@ -1542,6 +1546,21 @@ function ActiveSession(props: {
   const dismissAsk = useChat((s) => s.dismissAsk)
   const composerRef = useRef<ComposerHandle | null>(null)
   const pumpEntry = outboundPumpFor(props.sessionId)
+  useEffect(() => {
+    const unmount = pumpEntry.mount()
+    let disposed = false
+    if (streamId) {
+      void sessionGateway()
+        .then((gw) => {
+          if (!disposed) void pumpEntry.observe(gw, streamId)
+        })
+        .catch(() => undefined)
+    }
+    return () => {
+      disposed = true
+      unmount()
+    }
+  }, [pumpEntry, streamId, sessionGateway])
 
   // Ask card content: the live turn's ask tool wins (question just streamed
   // in); after the turn ends the store's stashed copy keeps the card up until
@@ -1630,9 +1649,9 @@ function ActiveSession(props: {
         protocolOwned &&
         capabilities?.imageAttachments &&
         attachments?.every((a) => a.mime.startsWith('image/'))
-      await pumpEntry.observe(gw, sid)
+      const correlated = await pumpEntry.observe(gw, sid, deliveryId)
       await gw.sendHarnessTurn(sid, {
-        deliveryId,
+        deliveryId: correlated ? deliveryId : undefined,
         text: nativeAttachments ? text : referenceText,
         ...(nativeAttachments && attachments?.length ? { attachments } : {}),
         ...(harnessId === nativeHarnessId ? turnOptions.effective : {}),

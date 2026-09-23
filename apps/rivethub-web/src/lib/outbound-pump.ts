@@ -33,6 +33,7 @@
  * the inject sink, so the ordering is unit-testable (see harness-attach.ts).
  */
 
+import { uuidv4 } from './uuid.js'
 import type { OutboundItem } from '../stores/chat.js'
 import { watchOutboundDelivery, type DeliveryGateway } from './outbound-delivery.js'
 import { sendBlockNote } from './send-block-note.js'
@@ -40,6 +41,11 @@ import { sendBlockNote } from './send-block-note.js'
 /** How long the queue pump waits for an injected turn's first stream frame
  *  before deciding the harness isn't bridging and letting the queue flow. */
 export const INJECT_LATCH_MS = 6_000
+/**
+ * Den's cold deadline: 10s deliveryFallbackMs + 15s injectReadyMaxMs + 5s
+ * transport slack. Must track those den defaults if they change.
+ */
+export const DELIVERY_WINDOW_MS = 30_000
 /**
  * Give up auto-retrying after this many rejections. A harness parked on a TUI
  * permission prompt is mid-turn indefinitely, and hammering it forever is
@@ -81,6 +87,7 @@ export interface OutboundPumpStore {
 
 export interface OutboundPumpOptions {
   sessionId: string
+  onDeliveryWindowChange?: (open: boolean) => void
   /** Registry-owned identity survives defensive alias eviction. */
   currentSessionKey?: () => string
   store: OutboundPumpStore
@@ -126,6 +133,7 @@ export interface OutboundPump {
   onBusy(): void
   /** The live tail has a gap: retain the item as failed, with uncertain delivery. */
   onDeliveryLost(): void
+  forgetDelivery(deliveryId: string): void
 }
 
 export function createOutboundPump(opts: OutboundPumpOptions): OutboundPump {
@@ -151,6 +159,13 @@ export function createOutboundPump(opts: OutboundPumpOptions): OutboundPump {
   // Keep the accepted slot while a later request is pending: that request may
   // be refused as busy before the earlier delivery deadline fires.
   const deliveries = new Map<string, { item: OutboundItem; accepted: boolean; note?: string }>()
+  const deliveryTimers = new Map<string, ReturnType<typeof setTimeout>>()
+  const forgetDelivery = (id: string): void => {
+    clearTimeout(deliveryTimers.get(id))
+    deliveryTimers.delete(id)
+    deliveries.delete(id)
+    opts.onDeliveryWindowChange?.(deliveries.size > 0)
+  }
   const restore = (deliveryId: string, note: string): void => {
     const delivery = deliveries.get(deliveryId)
     if (!delivery) return
@@ -159,12 +174,12 @@ export function createOutboundPump(opts: OutboundPumpOptions): OutboundPump {
       return
     }
     store.restoreFailed(sessionId(), delivery.item, note)
-    deliveries.delete(deliveryId)
+    forgetDelivery(deliveryId)
   }
   const clearDeliveryWindow = (): void => {
     for (const [id, delivery] of deliveries) {
       // Failure + turn-complete can both beat the HTTP acceptance response.
-      if (!delivery.note) deliveries.delete(id)
+      if (!delivery.note) forgetDelivery(id)
     }
   }
   /** Backoff retry for the same wait. Cleared by an idle edge, a new send, or dispose. */
@@ -201,8 +216,13 @@ export function createOutboundPump(opts: OutboundPumpOptions): OutboundPump {
     if (!next) return
 
     const manualRetry = Boolean(pumpOpts?.forceId) && next.status === 'failed'
-    const deliveryId = crypto.randomUUID()
+    const deliveryId = uuidv4()
     deliveries.set(deliveryId, { item: { ...next }, accepted: false })
+    deliveryTimers.set(
+      deliveryId,
+      setTimeout(() => forgetDelivery(deliveryId), DELIVERY_WINDOW_MS),
+    )
+    opts.onDeliveryWindowChange?.(true)
     pumping = true
     inFlight = next.id
     const gen = generation
@@ -223,11 +243,14 @@ export function createOutboundPump(opts: OutboundPumpOptions): OutboundPump {
       )
       // Cancelled/disposed mid-inject: a newer generation owns `pumping` and
       // the live slot — leave both alone.
-      if (superseded()) return
+      if (superseded()) {
+        forgetDelivery(deliveryId)
+        return
+      }
       store.dequeue(sessionId(), next.id)
       const delivery = deliveries.get(deliveryId)
       // A successful send replaces den's single delivery slot.
-      for (const id of deliveries.keys()) if (id !== deliveryId) deliveries.delete(id)
+      for (const id of deliveries.keys()) if (id !== deliveryId) forgetDelivery(id)
       if (delivery) {
         delivery.accepted = true
         if (delivery.note) restore(deliveryId, delivery.note)
@@ -238,21 +261,30 @@ export function createOutboundPump(opts: OutboundPumpOptions): OutboundPump {
       clearIdleRetryTimer()
       // Hold the pump until the harness's stream latches busy (see header).
       await store.awaitBusy(sessionId(), INJECT_LATCH_MS)
-      if (superseded()) return
+      if (superseded()) {
+        forgetDelivery(deliveryId)
+        return
+      }
       const busy = store.liveIsBusy(sessionId())
-      if (busy) clearDeliveryWindow()
       if (!busy) {
+        // Latch expiry is not delivery proof: a cold PTY may still buffer the paste.
         store.clearLive(sessionId())
       }
     } catch (err) {
       // Superseded first: `pumping` / `inFlight` may be a newer pump()'s.
-      if (superseded()) return
+      if (superseded()) {
+        forgetDelivery(deliveryId)
+        return
+      }
       pumping = false
       inFlight = undefined
-      deliveries.delete(deliveryId)
+      forgetDelivery(deliveryId)
       if (opts.isTurnInFlight(err) && manualRetry) {
         store.fail(sessionId(), next.id, sendBlockNote(err) ?? 'not sent: a turn is still running')
-        if (!store.liveIsBusy(sessionId())) store.clearLive(sessionId())
+        if (!store.liveIsBusy(sessionId())) {
+          store.clearLive(sessionId())
+          void pump().catch(() => undefined)
+        }
         return
       }
       if (opts.isTurnInFlight(err)) {
@@ -289,6 +321,7 @@ export function createOutboundPump(opts: OutboundPumpOptions): OutboundPump {
 
   return {
     pump,
+    forgetDelivery,
     reset: (id) => {
       // Only the in-flight send's own cancel frees the latch — cancelling an
       // already-dequeued (latch-window) or never-started item must not, or a
@@ -296,7 +329,7 @@ export function createOutboundPump(opts: OutboundPumpOptions): OutboundPump {
       // window the latch exists to protect.
       if (id !== inFlight) return
       for (const [key, delivery] of deliveries) {
-        if (delivery.item.id === id) deliveries.delete(key)
+        if (delivery.item.id === id) forgetDelivery(key)
       }
       generation += 1
       inFlight = undefined
@@ -308,7 +341,7 @@ export function createOutboundPump(opts: OutboundPumpOptions): OutboundPump {
       inFlight = undefined
       pumping = false
       awaitingIdle = false
-      deliveries.clear()
+      for (const id of deliveries.keys()) forgetDelivery(id)
       clearIdleRetryTimer()
     },
     onIdle: () => {
@@ -323,16 +356,13 @@ export function createOutboundPump(opts: OutboundPumpOptions): OutboundPump {
     },
     onDeliveryLost: () => {
       if (disposed) return
-      for (const id of deliveries.keys()) {
+      for (const [id, delivery] of deliveries) {
+        if (!delivery.accepted) continue
         restore(id, 'delivery unconfirmed: connection lost; check the conversation before retrying')
       }
     },
     onUndelivered: (deliveryId, note) => {
       if (disposed || !deliveries.has(deliveryId)) return
-      if (store.liveIsBusy(sessionId())) {
-        clearDeliveryWindow()
-        return
-      }
       restore(deliveryId, note ?? 'not delivered')
     },
   }
@@ -346,7 +376,8 @@ export type ThreadLifecycleEvent =
 type PumpEntry = {
   pump: OutboundPump
   sink: { current: OutboundPumpOptions['inject'] }
-  observe(gateway: DeliveryGateway, sessionId: string): Promise<void>
+  observe(gateway: DeliveryGateway, sessionId: string, deliveryId?: string): Promise<boolean>
+  mount(): () => void
   closeObserver(): void
 }
 export type OutboundPumpRegistry = ((sessionId: string) => PumpEntry) & { dispose(): void }
@@ -402,22 +433,56 @@ export function createOutboundPumpRegistry(
     }
     const sink = { current: noView }
     let observer: ReturnType<typeof watchOutboundDelivery> | undefined
-    let observedGateway: DeliveryGateway | undefined
+    let observedBase: string | undefined
+    let mounted = 0
+    let windowOpen = false
+    const closeIfIdle = (): void => {
+      if (!mounted && !windowOpen) entry.closeObserver()
+    }
     let observedSession: string | undefined
     const entry: PumpEntry & { key: string } = {
-      observe: (gateway, sessionId) => {
-        if (!observer || observedGateway !== gateway || observedSession !== sessionId) {
-          observer?.close()
-          observedGateway = gateway
-          observedSession = sessionId
-          observer = watchOutboundDelivery(gateway, sessionId, entry.pump)
+      mount: () => {
+        mounted += 1
+        return () => {
+          mounted -= 1
+          closeIfIdle()
         }
-        return observer.ready
       },
-      closeObserver: () => observer?.close(),
+      observe: async (gateway, sessionId, deliveryId) => {
+        try {
+          if (
+            !observer ||
+            observedBase !== gateway.config.baseUrl ||
+            observedSession !== sessionId
+          ) {
+            observer?.close()
+            observedBase = gateway.config.baseUrl
+            observedSession = sessionId
+            observer = watchOutboundDelivery(gateway, sessionId, entry.pump)
+          }
+          await observer.ready
+          return true
+        } catch {
+          if (deliveryId) entry.pump.forgetDelivery(deliveryId)
+          console.warn(
+            'Delivery observer unavailable; sending over HTTP without delivery correlation',
+          )
+          return false
+        } finally {
+          closeIfIdle()
+        }
+      },
+      closeObserver: () => {
+        observer?.close()
+        observer = undefined
+      },
       key,
       sink,
       pump: createOutboundPump({
+        onDeliveryWindowChange: (open) => {
+          windowOpen = open
+          closeIfIdle()
+        },
         sessionId: key,
         currentSessionKey: () =>
           subscribe ? entry.key : (store.resolveSessionKey?.(entry.key) ?? entry.key),

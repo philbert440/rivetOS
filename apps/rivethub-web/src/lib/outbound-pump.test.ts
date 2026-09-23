@@ -5,6 +5,7 @@ import {
   createOutboundPump,
   createOutboundPumpRegistry,
   INJECT_LATCH_MS,
+  DELIVERY_WINDOW_MS,
   TURN_RETRY_ATTEMPTS,
   TURN_RETRY_BACKOFF_MS,
   turnRetryDelayMs,
@@ -522,6 +523,140 @@ describe('onUndelivered', () => {
   beforeEach(() => vi.useFakeTimers())
   afterEach(() => vi.useRealTimers())
 
+  it('sends without crypto.randomUUID on insecure-context heads', async () => {
+    vi.stubGlobal('crypto', {
+      randomUUID: undefined,
+      getRandomValues: (b: Uint8Array) => b.fill(1),
+    })
+    try {
+      const s = fakeStore()
+      s.items = [queued('a')]
+      const inject = vi.fn(async () => {})
+      const pump = createOutboundPump({
+        sessionId: SID,
+        store: s,
+        inject,
+        isTurnInFlight: () => false,
+      })
+      const pending = pump.pump()
+      await vi.advanceTimersByTimeAsync(INJECT_LATCH_MS)
+      await pending
+      expect(inject).toHaveBeenCalledWith(
+        'a',
+        false,
+        undefined,
+        false,
+        '01010101-0101-4101-8101-010101010101',
+      )
+      expect(s.items).toEqual([])
+    } finally {
+      vi.unstubAllGlobals()
+    }
+  })
+  it('restores a cold-spawn failure at 24s after the inject latch expires', async () => {
+    const s = fakeStore()
+    s.items = [queued('a')]
+    const onDeliveryWindowChange = vi.fn()
+    const pump = createOutboundPump({
+      sessionId: SID,
+      store: s,
+      inject: async () => {},
+      isTurnInFlight: () => false,
+      onDeliveryWindowChange,
+    })
+    const pending = pump.pump()
+    await vi.advanceTimersByTimeAsync(INJECT_LATCH_MS)
+    await pending
+    expect(s.calls).toContain('clearLive')
+    expect(s.items).toEqual([])
+    expect(onDeliveryWindowChange).toHaveBeenLastCalledWith(true)
+    await vi.advanceTimersByTimeAsync(24_000 - INJECT_LATCH_MS)
+    pump.onUndelivered(DELIVERY_ID)
+    expect(s.items).toEqual([{ ...queued('a'), status: 'failed', note: 'not delivered' }])
+    expect(onDeliveryWindowChange).toHaveBeenLastCalledWith(false)
+    pump.dispose()
+  })
+
+  it('restores unconfirmed delivery on a socket gap after latch expiry', async () => {
+    const s = fakeStore()
+    s.items = [queued('a')]
+    const pump = createOutboundPump({
+      sessionId: SID,
+      store: s,
+      inject: async () => {},
+      isTurnInFlight: () => false,
+    })
+    const pending = pump.pump()
+    await vi.advanceTimersByTimeAsync(INJECT_LATCH_MS)
+    await pending
+    pump.onDeliveryLost()
+    expect(s.items).toEqual([
+      {
+        ...queued('a'),
+        status: 'failed',
+        note: 'delivery unconfirmed: connection lost; check the conversation before retrying',
+      },
+    ])
+    pump.dispose()
+  })
+
+  it('drops the handle at 30s and ignores a later reconnect or correlated failure', async () => {
+    const s = fakeStore()
+    s.items = [queued('a')]
+    const onDeliveryWindowChange = vi.fn()
+    const pump = createOutboundPump({
+      sessionId: SID,
+      store: s,
+      inject: async () => {},
+      isTurnInFlight: () => false,
+      onDeliveryWindowChange,
+    })
+    const pending = pump.pump()
+    expect(DELIVERY_WINDOW_MS).toBe(30_000)
+    await vi.advanceTimersByTimeAsync(29_999)
+    await pending
+    expect(onDeliveryWindowChange).toHaveBeenLastCalledWith(true)
+    await vi.advanceTimersByTimeAsync(1)
+    expect(onDeliveryWindowChange).toHaveBeenLastCalledWith(false)
+    await vi.advanceTimersByTimeAsync(1_000)
+    pump.onDeliveryLost()
+    pump.onUndelivered(DELIVERY_ID)
+    expect(s.items).toEqual([])
+    expect(s.calls).not.toContain('restoreFailed:a')
+    pump.dispose()
+  })
+  it('restores a correlated failure while transcript status is blocked', async () => {
+    const s = fakeStore()
+    s.items = [{ ...queued('a'), status: 'failed' }]
+    s.busy = true
+    const pump = createOutboundPump({
+      sessionId: SID,
+      store: s,
+      inject: async () => {},
+      isTurnInFlight: () => false,
+    })
+    void pump.pump({ forceId: 'a' })
+    await vi.advanceTimersByTimeAsync(0)
+    s.busy = true // Transcript blocked maps to liveIsBusy=true.
+    pump.onUndelivered(DELIVERY_ID)
+    expect(s.items[0]).toMatchObject({ id: 'a', status: 'failed' })
+    pump.dispose()
+  })
+  it('does not restore an unaccepted request on a socket gap', () => {
+    const s = fakeStore()
+    s.items = [queued('a')]
+    const pump = createOutboundPump({
+      sessionId: SID,
+      store: s,
+      inject: () => new Promise(() => {}),
+      isTurnInFlight: () => false,
+    })
+    void pump.pump()
+    pump.onDeliveryLost()
+    expect(s.items[0].status).toBe('sending')
+    expect(s.calls).not.toContain('restoreFailed:a')
+    pump.dispose()
+  })
   it('restores the last accepted item as failed', async () => {
     const s = fakeStore()
     s.items = [queued('a')]
@@ -553,6 +688,7 @@ describe('onUndelivered', () => {
     await vi.advanceTimersByTimeAsync(0)
     expect(s.calls).toContain('dequeue:a')
     s.busy = true
+    pump.onBusy()
     await vi.advanceTimersByTimeAsync(INJECT_LATCH_MS)
     await pending
     pump.onUndelivered(DELIVERY_ID)
@@ -607,7 +743,7 @@ describe('onUndelivered', () => {
     expect(s.calls.filter((c) => c.startsWith('restoreFailed'))).toEqual(['restoreFailed:a'])
   })
 
-  it('keeps the accepted delivery when a subsequent queued send is refused', async () => {
+  it('retains the accepted delivery when a subsequent queued send is refused', async () => {
     vi.mocked(crypto.randomUUID)
       .mockReturnValueOnce(DELIVERY_ID)
       .mockReturnValueOnce('22222222-2222-4222-8222-222222222222')
@@ -625,7 +761,10 @@ describe('onUndelivered', () => {
     await pending
     expect(inject).toHaveBeenCalledTimes(2)
     pump.onUndelivered(DELIVERY_ID)
-    expect(s.items.find((item) => item.id === 'a')?.status).toBe('failed')
+    expect(s.items.find((item) => item.id === 'a')).toMatchObject({
+      status: 'failed',
+      note: 'not delivered',
+    })
     pump.dispose()
   })
 
