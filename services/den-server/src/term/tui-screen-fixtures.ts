@@ -1,4 +1,4 @@
-/** Shared herdr screen captures. Claude Code 2.1.280 auto-mode dialog; 2.1.263 perm/picker. */
+/** Shared herdr screen captures. Claude Code 2.1.280 auto-mode dialog and /model picker; 2.1.263 perm/picker. */
 
 export const AUTO_MODE_DIALOG_SCREEN = `\
   │ claude (this session)                          │ about 17%      │ Drops when I'm idle.                          │
@@ -30,6 +30,16 @@ export const CLAUDE_PERM_SCREEN = `\
   Esc to cancel · Tab to amend
 `
 
+/** Composer a live Claude pane keeps under a dialog (empty ❯, rule, status).
+ *  The perm/picker captures omit it; appending it must not hide the dialog. */
+export const CLAUDE_COMPOSER_TAIL = `\
+❯
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+  ⏵⏵ auto mode on (shift+tab to cycle) · ← for agents
+`
+
+export const CLAUDE_PERM_WITH_COMPOSER_SCREEN = `${CLAUDE_PERM_SCREEN}${CLAUDE_COMPOSER_TAIL}`
+
 export const CLAUDE_PICKER_SCREEN = `\
 Which color would you like?
 ❯ 1. Red
@@ -43,6 +53,8 @@ Which color would you like?
   5. Chat about this
 Enter to select · ↑/↓ to navigate · Esc to cancel
 `
+
+export const CLAUDE_PICKER_WITH_COMPOSER_SCREEN = `${CLAUDE_PICKER_SCREEN}${CLAUDE_COMPOSER_TAIL}`
 
 export const IDLE_HARNESS_SCREEN = `\
   │ claude (this session)                          │ about 17%      │ Drops when I'm idle.                          │

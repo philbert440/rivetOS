@@ -19,7 +19,9 @@
  *     rejection never starts a turn, so that edge may never come — a bounded
  *     backoff (3s, then 6s, then 12s) retries anyway, cancelled by a real idle
  *     edge, a new send, or dispose. After TURN_RETRY_ATTEMPTS the user's
- *     inject button is the (interrupting) manual retry.
+ *     inject button is the manual retry: that send sets bypassDialogGate so
+ *     a copied-rule false positive can go through. Automatic retries never
+ *     set it. Interrupt (Esc a busy turn) is separate and is not the bypass.
  *
  * Stale-turn release is den's job (server-side timer re-armed per frame).
  *
@@ -80,6 +82,8 @@ export interface OutboundPumpOptions {
     text: string,
     interrupt: boolean,
     attachments?: OutboundItem['attachments'],
+    /** True only for the user's inject button (`forceId`), never an auto-retry. */
+    bypassDialogGate?: boolean,
   ) => Promise<void>
   /** The driver's "a turn is already running" rejection. */
   isTurnInFlight: (err: unknown) => boolean
@@ -173,7 +177,13 @@ export function createOutboundPump(opts: OutboundPumpOptions): OutboundPump {
     store.markSending(sessionId(), next.id)
     store.beginLive(sessionId(), 'working…')
     try {
-      await opts.inject(next.text, pumpOpts?.interrupt === true, next.attachments)
+      await opts.inject(
+        next.text,
+        pumpOpts?.interrupt === true,
+        next.attachments,
+        // forceId is the user's inject button. Timer and idle retries omit it.
+        Boolean(pumpOpts?.forceId),
+      )
       // Cancelled/disposed mid-inject: a newer generation owns `pumping` and
       // the live slot — leave both alone.
       if (superseded()) return
@@ -319,7 +329,8 @@ export function createOutboundPumpRegistry(
         currentSessionKey: () =>
           subscribe ? entry.key : (store.resolveSessionKey?.(entry.key) ?? entry.key),
         store,
-        inject: (text, interrupt, attachments) => sink.current(text, interrupt, attachments),
+        inject: (text, interrupt, attachments, bypassDialogGate) =>
+          sink.current(text, interrupt, attachments, bypassDialogGate),
         isTurnInFlight,
       }),
     }

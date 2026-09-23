@@ -313,7 +313,7 @@ describe('outbound sends across rekey', () => {
     t.reject(new Error('offline'))
     await failed
     await vi.advanceTimersByTimeAsync(INJECT_LATCH_MS)
-    expect(next).toHaveBeenCalledExactlyOnceWith('second', false, undefined)
+    expect(next).toHaveBeenCalledExactlyOnceWith('second', false, undefined, false)
     expect(state().outbound[to]).toEqual([{ id: t.id, text: 'first', status: 'failed' }])
     const retry = t.registry(to).pump.pump({ forceId: t.id })
     await vi.advanceTimersByTimeAsync(INJECT_LATCH_MS)
@@ -371,7 +371,7 @@ describe('outbound sends across rekey', () => {
     expect(state().outbound[to]?.[0].status).toBe('sending')
     await vi.advanceTimersByTimeAsync(INJECT_LATCH_MS)
     await pending
-    expect(retry).toHaveBeenCalledWith('first', false, undefined)
+    expect(retry).toHaveBeenCalledWith('first', false, undefined, true)
     expect(state().outbound[to]).toEqual([])
     expect(state().messages[to]?.map((m) => m.id)).toEqual([t.id])
   })
@@ -413,7 +413,7 @@ describe('outbound sends across rekey', () => {
     await vi.advanceTimersByTimeAsync(2 * INJECT_LATCH_MS)
     await t.pending
     expect(t.inject).toHaveBeenCalledOnce()
-    expect(next).toHaveBeenCalledExactlyOnceWith('second', false, undefined)
+    expect(next).toHaveBeenCalledExactlyOnceWith('second', false, undefined, false)
     expect(state().outbound[to]).toEqual([])
   })
 
