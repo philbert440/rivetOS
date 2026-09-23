@@ -400,10 +400,11 @@ describe('own-your-data landing', () => {
     ]) {
       assert.match(html, new RegExp(`id="${id}"`), id);
     }
+    assert.match(html, /Your agents/);
     assert.match(html, /Your hardware/);
-    assert.match(html, /Not a black box/);
+    assert.match(html, /Not a hosted black box/);
     assert.match(html, /Is this SaaS\?/);
-    assert.match(html, /Is this the same repo as RivetOS\?/);
+    assert.match(html, /Same repo as RivetOS\?/);
     assert.match(html, /data-sticky-cta/);
   });
 
@@ -425,7 +426,9 @@ describe('own-your-data landing', () => {
   });
 
   it('points rivetos.dev get-started at RivetHub', () => {
-    assert.match(astroHome, /Your hardware/);
+    assert.match(astroHome, /Run your own agents/);
+    assert.match(astroHome, /Own the memory they share/);
+    assert.match(astroHome, /Get RivetHub/);
     assert.match(astroHome, /https:\/\/rivethub\.io\//);
     assert.match(astroHome, /data-ph-event="cta_setup_agent"/);
     assert.match(astroHome, /philbert440\/rivetOS/);
