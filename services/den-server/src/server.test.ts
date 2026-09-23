@@ -9,6 +9,8 @@ import { createDenServer, type DenServer } from './server.js'
 import type { DenConfig } from './config.js'
 import { baseTestDenConfig, emptyTls } from './test-config.js'
 import type { PtyProc } from './term/pty.js'
+import type { HerdrCtl, HerdrCreateOpts, HerdrSessionInfo } from './term/herdr.js'
+import { AUTO_MODE_DIALOG_SCREEN } from './term/tui-screen-fixtures.js'
 
 // Inspectable fake PTY for terminal/inject tests.
 const fakeProcs: FakeProc[] = []
@@ -62,6 +64,8 @@ async function start(
     term?: boolean
     codexAppServerUrl?: string
     codexCmd?: string[]
+    mux?: 'tmux' | 'herdr' | 'none'
+    herdrCtl?: HerdrCtl
   } = {},
 ): Promise<{ den: DenServer; base: string; port: number }> {
   const stateDir = mkdtempSync(join(tmpdir(), 'den-server-'))
@@ -81,6 +85,7 @@ async function start(
       idleTtlMs: 1_800_000,
       exitLingerMs: 60_000,
       injectReadyMs: 10,
+      ...(opts.mux ? { mux: opts.mux } : {}),
     },
   })
   config.codexAppServerUrl = opts.codexAppServerUrl
@@ -97,6 +102,7 @@ async function start(
     extraRoutes: opts.extraRoutes,
     extraUpgrades: opts.extraUpgrades,
     ...(opts.term ? { ptySpawn: () => new FakeProc(++pid) } : {}),
+    ...(opts.herdrCtl ? { herdrCtl: opts.herdrCtl } : {}),
   })
   servers.push(den)
   await new Promise<void>((r) => den.server.listen(0, '127.0.0.1', r))
@@ -588,6 +594,108 @@ describe('POST /term/inject (seamless modes 5c)', () => {
     expect(inj.status).toBe(409)
     expect(await inj.json()).toEqual({ error: 'session is not an agent harness' })
     expect(fakeProcs[0].writes).toEqual(before)
+  })
+
+  // Herdr capture is what POST /term/inject's dialog gate reads. mux:none
+  // returns an empty screen, so these cases cannot be pinned there.
+  function dialogHerdr(read: () => Promise<string>): HerdrCtl {
+    const sessions = new Map<string, HerdrSessionInfo>()
+    return {
+      hasSession: (name) => sessions.has(name),
+      killSession: (name) => {
+        sessions.delete(name)
+      },
+      listSessions: () => [...sessions.values()],
+      create(opts: HerdrCreateOpts) {
+        sessions.set(opts.name, {
+          name: opts.name,
+          denKey: opts.denKey,
+          activity: 1,
+          created: 1,
+          command: opts.command,
+          user: opts.user,
+          paneId: 'w1:p1',
+        })
+      },
+      attachArgv: (name) => ['herdr', '--session', name],
+      captureAsync: () => read(),
+    }
+  }
+
+  const DIALOG_409 = {
+    error: 'harness is showing a dialog; answer it in the terminal first',
+    code: 'turn_in_flight',
+    retryable: true,
+    reason: 'harness_dialog',
+  }
+
+  async function spawnHarness(command: string, session: string, read: () => Promise<string>) {
+    fakeProcs.length = 0
+    const started = await start('', 60_000, {
+      term: true,
+      mux: 'herdr',
+      herdrCtl: dialogHerdr(read),
+    })
+    const spawn = await post(started.base, '/term', { command, session })
+    expect(spawn.status).toBe(201)
+    return started
+  }
+
+  it('409s a Claude session whose screen is a dialog, with no pane text on the wire', async () => {
+    const { base } = await spawnHarness('claude', 'chat-dialog', () =>
+      Promise.resolve(AUTO_MODE_DIALOG_SCREEN),
+    )
+    const inj = await post(base, '/term/inject', { session: 'chat-dialog', text: 'hello' })
+    expect(inj.status).toBe(409)
+    expect(await inj.json()).toEqual(DIALOG_409)
+    expect(fakeProcs[0].writes).toEqual([])
+  })
+
+  it('does not gate an interrupt inject or a bare-Enter submit', async () => {
+    const { base } = await spawnHarness('claude', 'chat-exempt', () =>
+      Promise.resolve(AUTO_MODE_DIALOG_SCREEN),
+    )
+    const interrupt = await post(base, '/term/inject', {
+      session: 'chat-exempt',
+      text: 'hello',
+      interrupt: true,
+    })
+    expect(interrupt.status).toBe(202)
+    expect(await interrupt.json()).toMatchObject({ ok: true })
+    const bareEnter = await post(base, '/term/inject', { session: 'chat-exempt', text: '' })
+    expect(bareEnter.status).toBe(202)
+    expect(await bareEnter.json()).toMatchObject({ ok: true })
+  })
+
+  it('does not gate a non-Claude agent session showing the same screen', async () => {
+    const { base } = await spawnHarness('grok', 'chat-grok', () =>
+      Promise.resolve(AUTO_MODE_DIALOG_SCREEN),
+    )
+    const inj = await post(base, '/term/inject', { session: 'chat-grok', text: 'hello' })
+    expect(inj.status).toBe(202)
+    expect(await inj.json()).toMatchObject({ ok: true })
+  })
+
+  it('fails open when the screen read errors', async () => {
+    const { base } = await spawnHarness('claude', 'chat-read-err', () =>
+      Promise.reject(new Error('pane read failed')),
+    )
+    const inj = await post(base, '/term/inject', { session: 'chat-read-err', text: 'hello' })
+    expect(inj.status).toBe(202)
+    expect(await inj.json()).toMatchObject({ ok: true })
+  })
+
+  it('lets a forced manual inject pass the dialog gate', async () => {
+    const { base } = await spawnHarness('claude', 'chat-force', () =>
+      Promise.resolve(AUTO_MODE_DIALOG_SCREEN),
+    )
+    const inj = await post(base, '/term/inject', {
+      session: 'chat-force',
+      text: 'hello',
+      bypassDialogGate: true,
+    })
+    expect(inj.status).toBe(202)
+    expect(await inj.json()).toMatchObject({ ok: true })
   })
 })
 

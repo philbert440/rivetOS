@@ -377,6 +377,12 @@ export type UserTurn = {
    * Callers must cap at `SYSTEM_PROMPT_MAX_CHARS`.
    */
   systemPrompt?: string
+  /**
+   * Skip the Claude blocking-dialog pre-send gate. Set only by the user's
+   * explicit inject/retry — never by an automatic queue retry. A reply that
+   * copies the dialog's box rule can false-positive; this is the way through.
+   */
+  bypassDialogGate?: boolean
 }
 
 /**

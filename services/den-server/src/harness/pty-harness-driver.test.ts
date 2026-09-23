@@ -1982,6 +1982,42 @@ describe('sendUserTurn gates on an open blocking dialog', () => {
     driver.close()
   })
 
+  it('injects through an open dialog when the user sets bypassDialogGate', async () => {
+    const pty = fakePty()
+    const driver = new ClaudeCodeDriver({
+      store: fakeStore([]),
+      pty: () => Promise.resolve(pty.host),
+      turnQuietMs: 0,
+      screen: () => AUTO_MODE_DIALOG_SCREEN,
+    })
+    await driver.startSession({ nativeSessionId: UUID })
+    await driver.sendUserTurn(sid, { text: 'hello', bypassDialogGate: true })
+    expect(pty.injects.map((i) => i.text)).toEqual(['hello'])
+    driver.close()
+  })
+
+  it('still skips the dialog gate on the dead-PTY retry when the user forced the inject', async () => {
+    const pty = fakePty()
+    let injectAttempts = 0
+    pty.host.inject = (id, text, submit, interrupt) => {
+      injectAttempts += 1
+      if (injectAttempts === 1) return false
+      pty.injects.push({ id, text, submit, interrupt })
+      return true
+    }
+    const driver = new ClaudeCodeDriver({
+      store: fakeStore([]),
+      pty: () => Promise.resolve(pty.host),
+      turnQuietMs: 0,
+      screen: () => AUTO_MODE_DIALOG_SCREEN,
+    })
+    await driver.startSession({ nativeSessionId: UUID })
+    await driver.sendUserTurn(sid, { text: 'hello', bypassDialogGate: true })
+    expect(injectAttempts).toBe(2)
+    expect(pty.injects.map((i) => i.text)).toEqual(['hello'])
+    driver.close()
+  })
+
   it('does not block on an old dialog in scrollback', async () => {
     const pty = fakePty()
     const driver = new ClaudeCodeDriver({

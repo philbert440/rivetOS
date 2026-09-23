@@ -643,7 +643,7 @@ export function createHarnessRoutes(opts: {
     if (action === 'turns') {
       const body = await parseJsonBody(req, res)
       if (!body) return true
-      const { text, attachments, systemPrompt, model, effort } = body
+      const { text, attachments, systemPrompt, model, effort, bypassDialogGate } = body
       if (
         typeof text !== 'string' ||
         (text === '' && !(Array.isArray(attachments) && attachments.length))
@@ -665,6 +665,8 @@ export function createHarnessRoutes(opts: {
       if (typeof systemPrompt === 'string' && systemPrompt.trim()) {
         turn.systemPrompt = systemPrompt.trim().slice(0, SYSTEM_PROMPT_MAX_CHARS)
       }
+      // Only the user's inject button sets this. A stringly "true" must not.
+      if (bypassDialogGate === true) turn.bypassDialogGate = true
       if (attachments !== undefined) {
         if (
           !Array.isArray(attachments) ||

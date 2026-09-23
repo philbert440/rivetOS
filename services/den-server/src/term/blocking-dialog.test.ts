@@ -1,9 +1,11 @@
-import { describe, expect, it, vi } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 import { dialogOnScreen, parseBlockingDialog } from './blocking-dialog.js'
 import {
   AUTO_MODE_DIALOG_SCREEN,
   CLAUDE_PERM_SCREEN,
+  CLAUDE_PERM_WITH_COMPOSER_SCREEN,
   CLAUDE_PICKER_SCREEN,
+  CLAUDE_PICKER_WITH_COMPOSER_SCREEN,
   IDLE_HARNESS_SCREEN,
   MODEL_PICKER_SCREEN,
   OLD_DIALOG_SCROLLBACK_SCREEN,
@@ -19,6 +21,10 @@ const AUTO_MODE_RESULT = {
 }
 
 describe('parseBlockingDialog', () => {
+  afterEach(() => {
+    vi.restoreAllMocks()
+  })
+
   it('parses the Claude Code 2.1.280 auto-mode dialog', () => {
     expect(parseBlockingDialog(AUTO_MODE_DIALOG_SCREEN)).toEqual(AUTO_MODE_RESULT)
   })
@@ -97,7 +103,7 @@ describe('parseBlockingDialog', () => {
     expect(parseBlockingDialog(screen)).toBeUndefined()
   })
 
-  it('rejects option keys that are not sequential from 1', () => {
+  it('stops the option walk on a predecessor-key gap (7 then 1)', () => {
     const screen = AUTO_MODE_DIALOG_SCREEN.replace('    2. Not now', '    7. Not now').replace(
       "    3. Don't show again\n",
       '',
@@ -107,10 +113,13 @@ describe('parseBlockingDialog', () => {
 
   it('logs at debug when a footer matches but the tail check rejects', () => {
     const debug = vi.spyOn(console, 'debug').mockImplementation(() => undefined)
-    expect(parseBlockingDialog(OLD_DIALOG_SCROLLBACK_SCREEN)).toBeUndefined()
-    expect(debug).toHaveBeenCalled()
-    expect(String(debug.mock.calls[0]?.[0])).toContain('post-footer check rejected')
-    debug.mockRestore()
+    try {
+      expect(parseBlockingDialog(OLD_DIALOG_SCROLLBACK_SCREEN)).toBeUndefined()
+      expect(debug).toHaveBeenCalled()
+      expect(String(debug.mock.calls[0]?.[0])).toContain('post-footer check rejected')
+    } finally {
+      debug.mockRestore()
+    }
   })
 
   it('ignores a dialog when the input box has a typed draft', () => {
@@ -130,6 +139,28 @@ describe('parseBlockingDialog', () => {
 
   it('detects a live AskUserQuestion picker', () => {
     expect(parseBlockingDialog(CLAUDE_PICKER_SCREEN)).toMatchObject({
+      options: [
+        { key: '1', label: 'Red' },
+        { key: '2', label: 'Green' },
+        { key: '3', label: 'Blue' },
+        { key: '4', label: 'Type something.' },
+        { key: '5', label: 'Chat about this' },
+      ],
+    })
+  })
+
+  it('detects a permission prompt with the composer tail still on screen', () => {
+    expect(parseBlockingDialog(CLAUDE_PERM_WITH_COMPOSER_SCREEN)).toMatchObject({
+      options: [
+        { key: '1', label: 'Yes' },
+        { key: '2', label: "Yes, and don't ask again for mkdir" },
+        { key: '3', label: 'No' },
+      ],
+    })
+  })
+
+  it('detects an AskUserQuestion picker with the composer tail still on screen', () => {
+    expect(parseBlockingDialog(CLAUDE_PICKER_WITH_COMPOSER_SCREEN)).toMatchObject({
       options: [
         { key: '1', label: 'Red' },
         { key: '2', label: 'Green' },
@@ -200,6 +231,67 @@ describe('parseBlockingDialog', () => {
       '  ⏵⏵ auto mode on (shift+tab to cycle) · ← for agents',
       'notes for agents',
     )
+    expect(parseBlockingDialog(screen)).toBeUndefined()
+  })
+
+  it('still detects the /model picker when one extra chrome row sits above the footer', () => {
+    const screen = MODEL_PICKER_SCREEN.replace(
+      '\n   Enter to set as default',
+      '\n   extra chrome row\n   Enter to set as default',
+    )
+    expect(parseBlockingDialog(screen)?.options.map((o) => o.key)).toEqual([
+      '1',
+      '2',
+      '3',
+      '4',
+      '5',
+      '6',
+      '7',
+      '8',
+      '9',
+      '10',
+    ])
+  })
+
+  it('logs at debug when no option row is within 10 lines of the footer', () => {
+    const screen = `  ❯ 1. Yes\n    2. No\n${'\n'.repeat(12)}Enter to confirm · Esc to cancel\n`
+    const debug = vi.spyOn(console, 'debug').mockImplementation(() => undefined)
+    try {
+      expect(parseBlockingDialog(screen)).toBeUndefined()
+      expect(String(debug.mock.calls[0]?.[0])).toContain('no option row')
+    } finally {
+      debug.mockRestore()
+    }
+  })
+
+  it('logs at debug when the option walk breaks on a predecessor-key gap', () => {
+    const screen = AUTO_MODE_DIALOG_SCREEN.replace('    2. Not now', '    7. Not now').replace(
+      "    3. Don't show again\n",
+      '',
+    )
+    const debug = vi.spyOn(console, 'debug').mockImplementation(() => undefined)
+    try {
+      expect(parseBlockingDialog(screen)).toBeUndefined()
+      expect(String(debug.mock.calls[0]?.[0])).toContain('option walk rejected (predecessor)')
+    } finally {
+      debug.mockRestore()
+    }
+  })
+
+  it('does not treat a box rule more than 8 lines above a quoted menu as a live dialog', () => {
+    const gap = Array.from({ length: 10 }, () => '  quoted body line').join('\n')
+    const screen = `\
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+${gap}
+
+  ❯ 1. Yes
+    2. No
+  Enter to confirm · Esc to cancel
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+❯
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+  ⏵⏵ auto mode on (shift+tab to cycle) · ← for agents
+`
     expect(parseBlockingDialog(screen)).toBeUndefined()
   })
 

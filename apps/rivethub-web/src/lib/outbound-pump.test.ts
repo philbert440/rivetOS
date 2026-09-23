@@ -107,7 +107,7 @@ describe('createOutboundPump', () => {
     const pending = pump.pump()
     await vi.advanceTimersByTimeAsync(INJECT_LATCH_MS + 1_000)
     await pending
-    expect(inject).toHaveBeenCalledWith('caption', false, attachments)
+    expect(inject).toHaveBeenCalledWith('caption', false, attachments, false)
   })
 
   it('waits out a busy live turn instead of double-injecting', async () => {
@@ -161,6 +161,36 @@ describe('createOutboundPump', () => {
     await vi.advanceTimersByTimeAsync(60_000)
     expect(failures).toBe(1)
     expect(injected).toEqual(['a'])
+  })
+
+  it('sets bypassDialogGate on a forced inject and not on an automatic retry', async () => {
+    const s = fakeStore()
+    s.items = [queued('a')]
+    const calls: boolean[] = []
+    let failures = 0
+    const pump = createOutboundPump({
+      sessionId: SID,
+      store: s,
+      inject: (_text, _interrupt, _attachments, bypass) => {
+        calls.push(bypass === true)
+        if (failures < 1) {
+          failures += 1
+          return Promise.reject(TURN_IN_FLIGHT)
+        }
+        return Promise.resolve()
+      },
+      isTurnInFlight: (err) => err === TURN_IN_FLIGHT,
+    })
+    await pump.pump()
+    expect(calls).toEqual([false])
+    await vi.advanceTimersByTimeAsync(TURN_RETRY_BACKOFF_MS[0] + INJECT_LATCH_MS)
+    expect(calls).toEqual([false, false])
+    s.items = [queued('b')]
+    const forced = pump.pump({ forceId: 'b' })
+    expect(calls.at(-1)).toBe(true)
+    await vi.advanceTimersByTimeAsync(INJECT_LATCH_MS)
+    await forced
+    expect(calls).toEqual([false, false, true])
   })
 
   it('retries a turn_in_flight rejection on the backoff timer without an idle edge', async () => {

@@ -572,6 +572,8 @@ export interface TermInjectRequest {
   /** send Esc first to cancel the harness's in-flight turn, then paste after
    *  a settle — "inject now" on a queued message; default false */
   interrupt?: boolean
+  /** Skip the Claude blocking-dialog gate. User-initiated inject only. */
+  bypassDialogGate?: boolean
 }
 
 export interface TermInjectResponse {

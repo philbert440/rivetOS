@@ -1584,6 +1584,7 @@ export function createDenServer(config: DenConfig, opts: DenServerOptions = {}):
             text?: unknown
             submit?: unknown
             interrupt?: unknown
+            bypassDialogGate?: unknown
           }
           if (typeof p.session !== 'string' || p.session === '')
             return json(res, 400, { error: 'session (string) is required' })
@@ -1635,14 +1636,20 @@ export function createDenServer(config: DenConfig, opts: DenServerOptions = {}):
           // Same gate as the driver's sendUserTurn: a chat turn pasted into an
           // open menu is lost, and its Enter picks an option. New conversations
           // reach the harness through this route before they are registered.
-          // An interrupting inject is exempt: its Esc closes the dialog first.
-          if (submit && p.text && !interrupt) {
+          // Claude only — the detector is fixtured for Claude Code screens. An
+          // unknown command fails open rather than 409 every send.
+          const command = manager.get(ptyId)?.command
+          const claudeHarness = command === 'claude' || command === 'claude-code'
+          // Bare Enter (empty text) is the adopt nudge; submit:false is a paste, not a confirm.
+          const bypassDialogGate = p.bypassDialogGate === true
+          if (claudeHarness && submit && p.text && !interrupt && !bypassDialogGate) {
             const dialog = await dialogOnScreen(() => manager.screen(ptyId, 40))
             if (dialog)
               return json(res, 409, {
                 error: 'harness is showing a dialog; answer it in the terminal first',
+                code: 'turn_in_flight',
+                retryable: true,
                 reason: 'harness_dialog',
-                dialog,
               })
           }
           if (!manager.inject(ptyId, p.text, submit, interrupt)) {

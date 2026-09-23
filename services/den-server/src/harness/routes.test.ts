@@ -868,6 +868,29 @@ describe('HarnessError → HTTP status mapping', () => {
     expect(await res.json()).toMatchObject({ code, error: `boom: ${code}` })
   })
 
+  it('forwards bypassDialogGate only when it is boolean true', async () => {
+    const driver = new FakeDriver()
+    driver.add(SID)
+    const { base } = await start(driver)
+    const forced = await post(base, `/api/harness-sessions/${enc(SID)}/turns`, {
+      text: 'hello',
+      bypassDialogGate: true,
+    })
+    expect(forced.status).toBe(202)
+    expect(driver.calls.turns.at(-1)?.turn.bypassDialogGate).toBe(true)
+
+    const plain = await post(base, `/api/harness-sessions/${enc(SID)}/turns`, { text: 'again' })
+    expect(plain.status).toBe(202)
+    expect(driver.calls.turns.at(-1)?.turn).not.toHaveProperty('bypassDialogGate')
+
+    const spoofed = await post(base, `/api/harness-sessions/${enc(SID)}/turns`, {
+      text: 'nope',
+      bypassDialogGate: 'true',
+    })
+    expect(spoofed.status).toBe(202)
+    expect(driver.calls.turns.at(-1)?.turn).not.toHaveProperty('bypassDialogGate')
+  })
+
   it('puts only the string harness_dialog reason on the 409 body without the pane', async () => {
     const driver = new FakeDriver()
     driver.add(SID)
