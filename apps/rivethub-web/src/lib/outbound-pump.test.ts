@@ -1,4 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import type { HarnessEvent, SessionId } from '@rivetos/types'
+import type { DeliveryGateway } from './outbound-delivery.js'
 import type { LiveTurn, OutboundItem } from '../stores/chat.js'
 import { DIALOG_NOTE } from './send-block-note.js'
 import {
@@ -442,6 +444,89 @@ describe('createOutboundPump', () => {
     await vi.advanceTimersByTimeAsync(60_000)
     expect(injects).toBe(1)
     expect(s.items).toEqual([queued('a')])
+  })
+})
+
+describe('mounted delivery observer recovery', () => {
+  beforeEach(() => vi.useFakeTimers())
+  afterEach(() => vi.useRealTimers())
+
+  it.each(['forbidden', 'unknown_session', 'invalid_session_id', 'capability_unsupported'])(
+    'opens a fresh observer on the next send after %s',
+    async (code) => {
+      const store = fakeStore()
+      const registry = createOutboundPumpRegistry(store, () => false)
+      const entry = registry(SID)
+      entry.mount()
+      const listeners: Array<(event: HarnessEvent) => void> = []
+      const closes: Array<ReturnType<typeof vi.fn>> = []
+      const gateway: DeliveryGateway = {
+        config: { baseUrl: 'http://den' },
+        watchHarnessSession: vi.fn((_sid, listener, options) => {
+          listeners.push(listener)
+          const close = vi.fn()
+          closes.push(close)
+          options?.onStatus?.('open')
+          return { close, send: () => true }
+        }),
+      }
+      const correlated: boolean[] = []
+      entry.sink.current = async (_text, _interrupt, _attachments, _bypass, id) => {
+        correlated.push(await entry.observe(gateway, SID, id))
+      }
+      store.items = [queued('first')]
+      const first = entry.pump.pump()
+      await vi.advanceTimersByTimeAsync(INJECT_LATCH_MS)
+      await first
+      listeners[0]({ type: 'error', sessionId: SID as SessionId, code, message: 'gone' })
+      await vi.advanceTimersByTimeAsync(0)
+      expect(closes[0]).toHaveBeenCalledTimes(1)
+      expect(gateway.watchHarnessSession).toHaveBeenCalledTimes(1)
+
+      store.items = [queued('second')]
+      const second = entry.pump.pump()
+      await vi.advanceTimersByTimeAsync(INJECT_LATCH_MS)
+      await second
+      expect(gateway.watchHarnessSession).toHaveBeenCalledTimes(2)
+      expect(correlated).toEqual([true, true])
+      expect(closes[1]).not.toHaveBeenCalled()
+      // Frames from the retired subscription cannot close its replacement.
+      listeners[0]({ type: 'error', sessionId: SID as SessionId, code, message: 'gone' })
+      expect(await entry.observe(gateway, SID)).toBe(true)
+      expect(gateway.watchHarnessSession).toHaveBeenCalledTimes(2)
+      registry.dispose()
+    },
+  )
+
+  it('recovers when a terminal frame arrives synchronously during subscription setup', async () => {
+    const registry = createOutboundPumpRegistry(fakeStore(), () => false)
+    const entry = registry(SID)
+    entry.mount()
+    const warning = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    const close = vi.fn()
+    let refused = true
+    const gateway: DeliveryGateway = {
+      config: { baseUrl: 'http://den' },
+      watchHarnessSession: vi.fn((_sid, listener, options) => {
+        options?.onStatus?.('open')
+        if (refused) {
+          listener({
+            type: 'error',
+            sessionId: SID as SessionId,
+            code: 'forbidden',
+            message: 'gone',
+          })
+        }
+        return { close, send: () => true }
+      }),
+    }
+    expect(await entry.observe(gateway, SID)).toBe(false)
+    refused = false
+    expect(await entry.observe(gateway, SID)).toBe(true)
+    expect(gateway.watchHarnessSession).toHaveBeenCalledTimes(2)
+    expect(close).toHaveBeenCalledTimes(1)
+    expect(warning).toHaveBeenCalledTimes(1)
+    registry.dispose()
   })
 })
 

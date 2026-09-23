@@ -198,17 +198,29 @@ describe('registry delivery observation', () => {
     expect(f.close).toHaveBeenCalledTimes(2)
     f.registry.dispose()
   })
-  it.each(['unknown_session', 'invalid_session_id', 'capability_unsupported'])(
-    'stops reconnecting for %s',
-    async (code) => {
-      const f = fixture()
-      await f.entry.observe(f.gateway, SID)
-      f.emit({ type: 'error', sessionId: SID, code, message: 'gone' })
-      await vi.advanceTimersByTimeAsync(0)
-      expect(f.close).toHaveBeenCalledTimes(1)
-      f.registry.dispose()
-    },
-  )
+  it.each([
+    'forbidden',
+    'unknown_session',
+    'session_not_found',
+    'unknown_harness',
+    'invalid_session_id',
+    'capability_unsupported',
+  ])('stops reconnecting for %s', async (code) => {
+    const f = fixture()
+    const lost = vi.spyOn(f.entry.pump, 'onDeliveryLost')
+    const watch = vi.spyOn(f.gateway, 'watchHarnessSession')
+    void f.entry.pump.pump()
+    await vi.advanceTimersByTimeAsync(0)
+    f.emit({ type: 'error', sessionId: SID, code, message: 'gone' })
+    await vi.advanceTimersByTimeAsync(0)
+    expect(f.close).toHaveBeenCalledTimes(1)
+    f.status('closed')
+    await vi.advanceTimersByTimeAsync(2_000)
+    expect(watch).toHaveBeenCalledTimes(1)
+    expect(lost).not.toHaveBeenCalled()
+    expect(f.queues[SID]).toEqual([])
+    f.registry.dispose()
+  })
 
   it('does not treat a blocked frame as delivery proof', async () => {
     const f = fixture()

@@ -452,15 +452,21 @@ export function createOutboundPumpRegistry(
         try {
           if (
             !observer ||
+            observer.closed ||
             observedBase !== gateway.config.baseUrl ||
             observedSession !== sessionId
           ) {
-            observer?.close()
+            entry.closeObserver()
             observedBase = gateway.config.baseUrl
             observedSession = sessionId
-            observer = watchOutboundDelivery(gateway, sessionId, entry.pump)
+            observer = watchOutboundDelivery(gateway, sessionId, entry.pump, () => {
+              observer = undefined
+            })
           }
-          await observer.ready
+          const current = observer
+          // A transport may emit a terminal frame before watch returns.
+          if (current.closed) observer = undefined
+          await current.ready
           return true
         } catch {
           if (deliveryId) entry.pump.forgetDelivery(deliveryId)

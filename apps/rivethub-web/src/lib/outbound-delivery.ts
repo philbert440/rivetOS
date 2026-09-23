@@ -12,6 +12,7 @@ export function watchOutboundDelivery(
   gateway: DeliveryGateway,
   sessionId: string,
   pump: OutboundPump,
+  onTerminal?: () => void,
 ) {
   let open = false
   let closed = false
@@ -32,6 +33,7 @@ export function watchOutboundDelivery(
       if (
         event.type === 'error' &&
         [
+          'forbidden',
           'unknown_session',
           'session_not_found',
           'unknown_harness',
@@ -39,8 +41,9 @@ export function watchOutboundDelivery(
           'capability_unsupported',
         ].includes(event.code)
       ) {
-        pump.onDeliveryLost()
+        // A refused subscription is not evidence that an HTTP send was lost.
         close()
+        onTerminal?.()
         return
       }
       if (event.type === 'error' && event.code === 'turn_undelivered') {
@@ -83,6 +86,9 @@ export function watchOutboundDelivery(
     },
   )
   return {
+    get closed(): boolean {
+      return closed
+    },
     get ready(): Promise<void> {
       if (closed) return Promise.reject(new Error('delivery observer closed'))
       if (open) return Promise.resolve()
