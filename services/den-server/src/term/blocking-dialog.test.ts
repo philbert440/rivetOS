@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
 import { dialogOnScreen, parseBlockingDialog } from './blocking-dialog.js'
 import {
   AUTO_MODE_DIALOG_SCREEN,
@@ -60,6 +60,59 @@ describe('parseBlockingDialog', () => {
     expect(parseBlockingDialog(screen)).toBeUndefined()
   })
 
+  it('ignores a numbered list and a footer-like phrase above the live input box', () => {
+    // The phrase is a real footer match, so this reaches the post-footer
+    // check instead of short-circuiting on "no footer".
+    const screen = `\
+● Done.
+
+1. Close RivetHub when you are finished.
+2. Check whether Obsidian is running.
+…press Esc to cancel
+
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+❯
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+  ⏵⏵ auto mode on (shift+tab to cycle) · ← for agents
+`
+    expect(parseBlockingDialog(screen)).toBeUndefined()
+  })
+
+  it('ignores a quoted menu with a literal ❯ row once scrollback follows it', () => {
+    const screen = `\
+● Quoted the picker back:
+
+  1. Yes
+  ❯ 2. Not now
+  3. Don't show again
+  …press Esc to cancel
+
+● And then the reply continued in normal scrollback.
+
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+❯
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+  ⏵⏵ auto mode on (shift+tab to cycle) · ← for agents
+`
+    expect(parseBlockingDialog(screen)).toBeUndefined()
+  })
+
+  it('rejects option keys that are not sequential from 1', () => {
+    const screen = AUTO_MODE_DIALOG_SCREEN.replace('    2. Not now', '    7. Not now').replace(
+      "    3. Don't show again\n",
+      '',
+    )
+    expect(parseBlockingDialog(screen)).toBeUndefined()
+  })
+
+  it('logs at debug when a footer matches but the tail check rejects', () => {
+    const debug = vi.spyOn(console, 'debug').mockImplementation(() => undefined)
+    expect(parseBlockingDialog(OLD_DIALOG_SCROLLBACK_SCREEN)).toBeUndefined()
+    expect(debug).toHaveBeenCalled()
+    expect(String(debug.mock.calls[0]?.[0])).toContain('post-footer check rejected')
+    debug.mockRestore()
+  })
+
   it('ignores a dialog when the input box has a typed draft', () => {
     const typed = AUTO_MODE_DIALOG_SCREEN.replace(/\n❯\n/, '\n❯ hello there\n')
     expect(parseBlockingDialog(typed)).toBeUndefined()
@@ -104,6 +157,52 @@ describe('parseBlockingDialog', () => {
     expect(parseBlockingDialog(oldPicker + AUTO_MODE_DIALOG_SCREEN)).toEqual(AUTO_MODE_RESULT)
   })
 
+  it('ignores an assistant reply that quotes a dialog above the live input box', () => {
+    // GLM trace. The composer is still up (empty ❯ under the footer) and no
+    // box-drawing rule frames the quoted menu, so this is not a live dialog.
+    const screen = `\
+● The prompt at the bottom of the tool looks like this:
+
+  ❯ 1. Yes
+    2. No
+  Enter to confirm · Esc to cancel
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+❯
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+  ⏵⏵ auto mode on (shift+tab to cycle) · ← for agents
+`
+    expect(parseBlockingDialog(screen)).toBeUndefined()
+  })
+
+  it('detects the live dialog when a stale ❯ row is separated from it by a blank line', () => {
+    const screen = AUTO_MODE_DIALOG_SCREEN.replace(
+      '  ❯ 1. Yes\n',
+      '  ❯ 1. Red\n    2. Green\n\n  ❯ 1. Yes\n',
+    )
+    expect(parseBlockingDialog(screen)).toEqual(AUTO_MODE_RESULT)
+  })
+
+  it('does not glue a column-0 numbered list directly above the dialog options', () => {
+    const screen = AUTO_MODE_DIALOG_SCREEN.replace(
+      '  ❯ 1. Yes\n',
+      '1. Close RivetHub when you are not working on it.\n2. Check whether Obsidian settles down.\n  ❯ 1. Yes\n',
+    )
+    expect(parseBlockingDialog(screen)).toEqual(AUTO_MODE_RESULT)
+  })
+
+  it('does not treat a "- item" list line as a separator', () => {
+    const screen = AUTO_MODE_DIALOG_SCREEN.replace('\n❯\n', '\n- item\n❯\n')
+    expect(parseBlockingDialog(screen)).toBeUndefined()
+  })
+
+  it('does not treat a reply line that says "for agents" as composer chrome', () => {
+    const screen = AUTO_MODE_DIALOG_SCREEN.replace(
+      '  ⏵⏵ auto mode on (shift+tab to cycle) · ← for agents',
+      'notes for agents',
+    )
+    expect(parseBlockingDialog(screen)).toBeUndefined()
+  })
+
   it('detects the scrolled /model picker (↓ row, rows before the footer, ▔ border)', () => {
     const dialog = parseBlockingDialog(MODEL_PICKER_SCREEN)
     expect(dialog?.title).toBe('Select model')
@@ -123,6 +222,37 @@ describe('parseBlockingDialog', () => {
       key: '2',
       label: 'Opus 5.5 ✔             Most capable for ambitious work',
     })
+  })
+
+  it.each([
+    ['↑', true],
+    [' ', false],
+  ] as const)('requires ↑ on a scrolled window starting at 3 (marker: %s)', (marker, detected) => {
+    const screen = `▔▔▔▔▔▔▔▔▔▔
+   Select model
+
+   ${marker} 3. Sonnet
+   ❯ 4. Opus
+   ↓ 5. Haiku
+      … +1 model
+
+   ◐ Medium effort (default) ←/→ to adjust
+
+   Enter to set as default · Esc to cancel
+`
+    const dialog = parseBlockingDialog(screen)
+    if (detected) {
+      expect(dialog).toEqual({
+        title: 'Select model',
+        options: [
+          { key: '3', label: 'Sonnet' },
+          { key: '4', label: 'Opus' },
+          { key: '5', label: 'Haiku' },
+        ],
+      })
+    } else {
+      expect(dialog).toBeUndefined()
+    }
   })
 
   it('returns undefined for an empty screen', () => {

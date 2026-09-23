@@ -8,6 +8,7 @@ import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from 'vites
 import {
   createOutboundPumpRegistry,
   INJECT_LATCH_MS,
+  TURN_RETRY_BACKOFF_MS,
   type OutboundPumpStore,
 } from '../lib/outbound-pump.js'
 
@@ -386,7 +387,8 @@ describe('outbound sends across rekey', () => {
     expect(state().outbound.draft).toBeUndefined()
     const retry = vi.fn(() => Promise.resolve())
     t.registry(to).sink.current = retry
-    await vi.advanceTimersByTimeAsync(60_000)
+    // Under the pump's backoff so this asserts the idle edge, not the timer.
+    await vi.advanceTimersByTimeAsync(TURN_RETRY_BACKOFF_MS[0] - 1)
     expect(retry).not.toHaveBeenCalled()
     t.registry(to).pump.onIdle()
     await vi.advanceTimersByTimeAsync(INJECT_LATCH_MS)
