@@ -7,7 +7,7 @@
 // between a check and the state change it guards looks identical to correct
 // code. Concurrency pins go here.
 
-import { describe, expect, it, vi } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 import {
   HarnessError,
   type HarnessEvent,
@@ -1954,6 +1954,358 @@ describe('sendUserTurn gates on an open blocking dialog', () => {
     await driver.startSession({ nativeSessionId: UUID })
     await driver.sendUserTurn(sid, { text: 'hello' })
     expect(pty.injects).toHaveLength(1)
+    driver.close()
+  })
+})
+
+describe('sendUserTurn delivery confirm', () => {
+  const sid = ClaudeCodeDriver.sessionId(UUID)
+  const TURN = 'hello there friend'
+  const DELIVERY = {
+    deliveryConfirmMs: 4000,
+    deliveryFallbackMs: 10000,
+    deliveryPeekMs: 1500,
+    turnQuietMs: 0,
+  } as const
+
+  function composerScreen(draft: string): string {
+    return `\
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+❯ ${draft}
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+  ⏵⏵ auto mode on (shift+tab to cycle) · ← for agents
+`
+  }
+
+  afterEach(() => {
+    vi.useRealTimers()
+  })
+
+  async function warm(opts: {
+    screen?: () => string | Promise<string>
+    events?: (sink: (ev: { session: string; type: string; text?: string }) => void) => () => void
+    transcript?: ReturnType<typeof fakeTranscript>
+    herdrStatus?: boolean
+  }): Promise<{
+    driver: ClaudeCodeDriver
+    pty: ReturnType<typeof fakePty>
+    seen: HarnessEvent[]
+  }> {
+    const pty = fakePty()
+    const driver = new ClaudeCodeDriver({
+      store: fakeStore([]),
+      pty: () => Promise.resolve(pty.host),
+      herdrStatus: opts.herdrStatus ?? true,
+      ...DELIVERY,
+      screen: opts.screen ?? (() => IDLE_HARNESS_SCREEN),
+      events: opts.events,
+      transcript: opts.transcript,
+    })
+    await driver.startSession({ nativeSessionId: UUID })
+    const seen: HarnessEvent[] = []
+    driver.subscribe(sid, (e) => seen.push(e))
+    return { driver, pty, seen }
+  }
+
+  function undelivered(seen: HarnessEvent[]): HarnessEvent[] {
+    return seen.filter((e) => e.type === 'error' && e.code === 'turn_undelivered')
+  }
+
+  it('message.user with matching text is delivery', async () => {
+    vi.useFakeTimers()
+    let emit!: (ev: { session: string; type: string; text?: string }) => void
+    const { driver, seen } = await warm({
+      events: (sink) => {
+        emit = sink
+        return () => undefined
+      },
+    })
+    await driver.sendUserTurn(sid, { text: TURN })
+    emit({ session: UUID, type: 'message.user', text: TURN })
+    await vi.advanceTimersByTimeAsync(20_000)
+    expect(undelivered(seen)).toEqual([])
+    driver.close()
+  })
+
+  it('message.user with pasted_content wrapper matches', async () => {
+    vi.useFakeTimers()
+    let emit!: (ev: { session: string; type: string; text?: string }) => void
+    const { driver, seen } = await warm({
+      events: (sink) => {
+        emit = sink
+        return () => undefined
+      },
+    })
+    await driver.sendUserTurn(sid, { text: TURN })
+    emit({
+      session: UUID,
+      type: 'message.user',
+      text: `<pasted_content id="x">\n${TURN}\n</pasted_content id="x">`,
+    })
+    await vi.advanceTimersByTimeAsync(20_000)
+    expect(undelivered(seen)).toEqual([])
+    driver.close()
+  })
+
+  it('message.user with a system-prompt prefix matches', async () => {
+    vi.useFakeTimers()
+    let emit!: (ev: { session: string; type: string; text?: string }) => void
+    const { driver, seen } = await warm({
+      events: (sink) => {
+        emit = sink
+        return () => undefined
+      },
+    })
+    await driver.sendUserTurn(sid, { text: TURN, systemPrompt: 'be terse' })
+    emit({
+      session: UUID,
+      type: 'message.user',
+      text: `[System instructions]\nbe terse\n\n${TURN}`,
+    })
+    await vi.advanceTimersByTimeAsync(20_000)
+    expect(undelivered(seen)).toEqual([])
+    driver.close()
+  })
+
+  it('herdr working is delivery', async () => {
+    vi.useFakeTimers()
+    const { driver, seen } = await warm({})
+    await driver.sendUserTurn(sid, { text: TURN })
+    driver.applyHerdrStatus(UUID, { type: 'status', sessionId: sid, status: 'working', since: 1 })
+    await vi.advanceTimersByTimeAsync(20_000)
+    expect(undelivered(seen)).toEqual([])
+    driver.close()
+  })
+
+  it('herdr blocked is delivery', async () => {
+    vi.useFakeTimers()
+    const { driver, seen } = await warm({})
+    await driver.sendUserTurn(sid, { text: TURN })
+    driver.applyHerdrStatus(UUID, { type: 'status', sessionId: sid, status: 'blocked', since: 1 })
+    await vi.advanceTimersByTimeAsync(20_000)
+    expect(undelivered(seen)).toEqual([])
+    driver.close()
+  })
+
+  it('transcript working edge is delivery', async () => {
+    vi.useFakeTimers()
+    const tx = fakeTranscript()
+    const { driver, seen } = await warm({ transcript: tx })
+    await driver.sendUserTurn(sid, { text: TURN })
+    tx.emit(sid, {
+      kind: 'transcript',
+      session: sid,
+      rev: 1,
+      command: 'claude',
+      from: 0,
+      total: 1,
+      turns: [{ role: 'user', text: TURN }],
+    })
+    await vi.advanceTimersByTimeAsync(20_000)
+    expect(undelivered(seen)).toEqual([])
+    driver.close()
+  })
+
+  it('message.user with different text still fails at the deadline', async () => {
+    vi.useFakeTimers()
+    let emit!: (ev: { session: string; type: string; text?: string }) => void
+    const { driver, seen } = await warm({
+      events: (sink) => {
+        emit = sink
+        return () => undefined
+      },
+    })
+    await driver.sendUserTurn(sid, { text: TURN })
+    emit({ session: UUID, type: 'message.user', text: 'something else entirely' })
+    await vi.advanceTimersByTimeAsync(9_999)
+    expect(undelivered(seen)).toEqual([])
+    await vi.advanceTimersByTimeAsync(1)
+    expect(undelivered(seen)).toHaveLength(1)
+    driver.close()
+  })
+
+  it('a non-message.user den event is not delivery but sets hooksSeen', async () => {
+    vi.useFakeTimers()
+    let emit!: (ev: { session: string; type: string; text?: string }) => void
+    const { driver, seen } = await warm({
+      events: (sink) => {
+        emit = sink
+        return () => undefined
+      },
+    })
+    await driver.sendUserTurn(sid, { text: TURN })
+    emit({ session: UUID, type: 'thinking.delta', text: '…' })
+    await vi.advanceTimersByTimeAsync(9_999)
+    expect(undelivered(seen)).toEqual([])
+    await vi.advanceTimersByTimeAsync(1)
+    expect(undelivered(seen)).toHaveLength(1)
+    seen.length = 0
+    await driver.sendUserTurn(sid, { text: 'second' })
+    await vi.advanceTimersByTimeAsync(3_999)
+    expect(undelivered(seen)).toEqual([])
+    await vi.advanceTimersByTimeAsync(1)
+    expect(undelivered(seen)).toHaveLength(1)
+    driver.close()
+  })
+
+  it('fails at the screen check when a dialog is open', async () => {
+    vi.useFakeTimers()
+    let live = false
+    const { driver, seen, pty } = await warm({
+      screen: () => (live ? AUTO_MODE_DIALOG_SCREEN : IDLE_HARNESS_SCREEN),
+    })
+    await driver.sendUserTurn(sid, { text: TURN })
+    live = true
+    await vi.advanceTimersByTimeAsync(1_499)
+    expect(undelivered(seen)).toEqual([])
+    await vi.advanceTimersByTimeAsync(1)
+    expect(undelivered(seen)[0]?.message).toMatch(/Teach auto mode/)
+    expect(pty.injects).toHaveLength(1)
+    driver.close()
+  })
+
+  it('fails at 2500ms when the turn is stuck in the input twice', async () => {
+    vi.useFakeTimers()
+    const { driver, seen, pty } = await warm({ screen: () => composerScreen(TURN) })
+    await driver.sendUserTurn(sid, { text: TURN })
+    await vi.advanceTimersByTimeAsync(1_500)
+    expect(undelivered(seen)).toEqual([])
+    await vi.advanceTimersByTimeAsync(999)
+    expect(undelivered(seen)).toEqual([])
+    await vi.advanceTimersByTimeAsync(1)
+    expect(undelivered(seen)[0]?.message).toMatch(/input box/)
+    expect(pty.injects).toHaveLength(1)
+    driver.close()
+  })
+
+  it('does not fail early when the input is empty on the second peek', async () => {
+    vi.useFakeTimers()
+    let n = 0
+    const { driver, seen } = await warm({
+      screen: () => {
+        n += 1
+        return n === 1 ? composerScreen(TURN) : IDLE_HARNESS_SCREEN
+      },
+    })
+    await driver.sendUserTurn(sid, { text: TURN })
+    await vi.advanceTimersByTimeAsync(2_500)
+    expect(undelivered(seen)).toEqual([])
+    driver.close()
+  })
+
+  it('deadline with hooks seen is 4000ms', async () => {
+    vi.useFakeTimers()
+    let emit!: (ev: { session: string; type: string }) => void
+    const { driver, seen } = await warm({
+      events: (sink) => {
+        emit = sink
+        return () => undefined
+      },
+    })
+    emit({ session: UUID, type: 'session.start' })
+    await driver.sendUserTurn(sid, { text: TURN })
+    await vi.advanceTimersByTimeAsync(3_999)
+    expect(undelivered(seen)).toEqual([])
+    await vi.advanceTimersByTimeAsync(1)
+    expect(undelivered(seen)[0]?.message).toMatch(/4s/)
+    driver.close()
+  })
+
+  it('deadline with no hooks is 10000ms', async () => {
+    vi.useFakeTimers()
+    const { driver, seen } = await warm({})
+    await driver.sendUserTurn(sid, { text: TURN })
+    await vi.advanceTimersByTimeAsync(9_999)
+    expect(undelivered(seen)).toEqual([])
+    await vi.advanceTimersByTimeAsync(1)
+    expect(undelivered(seen)[0]?.message).toMatch(/10s/)
+    driver.close()
+  })
+
+  it('cold pty skips the screen check and uses the long deadline', async () => {
+    vi.useFakeTimers()
+    const pty = fakePty()
+    let screens = 0
+    const driver = new ClaudeCodeDriver({
+      store: fakeStore([]),
+      pty: () => Promise.resolve(pty.host),
+      ...DELIVERY,
+      events: () => () => undefined,
+      screen: () => {
+        screens += 1
+        return IDLE_HARNESS_SCREEN
+      },
+    })
+    const seen: HarnessEvent[] = []
+    driver.subscribe(sid, (e) => seen.push(e))
+    await driver.sendUserTurn(sid, { text: TURN })
+    const afterSend = screens
+    await vi.advanceTimersByTimeAsync(1_500)
+    expect(screens).toBe(afterSend)
+    await vi.advanceTimersByTimeAsync(23_499)
+    expect(undelivered(seen)).toEqual([])
+    await vi.advanceTimersByTimeAsync(1)
+    expect(undelivered(seen)).toHaveLength(1)
+    driver.close()
+  })
+
+  it('emits error before turn-complete and releases the lock', async () => {
+    vi.useFakeTimers()
+    const { driver, seen } = await warm({})
+    await driver.sendUserTurn(sid, { text: TURN })
+    await vi.advanceTimersByTimeAsync(10_000)
+    const types = seen.filter((e) => e.type === 'error' || e.type === 'turn-complete').map((e) => e.type)
+    expect(types.slice(0, 2)).toEqual(['error', 'turn-complete'])
+    expect(seen.find((e) => e.type === 'turn-complete')).toMatchObject({ stopReason: 'undelivered' })
+    await driver.sendUserTurn(sid, { text: 'again' })
+    driver.close()
+  })
+
+  it('interrupt before the deadline emits no undelivered error', async () => {
+    vi.useFakeTimers()
+    const { driver, seen } = await warm({})
+    await driver.sendUserTurn(sid, { text: TURN })
+    await driver.interrupt(sid)
+    await vi.advanceTimersByTimeAsync(20_000)
+    expect(undelivered(seen)).toEqual([])
+    expect(seen.filter((e) => e.type === 'turn-complete').map((e) => e.stopReason)).toEqual([
+      'interrupted',
+    ])
+    driver.close()
+  })
+
+  it('screen throw does not fail early', async () => {
+    vi.useFakeTimers()
+    const { driver, seen } = await warm({
+      screen: () => {
+        throw new Error('boom')
+      },
+    })
+    await driver.sendUserTurn(sid, { text: TURN })
+    await vi.advanceTimersByTimeAsync(1_500)
+    expect(undelivered(seen)).toEqual([])
+    await vi.advanceTimersByTimeAsync(8_500)
+    expect(undelivered(seen)).toHaveLength(1)
+    driver.close()
+  })
+
+  it('deliveryConfirmMs 0 does not arm', async () => {
+    vi.useFakeTimers()
+    const pty = fakePty()
+    const driver = new ClaudeCodeDriver({
+      store: fakeStore([]),
+      pty: () => Promise.resolve(pty.host),
+      turnQuietMs: 0,
+      deliveryConfirmMs: 0,
+      events: () => () => undefined,
+      screen: () => IDLE_HARNESS_SCREEN,
+    })
+    await driver.startSession({ nativeSessionId: UUID })
+    const seen: HarnessEvent[] = []
+    driver.subscribe(sid, (e) => seen.push(e))
+    await driver.sendUserTurn(sid, { text: TURN })
+    await vi.advanceTimersByTimeAsync(20_000)
+    expect(undelivered(seen)).toEqual([])
     driver.close()
   })
 })

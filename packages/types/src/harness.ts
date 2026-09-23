@@ -173,12 +173,13 @@ export type HarnessEvent =
       type: 'turn-complete'
       sessionId: SessionId
       turnId?: string
-      /** 'end-turn' | 'interrupted' | 'error' | harness-specific string */
+      /** 'end-turn' | 'interrupted' | 'error' | 'undelivered' | harness-specific string */
       stopReason?: string
     }
   | {
       type: 'error'
       sessionId: SessionId
+      /** Includes `turn_undelivered` when a pasted turn never reached the harness. */
       code: string
       message: string
       retryable?: boolean

@@ -105,8 +105,10 @@ import {
 } from '@rivetos/types'
 import type { HarnessSession } from '../term/harness-sessions.js'
 import { overlaySessionContext } from '../term/context-window.js'
+import { stripPastedContentWrapper } from './adapters/claude.js'
 import { parseAskPicker } from '../term/ask-picker.js'
 import { parseBlockingDialog, type BlockingDialog } from '../term/blocking-dialog.js'
+import { parseComposerInput } from '../term/composer-input.js'
 import { parsePermissionPrompt } from '../term/permission-prompt.js'
 import type { TranscriptWatcher } from '../term/transcript-watch.js'
 import { adapterForCommand, type HarnessAdapter } from './adapters/index.js'
@@ -192,6 +194,13 @@ export interface PtyHarnessDriverDeps<S extends HarnessStoreHost = HarnessStoreH
    * installed would otherwise wedge every later turn on `turn_in_flight`.
    */
   turnQuietMs?: number
+  /** Deadline for proof of delivery when this session's den hooks have been seen working.
+   *  0 disables the whole delivery check. */
+  deliveryConfirmMs?: number
+  /** Deadline when no den hook has ever been seen for this session. */
+  deliveryFallbackMs?: number
+  /** When to do the early screen check after the paste. 0 = skip the screen check. */
+  deliveryPeekMs?: number
   now?: () => number
   log?: (msg: string) => void
   /**
@@ -226,6 +235,11 @@ export interface PtyHarnessIdentity {
 
 const DEFAULT_LIST_LIMIT = 100
 const DEFAULT_TURN_QUIET_MS = 5 * 60_000
+const DEFAULT_DELIVERY_CONFIRM_MS = 4_000
+const DEFAULT_DELIVERY_FALLBACK_MS = 10_000
+const DEFAULT_DELIVERY_PEEK_MS = 1_500
+/** term/manager.ts injectReadyMaxMs — a cold spawn may buffer the paste this long. */
+const INJECT_READY_MAX_MS = 15_000
 /** Re-read grok/kimi sheets at most this often (`verifyCapabilities` is hot). */
 const SHEET_TTL_MS = 60_000
 /** Fresh PTYs get a sane default geometry; a real attach resizes immediately. */
@@ -300,11 +314,20 @@ export interface LiveState {
   turns?: HarnessTranscriptTurn[]
   /** An explicit sendUserTurn claim the store has NOT echoed yet: `claimAt` is
    *  when it was taken, `claimTurns` how many turns the store had then. Until
-   *  the store grows past that (the injected user turn lands), the tracker's
+   *  the store has grown past that (the injected user turn lands), the tracker's
    *  view is stale — a completed PREVIOUS turn must not release the lock, mark
    *  the session idle, or fire turn-complete. Cleared on echo / endTurn. */
   claimAt?: number
   claimTurns?: number
+  /** Set once any den hook event arrives for this session; picks the fast deadline. Never cleared
+   *  for the life of the LiveState (carry it across rotation like other per-session flags). */
+  hooksSeen?: boolean
+  delivery?: {
+    key: string
+    deadline: ReturnType<typeof setTimeout>
+    peek?: ReturnType<typeof setTimeout>
+    stuckOnce?: boolean
+  }
 }
 
 /**
@@ -317,6 +340,11 @@ export function harnessTurnText(turn: UserTurn, applySystemPrompt: boolean): str
   const prompt = typeof turn.systemPrompt === 'string' ? turn.systemPrompt.trim() : ''
   if (!prompt) return turn.text
   return prefixSystemPrompt(prompt, turn.text)
+}
+
+/** Whitespace-collapsed, wrapper-stripped text for comparing a turn with its hook echo. */
+function deliveryKey(text: string): string {
+  return stripPastedContentWrapper(text).replace(/\s+/g, ' ').trim()
 }
 
 /** Fallback AskUserQuestion answer: labels joined by ", "; multi-question
@@ -362,6 +390,9 @@ export abstract class PtyHarnessDriver<S extends HarnessStoreHost = HarnessStore
   protected readonly log: (msg: string) => void
   protected readonly listLimit: number
   protected readonly turnQuietMs: number
+  protected readonly deliveryConfirmMs: number
+  protected readonly deliveryFallbackMs: number
+  protected readonly deliveryPeekMs: number
 
   /** native id → live view (status, in-flight turn, open tool calls). */
   protected readonly live = new Map<string, LiveState>()
@@ -392,6 +423,9 @@ export abstract class PtyHarnessDriver<S extends HarnessStoreHost = HarnessStore
     this.log = deps.log ?? ((): void => undefined)
     this.listLimit = deps.listLimit ?? DEFAULT_LIST_LIMIT
     this.turnQuietMs = deps.turnQuietMs ?? DEFAULT_TURN_QUIET_MS
+    this.deliveryConfirmMs = deps.deliveryConfirmMs ?? DEFAULT_DELIVERY_CONFIRM_MS
+    this.deliveryFallbackMs = deps.deliveryFallbackMs ?? DEFAULT_DELIVERY_FALLBACK_MS
+    this.deliveryPeekMs = deps.deliveryPeekMs ?? DEFAULT_DELIVERY_PEEK_MS
     this.sheetFn =
       deps.sheet ??
       ((): ModelSheet =>
@@ -686,6 +720,7 @@ export abstract class PtyHarnessDriver<S extends HarnessStoreHost = HarnessStore
     // (and release) once the store has grown past it — see LiveState.claimAt.
     state.claimAt = this.now()
     state.claimTurns = state.turns?.length
+    const warm = Boolean(pty.ptyForSession(this.room(native)))
     try {
       const applySystemPrompt = !state.systemPromptApplied
       const injected = harnessTurnText(turn, applySystemPrompt)
@@ -727,6 +762,7 @@ export abstract class PtyHarnessDriver<S extends HarnessStoreHost = HarnessStore
     // Announce it: `beginTurn` re-sets the flag (already ours), arms the
     // quiet-window failsafe and moves the session to `active`.
     this.beginTurn(native)
+    this.armDeliveryCheck(native, turn.text, warm)
   }
 
   async interrupt(sessionId: SessionId): Promise<void> {
@@ -923,6 +959,7 @@ export abstract class PtyHarnessDriver<S extends HarnessStoreHost = HarnessStore
       if (state.staleTimer) clearTimeout(state.staleTimer)
       if (state.transcriptHoldTimer) clearTimeout(state.transcriptHoldTimer)
       if (state.screenRereadTimer) clearTimeout(state.screenRereadTimer)
+      this.clearDelivery(state)
       state.transcriptOff?.()
     }
     this.live.clear()
@@ -1268,6 +1305,7 @@ export abstract class PtyHarnessDriver<S extends HarnessStoreHost = HarnessStore
     if (frame.status === 'working') {
       state.blocked = false
       state.turnInFlight = true
+      this.markDelivered(native)
       this.armQuietWindow(native)
       this.setStatus(native, 'active')
       this.resolveExternalApproval(native)
@@ -1275,6 +1313,7 @@ export abstract class PtyHarnessDriver<S extends HarnessStoreHost = HarnessStore
     } else if (frame.status === 'blocked') {
       state.blocked = true
       state.turnInFlight = true
+      this.markDelivered(native)
       this.setStatus(native, 'active')
       const pending = this.pendingPromptIds(state)
       if (pending.length > 0) {
@@ -1355,6 +1394,9 @@ export abstract class PtyHarnessDriver<S extends HarnessStoreHost = HarnessStore
       state.lastStoreChangeAt = carried.lastStoreChangeAt
       state.claimAt = carried.claimAt
       state.claimTurns = carried.claimTurns
+      state.hooksSeen = carried.hooksSeen
+      const deliveryKeyCarried = carried.delivery?.key
+      if (carried.delivery) this.clearDelivery(carried)
       if (carried.quietTimer) {
         clearTimeout(carried.quietTimer)
         carried.quietTimer = undefined
@@ -1371,6 +1413,7 @@ export abstract class PtyHarnessDriver<S extends HarnessStoreHost = HarnessStore
       carried.transcriptOff?.()
       carried.transcriptOff = undefined
       if (state.turnInFlight) this.armQuietWindow(next)
+      if (deliveryKeyCarried) this.armDeliveryCheck(next, deliveryKeyCarried, true)
       this.live.delete(previous)
       // The chat must not go dark for the rest of a turn that spans a rotation:
       // re-subscribe under the successor id and re-arm the stale release.
@@ -1417,6 +1460,7 @@ export abstract class PtyHarnessDriver<S extends HarnessStoreHost = HarnessStore
       clearTimeout(state.quietTimer)
       state.quietTimer = undefined
     }
+    this.clearDelivery(state)
     if (!state.turnInFlight && !always) return
     state.turnInFlight = false
     state.claimAt = undefined
@@ -1487,6 +1531,138 @@ export abstract class PtyHarnessDriver<S extends HarnessStoreHost = HarnessStore
       )
       return undefined
     }
+  }
+
+  protected clearDelivery(state: LiveState): void {
+    if (!state.delivery) return
+    clearTimeout(state.delivery.deadline)
+    if (state.delivery.peek) clearTimeout(state.delivery.peek)
+    state.delivery = undefined
+  }
+
+  protected markDelivered(native: string): void {
+    const state = this.live.get(native)
+    if (state) this.clearDelivery(state)
+  }
+
+  protected armDeliveryCheck(native: string, text: string, warm: boolean): void {
+    if (this.deliveryConfirmMs <= 0) return
+    const state = this.ensureLive(native)
+    this.clearDelivery(state)
+    const key = deliveryKey(text).slice(0, 80)
+    // Cold spawn: term manager may hold the paste until the TUI is ready
+    // (injectReadyMaxMs, 15s). Skip the screen check; a "written vs buffered"
+    // inject result is out of scope.
+    const deadlineMs = warm
+      ? state.hooksSeen
+        ? this.deliveryConfirmMs
+        : this.deliveryFallbackMs
+      : this.deliveryFallbackMs + INJECT_READY_MAX_MS
+    const peekMs = warm ? this.deliveryPeekMs : 0
+    const deadline = setTimeout(() => {
+      void this.deadlineDelivery(native, deadlineMs)
+    }, deadlineMs)
+    deadline.unref()
+    const delivery: NonNullable<LiveState['delivery']> = { key, deadline }
+    if (peekMs > 0) {
+      const peek = setTimeout(() => {
+        void this.peekDelivery(native)
+      }, peekMs)
+      peek.unref()
+      delivery.peek = peek
+    }
+    state.delivery = delivery
+  }
+
+  protected failDelivery(native: string, why: string): void {
+    const state = this.live.get(native)
+    if (!state?.delivery || !state.turnInFlight) return
+    this.clearDelivery(state)
+    this.log(`[den-server] harness: turn undelivered for ${this.harnessId}:${native}: ${why}`)
+    this.emit(native, {
+      type: 'error',
+      sessionId: this.sid(native),
+      code: 'turn_undelivered',
+      message: why,
+      retryable: true,
+    })
+    this.endTurn(native, 'undelivered')
+  }
+
+  protected inputHoldsTurn(raw: string, key: string): boolean {
+    const input = parseComposerInput(raw)
+    if (input === undefined) return false
+    if (/\[Pasted text #\d+/.test(input)) return true
+    if (!key) return false
+    return deliveryKey(input).includes(key.slice(0, 30))
+  }
+
+  protected async peekDelivery(native: string): Promise<void> {
+    const state = this.live.get(native)
+    if (!state?.delivery) return
+    let raw: string
+    try {
+      raw = (await this.deps.screen?.(this.room(native))) ?? ''
+    } catch (err) {
+      this.log(
+        `[den-server] harness: delivery screen capture failed for ${this.harnessId}:${native}: ` +
+          (err instanceof Error ? err.message : String(err)),
+      )
+      return
+    }
+    if (!this.live.get(native)?.delivery) return
+    const dialog = parseBlockingDialog(raw)
+    if (dialog) {
+      const title = dialog.title ? ` (“${dialog.title}”)` : ''
+      this.failDelivery(
+        native,
+        `${this.productName} is showing a dialog${title}; answer it in the terminal, then retry`,
+      )
+      return
+    }
+    if (this.inputHoldsTurn(raw, state.delivery.key)) {
+      if (!state.delivery.stuckOnce) {
+        state.delivery.stuckOnce = true
+        const peek = setTimeout(() => {
+          void this.peekDelivery(native)
+        }, 1_000)
+        peek.unref()
+        state.delivery.peek = peek
+        return
+      }
+      this.failDelivery(
+        native,
+        `${this.productName} didn't submit the message (it's still in the input box); check the terminal`,
+      )
+    }
+  }
+
+  protected async deadlineDelivery(native: string, deadlineMs: number): Promise<void> {
+    const state = this.live.get(native)
+    if (!state?.delivery || !state.turnInFlight) return
+    try {
+      const raw = (await this.deps.screen?.(this.room(native))) ?? ''
+      if (!this.live.get(native)?.delivery) return
+      const dialog = parseBlockingDialog(raw)
+      if (dialog) {
+        const title = dialog.title ? ` (“${dialog.title}”)` : ''
+        this.failDelivery(
+          native,
+          `${this.productName} is showing a dialog${title}; answer it in the terminal, then retry`,
+        )
+        return
+      }
+    } catch (err) {
+      this.log(
+        `[den-server] harness: delivery deadline screen capture failed for ${this.harnessId}:${native}: ` +
+          (err instanceof Error ? err.message : String(err)),
+      )
+    }
+    const secs = Math.round(deadlineMs / 1000)
+    this.failDelivery(
+      native,
+      `${this.productName} didn't start working on the message within ${String(secs)}s`,
+    )
   }
 
   protected async captureBlockedScreen(native: string): Promise<void> {
@@ -1838,6 +2014,7 @@ export abstract class PtyHarnessDriver<S extends HarnessStoreHost = HarnessStore
       if (!(claimPending && edges.status.status === 'idle')) this.emit(native, statusEvent)
       if (edges.status.status === 'working') {
         state.turnInFlight = true
+        this.markDelivered(native)
         this.armQuietWindow(native)
       } else if (!claimPending) {
         state.turnInFlight = false
@@ -1923,6 +2100,14 @@ export abstract class PtyHarnessDriver<S extends HarnessStoreHost = HarnessStore
     if (native === undefined) return
     if (!this.ownsEvent(native, ev)) return
     const state = this.ensureLive(native)
+    state.hooksSeen = true
+    if (
+      ev.type === 'message.user' &&
+      state.delivery?.key &&
+      deliveryKey(typeof ev.text === 'string' ? ev.text : '').includes(state.delivery.key)
+    ) {
+      this.markDelivered(native)
+    }
     if (state.turnInFlight) this.armQuietWindow(native)
     const sessionId = this.sid(native)
 
