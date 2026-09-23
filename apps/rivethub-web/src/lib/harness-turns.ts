@@ -171,13 +171,81 @@ export function messagesFromHarnessTurns(
 export function agentStatusLine(
   live: LiveTurn | undefined,
   status: HarnessStatusFrame | undefined,
+  /**
+   * A user turn is awaiting its reply but nothing is animating yet: the send is
+   * in flight before the harness's first event (cold PTY spawn), OR the reply
+   * has not started streaming and the pump has already dropped its `working…`
+   * placeholder (the multi-second gap between turn-accept and first token).
+   * Fills that gap with `working…` — matching the pump's own placeholder text —
+   * so the transcript never sits blank while a reply is coming. Ignored once a
+   * live turn or any status frame exists (they are more specific).
+   */
+  awaitingReply?: boolean,
 ): { text: string; tool?: string } | undefined {
-  if (live || !status) return undefined
-  if (status.status === 'blocked' || status.phase === 'prompt') {
-    return { text: 'waiting for you', tool: status.tool?.name }
+  if (live) return undefined
+  if (status) {
+    if (status.status === 'blocked' || status.phase === 'prompt') {
+      return { text: 'waiting for you', tool: status.tool?.name }
+    }
+    if (status.status === 'working') {
+      return { text: statusActivity(status) ?? 'working…', tool: status.tool?.name }
+    }
+    return undefined
   }
-  if (status.status === 'working') {
-    return { text: statusActivity(status) ?? 'working…', tool: status.tool?.name }
-  }
+  if (awaitingReply) return { text: 'working…' }
   return undefined
+}
+
+export const STALE_REPLY_WAIT_MS = 90_000
+export interface ReplyWaitClock {
+  key: string
+  startedAt: number
+}
+
+/** Keep identity stable when neither the turn nor its heartbeat changed. */
+export function nextWaitClock(
+  prev: ReplyWaitClock | undefined,
+  waitKey: string | undefined,
+  statusChanged: boolean,
+  now: number,
+): ReplyWaitClock | undefined {
+  if (!waitKey) return undefined
+  if (prev?.key === waitKey && (!statusChanged || prev.startedAt === now)) return prev
+  return { key: waitKey, startedAt: now }
+}
+
+/** Persisted messages are not pending evidence. Without content or status
+ * heartbeats, a slow first token is indistinguishable from a wedged turn. */
+export function deriveReplyWait(input: {
+  outbound: readonly { id: string; status: string }[]
+  acceptedReply?: string
+  live?: LiveTurn
+  status?: HarnessStatusFrame
+  clock?: ReplyWaitClock
+  now: number
+}) {
+  const { outbound, acceptedReply, live, status, clock, now } = input
+  const pending =
+    outbound.find((o) => o.status === 'sending') ?? outbound.find((o) => o.status === 'queued')
+  const awaitingReply = !!(pending || acceptedReply)
+  const hasContent = !!(live?.text || live?.reasoningText || live?.tools.length)
+  const activeStatus = status?.status === 'working' || status?.status === 'blocked'
+  const waitKey = hasContent
+    ? undefined
+    : (pending?.id ??
+      acceptedReply ??
+      (activeStatus ? 'status' : live && !status ? 'placeholder' : undefined))
+  const deadline =
+    waitKey && clock?.key === waitKey ? clock.startedAt + STALE_REPLY_WAIT_MS : undefined
+  const stale = deadline !== undefined && now >= deadline
+  const displayLive =
+    !hasContent && (stale || (status?.status === 'idle' && !awaitingReply)) ? undefined : live
+  return {
+    awaitingReply,
+    waitKey,
+    deadline,
+    stale,
+    displayLive,
+    statusLine: agentStatusLine(displayLive, status, awaitingReply && !stale),
+  }
 }

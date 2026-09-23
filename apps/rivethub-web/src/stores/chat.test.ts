@@ -62,6 +62,7 @@ afterEach(() => {
 
 beforeEach(() => {
   useChat.setState({
+    replyAcceptance: {},
     messages: {},
     transcripts: {},
     live: {},
@@ -717,4 +718,42 @@ describe('committed-turn reconciliation', () => {
     expect(state().messages.A).toBeUndefined()
     expect(state().messages.B?.map((m) => m.id)).toEqual(['m1'])
   })
+})
+
+describe('reply acceptance across adoption', () => {
+  const start = () => {
+    const store = useChat.getState()
+    store.addDraft('draft')
+    const id = store.enqueueOutbound('draft', 'hello')
+    store.markOutboundSending('draft', id)
+    return store.beginReply('draft', id)
+  }
+  it.each([false, true])('survives rekey with acceptance before move = %s', (before) => {
+    const generation = start()
+    const store = useChat.getState()
+    if (before) store.acceptReply('draft', generation)
+    expect(store.rekey('draft', 'canonical')).toBe(true)
+    if (!before) store.acceptReply('draft', generation)
+    expect(useChat.getState().replyAcceptance.canonical).toEqual({
+      id: generation.id,
+      accepted: true,
+    })
+    expect(useChat.getState().replyAcceptance.draft).toBeUndefined()
+    store.clearLive('canonical') // pump placeholder expiry must preserve acceptance
+    expect(useChat.getState().replyAcceptance.canonical?.accepted).toBe(true)
+  })
+  it.each(['stop', 'content', 'completion', 'new send'] as const)(
+    '%s prevents late acceptance',
+    (event) => {
+      const generation = start()
+      const store = useChat.getState()
+      if (event === 'content')
+        store.setLive('draft', { text: 'reply', reasoning: false, reasoningText: '', tools: [] })
+      else if (event === 'completion') store.setLive('draft', undefined)
+      else if (event === 'new send') store.beginReply('draft', 'new')
+      else store.clearAcceptedReply('draft')
+      store.acceptReply('draft', generation)
+      expect(useChat.getState().replyAcceptance.draft?.accepted).not.toBe(true)
+    },
+  )
 })

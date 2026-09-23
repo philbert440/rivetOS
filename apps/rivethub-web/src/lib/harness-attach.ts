@@ -69,7 +69,7 @@ export interface HarnessAttachOptions {
    */
   onControlReset?: () => void
   /** Live turn state, `undefined` when the slot should clear. */
-  onLive: (turn: LiveTurn | undefined) => void
+  onLive: (turn: LiveTurn | undefined, reason?: 'resync') => void
   /** Approval request/resolution — outlives the turn, so not part of the fold. */
   onApproval?: (event: HarnessApprovalEvent) => void
   onTurnComplete?: () => void
@@ -214,7 +214,7 @@ export function attachHarnessSession(opts: HarnessAttachOptions): HarnessAttachm
         // transcript frame is about to rebuild.
         if (event.from === 0) {
           live = undefined
-          opts.onLive(undefined)
+          opts.onLive(undefined, 'resync')
           if (syncTimer) {
             clearTimeout(syncTimer)
             syncTimer = undefined
