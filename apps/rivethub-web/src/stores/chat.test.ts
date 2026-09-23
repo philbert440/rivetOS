@@ -180,6 +180,7 @@ describe('outbound sends across rekey', () => {
     dequeue: (sid, id) => state().dequeueOutbound(sid, id),
     requeue: (sid, id) => state().requeueOutbound(sid, id),
     fail: (sid, id) => state().failOutbound(sid, id),
+    restoreFailed: (sid, item) => state().restoreOutboundFailed(sid, item),
     beginLive: (sid, activity) => state().beginLive(sid, activity),
     clearLive: (sid) => state().clearLive(sid),
     awaitBusy: (_sid, ms) => new Promise((resolve) => setTimeout(resolve, ms)),
@@ -714,5 +715,28 @@ describe('committed-turn reconciliation', () => {
     state().seed('A', [{ id: 'm1', sessionId: 'A', role: 'user', text: 'backfill', ts: 1 }])
     expect(state().messages.A).toBeUndefined()
     expect(state().messages.B?.map((m) => m.id)).toEqual(['m1'])
+  })
+})
+
+describe('restoreOutboundFailed', () => {
+  const state = () => useChat.getState()
+
+  it('inserts one failed item at the front and keeps the existing bubble', () => {
+    state().addDraft('A')
+    const id = state().enqueueOutbound('A', 'hello')
+    state().markOutboundSending('A', id)
+    state().dequeueOutbound('A', id)
+    expect(state().messages.A?.some((m) => m.id === id)).toBe(true)
+    state().restoreOutboundFailed('A', { id, text: 'hello', status: 'queued' })
+    expect(state().outbound.A?.[0]).toMatchObject({ id, status: 'failed' })
+    expect(state().messages.A?.filter((m) => m.id === id)).toHaveLength(1)
+  })
+
+  it('does nothing if the id is already queued', () => {
+    state().addDraft('A')
+    const id = state().enqueueOutbound('A', 'hello')
+    state().restoreOutboundFailed('A', { id, text: 'hello', status: 'failed' })
+    expect(state().outbound.A).toHaveLength(1)
+    expect(state().outbound.A?.[0].status).toBe('queued')
   })
 })

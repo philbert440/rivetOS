@@ -17,6 +17,9 @@
  *     is simply "not yet": the turn goes back on the queue and retries once
  *     per `status idle` / `turn-complete` edge (`onIdle()`). After the
  *     attempt cap the user's inject button is the (interrupting) manual retry.
+ *   - **`turn_undelivered`.** den accepted the inject but the harness never
+ *     took it. The pump keeps the last accepted item and `onUndelivered()`
+ *     puts it back as failed (no auto-retry — a dialog may need answering).
  *
  * Stale-turn release is den's job (server-side timer re-armed per frame).
  *
@@ -45,6 +48,7 @@ export interface OutboundPumpStore {
   dequeue(sessionId: string, id: string): void
   requeue(sessionId: string, id: string): void
   fail(sessionId: string, id: string): void
+  restoreFailed(sessionId: string, item: OutboundItem): void
   beginLive(sessionId: string, activity: string): void
   clearLive(sessionId: string): void
   /**
@@ -91,6 +95,8 @@ export interface OutboundPump {
    * `turn_in_flight`, once per edge, up to TURN_RETRY_ATTEMPTS.
    */
   onIdle(): void
+  /** den reported `turn_undelivered` for the last accepted inject. */
+  onUndelivered(): void
 }
 
 export function createOutboundPump(opts: OutboundPumpOptions): OutboundPump {
@@ -113,6 +119,7 @@ export function createOutboundPump(opts: OutboundPumpOptions): OutboundPump {
   const turnRetries = new Map<string, number>()
   /** Waiting for an idle/turn-complete edge to retry. */
   let awaitingIdle = false
+  let lastAccepted: OutboundItem | undefined
 
   const pump = async (pumpOpts?: { forceId?: string; interrupt?: boolean }): Promise<void> => {
     if (disposed || pumping) return
@@ -136,6 +143,7 @@ export function createOutboundPump(opts: OutboundPumpOptions): OutboundPump {
       // Cancelled/disposed mid-inject: a newer generation owns `pumping` and
       // the live slot — leave both alone.
       if (superseded()) return
+      lastAccepted = next
       store.dequeue(sessionId(), next.id)
       turnRetries.delete(next.id)
       inFlight = undefined
@@ -143,6 +151,7 @@ export function createOutboundPump(opts: OutboundPumpOptions): OutboundPump {
       // Hold the pump until the harness's stream latches busy (see header).
       await store.awaitBusy(sessionId(), INJECT_LATCH_MS)
       if (superseded()) return
+      if (store.liveIsBusy(sessionId())) lastAccepted = undefined
       if (!store.liveIsBusy(sessionId())) {
         store.clearLive(sessionId())
       }
@@ -197,11 +206,17 @@ export function createOutboundPump(opts: OutboundPumpOptions): OutboundPump {
       inFlight = undefined
       pumping = false
       awaitingIdle = false
+      lastAccepted = undefined
     },
     onIdle: () => {
       if (disposed || !awaitingIdle) return
       awaitingIdle = false
       void pump().catch(() => undefined)
+    },
+    onUndelivered: () => {
+      if (disposed || !lastAccepted) return
+      store.restoreFailed(sessionId(), lastAccepted)
+      lastAccepted = undefined
     },
   }
 }

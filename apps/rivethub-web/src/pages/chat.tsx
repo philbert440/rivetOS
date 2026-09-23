@@ -1284,6 +1284,7 @@ function ActiveSession(props: {
         onLive: (turn) => useChat.getState().setLive(props.sessionId, turn),
         onApproval: (event) => useChat.getState().applyApprovalEvent(props.sessionId, event),
         onTurnComplete: () => outboundPumpFor(props.sessionId).pump.onIdle(),
+        onUndelivered: () => outboundPumpFor(props.sessionId).pump.onUndelivered(),
         onSessionUpdated: () => {
           void queryClient.invalidateQueries({
             queryKey: ['remote-session', sessionBase, props.sessionId],

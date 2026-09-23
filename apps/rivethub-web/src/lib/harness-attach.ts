@@ -73,6 +73,7 @@ export interface HarnessAttachOptions {
   /** Approval request/resolution — outlives the turn, so not part of the fold. */
   onApproval?: (event: HarnessApprovalEvent) => void
   onTurnComplete?: () => void
+  onUndelivered?: (event: HarnessEvent) => void
   onSessionUpdated?: () => void
   /**
    * Store's live-turn source for this session. Hook deltas fold only while
@@ -193,6 +194,7 @@ export function attachHarnessSession(opts: HarnessAttachOptions): HarnessAttachm
       }
       if (event.type === 'error') {
         clearSystemPromptSent(opts.sessionId)
+        if (event.code === 'turn_undelivered') opts.onUndelivered?.(event)
         if (FATAL_CODES.has(event.code)) {
           // The server's attach-failure frame: it closes the socket right after,
           // and the ws helper would otherwise reconnect into the same refusal

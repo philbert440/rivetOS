@@ -217,6 +217,10 @@ interface ChatState {
   dequeueOutbound: (sessionId: string, id: string) => void
   /** Keep failed sends visible and available for manual retry. */
   failOutbound: (sessionId: string, id: string) => void
+  /** A turn den accepted but the harness never took (`turn_undelivered`): put it back
+   *  as `failed` so the existing failed-turn UI (bubble + retry) shows. The bubble is
+   *  still present from the original send; don't add a second one. */
+  restoreOutboundFailed: (sessionId: string, item: OutboundItem) => void
   /** Remove the queue entry and optimistic bubble when recalled by the user. */
   cancelOutbound: (sessionId: string, id: string) => void
   /**
@@ -912,6 +916,20 @@ export const useChat = create<ChatState>()(
               [sessionId]: (s.outbound[sessionId] ?? []).map((o) =>
                 o.id === id ? { ...o, status: 'failed' as const } : o,
               ),
+            },
+          }
+        })
+      },
+
+      restoreOutboundFailed: (sessionId, item) => {
+        sessionId = keyOf(sessionId)
+        return set((s) => {
+          const q = s.outbound[sessionId] ?? []
+          if (q.some((o) => o.id === item.id)) return s
+          return {
+            outbound: {
+              ...s.outbound,
+              [sessionId]: [{ ...item, status: 'failed' as const }, ...q],
             },
           }
         })

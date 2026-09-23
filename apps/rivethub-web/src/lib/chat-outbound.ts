@@ -13,6 +13,7 @@ const pumpStore: OutboundPumpStore = {
   dequeue: (sid, id) => useChat.getState().dequeueOutbound(sid, id),
   requeue: (sid, id) => useChat.getState().requeueOutbound(sid, id),
   fail: (sid, id) => useChat.getState().failOutbound(sid, id),
+  restoreFailed: (sid, item) => useChat.getState().restoreOutboundFailed(sid, item),
   beginLive: (sid, activity) => useChat.getState().beginLive(sid, activity),
   clearLive: (sid) => useChat.getState().clearLive(sid),
   awaitBusy: (sid, ms) =>

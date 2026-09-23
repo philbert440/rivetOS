@@ -47,6 +47,12 @@ function fakeStore(): FakeStore {
       const item = s.items.find((o) => o.id === id)
       if (item) item.status = 'failed'
     },
+    restoreFailed: (_sid, item) => {
+      s.calls.push(`restoreFailed:${item.id}`)
+      if (!s.items.some((o) => o.id === item.id)) {
+        s.items = [{ ...item, status: 'failed' }, ...s.items]
+      }
+    },
     beginLive: () => {
       s.calls.push('beginLive')
     },
@@ -361,4 +367,76 @@ describe('pump registry rekey ownership', () => {
       }
     },
   )
+})
+
+describe('onUndelivered', () => {
+  beforeEach(() => vi.useFakeTimers())
+  afterEach(() => vi.useRealTimers())
+
+  it('restores the last accepted item as failed', async () => {
+    const s = fakeStore()
+    s.items = [queued('a')]
+    const pump = createOutboundPump({
+      sessionId: SID,
+      store: s,
+      inject: () => Promise.resolve(),
+      isTurnInFlight: () => false,
+    })
+    const p = pump.pump()
+    await vi.advanceTimersByTimeAsync(0)
+    await Promise.resolve()
+    pump.onUndelivered()
+    expect(s.calls.filter((c) => c.startsWith('restoreFailed'))).toEqual(['restoreFailed:a'])
+    await vi.advanceTimersByTimeAsync(INJECT_LATCH_MS)
+    await p
+  })
+
+  it('does not restore after the turn went busy', async () => {
+    const s = fakeStore()
+    s.items = [queued('a')]
+    s.busy = true
+    const pump = createOutboundPump({
+      sessionId: SID,
+      store: s,
+      inject: () => Promise.resolve(),
+      isTurnInFlight: () => false,
+    })
+    await pump.pump()
+    pump.onUndelivered()
+    expect(s.calls.filter((c) => c.startsWith('restoreFailed'))).toEqual([])
+  })
+
+  it('is a no-op with nothing accepted', () => {
+    const s = fakeStore()
+    const pump = createOutboundPump({
+      sessionId: SID,
+      store: s,
+      inject: () => Promise.resolve(),
+      isTurnInFlight: () => false,
+    })
+    pump.onUndelivered()
+    expect(s.calls.filter((c) => c.startsWith('restoreFailed'))).toEqual([])
+  })
+
+  it('restores only the latest accepted item', async () => {
+    const s = fakeStore()
+    s.items = [queued('a'), queued('b')]
+    const pump = createOutboundPump({
+      sessionId: SID,
+      store: s,
+      inject: () => Promise.resolve(),
+      isTurnInFlight: () => false,
+    })
+    const p1 = pump.pump()
+    await vi.advanceTimersByTimeAsync(INJECT_LATCH_MS)
+    await p1
+    s.items = [queued('b')]
+    const p2 = pump.pump()
+    await vi.advanceTimersByTimeAsync(0)
+    await Promise.resolve()
+    pump.onUndelivered()
+    expect(s.calls.filter((c) => c.startsWith('restoreFailed'))).toEqual(['restoreFailed:b'])
+    await vi.advanceTimersByTimeAsync(INJECT_LATCH_MS)
+    await p2
+  })
 })
