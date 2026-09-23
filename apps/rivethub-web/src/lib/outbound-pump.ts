@@ -28,6 +28,7 @@
  */
 
 import type { OutboundItem } from '../stores/chat.js'
+import { sendBlockNote } from './send-block-note.js'
 
 /** How long the queue pump waits for an injected turn's first stream frame
  *  before deciding the harness isn't bridging and letting the queue flow. */
@@ -46,9 +47,9 @@ export interface OutboundPumpStore {
   liveIsBusy(sessionId: string): boolean
   markSending(sessionId: string, id: string): void
   dequeue(sessionId: string, id: string): void
-  requeue(sessionId: string, id: string): void
-  fail(sessionId: string, id: string): void
-  restoreFailed(sessionId: string, item: OutboundItem): void
+  requeue(sessionId: string, id: string, note?: string): void
+  fail(sessionId: string, id: string, note?: string): void
+  restoreFailed(sessionId: string, item: OutboundItem, note?: string): void
   beginLive(sessionId: string, activity: string): void
   clearLive(sessionId: string): void
   /**
@@ -95,8 +96,8 @@ export interface OutboundPump {
    * `turn_in_flight`, once per edge, up to TURN_RETRY_ATTEMPTS.
    */
   onIdle(): void
-  /** den reported `turn_undelivered` for the last accepted inject. */
-  onUndelivered(): void
+  /** den reported `turn_undelivered` for the last accepted inject; `note` says why. */
+  onUndelivered(note?: string): void
 }
 
 export function createOutboundPump(opts: OutboundPumpOptions): OutboundPump {
@@ -163,7 +164,7 @@ export function createOutboundPump(opts: OutboundPumpOptions): OutboundPump {
       if (opts.isTurnInFlight(err)) {
         // Not a failure: put the turn back in the queue and retry on the
         // next idle / turn-complete edge.
-        store.requeue(sessionId(), next.id)
+        store.requeue(sessionId(), next.id, sendBlockNote(err))
         // Only the pre-inject placeholder goes: a real streaming turn is
         // exactly WHY the driver said no, and dropping its bubble would blank
         // the reply the user is watching.
@@ -175,7 +176,7 @@ export function createOutboundPump(opts: OutboundPumpOptions): OutboundPump {
       }
       turnRetries.delete(next.id)
       awaitingIdle = false
-      store.fail(sessionId(), next.id)
+      store.fail(sessionId(), next.id, sendBlockNote(err))
       store.clearLive(sessionId())
       // Try the next queued message after a failure.
       void pump().catch(() => undefined)
@@ -213,9 +214,9 @@ export function createOutboundPump(opts: OutboundPumpOptions): OutboundPump {
       awaitingIdle = false
       void pump().catch(() => undefined)
     },
-    onUndelivered: () => {
+    onUndelivered: (note) => {
       if (disposed || !lastAccepted) return
-      store.restoreFailed(sessionId(), lastAccepted)
+      store.restoreFailed(sessionId(), lastAccepted, note)
       lastAccepted = undefined
     },
   }

@@ -7,6 +7,7 @@ import {
   shouldPersistLaunchLatch,
 } from '../lib/conversation-model-options.js'
 import { withAttachmentText } from '../lib/attachments.js'
+import { undeliveredNote } from '../lib/send-block-note.js'
 /**
  * Chat — the day-one job (phase-4 design doc). Layout mirrors
  * rivet-android: conversation drawer on the left, transcript + composer on
@@ -1284,7 +1285,10 @@ function ActiveSession(props: {
         onLive: (turn) => useChat.getState().setLive(props.sessionId, turn),
         onApproval: (event) => useChat.getState().applyApprovalEvent(props.sessionId, event),
         onTurnComplete: () => outboundPumpFor(props.sessionId).pump.onIdle(),
-        onUndelivered: () => outboundPumpFor(props.sessionId).pump.onUndelivered(),
+        onUndelivered: (ev) =>
+          outboundPumpFor(props.sessionId).pump.onUndelivered(
+            undeliveredNote(ev.type === 'error' ? ev.message : undefined),
+          ),
         onSessionUpdated: () => {
           void queryClient.invalidateQueries({
             queryKey: ['remote-session', sessionBase, props.sessionId],
@@ -1768,6 +1772,10 @@ function ActiveSession(props: {
       ),
     [outbound],
   )
+  const outboundNotes = useMemo(
+    () => Object.fromEntries(outbound.flatMap((o) => (o.note ? [[o.id, o.note]] : []))),
+    [outbound],
+  )
   // Thinking window (no block yet), blocked, prompt: one line under the
   // transcript so the agent is never silently "working" (requirement 3).
   const statusLine = agentStatusLine(live, agentStatus)
@@ -1920,6 +1928,7 @@ function ActiveSession(props: {
             })}
             live={live}
             outbound={outboundStatus}
+            outboundNotes={outboundNotes}
             statusLine={statusLine}
           />
           <QueuedStrip items={outbound} onInject={onInjectOutbound} onCancel={onCancelOutbound} />

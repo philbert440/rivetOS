@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { LiveTurn, OutboundItem } from '../stores/chat.js'
+import { DIALOG_NOTE } from './send-block-note.js'
 import {
   createOutboundPump,
   createOutboundPumpRegistry,
@@ -37,20 +38,20 @@ function fakeStore(): FakeStore {
       s.calls.push(`dequeue:${id}`)
       s.items = s.items.filter((o) => o.id !== id)
     },
-    requeue: (_sid, id) => {
+    requeue: (_sid, id, note) => {
       s.calls.push(`requeue:${id}`)
       const it = s.items.find((o) => o.id === id)
-      if (it) it.status = 'queued'
+      if (it) Object.assign(it, { status: 'queued', note })
     },
-    fail: (_sid, id) => {
+    fail: (_sid, id, note) => {
       s.calls.push(`fail:${id}`)
       const item = s.items.find((o) => o.id === id)
-      if (item) item.status = 'failed'
+      if (item) Object.assign(item, { status: 'failed', note })
     },
-    restoreFailed: (_sid, item) => {
+    restoreFailed: (_sid, item, note) => {
       s.calls.push(`restoreFailed:${item.id}`)
       if (!s.items.some((o) => o.id === item.id)) {
-        s.items = [{ ...item, status: 'failed' }, ...s.items]
+        s.items = [{ ...item, status: 'failed', note }, ...s.items]
       }
     },
     beginLive: () => {
@@ -339,12 +340,12 @@ describe('pump registry rekey ownership', () => {
         const failure = expect(pending).rejects.toThrow('offline')
         reject(new Error('offline'))
         await failure
-        expect(fail).toHaveBeenCalledWith(key, 'first')
+        expect(fail).toHaveBeenCalledWith(key, 'first', undefined)
         expect(s.items.find((o) => o.id === 'first')?.status).toBe('failed')
       } else {
         reject(TURN_IN_FLIGHT)
         await pending
-        expect(requeue).toHaveBeenCalledWith(key, 'first')
+        expect(requeue).toHaveBeenCalledWith(key, 'first', undefined)
         expect(next).not.toHaveBeenCalled()
         adopted.pump.onIdle()
       }
@@ -438,5 +439,76 @@ describe('onUndelivered', () => {
     expect(s.calls.filter((c) => c.startsWith('restoreFailed'))).toEqual(['restoreFailed:b'])
     await vi.advanceTimersByTimeAsync(INJECT_LATCH_MS)
     await p2
+  })
+})
+
+describe('failure notes', () => {
+  beforeEach(() => vi.useFakeTimers())
+  afterEach(() => vi.useRealTimers())
+
+  const dialogRefusal = Object.assign(new Error('harness is showing a dialog'), {
+    status: 409,
+    body: { error: 'harness is showing a dialog', reason: 'harness_dialog' },
+  })
+
+  it('fails a send refused for an open dialog with the dialog note', async () => {
+    const s = fakeStore()
+    s.items = [queued('a')]
+    const pump = createOutboundPump({
+      sessionId: SID,
+      store: s,
+      inject: () => Promise.reject(dialogRefusal),
+      isTurnInFlight: () => false,
+    })
+    await expect(pump.pump()).rejects.toThrow('dialog')
+    expect(s.items[0]).toMatchObject({ id: 'a', status: 'failed', note: DIALOG_NOTE })
+  })
+
+  it('requeues a turn_in_flight refused for an open dialog with the dialog note', async () => {
+    const s = fakeStore()
+    s.items = [queued('a')]
+    const pump = createOutboundPump({
+      sessionId: SID,
+      store: s,
+      inject: () => Promise.reject(dialogRefusal),
+      isTurnInFlight: () => true,
+    })
+    await pump.pump()
+    expect(s.items[0]).toMatchObject({ id: 'a', status: 'queued', note: DIALOG_NOTE })
+  })
+
+  it('a plain failure carries no note', async () => {
+    const s = fakeStore()
+    s.items = [queued('a')]
+    const pump = createOutboundPump({
+      sessionId: SID,
+      store: s,
+      inject: () => Promise.reject(new Error('offline')),
+      isTurnInFlight: () => false,
+    })
+    await expect(pump.pump()).rejects.toThrow('offline')
+    expect(s.items[0]?.note).toBeUndefined()
+  })
+
+  it('onUndelivered passes its note to the restored item', async () => {
+    const s = fakeStore()
+    s.items = [queued('a')]
+    const pump = createOutboundPump({
+      sessionId: SID,
+      store: s,
+      inject: () => Promise.resolve(),
+      isTurnInFlight: () => false,
+    })
+    const p = pump.pump()
+    await vi.advanceTimersByTimeAsync(0)
+    await Promise.resolve()
+    pump.onUndelivered('not delivered: Claude Code is showing a dialog')
+    expect(s.items[0]).toMatchObject({
+      id: 'a',
+      status: 'failed',
+      note: 'not delivered: Claude Code is showing a dialog',
+    })
+    await vi.advanceTimersByTimeAsync(INJECT_LATCH_MS)
+    await p
   })
 })

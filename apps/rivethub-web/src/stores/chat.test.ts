@@ -178,9 +178,9 @@ describe('outbound sends across rekey', () => {
     liveIsBusy: (sid) => state().liveIsBusy(sid),
     markSending: (sid, id) => state().markOutboundSending(sid, id),
     dequeue: (sid, id) => state().dequeueOutbound(sid, id),
-    requeue: (sid, id) => state().requeueOutbound(sid, id),
-    fail: (sid, id) => state().failOutbound(sid, id),
-    restoreFailed: (sid, item) => state().restoreOutboundFailed(sid, item),
+    requeue: (sid, id, note) => state().requeueOutbound(sid, id, note),
+    fail: (sid, id, note) => state().failOutbound(sid, id, note),
+    restoreFailed: (sid, item, note) => state().restoreOutboundFailed(sid, item, note),
     beginLive: (sid, activity) => state().beginLive(sid, activity),
     clearLive: (sid) => state().clearLive(sid),
     awaitBusy: (_sid, ms) => new Promise((resolve) => setTimeout(resolve, ms)),
@@ -730,6 +730,27 @@ describe('restoreOutboundFailed', () => {
     state().restoreOutboundFailed('A', { id, text: 'hello', status: 'queued' })
     expect(state().outbound.A?.[0]).toMatchObject({ id, status: 'failed' })
     expect(state().messages.A?.filter((m) => m.id === id)).toHaveLength(1)
+  })
+
+  it('carries a failure note, and the next send clears it', () => {
+    state().addDraft('A')
+    const id = state().enqueueOutbound('A', 'hello')
+    state().markOutboundSending('A', id)
+    state().failOutbound('A', id, 'not sent: picker open')
+    expect(state().outbound.A?.[0]).toMatchObject({
+      status: 'failed',
+      note: 'not sent: picker open',
+    })
+    state().markOutboundSending('A', id)
+    expect(state().outbound.A?.[0].note).toBeUndefined()
+    state().requeueOutbound('A', id, 'not sent: picker open')
+    expect(state().outbound.A?.[0]).toMatchObject({
+      status: 'queued',
+      note: 'not sent: picker open',
+    })
+    state().dequeueOutbound('A', id)
+    state().restoreOutboundFailed('A', { id, text: 'hello', status: 'queued' }, 'not delivered')
+    expect(state().outbound.A?.[0]).toMatchObject({ status: 'failed', note: 'not delivered' })
   })
 
   it('does nothing if the id is already queued', () => {

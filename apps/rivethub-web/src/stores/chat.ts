@@ -64,6 +64,8 @@ export interface OutboundItem {
   text: string
   attachments?: import('@rivetos/types').UserTurn['attachments']
   status: OutboundStatus
+  /** Why the last send didn't land (lib/send-block-note.ts). Cleared on the next send. */
+  note?: string
 }
 
 /** Server-pushed harness transcript state for a watched session. */
@@ -212,15 +214,15 @@ interface ChatState {
   markOutboundSending: (sessionId: string, id: string) => void
   /** Put a sending item back in the queue — the harness answered
    *  `turn_in_flight`, which is a "not yet", not a failure. */
-  requeueOutbound: (sessionId: string, id: string) => void
+  requeueOutbound: (sessionId: string, id: string, note?: string) => void
   /** Drop from queue after inject accepted (bubble stays until WS echo). */
   dequeueOutbound: (sessionId: string, id: string) => void
   /** Keep failed sends visible and available for manual retry. */
-  failOutbound: (sessionId: string, id: string) => void
+  failOutbound: (sessionId: string, id: string, note?: string) => void
   /** A turn den accepted but the harness never took (`turn_undelivered`): put it back
    *  as `failed` so the existing failed-turn UI (bubble + retry) shows. The bubble is
    *  still present from the original send; don't add a second one. */
-  restoreOutboundFailed: (sessionId: string, item: OutboundItem) => void
+  restoreOutboundFailed: (sessionId: string, item: OutboundItem, note?: string) => void
   /** Remove the queue entry and optimistic bubble when recalled by the user. */
   cancelOutbound: (sessionId: string, id: string) => void
   /**
@@ -864,13 +866,13 @@ export const useChat = create<ChatState>()(
           outbound: {
             ...s.outbound,
             [sessionId]: (s.outbound[sessionId] ?? []).map((o) =>
-              o.id === id ? { ...o, status: 'sending' as const } : o,
+              o.id === id ? { ...o, status: 'sending' as const, note: undefined } : o,
             ),
           },
         }))
       },
 
-      requeueOutbound: (sessionId, id) => {
+      requeueOutbound: (sessionId, id, note) => {
         sessionId = keyOf(sessionId)
         return set((s) => {
           if (!s.outbound[sessionId]?.some((o) => o.id === id)) return s
@@ -878,7 +880,7 @@ export const useChat = create<ChatState>()(
             outbound: {
               ...s.outbound,
               [sessionId]: (s.outbound[sessionId] ?? []).map((o) =>
-                o.id === id ? { ...o, status: 'queued' as const } : o,
+                o.id === id ? { ...o, status: 'queued' as const, note } : o,
               ),
             },
             // Refusal means not accepted: show only the queue strip until retry.
@@ -906,7 +908,7 @@ export const useChat = create<ChatState>()(
 
       // Failed turns do not block later queued turns. Manual retry deliberately
       // injects after any later turns already sent, using the original item id.
-      failOutbound: (sessionId, id) => {
+      failOutbound: (sessionId, id, note) => {
         sessionId = keyOf(sessionId)
         return set((s) => {
           if (!s.outbound[sessionId]?.some((o) => o.id === id)) return s
@@ -914,14 +916,14 @@ export const useChat = create<ChatState>()(
             outbound: {
               ...s.outbound,
               [sessionId]: (s.outbound[sessionId] ?? []).map((o) =>
-                o.id === id ? { ...o, status: 'failed' as const } : o,
+                o.id === id ? { ...o, status: 'failed' as const, note } : o,
               ),
             },
           }
         })
       },
 
-      restoreOutboundFailed: (sessionId, item) => {
+      restoreOutboundFailed: (sessionId, item, note) => {
         sessionId = keyOf(sessionId)
         return set((s) => {
           const q = s.outbound[sessionId] ?? []
@@ -929,7 +931,7 @@ export const useChat = create<ChatState>()(
           return {
             outbound: {
               ...s.outbound,
-              [sessionId]: [{ ...item, status: 'failed' as const }, ...q],
+              [sessionId]: [{ ...item, status: 'failed' as const, note }, ...q],
             },
           }
         })
