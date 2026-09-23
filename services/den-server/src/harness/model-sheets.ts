@@ -10,7 +10,7 @@
 
 import { homedir } from 'node:os'
 import { join } from 'node:path'
-import { readFileSync } from 'node:fs'
+import { readFileSync, statSync } from 'node:fs'
 import type { EffortOption, HarnessId, HarnessModelOption } from '@rivetos/types'
 
 /**
@@ -233,7 +233,7 @@ export function claudeSheet(
     { id: 'opus[1m]', label: 'Opus 5 1M context' },
     { id: 'sonnet[1m]', label: 'Sonnet 5 1M context' },
   ]
-  for (const extra of claudeCacheModels(readJson, home, env)) {
+  for (const extra of claudeCacheModelsFor(readJson, home, env)) {
     if (!models.some((m) => m.id === extra.id)) models.push(extra)
   }
   return {
@@ -276,6 +276,53 @@ function claudeCacheModels(
     out.push({ id, label })
   }
   return out
+}
+
+/**
+ * Memoized `claudeCacheModels`. `~/.claude.json` accumulates per-project
+ * history and can be several MB, and the sheet is rebuilt on every terminal
+ * CREATE, so parsing it synchronously each spawn is wasteful. The resolved
+ * path keys the memo and the file's `mtimeMs`+`size` stand in for its content;
+ * a stat error means "no cache rows", matching an unreadable file even though
+ * nothing was read. Only the real file reader takes this path — an injected
+ * reader always runs so tests/DI stay deterministic.
+ */
+function claudeCacheModelsFor(
+  readJson: ReadJson,
+  home: string,
+  env: NodeJS.ProcessEnv,
+): HarnessModelOption[] {
+  if (readJson !== defaultReadJson) return claudeCacheModels(readJson, home, env)
+  const path = claudeGlobalConfigPath(home, env)
+  let mtimeMs: number
+  let size: number
+  try {
+    const stat = statSync(path)
+    mtimeMs = stat.mtimeMs
+    size = stat.size
+  } catch {
+    claudeCacheMemo.delete(path)
+    return []
+  }
+  const memo = claudeCacheMemo.get(path)
+  if (memo && memo.mtimeMs === mtimeMs && memo.size === size) return memo.models
+  const models = claudeCacheModels(defaultReadJson, home, env)
+  claudeCacheMemo.set(path, { mtimeMs, size, models })
+  return models
+}
+
+interface ClaudeCacheMemo {
+  mtimeMs: number
+  size: number
+  models: HarnessModelOption[]
+}
+
+/** One entry per resolved config path; a fresh file stat replaces it. */
+const claudeCacheMemo = new Map<string, ClaudeCacheMemo>()
+
+/** Drop the `~/.claude.json` cache-row memo (tests only). */
+export function __resetClaudeCacheMemoForTests(): void {
+  claudeCacheMemo.clear()
 }
 
 /**

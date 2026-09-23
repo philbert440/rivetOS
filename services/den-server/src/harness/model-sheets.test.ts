@@ -1,8 +1,10 @@
-import { readFileSync } from 'node:fs'
+import { mkdtempSync, readFileSync, rmSync, utimesSync, writeFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { describe, expect, it } from 'vitest'
 import {
+  __resetClaudeCacheMemoForTests,
   appendModelEffortArgv,
   applySheetOverride,
   claudeGlobalConfigPath,
@@ -168,6 +170,33 @@ describe('claudeSheet', () => {
         (m) => m.id,
       ),
     ).toEqual(BASE_CLAUDE_IDS)
+  })
+
+  it('memoizes cache rows per path and refreshes when mtime/size change', () => {
+    __resetClaudeCacheMemoForTests()
+    const dir = mkdtempSync(join(tmpdir(), 'claude-sheet-'))
+    try {
+      const path = join(dir, '.claude.json')
+      const env = { CLAUDE_CONFIG_DIR: dir }
+      const write = (value: string, seconds: number): void => {
+        writeFileSync(path, JSON.stringify({ additionalModelOptionsCache: [{ value }] }))
+        utimesSync(path, seconds, seconds)
+      }
+
+      write('claude-first', 1_000_000)
+      const first = claudeSheet(undefined, dir, env)
+      expect(first.models?.map((m) => m.id)).toEqual([...BASE_CLAUDE_IDS, 'claude-first'])
+
+      // Different content plus a bumped mtime invalidates the memoized rows.
+      write('claude-second', 2_000_000)
+      const second = claudeSheet(undefined, dir, env)
+      expect(second.models?.map((m) => m.id)).toEqual([...BASE_CLAUDE_IDS, 'claude-second'])
+
+      // An unchanged file returns the memoized rows without re-reading.
+      expect(claudeSheet(undefined, dir, env).models).toEqual(second.models)
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
   })
 })
 
