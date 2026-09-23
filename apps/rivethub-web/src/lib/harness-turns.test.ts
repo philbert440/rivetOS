@@ -3,6 +3,7 @@ import type { HarnessStatusFrame, HarnessTranscriptTurn, SessionId } from '@rive
 import {
   agentStatusLine,
   deriveReplyWait,
+  nextWaitClock,
   foldHermesAssistant,
   isLiveTurnCommand,
   liveFromTranscript,
@@ -330,7 +331,6 @@ describe('reply wait evidence and deadline', () => {
     { name: 'first token clears acceptance', live: content },
     { name: 'send failure', outbound: [{ id: 'first', status: 'failed' }] },
     { name: 'interrupt clears acceptance' },
-    { name: 'reopen persisted user tail supplies no local evidence' },
     { name: 'wedged accepted turn', acceptedReply: 'first', now: 90_000, stale: true },
     {
       name: 'wedged placeholder',
@@ -341,6 +341,7 @@ describe('reply wait evidence and deadline', () => {
     },
     {
       name: 'second send after wedge',
+      clock: nextWaitClock(clock, 'second', false, 100_000),
       outbound: [{ id: 'second', status: 'sending' }],
       now: 100_000,
       line: 'working…',
@@ -353,12 +354,24 @@ describe('reply wait evidence and deadline', () => {
       line: 'working…',
     },
     {
-      name: 'status eventually wedges too',
+      name: 'one-shot working status survives deadline',
       status: working,
       clock: { key: 'status', startedAt: 0 },
       now: 90_000,
       stale: true,
+      line: 'working…',
     },
+    ...(['blocked', 'prompt', 'thinking'] as const).map((phase) => ({
+      name: `one-shot ${phase} status survives deadline`,
+      status: {
+        status: phase === 'blocked' ? 'blocked' : 'working',
+        phase: phase === 'blocked' ? undefined : phase,
+      } as HarnessStatusFrame,
+      clock: { key: 'status', startedAt: 0 },
+      now: 90_000,
+      stale: true,
+      line: phase === 'thinking' ? 'thinking…' : 'waiting for you',
+    })),
     { name: 'live content wins', acceptedReply: 'first', live: content, now: 100_000 },
     {
       name: 'idle frame wins',
@@ -373,8 +386,38 @@ describe('reply wait evidence and deadline', () => {
     },
   ])('$name', ({ line, stale, ...input }) => {
     const result = deriveReplyWait({ outbound: [], now: 0, clock, ...input })
+    if (input.name === 'second send after wedge') expect(result.deadline).toBe(190_000)
     expect(result.statusLine?.text).toBe(line)
     expect(result.stale).toBe(stale ?? false)
     if (stale) expect(result.displayLive).toBeUndefined()
+  })
+})
+
+describe('nextWaitClock', () => {
+  const prev = { key: 'first', startedAt: 0 }
+  it.each([
+    {
+      name: 'new key resets',
+      key: 'second',
+      heartbeat: false,
+      expected: { key: 'second', startedAt: 100_000 },
+    },
+    {
+      name: 'status heartbeat resets',
+      key: 'first',
+      heartbeat: true,
+      expected: { key: 'first', startedAt: 100_000 },
+    },
+    { name: 'content clears', key: undefined, heartbeat: false, expected: undefined },
+    {
+      name: 'same key without heartbeat keeps identity',
+      key: 'first',
+      heartbeat: false,
+      expected: prev,
+    },
+  ])('$name', ({ key, heartbeat, expected }) => {
+    const result = nextWaitClock(prev, key, heartbeat, 100_000)
+    expect(result).toEqual(expected)
+    if (expected === prev) expect(result).toBe(prev)
   })
 })

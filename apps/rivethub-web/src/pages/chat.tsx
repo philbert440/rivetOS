@@ -84,7 +84,7 @@ import { isAskUserTool, questionsFromLiveTools } from '../lib/ask-user.js'
 import { accentFor } from '../lib/agent-accent.js'
 import { attachHarnessSession } from '../lib/harness-attach.js'
 import { statusActivity } from '../lib/harness-fold.js'
-import { deriveReplyWait, type ReplyWaitClock } from '../lib/harness-turns.js'
+import { deriveReplyWait, nextWaitClock, type ReplyWaitClock } from '../lib/harness-turns.js'
 import { createPtyEnsurer } from '../lib/pty-ensure.js'
 import { outboundPumpFor } from '../lib/chat-outbound.js'
 import {
@@ -1117,35 +1117,14 @@ function ActiveSession(props: {
   // Selectors must return stable references when empty (see EMPTY_* above).
   const messages = useChat((s) => s.messagesFor(props.sessionId) ?? EMPTY_MESSAGES)
   const agentStatus = useChat((s) => s.agentStatus[s.resolveSessionKey(props.sessionId)])
-  // View-local evidence only: another device's send is intentionally not pending.
-  const [acceptedReply, setAcceptedReply] = useState<string | undefined>()
-  const replyGeneration = useRef(0)
+  // Local-send evidence follows the session through draft adoption.
+  const acceptedReply = useChat((s) => {
+    const marker = s.replyAcceptance[s.resolveSessionKey(props.sessionId)]
+    return marker?.accepted ? marker.id : undefined
+  })
   const clearAcceptedReply = useCallback(() => {
-    replyGeneration.current += 1
-    setAcceptedReply(undefined)
-  }, [])
-  useEffect(() => {
-    const unsubscribe = useChat.subscribe((state, prev) => {
-      const key = state.resolveSessionKey(props.sessionId)
-      const turn = state.live[key]
-      const content = !!(turn?.text || turn?.reasoningText || turn?.tools.length)
-      const assistantChanged =
-        state.messages[key] !== prev.messages[key] &&
-        state.messages[key]?.at(-1)?.role === 'assistant'
-      if (
-        state.agentStatus[key] !== prev.agentStatus[key] ||
-        (state.live[key] !== prev.live[key] && content) ||
-        (state.liveTs[key] !== prev.liveTs[key] && !turn) ||
-        assistantChanged
-      ) {
-        clearAcceptedReply()
-      }
-    })
-    return () => {
-      unsubscribe()
-      replyGeneration.current += 1
-    }
-  }, [props.sessionId, clearAcceptedReply])
+    useChat.getState().clearAcceptedReply(props.sessionId)
+  }, [props.sessionId])
 
   // The live turn changes identity on every streaming tick. Subscribe to the
   // full object only while it is actually rendered (chat mode); terminal
@@ -1262,7 +1241,12 @@ function ActiveSession(props: {
         },
         onPrompt: (ev) => useChat.getState().applyPromptEvent(props.sessionId, ev),
         onControlReset: () => useChat.getState().clearHarnessPrompts(props.sessionId),
-        onLive: (turn) => {
+        onLive: (turn, reason) => {
+          // A snapshot resets the overlay, not the in-flight send generation.
+          if (reason === 'resync') {
+            useChat.getState().clearLive(props.sessionId)
+            return
+          }
           if (!turn) clearAcceptedReply()
           useChat.getState().setLive(props.sessionId, turn)
         },
@@ -1631,26 +1615,19 @@ function ActiveSession(props: {
 
   pumpEntry.sink.current = async (...args) => {
     clearAcceptedReply()
-    const generation = replyGeneration.current
     const id = useChat
       .getState()
       .queueFor(props.sessionId)
       ?.find((o) => o.status === 'sending')?.id
+    const generation = id ? useChat.getState().beginReply(props.sessionId, id) : undefined
     try {
       await injectOne(...args)
-      // A frame, Stop, cancellation or unmount may beat the HTTP response.
-      if (
-        id &&
-        generation === replyGeneration.current &&
-        useChat
-          .getState()
-          .queueFor(props.sessionId)
-          ?.some((o) => o.id === id && o.status === 'sending')
-      ) {
-        setAcceptedReply(id)
-      }
+      if (generation) useChat.getState().acceptReply(props.sessionId, generation)
     } catch (err) {
-      if (generation === replyGeneration.current) clearAcceptedReply()
+      const state = useChat.getState()
+      if (state.replyAcceptance[state.resolveSessionKey(props.sessionId)] === generation) {
+        clearAcceptedReply()
+      }
       throw err
     }
   }
@@ -1742,13 +1719,27 @@ function ActiveSession(props: {
   const waitKey = replyWait.waitKey
   // A new outbound identity gets a fresh deadline. Each real status frame is
   // also a heartbeat, including while the harness is waiting for its first token.
+  const previousWaitStatus = useRef(agentStatus)
   useEffect(() => {
-    setWaitClock(waitKey ? { key: waitKey, startedAt: Date.now() } : undefined)
-  }, [waitKey, agentStatus])
+    const next = nextWaitClock(
+      waitClock,
+      waitKey,
+      previousWaitStatus.current !== agentStatus,
+      Date.now(),
+    )
+    previousWaitStatus.current = agentStatus
+    if (next !== waitClock) setWaitClock(next)
+  }, [waitKey, agentStatus, waitClock])
   const deadline = replyWait.deadline
   useEffect(() => {
     if (deadline === undefined) return
-    const id = setTimeout(() => setWaitTick((n) => n + 1), Math.max(0, deadline - Date.now()))
+    let id: ReturnType<typeof setTimeout>
+    const fire = () => {
+      const remaining = deadline - Date.now()
+      if (remaining > 0) id = setTimeout(fire, remaining)
+      else setWaitTick((n) => n + 1)
+    }
+    id = setTimeout(fire, Math.max(0, deadline - Date.now()))
     return () => clearTimeout(id)
   }, [deadline])
   const { displayLive, statusLine } = replyWait

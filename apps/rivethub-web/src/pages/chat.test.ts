@@ -59,3 +59,11 @@ describe('session view integration', () => {
     expect(chat).toContain('harnessId = parseSessionId(active).harnessId')
   })
 })
+
+it('derives awaiting reply from local send evidence, never persisted messages', () => {
+  const call = chat.match(/const replyWait = deriveReplyWait\(\{([\s\S]*?)\}\)/)?.[1]
+  expect(call).toBeDefined()
+  expect(call).not.toMatch(/messages/)
+  expect(call).toMatch(/outbound,\s*acceptedReply,/)
+  expect(chat).not.toMatch(/(?:const|let) awaitingReply\s*=/)
+})

@@ -202,6 +202,18 @@ export interface ReplyWaitClock {
   startedAt: number
 }
 
+/** Keep identity stable when neither the turn nor its heartbeat changed. */
+export function nextWaitClock(
+  prev: ReplyWaitClock | undefined,
+  waitKey: string | undefined,
+  statusChanged: boolean,
+  now: number,
+): ReplyWaitClock | undefined {
+  if (!waitKey) return undefined
+  if (prev?.key === waitKey && (!statusChanged || prev.startedAt === now)) return prev
+  return { key: waitKey, startedAt: now }
+}
+
 /** Persisted messages are not pending evidence. Without content or status
  * heartbeats, a slow first token is indistinguishable from a wedged turn. */
 export function deriveReplyWait(input: {
@@ -234,6 +246,6 @@ export function deriveReplyWait(input: {
     deadline,
     stale,
     displayLive,
-    statusLine: agentStatusLine(displayLive, stale ? undefined : status, awaitingReply && !stale),
+    statusLine: agentStatusLine(displayLive, status, awaitingReply && !stale),
   }
 }
