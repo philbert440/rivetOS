@@ -297,4 +297,20 @@ describe('agentStatusLine (the thinking window is never silent)', () => {
     const live = { text: 'x', reasoning: false, reasoningText: '', tools: [] }
     expect(agentStatusLine(live, st({ status: 'working' }))).toBeUndefined()
   })
+  it('fills the awaiting-reply gap with "working…" (cold spawn or accept→stream void)', () => {
+    // No live turn and no status frame yet, but a reply is coming → animate.
+    expect(agentStatusLine(undefined, undefined, true)?.text).toBe('working…')
+    // Nothing awaited → still silent (unchanged behavior).
+    expect(agentStatusLine(undefined, undefined, false)).toBeUndefined()
+    expect(agentStatusLine(undefined, undefined)).toBeUndefined()
+  })
+  it('lets a live bubble or any status frame win over the awaiting-reply gap', () => {
+    const live = { text: 'x', reasoning: false, reasoningText: '', tools: [] }
+    expect(agentStatusLine(live, undefined, true)).toBeUndefined()
+    // Once the harness emits a frame the gap is over: idle stays silent,
+    // working/blocked take their own lines — awaitingReply never overrides.
+    expect(agentStatusLine(undefined, st({ status: 'idle' }), true)).toBeUndefined()
+    expect(agentStatusLine(undefined, st({ status: 'working' }), true)?.text).toBe('working…')
+    expect(agentStatusLine(undefined, st({ status: 'blocked' }), true)?.text).toBe('waiting for you')
+  })
 })

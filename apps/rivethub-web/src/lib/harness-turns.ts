@@ -171,13 +171,27 @@ export function messagesFromHarnessTurns(
 export function agentStatusLine(
   live: LiveTurn | undefined,
   status: HarnessStatusFrame | undefined,
+  /**
+   * A user turn is awaiting its reply but nothing is animating yet: the send is
+   * in flight before the harness's first event (cold PTY spawn), OR the reply
+   * has not started streaming and the pump has already dropped its `working…`
+   * placeholder (the multi-second gap between turn-accept and first token).
+   * Fills that gap with `working…` — matching the pump's own placeholder text —
+   * so the transcript never sits blank while a reply is coming. Ignored once a
+   * live turn or any status frame exists (they are more specific).
+   */
+  awaitingReply?: boolean,
 ): { text: string; tool?: string } | undefined {
-  if (live || !status) return undefined
-  if (status.status === 'blocked' || status.phase === 'prompt') {
-    return { text: 'waiting for you', tool: status.tool?.name }
+  if (live) return undefined
+  if (status) {
+    if (status.status === 'blocked' || status.phase === 'prompt') {
+      return { text: 'waiting for you', tool: status.tool?.name }
+    }
+    if (status.status === 'working') {
+      return { text: statusActivity(status) ?? 'working…', tool: status.tool?.name }
+    }
+    return undefined
   }
-  if (status.status === 'working') {
-    return { text: statusActivity(status) ?? 'working…', tool: status.tool?.name }
-  }
+  if (awaitingReply) return { text: 'working…' }
   return undefined
 }

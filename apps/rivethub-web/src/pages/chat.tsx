@@ -1666,7 +1666,17 @@ function ActiveSession(props: {
   )
   // Thinking window (no block yet), blocked, prompt: one line under the
   // transcript so the agent is never silently "working" (requirement 3).
-  const statusLine = agentStatusLine(live, agentStatus)
+  // `awaitingReply` covers the two windows the pump's own `working…` placeholder
+  // does not: the send in flight before the harness's first event (cold spawn),
+  // and — the longer one — after the turn is accepted (the optimistic bubble has
+  // retired into `messages` as the tail user turn) but before the reply streams,
+  // where the pump has already cleared its placeholder. Either way the newest
+  // thing is our un-answered turn, so keep the indicator up. A live turn or a
+  // status frame is more specific and wins (handled inside agentStatusLine).
+  const pendingSend = outbound.some((o) => o.status === 'sending' || o.status === 'queued')
+  const lastMessage = messages.length ? messages[messages.length - 1] : undefined
+  const awaitingReply = pendingSend || lastMessage?.role === 'user'
+  const statusLine = agentStatusLine(live, agentStatus, awaitingReply)
 
   // Capability-gated affordances. `canInterrupt` is the driver's own flag —
   // hidden rather than shown-and-501'd when the node has no interrupt path.
