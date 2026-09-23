@@ -115,6 +115,10 @@ export interface HerdrSessionInfo {
   user: string
   /** First pane id, when known (`w1:p1`). */
   paneId?: string
+  /** `@rivet_agent_pane`: `1` agent pane, `0` plain. Absent on sessions
+   *  created before the stamp existed — reattach then uses the pre-change
+   *  key rule instead of argv[0]. */
+  agentPane?: '1' | '0'
 }
 
 /** The herdr command surface the manager uses. `create` is async (event-loop
@@ -171,6 +175,10 @@ export interface HerdrCreateOpts {
   user: string
   cols?: number
   rows?: number
+  /** Manager's isAgentPane for this create. Stamped as `@rivet_agent_pane`.
+   *  Omitted → the stamp follows `herdrUseAgent(kind, argv[0])`, which is
+   *  what `create()` actually launches. */
+  agentPane?: boolean
 }
 
 // ---------------------------------------------------------------------------
@@ -415,6 +423,50 @@ export function herdrKindForArgv0(argv0: string): string | undefined {
  *  events — so the idle-signal ready-gate must not wait for them. */
 export function herdrUseAgent(kind: string | undefined, argv0: string): boolean {
   return Boolean(kind) && !argv0.includes('/') && argv0 === kind
+}
+
+/** Pre-change rule: roster KEY → herdr `--kind`. Sessions with no
+ *  `@rivet_agent_pane` stamp were classified this way. Reattach keeps it so
+ *  a renamed key (`claude-code` running `claude`) stays the plain pane it
+ *  was launched as, instead of being probed and ended. */
+export function herdrKindForCommand(command: string): string | undefined {
+  return herdrKindForArgv0(command)
+}
+
+export interface HerdrAgentPaneDecision {
+  /** `--kind` for a fresh create. Undefined when a stamp decides reattach. */
+  kind: string | undefined
+  /** Idle-gate, probe, and first-turn confirm. */
+  agentPane: boolean
+}
+
+/**
+ * One resolution for a fresh create, a persisted reattach, and the restart
+ * sweep's retain check.
+ *
+ * Fresh (`persisted` unset/false): kind and agent-pane come from argv[0].
+ * The sweep passes the roster entry's argv[0], or the `@rivet_command` tag
+ * when that entry has left the roster — the same predicate as create.
+ * Persisted with stamp `1` or `0`: trust the stamp written at create.
+ * Persisted with no stamp: `herdrUseAgent(herdrKindForCommand(legacyKey), argv0)`.
+ */
+export function resolveHerdrAgentPane(opts: {
+  argv0: string
+  persisted?: boolean
+  /** `@rivet_agent_pane` when the session carries it. Any other value is absent. */
+  stamp?: string
+  /** Roster key for the unstamped persisted rule. */
+  legacyKey?: string
+}): HerdrAgentPaneDecision {
+  if (opts.persisted) {
+    if (opts.stamp === '1' || opts.stamp === '0') {
+      return { kind: undefined, agentPane: opts.stamp === '1' }
+    }
+    const kind = herdrKindForCommand(opts.legacyKey ?? '')
+    return { kind, agentPane: herdrUseAgent(kind, opts.argv0) }
+  }
+  const kind = herdrKindForArgv0(opts.argv0)
+  return { kind, agentPane: herdrUseAgent(kind, opts.argv0) }
 }
 
 export function posixShellJoin(argv: string[]): string {
@@ -1177,6 +1229,8 @@ interface RivetMeta {
   created?: number
   denKey?: string
   pid?: number
+  /** `@rivet_agent_pane`. Absent when this den never stamped it. */
+  agentPane?: '1' | '0'
 }
 
 function readMeta(configHome: string, name: string): RivetMeta {
@@ -1190,6 +1244,7 @@ function readMeta(configHome: string, name: string): RivetMeta {
       created: typeof j.created === 'number' ? j.created : undefined,
       denKey: typeof j.denKey === 'string' ? j.denKey : undefined,
       pid: typeof j.pid === 'number' && j.pid > 0 ? j.pid : undefined,
+      agentPane: j.agentPane === '1' || j.agentPane === '0' ? j.agentPane : undefined,
     }
   } catch {
     return { command: '', user: '' }
@@ -1342,6 +1397,7 @@ export function createRealHerdrCtl(
         command: meta.command,
         user: meta.user,
         paneId: meta.paneId,
+        ...(meta.agentPane !== undefined ? { agentPane: meta.agentPane } : {}),
       })
     }
     return out
@@ -1386,6 +1442,7 @@ export function createRealHerdrCtl(
       const meta = readMeta(configHome, name)
       if (option === '@rivet_command') meta.command = value
       if (option === '@rivet_user') meta.user = value
+      if (option === '@rivet_agent_pane' && (value === '1' || value === '0')) meta.agentPane = value
       writeMeta(configHome, name, meta)
     },
     windowSize(name) {
@@ -1415,12 +1472,22 @@ export function createRealHerdrCtl(
       // Record the session the moment its server is up — a crash anywhere in
       // workspace/agent setup must not leave a running server invisible to
       // list/resolve/GC. paneId is added below once the pane exists.
+      // `@rivet_agent_pane` records how this pane is launched. Reattach
+      // trusts the stamp; a session written before it existed keeps the
+      // pre-change key rule. opts.agentPane is the manager's single
+      // decision; direct ctl callers fall back to the launch predicate.
+      const argv0 = opts.argv[0] ?? ''
+      // One boolean for the launch and the stamp. The manager passes the
+      // decision it already computed; direct callers keep the kind/argv rule.
+      const useAgent = opts.agentPane ?? herdrUseAgent(opts.kind, argv0)
+      const agentPaneStamp: '1' | '0' = useAgent ? '1' : '0'
       writeMeta(configHome, opts.name, {
         command: opts.command,
         user: opts.user,
         created: Math.floor(Date.now() / 1000),
         denKey: opts.denKey,
         pid: child.pid,
+        agentPane: agentPaneStamp,
       })
       const agentEnv = { ...opts.env }
       if (!agentEnv.XDG_CONFIG_HOME || agentEnv.XDG_CONFIG_HOME === configHome) {
@@ -1470,8 +1537,6 @@ export function createRealHerdrCtl(
         // from PATH. A PATH-less roster (`/opt/grok-1.0.13/bin/grok`) pins a
         // build herdr would silently replace, so it runs verbatim in a plain
         // pane instead (no status detection — the honest trade).
-        const argv0 = opts.argv[0] ?? ''
-        const useAgent = herdrUseAgent(opts.kind, argv0)
         if (useAgent) {
           const startReq = {
             id: 'den-agent-start',
@@ -1516,6 +1581,7 @@ export function createRealHerdrCtl(
           created: Math.floor(Date.now() / 1000),
           denKey: opts.denKey,
           pid: child.pid,
+          agentPane: agentPaneStamp,
         })
       } catch (e) {
         try {

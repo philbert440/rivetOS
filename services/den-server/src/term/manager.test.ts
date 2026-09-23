@@ -26,6 +26,7 @@ import {
   herdrConfigHome,
   herdrConfigPath,
   herdrSessionName,
+  herdrUseAgent,
   type HerdrCtl,
   type HerdrCreateOpts,
   type HerdrSessionInfo,
@@ -2440,6 +2441,7 @@ class FakeHerdrCtl implements HerdrCtl {
     if (!s) return
     if (option === '@rivet_command') s.command = value
     if (option === '@rivet_user') s.user = value
+    if (option === '@rivet_agent_pane' && (value === '1' || value === '0')) s.agentPane = value
   }
   windowSize(): { cols: number; rows: number } | undefined {
     return { cols: 120, rows: 40 }
@@ -2447,6 +2449,8 @@ class FakeHerdrCtl implements HerdrCtl {
   create(opts: HerdrCreateOpts): void {
     if (this.failWith) throw this.failWith
     this.creates.push(opts)
+    const argv0 = opts.argv[0] ?? ''
+    const useAgent = opts.agentPane ?? herdrUseAgent(opts.kind, argv0)
     this.sessions.set(opts.name, {
       name: opts.name,
       denKey: opts.denKey,
@@ -2455,6 +2459,7 @@ class FakeHerdrCtl implements HerdrCtl {
       command: opts.command,
       user: opts.user,
       paneId: 'w1:p1',
+      agentPane: useAgent ? '1' : '0',
     })
   }
   attachArgv(name: string): string[] {
@@ -2588,6 +2593,124 @@ describe('term manager (herdr mux)', () => {
     expect(gonePty.reattached).toBe(true)
     expect(gonePty.command).toBe('claude')
     expect(gone.manager.isAgentHarness(gonePty.id)).toBe(true)
+  })
+
+  const claudeCodeRoster = (): TermRoster => ({
+    default: 'claude-code',
+    cwd: defaultRoster().cwd,
+    env: {},
+    commands: {
+      'claude-code': { label: 'Claude', cmd: ['claude'], room: true },
+    },
+  })
+
+  it('renamed roster key: kind from argv[0], agent pane, idle gate, no degradation log', () => {
+    vi.useFakeTimers()
+    const ctl = new FakeHerdrCtl()
+    const { manager, procs, logs } = makeManager(
+      { mux: 'herdr', injectReadyMs: 300, injectReadyMaxMs: 15_000, injectSubmitDelayMs: 80 },
+      { herdrCtl: ctl, roster: claudeCodeRoster() },
+    )
+    const pty = manager.spawn('claude-code', 80, 24, '', uuid)
+    expect(ctl.creates).toHaveLength(1)
+    expect(ctl.creates[0].kind).toBe('claude')
+    expect(ctl.creates[0].agentPane).toBe(true)
+    expect(ctl.creates[0].command).toBe('claude-code')
+    expect(ctl.creates[0].argv[0]).toBe('claude')
+    expect(ctl.sessions.get(herdrSessionName(uuid))?.agentPane).toBe('1')
+    expect(pty.noAgentEvidence).toBe(true)
+    expect(logs.some((l) => l.includes('no agent-idle ready-gate'))).toBe(false)
+    expect(manager.inject(pty.id, 'hello', true)).toBe(true)
+    procs[0].emitData('draw-1')
+    vi.advanceTimersByTime(300)
+    expect(procs[0].writes).toEqual([])
+    ctl.emit?.({
+      event: 'pane.agent_status_changed',
+      data: { pane_id: 'w1:p1', agent: 'claude', agent_status: 'idle' },
+    })
+    expect(procs[0].writes).toEqual(['\x1b[200~hello\x1b[201~'])
+  })
+
+  it('restart sweep retains a kind tag gone from the roster and a renamed key whose argv0 is a kind', () => {
+    vi.useFakeTimers()
+    const ctl = new FakeHerdrCtl()
+    const retained: string[] = []
+    const orig = ctl.subscribeEvents.bind(ctl)
+    ctl.subscribeEvents = (name, onEvent, onClose) => {
+      retained.push(name)
+      return orig(name, onEvent, onClose)
+    }
+    const kindTag = herdrSessionName('sweep-kind-tag')
+    const renamed = herdrSessionName('sweep-renamed')
+    const plain = herdrSessionName('sweep-plain')
+    const seed = (name: string, denKey: string, command: string): void => {
+      ctl.sessions.set(name, {
+        name,
+        denKey,
+        activity: 1,
+        created: 1,
+        command,
+        user: 'owner',
+        paneId: 'w1:p1',
+      })
+    }
+    // Tag left the roster, but the tag itself is a kind.
+    seed(kindTag, 'sweep-kind-tag', 'claude')
+    // Renamed key still in the roster; its argv[0] is a kind.
+    seed(renamed, 'sweep-renamed', 'claude-code')
+    // Neither the tag nor a roster argv[0] is a kind.
+    seed(plain, 'sweep-plain', 'my-wrapper')
+    makeManager({ mux: 'herdr' }, { herdrCtl: ctl, roster: claudeCodeRoster() })
+    expect(retained).toEqual([])
+    vi.advanceTimersByTime(60_000)
+    expect([...retained].sort()).toEqual([kindTag, renamed].sort())
+  })
+
+  it('legacy reattach without @rivet_agent_pane stays a plain pane; stamp 1 is an agent pane', async () => {
+    vi.useFakeTimers()
+    const roster = claudeCodeRoster()
+    const attach = async (session: string, stamp?: '1' | '0') => {
+      const ctl = new FakeHerdrCtl()
+      const name = herdrSessionName(session)
+      ctl.sessions.set(name, {
+        name,
+        denKey: session,
+        activity: 1,
+        created: 1,
+        command: 'claude-code',
+        user: 'owner',
+        paneId: 'w1:p1',
+        ...(stamp !== undefined ? { agentPane: stamp } : {}),
+      })
+      let probes = 0
+      ctl.paneAgent = () => {
+        probes += 1
+        return Promise.resolve({ agent: null })
+      }
+      const { manager, procs } = makeManager({ mux: 'herdr' }, { herdrCtl: ctl, roster })
+      const pty = await manager.spawn('claude-code', 80, 24, '', session)
+      return { manager, procs, ctl, pty, probes: () => probes }
+    }
+
+    const plain = await attach('legacy-plain')
+    expect(plain.pty.reattached).toBe(true)
+    expect(plain.pty.noAgentEvidence).toBeUndefined()
+    expect(plain.pty.agentEnded).toBeUndefined()
+    expect(plain.probes()).toBe(0)
+    expect(plain.ctl.kills).toEqual([])
+    expect(plain.manager.inject(plain.pty.id, 'hello', true)).toBe(true)
+    expect(plain.procs[0].writes).toEqual(['\x1b[200~hello\x1b[201~'])
+    vi.advanceTimersByTime(5_000)
+    expect(plain.ctl.kills).toEqual([])
+    expect(plain.manager.get(plain.pty.id)?.state).toBe('running')
+
+    const stamped = await attach('legacy-stamped', '1')
+    expect(stamped.pty.reattached).toBe(true)
+    expect(stamped.probes()).toBe(1)
+    expect(stamped.pty.noAgentEvidence).toBe(true)
+    expect(stamped.pty.agentEnded).toBe(true)
+    expect(stamped.manager.inject(stamped.pty.id, 'hello', true)).toBe(false)
+    expect(stamped.procs[0].writes).toEqual([])
   })
 
   it('kill releases the status subscribe (no leak) and killSession', () => {

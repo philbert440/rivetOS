@@ -31,7 +31,9 @@ import {
   herdrPaneAgentLive,
   parsePaneAgent,
   herdrKindForArgv0,
+  herdrKindForCommand,
   herdrUseAgent,
+  resolveHerdrAgentPane,
   herdrRuntimeHash,
   herdrServerArgv,
   herdrSessionName,
@@ -150,14 +152,50 @@ describe('herdr argv builders', () => {
   })
 
   it('kind follows argv[0], not the roster key', () => {
-    // A key renamed to the harness product id still runs `claude`: agent pane.
+    // argv[0] `claude` is an agent pane (a renamed key such as `claude-code`
+    // still runs this binary).
     expect(herdrUseAgent(herdrKindForArgv0('claude'), 'claude')).toBe(true)
-    // A key that keeps a harness name while running something else is not.
+    // A non-kind argv[0] (`my-wrapper`) is not an agent pane.
     expect(herdrUseAgent(herdrKindForArgv0('my-wrapper'), 'my-wrapper')).toBe(false)
     // A pinned build stays a plain pane — --kind would launch PATH instead.
     expect(herdrUseAgent(herdrKindForArgv0('/usr/local/bin/claude'), '/usr/local/bin/claude')).toBe(
       false,
     )
+  })
+
+  it('resolveHerdrAgentPane: fresh argv0, stamp wins, absent stamp uses the key', () => {
+    expect(resolveHerdrAgentPane({ argv0: 'claude' })).toEqual({
+      kind: 'claude',
+      agentPane: true,
+    })
+    // Sweep fallback passes the tag itself when the roster entry is gone.
+    expect(resolveHerdrAgentPane({ argv0: 'kimi' }).agentPane).toBe(true)
+    expect(resolveHerdrAgentPane({ argv0: 'my-wrapper' }).agentPane).toBe(false)
+    // Legacy reattach of a renamed key: no stamp → plain pane.
+    expect(
+      resolveHerdrAgentPane({ argv0: 'claude', persisted: true, legacyKey: 'claude-code' }),
+    ).toEqual({ kind: undefined, agentPane: false })
+    expect(herdrKindForCommand('claude-code')).toBeUndefined()
+    expect(
+      resolveHerdrAgentPane({
+        argv0: 'claude',
+        persisted: true,
+        legacyKey: 'claude-code',
+        stamp: '1',
+      }),
+    ).toEqual({ kind: undefined, agentPane: true })
+    expect(
+      resolveHerdrAgentPane({
+        argv0: 'claude',
+        persisted: true,
+        legacyKey: 'claude-code',
+        stamp: '0',
+      }).agentPane,
+    ).toBe(false)
+    // A pre-change key that was itself a kind stays an agent pane.
+    expect(
+      resolveHerdrAgentPane({ argv0: 'claude', persisted: true, legacyKey: 'claude' }).agentPane,
+    ).toBe(true)
   })
 
   it('herdrUseAgent matches create(): kind === argv0 and no slash', () => {
@@ -677,6 +715,10 @@ describe('createRealHerdrCtl argv', () => {
       args: ['--resume', 'abc'],
     })
     expect(ctl.attachArgv('dabc')).toEqual(['herdr', '--session', 'dabc'])
+    const meta = JSON.parse(readFileSync(herdrMetaPath('/tmp/herdr-cfg', 'dabc'), 'utf8')) as {
+      agentPane?: string
+    }
+    expect(meta.agentPane).toBe('1')
   })
 
   it('unknown kind uses pane.send_text and never agent.start', async () => {
@@ -708,6 +750,10 @@ describe('createRealHerdrCtl argv', () => {
     // one readiness pane.get (the fake answers with a prompt title) sits between them
     expect(rpcs).toEqual(['workspace.create', 'pane.get', 'pane.send_text'])
     expect(rpcs).not.toContain('agent.start')
+    const meta = JSON.parse(readFileSync(herdrMetaPath('/tmp/herdr-cfg', 'dshell'), 'utf8')) as {
+      agentPane?: string
+    }
+    expect(meta.agentPane).toBe('0')
   })
 
   it('slow create does not stall a concurrent ctl call', async () => {
