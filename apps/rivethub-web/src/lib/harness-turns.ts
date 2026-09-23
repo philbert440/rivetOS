@@ -195,3 +195,45 @@ export function agentStatusLine(
   if (awaitingReply) return { text: 'working…' }
   return undefined
 }
+
+export const STALE_REPLY_WAIT_MS = 90_000
+export interface ReplyWaitClock {
+  key: string
+  startedAt: number
+}
+
+/** Persisted messages are not pending evidence. Without content or status
+ * heartbeats, a slow first token is indistinguishable from a wedged turn. */
+export function deriveReplyWait(input: {
+  outbound: readonly { id: string; status: string }[]
+  acceptedReply?: string
+  live?: LiveTurn
+  status?: HarnessStatusFrame
+  clock?: ReplyWaitClock
+  now: number
+}) {
+  const { outbound, acceptedReply, live, status, clock, now } = input
+  const pending =
+    outbound.find((o) => o.status === 'sending') ?? outbound.find((o) => o.status === 'queued')
+  const awaitingReply = !!(pending || acceptedReply)
+  const hasContent = !!(live?.text || live?.reasoningText || live?.tools.length)
+  const activeStatus = status?.status === 'working' || status?.status === 'blocked'
+  const waitKey = hasContent
+    ? undefined
+    : (pending?.id ??
+      acceptedReply ??
+      (activeStatus ? 'status' : live && !status ? 'placeholder' : undefined))
+  const deadline =
+    waitKey && clock?.key === waitKey ? clock.startedAt + STALE_REPLY_WAIT_MS : undefined
+  const stale = deadline !== undefined && now >= deadline
+  const displayLive =
+    !hasContent && (stale || (status?.status === 'idle' && !awaitingReply)) ? undefined : live
+  return {
+    awaitingReply,
+    waitKey,
+    deadline,
+    stale,
+    displayLive,
+    statusLine: agentStatusLine(displayLive, stale ? undefined : status, awaitingReply && !stale),
+  }
+}

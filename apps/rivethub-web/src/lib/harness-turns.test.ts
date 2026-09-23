@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest'
 import type { HarnessStatusFrame, HarnessTranscriptTurn, SessionId } from '@rivetos/types'
 import {
   agentStatusLine,
+  deriveReplyWait,
   foldHermesAssistant,
   isLiveTurnCommand,
   liveFromTranscript,
@@ -311,6 +312,69 @@ describe('agentStatusLine (the thinking window is never silent)', () => {
     // working/blocked take their own lines — awaitingReply never overrides.
     expect(agentStatusLine(undefined, st({ status: 'idle' }), true)).toBeUndefined()
     expect(agentStatusLine(undefined, st({ status: 'working' }), true)?.text).toBe('working…')
-    expect(agentStatusLine(undefined, st({ status: 'blocked' }), true)?.text).toBe('waiting for you')
+    expect(agentStatusLine(undefined, st({ status: 'blocked' }), true)?.text).toBe(
+      'waiting for you',
+    )
+  })
+})
+
+describe('reply wait evidence and deadline', () => {
+  const clock = { key: 'first', startedAt: 0 }
+  const placeholder = { text: '', reasoning: false, reasoningText: '', tools: [] }
+  const content = { ...placeholder, text: 'Hello' }
+  const working = { status: 'working' } as HarnessStatusFrame
+  it.each([
+    { name: 'new send', outbound: [{ id: 'first', status: 'sending' }], line: 'working…' },
+    { name: 'queued send', outbound: [{ id: 'first', status: 'queued' }], line: 'working…' },
+    { name: 'accepted before first token', acceptedReply: 'first', line: 'working…' },
+    { name: 'first token clears acceptance', live: content },
+    { name: 'send failure', outbound: [{ id: 'first', status: 'failed' }] },
+    { name: 'interrupt clears acceptance' },
+    { name: 'reopen persisted user tail supplies no local evidence' },
+    { name: 'wedged accepted turn', acceptedReply: 'first', now: 90_000, stale: true },
+    {
+      name: 'wedged placeholder',
+      acceptedReply: 'first',
+      live: placeholder,
+      now: 90_000,
+      stale: true,
+    },
+    {
+      name: 'second send after wedge',
+      outbound: [{ id: 'second', status: 'sending' }],
+      now: 100_000,
+      line: 'working…',
+    },
+    {
+      name: 'status heartbeat extends slow first token',
+      status: working,
+      clock: { key: 'status', startedAt: 80_000 },
+      now: 100_000,
+      line: 'working…',
+    },
+    {
+      name: 'status eventually wedges too',
+      status: working,
+      clock: { key: 'status', startedAt: 0 },
+      now: 90_000,
+      stale: true,
+    },
+    { name: 'live content wins', acceptedReply: 'first', live: content, now: 100_000 },
+    {
+      name: 'idle frame wins',
+      acceptedReply: 'first',
+      status: { status: 'idle' } as HarnessStatusFrame,
+    },
+    {
+      name: 'prompt frame wins',
+      acceptedReply: 'first',
+      status: { status: 'working', phase: 'prompt' } as HarnessStatusFrame,
+      line: 'waiting for you',
+    },
+  ])('$name', ({ line, stale, ...input }) => {
+    const result = deriveReplyWait({ outbound: [], now: 0, clock, ...input })
+    expect(result.statusLine?.text).toBe(line)
+    expect(result.stale).toBe(stale ?? false)
+    if (stale) expect(result.displayLive).toBeUndefined()
   })
 })
