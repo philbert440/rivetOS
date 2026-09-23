@@ -89,6 +89,15 @@ describe('claudeSheet', () => {
     expect(sheet.efforts?.find((e) => e.default)?.id).toBe('medium')
     expect(sheet.efforts?.map((e) => e.id)).toEqual(['low', 'medium', 'high', 'xhigh', 'max'])
   })
+  it('advertises launch-time model selection (#814)', () => {
+    expect(claudeSheet().launchModel).toBe(true)
+    // Sheets whose launch model is config-owned or flag-less stay silent:
+    // a `models` + `modelFlag` sheet does NOT imply `launchModel`.
+    expect(hermesSheet().launchModel).toBeUndefined()
+    expect(codexSheet().launchModel).toBeUndefined()
+    expect(grokSheet(() => GROK_CACHE, '/tmp/fake-home').launchModel).toBeUndefined()
+    expect(kimiSheet(() => '', '/tmp/fake-home').launchModel).toBeUndefined()
+  })
 
   it('appends non-disabled cache models and skips gated ones', () => {
     const sheet = claudeSheet(() => CLAUDE_JSON, '/tmp/fake-home')

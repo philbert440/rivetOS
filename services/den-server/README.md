@@ -63,6 +63,14 @@ posture is deliberately strict:
 - **Audited.** Every spawn/kill/exit appends a JSON line to
   `$RIVETOS_DEN_STATE_DIR/term-audit.log`.
 
+Model and effort flags are added only when a built-in key's entry still runs
+that key's built-in program, compared by the file name of the first argv
+element — an absolute path or extra arguments are fine; a wrapper as the
+first element is not (`npx …`, `env FOO=1 claude`, `bash -lc claude`, or a
+version-suffixed or renamed binary). Use the entry's `env` for environment
+variables instead of an `env` wrapper. When flags are skipped the den logs
+one line naming the key.
+
 Roster file shape:
 
 ```json

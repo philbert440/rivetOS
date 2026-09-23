@@ -3,7 +3,10 @@ import { useQuery } from '@tanstack/react-query'
 import { ArrowUp, Mic, Paperclip, Volume2, VolumeX, X } from 'lucide-react'
 import type { CatalogAgent, ThinkingLevel } from '@rivetos/types'
 import { Select, type SelectOption } from './select.js'
-import type { conversationModelOptions } from '../lib/conversation-model-options.js'
+import type {
+  conversationModelOptions,
+  launchModelOptions,
+} from '../lib/conversation-model-options.js'
 import type { WsStatus } from '../stores/chat.js'
 import type { ChatSettings } from '../stores/chat-settings.js'
 import type { AskQuestion, AskScreen } from '../lib/ask-user.js'
@@ -34,6 +37,7 @@ import { EffortPicker } from './pickers/effort-picker.js'
 import { ModelPicker } from './pickers/model-picker.js'
 import { NodePicker } from './pickers/node-picker.js'
 import { AskUserCard, type AskStructuredAnswer } from './ask-user-card.js'
+import { focusIsInUse } from '../lib/composer-autofocus.js'
 
 /** Imperative surface for the parent (chat page): cancelling a queued message
  *  recalls its text into the draft instead of discarding it. */
@@ -66,9 +70,18 @@ export function Composer(props: {
   nativeControls?: boolean
   turnOptions?: ReturnType<typeof conversationModelOptions>
   onTurnPick?: (pick: { model?: string; effort?: string }) => void
+  /**
+   * Spawn-time model selection (#814). Rendered only when `models` is
+   * non-empty — the helper already applies the pre-spawn `launchModel` gate.
+   * Empty value = harness default (`defaultModelLabel`).
+   */
+  launchOptions?: ReturnType<typeof launchModelOptions>
+  onLaunchModel?: (model?: string) => void
   wsStatus: WsStatus
   settingsKey: string
   agent?: string
+  /** When true, the agent selector cannot change (a spawn is in flight). */
+  agentLocked?: boolean
   effort: ThinkingLevel
   /** Agent-preset system prompt; sent on the chat-loop POST path. */
   systemPrompt?: string
@@ -135,12 +148,13 @@ export function Composer(props: {
   // reconnect can't steal focus mid-scroll.
   //
   // Two guards keep the steal from hurting:
-  //  1. Only take focus when nothing else owns it. `connected` flips true a
-  //     beat after the page renders, and in that window the drawer is
-  //     interactive: an inline rename input commits on blur (a steal would
-  //     save a half-typed name), the filter input, a dialog focus trap, an
-  //     in-progress transcript selection, and a terminal a legacy row is still
-  //     showing before it flips to Chat must all be left alone.
+  //  1. Never take focus from something in use (`focusIsInUse`). `connected`
+  //     flips true a beat after the page renders, and in that window the
+  //     drawer is interactive: an inline rename input commits on blur (a steal
+  //     would save a half-typed name), the filter input, a dialog focus trap,
+  //     and a terminal a legacy row is still showing before it flips to Chat
+  //     must all be left alone. A focused button or link is NOT in use — it's
+  //     the sidebar row or new-chat button that was just clicked to get here.
   //  2. Skip on coarse-pointer (touch). Programmatic focus is NOT suppressed on
   //     Android Chrome/WebView (only iOS Safari), so on a tap that remounts the
   //     composer the keyboard would rise over the transcript — don't. A real
@@ -150,8 +164,7 @@ export function Composer(props: {
   useEffect(() => {
     if (!connected || autoFocusedFor.current === props.sessionId) return
     if (typeof window !== 'undefined' && window.matchMedia?.('(pointer: coarse)').matches) return
-    const active = document.activeElement
-    if (active && active !== document.body) return
+    if (focusIsInUse(document.activeElement)) return
     const ta = taRef.current
     if (!ta) return
     ta.focus()
@@ -480,12 +493,26 @@ export function Composer(props: {
               value={props.agent ?? ''}
               options={models}
               onChange={(v) => props.onSetting({ agent: v })}
-              disabled={catalog.isError}
+              disabled={catalog.isError || props.agentLocked === true}
               unavailable={catalog.isError}
             />
           )}
           {!props.nativeControls && (
             <EffortPicker value={props.effort} onChange={(v) => props.onSetting({ effort: v })} />
+          )}
+          {!!props.launchOptions?.models.length && (
+            <Select
+              value={props.launchOptions.value}
+              options={[
+                { value: '', label: props.launchOptions.defaultModelLabel },
+                ...props.launchOptions.models,
+              ]}
+              onChange={(model) => props.onLaunchModel?.(model || undefined)}
+              label="Model for this conversation"
+              title={`Model: ${props.launchOptions.models.find((m) => m.value === props.launchOptions?.value)?.label ?? props.launchOptions.defaultModelLabel}`}
+              aria-label="Model for this conversation"
+              className="max-w-[12rem] min-w-0 rounded-full"
+            />
           )}
           {!!props.turnOptions?.models.length && (
             <Select
