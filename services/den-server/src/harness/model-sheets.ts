@@ -37,6 +37,15 @@ export interface ModelSheet {
   modelFlag?: string
   effortFlag?: string
   /**
+   * The CLI honors `modelFlag` at launch: a model picked before the
+   * conversation's first spawn is honored for the session's life (#814).
+   * Explicit by design — a sheet with `models` + `modelFlag` does NOT imply
+   * this; the web's pre-spawn picker gates on the flag, while the den's
+   * spawn path keeps appending `modelFlag` whenever the sheet carries one
+   * and the id is listed.
+   */
+  launchModel?: boolean
+  /**
    * Effort id → CLI flag value. Present + empty string omits the flag
    * (opencode medium → no `--variant`). Absent key → use the effort id.
    */
@@ -184,6 +193,12 @@ export function applySheetOverride(
   return next
 }
 
+/**
+ * `--model` is Claude Code's launch-time model switch and the sheet above is
+ * the alias set the CLI accepts, so a pre-spawn pick is honored for the
+ * session's life → `launchModel` (#814). The 1M-context variants are
+ * request-side context flags on the same models, kept as first-class rows.
+ */
 export function claudeSheet(): ModelSheet {
   return {
     models: [
@@ -198,6 +213,7 @@ export function claudeSheet(): ModelSheet {
     efforts: CLAUDE_EFFORTS,
     modelFlag: '--model',
     effortFlag: '--effort',
+    launchModel: true,
   }
 }
 

@@ -523,6 +523,16 @@ describe('model/effort sheet on capabilities', () => {
     expect(driver.capabilities.modelFlag).toBe('--model')
   })
 
+  it('stamps launchModel from the sheet and drops it when the sheet does not carry it', () => {
+    // claudeSheet() declares launchModel → the advertised flag follows.
+    expect(new ClaudeCodeDriver({ store: fakeStore([]) }).capabilities.launchModel).toBe(true)
+    const custom = new ClaudeCodeDriver({
+      store: fakeStore([]),
+      sheet: () => ({ models: [{ id: 'a', label: 'A' }], modelFlag: '--model' }),
+    })
+    expect(custom.capabilities.launchModel).toBeUndefined()
+  })
+
   it('memoizes the sheet for 60s and emits when a re-read after TTL differs', async () => {
     let t = 0
     let reads = 0

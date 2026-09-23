@@ -125,6 +125,8 @@ describe('capability flags are honest', () => {
     const caps = makeDriver().driver.capabilities
     expect(caps.modelFlag).toBe('--model')
     expect(caps.effortFlag).toBe('--effort')
+    // Launch-time model selection: the pre-spawn picker gates on this (#814).
+    expect(caps.launchModel).toBe(true)
     expect(caps.models?.map((m) => m.id)).toEqual(
       expect.arrayContaining(['fable', 'opus', 'sonnet', 'fable[1m]']),
     )

@@ -12,7 +12,9 @@ import {
   sortByRecency,
   fetchHarnessPlaneSessions,
   findChatItem,
+  harnessForRosterCommand,
   harnessGate,
+  rosterCommandFor,
   isTurnInFlight,
   listableHarnesses,
   mergeSessionCreated,
@@ -422,6 +424,28 @@ describe('typed-error and id helpers', () => {
     expect(ROSTER_COMMAND.pi).toBe('pi')
     expect(ROSTER_COMMAND['qwen-code']).toBe('qwen')
     expect(ROSTER_COMMAND.codex).toBe('codex')
+  })
+
+  it('resolves a roster command back onto its harness (inverse of the map)', () => {
+    expect(harnessForRosterCommand('claude')).toBe('claude-code')
+    expect(harnessForRosterCommand('grok')).toBe('grok-build')
+    expect(harnessForRosterCommand('kimi')).toBe('kimi-code')
+    expect(harnessForRosterCommand('opencode')).toBe('opencode')
+    expect(harnessForRosterCommand('qwen')).toBe('qwen-code')
+  })
+
+  it('round-trips every roster command, and the command values are distinct', () => {
+    const commands = Object.values(ROSTER_COMMAND)
+    expect(new Set(commands).size).toBe(commands.length)
+    for (const id of Object.keys(ROSTER_COMMAND)) {
+      expect(harnessForRosterCommand(rosterCommandFor(id))).toBe(id)
+    }
+  })
+
+  it('returns undefined for a command with no harness (grok-fast) or absent input', () => {
+    expect(harnessForRosterCommand('grok-fast')).toBeUndefined()
+    expect(harnessForRosterCommand('')).toBeUndefined()
+    expect(harnessForRosterCommand(undefined)).toBeUndefined()
   })
 
   it('shortens a native id for the drawer badge', () => {
