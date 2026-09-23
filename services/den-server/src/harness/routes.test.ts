@@ -868,6 +868,22 @@ describe('HarnessError → HTTP status mapping', () => {
     expect(await res.json()).toMatchObject({ code, error: `boom: ${code}` })
   })
 
+  it('forwards a string context.reason, and omits reason when there is none', async () => {
+    const driver = new FakeDriver()
+    driver.add(SID)
+    const { base } = await start(driver)
+    driver.next = new HarnessError('turn_in_flight', 'showing a dialog', {
+      context: { reason: 'harness_dialog', dialog: { title: 'Select model', options: [] } },
+    })
+    const blocked = await post(base, `/api/harness-sessions/${enc(SID)}/turns`, { text: 'x' })
+    expect(blocked.status).toBe(409)
+    expect(await blocked.json()).toMatchObject({ code: 'turn_in_flight', reason: 'harness_dialog' })
+
+    driver.next = new HarnessError('turn_in_flight', 'mid-turn')
+    const busy = await post(base, `/api/harness-sessions/${enc(SID)}/turns`, { text: 'x' })
+    expect(await busy.json()).not.toHaveProperty('reason')
+  })
+
   it('500s a non-contract driver failure', async () => {
     const driver = new FakeDriver()
     driver.add(SID)

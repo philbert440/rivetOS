@@ -159,10 +159,14 @@ function isPromptAnswers(
 
 function fail(res: ServerResponse, err: unknown): boolean {
   if (err instanceof HarnessError) {
+    // `reason` refines a code for the UI (e.g. `turn_in_flight` because the
+    // TUI is showing a dialog, not because a turn is running).
+    const reason = err.context.reason
     return json(res, harnessErrorStatus(err), {
       error: err.message,
       code: err.code,
       retryable: err.retryable,
+      ...(typeof reason === 'string' ? { reason } : {}),
     })
   }
   const message = err instanceof Error ? err.message : String(err)
