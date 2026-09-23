@@ -63,6 +63,7 @@ import {
 } from './identity.js'
 import { auditTenancyDeny, createSessionOwners, sessionForbidden } from './session-owners.js'
 import { createMeshView } from './mesh.js'
+import { dialogOnScreen } from './term/blocking-dialog.js'
 import { composeTermAttach, wirePtyInfo } from './term/attach.js'
 import { createRosterProvider } from './term/roster.js'
 import { loadRealPtySpawn, type PtySpawn } from './term/pty.js'
@@ -1631,6 +1632,19 @@ export function createDenServer(config: DenConfig, opts: DenServerOptions = {}):
           }
           const submit = p.submit !== false // default true
           const interrupt = p.interrupt === true // Esc the in-flight turn first
+          // Same gate as the driver's sendUserTurn: a chat turn pasted into an
+          // open menu is lost, and its Enter picks an option. New conversations
+          // reach the harness through this route before they are registered.
+          // An interrupting inject is exempt: its Esc closes the dialog first.
+          if (submit && p.text && !interrupt) {
+            const dialog = await dialogOnScreen(() => manager.screen(ptyId, 40))
+            if (dialog)
+              return json(res, 409, {
+                error: 'harness is showing a dialog; answer it in the terminal first',
+                reason: 'harness_dialog',
+                dialog,
+              })
+          }
           if (!manager.inject(ptyId, p.text, submit, interrupt)) {
             const inf = manager.get(ptyId)
             // Keep HTTP 409. Distinguish "not seen yet" (client can retry)

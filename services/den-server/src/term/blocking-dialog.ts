@@ -111,3 +111,17 @@ export function parseBlockingDialog(screen: string): BlockingDialog | undefined 
   }
   return { title, options }
 }
+
+/** Read the screen and parse it, failing open: a read error or an empty screen means
+ *  "no dialog", so a flaky capture never blocks chat. For callers without their own
+ *  logging (the legacy `POST /term/inject` route). */
+export async function dialogOnScreen(
+  read: () => Promise<string> | string,
+): Promise<BlockingDialog | undefined> {
+  try {
+    const raw = await read()
+    return raw ? parseBlockingDialog(raw) : undefined
+  } catch {
+    return undefined
+  }
+}

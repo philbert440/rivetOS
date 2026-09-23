@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { parseBlockingDialog } from './blocking-dialog.js'
+import { dialogOnScreen, parseBlockingDialog } from './blocking-dialog.js'
 import {
   AUTO_MODE_DIALOG_SCREEN,
   CLAUDE_PERM_SCREEN,
@@ -127,5 +127,21 @@ describe('parseBlockingDialog', () => {
 
   it('returns undefined for an empty screen', () => {
     expect(parseBlockingDialog('')).toBeUndefined()
+  })
+})
+
+describe('dialogOnScreen (legacy POST /term/inject gate)', () => {
+  it('finds the dialog on the screen it reads', async () => {
+    expect(await dialogOnScreen(() => Promise.resolve(MODEL_PICKER_SCREEN))).toMatchObject({
+      title: 'Select model',
+    })
+  })
+
+  it('fails open on an idle screen, an empty read, and a read error', async () => {
+    expect(await dialogOnScreen(() => IDLE_HARNESS_SCREEN)).toBeUndefined()
+    expect(await dialogOnScreen(() => '')).toBeUndefined()
+    expect(
+      await dialogOnScreen(() => Promise.reject(new Error('pane read failed'))),
+    ).toBeUndefined()
   })
 })
