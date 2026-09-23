@@ -184,21 +184,68 @@ export function applySheetOverride(
   return next
 }
 
-export function claudeSheet(): ModelSheet {
+/**
+ * Claude Code's model list. The base models (Opus/Sonnet/Haiku and their 1M
+ * variants, Fable) are baked into the installed CLI version, so the static list
+ * is the floor and no config file can drop below it. On top of that we merge
+ * Claude Code's own `additionalModelOptionsCache` from `~/.claude.json`: the CLI
+ * writes account-specific extras it advertises (a new model can appear before
+ * this static list is bumped) and update-gated entries flagged `disabled`. The
+ * gated rows are skipped — never offered — so the picker cannot spawn a model
+ * this install can't run. Cache rows whose id already exists in the base are
+ * dropped; an unreadable file leaves the static list untouched.
+ */
+export function claudeSheet(
+  readJson: ReadJson = defaultReadJson,
+  home: string = homedir(),
+): ModelSheet {
+  const models: HarnessModelOption[] = [
+    { id: 'fable', label: 'Fable 5.1', default: true },
+    { id: 'opus', label: 'Opus 5' },
+    { id: 'sonnet', label: 'Sonnet 5' },
+    { id: 'haiku', label: 'Haiku 4.5' },
+    { id: 'fable[1m]', label: 'Fable 5.1 1M context' },
+    { id: 'opus[1m]', label: 'Opus 5 1M context' },
+    { id: 'sonnet[1m]', label: 'Sonnet 5 1M context' },
+  ]
+  for (const extra of claudeCacheModels(readJson, home)) {
+    if (!models.some((m) => m.id === extra.id)) models.push(extra)
+  }
   return {
-    models: [
-      { id: 'fable', label: 'Fable 5.1', default: true },
-      { id: 'opus', label: 'Opus 5' },
-      { id: 'sonnet', label: 'Sonnet 5' },
-      { id: 'haiku', label: 'Haiku 4.5' },
-      { id: 'fable[1m]', label: 'Fable 5.1 1M context' },
-      { id: 'opus[1m]', label: 'Opus 5 1M context' },
-      { id: 'sonnet[1m]', label: 'Sonnet 5 1M context' },
-    ],
+    models,
     efforts: CLAUDE_EFFORTS,
     modelFlag: '--model',
     effortFlag: '--effort',
   }
+}
+
+/**
+ * Non-`disabled` `additionalModelOptionsCache` rows from `~/.claude.json`,
+ * mapped to model options. Efforts are left off so each inherits the sheet's
+ * shared Claude effort set, exactly like the base rows. Malformed rows, gated
+ * (`disabled`) rows, invalid ids, and duplicates are dropped; an unreadable or
+ * unshaped file yields none.
+ */
+function claudeCacheModels(readJson: ReadJson, home: string): HarnessModelOption[] {
+  let raw: unknown
+  try {
+    raw = readJson(join(home, '.claude.json'))
+  } catch {
+    return []
+  }
+  if (!isRecord(raw) || !Array.isArray(raw.additionalModelOptionsCache)) return []
+  const out: HarnessModelOption[] = []
+  const seen = new Set<string>()
+  for (const entry of raw.additionalModelOptionsCache) {
+    if (!isRecord(entry) || entry.disabled === true) continue
+    if (typeof entry.value !== 'string') continue
+    const id = entry.value.trim()
+    if (!MODEL_TOKEN_RE.test(id) || seen.has(id)) continue
+    seen.add(id)
+    const label = typeof entry.label === 'string' && entry.label.trim() ? entry.label.trim() : id
+    out.push({ id, label })
+  }
+  return out
 }
 
 /**
@@ -651,7 +698,7 @@ export function sheetForHarness(harnessId: HarnessId, readers?: SheetReaders): M
   const readText = readers?.readText
   switch (harnessId) {
     case 'claude-code':
-      return claudeSheet()
+      return claudeSheet(readJson, home)
     case 'grok-build':
       return grokSheet(readJson, home)
     case 'kimi-code':

@@ -21,6 +21,7 @@ import {
   sanitizeModels,
   sheetForHarness,
 } from './model-sheets.js'
+import type { ReadJson } from './model-sheets.js'
 
 const CT116_TOML = readFileSync(
   join(dirname(fileURLToPath(import.meta.url)), '__fixtures__/kimi-config-ct116.toml'),
@@ -64,23 +65,79 @@ const GROK_CACHE = {
   },
 }
 
+const CLAUDE_JSON = {
+  additionalModelOptionsCache: [
+    { value: 'claude-fable-5-1[1m]', label: 'Fable', description: 'Fable 5.1 · Most capable' },
+    { value: 'cc-update-required-1', label: 'Opus 5.5 (disabled)', disabled: true },
+  ],
+}
+
+const BASE_CLAUDE_IDS = ['fable', 'opus', 'sonnet', 'haiku', 'fable[1m]', 'opus[1m]', 'sonnet[1m]']
+
+/** A reader that has no ~/.claude.json — keeps claudeSheet() on the base list. */
+const noClaudeJson: ReadJson = () => {
+  throw Object.assign(new Error('ENOENT'), { code: 'ENOENT' })
+}
+
 describe('claudeSheet', () => {
   it('declares aliases including 1M variants and medium-default efforts', () => {
-    const sheet = claudeSheet()
+    const sheet = claudeSheet(noClaudeJson, '/tmp/fake-home')
     expect(sheet.modelFlag).toBe('--model')
     expect(sheet.effortFlag).toBe('--effort')
-    expect(sheet.models?.map((m) => m.id)).toEqual([
-      'fable',
-      'opus',
-      'sonnet',
-      'haiku',
-      'fable[1m]',
-      'opus[1m]',
-      'sonnet[1m]',
-    ])
+    expect(sheet.models?.map((m) => m.id)).toEqual(BASE_CLAUDE_IDS)
     expect(sheet.models?.find((m) => m.default)?.id).toBe('fable')
     expect(sheet.efforts?.find((e) => e.default)?.id).toBe('medium')
     expect(sheet.efforts?.map((e) => e.id)).toEqual(['low', 'medium', 'high', 'xhigh', 'max'])
+  })
+
+  it('appends non-disabled cache models and skips gated ones', () => {
+    const sheet = claudeSheet(() => CLAUDE_JSON, '/tmp/fake-home')
+    expect(sheet.models?.map((m) => m.id)).toEqual([...BASE_CLAUDE_IDS, 'claude-fable-5-1[1m]'])
+    const fable = sheet.models?.find((m) => m.id === 'claude-fable-5-1[1m]')
+    expect(fable).toMatchObject({ id: 'claude-fable-5-1[1m]', label: 'Fable' })
+    // Per-model efforts are left off so the sheet's Claude effort set applies.
+    expect(fable?.efforts).toBeUndefined()
+    // The update-gated row is never offered.
+    expect(sheet.models?.some((m) => m.id === 'cc-update-required-1')).toBe(false)
+    expect(sheet.models?.find((m) => m.default)?.id).toBe('fable')
+  })
+
+  it('drops a cache row whose id already exists in the base list', () => {
+    const sheet = claudeSheet(
+      () => ({ additionalModelOptionsCache: [{ value: 'opus', label: 'Dup Opus' }] }),
+      '/tmp/fake-home',
+    )
+    expect(sheet.models?.map((m) => m.id)).toEqual(BASE_CLAUDE_IDS)
+    expect(sheet.models?.find((m) => m.id === 'opus')?.label).toBe('Opus 5')
+  })
+
+  it('drops malformed and invalid-id cache rows', () => {
+    const sheet = claudeSheet(
+      () => ({
+        additionalModelOptionsCache: [
+          { value: '../evil', label: 'Traversal' },
+          { value: 42 },
+          { label: 'no value' },
+          'not-an-object',
+          { value: 'claude-new-model', label: '' },
+        ],
+      }),
+      '/tmp/fake-home',
+    )
+    // Only the last, valid row survives; empty label falls back to the id.
+    expect(sheet.models?.map((m) => m.id)).toEqual([...BASE_CLAUDE_IDS, 'claude-new-model'])
+    expect(sheet.models?.find((m) => m.id === 'claude-new-model')?.label).toBe('claude-new-model')
+  })
+
+  it('keeps the base list when the cache is missing or unshaped', () => {
+    expect(claudeSheet(() => ({}), '/tmp/fake-home').models?.map((m) => m.id)).toEqual(
+      BASE_CLAUDE_IDS,
+    )
+    expect(
+      claudeSheet(() => ({ additionalModelOptionsCache: 'nope' }), '/tmp/fake-home').models?.map(
+        (m) => m.id,
+      ),
+    ).toEqual(BASE_CLAUDE_IDS)
   })
 })
 
@@ -386,7 +443,7 @@ describe('codexSheet', () => {
 
 describe('applySheetOverride', () => {
   it('replaces models/efforts when the override carries that key', () => {
-    const base = claudeSheet()
+    const base = claudeSheet(noClaudeJson, '/tmp/fake-home')
     const next = applySheetOverride(base, {
       models: [{ id: 'only', label: 'Only' }, { id: 1 }, { nope: true }],
       efforts: [{ id: 'max', label: 'Max', default: true }, 'bad'],
@@ -398,14 +455,14 @@ describe('applySheetOverride', () => {
   })
 
   it('ignores a non-array override and keeps the sheet list', () => {
-    const base = claudeSheet()
+    const base = claudeSheet(noClaudeJson, '/tmp/fake-home')
     const next = applySheetOverride(base, { models: 'nope', efforts: { id: 'x' } })
     expect(next.models).toEqual(base.models)
     expect(next.efforts).toEqual(base.efforts)
   })
 
   it('ignores an override that sanitizes to empty and logs', () => {
-    const base = claudeSheet()
+    const base = claudeSheet(noClaudeJson, '/tmp/fake-home')
     const logs: string[] = []
     const next = applySheetOverride(base, { models: [], efforts: [{ id: 'bad id!' }] }, (msg) =>
       logs.push(msg),
@@ -439,7 +496,7 @@ describe('sanitizeModels', () => {
 })
 
 describe('appendModelEffortArgv', () => {
-  const claude = claudeSheet()
+  const claude = claudeSheet(noClaudeJson, '/tmp/fake-home')
   it('appends flags for listed values', () => {
     expect(appendModelEffortArgv(['claude'], claude, 'fable', 'high')).toEqual([
       'claude',
