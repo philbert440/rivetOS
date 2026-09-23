@@ -379,9 +379,11 @@ export type UserTurn = {
    */
   systemPrompt?: string
   /**
-   * Skip the Claude blocking-dialog pre-send gate. Set only by the user's
-   * explicit inject/retry — never by an automatic queue retry. A reply that
-   * copies the dialog's box rule can false-positive; this is the way through.
+   * User-initiated inject/retry only — never an automatic queue retry. The
+   * server still reads the screen. A detected dialog is dismissed with Esc
+   * before the paste, so the turn cannot confirm the highlighted option. No
+   * dialog: a normal paste. A copied-rule false positive also receives Esc
+   * before the paste.
    */
   bypassDialogGate?: boolean
 }

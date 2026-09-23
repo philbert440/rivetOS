@@ -1732,7 +1732,9 @@ function ActiveSession(props: {
       // Inject NOW means now: Esc the in-flight turn so the harness drops what
       // it's doing and picks this message up. A failed turn's retry does not
       // interrupt. forceId is also the dialog-gate bypass — only this button
-      // sets it, so a copied-rule false positive can be sent.
+      // sets it. The server still reads the screen and Esc-dismisses a live
+      // menu before pasting, so the click cannot confirm a permission prompt.
+      // A copied-rule false positive also gets Esc before the paste.
       const state = useChat.getState()
       const key = state.resolveSessionKey(props.sessionId)
       const failed = state.queueFor(props.sessionId)?.find((o) => o.id === id)?.status === 'failed'

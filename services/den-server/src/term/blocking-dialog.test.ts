@@ -3,9 +3,7 @@ import { dialogOnScreen, parseBlockingDialog } from './blocking-dialog.js'
 import {
   AUTO_MODE_DIALOG_SCREEN,
   CLAUDE_PERM_SCREEN,
-  CLAUDE_PERM_WITH_COMPOSER_SCREEN,
   CLAUDE_PICKER_SCREEN,
-  CLAUDE_PICKER_WITH_COMPOSER_SCREEN,
   IDLE_HARNESS_SCREEN,
   MODEL_PICKER_SCREEN,
   OLD_DIALOG_SCROLLBACK_SCREEN,
@@ -149,26 +147,23 @@ describe('parseBlockingDialog', () => {
     })
   })
 
-  it('detects a permission prompt with the composer tail still on screen', () => {
-    expect(parseBlockingDialog(CLAUDE_PERM_WITH_COMPOSER_SCREEN)).toMatchObject({
-      options: [
-        { key: '1', label: 'Yes' },
-        { key: '2', label: "Yes, and don't ask again for mkdir" },
-        { key: '3', label: 'No' },
-      ],
-    })
-  })
-
-  it('detects an AskUserQuestion picker with the composer tail still on screen', () => {
-    expect(parseBlockingDialog(CLAUDE_PICKER_WITH_COMPOSER_SCREEN)).toMatchObject({
-      options: [
-        { key: '1', label: 'Red' },
-        { key: '2', label: 'Green' },
-        { key: '3', label: 'Blue' },
-        { key: '4', label: 'Type something.' },
-        { key: '5', label: 'Chat about this' },
-      ],
-    })
+  it('permission and AskUserQuestion captures have no composer between footer and chrome', () => {
+    // Real screens replace the composer. The menu matches on that path, not
+    // because a question line sits above the options.
+    const footer = /Enter to (confirm|select|continue)|Esc to (cancel|go back|exit)/
+    for (const screen of [CLAUDE_PERM_SCREEN, CLAUDE_PICKER_SCREEN]) {
+      const lines = screen.split('\n')
+      let footerIdx = -1
+      for (let i = lines.length - 1; i >= 0; i--) {
+        if (footer.test(lines[i])) {
+          footerIdx = i
+          break
+        }
+      }
+      expect(footerIdx).toBeGreaterThanOrEqual(0)
+      expect(lines.slice(footerIdx + 1).some((line) => /^\s*❯\s*$/.test(line))).toBe(false)
+      expect(parseBlockingDialog(screen)).toBeDefined()
+    }
   })
 
   it('does not glue a numbered list from an earlier reply onto the dialog options', () => {
@@ -205,6 +200,24 @@ describe('parseBlockingDialog', () => {
     expect(parseBlockingDialog(screen)).toBeUndefined()
   })
 
+  it('ignores a quoted menu that includes the question line above the live composer', () => {
+    // Round-3 false positive. The question sits on the options, but there is
+    // no box rule, and the composer is still up — a reply, not a live dialog.
+    const screen = `\
+● The prompt at the bottom of the tool looks like this:
+
+  Do you want to proceed?
+  ❯ 1. Yes
+    2. No
+  Enter to confirm · Esc to cancel
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+❯
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+  ⏵⏵ auto mode on (shift+tab to cycle) · ← for agents
+`
+    expect(parseBlockingDialog(screen)).toBeUndefined()
+  })
+
   it('detects the live dialog when a stale ❯ row is separated from it by a blank line', () => {
     const screen = AUTO_MODE_DIALOG_SCREEN.replace(
       '  ❯ 1. Yes\n',
@@ -218,7 +231,10 @@ describe('parseBlockingDialog', () => {
       '  ❯ 1. Yes\n',
       '1. Close RivetHub when you are not working on it.\n2. Check whether Obsidian settles down.\n  ❯ 1. Yes\n',
     )
-    expect(parseBlockingDialog(screen)).toEqual(AUTO_MODE_RESULT)
+    // Above a live composer, unindented prose breaks the dialog frame.
+    expect(parseBlockingDialog(screen)).toBeUndefined()
+    // Without a composer the option walk still excludes the other column.
+    expect(parseBlockingDialog(screen.replace('\n❯\n', '\n'))).toEqual(AUTO_MODE_RESULT)
   })
 
   it('does not treat a "- item" list line as a separator', () => {
@@ -278,8 +294,37 @@ describe('parseBlockingDialog', () => {
     }
   })
 
-  it('does not treat a box rule more than 8 lines above a quoted menu as a live dialog', () => {
-    const gap = Array.from({ length: 10 }, () => '  quoted body line').join('\n')
+  it('detects an auto-mode dialog whose explanation body is longer than a fixed line cap', () => {
+    const body = Array.from({ length: 8 }, (_, n) => `  explanation line ${n + 1}`).join('\n')
+    const screen = AUTO_MODE_DIALOG_SCREEN.replace(
+      '  Auto mode works better when it knows your environment. Takes about a minute.',
+      body,
+    )
+    expect(parseBlockingDialog(screen)).toEqual(AUTO_MODE_RESULT)
+  })
+
+  it.each(['● Assistant reply', '  ⏺ Assistant reply', 'Unindented reply', '1. Unindented list'])(
+    'stops the rule walk at %s even with a rule above it',
+    (boundary) => {
+      const screen = `\
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+${boundary}
+
+  Do you want to proceed?
+  ❯ 1. Yes
+    2. No
+  Enter to confirm · Esc to cancel
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+❯
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+  ⏵⏵ auto mode on (shift+tab to cycle) · ← for agents
+`
+      expect(parseBlockingDialog(screen)).toBeUndefined()
+    },
+  )
+
+  it('does not treat a box rule past the safety cap as framing a menu', () => {
+    const gap = Array.from({ length: 45 }, () => '  quoted body line').join('\n')
     const screen = `\
 ────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
 ${gap}
