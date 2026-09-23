@@ -32,6 +32,7 @@ import {
   parsePaneAgent,
   herdrKindForArgv0,
   herdrKindForCommand,
+  herdrSweepRetains,
   herdrUseAgent,
   resolveHerdrAgentPane,
   herdrRuntimeHash,
@@ -163,12 +164,12 @@ describe('herdr argv builders', () => {
     )
   })
 
-  it('resolveHerdrAgentPane: fresh argv0, stamp wins, absent stamp uses the key', () => {
+  it('resolveHerdrAgentPane: fresh argv0, stamp wins, absent stamp uses key and argv0', () => {
     expect(resolveHerdrAgentPane({ argv0: 'claude' })).toEqual({
       kind: 'claude',
       agentPane: true,
     })
-    // Sweep fallback passes the tag itself when the roster entry is gone.
+    // Fresh path only. The sweep's retain rule is herdrSweepRetains.
     expect(resolveHerdrAgentPane({ argv0: 'kimi' }).agentPane).toBe(true)
     expect(resolveHerdrAgentPane({ argv0: 'my-wrapper' }).agentPane).toBe(false)
     // Legacy reattach of a renamed key: no stamp → plain pane.
@@ -192,10 +193,59 @@ describe('herdr argv builders', () => {
         stamp: '0',
       }).agentPane,
     ).toBe(false)
-    // A pre-change key that was itself a kind stays an agent pane.
+    // A pre-change key that was itself a kind, still running that binary.
     expect(
-      resolveHerdrAgentPane({ argv0: 'claude', persisted: true, legacyKey: 'claude' }).agentPane,
+      resolveHerdrAgentPane({ argv0: 'claude', persisted: true, legacyKey: 'claude' }),
+    ).toEqual({ kind: 'claude', agentPane: true })
+    // Same key, but today's argv0 is a pinned path or a wrapper: plain.
+    // Probing this pane would see no agent and end a live session.
+    expect(
+      resolveHerdrAgentPane({
+        argv0: '/opt/claude/bin/claude',
+        persisted: true,
+        legacyKey: 'claude',
+      }),
+    ).toEqual({ kind: 'claude', agentPane: false })
+    expect(resolveHerdrAgentPane({ argv0: 'npx', persisted: true, legacyKey: 'claude' })).toEqual({
+      kind: 'claude',
+      agentPane: false,
+    })
+    expect(
+      resolveHerdrAgentPane({
+        argv0: '/opt/claude/bin/claude',
+        persisted: true,
+        legacyKey: 'claude',
+        stamp: '0',
+      }).agentPane,
+    ).toBe(false)
+    // Stamp still wins over a path argv0.
+    expect(
+      resolveHerdrAgentPane({
+        argv0: '/opt/claude/bin/claude',
+        persisted: true,
+        legacyKey: 'claude',
+        stamp: '1',
+      }).agentPane,
     ).toBe(true)
+  })
+
+  it('herdrSweepRetains: stamp wins; otherwise a kind tag or a kind argv0', () => {
+    // Unstamped kind tag, entry repointed to a path → retain.
+    expect(herdrSweepRetains({ tag: 'claude', entryArgv0: '/opt/claude/bin/claude' })).toBe(true)
+    // Unstamped kind tag, entry argv0 is a wrapper → retain.
+    expect(herdrSweepRetains({ tag: 'grok', entryArgv0: 'npx' })).toBe(true)
+    // Unstamped renamed tag whose entry argv0 is the kind → retain.
+    expect(herdrSweepRetains({ tag: 'claude-code', entryArgv0: 'claude' })).toBe(true)
+    // Stamp wins both ways, including over a kind tag and a kind argv0.
+    expect(herdrSweepRetains({ stamp: '0', tag: 'claude', entryArgv0: 'claude' })).toBe(false)
+    expect(herdrSweepRetains({ stamp: '1', tag: 'my-wrapper' })).toBe(true)
+    // Tag is not a kind and the entry is gone → not retained.
+    expect(herdrSweepRetains({ tag: 'claude-code' })).toBe(false)
+    expect(herdrSweepRetains({ tag: 'my-wrapper' })).toBe(false)
+    // A path is not a kind, so it does not retain on its own.
+    expect(herdrSweepRetains({ tag: 'my-wrapper', entryArgv0: '/opt/claude/bin/claude' })).toBe(
+      false,
+    )
   })
 
   it('herdrUseAgent matches create(): kind === argv0 and no slash', () => {
@@ -751,6 +801,43 @@ describe('createRealHerdrCtl argv', () => {
     expect(rpcs).toEqual(['workspace.create', 'pane.get', 'pane.send_text'])
     expect(rpcs).not.toContain('agent.start')
     const meta = JSON.parse(readFileSync(herdrMetaPath('/tmp/herdr-cfg', 'dshell'), 'utf8')) as {
+      agentPane?: string
+    }
+    expect(meta.agentPane).toBe('0')
+  })
+
+  it('agentPane true with no kind does not call agent.start and stamps plain', async () => {
+    const rpcs: string[] = []
+    const rpc: HerdrRpc = async (_path, req) => {
+      rpcs.push(req.method)
+      if (req.method === 'pane.get') return { pane: { terminal_title: 'user@host: ~' } }
+      if (req.method === 'workspace.create') return { root_pane: { pane_id: 'w1:p1' } }
+      return {}
+    }
+    const ctl = createRealHerdrCtl(
+      '/usr/bin/herdr',
+      '/tmp/herdr-cfg-nokind',
+      () => '',
+      spawnFake,
+      () => true,
+      undefined,
+      rpc,
+    )
+    await ctl.create({
+      name: 'dnokind',
+      denKey: 'chat-nokind',
+      argv: ['bash'],
+      env: {},
+      cwd: '/work',
+      agentPane: true,
+      command: 'shell',
+      user: 'owner',
+    })
+    expect(rpcs).not.toContain('agent.start')
+    expect(rpcs).toContain('pane.send_text')
+    const meta = JSON.parse(
+      readFileSync(herdrMetaPath('/tmp/herdr-cfg-nokind', 'dnokind'), 'utf8'),
+    ) as {
       agentPane?: string
     }
     expect(meta.agentPane).toBe('0')

@@ -101,6 +101,7 @@ import {
   herdrStatusToFrame,
   herdrSessionName,
   herdrSupported,
+  herdrSweepRetains,
   resolveHerdrAgentPane,
   HerdrCommandError,
   HerdrUnavailableError,
@@ -875,7 +876,9 @@ export function createTermManager(config: DenConfig, deps: TermManagerDeps): Ter
     const ctl = muxCtl
     sweepTimer = setInterval(
       () => {
-        let sessions: TmuxSessionInfo[]
+        // Herdr rows carry `@rivet_agent_pane`; tmux rows do not. The optional
+        // field keeps the stamp visible to the retain check below.
+        let sessions: Array<TmuxSessionInfo & { agentPane?: '1' | '0' }>
         try {
           sessions = ctl.listSessions()
         } catch (e) {
@@ -891,13 +894,26 @@ export function createTermManager(config: DenConfig, deps: TermManagerDeps): Ter
         // sessions den didn't create in this process (restart survivors):
         // track first sighting so GC eligibility runs from then, never from
         // before den was even up.
-        // Restart survivors carry the roster KEY in @rivet_command. Retain
-        // when that entry's argv[0] is a herdr kind — the same decision as a
-        // fresh spawn. Entry renamed away or removed: fall back to the tag
-        // itself. Base retained whenever the tag was a kind; without the
-        // fallback a restart drops the subscription until the next attach.
-        // Resolved once per tick: roster() stats the file on every call.
-        const sweepRoster = herdr ? deps.roster() : undefined
+        // Restart survivors carry the roster KEY in @rivet_command, and herdr
+        // rows carry @rivet_agent_pane when this den stamped it. Retain via
+        // herdrSweepRetains, not the reattach helper: the stamp wins; an
+        // unstamped survivor is kept when the tag is a kind OR the roster
+        // entry's argv0 is a kind. Reattach is stricter — a kind key whose
+        // argv0 is a path or wrapper stays plain — and the sweep may keep a
+        // superset, which only subscribes to status. Entry removed: only the
+        // tag is consulted. Once per tick — roster() stats the file on every
+        // call. A throwing provider must not kill the interval; list/GC still
+        // run, and retain falls back to the tag.
+        let sweepRoster: TermRoster | undefined
+        if (herdr) {
+          try {
+            sweepRoster = deps.roster()
+          } catch (e) {
+            deps.log(
+              `[den-server] term: session sweep roster failed (${String(e)}) — retaining by tag only`,
+            )
+          }
+        }
         for (const s of sessions) {
           if (!knownTmux.has(s.name)) {
             knownTmux.set(s.name, {
@@ -914,8 +930,15 @@ export function createTermManager(config: DenConfig, deps: TermManagerDeps): Ter
               s.command && sweepRoster && Object.hasOwn(sweepRoster.commands, s.command)
                 ? sweepRoster.commands[s.command]
                 : undefined
-            const taggedCmd = entry ? entry.cmd[0] : undefined
-            if (herdr && resolveHerdrAgentPane({ argv0: taggedCmd ?? s.command ?? '' }).agentPane) {
+            const entryArgv0 = entry?.cmd[0]
+            if (
+              herdr &&
+              herdrSweepRetains({
+                stamp: s.agentPane,
+                tag: s.command,
+                entryArgv0,
+              })
+            ) {
               statusHub?.retain(s.name, denKeyOf(s))
             }
           }
@@ -1939,6 +1962,19 @@ export function createTermManager(config: DenConfig, deps: TermManagerDeps): Ter
             )
           muxCtl.setOption?.(s.name, '@rivet_command', s.command || key)
           muxCtl.setOption?.(s.name, '@rivet_user', 'owner')
+          // No prior stamp. Persist the same decision reattach makes — the
+          // pre-change rule herdrUseAgent(herdrKindForCommand(key), argv0) —
+          // so a later reattach trusts the stamp instead of a different
+          // request key. Herdr only. This path keeps argv at entry.cmd, so
+          // the stamp matches paneDecision below.
+          if (herdr) {
+            const adoptPane = resolveHerdrAgentPane({
+              argv0: entry.cmd[0] ?? '',
+              persisted: true,
+              legacyKey: key,
+            })
+            muxCtl.setOption?.(s.name, '@rivet_agent_pane', adoptPane.agentPane ? '1' : '0')
+          }
           if (!adoptedTmux.has(s.name)) {
             adoptedTmux.add(s.name)
             deps.log(`[den-server] term: adopted untagged tmux session ${s.name} (pre-fix create)`)
@@ -2167,10 +2203,11 @@ export function createTermManager(config: DenConfig, deps: TermManagerDeps): Ter
       }
       // Fresh create: kind and agent-pane from argv[0]. Persisted reattach:
       // trust @rivet_agent_pane when this den stamped it; a session from an
-      // older den has no stamp and keeps the pre-change key rule, so a
-      // renamed-key plain pane is not probed and ended. One decision — the
-      // create kind, the record, the ready-gate and the degradation warning
-      // share it (the sweep uses the same helper).
+      // older den has no stamp and keeps the pre-change rule
+      // herdrUseAgent(herdrKindForCommand(key), argv[0]). A kind key whose
+      // entry now runs a path or wrapper is not probed and ended, and a
+      // renamed-key plain pane stays plain. The sweep uses herdrSweepRetains
+      // (a superset) so the two decisions do not share one helper.
       const paneDecision = resolveHerdrAgentPane({
         argv0: argv[0] ?? '',
         persisted,
@@ -2330,7 +2367,12 @@ export function createTermManager(config: DenConfig, deps: TermManagerDeps): Ter
         // request's entry — do not invent a refusal. No tag (pre-fix
         // untagged adopt): today's behaviour (request key is written as the
         // tag). cwd/env/identity/LRU/argv stay on the request.
-        const taggedEntry = persisted && persistedTag ? roster.commands[persistedTag] : undefined
+        // Own property only — same as the sweep. A tag like `constructor`
+        // must not pick up Object.prototype and treat it as a roster entry.
+        const taggedEntry =
+          persisted && persistedTag && Object.hasOwn(roster.commands, persistedTag)
+            ? roster.commands[persistedTag]
+            : undefined
         const recordKey = taggedEntry ? persistedTag : key
         const recordEntry = taggedEntry ?? entry
         if (muxCtl && tmuxName) {
@@ -2416,15 +2458,17 @@ export function createTermManager(config: DenConfig, deps: TermManagerDeps): Ter
         // A harness entry that is NOT an agent pane still works, but loses the
         // agent-idle ready-gate and the first-turn confirm: it falls back to
         // output quiescence alone. That is invisible until a first turn goes
-        // missing, so say it once at spawn. Wrapper scripts and PATH-less
-        // argv[0] cannot be agent panes by design (herdr's --kind would launch
-        // its own PATH binary instead of the pinned one) — a renamed roster
-        // key is the recoverable case.
+        // missing, so say it once at spawn. Fresh creates name the argv[0]
+        // reason (path or not a kind). A persisted reattach says the pane was
+        // created plain (stamp `0`, or no stamp and the pre-change rule) and
+        // does not claim today's argv[0] failed the fresh-create check.
         if (r.room && herdr && !isAgentPane) {
           const a0 = argv[0] ?? ''
-          const why = a0.includes('/')
-            ? `argv[0] '${a0}' is a path, not a bare command`
-            : `argv[0] '${a0}' is not a herdr agent kind`
+          const why = persisted
+            ? 'the pane was created as a plain pane'
+            : a0.includes('/')
+              ? `argv[0] '${a0}' is a path, not a bare command`
+              : `argv[0] '${a0}' is not a herdr agent kind`
           deps.log(
             `[den-server] term: '${recordKey}' has no agent-idle ready-gate — ${why}. ` +
               `First-turn confirm is off; falling back to output quiescence.`,

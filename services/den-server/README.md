@@ -101,10 +101,13 @@ re-armed on every chunk. A herdr agent-idle event readies the pane only when
 it was created as an agent pane — for a fresh create, the roster entry's own
 argv[0] is a herdr kind, not a wrapper or absolute path, so renaming the key
 does not change that decision — even while output is still trickling;
-otherwise the quiet period applies. The restart sweep still uses the key to
-find the entry, and falls back to the key when that entry has left the
-roster. A session with no `@rivet_agent_pane` stamp (created before this
-rule) keeps the previous key-based decision on reattach. A `room: true`
+otherwise the quiet period applies. The restart sweep (status subscription
+only) lets the stamp win and, with no stamp, retains when the tag is a kind
+or the roster entry's argv[0] is a kind. The stamp is written at create and
+on adopt; reattach lets it win too, and a session with no
+`@rivet_agent_pane` stamp (created before this rule) keeps the previous
+rule — kind from the roster key, which argv[0] must equal — so a renamed key
+or pinned path stays the plain pane it was launched as. A `room: true`
 entry that resolves to a plain pane logs once at spawn, since it silently
 loses the agent-idle gate and the first-turn confirm),
 `RIVETOS_DEN_TERM_INJECT_READY_MAX_MS` (15000 — hard ceiling: flush buffered
