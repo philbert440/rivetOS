@@ -1982,25 +1982,46 @@ describe('sendUserTurn gates on an open blocking dialog', () => {
     driver.close()
   })
 
-  it('injects through an open dialog when the user sets bypassDialogGate', async () => {
+  it('dismisses a live permission dialog with Esc before a forced inject', async () => {
     const pty = fakePty()
     const driver = new ClaudeCodeDriver({
       store: fakeStore([]),
       pty: () => Promise.resolve(pty.host),
       turnQuietMs: 0,
-      screen: () => AUTO_MODE_DIALOG_SCREEN,
+      screen: () => CLAUDE_PERM_SCREEN,
     })
     await driver.startSession({ nativeSessionId: UUID })
     await driver.sendUserTurn(sid, { text: 'hello', bypassDialogGate: true })
-    expect(pty.injects.map((i) => i.text)).toEqual(['hello'])
+    // interrupt is the term manager's Esc-then-paste. The text is the turn,
+    // never the highlighted option 1.
+    expect(pty.injects).toEqual([{ id: 'pty-1', text: 'hello', submit: true, interrupt: true }])
+    expect(pty.injects.some((i) => i.text === '1')).toBe(false)
     driver.close()
   })
 
-  it('still skips the dialog gate on the dead-PTY retry when the user forced the inject', async () => {
+  it('pastes a forced inject normally when no dialog is on screen', async () => {
+    const pty = fakePty()
+    const driver = new ClaudeCodeDriver({
+      store: fakeStore([]),
+      pty: () => Promise.resolve(pty.host),
+      turnQuietMs: 0,
+      screen: () => IDLE_HARNESS_SCREEN,
+    })
+    await driver.startSession({ nativeSessionId: UUID })
+    await driver.sendUserTurn(sid, { text: 'hello', bypassDialogGate: true })
+    expect(pty.injects).toEqual([
+      { id: 'pty-1', text: 'hello', submit: true, interrupt: undefined },
+    ])
+    driver.close()
+  })
+
+  it('Esc-dismisses a dialog on the dead-PTY retry when the user forced the inject', async () => {
     const pty = fakePty()
     let injectAttempts = 0
+    const seen: Injected[] = []
     pty.host.inject = (id, text, submit, interrupt) => {
       injectAttempts += 1
+      seen.push({ id, text, submit, interrupt })
       if (injectAttempts === 1) return false
       pty.injects.push({ id, text, submit, interrupt })
       return true
@@ -2009,12 +2030,14 @@ describe('sendUserTurn gates on an open blocking dialog', () => {
       store: fakeStore([]),
       pty: () => Promise.resolve(pty.host),
       turnQuietMs: 0,
-      screen: () => AUTO_MODE_DIALOG_SCREEN,
+      screen: () => CLAUDE_PERM_SCREEN,
     })
     await driver.startSession({ nativeSessionId: UUID })
     await driver.sendUserTurn(sid, { text: 'hello', bypassDialogGate: true })
     expect(injectAttempts).toBe(2)
+    expect(seen.every((i) => i.interrupt === true && i.text === 'hello')).toBe(true)
     expect(pty.injects.map((i) => i.text)).toEqual(['hello'])
+    expect(seen.some((i) => i.text === '1')).toBe(false)
     driver.close()
   })
 

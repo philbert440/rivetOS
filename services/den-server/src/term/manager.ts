@@ -270,7 +270,7 @@ interface PtyRecord {
    *  agent-idle, else output quiescence of injectReadyMs, else injectReadyMaxMs
    *  ceiling), then flush — so the FIRST chat turn to a fresh harness lands. */
   ready: boolean
-  injectBuffer: { text: string; submit: boolean }[]
+  injectBuffer: { text: string; submit: boolean; interrupt?: boolean }[]
   readyTimer?: NodeJS.Timeout
   readyCeilingTimer?: NodeJS.Timeout
   confirmTimer?: NodeJS.Timeout
@@ -314,7 +314,7 @@ interface PtyRecord {
   probeBackoffTimer?: NodeJS.Timeout
   /** Fires after harnessEndedGraceMs while agentEnded stays set. */
   endedGraceTimer?: NodeJS.Timeout
-  injectRest?: { text: string; submit: boolean }[]
+  injectRest?: { text: string; submit: boolean; interrupt?: boolean }[]
   /** Ordinal of the in-flight first-flush turn waiting for a `working` frame. */
   confirmTurn?: number
   /** Monotonic ordinal of flushed/dropped inject turns (never the text). */
@@ -710,6 +710,18 @@ export function createTermManager(config: DenConfig, deps: TermManagerDeps): Ter
   const submitWrite = (r: PtyRecord, text: string, submit: boolean, startMs = 0): void => {
     laterWrite(r, submit ? `${PASTE_START}${text}${PASTE_END}` : text, startMs)
     if (submit) laterWrite(r, SUBMIT_CR, startMs + submitDelayMs)
+  }
+
+  /** Preserve cancel-before-paste through both ready and buffered sends. */
+  const injectWrite = (r: PtyRecord, text: string, submit: boolean, interrupt = false): void => {
+    let startMs = Math.max(0, r.injectNextAtMs - now())
+    if (interrupt) {
+      // Never put Esc between an earlier paste and its Enter.
+      laterWrite(r, INTERRUPT_ESC, startMs)
+      startMs += INTERRUPT_SETTLE_MS
+    }
+    submitWrite(r, text, submit, startMs)
+    r.injectNextAtMs = now() + startMs + (submit ? submitDelayMs * 2 : submitDelayMs)
   }
 
   const auditLine = (line: Record<string, unknown>): void => {
@@ -1123,8 +1135,6 @@ export function createTermManager(config: DenConfig, deps: TermManagerDeps): Ter
     }
   }
 
-  const restStartMs = (r: PtyRecord): number => Math.max(0, r.injectNextAtMs - now())
-
   const nextInjectTurn = (r: PtyRecord): number => {
     r.injectSeq = (r.injectSeq ?? 0) + 1
     return r.injectSeq
@@ -1144,9 +1154,7 @@ export function createTermManager(config: DenConfig, deps: TermManagerDeps): Ter
     const rest = r.injectRest
     r.injectRest = undefined
     if (!rest || rest.length === 0) return
-    const startMs = restStartMs(r)
-    rest.forEach((d, i) => submitWrite(r, d.text, d.submit, startMs + i * submitDelayMs * 2))
-    r.injectNextAtMs = now() + startMs + rest.length * submitDelayMs * 2
+    rest.forEach((d) => injectWrite(r, d.text, d.submit, d.interrupt))
   }
 
   const recordUnconfirmed = (r: PtyRecord, turn: number, reason: string): void => {
@@ -1215,14 +1223,12 @@ export function createTermManager(config: DenConfig, deps: TermManagerDeps): Ter
       return
     }
     if (!canConfirmInject(r)) {
-      pending.forEach((d, i) => submitWrite(r, d.text, d.submit, i * submitDelayMs * 2))
-      r.injectNextAtMs = now() + pending.length * submitDelayMs * 2
+      pending.forEach((d) => injectWrite(r, d.text, d.submit, d.interrupt))
       return
     }
     const [first, ...rest] = pending
     r.injectRest = rest
-    submitWrite(r, first.text, first.submit, 0)
-    r.injectNextAtMs = now() + (first.submit ? submitDelayMs * 2 : submitDelayMs)
+    injectWrite(r, first.text, first.submit, first.interrupt)
     if (!first.submit) {
       flushRest(r)
       return
@@ -2628,7 +2634,7 @@ export function createTermManager(config: DenConfig, deps: TermManagerDeps): Ter
         if (r.confirmTurn !== undefined) {
           r.injectRest = r.injectRest ?? []
           if (r.injectRest.length >= INJECT_BUFFER_MAX) return false
-          r.injectRest.push({ text, submit })
+          r.injectRest.push({ text, submit, interrupt })
           return true
         }
         // Re-check immediately before writing — a release can race a ready inject.
@@ -2636,23 +2642,13 @@ export function createTermManager(config: DenConfig, deps: TermManagerDeps): Ter
         // Serialize against any in-flight turn so paste/CR pairs never
         // interleave (paste₁, paste₂, CR₁, CR₂) when two injects land within
         // one submit delay — parallel API clients or a UI without a send lock.
-        let startMs = Math.max(0, r.injectNextAtMs - now())
-        if (interrupt) {
-          // Esc respects the serialization watermark: landing between a prior
-          // turn's paste and its CR would wipe that turn's input (the TUI
-          // clears its composer on Esc) and the CR would submit nothing
-          // (grok review, PR #338). After the chain: cancel, settle, paste.
-          laterWrite(r, INTERRUPT_ESC, startMs)
-          startMs += INTERRUPT_SETTLE_MS
-        }
-        submitWrite(r, text, submit, startMs)
-        r.injectNextAtMs = now() + startMs + (submit ? submitDelayMs * 2 : submitDelayMs)
+        injectWrite(r, text, submit, interrupt)
         return true
       }
       // Bounded buffer: a client can't grow memory by spamming inject before
       // the harness is ready (#316 review).
       if (r.injectBuffer.length >= INJECT_BUFFER_MAX) return false
-      r.injectBuffer.push({ text, submit })
+      r.injectBuffer.push({ text, submit, interrupt })
       armCeiling(r)
       return true
     },

@@ -365,8 +365,9 @@ export abstract class PtyHarnessDriver<S extends HarnessStoreHost = HarnessStore
   /**
    * Pre-send blocking-dialog gate. Default off. Only a subclass whose screens
    * are fixtured (Claude Code) opts in — a false positive 409s every send.
-   * The only bypass is `UserTurn.bypassDialogGate`, set by the user's inject
-   * button, never by an automatic retry.
+   * `UserTurn.bypassDialogGate` is the user's inject button, never an
+   * automatic retry. A bypass still reads the screen: a detected dialog is
+   * dismissed with Esc before the paste, and no dialog pastes normally.
    */
   protected dialogGate = false
 
@@ -707,14 +708,17 @@ export abstract class PtyHarnessDriver<S extends HarnessStoreHost = HarnessStore
       // receive the paste, and a fresh spawn's first capture can predate the
       // first paint — a startup dialog, or an early digit+Enter that selects
       // a menu option, can still race through. The dead-PTY retry below
-      // re-checks; it does not close this window. The user's inject button
-      // sets bypassDialogGate; automatic retries must not.
+      // re-checks; it does not close this window.
+      // bypassDialogGate is the user's inject button; automatic retries must
+      // not set it. The bypass still reads. A detected dialog is dismissed
+      // with Esc (the footer's cancel) before the paste, so the turn cannot
+      // confirm the highlighted option. No dialog: a normal paste. Passing
+      // `undefined` (not false) keeps the recorded interrupt flag absent on
+      // the ordinary path.
       const bypassDialogGate = turn.bypassDialogGate === true
-      if (!bypassDialogGate) {
-        const dialog = await this.openDialog(native)
-        if (dialog) throw dialogRejection(dialog)
-      }
-      if (!pty.inject(ptyId, injected, true)) {
+      const dialog = await this.openDialog(native)
+      if (dialog && !bypassDialogGate) throw dialogRejection(dialog)
+      if (!pty.inject(ptyId, injected, true, dialog ? true : undefined)) {
         // The term manager keeps its session→pty mapping until the EXITED
         // record is reaped (exitLingerMs), so a harness that just died still
         // resolves to a pty that refuses writes. Answering
@@ -724,11 +728,9 @@ export abstract class PtyHarnessDriver<S extends HarnessStoreHost = HarnessStore
         // once more. Re-check the pane first: a dialog may have painted
         // between the pre-send snapshot and this retry.
         ptyId = await this.spawnFor(pty, native, true)
-        if (!bypassDialogGate) {
-          const retryDialog = await this.openDialog(native)
-          if (retryDialog) throw dialogRejection(retryDialog)
-        }
-        if (!pty.inject(ptyId, injected, true)) {
+        const retryDialog = await this.openDialog(native)
+        if (retryDialog && !bypassDialogGate) throw dialogRejection(retryDialog)
+        if (!pty.inject(ptyId, injected, true, retryDialog ? true : undefined)) {
           // A live-but-unwritable harness means its pre-ready inject buffer is
           // full — genuinely transient, so say so instead of 501.
           throw new HarnessError(
@@ -1496,11 +1498,12 @@ export abstract class PtyHarnessDriver<S extends HarnessStoreHost = HarnessStore
 
   /**
    * Screen read before a paste. Off unless `dialogGate` is set — only Claude
-   * Code screens are validated, and a false positive 409s every send. The
-   * user's inject sets `bypassDialogGate` and `sendUserTurn` skips this read;
-   * automatic retries do not. Fails open: no `screen` dep, a capture error,
-   * or an empty screen all mean "no dialog", so a flaky capture can never
-   * block chat.
+   * Code screens are validated, and a false positive 409s every send.
+   * `sendUserTurn` always calls this, including when `bypassDialogGate` is
+   * set: a detected dialog is then dismissed with Esc instead of rejected,
+   * and a miss pastes normally. Automatic retries do not set the flag.
+   * Fails open: no `screen` dep, a capture error, or an empty screen all
+   * mean "no dialog", so a flaky capture can never block chat.
    *
    * `resolveApproval` and `answerPrompt` intentionally bypass this gate. They
    * write the answer with `injectKeys` (a typed prompt answer uses `pty.inject`)

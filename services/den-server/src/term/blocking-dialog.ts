@@ -15,16 +15,17 @@
  * nothing after the footer except separators, an empty input box, or the
  * composer status line. Unknown screens return undefined (fail open).
  *
- * The permission prompt and the AskUserQuestion picker replace the composer
- * in the captures, but a live pane still has the composer tail under them.
- * An empty `❯` between the footer and the status chrome is that tail — the
- * same shape a reply has when it quotes a menu. A menu above it matches when
- * a box-drawing rule frames the options (bounded walk: stop at the first
- * blank above the question block, or 8 lines) or a question line sits in the
- * option block's own body before any blank. Permission and AskUserQuestion
- * have no box rule; the question line is what keeps them. A quote is split
- * from the menu by a blank, so it does not match. A quote that copies the
- * rule is not distinguishable from the live dialog.
+ * The permission prompt and the AskUserQuestion picker replace the composer:
+ * those captures have no empty `❯` between the footer and the bottom of the
+ * screen, so the menu matches without a box rule. A menu above a still-present
+ * composer (an empty `❯` between the footer and the status chrome) matches
+ * only when a box-drawing rule frames the options. The walk climbs blank
+ * lines and indented dialog body until that rule, or until a line that cannot
+ * be dialog body — an assistant `●` / `⏺` bullet, an unindented non-rule
+ * line, or the top of the screen — with a 40-line safety cap. A quoted menu
+ * (question, options, and footer) above the live composer has no rule, so it
+ * does not match. A quote that also copies the rule is not distinguishable
+ * from the live dialog.
  */
 
 import { screenLines } from './permission-prompt.js'
@@ -69,16 +70,10 @@ function rejectingTailLine(lines: string[], footerIdx: number): string | undefin
   return undefined
 }
 
-/** How far above the options a framing rule may sit. */
-const RULE_WALK_LIMIT = 8
-
-/** Dialog question (`Do you want to proceed?`, `Which color would you like?`).
- *  A `●` reply that quotes a question is not one. */
-function isQuestionLine(line: string): boolean {
-  const text = line.trim()
-  if (!text.endsWith('?') || text.length > 160) return false
-  return !/^[●○]/.test(text)
-}
+/** Safety cap on the upward rule walk. The stop is structural; this only
+ *  bounds a pathological screen so a rule copied far up scrollback cannot
+ *  frame a menu. */
+const RULE_WALK_CAP = 40
 
 /** Empty `❯` between the footer and the status chrome. A dialog that replaced
  *  the composer has no such input, so the gate does not also demand a frame. */
@@ -91,50 +86,30 @@ function composerBetweenFooterAndChrome(lines: string[], footerIdx: number): boo
   return false
 }
 
-/** Question line in the option block's own body, before any blank.
- *  Permission and AskUserQuestion have no box rule; the question sits on
- *  the options. A quoted menu is separated from its prose by a blank. */
-function questionDirectlyAbove(lines: string[], firstOptionIdx: number): boolean {
-  for (let i = firstOptionIdx - 1; i >= 0; i--) {
-    const line = lines[i]
-    if (/^\s*$/.test(line)) return false
-    if (isQuestionLine(line)) return true
-    if (OPTION_LINE.test(line) || isWrap(line) || SEPARATOR.test(line)) continue
-    return false
-  }
-  return false
+/** Assistant reply marker. A quoted menu sits under one; a live dialog body does not. */
+function isAssistantBullet(line: string): boolean {
+  return /^\s*[●⏺○]/.test(line)
 }
 
-/** Box rule above the options. Stops at the first blank above the question
- *  block (the next line must be the rule) or after RULE_WALK_LIMIT lines, so
- *  a rule copied into scrollback does not match. Option rows are skipped so
- *  a stale `❯` inside the frame does not hide the rule. */
+/** Blank line or indented dialog body (question, explanation, wrap, stale
+ *  option row). An assistant bullet or an unindented non-rule line is not. */
+function isDialogBodyLine(line: string): boolean {
+  if (/^\s*$/.test(line)) return true
+  if (isAssistantBullet(line)) return false
+  if (SEPARATOR.test(line)) return false
+  return /^\s+\S/.test(line)
+}
+
+/** Box rule above the options. Climbs blank lines and indented body until the
+ *  rule (match) or a line that cannot be dialog body (miss). */
 function dialogRuleAbove(lines: string[], firstOptionIdx: number): boolean {
-  let seenTitle = false
   let steps = 0
-  const step = (): boolean => {
-    steps += 1
-    return steps <= RULE_WALK_LIMIT
-  }
   for (let i = firstOptionIdx - 1; i >= 0; i--) {
-    if (!step()) return false
+    steps += 1
+    if (steps > RULE_WALK_CAP) return false
     const line = lines[i]
-    if (/^\s*$/.test(line)) {
-      if (!seenTitle) continue
-      for (let j = i - 1; j >= 0; j--) {
-        if (!step()) return false
-        const above = lines[j]
-        if (/^\s*$/.test(above)) return false
-        return DIALOG_RULE.test(above)
-      }
-      return false
-    }
     if (DIALOG_RULE.test(line)) return true
-    if (isQuestionLine(line)) {
-      seenTitle = true
-      continue
-    }
-    if (isWrap(line) || OPTION_LINE.test(line)) continue
+    if (isDialogBodyLine(line)) continue
     return false
   }
   return false
@@ -256,13 +231,9 @@ export function parseBlockingDialog(screen: string): BlockingDialog | undefined 
     return undefined
   }
 
-  if (
-    composerBetweenFooterAndChrome(lines, footerIdx) &&
-    !dialogRuleAbove(lines, firstOptionIdx) &&
-    !questionDirectlyAbove(lines, firstOptionIdx)
-  ) {
+  if (composerBetweenFooterAndChrome(lines, footerIdx) && !dialogRuleAbove(lines, firstOptionIdx)) {
     console.debug(
-      '[den-server] blocking-dialog: footer matched above a live input box but no dialog rule or question line frames the menu; gate fail-open',
+      '[den-server] blocking-dialog: footer matched above a live input box but no dialog rule frames the menu; gate fail-open',
     )
     return undefined
   }

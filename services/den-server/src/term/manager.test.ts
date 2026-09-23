@@ -707,6 +707,21 @@ describe('term manager', () => {
     expect(procs[0].writes).toEqual(['\x1b', '\x1b[200~do this instead\x1b[201~', '\r'])
   })
 
+  it('preserves Esc before a paste buffered until the harness is ready', () => {
+    vi.useFakeTimers()
+    const { manager, procs } = makeManager({ injectReadyMs: 10, injectSubmitDelayMs: 80 })
+    const pty = manager.spawn('claude', 80, 24, '', 'chat-buffer-cancel')
+    expect(manager.inject(pty.id, 'hello', true, true)).toBe(true)
+    expect(procs[0].writes).toEqual([])
+    procs[0].emitData('permission dialog')
+    vi.advanceTimersByTime(10)
+    expect(procs[0].writes).toEqual(['\x1b'])
+    vi.advanceTimersByTime(400)
+    expect(procs[0].writes).toEqual(['\x1b', '\x1b[200~hello\x1b[201~'])
+    vi.advanceTimersByTime(80)
+    expect(procs[0].writes).toEqual(['\x1b', '\x1b[200~hello\x1b[201~', '\r'])
+  })
+
   it('interrupt inject queues its Esc behind a prior turn in flight (grok review #338)', () => {
     vi.useFakeTimers()
     const { manager, procs } = makeManager({ injectReadyMs: 10, injectSubmitDelayMs: 80 })
@@ -3038,6 +3053,32 @@ describe('term manager (herdr mux)', () => {
     vi.advanceTimersByTime(400)
     expect(procs[0].writes).toEqual([pasteOf('one'), '\r', pasteOf('two'), '\r'])
   })
+
+  it.each([false, true])(
+    'preserves buffered Esc during first-turn confirmation (already ready: %s)',
+    (alreadyReady) => {
+      vi.useFakeTimers()
+      const { manager, procs, ctl } = herdrInject()
+      const pty = manager.spawn('claude', 80, 24, '', uuid)
+      expect(manager.inject(pty.id, 'one', true)).toBe(true)
+      if (!alreadyReady) expect(manager.inject(pty.id, 'two', true, true)).toBe(true)
+      ctl.emit?.({
+        event: 'pane.agent_status_changed',
+        data: { pane_id: 'w1:p1', agent: 'claude', agent_status: 'idle' },
+      })
+      if (alreadyReady) expect(manager.inject(pty.id, 'two', true, true)).toBe(true)
+      ctl.emit?.({
+        event: 'pane.agent_status_changed',
+        data: { pane_id: 'w1:p1', agent: 'claude', agent_status: 'working' },
+      })
+      vi.advanceTimersByTime(160)
+      expect(procs[0].writes).toEqual([pasteOf('one'), '\r', '\x1b'])
+      vi.advanceTimersByTime(400)
+      expect(procs[0].writes).toEqual([pasteOf('one'), '\r', '\x1b', pasteOf('two')])
+      vi.advanceTimersByTime(80)
+      expect(procs[0].writes).toEqual([pasteOf('one'), '\r', '\x1b', pasteOf('two'), '\r'])
+    },
+  )
 
   it('later buffered turns flush after the confirm window elapses without working', () => {
     vi.useFakeTimers()

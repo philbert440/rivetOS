@@ -10,7 +10,11 @@ import type { DenConfig } from './config.js'
 import { baseTestDenConfig, emptyTls } from './test-config.js'
 import type { PtyProc } from './term/pty.js'
 import type { HerdrCtl, HerdrCreateOpts, HerdrSessionInfo } from './term/herdr.js'
-import { AUTO_MODE_DIALOG_SCREEN } from './term/tui-screen-fixtures.js'
+import {
+  AUTO_MODE_DIALOG_SCREEN,
+  CLAUDE_PERM_SCREEN,
+  IDLE_HARNESS_SCREEN,
+} from './term/tui-screen-fixtures.js'
 
 // Inspectable fake PTY for terminal/inject tests.
 const fakeProcs: FakeProc[] = []
@@ -598,8 +602,9 @@ describe('POST /term/inject (seamless modes 5c)', () => {
 
   // Herdr capture is what POST /term/inject's dialog gate reads. mux:none
   // returns an empty screen, so these cases cannot be pinned there.
-  function dialogHerdr(read: () => Promise<string>): HerdrCtl {
+  function dialogHerdr(read: () => Promise<string>): HerdrCtl & { emit(evt: unknown): void } {
     const sessions = new Map<string, HerdrSessionInfo>()
+    let onEvent: ((evt: unknown) => void) | undefined
     return {
       hasSession: (name) => sessions.has(name),
       killSession: (name) => {
@@ -619,7 +624,25 @@ describe('POST /term/inject (seamless modes 5c)', () => {
       },
       attachArgv: (name) => ['herdr', '--session', name],
       captureAsync: () => read(),
+      resolvePaneId: () => (sessions.size > 0 ? 'w1:p1' : undefined),
+      subscribeEvents: (_name, cb) => {
+        onEvent = cb
+        return () => {
+          if (onEvent === cb) onEvent = undefined
+        }
+      },
+      emit(evt) {
+        onEvent?.(evt)
+      },
     }
+  }
+
+  /** Herdr idle so the ready-gate flushes and inject bytes are observable. */
+  function markHarnessIdle(herdr: { emit(evt: unknown): void }): void {
+    herdr.emit({
+      event: 'pane.agent_status_changed',
+      data: { pane_id: 'w1:p1', agent: 'claude', agent_status: 'idle' },
+    })
   }
 
   const DIALOG_409 = {
@@ -631,14 +654,15 @@ describe('POST /term/inject (seamless modes 5c)', () => {
 
   async function spawnHarness(command: string, session: string, read: () => Promise<string>) {
     fakeProcs.length = 0
+    const herdr = dialogHerdr(read)
     const started = await start('', 60_000, {
       term: true,
       mux: 'herdr',
-      herdrCtl: dialogHerdr(read),
+      herdrCtl: herdr,
     })
     const spawn = await post(started.base, '/term', { command, session })
     expect(spawn.status).toBe(201)
-    return started
+    return { ...started, herdr }
   }
 
   it('409s a Claude session whose screen is a dialog, with no pane text on the wire', async () => {
@@ -651,7 +675,7 @@ describe('POST /term/inject (seamless modes 5c)', () => {
     expect(fakeProcs[0].writes).toEqual([])
   })
 
-  it('does not gate an interrupt inject or a bare-Enter submit', async () => {
+  it('does not gate an interrupt inject, bare-Enter submit, or partial paste', async () => {
     const { base } = await spawnHarness('claude', 'chat-exempt', () =>
       Promise.resolve(AUTO_MODE_DIALOG_SCREEN),
     )
@@ -665,6 +689,13 @@ describe('POST /term/inject (seamless modes 5c)', () => {
     const bareEnter = await post(base, '/term/inject', { session: 'chat-exempt', text: '' })
     expect(bareEnter.status).toBe(202)
     expect(await bareEnter.json()).toMatchObject({ ok: true })
+    const partial = await post(base, '/term/inject', {
+      session: 'chat-exempt',
+      text: 'partial',
+      submit: false,
+    })
+    expect(partial.status).toBe(202)
+    expect(await partial.json()).toMatchObject({ ok: true })
   })
 
   it('does not gate a non-Claude agent session showing the same screen', async () => {
@@ -685,10 +716,11 @@ describe('POST /term/inject (seamless modes 5c)', () => {
     expect(await inj.json()).toMatchObject({ ok: true })
   })
 
-  it('lets a forced manual inject pass the dialog gate', async () => {
-    const { base } = await spawnHarness('claude', 'chat-force', () =>
-      Promise.resolve(AUTO_MODE_DIALOG_SCREEN),
+  it('Esc-dismisses a live permission dialog before a forced inject and never selects option 1', async () => {
+    const { base, herdr } = await spawnHarness('claude', 'chat-force', () =>
+      Promise.resolve(CLAUDE_PERM_SCREEN),
     )
+    markHarnessIdle(herdr)
     const inj = await post(base, '/term/inject', {
       session: 'chat-force',
       text: 'hello',
@@ -696,6 +728,32 @@ describe('POST /term/inject (seamless modes 5c)', () => {
     })
     expect(inj.status).toBe(202)
     expect(await inj.json()).toMatchObject({ ok: true })
+    // Esc lands immediately; the paste waits out the interrupt settle.
+    expect(fakeProcs[0].writes).toEqual(['\x1b'])
+    await new Promise((r) => setTimeout(r, 700))
+    const writes = fakeProcs[0].writes
+    const esc = writes.indexOf('\x1b')
+    const paste = writes.indexOf('\x1b[200~hello\x1b[201~')
+    const cr = writes.indexOf('\r')
+    expect(esc).toBe(0)
+    expect(paste).toBeGreaterThan(esc)
+    expect(cr).toBeGreaterThan(paste)
+    expect(writes.some((w) => w === '1' || w === '\x1b[200~1\x1b[201~')).toBe(false)
+  })
+
+  it('pastes a forced inject normally when no dialog is on screen', async () => {
+    const { base, herdr } = await spawnHarness('claude', 'chat-idle-bypass', () =>
+      Promise.resolve(IDLE_HARNESS_SCREEN),
+    )
+    markHarnessIdle(herdr)
+    const inj = await post(base, '/term/inject', {
+      session: 'chat-idle-bypass',
+      text: 'hello',
+      bypassDialogGate: true,
+    })
+    expect(inj.status).toBe(202)
+    expect(fakeProcs[0].writes[0]).toBe('\x1b[200~hello\x1b[201~')
+    expect(fakeProcs[0].writes.some((w) => w === '\x1b')).toBe(false)
   })
 })
 
