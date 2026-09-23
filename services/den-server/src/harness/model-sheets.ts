@@ -194,12 +194,22 @@ export function applySheetOverride(
 }
 
 /**
+ * Claude Code's global config file: `~/.claude.json`, or
+ * `$CLAUDE_CONFIG_DIR/.claude.json` when set (non-empty after trim).
+ */
+export function claudeGlobalConfigPath(home: string, env: NodeJS.ProcessEnv = process.env): string {
+  const configDir = env.CLAUDE_CONFIG_DIR?.trim()
+  return configDir ? join(configDir, '.claude.json') : join(home, '.claude.json')
+}
+
+/**
  * Claude Code's model list. The base models (Opus/Sonnet/Haiku and their 1M
  * variants, Fable) are baked into the installed CLI version, so the static list
  * is the floor and no config file can drop below it. On top of that we merge
- * Claude Code's own `additionalModelOptionsCache` from `~/.claude.json`: the CLI
- * writes account-specific extras it advertises (a new model can appear before
- * this static list is bumped) and update-gated entries flagged `disabled`. The
+ * Claude Code's own `additionalModelOptionsCache` from `~/.claude.json`, or
+ * `$CLAUDE_CONFIG_DIR/.claude.json` when set: the CLI writes account-specific
+ * extras it advertises (a new model can appear before this static list is
+ * bumped) and update-gated entries flagged `disabled`. The
  * gated rows are skipped — never offered — so the picker cannot spawn a model
  * this install can't run. Cache rows whose id already exists in the base are
  * dropped; an unreadable file leaves the static list untouched.
@@ -212,6 +222,7 @@ export function applySheetOverride(
 export function claudeSheet(
   readJson: ReadJson = defaultReadJson,
   home: string = homedir(),
+  env: NodeJS.ProcessEnv = process.env,
 ): ModelSheet {
   const models: HarnessModelOption[] = [
     { id: 'fable', label: 'Fable 5.1', default: true },
@@ -222,7 +233,7 @@ export function claudeSheet(
     { id: 'opus[1m]', label: 'Opus 5 1M context' },
     { id: 'sonnet[1m]', label: 'Sonnet 5 1M context' },
   ]
-  for (const extra of claudeCacheModels(readJson, home)) {
+  for (const extra of claudeCacheModels(readJson, home, env)) {
     if (!models.some((m) => m.id === extra.id)) models.push(extra)
   }
   return {
@@ -235,16 +246,20 @@ export function claudeSheet(
 }
 
 /**
- * Non-`disabled` `additionalModelOptionsCache` rows from `~/.claude.json`,
- * mapped to model options. Efforts are left off so each inherits the sheet's
- * shared Claude effort set, exactly like the base rows. Malformed rows, gated
- * (`disabled`) rows, invalid ids, and duplicates are dropped; an unreadable or
- * unshaped file yields none.
+ * Non-`disabled` `additionalModelOptionsCache` rows from `~/.claude.json`, or
+ * `$CLAUDE_CONFIG_DIR/.claude.json` when set, mapped to model options. Efforts
+ * are left off so each inherits the sheet's shared Claude effort set, exactly
+ * like the base rows. Malformed rows, gated (`disabled`) rows, invalid ids, and
+ * duplicates are dropped; an unreadable or unshaped file yields none.
  */
-function claudeCacheModels(readJson: ReadJson, home: string): HarnessModelOption[] {
+function claudeCacheModels(
+  readJson: ReadJson,
+  home: string,
+  env: NodeJS.ProcessEnv,
+): HarnessModelOption[] {
   let raw: unknown
   try {
-    raw = readJson(join(home, '.claude.json'))
+    raw = readJson(claudeGlobalConfigPath(home, env))
   } catch {
     return []
   }

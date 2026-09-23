@@ -5,6 +5,7 @@ import { describe, expect, it } from 'vitest'
 import {
   appendModelEffortArgv,
   applySheetOverride,
+  claudeGlobalConfigPath,
   claudeSheet,
   codexSheet,
   EFFORT_TOKEN_RE,
@@ -109,6 +110,26 @@ describe('claudeSheet', () => {
     // The update-gated row is never offered.
     expect(sheet.models?.some((m) => m.id === 'cc-update-required-1')).toBe(false)
     expect(sheet.models?.find((m) => m.default)?.id).toBe('fable')
+  })
+
+  it('resolves the global config path from CLAUDE_CONFIG_DIR when set', () => {
+    expect(claudeGlobalConfigPath('/h', {})).toBe('/h/.claude.json')
+    expect(claudeGlobalConfigPath('/h', { CLAUDE_CONFIG_DIR: '/cfg' })).toBe('/cfg/.claude.json')
+    expect(claudeGlobalConfigPath('/h', { CLAUDE_CONFIG_DIR: '   ' })).toBe('/h/.claude.json')
+  })
+
+  it('merges cache rows from $CLAUDE_CONFIG_DIR/.claude.json when set', () => {
+    const paths: string[] = []
+    const sheet = claudeSheet(
+      (path) => {
+        paths.push(path)
+        return CLAUDE_JSON
+      },
+      '/h',
+      { CLAUDE_CONFIG_DIR: '/cfg' },
+    )
+    expect(paths).toEqual(['/cfg/.claude.json'])
+    expect(sheet.models?.map((m) => m.id)).toEqual([...BASE_CLAUDE_IDS, 'claude-fable-5-1[1m]'])
   })
 
   it('drops a cache row whose id already exists in the base list', () => {
