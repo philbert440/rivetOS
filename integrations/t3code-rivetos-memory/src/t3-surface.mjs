@@ -21,6 +21,9 @@
  * Closest working extension point today: register RivetOS MCP on the harness
  * T3 launches. Memories enter the thread only when the agent calls a tool —
  * there is no T3 context-injection hook to stub.
+ *
+ * Automatic write path is host-side: bin/t3code-memory-capture.sh polls
+ * ~/.t3/userdata/state.sqlite (not a T3 plugin hook).
  */
 
 export const T3_PLUGIN_NAME_PATTERN = /^[a-z0-9-]+$/

@@ -86,6 +86,12 @@ check('mcp-http.json has no headers', mcpHttp.mcpServers.rivetos.headers === und
 const pluginMeta = JSON.parse(fs.readFileSync(path.join(ROOT, 'plugin.json'), 'utf8'))
 check('plugin.json records no first-class API', pluginMeta.t3code.firstClassPluginApi === false)
 check('plugin.json records no context hooks', pluginMeta.t3code.contextInjectionHooks === false)
+check(
+  'plugin.json records automatic sqlite capture',
+  pluginMeta.t3code.capture?.automatic === true &&
+    pluginMeta.t3code.capture?.requiresToolCall === false &&
+    pluginMeta.t3code.capture?.sidecar === 'bin/t3code-memory-capture.sh',
+)
 
 const formatted = formatMemoriesAsContext('we decided on stdio MCP', 'how does T3 register?')
 check('context block has heading', formatted.startsWith('## RivetOS memory'))

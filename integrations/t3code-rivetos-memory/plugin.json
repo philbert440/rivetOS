@@ -23,6 +23,14 @@
       "type": "http",
       "path": "/mcp",
       "headers": false
+    },
+    "capture": {
+      "sidecar": "bin/t3code-memory-capture.sh",
+      "sqlite": "~/.t3/userdata/state.sqlite",
+      "automatic": true,
+      "requiresToolCall": false,
+      "agent": "rivet-t3",
+      "channel": "t3code"
     }
   }
 }

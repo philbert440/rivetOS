@@ -1,11 +1,13 @@
 # rivet-memory (T3 Code) — prototype
 
 Minimal pipe: a T3 Code thread talking to any harness (Claude, Codex, Grok,
-OpenCode, …) can call RivetOS memory tools on demand. This is **not** a
-production plugin and **not** Cursor-format Agent Plugin.
+OpenCode, …) can call RivetOS memory tools on demand, and a host-side sidecar
+automatically captures completed turns from T3's SQLite into RivetOS memory.
+This is **not** a production plugin and **not** Cursor-format Agent Plugin.
 
 The backend is the existing RivetOS MCP sidecar
-(`services/mcp-sidecar`). This folder only registers it.
+(`services/mcp-sidecar`). This folder registers it and ships the capture
+sidecar. Capture does **not** go through MCP tool calls.
 
 ## How registration works
 
@@ -101,17 +103,30 @@ See `src/tool-map.mjs` and `workspace-templates/MEMORY.md`.
    curl -sS http://127.0.0.1:5700/health/live
    ```
 
-5. In a T3 Claude (or other harness) thread, ask the agent to call
-   `memory_search` / `memory_browse`. That is the recall flow. T3 will not
-   inject memories by itself.
+5. Run the capture sidecar beside `t3 service` so completed turns land in
+   memory without a tool call (all T3 providers, one `rivet-t3` agent):
 
-6. Prove the client without T3:
+   ```bash
+   t3 service install
+   integrations/t3code-rivetos-memory/bin/t3code-memory-capture.sh --watch
+   ```
+
+   Details, cursor path, and schema-churn / WAL / 16K-cap risks:
+   `capture/README.md`.
+
+6. In a T3 Claude (or other harness) thread, ask the agent to call
+   `memory_search` / `memory_browse`. That is the recall flow. T3 will not
+   inject memories by itself. Automatic capture is the write path; MCP is
+   still the on-demand read path.
+
+7. Prove the client without T3:
 
    ```bash
    npm test --prefix integrations/t3code-rivetos-memory
    # or from the repo root:
    node integrations/t3code-rivetos-memory/test/smoke.test.mjs
    integrations/t3code-rivetos-memory/test/standalone.test.sh
+   node --experimental-strip-types integrations/t3code-rivetos-memory/capture/test/smoke.test.ts
    ```
 
    The smoke test always checks mapping, registration artifacts, and the
@@ -132,6 +147,9 @@ See `src/tool-map.mjs` and `workspace-templates/MEMORY.md`.
 | `RIVETOS_ENV_FILE` | Env file parsed (never sourced). Default `~/.rivetos/.env`. |
 | `MCP_HOST` / `MCP_PORT` | HTTP bind. Default `127.0.0.1:5700`. |
 | `RIVETOS_MCP_TOKEN` | Bearer for TCP. T3 plugin MCP URLs cannot send headers — leave unset for the HTTP prototype. |
+| `T3_STATE_SQLITE` / `T3_USERDATA` | Capture sqlite path. Default `~/.t3/userdata/state.sqlite`. |
+| `RIVETOS_T3CODE_STATE` | Capture cursor file. Default `~/.rivetos/t3code-capture-state.json`. |
+| `RIVETOS_CAPTURE_AGENT` | Capture agent name. Default `rivet-t3`. |
 
 ## Known gaps / blockers
 
@@ -143,16 +161,23 @@ See `src/tool-map.mjs` and `workspace-templates/MEMORY.md`.
 3. **HTTP `mcpUrl` merge is not shipped.** T3 injects only `t3-code` today.
    Extra HTTP servers work if you add them to the harness config yourself
    (Claude `type: "http"` is valid; T3 will load it via settingSources).
-4. **No capture.** Sibling kits (Claude, Codex, OpenCode) ingest sessions.
-   This prototype only proves recall/store/summarize mapping.
+4. **Capture is a host sidecar, not a T3 hook.** T3 has no session-idle
+   plugin event. `bin/t3code-memory-capture.sh --watch` polls
+   `~/.t3/userdata/state.sqlite` (read-only, WAL-aware) and upserts like
+   the OpenCode kit. See `capture/README.md` for schema-churn / WAL / 16K
+   risks. Harness-native capture (Claude hooks, Codex rollouts, OpenCode
+   db) is **optional enrichment** — not required.
 5. **Not wired into `rivetos plugins install`.** T3 is not a `HARNESS_IDS`
-   entry. Install is this setup script.
+   entry. Install is this setup script plus the capture sidecar.
 6. **Untested against a live T3 desktop** in this environment. The MCP
-   round-trip and registration artifacts are tested; T3 UI is not.
+   round-trip, registration artifacts, and a fixture SQLite capture path
+   are tested; T3 UI is not.
 7. **Claude `--mcp-config` is T3-owned.** T3 passes its preview server that
    way and still loads user MCP via settingSources. If a future T3 build
    set `strictMcpConfig` on normal sessions, user MCP would stop loading —
    that is a T3 change, not something this kit can paper over.
+8. **`memory_get_full` does not yet re-read T3 tables.** Truncated 16K
+   tails keep a sqlite pointer; opening the original row is a follow-up.
 
 ## Files
 
@@ -163,7 +188,9 @@ See `src/tool-map.mjs` and `workspace-templates/MEMORY.md`.
 | `mcp.json` / `mcp-http.json` | Stdio vs HTTP MCP fragments. |
 | `bin/rivet-memory-mcp.sh` | Stdio sidecar launcher. |
 | `bin/rivet-memory-mcp-http.sh` | HTTP sidecar launcher. |
-| `bin/setup-t3code-rivetos-memory.sh` | Print / apply / remove. |
+| `bin/setup-t3code-rivetos-memory.sh` | Print / apply / remove (MCP registration). |
+| `bin/t3code-memory-capture.sh` | Sidecar: poll T3 sqlite → RivetOS memory. |
+| `capture/` | Capture worker (`@rivetos/t3code-rivetos-memory-capture`). |
 | `src/recall-client.mjs` | `memory_search` → context block. |
 | `src/tool-map.mjs` | Informal names → real tools. |
 | `src/t3-surface.mjs` | Verified T3 capabilities. |

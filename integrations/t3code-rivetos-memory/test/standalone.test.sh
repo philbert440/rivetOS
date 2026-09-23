@@ -14,6 +14,8 @@ fail() { echo "not ok - $1" >&2; failed=$((failed + 1)); }
 bash -n "$KIT/bin/rivet-memory-mcp.sh" && pass "stdio launcher bash -n" || fail "stdio launcher bash -n"
 bash -n "$KIT/bin/rivet-memory-mcp-http.sh" && pass "http launcher bash -n" || fail "http launcher bash -n"
 bash -n "$KIT/bin/setup-t3code-rivetos-memory.sh" && pass "setup bash -n" || fail "setup bash -n"
+bash -n "$KIT/bin/t3code-memory-capture.sh" && pass "capture launcher bash -n" || fail "capture launcher bash -n"
+[ -x "$KIT/bin/t3code-memory-capture.sh" ] && pass "capture launcher is executable" || fail "capture launcher is executable"
 
 for f in plugin.json t3-plugin.json mcp.json mcp-http.json; do
   python3 -c "import json,sys; json.load(open(sys.argv[1]))" "$KIT/$f" \
@@ -40,7 +42,9 @@ headers="$(python3 -c "import json; print('headers' in json.load(open('$KIT/mcp-
 [ "$headers" = False ] && pass "mcp-http has no headers" || fail "mcp-http has no headers"
 
 if grep -R -n -E 'postgres://[^[:space:]]+:[^[:space:]]+@|sk-[A-Za-z0-9]|RIVETOS_CLOUD_TOKEN=.+' \
-  "$KIT/README.md" "$KIT/plugin.json" "$KIT/t3-plugin.json" "$KIT/mcp.json" "$KIT/mcp-http.json" >/dev/null; then
+  --exclude-dir=node_modules --exclude-dir=dist \
+  "$KIT/README.md" "$KIT/T3.md" "$KIT/plugin.json" "$KIT/t3-plugin.json" "$KIT/mcp.json" "$KIT/mcp-http.json" \
+  "$KIT/capture/README.md" "$KIT/capture/src" "$KIT/capture/test" "$KIT/bin" >/dev/null; then
   fail "kit files contain no hardcoded secrets"
 else
   pass "kit files contain no hardcoded secrets"
@@ -49,12 +53,16 @@ fi
 # setup --print must not touch HOME configs
 DUMMY="$(mktemp -d "${TMPDIR:-/tmp}/t3code-rivetos.XXXXXX")"
 trap 'rm -rf "$DUMMY"' EXIT
-if ! HOME="$DUMMY" CLAUDE_CONFIG_FILE="$DUMMY/missing.json" \
-  RIVETOS_ROOT="$REPO" bash "$KIT/bin/setup-t3code-rivetos-memory.sh" --print >/dev/null; then
-  fail "setup --print exits 0"
-else
+print_out="$(HOME="$DUMMY" CLAUDE_CONFIG_FILE="$DUMMY/missing.json" \
+  RIVETOS_ROOT="$REPO" bash "$KIT/bin/setup-t3code-rivetos-memory.sh" --print)" || print_out=""
+if [ -n "$print_out" ]; then
   pass "setup --print exits 0"
+else
+  fail "setup --print exits 0"
 fi
+printf '%s' "$print_out" | grep -q 't3code-memory-capture.sh --watch' \
+  && pass "setup --print documents capture sidecar" \
+  || fail "setup --print documents capture sidecar"
 if [ -e "$DUMMY/.claude.json" ] || [ -e "$DUMMY/.rivetos" ]; then
   fail "setup --print writes no home files"
 else
@@ -103,6 +111,12 @@ if [ -f "$REPO/services/mcp-sidecar/dist/cli.js" ]; then
 else
   pass "sidecar not built — skip checkout print (helpers still ran)"
 fi
+
+status_out="$(HOME="$DUMMY" RIVETOS_T3CODE_STATE="$DUMMY/t3code-capture-state.json" \
+  RIVETOS_ENV_FILE="$DUMMY/no.env" bash "$KIT/bin/t3code-memory-capture.sh" --status)" || true
+printf '%s' "$status_out" | grep -q 'lastIngestAt: never' \
+  && pass "capture --status prints cursor without PG" \
+  || fail "capture --status prints cursor without PG"
 
 # Shared path helper still exists (this kit sources it, does not copy it)
 [ -f "$SHARED/rivet-paths.sh" ] && pass "shared rivet-paths.sh present" || fail "shared rivet-paths.sh present"

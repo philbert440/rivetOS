@@ -3,9 +3,9 @@
   "version": "0.1.0",
   "private": true,
   "type": "module",
-  "description": "Prototype: expose RivetOS memory tools to T3 Code via harness MCP registration and a T3-shaped HTTP mcpUrl.",
+  "description": "Prototype: expose RivetOS memory tools to T3 Code via harness MCP registration, a T3-shaped HTTP mcpUrl, and automatic SQLite capture.",
   "license": "Apache-2.0",
   "scripts": {
-    "test": "node test/smoke.test.mjs && bash test/standalone.test.sh"
+    "test": "node test/smoke.test.mjs && bash test/standalone.test.sh && node --experimental-strip-types capture/test/smoke.test.ts"
   }
 }

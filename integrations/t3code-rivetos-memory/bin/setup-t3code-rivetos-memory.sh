@@ -6,6 +6,7 @@
 # writes the closest artifacts T3 / its harnesses can consume:
 #
 #   --print   (default)  Show Claude / Codex / OpenCode / T3-HTTP snippets
+#                        plus the host-side sqlite capture sidecar
 #   --apply              Write generated files under ~/.rivetos/t3code-rivetos-memory/
 #                        and merge mcpServers.rivetos into ~/.claude.json when
 #                        that file is missing or valid JSON
@@ -21,6 +22,7 @@ RIVETOS_ROOT="${RIVETOS_ROOT:-$(cd "$PLUGIN_DIR/../.." && pwd)}"
 PLUGIN_PATH="$RIVETOS_ROOT/integrations/t3code-rivetos-memory"
 LAUNCHER="$PLUGIN_PATH/bin/rivet-memory-mcp.sh"
 HTTP_LAUNCHER="$PLUGIN_PATH/bin/rivet-memory-mcp-http.sh"
+CAPTURE_LAUNCHER="$PLUGIN_PATH/bin/t3code-memory-capture.sh"
 MCP_HOST="${MCP_HOST:-127.0.0.1}"
 MCP_PORT="${MCP_PORT:-5700}"
 MCP_URL="http://${MCP_HOST}:${MCP_PORT}/mcp"
@@ -158,6 +160,22 @@ bash $HTTP_LAUNCHER
 EOF
 echo
 
+echo "=== 5. Automatic capture (run beside t3 service — not a T3 plugin) ==="
+cat <<EOF
+# T3 writes ~/.t3/userdata/state.sqlite (WAL). This sidecar opens it
+# read-only and upserts completed turns into RivetOS memory (all providers,
+# agent=rivet-t3). No memory_ingest_session tool call required.
+t3 service install
+bash $CAPTURE_LAUNCHER --watch
+# one-shot: bash $CAPTURE_LAUNCHER --backfill --days 14
+# status:   bash $CAPTURE_LAUNCHER --status
+# cursor:   ~/.rivetos/t3code-capture-state.json
+# risks:    $PLUGIN_PATH/capture/README.md (schema-churn / WAL / 16K cap)
+# Harness-native capture (Claude hooks, Codex rollouts, OpenCode db) is
+# optional enrichment only — not required for T3-wide ingest.
+EOF
+echo
+
 echo "=== Env (never commit secrets) ==="
 echo "Read from ~/.rivetos/.env or the process environment:"
 echo "  RIVETOS_PG_URL / RIVETOS_DATAHUB_URL   required for memory_* tools"
@@ -165,6 +183,9 @@ echo "  RIVETOS_EMBED_URL + RIVETOS_EMBED_MODEL  optional hybrid search"
 echo "  RIVETOS_MCP_ENABLE_MEMORY_WRITE=1        opt-in store (memory_append)"
 echo "  RIVETOS_ROOT                             RivetOS checkout (default /opt/rivetos)"
 echo "  MCP_HOST / MCP_PORT                      HTTP bind (default 127.0.0.1:5700)"
+echo "  T3_STATE_SQLITE / T3_USERDATA            capture sqlite (default ~/.t3/userdata/state.sqlite)"
+echo "  RIVETOS_T3CODE_STATE                     capture cursor (default ~/.rivetos/t3code-capture-state.json)"
+echo "  RIVETOS_CAPTURE_AGENT                    capture agent (default rivet-t3)"
 echo
 
 if [ "$DO_APPLY" -eq 1 ]; then

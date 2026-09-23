@@ -1,0 +1,25 @@
+{
+  "name": "@rivetos/t3code-rivetos-memory-capture",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Capture worker for the T3 Code rivet-memory prototype. Polls ~/.t3/userdata/state.sqlite (read-only, WAL-aware) and upserts completed turns into RivetOS memory under agent='rivet-t3'.",
+  "license": "Apache-2.0",
+  "main": "dist/t3code-memory-capture.js",
+  "bin": {
+    "t3code-rivetos-memory-capture": "dist/t3code-memory-capture.js"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc --noEmit -p tsconfig.json",
+    "test": "node --experimental-strip-types test/smoke.test.ts",
+    "clean": "rm -rf dist"
+  },
+  "dependencies": {
+    "pg": "^8.22.0"
+  },
+  "devDependencies": {
+    "@types/node": "^26.1.2",
+    "@types/pg": "^8.20.3"
+  }
+}
