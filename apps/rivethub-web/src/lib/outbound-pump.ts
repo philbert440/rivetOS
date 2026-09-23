@@ -19,9 +19,11 @@
  *     rejection never starts a turn, so that edge may never come — a bounded
  *     backoff (3s, then 6s, then 12s) retries anyway, cancelled by a real idle
  *     edge, a new send, or dispose. After TURN_RETRY_ATTEMPTS the user's
- *     inject button is the manual retry: that send sets bypassDialogGate so
- *     a copied-rule false positive can go through. Automatic retries never
- *     set it. Interrupt (Esc a busy turn) is separate and is not the bypass.
+ *     inject button is the manual retry: that send sets bypassDialogGate.
+ *     The server still reads the screen — a live dialog is dismissed with
+ *     Esc before the paste; a copied-rule false positive also receives Esc.
+ *     With no detected dialog, it pastes normally. Automatic retries never
+ *     set the flag. Interrupt (Esc a busy turn) is separate and is not the bypass.
  *   - **`turn_undelivered`.** den accepted the inject but the harness never
  *     took it. The pump keeps the last accepted item and `onUndelivered()`
  *     puts it back as failed only for the matching per-attempt delivery ID.
