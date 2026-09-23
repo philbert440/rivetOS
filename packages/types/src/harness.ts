@@ -68,6 +68,15 @@ export type HarnessCapabilities = {
   listSessions: boolean
   /** Native per-turn model/effort settings (not CLI spawn flags). */
   turnOptions?: boolean
+  /**
+   * The harness honors its `modelFlag` at LAUNCH: a model chosen before the
+   * conversation's first spawn is what the session runs for its life (the
+   * spawn-time twin of `turnOptions`, which switches per turn after launch).
+   * A harness may declare both. UIs gate the pre-spawn model picker on this
+   * explicit flag — never inferred from `models` + `modelFlag` (#814). The
+   * den still validates any `POST /term` model against the sheet either way.
+   */
+  launchModel?: boolean
   /** Structured staged image inputs. */
   imageAttachments?: boolean
   /**
@@ -368,6 +377,14 @@ export type UserTurn = {
    * Callers must cap at `SYSTEM_PROMPT_MAX_CHARS`.
    */
   systemPrompt?: string
+  /**
+   * User-initiated inject/retry only — never an automatic queue retry. The
+   * server still reads the screen. A detected dialog is dismissed with Esc
+   * before the paste, so the turn cannot confirm the highlighted option. No
+   * dialog: a normal paste. A copied-rule false positive also receives Esc
+   * before the paste.
+   */
+  bypassDialogGate?: boolean
 }
 
 /**

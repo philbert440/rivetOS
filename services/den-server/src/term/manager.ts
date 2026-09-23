@@ -48,7 +48,7 @@ import {
 } from 'node:fs'
 import { homedir, hostname } from 'node:os'
 import { randomBytes } from 'node:crypto'
-import { join, resolve } from 'node:path'
+import { basename, join, resolve } from 'node:path'
 import type { DenConfig } from '../config.js'
 import {
   appendModelEffortArgv,
@@ -63,7 +63,7 @@ import {
   type ContextSource,
 } from './context-window.js'
 import type { PtyProc, PtySpawn } from './pty.js'
-import type { TermRoster } from './roster.js'
+import { builtinRosterArgv0, type TermRoster } from './roster.js'
 import {
   classifyExistingTmuxSession,
   createRealTmuxCtl,
@@ -97,12 +97,12 @@ import {
   herdrEventNamedAgent,
   herdrEventPaneId,
   herdrEventTimestamp,
-  herdrKindForCommand,
   herdrPaneAgentLive,
   herdrStatusToFrame,
   herdrSessionName,
   herdrSupported,
-  herdrUseAgent,
+  herdrSweepRetains,
+  resolveHerdrAgentPane,
   HerdrCommandError,
   HerdrUnavailableError,
   type HerdrCreateOpts,
@@ -270,7 +270,7 @@ interface PtyRecord {
    *  agent-idle, else output quiescence of injectReadyMs, else injectReadyMaxMs
    *  ceiling), then flush — so the FIRST chat turn to a fresh harness lands. */
   ready: boolean
-  injectBuffer: { text: string; submit: boolean }[]
+  injectBuffer: { text: string; submit: boolean; interrupt?: boolean }[]
   readyTimer?: NodeJS.Timeout
   readyCeilingTimer?: NodeJS.Timeout
   confirmTimer?: NodeJS.Timeout
@@ -314,7 +314,7 @@ interface PtyRecord {
   probeBackoffTimer?: NodeJS.Timeout
   /** Fires after harnessEndedGraceMs while agentEnded stays set. */
   endedGraceTimer?: NodeJS.Timeout
-  injectRest?: { text: string; submit: boolean }[]
+  injectRest?: { text: string; submit: boolean; interrupt?: boolean }[]
   /** Ordinal of the in-flight first-flush turn waiting for a `working` frame. */
   confirmTurn?: number
   /** Monotonic ordinal of flushed/dropped inject turns (never the text). */
@@ -712,6 +712,18 @@ export function createTermManager(config: DenConfig, deps: TermManagerDeps): Ter
     if (submit) laterWrite(r, SUBMIT_CR, startMs + submitDelayMs)
   }
 
+  /** Preserve cancel-before-paste through both ready and buffered sends. */
+  const injectWrite = (r: PtyRecord, text: string, submit: boolean, interrupt = false): void => {
+    let startMs = Math.max(0, r.injectNextAtMs - now())
+    if (interrupt) {
+      // Never put Esc between an earlier paste and its Enter.
+      laterWrite(r, INTERRUPT_ESC, startMs)
+      startMs += INTERRUPT_SETTLE_MS
+    }
+    submitWrite(r, text, submit, startMs)
+    r.injectNextAtMs = now() + startMs + (submit ? submitDelayMs * 2 : submitDelayMs)
+  }
+
   const auditLine = (line: Record<string, unknown>): void => {
     try {
       appendFileSync(auditFile, JSON.stringify(line) + '\n')
@@ -876,7 +888,9 @@ export function createTermManager(config: DenConfig, deps: TermManagerDeps): Ter
     const ctl = muxCtl
     sweepTimer = setInterval(
       () => {
-        let sessions: TmuxSessionInfo[]
+        // Herdr rows carry `@rivet_agent_pane`; tmux rows do not. The optional
+        // field keeps the stamp visible to the retain check below.
+        let sessions: Array<TmuxSessionInfo & { agentPane?: '1' | '0' }>
         try {
           sessions = ctl.listSessions()
         } catch (e) {
@@ -892,6 +906,26 @@ export function createTermManager(config: DenConfig, deps: TermManagerDeps): Ter
         // sessions den didn't create in this process (restart survivors):
         // track first sighting so GC eligibility runs from then, never from
         // before den was even up.
+        // Restart survivors carry the roster KEY in @rivet_command, and herdr
+        // rows carry @rivet_agent_pane when this den stamped it. Retain via
+        // herdrSweepRetains, not the reattach helper: the stamp wins; an
+        // unstamped survivor is kept when the tag is a kind OR the roster
+        // entry's argv0 is a kind. Reattach is stricter — a kind key whose
+        // argv0 is a path or wrapper stays plain — and the sweep may keep a
+        // superset, which only subscribes to status. Entry removed: only the
+        // tag is consulted. Once per tick — roster() stats the file on every
+        // call. A throwing provider must not kill the interval; list/GC still
+        // run, and retain falls back to the tag.
+        let sweepRoster: TermRoster | undefined
+        if (herdr) {
+          try {
+            sweepRoster = deps.roster()
+          } catch (e) {
+            deps.log(
+              `[den-server] term: session sweep roster failed (${String(e)}) — retaining by tag only`,
+            )
+          }
+        }
         for (const s of sessions) {
           if (!knownTmux.has(s.name)) {
             knownTmux.set(s.name, {
@@ -902,7 +936,21 @@ export function createTermManager(config: DenConfig, deps: TermManagerDeps): Ter
               firstSeenTs: now(),
               endSent: false,
             })
-            if (herdr && herdrKindForCommand(s.command || '')) {
+            // Own property only — a tag like `constructor` must not walk
+            // Object.prototype and throw out of this timer.
+            const entry =
+              s.command && sweepRoster && Object.hasOwn(sweepRoster.commands, s.command)
+                ? sweepRoster.commands[s.command]
+                : undefined
+            const entryArgv0 = entry?.cmd[0]
+            if (
+              herdr &&
+              herdrSweepRetains({
+                stamp: s.agentPane,
+                tag: s.command,
+                entryArgv0,
+              })
+            ) {
               statusHub?.retain(s.name, denKeyOf(s))
             }
           }
@@ -1123,8 +1171,6 @@ export function createTermManager(config: DenConfig, deps: TermManagerDeps): Ter
     }
   }
 
-  const restStartMs = (r: PtyRecord): number => Math.max(0, r.injectNextAtMs - now())
-
   const nextInjectTurn = (r: PtyRecord): number => {
     r.injectSeq = (r.injectSeq ?? 0) + 1
     return r.injectSeq
@@ -1144,9 +1190,7 @@ export function createTermManager(config: DenConfig, deps: TermManagerDeps): Ter
     const rest = r.injectRest
     r.injectRest = undefined
     if (!rest || rest.length === 0) return
-    const startMs = restStartMs(r)
-    rest.forEach((d, i) => submitWrite(r, d.text, d.submit, startMs + i * submitDelayMs * 2))
-    r.injectNextAtMs = now() + startMs + rest.length * submitDelayMs * 2
+    rest.forEach((d) => injectWrite(r, d.text, d.submit, d.interrupt))
   }
 
   const recordUnconfirmed = (r: PtyRecord, turn: number, reason: string): void => {
@@ -1215,14 +1259,12 @@ export function createTermManager(config: DenConfig, deps: TermManagerDeps): Ter
       return
     }
     if (!canConfirmInject(r)) {
-      pending.forEach((d, i) => submitWrite(r, d.text, d.submit, i * submitDelayMs * 2))
-      r.injectNextAtMs = now() + pending.length * submitDelayMs * 2
+      pending.forEach((d) => injectWrite(r, d.text, d.submit, d.interrupt))
       return
     }
     const [first, ...rest] = pending
     r.injectRest = rest
-    submitWrite(r, first.text, first.submit, 0)
-    r.injectNextAtMs = now() + (first.submit ? submitDelayMs * 2 : submitDelayMs)
+    injectWrite(r, first.text, first.submit, first.interrupt)
     if (!first.submit) {
       flushRest(r)
       return
@@ -1894,7 +1936,10 @@ export function createTermManager(config: DenConfig, deps: TermManagerDeps): Ter
       /** `@rivet_command` on the taken-over session, captured before adopt
        *  stamps a missing tag with the request key. */
       let persistedTag = ''
-      const takeExisting = (s: TmuxSessionInfo): void => {
+      /** `@rivet_agent_pane` (`1`/`0`) captured before adopt. Absent on
+       *  sessions created before the stamp existed. */
+      let persistedAgentPane: '1' | '0' | undefined
+      const takeExisting = (s: TmuxSessionInfo & { agentPane?: '1' | '0' }): void => {
         const d = herdr
           ? classifyExistingHerdrSession(s, routedUser)
           : classifyExistingTmuxSession(s, routedUser)
@@ -1912,6 +1957,7 @@ export function createTermManager(config: DenConfig, deps: TermManagerDeps): Ter
         // `s.command` on setOption, and a pre-fix untagged session must
         // keep today's behaviour (request key).
         persistedTag = s.command
+        persistedAgentPane = s.agentPane
         if (d === 'adopt' && muxCtl) {
           // Classify already refuses non-owner adopt; keep the guard here so
           // a stub/mis-classified row cannot stamp a routed identity.
@@ -1922,6 +1968,19 @@ export function createTermManager(config: DenConfig, deps: TermManagerDeps): Ter
             )
           muxCtl.setOption?.(s.name, '@rivet_command', s.command || key)
           muxCtl.setOption?.(s.name, '@rivet_user', 'owner')
+          // No prior stamp. Persist the same decision reattach makes — the
+          // pre-change rule herdrUseAgent(herdrKindForCommand(key), argv0) —
+          // so a later reattach trusts the stamp instead of a different
+          // request key. Herdr only. This path keeps argv at entry.cmd, so
+          // the stamp matches paneDecision below.
+          if (herdr) {
+            const adoptPane = resolveHerdrAgentPane({
+              argv0: entry.cmd[0] ?? '',
+              persisted: true,
+              legacyKey: key,
+            })
+            muxCtl.setOption?.(s.name, '@rivet_agent_pane', adoptPane.agentPane ? '1' : '0')
+          }
           if (!adoptedTmux.has(s.name)) {
             adoptedTmux.add(s.name)
             deps.log(`[den-server] term: adopted untagged tmux session ${s.name} (pre-fix create)`)
@@ -2057,7 +2116,27 @@ export function createTermManager(config: DenConfig, deps: TermManagerDeps): Ter
       // Model/effort flags only on CREATE — a reattach must not rewrite a
       // running harness's argv.
       if (!persisted) {
-        const sheet = deps.modelSheetFor?.(key) ?? sheetForRosterCommand(key, config.harnesses)
+        // deps.modelSheetFor is the test/DI seam and keeps the old resolution.
+        // Otherwise flags are appended only when this key still runs its
+        // built-in program (basename of argv[0]; extra args still count).
+        // A key with no built-in entry gets no sheet, as before. Den-wide
+        // harness identity (ROSTER_TO_HARNESS in server.ts and elsewhere) is
+        // a separate design — do not change those call sites from here.
+        let sheet: ModelSheet | undefined
+        if (deps.modelSheetFor) {
+          sheet = deps.modelSheetFor(key) ?? sheetForRosterCommand(key, config.harnesses)
+        } else {
+          const builtinArgv0 = builtinRosterArgv0(key)
+          const sameProgram =
+            builtinArgv0 !== undefined && basename(entry.cmd[0]) === basename(builtinArgv0)
+          if (sameProgram) {
+            sheet = sheetForRosterCommand(key, config.harnesses)
+          } else if (builtinArgv0 !== undefined) {
+            deps.log(
+              `[den-server] term: roster key ${key}: model/effort flags were skipped because the entry's command is not the built-in one`,
+            )
+          }
+        }
         argv = appendModelEffortArgv(argv, sheet, model, effort, deps.log)
         if (session) argv = deps.harnessArgv?.(key, session, argv) ?? argv
       }
@@ -2148,6 +2227,19 @@ export function createTermManager(config: DenConfig, deps: TermManagerDeps): Ter
           // keep the caller's size
         }
       }
+      // Fresh create: kind and agent-pane from argv[0]. Persisted reattach:
+      // trust @rivet_agent_pane when this den stamped it; a session from an
+      // older den has no stamp and keeps the pre-change rule
+      // herdrUseAgent(herdrKindForCommand(key), argv[0]). A kind key whose
+      // entry now runs a path or wrapper is not probed and ended, and a
+      // renamed-key plain pane stays plain. The sweep uses herdrSweepRetains
+      // (a superset) so the two decisions do not share one helper.
+      const paneDecision = resolveHerdrAgentPane({
+        argv0: argv[0] ?? '',
+        persisted,
+        stamp: persistedAgentPane,
+        legacyKey: key,
+      })
       let herdrPendingCreate: HerdrCreateOpts | undefined
       if (herdr && tmuxName) {
         if (!persisted) {
@@ -2161,7 +2253,8 @@ export function createTermManager(config: DenConfig, deps: TermManagerDeps): Ter
             argv,
             env: herdrEnv,
             cwd,
-            kind: herdrKindForCommand(key),
+            kind: paneDecision.kind,
+            agentPane: paneDecision.agentPane,
             command: key,
             user: routedUser ?? 'owner',
             cols,
@@ -2300,7 +2393,12 @@ export function createTermManager(config: DenConfig, deps: TermManagerDeps): Ter
         // request's entry — do not invent a refusal. No tag (pre-fix
         // untagged adopt): today's behaviour (request key is written as the
         // tag). cwd/env/identity/LRU/argv stay on the request.
-        const taggedEntry = persisted && persistedTag ? roster.commands[persistedTag] : undefined
+        // Own property only — same as the sweep. A tag like `constructor`
+        // must not pick up Object.prototype and treat it as a roster entry.
+        const taggedEntry =
+          persisted && persistedTag && Object.hasOwn(roster.commands, persistedTag)
+            ? roster.commands[persistedTag]
+            : undefined
         const recordKey = taggedEntry ? persistedTag : key
         const recordEntry = taggedEntry ?? entry
         if (muxCtl && tmuxName) {
@@ -2333,6 +2431,8 @@ export function createTermManager(config: DenConfig, deps: TermManagerDeps): Ter
           : stampFromSpawn(model, key)
         rememberSessionContext(denSession, ctxStamp)
 
+        // paneDecision (above) is the single create/reattach resolution.
+        const isAgentPane = Boolean(herdr) && paneDecision.agentPane
         const r: PtyRecord = {
           id,
           denSession,
@@ -2348,7 +2448,7 @@ export function createTermManager(config: DenConfig, deps: TermManagerDeps): Ter
           routedUser,
           tmuxName,
           muxKind: tmuxName ? (herdr ? 'herdr' : tmux ? 'tmux' : undefined) : undefined,
-          agentPane: Boolean(herdr) && herdrUseAgent(herdrKindForCommand(key), argv[0] ?? ''),
+          agentPane: isAgentPane,
           paneId:
             herdr && tmuxName
               ? (herdr.resolvePaneId?.(tmuxName) ??
@@ -2369,9 +2469,7 @@ export function createTermManager(config: DenConfig, deps: TermManagerDeps): Ter
           // harness pane is NOT ready until paneAgent (or a status frame)
           // proves an agent is present — otherwise chat injects the leftover
           // shell (#791).
-          ready:
-            persisted &&
-            !(Boolean(herdr) && herdrUseAgent(herdrKindForCommand(key), argv[0] ?? '')),
+          ready: persisted && !isAgentPane,
           injectBuffer: [],
           injectTimers: [],
           injectNextAtMs: 0,
@@ -2383,6 +2481,25 @@ export function createTermManager(config: DenConfig, deps: TermManagerDeps): Ter
         }
         records.set(id, r)
         bySession.set(denSession, id)
+        // A harness entry that is NOT an agent pane still works, but loses the
+        // agent-idle ready-gate and the first-turn confirm: it falls back to
+        // output quiescence alone. That is invisible until a first turn goes
+        // missing, so say it once at spawn. Fresh creates name the argv[0]
+        // reason (path or not a kind). A persisted reattach says the pane was
+        // created plain (stamp `0`, or no stamp and the pre-change rule) and
+        // does not claim today's argv[0] failed the fresh-create check.
+        if (r.room && herdr && !isAgentPane) {
+          const a0 = argv[0] ?? ''
+          const why = persisted
+            ? 'the pane was created as a plain pane'
+            : a0.includes('/')
+              ? `argv[0] '${a0}' is a path, not a bare command`
+              : `argv[0] '${a0}' is not a herdr agent kind`
+          deps.log(
+            `[den-server] term: '${recordKey}' has no agent-idle ready-gate — ${why}. ` +
+              `First-turn confirm is off; falling back to output quiescence.`,
+          )
+        }
         proc.onData((data) => {
           r.lastOutputTs = now()
           touchActivity(r)
@@ -2608,7 +2725,7 @@ export function createTermManager(config: DenConfig, deps: TermManagerDeps): Ter
         if (r.confirmTurn !== undefined) {
           r.injectRest = r.injectRest ?? []
           if (r.injectRest.length >= INJECT_BUFFER_MAX) return false
-          r.injectRest.push({ text, submit })
+          r.injectRest.push({ text, submit, interrupt })
           return true
         }
         // Re-check immediately before writing — a release can race a ready inject.
@@ -2616,23 +2733,13 @@ export function createTermManager(config: DenConfig, deps: TermManagerDeps): Ter
         // Serialize against any in-flight turn so paste/CR pairs never
         // interleave (paste₁, paste₂, CR₁, CR₂) when two injects land within
         // one submit delay — parallel API clients or a UI without a send lock.
-        let startMs = Math.max(0, r.injectNextAtMs - now())
-        if (interrupt) {
-          // Esc respects the serialization watermark: landing between a prior
-          // turn's paste and its CR would wipe that turn's input (the TUI
-          // clears its composer on Esc) and the CR would submit nothing
-          // (grok review, PR #338). After the chain: cancel, settle, paste.
-          laterWrite(r, INTERRUPT_ESC, startMs)
-          startMs += INTERRUPT_SETTLE_MS
-        }
-        submitWrite(r, text, submit, startMs)
-        r.injectNextAtMs = now() + startMs + (submit ? submitDelayMs * 2 : submitDelayMs)
+        injectWrite(r, text, submit, interrupt)
         return true
       }
       // Bounded buffer: a client can't grow memory by spamming inject before
       // the harness is ready (#316 review).
       if (r.injectBuffer.length >= INJECT_BUFFER_MAX) return false
-      r.injectBuffer.push({ text, submit })
+      r.injectBuffer.push({ text, submit, interrupt })
       armCeiling(r)
       return true
     },

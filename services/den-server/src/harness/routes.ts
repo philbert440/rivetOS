@@ -159,10 +159,14 @@ function isPromptAnswers(
 
 function fail(res: ServerResponse, err: unknown): boolean {
   if (err instanceof HarnessError) {
+    // `reason` refines a code for the UI (e.g. `turn_in_flight` because the
+    // TUI is showing a dialog, not because a turn is running).
+    const reason = err.context.reason
     return json(res, harnessErrorStatus(err), {
       error: err.message,
       code: err.code,
       retryable: err.retryable,
+      ...(typeof reason === 'string' ? { reason } : {}),
     })
   }
   const message = err instanceof Error ? err.message : String(err)
@@ -639,7 +643,7 @@ export function createHarnessRoutes(opts: {
     if (action === 'turns') {
       const body = await parseJsonBody(req, res)
       if (!body) return true
-      const { text, attachments, systemPrompt, model, effort } = body
+      const { text, attachments, systemPrompt, model, effort, bypassDialogGate } = body
       if (
         typeof text !== 'string' ||
         (text === '' && !(Array.isArray(attachments) && attachments.length))
@@ -661,6 +665,8 @@ export function createHarnessRoutes(opts: {
       if (typeof systemPrompt === 'string' && systemPrompt.trim()) {
         turn.systemPrompt = systemPrompt.trim().slice(0, SYSTEM_PROMPT_MAX_CHARS)
       }
+      // Only the user's inject button sets this. A stringly "true" must not.
+      if (bypassDialogGate === true) turn.bypassDialogGate = true
       if (attachments !== undefined) {
         if (
           !Array.isArray(attachments) ||

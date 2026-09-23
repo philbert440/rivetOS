@@ -11,6 +11,7 @@ import {
   type ClaudeStoreHost,
   type DenAgentEventLike,
 } from './claude-driver.js'
+import type { SheetReaders } from './model-sheets.js'
 import { FIVE_FLAGS, pick } from './test/driver-conformance.js'
 
 const UUID = 'a1b2c3d4-1111-4222-8333-444455556666'
@@ -71,12 +72,18 @@ function fakePty() {
   }
 }
 
+/** Force the static claude sheet — tests do not depend on ~/.claude.json. */
+const emptyClaudeJson: SheetReaders = {
+  readJson: () => ({}),
+}
+
 function makeDriver(
   opts: {
     rows?: HarnessSession[]
     withPty?: boolean
     withEvents?: boolean
     cwd?: () => string | undefined
+    sheetReaders?: SheetReaders
   } = {},
 ): Fakes {
   const { rows = [], withPty = true, withEvents = true } = opts
@@ -96,6 +103,7 @@ function makeDriver(
       : undefined,
     cwd: opts.cwd ?? ((): string => '/home/rivet'),
     turnQuietMs: 0,
+    sheetReaders: opts.sheetReaders ?? emptyClaudeJson,
   })
   return { driver, pty, store, emitDen: (ev) => emit(ev) }
 }
@@ -125,6 +133,8 @@ describe('capability flags are honest', () => {
     const caps = makeDriver().driver.capabilities
     expect(caps.modelFlag).toBe('--model')
     expect(caps.effortFlag).toBe('--effort')
+    // Launch-time model selection: the pre-spawn picker gates on this (#814).
+    expect(caps.launchModel).toBe(true)
     expect(caps.models?.map((m) => m.id)).toEqual(
       expect.arrayContaining(['fable', 'opus', 'sonnet', 'fable[1m]']),
     )

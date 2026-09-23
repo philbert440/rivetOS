@@ -27,6 +27,11 @@ python3 -m http.server 8771 --directory apps/rivethub-site/public
 Serving `public/` directly uses the empty config stub, so pageviews stay
 off. Serve `dist/` after a keyed build to exercise PostHog locally.
 
+Named marketing clicks use `data-ph-event` on landing CTAs. `public/posthog.js`
+captures only these allowlisted names, plus the page path: `cta_setup_agent`,
+`cta_install_local`, `cta_install_server`, `path_local`, `path_datahub`. No
+session recording, no form fields, no PII.
+
 Publish the contents of `dist/` to the rivethub.io web root. Release binaries and `releases/latest.json` are maintained by release publishing, not this site build. Preserve that directory when deploying. Without a release feed, the download pages retain their explicitly labelled bundled snapshot.
 
 The Omarchy gallery contains actual desktop captures. Its manifest records themes and capture provenance. The homepage terminal image shows a replay of a saved exchange; its caption identifies it as such.

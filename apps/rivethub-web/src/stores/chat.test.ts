@@ -8,6 +8,7 @@ import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from 'vites
 import {
   createOutboundPumpRegistry,
   INJECT_LATCH_MS,
+  TURN_RETRY_BACKOFF_MS,
   type OutboundPumpStore,
 } from '../lib/outbound-pump.js'
 
@@ -61,6 +62,7 @@ afterEach(() => {
 
 beforeEach(() => {
   useChat.setState({
+    replyAcceptance: {},
     messages: {},
     transcripts: {},
     live: {},
@@ -312,7 +314,7 @@ describe('outbound sends across rekey', () => {
     t.reject(new Error('offline'))
     await failed
     await vi.advanceTimersByTimeAsync(INJECT_LATCH_MS)
-    expect(next).toHaveBeenCalledExactlyOnceWith('second', false, undefined)
+    expect(next).toHaveBeenCalledExactlyOnceWith('second', false, undefined, false)
     expect(state().outbound[to]).toEqual([{ id: t.id, text: 'first', status: 'failed' }])
     const retry = t.registry(to).pump.pump({ forceId: t.id })
     await vi.advanceTimersByTimeAsync(INJECT_LATCH_MS)
@@ -370,7 +372,7 @@ describe('outbound sends across rekey', () => {
     expect(state().outbound[to]?.[0].status).toBe('sending')
     await vi.advanceTimersByTimeAsync(INJECT_LATCH_MS)
     await pending
-    expect(retry).toHaveBeenCalledWith('first', false, undefined)
+    expect(retry).toHaveBeenCalledWith('first', false, undefined, true)
     expect(state().outbound[to]).toEqual([])
     expect(state().messages[to]?.map((m) => m.id)).toEqual([t.id])
   })
@@ -386,7 +388,8 @@ describe('outbound sends across rekey', () => {
     expect(state().outbound.draft).toBeUndefined()
     const retry = vi.fn(() => Promise.resolve())
     t.registry(to).sink.current = retry
-    await vi.advanceTimersByTimeAsync(60_000)
+    // Under the pump's backoff so this asserts the idle edge, not the timer.
+    await vi.advanceTimersByTimeAsync(TURN_RETRY_BACKOFF_MS[0] - 1)
     expect(retry).not.toHaveBeenCalled()
     t.registry(to).pump.onIdle()
     await vi.advanceTimersByTimeAsync(INJECT_LATCH_MS)
@@ -411,7 +414,7 @@ describe('outbound sends across rekey', () => {
     await vi.advanceTimersByTimeAsync(2 * INJECT_LATCH_MS)
     await t.pending
     expect(t.inject).toHaveBeenCalledOnce()
-    expect(next).toHaveBeenCalledExactlyOnceWith('second', false, undefined)
+    expect(next).toHaveBeenCalledExactlyOnceWith('second', false, undefined, false)
     expect(state().outbound[to]).toEqual([])
   })
 
@@ -715,4 +718,42 @@ describe('committed-turn reconciliation', () => {
     expect(state().messages.A).toBeUndefined()
     expect(state().messages.B?.map((m) => m.id)).toEqual(['m1'])
   })
+})
+
+describe('reply acceptance across adoption', () => {
+  const start = () => {
+    const store = useChat.getState()
+    store.addDraft('draft')
+    const id = store.enqueueOutbound('draft', 'hello')
+    store.markOutboundSending('draft', id)
+    return store.beginReply('draft', id)
+  }
+  it.each([false, true])('survives rekey with acceptance before move = %s', (before) => {
+    const generation = start()
+    const store = useChat.getState()
+    if (before) store.acceptReply('draft', generation)
+    expect(store.rekey('draft', 'canonical')).toBe(true)
+    if (!before) store.acceptReply('draft', generation)
+    expect(useChat.getState().replyAcceptance.canonical).toEqual({
+      id: generation.id,
+      accepted: true,
+    })
+    expect(useChat.getState().replyAcceptance.draft).toBeUndefined()
+    store.clearLive('canonical') // pump placeholder expiry must preserve acceptance
+    expect(useChat.getState().replyAcceptance.canonical?.accepted).toBe(true)
+  })
+  it.each(['stop', 'content', 'completion', 'new send'] as const)(
+    '%s prevents late acceptance',
+    (event) => {
+      const generation = start()
+      const store = useChat.getState()
+      if (event === 'content')
+        store.setLive('draft', { text: 'reply', reasoning: false, reasoningText: '', tools: [] })
+      else if (event === 'completion') store.setLive('draft', undefined)
+      else if (event === 'new send') store.beginReply('draft', 'new')
+      else store.clearAcceptedReply('draft')
+      store.acceptReply('draft', generation)
+      expect(useChat.getState().replyAcceptance.draft?.accepted).not.toBe(true)
+    },
+  )
 })

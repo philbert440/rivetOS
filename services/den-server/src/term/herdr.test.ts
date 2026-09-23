@@ -30,8 +30,11 @@ import {
   herdrMetaPath,
   herdrPaneAgentLive,
   parsePaneAgent,
+  herdrKindForArgv0,
   herdrKindForCommand,
+  herdrSweepRetains,
   herdrUseAgent,
+  resolveHerdrAgentPane,
   herdrRuntimeHash,
   herdrServerArgv,
   herdrSessionName,
@@ -49,6 +52,7 @@ import {
   type HerdrSessionInfo,
   type HerdrSpawn,
 } from './herdr.js'
+import { defaultRoster } from './roster.js'
 
 const sample: HerdrSessionInfo = {
   name: herdrSessionName('chat-f'),
@@ -122,14 +126,126 @@ describe('herdr argv builders', () => {
   })
 
   it("kind mapping returns undefined for anything outside herdr's closed enum", () => {
-    expect(herdrKindForCommand('claude')).toBe('claude')
-    expect(herdrKindForCommand('grok')).toBe('grok')
-    expect(herdrKindForCommand('kimi')).toBe('kimi')
-    expect(herdrKindForCommand('codex')).toBe('codex')
-    expect(herdrKindForCommand('hermes')).toBe('hermes')
-    expect(herdrKindForCommand('shell')).toBeUndefined()
-    expect(herdrKindForCommand('bash')).toBeUndefined()
-    expect(herdrKindForCommand('operator-key')).toBeUndefined()
+    expect(herdrKindForArgv0('claude')).toBe('claude')
+    expect(herdrKindForArgv0('grok')).toBe('grok')
+    expect(herdrKindForArgv0('kimi')).toBe('kimi')
+    expect(herdrKindForArgv0('codex')).toBe('codex')
+    expect(herdrKindForArgv0('hermes')).toBe('hermes')
+    expect(herdrKindForArgv0('shell')).toBeUndefined()
+    expect(herdrKindForArgv0('bash')).toBeUndefined()
+    expect(herdrKindForArgv0('operator-key')).toBeUndefined()
+  })
+
+  // Every room:true entry in defaultRoster() must resolve to a kind from its
+  // OWN argv[0]. These three were never pinned, so a herdr enum rename could
+  // drop one and only surface as a dropped first turn on that harness.
+  it('every built-in harness argv[0] is a herdr agent kind', () => {
+    const roster = defaultRoster()
+    const harnesses = Object.entries(roster.commands).filter(([, e]) => e.room)
+    expect(harnesses.length).toBe(8)
+    for (const [key, entry] of harnesses) {
+      const argv0 = entry.cmd[0] ?? ''
+      expect(herdrKindForArgv0(argv0), `${key} → ${argv0}`).toBe(argv0)
+      expect(herdrUseAgent(herdrKindForArgv0(argv0), argv0), `${key} is an agent pane`).toBe(true)
+    }
+    // the one non-harness entry must stay a plain pane
+    expect(herdrKindForArgv0(roster.commands.shell.cmd[0])).toBeUndefined()
+  })
+
+  it('kind follows argv[0], not the roster key', () => {
+    // argv[0] `claude` is an agent pane (a renamed key such as `claude-code`
+    // still runs this binary).
+    expect(herdrUseAgent(herdrKindForArgv0('claude'), 'claude')).toBe(true)
+    // A non-kind argv[0] (`my-wrapper`) is not an agent pane.
+    expect(herdrUseAgent(herdrKindForArgv0('my-wrapper'), 'my-wrapper')).toBe(false)
+    // A pinned build stays a plain pane — --kind would launch PATH instead.
+    expect(herdrUseAgent(herdrKindForArgv0('/usr/local/bin/claude'), '/usr/local/bin/claude')).toBe(
+      false,
+    )
+  })
+
+  it('resolveHerdrAgentPane: fresh argv0, stamp wins, absent stamp uses key and argv0', () => {
+    expect(resolveHerdrAgentPane({ argv0: 'claude' })).toEqual({
+      kind: 'claude',
+      agentPane: true,
+    })
+    // Fresh path only. The sweep's retain rule is herdrSweepRetains.
+    expect(resolveHerdrAgentPane({ argv0: 'kimi' }).agentPane).toBe(true)
+    expect(resolveHerdrAgentPane({ argv0: 'my-wrapper' }).agentPane).toBe(false)
+    // Legacy reattach of a renamed key: no stamp → plain pane.
+    expect(
+      resolveHerdrAgentPane({ argv0: 'claude', persisted: true, legacyKey: 'claude-code' }),
+    ).toEqual({ kind: undefined, agentPane: false })
+    expect(herdrKindForCommand('claude-code')).toBeUndefined()
+    expect(
+      resolveHerdrAgentPane({
+        argv0: 'claude',
+        persisted: true,
+        legacyKey: 'claude-code',
+        stamp: '1',
+      }),
+    ).toEqual({ kind: undefined, agentPane: true })
+    expect(
+      resolveHerdrAgentPane({
+        argv0: 'claude',
+        persisted: true,
+        legacyKey: 'claude-code',
+        stamp: '0',
+      }).agentPane,
+    ).toBe(false)
+    // A pre-change key that was itself a kind, still running that binary.
+    expect(
+      resolveHerdrAgentPane({ argv0: 'claude', persisted: true, legacyKey: 'claude' }),
+    ).toEqual({ kind: 'claude', agentPane: true })
+    // Same key, but today's argv0 is a pinned path or a wrapper: plain.
+    // Probing this pane would see no agent and end a live session.
+    expect(
+      resolveHerdrAgentPane({
+        argv0: '/opt/claude/bin/claude',
+        persisted: true,
+        legacyKey: 'claude',
+      }),
+    ).toEqual({ kind: 'claude', agentPane: false })
+    expect(resolveHerdrAgentPane({ argv0: 'npx', persisted: true, legacyKey: 'claude' })).toEqual({
+      kind: 'claude',
+      agentPane: false,
+    })
+    expect(
+      resolveHerdrAgentPane({
+        argv0: '/opt/claude/bin/claude',
+        persisted: true,
+        legacyKey: 'claude',
+        stamp: '0',
+      }).agentPane,
+    ).toBe(false)
+    // Stamp still wins over a path argv0.
+    expect(
+      resolveHerdrAgentPane({
+        argv0: '/opt/claude/bin/claude',
+        persisted: true,
+        legacyKey: 'claude',
+        stamp: '1',
+      }).agentPane,
+    ).toBe(true)
+  })
+
+  it('herdrSweepRetains: stamp wins; otherwise a kind tag or a kind argv0', () => {
+    // Unstamped kind tag, entry repointed to a path → retain.
+    expect(herdrSweepRetains({ tag: 'claude', entryArgv0: '/opt/claude/bin/claude' })).toBe(true)
+    // Unstamped kind tag, entry argv0 is a wrapper → retain.
+    expect(herdrSweepRetains({ tag: 'grok', entryArgv0: 'npx' })).toBe(true)
+    // Unstamped renamed tag whose entry argv0 is the kind → retain.
+    expect(herdrSweepRetains({ tag: 'claude-code', entryArgv0: 'claude' })).toBe(true)
+    // Stamp wins both ways, including over a kind tag and a kind argv0.
+    expect(herdrSweepRetains({ stamp: '0', tag: 'claude', entryArgv0: 'claude' })).toBe(false)
+    expect(herdrSweepRetains({ stamp: '1', tag: 'my-wrapper' })).toBe(true)
+    // Tag is not a kind and the entry is gone → not retained.
+    expect(herdrSweepRetains({ tag: 'claude-code' })).toBe(false)
+    expect(herdrSweepRetains({ tag: 'my-wrapper' })).toBe(false)
+    // A path is not a kind, so it does not retain on its own.
+    expect(herdrSweepRetains({ tag: 'my-wrapper', entryArgv0: '/opt/claude/bin/claude' })).toBe(
+      false,
+    )
   })
 
   it('herdrUseAgent matches create(): kind === argv0 and no slash', () => {
@@ -649,6 +765,10 @@ describe('createRealHerdrCtl argv', () => {
       args: ['--resume', 'abc'],
     })
     expect(ctl.attachArgv('dabc')).toEqual(['herdr', '--session', 'dabc'])
+    const meta = JSON.parse(readFileSync(herdrMetaPath('/tmp/herdr-cfg', 'dabc'), 'utf8')) as {
+      agentPane?: string
+    }
+    expect(meta.agentPane).toBe('1')
   })
 
   it('unknown kind uses pane.send_text and never agent.start', async () => {
@@ -680,6 +800,47 @@ describe('createRealHerdrCtl argv', () => {
     // one readiness pane.get (the fake answers with a prompt title) sits between them
     expect(rpcs).toEqual(['workspace.create', 'pane.get', 'pane.send_text'])
     expect(rpcs).not.toContain('agent.start')
+    const meta = JSON.parse(readFileSync(herdrMetaPath('/tmp/herdr-cfg', 'dshell'), 'utf8')) as {
+      agentPane?: string
+    }
+    expect(meta.agentPane).toBe('0')
+  })
+
+  it('agentPane true with no kind does not call agent.start and stamps plain', async () => {
+    const rpcs: string[] = []
+    const rpc: HerdrRpc = async (_path, req) => {
+      rpcs.push(req.method)
+      if (req.method === 'pane.get') return { pane: { terminal_title: 'user@host: ~' } }
+      if (req.method === 'workspace.create') return { root_pane: { pane_id: 'w1:p1' } }
+      return {}
+    }
+    const ctl = createRealHerdrCtl(
+      '/usr/bin/herdr',
+      '/tmp/herdr-cfg-nokind',
+      () => '',
+      spawnFake,
+      () => true,
+      undefined,
+      rpc,
+    )
+    await ctl.create({
+      name: 'dnokind',
+      denKey: 'chat-nokind',
+      argv: ['bash'],
+      env: {},
+      cwd: '/work',
+      agentPane: true,
+      command: 'shell',
+      user: 'owner',
+    })
+    expect(rpcs).not.toContain('agent.start')
+    expect(rpcs).toContain('pane.send_text')
+    const meta = JSON.parse(
+      readFileSync(herdrMetaPath('/tmp/herdr-cfg-nokind', 'dnokind'), 'utf8'),
+    ) as {
+      agentPane?: string
+    }
+    expect(meta.agentPane).toBe('0')
   })
 
   it('slow create does not stall a concurrent ctl call', async () => {

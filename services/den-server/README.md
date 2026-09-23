@@ -63,6 +63,14 @@ posture is deliberately strict:
 - **Audited.** Every spawn/kill/exit appends a JSON line to
   `$RIVETOS_DEN_STATE_DIR/term-audit.log`.
 
+Model and effort flags are added only when a built-in key's entry still runs
+that key's built-in program, compared by the file name of the first argv
+element — an absolute path or extra arguments are fine; a wrapper as the
+first element is not (`npx …`, `env FOO=1 claude`, `bash -lc claude`, or a
+version-suffixed or renamed binary). Use the entry's `env` for environment
+variables instead of an `env` wrapper. When flags are skipped the den logs
+one line naming the key.
+
 Roster file shape:
 
 ```json
@@ -98,9 +106,18 @@ inspection),
 `RIVETOS_DEN_TERM_INJECT_READY_MS` (500 — quiet period with no PTY output
 before a fresh harness is treated as ready for a buffered chat inject;
 re-armed on every chunk. A herdr agent-idle event readies the pane only when
-it was created as an agent pane — roster argv[0] is the herdr kind, not a
-wrapper or absolute path — even while output is still trickling; otherwise
-the quiet period applies),
+it was created as an agent pane — for a fresh create, the roster entry's own
+argv[0] is a herdr kind, not a wrapper or absolute path, so renaming the key
+does not change that decision — even while output is still trickling;
+otherwise the quiet period applies. The restart sweep (status subscription
+only) lets the stamp win and, with no stamp, retains when the tag is a kind
+or the roster entry's argv[0] is a kind. The stamp is written at create and
+on adopt; reattach lets it win too, and a session with no
+`@rivet_agent_pane` stamp (created before this rule) keeps the previous
+rule — kind from the roster key, which argv[0] must equal — so a renamed key
+or pinned path stays the plain pane it was launched as. A `room: true`
+entry that resolves to a plain pane logs once at spawn, since it silently
+loses the agent-idle gate and the first-turn confirm),
 `RIVETOS_DEN_TERM_INJECT_READY_MAX_MS` (15000 — hard ceiling: flush buffered
 injects anyway and log a warning),
 `RIVETOS_DEN_TERM_INJECT_CONFIRM_MS` (5000 — after the first buffered submit

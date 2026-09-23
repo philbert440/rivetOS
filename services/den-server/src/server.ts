@@ -63,6 +63,7 @@ import {
 } from './identity.js'
 import { auditTenancyDeny, createSessionOwners, sessionForbidden } from './session-owners.js'
 import { createMeshView } from './mesh.js'
+import { dialogOnScreen } from './term/blocking-dialog.js'
 import { composeTermAttach, wirePtyInfo } from './term/attach.js'
 import { createRosterProvider } from './term/roster.js'
 import { loadRealPtySpawn, type PtySpawn } from './term/pty.js'
@@ -1583,6 +1584,7 @@ export function createDenServer(config: DenConfig, opts: DenServerOptions = {}):
             text?: unknown
             submit?: unknown
             interrupt?: unknown
+            bypassDialogGate?: unknown
           }
           if (typeof p.session !== 'string' || p.session === '')
             return json(res, 400, { error: 'session (string) is required' })
@@ -1631,7 +1633,34 @@ export function createDenServer(config: DenConfig, opts: DenServerOptions = {}):
           }
           const submit = p.submit !== false // default true
           const interrupt = p.interrupt === true // Esc the in-flight turn first
-          if (!manager.inject(ptyId, p.text, submit, interrupt)) {
+          // Same gate as the driver's sendUserTurn: a chat turn pasted into an
+          // open menu is lost, and its Enter picks an option. New conversations
+          // reach the harness through this route before they are registered.
+          // Claude only — the detector is fixtured for Claude Code screens. An
+          // unknown command fails open rather than 409 every send. A bypass
+          // still reads the screen and Esc-dismisses a live dialog before the
+          // paste; it does not confirm the highlighted option.
+          const command = manager.get(ptyId)?.command
+          const claudeHarness = command === 'claude' || command === 'claude-code'
+          // Bare Enter (empty text) is the adopt nudge; submit:false is a paste,
+          // not a confirm. Interrupt already sends Esc before the paste.
+          const bypassDialogGate = p.bypassDialogGate === true
+          let dismissDialog = false
+          if (claudeHarness && submit && p.text && !interrupt) {
+            const dialog = await dialogOnScreen(() => manager.screen(ptyId, 40))
+            if (dialog) {
+              if (!bypassDialogGate) {
+                return json(res, 409, {
+                  error: 'harness is showing a dialog; answer it in the terminal first',
+                  code: 'turn_in_flight',
+                  retryable: true,
+                  reason: 'harness_dialog',
+                })
+              }
+              dismissDialog = true
+            }
+          }
+          if (!manager.inject(ptyId, p.text, submit, interrupt || dismissDialog)) {
             const inf = manager.get(ptyId)
             // Keep HTTP 409. Distinguish "not seen yet" (client can retry)
             // from "harness ended" (`harness not writable` / after reap
