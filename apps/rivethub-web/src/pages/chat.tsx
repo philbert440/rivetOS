@@ -131,6 +131,9 @@ const EMPTY_TOOLS: LiveToolEntry[] = []
 
 /** Pause between a control-plane interrupt and the turn that displaced it. */
 const INTERRUPT_SETTLE_MS = 400
+/** Drop a non-busy waiting indicator after this long with no stream — a wedged
+ *  turn must not spin forever (see the statusLine derivation). */
+const STALE_WAIT_MS = 90_000
 
 // A draft id IS a UUID so it can become the harness's native session id
 // (claude --session-id requires a UUID). It stays bare until the control plane
@@ -1664,6 +1667,8 @@ function ActiveSession(props: {
       ),
     [outbound],
   )
+  const waitStartRef = useRef<number | undefined>(undefined)
+  const [, setWaitTick] = useState(0)
   // Thinking window (no block yet), blocked, prompt: one line under the
   // transcript so the agent is never silently "working" (requirement 3).
   // `awaitingReply` covers the two windows the pump's own `working…` placeholder
@@ -1676,7 +1681,30 @@ function ActiveSession(props: {
   const pendingSend = outbound.some((o) => o.status === 'sending' || o.status === 'queued')
   const lastMessage = messages.length ? messages[messages.length - 1] : undefined
   const awaitingReply = pendingSend || lastMessage?.role === 'user'
-  const statusLine = agentStatusLine(live, agentStatus, awaitingReply)
+  // A non-busy waiting indicator — the pump's pre-stream placeholder or the
+  // awaitingReply line — must not spin forever when a turn wedges (den accepted
+  // the inject but the harness never streamed or completed it). After
+  // STALE_WAIT_MS with no real stream content it is dropped, so the transcript
+  // falls silent instead of pretending indefinitely. A genuinely working turn
+  // streams text / tools / reasoning (liveBusy) and is never counted stale; a
+  // buffer-then-commit harness ends the wait when its reply lands in `messages`.
+  // (liveBusy is derived once above.)
+  const liveWaiting = live !== undefined && !liveBusy
+  const waiting = liveWaiting || (live === undefined && awaitingReply)
+  if (waiting) {
+    if (waitStartRef.current === undefined) waitStartRef.current = Date.now()
+  } else {
+    waitStartRef.current = undefined
+  }
+  const staleWait =
+    waitStartRef.current !== undefined && Date.now() - waitStartRef.current > STALE_WAIT_MS
+  useEffect(() => {
+    if (!waiting || staleWait) return
+    const id = setInterval(() => setWaitTick((n) => n + 1), 1000)
+    return () => clearInterval(id)
+  }, [waiting, staleWait])
+  const displayLive = liveWaiting && staleWait ? undefined : live
+  const statusLine = agentStatusLine(displayLive, agentStatus, awaitingReply && !staleWait)
 
   // Capability-gated affordances. `canInterrupt` is the driver's own flag —
   // hidden rather than shown-and-501'd when the node has no interrupt path.
@@ -1824,7 +1852,7 @@ function ActiveSession(props: {
               presetColor: props.item?.accent,
               command: harnessCommand ?? settings?.agent,
             })}
-            live={live}
+            live={displayLive}
             outbound={outboundStatus}
             statusLine={statusLine}
           />
