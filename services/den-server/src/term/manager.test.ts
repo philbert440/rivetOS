@@ -26,6 +26,7 @@ import {
   herdrConfigHome,
   herdrConfigPath,
   herdrSessionName,
+  herdrUseAgent,
   type HerdrCtl,
   type HerdrCreateOpts,
   type HerdrSessionInfo,
@@ -2522,6 +2523,7 @@ class FakeHerdrCtl implements HerdrCtl {
     if (!s) return
     if (option === '@rivet_command') s.command = value
     if (option === '@rivet_user') s.user = value
+    if (option === '@rivet_agent_pane' && (value === '1' || value === '0')) s.agentPane = value
   }
   windowSize(): { cols: number; rows: number } | undefined {
     return { cols: 120, rows: 40 }
@@ -2529,6 +2531,8 @@ class FakeHerdrCtl implements HerdrCtl {
   create(opts: HerdrCreateOpts): void {
     if (this.failWith) throw this.failWith
     this.creates.push(opts)
+    const argv0 = opts.argv[0] ?? ''
+    const useAgent = opts.agentPane ?? herdrUseAgent(opts.kind, argv0)
     this.sessions.set(opts.name, {
       name: opts.name,
       denKey: opts.denKey,
@@ -2537,6 +2541,7 @@ class FakeHerdrCtl implements HerdrCtl {
       command: opts.command,
       user: opts.user,
       paneId: 'w1:p1',
+      agentPane: useAgent ? '1' : '0',
     })
   }
   attachArgv(name: string): string[] {
@@ -2670,6 +2675,340 @@ describe('term manager (herdr mux)', () => {
     expect(gonePty.reattached).toBe(true)
     expect(gonePty.command).toBe('claude')
     expect(gone.manager.isAgentHarness(gonePty.id)).toBe(true)
+  })
+
+  const claudeCodeRoster = (): TermRoster => ({
+    default: 'claude-code',
+    cwd: defaultRoster().cwd,
+    env: {},
+    commands: {
+      'claude-code': { label: 'Claude', cmd: ['claude'], room: true },
+    },
+  })
+
+  it('renamed roster key: kind from argv[0], agent pane, idle gate, no degradation log', () => {
+    vi.useFakeTimers()
+    const ctl = new FakeHerdrCtl()
+    const { manager, procs, logs } = makeManager(
+      { mux: 'herdr', injectReadyMs: 300, injectReadyMaxMs: 15_000, injectSubmitDelayMs: 80 },
+      { herdrCtl: ctl, roster: claudeCodeRoster() },
+    )
+    const pty = manager.spawn('claude-code', 80, 24, '', uuid)
+    expect(ctl.creates).toHaveLength(1)
+    expect(ctl.creates[0].kind).toBe('claude')
+    expect(ctl.creates[0].agentPane).toBe(true)
+    expect(ctl.creates[0].command).toBe('claude-code')
+    expect(ctl.creates[0].argv[0]).toBe('claude')
+    expect(ctl.sessions.get(herdrSessionName(uuid))?.agentPane).toBe('1')
+    expect(pty.noAgentEvidence).toBe(true)
+    expect(logs.some((l) => l.includes('no agent-idle ready-gate'))).toBe(false)
+    expect(manager.inject(pty.id, 'hello', true)).toBe(true)
+    procs[0].emitData('draw-1')
+    vi.advanceTimersByTime(300)
+    expect(procs[0].writes).toEqual([])
+    ctl.emit?.({
+      event: 'pane.agent_status_changed',
+      data: { pane_id: 'w1:p1', agent: 'claude', agent_status: 'idle' },
+    })
+    expect(procs[0].writes).toEqual(['\x1b[200~hello\x1b[201~'])
+  })
+
+  it('restart sweep retains a kind tag, a stamp, and an unstamped renamed key', () => {
+    vi.useFakeTimers()
+    const ctl = new FakeHerdrCtl()
+    const retained: string[] = []
+    const orig = ctl.subscribeEvents.bind(ctl)
+    ctl.subscribeEvents = (name, onEvent, onClose) => {
+      retained.push(name)
+      return orig(name, onEvent, onClose)
+    }
+    const kindTag = herdrSessionName('sweep-kind-tag')
+    const renamed = herdrSessionName('sweep-renamed')
+    const renamedPlain = herdrSessionName('sweep-renamed-plain')
+    const plain = herdrSessionName('sweep-plain')
+    const seed = (name: string, denKey: string, command: string, stamp?: '1' | '0'): void => {
+      ctl.sessions.set(name, {
+        name,
+        denKey,
+        activity: 1,
+        created: 1,
+        command,
+        user: 'owner',
+        paneId: 'w1:p1',
+        ...(stamp !== undefined ? { agentPane: stamp } : {}),
+      })
+    }
+    // Tag left the roster, but the tag itself is a kind. No stamp → retain.
+    seed(kindTag, 'sweep-kind-tag', 'claude')
+    // Renamed key is not a kind. Stamp `1` retains it.
+    seed(renamed, 'sweep-renamed', 'claude-code', '1')
+    // Same renamed key, no stamp. The roster entry's argv0 `claude` is a
+    // kind, so the sweep retains it. Reattach of this shape stays plain.
+    seed(renamedPlain, 'sweep-renamed-plain', 'claude-code')
+    // Tag is not a kind and the entry is gone → not retained.
+    seed(plain, 'sweep-plain', 'my-wrapper')
+    makeManager({ mux: 'herdr' }, { herdrCtl: ctl, roster: claudeCodeRoster() })
+    expect(retained).toEqual([])
+    vi.advanceTimersByTime(60_000)
+    expect([...retained].sort()).toEqual([kindTag, renamed, renamedPlain].sort())
+  })
+
+  it('restart sweep retains a repointed kind tag unless the pane is stamped plain', () => {
+    vi.useFakeTimers()
+    const ctl = new FakeHerdrCtl()
+    const retained: string[] = []
+    const orig = ctl.subscribeEvents.bind(ctl)
+    ctl.subscribeEvents = (name, onEvent, onClose) => {
+      retained.push(name)
+      return orig(name, onEvent, onClose)
+    }
+    const roster: TermRoster = {
+      default: 'claude',
+      cwd: defaultRoster().cwd,
+      env: {},
+      commands: {
+        claude: { label: 'Claude', cmd: ['/opt/claude/bin/claude'], room: true },
+        grok: { label: 'Grok', cmd: ['npx', 'grok'], room: true },
+      },
+    }
+    const pathName = herdrSessionName('sweep-repoint-path')
+    const wrapName = herdrSessionName('sweep-repoint-wrap')
+    const zeroName = herdrSessionName('sweep-repoint-zero')
+    const oneName = herdrSessionName('sweep-repoint-one')
+    const seed = (name: string, denKey: string, command: string, stamp?: '1' | '0'): void => {
+      ctl.sessions.set(name, {
+        name,
+        denKey,
+        activity: 1,
+        created: 1,
+        command,
+        user: 'owner',
+        paneId: 'w1:p1',
+        ...(stamp !== undefined ? { agentPane: stamp } : {}),
+      })
+    }
+    // Tag is a kind; the entry now points at a pinned path. No stamp → retain.
+    seed(pathName, 'sweep-repoint-path', 'claude')
+    // Tag is a kind; argv0 is a wrapper (`npx`). No stamp → retain.
+    seed(wrapName, 'sweep-repoint-wrap', 'grok')
+    // Stamp wins over a kind tag.
+    seed(zeroName, 'sweep-repoint-zero', 'claude', '0')
+    seed(oneName, 'sweep-repoint-one', 'claude', '1')
+    makeManager({ mux: 'herdr' }, { herdrCtl: ctl, roster })
+    expect(retained).toEqual([])
+    vi.advanceTimersByTime(60_000)
+    expect([...retained].sort()).toEqual([pathName, wrapName, oneName].sort())
+    expect(retained).not.toContain(zeroName)
+  })
+
+  it('legacy reattach without @rivet_agent_pane stays a plain pane; stamp 1 is an agent pane', async () => {
+    vi.useFakeTimers()
+    const roster = claudeCodeRoster()
+    const attach = async (session: string, stamp?: '1' | '0') => {
+      const ctl = new FakeHerdrCtl()
+      const name = herdrSessionName(session)
+      ctl.sessions.set(name, {
+        name,
+        denKey: session,
+        activity: 1,
+        created: 1,
+        command: 'claude-code',
+        user: 'owner',
+        paneId: 'w1:p1',
+        ...(stamp !== undefined ? { agentPane: stamp } : {}),
+      })
+      let probes = 0
+      ctl.paneAgent = () => {
+        probes += 1
+        return Promise.resolve({ agent: null })
+      }
+      const { manager, procs, logs } = makeManager({ mux: 'herdr' }, { herdrCtl: ctl, roster })
+      const pty = await manager.spawn('claude-code', 80, 24, '', session)
+      return { manager, procs, ctl, pty, logs, probes: () => probes }
+    }
+
+    const plain = await attach('legacy-plain')
+    expect(plain.pty.reattached).toBe(true)
+    expect(plain.pty.noAgentEvidence).toBeUndefined()
+    expect(plain.pty.agentEnded).toBeUndefined()
+    expect(plain.probes()).toBe(0)
+    expect(plain.ctl.kills).toEqual([])
+    expect(plain.manager.inject(plain.pty.id, 'hello', true)).toBe(true)
+    expect(plain.procs[0].writes).toEqual(['\x1b[200~hello\x1b[201~'])
+    expect(plain.logs.some((l) => l.includes('was created as a plain pane'))).toBe(true)
+    expect(plain.logs.some((l) => l.includes('is not a herdr agent kind'))).toBe(false)
+    vi.advanceTimersByTime(5_000)
+    expect(plain.ctl.kills).toEqual([])
+    expect(plain.manager.get(plain.pty.id)?.state).toBe('running')
+
+    const stamped = await attach('legacy-stamped', '1')
+    expect(stamped.pty.reattached).toBe(true)
+    expect(stamped.probes()).toBe(1)
+    expect(stamped.pty.noAgentEvidence).toBe(true)
+    expect(stamped.pty.agentEnded).toBe(true)
+    expect(stamped.manager.inject(stamped.pty.id, 'hello', true)).toBe(false)
+    expect(stamped.procs[0].writes).toEqual([])
+  })
+
+  it('unstamped reattach of a kind key stays plain when argv0 is a path or wrapper', async () => {
+    vi.useFakeTimers()
+    const attach = async (session: string, argv0: string) => {
+      const roster: TermRoster = {
+        default: 'claude',
+        cwd: defaultRoster().cwd,
+        env: {},
+        commands: {
+          claude: { label: 'Claude', cmd: [argv0], room: true },
+        },
+      }
+      const ctl = new FakeHerdrCtl()
+      const name = herdrSessionName(session)
+      ctl.sessions.set(name, {
+        name,
+        denKey: session,
+        activity: 1,
+        created: 1,
+        command: 'claude',
+        user: 'owner',
+        paneId: 'w1:p1',
+      })
+      let probes = 0
+      ctl.paneAgent = () => {
+        probes += 1
+        return Promise.resolve({ agent: null })
+      }
+      const { manager, procs, logs } = makeManager({ mux: 'herdr' }, { herdrCtl: ctl, roster })
+      const pty = await manager.spawn('claude', 80, 24, '', session)
+      return { manager, procs, ctl, pty, logs, probes: () => probes }
+    }
+
+    for (const [session, argv0] of [
+      ['reattach-path', '/opt/claude/bin/claude'],
+      ['reattach-npx', 'npx'],
+    ] as const) {
+      const plain = await attach(session, argv0)
+      expect(plain.pty.reattached, argv0).toBe(true)
+      expect(plain.pty.noAgentEvidence, argv0).toBeUndefined()
+      expect(plain.pty.agentEnded, argv0).toBeUndefined()
+      expect(plain.probes(), argv0).toBe(0)
+      expect(plain.ctl.kills, argv0).toEqual([])
+      expect(plain.manager.inject(plain.pty.id, 'hello', true), argv0).toBe(true)
+      expect(plain.procs[0].writes, argv0).toEqual(['\x1b[200~hello\x1b[201~'])
+      expect(
+        plain.logs.some((l) => l.includes('was created as a plain pane')),
+        argv0,
+      ).toBe(true)
+      expect(
+        plain.logs.some((l) => l.includes('is not a herdr agent kind')),
+        argv0,
+      ).toBe(false)
+      expect(
+        plain.logs.some((l) => l.includes('is a path')),
+        argv0,
+      ).toBe(false)
+      vi.advanceTimersByTime(5_000)
+      expect(plain.ctl.kills, argv0).toEqual([])
+      expect(plain.manager.get(plain.pty.id)?.state, argv0).toBe('running')
+    }
+  })
+
+  it('reattach stamp 0 stays a plain pane even when the tag is a kind', async () => {
+    vi.useFakeTimers()
+    const ctl = new FakeHerdrCtl()
+    const session = 'stamp-zero-kind'
+    const name = herdrSessionName(session)
+    ctl.sessions.set(name, {
+      name,
+      denKey: session,
+      activity: 1,
+      created: 1,
+      command: 'claude',
+      user: 'owner',
+      paneId: 'w1:p1',
+      agentPane: '0',
+    })
+    let probes = 0
+    ctl.paneAgent = () => {
+      probes += 1
+      return Promise.resolve({ agent: 'claude', status: 'idle' })
+    }
+    const { manager, procs, logs } = makeManager({ mux: 'herdr' }, { herdrCtl: ctl })
+    const pty = await manager.spawn('claude', 80, 24, '', session)
+    expect(pty.reattached).toBe(true)
+    expect(probes).toBe(0)
+    expect(pty.noAgentEvidence).toBeUndefined()
+    expect(pty.agentEnded).toBeUndefined()
+    expect(ctl.kills).toEqual([])
+    expect(manager.inject(pty.id, 'hello', true)).toBe(true)
+    expect(procs[0].writes).toEqual(['\x1b[200~hello\x1b[201~'])
+    // argv[0] is the kind `claude`. The log must not claim otherwise.
+    expect(logs.some((l) => l.includes('was created as a plain pane'))).toBe(true)
+    expect(logs.some((l) => l.includes('is not a herdr agent kind'))).toBe(false)
+    expect(logs.some((l) => l.includes('is a path'))).toBe(false)
+  })
+
+  it('herdr adopt stamps @rivet_agent_pane so a later reattach ignores the request key', async () => {
+    vi.useFakeTimers()
+    const name = herdrSessionName('adopt-stamp')
+    const ctl = new FakeHerdrCtl()
+    ctl.sessions.set(name, {
+      name,
+      denKey: 'adopt-stamp',
+      activity: 1,
+      created: 1,
+      command: '',
+      user: '',
+      paneId: 'w1:p1',
+    })
+    let probes = 0
+    ctl.paneAgent = () => {
+      probes += 1
+      return Promise.resolve({ agent: 'claude', status: 'idle' })
+    }
+    const { manager, procs } = makeManager({ mux: 'herdr' }, { herdrCtl: ctl })
+    const first = await manager.spawn('claude', 80, 24, '', 'adopt-stamp')
+    expect(first.reattached).toBe(true)
+    expect(ctl.sessions.get(name)?.command).toBe('claude')
+    expect(ctl.sessions.get(name)?.user).toBe('owner')
+    expect(ctl.sessions.get(name)?.agentPane).toBe('1')
+    expect(probes).toBe(1)
+
+    procs[0].emitExit(null)
+    const second = await manager.spawn('shell', 80, 24, '', 'adopt-stamp')
+    expect(second.reattached).toBe(true)
+    expect(second.id).not.toBe(first.id)
+    // Request key is shell. The stamp keeps the agent pane and the tag.
+    expect(ctl.sessions.get(name)?.command).toBe('claude')
+    expect(ctl.sessions.get(name)?.agentPane).toBe('1')
+    expect(probes).toBe(2)
+
+    const plainName = herdrSessionName('adopt-stamp-plain')
+    const plainCtl = new FakeHerdrCtl()
+    plainCtl.sessions.set(plainName, {
+      name: plainName,
+      denKey: 'adopt-stamp-plain',
+      activity: 1,
+      created: 1,
+      command: '',
+      user: '',
+      paneId: 'w1:p1',
+    })
+    let plainProbes = 0
+    plainCtl.paneAgent = () => {
+      plainProbes += 1
+      return Promise.resolve({ agent: 'claude', status: 'idle' })
+    }
+    const plain = makeManager({ mux: 'herdr' }, { herdrCtl: plainCtl })
+    const adopted = await plain.manager.spawn('shell', 80, 24, '', 'adopt-stamp-plain')
+    expect(adopted.reattached).toBe(true)
+    expect(plainCtl.sessions.get(plainName)?.agentPane).toBe('0')
+    expect(plainProbes).toBe(0)
+    plain.procs[0].emitExit(null)
+    const again = await plain.manager.spawn('claude', 80, 24, '', 'adopt-stamp-plain')
+    expect(again.reattached).toBe(true)
+    expect(plainCtl.sessions.get(plainName)?.command).toBe('shell')
+    expect(plainCtl.sessions.get(plainName)?.agentPane).toBe('0')
+    expect(plainProbes).toBe(0)
   })
 
   it('kill releases the status subscribe (no leak) and killSession', () => {
