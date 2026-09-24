@@ -225,6 +225,8 @@ export type { MeshRegistryConfig, BuildLocalNodeArgs } from './domain/mesh.js'
 export { MeshDelegationEngine } from './domain/mesh-delegation.js'
 export type { MeshDelegationConfig } from './domain/mesh-delegation.js'
 export {
+  ROSTER_READ_BOUND_MS,
+  NoMeshRegistryError,
   PresetDelegationEngine,
   assessPresetRun,
   presetTaskSpec,

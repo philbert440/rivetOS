@@ -23,7 +23,7 @@ import { createExecutorRegistry, type TaskExecutorRegistry } from './task/runner
 import { InMemoryTaskStore } from './task/store.js'
 import { createTaskCompletionWaiter } from './task/completion-waiter.js'
 import { buildCatalogAgents } from './task/catalog-api.js'
-import { PresetDelegationEngine, presetTaskSpec } from './preset-delegation.js'
+import { NoMeshRegistryError, PresetDelegationEngine, presetTaskSpec } from './preset-delegation.js'
 
 const caps: HarnessExecutorCapabilities = {
   steerable: false,
@@ -197,6 +197,7 @@ describe('PresetDelegationEngine', () => {
       },
       rowPreset,
       1,
+      'parent-1',
     )
 
     expect(result.status).toBe('completed')
@@ -211,6 +212,7 @@ describe('PresetDelegationEngine', () => {
       nodeAffinity: 'ct115',
       requestedBy: 'local',
       chainDepth: 2,
+      parentTaskId: 'parent-1',
       maxAttempts: 1,
       goal: 'review the diff\n\nContext:\nfile a.ts',
     })
@@ -427,6 +429,42 @@ describe('PresetDelegationEngine', () => {
     )
     expect(result.response).toContain('no mesh registry; cannot reach node "ct116"')
     expect(await store.list()).toHaveLength(0)
+  })
+
+  it('treats NoMeshRegistryError like a missing registry', async () => {
+    const absent: MeshRegistry = {
+      ...mesh([]),
+      getNodes: () => Promise.reject(new NoMeshRegistryError()),
+    }
+    const remoteStore = new InMemoryTaskStore()
+    const remote = preset({ node: 'ct116' })
+    const refused = engineFor([remote], { store: remoteStore, nodeName: 'ct115', mesh: absent })
+    const denied = await refused.delegate(
+      { fromAgent: 'local', toAgent: 'reviewer', task: 't' },
+      remote,
+      0,
+    )
+    expect(denied.response).toContain('no mesh registry; cannot reach node "ct116"')
+    expect(await remoteStore.list()).toHaveLength(0)
+
+    const localStore = autoFinish('completed')
+    const local = preset({ node: 'ct115' })
+    let seen: string | undefined
+    const allowed = engineFor([local], { store: localStore, nodeName: 'ct115', mesh: absent })
+    const result = await allowed.delegate(
+      { fromAgent: 'local', toAgent: 'reviewer', task: 't' },
+      local,
+      0,
+      undefined,
+      (rowId) => {
+        seen = rowId
+      },
+    )
+    expect(result.status).toBe('completed')
+    expect(result.response).not.toContain('no mesh registry')
+    const row = (await localStore.list())[0]
+    expect(row?.nodeAffinity).toBe('ct115')
+    expect(seen).toBe(row?.id)
   })
 
   it('remote node that advertises the harness runs as a mesh-origin row', async () => {
