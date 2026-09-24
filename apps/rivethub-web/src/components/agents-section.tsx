@@ -1,30 +1,33 @@
 /**
  * Agents section — collapsible named agent presets roster for the sidebar.
  * Each agent carries model, effort, system prompt, color, and a target node.
- * Click opens that agent's sticky session on agent.nodeBaseUrl without
- * switchTo; ↺ replaces the pin. Hub connection, Memory, Files stay put.
+ * Click opens that agent's sticky session on the resolved hosting den
+ * without switchTo; ↺ replaces the pin. Hub connection, Memory, Files stay put.
  *
  * All node calls go through gatewayFor (desktop mTLS pipe, #491) — a raw
  * RivetGateway on an https base cannot authenticate from the desktop shell.
  */
 
 import { useCallback, useEffect, useRef, useState, type JSX } from 'react'
-import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
+import { useMutation, useQueries, useQuery, useQueryClient } from '@tanstack/react-query'
 import { useNavigate } from '@tanstack/react-router'
 import { Bot, ChevronDown, ChevronRight, Pencil, Plus, RotateCcw, Trash2, X } from 'lucide-react'
-import {
-  migrateAgentPreset,
-  type AgentPreset,
-  type AgentUpdateRequest,
-  type HarnessId,
-  type ThinkingLevel,
-} from '@rivetos/types'
+import { migrateAgentPreset, type HarnessId, type ThinkingLevel } from '@rivetos/types'
 
-/** Editor → den PATCH shape: `harnessId: null` clears the harness (JSON drops `undefined`). */
-type AgentPatch = Omit<Partial<AgentPreset>, 'harnessId'> & { harnessId?: HarnessId | null }
+/** Editor → den write. `harnessId: null` clears the harness. `nodeBaseUrl` picks the den. */
+type AgentPatch = AgentWrite
 import { GatewayError } from '@rivetos/gateway-client'
 import { useConnection } from '../stores/connection.js'
-import { useNodeName, urlLabel } from '../lib/node-name.js'
+import { healthzQueryOptions, useMeshNodeName, useNodeName, urlLabel } from '../lib/node-name.js'
+import { useNodeDiscovery } from '../lib/use-node-discovery.js'
+import { agentDirectoryPlaceholder } from '../lib/agent-directory.js'
+import {
+  agentCreateBody,
+  agentCreateBodyLegacy,
+  agentUpdateBody,
+  isLegacyNodeBaseUrlRequired,
+  type AgentWrite,
+} from '../lib/agent-form.js'
 import { useConfirmDialog } from './confirm-dialog.js'
 import { Select } from './select.js'
 import { agentCopySeed, canOfferAgentCopy, copyName, type AgentDraft } from '../lib/agent-copy.js'
@@ -49,10 +52,15 @@ import {
 } from '../lib/agent-session.js'
 import {
   aggregateAgentActivity,
+  dedupeRosterAgents,
+  meshDenName,
+  nodeOptionLabel,
   pointersToPoll,
   sessionPointerMatches,
   uniqueRosterNodes,
+  type ListedAgents,
   type NodeChoice,
+  type ResolvedRosterAgent,
 } from '../lib/agent-roster.js'
 import { nativeIdOf } from '../lib/harness-chat.js'
 import { accentFor } from '../lib/agent-accent.js'
@@ -66,9 +74,17 @@ import { useChatSettings } from '../stores/chat-settings.js'
 import { useSidebarPrefs } from '../stores/sidebar-prefs.js'
 import { Tooltip } from './ui/tooltip.js'
 
-type RosterAgent = AgentPreset & { sourceNodeBaseUrl: string }
+type RosterAgent = ResolvedRosterAgent
 
-const lastGoodAgentsByNode = new Map<string, AgentPreset[]>()
+type NodeListMeta = {
+  node?: string
+  directoryRoot?: string
+  sharedDir?: string
+  backend?: 'postgres' | 'file'
+}
+
+const nodeListMeta = new Map<string, NodeListMeta>()
+const lastGoodSliceByNode = new Map<string, ListedAgents & NodeListMeta>()
 
 /** Safety cap on the status fan-out. Pointers are unique per (agent, node),
  *  so the real bound is roster size — this only guards a pathological map. */
@@ -111,20 +127,31 @@ function NodeSelector({
   excludedNodes = [],
 }: NodeSelectorProps): JSX.Element {
   const { roster, baseUrl: currentBaseUrl } = useConnection()
+  const { mesh } = useNodeDiscovery()
+  const meshNodes = mesh.data?.nodes ?? []
   const rosterNodes = uniqueRosterNodes(roster, currentBaseUrl)
   const uniqueNodes =
     value && !rosterNodes.some((n) => n.baseUrl === value)
       ? [...rosterNodes, { name: value, baseUrl: value }]
       : rosterNodes
+  const probes = useQueries({ queries: uniqueNodes.map((n) => healthzQueryOptions(n.baseUrl)) })
+  const options = uniqueNodes
+    .map((n, i) => ({
+      value: n.baseUrl,
+      label: nodeOptionLabel(n, {
+        currentBaseUrl,
+        meshName: meshDenName(meshNodes, n.baseUrl),
+        healthzNode: probes[i]?.data?.node || undefined,
+      }),
+    }))
+    .filter((n) => !excludedNodes.includes(n.value))
 
   return (
     <div className="flex flex-col gap-1">
       <label className="text-xs text-ink-dim">Node</label>
       <Select
         value={value}
-        options={uniqueNodes
-          .filter((n) => !excludedNodes.includes(n.baseUrl))
-          .map((n) => ({ value: n.baseUrl, label: n.name }))}
+        options={options}
         onChange={onChange}
         disabled={disabled}
         label="Node"
@@ -161,6 +188,10 @@ function AgentEditor({
   const [rawModel, setModel] = useState(init?.model ?? '')
   const [rawEffort, setEffort] = useState(init?.effort ?? '')
   const [systemPrompt, setSystemPrompt] = useState(init?.systemPrompt ?? '')
+  const [directory, setDirectory] = useState(agent?.directory ?? duplicate?.draft.directory ?? '')
+  const [sharedLink, setSharedLink] = useState(
+    agent?.sharedLink ?? duplicate?.draft.sharedLink ?? true,
+  )
   const excludedNodes = duplicate
     ? [duplicate.source.nodeBaseUrl, duplicate.source.sourceNodeBaseUrl]
     : []
@@ -172,6 +203,19 @@ function AgentEditor({
         : baseUrl),
   )
   const nodeLocked = Boolean(agent)
+  const hostingNode = useMeshNodeName(agent?.sourceNodeBaseUrl ?? '')
+  const directoryRoot = nodeListMeta.get(nodeBaseUrl)?.directoryRoot
+  const catalogQuery = useQuery({
+    queryKey: ['agent-catalog', nodeBaseUrl, transportEpoch],
+    queryFn: async ({ signal }) => (await gatewayFor(nodeBaseUrl)).catalog(signal),
+    enabled: Boolean(nodeBaseUrl),
+    staleTime: 60_000,
+    retry: false,
+  })
+  const trimmedName = name.trim()
+  const catalogClash =
+    trimmedName !== '' &&
+    (catalogQuery.data?.agents ?? []).some((row) => row.id === trimmedName && row.id !== agent?.id)
   const formRef = useRef<HTMLFormElement | null>(null)
   // A picker's Radix popper still being mounted means that popover owns the
   // event (its own dismiss handlers run first, in the same dispatch).
@@ -199,6 +243,8 @@ function AgentEditor({
             harnessId: rawHarnessId,
             model: rawModel,
             effort: rawEffort,
+            directory,
+            sharedLink,
           },
           duplicate.source,
           { nodeBaseUrl, harnesses },
@@ -285,6 +331,8 @@ function AgentEditor({
       effort,
       systemPrompt,
       harnessId: harnessId ? (harnessId as HarnessId) : null,
+      directory,
+      sharedLink,
     }
     if (!nodeLocked) patch.nodeBaseUrl = nodeBaseUrl
     onSave(patch)
@@ -336,6 +384,11 @@ function AgentEditor({
             disabled={disabled}
             className="rounded border border-line bg-panel-2 px-2 py-1.5 text-xs text-ink outline-none focus:border-em disabled:opacity-50"
           />
+          {catalogClash && (
+            <p className="text-xs text-ink-dim" role="status">
+              This name matches a catalog agent id, which wins over a preset name for delegate_task.
+            </p>
+          )}
         </div>
 
         <div className="flex flex-col gap-1">
@@ -359,12 +412,43 @@ function AgentEditor({
           </div>
         </div>
 
-        <NodeSelector
-          excludedNodes={excludedNodes}
-          value={nodeBaseUrl}
-          onChange={setNodeBaseUrl}
-          disabled={disabled || nodeLocked}
-        />
+        {agent ? (
+          <div className="flex flex-col gap-1">
+            <span className="text-xs text-ink-dim">Node</span>
+            <p className="rounded border border-line bg-panel-2 px-2 py-1.5 text-xs text-ink">
+              {agent.node || hostingNode || 'unknown'}
+            </p>
+          </div>
+        ) : (
+          <NodeSelector
+            excludedNodes={excludedNodes}
+            value={nodeBaseUrl}
+            onChange={setNodeBaseUrl}
+            disabled={disabled}
+          />
+        )}
+
+        <div className="flex flex-col gap-1">
+          <label className="text-xs text-ink-dim">Directory</label>
+          <input
+            value={directory}
+            onChange={(e) => setDirectory(e.target.value)}
+            placeholder={agentDirectoryPlaceholder(directoryRoot, name)}
+            disabled={disabled}
+            spellCheck={false}
+            className="rounded border border-line bg-panel-2 px-2 py-1.5 font-mono text-xs text-ink outline-none focus:border-em disabled:opacity-50"
+          />
+        </div>
+
+        <label className="flex items-center gap-2 text-xs text-ink-dim">
+          <input
+            type="checkbox"
+            checked={sharedLink}
+            onChange={(e) => setSharedLink(e.target.checked)}
+            disabled={disabled}
+          />
+          Link shared directory (rivet-shared)
+        </label>
 
         <div className="flex flex-col gap-1">
           <label className="text-xs text-ink-dim">Harness</label>
@@ -399,7 +483,16 @@ function AgentEditor({
                 <button
                   type="button"
                   onClick={() =>
-                    onDuplicate({ name, color, harnessId, model, effort, systemPrompt })
+                    onDuplicate({
+                      name,
+                      color,
+                      harnessId,
+                      model,
+                      effort,
+                      systemPrompt,
+                      directory,
+                      sharedLink,
+                    })
                   }
                   disabled={disabled}
                   className="self-start rounded border border-line px-3 py-1.5 text-xs text-ink-dim hover:border-em hover:text-em disabled:opacity-50"
@@ -600,6 +693,14 @@ function AgentRow({
       : activity.nodeBaseUrl === baseUrl
         ? `${activity.level} here`
         : `${activity.level} on ${activityNodeName ?? urlLabel(activity.nodeBaseUrl)}`
+  const place = [agent.node, agent.directory].filter(Boolean).join(' · ')
+  const rowTitle = nodeKnown
+    ? place
+      ? `${agent.name} — ${place}`
+      : agent.name
+    : place
+      ? `${agent.name} (node unknown) — ${place}`
+      : `${agent.name} (node unknown)`
 
   const swatch = (
     <span
@@ -617,7 +718,7 @@ function AgentRow({
 
   if (compact) {
     return (
-      <Tooltip label={nodeKnown ? agent.name : `${agent.name} (node unknown)`} block>
+      <Tooltip label={rowTitle} block>
         <button
           type="button"
           onClick={onOpen}
@@ -637,7 +738,7 @@ function AgentRow({
         onClick={onOpen}
         disabled={!nodeKnown}
         className="flex min-w-0 flex-1 items-center gap-2 text-left disabled:opacity-50"
-        title={nodeKnown ? agent.name : 'node unknown'}
+        title={rowTitle}
       >
         {swatch}
         <span className="min-w-0 truncate text-xs text-ink">{agent.name}</span>
@@ -700,36 +801,50 @@ export function AgentsSection(props: { compact?: boolean }): JSX.Element {
   const dialog = useConfirmDialog()
 
   const uniqueNodes: NodeChoice[] = uniqueRosterNodes(roster, baseUrl)
+  const { mesh } = useNodeDiscovery()
+  const meshNodes = mesh.isError ? [] : (mesh.data?.nodes ?? [])
+  const probes = useQueries({ queries: uniqueNodes.map((n) => healthzQueryOptions(n.baseUrl)) })
+  const rosterForResolve: NodeChoice[] = uniqueNodes.map((n, i) => {
+    const node = probes[i]?.data?.node || undefined
+    return { name: n.name, baseUrl: n.baseUrl, ...(node ? { node } : {}) }
+  })
+  const meshKey = meshNodes.map((n) => `${n.id}:${n.name}:${n.denUrl}`).join('|')
+  const rosterKey = rosterForResolve.map((n) => `${n.baseUrl}=${n.node ?? ''}`).join('|')
 
   const nodeQueries = useQuery({
-    queryKey: ['agents-all-nodes', uniqueNodes.map((n) => n.baseUrl), transportEpoch],
+    queryKey: ['agents-all-nodes', rosterKey, meshKey, transportEpoch],
     queryFn: async ({ signal }) => {
       const results = await Promise.all(
         uniqueNodes.map(async (node) => {
           try {
             const res = await (await gatewayFor(node.baseUrl)).agentsList(signal)
-            lastGoodAgentsByNode.set(node.baseUrl, res.agents)
-            return { nodeBaseUrl: node.baseUrl, agents: res.agents }
+            const slice: ListedAgents & NodeListMeta = {
+              baseUrl: node.baseUrl,
+              node: res.node,
+              directoryRoot: res.directoryRoot,
+              sharedDir: res.sharedDir,
+              backend: res.backend,
+              agents: res.agents.map((agent) => migrateAgentPreset(agent)),
+            }
+            lastGoodSliceByNode.set(node.baseUrl, slice)
+            nodeListMeta.set(node.baseUrl, slice)
+            return slice
           } catch (err) {
             if (signal.aborted) throw err
-            const kept = lastGoodAgentsByNode.get(node.baseUrl) ?? []
-            return { nodeBaseUrl: node.baseUrl, agents: kept }
+            const kept = lastGoodSliceByNode.get(node.baseUrl)
+            if (kept) {
+              nodeListMeta.set(node.baseUrl, kept)
+              return kept
+            }
+            return { baseUrl: node.baseUrl, agents: [] }
           }
         }),
       )
-      const allAgents: RosterAgent[] = []
-      const seen = new Set<string>()
-      for (const result of results) {
-        for (const agent of result.agents) {
-          if (seen.has(agent.id)) continue
-          seen.add(agent.id)
-          allAgents.push({
-            ...migrateAgentPreset(agent),
-            sourceNodeBaseUrl: result.nodeBaseUrl,
-          })
-        }
-      }
-      return allAgents
+      return dedupeRosterAgents(results, {
+        currentBaseUrl: baseUrl,
+        mesh: meshNodes,
+        roster: rosterForResolve,
+      })
     },
     placeholderData: (prev) => prev,
   })
@@ -738,16 +853,20 @@ export function AgentsSection(props: { compact?: boolean }): JSX.Element {
   const isLoading = nodeQueries.isLoading
 
   const createMutation = useMutation({
-    mutationFn: async (agent: AgentPatch) =>
-      (await gatewayFor(agent.nodeBaseUrl!)).agentCreate({
-        name: agent.name!,
-        color: agent.color,
-        harnessId: agent.harnessId ?? undefined,
-        model: agent.model,
-        effort: agent.effort,
-        systemPrompt: agent.systemPrompt,
-        nodeBaseUrl: agent.nodeBaseUrl!,
-      }),
+    mutationFn: async (agent: AgentPatch) => {
+      const target = agent.nodeBaseUrl
+      if (!target) throw new Error('node unknown')
+      const gw = await gatewayFor(target)
+      const body = agentCreateBody(agent)
+      try {
+        return await gw.agentCreate(body)
+      } catch (err) {
+        // Old dens still 400 when nodeBaseUrl is missing. One retry; a second
+        // failure is the mutation error. New fields are ignored by those dens.
+        if (!isLegacyNodeBaseUrlRequired(err)) throw err
+        return gw.agentCreate(agentCreateBodyLegacy(agent, target))
+      }
+    },
     onSuccess: () => {
       void queryClient.invalidateQueries({ queryKey: ['agents-all-nodes'] })
       setCreating(false)
@@ -760,19 +879,13 @@ export function AgentsSection(props: { compact?: boolean }): JSX.Element {
       id,
       agent,
       targetNode,
+      previous,
     }: {
       id: string
       agent: AgentPatch
       targetNode: string
-    }) =>
-      (await gatewayFor(targetNode)).agentUpdate(id, {
-        name: agent.name,
-        color: agent.color,
-        harnessId: agent.harnessId,
-        model: agent.model,
-        effort: agent.effort,
-        systemPrompt: agent.systemPrompt,
-      } satisfies AgentUpdateRequest),
+      previous: RosterAgent
+    }) => (await gatewayFor(targetNode)).agentUpdate(id, agentUpdateBody(previous, agent)),
     onSuccess: () => {
       void queryClient.invalidateQueries({ queryKey: ['agents-all-nodes'] })
       setEditing(null)
@@ -861,7 +974,7 @@ export function AgentsSection(props: { compact?: boolean }): JSX.Element {
 
   const applyAgentSettings = (
     sessionId: string,
-    agent: AgentPreset,
+    agent: RosterAgent,
     nodeUrl: string,
     opts?: { replace?: boolean },
   ): void => {
@@ -872,13 +985,15 @@ export function AgentsSection(props: { compact?: boolean }): JSX.Element {
       effort: isThinkingLevel(agent.effort) ? agent.effort : 'medium',
       harnessEffort: agent.effort || undefined,
       systemPrompt: agent.systemPrompt || '',
+      agentId: agent.id,
     })
     setAgentLastSession(agent.id, sessionId, nodeUrl, opts)
   }
 
-  // Hub connection stays put. The session lives on agent.nodeBaseUrl.
-  const openFresh = (agent: AgentPreset, opts?: { replace?: boolean }): void => {
-    const nodeUrl = agent.nodeBaseUrl
+  // Hub connection stays put. The session lives on the resolved hosting URL.
+  const openFresh = (agent: RosterAgent, opts?: { replace?: boolean }): void => {
+    const nodeUrl = agent.sourceNodeBaseUrl
+    if (!nodeUrl) return
     const currentBase = useConnection.getState().baseUrl
     const sessionId = uuidv4()
     applyAgentSettings(sessionId, agent, nodeUrl, opts)
@@ -950,10 +1065,10 @@ export function AgentsSection(props: { compact?: boolean }): JSX.Element {
   }
 
   const handleOpen = (agent: RosterAgent): void => {
-    if (!uniqueNodes.some((n) => n.baseUrl === agent.nodeBaseUrl)) return
+    if (!agent.sourceNodeBaseUrl) return
     const gen = bumpGen(agent.id)
     void (async () => {
-      collapseAgentSlots(agent.id, agent.nodeBaseUrl)
+      collapseAgentSlots(agent.id, agent.sourceNodeBaseUrl)
       const pin = listAgentSessions(agent.id).at(0)
       if (!pin) {
         openFresh(agent)
@@ -978,7 +1093,7 @@ export function AgentsSection(props: { compact?: boolean }): JSX.Element {
     // Same fail-closed guard as handleOpen: never mint/pin off-roster. The
     // spawn itself is already fail-closed at spawnPty; this keeps a ↺ click
     // from minting a draft pinned to a node that cannot run it.
-    if (!uniqueNodes.some((n) => n.baseUrl === agent.nodeBaseUrl)) return
+    if (!agent.sourceNodeBaseUrl) return
     bumpGen(agent.id)
     openFresh(agent, { replace: true })
   }
@@ -1038,7 +1153,7 @@ export function AgentsSection(props: { compact?: boolean }): JSX.Element {
               key={agent.id}
               agent={agent}
               compact={compact}
-              nodeKnown={uniqueNodes.some((n) => n.baseUrl === agent.nodeBaseUrl)}
+              nodeKnown={Boolean(agent.sourceNodeBaseUrl)}
               onOpen={() => handleOpen(agent)}
               onStartOver={() => handleStartOver(agent)}
               onEdit={() => {
@@ -1056,7 +1171,7 @@ export function AgentsSection(props: { compact?: boolean }): JSX.Element {
                   ) {
                     deleteMutation.mutate({
                       id: agent.id,
-                      targetNode: agent.sourceNodeBaseUrl,
+                      targetNode: agent.sourceNodeBaseUrl || agent.listedBaseUrl,
                     })
                   }
                 })()
@@ -1079,7 +1194,8 @@ export function AgentsSection(props: { compact?: boolean }): JSX.Element {
             updateMutation.mutate({
               id: editing.id,
               agent: updated,
-              targetNode: editing.sourceNodeBaseUrl,
+              targetNode: editing.sourceNodeBaseUrl || editing.listedBaseUrl,
+              previous: editing,
             })
           }
           onCancel={cancelEdit}

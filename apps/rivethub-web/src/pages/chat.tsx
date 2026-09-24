@@ -6,6 +6,7 @@ import {
   needsRegistryBeforeSpawn,
   shouldPersistLaunchLatch,
 } from '../lib/conversation-model-options.js'
+import { presetSpawnFields, termSpawnBody, termSpawnFallbackBody } from '../lib/term-spawn.js'
 import { withAttachmentText } from '../lib/attachments.js'
 import {
   DIALOG_DISMISSED_NOTICE,
@@ -1492,18 +1493,33 @@ function ActiveSession(props: {
         (settings?.harnessId ? rosterCommandFor(settings.harnessId) : undefined) ||
         settings?.agent ||
         undefined
-      const body = {
-        session: props.sessionId,
-        ...(command ? { command } : {}),
-        ...(harnessCommand ? { resume: props.sessionId } : {}),
-        ...settledLaunch.spawn,
-      }
+      const preset = presetSpawnFields(
+        settings?.agentId,
+        queryClient
+          .getQueriesData<{ id: string; model?: string; effort?: string }[]>({
+            queryKey: ['agents-all-nodes'],
+          })
+          .map(([, data]) => data),
+      )
+      const body = termSpawnBody({
+        sessionId: props.sessionId,
+        command,
+        resumeSessionId: harnessCommand ? props.sessionId : undefined,
+        agentId: settings?.agentId,
+        model: settledLaunch.spawn.model,
+        effort: settledLaunch.spawn.effort,
+        preset,
+      })
       // An API-only agent has no roster command → fall back to the node default
       // rather than 404 (keeps the session id via --session-id if a UUID).
+      // agentId stays on that retry so the den can still derive the preset.
+      // A 404 for an unknown agentId fails the retry too, and a 409 (preset
+      // hosted on another node) is not retried. Both surface as this thread's
+      // spawn error — GatewayError.message is the den's error text.
       const p = command
         ? await gw.termSpawn(body).catch((error: unknown) => {
             if (error instanceof GatewayError && error.status === 404 && !settings?.harnessId)
-              return gw.termSpawn({ session: props.sessionId })
+              return gw.termSpawn(termSpawnFallbackBody(props.sessionId, settings?.agentId))
             throw error
           })
         : await gw.termSpawn(body)

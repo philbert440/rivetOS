@@ -132,6 +132,18 @@ describe('agentCopySeed', () => {
   })
 })
 
+describe('agentCopySeed directory', () => {
+  it('carries directory and sharedLink onto the create seed', () => {
+    const result = agentCopySeed(
+      { ...draft, directory: '~/agents/reviewer', sharedLink: false },
+      source,
+      target,
+    )
+    assert.equal(result.seed.directory, '~/agents/reviewer')
+    assert.equal(result.seed.sharedLink, false)
+  })
+})
+
 describe('canOfferAgentCopy', () => {
   it('offers copying only for a failed request to the existing preset owner', () => {
     assert.equal(canOfferAgentCopy(source, source.sourceNodeBaseUrl, true), true)

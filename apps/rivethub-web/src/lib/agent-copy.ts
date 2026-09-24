@@ -12,6 +12,9 @@ export type AgentDraft = Pick<
   'name' | 'color' | 'model' | 'effort' | 'systemPrompt'
 > & {
   harnessId: string
+  /** Carried onto the copy when the editor has one. Empty means the den default. */
+  directory?: string
+  sharedLink?: boolean
 }
 export type CopySource = Pick<AgentPreset, 'nodeBaseUrl'> & { sourceNodeBaseUrl: string }
 export type CopyTarget = {
@@ -75,6 +78,8 @@ export function agentCopySeed(draft: AgentDraft, source: CopySource, target: Cop
       model,
       effort,
       nodeBaseUrl: target.nodeBaseUrl,
+      ...(draft.directory !== undefined ? { directory: draft.directory } : {}),
+      ...(draft.sharedLink !== undefined ? { sharedLink: draft.sharedLink } : {}),
     },
     notes,
   }
