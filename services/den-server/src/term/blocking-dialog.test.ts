@@ -1,12 +1,20 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { dialogOnScreen, parseBlockingDialog } from './blocking-dialog.js'
+import {
+  dialogOnScreen,
+  parseBlockingDialog,
+  parsePreSendBlock,
+  preSendBlockOnScreen,
+} from './blocking-dialog.js'
 import {
   AUTO_MODE_DIALOG_SCREEN,
   CLAUDE_PERM_SCREEN,
   CLAUDE_PICKER_SCREEN,
+  FRESH_CLAUDE_PROMPT_SCREEN,
   IDLE_HARNESS_SCREEN,
   MODEL_PICKER_SCREEN,
   OLD_DIALOG_SCROLLBACK_SCREEN,
+  SLASH_DRAFT_SCREEN,
+  WRAPPED_DRAFT_SCREEN,
 } from './tui-screen-fixtures.js'
 
 const AUTO_MODE_RESULT = {
@@ -410,5 +418,31 @@ describe('dialogOnScreen (legacy POST /term/inject gate)', () => {
     expect(
       await dialogOnScreen(() => Promise.reject(new Error('pane read failed'))),
     ).toBeUndefined()
+  })
+})
+
+describe('parsePreSendBlock', () => {
+  it('reports unsent text in the input box as a draft', () => {
+    expect(parsePreSendBlock(SLASH_DRAFT_SCREEN)).toEqual({ draft: true })
+  })
+
+  it('blocks nothing on an idle screen, a fresh placeholder prompt, or an empty read', () => {
+    expect(parsePreSendBlock(IDLE_HARNESS_SCREEN)).toEqual({})
+    expect(parsePreSendBlock(FRESH_CLAUDE_PROMPT_SCREEN)).toEqual({})
+    expect(parsePreSendBlock('')).toEqual({})
+  })
+
+  it('fails open on a wrapped draft (pinned until the separator block is parsed)', () => {
+    expect(parsePreSendBlock(WRAPPED_DRAFT_SCREEN)).toEqual({})
+  })
+
+  it('reports an open dialog, not a draft', () => {
+    const block = parsePreSendBlock(MODEL_PICKER_SCREEN)
+    expect(block.dialog?.title).toBe('Select model')
+    expect(block.draft).toBeUndefined()
+  })
+
+  it('fails open when the screen read throws', async () => {
+    expect(await preSendBlockOnScreen(() => Promise.reject(new Error('read failed')))).toEqual({})
   })
 })

@@ -108,7 +108,12 @@ import type { HarnessSession } from '../term/harness-sessions.js'
 import { overlaySessionContext } from '../term/context-window.js'
 import { stripPastedContentWrapper } from './adapters/claude.js'
 import { parseAskPicker } from '../term/ask-picker.js'
-import { parseBlockingDialog, type BlockingDialog } from '../term/blocking-dialog.js'
+import {
+  parseBlockingDialog,
+  parsePreSendBlock,
+  type BlockingDialog,
+  type PreSendBlock,
+} from '../term/blocking-dialog.js'
 import { parseComposerInput } from '../term/composer-input.js'
 import { parsePermissionPrompt } from '../term/permission-prompt.js'
 import type { TranscriptWatcher } from '../term/transcript-watch.js'
@@ -829,6 +834,15 @@ export abstract class PtyHarnessDriver<S extends HarnessStoreHost = HarnessStore
           `${this.harnessId} ${native} is showing a dialog; answer it in the terminal first`,
           { harnessId: this.harnessId, sessionId, context: { reason: 'harness_dialog', dialog } },
         )
+      // Unsent text in the input box would be merged with the paste and
+      // submitted as one message. Refused even on the inject button: Esc can't
+      // clear it safely, and the text is the user's.
+      const draftRejection = (): HarnessError =>
+        new HarnessError(
+          'turn_in_flight',
+          `${this.harnessId} ${native} has unsent text in its input; send or clear it in the terminal first`,
+          { harnessId: this.harnessId, sessionId, context: { reason: 'harness_draft' } },
+        )
       let ptyId = await this.ensurePty(pty, native)
       if (ptyId !== idBefore) createdOrRespawned = true
       // Snapshot, not a lock. A dialog can open after this read and still
@@ -843,8 +857,9 @@ export abstract class PtyHarnessDriver<S extends HarnessStoreHost = HarnessStore
       // `undefined` (not false) keeps the recorded interrupt flag absent on
       // the ordinary path.
       const bypassDialogGate = turn.bypassDialogGate === true
-      const dialog = await this.openDialog(native)
+      const { dialog, draft } = await this.preSendBlock(native)
       if (dialog && !bypassDialogGate) throw dialogRejection(dialog)
+      if (draft) throw draftRejection()
       dismissedDialog = Boolean(dialog)
       if (!pty.inject(ptyId, injected, true, dialog ? true : undefined)) {
         // The term manager keeps its session→pty mapping until the EXITED
@@ -857,8 +872,10 @@ export abstract class PtyHarnessDriver<S extends HarnessStoreHost = HarnessStore
         // between the pre-send snapshot and this retry.
         createdOrRespawned = true
         ptyId = await this.spawnFor(pty, native, true)
-        const retryDialog = await this.openDialog(native)
+        const retry = await this.preSendBlock(native)
+        const retryDialog = retry.dialog
         if (retryDialog && !bypassDialogGate) throw dialogRejection(retryDialog)
+        if (retry.draft) throw draftRejection()
         dismissedDialog = Boolean(retryDialog)
         if (!pty.inject(ptyId, injected, true, retryDialog ? true : undefined)) {
           // A live-but-unwritable harness means its pre-ready inject buffer is
@@ -1685,25 +1702,25 @@ export abstract class PtyHarnessDriver<S extends HarnessStoreHost = HarnessStore
    * set: a detected dialog is then dismissed with Esc instead of rejected,
    * and a miss pastes normally. Automatic retries do not set the flag.
    * Fails open: no `screen` dep, a capture error, or an empty screen all
-   * mean "no dialog", so a flaky capture can never block chat.
+   * mean "no dialog", so a flaky capture can never block chat. The same read
+   * reports unsent text in the input box (`draft`), which blocks every send.
    *
    * `resolveApproval` and `answerPrompt` intentionally bypass this gate. They
    * write the answer with `injectKeys` (a typed prompt answer uses `pty.inject`)
    * instead of `sendUserTurn`. They are answering the dialog; running the gate
    * there would 409 the answer.
    */
-  protected async openDialog(native: string): Promise<BlockingDialog | undefined> {
-    if (!this.dialogGate) return undefined
+  protected async preSendBlock(native: string): Promise<PreSendBlock> {
+    if (!this.dialogGate) return {}
     try {
       const raw = await this.deps.screen?.(this.room(native))
-      if (!raw) return undefined
-      return parseBlockingDialog(raw)
+      return parsePreSendBlock(raw ?? '')
     } catch (err) {
       this.log(
         `[den-server] harness: pre-send screen capture failed for ${this.harnessId}:${native}: ` +
           (err instanceof Error ? err.message : String(err)),
       )
-      return undefined
+      return {}
     }
   }
 

@@ -3,6 +3,7 @@ import {
   DIALOG_DISMISSED_NOTICE,
   DIALOG_DISMISSED_NOTICE_MS,
   DIALOG_NOTE,
+  DRAFT_NOTE,
   dialogDismissedNoticeRemaining,
   dismissedDialogFrom,
   sendBlockNote,
@@ -10,6 +11,17 @@ import {
 } from './send-block-note.js'
 
 describe('sendBlockNote', () => {
+  it('explains a send refused because the Terminal input has unsent text', () => {
+    const err = {
+      status: 409,
+      body: { error: 'x', code: 'turn_in_flight', reason: 'harness_draft' },
+    }
+    expect(sendBlockNote(err)).toBe(DRAFT_NOTE)
+    expect(DRAFT_NOTE).toMatch(/unsent text/)
+    expect(DRAFT_NOTE).toMatch(/stays queued/)
+    expect(DRAFT_NOTE).toMatch(/inject button/)
+  })
+
   it('explains a send refused because the Terminal has a dialog open', () => {
     const err = { status: 409, body: { error: 'x', reason: 'harness_dialog' } }
     expect(sendBlockNote(err)).toBe(DIALOG_NOTE)
