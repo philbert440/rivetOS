@@ -192,7 +192,7 @@ try {
   }
 } catch (err) {
   const message = err instanceof Error ? err.message : String(err)
-  if (!ranLiveMcp && /Cannot find package/.test(message)) {
+  if (!ranLiveMcp && /Cannot find (package|module)/.test(message)) {
     check('live MCP skipped (workspace packages not installed)', true)
   } else {
     check('live MCP recall round-trip', false, message)

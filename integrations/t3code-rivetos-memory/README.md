@@ -111,8 +111,9 @@ See `src/tool-map.mjs` and `workspace-templates/MEMORY.md`.
    integrations/t3code-rivetos-memory/bin/t3code-memory-capture.sh --watch
    ```
 
-   Details, cursor path, and schema-churn / WAL / 16K-cap risks:
-   `capture/README.md`.
+   Details, cursor path, and schema-churn / WAL risks:
+   `capture/README.md`. The first `--watch` pass with an empty cursor
+   keeps the last 14 days and seeds the cursor.
 
 6. In a T3 Claude (or other harness) thread, ask the agent to call
    `memory_search` / `memory_browse`. That is the recall flow. T3 will not
@@ -145,7 +146,7 @@ See `src/tool-map.mjs` and `workspace-templates/MEMORY.md`.
 | `RIVETOS_MCP_ENABLE_MEMORY_WRITE` | `1` to register `memory_append` / `memory_ingest_session`. |
 | `RIVETOS_ROOT` | Checkout used to find `services/mcp-sidecar/dist/cli.js`. |
 | `RIVETOS_ENV_FILE` | Env file parsed (never sourced). Default `~/.rivetos/.env`. |
-| `MCP_HOST` / `MCP_PORT` | HTTP bind. Default `127.0.0.1:5700`. |
+| `MCP_HOST` / `MCP_PORT` | HTTP bind. Default `127.0.0.1:5700`. Non-loopback without `RIVETOS_MCP_TOKEN` is refused unless `RIVETOS_MCP_ALLOW_INSECURE_BIND=1`. |
 | `RIVETOS_MCP_TOKEN` | Bearer for TCP. T3 plugin MCP URLs cannot send headers — leave unset for the HTTP prototype. |
 | `T3_STATE_SQLITE` / `T3_USERDATA` | Capture sqlite path. Default `~/.t3/userdata/state.sqlite`. |
 | `RIVETOS_T3CODE_STATE` | Capture cursor file. Default `~/.rivetos/t3code-capture-state.json`. |
@@ -164,7 +165,7 @@ See `src/tool-map.mjs` and `workspace-templates/MEMORY.md`.
 4. **Capture is a host sidecar, not a T3 hook.** T3 has no session-idle
    plugin event. `bin/t3code-memory-capture.sh --watch` polls
    `~/.t3/userdata/state.sqlite` (read-only, WAL-aware) and upserts like
-   the OpenCode kit. See `capture/README.md` for schema-churn / WAL / 16K
+   the OpenCode kit. See `capture/README.md` for schema-churn / WAL
    risks. Harness-native capture (Claude hooks, Codex rollouts, OpenCode
    db) is **optional enrichment** — not required.
 5. **Not wired into `rivetos plugins install`.** T3 is not a `HARNESS_IDS`
@@ -176,8 +177,9 @@ See `src/tool-map.mjs` and `workspace-templates/MEMORY.md`.
    way and still loads user MCP via settingSources. If a future T3 build
    set `strictMcpConfig` on normal sessions, user MCP would stop loading —
    that is a T3 change, not something this kit can paper over.
-8. **`memory_get_full` does not yet re-read T3 tables.** Truncated 16K
-   tails keep a sqlite pointer; opening the original row is a follow-up.
+8. **`memory_get_full` does not re-read T3 `state.sqlite`.** Capture
+   stores those bodies in full (`metadata.uncapped`) instead of truncating
+   them. The sqlite ids in metadata are provenance only.
 
 ## Files
 

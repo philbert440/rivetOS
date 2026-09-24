@@ -34,6 +34,16 @@ unset RIVETOS_MCP_STDIO
 export MCP_HOST="${MCP_HOST:-127.0.0.1}"
 export MCP_PORT="${MCP_PORT:-5700}"
 
+case "$MCP_HOST" in
+  127.0.0.1 | ::1 | localhost | '[::1]') ;;
+  *)
+    if [ -z "${RIVETOS_MCP_TOKEN:-}" ] && [ "${RIVETOS_MCP_ALLOW_INSECURE_BIND:-}" != 1 ]; then
+      echo "rivet-memory-mcp-http: refusing non-loopback MCP_HOST=${MCP_HOST} without RIVETOS_MCP_TOKEN (set RIVETOS_MCP_ALLOW_INSECURE_BIND=1 to override)" >&2
+      exit 1
+    fi
+    ;;
+esac
+
 kind="$(rivetos_resolve_mcp_launch)" || exit 1
 if [ "${RIVETOS_MCP_LAUNCH_PRINT:-}" = "1" ]; then
   printf '%s\n' "$kind" >&2

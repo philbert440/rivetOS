@@ -36,8 +36,13 @@ integrations/t3code-rivetos-memory/bin/t3code-memory-capture.sh --backfill --day
 integrations/t3code-rivetos-memory/bin/t3code-memory-capture.sh --status
 ```
 
-`--watch` polls every 2.5s (override `--poll-ms`). It never writes the
-SQLite file. Logs: `~/.rivetos/logs/t3code-capture.log`.
+`--watch` polls every 2.5s (override `--poll-ms`). The first pass with an
+empty cursor uses the backfill window (default 14 days; there is no
+separate env var) on both completed turns and idle sessions, and seeds
+`historyNotBefore` so later ticks do not ingest older history. `--days`
+bounds message and activity timestamps inside a selected thread, not
+only which threads are listed. It never writes the SQLite file. Logs:
+`~/.rivetos/logs/t3code-capture.log`.
 
 Needs `RIVETOS_PG_URL` (or postgres DataHub) in `~/.rivetos/.env`.
 
@@ -76,11 +81,16 @@ WAL) and set `PRAGMA busy_timeout = 5000` to match T3. `SQLITE_BUSY`
 during a checkpoint is retried on the next poll. Never copy the db
 without `-wal`/`-shm` and expect a consistent snapshot.
 
-**16K message cap.** Bodies are capped at 16,000 chars only when the
-row carries `session_sqlite_path` + `session_sqlite_message_id` (or
-activity id) so a later `memory_get_full` could re-read SQLite.
-`memory_get_full` does not yet know the T3 tables — truncated tails
-are a known gap until that reader is wired.
+**No lossy 16K cap.** `memory_get_full` cannot re-read T3 rows: it looks
+up `metadata.session_sqlite_part_id` on a file ending in `.db`, and this
+kit's database is `state.sqlite`. Content and tool fields are therefore
+stored in full. A payload over 16,000 characters is marked
+`metadata.uncapped = true`. `session_sqlite_message_id` and
+`session_sqlite_activity_id` stay in metadata as provenance only.
+`ros_messages.tool_args` is JSONB, so a string `toolArgs` (or any value
+the cap would have sliced) is stored with `JSON.stringify`. A real
+truncation also records `full_tool_args_length` / `full_tool_result_length`
+and `metadata.truncated`.
 
 ## CLI
 

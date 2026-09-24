@@ -59,6 +59,12 @@ export interface CaptureState {
   threads: Record<string, ThreadCursor>
   lastIngestAt?: string | null
   lastIngestSource?: string | null
+  /**
+   * ISO timestamp seeded on the first windowed pass. Later `--watch` ticks
+   * do not fold messages, activities, turns, or sessions older than this,
+   * so a restart cannot dump pre-start history.
+   */
+  historyNotBefore?: string | null
 }
 
 export interface Queryable {
@@ -157,7 +163,13 @@ export function emptyCursor(): ThreadCursor {
 }
 
 export function emptyState(): CaptureState {
-  return { version: STATE_VERSION, threads: {}, lastIngestAt: null, lastIngestSource: null }
+  return {
+    version: STATE_VERSION,
+    threads: {},
+    lastIngestAt: null,
+    lastIngestSource: null,
+    historyNotBefore: null,
+  }
 }
 
 export function loadState(file = captureStatePath()): CaptureState {
@@ -182,6 +194,7 @@ export function loadState(file = captureStatePath()): CaptureState {
       threads,
       lastIngestAt: asString(raw.lastIngestAt),
       lastIngestSource: asString(raw.lastIngestSource),
+      historyNotBefore: asString(raw.historyNotBefore),
     }
   } catch {
     return emptyState()
@@ -210,13 +223,48 @@ export function mergeState(onDisk: CaptureState | null, next: CaptureState): Cap
         }
       : cur
   }
-  return { ...onDisk, ...next, threads }
+  return {
+    ...onDisk,
+    ...next,
+    threads,
+    // Keep the earlier floor so a narrower later pass cannot re-open
+    // history the first window already closed.
+    historyNotBefore: minIso(onDisk.historyNotBefore ?? null, next.historyNotBefore ?? null),
+  }
 }
 
 function maxIso(a: string, b: string): string {
   if (!a) return b
   if (!b) return a
   return a >= b ? a : b
+}
+
+function minIso(a: string | null, b: string | null): string | null {
+  if (!a) return b
+  if (!b) return a
+  return a <= b ? a : b
+}
+
+export type MessageRole = 'system' | 'user' | 'assistant' | 'tool'
+
+let unknownRoleSkips = 0
+
+/** Map a T3 role onto the ros_messages CHECK set. Anything else is rejected. */
+export function canonicalMessageRole(role: string): MessageRole | null {
+  const normalized = role.trim().toLowerCase()
+  if (
+    normalized === 'system' ||
+    normalized === 'user' ||
+    normalized === 'assistant' ||
+    normalized === 'tool'
+  ) {
+    return normalized
+  }
+  return null
+}
+
+export function unknownRoleSkipCount(): number {
+  return unknownRoleSkips
 }
 
 export function saveState(state: CaptureState, file = captureStatePath()): void {
@@ -315,6 +363,18 @@ function overlapFloor(iso: string): string {
   return new Date(Math.max(0, ms - CURSOR_OVERLAP_MS)).toISOString()
 }
 
+/** True when the row is newer than the saved cursor, or inside the overlap
+ * window but not the cursor row itself. The high-water row must not depend
+ * on event-id dedup to stay out of the next tick. */
+function isPendingRow(updatedAt: string, id: string, cursorTs: string, cursorId: string): boolean {
+  if (!cursorTs) return true
+  if (updatedAt === cursorTs && id === cursorId) return false
+  if (afterCursor(updatedAt, id, cursorTs, cursorId)) return true
+  if (updatedAt === cursorTs) return true
+  const floor = overlapFloor(cursorTs)
+  return Boolean(floor) && updatedAt >= floor && updatedAt < cursorTs
+}
+
 export function isIdleSessionStatus(status: string | null): boolean {
   if (!status) return false
   return !['running', 'starting'].includes(status)
@@ -364,7 +424,7 @@ export function foldCompletedThread(
   threadId: string,
   cursor: ThreadCursor,
   dbPath: string,
-  opts: { ignoreCursor?: boolean } = {},
+  opts: { ignoreCursor?: boolean; sinceIso?: string } = {},
 ): FoldedTurn {
   const skip: Record<string, number> = {}
   const messages: PendingMessage[] = []
@@ -402,7 +462,7 @@ export function foldCompletedThread(
   const provider = asString(meta?.provider_name)
 
   const msgUpdated = msgCols.has('updated_at') ? 'm.updated_at' : 'm.created_at'
-  const msgFloor = opts.ignoreCursor ? '' : overlapFloor(cursor.lastMessageUpdatedAt)
+  const since = opts.sinceIso ?? ''
   const streamingPred = msgCols.has('is_streaming') ? 'AND COALESCE(m.is_streaming, 0) = 0' : ''
 
   const msgRows = db
@@ -427,7 +487,14 @@ export function foldCompletedThread(
     if (!id || seenMsg.has(id)) continue
     seenMsg.add(id)
     const updatedAt = isoOrEmpty(r.updated_at) || isoOrEmpty(r.created_at)
-    if (!opts.ignoreCursor && !afterCursor(updatedAt, id, msgFloor, cursor.lastMessageId)) {
+    if (since && updatedAt < since) {
+      skip.window = (skip.window ?? 0) + 1
+      continue
+    }
+    if (
+      !opts.ignoreCursor &&
+      !isPendingRow(updatedAt, id, cursor.lastMessageUpdatedAt, cursor.lastMessageId)
+    ) {
       skip.cursor = (skip.cursor ?? 0) + 1
       continue
     }
@@ -453,7 +520,6 @@ export function foldCompletedThread(
   }
 
   if (actCols.size > 0) {
-    const actFloor = opts.ignoreCursor ? '' : overlapFloor(cursor.lastActivityCreatedAt)
     const payloadSel = actCols.has('payload_json') ? 'a.payload_json' : `'{}'`
     const actRows = db
       .prepare(
@@ -473,8 +539,13 @@ export function foldCompletedThread(
       const kind = asString(r.kind) || ''
       if (!id || !isToolActivity(tone, kind)) continue
       const createdAt = isoOrEmpty(r.created_at)
-      if (!opts.ignoreCursor && !afterCursor(createdAt, id, actFloor, cursor.lastActivityId))
+      if (since && createdAt < since) continue
+      if (
+        !opts.ignoreCursor &&
+        !isPendingRow(createdAt, id, cursor.lastActivityCreatedAt, cursor.lastActivityId)
+      ) {
         continue
+      }
       const payload = parseJson(r.payload_json)
       const tool = extractToolFromActivity(payload, kind, asString(r.summary) || '')
       messages.push({
@@ -555,6 +626,7 @@ export function listEligibleThreadIds(
       const id = asString(r.thread_id)
       if (!id || !isIdleSessionStatus(asString(r.status))) continue
       const updated = isoOrEmpty(r.updated_at)
+      if (since && updated < since) continue
       const cur = state.threads[id]
       if (!opts.ignoreCursor && cur && updated && updated <= cur.lastTurnCompletedAt) continue
       ids.add(id)
@@ -665,26 +737,45 @@ export async function insertMessage(
   dbPath: string | null,
   seen?: Set<string>,
 ): Promise<'inserted' | 'skipped'> {
+  const role = canonicalMessageRole(m.role)
+  if (!role) {
+    unknownRoleSkips++
+    log(`skip unknown role ${m.role} event=${m.eventId}`)
+    return 'skipped'
+  }
   if (seen?.has(m.eventId)) return 'skipped'
   if (await eventIdExists(client, conversationId, m.eventId)) {
     seen?.add(m.eventId)
     return 'skipped'
   }
 
-  const rowId =
-    (typeof m.extra?.session_sqlite_message_id === 'string' && m.extra.session_sqlite_message_id) ||
-    (typeof m.extra?.session_sqlite_activity_id === 'string' &&
-      m.extra.session_sqlite_activity_id) ||
-    m.eventId
-  const pointer = { dbPath, rowId }
+  // memory_get_full cannot dereference T3 state.sqlite rows, so do not pass a
+  // pointer. capForStorage then keeps the full text and sets uncapped.
+  const pointer = { dbPath: null, rowId: null }
   const contentCap = capForStorage(m.content ?? '', pointer)
   let toolResultStored: string | null = null
-  if (typeof m.toolResult === 'string')
-    toolResultStored = capForStorage(m.toolResult, pointer).stored
+  let toolResultTruncated = false
+  let toolResultUncapped = false
+  if (typeof m.toolResult === 'string') {
+    const toolCap = capForStorage(m.toolResult, pointer)
+    toolResultStored = toolCap.stored
+    toolResultTruncated = toolCap.truncated
+    toolResultUncapped = toolCap.uncapped === true
+  }
   let toolArgsStored: string | null = null
+  let toolArgsTruncated = false
+  let toolArgsFullLength = 0
+  let toolArgsUncapped = false
   if (m.toolArgs != null) {
     const raw = typeof m.toolArgs === 'string' ? m.toolArgs : JSON.stringify(m.toolArgs)
-    toolArgsStored = capForStorage(raw, pointer).stored
+    const argCap = capForStorage(raw, pointer)
+    // tool_args is jsonb. A bare string, or a cap that sliced the JSON, must
+    // be encoded as a JSON string so Postgres accepts the bind parameter.
+    toolArgsStored =
+      typeof m.toolArgs === 'string' || argCap.truncated ? JSON.stringify(argCap.stored) : raw
+    toolArgsTruncated = argCap.truncated
+    toolArgsFullLength = raw.length
+    toolArgsUncapped = argCap.uncapped === true
   }
 
   const meta: Record<string, unknown> = {
@@ -701,6 +792,15 @@ export async function insertMessage(
     meta.full_content_length = (m.content ?? '').length
     meta.truncated = true
   }
+  if (contentCap.uncapped || toolResultUncapped || toolArgsUncapped) meta.uncapped = true
+  if (toolResultTruncated && m.toolResult) {
+    meta.full_tool_result_length = m.toolResult.length
+    meta.truncated = true
+  }
+  if (toolArgsTruncated) {
+    meta.full_tool_args_length = toolArgsFullLength
+    meta.truncated = true
+  }
 
   await client.query(
     `INSERT INTO ros_messages
@@ -710,7 +810,7 @@ export async function insertMessage(
       conversationId,
       captureAgent(),
       CAPTURE_CHANNEL,
-      m.role,
+      role,
       contentCap.stored,
       m.toolName ?? null,
       toolArgsStored,
@@ -794,6 +894,11 @@ export function createWatcherState(capture: CaptureState = emptyState()): Watche
   return { seen: new Map(), capture }
 }
 
+export function backfillSinceIso(days: number, now = Date.now()): string {
+  if (!Number.isFinite(days) || days <= 0) return ''
+  return new Date(now - days * 24 * 60 * 60 * 1000).toISOString()
+}
+
 export async function scanOnce(
   dbPath: string,
   client: Queryable,
@@ -810,50 +915,74 @@ export async function scanOnce(
       log(`schema-churn missing tables: ${schema.missing.join(',')}`)
       return { threads: 0, inserted: 0, skipped: 0, schemaChurn: schema.missing }
     }
-    const days = opts.backfillDays
-    const sinceIso =
-      days === undefined || days <= 0
-        ? ''
-        : new Date(Date.now() - days * 24 * 60 * 60 * 1000).toISOString()
-    const ignoreCursor = opts.ignoreCursor === true || (days !== undefined && days > 0)
+    const explicitDays = opts.backfillDays
+    let sinceIso = ''
+    if (explicitDays !== undefined) {
+      if (explicitDays > 0) sinceIso = backfillSinceIso(explicitDays)
+    } else if (opts.source === 'watch') {
+      const noCursor =
+        !state.capture.historyNotBefore && Object.keys(state.capture.threads).length === 0
+      if (noCursor) {
+        // No backfill-days env var in this kit; the backfill default is 14.
+        sinceIso = backfillSinceIso(DEFAULT_BACKFILL_DAYS)
+        state.capture.historyNotBefore = sinceIso
+      } else if (state.capture.historyNotBefore) {
+        sinceIso = state.capture.historyNotBefore
+      }
+    }
+    if (sinceIso) {
+      const prev = state.capture.historyNotBefore ?? null
+      if (!prev || sinceIso < prev) state.capture.historyNotBefore = sinceIso
+    }
+    const ignoreCursor =
+      opts.ignoreCursor === true || (explicitDays !== undefined && explicitDays > 0)
     const threadIds = listEligibleThreadIds(db, schema, state.capture, { ignoreCursor, sinceIso })
     const abs = path.resolve(dbPath)
     let inserted = 0
     let skipped = 0
     for (const threadId of threadIds) {
-      const cursor = state.capture.threads[threadId] ?? emptyCursor()
-      const folded = foldCompletedThread(db, schema, threadId, cursor, abs, { ignoreCursor })
-      if (folded.messages.length === 0) {
+      try {
+        const cursor = state.capture.threads[threadId] ?? emptyCursor()
+        const folded = foldCompletedThread(db, schema, threadId, cursor, abs, {
+          ignoreCursor,
+          sinceIso,
+        })
+        if (folded.messages.length === 0) {
+          state.capture.threads[threadId] = advanceThreadCursor(
+            cursor,
+            folded,
+            latestCompletedAt(db, threadId),
+          )
+          continue
+        }
+        let seen = state.seen.get(deriveSessionKey(threadId))
+        if (!seen) {
+          seen = new Set()
+          state.seen.set(deriveSessionKey(threadId), seen)
+        }
+        const result = await ingestMessages(client, threadId, folded.messages, {
+          title: folded.title,
+          cwd: folded.cwd,
+          dbPath: abs,
+          provider: folded.provider,
+          triggerEvent: source,
+          seen,
+        })
+        inserted += result.inserted
+        skipped += result.skipped
         state.capture.threads[threadId] = advanceThreadCursor(
           cursor,
           folded,
           latestCompletedAt(db, threadId),
         )
-        continue
+        log(
+          `ingest ${result.sessionKey}: msgs=${String(folded.messages.length)} inserted=${String(result.inserted)} skipped=${String(result.skipped)}`,
+        )
+      } catch (err) {
+        log(`thread ${threadId} failed: ${err instanceof Error ? err.message : String(err)}`)
+      } finally {
+        saveState(state.capture, stateFile)
       }
-      let seen = state.seen.get(deriveSessionKey(threadId))
-      if (!seen) {
-        seen = new Set()
-        state.seen.set(deriveSessionKey(threadId), seen)
-      }
-      const result = await ingestMessages(client, threadId, folded.messages, {
-        title: folded.title,
-        cwd: folded.cwd,
-        dbPath: abs,
-        provider: folded.provider,
-        triggerEvent: source,
-        seen,
-      })
-      inserted += result.inserted
-      skipped += result.skipped
-      state.capture.threads[threadId] = advanceThreadCursor(
-        cursor,
-        folded,
-        latestCompletedAt(db, threadId),
-      )
-      log(
-        `ingest ${result.sessionKey}: msgs=${String(folded.messages.length)} inserted=${String(result.inserted)} skipped=${String(result.skipped)}`,
-      )
     }
     state.capture.lastIngestAt = new Date().toISOString()
     state.capture.lastIngestSource = source
@@ -1007,7 +1136,8 @@ export const USAGE = `t3code-memory-capture — ingest T3 state.sqlite projectio
   t3code-memory-capture --once [--db FILE]
   t3code-memory-capture --status
 
-  --watch          poll completed turns / idle sessions (run beside t3 service)
+  --watch          poll completed turns / idle sessions (run beside t3 service).
+                   An empty cursor uses the ${String(DEFAULT_BACKFILL_DAYS)}-day window and seeds it.
   --poll-ms N      watch interval (default ${String(DEFAULT_POLL_MS)})
   --backfill       one-shot catch-up (default ${String(DEFAULT_BACKFILL_DAYS)} days)
   --once           one poll using the saved cursor

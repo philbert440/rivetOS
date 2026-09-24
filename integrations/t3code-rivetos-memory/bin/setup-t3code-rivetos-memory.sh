@@ -27,7 +27,12 @@ MCP_HOST="${MCP_HOST:-127.0.0.1}"
 MCP_PORT="${MCP_PORT:-5700}"
 MCP_URL="http://${MCP_HOST}:${MCP_PORT}/mcp"
 STATE_DIR="${RIVETOS_HOME:-$HOME/.rivetos}/t3code-rivetos-memory"
-CLAUDE_JSON="${CLAUDE_CONFIG_FILE:-$HOME/.claude.json}"
+# Same path --print advertises: $CLAUDE_CONFIG_DIR/.claude.json, else ~/.claude.json.
+if [ -n "${CLAUDE_CONFIG_DIR:-}" ]; then
+  CLAUDE_JSON="${CLAUDE_CONFIG_DIR}/.claude.json"
+else
+  CLAUDE_JSON="${HOME}/.claude.json"
+fi
 
 DO_APPLY=0
 DO_FORCE=0
@@ -57,27 +62,55 @@ const cfgPath = process.argv[2]
 const launcher = process.argv[3]
 const mode = process.argv[4]
 const force = process.argv[5] === '1'
+
+function isPlainObject(v) {
+  return Boolean(v) && typeof v === 'object' && !Array.isArray(v)
+}
+
+function writeAtomic(dest, text) {
+  if (fs.existsSync(dest)) {
+    const bak = `${dest}.bak`
+    if (!fs.existsSync(bak)) fs.copyFileSync(dest, bak)
+  }
+  const tmp = `${dest}.${process.pid}.tmp`
+  fs.writeFileSync(tmp, text)
+  try {
+    fs.renameSync(tmp, dest)
+  } catch (err) {
+    try {
+      fs.unlinkSync(tmp)
+    } catch {
+      // ignore leftover temp
+    }
+    throw err
+  }
+}
+
 const exists = fs.existsSync(cfgPath)
 let data = {}
 if (exists) {
+  let parsed
   try {
-    data = JSON.parse(fs.readFileSync(cfgPath, 'utf8'))
-  } catch {
-    console.log(`⚠️  ${cfgPath} is not plain JSON — leaving it; wrote the fragment only`)
-    process.exit(0)
+    parsed = JSON.parse(fs.readFileSync(cfgPath, 'utf8'))
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err)
+    console.error(`error: ${cfgPath} is not valid JSON (${msg}); refusing to modify it`)
+    process.exit(1)
   }
+  if (!isPlainObject(parsed)) {
+    console.error(`error: ${cfgPath} is not a plain JSON object; refusing to modify it`)
+    process.exit(1)
+  }
+  data = parsed
 }
-if (!data || typeof data !== 'object' || Array.isArray(data)) data = {}
-if (!data.mcpServers || typeof data.mcpServers !== 'object' || Array.isArray(data.mcpServers)) {
-  data.mcpServers = {}
-}
+if (!isPlainObject(data.mcpServers)) data.mcpServers = {}
 if (mode === 'remove') {
   if (!data.mcpServers.rivetos) {
     console.log(`No rivetos MCP entry in ${cfgPath}`)
     process.exit(0)
   }
   delete data.mcpServers.rivetos
-  fs.writeFileSync(cfgPath, `${JSON.stringify(data, null, 2)}\n`)
+  writeAtomic(cfgPath, `${JSON.stringify(data, null, 2)}\n`)
   console.log(`✅ Removed rivetos MCP from ${cfgPath}`)
   process.exit(0)
 }
@@ -86,7 +119,7 @@ if (data.mcpServers.rivetos && !force) {
   process.exit(0)
 }
 data.mcpServers.rivetos = { command: 'bash', args: [launcher] }
-fs.writeFileSync(cfgPath, `${JSON.stringify(data, null, 2)}\n`)
+writeAtomic(cfgPath, `${JSON.stringify(data, null, 2)}\n`)
 console.log(`✅ Wrote mcpServers.rivetos to ${cfgPath}`)
 JS
 }
@@ -109,8 +142,8 @@ echo "Registration is harness-native MCP (works today) plus a T3-shaped HTTP mcp
 echo
 
 echo "=== 1. Claude (T3 loads settingSources user/project/local) ==="
+echo "# ${CLAUDE_JSON}  (\$CLAUDE_CONFIG_DIR/.claude.json when CLAUDE_CONFIG_DIR is set, else ~/.claude.json)"
 cat <<EOF
-# ~/.claude.json  (or \$CLAUDE_CONFIG_DIR)
 {
   "mcpServers": {
     "rivetos": {
@@ -124,7 +157,7 @@ echo
 
 echo "=== 2. Codex (T3 launches Codex with that home's config) ==="
 cat <<EOF
-codex mcp add rivetos -- bash $LAUNCHER
+codex mcp add rivetos -- bash "$LAUNCHER"
 # or add [mcp_servers.rivetos] to ~/.codex/config.toml
 EOF
 echo
@@ -147,7 +180,7 @@ echo
 echo "=== 4. T3 HTTP mcpUrl (type:http, no headers — matches t3-code shape) ==="
 cat <<EOF
 # Start the sidecar:
-bash $HTTP_LAUNCHER
+bash "$HTTP_LAUNCHER"
 # Health: $MCP_URL replaced by http://${MCP_HOST}:${MCP_PORT}/health/live
 # Proposed plugin entry (t3-plugin.json):
 {
@@ -166,11 +199,11 @@ cat <<EOF
 # read-only and upserts completed turns into RivetOS memory (all providers,
 # agent=rivet-t3). No memory_ingest_session tool call required.
 t3 service install
-bash $CAPTURE_LAUNCHER --watch
-# one-shot: bash $CAPTURE_LAUNCHER --backfill --days 14
-# status:   bash $CAPTURE_LAUNCHER --status
+bash "$CAPTURE_LAUNCHER" --watch
+# one-shot: bash "$CAPTURE_LAUNCHER" --backfill --days 14
+# status:   bash "$CAPTURE_LAUNCHER" --status
 # cursor:   ~/.rivetos/t3code-capture-state.json
-# risks:    $PLUGIN_PATH/capture/README.md (schema-churn / WAL / 16K cap)
+# risks:    $PLUGIN_PATH/capture/README.md (schema-churn / WAL / uncapped over 16K)
 # Harness-native capture (Claude hooks, Codex rollouts, OpenCode db) is
 # optional enrichment only — not required for T3-wide ingest.
 EOF
@@ -183,6 +216,7 @@ echo "  RIVETOS_EMBED_URL + RIVETOS_EMBED_MODEL  optional hybrid search"
 echo "  RIVETOS_MCP_ENABLE_MEMORY_WRITE=1        opt-in store (memory_append)"
 echo "  RIVETOS_ROOT                             RivetOS checkout (default /opt/rivetos)"
 echo "  MCP_HOST / MCP_PORT                      HTTP bind (default 127.0.0.1:5700)"
+echo "  RIVETOS_MCP_ALLOW_INSECURE_BIND=1        allow non-loopback MCP_HOST without a token"
 echo "  T3_STATE_SQLITE / T3_USERDATA            capture sqlite (default ~/.t3/userdata/state.sqlite)"
 echo "  RIVETOS_T3CODE_STATE                     capture cursor (default ~/.rivetos/t3code-capture-state.json)"
 echo "  RIVETOS_CAPTURE_AGENT                    capture agent (default rivet-t3)"
