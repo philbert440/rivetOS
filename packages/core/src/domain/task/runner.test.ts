@@ -5,9 +5,13 @@
  */
 
 import { describe, it, expect, vi, beforeEach } from 'vitest'
+import { existsSync, lstatSync, mkdirSync, mkdtempSync, readlinkSync, rmSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 import type pg from 'pg'
 import { run } from 'graphile-worker'
 import type {
+  AgentPreset,
   HarnessExecutor,
   HarnessExecutorCapabilities,
   TaskEvent,
@@ -313,6 +317,483 @@ describe('createTaskHandler', () => {
   })
 })
 
+function directoryPreset(directory: string, sharedLink = true): AgentPreset {
+  return {
+    id: 'preset-1',
+    name: 'reviewer',
+    color: '',
+    harnessId: 'claude-code',
+    model: 'opus',
+    effort: 'high',
+    systemPrompt: '',
+    directory,
+    sharedLink,
+    nodeBaseUrl: '',
+    createdAt: 1,
+    updatedAt: 1,
+  }
+}
+
+describe('createTaskHandler spec forwarding', () => {
+  function handlerFor(
+    fake: ReturnType<typeof makeFakeExecutor>,
+    workspaceDir: string,
+    resolvePreset?: (id: string) => Promise<AgentPreset | undefined>,
+    kind: 'chat-loop' | 'harness-session' = 'chat-loop',
+    presetOpts?: {
+      resolvePresetBoundMs?: number
+      invalidatePreset?: () => void
+      heartbeatIntervalMs?: number
+    },
+  ) {
+    const store = new InMemoryTaskStore()
+    const executors = createExecutorRegistry()
+    executors.register(kind, fake)
+    const handler = createTaskHandler({
+      store,
+      executors,
+      nodeId: 'test-node',
+      workspaceDir,
+      resolvePreset,
+      resolvePresetBoundMs: presetOpts?.resolvePresetBoundMs,
+      invalidatePreset: presetOpts?.invalidatePreset,
+      heartbeatIntervalMs: presetOpts?.heartbeatIntervalMs,
+    })
+    return { store, handler }
+  }
+
+  it('forwards a workflow workingDir without creating a directory or symlink', async () => {
+    const fake = makeFakeExecutor()
+    const parent = mkdtempSync(join(tmpdir(), 'rivetos-wf-'))
+    const dir = join(parent, 'case')
+    const shared = join(parent, 'shared')
+    mkdirSync(shared)
+    const prev = process.env.RIVETOS_SHARED_DIR
+    process.env.RIVETOS_SHARED_DIR = shared
+    try {
+      const { store, handler } = handlerFor(fake, '/workspace')
+      const task = await store.create(
+        taskInput({
+          spec: { workingDir: dir, effort: 'high', systemPromptAppend: 'be brief' },
+        }),
+      )
+
+      await handler(task.id)
+
+      expect(fake.specs[0]?.workingDir).toBe(dir)
+      expect(fake.specs[0]?.effort).toBe('high')
+      expect(fake.specs[0]?.systemPromptAppend).toBe('be brief')
+      expect(fake.specs[0]?.session.workingDir).toBe(dir)
+      expect(existsSync(dir)).toBe(false)
+      expect((await store.get(task.id))?.status).toBe('completed')
+    } finally {
+      if (prev === undefined) Reflect.deleteProperty(process.env, 'RIVETOS_SHARED_DIR')
+      else process.env.RIVETOS_SHARED_DIR = prev
+      rmSync(parent, { recursive: true, force: true })
+    }
+  })
+
+  it('materialises a preset row directory and the shared symlink', async () => {
+    const fake = makeFakeExecutor()
+    const parent = mkdtempSync(join(tmpdir(), 'rivetos-preset-'))
+    const shared = join(parent, 'shared')
+    const dir = join(parent, 'agent')
+    mkdirSync(shared)
+    const prev = process.env.RIVETOS_SHARED_DIR
+    process.env.RIVETOS_SHARED_DIR = shared
+    try {
+      const { store, handler } = handlerFor(fake, '/workspace', async (id) =>
+        id === 'preset-1' ? directoryPreset(dir, true) : undefined,
+      )
+      const task = await store.create(
+        taskInput({
+          spec: { presetId: 'preset-1', workingDir: dir, sharedLink: false },
+        }),
+      )
+
+      await handler(task.id)
+
+      expect(existsSync(dir)).toBe(true)
+      const link = join(dir, 'rivet-shared')
+      expect(lstatSync(link).isSymbolicLink()).toBe(true)
+      expect(readlinkSync(link)).toBe(shared)
+      expect(fake.specs[0]?.workingDir).toBe(dir)
+      expect(fake.specs[0]?.session.workingDir).toBe(dir)
+      expect((await store.get(task.id))?.status).toBe('completed')
+    } finally {
+      if (prev === undefined) Reflect.deleteProperty(process.env, 'RIVETOS_SHARED_DIR')
+      else process.env.RIVETOS_SHARED_DIR = prev
+      rmSync(parent, { recursive: true, force: true })
+    }
+  })
+
+  it('absent spec fields fall back to opts.workspaceDir', async () => {
+    const fake = makeFakeExecutor()
+    const { store, handler } = handlerFor(fake, '/workspace')
+    const task = await store.create(taskInput())
+
+    await handler(task.id)
+
+    expect(fake.specs[0]?.workingDir).toBe('/workspace')
+    expect(fake.specs[0]?.session.workingDir).toBe('/workspace')
+    expect(fake.specs[0]?.effort).toBeUndefined()
+    expect(fake.specs[0]?.systemPromptAppend).toBeUndefined()
+  })
+
+  it('an invalid workingDir fails the task with working_dir_unavailable', async () => {
+    const fake = makeFakeExecutor()
+    const { store, handler } = handlerFor(fake, '/workspace', async () =>
+      directoryPreset('agents/reviewer'),
+    )
+    const task = await store.create(
+      taskInput({ spec: { presetId: 'preset-1', workingDir: 'agents/reviewer' } }),
+    )
+
+    await handler(task.id)
+
+    const row = await store.get(task.id)
+    expect(row?.status).toBe('failed')
+    expect(row?.error).toBe('working_dir_unavailable')
+    expect(fake.specs).toHaveLength(0)
+  })
+
+  it('a forged presetId with an explicit executor materialises nothing', async () => {
+    const fake = makeFakeExecutor()
+    const parent = mkdtempSync(join(tmpdir(), 'rivetos-forged-'))
+    const dir = join(parent, 'planted')
+    const prev = process.env.RIVETOS_SHARED_DIR
+    process.env.RIVETOS_SHARED_DIR = join(parent, 'shared')
+    try {
+      const { store, handler } = handlerFor(
+        fake,
+        '/workspace',
+        async () => undefined,
+        'harness-session',
+      )
+      const task = await store.create(
+        taskInput({
+          executor: 'harness-session',
+          executorTarget: 'claude-code',
+          spec: { presetId: 'forged', workingDir: dir, sharedLink: true },
+        }),
+      )
+
+      await handler(task.id)
+
+      expect(existsSync(dir)).toBe(false)
+      expect(fake.specs).toHaveLength(1)
+      expect(fake.specs[0]?.workingDir).toBe(dir)
+      expect((await store.get(task.id))?.status).toBe('completed')
+    } finally {
+      if (prev === undefined) Reflect.deleteProperty(process.env, 'RIVETOS_SHARED_DIR')
+      else process.env.RIVETOS_SHARED_DIR = prev
+      rmSync(parent, { recursive: true, force: true })
+    }
+  })
+
+  it('a workingDir that differs from the preset fails working_dir_mismatch', async () => {
+    const fake = makeFakeExecutor()
+    const parent = mkdtempSync(join(tmpdir(), 'rivetos-mismatch-'))
+    const presetDir = join(parent, 'agent')
+    const staleDir = join(parent, 'stale')
+    const prev = process.env.RIVETOS_SHARED_DIR
+    process.env.RIVETOS_SHARED_DIR = join(parent, 'shared')
+    try {
+      const { store, handler } = handlerFor(fake, '/workspace', async () =>
+        directoryPreset(presetDir, true),
+      )
+      const task = await store.create(
+        taskInput({
+          spec: { presetId: 'preset-1', workingDir: staleDir, sharedLink: true },
+        }),
+      )
+
+      await handler(task.id)
+
+      const row = await store.get(task.id)
+      expect(row?.status).toBe('failed')
+      expect(row?.error).toBe('working_dir_mismatch')
+      expect(existsSync(presetDir)).toBe(false)
+      expect(existsSync(staleDir)).toBe(false)
+      expect(fake.specs).toHaveLength(0)
+    } finally {
+      if (prev === undefined) Reflect.deleteProperty(process.env, 'RIVETOS_SHARED_DIR')
+      else process.env.RIVETOS_SHARED_DIR = prev
+      rmSync(parent, { recursive: true, force: true })
+    }
+  })
+
+  it('materialises the preset directory even when spec.workingDir is stale', async () => {
+    // The row omitted workingDir (the spec copy is stale / not the source of
+    // truth). The resolver's directory is created, and a stale spec.sharedLink
+    // of false does not suppress the preset's link. A differing workingDir
+    // fails closed — see the mismatch test — and is not created.
+    const fake = makeFakeExecutor()
+    const parent = mkdtempSync(join(tmpdir(), 'rivetos-stale-'))
+    const presetDir = join(parent, 'agent')
+    const shared = join(parent, 'shared')
+    mkdirSync(shared)
+    const prev = process.env.RIVETOS_SHARED_DIR
+    process.env.RIVETOS_SHARED_DIR = shared
+    try {
+      const { store, handler } = handlerFor(fake, '/workspace', async () =>
+        directoryPreset(presetDir, true),
+      )
+      const task = await store.create(
+        taskInput({
+          spec: { presetId: 'preset-1', sharedLink: false },
+        }),
+      )
+
+      await handler(task.id)
+
+      expect(existsSync(presetDir)).toBe(true)
+      expect(lstatSync(join(presetDir, 'rivet-shared')).isSymbolicLink()).toBe(true)
+      expect(readlinkSync(join(presetDir, 'rivet-shared'))).toBe(shared)
+      expect(fake.specs[0]?.workingDir).toBe(presetDir)
+      expect((await store.get(task.id))?.status).toBe('completed')
+    } finally {
+      if (prev === undefined) Reflect.deleteProperty(process.env, 'RIVETOS_SHARED_DIR')
+      else process.env.RIVETOS_SHARED_DIR = prev
+      rmSync(parent, { recursive: true, force: true })
+    }
+  })
+
+  it('a presetId row with no resolver materialises nothing', async () => {
+    const fake = makeFakeExecutor()
+    const parent = mkdtempSync(join(tmpdir(), 'rivetos-no-resolver-'))
+    const dir = join(parent, 'agent')
+    const prev = process.env.RIVETOS_SHARED_DIR
+    process.env.RIVETOS_SHARED_DIR = join(parent, 'shared')
+    try {
+      const { store, handler } = handlerFor(fake, '/workspace')
+      const task = await store.create(
+        taskInput({ spec: { presetId: 'preset-1', workingDir: dir, sharedLink: true } }),
+      )
+
+      await handler(task.id)
+
+      expect(existsSync(dir)).toBe(false)
+      expect((await store.get(task.id))?.status).toBe('completed')
+    } finally {
+      if (prev === undefined) Reflect.deleteProperty(process.env, 'RIVETOS_SHARED_DIR')
+      else process.env.RIVETOS_SHARED_DIR = prev
+      rmSync(parent, { recursive: true, force: true })
+    }
+  })
+
+  it('a resolver that never resolves is a miss within the bound', async () => {
+    const fake = makeFakeExecutor()
+    const parent = mkdtempSync(join(tmpdir(), 'rivetos-hung-resolve-'))
+    const dir = join(parent, 'planted')
+    try {
+      const { store, handler } = handlerFor(
+        fake,
+        '/workspace',
+        () => new Promise(() => {}),
+        'chat-loop',
+        {
+          resolvePresetBoundMs: 40,
+          heartbeatIntervalMs: 10,
+        },
+      )
+      const realHeartbeat = store.heartbeat.bind(store)
+      let beats = 0
+      store.heartbeat = (id) => {
+        beats += 1
+        return realHeartbeat(id)
+      }
+      const task = await store.create(
+        taskInput({ spec: { presetId: 'preset-1', workingDir: dir, sharedLink: true } }),
+      )
+      const started = Date.now()
+      await handler(task.id)
+      const elapsed = Date.now() - started
+      expect(elapsed).toBeGreaterThanOrEqual(30)
+      expect(elapsed).toBeLessThan(500)
+      expect(beats).toBeGreaterThan(0)
+      expect(existsSync(dir)).toBe(false)
+      expect(fake.specs).toHaveLength(1)
+      expect(fake.specs[0]?.workingDir).toBe(dir)
+      expect((await store.get(task.id))?.status).toBe('completed')
+    } finally {
+      rmSync(parent, { recursive: true, force: true })
+    }
+  })
+
+  it('a resolver that rejects is a miss and does not crash the handler', async () => {
+    const fake = makeFakeExecutor()
+    const parent = mkdtempSync(join(tmpdir(), 'rivetos-reject-resolve-'))
+    const dir = join(parent, 'planted')
+    try {
+      const { store, handler } = handlerFor(
+        fake,
+        '/workspace',
+        () => Promise.reject(new Error('store down')),
+        'chat-loop',
+        { resolvePresetBoundMs: 200 },
+      )
+      const task = await store.create(
+        taskInput({ spec: { presetId: 'preset-1', workingDir: dir, sharedLink: true } }),
+      )
+
+      await expect(handler(task.id)).resolves.toBeUndefined()
+
+      expect(existsSync(dir)).toBe(false)
+      expect(fake.specs).toHaveLength(1)
+      expect(fake.specs[0]?.workingDir).toBe(dir)
+      const row = await store.get(task.id)
+      expect(row?.status).toBe('completed')
+      expect(row?.error).toBeUndefined()
+    } finally {
+      rmSync(parent, { recursive: true, force: true })
+    }
+  })
+
+  it('starts the liveness heartbeat before awaiting resolvePreset', async () => {
+    const fake = makeFakeExecutor()
+    const parent = mkdtempSync(join(tmpdir(), 'rivetos-hb-before-resolve-'))
+    const shared = join(parent, 'shared')
+    const dir = join(parent, 'agent')
+    mkdirSync(shared)
+    const prev = process.env.RIVETOS_SHARED_DIR
+    process.env.RIVETOS_SHARED_DIR = shared
+    let release: (preset: AgentPreset | undefined) => void = () => {}
+    const lookup = new Promise<AgentPreset | undefined>((resolve) => {
+      release = resolve
+    })
+    try {
+      const { store, handler } = handlerFor(fake, '/workspace', () => lookup, 'chat-loop', {
+        resolvePresetBoundMs: 1_000,
+        heartbeatIntervalMs: 10,
+      })
+      const realHeartbeat = store.heartbeat.bind(store)
+      let beats = 0
+      store.heartbeat = (id) => {
+        beats += 1
+        if (beats === 1) release(directoryPreset(dir, true))
+        return realHeartbeat(id)
+      }
+      const task = await store.create(
+        taskInput({ spec: { presetId: 'preset-1', workingDir: dir } }),
+      )
+      const started = Date.now()
+      await handler(task.id)
+      expect(Date.now() - started).toBeLessThan(1_000)
+      expect(beats).toBeGreaterThan(0)
+      expect(existsSync(dir)).toBe(true)
+      expect(fake.specs[0]?.workingDir).toBe(dir)
+      expect((await store.get(task.id))?.status).toBe('completed')
+    } finally {
+      if (prev === undefined) Reflect.deleteProperty(process.env, 'RIVETOS_SHARED_DIR')
+      else process.env.RIVETOS_SHARED_DIR = prev
+      rmSync(parent, { recursive: true, force: true })
+    }
+  })
+
+  it('a stale directory then the current one runs in the current directory', async () => {
+    const fake = makeFakeExecutor()
+    const parent = mkdtempSync(join(tmpdir(), 'rivetos-refresh-dir-'))
+    const shared = join(parent, 'shared')
+    const staleDir = join(parent, 'stale')
+    const currentDir = join(parent, 'current')
+    mkdirSync(shared)
+    const prev = process.env.RIVETOS_SHARED_DIR
+    process.env.RIVETOS_SHARED_DIR = shared
+    let calls = 0
+    let invalidations = 0
+    try {
+      const { store, handler } = handlerFor(
+        fake,
+        '/workspace',
+        async () => {
+          calls += 1
+          return directoryPreset(calls === 1 ? staleDir : currentDir, true)
+        },
+        'chat-loop',
+        {
+          invalidatePreset: () => {
+            invalidations += 1
+          },
+        },
+      )
+      const task = await store.create(
+        taskInput({ spec: { presetId: 'preset-1', workingDir: currentDir } }),
+      )
+
+      await handler(task.id)
+
+      expect(invalidations).toBe(1)
+      expect(calls).toBe(2)
+      expect(existsSync(currentDir)).toBe(true)
+      expect(existsSync(staleDir)).toBe(false)
+      expect(lstatSync(join(currentDir, 'rivet-shared')).isSymbolicLink()).toBe(true)
+      expect(fake.specs[0]?.workingDir).toBe(currentDir)
+      expect((await store.get(task.id))?.status).toBe('completed')
+    } finally {
+      if (prev === undefined) Reflect.deleteProperty(process.env, 'RIVETOS_SHARED_DIR')
+      else process.env.RIVETOS_SHARED_DIR = prev
+      rmSync(parent, { recursive: true, force: true })
+    }
+  })
+
+  // Integrator-added (round 4): the retry after a mismatch fails CLOSED. When
+  // the refreshed lookup cannot answer (hang or rejection) the runner keeps the
+  // first preset, compares again, and fails working_dir_mismatch rather than
+  // running in a directory nobody could confirm. Nothing is materialised.
+  for (const mode of ['hangs', 'rejects'] as const) {
+    it(`fails closed when the retry lookup after a mismatch ${mode}`, async () => {
+      const fake = makeFakeExecutor()
+      const parent = mkdtempSync(join(tmpdir(), 'rivetos-retry-'))
+      const staleDir = join(parent, 'stale')
+      const currentDir = join(parent, 'current')
+      const shared = join(parent, 'shared')
+      mkdirSync(shared)
+      const prev = process.env.RIVETOS_SHARED_DIR
+      process.env.RIVETOS_SHARED_DIR = shared
+      let calls = 0
+      let invalidations = 0
+      try {
+        const { store, handler } = handlerFor(
+          fake,
+          '/workspace',
+          async () => {
+            calls += 1
+            if (calls === 1) return directoryPreset(staleDir, true)
+            if (mode === 'rejects') throw new Error('registry down')
+            return new Promise<AgentPreset | undefined>(() => undefined)
+          },
+          'chat-loop',
+          {
+            resolvePresetBoundMs: 50,
+            invalidatePreset: () => {
+              invalidations += 1
+            },
+          },
+        )
+        const task = await store.create(
+          taskInput({ spec: { presetId: 'preset-1', workingDir: currentDir } }),
+        )
+
+        await handler(task.id)
+
+        const row = await store.get(task.id)
+        expect(invalidations).toBe(1)
+        expect(calls).toBe(2)
+        expect(row?.status).toBe('failed')
+        expect(row?.error).toBe('working_dir_mismatch')
+        expect(existsSync(staleDir)).toBe(false)
+        expect(existsSync(currentDir)).toBe(false)
+        expect(fake.specs).toHaveLength(0)
+      } finally {
+        if (prev === undefined) Reflect.deleteProperty(process.env, 'RIVETOS_SHARED_DIR')
+        else process.env.RIVETOS_SHARED_DIR = prev
+        rmSync(parent, { recursive: true, force: true })
+      }
+    })
+  }
+})
+
 describe('createTaskRunner graphile pool wiring', () => {
   const pgUrl = 'postgres://user:pass@localhost:5432/db'
 
@@ -384,10 +865,9 @@ describe('createTaskRunner start() guards (P1)', () => {
   }
 
   it('no-ops (never throws) when sweep reports the relation missing', async () => {
-    const relationMissing = Object.assign(
-      new Error('relation "ros_tasks" does not exist'),
-      { code: '42P01' },
-    )
+    const relationMissing = Object.assign(new Error('relation "ros_tasks" does not exist'), {
+      code: '42P01',
+    })
     const store = stubStore({ sweep: () => Promise.reject(relationMissing) })
     const runner = createTaskRunner({
       // Unreachable on purpose — start() must return before connecting.
@@ -501,4 +981,3 @@ describe('wiki contextRefs (3f)', () => {
     expect(seenContext).toContain('mem-context')
   })
 })
-

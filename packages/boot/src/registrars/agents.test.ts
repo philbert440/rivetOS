@@ -10,6 +10,8 @@ import {
 
 const coreMocks = vi.hoisted(() => {
   const pgTaskStores: unknown[] = []
+  const meshRegisters: Array<{ metadata?: { harnessExecutors?: unknown } }> = []
+  let taskStoreReady = true
   class PgTaskStore {
     pool: unknown
     constructor(pool: unknown) {
@@ -17,7 +19,7 @@ const coreMocks = vi.hoisted(() => {
       pgTaskStores.push(pool)
     }
     async isReady(): Promise<boolean> {
-      return true
+      return taskStoreReady
     }
   }
   const createTaskRunner = vi.fn((opts: { pgPool?: unknown }) => ({
@@ -29,32 +31,88 @@ const coreMocks = vi.hoisted(() => {
   const createTaskCompletionWaiter = vi.fn(() => ({
     stop: vi.fn(async () => undefined),
   }))
-  return { PgTaskStore, pgTaskStores, createTaskRunner, createTaskCompletionWaiter }
-})
-
-const meshCapture = vi.hoisted(() => {
   const started: Array<{ id: string; name: string }> = []
   const nodeNames: string[] = []
   class FileMeshRegistry {
-    constructor(opts: { mesh?: { nodeName?: string } }) {
-      if (opts.mesh?.nodeName) nodeNames.push(opts.mesh.nodeName)
+    constructor(config: { mesh?: { nodeName?: string } }) {
+      if (config.mesh?.nodeName) nodeNames.push(config.mesh.nodeName)
     }
-    start(node: { id: string; name: string }): Promise<void> {
+    async register(node: { metadata?: { harnessExecutors?: unknown } }): Promise<void> {
+      meshRegisters.push(node)
+    }
+    async start(node: {
+      id: string
+      name: string
+      metadata?: { harnessExecutors?: unknown }
+    }): Promise<void> {
       started.push({ id: node.id, name: node.name })
-      return Promise.resolve()
+      await this.register(node)
+    }
+    async deregister(): Promise<void> {}
+    async heartbeat(): Promise<void> {}
+    async getNodes(): Promise<unknown[]> {
+      return []
+    }
+    async getNode(): Promise<undefined> {
+      return undefined
+    }
+    async findByAgent(): Promise<unknown[]> {
+      return []
+    }
+    async findByCapability(): Promise<unknown[]> {
+      return []
+    }
+    async findByProvider(): Promise<unknown[]> {
+      return []
+    }
+    async sync(): Promise<void> {}
+    async prune(): Promise<unknown[]> {
+      return []
     }
   }
   class AgentChannelServer {
-    start(): Promise<void> {
-      return Promise.resolve()
-    }
+    constructor(_config: unknown) {}
+    async start(): Promise<void> {}
+    async stop(): Promise<void> {}
   }
+  const loadTlsConfig = (): {
+    ca: Buffer
+    cert: Buffer
+    key: Buffer
+    cn: string
+  } => ({
+    ca: Buffer.from('ca'),
+    cert: Buffer.from('cert'),
+    key: Buffer.from('key'),
+    cn: 'test',
+  })
+  return {
+    PgTaskStore,
+    pgTaskStores,
+    createTaskRunner,
+    createTaskCompletionWaiter,
+    FileMeshRegistry,
+    AgentChannelServer,
+    loadTlsConfig,
+    meshRegisters,
+    started,
+    nodeNames,
+    get taskStoreReady() {
+      return taskStoreReady
+    },
+    set taskStoreReady(value: boolean) {
+      taskStoreReady = value
+    },
+  }
+})
+
+const meshCapture = vi.hoisted(() => {
   class MeshDelegationEngine {
     createDelegationTool(): { name: string } {
       return { name: 'delegate_task' }
     }
   }
-  return { started, nodeNames, FileMeshRegistry, AgentChannelServer, MeshDelegationEngine }
+  return { MeshDelegationEngine }
 })
 
 const pgMocks = vi.hoisted(() => {
@@ -78,15 +136,10 @@ vi.mock('@rivetos/core', async (importOriginal) => {
     PgTaskStore: coreMocks.PgTaskStore,
     createTaskRunner: coreMocks.createTaskRunner,
     createTaskCompletionWaiter: coreMocks.createTaskCompletionWaiter,
-    FileMeshRegistry: meshCapture.FileMeshRegistry,
-    AgentChannelServer: meshCapture.AgentChannelServer,
+    FileMeshRegistry: coreMocks.FileMeshRegistry,
+    AgentChannelServer: coreMocks.AgentChannelServer,
     MeshDelegationEngine: meshCapture.MeshDelegationEngine,
-    loadTlsConfig: () => ({
-      ca: Buffer.from('ca'),
-      cert: Buffer.from('cert'),
-      key: Buffer.from('key'),
-      cn: 'node',
-    }),
+    loadTlsConfig: coreMocks.loadTlsConfig,
   }
 })
 
@@ -96,6 +149,7 @@ vi.mock('undici', () => ({
       void _opts
     }
   },
+  fetch: vi.fn(),
 }))
 
 vi.mock('pg', () => ({
@@ -119,11 +173,13 @@ vi.mock('node:child_process', () => ({
 afterEach(() => {
   vi.unstubAllEnvs()
   coreMocks.pgTaskStores.splice(0)
+  coreMocks.meshRegisters.splice(0)
+  coreMocks.taskStoreReady = true
   coreMocks.createTaskRunner.mockClear()
   coreMocks.createTaskCompletionWaiter.mockClear()
   pgMocks.Pool.instances.splice(0)
-  meshCapture.started.splice(0)
-  meshCapture.nodeNames.splice(0)
+  coreMocks.started.splice(0)
+  coreMocks.nodeNames.splice(0)
 })
 
 describe('resolveAdvertiseHost', () => {
@@ -249,7 +305,11 @@ describe('registerAgentTools shared pool wiring', () => {
   }
 
   it('passes the host pool to PgTaskStore and createTaskRunner and does not end it', async () => {
-    const hostPool = { end: vi.fn(async () => undefined) }
+    const hostPool = {
+      end: vi.fn(async () => undefined),
+      // Preset store probes ros_agent_presets on the same pool. Empty → not ready.
+      query: vi.fn(async () => ({ rows: [] })),
+    }
     const { runtime, hooks } = stubRuntime({ pgPool: hostPool })
     await registerAgentTools(runtime, config(), '/tmp')
     expect(coreMocks.pgTaskStores[0]).toBe(hostPool)
@@ -258,6 +318,29 @@ describe('registerAgentTools shared pool wiring', () => {
     )
     for (const hook of hooks) await hook()
     expect(hostPool.end).not.toHaveBeenCalled()
+  })
+
+  it('passes resolvePreset and invalidatePreset to createTaskRunner', async () => {
+    const hostPool = {
+      end: vi.fn(async () => undefined),
+      query: vi.fn(async (sql: unknown) => {
+        if (typeof sql === 'string' && sql.includes("to_regclass('ros_agent_presets')")) {
+          return { rows: [{ reg: 'ros_agent_presets' }] }
+        }
+        return { rows: [] }
+      }),
+    }
+    const { runtime, hooks } = stubRuntime({ pgPool: hostPool })
+    await registerAgentTools(runtime, config(), '/tmp')
+    const opts = coreMocks.createTaskRunner.mock.calls[0]?.[0] as {
+      resolvePreset?: (id: string) => Promise<unknown>
+      invalidatePreset?: () => void
+    }
+    expect(typeof opts.resolvePreset).toBe('function')
+    expect(typeof opts.invalidatePreset).toBe('function')
+    opts.invalidatePreset?.()
+    await expect(opts.resolvePreset?.('missing')).resolves.toBeUndefined()
+    for (const hook of hooks) await hook()
   })
 
   it('creates a registrar-owned pool and registers an end() hook when no host pool', async () => {
@@ -292,15 +375,71 @@ describe('registerAgentTools shared pool wiring', () => {
     vi.stubEnv('HOSTNAME', 'from-host')
     const { runtime } = stubRuntime({})
     await registerAgentTools(runtime, meshConfig('  ct115  '), '/tmp')
-    expect(meshCapture.nodeNames).toEqual(['ct115'])
-    expect(meshCapture.started).toEqual([{ id: 'ct115', name: 'ct115' }])
+    expect(coreMocks.nodeNames).toEqual(['ct115'])
+    expect(coreMocks.started).toEqual([{ id: 'ct115', name: 'ct115' }])
   })
 
   it('registers HOSTNAME when mesh.node_name is absent', async () => {
     vi.stubEnv('HOSTNAME', 'from-host')
     const { runtime } = stubRuntime({})
     await registerAgentTools(runtime, meshConfig(), '/tmp')
-    expect(meshCapture.nodeNames).toEqual(['from-host'])
-    expect(meshCapture.started).toEqual([{ id: 'from-host', name: 'from-host' }])
+    expect(coreMocks.nodeNames).toEqual(['from-host'])
+    expect(coreMocks.started).toEqual([{ id: 'from-host', name: 'from-host' }])
+  })
+
+  it('registers harnessExecutors on the first mesh register()', async () => {
+    const hostPool = {
+      end: vi.fn(async () => undefined),
+      query: vi.fn(async () => ({ rows: [] })),
+    }
+    const { runtime, hooks } = stubRuntime({ pgPool: hostPool })
+    await registerAgentTools(
+      runtime,
+      {
+        ...config(),
+        mesh: { enabled: true, tls: true, node_name: 'ct115' },
+      },
+      '/tmp',
+    )
+    expect(coreMocks.meshRegisters).toHaveLength(1)
+    expect(coreMocks.meshRegisters[0]?.metadata?.harnessExecutors).toEqual([])
+    for (const hook of hooks) await hook()
+  })
+
+  it('does not probe the preset store when the task engine is not live', async () => {
+    const hostPool = {
+      end: vi.fn(async () => undefined),
+      query: vi.fn(async () => ({ rows: [{ reg: 'ros_agent_presets' }] })),
+    }
+    const { runtime, hooks } = stubRuntime({ pgPool: hostPool })
+    await registerAgentTools(runtime, { ...config(), tasks: { enabled: false } }, '/tmp')
+    expect(hostPool.query).not.toHaveBeenCalled()
+    for (const hook of hooks) await hook()
+  })
+
+  it('a preset-store probe error does not abort boot', async () => {
+    const hostPool = {
+      end: vi.fn(async () => undefined),
+      query: vi.fn(async () => {
+        throw new Error('connection refused')
+      }),
+    }
+    const { runtime, hooks } = stubRuntime({ pgPool: hostPool })
+    await expect(registerAgentTools(runtime, config(), '/tmp')).resolves.toEqual(
+      expect.objectContaining({ gatewayRoutes: expect.any(Array) }),
+    )
+    for (const hook of hooks) await hook()
+  })
+
+  it('does not probe presets when ros_tasks is not ready', async () => {
+    coreMocks.taskStoreReady = false
+    const hostPool = {
+      end: vi.fn(async () => undefined),
+      query: vi.fn(async () => ({ rows: [{ reg: 'ros_agent_presets' }] })),
+    }
+    const { runtime, hooks } = stubRuntime({ pgPool: hostPool })
+    await registerAgentTools(runtime, config(), '/tmp')
+    expect(hostPool.query).not.toHaveBeenCalled()
+    for (const hook of hooks) await hook()
   })
 })

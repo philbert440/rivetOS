@@ -23,15 +23,19 @@
 import { run, type Runner } from 'graphile-worker'
 import type pg from 'pg'
 import type {
+  AgentPreset,
   HarnessExecutor,
   Memory,
   TaskBudget,
   TaskExecutorKind,
   TaskResult,
+  TaskSpec,
   TaskStatus,
   TaskUsage,
 } from '@rivetos/types'
-import { buildLocalSessionContext, sharedPath } from '@rivetos/types'
+import { buildLocalSessionContext, sharedDir, sharedPath } from '@rivetos/types'
+import { ensureAgentDirectory } from '@rivetos/agent-registry'
+import { ROSTER_READ_BOUND_MS } from '../preset-delegation.js'
 import { canonicalizeExecutorTarget, harnessExecutorCoverage } from './harness-executors.js'
 import type { HarnessExecutorCoverage } from './harness-executors.js'
 import type { TaskRow, TaskStore } from './store.js'
@@ -42,6 +46,12 @@ import { logger } from '../../logger.js'
 import { retryPreSendConnect } from './pg-transient.js'
 
 const log = logger('TaskRunner')
+
+/** One warning per process — a fleet of preset rows must not spam this. */
+let loggedMissingPresetResolver = false
+let loggedPresetResolveTimeout = false
+let loggedPresetResolveRejection = false
+let loggedPresetInvalidateFailure = false
 
 // ---------------------------------------------------------------------------
 // Executor registry — keyed by (executor, executor_target).
@@ -142,6 +152,24 @@ export interface TaskHandlerOptions {
    * unevaluated terminal row. Absent = phase-1 behavior.
    */
   evaluation?: import('./evaluation-coordinator.js').EvaluationCoordinator
+  /**
+   * Preset lookup for directory materialisation. Boot passes
+   * `presetResolver.find`. Absent (a node that never loaded presets): a row
+   * with `spec.presetId` is not materialised. The spec's `workingDir` is not
+   * a path the runner may create.
+   */
+  resolvePreset?: (id: string) => Promise<AgentPreset | undefined>
+  /**
+   * Deadline for one `resolvePreset` call. Default {@link ROSTER_READ_BOUND_MS}.
+   * A timeout or a rejection is a miss: materialise nothing and keep the spec cwd.
+   */
+  resolvePresetBoundMs?: number
+  /**
+   * Drop the preset cache before a second lookup. Boot passes
+   * `presetResolver.invalidate`. Called at most once, and only when the
+   * row's workingDir disagrees with the first lookup.
+   */
+  invalidatePreset?: () => void
 }
 
 const HEARTBEAT_INTERVAL_MS_DEFAULT = 30_000
@@ -290,6 +318,153 @@ export function createTaskHandler(opts: TaskHandlerOptions): (taskId: string) =>
   }
 }
 
+interface PinnedDirectory {
+  ok: boolean
+  /** Cwd forwarded to the executor. Undefined → opts.workspaceDir. */
+  workingDir?: string
+}
+
+type PresetLookup =
+  | { kind: 'value'; preset: AgentPreset | undefined }
+  | { kind: 'timeout' }
+  | { kind: 'rejected'; err: unknown }
+
+/** One lookup. Timeout and rejection are misses — they must not reject the handler. */
+function resolvePresetBounded(
+  resolvePreset: (id: string) => Promise<AgentPreset | undefined>,
+  id: string,
+  timeoutMs: number,
+): Promise<AgentPreset | undefined> {
+  let timer: ReturnType<typeof setTimeout> | undefined
+  const timeout = new Promise<PresetLookup>((resolve) => {
+    timer = setTimeout(() => resolve({ kind: 'timeout' }), timeoutMs)
+    timer.unref()
+  })
+  // Attach the rejection handler before the race so a late reject is not unhandled.
+  const work = resolvePreset(id).then(
+    (preset): PresetLookup => ({ kind: 'value', preset }),
+    (err: unknown): PresetLookup => ({ kind: 'rejected', err }),
+  )
+  return Promise.race([work, timeout])
+    .then((outcome) => {
+      if (outcome.kind === 'value') return outcome.preset
+      if (outcome.kind === 'timeout') {
+        if (!loggedPresetResolveTimeout) {
+          loggedPresetResolveTimeout = true
+          log.warn('preset lookup timed out — not materialising a working directory')
+        }
+        return undefined
+      }
+      if (!loggedPresetResolveRejection) {
+        loggedPresetResolveRejection = true
+        const msg = outcome.err instanceof Error ? outcome.err.message : String(outcome.err)
+        log.warn(`preset lookup rejected (${msg}) — not materialising a working directory`)
+      }
+      return undefined
+    })
+    .finally(() => {
+      if (timer !== undefined) clearTimeout(timer)
+    })
+}
+
+function presetDirectoryOf(preset: AgentPreset): string | undefined {
+  return typeof preset.directory === 'string' && preset.directory !== ''
+    ? preset.directory
+    : undefined
+}
+
+/**
+ * Materialise a preset's own directory, or refuse.
+ * - no presetId: forward spec.workingDir, create nothing
+ * - presetId, no resolver: create nothing, log once
+ * - forged id, or a lookup that times out or rejects: create nothing, forward
+ *   the spec cwd (a miss, not a handler crash)
+ * - spec.workingDir set and different from the preset directory: invalidate
+ *   once when `invalidatePreset` is set, look up again, and only then fail
+ *   `working_dir_mismatch`. Create nothing
+ * - otherwise materialise the preset directory and shared link, and run there
+ *   even when the row omitted workingDir
+ */
+async function pinPresetDirectory(
+  task: TaskRow,
+  spec: { presetId?: string; workingDir?: string },
+  opts: TaskHandlerOptions,
+): Promise<PinnedDirectory> {
+  const presetId =
+    typeof spec.presetId === 'string' && spec.presetId !== '' ? spec.presetId : undefined
+  const specDir = typeof spec.workingDir === 'string' ? spec.workingDir : undefined
+  if (!presetId) return { ok: true, workingDir: specDir }
+
+  if (!opts.resolvePreset) {
+    if (!loggedMissingPresetResolver) {
+      loggedMissingPresetResolver = true
+      log.warn(
+        'preset row has presetId but no resolvePreset — not materialising a working directory',
+      )
+    }
+    return { ok: true, workingDir: specDir }
+  }
+
+  const resolvePreset = opts.resolvePreset
+  const bound = opts.resolvePresetBoundMs ?? ROSTER_READ_BOUND_MS
+  const lookup = (): Promise<AgentPreset | undefined> =>
+    resolvePresetBounded(resolvePreset, presetId, bound)
+
+  let preset = await lookup()
+  if (!preset) return { ok: true, workingDir: specDir }
+
+  let presetDir = presetDirectoryOf(preset)
+  // A blank spec cwd is "not set", not a conflicting path.
+  const conflicts = (dir: string | undefined): boolean =>
+    specDir !== undefined && specDir !== '' && specDir !== dir
+  if (conflicts(presetDir) && opts.invalidatePreset) {
+    try {
+      opts.invalidatePreset()
+    } catch (err: unknown) {
+      if (!loggedPresetInvalidateFailure) {
+        loggedPresetInvalidateFailure = true
+        const msg = err instanceof Error ? err.message : String(err)
+        log.warn(`preset invalidate failed (${msg}) — looking the preset up again anyway`)
+      }
+    }
+    const refreshed = await lookup()
+    if (refreshed) {
+      preset = refreshed
+      presetDir = presetDirectoryOf(preset)
+    }
+  }
+  if (conflicts(presetDir)) {
+    await opts.store.finish(task.id, 'failed', {
+      verdict: 'failed',
+      summary: `Working directory does not match preset "${preset.name || presetId}"`,
+      artifacts: [],
+      usage: ZERO_USAGE,
+      error: 'working_dir_mismatch',
+    })
+    return { ok: false }
+  }
+
+  if (presetDir !== undefined) {
+    try {
+      ensureAgentDirectory(
+        { directory: presetDir, sharedLink: preset.sharedLink },
+        { sharedDir: sharedDir(), log: (msg) => log.info(msg) },
+      )
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : String(err)
+      await opts.store.finish(task.id, 'failed', {
+        verdict: 'failed',
+        summary: `Working directory unavailable: ${msg}`,
+        artifacts: [],
+        usage: ZERO_USAGE,
+        error: 'working_dir_unavailable',
+      })
+      return { ok: false }
+    }
+  }
+  return { ok: true, workingDir: presetDir ?? specDir }
+}
+
 async function runClaimedTask(task: TaskRow, opts: TaskHandlerOptions): Promise<void> {
   const executor = opts.executors.resolve(task.executor, task.executorTarget)
   if (!executor) {
@@ -310,17 +485,15 @@ async function runClaimedTask(task: TaskRow, opts: TaskHandlerOptions): Promise<
     model?: string
     promptMode?: 'task' | 'heartbeat'
     excludeTools?: string[]
+    workingDir?: string
+    effort?: TaskSpec['effort']
+    systemPromptAppend?: string
+    sharedLink?: boolean
+    presetId?: string
   }
 
-  // Resuming from awaiting-input: consume the stashed message atomically —
-  // it must drive the opening turn INSTEAD of the goal (the goal must never
-  // re-execute on resume; memory-conversation rehydration lands at step (c)).
-  let resumeMessage =
-    task.pendingMessage !== undefined ? await opts.store.takePendingMessage(task.id) : undefined
-
-  // Periodic liveness heartbeat — the crash sweep only reaps rows whose
-  // last_heartbeat_at is stale, so an overlapping old process's in-flight
-  // tasks are not double-run across a restart.
+  // Armed before preset lookup. A slow resolver must not look like a dead
+  // runner — the crash sweep reaps rows whose last_heartbeat_at is stale.
   const heartbeatTimer = setInterval(() => {
     opts.store.heartbeat(task.id).catch((err: unknown) => {
       log.warn(`Heartbeat for task ${task.id} failed: ${(err as Error).message}`)
@@ -329,6 +502,21 @@ async function runClaimedTask(task: TaskRow, opts: TaskHandlerOptions): Promise<
   heartbeatTimer.unref()
 
   try {
+    // Preset rows pin a directory, but the spec is not the source of truth:
+    // `workingDir` / `presetId` on the row can be forged or stale. Look the
+    // preset up and materialise ITS directory and shared link. Workflow
+    // chat-loop steps also set workingDir (the case dir) and must keep that
+    // cwd — they have no presetId, so nothing is created.
+    const pinned = await pinPresetDirectory(task, spec, opts)
+    if (!pinned.ok) return
+    const workingDir = pinned.workingDir ?? opts.workspaceDir
+
+    // Resuming from awaiting-input: consume the stashed message atomically —
+    // it must drive the opening turn INSTEAD of the goal (the goal must never
+    // re-execute on resume; memory-conversation rehydration lands at step (c)).
+    let resumeMessage =
+      task.pendingMessage !== undefined ? await opts.store.takePendingMessage(task.id) : undefined
+
     let totalUsage = ZERO_USAGE
     // 2e: verifier-driven retry state (distinct from crash-recovery attempt).
     let evalAttempts = task.evalAttempt
@@ -351,14 +539,16 @@ async function runClaimedTask(task: TaskRow, opts: TaskHandlerOptions): Promise<
           model: spec.model,
           promptMode: spec.promptMode,
           excludeTools: spec.excludeTools,
-          workingDir: opts.workspaceDir,
+          workingDir,
+          effort: spec.effort,
+          systemPromptAppend: spec.systemPromptAppend,
           resumeMessage,
           session: buildLocalSessionContext({
             agentId: task.agentId,
             nodeId: opts.nodeId,
             conversationId: task.conversationId ?? task.id,
             userId: task.requestedBy ?? 'task-runner',
-            workingDir: opts.workspaceDir,
+            workingDir,
           }),
         },
         { signal: abort.signal },

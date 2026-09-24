@@ -19,6 +19,7 @@
 
 import type { IncomingMessage, ServerResponse } from 'node:http'
 import type {
+  AgentPreset,
   GatewayRoute,
   TaskKillResponse,
   TaskResponse,
@@ -29,6 +30,7 @@ import type {
   TaskWire,
 } from '@rivetos/types'
 import type { NewTaskInput, TaskListFilter, TaskRow, TaskStore } from './store.js'
+import { assessPresetRun, presetTaskSpec, type PresetHostContext } from '../preset-delegation.js'
 import {
   CRITERIA_POLICY_OFF,
   CriteriaRequiredError,
@@ -71,6 +73,18 @@ export interface TaskApiOptions {
    * an Error message rejects the create with 400 (agent nowhere).
    */
   resolveAffinity?: (agentId: string) => Promise<string | { error: string } | undefined>
+  /**
+   * RivetHub preset lookup (id, then name). Boot wires `presets.find` after
+   * config-agent ids, which win. When this returns a preset and the body did
+   * not set `executor`, the row is a harness-session preset task — not chat-loop.
+   */
+  resolvePreset?: (agentId: string) => Promise<AgentPreset | undefined>
+  /**
+   * Coverage context for that preset row. Same pre-flight as delegate_task:
+   * no harness / unimplemented → 400, hosting node offline or unknown → 409.
+   * Omit only in tests that assert row shape without coverage.
+   */
+  presetHost?: PresetHostContext
 }
 
 function json(res: ServerResponse, code: number, body: unknown): void {
@@ -147,6 +161,72 @@ function parseCreate(body: Record<string, unknown>): NewTaskInput | string {
   }
 }
 
+/**
+ * Client spec keys the preset branch owns. `stripClientPresetFields` deletes
+ * this same set with static `delete`s — a dynamic delete of the list trips
+ * the lint rule — so a new key has to be added in both places.
+ */
+const CLIENT_PRESET_FIELDS = [
+  'presetId',
+  'presetName',
+  'sharedLink',
+  'delegation',
+  'meshFrom',
+] as const
+
+/**
+ * Fields only the server may put on a preset row. A client spec keeps them
+ * only when this route took the preset branch and `presetTaskSpec` re-adds
+ * them. Explicit executors and unknown agent ids are not that branch.
+ */
+function stripClientPresetFields(
+  spec: Record<string, unknown> | undefined,
+): Record<string, unknown> | undefined {
+  if (!spec) return spec
+  const next: Record<string, unknown> = { ...spec }
+  // Static deletes, one per CLIENT_PRESET_FIELDS entry. Keep the two in lockstep.
+  delete next.presetId
+  delete next.presetName
+  delete next.sharedLink
+  delete next.delegation
+  delete next.meshFrom
+  return next
+}
+
+/**
+ * Preset-row spec precedence for POST /api/tasks:
+ * - a non-blank body `model` wins; a blank `model` is omitted and does not
+ *   fall back to the preset model
+ * - body `effort` and `systemPromptAppend` are ignored — the preset owns them
+ * - `presetId`, `presetName`, `workingDir`, and `sharedLink` come from the preset
+ * - the row is not a delegation: no `delegation`, no `meshFrom`
+ * Other client spec fields (`tools`, `interactive`, …) are kept.
+ */
+function specForApiPreset(
+  preset: AgentPreset,
+  clientSpec: Record<string, unknown> | undefined,
+): Record<string, unknown> {
+  const client = clientSpec ?? {}
+  const rest: Record<string, unknown> = {}
+  for (const [key, value] of Object.entries(client)) {
+    if (
+      key === 'model' ||
+      key === 'effort' ||
+      key === 'systemPromptAppend' ||
+      key === 'workingDir' ||
+      (CLIENT_PRESET_FIELDS as readonly string[]).includes(key)
+    ) {
+      continue
+    }
+    rest[key] = value
+  }
+  const modelOpt = typeof client.model === 'string' ? { model: client.model } : {}
+  return {
+    ...rest,
+    ...presetTaskSpec(preset, { ...modelOpt, delegation: false }),
+  }
+}
+
 /** Apply criteria policy to a parsed create; returns an error string for 400. */
 function applyCriteriaPolicy(input: NewTaskInput, policy: CriteriaPolicy): NewTaskInput | string {
   try {
@@ -191,6 +271,30 @@ export function createTaskApiRoute(opts: TaskApiOptions): GatewayRoute {
           if (typeof parsed === 'string') return json(res, 400, { error: parsed })
           const input = applyCriteriaPolicy(parsed, opts.criteriaPolicy ?? CRITERIA_POLICY_OFF)
           if (typeof input === 'string') return json(res, 400, { error: input })
+          // A body that names an executor is left alone — including an explicit
+          // chat-loop. Only the default (field absent) is rewritten into a preset row.
+          const executorExplicit = typeof body.executor === 'string'
+          let tookPresetBranch = false
+          if (!executorExplicit && opts.resolvePreset) {
+            const preset = await opts.resolvePreset(input.agentId)
+            if (preset) {
+              tookPresetBranch = true
+              if (opts.presetHost) {
+                const assessed = await assessPresetRun(preset, opts.presetHost)
+                if (assessed.refusal) {
+                  return json(res, assessed.refusal.status, { error: assessed.refusal.error })
+                }
+              }
+              input.executor = 'harness-session'
+              input.executorTarget = preset.harnessId
+              input.agentId = preset.id
+              input.nodeAffinity = preset.node
+              input.spec = specForApiPreset(preset, input.spec)
+            }
+          }
+          // Defence in depth for the runner: a forged presetId must not be
+          // stored on a row this route did not build from a resolved preset.
+          if (!tookPresetBranch) input.spec = stripClientPresetFields(input.spec)
           if (!input.nodeAffinity && opts.resolveAffinity) {
             const resolved = await opts.resolveAffinity(input.agentId)
             if (typeof resolved === 'object' && resolved !== null)

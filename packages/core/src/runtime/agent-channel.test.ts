@@ -407,3 +407,78 @@ describe('loadTlsConfig', () => {
     ).toThrow(/mesh TLS configured but node key.*not readable/)
   })
 })
+
+describe('POST /api/message toAgent', () => {
+  let msgServer: AgentChannelServer
+  let msgPort: number
+  const calls: Array<{ toAgent: string }> = []
+
+  beforeAll(async () => {
+    calls.length = 0
+    msgPort = 21443 + Math.floor(Math.random() * 1000)
+    msgServer = new AgentChannelServer({
+      port: msgPort,
+      tls: loadFixtureTls(),
+      delegationEngine: {
+        delegate: async (req: { toAgent: string }) => {
+          calls.push({ toAgent: req.toAgent })
+          return { status: 'completed', response: 'done', durationMs: 1 }
+        },
+      } as unknown as DelegationEngine,
+      meshRegistry: noopRegistry,
+      router: noopRouter,
+      localAgents: ['alpha', 'beta'],
+    })
+    await msgServer.start()
+  })
+
+  afterAll(async () => {
+    await msgServer.stop()
+  })
+
+  const cert = () => ({
+    cert: readFileSync(join(FIXTURES, 'node.crt')),
+    key: readFileSync(join(FIXTURES, 'node.key')),
+  })
+
+  it('honours toAgent', async () => {
+    const res = await makeRequest({
+      port: msgPort,
+      path: '/api/message',
+      method: 'POST',
+      clientCert: cert(),
+      body: { fromAgent: 'remote', message: 'hello beta', toAgent: 'beta' },
+    })
+    expect(res.status).toBe(200)
+    const body = JSON.parse(res.body) as { agent: string; response: string }
+    expect(body.agent).toBe('beta')
+    expect(body.response).toBe('done')
+    expect(calls.at(-1)?.toAgent).toBe('beta')
+  })
+
+  it('404s a foreign agent', async () => {
+    const res = await makeRequest({
+      port: msgPort,
+      path: '/api/message',
+      method: 'POST',
+      clientCert: cert(),
+      body: { fromAgent: 'remote', message: 'hello', toAgent: 'nope' },
+    })
+    expect(res.status).toBe(404)
+    expect(JSON.parse(res.body)).toEqual({ error: 'agent "nope" is not hosted on this node' })
+  })
+
+  it('no toAgent keeps localAgents[0]', async () => {
+    const res = await makeRequest({
+      port: msgPort,
+      path: '/api/message',
+      method: 'POST',
+      clientCert: cert(),
+      body: { fromAgent: 'remote', message: 'hello default' },
+    })
+    expect(res.status).toBe(200)
+    const body = JSON.parse(res.body) as { agent: string }
+    expect(body.agent).toBe('alpha')
+    expect(calls.at(-1)?.toAgent).toBe('alpha')
+  })
+})

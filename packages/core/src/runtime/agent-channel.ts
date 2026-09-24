@@ -89,6 +89,12 @@ interface MessageRequest {
   chainDepth?: number
   /** Optional per-call model override forwarded from the remote caller. */
   model?: string
+  /**
+   * Config-agent id to run on this node. Absent keeps the legacy behaviour:
+   * the first local agent. A name this node does not host is a 404 — the
+   * caller must not silently land on localAgents[0].
+   */
+  toAgent?: string
 }
 
 interface MessageResponse {
@@ -292,7 +298,8 @@ export class AgentChannelServer {
       return
     }
 
-    const { fromAgent, message, timeoutMs, chainDepth, model } = body as unknown as MessageRequest
+    const { fromAgent, message, timeoutMs, chainDepth, model, toAgent } =
+      body as unknown as MessageRequest
 
     if (!fromAgent || !message) {
       res.writeHead(400, { 'Content-Type': 'application/json' })
@@ -300,8 +307,18 @@ export class AgentChannelServer {
       return
     }
 
-    const targetAgent = this.config.localAgents[0]
+    const requested = typeof toAgent === 'string' && toAgent.length > 0 ? toAgent : undefined
+    const targetAgent = requested
+      ? this.config.localAgents.includes(requested)
+        ? requested
+        : undefined
+      : this.config.localAgents[0]
     if (!targetAgent) {
+      if (requested) {
+        res.writeHead(404, { 'Content-Type': 'application/json' })
+        res.end(JSON.stringify({ error: `agent "${requested}" is not hosted on this node` }))
+        return
+      }
       res.writeHead(503, { 'Content-Type': 'application/json' })
       res.end(JSON.stringify({ error: 'No agents available on this node' }))
       return
