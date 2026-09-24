@@ -1,5 +1,10 @@
 import { describe, expect, it } from 'vitest'
-import { DIALOG_NOTE, sendBlockNote, undeliveredNote } from './send-block-note.js'
+import {
+  DIALOG_DISMISSED_NOTICE,
+  DIALOG_NOTE,
+  sendBlockNote,
+  undeliveredNote,
+} from './send-block-note.js'
 
 describe('sendBlockNote', () => {
   it('explains a send refused because the Terminal has a dialog open', () => {
@@ -30,5 +35,13 @@ describe('undeliveredNote', () => {
 
   it('falls back when there is no message', () => {
     expect(undeliveredNote(undefined)).toBe('not delivered: check Terminal before retrying')
+  })
+})
+
+describe('DIALOG_DISMISSED_NOTICE', () => {
+  it('says the message was sent and that a Terminal picker or prompt was cancelled', () => {
+    expect(DIALOG_DISMISSED_NOTICE).toMatch(/^sent:/)
+    expect(DIALOG_DISMISSED_NOTICE).toMatch(/Terminal/)
+    expect(DIALOG_DISMISSED_NOTICE).toMatch(/cancelled \(Esc\)/)
   })
 })

@@ -22,6 +22,7 @@ import {
   type HarnessSessionSummary,
   type SessionId,
   type StartSessionOpts,
+  type SendUserTurnResult,
   type UserTurn,
 } from '@rivetos/types'
 import { createDenServer, type DenServer, type DenServerOptions } from '../server.js'
@@ -103,10 +104,12 @@ class FakeDriver implements HarnessDriver {
     this.throwIfArmed()
     return Promise.resolve()
   }
-  sendUserTurn(sessionId: SessionId, turn: UserTurn): Promise<void> {
+  /** What the next `sendUserTurn` resolves with. */
+  turnResult: SendUserTurnResult | undefined = undefined
+  sendUserTurn(sessionId: SessionId, turn: UserTurn): Promise<SendUserTurnResult | undefined> {
     this.calls.turns.push({ sessionId, turn })
     this.throwIfArmed()
-    return Promise.resolve()
+    return Promise.resolve(this.turnResult)
   }
   resolveApproval(): Promise<void> {
     return Promise.reject(new HarnessError('unknown_approval', 'no such approval'))
@@ -898,6 +901,22 @@ describe('HarnessError → HTTP status mapping', () => {
     const plain = await post(base, `/api/harness-sessions/${enc(SID)}/turns`, { text: 'again' })
     expect(plain.status).toBe(202)
     expect(driver.calls.turns.at(-1)?.turn).not.toHaveProperty('bypassDialogGate')
+  })
+
+  it('echoes dismissedDialog only when the driver reports one', async () => {
+    const driver = new FakeDriver()
+    driver.add(SID)
+    const { base } = await start(driver)
+    driver.turnResult = { dismissedDialog: true }
+    const dismissed = await post(base, `/api/harness-sessions/${enc(SID)}/turns`, {
+      text: 'hello',
+      bypassDialogGate: true,
+    })
+    expect(dismissed.status).toBe(202)
+    expect(await dismissed.json()).toMatchObject({ ok: true, dismissedDialog: true })
+    driver.turnResult = undefined
+    const plain = await post(base, `/api/harness-sessions/${enc(SID)}/turns`, { text: 'again' })
+    expect(await plain.json()).not.toHaveProperty('dismissedDialog')
 
     const spoofed = await post(base, `/api/harness-sessions/${enc(SID)}/turns`, {
       text: 'nope',

@@ -26,3 +26,11 @@ export function undeliveredNote(message: string | undefined): string {
   }
   return 'not delivered: check Terminal before retrying'
 }
+
+/** Shown after the inject button's send cancelled an open picker or prompt with
+ *  Esc (den answers `dismissedDialog: true`), so the cancel isn't silent (#868). */
+export const DIALOG_DISMISSED_NOTICE =
+  'sent: a picker or prompt was open in the Terminal and was cancelled (Esc) first'
+
+/** How long that notice stays up. */
+export const DIALOG_DISMISSED_NOTICE_MS = 8_000

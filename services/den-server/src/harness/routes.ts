@@ -686,8 +686,13 @@ export function createHarnessRoutes(opts: {
         turn.attachments = attachments as UserTurn['attachments']
       }
       try {
-        await driver.sendUserTurn(sessionId, turn)
-        return json(res, 202, { ok: true, sessionId, ...redirect })
+        const result = await driver.sendUserTurn(sessionId, turn)
+        return json(res, 202, {
+          ok: true,
+          sessionId,
+          ...redirect,
+          ...(result?.dismissedDialog ? { dismissedDialog: true } : {}),
+        })
       } catch (err) {
         return fail(res, err)
       }

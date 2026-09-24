@@ -581,6 +581,8 @@ export interface TermInjectRequest {
 export interface TermInjectResponse {
   ok: true
   ptyId: string
+  /** The inject button's send cancelled an open dialog with Esc first. */
+  dismissedDialog?: true
 }
 
 // ---------------------------------------------------------------------------
@@ -760,6 +762,8 @@ export interface HarnessSessionTranscriptResponse extends HarnessRedirect {
 export interface HarnessTurnAccepted extends HarnessRedirect {
   ok: true
   sessionId: SessionId
+  /** The inject button's send cancelled an open dialog with Esc first. */
+  dismissedDialog?: true
 }
 
 /** 202 from `POST /api/harness-sessions/:enc/approvals/:requestId`. */

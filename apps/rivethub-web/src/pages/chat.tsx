@@ -7,6 +7,7 @@ import {
   shouldPersistLaunchLatch,
 } from '../lib/conversation-model-options.js'
 import { withAttachmentText } from '../lib/attachments.js'
+import { DIALOG_DISMISSED_NOTICE, DIALOG_DISMISSED_NOTICE_MS } from '../lib/send-block-note.js'
 /**
  * Chat — the day-one job (phase-4 design doc). Layout mirrors
  * rivet-android: conversation drawer on the left, transcript + composer on
@@ -1263,6 +1264,13 @@ function ActiveSession(props: {
   // store and pushes turn deltas over the sessions WS; the store applies them.
   const streamId = gate.stream ? canonicalId : undefined
   const [streamError, setStreamError] = useState<string | undefined>()
+  // The inject button's last send cancelled an open dialog (den `dismissedDialog`).
+  const [dialogDismissedAt, setDialogDismissedAt] = useState<number | undefined>()
+  useEffect(() => {
+    if (dialogDismissedAt === undefined) return
+    const timer = setTimeout(() => setDialogDismissedAt(undefined), DIALOG_DISMISSED_NOTICE_MS)
+    return () => clearTimeout(timer)
+  }, [dialogDismissedAt])
   useEffect(() => {
     if (streamId === undefined) {
       // The legacy watch rides the GLOBAL sessions socket, which only carries
@@ -1675,7 +1683,7 @@ function ActiveSession(props: {
         capabilities?.imageAttachments &&
         attachments?.every((a) => a.mime.startsWith('image/'))
       const correlated = await pumpEntry.observe(gw, sid, deliveryId)
-      await gw.sendHarnessTurn(sid, {
+      const accepted = await gw.sendHarnessTurn(sid, {
         deliveryId: correlated ? deliveryId : undefined,
         text: nativeAttachments ? text : referenceText,
         ...(nativeAttachments && attachments?.length ? { attachments } : {}),
@@ -1683,6 +1691,7 @@ function ActiveSession(props: {
         ...(prompt ? { systemPrompt: prompt } : {}),
         ...(bypassDialogGate ? { bypassDialogGate: true } : {}),
       })
+      if (accepted.dismissedDialog) setDialogDismissedAt(Date.now())
     }
     // A loaded harness summary can route a plain turn before descriptors arrive.
     const sendSessionId = canonicalId ?? (item?.kind === 'harness' ? item.sessionId : undefined)
@@ -1716,12 +1725,13 @@ function ActiveSession(props: {
         return
       }
       try {
-        await gw.termInject({
+        const injected = await gw.termInject({
           session: props.sessionId,
           text: injectText,
           ...(interrupt ? { interrupt } : {}),
           ...(bypassDialogGate ? { bypassDialogGate: true } : {}),
         })
+        if (injected.dismissedDialog) setDialogDismissedAt(Date.now())
       } catch {
         // The harness may have been LRU-evicted while we held a stale pty ref
         //: drop the ref, respawn (store-existence → --resume so
@@ -1731,11 +1741,12 @@ function ActiveSession(props: {
         protocolSessionRef.current = undefined
         setTermPtyId(undefined)
         await ensurePty()
-        await gw.termInject({
+        const injected = await gw.termInject({
           session: props.sessionId,
           text: injectText,
           ...(bypassDialogGate ? { bypassDialogGate: true } : {}),
         })
+        if (injected.dismissedDialog) setDialogDismissedAt(Date.now())
       }
       if (prompt) markSystemPromptSent(props.sessionId)
     } catch (err) {
@@ -2036,6 +2047,14 @@ function ActiveSession(props: {
             statusLine={statusLine}
           />
           <QueuedStrip items={outbound} onInject={onInjectOutbound} onCancel={onCancelOutbound} />
+          {dialogDismissedAt !== undefined && (
+            <div
+              role="status"
+              className="border-t border-line bg-panel-2/40 px-4 py-1.5 font-mono text-[11px] text-ink-dim"
+            >
+              {DIALOG_DISMISSED_NOTICE}
+            </div>
+          )}
           {remoteDead && (
             <div className="border-t border-line bg-panel-2/40 px-4 py-1.5 font-mono text-[11px] text-red">
               this conversation's session no longer exists on{' '}

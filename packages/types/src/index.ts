@@ -156,6 +156,7 @@ export type {
   HarnessPromptEvent,
   StartSessionOpts,
   UserTurn,
+  SendUserTurnResult,
   HarnessDriver,
 } from './harness.js'
 export type { SessionSummary as HarnessSessionSummary } from './harness.js'

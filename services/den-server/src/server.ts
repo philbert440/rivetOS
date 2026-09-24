@@ -1795,7 +1795,11 @@ export function createDenServer(config: DenConfig, opts: DenServerOptions = {}):
               return json(res, 409, { error: 'no agent evidence yet' })
             return json(res, 409, { error: 'harness not writable' })
           }
-          return json(res, 202, { ok: true, ptyId })
+          return json(res, 202, {
+            ok: true,
+            ptyId,
+            ...(dismissDialog ? { dismissedDialog: true } : {}),
+          })
         }
       }
 

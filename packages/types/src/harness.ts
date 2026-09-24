@@ -430,6 +430,14 @@ export type UserTurn = {
   bypassDialogGate?: boolean
 }
 
+/** Optional detail from an accepted `sendUserTurn`. Drivers with nothing to
+ *  report return nothing. */
+export interface SendUserTurnResult {
+  /** A `bypassDialogGate` send found a dialog open and cancelled it with Esc
+   *  before the paste. A flag only: pane text never leaves the node. */
+  dismissedDialog?: boolean
+}
+
 /**
  * Per-node driver. Gateway/hub never talk to harness binaries directly.
  *
@@ -445,7 +453,7 @@ export interface HarnessDriver {
   interrupt(sessionId: SessionId): Promise<void>
   /** Rejects with `turn_in_flight` while a turn is running — v1 drivers MUST
    *  NOT silently queue. */
-  sendUserTurn(sessionId: SessionId, turn: UserTurn): Promise<void>
+  sendUserTurn(sessionId: SessionId, turn: UserTurn): Promise<void | SendUserTurnResult>
   /** Rejects with `unknown_approval` for an unknown/expired `requestId`. */
   resolveApproval(
     sessionId: SessionId,

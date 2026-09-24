@@ -753,7 +753,7 @@ describe('POST /term/inject (seamless modes 5c)', () => {
       bypassDialogGate: true,
     })
     expect(inj.status).toBe(202)
-    expect(await inj.json()).toMatchObject({ ok: true })
+    expect(await inj.json()).toMatchObject({ ok: true, dismissedDialog: true })
     // Esc lands immediately; the paste waits out the interrupt settle.
     expect(fakeProcs[0].writes).toEqual(['\x1b'])
     await new Promise((r) => setTimeout(r, 700))
@@ -778,6 +778,7 @@ describe('POST /term/inject (seamless modes 5c)', () => {
       bypassDialogGate: true,
     })
     expect(inj.status).toBe(202)
+    expect(await inj.json()).not.toHaveProperty('dismissedDialog')
     expect(fakeProcs[0].writes[0]).toBe('\x1b[200~hello\x1b[201~')
     expect(fakeProcs[0].writes.some((w) => w === '\x1b')).toBe(false)
   })
@@ -1020,7 +1021,9 @@ describe('browser origin policy', () => {
     expect(await rawGet(port, '/sessions', { host: `localhost:${port}` })).toBe(200)
     expect(await rawGet(port, '/sessions', { host: `evil.example:${port}` })).toBe(403)
     const allowed = await start('', 60_000, { allowedHosts: ['den.example'] })
-    expect(await rawGet(allowed.port, '/sessions', { host: `den.example:${allowed.port}` })).toBe(200)
+    expect(await rawGet(allowed.port, '/sessions', { host: `den.example:${allowed.port}` })).toBe(
+      200,
+    )
   })
 
   it('refuses a rebound Host on WebSocket upgrades', async () => {
