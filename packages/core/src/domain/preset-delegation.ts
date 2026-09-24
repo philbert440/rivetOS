@@ -51,6 +51,19 @@ const MESH_REFRESH_TTL_MS = 30_000
  */
 export const ROSTER_READ_BOUND_MS = 2_000
 
+/**
+ * Thrown by a {@link MeshRegistry} that is installed but has no snapshot this
+ * call can judge remote nodes with (mesh file absent, unreadable, or a hung
+ * read with no last-good copy). Preflight treats it like a missing registry:
+ * a preset on this node still runs; any other node is refused.
+ */
+export class NoMeshRegistryError extends Error {
+  constructor() {
+    super('no mesh registry')
+    this.name = 'NoMeshRegistryError'
+  }
+}
+
 const TASK_EFFORTS = ['low', 'medium', 'high'] as const
 type TaskEffort = (typeof TASK_EFFORTS)[number]
 
@@ -188,6 +201,15 @@ function gapText(preset: AgentPreset, where: string, reason: string): string {
   return `agent "${preset.name}" (${harnessId} on ${where}): ${reason}`
 }
 
+function noMeshRegistryRefusal(node: string): PresetAssessment {
+  return {
+    refusal: {
+      status: 409,
+      error: `no mesh registry; cannot reach node "${node}"`,
+    },
+  }
+}
+
 /**
  * The `spec` both `delegate_task` and `POST /api/tasks` write for a preset row.
  * One builder so the paths cannot drift.
@@ -256,19 +278,22 @@ export async function assessPresetRun(
   }
 
   // Remote node, or this node with no executor registry (sidecar).
-  // No mesh registry: a local preset still runs (nothing else can judge it);
-  // a remote one cannot be reached.
+  // No mesh registry — including one that throws NoMeshRegistryError because
+  // this call's snapshot is missing: a local preset still runs (nothing else
+  // can judge it); a remote one cannot be reached.
   if (!ctx.meshRegistry) {
     if (local) return {}
-    return {
-      refusal: {
-        status: 409,
-        error: `no mesh registry; cannot reach node "${preset.node}"`,
-      },
-    }
+    return noMeshRegistryRefusal(preset.node)
   }
 
-  const nodes = await ctx.meshRegistry.getNodes()
+  let nodes: MeshNode[]
+  try {
+    nodes = await ctx.meshRegistry.getNodes()
+  } catch (err: unknown) {
+    if (!(err instanceof NoMeshRegistryError)) throw err
+    if (local) return {}
+    return noMeshRegistryRefusal(preset.node)
+  }
   const host = nodes.find((n) => n.name === preset.node && n.status === 'online')
   if (!host) {
     return {
@@ -370,12 +395,16 @@ export class PresetDelegationEngine {
   /**
    * `parentTaskId` is set when this call is itself inside a harness task
    * (the mcp-sidecar reads `RIVETOS_TASK_ID`). In-process engines omit it.
+   * `onCreated` fires with the new row id after insert and before the wait,
+   * so a caller that has already aborted can kill that row. It is not called
+   * when preflight refuses or `create` throws, and it must not throw.
    */
   async delegate(
     request: DelegationRequest,
     preset: AgentPreset,
     chainDepth = 0,
     parentTaskId?: string,
+    onCreated?: (rowId: string) => void,
   ): Promise<DelegationResult> {
     const depth = chainDepth + 1
     if (depth > this.maxChainDepth) {
@@ -441,6 +470,7 @@ export class PresetDelegationEngine {
           meshFrom: this.config.nodeName,
         }),
       })
+      onCreated?.(row.id)
       return await settleDelegatedTask({
         store: this.config.taskStore,
         waiter: this.config.waiter,
@@ -536,6 +566,14 @@ export class PresetDelegationEngine {
         this.lastMeshRefreshAt = this.now()
       })
       .catch((err: unknown) => {
+        // An older generation must not move the freshness timestamp.
+        if (this.meshGeneration !== gen) return
+        // No snapshot yet is not a broken registry — the loader already decided,
+        // and warning here would fire on every single-host boot.
+        if (err instanceof NoMeshRegistryError) {
+          this.lastMeshRefreshAt = this.now()
+          return
+        }
         log.warn(
           `Could not read mesh registry for preset roster: ${
             err instanceof Error ? err.message : String(err)
@@ -543,8 +581,6 @@ export class PresetDelegationEngine {
         )
         // A dead registry is not retried on every roster read until the TTL passes.
         // A timeout does not stamp — the next call starts a new race.
-        // An older generation must not move the freshness timestamp either.
-        if (this.meshGeneration !== gen) return
         this.lastMeshRefreshAt = this.now()
       })
       .finally(() => {

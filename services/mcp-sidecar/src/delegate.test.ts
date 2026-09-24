@@ -420,7 +420,170 @@ describe('sidecar delegate_task', () => {
     expect(body).toBe('[killed] delegate_task aborted by the client')
     expect((await store.get(row.id))?.status).toBe('killed')
   })
+
+  it('abort kills only the row this call created', async () => {
+    const { store, handle } = await setup({
+      presets: [preset()],
+      nodes: [HOST],
+      autoFinish: false,
+      pollFallbackMs: 15,
+    })
+    const ac = new AbortController()
+    const pending = text(
+      handle,
+      'delegate_task',
+      { to_agent: 'reviewer', task: 'review' },
+      { signal: ac.signal },
+    )
+    const started = Date.now()
+    let row = (await store.list())[0]
+    while (!row) {
+      if (Date.now() - started > 2_000) throw new Error('row was not created')
+      await sleep(10)
+      row = (await store.list())[0]
+    }
+    const unrelated = await store.create({
+      goal: 'other harness',
+      executor: 'chat-loop',
+      agentId: 'someone-else',
+      origin: 'tool',
+      chainDepth: 0,
+      maxAttempts: 1,
+    })
+    ac.abort()
+    const body = await pending
+    expect(body).toBe('[killed] delegate_task aborted by the client')
+    expect((await store.get(row.id))?.status).toBe('killed')
+    expect((await store.get(unrelated.id))?.status).toBe('queued')
+  })
+
+  it('kills a preset row whose create resolves only after the client aborted', async () => {
+    const { store, handle, release, creates } = await setupGatedCreate()
+    const ac = new AbortController()
+    const pending = text(
+      handle,
+      'delegate_task',
+      { to_agent: 'reviewer', task: 'review' },
+      { signal: ac.signal },
+    )
+    const started = Date.now()
+    while (creates() === 0) {
+      if (Date.now() - started > 2_000) throw new Error('create was not called')
+      await sleep(10)
+    }
+    ac.abort()
+    release()
+    const body = await pending
+    expect(body).toBe('[killed] delegate_task aborted by the client')
+    const rows = await store.list()
+    expect(rows).toHaveLength(1)
+    expect(rows.some((row) => row.status === 'queued' || row.status === 'running')).toBe(false)
+    expect(rows[0]?.status).toBe('killed')
+  })
+
+  it('returns the create failure when the client aborts while create is still pending', async () => {
+    const { store, handle, release, creates } = await setupGatedCreate(new Error('disk full'))
+    const ac = new AbortController()
+    const pending = text(
+      handle,
+      'delegate_task',
+      { to_agent: 'reviewer', task: 'review' },
+      { signal: ac.signal },
+    )
+    const started = Date.now()
+    while (creates() === 0) {
+      if (Date.now() - started > 2_000) throw new Error('create was not called')
+      await sleep(10)
+    }
+    ac.abort()
+    release()
+    const body = await pending
+    expect(body).toContain('[failed]')
+    expect(body).toContain('disk full')
+    expect(body).not.toContain('[killed]')
+    const rows = await store.list()
+    expect(rows.some((row) => row.status === 'queued' || row.status === 'running')).toBe(false)
+  })
+
+  it('abort of a runtime delegation kills only that row', async () => {
+    const { store, handle } = await setup({
+      nodes: [meshNode({ name: NODE, agents: ['local-grok'] })],
+      autoFinish: false,
+      pollFallbackMs: 15,
+    })
+    const ac = new AbortController()
+    const pending = text(
+      handle,
+      'delegate_task',
+      { to_agent: 'local-grok', task: 'hi' },
+      { signal: ac.signal },
+    )
+    const started = Date.now()
+    let row = (await store.list())[0]
+    while (!row) {
+      if (Date.now() - started > 2_000) throw new Error('row was not created')
+      await sleep(10)
+      row = (await store.list())[0]
+    }
+    const unrelated = await store.create({
+      goal: 'scheduled',
+      executor: 'chat-loop',
+      agentId: 'other',
+      origin: 'heartbeat',
+      chainDepth: 0,
+      maxAttempts: 1,
+    })
+    ac.abort()
+    const body = await pending
+    expect(body).toBe('[killed] delegate_task aborted by the client')
+    expect((await store.get(row.id))?.status).toBe('killed')
+    expect((await store.get(unrelated.id))?.status).toBe('queued')
+  })
 })
+
+async function setupGatedCreate(fail?: Error): Promise<{
+  store: InMemoryTaskStore
+  handle: DelegateToolsHandle
+  release: () => void
+  creates: () => number
+}> {
+  let releaseGate: () => void = () => undefined
+  const gate = new Promise<void>((resolve) => {
+    releaseGate = resolve
+  })
+  let createCalls = 0
+  const store = new InMemoryTaskStore()
+  const realCreate = store.create.bind(store)
+  store.create = (input) => {
+    createCalls += 1
+    return gate.then(() => (fail ? Promise.reject(fail) : realCreate(input)))
+  }
+  const waiter = createTaskCompletionWaiter({ store, pollFallbackMs: 15 })
+  const engine = new PresetDelegationEngine({
+    resolver: resolver([preset()]),
+    taskStore: store,
+    waiter,
+    nodeName: NODE,
+    meshRegistry: registry(() => Promise.resolve([HOST])),
+  })
+  const handle = createDelegateTools({
+    store,
+    waiter,
+    presets: engine,
+    meshNodes: () => Promise.resolve([HOST]),
+    nodeName: NODE,
+    requestedBy: 'tester',
+  })
+  closers.push(() => handle.close())
+  return {
+    store,
+    handle,
+    release: () => {
+      releaseGate()
+    },
+    creates: () => createCalls,
+  }
+}
 
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => {
@@ -463,6 +626,8 @@ async function bootEnv(opts: {
   readFile?: (path: string) => Promise<string>
   stat?: (path: string) => Promise<{ mtimeMs: number }>
   trackGets?: boolean
+  /** Default true. False skips the completion waiter (HTTP/socket). */
+  registerDelegateTask?: boolean
 }): Promise<{
   store: InMemoryTaskStore
   handle: DelegateToolsHandle | undefined
@@ -527,6 +692,7 @@ async function bootEnv(opts: {
     nodeName: opts.nodeName ?? 'local',
     requestedBy: 'tester',
     parentTaskId: parentTaskId ?? '',
+    ...(opts.registerDelegateTask === false ? { registerDelegateTask: false } : {}),
     log: (msg) => {
       logs.push(msg)
     },
@@ -713,26 +879,52 @@ describe('createDelegateToolsFromEnv', () => {
     expect(booted.events).toEqual(['waiter', 'pool'])
   })
 
-  it('treats every preset as local when mesh.json is absent', async () => {
+  it('runs a same-node preset and refuses a remote one when mesh.json is absent', async () => {
     const booted = await bootEnv({
-      presets: [preset({ node: 'ct112' })],
+      presets: [
+        preset({ id: 'home', name: 'home', node: 'local' }),
+        preset({ id: 'away', name: 'away', node: 'ct112' }),
+      ],
       nodeName: 'local',
       autoFinish: true,
     })
     const handle = mustHandle(booted.handle)
     const listed = await text(handle, 'list_agents', {})
     expect(listed).toContain('on local — this node')
+    expect(listed).toContain('on ct112')
+    expect(listed).not.toContain('ct112 — this node')
     expect(listed).not.toContain('(mesh unavailable)')
     expect(booted.logs.filter((line) => line.includes('ENOENT'))).toHaveLength(1)
-    const body = await text(handle, 'delegate_task', { to_agent: 'reviewer', task: 'review' })
+    const body = await text(handle, 'delegate_task', { to_agent: 'home', task: 'review' })
     expect(body.startsWith('looks good')).toBe(true)
     const row = must((await booted.store.list())[0], 'row')
     expect(row.nodeAffinity).toBe('local')
     expect(row.origin).toBe('tool')
     expect(row.executor).toBe('harness-session')
+    const denied = await text(handle, 'delegate_task', { to_agent: 'away', task: 'go' })
+    expect(denied).toContain('no mesh registry; cannot reach node "ct112"')
+    const rows = await booted.store.list()
+    expect(rows).toHaveLength(1)
+    expect(rows[0]?.nodeAffinity).toBe('local')
     const listedAgain = await text(handle, 'list_agents', {})
     expect(listedAgain).toContain('on local — this node')
+    expect(listedAgain).not.toContain('ct112 — this node')
     expect(booted.logs.filter((line) => line.includes('ENOENT'))).toHaveLength(1)
+  })
+
+  it('does not start the completion waiter when delegate_task is not registered', async () => {
+    const booted = await bootEnv({
+      presets: [preset({ node: 'local' })],
+      nodeName: 'local',
+      registerDelegateTask: false,
+    })
+    const handle = mustHandle(booted.handle)
+    expect(booted.waiterStarts).toBe(0)
+    const listed = await text(handle, 'list_agents', {})
+    expect(listed).toContain('on local — this node')
+    expect(listed).not.toContain('(mesh unavailable)')
+    await handle.close()
+    expect(booted.events).toEqual(['pool'])
   })
 
   it('runs a same-node preset and refuses a remote one when mesh.json is unreadable', async () => {

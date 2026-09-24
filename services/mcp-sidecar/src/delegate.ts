@@ -10,14 +10,19 @@
  * Mesh reads are a bounded `parseMeshFile` of `<meshDir>/mesh.json`
  * (`RIVETOS_MESH_DIR`, else the shared dir). A read that exceeds
  * {@link ROSTER_READ_BOUND_MS} is abandoned: `list_agents` says the mesh is
- * unavailable and a local preset still runs. The parsed file is cached with
- * its mtime so the hot path does not read it again within that bound. A hung
- * read is not stored on the request path and is not started a second time.
+ * unavailable and a preset on this node still runs. The parsed file is cached
+ * with its mtime so the hot path does not read it again within that bound.
+ * A hung read is not stored on the request path and is not started a second
+ * time. A permanently wedged read (the syscall never returns) stays
+ * unavailable for the process lifetime by design — one libuv thread stays
+ * pinned, and retrying would pin more.
  * `FileMeshRegistry` is not constructed — it needs TLS material and starts
- * heartbeats. When the file parses, the engine gets a `meshRegistry` (only
- * `getNodes` and `findByAgent` do real work). When the file is missing or
- * unreadable, the engine is built with no registry. A missing file also
- * treats every preset as local: a single-host install has one runner.
+ * heartbeats. The engine is given one registry at construction whose
+ * `getNodes` consults this loader. A parsed file, or the last good snapshot,
+ * is returned as nodes. A missing, unreadable, or timed-out read with no
+ * snapshot is no mesh registry: a preset whose node equals this node still
+ * runs, because the node name mirrors boot; any other node is refused.
+ * `list_agents` labels "this node" only on that exact match.
  */
 
 import { readFile, stat } from 'node:fs/promises'
@@ -27,10 +32,10 @@ import {
   createCachedPresetResolver,
   PgAgentPresetStore,
   type AgentPresetStore,
-  type CachedPresetResolver,
 } from '@rivetos/agent-registry'
 import {
   CRITERIA_POLICY_OFF,
+  NoMeshRegistryError,
   PgTaskStore,
   PresetDelegationEngine,
   ROSTER_READ_BOUND_MS,
@@ -38,7 +43,6 @@ import {
   harnessExecutorGap,
   normalizeCriteria,
   settleDelegatedTask,
-  type PresetDelegationConfig,
   type PresetRosterEntry,
   type TaskCompletionWaiter,
   type TaskRow,
@@ -47,7 +51,6 @@ import {
 import type { ToolExecuteContext, ToolRegistration } from '@rivetos/mcp'
 import {
   parseMeshFile,
-  type AgentPreset,
   type DelegationRequest,
   type DelegationResult,
   type MeshNode,
@@ -74,7 +77,6 @@ const WAIT_GRACE_MS = 5_000
  */
 export const DELEGATE_POOL_CONNECTION_TIMEOUT_MS = 5_000
 const DELEGATE_POOL_MAX = 2
-const PRE_TERMINAL = new Set(['queued', 'awaiting-input', 'running'])
 const CLIENT_ABORT_TEXT = '[killed] delegate_task aborted by the client'
 /** Postgres accepts any hex 8-4-4-4-12 uuid, and rejects everything else. */
 const TASK_ID_UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
@@ -349,6 +351,9 @@ function readOnlyMeshRegistry(getNodes: () => Promise<MeshNode[]>): MeshRegistry
 }
 
 function untilAbort<T>(work: Promise<T>, signal: AbortSignal): Promise<T | 'aborted'> {
+  // Abort returns without awaiting `work`. Observe a late rejection so a
+  // create that fails after the client is gone cannot crash the process.
+  void work.catch(() => undefined)
   if (signal.aborted) return Promise.resolve('aborted')
   return new Promise((resolve, reject) => {
     const onAbort = () => {
@@ -374,28 +379,50 @@ function untilAbort<T>(work: Promise<T>, signal: AbortSignal): Promise<T | 'abor
 }
 
 /**
- * No mesh file: only one runner exists, so a preset stamped with some other
- * node name still runs here. Unreadable / timed-out mesh does not localize —
- * the file may exist, we just cannot see it.
+ * The row this call inserted, if it did. `done` stays pending until `note`
+ * or `finish` so an abort can wait out an in-flight `create` (it cannot be
+ * cancelled) and then kill exactly that row.
  */
-function localizeResolver(
-  inner: CachedPresetResolver,
-  treatAsLocal: () => boolean,
-  nodeName: string,
-): CachedPresetResolver {
-  const mapOne = (preset: AgentPreset): AgentPreset => {
-    if (!treatAsLocal() || preset.node === nodeName) return preset
-    return { ...preset, node: nodeName }
-  }
+function trackCreatedRow(): {
+  note(rowId: string): void
+  done: Promise<string | undefined>
+  finish(): void
+} {
+  let rowId: string | undefined
+  let settled = false
+  let resolveDone: (id: string | undefined) => void = () => undefined
+  const done = new Promise<string | undefined>((resolve) => {
+    resolveDone = (id) => {
+      if (settled) return
+      settled = true
+      resolve(id)
+    }
+  })
   return {
-    list: () => inner.list().then((rows) => rows.map(mapOne)),
-    find: (handle) => inner.find(handle).then((preset) => (preset ? mapOne(preset) : undefined)),
-    lastKnown: () => inner.lastKnown().map(mapOne),
-    invalidate() {
-      inner.invalidate()
+    note(id: string) {
+      rowId = id
+      resolveDone(id)
     },
-    status: () => inner.status(),
+    done,
+    finish() {
+      resolveDone(rowId)
+    },
   }
+}
+
+/**
+ * One registry for the life of the handle. `getNodes` reads the bounded
+ * loader on every call, so concurrent delegations cannot race a flag and the
+ * engine does not have to keep its config object by reference.
+ * No snapshot throws {@link NoMeshRegistryError} — same refusal as no registry.
+ */
+function dynamicMeshRegistry(load: () => Promise<MeshView>): MeshRegistry {
+  return readOnlyMeshRegistry(async () => {
+    const view = await load()
+    if (view.kind === 'ok') return view.nodes
+    if (view.kind === 'unavailable' && view.lastGood) return view.lastGood
+    throw new NoMeshRegistryError()
+  })
 }
 
 function raceBound<T>(work: Promise<T>, ms: number): Promise<T | 'timeout'> {
@@ -471,7 +498,9 @@ function createBoundedMeshReader(opts: {
         hung = false
         if (!loggedAbsent) {
           loggedAbsent = true
-          opts.log('mesh.json unavailable (ENOENT) — no mesh file; presets are treated as local')
+          opts.log(
+            'mesh.json unavailable (ENOENT) — no mesh file; only presets on this node can run',
+          )
         }
         return
       }
@@ -556,9 +585,11 @@ export function createDelegateTools(deps: DelegateToolsDeps): DelegateToolsHandl
   const now = deps.now ?? Date.now
 
   async function renderAgents(): Promise<string> {
-    // Mesh first: a missing file localizes presets before the roster is read.
-    const mesh = await deps.meshNodes()
-    const entries = await deps.presets.rosterEntriesFresh({ timeoutMs: ROSTER_READ_BOUND_MS })
+    // One bound, not two: the roster refresh and the mesh read share the loader.
+    const [mesh, entries] = await Promise.all([
+      deps.meshNodes(),
+      deps.presets.rosterEntriesFresh({ timeoutMs: ROSTER_READ_BOUND_MS }),
+    ])
     if (mesh === 'unavailable') return formatAgentListing(entries, [], true)
     return formatAgentListing(entries, mesh, false)
   }
@@ -567,6 +598,7 @@ export function createDelegateTools(deps: DelegateToolsDeps): DelegateToolsHandl
     call: DelegateCall,
     host: MeshNode,
     parentDepth: number,
+    onCreated?: (rowId: string) => void,
   ): Promise<DelegationResult> {
     const startTime = now()
     const goal = delegationGoal(call.task, call.context)
@@ -594,6 +626,7 @@ export function createDelegateTools(deps: DelegateToolsDeps): DelegateToolsHandl
           ...(call.model ? { model: call.model } : {}),
         },
       })
+      onCreated?.(row.id)
       return await settleDelegatedTask({
         store: deps.store,
         waiter: deps.waiter,
@@ -609,15 +642,6 @@ export function createDelegateTools(deps: DelegateToolsDeps): DelegateToolsHandl
         response: `${describe} failed: ${errorMessage(err)}`,
         durationMs: now() - startTime,
       }
-    }
-  }
-
-  async function killSpawned(before: ReadonlySet<string>): Promise<void> {
-    const rows = await deps.store.list()
-    for (const row of rows) {
-      if (before.has(row.id)) continue
-      if (!PRE_TERMINAL.has(row.status)) continue
-      await deps.store.requestKill(row.id)
     }
   }
 
@@ -684,43 +708,53 @@ export function createDelegateTools(deps: DelegateToolsDeps): DelegateToolsHandl
           const preset = await deps.presets.find(call.toAgent)
           if (signal?.aborted) return CLIENT_ABORT_TEXT
 
-          const before = signal
-            ? new Set((await deps.store.list()).map((row) => row.id))
-            : undefined
-          if (signal?.aborted) return CLIENT_ABORT_TEXT
-
+          const created = trackCreatedRow()
           const work = (async (): Promise<string> => {
-            if (preset) {
-              const settled = await deps.presets.delegate(
-                request,
-                preset,
-                parentDepth,
-                deps.parentTask?.id,
-              )
-              const node = preset.node && preset.node.length > 0 ? preset.node : deps.nodeName
-              return formatDelegationResult(annotateTimeout(settled, node))
-            }
+            try {
+              if (preset) {
+                const settled = await deps.presets.delegate(
+                  request,
+                  preset,
+                  parentDepth,
+                  deps.parentTask?.id,
+                  (rowId) => {
+                    created.note(rowId)
+                  },
+                )
+                const node = preset.node && preset.node.length > 0 ? preset.node : deps.nodeName
+                return formatDelegationResult(annotateTimeout(settled, node))
+              }
 
-            const host = pickOnlineHost(nodes, call.toAgent)
-            if (!host) {
-              const listing = await renderAgents()
-              return (
-                `[failed] Agent "${call.toAgent}" not found in RivetHub presets or runtime agents.\n\n` +
-                listing
-              )
-            }
+              const host = pickOnlineHost(nodes, call.toAgent)
+              if (!host) {
+                const listing = await renderAgents()
+                return (
+                  `[failed] Agent "${call.toAgent}" not found in RivetHub presets or runtime agents.\n\n` +
+                  listing
+                )
+              }
 
-            const settled = await delegateRuntime(call, host, parentDepth)
-            return formatDelegationResult(annotateTimeout(settled, host.name))
+              const settled = await delegateRuntime(call, host, parentDepth, (rowId) => {
+                created.note(rowId)
+              })
+              return formatDelegationResult(annotateTimeout(settled, host.name))
+            } finally {
+              created.finish()
+            }
           })()
 
           if (!signal) return await work
           const outcome = await untilAbort(work, signal)
-          if (outcome === 'aborted') {
-            await killSpawned(before ?? new Set())
+          if (outcome !== 'aborted') return outcome
+          // `create` cannot be cancelled. Wait it out so a row that lands
+          // after the abort is still killed, and so a failed insert is the
+          // result the client sees instead of `[killed]`.
+          const rowId = await created.done
+          if (rowId) {
+            await deps.store.requestKill(rowId)
             return CLIENT_ABORT_TEXT
           }
-          return outcome
+          return await work
         } catch (err: unknown) {
           return `[failed] delegate_task failed: ${errorMessage(err)}`
         }
@@ -763,6 +797,12 @@ export async function createDelegateToolsFromEnv(opts: {
    * to force depth 0 even if that env var is set.
    */
   parentTaskId?: string
+  /**
+   * When false (HTTP/socket), do not open the completion waiter. `list_agents`
+   * only needs the store; LISTEN exists for `delegate_task`. The tool is still
+   * returned — the caller strips it. Default true.
+   */
+  registerDelegateTask?: boolean
   log?: (msg: string) => void
   /** Test seam. Default `new pg.Pool(delegatePoolConfig(pgUrl))`. */
   createPool?: (config: pg.PoolConfig) => pg.Pool
@@ -816,12 +856,18 @@ export async function createDelegateToolsFromEnv(opts: {
       return undefined
     }
 
-    waiter = (
-      opts.createWaiter ??
-      ((tasks: TaskStore) => createTaskCompletionWaiter({ store: tasks, pgUrl: opts.pgUrl }))
-    )(store)
+    // HTTP/socket never registers delegate_task, so it must not open LISTEN.
+    const registerDelegateTask = opts.registerDelegateTask !== false
+    waiter = registerDelegateTask
+      ? (
+          opts.createWaiter ??
+          ((tasks: TaskStore) => createTaskCompletionWaiter({ store: tasks, pgUrl: opts.pgUrl }))
+        )(store)
+      : {
+          wait: () => Promise.resolve(undefined),
+          stop: () => Promise.resolve(),
+        }
 
-    let localizeAll = false
     const meshPath = join(opts.sharedDir, 'mesh.json')
     const mesh = createBoundedMeshReader({
       path: meshPath,
@@ -839,43 +885,22 @@ export async function createDelegateToolsFromEnv(opts: {
         }),
       log,
     })
-    const engineConfig: PresetDelegationConfig = {
-      resolver: localizeResolver(
-        createCachedPresetResolver(presetStore, { log }),
-        () => localizeAll,
-        opts.nodeName,
-      ),
+    const presets = new PresetDelegationEngine({
+      resolver: createCachedPresetResolver(presetStore, { log }),
       taskStore: store,
       waiter,
       nodeName: opts.nodeName,
-    }
-    const registry = readOnlyMeshRegistry(async () => {
-      const view = await mesh.load()
-      if (view.kind === 'ok') return view.nodes
-      if (view.kind === 'unavailable' && view.lastGood) return view.lastGood
-      return []
+      meshRegistry: dynamicMeshRegistry(() => mesh.load()),
     })
-    const presets = new PresetDelegationEngine(engineConfig)
 
     const meshNodes = async (): Promise<MeshNode[] | 'unavailable'> => {
       const view = await mesh.load()
-      if (view.kind === 'absent') {
-        // No registry that returns [] — that rejects every preset. No file
-        // means every preset is local (see localizeResolver).
-        localizeAll = true
-        engineConfig.meshRegistry = undefined
-        return []
-      }
-      if (view.kind === 'ok') {
-        localizeAll = false
-        engineConfig.meshRegistry = registry
-        return view.nodes
-      }
-      localizeAll = false
-      // Timeout or unreadable. Do not install a registry that returns []
-      // or a local preset is refused as offline. Last-good nodes, if we
-      // ever parsed the file, keep remote presets judgeable.
-      engineConfig.meshRegistry = view.lastGood ? registry : undefined
+      if (view.kind === 'ok') return view.nodes
+      // Absent is an empty roster, not "unavailable": the file is not there.
+      // Remote presets are refused by the engine (no mesh registry). A timed-out
+      // or unreadable read stays unavailable; a last-good snapshot still lets
+      // delegation judge remote nodes via the registry, not via this listing.
+      if (view.kind === 'absent') return []
       return 'unavailable'
     }
 

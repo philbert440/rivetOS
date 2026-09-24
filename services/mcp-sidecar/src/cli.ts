@@ -196,7 +196,8 @@ async function main(): Promise<void> {
   // inside createDelegateToolsFromEnv). A postgres probe that fails inside
   // the connect budget skips the tools and startup continues.
   // delegate_task is stdio-only: HTTP/socket mode has no per-harness
-  // RIVETOS_TASK_ID, so the chain guard would stay at depth 0.
+  // RIVETOS_TASK_ID, so the chain guard would stay at depth 0. That mode
+  // also skips the completion waiter — list_agents only reads the store.
   if (pgUrl && process.env.RIVETOS_MCP_ENABLE_DELEGATE === '0') {
     console.log('[rivetos-mcp-sidecar] RIVETOS_MCP_ENABLE_DELEGATE=0 — delegate tools disabled')
   } else if (pgUrl) {
@@ -209,6 +210,7 @@ async function main(): Promise<void> {
         nodeName,
         requestedBy,
         parentTaskId: process.env.RIVETOS_TASK_ID,
+        registerDelegateTask: stdioMode,
         log: console.error,
       })
       if (handle) {
