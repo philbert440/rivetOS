@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Agent registry
+
+- `@rivetos/agent-registry` (tagged `domain:shared`) is the shared preset store den, core, and the hub will import: file and Postgres backends, directory materialization, a short-lived cache, and a one-shot `agents.json` importer. Migration `0017_agent_presets.sql` adds the DataHub table `ros_agent_presets`. `AgentPreset` gains optional `node`, `directory`, and `sharedLink` (`nodeBaseUrl` stays, deprecated); roster-command helpers move into `@rivetos/types` so den and RivetHub share one map. No runtime behaviour change.
+
 ### Den
 
 - `POST /term/inject` writes only into sessions whose roster entry is an agent harness (`room: true`). Terminal-only sessions (`room: false`) answer 409 `session is not an agent harness` and nothing is written to the PTY (#810). Custom harness entries must set `room: true` to receive chat; terminal-only entries are typed through the terminal. Typing into a shell remains the terminal websocket.
