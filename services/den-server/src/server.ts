@@ -645,6 +645,9 @@ export function createDenServer(config: DenConfig, opts: DenServerOptions = {}):
         sessionCwd: (command, id) =>
           sessionCwdStore.get(command, id) ?? (command === 'qwen' ? qwenSessionCwd(id) : undefined),
         recordSessionCwd: writeSessionCwd,
+        forgetSessionCwd: (command, id) => {
+          sessionCwdStore.delete(command, id)
+        },
         harnessArgv: (command, session, argv) =>
           command === 'codex' ? codexProtocol?.terminalArgv(session, argv[0]) : undefined,
         tmuxCtl: opts.tmuxCtl,
@@ -686,7 +689,7 @@ export function createDenServer(config: DenConfig, opts: DenServerOptions = {}):
   const rosterCwdFor = (key: string) => (): string => defaultSpawnCwd(rosterProvider.get(), key)
   const recordedSessionCwd = (command: string, id: string): string | undefined =>
     sessionCwdStore.get(command, id)
-  const sessionCwdMtime = (): number => sessionCwdStore.observedMtime()
+  const sessionCwdMtime = (): number => sessionCwdStore.generation()
   // The node's HarnessDriver registry (docs/ARCHITECTURE.md).
   // All built-in drivers formalize the machinery right above them — the
   // term manager (spawn/--resume/inject/Esc), the harness's on-disk store, and
@@ -1676,15 +1679,21 @@ export function createDenServer(config: DenConfig, opts: DenServerOptions = {}):
                 if (requested && codexProtocol.manages(requested)) {
                   // The app-server thread is already alive. resume cannot
                   // chdir it, and force must not record or report a directory
-                  // the thread is not in. `recorded` wins; the binding cwd
-                  // covers a thread that was never written to the store.
+                  // the thread is not in. Closing the terminal does not end
+                  // the thread, so the advice is the same one an unforced
+                  // request gets. `recorded` wins when it disagrees with the
+                  // preset; the binding cwd covers a thread that was never
+                  // written to the store, and a binding that disagrees with
+                  // a matching record. A getSession failure with nothing
+                  // recorded fails closed — falling through would resume and
+                  // answer 201 with the preset directory.
                   let threadCwd: string | undefined
                   try {
                     const summary = await codexProtocol.getSession(CodexDriver.sessionId(requested))
                     if (typeof summary?.cwd === 'string' && summary.cwd.trim())
                       threadCwd = summary.cwd
-                  } catch {
-                    threadCwd = undefined
+                  } catch (error) {
+                    if (!recorded) throw error
                   }
                   const running = [recorded, threadCwd].find(
                     (dir) =>
@@ -1695,7 +1704,7 @@ export function createDenServer(config: DenConfig, opts: DenServerOptions = {}):
                   )
                   if (running) {
                     return json(res, 409, {
-                      error: `session runs in ${running}; close it before moving it`,
+                      error: `session runs in ${running}; edit the agent or start a new conversation`,
                     })
                   }
                   await codexProtocol.resumeSession(CodexDriver.sessionId(requested))

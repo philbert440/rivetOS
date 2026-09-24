@@ -8,9 +8,13 @@
 // not uuids; and it ROTATES, which the shared conformance suite at the bottom
 // exercises end to end through a real registry.
 
+import { mkdtempSync, rmSync, utimesSync, writeFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 import { describe, expect, it, vi } from 'vitest'
 import { HarnessError, type HarnessEvent, type SessionId } from '@rivetos/types'
 import type { HarnessSession } from '../term/harness-sessions.js'
+import { createSessionCwdStore } from '../term/session-cwd.js'
 import { HermesDriver, type HermesPtyHost, type HermesStoreHost } from './hermes-driver.js'
 import type { DenAgentEventLike } from './pty-harness-driver.js'
 import { createHarnessRegistry, type HarnessRegistry } from './registry.js'
@@ -465,6 +469,46 @@ describe('resumeSession', () => {
     stamp += 1
     f.emitDen(hermesEvent(ROOM, NAT, { type: 'message.agent', text: 'now' }))
     expect(recorded.get(`hermes:${NAT}`)).toBe('/srv/later')
+  })
+
+  it('discovers a room record another process wrote into the cwd store', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'den-hermes-cwd-'))
+    const file = join(dir, 'session-cwd.json')
+    const store = createSessionCwdStore(file)
+    let lookups = 0
+    try {
+      const f = makeDriver({
+        cwd: () => '/home/rivet',
+        sessionCwd: (command, id) => {
+          lookups += 1
+          return store.get(command, id)
+        },
+        recordSessionCwd: (command, id, cwd) => {
+          store.set(command, id, cwd)
+        },
+        sessionCwdMtime: () => store.generation(),
+      })
+      adopt(f, ROOM, NAT)
+      expect(lookups).toBe(1)
+      f.emitDen(hermesEvent(ROOM, NAT, { type: 'message.agent', text: 'again' }))
+      expect(lookups).toBe(1)
+      writeFileSync(
+        file,
+        JSON.stringify({
+          v: 1,
+          entries: { [`hermes:${ROOM}`]: { cwd: '/tmp/external-room', at: 1 } },
+        }),
+      )
+      const future = new Date(Date.now() + 10_000)
+      utimesSync(file, future, future)
+      f.emitDen(hermesEvent(ROOM, NAT, { type: 'message.agent', text: 'now' }))
+      // Room lookup, then the native-id check, once the generation moves.
+      expect(lookups).toBe(3)
+      expect(store.get('hermes', NAT)).toBe('/tmp/external-room')
+    } finally {
+      store.close()
+      rmSync(dir, { recursive: true, force: true })
+    }
   })
 
   it('copies again after a rotation drops the previous native pair', () => {

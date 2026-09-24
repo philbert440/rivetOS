@@ -214,8 +214,8 @@ export abstract class AdoptingPtyHarnessDriver<
   }
 
   /**
-   * True when this pair is copied, or the store still has the mtime of a
-   * miss. No mtime hook → never settled on a miss, so the next event retries.
+   * True when this pair is copied, or the store still has the generation of a
+   * miss. No generation hook → never settled on a miss, so the next event retries.
    */
   private cwdSettled(room: string, native: string): boolean {
     const pair = this.pairKey(room, native)
@@ -235,8 +235,8 @@ export abstract class AdoptingPtyHarnessDriver<
     if (stamp !== undefined && this.cwdMiss.get(pair) === stamp) return
     const cwd = lookup(this.rosterCommand, room)
     // Not recorded yet (the spawn write can land after the first event).
-    // A negative mark keyed on the store mtime skips repeat reads until a
-    // write. Without a mtime hook the pair stays unmarked and the next
+    // A negative mark keyed on the store generation skips repeat reads until
+    // a write. Without a generation hook the pair stays unmarked and the next
     // bindRoom retries.
     if (!cwd) {
       if (stamp !== undefined) this.cwdMiss.set(pair, stamp)

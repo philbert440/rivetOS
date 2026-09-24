@@ -151,7 +151,10 @@ describe('session cwd store', () => {
     expect(store.get('claude', 'a')).toBe('/tmp/agent-a')
     expect(writes).toBe(1)
     expect(readFileSync(file, 'utf8')).toBe(body)
-    // The boundary itself rewrites. One millisecond earlier would not.
+    // The boundary itself rewrites. One millisecond earlier does not.
+    t = 10_000 + SESSION_CWD_TOUCH_MS - 1
+    expect(store.get('claude', 'a')).toBe('/tmp/agent-a')
+    expect(writes).toBe(1)
     t = 10_000 + SESSION_CWD_TOUCH_MS
     expect(store.get('claude', 'a')).toBe('/tmp/agent-a')
     expect(writes).toBe(2)
@@ -162,6 +165,70 @@ describe('session cwd store', () => {
       cwd: '/tmp/agent-a',
       at: 10_000 + SESSION_CWD_TOUCH_MS,
     })
+    store.close()
+  })
+
+  it('generation advances on every write even when the mtime does not', () => {
+    const dir = tmp()
+    const file = join(dir, 'session-cwd.json')
+    const fixed = new Date(1_700_000_000_000)
+    const store = createSessionCwdStore(file, {
+      writeFile: (path, data, options) => {
+        writeFileSync(path, data, options)
+        utimesSync(path, fixed, fixed)
+      },
+    })
+    store.set('claude', 'a', '/tmp/a')
+    const first = store.generation()
+    expect(first).toBeGreaterThan(0)
+    store.set('claude', 'a', '/tmp/b')
+    expect(store.generation()).toBeGreaterThan(first)
+    expect(store.get('claude', 'a')).toBe('/tmp/b')
+    store.close()
+  })
+
+  it('an externally added record bumps generation and is then readable', () => {
+    const dir = tmp()
+    const file = join(dir, 'session-cwd.json')
+    const store = createSessionCwdStore(file)
+    store.set('claude', 'a', '/tmp/agent-a')
+    const before = store.generation()
+    const raw = JSON.parse(readFileSync(file, 'utf8')) as {
+      v: number
+      entries: Record<string, { cwd: string; at: number }>
+    }
+    raw.entries['claude:extra'] = { cwd: '/tmp/external', at: 1 }
+    writeFileSync(file, JSON.stringify(raw))
+    const future = new Date(Date.now() + 10_000)
+    utimesSync(file, future, future)
+    expect(store.generation()).toBeGreaterThan(before)
+    expect(store.get('claude', 'extra')).toBe('/tmp/external')
+    expect(store.get('claude', 'a')).toBe('/tmp/agent-a')
+    store.close()
+  })
+
+  it('delete drops one room and does not rewrite when the key is absent', () => {
+    const dir = tmp()
+    const file = join(dir, 'session-cwd.json')
+    let writes = 0
+    const store = createSessionCwdStore(file, {
+      writeFile: (path, data, options) => {
+        writes += 1
+        writeFileSync(path, data, options)
+      },
+    })
+    store.set('claude', 'a', '/tmp/a')
+    store.set('claude', 'b', '/tmp/b')
+    const before = store.generation()
+    writes = 0
+    store.delete('claude', 'missing')
+    expect(writes).toBe(0)
+    expect(store.generation()).toBe(before)
+    store.delete('claude', 'a')
+    expect(writes).toBe(1)
+    expect(store.get('claude', 'a')).toBeUndefined()
+    expect(store.get('claude', 'b')).toBe('/tmp/b')
+    expect(store.generation()).toBeGreaterThan(before)
     store.close()
   })
 

@@ -32,8 +32,15 @@ export const SESSION_CWD_TOUCH_MS = 60 * 60 * 1000
 export interface SessionCwdStore {
   get(command: string, id: string): string | undefined
   set(command: string, id: string, cwd: string): void
-  /** In-memory file mtime. 0 until a load or write. A write changes it. */
-  observedMtime(): number
+  /** Remove one room. No-op when the key is absent (does not rewrite). */
+  delete(command: string, id: string): void
+  /**
+   * Monotonic write generation. 0 until a load or write. Increases on every
+   * successful write and whenever `load` re-reads the file, so a miss cached
+   * against the previous value retries after this process writes or another
+   * den process adds a record. Not an mtime: two writes in one tick both count.
+   */
+  generation(): number
   close(): void
 }
 
@@ -148,6 +155,8 @@ export function createSessionCwdStore(
     })
   const mutex = makeMutex()
   let cache: Cache | null = null
+  /** Counts writes and external re-reads. Independent of filesystem mtime. */
+  let generation = 0
   /** One warning per key + bad value. A later edit of the value logs again. */
   const invalidLogged = new Set<string>()
 
@@ -160,7 +169,12 @@ export function createSessionCwdStore(
       st = undefined
     }
     if (!st) {
-      cache = null
+      // A file we had loaded disappeared (another process, or quarantine).
+      // A miss cached against the old generation must retry.
+      if (cache) {
+        cache = null
+        generation += 1
+      }
       return {}
     }
     if (cache && cache.mtimeMs === st.mtimeMs && cache.size === st.size) return cache.entries
@@ -173,7 +187,17 @@ export function createSessionCwdStore(
     } catch {
       cache = null
     }
+    // Another den process (or an operator) changed the file. Bump even when
+    // the new mtime collides with the cached one and only the size differed,
+    // and also when this is the first time the file became visible.
+    generation += 1
     return entries
+  }
+
+  const remember = (entries: Record<string, Entry>): void => {
+    const st = saveFile(file, entries, write)
+    cache = { mtimeMs: st.mtimeMs, size: st.size, entries }
+    generation += 1
   }
 
   const keyFor = (command: string, id: string): string => `${command}:${id}`
@@ -199,8 +223,7 @@ export function createSessionCwdStore(
         if (entry.cwd === validated && !touch) return validated
         const next = evict({ ...loaded, [key]: { cwd: validated, at: touch ? at : entry.at } }, max)
         try {
-          const st = saveFile(file, next, write)
-          cache = { mtimeMs: st.mtimeMs, size: st.size, entries: next }
+          remember(next)
         } catch (err) {
           // The value is still usable. A failed recency write must not fail
           // the read — the next get tries again.
@@ -215,13 +238,28 @@ export function createSessionCwdStore(
       mutex(() => {
         const entries = { ...load() }
         entries[keyFor(command, id)] = { cwd, at: now() }
-        const next = evict(entries, max)
-        const st = saveFile(file, next, write)
-        cache = { mtimeMs: st.mtimeMs, size: st.size, entries: next }
+        remember(evict(entries, max))
       })
     },
-    observedMtime(): number {
-      return cache?.mtimeMs ?? 0
+    delete(command, id): void {
+      mutex(() => {
+        const loaded = load()
+        const key = keyFor(command, id)
+        if (!Object.hasOwn(loaded, key)) return
+        const entries: Record<string, Entry> = {}
+        for (const [name, value] of Object.entries(loaded)) {
+          if (name !== key) entries[name] = value
+        }
+        remember(entries)
+      })
+    },
+    generation(): number {
+      // Restat so a record another process just wrote is visible to a caller
+      // that has not called get() yet. A cache hit does not bump.
+      return mutex(() => {
+        load()
+        return generation
+      })
     },
     close(): void {
       cache = null

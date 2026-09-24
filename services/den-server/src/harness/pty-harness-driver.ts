@@ -226,8 +226,9 @@ export interface PtyHarnessDriverDeps<S extends HarnessStoreHost = HarnessStoreH
    */
   recordSessionCwd?: (command: string, id: string, cwd: string) => void
   /**
-   * In-memory mtime of the cwd store. A miss cached against this value is
-   * not looked up again until a write changes it. Omitted → every bind reads.
+   * Write generation of the cwd store (`generation()`). A miss cached against
+   * this value is not looked up again until a write or an external edit
+   * changes it. Omitted → every bind reads.
    */
   sessionCwdMtime?: () => number
   /** How many sessions `listSessions` pulls from the store. */

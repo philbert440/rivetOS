@@ -13,6 +13,8 @@ import { join } from 'node:path'
 import { spawn as childSpawn } from 'node:child_process'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import type { DenConfig, DenTermConfig } from '../config.js'
+import { ClaudeCodeDriver } from '../harness/claude-driver.js'
+import type { HarnessSession } from './harness-sessions.js'
 import { createTermManager, TermSpawnError, type TermManager } from './manager.js'
 import { createSessionCwdStore } from './session-cwd.js'
 import { resetSessionContextForTest } from './context-window.js'
@@ -108,6 +110,7 @@ function makeManager(
     sessionExists?: (command: string, id: string) => boolean
     sessionCwd?: (command: string, id: string) => string | undefined
     recordSessionCwd?: (command: string, id: string, cwd: string) => void
+    forgetSessionCwd?: (command: string, id: string) => void
     tmuxCtl?: TmuxCtl
     herdrCtl?: HerdrCtl
     findHerdr?: () => string | null
@@ -175,6 +178,7 @@ function makeManager(
     sessionExists: extra.sessionExists,
     sessionCwd: extra.sessionCwd,
     recordSessionCwd: extra.recordSessionCwd,
+    forgetSessionCwd: extra.forgetSessionCwd,
     tmuxCtl: extra.tmuxCtl,
     herdrCtl: extra.herdrCtl,
     findHerdr: extra.findHerdr,
@@ -632,6 +636,86 @@ describe('term manager', () => {
     expect(recorded).toEqual([{ command: 'claude', id: 'chat-1', cwd: '/tmp/agent-claude' }])
     expect(pty.cwd).toBe('/tmp/agent-claude')
     overridden.manager.close()
+  })
+
+  it('a plain spawn in the default drops a stale room record; resume reuses', async () => {
+    const session = '11111111-1111-4111-8111-111111111111'
+    const preset = mkdtempSync(join(tmpdir(), 'den-cwd-stale-preset-'))
+    const storeDir = mkdtempSync(join(tmpdir(), 'den-cwd-stale-store-'))
+    dirs.push(preset, storeDir)
+    const store = createSessionCwdStore(join(storeDir, 'session-cwd.json'))
+    const wiring = {
+      sessionExists: () => false,
+      sessionCwd: (command: string, id: string) => store.get(command, id),
+      recordSessionCwd: (command: string, id: string, cwd: string) => store.set(command, id, cwd),
+      forgetSessionCwd: (command: string, id: string) => store.delete(command, id),
+    }
+    const { manager, procs, spawns } = makeManager({}, wiring)
+    manager.spawn(
+      'claude',
+      80,
+      24,
+      '',
+      session,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      preset,
+    )
+    expect(store.get('claude', session)).toBe(preset)
+    procs[0].emit('exit', 0)
+
+    const plain = manager.spawn('claude', 80, 24, '', session)
+    expect(plain.cwd).toBe(homedir())
+    expect(store.get('claude', session)).toBeUndefined()
+    expect(spawns).toHaveLength(2)
+
+    const reusePreset = (): void => {
+      manager.spawn(
+        'claude',
+        80,
+        24,
+        '',
+        session,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        preset,
+      )
+    }
+    expect(reusePreset).toThrow(TermSpawnError)
+    try {
+      reusePreset()
+    } catch (err) {
+      expect(err).toBeInstanceOf(TermSpawnError)
+      expect((err as TermSpawnError).code).toBe('cwd-live')
+      expect((err as TermSpawnError).message).toBe(
+        `session is running in ${homedir()}; edit the agent or start a new conversation`,
+      )
+    }
+    expect(spawns).toHaveLength(2)
+
+    const row: HarnessSession = { id: session, command: 'claude', title: 't', updatedAt: 1 }
+    const driver = new ClaudeCodeDriver({
+      store: {
+        list: () => Promise.resolve([row]),
+        describe: () => Promise.resolve(row),
+        transcript: () => Promise.resolve({ turns: [] }),
+      },
+      pty: () => Promise.resolve(manager),
+      sessionCwd: (command, id) => store.get(command, id),
+      recordSessionCwd: (command, id, cwd) => store.set(command, id, cwd),
+      turnQuietMs: 0,
+    })
+    await expect(driver.resumeSession(ClaudeCodeDriver.sessionId(session))).resolves.toMatchObject({
+      sessionId: ClaudeCodeDriver.sessionId(session),
+    })
+    expect(spawns).toHaveLength(2)
+    store.close()
   })
 
   it('a resume keeps the recorded cwd when the preset directory moved', () => {
@@ -1657,6 +1741,8 @@ class FakeTmuxCtl implements TmuxCtl {
   stamps: { name: string; option: string; value: string }[] = []
   /** Scripted `windowSize` result per session name. Absent → undefined. */
   sizes = new Map<string, { cols: number; rows: number }>()
+  /** Scripted `#{pane_current_path}` per session name. Absent → undefined. */
+  paths = new Map<string, string>()
   /** When set, every method throws — simulates a wedged/missing tmux. */
   failWith?: Error
   hasSession(name: string): boolean {
@@ -1685,6 +1771,10 @@ class FakeTmuxCtl implements TmuxCtl {
   windowSize(name: string): { cols: number; rows: number } | undefined {
     if (this.failWith) throw this.failWith
     return this.sizes.get(name)
+  }
+  paneCurrentPath(name: string): string | undefined {
+    if (this.failWith) throw this.failWith
+    return this.paths.get(name)
   }
   /** Simulate the tmux server creating a session for a fresh new-session.
    *  Defaults carry den's tags. Pass '' for command to model a pre-fix
@@ -2173,9 +2263,77 @@ describe('term manager (tmux mux)', () => {
     // spawnInflight was cleared: an immediate unforced retry is not 'cap'.
     const again = manager.spawn('claude', 80, 24, '', session)
     expect(again.reattached).toBe(true)
+    expect(again.cwd).toBe(recordedDir)
     expect(spawns).toHaveLength(1)
     expect(spawns[0].argv).toContain('attach-session')
     expect(recorded).toEqual([])
+  })
+
+  it('a plain tmux reattach records the pane directory, then a default preset is refused', () => {
+    const session = 'chat-cwd-pane'
+    const live = mkdtempSync(join(tmpdir(), 'den-cwd-pane-live-'))
+    const stale = mkdtempSync(join(tmpdir(), 'den-cwd-pane-stale-'))
+    dirs.push(live, stale)
+    const ctl = new FakeTmuxCtl()
+    const name = encodeTmuxName(session)
+    ctl.serverCreated(name, 'claude', 'owner')
+    ctl.paths.set(name, live)
+    const { manager, spawns } = makeManager(
+      { mux: 'tmux' },
+      {
+        tmuxCtl: ctl,
+        sessionExists: () => false,
+        sessionCwd: (command, id) => (command === 'claude' && id === session ? live : undefined),
+      },
+    )
+    const pty = manager.spawn('claude', 80, 24, '', session)
+    expect(pty.reattached).toBe(true)
+    expect(pty.cwd).toBe(live)
+    expect(spawns).toHaveLength(1)
+    expect(spawns[0].argv).toContain('attach-session')
+    const presetDefault = (): void => {
+      manager.spawn(
+        'claude',
+        80,
+        24,
+        '',
+        session,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        homedir(),
+      )
+    }
+    expect(presetDefault).toThrow(TermSpawnError)
+    try {
+      presetDefault()
+    } catch (err) {
+      expect(err).toBeInstanceOf(TermSpawnError)
+      expect((err as TermSpawnError).code).toBe('cwd-live')
+      expect((err as TermSpawnError).message).toBe(
+        `session is running in ${live}; edit the agent or start a new conversation`,
+      )
+    }
+    expect(spawns).toHaveLength(1)
+
+    // The pane path is the process. A stale room record must not win.
+    const ctlStale = new FakeTmuxCtl()
+    ctlStale.serverCreated(name, 'claude', 'owner')
+    ctlStale.paths.set(name, live)
+    const staleMgr = makeManager(
+      { mux: 'tmux' },
+      {
+        tmuxCtl: ctlStale,
+        sessionExists: () => false,
+        sessionCwd: (command, id) => (command === 'claude' && id === session ? stale : undefined),
+      },
+    )
+    const fromPane = staleMgr.manager.spawn('claude', 80, 24, '', session)
+    expect(fromPane.reattached).toBe(true)
+    expect(fromPane.cwd).toBe(live)
+    expect(fromPane.cwd).not.toBe(stale)
   })
 
   it('a forced reattach to the recorded directory attaches', () => {
@@ -3399,8 +3557,36 @@ describe('term manager (herdr mux)', () => {
     expect(ctl.creates).toHaveLength(0)
     const again = refused.manager.spawn('claude', 80, 24, '', session)
     expect(again.reattached).toBe(true)
+    expect(again.cwd).toBe(recordedDir)
     expect(refused.spawns).toHaveLength(1)
     expect(refused.spawns[0].argv).toEqual(['herdr', '--session', name])
+    const presetDefault = (): void => {
+      refused.manager.spawn(
+        'claude',
+        80,
+        24,
+        '',
+        session,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        homedir(),
+      )
+    }
+    expect(presetDefault).toThrow(TermSpawnError)
+    try {
+      presetDefault()
+    } catch (err) {
+      expect(err).toBeInstanceOf(TermSpawnError)
+      expect((err as TermSpawnError).code).toBe('cwd-live')
+      expect((err as TermSpawnError).message).toBe(
+        `session is running in ${recordedDir}; edit the agent or start a new conversation`,
+      )
+    }
+    expect(refused.spawns).toHaveLength(1)
+    expect(ctl.creates).toHaveLength(0)
 
     const matched = seed(recordedDir)
     const pty = matched.manager.spawn(
