@@ -1,7 +1,18 @@
 import { describe, expect, it } from 'vitest'
-import { DIALOG_NOTE, sendBlockNote, undeliveredNote } from './send-block-note.js'
+import { DIALOG_NOTE, DRAFT_NOTE, sendBlockNote, undeliveredNote } from './send-block-note.js'
 
 describe('sendBlockNote', () => {
+  it('explains a send refused because the Terminal input has unsent text', () => {
+    const err = {
+      status: 409,
+      body: { error: 'x', code: 'turn_in_flight', reason: 'harness_draft' },
+    }
+    expect(sendBlockNote(err)).toBe(DRAFT_NOTE)
+    expect(DRAFT_NOTE).toMatch(/unsent text/)
+    expect(DRAFT_NOTE).toMatch(/stays queued/)
+    expect(DRAFT_NOTE).toMatch(/inject button/)
+  })
+
   it('explains a send refused because the Terminal has a dialog open', () => {
     const err = { status: 409, body: { error: 'x', reason: 'harness_dialog' } }
     expect(sendBlockNote(err)).toBe(DIALOG_NOTE)

@@ -22,8 +22,10 @@
  *     inject button is the manual retry: that send sets bypassDialogGate.
  *     The server still reads the screen — a live dialog is dismissed with
  *     Esc before the paste; a copied-rule false positive also receives Esc.
- *     With no detected dialog, it pastes normally. Automatic retries never
- *     set the flag. Interrupt (Esc a busy turn) is separate and is not the bypass.
+ *     A draft refuses the button too: nothing clears the user's unsent text
+ *     safely. With no detected dialog and no draft, it pastes normally.
+ *     Automatic retries never set the flag. Interrupt (Esc a busy turn) is
+ *     separate and is not the bypass.
  *   - **`turn_undelivered`.** den accepted the inject but the harness never
  *     took it. The pump keeps the last accepted item and `onUndelivered()`
  *     puts it back as failed only for the matching per-attempt delivery ID.

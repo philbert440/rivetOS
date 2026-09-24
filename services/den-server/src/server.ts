@@ -71,7 +71,7 @@ import {
 import { auditTenancyDeny, createSessionOwners, sessionForbidden } from './session-owners.js'
 import { createMeshView, loadMeshFile, meshDenOrigins, meshFilePaths } from './mesh.js'
 import { checkOrigin, type OriginPolicyOptions } from './origin-policy.js'
-import { dialogOnScreen } from './term/blocking-dialog.js'
+import { preSendBlockOnScreen } from './term/blocking-dialog.js'
 import { composeTermAttach, wirePtyInfo } from './term/attach.js'
 import { createRosterProvider } from './term/roster.js'
 import { loadRealPtySpawn, type PtySpawn } from './term/pty.js'
@@ -1772,7 +1772,18 @@ export function createDenServer(config: DenConfig, opts: DenServerOptions = {}):
           const bypassDialogGate = p.bypassDialogGate === true
           let dismissDialog = false
           if (claudeHarness && submit && p.text && !interrupt) {
-            const dialog = await dialogOnScreen(() => manager.screen(ptyId, 40))
+            const { dialog, draft } = await preSendBlockOnScreen(() => manager.screen(ptyId, 40))
+            // Unsent text in the input would merge with the paste. Refused
+            // even on the inject button: Esc can't clear it safely.
+            if (draft) {
+              return json(res, 409, {
+                error:
+                  'harness has unsent text in its input; send or clear it in the terminal first',
+                code: 'turn_in_flight',
+                retryable: true,
+                reason: 'harness_draft',
+              })
+            }
             if (dialog) {
               if (!bypassDialogGate) {
                 return json(res, 409, {

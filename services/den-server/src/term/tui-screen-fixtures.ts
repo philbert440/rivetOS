@@ -102,3 +102,75 @@ export const MODEL_PICKER_SCREEN = `\
 
    Enter to set as default · s to use this session only · Esc to cancel
 `
+
+/** Claude Code 2.1.280, fresh session (captured 2026-09-24): the empty input box
+ *  shows a dim rotating example (`Try "refactor <filepath>"`). Not typed text. */
+export const FRESH_CLAUDE_PROMPT_SCREEN = `\
+ ▐▛███▛█   Claude Code v2.1.280
+▝▜██████▀  Opus 5.5 · Claude Pro
+  ▝▝ ▝▝    /home/alex
+
+▎ Using Opus 5.5 (from .claude/settings.json) · /model
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+                                                                                                    ◐ medium · /effort
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+❯\u00a0Try "refactor <filepath>"
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+  ⏵⏵ auto mode on (shift+tab to cycle) · ← for agents
+`
+
+/** Claude Code 2.1.280 with `/model` typed but not sent (captured live 2026-09-23):
+ *  the slash-command list is drawn above the input box. A chat paste here became
+ *  `/modeltest 1`. */
+export const SLASH_DRAFT_SCREEN = `\
+  /model                         Set the AI model for Claude Code (currently
+                                 Opus 5.5)
+  /claude-api                    Reference for the Claude API / Anthropic SDK
+                                 — model ids, pricing, params, streaming, to…
+───────────────────────────────────────────────────────────────────────────────
+❯\u00a0/model
+───────────────────────────────────────────────────────────────────────────────
+  ⏵⏵ auto mode on (shift+tab to cycle)
+`
+
+/**
+ * Synthetic, not a live capture. A draft longer than the pane width wraps
+ * onto the next row (shift+enter looks the same in a plain-text capture).
+ * `belowIsChrome` fail-opens, so this is not reported as a draft. Pinned
+ * until the block between the two separators is parsed.
+ */
+export const WRAPPED_DRAFT_SCREEN = `\
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+❯ this draft is longer than the pane and wraps
+onto the next row
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+  ⏵⏵ auto mode on (shift+tab to cycle) · ← for agents
+`
