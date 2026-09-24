@@ -12,11 +12,11 @@
  *   model             `-m` model id (default: the CLI's configured model)
  *   permission_mode   --permission-mode (default dontAsk — tools denied unless allowed)
  *   reasoning_effort  low|medium|high (default: CLI default; per-turn `thinking` overrides)
- *   max_turns         --max-turns (default 1 = answer only, no tool loop)
+ *   max_turns         --max-turns (default unset = flag omitted, grok decides when to stop)
  *   no_plan           --no-plan (default true)
  *   system_prompt     prepend|override|off — how the RivetOS system prompt reaches grok (default prepend)
  *   session           resume|replay — per-conversation grok session (default resume)
- *   allow             list of --allow rules for tool-using turns (max_turns > 1)
+ *   allow             list of --allow rules for tool-using turns
  *   tools             --tools pass-through
  *   cwd               working directory for the spawned grok
  *   context_window / max_output_tokens / name
@@ -116,7 +116,7 @@ export class GrokCliProvider implements Provider {
   private model: string
   private permissionMode: string
   private reasoningEffort: GrokReasoningEffort | undefined
-  private maxTurns: number
+  private maxTurns: number | undefined
   private noPlan: boolean
   private systemPromptMode: GrokSystemPromptMode
   private sessionMode: GrokSessionMode
@@ -134,7 +134,8 @@ export class GrokCliProvider implements Provider {
     this.model = config.model ?? 'default'
     this.permissionMode = config.permissionMode ?? 'dontAsk'
     this.reasoningEffort = config.reasoningEffort
-    this.maxTurns = config.maxTurns && config.maxTurns > 0 ? Math.floor(config.maxTurns) : 1
+    // Unset = no cap. A cap of 1 ends every tool-using turn as error_max_turns (#951).
+    this.maxTurns = config.maxTurns && config.maxTurns > 0 ? Math.floor(config.maxTurns) : undefined
     this.noPlan = config.noPlan ?? true
     this.systemPromptMode = config.systemPrompt ?? 'prepend'
     this.sessionMode = config.session === 'replay' ? 'replay' : 'resume'

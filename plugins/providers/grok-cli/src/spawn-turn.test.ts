@@ -41,6 +41,11 @@ describe('buildArgs', () => {
     ])
   })
 
+  it('omits --max-turns when no cap is configured', () => {
+    const { maxTurns: _unset, ...uncapped } = base
+    expect(buildArgs(uncapped, 'hello')).not.toContain('--max-turns')
+  })
+
   it('adds model, effort, system override, tools, allow rules and cwd when set', () => {
     const args = buildArgs(
       {
