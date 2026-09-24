@@ -24,9 +24,10 @@ export const INERT_SELECTOR = '[inert]'
  *  fresh page load. */
 export function focusIsInUse(active: FocusedElementLike | null | undefined): boolean {
   if (!active) return false
-  // The narrow history drawer is always `role="dialog"` and turns inert when
-  // picking a row closes it, leaving focus on that row. Nothing inert can be
-  // in use, so it must not hold autofocus off (#948).
+  // Narrow drawers (history drawer, nav rail) are always `role="dialog"` and
+  // turn inert when closed, leaving focus inside. Nothing inert can be in use,
+  // so it must not hold autofocus off (#948). A native `showModal()` dialog
+  // escapes ancestor inertness; none exists in the app today.
   if (active.closest(INERT_SELECTOR) != null) return false
   if (TEXT_ENTRY_TAGS.has(active.tagName.toUpperCase())) return true
   if (active.isContentEditable) return true

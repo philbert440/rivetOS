@@ -55,6 +55,8 @@ describe('focusIsInUse', () => {
     expect(button.asked).toContain(DIALOG_SELECTOR)
   })
 
+  // A Radix picker popover renders `role="dialog"` (PopoverContent). That row
+  // of this table is what keeps its focus; it asserts nothing beyond the clause.
   it.each(['dialog', '[role="dialog"]', '[role="alertdialog"]', '[aria-modal="true"]'])(
     'anything inside %s is in use, even a button',
     (ancestor) => {
@@ -62,17 +64,14 @@ describe('focusIsInUse', () => {
     },
   )
 
-  it('a Radix picker popover (role="dialog") keeps its focus', () => {
-    expect(focusIsInUse(el('BUTTON', { within: ['[role="dialog"]'] }))).toBe(true)
-  })
-
   it('a row button in the closed (inert) narrow history drawer does not block autofocus', () => {
-    const row = el('BUTTON', { within: ['[role="dialog"]', INERT_SELECTOR] })
+    expect(INERT_SELECTOR).toBe('[inert]')
+    const row = el('BUTTON', { within: ['[role="dialog"]', '[inert]'] })
     expect(focusIsInUse(row)).toBe(false)
   })
 
   it('an input inside an inert subtree is not in use either', () => {
-    expect(focusIsInUse(el('INPUT', { within: [INERT_SELECTOR] }))).toBe(false)
+    expect(focusIsInUse(el('INPUT', { within: ['[inert]'] }))).toBe(false)
   })
 
   it('the open drawer (not inert) still protects its filter input and rows', () => {

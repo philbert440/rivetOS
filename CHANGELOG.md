@@ -30,7 +30,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### RivetHub client
 
 - Composer model picker for conversations whose harness supports choosing a model per turn.
-- `apps/rivethub-web`: the composer autofocuses on landing in a conversation and when switching to another, so you can type without clicking first. Waits for the socket (the textarea is disabled while reconnecting) and fires once per session. It never pulls focus from something you're already using — an inline rename, a filter, a dialog, or the terminal — and skips touch devices so a tap can't raise the keyboard over the transcript.
+- `apps/rivethub-web`: the composer autofocuses on landing in a conversation and when switching to another, so you can type without clicking first. Waits for the socket (the textarea is disabled while reconnecting) and fires once per session. It never pulls focus from something you're already using — an inline rename, a filter, a dialog (unless the dialog has closed and gone inert), or the terminal — and skips touch devices so a tap can't raise the keyboard over the transcript.
 - A model picker appears before a harness's first launch in a conversation. The choice is then fixed for that harness in that conversation. Switching the conversation's agent clears it and offers the new agent's models. claude-code only today (#814).
 - `apps/rivethub-web`: prevent sidebar and composer node pickers flashing while discovery is pending or failed with one saved node; keep multiple saved nodes available immediately (#809).
 - `apps/rivethub-web`: hide node pickers only when connected to the sole saved node (or the app origin with no saved nodes) and mesh discovery confirms no peers; keep discovery and first-peer saving available.
