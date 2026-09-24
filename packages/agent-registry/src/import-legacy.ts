@@ -18,6 +18,8 @@ export interface ImportLegacyAgentsArgs {
 export interface ImportLegacyAgentsResult {
   imported: number
   skipped: number
+  /** Rows imported under a disambiguated name (`"<name> (<node>)"`, then a suffix). */
+  renamed: number
   /** Set when the source file was renamed aside. Never deleted. */
   renamedTo?: string
   /** Set when the import was refused (the store file is the source). */
@@ -29,6 +31,12 @@ export interface ImportLegacyAgentsResult {
    * these rows — an id skipped after a crash still gets its directory.
    */
   rows?: AgentPreset[]
+  /**
+   * Rows that still collided after the id-suffix name. Only an id conflict
+   * counts as `skipped`. When this is non-empty the source file is left in
+   * place so a later boot can retry.
+   */
+  unresolved?: Array<{ id: string; name: string }>
 }
 
 /** Id conflicts are skipped. Name conflicts are imported under a disambiguated name. */
@@ -44,15 +52,17 @@ function isIdConflict(err: PresetConflictError): boolean {
  * One-shot import of a den `agents.json` into `store`. An id conflict is
  * skipped and logged. A name conflict (PG's case-insensitive unique name,
  * which the old per-node file den did not enforce) is imported as
- * `"<name> (<node>)"`, then `"<name> (<node> 2)"`, and so on, and logged.
- * The source file is renamed to `<file>.imported-<epoch ms>` and never
- * deleted. A missing file is a no-op.
+ * `"<name> (<node>)"`, then `"<name> (<node> 2)"`, and so on, and finally
+ * `"<name> (<node> <first 8 of id>)"`. A row that still cannot be imported
+ * is reported on `unresolved` and the source file is left in place. Otherwise
+ * the source file is renamed to `<file>.imported-<epoch ms>` and never
+ * deleted. A missing file is a no-op. `renamed` counts disambiguations.
  */
 export async function importLegacyAgentsJson(
   args: ImportLegacyAgentsArgs,
 ): Promise<ImportLegacyAgentsResult> {
   const { file, store, node, directoryRoot, log } = args
-  if (!existsSync(file)) return { imported: 0, skipped: 0 }
+  if (!existsSync(file)) return { imported: 0, skipped: 0, renamed: 0 }
 
   // Slice 2 falls back to the file store and fire-and-forgets this import
   // against the same agents.json. Renaming that file would drop the live registry.
@@ -64,14 +74,16 @@ export async function importLegacyAgentsJson(
     store.file !== undefined &&
     resolve(store.file) === resolve(file)
   ) {
-    return { imported: 0, skipped: 0, reason: 'store is the source file' }
+    return { imported: 0, skipped: 0, renamed: 0, reason: 'store is the source file' }
   }
 
   const legacy = new FileAgentPresetStore(file)
   const rows = await legacy.list()
   let imported = 0
   let skipped = 0
+  let renamed = 0
   const importedRows: AgentPreset[] = []
+  const unresolved: Array<{ id: string; name: string }> = []
   for (const row of rows) {
     const validated = validateDirectory(row.directory)
     const directory = validated ?? defaultDirectoryFor(directoryRoot, row.name)
@@ -81,16 +93,21 @@ export async function importLegacyAgentsJson(
       )
     }
     // Same id on every attempt so a name rewrite cannot mint a second row for
-    // one legacy preset. Only an id collision gives up.
+    // one legacy preset. Only an id collision is skipped. After
+    // `"<name> (<node> N)"` the last candidate is `"<name> (<node> <id8>)"`.
+    // A name conflict on that candidate is reported and the file stays.
     const baseName = row.name.trim()
+    const idSuffix = row.id.slice(0, 8)
+    const candidates = [
+      baseName,
+      `${baseName} (${node})`,
+      ...Array.from({ length: 18 }, (_, index) => `${baseName} (${node} ${String(index + 2)})`),
+      `${baseName} (${node} ${idSuffix})`,
+    ]
     let importedRow = false
-    for (let attempt = 0; attempt < 20; attempt += 1) {
-      const candidate =
-        attempt === 0
-          ? baseName
-          : attempt === 1
-            ? `${baseName} (${node})`
-            : `${baseName} (${node} ${String(attempt)})`
+    let idSkipped = false
+    for (let attempt = 0; attempt < candidates.length; attempt += 1) {
+      const candidate = candidates[attempt] ?? baseName
       try {
         // `create` keeps `createdAt` and stamps `updatedAt` at import time.
         const created = await store.create({
@@ -102,6 +119,7 @@ export async function importLegacyAgentsJson(
           directory,
         })
         if (attempt > 0) {
+          renamed += 1
           log?.(
             `imported legacy agent ${row.id} (${baseName}) as "${created.name}" after a name conflict`,
           )
@@ -115,22 +133,37 @@ export async function importLegacyAgentsJson(
         if (isIdConflict(err)) {
           skipped += 1
           log?.(`skipped legacy agent ${row.id} (${row.name}): ${err.message}`)
-          importedRow = true
+          idSkipped = true
           break
         }
         log?.(`legacy agent ${row.id} (${baseName}) name conflict: ${err.message}`)
       }
     }
-    if (!importedRow) {
-      skipped += 1
-      log?.(`skipped legacy agent ${row.id} (${baseName}): name still conflicts after 20 attempts`)
+    if (!importedRow && !idSkipped) {
+      unresolved.push({ id: row.id, name: baseName })
+      log?.(`legacy agent ${row.id} (${baseName}) was not imported; source file left in place`)
     }
   }
 
-  const outcome: ImportLegacyAgentsResult = { imported, skipped, rows: importedRows }
+  const outcome: ImportLegacyAgentsResult = {
+    imported,
+    skipped,
+    renamed,
+    rows: importedRows,
+    ...(unresolved.length > 0 ? { unresolved } : {}),
+  }
+  log?.(
+    `legacy agents import: imported=${String(imported)} skipped=${String(skipped)} renamed=${String(renamed)}`,
+  )
   // A corrupt file is quarantined (renamed) by the file store on load.
   if (!existsSync(file)) {
     log?.(`legacy agents file ${file} was quarantined and not renamed to .imported`)
+    return outcome
+  }
+  if (unresolved.length > 0) {
+    log?.(
+      `legacy agents file ${file} left in place; ${String(unresolved.length)} row(s) could not be imported`,
+    )
     return outcome
   }
   const renamedTo = `${file}.imported-${Date.now()}`

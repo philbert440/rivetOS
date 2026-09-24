@@ -132,7 +132,8 @@ describe('importLegacyAgentsJson', () => {
         logs.push(message)
       },
     })
-    expect(result).toMatchObject({ imported: 2, skipped: 0 })
+    expect(result).toMatchObject({ imported: 2, skipped: 0, renamed: 2 })
+    expect(logs.join('\n')).toMatch(/legacy agents import: imported=2 skipped=0 renamed=2/)
     const logged = logs.join('\n')
     expect(logged).toMatch(/other/)
     expect(logged).toMatch(/name conflict/)
@@ -215,7 +216,7 @@ describe('importLegacyAgentsJson', () => {
         logs.push(message)
       },
     })
-    expect(result).toMatchObject({ imported: 1, skipped: 1 })
+    expect(result).toMatchObject({ imported: 1, skipped: 1, renamed: 1 })
     expect(created.map((row) => row.name)).toEqual(['Same (ct115)'])
     expect(created[0]?.id).toBe('name-clash')
     const logged = logs.join('\n')
@@ -272,7 +273,12 @@ describe('importLegacyAgentsJson', () => {
       node: 'ct115',
       directoryRoot: '/home/agents',
     })
-    expect(result).toEqual({ imported: 0, skipped: 0, reason: 'store is the source file' })
+    expect(result).toEqual({
+      imported: 0,
+      skipped: 0,
+      renamed: 0,
+      reason: 'store is the source file',
+    })
     expect(existsSync(file)).toBe(true)
     expect(readdirSync(dir).some((name) => name.includes('.imported-'))).toBe(false)
     expect(readFileSync(file, 'utf8')).toMatch(/Reviewer/)
@@ -321,7 +327,12 @@ describe('importLegacyAgentsJson', () => {
       node: 'ct115',
       directoryRoot: '/home/agents',
     })
-    expect(result).toEqual({ imported: 0, skipped: 0, reason: 'store is the source file' })
+    expect(result).toEqual({
+      imported: 0,
+      skipped: 0,
+      renamed: 0,
+      reason: 'store is the source file',
+    })
     expect(existsSync(file)).toBe(true)
     expect(readdirSync(dir).some((name) => name.includes('.imported-'))).toBe(false)
     expect(readFileSync(file, 'utf8')).toMatch(/Reviewer/)
@@ -348,6 +359,82 @@ describe('importLegacyAgentsJson', () => {
     expect((await primary.get('11111111-1111-4111-8111-111111111111'))?.node).toBe('ct115')
   })
 
+  it('imports under "<name> (<node> <id8>)" once numbered suffixes are exhausted', async () => {
+    const target = new FileAgentPresetStore(join(dir, 'target.json'))
+    const taken = ['Reviewer', 'Reviewer (ct115)']
+    for (let n = 2; n <= 19; n += 1) taken.push(`Reviewer (ct115 ${String(n)})`)
+    for (let i = 0; i < taken.length; i += 1) {
+      await target.create({
+        id: `keep-${String(i)}`,
+        name: taken[i] ?? 'keep',
+        node: 'n',
+        directory: '/x',
+        createdAt: 1,
+      })
+    }
+    const file = join(dir, 'agents.json')
+    writeFileSync(file, JSON.stringify({ agents: [legacyRow()] }))
+    const logs: string[] = []
+    const result = await importLegacyAgentsJson({
+      file,
+      store: target,
+      node: 'ct115',
+      directoryRoot: '/home/agents',
+      log: (message) => {
+        logs.push(message)
+      },
+    })
+    expect(result).toMatchObject({ imported: 1, skipped: 0, renamed: 1 })
+    expect(result.unresolved).toBeUndefined()
+    expect((await target.get('11111111-1111-4111-8111-111111111111'))?.name).toBe(
+      'Reviewer (ct115 11111111)',
+    )
+    expect(logs.join('\n')).toMatch(/legacy agents import: imported=1 skipped=0 renamed=1/)
+    expect(result.renamedTo).toBeTruthy()
+    expect(existsSync(file)).toBe(false)
+  })
+
+  it('leaves the source unarchived when the id suffix still collides', async () => {
+    const target = new FileAgentPresetStore(join(dir, 'target.json'))
+    const taken = ['Reviewer', 'Reviewer (ct115)', 'Reviewer (ct115 11111111)']
+    for (let n = 2; n <= 19; n += 1) taken.push(`Reviewer (ct115 ${String(n)})`)
+    for (let i = 0; i < taken.length; i += 1) {
+      await target.create({
+        id: `keep-${String(i)}`,
+        name: taken[i] ?? 'keep',
+        node: 'n',
+        directory: '/x',
+        createdAt: 1,
+      })
+    }
+    const file = join(dir, 'agents.json')
+    const source = JSON.stringify({ agents: [legacyRow()] })
+    writeFileSync(file, source)
+    const logs: string[] = []
+    const result = await importLegacyAgentsJson({
+      file,
+      store: target,
+      node: 'ct115',
+      directoryRoot: '/home/agents',
+      log: (message) => {
+        logs.push(message)
+      },
+    })
+    expect(result.imported).toBe(0)
+    expect(result.skipped).toBe(0)
+    expect(result.renamed).toBe(0)
+    expect(result.renamedTo).toBeUndefined()
+    expect(result.unresolved).toEqual([
+      { id: '11111111-1111-4111-8111-111111111111', name: 'Reviewer' },
+    ])
+    expect(existsSync(file)).toBe(true)
+    expect(readFileSync(file, 'utf8')).toBe(source)
+    expect(readdirSync(dir).some((name) => name.includes('.imported-'))).toBe(false)
+    expect(await target.get('11111111-1111-4111-8111-111111111111')).toBeUndefined()
+    expect(logs.join('\n')).toMatch(/source file left in place/)
+    expect(logs.join('\n')).toMatch(/legacy agents import: imported=0 skipped=0 renamed=0/)
+  })
+
   it('returns zeros when the file is absent', async () => {
     const target = new FileAgentPresetStore(join(dir, 'target.json'))
     const result = await importLegacyAgentsJson({
@@ -356,7 +443,7 @@ describe('importLegacyAgentsJson', () => {
       node: 'n',
       directoryRoot: '/home/agents',
     })
-    expect(result).toEqual({ imported: 0, skipped: 0 })
+    expect(result).toEqual({ imported: 0, skipped: 0, renamed: 0 })
     expect(await target.list()).toEqual([])
   })
 })

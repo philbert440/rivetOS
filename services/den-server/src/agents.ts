@@ -12,16 +12,20 @@
  *
  * The store is chosen by server.ts: Postgres (`ros_agent_presets`) when the
  * table is ready, otherwise the per-node `agents.json` file. POST and PATCH
- * run on a per-id promise chain (POST keyed by name) on both backends so two
- * materialisers cannot leave the symlink disagreeing with the stored row.
- * The filesystem is not a place to delete things the store has not accepted:
- * POST never unlinks, and PATCH updates the row before it touches disk.
+ * share one chain on both backends: POST holds the name key and, when that
+ * name already exists, the preset's id key (the same key PATCH uses), plus
+ * the directory key. The filesystem is not a place to delete things the
+ * store has not accepted: POST creates the directory first and the
+ * `rivet-shared` link only after `store.create` accepts the row, and a
+ * rejected POST removes only an empty directory this call created that no
+ * stored row owns. PATCH updates the row before it touches disk and unlinks
+ * only when this patch flips `sharedLink` off without moving the directory.
  */
 
 import type { IncomingMessage, ServerResponse } from 'node:http'
-import { existsSync, lstatSync, readlinkSync, rmdirSync, unlinkSync } from 'node:fs'
+import { existsSync, lstatSync, readlinkSync, realpathSync, rmdirSync, unlinkSync } from 'node:fs'
 import { homedir } from 'node:os'
-import { join, resolve } from 'node:path'
+import { dirname, join, resolve } from 'node:path'
 import { SYSTEM_PROMPT_MAX_CHARS, type AgentPreset, type HarnessId } from '@rivetos/types'
 import {
   PresetConflictError,
@@ -230,19 +234,12 @@ export function createAgentsRoutes(opts: {
 
   const linkPath = (directory: string): string => join(directory, LINK_NAME)
 
-  const symlinkExists = (directory: string): boolean => {
-    try {
-      return lstatSync(linkPath(directory)).isSymbolicLink()
-    } catch (err) {
-      if (isAbsentPath(err)) return false
-      throw err
-    }
-  }
-
   /**
-   * Unlink `rivet-shared` only when it is a symlink whose target resolves to
-   * `sharedDir`, and only inside `directory` (the preset's stored directory).
-   * A real file, a link elsewhere, or a link to somewhere else stays.
+   * Unlink `rivet-shared` only when the link's real parent is this preset's
+   * real directory and the target, resolved against that real parent, is
+   * `sharedDir`. Lexical `resolve` is wrong for a symlinked parent: `../shared`
+   * from `/tmp/alias` → `/tmp/other/agent` is `/tmp/other/shared`, not
+   * `/tmp/shared`. A realpath failure leaves the link (do not unlink).
    */
   const removeSharedLink = (directory: string): void => {
     if (!sharedDir) return
@@ -255,20 +252,36 @@ export function createAgentsRoutes(opts: {
       if (isAbsentPath(err)) return
       throw err
     }
-    if (resolve(directory, target) !== resolve(sharedDir)) return
+    let linkParentReal: string
+    let presetReal: string
+    let targetReal: string
+    let sharedReal: string
+    try {
+      linkParentReal = realpathSync.native(dirname(link))
+      presetReal = realpathSync.native(directory)
+      targetReal = realpathSync.native(resolve(linkParentReal, target))
+      sharedReal = realpathSync.native(sharedDir)
+    } catch {
+      return
+    }
+    if (linkParentReal !== presetReal) return
+    if (targetReal !== sharedReal) return
     unlinkSync(link)
   }
 
-  /** Undo a directory and link this call created. Never removes anything it did not create. */
-  const undoCreated = (directory: string, createdDir: boolean, createdLink: boolean): void => {
-    if (createdLink) {
-      try {
-        removeSharedLink(directory)
-      } catch (err) {
-        error(`could not restore agent directory: ${errorMessage(err)}`)
-      }
-    }
+  /**
+   * Drop an empty directory this call created. Never unlinks. A row that now
+   * owns `directory` (a concurrent create accepted it) keeps the directory.
+   */
+  const undoCreated = async (directory: string, createdDir: boolean): Promise<void> => {
     if (!createdDir) return
+    try {
+      const rows = await store.list()
+      if (rows.some((row) => row.directory === directory)) return
+    } catch (err) {
+      error(`could not check agent directory ownership: ${errorMessage(err)}`)
+      return
+    }
     try {
       rmdirSync(directory)
     } catch {
@@ -335,34 +348,30 @@ export function createAgentsRoutes(opts: {
       return
     }
 
-    // POST never unlinks. `sharedLink: false` simply does not create the link.
-    // A directory this call creates is removed only if the store then rejects
-    // the row and the directory is empty.
+    // POST never unlinks. The directory is created first; the link waits until
+    // `store.create` accepts the row, so a 409 cannot remove a link a
+    // concurrent PATCH just enabled. `sharedLink: false` never creates one.
+    // A directory this call created is removed only when the store rejects
+    // the row, the directory is still empty, and no stored row owns it.
     const dirExisted = existsSync(directory)
-    const linkExisted = symlinkExists(directory)
     let createdDir: boolean
-    let createdLink: boolean
     try {
       const ensured = ensureAgentDirectory(
-        { directory, sharedLink },
+        { directory, sharedLink: false },
         { ...(sharedDir ? { sharedDir } : {}), log: info },
       )
       createdDir = ensured.created && !dirExisted
-      createdLink = ensured.linked && !linkExisted
       if (ensured.reason) warn(ensured.reason)
       for (const warning of directoryWarnings(directory, sharedDir)) warn(warning)
     } catch (err) {
-      undoCreated(
-        directory,
-        !dirExisted && existsSync(directory),
-        !linkExisted && symlinkExists(directory),
-      )
+      await undoCreated(directory, !dirExisted && existsSync(directory))
       json(res, 500, { error: `could not create agent directory: ${errorMessage(err)}` })
       return
     }
 
+    let agent: AgentPreset
     try {
-      const agent = await store.create({
+      agent = await store.create({
         name,
         color,
         model,
@@ -376,15 +385,30 @@ export function createAgentsRoutes(opts: {
         ...(harnessId ? { harnessId } : {}),
         createdAt: now(),
       })
-      json(res, 201, { agent })
     } catch (err) {
-      undoCreated(directory, createdDir, createdLink)
+      await undoCreated(directory, createdDir)
       if (err instanceof PresetConflictError) {
         json(res, 409, { error: `an agent named "${name}" already exists` })
         return
       }
       unavailable(res, err)
+      return
     }
+
+    const storedDirectory = agent.directory ?? directory
+    if (agent.sharedLink !== false) {
+      try {
+        const linked = ensureAgentDirectory(
+          { directory: storedDirectory, sharedLink: true },
+          { ...(sharedDir ? { sharedDir } : {}), log: info },
+        )
+        if (linked.reason) warn(linked.reason)
+      } catch (err) {
+        json(res, 500, { error: `could not create agent directory: ${errorMessage(err)}` })
+        return
+      }
+    }
+    json(res, 201, { agent })
   }
 
   const patchPreset = async (
@@ -469,15 +493,26 @@ export function createAgentsRoutes(opts: {
       if (next && !storedUrl.trim()) patch.nodeBaseUrl = next
     }
 
-    const placementRequested = raw.directory !== undefined || typeof raw.sharedLink === 'boolean'
+    // An unchanged directory or sharedLink is not a placement request. A form
+    // that round-trips every field must not 409 a foreign preset. Compare the
+    // sent text before `~/` expansion so a real change still 409s without
+    // calling homeDir.
+    const storedDirectory = existing.directory ?? ''
+    const storedSharedLink = existing.sharedLink !== false
+    const directoryChanged =
+      raw.directory !== undefined &&
+      (typeof raw.directory !== 'string' || raw.directory.trim() !== storedDirectory)
+    const sharedLinkChanged =
+      typeof raw.sharedLink === 'boolean' && raw.sharedLink !== storedSharedLink
+    const placementChange = directoryChanged || sharedLinkChanged
     const hostedOn = typeof existing.node === 'string' ? existing.node.trim() : ''
-    if (placementRequested && hostedOn !== '' && hostedOn !== nodeName) {
+    if (placementChange && hostedOn !== '' && hostedOn !== nodeName) {
       json(res, 409, { error: `agent "${existing.name}" is hosted on ${hostedOn}` })
       return
     }
 
     let materializeDirectory = false
-    if (placementRequested) {
+    if (placementChange) {
       let nextDirectory = existing.directory
       const nextSharedLink = existing.sharedLink !== false
       if (raw.directory !== undefined) {
@@ -530,7 +565,12 @@ export function createAgentsRoutes(opts: {
         return
       }
       try {
-        if (agent.sharedLink === false) removeSharedLink(directory)
+        // Unlink only a flip to false in this same directory. A move, or a
+        // repeated `sharedLink: false`, must not delete a link that belongs
+        // to another preset (including `$HOME/rivet-shared`).
+        if (patch.sharedLink === false && directory === existing.directory) {
+          removeSharedLink(directory)
+        }
         const ensured = ensureAgentDirectory(
           { directory, sharedLink: agent.sharedLink !== false },
           { ...(sharedDir ? { sharedDir } : {}), log: info },
@@ -574,8 +614,26 @@ export function createAgentsRoutes(opts: {
         typeof raw.name === 'string' && raw.name.trim()
           ? raw.name.trim().slice(0, 128)
           : 'Unnamed Agent'
+      const directory = resolveDirectory(raw.directory, name)
       try {
-        await withChain(`post:${nameKey(name)}`, () => createPreset(raw, res))
+        // Name key, then the existing preset's id (PATCH's key), then the
+        // directory. Same order on every POST so two creates cannot deadlock.
+        await withChain(`post:${nameKey(name)}`, async () => {
+          let existingId: string | undefined
+          try {
+            const existing = await store.findByHandle(name)
+            if (existing && nameKey(existing.name) === nameKey(name)) existingId = existing.id
+          } catch (err) {
+            unavailable(res, err)
+            return
+          }
+          const write = (): Promise<void> => {
+            if (!directory) return createPreset(raw, res)
+            return withChain(`dir:${directory}`, () => createPreset(raw, res))
+          }
+          if (existingId) await withChain(existingId, write)
+          else await write()
+        })
       } catch (err) {
         unavailable(res, err)
       }

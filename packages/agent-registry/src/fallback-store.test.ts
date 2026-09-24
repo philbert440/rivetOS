@@ -1,7 +1,7 @@
 import { mkdtempSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
 import type { AgentPreset } from '@rivetos/types'
 import { createFallbackPresetStore } from './fallback-store.js'
 import { FileAgentPresetStore } from './file-store.js'
@@ -236,6 +236,72 @@ describe('createFallbackPresetStore', () => {
     clock += 1
     expect((await store.list())[0]?.id).toBe('fallback')
     expect(primary.checks).toBe(2)
+  })
+
+  it('logs once when a fallback op is still in flight after 30s', async () => {
+    vi.useFakeTimers()
+    try {
+      let clock = 0
+      let ready = false
+      const logs: string[] = []
+      let releaseCreate: () => void = () => undefined
+      const gate = new Promise<void>((resolve) => {
+        releaseCreate = resolve
+      })
+      let markEntered: () => void = () => undefined
+      const entered = new Promise<void>((resolve) => {
+        markEntered = resolve
+      })
+      const primary = fake({
+        backend: 'postgres',
+        marker: 'primary',
+        isReady: () => ready,
+      })
+      const fallback = fake({
+        backend: 'file',
+        file: '/var/agents.json',
+        marker: 'fallback',
+        isReady: () => true,
+      })
+      const store = createFallbackPresetStore({
+        primary,
+        fallback,
+        recheckMs: 1_000,
+        now: () => clock,
+        log: (msg) => {
+          logs.push(msg)
+        },
+      })
+      expect((await store.list())[0]?.id).toBe('fallback')
+      const originalCreate = fallback.create.bind(fallback)
+      fallback.create = (input) => {
+        markEntered()
+        return gate.then(() => originalCreate(input))
+      }
+      clock += 500
+      const hung = store.create({ name: 'Late', node: 'n', directory: '/d' })
+      await entered
+
+      ready = true
+      clock += 1_000
+      let announced = false
+      store.onPrimaryReady(() => {
+        announced = true
+      })
+      const flipping = store.list()
+      await vi.advanceTimersByTimeAsync(30_000)
+      expect(logs.filter((line) => line.includes('still in flight after 30s'))).toHaveLength(1)
+      await vi.advanceTimersByTimeAsync(60_000)
+      expect(logs.filter((line) => line.includes('still in flight after 30s'))).toHaveLength(1)
+      expect(announced).toBe(false)
+      releaseCreate()
+      await hung
+      await flipping
+      expect(announced).toBe(true)
+      expect(store.backend).toBe('postgres')
+    } finally {
+      vi.useRealTimers()
+    }
   })
 
   it('imports a fallback create that was still in flight when the primary flipped', async () => {

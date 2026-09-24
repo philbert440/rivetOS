@@ -9,6 +9,13 @@ import type {
 /** A hung `isReady` counts as not ready after this. Matches the preset pool's query budget. */
 export const PRESET_PROBE_TIMEOUT_MS = 10_000
 
+/**
+ * One log if a fallback op is still in flight this long after a drain starts.
+ * A hung local `stateDir` never settles the drain, so the primary import
+ * would otherwise wait forever with no signal.
+ */
+const DRAIN_LIVENESS_MS = 30_000
+
 export interface FallbackPresetStoreOptions {
   primary: AgentPresetStore
   fallback: AgentPresetStore
@@ -94,8 +101,32 @@ export function createFallbackPresetStore(
   let lastCheck: number | undefined
   let inflight: Promise<boolean> | null = null
   let fallbackOps = 0
+  let drainWarned = false
+  let drainTimer: ReturnType<typeof setTimeout> | undefined
   const callbacks: Array<() => void> = []
   const drainers: Array<() => void> = []
+
+  function clearDrainTimer(): void {
+    if (drainTimer === undefined) return
+    clearTimeout(drainTimer)
+    drainTimer = undefined
+  }
+
+  /** Log once per hang. A later drain that settles and hangs again logs again. */
+  function armDrainLiveness(): void {
+    if (drainTimer !== undefined || drainWarned) return
+    const timer = setTimeout(() => {
+      drainTimer = undefined
+      if (fallbackOps === 0 || drainWarned) return
+      drainWarned = true
+      log?.(
+        `preset store fallback operation still in flight after ${String(DRAIN_LIVENESS_MS / 1000)}s; ` +
+          'a hung stateDir is blocking the primary import',
+      )
+    }, DRAIN_LIVENESS_MS)
+    drainTimer = timer
+    if (typeof timer.unref === 'function') timer.unref()
+  }
 
   function fireReady(): void {
     if (announced) return
@@ -129,6 +160,8 @@ export function createFallbackPresetStore(
   function endFallback(): void {
     fallbackOps -= 1
     if (fallbackOps === 0) {
+      clearDrainTimer()
+      drainWarned = false
       const pending = drainers.splice(0)
       for (const resolve of pending) resolve()
     }
@@ -136,6 +169,7 @@ export function createFallbackPresetStore(
 
   function drainFallback(): Promise<void> {
     if (fallbackOps === 0) return Promise.resolve()
+    armDrainLiveness()
     return new Promise((resolve) => {
       drainers.push(resolve)
     })
@@ -152,6 +186,10 @@ export function createFallbackPresetStore(
       if (ok) {
         // New ops take the primary now. Announce only after fallback ops that
         // already started have finished writing.
+        // Transient split-brain: this flip is visible to GET/PATCH before the
+        // legacy import runs, so a legacy id 404s from Postgres until that
+        // import lands. The drain here waits for in-flight file writes, not
+        // for the import (the den starts that from onPrimaryReady).
         servingPrimary = true
         if (fallbackOps > 0) await drainFallback()
         fireReady()

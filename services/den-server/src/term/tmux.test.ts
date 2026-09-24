@@ -328,9 +328,10 @@ describe.skipIf(!tmuxAvailable())(
         stdio: ['ignore', 'pipe', 'pipe'],
         env: { ...process.env, RIVETOS_PG_URL: 'postgres://should-be-unset' },
       })
+      // `-u` matches the ctl argv: under LANG=C tmux renders the -F tab as `_`.
       const out = execFileSync(
         'tmux',
-        ['-L', socket, 'list-sessions', '-F', '#{@rivet_command}\t#{@rivet_user}'],
+        ['-u', '-L', socket, 'list-sessions', '-F', '#{@rivet_command}\t#{@rivet_user}'],
         {
           encoding: 'utf8',
           timeout: 2000,
@@ -338,7 +339,7 @@ describe.skipIf(!tmuxAvailable())(
         },
       )
       expect(out.trim()).toBe('claude\towner')
-      const envOut = execFileSync('tmux', ['-L', socket, 'show-environment', '-t', '=t1'], {
+      const envOut = execFileSync('tmux', ['-u', '-L', socket, 'show-environment', '-t', '=t1'], {
         encoding: 'utf8',
         timeout: 2000,
         stdio: ['ignore', 'pipe', 'ignore'],

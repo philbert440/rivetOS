@@ -13,7 +13,12 @@ import {
 } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { FileAgentPresetStore, type AgentPresetStore } from '@rivetos/agent-registry'
+import {
+  FileAgentPresetStore,
+  PresetConflictError,
+  type AgentPresetInput,
+  type AgentPresetStore,
+} from '@rivetos/agent-registry'
 import { createAgentsRoutes, type AgentRouteLog } from './agents.js'
 import type { AgentPreset } from '@rivetos/types'
 
@@ -66,6 +71,24 @@ afterEach(async () => {
     dir = undefined
   }
 })
+
+function storeOver(
+  root: string,
+  create: (real: FileAgentPresetStore, input: AgentPresetInput) => Promise<AgentPreset>,
+): AgentPresetStore {
+  const real = new FileAgentPresetStore(join(root, 'agents.json'), { now: () => now })
+  return {
+    backend: 'file',
+    file: real.file,
+    isReady: () => real.isReady(),
+    list: (filter) => real.list(filter),
+    get: (id) => real.get(id),
+    findByHandle: (handle) => real.findByHandle(handle),
+    create: (input) => create(real, input),
+    update: (id, patch) => real.update(id, patch),
+    delete: (id) => real.delete(id),
+  }
+}
 
 async function createAgent(
   body: Record<string, unknown> = { name: 'Alpha', nodeBaseUrl: NODE },
@@ -721,5 +744,225 @@ describe('agents routes', () => {
     expect(agent.sharedLink).toBe(false)
     expect(existsSync(directory)).toBe(true)
     expect(existsSync(join(directory, 'rivet-shared'))).toBe(false)
+  })
+
+  it('a duplicate POST blocked in create does not undo a link PATCH enables', async () => {
+    let releaseGate: () => void = () => undefined
+    const gate = new Promise<void>((resolve) => {
+      releaseGate = resolve
+    })
+    let markEntered: () => void = () => undefined
+    const entered = new Promise<void>((resolve) => {
+      markEntered = resolve
+    })
+    let blockDuplicate = false
+    await start({
+      store: (root) =>
+        storeOver(root, (real, input) => {
+          if (blockDuplicate) {
+            markEntered()
+            return gate.then(() =>
+              Promise.reject(new PresetConflictError('agent name already exists')),
+            )
+          }
+          return real.create(input)
+        }),
+    })
+    const created = await createAgent({ name: 'Alpha', sharedLink: false })
+    expect(created.status).toBe(201)
+    const id = created.json.agent!.id
+    const directory = created.json.agent!.directory!
+    const link = join(directory, 'rivet-shared')
+    expect(existsSync(link)).toBe(false)
+    blockDuplicate = true
+    const pendingPost = createAgent({ name: 'Alpha', sharedLink: true })
+    await entered
+    const pendingPatch = fetch(`${base}/api/agents/${id}`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ sharedLink: true }),
+    })
+    releaseGate()
+    const again = await pendingPost
+    const patched = await pendingPatch
+    expect(again.status).toBe(409)
+    expect(patched.status).toBe(200)
+    expect(((await patched.json()) as { agent: AgentPreset }).agent.sharedLink).toBe(true)
+    expect(lstatSync(link).isSymbolicLink()).toBe(true)
+    expect(readlinkSync(link)).toBe(join(dir!, 'shared'))
+    const got = (await (await fetch(`${base}/api/agents/${id}`)).json()) as { agent: AgentPreset }
+    expect(got.agent.sharedLink).toBe(true)
+  })
+
+  it('PATCH {directory:"~/"} on a no-link preset never unlinks the home link', async () => {
+    await start({
+      homeDir: () => {
+        const home = join(dir!, 'home')
+        if (!existsSync(home)) {
+          mkdirSync(home)
+          symlinkSync(join(dir!, 'shared'), join(home, 'rivet-shared'))
+        }
+        return home
+      },
+    })
+    const created = await createAgent({ name: 'Nolink', sharedLink: false })
+    expect(created.status).toBe(201)
+    const res = await fetch(`${base}/api/agents/${created.json.agent!.id}`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ directory: '~/' }),
+    })
+    expect(res.status).toBe(200)
+    const agent = ((await res.json()) as { agent: AgentPreset }).agent
+    expect(agent.directory).toBe(join(dir!, 'home'))
+    expect(agent.sharedLink).toBe(false)
+    const link = join(dir!, 'home', 'rivet-shared')
+    expect(lstatSync(link).isSymbolicLink()).toBe(true)
+    expect(readlinkSync(link)).toBe(join(dir!, 'shared'))
+  })
+
+  it('does not unlink a relative rivet-shared when the parent directory is a symlink', async () => {
+    await start()
+    const otherAgent = join(dir!, 'other', 'agent')
+    mkdirSync(otherAgent, { recursive: true })
+    mkdirSync(join(dir!, 'other', 'shared'))
+    const alias = join(dir!, 'alias')
+    symlinkSync(otherAgent, alias)
+    // Lexical resolve(alias, '../shared') is the configured shared dir.
+    // The real target is other/shared, so the link must stay.
+    symlinkSync('../shared', join(alias, 'rivet-shared'))
+    const created = await createAgent({ name: 'Alias', directory: alias, sharedLink: true })
+    expect(created.status).toBe(201)
+    const link = join(alias, 'rivet-shared')
+    expect(readlinkSync(link)).toBe('../shared')
+    const res = await fetch(`${base}/api/agents/${created.json.agent!.id}`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ sharedLink: false }),
+    })
+    expect(res.status).toBe(200)
+    expect(((await res.json()) as { agent: AgentPreset }).agent.sharedLink).toBe(false)
+    expect(lstatSync(link).isSymbolicLink()).toBe(true)
+    expect(readlinkSync(link)).toBe('../shared')
+  })
+
+  it('unlinks a symlinked-parent link whose real target is sharedDir', async () => {
+    await start()
+    const otherAgent = join(dir!, 'other', 'agent')
+    mkdirSync(otherAgent, { recursive: true })
+    const alias = join(dir!, 'alias')
+    symlinkSync(otherAgent, alias)
+    symlinkSync('../../shared', join(alias, 'rivet-shared'))
+    const created = await createAgent({ name: 'Alias', directory: alias, sharedLink: true })
+    expect(created.status).toBe(201)
+    const link = join(alias, 'rivet-shared')
+    const res = await fetch(`${base}/api/agents/${created.json.agent!.id}`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ sharedLink: false }),
+    })
+    expect(res.status).toBe(200)
+    expect(existsSync(link)).toBe(false)
+  })
+
+  it('round-trips an unchanged directory and sharedLink on a foreign preset', async () => {
+    let expanded = false
+    await start({
+      homeDir: () => {
+        expanded = true
+        return join(dir!, 'home')
+      },
+    })
+    const remoteDir = join(dir!, 'remote-dir')
+    mkdirSync(remoteDir)
+    symlinkSync(join(dir!, 'shared'), join(remoteDir, 'rivet-shared'))
+    writeFileSync(
+      join(dir!, 'agents.json'),
+      JSON.stringify({
+        agents: [
+          {
+            id: 'foreign-2',
+            name: 'Remote',
+            color: '',
+            model: '',
+            effort: 'medium',
+            systemPrompt: '',
+            nodeBaseUrl: '',
+            node: 'ct114',
+            directory: remoteDir,
+            sharedLink: true,
+            createdAt: 1,
+            updatedAt: 1,
+          },
+        ],
+      }),
+    )
+    const res = await fetch(`${base}/api/agents/foreign-2`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        directory: remoteDir,
+        sharedLink: true,
+        name: 'Renamed',
+        model: 'opus',
+      }),
+    })
+    expect(res.status).toBe(200)
+    expect(expanded).toBe(false)
+    const agent = ((await res.json()) as { agent: AgentPreset }).agent
+    expect(agent).toMatchObject({
+      name: 'Renamed',
+      model: 'opus',
+      directory: remoteDir,
+      sharedLink: true,
+      node: 'ct114',
+    })
+    expect(readlinkSync(join(remoteDir, 'rivet-shared'))).toBe(join(dir!, 'shared'))
+  })
+
+  it('a rejected POST does not remove a directory another preset now owns', async () => {
+    await start({
+      store: (root) =>
+        storeOver(root, async (real, input) => {
+          if (input.name === 'Loser') {
+            await real.create({
+              name: 'Keeper',
+              node: 'ct115',
+              directory: input.directory,
+              sharedLink: false,
+              createdAt: 1,
+            })
+            throw new Error('injected')
+          }
+          return real.create(input)
+        }),
+    })
+    const directory = join(dir!, 'custom')
+    const res = await createAgent({ name: 'Loser', directory, sharedLink: false })
+    expect(res.status).toBe(503)
+    expect(existsSync(directory)).toBe(true)
+    const listed = (await (await fetch(`${base}/api/agents`)).json()) as { agents: AgentPreset[] }
+    expect(listed.agents.map((agent) => agent.name)).toEqual(['Keeper'])
+    expect(listed.agents[0]?.directory).toBe(directory)
+  })
+
+  it('two POSTs with different names and one directory keep the accepted preset', async () => {
+    await start({
+      store: (root) =>
+        storeOver(root, (real, input) => {
+          if (input.name === 'Loser') return Promise.reject(new Error('injected'))
+          return real.create(input)
+        }),
+    })
+    const directory = join(dir!, 'custom')
+    const [keeper, loser] = await Promise.all([
+      createAgent({ name: 'Keeper', directory, sharedLink: true }),
+      createAgent({ name: 'Loser', directory, sharedLink: true }),
+    ])
+    expect([keeper.status, loser.status].sort()).toEqual([201, 503])
+    expect(existsSync(directory)).toBe(true)
+    expect(readlinkSync(join(directory, 'rivet-shared'))).toBe(join(dir!, 'shared'))
+    const listed = (await (await fetch(`${base}/api/agents`)).json()) as { agents: AgentPreset[] }
+    expect(listed.agents.map((agent) => agent.name)).toEqual(['Keeper'])
   })
 })

@@ -245,7 +245,7 @@ describe('agents routes with a fallback store', () => {
       directoryRoot: join(dir, 'agents'),
       sharedDir,
     })
-    expect(result).toEqual({ imported: 0, skipped: 0 })
+    expect(result).toEqual({ imported: 0, skipped: 0, renamed: 0 })
     expect(existsSync(directory)).toBe(true)
     expect(readlinkSync(join(directory, 'rivet-shared'))).toBe(sharedDir)
     expect(existsSync(elsewhere)).toBe(false)

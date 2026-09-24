@@ -1007,6 +1007,10 @@ export function createDenServer(config: DenConfig, opts: DenServerOptions = {}):
     // Directories are materialized for every preset hosted on this node, not
     // only rows this pass inserted — a crash mid-import still gets its
     // directories on the next boot. Slices 3 and 5 also ensure on use.
+    // Transient split-brain: `servingPrimary` flips before this import
+    // finishes, so GET/PATCH of a legacy id 404s from Postgres until the
+    // rows land. Slice 3 resolves presets by id and handle, so a POST /term
+    // in that window 404s too.
     fallbackStore.onPrimaryReady(() => {
       void fallbackStore
         .drainFallback()
