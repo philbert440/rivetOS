@@ -1,6 +1,13 @@
+import { readFileSync } from 'node:fs'
 import { describe, it } from 'vitest'
 import assert from 'node:assert/strict'
-import { agentCopySeed, canOfferAgentCopy, type AgentDraft, type CopyTarget } from './agent-copy.js'
+import {
+  agentCopySeed,
+  canOfferAgentCopy,
+  copyFormDirectory,
+  type AgentDraft,
+  type CopyTarget,
+} from './agent-copy.js'
 
 const source = {
   id: 'old-id',
@@ -160,6 +167,43 @@ describe('agentCopySeed directory', () => {
       target,
     )
     assert.equal(result.seed.directory, '/srv/agents/custom')
+  })
+})
+
+describe('copy form directory', () => {
+  it('submits the cleaned seed, not the source default the seed dropped', () => {
+    const seeded = agentCopySeed(
+      { ...draft, name: 'Reviewer (copy)', directory: '/srv/agents/reviewer/' },
+      { ...source, name: 'Reviewer', directoryRoot: '/srv/agents/' },
+      target,
+    )
+    assert.equal(seeded.seed.directory, undefined)
+    assert.equal(copyFormDirectory('/srv/agents/reviewer/', seeded.seed), '')
+  })
+
+  it('submits a directory the seed kept', () => {
+    const seeded = agentCopySeed(
+      { ...draft, directory: '/srv/agents/custom' },
+      { ...source, name: 'Reviewer', directoryRoot: '/srv/agents' },
+      target,
+    )
+    assert.equal(copyFormDirectory('/srv/agents/custom', seeded.seed), '/srv/agents/custom')
+  })
+
+  it('shows the draft directory until a seed exists', () => {
+    assert.equal(copyFormDirectory('/srv/agents/reviewer', undefined), '/srv/agents/reviewer')
+    assert.equal(copyFormDirectory(undefined, undefined), '')
+  })
+
+  it('is what the copy editor initialises and submits', () => {
+    const src = readFileSync(new URL('../components/agents-section.tsx', import.meta.url), 'utf8')
+    assert.match(src, /directory: draftDirectory/)
+    assert.match(
+      src,
+      /const directory = duplicate \? copyFormDirectory\(draftDirectory, copy\?\.seed\) : draftDirectory/,
+    )
+    const submit = src.slice(src.indexOf('const handleSubmit'), src.indexOf('onSave(patch)'))
+    assert.match(submit, /directory,/)
   })
 })
 

@@ -94,6 +94,20 @@ export function agentCopySeed(draft: AgentDraft, source: CopySource, target: Cop
 }
 
 /**
+ * Directory the copy form shows and submits. Once `agentCopySeed` has run,
+ * its directory wins — a dropped source default is empty, so create omits
+ * it and the target den applies its own. Before a seed exists, the draft
+ * directory is what the field shows.
+ */
+export function copyFormDirectory(
+  draftDirectory: string | undefined,
+  seed: { directory?: string } | undefined,
+): string {
+  if (seed === undefined) return draftDirectory ?? ''
+  return seed.directory ?? ''
+}
+
+/**
  * Drop a directory that is only the source den's default `<root>/<slug>`.
  * The target den then applies its own default instead of inheriting the
  * source path. Anything else, including an unknown root, is kept.

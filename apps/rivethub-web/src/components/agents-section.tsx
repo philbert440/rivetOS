@@ -26,7 +26,13 @@ import {
 } from '../lib/agent-form.js'
 import { useConfirmDialog } from './confirm-dialog.js'
 import { Select } from './select.js'
-import { agentCopySeed, canOfferAgentCopy, copyName, type AgentDraft } from '../lib/agent-copy.js'
+import {
+  agentCopySeed,
+  canOfferAgentCopy,
+  copyFormDirectory,
+  copyName,
+  type AgentDraft,
+} from '../lib/agent-copy.js'
 import { gatewayFor } from '../lib/agent-gateway.js'
 import {
   defaultEffort,
@@ -181,7 +187,9 @@ function AgentEditor({
   const [rawModel, setModel] = useState(init?.model ?? '')
   const [rawEffort, setEffort] = useState(init?.effort ?? '')
   const [systemPrompt, setSystemPrompt] = useState(init?.systemPrompt ?? '')
-  const [directory, setDirectory] = useState(agent?.directory ?? duplicate?.draft.directory ?? '')
+  const [draftDirectory, setDirectory] = useState(
+    agent?.directory ?? duplicate?.draft.directory ?? '',
+  )
   const [sharedLink, setSharedLink] = useState(
     agent?.sharedLink ?? duplicate?.draft.sharedLink ?? true,
   )
@@ -234,7 +242,7 @@ function AgentEditor({
             harnessId: rawHarnessId,
             model: rawModel,
             effort: rawEffort,
-            directory,
+            directory: draftDirectory,
             sharedLink,
           },
           {
@@ -249,6 +257,9 @@ function AgentEditor({
   const harnessId = duplicate ? (copy?.seed.harnessId ?? '') : rawHarnessId
   const model = duplicate ? (copy?.seed.model ?? '') : rawModel
   const effort = duplicate ? (copy?.seed.effort ?? '') : rawEffort
+  // The copy form shows and submits the seed directory. A source default
+  // that `agentCopySeed` dropped must not ride along as the draft path.
+  const directory = duplicate ? copyFormDirectory(draftDirectory, copy?.seed) : draftDirectory
   const copyReady =
     !duplicate ||
     Boolean(copy && harnessesQuery.isSuccess && !harnessesQuery.isFetching && harnessId)

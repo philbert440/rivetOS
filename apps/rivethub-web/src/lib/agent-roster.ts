@@ -22,6 +22,13 @@ function stripSlash(url: string | undefined): string {
   return (url ?? '').trim().replace(/\/+$/, '')
 }
 
+/** Roster rows whose recorded `/healthz.node` is `nodeName` and whose URL is set. */
+function rosterEntriesForNode(roster: readonly NodeChoice[], nodeName: string): NodeChoice[] {
+  return roster.filter(
+    (entry) => entry.node?.trim() === nodeName && stripSlash(entry.baseUrl) !== '',
+  )
+}
+
 /**
  * URL of the den that hosts `agent`, or undefined ("node unknown").
  *
@@ -29,8 +36,10 @@ function stripSlash(url: string | undefined): string {
  *    the single-host path: a loopback node advertises an empty `denUrl`.
  * 2. A mesh node with a non-empty `denUrl` whose `name` equals `agent.node`,
  *    else one whose `id` equals `agent.node`. Name wins when both could hit.
- * 3. A roster entry whose recorded `/healthz.node` equals `agent.node`.
- * 4. Legacy `agent.nodeBaseUrl` when set.
+ * 3. A roster entry whose recorded `/healthz.node` equals `agent.node`,
+ *    when exactly one entry has that name. Two entries are unknown.
+ * 4. Legacy `agent.nodeBaseUrl` when set. A rule-3 collision does not
+ *    fall through to this.
  */
 export function resolveAgentNodeUrl(
   agent: Pick<AgentPreset, 'node' | 'nodeBaseUrl'>,
@@ -51,10 +60,9 @@ export function resolveAgentNodeUrl(
       ctx.mesh.find((entry) => stripSlash(entry.denUrl) !== '' && entry.name.trim() === node) ??
       ctx.mesh.find((entry) => stripSlash(entry.denUrl) !== '' && entry.id.trim() === node)
     if (meshHit) return stripSlash(meshHit.denUrl)
-    const rosterHit = ctx.roster.find(
-      (entry) => entry.node?.trim() === node && stripSlash(entry.baseUrl),
-    )
-    if (rosterHit) return stripSlash(rosterHit.baseUrl)
+    const rosterHits = rosterEntriesForNode(ctx.roster, node)
+    if (rosterHits.length > 1) return undefined
+    if (rosterHits.length === 1) return stripSlash(rosterHits[0]?.baseUrl)
   }
   const legacy = stripSlash(agent.nodeBaseUrl)
   return legacy || undefined
@@ -104,7 +112,9 @@ export type ResolvedRosterAgent = AgentPreset & {
 /**
  * Map a resolved hosting URL onto a roster entry the hub can open.
  * Same URL wins; otherwise the entry whose recorded `/healthz.node` equals
- * `node`. A mesh-only alias (or any other URL on no roster entry) is unknown.
+ * `node`, when exactly one roster entry has that name. More than one is
+ * unknown (the row stays disabled). A mesh-only alias, or any other URL on
+ * no roster entry, is unknown.
  */
 export function rosterUrlForResolved(
   resolved: string | undefined,
@@ -117,10 +127,9 @@ export function rosterUrlForResolved(
   if (same) return stripSlash(same.baseUrl)
   const nodeName = node?.trim()
   if (!nodeName) return undefined
-  const byNode = roster.find(
-    (entry) => entry.node?.trim() === nodeName && stripSlash(entry.baseUrl) !== '',
-  )
-  return byNode ? stripSlash(byNode.baseUrl) : undefined
+  const byNode = rosterEntriesForNode(roster, nodeName)
+  if (byNode.length !== 1) return undefined
+  return stripSlash(byNode[0]?.baseUrl)
 }
 
 /** Delete always goes to the den that listed the row. Legacy files live only there. */

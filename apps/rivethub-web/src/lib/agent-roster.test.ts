@@ -11,6 +11,7 @@ import {
   pointersToPoll,
   presetsFromAgentsQueryData,
   resolveAgentNodeUrl,
+  rosterUrlForResolved,
   sessionPointerMatches,
   uniqueRosterNodes,
   type NodeChoice,
@@ -181,6 +182,16 @@ describe('resolveAgentNodeUrl', () => {
     ).toBe(peer)
   })
 
+  it('treats two roster entries with the same healthz node as unknown, in either order', () => {
+    const agent = preset({ id: 'a', name: 'Reviewer', node: 'shared', nodeBaseUrl: legacy })
+    const first: NodeChoice = { name: 'a', baseUrl: 'https://192.0.2.20:5174', node: 'shared' }
+    const second: NodeChoice = { name: 'b', baseUrl: 'https://192.0.2.21:5174', node: 'shared' }
+    expect(resolveAgentNodeUrl(agent, { ...ctx, roster: [first, second] })).toBeUndefined()
+    expect(resolveAgentNodeUrl(agent, { ...ctx, roster: [second, first] })).toBeUndefined()
+    expect(resolveAgentNodeUrl(agent, { ...ctx, roster: [first] })).toBe(first.baseUrl)
+    expect(resolveAgentNodeUrl(agent, { ...ctx, roster: [second] })).toBe(second.baseUrl)
+  })
+
   it('uses a roster entry whose recorded healthz node matches', () => {
     const agent = preset({ id: 'a', name: 'Reviewer', node: 'ct116', nodeBaseUrl: legacy })
     const roster: NodeChoice[] = [
@@ -244,6 +255,26 @@ describe('resolveAgentNodeUrl', () => {
   })
 })
 
+describe('rosterUrlForResolved', () => {
+  const first: NodeChoice = { name: 'a', baseUrl: 'https://192.0.2.20:5174', node: 'shared' }
+  const second: NodeChoice = { name: 'b', baseUrl: 'https://192.0.2.21:5174', node: 'shared' }
+  const elsewhere = 'https://192.0.2.30:5174'
+
+  it('returns undefined when two roster entries share the healthz node, in either order', () => {
+    expect(rosterUrlForResolved(elsewhere, 'shared', [first, second])).toBeUndefined()
+    expect(rosterUrlForResolved(elsewhere, 'shared', [second, first])).toBeUndefined()
+  })
+
+  it('maps a single healthz-node hit, and an exact roster URL still wins', () => {
+    expect(rosterUrlForResolved(elsewhere, 'shared', [first])).toBe(first.baseUrl)
+    expect(rosterUrlForResolved(elsewhere, 'shared', [second])).toBe(second.baseUrl)
+    expect(rosterUrlForResolved(first.baseUrl, 'shared', [first, second])).toBe(first.baseUrl)
+    expect(rosterUrlForResolved(`${second.baseUrl}/`, 'shared', [second, first])).toBe(
+      second.baseUrl,
+    )
+  })
+})
+
 describe('nodeOptionLabel', () => {
   it('labels the current node by its mesh name when the probe recorded one', () => {
     expect(
@@ -288,7 +319,7 @@ describe('dedupeRosterAgents', () => {
   ]
 
   it('prefers the hosting den’s own copy over a mesh alias of the same node', () => {
-    const meshAlias = 'https://100.64.0.11:5174'
+    const meshAlias = 'https://198.51.100.11:5174'
     const rows = dedupeRosterAgents(
       [
         {

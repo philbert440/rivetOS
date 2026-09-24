@@ -8,10 +8,10 @@ import {
 } from '../lib/conversation-model-options.js'
 import {
   DELETED_PRESET_NOTICE,
-  isDeletedAgentError,
+  presetHasHarnessFlag,
   recoverDeletedAgentSpawn,
+  spawnOnceWithCommandFallback,
   termSpawnBody,
-  termSpawnFallbackBody,
 } from '../lib/term-spawn.js'
 import { withAttachmentText } from '../lib/attachments.js'
 import {
@@ -1506,31 +1506,31 @@ function ActiveSession(props: {
         effort: settledLaunch.spawn.effort,
         // A preset with no harness must not send agentId — the den 400s
         // `agent has no harness and no command was given`.
-        presetHasHarness: settings?.agentId ? Boolean(settings.harnessId) : undefined,
+        presetHasHarness: presetHasHarnessFlag(settings),
       })
       // An API-only agent has no roster command → fall back to the node default
-      // rather than 404 (keeps the session id via --session-id if a UUID).
-      // That fallback is not the deleted-preset path: a 404 whose message is
-      // `agent not found` clears agentId and retries once without it. Model,
-      // effort, and harness stay. A second failure is this thread's spawn
+      // rather than 404 (keeps session, model, and effort). That fallback is
+      // not the missing-preset path: a 404 whose message is `agent not found`
+      // clears agentId and retries once without it, unless that id is still
+      // in the agents cache — then the 404 is this thread's error. Model and
+      // effort stay on the retry. A second failure is this thread's spawn
       // error. A 409 (preset hosted on another node) is not retried.
-      const spawnOnce = (req: typeof body) => {
-        if (!command) return gw.termSpawn(req)
-        return gw.termSpawn(req).catch((error: unknown) => {
-          if (
-            error instanceof GatewayError &&
-            error.status === 404 &&
-            !isDeletedAgentError(error) &&
-            !settings?.harnessId
-          ) {
-            return gw.termSpawn(termSpawnFallbackBody(props.sessionId, req.agentId))
-          }
-          throw error
+      const spawnOnce = (req: typeof body) =>
+        spawnOnceWithCommandFallback((next) => gw.termSpawn(next), req, {
+          command,
+          harnessId: settings?.harnessId,
         })
-      }
-      const spawned = await recoverDeletedAgentSpawn(spawnOnce, body, () => {
-        writeLaunchState({ agentId: undefined })
-      })
+      const listedAgentIds = queryClient
+        .getQueriesData({ queryKey: ['agents-all-nodes'] })
+        .flatMap(([, data]) => presetsFromAgentsQueryData(data).map((preset) => preset.id))
+      const spawned = await recoverDeletedAgentSpawn(
+        spawnOnce,
+        body,
+        () => {
+          writeLaunchState({ agentId: undefined })
+        },
+        listedAgentIds,
+      )
       if (spawned.droppedAgentId) setPresetNotice(DELETED_PRESET_NOTICE)
       const p = spawned.result
       // Latch after the first successful spawn, unless this harness already
