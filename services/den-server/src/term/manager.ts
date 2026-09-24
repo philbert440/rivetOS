@@ -22,7 +22,9 @@
 //
 // Security posture (this is a shell as the service user behind a web page —
 // every rule here is deliberate):
-//   - only roster KEYS come in over HTTP; argv/cwd/env are operator-owned
+//   - only roster KEYS come in over HTTP; a client never sends a raw cwd.
+//     An agent preset id is resolved to a directory by the HTTP layer.
+//     argv/env stay operator-owned.
 //   - argv is spawned directly, never through a shell (tmux CREATE wraps the
 //     harness in `/bin/sh -c` only to source a 0600 env file — credentials
 //     never appear on the tmux client argv / `ps`)
@@ -63,7 +65,7 @@ import {
   type ContextSource,
 } from './context-window.js'
 import type { PtyProc, PtySpawn } from './pty.js'
-import { builtinRosterArgv0, type TermRoster } from './roster.js'
+import { builtinRosterArgv0, defaultSpawnCwd, type TermRoster } from './roster.js'
 import {
   classifyExistingTmuxSession,
   createRealTmuxCtl,
@@ -136,9 +138,16 @@ export interface TermManagerDeps {
   /** Does this harness already have an on-disk session with this id? Decides
    *  --resume vs --session-id on re-spawn (#318 review). Default: never. */
   sessionExists?: (command: string, id: string) => boolean
-  /** Recorded project cwd for a stored session. Qwen `--resume` is cwd-scoped
-   *  and must run in this directory, not homedir. Default: none. */
+  /** Recorded project cwd for a stored session. Resume looks up the
+   *  harness-native id, then the conversation join key, then denSession
+   *  (they coincide for a room session — the join key IS the den session).
+   *  Qwen `--resume` is cwd-scoped and must run in this directory; every
+   *  other harness uses the same lookup so an agent directory survives a
+   *  respawn. Default: none. */
   sessionCwd?: (command: string, id: string) => string | undefined
+  /** Persist `cwd` after a successful fresh spawn when it is not the roster
+   *  default. Omitted on tmux/herdr reattach — that harness is still running. */
+  recordSessionCwd?: (command: string, id: string, cwd: string) => void
   /** Attach an existing protocol session through the harness native TUI. */
   harnessArgv?: (command: string, session: string, argv: string[]) => string[] | undefined
   /** tmux control seam (T1): injected by tests so unit tests never spawn a
@@ -169,6 +178,8 @@ export interface PtyInfo {
   id: string
   denSession: string
   command: string
+  /** Directory this PTY was spawned in. */
+  cwd?: string
   /** Child pid. Absent on client-less persisted rows when tmux didn't
    *  report a pane pid — never a fake 0. */
   pid?: number
@@ -1650,6 +1661,7 @@ export function createTermManager(config: DenConfig, deps: TermManagerDeps): Ter
       id: r.id,
       denSession: r.denSession,
       command: r.command,
+      cwd: r.cwd,
       pid: r.pid,
       attached: r.attached.size,
       createdAt: r.createdAt,
@@ -1907,26 +1919,37 @@ export function createTermManager(config: DenConfig, deps: TermManagerDeps): Ter
       // The conversation join key IS the den session, so den (?session), the
       // capture hooks (RIVETOS_SESSION_KEY), and this PTY all share one id.
       const denSession = session ?? `den-${id}`
-      // Harness sessions (room: true) spawn in the user's home. OpenCode is
-      // the exception: its file picker refuses `$HOME`, so honour `entry.cwd`
-      // for the `opencode` roster command only. Qwen sessions are cwd-scoped
-      // (`--resume` from another dir prints "No saved session found" and
-      // exits 0), so a resume uses the transcript's recorded cwd — via the
-      // driver's spawn override (`cwdOverride`) or `sessionCwd` for /term
-      // drawer spawns. New qwen sessions stay at homedir like pi.
+      // Fresh-spawn directory. Room entries use homedir except opencode
+      // (its file picker refuses `$HOME`). An explicit override (the agent
+      // preset directory, or a driver's cwd) or a cwd recorded for this
+      // session wins — for every harness, not only qwen. Resume lookup order
+      // is the harness-native id, then the conversation join key, then
+      // denSession. For a room session the join key IS the den session
+      // (`denSession = session ?? den-${id}`), so the last two coincide and
+      // a cwd stored under denSession is found by the session probe. They
+      // differ when `resume` names a native id that is not the join key
+      // (qwen's transcript id). A brand-new session has no resumeNative, so
+      // sessionCwd is not consulted — a new qwen session stays at homedir
+      // even if a lookup would return a directory.
       const resumeNative =
         resume || (session && deps.sessionExists?.(key, session) ? session : undefined)
-      const recordedCwd =
-        key === 'qwen' && resumeNative ? deps.sessionCwd?.(key, resumeNative) : undefined
-      const explicitCwd = cwdOverride?.trim() || recordedCwd?.trim()
-      const cwd =
-        key === 'qwen' && explicitCwd
-          ? explicitCwd
-          : entry.room
-            ? key === 'opencode' && entry.cwd
-              ? entry.cwd
-              : homedir()
-            : (entry.cwd ?? roster.cwd)
+      const lookupRecorded = (id: string): string | undefined => {
+        const found = deps.sessionCwd?.(key, id)?.trim()
+        return found || undefined
+      }
+      let recordedCwd: string | undefined
+      if (resumeNative) {
+        const seen = new Set<string>()
+        for (const id of [resumeNative, session, denSession]) {
+          if (!id || seen.has(id)) continue
+          seen.add(id)
+          recordedCwd = lookupRecorded(id)
+          if (recordedCwd) break
+        }
+      }
+      const explicitCwd = cwdOverride?.trim() || recordedCwd
+      const defaultCwd = defaultSpawnCwd(roster, key)
+      const cwd = explicitCwd || defaultCwd
 
       // tmux reattach path (T1): if a tmux session for this den session
       // already exists on our socket, the harness is STILL RUNNING (it
@@ -2539,6 +2562,10 @@ export function createTermManager(config: DenConfig, deps: TermManagerDeps): Ter
             harness: 'rivetos',
             ts: now(),
           })
+        // Fresh spawn only. A tmux/herdr reattach is the same still-running
+        // harness — attach ignores cwd, and recording again would overwrite
+        // the directory the session was actually started in.
+        if (!persisted && cwd !== defaultCwd) deps.recordSessionCwd?.(key, denSession, cwd)
         if (r.agentPane) armCeiling(r)
         if (r.agentPane && r.tmuxName && herdr?.paneAgent) {
           return applyAgentProbe(r).then(() => info(r))

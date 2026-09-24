@@ -104,6 +104,7 @@ import {
   type SendUserTurnResult,
   type UserTurn,
 } from '@rivetos/types'
+import { validateDirectory } from '@rivetos/agent-registry'
 import type { HarnessSession } from '../term/harness-sessions.js'
 import { overlaySessionContext } from '../term/context-window.js'
 import { stripPastedContentWrapper } from './adapters/claude.js'
@@ -140,7 +141,12 @@ export interface DenAgentEventLike {
   [k: string]: unknown
 }
 
-/** The slice of the den term manager these drivers need. */
+/**
+ * The slice of the den term manager these drivers need.
+ * `spawn` matches the manager's full signature. The extra arguments are
+ * optional, so a host that only implements the original parameters still
+ * assigns. `cwd` is the 11th argument.
+ */
 export interface HarnessPtyHost {
   spawn(
     rosterKey: string | undefined,
@@ -149,6 +155,11 @@ export interface HarnessPtyHost {
     remote: string,
     session?: string,
     resume?: string,
+    envOverride?: Record<string, string>,
+    routedUser?: string,
+    model?: string,
+    effort?: string,
+    cwd?: string,
   ): { id: string; denSession: string } | Promise<{ id: string; denSession: string }>
   ptyForSession(denSession: string): string | undefined
   inject(id: string, text: string, submit: boolean, interrupt?: boolean): boolean
@@ -200,6 +211,12 @@ export interface PtyHarnessDriverDeps<S extends HarnessStoreHost = HarnessStoreH
    * edits the roster.
    */
   cwd?: () => string | undefined
+  /**
+   * Recorded project cwd for a session, keyed by roster command and native
+   * id. Wins over `cwd` on summaries so a session started in an agent
+   * directory reports that directory. Qwen still prefers the transcript row.
+   */
+  sessionCwd?: (command: string, id: string) => string | undefined
   /** How many sessions `listSessions` pulls from the store. */
   listLimit?: number
   /**
@@ -719,14 +736,22 @@ export abstract class PtyHarnessDriver<S extends HarnessStoreHost = HarnessStore
   // -- lifecycle -------------------------------------------------------------
 
   async startSession(opts: StartSessionOpts = {}): Promise<HarnessSessionSummary> {
-    // cwd/model are roster-owned on this path: the term manager spawns the
-    // operator's argv in the roster cwd and takes no per-request override.
-    // Rejecting beats silently ignoring the caller's intent.
-    if (opts.cwd !== undefined) {
-      throw this.unsupported(`${this.harnessId}: cwd is roster-owned (den-term.json)`)
-    }
+    // model stays roster-owned: the term manager appends the sheet's flag
+    // from the operator roster, not from this request. cwd is accepted when
+    // it is an absolute directory (an agent preset). A relative path is
+    // rejected rather than resolved against the den process.
     if (opts.model !== undefined) {
       throw this.unsupported(`${this.harnessId}: model is roster-owned (den-term.json)`)
+    }
+    let cwd: string | undefined
+    if (opts.cwd !== undefined) {
+      const validated = validateDirectory(opts.cwd)
+      if (!validated) {
+        throw new HarnessError('bad_request', `${this.harnessId}: cwd must be an absolute path`, {
+          harnessId: this.harnessId,
+        })
+      }
+      cwd = validated
     }
     const pty = await this.requirePty('startSession')
 
@@ -743,9 +768,7 @@ export abstract class PtyHarnessDriver<S extends HarnessStoreHost = HarnessStore
       )
     }
 
-    await Promise.resolve(
-      pty.spawn(this.rosterCommand, SPAWN_COLS, SPAWN_ROWS, 'harness-driver', native),
-    )
+    await this.spawnFor(pty, native, false, cwd !== undefined ? { cwd } : undefined)
     this.ensureLive(native).status = 'idle'
     const summary = this.liveSummary(native, 'idle')
     this.announce(native, summary)
@@ -1203,7 +1226,7 @@ export abstract class PtyHarnessDriver<S extends HarnessStoreHost = HarnessStore
       updatedAt: stamp,
       status: statusOverride ?? this.statusFor(native),
     }
-    const cwd = this.cwd()
+    const cwd = this.deps.sessionCwd?.(this.rosterCommand, native) ?? this.cwd()
     if (cwd) summary.cwd = cwd
     if (this.live.get(native)?.blocked) summary.blocked = true
     return summary
@@ -1223,7 +1246,7 @@ export abstract class PtyHarnessDriver<S extends HarnessStoreHost = HarnessStore
       status: statusOverride ?? this.statusFor(row.id),
     }
     if (row.title && row.title !== row.id) summary.title = row.title
-    const cwd = this.cwd()
+    const cwd = this.deps.sessionCwd?.(this.rosterCommand, row.id) ?? this.cwd()
     if (cwd) summary.cwd = cwd
     if (row.model) summary.model = row.model
     if (this.live.get(row.id)?.blocked) summary.blocked = true
@@ -1333,7 +1356,12 @@ export abstract class PtyHarnessDriver<S extends HarnessStoreHost = HarnessStore
    * still-lingering EXITED record produces a fresh pty, which is what the
    * dead-pty retry in `sendUserTurn` wants.
    */
-  protected async spawnFor(pty: HarnessPtyHost, native: string, resume: boolean): Promise<string> {
+  protected async spawnFor(
+    pty: HarnessPtyHost,
+    native: string,
+    resume: boolean,
+    opts?: { cwd?: string },
+  ): Promise<string> {
     const spawned = await Promise.resolve(
       pty.spawn(
         this.rosterCommand,
@@ -1342,6 +1370,11 @@ export abstract class PtyHarnessDriver<S extends HarnessStoreHost = HarnessStore
         'harness-driver',
         this.room(native),
         resume ? native : undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        opts?.cwd,
       ),
     )
     this.ensureLive(native)

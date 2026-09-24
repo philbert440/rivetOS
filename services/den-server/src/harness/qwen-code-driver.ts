@@ -34,32 +34,6 @@ import {
   type PtyHarnessDriverDeps,
 } from './pty-harness-driver.js'
 
-/** Match `PtyHarnessDriver` SPAWN_COLS / SPAWN_ROWS (not exported). */
-const SPAWN_COLS = 120
-const SPAWN_ROWS = 40
-
-/**
- * Term manager `spawn` accepts cwd as the 11th argument (after effort).
- * `HarnessPtyHost` does not declare it; qwen resume needs it because
- * sessions are cwd-scoped (`qwen --resume` in the wrong dir exits 0 with
- * "No saved session found"). Extra optional params are assignable from the
- * 6-arg host method, so bind it as `const spawn: SpawnWithCwd = pty.spawn.bind(pty)`
- * rather than asserting — the assertion is a no-op to the type checker.
- */
-type SpawnWithCwd = (
-  rosterKey: string | undefined,
-  cols: number,
-  rows: number,
-  remote: string,
-  session?: string,
-  resume?: string,
-  envOverride?: Record<string, string>,
-  routedUser?: string,
-  model?: string,
-  effort?: string,
-  cwd?: string,
-) => ReturnType<HarnessPtyHost['spawn']>
-
 export const QWEN_CODE_HARNESS_ID = 'qwen-code' as const
 /** Roster key the den term manager spawns Qwen Code under. */
 export const QWEN_CODE_ROSTER_COMMAND = 'qwen'
@@ -91,8 +65,8 @@ export class QwenCodeDriver extends PtyHarnessDriver<QwenCodeStoreHost> {
   }
 
   /**
-   * Prefer the transcript's recorded project cwd on summaries. New (live-only)
-   * sessions still report the roster cwd via `liveSummary`.
+   * Prefer the transcript's recorded project cwd on summaries. A live session
+   * with no row yet uses `sessionCwd`, then the roster cwd (`liveSummary`).
    */
   protected summarize(
     row: HarnessSession,
@@ -104,36 +78,19 @@ export class QwenCodeDriver extends PtyHarnessDriver<QwenCodeStoreHost> {
   }
 
   /**
-   * Resume (and LRU re-spawn) in the session's original cwd. New sessions go
-   * through `startSession` → base `spawn` and stay where the roster puts them
-   * (homedir for room:true).
+   * Resume (and LRU re-spawn) in the session's original cwd. The transcript
+   * directory wins: `qwen --resume` in the wrong dir exits 0 with "No saved
+   * session found". New sessions go through `startSession` → base `spawnFor`
+   * and stay where the caller (or the roster) put them.
    */
-  protected async spawnFor(pty: HarnessPtyHost, native: string, resume: boolean): Promise<string> {
-    let cwd: string | undefined
-    if (resume) {
-      const row = await this.deps.store.describe(native)
-      if (row?.cwd) cwd = row.cwd
-    }
-    // The host type declares 4–6 params; the 11th (cwd) is the manager's optional
-    // override. Bind (not cast) so the widened signature is a real value, not an
-    // unbound method reference.
-    const spawn: SpawnWithCwd = pty.spawn.bind(pty)
-    const spawned = await Promise.resolve(
-      spawn(
-        this.rosterCommand,
-        SPAWN_COLS,
-        SPAWN_ROWS,
-        'harness-driver',
-        this.room(native),
-        resume ? native : undefined,
-        undefined,
-        undefined,
-        undefined,
-        undefined,
-        cwd,
-      ),
-    )
-    this.ensureLive(native)
-    return spawned.id
+  protected async spawnFor(
+    pty: HarnessPtyHost,
+    native: string,
+    resume: boolean,
+    opts?: { cwd?: string },
+  ): Promise<string> {
+    if (!resume) return super.spawnFor(pty, native, resume, opts)
+    const row = await this.deps.store.describe(native)
+    return super.spawnFor(pty, native, resume, { cwd: row?.cwd })
   }
 }

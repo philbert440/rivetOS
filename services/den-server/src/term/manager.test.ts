@@ -98,6 +98,7 @@ function makeManager(
     spawn?: PtySpawn
     sessionExists?: (command: string, id: string) => boolean
     sessionCwd?: (command: string, id: string) => string | undefined
+    recordSessionCwd?: (command: string, id: string, cwd: string) => void
     tmuxCtl?: TmuxCtl
     herdrCtl?: HerdrCtl
     findHerdr?: () => string | null
@@ -164,6 +165,7 @@ function makeManager(
     roomOpen: extra.roomOpen,
     sessionExists: extra.sessionExists,
     sessionCwd: extra.sessionCwd,
+    recordSessionCwd: extra.recordSessionCwd,
     tmuxCtl: extra.tmuxCtl,
     herdrCtl: extra.herdrCtl,
     findHerdr: extra.findHerdr,
@@ -524,6 +526,100 @@ describe('term manager', () => {
     const nonUuid = makeManager({}, { sessionExists: () => false })
     nonUuid.manager.spawn('claude', 80, 24, '', 'chat-20260707-abcd')
     expect(nonUuid.spawns[0].argv).toEqual(['claude'])
+  })
+
+  it('cwdOverride is honoured for a room entry (claude)', () => {
+    const { manager, spawns } = makeManager()
+    const pty = manager.spawn(
+      'claude',
+      80,
+      24,
+      '',
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      '/tmp/agent-claude',
+    )
+    expect(spawns[0].opts.cwd).toBe('/tmp/agent-claude')
+    expect(pty.cwd).toBe('/tmp/agent-claude')
+    expect(spawns[0].argv[0]).toBe('claude')
+  })
+
+  it('a claude resume reuses the recorded cwd via sessionCwd', () => {
+    const uuid = '11111111-1111-4111-8111-111111111111'
+    const viaNative = makeManager(
+      {},
+      {
+        sessionExists: () => true,
+        sessionCwd: (command, id) =>
+          command === 'claude' && id === uuid ? '/tmp/agent-claude' : undefined,
+      },
+    )
+    viaNative.manager.spawn('claude', 80, 24, '', uuid)
+    expect(viaNative.spawns[0].opts.cwd).toBe('/tmp/agent-claude')
+    expect(viaNative.spawns[0].argv).toEqual(['claude', '--resume', uuid])
+    viaNative.manager.close()
+
+    // `resume` names a harness-native id. The cwd was stored under the join
+    // key, which for a room session IS the den session. The native probe
+    // misses; the session probe hits.
+    const viaSession = makeManager(
+      {},
+      {
+        sessionCwd: (command, id) =>
+          command === 'claude' && id === 'join-key' ? '/tmp/agent-join' : undefined,
+      },
+    )
+    viaSession.manager.spawn('claude', 80, 24, '', 'join-key', 'native-id')
+    expect(viaSession.spawns[0].opts.cwd).toBe('/tmp/agent-join')
+    expect(viaSession.spawns[0].argv).toContain('native-id')
+    viaSession.manager.close()
+  })
+
+  it('recordSessionCwd fires only when the cwd differs from the default', () => {
+    const recorded: { command: string; id: string; cwd: string }[] = []
+    const record = (command: string, id: string, cwd: string): void => {
+      recorded.push({ command, id, cwd })
+    }
+    const same = makeManager({}, { recordSessionCwd: record })
+    same.manager.spawn('claude', 80, 24, '', 'chat-default')
+    expect(recorded).toEqual([])
+    same.manager.spawn(
+      'claude',
+      80,
+      24,
+      '',
+      'chat-home',
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      homedir(),
+    )
+    expect(recorded).toEqual([])
+    same.manager.close()
+
+    const overridden = makeManager({}, { recordSessionCwd: record })
+    const pty = overridden.manager.spawn(
+      'claude',
+      80,
+      24,
+      '',
+      'chat-1',
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      '/tmp/agent-claude',
+    )
+    expect(recorded).toEqual([{ command: 'claude', id: 'chat-1', cwd: '/tmp/agent-claude' }])
+    expect(pty.cwd).toBe('/tmp/agent-claude')
+    overridden.manager.close()
   })
 
   it('OMITS RIVET_DEN_TOKEN entirely when the token is empty', () => {
@@ -1601,6 +1697,36 @@ describe('term manager (tmux mux)', () => {
     expect(fresh.spawns[0].argv).toContain('new-session')
     expect(fresh.spawns[0].argv).not.toContain('-A')
     expect(parseTmuxArgv(fresh.spawns[0].argv).harness).toEqual(['claude', '--resume', uuid])
+  })
+
+  it('tmux reattach does not re-record', () => {
+    const ctl = new FakeTmuxCtl()
+    ctl.serverCreated(encodeTmuxName(uuid), 'claude', 'owner')
+    const recorded: string[] = []
+    const { manager } = makeManager(
+      { mux: 'tmux' },
+      {
+        tmuxCtl: ctl,
+        recordSessionCwd: () => {
+          recorded.push('called')
+        },
+      },
+    )
+    const pty = manager.spawn(
+      'claude',
+      80,
+      24,
+      '',
+      uuid,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      '/tmp/agent-claude',
+    )
+    expect(pty.reattached).toBe(true)
+    expect(recorded).toEqual([])
   })
 
   it('has-session live → attach form: immediately ready, no -e, no tags', () => {

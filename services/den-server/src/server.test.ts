@@ -1,4 +1,4 @@
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { lstatSync, mkdirSync, mkdtempSync, readlinkSync, rmSync, writeFileSync } from 'node:fs'
 import { hostname, tmpdir } from 'node:os'
 import { join } from 'node:path'
 import type { AddressInfo } from 'node:net'
@@ -6,6 +6,7 @@ import { EventEmitter, once } from 'node:events'
 import { request } from 'node:http'
 import { WebSocket, WebSocketServer } from 'ws'
 import { afterEach, describe, expect, it } from 'vitest'
+import type { AgentPreset } from '@rivetos/types'
 import { createDenServer, type DenServer } from './server.js'
 import type { DenConfig } from './config.js'
 import { baseTestDenConfig, emptyTls } from './test-config.js'
@@ -42,7 +43,9 @@ class FakeProc extends EventEmitter implements PtyProc {
 
 const servers: DenServer[] = []
 const dirs: string[] = []
+const fakeSpawns: { argv: string[]; cwd?: string }[] = []
 afterEach(async () => {
+  fakeSpawns.length = 0
   await Promise.all(servers.splice(0).map((s) => s.close()))
   dirs.splice(0).forEach((d) => rmSync(d, { recursive: true, force: true }))
 })
@@ -75,8 +78,10 @@ async function start(
     herdrCtl?: HerdrCtl
     allowedOrigins?: string[]
     allowedHosts?: string[]
+    /** Materialize a local shared dir (never the real /rivet-shared) and point sharedRoot at it. */
+    linkShared?: boolean
   } = {},
-): Promise<{ den: DenServer; base: string; port: number }> {
+): Promise<{ den: DenServer; base: string; port: number; stateDir: string; sharedDir?: string }> {
   const stateDir = mkdtempSync(join(tmpdir(), 'den-server-'))
   dirs.push(stateDir)
   const config: DenConfig = baseTestDenConfig(stateDir, {
@@ -108,17 +113,30 @@ async function start(
         commands: { codex: { label: 'Codex', cmd: opts.codexCmd, room: true } },
       }),
     )
+  let sharedDir: string | undefined
+  if (opts.linkShared) {
+    sharedDir = join(stateDir, 'shared')
+    mkdirSync(sharedDir)
+    config.sharedRoot = sharedDir
+  }
   let pid = 2000
   const den = createDenServer(config, {
     extraRoutes: opts.extraRoutes,
     extraUpgrades: opts.extraUpgrades,
-    ...(opts.term ? { ptySpawn: () => new FakeProc(++pid) } : {}),
+    ...(opts.term
+      ? {
+          ptySpawn: (argv: string[], spawnOpts: { cwd?: string }) => {
+            fakeSpawns.push({ argv: [...argv], cwd: spawnOpts.cwd })
+            return new FakeProc(++pid)
+          },
+        }
+      : {}),
     ...(opts.herdrCtl ? { herdrCtl: opts.herdrCtl } : {}),
   })
   servers.push(den)
   await new Promise<void>((r) => den.server.listen(0, '127.0.0.1', r))
   const port = (den.server.address() as AddressInfo).port
-  return { den, base: `http://127.0.0.1:${port}`, port }
+  return { den, base: `http://127.0.0.1:${port}`, port, stateDir, sharedDir }
 }
 
 const EV = { v: 1, session: 's1', name: 'alpha', ts: 100, type: 'session.start', title: 'hello' }
@@ -1089,5 +1107,144 @@ describe('browser origin policy', () => {
       req.end()
     })
     expect(status).toBe(403)
+function storedPreset(over: Partial<AgentPreset> & Pick<AgentPreset, 'id' | 'name'>): AgentPreset {
+  return {
+    color: '',
+    model: '',
+    effort: '',
+    systemPrompt: '',
+    nodeBaseUrl: '',
+    createdAt: 1,
+    updatedAt: 1,
+    ...over,
+  }
+}
+
+describe('POST /term { agentId }', () => {
+  it('spawns in the preset directory with the preset command, model, and effort', async () => {
+    const { base, sharedDir } = await start('', 60_000, {
+      term: true,
+      linkShared: true,
+      mux: 'none',
+    })
+    const created = await post(base, '/api/agents', {
+      name: 'Reviewer',
+      harnessId: 'claude-code',
+      model: 'haiku',
+      effort: 'low',
+    })
+    expect(created.status).toBe(201)
+    const agent = ((await created.json()) as { agent: AgentPreset }).agent
+    expect(agent.directory).toBeTruthy()
+    const link = join(agent.directory!, 'rivet-shared')
+    expect(lstatSync(link).isSymbolicLink()).toBe(true)
+    expect(readlinkSync(link)).toBe(sharedDir)
+
+    fakeSpawns.length = 0
+    const spawned = await post(base, '/term', { agentId: agent.id })
+    expect(spawned.status).toBe(201)
+    const body = (await spawned.json()) as { command: string; cwd?: string; error?: string }
+    expect(body.command).toBe('claude')
+    expect(body.cwd).toBe(agent.directory)
+    expect(fakeSpawns).toHaveLength(1)
+    expect(fakeSpawns[0].cwd).toBe(agent.directory)
+    expect(fakeSpawns[0].argv).toEqual(['claude', '--model', 'haiku', '--effort', 'low'])
+
+    const cfg = await (await fetch(`${base}/term/config`)).text()
+    expect(cfg).not.toContain('cwd')
+    expect(cfg).not.toContain(agent.directory!)
+  })
+
+  it('lets an explicit command and model win', async () => {
+    const { base } = await start('', 60_000, { term: true, mux: 'none' })
+    const created = await post(base, '/api/agents', {
+      name: 'Reviewer',
+      harnessId: 'claude-code',
+      model: 'haiku',
+      effort: 'low',
+    })
+    const agent = ((await created.json()) as { agent: AgentPreset }).agent
+    fakeSpawns.length = 0
+    const modeled = await post(base, '/term', { agentId: agent.id, model: 'opus' })
+    expect(modeled.status).toBe(201)
+    expect(fakeSpawns[0].argv).toContain('--model')
+    expect(fakeSpawns[0].argv).toContain('opus')
+    expect(fakeSpawns[0].argv).not.toContain('haiku')
+    expect(fakeSpawns[0].argv).toContain('low')
+    expect(fakeSpawns[0].cwd).toBe(agent.directory)
+
+    fakeSpawns.length = 0
+    const shelled = await post(base, '/term', { agentId: agent.id, command: 'shell' })
+    expect(shelled.status).toBe(201)
+    expect(((await shelled.json()) as { command: string; cwd?: string }).command).toBe('shell')
+    expect(fakeSpawns[0].argv[0]).toBe('bash')
+    expect(fakeSpawns[0].cwd).toBe(agent.directory)
+  })
+
+  it('404s an unknown agent and 400s a bad agentId', async () => {
+    const { base } = await start('', 60_000, { term: true, mux: 'none' })
+    const missing = await post(base, '/term', { agentId: 'no-such-agent' })
+    expect(missing.status).toBe(404)
+    expect(await missing.json()).toEqual({ error: 'agent not found' })
+    expect((await post(base, '/term', { agentId: '../x' })).status).toBe(400)
+    expect((await post(base, '/term', { agentId: '' })).status).toBe(400)
+    expect((await post(base, '/term', { agentId: 4 })).status).toBe(400)
+    expect(fakeSpawns).toEqual([])
+  })
+
+  it('409s a preset hosted on another node', async () => {
+    const { base, stateDir } = await start('', 60_000, { term: true, mux: 'none' })
+    writeFileSync(
+      join(stateDir, 'agents.json'),
+      JSON.stringify({
+        agents: [
+          storedPreset({
+            id: 'foreign',
+            name: 'Foreign',
+            harnessId: 'claude-code',
+            model: 'haiku',
+            effort: 'low',
+            directory: join(stateDir, 'agents', 'foreign'),
+            node: 'some-other-node',
+          }),
+        ],
+      }),
+    )
+    const res = await post(base, '/term', { agentId: 'foreign' })
+    expect(res.status).toBe(409)
+    expect(await res.json()).toEqual({
+      error: 'agent "Foreign" is hosted on some-other-node',
+      node: 'some-other-node',
+    })
+    expect(fakeSpawns).toEqual([])
+  })
+
+  it('409s a preset with no directory and 500s when the directory cannot be created', async () => {
+    const { base, stateDir } = await start('', 60_000, { term: true, mux: 'none' })
+    const blocked = join(stateDir, 'not-a-directory')
+    writeFileSync(blocked, 'x')
+    writeFileSync(
+      join(stateDir, 'agents.json'),
+      JSON.stringify({
+        agents: [
+          storedPreset({ id: 'nodir', name: 'NoDir' }),
+          storedPreset({
+            id: 'blocked',
+            name: 'Blocked',
+            harnessId: 'claude-code',
+            directory: join(blocked, 'child'),
+          }),
+        ],
+      }),
+    )
+    const missing = await post(base, '/term', { agentId: 'nodir' })
+    expect(missing.status).toBe(409)
+    expect(await missing.json()).toEqual({ error: 'agent "NoDir" has no directory' })
+    const failed = await post(base, '/term', { agentId: 'blocked' })
+    expect(failed.status).toBe(500)
+    expect(((await failed.json()) as { error: string }).error).toMatch(
+      /^could not create agent directory: /,
+    )
+    expect(fakeSpawns).toEqual([])
   })
 })

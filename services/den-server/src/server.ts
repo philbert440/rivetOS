@@ -14,7 +14,7 @@
 //   POST /layout?viewer=<key>   persist a viewer layout
 //   GET  /mesh.json             den-enabled mesh roster + per-node den health
 //   GET  /term/config           terminal roster (keys + labels — never argv)
-//   POST /term                  spawn a roster command in a PTY (opt-in)
+//   POST /term                  spawn a roster command, or an agent preset, in a PTY (opt-in)
 //   GET  /term/list             live + recently-exited PTYs, plus tmux
 //                               sessions with no den client (persisted:true)
 //   DELETE /term?id=<id>        kill a PTY (tmux: kill-session, then
@@ -39,7 +39,7 @@
 
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http'
 import { createServer as createHttpsServer } from 'node:https'
-import { homedir, hostname } from 'node:os'
+import { hostname } from 'node:os'
 import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync, statSync } from 'node:fs'
 import { join, normalize, extname } from 'node:path'
 import { WebSocketServer, type WebSocket } from 'ws'
@@ -48,6 +48,7 @@ import {
   FileAgentPresetStore,
   PgAgentPresetStore,
   createFallbackPresetStore,
+  ensureAgentDirectory,
   type AgentPresetStore,
 } from '@rivetos/agent-registry'
 import {
@@ -59,7 +60,12 @@ import {
   type AgentEvent,
   type DenState,
 } from '@rivetos/den-protocol'
-import { MeshParseError, type HarnessDriver, type UserContext } from '@rivetos/types'
+import {
+  MeshParseError,
+  rosterCommandFor,
+  type HarnessDriver,
+  type UserContext,
+} from '@rivetos/types'
 import type { DenConfig } from './config.js'
 import {
   bindRequestUser,
@@ -73,7 +79,8 @@ import { createMeshView, loadMeshFile, meshDenOrigins, meshFilePaths } from './m
 import { checkOrigin, type OriginPolicyOptions } from './origin-policy.js'
 import { preSendBlockOnScreen } from './term/blocking-dialog.js'
 import { composeTermAttach, wirePtyInfo } from './term/attach.js'
-import { createRosterProvider } from './term/roster.js'
+import { createRosterProvider, defaultSpawnCwd } from './term/roster.js'
+import { createSessionCwdStore } from './term/session-cwd.js'
 import { loadRealPtySpawn, type PtySpawn } from './term/pty.js'
 import { createTermManager, TermSpawnError, type TermManager } from './term/manager.js'
 import { EFFORT_TOKEN_RE, MODEL_TOKEN_RE, ROSTER_TO_HARNESS } from './harness/model-sheets.js'
@@ -583,6 +590,7 @@ export function createDenServer(config: DenConfig, opts: DenServerOptions = {}):
     )
 
   const rosterProvider = createRosterProvider(config.term.configFile)
+  const sessionCwdStore = createSessionCwdStore(join(config.stateDir, 'session-cwd.json'))
   if (config.codexAppServerUrl && config.usersRegistry) {
     throw new Error(
       'Codex app-server requires a single-owner node; per-user app-server isolation is not configured',
@@ -616,7 +624,9 @@ export function createDenServer(config: DenConfig, opts: DenServerOptions = {}):
           return !!room && !room.ended
         },
         sessionExists: harnessSessionExists,
-        sessionCwd: (command, id) => (command === 'qwen' ? qwenSessionCwd(id) : undefined),
+        sessionCwd: (command, id) =>
+          sessionCwdStore.get(command, id) ?? (command === 'qwen' ? qwenSessionCwd(id) : undefined),
+        recordSessionCwd: (command, id, cwd) => sessionCwdStore.set(command, id, cwd),
         harnessArgv: (command, session, argv) =>
           command === 'codex' ? codexProtocol?.terminalArgv(session, argv[0]) : undefined,
         tmuxCtl: opts.tmuxCtl,
@@ -654,15 +664,10 @@ export function createDenServer(config: DenConfig, opts: DenServerOptions = {}):
   // Roster cwd for a harness entry, read at call time — rosterProvider
   // re-reads den-term.json when it changes on disk, so an operator edit is
   // reflected without a restart (passed as a getter, not a snapshot).
-  const rosterCwdFor = (key: string) => (): string => {
-    const roster = rosterProvider.get()
-    if (!Object.hasOwn(roster.commands, key)) return roster.cwd
-    const entry = roster.commands[key]
-    // Mirrors the spawn rule in term/manager.ts: harness cwd is forced to
-    // home except OpenCode, whose file picker refuses `$HOME`.
-    if (entry.room) return key === 'opencode' && entry.cwd ? entry.cwd : homedir()
-    return entry.cwd ?? roster.cwd
-  }
+  // The rule itself lives in `defaultSpawnCwd`, shared with the term manager.
+  const rosterCwdFor = (key: string) => (): string => defaultSpawnCwd(rosterProvider.get(), key)
+  const recordedSessionCwd = (command: string, id: string): string | undefined =>
+    sessionCwdStore.get(command, id)
   // The node's HarnessDriver registry (docs/ARCHITECTURE.md).
   // All built-in drivers formalize the machinery right above them — the
   // term manager (spawn/--resume/inject/Esc), the harness's on-disk store, and
@@ -732,6 +737,7 @@ export function createDenServer(config: DenConfig, opts: DenServerOptions = {}):
         events: denEventTap,
         herdrStatus: () => termManager?.mux() === 'herdr',
         cwd: rosterCwdFor('claude'),
+        sessionCwd: recordedSessionCwd,
         log: console.error,
         sheetOverride: config.harnesses?.['claude-code'],
         transcript: opts.transcriptWatcher,
@@ -743,6 +749,7 @@ export function createDenServer(config: DenConfig, opts: DenServerOptions = {}):
         events: denEventTap,
         herdrStatus: () => termManager?.mux() === 'herdr',
         cwd: rosterCwdFor('grok'),
+        sessionCwd: recordedSessionCwd,
         log: console.error,
         sheetOverride: config.harnesses?.['grok-build'],
         transcript: opts.transcriptWatcher,
@@ -754,6 +761,7 @@ export function createDenServer(config: DenConfig, opts: DenServerOptions = {}):
         events: denEventTap,
         herdrStatus: () => termManager?.mux() === 'herdr',
         cwd: rosterCwdFor('hermes'),
+        sessionCwd: recordedSessionCwd,
         log: console.error,
         sheetOverride: config.harnesses?.hermes,
         transcript: opts.transcriptWatcher,
@@ -765,6 +773,7 @@ export function createDenServer(config: DenConfig, opts: DenServerOptions = {}):
         events: denEventTap,
         herdrStatus: () => termManager?.mux() === 'herdr',
         cwd: rosterCwdFor('kimi'),
+        sessionCwd: recordedSessionCwd,
         log: console.error,
         sheetOverride: config.harnesses?.['kimi-code'],
         transcript: opts.transcriptWatcher,
@@ -776,6 +785,7 @@ export function createDenServer(config: DenConfig, opts: DenServerOptions = {}):
         events: denEventTap,
         herdrStatus: () => termManager?.mux() === 'herdr',
         cwd: rosterCwdFor('pi'),
+        sessionCwd: recordedSessionCwd,
         log: console.error,
         sheetOverride: config.harnesses?.pi,
         transcript: opts.transcriptWatcher,
@@ -787,6 +797,7 @@ export function createDenServer(config: DenConfig, opts: DenServerOptions = {}):
         events: denEventTap,
         herdrStatus: () => termManager?.mux() === 'herdr',
         cwd: rosterCwdFor('qwen'),
+        sessionCwd: recordedSessionCwd,
         log: console.error,
         sheetOverride: config.harnesses?.['qwen-code'],
         transcript: opts.transcriptWatcher,
@@ -798,6 +809,7 @@ export function createDenServer(config: DenConfig, opts: DenServerOptions = {}):
         events: denEventTap,
         herdrStatus: () => termManager?.mux() === 'herdr',
         cwd: rosterCwdFor('opencode'),
+        sessionCwd: recordedSessionCwd,
         log: console.error,
         sheetOverride: config.harnesses?.opencode,
         transcript: opts.transcriptWatcher,
@@ -820,6 +832,7 @@ export function createDenServer(config: DenConfig, opts: DenServerOptions = {}):
         events: denEventTap,
         herdrStatus: () => termManager?.mux() === 'herdr',
         cwd: rosterCwdFor('codex'),
+        sessionCwd: recordedSessionCwd,
         log: console.error,
         sheetOverride: config.harnesses?.codex,
         transcript: opts.transcriptWatcher,
@@ -1487,6 +1500,7 @@ export function createDenServer(config: DenConfig, opts: DenServerOptions = {}):
             resume?: unknown
             model?: unknown
             effort?: unknown
+            agentId?: unknown
           }
           if (p.command !== undefined && typeof p.command !== 'string')
             return json(res, 400, { error: 'command must be a roster key' })
@@ -1494,15 +1508,74 @@ export function createDenServer(config: DenConfig, opts: DenServerOptions = {}):
             return json(res, 400, { error: 'session must be a string' })
           if (p.resume !== undefined && typeof p.resume !== 'string')
             return json(res, 400, { error: 'resume must be a string' })
+          if (
+            p.agentId !== undefined &&
+            (typeof p.agentId !== 'string' || !/^[\w-]{1,64}$/.test(p.agentId))
+          )
+            return json(res, 400, { error: 'agentId must be a 1-64 token' })
           const token = (v: unknown, re: RegExp): string | undefined | null => {
             if (v === undefined) return undefined
             if (typeof v !== 'string' || !re.test(v)) return null
             return v
           }
-          const modelTok = token(p.model, MODEL_TOKEN_RE)
-          const effortTok = token(p.effort, EFFORT_TOKEN_RE)
+          let modelTok = token(p.model, MODEL_TOKEN_RE)
+          let effortTok = token(p.effort, EFFORT_TOKEN_RE)
           if (modelTok === null) return json(res, 400, { error: 'model must be a 1-64 token' })
           if (effortTok === null) return json(res, 400, { error: 'effort must be a 1-64 token' })
+          // Explicit command/model/effort win. agentId fills whatever the
+          // client left out, and the preset directory is the cwd — clients
+          // never send a raw one. Preset-derived tokens are checked again
+          // so a bad stored value is a 400 that names the preset.
+          let command: string | undefined = typeof p.command === 'string' ? p.command : undefined
+          let cwdOverride: string | undefined
+          if (typeof p.agentId === 'string') {
+            const preset = await presetStore.get(p.agentId)
+            if (!preset) return json(res, 404, { error: 'agent not found' })
+            if (preset.node && preset.node !== config.nodeName) {
+              return json(res, 409, {
+                error: `agent "${preset.name}" is hosted on ${preset.node}`,
+                node: preset.node,
+              })
+            }
+            if (!preset.directory) {
+              return json(res, 409, { error: `agent "${preset.name}" has no directory` })
+            }
+            try {
+              ensureAgentDirectory(preset, {
+                ...(config.sharedRoot ? { sharedDir: config.sharedRoot } : {}),
+                log: (msg) => console.error(`[den-server] ${msg}`),
+              })
+            } catch (err) {
+              const msg = err instanceof Error ? err.message : String(err)
+              return json(res, 500, { error: `could not create agent directory: ${msg}` })
+            }
+            if (command === undefined) {
+              const fromHarness = rosterCommandFor(preset.harnessId)
+              if (!fromHarness) {
+                return json(res, 400, { error: 'agent has no harness and no command was given' })
+              }
+              command = fromHarness
+            }
+            if (modelTok === undefined && preset.model) {
+              const derived = token(preset.model, MODEL_TOKEN_RE)
+              if (derived === null) {
+                return json(res, 400, {
+                  error: `agent "${preset.name}" model must be a 1-64 token`,
+                })
+              }
+              modelTok = derived
+            }
+            if (effortTok === undefined && preset.effort) {
+              const derived = token(preset.effort, EFFORT_TOKEN_RE)
+              if (derived === null) {
+                return json(res, 400, {
+                  error: `agent "${preset.name}" effort must be a 1-64 token`,
+                })
+              }
+              effortTok = derived
+            }
+            cwdOverride = preset.directory
+          }
           const clamp = (v: unknown, lo: number, hi: number, dflt: number): number =>
             typeof v === 'number' && Number.isFinite(v)
               ? Math.min(hi, Math.max(lo, Math.floor(v)))
@@ -1529,7 +1602,7 @@ export function createDenServer(config: DenConfig, opts: DenServerOptions = {}):
             }
             if (
               codexProtocol &&
-              (p.command ?? rosterProvider.get().default) === 'codex' &&
+              (command ?? rosterProvider.get().default) === 'codex' &&
               !(sessionKey && manager.ptyForSession(sessionKey))
             ) {
               try {
@@ -1542,6 +1615,9 @@ export function createDenServer(config: DenConfig, opts: DenServerOptions = {}):
                     nativeSessionId: requested,
                     model: modelTok,
                     effort: effortTok,
+                    // Resume took the branch above and ignores cwd — the
+                    // thread is already running.
+                    ...(cwdOverride ? { cwd: cwdOverride } : {}),
                   })
                   sessionKey = denJoinKey(created.sessionId)
                 }
@@ -1554,7 +1630,7 @@ export function createDenServer(config: DenConfig, opts: DenServerOptions = {}):
             }
             const userEnv = captureEnvFor(userCtx)
             const pty = await manager.spawn(
-              p.command,
+              command,
               clamp(p.cols, 20, 500, 80),
               clamp(p.rows, 5, 200, 24),
               req.socket.remoteAddress ?? '',
@@ -1564,6 +1640,7 @@ export function createDenServer(config: DenConfig, opts: DenServerOptions = {}):
               routedUser,
               modelTok,
               effortTok,
+              cwdOverride,
             )
             if (userCtx) {
               sessionOwners.set(pty.denSession, userCtx.userId)
@@ -1584,6 +1661,7 @@ export function createDenServer(config: DenConfig, opts: DenServerOptions = {}):
                 ? { harnessSessionId: CodexDriver.sessionId(pty.denSession) }
                 : {}),
               command: pty.command,
+              ...(pty.cwd ? { cwd: pty.cwd } : {}),
               pid: pty.pid,
               createdAt: pty.createdAt,
               // T1: stamped only when tmux backs the PTY — under mux:none the

@@ -552,6 +552,11 @@ export interface TermSpawnRequest {
   /** Harness-native session id to resume (e.g. `claude --resume`) when the
    *  pool respawns a cold conversation. Reserved; wired with the pool. */
   resume?: string
+  /**
+   * RivetHub agent preset id; the den derives command/model/effort/cwd from it —
+   * explicit fields still win. Clients never send a raw cwd.
+   */
+  agentId?: string
   cols?: number
   rows?: number
 }
@@ -565,6 +570,8 @@ export interface TermSpawnResponse {
   pid: number
   /** epoch ms */
   createdAt: number
+  /** Directory the harness was spawned in. Derived by the den, never sent by the client. */
+  cwd?: string
   /** Present only when the PTY is mux-backed (`tmux` or `herdr`). */
   mux?: 'tmux' | 'herdr'
   /** Live client joined an already-running tmux session. */
@@ -814,6 +821,8 @@ export interface PtyInfo {
   id: string
   denSession: string
   command: string
+  /** Directory the harness was spawned in, when the den recorded one. */
+  cwd?: string
   state: 'running' | 'exited'
   /** child pid — absent on client-less persisted rows when tmux didn't
    *  report a pane pid (never a fake 0) */
