@@ -580,21 +580,32 @@ den:
   # tls_key: $RIVETOS_SHARED_DIR/rivet-ca/issued/<node_name>.key
 ```
 
-| Key              | Type    | Default         | Description                                                                                                  |
-| ---------------- | ------- | --------------- | ------------------------------------------------------------------------------------------------------------ |
-| `enabled`        | boolean | `false`         | Embed the den gateway in this process.                                                                       |
-| `host`           | string  | `127.0.0.1`     | Bind address. Off-loopback requires TLS.                                                                     |
-| `port`           | number  | `5174`          | HTTP/WS (or HTTPS) port.                                                                                     |
-| `tls_cert`       | string  | —               | Node TLS cert PEM path. Required off-loopback. Env: `RIVETOS_DEN_TLS_CERT`.                                  |
-| `tls_key`        | string  | —               | Node TLS key PEM path. Env: `RIVETOS_DEN_TLS_KEY`.                                                           |
-| `token`          | string  | —               | Legacy; ignored. Gateway auth is device mTLS.                                                                |
-| `terminal`       | object  | —               | Local PTY terminals. Off by default. See `den.terminal.*`.                                                   |
-| `static_dir`     | string  | hub dist        | Override for the built hub app served at `/`.                                                                |
-| `root_redirect`  | string  | —               | 302 target for `GET /`.                                                                                      |
-| `files_root`     | string  | `$RIVETOS_SHARED_DIR` (unset → product default) | Shared filestore root for `/api/files/*`. Empty string disables the routes.                   |
-| `files_open`     | boolean | —               | Opt-out of the files security gate. Defaults to `terminal.open` when unset.                                  |
-| `devices`        | object  | —               | Mesh device enrollment (Settings → Devices). Off unless `devices.enabled`.                                   |
-| `advertise_mdns` | boolean | `false`         | Publish `_rivethub._tcp` via mDNS so LAN apps can find this node. No-op unless the gateway actually started. |
+| Key               | Type     | Default                                         | Description                                                                                                                                          |
+| ----------------- | -------- | ----------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `enabled`         | boolean  | `false`                                         | Embed the den gateway in this process.                                                                                                               |
+| `host`            | string   | `127.0.0.1`                                     | Bind address. Off-loopback requires TLS.                                                                                                             |
+| `port`            | number   | `5174`                                          | HTTP/WS (or HTTPS) port.                                                                                                                             |
+| `tls_cert`        | string   | —                                               | Node TLS cert PEM path. Required off-loopback. Env: `RIVETOS_DEN_TLS_CERT`.                                                                          |
+| `tls_key`         | string   | —                                               | Node TLS key PEM path. Env: `RIVETOS_DEN_TLS_KEY`.                                                                                                   |
+| `token`           | string   | —                                               | Legacy; ignored. Gateway auth is device mTLS.                                                                                                        |
+| `terminal`        | object   | —                                               | Local PTY terminals. Off by default. See `den.terminal.*`.                                                                                           |
+| `static_dir`      | string   | hub dist                                        | Override for the built hub app served at `/`.                                                                                                        |
+| `root_redirect`   | string   | —                                               | 302 target for `GET /`.                                                                                                                              |
+| `files_root`      | string   | `$RIVETOS_SHARED_DIR` (unset → product default) | Shared filestore root for `/api/files/*`. Empty string disables the routes.                                                                          |
+| `files_open`      | boolean  | —                                               | Opt-out of the files security gate. Defaults to `terminal.open` when unset.                                                                          |
+| `devices`         | object   | —                                               | Mesh device enrollment (Settings → Devices). Off unless `devices.enabled`.                                                                           |
+| `advertise_mdns`  | boolean  | `false`                                         | Publish `_rivethub._tcp` via mDNS so LAN apps can find this node. No-op unless the gateway actually started.                                         |
+| `allowed_origins` | string[] | —                                               | Extra browser origins (`scheme://host[:port]`) allowed to call the gateway. See **Browser origin policy** below. Env: `RIVETOS_DEN_ALLOWED_ORIGINS`. |
+| `allowed_hosts`   | string[] | —                                               | Extra `Host` names a plain-HTTP (no TLS) gateway accepts from loopback callers, e.g. a local reverse proxy's name. Env: `RIVETOS_DEN_ALLOWED_HOSTS`. |
+
+**Browser origin policy.** The gateway answers a browser only when the request's `Origin` is one of:
+
+- the gateway itself (same host and port — the RivetHub web app it serves);
+- the RivetHub desktop app (`app://bundle`);
+- another den in the mesh roster (`mesh.json`), so cross-node RivetHub works without configuration;
+- an entry in `den.allowed_origins`.
+
+Requests without an `Origin` (the Android app, hooks, CLI tools, mesh peers) are unaffected. Any other origin gets `403`, on HTTP requests and on WebSocket upgrades alike, and no response ever carries `Access-Control-Allow-Origin: *`. On a plain-HTTP gateway, loopback callers must also address it by a loopback name (`127.0.0.1`, `localhost`, `[::1]`, `*.localhost`) or a name in `den.allowed_hosts`. If you open RivetHub through a name the mesh roster doesn't list (a Tailscale MagicDNS name, a reverse proxy), add that origin to `den.allowed_origins` on the nodes it calls.
 
 ---
 

@@ -101,6 +101,8 @@ export function buildGatewayEnv(config: RivetConfig, installRoot: string): Recor
   // loadConfig (`loadDenConfig({ ...env })` in registerGateway).
   if (config.runtime?.experimental === true) env.RIVETOS_EXPERIMENTAL = '1'
   if (den.root_redirect?.trim()) env.RIVETOS_DEN_ROOT_REDIRECT = den.root_redirect.trim()
+  if (den.allowed_origins?.length) env.RIVETOS_DEN_ALLOWED_ORIGINS = den.allowed_origins.join(',')
+  if (den.allowed_hosts?.length) env.RIVETOS_DEN_ALLOWED_HOSTS = den.allowed_hosts.join(',')
   if (den.files_root !== undefined) env.RIVETOS_DEN_FILES_ROOT = den.files_root.trim()
   // files_open defaults to the terminal posture: a node the operator already
   // opted into tokenless trusted-LAN terminals gets the files browser too.

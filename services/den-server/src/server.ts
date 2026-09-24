@@ -62,7 +62,8 @@ import {
   stampUserHeader,
 } from './identity.js'
 import { auditTenancyDeny, createSessionOwners, sessionForbidden } from './session-owners.js'
-import { createMeshView } from './mesh.js'
+import { createMeshView, loadMeshFile, meshDenOrigins, meshFilePaths } from './mesh.js'
+import { checkOrigin, type OriginPolicyOptions } from './origin-policy.js'
 import { dialogOnScreen } from './term/blocking-dialog.js'
 import { composeTermAttach, wirePtyInfo } from './term/attach.js'
 import { createRosterProvider } from './term/roster.js'
@@ -282,8 +283,9 @@ const API_PATHS = new Set([
   '/files/delete',
 ])
 
+// No Access-Control-Allow-Origin here: the request handler echoes the
+// caller's origin only when the origin policy allows it (origin-policy.ts).
 const CORS = {
-  'Access-Control-Allow-Origin': '*',
   'Access-Control-Allow-Methods': 'GET, POST, PATCH, DELETE, OPTIONS',
   // x-rivet-conversation / x-rivet-title: OpenAI /v1 bridge conventions (Android)
   'Access-Control-Allow-Headers':
@@ -970,6 +972,39 @@ export function createDenServer(config: DenConfig, opts: DenServerOptions = {}):
       requireClientCert: config.tls.requireClientCert,
     })
 
+  // Browser origin policy (origin-policy.ts). Mesh peers' den origins come
+  // from the shared roster, refreshed on the mesh cache interval, so
+  // cross-node RivetHub keeps working without per-node config.
+  let peerOrigins: string[] = []
+  const refreshPeerOrigins = async (): Promise<void> => {
+    try {
+      const file = await loadMeshFile(meshFilePaths(config.meshFile, config.sharedRoot))
+      peerOrigins = file ? meshDenOrigins(file) : []
+    } catch (err) {
+      console.error(
+        `[den-server] origin policy: mesh roster unreadable, keeping last peers: ${String(err)}`,
+      )
+    }
+  }
+  void refreshPeerOrigins()
+  const peerOriginTimer = setInterval(
+    () => void refreshPeerOrigins(),
+    Math.max(config.meshCacheMs, 5_000),
+  )
+  peerOriginTimer.unref()
+  const originPolicy: OriginPolicyOptions = {
+    tls: tlsReady,
+    allowedOrigins: config.allowedOrigins ?? [],
+    allowedHosts: config.allowedHosts ?? [],
+    peerOrigins: () => peerOrigins,
+  }
+  const deniedOrigins = new Set<string>()
+  const logOriginDenied = (reason: string): void => {
+    if (deniedOrigins.has(reason) || deniedOrigins.size >= 100) return
+    deniedOrigins.add(reason)
+    console.error(`[den-server] refused browser request: ${reason}`)
+  }
+
   const serveStatic = (res: ServerResponse, root: string, rel: string): boolean => {
     const norm = normalize(rel).replace(/^([/\\])+/, '')
     if (norm.startsWith('..')) return false
@@ -1040,6 +1075,17 @@ export function createDenServer(config: DenConfig, opts: DenServerOptions = {}):
     void (async () => {
       const url = new URL(req.url ?? '/', 'http://localhost')
       canonicalize(url)
+      const origin = checkOrigin(req, originPolicy)
+      if (!origin.ok) {
+        logOriginDenied(origin.reason)
+        res.writeHead(403, { 'Content-Type': 'application/json' })
+        res.end(JSON.stringify({ error: 'forbidden origin' }))
+        return
+      }
+      if (origin.allowOrigin) {
+        res.setHeader('Access-Control-Allow-Origin', origin.allowOrigin)
+        res.setHeader('Vary', 'Origin')
+      }
       if (req.method === 'OPTIONS') {
         res.writeHead(204, CORS)
         res.end()
@@ -1782,6 +1828,14 @@ export function createDenServer(config: DenConfig, opts: DenServerOptions = {}):
     socket.on('error', () => socket.destroy())
     const url = new URL(req.url ?? '/', 'http://localhost')
     canonicalize(url)
+    // WebSockets bypass CORS entirely, so the origin policy is the only thing
+    // keeping a web page from opening /ws or /term with ambient credentials.
+    const origin = checkOrigin(req, originPolicy)
+    if (!origin.ok) {
+      logOriginDenied(origin.reason)
+      socket.end('HTTP/1.1 403 Forbidden\r\nConnection: close\r\nContent-Length: 0\r\n\r\n')
+      return
+    }
     if (!authorized(req, url)) {
       socket.destroy()
       return
