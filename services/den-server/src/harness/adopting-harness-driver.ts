@@ -89,8 +89,12 @@ export abstract class AdoptingPtyHarnessDriver<
   /** The inverse — which room a native id is live in. See `room()`. */
   protected readonly nativeRoom = new Map<string, string>()
   /** Room→native pairs whose cwd copy has landed. A failed or not-yet-possible
-   *  copy is absent, so the next bindRoom tries again. */
+   *  copy is absent, so the next bindRoom tries again. Pruned when the room
+   *  takes a different native. */
   private readonly cwdCopied = new Set<string>()
+  /** Misses, keyed by room→native and the store mtime that missed. An equal
+   *  mtime is still a miss; a write changes the mtime and the next event retries. */
+  private readonly cwdMiss = new Map<string, number>()
 
   constructor(identity: AdoptingHarnessIdentity, deps: PtyHarnessDriverDeps<S>) {
     super(identity, deps)
@@ -198,17 +202,47 @@ export abstract class AdoptingPtyHarnessDriver<
    * which is not the room. Copy the record when the pair is learned — not
    * only at spawn, and not only while this process's map is still warm.
    */
+  private pairKey(room: string, native: string): string {
+    return `${room}\0${native}`
+  }
+
+  /** Drop copy state for a native this room no longer runs. */
+  private forgetCwdPair(room: string, native: string): void {
+    const pair = this.pairKey(room, native)
+    this.cwdCopied.delete(pair)
+    this.cwdMiss.delete(pair)
+  }
+
+  /**
+   * True when this pair is copied, or the store still has the mtime of a
+   * miss. No mtime hook → never settled on a miss, so the next event retries.
+   */
+  private cwdSettled(room: string, native: string): boolean {
+    const pair = this.pairKey(room, native)
+    if (this.cwdCopied.has(pair)) return true
+    const stamp = this.deps.sessionCwdMtime?.()
+    return stamp !== undefined && this.cwdMiss.get(pair) === stamp
+  }
+
   private rememberNativeCwd(room: string, native: string): void {
     if (!native || room === native) return
-    const pair = `${room}\0${native}`
+    const pair = this.pairKey(room, native)
     if (this.cwdCopied.has(pair)) return
     const record = this.deps.recordSessionCwd
     const lookup = this.deps.sessionCwd
     if (!record || !lookup) return
+    const stamp = this.deps.sessionCwdMtime?.()
+    if (stamp !== undefined && this.cwdMiss.get(pair) === stamp) return
     const cwd = lookup(this.rosterCommand, room)
     // Not recorded yet (the spawn write can land after the first event).
-    // Leave the pair unmarked so a later bindRoom retries.
-    if (!cwd) return
+    // A negative mark keyed on the store mtime skips repeat reads until a
+    // write. Without a mtime hook the pair stays unmarked and the next
+    // bindRoom retries.
+    if (!cwd) {
+      if (stamp !== undefined) this.cwdMiss.set(pair, stamp)
+      return
+    }
+    this.cwdMiss.delete(pair)
     if (lookup(this.rosterCommand, native) === cwd) {
       this.cwdCopied.add(pair)
       return
@@ -240,9 +274,11 @@ export abstract class AdoptingPtyHarnessDriver<
   protected bindRoom(room: string, native: string): void {
     const previous = this.roomNative.get(room)
     if (previous === native) {
-      this.rememberNativeCwd(room, native)
+      // A room with no record does not hit the store on every equal event.
+      if (!this.cwdSettled(room, native)) this.rememberNativeCwd(room, native)
       return
     }
+    if (previous !== undefined) this.forgetCwdPair(room, previous)
     this.roomNative.set(room, native)
     this.nativeRoom.set(native, room)
     this.rememberNativeCwd(room, native)

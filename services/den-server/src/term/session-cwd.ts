@@ -32,8 +32,12 @@ export const SESSION_CWD_TOUCH_MS = 60 * 60 * 1000
 export interface SessionCwdStore {
   get(command: string, id: string): string | undefined
   set(command: string, id: string, cwd: string): void
+  /** In-memory file mtime. 0 until a load or write. A write changes it. */
+  observedMtime(): number
   close(): void
 }
+
+type FileWriter = (file: string, data: string, options?: { mode?: number }) => void
 
 interface Entry {
   cwd: string
@@ -109,10 +113,14 @@ function loadFile(file: string): Record<string, Entry> {
   }
 }
 
-function saveFile(file: string, entries: Record<string, Entry>): { mtimeMs: number; size: number } {
+function saveFile(
+  file: string,
+  entries: Record<string, Entry>,
+  write: FileWriter,
+): { mtimeMs: number; size: number } {
   mkdirSync(dirname(file), { recursive: true, mode: 0o700 })
   const tmp = `${file}.tmp-${process.pid}`
-  writeFileSync(tmp, JSON.stringify({ v: 1, entries }, null, 2), { mode: 0o600 })
+  write(tmp, JSON.stringify({ v: 1, entries }, null, 2), { mode: 0o600 })
   renameSync(tmp, file)
   const st = statSync(file)
   return { mtimeMs: st.mtimeMs, size: st.size }
@@ -129,10 +137,15 @@ function evict(entries: Record<string, Entry>, max: number): Record<string, Entr
 
 export function createSessionCwdStore(
   file: string,
-  opts?: { max?: number; now?: () => number },
+  opts?: { max?: number; now?: () => number; writeFile?: FileWriter },
 ): SessionCwdStore {
   const max = opts?.max ?? DEFAULT_MAX
   const now = opts?.now ?? Date.now
+  const write: FileWriter =
+    opts?.writeFile ??
+    ((path, data, options) => {
+      writeFileSync(path, data, options)
+    })
   const mutex = makeMutex()
   let cache: Cache | null = null
   /** One warning per key + bad value. A later edit of the value logs again. */
@@ -186,7 +199,7 @@ export function createSessionCwdStore(
         if (entry.cwd === validated && !touch) return validated
         const next = evict({ ...loaded, [key]: { cwd: validated, at: touch ? at : entry.at } }, max)
         try {
-          const st = saveFile(file, next)
+          const st = saveFile(file, next, write)
           cache = { mtimeMs: st.mtimeMs, size: st.size, entries: next }
         } catch (err) {
           // The value is still usable. A failed recency write must not fail
@@ -203,9 +216,12 @@ export function createSessionCwdStore(
         const entries = { ...load() }
         entries[keyFor(command, id)] = { cwd, at: now() }
         const next = evict(entries, max)
-        const st = saveFile(file, next)
+        const st = saveFile(file, next, write)
         cache = { mtimeMs: st.mtimeMs, size: st.size, entries: next }
       })
+    },
+    observedMtime(): number {
+      return cache?.mtimeMs ?? 0
     },
     close(): void {
       cache = null

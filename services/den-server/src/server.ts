@@ -686,6 +686,7 @@ export function createDenServer(config: DenConfig, opts: DenServerOptions = {}):
   const rosterCwdFor = (key: string) => (): string => defaultSpawnCwd(rosterProvider.get(), key)
   const recordedSessionCwd = (command: string, id: string): string | undefined =>
     sessionCwdStore.get(command, id)
+  const sessionCwdMtime = (): number => sessionCwdStore.observedMtime()
   // The node's HarnessDriver registry (docs/ARCHITECTURE.md).
   // All built-in drivers formalize the machinery right above them — the
   // term manager (spawn/--resume/inject/Esc), the harness's on-disk store, and
@@ -783,6 +784,7 @@ export function createDenServer(config: DenConfig, opts: DenServerOptions = {}):
         cwd: rosterCwdFor('hermes'),
         sessionCwd: recordedSessionCwd,
         recordSessionCwd: writeSessionCwd,
+        sessionCwdMtime,
         log: console.error,
         sheetOverride: config.harnesses?.hermes,
         transcript: opts.transcriptWatcher,
@@ -796,6 +798,7 @@ export function createDenServer(config: DenConfig, opts: DenServerOptions = {}):
         cwd: rosterCwdFor('kimi'),
         sessionCwd: recordedSessionCwd,
         recordSessionCwd: writeSessionCwd,
+        sessionCwdMtime,
         log: console.error,
         sheetOverride: config.harnesses?.['kimi-code'],
         transcript: opts.transcriptWatcher,
@@ -835,6 +838,7 @@ export function createDenServer(config: DenConfig, opts: DenServerOptions = {}):
         cwd: rosterCwdFor('opencode'),
         sessionCwd: recordedSessionCwd,
         recordSessionCwd: writeSessionCwd,
+        sessionCwdMtime,
         log: console.error,
         sheetOverride: config.harnesses?.opencode,
         transcript: opts.transcriptWatcher,
@@ -859,6 +863,7 @@ export function createDenServer(config: DenConfig, opts: DenServerOptions = {}):
         cwd: rosterCwdFor('codex'),
         sessionCwd: recordedSessionCwd,
         recordSessionCwd: writeSessionCwd,
+        sessionCwdMtime,
         log: console.error,
         sheetOverride: config.harnesses?.codex,
         transcript: opts.transcriptWatcher,
@@ -1669,6 +1674,30 @@ export function createDenServer(config: DenConfig, opts: DenServerOptions = {}):
               try {
                 const requested = sessionKey ?? resumeKey
                 if (requested && codexProtocol.manages(requested)) {
+                  // The app-server thread is already alive. resume cannot
+                  // chdir it, and force must not record or report a directory
+                  // the thread is not in. `recorded` wins; the binding cwd
+                  // covers a thread that was never written to the store.
+                  let threadCwd: string | undefined
+                  try {
+                    const summary = await codexProtocol.getSession(CodexDriver.sessionId(requested))
+                    if (typeof summary?.cwd === 'string' && summary.cwd.trim())
+                      threadCwd = summary.cwd
+                  } catch {
+                    threadCwd = undefined
+                  }
+                  const running = [recorded, threadCwd].find(
+                    (dir) =>
+                      typeof dir === 'string' &&
+                      dir.length > 0 &&
+                      cwdOverride !== undefined &&
+                      canonicalPath(dir) !== canonicalPath(cwdOverride),
+                  )
+                  if (running) {
+                    return json(res, 409, {
+                      error: `session runs in ${running}; close it before moving it`,
+                    })
+                  }
                   await codexProtocol.resumeSession(CodexDriver.sessionId(requested))
                   sessionKey = requested
                 } else if (!resumeKey && !(requested && harnessSessionExists('codex', requested))) {

@@ -95,6 +95,7 @@ function makeDriver(
     cwd?: () => string | undefined
     sessionCwd?: (command: string, id: string) => string | undefined
     recordSessionCwd?: (command: string, id: string, cwd: string) => void
+    sessionCwdMtime?: () => number
   } = {},
 ): Fakes {
   const { rows = [], withPty = true, withEvents = true } = opts
@@ -115,6 +116,7 @@ function makeDriver(
     cwd: opts.cwd ?? ((): string => '/home/rivet'),
     sessionCwd: opts.sessionCwd,
     recordSessionCwd: opts.recordSessionCwd,
+    sessionCwdMtime: opts.sessionCwdMtime,
     turnQuietMs: 0,
   })
   return { driver, pty, store, emitDen: (ev) => emit(ev) }
@@ -435,6 +437,55 @@ describe('resumeSession', () => {
     recorded.set(`hermes:${ROOM}`, '/srv/later')
     f.emitDen(hermesEvent(ROOM, NAT, { type: 'message.agent', text: 'later' }))
     expect(recorded.get(`hermes:${NAT}`)).toBe('/srv/later')
+  })
+
+  it('does not re-read a missing room record until the store mtime changes', () => {
+    const recorded = new Map<string, string>()
+    let lookups = 0
+    let stamp = 1
+    const f = makeDriver({
+      cwd: () => '/home/rivet',
+      sessionCwd: (command, id) => {
+        lookups += 1
+        return recorded.get(`${command}:${id}`)
+      },
+      recordSessionCwd: (command, id, cwd) => {
+        recorded.set(`${command}:${id}`, cwd)
+      },
+      sessionCwdMtime: () => stamp,
+    })
+    adopt(f, ROOM, NAT)
+    expect(lookups).toBe(1)
+    f.emitDen(hermesEvent(ROOM, NAT, { type: 'message.agent', text: 'again' }))
+    expect(lookups).toBe(1)
+    recorded.set(`hermes:${ROOM}`, '/srv/later')
+    f.emitDen(hermesEvent(ROOM, NAT, { type: 'message.agent', text: 'still' }))
+    expect(lookups).toBe(1)
+    expect(recorded.get(`hermes:${NAT}`)).toBeUndefined()
+    stamp += 1
+    f.emitDen(hermesEvent(ROOM, NAT, { type: 'message.agent', text: 'now' }))
+    expect(recorded.get(`hermes:${NAT}`)).toBe('/srv/later')
+  })
+
+  it('copies again after a rotation drops the previous native pair', () => {
+    const preset = '/srv/agent-preset'
+    const recorded = new Map<string, string>()
+    recorded.set(`hermes:${ROOM}`, preset)
+    const f = makeDriver({
+      cwd: () => '/home/rivet',
+      sessionCwd: (command, id) => recorded.get(`${command}:${id}`),
+      recordSessionCwd: (command, id, cwd) => {
+        recorded.set(`${command}:${id}`, cwd)
+      },
+    })
+    adopt(f, ROOM, NAT)
+    expect(recorded.get(`hermes:${NAT}`)).toBe(preset)
+    recorded.delete(`hermes:${NAT}`)
+    f.emitDen(hermesEvent(ROOM, NAT2, { type: 'message.agent', text: 'rotate' }))
+    expect(recorded.get(`hermes:${NAT2}`)).toBe(preset)
+    recorded.delete(`hermes:${NAT}`)
+    f.emitDen(hermesEvent(ROOM, NAT, { type: 'message.agent', text: 'back' }))
+    expect(recorded.get(`hermes:${NAT}`)).toBe(preset)
   })
 
   it('keeps an adopted session in ITS den room rather than opening a second one', async () => {

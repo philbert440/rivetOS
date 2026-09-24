@@ -874,6 +874,59 @@ describe('term manager', () => {
     expect(spawns).toHaveLength(1)
   })
 
+  it('an unforced reuse of a live PTY refuses a different directory', () => {
+    const other = mkdtempSync(join(tmpdir(), 'den-cwd-live-unforced-'))
+    dirs.push(other)
+    const { manager, spawns, procs } = makeManager()
+    const session = 'live-unforced-cwd'
+    const pty = manager.spawn('claude', 80, 24, '', session)
+    expect(pty.cwd).toBe(homedir())
+    expect(spawns).toHaveLength(1)
+    const reuse = (): void => {
+      manager.spawn(
+        'claude',
+        80,
+        24,
+        '',
+        session,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        other,
+      )
+    }
+    expect(reuse).toThrow(TermSpawnError)
+    try {
+      reuse()
+    } catch (err) {
+      expect(err).toBeInstanceOf(TermSpawnError)
+      expect((err as TermSpawnError).code).toBe('cwd-live')
+      expect((err as TermSpawnError).message).toBe(
+        `session is running in ${homedir()}; edit the agent or start a new conversation`,
+      )
+    }
+    expect(spawns).toHaveLength(1)
+    expect(procs[0].kills).toEqual([])
+
+    const same = manager.spawn(
+      'claude',
+      80,
+      24,
+      '',
+      session,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      homedir(),
+    )
+    expect(same.id).toBe(pty.id)
+    expect(spawns).toHaveLength(1)
+  })
+
   it('a missing recorded directory is an error, not the roster default', () => {
     const uuid = '11111111-1111-4111-8111-111111111111'
     const gone = join(tmpdir(), 'den-cwd-missing-does-not-exist')
@@ -2024,6 +2077,35 @@ describe('term manager (tmux mux)', () => {
         },
       },
     )
+    const moved = (): void => {
+      manager.spawn(
+        'claude',
+        80,
+        24,
+        '',
+        uuid,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        '/tmp/agent-claude',
+      )
+    }
+    // No room record: the live directory is the roster default. A different
+    // preset must not attach or be recorded as if the harness had moved.
+    expect(moved).toThrow(TermSpawnError)
+    try {
+      moved()
+    } catch (err) {
+      expect(err).toBeInstanceOf(TermSpawnError)
+      expect((err as TermSpawnError).code).toBe('cwd-live')
+      expect((err as TermSpawnError).message).toBe(
+        `session is running in ${homedir()}; edit the agent or start a new conversation`,
+      )
+    }
+    expect(recorded).toEqual([])
+
     const pty = manager.spawn(
       'claude',
       80,
@@ -2035,10 +2117,100 @@ describe('term manager (tmux mux)', () => {
       undefined,
       undefined,
       undefined,
-      '/tmp/agent-claude',
+      homedir(),
     )
     expect(pty.reattached).toBe(true)
     expect(recorded).toEqual([])
+  })
+
+  it('a forced reattach reads the room record when the harness store has no transcript', () => {
+    const session = 'chat-cwd-live'
+    const recordedDir = mkdtempSync(join(tmpdir(), 'den-cwd-mux-x-'))
+    dirs.push(recordedDir)
+    const ctl = new FakeTmuxCtl()
+    ctl.serverCreated(encodeTmuxName(session), 'claude', 'owner')
+    const recorded: string[] = []
+    const { manager, spawns } = makeManager(
+      { mux: 'tmux' },
+      {
+        tmuxCtl: ctl,
+        sessionExists: () => false,
+        sessionCwd: (command, id) =>
+          command === 'claude' && id === session ? recordedDir : undefined,
+        recordSessionCwd: () => {
+          recorded.push('called')
+        },
+      },
+    )
+    const forceDefault = (): void => {
+      manager.spawn(
+        'claude',
+        80,
+        24,
+        '',
+        session,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        homedir(),
+        true,
+      )
+    }
+    expect(forceDefault).toThrow(TermSpawnError)
+    try {
+      forceDefault()
+    } catch (err) {
+      expect(err).toBeInstanceOf(TermSpawnError)
+      expect((err as TermSpawnError).code).toBe('cwd-live')
+      expect((err as TermSpawnError).message).toBe(
+        `session is running in ${recordedDir}; close it before moving it`,
+      )
+    }
+    expect(spawns).toEqual([])
+    expect(recorded).toEqual([])
+    // spawnInflight was cleared: an immediate unforced retry is not 'cap'.
+    const again = manager.spawn('claude', 80, 24, '', session)
+    expect(again.reattached).toBe(true)
+    expect(spawns).toHaveLength(1)
+    expect(spawns[0].argv).toContain('attach-session')
+    expect(recorded).toEqual([])
+  })
+
+  it('a forced reattach to the recorded directory attaches', () => {
+    const session = 'chat-cwd-match'
+    const recordedDir = mkdtempSync(join(tmpdir(), 'den-cwd-mux-match-'))
+    dirs.push(recordedDir)
+    const ctl = new FakeTmuxCtl()
+    ctl.serverCreated(encodeTmuxName(session), 'claude', 'owner')
+    const { manager, spawns } = makeManager(
+      { mux: 'tmux' },
+      {
+        tmuxCtl: ctl,
+        sessionExists: () => false,
+        sessionCwd: (command, id) =>
+          command === 'claude' && id === session ? recordedDir : undefined,
+      },
+    )
+    const pty = manager.spawn(
+      'claude',
+      80,
+      24,
+      '',
+      session,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      recordedDir,
+      true,
+    )
+    expect(pty.reattached).toBe(true)
+    expect(spawns).toHaveLength(1)
+    expect(spawns[0].argv).toContain('attach-session')
+    expect(spawns[0].argv).not.toContain('new-session')
   })
 
   it('has-session live → attach form: immediately ready, no -e, no tags', () => {
@@ -2370,6 +2542,73 @@ describe('term manager (tmux mux)', () => {
     ])
     expect(pty.reattached).toBe(true)
     expect(pty.pid).toBe(procs[0].pid)
+  })
+
+  it('duplicate-session reattach refuses a forced move using the room record', () => {
+    const session = 'chat-dup-cwd'
+    const recordedDir = mkdtempSync(join(tmpdir(), 'den-cwd-dup-x-'))
+    dirs.push(recordedDir)
+    const ctl = new FakeTmuxCtl()
+    const name = encodeTmuxName(session)
+    const realList = ctl.listSessions.bind(ctl)
+    let lists = 0
+    ctl.listSessions = () => {
+      lists += 1
+      if (lists === 1) return []
+      return realList()
+    }
+    const spawns: { argv: string[] }[] = []
+    let pid = 3000
+    const { manager } = makeManager(
+      { mux: 'tmux' },
+      {
+        tmuxCtl: ctl,
+        sessionExists: () => false,
+        sessionCwd: (command, id) =>
+          command === 'claude' && id === session ? recordedDir : undefined,
+        spawn: (argv) => {
+          spawns.push({ argv })
+          if (argv.includes('new-session')) {
+            ctl.serverCreated(name, 'claude', 'owner')
+            throw new Error(`duplicate session: ${name}`)
+          }
+          return new FakeProc(++pid)
+        },
+      },
+    )
+    const forceDefault = (): void => {
+      manager.spawn(
+        'claude',
+        80,
+        24,
+        '',
+        session,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        homedir(),
+        true,
+      )
+    }
+    expect(forceDefault).toThrow(TermSpawnError)
+    try {
+      forceDefault()
+    } catch (err) {
+      expect(err).toBeInstanceOf(TermSpawnError)
+      expect((err as TermSpawnError).code).toBe('cwd-live')
+      expect((err as TermSpawnError).message).toBe(
+        `session is running in ${recordedDir}; close it before moving it`,
+      )
+    }
+    expect(spawns).toHaveLength(1)
+    expect(spawns[0].argv).toContain('new-session')
+    expect(spawns[0].argv).not.toContain('attach-session')
+    const again = manager.spawn('claude', 80, 24, '', session)
+    expect(again.reattached).toBe(true)
+    expect(spawns).toHaveLength(2)
+    expect(spawns[1].argv).toContain('attach-session')
   })
 
   it('detached-ttl under tmux DETACHES: audit `detach`, session untouched, client SIGHUPd', () => {
@@ -3104,6 +3343,83 @@ describe('term manager (herdr mux)', () => {
     expect(pty.reattached).toBe(true)
     expect(ctl.creates).toHaveLength(0)
     expect(spawns[0].argv).toEqual(['herdr', '--session', name])
+  })
+
+  it('a forced herdr reattach reads the room record when the harness store has no transcript', () => {
+    const session = 'chat-herdr-cwd'
+    const recordedDir = mkdtempSync(join(tmpdir(), 'den-cwd-herdr-x-'))
+    dirs.push(recordedDir)
+    const ctl = new FakeHerdrCtl()
+    const name = herdrSessionName(session)
+    ctl.sessions.set(name, {
+      name,
+      denKey: session,
+      activity: 1,
+      created: 1,
+      command: 'claude',
+      user: 'owner',
+    })
+    const seed = (dir: string): ReturnType<typeof makeManager> =>
+      makeManager(
+        { mux: 'herdr' },
+        {
+          herdrCtl: ctl,
+          sessionExists: () => false,
+          sessionCwd: (command, id) => (command === 'claude' && id === session ? dir : undefined),
+        },
+      )
+    const refused = seed(recordedDir)
+    const forceDefault = (): void => {
+      refused.manager.spawn(
+        'claude',
+        80,
+        24,
+        '',
+        session,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        homedir(),
+        true,
+      )
+    }
+    expect(forceDefault).toThrow(TermSpawnError)
+    try {
+      forceDefault()
+    } catch (err) {
+      expect(err).toBeInstanceOf(TermSpawnError)
+      expect((err as TermSpawnError).code).toBe('cwd-live')
+      expect((err as TermSpawnError).message).toBe(
+        `session is running in ${recordedDir}; close it before moving it`,
+      )
+    }
+    expect(refused.spawns).toEqual([])
+    expect(ctl.creates).toHaveLength(0)
+    const again = refused.manager.spawn('claude', 80, 24, '', session)
+    expect(again.reattached).toBe(true)
+    expect(refused.spawns).toHaveLength(1)
+    expect(refused.spawns[0].argv).toEqual(['herdr', '--session', name])
+
+    const matched = seed(recordedDir)
+    const pty = matched.manager.spawn(
+      'claude',
+      80,
+      24,
+      '',
+      session,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      recordedDir,
+      true,
+    )
+    expect(pty.reattached).toBe(true)
+    expect(ctl.creates).toHaveLength(0)
+    expect(matched.spawns[0].argv).toEqual(['herdr', '--session', name])
   })
 
   it('reattach: harness-ness follows the persisted tag, not the request key', () => {

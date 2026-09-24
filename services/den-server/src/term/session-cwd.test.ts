@@ -134,16 +134,34 @@ describe('session cwd store', () => {
     const dir = tmp()
     const file = join(dir, 'session-cwd.json')
     let t = 10_000
-    const store = createSessionCwdStore(file, { now: () => t })
+    let writes = 0
+    const store = createSessionCwdStore(file, {
+      now: () => t,
+      writeFile: (path, data, options) => {
+        writes += 1
+        writeFileSync(path, data, options)
+      },
+    })
     store.set('claude', 'a', '/tmp/agent-a')
-    const written = statSync(file).mtimeMs
+    expect(writes).toBe(1)
     const body = readFileSync(file, 'utf8')
     t += 60_000
     expect(store.get('claude', 'a')).toBe('/tmp/agent-a')
     t += 60_000
     expect(store.get('claude', 'a')).toBe('/tmp/agent-a')
-    expect(statSync(file).mtimeMs).toBe(written)
+    expect(writes).toBe(1)
     expect(readFileSync(file, 'utf8')).toBe(body)
+    // The boundary itself rewrites. One millisecond earlier would not.
+    t = 10_000 + SESSION_CWD_TOUCH_MS
+    expect(store.get('claude', 'a')).toBe('/tmp/agent-a')
+    expect(writes).toBe(2)
+    const rewritten = JSON.parse(readFileSync(file, 'utf8')) as {
+      entries: Record<string, { cwd: string; at: number }>
+    }
+    expect(rewritten.entries['claude:a']).toEqual({
+      cwd: '/tmp/agent-a',
+      at: 10_000 + SESSION_CWD_TOUCH_MS,
+    })
     store.close()
   })
 

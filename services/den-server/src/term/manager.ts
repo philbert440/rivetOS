@@ -1903,13 +1903,15 @@ export function createTermManager(config: DenConfig, deps: TermManagerDeps): Ter
           if (existing.agentPane && existing.agentEnded) {
             endHarnessPane(existing)
           } else {
-            // The child is already running. force cannot chdir it; reporting
-            // the preset directory would be a lie. The same directory reached
-            // through a symlink is not a move.
-            if (forceCwd && override && canonicalPath(existing.cwd) !== canonicalPath(override)) {
+            // The child is already running. Neither force nor a plain preset
+            // directory can chdir it; reporting the preset directory would be
+            // a lie. The same directory reached through a symlink is not a move.
+            if (override && canonicalPath(existing.cwd) !== canonicalPath(override)) {
               throw new TermSpawnError(
                 'cwd-live',
-                `session is running in ${existing.cwd}; close it before moving it`,
+                forceCwd
+                  ? `session is running in ${existing.cwd}; close it before moving it`
+                  : `session is running in ${existing.cwd}; edit the agent or start a new conversation`,
               )
             }
             return info(existing)
@@ -2030,17 +2032,33 @@ export function createTermManager(config: DenConfig, deps: TermManagerDeps): Ter
       )
       const cwd = (forcing ? override : recordedCwd) || override || defaultCwd
       // A live mux session is already running; attach does not chdir it.
-      // Throw before the attach client is spawned. spawnInflight was added
-      // by the mux block below — clear it so a refused move does not wedge
-      // the session on 'cap'.
+      // The room record is the live directory even when there is no
+      // resumeNative — a surviving tmux/herdr session whose harness store
+      // has no transcript never enters the lookup above. This read is only
+      // the live directory. A brand-new session still does not consult the
+      // store for its spawn cwd. Throw before the attach client is spawned.
+      // spawnInflight was added by the mux block below — clear it so a
+      // refused move does not wedge the session on 'cap'.
+      const liveDirectory = (): string => {
+        const id = session ?? denSession
+        const raw = deps.sessionCwd?.(key, id)?.trim()
+        if (raw) {
+          const validated = validateDirectory(raw)
+          if (!validated) invalidRecorded(id, raw)
+          else return validated
+        }
+        return recordedCwd ?? missingRecorded ?? defaultCwd
+      }
       const refuseLiveMove = (): void => {
-        if (!persisted || !forceCwd || !override) return
-        const liveDir = recordedCwd ?? missingRecorded ?? defaultCwd
+        if (!persisted || !override) return
+        const liveDir = liveDirectory()
         if (sameDirectory(liveDir, override)) return
         spawnInflight.delete(denSession)
         throw new TermSpawnError(
           'cwd-live',
-          `session is running in ${liveDir}; close it before moving it`,
+          forceCwd
+            ? `session is running in ${liveDir}; close it before moving it`
+            : `session is running in ${liveDir}; edit the agent or start a new conversation`,
         )
       }
 

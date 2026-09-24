@@ -225,6 +225,11 @@ export interface PtyHarnessDriverDeps<S extends HarnessStoreHost = HarnessStoreH
    * must not fail because the cwd file could not be written.
    */
   recordSessionCwd?: (command: string, id: string, cwd: string) => void
+  /**
+   * In-memory mtime of the cwd store. A miss cached against this value is
+   * not looked up again until a write changes it. Omitted → every bind reads.
+   */
+  sessionCwdMtime?: () => number
   /** How many sessions `listSessions` pulls from the store. */
   listLimit?: number
   /**
