@@ -7,8 +7,9 @@
  * wedge the next spawn. Loaded lazily and re-read when the mtime changes,
  * so an operator can edit the file without restarting den.
  *
- * Capped by `at` (LRU). A `get` refreshes `at`, so a session in use is not
- * evicted ahead of one that was only written. Room sessions record under the
+ * Capped by `at` (LRU). A `get` refreshes `at` at most once per
+ * `SESSION_CWD_TOUCH_MS`, so a list poll does not rewrite the file or bump
+ * recency on every read. Room sessions record under the
  * den session id (the conversation join key) and, once known, the harness
  * native id. Qwen's transcript id can differ and is tried first on resume
  * (see the term manager).
@@ -24,6 +25,9 @@ import { dirname } from 'node:path'
 import { validateDirectory } from '@rivetos/agent-registry'
 
 const DEFAULT_MAX = 2000
+
+/** Recency is persisted at most this often. A read inside the window does not write. */
+export const SESSION_CWD_TOUCH_MS = 60 * 60 * 1000
 
 export interface SessionCwdStore {
   get(command: string, id: string): string | undefined
@@ -178,8 +182,9 @@ export function createSessionCwdStore(
           return undefined
         }
         const at = now()
-        if (entry.at === at && entry.cwd === validated) return validated
-        const next = evict({ ...loaded, [key]: { cwd: validated, at } }, max)
+        const touch = at - entry.at >= SESSION_CWD_TOUCH_MS
+        if (entry.cwd === validated && !touch) return validated
+        const next = evict({ ...loaded, [key]: { cwd: validated, at: touch ? at : entry.at } }, max)
         try {
           const st = saveFile(file, next)
           cache = { mtimeMs: st.mtimeMs, size: st.size, entries: next }

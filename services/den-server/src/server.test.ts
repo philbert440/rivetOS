@@ -6,6 +6,7 @@ import {
   readFileSync,
   readlinkSync,
   rmSync,
+  symlinkSync,
   writeFileSync,
 } from 'node:fs'
 import { hostname, tmpdir } from 'node:os'
@@ -1487,6 +1488,65 @@ describe('POST /term { agentId }', () => {
     expect(fakeSpawns).toEqual([])
   })
 
+  it('rejects force while the PTY is still running and does not report a cwd', async () => {
+    const { base } = await start('', 60_000, { term: true, mux: 'none' })
+    const created = await post(base, '/api/agents', {
+      name: 'Reviewer',
+      harnessId: 'claude-code',
+    })
+    const agent = ((await created.json()) as { agent: AgentPreset }).agent
+    const session = '44444444-4444-4444-8444-444444444444'
+    const first = await post(base, '/term', { agentId: agent.id, session })
+    expect(first.status).toBe(201)
+    const moved = join(agent.directory!, '..', 'reviewer-live-move')
+    const patched = await fetch(`${base}/api/agents/${agent.id}`, {
+      method: 'PATCH',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ directory: moved }),
+    })
+    expect(patched.status).toBe(200)
+    fakeSpawns.length = 0
+    const forced = await post(base, '/term', {
+      agentId: agent.id,
+      session,
+      resume: session,
+      force: true,
+    })
+    expect(forced.status).toBe(409)
+    const body = (await forced.json()) as { error?: string; cwd?: string }
+    expect(body).not.toHaveProperty('cwd')
+    expect(body.error).toBe(`session is running in ${agent.directory}; close it before moving it`)
+    expect(fakeSpawns).toEqual([])
+  })
+
+  it('a symlinked preset directory is the same place as the recorded real path', async () => {
+    const { base } = await start('', 60_000, { term: true, mux: 'none' })
+    const created = await post(base, '/api/agents', {
+      name: 'Reviewer',
+      harnessId: 'claude-code',
+    })
+    const agent = ((await created.json()) as { agent: AgentPreset }).agent
+    const session = '55555555-5555-4555-8555-555555555555'
+    const first = await post(base, '/term', { agentId: agent.id, session })
+    expect(first.status).toBe(201)
+    expect(fakeSpawns[0].cwd).toBe(agent.directory)
+    fakeProcs[fakeProcs.length - 1].emit('exit', 0)
+
+    const link = `${agent.directory}-link`
+    symlinkSync(agent.directory!, link)
+    const patched = await fetch(`${base}/api/agents/${agent.id}`, {
+      method: 'PATCH',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ directory: link }),
+    })
+    expect(patched.status).toBe(200)
+
+    fakeSpawns.length = 0
+    const resumed = await post(base, '/term', { agentId: agent.id, session, resume: session })
+    expect(resumed.status).toBe(201)
+    expect(fakeSpawns[0].cwd).toBe(agent.directory)
+  })
+
   it('writes session-cwd.json and a later spawn resumes from it', async () => {
     const { base, stateDir } = await start('', 60_000, { term: true, mux: 'none' })
     const created = await post(base, '/api/agents', {
@@ -1537,6 +1597,7 @@ describe('POST /term { agentId }', () => {
     await once(upstream, 'listening')
     const starts: Record<string, unknown>[] = []
     const resumes: Record<string, unknown>[] = []
+    let noteInitialized: (() => void) | undefined
     upstream.on('connection', (socket) => {
       socket.on('message', (data) => {
         const frame = JSON.parse(String(data)) as {
@@ -1544,6 +1605,7 @@ describe('POST /term { agentId }', () => {
           method?: string
           params?: Record<string, unknown>
         }
+        if (frame.method === 'initialized') noteInitialized?.()
         if (frame.id === undefined) return
         if (frame.method === 'thread/start') starts.push(frame.params ?? {})
         if (frame.method === 'thread/resume') resumes.push(frame.params ?? {})
@@ -1584,15 +1646,51 @@ describe('POST /term { agentId }', () => {
       expect(body.cwd).toBe(agent.directory)
       expect(starts).toHaveLength(1)
       expect(starts[0].cwd).toBe(agent.directory)
+      // New-session path: thread/start only. Length 0 is the assertion —
+      // `.every` on an empty list would pass without pinning a resume.
+      expect(resumes).toHaveLength(0)
       expect((await fetch(`${base}/term?id=${body.id}`, { method: 'DELETE' })).status).toBe(200)
-      const resumed = await post(base, '/term', { agentId: agent.id, session: body.denSession })
+      // Disconnect clears the loaded generation. The next spawn with resume
+      // sends thread/resume, and that request has no cwd. Snapshot the
+      // initialized count after the socket is gone so a late first
+      // `initialized` frame cannot satisfy the wait.
+      let initialized = 0
+      noteInitialized = () => {
+        initialized += 1
+      }
+      const closing = [...upstream.clients].map(
+        (socket) => new Promise<void>((resolve) => socket.once('close', () => resolve())),
+      )
+      for (const socket of [...upstream.clients]) socket.terminate()
+      await Promise.all(closing)
+      const seen = initialized
+      await new Promise<void>((resolve, reject) => {
+        const timer = setTimeout(
+          () => reject(new Error('codex app-server did not reconnect')),
+          5_000,
+        )
+        const finish = (): void => {
+          if (initialized <= seen) return
+          clearTimeout(timer)
+          noteInitialized = undefined
+          resolve()
+        }
+        noteInitialized = () => {
+          initialized += 1
+          finish()
+        }
+        finish()
+      })
+      const resumed = await post(base, '/term', {
+        agentId: agent.id,
+        session: body.denSession,
+        resume: body.denSession,
+      })
       expect(resumed.status).toBe(201)
-      // A new session's thread/start carries the preset cwd. Resume does not
-      // call thread/start again (that is the only place cwd is sent). An
-      // already-loaded thread skips thread/resume; if one is sent it has no cwd.
       expect(starts).toHaveLength(1)
       expect(starts[0].cwd).toBe(agent.directory)
-      expect(resumes.every((params) => !('cwd' in params))).toBe(true)
+      expect(resumes).toHaveLength(1)
+      expect(resumes[0]).not.toHaveProperty('cwd')
     } finally {
       for (const socket of upstream.clients) socket.terminate()
       upstream.close()

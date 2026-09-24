@@ -107,7 +107,7 @@ export function validateDirectory(raw: unknown): string | undefined {
  * string. A symlinked shared dir (`~/rivet-shared` → `/rivet-shared`) then
  * compares equal to the real path.
  */
-function canonicalPath(path: string): string {
+export function canonicalPath(path: string): string {
   const normalized = withoutTrailingSep(normalize(path))
   if (!normalized) return normalized
   try {

@@ -401,6 +401,42 @@ describe('resumeSession', () => {
     expect(second.pty.spawns).toEqual([{ key: 'hermes', session: NAT, resume: NAT, cwd: preset }])
   })
 
+  it('retries a native cwd copy that failed instead of treating the pair as done', () => {
+    const preset = '/srv/agent-preset'
+    const recorded = new Map<string, string>()
+    recorded.set(`hermes:${ROOM}`, preset)
+    let fail = true
+    const f = makeDriver({
+      cwd: () => '/home/rivet',
+      sessionCwd: (command, id) => recorded.get(`${command}:${id}`),
+      recordSessionCwd: (command, id, cwd) => {
+        if (fail) throw new Error('ENOSPC')
+        recorded.set(`${command}:${id}`, cwd)
+      },
+    })
+    adopt(f, ROOM, NAT)
+    expect(recorded.get(`hermes:${NAT}`)).toBeUndefined()
+    fail = false
+    f.emitDen(hermesEvent(ROOM, NAT, { type: 'message.agent', text: 'later' }))
+    expect(recorded.get(`hermes:${NAT}`)).toBe(preset)
+  })
+
+  it('retries the native cwd copy once the room record appears', () => {
+    const recorded = new Map<string, string>()
+    const f = makeDriver({
+      cwd: () => '/home/rivet',
+      sessionCwd: (command, id) => recorded.get(`${command}:${id}`),
+      recordSessionCwd: (command, id, cwd) => {
+        recorded.set(`${command}:${id}`, cwd)
+      },
+    })
+    adopt(f, ROOM, NAT)
+    expect(recorded.get(`hermes:${NAT}`)).toBeUndefined()
+    recorded.set(`hermes:${ROOM}`, '/srv/later')
+    f.emitDen(hermesEvent(ROOM, NAT, { type: 'message.agent', text: 'later' }))
+    expect(recorded.get(`hermes:${NAT}`)).toBe('/srv/later')
+  })
+
   it('keeps an adopted session in ITS den room rather than opening a second one', async () => {
     // The room is the join key den, chat and the PTY share. Re-spawning an
     // evicted hermes must land back in the same room, with --resume carrying

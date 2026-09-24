@@ -48,6 +48,7 @@ import {
   FileAgentPresetStore,
   PgAgentPresetStore,
   createFallbackPresetStore,
+  canonicalPath,
   ensureAgentDirectory,
   validateDirectory,
   type AgentPresetStore,
@@ -1650,7 +1651,12 @@ export function createDenServer(config: DenConfig, opts: DenServerOptions = {}):
             const recorded = cwdOverride
               ? recordedCwdFor(spawnCommand, [resumeKey, sessionKey])
               : undefined
-            if (recorded && cwdOverride && recorded !== cwdOverride && !force) {
+            if (
+              recorded &&
+              cwdOverride &&
+              canonicalPath(recorded) !== canonicalPath(cwdOverride) &&
+              !force
+            ) {
               return json(res, 409, {
                 error: `session runs in ${recorded}; edit the agent or start a new conversation`,
               })
@@ -1736,7 +1742,7 @@ export function createDenServer(config: DenConfig, opts: DenServerOptions = {}):
             if (e instanceof TermSpawnError)
               return json(
                 res,
-                e.code === 'cap' || e.code === 'cwd-missing'
+                e.code === 'cap' || e.code === 'cwd-missing' || e.code === 'cwd-live'
                   ? 409
                   : e.code === 'user-mismatch'
                     ? 403

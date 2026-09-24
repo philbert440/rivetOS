@@ -10,7 +10,7 @@ import {
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { createSessionCwdStore } from './session-cwd.js'
+import { createSessionCwdStore, SESSION_CWD_TOUCH_MS } from './session-cwd.js'
 
 const dirs: string[] = []
 afterEach(() => {
@@ -115,14 +115,35 @@ describe('session cwd store', () => {
     const dir = tmp()
     const file = join(dir, 'session-cwd.json')
     let t = 0
-    const store = createSessionCwdStore(file, { max: 2, now: () => ++t })
+    const store = createSessionCwdStore(file, { max: 2, now: () => t })
+    t = 1
     store.set('claude', 'old', '/tmp/old')
+    t = 2
     store.set('claude', 'mid', '/tmp/mid')
+    t = 2 + SESSION_CWD_TOUCH_MS
     expect(store.get('claude', 'old')).toBe('/tmp/old')
+    t += 1
     store.set('claude', 'new', '/tmp/new')
     expect(store.get('claude', 'mid')).toBeUndefined()
     expect(store.get('claude', 'old')).toBe('/tmp/old')
     expect(store.get('claude', 'new')).toBe('/tmp/new')
+    store.close()
+  })
+
+  it('two reads inside the recency window leave the one set write untouched', () => {
+    const dir = tmp()
+    const file = join(dir, 'session-cwd.json')
+    let t = 10_000
+    const store = createSessionCwdStore(file, { now: () => t })
+    store.set('claude', 'a', '/tmp/agent-a')
+    const written = statSync(file).mtimeMs
+    const body = readFileSync(file, 'utf8')
+    t += 60_000
+    expect(store.get('claude', 'a')).toBe('/tmp/agent-a')
+    t += 60_000
+    expect(store.get('claude', 'a')).toBe('/tmp/agent-a')
+    expect(statSync(file).mtimeMs).toBe(written)
+    expect(readFileSync(file, 'utf8')).toBe(body)
     store.close()
   })
 

@@ -88,6 +88,9 @@ export abstract class AdoptingPtyHarnessDriver<
   protected readonly roomNative = new Map<string, string>()
   /** The inverse — which room a native id is live in. See `room()`. */
   protected readonly nativeRoom = new Map<string, string>()
+  /** Room→native pairs whose cwd copy has landed. A failed or not-yet-possible
+   *  copy is absent, so the next bindRoom tries again. */
+  private readonly cwdCopied = new Set<string>()
 
   constructor(identity: AdoptingHarnessIdentity, deps: PtyHarnessDriverDeps<S>) {
     super(identity, deps)
@@ -197,15 +200,24 @@ export abstract class AdoptingPtyHarnessDriver<
    */
   private rememberNativeCwd(room: string, native: string): void {
     if (!native || room === native) return
+    const pair = `${room}\0${native}`
+    if (this.cwdCopied.has(pair)) return
     const record = this.deps.recordSessionCwd
     const lookup = this.deps.sessionCwd
     if (!record || !lookup) return
     const cwd = lookup(this.rosterCommand, room)
+    // Not recorded yet (the spawn write can land after the first event).
+    // Leave the pair unmarked so a later bindRoom retries.
     if (!cwd) return
-    if (lookup(this.rosterCommand, native) === cwd) return
+    if (lookup(this.rosterCommand, native) === cwd) {
+      this.cwdCopied.add(pair)
+      return
+    }
     try {
       record(this.rosterCommand, native, cwd)
+      this.cwdCopied.add(pair)
     } catch (err) {
+      // Do not mark the pair. The next bindRoom retries the copy.
       this.log(
         `[den-server] ${this.harnessId}: session cwd persist failed for ${native}: ${err instanceof Error ? err.message : String(err)}`,
       )
@@ -227,7 +239,10 @@ export abstract class AdoptingPtyHarnessDriver<
    */
   protected bindRoom(room: string, native: string): void {
     const previous = this.roomNative.get(room)
-    if (previous === native) return
+    if (previous === native) {
+      this.rememberNativeCwd(room, native)
+      return
+    }
     this.roomNative.set(room, native)
     this.nativeRoom.set(native, room)
     this.rememberNativeCwd(room, native)
