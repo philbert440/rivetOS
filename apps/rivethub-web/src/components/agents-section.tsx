@@ -12,20 +12,16 @@ import { useCallback, useEffect, useRef, useState, type JSX } from 'react'
 import { useMutation, useQueries, useQuery, useQueryClient } from '@tanstack/react-query'
 import { useNavigate } from '@tanstack/react-router'
 import { Bot, ChevronDown, ChevronRight, Pencil, Plus, RotateCcw, Trash2, X } from 'lucide-react'
-import { migrateAgentPreset, type HarnessId, type ThinkingLevel } from '@rivetos/types'
-
-/** Editor → den write. `harnessId: null` clears the harness. `nodeBaseUrl` picks the den. */
-type AgentPatch = AgentWrite
+import { migrateAgentPreset, type HarnessId } from '@rivetos/types'
 import { GatewayError } from '@rivetos/gateway-client'
 import { useConnection } from '../stores/connection.js'
 import { healthzQueryOptions, useMeshNodeName, useNodeName, urlLabel } from '../lib/node-name.js'
 import { useNodeDiscovery } from '../lib/use-node-discovery.js'
 import { agentDirectoryPlaceholder } from '../lib/agent-directory.js'
 import {
-  agentCreateBody,
-  agentCreateBodyLegacy,
   agentUpdateBody,
-  isLegacyNodeBaseUrlRequired,
+  catalogNameClashes,
+  createWithLegacyRetry,
   type AgentWrite,
 } from '../lib/agent-form.js'
 import { useConfirmDialog } from './confirm-dialog.js'
@@ -51,6 +47,9 @@ import {
   setAgentLastSession,
 } from '../lib/agent-session.js'
 import {
+  agentDeleteTarget,
+  agentThreadSettings,
+  agentUpdateTarget,
   aggregateAgentActivity,
   dedupeRosterAgents,
   meshDenName,
@@ -107,12 +106,6 @@ function knownToChatStore(sessionId: string): boolean {
   return (chat.transcripts[sessionId]?.turns.length ?? 0) > 0
 }
 
-const THINKING_LEVELS: readonly ThinkingLevel[] = ['off', 'low', 'medium', 'high', 'xhigh']
-
-function isThinkingLevel(value: string): value is ThinkingLevel {
-  return (THINKING_LEVELS as readonly string[]).includes(value)
-}
-
 interface NodeSelectorProps {
   value: string
   onChange: (baseUrl: string) => void
@@ -164,7 +157,7 @@ function NodeSelector({
 interface AgentEditorProps {
   agent?: RosterAgent
   duplicate?: { source: RosterAgent; draft: AgentDraft }
-  onSave: (agent: AgentPatch) => void
+  onSave: (agent: AgentWrite) => void
   onCancel: () => void
   onDuplicate?: (draft: AgentDraft) => void
   disabled?: boolean
@@ -213,9 +206,7 @@ function AgentEditor({
     retry: false,
   })
   const trimmedName = name.trim()
-  const catalogClash =
-    trimmedName !== '' &&
-    (catalogQuery.data?.agents ?? []).some((row) => row.id === trimmedName && row.id !== agent?.id)
+  const catalogClash = catalogNameClashes(trimmedName, catalogQuery.data?.agents ?? [], agent?.id)
   const formRef = useRef<HTMLFormElement | null>(null)
   // A picker's Radix popper still being mounted means that popover owns the
   // event (its own dismiss handlers run first, in the same dispatch).
@@ -246,7 +237,12 @@ function AgentEditor({
             directory,
             sharedLink,
           },
-          duplicate.source,
+          {
+            ...duplicate.source,
+            directoryRoot:
+              nodeListMeta.get(duplicate.source.sourceNodeBaseUrl)?.directoryRoot ??
+              nodeListMeta.get(duplicate.source.listedBaseUrl)?.directoryRoot,
+          },
           { nodeBaseUrl, harnesses },
         )
       : undefined
@@ -324,7 +320,7 @@ function AgentEditor({
   const handleSubmit = (e: React.SyntheticEvent<HTMLFormElement>): void => {
     e.preventDefault()
     if (!copyReady) return
-    const patch: AgentPatch = {
+    const patch: AgentWrite = {
       name,
       color,
       model,
@@ -808,11 +804,16 @@ export function AgentsSection(props: { compact?: boolean }): JSX.Element {
     const node = probes[i]?.data?.node || undefined
     return { name: n.name, baseUrl: n.baseUrl, ...(node ? { node } : {}) }
   })
-  const meshKey = meshNodes.map((n) => `${n.id}:${n.name}:${n.denUrl}`).join('|')
-  const rosterKey = rosterForResolve.map((n) => `${n.baseUrl}=${n.node ?? ''}`).join('|')
+  // Sorted roster URLs only. Healthz nodes and mesh aliases are applied when
+  // deduping the cached lists, so a probe resolving does not refetch every den.
+  const rosterUrlKey = uniqueNodes
+    .map((n) => n.baseUrl.trim().replace(/\/+$/, ''))
+    .filter((url) => url !== '')
+    .sort()
+    .join('|')
 
   const nodeQueries = useQuery({
-    queryKey: ['agents-all-nodes', rosterKey, meshKey, transportEpoch],
+    queryKey: ['agents-all-nodes', rosterUrlKey, transportEpoch],
     queryFn: async ({ signal }) => {
       const results = await Promise.all(
         uniqueNodes.map(async (node) => {
@@ -840,32 +841,26 @@ export function AgentsSection(props: { compact?: boolean }): JSX.Element {
           }
         }),
       )
-      return dedupeRosterAgents(results, {
-        currentBaseUrl: baseUrl,
-        mesh: meshNodes,
-        roster: rosterForResolve,
-      })
+      return results
     },
     placeholderData: (prev) => prev,
   })
 
-  const agents = nodeQueries.data ?? []
+  const agents = dedupeRosterAgents(nodeQueries.data ?? [], {
+    currentBaseUrl: baseUrl,
+    mesh: meshNodes,
+    roster: rosterForResolve,
+  })
   const isLoading = nodeQueries.isLoading
 
   const createMutation = useMutation({
-    mutationFn: async (agent: AgentPatch) => {
+    mutationFn: async (agent: AgentWrite) => {
       const target = agent.nodeBaseUrl
       if (!target) throw new Error('node unknown')
       const gw = await gatewayFor(target)
-      const body = agentCreateBody(agent)
-      try {
-        return await gw.agentCreate(body)
-      } catch (err) {
-        // Old dens still 400 when nodeBaseUrl is missing. One retry; a second
-        // failure is the mutation error. New fields are ignored by those dens.
-        if (!isLegacyNodeBaseUrlRequired(err)) throw err
-        return gw.agentCreate(agentCreateBodyLegacy(agent, target))
-      }
+      // Old dens still 400 when nodeBaseUrl is missing. One retry; a second
+      // failure is the mutation error. New fields are ignored by those dens.
+      return createWithLegacyRetry((body) => gw.agentCreate(body), agent, target)
     },
     onSuccess: () => {
       void queryClient.invalidateQueries({ queryKey: ['agents-all-nodes'] })
@@ -882,7 +877,7 @@ export function AgentsSection(props: { compact?: boolean }): JSX.Element {
       previous,
     }: {
       id: string
-      agent: AgentPatch
+      agent: AgentWrite
       targetNode: string
       previous: RosterAgent
     }) => (await gatewayFor(targetNode)).agentUpdate(id, agentUpdateBody(previous, agent)),
@@ -978,19 +973,13 @@ export function AgentsSection(props: { compact?: boolean }): JSX.Element {
     nodeUrl: string,
     opts?: { replace?: boolean },
   ): void => {
-    chatSettings.set(`${nodeUrl}::${sessionId}`, {
-      agent: rosterCommandFor(agent.harnessId) ?? '',
-      harnessId: agent.harnessId,
-      model: agent.model || '',
-      effort: isThinkingLevel(agent.effort) ? agent.effort : 'medium',
-      harnessEffort: agent.effort || undefined,
-      systemPrompt: agent.systemPrompt || '',
-      agentId: agent.id,
-    })
+    chatSettings.set(`${nodeUrl}::${sessionId}`, agentThreadSettings(agent))
     setAgentLastSession(agent.id, sessionId, nodeUrl, opts)
   }
 
   // Hub connection stays put. The session lives on the resolved hosting URL.
+  // sourceNodeBaseUrl is empty when that URL is not a roster entry, so this
+  // never pins a session to an off-roster host.
   const openFresh = (agent: RosterAgent, opts?: { replace?: boolean }): void => {
     const nodeUrl = agent.sourceNodeBaseUrl
     if (!nodeUrl) return
@@ -1171,7 +1160,7 @@ export function AgentsSection(props: { compact?: boolean }): JSX.Element {
                   ) {
                     deleteMutation.mutate({
                       id: agent.id,
-                      targetNode: agent.sourceNodeBaseUrl || agent.listedBaseUrl,
+                      targetNode: agentDeleteTarget(agent),
                     })
                   }
                 })()
@@ -1194,7 +1183,7 @@ export function AgentsSection(props: { compact?: boolean }): JSX.Element {
             updateMutation.mutate({
               id: editing.id,
               agent: updated,
-              targetNode: editing.sourceNodeBaseUrl || editing.listedBaseUrl,
+              targetNode: agentUpdateTarget(editing),
               previous: editing,
             })
           }

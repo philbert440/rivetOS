@@ -142,6 +142,25 @@ describe('agentCopySeed directory', () => {
     assert.equal(result.seed.directory, '~/agents/reviewer')
     assert.equal(result.seed.sharedLink, false)
   })
+
+  it('drops directory when it is the source default root/slug', () => {
+    const result = agentCopySeed(
+      { ...draft, name: 'Reviewer (copy)', directory: '/srv/agents/reviewer/' },
+      { ...source, name: 'Reviewer', directoryRoot: '/srv/agents/' },
+      target,
+    )
+    assert.equal(result.seed.directory, undefined)
+    assert.equal(Object.hasOwn(result.seed, 'directory'), false)
+  })
+
+  it('keeps a directory that is not the source default', () => {
+    const result = agentCopySeed(
+      { ...draft, directory: '/srv/agents/custom' },
+      { ...source, name: 'Reviewer', directoryRoot: '/srv/agents' },
+      target,
+    )
+    assert.equal(result.seed.directory, '/srv/agents/custom')
+  })
 })
 
 describe('canOfferAgentCopy', () => {

@@ -6,7 +6,13 @@ import {
   needsRegistryBeforeSpawn,
   shouldPersistLaunchLatch,
 } from '../lib/conversation-model-options.js'
-import { presetSpawnFields, termSpawnBody, termSpawnFallbackBody } from '../lib/term-spawn.js'
+import {
+  DELETED_PRESET_NOTICE,
+  isDeletedAgentError,
+  recoverDeletedAgentSpawn,
+  termSpawnBody,
+  termSpawnFallbackBody,
+} from '../lib/term-spawn.js'
 import { withAttachmentText } from '../lib/attachments.js'
 import {
   DIALOG_DISMISSED_NOTICE,
@@ -62,7 +68,7 @@ import {
   getAgentSessionsVersion,
 } from '../lib/agent-session.js'
 import { migrateSessionKey, storageKey } from '../lib/session-rekey.js'
-import { sessionPointerMatches } from '../lib/agent-roster.js'
+import { presetsFromAgentsQueryData, sessionPointerMatches } from '../lib/agent-roster.js'
 import {
   clearSessionNodeBinding,
   rekeySessionNodeBinding,
@@ -310,12 +316,8 @@ export function ChatPage(): JSX.Element {
     const pinIds = new Set(pins.map((p) => p.sessionId))
     const withoutAgentDrafts = base.filter((it) => !(it.kind === 'draft' && pinIds.has(it.key)))
     const house = queryClient
-      .getQueriesData<
-        { id: string; name: string; color: string; model: string; harnessId?: HarnessId }[]
-      >({
-        queryKey: ['agents-all-nodes'],
-      })
-      .flatMap(([, data]) => data ?? [])
+      .getQueriesData({ queryKey: ['agents-all-nodes'] })
+      .flatMap(([, data]) => presetsFromAgentsQueryData(data))
     const byId = new Map(house.map((a) => [a.id, a]))
     const pinBySession = new Map(pins.map((p) => [p.sessionId, p]))
     const withAgentAccent = withoutAgentDrafts.map((it) => {
@@ -1129,6 +1131,7 @@ function ActiveSession(props: {
   // state).
   const [spawnInFlight, setSpawnInFlight] = useState(false)
   const [termError, setTermError] = useState<string | undefined>()
+  const [presetNotice, setPresetNotice] = useState<string | undefined>()
   // ref mirrors termPtyId so the unmount cleanup can kill the current PTY
   // (state is captured stale in an unmount-only effect)
   const protocolSessionRef = useRef<import('@rivetos/types').SessionId | undefined>(undefined)
@@ -1419,6 +1422,7 @@ function ActiveSession(props: {
   useEffect(() => {
     const id = termPtyRef.current
     if (id) {
+      setPresetNotice(undefined)
       void sessionGateway()
         .then((gw) => gw.termKill(id))
         .catch(() => undefined)
@@ -1493,14 +1497,6 @@ function ActiveSession(props: {
         (settings?.harnessId ? rosterCommandFor(settings.harnessId) : undefined) ||
         settings?.agent ||
         undefined
-      const preset = presetSpawnFields(
-        settings?.agentId,
-        queryClient
-          .getQueriesData<{ id: string; model?: string; effort?: string }[]>({
-            queryKey: ['agents-all-nodes'],
-          })
-          .map(([, data]) => data),
-      )
       const body = termSpawnBody({
         sessionId: props.sessionId,
         command,
@@ -1508,21 +1504,35 @@ function ActiveSession(props: {
         agentId: settings?.agentId,
         model: settledLaunch.spawn.model,
         effort: settledLaunch.spawn.effort,
-        preset,
+        // A preset with no harness must not send agentId — the den 400s
+        // `agent has no harness and no command was given`.
+        presetHasHarness: settings?.agentId ? Boolean(settings.harnessId) : undefined,
       })
       // An API-only agent has no roster command → fall back to the node default
       // rather than 404 (keeps the session id via --session-id if a UUID).
-      // agentId stays on that retry so the den can still derive the preset.
-      // A 404 for an unknown agentId fails the retry too, and a 409 (preset
-      // hosted on another node) is not retried. Both surface as this thread's
-      // spawn error — GatewayError.message is the den's error text.
-      const p = command
-        ? await gw.termSpawn(body).catch((error: unknown) => {
-            if (error instanceof GatewayError && error.status === 404 && !settings?.harnessId)
-              return gw.termSpawn(termSpawnFallbackBody(props.sessionId, settings?.agentId))
-            throw error
-          })
-        : await gw.termSpawn(body)
+      // That fallback is not the deleted-preset path: a 404 whose message is
+      // `agent not found` clears agentId and retries once without it. Model,
+      // effort, and harness stay. A second failure is this thread's spawn
+      // error. A 409 (preset hosted on another node) is not retried.
+      const spawnOnce = (req: typeof body) => {
+        if (!command) return gw.termSpawn(req)
+        return gw.termSpawn(req).catch((error: unknown) => {
+          if (
+            error instanceof GatewayError &&
+            error.status === 404 &&
+            !isDeletedAgentError(error) &&
+            !settings?.harnessId
+          ) {
+            return gw.termSpawn(termSpawnFallbackBody(props.sessionId, req.agentId))
+          }
+          throw error
+        })
+      }
+      const spawned = await recoverDeletedAgentSpawn(spawnOnce, body, () => {
+        writeLaunchState({ agentId: undefined })
+      })
+      if (spawned.droppedAgentId) setPresetNotice(DELETED_PRESET_NOTICE)
+      const p = spawned.result
       // Latch after the first successful spawn, unless this harness already
       // latched or the conversation's agent/harness changed while we were in
       // flight. Persisted on chat settings so the picker stays shut when this
@@ -2052,6 +2062,14 @@ function ActiveSession(props: {
           </span>
           {headerTail}
         </div>
+      )}
+      {presetNotice && (
+        <p
+          role="status"
+          className="border-b border-line bg-panel-2/40 px-4 py-1.5 font-mono text-[11px] text-ink-dim"
+        >
+          {presetNotice}
+        </p>
       )}
       {mode === 'chat' ? (
         <>

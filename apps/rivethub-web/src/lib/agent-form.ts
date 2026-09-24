@@ -1,4 +1,10 @@
-import type { AgentCreateRequest, AgentPreset, AgentUpdateRequest, HarnessId } from '@rivetos/types'
+import type {
+  AgentCreateRequest,
+  AgentPreset,
+  AgentUpdateRequest,
+  CatalogAgent,
+  HarnessId,
+} from '@rivetos/types'
 import { GatewayError } from '@rivetos/gateway-client'
 
 /** Fields the agent editor submits. `nodeBaseUrl` chooses the den; it is not a wire field. */
@@ -36,6 +42,43 @@ export function agentCreateBody(agent: AgentWrite): AgentCreateRequest {
 /** One retry for a pre-registry den that still 400s with `nodeBaseUrl is required`. */
 export function agentCreateBodyLegacy(agent: AgentWrite, nodeBaseUrl: string): AgentCreateRequest {
   return { ...agentCreateBody(agent), nodeBaseUrl }
+}
+
+/**
+ * POST the current-den body. A pre-registry den answers 400
+ * `nodeBaseUrl is required`; retry that once with the legacy field.
+ * A second failure, or any other error, surfaces to the caller.
+ */
+export async function createWithLegacyRetry<T>(
+  post: (body: AgentCreateRequest) => Promise<T>,
+  agent: AgentWrite,
+  baseUrl: string,
+): Promise<T> {
+  try {
+    return await post(agentCreateBody(agent))
+  } catch (err) {
+    if (!isLegacyNodeBaseUrlRequired(err)) throw err
+    return await post(agentCreateBodyLegacy(agent, baseUrl))
+  }
+}
+
+/**
+ * Catalog-clash warning: the name equals a local config-agent id, which
+ * wins over a preset name for delegate_task. Remote rows and `kind: 'preset'`
+ * rows do not. The id compare is case-sensitive, matching the catalog.
+ */
+export function catalogNameClashes(
+  name: string,
+  agents: readonly CatalogAgent[],
+  editingId?: string,
+): boolean {
+  const trimmed = name.trim()
+  if (trimmed === '') return false
+  return agents.some((row) => {
+    if (row.id !== trimmed || row.id === editingId) return false
+    if (!row.local) return false
+    return !('kind' in row)
+  })
 }
 
 export function isLegacyNodeBaseUrlRequired(err: unknown): boolean {

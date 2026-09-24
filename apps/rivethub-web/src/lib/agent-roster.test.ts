@@ -2,10 +2,14 @@ import { describe, expect, it } from 'vitest'
 import type { AgentPreset, MeshDenNode } from '@rivetos/types'
 import {
   aggregateAgentActivity,
+  agentDeleteTarget,
+  agentThreadSettings,
+  agentUpdateTarget,
   dedupeRosterAgents,
   meshDenName,
   nodeOptionLabel,
   pointersToPoll,
+  presetsFromAgentsQueryData,
   resolveAgentNodeUrl,
   sessionPointerMatches,
   uniqueRosterNodes,
@@ -145,6 +149,19 @@ describe('resolveAgentNodeUrl', () => {
     ).toBe(source)
   })
 
+  it('matches a mesh name before an id when both could hit', () => {
+    const agent = preset({ id: 'a', name: 'Reviewer', node: 'shared', nodeBaseUrl: '' })
+    expect(
+      resolveAgentNodeUrl(agent, {
+        ...ctx,
+        mesh: [
+          mesh({ id: 'shared', name: 'other', denUrl: 'https://by-id.example' }),
+          mesh({ id: 'later', name: 'shared', denUrl: 'https://by-name.example' }),
+        ],
+      }),
+    ).toBe('https://by-name.example')
+  })
+
   it('uses a mesh denUrl when the name or id matches and the URL is non-empty', () => {
     const agent = preset({ id: 'a', name: 'Reviewer', node: 'ct116', nodeBaseUrl: legacy })
     expect(
@@ -265,32 +282,77 @@ describe('dedupeRosterAgents', () => {
     directory: '/srv/reviewer',
     nodeBaseUrl: '',
   })
+  const saved = [
+    { name: 'current', baseUrl: current, node: 'ct115' },
+    { name: 'host', baseUrl: host, node: 'ct116' },
+  ]
 
-  it('keeps the resolved copy and prefers the current node when it also resolves', () => {
+  it('prefers the hosting den’s own copy over a mesh alias of the same node', () => {
+    const meshAlias = 'https://100.64.0.11:5174'
     const rows = dedupeRosterAgents(
       [
-        { baseUrl: current, node: 'ct115', agents: [{ ...agent, name: 'from-current' }] },
-        { baseUrl: host, node: 'ct116', agents: [{ ...agent, name: 'from-host' }] },
+        {
+          baseUrl: current,
+          node: 'ct115',
+          agents: [{ ...agent, name: 'from-current', directory: '/from/current' }],
+        },
+        {
+          baseUrl: host,
+          node: 'ct116',
+          agents: [{ ...agent, name: 'from-host', directory: '/on/host' }],
+        },
       ],
       {
         currentBaseUrl: current,
-        mesh: [mesh({ id: 'ct116', name: 'ct116', denUrl: host })],
-        roster: [],
+        mesh: [mesh({ id: 'ct116', name: 'ct116', denUrl: meshAlias })],
+        roster: saved,
       },
     )
     expect(rows).toHaveLength(1)
-    expect(rows[0]?.name).toBe('from-current')
+    expect(rows[0]?.name).toBe('from-host')
+    expect(rows[0]?.directory).toBe('/on/host')
     expect(rows[0]?.sourceNodeBaseUrl).toBe(host)
+    expect(rows[0]?.sourceNodeBaseUrl).not.toBe(meshAlias)
+    expect(rows[0]?.listedBaseUrl).toBe(host)
+  })
+
+  it('leaves a mesh-only host unresolved when its denUrl is not on the roster', () => {
+    const meshOnly = 'https://mesh-only.example:5174'
+    const rows = dedupeRosterAgents([{ baseUrl: current, node: 'ct115', agents: [agent] }], {
+      currentBaseUrl: current,
+      mesh: [mesh({ id: 'ct116', name: 'ct116', denUrl: meshOnly })],
+      roster: [{ name: 'current', baseUrl: current, node: 'ct115' }],
+    })
+    expect(rows[0]?.sourceNodeBaseUrl).toBe('')
     expect(rows[0]?.listedBaseUrl).toBe(current)
   })
 
-  it('keeps another den’s copy when only that copy resolves', () => {
+  it('prefers the current node when resolved copies are roster aliases, not self-hosted', () => {
+    const alias = 'https://192.0.2.12:5174'
+    const legacy = preset({ id: 'same', name: 'Reviewer', nodeBaseUrl: alias })
+    const rows = dedupeRosterAgents(
+      [
+        { baseUrl: current, node: 'ct115', agents: [{ ...legacy, name: 'from-current' }] },
+        { baseUrl: host, node: 'ct116', agents: [{ ...legacy, name: 'from-host' }] },
+      ],
+      {
+        currentBaseUrl: current,
+        mesh: [],
+        roster: [...saved, { name: 'alias', baseUrl: alias }],
+      },
+    )
+    expect(rows[0]?.name).toBe('from-current')
+    expect(rows[0]?.sourceNodeBaseUrl).toBe(alias)
+    expect(rows[0]?.listedBaseUrl).toBe(current)
+  })
+
+  it('keeps another den’s copy when that copy is the hosting den', () => {
     const rows = dedupeRosterAgents(
       [
         { baseUrl: current, node: 'ct115', agents: [agent] },
         { baseUrl: host, node: 'ct116', agents: [{ ...agent, directory: '/on/host' }] },
       ],
-      { currentBaseUrl: current, mesh: [], roster: [] },
+      { currentBaseUrl: current, mesh: [], roster: saved },
     )
     expect(rows[0]?.sourceNodeBaseUrl).toBe(host)
     expect(rows[0]?.directory).toBe('/on/host')
@@ -305,6 +367,79 @@ describe('dedupeRosterAgents', () => {
     })
     expect(rows[0]?.sourceNodeBaseUrl).toBe('')
     expect(rows[0]?.listedBaseUrl).toBe(current)
+  })
+})
+
+describe('agent delete and update targets', () => {
+  const listed = 'https://listed.example'
+  const resolved = 'https://host.example'
+
+  it('deletes on the listing den and updates there unless node is set', () => {
+    const legacy = { node: undefined, sourceNodeBaseUrl: resolved, listedBaseUrl: listed }
+    expect(agentDeleteTarget(legacy)).toBe(listed)
+    expect(agentUpdateTarget(legacy)).toBe(listed)
+
+    const placed = { node: 'ct116', sourceNodeBaseUrl: resolved, listedBaseUrl: listed }
+    expect(agentDeleteTarget(placed)).toBe(listed)
+    expect(agentUpdateTarget(placed)).toBe(resolved)
+
+    const unresolved = { node: 'ct116', sourceNodeBaseUrl: '', listedBaseUrl: listed }
+    expect(agentUpdateTarget(unresolved)).toBe(listed)
+  })
+})
+
+describe('agentThreadSettings', () => {
+  it('stores the preset id along with model, effort, and harness', () => {
+    expect(
+      agentThreadSettings({
+        id: 'preset-1',
+        harnessId: 'claude-code',
+        model: 'opus',
+        effort: 'high',
+        systemPrompt: 'be brief',
+      }),
+    ).toEqual({
+      agent: 'claude',
+      harnessId: 'claude-code',
+      model: 'opus',
+      effort: 'high',
+      harnessEffort: 'high',
+      systemPrompt: 'be brief',
+      agentId: 'preset-1',
+    })
+  })
+
+  it('keeps agentId when the preset has no harness', () => {
+    const settings = agentThreadSettings({
+      id: 'preset-2',
+      model: 'haiku',
+      effort: '',
+      systemPrompt: '',
+    })
+    expect(settings.agentId).toBe('preset-2')
+    expect(settings.agent).toBe('')
+    expect(settings.harnessId).toBeUndefined()
+    expect(settings.effort).toBe('medium')
+  })
+})
+
+describe('presetsFromAgentsQueryData', () => {
+  it('reads a deduped preset array and a per-den list cache', () => {
+    const presetRow = {
+      id: 'preset-1',
+      name: 'Reviewer',
+      color: '#fff',
+      model: 'opus',
+      harnessId: 'claude-code' as const,
+    }
+    expect(presetsFromAgentsQueryData([presetRow])).toEqual([presetRow])
+    expect(
+      presetsFromAgentsQueryData([
+        { baseUrl: 'https://a.example', agents: [presetRow] },
+        { baseUrl: 'https://b.example', agents: [] },
+      ]),
+    ).toEqual([presetRow])
+    expect(presetsFromAgentsQueryData(undefined)).toEqual([])
   })
 })
 
