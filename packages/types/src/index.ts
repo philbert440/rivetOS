@@ -166,9 +166,12 @@ export {
 } from './agent-preset.js'
 export {
   HARNESS_IDS,
+  ROSTER_COMMAND,
   SYSTEM_PROMPT_MAX_CHARS,
   SYSTEM_PROMPT_INJECT_HEADING,
   prefixSystemPrompt,
+  rosterCommandFor,
+  harnessForRosterCommand,
 } from './harness.js'
 export { deriveTurnStatus, isPromptToolName } from './harness-turn-status.js'
 export {

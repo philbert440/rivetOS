@@ -6,9 +6,17 @@
  * compile until someone decides which surface consumes it.
  */
 
-import { describe, it, expect } from 'vitest'
-import type { HarnessEvent, SessionId } from './index.js'
-import { prefixSystemPrompt, SYSTEM_PROMPT_INJECT_HEADING, SYSTEM_PROMPT_MAX_CHARS } from './harness.js'
+import { describe, expect, it } from 'vitest'
+import {
+  HARNESS_IDS,
+  SYSTEM_PROMPT_INJECT_HEADING,
+  SYSTEM_PROMPT_MAX_CHARS,
+  harnessForRosterCommand,
+  prefixSystemPrompt,
+  rosterCommandFor,
+  type HarnessEvent,
+  type SessionId,
+} from './index.js'
 
 const SID = 'claude-code:a1b2c3d4-1111-4222-8333-444455556666' as SessionId
 
@@ -67,5 +75,16 @@ describe('harness event contract', () => {
 
   it('classifies every member of the union', () => {
     expect(Object.keys(OWNER)).toHaveLength(13)
+  })
+})
+
+describe('roster commands', () => {
+  it('covers every harness id and round-trips through harnessForRosterCommand', () => {
+    expect(HARNESS_IDS.length).toBeGreaterThan(0)
+    for (const id of HARNESS_IDS) {
+      const command = rosterCommandFor(id)
+      expect(command).toEqual(expect.any(String))
+      expect(harnessForRosterCommand(command)).toBe(id)
+    }
   })
 })

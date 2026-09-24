@@ -35,6 +35,9 @@
 
 import {
   parseSessionId,
+  ROSTER_COMMAND,
+  harnessForRosterCommand,
+  rosterCommandFor,
   type HarnessCapabilities,
   type HarnessDescriptor,
   type HarnessId,
@@ -42,6 +45,8 @@ import {
   type HarnessSessionSummary,
   type SessionId,
 } from '@rivetos/types'
+
+export { ROSTER_COMMAND, rosterCommandFor, harnessForRosterCommand }
 
 /** How a chat row is driven. */
 export type ChatItemKind =
@@ -81,44 +86,6 @@ export interface ChatItem {
   pinNodeBaseUrl?: string
   /** Agent-pin rows: hide discard; ↺ on the rail is the replace. */
   pin?: boolean
-}
-
-/**
- * Den roster keys per harness id. Only a fallback: the on-disk row's own
- * `command` wins whenever the legacy scan also saw the session, which is the
- * normal case (both surfaces read the same store). Roster tokens are UI/spawn
- * labels — never key material (harness-control-plane.md § Legacy keys).
- */
-export const ROSTER_COMMAND: Record<HarnessId | 'pi', string> = {
-  'claude-code': 'claude',
-  'grok-build': 'grok',
-  'kimi-code': 'kimi',
-  opencode: 'opencode',
-  hermes: 'hermes',
-  codex: 'codex',
-  pi: 'pi',
-  'qwen-code': 'qwen',
-}
-
-export function rosterCommandFor(harnessId: string | undefined): string | undefined {
-  if (!harnessId) return undefined
-  return (ROSTER_COMMAND as Record<string, string | undefined>)[harnessId]
-}
-
-/**
- * Reverse of `ROSTER_COMMAND`: map a catalog roster command (the `agent`
- * label, e.g. "claude") to the harness it spawns ("claude-code"). Used only to
- * decide which harness's sheet gates the pre-spawn model picker (#814) for a
- * conversation whose settings carry an agent but not a harnessId — never to
- * choose a launch command or flags (the den resolves those). A command with
- * no harness (e.g. "grok-fast") returns undefined → no picker.
- */
-export function harnessForRosterCommand(command: string | undefined): HarnessId | undefined {
-  if (!command) return undefined
-  for (const [harnessId, roster] of Object.entries(ROSTER_COMMAND)) {
-    if (roster === command) return harnessId as HarnessId
-  }
-  return undefined
 }
 
 /** Native half of a canonical id; undefined when it doesn't parse. */

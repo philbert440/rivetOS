@@ -1225,7 +1225,18 @@ export interface AgentPreset {
   effort: string
   /** System prompt override; empty = no override. */
   systemPrompt: string
-  /** Node baseUrl this agent runs on. */
+  /** Mesh node NAME hosting the agent (`mesh.node_name`). Absent on legacy rows. */
+  node?: string
+  /** Absolute working directory for the agent's harness. Absent on legacy rows. */
+  directory?: string
+  /** When false, skip the shared-directory symlink inside `directory`. */
+  sharedLink?: boolean
+  /**
+   * Den base URL of the hosting node. Pre-registry field: prefer `node`.
+   * Slice 7 of agents-as-delegation-targets marks it `@deprecated` and
+   * optional once every consumer has moved; tagging it earlier fails
+   * `no-deprecated` lint in the den and hub, which still read it.
+   */
   nodeBaseUrl: string
   /** epoch ms */
   createdAt: number
@@ -1235,6 +1246,14 @@ export interface AgentPreset {
 
 export interface AgentsListResponse {
   agents: AgentPreset[]
+  /** Mesh node NAME of the den that answered. */
+  node?: string
+  /** Default parent for new agent working directories. */
+  directoryRoot?: string
+  /** Shared directory the per-agent `rivet-shared` symlink targets. */
+  sharedDir?: string
+  /** Store that served this list. */
+  backend?: 'postgres' | 'file'
 }
 
 export interface AgentCreateRequest {
@@ -1244,7 +1263,17 @@ export interface AgentCreateRequest {
   model?: string
   effort?: string
   systemPrompt?: string
-  nodeBaseUrl: string
+  /**
+   * Den base URL of the hosting node. Optional for registry clients; the den
+   * fills `node` when omitted. Formally deprecated in slice 7 (see AgentPreset).
+   */
+  nodeBaseUrl?: string
+  /** Mesh node NAME. The hosting den sets this when the client omits it. */
+  node?: string
+  /** Absolute working directory. The den defaults it when omitted. */
+  directory?: string
+  /** When false, skip the shared-directory symlink. */
+  sharedLink?: boolean
 }
 
 export interface AgentUpdateRequest {
@@ -1256,6 +1285,8 @@ export interface AgentUpdateRequest {
   effort?: string
   systemPrompt?: string
   nodeBaseUrl?: string
+  directory?: string
+  sharedLink?: boolean
 }
 
 export interface AgentResponse {

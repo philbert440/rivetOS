@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Agent registry
+
+- `@rivetos/agent-registry` (tagged `domain:shared`) is the shared preset store den, core, and the hub will import: file and Postgres backends, directory materialization, a short-lived cache, and a one-shot `agents.json` importer. Migration `0017_agent_presets.sql` adds the DataHub table `ros_agent_presets`. `AgentPreset` gains optional `node`, `directory`, and `sharedLink` (`nodeBaseUrl` stays, deprecated); roster-command helpers move into `@rivetos/types` so den and RivetHub share one map. No runtime behaviour change.
+
 ### Den
 
 - The gateway enforces a browser origin policy. A request or WebSocket upgrade that carries an `Origin` is answered only when that origin is the gateway itself, the RivetHub desktop app, another den in the mesh roster, or listed in the new `den.allowed_origins`; anything else gets `403`. Responses echo the allowed origin instead of `Access-Control-Allow-Origin: *`. Clients that send no `Origin` (Android, hooks, CLI, mesh peers) are unaffected. A plain-HTTP gateway also requires loopback callers to use a loopback `Host` name or one listed in the new `den.allowed_hosts`. The mesh agent channel now refuses requests that carry an `Origin`. See CONFIG-REFERENCE → `den` → Browser origin policy.
