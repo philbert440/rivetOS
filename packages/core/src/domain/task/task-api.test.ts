@@ -9,6 +9,7 @@ import { createServer, type Server } from 'node:http'
 import type { AddressInfo } from 'node:net'
 import { describe, it, expect, afterEach, vi } from 'vitest'
 import type {
+  AgentPreset,
   HarnessExecutor,
   HarnessExecutorCapabilities,
   TaskResult,
@@ -18,6 +19,8 @@ import { InMemoryTaskStore } from './store.js'
 import { createExecutorRegistry, createTaskHandler } from './runner.js'
 import { createTaskCompletionWaiter, type TaskCompletionWaiter } from './completion-waiter.js'
 import { createTaskApiRoute } from './task-api.js'
+import { PresetDelegationEngine } from '../preset-delegation.js'
+import type { CachedPresetResolver } from '@rivetos/agent-registry'
 
 const caps: HarnessExecutorCapabilities = {
   steerable: true,
@@ -295,5 +298,63 @@ describe('agent-aware dispatch (resolveAffinity)', () => {
     const res = await create(base, { goal: 'x', agentId: 'nobody' })
     expect(res.status).toBe(400)
     expect(await store.list()).toHaveLength(0)
+  })
+
+  it('affinity pins a preset create to preset.node', async () => {
+    const reviewer: AgentPreset = {
+      id: 'preset-reviewer',
+      name: 'reviewer',
+      color: '',
+      harnessId: 'claude-code',
+      model: 'opus',
+      effort: 'high',
+      systemPrompt: '',
+      node: 'ct116',
+      directory: '/home/rivet/.rivetos/agents/reviewer',
+      nodeBaseUrl: '',
+      createdAt: 1,
+      updatedAt: 1,
+    }
+    const resolver: CachedPresetResolver = {
+      list: () => Promise.resolve([reviewer]),
+      find: (handle) =>
+        Promise.resolve(handle === 'reviewer' || handle === reviewer.id ? reviewer : undefined),
+      lastKnown: () => [reviewer],
+      invalidate() {},
+    }
+    const executors = createExecutorRegistry()
+    executors.register('chat-loop', fakeExecutor({ hang: true }))
+    const store = new InMemoryTaskStore()
+    const waiter = createTaskCompletionWaiter({ store, pollFallbackMs: 10 })
+    const presets = new PresetDelegationEngine({
+      resolver,
+      taskStore: store,
+      waiter,
+      nodeName: 'ct115',
+    })
+    const route = createTaskApiRoute({
+      store,
+      waiter,
+      resolveAffinity: async (agentId) => {
+        if (agentId === 'local-agent') return 'this-node'
+        const preset = await presets.find(agentId)
+        if (preset?.node) return preset.node
+        return { error: `agent "${agentId}" not found locally or on the mesh` }
+      },
+    })
+    const server: Server = createServer((req, res) => {
+      void route.handler(req, res)
+    })
+    await new Promise<void>((r) => server.listen(0, '127.0.0.1', r))
+    const port = (server.address() as AddressInfo).port
+    cleanups.push(async () => {
+      await waiter.stop()
+      await new Promise((r) => server.close(r))
+    })
+    const base = `http://127.0.0.1:${port}`
+    const res = await create(base, { goal: 'review', agentId: 'reviewer' })
+    expect(res.status).toBe(201)
+    const { task } = (await res.json()) as { task: { id: string } }
+    expect((await store.get(task.id))?.nodeAffinity).toBe(reviewer.node)
   })
 })

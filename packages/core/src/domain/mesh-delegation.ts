@@ -6,9 +6,10 @@
  * hosts that agent, then sends the task via the agent channel HTTP API.
  *
  * Priority:
- * 1. Local agent (same process) → use DelegationEngine directly
- * 2. Remote agent (mesh peer) → HTTP POST to the peer's /api/message
- * 3. Not found → error
+ * 1. Local config.yaml agent (same process) → use DelegationEngine directly
+ * 2. RivetHub agent preset (id or name) → harness-session task on preset.node
+ * 3. Remote config agent (mesh peer) → postgres task, else HTTP POST
+ * 4. Not found → error
  */
 
 import { CRITERIA_POLICY_OFF, normalizeCriteria, type CriteriaPolicy } from './task/criteria.js'
@@ -21,9 +22,11 @@ import type {
   MeshDelegationRoute,
 } from '@rivetos/types'
 import type { DelegationEngine } from './delegation.js'
+import type { PresetDelegationEngine } from './preset-delegation.js'
 import type { Router } from './router.js'
 import type { TaskStore } from './task/store.js'
 import type { TaskCompletionWaiter } from './task/completion-waiter.js'
+import { settleDelegatedTask } from './task/delegation-wait.js'
 import { logger } from '../logger.js'
 // Use undici's own fetch (not Node's global fetch). The mTLS dispatcher is
 // built from the node_modules `undici` Agent; Node's global fetch is backed by
@@ -78,6 +81,19 @@ export interface MeshDelegationConfig {
   taskStore?: TaskStore
   waiter?: TaskCompletionWaiter
   transport?: 'postgres' | 'http'
+
+  /**
+   * RivetHub presets, tried after a local config agent and before the mesh
+   * registry. A config agent id wins over a preset with the same name.
+   */
+  presets?: PresetDelegationEngine
+
+  /**
+   * HTTP client for the legacy mesh fallback. Defaults to undici's fetch
+   * (same instance as the mTLS dispatcher). Tests pass a fake to assert the
+   * payload without a peer.
+   */
+  fetchImpl?: typeof undiciFetch
 }
 
 /** A reachable agent and where it lives, for the delegation roster. */
@@ -175,14 +191,19 @@ export class MeshDelegationEngine {
 
   /** Format the roster as bullet lines for the tool description. */
   private formatRoster(entries: RosterEntry[]): string {
-    if (entries.length === 0) return '(no agents currently reachable)'
-    return entries
-      .map((e) =>
-        e.local
-          ? `- ${e.agentId} (this node — local, in-process)`
-          : `- ${e.agentId} (remote: ${e.remoteNodes.join(', ')})`,
-      )
-      .join('\n')
+    const lines =
+      entries.length === 0
+        ? '(no agents currently reachable)'
+        : entries
+            .map((e) =>
+              e.local
+                ? `- ${e.agentId} (this node — local, in-process)`
+                : `- ${e.agentId} (remote: ${e.remoteNodes.join(', ')})`,
+            )
+            .join('\n')
+    const presetRoster = this.config.presets?.rosterText() ?? ''
+    if (!presetRoster) return lines
+    return `${lines}\n\nAgents (RivetHub presets):\n${presetRoster}`
   }
 
   /**
@@ -211,15 +232,29 @@ export class MeshDelegationEngine {
    * local if possible, remote via mesh if not.
    */
   async delegate(request: DelegationRequest, chainDepth = 0): Promise<DelegationResult> {
+    // Local config agent first — its id wins over a preset of the same name.
+    if (this.localRoute(request.toAgent)) {
+      log.info(`Delegating to ${request.toAgent} locally`)
+      return this.config.localEngine.delegate(request, chainDepth)
+    }
+
+    const preset = await this.config.presets?.find(request.toAgent)
+    if (preset && this.config.presets) {
+      log.info(`Delegating to preset "${preset.name}" (${preset.id})`)
+      return this.config.presets.delegate(request, preset, chainDepth)
+    }
+
     const route = await this.resolveRoute(request.toAgent)
 
     if (!route) {
       const reachable = (await this.listReachableAgents()).map((e) => e.agentId)
+      const presetNames = this.config.presets?.rosterEntries().map((e) => e.name) ?? []
+      const names = [...new Set([...reachable, ...presetNames])]
       return {
         status: 'failed',
         response:
           `Agent "${request.toAgent}" not found locally or in the mesh. ` +
-          `Agents you can delegate to: ${reachable.length ? reachable.join(', ') : '(none reachable)'}`,
+          `Agents you can delegate to: ${names.length ? names.join(', ') : '(none reachable)'}`,
       }
     }
 
@@ -239,22 +274,26 @@ export class MeshDelegationEngine {
     return this.delegateRemote(request, route, chainDepth)
   }
 
+  /** Local config.yaml agent, if this node hosts that id. */
+  private localRoute(agentId: string): MeshDelegationRoute | undefined {
+    if (!this.config.localAgents.includes(agentId)) return undefined
+    const agent = this.config.router.getAgents().find((a) => a.id === agentId)
+    if (!agent) return undefined
+    return {
+      agentId,
+      node: { id: 'local', name: 'local', host: 'localhost', port: 0 } as MeshNode,
+      type: 'local',
+    }
+  }
+
   /**
    * Resolve where an agent lives — local or remote.
+   * Preset lookup is not part of this: `delegate` tries presets between the
+   * local route and `findByAgent`.
    */
   async resolveRoute(agentId: string): Promise<MeshDelegationRoute | undefined> {
-    // Check local first
-    if (this.config.localAgents.includes(agentId)) {
-      const agents = this.config.router.getAgents()
-      const agent = agents.find((a) => a.id === agentId)
-      if (agent) {
-        return {
-          agentId,
-          node: { id: 'local', name: 'local', host: 'localhost', port: 0 } as MeshNode,
-          type: 'local',
-        }
-      }
-    }
+    const local = this.localRoute(agentId)
+    if (local) return local
 
     // Check mesh registry
     const nodes = await this.config.meshRegistry.findByAgent(agentId)
@@ -332,6 +371,7 @@ export class MeshDelegationEngine {
     }
 
     try {
+      const describe = `Remote delegation to ${request.toAgent} on ${route.node.name}`
       const row = await store.create({
         goal: request.task,
         executor: 'chat-loop',
@@ -354,37 +394,14 @@ export class MeshDelegationEngine {
         maxAttempts: 1,
       })
 
-      const terminal = await waiter.wait(row.id, { deadlineMs: waitMs })
-      const durationMs = Date.now() - startTime
-
-      if (!terminal) {
-        // Deadline (or vanished row): kill before returning so the remote
-        // runner discards the in-flight outcome — no zombie mesh runs.
-        await store.requestKill(row.id)
-        return {
-          status: 'timeout',
-          response: `Remote delegation to ${request.toAgent} on ${route.node.name} timed out after ${String(waitMs)}ms (task ${row.id} killed)`,
-          durationMs,
-        }
-      }
-
-      if (terminal.status === 'completed') {
-        return {
-          status: 'completed',
-          response:
-            terminal.result?.output ??
-            terminal.result?.summary ??
-            '[no response from remote agent]',
-          iterations: terminal.result?.usage.turns,
-          durationMs,
-        }
-      }
-
-      return {
-        status: terminal.status === 'timeout' ? 'timeout' : 'failed',
-        response: `Remote delegation to ${request.toAgent} on ${route.node.name} ${terminal.status}${terminal.error ? `: ${terminal.error}` : ''}`,
-        durationMs,
-      }
+      return await settleDelegatedTask({
+        store,
+        waiter,
+        rowId: row.id,
+        waitMs,
+        startTime,
+        describe,
+      })
     } catch (err: unknown) {
       return {
         status: 'failed',
@@ -413,6 +430,7 @@ export class MeshDelegationEngine {
 
       const payload: Record<string, unknown> = {
         fromAgent: request.fromAgent,
+        toAgent: request.toAgent,
         message: `[Mesh delegation] ${request.task}`,
         waitForResponse: true,
         chainDepth: chainDepth + 1,
@@ -427,7 +445,8 @@ export class MeshDelegationEngine {
       // Use shared undici dispatcher for mTLS (created once at construction).
       // Must call undici's own fetch here so the dispatcher and client come
       // from the same undici instance (see import note above).
-      const res = await undiciFetch(url, {
+      const fetchImpl = this.config.fetchImpl ?? undiciFetch
+      const res = await fetchImpl(url, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(payload),
@@ -484,7 +503,7 @@ export class MeshDelegationEngine {
         properties: {
           to_agent: {
             type: 'string',
-            description: 'Agent ID to delegate to (e.g., "grok", "opus", "local")',
+            description: 'Agent ID or RivetHub agent name to delegate to',
           },
           task: {
             type: 'string',

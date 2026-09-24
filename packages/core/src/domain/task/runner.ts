@@ -28,10 +28,12 @@ import type {
   TaskBudget,
   TaskExecutorKind,
   TaskResult,
+  TaskSpec,
   TaskStatus,
   TaskUsage,
 } from '@rivetos/types'
-import { buildLocalSessionContext, sharedPath } from '@rivetos/types'
+import { buildLocalSessionContext, sharedDir, sharedPath } from '@rivetos/types'
+import { ensureAgentDirectory } from '@rivetos/agent-registry'
 import { canonicalizeExecutorTarget, harnessExecutorCoverage } from './harness-executors.js'
 import type { HarnessExecutorCoverage } from './harness-executors.js'
 import type { TaskRow, TaskStore } from './store.js'
@@ -310,7 +312,35 @@ async function runClaimedTask(task: TaskRow, opts: TaskHandlerOptions): Promise<
     model?: string
     promptMode?: 'task' | 'heartbeat'
     excludeTools?: string[]
+    workingDir?: string
+    effort?: TaskSpec['effort']
+    systemPromptAppend?: string
+    sharedLink?: boolean
   }
+
+  // A preset (or any row) pins its own directory. Materialise it before the
+  // executor starts so an imported or foreign-created row gets a directory
+  // the first time it runs. A bad path fails the task; it must not crash
+  // the handler (the graphile job would then leave the row running).
+  if (typeof spec.workingDir === 'string') {
+    try {
+      ensureAgentDirectory(
+        { directory: spec.workingDir, sharedLink: spec.sharedLink },
+        { sharedDir: sharedDir(), log: (msg) => log.info(msg) },
+      )
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : String(err)
+      await opts.store.finish(task.id, 'failed', {
+        verdict: 'failed',
+        summary: `Working directory unavailable: ${msg}`,
+        artifacts: [],
+        usage: ZERO_USAGE,
+        error: 'working_dir_unavailable',
+      })
+      return
+    }
+  }
+  const workingDir = spec.workingDir ?? opts.workspaceDir
 
   // Resuming from awaiting-input: consume the stashed message atomically —
   // it must drive the opening turn INSTEAD of the goal (the goal must never
@@ -351,14 +381,16 @@ async function runClaimedTask(task: TaskRow, opts: TaskHandlerOptions): Promise<
           model: spec.model,
           promptMode: spec.promptMode,
           excludeTools: spec.excludeTools,
-          workingDir: opts.workspaceDir,
+          workingDir,
+          effort: spec.effort,
+          systemPromptAppend: spec.systemPromptAppend,
           resumeMessage,
           session: buildLocalSessionContext({
             agentId: task.agentId,
             nodeId: opts.nodeId,
             conversationId: task.conversationId ?? task.id,
             userId: task.requestedBy ?? 'task-runner',
-            workingDir: opts.workspaceDir,
+            workingDir,
           }),
         },
         { signal: abort.signal },

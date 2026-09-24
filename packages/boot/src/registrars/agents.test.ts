@@ -249,7 +249,11 @@ describe('registerAgentTools shared pool wiring', () => {
   }
 
   it('passes the host pool to PgTaskStore and createTaskRunner and does not end it', async () => {
-    const hostPool = { end: vi.fn(async () => undefined) }
+    const hostPool = {
+      end: vi.fn(async () => undefined),
+      // Preset store probes ros_agent_presets on the same pool. Empty → not ready.
+      query: vi.fn(async () => ({ rows: [] })),
+    }
     const { runtime, hooks } = stubRuntime({ pgPool: hostPool })
     await registerAgentTools(runtime, config(), '/tmp')
     expect(coreMocks.pgTaskStores[0]).toBe(hostPool)

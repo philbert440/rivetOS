@@ -26,6 +26,7 @@ import type {
   Tool,
 } from '@rivetos/types'
 import type { Router } from '../router.js'
+import type { PresetDelegationEngine } from '../preset-delegation.js'
 import type { TaskExecutorRegistry } from './runner.js'
 import { isHarnessExecutorTarget, isNotImplementedHarnessExecutor } from './harness-executors.js'
 import { logger } from '../../logger.js'
@@ -42,6 +43,24 @@ export interface CatalogApiOptions {
   executors: TaskExecutorRegistry
   skills?: () => Skill[]
   meshRegistry?: MeshRegistry
+  /** RivetHub presets appended as `kind: 'preset'` catalog agents. */
+  presets?: PresetDelegationEngine
+}
+
+function presetCatalogAgents(opts: CatalogApiOptions): CatalogAgent[] {
+  const entries = opts.presets?.rosterEntries() ?? []
+  return entries.map((entry): CatalogAgent => ({
+    kind: 'preset',
+    id: entry.id,
+    name: entry.name,
+    node: entry.node,
+    local: entry.local,
+    ...(entry.harnessId ? { harnessId: entry.harnessId } : {}),
+    ...(entry.model ? { model: entry.model } : {}),
+    ...(entry.directory ? { directory: entry.directory } : {}),
+    ...(entry.implemented !== undefined ? { implemented: entry.implemented } : {}),
+    ...(entry.gap ? { gap: entry.gap } : {}),
+  }))
 }
 
 function json(res: ServerResponse, code: number, body: unknown): void {
@@ -58,7 +77,8 @@ export async function buildCatalogAgents(opts: CatalogApiOptions): Promise<Catal
     node: opts.nodeName,
     local: true,
   }))
-  if (!opts.meshRegistry) return local
+  const presets = presetCatalogAgents(opts)
+  if (!opts.meshRegistry) return [...local, ...presets]
   const nodes = await opts.meshRegistry.getNodes()
   const remote = nodes
     .filter((n) => n.status === 'online' && n.name !== opts.nodeName)
@@ -86,7 +106,7 @@ export async function buildCatalogAgents(opts: CatalogApiOptions): Promise<Catal
           : { id: agentId, node: n.name, local: false }
       })
     })
-  return [...local, ...remote]
+  return [...local, ...remote, ...presets]
 }
 
 export function createCatalogApiRoute(opts: CatalogApiOptions): GatewayRoute {

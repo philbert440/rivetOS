@@ -141,6 +141,40 @@ describe('DelegationEngine', () => {
       expect(result.response).toContain('grok')
     })
 
+    it('unknown agent falls through to presets', async () => {
+      const delegate = vi.fn(async () => ({
+        status: 'completed' as const,
+        response: 'preset did it',
+      }))
+      const presets = {
+        find: async (handle: string) =>
+          handle === 'reviewer'
+            ? { id: 'p1', name: 'reviewer', node: 'ct116', harnessId: 'codex' }
+            : undefined,
+        delegate,
+        rosterText: () => '- reviewer (agent: codex on ct116)',
+        rosterEntries: () => [],
+      }
+      const engine = new DelegationEngine({
+        ...createBaseConfig(),
+        presets: presets as unknown as DelegationConfig['presets'],
+      })
+
+      const result = await engine.delegate(createRequest({ toAgent: 'reviewer' }))
+      expect(result.status).toBe('completed')
+      expect(result.response).toBe('preset did it')
+      expect(delegate).toHaveBeenCalledTimes(1)
+
+      const tool = engine.createDelegationTool()
+      expect(tool.description).toContain('Agents (RivetHub presets):')
+      expect(tool.description).toContain('reviewer')
+
+      // A config agent id still runs in-process and does not hit the preset.
+      const local = await engine.delegate(createRequest({ toAgent: 'grok' }))
+      expect(local.response).toContain('Delegated result')
+      expect(delegate).toHaveBeenCalledTimes(1)
+    })
+
     it('fails when provider is not available', async () => {
       // Agent exists but its provider is not registered
       const router = createMockRouter([{ id: 'grok', provider: 'xai' }])

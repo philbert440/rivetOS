@@ -9,6 +9,7 @@ import type { HarnessExecutorCapabilities, MeshNode, MeshRegistry } from '@rivet
 import { createExecutorRegistry } from './runner.js'
 import { createNotImplementedHarnessExecutor } from './harness-executors.js'
 import { createCatalogApiRoute } from './catalog-api.js'
+import type { PresetDelegationEngine } from '../preset-delegation.js'
 import type { Router } from '../router.js'
 
 const caps: HarnessExecutorCapabilities = {
@@ -119,7 +120,13 @@ describe('/api/catalog', () => {
     const base = await start()
     const body = (await (await fetch(`${base}/api/catalog`)).json()) as {
       node: string
-      agents: Array<{ id: string; node: string; local?: boolean; provider?: string; model?: string }>
+      agents: Array<{
+        id: string
+        node: string
+        local?: boolean
+        provider?: string
+        model?: string
+      }>
       executors: Array<{
         key: string
         commands: unknown[]
@@ -175,5 +182,55 @@ describe('/api/catalog', () => {
     expect(agents.agents).toHaveLength(2)
     expect((await fetch(`${base}/api/catalog/nope`)).status).toBe(404)
     expect((await fetch(`${base}/api/catalog`, { method: 'POST' })).status).toBe(405)
+  })
+
+  it('appends RivetHub presets as kind:preset', async () => {
+    const presets = {
+      rosterEntries: () => [
+        {
+          id: 'preset-1',
+          name: 'reviewer',
+          node: 'ct116',
+          local: false,
+          harnessId: 'claude-code',
+          directory: '/home/rivet/.rivetos/agents/reviewer',
+          model: 'opus',
+          implemented: false,
+          gap: 'no headless executor',
+        },
+      ],
+    } as unknown as PresetDelegationEngine
+    const executors = createExecutorRegistry()
+    const router = { getAgents: () => [] } as unknown as Router
+    const route = createCatalogApiRoute({
+      nodeName: 'ct115',
+      router,
+      tools: () => [],
+      executors,
+      presets,
+    })
+    const server: Server = createServer((req, res) => {
+      void route.handler(req, res)
+    })
+    await new Promise<void>((r) => server.listen(0, '127.0.0.1', r))
+    cleanups.push(() => new Promise((r) => server.close(r)))
+    const base = `http://127.0.0.1:${(server.address() as AddressInfo).port}`
+    const body = (await (await fetch(`${base}/api/catalog/agents`)).json()) as {
+      agents: Array<{ kind?: string; name?: string; implemented?: boolean; gap?: string }>
+    }
+    expect(body.agents).toEqual([
+      {
+        kind: 'preset',
+        id: 'preset-1',
+        name: 'reviewer',
+        node: 'ct116',
+        local: false,
+        harnessId: 'claude-code',
+        directory: '/home/rivet/.rivetos/agents/reviewer',
+        model: 'opus',
+        implemented: false,
+        gap: 'no headless executor',
+      },
+    ])
   })
 })

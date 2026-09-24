@@ -223,6 +223,9 @@ export { FileMeshRegistry, buildLocalNode } from './domain/mesh.js'
 export type { MeshRegistryConfig, BuildLocalNodeArgs } from './domain/mesh.js'
 export { MeshDelegationEngine } from './domain/mesh-delegation.js'
 export type { MeshDelegationConfig } from './domain/mesh-delegation.js'
+export { PresetDelegationEngine } from './domain/preset-delegation.js'
+export type { PresetDelegationConfig, PresetRosterEntry } from './domain/preset-delegation.js'
+export { settleDelegatedTask } from './domain/task/delegation-wait.js'
 
 // Security
 export {

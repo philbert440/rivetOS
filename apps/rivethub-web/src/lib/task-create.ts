@@ -29,16 +29,22 @@ export function criteriaFromLines(text: string): AcceptanceCriterion[] {
   }))
 }
 
+function isPreset(agent: CatalogAgent): agent is Extract<CatalogAgent, { kind: 'preset' }> {
+  return 'kind' in agent && agent.kind === 'preset'
+}
+
 /**
- * Agent picker for tasks — local AND mesh agents (tasks are how mesh work
- * is routed; chat deliberately excludes remote).
+ * Agent picker for tasks — local config agents, mesh agents, then RivetHub
+ * presets (tasks are how mesh work is routed; chat deliberately excludes
+ * remote agents and presets).
  */
 export function taskAgentOptions(agents: readonly CatalogAgent[]): SelectOption[] {
   const opts: SelectOption[] = []
   const seen = new Set<string>()
-  // Locals first for a short default list
+  // Locals first for a short default list. Presets carry `local` too, but
+  // they are a third variant — narrowing on `local` alone would mis-label them.
   for (const a of agents) {
-    if (!a.local || seen.has(a.id)) continue
+    if (isPreset(a) || !a.local || seen.has(a.id)) continue
     seen.add(a.id)
     const model = 'model' in a && a.model ? ` (${a.model})` : ''
     opts.push({
@@ -47,11 +53,23 @@ export function taskAgentOptions(agents: readonly CatalogAgent[]): SelectOption[
     })
   }
   for (const a of agents) {
-    if (a.local || seen.has(a.id)) continue
+    if (isPreset(a) || a.local || seen.has(a.id)) continue
     seen.add(a.id)
     opts.push({
       value: a.id,
       label: `${HARNESS_LABEL[a.id] ?? a.id} @ ${a.node}`,
+    })
+  }
+  for (const a of agents) {
+    if (!isPreset(a) || seen.has(a.id)) continue
+    seen.add(a.id)
+    const harness = a.harnessId ?? 'no harness'
+    const unimplemented = a.implemented === false
+    opts.push({
+      value: a.id,
+      label: `${a.name} (agent · ${harness} @ ${a.node})`,
+      disabled: unimplemented,
+      title: unimplemented ? (a.gap ?? 'no headless executor') : undefined,
     })
   }
   return opts

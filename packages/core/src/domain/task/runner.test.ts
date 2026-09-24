@@ -5,6 +5,8 @@
  */
 
 import { describe, it, expect, vi, beforeEach } from 'vitest'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 import type pg from 'pg'
 import { run } from 'graphile-worker'
 import type {
@@ -313,6 +315,61 @@ describe('createTaskHandler', () => {
   })
 })
 
+describe('createTaskHandler spec forwarding', () => {
+  function handlerFor(fake: ReturnType<typeof makeFakeExecutor>, workspaceDir: string) {
+    const store = new InMemoryTaskStore()
+    const executors = createExecutorRegistry()
+    executors.register('chat-loop', fake)
+    const handler = createTaskHandler({ store, executors, nodeId: 'test-node', workspaceDir })
+    return { store, handler }
+  }
+
+  it('forwards workingDir, effort, and systemPromptAppend from the row spec', async () => {
+    const fake = makeFakeExecutor()
+    const dir = join(tmpdir(), 'rivetos-agt-s3-runner')
+    const { store, handler } = handlerFor(fake, '/workspace')
+    const task = await store.create(
+      taskInput({
+        spec: { workingDir: dir, effort: 'high', systemPromptAppend: 'be brief' },
+      }),
+    )
+
+    await handler(task.id)
+
+    expect(fake.specs[0]?.workingDir).toBe(dir)
+    expect(fake.specs[0]?.effort).toBe('high')
+    expect(fake.specs[0]?.systemPromptAppend).toBe('be brief')
+    expect(fake.specs[0]?.session.workingDir).toBe(dir)
+    expect((await store.get(task.id))?.status).toBe('completed')
+  })
+
+  it('absent spec fields fall back to opts.workspaceDir', async () => {
+    const fake = makeFakeExecutor()
+    const { store, handler } = handlerFor(fake, '/workspace')
+    const task = await store.create(taskInput())
+
+    await handler(task.id)
+
+    expect(fake.specs[0]?.workingDir).toBe('/workspace')
+    expect(fake.specs[0]?.session.workingDir).toBe('/workspace')
+    expect(fake.specs[0]?.effort).toBeUndefined()
+    expect(fake.specs[0]?.systemPromptAppend).toBeUndefined()
+  })
+
+  it('an invalid workingDir fails the task with working_dir_unavailable', async () => {
+    const fake = makeFakeExecutor()
+    const { store, handler } = handlerFor(fake, '/workspace')
+    const task = await store.create(taskInput({ spec: { workingDir: 'agents/reviewer' } }))
+
+    await handler(task.id)
+
+    const row = await store.get(task.id)
+    expect(row?.status).toBe('failed')
+    expect(row?.error).toBe('working_dir_unavailable')
+    expect(fake.specs).toHaveLength(0)
+  })
+})
+
 describe('createTaskRunner graphile pool wiring', () => {
   const pgUrl = 'postgres://user:pass@localhost:5432/db'
 
@@ -384,10 +441,9 @@ describe('createTaskRunner start() guards (P1)', () => {
   }
 
   it('no-ops (never throws) when sweep reports the relation missing', async () => {
-    const relationMissing = Object.assign(
-      new Error('relation "ros_tasks" does not exist'),
-      { code: '42P01' },
-    )
+    const relationMissing = Object.assign(new Error('relation "ros_tasks" does not exist'), {
+      code: '42P01',
+    })
     const store = stubStore({ sweep: () => Promise.reject(relationMissing) })
     const runner = createTaskRunner({
       // Unreachable on purpose — start() must return before connecting.
@@ -501,4 +557,3 @@ describe('wiki contextRefs (3f)', () => {
     expect(seenContext).toContain('mem-context')
   })
 })
-

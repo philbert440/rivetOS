@@ -167,7 +167,7 @@ function TaskCreateForm(props: {
 
   const agents = taskAgentOptions(catalog.data?.agents ?? [])
   // Seed default agent once catalog loads
-  const effectiveAgent = agentId || agents[0]?.value || ''
+  const effectiveAgent = agentId || agents.find((a) => !a.disabled)?.value || ''
 
   const submit = async (): Promise<void> => {
     const g = goal.trim()
