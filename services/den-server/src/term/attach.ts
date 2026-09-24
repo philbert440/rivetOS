@@ -25,13 +25,18 @@ export function composeTermAttach(
   }
 }
 
-/** Strip manager-only socket/session and stamp `attach` for the HTTP surface. */
+/**
+ * Strip manager-only socket/session/cwd and stamp `attach` for the HTTP
+ * surface. cwd never leaves den on `/term/list` — the roster header says so.
+ * A preset's directory is reported only on the `POST /term { agentId }`
+ * response, from the resolved override, not from this row.
+ */
 export function wirePtyInfo(
   row: PtyInfo,
   identity: AttachIdentity,
   local: boolean,
-): Omit<PtyInfo, 'socket' | 'session'> & { attach?: TermAttachInfo } {
-  const { socket: _socket, session: _session, ...rest } = row
+): Omit<PtyInfo, 'socket' | 'session' | 'cwd'> & { attach?: TermAttachInfo } {
+  const { socket: _socket, session: _session, cwd: _cwd, ...rest } = row
   const attach = composeTermAttach(row, identity, local)
   return attach ? { ...rest, attach } : rest
 }

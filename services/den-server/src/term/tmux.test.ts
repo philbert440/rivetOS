@@ -216,6 +216,49 @@ describe('tmux argv builders', () => {
     }
     expect(createRealTmuxCtl('/usr/bin/tmux', 's', 'c', timeout).windowSize!('a')).toBeUndefined()
   })
+
+  it('paneCurrentPath queries display-message -p -t =<name>: #{pane_current_path}', () => {
+    const calls: string[][] = []
+    const exec: TmuxExec = (_bin, args) => {
+      calls.push(args)
+      return '/srv/agent\n'
+    }
+    const ctl = createRealTmuxCtl('/usr/bin/tmux', 's', 'c', exec)
+    expect(ctl.paneCurrentPath!('chat-f')).toBe('/srv/agent')
+    expect(calls[0]).toEqual([
+      '-u',
+      '-L',
+      's',
+      '-f',
+      'c',
+      'display-message',
+      '-p',
+      '-t',
+      '=chat-f:',
+      '#{pane_current_path}',
+    ])
+  })
+
+  it('paneCurrentPath returns undefined on exit 1, empty output, or ctl throw', () => {
+    const exit1: TmuxExec = () => {
+      throw Object.assign(new Error('exit 1'), { status: 1 })
+    }
+    expect(
+      createRealTmuxCtl('/usr/bin/tmux', 's', 'c', exit1).paneCurrentPath!('a'),
+    ).toBeUndefined()
+
+    const empty: TmuxExec = () => '\n'
+    expect(
+      createRealTmuxCtl('/usr/bin/tmux', 's', 'c', empty).paneCurrentPath!('a'),
+    ).toBeUndefined()
+
+    const timeout: TmuxExec = () => {
+      throw Object.assign(new Error('timeout'), { code: 'ETIMEDOUT' })
+    }
+    expect(
+      createRealTmuxCtl('/usr/bin/tmux', 's', 'c', timeout).paneCurrentPath!('a'),
+    ).toBeUndefined()
+  })
 })
 
 describe('ensureUtf8Locale', () => {

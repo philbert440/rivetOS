@@ -1,9 +1,12 @@
 // Operator-owned terminal roster (~/.rivetos/den-term.json).
 //
-// The HTTP API accepts only roster KEYS — argv, cwd and env never travel over
-// the wire in either direction. Every command is spawned directly from its
-// argv array (no shell interpolation anywhere), so the roster file is the one
-// and only place an operator defines what a den terminal can run.
+// The HTTP API accepts only roster KEYS — a client never sends argv, cwd, or
+// env. POST /term may name an agent preset; the den derives the directory.
+// The spawn response reports that directory only when the request named a
+// preset. /term/list never carries cwd. The roster file itself stays off the
+// wire. Every command is spawned directly from its argv array (no
+// shell interpolation anywhere), so the roster file is the one and only place
+// an operator defines what a den terminal can run.
 //
 // The file is re-read lazily (stat per lookup, parse only on change) so
 // operator edits take effect without a restart. A malformed file is rejected
@@ -105,6 +108,20 @@ export function defaultRoster(): TermRoster {
       shell: { label: 'Shell', cmd: ['bash', '-l'], room: false },
     },
   }
+}
+
+/**
+ * Directory a fresh spawn of `key` uses when the caller did not record one
+ * and did not pass an override. Unknown key → roster cwd. A room entry is
+ * `homedir()` except `opencode`, whose file picker refuses `$HOME` and
+ * honours `entry.cwd`. Anything else uses the entry cwd, then the roster cwd.
+ * Shared by the term manager and `server.ts`'s `rosterCwdFor`.
+ */
+export function defaultSpawnCwd(roster: TermRoster, key: string): string {
+  if (!Object.hasOwn(roster.commands, key)) return roster.cwd
+  const entry = roster.commands[key]
+  if (entry.room) return key === 'opencode' && entry.cwd ? entry.cwd : homedir()
+  return entry.cwd ?? roster.cwd
 }
 
 /** argv[0] of the built-in roster entry for `key`. Undefined when the key is not a built-in. */

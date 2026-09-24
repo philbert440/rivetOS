@@ -1,11 +1,25 @@
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
-import { hostname, tmpdir } from 'node:os'
+import {
+  existsSync,
+  lstatSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  readlinkSync,
+  rmSync,
+  symlinkSync,
+  utimesSync,
+  writeFileSync,
+} from 'node:fs'
+import { homedir, hostname, tmpdir } from 'node:os'
 import { join } from 'node:path'
 import type { AddressInfo } from 'node:net'
 import { EventEmitter, once } from 'node:events'
 import { request } from 'node:http'
 import { WebSocket, WebSocketServer } from 'ws'
 import { afterEach, describe, expect, it } from 'vitest'
+import type { Pool } from 'pg'
+import type { AgentPreset } from '@rivetos/types'
+import { CodexProtocolDriver } from './harness/codex-protocol-driver.js'
 import { createDenServer, type DenServer } from './server.js'
 import type { DenConfig } from './config.js'
 import { baseTestDenConfig, emptyTls } from './test-config.js'
@@ -42,7 +56,9 @@ class FakeProc extends EventEmitter implements PtyProc {
 
 const servers: DenServer[] = []
 const dirs: string[] = []
+const fakeSpawns: { argv: string[]; cwd?: string }[] = []
 afterEach(async () => {
+  fakeSpawns.length = 0
   await Promise.all(servers.splice(0).map((s) => s.close()))
   dirs.splice(0).forEach((d) => rmSync(d, { recursive: true, force: true }))
 })
@@ -75,8 +91,11 @@ async function start(
     herdrCtl?: HerdrCtl
     allowedOrigins?: string[]
     allowedHosts?: string[]
+    /** Materialize a local shared dir (never the real /rivet-shared) and point sharedRoot at it. */
+    linkShared?: boolean
+    presetPool?: Pool
   } = {},
-): Promise<{ den: DenServer; base: string; port: number }> {
+): Promise<{ den: DenServer; base: string; port: number; stateDir: string; sharedDir?: string }> {
   const stateDir = mkdtempSync(join(tmpdir(), 'den-server-'))
   dirs.push(stateDir)
   const config: DenConfig = baseTestDenConfig(stateDir, {
@@ -108,17 +127,31 @@ async function start(
         commands: { codex: { label: 'Codex', cmd: opts.codexCmd, room: true } },
       }),
     )
+  let sharedDir: string | undefined
+  if (opts.linkShared) {
+    sharedDir = join(stateDir, 'shared')
+    mkdirSync(sharedDir)
+    config.sharedRoot = sharedDir
+  }
   let pid = 2000
   const den = createDenServer(config, {
     extraRoutes: opts.extraRoutes,
     extraUpgrades: opts.extraUpgrades,
-    ...(opts.term ? { ptySpawn: () => new FakeProc(++pid) } : {}),
+    ...(opts.term
+      ? {
+          ptySpawn: (argv: string[], spawnOpts: { cwd?: string }) => {
+            fakeSpawns.push({ argv: [...argv], cwd: spawnOpts.cwd })
+            return new FakeProc(++pid)
+          },
+        }
+      : {}),
     ...(opts.herdrCtl ? { herdrCtl: opts.herdrCtl } : {}),
+    ...(opts.presetPool ? { presetPool: opts.presetPool } : {}),
   })
   servers.push(den)
   await new Promise<void>((r) => den.server.listen(0, '127.0.0.1', r))
   const port = (den.server.address() as AddressInfo).port
-  return { den, base: `http://127.0.0.1:${port}`, port }
+  return { den, base: `http://127.0.0.1:${port}`, port, stateDir, sharedDir }
 }
 
 const EV = { v: 1, session: 's1', name: 'alpha', ts: 100, type: 'session.start', title: 'hello' }
@@ -129,6 +162,57 @@ const post = (base: string, path: string, body: unknown, headers: Record<string,
     headers: { 'content-type': 'application/json', ...headers },
     body: JSON.stringify(body),
   })
+
+/** Local codex app-server. Echoes thread/start cwd; thread/resume has none. */
+async function listenCodex(): Promise<{
+  url: string
+  starts: Record<string, unknown>[]
+  resumes: Record<string, unknown>[]
+  close: () => void
+}> {
+  const upstream = new WebSocketServer({ host: '127.0.0.1', port: 0 })
+  await once(upstream, 'listening')
+  const starts: Record<string, unknown>[] = []
+  const resumes: Record<string, unknown>[] = []
+  upstream.on('connection', (socket) => {
+    socket.on('message', (data) => {
+      const frame = JSON.parse(String(data)) as {
+        id?: number
+        method?: string
+        params?: Record<string, unknown>
+      }
+      if (frame.id === undefined) return
+      if (frame.method === 'thread/start') starts.push(frame.params ?? {})
+      if (frame.method === 'thread/resume') resumes.push(frame.params ?? {})
+      const cwd = frame.params?.cwd
+      socket.send(
+        JSON.stringify({
+          id: frame.id,
+          result:
+            frame.method === 'initialize'
+              ? {}
+              : {
+                  thread: {
+                    id: 'native-thread',
+                    cwd: typeof cwd === 'string' ? cwd : '/tmp',
+                    turns: [],
+                  },
+                },
+        }),
+      )
+    })
+  })
+  const address = upstream.address() as AddressInfo
+  return {
+    url: `ws://127.0.0.1:${address.port}`,
+    starts,
+    resumes,
+    close: () => {
+      for (const socket of upstream.clients) socket.terminate()
+      upstream.close()
+    },
+  }
+}
 
 describe('den-server', () => {
   it('ingests events, exposes sessions and state', async () => {
@@ -1089,5 +1173,848 @@ describe('browser origin policy', () => {
       req.end()
     })
     expect(status).toBe(403)
+  })
+})
+
+function storedPreset(over: Partial<AgentPreset> & Pick<AgentPreset, 'id' | 'name'>): AgentPreset {
+  return {
+    color: '',
+    model: '',
+    effort: '',
+    systemPrompt: '',
+    nodeBaseUrl: '',
+    createdAt: 1,
+    updatedAt: 1,
+    ...over,
+  }
+}
+
+describe('POST /term { agentId }', () => {
+  it('spawns in the preset directory with the preset command, model, and effort', async () => {
+    const { base, sharedDir } = await start('', 60_000, {
+      term: true,
+      linkShared: true,
+      mux: 'none',
+    })
+    const created = await post(base, '/api/agents', {
+      name: 'Reviewer',
+      harnessId: 'claude-code',
+      model: 'haiku',
+      effort: 'low',
+    })
+    expect(created.status).toBe(201)
+    const agent = ((await created.json()) as { agent: AgentPreset }).agent
+    expect(agent.directory).toBeTruthy()
+    const link = join(agent.directory!, 'rivet-shared')
+    expect(lstatSync(link).isSymbolicLink()).toBe(true)
+    expect(readlinkSync(link)).toBe(sharedDir)
+
+    fakeSpawns.length = 0
+    const spawned = await post(base, '/term', { agentId: agent.id })
+    expect(spawned.status).toBe(201)
+    const body = (await spawned.json()) as { command: string; cwd?: string; error?: string }
+    expect(body.command).toBe('claude')
+    expect(body.cwd).toBe(agent.directory)
+    expect(fakeSpawns).toHaveLength(1)
+    expect(fakeSpawns[0].cwd).toBe(agent.directory)
+    expect(fakeSpawns[0].argv).toEqual(['claude', '--model', 'haiku', '--effort', 'low'])
+
+    const cfg = await (await fetch(`${base}/term/config`)).text()
+    expect(cfg).not.toContain('cwd')
+    expect(cfg).not.toContain(agent.directory!)
+  })
+
+  it('lets an explicit command and model win', async () => {
+    const { base } = await start('', 60_000, { term: true, mux: 'none' })
+    const created = await post(base, '/api/agents', {
+      name: 'Reviewer',
+      harnessId: 'claude-code',
+      model: 'haiku',
+      effort: 'low',
+    })
+    const agent = ((await created.json()) as { agent: AgentPreset }).agent
+    fakeSpawns.length = 0
+    const modeled = await post(base, '/term', { agentId: agent.id, model: 'opus' })
+    expect(modeled.status).toBe(201)
+    expect(fakeSpawns[0].argv).toContain('--model')
+    expect(fakeSpawns[0].argv).toContain('opus')
+    expect(fakeSpawns[0].argv).not.toContain('haiku')
+    expect(fakeSpawns[0].argv).toContain('low')
+    expect(fakeSpawns[0].cwd).toBe(agent.directory)
+
+    fakeSpawns.length = 0
+    const shelled = await post(base, '/term', { agentId: agent.id, command: 'shell' })
+    expect(shelled.status).toBe(201)
+    expect(((await shelled.json()) as { command: string; cwd?: string }).command).toBe('shell')
+    expect(fakeSpawns[0].argv[0]).toBe('bash')
+    expect(fakeSpawns[0].cwd).toBe(agent.directory)
+  })
+
+  it('404s an unknown agent and 400s a bad agentId', async () => {
+    const { base } = await start('', 60_000, { term: true, mux: 'none' })
+    const missing = await post(base, '/term', { agentId: 'no-such-agent' })
+    expect(missing.status).toBe(404)
+    expect(await missing.json()).toEqual({ error: 'agent not found' })
+    expect((await post(base, '/term', { agentId: '../x' })).status).toBe(400)
+    expect((await post(base, '/term', { agentId: '' })).status).toBe(400)
+    expect((await post(base, '/term', { agentId: 4 })).status).toBe(400)
+    expect(fakeSpawns).toEqual([])
+  })
+
+  it('409s a preset hosted on another node', async () => {
+    const { base, stateDir } = await start('', 60_000, { term: true, mux: 'none' })
+    writeFileSync(
+      join(stateDir, 'agents.json'),
+      JSON.stringify({
+        agents: [
+          storedPreset({
+            id: 'foreign',
+            name: 'Foreign',
+            harnessId: 'claude-code',
+            model: 'haiku',
+            effort: 'low',
+            directory: join(stateDir, 'agents', 'foreign'),
+            node: 'some-other-node',
+          }),
+        ],
+      }),
+    )
+    const res = await post(base, '/term', { agentId: 'foreign' })
+    expect(res.status).toBe(409)
+    expect(await res.json()).toEqual({
+      error: 'agent "Foreign" is hosted on some-other-node',
+      node: 'some-other-node',
+    })
+    expect(fakeSpawns).toEqual([])
+  })
+
+  it('409s a preset with no directory and 500s when the directory cannot be created', async () => {
+    const { base, stateDir } = await start('', 60_000, { term: true, mux: 'none' })
+    const blocked = join(stateDir, 'not-a-directory')
+    writeFileSync(blocked, 'x')
+    writeFileSync(
+      join(stateDir, 'agents.json'),
+      JSON.stringify({
+        agents: [
+          storedPreset({ id: 'nodir', name: 'NoDir' }),
+          storedPreset({
+            id: 'blocked',
+            name: 'Blocked',
+            harnessId: 'claude-code',
+            directory: join(blocked, 'child'),
+          }),
+        ],
+      }),
+    )
+    const missing = await post(base, '/term', { agentId: 'nodir' })
+    expect(missing.status).toBe(409)
+    expect(await missing.json()).toEqual({ error: 'agent "NoDir" has no directory' })
+    const failed = await post(base, '/term', { agentId: 'blocked' })
+    expect(failed.status).toBe(500)
+    expect(((await failed.json()) as { error: string }).error).toMatch(
+      /^could not create agent directory: /,
+    )
+    expect(fakeSpawns).toEqual([])
+  })
+
+  it('400s a preset model that is not a token, naming the preset', async () => {
+    const { base, stateDir } = await start('', 60_000, { term: true, mux: 'none' })
+    const directory = join(stateDir, 'agents', 'bad-model')
+    mkdirSync(directory, { recursive: true })
+    writeFileSync(
+      join(stateDir, 'agents.json'),
+      JSON.stringify({
+        agents: [
+          storedPreset({
+            id: 'bad-model',
+            name: 'Bad Model',
+            harnessId: 'claude-code',
+            model: 'bad model',
+            effort: 'low',
+            directory,
+          }),
+        ],
+      }),
+    )
+    const res = await post(base, '/term', { agentId: 'bad-model' })
+    expect(res.status).toBe(400)
+    expect(await res.json()).toEqual({
+      error: 'agent "Bad Model" model must be a 1-64 token',
+    })
+    expect(fakeSpawns).toEqual([])
+  })
+
+  it('400s a preset effort that is not a token, naming the preset', async () => {
+    const directory = mkdtempSync(join(tmpdir(), 'den-bad-effort-'))
+    dirs.push(directory)
+    const queries: string[] = []
+    const pool = {
+      async query(sql: string) {
+        queries.push(sql)
+        if (sql.includes('to_regclass')) return { rows: [{ reg: 'ros_agent_presets' }] }
+        if (sql.includes('WHERE id =')) {
+          return {
+            rows: [
+              {
+                id: 'bad-effort',
+                name: 'Bad Effort',
+                color: '',
+                harness_id: 'claude-code',
+                model: '',
+                effort: 'bad effort',
+                system_prompt: '',
+                node: '',
+                directory,
+                shared_link: false,
+                node_base_url: '',
+                created_at: new Date(1),
+                updated_at: new Date(1),
+              },
+            ],
+          }
+        }
+        return { rows: [] }
+      },
+      async end() {
+        return undefined
+      },
+    } as unknown as Pool
+    const { base } = await start('', 60_000, { term: true, mux: 'none', presetPool: pool })
+    const started = Date.now()
+    while (!queries.some((sql) => sql.includes('to_regclass'))) {
+      if (Date.now() - started > 2_000) throw new Error('preset probe was not kicked')
+      await new Promise((resolve) => setTimeout(resolve, 10))
+    }
+    await new Promise((resolve) => setTimeout(resolve, 20))
+    const res = await post(base, '/term', { agentId: 'bad-effort' })
+    expect(res.status).toBe(400)
+    expect(await res.json()).toEqual({
+      error: 'agent "Bad Effort" effort must be a 1-64 token',
+    })
+    expect(fakeSpawns).toEqual([])
+  })
+
+  it('400s when the agent has no harness and no command was given', async () => {
+    const { base, stateDir } = await start('', 60_000, { term: true, mux: 'none' })
+    const directory = join(stateDir, 'agents', 'no-harness')
+    mkdirSync(directory, { recursive: true })
+    writeFileSync(
+      join(stateDir, 'agents.json'),
+      JSON.stringify({
+        agents: [
+          storedPreset({
+            id: 'no-harness',
+            name: 'Plain',
+            directory,
+          }),
+        ],
+      }),
+    )
+    const res = await post(base, '/term', { agentId: 'no-harness' })
+    expect(res.status).toBe(400)
+    expect(await res.json()).toEqual({
+      error: 'agent has no harness and no command was given',
+    })
+    expect(fakeSpawns).toEqual([])
+  })
+
+  it('503s when the preset store is down', async () => {
+    const queries: string[] = []
+    const pool = {
+      async query(sql: string) {
+        queries.push(sql)
+        if (sql.includes('to_regclass')) return { rows: [{ reg: 'ros_agent_presets' }] }
+        throw new Error('connection refused: secret-cause')
+      },
+      async end() {
+        return undefined
+      },
+    } as unknown as Pool
+    const { base } = await start('', 60_000, { term: true, mux: 'none', presetPool: pool })
+    const started = Date.now()
+    while (!queries.some((sql) => sql.includes('to_regclass'))) {
+      if (Date.now() - started > 2_000) throw new Error('preset probe was not kicked')
+      await new Promise((resolve) => setTimeout(resolve, 10))
+    }
+    await new Promise((resolve) => setTimeout(resolve, 20))
+    const res = await post(base, '/term', { agentId: 'reviewer' })
+    expect(res.status).toBe(503)
+    const body = (await res.json()) as { error?: string }
+    expect(body).toEqual({ error: 'agent registry unavailable' })
+    expect(JSON.stringify(body)).not.toMatch(/secret-cause/)
+    expect(fakeSpawns).toEqual([])
+  })
+
+  it('uses the normalised preset directory for the spawn and the response', async () => {
+    const { base, stateDir } = await start('', 60_000, { term: true, mux: 'none' })
+    const directory = join(stateDir, 'agents', 'slash')
+    mkdirSync(directory, { recursive: true })
+    writeFileSync(
+      join(stateDir, 'agents.json'),
+      JSON.stringify({
+        agents: [
+          storedPreset({
+            id: 'slash',
+            name: 'Slash',
+            harnessId: 'claude-code',
+            directory: `${directory}/`,
+          }),
+        ],
+      }),
+    )
+    fakeSpawns.length = 0
+    const res = await post(base, '/term', { agentId: 'slash' })
+    expect(res.status).toBe(201)
+    const body = (await res.json()) as { cwd?: string }
+    expect(body.cwd).toBe(directory)
+    expect(fakeSpawns[0].cwd).toBe(directory)
+    const raw = JSON.parse(readFileSync(join(stateDir, 'session-cwd.json'), 'utf8')) as {
+      entries: Record<string, { cwd: string }>
+    }
+    expect(Object.values(raw.entries).map((entry) => entry.cwd)).toEqual([directory])
+  })
+
+  it('keeps a moved preset in the recorded directory, force moves it, and a different preset 409s', async () => {
+    const { base } = await start('', 60_000, { term: true, mux: 'none' })
+    const created = await post(base, '/api/agents', {
+      name: 'Reviewer',
+      harnessId: 'claude-code',
+    })
+    const agent = ((await created.json()) as { agent: AgentPreset }).agent
+    const session = '11111111-1111-4111-8111-111111111111'
+    fakeSpawns.length = 0
+    const first = await post(base, '/term', { agentId: agent.id, session })
+    expect(first.status).toBe(201)
+    expect(fakeSpawns[0].cwd).toBe(agent.directory)
+    fakeProcs[fakeProcs.length - 1].emit('exit', 0)
+
+    const moved = join(agent.directory!, '..', 'reviewer-moved')
+    const patched = await fetch(`${base}/api/agents/${agent.id}`, {
+      method: 'PATCH',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ directory: moved }),
+    })
+    expect(patched.status).toBe(200)
+
+    fakeSpawns.length = 0
+    const stayed = await post(base, '/term', { agentId: agent.id, session, resume: session })
+    expect(stayed.status).toBe(409)
+    expect(await stayed.json()).toEqual({
+      error: `session runs in ${agent.directory}; edit the agent or start a new conversation`,
+    })
+    expect(fakeSpawns).toEqual([])
+
+    const plain = await post(base, '/term', { command: 'claude', session, resume: session })
+    expect(plain.status).toBe(201)
+    expect(await plain.json()).not.toHaveProperty('cwd')
+    expect(fakeSpawns[0].cwd).toBe(agent.directory)
+    fakeProcs[fakeProcs.length - 1].emit('exit', 0)
+
+    fakeSpawns.length = 0
+    const forced = await post(base, '/term', {
+      agentId: agent.id,
+      session,
+      resume: session,
+      force: true,
+    })
+    expect(forced.status).toBe(201)
+    const forcedBody = (await forced.json()) as { cwd?: string }
+    expect(forcedBody.cwd).toBe(moved)
+    expect(fakeSpawns[0].cwd).toBe(moved)
+    fakeProcs[fakeProcs.length - 1].emit('exit', 0)
+
+    const other = await post(base, '/api/agents', {
+      name: 'Other',
+      harnessId: 'claude-code',
+    })
+    const otherAgent = ((await other.json()) as { agent: AgentPreset }).agent
+    fakeSpawns.length = 0
+    const conflict = await post(base, '/term', {
+      agentId: otherAgent.id,
+      session,
+      resume: session,
+    })
+    expect(conflict.status).toBe(409)
+    expect(((await conflict.json()) as { error: string }).error).toContain(
+      `session runs in ${moved}`,
+    )
+    expect(fakeSpawns).toEqual([])
+  })
+
+  it('rejects force while the PTY is still running and does not report a cwd', async () => {
+    const { base } = await start('', 60_000, { term: true, mux: 'none' })
+    const created = await post(base, '/api/agents', {
+      name: 'Reviewer',
+      harnessId: 'claude-code',
+    })
+    const agent = ((await created.json()) as { agent: AgentPreset }).agent
+    const session = '44444444-4444-4444-8444-444444444444'
+    const first = await post(base, '/term', { agentId: agent.id, session })
+    expect(first.status).toBe(201)
+    const moved = join(agent.directory!, '..', 'reviewer-live-move')
+    const patched = await fetch(`${base}/api/agents/${agent.id}`, {
+      method: 'PATCH',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ directory: moved }),
+    })
+    expect(patched.status).toBe(200)
+    fakeSpawns.length = 0
+    const forced = await post(base, '/term', {
+      agentId: agent.id,
+      session,
+      resume: session,
+      force: true,
+    })
+    expect(forced.status).toBe(409)
+    const body = (await forced.json()) as { error?: string; cwd?: string }
+    expect(body).not.toHaveProperty('cwd')
+    expect(body.error).toBe(`session is running in ${agent.directory}; close it before moving it`)
+    expect(fakeSpawns).toEqual([])
+  })
+
+  it('reports the preset directory only when the live cwd is that directory', async () => {
+    const { base, stateDir } = await start('', 60_000, { term: true, mux: 'none' })
+    const session = 'live-default-cwd'
+    fakeSpawns.length = 0
+    const first = await post(base, '/term', { command: 'claude', session })
+    expect(first.status).toBe(201)
+    const firstBody = (await first.json()) as { id: string; cwd?: string }
+    expect(firstBody).not.toHaveProperty('cwd')
+    expect(fakeSpawns).toHaveLength(1)
+    expect(fakeSpawns[0].cwd).toBe(homedir())
+
+    const created = await post(base, '/api/agents', {
+      name: 'Elsewhere',
+      harnessId: 'claude-code',
+    })
+    const agent = ((await created.json()) as { agent: AgentPreset }).agent
+    expect(agent.directory).not.toBe(homedir())
+    const refused = await post(base, '/term', { agentId: agent.id, session })
+    expect(refused.status).toBe(409)
+    const refusedBody = (await refused.json()) as { error?: string; cwd?: string }
+    expect(refusedBody).not.toHaveProperty('cwd')
+    expect(refusedBody.error).toBe(
+      `session is running in ${homedir()}; edit the agent or start a new conversation`,
+    )
+    expect(fakeSpawns).toHaveLength(1)
+
+    const link = join(stateDir, 'home-link')
+    symlinkSync(homedir(), link)
+    const homeAgentRes = await post(base, '/api/agents', {
+      name: 'At Home',
+      harnessId: 'claude-code',
+      directory: link,
+      sharedLink: false,
+    })
+    expect(homeAgentRes.status).toBe(201)
+    const homeAgent = ((await homeAgentRes.json()) as { agent: AgentPreset }).agent
+    const ok = await post(base, '/term', { agentId: homeAgent.id, session })
+    expect(ok.status).toBe(201)
+    const okBody = (await ok.json()) as { id: string; cwd?: string }
+    expect(okBody.id).toBe(firstBody.id)
+    expect(okBody.cwd).toBe(link)
+    expect(fakeSpawns).toHaveLength(1)
+  })
+
+  it('a symlinked preset directory is the same place as the recorded real path', async () => {
+    const { base } = await start('', 60_000, { term: true, mux: 'none' })
+    const created = await post(base, '/api/agents', {
+      name: 'Reviewer',
+      harnessId: 'claude-code',
+    })
+    const agent = ((await created.json()) as { agent: AgentPreset }).agent
+    const session = '55555555-5555-4555-8555-555555555555'
+    const first = await post(base, '/term', { agentId: agent.id, session })
+    expect(first.status).toBe(201)
+    expect(fakeSpawns[0].cwd).toBe(agent.directory)
+    fakeProcs[fakeProcs.length - 1].emit('exit', 0)
+
+    const link = `${agent.directory}-link`
+    symlinkSync(agent.directory!, link)
+    const patched = await fetch(`${base}/api/agents/${agent.id}`, {
+      method: 'PATCH',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ directory: link }),
+    })
+    expect(patched.status).toBe(200)
+
+    fakeSpawns.length = 0
+    const resumed = await post(base, '/term', { agentId: agent.id, session, resume: session })
+    expect(resumed.status).toBe(201)
+    expect(fakeSpawns[0].cwd).toBe(agent.directory)
+  })
+
+  it('writes session-cwd.json and a later spawn resumes from it', async () => {
+    const { base, stateDir } = await start('', 60_000, { term: true, mux: 'none' })
+    const created = await post(base, '/api/agents', {
+      name: 'Reviewer',
+      harnessId: 'claude-code',
+    })
+    const agent = ((await created.json()) as { agent: AgentPreset }).agent
+    const session = '22222222-2222-4222-8222-222222222222'
+    const first = await post(base, '/term', { agentId: agent.id, session })
+    expect(first.status).toBe(201)
+    expect((await first.json()) as { cwd?: string }).toMatchObject({ cwd: agent.directory })
+    const file = join(stateDir, 'session-cwd.json')
+    const raw = JSON.parse(readFileSync(file, 'utf8')) as {
+      entries: Record<string, { cwd: string }>
+    }
+    expect(raw.entries[`claude:${session}`].cwd).toBe(agent.directory)
+    fakeProcs[fakeProcs.length - 1].emit('exit', 0)
+    fakeSpawns.length = 0
+    const second = await post(base, '/term', { command: 'claude', session, resume: session })
+    expect(second.status).toBe(201)
+    expect(await second.json()).not.toHaveProperty('cwd')
+    expect(fakeSpawns[0].cwd).toBe(agent.directory)
+    expect(fakeSpawns[0].argv).toContain('--resume')
+    expect(fakeSpawns[0].argv).toContain(session)
+  })
+
+  it('refuses a recorded resume whose directory is gone', async () => {
+    const { base, stateDir } = await start('', 60_000, { term: true, mux: 'none' })
+    const created = await post(base, '/api/agents', {
+      name: 'Reviewer',
+      harnessId: 'claude-code',
+    })
+    const agent = ((await created.json()) as { agent: AgentPreset }).agent
+    const session = '33333333-3333-4333-8333-333333333333'
+    expect((await post(base, '/term', { agentId: agent.id, session })).status).toBe(201)
+    fakeProcs[fakeProcs.length - 1].emit('exit', 0)
+    rmSync(agent.directory!, { recursive: true, force: true })
+    fakeSpawns.length = 0
+    const resumed = await post(base, '/term', { command: 'claude', session, resume: session })
+    expect(resumed.status).toBe(409)
+    expect(((await resumed.json()) as { error: string }).error).toContain(agent.directory!)
+    expect(fakeSpawns).toEqual([])
+    expect(existsSync(join(stateDir, 'session-cwd.json'))).toBe(true)
+  })
+
+  it('gives codex startSession the preset cwd on a new session and not on resume', async () => {
+    const upstream = new WebSocketServer({ host: '127.0.0.1', port: 0 })
+    await once(upstream, 'listening')
+    const starts: Record<string, unknown>[] = []
+    const resumes: Record<string, unknown>[] = []
+    let noteInitialized: (() => void) | undefined
+    upstream.on('connection', (socket) => {
+      socket.on('message', (data) => {
+        const frame = JSON.parse(String(data)) as {
+          id?: number
+          method?: string
+          params?: Record<string, unknown>
+        }
+        if (frame.method === 'initialized') noteInitialized?.()
+        if (frame.id === undefined) return
+        if (frame.method === 'thread/start') starts.push(frame.params ?? {})
+        if (frame.method === 'thread/resume') resumes.push(frame.params ?? {})
+        const cwd = frame.params?.cwd
+        socket.send(
+          JSON.stringify({
+            id: frame.id,
+            result:
+              frame.method === 'initialize'
+                ? {}
+                : {
+                    thread: {
+                      id: 'native-thread',
+                      cwd: typeof cwd === 'string' ? cwd : '/tmp',
+                      turns: [],
+                    },
+                  },
+          }),
+        )
+      })
+    })
+    try {
+      const address = upstream.address() as AddressInfo
+      const { base } = await start('', 60_000, {
+        term: true,
+        mux: 'none',
+        codexAppServerUrl: `ws://127.0.0.1:${address.port}`,
+      })
+      const created = await post(base, '/api/agents', {
+        name: 'Codex Agent',
+        harnessId: 'codex',
+      })
+      expect(created.status).toBe(201)
+      const agent = ((await created.json()) as { agent: AgentPreset }).agent
+      const spawned = await post(base, '/term', { agentId: agent.id })
+      expect(spawned.status).toBe(201)
+      const body = (await spawned.json()) as { id: string; denSession: string; cwd?: string }
+      expect(body.cwd).toBe(agent.directory)
+      expect(starts).toHaveLength(1)
+      expect(starts[0].cwd).toBe(agent.directory)
+      // New-session path: thread/start only. Length 0 is the assertion —
+      // `.every` on an empty list would pass without pinning a resume.
+      expect(resumes).toHaveLength(0)
+      expect((await fetch(`${base}/term?id=${body.id}`, { method: 'DELETE' })).status).toBe(200)
+      // Disconnect clears the loaded generation. The next spawn with resume
+      // sends thread/resume, and that request has no cwd. Snapshot the
+      // initialized count after the socket is gone so a late first
+      // `initialized` frame cannot satisfy the wait.
+      let initialized = 0
+      noteInitialized = () => {
+        initialized += 1
+      }
+      const closing = [...upstream.clients].map(
+        (socket) => new Promise<void>((resolve) => socket.once('close', () => resolve())),
+      )
+      for (const socket of [...upstream.clients]) socket.terminate()
+      await Promise.all(closing)
+      const seen = initialized
+      await new Promise<void>((resolve, reject) => {
+        const timer = setTimeout(
+          () => reject(new Error('codex app-server did not reconnect')),
+          5_000,
+        )
+        const finish = (): void => {
+          if (initialized <= seen) return
+          clearTimeout(timer)
+          noteInitialized = undefined
+          resolve()
+        }
+        noteInitialized = () => {
+          initialized += 1
+          finish()
+        }
+        finish()
+      })
+      const resumed = await post(base, '/term', {
+        agentId: agent.id,
+        session: body.denSession,
+        resume: body.denSession,
+      })
+      expect(resumed.status).toBe(201)
+      expect(starts).toHaveLength(1)
+      expect(starts[0].cwd).toBe(agent.directory)
+      expect(resumes).toHaveLength(1)
+      expect(resumes[0]).not.toHaveProperty('cwd')
+    } finally {
+      for (const socket of upstream.clients) socket.terminate()
+      upstream.close()
+    }
+  })
+
+  it('refuses to force a codex app-server thread into a different directory', async () => {
+    const upstream = new WebSocketServer({ host: '127.0.0.1', port: 0 })
+    await once(upstream, 'listening')
+    const starts: Record<string, unknown>[] = []
+    const resumes: Record<string, unknown>[] = []
+    upstream.on('connection', (socket) => {
+      socket.on('message', (data) => {
+        const frame = JSON.parse(String(data)) as {
+          id?: number
+          method?: string
+          params?: Record<string, unknown>
+        }
+        if (frame.id === undefined) return
+        if (frame.method === 'thread/start') starts.push(frame.params ?? {})
+        if (frame.method === 'thread/resume') resumes.push(frame.params ?? {})
+        const cwd = frame.params?.cwd
+        socket.send(
+          JSON.stringify({
+            id: frame.id,
+            result:
+              frame.method === 'initialize'
+                ? {}
+                : {
+                    thread: {
+                      id: 'native-thread',
+                      cwd: typeof cwd === 'string' ? cwd : '/tmp',
+                      turns: [],
+                    },
+                  },
+          }),
+        )
+      })
+    })
+    try {
+      const address = upstream.address() as AddressInfo
+      const { base, stateDir } = await start('', 60_000, {
+        term: true,
+        mux: 'none',
+        codexAppServerUrl: `ws://127.0.0.1:${address.port}`,
+      })
+      const created = await post(base, '/api/agents', {
+        name: 'Codex Agent',
+        harnessId: 'codex',
+      })
+      expect(created.status).toBe(201)
+      const agent = ((await created.json()) as { agent: AgentPreset }).agent
+      const spawned = await post(base, '/term', { agentId: agent.id })
+      expect(spawned.status).toBe(201)
+      const body = (await spawned.json()) as { denSession: string; cwd?: string }
+      expect(body.cwd).toBe(agent.directory)
+      expect(starts).toHaveLength(1)
+      expect(resumes).toHaveLength(0)
+      expect((await fetch(`${base}/term?id=${body.denSession}`, { method: 'DELETE' })).status).toBe(
+        200,
+      )
+      const moved = join(agent.directory!, '..', 'codex-moved')
+      const patched = await fetch(`${base}/api/agents/${agent.id}`, {
+        method: 'PATCH',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ directory: moved }),
+      })
+      expect(patched.status).toBe(200)
+      const file = join(stateDir, 'session-cwd.json')
+      const before = readFileSync(file, 'utf8')
+      fakeSpawns.length = 0
+      const forced = await post(base, '/term', {
+        agentId: agent.id,
+        session: body.denSession,
+        force: true,
+      })
+      expect(forced.status).toBe(409)
+      expect(await forced.json()).toEqual({
+        error: `session runs in ${agent.directory}; edit the agent or start a new conversation`,
+      })
+      expect(resumes).toHaveLength(0)
+      expect(starts).toHaveLength(1)
+      expect(fakeSpawns).toEqual([])
+      expect(readFileSync(file, 'utf8')).toBe(before)
+    } finally {
+      for (const socket of upstream.clients) socket.terminate()
+      upstream.close()
+    }
+  })
+
+  it('refuses a codex preset when the thread was started with nothing recorded', async () => {
+    const app = await listenCodex()
+    try {
+      const { base, stateDir } = await start('', 60_000, {
+        term: true,
+        mux: 'none',
+        codexAppServerUrl: app.url,
+      })
+      const session = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa'
+      const spawned = await post(base, '/term', { command: 'codex', session })
+      expect(spawned.status).toBe(201)
+      const body = (await spawned.json()) as { denSession: string; cwd?: string }
+      expect(body.denSession).toBe(session)
+      expect(body).not.toHaveProperty('cwd')
+      expect(app.starts).toHaveLength(1)
+      expect(app.resumes).toHaveLength(0)
+      const file = join(stateDir, 'session-cwd.json')
+      if (existsSync(file)) {
+        const raw = JSON.parse(readFileSync(file, 'utf8')) as {
+          entries: Record<string, unknown>
+        }
+        expect(raw.entries[`codex:${session}`]).toBeUndefined()
+      }
+      expect((await fetch(`${base}/term?id=${body.denSession}`, { method: 'DELETE' })).status).toBe(
+        200,
+      )
+      const created = await post(base, '/api/agents', {
+        name: 'Codex Elsewhere',
+        harnessId: 'codex',
+      })
+      const agent = ((await created.json()) as { agent: AgentPreset }).agent
+      expect(agent.directory).not.toBe(homedir())
+      const spawnsBefore = fakeSpawns.length
+      const moved = await post(base, '/term', { agentId: agent.id, session })
+      expect(moved.status).toBe(409)
+      expect(await moved.json()).toEqual({
+        error: `session runs in ${homedir()}; edit the agent or start a new conversation`,
+      })
+      expect(app.resumes).toHaveLength(0)
+      expect(app.starts).toHaveLength(1)
+      expect(fakeSpawns).toHaveLength(spawnsBefore)
+    } finally {
+      app.close()
+    }
+  })
+
+  it('refuses a codex preset when the record matches but the binding cwd does not', async () => {
+    const app = await listenCodex()
+    try {
+      const { base, stateDir } = await start('', 60_000, {
+        term: true,
+        mux: 'none',
+        codexAppServerUrl: app.url,
+      })
+      const created = await post(base, '/api/agents', {
+        name: 'Codex Agent',
+        harnessId: 'codex',
+      })
+      const agent = ((await created.json()) as { agent: AgentPreset }).agent
+      const session = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb'
+      const spawned = await post(base, '/term', { agentId: agent.id, session })
+      expect(spawned.status).toBe(201)
+      expect((await spawned.json()) as { cwd?: string }).toMatchObject({ cwd: agent.directory })
+      expect(app.starts).toHaveLength(1)
+      expect(app.resumes).toHaveLength(0)
+      expect((await fetch(`${base}/term?id=${session}`, { method: 'DELETE' })).status).toBe(200)
+      const moved = join(agent.directory!, '..', 'codex-binding')
+      const patched = await fetch(`${base}/api/agents/${agent.id}`, {
+        method: 'PATCH',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ directory: moved }),
+      })
+      expect(patched.status).toBe(200)
+      const file = join(stateDir, 'session-cwd.json')
+      const raw = JSON.parse(readFileSync(file, 'utf8')) as {
+        v: number
+        entries: Record<string, { cwd: string; at: number }>
+      }
+      expect(raw.entries[`codex:${session}`].cwd).toBe(agent.directory)
+      raw.entries[`codex:${session}`].cwd = moved
+      writeFileSync(file, JSON.stringify(raw))
+      const future = new Date(Date.now() + 10_000)
+      utimesSync(file, future, future)
+      fakeSpawns.length = 0
+      const refused = await post(base, '/term', { agentId: agent.id, session })
+      expect(refused.status).toBe(409)
+      expect(await refused.json()).toEqual({
+        error: `session runs in ${agent.directory}; edit the agent or start a new conversation`,
+      })
+      expect(app.resumes).toHaveLength(0)
+      expect(app.starts).toHaveLength(1)
+      expect(fakeSpawns).toEqual([])
+    } finally {
+      app.close()
+    }
+  })
+
+  it('fails closed when codex getSession throws and nothing is recorded', async () => {
+    const app = await listenCodex()
+    const original = CodexProtocolDriver.prototype.getSession
+    try {
+      const { base, stateDir } = await start('', 60_000, {
+        term: true,
+        mux: 'none',
+        codexAppServerUrl: app.url,
+      })
+      const session = 'cccccccc-cccc-4ccc-8ccc-cccccccccccc'
+      const spawned = await post(base, '/term', { command: 'codex', session })
+      expect(spawned.status).toBe(201)
+      expect(await spawned.json()).not.toHaveProperty('cwd')
+      expect((await fetch(`${base}/term?id=${session}`, { method: 'DELETE' })).status).toBe(200)
+      const file = join(stateDir, 'session-cwd.json')
+      if (existsSync(file)) {
+        const raw = JSON.parse(readFileSync(file, 'utf8')) as {
+          entries: Record<string, unknown>
+        }
+        expect(raw.entries[`codex:${session}`]).toBeUndefined()
+      }
+      const created = await post(base, '/api/agents', {
+        name: 'Codex Elsewhere',
+        harnessId: 'codex',
+      })
+      const agent = ((await created.json()) as { agent: AgentPreset }).agent
+      CodexProtocolDriver.prototype.getSession = () =>
+        Promise.reject(new Error('session directory unavailable'))
+      fakeSpawns.length = 0
+      const refused = await post(base, '/term', { agentId: agent.id, session })
+      expect(refused.status).toBe(503)
+      const body = (await refused.json()) as { error?: string; cwd?: string }
+      expect(body).not.toHaveProperty('cwd')
+      expect(body.error).toBe('session directory unavailable')
+      expect(app.resumes).toHaveLength(0)
+      expect(app.starts).toHaveLength(1)
+      expect(fakeSpawns).toEqual([])
+    } finally {
+      CodexProtocolDriver.prototype.getSession = original
+      app.close()
+    }
   })
 })

@@ -22,7 +22,10 @@
 //
 // Security posture (this is a shell as the service user behind a web page —
 // every rule here is deliberate):
-//   - only roster KEYS come in over HTTP; argv/cwd/env are operator-owned
+//   - only roster KEYS come in over HTTP; a client never sends a raw cwd.
+//     An agent preset id is resolved to a directory by the HTTP layer.
+//     The spawn response reports that directory only for that preset;
+//     /term/list does not. argv/env stay operator-owned.
 //   - argv is spawned directly, never through a shell (tmux CREATE wraps the
 //     harness in `/bin/sh -c` only to source a 0600 env file — credentials
 //     never appear on the tmux client argv / `ps`)
@@ -40,12 +43,14 @@
 import {
   appendFileSync,
   chmodSync,
+  existsSync,
   mkdirSync,
   readdirSync,
   statSync,
   unlinkSync,
   writeFileSync,
 } from 'node:fs'
+import { canonicalPath, validateDirectory } from '@rivetos/agent-registry'
 import { homedir, hostname } from 'node:os'
 import { randomBytes } from 'node:crypto'
 import { basename, join, resolve } from 'node:path'
@@ -63,7 +68,7 @@ import {
   type ContextSource,
 } from './context-window.js'
 import type { PtyProc, PtySpawn } from './pty.js'
-import { builtinRosterArgv0, type TermRoster } from './roster.js'
+import { builtinRosterArgv0, defaultSpawnCwd, type TermRoster } from './roster.js'
 import {
   classifyExistingTmuxSession,
   createRealTmuxCtl,
@@ -114,7 +119,13 @@ import type { HarnessStatusFrame } from '@rivetos/types'
 export class TermSpawnError extends Error {
   constructor(
     public readonly code:
-      'unknown-command' | 'cap' | 'user-mismatch' | 'tmux-unavailable' | 'herdr',
+      | 'unknown-command'
+      | 'cap'
+      | 'user-mismatch'
+      | 'tmux-unavailable'
+      | 'herdr'
+      | 'cwd-missing'
+      | 'cwd-live',
     message: string,
   ) {
     super(message)
@@ -136,9 +147,25 @@ export interface TermManagerDeps {
   /** Does this harness already have an on-disk session with this id? Decides
    *  --resume vs --session-id on re-spawn (#318 review). Default: never. */
   sessionExists?: (command: string, id: string) => boolean
-  /** Recorded project cwd for a stored session. Qwen `--resume` is cwd-scoped
-   *  and must run in this directory, not homedir. Default: none. */
+  /** Recorded project cwd for a stored session. Resume looks up the
+   *  harness-native id, then the conversation join key, then denSession
+   *  (they coincide for a room session — the join key IS the den session).
+   *  Qwen `--resume` is cwd-scoped and must run in this directory; every
+   *  other harness uses the same lookup so an agent directory survives a
+   *  respawn. Default: none. */
   sessionCwd?: (command: string, id: string) => string | undefined
+  /** Persist `cwd` after a successful fresh spawn outside the roster default,
+   *  and on a forced move even when the destination is the default. Omitted
+   *  on tmux/herdr reattach — that harness is still running, and the in-memory
+   *  record takes the live directory instead. A throw is logged and does not
+   *  fail the spawn — the process is already running. Also used to copy the
+   *  record onto a harness-native id. */
+  recordSessionCwd?: (command: string, id: string, cwd: string) => void
+  /** Drop a room's recorded cwd. A fresh spawn that lands in the roster
+   *  default calls this so a stale preset directory cannot outlive the
+   *  process. A missing entry is a no-op. A throw is logged and does not
+   *  fail the spawn. */
+  forgetSessionCwd?: (command: string, id: string) => void
   /** Attach an existing protocol session through the harness native TUI. */
   harnessArgv?: (command: string, session: string, argv: string[]) => string[] | undefined
   /** tmux control seam (T1): injected by tests so unit tests never spawn a
@@ -169,6 +196,8 @@ export interface PtyInfo {
   id: string
   denSession: string
   command: string
+  /** Directory this PTY was spawned in. */
+  cwd?: string
   /** Child pid. Absent on client-less persisted rows when tmux didn't
    *  report a pane pid — never a fake 0. */
   pid?: number
@@ -353,6 +382,8 @@ export interface TermManager {
     model?: string,
     effort?: string,
     cwdOverride?: string,
+    /** Resume into `cwdOverride` even when a recorded cwd exists. */
+    forceCwd?: boolean,
   ): PtyInfo | Promise<PtyInfo>
   /** Resolved mux after construct-time fallback (herdr→tmux→none). */
   mux(): 'tmux' | 'herdr' | 'none'
@@ -1650,6 +1681,7 @@ export function createTermManager(config: DenConfig, deps: TermManagerDeps): Ter
       id: r.id,
       denSession: r.denSession,
       command: r.command,
+      cwd: r.cwd,
       pid: r.pid,
       attached: r.attached.size,
       createdAt: r.createdAt,
@@ -1817,6 +1849,29 @@ export function createTermManager(config: DenConfig, deps: TermManagerDeps): Ter
     onExit(r, null)
   }
 
+  /** One log line per command+id+bad value. A later edit logs again. */
+  const loggedInvalidCwd = new Set<string>()
+  const persistSessionCwd = (command: string, id: string, dir: string): void => {
+    try {
+      deps.recordSessionCwd?.(command, id, dir)
+    } catch (err) {
+      // The process is already running (or the copy is best-effort). A full
+      // disk must not turn a live session into a failed request.
+      deps.log(
+        `[den-server] term: session cwd persist failed for ${command}:${id}: ${err instanceof Error ? err.message : String(err)}`,
+      )
+    }
+  }
+  const forgetSessionCwd = (command: string, id: string): void => {
+    try {
+      deps.forgetSessionCwd?.(command, id)
+    } catch (err) {
+      deps.log(
+        `[den-server] term: session cwd forget failed for ${command}:${id}: ${err instanceof Error ? err.message : String(err)}`,
+      )
+    }
+  }
+
   return {
     spawn(
       rosterKey,
@@ -1830,7 +1885,11 @@ export function createTermManager(config: DenConfig, deps: TermManagerDeps): Ter
       model,
       effort,
       cwdOverride,
+      forceCwd,
     ): PtyInfo | Promise<PtyInfo> {
+      // Normalised once. Compared in canonical form so a symlink and the
+      // physical path of the same directory are not treated as a move.
+      const override = validateDirectory(cwdOverride)
       // Spawn-or-get: a conversation's PTY is a singleton keyed by `session`.
       // Re-entering Terminal (or chat inject) for a live conversation reuses
       // the same harness rather than spawning a second (seamless modes).
@@ -1858,6 +1917,17 @@ export function createTermManager(config: DenConfig, deps: TermManagerDeps): Ter
           if (existing.agentPane && existing.agentEnded) {
             endHarnessPane(existing)
           } else {
+            // The child is already running. Neither force nor a plain preset
+            // directory can chdir it; reporting the preset directory would be
+            // a lie. The same directory reached through a symlink is not a move.
+            if (override && canonicalPath(existing.cwd) !== canonicalPath(override)) {
+              throw new TermSpawnError(
+                'cwd-live',
+                forceCwd
+                  ? `session is running in ${existing.cwd}; close it before moving it`
+                  : `session is running in ${existing.cwd}; edit the agent or start a new conversation`,
+              )
+            }
             return info(existing)
           }
         }
@@ -1907,26 +1977,114 @@ export function createTermManager(config: DenConfig, deps: TermManagerDeps): Ter
       // The conversation join key IS the den session, so den (?session), the
       // capture hooks (RIVETOS_SESSION_KEY), and this PTY all share one id.
       const denSession = session ?? `den-${id}`
-      // Harness sessions (room: true) spawn in the user's home. OpenCode is
-      // the exception: its file picker refuses `$HOME`, so honour `entry.cwd`
-      // for the `opencode` roster command only. Qwen sessions are cwd-scoped
-      // (`--resume` from another dir prints "No saved session found" and
-      // exits 0), so a resume uses the transcript's recorded cwd — via the
-      // driver's spawn override (`cwdOverride`) or `sessionCwd` for /term
-      // drawer spawns. New qwen sessions stay at homedir like pi.
+      // Fresh-spawn directory. Room entries use homedir except opencode
+      // (its file picker refuses `$HOME`). An explicit override (the agent
+      // preset directory, or a driver's cwd) wins for a NEW session. On a
+      // resume the recorded cwd wins over that override unless `forceCwd` —
+      // for every harness, including qwen, whose transcript cwd is a recorded
+      // cwd. Lookup order is the harness-native id, then the conversation
+      // join key, then denSession. For a room session the join key IS the
+      // den session (`denSession = session ?? den-${id}`), so the last two
+      // coincide. They differ when `resume` names a native id that is not
+      // the join key. A brand-new session has no resumeNative, so sessionCwd
+      // is not consulted — a new qwen session stays at homedir even if a
+      // lookup would return a directory.
       const resumeNative =
         resume || (session && deps.sessionExists?.(key, session) ? session : undefined)
-      const recordedCwd =
-        key === 'qwen' && resumeNative ? deps.sessionCwd?.(key, resumeNative) : undefined
-      const explicitCwd = cwdOverride?.trim() || recordedCwd?.trim()
-      const cwd =
-        key === 'qwen' && explicitCwd
-          ? explicitCwd
-          : entry.room
-            ? key === 'opencode' && entry.cwd
-              ? entry.cwd
-              : homedir()
-            : (entry.cwd ?? roster.cwd)
+      const invalidRecorded = (id: string, raw: string): void => {
+        const mark = `${key}:${id}\0${raw}`
+        if (loggedInvalidCwd.has(mark)) return
+        loggedInvalidCwd.add(mark)
+        deps.log(
+          `[den-server] term: recorded cwd for ${key}:${id} ignored: not an absolute directory`,
+        )
+      }
+      // A recorded value that is not an absolute directory is ignored (the
+      // spawn falls through to the override or the roster default). A
+      // recorded absolute directory that is gone is a hard error — never a
+      // silent resume in the default directory, and never a 201 for a child
+      // that dies on chdir. `forceCwd` is opting into a different directory,
+      // so a missing recorded one is not consulted. It is still remembered
+      // so a live reattach can name the directory the harness is in.
+      let recordedCwd: string | undefined
+      let missingRecorded: string | undefined
+      if (resumeNative) {
+        const seen = new Set<string>()
+        for (const id of [resumeNative, session, denSession]) {
+          if (!id || seen.has(id)) continue
+          seen.add(id)
+          const raw = deps.sessionCwd?.(key, id)?.trim()
+          if (!raw) continue
+          const validated = validateDirectory(raw)
+          if (!validated) {
+            invalidRecorded(id, raw)
+            continue
+          }
+          if (!existsSync(validated)) {
+            if (forceCwd && override) {
+              missingRecorded = validated
+              break
+            }
+            throw new TermSpawnError(
+              'cwd-missing',
+              `recorded directory does not exist: ${validated}`,
+            )
+          }
+          recordedCwd = validated
+          break
+        }
+      }
+      // Resume keeps the directory the session was actually started in.
+      // A preset's current directory (`cwdOverride`) must not move it unless
+      // the caller passes forceCwd AND the destination is a different
+      // directory. Qwen records `process.cwd()` (the physical path); a preset
+      // directory under a symlink is the same place and is not a move.
+      const defaultCwd = defaultSpawnCwd(roster, key)
+      const sameDirectory = (a: string, b: string): boolean => canonicalPath(a) === canonicalPath(b)
+      const forcing = Boolean(
+        forceCwd && override && !(recordedCwd && sameDirectory(recordedCwd, override)),
+      )
+      const cwd = (forcing ? override : recordedCwd) || override || defaultCwd
+      // A live mux session is already running; attach does not chdir it.
+      // The in-memory record must name where that process is, not the spawn
+      // cwd (a plain reattach has no resumeNative, so the lookup above never
+      // ran and `cwd` is the roster default). tmux reports the pane path;
+      // herdr has no equivalent and keeps the room record. Order: pane path,
+      // room record by session ?? denSession, the resume lookup, the roster
+      // default. A brand-new session still does not consult the store for
+      // its spawn cwd. Throw before the attach client is spawned.
+      // spawnInflight was added by the mux block below — clear it so a
+      // refused move does not wedge the session on 'cap'.
+      const liveDirectory = (): string => {
+        if (tmux && !herdr && tmuxName) {
+          try {
+            const pane = validateDirectory(tmux.paneCurrentPath?.(tmuxName)?.trim())
+            if (pane) return pane
+          } catch {
+            // Query failed. The room record is the next best name.
+          }
+        }
+        const id = session ?? denSession
+        const raw = deps.sessionCwd?.(key, id)?.trim()
+        if (raw) {
+          const validated = validateDirectory(raw)
+          if (!validated) invalidRecorded(id, raw)
+          else return validated
+        }
+        return recordedCwd ?? missingRecorded ?? defaultCwd
+      }
+      const refuseLiveMove = (): void => {
+        if (!persisted || !override) return
+        const liveDir = liveDirectory()
+        if (sameDirectory(liveDir, override)) return
+        spawnInflight.delete(denSession)
+        throw new TermSpawnError(
+          'cwd-live',
+          forceCwd
+            ? `session is running in ${liveDir}; close it before moving it`
+            : `session is running in ${liveDir}; edit the agent or start a new conversation`,
+        )
+      }
 
       // tmux reattach path (T1): if a tmux session for this den session
       // already exists on our socket, the harness is STILL RUNNING (it
@@ -2044,6 +2202,7 @@ export function createTermManager(config: DenConfig, deps: TermManagerDeps): Ter
           throw e
         }
       }
+      refuseLiveMove()
       const env: Record<string, string> = {}
       // Keys the manager SETS OR OVERRIDES for the harness — under tmux,
       // non-credential keys ride as `-e KEY=VAL` so an EXISTING tmux server
@@ -2379,6 +2538,9 @@ export function createTermManager(config: DenConfig, deps: TermManagerDeps): Ter
                 // attach path does not source the create env file
               }
             }
+            // takeExisting just marked this a reattach. A force that the
+            // running harness cannot apply must not fall through to attach.
+            refuseLiveMove()
             spawnArgv = tmuxAttachArgv(tmuxSocket, tmuxConfPath, tmuxName)
             applyTmuxWindowSize()
             proc = deps.spawn(spawnArgv, { cwd, env, cols: spawnCols, rows: spawnRows })
@@ -2441,13 +2603,17 @@ export function createTermManager(config: DenConfig, deps: TermManagerDeps): Ter
 
         // paneDecision (above) is the single create/reattach resolution.
         const isAgentPane = Boolean(herdr) && paneDecision.agentPane
+        // Reattach does not chdir. The record names the directory the
+        // harness is already in, which is not the spawn `cwd` when this
+        // request carried no resume id.
+        const recordCwd = persisted ? liveDirectory() : cwd
         const r: PtyRecord = {
           id,
           denSession,
           command: recordKey,
           room: recordEntry.room,
           argv,
-          cwd,
+          cwd: recordCwd,
           remote,
           pid: proc.pid,
           proc,
@@ -2529,6 +2695,25 @@ export function createTermManager(config: DenConfig, deps: TermManagerDeps): Ter
         // type that prompt into until a session window exists. The harness's
         // own events land in the same room via RIVET_DEN_SESSION and take over.
         // On reattach this follows the tagged entry, not the request.
+        // Record before the synthetic session.start. Adopting drivers copy the
+        // room key onto the native id from that event, and the copy misses if
+        // the room key is not in the store yet. Not on tmux/herdr reattach:
+        // that harness is still running and the in-memory record already
+        // names the live directory. A forced move writes the destination even
+        // when it is the roster default — otherwise the old directory stays
+        // recorded and the next resume goes back there. A plain spawn in the
+        // default forgets the room entry so a stale preset cannot survive,
+        // and still carries no cwd in the response. A persist error is logged;
+        // the child is already up.
+        if (!persisted) {
+          const cwdIds = [denSession]
+          if (resumeNative && resumeNative !== denSession) cwdIds.push(resumeNative)
+          if (cwd !== defaultCwd || forcing) {
+            for (const cwdId of cwdIds) persistSessionCwd(key, cwdId, cwd)
+          } else {
+            for (const cwdId of cwdIds) forgetSessionCwd(key, cwdId)
+          }
+        }
         if (recordEntry.room)
           deps.ingest({
             v: 1,

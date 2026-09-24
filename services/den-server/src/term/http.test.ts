@@ -167,6 +167,7 @@ describe('term endpoints', () => {
     expect(typeof pty.pid).toBe('number')
     expect(typeof pty.createdAt).toBe('number')
     expect(pty).not.toHaveProperty('attach')
+    expect(pty).not.toHaveProperty('cwd')
     expect(spawns[0].argv).toEqual(['claude'])
     // cols/rows defaulted
     expect(spawns[0].opts).toMatchObject({ cols: 80, rows: 24 })
@@ -273,6 +274,7 @@ describe('term endpoints', () => {
       state: 'running',
     })
     expect(list.ptys[0]).not.toHaveProperty('attach')
+    expect(list.ptys[0]).not.toHaveProperty('cwd')
     expect((await fetch(`${base}/term?id=nope`, { method: 'DELETE' })).status).toBe(404)
     const del = await fetch(`${base}/term?id=${pty.id}`, { method: 'DELETE' })
     expect(del.status).toBe(200)

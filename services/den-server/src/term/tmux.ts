@@ -65,6 +65,13 @@ export interface TmuxCtl {
    *  server, unparseable output) — callers fall back to their own size.
    *  Optional: fakes that never attach don't need it. */
   windowSize?(name: string): { cols: number; rows: number } | undefined
+  /**
+   * `#{pane_current_path}` for the session's current pane — where the harness
+   * process is actually standing. Undefined when the query fails. Optional:
+   * fakes that never reattach don't need it. Callers prefer this over the
+   * room record; herdr has no equivalent and keeps the room record.
+   */
+  paneCurrentPath?(name: string): string | undefined
 }
 
 export interface TmuxSessionInfo {
@@ -505,6 +512,19 @@ export function createRealTmuxCtl(
         if (!Number.isFinite(cols) || !Number.isFinite(rows) || cols < 1 || rows < 1)
           return undefined
         return { cols, rows }
+      } catch {
+        return undefined
+      }
+    },
+    paneCurrentPath(name) {
+      // Same fail-open as windowSize: a wedged tmux must not abort an attach
+      // that list/has-session already approved. Callers fall back to the room
+      // record, then the roster default.
+      try {
+        const stdout = run(['display-message', '-p', '-t', `=${name}:`, '#{pane_current_path}'])
+        if (stdout === null) return undefined
+        const line = stdout.trim().split('\n')[0]?.trim() ?? ''
+        return line.length > 0 ? line : undefined
       } catch {
         return undefined
       }

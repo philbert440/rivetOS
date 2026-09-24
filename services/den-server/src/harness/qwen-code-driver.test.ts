@@ -120,6 +120,7 @@ function makeDriver(
     withPty?: boolean
     withEvents?: boolean
     cwd?: () => string | undefined
+    sessionCwd?: (command: string, id: string) => string | undefined
     sheetReaders?: SheetReaders
     transcript?: ReturnType<typeof fakeTranscript>
   } = {},
@@ -141,6 +142,7 @@ function makeDriver(
       : undefined,
     transcript: opts.transcript,
     cwd: opts.cwd ?? ((): string => '/home/example'),
+    sessionCwd: opts.sessionCwd,
     turnQuietMs: 0,
     sheetReaders: opts.sheetReaders ?? missingQwenFiles,
   })
@@ -219,10 +221,21 @@ describe('capability-false paths reject with capability_unsupported', () => {
     )
   })
 
-  it('rejects roster-owned start options rather than silently ignoring them', async () => {
-    const { driver } = makeDriver()
-    await expectUnsupported(() => driver.startSession({ cwd: '/elsewhere' }))
+  it('accepts cwd (11th spawn arg) and still rejects model', async () => {
+    const { driver, pty } = makeDriver()
+    await driver.startSession({ nativeSessionId: UUID, cwd: '/tmp/agent-workdir' })
+    expect(pty.spawns).toEqual([
+      { key: 'qwen', session: UUID, resume: undefined, cwd: '/tmp/agent-workdir' },
+    ])
     await expectUnsupported(() => driver.startSession({ model: 'qwen-27b' }))
+  })
+
+  it('rejects a relative cwd', async () => {
+    const { driver, pty } = makeDriver()
+    await expect(driver.startSession({ cwd: 'proj' })).rejects.toMatchObject({
+      code: 'bad_request',
+    })
+    expect(pty.spawns).toEqual([])
   })
 })
 
@@ -341,6 +354,22 @@ describe('resumeSession', () => {
     expect(pty.spawns).toEqual([
       { key: 'qwen', session: UUID, resume: UUID, cwd: '/home/example/proj' },
     ])
+  })
+
+  it('prefers the transcript cwd over sessionCwd', async () => {
+    const { driver } = makeDriver({
+      rows: [
+        {
+          id: UUID,
+          command: 'qwen',
+          title: 't',
+          updatedAt: 2,
+          cwd: '/home/example/proj',
+        },
+      ],
+      sessionCwd: () => '/somewhere/else',
+    })
+    expect((await driver.getSession(SID))?.cwd).toBe('/home/example/proj')
   })
 
   it('resumes a session the store cannot describe yet', async () => {

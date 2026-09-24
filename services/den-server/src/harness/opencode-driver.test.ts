@@ -97,6 +97,7 @@ function makeDriver(
     withPty?: boolean
     withEvents?: boolean
     cwd?: () => string | undefined
+    sessionCwd?: (command: string, id: string) => string | undefined
     now?: () => number
     sheetReaders?: SheetReaders
   } = {},
@@ -117,6 +118,7 @@ function makeDriver(
         }
       : undefined,
     cwd: opts.cwd ?? ((): string => '/home/rivet'),
+    sessionCwd: opts.sessionCwd,
     now: opts.now,
     turnQuietMs: 0,
     sheetReaders: opts.sheetReaders,
@@ -242,7 +244,9 @@ describe('identity + canonicalization', () => {
 
   it('lists store rows as canonical summaries', async () => {
     const { driver } = makeDriver({
-      rows: [{ id: NAT, command: 'opencode', title: 'review the PR', updatedAt: 1_700_000_000_000 }],
+      rows: [
+        { id: NAT, command: 'opencode', title: 'review the PR', updatedAt: 1_700_000_000_000 },
+      ],
     })
     const [summary] = await driver.listSessions()
     expect(summary).toMatchObject({
@@ -358,6 +362,41 @@ describe('adoption — how an opencode session enters the control plane', () => 
       title: 'Hermes',
     })
     expect(seen).toHaveLength(before)
+  })
+
+  it('adopts a session recorded in a preset directory, not only the roster cwd', async () => {
+    const now = 10_000
+    const preset = '/srv/agent-preset'
+    const f = makeDriver({
+      rows: [
+        {
+          id: NAT,
+          command: 'opencode',
+          title: 'preset',
+          updatedAt: now,
+          createdAt: now,
+          directory: preset,
+        },
+      ],
+      cwd: () => '/home/rivet',
+      sessionCwd: (command, id) => (command === 'opencode' && id === ROOM ? preset : undefined),
+      now: () => now,
+    })
+    const seen: HarnessEvent[] = []
+    f.driver.subscribeEvents((e) => seen.push(e))
+    f.emitDen({
+      v: 1,
+      session: ROOM,
+      harness: 'rivetos',
+      name: 'rivet-node:opencode',
+      type: 'session.start',
+      title: 'OpenCode',
+    })
+    expect(seen).toContainEqual({ type: 'session-updated', sessionId: SID, status: 'idle' })
+    await vi.waitFor(() => {
+      expect(seen.some((e) => e.type === 'session-created' && e.sessionId === SID)).toBe(true)
+    })
+    expect(await f.driver.getSession(SID)).toMatchObject({ sessionId: SID, status: 'idle' })
   })
 
   it('learns a fresh roster spawn’s native id from the newest session row for cwd', async () => {
@@ -525,7 +564,9 @@ describe('subscribe maps den AgentEvents onto the contract', () => {
     const seen: HarnessEvent[] = []
     const off = f.driver.subscribe(SID, (e) => seen.push(e))
 
-    f.emitDen(opencodeEvent(ROOM, NAT, { type: 'tool.start', tool: 'Bash', args: { command: 'ls' } }))
+    f.emitDen(
+      opencodeEvent(ROOM, NAT, { type: 'tool.start', tool: 'Bash', args: { command: 'ls' } }),
+    )
     f.emitDen(opencodeEvent(ROOM, NAT, { type: 'tool.end', tool: 'Bash' }))
     f.emitDen(opencodeEvent(ROOM, NAT, { type: 'turn.end' }))
     off()
@@ -664,8 +705,7 @@ runHarnessRotationConformance('opencode', () => {
     driver: fakes.driver,
     sessionId: SID,
     rotate: () => {
-      const next =
-        [NAT2, NAT3][minted++] ?? `ses_00000000${String(minted).padStart(16, '0')}`
+      const next = [NAT2, NAT3][minted++] ?? `ses_00000000${String(minted).padStart(16, '0')}`
       fakes.emitDen(opencodeEvent(ROOM, next, { type: 'session.start', title: 'opencode session' }))
       return `opencode:${next}` as SessionId
     },

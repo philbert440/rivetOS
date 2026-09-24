@@ -138,10 +138,19 @@ export class OpencodeDriver extends AdoptingPtyHarnessDriver<OpencodeStoreHost> 
   private readonly pendingSpawn = new Map<string, number>()
 
   private adoptFromStore(room: string): string | undefined {
-    const cwd = this.deps.cwd?.() ?? ''
+    // A preset directory is not the roster cwd. The session store is keyed
+    // by the directory the process was spawned in, which the cwd store
+    // recorded under the den room. Try that first, then the roster cwd.
+    const recorded = this.deps.sessionCwd?.(this.rosterCommand, room)
+    const rosterCwd = this.deps.cwd?.() ?? ''
     const since = (this.pendingSpawn.get(room) ?? this.now()) - 2_000
-    const id = this.deps.store.newestAfter?.(cwd, since)
-    if (id && OPENCODE_NATIVE_RE.test(id)) return id
+    const tried = new Set<string>()
+    for (const cwd of [recorded, rosterCwd]) {
+      if (cwd === undefined || tried.has(cwd)) continue
+      tried.add(cwd)
+      const id = this.deps.store.newestAfter?.(cwd, since)
+      if (id && OPENCODE_NATIVE_RE.test(id)) return id
+    }
     return undefined
   }
 

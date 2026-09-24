@@ -8,9 +8,13 @@
 // not uuids; and it ROTATES, which the shared conformance suite at the bottom
 // exercises end to end through a real registry.
 
+import { mkdtempSync, rmSync, utimesSync, writeFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 import { describe, expect, it, vi } from 'vitest'
 import { HarnessError, type HarnessEvent, type SessionId } from '@rivetos/types'
 import type { HarnessSession } from '../term/harness-sessions.js'
+import { createSessionCwdStore } from '../term/session-cwd.js'
 import { HermesDriver, type HermesPtyHost, type HermesStoreHost } from './hermes-driver.js'
 import type { DenAgentEventLike } from './pty-harness-driver.js'
 import { createHarnessRegistry, type HarnessRegistry } from './registry.js'
@@ -55,15 +59,16 @@ function fakeStore(rows: HarnessSession[] = []) {
 }
 
 function fakePty() {
-  const spawns: { key?: string; session?: string; resume?: string }[] = []
+  const spawns: { key?: string; session?: string; resume?: string; cwd?: string }[] = []
   const injects: { id: string; text: string; submit: boolean; interrupt?: boolean }[] = []
   const live = new Map<string, string>()
   let writable = true
   /** pty ids that refuse writes — the exited-but-not-yet-reaped record. */
   const dead = new Set<string>()
   const host: HermesPtyHost = {
-    spawn: (key, _cols, _rows, _remote, session, resume) => {
-      spawns.push({ key, session, resume })
+    spawn: (key, _cols, _rows, _remote, session, resume, ...rest) => {
+      const cwd = rest[4]
+      spawns.push({ key, session, resume, ...(typeof cwd === 'string' && cwd ? { cwd } : {}) })
       const id = `pty-${String(spawns.length)}`
       if (session) live.set(session, id)
       return { id, denSession: session ?? id }
@@ -92,6 +97,9 @@ function makeDriver(
     withPty?: boolean
     withEvents?: boolean
     cwd?: () => string | undefined
+    sessionCwd?: (command: string, id: string) => string | undefined
+    recordSessionCwd?: (command: string, id: string, cwd: string) => void
+    sessionCwdMtime?: () => number
   } = {},
 ): Fakes {
   const { rows = [], withPty = true, withEvents = true } = opts
@@ -110,6 +118,9 @@ function makeDriver(
         }
       : undefined,
     cwd: opts.cwd ?? ((): string => '/home/rivet'),
+    sessionCwd: opts.sessionCwd,
+    recordSessionCwd: opts.recordSessionCwd,
+    sessionCwdMtime: opts.sessionCwdMtime,
     turnQuietMs: 0,
   })
   return { driver, pty, store, emitDen: (ev) => emit(ev) }
@@ -370,6 +381,155 @@ describe('resumeSession', () => {
   it('rejects a session the harness store has never heard of', async () => {
     const { driver } = makeDriver()
     await expect(driver.resumeSession(SID)).rejects.toMatchObject({ code: 'invalid_session_id' })
+  })
+
+  it('a restarted driver (fresh room map) resumes into the directory recorded for the native id', async () => {
+    const preset = '/srv/agent-preset'
+    const recorded = new Map<string, string>()
+    const sessionCwd = (command: string, id: string): string | undefined =>
+      recorded.get(`${command}:${id}`)
+    const recordSessionCwd = (command: string, id: string, cwd: string): void => {
+      recorded.set(`${command}:${id}`, cwd)
+    }
+    recorded.set(`hermes:${ROOM}`, preset)
+    const first = makeDriver({ sessionCwd, recordSessionCwd, cwd: () => '/home/rivet' })
+    adopt(first, ROOM, NAT)
+    expect(recorded.get(`hermes:${NAT}`)).toBe(preset)
+    expect((await first.driver.getSession(SID))?.cwd).toBe(preset)
+
+    const second = makeDriver({
+      rows: [{ id: NAT, command: 'hermes', title: 't', updatedAt: 1 }],
+      sessionCwd,
+      recordSessionCwd,
+      cwd: () => '/home/rivet',
+    })
+    await second.driver.resumeSession(SID)
+    expect(second.pty.spawns).toEqual([{ key: 'hermes', session: NAT, resume: NAT, cwd: preset }])
+  })
+
+  it('retries a native cwd copy that failed instead of treating the pair as done', () => {
+    const preset = '/srv/agent-preset'
+    const recorded = new Map<string, string>()
+    recorded.set(`hermes:${ROOM}`, preset)
+    let fail = true
+    const f = makeDriver({
+      cwd: () => '/home/rivet',
+      sessionCwd: (command, id) => recorded.get(`${command}:${id}`),
+      recordSessionCwd: (command, id, cwd) => {
+        if (fail) throw new Error('ENOSPC')
+        recorded.set(`${command}:${id}`, cwd)
+      },
+    })
+    adopt(f, ROOM, NAT)
+    expect(recorded.get(`hermes:${NAT}`)).toBeUndefined()
+    fail = false
+    f.emitDen(hermesEvent(ROOM, NAT, { type: 'message.agent', text: 'later' }))
+    expect(recorded.get(`hermes:${NAT}`)).toBe(preset)
+  })
+
+  it('retries the native cwd copy once the room record appears', () => {
+    const recorded = new Map<string, string>()
+    const f = makeDriver({
+      cwd: () => '/home/rivet',
+      sessionCwd: (command, id) => recorded.get(`${command}:${id}`),
+      recordSessionCwd: (command, id, cwd) => {
+        recorded.set(`${command}:${id}`, cwd)
+      },
+    })
+    adopt(f, ROOM, NAT)
+    expect(recorded.get(`hermes:${NAT}`)).toBeUndefined()
+    recorded.set(`hermes:${ROOM}`, '/srv/later')
+    f.emitDen(hermesEvent(ROOM, NAT, { type: 'message.agent', text: 'later' }))
+    expect(recorded.get(`hermes:${NAT}`)).toBe('/srv/later')
+  })
+
+  it('does not re-read a missing room record until the store mtime changes', () => {
+    const recorded = new Map<string, string>()
+    let lookups = 0
+    let stamp = 1
+    const f = makeDriver({
+      cwd: () => '/home/rivet',
+      sessionCwd: (command, id) => {
+        lookups += 1
+        return recorded.get(`${command}:${id}`)
+      },
+      recordSessionCwd: (command, id, cwd) => {
+        recorded.set(`${command}:${id}`, cwd)
+      },
+      sessionCwdMtime: () => stamp,
+    })
+    adopt(f, ROOM, NAT)
+    expect(lookups).toBe(1)
+    f.emitDen(hermesEvent(ROOM, NAT, { type: 'message.agent', text: 'again' }))
+    expect(lookups).toBe(1)
+    recorded.set(`hermes:${ROOM}`, '/srv/later')
+    f.emitDen(hermesEvent(ROOM, NAT, { type: 'message.agent', text: 'still' }))
+    expect(lookups).toBe(1)
+    expect(recorded.get(`hermes:${NAT}`)).toBeUndefined()
+    stamp += 1
+    f.emitDen(hermesEvent(ROOM, NAT, { type: 'message.agent', text: 'now' }))
+    expect(recorded.get(`hermes:${NAT}`)).toBe('/srv/later')
+  })
+
+  it('discovers a room record another process wrote into the cwd store', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'den-hermes-cwd-'))
+    const file = join(dir, 'session-cwd.json')
+    const store = createSessionCwdStore(file)
+    let lookups = 0
+    try {
+      const f = makeDriver({
+        cwd: () => '/home/rivet',
+        sessionCwd: (command, id) => {
+          lookups += 1
+          return store.get(command, id)
+        },
+        recordSessionCwd: (command, id, cwd) => {
+          store.set(command, id, cwd)
+        },
+        sessionCwdMtime: () => store.generation(),
+      })
+      adopt(f, ROOM, NAT)
+      expect(lookups).toBe(1)
+      f.emitDen(hermesEvent(ROOM, NAT, { type: 'message.agent', text: 'again' }))
+      expect(lookups).toBe(1)
+      writeFileSync(
+        file,
+        JSON.stringify({
+          v: 1,
+          entries: { [`hermes:${ROOM}`]: { cwd: '/tmp/external-room', at: 1 } },
+        }),
+      )
+      const future = new Date(Date.now() + 10_000)
+      utimesSync(file, future, future)
+      f.emitDen(hermesEvent(ROOM, NAT, { type: 'message.agent', text: 'now' }))
+      // Room lookup, then the native-id check, once the generation moves.
+      expect(lookups).toBe(3)
+      expect(store.get('hermes', NAT)).toBe('/tmp/external-room')
+    } finally {
+      store.close()
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
+  it('copies again after a rotation drops the previous native pair', () => {
+    const preset = '/srv/agent-preset'
+    const recorded = new Map<string, string>()
+    recorded.set(`hermes:${ROOM}`, preset)
+    const f = makeDriver({
+      cwd: () => '/home/rivet',
+      sessionCwd: (command, id) => recorded.get(`${command}:${id}`),
+      recordSessionCwd: (command, id, cwd) => {
+        recorded.set(`${command}:${id}`, cwd)
+      },
+    })
+    adopt(f, ROOM, NAT)
+    expect(recorded.get(`hermes:${NAT}`)).toBe(preset)
+    recorded.delete(`hermes:${NAT}`)
+    f.emitDen(hermesEvent(ROOM, NAT2, { type: 'message.agent', text: 'rotate' }))
+    expect(recorded.get(`hermes:${NAT2}`)).toBe(preset)
+    recorded.delete(`hermes:${NAT}`)
+    f.emitDen(hermesEvent(ROOM, NAT, { type: 'message.agent', text: 'back' }))
+    expect(recorded.get(`hermes:${NAT}`)).toBe(preset)
   })
 
   it('keeps an adopted session in ITS den room rather than opening a second one', async () => {

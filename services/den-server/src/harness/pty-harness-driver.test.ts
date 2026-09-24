@@ -3103,3 +3103,31 @@ describe('sendUserTurn delivery confirm', () => {
     driver.close()
   })
 })
+
+describe('session cwd on summaries', () => {
+  it('uses sessionCwd when present and falls back to the roster cwd', async () => {
+    const recorded = new ClaudeCodeDriver({
+      store: fakeStore([{ id: UUID, command: 'claude', title: 't', updatedAt: 1 }]),
+      cwd: () => '/home/roster',
+      sessionCwd: (command, id) => (command === 'claude' && id === UUID ? '/srv/agent' : undefined),
+    })
+    const [summary] = await recorded.listSessions()
+    expect(summary.cwd).toBe('/srv/agent')
+
+    const rosterOnly = new ClaudeCodeDriver({
+      store: fakeStore([{ id: UUID, command: 'claude', title: 't', updatedAt: 1 }]),
+      cwd: () => '/home/roster',
+      sessionCwd: () => undefined,
+    })
+    expect((await rosterOnly.listSessions())[0].cwd).toBe('/home/roster')
+
+    const pty = fakePty()
+    const live = new ClaudeCodeDriver({
+      store: fakeStore([]),
+      pty: () => Promise.resolve(pty.host),
+      cwd: () => '/home/roster',
+      sessionCwd: () => '/srv/live',
+    })
+    expect((await live.startSession({ nativeSessionId: UUID })).cwd).toBe('/srv/live')
+  })
+})

@@ -1,0 +1,266 @@
+import {
+  mkdtempSync,
+  readdirSync,
+  readFileSync,
+  rmSync,
+  statSync,
+  utimesSync,
+  writeFileSync,
+} from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
+import { afterEach, describe, expect, it, vi } from 'vitest'
+import { createSessionCwdStore, SESSION_CWD_TOUCH_MS } from './session-cwd.js'
+
+const dirs: string[] = []
+afterEach(() => {
+  dirs.splice(0).forEach((d) => rmSync(d, { recursive: true, force: true }))
+})
+
+function tmp(): string {
+  const dir = mkdtempSync(join(tmpdir(), 'den-session-cwd-'))
+  dirs.push(dir)
+  return dir
+}
+
+describe('session cwd store', () => {
+  it('set/get round-trips and does not create the file until the first set', () => {
+    const dir = tmp()
+    const file = join(dir, 'session-cwd.json')
+    const store = createSessionCwdStore(file)
+    expect(store.get('claude', 'a')).toBeUndefined()
+    expect(readdirSync(dir)).toEqual([])
+    store.set('claude', 'sess-1', '/tmp/agent-a')
+    expect(store.get('claude', 'sess-1')).toBe('/tmp/agent-a')
+    expect(store.get('qwen', 'sess-1')).toBeUndefined()
+    const raw = JSON.parse(readFileSync(file, 'utf8')) as {
+      v: number
+      entries: Record<string, { cwd: string; at: number }>
+    }
+    expect(raw.v).toBe(1)
+    expect(raw.entries['claude:sess-1'].cwd).toBe('/tmp/agent-a')
+    expect(typeof raw.entries['claude:sess-1'].at).toBe('number')
+    store.close()
+  })
+
+  it('evicts the least-recently written entry at max', () => {
+    const dir = tmp()
+    const file = join(dir, 'session-cwd.json')
+    let t = 0
+    const store = createSessionCwdStore(file, { max: 2, now: () => ++t })
+    store.set('claude', '1', '/tmp/a')
+    store.set('claude', '2', '/tmp/b')
+    store.set('claude', '3', '/tmp/c')
+    expect(store.get('claude', '1')).toBeUndefined()
+    expect(store.get('claude', '2')).toBe('/tmp/b')
+    expect(store.get('claude', '3')).toBe('/tmp/c')
+    // refreshing an entry moves it to the front of the LRU
+    store.set('claude', '2', '/tmp/b2')
+    store.set('claude', '4', '/tmp/d')
+    expect(store.get('claude', '3')).toBeUndefined()
+    expect(store.get('claude', '2')).toBe('/tmp/b2')
+    expect(store.get('claude', '4')).toBe('/tmp/d')
+    const raw = JSON.parse(readFileSync(file, 'utf8')) as { entries: Record<string, unknown> }
+    expect(Object.keys(raw.entries).sort()).toEqual(['claude:2', 'claude:4'])
+  })
+
+  it('writes atomically as mode 0600 and leaves no tmp file', () => {
+    const dir = tmp()
+    const file = join(dir, 'nested', 'session-cwd.json')
+    const store = createSessionCwdStore(file)
+    store.set('claude', 'a', '/tmp/agent-a')
+    expect(statSync(file).mode & 0o777).toBe(0o600)
+    const names = readdirSync(join(dir, 'nested'))
+    expect(names.some((name) => name.includes('.tmp-'))).toBe(false)
+    expect(names).toContain('session-cwd.json')
+  })
+
+  it('quarantines a corrupt file and still accepts writes', () => {
+    const dir = tmp()
+    const file = join(dir, 'session-cwd.json')
+    writeFileSync(file, '{ not json')
+    const store = createSessionCwdStore(file)
+    expect(store.get('claude', 'a')).toBeUndefined()
+    expect(readdirSync(dir).some((name) => name.startsWith('session-cwd.json.corrupt-'))).toBe(true)
+    store.set('claude', 'a', '/tmp/agent-a')
+    expect(store.get('claude', 'a')).toBe('/tmp/agent-a')
+  })
+
+  it('quarantines a JSON file whose shape is wrong', () => {
+    const dir = tmp()
+    const file = join(dir, 'session-cwd.json')
+    writeFileSync(file, JSON.stringify({ v: 2, entries: {} }))
+    const store = createSessionCwdStore(file)
+    expect(store.get('claude', 'a')).toBeUndefined()
+    expect(readdirSync(dir).some((name) => name.startsWith('session-cwd.json.corrupt-'))).toBe(true)
+  })
+
+  it('re-reads when an operator edits the file', () => {
+    const dir = tmp()
+    const file = join(dir, 'session-cwd.json')
+    const store = createSessionCwdStore(file)
+    store.set('claude', 'a', '/tmp/agent-a')
+    const raw = JSON.parse(readFileSync(file, 'utf8')) as {
+      v: number
+      entries: Record<string, { cwd: string; at: number }>
+    }
+    raw.entries['claude:a'].cwd = '/tmp/edited'
+    writeFileSync(file, JSON.stringify(raw))
+    const future = new Date(Date.now() + 10_000)
+    utimesSync(file, future, future)
+    expect(store.get('claude', 'a')).toBe('/tmp/edited')
+  })
+
+  it('get refreshes recency so a session in use is not evicted', () => {
+    const dir = tmp()
+    const file = join(dir, 'session-cwd.json')
+    let t = 0
+    const store = createSessionCwdStore(file, { max: 2, now: () => t })
+    t = 1
+    store.set('claude', 'old', '/tmp/old')
+    t = 2
+    store.set('claude', 'mid', '/tmp/mid')
+    t = 2 + SESSION_CWD_TOUCH_MS
+    expect(store.get('claude', 'old')).toBe('/tmp/old')
+    t += 1
+    store.set('claude', 'new', '/tmp/new')
+    expect(store.get('claude', 'mid')).toBeUndefined()
+    expect(store.get('claude', 'old')).toBe('/tmp/old')
+    expect(store.get('claude', 'new')).toBe('/tmp/new')
+    store.close()
+  })
+
+  it('two reads inside the recency window leave the one set write untouched', () => {
+    const dir = tmp()
+    const file = join(dir, 'session-cwd.json')
+    let t = 10_000
+    let writes = 0
+    const store = createSessionCwdStore(file, {
+      now: () => t,
+      writeFile: (path, data, options) => {
+        writes += 1
+        writeFileSync(path, data, options)
+      },
+    })
+    store.set('claude', 'a', '/tmp/agent-a')
+    expect(writes).toBe(1)
+    const body = readFileSync(file, 'utf8')
+    t += 60_000
+    expect(store.get('claude', 'a')).toBe('/tmp/agent-a')
+    t += 60_000
+    expect(store.get('claude', 'a')).toBe('/tmp/agent-a')
+    expect(writes).toBe(1)
+    expect(readFileSync(file, 'utf8')).toBe(body)
+    // The boundary itself rewrites. One millisecond earlier does not.
+    t = 10_000 + SESSION_CWD_TOUCH_MS - 1
+    expect(store.get('claude', 'a')).toBe('/tmp/agent-a')
+    expect(writes).toBe(1)
+    t = 10_000 + SESSION_CWD_TOUCH_MS
+    expect(store.get('claude', 'a')).toBe('/tmp/agent-a')
+    expect(writes).toBe(2)
+    const rewritten = JSON.parse(readFileSync(file, 'utf8')) as {
+      entries: Record<string, { cwd: string; at: number }>
+    }
+    expect(rewritten.entries['claude:a']).toEqual({
+      cwd: '/tmp/agent-a',
+      at: 10_000 + SESSION_CWD_TOUCH_MS,
+    })
+    store.close()
+  })
+
+  it('generation advances on every write even when the mtime does not', () => {
+    const dir = tmp()
+    const file = join(dir, 'session-cwd.json')
+    const fixed = new Date(1_700_000_000_000)
+    const store = createSessionCwdStore(file, {
+      writeFile: (path, data, options) => {
+        writeFileSync(path, data, options)
+        utimesSync(path, fixed, fixed)
+      },
+    })
+    store.set('claude', 'a', '/tmp/a')
+    const first = store.generation()
+    expect(first).toBeGreaterThan(0)
+    store.set('claude', 'a', '/tmp/b')
+    expect(store.generation()).toBeGreaterThan(first)
+    expect(store.get('claude', 'a')).toBe('/tmp/b')
+    store.close()
+  })
+
+  it('an externally added record bumps generation and is then readable', () => {
+    const dir = tmp()
+    const file = join(dir, 'session-cwd.json')
+    const store = createSessionCwdStore(file)
+    store.set('claude', 'a', '/tmp/agent-a')
+    const before = store.generation()
+    const raw = JSON.parse(readFileSync(file, 'utf8')) as {
+      v: number
+      entries: Record<string, { cwd: string; at: number }>
+    }
+    raw.entries['claude:extra'] = { cwd: '/tmp/external', at: 1 }
+    writeFileSync(file, JSON.stringify(raw))
+    const future = new Date(Date.now() + 10_000)
+    utimesSync(file, future, future)
+    expect(store.generation()).toBeGreaterThan(before)
+    expect(store.get('claude', 'extra')).toBe('/tmp/external')
+    expect(store.get('claude', 'a')).toBe('/tmp/agent-a')
+    store.close()
+  })
+
+  it('delete drops one room and does not rewrite when the key is absent', () => {
+    const dir = tmp()
+    const file = join(dir, 'session-cwd.json')
+    let writes = 0
+    const store = createSessionCwdStore(file, {
+      writeFile: (path, data, options) => {
+        writes += 1
+        writeFileSync(path, data, options)
+      },
+    })
+    store.set('claude', 'a', '/tmp/a')
+    store.set('claude', 'b', '/tmp/b')
+    const before = store.generation()
+    writes = 0
+    store.delete('claude', 'missing')
+    expect(writes).toBe(0)
+    expect(store.generation()).toBe(before)
+    store.delete('claude', 'a')
+    expect(writes).toBe(1)
+    expect(store.get('claude', 'a')).toBeUndefined()
+    expect(store.get('claude', 'b')).toBe('/tmp/b')
+    expect(store.generation()).toBeGreaterThan(before)
+    store.close()
+  })
+
+  it('ignores a relative or garbage cwd on read and logs once', () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined)
+    try {
+      const dir = tmp()
+      const file = join(dir, 'session-cwd.json')
+      writeFileSync(
+        file,
+        JSON.stringify({
+          v: 1,
+          entries: {
+            'claude:rel': { cwd: 'relative/path', at: 1 },
+            'claude:junk': { cwd: 'not a path', at: 1 },
+            'claude:ok': { cwd: '/tmp/ok/', at: 2 },
+          },
+        }),
+      )
+      const store = createSessionCwdStore(file)
+      expect(store.get('claude', 'rel')).toBeUndefined()
+      expect(store.get('claude', 'rel')).toBeUndefined()
+      expect(store.get('claude', 'junk')).toBeUndefined()
+      expect(store.get('claude', 'ok')).toBe('/tmp/ok')
+      const ignored = warn.mock.calls.filter((call) => String(call[0]).includes('claude:rel'))
+      expect(ignored).toHaveLength(1)
+      expect(
+        warn.mock.calls.filter((call) => String(call[0]).includes('claude:junk')),
+      ).toHaveLength(1)
+      store.close()
+    } finally {
+      warn.mockRestore()
+    }
+  })
+})

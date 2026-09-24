@@ -33,6 +33,7 @@ export {
   slugify,
   defaultDirectoryFor,
   validateDirectory,
+  canonicalPath,
   directoryWarnings,
 } from './validate.js'
 

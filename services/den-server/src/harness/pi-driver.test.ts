@@ -44,14 +44,14 @@ function fakeStore(rows: HarnessSession[] = []) {
 }
 
 function fakePty() {
-  const spawns: { key?: string; session?: string; resume?: string }[] = []
+  const spawns: { key?: string; session?: string; resume?: string; cwd?: string }[] = []
   const injects: { id: string; text: string; submit: boolean; interrupt?: boolean }[] = []
   const live = new Map<string, string>()
   let writable = true
   const dead = new Set<string>()
   const host: PiPtyHost = {
-    spawn: (key, _cols, _rows, _remote, session, resume) => {
-      spawns.push({ key, session, resume })
+    spawn: (key, _cols, _rows, _remote, session, resume, _env, _user, _model, _effort, cwd) => {
+      spawns.push({ key, session, resume, ...(typeof cwd === 'string' && cwd ? { cwd } : {}) })
       const id = `pty-${String(spawns.length)}`
       if (session) live.set(session, id)
       return { id, denSession: session ?? id }
@@ -184,10 +184,21 @@ describe('capability-false paths reject with capability_unsupported', () => {
     )
   })
 
-  it('rejects roster-owned start options rather than silently ignoring them', async () => {
-    const { driver } = makeDriver()
-    await expectUnsupported(() => driver.startSession({ cwd: '/elsewhere' }))
+  it('accepts cwd (11th spawn arg) and still rejects model', async () => {
+    const { driver, pty } = makeDriver()
+    await driver.startSession({ nativeSessionId: UUID, cwd: '/tmp/agent-workdir' })
+    expect(pty.spawns).toEqual([
+      { key: 'pi', session: UUID, resume: undefined, cwd: '/tmp/agent-workdir' },
+    ])
     await expectUnsupported(() => driver.startSession({ model: 'deepseek/deepseek-v4-flash' }))
+  })
+
+  it('rejects a relative cwd', async () => {
+    const { driver, pty } = makeDriver()
+    await expect(driver.startSession({ cwd: 'proj' })).rejects.toMatchObject({
+      code: 'bad_request',
+    })
+    expect(pty.spawns).toEqual([])
   })
 })
 

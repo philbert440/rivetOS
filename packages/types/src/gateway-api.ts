@@ -552,6 +552,18 @@ export interface TermSpawnRequest {
   /** Harness-native session id to resume (e.g. `claude --resume`) when the
    *  pool respawns a cold conversation. Reserved; wired with the pool. */
   resume?: string
+  /**
+   * RivetHub agent preset id; the den derives command/model/effort/cwd from it —
+   * explicit fields still win. Clients never send a raw cwd.
+   */
+  agentId?: string
+  /**
+   * Resume an existing session into the preset's current directory when that
+   * directory differs from the one the session was recorded in. Without this,
+   * the den keeps the recorded directory and answers 409
+   * `session runs in <recorded>; edit the agent or start a new conversation`.
+   */
+  force?: boolean
   cols?: number
   rows?: number
 }
@@ -565,6 +577,12 @@ export interface TermSpawnResponse {
   pid: number
   /** epoch ms */
   createdAt: number
+  /**
+   * Directory the harness was spawned in. Present only when the request named
+   * an agent preset (`agentId`); the den derives it and the client never sends
+   * a raw cwd. Absent on a plain `POST /term`, and never present on `/term/list`.
+   */
+  cwd?: string
   /** Present only when the PTY is mux-backed (`tmux` or `herdr`). */
   mux?: 'tmux' | 'herdr'
   /** Live client joined an already-running tmux session. */
