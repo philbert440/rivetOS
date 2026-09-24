@@ -443,7 +443,6 @@ export function createAgentsRoutes(opts: {
     if (typeof raw.nodeBaseUrl === 'string') {
       const next = raw.nodeBaseUrl.trim().slice(0, 512)
       if (next) {
-        // eslint-disable-next-line @typescript-eslint/no-deprecated
         const storedUrl = existing.nodeBaseUrl
         if (storedUrl.trim() && next !== storedUrl) {
           json(res, 400, { error: NODE_IMMUTABLE })
@@ -488,7 +487,6 @@ export function createAgentsRoutes(opts: {
     }
     if (typeof raw.nodeBaseUrl === 'string') {
       const next = raw.nodeBaseUrl.trim().slice(0, 512)
-      // eslint-disable-next-line @typescript-eslint/no-deprecated
       const storedUrl = existing.nodeBaseUrl
       if (next && !storedUrl.trim()) patch.nodeBaseUrl = next
     }

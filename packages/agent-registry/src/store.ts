@@ -143,8 +143,7 @@ export function presetFromPatch(
   if (patch.directory !== undefined) next.directory = patch.directory
   if (patch.sharedLink !== undefined) next.sharedLink = patch.sharedLink
   if (patch.nodeBaseUrl !== undefined) {
-    // Still persisted for pre-registry clients; the field is deprecated on the type.
-    // eslint-disable-next-line @typescript-eslint/no-deprecated
+    // Still persisted for pre-registry clients; formally deprecated in slice 7.
     next.nodeBaseUrl = patch.nodeBaseUrl
   }
   if (patch.harnessId === null) delete next.harnessId
