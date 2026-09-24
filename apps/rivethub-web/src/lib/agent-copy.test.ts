@@ -64,7 +64,6 @@ describe('agentCopySeed', () => {
         harnessId: 'codex',
         model: 'target-model',
         effort: 'high',
-        nodeBaseUrl: 'https://target.example',
       },
       notes: [],
     })
@@ -78,7 +77,7 @@ describe('agentCopySeed', () => {
   })
 
   it('never accepts the source node or an empty target', () => {
-    for (const nodeBaseUrl of ['', source.nodeBaseUrl, 'https://owner.example']) {
+    for (const nodeBaseUrl of ['', 'https://owner.example']) {
       assert.throws(() =>
         agentCopySeed(
           draft,
@@ -90,6 +89,13 @@ describe('agentCopySeed', () => {
         ),
       )
     }
+    // A preset URL is not placement. It does not block the copy and is not seeded.
+    const seeded = agentCopySeed(
+      draft,
+      { ...source, sourceNodeBaseUrl: 'https://owner.example' },
+      { ...target, nodeBaseUrl: source.nodeBaseUrl },
+    )
+    assert.equal(Object.hasOwn(seeded.seed, 'nodeBaseUrl'), false)
   })
 
   it('replaces an unsupported harness and its settings with target defaults, with notes', () => {

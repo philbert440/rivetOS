@@ -39,7 +39,8 @@ function rosterEntriesForNode(roster: readonly NodeChoice[], nodeName: string): 
  * 3. A roster entry whose recorded `/healthz.node` equals `agent.node`,
  *    when exactly one entry has that name. Two entries are unknown.
  * 4. Legacy `agent.nodeBaseUrl` when set. A rule-3 collision does not
- *    fall through to this.
+ *    fall through to this. Remove this rule when no pre-registry den (one
+ *    that 400s `nodeBaseUrl is required`) remains on the roster.
  */
 export function resolveAgentNodeUrl(
   agent: Pick<AgentPreset, 'node' | 'nodeBaseUrl'>,
@@ -64,6 +65,8 @@ export function resolveAgentNodeUrl(
     if (rosterHits.length > 1) return undefined
     if (rosterHits.length === 1) return stripSlash(rosterHits[0]?.baseUrl)
   }
+  // Legacy fallback until no pre-registry den (one that 400s `nodeBaseUrl is required`) remains on the roster.
+  // eslint-disable-next-line @typescript-eslint/no-deprecated -- legacy fallback (slice 7)
   const legacy = stripSlash(agent.nodeBaseUrl)
   return legacy || undefined
 }

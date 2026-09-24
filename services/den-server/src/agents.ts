@@ -335,6 +335,10 @@ export function createAgentsRoutes(opts: {
       typeof raw.systemPrompt === 'string'
         ? raw.systemPrompt.trim().slice(0, SYSTEM_PROMPT_MAX_CHARS)
         : ''
+    // Create stores a trimmed client `nodeBaseUrl` (at most 512 characters)
+    // when one is sent, and never requires it. Hubs that send none store ''.
+    // Update never patches it. List and GET still echo a URL a legacy file
+    // row already has. Placement is `node` + `directory`.
     const nodeBaseUrl =
       typeof raw.nodeBaseUrl === 'string' ? raw.nodeBaseUrl.trim().slice(0, 512) : ''
     if (typeof raw.node === 'string' && raw.node.trim() && raw.node.trim() !== nodeName) {
@@ -380,7 +384,6 @@ export function createAgentsRoutes(opts: {
         node: nodeName,
         directory,
         sharedLink,
-        // Still accepted from pre-registry clients; the field is deprecated.
         nodeBaseUrl,
         ...(harnessId ? { harnessId } : {}),
         createdAt: now(),
@@ -440,17 +443,6 @@ export function createAgentsRoutes(opts: {
       }
     }
 
-    if (typeof raw.nodeBaseUrl === 'string') {
-      const next = raw.nodeBaseUrl.trim().slice(0, 512)
-      if (next) {
-        const storedUrl = existing.nodeBaseUrl
-        if (storedUrl.trim() && next !== storedUrl) {
-          json(res, 400, { error: NODE_IMMUTABLE })
-          return
-        }
-      }
-    }
-
     const patch: AgentPresetPatch = {}
     let name = existing.name
     if (typeof raw.name === 'string' && raw.name.trim()) {
@@ -484,11 +476,6 @@ export function createAgentsRoutes(opts: {
     }
     if (typeof raw.systemPrompt === 'string') {
       patch.systemPrompt = raw.systemPrompt.trim().slice(0, SYSTEM_PROMPT_MAX_CHARS)
-    }
-    if (typeof raw.nodeBaseUrl === 'string') {
-      const next = raw.nodeBaseUrl.trim().slice(0, 512)
-      const storedUrl = existing.nodeBaseUrl
-      if (next && !storedUrl.trim()) patch.nodeBaseUrl = next
     }
 
     // An unchanged directory or sharedLink is not a placement request. A form
