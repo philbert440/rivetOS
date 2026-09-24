@@ -175,14 +175,12 @@ export class AgentChannel implements Channel {
   // -----------------------------------------------------------------------
 
   private async handleRequest(req: IncomingMessage, res: ServerResponse): Promise<void> {
-    // CORS preflight
-    if (req.method === 'OPTIONS') {
-      res.writeHead(204, {
-        'Access-Control-Allow-Origin': '*',
-        'Access-Control-Allow-Methods': 'POST, GET',
-        'Access-Control-Allow-Headers': 'Authorization, Content-Type',
-      })
-      res.end()
+    // Node-to-node only. Browsers attach an Origin (and can present an
+    // installed device cert that chains to the same CA), so any request
+    // carrying one is refused — no CORS surface, no cross-site delivery.
+    if (req.headers.origin !== undefined) {
+      res.writeHead(403, { 'Content-Type': 'application/json' })
+      res.end(JSON.stringify({ error: 'browser requests are not accepted' }))
       return
     }
 

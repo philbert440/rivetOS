@@ -857,6 +857,20 @@ export function validateDen(den: Record<string, unknown>, issues: ValidationIssu
     }
   }
 
+  // allowed_origins / allowed_hosts: browser origin policy (den-server
+  // origin-policy.ts) — lists of non-empty strings.
+  for (const key of ['allowed_origins', 'allowed_hosts'] as const) {
+    const v = den[key]
+    if (v === undefined) continue
+    if (!Array.isArray(v) || v.some((e) => typeof e !== 'string' || e.trim() === '')) {
+      issues.push({
+        severity: 'error',
+        path: `${path}.${key}`,
+        message: `"den.${key}" must be a list of non-empty strings`,
+      })
+    }
+  }
+
   for (const key of ['static_dir'] as const) {
     if (den[key] !== undefined && (typeof den[key] !== 'string' || den[key].trim() === '')) {
       issues.push({

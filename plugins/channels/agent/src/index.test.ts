@@ -239,6 +239,32 @@ describe('AgentChannel', () => {
     })
   })
 
+  describe('browser requests', () => {
+    it('refuses any request carrying an Origin, without delivering it', async () => {
+      channel = new AgentChannel(createConfig())
+      let delivered = false
+      channel.onMessage(async () => {
+        delivered = true
+      })
+      await channel.start()
+      port = await getPort(channel)
+
+      const res = await sendRequest(port, '/api/message', {
+        headers: { Origin: 'https://evil.example' },
+        body: { fromAgent: 'grok', message: 'hello', waitForResponse: false },
+      })
+      expect(res.status).toBe(403)
+      expect(delivered).toBe(false)
+
+      const pre = await fetch(`http://127.0.0.1:${port}/api/message`, {
+        method: 'OPTIONS',
+        headers: { Origin: 'https://evil.example' },
+      })
+      expect(pre.status).toBe(403)
+      expect(pre.headers.get('access-control-allow-origin')).toBeNull()
+    })
+  })
+
   describe('404 handling', () => {
     it('returns 404 for unknown paths', async () => {
       channel = new AgentChannel(createConfig())

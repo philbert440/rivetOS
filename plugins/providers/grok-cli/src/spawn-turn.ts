@@ -30,8 +30,8 @@ export interface GrokSpawnFlags {
   permissionMode: string
   /** `--reasoning-effort`; omit to use the CLI default. */
   reasoningEffort?: GrokReasoningEffort
-  /** `--max-turns` — 1 = answer only, no tool loop. */
-  maxTurns: number
+  /** `--max-turns`; omit to let grok decide when to stop (1 = answer only, no tool loop). */
+  maxTurns?: number
   /** `--no-plan` — skip plan mode (which would swallow a headless run). */
   noPlan: boolean
   /** `--system-prompt-override` text ('' = omit). */
@@ -60,9 +60,8 @@ export function buildArgs(flags: GrokSpawnFlags, prompt: string): string[] {
     '--include-partial-messages',
     '--permission-mode',
     flags.permissionMode,
-    '--max-turns',
-    String(flags.maxTurns),
   ]
+  if (flags.maxTurns !== undefined) args.push('--max-turns', String(flags.maxTurns))
   if (flags.noPlan) args.push('--no-plan')
   if (flags.modelId) args.push('-m', flags.modelId)
   if (flags.reasoningEffort) args.push('--reasoning-effort', flags.reasoningEffort)

@@ -40,6 +40,23 @@ describe('buildGatewayEnv — MicBridge audio', () => {
   })
 })
 
+describe('buildGatewayEnv — browser origin policy', () => {
+  it('wires den.allowed_origins / allowed_hosts only when set', () => {
+    const none = buildGatewayEnv(base({}), '/opt/rivetos')
+    expect(none.RIVETOS_DEN_ALLOWED_ORIGINS).toBeUndefined()
+    expect(none.RIVETOS_DEN_ALLOWED_HOSTS).toBeUndefined()
+    const env = buildGatewayEnv(
+      base({
+        allowed_origins: ['https://hub.example', 'https://b.example:8443'],
+        allowed_hosts: ['den.example'],
+      }),
+      '/opt/rivetos',
+    )
+    expect(env.RIVETOS_DEN_ALLOWED_ORIGINS).toBe('https://hub.example,https://b.example:8443')
+    expect(env.RIVETOS_DEN_ALLOWED_HOSTS).toBe('den.example')
+  })
+})
+
 describe('buildGatewayEnv — device enrollment', () => {
   it('emits nothing when devices is absent or disabled', () => {
     expect(buildGatewayEnv(base({}), '/opt/rivetos').RIVETOS_DEN_DEVICES).toBeUndefined()

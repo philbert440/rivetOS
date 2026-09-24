@@ -83,6 +83,7 @@ interface TlsRequestOptions {
   rejectUnauthorized?: boolean
   /** HTTP method (default: GET) */
   method?: string
+  headers?: Record<string, string>
   /** JSON request body (sets Content-Type and serializes) */
   body?: unknown
   /** Override target port (defaults to the shared test server's port) */
@@ -100,7 +101,10 @@ function makeRequest(opts: TlsRequestOptions): Promise<{ status: number; body: s
       // For tests: supply our test CA so the server cert is trusted
       ca: readFileSync(join(FIXTURES, 'ca.crt')),
       rejectUnauthorized: opts.rejectUnauthorized ?? true,
-      headers: payload !== undefined ? { 'Content-Type': 'application/json' } : undefined,
+      headers: {
+        ...(payload !== undefined ? { 'Content-Type': 'application/json' } : {}),
+        ...opts.headers,
+      },
     }
 
     if (opts.clientCert) {
@@ -141,6 +145,18 @@ describe('AgentChannelServer (mTLS)', () => {
     expect(body.ok).toBe(true)
     expect(body.tls).toBe(true)
     expect(body.node).toBe('ct110')
+  })
+
+  it('refuses browser requests (any Origin) even with a valid client cert', async () => {
+    const res = await makeRequest({
+      path: '/api/mesh/ping',
+      headers: { Origin: 'https://evil.example' },
+      clientCert: {
+        cert: readFileSync(join(FIXTURES, 'node.crt')),
+        key: readFileSync(join(FIXTURES, 'node.key')),
+      },
+    })
+    expect(res.status).toBe(403)
   })
 
   it('rejects a connection with no client certificate', async () => {
