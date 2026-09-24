@@ -228,7 +228,9 @@ export async function registerAgentTools(
     const agentChannelPort = meshConfig.agent_channel_port ?? 3000
     const agentChannelHost = meshConfig.agent_channel_host
     const localAgents = Object.keys(config.agents)
-    const nodeName = meshConfig.node_name ?? 'unknown'
+    // Same string den stamps on preset.node and the runner claims on.
+    // A padded mesh.node_name must not register as a different mesh id.
+    const nodeName = nodeNameFor(config)
 
     // Load TLS material — required for mesh (no plaintext fallback)
     // Convert YAML snake_case paths to camelCase for loadTlsConfig

@@ -2,10 +2,11 @@ import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSy
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
+import type { AgentPreset } from '@rivetos/types'
 import { createFallbackPresetStore } from './fallback-store.js'
 import { FileAgentPresetStore } from './file-store.js'
 import { importLegacyAgentsJson } from './import-legacy.js'
-import type { AgentPresetStore } from './store.js'
+import { PresetConflictError, type AgentPresetInput, type AgentPresetStore } from './store.js'
 
 function legacyRow(overrides: Record<string, unknown> = {}): Record<string, unknown> {
   return {
@@ -100,28 +101,128 @@ describe('importLegacyAgentsJson', () => {
     expect((await target.get('fresh'))?.directory).toBe('/home/agents/newcomer')
   })
 
-  it('skips a conflicting name', async () => {
+  it('imports a conflicting name as "<name> (<node>)" and then "<name> (<node> 2)"', async () => {
     const target = new FileAgentPresetStore(join(dir, 'target.json'))
     await target.create({ id: 'keep', name: 'Reviewer', node: 'n', directory: '/x', createdAt: 1 })
+    await target.create({ id: 'keep2', name: 'Other', node: 'n', directory: '/y', createdAt: 1 })
+    await target.create({
+      id: 'keep3',
+      name: 'Other (ct115)',
+      node: 'n',
+      directory: '/z',
+      createdAt: 1,
+    })
     const file = join(dir, 'agents.json')
     writeFileSync(
       file,
-      JSON.stringify({ agents: [legacyRow({ id: 'other', name: ' reviewer ' })] }),
+      JSON.stringify({
+        agents: [
+          legacyRow({ id: 'other', name: ' reviewer ' }),
+          legacyRow({ id: 'second', name: 'Other' }),
+        ],
+      }),
     )
     const logs: string[] = []
     const result = await importLegacyAgentsJson({
       file,
       store: target,
-      node: 'n',
+      node: 'ct115',
       directoryRoot: '/home/agents',
       log: (message) => {
         logs.push(message)
       },
     })
-    expect(result).toMatchObject({ imported: 0, skipped: 1 })
-    expect(logs.join('\n')).toMatch(/other/)
-    expect(logs.join('\n')).toMatch(/reviewer/i)
-    expect(await target.list()).toHaveLength(1)
+    expect(result).toMatchObject({ imported: 2, skipped: 0 })
+    const logged = logs.join('\n')
+    expect(logged).toMatch(/other/)
+    expect(logged).toMatch(/name conflict/)
+    expect(logged).toMatch(/reviewer \(ct115\)/)
+    expect(logged).toMatch(/Other \(ct115 2\)/)
+    const names = (await target.list()).map((row) => row.name).sort()
+    expect(names).toEqual([
+      'Other',
+      // Space sorts before ')'.
+      'Other (ct115 2)',
+      'Other (ct115)',
+      'Reviewer',
+      'reviewer (ct115)',
+    ])
+    expect((await target.get('other'))?.name).toBe('reviewer (ct115)')
+    expect((await target.get('second'))?.name).toBe('Other (ct115 2)')
+    expect(result.renamedTo).toBeTruthy()
+  })
+
+  it('skips only an id conflict when postgres reports pkey vs the name index', async () => {
+    const file = join(dir, 'agents.json')
+    writeFileSync(
+      file,
+      JSON.stringify({
+        agents: [
+          legacyRow({ id: 'id-clash', name: 'Kept' }),
+          legacyRow({ id: 'name-clash', name: 'Same' }),
+        ],
+      }),
+    )
+    const created: AgentPreset[] = []
+    const logs: string[] = []
+    const store: AgentPresetStore = {
+      backend: 'postgres',
+      isReady: () => Promise.resolve(true),
+      list: () => Promise.resolve(created.slice()),
+      get: (id) => Promise.resolve(created.find((row) => row.id === id)),
+      findByHandle: () => Promise.resolve(undefined),
+      create: (input: AgentPresetInput & { id?: string; createdAt?: number }) => {
+        if (input.id === 'id-clash') {
+          return Promise.reject(
+            new PresetConflictError(
+              'agent preset conflicts with an existing id or name (ros_agent_presets_pkey)',
+            ),
+          )
+        }
+        if (input.name === 'Same') {
+          return Promise.reject(
+            new PresetConflictError(
+              'agent preset conflicts with an existing id or name (idx_ros_agent_presets_name)',
+            ),
+          )
+        }
+        const preset = {
+          id: input.id ?? 'generated',
+          name: input.name,
+          color: input.color ?? '',
+          model: input.model ?? '',
+          effort: input.effort ?? 'medium',
+          systemPrompt: input.systemPrompt ?? '',
+          node: input.node,
+          directory: input.directory,
+          sharedLink: input.sharedLink ?? true,
+          nodeBaseUrl: input.nodeBaseUrl ?? '',
+          createdAt: input.createdAt ?? 1,
+          updatedAt: 2,
+        } as AgentPreset
+        created.push(preset)
+        return Promise.resolve(preset)
+      },
+      update: () => Promise.resolve(undefined),
+      delete: () => Promise.resolve(false),
+    }
+    const result = await importLegacyAgentsJson({
+      file,
+      store,
+      node: 'ct115',
+      directoryRoot: '/home/agents',
+      log: (message) => {
+        logs.push(message)
+      },
+    })
+    expect(result).toMatchObject({ imported: 1, skipped: 1 })
+    expect(created.map((row) => row.name)).toEqual(['Same (ct115)'])
+    expect(created[0]?.id).toBe('name-clash')
+    const logged = logs.join('\n')
+    expect(logged).toMatch(/id-clash/)
+    expect(logged).toMatch(/pkey/)
+    expect(logged).toMatch(/idx_ros_agent_presets_name/)
+    expect(logged).toMatch(/Same \(ct115\)/)
   })
 
   it('keeps a valid directory and falls back when one is missing or invalid', async () => {

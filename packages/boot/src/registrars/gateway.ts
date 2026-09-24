@@ -187,11 +187,6 @@ export function buildGatewayEnv(config: RivetConfig, installRoot: string): Recor
   // only this map, never the process env, so without a passthrough the
   // documented cap/TTL/dir knobs would be silently inert on an embedded
   // gateway. Same reasoning as RIVETOS_DEN_DEVICES_PG_ADMIN_URL above.
-  // Mesh node name the task runner claims on. den's loadConfig prefers this
-  // over RIVETOS_DEN_NODE_ID and hostname(), so preset.node matches
-  // node_affinity byte-for-byte. Set before the prefix passthrough so an
-  // explicit process env still wins.
-  env.RIVETOS_DEN_NODE_NAME = nodeNameFor(config)
   // Prefix passthrough: adding RIVETOS_DEN_* / RIVETOS_USER_* must never
   // again be a silent no-op (the #563 footgun). Process env wins for keys
   // that are set; config-derived values above stand when env is silent.
@@ -202,6 +197,14 @@ export function buildGatewayEnv(config: RivetConfig, installRoot: string): Recor
     const value = raw?.trim()
     if (value) env[key] = value
   }
+  // Mesh node name the task runner claims on (`nodeNameFor`: mesh.node_name,
+  // else HOSTNAME, else `local`). den's loadConfig prefers RIVETOS_DEN_NODE_NAME
+  // over RIVETOS_DEN_NODE_ID and hostname(), so this must be the same string
+  // the runner uses. Set AFTER the prefix passthrough: a process-env
+  // RIVETOS_DEN_NODE_NAME is ignored when den is embedded. The runner does not
+  // read that variable, so letting it override here split preset.node from
+  // node_affinity.
+  env.RIVETOS_DEN_NODE_NAME = nodeNameFor(config)
   const teamAdmin = process.env.RIVETOS_TEAM_PG_ADMIN_URL?.trim()
   if (teamAdmin) env.RIVETOS_TEAM_PG_ADMIN_URL = teamAdmin
 

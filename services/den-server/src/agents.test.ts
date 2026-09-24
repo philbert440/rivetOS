@@ -8,12 +8,13 @@ import {
   mkdtempSync,
   readlinkSync,
   rmSync,
+  symlinkSync,
   writeFileSync,
 } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { FileAgentPresetStore } from '@rivetos/agent-registry'
-import { createAgentsRoutes } from './agents.js'
+import { FileAgentPresetStore, type AgentPresetStore } from '@rivetos/agent-registry'
+import { createAgentsRoutes, type AgentRouteLog } from './agents.js'
 import type { AgentPreset } from '@rivetos/types'
 
 const NODE = 'https://192.0.2.10:5174'
@@ -23,17 +24,24 @@ let server: Server | undefined
 let base: string
 let now = 1_700_000_000_000
 
-async function start(opts?: { homeDir?: () => string }): Promise<void> {
+async function start(opts?: {
+  homeDir?: () => string
+  directoryRoot?: (dir: string) => string
+  store?: (dir: string) => AgentPresetStore
+  log?: AgentRouteLog
+}): Promise<void> {
   dir = mkdtempSync(join(tmpdir(), 'den-agents-'))
   mkdirSync(join(dir, 'shared'))
   now = 1_700_000_000_000
   const routes = createAgentsRoutes({
-    store: new FileAgentPresetStore(join(dir, 'agents.json'), { now: () => now }),
+    store:
+      opts?.store?.(dir) ?? new FileAgentPresetStore(join(dir, 'agents.json'), { now: () => now }),
     nodeName: 'ct115',
-    directoryRoot: join(dir, 'agents'),
+    directoryRoot: opts?.directoryRoot?.(dir) ?? join(dir, 'agents'),
     sharedDir: join(dir, 'shared'),
     now: () => now,
     ...(opts?.homeDir ? { homeDir: opts.homeDir } : {}),
+    ...(opts?.log ? { log: opts.log } : {}),
   })
   server = createServer((req, res) => {
     const url = new URL(req.url ?? '/', 'http://localhost')
@@ -400,5 +408,318 @@ describe('agents routes', () => {
     expect(recatalog.status).toBe(200)
     const remigrated = ((await recatalog.json()) as { agent: AgentPreset }).agent
     expect(remigrated).toMatchObject({ harnessId: 'claude-code', model: '' })
+  })
+
+  it('logs directory creation at info, not error', async () => {
+    const logs: string[] = []
+    await start({
+      log: (msg, level) => {
+        logs.push(`${level ?? 'error'}:${msg}`)
+      },
+    })
+    expect((await createAgent({ name: 'Alpha' })).status).toBe(201)
+    expect(
+      logs.some((line) => line.startsWith('info:') && line.includes('created agent directory')),
+    ).toBe(true)
+    expect(logs.some((line) => line.startsWith('info:') && line.includes('linked'))).toBe(true)
+    expect(logs.some((line) => line.startsWith('error:'))).toBe(false)
+  })
+
+  it('store failure → 503 with the cause logged, not leaked', async () => {
+    const logs: string[] = []
+    await start({
+      log: (msg, level) => {
+        logs.push(`${level ?? 'error'}:${msg}`)
+      },
+      store: () => ({
+        backend: 'file',
+        isReady: () => Promise.resolve(true),
+        list: () => Promise.reject(new Error('secret-cause')),
+        get: () => Promise.reject(new Error('secret-cause')),
+        findByHandle: () => Promise.reject(new Error('secret-cause')),
+        create: () => Promise.reject(new Error('secret-cause')),
+        update: () => Promise.reject(new Error('secret-cause')),
+        delete: () => Promise.reject(new Error('secret-cause')),
+      }),
+    })
+    const listed = await fetch(`${base}/api/agents`)
+    const body = (await listed.json()) as { error?: string }
+    expect(listed.status).toBe(503)
+    expect(body.error).toBe('agent registry unavailable')
+    expect(JSON.stringify(body)).not.toMatch(/secret-cause/)
+    expect(logs.some((line) => line.startsWith('error:') && line.includes('secret-cause'))).toBe(
+      true,
+    )
+  })
+
+  it('ensureAgentDirectory failure → 500 and nothing stored', async () => {
+    await start({
+      directoryRoot: (root) => {
+        const file = join(root, 'not-a-dir')
+        writeFileSync(file, 'x')
+        return file
+      },
+    })
+    const res = await createAgent({ name: 'Alpha' })
+    expect(res.status).toBe(500)
+    expect(res.json.error).toMatch(/could not create agent directory/)
+    const listed = (await (await fetch(`${base}/api/agents`)).json()) as { agents: AgentPreset[] }
+    expect(listed.agents).toEqual([])
+    expect(existsSync(join(dir!, 'agents.json'))).toBe(false)
+  })
+
+  it('rejected duplicate POST leaves the existing agent link', async () => {
+    await start()
+    const created = await createAgent({ name: 'Alpha' })
+    const link = join(created.json.agent!.directory!, 'rivet-shared')
+    expect(lstatSync(link).isSymbolicLink()).toBe(true)
+    const again = await createAgent({ name: 'alpha', sharedLink: false })
+    expect(again.status).toBe(409)
+    expect(lstatSync(link).isSymbolicLink()).toBe(true)
+    expect(readlinkSync(link)).toBe(join(dir!, 'shared'))
+  })
+
+  it('PATCH rename → 409 leaves the link and the row', async () => {
+    await start()
+    const alpha = await createAgent({ name: 'Alpha' })
+    expect((await createAgent({ name: 'Beta' })).status).toBe(201)
+    const link = join(alpha.json.agent!.directory!, 'rivet-shared')
+    const res = await fetch(`${base}/api/agents/${alpha.json.agent!.id}`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name: 'Beta', sharedLink: false }),
+    })
+    expect(res.status).toBe(409)
+    const got = (await (await fetch(`${base}/api/agents/${alpha.json.agent!.id}`)).json()) as {
+      agent: AgentPreset
+    }
+    expect(got.agent.name).toBe('Alpha')
+    expect(got.agent.sharedLink).toBe(true)
+    expect(readlinkSync(link)).toBe(join(dir!, 'shared'))
+  })
+
+  it('two concurrent placement PATCHes both land and disk matches the stored row', async () => {
+    await start()
+    const created = await createAgent({ name: 'Alpha' })
+    const id = created.json.agent!.id
+    const next = join(dir!, 'moved')
+    const [off, moved] = await Promise.all([
+      fetch(`${base}/api/agents/${id}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ sharedLink: false }),
+      }),
+      fetch(`${base}/api/agents/${id}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ directory: next }),
+      }),
+    ])
+    expect(off.status).toBe(200)
+    expect(moved.status).toBe(200)
+    const agent = (
+      (await (await fetch(`${base}/api/agents/${id}`)).json()) as { agent: AgentPreset }
+    ).agent
+    expect(agent.sharedLink).toBe(false)
+    expect(agent.directory).toBe(next)
+    expect(existsSync(next)).toBe(true)
+    expect(existsSync(join(next, 'rivet-shared'))).toBe(false)
+  })
+
+  it('POST {directory:"~/", sharedLink:false} never unlinks', async () => {
+    await start({
+      homeDir: () => {
+        const home = join(dir!, 'home')
+        if (!existsSync(home)) {
+          mkdirSync(home)
+          symlinkSync(join(dir!, 'shared'), join(home, 'rivet-shared'))
+        }
+        return home
+      },
+    })
+    const res = await createAgent({ name: 'Home', directory: '~/', sharedLink: false })
+    expect(res.status).toBe(201)
+    const link = join(dir!, 'home', 'rivet-shared')
+    expect(lstatSync(link).isSymbolicLink()).toBe(true)
+    expect(readlinkSync(link)).toBe(join(dir!, 'shared'))
+  })
+
+  it('absolute path with .. and ~/../x → 400', async () => {
+    await start({ homeDir: () => join(dir!, 'home') })
+    const abs = await createAgent({
+      name: 'Dot',
+      directory: `${dir!}/agents/../escaped`,
+    })
+    expect(abs.status).toBe(400)
+    expect(abs.json.error).toBe('directory must be an absolute path')
+    expect(existsSync(join(dir!, 'escaped'))).toBe(false)
+    const tilde = await createAgent({ name: 'Tilde', directory: '~/../x' })
+    expect(tilde.status).toBe(400)
+    expect(tilde.json.error).toBe('directory must be an absolute path')
+    expect(existsSync(join(dir!, 'x'))).toBe(false)
+  })
+
+  it('PATCH nodeBaseUrl is accepted when the stored value is empty', async () => {
+    await start()
+    const created = await createAgent({ name: 'Bare' })
+    expect(created.json.agent?.nodeBaseUrl).toBe('')
+    const res = await fetch(`${base}/api/agents/${created.json.agent!.id}`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ nodeBaseUrl: 'https://192.0.2.20:5174' }),
+    })
+    expect(res.status).toBe(200)
+    expect(((await res.json()) as { agent: AgentPreset }).agent.nodeBaseUrl).toBe(
+      'https://192.0.2.20:5174',
+    )
+  })
+
+  it('GET ?node= filters', async () => {
+    await start()
+    writeFileSync(
+      join(dir!, 'agents.json'),
+      JSON.stringify({
+        agents: [
+          {
+            id: 'local-1',
+            name: 'Local',
+            color: '',
+            model: '',
+            effort: 'medium',
+            systemPrompt: '',
+            nodeBaseUrl: '',
+            node: 'ct115',
+            directory: join(dir!, 'agents', 'local'),
+            sharedLink: true,
+            createdAt: 1,
+            updatedAt: 1,
+          },
+          {
+            id: 'remote-1',
+            name: 'Remote',
+            color: '',
+            model: '',
+            effort: 'medium',
+            systemPrompt: '',
+            nodeBaseUrl: '',
+            node: 'ct114',
+            directory: join(dir!, 'agents', 'remote'),
+            sharedLink: true,
+            createdAt: 2,
+            updatedAt: 2,
+          },
+        ],
+      }),
+    )
+    const filtered = (await (await fetch(`${base}/api/agents?node=ct114`)).json()) as {
+      agents: AgentPreset[]
+    }
+    expect(filtered.agents.map((agent) => agent.name)).toEqual(['Remote'])
+    const local = (await (await fetch(`${base}/api/agents?node=ct115`)).json()) as {
+      agents: AgentPreset[]
+    }
+    expect(local.agents.map((agent) => agent.name)).toEqual(['Local'])
+  })
+
+  it('refuses directory and sharedLink edits for a foreign preset and still edits other fields', async () => {
+    let expanded = false
+    await start({
+      homeDir: () => {
+        expanded = true
+        return join(dir!, 'home')
+      },
+    })
+    const remoteDir = join(dir!, 'remote-dir')
+    mkdirSync(remoteDir)
+    symlinkSync(join(dir!, 'shared'), join(remoteDir, 'rivet-shared'))
+    writeFileSync(
+      join(dir!, 'agents.json'),
+      JSON.stringify({
+        agents: [
+          {
+            id: 'foreign-1',
+            name: 'Remote',
+            color: '',
+            model: '',
+            effort: 'medium',
+            systemPrompt: '',
+            nodeBaseUrl: '',
+            node: 'ct114',
+            directory: remoteDir,
+            sharedLink: true,
+            createdAt: 1,
+            updatedAt: 1,
+          },
+        ],
+      }),
+    )
+    const denied = await fetch(`${base}/api/agents/foreign-1`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ directory: '~/stolen', sharedLink: false, name: 'Nope' }),
+    })
+    expect(denied.status).toBe(409)
+    expect(((await denied.json()) as { error: string }).error).toBe(
+      'agent "Remote" is hosted on ct114',
+    )
+    expect(expanded).toBe(false)
+    expect(readlinkSync(join(remoteDir, 'rivet-shared'))).toBe(join(dir!, 'shared'))
+    expect(existsSync(join(dir!, 'home', 'stolen'))).toBe(false)
+
+    const renamed = await fetch(`${base}/api/agents/foreign-1`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name: 'Renamed', model: 'opus' }),
+    })
+    expect(renamed.status).toBe(200)
+    const agent = ((await renamed.json()) as { agent: AgentPreset }).agent
+    expect(agent).toMatchObject({
+      name: 'Renamed',
+      model: 'opus',
+      directory: remoteDir,
+      node: 'ct114',
+    })
+    expect(readlinkSync(join(remoteDir, 'rivet-shared'))).toBe(join(dir!, 'shared'))
+  })
+
+  it('PATCH sharedLink:false on a legacy row defaults and persists the directory', async () => {
+    await start()
+    writeFileSync(
+      join(dir!, 'agents.json'),
+      JSON.stringify({
+        agents: [
+          {
+            id: 'legacy-1',
+            name: 'Legacy',
+            color: '',
+            model: '',
+            effort: 'medium',
+            systemPrompt: '',
+            nodeBaseUrl: NODE,
+            createdAt: 1,
+            updatedAt: 1,
+          },
+        ],
+      }),
+    )
+    const sameNode = await fetch(`${base}/api/agents/legacy-1`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ node: 'ct115' }),
+    })
+    expect(sameNode.status).toBe(200)
+
+    const res = await fetch(`${base}/api/agents/legacy-1`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ sharedLink: false }),
+    })
+    expect(res.status).toBe(200)
+    const directory = join(dir!, 'agents', 'legacy')
+    const agent = ((await res.json()) as { agent: AgentPreset }).agent
+    expect(agent.directory).toBe(directory)
+    expect(agent.sharedLink).toBe(false)
+    expect(existsSync(directory)).toBe(true)
+    expect(existsSync(join(directory, 'rivet-shared'))).toBe(false)
   })
 })

@@ -25,15 +25,28 @@ export interface ImportLegacyAgentsResult {
   /**
    * Presets written by this import. Omitted when the import returns before
    * reading rows (missing file, or the store file is the source). The den
-   * materializes a directory for each of these and no others.
+   * materializes every preset hosted on this node (`list({node})`), not only
+   * these rows — an id skipped after a crash still gets its directory.
    */
   rows?: AgentPreset[]
 }
 
+/** Id conflicts are skipped. Name conflicts are imported under a disambiguated name. */
+function isIdConflict(err: PresetConflictError): boolean {
+  const message = err.message
+  if (message.startsWith('agent id already exists')) return true
+  if (message.startsWith('agent name already exists')) return false
+  if (message.includes('idx_ros_agent_presets_name')) return false
+  return /_pkey\b/.test(message) || message.includes('primary key')
+}
+
 /**
- * One-shot import of a den `agents.json` into `store`. An id or name conflict
- * is skipped and logged. The source file is renamed to
- * `<file>.imported-<epoch ms>` and never deleted. A missing file is a no-op.
+ * One-shot import of a den `agents.json` into `store`. An id conflict is
+ * skipped and logged. A name conflict (PG's case-insensitive unique name,
+ * which the old per-node file den did not enforce) is imported as
+ * `"<name> (<node>)"`, then `"<name> (<node> 2)"`, and so on, and logged.
+ * The source file is renamed to `<file>.imported-<epoch ms>` and never
+ * deleted. A missing file is a no-op.
  */
 export async function importLegacyAgentsJson(
   args: ImportLegacyAgentsArgs,
@@ -67,24 +80,50 @@ export async function importLegacyAgentsJson(
         `legacy agent ${row.id} (${row.name}): directory missing or invalid; using ${directory}`,
       )
     }
-    try {
-      // `create` keeps `createdAt` and stamps `updatedAt` at import time.
-      const created = await store.create({
-        ...row,
-        id: row.id,
-        createdAt: row.createdAt,
-        node,
-        directory,
-      })
-      importedRows.push(created)
-      imported += 1
-    } catch (err) {
-      if (err instanceof PresetConflictError) {
-        skipped += 1
-        log?.(`skipped legacy agent ${row.id} (${row.name}): ${err.message}`)
-        continue
+    // Same id on every attempt so a name rewrite cannot mint a second row for
+    // one legacy preset. Only an id collision gives up.
+    const baseName = row.name.trim()
+    let importedRow = false
+    for (let attempt = 0; attempt < 20; attempt += 1) {
+      const candidate =
+        attempt === 0
+          ? baseName
+          : attempt === 1
+            ? `${baseName} (${node})`
+            : `${baseName} (${node} ${String(attempt)})`
+      try {
+        // `create` keeps `createdAt` and stamps `updatedAt` at import time.
+        const created = await store.create({
+          ...row,
+          id: row.id,
+          name: candidate,
+          createdAt: row.createdAt,
+          node,
+          directory,
+        })
+        if (attempt > 0) {
+          log?.(
+            `imported legacy agent ${row.id} (${baseName}) as "${created.name}" after a name conflict`,
+          )
+        }
+        importedRows.push(created)
+        imported += 1
+        importedRow = true
+        break
+      } catch (err) {
+        if (!(err instanceof PresetConflictError)) throw err
+        if (isIdConflict(err)) {
+          skipped += 1
+          log?.(`skipped legacy agent ${row.id} (${row.name}): ${err.message}`)
+          importedRow = true
+          break
+        }
+        log?.(`legacy agent ${row.id} (${baseName}) name conflict: ${err.message}`)
       }
-      throw err
+    }
+    if (!importedRow) {
+      skipped += 1
+      log?.(`skipped legacy agent ${row.id} (${baseName}): name still conflicts after 20 attempts`)
     }
   }
 

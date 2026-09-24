@@ -43,7 +43,7 @@ import { homedir, hostname } from 'node:os'
 import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync, statSync } from 'node:fs'
 import { join, normalize, extname } from 'node:path'
 import { WebSocketServer, type WebSocket } from 'ws'
-import pg from 'pg'
+import type { Pool } from 'pg'
 import {
   FileAgentPresetStore,
   PgAgentPresetStore,
@@ -93,6 +93,7 @@ import { overlaySessionContext, sessionContext } from './term/context-window.js'
 import { createFilesRoutes } from './files.js'
 import { createDevicesRoutes, lookupDeviceName } from './devices.js'
 import { createAgentsRoutes, importAndMaterializeLegacyAgents } from './agents.js'
+import { createPresetPool, endPresetPool } from './preset-pool.js'
 import { createHarnessRegistry, type HarnessRegistry } from './harness/registry.js'
 import { ClaudeCodeDriver, type DenAgentEventLike } from './harness/claude-driver.js'
 import { GrokBuildDriver } from './harness/grok-driver.js'
@@ -387,6 +388,12 @@ export interface DenServerOptions {
    * replaces one is replacing that wiring for all of them.
    */
   skipBuiltinHarnessDrivers?: boolean
+  /**
+   * Preset-registry pool. Production builds one from `config.pgUrl`
+   * ({@link createPresetPool}: error listeners, 5s connect, 10s query).
+   * Tests inject a stub and assert `end()` from `close()`.
+   */
+  presetPool?: Pool
   /**
    * Rotation-breadcrumb source for the post-restart alias reconstructor.
    * Omitted = the memory DB at `config.pgUrl` (`RIVETOS_PG_URL`); with no URL
@@ -971,10 +978,13 @@ export function createDenServer(config: DenConfig, opts: DenServerOptions = {}):
 
   // Agent presets (Settings → Agents). One registry: Postgres when this den
   // has a memory DB and `ros_agent_presets` is present, otherwise the per-node
-  // agents.json. The pool is tiny and closed in den.close().
-  const presetPool = config.pgUrl
-    ? new pg.Pool({ connectionString: config.pgUrl, max: 2 })
-    : undefined
+  // agents.json. The pool is tiny (max 2, 5s connect, 10s query) and closed
+  // in den.close() with a 5s bound so a stuck checkout cannot hang shutdown.
+  const presetPool =
+    opts.presetPool ??
+    (config.pgUrl
+      ? createPresetPool(config.pgUrl, (msg) => console.error(`[den-server] ${msg}`))
+      : undefined)
   const fileStore = new FileAgentPresetStore(join(config.stateDir, 'agents.json'))
   let presetStore: AgentPresetStore = fileStore
   if (presetPool) {
@@ -989,22 +999,32 @@ export function createDenServer(config: DenConfig, opts: DenServerOptions = {}):
     // Deliberately NOT awaited: a missing table or a down memory DB must never
     // delay a node's boot, and a miss is failure-soft — the file keeps serving
     // until the primary answers ready, then this runs once and renames the file
-    // aside. Directories for the imported rows are materialized here; a mkdir
-    // failure is logged and does not undo the row. The callback is registered
-    // before the probe so a fast primary cannot be missed.
+    // aside. The callback is registered before the probe so a fast primary
+    // cannot be missed. It targets `primary`, never the wrapper (a file-mode
+    // wrapper would refuse to rename the live agents.json). onPrimaryReady
+    // already waits until in-flight fallback writes drain; drainFallback()
+    // is the same barrier for a callback registered slightly later.
+    // Directories are materialized for every preset hosted on this node, not
+    // only rows this pass inserted — a crash mid-import still gets its
+    // directories on the next boot. Slices 3 and 5 also ensure on use.
     fallbackStore.onPrimaryReady(() => {
-      void importAndMaterializeLegacyAgents({
-        file: join(config.stateDir, 'agents.json'),
-        store: primary,
-        nodeName: config.nodeName,
-        directoryRoot: config.agentsDir,
-        ...(config.sharedRoot ? { sharedDir: config.sharedRoot } : {}),
-        log: (msg) => console.error(`[den-server] ${msg}`),
-      }).catch((err: unknown) => {
-        console.error(
-          `[den-server] legacy agent import failed: ${err instanceof Error ? err.message : String(err)}`,
+      void fallbackStore
+        .drainFallback()
+        .then(() =>
+          importAndMaterializeLegacyAgents({
+            file: join(config.stateDir, 'agents.json'),
+            store: primary,
+            nodeName: config.nodeName,
+            directoryRoot: config.agentsDir,
+            ...(config.sharedRoot ? { sharedDir: config.sharedRoot } : {}),
+            log: (msg) => console.error(`[den-server] ${msg}`),
+          }),
         )
-      })
+        .catch((err: unknown) => {
+          console.error(
+            `[den-server] legacy agent import failed: ${err instanceof Error ? err.message : String(err)}`,
+          )
+        })
     })
     void fallbackStore.isReady()
   }
@@ -2007,13 +2027,7 @@ export function createDenServer(config: DenConfig, opts: DenServerOptions = {}):
         wss.close(() => {
           server.close(() => {
             void (async () => {
-              try {
-                await presetPool?.end()
-              } catch (err) {
-                console.error(
-                  `[den-server] preset pool close failed: ${err instanceof Error ? err.message : String(err)}`,
-                )
-              }
+              await endPresetPool(presetPool, (msg) => console.error(`[den-server] ${msg}`))
               resolve()
             })()
           })

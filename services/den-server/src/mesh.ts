@@ -41,8 +41,11 @@ export interface MeshViewOptions {
   /** PEM bundle for verifying https peers (the Rivet CA chain). '' / missing
    *  file = system trust only, so private-CA peers show offline. */
   caPath?: string
-  /** Which roster entry is this process — default $RIVETOS_DEN_NODE_ID, else
-   *  os.hostname(). No id matching = no `latest` anywhere, which is fine. */
+  /** Which roster entry is this process. den passes `config.nodeName`
+   *  (`RIVETOS_DEN_NODE_NAME`, else `RIVETOS_DEN_NODE_ID`, else hostname).
+   *  Omitted → `os.hostname()` only — not `process.env`, so a stale
+   *  NODE_ID cannot disagree with the id the server already resolved.
+   *  No id matching = no `latest` anywhere, which is fine. */
   localNodeId?: string
   /** Latest {activity,title} among the sessions this process serves. */
   getLocalLatest?: () => { activity: string; title: string } | null
@@ -71,7 +74,7 @@ export const meshFilePaths = (meshFile: string, sharedRoot?: string): string[] =
 /** This node's ssh target, derived from the mesh roster. Falls back to
  *  `fallbackHost` (typically `os.hostname()`) and sshUser `rivet` when the
  *  roster is missing or has no matching node. Lookup is by map key or
- *  `node.id` against `RIVETOS_DEN_NODE_ID`. */
+ *  `node.id` against the caller's node id (`config.nodeName` from den). */
 export function localMeshIdentity(
   file:
     | {
@@ -228,7 +231,7 @@ async function probe(
 
 export function createMeshView(opts: MeshViewOptions): MeshView {
   const probeTimeoutMs = opts.probeTimeoutMs ?? 1500
-  const localNodeId = opts.localNodeId ?? process.env.RIVETOS_DEN_NODE_ID ?? hostname()
+  const localNodeId = opts.localNodeId?.trim() || hostname()
   const paths = meshFilePaths(opts.meshFile, opts.sharedRoot)
   // CA is read once per process — cert rotation on /rivet-shared is picked up
   // by the service restart that a rotation already requires. Only a SUCCESSFUL

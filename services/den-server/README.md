@@ -40,8 +40,18 @@ On RivetOS-managed nodes these come from `~/.rivetos/den.env`, which
 - `RIVETOS_DEN_MESH_FILE` — mesh roster for `/mesh.json`; empty tries
   `/rivet-shared/mesh.json` then `~/.rivetos/mesh.json`
 - `RIVETOS_DEN_MESH_CACHE_MS` (10000) — `/mesh.json` result cache TTL
-- `RIVETOS_DEN_NODE_ID` (hostname) — this node's id in the roster, used to
-  attach `latest` to the local entry
+- `RIVETOS_DEN_NODE_NAME` — this den's mesh node name. Boot sets it from
+  `nodeNameFor` (`mesh.node_name`, else `HOSTNAME`, else `local`) and that
+  value wins over anything already in the process environment when den is
+  embedded. It outranks `RIVETOS_DEN_NODE_ID` and the hostname, including for
+  which `/mesh.json` entry gets `latest`. A standalone den with neither env
+  var set uses `hostname()`, which can disagree with the runner
+  (`HOSTNAME` or `local`); run den embedded so preset `node` and task
+  affinity stay the same string.
+- `RIVETOS_DEN_NODE_ID` — legacy fallback for the node name when
+  `RIVETOS_DEN_NODE_NAME` is unset. Not read directly by `/mesh.json` anymore.
+- `RIVETOS_DEN_AGENTS_DIR` (`~/.rivetos/agents`) — default parent directory
+  for agent presets (`directory` on each row).
 
 ## Terminals (opt-in)
 

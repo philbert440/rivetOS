@@ -6,37 +6,75 @@ import type {
   AgentRegistryBackend,
 } from './store.js'
 
+/** A hung `isReady` counts as not ready after this. Matches the preset pool's query budget. */
+export const PRESET_PROBE_TIMEOUT_MS = 10_000
+
 export interface FallbackPresetStoreOptions {
   primary: AgentPresetStore
   fallback: AgentPresetStore
-  /** How long a false/throwing primary check is trusted. Default 30s. */
+  /** How long a false/throwing/timed-out primary check is trusted. Default 30s. */
   recheckMs?: number
+  /**
+   * Bound on one `primary.isReady()` call. A timeout counts as not ready and
+   * is re-checked after `recheckMs`. Default {@link PRESET_PROBE_TIMEOUT_MS}.
+   */
+  probeTimeoutMs?: number
   now?: () => number
   log?: (msg: string) => void
 }
 
 export interface FallbackAgentPresetStore extends AgentPresetStore {
   /**
-   * Fires once the primary has answered `isReady() === true`, including when
-   * it already has. Register synchronously after `createFallbackPresetStore`
-   * and before the first `isReady`/`list`/… call: the den kicks a probe at
-   * boot and must not miss the transition. Not called again if the primary
-   * was already accepted.
+   * Fires once the primary has answered `isReady() === true` AND in-flight
+   * fallback operations have drained, including when the primary was already
+   * accepted. Register synchronously after `createFallbackPresetStore` and
+   * before the first `isReady`/`list`/… call: the den kicks a probe at boot
+   * and must not miss the transition. Not called again if the primary was
+   * already announced.
    */
   onPrimaryReady(cb: () => void): void
+  /**
+   * Resolves when no fallback operation is in flight. `onPrimaryReady` waits
+   * on this before firing, so a legacy import cannot snapshot `agents.json`
+   * while a fallback `create` is still writing it. Safe to call again.
+   */
+  drainFallback(): Promise<void>
 }
 
 function errorMessage(err: unknown): string {
   return err instanceof Error ? err.message : String(err)
 }
 
+function withTimeout<T>(work: Promise<T>, ms: number): Promise<T> {
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(() => {
+      reject(new Error(`preset store primary check timed out after ${String(ms)}ms`))
+    }, ms)
+    void work.then(
+      (value) => {
+        clearTimeout(timer)
+        resolve(value)
+      },
+      (err: unknown) => {
+        clearTimeout(timer)
+        reject(err instanceof Error ? err : new Error(String(err)))
+      },
+    )
+  })
+}
+
 /**
  * Serve `primary` once `primary.isReady()` has answered true (cached forever
- * after that first true). While it answers false or throws, serve `fallback`
- * and ask again at most every `recheckMs`. `backend` and `file` report the
- * store currently in use — before the first successful check, that is the
- * fallback, so a file-mode wrapper still exposes `file` to the legacy-import
- * guard.
+ * after that first true). While it answers false, throws, or times out, serve
+ * `fallback` and ask again at most every `recheckMs`. `backend` and `file`
+ * report the store currently in use — before the first successful check, that
+ * is the fallback, so a file-mode wrapper still exposes `file` to the
+ * legacy-import guard.
+ *
+ * A fallback operation that already chose the file store is counted until it
+ * finishes. The flip stops handing out the fallback immediately (new ops go
+ * to the primary) and announces readiness only after those ops drain, so a
+ * write that started on the file cannot land after the importer's snapshot.
  *
  * Does not probe on its own. The caller kicks `isReady()` (the den does this
  * at boot, not awaited) after registering `onPrimaryReady`.
@@ -47,18 +85,21 @@ export function createFallbackPresetStore(
   const primary = opts.primary
   const fallback = opts.fallback
   const recheckMs = opts.recheckMs ?? 30_000
+  const probeTimeoutMs = opts.probeTimeoutMs ?? PRESET_PROBE_TIMEOUT_MS
   const now = opts.now ?? Date.now
   const log = opts.log
 
-  let primaryReady = false
+  let servingPrimary = false
+  let announced = false
   let lastCheck: number | undefined
   let inflight: Promise<boolean> | null = null
-  let fired = false
+  let fallbackOps = 0
   const callbacks: Array<() => void> = []
+  const drainers: Array<() => void> = []
 
   function fireReady(): void {
-    if (fired) return
-    fired = true
+    if (announced) return
+    announced = true
     const pending = callbacks.splice(0)
     for (const cb of pending) {
       try {
@@ -70,7 +111,7 @@ export function createFallbackPresetStore(
   }
 
   function onPrimaryReady(cb: () => void): void {
-    if (primaryReady) {
+    if (announced) {
       try {
         cb()
       } catch (err) {
@@ -81,11 +122,38 @@ export function createFallbackPresetStore(
     callbacks.push(cb)
   }
 
+  function beginFallback(): void {
+    fallbackOps += 1
+  }
+
+  function endFallback(): void {
+    fallbackOps -= 1
+    if (fallbackOps === 0) {
+      const pending = drainers.splice(0)
+      for (const resolve of pending) resolve()
+    }
+  }
+
+  function drainFallback(): Promise<void> {
+    if (fallbackOps === 0) return Promise.resolve()
+    return new Promise((resolve) => {
+      drainers.push(resolve)
+    })
+  }
+
   async function probe(): Promise<boolean> {
     try {
-      const ok = await primary.isReady()
+      // `Promise.resolve().then` so a synchronous `isReady` throw rejects the
+      // promise instead of running `finally` before `inflight` is assigned.
+      const ok = await withTimeout(
+        Promise.resolve().then(() => primary.isReady()),
+        probeTimeoutMs,
+      )
       if (ok) {
-        primaryReady = true
+        // New ops take the primary now. Announce only after fallback ops that
+        // already started have finished writing.
+        servingPrimary = true
+        if (fallbackOps > 0) await drainFallback()
         fireReady()
         return true
       }
@@ -98,22 +166,51 @@ export function createFallbackPresetStore(
     }
   }
 
+  function startProbe(): Promise<boolean> {
+    const flight = Promise.resolve().then(probe)
+    inflight = flight
+    return flight
+  }
+
   function usePrimary(): Promise<boolean> {
-    if (primaryReady) return Promise.resolve(true)
+    if (servingPrimary) return Promise.resolve(true)
     if (inflight) return inflight
     const t = now()
     if (lastCheck !== undefined && t - lastCheck < recheckMs) return Promise.resolve(false)
     lastCheck = t
-    inflight = probe()
-    return inflight
+    return startProbe()
   }
 
-  async function active(): Promise<AgentPresetStore> {
-    return (await usePrimary()) ? primary : fallback
+  /**
+   * Pick the store and, when it is the fallback, hold the drain count from
+   * this synchronous turn until `op` settles. The cached-not-ready path does
+   * not await before `beginFallback`, so a probe cannot flip and snapshot
+   * between the decision and the count.
+   */
+  async function run<T>(op: (store: AgentPresetStore) => Promise<T>): Promise<T> {
+    if (!servingPrimary && !inflight) {
+      const t = now()
+      if (lastCheck !== undefined && t - lastCheck < recheckMs) {
+        beginFallback()
+        try {
+          return await op(fallback)
+        } finally {
+          endFallback()
+        }
+      }
+    }
+    const ready = await usePrimary()
+    if (ready || servingPrimary) return op(primary)
+    beginFallback()
+    try {
+      return await op(fallback)
+    } finally {
+      endFallback()
+    }
   }
 
   function current(): AgentPresetStore {
-    return primaryReady ? primary : fallback
+    return servingPrimary ? primary : fallback
   }
 
   return {
@@ -126,26 +223,25 @@ export function createFallbackPresetStore(
     isReady(): Promise<boolean> {
       return usePrimary().then((ready) => (ready ? true : fallback.isReady()))
     },
-    async list(filter?: { node?: string }): Promise<AgentPreset[]> {
-      return (await active()).list(filter)
+    list(filter?: { node?: string }): Promise<AgentPreset[]> {
+      return run((store) => store.list(filter))
     },
-    async get(id: string): Promise<AgentPreset | undefined> {
-      return (await active()).get(id)
+    get(id: string): Promise<AgentPreset | undefined> {
+      return run((store) => store.get(id))
     },
-    async findByHandle(handle: string): Promise<AgentPreset | undefined> {
-      return (await active()).findByHandle(handle)
+    findByHandle(handle: string): Promise<AgentPreset | undefined> {
+      return run((store) => store.findByHandle(handle))
     },
-    async create(
-      input: AgentPresetInput & { id?: string; createdAt?: number },
-    ): Promise<AgentPreset> {
-      return (await active()).create(input)
+    create(input: AgentPresetInput & { id?: string; createdAt?: number }): Promise<AgentPreset> {
+      return run((store) => store.create(input))
     },
-    async update(id: string, patch: AgentPresetPatch): Promise<AgentPreset | undefined> {
-      return (await active()).update(id, patch)
+    update(id: string, patch: AgentPresetPatch): Promise<AgentPreset | undefined> {
+      return run((store) => store.update(id, patch))
     },
-    async delete(id: string): Promise<boolean> {
-      return (await active()).delete(id)
+    delete(id: string): Promise<boolean> {
+      return run((store) => store.delete(id))
     },
     onPrimaryReady,
+    drainFallback,
   }
 }

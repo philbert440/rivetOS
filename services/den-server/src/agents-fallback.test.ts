@@ -3,6 +3,7 @@ import type { AddressInfo } from 'node:net'
 import {
   existsSync,
   lstatSync,
+  mkdirSync,
   mkdtempSync,
   readdirSync,
   readlinkSync,
@@ -47,8 +48,10 @@ function memoryPrimary(): AgentPresetStore & { rows: AgentPreset[]; checks: numb
     isReady() {
       return Promise.reject(new Error('isReady is injected by the test'))
     },
-    list() {
-      return Promise.resolve(rows.slice())
+    list(filter?: { node?: string }) {
+      const matched =
+        filter?.node === undefined ? rows : rows.filter((row) => row.node === filter.node)
+      return Promise.resolve(matched.slice())
     },
     get(id) {
       return Promise.resolve(rows.find((row) => row.id === id))
@@ -195,5 +198,56 @@ describe('agents routes with a fallback store', () => {
     await fetch(`${base}/api/agents`)
     expect(primary.rows).toHaveLength(1)
     expect(readdirSync(dir).filter((name) => name.includes('.imported-'))).toHaveLength(1)
+  })
+
+  it('materializes a pre-existing primary row even when the import inserts nothing', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'den-agents-preexisting-'))
+    dirs.push(dir)
+    const directory = join(dir, 'agents', 'already')
+    const elsewhere = join(dir, 'agents', 'other-node')
+    const sharedDir = join(dir, 'shared')
+    mkdirSync(sharedDir)
+    const primary = memoryPrimary()
+    primary.rows.push(
+      {
+        id: 'pre-existing',
+        name: 'Already',
+        color: '',
+        model: '',
+        effort: 'medium',
+        systemPrompt: '',
+        node: 'ct115',
+        directory,
+        sharedLink: true,
+        nodeBaseUrl: '',
+        createdAt: 1,
+        updatedAt: 1,
+      },
+      {
+        id: 'other-node',
+        name: 'Other',
+        color: '',
+        model: '',
+        effort: 'medium',
+        systemPrompt: '',
+        node: 'ct114',
+        directory: elsewhere,
+        sharedLink: true,
+        nodeBaseUrl: '',
+        createdAt: 2,
+        updatedAt: 2,
+      },
+    )
+    const result = await importAndMaterializeLegacyAgents({
+      file: join(dir, 'agents.json'),
+      store: primary,
+      nodeName: 'ct115',
+      directoryRoot: join(dir, 'agents'),
+      sharedDir,
+    })
+    expect(result).toEqual({ imported: 0, skipped: 0 })
+    expect(existsSync(directory)).toBe(true)
+    expect(readlinkSync(join(directory, 'rivet-shared'))).toBe(sharedDir)
+    expect(existsSync(elsewhere)).toBe(false)
   })
 })
