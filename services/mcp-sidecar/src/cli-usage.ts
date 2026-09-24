@@ -29,9 +29,18 @@ RIVETOS_PG_URL enables:
   memory_search, memory_browse, memory_stats, memory_get_full (read-only)
   wiki_search, wiki_read
   delegate_task, list_agents
-      Preset name/id or a runtime agent id. Postgres direct (no gateway).
-      RIVETOS_MCP_ENABLE_DELEGATE=0 disables both.
-      RIVETOS_TASK_ID is read for the chain guard.
+      Preset name or id wins over a runtime agent id. Postgres direct
+      (no gateway). RIVETOS_MCP_ENABLE_DELEGATE=0 disables both.
+      delegate_task is registered only in stdio mode (--stdio or
+      RIVETOS_MCP_STDIO=1). HTTP and unix-socket mode do not register it:
+      delegate_task needs a per-harness stdio sidecar for the chain guard.
+      list_agents still registers there.
+      RIVETOS_TASK_ID is the parent ros_tasks id for the chain guard. A
+      non-UUID value does not disable the tools; depth fail-closes.
+      The call blocks until the task finishes (default 20 minutes, max 30).
+      Set the client tool-call timeout above that wait or the client aborts
+      and the row is killed: Codex tool_timeout_sec (default 60 is too low)
+      and Claude Code's MCP timeout.
   WIKI_DIR selects the wiki repo root (see RIVETOS_SHARED_DIR).
 
 Opt-in (off by default):
@@ -45,8 +54,16 @@ Other environment:
   RIVETOS_EMBED_URL, RIVETOS_EMBED_MODEL
   GOOGLE_CSE_API_KEY (or GOOGLE_API_KEY) + GOOGLE_CSE_ID
   RIVETOS_USER_AGENT, RIVETOS_SKILL_DIRS, WIKI_DIR, RIVETOS_SHARED_DIR
-  RIVETOS_NODE_NAME, RIVETOS_AGENT_ID
-      Labels on delegate_task rows (default: hostname, mcp-sidecar).
+  RIVETOS_MESH_DIR
+      Directory containing mesh.json. Checked before RIVETOS_SHARED_DIR.
+      Boot writes mesh.json to mesh.storage_dir or the shared dir; set
+      RIVETOS_MESH_DIR when that directory is not the shared dir.
+  RIVETOS_NODE_NAME
+      This node on delegate rows. Must equal mesh.node_name when
+      mesh.node_name is set. Fallback: HOSTNAME, then local (boot's rule,
+      not the OS hostname).
+  RIVETOS_AGENT_ID
+      requestedBy on delegate rows. Default mcp-sidecar.
 `
 
 export function wantsHelp(argv: string[]): boolean {

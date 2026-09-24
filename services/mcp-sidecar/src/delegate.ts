@@ -7,16 +7,28 @@
  * slice 3 creates; a config.yaml agent id becomes a chat-loop row pinned
  * to the newest online mesh node that hosts it (`delegateRemoteViaTasks`).
  *
- * Mesh reads are a one-shot `parseMeshFile` of `<sharedDir>/mesh.json`.
+ * Mesh reads are a bounded `parseMeshFile` of `<meshDir>/mesh.json`
+ * (`RIVETOS_MESH_DIR`, else the shared dir). A read that exceeds
+ * {@link ROSTER_READ_BOUND_MS} is abandoned: `list_agents` says the mesh is
+ * unavailable and a local preset still runs. The parsed file is cached with
+ * its mtime so the hot path does not read it again within that bound. A hung
+ * read is not stored on the request path and is not started a second time.
  * `FileMeshRegistry` is not constructed — it needs TLS material and starts
- * heartbeats. The engine's `meshRegistry` is still the full `MeshRegistry`
- * (slice 3 is under review); only `getNodes` and `findByAgent` do real work.
+ * heartbeats. When the file parses, the engine gets a `meshRegistry` (only
+ * `getNodes` and `findByAgent` do real work). When the file is missing or
+ * unreadable, the engine is built with no registry. A missing file also
+ * treats every preset as local: a single-host install has one runner.
  */
 
-import { readFile } from 'node:fs/promises'
+import { readFile, stat } from 'node:fs/promises'
 import { join } from 'node:path'
 import pg from 'pg'
-import { createCachedPresetResolver, PgAgentPresetStore } from '@rivetos/agent-registry'
+import {
+  createCachedPresetResolver,
+  PgAgentPresetStore,
+  type AgentPresetStore,
+  type CachedPresetResolver,
+} from '@rivetos/agent-registry'
 import {
   CRITERIA_POLICY_OFF,
   PgTaskStore,
@@ -26,13 +38,16 @@ import {
   harnessExecutorGap,
   normalizeCriteria,
   settleDelegatedTask,
+  type PresetDelegationConfig,
   type PresetRosterEntry,
   type TaskCompletionWaiter,
+  type TaskRow,
   type TaskStore,
 } from '@rivetos/core'
-import type { ToolRegistration } from '@rivetos/mcp'
+import type { ToolExecuteContext, ToolRegistration } from '@rivetos/mcp'
 import {
   parseMeshFile,
+  type AgentPreset,
   type DelegationRequest,
   type DelegationResult,
   type MeshNode,
@@ -42,25 +57,57 @@ import { z } from 'zod'
 
 /** Same cap as `PresetDelegationEngine`'s default. The next depth, not the parent's. */
 const MAX_CHAIN_DEPTH = 3
+/**
+ * Non-UUID `RIVETOS_TASK_ID`. The next delegation is the last the cap allows
+ * (`depth === MAX_CHAIN_DEPTH`), instead of starting a fresh chain at 0.
+ */
+const FAIL_CLOSED_PARENT_DEPTH = MAX_CHAIN_DEPTH - 1
 /** Tool default. The engine's own unset default is 30 minutes; we always pass this. */
 const DEFAULT_TIMEOUT_MS = 1_200_000
 const MAX_TIMEOUT_MS = 1_800_000
 /** Matches the grace both delegation engines add on top of `timeoutMs`. */
 const WAIT_GRACE_MS = 5_000
+/**
+ * `pg.Pool` connect budget. A black-holed host must not stall sidecar startup
+ * for the kernel TCP timeout (~2 min). The probe then fails, tools are
+ * skipped, and the server still binds.
+ */
+export const DELEGATE_POOL_CONNECTION_TIMEOUT_MS = 5_000
+const DELEGATE_POOL_MAX = 2
+const PRE_TERMINAL = new Set(['queued', 'awaiting-input', 'running'])
+const CLIENT_ABORT_TEXT = '[killed] delegate_task aborted by the client'
+/** Postgres accepts any hex 8-4-4-4-12 uuid, and rejects everything else. */
+const TASK_ID_UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
 
 const READ_ONLY = { readOnlyHint: true, idempotentHint: true } as const
+
+/**
+ * HTTP and unix-socket mode have no per-harness `RIVETOS_TASK_ID` (that env
+ * belongs to the spawned sidecar, not the shared server). Registering
+ * `delegate_task` there would run every call at depth 0.
+ */
+export const DELEGATE_TASK_HTTP_REASON =
+  'delegate_task needs a per-harness stdio sidecar for the chain guard'
 
 export interface DelegateToolsDeps {
   store: TaskStore
   waiter: TaskCompletionWaiter
   /** Built WITHOUT `executors` — the sidecar judges coverage from the mesh. */
   presets: PresetDelegationEngine
-  /** Read-only roster. `[]` when no mesh file. */
-  meshNodes: () => Promise<MeshNode[]>
+  /**
+   * Read-only roster. `'unavailable'` when the bounded mesh read timed out
+   * or failed — `list_agents` says so instead of listing runtime agents.
+   * `[]` when the file is absent.
+   */
+  meshNodes: () => Promise<MeshNode[] | 'unavailable'>
   nodeName: string
   requestedBy: string
-  /** Loop guard. Absent at depth 0 (not inside a delegated harness). */
-  parentTask?: { id: string; chainDepth: number }
+  /**
+   * Loop guard. Absent at depth 0 (not inside a delegated harness).
+   * `id` is omitted when the parent id is not a UUID (fail closed: depth
+   * only, no `parentTaskId` stamped onto the child).
+   */
+  parentTask?: { id?: string; chainDepth: number }
   now?: () => number
   log?: (msg: string) => void
 }
@@ -69,7 +116,7 @@ export interface DelegateToolsHandle {
   tools: ToolRegistration[]
   /**
    * Stops the waiter. The handle from `createDelegateToolsFromEnv` also
-   * ends the pool that function opened.
+   * ends the pool that function opened. A second call is a no-op.
    */
   close(): Promise<void>
 }
@@ -80,6 +127,74 @@ interface DelegateCall {
   context?: string[]
   timeoutMs: number
   model?: string
+}
+
+interface DelegateStores {
+  tasks: TaskStore & { isReady(): Promise<boolean> }
+  presets: AgentPresetStore
+}
+
+type MeshView =
+  | { kind: 'ok'; nodes: MeshNode[] }
+  | { kind: 'absent' }
+  | { kind: 'unavailable'; lastGood?: MeshNode[] }
+
+/**
+ * `delegate_task` only in stdio mode. HTTP/socket keeps `list_agents`.
+ * `skippedDelegateTask` is the signal to log {@link DELEGATE_TASK_HTTP_REASON}.
+ */
+export function delegateToolsForTransport(
+  tools: readonly ToolRegistration[],
+  stdioMode: boolean,
+): { tools: ToolRegistration[]; skippedDelegateTask: boolean } {
+  if (stdioMode) return { tools: [...tools], skippedDelegateTask: false }
+  const kept = tools.filter((tool) => tool.name !== 'delegate_task')
+  return {
+    tools: kept,
+    skippedDelegateTask: kept.length !== tools.length,
+  }
+}
+
+/**
+ * Boot's node name is `mesh.node_name || HOSTNAME || 'local'`.
+ * The sidecar has no config file, so `RIVETOS_NODE_NAME` stands in for
+ * `mesh.node_name` and must equal it when that is set. Blank values are
+ * ignored. Never `os.hostname()`: a systemd unit with no HOSTNAME stamps
+ * presets `node: 'local'`.
+ */
+export function sidecarNodeName(env: NodeJS.ProcessEnv): string {
+  const named = env.RIVETOS_NODE_NAME?.trim()
+  if (named) return named
+  const host = env.HOSTNAME?.trim()
+  if (host) return host
+  return 'local'
+}
+
+/**
+ * Directory that contains `mesh.json`. `RIVETOS_MESH_DIR` wins over the
+ * shared dir. Boot writes the file to `mesh.storage_dir ?? sharedDir()`.
+ */
+export function resolveMeshDir(env: NodeJS.ProcessEnv, shared: string): string {
+  const override = env.RIVETOS_MESH_DIR?.trim()
+  return override ? override : shared
+}
+
+export function delegatePoolConfig(pgUrl: string): pg.PoolConfig {
+  return {
+    connectionString: pgUrl,
+    max: DELEGATE_POOL_MAX,
+    connectionTimeoutMillis: DELEGATE_POOL_CONNECTION_TIMEOUT_MS,
+  }
+}
+
+function errorMessage(err: unknown): string {
+  return err instanceof Error ? err.message : String(err)
+}
+
+function errorCode(err: unknown): string | undefined {
+  if (typeof err !== 'object' || err === null || !('code' in err)) return undefined
+  const code = (err as { code?: unknown }).code
+  return typeof code === 'string' ? code : undefined
 }
 
 function isStringArray(value: unknown): value is string[] {
@@ -148,15 +263,25 @@ function formatRosterLine(entry: PresetRosterEntry): string {
   return line
 }
 
-function formatAgentListing(entries: PresetRosterEntry[], nodes: MeshNode[]): string {
+function formatAgentListing(
+  entries: PresetRosterEntry[],
+  nodes: MeshNode[],
+  runtimeUnavailable: boolean,
+): string {
   const presetText =
     entries.length === 0 ? '(none)' : entries.map((entry) => formatRosterLine(entry)).join('\n')
   const runtimeLines: string[] = []
-  for (const node of nodes) {
-    if (node.status !== 'online') continue
-    for (const id of node.agents) runtimeLines.push(`- ${id} (${node.name})`)
+  if (!runtimeUnavailable) {
+    for (const node of nodes) {
+      if (node.status !== 'online') continue
+      for (const id of node.agents) runtimeLines.push(`- ${id} (${node.name})`)
+    }
   }
-  const runtimeText = runtimeLines.length === 0 ? '(none)' : runtimeLines.join('\n')
+  const runtimeText = runtimeUnavailable
+    ? '(mesh unavailable)'
+    : runtimeLines.length === 0
+      ? '(none)'
+      : runtimeLines.join('\n')
   return (
     `${presetText}\n\n` +
     `Runtime agents (mesh):\n${runtimeText}\n\n` +
@@ -223,15 +348,219 @@ function readOnlyMeshRegistry(getNodes: () => Promise<MeshNode[]>): MeshRegistry
   }
 }
 
+function untilAbort<T>(work: Promise<T>, signal: AbortSignal): Promise<T | 'aborted'> {
+  if (signal.aborted) return Promise.resolve('aborted')
+  return new Promise((resolve, reject) => {
+    const onAbort = () => {
+      signal.removeEventListener('abort', onAbort)
+      resolve('aborted')
+    }
+    signal.addEventListener('abort', onAbort)
+    if (signal.aborted) {
+      onAbort()
+      return
+    }
+    work.then(
+      (value) => {
+        signal.removeEventListener('abort', onAbort)
+        resolve(value)
+      },
+      (err: unknown) => {
+        signal.removeEventListener('abort', onAbort)
+        reject(err instanceof Error ? err : new Error(errorMessage(err)))
+      },
+    )
+  })
+}
+
+/**
+ * No mesh file: only one runner exists, so a preset stamped with some other
+ * node name still runs here. Unreadable / timed-out mesh does not localize —
+ * the file may exist, we just cannot see it.
+ */
+function localizeResolver(
+  inner: CachedPresetResolver,
+  treatAsLocal: () => boolean,
+  nodeName: string,
+): CachedPresetResolver {
+  const mapOne = (preset: AgentPreset): AgentPreset => {
+    if (!treatAsLocal() || preset.node === nodeName) return preset
+    return { ...preset, node: nodeName }
+  }
+  return {
+    list: () => inner.list().then((rows) => rows.map(mapOne)),
+    find: (handle) => inner.find(handle).then((preset) => (preset ? mapOne(preset) : undefined)),
+    lastKnown: () => inner.lastKnown().map(mapOne),
+    invalidate() {
+      inner.invalidate()
+    },
+    status: () => inner.status(),
+  }
+}
+
+function raceBound<T>(work: Promise<T>, ms: number): Promise<T | 'timeout'> {
+  let timer: ReturnType<typeof setTimeout> | undefined
+  const timeout = new Promise<'timeout'>((resolve) => {
+    timer = setTimeout(() => {
+      resolve('timeout')
+    }, ms)
+    timer.unref()
+  })
+  return Promise.race([work, timeout]).finally(() => {
+    if (timer !== undefined) clearTimeout(timer)
+  })
+}
+
+/**
+ * One mesh.json snapshot. The request path races the read against `boundMs`
+ * and drops its reference on timeout so a hung `readFile` is not awaited
+ * again. A second call while that read is still hung does not start another.
+ * A fresh mtime match skips `readFile` entirely.
+ */
+function createBoundedMeshReader(opts: {
+  path: string
+  boundMs: number
+  readFile: (path: string) => Promise<string>
+  stat: (path: string) => Promise<{ mtimeMs: number }>
+  log: (msg: string) => void
+}): { load: () => Promise<MeshView> } {
+  type Cached =
+    | { kind: 'ok'; nodes: MeshNode[]; mtimeMs: number; at: number }
+    | { kind: 'absent'; at: number }
+    | { kind: 'error'; at: number }
+
+  let cached: Cached | undefined
+  let lastGood: MeshNode[] | undefined
+  /** True once a read has outlived the bound. Cleared if that read later finishes. */
+  let hung = false
+  let attempt: Promise<void> | undefined
+  let attemptAt = 0
+  let loggedTimeout = false
+  let loggedAbsent = false
+  let loggedBad = false
+
+  function viewFromCache(): MeshView {
+    if (!cached || cached.kind === 'error') {
+      return lastGood ? { kind: 'unavailable', lastGood } : { kind: 'unavailable' }
+    }
+    if (cached.kind === 'absent') return { kind: 'absent' }
+    return { kind: 'ok', nodes: cached.nodes }
+  }
+
+  function unavailableView(): MeshView {
+    return lastGood ? { kind: 'unavailable', lastGood } : { kind: 'unavailable' }
+  }
+
+  async function readOnce(): Promise<void> {
+    try {
+      const info = await opts.stat(opts.path)
+      if (cached?.kind === 'ok' && cached.mtimeMs === info.mtimeMs) {
+        cached = { ...cached, at: Date.now() }
+        hung = false
+        return
+      }
+      const raw = await opts.readFile(opts.path)
+      const nodes = Object.values(parseMeshFile(raw, opts.path).nodes)
+      cached = { kind: 'ok', nodes, mtimeMs: info.mtimeMs, at: Date.now() }
+      lastGood = nodes
+      hung = false
+    } catch (err: unknown) {
+      if (errorCode(err) === 'ENOENT') {
+        cached = { kind: 'absent', at: Date.now() }
+        lastGood = undefined
+        hung = false
+        if (!loggedAbsent) {
+          loggedAbsent = true
+          opts.log('mesh.json unavailable (ENOENT) — no mesh file; presets are treated as local')
+        }
+        return
+      }
+      cached = { kind: 'error', at: Date.now() }
+      hung = false
+      if (!loggedBad) {
+        loggedBad = true
+        const code = errorCode(err)
+        const detail = code ? `${code}: ${errorMessage(err)}` : errorMessage(err)
+        opts.log(`mesh.json unavailable (${detail}) — runtime agent roster empty`)
+      }
+    }
+  }
+
+  async function load(): Promise<MeshView> {
+    if (hung) return unavailableView()
+    const now = Date.now()
+    if (cached && now - cached.at < opts.boundMs) return viewFromCache()
+
+    // A Promise is always truthy, so absence is `=== undefined`.
+    let pending: Promise<void>
+    if (attempt === undefined) {
+      attemptAt = now
+      // Not retained past the bound. The fs callback roots the promise until
+      // the syscall finishes; a late finish updates `cached` inside readOnce.
+      pending = readOnce()
+      attempt = pending
+    } else {
+      pending = attempt
+    }
+
+    const elapsed = Date.now() - attemptAt
+    const giveUp = (): MeshView => {
+      hung = true
+      // Drop the field so nothing in this object awaits the hung read, and
+      // so the next call cannot start a second readFile while `hung` is set.
+      attempt = undefined
+      if (!loggedTimeout) {
+        loggedTimeout = true
+        opts.log(
+          `mesh.json read exceeded ${String(opts.boundMs)}ms (${opts.path}) — runtime agent roster unavailable`,
+        )
+      }
+      return unavailableView()
+    }
+    if (elapsed >= opts.boundMs) return giveUp()
+
+    const outcome = await raceBound(pending, opts.boundMs - elapsed)
+    if (attempt === pending) attempt = undefined
+    if (outcome === 'timeout') return giveUp()
+    return viewFromCache()
+  }
+
+  return { load }
+}
+
+async function resolveParentTask(
+  store: TaskStore,
+  parentTaskId: string | undefined,
+  log: (msg: string) => void,
+): Promise<DelegateToolsDeps['parentTask']> {
+  // Empty string is "no parent" and does not fall through to the process env,
+  // so tests can opt out without unsetting the operator's shell.
+  const raw = parentTaskId !== undefined ? parentTaskId : process.env.RIVETOS_TASK_ID
+  const parentId = raw?.trim()
+  if (!parentId) return undefined
+  if (!TASK_ID_UUID.test(parentId)) {
+    log(
+      `RIVETOS_TASK_ID "${parentId}" is not a UUID — delegate tools registered at chain depth ${String(FAIL_CLOSED_PARENT_DEPTH)} (fail closed)`,
+    )
+    return { chainDepth: FAIL_CLOSED_PARENT_DEPTH }
+  }
+  const row: TaskRow | undefined = await store.get(parentId)
+  if (!row) {
+    log(`RIVETOS_TASK_ID ${parentId} not in ros_tasks — treating chain depth as 0`)
+    return undefined
+  }
+  return { id: row.id, chainDepth: row.chainDepth }
+}
+
 export function createDelegateTools(deps: DelegateToolsDeps): DelegateToolsHandle {
   const now = deps.now ?? Date.now
 
   async function renderAgents(): Promise<string> {
-    const [entries, nodes] = await Promise.all([
-      deps.presets.rosterEntriesFresh({ timeoutMs: ROSTER_READ_BOUND_MS }),
-      deps.meshNodes(),
-    ])
-    return formatAgentListing(entries, nodes)
+    // Mesh first: a missing file localizes presets before the roster is read.
+    const mesh = await deps.meshNodes()
+    const entries = await deps.presets.rosterEntriesFresh({ timeoutMs: ROSTER_READ_BOUND_MS })
+    if (mesh === 'unavailable') return formatAgentListing(entries, [], true)
+    return formatAgentListing(entries, mesh, false)
   }
 
   async function delegateRuntime(
@@ -242,19 +571,22 @@ export function createDelegateTools(deps: DelegateToolsDeps): DelegateToolsHandl
     const startTime = now()
     const goal = delegationGoal(call.task, call.context)
     const describe = `Remote delegation to ${call.toAgent} on ${host.name}`
+    // Same node as the sidecar: this is a local handoff, matching the preset
+    // path's `origin: 'tool'`. Anywhere else stays a mesh delegation.
+    const origin = host.name === deps.nodeName ? 'tool' : 'mesh'
     try {
       const row = await deps.store.create({
         goal,
         executor: 'chat-loop',
         agentId: call.toAgent,
-        origin: 'mesh',
+        origin,
         nodeAffinity: host.name,
         requestedBy: deps.requestedBy,
         chainDepth: parentDepth + 1,
-        ...(deps.parentTask ? { parentTaskId: deps.parentTask.id } : {}),
+        ...(deps.parentTask?.id ? { parentTaskId: deps.parentTask.id } : {}),
         maxAttempts: 1,
         budget: { maxWallClockMs: call.timeoutMs },
-        acceptanceCriteria: normalizeCriteria({ goal, origin: 'mesh' }, CRITERIA_POLICY_OFF),
+        acceptanceCriteria: normalizeCriteria({ goal, origin }, CRITERIA_POLICY_OFF),
         spec: {
           delegation: true,
           meshFrom: deps.nodeName,
@@ -274,9 +606,18 @@ export function createDelegateTools(deps: DelegateToolsDeps): DelegateToolsHandl
     } catch (err: unknown) {
       return {
         status: 'failed',
-        response: `${describe} failed: ${err instanceof Error ? err.message : String(err)}`,
+        response: `${describe} failed: ${errorMessage(err)}`,
         durationMs: now() - startTime,
       }
+    }
+  }
+
+  async function killSpawned(before: ReadonlySet<string>): Promise<void> {
+    const rows = await deps.store.list()
+    for (const row of rows) {
+      if (before.has(row.id)) continue
+      if (!PRE_TERMINAL.has(row.status)) continue
+      await deps.store.requestKill(row.id)
     }
   }
 
@@ -285,9 +626,13 @@ export function createDelegateTools(deps: DelegateToolsDeps): DelegateToolsHandl
       name: 'delegate_task',
       description:
         'Delegate work to a RivetHub agent (preset name or id) or a runtime agent id. ' +
-        'Call list_agents first. Presets run as a harness session in the agent directory; ' +
+        'Call list_agents first. A preset name or id wins when it also matches a runtime agent id. ' +
+        'Presets run as a harness session in the agent directory; ' +
         'runtime agents run as a chat-loop on the newest online node that hosts them. ' +
-        'Waits until the task finishes or the timeout elapses (default 20 minutes).',
+        'Waits until the task finishes or the timeout elapses (default 20 minutes, max 30). ' +
+        'Set the client tool-call timeout above that wait — Codex tool_timeout_sec ' +
+        '(its default of 60s aborts the call) and Claude Code MCP timeout. ' +
+        'An aborted call kills the row.',
       inputSchema: {
         to_agent: z
           .string()
@@ -307,7 +652,7 @@ export function createDelegateTools(deps: DelegateToolsDeps): DelegateToolsHandl
           .describe('How long to wait, in milliseconds (default 20 minutes, max 30)'),
         model: z.string().optional().describe('Optional model override for this delegation'),
       },
-      async execute(args: Record<string, unknown>): Promise<string> {
+      async execute(args: Record<string, unknown>, ctx?: ToolExecuteContext): Promise<string> {
         try {
           const call = readDelegateCall(args)
           if (typeof call === 'string') return call
@@ -320,6 +665,13 @@ export function createDelegateTools(deps: DelegateToolsDeps): DelegateToolsHandl
             return `[failed] delegation chain too deep (${depth} > ${cap})`
           }
 
+          const signal = ctx?.signal
+          if (signal?.aborted) return CLIENT_ABORT_TEXT
+
+          const mesh = await deps.meshNodes()
+          if (signal?.aborted) return CLIENT_ABORT_TEXT
+          const nodes = mesh === 'unavailable' ? [] : mesh
+
           const request: DelegationRequest = {
             fromAgent: deps.requestedBy,
             toAgent: call.toAgent,
@@ -330,31 +682,47 @@ export function createDelegateTools(deps: DelegateToolsDeps): DelegateToolsHandl
           }
 
           const preset = await deps.presets.find(call.toAgent)
-          if (preset) {
-            const settled = await deps.presets.delegate(
-              request,
-              preset,
-              parentDepth,
-              deps.parentTask?.id,
-            )
-            const node = preset.node && preset.node.length > 0 ? preset.node : deps.nodeName
-            return formatDelegationResult(annotateTimeout(settled, node))
-          }
+          if (signal?.aborted) return CLIENT_ABORT_TEXT
 
-          const host = pickOnlineHost(await deps.meshNodes(), call.toAgent)
-          if (!host) {
-            const listing = await renderAgents()
-            return (
-              `[failed] Agent "${call.toAgent}" not found in RivetHub presets or runtime agents.\n\n` +
-              listing
-            )
-          }
+          const before = signal
+            ? new Set((await deps.store.list()).map((row) => row.id))
+            : undefined
+          if (signal?.aborted) return CLIENT_ABORT_TEXT
 
-          const settled = await delegateRuntime(call, host, parentDepth)
-          return formatDelegationResult(annotateTimeout(settled, host.name))
+          const work = (async (): Promise<string> => {
+            if (preset) {
+              const settled = await deps.presets.delegate(
+                request,
+                preset,
+                parentDepth,
+                deps.parentTask?.id,
+              )
+              const node = preset.node && preset.node.length > 0 ? preset.node : deps.nodeName
+              return formatDelegationResult(annotateTimeout(settled, node))
+            }
+
+            const host = pickOnlineHost(nodes, call.toAgent)
+            if (!host) {
+              const listing = await renderAgents()
+              return (
+                `[failed] Agent "${call.toAgent}" not found in RivetHub presets or runtime agents.\n\n` +
+                listing
+              )
+            }
+
+            const settled = await delegateRuntime(call, host, parentDepth)
+            return formatDelegationResult(annotateTimeout(settled, host.name))
+          })()
+
+          if (!signal) return await work
+          const outcome = await untilAbort(work, signal)
+          if (outcome === 'aborted') {
+            await killSpawned(before ?? new Set())
+            return CLIENT_ABORT_TEXT
+          }
+          return outcome
         } catch (err: unknown) {
-          const message = err instanceof Error ? err.message : String(err)
-          return `[failed] delegate_task failed: ${message}`
+          return `[failed] delegate_task failed: ${errorMessage(err)}`
         }
       },
     },
@@ -362,15 +730,15 @@ export function createDelegateTools(deps: DelegateToolsDeps): DelegateToolsHandl
       name: 'list_agents',
       description:
         'List RivetHub agents (presets) and runtime agents on online mesh nodes. ' +
-        'Pass a preset name or id, or a runtime agent id, as delegate_task to_agent.',
+        'Pass a preset name or id, or a runtime agent id, as delegate_task to_agent. ' +
+        'A preset name or id wins when it also matches a runtime agent id.',
       annotations: READ_ONLY,
       inputSchema: {},
       async execute(): Promise<string> {
         try {
           return await renderAgents()
         } catch (err: unknown) {
-          const message = err instanceof Error ? err.message : String(err)
-          return `[failed] list_agents failed: ${message}`
+          return `[failed] list_agents failed: ${errorMessage(err)}`
         }
       },
     },
@@ -386,14 +754,32 @@ export function createDelegateTools(deps: DelegateToolsDeps): DelegateToolsHandl
 
 export async function createDelegateToolsFromEnv(opts: {
   pgUrl: string
+  /** Directory containing `mesh.json` (`RIVETOS_MESH_DIR` or the shared dir). */
   sharedDir: string
   nodeName: string
   requestedBy: string
+  /**
+   * Parent ros_tasks id. When omitted, `RIVETOS_TASK_ID` is read. Pass `''`
+   * to force depth 0 even if that env var is set.
+   */
   parentTaskId?: string
   log?: (msg: string) => void
+  /** Test seam. Default `new pg.Pool(delegatePoolConfig(pgUrl))`. */
+  createPool?: (config: pg.PoolConfig) => pg.Pool
+  /** Test seam. Default `PgTaskStore` + `PgAgentPresetStore`. */
+  openStores?: (pool: pg.Pool) => DelegateStores
+  /** Test seam. Default `createTaskCompletionWaiter`. */
+  createWaiter?: (store: TaskStore) => TaskCompletionWaiter
+  /** Test seam. Default `fs.readFile`. */
+  readFile?: (path: string) => Promise<string>
+  /** Test seam. Default `fs.stat`. */
+  stat?: (path: string) => Promise<{ mtimeMs: number }>
+  /** Test seam. Default {@link ROSTER_READ_BOUND_MS}. */
+  meshBoundMs?: number
 }): Promise<DelegateToolsHandle | undefined> {
   const log = opts.log ?? (() => undefined)
-  const pool = new pg.Pool({ connectionString: opts.pgUrl, max: 2 })
+  const createPool = opts.createPool ?? ((config: pg.PoolConfig) => new pg.Pool(config))
+  const pool = createPool(delegatePoolConfig(opts.pgUrl))
   // An idle client error with no listener crashes the process.
   pool.on('error', (err: Error) => {
     log(`delegate pool error: ${err.message}`)
@@ -402,52 +788,97 @@ export async function createDelegateToolsFromEnv(opts: {
   let waiter: TaskCompletionWaiter | undefined
   let releasePool = true
   try {
-    const store = new PgTaskStore(pool)
-    if (!(await store.isReady())) {
-      log('ros_tasks missing — delegate_task disabled')
-      return undefined
-    }
-    const presetStore = new PgAgentPresetStore(pool)
-    if (!(await presetStore.isReady())) {
-      log('ros_agent_presets missing — delegate_task disabled')
+    const opened = opts.openStores
+      ? opts.openStores(pool)
+      : { tasks: new PgTaskStore(pool), presets: new PgAgentPresetStore(pool) }
+    const store = opened.tasks
+    const presetStore = opened.presets
+
+    try {
+      if (!(await store.isReady())) {
+        log('ros_tasks missing — delegate_task disabled')
+        return undefined
+      }
+      if (!(await presetStore.isReady())) {
+        log('ros_agent_presets missing — delegate_task disabled')
+        return undefined
+      }
+    } catch (err: unknown) {
+      log(`delegate tools skipped — postgres probe failed: ${errorMessage(err)}`)
       return undefined
     }
 
-    const parentId = (opts.parentTaskId ?? process.env.RIVETOS_TASK_ID)?.trim()
     let parentTask: DelegateToolsDeps['parentTask']
-    if (parentId) {
-      const row = await store.get(parentId)
-      if (!row) {
-        log(`RIVETOS_TASK_ID ${parentId} not in ros_tasks — treating chain depth as 0`)
-      } else {
-        parentTask = { id: row.id, chainDepth: row.chainDepth }
-      }
+    try {
+      parentTask = await resolveParentTask(store, opts.parentTaskId, log)
+    } catch (err: unknown) {
+      log(`delegate tools skipped — postgres probe failed: ${errorMessage(err)}`)
+      return undefined
     }
 
-    let meshErrorLogged = false
-    const meshNodes = async (): Promise<MeshNode[]> => {
-      const path = join(opts.sharedDir, 'mesh.json')
-      try {
-        const raw = await readFile(path, 'utf8')
-        return Object.values(parseMeshFile(raw, path).nodes)
-      } catch (err: unknown) {
-        if (!meshErrorLogged) {
-          meshErrorLogged = true
-          const message = err instanceof Error ? err.message : String(err)
-          log(`mesh.json unavailable (${message}) — runtime agent roster empty`)
-        }
-        return []
-      }
-    }
+    waiter = (
+      opts.createWaiter ??
+      ((tasks: TaskStore) => createTaskCompletionWaiter({ store: tasks, pgUrl: opts.pgUrl }))
+    )(store)
 
-    waiter = createTaskCompletionWaiter({ store, pgUrl: opts.pgUrl })
-    const presets = new PresetDelegationEngine({
-      resolver: createCachedPresetResolver(presetStore, { log }),
+    let localizeAll = false
+    const meshPath = join(opts.sharedDir, 'mesh.json')
+    const mesh = createBoundedMeshReader({
+      path: meshPath,
+      boundMs: Math.max(1, opts.meshBoundMs ?? ROSTER_READ_BOUND_MS),
+      readFile:
+        opts.readFile ??
+        ((path) => {
+          return readFile(path, 'utf8')
+        }),
+      stat:
+        opts.stat ??
+        (async (path) => {
+          const info = await stat(path)
+          return { mtimeMs: info.mtimeMs }
+        }),
+      log,
+    })
+    const engineConfig: PresetDelegationConfig = {
+      resolver: localizeResolver(
+        createCachedPresetResolver(presetStore, { log }),
+        () => localizeAll,
+        opts.nodeName,
+      ),
       taskStore: store,
       waiter,
       nodeName: opts.nodeName,
-      meshRegistry: readOnlyMeshRegistry(meshNodes),
+    }
+    const registry = readOnlyMeshRegistry(async () => {
+      const view = await mesh.load()
+      if (view.kind === 'ok') return view.nodes
+      if (view.kind === 'unavailable' && view.lastGood) return view.lastGood
+      return []
     })
+    const presets = new PresetDelegationEngine(engineConfig)
+
+    const meshNodes = async (): Promise<MeshNode[] | 'unavailable'> => {
+      const view = await mesh.load()
+      if (view.kind === 'absent') {
+        // No registry that returns [] — that rejects every preset. No file
+        // means every preset is local (see localizeResolver).
+        localizeAll = true
+        engineConfig.meshRegistry = undefined
+        return []
+      }
+      if (view.kind === 'ok') {
+        localizeAll = false
+        engineConfig.meshRegistry = registry
+        return view.nodes
+      }
+      localizeAll = false
+      // Timeout or unreadable. Do not install a registry that returns []
+      // or a local preset is refused as offline. Last-good nodes, if we
+      // ever parsed the file, keep remote presets judgeable.
+      engineConfig.meshRegistry = view.lastGood ? registry : undefined
+      return 'unavailable'
+    }
+
     const inner = createDelegateTools({
       store,
       waiter,
@@ -459,9 +890,12 @@ export async function createDelegateToolsFromEnv(opts: {
       log,
     })
     releasePool = false
+    let closed = false
     return {
       tools: inner.tools,
       async close() {
+        if (closed) return
+        closed = true
         try {
           await inner.close()
         } finally {
