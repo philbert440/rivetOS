@@ -11,6 +11,7 @@ import {
   findPresetByHandle,
   presetFromCreate,
   PresetConflictError,
+  requireAgentName,
   type AgentPresetInput,
   type AgentPresetPatch,
   type AgentPresetStore,
@@ -46,6 +47,11 @@ interface PresetRow {
 
 type QueryParam = string | number | boolean | Date | null
 
+/**
+ * Runtime use of the `pg` package. A type-only `pg.Pool` annotation is erased,
+ * so `@nx/dependency-checks` would treat the declared dependency as unused.
+ * One package entry point means file-only consumers load `pg` too.
+ */
 function assertPool(pool: pg.Pool): pg.Pool {
   if (typeof pool.query !== 'function') {
     throw new TypeError(`PgAgentPresetStore expected a pg.Pool (${pg.Pool.name})`)
@@ -95,31 +101,36 @@ function rowToPreset(row: PresetRow): AgentPreset {
     updatedAt: epochMs(row.updated_at),
   }
   const harness = row.harness_id
+  // A harness_id this build does not know (a newer den in a mixed-version
+  // fleet) is dropped, so the preset reads as harness-less. migrateAgentPreset
+  // may still map `model`. An older den must not invent a harness id.
   if (harness && isHarnessId(harness)) preset.harnessId = harness
   return migrateAgentPreset(preset)
 }
 
-/** SQL string literal. Tokens come from HARNESS_IDS / the catalog map, never from user input. */
-function sqlString(value: string): string {
-  if (!/^[a-z0-9.-]+$/.test(value)) throw new Error(`refusing to embed ${value} in SQL`)
-  return `'${value}'`
-}
-
 /**
- * `CASE <modelExpr> WHEN 'claude' THEN 'claude-code' … ELSE NULL END`,
- * matching `catalogAgentToHarness` (canonical harness ids win, then the catalog map).
+ * Scalar subquery: the harness `migrateAgentPreset` would assign when
+ * `harnessId` is unset and `modelExpr` is a catalog agent id or a canonical
+ * harness id; NULL otherwise.
+ *
+ * Reads `HARNESS_IDS` and `CATALOG_AGENT_TO_HARNESS` at runtime (canonical
+ * ids win, then the catalog map) so a catalog-map change stays in sync with
+ * `catalogAgentToHarness` — do not hand-copy the pairs. Bound parameters,
+ * not embedded literals: a future key with `_` or uppercase must not break
+ * the statement. `modelExpr` is a column reference or a `$n` placeholder,
+ * never a raw value. VALUES columns are not named `model`, so the outer
+ * `model` column is not shadowed.
  */
-function harnessFromModelSql(modelExpr: string): string {
+function harnessFromModelSql(modelExpr: string, bind: (value: string) => string): string {
   const pairs = new Map<string, HarnessId>()
   for (const id of HARNESS_IDS) pairs.set(id, id)
   for (const [catalog, harness] of Object.entries(CATALOG_AGENT_TO_HARNESS)) {
     if (!pairs.has(catalog)) pairs.set(catalog, harness)
   }
-  const whens: string[] = []
-  for (const [model, harness] of pairs) {
-    whens.push(`WHEN ${modelExpr} = ${sqlString(model)} THEN ${sqlString(harness)}`)
-  }
-  return `CASE ${whens.join(' ')} ELSE NULL END`
+  const rows = [...pairs]
+    .map(([model, harness]) => `(${bind(model)}::text, ${bind(harness)}::text)`)
+    .join(', ')
+  return `(SELECT v.harness FROM (VALUES ${rows}) AS v(catalog_model, harness) WHERE v.catalog_model = ${modelExpr})`
 }
 
 export class PgAgentPresetStore implements AgentPresetStore {
@@ -231,7 +242,7 @@ export class PgAgentPresetStore implements AgentPresetStore {
       sets.push(`${column} = ${expr}`)
     }
 
-    if (patch.name !== undefined) set('name', patch.name.trim())
+    if (patch.name !== undefined) set('name', requireAgentName(patch.name))
     if (patch.color !== undefined) set('color', patch.color)
     if (patch.effort !== undefined) set('effort', patch.effort)
     if (patch.systemPrompt !== undefined) set('system_prompt', patch.systemPrompt)
@@ -245,26 +256,25 @@ export class PgAgentPresetStore implements AgentPresetStore {
       set('model', migrated.model)
       set('harness_id', migrated.harnessId ?? null)
     } else if (patch.harnessId === null) {
-      const mapped = harnessFromModelSql('model')
+      const mapped = harnessFromModelSql('model', bind)
       setExpr('model', `CASE WHEN (${mapped}) IS NOT NULL THEN '' ELSE model END`)
       setExpr('harness_id', mapped)
     } else if (typeof patch.harnessId === 'string') {
       set('harness_id', patch.harnessId)
       if (patch.model !== undefined) set('model', patch.model)
     } else if (patch.model !== undefined) {
-      const migrated = migrateAgentPreset<{ model: string; harnessId?: HarnessId }>({
-        model: patch.model,
-      })
-      const modelParam = bind(patch.model)
-      const migratedModel = bind(migrated.model)
-      const migratedHarness = bind(migrated.harnessId ?? null)
+      // SET expressions all see the OLD row. Migrate that row first (a legacy
+      // `{model:'claude', harness_id:NULL}` becomes harness `claude-code`),
+      // then apply the patch model verbatim — the same order as a file-store
+      // read followed by `presetFromPatch`. Only a harness-less row whose old
+      // model does not map migrates the *new* model.
+      const patchModel = bind(patch.model)
+      const mappedOld = harnessFromModelSql('model', bind)
+      const mappedPatch = harnessFromModelSql(patchModel, bind)
+      setExpr('harness_id', `COALESCE(harness_id, ${mappedOld}, ${mappedPatch})`)
       setExpr(
         'model',
-        `CASE WHEN harness_id IS NOT NULL THEN ${modelParam} ELSE ${migratedModel} END`,
-      )
-      setExpr(
-        'harness_id',
-        `CASE WHEN harness_id IS NOT NULL THEN harness_id ELSE ${migratedHarness} END`,
+        `CASE WHEN harness_id IS NOT NULL OR (${mappedOld}) IS NOT NULL THEN ${patchModel} WHEN (${mappedPatch}) IS NOT NULL THEN '' ELSE ${patchModel} END`,
       )
     }
 

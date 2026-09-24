@@ -107,6 +107,8 @@ describe('createCachedPresetResolver', () => {
       expect(logs.join('\n')).toMatch(/db down/)
     })
     expect(resolver.lastKnown()).toMatchObject([{ name: 'Ok' }])
+    expect(await resolver.list()).toMatchObject([{ name: 'Ok' }])
+    expect(calls).toBe(2)
   })
 
   it('finds by handle priority on the cached list without a store round-trip', async () => {
@@ -120,10 +122,11 @@ describe('createCachedPresetResolver', () => {
       ])
     })
     const resolver = createCachedPresetResolver(store, { now: () => 0, ttlMs: 30_000 })
-    expect((await resolver.find('beta'))?.id).toBe('beta')
-    expect((await resolver.find('Alpha'))?.id).toBe('beta')
-    expect((await resolver.find('gamma'))?.id).toBe('id-c')
-    expect(await resolver.find('missing')).toBeUndefined()
+    const { find } = resolver
+    expect((await find('beta'))?.id).toBe('beta')
+    expect((await find('Alpha'))?.id).toBe('beta')
+    expect((await find('gamma'))?.id).toBe('id-c')
+    expect(await find('missing')).toBeUndefined()
     expect(calls).toBe(1)
     expect(store.findCalls).toBe(0)
   })
@@ -142,5 +145,93 @@ describe('createCachedPresetResolver', () => {
     expect((await resolver.list())[0]?.name).toBe('n2')
     expect(calls).toBe(2)
     expect(resolver.lastKnown()).toMatchObject([{ name: 'n2' }])
+  })
+
+  it('does not let a refresh started before invalidate satisfy the next list', async () => {
+    let now = 0
+    let calls = 0
+    let releaseOld: (rows: AgentPreset[]) => void = () => undefined
+    const oldRefresh = new Promise<AgentPreset[]>((resolve) => {
+      releaseOld = resolve
+    })
+    let releaseNew: (rows: AgentPreset[]) => void = () => undefined
+    const newRefresh = new Promise<AgentPreset[]>((resolve) => {
+      releaseNew = resolve
+    })
+    const store = fake(() => {
+      calls += 1
+      if (calls === 1) return Promise.resolve([preset({ id: 'old1', name: 'old1' })])
+      if (calls === 2) return oldRefresh
+      return newRefresh
+    })
+    const resolver = createCachedPresetResolver(store, { now: () => now, ttlMs: 1_000 })
+    expect((await resolver.list())[0]?.id).toBe('old1')
+    now = 1_000
+    expect((await resolver.list())[0]?.id).toBe('old1')
+    expect(calls).toBe(2)
+
+    resolver.invalidate()
+    const pending = resolver.list()
+    await Promise.resolve()
+    expect(calls).toBe(3)
+
+    releaseOld([preset({ id: 'old2', name: 'old2' })])
+    await oldRefresh
+    await Promise.resolve()
+    await Promise.resolve()
+    expect(resolver.lastKnown()[0]?.id).toBe('old1')
+
+    releaseNew([preset({ id: 'new', name: 'new' })])
+    await expect(pending).resolves.toMatchObject([{ id: 'new' }])
+    expect(calls).toBe(3)
+    expect(resolver.lastKnown()).toMatchObject([{ id: 'new' }])
+  })
+
+  it('a failed cold load does not mark the cache fresh', async () => {
+    let calls = 0
+    const logs: string[] = []
+    const store = fake(() => {
+      calls += 1
+      if (calls === 1) return Promise.reject(new Error('down'))
+      return Promise.resolve([preset({ id: 'a', name: 'Later' })])
+    })
+    const resolver = createCachedPresetResolver(store, {
+      now: () => 0,
+      ttlMs: 30_000,
+      log: (message) => {
+        logs.push(message)
+      },
+    })
+    expect(await resolver.list()).toEqual([])
+    expect(logs.join('\n')).toMatch(/down/)
+    expect(resolver.lastKnown()).toEqual([])
+    expect(await resolver.list()).toMatchObject([{ id: 'a', name: 'Later' }])
+    expect(calls).toBe(2)
+  })
+
+  it('a throwing logger does not reject the refresh', async () => {
+    let calls = 0
+    let now = 0
+    const store = fake(() => {
+      calls += 1
+      if (calls === 1) return Promise.resolve([preset({ id: 'a', name: 'Ok' })])
+      return Promise.reject(new Error('db down'))
+    })
+    const resolver = createCachedPresetResolver(store, {
+      now: () => now,
+      ttlMs: 1_000,
+      log: () => {
+        throw new Error('log broke')
+      },
+    })
+    await expect(resolver.list()).resolves.toMatchObject([{ name: 'Ok' }])
+    now = 1_000
+    await expect(resolver.list()).resolves.toMatchObject([{ name: 'Ok' }])
+    await vi.waitFor(() => {
+      expect(calls).toBe(2)
+    })
+    expect(resolver.lastKnown()).toMatchObject([{ name: 'Ok' }])
+    expect(await resolver.list()).toMatchObject([{ name: 'Ok' }])
+    expect(calls).toBe(2)
   })
 })

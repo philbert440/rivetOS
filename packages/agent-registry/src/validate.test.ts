@@ -1,3 +1,6 @@
+import { mkdirSync, mkdtempSync, rmSync, symlinkSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 import { describe, expect, it } from 'vitest'
 import { defaultDirectoryFor, directoryWarnings, slugify, validateDirectory } from './validate.js'
 
@@ -45,6 +48,12 @@ describe('validateDirectory', () => {
     expect(validateDirectory(`/${'a'.repeat(512)}`)).toBeUndefined()
     expect(validateDirectory(`/${'a'.repeat(511)}`)).toBe(`/${'a'.repeat(511)}`)
   })
+
+  it('rejects the filesystem root', () => {
+    expect(validateDirectory('/')).toBeUndefined()
+    expect(validateDirectory('//')).toBeUndefined()
+    expect(validateDirectory('/.')).toBeUndefined()
+  })
 })
 
 describe('directoryWarnings', () => {
@@ -57,5 +66,24 @@ describe('directoryWarnings', () => {
     expect(warned[0]).toMatch(/rivet-shared/)
     expect(warned[0]).toMatch(/ancestor/)
     expect(directoryWarnings('/rivet-shared', '/rivet-shared')).toHaveLength(1)
+  })
+
+  it('compares real paths when a shared directory is a symlink', () => {
+    const root = mkdtempSync(join(tmpdir(), 'agent-registry-warn-'))
+    try {
+      const real = join(root, 'real-shared')
+      const viaLink = join(root, 'link-shared')
+      mkdirSync(real)
+      symlinkSync(real, viaLink)
+      const directory = join(real, 'agents', 'reviewer')
+      mkdirSync(directory, { recursive: true })
+      expect(directoryWarnings(directory, viaLink)).toHaveLength(1)
+      expect(directoryWarnings(join(viaLink, 'agents', 'reviewer'), real)).toHaveLength(1)
+      const outside = join(root, 'other')
+      mkdirSync(outside)
+      expect(directoryWarnings(outside, viaLink)).toEqual([])
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
   })
 })

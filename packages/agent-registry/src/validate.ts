@@ -1,3 +1,4 @@
+import { existsSync, realpathSync } from 'node:fs'
 import { isAbsolute, join, normalize, sep } from 'node:path'
 import { HARNESS_IDS, type AgentPreset, type HarnessId } from '@rivetos/types'
 
@@ -84,7 +85,9 @@ function withoutTrailingSep(path: string): string {
 
 /**
  * Absolute path only. `~` is not expanded (that is the den's job).
- * `..` is rejected only when a segment survives `path.normalize`.
+ * The filesystem root is rejected. `path.normalize` already collapses `..`
+ * on an absolute path, so the segment check below does not fire for absolute
+ * input; it stays so a `..` segment cannot slip through if normalisation changes.
  */
 export function validateDirectory(raw: unknown): string | undefined {
   if (typeof raw !== 'string' || raw.includes('\0')) return undefined
@@ -92,9 +95,27 @@ export function validateDirectory(raw: unknown): string | undefined {
   if (!trimmed || !isAbsolute(trimmed)) return undefined
   const normalized = withoutTrailingSep(normalize(trimmed))
   if (!normalized || normalized.includes('\0')) return undefined
+  if (normalized === '/' || normalized === sep) return undefined
+  // Dead for absolute input today: `normalize` resolves every `..`.
   if (normalized.split(sep).includes('..')) return undefined
   if (normalized.length > 512) return undefined
   return normalized
+}
+
+/**
+ * `realpathSync.native` when the path exists, otherwise the normalised
+ * string. A symlinked shared dir (`~/rivet-shared` → `/rivet-shared`) then
+ * compares equal to the real path.
+ */
+function canonicalPath(path: string): string {
+  const normalized = withoutTrailingSep(normalize(path))
+  if (!normalized) return normalized
+  try {
+    if (!existsSync(normalized)) return normalized
+    return withoutTrailingSep(realpathSync.native(normalized))
+  } catch {
+    return normalized
+  }
 }
 
 /**
@@ -104,8 +125,8 @@ export function validateDirectory(raw: unknown): string | undefined {
  */
 export function directoryWarnings(directory: string, sharedDir?: string): string[] {
   if (!sharedDir) return []
-  const dir = withoutTrailingSep(normalize(directory))
-  const root = withoutTrailingSep(normalize(sharedDir))
+  const dir = canonicalPath(directory)
+  const root = canonicalPath(sharedDir)
   if (!dir || !root) return []
   const inside = dir === root || dir.startsWith(`${root}${sep}`)
   if (!inside) return []

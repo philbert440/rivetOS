@@ -29,5 +29,6 @@ describe('0017 agent presets migration file', () => {
     expect(statements).not.toMatch(/\b(UPDATE|INSERT|DELETE)\b/i)
     expect(statements).not.toMatch(/\bREFERENCES\b/)
     expect(statements).not.toMatch(/\bCREATE\s+TRIGGER\b/i)
+    expect(statements).not.toMatch(/\bCHECK\b/i)
   })
 })

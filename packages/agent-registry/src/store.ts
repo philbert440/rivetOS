@@ -51,9 +51,22 @@ export class PresetConflictError extends Error {
   }
 }
 
-/** Case-insensitive trimmed name, the uniqueness key both stores share. */
+/**
+ * Case-insensitive trimmed name, the uniqueness key both stores share.
+ *
+ * The Postgres unique index uses `lower(name)` (0017). `String#toLowerCase`
+ * and PG `lower()` agree under a UTF-8 ctype and can diverge for non-ASCII
+ * names on a C ctype. The DataHub is expected to be UTF-8, so the two keys match.
+ */
 export function nameKey(name: string): string {
   return name.trim().toLowerCase()
+}
+
+/** Blank names collapse to one unique-index key. Both stores reject them. */
+export function requireAgentName(name: string): string {
+  const trimmed = name.trim()
+  if (trimmed.length === 0) throw new Error('agent name is required')
+  return trimmed
 }
 
 export function sortPresets(presets: readonly AgentPreset[]): AgentPreset[] {
@@ -84,7 +97,7 @@ export function presetFromCreate(
 ): AgentPreset {
   const draft: AgentPreset = {
     id: input.id ?? opts.id,
-    name: input.name.trim(),
+    name: requireAgentName(input.name),
     color: input.color ?? '',
     model: input.model ?? '',
     effort: input.effort ?? 'medium',
@@ -113,7 +126,7 @@ export function presetFromPatch(
   now: number,
 ): AgentPreset {
   const next: AgentPreset = { ...current, updatedAt: now }
-  if (patch.name !== undefined) next.name = patch.name.trim()
+  if (patch.name !== undefined) next.name = requireAgentName(patch.name)
   if (patch.color !== undefined) next.color = patch.color
   if (patch.model !== undefined) next.model = patch.model
   if (patch.effort !== undefined) next.effort = patch.effort

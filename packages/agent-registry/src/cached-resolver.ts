@@ -21,8 +21,9 @@ export interface CachedPresetResolver {
 /**
  * First `list` awaits the store. After that, a stale cache returns the
  * last-known list immediately and refreshes in the background (one refresh
- * in flight). Store errors are logged and the last-known list is kept.
- * `invalidate` makes the next `list` await a fresh read.
+ * per generation). Store errors are logged and the last-known list is kept.
+ * `invalidate` bumps a generation so a refresh that started earlier cannot
+ * publish, and the next `list` awaits a refresh started at the new generation.
  */
 export function createCachedPresetResolver(
   store: AgentPresetStore,
@@ -35,51 +36,67 @@ export function createCachedPresetResolver(
   let known: AgentPreset[] = []
   let hasValue = false
   let fetchedAt = 0
-  let invalidated = false
-  let inflight: Promise<void> | null = null
+  let generation = 0
+  /** Generation `known` was published under. -1 until the first success. */
+  let publishedGeneration = -1
+  let inflight: { gen: number; promise: Promise<void> } | null = null
 
-  function refresh(): Promise<void> {
-    if (inflight) return inflight
-    inflight = Promise.resolve()
+  function startRefresh(gen: number): Promise<void> {
+    if (inflight && inflight.gen === gen) return inflight.promise
+    const promise = Promise.resolve()
       .then(() => store.list())
       .then((rows) => {
+        if (generation !== gen) return
         known = rows
         hasValue = true
+        publishedGeneration = gen
         fetchedAt = now()
       })
       .catch((err: unknown) => {
-        if (hasValue) fetchedAt = now()
-        const message = err instanceof Error ? err.message : 'unknown error'
-        log?.(`agent preset refresh failed: ${message}`)
+        // A failed refresh of the current generation stamps `fetchedAt` so a
+        // dead store is not retried on every list until the TTL passes. A cold
+        // failure does not: the next list tries again. An older generation
+        // must not touch the cache.
+        if (generation === gen && hasValue) fetchedAt = now()
+        try {
+          const message = err instanceof Error ? err.message : 'unknown error'
+          log?.(`agent preset refresh failed: ${message}`)
+        } catch {
+          // A throwing logger must not reject the refresh. The stale path is
+          // `void startRefresh()`, so a rejection would be unhandled.
+        }
       })
       .finally(() => {
-        inflight = null
+        if (inflight?.promise === promise) inflight = null
       })
-    return inflight
+    inflight = { gen, promise }
+    return promise
+  }
+
+  async function list(): Promise<AgentPreset[]> {
+    let gen = generation
+    while (publishedGeneration !== gen || !hasValue) {
+      await startRefresh(gen)
+      if (generation === gen) return known.slice()
+      gen = generation
+    }
+    if (now() - fetchedAt >= ttlMs) void startRefresh(gen)
+    return known.slice()
+  }
+
+  async function find(handle: string): Promise<AgentPreset | undefined> {
+    const rows = await list()
+    return findPresetByHandle(rows, handle)
   }
 
   return {
-    async list(): Promise<AgentPreset[]> {
-      if (!hasValue || invalidated) {
-        invalidated = false
-        await refresh()
-        return known.slice()
-      }
-      if (now() - fetchedAt >= ttlMs) void refresh()
-      return known.slice()
-    },
-
-    async find(handle: string): Promise<AgentPreset | undefined> {
-      const rows = await this.list()
-      return findPresetByHandle(rows, handle)
-    },
-
+    list,
+    find,
     lastKnown(): AgentPreset[] {
       return known.slice()
     },
-
     invalidate(): void {
-      invalidated = true
+      generation += 1
     },
   }
 }

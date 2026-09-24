@@ -4,6 +4,52 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest'
 import pg from 'pg'
 import { PgAgentPresetStore } from './pg-store.js'
 import { PresetConflictError, type AgentPresetInput } from './store.js'
+import {
+  describePresetStoreContract,
+  type RawPresetSeed,
+  type StoredPreset,
+} from './test/store-contract.test-helper.js'
+
+function seedRawRow(pool: pg.Pool, row: RawPresetSeed): Promise<unknown> {
+  return pool.query(
+    `INSERT INTO ros_agent_presets (
+       id, name, color, harness_id, model, effort, system_prompt,
+       node, directory, shared_link, node_base_url, created_at, updated_at
+     ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)`,
+    [
+      row.id,
+      row.name,
+      row.color ?? '',
+      row.harnessId,
+      row.model,
+      row.effort ?? 'medium',
+      row.systemPrompt ?? '',
+      row.node,
+      row.directory,
+      row.sharedLink ?? true,
+      row.nodeBaseUrl ?? '',
+      new Date(row.createdAt ?? 1),
+      new Date(row.updatedAt ?? 1),
+    ],
+  )
+}
+
+async function readStoredRow(pool: pg.Pool, id: string): Promise<StoredPreset | undefined> {
+  const result = await pool.query<{
+    name: string
+    model: string
+    harness_id: string | null
+    shared_link: boolean
+  }>('SELECT name, model, harness_id, shared_link FROM ros_agent_presets WHERE id = $1', [id])
+  const row = result.rows[0]
+  if (!row) return undefined
+  return {
+    name: row.name,
+    model: row.model,
+    harnessId: row.harness_id,
+    sharedLink: row.shared_link,
+  }
+}
 
 const TEST_PG_URL = process.env.RIVETOS_TASKS_TEST_PG_URL
 const MIGRATION_SQL = readFileSync(
@@ -180,5 +226,13 @@ describe.skipIf(!TEST_PG_URL)('PgAgentPresetStore (scratch schema)', () => {
     expect(await store.delete('a')).toBe(true)
     expect(await store.get('a')).toBeUndefined()
     expect(await store.update('missing', { name: 'nope' })).toBeUndefined()
+  })
+
+  describePresetStoreContract({
+    newStore: () => store,
+    seedRaw: async (row) => {
+      await seedRawRow(pool, row)
+    },
+    readStored: (id) => readStoredRow(pool, id),
   })
 })

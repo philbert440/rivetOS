@@ -1,7 +1,8 @@
 import { existsSync, renameSync } from 'node:fs'
+import { resolve } from 'node:path'
 import { FileAgentPresetStore } from './file-store.js'
 import { PresetConflictError, type AgentPresetStore } from './store.js'
-import { defaultDirectoryFor } from './validate.js'
+import { defaultDirectoryFor, validateDirectory } from './validate.js'
 
 export interface ImportLegacyAgentsArgs {
   file: string
@@ -18,6 +19,8 @@ export interface ImportLegacyAgentsResult {
   skipped: number
   /** Set when the source file was renamed aside. Never deleted. */
   renamedTo?: string
+  /** Set when the import was refused (the store file is the source). */
+  reason?: string
 }
 
 /**
@@ -31,18 +34,36 @@ export async function importLegacyAgentsJson(
   const { file, store, node, directoryRoot, log } = args
   if (!existsSync(file)) return { imported: 0, skipped: 0 }
 
+  // Slice 2 falls back to the file store and fire-and-forgets this import
+  // against the same agents.json. Renaming that file would drop the live registry.
+  if (
+    store.backend === 'file' &&
+    store instanceof FileAgentPresetStore &&
+    resolve(store.file) === resolve(file)
+  ) {
+    return { imported: 0, skipped: 0, reason: 'store is the source file' }
+  }
+
   const legacy = new FileAgentPresetStore(file)
   const rows = await legacy.list()
   let imported = 0
   let skipped = 0
   for (const row of rows) {
+    const validated = validateDirectory(row.directory)
+    const directory = validated ?? defaultDirectoryFor(directoryRoot, row.name)
+    if (validated === undefined) {
+      log?.(
+        `legacy agent ${row.id} (${row.name}): directory missing or invalid; using ${directory}`,
+      )
+    }
     try {
+      // `create` keeps `createdAt` and stamps `updatedAt` at import time.
       await store.create({
         ...row,
         id: row.id,
         createdAt: row.createdAt,
         node,
-        directory: row.directory || defaultDirectoryFor(directoryRoot, row.name),
+        directory,
       })
       imported += 1
     } catch (err) {

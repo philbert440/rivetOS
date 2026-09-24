@@ -3,9 +3,11 @@ import {
   lstatSync,
   mkdirSync,
   mkdtempSync,
+  readFileSync,
   readlinkSync,
   rmSync,
   statSync,
+  symlinkSync,
   writeFileSync,
 } from 'node:fs'
 import { tmpdir } from 'node:os'
@@ -71,7 +73,69 @@ describe('ensureAgentDirectory', () => {
   it('throws when the directory is empty', () => {
     expect(() => ensureAgentDirectory({ directory: '' })).toThrow('agent directory is empty')
     expect(() => ensureAgentDirectory({ directory: '   ' })).toThrow('agent directory is empty')
-    expect(() => ensureAgentDirectory({})).toThrow('agent directory is empty')
+  })
+
+  it('rejects a directory that is not an absolute path', () => {
+    expect(() => ensureAgentDirectory({})).toThrow('agent directory must be an absolute path')
+    expect(() => ensureAgentDirectory({ directory: 'agents/reviewer' })).toThrow(
+      'agent directory must be an absolute path',
+    )
+    expect(() => ensureAgentDirectory({ directory: '../etc' })).toThrow(
+      'agent directory must be an absolute path',
+    )
+    expect(() => ensureAgentDirectory({ directory: '/tmp/\0hidden' })).toThrow(
+      'agent directory must be an absolute path',
+    )
+    expect(() => ensureAgentDirectory({ directory: 123 as unknown as string })).toThrow(
+      'agent directory must be an absolute path',
+    )
+    expect(() => ensureAgentDirectory({ directory: '/' })).toThrow(
+      'agent directory must be an absolute path',
+    )
+  })
+
+  it('leaves an existing symlink with a different target alone', () => {
+    const directory = join(root, 'agent')
+    const elsewhere = join(root, 'elsewhere')
+    mkdirSync(elsewhere)
+    mkdirSync(directory)
+    const link = join(directory, 'rivet-shared')
+    symlinkSync(elsewhere, link)
+    const shared = join(root, 'shared')
+    mkdirSync(shared)
+    const result = ensureAgentDirectory({ directory }, { sharedDir: shared })
+    expect(result).toEqual({ created: false, linked: true })
+    expect(readlinkSync(link)).toBe(elsewhere)
+  })
+
+  it('reports a dangling existing symlink from its own target', () => {
+    const directory = join(root, 'agent')
+    mkdirSync(directory)
+    const missing = join(root, 'gone')
+    const link = join(directory, 'rivet-shared')
+    symlinkSync(missing, link)
+    const shared = join(root, 'shared')
+    mkdirSync(shared)
+    const result = ensureAgentDirectory({ directory }, { sharedDir: shared })
+    expect(result.created).toBe(false)
+    expect(result.linked).toBe(true)
+    expect(result.reason).toMatch(/dangle/)
+    expect(result.reason).toContain(missing)
+    expect(result.reason).not.toContain(shared)
+    expect(readlinkSync(link)).toBe(missing)
+  })
+
+  it('leaves a regular file at the link path alone', () => {
+    const directory = join(root, 'agent')
+    mkdirSync(directory)
+    const link = join(directory, 'rivet-shared')
+    writeFileSync(link, 'not-a-directory')
+    const result = ensureAgentDirectory({ directory }, { sharedDir: join(root, 'shared') })
+    expect(result.created).toBe(false)
+    expect(result.linked).toBe(false)
+    expect(result.reason).toMatch(/file/)
+    expect(readFileSync(link, 'utf8')).toBe('not-a-directory')
+    expect(lstatSync(link).isFile()).toBe(true)
   })
 
   it('does not throw when the shared directory is missing', () => {

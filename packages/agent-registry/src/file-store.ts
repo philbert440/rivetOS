@@ -98,7 +98,7 @@ export class FileAgentPresetStore implements AgentPresetStore {
   private readonly mutex: <T>(fn: () => T | Promise<T>) => Promise<T>
 
   constructor(
-    private readonly file: string,
+    readonly file: string,
     opts?: FileAgentPresetStoreOptions,
   ) {
     this.now = opts?.now ?? Date.now

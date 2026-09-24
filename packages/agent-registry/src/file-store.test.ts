@@ -4,6 +4,47 @@ import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import { FileAgentPresetStore } from './file-store.js'
 import { PresetConflictError, type AgentPresetInput } from './store.js'
+import {
+  describePresetStoreContract,
+  type RawPresetSeed,
+  type StoredPreset,
+} from './test/store-contract.test-helper.js'
+import { isRecord } from './validate.js'
+
+function legacyAgent(row: RawPresetSeed): Record<string, unknown> {
+  const agent: Record<string, unknown> = {
+    id: row.id,
+    name: row.name,
+    color: row.color ?? '',
+    model: row.model,
+    effort: row.effort ?? 'medium',
+    systemPrompt: row.systemPrompt ?? '',
+    nodeBaseUrl: row.nodeBaseUrl ?? '',
+    createdAt: row.createdAt ?? 1,
+    updatedAt: row.updatedAt ?? 1,
+    node: row.node,
+    directory: row.directory,
+    sharedLink: row.sharedLink ?? true,
+  }
+  if (row.harnessId !== null) agent.harnessId = row.harnessId
+  return agent
+}
+
+function readContractRow(file: string, id: string): StoredPreset | undefined {
+  if (!existsSync(file)) return undefined
+  const parsed: unknown = JSON.parse(readFileSync(file, 'utf8'))
+  if (!isRecord(parsed) || !Array.isArray(parsed.agents)) return undefined
+  const row = parsed.agents.find((agent) => isRecord(agent) && agent.id === id)
+  if (!isRecord(row) || typeof row.name !== 'string' || typeof row.model !== 'string') {
+    return undefined
+  }
+  return {
+    name: row.name,
+    model: row.model,
+    harnessId: typeof row.harnessId === 'string' ? row.harnessId : null,
+    sharedLink: typeof row.sharedLink === 'boolean' ? row.sharedLink : true,
+  }
+}
 
 function input(overrides: Partial<AgentPresetInput> = {}): AgentPresetInput {
   return {
@@ -181,5 +222,14 @@ describe('FileAgentPresetStore', () => {
     expect(await registry.delete('a')).toBe(true)
     expect(await registry.delete('a')).toBe(false)
     expect(await registry.get('a')).toBeUndefined()
+  })
+
+  describePresetStoreContract({
+    newStore: () => new FileAgentPresetStore(join(dir, 'contract.json'), { now: () => 5_000 }),
+    seedRaw: (row) => {
+      writeFileSync(join(dir, 'contract.json'), JSON.stringify({ agents: [legacyAgent(row)] }))
+      return Promise.resolve()
+    },
+    readStored: (id) => Promise.resolve(readContractRow(join(dir, 'contract.json'), id)),
   })
 })
