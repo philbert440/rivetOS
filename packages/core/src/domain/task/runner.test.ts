@@ -736,6 +736,62 @@ describe('createTaskHandler spec forwarding', () => {
       rmSync(parent, { recursive: true, force: true })
     }
   })
+
+  // Integrator-added (round 4): the retry after a mismatch fails CLOSED. When
+  // the refreshed lookup cannot answer (hang or rejection) the runner keeps the
+  // first preset, compares again, and fails working_dir_mismatch rather than
+  // running in a directory nobody could confirm. Nothing is materialised.
+  for (const mode of ['hangs', 'rejects'] as const) {
+    it(`fails closed when the retry lookup after a mismatch ${mode}`, async () => {
+      const fake = makeFakeExecutor()
+      const parent = mkdtempSync(join(tmpdir(), 'rivetos-retry-'))
+      const staleDir = join(parent, 'stale')
+      const currentDir = join(parent, 'current')
+      const shared = join(parent, 'shared')
+      mkdirSync(shared)
+      const prev = process.env.RIVETOS_SHARED_DIR
+      process.env.RIVETOS_SHARED_DIR = shared
+      let calls = 0
+      let invalidations = 0
+      try {
+        const { store, handler } = handlerFor(
+          fake,
+          '/workspace',
+          async () => {
+            calls += 1
+            if (calls === 1) return directoryPreset(staleDir, true)
+            if (mode === 'rejects') throw new Error('registry down')
+            return new Promise<AgentPreset | undefined>(() => undefined)
+          },
+          'chat-loop',
+          {
+            resolvePresetBoundMs: 50,
+            invalidatePreset: () => {
+              invalidations += 1
+            },
+          },
+        )
+        const task = await store.create(
+          taskInput({ spec: { presetId: 'preset-1', workingDir: currentDir } }),
+        )
+
+        await handler(task.id)
+
+        const row = await store.get(task.id)
+        expect(invalidations).toBe(1)
+        expect(calls).toBe(2)
+        expect(row?.status).toBe('failed')
+        expect(row?.error).toBe('working_dir_mismatch')
+        expect(existsSync(staleDir)).toBe(false)
+        expect(existsSync(currentDir)).toBe(false)
+        expect(fake.specs).toHaveLength(0)
+      } finally {
+        if (prev === undefined) Reflect.deleteProperty(process.env, 'RIVETOS_SHARED_DIR')
+        else process.env.RIVETOS_SHARED_DIR = prev
+        rmSync(parent, { recursive: true, force: true })
+      }
+    })
+  }
 })
 
 describe('createTaskRunner graphile pool wiring', () => {
