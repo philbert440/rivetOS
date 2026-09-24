@@ -48,6 +48,7 @@ import {
   createNotImplementedHarnessExecutor,
   harnessExecutorGap,
   createTaskRunner,
+  PresetDelegationEngine,
   SkillManagerImpl,
   createSkillListTool,
   createSkillManageTool,
@@ -56,6 +57,11 @@ import {
   createWorkflowTools,
 } from '@rivetos/core'
 import { WorkflowEngine, resolveCaseDirRoot, defaultWorkflowsDefsRoot } from '@rivetos/workflows'
+import {
+  PgAgentPresetStore,
+  createCachedPresetResolver,
+  type CachedPresetResolver,
+} from '@rivetos/agent-registry'
 import type { DelegationRunsRecorder, EscalationNotifier } from '@rivetos/core'
 import pg from 'pg'
 import {
@@ -140,6 +146,7 @@ export async function registerAgentTools(
   let taskEngineStore: PgTaskStore | undefined
   let taskWaiter: TaskCompletionWaiter | undefined
   let meshRegistryRef: MeshRegistry | undefined
+  let presetResolver: CachedPresetResolver | undefined
   let delegationRecorder: DelegationRunsRecorder | undefined
   let userPools: Map<string, pg.Pool | null> | undefined
 
@@ -198,12 +205,93 @@ export async function registerAgentTools(
         await taskWaiter?.stop()
       })
     }
+    // Presets are only usable once a task row can be pinned. A probe error
+    // (PG blip) must not reject registerAgentTools — delegation stays off.
+    if (pool && taskEngineStore && taskWaiter) {
+      try {
+        const presetStore = new PgAgentPresetStore(pool)
+        if (await presetStore.isReady()) {
+          presetResolver = createCachedPresetResolver(presetStore, {
+            log: (msg) => log.info(msg),
+          })
+        } else {
+          log.warn(
+            'ros_agent_presets missing — preset delegation off until rivetos-memory-migrate runs',
+          )
+        }
+      } catch (err: unknown) {
+        log.warn(
+          `agent preset store probe failed — preset delegation off: ${
+            err instanceof Error ? err.message : String(err)
+          }`,
+        )
+      }
+    }
   } else {
     log.info('No pgUrl — subagent sessions are process-local; delegation audit disabled')
   }
 
-  // Build the local delegation engine (always needed — mesh wraps it)
-  const localDelegation = new DelegationEngine({
+  // Node name the runner claims on, den stamps onto preset.node, and the
+  // mesh roster uses. One helper so those cannot drift (a blank
+  // mesh.node_name must not fall through to the old 'unknown' literal).
+  const nodeName = nodeNameFor(config)
+
+  // Executor registry BEFORE mesh registration. Harness probes only need
+  // the runtime, config, and this registry, so the first register() can
+  // advertise metadata.harnessExecutors. A later register() would
+  // wholesale-replace the roster entry.
+  const executorCfg = {
+    router: runtime.getRouter(),
+    workspace: runtime.getWorkspace(),
+    tools: () => runtime.getTools(),
+    hooks: runtime.getHooks(),
+    toolFilter: hasFilters ? toolFilter : undefined,
+    workspaceDir,
+    turnTimeout: config.runtime.turn_timeout,
+    contextConfig,
+  }
+  const executors = createExecutorRegistry()
+  const taskPricing = config.tasks?.pricing
+    ? Object.fromEntries(
+        Object.entries(config.tasks.pricing).map(([provider, p]) => [
+          provider,
+          { inputPerMTok: p.input_per_mtok, outputPerMTok: p.output_per_mtok },
+        ]),
+      )
+    : undefined
+  executors.register(
+    'chat-loop',
+    createChatLoopExecutor({ ...executorCfg, memory: runtime.getMemory(), pricing: taskPricing }),
+  )
+  await registerHarnessTaskExecutors(runtime, config, executors, workspaceDir)
+  const implementedHarnesses = executors
+    .harnesses()
+    .filter((row) => row.implemented)
+    .map((row) => row.harnessId)
+
+  let presets: PresetDelegationEngine | undefined
+  const ensurePresets = async (
+    meshRegistry?: MeshRegistry,
+  ): Promise<PresetDelegationEngine | undefined> => {
+    // Harness executors run only through the durable runner. Without the
+    // task store + waiter there is nothing to pin a preset row to.
+    if (!presetResolver || !taskEngineStore || !taskWaiter) return undefined
+    const known = await presetResolver.list()
+    const engine = new PresetDelegationEngine({
+      resolver: presetResolver,
+      taskStore: taskEngineStore,
+      waiter: taskWaiter,
+      nodeName,
+      executors,
+      meshRegistry,
+      criteriaPolicy,
+    })
+    const onNode = known.filter((p) => p.node === nodeName).length
+    log.info(`Preset delegation: ${String(known.length)} presets (${String(onNode)} on this node)`)
+    return engine
+  }
+
+  const delegationEngineConfig = (presetEngine: PresetDelegationEngine | undefined) => ({
     router: runtime.getRouter(),
     workspace: runtime.getWorkspace(),
     tools: () => runtime.getTools(),
@@ -213,6 +301,7 @@ export async function registerAgentTools(
     turnTimeout: config.runtime.turn_timeout,
     contextConfig,
     recorder: delegationRecorder,
+    presets: presetEngine,
   })
 
   // Determine if mesh is enabled
@@ -228,9 +317,6 @@ export async function registerAgentTools(
     const agentChannelPort = meshConfig.agent_channel_port ?? 3000
     const agentChannelHost = meshConfig.agent_channel_host
     const localAgents = Object.keys(config.agents)
-    // Same string den stamps on preset.node and the runner claims on.
-    // A padded mesh.node_name must not register as a different mesh id.
-    const nodeName = nodeNameFor(config)
 
     // Load TLS material — required for mesh (no plaintext fallback)
     // Convert YAML snake_case paths to camelCase for loadTlsConfig
@@ -326,12 +412,16 @@ export async function registerAgentTools(
         ...(denEnabled ? { denPort: config.den?.port ?? 5174 } : {}),
         ...(denUrl ? { denUrl } : {}),
         agentDetails,
+        harnessExecutors: implementedHarnesses,
       },
       version: '0.1.0',
     })
 
     await meshRegistry.start(localNode)
     log.info(`Mesh registry started — node "${localNode.name}" registered`)
+
+    presets = await ensurePresets(meshRegistry)
+    const localDelegation = new DelegationEngine(delegationEngineConfig(presets))
 
     // Mesh delegation engine
     const { Agent: UndiciAgent } = await import('undici')
@@ -359,6 +449,7 @@ export async function registerAgentTools(
       taskStore: taskEngineStore,
       waiter: taskWaiter,
       transport: meshConfig.delegation_transport,
+      presets,
     })
 
     // Register the mesh-aware delegation tool
@@ -381,48 +472,27 @@ export async function registerAgentTools(
     // ------------------------------------------------------------------
     // Local-only mode — plain DelegationEngine
     // ------------------------------------------------------------------
+    presets = await ensurePresets(undefined)
+    const localDelegation = new DelegationEngine(delegationEngineConfig(presets))
     runtime.registerTool(localDelegation.createDelegationTool())
-  }
-
-  const executorCfg = {
-    router: runtime.getRouter(),
-    workspace: runtime.getWorkspace(),
-    tools: () => runtime.getTools(),
-    hooks: runtime.getHooks(),
-    toolFilter: hasFilters ? toolFilter : undefined,
-    workspaceDir,
-    turnTimeout: config.runtime.turn_timeout,
-    contextConfig,
   }
 
   // ------------------------------------------------------------------
   // Task engine (phase 1a) — durable ros_tasks + embedded run-task runner.
   //
   // Enabled by default and inert: nothing creates task rows yet, so the
-  // runner idles on an empty queue. chat-loop always registers; the
-  // `claude-code` harness executor registers when its binary probe passes,
-  // and EVERY other harness id registers an explicit rejection so a task
-  // aimed at one fails with a reason instead of an anonymous registry miss.
-  // On startup the runner crash-sweeps rows this node left 'running'.
+  // runner idles on an empty queue. chat-loop and harness executors were
+  // registered above, before the mesh node, so metadata.harnessExecutors
+  // is on the first register(). On startup the runner crash-sweeps rows
+  // this node left 'running'.
   // ------------------------------------------------------------------
-  // Executor registry — shared by the durable runner and the in-memory
-  // fallback path.
-  const executors = createExecutorRegistry()
-  // Task-conversation persistence + resume rehydration (step (c)) — turns
-  // file under session_key task:<id> alongside the harness executors' rows.
-  const taskPricing = config.tasks?.pricing
-    ? Object.fromEntries(
-        Object.entries(config.tasks.pricing).map(([provider, p]) => [
-          provider,
-          { inputPerMTok: p.input_per_mtok, outputPerMTok: p.output_per_mtok },
-        ]),
-      )
-    : undefined
-  executors.register(
-    'chat-loop',
-    createChatLoopExecutor({ ...executorCfg, memory: runtime.getMemory(), pricing: taskPricing }),
-  )
-  await registerHarnessTaskExecutors(runtime, config, executors, workspaceDir)
+
+  // Runner materialises preset directories from the resolver, not from
+  // spec.workingDir. A node with no preset store passes undefined and the
+  // runner creates nothing for presetId rows.
+  const presetLookup = presetResolver
+  const resolvePresetForRunner = presetLookup ? (id: string) => presetLookup.find(id) : undefined
+  const invalidatePresetForRunner = presetLookup ? () => presetLookup.invalidate() : undefined
 
   // Subagent tool store: durable when the engine is live, else process-local
   // (g2a: the in-memory task store replaces the deleted InMemorySubagentStore;
@@ -441,6 +511,8 @@ export async function registerAgentTools(
       nodeId: nodeNameFor(config),
       workspaceDir,
       memory: runtime.getMemory(),
+      resolvePreset: resolvePresetForRunner,
+      invalidatePreset: invalidatePresetForRunner,
     })
     subagentTaskStore = inMemoryStore
   }
@@ -518,6 +590,8 @@ export async function registerAgentTools(
       // Context-refs resolution (step (b) checklist) — the runner folds
       // memory context into TaskSpec.resolvedContext when refs are present.
       memory: runtime.getMemory(),
+      resolvePreset: resolvePresetForRunner,
+      invalidatePreset: invalidatePresetForRunner,
     })
     runTaskRef.current = taskRunner.handler
     await taskRunner.start()
@@ -609,12 +683,12 @@ export async function registerAgentTools(
   // G1/G4: gateway route families — mounted by registerGateway. Tasks only
   // when the durable engine is live (the API over the in-memory fallback
   // would lie about durability); catalog always (it describes the node).
-  const nodeName = nodeNameFor(config)
   const registry = meshRegistryRef
 
   // Agent-aware dispatch (G4, from the G1 smoke followup): unpinned creates
-  // resolve to the agent's home node — local agents pin here, mesh agents to
-  // their (online) host, unknown agents 400 instead of a doomed global row.
+  // resolve to the agent's home node — local config agents pin here, presets
+  // pin to preset.node, mesh agents to their (online) host, unknown agents
+  // 400 instead of a doomed global row. A config agent id wins over a preset.
   const resolveAffinity = async (
     agentId: string,
   ): Promise<string | { error: string } | undefined> => {
@@ -625,6 +699,8 @@ export async function registerAgentTools(
         .some((a) => a.id === agentId)
     )
       return nodeName
+    const preset = await presets?.find(agentId)
+    if (preset?.node) return preset.node
     if (registry) {
       const nodes = await registry.findByAgent(agentId)
       const online = nodes.filter((n) => n.status === 'online' && n.name !== nodeName)
@@ -637,11 +713,28 @@ export async function registerAgentTools(
 
   const gatewayRoutes: GatewayRoute[] = []
   if (taskEngineStore && taskWaiter) {
+    // Config agent ids win over a preset of the same name. The route builds
+    // the harness-session row; resolveAffinity alone would pin the node and
+    // leave executor chat-loop, which the runner then fails as unregistered.
+    const presetEngine = presets
     gatewayRoutes.push(
       createTaskApiRoute({
         store: taskEngineStore,
         waiter: taskWaiter,
         resolveAffinity,
+        resolvePreset: presetEngine
+          ? async (agentId) => {
+              if (
+                runtime
+                  .getRouter()
+                  .getAgents()
+                  .some((a) => a.id === agentId)
+              )
+                return undefined
+              return presetEngine.find(agentId)
+            }
+          : undefined,
+        presetHost: presetEngine ? { nodeName, executors, meshRegistry: registry } : undefined,
         criteriaPolicy,
       }),
       createOutcomesApiRoute({ store: taskEngineStore }),
@@ -684,6 +777,7 @@ export async function registerAgentTools(
       executors,
       skills: () => skillManager.list(),
       meshRegistry: registry,
+      presets,
     }),
   )
 

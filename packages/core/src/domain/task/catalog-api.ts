@@ -21,11 +21,13 @@ import type {
   CatalogSheet,
   GatewayRoute,
   HarnessExecutor,
+  MeshNode,
   MeshRegistry,
   Skill,
   Tool,
 } from '@rivetos/types'
 import type { Router } from '../router.js'
+import { ROSTER_READ_BOUND_MS, type PresetDelegationEngine } from '../preset-delegation.js'
 import type { TaskExecutorRegistry } from './runner.js'
 import { isHarnessExecutorTarget, isNotImplementedHarnessExecutor } from './harness-executors.js'
 import { logger } from '../../logger.js'
@@ -42,6 +44,75 @@ export interface CatalogApiOptions {
   executors: TaskExecutorRegistry
   skills?: () => Skill[]
   meshRegistry?: MeshRegistry
+  /** RivetHub presets appended as `kind: 'preset'` catalog agents. */
+  presets?: PresetDelegationEngine
+  /**
+   * Bound for the fresh preset roster. Default {@link ROSTER_READ_BOUND_MS}.
+   * Tests shorten it. A hung store falls back to `rosterEntries()` (last-known).
+   */
+  rosterFreshTimeoutMs?: number
+}
+
+const lastMeshNodes = new WeakMap<MeshRegistry, MeshNode[]>()
+/** Generation of the latest getNodes() this registry started. An older read must not publish. */
+const meshReadGeneration = new WeakMap<MeshRegistry, number>()
+
+/**
+ * Bound `getNodes`. Timeout or rejection returns the last snapshot this
+ * registry published (empty until the first success). A late completion
+ * publishes only when no newer read has started.
+ */
+function boundedMeshNodes(registry: MeshRegistry, timeoutMs: number): Promise<MeshNode[]> {
+  const fallback = lastMeshNodes.get(registry) ?? []
+  const gen = (meshReadGeneration.get(registry) ?? 0) + 1
+  meshReadGeneration.set(registry, gen)
+  let timer: ReturnType<typeof setTimeout> | undefined
+  const timeout = new Promise<MeshNode[]>((resolve) => {
+    timer = setTimeout(() => resolve(fallback), timeoutMs)
+    timer.unref()
+  })
+  const work = registry.getNodes().then(
+    (nodes) => {
+      if (meshReadGeneration.get(registry) === gen) lastMeshNodes.set(registry, nodes)
+      return nodes
+    },
+    () => fallback,
+  )
+  return Promise.race([work, timeout]).finally(() => {
+    if (timer !== undefined) clearTimeout(timer)
+  })
+}
+
+function raceRoster<T>(work: Promise<T>, timeoutMs: number, fallback: () => T): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined
+  const timeout = new Promise<T>((resolve) => {
+    timer = setTimeout(() => resolve(fallback()), timeoutMs)
+    timer.unref()
+  })
+  return Promise.race([work.catch(() => fallback()), timeout]).finally(() => {
+    if (timer !== undefined) clearTimeout(timer)
+  })
+}
+
+async function presetCatalogAgents(opts: CatalogApiOptions): Promise<CatalogAgent[]> {
+  if (!opts.presets) return []
+  const bound = opts.rosterFreshTimeoutMs ?? ROSTER_READ_BOUND_MS
+  const presets = opts.presets
+  const entries = await raceRoster(presets.rosterEntriesFresh({ timeoutMs: bound }), bound, () =>
+    presets.rosterEntries(),
+  )
+  return entries.map((entry): CatalogAgent => ({
+    kind: 'preset',
+    id: entry.id,
+    name: entry.name,
+    node: entry.node,
+    local: entry.local,
+    ...(entry.harnessId ? { harnessId: entry.harnessId } : {}),
+    ...(entry.model ? { model: entry.model } : {}),
+    ...(entry.directory ? { directory: entry.directory } : {}),
+    ...(entry.implemented !== undefined ? { implemented: entry.implemented } : {}),
+    ...(entry.gap ? { gap: entry.gap } : {}),
+  }))
 }
 
 function json(res: ServerResponse, code: number, body: unknown): void {
@@ -58,8 +129,13 @@ export async function buildCatalogAgents(opts: CatalogApiOptions): Promise<Catal
     node: opts.nodeName,
     local: true,
   }))
-  if (!opts.meshRegistry) return local
-  const nodes = await opts.meshRegistry.getNodes()
+  const presets = await presetCatalogAgents(opts)
+  if (!opts.meshRegistry) return [...local, ...presets]
+  // Same bound as roster reads. A hung getNodes must not pin the catalog.
+  const nodes = await boundedMeshNodes(
+    opts.meshRegistry,
+    opts.rosterFreshTimeoutMs ?? ROSTER_READ_BOUND_MS,
+  )
   const remote = nodes
     .filter((n) => n.status === 'online' && n.name !== opts.nodeName)
     .flatMap((n) => {
@@ -86,7 +162,7 @@ export async function buildCatalogAgents(opts: CatalogApiOptions): Promise<Catal
           : { id: agentId, node: n.name, local: false }
       })
     })
-  return [...local, ...remote]
+  return [...local, ...remote, ...presets]
 }
 
 export function createCatalogApiRoute(opts: CatalogApiOptions): GatewayRoute {
