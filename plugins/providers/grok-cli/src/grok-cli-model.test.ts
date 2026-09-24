@@ -274,6 +274,12 @@ describe('stream event helpers', () => {
     expect(streamErrorMessage({ type: 'error', message: 'boom' })).toBe('boom')
     expect(streamErrorMessage({ type: 'result', is_error: true, result: 'nope' })).toBe('nope')
     expect(streamErrorMessage({ type: 'result', is_error: false })).toBeUndefined()
+    expect(
+      streamErrorMessage({ type: 'result', is_error: true, subtype: 'error_max_turns' }),
+    ).toBe('grok result is_error: error_max_turns')
+    expect(
+      streamErrorMessage({ type: 'result', is_error: true, subtype: 'error_max_turns', result: 'nope' }),
+    ).toBe('nope (error_max_turns)')
     const inner = innerStreamEvent({
       type: 'stream_event',
       event: { type: 'content_block_delta', delta: { type: 'text_delta', text: 'Hi' } },

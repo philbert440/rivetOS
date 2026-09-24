@@ -60,7 +60,7 @@ export interface GrokCliModelConfig {
   binary: string
   permissionMode: string
   reasoningEffort: GrokReasoningEffort | undefined
-  maxTurns: number
+  maxTurns: number | undefined
   noPlan: boolean
   systemPromptMode: GrokSystemPromptMode
   allow: string[] | undefined
@@ -322,9 +322,16 @@ export function streamErrorMessage(ev: GrokCliEvent): string | undefined {
     return 'grok stream error'
   }
   if (ev.type === 'result' && ev.is_error) {
-    if (typeof ev.result === 'string' && ev.result) return ev.result
-    if (typeof ev.message === 'string' && ev.message) return ev.message
-    return 'grok result is_error'
+    // `subtype` (e.g. error_max_turns) is often the only cause grok reports.
+    const subtype = typeof ev.subtype === 'string' && ev.subtype ? ev.subtype : undefined
+    const detail =
+      typeof ev.result === 'string' && ev.result
+        ? ev.result
+        : typeof ev.message === 'string' && ev.message
+          ? ev.message
+          : undefined
+    if (detail) return subtype ? `${detail} (${subtype})` : detail
+    return subtype ? `grok result is_error: ${subtype}` : 'grok result is_error'
   }
   return undefined
 }

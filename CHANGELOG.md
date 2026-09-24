@@ -32,6 +32,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Harness
 
+- `grok-cli` provider: `max_turns` defaults to unset, so `--max-turns` is only passed when configured (#951). The old default of `1` ended every tool-using grok turn as `error_max_turns` — grok heartbeats and mesh tasks failed with a bare `grok result is_error`. A failed result now carries grok's `subtype` in the error (e.g. `grok result is_error: error_max_turns`).
 - `claude-cli` provider: the `claude --version` availability probe is bounded (15 s, then SIGKILL, reported unavailable) and shared between concurrent callers. It had no timeout, and `Runtime.start()` awaits `router.healthCheck()` before starting channels, so a `claude` that never exits (e.g. a wrapper script whose `exec claude` resolves back to itself) held the gateway channel and health endpoint down indefinitely.
 - `pi` harness (earendil-works/pi, provider `pi-cli`, roster command `pi`) on RivetHub web + Android, with a commented `@rivetos/provider-pi-cli` config example (recommended default backend z.ai GLM).
 - feat(harness): add qwen-code — Qwen Code CLI as the eighth first-class harness (driver, provider, executor, hooks-driven memory capture via a qwen extension, web + Android).

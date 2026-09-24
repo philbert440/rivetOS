@@ -467,7 +467,7 @@ providers:
     # model: grok-4.5                    # optional; omit for the CLI's configured model
     permission_mode: dontAsk # tools denied unless `allow` rules cover them
     reasoning_effort: medium # low|medium|high; a turn's `thinking` overrides
-    max_turns: 1 # 1 = answer only, no tool loop
+    # max_turns: 20                      # optional cap; omit to let grok decide
     no_plan: true
     system_prompt: prepend # prepend | override | off
     session: resume # resume | replay
@@ -481,7 +481,7 @@ providers:
 | `model`            | CLI default (optional)          | Passed as `-m` when set. Omit to use the CLI's configured model.                                                                                                                               |
 | `permission_mode`  | `dontAsk`                       | `--permission-mode`. `dontAsk` auto-denies tools not covered by `allow`.                                                                                                                       |
 | `reasoning_effort` | CLI default                     | `--reasoning-effort`. Per-turn `thinking` (`low`/`medium`/`high`+) overrides.                                                                                                                  |
-| `max_turns`        | `1`                             | `--max-turns`. Raise with `allow` rules for agentic turns.                                                                                                                                     |
+| `max_turns` | unset | `--max-turns`, only passed when set. Unset lets grok run its tool loop to completion; `1` = answer only, and any tool call then ends the turn as `error_max_turns`. |
 | `no_plan`          | `true`                          | `--no-plan` — plan mode would swallow a headless run.                                                                                                                                          |
 | `system_prompt`    | `prepend`                       | `prepend` = RivetOS system prompt at the top of the prompt, grok keeps its own; `override` = `--system-prompt-override`; `off` = dropped. Applies on first turn and on later `--resume` turns. |
 | `session`          | `resume`                        | `resume` = one grok session per RivetOS conversation (`~/.rivetos/grok-cli-sessions.json`). `replay` = full transcript every turn, no session flags.                                           |
