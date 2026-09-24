@@ -321,6 +321,22 @@ export type CatalogAgent =
    * advertised per-agent detail in its mesh registration (#272); absent on
    * older peers. */
   | { id: string; node: string; local: false; provider?: string; model?: string }
+  /**
+   * RivetHub agent preset. `implemented: false` means the hosting node has
+   * no headless executor for `harnessId`; `gap` is the reason (tooltip).
+   */
+  | {
+      kind: 'preset'
+      id: string
+      name: string
+      node: string
+      local: boolean
+      harnessId?: HarnessId
+      model?: string
+      directory?: string
+      implemented?: boolean
+      gap?: string
+    }
 
 export interface CatalogCommand {
   name: string

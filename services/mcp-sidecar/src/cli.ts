@@ -34,8 +34,28 @@
  *                             non-dev setup. Compared in constant time
  *                             against `Authorization: Bearer <token>`.
  *   RIVETOS_PG_URL          — postgres connection string. If set, enables
- *                             `memory_search`, `memory_browse`,
- *                             `memory_stats`, and `memory_get_full`.
+ *                             memory_*, wiki_*, and `list_agents`.
+ *                             `delegate_task` is enabled only together with
+ *                             stdio mode (see below): a shared HTTP or socket
+ *                             server has no per-harness chain guard.
+ *   RIVETOS_MCP_ENABLE_DELEGATE=0
+ *                           — disables delegate_task and list_agents even
+ *                             when RIVETOS_PG_URL is set.
+ *   RIVETOS_TASK_ID         — parent ros_tasks id. Read for the delegate
+ *                             chain guard (and stored as parentTaskId).
+ *                             Only meaningful in stdio mode, where this
+ *                             process is the harness's child. A non-UUID
+ *                             value fail-closes depth instead of disabling
+ *                             the tools.
+ *   RIVETOS_AGENT_ID        — requestedBy on delegated rows. Default
+ *                             `mcp-sidecar`.
+ *   RIVETOS_NODE_NAME       — this node. Must equal mesh.node_name when that
+ *                             is set. Else HOSTNAME, else `local` (boot's
+ *                             rule — not os.hostname()).
+ *   RIVETOS_MESH_DIR        — directory containing mesh.json. Wins over
+ *                             RIVETOS_SHARED_DIR. Boot writes the file to
+ *                             mesh.storage_dir or the shared dir; point this
+ *                             at the same place when those differ.
  *   RIVETOS_EMBED_URL       — optional embedding endpoint for hybrid search
  *   RIVETOS_EMBED_MODEL     — required when memory is on (RIVETOS_PG_URL set)
  *                             and RIVETOS_EMBED_URL is set. Ignored if memory
@@ -62,13 +82,23 @@
  *                                    `memory_ingest_session` (write surface,
  *                                    off by default).
  *
- * Runtime-plane tools (delegate_task, subagent_*, ask_user, todo,
- * compact_context) and the claude-cli MCP bridge land in later slices.
+ * Runtime-plane tools: list_agents is registered when Postgres is configured.
+ * delegate_task is registered only in stdio mode (the chain guard reads
+ * RIVETOS_TASK_ID from this process). subagent_*, ask_user, todo, and
+ * compact_context are still pending.
  */
 
 import { defaultEchoTool, type ToolRegistration } from '@rivetos/mcp'
 import { createV2McpServer, createV2StdioMcpServer } from '@rivetos/mcp-v2'
+import { sharedDir } from '@rivetos/types'
 import { USAGE, wantsHelp } from './cli-usage.js'
+import {
+  DELEGATE_TASK_HTTP_REASON,
+  createDelegateToolsFromEnv,
+  delegateToolsForTransport,
+  resolveMeshDir,
+  sidecarNodeName,
+} from './delegate.js'
 import { memoryEmbedGuardError } from './embed-guard.js'
 import { createFileTools, type FileToolsHandle } from './file.js'
 import { createMemoryTools, type MemoryToolsHandle } from './memory.js'
@@ -157,6 +187,48 @@ async function main(): Promise<void> {
     } catch (err: unknown) {
       const message = err instanceof Error ? err.message : String(err)
       console.error(`[rivetos-mcp-sidecar] failed to enable wiki tools: ${message}`)
+    }
+  }
+
+  // --- Delegation (delegate_task, list_agents) — Postgres direct ------------
+  // The only delegation path a CLI harness has. Off when the flag is 0, or
+  // when ros_tasks / ros_agent_presets are missing (that reason is logged
+  // inside createDelegateToolsFromEnv). A postgres probe that fails inside
+  // the connect budget skips the tools and startup continues.
+  // delegate_task is stdio-only: HTTP/socket mode has no per-harness
+  // RIVETOS_TASK_ID, so the chain guard would stay at depth 0. That mode
+  // also skips the completion waiter — list_agents only reads the store.
+  if (pgUrl && process.env.RIVETOS_MCP_ENABLE_DELEGATE === '0') {
+    console.log('[rivetos-mcp-sidecar] RIVETOS_MCP_ENABLE_DELEGATE=0 — delegate tools disabled')
+  } else if (pgUrl) {
+    try {
+      const nodeName = sidecarNodeName(process.env)
+      const requestedBy = process.env.RIVETOS_AGENT_ID ?? 'mcp-sidecar'
+      const handle = await createDelegateToolsFromEnv({
+        pgUrl,
+        sharedDir: resolveMeshDir(process.env, sharedDir()),
+        nodeName,
+        requestedBy,
+        parentTaskId: process.env.RIVETOS_TASK_ID,
+        registerDelegateTask: stdioMode,
+        log: console.error,
+      })
+      if (handle) {
+        const selected = delegateToolsForTransport(handle.tools, stdioMode)
+        if (selected.skippedDelegateTask) {
+          console.error(`[rivetos-mcp-sidecar] ${DELEGATE_TASK_HTTP_REASON}`)
+        }
+        // Close the pool even if HTTP mode kept only list_agents.
+        cleanups.push(() => handle.close())
+        if (selected.tools.length > 0) {
+          tools.push(...selected.tools)
+          const names = selected.tools.map((tool) => tool.name).join(', ')
+          console.log(`[rivetos-mcp-sidecar] delegate tools enabled (${names})`)
+        }
+      }
+    } catch (err: unknown) {
+      const message = err instanceof Error ? err.message : String(err)
+      console.error(`[rivetos-mcp-sidecar] failed to enable delegate tools: ${message}`)
     }
   }
 

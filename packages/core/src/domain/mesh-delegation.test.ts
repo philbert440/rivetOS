@@ -7,10 +7,11 @@
  * that the tool now advertises the live, reachable roster.
  */
 
-import { describe, it, expect } from 'vitest'
+import { describe, it, expect, vi } from 'vitest'
 import type { MeshNode, MeshRegistry, Tool } from '@rivetos/types'
 import { MeshDelegationEngine } from './mesh-delegation.js'
 import type { DelegationEngine } from './delegation.js'
+import type { PresetDelegationEngine } from './preset-delegation.js'
 import type { Router } from './router.js'
 
 function node(name: string, agents: string[], status: MeshNode['status'] = 'online'): MeshNode {
@@ -115,6 +116,7 @@ function makePgEngine(
   nodes: MeshNode[],
   store: InMemoryTaskStore,
   transport?: 'postgres' | 'http',
+  extra?: Partial<ConstructorParameters<typeof MeshDelegationEngine>[0]>,
 ): MeshDelegationEngine {
   return new MeshDelegationEngine({
     localEngine: {} as DelegationEngine,
@@ -127,6 +129,7 @@ function makePgEngine(
     taskStore: store,
     waiter: createTaskCompletionWaiter({ store, pollFallbackMs: 10 }),
     transport,
+    ...extra,
   })
 }
 
@@ -204,14 +207,25 @@ describe('MeshDelegationEngine postgres transport', () => {
     expect(result.response).toContain('provider exploded')
   })
 
-  it("transport 'http' forces the legacy path (no task rows)", async () => {
+  it("transport 'http' forces the legacy path (no task rows) and sends toAgent", async () => {
     const store = new InMemoryTaskStore()
-    const engine = makePgEngine(remote, store, 'http')
-    // The undici path will fail fast against the fake node — that's fine;
-    // the assertion is that no ros_tasks row was created.
+    let payload: Record<string, unknown> | undefined
+    const fetchImpl = (async (_url: unknown, init?: { body?: unknown }) => {
+      payload = JSON.parse(String(init?.body ?? '{}')) as Record<string, unknown>
+      return {
+        ok: false,
+        status: 599,
+        text: () => Promise.resolve('forced'),
+        json: () => Promise.resolve({}),
+      }
+    }) as NonNullable<ConstructorParameters<typeof MeshDelegationEngine>[0]['fetchImpl']>
+    const engine = makePgEngine(remote, store, 'http', { fetchImpl })
+    // The fake fetch fails the HTTP call — no ros_tasks row, and the body
+    // still names the target agent (the old payload dropped it).
     const result = await engine.delegate({ fromAgent: 'local', toAgent: 'grok', task: 'x' }, 0)
     expect(result.status).not.toBe('completed')
     expect(await store.list()).toHaveLength(0)
+    expect(payload?.toAgent).toBe('grok')
   })
 
   it('refuses mesh delegation past the chain-depth cap without creating a row', async () => {
@@ -221,5 +235,119 @@ describe('MeshDelegationEngine postgres transport', () => {
     expect(result.status).toBe('failed')
     expect(result.response).toContain('chain too deep')
     expect(await store.list()).toHaveLength(0)
+  })
+})
+
+function presetDouble(found: boolean, rosterLine: string) {
+  const delegate = vi.fn(async () => ({ status: 'completed' as const, response: 'from preset' }))
+  const engine = {
+    find: async (handle: string) =>
+      found && handle === 'reviewer'
+        ? { id: 'preset-1', name: 'reviewer', node: 'ct116', harnessId: 'codex' }
+        : undefined,
+    delegate,
+    rosterText: () => rosterLine,
+    rosterEntries: () =>
+      rosterLine
+        ? [
+            {
+              id: 'preset-1',
+              name: 'reviewer',
+              node: 'ct116',
+              local: false,
+              directory: '/agents/reviewer',
+            },
+          ]
+        : [],
+  } as unknown as PresetDelegationEngine
+  return { delegate, engine }
+}
+
+describe('MeshDelegationEngine presets', () => {
+  it('resolves a preset before the mesh registry', async () => {
+    const findByAgent = vi.fn(async () => [node('ct112', ['reviewer'])])
+    const { delegate, engine: presets } = presetDouble(true, '- reviewer (agent: codex on ct116)')
+    const localDelegate = vi.fn()
+    const engine = new MeshDelegationEngine({
+      localEngine: { delegate: localDelegate } as unknown as DelegationEngine,
+      router: { getAgents: () => [] } as unknown as Router,
+      meshRegistry: { ...makeRegistry([node('ct112', ['reviewer'])]), findByAgent },
+      tls: { ca: '', cert: '', key: '' },
+      httpsDispatcher: {},
+      localAgents: ['local'],
+      nodeName: 'ct115',
+      presets,
+    })
+
+    const result = await engine.delegate({ fromAgent: 'local', toAgent: 'reviewer', task: 'look' })
+    expect(result.response).toBe('from preset')
+    expect(delegate).toHaveBeenCalledTimes(1)
+    expect(localDelegate).not.toHaveBeenCalled()
+    expect(findByAgent).not.toHaveBeenCalled()
+  })
+
+  it('a config agent with the same id as a preset wins', async () => {
+    const findByAgent = vi.fn(async () => [node('ct112', ['reviewer'])])
+    const { delegate, engine: presets } = presetDouble(true, '- reviewer (agent: codex on ct116)')
+    const localDelegate = vi.fn(async () => ({
+      status: 'completed' as const,
+      response: 'local wins',
+    }))
+    const engine = new MeshDelegationEngine({
+      localEngine: { delegate: localDelegate } as unknown as DelegationEngine,
+      router: {
+        getAgents: () => [{ id: 'reviewer', provider: 'xai', name: 'reviewer' }],
+      } as unknown as Router,
+      meshRegistry: { ...makeRegistry([node('ct112', ['reviewer'])]), findByAgent },
+      tls: { ca: '', cert: '', key: '' },
+      httpsDispatcher: {},
+      localAgents: ['reviewer'],
+      nodeName: 'ct115',
+      presets,
+    })
+
+    const result = await engine.delegate({ fromAgent: 'other', toAgent: 'reviewer', task: 'look' })
+    expect(result.response).toBe('local wins')
+    expect(localDelegate).toHaveBeenCalledTimes(1)
+    expect(delegate).not.toHaveBeenCalled()
+    expect(findByAgent).not.toHaveBeenCalled()
+  })
+
+  it('roster advertises presets', async () => {
+    const { engine: presets } = presetDouble(
+      true,
+      '- reviewer (agent: codex on ct116, dir /agents/reviewer)',
+    )
+    const engine = new MeshDelegationEngine({
+      localEngine: {} as DelegationEngine,
+      router: { getAgents: () => [] } as unknown as Router,
+      meshRegistry: makeRegistry([node('ct114', ['local', 'grok']), node('ct115', ['opus'])]),
+      tls: { ca: '', cert: '', key: '' },
+      httpsDispatcher: {},
+      localAgents: ['local', 'grok'],
+      nodeName: 'ct114',
+      presets,
+    })
+    await new Promise((r) => setTimeout(r, 10))
+    const desc = engine.createDelegationTool().description
+    expect(desc).toContain('Agents (RivetHub presets):')
+    expect(desc).toContain('reviewer (agent: codex on ct116')
+  })
+
+  it('not-found message lists preset names', async () => {
+    const { engine: presets } = presetDouble(false, '- reviewer (agent: codex on ct116)')
+    const engine = new MeshDelegationEngine({
+      localEngine: {} as DelegationEngine,
+      router: { getAgents: () => [] } as unknown as Router,
+      meshRegistry: makeRegistry([]),
+      tls: { ca: '', cert: '', key: '' },
+      httpsDispatcher: {},
+      localAgents: ['local'],
+      nodeName: 'ct115',
+      presets,
+    })
+    const result = await engine.delegate({ fromAgent: 'local', toAgent: 'nobody', task: 'x' })
+    expect(result.status).toBe('failed')
+    expect(result.response).toContain('reviewer')
   })
 })
