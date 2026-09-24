@@ -1,5 +1,5 @@
 import { useEffect, useState, type JSX } from 'react'
-import { useQueryClient } from '@tanstack/react-query'
+import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { isValidGatewayUrl, useConnection } from '../stores/connection.js'
 import { useTheme } from '../stores/theme.js'
 import type { ThemePreference } from '../lib/theme.js'
@@ -119,6 +119,46 @@ function SavedNodesSection(): JSX.Element {
         ),
       )}
       {notice && <p className="mt-1 font-mono text-[10px] text-ink-dim">{notice}</p>}
+    </>
+  )
+}
+
+/** Read-only registry facts for the connected node (`GET /api/agents`). */
+function AgentsSettingsBlock(): JSX.Element {
+  const baseUrl = useConnection((s) => s.baseUrl)
+  const transportEpoch = useConnection((s) => s.transportEpoch)
+  const agents = useQuery({
+    queryKey: ['settings-agents', baseUrl, transportEpoch],
+    enabled: Boolean(baseUrl),
+    staleTime: 30_000,
+    retry: false,
+    queryFn: async ({ signal }) => (await gatewayFor(baseUrl)).agentsList(signal),
+  })
+  const row = (label: string, value: string | undefined): JSX.Element => (
+    <div className="mb-1 flex gap-2 text-xs">
+      <span className="w-32 shrink-0 text-ink-dim">{label}</span>
+      <span className="min-w-0 break-all font-mono text-ink">{value || '—'}</span>
+    </div>
+  )
+  return (
+    <>
+      <h2 className="mt-10 mb-3 border-t border-line pt-6 font-mono text-sm font-semibold text-em">
+        Agents
+      </h2>
+      <p className="mb-3 text-xs text-ink-dim">
+        The shared directory comes from <span className="font-mono">RIVETOS_SHARED_DIR</span> /{' '}
+        <span className="font-mono">mesh.storage_dir</span> on the node.
+      </p>
+      {agents.isLoading && <p className="text-xs text-ink-dim">loading…</p>}
+      {agents.isError && <p className="text-xs text-red">Could not read agents on this node.</p>}
+      {agents.data && (
+        <>
+          {row('Backend', agents.data.backend)}
+          {row('Node', agents.data.node)}
+          {row('Directory root', agents.data.directoryRoot)}
+          {row('Shared directory', agents.data.sharedDir)}
+        </>
+      )}
     </>
   )
 }
@@ -284,6 +324,8 @@ export function SettingsPage(): JSX.Element {
       ))}
 
       <SavedNodesSection />
+
+      <AgentsSettingsBlock />
 
       <h2 className="mt-10 mb-3 border-t border-line pt-6 font-mono text-sm font-semibold text-em">
         Memory wiki (datahub)

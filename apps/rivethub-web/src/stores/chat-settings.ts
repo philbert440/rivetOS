@@ -37,15 +37,21 @@ export interface ChatSettings {
   harnessEffort?: string
   /** Agent-preset system prompt for this thread; '' / omitted = none. */
   systemPrompt?: string
+  /**
+   * RivetHub agent preset id. Sent as `POST /term` `agentId` so the den
+   * spawns in that preset's directory. Cleared when `agent` or `harnessId`
+   * changes, the same way `model` is, unless this patch sets it.
+   */
+  agentId?: string
 }
 
 /**
  * An agent or harness change drops per-turn overrides even when the same
- * patch supplies them. It also drops the launch model — unless this patch
- * itself sets `model`, which always wins over that implicit clear (#821) —
- * and clears `launched`, so the new harness gets its own pre-launch picker.
- * A patch cannot carry `launched: true` across that change.
- * Re-selecting the same agent or harness is not a change.
+ * patch supplies them. It also drops the launch model and `agentId` — unless
+ * this patch itself sets `model` or `agentId`, which always win over that
+ * implicit clear (#821) — and clears `launched`, so the new harness gets its
+ * own pre-launch picker. A patch cannot carry `launched: true` across that
+ * change. Re-selecting the same agent or harness is not a change.
  */
 export function mergeChatSettings(
   current: ChatSettings | undefined,
@@ -56,12 +62,14 @@ export function mergeChatSettings(
     (('agent' in patch && patch.agent !== current.agent) ||
       ('harnessId' in patch && patch.harnessId !== current.harnessId))
   const clearModel = changed && !('model' in patch)
+  const clearAgentId = changed && !('agentId' in patch)
   return {
     ...DEFAULT,
     ...current,
     ...patch,
     ...(changed ? { turnPick: undefined, launched: undefined } : {}),
     ...(clearModel ? { model: undefined } : {}),
+    ...(clearAgentId ? { agentId: undefined } : {}),
   }
 }
 

@@ -1,6 +1,12 @@
 import { describe, it } from 'vitest'
 import assert from 'node:assert/strict'
-import { agentCopySeed, canOfferAgentCopy, type AgentDraft, type CopyTarget } from './agent-copy.js'
+import {
+  agentCopySeed,
+  canOfferAgentCopy,
+  copyFormDirectory,
+  type AgentDraft,
+  type CopyTarget,
+} from './agent-copy.js'
 
 const source = {
   id: 'old-id',
@@ -129,6 +135,78 @@ describe('agentCopySeed', () => {
     assert.equal(result.seed.model, '')
     assert.equal(result.seed.effort, '')
     assert.equal(result.notes.length, 2)
+  })
+})
+
+describe('agentCopySeed directory', () => {
+  it('carries directory and sharedLink onto the create seed', () => {
+    const result = agentCopySeed(
+      { ...draft, directory: '~/agents/reviewer', sharedLink: false },
+      source,
+      target,
+    )
+    assert.equal(result.seed.directory, '~/agents/reviewer')
+    assert.equal(result.seed.sharedLink, false)
+  })
+
+  it('drops directory when it is the source default root/slug', () => {
+    const result = agentCopySeed(
+      { ...draft, name: 'Reviewer (copy)', directory: '/srv/agents/reviewer/' },
+      { ...source, name: 'Reviewer', directoryRoot: '/srv/agents/' },
+      target,
+    )
+    assert.equal(result.seed.directory, undefined)
+    assert.equal(Object.hasOwn(result.seed, 'directory'), false)
+  })
+
+  it('keeps a directory that is not the source default', () => {
+    const result = agentCopySeed(
+      { ...draft, directory: '/srv/agents/custom' },
+      { ...source, name: 'Reviewer', directoryRoot: '/srv/agents' },
+      target,
+    )
+    assert.equal(result.seed.directory, '/srv/agents/custom')
+  })
+})
+
+describe('copy form directory', () => {
+  it('submits the cleaned seed, not the source default the seed dropped', () => {
+    const seeded = agentCopySeed(
+      { ...draft, name: 'Reviewer (copy)', directory: '/srv/agents/reviewer/' },
+      { ...source, name: 'Reviewer', directoryRoot: '/srv/agents/' },
+      target,
+    )
+    assert.equal(seeded.seed.directory, undefined)
+    assert.equal(copyFormDirectory('/srv/agents/reviewer/', seeded.seed), '')
+  })
+
+  it('submits a directory the seed kept', () => {
+    const seeded = agentCopySeed(
+      { ...draft, directory: '/srv/agents/custom' },
+      { ...source, name: 'Reviewer', directoryRoot: '/srv/agents' },
+      target,
+    )
+    assert.equal(copyFormDirectory('/srv/agents/custom', seeded.seed), '/srv/agents/custom')
+  })
+
+  it('shows the draft directory until a seed exists', () => {
+    assert.equal(copyFormDirectory('/srv/agents/reviewer', undefined), '/srv/agents/reviewer')
+    assert.equal(copyFormDirectory(undefined, undefined), '')
+  })
+
+  it('keeps a custom path, clears a source default, and re-cleans an edit', () => {
+    const rooted = { ...source, name: 'Reviewer', directoryRoot: '/srv/agents' }
+    // The editor recomputes the seed from the current draft on every render,
+    // then shows that cleaned directory. An edit is a new draft, not a patch
+    // of the previous seed.
+    const show = (directory: string): string => {
+      const seeded = agentCopySeed({ ...draft, directory }, rooted, target)
+      return copyFormDirectory(directory, seeded.seed)
+    }
+    assert.equal(show('/srv/agents/custom'), '/srv/agents/custom')
+    assert.equal(show('/srv/agents/reviewer'), '')
+    assert.equal(show('/srv/agents/elsewhere'), '/srv/agents/elsewhere')
+    assert.equal(show('/srv/agents/reviewer/'), '')
   })
 })
 

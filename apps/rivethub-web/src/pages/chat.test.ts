@@ -62,7 +62,12 @@ describe('session view integration', () => {
 
   it('spreads conversationLaunch into the spawn body and shows the default model label', () => {
     expect(chat).toContain('conversationLaunch(')
-    expect(chat).toContain('...settledLaunch.spawn')
+    expect(chat).toContain('termSpawnBody(')
+    expect(chat).toContain('spawnOnceWithCommandFallback(')
+    expect(chat).toContain('presetHasHarness: presetHasHarnessFlag(')
+    expect(chat).toContain("queryKey: ['agents-all-nodes']")
+    expect(chat).toContain('recoverDeletedAgentSpawnUsingCache(')
+    expect(chat).toContain('settledLaunch.spawn')
     expect(chat).toContain('needsRegistryBeforeSpawn(')
     expect(chat).toContain('shouldPersistLaunchLatch(')
     expect(chat).toContain('launchStateWrite(')

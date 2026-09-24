@@ -1,4 +1,5 @@
 import type { AgentPreset, HarnessId } from '@rivetos/types'
+import { agentDirectoryPlaceholder } from './agent-directory.js'
 import {
   defaultEffort,
   defaultModel,
@@ -12,8 +13,17 @@ export type AgentDraft = Pick<
   'name' | 'color' | 'model' | 'effort' | 'systemPrompt'
 > & {
   harnessId: string
+  /** Carried onto the copy when the editor has one. Empty means the den default. */
+  directory?: string
+  sharedLink?: boolean
 }
-export type CopySource = Pick<AgentPreset, 'nodeBaseUrl'> & { sourceNodeBaseUrl: string }
+export type CopySource = Pick<AgentPreset, 'nodeBaseUrl'> & {
+  sourceNodeBaseUrl: string
+  /** Preset name the stored directory was slugged from, when known. */
+  name?: string
+  /** Hosting den's directory root. With `name`, a default `<root>/<slug>` is not copied. */
+  directoryRoot?: string
+}
 export type CopyTarget = {
   nodeBaseUrl: string
   harnesses: { harnessId: HarnessId; capabilities: HarnessSheet }[]
@@ -66,6 +76,7 @@ export function agentCopySeed(draft: AgentDraft, source: CopySource, target: Cop
       )
     }
   }
+  const directory = copiedDirectory(draft.directory, source)
   return {
     seed: {
       name: copyName(draft.name),
@@ -75,7 +86,39 @@ export function agentCopySeed(draft: AgentDraft, source: CopySource, target: Cop
       model,
       effort,
       nodeBaseUrl: target.nodeBaseUrl,
+      ...(directory !== undefined ? { directory } : {}),
+      ...(draft.sharedLink !== undefined ? { sharedLink: draft.sharedLink } : {}),
     },
     notes,
   }
+}
+
+/**
+ * Directory the copy form shows and submits. Once `agentCopySeed` has run,
+ * its directory wins — a dropped source default is empty, so create omits
+ * it and the target den applies its own. Before a seed exists, the draft
+ * directory is what the field shows.
+ */
+export function copyFormDirectory(
+  draftDirectory: string | undefined,
+  seed: { directory?: string } | undefined,
+): string {
+  if (seed === undefined) return draftDirectory ?? ''
+  return seed.directory ?? ''
+}
+
+/**
+ * Drop a directory that is only the source den's default `<root>/<slug>`.
+ * The target den then applies its own default instead of inheriting the
+ * source path. Anything else, including an unknown root, is kept.
+ */
+function copiedDirectory(directory: string | undefined, source: CopySource): string | undefined {
+  if (directory === undefined) return undefined
+  const root = source.directoryRoot
+  const name = source.name
+  if (!root || !name) return directory
+  const stored = directory.trim().replace(/\/+$/, '')
+  const presetDefault = agentDirectoryPlaceholder(root, name).replace(/\/+$/, '')
+  if (stored === presetDefault) return undefined
+  return directory
 }

@@ -16,7 +16,7 @@ function memoryStorage(): Storage {
 
 vi.stubGlobal('localStorage', memoryStorage())
 
-const { useChatSettings } = await import('./chat-settings.js')
+const { useChatSettings, mergeChatSettings } = await import('./chat-settings.js')
 
 describe('chat settings recency cap', () => {
   beforeEach(() => {
@@ -35,5 +35,26 @@ describe('chat settings recency cap', () => {
     expect(byKey.k1).toBeUndefined()
     expect(byKey.k200?.agent).toBe('grok')
     expect(byKey.k199).toBeDefined()
+  })
+})
+
+describe('agentId', () => {
+  it('clears agentId when the agent or harness changes, like model', () => {
+    const current = {
+      agent: 'claude',
+      effort: 'medium' as const,
+      harnessId: 'claude-code' as const,
+      model: 'opus',
+      agentId: 'preset-1',
+    }
+    expect(mergeChatSettings(current, { agent: 'grok' }).agentId).toBeUndefined()
+    expect(mergeChatSettings(current, { harnessId: 'grok-build' }).agentId).toBeUndefined()
+    expect(mergeChatSettings(current, { agent: 'claude' }).agentId).toBe('preset-1')
+    expect(mergeChatSettings(current, { model: 'haiku' }).agentId).toBe('preset-1')
+    // The same patch may stamp a new preset id; that value wins over the clear.
+    expect(mergeChatSettings(current, { agent: 'grok', agentId: 'preset-2' }).agentId).toBe(
+      'preset-2',
+    )
+    expect(mergeChatSettings(current, { agent: 'grok', agentId: 'preset-2' }).model).toBeUndefined()
   })
 })
