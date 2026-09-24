@@ -232,8 +232,9 @@ export class PgAgentPresetStore implements AgentPresetStore {
           node,
           directory,
           preset.sharedLink ?? true,
-          // Still persisted for pre-registry clients (formally deprecated in slice 7).
-          preset.nodeBaseUrl,
+          // Column stays. New rows write ''. A legacy import may still pass a URL.
+          // eslint-disable-next-line @typescript-eslint/no-deprecated -- legacy import rows; remove with the node_base_url column
+          preset.nodeBaseUrl ?? '',
           new Date(preset.createdAt),
           new Date(preset.updatedAt),
         ],
@@ -265,6 +266,7 @@ export class PgAgentPresetStore implements AgentPresetStore {
     if (patch.systemPrompt !== undefined) set('system_prompt', patch.systemPrompt)
     if (patch.directory !== undefined) set('directory', patch.directory)
     if (patch.sharedLink !== undefined) set('shared_link', patch.sharedLink)
+    // eslint-disable-next-line @typescript-eslint/no-deprecated -- legacy import rows; remove with the node_base_url column
     if (patch.nodeBaseUrl !== undefined) set('node_base_url', patch.nodeBaseUrl)
 
     if (patch.harnessId === null && patch.model !== undefined) {

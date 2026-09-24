@@ -17,7 +17,7 @@ export type AgentDraft = Pick<
   directory?: string
   sharedLink?: boolean
 }
-export type CopySource = Pick<AgentPreset, 'nodeBaseUrl'> & {
+export type CopySource = {
   sourceNodeBaseUrl: string
   /** Preset name the stored directory was slugged from, when known. */
   name?: string
@@ -44,11 +44,7 @@ export function canOfferAgentCopy(
 
 /** Only caller-supplied target capabilities may authorize copied selections. */
 export function agentCopySeed(draft: AgentDraft, source: CopySource, target: CopyTarget) {
-  if (
-    !target.nodeBaseUrl ||
-    target.nodeBaseUrl === source.sourceNodeBaseUrl ||
-    target.nodeBaseUrl === source.nodeBaseUrl
-  ) {
+  if (!target.nodeBaseUrl || target.nodeBaseUrl === source.sourceNodeBaseUrl) {
     throw new Error('Choose another reachable node for the copy.')
   }
   const harness =
@@ -85,7 +81,6 @@ export function agentCopySeed(draft: AgentDraft, source: CopySource, target: Cop
       harnessId,
       model,
       effort,
-      nodeBaseUrl: target.nodeBaseUrl,
       ...(directory !== undefined ? { directory } : {}),
       ...(draft.sharedLink !== undefined ? { sharedLink: draft.sharedLink } : {}),
     },

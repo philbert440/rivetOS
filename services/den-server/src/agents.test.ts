@@ -203,32 +203,51 @@ describe('agents routes', () => {
     expect(((await got.json()) as { agent: AgentPreset }).agent.node).toBe('ct115')
   })
 
-  it('PATCH 400s nodeBaseUrl changes as immutable', async () => {
+  it('POST nodeBaseUrl is stored, not required', async () => {
     await start()
-    const created = await createAgent()
+    const sent = `  https://192.0.2.99:5174/${'x'.repeat(500)}  `
+    const res = await createAgent({
+      name: 'Stored',
+      nodeBaseUrl: sent,
+    })
+    expect(res.status).toBe(201)
+    const stored = sent.trim().slice(0, 512)
+    expect(stored.length).toBe(512)
+    expect(res.json.agent).toMatchObject({ node: 'ct115', nodeBaseUrl: stored })
+
+    const omitted = await createAgent({ name: 'Omitted' })
+    expect(omitted.status).toBe(201)
+    expect(omitted.json.agent?.nodeBaseUrl).toBe('')
+  })
+
+  it('PATCH ignores nodeBaseUrl and does not fill an empty URL', async () => {
+    await start()
+    const created = await createAgent({ name: 'Alpha' })
+    expect(created.json.agent?.nodeBaseUrl).toBe('')
     const res = await fetch(`${base}/api/agents/${created.json.agent!.id}`, {
       method: 'PATCH',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ nodeBaseUrl: 'https://192.0.2.99:5174' }),
+      body: JSON.stringify({ nodeBaseUrl: 'https://192.0.2.99:5174', name: 'Renamed' }),
     })
-    expect(res.status).toBe(400)
-    expect(((await res.json()) as { error: string }).error).toBe(
-      'node is immutable; recreate the agent',
-    )
-    const got = await fetch(`${base}/api/agents/${created.json.agent!.id}`)
-    expect(((await got.json()) as { agent: AgentPreset }).agent.nodeBaseUrl).toBe(NODE)
+    expect(res.status).toBe(200)
+    expect(((await res.json()) as { agent: AgentPreset }).agent).toMatchObject({
+      name: 'Renamed',
+      nodeBaseUrl: '',
+    })
   })
 
-  it('PATCH of the same nodeBaseUrl is a no-op, not 400', async () => {
+  it('PATCH of nodeBaseUrl is a no-op, not 400', async () => {
     await start()
-    const created = await createAgent()
+    const created = await createAgent({ name: 'Alpha' })
     const res = await fetch(`${base}/api/agents/${created.json.agent!.id}`, {
       method: 'PATCH',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ nodeBaseUrl: NODE, name: 'Renamed' }),
     })
     expect(res.status).toBe(200)
-    expect(((await res.json()) as { agent: AgentPreset }).agent.name).toBe('Renamed')
+    const agent = ((await res.json()) as { agent: AgentPreset }).agent
+    expect(agent.name).toBe('Renamed')
+    expect(agent.nodeBaseUrl).toBe('')
   })
 
   it('serializes concurrent patches so both field writes land', async () => {
@@ -330,16 +349,52 @@ describe('agents routes', () => {
     expect(existsSync(join(home, 'x'))).toBe(true)
   })
 
-  it('PATCH empty nodeBaseUrl is ignored', async () => {
+  it('lists and gets a legacy file row with its nodeBaseUrl, and PATCH does not change it', async () => {
     await start()
-    const created = await createAgent()
-    const res = await fetch(`${base}/api/agents/${created.json.agent!.id}`, {
+    writeFileSync(
+      join(dir!, 'agents.json'),
+      JSON.stringify({
+        agents: [
+          {
+            id: 'legacy-url-1',
+            name: 'LegacyUrl',
+            color: '',
+            model: '',
+            effort: 'medium',
+            systemPrompt: '',
+            nodeBaseUrl: NODE,
+            createdAt: 1,
+            updatedAt: 1,
+          },
+        ],
+      }),
+    )
+    const listed = (await (await fetch(`${base}/api/agents`)).json()) as { agents: AgentPreset[] }
+    expect(listed.agents).toHaveLength(1)
+    expect(listed.agents[0]?.nodeBaseUrl).toBe(NODE)
+    const got = (await (await fetch(`${base}/api/agents/legacy-url-1`)).json()) as {
+      agent: AgentPreset
+    }
+    expect(got.agent.nodeBaseUrl).toBe(NODE)
+
+    const cleared = await fetch(`${base}/api/agents/legacy-url-1`, {
       method: 'PATCH',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ nodeBaseUrl: '' }),
     })
-    expect(res.status).toBe(200)
-    expect(((await res.json()) as { agent: AgentPreset }).agent.nodeBaseUrl).toBe(NODE)
+    expect(cleared.status).toBe(200)
+    expect(((await cleared.json()) as { agent: AgentPreset }).agent.nodeBaseUrl).toBe(NODE)
+
+    const replaced = await fetch(`${base}/api/agents/legacy-url-1`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ nodeBaseUrl: 'https://192.0.2.99:5174', name: 'StillLegacy' }),
+    })
+    expect(replaced.status).toBe(200)
+    expect(((await replaced.json()) as { agent: AgentPreset }).agent).toMatchObject({
+      name: 'StillLegacy',
+      nodeBaseUrl: NODE,
+    })
   })
 
   it('migrates a stored catalog-agent model onto harnessId', async () => {
@@ -582,7 +637,7 @@ describe('agents routes', () => {
     expect(existsSync(join(dir!, 'x'))).toBe(false)
   })
 
-  it('PATCH nodeBaseUrl is accepted when the stored value is empty', async () => {
+  it('PATCH nodeBaseUrl does not fill an empty stored URL', async () => {
     await start()
     const created = await createAgent({ name: 'Bare' })
     expect(created.json.agent?.nodeBaseUrl).toBe('')
@@ -592,9 +647,7 @@ describe('agents routes', () => {
       body: JSON.stringify({ nodeBaseUrl: 'https://192.0.2.20:5174' }),
     })
     expect(res.status).toBe(200)
-    expect(((await res.json()) as { agent: AgentPreset }).agent.nodeBaseUrl).toBe(
-      'https://192.0.2.20:5174',
-    )
+    expect(((await res.json()) as { agent: AgentPreset }).agent.nodeBaseUrl).toBe('')
   })
 
   it('GET ?node= filters', async () => {

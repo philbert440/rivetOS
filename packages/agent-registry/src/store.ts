@@ -14,7 +14,7 @@ export interface AgentPresetInput {
   /** Absolute working directory for the agent's harness. */
   directory: string
   sharedLink?: boolean
-  /** Den base URL of the hosting node, kept for pre-registry clients (formally deprecated in slice 7). */
+  /** Legacy import / pre-registry rows only. Not placement. */
   nodeBaseUrl?: string
 }
 
@@ -29,8 +29,8 @@ export interface AgentPresetPatch {
   directory?: string
   sharedLink?: boolean
   /**
-   * Stored only when the route is filling an empty legacy URL. A change to a
-   * non-empty URL is rejected before this patch is built.
+   * @deprecated — legacy import / pre-registry rows only. No in-repo route
+   * builds this patch.
    */
   nodeBaseUrl?: string
 }
@@ -112,7 +112,7 @@ export function presetFromCreate(
     model: input.model ?? '',
     effort: input.effort ?? 'medium',
     systemPrompt: input.systemPrompt ?? '',
-    // Still persisted for pre-registry clients (formally deprecated in slice 7).
+    // Legacy import / pre-registry rows only.
     nodeBaseUrl: input.nodeBaseUrl ?? '',
     createdAt: input.createdAt ?? opts.now,
     updatedAt: opts.now,
@@ -142,8 +142,10 @@ export function presetFromPatch(
   if (patch.systemPrompt !== undefined) next.systemPrompt = patch.systemPrompt
   if (patch.directory !== undefined) next.directory = patch.directory
   if (patch.sharedLink !== undefined) next.sharedLink = patch.sharedLink
+  // eslint-disable-next-line @typescript-eslint/no-deprecated -- legacy import rows; remove with the node_base_url column
   if (patch.nodeBaseUrl !== undefined) {
-    // Still persisted for pre-registry clients; formally deprecated in slice 7.
+    // Legacy import / pre-registry rows only.
+    // eslint-disable-next-line @typescript-eslint/no-deprecated -- legacy import rows; remove with the node_base_url column
     next.nodeBaseUrl = patch.nodeBaseUrl
   }
   if (patch.harnessId === null) delete next.harnessId

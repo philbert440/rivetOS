@@ -193,9 +193,7 @@ function AgentEditor({
   const [sharedLink, setSharedLink] = useState(
     agent?.sharedLink ?? duplicate?.draft.sharedLink ?? true,
   )
-  const excludedNodes = duplicate
-    ? [duplicate.source.nodeBaseUrl, duplicate.source.sourceNodeBaseUrl]
-    : []
+  const excludedNodes = duplicate ? [duplicate.source.sourceNodeBaseUrl] : []
   const [nodeBaseUrl, setNodeBaseUrl] = useState(
     agent?.sourceNodeBaseUrl ??
       (duplicate
