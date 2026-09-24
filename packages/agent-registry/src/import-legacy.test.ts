@@ -2,8 +2,10 @@ import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSy
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
+import { createFallbackPresetStore } from './fallback-store.js'
 import { FileAgentPresetStore } from './file-store.js'
 import { importLegacyAgentsJson } from './import-legacy.js'
+import type { AgentPresetStore } from './store.js'
 
 function legacyRow(overrides: Record<string, unknown> = {}): Record<string, unknown> {
   return {
@@ -54,6 +56,8 @@ describe('importLegacyAgentsJson', () => {
       name: 'Reviewer',
     })
     expect(row?.updatedAt).not.toBe(10)
+    expect(result.rows).toHaveLength(1)
+    expect(result.rows?.[0]?.directory).toBe('/home/agents/reviewer')
   })
 
   it('skips a conflicting id and still renames the file', async () => {
@@ -190,6 +194,57 @@ describe('importLegacyAgentsJson', () => {
     expect(result.reason).toBeUndefined()
     expect(existsSync(file)).toBe(false)
     expect(await target.list()).toEqual([])
+  })
+
+  it('refuses a file-mode fallback wrapper whose file is the source', async () => {
+    const file = join(dir, 'agents.json')
+    writeFileSync(file, JSON.stringify({ agents: [legacyRow()] }))
+    const fallback = new FileAgentPresetStore(`${dir}/./agents.json`)
+    const primary: AgentPresetStore = {
+      backend: 'postgres',
+      isReady: () => Promise.resolve(false),
+      list: () => Promise.resolve([]),
+      get: () => Promise.resolve(undefined),
+      findByHandle: () => Promise.resolve(undefined),
+      create: () => Promise.reject(new Error('primary should not be written')),
+      update: () => Promise.resolve(undefined),
+      delete: () => Promise.resolve(false),
+    }
+    const wrapper = createFallbackPresetStore({ primary, fallback, now: () => 0 })
+    await wrapper.list()
+    expect(wrapper.backend).toBe('file')
+    expect(resolve(wrapper.file ?? '')).toBe(resolve(file))
+    const result = await importLegacyAgentsJson({
+      file,
+      store: wrapper,
+      node: 'ct115',
+      directoryRoot: '/home/agents',
+    })
+    expect(result).toEqual({ imported: 0, skipped: 0, reason: 'store is the source file' })
+    expect(existsSync(file)).toBe(true)
+    expect(readdirSync(dir).some((name) => name.includes('.imported-'))).toBe(false)
+    expect(readFileSync(file, 'utf8')).toMatch(/Reviewer/)
+  })
+
+  it('imports through a wrapper once the primary file is a different path', async () => {
+    const file = join(dir, 'agents.json')
+    writeFileSync(file, JSON.stringify({ agents: [legacyRow()] }))
+    const fallback = new FileAgentPresetStore(file)
+    const primary = new FileAgentPresetStore(join(dir, 'target.json'))
+    const wrapper = createFallbackPresetStore({ primary, fallback, now: () => 0 })
+    await wrapper.list()
+    expect(wrapper.backend).toBe('file')
+    expect(resolve(wrapper.file ?? '')).toBe(resolve(primary.file))
+    const result = await importLegacyAgentsJson({
+      file,
+      store: wrapper,
+      node: 'ct115',
+      directoryRoot: '/home/agents',
+    })
+    expect(result.imported).toBe(1)
+    expect(result.renamedTo).toMatch(/imported-/)
+    expect(existsSync(file)).toBe(false)
+    expect((await primary.get('11111111-1111-4111-8111-111111111111'))?.node).toBe('ct115')
   })
 
   it('returns zeros when the file is absent', async () => {

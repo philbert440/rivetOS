@@ -1,6 +1,6 @@
 // Environment-driven configuration for the den server.
 
-import { homedir } from 'node:os'
+import { homedir, hostname } from 'node:os'
 import { loadUsersRegistry, sharedDir, type UsersRegistry } from '@rivetos/types'
 import { join } from 'node:path'
 import { DEFAULT_UPLOAD_MAX_BYTES, DEFAULT_UPLOAD_TTL_MS } from './harness/uploads.js'
@@ -20,6 +20,21 @@ function intEnv(env: NodeJS.ProcessEnv, name: string, fallback: number): number 
 function truthyEnv(raw: string | undefined): boolean {
   const v = (raw ?? '').trim().toLowerCase()
   return v === '1' || v === 'on'
+}
+
+function nonEmpty(value: string | undefined): string | undefined {
+  const trimmed = value?.trim()
+  return trimmed ? trimmed : undefined
+}
+
+/** Blank values fall through. `hostname()` is last; `'local'` only if that is empty too. */
+function denNodeName(env: NodeJS.ProcessEnv): string {
+  return (
+    nonEmpty(env.RIVETOS_DEN_NODE_NAME) ??
+    nonEmpty(env.RIVETOS_DEN_NODE_ID) ??
+    nonEmpty(hostname()) ??
+    'local'
+  )
 }
 
 /**
@@ -138,6 +153,18 @@ export interface DenConfig {
   codexAppServerUrl?: string
   /** Directory for persisted state (per-viewer layouts). */
   stateDir: string
+  /**
+   * Mesh node NAME this den serves. Preset `node` is stamped with this
+   * string, which must match the task runner's `node_affinity`
+   * (`mesh.node_name`). `RIVETOS_DEN_NODE_NAME`, else `RIVETOS_DEN_NODE_ID`,
+   * else `os.hostname()`.
+   */
+  nodeName: string
+  /**
+   * Parent directory for a preset that does not name one.
+   * `RIVETOS_DEN_AGENTS_DIR`, else `~/.rivetos/agents`.
+   */
+  agentsDir: string
   /** Built hub app to serve at / (optional). */
   staticDir: string
   /** 302 target for GET / — e.g. '/wiki' makes the wiki the landing page. */
@@ -184,11 +211,12 @@ export interface DenConfig {
   voice?: DenVoiceConfig
   /**
    * Shared memory DB (`RIVETOS_PG_URL`) — the same database capture writes to.
-   * den-server reads it for exactly one thing today: the post-restart alias
-   * reconstructor, which reads rotation breadcrumbs back out of
-   * `ros_messages` (see harness/alias-restore.ts). Empty/absent = no memory DB
-   * on this node, so nothing to reconstruct from. Optional for the same reason
-   * as `devices`: hand-built test configs predating the field stay valid.
+   * den-server reads it for the post-restart alias reconstructor
+   * (`ros_messages`) and for the shared agent-preset table
+   * (`ros_agent_presets`). Empty/absent = no memory DB on this node, so
+   * presets stay in `<stateDir>/agents.json` and there is nothing to
+   * reconstruct aliases from. Optional for the same reason as `devices`:
+   * hand-built test configs predating the field stay valid.
    */
   pgUrl?: string
   /**
@@ -309,6 +337,8 @@ export function loadConfig(
       ? { codexAppServerUrl: env.RIVETOS_CODEX_APP_SERVER_URL }
       : {}),
     stateDir: env.RIVETOS_DEN_STATE_DIR ?? join(homedir(), '.rivetos', 'den'),
+    nodeName: denNodeName(env),
+    agentsDir: nonEmpty(env.RIVETOS_DEN_AGENTS_DIR) ?? join(homedir(), '.rivetos', 'agents'),
     staticDir: env.RIVETOS_DEN_STATIC_DIR ?? '',
     rootRedirect: env.RIVETOS_DEN_ROOT_REDIRECT ?? '',
     evictTtlMs: intEnv(env, 'RIVETOS_DEN_EVICT_TTL_MS', 24 * 60 * 60 * 1000),

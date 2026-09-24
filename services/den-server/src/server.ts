@@ -43,6 +43,13 @@ import { homedir, hostname } from 'node:os'
 import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync, statSync } from 'node:fs'
 import { join, normalize, extname } from 'node:path'
 import { WebSocketServer, type WebSocket } from 'ws'
+import pg from 'pg'
+import {
+  FileAgentPresetStore,
+  PgAgentPresetStore,
+  createFallbackPresetStore,
+  type AgentPresetStore,
+} from '@rivetos/agent-registry'
 import {
   initialDenState,
   initialRoomState,
@@ -85,7 +92,7 @@ import {
 import { overlaySessionContext, sessionContext } from './term/context-window.js'
 import { createFilesRoutes } from './files.js'
 import { createDevicesRoutes, lookupDeviceName } from './devices.js'
-import { createAgentsRoutes } from './agents.js'
+import { createAgentsRoutes, importAndMaterializeLegacyAgents } from './agents.js'
 import { createHarnessRegistry, type HarnessRegistry } from './harness/registry.js'
 import { ClaudeCodeDriver, type DenAgentEventLike } from './harness/claude-driver.js'
 import { GrokBuildDriver } from './harness/grok-driver.js'
@@ -334,8 +341,9 @@ export interface DenServerOptions {
   /** herdr control override for tests — scripted create/attach/list so tests
    *  never spawn a real herdr. Omitted = pinned 0.8.2 on PATH when mux is herdr. */
   herdrCtl?: HerdrCtl
-  /** Which mesh.json node is this process — default $RIVETOS_DEN_NODE_ID,
-   *  else os.hostname(). Used for attach.host / attach.sshUser. */
+  /** Which mesh.json node is this process — default `config.nodeName`
+   *  (`RIVETOS_DEN_NODE_NAME`, else `RIVETOS_DEN_NODE_ID`, else hostname, via
+   *  loadConfig). Used for attach.host / attach.sshUser. */
   localNodeId?: string
   /**
    * Gateway route mounts (G0, Appendix F): matched by longest prefix AFTER
@@ -486,7 +494,7 @@ export function createDenServer(config: DenConfig, opts: DenServerOptions = {}):
     evictTimers.set(session, t)
   }
 
-  const localNodeId = opts.localNodeId ?? process.env.RIVETOS_DEN_NODE_ID ?? hostname()
+  const localNodeId = opts.localNodeId ?? config.nodeName
   const meshView = createMeshView({
     meshFile: config.meshFile,
     sharedRoot: config.sharedRoot,
@@ -961,9 +969,50 @@ export function createDenServer(config: DenConfig, opts: DenServerOptions = {}):
       })
     : null
 
-  // Agent presets (Settings → Agents): named model/effort/prompt configs.
+  // Agent presets (Settings → Agents). One registry: Postgres when this den
+  // has a memory DB and `ros_agent_presets` is present, otherwise the per-node
+  // agents.json. The pool is tiny and closed in den.close().
+  const presetPool = config.pgUrl
+    ? new pg.Pool({ connectionString: config.pgUrl, max: 2 })
+    : undefined
+  const fileStore = new FileAgentPresetStore(join(config.stateDir, 'agents.json'))
+  let presetStore: AgentPresetStore = fileStore
+  if (presetPool) {
+    const primary = new PgAgentPresetStore(presetPool)
+    const fallbackStore = createFallbackPresetStore({
+      primary,
+      fallback: fileStore,
+      log: (msg) => console.error(`[den-server] ${msg}`),
+    })
+    presetStore = fallbackStore
+    // One-shot import of a pre-registry agents.json into the DataHub table.
+    // Deliberately NOT awaited: a missing table or a down memory DB must never
+    // delay a node's boot, and a miss is failure-soft — the file keeps serving
+    // until the primary answers ready, then this runs once and renames the file
+    // aside. Directories for the imported rows are materialized here; a mkdir
+    // failure is logged and does not undo the row. The callback is registered
+    // before the probe so a fast primary cannot be missed.
+    fallbackStore.onPrimaryReady(() => {
+      void importAndMaterializeLegacyAgents({
+        file: join(config.stateDir, 'agents.json'),
+        store: primary,
+        nodeName: config.nodeName,
+        directoryRoot: config.agentsDir,
+        ...(config.sharedRoot ? { sharedDir: config.sharedRoot } : {}),
+        log: (msg) => console.error(`[den-server] ${msg}`),
+      }).catch((err: unknown) => {
+        console.error(
+          `[den-server] legacy agent import failed: ${err instanceof Error ? err.message : String(err)}`,
+        )
+      })
+    })
+    void fallbackStore.isReady()
+  }
   const agentsRoutes = createAgentsRoutes({
-    stateDir: config.stateDir,
+    store: presetStore,
+    nodeName: config.nodeName,
+    directoryRoot: config.agentsDir,
+    ...(config.sharedRoot ? { sharedDir: config.sharedRoot } : {}),
   })
 
   const authorized = (req: IncomingMessage, _url: URL): boolean =>
@@ -1093,9 +1142,15 @@ export function createDenServer(config: DenConfig, opts: DenServerOptions = {}):
       }
       if (url.pathname === '/healthz') {
         // `name` = the node's hostname (e.g. rivet-grok) so the UI can show a
-        // human-readable node label instead of host:port. Unauthed, like the
+        // human-readable node label instead of host:port. `node` is the mesh
+        // node name presets and the task runner share. Unauthed, like the
         // rest of /healthz.
-        json(res, 200, { ok: true, sessions: Object.keys(state.rooms).length, name: hostname() })
+        json(res, 200, {
+          ok: true,
+          sessions: Object.keys(state.rooms).length,
+          name: hostname(),
+          node: config.nodeName,
+        })
         return
       }
       // Static viewer + pack art: the TLS handshake no longer implies
@@ -1949,7 +2004,20 @@ export function createDenServer(config: DenConfig, opts: DenServerOptions = {}):
         micBridge?.close()
         termManager?.close()
         for (const c of clients) c.ws.close()
-        wss.close(() => server.close(() => resolve()))
+        wss.close(() => {
+          server.close(() => {
+            void (async () => {
+              try {
+                await presetPool?.end()
+              } catch (err) {
+                console.error(
+                  `[den-server] preset pool close failed: ${err instanceof Error ? err.message : String(err)}`,
+                )
+              }
+              resolve()
+            })()
+          })
+        })
       }),
   }
 }

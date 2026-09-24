@@ -32,6 +32,7 @@ interface GatewayUpgrade {
   handle: (req: IncomingMessage, socket: Duplex, head: Buffer, url: URL) => void
 }
 import type { RivetConfig } from '../config.js'
+import { nodeNameFor } from '../node-name.js'
 
 const log = logger('Boot:Gateway')
 
@@ -186,6 +187,11 @@ export function buildGatewayEnv(config: RivetConfig, installRoot: string): Recor
   // only this map, never the process env, so without a passthrough the
   // documented cap/TTL/dir knobs would be silently inert on an embedded
   // gateway. Same reasoning as RIVETOS_DEN_DEVICES_PG_ADMIN_URL above.
+  // Mesh node name the task runner claims on. den's loadConfig prefers this
+  // over RIVETOS_DEN_NODE_ID and hostname(), so preset.node matches
+  // node_affinity byte-for-byte. Set before the prefix passthrough so an
+  // explicit process env still wins.
+  env.RIVETOS_DEN_NODE_NAME = nodeNameFor(config)
   // Prefix passthrough: adding RIVETOS_DEN_* / RIVETOS_USER_* must never
   // again be a silent no-op (the #563 footgun). Process env wins for keys
   // that are set; config-derived values above stand when env is silent.

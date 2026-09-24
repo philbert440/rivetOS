@@ -12,6 +12,7 @@
 
 import { spawn } from 'node:child_process'
 import { join } from 'node:path'
+import { nodeNameFor } from '../node-name.js'
 import type { Runtime } from '@rivetos/core'
 import { loadTlsConfig } from '@rivetos/core'
 import {
@@ -435,7 +436,7 @@ export async function registerAgentTools(
     handlerRef.run = createTaskHandler({
       store: inMemoryStore,
       executors,
-      nodeId: config.mesh?.node_name ?? process.env.HOSTNAME ?? 'local',
+      nodeId: nodeNameFor(config),
       workspaceDir,
       memory: runtime.getMemory(),
     })
@@ -483,7 +484,7 @@ export async function registerAgentTools(
                   )
                 : createLogEscalationNotifier(),
             ),
-            nodeId: config.mesh?.node_name ?? process.env.HOSTNAME ?? 'local',
+            nodeId: nodeNameFor(config),
             config: {
               maxRetries: evalSection.max_retries,
               agentId: evalSection.verifier?.agent_id,
@@ -509,7 +510,7 @@ export async function registerAgentTools(
       pgPool: pool,
       store: taskEngineStore,
       executors,
-      nodeId: config.mesh?.node_name ?? process.env.HOSTNAME ?? 'local',
+      nodeId: nodeNameFor(config),
       workspaceDir,
       evaluation,
       // Context-refs resolution (step (b) checklist) — the runner folds
@@ -527,11 +528,7 @@ export async function registerAgentTools(
     // POST /api/tasks (2026-07-26 fleet failure: unpinned heartbeats raced
     // on the global run-task queue and failed where the agent was missing).
     if (taskWaiter) {
-      runtime.setHeartbeatTaskStore(
-        taskEngineStore,
-        taskWaiter,
-        config.mesh?.node_name ?? process.env.HOSTNAME ?? 'local',
-      )
+      runtime.setHeartbeatTaskStore(taskEngineStore, taskWaiter, nodeNameFor(config))
     }
     log.info('Task engine started — subagent tools, delegation audit + heartbeats are task-backed')
   } else if (tasksEnabled && pgUrl) {
@@ -610,7 +607,7 @@ export async function registerAgentTools(
   // G1/G4: gateway route families — mounted by registerGateway. Tasks only
   // when the durable engine is live (the API over the in-memory fallback
   // would lie about durability); catalog always (it describes the node).
-  const nodeName = config.mesh?.node_name ?? process.env.HOSTNAME ?? 'local'
+  const nodeName = nodeNameFor(config)
   const registry = meshRegistryRef
 
   // Agent-aware dispatch (G4, from the G1 smoke followup): unpinned creates

@@ -10,6 +10,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Agent registry
 
 - `@rivetos/agent-registry` (tagged `domain:shared`) is the shared preset store den, core, and the hub will import: file and Postgres backends, directory materialization, a short-lived cache, and a one-shot `agents.json` importer. Migration `0017_agent_presets.sql` adds the DataHub table `ros_agent_presets`. `AgentPreset` gains optional `node`, `directory`, and `sharedLink` (`nodeBaseUrl` stays, deprecated); roster-command helpers move into `@rivetos/types` so den and RivetHub share one map. No runtime behaviour change.
+- den serves presets from the DataHub (`ros_agent_presets` on `config.pgUrl` / `RIVETOS_PG_URL`) and falls back to the per-node `agents.json` when Postgres is absent or the table is not ready yet. The first time the table answers ready, that file is imported once and renamed aside; imported rows get a directory on disk.
+- Presets carry `node`, `directory`, and `sharedLink`. The hosting den materializes the directory (mode 0700) and a `rivet-shared` symlink to the shared directory. `sharedLink: false` removes that symlink; turning it back on links it again. The directory is not deleted with the preset.
+- `nodeBaseUrl` is no longer required on create, and an empty patch value is ignored. A non-empty change to a stored URL is still rejected. A client `node` other than this den's is rejected; `node` cannot be changed later.
+- `RIVETOS_DEN_NODE_NAME` (then `RIVETOS_DEN_NODE_ID`, then the hostname) is this den's mesh node name. Boot sets it from `nodeNameFor(config)` (`mesh.node_name`, then `HOSTNAME`, then `local`) before prefix passthrough, so an explicit process env still wins. `RIVETOS_DEN_AGENTS_DIR` overrides the default preset directory root (`~/.rivetos/agents`).
+- `/healthz` includes `node` (the mesh node name) next to `name` (the hostname).
 
 ### Den
 

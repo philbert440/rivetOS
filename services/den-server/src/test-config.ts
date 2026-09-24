@@ -1,4 +1,6 @@
 /** Shared empty TLS + den fields for unit tests (loopback HTTP). */
+import { hostname } from 'node:os'
+import { join } from 'node:path'
 import type { DenConfig, DenTlsFileConfig } from './config.js'
 
 export const emptyTls = (): DenTlsFileConfig => ({
@@ -19,6 +21,12 @@ export function baseTestDenConfig(
     token: '',
     tls: partial.tls ?? emptyTls(),
     stateDir,
+    nodeName:
+      partial.nodeName ??
+      (process.env.RIVETOS_DEN_NODE_NAME?.trim() ||
+        process.env.RIVETOS_DEN_NODE_ID?.trim() ||
+        hostname()),
+    agentsDir: partial.agentsDir ?? join(stateDir, 'agents'),
     staticDir: partial.staticDir ?? '',
     rootRedirect: partial.rootRedirect ?? '',
     evictTtlMs: partial.evictTtlMs ?? 60_000,

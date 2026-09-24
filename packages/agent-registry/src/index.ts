@@ -15,6 +15,11 @@ export {
 
 export { FileAgentPresetStore, type FileAgentPresetStoreOptions } from './file-store.js'
 export { PgAgentPresetStore, type PgAgentPresetStoreOptions } from './pg-store.js'
+export {
+  createFallbackPresetStore,
+  type FallbackAgentPresetStore,
+  type FallbackPresetStoreOptions,
+} from './fallback-store.js'
 
 export {
   COLOR_RE,

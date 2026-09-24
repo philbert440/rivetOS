@@ -1,160 +1,45 @@
 /**
  * Agent presets (/api/agents/*) — named agent configurations that can be
  * applied to sessions. Each preset holds model, effort level, optional
- * system prompt, and optional color swatch for UI display.
+ * system prompt, optional color, the mesh node that hosts it, and a working
+ * directory.
  *
- *   GET    /api/agents           list all agent presets
- *   POST   /api/agents           {name, color?, model?, effort?, systemPrompt?} → agent
- *   GET    /api/agents/:id       get one agent preset
- *   PATCH  /api/agents/:id       update agent preset
- *   DELETE /api/agents/:id       delete agent preset
+ *   GET    /api/agents           list presets (`?node=` filters)
+ *   POST   /api/agents           create on this den's node
+ *   GET    /api/agents/:id       get one
+ *   PATCH  /api/agents/:id       update (`node` is immutable)
+ *   DELETE /api/agents/:id       delete the row; the directory stays
  *
- * Storage is a simple JSON file in stateDir (agents.json), similar to
- * mesh-devices but without the cross-node locking complexity. Mutations
- * serialize through an in-process queue so concurrent RMW cannot drop writes.
+ * The store is chosen by server.ts: Postgres (`ros_agent_presets`) when the
+ * table is ready, otherwise the per-node `agents.json` file. Writes are one
+ * store call. The file store already serializes its own read-modify-write,
+ * and Postgres is one statement, so this router does not add a second mutex.
  */
 
 import type { IncomingMessage, ServerResponse } from 'node:http'
-import { randomUUID } from 'node:crypto'
-import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs'
-import { dirname, join } from 'node:path'
+import { lstatSync, unlinkSync } from 'node:fs'
+import { homedir } from 'node:os'
+import { join } from 'node:path'
+import { SYSTEM_PROMPT_MAX_CHARS, type AgentPreset, type HarnessId } from '@rivetos/types'
 import {
-  HARNESS_IDS,
-  SYSTEM_PROMPT_MAX_CHARS,
-  migrateAgentPreset,
-  type AgentPreset,
-  type HarnessId,
-} from '@rivetos/types'
+  PresetConflictError,
+  defaultDirectoryFor,
+  directoryWarnings,
+  ensureAgentDirectory,
+  importLegacyAgentsJson,
+  isRecord,
+  parseColor,
+  parseEffort,
+  parseHarnessId,
+  validateDirectory,
+  type AgentPresetPatch,
+  type AgentPresetStore,
+  type ImportLegacyAgentsResult,
+} from '@rivetos/agent-registry'
 
-// ---------------------------------------------------------------------------
-// helpers
-
-const COLOR_RE = /^#(?:[0-9a-fA-F]{3}|[0-9a-fA-F]{6})$/
 const NODE_IMMUTABLE = 'node is immutable; recreate the agent'
-const EFFORT_RE = /^[A-Za-z0-9._[\]:-]{0,64}$/
-
-function isHarnessId(value: string): value is HarnessId {
-  return (HARNESS_IDS as readonly string[]).includes(value)
-}
-
-function parseEffort(value: unknown): string | undefined {
-  if (typeof value !== 'string') return undefined
-  const effort = value.trim()
-  if (!EFFORT_RE.test(effort)) return undefined
-  return effort
-}
-
-function parseHarnessId(value: unknown): HarnessId | undefined | 'bad' {
-  if (value === undefined || value === null) return undefined
-  if (typeof value !== 'string' || !isHarnessId(value)) return 'bad'
-  return value
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === 'object' && value !== null && !Array.isArray(value)
-}
-
-function isAgentPreset(value: unknown): value is AgentPreset {
-  if (!isRecord(value)) return false
-  if (
-    value.harnessId !== undefined &&
-    (typeof value.harnessId !== 'string' || !isHarnessId(value.harnessId))
-  )
-    return false
-  return (
-    typeof value.id === 'string' &&
-    value.id.length > 0 &&
-    typeof value.name === 'string' &&
-    typeof value.color === 'string' &&
-    typeof value.model === 'string' &&
-    typeof value.effort === 'string' &&
-    EFFORT_RE.test(value.effort) &&
-    typeof value.systemPrompt === 'string' &&
-    typeof value.nodeBaseUrl === 'string' &&
-    typeof value.createdAt === 'number' &&
-    typeof value.updatedAt === 'number'
-  )
-}
-
-function isHttpUrl(value: string): boolean {
-  try {
-    const u = new URL(value)
-    return (u.protocol === 'http:' || u.protocol === 'https:') && u.host.length > 0
-  } catch {
-    return false
-  }
-}
-
-function parseColor(value: unknown): string | undefined {
-  if (typeof value !== 'string') return undefined
-  const color = value.trim()
-  if (color === '') return ''
-  if (!COLOR_RE.test(color)) return undefined
-  return color
-}
-
-/**
- * In-process promise-chain mutex. Serializes registry RMW so two tabs
- * cannot drop each other's writes. Same shape as mesh-devices.
- */
-function makeMutex(): <T>(fn: () => T | Promise<T>) => Promise<T> {
-  let tail: Promise<unknown> = Promise.resolve()
-  return <T>(fn: () => T | Promise<T>): Promise<T> => {
-    const run = tail.then(fn, fn)
-    tail = run.then(
-      () => {},
-      () => {},
-    )
-    return run
-  }
-}
-
-// ---------------------------------------------------------------------------
-// storage
-
-interface Registry {
-  agents: AgentPreset[]
-}
-
-function quarantineCorrupt(file: string, reason: string): Registry {
-  const dest = `${file}.corrupt-${Date.now()}`
-  try {
-    if (existsSync(file)) renameSync(file, dest)
-    console.warn(`[den-server] agents.json ${reason}; quarantined to ${dest}`)
-  } catch (err) {
-    console.warn(
-      `[den-server] agents.json ${reason}; quarantine rename failed: ${err instanceof Error ? err.message : String(err)}`,
-    )
-  }
-  return { agents: [] }
-}
-
-function loadRegistry(file: string): Registry {
-  if (!existsSync(file)) return { agents: [] }
-  try {
-    const raw: unknown = JSON.parse(readFileSync(file, 'utf8'))
-    if (!isRecord(raw) || !Array.isArray(raw.agents)) {
-      return quarantineCorrupt(file, 'shape invalid')
-    }
-    return {
-      agents: (raw.agents as unknown[])
-        .map((row): unknown => (isAgentPreset(row) ? migrateAgentPreset(row) : row))
-        .filter(isAgentPreset),
-    }
-  } catch {
-    return quarantineCorrupt(file, 'parse failed')
-  }
-}
-
-function saveRegistry(file: string, reg: Registry): void {
-  mkdirSync(dirname(file), { recursive: true, mode: 0o700 })
-  const tmp = `${file}.tmp-${process.pid}`
-  writeFileSync(tmp, JSON.stringify(reg, null, 2), { mode: 0o600 })
-  renameSync(tmp, file)
-}
-
-// ---------------------------------------------------------------------------
-// routes
+const DIRECTORY_ABS = 'directory must be an absolute path'
+const LINK_NAME = 'rivet-shared'
 
 const readJson = (req: IncomingMessage, limit = 64 * 1024): Promise<unknown> =>
   new Promise((resolve, reject) => {
@@ -181,40 +66,168 @@ const json = (res: ServerResponse, status: number, body: unknown): void => {
   res.end(JSON.stringify(body))
 }
 
+function errorMessage(err: unknown): string {
+  return err instanceof Error ? err.message : String(err)
+}
+
+function isEnoent(err: unknown): boolean {
+  return typeof err === 'object' && err !== null && 'code' in err && err.code === 'ENOENT'
+}
+
 export interface AgentsRoutes {
   handle(req: IncomingMessage, res: ServerResponse, url: URL): Promise<boolean>
 }
 
-export function createAgentsRoutes(opts: { stateDir: string; now?: () => number }): AgentsRoutes {
+export interface ImportAndMaterializeLegacyArgs {
+  file: string
+  /** Primary store. Never the fallback wrapper — importing the live file would rename it. */
+  store: AgentPresetStore
+  nodeName: string
+  directoryRoot: string
+  sharedDir?: string
+  log?: (msg: string) => void
+}
+
+/**
+ * One-shot legacy import plus a directory (and `rivet-shared` symlink) for
+ * each row this call wrote. Directory failures are logged; the row stays.
+ * The caller fire-and-forgets this — a down database must not delay boot.
+ */
+export async function importAndMaterializeLegacyAgents(
+  opts: ImportAndMaterializeLegacyArgs,
+): Promise<ImportLegacyAgentsResult> {
+  const result = await importLegacyAgentsJson({
+    file: opts.file,
+    store: opts.store,
+    node: opts.nodeName,
+    directoryRoot: opts.directoryRoot,
+    ...(opts.log ? { log: opts.log } : {}),
+  })
+  for (const row of result.rows ?? []) {
+    if (!row.directory) continue
+    try {
+      const ensured = ensureAgentDirectory(
+        { directory: row.directory, sharedLink: row.sharedLink },
+        {
+          ...(opts.sharedDir ? { sharedDir: opts.sharedDir } : {}),
+          ...(opts.log ? { log: opts.log } : {}),
+        },
+      )
+      if (ensured.reason) console.warn(`[den-server] ${ensured.reason}`)
+      for (const warning of directoryWarnings(row.directory, opts.sharedDir)) {
+        console.warn(`[den-server] ${warning}`)
+      }
+    } catch (err) {
+      opts.log?.(`could not create agent directory: ${errorMessage(err)}`)
+    }
+  }
+  return result
+}
+
+export function createAgentsRoutes(opts: {
+  store: AgentPresetStore
+  nodeName: string
+  /** Default parent for a preset that does not name a directory. */
+  directoryRoot: string
+  /** Shared directory the `rivet-shared` symlink targets, when configured. */
+  sharedDir?: string
+  /** For `~/` expansion. Default `os.homedir`. */
+  homeDir?: () => string
+  now?: () => number
+  log?: (msg: string) => void
+}): AgentsRoutes {
+  const store = opts.store
+  const nodeName = opts.nodeName
+  const directoryRoot = opts.directoryRoot
+  const sharedDir = opts.sharedDir
+  const homeDir = opts.homeDir ?? homedir
   const now = opts.now ?? Date.now
-  const file = join(opts.stateDir, 'agents.json')
-  const mutex = makeMutex()
+  const log = opts.log ?? ((msg: string) => console.error(`[den-server] ${msg}`))
+
+  const warn = (msg: string): void => {
+    console.warn(`[den-server] ${msg}`)
+  }
+
+  const unavailable = (res: ServerResponse, err: unknown): void => {
+    log(`agent registry unavailable: ${errorMessage(err)}`)
+    json(res, 503, { error: 'agent registry unavailable' })
+  }
+
+  const expandHome = (raw: string): string => {
+    if (!raw.startsWith('~/')) return raw
+    return join(homeDir(), raw.slice(2))
+  }
+
+  /** Empty → the default directory. Anything else must validate. */
+  const resolveDirectory = (raw: unknown, name: string): string | undefined => {
+    if (raw === undefined || (typeof raw === 'string' && raw.trim() === '')) {
+      return validateDirectory(defaultDirectoryFor(directoryRoot, name))
+    }
+    if (typeof raw !== 'string') return undefined
+    return validateDirectory(expandHome(raw.trim()))
+  }
+
+  const materialize = (
+    directory: string,
+    sharedLink: boolean,
+  ): { ok: true } | { ok: false; error: string } => {
+    try {
+      if (!sharedLink) removeSharedSymlink(directory)
+      const ensured = ensureAgentDirectory(
+        { directory, sharedLink },
+        { ...(sharedDir ? { sharedDir } : {}), log },
+      )
+      if (ensured.reason) warn(ensured.reason)
+      for (const warning of directoryWarnings(directory, sharedDir)) warn(warning)
+      return { ok: true }
+    } catch (err) {
+      return { ok: false, error: `could not create agent directory: ${errorMessage(err)}` }
+    }
+  }
+
+  const readBody = async (
+    req: IncomingMessage,
+    res: ServerResponse,
+  ): Promise<Record<string, unknown> | undefined> => {
+    let raw: unknown
+    try {
+      raw = await readJson(req)
+    } catch (err) {
+      json(res, 400, { error: errorMessage(err) })
+      return undefined
+    }
+    if (!isRecord(raw)) {
+      json(res, 400, { error: 'invalid JSON' })
+      return undefined
+    }
+    return raw
+  }
 
   const handleInner = async (
     req: IncomingMessage,
     res: ServerResponse,
     url: URL,
   ): Promise<boolean> => {
-    // List all agents
     if (req.method === 'GET' && url.pathname === '/api/agents') {
-      const reg = loadRegistry(file)
-      json(res, 200, { agents: reg.agents })
+      const nodeFilter = url.searchParams.get('node')?.trim()
+      try {
+        const agents = await store.list(nodeFilter ? { node: nodeFilter } : undefined)
+        json(res, 200, {
+          agents,
+          node: nodeName,
+          directoryRoot,
+          ...(sharedDir !== undefined ? { sharedDir } : {}),
+          backend: store.backend,
+        })
+      } catch (err) {
+        unavailable(res, err)
+      }
       return true
     }
 
-    // Create a new agent
     if (req.method === 'POST' && url.pathname === '/api/agents') {
-      let raw: unknown
-      try {
-        raw = await readJson(req)
-      } catch (e) {
-        json(res, 400, { error: e instanceof Error ? e.message : 'invalid JSON' })
-        return true
-      }
-      if (!isRecord(raw)) {
-        json(res, 400, { error: 'invalid JSON' })
-        return true
-      }
+      const raw = await readBody(req, res)
+      if (!raw) return true
 
       const name =
         typeof raw.name === 'string' && raw.name.trim()
@@ -226,110 +239,126 @@ export function createAgentsRoutes(opts: { stateDir: string; now?: () => number 
         return true
       }
       const color = colorRaw ?? ''
-      const modelRaw = typeof raw.model === 'string' ? raw.model.trim().slice(0, 128) : ''
+      const model = typeof raw.model === 'string' ? raw.model.trim().slice(0, 128) : ''
       const effortParsed = parseEffort(raw.effort)
       if (raw.effort !== undefined && effortParsed === undefined) {
         json(res, 400, { error: 'effort must be a 0-64 token' })
         return true
       }
+      const effort = effortParsed ?? 'medium'
       const hid = parseHarnessId(raw.harnessId)
       if (hid === 'bad') {
         json(res, 400, { error: 'harnessId must be a known harness' })
         return true
       }
-      const migrated = migrateAgentPreset({
-        model: modelRaw,
-        harnessId: hid,
-      })
-      const model = migrated.model
-      const harnessId = migrated.harnessId
-      const effort = effortParsed ?? 'medium'
+      const harnessId: HarnessId | undefined = hid
       const systemPrompt =
         typeof raw.systemPrompt === 'string'
           ? raw.systemPrompt.trim().slice(0, SYSTEM_PROMPT_MAX_CHARS)
           : ''
       const nodeBaseUrl =
         typeof raw.nodeBaseUrl === 'string' ? raw.nodeBaseUrl.trim().slice(0, 512) : ''
-
-      if (!nodeBaseUrl) {
-        json(res, 400, { error: 'nodeBaseUrl is required' })
+      if (typeof raw.node === 'string' && raw.node.trim() && raw.node.trim() !== nodeName) {
+        json(res, 400, { error: `agent must be created on its hosting node (${nodeName})` })
         return true
       }
-      if (!isHttpUrl(nodeBaseUrl)) {
-        json(res, 400, { error: 'nodeBaseUrl must be an http(s) URL' })
+      const sharedLink = typeof raw.sharedLink === 'boolean' ? raw.sharedLink : true
+      const directory = resolveDirectory(raw.directory, name)
+      if (!directory) {
+        json(res, 400, { error: DIRECTORY_ABS })
+        return true
+      }
+      const made = materialize(directory, sharedLink)
+      if (!made.ok) {
+        json(res, 500, { error: made.error })
         return true
       }
 
-      const reg = loadRegistry(file)
-      const agent: AgentPreset = {
-        id: randomUUID(),
-        name,
-        color,
-        model,
-        effort,
-        systemPrompt,
-        nodeBaseUrl,
-        createdAt: now(),
-        updatedAt: now(),
-        ...(harnessId ? { harnessId } : {}),
+      try {
+        const agent = await store.create({
+          name,
+          color,
+          model,
+          effort,
+          systemPrompt,
+          node: nodeName,
+          directory,
+          sharedLink,
+          // Still accepted from pre-registry clients; the field is deprecated.
+          // eslint-disable-next-line @typescript-eslint/no-deprecated
+          nodeBaseUrl,
+          ...(harnessId ? { harnessId } : {}),
+          createdAt: now(),
+        })
+        json(res, 201, { agent })
+      } catch (err) {
+        if (err instanceof PresetConflictError) {
+          json(res, 409, { error: `an agent named "${name}" already exists` })
+          return true
+        }
+        unavailable(res, err)
       }
-      reg.agents.push(agent)
-      saveRegistry(file, reg)
-      json(res, 201, { agent })
       return true
     }
 
-    // Get single agent
     const idMatch = url.pathname.match(/^\/api\/agents\/([\w-]+)$/)
     if (req.method === 'GET' && idMatch) {
       const id = idMatch[1]
-      const reg = loadRegistry(file)
-      const maybeAgent = reg.agents.find((a) => a.id === id)
-      if (!maybeAgent) {
-        json(res, 404, { error: 'agent not found' })
-        return true
+      try {
+        const agent = await store.get(id)
+        if (!agent) {
+          json(res, 404, { error: 'agent not found' })
+          return true
+        }
+        json(res, 200, { agent })
+      } catch (err) {
+        unavailable(res, err)
       }
-      json(res, 200, { agent: maybeAgent })
       return true
     }
 
-    // Update agent
     if (req.method === 'PATCH' && idMatch) {
       const id = idMatch[1]
-      let raw: unknown
-      try {
-        raw = await readJson(req)
-      } catch (e) {
-        json(res, 400, { error: e instanceof Error ? e.message : 'invalid JSON' })
-        return true
-      }
-      if (!isRecord(raw)) {
-        json(res, 400, { error: 'invalid JSON' })
-        return true
-      }
+      const raw = await readBody(req, res)
+      if (!raw) return true
 
-      const reg = loadRegistry(file)
-      const maybeAgent = reg.agents.find((a) => a.id === id)
-      if (!maybeAgent) {
+      let existing: AgentPreset | undefined
+      try {
+        existing = await store.get(id)
+      } catch (err) {
+        unavailable(res, err)
+        return true
+      }
+      if (!existing) {
         json(res, 404, { error: 'agent not found' })
         return true
       }
-      const agent = maybeAgent
 
-      if (typeof raw.nodeBaseUrl === 'string') {
-        const next = raw.nodeBaseUrl.trim()
-        if (!next) {
-          json(res, 400, { error: 'nodeBaseUrl is required' })
-          return true
-        }
-        if (next !== agent.nodeBaseUrl) {
+      if (raw.node !== undefined) {
+        const next = typeof raw.node === 'string' ? raw.node.trim() : undefined
+        if (next !== existing.node) {
           json(res, 400, { error: NODE_IMMUTABLE })
           return true
         }
       }
 
+      if (typeof raw.nodeBaseUrl === 'string') {
+        const next = raw.nodeBaseUrl.trim().slice(0, 512)
+        if (next) {
+          // eslint-disable-next-line @typescript-eslint/no-deprecated
+          const storedUrl = existing.nodeBaseUrl
+          if (storedUrl.trim() && next !== storedUrl) {
+            json(res, 400, { error: NODE_IMMUTABLE })
+            return true
+          }
+        }
+      }
+
+      const patch: AgentPresetPatch = {}
+      let name = existing.name
       if (typeof raw.name === 'string' && raw.name.trim()) {
-        agent.name = raw.name.trim().slice(0, 128)
+        name = raw.name.trim().slice(0, 128)
+        patch.name = name
       }
       if (raw.color !== undefined) {
         const color = parseColor(raw.color)
@@ -337,18 +366,16 @@ export function createAgentsRoutes(opts: { stateDir: string; now?: () => number 
           json(res, 400, { error: 'color must be a hex value' })
           return true
         }
-        agent.color = color
+        patch.color = color
       }
-      if (typeof raw.model === 'string') {
-        agent.model = raw.model.trim().slice(0, 128)
-      }
+      if (typeof raw.model === 'string') patch.model = raw.model.trim().slice(0, 128)
       if (raw.effort !== undefined) {
         const effort = parseEffort(raw.effort)
         if (effort === undefined) {
           json(res, 400, { error: 'effort must be a 0-64 token' })
           return true
         }
-        agent.effort = effort
+        patch.effort = effort
       }
       if (raw.harnessId !== undefined) {
         const hid = parseHarnessId(raw.harnessId)
@@ -356,34 +383,77 @@ export function createAgentsRoutes(opts: { stateDir: string; now?: () => number 
           json(res, 400, { error: 'harnessId must be a known harness' })
           return true
         }
-        if (hid) agent.harnessId = hid
-        else delete agent.harnessId
+        patch.harnessId = hid ?? null
       }
       if (typeof raw.systemPrompt === 'string') {
-        agent.systemPrompt = raw.systemPrompt.trim().slice(0, SYSTEM_PROMPT_MAX_CHARS)
+        patch.systemPrompt = raw.systemPrompt.trim().slice(0, SYSTEM_PROMPT_MAX_CHARS)
       }
-      const migrated = migrateAgentPreset(agent)
-      agent.model = migrated.model
-      if (migrated.harnessId) agent.harnessId = migrated.harnessId
-      else delete agent.harnessId
-      agent.updatedAt = now()
-      saveRegistry(file, reg)
-      json(res, 200, { agent })
+      if (typeof raw.nodeBaseUrl === 'string') {
+        const next = raw.nodeBaseUrl.trim().slice(0, 512)
+        // eslint-disable-next-line @typescript-eslint/no-deprecated
+        const storedUrl = existing.nodeBaseUrl
+        if (next && !storedUrl.trim()) patch.nodeBaseUrl = next
+      }
+
+      let nextDirectory = existing.directory
+      let nextSharedLink = existing.sharedLink !== false
+      let materializeDirectory = false
+      if (raw.directory !== undefined) {
+        const directory = resolveDirectory(raw.directory, name)
+        if (!directory) {
+          json(res, 400, { error: DIRECTORY_ABS })
+          return true
+        }
+        nextDirectory = directory
+        materializeDirectory = true
+        if (directory !== existing.directory) patch.directory = directory
+      }
+      if (typeof raw.sharedLink === 'boolean' && raw.sharedLink !== nextSharedLink) {
+        nextSharedLink = raw.sharedLink
+        patch.sharedLink = raw.sharedLink
+        materializeDirectory = true
+      }
+      if (materializeDirectory) {
+        if (!nextDirectory) {
+          json(res, 400, { error: DIRECTORY_ABS })
+          return true
+        }
+        const made = materialize(nextDirectory, nextSharedLink)
+        if (!made.ok) {
+          json(res, 500, { error: made.error })
+          return true
+        }
+      }
+
+      try {
+        const agent = await store.update(id, patch)
+        if (!agent) {
+          json(res, 404, { error: 'agent not found' })
+          return true
+        }
+        json(res, 200, { agent })
+      } catch (err) {
+        if (err instanceof PresetConflictError) {
+          json(res, 409, { error: `an agent named "${name}" already exists` })
+          return true
+        }
+        unavailable(res, err)
+      }
       return true
     }
 
-    // Delete agent
     if (req.method === 'DELETE' && idMatch) {
       const id = idMatch[1]
-      const reg = loadRegistry(file)
-      const exists = reg.agents.some((a) => a.id === id)
-      if (!exists) {
-        json(res, 404, { error: 'agent not found' })
-        return true
+      try {
+        const ok = await store.delete(id)
+        if (!ok) {
+          json(res, 404, { error: 'agent not found' })
+          return true
+        }
+        json(res, 200, { ok: true })
+      } catch (err) {
+        unavailable(res, err)
       }
-      reg.agents = reg.agents.filter((a) => a.id !== id)
-      saveRegistry(file, reg)
-      json(res, 200, { ok: true })
       return true
     }
 
@@ -394,7 +464,19 @@ export function createAgentsRoutes(opts: { stateDir: string; now?: () => number 
   return {
     async handle(req, res, url) {
       if (url.pathname !== '/api/agents' && !url.pathname.startsWith('/api/agents/')) return false
-      return mutex(() => handleInner(req, res, url))
+      return handleInner(req, res, url)
     },
   }
+}
+
+/** Drop a `rivet-shared` symlink. A real file or directory at that path stays. */
+function removeSharedSymlink(directory: string): void {
+  const link = join(directory, LINK_NAME)
+  try {
+    if (!lstatSync(link).isSymbolicLink()) return
+  } catch (err) {
+    if (isEnoent(err)) return
+    throw err
+  }
+  unlinkSync(link)
 }

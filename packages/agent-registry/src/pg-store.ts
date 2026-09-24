@@ -265,6 +265,7 @@ export class PgAgentPresetStore implements AgentPresetStore {
     if (patch.systemPrompt !== undefined) set('system_prompt', patch.systemPrompt)
     if (patch.directory !== undefined) set('directory', patch.directory)
     if (patch.sharedLink !== undefined) set('shared_link', patch.sharedLink)
+    if (patch.nodeBaseUrl !== undefined) set('node_base_url', patch.nodeBaseUrl)
 
     if (patch.harnessId === null && patch.model !== undefined) {
       // The patch replaces both fields, so the old row is not read. Same as

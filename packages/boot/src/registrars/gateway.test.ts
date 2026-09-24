@@ -10,6 +10,20 @@ import type { RivetConfig } from '../config.js'
 const base = (den: NonNullable<RivetConfig['den']>, mesh?: RivetConfig['mesh']): RivetConfig =>
   ({ den, ...(mesh ? { mesh } : {}) }) as RivetConfig
 
+describe('buildGatewayEnv — den node name', () => {
+  it('sets RIVETOS_DEN_NODE_NAME from mesh.node_name', () => {
+    vi.stubEnv('RIVETOS_DEN_NODE_NAME', '')
+    const env = buildGatewayEnv(base({}, { node_name: 'ct115' }), '/opt/rivetos')
+    expect(env.RIVETOS_DEN_NODE_NAME).toBe('ct115')
+  })
+
+  it('lets an explicit process env win over mesh.node_name', () => {
+    vi.stubEnv('RIVETOS_DEN_NODE_NAME', 'from-env')
+    const env = buildGatewayEnv(base({}, { node_name: 'ct115' }), '/opt/rivetos')
+    expect(env.RIVETOS_DEN_NODE_NAME).toBe('from-env')
+  })
+})
+
 describe('buildGatewayEnv — MicBridge audio', () => {
   it('wires RIVETOS_DEN_AUDIO when terminal is enabled', () => {
     const off = buildGatewayEnv(base({}), '/opt/rivetos')

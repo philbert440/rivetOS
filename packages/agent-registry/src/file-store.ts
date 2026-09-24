@@ -1,7 +1,8 @@
 /**
  * File-backed preset registry. The mutex, quarantine, load, and save helpers
- * are the den's (`services/den-server/src/agents.ts`); that copy stays until
- * a later slice swaps the den onto this store. Formatted for this package.
+ * moved here from den (`services/den-server/src/agents.ts`). den uses this
+ * store directly when it has no Postgres, and as the fallback until
+ * `ros_agent_presets` is ready.
  */
 
 import { randomUUID } from 'node:crypto'
