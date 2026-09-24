@@ -1,7 +1,8 @@
 /**
- * Shared preset-store cases. Not a test file itself: both store suites call
- * `describePresetStoreContract`. It stays in this tsconfig so lint can typecheck
- * it; it is not exported from the package entry.
+ * Shared preset-store cases. Not a suite of its own: both store test files call
+ * `describePresetStoreContract`. It lives under `src/test` so this package's
+ * tsconfig compiles it (lint and typecheck see it) and vitest does not load it
+ * as its own file. It is not exported from the package entry.
  */
 
 import { describe, expect, it } from 'vitest'
@@ -50,6 +51,26 @@ function legacySeed(overrides: Partial<RawPresetSeed> & Pick<RawPresetSeed, 'id'
   }
 }
 
+function canonicalSeed(
+  overrides: Partial<RawPresetSeed> & Pick<RawPresetSeed, 'id'>,
+): RawPresetSeed {
+  return {
+    name: 'Canonical',
+    model: 'claude',
+    harnessId: 'codex',
+    node: 'ct115',
+    directory: '/tmp/agents/canonical-row',
+    sharedLink: true,
+    ...overrides,
+  }
+}
+
+function expectStored(contract: PresetStoreContract, id: string, row: StoredPreset): Promise<void> {
+  return contract.readStored(id).then((stored) => {
+    expect(stored).toEqual(row)
+  })
+}
+
 export function describePresetStoreContract(contract: PresetStoreContract): void {
   describe('shared preset-store contract', () => {
     it('create with a catalog model migrates onto harnessId', async () => {
@@ -91,6 +112,72 @@ export function describePresetStoreContract(contract: PresetStoreContract): void
       expect(await contract.readStored(id)).toMatchObject({
         harnessId: 'claude-code',
         model: 'opus',
+      })
+    })
+
+    it('harnessId null on a raw legacy catalog row clears harness and model', async () => {
+      const id = 'legacy-clear-harness'
+      await contract.seedRaw(legacySeed({ id, name: 'LegacyClear' }))
+      const updated = await contract.newStore().update(id, { harnessId: null })
+      expect(updated?.harnessId).toBeUndefined()
+      expect(updated?.model).toBe('')
+      await expectStored(contract, id, {
+        name: 'LegacyClear',
+        model: '',
+        harnessId: null,
+        sharedLink: true,
+      })
+    })
+
+    it('harness-only patch on a raw legacy catalog row stores an empty model', async () => {
+      const id = 'legacy-set-harness'
+      await contract.seedRaw(legacySeed({ id, name: 'LegacyHarness' }))
+      const updated = await contract.newStore().update(id, { harnessId: 'codex' })
+      expect(updated).toMatchObject({ harnessId: 'codex', model: '' })
+      await expectStored(contract, id, {
+        name: 'LegacyHarness',
+        model: '',
+        harnessId: 'codex',
+        sharedLink: true,
+      })
+    })
+
+    it('harnessId null on a raw canonical row migrates the stored model', async () => {
+      const id = 'canonical-clear-harness'
+      await contract.seedRaw(canonicalSeed({ id, name: 'CanonicalClear' }))
+      const updated = await contract.newStore().update(id, { harnessId: null })
+      expect(updated).toMatchObject({ harnessId: 'claude-code', model: '' })
+      await expectStored(contract, id, {
+        name: 'CanonicalClear',
+        model: '',
+        harnessId: 'claude-code',
+        sharedLink: true,
+      })
+    })
+
+    it('harness-only codex patch on a raw canonical row keeps the stored model', async () => {
+      const id = 'canonical-set-harness'
+      await contract.seedRaw(canonicalSeed({ id, name: 'CanonicalHarness' }))
+      const updated = await contract.newStore().update(id, { harnessId: 'codex' })
+      expect(updated).toMatchObject({ harnessId: 'codex', model: 'claude' })
+      await expectStored(contract, id, {
+        name: 'CanonicalHarness',
+        model: 'claude',
+        harnessId: 'codex',
+        sharedLink: true,
+      })
+    })
+
+    it('model-only patch on a raw canonical row keeps the harness', async () => {
+      const id = 'canonical-model'
+      await contract.seedRaw(canonicalSeed({ id, name: 'CanonicalModel' }))
+      const updated = await contract.newStore().update(id, { model: 'opus' })
+      expect(updated).toMatchObject({ harnessId: 'codex', model: 'opus' })
+      await expectStored(contract, id, {
+        name: 'CanonicalModel',
+        model: 'opus',
+        harnessId: 'codex',
+        sharedLink: true,
       })
     })
 

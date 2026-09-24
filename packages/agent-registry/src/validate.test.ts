@@ -58,14 +58,23 @@ describe('validateDirectory', () => {
 
 describe('directoryWarnings', () => {
   it('warns only when the directory is inside the shared directory', () => {
-    expect(directoryWarnings('/home/agents/reviewer', '/rivet-shared')).toEqual([])
-    expect(directoryWarnings('/rivet-shared-other/reviewer', '/rivet-shared')).toEqual([])
+    expect(
+      directoryWarnings('/home/agents/reviewer', '/nonexistent-shared-root-for-tests'),
+    ).toEqual([])
+    expect(
+      directoryWarnings('/nonexistent-shared-root-other/reviewer', '/nonexistent-shared-root'),
+    ).toEqual([])
     expect(directoryWarnings('/tmp/a')).toEqual([])
-    const warned = directoryWarnings('/rivet-shared/agents/reviewer', '/rivet-shared/')
+    const warned = directoryWarnings(
+      '/nonexistent-shared-root/agents/reviewer',
+      '/nonexistent-shared-root/',
+    )
     expect(warned).toHaveLength(1)
     expect(warned[0]).toMatch(/rivet-shared/)
     expect(warned[0]).toMatch(/ancestor/)
-    expect(directoryWarnings('/rivet-shared', '/rivet-shared')).toHaveLength(1)
+    expect(directoryWarnings('/nonexistent-shared-root', '/nonexistent-shared-root')).toHaveLength(
+      1,
+    )
   })
 
   it('compares real paths when a shared directory is a symlink', () => {

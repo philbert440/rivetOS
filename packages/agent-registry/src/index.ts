@@ -41,6 +41,7 @@ export {
   createCachedPresetResolver,
   type CachedPresetResolver,
   type CachedPresetResolverOptions,
+  type CachedPresetResolverStatus,
 } from './cached-resolver.js'
 
 export {

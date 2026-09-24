@@ -50,6 +50,15 @@
       "scope:domain",
       "type:lib",
       "domain:shared"
-    ]
+    ],
+    "targets": {
+      "test": {
+        "inputs": [
+          "default",
+          "^production",
+          "{workspaceRoot}/plugins/memory/postgres/src/schema/migrations/0017_agent_presets.sql"
+        ]
+      }
+    }
   }
 }

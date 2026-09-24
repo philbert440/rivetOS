@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest'
-import { createCachedPresetResolver } from './cached-resolver.js'
+import { createCachedPresetResolver, type CachedPresetResolver } from './cached-resolver.js'
 import type { AgentPresetStore } from './store.js'
 import type { AgentPreset } from '@rivetos/types'
 
@@ -233,5 +233,87 @@ describe('createCachedPresetResolver', () => {
     expect(resolver.lastKnown()).toMatchObject([{ name: 'Ok' }])
     expect(await resolver.list()).toMatchObject([{ name: 'Ok' }])
     expect(calls).toBe(2)
+  })
+
+  it('one list returns after at most two store reads when each of 20 refreshes is invalidated', async () => {
+    let calls = 0
+    let invalidate = (): void => undefined
+    const store = fake(() => {
+      calls += 1
+      if (calls > 20) return Promise.reject(new Error('refresh was not bounded'))
+      invalidate()
+      return Promise.resolve([preset({ id: 'a', name: `n${calls}` })])
+    })
+    const resolver = createCachedPresetResolver(store, { now: () => 0, ttlMs: 30_000 })
+    invalidate = () => {
+      resolver.invalidate()
+    }
+    const rows = await resolver.list()
+    expect(calls).toBeGreaterThanOrEqual(1)
+    expect(calls).toBeLessThanOrEqual(2)
+    expect(rows).toMatchObject([{ id: 'a' }])
+    expect(resolver.lastKnown()).toEqual([])
+    expect(resolver.status()).toEqual({ hasValue: false, fetchedAt: 0 })
+  })
+
+  it('serves a warm cache for the TTL after a failed post-invalidation refresh', async () => {
+    let now = 0
+    let calls = 0
+    let releaseRetry: (rows: AgentPreset[]) => void = () => undefined
+    const retry = new Promise<AgentPreset[]>((resolve) => {
+      releaseRetry = resolve
+    })
+    const store = fake(() => {
+      calls += 1
+      if (calls === 1) return Promise.resolve([preset({ id: 'a', name: 'Ok' })])
+      if (calls === 2) return Promise.reject(new Error('db down'))
+      return retry
+    })
+    const resolver = createCachedPresetResolver(store, { now: () => now, ttlMs: 30_000 })
+    await expect(resolver.list()).resolves.toMatchObject([{ name: 'Ok' }])
+    expect(resolver.status()).toEqual({ hasValue: true, fetchedAt: 0 })
+    resolver.invalidate()
+    await expect(resolver.list()).resolves.toMatchObject([{ name: 'Ok' }])
+    await expect(resolver.list()).resolves.toMatchObject([{ name: 'Ok' }])
+    await expect(resolver.list()).resolves.toMatchObject([{ name: 'Ok' }])
+    expect(calls).toBe(2)
+    expect(resolver.status()).toEqual({ hasValue: true, lastError: 'db down', fetchedAt: 0 })
+    expect(resolver.lastKnown()).toMatchObject([{ name: 'Ok' }])
+    now = 29_999
+    await expect(resolver.list()).resolves.toMatchObject([{ name: 'Ok' }])
+    expect(calls).toBe(2)
+    now = 30_000
+    let settled = false
+    const pending = resolver.list().then((rows) => {
+      settled = true
+      return rows
+    })
+    await vi.waitFor(() => {
+      expect(calls).toBe(3)
+    })
+    expect(settled).toBe(false)
+    releaseRetry([preset({ id: 'a', name: 'Later' })])
+    await expect(pending).resolves.toMatchObject([{ name: 'Later' }])
+    expect(resolver.status()).toEqual({ hasValue: true, fetchedAt: 30_000 })
+    expect(resolver.lastKnown()).toMatchObject([{ name: 'Later' }])
+  })
+
+  it('status distinguishes a down store from an empty registry', async () => {
+    let calls = 0
+    const store = fake(() => {
+      calls += 1
+      if (calls === 1) return Promise.reject(new Error('db down'))
+      return Promise.resolve([])
+    })
+    const resolver: CachedPresetResolver = createCachedPresetResolver(store, {
+      now: () => 50,
+      ttlMs: 30_000,
+    })
+    expect(resolver.status()).toEqual({ hasValue: false, fetchedAt: 0 })
+    await expect(resolver.list()).resolves.toEqual([])
+    expect(resolver.status()).toEqual({ hasValue: false, lastError: 'db down', fetchedAt: 0 })
+    await expect(resolver.list()).resolves.toEqual([])
+    expect(calls).toBe(2)
+    expect(resolver.status()).toEqual({ hasValue: true, fetchedAt: 50 })
   })
 })

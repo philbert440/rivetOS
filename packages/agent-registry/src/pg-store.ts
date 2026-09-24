@@ -117,9 +117,9 @@ function rowToPreset(row: PresetRow): AgentPreset {
  * ids win, then the catalog map) so a catalog-map change stays in sync with
  * `catalogAgentToHarness` — do not hand-copy the pairs. Bound parameters,
  * not embedded literals: a future key with `_` or uppercase must not break
- * the statement. `modelExpr` is a column reference or a `$n` placeholder,
- * never a raw value. VALUES columns are not named `model`, so the outer
- * `model` column is not shadowed.
+ * the statement. `modelExpr` is a column reference, a `$n` placeholder, or a
+ * parenthesized SQL expression built from those — never a raw value. VALUES
+ * columns are not named `model`, so the outer `model` column is not shadowed.
  */
 function harnessFromModelSql(modelExpr: string, bind: (value: string) => string): string {
   const pairs = new Map<string, HarnessId>()
@@ -131,6 +131,24 @@ function harnessFromModelSql(modelExpr: string, bind: (value: string) => string)
     .map(([model, harness]) => `(${bind(model)}::text, ${bind(harness)}::text)`)
     .join(', ')
   return `(SELECT v.harness FROM (VALUES ${rows}) AS v(catalog_model, harness) WHERE v.catalog_model = ${modelExpr})`
+}
+
+/**
+ * Read-migrated old row, matching a file-store load before `presetFromPatch`.
+ * One `mapped(model)` so every branch shares the placeholders.
+ *
+ * `h' = harness_id IS NULL ? mapped(model) : harness_id`
+ * `m' = (harness_id IS NULL AND mapped(model) IS NOT NULL) ? '' : model`
+ *
+ * Calling this binds parameters. The UPDATE must splice in at least one
+ * fragment (both contain the same placeholders).
+ */
+function readMigratedRowSql(bind: (value: string) => string): { harness: string; model: string } {
+  const mappedOld = harnessFromModelSql('model', bind)
+  return {
+    harness: `CASE WHEN harness_id IS NULL THEN ${mappedOld} ELSE harness_id END`,
+    model: `CASE WHEN harness_id IS NULL AND (${mappedOld}) IS NOT NULL THEN '' ELSE model END`,
+  }
 }
 
 export class PgAgentPresetStore implements AgentPresetStore {
@@ -250,31 +268,41 @@ export class PgAgentPresetStore implements AgentPresetStore {
     if (patch.sharedLink !== undefined) set('shared_link', patch.sharedLink)
 
     if (patch.harnessId === null && patch.model !== undefined) {
+      // The patch replaces both fields, so the old row is not read. Same as
+      // clearing harnessId and then `migrateAgentPreset` on the patch model.
       const migrated = migrateAgentPreset<{ model: string; harnessId?: HarnessId }>({
         model: patch.model,
       })
       set('model', migrated.model)
       set('harness_id', migrated.harnessId ?? null)
     } else if (patch.harnessId === null) {
-      const mapped = harnessFromModelSql('model', bind)
-      setExpr('model', `CASE WHEN (${mapped}) IS NOT NULL THEN '' ELSE model END`)
-      setExpr('harness_id', mapped)
+      // Clear harness, then migrate m'. h' is dropped on purpose.
+      const migrated = readMigratedRowSql(bind)
+      const mappedModel = harnessFromModelSql(`(${migrated.model})`, bind)
+      setExpr('harness_id', mappedModel)
+      setExpr(
+        'model',
+        `CASE WHEN (${mappedModel}) IS NOT NULL THEN '' ELSE (${migrated.model}) END`,
+      )
     } else if (typeof patch.harnessId === 'string') {
       set('harness_id', patch.harnessId)
       if (patch.model !== undefined) set('model', patch.model)
+      else {
+        const migrated = readMigratedRowSql(bind)
+        setExpr('model', `(${migrated.model})`)
+      }
     } else if (patch.model !== undefined) {
-      // SET expressions all see the OLD row. Migrate that row first (a legacy
-      // `{model:'claude', harness_id:NULL}` becomes harness `claude-code`),
-      // then apply the patch model verbatim — the same order as a file-store
-      // read followed by `presetFromPatch`. Only a harness-less row whose old
-      // model does not map migrates the *new* model.
+      // SET expressions see the OLD row. Model-only replaces m' and keeps h':
+      // a migrated harness stays, and the patch model is stored verbatim. A
+      // still-empty harness migrates the new model. Same order as a file-store
+      // read followed by `presetFromPatch`.
+      const migrated = readMigratedRowSql(bind)
       const patchModel = bind(patch.model)
-      const mappedOld = harnessFromModelSql('model', bind)
       const mappedPatch = harnessFromModelSql(patchModel, bind)
-      setExpr('harness_id', `COALESCE(harness_id, ${mappedOld}, ${mappedPatch})`)
+      setExpr('harness_id', `COALESCE((${migrated.harness}), ${mappedPatch})`)
       setExpr(
         'model',
-        `CASE WHEN harness_id IS NOT NULL OR (${mappedOld}) IS NOT NULL THEN ${patchModel} WHEN (${mappedPatch}) IS NOT NULL THEN '' ELSE ${patchModel} END`,
+        `CASE WHEN (${migrated.harness}) IS NOT NULL THEN ${patchModel} WHEN (${mappedPatch}) IS NOT NULL THEN '' ELSE ${patchModel} END`,
       )
     }
 
