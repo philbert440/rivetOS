@@ -198,9 +198,12 @@ export class DelegationEngine {
     const agents = router.getAgents()
     const agent = agents.find((a) => a.id === request.toAgent)
     if (!agent) {
+      const presetNames = this.config.presets?.rosterEntries().map((entry) => entry.name) ?? []
+      const names = [...new Set([...agents.map((a) => a.id), ...presetNames])]
+      const listed = names.length ? names.join(', ') : '(none reachable)'
       const result: DelegationResult = {
         status: 'failed',
-        response: `Unknown agent: ${request.toAgent}. Available: ${agents.map((a) => a.id).join(', ')}`,
+        response: `Unknown agent: ${request.toAgent}. Agents you can delegate to: ${listed}`,
       }
       await this.fireAfterHook(request, result, startTime, chainDepth, false)
       return result

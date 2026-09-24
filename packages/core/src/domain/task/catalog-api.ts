@@ -47,8 +47,8 @@ export interface CatalogApiOptions {
   presets?: PresetDelegationEngine
 }
 
-function presetCatalogAgents(opts: CatalogApiOptions): CatalogAgent[] {
-  const entries = opts.presets?.rosterEntries() ?? []
+async function presetCatalogAgents(opts: CatalogApiOptions): Promise<CatalogAgent[]> {
+  const entries = opts.presets ? await opts.presets.rosterEntriesFresh() : []
   return entries.map((entry): CatalogAgent => ({
     kind: 'preset',
     id: entry.id,
@@ -77,7 +77,7 @@ export async function buildCatalogAgents(opts: CatalogApiOptions): Promise<Catal
     node: opts.nodeName,
     local: true,
   }))
-  const presets = presetCatalogAgents(opts)
+  const presets = await presetCatalogAgents(opts)
   if (!opts.meshRegistry) return [...local, ...presets]
   const nodes = await opts.meshRegistry.getNodes()
   const remote = nodes

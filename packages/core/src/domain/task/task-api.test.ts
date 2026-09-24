@@ -12,15 +12,17 @@ import type {
   AgentPreset,
   HarnessExecutor,
   HarnessExecutorCapabilities,
+  MeshNode,
+  MeshRegistry,
   TaskResult,
   TaskSpec,
 } from '@rivetos/types'
 import { InMemoryTaskStore } from './store.js'
 import { createExecutorRegistry, createTaskHandler } from './runner.js'
+import { createNotImplementedHarnessExecutor } from './harness-executors.js'
 import { createTaskCompletionWaiter, type TaskCompletionWaiter } from './completion-waiter.js'
 import { createTaskApiRoute } from './task-api.js'
-import { PresetDelegationEngine } from '../preset-delegation.js'
-import type { CachedPresetResolver } from '@rivetos/agent-registry'
+import type { PresetHostContext } from '../preset-delegation.js'
 
 const caps: HarnessExecutorCapabilities = {
   steerable: true,
@@ -300,47 +302,58 @@ describe('agent-aware dispatch (resolveAffinity)', () => {
     expect(await store.list()).toHaveLength(0)
   })
 
-  it('affinity pins a preset create to preset.node', async () => {
-    const reviewer: AgentPreset = {
+  function presetMesh(nodes: MeshNode[]): MeshRegistry {
+    return {
+      register: async () => undefined,
+      deregister: async () => undefined,
+      heartbeat: async () => undefined,
+      getNodes: async () => nodes,
+      getNode: async (id) => nodes.find((n) => n.id === id),
+      findByAgent: async () => [],
+      findByCapability: async () => [],
+      findByProvider: async () => [],
+      sync: async () => undefined,
+      prune: async () => [],
+    }
+  }
+
+  function reviewerPreset(overrides: Partial<AgentPreset> = {}): AgentPreset {
+    return {
       id: 'preset-reviewer',
       name: 'reviewer',
       color: '',
       harnessId: 'claude-code',
       model: 'opus',
       effort: 'high',
-      systemPrompt: '',
+      systemPrompt: 'be strict',
       node: 'ct116',
       directory: '/home/rivet/.rivetos/agents/reviewer',
       nodeBaseUrl: '',
       createdAt: 1,
       updatedAt: 1,
+      ...overrides,
     }
-    const resolver: CachedPresetResolver = {
-      list: () => Promise.resolve([reviewer]),
-      find: (handle) =>
-        Promise.resolve(handle === 'reviewer' || handle === reviewer.id ? reviewer : undefined),
-      lastKnown: () => [reviewer],
-      invalidate() {},
-    }
-    const executors = createExecutorRegistry()
-    executors.register('chat-loop', fakeExecutor({ hang: true }))
+  }
+
+  async function startPresetApi(opts: {
+    preset: AgentPreset
+    presetHost?: PresetHostContext
+    resolveAffinity?: boolean
+  }): Promise<{ base: string; store: InMemoryTaskStore }> {
     const store = new InMemoryTaskStore()
     const waiter = createTaskCompletionWaiter({ store, pollFallbackMs: 10 })
-    const presets = new PresetDelegationEngine({
-      resolver,
-      taskStore: store,
-      waiter,
-      nodeName: 'ct115',
-    })
     const route = createTaskApiRoute({
       store,
       waiter,
-      resolveAffinity: async (agentId) => {
-        if (agentId === 'local-agent') return 'this-node'
-        const preset = await presets.find(agentId)
-        if (preset?.node) return preset.node
-        return { error: `agent "${agentId}" not found locally or on the mesh` }
-      },
+      resolvePreset: async (agentId) =>
+        agentId === opts.preset.name || agentId === opts.preset.id ? opts.preset : undefined,
+      presetHost: opts.presetHost,
+      resolveAffinity: opts.resolveAffinity
+        ? async (agentId) =>
+            agentId === 'local-agent'
+              ? 'this-node'
+              : { error: `agent "${agentId}" not found locally or on the mesh` }
+        : undefined,
     })
     const server: Server = createServer((req, res) => {
       void route.handler(req, res)
@@ -351,10 +364,148 @@ describe('agent-aware dispatch (resolveAffinity)', () => {
       await waiter.stop()
       await new Promise((r) => server.close(r))
     })
-    const base = `http://127.0.0.1:${port}`
-    const res = await create(base, { goal: 'review', agentId: 'reviewer' })
+    return { base: `http://127.0.0.1:${port}`, store }
+  }
+
+  it('a preset create builds the harness-session row, not a chat-loop row', async () => {
+    const reviewer = reviewerPreset()
+    const host: MeshNode = {
+      id: 'ct116',
+      name: 'ct116',
+      agents: [],
+      host: '10.0.0.1',
+      port: 3000,
+      providers: [],
+      models: [],
+      capabilities: [],
+      status: 'online',
+      lastSeen: 1,
+      registeredAt: 1,
+      version: '0.1.0',
+      metadata: { harnessExecutors: ['claude-code'] },
+    }
+    const { base, store } = await startPresetApi({
+      preset: reviewer,
+      presetHost: { nodeName: 'ct115', meshRegistry: presetMesh([host]) },
+    })
+    const res = await create(base, { goal: 'review the diff', agentId: 'reviewer' })
     expect(res.status).toBe(201)
     const { task } = (await res.json()) as { task: { id: string } }
-    expect((await store.get(task.id))?.nodeAffinity).toBe(reviewer.node)
+    const row = await store.get(task.id)
+    expect(row).toMatchObject({
+      executor: 'harness-session',
+      executorTarget: 'claude-code',
+      agentId: reviewer.id,
+      nodeAffinity: reviewer.node,
+      origin: 'api',
+      goal: 'review the diff',
+    })
+    expect(row?.spec).toMatchObject({
+      presetId: reviewer.id,
+      presetName: 'reviewer',
+      workingDir: reviewer.directory,
+      sharedLink: true,
+      model: 'opus',
+      effort: 'high',
+      systemPromptAppend: 'be strict',
+      delegation: true,
+      excludeTools: ['delegate_task'],
+    })
+  })
+
+  it('a body model wins over the preset model', async () => {
+    const reviewer = reviewerPreset()
+    const host: MeshNode = {
+      id: 'ct116',
+      name: 'ct116',
+      agents: [],
+      host: '10.0.0.1',
+      port: 3000,
+      providers: [],
+      models: [],
+      capabilities: [],
+      status: 'online',
+      lastSeen: 1,
+      registeredAt: 1,
+      version: '0.1.0',
+      metadata: { harnessExecutors: ['claude-code'] },
+    }
+    const { base, store } = await startPresetApi({
+      preset: reviewer,
+      presetHost: { nodeName: 'ct115', meshRegistry: presetMesh([host]) },
+    })
+    const res = await create(base, {
+      goal: 'review',
+      agentId: 'reviewer',
+      spec: { model: 'haiku' },
+    })
+    expect(res.status).toBe(201)
+    const { task } = (await res.json()) as { task: { id: string } }
+    expect((await store.get(task.id))?.spec.model).toBe('haiku')
+  })
+
+  it('an unimplemented preset is 400 with the gap text and creates no row', async () => {
+    const reviewer = reviewerPreset({ harnessId: 'codex', node: 'ct115' })
+    const executors = createExecutorRegistry()
+    executors.register(
+      'harness-session',
+      createNotImplementedHarnessExecutor('codex', { reason: 'binary not resolvable' }),
+      'codex',
+    )
+    const { base, store } = await startPresetApi({
+      preset: reviewer,
+      presetHost: { nodeName: 'ct115', executors },
+    })
+    const res = await create(base, { goal: 'review', agentId: 'reviewer' })
+    expect(res.status).toBe(400)
+    const body = (await res.json()) as { error: string }
+    expect(body.error).toContain('agent "reviewer" (codex on this node):')
+    expect(body.error).toContain('binary not resolvable')
+    expect(await store.list()).toHaveLength(0)
+  })
+
+  it('an offline hosting node is 409', async () => {
+    const reviewer = reviewerPreset({ node: 'ct116' })
+    const host: MeshNode = {
+      id: 'ct116',
+      name: 'ct116',
+      agents: [],
+      host: '10.0.0.1',
+      port: 3000,
+      providers: [],
+      models: [],
+      capabilities: [],
+      status: 'offline',
+      lastSeen: 1,
+      registeredAt: 1,
+      version: '0.1.0',
+    }
+    const { base, store } = await startPresetApi({
+      preset: reviewer,
+      presetHost: { nodeName: 'ct115', meshRegistry: presetMesh([host]) },
+    })
+    const res = await create(base, { goal: 'review', agentId: 'reviewer' })
+    expect(res.status).toBe(409)
+    const body = (await res.json()) as { error: string }
+    expect(body.error).toContain('hosting node "ct116" is offline or unknown')
+    expect(await store.list()).toHaveLength(0)
+  })
+
+  it('an explicit executor is left alone', async () => {
+    const reviewer = reviewerPreset()
+    const { base, store } = await startPresetApi({ preset: reviewer })
+    const res = await create(base, {
+      goal: 'review',
+      agentId: 'reviewer',
+      executor: 'chat-loop',
+    })
+    expect(res.status).toBe(201)
+    const { task } = (await res.json()) as { task: { id: string } }
+    const row = await store.get(task.id)
+    expect(row?.executor).toBe('chat-loop')
+    expect(row?.executorTarget).toBeUndefined()
+    expect(row?.agentId).toBe('reviewer')
+    expect(row?.spec.presetId).toBeUndefined()
+    expect(row?.nodeAffinity).toBeUndefined()
   })
 })

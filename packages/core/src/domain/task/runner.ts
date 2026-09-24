@@ -316,13 +316,20 @@ async function runClaimedTask(task: TaskRow, opts: TaskHandlerOptions): Promise<
     effort?: TaskSpec['effort']
     systemPromptAppend?: string
     sharedLink?: boolean
+    presetId?: string
   }
 
-  // A preset (or any row) pins its own directory. Materialise it before the
-  // executor starts so an imported or foreign-created row gets a directory
-  // the first time it runs. A bad path fails the task; it must not crash
-  // the handler (the graphile job would then leave the row running).
-  if (typeof spec.workingDir === 'string') {
+  // Preset rows pin a directory. Materialise it before the executor starts
+  // so an imported or foreign-created preset gets one the first time it
+  // runs. Workflow chat-loop steps also set workingDir (the case dir) and
+  // must keep that cwd — creating `<caseDir>/rivet-shared` would symlink-cycle
+  // the shared tree. A bad preset path fails the task; it must not crash the
+  // handler (the graphile job would then leave the row running).
+  if (
+    typeof spec.presetId === 'string' &&
+    spec.presetId !== '' &&
+    typeof spec.workingDir === 'string'
+  ) {
     try {
       ensureAgentDirectory(
         { directory: spec.workingDir, sharedLink: spec.sharedLink },

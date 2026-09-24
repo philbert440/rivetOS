@@ -13,6 +13,7 @@ import type {
   AgentPreset,
   DelegationRequest,
   DelegationResult,
+  HarnessExecutor,
   HarnessId,
   MeshNode,
   MeshRegistry,
@@ -20,7 +21,12 @@ import type {
 import { logger } from '../logger.js'
 import { CRITERIA_POLICY_OFF, normalizeCriteria, type CriteriaPolicy } from './task/criteria.js'
 import { settleDelegatedTask } from './task/delegation-wait.js'
-import { harnessExecutorGap, isNotImplementedHarnessExecutor } from './task/harness-executors.js'
+import {
+  canonicalizeExecutorTarget,
+  harnessExecutorGap,
+  isNotImplementedHarnessExecutor,
+  notImplementedHarnessReason,
+} from './task/harness-executors.js'
 import type { TaskExecutorRegistry } from './task/runner.js'
 import type { TaskStore } from './task/store.js'
 import type { TaskCompletionWaiter } from './task/completion-waiter.js'
@@ -30,6 +36,11 @@ const log = logger('PresetDelegation')
 const DEFAULT_MAX_CHAIN_DEPTH = 3
 /** Unset timeoutMs caps the wait at 30m, matching mesh delegation. */
 const DEFAULT_WAIT_MS = 1_800_000
+/**
+ * Same window as `CachedPresetResolver`'s default TTL. Roster reads kick
+ * `refreshMesh` but must not stampede `getNodes`.
+ */
+const MESH_REFRESH_TTL_MS = 30_000
 
 const TASK_EFFORTS = ['low', 'medium', 'high'] as const
 type TaskEffort = (typeof TASK_EFFORTS)[number]
@@ -71,6 +82,30 @@ export interface PresetDelegationConfig {
   now?: () => number
 }
 
+/** Coverage inputs shared by delegate_task pre-flight and POST /api/tasks. */
+export interface PresetHostContext {
+  nodeName: string
+  executors?: TaskExecutorRegistry
+  meshRegistry?: MeshRegistry
+}
+
+/** Why a preset create or delegation must not start, plus any mesh snapshot taken. */
+export interface PresetAssessment {
+  refusal?: { status: 400 | 409; error: string }
+  /** Present when the hosting node was judged from the mesh registry. */
+  meshNodes?: MeshNode[]
+}
+
+export interface PresetTaskSpecOptions {
+  /**
+   * When set (including `''`), wins over `preset.model`. Omit to use the preset.
+   * A blank string is omitted from the spec rather than stored.
+   */
+  model?: string
+  /** This node, recorded as `spec.meshFrom` when provided. */
+  meshFrom?: string
+}
+
 function isTaskEffort(effort: string): effort is TaskEffort {
   return (TASK_EFFORTS as readonly string[]).includes(effort)
 }
@@ -94,11 +129,138 @@ function advertisedHarnesses(node: MeshNode | undefined): string[] | undefined {
   return raw.filter((item): item is string => typeof item === 'string')
 }
 
+/** `claude-cli` in an older advertisement covers a `claude-code` preset, and the reverse. */
+function advertisedCovers(advertised: string[], harnessId: string): boolean {
+  const want = canonicalizeExecutorTarget(harnessId).target
+  return advertised.some((item) => canonicalizeExecutorTarget(item).target === want)
+}
+
+/**
+ * Local rejection text. The executor's own reason (boot's gapOverrides, e.g.
+ * "binary not resolvable") wins; a missing executor falls back to the recorded gap.
+ */
+function localExecutorGap(harnessId: string, executor: HarnessExecutor | undefined): string {
+  if (executor && isNotImplementedHarnessExecutor(executor)) {
+    return notImplementedHarnessReason(executor) ?? harnessExecutorGap(harnessId)
+  }
+  return harnessExecutorGap(harnessId)
+}
+
+function gapText(preset: AgentPreset, where: string, reason: string): string {
+  const harnessId = preset.harnessId ?? 'unknown'
+  return `agent "${preset.name}" (${harnessId} on ${where}): ${reason}`
+}
+
+/**
+ * The `spec` both `delegate_task` and `POST /api/tasks` write for a preset row.
+ * One builder so the paths cannot drift.
+ */
+export function presetTaskSpec(
+  preset: AgentPreset,
+  opts?: PresetTaskSpecOptions,
+): Record<string, unknown> {
+  const modelSource = opts && 'model' in opts ? opts.model : preset.model
+  const model = modelSource || undefined
+  const effort = taskEffort(preset.effort)
+  const systemPromptAppend = preset.systemPrompt || undefined
+  return {
+    delegation: true,
+    presetId: preset.id,
+    presetName: preset.name,
+    ...(opts?.meshFrom ? { meshFrom: opts.meshFrom } : {}),
+    workingDir: preset.directory,
+    sharedLink: preset.sharedLink ?? true,
+    // excludeTools is a no-op for harness-session executors (they never
+    // consult it). Kept for parity with mesh chat-loop delegations.
+    excludeTools: ['delegate_task'],
+    ...(model ? { model } : {}),
+    ...(effort ? { effort } : {}),
+    ...(systemPromptAppend ? { systemPromptAppend } : {}),
+  }
+}
+
+/**
+ * Same pre-flight the delegation engine runs.
+ * No harness / unimplemented → 400 with the gap text.
+ * Hosting node unknown, offline, or unreachable → 409.
+ * A local preset with neither an executor registry nor a mesh registry is
+ * allowed (single-host sidecar: benefit of the doubt, like an older peer).
+ */
+export async function assessPresetRun(
+  preset: AgentPreset,
+  ctx: PresetHostContext,
+): Promise<PresetAssessment> {
+  if (!preset.harnessId) {
+    return {
+      refusal: { status: 400, error: `preset "${preset.name}" has no harness configured` },
+    }
+  }
+  if (!preset.node) {
+    return {
+      refusal: { status: 400, error: `preset "${preset.name}" has no hosting node` },
+    }
+  }
+
+  const harnessId = preset.harnessId
+  const local = preset.node === ctx.nodeName
+  if (local && ctx.executors) {
+    const executor = ctx.executors.resolve('harness-session', harnessId)
+    if (!executor || isNotImplementedHarnessExecutor(executor)) {
+      return {
+        refusal: {
+          status: 400,
+          error: gapText(preset, 'this node', localExecutorGap(harnessId, executor)),
+        },
+      }
+    }
+    return {}
+  }
+
+  // Remote node, or this node with no executor registry (sidecar).
+  // No mesh registry: a local preset still runs (nothing else can judge it);
+  // a remote one cannot be reached.
+  if (!ctx.meshRegistry) {
+    if (local) return {}
+    return {
+      refusal: {
+        status: 409,
+        error: `no mesh registry; cannot reach node "${preset.node}"`,
+      },
+    }
+  }
+
+  const nodes = await ctx.meshRegistry.getNodes()
+  const host = nodes.find((n) => n.name === preset.node && n.status === 'online')
+  if (!host) {
+    return {
+      meshNodes: nodes,
+      refusal: {
+        status: 409,
+        error: `hosting node "${preset.node}" is offline or unknown`,
+      },
+    }
+  }
+  const advertised = advertisedHarnesses(host)
+  // No harnessExecutors key: an older peer. Benefit of the doubt — create the row.
+  if (advertised && !advertisedCovers(advertised, harnessId)) {
+    return {
+      meshNodes: nodes,
+      refusal: {
+        status: 400,
+        error: gapText(preset, preset.node, harnessExecutorGap(harnessId)),
+      },
+    }
+  }
+  return { meshNodes: nodes }
+}
+
 export class PresetDelegationEngine {
   private readonly maxChainDepth: number
   private readonly now: () => number
   /** Last mesh snapshot for synchronous roster coverage. Delegation pre-flight re-reads. */
   private meshSnapshot: MeshNode[] = []
+  private lastMeshRefreshAt = 0
+  private meshRefreshInflight: Promise<void> | undefined
 
   constructor(private readonly config: PresetDelegationConfig) {
     this.maxChainDepth = config.maxChainDepth ?? DEFAULT_MAX_CHAIN_DEPTH
@@ -112,9 +274,26 @@ export class PresetDelegationEngine {
     return this.config.resolver.find(handle)
   }
 
-  /** From resolver.lastKnown(). Synchronous; remote coverage uses the last mesh snapshot. */
+  /**
+   * From resolver.lastKnown(). Synchronous. Kicks a background `list()` and a
+   * throttled mesh refresh so presets created after boot show up once the
+   * resolver TTL elapses. Remote coverage uses the last mesh snapshot.
+   */
   rosterEntries(): PresetRosterEntry[] {
+    void this.config.resolver.list()
+    void this.refreshMesh()
     return this.config.resolver.lastKnown().map((preset) => this.toRosterEntry(preset))
+  }
+
+  /**
+   * Await `resolver.list()` (fresh cache, or the last-known list plus a
+   * background refresh when the TTL has elapsed) and the throttled mesh
+   * snapshot. The catalog uses this; `list_agents` (slice 4) will too.
+   */
+  async rosterEntriesFresh(): Promise<PresetRosterEntry[]> {
+    await this.refreshMesh()
+    const rows = await this.config.resolver.list()
+    return rows.map((preset) => this.toRosterEntry(preset))
   }
 
   /**
@@ -137,9 +316,16 @@ export class PresetDelegationEngine {
   ): Promise<DelegationResult> {
     const depth = chainDepth + 1
     if (depth > this.maxChainDepth) {
+      // "mesh" only when the preset actually lives on another node. A
+      // same-node chain cap is still a local delegation.
+      const remote =
+        typeof preset.node === 'string' &&
+        preset.node !== '' &&
+        preset.node !== this.config.nodeName
+      const kind = remote ? 'mesh delegation' : 'delegation'
       return {
         status: 'failed',
-        response: `Delegation chain too deep (${String(depth)} > ${String(this.maxChainDepth)}) — refusing mesh delegation to ${request.toAgent}`,
+        response: `Delegation chain too deep (${String(depth)} > ${String(this.maxChainDepth)}) — refusing ${kind} to ${request.toAgent}`,
         durationMs: 0,
       }
     }
@@ -168,10 +354,6 @@ export class PresetDelegationEngine {
     const startTime = this.now()
     const waitMs = (request.timeoutMs ?? DEFAULT_WAIT_MS) + 5_000
 
-    const model = request.model ?? (preset.model || undefined)
-    const effort = taskEffort(preset.effort)
-    const systemPromptAppend = preset.systemPrompt || undefined
-
     try {
       const row = await this.config.taskStore.create({
         goal,
@@ -188,20 +370,10 @@ export class PresetDelegationEngine {
           { goal, origin },
           this.config.criteriaPolicy ?? CRITERIA_POLICY_OFF,
         ),
-        spec: {
-          delegation: true,
-          presetId: preset.id,
-          presetName: preset.name,
+        spec: presetTaskSpec(preset, {
+          ...(request.model !== undefined ? { model: request.model } : {}),
           meshFrom: this.config.nodeName,
-          workingDir: preset.directory,
-          sharedLink: preset.sharedLink ?? true,
-          // excludeTools is a no-op for harness-session executors (they never
-          // consult it). Kept for parity with mesh chat-loop delegations.
-          excludeTools: ['delegate_task'],
-          ...(model ? { model } : {}),
-          ...(effort ? { effort } : {}),
-          ...(systemPromptAppend ? { systemPromptAppend } : {}),
-        },
+        }),
       })
       return await settleDelegatedTask({
         store: this.config.taskStore,
@@ -210,6 +382,7 @@ export class PresetDelegationEngine {
         waitMs,
         startTime,
         describe,
+        now: this.now,
       })
     } catch (err: unknown) {
       return {
@@ -221,77 +394,42 @@ export class PresetDelegationEngine {
   }
 
   private async preflight(preset: AgentPreset): Promise<DelegationResult | undefined> {
-    if (!preset.harnessId) {
-      return {
-        status: 'failed',
-        response: `preset "${preset.name}" has no harness configured`,
-        durationMs: 0,
-      }
+    const assessed = await assessPresetRun(preset, {
+      nodeName: this.config.nodeName,
+      executors: this.config.executors,
+      meshRegistry: this.config.meshRegistry,
+    })
+    if (assessed.meshNodes) {
+      this.meshSnapshot = assessed.meshNodes
+      this.lastMeshRefreshAt = this.now()
     }
-    if (!preset.node) {
-      return {
-        status: 'failed',
-        response: `preset "${preset.name}" has no hosting node`,
-        durationMs: 0,
-      }
-    }
-
-    const harnessId = preset.harnessId
-    const local = preset.node === this.config.nodeName
-    if (local && this.config.executors) {
-      const executor = this.config.executors.resolve('harness-session', harnessId)
-      if (!executor || isNotImplementedHarnessExecutor(executor)) {
-        return {
-          status: 'failed',
-          response: this.gapText(preset, 'this node'),
-          durationMs: 0,
-        }
-      }
-      return undefined
-    }
-
-    // Remote node, or this node with no executor registry (sidecar): judge
-    // coverage from the mesh entry the hosting node advertised.
-    if (!this.config.meshRegistry) {
-      return {
-        status: 'failed',
-        response: `no mesh registry; cannot reach node "${preset.node}"`,
-        durationMs: 0,
-      }
-    }
-    const nodes = await this.config.meshRegistry.getNodes()
-    this.meshSnapshot = nodes
-    const host = nodes.find((n) => n.name === preset.node && n.status === 'online')
-    if (!host) {
-      return {
-        status: 'failed',
-        response: `hosting node "${preset.node}" is offline or unknown`,
-        durationMs: 0,
-      }
-    }
-    const advertised = advertisedHarnesses(host)
-    if (advertised && !advertised.includes(harnessId)) {
-      return {
-        status: 'failed',
-        response: this.gapText(preset, preset.node),
-        durationMs: 0,
-      }
-    }
-    return undefined
+    if (!assessed.refusal) return undefined
+    return { status: 'failed', response: assessed.refusal.error, durationMs: 0 }
   }
 
-  private gapText(preset: AgentPreset, where: string): string {
-    const harnessId = preset.harnessId ?? 'unknown'
-    return `agent "${preset.name}" (${harnessId} on ${where}): ${harnessExecutorGap(harnessId)}`
-  }
-
-  private async refreshMesh(): Promise<void> {
-    if (!this.config.meshRegistry) return
-    try {
-      this.meshSnapshot = await this.config.meshRegistry.getNodes()
-    } catch (err: unknown) {
-      log.warn(`Could not read mesh registry for preset roster: ${(err as Error).message}`)
-    }
+  private refreshMesh(): Promise<void> {
+    if (!this.config.meshRegistry) return Promise.resolve()
+    const fresh =
+      this.lastMeshRefreshAt !== 0 && this.now() - this.lastMeshRefreshAt < MESH_REFRESH_TTL_MS
+    if (fresh) return Promise.resolve()
+    if (this.meshRefreshInflight) return this.meshRefreshInflight
+    const registry = this.config.meshRegistry
+    const pending = registry
+      .getNodes()
+      .then((nodes) => {
+        this.meshSnapshot = nodes
+        this.lastMeshRefreshAt = this.now()
+      })
+      .catch((err: unknown) => {
+        log.warn(`Could not read mesh registry for preset roster: ${(err as Error).message}`)
+        // A dead registry is not retried on every roster read until the TTL passes.
+        this.lastMeshRefreshAt = this.now()
+      })
+      .finally(() => {
+        if (this.meshRefreshInflight === pending) this.meshRefreshInflight = undefined
+      })
+    this.meshRefreshInflight = pending
+    return pending
   }
 
   private toRosterEntry(preset: AgentPreset): PresetRosterEntry {
@@ -327,14 +465,14 @@ export class PresetDelegationEngine {
     if (local && this.config.executors) {
       const executor = this.config.executors.resolve('harness-session', harnessId)
       if (!executor || isNotImplementedHarnessExecutor(executor)) {
-        return { implemented: false, gap: harnessExecutorGap(harnessId) }
+        return { implemented: false, gap: localExecutorGap(harnessId, executor) }
       }
       return { implemented: true }
     }
     const host = this.meshSnapshot.find((n) => n.name === preset.node && n.status === 'online')
     const advertised = advertisedHarnesses(host)
     if (!advertised) return undefined
-    if (!advertised.includes(harnessId)) {
+    if (!advertisedCovers(advertised, harnessId)) {
       return { implemented: false, gap: harnessExecutorGap(harnessId) }
     }
     return { implemented: true }

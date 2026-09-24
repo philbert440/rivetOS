@@ -12,7 +12,7 @@ import { useConnection } from '../stores/connection.js'
 import { NotConnected, useGatewayReady } from '../components/not-connected.js'
 import { Select } from '../components/select.js'
 import { useConfirmDialog } from '../components/confirm-dialog.js'
-import { criteriaFromLines, taskAgentOptions } from '../lib/task-create.js'
+import { criteriaFromLines, taskAgentOptions, toTaskSelectOptions } from '../lib/task-create.js'
 
 const STATUS_COLORS: Record<TaskStatus, string> = {
   queued: 'text-ink-dim',
@@ -225,7 +225,7 @@ function TaskCreateForm(props: {
           options={
             agents.length === 0
               ? [{ value: '', label: 'loading agents…' }]
-              : agents.map((a) => ({ value: a.value, label: a.label }))
+              : toTaskSelectOptions(agents)
           }
         />
       </div>

@@ -74,3 +74,17 @@ export function taskAgentOptions(agents: readonly CatalogAgent[]): SelectOption[
   }
   return opts
 }
+
+/**
+ * Options handed to the task-form Select. `disabled` and `title` must survive
+ * — the form used to rebuild `{value, label}` and let unimplemented presets
+ * be selected.
+ */
+export function toTaskSelectOptions(opts: readonly SelectOption[]): SelectOption[] {
+  return opts.map((opt) => ({
+    value: opt.value,
+    label: opt.label,
+    disabled: opt.disabled,
+    title: opt.title,
+  }))
+}

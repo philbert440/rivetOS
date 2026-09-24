@@ -11,12 +11,18 @@ import type {
   MeshNode,
   MeshRegistry,
 } from '@rivetos/types'
-import type { CachedPresetResolver } from '@rivetos/agent-registry'
+import {
+  createCachedPresetResolver,
+  type AgentPresetStore,
+  type CachedPresetResolver,
+} from '@rivetos/agent-registry'
+import type { Router } from './router.js'
 import { harnessExecutorGap } from './task/harness-executors.js'
 import { createNotImplementedHarnessExecutor } from './task/harness-executors.js'
 import { createExecutorRegistry, type TaskExecutorRegistry } from './task/runner.js'
 import { InMemoryTaskStore } from './task/store.js'
 import { createTaskCompletionWaiter } from './task/completion-waiter.js'
+import { buildCatalogAgents } from './task/catalog-api.js'
 import { PresetDelegationEngine } from './preset-delegation.js'
 
 const caps: HarnessExecutorCapabilities = {
@@ -319,6 +325,16 @@ describe('PresetDelegationEngine', () => {
       3,
     )
     expect(deep.response).toContain('chain too deep')
+    expect(deep.response).not.toContain('mesh')
+    expect(await store.list()).toHaveLength(0)
+
+    const far = preset({ id: 'd', name: 'far', node: 'ct116' })
+    const remoteCap = await engine.delegate(
+      { fromAgent: 'local', toAgent: 'far', task: 't' },
+      far,
+      3,
+    )
+    expect(remoteCap.response).toContain('refusing mesh delegation')
     expect(await store.list()).toHaveLength(0)
   })
 
@@ -336,6 +352,22 @@ describe('PresetDelegationEngine', () => {
     )
     expect(result.status).toBe('failed')
     expect(result.response).toContain('agent "reviewer" (codex on this node):')
+    expect(result.response).toContain('not wired')
+    expect(result.response).not.toContain(harnessExecutorGap('codex'))
+    expect(await store.list()).toHaveLength(0)
+  })
+
+  it('local pre-flight falls back to the recorded gap when no executor is registered', async () => {
+    const store = new InMemoryTaskStore()
+    const engine = engineFor([preset({ harnessId: 'codex' })], {
+      store,
+      executors: executors([]),
+    })
+    const result = await engine.delegate(
+      { fromAgent: 'local', toAgent: 'reviewer', task: 't' },
+      preset({ harnessId: 'codex' }),
+      0,
+    )
     expect(result.response).toContain(harnessExecutorGap('codex'))
     expect(await store.list()).toHaveLength(0)
   })
@@ -448,10 +480,198 @@ describe('PresetDelegationEngine', () => {
     expect(text).toContain(
       '- reviewer (agent: codex on ct114 — this node, dir /home/rivet/.rivetos/agents/reviewer) — NO headless executor:',
     )
-    expect(text).toContain(harnessExecutorGap('codex'))
+    expect(text).toContain('not wired')
+    expect(text).toContain(harnessExecutorGap('kimi-code'))
     expect(text).toContain(
       '- kimi reviewer (agent: kimi-code on ct116, dir /home/rivet/.rivetos/agents/kimi) — NO headless executor:',
     )
     expect(text).toContain('- bare (on ct114 — this node) — no harness configured')
+  })
+
+  function autoFinish(
+    status: 'completed' | 'failed' | 'timeout',
+    error?: string,
+  ): InMemoryTaskStore {
+    const store = new InMemoryTaskStore((id) => {
+      void store.finish(id, status, {
+        verdict: status === 'completed' ? 'completed' : 'failed',
+        summary: status,
+        ...(status === 'completed' ? { output: 'done' } : {}),
+        artifacts: [],
+        usage: USAGE,
+        ...(error ? { error } : {}),
+      })
+    })
+    return store
+  }
+
+  it('maps a failed terminal row to text', async () => {
+    const store = autoFinish('failed', 'capability_unsupported: binary not resolvable')
+    const rowPreset = preset()
+    const engine = engineFor([rowPreset], { store, executors: executors(['claude-code']) })
+    const result = await engine.delegate(
+      { fromAgent: 'local', toAgent: 'reviewer', task: 't' },
+      rowPreset,
+      0,
+    )
+    expect(result.status).toBe('failed')
+    expect(result.response).toContain('Delegation to reviewer on ct115 failed')
+    expect(result.response).toContain('binary not resolvable')
+  })
+
+  it('maps a timeout terminal row to text', async () => {
+    const store = autoFinish('timeout', 'deadline')
+    const rowPreset = preset()
+    const engine = engineFor([rowPreset], { store, executors: executors(['claude-code']) })
+    const result = await engine.delegate(
+      { fromAgent: 'local', toAgent: 'reviewer', task: 't' },
+      rowPreset,
+      0,
+    )
+    expect(result.status).toBe('timeout')
+    expect(result.response).toContain('Delegation to reviewer on ct115 timeout')
+    expect(result.response).toContain('deadline')
+  })
+
+  it('durations use the engine clock', async () => {
+    const store = autoFinish('completed')
+    const waiter = createTaskCompletionWaiter({ store, pollFallbackMs: 10 })
+    stoppers.push(() => waiter.stop())
+    const rowPreset = preset()
+    const engine = new PresetDelegationEngine({
+      resolver: resolver([rowPreset]),
+      taskStore: store,
+      waiter,
+      nodeName: 'ct115',
+      executors: executors(['claude-code']),
+      now: () => 1_000_000,
+    })
+    const result = await engine.delegate(
+      { fromAgent: 'local', toAgent: 'reviewer', task: 't' },
+      rowPreset,
+    )
+    expect(result.status).toBe('completed')
+    expect(result.durationMs).toBe(0)
+  })
+
+  it('an older peer with no harnessExecutors metadata gets a row', async () => {
+    const store = autoFinish('completed')
+    const remote = preset({ node: 'ct116' })
+    const engine = engineFor([remote], {
+      store,
+      nodeName: 'ct115',
+      mesh: mesh([node('ct116', 'online')]),
+    })
+    const result = await engine.delegate(
+      { fromAgent: 'local', toAgent: 'reviewer', task: 't' },
+      remote,
+      0,
+    )
+    expect(result.status).toBe('completed')
+    expect(await store.list()).toHaveLength(1)
+  })
+
+  it('canonicalises advertised executor targets before the coverage check', async () => {
+    const store = autoFinish('completed')
+    const remote = preset({ node: 'ct116', harnessId: 'claude-code' })
+    const engine = engineFor([remote], {
+      store,
+      nodeName: 'ct115',
+      mesh: mesh([node('ct116', 'online', ['claude-cli'])]),
+    })
+    const result = await engine.delegate(
+      { fromAgent: 'local', toAgent: 'reviewer', task: 't' },
+      remote,
+      0,
+    )
+    expect(result.status).toBe('completed')
+    expect(await store.list()).toHaveLength(1)
+  })
+
+  it('a local preset with no executor registry uses its own mesh entry', async () => {
+    const store = autoFinish('completed')
+    const local = preset({ node: 'ct115' })
+    const engine = engineFor([local], {
+      store,
+      nodeName: 'ct115',
+      mesh: mesh([node('ct115', 'online', ['claude-code'])]),
+    })
+    const allowed = await engine.delegate(
+      { fromAgent: 'local', toAgent: 'reviewer', task: 't' },
+      local,
+      0,
+    )
+    expect(allowed.status).toBe('completed')
+
+    const refusedStore = new InMemoryTaskStore()
+    const refused = engineFor([local], {
+      store: refusedStore,
+      nodeName: 'ct115',
+      mesh: mesh([node('ct115', 'online', ['kimi-code'])]),
+    })
+    const blocked = await refused.delegate(
+      { fromAgent: 'local', toAgent: 'reviewer', task: 't' },
+      local,
+      0,
+    )
+    expect(blocked.response).toContain(harnessExecutorGap('claude-code'))
+    expect(await refusedStore.list()).toHaveLength(0)
+  })
+
+  it('a local preset with no executor registry and no mesh registry is created', async () => {
+    const store = autoFinish('completed')
+    const local = preset({ node: 'ct115' })
+    const engine = engineFor([local], { store, nodeName: 'ct115' })
+    const result = await engine.delegate(
+      { fromAgent: 'local', toAgent: 'reviewer', task: 't' },
+      local,
+      0,
+    )
+    expect(result.status).toBe('completed')
+    expect(result.response).not.toContain('no mesh registry')
+    expect(await store.list()).toHaveLength(1)
+  })
+
+  it('a preset added after boot shows up in rosterText after one TTL and in the next catalog request', async () => {
+    const rows: AgentPreset[] = [preset({ id: 'a', name: 'first' })]
+    let now = 1_000
+    const backing = {
+      list: async () => rows.map((row) => ({ ...row })),
+    } as unknown as AgentPresetStore
+    const cached = createCachedPresetResolver(backing, { ttlMs: 1_000, now: () => now })
+    const store = new InMemoryTaskStore()
+    const waiter = createTaskCompletionWaiter({ store, pollFallbackMs: 10 })
+    stoppers.push(() => waiter.stop())
+    const engine = new PresetDelegationEngine({
+      resolver: cached,
+      taskStore: store,
+      waiter,
+      nodeName: 'ct115',
+      executors: executors(['claude-code']),
+      now: () => now,
+    })
+    await cached.list()
+    expect(engine.rosterText()).toContain('first')
+
+    rows.push(preset({ id: 'b', name: 'second' }))
+    expect(engine.rosterText()).not.toContain('second')
+
+    now += 1_000
+    engine.rosterText()
+    for (let i = 0; i < 20 && !cached.lastKnown().some((row) => row.name === 'second'); i++) {
+      await new Promise((resolve) => setTimeout(resolve, 5))
+    }
+    expect(engine.rosterText()).toContain('second')
+
+    const agents = await buildCatalogAgents({
+      nodeName: 'ct115',
+      router: { getAgents: () => [] } as unknown as Router,
+      tools: () => [],
+      executors: executors(['claude-code']),
+      presets: engine,
+    })
+    expect(agents).toEqual(
+      expect.arrayContaining([expect.objectContaining({ kind: 'preset', name: 'second' })]),
+    )
   })
 })

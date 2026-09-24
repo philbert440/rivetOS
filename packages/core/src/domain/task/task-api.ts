@@ -19,6 +19,7 @@
 
 import type { IncomingMessage, ServerResponse } from 'node:http'
 import type {
+  AgentPreset,
   GatewayRoute,
   TaskKillResponse,
   TaskResponse,
@@ -29,6 +30,7 @@ import type {
   TaskWire,
 } from '@rivetos/types'
 import type { NewTaskInput, TaskListFilter, TaskRow, TaskStore } from './store.js'
+import { assessPresetRun, presetTaskSpec, type PresetHostContext } from '../preset-delegation.js'
 import {
   CRITERIA_POLICY_OFF,
   CriteriaRequiredError,
@@ -71,6 +73,18 @@ export interface TaskApiOptions {
    * an Error message rejects the create with 400 (agent nowhere).
    */
   resolveAffinity?: (agentId: string) => Promise<string | { error: string } | undefined>
+  /**
+   * RivetHub preset lookup (id, then name). Boot wires `presets.find` after
+   * config-agent ids, which win. When this returns a preset and the body did
+   * not set `executor`, the row is a harness-session preset task — not chat-loop.
+   */
+  resolvePreset?: (agentId: string) => Promise<AgentPreset | undefined>
+  /**
+   * Coverage context for that preset row. Same pre-flight as delegate_task:
+   * no harness / unimplemented → 400, hosting node offline or unknown → 409.
+   * Omit only in tests that assert row shape without coverage.
+   */
+  presetHost?: PresetHostContext
 }
 
 function json(res: ServerResponse, code: number, body: unknown): void {
@@ -191,6 +205,32 @@ export function createTaskApiRoute(opts: TaskApiOptions): GatewayRoute {
           if (typeof parsed === 'string') return json(res, 400, { error: parsed })
           const input = applyCriteriaPolicy(parsed, opts.criteriaPolicy ?? CRITERIA_POLICY_OFF)
           if (typeof input === 'string') return json(res, 400, { error: input })
+          // A body that names an executor is left alone — including an explicit
+          // chat-loop. Only the default (field absent) is rewritten into a preset row.
+          const executorExplicit = typeof body.executor === 'string'
+          if (!executorExplicit && opts.resolvePreset) {
+            const preset = await opts.resolvePreset(input.agentId)
+            if (preset) {
+              if (opts.presetHost) {
+                const assessed = await assessPresetRun(preset, opts.presetHost)
+                if (assessed.refusal) {
+                  return json(res, assessed.refusal.status, { error: assessed.refusal.error })
+                }
+              }
+              const bodyModel = typeof input.spec?.model === 'string' ? input.spec.model : undefined
+              input.executor = 'harness-session'
+              input.executorTarget = preset.harnessId
+              input.agentId = preset.id
+              input.nodeAffinity = preset.node
+              input.spec = {
+                ...input.spec,
+                ...presetTaskSpec(preset, {
+                  ...(bodyModel !== undefined ? { model: bodyModel } : {}),
+                  meshFrom: opts.presetHost?.nodeName,
+                }),
+              }
+            }
+          }
           if (!input.nodeAffinity && opts.resolveAffinity) {
             const resolved = await opts.resolveAffinity(input.agentId)
             if (typeof resolved === 'object' && resolved !== null)

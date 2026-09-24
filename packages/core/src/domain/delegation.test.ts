@@ -138,7 +138,26 @@ describe('DelegationEngine', () => {
 
       expect(result.status).toBe('failed')
       expect(result.response).toContain('Unknown agent: nonexistent')
+      expect(result.response).toContain('Agents you can delegate to:')
       expect(result.response).toContain('grok')
+    })
+
+    it('lists preset names beside config agents when the target is unknown', async () => {
+      const presets = {
+        find: async () => undefined,
+        delegate: async () => ({ status: 'completed' as const, response: '' }),
+        rosterText: () => '',
+        rosterEntries: () => [{ id: 'p', name: 'reviewer', node: 'ct116', local: false }],
+      }
+      const engine = new DelegationEngine({
+        ...createBaseConfig(),
+        presets: presets as unknown as DelegationConfig['presets'],
+      })
+      const result = await engine.delegate(createRequest({ toAgent: 'nonexistent' }))
+      expect(result.status).toBe('failed')
+      expect(result.response).toContain('Agents you can delegate to:')
+      expect(result.response).toContain('grok')
+      expect(result.response).toContain('reviewer')
     })
 
     it('unknown agent falls through to presets', async () => {

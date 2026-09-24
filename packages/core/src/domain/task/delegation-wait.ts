@@ -18,11 +18,14 @@ export async function settleDelegatedTask(args: {
   startTime: number
   /** Prefix for timeout / failure text, e.g. `Remote delegation to grok on ct112`. */
   describe: string
+  /** One clock with the caller. Default `Date.now`. */
+  now?: () => number
 }): Promise<DelegationResult> {
   const { store, waiter, rowId, waitMs, startTime, describe } = args
+  const now = args.now ?? Date.now
   try {
     const terminal = await waiter.wait(rowId, { deadlineMs: waitMs })
-    const durationMs = Date.now() - startTime
+    const durationMs = now() - startTime
 
     if (!terminal) {
       // Deadline (or vanished row): kill before returning so the runner
@@ -54,7 +57,7 @@ export async function settleDelegatedTask(args: {
     return {
       status: 'failed',
       response: `${describe} failed: ${err instanceof Error ? err.message : String(err)}`,
-      durationMs: Date.now() - startTime,
+      durationMs: now() - startTime,
     }
   }
 }

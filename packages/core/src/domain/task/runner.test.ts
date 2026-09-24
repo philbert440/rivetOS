@@ -5,6 +5,7 @@
  */
 
 import { describe, it, expect, vi, beforeEach } from 'vitest'
+import { existsSync, lstatSync, mkdirSync, mkdtempSync, readlinkSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import type pg from 'pg'
@@ -324,23 +325,67 @@ describe('createTaskHandler spec forwarding', () => {
     return { store, handler }
   }
 
-  it('forwards workingDir, effort, and systemPromptAppend from the row spec', async () => {
+  it('forwards a workflow workingDir without creating a directory or symlink', async () => {
     const fake = makeFakeExecutor()
-    const dir = join(tmpdir(), 'rivetos-agt-s3-runner')
-    const { store, handler } = handlerFor(fake, '/workspace')
-    const task = await store.create(
-      taskInput({
-        spec: { workingDir: dir, effort: 'high', systemPromptAppend: 'be brief' },
-      }),
-    )
+    const parent = mkdtempSync(join(tmpdir(), 'rivetos-wf-'))
+    const dir = join(parent, 'case')
+    const shared = join(parent, 'shared')
+    mkdirSync(shared)
+    const prev = process.env.RIVETOS_SHARED_DIR
+    process.env.RIVETOS_SHARED_DIR = shared
+    try {
+      const { store, handler } = handlerFor(fake, '/workspace')
+      const task = await store.create(
+        taskInput({
+          spec: { workingDir: dir, effort: 'high', systemPromptAppend: 'be brief' },
+        }),
+      )
 
-    await handler(task.id)
+      await handler(task.id)
 
-    expect(fake.specs[0]?.workingDir).toBe(dir)
-    expect(fake.specs[0]?.effort).toBe('high')
-    expect(fake.specs[0]?.systemPromptAppend).toBe('be brief')
-    expect(fake.specs[0]?.session.workingDir).toBe(dir)
-    expect((await store.get(task.id))?.status).toBe('completed')
+      expect(fake.specs[0]?.workingDir).toBe(dir)
+      expect(fake.specs[0]?.effort).toBe('high')
+      expect(fake.specs[0]?.systemPromptAppend).toBe('be brief')
+      expect(fake.specs[0]?.session.workingDir).toBe(dir)
+      expect(existsSync(dir)).toBe(false)
+      expect((await store.get(task.id))?.status).toBe('completed')
+    } finally {
+      if (prev === undefined) Reflect.deleteProperty(process.env, 'RIVETOS_SHARED_DIR')
+      else process.env.RIVETOS_SHARED_DIR = prev
+      rmSync(parent, { recursive: true, force: true })
+    }
+  })
+
+  it('materialises a preset row directory and the shared symlink', async () => {
+    const fake = makeFakeExecutor()
+    const parent = mkdtempSync(join(tmpdir(), 'rivetos-preset-'))
+    const shared = join(parent, 'shared')
+    const dir = join(parent, 'agent')
+    mkdirSync(shared)
+    const prev = process.env.RIVETOS_SHARED_DIR
+    process.env.RIVETOS_SHARED_DIR = shared
+    try {
+      const { store, handler } = handlerFor(fake, '/workspace')
+      const task = await store.create(
+        taskInput({
+          spec: { presetId: 'preset-1', workingDir: dir, sharedLink: true },
+        }),
+      )
+
+      await handler(task.id)
+
+      expect(existsSync(dir)).toBe(true)
+      const link = join(dir, 'rivet-shared')
+      expect(lstatSync(link).isSymbolicLink()).toBe(true)
+      expect(readlinkSync(link)).toBe(shared)
+      expect(fake.specs[0]?.workingDir).toBe(dir)
+      expect(fake.specs[0]?.session.workingDir).toBe(dir)
+      expect((await store.get(task.id))?.status).toBe('completed')
+    } finally {
+      if (prev === undefined) Reflect.deleteProperty(process.env, 'RIVETOS_SHARED_DIR')
+      else process.env.RIVETOS_SHARED_DIR = prev
+      rmSync(parent, { recursive: true, force: true })
+    }
   })
 
   it('absent spec fields fall back to opts.workspaceDir', async () => {
@@ -359,7 +404,9 @@ describe('createTaskHandler spec forwarding', () => {
   it('an invalid workingDir fails the task with working_dir_unavailable', async () => {
     const fake = makeFakeExecutor()
     const { store, handler } = handlerFor(fake, '/workspace')
-    const task = await store.create(taskInput({ spec: { workingDir: 'agents/reviewer' } }))
+    const task = await store.create(
+      taskInput({ spec: { presetId: 'preset-1', workingDir: 'agents/reviewer' } }),
+    )
 
     await handler(task.id)
 

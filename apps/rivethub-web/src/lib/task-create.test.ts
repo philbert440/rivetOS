@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest'
 import type { CatalogAgent } from '@rivetos/types'
-import { criteriaFromLines, taskAgentOptions } from './task-create.js'
+import { criteriaFromLines, taskAgentOptions, toTaskSelectOptions } from './task-create.js'
 
 describe('criteriaFromLines', () => {
   it('builds manual criteria with stable ids', () => {
@@ -69,5 +69,17 @@ describe('taskAgentOptions', () => {
     expect(codex?.label).toBe('codex reviewer (agent · codex @ ct115)')
     expect(codex?.disabled).toBe(true)
     expect(codex?.title).toBe('no headless executor for codex')
+
+    const select = toTaskSelectOptions(opts)
+    const selectCodex = select.find((o) => o.value === 'preset-codex')
+    expect(selectCodex).toEqual({
+      value: 'preset-codex',
+      label: 'codex reviewer (agent · codex @ ct115)',
+      disabled: true,
+      title: 'no headless executor for codex',
+    })
+    const selectReviewer = select.find((o) => o.value === 'preset-reviewer')
+    expect(selectReviewer?.disabled).toBeFalsy()
+    expect(selectReviewer?.title).toBeUndefined()
   })
 })

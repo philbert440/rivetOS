@@ -205,15 +205,25 @@ export async function registerAgentTools(
         await taskWaiter?.stop()
       })
     }
-    if (pool) {
-      const presetStore = new PgAgentPresetStore(pool)
-      if (await presetStore.isReady()) {
-        presetResolver = createCachedPresetResolver(presetStore, {
-          log: (msg) => log.info(msg),
-        })
-      } else {
+    // Presets are only usable once a task row can be pinned. A probe error
+    // (PG blip) must not reject registerAgentTools — delegation stays off.
+    if (pool && taskEngineStore && taskWaiter) {
+      try {
+        const presetStore = new PgAgentPresetStore(pool)
+        if (await presetStore.isReady()) {
+          presetResolver = createCachedPresetResolver(presetStore, {
+            log: (msg) => log.info(msg),
+          })
+        } else {
+          log.warn(
+            'ros_agent_presets missing — preset delegation off until rivetos-memory-migrate runs',
+          )
+        }
+      } catch (err: unknown) {
         log.warn(
-          'ros_agent_presets missing — preset delegation off until rivetos-memory-migrate runs',
+          `agent preset store probe failed — preset delegation off: ${
+            err instanceof Error ? err.message : String(err)
+          }`,
         )
       }
     }
@@ -692,11 +702,28 @@ export async function registerAgentTools(
 
   const gatewayRoutes: GatewayRoute[] = []
   if (taskEngineStore && taskWaiter) {
+    // Config agent ids win over a preset of the same name. The route builds
+    // the harness-session row; resolveAffinity alone would pin the node and
+    // leave executor chat-loop, which the runner then fails as unregistered.
+    const presetEngine = presets
     gatewayRoutes.push(
       createTaskApiRoute({
         store: taskEngineStore,
         waiter: taskWaiter,
         resolveAffinity,
+        resolvePreset: presetEngine
+          ? async (agentId) => {
+              if (
+                runtime
+                  .getRouter()
+                  .getAgents()
+                  .some((a) => a.id === agentId)
+              )
+                return undefined
+              return presetEngine.find(agentId)
+            }
+          : undefined,
+        presetHost: presetEngine ? { nodeName, executors, meshRegistry: registry } : undefined,
         criteriaPolicy,
       }),
       createOutcomesApiRoute({ store: taskEngineStore }),

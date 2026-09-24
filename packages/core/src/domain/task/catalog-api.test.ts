@@ -185,20 +185,22 @@ describe('/api/catalog', () => {
   })
 
   it('appends RivetHub presets as kind:preset', async () => {
+    const entries = [
+      {
+        id: 'preset-1',
+        name: 'reviewer',
+        node: 'ct116',
+        local: false,
+        harnessId: 'claude-code' as const,
+        directory: '/home/rivet/.rivetos/agents/reviewer',
+        model: 'opus',
+        implemented: false,
+        gap: 'no headless executor',
+      },
+    ]
     const presets = {
-      rosterEntries: () => [
-        {
-          id: 'preset-1',
-          name: 'reviewer',
-          node: 'ct116',
-          local: false,
-          harnessId: 'claude-code',
-          directory: '/home/rivet/.rivetos/agents/reviewer',
-          model: 'opus',
-          implemented: false,
-          gap: 'no headless executor',
-        },
-      ],
+      rosterEntries: () => entries,
+      rosterEntriesFresh: () => Promise.resolve(entries),
     } as unknown as PresetDelegationEngine
     const executors = createExecutorRegistry()
     const router = { getAgents: () => [] } as unknown as Router
