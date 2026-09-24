@@ -352,6 +352,7 @@ export interface LiveState {
   /** Last observed user echo, retained to reject replay across identical sends. */
   lastUserEcho?: { key: string; ts?: number }
   delivery?: {
+    deliveryId?: string
     /** Normalised prefix of this turn. */
     key: string
     /** Text passed to `armDeliveryCheck` (the user turn), for placeholder ownership. */
@@ -877,7 +878,7 @@ export abstract class PtyHarnessDriver<S extends HarnessStoreHost = HarnessStore
     // Announce it: `beginTurn` re-sets the flag (already ours), arms the
     // quiet-window failsafe and moves the session to `active`.
     this.beginTurn(native)
-    this.armDeliveryCheck(native, turn.text, warm, readyMaxMs)
+    this.armDeliveryCheck(native, turn.text, warm, readyMaxMs, turn.deliveryId)
   }
 
   async interrupt(sessionId: SessionId): Promise<void> {
@@ -1738,7 +1739,13 @@ export abstract class PtyHarnessDriver<S extends HarnessStoreHost = HarnessStore
     return ts === undefined || ts >= delivery.since
   }
 
-  protected armDeliveryCheck(native: string, text: string, warm: boolean, readyMaxMs = 0): void {
+  protected armDeliveryCheck(
+    native: string,
+    text: string,
+    warm: boolean,
+    readyMaxMs = 0,
+    deliveryId?: string,
+  ): void {
     if (this.deliveryConfirmMs <= 0) return
     const state = this.ensureLive(native)
     this.clearDelivery(state)
@@ -1759,6 +1766,7 @@ export abstract class PtyHarnessDriver<S extends HarnessStoreHost = HarnessStore
     }, deadlineMs)
     deadline.unref()
     const delivery: NonNullable<LiveState['delivery']> = {
+      deliveryId,
       key,
       text,
       since: this.now(),
@@ -1782,12 +1790,14 @@ export abstract class PtyHarnessDriver<S extends HarnessStoreHost = HarnessStore
   protected failDelivery(native: string, why: string): void {
     const state = this.live.get(native)
     if (!state?.delivery || !state.turnInFlight) return
+    const deliveryId = state.delivery.deliveryId
     this.clearDelivery(state)
     this.log(`[den-server] harness: turn undelivered for ${this.harnessId}:${native}: ${why}`)
     this.emit(native, {
       type: 'error',
       sessionId: this.sid(native),
       code: 'turn_undelivered',
+      ...(deliveryId ? { deliveryId } : {}),
       message: why,
       retryable: true,
     })

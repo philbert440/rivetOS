@@ -1286,7 +1286,7 @@ function ActiveSession(props: {
         onTranscript: (ev) => useChat.getState().applyHarnessTranscriptEvent(props.sessionId, ev),
         onAgentStatus: (ev) => {
           useChat.getState().applyAgentStatus(props.sessionId, ev)
-          if (ev.status === 'idle') outboundPumpFor(props.sessionId).pump.onIdle()
+          if (ev.status === 'working') outboundPumpFor(props.sessionId).pump.onBusy()
         },
         onPrompt: (ev) => useChat.getState().applyPromptEvent(props.sessionId, ev),
         onControlReset: () => useChat.getState().clearHarnessPrompts(props.sessionId),
@@ -1318,6 +1318,8 @@ function ActiveSession(props: {
         // Terminal: the attachment has already stopped itself, so say so plainly
         // instead of leaving a banner that looks like it might clear.
         onFatal: (message) => {
+          outboundPumpFor(props.sessionId).pump.onDeliveryLost()
+          outboundPumpFor(props.sessionId).closeObserver()
           clearAcceptedReply()
           useChat.getState().setLive(props.sessionId, undefined)
           setStreamError(`${message} — this session is no longer attachable`)
@@ -1569,6 +1571,21 @@ function ActiveSession(props: {
   const dismissAsk = useChat((s) => s.dismissAsk)
   const composerRef = useRef<ComposerHandle | null>(null)
   const pumpEntry = outboundPumpFor(props.sessionId)
+  useEffect(() => {
+    const unmount = pumpEntry.mount()
+    let disposed = false
+    if (streamId) {
+      void sessionGateway()
+        .then((gw) => {
+          if (!disposed) void pumpEntry.observe(gw, streamId)
+        })
+        .catch(() => undefined)
+    }
+    return () => {
+      disposed = true
+      unmount()
+    }
+  }, [pumpEntry, streamId, sessionGateway])
 
   // Ask card content: the live turn's ask tool wins (question just streamed
   // in); after the turn ends the store's stashed copy keeps the card up until
@@ -1628,6 +1645,7 @@ function ActiveSession(props: {
     attachments?: import('@rivetos/types').UserTurn['attachments'],
     // Set only when the pump was started with forceId (the inject button).
     bypassDialogGate = false,
+    deliveryId?: string,
   ): Promise<void> => {
     if (remoteDead) {
       throw new Error(`this thread's session no longer exists on ${urlLabel(sessionBase)}`)
@@ -1656,7 +1674,9 @@ function ActiveSession(props: {
         protocolOwned &&
         capabilities?.imageAttachments &&
         attachments?.every((a) => a.mime.startsWith('image/'))
+      const correlated = await pumpEntry.observe(gw, sid, deliveryId)
       await gw.sendHarnessTurn(sid, {
+        deliveryId: correlated ? deliveryId : undefined,
         text: nativeAttachments ? text : referenceText,
         ...(nativeAttachments && attachments?.length ? { attachments } : {}),
         ...(harnessId === nativeHarnessId ? turnOptions.effective : {}),
@@ -1819,6 +1839,10 @@ function ActiveSession(props: {
           .filter((o) => o.status !== 'queued')
           .map((o) => [o.id, o.status as 'sending' | 'failed']),
       ),
+    [outbound],
+  )
+  const outboundNotes = useMemo(
+    () => Object.fromEntries(outbound.flatMap((o) => (o.note ? [[o.id, o.note]] : []))),
     [outbound],
   )
   const [waitClock, setWaitClock] = useState<ReplyWaitClock>()
@@ -2008,6 +2032,7 @@ function ActiveSession(props: {
             })}
             live={displayLive}
             outbound={outboundStatus}
+            outboundNotes={outboundNotes}
             statusLine={statusLine}
           />
           <QueuedStrip items={outbound} onInject={onInjectOutbound} onCancel={onCancelOutbound} />

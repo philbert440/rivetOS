@@ -427,6 +427,30 @@ describe('attachHarnessSession', () => {
   })
 })
 
+describe('turn_undelivered', () => {
+  it('calls onUndelivered only for turn_undelivered', () => {
+    const h = fakeGateway()
+    const undelivered: string[] = []
+    const att = attachHarnessSession({
+      gateway: h.gateway,
+      sessionId: SID,
+      onResync: () => {},
+      onLive: () => {},
+      onUndelivered: (e) => undelivered.push(e.code),
+    })
+    h.emit({
+      type: 'error',
+      sessionId: SID,
+      code: 'turn_undelivered',
+      message: 'lost',
+      retryable: true,
+    })
+    h.emit({ type: 'error', sessionId: SID, code: 'other', message: 'nope' })
+    expect(undelivered).toEqual(['turn_undelivered'])
+    att.close()
+  })
+})
+
 describe('sync re-arm', () => {
   it('re-sends {type:sync} once after the re-arm wait when no snapshot followed (den throttles syncs)', async () => {
     vi.useFakeTimers()

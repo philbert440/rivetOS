@@ -181,6 +181,8 @@ export type HarnessEvent =
       sessionId: SessionId
       /** Includes `turn_undelivered` when a pasted turn never reached the harness. */
       code: string
+      /** Opaque client attempt ID, echoed only for delivery failures. */
+      deliveryId?: string
       message: string
       retryable?: boolean
     }
@@ -365,6 +367,8 @@ export function prefixSystemPrompt(prompt: string, text: string): string {
 }
 
 export type UserTurn = {
+  /** Opaque per-attempt correlation; does not change delivery or deduplication. */
+  deliveryId?: string
   model?: string
   effort?: string
   text: string

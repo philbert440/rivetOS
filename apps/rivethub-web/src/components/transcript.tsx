@@ -258,6 +258,8 @@ const Bubble = memo(function Bubble(props: {
   offscreenSkip?: boolean
   /** Outbound status for optimistic user turns — sending or failed (queued lives in QueuedStrip). */
   outboundStatus?: 'sending' | 'failed'
+  /** Why a failed send didn't land (lib/send-block-note.ts); replaces "send failed". */
+  outboundNote?: string
 }): JSX.Element {
   const mine = props.msg.role === 'user'
   const tools = useMemo(
@@ -285,7 +287,9 @@ const Bubble = memo(function Bubble(props: {
           {props.outboundStatus && (
             <div className="mt-1 flex items-center justify-end gap-2 px-1 font-mono text-[10px] text-ink-dim">
               <span>
-                {props.outboundStatus === 'failed' ? 'send failed — retry below' : 'sending…'}
+                {props.outboundStatus === 'failed'
+                  ? `${props.outboundNote ?? 'send failed'} — retry below`
+                  : 'sending…'}
               </span>
             </div>
           )}
@@ -385,6 +389,8 @@ export function Transcript(props: {
   live?: LiveTurn
   /** optim message id → outbound sending badge */
   outbound?: Record<string, 'sending' | 'failed'>
+  /** Per-message failure notes, keyed like `outbound`. */
+  outboundNotes?: Record<string, string>
   /** Blocked/prompt with no live turn — small line under the last message. */
   statusLine?: { text: string; tool?: string }
   /** per-harness bot accent (claude clay / grok grey / local emerald) */
@@ -447,6 +453,7 @@ export function Transcript(props: {
               msg={m}
               offscreenSkip={i < props.messages.length - CV_EDGE_ROWS}
               outboundStatus={props.outbound?.[m.id]}
+              outboundNote={props.outboundNotes?.[m.id]}
             />
           ))}
           {props.live && <LiveBubble turn={props.live} accent={props.accent} />}

@@ -868,6 +868,22 @@ describe('HarnessError → HTTP status mapping', () => {
     expect(await res.json()).toMatchObject({ code, error: `boom: ${code}` })
   })
 
+  it('forwards a bounded opaque delivery ID, ignoring malformed values', async () => {
+    const driver = new FakeDriver()
+    driver.add(SID)
+    const { base } = await start(driver)
+    for (const deliveryId of ['attempt-1', '', 42, 'x'.repeat(129)]) {
+      const res = await post(base, `/api/harness-sessions/${enc(SID)}/turns`, {
+        text: 'hello',
+        deliveryId,
+      })
+      expect(res.status).toBe(202)
+      expect(driver.calls.turns.at(-1)?.turn.deliveryId).toBe(
+        deliveryId === 'attempt-1' ? deliveryId : undefined,
+      )
+    }
+  })
+
   it('forwards bypassDialogGate only when it is boolean true', async () => {
     const driver = new FakeDriver()
     driver.add(SID)

@@ -180,8 +180,9 @@ describe('outbound sends across rekey', () => {
     liveIsBusy: (sid) => state().liveIsBusy(sid),
     markSending: (sid, id) => state().markOutboundSending(sid, id),
     dequeue: (sid, id) => state().dequeueOutbound(sid, id),
-    requeue: (sid, id) => state().requeueOutbound(sid, id),
-    fail: (sid, id) => state().failOutbound(sid, id),
+    requeue: (sid, id, note) => state().requeueOutbound(sid, id, note),
+    fail: (sid, id, note) => state().failOutbound(sid, id, note),
+    restoreFailed: (sid, item, note) => state().restoreOutboundFailed(sid, item, note),
     beginLive: (sid, activity) => state().beginLive(sid, activity),
     clearLive: (sid) => state().clearLive(sid),
     awaitBusy: (_sid, ms) => new Promise((resolve) => setTimeout(resolve, ms)),
@@ -208,6 +209,29 @@ describe('outbound sends across rekey', () => {
     const pending = entry.pump.pump()
     return { id, resolve, reject, inject, registry, entry, pending }
   }
+
+  it('keeps the restored bubble and failed row when manual retry is refused as busy', async () => {
+    state().addDraft('A')
+    const id = state().enqueueOutbound('A', 'hello')
+    state().markOutboundSending('A', id)
+    state().dequeueOutbound('A', id)
+    state().restoreOutboundFailed('A', { id, text: 'hello', status: 'queued' }, 'not delivered')
+    const registry = createOutboundPumpRegistry(store, () => true)
+    const entry = registry('A')
+    const inject = vi.fn(() => Promise.reject(new Error('turn_in_flight')))
+    entry.sink.current = inject
+    await entry.pump.pump({ forceId: id })
+    entry.pump.onIdle()
+    await vi.advanceTimersByTimeAsync(60_000)
+    expect(state().outbound.A?.[0]).toMatchObject({
+      id,
+      status: 'failed',
+      note: 'not sent: a turn is still running',
+    })
+    expect(state().messages.A?.filter((m) => m.id === id)).toHaveLength(1)
+    expect(inject).toHaveBeenCalledTimes(1)
+    registry.dispose()
+  })
 
   it('uses the module registry across chained moves and destination remounts', async () => {
     const t = setup('A', outboundPumpFor)
@@ -314,7 +338,13 @@ describe('outbound sends across rekey', () => {
     t.reject(new Error('offline'))
     await failed
     await vi.advanceTimersByTimeAsync(INJECT_LATCH_MS)
-    expect(next).toHaveBeenCalledExactlyOnceWith('second', false, undefined, false)
+    expect(next).toHaveBeenCalledExactlyOnceWith(
+      'second',
+      false,
+      undefined,
+      false,
+      expect.any(String),
+    )
     expect(state().outbound[to]).toEqual([{ id: t.id, text: 'first', status: 'failed' }])
     const retry = t.registry(to).pump.pump({ forceId: t.id })
     await vi.advanceTimersByTimeAsync(INJECT_LATCH_MS)
@@ -372,7 +402,7 @@ describe('outbound sends across rekey', () => {
     expect(state().outbound[to]?.[0].status).toBe('sending')
     await vi.advanceTimersByTimeAsync(INJECT_LATCH_MS)
     await pending
-    expect(retry).toHaveBeenCalledWith('first', false, undefined, true)
+    expect(retry).toHaveBeenCalledWith('first', false, undefined, true, expect.any(String))
     expect(state().outbound[to]).toEqual([])
     expect(state().messages[to]?.map((m) => m.id)).toEqual([t.id])
   })
@@ -414,7 +444,13 @@ describe('outbound sends across rekey', () => {
     await vi.advanceTimersByTimeAsync(2 * INJECT_LATCH_MS)
     await t.pending
     expect(t.inject).toHaveBeenCalledOnce()
-    expect(next).toHaveBeenCalledExactlyOnceWith('second', false, undefined, false)
+    expect(next).toHaveBeenCalledExactlyOnceWith(
+      'second',
+      false,
+      undefined,
+      false,
+      expect.any(String),
+    )
     expect(state().outbound[to]).toEqual([])
   })
 
@@ -717,6 +753,50 @@ describe('committed-turn reconciliation', () => {
     state().seed('A', [{ id: 'm1', sessionId: 'A', role: 'user', text: 'backfill', ts: 1 }])
     expect(state().messages.A).toBeUndefined()
     expect(state().messages.B?.map((m) => m.id)).toEqual(['m1'])
+  })
+})
+
+describe('restoreOutboundFailed', () => {
+  const state = () => useChat.getState()
+
+  it('inserts one failed item at the front and keeps the existing bubble', () => {
+    state().addDraft('A')
+    const id = state().enqueueOutbound('A', 'hello')
+    state().markOutboundSending('A', id)
+    state().dequeueOutbound('A', id)
+    expect(state().messages.A?.some((m) => m.id === id)).toBe(true)
+    state().restoreOutboundFailed('A', { id, text: 'hello', status: 'queued' })
+    expect(state().outbound.A?.[0]).toMatchObject({ id, status: 'failed' })
+    expect(state().messages.A?.filter((m) => m.id === id)).toHaveLength(1)
+  })
+
+  it('carries a failure note, and the next send clears it', () => {
+    state().addDraft('A')
+    const id = state().enqueueOutbound('A', 'hello')
+    state().markOutboundSending('A', id)
+    state().failOutbound('A', id, 'not sent: picker open')
+    expect(state().outbound.A?.[0]).toMatchObject({
+      status: 'failed',
+      note: 'not sent: picker open',
+    })
+    state().markOutboundSending('A', id)
+    expect(state().outbound.A?.[0].note).toBeUndefined()
+    state().requeueOutbound('A', id, 'not sent: picker open')
+    expect(state().outbound.A?.[0]).toMatchObject({
+      status: 'queued',
+      note: 'not sent: picker open',
+    })
+    state().dequeueOutbound('A', id)
+    state().restoreOutboundFailed('A', { id, text: 'hello', status: 'queued' }, 'not delivered')
+    expect(state().outbound.A?.[0]).toMatchObject({ status: 'failed', note: 'not delivered' })
+  })
+
+  it('does nothing if the id is already queued', () => {
+    state().addDraft('A')
+    const id = state().enqueueOutbound('A', 'hello')
+    state().restoreOutboundFailed('A', { id, text: 'hello', status: 'failed' })
+    expect(state().outbound.A).toHaveLength(1)
+    expect(state().outbound.A?.[0].status).toBe('queued')
   })
 })
 

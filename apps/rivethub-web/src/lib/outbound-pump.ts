@@ -24,6 +24,10 @@
  *     Esc before the paste; a copied-rule false positive also receives Esc.
  *     With no detected dialog, it pastes normally. Automatic retries never
  *     set the flag. Interrupt (Esc a busy turn) is separate and is not the bypass.
+ *   - **`turn_undelivered`.** den accepted the inject but the harness never
+ *     took it. The pump keeps the last accepted item and `onUndelivered()`
+ *     puts it back as failed only for the matching per-attempt delivery ID.
+ *     A manual retry refused as busy stays failed; it never arms auto-retry.
  *
  * Stale-turn release is den's job (server-side timer re-armed per frame).
  *
@@ -31,11 +35,19 @@
  * the inject sink, so the ordering is unit-testable (see harness-attach.ts).
  */
 
+import { uuidv4 } from './uuid.js'
 import type { OutboundItem } from '../stores/chat.js'
+import { watchOutboundDelivery, type DeliveryGateway } from './outbound-delivery.js'
+import { sendBlockNote } from './send-block-note.js'
 
 /** How long the queue pump waits for an injected turn's first stream frame
  *  before deciding the harness isn't bridging and letting the queue flow. */
 export const INJECT_LATCH_MS = 6_000
+/**
+ * Den's cold deadline: 10s deliveryFallbackMs + 15s injectReadyMaxMs + 5s
+ * transport slack. Must track those den defaults if they change.
+ */
+export const DELIVERY_WINDOW_MS = 30_000
 /**
  * Give up auto-retrying after this many rejections. A harness parked on a TUI
  * permission prompt is mid-turn indefinitely, and hammering it forever is
@@ -63,8 +75,9 @@ export interface OutboundPumpStore {
   liveIsBusy(sessionId: string): boolean
   markSending(sessionId: string, id: string): void
   dequeue(sessionId: string, id: string): void
-  requeue(sessionId: string, id: string): void
-  fail(sessionId: string, id: string): void
+  requeue(sessionId: string, id: string, note?: string): void
+  fail(sessionId: string, id: string, note?: string): void
+  restoreFailed(sessionId: string, item: OutboundItem, note?: string): void
   beginLive(sessionId: string, activity: string): void
   clearLive(sessionId: string): void
   /**
@@ -76,6 +89,7 @@ export interface OutboundPumpStore {
 
 export interface OutboundPumpOptions {
   sessionId: string
+  onDeliveryWindowChange?: (open: boolean) => void
   /** Registry-owned identity survives defensive alias eviction. */
   currentSessionKey?: () => string
   store: OutboundPumpStore
@@ -86,6 +100,7 @@ export interface OutboundPumpOptions {
     attachments?: OutboundItem['attachments'],
     /** True only for the user's inject button (`forceId`), never an auto-retry. */
     bypassDialogGate?: boolean,
+    deliveryId?: string,
   ) => Promise<void>
   /** The driver's "a turn is already running" rejection. */
   isTurnInFlight: (err: unknown) => boolean
@@ -114,6 +129,13 @@ export interface OutboundPump {
    * pending backoff timer so the edge and the timer cannot both inject.
    */
   onIdle(): void
+  /** Match den's echoed per-attempt ID; `note` must be safe display copy. */
+  onUndelivered(deliveryId: string, note?: string): void
+  /** Observed streaming/busy proof ends the delivery window. */
+  onBusy(): void
+  /** The live tail has a gap: retain the item as failed, with uncertain delivery. */
+  onDeliveryLost(): void
+  forgetDelivery(deliveryId: string): void
 }
 
 export function createOutboundPump(opts: OutboundPumpOptions): OutboundPump {
@@ -136,6 +158,32 @@ export function createOutboundPump(opts: OutboundPumpOptions): OutboundPump {
   const turnRetries = new Map<string, number>()
   /** Waiting for an idle/turn-complete edge to retry. */
   let awaitingIdle = false
+  // Keep the accepted slot while a later request is pending: that request may
+  // be refused as busy before the earlier delivery deadline fires.
+  const deliveries = new Map<string, { item: OutboundItem; accepted: boolean; note?: string }>()
+  const deliveryTimers = new Map<string, ReturnType<typeof setTimeout>>()
+  const forgetDelivery = (id: string): void => {
+    clearTimeout(deliveryTimers.get(id))
+    deliveryTimers.delete(id)
+    deliveries.delete(id)
+    opts.onDeliveryWindowChange?.(deliveries.size > 0)
+  }
+  const restore = (deliveryId: string, note: string): void => {
+    const delivery = deliveries.get(deliveryId)
+    if (!delivery) return
+    if (!delivery.accepted) {
+      delivery.note = note
+      return
+    }
+    store.restoreFailed(sessionId(), delivery.item, note)
+    forgetDelivery(deliveryId)
+  }
+  const clearDeliveryWindow = (): void => {
+    for (const [id, delivery] of deliveries) {
+      // Failure + turn-complete can both beat the HTTP acceptance response.
+      if (!delivery.note) forgetDelivery(id)
+    }
+  }
   /** Backoff retry for the same wait. Cleared by an idle edge, a new send, or dispose. */
   let idleRetryTimer: ReturnType<typeof setTimeout> | undefined
 
@@ -169,6 +217,14 @@ export function createOutboundPump(opts: OutboundPumpOptions): OutboundPump {
       : q.find((o) => o.status === 'queued')
     if (!next) return
 
+    const manualRetry = Boolean(pumpOpts?.forceId) && next.status === 'failed'
+    const deliveryId = uuidv4()
+    deliveries.set(deliveryId, { item: { ...next }, accepted: false })
+    deliveryTimers.set(
+      deliveryId,
+      setTimeout(() => forgetDelivery(deliveryId), DELIVERY_WINDOW_MS),
+    )
+    opts.onDeliveryWindowChange?.(true)
     pumping = true
     inFlight = next.id
     const gen = generation
@@ -185,31 +241,59 @@ export function createOutboundPump(opts: OutboundPumpOptions): OutboundPump {
         next.attachments,
         // forceId is the user's inject button. Timer and idle retries omit it.
         Boolean(pumpOpts?.forceId),
+        deliveryId,
       )
       // Cancelled/disposed mid-inject: a newer generation owns `pumping` and
       // the live slot — leave both alone.
-      if (superseded()) return
+      if (superseded()) {
+        forgetDelivery(deliveryId)
+        return
+      }
       store.dequeue(sessionId(), next.id)
+      const delivery = deliveries.get(deliveryId)
+      // A successful send replaces den's single delivery slot.
+      for (const id of deliveries.keys()) if (id !== deliveryId) forgetDelivery(id)
+      if (delivery) {
+        delivery.accepted = true
+        if (delivery.note) restore(deliveryId, delivery.note)
+      }
       turnRetries.delete(next.id)
       inFlight = undefined
       awaitingIdle = false
       clearIdleRetryTimer()
       // Hold the pump until the harness's stream latches busy (see header).
       await store.awaitBusy(sessionId(), INJECT_LATCH_MS)
-      if (superseded()) return
-      if (!store.liveIsBusy(sessionId())) {
+      if (superseded()) {
+        forgetDelivery(deliveryId)
+        return
+      }
+      const busy = store.liveIsBusy(sessionId())
+      if (!busy) {
+        // Latch expiry is not delivery proof: a cold PTY may still buffer the paste.
         store.clearLive(sessionId())
       }
     } catch (err) {
       // Superseded first: `pumping` / `inFlight` may be a newer pump()'s.
-      if (superseded()) return
+      if (superseded()) {
+        forgetDelivery(deliveryId)
+        return
+      }
       pumping = false
       inFlight = undefined
+      forgetDelivery(deliveryId)
+      if (opts.isTurnInFlight(err) && manualRetry) {
+        store.fail(sessionId(), next.id, sendBlockNote(err) ?? 'not sent: a turn is still running')
+        if (!store.liveIsBusy(sessionId())) {
+          store.clearLive(sessionId())
+          void pump().catch(() => undefined)
+        }
+        return
+      }
       if (opts.isTurnInFlight(err)) {
         // Not a failure: put the turn back and retry on the next idle /
         // turn-complete edge, or on the backoff timer if that edge never
         // comes (a dialog was dismissed without a status change).
-        store.requeue(sessionId(), next.id)
+        store.requeue(sessionId(), next.id, sendBlockNote(err))
         // Only the pre-inject placeholder goes: a real streaming turn is
         // exactly WHY the driver said no, and dropping its bubble would blank
         // the reply the user is watching.
@@ -224,7 +308,7 @@ export function createOutboundPump(opts: OutboundPumpOptions): OutboundPump {
       turnRetries.delete(next.id)
       awaitingIdle = false
       clearIdleRetryTimer()
-      store.fail(sessionId(), next.id)
+      store.fail(sessionId(), next.id, sendBlockNote(err))
       store.clearLive(sessionId())
       // Try the next queued message after a failure.
       void pump().catch(() => undefined)
@@ -239,12 +323,16 @@ export function createOutboundPump(opts: OutboundPumpOptions): OutboundPump {
 
   return {
     pump,
+    forgetDelivery,
     reset: (id) => {
       // Only the in-flight send's own cancel frees the latch — cancelling an
       // already-dequeued (latch-window) or never-started item must not, or a
       // cancel of a queued bubble would re-arm the pump inside the very
       // window the latch exists to protect.
       if (id !== inFlight) return
+      for (const [key, delivery] of deliveries) {
+        if (delivery.item.id === id) forgetDelivery(key)
+      }
       generation += 1
       inFlight = undefined
       pumping = false
@@ -255,13 +343,29 @@ export function createOutboundPump(opts: OutboundPumpOptions): OutboundPump {
       inFlight = undefined
       pumping = false
       awaitingIdle = false
+      for (const id of deliveries.keys()) forgetDelivery(id)
       clearIdleRetryTimer()
     },
     onIdle: () => {
+      clearDeliveryWindow()
       if (disposed || !awaitingIdle) return
       clearIdleRetryTimer()
       awaitingIdle = false
       void pump().catch(() => undefined)
+    },
+    onBusy: () => {
+      clearDeliveryWindow()
+    },
+    onDeliveryLost: () => {
+      if (disposed) return
+      for (const [id, delivery] of deliveries) {
+        if (!delivery.accepted) continue
+        restore(id, 'delivery unconfirmed: connection lost; check the conversation before retrying')
+      }
+    },
+    onUndelivered: (deliveryId, note) => {
+      if (disposed || !deliveries.has(deliveryId)) return
+      restore(deliveryId, note ?? 'not delivered')
     },
   }
 }
@@ -271,7 +375,13 @@ export type ThreadLifecycleEvent =
   | { type: 'remove'; keys: ReadonlySet<string> }
   | { type: 'clear' }
 
-type PumpEntry = { pump: OutboundPump; sink: { current: OutboundPumpOptions['inject'] } }
+type PumpEntry = {
+  pump: OutboundPump
+  sink: { current: OutboundPumpOptions['inject'] }
+  observe(gateway: DeliveryGateway, sessionId: string, deliveryId?: string): Promise<boolean>
+  mount(): () => void
+  closeObserver(): void
+}
 export type OutboundPumpRegistry = ((sessionId: string) => PumpEntry) & { dispose(): void }
 
 /** Preserve the latch across moves; release the pump and view sink on removal. */
@@ -286,6 +396,7 @@ export function createOutboundPumpRegistry(
   const drop = (key: string): void => {
     const entry = entries.get(key)
     if (!entry) return
+    entry.closeObserver()
     entry.pump.dispose()
     entry.sink.current = noView
     entries.delete(key)
@@ -323,16 +434,69 @@ export function createOutboundPumpRegistry(
       }
     }
     const sink = { current: noView }
+    let observer: ReturnType<typeof watchOutboundDelivery> | undefined
+    let observedBase: string | undefined
+    let mounted = 0
+    let windowOpen = false
+    const closeIfIdle = (): void => {
+      if (!mounted && !windowOpen) entry.closeObserver()
+    }
+    let observedSession: string | undefined
     const entry: PumpEntry & { key: string } = {
+      mount: () => {
+        mounted += 1
+        return () => {
+          mounted -= 1
+          closeIfIdle()
+        }
+      },
+      observe: async (gateway, sessionId, deliveryId) => {
+        try {
+          if (
+            !observer ||
+            observer.closed ||
+            observedBase !== gateway.config.baseUrl ||
+            observedSession !== sessionId
+          ) {
+            entry.closeObserver()
+            observedBase = gateway.config.baseUrl
+            observedSession = sessionId
+            observer = watchOutboundDelivery(gateway, sessionId, entry.pump, () => {
+              observer = undefined
+            })
+          }
+          const current = observer
+          // A transport may emit a terminal frame before watch returns.
+          if (current.closed) observer = undefined
+          await current.ready
+          return true
+        } catch {
+          if (deliveryId) entry.pump.forgetDelivery(deliveryId)
+          console.warn(
+            'Delivery observer unavailable; sending over HTTP without delivery correlation',
+          )
+          return false
+        } finally {
+          closeIfIdle()
+        }
+      },
+      closeObserver: () => {
+        observer?.close()
+        observer = undefined
+      },
       key,
       sink,
       pump: createOutboundPump({
+        onDeliveryWindowChange: (open) => {
+          windowOpen = open
+          closeIfIdle()
+        },
         sessionId: key,
         currentSessionKey: () =>
           subscribe ? entry.key : (store.resolveSessionKey?.(entry.key) ?? entry.key),
         store,
-        inject: (text, interrupt, attachments, bypassDialogGate) =>
-          sink.current(text, interrupt, attachments, bypassDialogGate),
+        inject: (text, interrupt, attachments, bypassDialogGate, deliveryId) =>
+          sink.current(text, interrupt, attachments, bypassDialogGate, deliveryId),
         isTurnInFlight,
       }),
     }
