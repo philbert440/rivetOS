@@ -304,8 +304,8 @@ class CpFakeDriver implements HarnessDriver {
   interrupt(): Promise<void> {
     return Promise.resolve()
   }
-  sendUserTurn(_sessionId: SessionId, _turn: UserTurn): Promise<void> {
-    return Promise.resolve()
+  sendUserTurn(_sessionId: SessionId, _turn: UserTurn): Promise<undefined> {
+    return Promise.resolve(undefined)
   }
   resolveApproval(): Promise<void> {
     return Promise.resolve()

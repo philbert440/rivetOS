@@ -11,6 +11,7 @@ import {
   type SessionId,
   type HarnessSessionSummary as SessionSummary,
   type StartSessionOpts,
+  type SendUserTurnResult,
   type UserTurn,
   type HarnessCapabilities,
   type HarnessPromptEvent,
@@ -416,7 +417,10 @@ export class CodexProtocolDriver extends CodexDriver {
     return { ...params, input }
   }
 
-  override async sendUserTurn(sessionId: SessionId, turn: UserTurn): Promise<void> {
+  override async sendUserTurn(
+    sessionId: SessionId,
+    turn: UserTurn,
+  ): Promise<SendUserTurnResult | undefined> {
     const id = this.native(sessionId),
       b = this.bindings.get(id)
     if (!b) return super.sendUserTurn(sessionId, turn)

@@ -2135,7 +2135,10 @@ describe('sendUserTurn gates on an open blocking dialog', () => {
       screen: () => CLAUDE_PERM_SCREEN,
     })
     await driver.startSession({ nativeSessionId: UUID })
-    await driver.sendUserTurn(sid, { text: 'hello', bypassDialogGate: true })
+    // The caller learns a dialog was cancelled, so the UI can say so (#868).
+    expect(await driver.sendUserTurn(sid, { text: 'hello', bypassDialogGate: true })).toEqual({
+      dismissedDialog: true,
+    })
     // interrupt is the term manager's Esc-then-paste. The text is the turn,
     // never the highlighted option 1.
     expect(pty.injects).toEqual([{ id: 'pty-1', text: 'hello', submit: true, interrupt: true }])
@@ -2152,7 +2155,9 @@ describe('sendUserTurn gates on an open blocking dialog', () => {
       screen: () => IDLE_HARNESS_SCREEN,
     })
     await driver.startSession({ nativeSessionId: UUID })
-    await driver.sendUserTurn(sid, { text: 'hello', bypassDialogGate: true })
+    expect(
+      await driver.sendUserTurn(sid, { text: 'hello', bypassDialogGate: true }),
+    ).toBeUndefined()
     expect(pty.injects).toEqual([
       { id: 'pty-1', text: 'hello', submit: true, interrupt: undefined },
     ])
@@ -2177,11 +2182,42 @@ describe('sendUserTurn gates on an open blocking dialog', () => {
       screen: () => CLAUDE_PERM_SCREEN,
     })
     await driver.startSession({ nativeSessionId: UUID })
-    await driver.sendUserTurn(sid, { text: 'hello', bypassDialogGate: true })
+    expect(await driver.sendUserTurn(sid, { text: 'hello', bypassDialogGate: true })).toEqual({
+      dismissedDialog: true,
+    })
     expect(injectAttempts).toBe(2)
     expect(seen.every((i) => i.interrupt === true && i.text === 'hello')).toBe(true)
     expect(pty.injects.map((i) => i.text)).toEqual(['hello'])
     expect(seen.some((i) => i.text === '1')).toBe(false)
+    driver.close()
+  })
+
+  it('drops dismissedDialog when the dead-PTY retry sees a clean screen', async () => {
+    const pty = fakePty()
+    let injectAttempts = 0
+    const seen: Injected[] = []
+    pty.host.inject = (id, text, submit, interrupt) => {
+      injectAttempts += 1
+      seen.push({ id, text, submit, interrupt })
+      if (injectAttempts === 1) return false
+      pty.injects.push({ id, text, submit, interrupt })
+      return true
+    }
+    const driver = new ClaudeCodeDriver({
+      store: fakeStore([]),
+      pty: () => Promise.resolve(pty.host),
+      turnQuietMs: 0,
+      // Dialog on the first read; the respawn re-check is idle, so the flag
+      // taken from the failed attempt must not survive.
+      screen: () => (injectAttempts === 0 ? CLAUDE_PERM_SCREEN : IDLE_HARNESS_SCREEN),
+    })
+    await driver.startSession({ nativeSessionId: UUID })
+    await expect(
+      driver.sendUserTurn(sid, { text: 'hello', bypassDialogGate: true }),
+    ).resolves.toBeUndefined()
+    expect(injectAttempts).toBe(2)
+    expect(seen[0]).toMatchObject({ text: 'hello', interrupt: true })
+    expect(seen[1]).toMatchObject({ text: 'hello', interrupt: undefined })
     driver.close()
   })
 

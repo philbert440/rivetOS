@@ -597,6 +597,10 @@ export interface TermInjectRequest {
 export interface TermInjectResponse {
   ok: true
   ptyId: string
+  /** Esc for an open dialog was queued ahead of this paste, with the same
+   *  delivery guarantee as the turn (accepted, possibly still buffered —
+   *  not proven written). */
+  dismissedDialog?: true
 }
 
 // ---------------------------------------------------------------------------
@@ -776,6 +780,10 @@ export interface HarnessSessionTranscriptResponse extends HarnessRedirect {
 export interface HarnessTurnAccepted extends HarnessRedirect {
   ok: true
   sessionId: SessionId
+  /** Esc for an open dialog was queued ahead of this paste, with the same
+   *  delivery guarantee as the turn (accepted, possibly still buffered —
+   *  not proven written). */
+  dismissedDialog?: true
 }
 
 /** 202 from `POST /api/harness-sessions/:enc/approvals/:requestId`. */

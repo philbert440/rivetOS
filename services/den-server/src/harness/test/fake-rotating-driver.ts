@@ -283,11 +283,11 @@ export class FakeRotatingDriver implements HarnessDriver {
     return Promise.resolve()
   }
 
-  sendUserTurn(sessionId: SessionId, turn: UserTurn): Promise<void> {
+  sendUserTurn(sessionId: SessionId, turn: UserTurn): Promise<undefined> {
     this.require(sessionId)
     this.turns.push({ sessionId, text: turn.text })
     this.transcripts.get(sessionId)?.push({ role: 'user', text: turn.text })
-    return Promise.resolve()
+    return Promise.resolve(undefined)
   }
 
   resolveApproval(): Promise<void> {

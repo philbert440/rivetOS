@@ -101,6 +101,7 @@ import {
   prefixSystemPrompt,
   type StartSessionOpts,
   type TranscriptWsFrame,
+  type SendUserTurnResult,
   type UserTurn,
 } from '@rivetos/types'
 import type { HarnessSession } from '../term/harness-sessions.js'
@@ -779,7 +780,10 @@ export abstract class PtyHarnessDriver<S extends HarnessStoreHost = HarnessStore
     return row ? this.summarize(row, this.statusFor(native)) : this.liveSummary(native)
   }
 
-  async sendUserTurn(sessionId: SessionId, turn: UserTurn): Promise<void> {
+  async sendUserTurn(
+    sessionId: SessionId,
+    turn: UserTurn,
+  ): Promise<SendUserTurnResult | undefined> {
     const native = this.native(sessionId)
     if (turn.attachments?.length) {
       // `POST /api/uploads` hands clients a node-local path, so `pathOrUri` is
@@ -816,6 +820,11 @@ export abstract class PtyHarnessDriver<S extends HarnessStoreHost = HarnessStore
     const room = this.room(native)
     const idBefore = pty.ptyForSession(room)
     let createdOrRespawned = !idBefore
+    // Set when a bypass send queued Esc ahead of the paste (#868). Same
+    // delivery guarantee as the turn: `inject` returning true means accepted
+    // (the pre-ready buffer counts), not proven written. A flag only.
+    // Assigned on every path that returns; the catch rethrows.
+    let dismissedDialog: boolean
     try {
       const applySystemPrompt = !state.systemPromptApplied
       const injected = harnessTurnText(turn, applySystemPrompt)
@@ -851,6 +860,7 @@ export abstract class PtyHarnessDriver<S extends HarnessStoreHost = HarnessStore
       const { dialog, draft } = await this.preSendBlock(native)
       if (dialog && !bypassDialogGate) throw dialogRejection(dialog)
       if (draft) throw draftRejection()
+      dismissedDialog = Boolean(dialog)
       if (!pty.inject(ptyId, injected, true, dialog ? true : undefined)) {
         // The term manager keeps its session→pty mapping until the EXITED
         // record is reaped (exitLingerMs), so a harness that just died still
@@ -866,6 +876,7 @@ export abstract class PtyHarnessDriver<S extends HarnessStoreHost = HarnessStore
         const retryDialog = retry.dialog
         if (retryDialog && !bypassDialogGate) throw dialogRejection(retryDialog)
         if (retry.draft) throw draftRejection()
+        dismissedDialog = Boolean(retryDialog)
         if (!pty.inject(ptyId, injected, true, retryDialog ? true : undefined)) {
           // A live-but-unwritable harness means its pre-ready inject buffer is
           // full — genuinely transient, so say so instead of 501.
@@ -896,6 +907,7 @@ export abstract class PtyHarnessDriver<S extends HarnessStoreHost = HarnessStore
     // quiet-window failsafe and moves the session to `active`.
     this.beginTurn(native)
     this.armDeliveryCheck(native, turn.text, warm, readyMaxMs, turn.deliveryId)
+    return dismissedDialog ? { dismissedDialog: true } : undefined
   }
 
   async interrupt(sessionId: SessionId): Promise<void> {

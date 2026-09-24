@@ -764,7 +764,7 @@ describe('POST /term/inject (seamless modes 5c)', () => {
       bypassDialogGate: true,
     })
     expect(inj.status).toBe(202)
-    expect(await inj.json()).toMatchObject({ ok: true })
+    expect(await inj.json()).toMatchObject({ ok: true, dismissedDialog: true })
     // Esc lands immediately; the paste waits out the interrupt settle.
     expect(fakeProcs[0].writes).toEqual(['\x1b'])
     await new Promise((r) => setTimeout(r, 700))
@@ -819,6 +819,7 @@ describe('POST /term/inject (seamless modes 5c)', () => {
       bypassDialogGate: true,
     })
     expect(inj.status).toBe(202)
+    expect(await inj.json()).not.toHaveProperty('dismissedDialog')
     expect(fakeProcs[0].writes[0]).toBe('\x1b[200~hello\x1b[201~')
     expect(fakeProcs[0].writes.some((w) => w === '\x1b')).toBe(false)
   })
