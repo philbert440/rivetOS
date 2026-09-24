@@ -174,6 +174,7 @@ export {
   harnessExecutorUnsupported,
   isHarnessExecutorTarget,
   isNotImplementedHarnessExecutor,
+  notImplementedHarnessReason,
 } from './domain/task/harness-executors.js'
 export type {
   HarnessExecutorCoverage,
@@ -223,6 +224,21 @@ export { FileMeshRegistry, buildLocalNode } from './domain/mesh.js'
 export type { MeshRegistryConfig, BuildLocalNodeArgs } from './domain/mesh.js'
 export { MeshDelegationEngine } from './domain/mesh-delegation.js'
 export type { MeshDelegationConfig } from './domain/mesh-delegation.js'
+export {
+  ROSTER_READ_BOUND_MS,
+  NoMeshRegistryError,
+  PresetDelegationEngine,
+  assessPresetRun,
+  presetTaskSpec,
+} from './domain/preset-delegation.js'
+export type {
+  PresetAssessment,
+  PresetDelegationConfig,
+  PresetHostContext,
+  PresetRosterEntry,
+  PresetTaskSpecOptions,
+} from './domain/preset-delegation.js'
+export { settleDelegatedTask } from './domain/task/delegation-wait.js'
 
 // Security
 export {

@@ -56,6 +56,9 @@ function catalogAgentOptions(agents: CatalogAgent[]): SelectOption[] {
     'grok-fast': 'grok Build (fast)',
   }
   for (const a of agents) {
+    // Presets are task-create targets, not chat-loop agents. `local` is not
+    // a discriminant — a preset hosted here is local and must still be skipped.
+    if ('kind' in a && a.kind === 'preset') continue
     if (!a.local || seen.has(a.id)) continue
     seen.add(a.id)
     const base = labels[a.id] ?? a.id

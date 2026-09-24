@@ -88,9 +88,23 @@ export function canonicalizeExecutorTarget(target: string | undefined): {
 /** Marks an executor as a registered rejection rather than a real harness. */
 const NOT_IMPLEMENTED = Symbol.for('rivetos.task.not-implemented-executor')
 
+/** The probe/gap reason stored on a rejecting executor (boot's `gapOverrides`). */
+const NOT_IMPLEMENTED_REASON = Symbol.for('rivetos.task.not-implemented-executor-reason')
+
 /** `true` for executors built by `createNotImplementedHarnessExecutor`. */
 export function isNotImplementedHarnessExecutor(executor: HarnessExecutor): boolean {
   return (executor as unknown as Record<symbol, unknown>)[NOT_IMPLEMENTED] === true
+}
+
+/**
+ * The rejecting executor's own reason, when it recorded one.
+ * Absent on a real harness and on a rejection that stored an empty reason —
+ * callers fall back to `harnessExecutorGap`.
+ */
+export function notImplementedHarnessReason(executor: HarnessExecutor): string | undefined {
+  if (!isNotImplementedHarnessExecutor(executor)) return undefined
+  const reason = (executor as unknown as Record<symbol, unknown>)[NOT_IMPLEMENTED_REASON]
+  return typeof reason === 'string' && reason.length > 0 ? reason : undefined
 }
 
 export interface NotImplementedHarnessExecutorOptions {
@@ -173,6 +187,10 @@ export function createNotImplementedHarnessExecutor(
     },
   }
   Object.defineProperty(executor, NOT_IMPLEMENTED, { value: true, enumerable: false })
+  Object.defineProperty(executor, NOT_IMPLEMENTED_REASON, {
+    value: opts.reason,
+    enumerable: false,
+  })
   return executor
 }
 

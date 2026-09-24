@@ -26,6 +26,7 @@ import type {
 import { AgentLoop } from './loop.js'
 import type { Router } from './router.js'
 import type { WorkspaceLoader } from './workspace.js'
+import type { PresetDelegationEngine } from './preset-delegation.js'
 import { noopDelegationRecorder, type DelegationRunsRecorder } from './delegation-recorder.js'
 
 // ---------------------------------------------------------------------------
@@ -87,6 +88,11 @@ export interface DelegationConfig {
   contextConfig?: { softNudgePct?: number[]; hardNudgePct?: number }
   /** Optional recorder for delegation observability (no-op by default) */
   recorder?: DelegationRunsRecorder
+  /**
+   * RivetHub presets. Tried when the router has no agent with that id,
+   * before the not-found failure. A config agent id wins over a preset name.
+   */
+  presets?: PresetDelegationEngine
 }
 
 // ---------------------------------------------------------------------------
@@ -136,6 +142,17 @@ export class DelegationEngine {
       }
     }
 
+    // Config agent id wins. Otherwise a RivetHub preset (id or name) runs as
+    // a harness-session task — not an in-process loop, so it skips the cache
+    // and the local delegation hooks.
+    const routed = this.config.router.getAgents().find((a) => a.id === request.toAgent)
+    if (!routed) {
+      const preset = await this.config.presets?.find(request.toAgent)
+      if (preset && this.config.presets) {
+        return this.config.presets.delegate(request, preset, chainDepth)
+      }
+    }
+
     // --- Cache check ---
     const cacheKey = this.buildCacheKey(request)
     const cached = this.getFromCache(cacheKey)
@@ -181,9 +198,12 @@ export class DelegationEngine {
     const agents = router.getAgents()
     const agent = agents.find((a) => a.id === request.toAgent)
     if (!agent) {
+      const presetNames = this.config.presets?.rosterEntries().map((entry) => entry.name) ?? []
+      const names = [...new Set([...agents.map((a) => a.id), ...presetNames])]
+      const listed = names.length ? names.join(', ') : '(none reachable)'
       const result: DelegationResult = {
         status: 'failed',
-        response: `Unknown agent: ${request.toAgent}. Available: ${agents.map((a) => a.id).join(', ')}`,
+        response: `Unknown agent: ${request.toAgent}. Agents you can delegate to: ${listed}`,
       }
       await this.fireAfterHook(request, result, startTime, chainDepth, false)
       return result
@@ -349,18 +369,26 @@ export class DelegationEngine {
    * @param chainDepth - Current chain depth (passed to delegate calls)
    */
   createDelegationTool(chainDepth = 0): Tool {
+    // eslint-disable-next-line @typescript-eslint/no-this-alias -- the getter below needs the engine instance
+    const engine = this
+    const baseDescription =
+      'Delegate a task to another agent. Use when you need a different model — ' +
+      'e.g., ask Grok to write code, ask Opus to review it. ' +
+      'The delegate runs with its own provider and returns the result.'
     return {
       name: 'delegate_task',
-      description:
-        'Delegate a task to another agent. Use when you need a different model — ' +
-        'e.g., ask Grok to write code, ask Opus to review it. ' +
-        'The delegate runs with its own provider and returns the result.',
+      get description(): string {
+        const roster = engine.config.presets?.rosterText()
+        return roster
+          ? `${baseDescription}\n\nAgents (RivetHub presets):\n${roster}`
+          : baseDescription
+      },
       parameters: {
         type: 'object',
         properties: {
           to_agent: {
             type: 'string',
-            description: 'Agent ID to delegate to (e.g., "grok", "opus", "local")',
+            description: 'Agent ID or RivetHub agent name to delegate to',
           },
           task: {
             type: 'string',

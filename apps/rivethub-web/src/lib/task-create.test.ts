@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest'
 import type { CatalogAgent } from '@rivetos/types'
-import { criteriaFromLines, taskAgentOptions } from './task-create.js'
+import { criteriaFromLines, taskAgentOptions, toTaskSelectOptions } from './task-create.js'
 
 describe('criteriaFromLines', () => {
   it('builds manual criteria with stable ids', () => {
@@ -29,5 +29,57 @@ describe('taskAgentOptions', () => {
     expect(opts.map((o) => o.value)).toEqual(['claude', 'remote-g', 'grok'])
     expect(opts[0]?.label).toContain('this node')
     expect(opts[1]?.label).toContain('@ ct112')
+  })
+
+  it('lists presets after config agents; unimplemented ones are disabled with the gap', () => {
+    const withPresets: CatalogAgent[] = [
+      ...agents,
+      {
+        kind: 'preset',
+        id: 'preset-reviewer',
+        name: 'reviewer',
+        node: 'ct116',
+        local: false,
+        harnessId: 'claude-code',
+        implemented: true,
+      },
+      {
+        kind: 'preset',
+        id: 'preset-codex',
+        name: 'codex reviewer',
+        node: 'ct115',
+        local: true,
+        harnessId: 'codex',
+        implemented: false,
+        gap: 'no headless executor for codex',
+      },
+    ]
+    const opts = taskAgentOptions(withPresets)
+    expect(opts.map((o) => o.value)).toEqual([
+      'claude',
+      'remote-g',
+      'grok',
+      'preset-reviewer',
+      'preset-codex',
+    ])
+    const reviewer = opts.find((o) => o.value === 'preset-reviewer')
+    expect(reviewer?.label).toBe('reviewer (agent · claude-code @ ct116)')
+    expect(reviewer?.disabled).toBeFalsy()
+    const codex = opts.find((o) => o.value === 'preset-codex')
+    expect(codex?.label).toBe('codex reviewer (agent · codex @ ct115)')
+    expect(codex?.disabled).toBe(true)
+    expect(codex?.title).toBe('no headless executor for codex')
+
+    const select = toTaskSelectOptions(opts)
+    const selectCodex = select.find((o) => o.value === 'preset-codex')
+    expect(selectCodex).toEqual({
+      value: 'preset-codex',
+      label: 'codex reviewer (agent · codex @ ct115)',
+      disabled: true,
+      title: 'no headless executor for codex',
+    })
+    const selectReviewer = select.find((o) => o.value === 'preset-reviewer')
+    expect(selectReviewer?.disabled).toBeFalsy()
+    expect(selectReviewer?.title).toBeUndefined()
   })
 })
