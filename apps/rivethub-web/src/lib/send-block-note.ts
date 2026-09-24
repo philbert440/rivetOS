@@ -27,10 +27,30 @@ export function undeliveredNote(message: string | undefined): string {
   return 'not delivered: check Terminal before retrying'
 }
 
-/** Shown after the inject button's send cancelled an open picker or prompt with
- *  Esc (den answers `dismissedDialog: true`), so the cancel isn't silent (#868). */
+/** Shown after the inject button's send queued Esc for an open picker or
+ *  prompt (den answers `dismissedDialog: true`). The Esc has the same delivery
+ *  guarantee as the paste — accepted, not proven written (#868). */
 export const DIALOG_DISMISSED_NOTICE =
-  'sent: a picker or prompt was open in the Terminal and was cancelled (Esc) first'
+  'sent: a picker or prompt was open in the Terminal; it is cancelled (Esc) before the paste'
 
 /** How long that notice stays up. */
 export const DIALOG_DISMISSED_NOTICE_MS = 8_000
+
+/** True when a turn 202 (`accepted`) or a legacy inject 202 (`injected`)
+ *  carries `dismissedDialog: true`. Anything else is not a dismissal. */
+export function dismissedDialogFrom(
+  response: { dismissedDialog?: unknown } | null | undefined,
+): boolean {
+  return response?.dismissedDialog === true
+}
+
+/** Milliseconds the notice should keep showing, or undefined when it was
+ *  never started or `now` is already at/past the 8 s mark. */
+export function dialogDismissedNoticeRemaining(
+  dismissedAt: number | undefined,
+  now: number,
+): number | undefined {
+  if (dismissedAt === undefined) return undefined
+  const remaining = dismissedAt + DIALOG_DISMISSED_NOTICE_MS - now
+  return remaining > 0 ? remaining : undefined
+}

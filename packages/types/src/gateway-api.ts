@@ -581,7 +581,9 @@ export interface TermInjectRequest {
 export interface TermInjectResponse {
   ok: true
   ptyId: string
-  /** The inject button's send cancelled an open dialog with Esc first. */
+  /** Esc for an open dialog was queued ahead of this paste, with the same
+   *  delivery guarantee as the turn (accepted, possibly still buffered —
+   *  not proven written). */
   dismissedDialog?: true
 }
 
@@ -762,7 +764,9 @@ export interface HarnessSessionTranscriptResponse extends HarnessRedirect {
 export interface HarnessTurnAccepted extends HarnessRedirect {
   ok: true
   sessionId: SessionId
-  /** The inject button's send cancelled an open dialog with Esc first. */
+  /** Esc for an open dialog was queued ahead of this paste, with the same
+   *  delivery guarantee as the turn (accepted, possibly still buffered —
+   *  not proven written). */
   dismissedDialog?: true
 }
 

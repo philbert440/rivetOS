@@ -2085,6 +2085,35 @@ describe('sendUserTurn gates on an open blocking dialog', () => {
     driver.close()
   })
 
+  it('drops dismissedDialog when the dead-PTY retry sees a clean screen', async () => {
+    const pty = fakePty()
+    let injectAttempts = 0
+    const seen: Injected[] = []
+    pty.host.inject = (id, text, submit, interrupt) => {
+      injectAttempts += 1
+      seen.push({ id, text, submit, interrupt })
+      if (injectAttempts === 1) return false
+      pty.injects.push({ id, text, submit, interrupt })
+      return true
+    }
+    const driver = new ClaudeCodeDriver({
+      store: fakeStore([]),
+      pty: () => Promise.resolve(pty.host),
+      turnQuietMs: 0,
+      // Dialog on the first read; the respawn re-check is idle, so the flag
+      // taken from the failed attempt must not survive.
+      screen: () => (injectAttempts === 0 ? CLAUDE_PERM_SCREEN : IDLE_HARNESS_SCREEN),
+    })
+    await driver.startSession({ nativeSessionId: UUID })
+    await expect(
+      driver.sendUserTurn(sid, { text: 'hello', bypassDialogGate: true }),
+    ).resolves.toBeUndefined()
+    expect(injectAttempts).toBe(2)
+    expect(seen[0]).toMatchObject({ text: 'hello', interrupt: true })
+    expect(seen[1]).toMatchObject({ text: 'hello', interrupt: undefined })
+    driver.close()
+  })
+
   it('does not block on an old dialog in scrollback', async () => {
     const pty = fakePty()
     const driver = new ClaudeCodeDriver({

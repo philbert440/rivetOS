@@ -43,8 +43,8 @@ class StubDriver implements HarnessDriver {
   interrupt(): Promise<void> {
     return Promise.resolve()
   }
-  sendUserTurn(): Promise<void> {
-    return Promise.resolve()
+  sendUserTurn(): Promise<undefined> {
+    return Promise.resolve(undefined)
   }
   resolveApproval(): Promise<void> {
     return Promise.resolve()

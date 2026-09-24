@@ -1,7 +1,10 @@
 import { describe, expect, it } from 'vitest'
 import {
   DIALOG_DISMISSED_NOTICE,
+  DIALOG_DISMISSED_NOTICE_MS,
   DIALOG_NOTE,
+  dialogDismissedNoticeRemaining,
+  dismissedDialogFrom,
   sendBlockNote,
   undeliveredNote,
 } from './send-block-note.js'
@@ -39,9 +42,40 @@ describe('undeliveredNote', () => {
 })
 
 describe('DIALOG_DISMISSED_NOTICE', () => {
-  it('says the message was sent and that a Terminal picker or prompt was cancelled', () => {
-    expect(DIALOG_DISMISSED_NOTICE).toMatch(/^sent:/)
-    expect(DIALOG_DISMISSED_NOTICE).toMatch(/Terminal/)
-    expect(DIALOG_DISMISSED_NOTICE).toMatch(/cancelled \(Esc\)/)
+  it('says the message was sent and that a Terminal picker or prompt is cancelled before the paste', () => {
+    expect(DIALOG_DISMISSED_NOTICE).toBe(
+      'sent: a picker or prompt was open in the Terminal; it is cancelled (Esc) before the paste',
+    )
+  })
+})
+
+describe('dismissedDialogFrom', () => {
+  it('reads the flag from either 202 shape and ignores anything else', () => {
+    expect(
+      dismissedDialogFrom({ ok: true, sessionId: 'claude-code:1', dismissedDialog: true }),
+    ).toBe(true)
+    expect(dismissedDialogFrom({ ok: true, ptyId: 'pty-1', dismissedDialog: true })).toBe(true)
+    expect(dismissedDialogFrom({ ok: true, sessionId: 'claude-code:1' })).toBe(false)
+    expect(dismissedDialogFrom({ ok: true, ptyId: 'pty-1' })).toBe(false)
+    expect(dismissedDialogFrom({ dismissedDialog: false })).toBe(false)
+    expect(dismissedDialogFrom({ dismissedDialog: 'true' })).toBe(false)
+    expect(dismissedDialogFrom(undefined)).toBe(false)
+    expect(dismissedDialogFrom(null)).toBe(false)
+  })
+})
+
+describe('dialogDismissedNoticeRemaining', () => {
+  const start = 1_000_000
+
+  it('stays up for 8s and is gone at the boundary', () => {
+    expect(dialogDismissedNoticeRemaining(undefined, start)).toBeUndefined()
+    expect(dialogDismissedNoticeRemaining(start, start)).toBe(DIALOG_DISMISSED_NOTICE_MS)
+    expect(dialogDismissedNoticeRemaining(start, start + DIALOG_DISMISSED_NOTICE_MS - 1)).toBe(1)
+    expect(
+      dialogDismissedNoticeRemaining(start, start + DIALOG_DISMISSED_NOTICE_MS),
+    ).toBeUndefined()
+    expect(dialogDismissedNoticeRemaining(start, start + DIALOG_DISMISSED_NOTICE_MS + 1)).toBe(
+      undefined,
+    )
   })
 })

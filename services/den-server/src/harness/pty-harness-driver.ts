@@ -815,9 +815,11 @@ export abstract class PtyHarnessDriver<S extends HarnessStoreHost = HarnessStore
     const room = this.room(native)
     const idBefore = pty.ptyForSession(room)
     let createdOrRespawned = !idBefore
-    // Set when the bypass Esc-cancels a dialog before the paste, so the client
-    // can say so (#868). A flag only: pane text never leaves the node.
-    let dismissedDialog = false
+    // Set when a bypass send queued Esc ahead of the paste (#868). Same
+    // delivery guarantee as the turn: `inject` returning true means accepted
+    // (the pre-ready buffer counts), not proven written. A flag only.
+    // Assigned on every path that returns; the catch rethrows.
+    let dismissedDialog: boolean
     try {
       const applySystemPrompt = !state.systemPromptApplied
       const injected = harnessTurnText(turn, applySystemPrompt)

@@ -431,11 +431,13 @@ export type UserTurn = {
 }
 
 /** Optional detail from an accepted `sendUserTurn`. Drivers with nothing to
- *  report return nothing. */
+ *  report resolve `undefined`. */
 export interface SendUserTurnResult {
-  /** A `bypassDialogGate` send found a dialog open and cancelled it with Esc
-   *  before the paste. A flag only: pane text never leaves the node. */
-  dismissedDialog?: boolean
+  /** A `bypassDialogGate` send found a dialog open and queued Esc ahead of
+   *  the paste, with the same delivery guarantee as the turn (accepted,
+   *  possibly still buffered — not proven written). A flag only: pane text
+   *  never leaves the node. */
+  dismissedDialog?: true
 }
 
 /**
@@ -453,7 +455,7 @@ export interface HarnessDriver {
   interrupt(sessionId: SessionId): Promise<void>
   /** Rejects with `turn_in_flight` while a turn is running — v1 drivers MUST
    *  NOT silently queue. */
-  sendUserTurn(sessionId: SessionId, turn: UserTurn): Promise<void | SendUserTurnResult>
+  sendUserTurn(sessionId: SessionId, turn: UserTurn): Promise<SendUserTurnResult | undefined>
   /** Rejects with `unknown_approval` for an unknown/expired `requestId`. */
   resolveApproval(
     sessionId: SessionId,

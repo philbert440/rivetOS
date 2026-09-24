@@ -901,6 +901,13 @@ describe('HarnessError → HTTP status mapping', () => {
     const plain = await post(base, `/api/harness-sessions/${enc(SID)}/turns`, { text: 'again' })
     expect(plain.status).toBe(202)
     expect(driver.calls.turns.at(-1)?.turn).not.toHaveProperty('bypassDialogGate')
+
+    const spoofed = await post(base, `/api/harness-sessions/${enc(SID)}/turns`, {
+      text: 'nope',
+      bypassDialogGate: 'true',
+    })
+    expect(spoofed.status).toBe(202)
+    expect(driver.calls.turns.at(-1)?.turn).not.toHaveProperty('bypassDialogGate')
   })
 
   it('echoes dismissedDialog only when the driver reports one', async () => {
@@ -917,13 +924,6 @@ describe('HarnessError → HTTP status mapping', () => {
     driver.turnResult = undefined
     const plain = await post(base, `/api/harness-sessions/${enc(SID)}/turns`, { text: 'again' })
     expect(await plain.json()).not.toHaveProperty('dismissedDialog')
-
-    const spoofed = await post(base, `/api/harness-sessions/${enc(SID)}/turns`, {
-      text: 'nope',
-      bypassDialogGate: 'true',
-    })
-    expect(spoofed.status).toBe(202)
-    expect(driver.calls.turns.at(-1)?.turn).not.toHaveProperty('bypassDialogGate')
   })
 
   it('puts only the string harness_dialog reason on the 409 body without the pane', async () => {

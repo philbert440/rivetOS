@@ -7,7 +7,11 @@ import {
   shouldPersistLaunchLatch,
 } from '../lib/conversation-model-options.js'
 import { withAttachmentText } from '../lib/attachments.js'
-import { DIALOG_DISMISSED_NOTICE, DIALOG_DISMISSED_NOTICE_MS } from '../lib/send-block-note.js'
+import {
+  DIALOG_DISMISSED_NOTICE,
+  dialogDismissedNoticeRemaining,
+  dismissedDialogFrom,
+} from '../lib/send-block-note.js'
 /**
  * Chat — the day-one job (phase-4 design doc). Layout mirrors
  * rivet-android: conversation drawer on the left, transcript + composer on
@@ -1264,11 +1268,12 @@ function ActiveSession(props: {
   // store and pushes turn deltas over the sessions WS; the store applies them.
   const streamId = gate.stream ? canonicalId : undefined
   const [streamError, setStreamError] = useState<string | undefined>()
-  // The inject button's last send cancelled an open dialog (den `dismissedDialog`).
+  // The inject button's last send queued Esc ahead of the paste (den `dismissedDialog`).
   const [dialogDismissedAt, setDialogDismissedAt] = useState<number | undefined>()
   useEffect(() => {
-    if (dialogDismissedAt === undefined) return
-    const timer = setTimeout(() => setDialogDismissedAt(undefined), DIALOG_DISMISSED_NOTICE_MS)
+    const remaining = dialogDismissedNoticeRemaining(dialogDismissedAt, Date.now())
+    if (remaining === undefined) return
+    const timer = setTimeout(() => setDialogDismissedAt(undefined), remaining)
     return () => clearTimeout(timer)
   }, [dialogDismissedAt])
   useEffect(() => {
@@ -1691,7 +1696,7 @@ function ActiveSession(props: {
         ...(prompt ? { systemPrompt: prompt } : {}),
         ...(bypassDialogGate ? { bypassDialogGate: true } : {}),
       })
-      if (accepted.dismissedDialog) setDialogDismissedAt(Date.now())
+      if (dismissedDialogFrom(accepted)) setDialogDismissedAt(Date.now())
     }
     // A loaded harness summary can route a plain turn before descriptors arrive.
     const sendSessionId = canonicalId ?? (item?.kind === 'harness' ? item.sessionId : undefined)
@@ -1731,7 +1736,7 @@ function ActiveSession(props: {
           ...(interrupt ? { interrupt } : {}),
           ...(bypassDialogGate ? { bypassDialogGate: true } : {}),
         })
-        if (injected.dismissedDialog) setDialogDismissedAt(Date.now())
+        if (dismissedDialogFrom(injected)) setDialogDismissedAt(Date.now())
       } catch {
         // The harness may have been LRU-evicted while we held a stale pty ref
         //: drop the ref, respawn (store-existence → --resume so
@@ -1746,7 +1751,7 @@ function ActiveSession(props: {
           text: injectText,
           ...(bypassDialogGate ? { bypassDialogGate: true } : {}),
         })
-        if (injected.dismissedDialog) setDialogDismissedAt(Date.now())
+        if (dismissedDialogFrom(injected)) setDialogDismissedAt(Date.now())
       }
       if (prompt) markSystemPromptSent(props.sessionId)
     } catch (err) {
