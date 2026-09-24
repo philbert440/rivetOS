@@ -40,9 +40,11 @@ const coreMocks = vi.hoisted(() => {
     async register(node: { metadata?: { harnessExecutors?: unknown } }): Promise<void> {
       meshRegisters.push(node)
     }
-    async start(
-      node: { id: string; name: string; metadata?: { harnessExecutors?: unknown } },
-    ): Promise<void> {
+    async start(node: {
+      id: string
+      name: string
+      metadata?: { harnessExecutors?: unknown }
+    }): Promise<void> {
       started.push({ id: node.id, name: node.name })
       await this.register(node)
     }
@@ -360,6 +362,7 @@ describe('registerAgentTools shared pool wiring', () => {
     await registerAgentTools(runtime, meshConfig(), '/tmp')
     expect(coreMocks.nodeNames).toEqual(['from-host'])
     expect(coreMocks.started).toEqual([{ id: 'from-host', name: 'from-host' }])
+  })
 
   it('registers harnessExecutors on the first mesh register()', async () => {
     const hostPool = {

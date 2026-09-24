@@ -487,6 +487,12 @@ export async function registerAgentTools(
   // this node left 'running'.
   // ------------------------------------------------------------------
 
+  // Runner materialises preset directories from the resolver, not from
+  // spec.workingDir. A node with no preset store passes undefined and the
+  // runner creates nothing for presetId rows.
+  const presetLookup = presetResolver
+  const resolvePresetForRunner = presetLookup ? (id: string) => presetLookup.find(id) : undefined
+
   // Subagent tool store: durable when the engine is live, else process-local
   // (g2a: the in-memory task store replaces the deleted InMemorySubagentStore;
   // its enqueue callback runs the same task handler in-process).
@@ -504,6 +510,7 @@ export async function registerAgentTools(
       nodeId: nodeNameFor(config),
       workspaceDir,
       memory: runtime.getMemory(),
+      resolvePreset: resolvePresetForRunner,
     })
     subagentTaskStore = inMemoryStore
   }
@@ -581,6 +588,7 @@ export async function registerAgentTools(
       // Context-refs resolution (step (b) checklist) — the runner folds
       // memory context into TaskSpec.resolvedContext when refs are present.
       memory: runtime.getMemory(),
+      resolvePreset: resolvePresetForRunner,
     })
     runTaskRef.current = taskRunner.handler
     await taskRunner.start()

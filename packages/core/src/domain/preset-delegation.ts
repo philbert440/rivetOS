@@ -41,6 +41,13 @@ const DEFAULT_WAIT_MS = 1_800_000
  * `refreshMesh` but must not stampede `getNodes`.
  */
 const MESH_REFRESH_TTL_MS = 30_000
+/**
+ * Bound for `resolver.list()` and `meshRegistry.getNodes()` while building a
+ * fresh roster. A hung read falls back to last-known data and must not pin
+ * the in-flight gate — the next call starts a new race.
+ * Catalog and slice 4's `list_agents` share this default.
+ */
+export const ROSTER_READ_BOUND_MS = 2_000
 
 const TASK_EFFORTS = ['low', 'medium', 'high'] as const
 type TaskEffort = (typeof TASK_EFFORTS)[number]
@@ -102,8 +109,36 @@ export interface PresetTaskSpecOptions {
    * A blank string is omitted from the spec rather than stored.
    */
   model?: string
-  /** This node, recorded as `spec.meshFrom` when provided. */
+  /**
+   * This node, recorded as `spec.meshFrom` on delegation rows.
+   * Ignored when `delegation` is false.
+   */
   meshFrom?: string
+  /**
+   * `delegate_task` rows are delegations (`delegation: true`, plus `meshFrom`
+   * when this node is known). API creates are not — pass false to omit both.
+   * Default true.
+   */
+  delegation?: boolean
+}
+
+/** Resolve when `work` settles, or at `timeoutMs` — and drop the shared gate. */
+function raceDeadline(
+  work: Promise<void>,
+  timeoutMs: number,
+  onTimeout: () => void,
+): Promise<void> {
+  let timer: ReturnType<typeof setTimeout> | undefined
+  const timeout = new Promise<void>((resolve) => {
+    timer = setTimeout(() => {
+      onTimeout()
+      resolve()
+    }, timeoutMs)
+    timer.unref()
+  })
+  return Promise.race([work, timeout]).finally(() => {
+    if (timer !== undefined) clearTimeout(timer)
+  })
 }
 
 function isTaskEffort(effort: string): effort is TaskEffort {
@@ -159,15 +194,16 @@ export function presetTaskSpec(
   preset: AgentPreset,
   opts?: PresetTaskSpecOptions,
 ): Record<string, unknown> {
+  const delegation = opts?.delegation !== false
   const modelSource = opts && 'model' in opts ? opts.model : preset.model
-  const model = modelSource || undefined
+  const model = modelSource && modelSource.trim() !== '' ? modelSource : undefined
   const effort = taskEffort(preset.effort)
   const systemPromptAppend = preset.systemPrompt || undefined
   return {
-    delegation: true,
+    ...(delegation ? { delegation: true } : {}),
     presetId: preset.id,
     presetName: preset.name,
-    ...(opts?.meshFrom ? { meshFrom: opts.meshFrom } : {}),
+    ...(delegation && opts?.meshFrom ? { meshFrom: opts.meshFrom } : {}),
     workingDir: preset.directory,
     sharedLink: preset.sharedLink ?? true,
     // excludeTools is a no-op for harness-session executors (they never
@@ -260,7 +296,13 @@ export class PresetDelegationEngine {
   /** Last mesh snapshot for synchronous roster coverage. Delegation pre-flight re-reads. */
   private meshSnapshot: MeshNode[] = []
   private lastMeshRefreshAt = 0
+  /** The getNodes() read itself — not the per-caller timeout wrapper. */
   private meshRefreshInflight: Promise<void> | undefined
+  /**
+   * In-flight fresh roster read. Cleared when it settles, including on
+   * timeout, so a hung `list()` cannot pin every later caller.
+   */
+  private presetRefreshInflight: Promise<AgentPreset[]> | undefined
 
   constructor(private readonly config: PresetDelegationConfig) {
     this.maxChainDepth = config.maxChainDepth ?? DEFAULT_MAX_CHAIN_DEPTH
@@ -286,13 +328,20 @@ export class PresetDelegationEngine {
   }
 
   /**
-   * Await `resolver.list()` (fresh cache, or the last-known list plus a
-   * background refresh when the TTL has elapsed) and the throttled mesh
-   * snapshot. The catalog uses this; `list_agents` (slice 4) will too.
+   * Presets from a store read that finished within `timeoutMs` (default
+   * {@link ROSTER_READ_BOUND_MS}), plus a mesh snapshot no older than that
+   * wait. `CachedPresetResolver.list()` is stale-while-revalidate after the
+   * TTL — that old cache is not fresh — so this invalidates and awaits the
+   * refresh. On timeout, falls back to `lastKnown()` / the last mesh snapshot
+   * and drops the in-flight gate; the next call starts a new race.
+   * The catalog and slice 4's `list_agents` use this.
    */
-  async rosterEntriesFresh(): Promise<PresetRosterEntry[]> {
-    await this.refreshMesh()
-    const rows = await this.config.resolver.list()
+  async rosterEntriesFresh(opts?: { timeoutMs?: number }): Promise<PresetRosterEntry[]> {
+    const timeoutMs = opts?.timeoutMs ?? ROSTER_READ_BOUND_MS
+    const [, rows] = await Promise.all([
+      this.refreshMesh(timeoutMs),
+      this.freshPresetRows(timeoutMs),
+    ])
     return rows.map((preset) => this.toRosterEntry(preset))
   }
 
@@ -407,13 +456,53 @@ export class PresetDelegationEngine {
     return { status: 'failed', response: assessed.refusal.error, durationMs: 0 }
   }
 
-  private refreshMesh(): Promise<void> {
+  /**
+   * `resolver.list()` after invalidate awaits the store. Racing that against
+   * `timeoutMs` keeps a hung read off the catalog. Timeout returns last-known
+   * rows and the caller's `finally` drops `presetRefreshInflight`.
+   */
+  private freshPresetRows(timeoutMs: number): Promise<AgentPreset[]> {
+    if (this.presetRefreshInflight) return this.presetRefreshInflight
+    this.config.resolver.invalidate()
+    const pending = this.awaitPresetList(timeoutMs).finally(() => {
+      if (this.presetRefreshInflight === pending) this.presetRefreshInflight = undefined
+    })
+    this.presetRefreshInflight = pending
+    return pending
+  }
+
+  private awaitPresetList(timeoutMs: number): Promise<AgentPreset[]> {
+    let timer: ReturnType<typeof setTimeout> | undefined
+    const timeout = new Promise<{ ok: false }>((resolve) => {
+      timer = setTimeout(() => resolve({ ok: false }), timeoutMs)
+      timer.unref()
+    })
+    return Promise.race([
+      this.config.resolver.list().then((rows) => ({ ok: true as const, rows })),
+      timeout,
+    ]).then((outcome) => {
+      if (timer !== undefined) clearTimeout(timer)
+      if (!outcome.ok) return this.config.resolver.lastKnown()
+      return outcome.rows
+    })
+  }
+
+  private refreshMesh(timeoutMs = ROSTER_READ_BOUND_MS): Promise<void> {
     if (!this.config.meshRegistry) return Promise.resolve()
     const fresh =
       this.lastMeshRefreshAt !== 0 && this.now() - this.lastMeshRefreshAt < MESH_REFRESH_TTL_MS
     if (fresh) return Promise.resolve()
-    if (this.meshRefreshInflight) return this.meshRefreshInflight
+    if (!this.meshRefreshInflight) this.meshRefreshInflight = this.startMeshRead()
+    const inflight = this.meshRefreshInflight
+    return raceDeadline(inflight, timeoutMs, () => {
+      // A hung getNodes() must not be the gate for the next roster read.
+      if (this.meshRefreshInflight === inflight) this.meshRefreshInflight = undefined
+    })
+  }
+
+  private startMeshRead(): Promise<void> {
     const registry = this.config.meshRegistry
+    if (!registry) return Promise.resolve()
     const pending = registry
       .getNodes()
       .then((nodes) => {
@@ -421,14 +510,18 @@ export class PresetDelegationEngine {
         this.lastMeshRefreshAt = this.now()
       })
       .catch((err: unknown) => {
-        log.warn(`Could not read mesh registry for preset roster: ${(err as Error).message}`)
+        log.warn(
+          `Could not read mesh registry for preset roster: ${
+            err instanceof Error ? err.message : String(err)
+          }`,
+        )
         // A dead registry is not retried on every roster read until the TTL passes.
+        // A timeout does not stamp — the next call starts a new race.
         this.lastMeshRefreshAt = this.now()
       })
       .finally(() => {
         if (this.meshRefreshInflight === pending) this.meshRefreshInflight = undefined
       })
-    this.meshRefreshInflight = pending
     return pending
   }
 

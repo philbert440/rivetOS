@@ -663,6 +663,9 @@ describe('PresetDelegationEngine', () => {
     }
     expect(engine.rosterText()).toContain('second')
 
+    // Catalog half must await a refresh, not read the cache rosterText just filled.
+    rows.push(preset({ id: 'c', name: 'third' }))
+    now += 1_000
     const agents = await buildCatalogAgents({
       nodeName: 'ct115',
       router: { getAgents: () => [] } as unknown as Router,
@@ -671,7 +674,105 @@ describe('PresetDelegationEngine', () => {
       presets: engine,
     })
     expect(agents).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ kind: 'preset', name: 'second' }),
+        expect.objectContaining({ kind: 'preset', name: 'third' }),
+      ]),
+    )
+  })
+
+  function catalogOpts(
+    engine: PresetDelegationEngine,
+    rosterFreshTimeoutMs: number,
+  ): Parameters<typeof buildCatalogAgents>[0] {
+    return {
+      nodeName: 'ct115',
+      router: { getAgents: () => [] } as unknown as Router,
+      tools: () => [],
+      executors: executors(['claude-code']),
+      presets: engine,
+      rosterFreshTimeoutMs,
+    }
+  }
+
+  it('the first catalog request after the TTL awaits a pending store read', async () => {
+    const rows: AgentPreset[] = [preset({ id: 'a', name: 'first' })]
+    let now = 1_000
+    const pending: Array<(rows: AgentPreset[]) => void> = []
+    let mode: 'immediate' | 'deferred' | 'hang' = 'immediate'
+    let listCalls = 0
+    const backing = {
+      list: () => {
+        listCalls += 1
+        if (mode === 'hang') return new Promise<AgentPreset[]>(() => {})
+        if (mode === 'deferred') {
+          return new Promise<AgentPreset[]>((resolve) => {
+            pending.push((next) => resolve(next.map((row) => ({ ...row }))))
+          })
+        }
+        return Promise.resolve(rows.map((row) => ({ ...row })))
+      },
+    } as unknown as AgentPresetStore
+    const cached = createCachedPresetResolver(backing, { ttlMs: 1_000, now: () => now })
+    const store = new InMemoryTaskStore()
+    const waiter = createTaskCompletionWaiter({ store, pollFallbackMs: 10 })
+    stoppers.push(() => waiter.stop())
+    const engine = new PresetDelegationEngine({
+      resolver: cached,
+      taskStore: store,
+      waiter,
+      nodeName: 'ct115',
+      executors: executors(['claude-code']),
+      now: () => now,
+    })
+    await cached.list()
+
+    rows.push(preset({ id: 'b', name: 'second' }))
+    now += 1_000
+    mode = 'deferred'
+    const catalog = buildCatalogAgents(catalogOpts(engine, 300))
+    for (let i = 0; i < 20 && pending.length === 0; i++) {
+      await new Promise((resolve) => setTimeout(resolve, 5))
+    }
+    expect(pending.length).toBeGreaterThan(0)
+    pending[0]?.(rows)
+    const agents = await catalog
+    expect(agents).toEqual(
       expect.arrayContaining([expect.objectContaining({ kind: 'preset', name: 'second' })]),
     )
+
+    rows.push(preset({ id: 'c', name: 'third' }))
+    now += 1_000
+    mode = 'hang'
+    const callsBeforeHang = listCalls
+    const started = Date.now()
+    const hung = await buildCatalogAgents(catalogOpts(engine, 40))
+    const elapsed = Date.now() - started
+    expect(elapsed).toBeGreaterThanOrEqual(30)
+    expect(elapsed).toBeLessThan(500)
+    expect(hung.some((agent) => agent.name === 'third')).toBe(false)
+    expect(hung.some((agent) => agent.name === 'second')).toBe(true)
+    expect(listCalls).toBeGreaterThan(callsBeforeHang)
+
+    // The timed-out read must not pin the next call.
+    const callsAfterTimeout = listCalls
+    await engine.rosterEntriesFresh({ timeoutMs: 40 })
+    expect(listCalls).toBeGreaterThan(callsAfterTimeout)
+  })
+
+  it('a hung mesh read does not pin the next roster refresh', async () => {
+    let calls = 0
+    const hung = mesh([])
+    hung.getNodes = () => {
+      calls += 1
+      return new Promise(() => {})
+    }
+    const store = new InMemoryTaskStore()
+    const engine = engineFor([preset()], { store, mesh: hung })
+    const afterConstruct = calls
+    expect(afterConstruct).toBeGreaterThanOrEqual(1)
+    await engine.rosterEntriesFresh({ timeoutMs: 30 })
+    await engine.rosterEntriesFresh({ timeoutMs: 30 })
+    expect(calls).toBeGreaterThan(afterConstruct)
   })
 })

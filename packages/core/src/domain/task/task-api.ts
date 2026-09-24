@@ -161,6 +161,66 @@ function parseCreate(body: Record<string, unknown>): NewTaskInput | string {
   }
 }
 
+const CLIENT_PRESET_FIELDS = [
+  'presetId',
+  'presetName',
+  'sharedLink',
+  'delegation',
+  'meshFrom',
+] as const
+
+/**
+ * Fields only the server may put on a preset row. A client spec keeps them
+ * only when this route took the preset branch and `presetTaskSpec` re-adds
+ * them. Explicit executors and unknown agent ids are not that branch.
+ */
+function stripClientPresetFields(
+  spec: Record<string, unknown> | undefined,
+): Record<string, unknown> | undefined {
+  if (!spec) return spec
+  const next: Record<string, unknown> = { ...spec }
+  delete next.presetId
+  delete next.presetName
+  delete next.sharedLink
+  delete next.delegation
+  delete next.meshFrom
+  return next
+}
+
+/**
+ * Preset-row spec precedence for POST /api/tasks:
+ * - a non-blank body `model` wins; a blank `model` is omitted and does not
+ *   fall back to the preset model
+ * - body `effort` and `systemPromptAppend` are ignored — the preset owns them
+ * - `presetId`, `presetName`, `workingDir`, and `sharedLink` come from the preset
+ * - the row is not a delegation: no `delegation`, no `meshFrom`
+ * Other client spec fields (`tools`, `interactive`, …) are kept.
+ */
+function specForApiPreset(
+  preset: AgentPreset,
+  clientSpec: Record<string, unknown> | undefined,
+): Record<string, unknown> {
+  const client = clientSpec ?? {}
+  const rest: Record<string, unknown> = {}
+  for (const [key, value] of Object.entries(client)) {
+    if (
+      key === 'model' ||
+      key === 'effort' ||
+      key === 'systemPromptAppend' ||
+      key === 'workingDir' ||
+      (CLIENT_PRESET_FIELDS as readonly string[]).includes(key)
+    ) {
+      continue
+    }
+    rest[key] = value
+  }
+  const modelOpt = typeof client.model === 'string' ? { model: client.model } : {}
+  return {
+    ...rest,
+    ...presetTaskSpec(preset, { ...modelOpt, delegation: false }),
+  }
+}
+
 /** Apply criteria policy to a parsed create; returns an error string for 400. */
 function applyCriteriaPolicy(input: NewTaskInput, policy: CriteriaPolicy): NewTaskInput | string {
   try {
@@ -208,29 +268,27 @@ export function createTaskApiRoute(opts: TaskApiOptions): GatewayRoute {
           // A body that names an executor is left alone — including an explicit
           // chat-loop. Only the default (field absent) is rewritten into a preset row.
           const executorExplicit = typeof body.executor === 'string'
+          let tookPresetBranch = false
           if (!executorExplicit && opts.resolvePreset) {
             const preset = await opts.resolvePreset(input.agentId)
             if (preset) {
+              tookPresetBranch = true
               if (opts.presetHost) {
                 const assessed = await assessPresetRun(preset, opts.presetHost)
                 if (assessed.refusal) {
                   return json(res, assessed.refusal.status, { error: assessed.refusal.error })
                 }
               }
-              const bodyModel = typeof input.spec?.model === 'string' ? input.spec.model : undefined
               input.executor = 'harness-session'
               input.executorTarget = preset.harnessId
               input.agentId = preset.id
               input.nodeAffinity = preset.node
-              input.spec = {
-                ...input.spec,
-                ...presetTaskSpec(preset, {
-                  ...(bodyModel !== undefined ? { model: bodyModel } : {}),
-                  meshFrom: opts.presetHost?.nodeName,
-                }),
-              }
+              input.spec = specForApiPreset(preset, input.spec)
             }
           }
+          // Defence in depth for the runner: a forged presetId must not be
+          // stored on a row this route did not build from a resolved preset.
+          if (!tookPresetBranch) input.spec = stripClientPresetFields(input.spec)
           if (!input.nodeAffinity && opts.resolveAffinity) {
             const resolved = await opts.resolveAffinity(input.agentId)
             if (typeof resolved === 'object' && resolved !== null)

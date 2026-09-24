@@ -23,6 +23,7 @@
 import { run, type Runner } from 'graphile-worker'
 import type pg from 'pg'
 import type {
+  AgentPreset,
   HarnessExecutor,
   Memory,
   TaskBudget,
@@ -44,6 +45,9 @@ import { logger } from '../../logger.js'
 import { retryPreSendConnect } from './pg-transient.js'
 
 const log = logger('TaskRunner')
+
+/** One warning per process — a fleet of preset rows must not spam this. */
+let loggedMissingPresetResolver = false
 
 // ---------------------------------------------------------------------------
 // Executor registry — keyed by (executor, executor_target).
@@ -144,6 +148,13 @@ export interface TaskHandlerOptions {
    * unevaluated terminal row. Absent = phase-1 behavior.
    */
   evaluation?: import('./evaluation-coordinator.js').EvaluationCoordinator
+  /**
+   * Preset lookup for directory materialisation. Boot passes
+   * `presetResolver.find`. Absent (a node that never loaded presets): a row
+   * with `spec.presetId` is not materialised. The spec's `workingDir` is not
+   * a path the runner may create.
+   */
+  resolvePreset?: (id: string) => Promise<AgentPreset | undefined>
 }
 
 const HEARTBEAT_INTERVAL_MS_DEFAULT = 30_000
@@ -292,6 +303,80 @@ export function createTaskHandler(opts: TaskHandlerOptions): (taskId: string) =>
   }
 }
 
+interface PinnedDirectory {
+  ok: boolean
+  /** Cwd forwarded to the executor. Undefined → opts.workspaceDir. */
+  workingDir?: string
+}
+
+/**
+ * Materialise a preset's own directory, or refuse.
+ * - no presetId: forward spec.workingDir, create nothing
+ * - presetId, no resolver: create nothing, log once
+ * - forged id (resolver misses): create nothing
+ * - spec.workingDir set and different from the preset directory: fail
+ *   `working_dir_mismatch`, create nothing
+ * - otherwise materialise the preset directory and shared link, and run there
+ *   even when the row omitted workingDir
+ */
+async function pinPresetDirectory(
+  task: TaskRow,
+  spec: { presetId?: string; workingDir?: string },
+  opts: TaskHandlerOptions,
+): Promise<PinnedDirectory> {
+  const presetId =
+    typeof spec.presetId === 'string' && spec.presetId !== '' ? spec.presetId : undefined
+  const specDir = typeof spec.workingDir === 'string' ? spec.workingDir : undefined
+  if (!presetId) return { ok: true, workingDir: specDir }
+
+  if (!opts.resolvePreset) {
+    if (!loggedMissingPresetResolver) {
+      loggedMissingPresetResolver = true
+      log.warn(
+        'preset row has presetId but no resolvePreset — not materialising a working directory',
+      )
+    }
+    return { ok: true, workingDir: specDir }
+  }
+
+  const preset = await opts.resolvePreset(presetId)
+  if (!preset) return { ok: true, workingDir: specDir }
+
+  const presetDir =
+    typeof preset.directory === 'string' && preset.directory !== '' ? preset.directory : undefined
+  // A blank spec cwd is "not set", not a conflicting path.
+  if (specDir !== undefined && specDir !== '' && specDir !== presetDir) {
+    await opts.store.finish(task.id, 'failed', {
+      verdict: 'failed',
+      summary: `Working directory does not match preset "${preset.name || presetId}"`,
+      artifacts: [],
+      usage: ZERO_USAGE,
+      error: 'working_dir_mismatch',
+    })
+    return { ok: false }
+  }
+
+  if (presetDir !== undefined) {
+    try {
+      ensureAgentDirectory(
+        { directory: presetDir, sharedLink: preset.sharedLink },
+        { sharedDir: sharedDir(), log: (msg) => log.info(msg) },
+      )
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : String(err)
+      await opts.store.finish(task.id, 'failed', {
+        verdict: 'failed',
+        summary: `Working directory unavailable: ${msg}`,
+        artifacts: [],
+        usage: ZERO_USAGE,
+        error: 'working_dir_unavailable',
+      })
+      return { ok: false }
+    }
+  }
+  return { ok: true, workingDir: presetDir ?? specDir }
+}
+
 async function runClaimedTask(task: TaskRow, opts: TaskHandlerOptions): Promise<void> {
   const executor = opts.executors.resolve(task.executor, task.executorTarget)
   if (!executor) {
@@ -319,35 +404,14 @@ async function runClaimedTask(task: TaskRow, opts: TaskHandlerOptions): Promise<
     presetId?: string
   }
 
-  // Preset rows pin a directory. Materialise it before the executor starts
-  // so an imported or foreign-created preset gets one the first time it
-  // runs. Workflow chat-loop steps also set workingDir (the case dir) and
-  // must keep that cwd — creating `<caseDir>/rivet-shared` would symlink-cycle
-  // the shared tree. A bad preset path fails the task; it must not crash the
-  // handler (the graphile job would then leave the row running).
-  if (
-    typeof spec.presetId === 'string' &&
-    spec.presetId !== '' &&
-    typeof spec.workingDir === 'string'
-  ) {
-    try {
-      ensureAgentDirectory(
-        { directory: spec.workingDir, sharedLink: spec.sharedLink },
-        { sharedDir: sharedDir(), log: (msg) => log.info(msg) },
-      )
-    } catch (err: unknown) {
-      const msg = err instanceof Error ? err.message : String(err)
-      await opts.store.finish(task.id, 'failed', {
-        verdict: 'failed',
-        summary: `Working directory unavailable: ${msg}`,
-        artifacts: [],
-        usage: ZERO_USAGE,
-        error: 'working_dir_unavailable',
-      })
-      return
-    }
-  }
-  const workingDir = spec.workingDir ?? opts.workspaceDir
+  // Preset rows pin a directory, but the spec is not the source of truth:
+  // `workingDir` / `presetId` on the row can be forged or stale. Look the
+  // preset up and materialise ITS directory and shared link. Workflow
+  // chat-loop steps also set workingDir (the case dir) and must keep that
+  // cwd — they have no presetId, so nothing is created.
+  const pinned = await pinPresetDirectory(task, spec, opts)
+  if (!pinned.ok) return
+  const workingDir = pinned.workingDir ?? opts.workspaceDir
 
   // Resuming from awaiting-input: consume the stashed message atomically —
   // it must drive the opening turn INSTEAD of the goal (the goal must never

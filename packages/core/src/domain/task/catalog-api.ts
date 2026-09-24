@@ -26,7 +26,7 @@ import type {
   Tool,
 } from '@rivetos/types'
 import type { Router } from '../router.js'
-import type { PresetDelegationEngine } from '../preset-delegation.js'
+import { ROSTER_READ_BOUND_MS, type PresetDelegationEngine } from '../preset-delegation.js'
 import type { TaskExecutorRegistry } from './runner.js'
 import { isHarnessExecutorTarget, isNotImplementedHarnessExecutor } from './harness-executors.js'
 import { logger } from '../../logger.js'
@@ -45,10 +45,31 @@ export interface CatalogApiOptions {
   meshRegistry?: MeshRegistry
   /** RivetHub presets appended as `kind: 'preset'` catalog agents. */
   presets?: PresetDelegationEngine
+  /**
+   * Bound for the fresh preset roster. Default {@link ROSTER_READ_BOUND_MS}.
+   * Tests shorten it. A hung store falls back to `rosterEntries()` (last-known).
+   */
+  rosterFreshTimeoutMs?: number
+}
+
+function raceRoster<T>(work: Promise<T>, timeoutMs: number, fallback: () => T): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined
+  const timeout = new Promise<T>((resolve) => {
+    timer = setTimeout(() => resolve(fallback()), timeoutMs)
+    timer.unref()
+  })
+  return Promise.race([work.catch(() => fallback()), timeout]).finally(() => {
+    if (timer !== undefined) clearTimeout(timer)
+  })
 }
 
 async function presetCatalogAgents(opts: CatalogApiOptions): Promise<CatalogAgent[]> {
-  const entries = opts.presets ? await opts.presets.rosterEntriesFresh() : []
+  if (!opts.presets) return []
+  const bound = opts.rosterFreshTimeoutMs ?? ROSTER_READ_BOUND_MS
+  const presets = opts.presets
+  const entries = await raceRoster(presets.rosterEntriesFresh({ timeoutMs: bound }), bound, () =>
+    presets.rosterEntries(),
+  )
   return entries.map((entry): CatalogAgent => ({
     kind: 'preset',
     id: entry.id,

@@ -7,6 +7,9 @@
 
 import { createServer, type Server } from 'node:http'
 import type { AddressInfo } from 'node:net'
+import { existsSync, mkdtempSync, rmSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 import { describe, it, expect, afterEach, vi } from 'vitest'
 import type {
   AgentPreset,
@@ -408,9 +411,10 @@ describe('agent-aware dispatch (resolveAffinity)', () => {
       model: 'opus',
       effort: 'high',
       systemPromptAppend: 'be strict',
-      delegation: true,
       excludeTools: ['delegate_task'],
     })
+    expect(row?.spec.delegation).toBeUndefined()
+    expect(row?.spec.meshFrom).toBeUndefined()
   })
 
   it('a body model wins over the preset model', async () => {
@@ -442,6 +446,54 @@ describe('agent-aware dispatch (resolveAffinity)', () => {
     expect(res.status).toBe(201)
     const { task } = (await res.json()) as { task: { id: string } }
     expect((await store.get(task.id))?.spec.model).toBe('haiku')
+  })
+
+  it('blank model is dropped and the preset owns effort and systemPromptAppend', async () => {
+    const reviewer = reviewerPreset()
+    const host: MeshNode = {
+      id: 'ct116',
+      name: 'ct116',
+      agents: [],
+      host: '10.0.0.1',
+      port: 3000,
+      providers: [],
+      models: [],
+      capabilities: [],
+      status: 'online',
+      lastSeen: 1,
+      registeredAt: 1,
+      version: '0.1.0',
+      metadata: { harnessExecutors: ['claude-code'] },
+    }
+    const { base, store } = await startPresetApi({
+      preset: reviewer,
+      presetHost: { nodeName: 'ct115', meshRegistry: presetMesh([host]) },
+    })
+    const res = await create(base, {
+      goal: 'review',
+      agentId: 'reviewer',
+      spec: {
+        model: '  ',
+        effort: 'low',
+        systemPromptAppend: 'from the client',
+        tools: ['memory_search'],
+        workingDir: '/tmp/not-the-preset',
+        presetId: 'forged',
+        delegation: true,
+        meshFrom: 'ct999',
+      },
+    })
+    expect(res.status).toBe(201)
+    const { task } = (await res.json()) as { task: { id: string } }
+    const spec = (await store.get(task.id))?.spec
+    expect(spec?.model).toBeUndefined()
+    expect(spec?.effort).toBe('high')
+    expect(spec?.systemPromptAppend).toBe('be strict')
+    expect(spec?.tools).toEqual(['memory_search'])
+    expect(spec?.workingDir).toBe(reviewer.directory)
+    expect(spec?.presetId).toBe(reviewer.id)
+    expect(spec?.delegation).toBeUndefined()
+    expect(spec?.meshFrom).toBeUndefined()
   })
 
   it('an unimplemented preset is 400 with the gap text and creates no row', async () => {
@@ -507,5 +559,83 @@ describe('agent-aware dispatch (resolveAffinity)', () => {
     expect(row?.agentId).toBe('reviewer')
     expect(row?.spec.presetId).toBeUndefined()
     expect(row?.nodeAffinity).toBeUndefined()
+  })
+
+  it('an explicit executor with a forged presetId stores none and materialises nothing', async () => {
+    const reviewer = reviewerPreset()
+    const parent = mkdtempSync(join(tmpdir(), 'rivetos-api-forged-'))
+    const dir = join(parent, 'planted')
+    try {
+      const { base, store } = await startPresetApi({ preset: reviewer })
+      const res = await create(base, {
+        goal: 'review',
+        agentId: 'reviewer',
+        executor: 'harness-session',
+        executorTarget: 'claude-code',
+        spec: {
+          presetId: 'forged',
+          presetName: 'nope',
+          sharedLink: true,
+          delegation: true,
+          meshFrom: 'ct999',
+          workingDir: dir,
+          model: 'haiku',
+        },
+      })
+      expect(res.status).toBe(201)
+      const { task } = (await res.json()) as { task: { id: string } }
+      const row = await store.get(task.id)
+      expect(row?.executor).toBe('harness-session')
+      expect(row?.spec.presetId).toBeUndefined()
+      expect(row?.spec.presetName).toBeUndefined()
+      expect(row?.spec.sharedLink).toBeUndefined()
+      expect(row?.spec.delegation).toBeUndefined()
+      expect(row?.spec.meshFrom).toBeUndefined()
+      expect(row?.spec.model).toBe('haiku')
+      expect(row?.spec.workingDir).toBe(dir)
+
+      const executors = createExecutorRegistry()
+      const fake = fakeExecutor()
+      executors.register('harness-session', fake, 'claude-code')
+      const handler = createTaskHandler({
+        store,
+        executors,
+        nodeId: 'test-node',
+        resolvePreset: async () => reviewer,
+      })
+      await handler(task.id)
+
+      expect(existsSync(dir)).toBe(false)
+      expect((await store.get(task.id))?.status).toBe('completed')
+    } finally {
+      rmSync(parent, { recursive: true, force: true })
+    }
+  })
+
+  it('an agentId that is not a preset drops forged preset fields', async () => {
+    const reviewer = reviewerPreset()
+    const { base, store } = await startPresetApi({ preset: reviewer })
+    const res = await create(base, {
+      goal: 'review',
+      agentId: 'not-a-preset',
+      spec: {
+        presetId: 'forged',
+        presetName: 'nope',
+        sharedLink: true,
+        delegation: true,
+        meshFrom: 'ct999',
+        model: 'haiku',
+      },
+    })
+    expect(res.status).toBe(201)
+    const { task } = (await res.json()) as { task: { id: string } }
+    const row = await store.get(task.id)
+    expect(row?.executor).toBe('chat-loop')
+    expect(row?.spec.presetId).toBeUndefined()
+    expect(row?.spec.presetName).toBeUndefined()
+    expect(row?.spec.sharedLink).toBeUndefined()
+    expect(row?.spec.delegation).toBeUndefined()
+    expect(row?.spec.meshFrom).toBeUndefined()
+    expect(row?.spec.model).toBe('haiku')
   })
 })
