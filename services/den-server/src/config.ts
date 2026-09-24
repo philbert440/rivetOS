@@ -5,6 +5,7 @@ import { loadUsersRegistry, sharedDir, type UsersRegistry } from '@rivetos/types
 import { join } from 'node:path'
 import { DEFAULT_UPLOAD_MAX_BYTES, DEFAULT_UPLOAD_TTL_MS } from './harness/uploads.js'
 import { herdrAvailable } from './term/herdr.js'
+import { parseList } from './origin-policy.js'
 
 function intEnv(env: NodeJS.ProcessEnv, name: string, fallback: number): number {
   // Read from the PASSED env — loadConfig(env) callers (the embedded
@@ -156,6 +157,13 @@ export interface DenConfig {
   /** How long one /mesh.json overview (roster read + peer probes) is served
    *  from cache (ms). */
   meshCacheMs: number
+  /** Extra browser origins allowed to call den (`den.allowed_origins`),
+   *  beyond same-origin, the desktop shell and mesh peers — see
+   *  origin-policy.ts. Optional so hand-built test configs stay valid. */
+  allowedOrigins?: string[]
+  /** Extra Host names a plain-HTTP den accepts from loopback callers
+   *  (`den.allowed_hosts`) — DNS-rebinding guard, see origin-policy.ts. */
+  allowedHosts?: string[]
   /** Local PTY terminals (opt-in; see term/). */
   term: DenTermConfig
   /** Host mic → virtual node input (opt-in; see audio/ + docs/MICBRIDGE.md). */
@@ -307,6 +315,8 @@ export function loadConfig(
     meshFile: env.RIVETOS_DEN_MESH_FILE ?? '',
     sharedRoot,
     meshCacheMs: intEnv(env, 'RIVETOS_DEN_MESH_CACHE_MS', 10_000),
+    allowedOrigins: parseList(env.RIVETOS_DEN_ALLOWED_ORIGINS),
+    allowedHosts: parseList(env.RIVETOS_DEN_ALLOWED_HOSTS),
     term: {
       enabled: truthyEnv(env.RIVETOS_DEN_TERM),
       open: truthyEnv(env.RIVETOS_DEN_TERM_OPEN),

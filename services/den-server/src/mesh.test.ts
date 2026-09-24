@@ -8,6 +8,7 @@ import {
   createMeshView,
   loadMeshFile,
   localMeshIdentity,
+  meshDenOrigins,
   meshFilePaths,
   type MeshOverview,
 } from './mesh.js'
@@ -188,6 +189,44 @@ describe('mesh view', () => {
 
     const noMesh = await start({ meshFile: join(tmp(), 'missing.json') })
     expect((await fetch(`${noMesh.base}/mesh.json`)).status).toBe(404)
+  })
+
+  it('meshDenOrigins lists every den origin in the roster', async () => {
+    const file = join(tmp(), 'mesh.json')
+    writeMesh(file, {
+      plain: node('plain'), // no den → none
+      tls: node('tls', { metadata: { denUrl: 'https://tls.example:5174/' } }),
+      port: node('port', { host: '192.0.2.20', metadata: { denPort: 5175 } }),
+      tag: node('tag', { host: '192.0.2.30', capabilities: ['den'] }),
+    })
+    const roster = await loadMeshFile([file])
+    expect(roster).not.toBeNull()
+    expect(meshDenOrigins(roster!).sort()).toEqual(
+      [
+        'https://tls.example:5174',
+        'http://192.0.2.20:5175',
+        'https://192.0.2.20:5175',
+        'http://192.0.2.30:5174',
+        'https://192.0.2.30:5174',
+      ].sort(),
+    )
+  })
+
+  it('allows browser requests from mesh peer dens, refuses others', async () => {
+    const file = join(tmp(), 'mesh.json')
+    writeMesh(file, { peer: node('peer', { metadata: { denUrl: 'https://peer.example:5174' } }) })
+    const { base } = await start({ meshFile: file })
+    await vi.waitFor(async () => {
+      const res = await fetch(`${base}/sessions`, {
+        headers: { origin: 'https://peer.example:5174' },
+      })
+      expect(res.status).toBe(200)
+      expect(res.headers.get('access-control-allow-origin')).toBe('https://peer.example:5174')
+    })
+    const other = await fetch(`${base}/sessions`, {
+      headers: { origin: 'https://other.example:5174' },
+    })
+    expect(other.status).toBe(403)
   })
 
   it('preflights DELETE for cross-origin session removal', async () => {

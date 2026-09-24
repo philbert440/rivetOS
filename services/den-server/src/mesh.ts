@@ -150,6 +150,33 @@ function denUrlFor(id: string, node: MeshNode): string | null {
 }
 
 /**
+ * Browser origins of every den in the roster, for the gateway origin policy
+ * (cross-node RivetHub: a page served by one node calls another). A roster
+ * entry without an explicit denUrl gets both schemes — denUrlFor assumes http,
+ * but TLS nodes serve https on the same host:port.
+ */
+export function meshDenOrigins(file: MeshFile): string[] {
+  const out = new Set<string>()
+  for (const [key, node] of Object.entries(file.nodes)) {
+    if (!node) continue
+    const denUrl = denUrlFor(node.id ?? key, node)
+    if (!denUrl) continue
+    let url: URL
+    try {
+      url = new URL(denUrl)
+    } catch {
+      continue
+    }
+    out.add(url.origin)
+    if (typeof node.metadata?.denUrl !== 'string') {
+      url.protocol = url.protocol === 'http:' ? 'https:' : 'http:'
+      out.add(url.origin)
+    }
+  }
+  return [...out]
+}
+
+/**
  * GET a peer's /healthz body. http URLs go through fetch; https URLs use
  * node:https directly so the private Rivet CA (opts.caPath) can be trusted
  * without process-wide NODE_EXTRA_CA_CERTS. Client certs are not needed:

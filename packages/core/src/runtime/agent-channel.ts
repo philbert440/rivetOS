@@ -211,6 +211,15 @@ export class AgentChannelServer {
     const url = req.url ?? '/'
     const method = req.method ?? 'GET'
 
+    // Node-to-node only. Browsers attach an Origin (and can present an
+    // installed device cert that chains to the same CA), so any request
+    // carrying one is refused — a cross-site page cannot deliver messages.
+    if (req.headers.origin !== undefined) {
+      res.writeHead(403, { 'Content-Type': 'application/json' })
+      res.end(JSON.stringify({ error: 'browser requests are not accepted' }))
+      return
+    }
+
     // Extract peer CN for logging
     const _peerCn = extractPeerIdentity(req.socket as TLSSocket)
 

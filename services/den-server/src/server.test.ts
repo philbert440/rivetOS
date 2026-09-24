@@ -3,6 +3,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import type { AddressInfo } from 'node:net'
 import { EventEmitter, once } from 'node:events'
+import { request } from 'node:http'
 import { WebSocket, WebSocketServer } from 'ws'
 import { afterEach, describe, expect, it } from 'vitest'
 import { createDenServer, type DenServer } from './server.js'
@@ -70,6 +71,8 @@ async function start(
     codexCmd?: string[]
     mux?: 'tmux' | 'herdr' | 'none'
     herdrCtl?: HerdrCtl
+    allowedOrigins?: string[]
+    allowedHosts?: string[]
   } = {},
 ): Promise<{ den: DenServer; base: string; port: number }> {
   const stateDir = mkdtempSync(join(tmpdir(), 'den-server-'))
@@ -93,6 +96,8 @@ async function start(
     },
   })
   config.codexAppServerUrl = opts.codexAppServerUrl
+  if (opts.allowedOrigins) config.allowedOrigins = opts.allowedOrigins
+  if (opts.allowedHosts) config.allowedHosts = opts.allowedHosts
   if (opts.codexCmd)
     writeFileSync(
       config.term.configFile,
@@ -356,11 +361,15 @@ describe('gateway route mounts (G0)', () => {
     expect(seen).toEqual(['handled'])
   })
 
-  it('gateway mounts carry CORS headers (cross-node browser clients)', async () => {
+  it('gateway mounts echo an allowed origin (cross-node browser clients)', async () => {
     const { base } = await start('', 60_000, { extraRoutes: [ping] })
-    const res = await fetch(`${base}/api/ping`)
+    const res = await fetch(`${base}/api/ping`, { headers: { origin: base } })
     expect(res.status).toBe(200)
-    expect(res.headers.get('access-control-allow-origin')).toBe('*')
+    expect(res.headers.get('access-control-allow-origin')).toBe(base)
+    expect(res.headers.get('vary')).toContain('Origin')
+    const native = await fetch(`${base}/api/ping`)
+    expect(native.status).toBe(200)
+    expect(native.headers.get('access-control-allow-origin')).toBeNull()
   })
 
   it('preflights PATCH for cross-origin agent edits', async () => {
@@ -416,9 +425,9 @@ describe('gateway route mounts (G0)', () => {
       },
     }
     const { base } = await start('', 60_000, { extraRoutes: [v1] })
-    const ok = await fetch(`${base}/v1/models`)
+    const ok = await fetch(`${base}/v1/models`, { headers: { origin: 'app://bundle' } })
     expect(ok.status).toBe(200)
-    expect(ok.headers.get('access-control-allow-origin')).toBe('*')
+    expect(ok.headers.get('access-control-allow-origin')).toBe('app://bundle')
     expect(await ok.json()).toMatchObject({ object: 'list' })
 
     const pre = await fetch(`${base}/v1/models`, { method: 'OPTIONS' })
@@ -930,4 +939,94 @@ it('rejects protocol inject text without submit before interrupting or sending',
     for (const socket of upstream.clients) socket.terminate()
     upstream.close()
   }
+})
+
+describe('browser origin policy', () => {
+  const evil = 'https://evil.example'
+
+  const rawGet = (port: number, path: string, headers: Record<string, string>) =>
+    new Promise<number>((resolve, reject) => {
+      const req = request({ host: '127.0.0.1', port, path, headers }, (res) => {
+        res.resume()
+        resolve(res.statusCode ?? 0)
+      })
+      req.on('error', reject)
+      req.end()
+    })
+
+  const upgrade = (url: string, origin: string) =>
+    new Promise<number | 'open'>((resolve) => {
+      const ws = new WebSocket(url, { origin })
+      ws.on('open', () => {
+        ws.close()
+        resolve('open')
+      })
+      ws.on('unexpected-response', (_req, res) => resolve(res.statusCode ?? 0))
+      ws.on('error', () => resolve(0))
+    })
+
+  it('refuses a foreign Origin on HTTP, with no CORS grant', async () => {
+    const { base } = await start()
+    const res = await fetch(`${base}/sessions`, { headers: { origin: evil } })
+    expect(res.status).toBe(403)
+    expect(res.headers.get('access-control-allow-origin')).toBeNull()
+    const pre = await fetch(`${base}/sessions`, { method: 'OPTIONS', headers: { origin: evil } })
+    expect(pre.status).toBe(403)
+    expect(pre.headers.get('access-control-allow-origin')).toBeNull()
+  })
+
+  it('refuses a foreign Origin on WebSocket upgrades; same-origin still connects', async () => {
+    const { base, port } = await start()
+    expect(await upgrade(`ws://127.0.0.1:${port}/ws`, evil)).toBe(403)
+    expect(await upgrade(`ws://127.0.0.1:${port}/ws`, base)).toBe('open')
+  })
+
+  it('refuses Origin: null (sandboxed frames, file://)', async () => {
+    const { base } = await start()
+    expect((await fetch(`${base}/sessions`, { headers: { origin: 'null' } })).status).toBe(403)
+  })
+
+  it('allows no-Origin native clients, the desktop shell and configured origins', async () => {
+    const { base } = await start('', 60_000, { allowedOrigins: ['https://hub.example:8443/'] })
+    expect((await fetch(`${base}/sessions`)).status).toBe(200)
+    const desk = await fetch(`${base}/sessions`, { headers: { origin: 'app://bundle' } })
+    expect(desk.status).toBe(200)
+    expect(desk.headers.get('access-control-allow-origin')).toBe('app://bundle')
+    const cfg = await fetch(`${base}/sessions`, { headers: { origin: 'https://hub.example:8443' } })
+    expect(cfg.status).toBe(200)
+    expect(cfg.headers.get('access-control-allow-origin')).toBe('https://hub.example:8443')
+  })
+
+  it('refuses a rebound Host on loopback over plain HTTP unless allowed', async () => {
+    const { port } = await start()
+    expect(await rawGet(port, '/sessions', { host: `127.0.0.1:${port}` })).toBe(200)
+    expect(await rawGet(port, '/sessions', { host: `localhost:${port}` })).toBe(200)
+    expect(await rawGet(port, '/sessions', { host: `evil.example:${port}` })).toBe(403)
+    const allowed = await start('', 60_000, { allowedHosts: ['den.example'] })
+    expect(await rawGet(allowed.port, '/sessions', { host: `den.example:${allowed.port}` })).toBe(200)
+  })
+
+  it('refuses a rebound Host on WebSocket upgrades', async () => {
+    const { port } = await start()
+    const status = await new Promise<number>((resolve) => {
+      const req = request({
+        host: '127.0.0.1',
+        port,
+        path: '/ws',
+        headers: {
+          host: `evil.example:${port}`,
+          origin: `http://evil.example:${port}`,
+          connection: 'Upgrade',
+          upgrade: 'websocket',
+          'sec-websocket-version': '13',
+          'sec-websocket-key': 'dGhlIHNhbXBsZSBub25jZQ==',
+        },
+      })
+      req.on('response', (res) => resolve(res.statusCode ?? 0))
+      req.on('upgrade', () => resolve(101))
+      req.on('error', () => resolve(0))
+      req.end()
+    })
+    expect(status).toBe(403)
+  })
 })
