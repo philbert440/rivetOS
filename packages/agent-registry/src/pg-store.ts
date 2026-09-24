@@ -232,8 +232,7 @@ export class PgAgentPresetStore implements AgentPresetStore {
           node,
           directory,
           preset.sharedLink ?? true,
-          // Still persisted for pre-registry clients; the field is deprecated on the type.
-          // eslint-disable-next-line @typescript-eslint/no-deprecated
+          // Still persisted for pre-registry clients (formally deprecated in slice 7).
           preset.nodeBaseUrl,
           new Date(preset.createdAt),
           new Date(preset.updatedAt),

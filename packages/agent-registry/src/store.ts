@@ -14,7 +14,7 @@ export interface AgentPresetInput {
   /** Absolute working directory for the agent's harness. */
   directory: string
   sharedLink?: boolean
-  /** @deprecated den base URL of the hosting node, kept for pre-registry clients. */
+  /** Den base URL of the hosting node, kept for pre-registry clients (formally deprecated in slice 7). */
   nodeBaseUrl?: string
 }
 
@@ -102,8 +102,7 @@ export function presetFromCreate(
     model: input.model ?? '',
     effort: input.effort ?? 'medium',
     systemPrompt: input.systemPrompt ?? '',
-    // Still persisted for pre-registry clients; the field is deprecated on the type.
-    // eslint-disable-next-line @typescript-eslint/no-deprecated
+    // Still persisted for pre-registry clients (formally deprecated in slice 7).
     nodeBaseUrl: input.nodeBaseUrl ?? '',
     createdAt: input.createdAt ?? opts.now,
     updatedAt: opts.now,

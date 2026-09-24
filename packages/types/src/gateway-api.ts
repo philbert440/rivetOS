@@ -1232,8 +1232,10 @@ export interface AgentPreset {
   /** When false, skip the shared-directory symlink inside `directory`. */
   sharedLink?: boolean
   /**
-   * Den base URL of the hosting node.
-   * @deprecated pre-registry clients; prefer `node`. A later slice makes this optional.
+   * Den base URL of the hosting node. Pre-registry field: prefer `node`.
+   * Slice 7 of agents-as-delegation-targets marks it `@deprecated` and
+   * optional once every consumer has moved; tagging it earlier fails
+   * `no-deprecated` lint in the den and hub, which still read it.
    */
   nodeBaseUrl: string
   /** epoch ms */
@@ -1262,8 +1264,8 @@ export interface AgentCreateRequest {
   effort?: string
   systemPrompt?: string
   /**
-   * Den base URL of the hosting node.
-   * @deprecated optional for registry clients; the den fills `node` when omitted.
+   * Den base URL of the hosting node. Optional for registry clients; the den
+   * fills `node` when omitted. Formally deprecated in slice 7 (see AgentPreset).
    */
   nodeBaseUrl?: string
   /** Mesh node NAME. The hosting den sets this when the client omits it. */
