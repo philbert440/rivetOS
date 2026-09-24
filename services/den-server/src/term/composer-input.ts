@@ -9,6 +9,10 @@ const INPUT_LINE = /^\s*❯\s?(.*)$/
 const OPTION_LINE = /^\s*(?:❯\s*)?\d+\.\s+/
 const SEPARATOR = /^[\s─━-]+$/
 const HINT = /⏵⏵|\? for shortcuts|shift\+tab to cycle|for agents/
+/** A fresh session's empty box shows a rotating dim example, e.g.
+ *  `❯ Try "refactor <filepath>"`. Plain-text captures lose the dim styling,
+ *  so match its shape: it is not typed text. */
+const PLACEHOLDER = /^Try "[^"]*"$/
 
 function belowIsChrome(lines: string[], idx: number): boolean {
   for (let i = idx + 1; i < lines.length; i++) {
@@ -31,6 +35,7 @@ export function parseComposerInput(screen: string): string | undefined {
     if (!belowIsChrome(lines, i)) continue
     if (i === 0 || !SEPARATOR.test(lines[i - 1])) continue
     const text = m[1].trim()
+    if (PLACEHOLDER.test(text)) return undefined
     return text || undefined
   }
   return undefined

@@ -15,6 +15,7 @@ import {
   AUTO_MODE_DIALOG_SCREEN,
   CLAUDE_PERM_SCREEN,
   IDLE_HARNESS_SCREEN,
+  SLASH_DRAFT_SCREEN,
 } from './term/tui-screen-fixtures.js'
 
 // Inspectable fake PTY for terminal/inject tests.
@@ -767,6 +768,23 @@ describe('POST /term/inject (seamless modes 5c)', () => {
     expect(writes.some((w) => w === '1' || w === '\x1b[200~1\x1b[201~')).toBe(false)
   })
 
+  it('409s harness_draft over unsent input text, even on the inject button', async () => {
+    const { base, herdr } = await spawnHarness('claude', 'chat-draft', () =>
+      Promise.resolve(SLASH_DRAFT_SCREEN),
+    )
+    markHarnessIdle(herdr)
+    for (const body of [
+      { session: 'chat-draft', text: 'test 1' },
+      { session: 'chat-draft', text: 'test 1', bypassDialogGate: true },
+    ]) {
+      const inj = await post(base, '/term/inject', body)
+      expect(inj.status).toBe(409)
+      expect(await inj.json()).toMatchObject({ code: 'turn_in_flight', reason: 'harness_draft' })
+    }
+    await new Promise((r) => setTimeout(r, 150))
+    expect(fakeProcs[0].writes).toEqual([])
+  })
+
   it('pastes a forced inject normally when no dialog is on screen', async () => {
     const { base, herdr } = await spawnHarness('claude', 'chat-idle-bypass', () =>
       Promise.resolve(IDLE_HARNESS_SCREEN),
@@ -1020,7 +1038,9 @@ describe('browser origin policy', () => {
     expect(await rawGet(port, '/sessions', { host: `localhost:${port}` })).toBe(200)
     expect(await rawGet(port, '/sessions', { host: `evil.example:${port}` })).toBe(403)
     const allowed = await start('', 60_000, { allowedHosts: ['den.example'] })
-    expect(await rawGet(allowed.port, '/sessions', { host: `den.example:${allowed.port}` })).toBe(200)
+    expect(await rawGet(allowed.port, '/sessions', { host: `den.example:${allowed.port}` })).toBe(
+      200,
+    )
   })
 
   it('refuses a rebound Host on WebSocket upgrades', async () => {

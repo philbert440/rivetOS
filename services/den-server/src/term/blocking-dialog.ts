@@ -29,6 +29,7 @@
  */
 
 import { screenLines } from './permission-prompt.js'
+import { parseComposerInput } from './composer-input.js'
 
 export interface BlockingDialog {
   /** First non-blank line after the nearest separator above the options (the dialog's
@@ -257,15 +258,38 @@ export function parseBlockingDialog(screen: string): BlockingDialog | undefined 
   return { title, options }
 }
 
+/** What a pre-send screen read found. At most one is set: an open dialog wins,
+ *  since its input box can't hold a draft. */
+export interface PreSendBlock {
+  dialog?: BlockingDialog
+  /** The input box holds unsent text. A paste would be appended to it and
+   *  submitted as one message (`/model` + `test 1` → `/modeltest 1`). */
+  draft?: boolean
+}
+
+/** Parse one pre-send screen read. An empty screen blocks nothing. */
+export function parsePreSendBlock(raw: string): PreSendBlock {
+  if (!raw) return {}
+  const dialog = parseBlockingDialog(raw)
+  if (dialog) return { dialog }
+  return parseComposerInput(raw) !== undefined ? { draft: true } : {}
+}
+
 /** Read and parse the screen, failing open for callers without their own logging
- * (the legacy `POST /term/inject` route). */
+ * (the legacy `POST /term/inject` route): a read error blocks nothing. */
+export async function preSendBlockOnScreen(
+  read: () => Promise<string> | string,
+): Promise<PreSendBlock> {
+  try {
+    return parsePreSendBlock(await read())
+  } catch {
+    return {}
+  }
+}
+
+/** The dialog half of `preSendBlockOnScreen`. */
 export async function dialogOnScreen(
   read: () => Promise<string> | string,
 ): Promise<BlockingDialog | undefined> {
-  try {
-    const raw = await read()
-    return raw ? parseBlockingDialog(raw) : undefined
-  } catch {
-    return undefined
-  }
+  return (await preSendBlockOnScreen(read)).dialog
 }

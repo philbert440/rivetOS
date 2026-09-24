@@ -36,6 +36,8 @@ import {
   IDLE_HARNESS_SCREEN,
   MODEL_PICKER_SCREEN,
   OLD_DIALOG_SCROLLBACK_SCREEN,
+  FRESH_CLAUDE_PROMPT_SCREEN,
+  SLASH_DRAFT_SCREEN,
 } from '../term/tui-screen-fixtures.js'
 
 const UUID = 'a1b2c3d4-1111-4222-8333-444455556666'
@@ -1932,6 +1934,54 @@ describe('sendUserTurn gates on an open blocking dialog', () => {
     driver.close()
   })
 
+  it('rejects without injecting when the input box holds unsent text', async () => {
+    const pty = fakePty()
+    const driver = new ClaudeCodeDriver({
+      store: fakeStore([]),
+      pty: () => Promise.resolve(pty.host),
+      turnQuietMs: 0,
+      screen: () => SLASH_DRAFT_SCREEN,
+    })
+    await driver.startSession({ nativeSessionId: UUID })
+    await expect(driver.sendUserTurn(sid, { text: 'test 1' })).rejects.toMatchObject({
+      code: 'turn_in_flight',
+      context: { reason: 'harness_draft' },
+    })
+    // Never `/modeltest 1`.
+    expect(pty.injects).toEqual([])
+    driver.close()
+  })
+
+  it('refuses a draft even on the inject button, and never sends Esc over it', async () => {
+    const pty = fakePty()
+    const driver = new ClaudeCodeDriver({
+      store: fakeStore([]),
+      pty: () => Promise.resolve(pty.host),
+      turnQuietMs: 0,
+      screen: () => SLASH_DRAFT_SCREEN,
+    })
+    await driver.startSession({ nativeSessionId: UUID })
+    await expect(
+      driver.sendUserTurn(sid, { text: 'test 1', bypassDialogGate: true }),
+    ).rejects.toMatchObject({ context: { reason: 'harness_draft' } })
+    expect(pty.injects).toEqual([])
+    driver.close()
+  })
+
+  it("sends normally over a fresh session's placeholder prompt", async () => {
+    const pty = fakePty()
+    const driver = new ClaudeCodeDriver({
+      store: fakeStore([]),
+      pty: () => Promise.resolve(pty.host),
+      turnQuietMs: 0,
+      screen: () => FRESH_CLAUDE_PROMPT_SCREEN,
+    })
+    await driver.startSession({ nativeSessionId: UUID })
+    await driver.sendUserTurn(sid, { text: 'hello' })
+    expect(pty.injects.map((i) => i.text)).toEqual(['hello'])
+    driver.close()
+  })
+
   it('releases the in-flight lock so a later send succeeds', async () => {
     const pty = fakePty()
     let screen = AUTO_MODE_DIALOG_SCREEN
@@ -2115,6 +2165,13 @@ describe('sendUserTurn delivery confirm', () => {
   afterEach(() => {
     vi.useRealTimers()
   })
+
+  /** The screen is idle when the turn is sent (the pre-send check passes) and
+   *  shows `after` once the paste has landed: `pasted()` flips it. */
+  function screenAfterPaste(after: string): { screen: () => string; pasted: () => void } {
+    let current = IDLE_HARNESS_SCREEN
+    return { screen: () => current, pasted: () => void (current = after) }
+  }
 
   async function warm(opts: {
     screen?: () => string | Promise<string>
@@ -2343,8 +2400,10 @@ describe('sendUserTurn delivery confirm', () => {
 
   it('fails at 2500ms when the turn is stuck in the input twice', async () => {
     vi.useFakeTimers()
-    const { driver, seen, pty } = await warm({ screen: () => composerScreen(TURN) })
+    const stuck = screenAfterPaste(composerScreen(TURN))
+    const { driver, seen, pty } = await warm({ screen: stuck.screen })
     await driver.sendUserTurn(sid, { text: TURN })
+    stuck.pasted()
     await vi.advanceTimersByTimeAsync(1_500)
     expect(undelivered(seen)).toEqual([])
     await vi.advanceTimersByTimeAsync(999)
@@ -2361,7 +2420,8 @@ describe('sendUserTurn delivery confirm', () => {
     const { driver, seen } = await warm({
       screen: () => {
         n += 1
-        return n === 1 ? composerScreen(TURN) : IDLE_HARNESS_SCREEN
+        // 1: pre-send check (idle), 2: first peek (stuck), 3: second peek (clear).
+        return n === 2 ? composerScreen(TURN) : IDLE_HARNESS_SCREEN
       },
     })
     await driver.sendUserTurn(sid, { text: TURN })
@@ -2758,10 +2818,10 @@ describe('sendUserTurn delivery confirm', () => {
 
   it('a short turn does not own a pasted-text placeholder', async () => {
     vi.useFakeTimers()
-    const { driver, seen } = await warm({
-      screen: () => composerScreen('[Pasted text #1 +12 lines]'),
-    })
+    const stuck = screenAfterPaste(composerScreen('[Pasted text #1 +12 lines]'))
+    const { driver, seen } = await warm({ screen: stuck.screen })
     await driver.sendUserTurn(sid, { text: TURN })
+    stuck.pasted()
     await vi.advanceTimersByTimeAsync(2_500)
     expect(undelivered(seen)).toEqual([])
     await vi.advanceTimersByTimeAsync(7_500)
@@ -2773,10 +2833,10 @@ describe('sendUserTurn delivery confirm', () => {
   it('a collapsed paste of this turn fails as stuck input', async () => {
     vi.useFakeTimers()
     const long = `${'line of the paste\n'.repeat(5)}tail`
-    const { driver, seen } = await warm({
-      screen: () => composerScreen('[Pasted text #1 +12 lines]'),
-    })
+    const stuck = screenAfterPaste(composerScreen('[Pasted text #1 +12 lines]'))
+    const { driver, seen } = await warm({ screen: stuck.screen })
     await driver.sendUserTurn(sid, { text: long })
+    stuck.pasted()
     await vi.advanceTimersByTimeAsync(1_500)
     expect(undelivered(seen)).toEqual([])
     await vi.advanceTimersByTimeAsync(999)
@@ -2789,10 +2849,12 @@ describe('sendUserTurn delivery confirm', () => {
   it('two pasted-text placeholders fall back to the deadline', async () => {
     vi.useFakeTimers()
     const long = 'x'.repeat(200)
-    const { driver, seen } = await warm({
-      screen: () => composerScreen('[Pasted text #1 +12 lines] [Pasted text #2 +4 lines]'),
-    })
+    const stuck = screenAfterPaste(
+      composerScreen('[Pasted text #1 +12 lines] [Pasted text #2 +4 lines]'),
+    )
+    const { driver, seen } = await warm({ screen: stuck.screen })
     await driver.sendUserTurn(sid, { text: long })
+    stuck.pasted()
     await vi.advanceTimersByTimeAsync(2_500)
     expect(undelivered(seen)).toEqual([])
     await vi.advanceTimersByTimeAsync(7_500)
