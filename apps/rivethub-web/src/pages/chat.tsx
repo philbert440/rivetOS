@@ -9,7 +9,7 @@ import {
 import {
   DELETED_PRESET_NOTICE,
   presetHasHarnessFlag,
-  recoverDeletedAgentSpawn,
+  recoverDeletedAgentSpawnUsingCache,
   spawnOnceWithCommandFallback,
   termSpawnBody,
 } from '../lib/term-spawn.js'
@@ -1512,25 +1512,19 @@ function ActiveSession(props: {
       // rather than 404 (keeps session, model, and effort). That fallback is
       // not the missing-preset path: a 404 whose message is `agent not found`
       // clears agentId and retries once without it, unless that id is still
-      // in the agents cache — then the 404 is this thread's error. Model and
-      // effort stay on the retry. A second failure is this thread's spawn
-      // error. A 409 (preset hosted on another node) is not retried.
+      // listed by an active agents query — then the 404 is this thread's
+      // error and those queries are refreshed for the next attempt. Inactive
+      // cache entries do not count. Model and effort stay on the retry. A
+      // second failure is this thread's spawn error. A 409 (preset hosted on
+      // another node) is not retried.
       const spawnOnce = (req: typeof body) =>
         spawnOnceWithCommandFallback((next) => gw.termSpawn(next), req, {
           command,
           harnessId: settings?.harnessId,
         })
-      const listedAgentIds = queryClient
-        .getQueriesData({ queryKey: ['agents-all-nodes'] })
-        .flatMap(([, data]) => presetsFromAgentsQueryData(data).map((preset) => preset.id))
-      const spawned = await recoverDeletedAgentSpawn(
-        spawnOnce,
-        body,
-        () => {
-          writeLaunchState({ agentId: undefined })
-        },
-        listedAgentIds,
-      )
+      const spawned = await recoverDeletedAgentSpawnUsingCache(queryClient, spawnOnce, body, () => {
+        writeLaunchState({ agentId: undefined })
+      })
       if (spawned.droppedAgentId) setPresetNotice(DELETED_PRESET_NOTICE)
       const p = spawned.result
       // Latch after the first successful spawn, unless this harness already

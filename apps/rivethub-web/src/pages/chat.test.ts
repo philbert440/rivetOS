@@ -66,7 +66,7 @@ describe('session view integration', () => {
     expect(chat).toContain('spawnOnceWithCommandFallback(')
     expect(chat).toContain('presetHasHarness: presetHasHarnessFlag(')
     expect(chat).toContain("queryKey: ['agents-all-nodes']")
-    expect(chat).toContain('listedAgentIds')
+    expect(chat).toContain('recoverDeletedAgentSpawnUsingCache(')
     expect(chat).toContain('settledLaunch.spawn')
     expect(chat).toContain('needsRegistryBeforeSpawn(')
     expect(chat).toContain('shouldPersistLaunchLatch(')

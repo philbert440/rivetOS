@@ -1,11 +1,14 @@
 import type { TermSpawnRequest } from '@rivetos/types'
+import { QueryClient, QueryObserver } from '@tanstack/react-query'
 import { GatewayError } from '@rivetos/gateway-client'
 import { describe, expect, it, vi } from 'vitest'
 import {
   DELETED_PRESET_NOTICE,
   isDeletedAgentError,
   presetHasHarnessFlag,
+  listedAgentIds,
   recoverDeletedAgentSpawn,
+  recoverDeletedAgentSpawnUsingCache,
   spawnOnceWithCommandFallback,
   termSpawnBody,
   termSpawnFallbackBody,
@@ -187,6 +190,116 @@ describe('recoverDeletedAgentSpawn', () => {
     expect(onDeleted).toHaveBeenCalledTimes(1)
     expect(calls[1]).not.toHaveProperty('agentId')
   })
+
+  it('stays loud while the id is listed, then recovers once it is gone', async () => {
+    const onDeleted = vi.fn()
+    const spawn = vi
+      .fn<(body: TermSpawnRequest) => Promise<string>>()
+      .mockRejectedValueOnce(missing)
+      .mockRejectedValueOnce(missing)
+      .mockResolvedValueOnce('pty-1')
+    await expect(recoverDeletedAgentSpawn(spawn, body, onDeleted, ['reviewer'])).rejects.toBe(
+      missing,
+    )
+    expect(spawn).toHaveBeenCalledTimes(1)
+    expect(onDeleted).not.toHaveBeenCalled()
+    const result = await recoverDeletedAgentSpawn(spawn, body, onDeleted, ['other'])
+    expect(result).toEqual({ result: 'pty-1', droppedAgentId: true })
+    expect(onDeleted).toHaveBeenCalledTimes(1)
+    expect(spawn).toHaveBeenCalledTimes(3)
+    expect(spawn.mock.calls[2]?.[0]).not.toHaveProperty('agentId')
+  })
+})
+
+describe('recoverDeletedAgentSpawnUsingCache', () => {
+  const body: TermSpawnRequest = {
+    session: 'sess-1',
+    command: 'claude',
+    model: 'haiku',
+    effort: 'low',
+    resume: 'sess-1',
+    agentId: 'reviewer',
+  }
+  const missing = new GatewayError(404, 'agent not found', { error: 'agent not found' })
+  const reviewer = {
+    id: 'reviewer',
+    name: 'Reviewer',
+    color: '',
+    model: '',
+    harnessId: 'claude-code' as const,
+  }
+  const ghost = {
+    id: 'ghost',
+    name: 'Ghost',
+    color: '',
+    model: '',
+    harnessId: 'claude-code' as const,
+  }
+  const other = {
+    id: 'other',
+    name: 'Other',
+    color: '',
+    model: '',
+    harnessId: 'claude-code' as const,
+  }
+
+  function cache(): { client: QueryClient; unsubscribe: () => void } {
+    const client = new QueryClient({
+      defaultOptions: { queries: { retry: false, gcTime: Infinity } },
+    })
+    const activeKey = ['agents-all-nodes', 'https://live.example', 2]
+    // An older roster key / transport epoch. No observer, so it stays inactive
+    // and must not count even though it still lists the deleted id.
+    client.setQueryData(activeKey, [{ baseUrl: 'https://live.example', agents: [reviewer] }])
+    client.setQueryData(
+      ['agents-all-nodes', 'https://old.example', 1],
+      [{ baseUrl: 'https://old.example', agents: [reviewer, ghost] }],
+    )
+    const observer = new QueryObserver(client, {
+      queryKey: activeKey,
+      queryFn: () => [{ baseUrl: 'https://live.example', agents: [reviewer] }],
+      staleTime: Infinity,
+    })
+    const unsubscribe = observer.subscribe(() => undefined)
+    return { client, unsubscribe }
+  }
+
+  it('ignores an inactive entry, stays loud while the active list has the id, then recovers', async () => {
+    const { client, unsubscribe } = cache()
+    try {
+      expect(listedAgentIds(client)).toEqual(['reviewer'])
+      const invalidate = vi.spyOn(client, 'invalidateQueries').mockResolvedValue()
+      const onDeleted = vi.fn()
+      const spawn = vi
+        .fn<(body: TermSpawnRequest) => Promise<string>>()
+        .mockRejectedValueOnce(missing)
+        .mockRejectedValueOnce(missing)
+        .mockResolvedValueOnce('pty-1')
+      await expect(recoverDeletedAgentSpawnUsingCache(client, spawn, body, onDeleted)).rejects.toBe(
+        missing,
+      )
+      expect(spawn).toHaveBeenCalledTimes(1)
+      expect(onDeleted).not.toHaveBeenCalled()
+      expect(invalidate).toHaveBeenCalledTimes(1)
+      expect(invalidate).toHaveBeenCalledWith({ queryKey: ['agents-all-nodes'] })
+
+      client.setQueryData(
+        ['agents-all-nodes', 'https://live.example', 2],
+        [{ baseUrl: 'https://live.example', agents: [other] }],
+      )
+      // The inactive snapshot still lists reviewer and ghost.
+      expect(listedAgentIds(client)).toEqual(['other'])
+      const result = await recoverDeletedAgentSpawnUsingCache(client, spawn, body, onDeleted)
+      expect(result).toEqual({ result: 'pty-1', droppedAgentId: true })
+      expect(onDeleted).toHaveBeenCalledTimes(1)
+      expect(spawn).toHaveBeenCalledTimes(3)
+      expect(spawn.mock.calls[2]?.[0]).not.toHaveProperty('agentId')
+      expect(invalidate).toHaveBeenCalledTimes(1)
+    } finally {
+      unsubscribe()
+      client.clear()
+    }
+  })
 })
 
 describe('termSpawnFallbackBody', () => {
@@ -208,7 +321,7 @@ describe('termSpawnFallbackBody', () => {
     })
   })
 
-  it('omits empty session, agentId, model, and effort', () => {
+  it('always sends session, and omits empty agentId, model, and effort', () => {
     expect(termSpawnFallbackBody({ session: 'sess-1' })).toEqual({ session: 'sess-1' })
     expect(
       termSpawnFallbackBody({
@@ -217,7 +330,7 @@ describe('termSpawnFallbackBody', () => {
         model: '',
         effort: '  ',
       }),
-    ).toEqual({})
+    ).toEqual({ session: '' })
   })
 })
 

@@ -1,4 +1,3 @@
-import { readFileSync } from 'node:fs'
 import { describe, it } from 'vitest'
 import assert from 'node:assert/strict'
 import {
@@ -195,15 +194,19 @@ describe('copy form directory', () => {
     assert.equal(copyFormDirectory(undefined, undefined), '')
   })
 
-  it('is what the copy editor initialises and submits', () => {
-    const src = readFileSync(new URL('../components/agents-section.tsx', import.meta.url), 'utf8')
-    assert.match(src, /directory: draftDirectory/)
-    assert.match(
-      src,
-      /const directory = duplicate \? copyFormDirectory\(draftDirectory, copy\?\.seed\) : draftDirectory/,
-    )
-    const submit = src.slice(src.indexOf('const handleSubmit'), src.indexOf('onSave(patch)'))
-    assert.match(submit, /directory,/)
+  it('keeps a custom path, clears a source default, and re-cleans an edit', () => {
+    const rooted = { ...source, name: 'Reviewer', directoryRoot: '/srv/agents' }
+    // The editor recomputes the seed from the current draft on every render,
+    // then shows that cleaned directory. An edit is a new draft, not a patch
+    // of the previous seed.
+    const show = (directory: string): string => {
+      const seeded = agentCopySeed({ ...draft, directory }, rooted, target)
+      return copyFormDirectory(directory, seeded.seed)
+    }
+    assert.equal(show('/srv/agents/custom'), '/srv/agents/custom')
+    assert.equal(show('/srv/agents/reviewer'), '')
+    assert.equal(show('/srv/agents/elsewhere'), '/srv/agents/elsewhere')
+    assert.equal(show('/srv/agents/reviewer/'), '')
   })
 })
 

@@ -1,5 +1,7 @@
+import type { QueryClient } from '@tanstack/react-query'
 import { GatewayError } from '@rivetos/gateway-client'
 import type { TermSpawnRequest } from '@rivetos/types'
+import { presetsFromAgentsQueryData } from './agent-roster.js'
 
 /** Shown once a missing preset is dropped and the thread spawns without it. */
 export const DELETED_PRESET_NOTICE = 'Preset not found on this node; opened without it'
@@ -56,6 +58,22 @@ export function isDeletedAgentError(err: unknown): boolean {
   return err instanceof GatewayError && err.status === 404 && err.message === 'agent not found'
 }
 
+function agentIdIsListed(agentId: string, listedAgentIds: readonly string[]): boolean {
+  const trimmed = agentId.trim()
+  return listedAgentIds.some((id) => id.trim() === trimmed)
+}
+
+/**
+ * Ids on active `agents-all-nodes` queries. `getQueriesData` prefix-matches
+ * inactive entries from an older roster key or transport epoch; those still
+ * list a deleted id until gcTime and must not block recovery.
+ */
+export function listedAgentIds(queryClient: QueryClient): string[] {
+  return queryClient
+    .getQueriesData({ queryKey: ['agents-all-nodes'], type: 'active' })
+    .flatMap(([, data]) => presetsFromAgentsQueryData(data).map((preset) => preset.id))
+}
+
 /**
  * Spawn once. On `agent not found`, call `onDeleted` (clear the thread's
  * preset id) and retry a single time without `agentId`. Skip that recovery
@@ -73,8 +91,7 @@ export async function recoverDeletedAgentSpawn<T>(
     return { result: await spawn(body), droppedAgentId: false }
   } catch (err) {
     if (!isDeletedAgentError(err) || !body.agentId) throw err
-    const agentId = body.agentId.trim()
-    if (listedAgentIds?.some((id) => id.trim() === agentId)) throw err
+    if (listedAgentIds && agentIdIsListed(body.agentId, listedAgentIds)) throw err
     onDeleted?.()
     return {
       result: await spawn(termSpawnBodyWithoutAgent(body)),
@@ -84,16 +101,38 @@ export async function recoverDeletedAgentSpawn<T>(
 }
 
 /**
- * Command-404 fallback. Keeps the session and, when set, the preset id,
- * model, and effort. Drops command and resume. Empty fields are omitted.
+ * Chat's recovery entry. The oracle is {@link listedAgentIds} (active queries
+ * only). When the id is still listed, the 404 stays the thread error and the
+ * agents queries are invalidated so the next attempt reads a fresh list.
+ */
+export async function recoverDeletedAgentSpawnUsingCache<T>(
+  queryClient: QueryClient,
+  spawn: (body: TermSpawnRequest) => Promise<T>,
+  body: TermSpawnRequest,
+  onDeleted?: () => void,
+): Promise<{ result: T; droppedAgentId: boolean }> {
+  const ids = listedAgentIds(queryClient)
+  try {
+    return await recoverDeletedAgentSpawn(spawn, body, onDeleted, ids)
+  } catch (err) {
+    if (isDeletedAgentError(err) && body.agentId && agentIdIsListed(body.agentId, ids)) {
+      void queryClient.invalidateQueries({ queryKey: ['agents-all-nodes'] })
+    }
+    throw err
+  }
+}
+
+/**
+ * Command-404 fallback. Always sends `session` — main never sent `{}`, and a
+ * blank session is still a session. Keeps the preset id, model, and effort
+ * when set. Drops command and resume. Other empty fields are omitted.
  */
 export function termSpawnFallbackBody(req: TermSpawnRequest): TermSpawnRequest {
-  const session = req.session?.trim()
   const agentId = req.agentId?.trim()
   const model = req.model?.trim()
   const effort = req.effort?.trim()
   return {
-    ...(session ? { session } : {}),
+    session: req.session?.trim() ?? '',
     ...(agentId ? { agentId } : {}),
     ...(model ? { model } : {}),
     ...(effort ? { effort } : {}),
