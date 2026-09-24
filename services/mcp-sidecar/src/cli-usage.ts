@@ -28,6 +28,10 @@ Always-on tools:
 RIVETOS_PG_URL enables:
   memory_search, memory_browse, memory_stats, memory_get_full (read-only)
   wiki_search, wiki_read
+  delegate_task, list_agents
+      Preset name/id or a runtime agent id. Postgres direct (no gateway).
+      RIVETOS_MCP_ENABLE_DELEGATE=0 disables both.
+      RIVETOS_TASK_ID is read for the chain guard.
   WIKI_DIR selects the wiki repo root (see RIVETOS_SHARED_DIR).
 
 Opt-in (off by default):
@@ -41,6 +45,8 @@ Other environment:
   RIVETOS_EMBED_URL, RIVETOS_EMBED_MODEL
   GOOGLE_CSE_API_KEY (or GOOGLE_API_KEY) + GOOGLE_CSE_ID
   RIVETOS_USER_AGENT, RIVETOS_SKILL_DIRS, WIKI_DIR, RIVETOS_SHARED_DIR
+  RIVETOS_NODE_NAME, RIVETOS_AGENT_ID
+      Labels on delegate_task rows (default: hostname, mcp-sidecar).
 `
 
 export function wantsHelp(argv: string[]): boolean {

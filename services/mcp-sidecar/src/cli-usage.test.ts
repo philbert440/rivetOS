@@ -17,5 +17,8 @@ describe('mcp-sidecar CLI usage', () => {
     expect(USAGE).toMatch(/internet_search/)
     expect(USAGE).toMatch(/wiki_search/)
     expect(USAGE).toMatch(/WIKI_DIR/)
+    expect(USAGE).toMatch(/delegate_task, list_agents/)
+    expect(USAGE).toMatch(/RIVETOS_MCP_ENABLE_DELEGATE=0/)
+    expect(USAGE).toMatch(/RIVETOS_TASK_ID/)
   })
 })

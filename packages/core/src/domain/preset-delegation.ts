@@ -367,10 +367,15 @@ export class PresetDelegationEngine {
       .join('\n')
   }
 
+  /**
+   * `parentTaskId` is set when this call is itself inside a harness task
+   * (the mcp-sidecar reads `RIVETOS_TASK_ID`). In-process engines omit it.
+   */
   async delegate(
     request: DelegationRequest,
     preset: AgentPreset,
     chainDepth = 0,
+    parentTaskId?: string,
   ): Promise<DelegationResult> {
     const depth = chainDepth + 1
     if (depth > this.maxChainDepth) {
@@ -422,6 +427,9 @@ export class PresetDelegationEngine {
         requestedBy: request.fromAgent,
         nodeAffinity: node,
         chainDepth: depth,
+        // Sidecar chain guard: the parent ros_tasks id when this process was
+        // spawned by a delegated harness. Absent for in-process engines.
+        ...(parentTaskId ? { parentTaskId } : {}),
         maxAttempts: 1,
         budget: request.timeoutMs ? { maxWallClockMs: request.timeoutMs } : undefined,
         acceptanceCriteria: normalizeCriteria(

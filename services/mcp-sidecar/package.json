@@ -26,6 +26,7 @@
     "@rivetos/tool-shell": "0.5.0",
     "@rivetos/tool-web-search": "0.5.0",
     "zod": "^4.4.3",
+    "@rivetos/agent-registry": "0.5.0",
     "@rivetos/core": "0.5.0",
     "@rivetos/wiki-core": "0.5.0",
     "pg": "^8.22.0"

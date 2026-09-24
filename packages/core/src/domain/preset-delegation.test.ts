@@ -197,6 +197,7 @@ describe('PresetDelegationEngine', () => {
       },
       rowPreset,
       1,
+      'parent-1',
     )
 
     expect(result.status).toBe('completed')
@@ -211,6 +212,7 @@ describe('PresetDelegationEngine', () => {
       nodeAffinity: 'ct115',
       requestedBy: 'local',
       chainDepth: 2,
+      parentTaskId: 'parent-1',
       maxAttempts: 1,
       goal: 'review the diff\n\nContext:\nfile a.ts',
     })
