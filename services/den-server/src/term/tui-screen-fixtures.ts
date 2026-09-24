@@ -160,3 +160,17 @@ export const SLASH_DRAFT_SCREEN = `\
 ───────────────────────────────────────────────────────────────────────────────
   ⏵⏵ auto mode on (shift+tab to cycle)
 `
+
+/**
+ * Synthetic, not a live capture. A draft longer than the pane width wraps
+ * onto the next row (shift+enter looks the same in a plain-text capture).
+ * `belowIsChrome` fail-opens, so this is not reported as a draft. Pinned
+ * until the block between the two separators is parsed.
+ */
+export const WRAPPED_DRAFT_SCREEN = `\
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+❯ this draft is longer than the pane and wraps
+onto the next row
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+  ⏵⏵ auto mode on (shift+tab to cycle) · ← for agents
+`

@@ -9,6 +9,8 @@ describe('sendBlockNote', () => {
     }
     expect(sendBlockNote(err)).toBe(DRAFT_NOTE)
     expect(DRAFT_NOTE).toMatch(/unsent text/)
+    expect(DRAFT_NOTE).toMatch(/stays queued/)
+    expect(DRAFT_NOTE).toMatch(/inject button/)
   })
 
   it('explains a send refused because the Terminal has a dialog open', () => {

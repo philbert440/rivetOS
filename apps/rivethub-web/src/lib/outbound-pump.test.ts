@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { HarnessEvent, SessionId } from '@rivetos/types'
 import type { DeliveryGateway } from './outbound-delivery.js'
 import type { LiveTurn, OutboundItem } from '../stores/chat.js'
-import { DIALOG_NOTE } from './send-block-note.js'
+import { DIALOG_NOTE, DRAFT_NOTE } from './send-block-note.js'
 import {
   createOutboundPump,
   createOutboundPumpRegistry,
@@ -965,6 +965,45 @@ describe('failure notes', () => {
     })
     await pump.pump()
     expect(s.items[0]).toMatchObject({ id: 'a', status: 'queued', note: DIALOG_NOTE })
+  })
+
+  it('retries harness_draft until exhaustion, then a later inject sends', async () => {
+    const draftRefusal = Object.assign(new Error('harness has unsent text'), {
+      status: 409,
+      body: { error: 'harness has unsent text', code: 'turn_in_flight', reason: 'harness_draft' },
+    })
+    const s = fakeStore()
+    s.items = [queued('a')]
+    let injects = 0
+    let cleared = false
+    const bypasses: boolean[] = []
+    const pump = createOutboundPump({
+      sessionId: SID,
+      store: s,
+      inject: (_text, _interrupt, _attachments, bypass) => {
+        injects += 1
+        bypasses.push(bypass === true)
+        if (!cleared) return Promise.reject(draftRefusal)
+        return Promise.resolve()
+      },
+      isTurnInFlight: () => true,
+    })
+    await pump.pump()
+    expect(s.items[0]).toMatchObject({ id: 'a', status: 'queued', note: DRAFT_NOTE })
+    for (let attempt = 1; attempt <= TURN_RETRY_ATTEMPTS; attempt++) {
+      await vi.advanceTimersByTimeAsync(turnRetryDelayMs(attempt))
+    }
+    await vi.advanceTimersByTimeAsync(120_000)
+    expect(injects).toBe(TURN_RETRY_ATTEMPTS + 1)
+    expect(bypasses.every((b) => b === false)).toBe(true)
+    expect(s.items[0]).toMatchObject({ id: 'a', status: 'queued', note: DRAFT_NOTE })
+    cleared = true
+    const resumed = pump.pump({ forceId: 'a' })
+    await vi.advanceTimersByTimeAsync(INJECT_LATCH_MS + 1_000)
+    await resumed
+    expect(injects).toBe(TURN_RETRY_ATTEMPTS + 2)
+    expect(bypasses.at(-1)).toBe(true)
+    expect(s.items).toEqual([])
   })
 
   it('a plain failure carries no note', async () => {

@@ -11,7 +11,7 @@ export const DIALOG_NOTE =
 /** den refused the paste because the Terminal's input box holds unsent text,
  *  which the paste would be appended to (`reason: 'harness_draft'`). */
 export const DRAFT_NOTE =
-  'not sent: the Terminal has unsent text in its input. Send or clear it there'
+  'not sent: the Terminal has unsent text in its input. The turn stays queued; press the inject button again once that draft is sent or cleared'
 
 /** The note for a refused send, or undefined when the error carries no known reason. */
 export function sendBlockNote(err: unknown): string | undefined {

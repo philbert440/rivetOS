@@ -14,6 +14,7 @@ import type { HerdrCtl, HerdrCreateOpts, HerdrSessionInfo } from './term/herdr.j
 import {
   AUTO_MODE_DIALOG_SCREEN,
   CLAUDE_PERM_SCREEN,
+  FRESH_CLAUDE_PROMPT_SCREEN,
   IDLE_HARNESS_SCREEN,
   SLASH_DRAFT_SCREEN,
 } from './term/tui-screen-fixtures.js'
@@ -734,6 +735,15 @@ describe('POST /term/inject (seamless modes 5c)', () => {
     expect(await inj.json()).toMatchObject({ ok: true })
   })
 
+  it('does not gate a non-Claude command on unsent input text', async () => {
+    const { base } = await spawnHarness('grok', 'chat-grok-draft', () =>
+      Promise.resolve(SLASH_DRAFT_SCREEN),
+    )
+    const inj = await post(base, '/term/inject', { session: 'chat-grok-draft', text: 'hello' })
+    expect(inj.status).toBe(202)
+    expect(await inj.json()).toMatchObject({ ok: true })
+  })
+
   it('fails open when the screen read errors', async () => {
     const { base } = await spawnHarness('claude', 'chat-read-err', () =>
       Promise.reject(new Error('pane read failed')),
@@ -766,6 +776,19 @@ describe('POST /term/inject (seamless modes 5c)', () => {
     expect(paste).toBeGreaterThan(esc)
     expect(cr).toBeGreaterThan(paste)
     expect(writes.some((w) => w === '1' || w === '\x1b[200~1\x1b[201~')).toBe(false)
+  })
+
+  it('409s harness_draft when the input is Try "foo", not a placeholder template', async () => {
+    const screen = FRESH_CLAUDE_PROMPT_SCREEN.replace('Try "refactor <filepath>"', 'Try "foo"')
+    const { base, herdr } = await spawnHarness('claude', 'chat-try-foo', () =>
+      Promise.resolve(screen),
+    )
+    markHarnessIdle(herdr)
+    const inj = await post(base, '/term/inject', { session: 'chat-try-foo', text: 'test 1' })
+    expect(inj.status).toBe(409)
+    expect(await inj.json()).toMatchObject({ code: 'turn_in_flight', reason: 'harness_draft' })
+    await new Promise((r) => setTimeout(r, 150))
+    expect(fakeProcs[0].writes).toEqual([])
   })
 
   it('409s harness_draft over unsent input text, even on the inject button', async () => {

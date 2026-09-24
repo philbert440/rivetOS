@@ -33,10 +33,10 @@ import {
   AUTO_MODE_DIALOG_SCREEN,
   CLAUDE_PERM_SCREEN,
   CLAUDE_PICKER_SCREEN,
+  FRESH_CLAUDE_PROMPT_SCREEN,
   IDLE_HARNESS_SCREEN,
   MODEL_PICKER_SCREEN,
   OLD_DIALOG_SCROLLBACK_SCREEN,
-  FRESH_CLAUDE_PROMPT_SCREEN,
   SLASH_DRAFT_SCREEN,
 } from '../term/tui-screen-fixtures.js'
 
@@ -1952,6 +1952,24 @@ describe('sendUserTurn gates on an open blocking dialog', () => {
     driver.close()
   })
 
+  it('refuses a typed Try "…" that is not a placeholder template', async () => {
+    const pty = fakePty()
+    const screen = FRESH_CLAUDE_PROMPT_SCREEN.replace('Try "refactor <filepath>"', 'Try "foo"')
+    const driver = new ClaudeCodeDriver({
+      store: fakeStore([]),
+      pty: () => Promise.resolve(pty.host),
+      turnQuietMs: 0,
+      screen: () => screen,
+    })
+    await driver.startSession({ nativeSessionId: UUID })
+    await expect(driver.sendUserTurn(sid, { text: 'test 1' })).rejects.toMatchObject({
+      code: 'turn_in_flight',
+      context: { reason: 'harness_draft' },
+    })
+    expect(pty.injects).toEqual([])
+    driver.close()
+  })
+
   it('refuses a draft even on the inject button, and never sends Esc over it', async () => {
     const pty = fakePty()
     const driver = new ClaudeCodeDriver({
@@ -2030,6 +2048,20 @@ describe('sendUserTurn gates on an open blocking dialog', () => {
     driver.close()
   })
 
+  it('does not gate a non-Claude PTY driver on unsent input text', async () => {
+    const pty = fakePty()
+    const driver = new GrokBuildDriver({
+      store: fakeStore([]),
+      pty: () => Promise.resolve(pty.host),
+      turnQuietMs: 0,
+      screen: () => SLASH_DRAFT_SCREEN,
+    })
+    await driver.startSession({ nativeSessionId: UUID })
+    await driver.sendUserTurn(GrokBuildDriver.sessionId(UUID), { text: 'hello' })
+    expect(pty.injects.map((i) => i.text)).toEqual(['hello'])
+    driver.close()
+  })
+
   it('does not gate a non-Claude PTY driver on a numbered-menu screen', async () => {
     const pty = fakePty()
     const driver = new GrokBuildDriver({
@@ -2041,6 +2073,31 @@ describe('sendUserTurn gates on an open blocking dialog', () => {
     await driver.startSession({ nativeSessionId: UUID })
     await driver.sendUserTurn(GrokBuildDriver.sessionId(UUID), { text: 'hello' })
     expect(pty.injects.map((i) => i.text)).toEqual(['hello'])
+    driver.close()
+  })
+
+  it('re-checks for a draft before the dead-PTY respawn retry and does not paste', async () => {
+    const pty = fakePty()
+    let injectAttempts = 0
+    pty.host.inject = (id, text, submit, interrupt) => {
+      injectAttempts += 1
+      if (injectAttempts === 1) return false
+      pty.injects.push({ id, text, submit, interrupt })
+      return true
+    }
+    const driver = new ClaudeCodeDriver({
+      store: fakeStore([]),
+      pty: () => Promise.resolve(pty.host),
+      turnQuietMs: 0,
+      screen: () => (injectAttempts === 0 ? IDLE_HARNESS_SCREEN : SLASH_DRAFT_SCREEN),
+    })
+    await driver.startSession({ nativeSessionId: UUID })
+    await expect(driver.sendUserTurn(sid, { text: 'hello' })).rejects.toMatchObject({
+      code: 'turn_in_flight',
+      context: { reason: 'harness_draft' },
+    })
+    expect(injectAttempts).toBe(1)
+    expect(pty.injects).toEqual([])
     driver.close()
   })
 
