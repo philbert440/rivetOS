@@ -32,6 +32,7 @@ interface GatewayUpgrade {
   handle: (req: IncomingMessage, socket: Duplex, head: Buffer, url: URL) => void
 }
 import type { RivetConfig } from '../config.js'
+import { nodeNameFor } from '../node-name.js'
 
 const log = logger('Boot:Gateway')
 
@@ -196,6 +197,14 @@ export function buildGatewayEnv(config: RivetConfig, installRoot: string): Recor
     const value = raw?.trim()
     if (value) env[key] = value
   }
+  // Mesh node name the task runner claims on (`nodeNameFor`: mesh.node_name,
+  // else HOSTNAME, else `local`). den's loadConfig prefers RIVETOS_DEN_NODE_NAME
+  // over RIVETOS_DEN_NODE_ID and hostname(), so this must be the same string
+  // the runner uses. Set AFTER the prefix passthrough: a process-env
+  // RIVETOS_DEN_NODE_NAME is ignored when den is embedded. The runner does not
+  // read that variable, so letting it override here split preset.node from
+  // node_affinity.
+  env.RIVETOS_DEN_NODE_NAME = nodeNameFor(config)
   const teamAdmin = process.env.RIVETOS_TEAM_PG_ADMIN_URL?.trim()
   if (teamAdmin) env.RIVETOS_TEAM_PG_ADMIN_URL = teamAdmin
 

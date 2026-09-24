@@ -1,5 +1,5 @@
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
-import { tmpdir } from 'node:os'
+import { homedir, hostname, tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
 import { resolveUser } from '@rivetos/types'
@@ -84,6 +84,40 @@ describe('loadUsersRegistry — explicit RIVETOS_USERS_FILE', () => {
   })
 })
 
+describe('node name and agents directory', () => {
+  it('RIVETOS_DEN_NODE_NAME beats RIVETOS_DEN_NODE_ID beats hostname()', () => {
+    expect(
+      loadConfig({
+        RIVETOS_DEN_NODE_NAME: ' from-name ',
+        RIVETOS_DEN_NODE_ID: 'from-id',
+      } as NodeJS.ProcessEnv).nodeName,
+    ).toBe('from-name')
+    expect(loadConfig({ RIVETOS_DEN_NODE_ID: ' from-id ' } as NodeJS.ProcessEnv).nodeName).toBe(
+      'from-id',
+    )
+    expect(
+      loadConfig({
+        RIVETOS_DEN_NODE_NAME: '   ',
+        RIVETOS_DEN_NODE_ID: 'from-id',
+      } as NodeJS.ProcessEnv).nodeName,
+    ).toBe('from-id')
+    expect(loadConfig({} as NodeJS.ProcessEnv).nodeName).toBe(hostname())
+  })
+
+  it('agentsDir defaults under the home directory and honors an override', () => {
+    expect(loadConfig({} as NodeJS.ProcessEnv).agentsDir).toBe(
+      join(homedir(), '.rivetos', 'agents'),
+    )
+    expect(
+      loadConfig({ RIVETOS_DEN_AGENTS_DIR: '  /var/lib/rivetos/agents  ' } as NodeJS.ProcessEnv)
+        .agentsDir,
+    ).toBe('/var/lib/rivetos/agents')
+    expect(loadConfig({ RIVETOS_DEN_AGENTS_DIR: '   ' } as NodeJS.ProcessEnv).agentsDir).toBe(
+      join(homedir(), '.rivetos', 'agents'),
+    )
+  })
+})
+
 describe('term.mux default (fleet default = herdr when the pinned binary is present)', () => {
   const base = { RIVETOS_DEN_TERM: '1' }
   it('unset + herdr reachable → herdr', () => {
@@ -93,11 +127,17 @@ describe('term.mux default (fleet default = herdr when the pinned binary is pres
     expect(loadConfig(base, { herdr: () => false }).term.mux).toBeUndefined()
   })
   it('explicit tmux opts out even when herdr is reachable', () => {
-    expect(loadConfig({ ...base, RIVETOS_DEN_TERM_MUX: 'tmux' }, { herdr: () => true }).term.mux).toBe('tmux')
-    expect(loadConfig({ ...base, RIVETOS_DEN_TERM_MUX: 'none' }, { herdr: () => true }).term.mux).toBe('none')
+    expect(
+      loadConfig({ ...base, RIVETOS_DEN_TERM_MUX: 'tmux' }, { herdr: () => true }).term.mux,
+    ).toBe('tmux')
+    expect(
+      loadConfig({ ...base, RIVETOS_DEN_TERM_MUX: 'none' }, { herdr: () => true }).term.mux,
+    ).toBe('none')
   })
   it('a garbage value still fails safe to none, never to the herdr default', () => {
-    expect(loadConfig({ ...base, RIVETOS_DEN_TERM_MUX: 'zellij' }, { herdr: () => true }).term.mux).toBe('none')
+    expect(
+      loadConfig({ ...base, RIVETOS_DEN_TERM_MUX: 'zellij' }, { herdr: () => true }).term.mux,
+    ).toBe('none')
   })
 })
 
@@ -107,15 +147,21 @@ describe('term.mux default — the REAL probe is wired (no injected probe)', () 
     const env = { RIVETOS_DEN_TERM: '1', PATH: '/nonexistent-dir', HOME: home }
     expect(loadConfig(env).term.mux).toBeUndefined()
     mkdirSync(join(home, '.local', 'bin'), { recursive: true })
-    writeFileSync(join(home, '.local', 'bin', 'herdr'), '#!/bin/sh\necho herdr 0.8.2\n', { mode: 0o755 })
+    writeFileSync(join(home, '.local', 'bin', 'herdr'), '#!/bin/sh\necho herdr 0.8.2\n', {
+      mode: 0o755,
+    })
     expect(loadConfig(env).term.mux).toBe('herdr')
-    writeFileSync(join(home, '.local', 'bin', 'herdr'), '#!/bin/sh\necho herdr 0.9.0\n', { mode: 0o755 })
+    writeFileSync(join(home, '.local', 'bin', 'herdr'), '#!/bin/sh\necho herdr 0.9.0\n', {
+      mode: 0o755,
+    })
     expect(loadConfig(env).term.mux).toBeUndefined() // wrong pin never auto-selects
     rmSync(home, { recursive: true, force: true })
   })
   it('terminals disabled → no probe, mux stays unset', () => {
     let probed = false
-    expect(loadConfig({ PATH: '/nonexistent-dir' }, { herdr: () => ((probed = true), true) }).term.mux).toBeUndefined()
+    expect(
+      loadConfig({ PATH: '/nonexistent-dir' }, { herdr: () => ((probed = true), true) }).term.mux,
+    ).toBeUndefined()
     expect(probed).toBe(false)
   })
 })

@@ -1,5 +1,5 @@
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
-import { tmpdir } from 'node:os'
+import { hostname, tmpdir } from 'node:os'
 import { join } from 'node:path'
 import type { AddressInfo } from 'node:net'
 import { EventEmitter, once } from 'node:events'
@@ -260,6 +260,23 @@ describe('den-server', () => {
     const big = 'x'.repeat(300 * 1024)
     const res = await fetch(`${base}/event`, { method: 'POST', body: big }).catch(() => null)
     expect(res?.status).toBe(413)
+  })
+
+  it('/healthz includes node', async () => {
+    const stateDir = mkdtempSync(join(tmpdir(), 'den-server-'))
+    dirs.push(stateDir)
+    const den = createDenServer(baseTestDenConfig(stateDir, { nodeName: 'ct115' }))
+    servers.push(den)
+    await new Promise<void>((resolve) => den.server.listen(0, '127.0.0.1', resolve))
+    const port = (den.server.address() as AddressInfo).port
+    const body = (await (await fetch(`http://127.0.0.1:${String(port)}/healthz`)).json()) as {
+      ok: boolean
+      name: string
+      node: string
+    }
+    expect(body.ok).toBe(true)
+    expect(body.node).toBe('ct115')
+    expect(body.name).toBe(hostname())
   })
 
   it('loopback allows APIs and WS without client certs; bearer is ignored', async () => {

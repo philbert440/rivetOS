@@ -55,6 +55,7 @@ export function ensureAgentDirectory(
   }
 
   const existed = existsSync(directory)
+  // `mode` applies to the leaf and to every missing parent this call creates.
   mkdirSync(directory, { recursive: true, mode: 0o700 })
   const created = !existed
   if (created) opts?.log?.(`created agent directory ${directory}`)

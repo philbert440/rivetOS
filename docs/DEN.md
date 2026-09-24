@@ -78,9 +78,13 @@ den `/healthz` in parallel (1.5s budget per peer), and answers:
 ```
 
 The whole result is cached for `RIVETOS_DEN_MESH_CACHE_MS` (default 10s).
-`latest` appears only on the entry that is this process; `RIVETOS_DEN_NODE_ID`
-(else the machine hostname) matched against roster node ids; when nothing
-matches, no entry carries a `latest`, which is fine. The endpoint is `/mesh.json`
+`latest` appears only on the entry that is this process. The id compared to
+the roster is `config.nodeName`: `RIVETOS_DEN_NODE_NAME` (set by boot from
+`mesh.node_name`, and it outranks `RIVETOS_DEN_NODE_ID`), else
+`RIVETOS_DEN_NODE_ID`, else the machine hostname. When nothing matches, no
+entry carries a `latest`, which is fine. A standalone den with neither env
+var set uses the hostname, which is not the runner's `HOSTNAME || 'local'` —
+that match is guaranteed only when den is embedded. The endpoint is `/mesh.json`
 _with_ the extension on purpose: the extensionless `/mesh` stays free for the
 viewer SPA's route.
 

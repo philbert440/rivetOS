@@ -10,6 +10,25 @@ import type { RivetConfig } from '../config.js'
 const base = (den: NonNullable<RivetConfig['den']>, mesh?: RivetConfig['mesh']): RivetConfig =>
   ({ den, ...(mesh ? { mesh } : {}) }) as RivetConfig
 
+describe('buildGatewayEnv — den node name', () => {
+  // A mesh node name makes resolveDenTls stat the issued cert under the shared
+  // dir. Point that at a local temp dir so the stat cannot touch a wedged
+  // /rivet-shared mount.
+  it('sets RIVETOS_DEN_NODE_NAME from mesh.node_name', () => {
+    vi.stubEnv('RIVETOS_DEN_NODE_NAME', '')
+    vi.stubEnv('RIVETOS_SHARED_DIR', tmpdir())
+    const env = buildGatewayEnv(base({}, { node_name: 'ct115' }), '/opt/rivetos')
+    expect(env.RIVETOS_DEN_NODE_NAME).toBe('ct115')
+  })
+
+  it('config wins over process env', () => {
+    vi.stubEnv('RIVETOS_DEN_NODE_NAME', 'from-env')
+    vi.stubEnv('RIVETOS_SHARED_DIR', tmpdir())
+    const env = buildGatewayEnv(base({}, { node_name: 'ct115' }), '/opt/rivetos')
+    expect(env.RIVETOS_DEN_NODE_NAME).toBe('ct115')
+  })
+})
+
 describe('buildGatewayEnv — MicBridge audio', () => {
   it('wires RIVETOS_DEN_AUDIO when terminal is enabled', () => {
     const off = buildGatewayEnv(base({}), '/opt/rivetos')

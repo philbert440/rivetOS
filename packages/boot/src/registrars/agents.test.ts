@@ -32,6 +32,31 @@ const coreMocks = vi.hoisted(() => {
   return { PgTaskStore, pgTaskStores, createTaskRunner, createTaskCompletionWaiter }
 })
 
+const meshCapture = vi.hoisted(() => {
+  const started: Array<{ id: string; name: string }> = []
+  const nodeNames: string[] = []
+  class FileMeshRegistry {
+    constructor(opts: { mesh?: { nodeName?: string } }) {
+      if (opts.mesh?.nodeName) nodeNames.push(opts.mesh.nodeName)
+    }
+    start(node: { id: string; name: string }): Promise<void> {
+      started.push({ id: node.id, name: node.name })
+      return Promise.resolve()
+    }
+  }
+  class AgentChannelServer {
+    start(): Promise<void> {
+      return Promise.resolve()
+    }
+  }
+  class MeshDelegationEngine {
+    createDelegationTool(): { name: string } {
+      return { name: 'delegate_task' }
+    }
+  }
+  return { started, nodeNames, FileMeshRegistry, AgentChannelServer, MeshDelegationEngine }
+})
+
 const pgMocks = vi.hoisted(() => {
   class Pool {
     static instances: Pool[] = []
@@ -53,8 +78,25 @@ vi.mock('@rivetos/core', async (importOriginal) => {
     PgTaskStore: coreMocks.PgTaskStore,
     createTaskRunner: coreMocks.createTaskRunner,
     createTaskCompletionWaiter: coreMocks.createTaskCompletionWaiter,
+    FileMeshRegistry: meshCapture.FileMeshRegistry,
+    AgentChannelServer: meshCapture.AgentChannelServer,
+    MeshDelegationEngine: meshCapture.MeshDelegationEngine,
+    loadTlsConfig: () => ({
+      ca: Buffer.from('ca'),
+      cert: Buffer.from('cert'),
+      key: Buffer.from('key'),
+      cn: 'node',
+    }),
   }
 })
+
+vi.mock('undici', () => ({
+  Agent: class Agent {
+    constructor(_opts?: unknown) {
+      void _opts
+    }
+  },
+}))
 
 vi.mock('pg', () => ({
   default: { Pool: pgMocks.Pool },
@@ -80,6 +122,8 @@ afterEach(() => {
   coreMocks.createTaskRunner.mockClear()
   coreMocks.createTaskCompletionWaiter.mockClear()
   pgMocks.Pool.instances.splice(0)
+  meshCapture.started.splice(0)
+  meshCapture.nodeNames.splice(0)
 })
 
 describe('resolveAdvertiseHost', () => {
@@ -228,5 +272,35 @@ describe('registerAgentTools shared pool wiring', () => {
     expect(created?.end).not.toHaveBeenCalled()
     for (const hook of hooks) await hook()
     expect(created?.end).toHaveBeenCalledTimes(1)
+  })
+
+  function meshConfig(nodeName?: string): RivetConfig {
+    return {
+      runtime: { workspace: '/tmp', default_agent: 'test-agent', skill_dirs: [] },
+      agents: { 'test-agent': { provider: 'p', model: 'm' } },
+      workflows: { enabled: false },
+      mesh: {
+        enabled: true,
+        tls: true,
+        storage_dir: '/tmp/agt-s2-mesh-reg',
+        ...(nodeName !== undefined ? { node_name: nodeName } : {}),
+      },
+    } as RivetConfig
+  }
+
+  it('registers a whitespace-padded mesh.node_name trimmed', async () => {
+    vi.stubEnv('HOSTNAME', 'from-host')
+    const { runtime } = stubRuntime({})
+    await registerAgentTools(runtime, meshConfig('  ct115  '), '/tmp')
+    expect(meshCapture.nodeNames).toEqual(['ct115'])
+    expect(meshCapture.started).toEqual([{ id: 'ct115', name: 'ct115' }])
+  })
+
+  it('registers HOSTNAME when mesh.node_name is absent', async () => {
+    vi.stubEnv('HOSTNAME', 'from-host')
+    const { runtime } = stubRuntime({})
+    await registerAgentTools(runtime, meshConfig(), '/tmp')
+    expect(meshCapture.nodeNames).toEqual(['from-host'])
+    expect(meshCapture.started).toEqual([{ id: 'from-host', name: 'from-host' }])
   })
 })

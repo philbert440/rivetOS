@@ -28,10 +28,20 @@ export interface AgentPresetPatch {
   systemPrompt?: string
   directory?: string
   sharedLink?: boolean
+  /**
+   * Stored only when the route is filling an empty legacy URL. A change to a
+   * non-empty URL is rejected before this patch is built.
+   */
+  nodeBaseUrl?: string
 }
 
 export interface AgentPresetStore {
   readonly backend: AgentRegistryBackend
+  /**
+   * Backing file when this store is file-based (the path it reads and writes).
+   * Absent for Postgres. A fallback wrapper forwards the active store's file.
+   */
+  readonly file?: string
   /** true when the backing store can serve requests (table exists / dir writable). */
   isReady(): Promise<boolean>
   list(filter?: { node?: string }): Promise<AgentPreset[]>
@@ -132,6 +142,10 @@ export function presetFromPatch(
   if (patch.systemPrompt !== undefined) next.systemPrompt = patch.systemPrompt
   if (patch.directory !== undefined) next.directory = patch.directory
   if (patch.sharedLink !== undefined) next.sharedLink = patch.sharedLink
+  if (patch.nodeBaseUrl !== undefined) {
+    // Still persisted for pre-registry clients; formally deprecated in slice 7.
+    next.nodeBaseUrl = patch.nodeBaseUrl
+  }
   if (patch.harnessId === null) delete next.harnessId
   else if (patch.harnessId !== undefined) next.harnessId = patch.harnessId
   return migrateAgentPreset(next)
