@@ -9,7 +9,7 @@ import {
 } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { afterEach, describe, expect, it } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 import { createSessionCwdStore } from './session-cwd.js'
 
 const dirs: string[] = []
@@ -109,5 +109,52 @@ describe('session cwd store', () => {
     const future = new Date(Date.now() + 10_000)
     utimesSync(file, future, future)
     expect(store.get('claude', 'a')).toBe('/tmp/edited')
+  })
+
+  it('get refreshes recency so a session in use is not evicted', () => {
+    const dir = tmp()
+    const file = join(dir, 'session-cwd.json')
+    let t = 0
+    const store = createSessionCwdStore(file, { max: 2, now: () => ++t })
+    store.set('claude', 'old', '/tmp/old')
+    store.set('claude', 'mid', '/tmp/mid')
+    expect(store.get('claude', 'old')).toBe('/tmp/old')
+    store.set('claude', 'new', '/tmp/new')
+    expect(store.get('claude', 'mid')).toBeUndefined()
+    expect(store.get('claude', 'old')).toBe('/tmp/old')
+    expect(store.get('claude', 'new')).toBe('/tmp/new')
+    store.close()
+  })
+
+  it('ignores a relative or garbage cwd on read and logs once', () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined)
+    try {
+      const dir = tmp()
+      const file = join(dir, 'session-cwd.json')
+      writeFileSync(
+        file,
+        JSON.stringify({
+          v: 1,
+          entries: {
+            'claude:rel': { cwd: 'relative/path', at: 1 },
+            'claude:junk': { cwd: 'not a path', at: 1 },
+            'claude:ok': { cwd: '/tmp/ok/', at: 2 },
+          },
+        }),
+      )
+      const store = createSessionCwdStore(file)
+      expect(store.get('claude', 'rel')).toBeUndefined()
+      expect(store.get('claude', 'rel')).toBeUndefined()
+      expect(store.get('claude', 'junk')).toBeUndefined()
+      expect(store.get('claude', 'ok')).toBe('/tmp/ok')
+      const ignored = warn.mock.calls.filter((call) => String(call[0]).includes('claude:rel'))
+      expect(ignored).toHaveLength(1)
+      expect(
+        warn.mock.calls.filter((call) => String(call[0]).includes('claude:junk')),
+      ).toHaveLength(1)
+      store.close()
+    } finally {
+      warn.mockRestore()
+    }
   })
 })

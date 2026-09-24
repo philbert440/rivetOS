@@ -90,4 +90,10 @@ describe('wirePtyInfo', () => {
     expect(wired).not.toHaveProperty('socket')
     expect(wired).not.toHaveProperty('session')
   })
+
+  it('strips cwd so a list row never carries the directory', () => {
+    const wired = wirePtyInfo({ ...NONE, cwd: '/tmp/agent-claude' }, IDENTITY, true)
+    expect(wired).not.toHaveProperty('cwd')
+    expect(JSON.stringify(wired)).not.toContain('cwd')
+  })
 })

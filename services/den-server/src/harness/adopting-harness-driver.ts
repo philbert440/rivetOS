@@ -190,6 +190,29 @@ export abstract class AdoptingPtyHarnessDriver<
   }
 
   /**
+   * The fresh spawn recorded cwd under the den room. Summaries and a
+   * post-restart `--resume <native>` look the session up by the native id,
+   * which is not the room. Copy the record when the pair is learned — not
+   * only at spawn, and not only while this process's map is still warm.
+   */
+  private rememberNativeCwd(room: string, native: string): void {
+    if (!native || room === native) return
+    const record = this.deps.recordSessionCwd
+    const lookup = this.deps.sessionCwd
+    if (!record || !lookup) return
+    const cwd = lookup(this.rosterCommand, room)
+    if (!cwd) return
+    if (lookup(this.rosterCommand, native) === cwd) return
+    try {
+      record(this.rosterCommand, native, cwd)
+    } catch (err) {
+      this.log(
+        `[den-server] ${this.harnessId}: session cwd persist failed for ${native}: ${err instanceof Error ? err.message : String(err)}`,
+      )
+    }
+  }
+
+  /**
    * Point a den room at the harness session running in it. First sighting is
    * an adoption (announce it and start tracking); a room that changes its
    * session id is a ROTATION.
@@ -207,6 +230,7 @@ export abstract class AdoptingPtyHarnessDriver<
     if (previous === native) return
     this.roomNative.set(room, native)
     this.nativeRoom.set(native, room)
+    this.rememberNativeCwd(room, native)
     if (previous === undefined) {
       this.ensureLive(native)
       this.announceIfNew(native)

@@ -1,4 +1,13 @@
-import { lstatSync, mkdirSync, mkdtempSync, readlinkSync, rmSync, writeFileSync } from 'node:fs'
+import {
+  existsSync,
+  lstatSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  readlinkSync,
+  rmSync,
+  writeFileSync,
+} from 'node:fs'
 import { hostname, tmpdir } from 'node:os'
 import { join } from 'node:path'
 import type { AddressInfo } from 'node:net'
@@ -6,6 +15,7 @@ import { EventEmitter, once } from 'node:events'
 import { request } from 'node:http'
 import { WebSocket, WebSocketServer } from 'ws'
 import { afterEach, describe, expect, it } from 'vitest'
+import type { Pool } from 'pg'
 import type { AgentPreset } from '@rivetos/types'
 import { createDenServer, type DenServer } from './server.js'
 import type { DenConfig } from './config.js'
@@ -80,6 +90,7 @@ async function start(
     allowedHosts?: string[]
     /** Materialize a local shared dir (never the real /rivet-shared) and point sharedRoot at it. */
     linkShared?: boolean
+    presetPool?: Pool
   } = {},
 ): Promise<{ den: DenServer; base: string; port: number; stateDir: string; sharedDir?: string }> {
   const stateDir = mkdtempSync(join(tmpdir(), 'den-server-'))
@@ -132,6 +143,7 @@ async function start(
         }
       : {}),
     ...(opts.herdrCtl ? { herdrCtl: opts.herdrCtl } : {}),
+    ...(opts.presetPool ? { presetPool: opts.presetPool } : {}),
   })
   servers.push(den)
   await new Promise<void>((r) => den.server.listen(0, '127.0.0.1', r))
@@ -1107,6 +1119,9 @@ describe('browser origin policy', () => {
       req.end()
     })
     expect(status).toBe(403)
+  })
+})
+
 function storedPreset(over: Partial<AgentPreset> & Pick<AgentPreset, 'id' | 'name'>): AgentPreset {
   return {
     color: '',
@@ -1246,5 +1261,341 @@ describe('POST /term { agentId }', () => {
       /^could not create agent directory: /,
     )
     expect(fakeSpawns).toEqual([])
+  })
+
+  it('400s a preset model that is not a token, naming the preset', async () => {
+    const { base, stateDir } = await start('', 60_000, { term: true, mux: 'none' })
+    const directory = join(stateDir, 'agents', 'bad-model')
+    mkdirSync(directory, { recursive: true })
+    writeFileSync(
+      join(stateDir, 'agents.json'),
+      JSON.stringify({
+        agents: [
+          storedPreset({
+            id: 'bad-model',
+            name: 'Bad Model',
+            harnessId: 'claude-code',
+            model: 'bad model',
+            effort: 'low',
+            directory,
+          }),
+        ],
+      }),
+    )
+    const res = await post(base, '/term', { agentId: 'bad-model' })
+    expect(res.status).toBe(400)
+    expect(await res.json()).toEqual({
+      error: 'agent "Bad Model" model must be a 1-64 token',
+    })
+    expect(fakeSpawns).toEqual([])
+  })
+
+  it('400s a preset effort that is not a token, naming the preset', async () => {
+    const directory = mkdtempSync(join(tmpdir(), 'den-bad-effort-'))
+    dirs.push(directory)
+    const queries: string[] = []
+    const pool = {
+      async query(sql: string) {
+        queries.push(sql)
+        if (sql.includes('to_regclass')) return { rows: [{ reg: 'ros_agent_presets' }] }
+        if (sql.includes('WHERE id =')) {
+          return {
+            rows: [
+              {
+                id: 'bad-effort',
+                name: 'Bad Effort',
+                color: '',
+                harness_id: 'claude-code',
+                model: '',
+                effort: 'bad effort',
+                system_prompt: '',
+                node: '',
+                directory,
+                shared_link: false,
+                node_base_url: '',
+                created_at: new Date(1),
+                updated_at: new Date(1),
+              },
+            ],
+          }
+        }
+        return { rows: [] }
+      },
+      async end() {
+        return undefined
+      },
+    } as unknown as Pool
+    const { base } = await start('', 60_000, { term: true, mux: 'none', presetPool: pool })
+    const started = Date.now()
+    while (!queries.some((sql) => sql.includes('to_regclass'))) {
+      if (Date.now() - started > 2_000) throw new Error('preset probe was not kicked')
+      await new Promise((resolve) => setTimeout(resolve, 10))
+    }
+    await new Promise((resolve) => setTimeout(resolve, 20))
+    const res = await post(base, '/term', { agentId: 'bad-effort' })
+    expect(res.status).toBe(400)
+    expect(await res.json()).toEqual({
+      error: 'agent "Bad Effort" effort must be a 1-64 token',
+    })
+    expect(fakeSpawns).toEqual([])
+  })
+
+  it('400s when the agent has no harness and no command was given', async () => {
+    const { base, stateDir } = await start('', 60_000, { term: true, mux: 'none' })
+    const directory = join(stateDir, 'agents', 'no-harness')
+    mkdirSync(directory, { recursive: true })
+    writeFileSync(
+      join(stateDir, 'agents.json'),
+      JSON.stringify({
+        agents: [
+          storedPreset({
+            id: 'no-harness',
+            name: 'Plain',
+            directory,
+          }),
+        ],
+      }),
+    )
+    const res = await post(base, '/term', { agentId: 'no-harness' })
+    expect(res.status).toBe(400)
+    expect(await res.json()).toEqual({
+      error: 'agent has no harness and no command was given',
+    })
+    expect(fakeSpawns).toEqual([])
+  })
+
+  it('503s when the preset store is down', async () => {
+    const queries: string[] = []
+    const pool = {
+      async query(sql: string) {
+        queries.push(sql)
+        if (sql.includes('to_regclass')) return { rows: [{ reg: 'ros_agent_presets' }] }
+        throw new Error('connection refused: secret-cause')
+      },
+      async end() {
+        return undefined
+      },
+    } as unknown as Pool
+    const { base } = await start('', 60_000, { term: true, mux: 'none', presetPool: pool })
+    const started = Date.now()
+    while (!queries.some((sql) => sql.includes('to_regclass'))) {
+      if (Date.now() - started > 2_000) throw new Error('preset probe was not kicked')
+      await new Promise((resolve) => setTimeout(resolve, 10))
+    }
+    await new Promise((resolve) => setTimeout(resolve, 20))
+    const res = await post(base, '/term', { agentId: 'reviewer' })
+    expect(res.status).toBe(503)
+    const body = (await res.json()) as { error?: string }
+    expect(body).toEqual({ error: 'agent registry unavailable' })
+    expect(JSON.stringify(body)).not.toMatch(/secret-cause/)
+    expect(fakeSpawns).toEqual([])
+  })
+
+  it('uses the normalised preset directory for the spawn and the response', async () => {
+    const { base, stateDir } = await start('', 60_000, { term: true, mux: 'none' })
+    const directory = join(stateDir, 'agents', 'slash')
+    mkdirSync(directory, { recursive: true })
+    writeFileSync(
+      join(stateDir, 'agents.json'),
+      JSON.stringify({
+        agents: [
+          storedPreset({
+            id: 'slash',
+            name: 'Slash',
+            harnessId: 'claude-code',
+            directory: `${directory}/`,
+          }),
+        ],
+      }),
+    )
+    fakeSpawns.length = 0
+    const res = await post(base, '/term', { agentId: 'slash' })
+    expect(res.status).toBe(201)
+    const body = (await res.json()) as { cwd?: string }
+    expect(body.cwd).toBe(directory)
+    expect(fakeSpawns[0].cwd).toBe(directory)
+    const raw = JSON.parse(readFileSync(join(stateDir, 'session-cwd.json'), 'utf8')) as {
+      entries: Record<string, { cwd: string }>
+    }
+    expect(Object.values(raw.entries).map((entry) => entry.cwd)).toEqual([directory])
+  })
+
+  it('keeps a moved preset in the recorded directory, force moves it, and a different preset 409s', async () => {
+    const { base } = await start('', 60_000, { term: true, mux: 'none' })
+    const created = await post(base, '/api/agents', {
+      name: 'Reviewer',
+      harnessId: 'claude-code',
+    })
+    const agent = ((await created.json()) as { agent: AgentPreset }).agent
+    const session = '11111111-1111-4111-8111-111111111111'
+    fakeSpawns.length = 0
+    const first = await post(base, '/term', { agentId: agent.id, session })
+    expect(first.status).toBe(201)
+    expect(fakeSpawns[0].cwd).toBe(agent.directory)
+    fakeProcs[fakeProcs.length - 1].emit('exit', 0)
+
+    const moved = join(agent.directory!, '..', 'reviewer-moved')
+    const patched = await fetch(`${base}/api/agents/${agent.id}`, {
+      method: 'PATCH',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ directory: moved }),
+    })
+    expect(patched.status).toBe(200)
+
+    fakeSpawns.length = 0
+    const stayed = await post(base, '/term', { agentId: agent.id, session, resume: session })
+    expect(stayed.status).toBe(409)
+    expect(await stayed.json()).toEqual({
+      error: `session runs in ${agent.directory}; edit the agent or start a new conversation`,
+    })
+    expect(fakeSpawns).toEqual([])
+
+    const plain = await post(base, '/term', { command: 'claude', session, resume: session })
+    expect(plain.status).toBe(201)
+    expect(await plain.json()).not.toHaveProperty('cwd')
+    expect(fakeSpawns[0].cwd).toBe(agent.directory)
+    fakeProcs[fakeProcs.length - 1].emit('exit', 0)
+
+    fakeSpawns.length = 0
+    const forced = await post(base, '/term', {
+      agentId: agent.id,
+      session,
+      resume: session,
+      force: true,
+    })
+    expect(forced.status).toBe(201)
+    const forcedBody = (await forced.json()) as { cwd?: string }
+    expect(forcedBody.cwd).toBe(moved)
+    expect(fakeSpawns[0].cwd).toBe(moved)
+    fakeProcs[fakeProcs.length - 1].emit('exit', 0)
+
+    const other = await post(base, '/api/agents', {
+      name: 'Other',
+      harnessId: 'claude-code',
+    })
+    const otherAgent = ((await other.json()) as { agent: AgentPreset }).agent
+    fakeSpawns.length = 0
+    const conflict = await post(base, '/term', {
+      agentId: otherAgent.id,
+      session,
+      resume: session,
+    })
+    expect(conflict.status).toBe(409)
+    expect(((await conflict.json()) as { error: string }).error).toContain(
+      `session runs in ${moved}`,
+    )
+    expect(fakeSpawns).toEqual([])
+  })
+
+  it('writes session-cwd.json and a later spawn resumes from it', async () => {
+    const { base, stateDir } = await start('', 60_000, { term: true, mux: 'none' })
+    const created = await post(base, '/api/agents', {
+      name: 'Reviewer',
+      harnessId: 'claude-code',
+    })
+    const agent = ((await created.json()) as { agent: AgentPreset }).agent
+    const session = '22222222-2222-4222-8222-222222222222'
+    const first = await post(base, '/term', { agentId: agent.id, session })
+    expect(first.status).toBe(201)
+    expect((await first.json()) as { cwd?: string }).toMatchObject({ cwd: agent.directory })
+    const file = join(stateDir, 'session-cwd.json')
+    const raw = JSON.parse(readFileSync(file, 'utf8')) as {
+      entries: Record<string, { cwd: string }>
+    }
+    expect(raw.entries[`claude:${session}`].cwd).toBe(agent.directory)
+    fakeProcs[fakeProcs.length - 1].emit('exit', 0)
+    fakeSpawns.length = 0
+    const second = await post(base, '/term', { command: 'claude', session, resume: session })
+    expect(second.status).toBe(201)
+    expect(await second.json()).not.toHaveProperty('cwd')
+    expect(fakeSpawns[0].cwd).toBe(agent.directory)
+    expect(fakeSpawns[0].argv).toContain('--resume')
+    expect(fakeSpawns[0].argv).toContain(session)
+  })
+
+  it('refuses a recorded resume whose directory is gone', async () => {
+    const { base, stateDir } = await start('', 60_000, { term: true, mux: 'none' })
+    const created = await post(base, '/api/agents', {
+      name: 'Reviewer',
+      harnessId: 'claude-code',
+    })
+    const agent = ((await created.json()) as { agent: AgentPreset }).agent
+    const session = '33333333-3333-4333-8333-333333333333'
+    expect((await post(base, '/term', { agentId: agent.id, session })).status).toBe(201)
+    fakeProcs[fakeProcs.length - 1].emit('exit', 0)
+    rmSync(agent.directory!, { recursive: true, force: true })
+    fakeSpawns.length = 0
+    const resumed = await post(base, '/term', { command: 'claude', session, resume: session })
+    expect(resumed.status).toBe(409)
+    expect(((await resumed.json()) as { error: string }).error).toContain(agent.directory!)
+    expect(fakeSpawns).toEqual([])
+    expect(existsSync(join(stateDir, 'session-cwd.json'))).toBe(true)
+  })
+
+  it('gives codex startSession the preset cwd on a new session and not on resume', async () => {
+    const upstream = new WebSocketServer({ host: '127.0.0.1', port: 0 })
+    await once(upstream, 'listening')
+    const starts: Record<string, unknown>[] = []
+    const resumes: Record<string, unknown>[] = []
+    upstream.on('connection', (socket) => {
+      socket.on('message', (data) => {
+        const frame = JSON.parse(String(data)) as {
+          id?: number
+          method?: string
+          params?: Record<string, unknown>
+        }
+        if (frame.id === undefined) return
+        if (frame.method === 'thread/start') starts.push(frame.params ?? {})
+        if (frame.method === 'thread/resume') resumes.push(frame.params ?? {})
+        const cwd = frame.params?.cwd
+        socket.send(
+          JSON.stringify({
+            id: frame.id,
+            result:
+              frame.method === 'initialize'
+                ? {}
+                : {
+                    thread: {
+                      id: 'native-thread',
+                      cwd: typeof cwd === 'string' ? cwd : '/tmp',
+                      turns: [],
+                    },
+                  },
+          }),
+        )
+      })
+    })
+    try {
+      const address = upstream.address() as AddressInfo
+      const { base } = await start('', 60_000, {
+        term: true,
+        mux: 'none',
+        codexAppServerUrl: `ws://127.0.0.1:${address.port}`,
+      })
+      const created = await post(base, '/api/agents', {
+        name: 'Codex Agent',
+        harnessId: 'codex',
+      })
+      expect(created.status).toBe(201)
+      const agent = ((await created.json()) as { agent: AgentPreset }).agent
+      const spawned = await post(base, '/term', { agentId: agent.id })
+      expect(spawned.status).toBe(201)
+      const body = (await spawned.json()) as { id: string; denSession: string; cwd?: string }
+      expect(body.cwd).toBe(agent.directory)
+      expect(starts).toHaveLength(1)
+      expect(starts[0].cwd).toBe(agent.directory)
+      expect((await fetch(`${base}/term?id=${body.id}`, { method: 'DELETE' })).status).toBe(200)
+      const resumed = await post(base, '/term', { agentId: agent.id, session: body.denSession })
+      expect(resumed.status).toBe(201)
+      // A new session's thread/start carries the preset cwd. Resume does not
+      // call thread/start again (that is the only place cwd is sent). An
+      // already-loaded thread skips thread/resume; if one is sent it has no cwd.
+      expect(starts).toHaveLength(1)
+      expect(starts[0].cwd).toBe(agent.directory)
+      expect(resumes.every((params) => !('cwd' in params))).toBe(true)
+    } finally {
+      for (const socket of upstream.clients) socket.terminate()
+      upstream.close()
+    }
   })
 })

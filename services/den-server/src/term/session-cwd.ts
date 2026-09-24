@@ -7,13 +7,21 @@
  * wedge the next spawn. Loaded lazily and re-read when the mtime changes,
  * so an operator can edit the file without restarting den.
  *
- * Capped by `at` (LRU). Room sessions record under the den session id, which
- * is the conversation join key; qwen's transcript id can differ and is tried
- * first on resume (see the term manager).
+ * Capped by `at` (LRU). A `get` refreshes `at`, so a session in use is not
+ * evicted ahead of one that was only written. Room sessions record under the
+ * den session id (the conversation join key) and, once known, the harness
+ * native id. Qwen's transcript id can differ and is tried first on resume
+ * (see the term manager).
+ *
+ * Stored cwd values are checked with `validateDirectory` on read. A relative
+ * or otherwise non-absolute value is ignored and logged once per key. A
+ * missing directory is still returned — the term manager turns that into a
+ * spawn error instead of silently falling back to the roster default.
  */
 
 import { existsSync, mkdirSync, readFileSync, renameSync, statSync, writeFileSync } from 'node:fs'
 import { dirname } from 'node:path'
+import { validateDirectory } from '@rivetos/agent-registry'
 
 const DEFAULT_MAX = 2000
 
@@ -115,11 +123,6 @@ function evict(entries: Record<string, Entry>, max: number): Record<string, Entr
   return next
 }
 
-function readCwd(entries: Record<string, Entry>, key: string): string | undefined {
-  if (!Object.hasOwn(entries, key)) return undefined
-  return entries[key].cwd
-}
-
 export function createSessionCwdStore(
   file: string,
   opts?: { max?: number; now?: () => number },
@@ -128,6 +131,8 @@ export function createSessionCwdStore(
   const now = opts?.now ?? Date.now
   const mutex = makeMutex()
   let cache: Cache | null = null
+  /** One warning per key + bad value. A later edit of the value logs again. */
+  const invalidLogged = new Set<string>()
 
   const load = (): Record<string, Entry> => {
     let st: { mtimeMs: number; size: number } | undefined
@@ -158,7 +163,35 @@ export function createSessionCwdStore(
 
   return {
     get(command, id): string | undefined {
-      return mutex(() => readCwd(load(), keyFor(command, id)))
+      return mutex(() => {
+        const loaded = load()
+        const key = keyFor(command, id)
+        const entry = Object.hasOwn(loaded, key) ? loaded[key] : undefined
+        if (!entry) return undefined
+        const validated = validateDirectory(entry.cwd)
+        if (!validated) {
+          const mark = `${key}\0${entry.cwd}`
+          if (!invalidLogged.has(mark)) {
+            invalidLogged.add(mark)
+            console.warn(`[den-server] session-cwd.json ${key} ignored: not an absolute directory`)
+          }
+          return undefined
+        }
+        const at = now()
+        if (entry.at === at && entry.cwd === validated) return validated
+        const next = evict({ ...loaded, [key]: { cwd: validated, at } }, max)
+        try {
+          const st = saveFile(file, next)
+          cache = { mtimeMs: st.mtimeMs, size: st.size, entries: next }
+        } catch (err) {
+          // The value is still usable. A failed recency write must not fail
+          // the read — the next get tries again.
+          console.warn(
+            `[den-server] session-cwd.json recency update failed: ${err instanceof Error ? err.message : String(err)}`,
+          )
+        }
+        return validated
+      })
     },
     set(command, id, cwd): void {
       mutex(() => {

@@ -6,6 +6,7 @@ import { spawn as childSpawn } from 'node:child_process'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import type { DenConfig, DenTermConfig } from '../config.js'
 import { createTermManager, TermSpawnError, type TermManager } from './manager.js'
+import { createSessionCwdStore } from './session-cwd.js'
 import { resetSessionContextForTest } from './context-window.js'
 import { loadRealPtySpawn, type PtyProc, type PtySpawn, type PtySpawnOpts } from './pty.js'
 import { createRosterProvider, defaultRoster, parseRoster, type TermRoster } from './roster.js'
@@ -99,6 +100,7 @@ function makeManager(
     sessionExists?: (command: string, id: string) => boolean
     sessionCwd?: (command: string, id: string) => string | undefined
     recordSessionCwd?: (command: string, id: string, cwd: string) => void
+    nativeIdFor?: (command: string, denSession: string) => string | undefined
     tmuxCtl?: TmuxCtl
     herdrCtl?: HerdrCtl
     findHerdr?: () => string | null
@@ -166,6 +168,7 @@ function makeManager(
     sessionExists: extra.sessionExists,
     sessionCwd: extra.sessionCwd,
     recordSessionCwd: extra.recordSessionCwd,
+    nativeIdFor: extra.nativeIdFor,
     tmuxCtl: extra.tmuxCtl,
     herdrCtl: extra.herdrCtl,
     findHerdr: extra.findHerdr,
@@ -490,17 +493,18 @@ describe('term manager', () => {
     expect(qwenResume.spawns[0].argv).toEqual(['qwen', '--approval-mode', 'yolo', '--resume', uuid])
     expect(qwenResume.spawns[0].opts.cwd).toBe(homedir())
 
+    const qwenDir = mkdtempSync(join(tmpdir(), 'den-qwen-proj-'))
+    dirs.push(qwenDir)
     const qwenProj = makeManager(
       {},
       {
         sessionExists: () => true,
-        sessionCwd: (command, id) =>
-          command === 'qwen' && id === uuid ? '/home/example/proj' : undefined,
+        sessionCwd: (command, id) => (command === 'qwen' && id === uuid ? qwenDir : undefined),
       },
     )
     qwenProj.manager.spawn('qwen', 80, 24, '', uuid)
     expect(qwenProj.spawns[0].argv).toEqual(['qwen', '--approval-mode', 'yolo', '--resume', uuid])
-    expect(qwenProj.spawns[0].opts.cwd).toBe('/home/example/proj')
+    expect(qwenProj.spawns[0].opts.cwd).toBe(qwenDir)
     qwenProj.manager.close()
 
     const qwenNewCwd = makeManager(
@@ -550,16 +554,18 @@ describe('term manager', () => {
 
   it('a claude resume reuses the recorded cwd via sessionCwd', () => {
     const uuid = '11111111-1111-4111-8111-111111111111'
+    const nativeDir = mkdtempSync(join(tmpdir(), 'den-claude-cwd-'))
+    const joinDir = mkdtempSync(join(tmpdir(), 'den-claude-join-'))
+    dirs.push(nativeDir, joinDir)
     const viaNative = makeManager(
       {},
       {
         sessionExists: () => true,
-        sessionCwd: (command, id) =>
-          command === 'claude' && id === uuid ? '/tmp/agent-claude' : undefined,
+        sessionCwd: (command, id) => (command === 'claude' && id === uuid ? nativeDir : undefined),
       },
     )
     viaNative.manager.spawn('claude', 80, 24, '', uuid)
-    expect(viaNative.spawns[0].opts.cwd).toBe('/tmp/agent-claude')
+    expect(viaNative.spawns[0].opts.cwd).toBe(nativeDir)
     expect(viaNative.spawns[0].argv).toEqual(['claude', '--resume', uuid])
     viaNative.manager.close()
 
@@ -570,11 +576,11 @@ describe('term manager', () => {
       {},
       {
         sessionCwd: (command, id) =>
-          command === 'claude' && id === 'join-key' ? '/tmp/agent-join' : undefined,
+          command === 'claude' && id === 'join-key' ? joinDir : undefined,
       },
     )
     viaSession.manager.spawn('claude', 80, 24, '', 'join-key', 'native-id')
-    expect(viaSession.spawns[0].opts.cwd).toBe('/tmp/agent-join')
+    expect(viaSession.spawns[0].opts.cwd).toBe(joinDir)
     expect(viaSession.spawns[0].argv).toContain('native-id')
     viaSession.manager.close()
   })
@@ -620,6 +626,237 @@ describe('term manager', () => {
     expect(recorded).toEqual([{ command: 'claude', id: 'chat-1', cwd: '/tmp/agent-claude' }])
     expect(pty.cwd).toBe('/tmp/agent-claude')
     overridden.manager.close()
+  })
+
+  it('a resume keeps the recorded cwd when the preset directory moved', () => {
+    const uuid = '11111111-1111-4111-8111-111111111111'
+    const oldDir = mkdtempSync(join(tmpdir(), 'den-cwd-old-'))
+    const newDir = mkdtempSync(join(tmpdir(), 'den-cwd-new-'))
+    dirs.push(oldDir, newDir)
+    const moved = makeManager(
+      {},
+      {
+        sessionExists: () => true,
+        sessionCwd: (command, id) => (command === 'claude' && id === uuid ? oldDir : undefined),
+      },
+    )
+    moved.manager.spawn(
+      'claude',
+      80,
+      24,
+      '',
+      uuid,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      newDir,
+    )
+    expect(moved.spawns[0].opts.cwd).toBe(oldDir)
+    moved.manager.close()
+
+    // Qwen's transcript cwd is a recorded cwd and loses to the same rule.
+    const qwen = makeManager(
+      {},
+      {
+        sessionExists: () => true,
+        sessionCwd: (command, id) => (command === 'qwen' && id === uuid ? oldDir : undefined),
+      },
+    )
+    qwen.manager.spawn(
+      'qwen',
+      80,
+      24,
+      '',
+      uuid,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      newDir,
+    )
+    expect(qwen.spawns[0].opts.cwd).toBe(oldDir)
+    expect(qwen.spawns[0].argv).toContain('--resume')
+    qwen.manager.close()
+  })
+
+  it('forceCwd moves a resume into the override directory', () => {
+    const uuid = '11111111-1111-4111-8111-111111111111'
+    const oldDir = mkdtempSync(join(tmpdir(), 'den-cwd-force-old-'))
+    const newDir = mkdtempSync(join(tmpdir(), 'den-cwd-force-new-'))
+    dirs.push(oldDir, newDir)
+    const { manager, spawns } = makeManager(
+      {},
+      {
+        sessionExists: () => true,
+        sessionCwd: () => oldDir,
+      },
+    )
+    manager.spawn(
+      'claude',
+      80,
+      24,
+      '',
+      uuid,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      newDir,
+      true,
+    )
+    expect(spawns[0].opts.cwd).toBe(newDir)
+  })
+
+  it('a missing recorded directory is an error, not the roster default', () => {
+    const uuid = '11111111-1111-4111-8111-111111111111'
+    const gone = join(tmpdir(), 'den-cwd-missing-does-not-exist')
+    const { manager, spawns } = makeManager(
+      {},
+      { sessionExists: () => true, sessionCwd: () => gone },
+    )
+    expect(() => manager.spawn('claude', 80, 24, '', uuid)).toThrow(TermSpawnError)
+    try {
+      manager.spawn('claude', 80, 24, '', uuid)
+    } catch (err) {
+      expect(err).toBeInstanceOf(TermSpawnError)
+      expect((err as TermSpawnError).code).toBe('cwd-missing')
+      expect((err as TermSpawnError).message).toContain(gone)
+    }
+    expect(spawns).toEqual([])
+  })
+
+  it('a relative recorded cwd is ignored and the spawn uses the default', () => {
+    const uuid = '11111111-1111-4111-8111-111111111111'
+    const { manager, spawns, logs, procs } = makeManager(
+      {},
+      { sessionExists: () => true, sessionCwd: () => 'relative/dir' },
+    )
+    manager.spawn('claude', 80, 24, '', uuid)
+    expect(spawns[0].opts.cwd).toBe(homedir())
+    expect(logs.some((line) => line.includes('not an absolute directory'))).toBe(true)
+    procs[0].emit('exit', 0)
+    manager.spawn('claude', 80, 24, '', uuid)
+    expect(logs.filter((line) => line.includes('not an absolute directory'))).toHaveLength(1)
+  })
+
+  it('a persist error after the process is up does not fail the spawn', () => {
+    const { manager, spawns, logs } = makeManager(
+      {},
+      {
+        recordSessionCwd: () => {
+          throw new Error('ENOSPC')
+        },
+      },
+    )
+    const pty = manager.spawn(
+      'claude',
+      80,
+      24,
+      '',
+      'chat-1',
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      '/tmp/agent-claude',
+    )
+    expect(pty.id).toMatch(/^pty-/)
+    expect(spawns).toHaveLength(1)
+    expect(spawns[0].opts.cwd).toBe('/tmp/agent-claude')
+    expect(logs.some((line) => line.includes('ENOSPC'))).toBe(true)
+  })
+
+  it('records the cwd under the native id once it is known, so a restarted resume finds it', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'den-cwd-native-'))
+    dirs.push(dir)
+    const agent = join(dir, 'agent')
+    mkdirSync(agent)
+    const store = createSessionCwdStore(join(dir, 'session-cwd.json'))
+    const room = 'den-room-aaaa'
+    const native = '20260802_225647_6ad0b9'
+    const wiring = {
+      sessionCwd: (command: string, id: string) => store.get(command, id),
+      recordSessionCwd: (command: string, id: string, cwd: string) => store.set(command, id, cwd),
+    }
+    const first = makeManager({}, wiring)
+    first.manager.spawn(
+      'hermes',
+      80,
+      24,
+      '',
+      room,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      agent,
+    )
+    expect(first.spawns[0].opts.cwd).toBe(agent)
+    expect(store.get('hermes', room)).toBe(agent)
+    expect(store.get('hermes', native)).toBeUndefined()
+    first.manager.bindNativeSession('hermes', room, native)
+    expect(store.get('hermes', native)).toBe(agent)
+    first.manager.close()
+
+    const second = makeManager({}, wiring)
+    second.manager.spawn('hermes', 80, 24, '', undefined, native)
+    expect(second.spawns[0].opts.cwd).toBe(agent)
+    expect(second.spawns[0].argv).toContain(native)
+    second.manager.close()
+    store.close()
+  })
+
+  it('records under nativeIdFor at spawn time when the harness id is already known', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'den-cwd-known-native-'))
+    dirs.push(dir)
+    const agent = join(dir, 'agent')
+    mkdirSync(agent)
+    const store = createSessionCwdStore(join(dir, 'session-cwd.json'))
+    const room = 'den-room-bbbb'
+    const native = 'sess_alreadyknownnative01'
+    const first = makeManager(
+      {},
+      {
+        sessionCwd: (command, id) => store.get(command, id),
+        recordSessionCwd: (command, id, cwd) => store.set(command, id, cwd),
+        nativeIdFor: (command, denSession) =>
+          command === 'kimi' && denSession === room ? native : undefined,
+      },
+    )
+    first.manager.spawn(
+      'kimi',
+      80,
+      24,
+      '',
+      room,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      agent,
+    )
+    expect(store.get('kimi', room)).toBe(agent)
+    expect(store.get('kimi', native)).toBe(agent)
+    first.manager.close()
+
+    const second = makeManager(
+      {},
+      {
+        sessionCwd: (command, id) => store.get(command, id),
+        recordSessionCwd: (command, id, cwd) => store.set(command, id, cwd),
+      },
+    )
+    second.manager.spawn('kimi', 80, 24, '', undefined, native)
+    expect(second.spawns[0].opts.cwd).toBe(agent)
+    second.manager.close()
+    store.close()
   })
 
   it('OMITS RIVET_DEN_TOKEN entirely when the token is empty', () => {

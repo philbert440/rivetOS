@@ -145,7 +145,8 @@ export interface DenAgentEventLike {
  * The slice of the den term manager these drivers need.
  * `spawn` matches the manager's full signature. The extra arguments are
  * optional, so a host that only implements the original parameters still
- * assigns. `cwd` is the 11th argument.
+ * assigns. `cwd` is the 11th argument and `forceCwd` the 12th; drivers do
+ * not set `forceCwd` (that is the HTTP `force` flag).
  */
 export interface HarnessPtyHost {
   spawn(
@@ -160,6 +161,7 @@ export interface HarnessPtyHost {
     model?: string,
     effort?: string,
     cwd?: string,
+    forceCwd?: boolean,
   ): { id: string; denSession: string } | Promise<{ id: string; denSession: string }>
   ptyForSession(denSession: string): string | undefined
   inject(id: string, text: string, submit: boolean, interrupt?: boolean): boolean
@@ -217,6 +219,12 @@ export interface PtyHarnessDriverDeps<S extends HarnessStoreHost = HarnessStoreH
    * directory reports that directory. Qwen still prefers the transcript row.
    */
   sessionCwd?: (command: string, id: string) => string | undefined
+  /**
+   * Copy a recorded cwd onto another id (the harness-native id, once
+   * `bindRoom` learns it). A throw is the caller's to swallow — adoption
+   * must not fail because the cwd file could not be written.
+   */
+  recordSessionCwd?: (command: string, id: string, cwd: string) => void
   /** How many sessions `listSessions` pulls from the store. */
   listLimit?: number
   /**
@@ -1362,6 +1370,17 @@ export abstract class PtyHarnessDriver<S extends HarnessStoreHost = HarnessStore
     resume: boolean,
     opts?: { cwd?: string },
   ): Promise<string> {
+    // On resume, pass the recorded directory so a host that does not look it
+    // up itself still starts in the right place. The term manager prefers
+    // its own record over this override unless force is set. The native id
+    // is tried first (a restarted adopting driver has an empty room map, so
+    // the room key IS the native id); the den room is the key the fresh
+    // spawn recorded under.
+    const recorded = resume
+      ? (this.deps.sessionCwd?.(this.rosterCommand, native) ??
+        this.deps.sessionCwd?.(this.rosterCommand, this.room(native)))
+      : undefined
+    const cwd = opts?.cwd ?? recorded
     const spawned = await Promise.resolve(
       pty.spawn(
         this.rosterCommand,
@@ -1374,7 +1393,7 @@ export abstract class PtyHarnessDriver<S extends HarnessStoreHost = HarnessStore
         undefined,
         undefined,
         undefined,
-        opts?.cwd,
+        cwd,
       ),
     )
     this.ensureLive(native)

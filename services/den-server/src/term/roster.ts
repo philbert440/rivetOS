@@ -2,8 +2,9 @@
 //
 // The HTTP API accepts only roster KEYS — a client never sends argv, cwd, or
 // env. POST /term may name an agent preset; the den derives the directory.
-// The spawn response reports that resolved cwd. The roster file itself stays
-// off the wire. Every command is spawned directly from its argv array (no
+// The spawn response reports that directory only when the request named a
+// preset. /term/list never carries cwd. The roster file itself stays off the
+// wire. Every command is spawned directly from its argv array (no
 // shell interpolation anywhere), so the roster file is the one and only place
 // an operator defines what a den terminal can run.
 //

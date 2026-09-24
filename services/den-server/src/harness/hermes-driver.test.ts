@@ -55,15 +55,16 @@ function fakeStore(rows: HarnessSession[] = []) {
 }
 
 function fakePty() {
-  const spawns: { key?: string; session?: string; resume?: string }[] = []
+  const spawns: { key?: string; session?: string; resume?: string; cwd?: string }[] = []
   const injects: { id: string; text: string; submit: boolean; interrupt?: boolean }[] = []
   const live = new Map<string, string>()
   let writable = true
   /** pty ids that refuse writes — the exited-but-not-yet-reaped record. */
   const dead = new Set<string>()
   const host: HermesPtyHost = {
-    spawn: (key, _cols, _rows, _remote, session, resume) => {
-      spawns.push({ key, session, resume })
+    spawn: (key, _cols, _rows, _remote, session, resume, ...rest) => {
+      const cwd = rest[4]
+      spawns.push({ key, session, resume, ...(typeof cwd === 'string' && cwd ? { cwd } : {}) })
       const id = `pty-${String(spawns.length)}`
       if (session) live.set(session, id)
       return { id, denSession: session ?? id }
@@ -92,6 +93,8 @@ function makeDriver(
     withPty?: boolean
     withEvents?: boolean
     cwd?: () => string | undefined
+    sessionCwd?: (command: string, id: string) => string | undefined
+    recordSessionCwd?: (command: string, id: string, cwd: string) => void
   } = {},
 ): Fakes {
   const { rows = [], withPty = true, withEvents = true } = opts
@@ -110,6 +113,8 @@ function makeDriver(
         }
       : undefined,
     cwd: opts.cwd ?? ((): string => '/home/rivet'),
+    sessionCwd: opts.sessionCwd,
+    recordSessionCwd: opts.recordSessionCwd,
     turnQuietMs: 0,
   })
   return { driver, pty, store, emitDen: (ev) => emit(ev) }
@@ -370,6 +375,30 @@ describe('resumeSession', () => {
   it('rejects a session the harness store has never heard of', async () => {
     const { driver } = makeDriver()
     await expect(driver.resumeSession(SID)).rejects.toMatchObject({ code: 'invalid_session_id' })
+  })
+
+  it('a restarted driver (fresh room map) resumes into the directory recorded for the native id', async () => {
+    const preset = '/srv/agent-preset'
+    const recorded = new Map<string, string>()
+    const sessionCwd = (command: string, id: string): string | undefined =>
+      recorded.get(`${command}:${id}`)
+    const recordSessionCwd = (command: string, id: string, cwd: string): void => {
+      recorded.set(`${command}:${id}`, cwd)
+    }
+    recorded.set(`hermes:${ROOM}`, preset)
+    const first = makeDriver({ sessionCwd, recordSessionCwd, cwd: () => '/home/rivet' })
+    adopt(first, ROOM, NAT)
+    expect(recorded.get(`hermes:${NAT}`)).toBe(preset)
+    expect((await first.driver.getSession(SID))?.cwd).toBe(preset)
+
+    const second = makeDriver({
+      rows: [{ id: NAT, command: 'hermes', title: 't', updatedAt: 1 }],
+      sessionCwd,
+      recordSessionCwd,
+      cwd: () => '/home/rivet',
+    })
+    await second.driver.resumeSession(SID)
+    expect(second.pty.spawns).toEqual([{ key: 'hermes', session: NAT, resume: NAT, cwd: preset }])
   })
 
   it('keeps an adopted session in ITS den room rather than opening a second one', async () => {
