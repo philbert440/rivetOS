@@ -21,6 +21,7 @@ import type {
   CatalogSheet,
   GatewayRoute,
   HarnessExecutor,
+  MeshNode,
   MeshRegistry,
   Skill,
   Tool,
@@ -50,6 +51,36 @@ export interface CatalogApiOptions {
    * Tests shorten it. A hung store falls back to `rosterEntries()` (last-known).
    */
   rosterFreshTimeoutMs?: number
+}
+
+const lastMeshNodes = new WeakMap<MeshRegistry, MeshNode[]>()
+/** Generation of the latest getNodes() this registry started. An older read must not publish. */
+const meshReadGeneration = new WeakMap<MeshRegistry, number>()
+
+/**
+ * Bound `getNodes`. Timeout or rejection returns the last snapshot this
+ * registry published (empty until the first success). A late completion
+ * publishes only when no newer read has started.
+ */
+function boundedMeshNodes(registry: MeshRegistry, timeoutMs: number): Promise<MeshNode[]> {
+  const fallback = lastMeshNodes.get(registry) ?? []
+  const gen = (meshReadGeneration.get(registry) ?? 0) + 1
+  meshReadGeneration.set(registry, gen)
+  let timer: ReturnType<typeof setTimeout> | undefined
+  const timeout = new Promise<MeshNode[]>((resolve) => {
+    timer = setTimeout(() => resolve(fallback), timeoutMs)
+    timer.unref()
+  })
+  const work = registry.getNodes().then(
+    (nodes) => {
+      if (meshReadGeneration.get(registry) === gen) lastMeshNodes.set(registry, nodes)
+      return nodes
+    },
+    () => fallback,
+  )
+  return Promise.race([work, timeout]).finally(() => {
+    if (timer !== undefined) clearTimeout(timer)
+  })
 }
 
 function raceRoster<T>(work: Promise<T>, timeoutMs: number, fallback: () => T): Promise<T> {
@@ -100,7 +131,11 @@ export async function buildCatalogAgents(opts: CatalogApiOptions): Promise<Catal
   }))
   const presets = await presetCatalogAgents(opts)
   if (!opts.meshRegistry) return [...local, ...presets]
-  const nodes = await opts.meshRegistry.getNodes()
+  // Same bound as roster reads. A hung getNodes must not pin the catalog.
+  const nodes = await boundedMeshNodes(
+    opts.meshRegistry,
+    opts.rosterFreshTimeoutMs ?? ROSTER_READ_BOUND_MS,
+  )
   const remote = nodes
     .filter((n) => n.status === 'online' && n.name !== opts.nodeName)
     .flatMap((n) => {

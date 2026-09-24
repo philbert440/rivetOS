@@ -320,6 +320,29 @@ describe('registerAgentTools shared pool wiring', () => {
     expect(hostPool.end).not.toHaveBeenCalled()
   })
 
+  it('passes resolvePreset and invalidatePreset to createTaskRunner', async () => {
+    const hostPool = {
+      end: vi.fn(async () => undefined),
+      query: vi.fn(async (sql: unknown) => {
+        if (typeof sql === 'string' && sql.includes("to_regclass('ros_agent_presets')")) {
+          return { rows: [{ reg: 'ros_agent_presets' }] }
+        }
+        return { rows: [] }
+      }),
+    }
+    const { runtime, hooks } = stubRuntime({ pgPool: hostPool })
+    await registerAgentTools(runtime, config(), '/tmp')
+    const opts = coreMocks.createTaskRunner.mock.calls[0]?.[0] as {
+      resolvePreset?: (id: string) => Promise<unknown>
+      invalidatePreset?: () => void
+    }
+    expect(typeof opts.resolvePreset).toBe('function')
+    expect(typeof opts.invalidatePreset).toBe('function')
+    opts.invalidatePreset?.()
+    await expect(opts.resolvePreset?.('missing')).resolves.toBeUndefined()
+    for (const hook of hooks) await hook()
+  })
+
   it('creates a registrar-owned pool and registers an end() hook when no host pool', async () => {
     const { runtime, hooks } = stubRuntime({})
     await registerAgentTools(runtime, config(), '/tmp')

@@ -492,6 +492,7 @@ export async function registerAgentTools(
   // runner creates nothing for presetId rows.
   const presetLookup = presetResolver
   const resolvePresetForRunner = presetLookup ? (id: string) => presetLookup.find(id) : undefined
+  const invalidatePresetForRunner = presetLookup ? () => presetLookup.invalidate() : undefined
 
   // Subagent tool store: durable when the engine is live, else process-local
   // (g2a: the in-memory task store replaces the deleted InMemorySubagentStore;
@@ -511,6 +512,7 @@ export async function registerAgentTools(
       workspaceDir,
       memory: runtime.getMemory(),
       resolvePreset: resolvePresetForRunner,
+      invalidatePreset: invalidatePresetForRunner,
     })
     subagentTaskStore = inMemoryStore
   }
@@ -589,6 +591,7 @@ export async function registerAgentTools(
       // memory context into TaskSpec.resolvedContext when refs are present.
       memory: runtime.getMemory(),
       resolvePreset: resolvePresetForRunner,
+      invalidatePreset: invalidatePresetForRunner,
     })
     runTaskRef.current = taskRunner.handler
     await taskRunner.start()

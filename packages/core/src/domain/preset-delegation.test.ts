@@ -23,7 +23,7 @@ import { createExecutorRegistry, type TaskExecutorRegistry } from './task/runner
 import { InMemoryTaskStore } from './task/store.js'
 import { createTaskCompletionWaiter } from './task/completion-waiter.js'
 import { buildCatalogAgents } from './task/catalog-api.js'
-import { PresetDelegationEngine } from './preset-delegation.js'
+import { PresetDelegationEngine, presetTaskSpec } from './preset-delegation.js'
 
 const caps: HarnessExecutorCapabilities = {
   steerable: false,
@@ -80,6 +80,8 @@ function resolver(rows: AgentPreset[]): CachedPresetResolver {
     },
     lastKnown: () => rows.slice(),
     invalidate() {},
+    // Always fresh: this stub has no store, so roster reads must not invalidate it.
+    status: () => ({ hasValue: true, fetchedAt: Date.now() }),
   }
 }
 
@@ -160,6 +162,12 @@ function engineFor(
 }
 
 describe('PresetDelegationEngine', () => {
+  it('trims a non-blank model on the preset spec', () => {
+    expect(presetTaskSpec(preset(), { model: ' opus ' }).model).toBe('opus')
+    expect(presetTaskSpec(preset({ model: ' haiku ' })).model).toBe('haiku')
+    expect(presetTaskSpec(preset(), { model: '   ' }).model).toBeUndefined()
+  })
+
   it('creates a harness-session row pinned to the hosting node', async () => {
     const store: InMemoryTaskStore = new InMemoryTaskStore((id) => {
       void (async () => {
@@ -664,8 +672,9 @@ describe('PresetDelegationEngine', () => {
     expect(engine.rosterText()).toContain('second')
 
     // Catalog half must await a refresh, not read the cache rosterText just filled.
+    // 30s is the roster TTL (`MESH_REFRESH_TTL_MS`); the resolver's own TTL is 1s.
     rows.push(preset({ id: 'c', name: 'third' }))
-    now += 1_000
+    now += 30_000
     const agents = await buildCatalogAgents({
       nodeName: 'ct115',
       router: { getAgents: () => [] } as unknown as Router,
@@ -685,6 +694,8 @@ describe('PresetDelegationEngine', () => {
     engine: PresetDelegationEngine,
     rosterFreshTimeoutMs: number,
   ): Parameters<typeof buildCatalogAgents>[0] {
+    const hungMesh = mesh([])
+    hungMesh.getNodes = () => new Promise(() => {})
     return {
       nodeName: 'ct115',
       router: { getAgents: () => [] } as unknown as Router,
@@ -692,6 +703,7 @@ describe('PresetDelegationEngine', () => {
       executors: executors(['claude-code']),
       presets: engine,
       rosterFreshTimeoutMs,
+      meshRegistry: hungMesh,
     }
   }
 
@@ -728,7 +740,8 @@ describe('PresetDelegationEngine', () => {
     await cached.list()
 
     rows.push(preset({ id: 'b', name: 'second' }))
-    now += 1_000
+    // Past the roster TTL, not merely the resolver's 1s TTL — otherwise no invalidate.
+    now += 30_000
     mode = 'deferred'
     const catalog = buildCatalogAgents(catalogOpts(engine, 300))
     for (let i = 0; i < 20 && pending.length === 0; i++) {
@@ -742,7 +755,7 @@ describe('PresetDelegationEngine', () => {
     )
 
     rows.push(preset({ id: 'c', name: 'third' }))
-    now += 1_000
+    now += 30_000
     mode = 'hang'
     const callsBeforeHang = listCalls
     const started = Date.now()
@@ -754,10 +767,14 @@ describe('PresetDelegationEngine', () => {
     expect(hung.some((agent) => agent.name === 'second')).toBe(true)
     expect(listCalls).toBeGreaterThan(callsBeforeHang)
 
-    // The timed-out read must not pin the next call.
+    // A timed-out list() stays in flight, so the next call must not start another.
     const callsAfterTimeout = listCalls
-    await engine.rosterEntriesFresh({ timeoutMs: 40 })
-    expect(listCalls).toBeGreaterThan(callsAfterTimeout)
+    const againStarted = Date.now()
+    const again = await engine.rosterEntriesFresh({ timeoutMs: 40 })
+    expect(Date.now() - againStarted).toBeLessThan(500)
+    expect(listCalls).toBe(callsAfterTimeout)
+    expect(again.some((entry) => entry.name === 'second')).toBe(true)
+    expect(again.some((entry) => entry.name === 'third')).toBe(false)
   })
 
   it('a hung mesh read does not pin the next roster refresh', async () => {
@@ -774,5 +791,34 @@ describe('PresetDelegationEngine', () => {
     await engine.rosterEntriesFresh({ timeoutMs: 30 })
     await engine.rosterEntriesFresh({ timeoutMs: 30 })
     expect(calls).toBeGreaterThan(afterConstruct)
+  })
+
+  it('a timed-out mesh read does not overwrite a newer snapshot', async () => {
+    const staleNode = node('ct116', 'online', ['kimi-code'])
+    const freshNode = node('ct116', 'online', ['claude-code'])
+    let call = 0
+    let releaseFirst: (nodes: MeshNode[]) => void = () => {}
+    const registry = mesh([])
+    registry.getNodes = () => {
+      call += 1
+      if (call === 1) {
+        return new Promise((resolve) => {
+          releaseFirst = resolve
+        })
+      }
+      return Promise.resolve([freshNode])
+    }
+    const store = new InMemoryTaskStore()
+    const remote = preset({ node: 'ct116' })
+    const engine = engineFor([remote], { store, mesh: registry })
+    expect(call).toBe(1)
+    await engine.rosterEntriesFresh({ timeoutMs: 20 })
+    await engine.rosterEntriesFresh({ timeoutMs: 200 })
+    expect(engine.rosterEntries().find((entry) => entry.id === remote.id)?.implemented).toBe(true)
+
+    releaseFirst([staleNode])
+    await new Promise((resolve) => setTimeout(resolve, 20))
+    expect(engine.rosterEntries().find((entry) => entry.id === remote.id)?.implemented).toBe(true)
+    expect(call).toBe(2)
   })
 })

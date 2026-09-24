@@ -161,6 +161,11 @@ function parseCreate(body: Record<string, unknown>): NewTaskInput | string {
   }
 }
 
+/**
+ * Client spec keys the preset branch owns. `stripClientPresetFields` deletes
+ * this same set with static `delete`s — a dynamic delete of the list trips
+ * the lint rule — so a new key has to be added in both places.
+ */
 const CLIENT_PRESET_FIELDS = [
   'presetId',
   'presetName',
@@ -179,6 +184,7 @@ function stripClientPresetFields(
 ): Record<string, unknown> | undefined {
   if (!spec) return spec
   const next: Record<string, unknown> = { ...spec }
+  // Static deletes, one per CLIENT_PRESET_FIELDS entry. Keep the two in lockstep.
   delete next.presetId
   delete next.presetName
   delete next.sharedLink
