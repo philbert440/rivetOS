@@ -33,6 +33,128 @@ class ChatSendTest {
         assertEquals(listOf(SpawnAttempt("draft-1")), spawnAttempts("draft-1", "  "))
     }
 
+    @Test fun `agentId attempt carries the command and not model or effort`() {
+        val attempts = spawnAttempts("draft-1", "claude", "fable", "high", "reviewer")
+        assertEquals(
+            listOf(
+                SpawnAttempt("draft-1", command = "claude", agentId = "reviewer"),
+                SpawnAttempt("draft-1", "claude", "fable", "high"),
+                SpawnAttempt("draft-1"),
+            ),
+            attempts,
+        )
+        assertEquals("claude", attempts[0].command)
+        assertNull(attempts[0].model)
+        assertNull(attempts[0].effort)
+        assertEquals(false, attempts[0].force)
+    }
+
+    @Test fun `agentId with a blank command drops the middle attempt`() {
+        assertEquals(
+            listOf(
+                SpawnAttempt("draft-1", agentId = "reviewer"),
+                SpawnAttempt("draft-1"),
+            ),
+            spawnAttempts("draft-1", "  ", null, null, " reviewer "),
+        )
+    }
+
+    @Test fun `blank agentId keeps the commanded fallback order`() {
+        assertEquals(
+            spawnAttempts("draft-1", "claude", "fable", "high"),
+            spawnAttempts("draft-1", "claude", "fable", "high", "  "),
+        )
+        assertEquals(
+            listOf(SpawnAttempt("draft-1")),
+            spawnAttempts("draft-1", null, null, null, null),
+        )
+    }
+
+    @Test fun `spawnConflict maps only 409 texts`() {
+        val hosted = "agent \"reviewer\" is hosted on ct115"
+        val recorded = "session runs in /tmp/old; edit the agent or start a new conversation"
+        val running = "session is running in /x; edit the agent or start a new conversation"
+        assertNull(spawnConflict(404, "agent not found"))
+        assertNull(spawnConflict(503, "agent registry unavailable"))
+        assertNull(spawnConflict(500, hosted))
+        assertEquals(SpawnConflict.HostedElsewhere, spawnConflict(409, hosted))
+        assertEquals(
+            SpawnConflict.NoDirectory,
+            spawnConflict(409, "agent \"reviewer\" has no directory"),
+        )
+        assertEquals(SpawnConflict.RecordedDir, spawnConflict(409, recorded))
+        assertEquals(SpawnConflict.Other, spawnConflict(409, running))
+        assertEquals(SpawnConflict.Other, spawnConflict(409, null))
+    }
+
+    @Test fun `forcedRetry sets force and keeps the rest of the attempt`() {
+        val attempt = SpawnAttempt("draft-1", command = "claude", agentId = "reviewer")
+        val forced = forcedRetry(attempt)
+        assertEquals(true, forced.force)
+        assertEquals("reviewer", forced.agentId)
+        assertEquals("draft-1", forced.session)
+        assertEquals("claude", forced.command)
+        assertNull(forced.model)
+        assertNull(forced.effort)
+        assertEquals(false, attempt.force)
+    }
+
+    @Test fun `RecordedDir stops the attempt loop`() {
+        assertTrue(spawnConflictStops(SpawnConflict.RecordedDir))
+    }
+
+    @Test fun `HostedElsewhere stops the attempt loop`() {
+        assertTrue(spawnConflictStops(SpawnConflict.HostedElsewhere))
+    }
+
+    @Test fun `NoDirectory stops the attempt loop`() {
+        assertTrue(spawnConflictStops(SpawnConflict.NoDirectory))
+    }
+
+    @Test fun `Other does not stop the attempt loop`() {
+        assertFalse(spawnConflictStops(SpawnConflict.Other))
+    }
+
+    @Test fun `a stopping conflict keeps the den error`() {
+        val hosted = "agent \"reviewer\" is hosted on ct115"
+        val missing = "agent \"reviewer\" has no directory"
+        val recorded = "session runs in /tmp/old; edit the agent or start a new conversation"
+        assertEquals(hosted, spawnStopError(SpawnConflict.HostedElsewhere, hosted, 409))
+        assertEquals(missing, spawnStopError(SpawnConflict.NoDirectory, missing, 409))
+        assertEquals("HTTP 409", spawnStopError(SpawnConflict.HostedElsewhere, null, 409))
+        assertNull(spawnStopError(SpawnConflict.RecordedDir, recorded, 409))
+        assertNull(spawnStopError(SpawnConflict.Other, hosted, 409))
+    }
+
+    @Test fun `agentId fallback surfaces den text except 404 and a stopping 409`() {
+        val noHarness = "agent has no harness and no command was given"
+        val badModel = "agent \"reviewer\" model must be a 1-64 token"
+        val directory = "could not create agent directory: directory must be an absolute path"
+        val running = "session is running in /x; edit the agent or start a new conversation"
+        val recorded = "session runs in /tmp/old; edit the agent or start a new conversation"
+        assertEquals(noHarness, agentAttemptFallbackError(400, noHarness))
+        assertEquals(badModel, agentAttemptFallbackError(400, badModel))
+        assertEquals(directory, agentAttemptFallbackError(500, directory))
+        assertEquals("agent registry unavailable", agentAttemptFallbackError(503, "agent registry unavailable"))
+        assertEquals(running, agentAttemptFallbackError(409, running))
+        assertEquals("HTTP 400", agentAttemptFallbackError(400, null))
+        assertNull(agentAttemptFallbackError(404, "agent not found"))
+        assertNull(agentAttemptFallbackError(409, recorded))
+        assertNull(agentAttemptFallbackError(409, "agent \"reviewer\" is hosted on ct115"))
+        assertNull(agentAttemptFallbackError(409, "agent \"reviewer\" has no directory"))
+    }
+
+    @Test fun `fallback success keeps the surfaced den error`() {
+        val registry = "agent registry unavailable"
+        val directory = "could not create agent directory: directory must be an absolute path"
+        val running = "session is running in /x; edit the agent or start a new conversation"
+        assertEquals(registry, spawnSuccessError(registry, registry))
+        assertEquals(directory, spawnSuccessError(directory, directory))
+        assertEquals(running, spawnSuccessError(running, running))
+        assertEquals("older", spawnSuccessError("older", registry))
+        assertNull(spawnSuccessError(null, registry))
+    }
+
     @Test fun `LRU eviction retries inject once`() {
         assertEquals(InjectTry.RetryAfterEviction, nextInjectTry(failed = true, alreadyRetried = false))
         assertNull(nextInjectTry(failed = true, alreadyRetried = true))

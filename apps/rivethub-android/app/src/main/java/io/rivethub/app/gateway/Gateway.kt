@@ -107,8 +107,9 @@ class Gateway(
     suspend fun wikiTopic(slug: String): WikiPageResponse =
         get(listOf("api", "wiki", slug), WikiPageResponse.serializer())
     suspend fun catalogAgents(): CatalogAgentsResponse = get(listOf("api", "catalog", "agents"), CatalogAgentsResponse.serializer())
-    suspend fun agents(): List<AgentPreset> =
-        get(listOf("api", "agents"), AgentsListResponse.serializer()).agents
+    /** Full `GET /api/agents` body, including directoryRoot when the den sends it. */
+    suspend fun agents(): AgentsListResponse =
+        get(listOf("api", "agents"), AgentsListResponse.serializer())
 
     /** PATCH one agent preset; null patch fields are dropped from the JSON body. */
     suspend fun agentUpdate(agentId: String, patch: AgentUpdateRequest): AgentPreset =
@@ -169,7 +170,10 @@ class Gateway(
 
     /**
      * Spawn-or-get a PTY. Passing [session] joins it to this conversation
-     * (chat / den / terminal = three views of one session).
+     * (chat / den / terminal = three views of one session). [agentId] lets
+     * the den fill whatever command, model, effort, and cwd the client left
+     * out. [force] resumes a session recorded in another directory into the
+     * preset cwd; null omits the field.
      */
     suspend fun termSpawn(
         session: String,
@@ -179,6 +183,8 @@ class Gateway(
         resume: String? = null,
         model: String? = null,
         effort: String? = null,
+        agentId: String? = null,
+        force: Boolean? = null,
     ): TermSpawnResponse =
         withContext(Dispatchers.IO) {
             val body = wireJson.encodeToString(
@@ -191,6 +197,8 @@ class Gateway(
                     rows = rows.coerceIn(5, 200),
                     model = model,
                     effort = effort,
+                    agentId = agentId,
+                    force = force,
                 ),
             ).toRequestBody("application/json".toMediaType())
             val req = Request.Builder().url(url(listOf("api", "terminal"))).post(body).build()

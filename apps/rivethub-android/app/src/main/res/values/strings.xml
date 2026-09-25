@@ -54,6 +54,14 @@
     <string name="agent_name_hint">Agent name</string>
     <string name="agent_color_hint">#3b82f6</string>
     <string name="agent_prompt_hint">Custom system prompt…</string>
+    <string name="agent_directory">Directory</string>
+    <string name="agent_directory_hint">Absolute directory on the node</string>
+    <string name="agent_shared_link">Link shared directory</string>
+    <string name="agent_node_empty">—</string>
+    <string name="agent_node_fixed">Node is fixed for this agent</string>
+    <string name="spawn_conflict_title">Resume in the agent directory?</string>
+    <string name="spawn_conflict_recorded_dir">This session is recorded in a different directory. Resuming here opens it in the agent directory.</string>
+    <string name="spawn_conflict_resume_anyway">Resume here anyway</string>
     <string name="agent_save_failed">Save failed — the node refused the update</string>
     <string name="loading_recent_conversation">Loading most recent conversation…</string>
     <string name="conversations_label">conversations</string>

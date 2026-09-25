@@ -42,6 +42,7 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.drawBehind
 import androidx.compose.ui.geometry.Offset
@@ -53,6 +54,7 @@ import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.compose.LocalLifecycleOwner
 import io.rivethub.app.R
+import io.rivethub.app.plane.agentRowSubtitle
 import io.rivethub.app.plane.AgentAction
 import io.rivethub.app.plane.AgentOpen
 import io.rivethub.app.plane.ConversationAction
@@ -243,7 +245,7 @@ fun ConversationsPane(
                     when (val action = newConversationAction(st.prefs.currentAgentId, st.agents.map { it.agentId })) {
                         is NewConversationAction.ForAgent -> {
                             val row = st.agents.find { it.agentId == action.agentId }
-                            if (row != null) onOpenChat(vm.openAgentAction(row, AgentAction.Plus))
+                            if (row != null) vm.openAgentAction(row, AgentAction.Plus)?.let(onOpenChat)
                         }
                         NewConversationAction.PickAgent -> {
                             if (st.agents.isEmpty()) {
@@ -392,19 +394,23 @@ fun ConversationsPane(
                 modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp),
             )
             st.agents.forEach { agent ->
-                Text(
-                    "${agent.name} · ${agent.nodeName}",
-                    color = colors.ink,
-                    style = RivetType.xs,
-                    modifier = Modifier
+                val subtitle = agentRowSubtitle(agent).ifBlank { agent.nodeName }
+                Column(
+                    Modifier
                         .fillMaxWidth()
                         .sizeIn(minHeight = 44.dp)
-                        .clickable {
+                        .alpha(if (agent.online) 1f else 0.5f)
+                        .clickable(enabled = agent.online) {
                             pickerOpen = false
-                            onOpenChat(vm.openAgentAction(agent, AgentAction.Plus))
+                            vm.openAgentAction(agent, AgentAction.Plus)?.let(onOpenChat)
                         }
                         .padding(horizontal = 8.dp, vertical = 6.dp),
-                )
+                ) {
+                    Text(agent.name, color = colors.ink, style = RivetType.xs)
+                    if (subtitle.isNotBlank()) {
+                        Text(subtitle, color = colors.inkDim, style = RivetType.mono10)
+                    }
+                }
             }
         }
     }

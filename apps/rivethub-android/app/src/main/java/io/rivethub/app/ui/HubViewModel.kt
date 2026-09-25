@@ -36,6 +36,7 @@ import io.rivethub.app.plane.locate
 import io.rivethub.app.plane.migrateLocalPrefs
 import io.rivethub.app.plane.moveSessionToAgent
 import io.rivethub.app.plane.openAgent
+import io.rivethub.app.plane.openAgentRow
 import io.rivethub.app.plane.pinChatItems
 import io.rivethub.app.plane.rekeyPinnedDraft
 import io.rivethub.app.plane.requestRefresh
@@ -94,6 +95,8 @@ class HubViewModel(private val c: AppContainer) : ViewModel() {
         val prefs: Prefs = Prefs(),
         val identityGen: Int = 0,
         val registryOpen: Boolean = false,
+        /** `GET /api/agents` directoryRoot, when any node reported one. */
+        val directoryRoot: String? = null,
     )
 
     private val _state = MutableStateFlow(UiState())
@@ -277,9 +280,8 @@ class HubViewModel(private val c: AppContainer) : ViewModel() {
         viewModelScope.launch { c.settings.migrateKeys(from, to) }
     }
 
-    fun openAgentAction(row: AgentRow, action: AgentAction): AgentOpen {
-        val open = openAgent(pointers, row.agentId, row.nodeDenUrl, row.harnessId, action)
-            .copy(model = row.model, effort = row.effort)
+    fun openAgentAction(row: AgentRow, action: AgentAction): AgentOpen? {
+        val open = openAgentRow(row, pointers, action) ?: return null
         if (open.draft) addDraft(open, row.nodeId, row.nodeName)
         viewModelScope.launch {
             c.settings.setCurrentAgentId(row.agentId)
@@ -314,8 +316,8 @@ class HubViewModel(private val c: AppContainer) : ViewModel() {
     /**
      * Long-press → Edit → Save: the SAME den PATCH the web editor sends
      * (`PATCH /api/agents/{id}`), issued against the node the agent LIVES on
-     * (`row.nodeDenUrl`; the patch may retarget `nodeBaseUrl` elsewhere).
-     * Refreshes on success; [onDone] reports the outcome on the VM scope.
+     * (`row.nodeDenUrl`). The node itself is immutable. Refreshes on success;
+     * [onDone] reports the outcome on the VM scope.
      */
     fun saveAgent(row: AgentRow, fields: AgentEditFields, onDone: (ok: Boolean) -> Unit) {
         viewModelScope.launch {
@@ -323,7 +325,7 @@ class HubViewModel(private val c: AppContainer) : ViewModel() {
                 val home = row.nodeDenUrl.trim().trimEnd('/')
                 val node = _state.value.nodes.find { it.denUrl.trimEnd('/') == home }
                     ?: NodeRef(id = row.nodeId, name = row.nodeName, denUrl = home, online = true, fromMesh = false)
-                c.transport.gateway(node).agentUpdate(row.agentId, agentPatchRequest(fields))
+                c.transport.gateway(node).agentUpdate(row.agentId, agentPatchRequest(fields, row))
                 refresh()
                 true
             } catch (e: Exception) {
@@ -421,16 +423,17 @@ class HubViewModel(private val c: AppContainer) : ViewModel() {
             }
             rebuildItems()
             val presetsAcc = LinkedHashMap<String, Result<List<AgentPreset>>>()
+            val meta = RosterMeta()
             var catalog: List<CatalogAgent> = emptyList()
             fun publishAgents() {
                 val current = _state.value.nodes
                 val agents = buildAgents(
-                    current.map { AgentNodeHint(it.id, it.name.ifBlank { it.id }, it.denUrl, it.online) },
+                    current.map { hintFor(it, meta) },
                     presetsAcc.toList(),
                     catalog,
                     pointers,
                 )
-                _state.update { it.copy(agents = agents) }
+                _state.update { it.copy(agents = agents, directoryRoot = meta.directoryRoot) }
             }
             coroutineScope {
                 launch {
@@ -444,7 +447,7 @@ class HubViewModel(private val c: AppContainer) : ViewModel() {
                     fetch = { fetchNodeBundle(it) },
                     onEach = { node, result ->
                         if (gen == refreshLatch.gen) {
-                            applyNodeBundle(node, result, presetsAcc)
+                            applyNodeBundle(node, result, presetsAcc, meta)
                             publishAgents()
                             rebuildItems()
                         }
@@ -477,8 +480,13 @@ class HubViewModel(private val c: AppContainer) : ViewModel() {
     private suspend fun fetchNodeBundle(node: NodeRef): NodeBundle {
         val hg = c.harness(node.denUrl)
         val gw = c.transport.gateway(node)
+        var healthNode = ""
         return fetchAfterHealthz(
-            healthz = { gw.healthz().ok },
+            healthz = {
+                val hz = gw.healthz()
+                healthNode = hz.node
+                hz.ok
+            },
             rest = {
                 val desc = runCatching { hg.listHarnesses() }
                 val planeRows = HashMap<String, Result<List<HarnessSessionSummary>>>()
@@ -486,7 +494,7 @@ class HubViewModel(private val c: AppContainer) : ViewModel() {
                     planeRows[hid] = runCatching { hg.listSessions(hid) }
                 }
                 val legacyRows = runCatching { hg.legacySessions() }
-                val presets = runCatching { gw.agents() }
+                val listed = runCatching { gw.agents() }
                 val errors = buildList {
                     add(desc.exceptionOrNull())
                     planeRows.values.forEach { add(it.exceptionOrNull()) }
@@ -499,7 +507,9 @@ class HubViewModel(private val c: AppContainer) : ViewModel() {
                     legacyRows = legacyRows,
                     ok = true,
                     error = nodeErrorBadge(errors),
-                    presets = presets,
+                    presets = listed.map { it.agents },
+                    meshNode = healthNode,
+                    directoryRoot = listed.getOrNull()?.directoryRoot,
                 )
             },
             skipped = { _, _ ->
@@ -511,6 +521,7 @@ class HubViewModel(private val c: AppContainer) : ViewModel() {
                     ok = false,
                     error = null,
                     presets = Result.success(emptyList()),
+                    meshNode = healthNode,
                 )
             },
         )
@@ -520,6 +531,7 @@ class HubViewModel(private val c: AppContainer) : ViewModel() {
         node: NodeRef,
         result: Result<NodeBundle>,
         presetsAcc: MutableMap<String, Result<List<AgentPreset>>>,
+        meta: RosterMeta,
     ) {
         val url = node.denUrl.trimEnd('/')
         val bundle = result.getOrNull()
@@ -540,6 +552,9 @@ class HubViewModel(private val c: AppContainer) : ViewModel() {
             legacy[url] = bundle.legacyRows
         }
         presetsAcc[url] = bundle.presets
+        if (bundle.meshNode.isNotBlank()) meta.meshNodes[url] = bundle.meshNode
+        val root = bundle.directoryRoot?.trim()?.trimEnd('/').orEmpty()
+        if (root.isNotEmpty() && meta.directoryRoot.isNullOrBlank()) meta.directoryRoot = root
         _state.update { st ->
             val nextErrors = st.nodeErrors.toMutableMap()
             if (bundle.error != null) nextErrors[node.id] = bundle.error else nextErrors.remove(node.id)
@@ -676,6 +691,31 @@ class HubViewModel(private val c: AppContainer) : ViewModel() {
         val ok: Boolean,
         val error: String?,
         val presets: Result<List<AgentPreset>>,
+        /** `Healthz.node` for this den. Empty when the field is missing or the probe failed. */
+        val meshNode: String = "",
+        val directoryRoot: String? = null,
     )
 
+}
+
+/** Per-refresh roster extras. Not kept across refreshes. */
+private class RosterMeta {
+    val meshNodes = HashMap<String, String>()
+    var directoryRoot: String? = null
+}
+
+/**
+ * Hint for one discovered node. `meshNode` is the healthz name when the den
+ * sent one, otherwise the mesh id, then the mesh name.
+ */
+private fun hintFor(node: NodeRef, meta: RosterMeta): AgentNodeHint {
+    val reported = meta.meshNodes[node.denUrl.trimEnd('/')].orEmpty()
+    val fallback = node.id.ifBlank { node.name }
+    return AgentNodeHint(
+        id = node.id,
+        name = node.name.ifBlank { node.id },
+        denUrl = node.denUrl,
+        online = node.online,
+        meshNode = reported.ifBlank { fallback },
+    )
 }

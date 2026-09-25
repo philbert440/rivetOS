@@ -297,7 +297,8 @@ fun App(
         when (val act = newConversationAction(st.prefs.currentAgentId, st.agents.map { it.agentId })) {
             is NewConversationAction.ForAgent -> {
                 val agent = st.agents.find { it.agentId == act.agentId } ?: return
-                openChatScreen(hubVm.openAgentAction(agent, AgentAction.Tap), replaceAll = true)
+                val open = hubVm.openAgentAction(agent, AgentAction.Tap) ?: return
+                openChatScreen(open, replaceAll = true)
             }
             NewConversationAction.PickAgent -> Unit
         }
