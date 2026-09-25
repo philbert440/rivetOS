@@ -56,6 +56,7 @@ import io.rivethub.app.ui.theme.RivetType
  * Terminal retains the session id, context pill, mode segment and history until U6.
  * The row owns the status inset. Its full-width context track doubles as the bottom
  * border even without usage data: 1dp in Chat, the existing 2dp in Terminal.
+ * Since U2b the history control opens the left drawer (the conversation list lives there).
  */
 @OptIn(ExperimentalFoundationApi::class)
 @Composable

@@ -30,6 +30,8 @@ import androidx.compose.ui.unit.Density
 import androidx.compose.ui.unit.dp
 import io.rivethub.app.R
 import io.rivethub.app.plane.AgentRow
+import io.rivethub.app.plane.Dot
+import io.rivethub.app.plane.NodeDots
 import io.rivethub.app.plane.AttachmentStatus
 import io.rivethub.app.plane.FONT_SCALE_STEPS
 import io.rivethub.app.plane.HubTab
@@ -521,31 +523,7 @@ private fun GalleryThemeBlock(label: String, mode: ThemeMode) {
                     width = Dimens.drawerWidth,
                     tab = HubTab.Conversations,
                     unread = 2,
-                    agents = listOf(
-                        AgentRow(
-                            agentId = "a1",
-                            name = "rivet",
-                            harnessId = "claude-code",
-                            nodeId = "n",
-                            nodeName = "ct115",
-                            nodeDenUrl = "https://192.0.2.10:5174",
-                            pointerSessionId = "s",
-                            color = "#CC785C",
-                            model = "claude",
-                            online = true,
-                        ),
-                        AgentRow(
-                            agentId = "a2",
-                            name = "offline bot",
-                            harnessId = "grok-build",
-                            nodeId = "gone",
-                            nodeName = "gone",
-                            nodeDenUrl = "https://192.0.2.99:5174",
-                            pointerSessionId = null,
-                            online = false,
-                        ),
-                    ),
-                    agentsCollapsed = false,
+                    dots = NodeDots(agent = Dot.Up, mesh = Dot.Down, hub = Dot.Unknown),
                     currentNodeName = "ct115",
                     nodeSheet = NodeSheetModel(
                         saved = listOf(
@@ -580,18 +558,20 @@ private fun GalleryThemeBlock(label: String, mode: ThemeMode) {
                     ),
                     onClose = {},
                     onNav = {},
+                    onFooter = {},
                     onUnread = {},
-                    onToggleAgents = {},
-                    onAddAgent = {},
-                    onAgentTap = {},
-                    onAgentStartOver = {},
-                    onAgentNew = {},
-                    onAgentEdit = {},
-                    onAgentGoToNode = {},
+                    onRefreshStatus = {},
                     onSelectNode = {},
                     onRemoveNode = {},
                     onSaveDiscovered = {},
-                )
+                ) {
+                    Text(
+                        stringResource(R.string.gallery_drawer_body_sample, 0),
+                        color = colors.inkDim,
+                        style = RivetType.mono11,
+                        modifier = Modifier.padding(12.dp),
+                    )
+                }
             }
             Column(Modifier.padding(horizontal = 16.dp, vertical = 8.dp)) {
                 GalleryH("Node sheet")

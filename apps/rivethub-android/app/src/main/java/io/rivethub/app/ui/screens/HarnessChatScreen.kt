@@ -156,10 +156,10 @@ import kotlinx.coroutines.delay
  * The session screen. There is NO wordmark TopBar here (web
  * lib/session-header.ts: the bar shows on every narrow screen EXCEPT an open
  * session). Chat mode has no back control (Phil 2026-09-03: "back" is the
- * right-side history drawer). Terminal mode swaps in [TerminalHeader]: back
- * returns to Chat and resyncs the transcript. The header owns the status-bar
- * inset; [onOpenDrawer] opens the left navigation drawer, [onOpenHistory] the
- * right history drawer.
+ * conversation history, which since drawer v2 / U2b is the left drawer's body).
+ * Terminal mode swaps in [TerminalHeader]: back returns to Chat and resyncs the
+ * transcript. The header owns the status-bar inset; [onOpenDrawer] (☰) and
+ * [onOpenHistory] both open the one left drawer — there is no right drawer.
  */
 @Composable
 fun HarnessChatScreen(

@@ -16,13 +16,13 @@ width (MobileTopBar chrome, flat conversation rows, drawer/status-bar insets fix
 no spinners, light-theme audit). The session-header slice adds the phone session chrome:
 ONE chat header row (☰ · title block · Stop · Terminal chip · search · +, no TopBar/no back), the left
 drawer shared with the session (☰ or edge swipe everywhere), a right history drawer hosting the
-conversations pane, transcript pinned to the bottom, chat-first launch. 2026-09-04: **the
+conversations pane (retired by U2b — see Screens), transcript pinned to the bottom, chat-first launch. 2026-09-04: **the
 conversations list is not an app screen** — the home is the chat surface (a session), the list
-lives only in the right history drawer. `MainActivity.App()` instant-resumes the persisted last
+lives only in the drawer (the LEFT drawer's body since U2b). `MainActivity.App()` instant-resumes the persisted last
 session (nav starts on `Screen.Chat`) or starts on `Screen.Hub`, whose Conversations tab is the
 launch surface (`ChatLaunchScreen` skeleton) until the pick/new resolution opens a session; Hub
 keeps Settings + the drawer. `ConversationsScreen.kt` is emptied (delete list); `ConversationsPane`
-lives in `ui/screens/ConversationsPane.kt`, hosted by `HistoryDrawer`. Grok-Bot screens/VMs are gone from the tree
+lives in `ui/screens/ConversationsPane.kt`, hosted by `HubDrawer` (U2b; `HistoryDrawer` is deleted). Grok-Bot screens/VMs are gone from the tree
 (removed in the M3b commit).
 
 ## Clean-room (UX program 2026-09-24)
@@ -87,16 +87,117 @@ whose Conversations tab is the launch surface until the pick/new resolution open
 |---|---|---|---|
 | Enroll | `ui/screens/EnrollScreen.kt` | none (container) | TopBar (decorative DenBot, no ☰ — no drawer exists pre-onboarding) + p12 + entry URL; 401 → cert refused; `https://` only |
 | Hub | `ui/screens/HubScreen.kt` | `HubViewModel` (activity-scoped `key=hub`) | Content only; hosted by `HubDrawer` (same file) — the ONE left ModalNavigationDrawer shared with Chat; Forget calls `shutdown()` on the same instance. Conversations tab = `ChatLaunchScreen` (launch/loading surface, NOT a list); Settings tab = Settings |
-| ~~Conversations~~ | `ui/screens/ConversationsScreen.kt` | — | DELETED 2026-09-04 (emptied file, delete list) — the list is not an app screen; `ConversationsPane` moved to `ui/screens/ConversationsPane.kt` and is hosted only by the right history drawer |
+| ~~Conversations~~ | `ui/screens/ConversationsScreen.kt` | — | DELETED 2026-09-04 (emptied file, delete list) — the list is not an app screen; `ConversationsPane` moved to `ui/screens/ConversationsPane.kt` and is hosted only by the left drawer (`HubDrawer`, U2b) |
 | Chat launch | `ui/screens/ChatLaunchScreen.kt` | HubViewModel | TopBar (☰ + wordmark) + centered DenBot with "Loading most recent conversation…" and a New-conversation button (web `ChatLaunchLoading`) while the launch resolution (instant resume / pick / new draft) lands — never the list, never a blank, no spinner |
 | Settings | `ui/screens/SettingsScreen.kt` | HubViewModel + container | TopBar (☰ + `Settings` title) + desktop settings chrome; identity, theme, terminal font, mesh-feed Updates; title long-press → gallery |
 | Chat | `ui/screens/HarnessChatScreen.kt` | `HarnessChatViewModel` via `ScreenStores` | ONE 48dp chat header row owns the status inset (☰ · title block · Stop · Terminal chip · search · +); title tap = rename after a turn, long-press title = history drawer until U2b; search replaces the transcript with message hits and tap jumps to the turn; full-width 1dp context track — no TopBar, no back; `HistoryDrawer` (right, same file as HubDrawer, state lifted to MainActivity) = ConversationsPane; BOTH drawers `gesturesEnabled = false` — ONE unified edge-swipe layer on HubDrawer's root (decision `plane/DrawerSwipe.kt`, web edge-swipe.ts semantics: 20dp zone / 40dp travel / horizontal-dominant) opens AND closes each drawer; transcript pinned to bottom + `↓ latest` pill; Terminal chip selects the same session; Terminal header retains its segment until U6 (`ModePager swipe = false`); VT attach |
+| Chat | `ui/screens/HarnessChatScreen.kt` | `HarnessChatViewModel` via `ScreenStores` | ONE session header row owns the status inset (☰ · id · ctx % · Stop · Terminal\|Chat · history) — no TopBar, no back; ☰ AND history both open the ONE left drawer (U2b: there is no right drawer; `HistoryDrawer` deleted); the drawer runs `gesturesEnabled = false` — ONE edge-swipe layer on HubDrawer's root (decision `plane/DrawerSwipe.kt`, web edge-swipe.ts semantics: 20dp zone / 40dp travel / horizontal-dominant) opens it from the left bezel and closes it on a leftward drag that STARTS ON THE SCRIM (right of the open sheet — a drag starting on the sheet is left to the rows, so swipe-to-archive works; fix1); the right bezel is inert; transcript pinned to bottom + `↓ latest` pill; Terminal\|Chat segment only (`ModePager swipe = false`); VT attach |
 | Memory | `ui/screens/MemoryScreen.kt` | `MemoryViewModel` (activity-scoped `key=memory`) | NATIVE wiki hub over datahub `GET /api/wiki` (mirror of the merged responsive web Memory hub: MemoryHubPage + pages/memory.tsx): TopBar (☰ + `Memory`) + Search/Wiki/Browse/Stats tab row + search field + compact topic rows (title + staleness badge). Pure layer `plane/MemoryWiki.kt` (tabs, rows, stats, TOC, staleness, datahub-node pick) mirrors web `lib/memory-hub.ts` + `lib/wiki-base.ts`; wire shapes in `gateway/Wire.kt`, calls `Gateway.wikiPages/wikiSearch/wikiTopic`. Datahub = mesh node named datahub, else `transport.entry()`; load failure = the web "Point RivetHub at datahub" pointer copy, never a spinner |
 | Memory topic | `ui/screens/MemoryTopicScreen.kt` | same `MemoryViewModel` | Pushed over Memory (its slug in `Screen.MemoryTopic`); header = Back + title (session-row vocabulary, no TopBar); lead + `MarkdownBody` body (`wikiBody` = currentState else full file), collapsible full-width Contents from the parsed ##/### headings; 404 = the web red-link state. Back pops to the hub list |
 | Gallery | `ui/components/ComponentGallery.kt` | none | D1a chrome + D1b chat + D2 top bar/rows/settings rhythm (dark + light) |
 
-Conversation list v2 (slice U2a, UX-SPEC §2 item 2; still hosted by the RIGHT history drawer
-until U2b moves it left): `ConversationsPane` sections the live rows with
+**Drawer v2 (slice U2b, UX-SPEC §2).** There is no right drawer. `HubDrawer` (ui/screens/HubScreen.kt)
+is the one left `ModalNavigationDrawer`, width `drawerWidthDp` = min(300, 85%) (`Dimens.drawerWidth`
+300dp), hosting `RivetDrawerContent` (ui/components/RivetDrawer.kt). Top to bottom:
+`DrawerHeader` (wordmark + unread bell) → `NodeStatusStrip` (ui/components/NodeStatusStrip.kt) →
+the conversation list (`ConversationsPane`, passed in as the drawer's `conversations` slot so the
+component takes no view model) → Files / Workflows rows only when their experimental flags are on
+(`plane/DrawerNav.kt drawerFlaggedRows`) → `NodeSwitcherFooter` (node sheet unchanged) →
+`DrawerFooter` (ui/components/DrawerFooter.kt): 44dp round `panel` buttons with a 1dp `line`
+ring, set/order from `drawerFooterActions(exp)` = Agents · Tasks (only with `expTasks`) · Memory ·
+Settings. Footer routing (`drawerFooterDest`): Agents → `AgentsPickerSheet`
+(ui/components/AgentsPickerSheet.kt; one `AgentRowChrome` per agent with an `agentPickerSubtitle`
+node (· directory basename once agents carry one) subtitle; tap = `openAgentAction(row,
+AgentAction.Plus)`, i.e. a NEW conversation; long-press = the existing `AgentActionSheet` (Start
+over / New / Edit / Go to node); rows are a keyed `LazyColumn` (`agentPickerKeys`) capped at
+`agentPickerMaxHeightDp` = 70% of the window so a large fleet scrolls; fix1 dropped the header "+"
+and its duplicate "Choose an agent" sheet — it only reopened the same list, there is no create flow); Tasks → `drawerTabRoute(Tasks)` (null today, so inert until
+slice D2 gives Tasks a route); Memory → `openMemory()`; Settings → the Settings tab. The old
+Conversations / Memory / Settings nav rows and the collapsible agents block are gone from the
+drawer body (the `agentsCollapsed` pref is now dormant). `HubDrawer(currentSessionKey, …)` — every
+MainActivity call site passes the open `Screen.Chat.sessionKey` or null — derives `openTick` from its
+own `drawerState` (snapshotFlow on `targetValue == Open`, exactly as `HistoryDrawer` did), so
+button and edge-swipe opens both scroll the open row into view. fix1: the scroll lands on the open
+row's SECTION HEADER (`plane/ActiveScroll.kt activeScrollTarget`) and falls back to the row only when
+the row is then not fully visible, so "Today" / "Pinned" stay on screen above it (scrolling straight
+to the row had pushed the header off the top — the "no section headers" screenshot).
+
+**Back ordering rule (fix1).** Back with the drawer open (or opening: `targetValue == Open`)
+closes the drawer and does nothing else. `HubDrawer` composes a `BackHandler` AFTER the
+`ModalNavigationDrawer` (so after every handler its content registers) inside `key(openTick)`, so
+it is re-added on every open and is the most recently added enabled callback — the
+`OnBackPressedDispatcher` runs that one first. It therefore beats MainActivity's `nav.pop()`
+handler, HubScreen's Settings → Conversations handler, and any handler a screen registered before that open. Sheets
+and dialogs opened from the drawer are their own windows and still dismiss first. A new screen
+handler must NOT try to outrank it (no re-keying tricks in content); if a screen needs Back while
+the drawer is open, close the drawer first. `RivetDrawerContent` is not a state-aware
+`ModalDrawerSheet`, so Material's own drawer Back handling does not apply here.
+
+**Chat socket feed (fix1).** MainActivity's `Screen.Chat` branch collects only
+`vm.state.map { it.ws }.distinctUntilChanged()` for `HubDrawer(chatWs)` — never the whole chat
+`UiState`, which changes on every streamed token and would recompose App + the drawer + the list.
+
+Status strip derivation (`plane/NodeStatus.kt nodeDots`, pure + `NodeStatusTest`; **no polling,
+no timers** — it recomposes from state, and a tap is ONE `HubViewModel.refresh()`; `NoPollingTest`
+now also scans `ui/HubViewModel.kt`, `NodeStatusStrip.kt`, `RivetDrawer.kt`, `DrawerFooter.kt`,
+`plane/NodeStatus.kt`). Dots: filled `em` = up, `red` = down, hollow `inkDim` ring = unknown; labels
+mono 11sp. Truth table (integrator contract revision, fix2 — same as the `nodeDots` KDoc and the
+table-driven `NodeStatusTest` cases; first matching row wins; "discovering" = `UiState.loading`,
+"offline" = the node's `online == false`, "error" = a `nodeErrors` entry for that node id,
+"answered" = the entry's last discovery outcome, see below):
+
+| dot | condition | shows |
+| --- | --- | --- |
+| hub | entry node has an error | down |
+| hub | entry resolved, online (discovering or not) | up |
+| hub | entry resolved, offline, not discovering | down |
+| hub | entry resolved, offline, discovering | unknown |
+| hub | entry unresolved, answered = true | up |
+| hub | entry unresolved, answered = false | down |
+| hub | entry unresolved, no outcome yet | unknown |
+| mesh | registry socket open | up |
+| mesh | socket closed, nodes known, not discovering | down |
+| mesh | socket closed, discovering / no nodes | unknown |
+| agent | active node has an error | down |
+| agent | chat socket CLOSED | down |
+| agent | active online, chat socket none (off a chat) or OPEN | up |
+| agent | active offline, not discovering | down |
+| agent | otherwise (socket CONNECTING, node absent, offline while discovering) | unknown |
+
+hub reads no socket; mesh ignores node online state and the chat socket. The entry node is resolved
+by `statusEntryNodeId`: exact den URL → same host:port → node id == the URL's host (the id a
+URL-added node gets). There is no "datahub node" step (dropped in fix2: it never matched and could
+paint another node's health as the hub).
+
+**Hub entry outcome (fix2).** The DataHub's own `/api/mesh` roster does NOT list the DataHub, so on a
+real mesh the entry is usually unresolved. The hub dot then reads `UiState.entryAnswer`
+(`plane/NodeStatus.kt EntryAnswer`, read via `entryAnsweredFor(entryAnswer, prefs.entryUrl,
+identityGen)`). `HubViewModel.refreshOnce` records it ONLY at the `c.transport.discover()` call:
+a roster returned (even empty) → true; that call threw → false; nothing yet → null. A
+`CancellationException` records nothing, and later per-node / catalog failures are not entry
+failures (the refresh-wide catch is too broad for this, so do not classify there). The outcome is
+sticky across a refresh of the same entry (`entryAnswerAtRefreshStart`, no flash), reads null for
+another entry URL or identity generation, and a result from a superseded refresh generation or
+identity cannot write (`recordEntryAnswer`). `st.nodes` and the NodeSwitcher stay exactly as the
+mesh returns them — never synthesize an entry `NodeRef` (web-hub parity). No timer is involved.
+Known edge, intended: a thrown `discover()` does not clear `st.nodes` (it is assigned only after a
+successful roster), so an entry that an earlier roster resolved keeps the resolved-entry rows and
+ignores `entryAnswered = false` — do NOT "fix" this by wiping `nodes` on a throw.
+The read clock `UiState.identityGen` is published together with the answer (fix3): at refresh start
+(`entryAnswerStateAtRefreshStart`) and on every accepted write (`publishEntryAnswer`), not only on
+prefs ticks and a successful roster, because the identity generation can move without a prefs write
+(Settings cert install → `refresh()`); otherwise a failure recorded under gen N is read at N−1 → null.
+The active node (`statusActiveNodeId`) is the open chat's node, else `prefs.viewNodeId`, else the
+entry node by the same resolution. The chat socket comes from
+`HarnessChatViewModel.UiState.ws`, passed by MainActivity's `Screen.Chat` branch as
+`HubDrawer(chatWs, chatNodeDenUrl)`.
+
+**U1 merge note (integrator):** U1 made long-press on the chat title open the history drawer and
+added a ☰/history pair to the chat header. After U2b, "history" IS the left drawer: point U1's hook
+at `openDrawer` (the `HubDrawer` content opener) — there is no `openHistory` any more. In this tree
+the pre-U1 `ChatSessionHeader` history button already routes to `openDrawer`.
+
+Conversation list v2 (slice U2a, UX-SPEC §2 item 2; hosted by the LEFT drawer since U2b): `ConversationsPane` sections the live rows with
 `plane/ConversationSections.kt sectionRows` — Pinned (only when non-empty), Today, Yesterday,
 then one section per local calendar day, newest first, with the year when it is not the current
 year. A row files under `updatedAt`, else `createdAt` (`ChatItem.createdAt`, from the wire
@@ -106,7 +207,7 @@ ON_RESUME recompose it, so sections roll over midnight or a zone change with no 
 caps, inkDim). Rows are pills (`ConversationRowChrome(pill = true)`: `Radius.full`, 36dp, 14dp
 side padding, one ellipsised line; swipe-to-archive unchanged), the in-flight status dot pulses,
 pinned rows carry a trailing `lucide_pin` (archived rows too). Host contract:
-`ConversationsPane(currentSessionKey, openTick)` — `HistoryDrawer` passes the open
+`ConversationsPane(currentSessionKey, openTick)` — `HubDrawer` passes the open
 `Screen.Chat.sessionKey` (MainActivity) and bumps `openTick` whenever the drawer state targets
 Open. The open row (`activeRowIn`: live first, then archived; native↔canonical, drafts included)
 is filled `panel2` and scrolled into view on every open (`activeIndexIn` counts the empty-state
@@ -128,8 +229,11 @@ Agents live in the drawer (tap / long-press ↺ / + pointer semantics; 2026-09-0
 also has Edit — `AgentEditSheet` name/color/model/effort/prompt/directory/shared link via `PATCH
 /api/agents/{id}`; the node is read-only — and Go to node, guarded so it never toggles the filter off).
 A dim second line shows `node · basename(directory)` when that subtitle is non-blank. Nodes live in the
+Agents live in the drawer footer's Agents picker since U2b (picker tap = + new; `openAgent` Tap / ↺ / + pointer semantics unchanged; 2026-09-04 long-press
+also has Edit — `AgentEditSheet` name/color/node/model/effort/prompt via `PATCH
+/api/agents/{id}` — and Go to node, guarded so it never toggles the filter off). Nodes live in the
 drawer footer sheet (view filter only; never rebinds an open chat; error badge is
-timeout/5xx only — 404 harness = plane-less, no badge). The drawer Memory row is ENABLED
+timeout/5xx only — 404 harness = plane-less, no badge). The drawer Memory entry (a footer button since U2b) is ENABLED
 (2026-09-04, native wiki hub): `drawerDestEnabled(Memory) = true`, routed by
 `plane/DrawerNav.kt drawerOpensMemoryScreen` (its own `Screen.Memory`, never a `HubTab`) through
 `HubDrawer.onOpenMemory` to MainActivity's `openMemory()` (pops back to an existing Memory
@@ -224,10 +328,11 @@ D2 phone chrome (responsive rivethub-web ← sidebar.tsx MobileTopBar + chat.tsx
 |---|---|
 | `sidebar.tsx:126` MobileTopBar (`h-12 border-b line bg-panel/80`, ☰ `size-5` in 44dp hit "Open menu", DenBot `size-7` decorative, `hubPageTitle` mono `text-sm em`) | `ui/components/TopBar.kt` on every non-session screen — the bar OWNS `statusBarsPadding` (panel/80 extends under the status bar); title rule `plane/HubChrome.kt topBarTitle` (wordmark on home, page title on Settings); NOT shown in a session (lib/session-header.ts showMobileTopBar) |
 | `chat.tsx:1645` narrow session row (`h-12 flex-nowrap gap-2 border-b line bg-panel/40 px-2`: ☰ `size-5`/44px · id mono `text-xs inkDim` truncate flex-1 · ctx % · Stop · Terminal\|Chat · history `size-5`/44px "Conversations"; no back chevron) | `ui/components/ChatHeader.kt` — ONE `Row` `height(Dimens.pageHeader)` owning `statusBarsPadding`, Chat items from `plane/ChatChrome.kt headerItemsV2` (☰ · title block · Stop · Terminal chip · search · +), title long-press opens history until U2b; Terminal keeps `narrowHeaderItems`; the session screen calls no TopBar. Right history drawer (chat.tsx:585-626, `w-64 border-l line bg-panel`, bg/70 scrim) = `HistoryDrawer` hosting `ConversationsPane`; chat-first launch = `plane/LaunchSession.kt pickLaunchSession`, latched in MainActivity (chat.tsx:463-475); transcript pin = `plane/TranscriptPin.kt` (transcript.tsx:385-480, 120dp, `↓ latest` pill mono 11sp em on panel, em-dim/50 border) |
+| `chat.tsx:1645` narrow session row (`h-12 flex-nowrap gap-2 border-b line bg-panel/40 px-2`: ☰ `size-5`/44px · id mono `text-xs inkDim` truncate flex-1 · ctx % · Stop · Terminal\|Chat · history `size-5`/44px "Conversations"; no back chevron) | `ui/components/ChatHeader.kt` — ONE `Row` `height(Dimens.pageHeader)` owning `statusBarsPadding`, items from `plane/ChatChrome.kt narrowHeaderItems`; the session screen calls no TopBar. History button → the left drawer (U2b retired the right `HistoryDrawer`; the pane is the left drawer's body); chat-first launch = `plane/LaunchSession.kt pickLaunchSession`, latched in MainActivity (chat.tsx:463-475); transcript pin = `plane/TranscriptPin.kt` (transcript.tsx:385-480, 120dp, `↓ latest` pill mono 11sp em on panel, em-dim/50 border) |
 | `chat.tsx:631` flat row (`mb-1 rounded`, `px-3 py-2 text-xs`, idle `text-ink-dim`, active `text-em bg-panel-2`, chip mono 9sp `bg-panel-2`) | `ui/components/ConversationRow.kt` — 36dp rows, no cards, no 44dp row floor (source density wins over hit area here); the `SwipeToDismissBox` panel2 reveal paints ONLY while `dismissDirection == EndToStart` (an always-on backgroundContent shows through the transparent idle row as a card) |
 | `chat.tsx:833` flat list, no node/agent group rows | `paneRows` in `plane/HubChrome.kt` (pin rows titled by agent name are desktop parity, chat.tsx:378-388) |
 | `chat.tsx:808` `+ new` raw button (`rounded border line px-2 py-1 text-xs inkDim`) | `NewConversationButton` in ConversationsPane.kt (NOT RivetButton) |
-| `sidebar.tsx:189` phone drawer `w-64` | `Dimens.drawerWidth` 256dp (`drawerWidthDp` rule, 85% under 360dp); drawer runs edge-to-edge: header owns status inset, footer owns nav inset |
+| Phone drawer width (UX-SPEC §2 "about 300dp"; was `sidebar.tsx:189` `w-64` before U2b) | `Dimens.drawerWidth` 300dp (`drawerWidthDp` = min(300, 85%)); drawer runs edge-to-edge: header owns status inset, footer (node switcher + round buttons) owns nav inset; status strip dots 8dp em / red / hollow inkDim ring, mono 11sp labels; footer buttons 44dp circle `panel` + 1dp `line` |
 | `settings.tsx:189` auth helper, h2 `mt-10 border-t pt-6 mb-3 mono sm semibold em` | `ui/components/SettingsChrome.kt` (`SettingsH2` / `FieldLabel`); entry field follows the h1 directly (no lead section h2); the h2 text must be `fillMaxWidth` or the `drawBehind` border-t only spans the glyphs |
 | no spinners anywhere; pull-to-refresh only answers a user pull | discovery progress is the mono `discovering… n/m` line (`discoveringLineVisible`) |
 | system bars | `MainActivity` sets `isAppearanceLight*StatusBars` from `ThemeMode`; bottom-most content owns `navigationBarsPadding` (composer / key bar / list block / scroll column), nothing else does |

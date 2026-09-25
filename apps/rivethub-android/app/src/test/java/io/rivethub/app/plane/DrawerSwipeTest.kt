@@ -8,11 +8,12 @@ class DrawerSwipeTest {
     private val width = 1080f
     private val zone = 60f
     private val travel = 120f
+    private val sheet = 810f
 
     @Test fun `left edge drag rightward opens the left drawer`() {
         val action = decideDrawerSwipe(
-            startX = 10f, dx = 150f, dy = 0f, viewportWidth = width,
-            sessionOpen = false, leftOpen = false, rightOpen = false,
+            startX = 10f, dx = 150f, dy = 0f,
+            leftOpen = false, sheetWidth = sheet,
             zone = zone, travel = travel,
         )
         assertEquals(DrawerSwipeAction.Open(DrawerSide.Left), action)
@@ -20,50 +21,44 @@ class DrawerSwipeTest {
 
     @Test fun `drag below the travel threshold does nothing`() {
         val action = decideDrawerSwipe(
-            startX = 10f, dx = 100f, dy = 0f, viewportWidth = width,
-            sessionOpen = true, leftOpen = false, rightOpen = false,
+            startX = 10f, dx = 100f, dy = 0f,
+            leftOpen = false, sheetWidth = sheet,
             zone = zone, travel = travel,
         )
         assertNull(action)
     }
 
-    @Test fun `open left drawer dragged back toward its bezel closes`() {
+    @Test fun `open left drawer dragged back from the scrim closes`() {
         val action = decideDrawerSwipe(
-            startX = 400f, dx = -130f, dy = 10f, viewportWidth = width,
-            sessionOpen = true, leftOpen = true, rightOpen = false,
+            startX = 900f, dx = -130f, dy = 10f,
+            leftOpen = true, sheetWidth = sheet,
             zone = zone, travel = travel,
         )
         assertEquals(DrawerSwipeAction.Close(DrawerSide.Left), action)
     }
 
-    @Test fun `open right drawer dragged back toward its bezel closes`() {
+    @Test fun `open drawer dragged further right stays open`() {
         val action = decideDrawerSwipe(
-            startX = 600f, dx = 130f, dy = -10f, viewportWidth = width,
-            sessionOpen = true, leftOpen = false, rightOpen = true,
+            startX = 600f, dx = 130f, dy = -10f,
+            leftOpen = true, sheetWidth = sheet,
             zone = zone, travel = travel,
         )
-        assertEquals(DrawerSwipeAction.Close(DrawerSide.Right), action)
+        assertNull(action)
     }
 
-    @Test fun `right edge drag opens the history drawer only in a session`() {
-        val inSession = decideDrawerSwipe(
-            startX = width - 5f, dx = -150f, dy = 0f, viewportWidth = width,
-            sessionOpen = true, leftOpen = false, rightOpen = false,
+    @Test fun `right edge drag never opens anything`() {
+        val action = decideDrawerSwipe(
+            startX = width - 5f, dx = -150f, dy = 0f,
+            leftOpen = false, sheetWidth = sheet,
             zone = zone, travel = travel,
         )
-        assertEquals(DrawerSwipeAction.Open(DrawerSide.Right), inSession)
-        val outsideSession = decideDrawerSwipe(
-            startX = width - 5f, dx = -150f, dy = 0f, viewportWidth = width,
-            sessionOpen = false, leftOpen = false, rightOpen = false,
-            zone = zone, travel = travel,
-        )
-        assertNull(outsideSession)
+        assertNull(action)
     }
 
     @Test fun `vertical dominant drag does nothing even at the bezel`() {
         val action = decideDrawerSwipe(
-            startX = 5f, dx = 130f, dy = 200f, viewportWidth = width,
-            sessionOpen = true, leftOpen = false, rightOpen = false,
+            startX = 5f, dx = 130f, dy = 200f,
+            leftOpen = false, sheetWidth = sheet,
             zone = zone, travel = travel,
         )
         assertNull(action)
@@ -71,10 +66,22 @@ class DrawerSwipeTest {
 
     @Test fun `mid-screen drag does not open a drawer`() {
         val action = decideDrawerSwipe(
-            startX = 500f, dx = 150f, dy = 0f, viewportWidth = width,
-            sessionOpen = true, leftOpen = false, rightOpen = false,
+            startX = 500f, dx = 150f, dy = 0f,
+            leftOpen = false, sheetWidth = sheet,
             zone = zone, travel = travel,
         )
         assertNull(action)
+    }
+
+    @Test fun `a leftward drag that starts on the open sheet is left to the rows`() {
+        // Swipe-to-archive on a conversation row inside the sheet must not close the drawer.
+        for (startX in listOf(10f, 400f, sheet)) {
+            val action = decideDrawerSwipe(
+                startX = startX, dx = -300f, dy = 5f,
+                leftOpen = true, sheetWidth = sheet,
+                zone = zone, travel = travel,
+            )
+            assertNull("startX=$startX", action)
+        }
     }
 }

@@ -3,13 +3,14 @@ package io.rivethub.app.plane
 import kotlin.math.abs
 
 /**
- * Unified edge-swipe decision for the TWO nested modal drawers (2026-09-04:
- * the nested drawers' built-in gestures competed, so the left swipe lost
- * arbitration and neither drawer reliably closed by swipe). Both drawers now
- * run `gesturesEnabled = false` and ONE gesture layer on the shared ancestor
+ * Edge-swipe decision for the ONE left modal drawer (drawer v2, UX-SPEC §2:
+ * there is no right drawer — the conversation list lives in the left one).
+ * The drawer runs `gesturesEnabled = false` and one gesture layer on its host
  * evaluates this pure function per move, mirroring the web
  * `lib/edge-swipe.ts` semantics (edge zone + horizontal-dominant + travel
- * threshold, fires once per gesture).
+ * threshold, fires once per gesture). 2026-09-04 history: the built-in
+ * drawer gesture lost arbitration when two drawers were nested, which is why
+ * the gesture is owned here rather than by `ModalNavigationDrawer`.
  *
  * All geometry inputs are in the SAME unit (the UI layer passes px converted
  * from [EDGE_ZONE_DP] / [EDGE_TRAVEL_DP]).
@@ -17,7 +18,8 @@ import kotlin.math.abs
 const val EDGE_ZONE_DP = 20
 const val EDGE_TRAVEL_DP = 40
 
-enum class DrawerSide { Left, Right }
+/** Only the left side exists since drawer v2; kept as a type so actions stay self-describing. */
+enum class DrawerSide { Left }
 
 sealed interface DrawerSwipeAction {
     val side: DrawerSide
@@ -31,36 +33,30 @@ sealed interface DrawerSwipeAction {
  *
  * Rules:
  *  - Not horizontal-dominant (`|dx| <= |dy|`) → nothing (a vertical scroll
- *    starting at the bezel must not yank a drawer).
- *  - The LEFT drawer is open and the drag travels left ≥ [travel] → close it.
- *  - The RIGHT drawer is open and the drag travels right ≥ [travel] → close it.
- *  - Neither open: start within [zone] of the LEFT bezel and dx ≥ [travel] →
- *    open the left drawer.
- *  - Neither open: [sessionOpen] AND start within [zone] of the RIGHT bezel
- *    and -dx ≥ [travel] → open the right (history) drawer. The right bezel is
- *    inert outside a session.
+ *    starting at the bezel must not yank the drawer).
+ *  - The drawer is open, the drag STARTS ON THE SCRIM (`startX >`
+ *    [sheetWidth], i.e. right of the open sheet) and travels left ≥ [travel]
+ *    → close it. A drag that starts on the sheet itself returns nothing, so
+ *    the rows inside it keep their own horizontal gestures (the conversation
+ *    row's swipe-to-archive, fix1 — a sheet-wide close used to steal it).
+ *    The scrim tap, the header close button and Back still close from there.
+ *  - The drawer is closed: start within [zone] of the LEFT bezel and
+ *    dx ≥ [travel] → open it.
+ *  - The right bezel is inert everywhere (no right drawer).
  */
 fun decideDrawerSwipe(
     startX: Float,
     dx: Float,
     dy: Float,
-    viewportWidth: Float,
-    sessionOpen: Boolean,
     leftOpen: Boolean,
-    rightOpen: Boolean,
+    sheetWidth: Float,
     zone: Float = EDGE_ZONE_DP.toFloat(),
     travel: Float = EDGE_TRAVEL_DP.toFloat(),
 ): DrawerSwipeAction? {
     if (abs(dx) <= abs(dy)) return null
     if (leftOpen) {
-        return if (-dx >= travel) DrawerSwipeAction.Close(DrawerSide.Left) else null
-    }
-    if (rightOpen) {
-        return if (dx >= travel) DrawerSwipeAction.Close(DrawerSide.Right) else null
+        return if (startX > sheetWidth && -dx >= travel) DrawerSwipeAction.Close(DrawerSide.Left) else null
     }
     if (startX <= zone && dx >= travel) return DrawerSwipeAction.Open(DrawerSide.Left)
-    if (sessionOpen && startX >= viewportWidth - zone && -dx >= travel) {
-        return DrawerSwipeAction.Open(DrawerSide.Right)
-    }
     return null
 }
