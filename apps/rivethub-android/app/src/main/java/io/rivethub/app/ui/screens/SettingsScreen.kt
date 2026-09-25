@@ -96,6 +96,22 @@ fun SettingsScreen(
     val pickP12 = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
         uri?.let { pendingP12 = it }
     }
+    // Task notifications: the toggle only sticks once the OS lets us post
+    // (POST_NOTIFICATIONS is a runtime permission from API 33).
+    val askNotifications = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
+        if (granted) scope.launch { c.settings.setTaskNotifications(true) }
+    }
+    fun setTaskNotifications(on: Boolean) {
+        val needsGrant = on &&
+            android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.TIRAMISU &&
+            androidx.core.content.ContextCompat.checkSelfPermission(ctx, android.Manifest.permission.POST_NOTIFICATIONS) !=
+            android.content.pm.PackageManager.PERMISSION_GRANTED
+        if (needsGrant) {
+            askNotifications.launch(android.Manifest.permission.POST_NOTIFICATIONS)
+        } else {
+            scope.launch { c.settings.setTaskNotifications(on) }
+        }
+    }
 
     val appearSystem = stringResource(R.string.appearance_system)
     val appearLight = stringResource(R.string.appearance_light)
@@ -343,6 +359,19 @@ fun SettingsScreen(
                         }
                         scope.launch { c.settings.setTerminalFontSp(sp) }
                     },
+                )
+
+                SettingsH2(stringResource(R.string.section_notifications))
+                ToggleRow(
+                    label = stringResource(R.string.settings_task_notifications),
+                    checked = prefs.taskNotifications,
+                    onChange = { v -> setTaskNotifications(v) },
+                )
+                Text(
+                    stringResource(R.string.settings_task_notifications_helper),
+                    color = colors.inkDim,
+                    style = RivetType.xs,
+                    modifier = Modifier.padding(top = 4.dp),
                 )
 
                 SettingsH2(stringResource(R.string.section_experimental))

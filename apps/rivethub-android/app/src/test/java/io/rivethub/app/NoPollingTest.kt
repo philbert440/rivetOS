@@ -26,4 +26,20 @@ class NoPollingTest {
             assertFalse("$rel: poll constant", "TRANSCRIPT_POLL_EVERY_MS" in s || "SESSION_POLL_EVERY_MS" in s)
         }
     }
+
+    @Test
+    fun notifications_inbox_is_socket_driven_with_no_foreground_service() {
+        val loop = Regex("""while\s*\([^)]*\)\s*\{[^}]*delay\(""")
+        for (rel in listOf("ui/HubViewModel.kt", "plane/Inbox.kt", "plane/NotificationsWatch.kt", "plane/OpenTaskTap.kt", "notify/TaskNotifier.kt", "notify/AppVisibility.kt")) {
+            val s = src(rel)
+            assertFalse("$rel: a while/delay poll loop", loop.containsMatchIn(s))
+            assertFalse("$rel: starts a foreground service", "startForeground" in s)
+        }
+        val manifest = File("src/main/AndroidManifest.xml")
+        assertTrue("missing manifest", manifest.exists())
+        val m = manifest.readText()
+        assertTrue("POST_NOTIFICATIONS not declared", "android.permission.POST_NOTIFICATIONS" in m)
+        assertFalse("a foreground-service permission crept in", "FOREGROUND_SERVICE" in m)
+        assertFalse("a <service> crept in", "<service" in m)
+    }
 }

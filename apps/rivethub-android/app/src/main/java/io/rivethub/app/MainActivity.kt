@@ -39,9 +39,14 @@ import io.rivethub.app.plane.newConversationAction
 import io.rivethub.app.plane.ChatHomeNav
 import io.rivethub.app.plane.ChatItemKind
 import io.rivethub.app.plane.HubTab
+import io.rivethub.app.plane.InboxLabels
 import io.rivethub.app.plane.LaunchCandidate
 import io.rivethub.app.plane.LocatedChatItem
 import io.rivethub.app.plane.NarrowLaunchTarget
+import io.rivethub.app.plane.ConsumedTaps
+import io.rivethub.app.plane.OpenTaskTap
+import io.rivethub.app.plane.openTaskFromIntent
+import io.rivethub.app.plane.rememberConsumedTap
 import io.rivethub.app.plane.chatHomeNav
 import io.rivethub.app.plane.displayTitle
 import io.rivethub.app.plane.findChatItem
@@ -65,14 +70,31 @@ import io.rivethub.app.ui.screens.MemoryTopicScreen
 import io.rivethub.app.ui.theme.RivetTheme
 import io.rivethub.app.ui.theme.ThemeMode
 import io.rivethub.app.ui.theme.blueprintGrid
+import io.rivethub.app.notify.TaskNotifier
 
 class MainActivity : ComponentActivity() {
     private var pendingShare by mutableStateOf<List<android.net.Uri>>(emptyList())
+    /** A tapped task-completion notification, until App() consumes it. */
+    private var pendingTap by mutableStateOf<OpenTaskTap?>(null)
+    /**
+     * Markers of the taps App() handled: the launch intent's marker pinned for
+     * the Activity's lifetime, plus the recent onNewIntent ones (capped). Saved
+     * with the Activity's instance state (the same bundle rememberSaveable
+     * writes to), so a recreation — including after process death, when the
+     * system hands back the ORIGINAL launch intent WITH its extras, however
+     * many taps came since — does not re-fire one (plane/OpenTaskTap.kt).
+     */
+    private var consumedTaps = ConsumedTaps()
 
     override fun onCreate(savedInstanceState: Bundle?) {
         enableEdgeToEdge()
         super.onCreate(savedInstanceState)
         pendingShare = extractShareUris(intent)
+        consumedTaps = ConsumedTaps(
+            launch = savedInstanceState?.getString(STATE_LAUNCH_TAP),
+            recent = savedInstanceState?.getStringArrayList(STATE_CONSUMED_TAPS).orEmpty(),
+        )
+        readOpenTask(intent, fromLaunch = true)
         // Compose UI 1.8+ reports every text field to the Autofill framework, so password
         // managers (1Password) kept offering themselves on the chat composer and the terminal
         // field. Nothing here takes a credential — tokens come from the mesh — so opt the whole
@@ -81,6 +103,10 @@ class MainActivity : ComponentActivity() {
         window.decorView.importantForAutofill = View.IMPORTANT_FOR_AUTOFILL_NO_EXCLUDE_DESCENDANTS
         requestLocalNetworkAccess()
         val container = (application as BotsApp).container
+        // Single singleTask activity: its start/stop is the app's
+        // foreground/background (notify/AppVisibility).
+        lifecycle.addObserver(container.visibility)
+        container.taskNotifier.ensureChannel()
         setContent {
             val prefs by container.settings.prefs.collectAsState(initial = null)
             val mode = when (prefs?.themeMode) {
@@ -108,6 +134,8 @@ class MainActivity : ComponentActivity() {
                     openStream = { uri -> contentResolver.openInputStream(uri) },
                     shareUris = pendingShare,
                     onShareConsumed = { pendingShare = emptyList() },
+                    openTaskId = pendingTap?.taskId,
+                    onOpenTaskConsumed = { consumeOpenTask() },
                 )
             }
         }
@@ -117,6 +145,48 @@ class MainActivity : ComponentActivity() {
         super.onNewIntent(intent)
         setIntent(intent)
         pendingShare = extractShareUris(intent)
+        readOpenTask(intent, fromLaunch = false)
+    }
+
+    override fun onSaveInstanceState(outState: Bundle) {
+        super.onSaveInstanceState(outState)
+        outState.putString(STATE_LAUNCH_TAP, consumedTaps.launch)
+        outState.putStringArrayList(STATE_CONSUMED_TAPS, ArrayList(consumedTaps.recent))
+    }
+
+    /**
+     * A fresh tap (new nonce) replaces any pending one — which is recorded as
+     * consumed, so a superseded launch tap cannot fire after a restore either;
+     * a consumed one is ignored (plane/OpenTaskTap.kt). [fromLaunch]: read in
+     * onCreate (the intent the system restores after process death).
+     */
+    private fun readOpenTask(intent: android.content.Intent?, fromLaunch: Boolean) {
+        val tap = openTaskFromIntent(
+            extra = intent?.getStringExtra(TaskNotifier.EXTRA_OPEN_TASK_ID),
+            nonce = intent?.getStringExtra(TaskNotifier.EXTRA_OPEN_TASK_NONCE),
+            consumed = consumedTaps,
+            fromLaunch = fromLaunch,
+        ) ?: return
+        pendingTap?.takeIf { it.marker != tap.marker }?.let { consumedTaps = rememberConsumedTap(consumedTaps, it) }
+        pendingTap = tap
+    }
+
+    /**
+     * App() handled the tap: remember its marker and strip the extras from
+     * the Activity intent, so neither a recreation nor a later re-read of
+     * getIntent() opens it again.
+     */
+    private fun consumeOpenTask() {
+        val tap = pendingTap ?: return
+        consumedTaps = rememberConsumedTap(consumedTaps, tap)
+        pendingTap = null
+        intent?.removeExtra(TaskNotifier.EXTRA_OPEN_TASK_ID)
+        intent?.removeExtra(TaskNotifier.EXTRA_OPEN_TASK_NONCE)
+    }
+
+    private companion object {
+        const val STATE_CONSUMED_TAPS = "consumed_open_tasks"
+        const val STATE_LAUNCH_TAP = "consumed_launch_open_task"
     }
 
     /**
@@ -186,6 +256,8 @@ fun App(
     openStream: (android.net.Uri) -> java.io.InputStream? = { null },
     shareUris: List<android.net.Uri> = emptyList(),
     onShareConsumed: () -> Unit = {},
+    openTaskId: String? = null,
+    onOpenTaskConsumed: () -> Unit = {},
 ) {
     val prefs by c.settings.prefs.collectAsState(initial = null)
     val p = prefs
@@ -223,10 +295,53 @@ fun App(
     var resumedKey by remember { mutableStateOf((nav.stack.firstOrNull() as? Screen.Chat)?.sessionKey) }
     val scope = rememberCoroutineScope()
     val stores: ScreenStores = viewModel(key = "screen-stores")
-    val hubVm: HubViewModel = viewModel(key = "hub") { HubViewModel(c) }
+    // Notifications inbox wiring (slice D3). Titles come from strings.xml —
+    // the only wording source: the VM is constructed with them, and the
+    // SideEffect below re-hands them after a locale change (the VM outlives
+    // it). The OS notification only posts while the app is backgrounded.
+    val inboxLabels = InboxLabels(
+        escalationTitle = stringResource(R.string.inbox_escalation_title),
+        taskDoneTitle = stringResource(R.string.inbox_task_done_title),
+        gateTitle = stringResource(R.string.inbox_gate_title),
+        taskDoneStatusFallback = stringResource(R.string.inbox_task_done_status_fallback),
+    )
+    val hubVm: HubViewModel = viewModel(key = "hub") { HubViewModel(c, inboxLabels) }
     val tasksVm: io.rivethub.app.ui.TasksViewModel = viewModel(key = "tasks") { io.rivethub.app.ui.TasksViewModel(c) }
+    hubVm.onTaskDone = { tasksVm.refresh() } // D3 → D2 seam: a task.done frame refetches the Tasks list
     val memoryVm: MemoryViewModel = viewModel(key = "memory") { MemoryViewModel(c) }
+
+    SideEffect {
+        hubVm.inboxLabels = inboxLabels
+        hubVm.systemNotifier = c.taskNotifier
+        hubVm.appResumed = { c.visibility.resumed }
+    }
+    // Task detail seam: this tree has no Tasks screen yet (slice D2 adds
+    // Screen.TaskDetail). The integrator sets this to push it — and sets
+    // hubVm.onTaskDone to TasksViewModel.refresh. While null, an inbox task
+    // row shows a strip and a tapped notification opens the inbox sheet.
+    val openTask: ((String) -> Unit)? = { id -> nav.push(Screen.TaskDetail(id)) } // D2 is merged: inbox task rows open the detail
     BackHandler(enabled = nav.stack.size > 1) { nav.pop() }
+
+    // A tapped task notification: open the task when the Tasks screen exists,
+    // else the inbox sheet. The sheet lives in HubDrawer, which hosts every
+    // post-enroll screen EXCEPT the component Gallery — so leave the Gallery
+    // first (it is only ever pushed over a HubDrawer screen; a lone Gallery
+    // root falls back to Hub). Pre-enroll the tap is dropped.
+    LaunchedEffect(openTaskId) {
+        val taskId = openTaskId ?: return@LaunchedEffect
+        onOpenTaskConsumed()
+        if (nav.current == Screen.Enroll) return@LaunchedEffect
+        val open = openTask
+        if (open != null) {
+            open(taskId)
+        } else {
+            if (nav.current == Screen.Gallery) {
+                nav.popTo { it != Screen.Gallery }
+                if (nav.current == Screen.Gallery) nav.replaceAll(Screen.Hub)
+            }
+            hubVm.setInboxOpen(true)
+        }
+    }
     val liveKeys = nav.stack.mapNotNull { it.storeKey() }.toSet()
     LaunchedEffect(liveKeys) { stores.retainOnly(liveKeys) }
 
@@ -450,6 +565,7 @@ fun App(
             onNavTab = { onNavTab(it) },
             onOpenMemory = { openMemory() },
             onOpenTasks = { openTasks() },
+            onOpenTask = openTask,
         ) { openDrawer ->
             HubScreen(
                 vm = hubVm,
@@ -489,6 +605,7 @@ fun App(
                     rightDrawer = historyState,
                     onOpenMemory = { openMemory() },
                     onOpenTasks = { openTasks() },
+                    onOpenTask = openTask,
                 ) { openDrawer ->
                     HistoryDrawer(
                         vm = hubVm,
@@ -537,6 +654,7 @@ fun App(
             onNavTab = { onNavTab(it) },
             onOpenMemory = { openMemory() },
             onOpenTasks = { openTasks() },
+            onOpenTask = openTask,
         ) { openDrawer ->
             MemoryScreen(
                 vm = memoryVm,
@@ -551,6 +669,7 @@ fun App(
             onNavTab = { onNavTab(it) },
             onOpenMemory = { openMemory() },
             onOpenTasks = { openTasks() },
+            onOpenTask = openTask,
         ) {
             MemoryTopicScreen(
                 vm = memoryVm,

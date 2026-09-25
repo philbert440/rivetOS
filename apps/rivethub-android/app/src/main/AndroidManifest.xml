@@ -7,6 +7,9 @@
          beyond a connect timeout (SYN-SENT, zero packets on the wire). -->
     <uses-permission android:name="android.permission.ACCESS_LOCAL_NETWORK" />
     <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES" />
+    <!-- Task-completion notifications (Settings → Task notifications). Runtime
+         permission on API 33+, requested only when the user turns the toggle on. -->
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
 
     <!-- Temporary: household noVNC desktop is plain HTTP. Flip usesCleartextTraffic back to false when that VM sits behind TLS. -->
     <application

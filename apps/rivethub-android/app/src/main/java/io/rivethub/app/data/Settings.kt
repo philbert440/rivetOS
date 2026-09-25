@@ -56,6 +56,8 @@ data class Prefs(
     val codeWrap: Boolean = false,
     /** Composer model sheet favourites (model ids), shown as the first group. */
     val favouriteModels: Set<String> = emptySet(),
+    /** Post an OS notification when a task completes while the app is in the background. Off by default. */
+    val taskNotifications: Boolean = false,
 )
 
 class Settings(context: Context) {
@@ -91,6 +93,7 @@ class Settings(context: Context) {
             codeLineNumbers = p[CODE_LINE_NUMBERS] ?: false,
             codeWrap = p[CODE_WRAP] ?: false,
             favouriteModels = p[FAVOURITE_MODELS] ?: emptySet(),
+            taskNotifications = p[TASK_NOTIFICATIONS] ?: false,
         )
     }
 
@@ -110,6 +113,7 @@ class Settings(context: Context) {
     suspend fun setExpFiles(v: Boolean) = ds.edit { it[EXP_FILES] = v }
     suspend fun setExpTasks(v: Boolean) = ds.edit { it[EXP_TASKS] = v }
     suspend fun setExpWorkflows(v: Boolean) = ds.edit { it[EXP_WORKFLOWS] = v }
+    suspend fun setTaskNotifications(v: Boolean) = ds.edit { it[TASK_NOTIFICATIONS] = v }
     suspend fun setTerminalFontSp(sp: Int) = ds.edit { it[TERM_FONT] = sp.coerceIn(10, 22) }
     suspend fun setViewNodeId(id: String) = ds.edit { it[VIEW_NODE] = id }
     suspend fun setCurrentAgentId(id: String) = ds.edit { it[CURRENT_AGENT] = id }
@@ -207,6 +211,7 @@ class Settings(context: Context) {
         private val EXP_TASKS = booleanPreferencesKey("expTasks")
         private val EXP_WORKFLOWS = booleanPreferencesKey("expWorkflows")
         private val FAVOURITE_MODELS = stringSetPreferencesKey("favouriteModels")
+        private val TASK_NOTIFICATIONS = booleanPreferencesKey("taskNotifications")
 
         private val mapSer = MapSerializer(String.serializer(), String.serializer())
         private val longMapSer = MapSerializer(String.serializer(), Long.serializer())

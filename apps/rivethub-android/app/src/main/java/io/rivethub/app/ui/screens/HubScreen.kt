@@ -5,7 +5,18 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.awaitEachGesture
 import androidx.compose.foundation.gestures.awaitFirstDown
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.navigationBarsPadding
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.verticalScroll
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
@@ -39,6 +50,8 @@ import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.input.pointer.positionChanged
 import androidx.compose.ui.platform.LocalLayoutDirection
 import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.semantics.stateDescription
 import androidx.compose.ui.unit.LayoutDirection
 import androidx.compose.ui.unit.dp
 import io.rivethub.app.AppContainer
@@ -52,6 +65,9 @@ import io.rivethub.app.plane.DrawerSwipeAction
 import io.rivethub.app.plane.EDGE_TRAVEL_DP
 import io.rivethub.app.plane.EDGE_ZONE_DP
 import io.rivethub.app.plane.HubTab
+import io.rivethub.app.plane.InboxEntry
+import io.rivethub.app.plane.InboxRoute
+import io.rivethub.app.plane.inboxRoute
 import io.rivethub.app.plane.LocatedChatItem
 import io.rivethub.app.plane.NodeSheetInput
 import io.rivethub.app.plane.buildNodeSheet
@@ -65,6 +81,10 @@ import io.rivethub.app.ui.HubViewModel
 import io.rivethub.app.ui.components.AgentEditSheet
 import io.rivethub.app.ui.components.RivetDrawerContent
 import io.rivethub.app.ui.components.RivetModalSheet
+import io.rivethub.app.ui.components.RivetButton
+import io.rivethub.app.ui.components.RivetButtonSize
+import io.rivethub.app.ui.components.RivetButtonVariant
+import io.rivethub.app.ui.components.TimeFmt
 import io.rivethub.app.ui.theme.RivetTheme
 import io.rivethub.app.ui.theme.RivetType
 import kotlinx.coroutines.CoroutineScope
@@ -93,12 +113,12 @@ fun HubDrawer(
     rightDrawer: DrawerState? = null,
     onOpenMemory: (() -> Unit)? = null,
     onOpenTasks: (() -> Unit)? = null,
+    onOpenTask: ((taskId: String) -> Unit)? = null,
     content: @Composable (openDrawer: () -> Unit) -> Unit,
 ) {
     val st by vm.state.collectAsState()
     val drawerState = rememberDrawerState(DrawerValue.Closed)
     val scope = rememberCoroutineScope()
-    var inboxOpen by remember { mutableStateOf(false) }
     var addAgentOpen by remember { mutableStateOf(false) }
     var editAgent by remember { mutableStateOf<AgentRow?>(null) }
     val tab = when (st.tab) {
@@ -146,7 +166,7 @@ fun HubDrawer(
                 RivetDrawerContent(
                     width = drawerWidth,
                     tab = tab,
-                    unread = st.inbox.size,
+                    unread = st.unread,
                     agents = st.agents,
                     agentsCollapsed = st.prefs.agentsCollapsed,
                     currentNodeName = currentName,
@@ -166,7 +186,7 @@ fun HubDrawer(
                         closeDrawer()
                     },
                     onUnread = {
-                        inboxOpen = true
+                        vm.setInboxOpen(true)
                         closeDrawer()
                     },
                     onToggleAgents = { vm.setAgentsCollapsed(!st.prefs.agentsCollapsed) },
@@ -264,27 +284,129 @@ fun HubDrawer(
         )
     }
 
-    if (inboxOpen) {
-        RivetModalSheet(onDismiss = { inboxOpen = false }) {
+    if (st.inboxOpen) {
+        InboxSheet(
+            entries = st.inbox,
+            onDismiss = { vm.setInboxOpen(false) },
+            onClear = { vm.clearInbox() },
+            onRow = { entry ->
+                vm.markInboxRead(entry.id)
+                when (val route = inboxRoute(entry)) {
+                    is InboxRoute.Task -> onOpenTask?.let { open ->
+                        vm.setInboxOpen(false)
+                        open(route.taskId)
+                        true
+                    } ?: false
+                    null -> true
+                }
+            },
+        )
+    }
+}
+
+/**
+ * The notifications inbox (UX-SPEC §6): newest first, unread dot, relative
+ * time, Clear. [onRow] returns false when the row's destination is not in
+ * this build (no Tasks screen yet) — the sheet then shows a one-line strip
+ * instead of navigating.
+ */
+@Composable
+private fun InboxSheet(
+    entries: List<InboxEntry>,
+    onDismiss: () -> Unit,
+    onClear: () -> Unit,
+    onRow: (InboxEntry) -> Boolean,
+) {
+    val colors = RivetTheme.colors
+    var strip by remember { mutableStateOf<String?>(null) }
+    val unavailable = stringResource(R.string.inbox_task_unavailable)
+    RivetModalSheet(onDismiss = onDismiss) {
+        Row(
+            Modifier.fillMaxWidth().padding(start = 8.dp, end = 4.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
             Text(
                 stringResource(R.string.inbox_title),
                 color = colors.em,
                 style = RivetType.sm,
+                modifier = Modifier.weight(1f).padding(vertical = 8.dp),
+            )
+            if (entries.isNotEmpty()) {
+                RivetButton(
+                    text = stringResource(R.string.inbox_clear),
+                    onClick = {
+                        strip = null
+                        onClear()
+                    },
+                    variant = RivetButtonVariant.Ghost,
+                    size = RivetButtonSize.Sm,
+                    textColor = colors.inkDim,
+                )
+            }
+        }
+        strip?.let {
+            Text(
+                it,
+                color = colors.inkDim,
+                style = RivetType.mono10,
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .background(colors.panel)
+                    .padding(horizontal = 8.dp, vertical = 6.dp),
+            )
+        }
+        if (entries.isEmpty()) {
+            Text(
+                stringResource(R.string.inbox_empty),
+                color = colors.inkDim,
+                style = RivetType.xs,
                 modifier = Modifier.padding(8.dp),
             )
-            if (st.inbox.isEmpty()) {
-                Text(
-                    stringResource(R.string.empty_inbox),
-                    color = colors.inkDim,
-                    style = RivetType.xs,
-                    modifier = Modifier.padding(8.dp),
-                )
-            } else {
-                st.inbox.forEach { item ->
-                    Text(item.text, color = colors.ink, style = RivetType.sm, modifier = Modifier.padding(8.dp))
+        } else {
+            Column(Modifier.verticalScroll(rememberScrollState()).navigationBarsPadding()) {
+                entries.forEach { entry ->
+                    InboxRow(entry) {
+                        strip = if (onRow(entry)) null else unavailable
+                    }
                 }
             }
         }
+    }
+}
+
+@Composable
+private fun InboxRow(entry: InboxEntry, onClick: () -> Unit) {
+    val colors = RivetTheme.colors
+    // The unread dot is colour-only; say it for TalkBack too.
+    val unreadLabel = stringResource(R.string.inbox_row_unread)
+    Row(
+        Modifier
+            .fillMaxWidth()
+            .sizeIn(minHeight = 44.dp)
+            .semantics(mergeDescendants = true) {
+                if (!entry.read) stateDescription = unreadLabel
+            }
+            .clickable(onClick = onClick)
+            .padding(horizontal = 8.dp, vertical = 8.dp),
+        verticalAlignment = Alignment.Top,
+    ) {
+        Box(Modifier.padding(top = 6.dp, end = 8.dp).size(6.dp)) {
+            if (!entry.read) {
+                Box(Modifier.fillMaxSize().clip(CircleShape).background(colors.em))
+            }
+        }
+        Column(Modifier.weight(1f)) {
+            Text(entry.title, color = colors.ink, style = RivetType.xs, maxLines = 1, overflow = TextOverflow.Ellipsis)
+            if (entry.body.isNotBlank()) {
+                Text(entry.body, color = colors.inkDim, style = RivetType.xs, maxLines = 2, overflow = TextOverflow.Ellipsis)
+            }
+        }
+        Text(
+            TimeFmt.listTime(entry.atMs),
+            color = colors.inkDim,
+            style = RivetType.mono10,
+            modifier = Modifier.padding(start = 8.dp, top = 2.dp),
+        )
     }
 }
 

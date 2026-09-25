@@ -10,11 +10,13 @@ import io.rivethub.app.gateway.CatalogAgentsResponse
 import io.rivethub.app.gateway.DenFrame
 import io.rivethub.app.gateway.Healthz
 import io.rivethub.app.gateway.MeshOverview
+import io.rivethub.app.gateway.NotificationFrame
 import io.rivethub.app.gateway.SessionFrame
 import io.rivethub.app.gateway.TermSpawnRequest
 import io.rivethub.app.gateway.TermSpawnResponse
 import io.rivethub.app.gateway.isPreset
 import io.rivethub.app.gateway.parseDenFrame
+import io.rivethub.app.gateway.parseNotificationFrame
 import io.rivethub.app.gateway.parseSessionFrame
 import io.rivethub.app.gateway.wireJson
 import org.junit.Assert.assertEquals
@@ -186,5 +188,43 @@ class WireTest {
         )
         assertFalse(plain.contains("agentId"))
         assertFalse(plain.contains("force"))
+    }
+
+    @Test fun `notification escalation frame decodes`() {
+        val f = parseNotificationFrame(
+            """{"kind":"escalation","taskId":"t1","agentId":"reviewer","summary":"needs a call","href":"/tasks/t1","ts":1727000000000,"extra":true}""",
+        )
+        assertEquals(NotificationFrame.Escalation("t1", "reviewer", "needs a call", "/tasks/t1", 1727000000000L), f)
+    }
+
+    @Test fun `notification task done frame decodes every status`() {
+        for (status in listOf("completed", "failed", "timeout", "killed")) {
+            val f = parseNotificationFrame("""{"kind":"task.done","taskId":"t2","status":"$status","ts":5}""")
+            assertEquals(NotificationFrame.TaskDone("t2", status, 5L), f)
+        }
+    }
+
+    @Test fun `notification workflow gate frame decodes with and without prompt`() {
+        val withPrompt = parseNotificationFrame(
+            """{"kind":"workflow.gate","runId":"r1","workflowId":"wf","label":"Ship?","prompt":"Approve","href":"/workflows/runs/r1","ts":7}""",
+        )
+        assertEquals(NotificationFrame.WorkflowGate("r1", "wf", "Ship?", "Approve", "/workflows/runs/r1", 7L), withPrompt)
+        val bare = parseNotificationFrame("""{"kind":"workflow.gate","runId":"r2","workflowId":"wf","label":"Gate","ts":8.0}""")
+        val gate = bare as NotificationFrame.WorkflowGate
+        assertNull(gate.prompt)
+        assertEquals("/workflows/runs/r2", gate.href)
+        assertEquals(8L, gate.ts)
+    }
+
+    @Test fun `notification unknown kind is Other and garbage is null`() {
+        assertEquals(NotificationFrame.Other("outcome.new"), parseNotificationFrame("""{"kind":"outcome.new","id":"x"}"""))
+        assertNull(parseNotificationFrame("not json"))
+        assertNull(parseNotificationFrame("[1,2]"))
+        assertNull(parseNotificationFrame("""{"nokind":1}"""))
+        assertNull(parseNotificationFrame("""{"kind":7}"""))
+        assertNull(parseNotificationFrame("""{"kind":"task.done","status":"completed","ts":1}"""))
+        val noTs = parseNotificationFrame("""{"kind":"task.done","taskId":"t","ts":"soon"}""") as NotificationFrame.TaskDone
+        assertEquals(0L, noTs.ts)
+        assertEquals("", noTs.status)
     }
 }
