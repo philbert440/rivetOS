@@ -25,6 +25,8 @@ data class ChatItem(
     val status: String? = null,
     val updatedAt: Long = 0,
     val pin: Boolean = false,
+    /** Epoch ms the session was created; 0 when unknown or unparsable. */
+    val createdAt: Long = 0,
 )
 
 /** Den roster tokens per harness id — UI/spawn labels, never key material. */
@@ -89,6 +91,7 @@ fun chatItems(
             transport = summary.transport,
             status = summary.status,
             updatedAt = if (parsed != 0L) parsed else (legacy?.updatedAt ?: 0L),
+            createdAt = parseIsoMillis(summary.createdAt),
         )
     }
 
@@ -109,6 +112,7 @@ fun chatItems(
             kind = ChatItemKind.DRAFT,
             title = "new conversation",
             updatedAt = draftCreatedAt[id] ?: 0L,
+            createdAt = draftCreatedAt[id] ?: 0L,
         )
     }
     return sortByRecency(items.values.toList() + draftItems, pins)

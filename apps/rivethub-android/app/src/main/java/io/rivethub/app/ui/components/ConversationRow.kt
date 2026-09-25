@@ -7,6 +7,7 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.shape.CircleShape
@@ -45,18 +46,27 @@ fun ConversationRowChrome(
     status: ConversationRowStatus = ConversationRowStatus.None,
     harness: String = "",
     swipeEnabled: Boolean = true,
+    pill: Boolean = false,
+    pinned: Boolean = false,
 ) {
     val colors = RivetTheme.colors
     // chat.tsx:642-644 — idle rows are `text-ink-dim` (`group-hover:text-ink`
     // has no phone analog; the ripple covers press), active rows `text-em`.
     // Archived rows share the idle colour: the source distinguishes them only by section.
     val titleColor = if (active && !archived) colors.em else colors.inkDim
+    // UX-SPEC §2: pill rows are one 36dp line (title ellipsised); the
+    // in-flight dot is the pulsing status dot below either way.
+    val rowSize = if (pill) {
+        Modifier.height(36.dp).padding(horizontal = 14.dp)
+    } else {
+        Modifier.padding(horizontal = 12.dp, vertical = 8.dp)
+    }
     val row: @Composable () -> Unit = {
         Row(
             Modifier
                 .fillMaxWidth()
                 .combinedClickable(onClick = onOpen, onLongClick = onLong)
-                .padding(horizontal = 12.dp, vertical = 8.dp),
+                .then(rowSize),
             verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.spacedBy(8.dp),
         ) {
@@ -85,12 +95,20 @@ fun ConversationRowChrome(
                 ConversationRowStatus.None -> Unit
             }
             if (harness.isNotBlank()) HarnessChip(harness)
+            if (pinned) {
+                Lucide(
+                    R.drawable.lucide_pin,
+                    contentDescription = stringResource(R.string.cd_pinned),
+                    tint = colors.inkDim,
+                    modifier = Modifier.size(12.dp),
+                )
+            }
         }
     }
     val wrap = modifier
         .fillMaxWidth()
         .padding(bottom = 4.dp)
-        .clip(RoundedCornerShape(Radius.sm))
+        .clip(RoundedCornerShape(if (pill) Radius.full else Radius.sm))
         .background(if (active) colors.panel2 else Color.Transparent)
     if (!swipeEnabled) {
         Box(wrap) { row() }

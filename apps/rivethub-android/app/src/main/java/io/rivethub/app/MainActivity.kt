@@ -481,6 +481,7 @@ fun App(
                     HistoryDrawer(
                         vm = hubVm,
                         state = historyState,
+                        currentSessionKey = s.sessionKey,
                         onOpenRow = { openRowScreen(it) },
                         onOpenChat = { openChatScreen(it) },
                     ) { openHistory ->

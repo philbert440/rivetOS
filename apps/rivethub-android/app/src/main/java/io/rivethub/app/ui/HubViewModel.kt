@@ -33,6 +33,8 @@ import io.rivethub.app.plane.enrollError
 import io.rivethub.app.plane.finishRefresh
 import io.rivethub.app.plane.listableHarnesses
 import io.rivethub.app.plane.locate
+import io.rivethub.app.plane.migrateLocalPrefs
+import io.rivethub.app.plane.moveSessionToAgent
 import io.rivethub.app.plane.openAgent
 import io.rivethub.app.plane.pinChatItems
 import io.rivethub.app.plane.rekeyPinnedDraft
@@ -79,6 +81,9 @@ class HubViewModel(private val c: AppContainer) : ViewModel() {
         val query: String = "",
         val archived: Set<String> = emptySet(),
         val titleOverrides: Map<String, String> = emptyMap(),
+        /** Local-only pin / hide sets (prefs `pinned` / `hidden`). */
+        val pinned: Set<String> = emptySet(),
+        val hidden: Set<String> = emptySet(),
         val loading: Boolean = false,
         val error: String? = null,
         val errorKind: EnrollErrorKind? = null,
@@ -129,6 +134,8 @@ class HubViewModel(private val c: AppContainer) : ViewModel() {
                         prefs = p,
                         archived = p.archived,
                         titleOverrides = p.titleOverrides,
+                        pinned = p.pinned,
+                        hidden = p.hidden,
                         identityGen = c.identity.generation(),
                         filter = filter,
                     )
@@ -196,6 +203,44 @@ class HubViewModel(private val c: AppContainer) : ViewModel() {
     fun rename(key: String, title: String) {
         viewModelScope.launch { c.settings.setTitleOverride(key, title) }
     }
+    fun pin(key: String) {
+        viewModelScope.launch { c.settings.pin(key) }
+    }
+    fun unpin(key: String) {
+        viewModelScope.launch { c.settings.unpin(key) }
+    }
+    fun hide(key: String) {
+        viewModelScope.launch { c.settings.hide(key) }
+    }
+
+    /**
+     * Long-press → Move to agent: [agentId]'s pointer now names [sessionKey]
+     * (on the node the row lives on) and any other agent pointing at it lets
+     * go (plane/ConversationMenu.kt moveSessionToAgent). Local pointer state
+     * only — no den call; the agent's previous session stays on the node.
+     * When the moved row is the open conversation ([isOpen]), the current
+     * agent follows it, so `+ new` mints for the agent that now owns it.
+     */
+    fun moveToAgent(sessionKey: String, agentId: String, isOpen: Boolean = false) {
+        val row = _state.value.items.find { it.item.key == sessionKey } ?: return
+        val before = pointers.all()
+        val after = moveSessionToAgent(before, sessionKey, agentId, row.nodeDenUrl, System.currentTimeMillis())
+        for (id in before.keys) if (id !in after) pointers.clear(id)
+        for ((id, ptr) in after) {
+            val prev = before[id]
+            if (prev == null || prev.sessionId != ptr.sessionId || prev.nodeBaseUrl != ptr.nodeBaseUrl) {
+                pointers.set(id, ptr.sessionId, ptr.nodeBaseUrl, replace = true)
+            }
+        }
+        _state.update { st ->
+            st.copy(agents = st.agents.map { a -> a.copy(pointerSessionId = pointers.get(a.agentId)?.sessionId) })
+        }
+        viewModelScope.launch {
+            persistPointers()
+            if (isOpen) c.settings.setCurrentAgentId(agentId)
+        }
+        rebuildItems()
+    }
 
     fun discardDraft(id: String) {
         drafts.removeAll { it.id == id }
@@ -208,9 +253,28 @@ class HubViewModel(private val c: AppContainer) : ViewModel() {
     fun agentForSession(sessionId: String): String? = pointers.agentForSession(sessionId)
 
     fun adoptChatPointer(agentId: String?, from: String, canonical: String, nodeDenUrl: String) {
+        // Pin / hide follow the session whether or not an agent pointer does.
+        migrateLocalKeys(from, canonical)
         if (!rekeyPinnedDraft(pointers, agentId, from, canonical, nodeDenUrl)) return
         viewModelScope.launch { persistPointers() }
         rebuildItems()
+    }
+
+    /**
+     * A session key moved [from] → [to]: carry the local pin / hide marks
+     * along (plane/ConversationIdentity.kt migrateLocalPrefs). State updates
+     * now so the adopted row never renders unpinned or un-hidden for a frame;
+     * the prefs flow then confirms it from the single DataStore edit. The
+     * edit always runs (a pin write may still be in flight); DataStore skips
+     * the disk write when nothing changed.
+     */
+    private fun migrateLocalKeys(from: String, to: String) {
+        if (from.isBlank() || to.isBlank() || from == to) return
+        _state.update {
+            val (pinned, hidden) = migrateLocalPrefs(it.pinned, it.hidden, from, to)
+            it.copy(pinned = pinned, hidden = hidden)
+        }
+        viewModelScope.launch { c.settings.migrateKeys(from, to) }
     }
 
     fun openAgentAction(row: AgentRow, action: AgentAction): AgentOpen {
@@ -524,6 +588,7 @@ class HubViewModel(private val c: AppContainer) : ViewModel() {
                     val rekey = adopt(hit.id, event.summary)
                     if (rekey != null) {
                         drafts.removeAll { it.id == hit.id }
+                        migrateLocalKeys(rekey.from, rekey.to)
                         pointers.rekey(rekey.from, rekey.to)
                         viewModelScope.launch {
                             persistPointers()
@@ -552,6 +617,7 @@ class HubViewModel(private val c: AppContainer) : ViewModel() {
                 }
                 val prev = event.previousSessionId
                 if (prev != null && prev != event.sessionId) {
+                    migrateLocalKeys(prev, event.sessionId)
                     pointers.rekey(prev, event.sessionId)
                     viewModelScope.launch {
                         persistPointers()

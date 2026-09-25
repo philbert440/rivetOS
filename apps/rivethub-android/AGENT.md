@@ -95,6 +95,35 @@ whose Conversations tab is the launch surface until the pick/new resolution open
 | Memory topic | `ui/screens/MemoryTopicScreen.kt` | same `MemoryViewModel` | Pushed over Memory (its slug in `Screen.MemoryTopic`); header = Back + title (session-row vocabulary, no TopBar); lead + `MarkdownBody` body (`wikiBody` = currentState else full file), collapsible full-width Contents from the parsed ##/### headings; 404 = the web red-link state. Back pops to the hub list |
 | Gallery | `ui/components/ComponentGallery.kt` | none | D1a chrome + D1b chat + D2 top bar/rows/settings rhythm (dark + light) |
 
+Conversation list v2 (slice U2a, UX-SPEC §2 item 2; still hosted by the RIGHT history drawer
+until U2b moves it left): `ConversationsPane` sections the live rows with
+`plane/ConversationSections.kt sectionRows` — Pinned (only when non-empty), Today, Yesterday,
+then one section per local calendar day, newest first, with the year when it is not the current
+year. A row files under `updatedAt`, else `createdAt` (`ChatItem.createdAt`, from the wire
+summary), else today; a future stamp also counts as today. The pane samples clock and zone in
+composition and keys its cached sections on `DayKey` (local date + zone); the drawer opening and
+ON_RESUME recompose it, so sections roll over midnight or a zone change with no timer. Headers are `SectionHeader` (mono 11sp
+caps, inkDim). Rows are pills (`ConversationRowChrome(pill = true)`: `Radius.full`, 36dp, 14dp
+side padding, one ellipsised line; swipe-to-archive unchanged), the in-flight status dot pulses,
+pinned rows carry a trailing `lucide_pin` (archived rows too). Host contract:
+`ConversationsPane(currentSessionKey, openTick)` — `HistoryDrawer` passes the open
+`Screen.Chat.sessionKey` (MainActivity) and bumps `openTick` whenever the drawer state targets
+Open. The open row (`activeRowIn`: live first, then archived; native↔canonical, drafts included)
+is filled `panel2` and scrolled into view on every open (`activeIndexIn` counts the empty-state
+line, headers, and the archived rows after the sections); an archived open row expands the
+archived block. Long-press menu = `plane/ConversationMenu.kt conversationActions`
+(draft → Discard draft only, where a draft is `plane/ConversationIdentity.kt isDraftRow` — a DRAFT
+row or an agent pointer row on a bare id; else Pin|Unpin · Rename · Move to agent when >1 agent ·
+Archive|Unarchive · Hide). **Pin and Hide are local-only** (prefs `pinned` / `hidden`, matched on
+key or canonical session id, and carried to the new id by `rekeyIdSet` / `migrateLocalPrefs` →
+`Settings.migrateKeys` (one edit) wherever the VM rekeys a session: adopt, session-updated
+`previousSessionId`, `adoptChatPointer`) — the den has no delete, hidden rows are just filtered out by
+`filterConversations(hidden = …)` and there is no unhide UI yet. Move to agent =
+`moveSessionToAgent` (chosen agent's pointer → this session on the row's node, any other agent
+pointing at it lets go) → `HubViewModel.moveToAgent` → `Settings.setAgentPointers`; no den call.
+When the moved row is the open conversation, `currentAgentId` follows it (so `+ new` does).
+Rename is still the pane's inline sheet (a shared `RenameSheet` is U1's).
+
 Agents live in the drawer (tap / long-press ↺ / + pointer semantics; 2026-09-04 long-press
 also has Edit — `AgentEditSheet` name/color/node/model/effort/prompt via `PATCH
 /api/agents/{id}` — and Go to node, guarded so it never toggles the filter off). Nodes live in the
@@ -110,9 +139,10 @@ Prefs keys (DataStore `rivethub`): `entryUrl`, `strictHostnames`, `onboarded`, `
 `titleOverrides`, `agentPointers` (`sessionId\tnodeBaseUrl`), `terminalFontSp`, `viewNodeId`,
 `currentAgentId`, `agentsCollapsed`, `lastSessionKey` + `lastSessionNode` (instant-resume
 pointer, written on every chat open; drafts never written), `expFiles` / `expTasks` /
-`expWorkflows` (experimental drawer sections, default false). Leftover Grok-Bot keys (`handle`,
-`pinned`, `hidden`, `sessionOverrides`, `lastSeen`, `desktopUrl`) are still decoded so a wipe is
-not required; their setters are gone.
+`expWorkflows` (experimental drawer sections, default false), `pinned` / `hidden` (U2a local
+pin/hide sets; `Settings.pin/unpin/hide/unhide/migrateKeys`). Leftover Grok-Bot keys (`handle`,
+`sessionOverrides`, `lastSeen`, `desktopUrl`) are still decoded so a wipe is not required; their
+setters are gone.
 
 ## Design system
 
