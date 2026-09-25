@@ -9,6 +9,7 @@ import androidx.compose.animation.core.tween
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.interaction.collectIsFocusedAsState
 import androidx.compose.foundation.interaction.collectIsPressedAsState
@@ -44,6 +45,7 @@ import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.disabled
 import androidx.compose.ui.semantics.role
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.input.ImeAction
@@ -53,6 +55,9 @@ import androidx.compose.ui.unit.dp
 import io.rivethub.app.R
 import io.rivethub.app.plane.AttachmentStatus
 import io.rivethub.app.plane.PendingAttachment
+import io.rivethub.app.plane.PlusItem
+import io.rivethub.app.plane.composerLongPressQueues
+import io.rivethub.app.plane.composerShowsMic
 import io.rivethub.app.plane.composerShowsStop
 import io.rivethub.app.plane.pickerRowCompact
 import io.rivethub.app.ui.theme.Dimens
@@ -78,8 +83,14 @@ fun Composer(
     attachments: List<PendingAttachment> = emptyList(),
     onRemoveAttachment: (String) -> Unit = {},
     pickers: @Composable RowScope.(compact: Boolean) -> Unit = {},
+    editing: Boolean = false,
+    onCancelEdit: () -> Unit = {},
+    onSendLongPress: (() -> Unit)? = null,
+    plusItems: List<PlusItem> = listOf(PlusItem.File),
+    onPlusItem: (PlusItem) -> Unit = { if (it == PlusItem.File) onAttach() },
 ) {
     val colors = RivetTheme.colors
+    var plusOpen by remember { mutableStateOf(false) }
     Column(
         modifier
             .fillMaxWidth()
@@ -119,6 +130,7 @@ fun Composer(
                 .padding(8.dp),
             verticalArrangement = Arrangement.spacedBy(8.dp),
         ) {
+            if (editing) EditingBanner(onCancel = onCancelEdit)
             Box(Modifier.fillMaxWidth().padding(horizontal = 8.dp).padding(top = 4.dp)) {
                 if (value.isEmpty()) {
                     Text(placeholder, color = colors.inkDim, style = RivetType.sm)
@@ -148,16 +160,17 @@ fun Composer(
                 ) {
                     pickers(compact)
                     Spacer(Modifier.weight(1f))
-                    val attachCd = stringResource(R.string.cd_attach)
+                    if (composerShowsMic(compact)) MicPlaceholder()
+                    val plusCd = stringResource(R.string.cd_plus_panel)
                     Box(
                         Modifier
                             .size(Dimens.touchTarget)
                             .clip(CircleShape)
                             .semantics {
-                                contentDescription = attachCd
+                                contentDescription = plusCd
                                 role = Role.Button
                             }
-                            .clickable(enabled = enabled && connected, role = Role.Button, onClick = onAttach),
+                            .clickable(enabled = enabled && connected, role = Role.Button, onClick = { plusOpen = true }),
                         contentAlignment = Alignment.Center,
                     ) {
                         Box(
@@ -165,7 +178,7 @@ fun Composer(
                             contentAlignment = Alignment.Center,
                         ) {
                             Lucide(
-                                R.drawable.lucide_paperclip,
+                                R.drawable.lucide_plus,
                                 contentDescription = null,
                                 tint = colors.inkDim,
                                 modifier = Modifier.size(16.dp),
@@ -175,6 +188,12 @@ fun Composer(
                     val showStop = composerShowsStop(sending, canStop)
                     val sendCd = stringResource(if (showStop) R.string.cd_stop else R.string.cd_send)
                     val sendOn = if (showStop) true else sendEnabled
+                    val canQueue = onSendLongPress != null && composerLongPressQueues(
+                        sending,
+                        value,
+                        attachments.any { it.status == AttachmentStatus.READY },
+                    )
+                    val queueLabel = stringResource(R.string.queue_message)
                     Box(
                         Modifier
                             .size(Dimens.touchTarget)
@@ -183,10 +202,17 @@ fun Composer(
                                 contentDescription = sendCd
                                 role = Role.Button
                             }
-                            .clickable(
-                                enabled = enabled && sendOn,
+                            .combinedClickable(
+                                enabled = enabled && (sendOn || canQueue),
                                 role = Role.Button,
-                                onClick = if (showStop) onStop else onSend,
+                                onLongClickLabel = if (canQueue) queueLabel else null,
+                                onLongClick = if (canQueue) onSendLongPress else null,
+                                onClick = {
+                                    when {
+                                        showStop -> onStop()
+                                        sendEnabled -> onSend()
+                                    }
+                                },
                             ),
                         contentAlignment = Alignment.Center,
                     ) {
@@ -201,7 +227,8 @@ fun Composer(
                             Lucide(
                                 if (showStop) R.drawable.lucide_square else R.drawable.lucide_arrow_up,
                                 contentDescription = null,
-                                tint = colors.em,
+                                // UX-SPEC §4: Send turns red while it is Stop.
+                                tint = if (showStop) colors.red else colors.em,
                                 modifier = Modifier.size(16.dp),
                             )
                         }
@@ -209,6 +236,72 @@ fun Composer(
                 }
             }
         }
+    }
+    PlusPanel(
+        visible = plusOpen,
+        items = plusItems,
+        onDismiss = { plusOpen = false },
+        onPick = onPlusItem,
+    )
+}
+
+/** "Editing ✕" row at the top of the composer card (UX-SPEC §4). */
+@Composable
+private fun EditingBanner(onCancel: () -> Unit) {
+    val colors = RivetTheme.colors
+    Row(
+        Modifier
+            .fillMaxWidth()
+            .background(colors.panel2, RoundedCornerShape(Radius.md))
+            .padding(start = 8.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(6.dp),
+    ) {
+        Lucide(R.drawable.lucide_pencil, contentDescription = null, tint = colors.em, modifier = Modifier.size(12.dp))
+        Text(
+            stringResource(R.string.editing),
+            color = colors.em,
+            style = RivetType.mono11,
+            modifier = Modifier.weight(1f),
+        )
+        val cancelCd = stringResource(R.string.cancel_edit)
+        Box(
+            Modifier
+                .size(Dimens.touchTarget)
+                .clip(CircleShape)
+                .semantics {
+                    contentDescription = cancelCd
+                    role = Role.Button
+                }
+                .clickable(role = Role.Button, onClick = onCancel),
+            contentAlignment = Alignment.Center,
+        ) {
+            Lucide(R.drawable.lucide_x, contentDescription = null, tint = colors.inkDim, modifier = Modifier.size(12.dp))
+        }
+    }
+}
+
+/** Disabled voice-input placeholder (phase 2). */
+@Composable
+private fun MicPlaceholder() {
+    val colors = RivetTheme.colors
+    val cd = stringResource(R.string.voice_coming_soon)
+    Box(
+        Modifier
+            .size(Dimens.touchTarget)
+            .semantics {
+                contentDescription = cd
+                role = Role.Button
+                disabled()
+            },
+        contentAlignment = Alignment.Center,
+    ) {
+        Lucide(
+            R.drawable.lucide_mic,
+            contentDescription = null,
+            tint = colors.inkDim,
+            modifier = Modifier.size(16.dp).alpha(0.4f),
+        )
     }
 }
 
@@ -224,8 +317,41 @@ fun ComposerPicker(
     modifier: Modifier = Modifier,
     enabled: Boolean = true,
 ) {
-    val colors = RivetTheme.colors
     var open by remember { mutableStateOf(false) }
+    ComposerPickerPill(
+        icon = icon,
+        label = label,
+        compact = compact,
+        title = title,
+        onClick = { open = true },
+        modifier = modifier,
+        enabled = enabled,
+    )
+    RivetSelectSheet(
+        visible = open,
+        onDismiss = { open = false },
+        options = options,
+        value = value,
+        onChange = {
+            onChange(it)
+            open = false
+        },
+        title = title,
+    )
+}
+
+/** The composer picker trigger (icon · label · chevron); the caller owns what it opens. */
+@Composable
+fun ComposerPickerPill(
+    @DrawableRes icon: Int,
+    label: String,
+    compact: Boolean,
+    title: String,
+    onClick: () -> Unit,
+    modifier: Modifier = Modifier,
+    enabled: Boolean = true,
+) {
+    val colors = RivetTheme.colors
     val interaction = remember { MutableInteractionSource() }
     val pressed by interaction.collectIsPressedAsState()
     val cd = "$title: $label"
@@ -241,7 +367,7 @@ fun ComposerPicker(
                 indication = null,
                 enabled = enabled,
                 role = Role.Button,
-                onClick = { open = true },
+                onClick = onClick,
             ),
         contentAlignment = Alignment.CenterStart,
     ) {
@@ -270,17 +396,6 @@ fun ComposerPicker(
             )
         }
     }
-    RivetSelectSheet(
-        visible = open,
-        onDismiss = { open = false },
-        options = options,
-        value = value,
-        onChange = {
-            onChange(it)
-            open = false
-        },
-        title = title,
-    )
 }
 
 @Composable

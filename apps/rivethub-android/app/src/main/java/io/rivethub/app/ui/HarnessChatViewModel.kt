@@ -24,6 +24,7 @@ import io.rivethub.app.plane.promptSlotAfter
 import io.rivethub.app.plane.AttachmentStatus
 import io.rivethub.app.plane.CLOSED_GATE
 import io.rivethub.app.plane.ChatSendAction
+import io.rivethub.app.plane.EditState
 import io.rivethub.app.plane.EnqueueResult
 import io.rivethub.app.plane.HarnessGate
 import io.rivethub.app.plane.HarnessSheet
@@ -35,6 +36,8 @@ import io.rivethub.app.plane.OutboundPump
 import io.rivethub.app.plane.PTY_READY_BOUND_MS
 import io.rivethub.app.plane.PTY_READY_QUIET_MS
 import io.rivethub.app.plane.PendingAttachment
+import io.rivethub.app.plane.PlusItem
+import io.rivethub.app.plane.plusPanelItems
 import io.rivethub.app.plane.PendingApproval
 import io.rivethub.app.plane.StagedTurnAttachment
 import io.rivethub.app.plane.PtyReadyGate
@@ -53,7 +56,19 @@ import io.rivethub.app.plane.resyncStillApplies
 import io.rivethub.app.plane.shouldResyncFromRegistry
 import io.rivethub.app.plane.anyFailed
 import io.rivethub.app.plane.anyUploading
+import io.rivethub.app.plane.beginEdit as beginEditState
 import io.rivethub.app.plane.buildUserTurn
+import io.rivethub.app.plane.compactCommandFor
+import io.rivethub.app.plane.editAfterOutcome
+import io.rivethub.app.plane.editForEnqueue
+import io.rivethub.app.plane.restoredEdit
+import io.rivethub.app.plane.PumpOutcome
+import io.rivethub.app.plane.RejectReason
+import io.rivethub.app.plane.CaptureFile
+import io.rivethub.app.plane.CaptureRegistry
+import io.rivethub.app.plane.CompactCheck
+import io.rivethub.app.plane.capturesToSweep
+import io.rivethub.app.plane.compactMayDispatch
 import io.rivethub.app.plane.cardFromLiveTools
 import io.rivethub.app.plane.chatItemForGate
 import io.rivethub.app.plane.chatSendAction
@@ -113,6 +128,7 @@ import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeout
 import kotlinx.coroutines.withTimeoutOrNull
 import java.io.Closeable
+import java.io.File
 import java.util.UUID
 
 /** One re-send of a rev-gap sync if no snapshot followed (den throttles syncs to 1 per 2 s). */
@@ -177,6 +193,10 @@ class HarnessChatViewModel(
         val contextWindow: Int? = null,
         val compactAt: Int? = null,
         val contextSource: String? = null,
+        /** Composer editing a sent message (U5 banner; bubble-tap wiring lands in U3b). */
+        val editing: EditState? = null,
+        /** Model-sheet favourites (Settings `favouriteModels`). */
+        val favouriteModels: Set<String> = emptySet(),
     )
 
     private val _state = MutableStateFlow(
@@ -231,7 +251,33 @@ class HarnessChatViewModel(
             }
         },
         attachmentsUploading = { anyUploading(_state.value.attachments) },
+        onOutcome = { onPumpOutcome(it) },
     )
+
+    /**
+     * Every pump pass, from any entry point (send, inject, idle / turn-complete
+     * edges, registry acknowledge), settles the item it touched: the Editing
+     * banner riding on it clears only on [PumpOutcome.Dispatched]; a hard
+     * failure puts that item's text, chips and edit back in the composer and
+     * says why. A deferred or 409-queued item keeps its banner.
+     */
+    private fun onPumpOutcome(o: PumpOutcome) {
+        when {
+            o is PumpOutcome.Dispatched ->
+                _state.update { it.copy(editing = editAfterOutcome(it.editing, o.item.id, o)) }
+            o is PumpOutcome.Rejected && o.reason == RejectReason.FAILED -> _state.update {
+                val item = o.item
+                val restored = restoreQueuedComposer(it.composer, it.attachments, item.text, item.attachments)
+                it.copy(
+                    error = o.cause?.let { e -> e.message ?: e.javaClass.simpleName } ?: it.error,
+                    composer = restored.text,
+                    attachments = restored.attachments,
+                    editing = editAfterOutcome(it.editing, item.id, o),
+                )
+            }
+            else -> Unit
+        }
+    }
 
     private var idleWatch: Job? = null
     /** Post-turn settle flush for hook-sourced stores (H1). */
@@ -318,7 +364,7 @@ class HarnessChatViewModel(
         viewModelScope.launch { boot() }
         viewModelScope.launch {
             c.settings.prefs.collect { p ->
-                _state.update { it.copy(termFontSp = p.terminalFontSp, codeLineNumbers = p.codeLineNumbers, codeWrap = p.codeWrap) }
+                _state.update { it.copy(termFontSp = p.terminalFontSp, codeLineNumbers = p.codeLineNumbers, codeWrap = p.codeWrap, favouriteModels = p.favouriteModels) }
             }
         }
     }
@@ -342,35 +388,47 @@ class HarnessChatViewModel(
 
     fun setEffort(id: String) = _state.update { it.copy(effort = id) }
 
-    fun send() {
-        val st = _state.value
+    /** Composer text + staged turn attachments, validated; null after publishing the refusal. */
+    private data class PreparedSend(val text: String, val atts: List<StagedTurnAttachment>, val keptComposer: String)
+
+    private fun prepareOutbound(st: UiState): PreparedSend? {
         if (anyUploading(st.attachments)) {
             _state.update { it.copy(error = composerOnSendAttempt(), errorCode = ERR_UPLOADING) }
-            return
+            return null
         }
         if (anyFailed(st.attachments)) {
             _state.update { it.copy(error = composerOnSendAttempt(), errorCode = ERR_FAILED_ATTACHMENT) }
-            return
+            return null
         }
         val nativeImages = nativeImageAttachments(st.sheet, st.transport)
         val staged = readyAttachments(st.attachments)
         if (nativeImages && staged.isNotEmpty()) {
             if (staged.any { !isNativeImageMime(it.mime) }) {
                 _state.update { it.copy(error = composerOnSendAttempt(), errorCode = ERR_IMAGE_ONLY) }
-                return
+                return null
             }
             val selected = st.sheet?.models?.find { it.id == st.model }
             if (!modelAcceptsImage(selected)) {
                 _state.update { it.copy(error = composerOnSendAttempt(), errorCode = ERR_IMAGE_UNSUPPORTED) }
-                return
+                return null
             }
         }
         val text = composerSendText(st.composer, st.attachments, nativeImages)
         val enqueueAtts = if (nativeImageTurn(staged, nativeImages)) staged else emptyList()
-        if (text.isBlank() && enqueueAtts.isEmpty()) return
-        val keptComposer = st.composer
+        if (text.isBlank() && enqueueAtts.isEmpty()) return null
+        return PreparedSend(text, enqueueAtts, st.composer)
+    }
+
+    fun send() {
+        val st = _state.value
+        val out = prepareOutbound(st) ?: return
+        val text = out.text
+        val enqueueAtts = out.atts
+        val keptComposer = out.keptComposer
         _state.update { it.copy(composer = "", attachments = emptyList(), error = composerOnSendAttempt(), errorCode = null) }
-        when (pump.tryEnqueue(text, enqueueAtts)) {
+        // The edit rides on the queued item: local enqueue is not acceptance, so
+        // the banner settles in [onPumpOutcome] when THIS item is dispatched or fails.
+        when (pump.tryEnqueue(text, enqueueAtts, editing = editForEnqueue(st.editing, pump.queued))) {
             is EnqueueResult.Uploading -> {
                 _state.update { it.copy(composer = keptComposer, attachments = st.attachments, errorCode = ERR_UPLOADING) }
             }
@@ -383,20 +441,122 @@ class HarnessChatViewModel(
                         }
                         publishMachine()
                     }.onFailure { e ->
+                        // The failed item's text / chips / edit are back via onPumpOutcome.
                         AndroidLogger.warn("RivetHub", "send failed: ${e.javaClass.simpleName}: ${e.message}", e)
                         publishMachine()
-                        _state.update {
-                            val restored = restoreQueuedComposer(it.composer, it.attachments, keptComposer, enqueueAtts)
-                            it.copy(
-                                error = e.message ?: e.javaClass.simpleName,
-                                composer = restored.text,
-                                attachments = restored.attachments,
-                            )
-                        }
                     }
                 }
             }
         }
+    }
+
+    /**
+     * Long-press Send while a turn is in flight (UX-SPEC §4): put the composer
+     * on the outbound queue WITHOUT pumping — the pump drains it on the next
+     * idle / turn-complete edge, and the queued strip offers inject / cancel.
+     * Same validation and `[attached: …]` text as [send]; refused while a chip
+     * is still uploading ([ERR_UPLOADING]).
+     */
+    fun enqueueSend() {
+        val st = _state.value
+        val out = prepareOutbound(st) ?: return
+        // Queued is not accepted: the edit rides on the item until it is dispatched.
+        when (pump.tryEnqueue(out.text, out.atts, editing = editForEnqueue(st.editing, pump.queued))) {
+            is EnqueueResult.Uploading -> {
+                _state.update { it.copy(error = composerOnSendAttempt(), errorCode = ERR_UPLOADING) }
+            }
+            is EnqueueResult.Accepted -> {
+                _state.update {
+                    it.copy(
+                        composer = "",
+                        attachments = emptyList(),
+                        error = composerOnSendAttempt(),
+                        errorCode = null,
+                    )
+                }
+                publishMachine()
+            }
+        }
+    }
+
+    /** Put [text] back in the composer with the "Editing ✕" banner (bubble-tap arrives in U3b). */
+    fun beginEdit(text: String) {
+        _state.update { it.copy(editing = beginEditState(text), composer = text, error = null, errorCode = null) }
+    }
+
+    /** Leave editing mode: banner gone, composer emptied. */
+    fun cancelEdit() {
+        _state.update { it.copy(editing = null, composer = "") }
+    }
+
+    /**
+     * "+" → Compress context: type the harness compaction command into the
+     * session PTY, the same path as the stale-409 fallback in [sendAdopted]
+     * (ensurePty on the native id, wait-ready when fresh, termInject). Claude
+     * only ([compactCommandFor]); never mid-turn, never on a draft.
+     *
+     * The PTY setup suspends, so a send can start meanwhile. The inject runs
+     * under the pump's send lock ([OutboundPump.withSendLock]) and re-checks
+     * [compactMayDispatch] there: a turn in flight, a queued / sending item,
+     * a draft or a different session drops the compaction (strip error) —
+     * and no pump send can begin between that check and the inject.
+     */
+    fun compactContext() {
+        val st = _state.value
+        val hid = resolvedHarnessId()
+        val before = compactCheck(st)
+        if (!compactMayDispatch(hid, before, before)) {
+            // Confirm outlived the idle state (a turn or queued send started under
+            // the dialog): explain the no-op, as the post-setup refusal does.
+            if (compactCommandFor(hid) != null) _state.update { it.copy(errorCode = ERR_COMPACT_BUSY) }
+            return
+        }
+        val cmd = compactCommandFor(hid) ?: return
+        val native = nativeIdOf(st.sessionId) ?: return
+        viewModelScope.launch {
+            try {
+                val pty = ensurePty(sessionOverride = native)
+                if (pty.fresh) waitUntilPtyReady(pty.id)
+                val sent = pump.withSendLock {
+                    val now = compactCheck(_state.value)
+                    if (!compactMayDispatch(hid, before, now)) return@withSendLock false
+                    withContext(Dispatchers.IO) { gateway().termInject(session = native, text = cmd) }
+                    true
+                }
+                if (!sent) {
+                    AndroidLogger.debug("RivetHub", "compact dropped: a turn or send started during PTY setup", null)
+                    _state.update { it.copy(errorCode = ERR_COMPACT_BUSY) }
+                }
+            } catch (e: Exception) {
+                AndroidLogger.warn("RivetHub", "compact inject failed: ${e.javaClass.simpleName}: ${e.message}", e)
+                _state.update { it.copy(error = e.message ?: e.javaClass.simpleName) }
+            }
+        }
+    }
+
+    private fun compactCheck(st: UiState) = CompactCheck(
+        sessionId = st.sessionId,
+        draft = st.draft,
+        inFlight = st.inFlight || machine.inFlight,
+        outboundBusy = pump.busy,
+    )
+
+    /**
+     * Model sheet long-press: add / remove [id] in ONE settings transaction
+     * ([io.rivethub.app.data.Settings.toggleFavouriteModel]), then publish the
+     * committed set — overlapping toggles serialise in DataStore.
+     */
+    fun toggleFavouriteModel(id: String) {
+        viewModelScope.launch {
+            val committed = c.settings.toggleFavouriteModel(id)
+            _state.update { it.copy(favouriteModels = committed) }
+        }
+    }
+
+    /** Entries of the composer "+" panel for this session right now. */
+    fun plusItems(): List<PlusItem> {
+        val st = _state.value
+        return plusPanelItems(resolvedHarnessId(), st.inFlight, st.draft)
     }
 
     fun stop() {
@@ -470,6 +630,7 @@ class HarnessChatViewModel(
                 it.copy(
                     composer = restored.text,
                     attachments = restored.attachments,
+                    editing = restoredEdit(it.editing, item),
                     queued = pump.queued,
                 )
             }
@@ -478,7 +639,7 @@ class HarnessChatViewModel(
 
     fun injectQueued(id: String) {
         val st = _state.value
-        val item = pump.queued.firstOrNull { it.id == id } ?: return
+        if (pump.queued.none { it.id == id }) return
         viewModelScope.launch {
             if (st.inFlight && st.gate.canInterrupt && !st.draft) {
                 runCatching {
@@ -488,25 +649,48 @@ class HarnessChatViewModel(
             try {
                 pump.pump(forceId = id)
             } catch (e: Throwable) {
-                if (!isTurnInFlight(e)) {
-                    // The pump dropped the item on a hard failure: say so and hand
-                    // the text and chips back instead of letting them vanish.
-                    AndroidLogger.warn("RivetHub", "inject failed: ${e.javaClass.simpleName}: ${e.message}", e)
-                    _state.update {
-                        val restored = restoreQueuedComposer(it.composer, it.attachments, item.text, item.attachments)
-                        it.copy(
-                            error = e.message ?: e.javaClass.simpleName,
-                            composer = restored.text,
-                            attachments = restored.attachments,
-                        )
-                    }
-                }
+                // A hard failure dropped the item; onPumpOutcome already handed its
+                // text, chips and edit back and set the error.
+                AndroidLogger.warn("RivetHub", "inject failed: ${e.javaClass.simpleName}: ${e.message}", e)
             }
             publishMachine()
         }
     }
 
-    fun stageUri(uri: Uri, name: String, mime: String?, size: Long) {
+    /** Camera files in use (pending capture or uploading); never swept. */
+    private val captures = CaptureRegistry()
+
+    /** The camera is being launched into [name] — hold it until the result comes back. */
+    fun captureStarted(name: String) = captures.hold(name)
+
+    /** The camera came back without a photo; the launcher deletes the file. */
+    fun captureAbandoned(name: String) = captures.release(name)
+
+    /**
+     * Stage a camera capture: [file] stays held through its upload; once it
+     * staged successfully, stale unheld captures in its directory are swept
+     * (not before the next capture — the previous one may still be live).
+     */
+    fun stageCapture(uri: Uri, file: File) {
+        val name = file.name
+        captures.hold(name)
+        stageUri(uri, name, "image/jpeg", file.length()) { ok ->
+            captures.release(name)
+            if (ok) sweepCaptures(file.parentFile ?: return@stageUri)
+        }
+    }
+
+    private fun sweepCaptures(dir: File) {
+        val held = captures.held()
+        val now = System.currentTimeMillis()
+        viewModelScope.launch(Dispatchers.IO) {
+            val files = dir.listFiles()?.filter { it.isFile }.orEmpty()
+            val doomed = capturesToSweep(files.map { CaptureFile(it.name, it.lastModified()) }, held, now).toSet()
+            files.filter { it.name in doomed }.forEach { it.delete() }
+        }
+    }
+
+    fun stageUri(uri: Uri, name: String, mime: String?, size: Long, onDone: (ok: Boolean) -> Unit = {}) {
         val id = UUID.randomUUID().toString()
         val resolvedMime = mime?.takeIf { it.isNotBlank() } ?: mimeFromName(name)
         if (uploadTooLarge(size)) {
@@ -516,6 +700,7 @@ class HarnessChatViewModel(
                     errorCode = ERR_TOO_LARGE,
                 )
             }
+            onDone(false)
             return
         }
         val nativeImages = nativeImageAttachments(_state.value.sheet, _state.value.transport)
@@ -526,6 +711,7 @@ class HarnessChatViewModel(
                     errorCode = ERR_IMAGE_ONLY,
                 )
             }
+            onDone(false)
             return
         }
         _state.update {
@@ -547,6 +733,7 @@ class HarnessChatViewModel(
                         },
                     )
                 }
+                onDone(true)
             } catch (e: Exception) {
                 _state.update { s ->
                     s.copy(
@@ -556,6 +743,7 @@ class HarnessChatViewModel(
                         error = e.message ?: e.javaClass.simpleName,
                     )
                 }
+                onDone(false)
             }
         }
     }
@@ -1262,5 +1450,6 @@ class HarnessChatViewModel(
         const val ERR_FAILED_ATTACHMENT = "failed_attachment"
         const val ERR_IMAGE_ONLY = "image_only"
         const val ERR_IMAGE_UNSUPPORTED = "image_unsupported"
+        const val ERR_COMPACT_BUSY = "compact_busy"
     }
 }

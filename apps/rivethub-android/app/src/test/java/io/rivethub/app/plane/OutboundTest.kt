@@ -300,4 +300,99 @@ class OutboundTest {
             assertTrue(pump.queued.isEmpty())
         }
     }
+
+    @Test fun `a pump waits out the send lock and busy tracks the queue`() = runBlocking {
+        withTimeout(1_000) {
+            val seen = mutableListOf<String>()
+            val pump = textPump(send = { seen += it })
+            assertFalse(pump.busy)
+            val entered = CompletableDeferred<Unit>()
+            val release = CompletableDeferred<Unit>()
+            coroutineScope {
+                launch {
+                    pump.withSendLock {
+                        entered.complete(Unit)
+                        release.await()
+                    }
+                }
+                entered.await()
+                assertTrue(pump.tryEnqueue("hi") is EnqueueResult.Accepted)
+                assertTrue(pump.busy)
+                val sender = launch { pump.pump() }
+                delay(20)
+                // the out-of-band holder still owns the lock: nothing went out
+                assertTrue(seen.isEmpty())
+                assertTrue(pump.busy)
+                release.complete(Unit)
+                sender.join()
+            }
+            assertEquals(listOf("hi"), seen)
+            // sent and awaiting turn-complete: the transcript's in-flight, not busy
+            assertTrue(pump.awaitingTurnComplete)
+            assertFalse(pump.busy)
+        }
+    }
+
+    @Test fun `send lock returns the block result`() = runBlocking {
+        withTimeout(1_000) {
+            val pump = textPump(send = { })
+            assertEquals(42, pump.withSendLock { 42 })
+            assertFalse(pump.withSendLock { pump.busy })
+        }
+    }
+
+    @Test fun `each pass names the item and what happened to it`() = runBlocking {
+        withTimeout(1_000) {
+            var n = 0
+            var calls = 0
+            var uploading = false
+            val seen = mutableListOf<PumpOutcome>()
+            val pump = OutboundPump(
+                send = { _, _ -> if (++calls == 2) throw TurnInFlight() },
+                attachmentsUploading = { uploading },
+                newId = { "id-${n++}" },
+                onOutcome = { seen += it },
+            )
+            assertEquals(PumpOutcome.Idle, pump.pump())
+            pump.tryEnqueue("one")
+            pump.tryEnqueue("two")
+            val sent = pump.pump()
+            assertTrue(sent is PumpOutcome.Dispatched && sent.item.text == "one")
+            val waiting = pump.pump()
+            assertTrue(waiting is PumpOutcome.Deferred)
+            assertEquals("id-1", waiting.itemId)
+            val busy = pump.onTurnComplete()
+            assertTrue(busy is PumpOutcome.Rejected && busy.reason == RejectReason.TURN_IN_FLIGHT)
+            assertEquals("id-1", busy.itemId)
+            assertEquals(1, pump.queued.size)
+            uploading = true
+            assertTrue(pump.onIdle() is PumpOutcome.Deferred)
+            // every pass reached the listener, in order
+            assertEquals(listOf(PumpOutcome.Idle, sent, waiting, busy), seen.take(4))
+            assertEquals(5, seen.size)
+        }
+    }
+
+    @Test fun `hard failure is reported as FAILED before it is rethrown`() = runBlocking {
+        withTimeout(1_000) {
+            val seen = mutableListOf<PumpOutcome>()
+            val pump = OutboundPump(
+                send = { _, _ -> error("boom") },
+                newId = { "x" },
+                onOutcome = { seen += it },
+            )
+            pump.tryEnqueue("nope")
+            try {
+                pump.pump()
+                org.junit.Assert.fail("expected throw")
+            } catch (e: IllegalStateException) {
+                assertEquals("boom", e.message)
+            }
+            val failed = seen.single()
+            assertTrue(failed is PumpOutcome.Rejected && failed.reason == RejectReason.FAILED)
+            assertEquals("x", failed.itemId)
+            assertEquals("nope", (failed as PumpOutcome.Rejected).item.text)
+            assertEquals("boom", failed.cause?.message)
+        }
+    }
 }
