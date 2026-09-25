@@ -258,6 +258,68 @@ private fun ContextCompactionTrack(view: ContextBarView?, height: androidx.compo
     )
 }
 
+/**
+ * Terminal mode replaces the chat row. 48dp: back to chat, title, Stop when
+ * the turn can be interrupted. No segmented control and no history button.
+ */
+@Composable
+fun TerminalHeader(
+    title: String,
+    onBack: () -> Unit,
+    onStop: (() -> Unit)?,
+    modifier: Modifier = Modifier,
+    padStatusBar: Boolean = true,
+) {
+    val colors = RivetTheme.colors
+    val backCd = stringResource(R.string.term_back_to_chat)
+    Column(
+        modifier
+            .fillMaxWidth()
+            .background(colors.panel.copy(alpha = 0.4f)),
+    ) {
+        Row(
+            Modifier
+                .fillMaxWidth()
+                .then(if (padStatusBar) Modifier.statusBarsPadding() else Modifier)
+                .height(Dimens.pageHeader)
+                .drawBehind {
+                    val y = size.height - Dimens.line.toPx() / 2f
+                    drawLine(colors.line, Offset(0f, y), Offset(size.width, y), Dimens.line.toPx())
+                }
+                .padding(horizontal = Dimens.grid),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(Dimens.grid),
+        ) {
+            Box(
+                Modifier
+                    .size(Dimens.touchTarget)
+                    .semantics {
+                        contentDescription = backCd
+                        role = Role.Button
+                    }
+                    .clickable(role = Role.Button, onClick = onBack),
+                contentAlignment = Alignment.Center,
+            ) {
+                Lucide(
+                    R.drawable.lucide_arrow_left,
+                    contentDescription = null,
+                    tint = colors.ink,
+                    modifier = Modifier.size(20.dp),
+                )
+            }
+            Text(
+                title,
+                color = colors.ink,
+                style = RivetType.sm,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+                modifier = Modifier.weight(1f),
+            )
+            if (onStop != null) HeaderStopButton(onClick = onStop)
+        }
+    }
+}
+
 /** Web Stop (chat.tsx:1606-1615): `rounded border line px-2 py-1 mono 11px inkDim`, pressed → red. */
 @Composable
 private fun HeaderStopButton(onClick: () -> Unit) {

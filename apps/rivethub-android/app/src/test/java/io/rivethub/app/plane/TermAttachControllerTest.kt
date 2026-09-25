@@ -8,6 +8,7 @@ import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import org.junit.Assert.assertArrayEquals
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
@@ -121,6 +122,102 @@ class TermAttachControllerTest {
         }
     }
 
+    @Test
+    fun `alt armed replace-edit sends raw dels then one esc prefix`() {
+        withHarness { h ->
+            h.ctl.ensure()
+            h.ctl.toggleAlt()
+            h.ctl.sendBytesRaw(TermKeys.backspaces(3))
+            h.ctl.sendBytes(TermKeys.ime("cat", ctrl = false))
+            assertEquals(2, h.socket.binaries.size)
+            assertArrayEquals(byteArrayOf(0x7f, 0x7f, 0x7f), h.socket.binaries[0])
+            assertArrayEquals(
+                byteArrayOf(0x1b, 'c'.code.toByte(), 'a'.code.toByte(), 't'.code.toByte()),
+                h.socket.binaries[1],
+            )
+            assertFalse(h.views.last().alt)
+        }
+    }
+
+    @Test
+    fun `alt armed pure delete still prefixes esc`() {
+        withHarness { h ->
+            h.ctl.ensure()
+            h.ctl.toggleAlt()
+            h.ctl.sendBytes(TermKeys.backspaces(2))
+            assertArrayEquals(byteArrayOf(0x1b, 0x7f, 0x7f), h.socket.binaries.single())
+            assertFalse(h.views.last().alt)
+        }
+    }
+
+    @Test
+    fun `latched alt is consumed once as an ESC prefix`() {
+        withHarness { h ->
+            h.ctl.ensure()
+            h.ctl.toggleAlt()
+            assertTrue(h.views.last().alt)
+            h.ctl.sendText("b")
+            h.ctl.sendBytes(byteArrayOf('x'.code.toByte()))
+            assertEquals(2, h.socket.binaries.size)
+            assertArrayEquals(byteArrayOf(0x1b, 'b'.code.toByte()), h.socket.binaries[0])
+            assertArrayEquals(byteArrayOf('x'.code.toByte()), h.socket.binaries[1])
+            assertFalse(h.views.last().alt)
+        }
+    }
+
+    @Test
+    fun `ctrl and alt together send ESC then the ctrl byte`() {
+        withHarness { h ->
+            h.ctl.ensure()
+            h.ctl.toggleCtrl()
+            h.ctl.toggleAlt()
+            h.ctl.sendText("c")
+            assertArrayEquals(byteArrayOf(0x1b, 0x03), h.socket.binaries.single())
+            assertFalse(h.views.last().ctrl)
+            assertFalse(h.views.last().alt)
+            assertFalse(h.views.last().ctrlLocked)
+        }
+    }
+
+    @Test
+    fun `restart after an exited pty watches a replacement id`() {
+        val cache = PtyAttachCache()
+        withHarness(ptyCache = cache) { h ->
+            h.ctl.ensure()
+            h.socket.pushText(
+                """{"type":"hello","v":1,"id":"pty-1","denSession":"s","command":"claude","cols":80,"rows":24,"state":"exited"}""",
+            )
+            assertEquals(TermStatus.Exited, h.views.last().status)
+            assertEquals(listOf("pty-1"), h.watched)
+            val first = h.socket
+            restartSessionPty(cache) { h.ctl.restart() }
+            assertTrue(first.closed)
+            // Attach sends resize after hello; restart must end on detach and never kill.
+            assertEquals(TERM_DETACH_JSON, first.texts.lastOrNull())
+            assertTrue(first.texts.none { it.contains("kill") })
+            assertEquals(listOf("pty-1", "pty-2"), h.watched)
+            assertEquals(2, h.spawns)
+            assertFalse(h.socket.closed)
+        }
+    }
+
+    @Test
+    fun `restart drops then ensures`() {
+        withHarness { h ->
+            h.ctl.ensure()
+            val first = h.socket
+            assertEquals(1, h.watches)
+            assertEquals(1, h.spawns)
+            h.ctl.restart()
+            assertTrue(first.closed)
+            assertEquals(listOf(TERM_DETACH_JSON), first.texts)
+            assertTrue(first.texts.none { it.contains("kill") })
+            assertEquals(2, h.watches)
+            assertEquals(2, h.spawns)
+            assertFalse(h.socket.closed)
+        }
+    }
+
     private fun hello(mux: String? = "tmux"): String {
         val muxJson = if (mux != null) ""","mux":"$mux"""" else ""
         return """{"type":"hello","v":1,"id":"p1","denSession":"s","command":"claude","cols":80,"rows":24,"state":"running"$muxJson}"""
@@ -129,11 +226,12 @@ class TermAttachControllerTest {
     private fun withHarness(
         isDraft: () -> Boolean = { false },
         spawnAndAdopt: suspend () -> Unit = {},
+        ptyCache: PtyAttachCache? = null,
         body: (Harness) -> Unit,
     ) {
         val job = SupervisorJob()
         val scope = CoroutineScope(job + Dispatchers.Unconfined)
-        val h = Harness(scope, isDraft, spawnAndAdopt)
+        val h = Harness(scope, isDraft, spawnAndAdopt, ptyCache)
         try {
             body(h)
         } finally {
@@ -173,21 +271,30 @@ class TermAttachControllerTest {
         scope: CoroutineScope,
         isDraft: () -> Boolean,
         spawnAndAdopt: suspend () -> Unit,
+        ptyCache: PtyAttachCache?,
     ) {
         val screen = FakeScreen()
         val views = ArrayList<TermAttachView>()
         var gen = 1
         var spawns = 0
         var watches = 0
+        var freshIds = 0
+        val watched = ArrayList<String>()
         var socket = FakeSocket()
         val ctl = TermAttachController(
             scope = scope,
             spawn = TermSpawnPort { _, _, _, _, _, _ ->
                 spawns++
-                TermSpawnResponse(id = "pty-1")
+                val id = if (ptyCache == null) {
+                    "pty-1"
+                } else {
+                    ptyCache.cached() ?: "pty-${++freshIds}".also { ptyCache.remember(it) }
+                }
+                TermSpawnResponse(id = id)
             },
-            watch = TermWatchFactory { _, onText, onBinary, onStatus ->
+            watch = TermWatchFactory { ptyId, onText, onBinary, onStatus ->
                 watches++
+                watched += ptyId
                 socket = FakeSocket()
                 socket.onText = onText
                 socket.onBinary = onBinary

@@ -648,7 +648,7 @@ class AnsiScreen(cols: Int = 80, rows: Int = 24) {
     }
 
     private fun pushScrollback(line: Array<TermCell>) {
-        if (scrollback.size >= SCROLLBACK) {
+        if (scrollback.size >= SCROLLBACK_LINES) {
             scrollback.removeFirst()
             droppedTotal++
         }
@@ -660,7 +660,8 @@ class AnsiScreen(cols: Int = 80, rows: Int = 24) {
         const val MAX_COLS = 500
         const val MIN_ROWS = 5
         const val MAX_ROWS = 200
-        const val SCROLLBACK = 5000
+        /** Lines kept above the live screen. Spec floor is 4000; 5000 was already in place. */
+        const val SCROLLBACK_LINES = 5000
         val DEFAULT_FG = 0xFFE6EDF3.toInt()
         val DEFAULT_BG = 0xFF0D1117.toInt()
         val CURSOR = 0xFF34D399.toInt()

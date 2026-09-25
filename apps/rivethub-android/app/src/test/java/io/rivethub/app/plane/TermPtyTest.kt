@@ -111,6 +111,12 @@ class TermPtyTest {
     }
 
     @Test
+    fun `Alt is an ESC prefix`() {
+        assertArrayEquals(byteArrayOf(0x1b, 'b'.code.toByte()), TermKeys.alt("b".toByteArray()))
+        assertArrayEquals(byteArrayOf(0x1b, 0x03), TermKeys.alt(TermKeys.ctrl('c')))
+    }
+
+    @Test
     fun `Ctrl letter is a control byte`() {
         assertArrayEquals(byteArrayOf(0x03), TermKeys.ctrl('c'))
         assertArrayEquals(byteArrayOf(0x03), TermKeys.ctrl('C'))

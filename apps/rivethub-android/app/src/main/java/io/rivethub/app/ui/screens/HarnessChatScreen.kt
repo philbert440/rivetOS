@@ -1,6 +1,7 @@
 package io.rivethub.app.ui.screens
 
 import android.provider.OpenableColumns
+import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
@@ -71,6 +72,8 @@ import io.rivethub.app.plane.PlusItem
 import io.rivethub.app.plane.SessionMode
 import io.rivethub.app.plane.SpawnConflict
 import io.rivethub.app.plane.TermStatus
+import io.rivethub.app.plane.modelDisplayLabel
+import io.rivethub.app.plane.terminalTitle
 import io.rivethub.app.plane.TranscriptPin
 import io.rivethub.app.plane.accentFor
 import io.rivethub.app.plane.composerCanSend
@@ -98,6 +101,7 @@ import io.rivethub.app.ui.components.ApprovalCard
 import io.rivethub.app.ui.components.AskUserCardView
 import io.rivethub.app.ui.components.ChatSessionHeader
 import io.rivethub.app.ui.components.ChatStatusStrip
+import io.rivethub.app.ui.components.TerminalHeader
 import io.rivethub.app.ui.components.Composer
 import io.rivethub.app.ui.components.QueuedStrip
 import io.rivethub.app.ui.components.ComposerModelPicker
@@ -110,10 +114,12 @@ import io.rivethub.app.ui.components.SelectOption
 import io.rivethub.app.ui.components.TerminalRetryState
 import io.rivethub.app.ui.components.ChatErrorStack
 import io.rivethub.app.ui.components.ToolDetailSheet
+import io.rivethub.app.ui.components.ToolRow
 import io.rivethub.app.ui.components.TranscriptAssistantTurn
 import io.rivethub.app.ui.components.TranscriptUserTurn
 import io.rivethub.app.ui.components.rememberComposerMediaLaunchers
 import io.rivethub.app.ui.components.rivetHexColor
+import io.rivethub.app.ui.term.TermEndedBar
 import io.rivethub.app.ui.term.TerminalKeyBar
 import io.rivethub.app.ui.term.TerminalPane
 import io.rivethub.app.ui.term.clipboardText
@@ -128,9 +134,10 @@ import kotlinx.coroutines.delay
 /**
  * The session screen. There is NO wordmark TopBar here (web
  * lib/session-header.ts: the bar shows on every narrow screen EXCEPT an open
- * session) and no back control (Phil 2026-09-03: "back" is the right-side
- * history drawer). The one-row [ChatSessionHeader] owns the status-bar inset;
- * [onOpenDrawer] opens the left navigation drawer (☰), [onOpenHistory] the
+ * session). Chat mode has no back control (Phil 2026-09-03: "back" is the
+ * right-side history drawer). Terminal mode swaps in [TerminalHeader]: back
+ * returns to Chat and resyncs the transcript. The header owns the status-bar
+ * inset; [onOpenDrawer] opens the left navigation drawer, [onOpenHistory] the
  * right history drawer.
  */
 @Composable
@@ -170,6 +177,9 @@ fun HarnessChatScreen(
     val selected = if (st.mode == SessionMode.Terminal) termLabel else chatLabel
     LifecycleEventEffect(Lifecycle.Event.ON_STOP) { vm.onAppBackground() }
     LifecycleEventEffect(Lifecycle.Event.ON_START) { vm.onAppForeground() }
+    BackHandler(enabled = st.mode == SessionMode.Terminal) {
+        vm.setMode(SessionMode.Chat)
+    }
     LaunchedEffect(st.mode) {
         if (st.mode == SessionMode.Terminal) vm.ensureTerminal()
     }
@@ -278,6 +288,8 @@ fun HarnessChatScreen(
     val nativeImages = vm.nativeImagesEnabled()
     val reconnecting = stringResource(R.string.ws_reconnecting_ellipsis)
 
+    val showStop = st.inFlight && st.gate.canInterrupt && !st.draft
+    val termRemoteError = st.termStatus == TermStatus.Closed && st.termRemote && !st.termError.isNullOrBlank()
     if (st.spawnConflict == SpawnConflict.RecordedDir) {
         RivetConfirmDialog(
             title = stringResource(R.string.spawn_conflict_title),
@@ -293,6 +305,22 @@ fun HarnessChatScreen(
             .fillMaxSize()
             .imePadding(),
     ) {
+        if (st.mode == SessionMode.Terminal) {
+            TerminalHeader(
+                title = terminalTitle(
+                    modelLabel = modelDisplayLabel(st.sheet, st.model),
+                    harnessLabel = vm.harnessDisplayLabel(),
+                    conversationTitle = st.title,
+                    // AnsiScreen does not surface an OSC window title.
+                    programTitle = null,
+                    status = st.termStatus,
+                    remote = st.termRemote,
+                    untitled = stringResource(R.string.term_untitled),
+                ),
+                onBack = { vm.setMode(SessionMode.Chat) },
+                onStop = if (showStop) vm::stop else null,
+            )
+        } else {
         ChatSessionHeader(
             sessionLabel = sessionLabel,
             context = if (st.mode == SessionMode.Chat) headerContext else context,
@@ -313,9 +341,10 @@ fun HarnessChatScreen(
             onSelectMode = { vm.setMode(if (it == termLabel) SessionMode.Terminal else SessionMode.Chat) },
             onOpenMenu = onOpenDrawer,
             onOpenHistory = onOpenHistory,
-            showStop = st.inFlight && st.gate.canInterrupt && !st.draft,
+            showStop = showStop,
             onStop = vm::stop,
         )
+        }
         if (searchActive && st.mode == SessionMode.Chat) {
             RivetField(
                 value = query,
@@ -339,7 +368,8 @@ fun HarnessChatScreen(
             ChatStatusStrip(stringResource(R.string.ws_disconnected), error = true)
         }
         stripError?.let { ChatStatusStrip("✗ $it", error = true) }
-        // Horizontal swipes belong to the drawers; mode changes use header controls.
+        // Horizontal swipes belong to the drawers, so the pager never swipes.
+        // Chat switches with the header segment; Terminal uses the back arrow.
         ModePager(
             pages = pages,
             selected = selected,
@@ -349,24 +379,23 @@ fun HarnessChatScreen(
             modifier = Modifier.weight(1f),
         ) { page ->
             if (page == termLabel) {
-                if (st.termStatus == TermStatus.Exited) {
-                    Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-                        TerminalRetryState(st.termError ?: stringResource(R.string.term_status_exited))
-                    }
-                } else {
-                    TerminalPane(
-                        screen = vm.terminalScreen(),
-                        rev = st.termRev,
-                        fontSp = st.termFontSp,
-                        status = st.termStatus,
-                        onResize = vm::resizeTerminal,
-                        onBytes = vm::sendTermBytes,
-                        ctrl = st.termCtrl,
-                        owner = st.termOwner,
-                        onClaim = vm::claimTerminal,
-                        modifier = Modifier.fillMaxSize(),
-                    )
-                }
+                TerminalPane(
+                    screen = vm.terminalScreen(),
+                    rev = st.termRev,
+                    fontSp = st.termFontSp,
+                    status = st.termStatus,
+                    onResize = vm::resizeTerminal,
+                    onBytes = vm::sendTermBytes,
+                    onBytesRaw = vm::sendTermBytesRaw,
+                    ctrl = st.termCtrl,
+                    owner = st.termOwner,
+                    onClaim = vm::claimTerminal,
+                    error = st.termError,
+                    remote = st.termRemote,
+                    onRestart = vm::restartTerminal,
+                    onBackToChat = { vm.setMode(SessionMode.Chat) },
+                    modifier = Modifier.fillMaxSize(),
+                )
             } else {
                 if (searchActive) {
                     val hits = remember(st.turns, query) { searchTurns(st.turns, query) }
@@ -381,24 +410,33 @@ fun HarnessChatScreen(
             }
         }
         if (st.mode == SessionMode.Terminal) {
-            TerminalKeyBar(
-                ctrl = st.termCtrl,
-                onCtrl = vm::toggleTermCtrl,
-                onCtrlLock = vm::lockTermCtrl,
-                onBytes = vm::sendTermBytes,
-                onPaste = {
-                    val text = clipboardText(ctx) ?: return@TerminalKeyBar
-                    vm.sendTermText(text)
-                },
-                applicationCursor = vm.terminalScreen().applicationCursor,
-                attachCommand = st.attachCommand,
-                onOpenInTerminal = {
-                    val cmd = st.attachCommand ?: return@TerminalKeyBar
-                    copyText(ctx, cmd)
-                },
-                onDetach = vm::userDetachTerminal,
-                modifier = Modifier.navigationBarsPadding(),
-            )
+            when {
+                st.termStatus == TermStatus.Exited -> TermEndedBar(
+                    onRestart = vm::restartTerminal,
+                    onBackToChat = { vm.setMode(SessionMode.Chat) },
+                )
+                termRemoteError -> Unit
+                else -> TerminalKeyBar(
+                    ctrl = st.termCtrl,
+                    alt = st.termAlt,
+                    onCtrl = vm::toggleTermCtrl,
+                    onCtrlLock = vm::lockTermCtrl,
+                    onAlt = vm::toggleTermAlt,
+                    onBytes = vm::sendTermBytes,
+                    onPaste = {
+                        val text = clipboardText(ctx) ?: return@TerminalKeyBar
+                        vm.sendTermText(text)
+                    },
+                    applicationCursor = vm.terminalScreen().applicationCursor,
+                    attachCommand = st.attachCommand,
+                    onOpenInTerminal = {
+                        val cmd = st.attachCommand ?: return@TerminalKeyBar
+                        copyText(ctx, cmd)
+                    },
+                    onDetach = vm::userDetachTerminal,
+                    modifier = Modifier.navigationBarsPadding(),
+                )
+            }
         } else {
             ChatErrorStack(
                 errors = st.errors,

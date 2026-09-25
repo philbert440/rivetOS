@@ -440,10 +440,34 @@ structural). Session WS stays on the existing per-attach Channel (M3b). Detach o
 the screen (VM cleared) or the app backgrounds (`ON_STOP`); reattach on return if Terminal was
 wanted. Identity `generation()` bump drops the attach. Font size is Settings Small/Medium/Large →
 11/13/16 sp; cols/rows use a measured "M" and `fontScale`. Ctrl is one-shot (long-press locks).
+ALT is one-shot too: an ESC prefix (`TermKeys.alt`), sticky highlight, cleared after the next
+key. It has no lock. Ctrl+ALT is ESC followed by the ctrl byte. An arrow is already `ESC [ A`,
+so ALT+arrow is `ESC ESC [ A` (meta sends ESC). Paste with CTRL armed is sent literally — a
+multi-character paste is not a ctrl letter — and paste with ALT armed gets one ESC prefix.
+Scrollback cap is
+`AnsiScreen.SCROLLBACK_LINES` (5000 lines; the spec floor is 4000).
 Two-finger scroll is local `AnsiScreen` scrollback, pinned to an absolute line while scrolled
 back; tmux copy-mode history paging is out of scope. DECCKM (`CSI ?1 h/l`) selects SS3 vs CSI
 arrows. `{type:detach}` is ahead of `@rivetos/types` and a no-op on today's server — the close
-is the detach.
+is the detach. Restart invalidates the cached PTY id (`PtyAttachCache` / `restartSessionPty`)
+and then `drop()` + `ensure()` — detach, never kill — so spawn-or-get runs again instead of
+rewatching an exited or reaped id. The server decides reattach versus a new client. An exited
+PTY replaces the key row with an ended bar (Restart, Back to chat).
+Back to chat (header arrow, system Back, or that button) returns to Chat and resyncs the
+transcript. A snapshot never cancels or completes a send; every send this phone makes gets
+exactly one retry `SYNC_REARM_MS` (3 s) later, unless a newer send from this phone happened
+in between, and that newer send carries its own retry. Request B at t_B ≤ t_T (T is the
+send that covers B) still arrives: if the 2 s throttle drops T, T's retry is at t_T + 3 s,
+outside that window, and if the retry is itself throttled the sync that throttled it ran
+after t_B and re-snapshotted every sink, so this phone already holds a snapshot captured
+after B. Either way B's state arrives, and a user request is at most two writes because
+requests inside a pending window are coalesced. Correlating a snapshot to the send that
+caused it needs a server-side `syncId` echoed in the snapshot; that is a fleet follow-up,
+not this client.
+In Terminal mode the header is that back arrow, the title (program title, else
+model or harness · conversation, plus " (ended)" and " · remote"), and Stop when the turn is
+interruptible — the segmented control and the history button are not shown. Detach-never-kill
+is unchanged: leave, background, and the Detach menu still send detach only.
 
 ## Build / test / install
 

@@ -110,6 +110,7 @@ import io.rivethub.app.plane.readyAttachments
 import io.rivethub.app.plane.reconcileSummaryControls
 import io.rivethub.app.plane.restoreQueuedComposer
 import io.rivethub.app.plane.harnessGate
+import io.rivethub.app.plane.harnessLabel
 import io.rivethub.app.plane.nextInjectTry
 import io.rivethub.app.plane.parseSessionMode
 import io.rivethub.app.plane.persistSessionMode
@@ -127,11 +128,15 @@ import io.rivethub.app.plane.spawnConflictStops
 import io.rivethub.app.plane.spawnModelEffort
 import io.rivethub.app.plane.spawnStopError
 import io.rivethub.app.plane.spawnSuccessError
+import io.rivethub.app.plane.PtyAttachCache
+import io.rivethub.app.plane.SyncCoalescer
 import io.rivethub.app.plane.TermAttachController
 import io.rivethub.app.plane.TermScreenPort
 import io.rivethub.app.plane.TermSocket
 import io.rivethub.app.plane.TermSpawnPort
 import io.rivethub.app.plane.TermStatus
+import io.rivethub.app.plane.restartSessionPty
+import io.rivethub.app.plane.terminalNodeIsRemote
 import io.rivethub.app.plane.TermWatchFactory
 import io.rivethub.app.plane.toSheet
 import io.rivethub.app.plane.uploadBaseUrl
@@ -139,6 +144,7 @@ import io.rivethub.app.plane.uploadTooLarge
 import io.rivethub.app.ui.term.AnsiScreen
 import io.rivethub.app.transport.NodeRef
 import io.rivethub.app.transport.hostOfUrl
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -160,7 +166,7 @@ import java.io.Closeable
 import java.io.File
 import java.util.UUID
 
-/** One re-send of a rev-gap sync if no snapshot followed (den throttles syncs to 1 per 2 s). */
+/** Gap between a sync send and its one retry. Den drops a second sync inside 2 s. */
 const val SYNC_REARM_MS: Long = 3_000L
 
 class HarnessChatViewModel(
@@ -216,6 +222,11 @@ class HarnessChatViewModel(
         val codeLineNumbers: Boolean = false,
         val codeWrap: Boolean = false,
         val termCtrl: Boolean = false,
+        val termAlt: Boolean = false,
+        /** Session den is not the transport entry node. */
+        val termRemote: Boolean = false,
+        /** Attach failure from [TermAttachController], not the composer strip. */
+        val termError: String? = null,
         val attachCommand: String? = null,
         val termClipboard: String? = null,
         /** Terminal owner (den #681); null = nobody owns it. Drives the ownership overlay. */
@@ -245,8 +256,6 @@ class HarnessChatViewModel(
         val cotExpanded: Set<Int> = emptySet(),
         /** Generation of the live turn; a tool sheet opened on it stays with it (plane/ToolSheet.kt). */
         val liveTurn: Long = 0L,
-        /** Terminal attach error for the retry surface; each new occurrence is also stacked once. */
-        val termError: String? = null,
     )
 
     private val _state = MutableStateFlow(
@@ -268,7 +277,7 @@ class HarnessChatViewModel(
     private var sessionWatch: WsSubscription? = null
     private var registryWatch: Closeable? = null
     private val identityGen = c.identity.generation()
-    private var ptyId: String? = null
+    private val ptyCache = PtyAttachCache()
     private var lastSpawn: TermSpawnResponse? = null
     /** The agentId attempt a recorded-directory 409 stopped on. */
     private var conflictAttempt: SpawnAttempt? = null
@@ -337,19 +346,34 @@ class HarnessChatViewModel(
     private var idleWatch: Job? = null
     /** Post-turn settle flush for hook-sourced stores (H1). */
     private var settleJob: Job? = null
-    /** Rev-gap sync: den drops a sync within 2 s of the previous one, silently —
-     *  re-send ONCE after a short wait unless a snapshot arrived (H3). */
+    /** One timer for the newest sync send. Re-armed on every send that opens
+     *  a window. A snapshot does not cancel it. [startAttach] does. */
     private var syncRearm: Job? = null
-    private var awaitingSnapshot: Boolean = false
+    private val syncCoalescer = SyncCoalescer()
 
     private fun requestSync() {
-        awaitingSnapshot = true
-        val sent = sessionWatch?.send("""{"type":"sync"}""") == true
-        syncRearm?.cancel()
-        syncRearm = viewModelScope.launch {
+        if (!syncCoalescer.onRequest()) return
+        sessionWatch?.send("""{"type":"sync"}""")
+        armSyncRearm()
+    }
+
+    /**
+     * One timer per opening send, replaced on every such send. The fire writes
+     * the one retry and does not arm another timer: [SyncCoalescer.onRearm]
+     * has closed the window, and a leftover timer could close a newer send's
+     * window. Launch the replacement before cancelling [syncRearm] so that
+     * cancel cannot take the new timer with it. A failed write is still a
+     * send — the retry fires either way.
+     */
+    private fun armSyncRearm() {
+        val previous = syncRearm
+        val next = viewModelScope.launch {
             delay(SYNC_REARM_MS)
-            if (awaitingSnapshot || !sent) sessionWatch?.send("""{"type":"sync"}""")
+            if (!syncCoalescer.onRearm()) return@launch
+            sessionWatch?.send("""{"type":"sync"}""")
         }
+        syncRearm = next
+        if (previous != null && previous != next) previous.cancel()
     }
     private val spawnMu = Mutex()
     private var lastRegistryStatus: String? = null
@@ -419,10 +443,11 @@ class HarnessChatViewModel(
                     termStatus = v.status,
                     termRev = v.rev,
                     termCtrl = v.ctrl,
+                    termAlt = v.alt,
+                    termError = v.error,
                     attachCommand = v.attachCommand,
                     termClipboard = v.clipboard,
                     termOwner = v.owner,
-                    termError = v.error,
                 )
             }
         },
@@ -434,7 +459,7 @@ class HarnessChatViewModel(
         viewModelScope.launch { boot() }
         viewModelScope.launch {
             c.settings.prefs.collect { p ->
-                _state.update { it.copy(termFontSp = p.terminalFontSp, codeLineNumbers = p.codeLineNumbers, codeWrap = p.codeWrap, favouriteModels = p.favouriteModels) }
+                _state.update { it.copy(termFontSp = p.terminalFontSp, codeLineNumbers = p.codeLineNumbers, codeWrap = p.codeWrap, favouriteModels = p.favouriteModels, termRemote = terminalNodeIsRemote(nodeDenUrl, p.entryUrl)) }
             }
         }
     }
@@ -446,9 +471,14 @@ class HarnessChatViewModel(
     fun setMoreOpen(v: Boolean) = _state.update { it.copy(moreOpen = v) }
 
     fun setMode(mode: SessionMode) {
+        val resync = _state.value.mode == SessionMode.Terminal && mode == SessionMode.Chat
         _state.update { it.copy(mode = mode) }
         viewModelScope.launch { c.settings.setSessionMode(_state.value.sessionId, persistSessionMode(mode)) }
+        if (resync) syncNow()
     }
+
+    /** Re-fetch the transcript. Terminal to Chat calls this so new turns show up. */
+    fun syncNow() = requestSync()
 
     fun setModel(id: String) {
         val sheet = _state.value.sheet
@@ -467,7 +497,7 @@ class HarnessChatViewModel(
         viewModelScope.launch {
             try {
                 val spawned = spawnMu.withLock {
-                    val existing = ptyId
+                    val existing = ptyCache.cached()
                     if (existing != null) {
                         lastSpawn ?: TermSpawnResponse(id = existing)
                     } else {
@@ -483,7 +513,7 @@ class HarnessChatViewModel(
                                 force = true,
                             )
                         }
-                        ptyId = response.id
+                        ptyCache.remember(response.id)
                         lastSpawn = response
                         response
                     }
@@ -935,7 +965,7 @@ class HarnessChatViewModel(
     }
 
     fun ensureTerminal() {
-        AndroidLogger.debug("RivetHub", "term ensure: draft=${_state.value.draft} session=${_state.value.sessionId} pty=$ptyId", null)
+        AndroidLogger.debug("RivetHub", "term ensure: draft=${_state.value.draft} session=${_state.value.sessionId} pty=${ptyCache.id}", null)
         termCtl.ensure()
     }
 
@@ -952,6 +982,9 @@ class HarnessChatViewModel(
 
     fun sendTermBytes(bytes: ByteArray) = termCtl.sendBytes(bytes)
 
+    /** IME replace-edit DEL burst: do not consume ALT. */
+    fun sendTermBytesRaw(bytes: ByteArray) = termCtl.sendBytesRaw(bytes)
+
     fun sendTermText(text: String) {
         if (text.isEmpty() || OscFilter.isColorReport(text)) return
         termCtl.sendText(text)
@@ -961,12 +994,20 @@ class HarnessChatViewModel(
 
     fun lockTermCtrl() = termCtl.lockCtrl()
 
+    fun toggleTermAlt() = termCtl.toggleAlt()
+
+    /** Drop the cached PTY id, detach, spawn-or-get again. Never kill. */
+    fun restartTerminal() = restartSessionPty(ptyCache) { termCtl.restart() }
+
+    /** Sheet label for the harness id, used when [UiState.model] is blank. */
+    fun harnessDisplayLabel(): String = harnessLabel(resolvedHarnessId())
+
     fun consumeTermClipboard() = termCtl.consumeClipboard()
 
     private suspend fun boot() {
         val prefs = c.settings.snapshot()
         val mode = parseSessionMode(prefs.sessionModes[_state.value.sessionId])
-        _state.update { it.copy(mode = mode, termFontSp = prefs.terminalFontSp, codeLineNumbers = prefs.codeLineNumbers, codeWrap = prefs.codeWrap) }
+        _state.update { it.copy(mode = mode, termFontSp = prefs.terminalFontSp, codeLineNumbers = prefs.codeLineNumbers, codeWrap = prefs.codeWrap, termRemote = terminalNodeIsRemote(nodeDenUrl, prefs.entryUrl)) }
         if (c.identity.generation() != identityGen) return
         try {
             val hg = c.harness(nodeDenUrl)
@@ -1128,6 +1169,7 @@ class HarnessChatViewModel(
         attach?.detach()
         settleJob?.cancel()
         syncRearm?.cancel()
+        syncCoalescer.abandon()
         sessionWatch?.close()
         sessionWatch = null
         frameJob?.cancel()
@@ -1170,10 +1212,9 @@ class HarnessChatViewModel(
                         when (val e = f.e) {
                             is HarnessEvent.Transcript -> {
                                 val ok = machine.applyTranscriptFrame(e)
-                                if (e.from == 0) {
-                                    awaitingSnapshot = false
-                                    syncRearm?.cancel()
-                                }
+                                // A from-zero snapshot is not this phone's response.
+                                // It must not touch the coalescer or the timer. A
+                                // rev-gap still goes through requestSync.
                                 if (!ok) requestSync()
                                 if (e.from == 0) {
                                     _state.update {
@@ -1350,14 +1391,14 @@ class HarnessChatViewModel(
                 val pty = ensurePty()
                 if (pty.fresh) waitUntilPtyReady(pty.id)
                 withContext(Dispatchers.IO) { gw.termInject(session = action.sessionId, text = action.text) }
-                AndroidLogger.debug("RivetHub", "inject ok: session=${action.sessionId} pty=$ptyId", null)
+                AndroidLogger.debug("RivetHub", "inject ok: session=${action.sessionId} pty=${ptyCache.id}", null)
                 injectCompleted = true
                 return
             } catch (e: Exception) {
                 if (e is SpawnNeedsConfirm || e is kotlinx.coroutines.CancellationException) throw e
                 if (nextInjectTry(failed = true, alreadyRetried = retried) == null) throw e
                 retried = true
-                ptyId = null
+                ptyCache.forget()
             }
         }
     }
@@ -1365,7 +1406,7 @@ class HarnessChatViewModel(
     private data class PtySlot(val id: String, val fresh: Boolean)
 
     private suspend fun ensurePty(sessionOverride: String? = null): PtySlot = spawnMu.withLock {
-        ptyId?.let { return@withLock PtySlot(it, fresh = false) }
+        ptyCache.cached()?.let { return@withLock PtySlot(it, fresh = false) }
         val st = _state.value
         val command = rosterCommandFor(harnessId)
         val flags = spawnModelEffort(st.sheet, harnessId, st.model, st.effort)
@@ -1394,7 +1435,7 @@ class HarnessChatViewModel(
                     )
                 }
                 val fresh = ptySpawnIsFresh(alreadyHeld = false, reattached = spawned.reattached)
-                ptyId = spawned.id
+                ptyCache.remember(spawned.id)
                 lastSpawn = spawned
                 _state.update { stNow ->
                     stNow.copy(

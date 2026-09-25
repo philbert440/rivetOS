@@ -24,6 +24,7 @@ data class TermAttachView(
     val clipboard: String? = null,
     val ctrl: Boolean = false,
     val ctrlLocked: Boolean = false,
+    val alt: Boolean = false,
     val error: String? = null,
     /** Terminal owner (den #681) from hello + `{type:'owner'}` frames; null = nobody owns it. */
     val owner: TermOwner? = null,
@@ -104,8 +105,7 @@ class TermAttachController(
     private var status = TermStatus.Closed
     private var attachCommand: String? = null
     private var clipboard: String? = null
-    private var ctrl = false
-    private var ctrlLocked = false
+    private var mods = TermModState()
     private var error: String? = null
     private var owner: TermOwner? = null
 
@@ -138,6 +138,12 @@ class TermAttachController(
         detach(keepWanted = false, clearCommand = true)
     }
 
+    /** Detach (never kill) and attach again. Ended-bar Restart. */
+    fun restart() {
+        drop()
+        ensure()
+    }
+
     fun close() {
         wanted = false
         detach(keepWanted = false, clearCommand = true)
@@ -154,33 +160,38 @@ class TermAttachController(
         publish()
     }
 
-    fun sendBytes(bytes: ByteArray) {
+    /**
+     * [applyModifiers] false skips [consumeMods]. A replace-edit uses that
+     * for the DEL burst so an armed ALT is spent on the added text, not the deletes.
+     */
+    fun sendBytes(bytes: ByteArray, applyModifiers: Boolean = true) {
         if (bytes.isEmpty()) return
         if (currentGen() != attachedGen) return
-        consumeCtrl()
-        client?.sendKeys(bytes)
+        val applied = if (applyModifiers) consumeMods() else emptySet()
+        client?.sendKeys(applyMods(bytes, null, applied))
     }
+
+    fun sendBytesRaw(bytes: ByteArray) = sendBytes(bytes, applyModifiers = false)
 
     fun sendText(text: String) {
         if (text.isEmpty()) return
         if (currentGen() != attachedGen) return
-        val latched = consumeCtrl()
-        client?.sendKeys(TermKeys.ime(text, latched))
+        val applied = consumeMods()
+        client?.sendKeys(applyMods(TermKeys.utf8(text), text, applied))
     }
 
     fun toggleCtrl() {
-        if (ctrlLocked) {
-            ctrlLocked = false
-            ctrl = false
-        } else {
-            ctrl = !ctrl
-        }
+        mods = mods.toggle(TermMod.Ctrl)
         publish()
     }
 
     fun lockCtrl() {
-        ctrl = true
-        ctrlLocked = true
+        mods = mods.copy(ctrl = true, ctrlLocked = true)
+        publish()
+    }
+
+    fun toggleAlt() {
+        mods = mods.toggle(TermMod.Alt)
         publish()
     }
 
@@ -195,13 +206,13 @@ class TermAttachController(
         client?.claim(cols, rows)
     }
 
-    private fun consumeCtrl(): Boolean {
-        val was = ctrl
-        if (was && !ctrlLocked) {
-            ctrl = false
+    private fun consumeMods(): Set<TermMod> {
+        val (next, applied) = mods.consume()
+        if (next != mods) {
+            mods = next
             publish()
         }
-        return was
+        return applied
     }
 
     private suspend fun attach() {
@@ -395,8 +406,9 @@ class TermAttachController(
                 rev = screen.generation,
                 attachCommand = attachCommand,
                 clipboard = clipboard,
-                ctrl = ctrl,
-                ctrlLocked = ctrlLocked,
+                ctrl = mods.ctrl,
+                ctrlLocked = mods.ctrlLocked,
+                alt = mods.alt,
                 error = error,
                 owner = owner,
             ),
