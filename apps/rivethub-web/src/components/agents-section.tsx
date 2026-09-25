@@ -612,16 +612,32 @@ function AgentEditor({
   )
 }
 
+function agentAccent(agent: Pick<RosterAgent, 'color' | 'harnessId' | 'model'>): string {
+  return accentFor({
+    presetColor: agent.color,
+    harnessId: agent.harnessId,
+    command: rosterCommandFor(agent.harnessId) ?? agent.model,
+  })
+}
+
 /** Agent colour dot; the current agent gets a ring in its own accent. */
-function AgentSwatch(props: { accent: string; compact?: boolean; current?: boolean }): JSX.Element {
+function AgentSwatch(props: {
+  accent: string
+  compact?: boolean
+  current?: boolean
+  /** Folded rail dot only: separate a dark accent from the Bot stroke. */
+  halo?: boolean
+}): JSX.Element {
   return (
     <span
-      className={cn('shrink-0 rounded-full', props.compact ? 'size-3' : 'size-2')}
+      className={cn('inline-block shrink-0 rounded-full', props.compact ? 'size-3' : 'size-2')}
       style={{
         background: props.accent,
         ...(props.current
           ? { boxShadow: `0 0 0 2px var(--color-panel-2), 0 0 0 3.5px ${props.accent}` }
-          : {}),
+          : props.halo
+            ? { boxShadow: '0 0 0 1.5px var(--color-panel)' }
+            : {}),
       }}
       aria-hidden
     />
@@ -733,11 +749,7 @@ function AgentRow({
       ? `${agent.name} (node unknown) — ${place}`
       : `${agent.name} (node unknown)`
 
-  const accent = accentFor({
-    presetColor: agent.color,
-    harnessId: agent.harnessId,
-    command: rosterCommandFor(agent.harnessId) ?? agent.model,
-  })
+  const accent = agentAccent(agent)
   const swatch = <AgentSwatch accent={accent} compact={compact} current={current} />
 
   if (compact) {
@@ -835,6 +847,7 @@ export function AgentsSection(props: { compact?: boolean }): JSX.Element {
   const queryClient = useQueryClient()
   const navigate = useNavigate()
   const { baseUrl, roster, transportEpoch } = useConnection()
+  // Whole-store useChat() keeps the marker fresh; agentForSession is not reactive.
   const { addDraft, setActive } = useChat()
   const activeSession = useChat((s) => s.active)
   const chatSettings = useChatSettings()
@@ -1173,13 +1186,7 @@ export function AgentsSection(props: { compact?: boolean }): JSX.Element {
   // The agent whose pinned session is the active chat (bound at open time).
   const currentAgentId = activeSession ? agentForSession(activeSession) : undefined
   const currentAgent = agents.find((a) => a.id === currentAgentId)
-  const currentAccent = currentAgent
-    ? accentFor({
-        presetColor: currentAgent.color,
-        harnessId: currentAgent.harnessId,
-        command: rosterCommandFor(currentAgent.harnessId) ?? currentAgent.model,
-      })
-    : undefined
+  const currentAccent = currentAgent ? agentAccent(currentAgent) : undefined
 
   return (
     <div className={compact ? 'border-t border-line px-1 py-2' : 'border-t border-line px-2 py-2'}>
@@ -1193,7 +1200,9 @@ export function AgentsSection(props: { compact?: boolean }): JSX.Element {
           <button
             type="button"
             onClick={() => setCollapsed((c) => !c)}
-            aria-label="Agents"
+            aria-label={
+              collapsed && currentAgent ? `Agents, current: ${currentAgent.name}` : 'Agents'
+            }
             aria-expanded={!collapsed}
             className={
               compact
@@ -1215,7 +1224,7 @@ export function AgentsSection(props: { compact?: boolean }): JSX.Element {
               currentAccent &&
               (compact ? (
                 <span className="absolute left-1/2 top-1.5 ml-1" aria-hidden>
-                  <AgentSwatch accent={currentAccent} />
+                  <AgentSwatch accent={currentAccent} halo />
                 </span>
               ) : (
                 <span className="ml-auto flex min-w-0 items-center gap-1.5 pl-2 text-xs text-em">

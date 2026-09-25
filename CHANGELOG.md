@@ -47,6 +47,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `apps/rivethub-web`: prevent sidebar and composer node pickers flashing while discovery is pending or failed with one saved node; keep multiple saved nodes available immediately (#809).
 - `apps/rivethub-web`: hide node pickers only when connected to the sole saved node (or the app origin with no saved nodes) and mesh discovery confirms no peers; keep discovery and first-peer saving available.
 - `apps/rivethub-web`: a send refused because the Terminal input holds unsent text (`reason: 'harness_draft'`) shows `DRAFT_NOTE`. The outbound pump retries that 409 up to six times (about 57s) and then leaves the turn queued; press the inject button again after the draft is sent or cleared.
+- Sidebar Agents: the agent bound to the active chat is marked (accent bar, ringed swatch and highlighted name; a folded list or the collapsed rail keeps a dot for it, and the row carries `aria-current`).
 
 ### Harness integrations
 
