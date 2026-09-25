@@ -3,6 +3,8 @@ package io.rivethub.app.ui.components
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
+import androidx.compose.foundation.ExperimentalFoundationApi
+import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.interaction.collectIsPressedAsState
@@ -22,6 +24,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.drawBehind
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
@@ -32,10 +35,14 @@ import androidx.compose.ui.semantics.role
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
+import androidx.compose.ui.text.font.FontWeight
 import io.rivethub.app.R
 import io.rivethub.app.plane.ContextBarView
 import io.rivethub.app.plane.NarrowHeaderItem
-import io.rivethub.app.plane.narrowHeaderItems
+import io.rivethub.app.plane.headerItemsV2
+import io.rivethub.app.plane.SessionMode
+import io.rivethub.app.plane.TitleBlock
 import io.rivethub.app.ui.theme.Dimens
 import io.rivethub.app.ui.theme.Radius
 import io.rivethub.app.ui.theme.RivetFonts
@@ -43,23 +50,14 @@ import io.rivethub.app.ui.theme.RivetTheme
 import io.rivethub.app.ui.theme.RivetType
 
 /**
- * Session chrome — ONE 48dp row that OWNS the status-bar inset (web narrow
- * branch, chat.tsx:1645-1674): ☰ · session id (flex-1, truncates) · ctx % ·
- * Stop (interruptible turn only) · Terminal|Chat · history. No back chevron —
- * on the phone "back" is the right-side history drawer (Phil 2026-09-03), and
- * the wordmark TopBar is not shown while a session is open.
- *
- * Tokens mirror the desktop header: `border-b border-line bg-panel/40 px-2
- * gap-2` (chat.tsx:1645), mono `text-xs text-ink-dim` title (chat.tsx:1659),
- * 44dp hit boxes with 20dp (`size-5`) lucide icons. Item order and visibility
- * come from `narrowHeaderItems` (plane/ChatChrome.kt), mirroring
- * lib/session-header.ts. `padStatusBar = false` is for the component gallery.
- *
- * Phil 2026-09-04: the BOTTOM EDGE of the header is the context-compaction
- * bar — a 2dp hairline track below the row (above the transcript), filled
- * toward forced compaction; its unfilled `line` segment doubles as the
- * header's `border-b`.
+ * Session row derived from the web chat.tsx narrow header and docs/UX-SPEC.md U1.
+ * Chat: menu, readable two-line title (tap rename, long-press history until U2b),
+ * optional Stop, Terminal chip, search, new chat. Search hides the chip and new chat.
+ * Terminal retains the session id, context pill, mode segment and history until U6.
+ * The row owns the status inset. Its full-width context track doubles as the bottom
+ * border even without usage data: 1dp in Chat, the existing 2dp in Terminal.
  */
+@OptIn(ExperimentalFoundationApi::class)
 @Composable
 fun ChatSessionHeader(
     sessionLabel: String,
@@ -73,12 +71,19 @@ fun ChatSessionHeader(
     onStop: () -> Unit,
     modifier: Modifier = Modifier,
     padStatusBar: Boolean = true,
+    mode: SessionMode = SessionMode.Terminal,
+    titleBlock: TitleBlock = TitleBlock(sessionLabel, ""),
+    searchActive: Boolean = false,
+    onRenameTap: () -> Unit = {},
+    onMode: (SessionMode) -> Unit = {},
+    onSearch: () -> Unit = {},
+    onNewChat: () -> Unit = {},
 ) {
     val colors = RivetTheme.colors
     Column(
         modifier
             .fillMaxWidth()
-            .background(colors.panel.copy(alpha = 0.4f)),
+            .background(if (mode == SessionMode.Chat) colors.bg else colors.panel.copy(alpha = 0.4f)),
     ) {
         Row(
             Modifier
@@ -87,11 +92,11 @@ fun ChatSessionHeader(
                 .height(Dimens.pageHeader)
                 .padding(horizontal = 8.dp),
             verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(8.dp),
+            horizontalArrangement = Arrangement.spacedBy(if (mode == SessionMode.Chat) 2.dp else 8.dp),
         ) {
             // Android opens every session against its own node (no cross-node
             // proxying like the web's), so the remote badge slot is never filled.
-            narrowHeaderItems(running = showStop, remote = false).forEach { item ->
+            headerItemsV2(running = showStop, remote = false, searchActive = searchActive, mode = mode).forEach { item ->
                 when (item) {
                     NarrowHeaderItem.Menu -> {
                         val openMenu = stringResource(R.string.cd_open_drawer)
@@ -113,6 +118,64 @@ fun ChatSessionHeader(
                             )
                         }
                     }
+                    NarrowHeaderItem.TitleBlock -> {
+                        Column(
+                            Modifier.weight(1f).height(Dimens.touchTarget)
+                                .clip(RoundedCornerShape(Radius.sm))
+                                .combinedClickable(
+                                    role = Role.Button,
+                                    onClickLabel = stringResource(R.string.action_rename),
+                                    onLongClickLabel = stringResource(R.string.action_history),
+                                    onClick = onRenameTap,
+                                    onLongClick = onOpenHistory,
+                                ),
+                            verticalArrangement = Arrangement.Center,
+                        ) {
+                            Text(
+                                titleBlock.line1,
+                                color = colors.ink,
+                                style = RivetType.sm.copy(fontSize = 14.sp, fontWeight = FontWeight.Medium),
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis,
+                            )
+                            Text(
+                                titleBlock.line2,
+                                color = colors.inkDim,
+                                style = RivetType.mono11,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis,
+                            )
+                        }
+                    }
+                    NarrowHeaderItem.TerminalChip -> {
+                        val label = stringResource(R.string.terminal_chip)
+                        Box(
+                            Modifier.height(Dimens.touchTarget)
+                                .semantics { contentDescription = label }
+                                .clickable(role = Role.Button) { onMode(SessionMode.Terminal) },
+                            contentAlignment = Alignment.Center,
+                        ) {
+                            Row(
+                                Modifier.border(1.dp, colors.line, RoundedCornerShape(Radius.full))
+                                    .padding(horizontal = 8.dp, vertical = 4.dp),
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(4.dp),
+                            ) {
+                                Lucide(R.drawable.lucide_code, null, tint = colors.inkDim, modifier = Modifier.size(14.dp))
+                                Text(label, color = colors.inkDim, style = RivetType.mono11, maxLines = 1)
+                            }
+                        }
+                    }
+                    NarrowHeaderItem.Search -> HeaderIconButton(
+                        icon = if (searchActive) R.drawable.lucide_x else R.drawable.lucide_search,
+                        description = stringResource(if (searchActive) R.string.close_search else R.string.search_messages),
+                        onClick = onSearch,
+                    )
+                    NarrowHeaderItem.NewChat -> HeaderIconButton(
+                        icon = R.drawable.lucide_plus,
+                        description = stringResource(R.string.new_chat),
+                        onClick = onNewChat,
+                    )
                     NarrowHeaderItem.Title -> Text(
                         sessionLabel,
                         color = colors.inkDim,
@@ -155,12 +218,12 @@ fun ChatSessionHeader(
                 }
             }
         }
-        ContextCompactionTrack(view = context)
+        ContextCompactionTrack(view = context, height = if (mode == SessionMode.Chat) 1.dp else 2.dp)
     }
 }
 
 /**
- * The hairline context-compaction track (Phil 2026-09-04): full width, 2dp,
+ * Full-width context-compaction track: Chat uses 1dp; Terminal keeps 2dp,
  * filled to [ContextBarView.fraction] where 100% = forced compaction. Fill is
  * `em` → `warn` (≥70%) → `red` (≥90%); the unfilled `line` segment reads as
  * the header's bottom border, so the track is drawn even with no data. Plain
@@ -168,7 +231,7 @@ fun ChatSessionHeader(
  * `animateFloatAsState` lets a post-compaction drop sweep down.
  */
 @Composable
-private fun ContextCompactionTrack(view: ContextBarView?) {
+private fun ContextCompactionTrack(view: ContextBarView?, height: androidx.compose.ui.unit.Dp) {
     val colors = RivetTheme.colors
     val fraction by animateFloatAsState(
         targetValue = view?.fraction ?: 0f,
@@ -184,7 +247,7 @@ private fun ContextCompactionTrack(view: ContextBarView?) {
     Box(
         Modifier
             .fillMaxWidth()
-            .height(2.dp)
+            .height(height)
             .then(if (description != null) Modifier.semantics { contentDescription = description } else Modifier)
             .drawBehind {
                 drawRect(colors.line)
@@ -267,5 +330,18 @@ fun TerminalRetryState(message: String, modifier: Modifier = Modifier) {
             color = colors.inkDim,
             style = RivetType.xs,
         )
+    }
+}
+
+@Composable
+private fun HeaderIconButton(icon: Int, description: String, onClick: () -> Unit) {
+    Box(
+        Modifier.size(Dimens.touchTarget)
+            .clip(RoundedCornerShape(Radius.sm))
+            .semantics { contentDescription = description }
+            .clickable(role = Role.Button, onClick = onClick),
+        contentAlignment = Alignment.Center,
+    ) {
+        Lucide(icon, null, tint = RivetTheme.colors.inkDim, modifier = Modifier.size(20.dp))
     }
 }

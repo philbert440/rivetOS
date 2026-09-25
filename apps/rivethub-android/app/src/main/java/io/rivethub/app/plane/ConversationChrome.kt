@@ -26,13 +26,19 @@ fun conversationEmptyKind(
 }
 
 /**
- * `+ new`: mint a draft for the current agent when that id is still on the
- * roster; otherwise open the agent picker.
+ * `+ new`: prefer the session agent, then the current agent, if still on the roster.
+ * Callers mint drafts with Plus; PickAgent leaves the no-agent fallback to the host.
+ * Omitting sessionAgentId preserves the conversations pane's current-agent rule.
  */
-fun newConversationAction(currentAgentId: String, agentIds: Collection<String>): NewConversationAction {
-    val id = currentAgentId.trim()
-    return if (id.isNotEmpty() && id in agentIds) NewConversationAction.ForAgent(id)
-    else NewConversationAction.PickAgent
+fun newConversationAction(
+    currentAgentId: String,
+    agentIds: Collection<String>,
+    sessionAgentId: String? = null,
+): NewConversationAction {
+    val id = listOfNotNull(sessionAgentId, currentAgentId)
+        .map(String::trim)
+        .firstOrNull { it.isNotEmpty() && it in agentIds }
+    return if (id != null) NewConversationAction.ForAgent(id) else NewConversationAction.PickAgent
 }
 
 fun conversationMatchesFilter(

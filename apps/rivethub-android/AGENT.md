@@ -14,7 +14,7 @@ chrome (drawer · conversations · settings · enroll). D1b is desktop-parity ch
 transcript · composer · terminal chrome). D2 is visual parity with the responsive web at phone
 width (MobileTopBar chrome, flat conversation rows, drawer/status-bar insets fixed,
 no spinners, light-theme audit). The session-header slice adds the phone session chrome:
-ONE header row (☰ · id · ctx % · Stop · Terminal|Chat · history, no TopBar/no back), the left
+ONE chat header row (☰ · title block · Stop · Terminal chip · search · +, no TopBar/no back), the left
 drawer shared with the session (☰ or edge swipe everywhere), a right history drawer hosting the
 conversations pane, transcript pinned to the bottom, chat-first launch. 2026-09-04: **the
 conversations list is not an app screen** — the home is the chat surface (a session), the list
@@ -90,7 +90,7 @@ whose Conversations tab is the launch surface until the pick/new resolution open
 | ~~Conversations~~ | `ui/screens/ConversationsScreen.kt` | — | DELETED 2026-09-04 (emptied file, delete list) — the list is not an app screen; `ConversationsPane` moved to `ui/screens/ConversationsPane.kt` and is hosted only by the right history drawer |
 | Chat launch | `ui/screens/ChatLaunchScreen.kt` | HubViewModel | TopBar (☰ + wordmark) + centered DenBot with "Loading most recent conversation…" and a New-conversation button (web `ChatLaunchLoading`) while the launch resolution (instant resume / pick / new draft) lands — never the list, never a blank, no spinner |
 | Settings | `ui/screens/SettingsScreen.kt` | HubViewModel + container | TopBar (☰ + `Settings` title) + desktop settings chrome; identity, theme, terminal font, mesh-feed Updates; title long-press → gallery |
-| Chat | `ui/screens/HarnessChatScreen.kt` | `HarnessChatViewModel` via `ScreenStores` | ONE session header row owns the status inset (☰ · id · ctx % · Stop · Terminal\|Chat · history) — no TopBar, no back; `HistoryDrawer` (right, same file as HubDrawer, state lifted to MainActivity) = ConversationsPane; BOTH drawers `gesturesEnabled = false` — ONE unified edge-swipe layer on HubDrawer's root (decision `plane/DrawerSwipe.kt`, web edge-swipe.ts semantics: 20dp zone / 40dp travel / horizontal-dominant) opens AND closes each drawer; transcript pinned to bottom + `↓ latest` pill; Terminal\|Chat segment only (`ModePager swipe = false`); VT attach |
+| Chat | `ui/screens/HarnessChatScreen.kt` | `HarnessChatViewModel` via `ScreenStores` | ONE 48dp chat header row owns the status inset (☰ · title block · Stop · Terminal chip · search · +); title tap = rename after a turn, long-press title = history drawer until U2b; search replaces the transcript with message hits and tap jumps to the turn; full-width 1dp context track — no TopBar, no back; `HistoryDrawer` (right, same file as HubDrawer, state lifted to MainActivity) = ConversationsPane; BOTH drawers `gesturesEnabled = false` — ONE unified edge-swipe layer on HubDrawer's root (decision `plane/DrawerSwipe.kt`, web edge-swipe.ts semantics: 20dp zone / 40dp travel / horizontal-dominant) opens AND closes each drawer; transcript pinned to bottom + `↓ latest` pill; Terminal chip selects the same session; Terminal header retains its segment until U6 (`ModePager swipe = false`); VT attach |
 | Memory | `ui/screens/MemoryScreen.kt` | `MemoryViewModel` (activity-scoped `key=memory`) | NATIVE wiki hub over datahub `GET /api/wiki` (mirror of the merged responsive web Memory hub: MemoryHubPage + pages/memory.tsx): TopBar (☰ + `Memory`) + Search/Wiki/Browse/Stats tab row + search field + compact topic rows (title + staleness badge). Pure layer `plane/MemoryWiki.kt` (tabs, rows, stats, TOC, staleness, datahub-node pick) mirrors web `lib/memory-hub.ts` + `lib/wiki-base.ts`; wire shapes in `gateway/Wire.kt`, calls `Gateway.wikiPages/wikiSearch/wikiTopic`. Datahub = mesh node named datahub, else `transport.entry()`; load failure = the web "Point RivetHub at datahub" pointer copy, never a spinner |
 | Memory topic | `ui/screens/MemoryTopicScreen.kt` | same `MemoryViewModel` | Pushed over Memory (its slug in `Screen.MemoryTopic`); header = Back + title (session-row vocabulary, no TopBar); lead + `MarkdownBody` body (`wikiBody` = currentState else full file), collapsible full-width Contents from the parsed ##/### headings; 404 = the web red-link state. Back pops to the hub list |
 | Gallery | `ui/components/ComponentGallery.kt` | none | D1a chrome + D1b chat + D2 top bar/rows/settings rhythm (dark + light) |
@@ -146,7 +146,7 @@ Chat mapping (phone session view ← rivethub-web):
 | desktop | phone file |
 |---|---|
 | `pages/chat.tsx` ActiveSession header | `ui/components/ChatHeader.kt` + `HarnessChatScreen` |
-| `components/context-bar.tsx` | `ui/components/ContextBar.kt` (`plane/ContextWindow.kt`, `plane/ChatChrome.kt`) — pct is toward FORCED COMPACTION (`compactAt` = window − 35k reserve; wire `contextWindow`/`compactAt`/`contextSource` preferred over `contextWindowFor(model)`, claude default 200k / 1M only on an explicit `[1m]`/`-1m` variant): the `{pct}%` mono 10sp pill stays inline in the one-row header (inkDim → warn ≥70% → red ≥90%) and a 2dp hairline track at the header's bottom edge fills to `fraction` (em → warn → red, `animateFloatAsState`) |
+| `components/context-bar.tsx` | `ui/components/ContextBar.kt` (`plane/ContextWindow.kt`, `plane/ChatChrome.kt`) — pct is toward FORCED COMPACTION (`compactAt` = window − 35k reserve; wire `contextWindow`/`compactAt`/`contextSource` preferred over `contextWindowFor(model)`, claude default 200k / 1M only on an explicit `[1m]`/`-1m` variant): Chat uses a mono 11sp `usedk/pct%` title subtitle after a completed turn and a full-width 1dp track; Terminal keeps the `{pct}%` pill and 2dp track. Track fill uses `fraction` (em → warn → red, `animateFloatAsState`) |
 | `components/segmented-control.tsx` Terminal \| Chat | existing `SegmentedControl` |
 | `components/transcript.tsx` | `ui/components/Transcript.kt` |
 | `components/markdown.tsx` | `ui/components/MarkdownBody.kt` (`plane/Markdown.kt`) |
@@ -161,7 +161,7 @@ D2 phone chrome (responsive rivethub-web ← sidebar.tsx MobileTopBar + chat.tsx
 | web (phone) | phone file |
 |---|---|
 | `sidebar.tsx:126` MobileTopBar (`h-12 border-b line bg-panel/80`, ☰ `size-5` in 44dp hit "Open menu", DenBot `size-7` decorative, `hubPageTitle` mono `text-sm em`) | `ui/components/TopBar.kt` on every non-session screen — the bar OWNS `statusBarsPadding` (panel/80 extends under the status bar); title rule `plane/HubChrome.kt topBarTitle` (wordmark on home, page title on Settings); NOT shown in a session (lib/session-header.ts showMobileTopBar) |
-| `chat.tsx:1645` narrow session row (`h-12 flex-nowrap gap-2 border-b line bg-panel/40 px-2`: ☰ `size-5`/44px · id mono `text-xs inkDim` truncate flex-1 · ctx % · Stop · Terminal\|Chat · history `size-5`/44px "Conversations"; no back chevron) | `ui/components/ChatHeader.kt` — ONE `Row` `height(Dimens.pageHeader)` owning `statusBarsPadding`, items from `plane/ChatChrome.kt narrowHeaderItems`; the session screen calls no TopBar. Right history drawer (chat.tsx:585-626, `w-64 border-l line bg-panel`, bg/70 scrim) = `HistoryDrawer` hosting `ConversationsPane`; chat-first launch = `plane/LaunchSession.kt pickLaunchSession`, latched in MainActivity (chat.tsx:463-475); transcript pin = `plane/TranscriptPin.kt` (transcript.tsx:385-480, 120dp, `↓ latest` pill mono 11sp em on panel, em-dim/50 border) |
+| `chat.tsx:1645` narrow session row (`h-12 flex-nowrap gap-2 border-b line bg-panel/40 px-2`: ☰ `size-5`/44px · id mono `text-xs inkDim` truncate flex-1 · ctx % · Stop · Terminal\|Chat · history `size-5`/44px "Conversations"; no back chevron) | `ui/components/ChatHeader.kt` — ONE `Row` `height(Dimens.pageHeader)` owning `statusBarsPadding`, Chat items from `plane/ChatChrome.kt headerItemsV2` (☰ · title block · Stop · Terminal chip · search · +), title long-press opens history until U2b; Terminal keeps `narrowHeaderItems`; the session screen calls no TopBar. Right history drawer (chat.tsx:585-626, `w-64 border-l line bg-panel`, bg/70 scrim) = `HistoryDrawer` hosting `ConversationsPane`; chat-first launch = `plane/LaunchSession.kt pickLaunchSession`, latched in MainActivity (chat.tsx:463-475); transcript pin = `plane/TranscriptPin.kt` (transcript.tsx:385-480, 120dp, `↓ latest` pill mono 11sp em on panel, em-dim/50 border) |
 | `chat.tsx:631` flat row (`mb-1 rounded`, `px-3 py-2 text-xs`, idle `text-ink-dim`, active `text-em bg-panel-2`, chip mono 9sp `bg-panel-2`) | `ui/components/ConversationRow.kt` — 36dp rows, no cards, no 44dp row floor (source density wins over hit area here); the `SwipeToDismissBox` panel2 reveal paints ONLY while `dismissDirection == EndToStart` (an always-on backgroundContent shows through the transparent idle row as a card) |
 | `chat.tsx:833` flat list, no node/agent group rows | `paneRows` in `plane/HubChrome.kt` (pin rows titled by agent name are desktop parity, chat.tsx:378-388) |
 | `chat.tsx:808` `+ new` raw button (`rounded border line px-2 py-1 text-xs inkDim`) | `NewConversationButton` in ConversationsPane.kt (NOT RivetButton) |
@@ -187,6 +187,12 @@ gone — its types live in `gateway/` + `plane/`. Screens talk to nodes only thr
 `AppContainer.harness(denUrl)` (same OkHttp generation as Gateway). No KMP now.
 
 ## Harness plane (M3a + M3b)
+
+U1 chat header: `plane/ChatChrome.kt` selects `headerItemsV2` for Chat and keeps
+`narrowHeaderItems` for Terminal. New `plane/TitleBlock.kt` formats title/identity/context
+and gates rename; `plane/MessageSearch.kt` selects first text matches and snippet highlight
+ranges. Each has JVM coverage. `ui/components/RenameSheet.kt` is shared-ready; U2a will
+switch the conversations pane to it.
 
 Pure Kotlin under `gateway/HarnessWire.kt`, `gateway/HarnessGateway.kt`, and `plane/`. Desktop
 semantics copied from `apps/rivethub-web` `harness-*.ts` + `ask-user.ts` + `attachments.ts` +
@@ -299,6 +305,13 @@ is the detach.
 
 ## Gotchas
 
+- U1 transcript pin is recreated on session-id changes (history navigation and draft adoption).
+  Keep ChatTranscript's scroll collector keyed on `pin` and `jumpToTurn`, and its local
+  pinned state in `remember(pin)`, so scroll events reach the current session's pin.
+- U1 header + resolves session agent, then current agent, against the roster via
+  `newConversationAction`; either resolved agent uses `AgentAction.Plus` without replacing
+  the back stack or moving the pinned thread. Only when neither resolves does the host use
+  the existing launch fallback (currently no-op without a roster-backed current agent).
 - Deferred from M1.5 (recorded here, not only in the fix notes): snackbar/toast host, `SelectOption.group` for grouped selects, `RivetSelect` `sheetState.hide()` before dismiss, `lint-android` not yet run in CI.
 - `usesCleartextTraffic=false` (manifest). Enroll and Settings refuse non-`https://` entry URLs. A mesh
   node advertising `http://` still fails; that maps to `EnrollErrorKind.Cleartext`.
