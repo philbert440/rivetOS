@@ -122,6 +122,35 @@ Top to bottom:
    socket is open), `mesh` (the mesh registry socket is open), `hub` (the entry/DataHub node answers).
    Filled accent dot = up, red dot = down, hollow grey = unknown. The strip derives from state the app
    already holds (socket status, last health result); tapping it triggers one refresh. It never polls.
+
+   Dot truth table (first matching row wins; "discovering" = a refresh in flight; "offline" = the mesh
+   reports the node offline; "error" = a recorded health error for that node; "answered" = the outcome of
+   the last mesh discovery against the entry: roster returned (even empty) = yes, request failed = no,
+   none yet for this entry = unknown):
+
+   | dot   | condition                                                      | shows   |
+   | ----- | -------------------------------------------------------------- | ------- |
+   | hub   | entry node has an error                                        | down    |
+   | hub   | entry resolved, online (discovering or not)                    | up      |
+   | hub   | entry resolved, offline, not discovering                       | down    |
+   | hub   | entry resolved, offline, discovering                           | unknown |
+   | hub   | entry unresolved, answered yes                                 | up      |
+   | hub   | entry unresolved, answered no                                  | down    |
+   | hub   | entry unresolved, no answer yet                                | unknown |
+   | mesh  | registry socket open                                           | up      |
+   | mesh  | socket closed, nodes known, not discovering                    | down    |
+   | mesh  | socket closed, discovering or no nodes                         | unknown |
+   | agent | active node has an error                                       | down    |
+   | agent | chat socket closed                                             | down    |
+   | agent | active node online, no chat open or chat socket open           | up      |
+   | agent | active node offline, not discovering                           | down    |
+   | agent | otherwise (socket connecting, node absent, offline mid-refresh) | unknown |
+
+   The entry node is the node the enrolled URL reaches: same den URL, else same host and port, else the node
+   whose id is the URL's host. The DataHub's own roster does not list the DataHub, so the entry is usually
+   unresolved and the hub dot follows "answered". The last answer is kept through a refresh (no flash) and is
+   cleared when the entry URL or device identity changes. The node list is shown exactly as the mesh returns
+   it; no entry row is added.
 2. **Conversation list** (replaces the right history drawer):
    - sections in order: **Pinned**, **Today**, **Yesterday**, then one section per calendar day in the
      device's local time zone (with the year when not the current year); a conversation whose timestamp
