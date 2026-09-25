@@ -14,7 +14,6 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.imePadding
-import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.sizeIn
@@ -63,7 +62,9 @@ import io.rivethub.app.plane.EnrollErrorKind
 import io.rivethub.app.plane.LocatedChatItem
 import io.rivethub.app.plane.NewConversationAction
 import io.rivethub.app.plane.SectionLabels
-import io.rivethub.app.plane.activeIndexIn
+import io.rivethub.app.plane.VisibleSpan
+import io.rivethub.app.plane.activeScrollTarget
+import io.rivethub.app.plane.itemFullyVisible
 import io.rivethub.app.plane.activeRowIn
 import io.rivethub.app.plane.accentForConversation
 import io.rivethub.app.plane.conversationActions
@@ -104,11 +105,11 @@ import kotlinx.coroutines.launch
 /**
  * The D1a conversations pane (chat.tsx ConversationsPane): `conversations ●
  * (n)` + `+ new` header, filter after the threshold, flat recency rows,
- * archived block. The pane's only host is the RIGHT history drawer in a
- * session (web chat.tsx mounts the same pane there) — 2026-09-04: the list
- * is not an app screen anymore, so the full-screen ConversationsScreen host
- * was deleted (the file is emptied; this pane is its surviving content).
- * The caller bounds the height (the drawer sheet's own size).
+ * archived block. The pane's only host is the LEFT drawer's body (drawer
+ * v2, U2b — there is no right drawer anymore; 2026-09-04: the list is not an
+ * app screen, so the full-screen ConversationsScreen host was deleted). The
+ * caller bounds the height, and the drawer's footer below the pane owns the
+ * navigation-bar inset.
  *
  * U2a (UX-SPEC §2 item 2): live rows are sectioned (Pinned · Today ·
  * Yesterday · per day, plane/ConversationSections.kt) and drawn as pills; the
@@ -192,15 +193,28 @@ fun ConversationsPane(
     // Scroll the open conversation into view on every drawer open, and when
     // its row first lands. The archived case waits for the block to expand
     // (the key flips once archivedOpen is applied). Event driven, no timer.
+    // fix1: land on the row's section header so "Today" / "Pinned" stays on
+    // screen above it; only when the row is then not fully visible (deep in
+    // a long section) scroll to the row itself (plane/ActiveScroll.kt).
     val archivedReady = active?.archived == true && archivedOpen
     LaunchedEffect(openTick, activeKey, archivedReady) {
-        val index = activeIndexIn(
+        val target = activeScrollTarget(
             sections,
             activeKey,
             archived = if (archivedOpen) lists.archived else emptyList(),
             leading = leadingItems,
-        )
-        index?.let { listState.scrollToItem(it) }
+        ) ?: return@LaunchedEffect
+        val header = target.header
+        if (header == null) {
+            listState.scrollToItem(target.row)
+            return@LaunchedEffect
+        }
+        listState.scrollToItem(header)
+        val info = listState.layoutInfo
+        val spans = info.visibleItemsInfo.map { VisibleSpan(it.index, it.offset, it.size) }
+        if (!itemFullyVisible(target.row, spans, info.viewportStartOffset, info.viewportEndOffset)) {
+            listState.scrollToItem(target.row)
+        }
     }
     val ptr = rememberPullToRefreshState()
     // D2-8: no circular spinner floats over the rows on auto-refresh — the pull
@@ -268,7 +282,7 @@ fun ConversationsPane(
             )
         }
         HubErrorLine(st.error, st.errorKind, onRetry = vm::refresh)
-        Column(Modifier.weight(1f).fillMaxWidth().navigationBarsPadding()) {
+        Column(Modifier.weight(1f).fillMaxWidth()) {
             Box(Modifier.weight(1f).fillMaxWidth()) {
                 PullToRefreshBox(
                     isRefreshing = pulled && st.loading,

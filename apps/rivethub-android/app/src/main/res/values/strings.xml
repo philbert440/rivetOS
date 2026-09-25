@@ -39,7 +39,6 @@
     <string name="cd_den_bot">Rivet den bot</string>
     <string name="unread_notifications">%d unread notifications</string>
     <string name="agents_section">Agents</string>
-    <string name="add_agent">add agent</string>
     <string name="agent_start_over">Start over</string>
     <string name="agent_new_conversation">New conversation</string>
     <string name="agent_edit">Edit</string>
@@ -65,6 +64,7 @@
     <string name="agent_save_failed">Save failed — the node refused the update</string>
     <string name="loading_recent_conversation">Loading most recent conversation…</string>
     <string name="conversations_label">conversations</string>
+    <string name="gallery_drawer_body_sample">conversations ● (%1$d)</string>
     <string name="action_new_plus">+ new</string>
     <string name="filter_placeholder">filter…</string>
     <string name="empty_search_for">no matches for “%1$s”</string>
@@ -372,4 +372,17 @@
     <string name="image_viewer_open">View image</string>
     <string name="message_actions_cd">Message actions</string>
     <string name="message_edit_cd">Edit message</string>
+    <!-- Drawer v2 (U2b): node status strip, footer buttons, agents picker -->
+    <string name="node_status_cd">Node status, tap to refresh</string>
+    <string name="dot_agent">agent</string>
+    <string name="dot_mesh">mesh</string>
+    <string name="dot_hub">hub</string>
+    <string name="dot_state_up">up</string>
+    <string name="dot_state_down">down</string>
+    <string name="dot_state_unknown">unknown</string>
+    <string name="footer_agents">Agents</string>
+    <string name="footer_tasks">Tasks</string>
+    <string name="footer_memory">Memory</string>
+    <string name="footer_settings">Settings</string>
+    <string name="agents_picker_title">Start a conversation with</string>
 </resources>

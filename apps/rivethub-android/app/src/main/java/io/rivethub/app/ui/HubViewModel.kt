@@ -21,6 +21,10 @@ import io.rivethub.app.plane.AgentPointers
 import io.rivethub.app.plane.AgentRow
 import io.rivethub.app.plane.ConversationFilter
 import io.rivethub.app.plane.EnrollErrorKind
+import io.rivethub.app.plane.EntryAnswer
+import io.rivethub.app.plane.EntryAnswerState
+import io.rivethub.app.plane.entryAnswerStateAtRefreshStart
+import io.rivethub.app.plane.publishEntryAnswer
 import io.rivethub.app.plane.HarnessSheet
 import io.rivethub.app.plane.LocatedChatItem
 import io.rivethub.app.plane.agentGoToNodeId
@@ -120,6 +124,12 @@ class HubViewModel(private val c: AppContainer, inboxLabels: InboxLabels) : View
         val registryOpen: Boolean = false,
         /** `GET /api/agents` directoryRoot, when any node reported one. */
         val directoryRoot: String? = null,
+        /**
+         * Last outcome of the entry's own `discover()` call (hub dot, fix2). Read it
+         * through `entryAnsweredFor(entryAnswer, prefs.entryUrl, identityGen)`,
+         * which yields null for another entry URL / identity generation.
+         */
+        val entryAnswer: EntryAnswer? = null,
     )
 
     private val _state = MutableStateFlow(UiState())
@@ -478,6 +488,13 @@ class HubViewModel(private val c: AppContainer, inboxLabels: InboxLabels) : View
                 )
             }
             val prefs = c.settings.snapshot()
+            // Sticky across a refresh of the same entry; dropped for a new entry URL / identity.
+            // The read clock (UiState.identityGen) moves with it: the identity can change
+            // without a prefs tick (Settings cert install → refresh), fix3.
+            _state.update {
+                val start = entryAnswerStateAtRefreshStart(it.entryAnswer, prefs.entryUrl, identityGen)
+                it.copy(entryAnswer = start.answer, identityGen = start.identityGen)
+            }
             if (prefs.entryUrl.isBlank()) {
                 reconcileNotificationWatch("", identityGen)
                 _state.update { it.copy(nodes = emptyList(), items = emptyList(), agents = emptyList()) }
@@ -489,9 +506,20 @@ class HubViewModel(private val c: AppContainer, inboxLabels: InboxLabels) : View
             // here (not only from the prefs collector) for an identity bump
             // that does not touch prefs.
             reconcileNotificationWatch(prefs.entryUrl, identityGen)
-            val nodes = c.transport.discover()
+            // The discovery boundary: the only place the hub dot's entry outcome is recorded.
+            // The refresh-wide catch below is too broad for this (it also sees per-node and
+            // catalog failures), so classify here and let the exception continue as before.
+            val nodes = try {
+                c.transport.discover()
+            } catch (e: Exception) {
+                if (e !is kotlinx.coroutines.CancellationException) {
+                    noteEntryAnswer(prefs.entryUrl, identityGen, gen, answered = false)
+                }
+                throw e
+            }
             if (c.identity.generation() != identityGen) return
             if (gen != refreshLatch.gen) return
+            noteEntryAnswer(prefs.entryUrl, identityGen, gen, answered = true)
             val live = nodes.map { it.denUrl.trimEnd('/') }.toSet()
             descriptors.keys.filter { it !in live }.forEach { descriptors.remove(it) }
             plane.keys.filter { it !in live }.forEach { plane.remove(it) }
@@ -558,6 +586,23 @@ class HubViewModel(private val c: AppContainer, inboxLabels: InboxLabels) : View
             refreshLatch = end.latch
             _state.update { it.copy(loading = end.latch.loading, discoveringDone = 0, discoveringTotal = 0) }
             if (end.rerun) refresh()
+        }
+    }
+
+    /**
+     * Stale generations (refresh or identity) are rejected inside [publishEntryAnswer]. An
+     * accepted write publishes the answer AND the identity generation it was keyed to, so the
+     * hub dot's read clock agrees with it on the failure path too (fix3).
+     */
+    private fun noteEntryAnswer(entryUrl: String, identityGen: Int, gen: Int, answered: Boolean) {
+        val liveRefreshGen = refreshLatch.gen
+        val liveIdentityGen = c.identity.generation()
+        _state.update {
+            val next = publishEntryAnswer(
+                EntryAnswerState(it.entryAnswer, it.identityGen),
+                entryUrl, identityGen, answered, gen, liveRefreshGen, liveIdentityGen,
+            )
+            it.copy(entryAnswer = next.answer, identityGen = next.identityGen)
         }
     }
 

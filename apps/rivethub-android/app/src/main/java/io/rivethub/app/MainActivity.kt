@@ -10,8 +10,6 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxSize
-import androidx.compose.material3.DrawerValue
-import androidx.compose.material3.rememberDrawerState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.LaunchedEffect
@@ -21,6 +19,8 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
+import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.launch
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
@@ -62,7 +62,6 @@ import io.rivethub.app.ui.Screen
 import io.rivethub.app.ui.components.ComponentGallery
 import io.rivethub.app.ui.screens.EnrollScreen
 import io.rivethub.app.ui.screens.HarnessChatScreen
-import io.rivethub.app.ui.screens.HistoryDrawer
 import io.rivethub.app.ui.screens.HubDrawer
 import io.rivethub.app.ui.screens.HubScreen
 import io.rivethub.app.ui.screens.MemoryScreen
@@ -267,7 +266,7 @@ fun App(
         return
     }
     // Home IS the chat surface (Phil 2026-09-04: the conversations list is
-    // not an app screen; it lives only in the right history drawer). Instant
+    // not an app screen; it lives only in the drawer — the left one since U2b). Instant
     // resume: a persisted last session (plane/LaunchSession.kt LastSession,
     // written by openChat) starts the nav stack straight on Screen.Chat —
     // before the mesh loads; the session screen's own loading covers the
@@ -349,7 +348,7 @@ fun App(
 
     // Opening a chat from the hub/launch surface PUSHES (replaceAll at launch
     // resolution, so the home session IS the stack root); from inside a
-    // session (the right history drawer, or a drawer agent row) it REPLACES
+    // session (a drawer conversation row, or an agent from the picker) it REPLACES
     // the open session — web row tap switches the active session in place.
     // Every open persists the instant-resume pointer (drafts excepted —
     // plane/LaunchSession.kt persistableLastSession).
@@ -561,7 +560,9 @@ fun App(
         // the rail is reachable by ☰ or left-edge swipe from a session too.
         Screen.Hub -> HubDrawer(
             vm = hubVm,
+            currentSessionKey = null,
             onOpenChat = { openChatScreen(it) },
+            onOpenRow = { openRowScreen(it) },
             onNavTab = { onNavTab(it) },
             onOpenMemory = { openMemory() },
             onOpenTasks = { openTasks() },
@@ -593,54 +594,55 @@ fun App(
                         },
                     )
                 }
-                // 2026-09-04: the right history drawer's state is lifted here
-                // so HubDrawer's unified edge-swipe layer can drive BOTH
-                // drawers (both run gesturesEnabled = false; the nested
-                // built-in gestures competed and the left swipe lost).
-                val historyState = rememberDrawerState(DrawerValue.Closed)
+                // Drawer v2 (U2b): there is no right drawer. The conversation
+                // list is the left drawer's body, so the header's history
+                // action opens the same drawer as ☰. The chat socket and node
+                // feed the drawer's `agent` status dot (no extra fetches).
+                // fix1: collect ONLY the socket status. The whole UiState is
+                // unequal on every streamed token (turns / liveText), and
+                // collecting it here recomposed App, the drawer and the
+                // conversation list per token. distinctUntilChanged keeps
+                // this to real socket transitions.
+                val chatWs by remember(vm) { vm.state.map { it.ws }.distinctUntilChanged() }
+                    .collectAsState(initial = vm.state.value.ws)
                 HubDrawer(
                     vm = hubVm,
+                    currentSessionKey = s.sessionKey,
                     onOpenChat = { openChatScreen(it) },
+                    onOpenRow = { openRowScreen(it) },
                     onNavTab = { onNavTab(it) },
-                    rightDrawer = historyState,
                     onOpenMemory = { openMemory() },
                     onOpenTasks = { openTasks() },
                     onOpenTask = openTask,
+                    chatWs = chatWs,
+                    chatNodeDenUrl = s.nodeDenUrl,
                 ) { openDrawer ->
-                    HistoryDrawer(
-                        vm = hubVm,
-                        state = historyState,
-                        currentSessionKey = s.sessionKey,
-                        onOpenRow = { openRowScreen(it) },
-                        onOpenChat = { openChatScreen(it) },
-                    ) { openHistory ->
-                        HarnessChatScreen(
-                            vm = vm,
-                            tasksVm = tasksVm,
-                            onTaskCreated = { nav.push(Screen.TaskDetail(it)) },
-                            onOpenDrawer = openDrawer,
-                            onOpenHistory = openHistory,
-                            hubVm = hubVm,
-                            harnessId = s.harnessId,
-                            initialAgentId = s.agentId,
-                            onNewChat = { sessionAgentId ->
-                                val current = hubVm.state.value
-                                when (val action = newConversationAction(
-                                    currentAgentId = current.prefs.currentAgentId,
-                                    agentIds = current.agents.map { it.agentId },
-                                    sessionAgentId = sessionAgentId,
-                                )) {
-                                    is NewConversationAction.ForAgent -> {
-                                        val agent = current.agents.first { it.agentId == action.agentId }
-                                        hubVm.openAgentAction(agent, AgentAction.Plus)?.let { openChatScreen(it) }
-                                    }
-                                    NewConversationAction.PickAgent -> openNewDraft()
+                    HarnessChatScreen(
+                        vm = vm,
+                        tasksVm = tasksVm,
+                        onTaskCreated = { nav.push(Screen.TaskDetail(it)) },
+                        onOpenDrawer = openDrawer,
+                        onOpenHistory = openDrawer,
+                        hubVm = hubVm,
+                        harnessId = s.harnessId,
+                        initialAgentId = s.agentId,
+                        onNewChat = { sessionAgentId ->
+                            val current = hubVm.state.value
+                            when (val action = newConversationAction(
+                                currentAgentId = current.prefs.currentAgentId,
+                                agentIds = current.agents.map { it.agentId },
+                                sessionAgentId = sessionAgentId,
+                            )) {
+                                is NewConversationAction.ForAgent -> {
+                                    val agent = current.agents.first { it.agentId == action.agentId }
+                                    hubVm.openAgentAction(agent, AgentAction.Plus)?.let { openChatScreen(it) }
                                 }
-                            },
-                            shareUris = shareUris,
-                            onShareConsumed = onShareConsumed,
-                        )
-                    }
+                                NewConversationAction.PickAgent -> openNewDraft()
+                            }
+                        },
+                        shareUris = shareUris,
+                        onShareConsumed = onShareConsumed,
+                    )
                 }
             }
         }
@@ -650,7 +652,9 @@ fun App(
         // hub list → whatever is below (hub / session).
         Screen.Memory -> HubDrawer(
             vm = hubVm,
+            currentSessionKey = null,
             onOpenChat = { openChatScreen(it) },
+            onOpenRow = { openRowScreen(it) },
             onNavTab = { onNavTab(it) },
             onOpenMemory = { openMemory() },
             onOpenTasks = { openTasks() },
@@ -665,7 +669,9 @@ fun App(
         }
         is Screen.MemoryTopic -> HubDrawer(
             vm = hubVm,
+            currentSessionKey = null,
             onOpenChat = { openChatScreen(it) },
+            onOpenRow = { openRowScreen(it) },
             onNavTab = { onNavTab(it) },
             onOpenMemory = { openMemory() },
             onOpenTasks = { openTasks() },
@@ -678,14 +684,14 @@ fun App(
             )
         }
         Screen.Tasks -> HubDrawer(
-            vm = hubVm, onOpenChat = { openChatScreen(it) }, onNavTab = { onNavTab(it) },
-            onOpenMemory = { openMemory() }, onOpenTasks = { openTasks() },
+            vm = hubVm, currentSessionKey = null, onOpenChat = { openChatScreen(it) }, onOpenRow = { openRowScreen(it) },
+            onNavTab = { onNavTab(it) }, onOpenMemory = { openMemory() }, onOpenTasks = { openTasks() }, onOpenTask = openTask,
         ) { openDrawer ->
             io.rivethub.app.ui.screens.TasksScreen(tasksVm, openDrawer) { nav.push(Screen.TaskDetail(it)) }
         }
         is Screen.TaskDetail -> HubDrawer(
-            vm = hubVm, onOpenChat = { openChatScreen(it) }, onNavTab = { onNavTab(it) },
-            onOpenMemory = { openMemory() }, onOpenTasks = { openTasks() },
+            vm = hubVm, currentSessionKey = null, onOpenChat = { openChatScreen(it) }, onOpenRow = { openRowScreen(it) },
+            onNavTab = { onNavTab(it) }, onOpenMemory = { openMemory() }, onOpenTasks = { openTasks() }, onOpenTask = openTask,
         ) {
             io.rivethub.app.ui.screens.TaskDetailScreen(tasksVm, s.id) { nav.pop() }
         }

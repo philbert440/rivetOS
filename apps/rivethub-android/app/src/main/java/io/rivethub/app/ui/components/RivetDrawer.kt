@@ -14,8 +14,8 @@ import androidx.compose.foundation.interaction.collectIsPressedAsState
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.ColumnScope
 import androidx.compose.foundation.layout.Row
-import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
@@ -25,10 +25,8 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.sizeIn
 import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.width
-import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
@@ -57,6 +55,8 @@ import io.rivethub.app.R
 import io.rivethub.app.plane.AgentRow
 import io.rivethub.app.plane.AgentSheetAction
 import io.rivethub.app.plane.DrawerDest
+import io.rivethub.app.plane.DrawerFooterAction
+import io.rivethub.app.plane.NodeDots
 import io.rivethub.app.plane.HubTab
 import io.rivethub.app.plane.NodeSheetModel
 import io.rivethub.app.plane.NodeSheetRow
@@ -67,42 +67,45 @@ import io.rivethub.app.plane.discoveredNodeLabel
 import io.rivethub.app.plane.ExperimentalFlags
 import io.rivethub.app.plane.drawerDestEnabled
 import io.rivethub.app.plane.drawerItemActive
-import io.rivethub.app.plane.drawerVisiblePrimary
-import io.rivethub.app.plane.drawerVisibleSecondary
+import io.rivethub.app.plane.drawerFlaggedRows
 import io.rivethub.app.plane.formatUnreadBadge
 import io.rivethub.app.ui.theme.Dimens
 import io.rivethub.app.ui.theme.Radius
 import io.rivethub.app.ui.theme.RivetTheme
 import io.rivethub.app.ui.theme.RivetType
 
+/**
+ * Drawer v2 (UX-SPEC §2, slice U2b) — the ONE drawer; there is no right
+ * drawer. Top to bottom: [DrawerHeader] (wordmark + unread bell) →
+ * [NodeStatusStrip] → the conversation list ([conversations] slot; the host
+ * puts `ConversationsPane` there, so this component needs no view model and
+ * the gallery can show it with a placeholder) → flagged Files / Workflows
+ * rows when enabled → [NodeSwitcherFooter] → [DrawerFooter] round buttons
+ * (Agents · Tasks flagged · Memory · Settings). The agents list moved out of
+ * the drawer body into `AgentsPickerSheet` (the Agents footer button).
+ */
 @Composable
 fun RivetDrawerContent(
     width: Dp,
     tab: HubTab,
     unread: Int,
-    agents: List<AgentRow>,
-    agentsCollapsed: Boolean,
+    dots: NodeDots,
     currentNodeName: String,
     nodeSheet: NodeSheetModel,
     onClose: () -> Unit,
     onNav: (DrawerDest) -> Unit,
+    onFooter: (DrawerFooterAction) -> Unit,
     onUnread: () -> Unit,
-    onToggleAgents: () -> Unit,
-    onAddAgent: () -> Unit,
-    onAgentTap: (AgentRow) -> Unit,
-    onAgentStartOver: (AgentRow) -> Unit,
-    onAgentNew: (AgentRow) -> Unit,
-    onAgentEdit: (AgentRow) -> Unit,
-    onAgentGoToNode: (AgentRow) -> Unit,
+    onRefreshStatus: () -> Unit,
     onSelectNode: (NodeSheetRow) -> Unit,
     onRemoveNode: (NodeSheetRow) -> Unit,
     onSaveDiscovered: (NodeSheetRow) -> Unit,
     exp: ExperimentalFlags = ExperimentalFlags(),
     modifier: Modifier = Modifier,
+    conversations: @Composable ColumnScope.() -> Unit,
 ) {
     val colors = RivetTheme.colors
     var nodeOpen by remember { mutableStateOf(false) }
-    var agentSheet by remember { mutableStateOf<AgentRow?>(null) }
     Column(
         modifier
             .width(width)
@@ -116,50 +119,32 @@ fun RivetDrawerContent(
             onUnread = onUnread,
             modifier = Modifier.statusBarsPadding(),
         )
+        NodeStatusStrip(dots = dots, onRefresh = onRefreshStatus)
         Column(
             Modifier
                 .weight(1f)
-                .verticalScroll(rememberScrollState()),
-        ) {
+                .fillMaxWidth(),
+            content = conversations,
+        )
+        val flagged = drawerFlaggedRows(exp)
+        if (flagged.isNotEmpty()) {
             Column(
-                Modifier.padding(horizontal = 8.dp),
+                Modifier
+                    .fillMaxWidth()
+                    .drawTopBorder(colors.line)
+                    .padding(horizontal = 8.dp, vertical = 4.dp),
                 verticalArrangement = Arrangement.spacedBy(4.dp),
             ) {
-                drawerVisiblePrimary(exp).forEach { dest ->
-                    DrawerNavItem(dest, tab, onNav, exp)
-                }
-                val secondary = drawerVisibleSecondary(exp)
-                if (secondary.isNotEmpty()) {
-                    Box(
-                        Modifier
-                            .fillMaxWidth()
-                            .padding(vertical = 8.dp)
-                            .height(1.dp)
-                            .background(colors.line),
-                    )
-                    secondary.forEach { dest ->
-                        DrawerNavItem(dest, tab, onNav, exp)
-                    }
-                }
+                flagged.forEach { dest -> DrawerNavItem(dest, tab, onNav, exp) }
             }
-            AgentsBlock(
-                agents = agents,
-                collapsed = agentsCollapsed,
-                onToggle = onToggleAgents,
-                onAdd = onAddAgent,
-                onTap = onAgentTap,
-                onLong = { agentSheet = it },
-            )
         }
         Column(Modifier.navigationBarsPadding()) {
-            Box(Modifier.padding(horizontal = 8.dp)) {
-                DrawerNavItem(DrawerDest.Settings, tab, onNav, exp)
-            }
             NodeSwitcherFooter(
                 currentName = currentNodeName,
                 open = nodeOpen,
                 onToggle = { nodeOpen = !nodeOpen },
             )
+            DrawerFooter(exp = exp, onAction = onFooter)
         }
     }
     if (nodeOpen) {
@@ -174,22 +159,6 @@ fun RivetDrawerContent(
             onSaveDiscovered = {
                 onSaveDiscovered(it)
                 nodeOpen = false
-            },
-        )
-    }
-    agentSheet?.let { row ->
-        AgentActionSheet(
-            name = row.name,
-            online = row.online,
-            onDismiss = { agentSheet = null },
-            onAction = { action ->
-                when (action) {
-                    AgentSheetAction.StartOver -> onAgentStartOver(row)
-                    AgentSheetAction.New -> onAgentNew(row)
-                    AgentSheetAction.Edit -> onAgentEdit(row)
-                    AgentSheetAction.GoToNode -> onAgentGoToNode(row)
-                }
-                agentSheet = null
             },
         )
     }
@@ -286,79 +255,6 @@ private fun DrawerHeader(unread: Int, onToggle: () -> Unit, onUnread: () -> Unit
 }
 
 @Composable
-private fun AgentsBlock(
-    agents: List<AgentRow>,
-    collapsed: Boolean,
-    onToggle: () -> Unit,
-    onAdd: () -> Unit,
-    onTap: (AgentRow) -> Unit,
-    onLong: (AgentRow) -> Unit,
-) {
-    val colors = RivetTheme.colors
-    Column(
-        Modifier
-            .fillMaxWidth()
-            .drawTopBorder(colors.line)
-            .padding(horizontal = 8.dp, vertical = 8.dp),
-    ) {
-        Row(
-            Modifier.fillMaxWidth(),
-            verticalAlignment = Alignment.CenterVertically,
-        ) {
-            Row(
-                Modifier
-                    .weight(1f)
-                    .sizeIn(minHeight = 44.dp)
-                    .clip(RoundedCornerShape(Radius.sm))
-                    .clickable(role = Role.Button, onClick = onToggle)
-                    .padding(horizontal = 12.dp, vertical = 8.dp),
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                Lucide(R.drawable.lucide_bot, null, tint = colors.inkDim, modifier = Modifier.size(16.dp))
-                Spacer(Modifier.width(8.dp))
-                Text(stringResource(R.string.agents_section), color = colors.inkDim, style = RivetType.sm)
-                Spacer(Modifier.width(4.dp))
-                Lucide(
-                    if (collapsed) R.drawable.lucide_chevron_right else R.drawable.lucide_chevron_down,
-                    contentDescription = null,
-                    tint = colors.inkDim,
-                    modifier = Modifier.size(12.dp),
-                )
-            }
-            if (!collapsed) {
-                Box(
-                    Modifier
-                        .sizeIn(minWidth = 44.dp, minHeight = 44.dp)
-                        .clickable(role = Role.Button, onClick = onAdd),
-                    contentAlignment = Alignment.Center,
-                ) {
-                    Lucide(
-                        R.drawable.lucide_plus,
-                        contentDescription = stringResource(R.string.add_agent),
-                        tint = colors.inkDim,
-                        modifier = Modifier.size(16.dp),
-                    )
-                }
-            }
-        }
-        if (!collapsed) {
-            if (agents.isEmpty()) {
-                Text(
-                    stringResource(R.string.empty_agents),
-                    color = colors.inkDim,
-                    style = RivetType.xs,
-                    modifier = Modifier.padding(horizontal = 12.dp, vertical = 4.dp),
-                )
-            } else {
-                agents.forEach { row ->
-                    AgentRowChrome(row = row, onTap = { onTap(row) }, onLong = { onLong(row) })
-                }
-            }
-        }
-    }
-}
-
-@Composable
 fun AgentRowChrome(
     row: AgentRow,
     onTap: () -> Unit,
@@ -366,6 +262,7 @@ fun AgentRowChrome(
     modifier: Modifier = Modifier,
     activityActive: Boolean = row.pointerSessionId != null && row.online,
     activityIdle: Boolean = row.pointerSessionId != null && !row.online,
+    subtitle: String? = null,
 ) {
     val colors = RivetTheme.colors
     val hex = accentForDrawer(row.color, row.harnessId, row.model)
@@ -395,8 +292,7 @@ fun AgentRowChrome(
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis,
             )
-            val subtitle = agentRowSubtitle(row)
-            if (subtitle.isNotBlank()) {
+            if (!subtitle.isNullOrBlank()) {
                 Text(
                     subtitle,
                     color = colors.inkDim,
@@ -598,7 +494,7 @@ private fun NodeSheetSavedRow(row: NodeSheetRow, onSelect: () -> Unit, onRemove:
  * (2026-09-04: Edit + Go to node joined Start over / New conversation).
  */
 @Composable
-private fun AgentActionSheet(
+internal fun AgentActionSheet(
     name: String,
     online: Boolean,
     onDismiss: () -> Unit,
