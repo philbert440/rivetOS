@@ -11,12 +11,15 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.lazy.LazyListState
+import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.lazy.rememberLazyListState
@@ -34,10 +37,19 @@ import androidx.compose.runtime.setValue
 import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.focus.focusRequester
+import androidx.compose.ui.text.SpanStyle
+import androidx.compose.ui.text.buildAnnotatedString
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.semantics.LiveRegionMode
+import androidx.compose.ui.semantics.liveRegion
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.Lifecycle
@@ -45,6 +57,14 @@ import androidx.lifecycle.compose.LifecycleEventEffect
 import io.rivethub.app.R
 import io.rivethub.app.data.splitHermesReasoning
 import io.rivethub.app.gateway.WsStatus
+import io.rivethub.app.plane.findChatItem
+import io.rivethub.app.plane.displayTitle
+import io.rivethub.app.plane.titleBlock
+import io.rivethub.app.plane.renameAllowed
+import io.rivethub.app.plane.harnessLabel
+import io.rivethub.app.plane.searchTurns
+import io.rivethub.app.plane.highlightRanges
+import io.rivethub.app.plane.SearchHit
 import io.rivethub.app.plane.AttachmentStatus
 import io.rivethub.app.plane.SessionMode
 import io.rivethub.app.plane.TermStatus
@@ -56,7 +76,11 @@ import io.rivethub.app.plane.contextBarView
 import io.rivethub.app.plane.humanToolTitle
 import io.rivethub.app.plane.statsLineOrNull
 import io.rivethub.app.plane.toolArgStrings
+import io.rivethub.app.ui.HubViewModel
 import io.rivethub.app.ui.HarnessChatViewModel
+import io.rivethub.app.ui.components.RenameSheet
+import io.rivethub.app.ui.components.RivetField
+import io.rivethub.app.ui.components.RivetFieldSize
 import io.rivethub.app.ui.components.AgentStatusLine
 import io.rivethub.app.ui.components.ApprovalCard
 import io.rivethub.app.ui.components.AskUserCardView
@@ -83,6 +107,7 @@ import io.rivethub.app.ui.theme.Radius
 import io.rivethub.app.ui.theme.RivetTheme
 import io.rivethub.app.ui.theme.RivetType
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.delay
 
 /**
  * The session screen. There is NO wordmark TopBar here (web
@@ -97,10 +122,31 @@ fun HarnessChatScreen(
     vm: HarnessChatViewModel,
     onOpenDrawer: () -> Unit,
     onOpenHistory: () -> Unit,
+    hubVm: HubViewModel,
+    harnessId: String?,
+    initialAgentId: String?,
+    onNewChat: (String?) -> Unit,
     shareUris: List<android.net.Uri> = emptyList(),
     onShareConsumed: () -> Unit = {},
 ) {
     val st by vm.state.collectAsState()
+    val hubState by hubVm.state.collectAsState()
+    val agentId = hubVm.agentForSession(st.sessionId) ?: initialAgentId?.takeIf { it.isNotBlank() }
+    val agent = hubState.agents.find { it.agentId == agentId }
+    var renameOpen by remember(st.sessionId) { mutableStateOf(false) }
+    var renameNotice by remember(st.sessionId) { mutableStateOf(0) }
+    var searchActive by remember(st.sessionId) { mutableStateOf(false) }
+    var query by remember(st.sessionId) { mutableStateOf("") }
+    var jumpToTurn by remember(st.sessionId) { mutableStateOf<Int?>(null) }
+    val listState = rememberLazyListState()
+    val transcriptPin = remember(st.sessionId) { TranscriptPin() }
+    val searchFocus = remember { FocusRequester() }
+    LaunchedEffect(renameNotice) {
+        if (renameNotice > 0) {
+            delay(2_000)
+            renameNotice = 0
+        }
+    }
     val ctx = LocalContext.current
     val chatLabel = stringResource(R.string.mode_chat)
     val termLabel = stringResource(R.string.mode_terminal)
@@ -165,6 +211,33 @@ fun HarnessChatScreen(
             compactAt = st.compactAt,
         )
     }
+    val sessionItem = remember(hubState.items, st.sessionId) {
+        findChatItem(hubState.items.map { it.item }, st.sessionId)
+    }
+    val nativeModels = remember(vm, st.sheet, st.transport) { vm.nativeModels() }
+    val displayTitle = sessionItem?.let { displayTitle(it, hubState.titleOverrides) }
+        ?: hubState.titleOverrides[st.sessionId] ?: st.title
+    val headerContext = context.takeIf { st.turns.any { it.role == "assistant" && it.complete != false } }
+    val block = titleBlock(
+        title = displayTitle,
+        draft = st.draft,
+        agentName = agent?.name,
+        modelLabel = st.sheet?.models?.find { it.id == st.model }?.label?.takeIf { it.isNotBlank() }
+            ?: nativeModels.find { it.first == st.model }?.second?.takeIf { it.isNotBlank() },
+        harnessLabel = harnessLabel(harnessId ?: agent?.harnessId),
+        context = headerContext,
+        newChatLabel = stringResource(R.string.new_chat),
+    )
+    if (renameOpen && renameAllowed(st.draft, st.turns.size)) {
+        RenameSheet(
+            initial = displayTitle,
+            onDismiss = { renameOpen = false },
+            onSave = { text ->
+                hubVm.rename(st.sessionId, text)
+                renameOpen = false
+            },
+        )
+    }
     val accentHex = accentFor(
         command = st.sessionId.substringBefore(':').takeIf { st.sessionId.contains(':') } ?: st.model,
     )
@@ -177,7 +250,6 @@ fun HarnessChatScreen(
         HarnessChatViewModel.ERR_IMAGE_UNSUPPORTED -> stringResource(R.string.error_image_unsupported)
         else -> st.error
     }
-    val nativeModels = vm.nativeModels()
     val nativeImages = vm.nativeImagesEnabled()
     val reconnecting = stringResource(R.string.ws_reconnecting_ellipsis)
 
@@ -188,7 +260,19 @@ fun HarnessChatScreen(
     ) {
         ChatSessionHeader(
             sessionLabel = sessionLabel,
-            context = context,
+            context = if (st.mode == SessionMode.Chat) headerContext else context,
+            mode = st.mode,
+            titleBlock = block,
+            searchActive = searchActive,
+            onRenameTap = {
+                if (renameAllowed(st.draft, st.turns.size)) renameOpen = true else renameNotice++
+            },
+            onMode = vm::setMode,
+            onSearch = {
+                query = ""
+                searchActive = !searchActive
+            },
+            onNewChat = { onNewChat(agentId) },
             modeOptions = pages,
             selectedMode = selected,
             onSelectMode = { vm.setMode(if (it == termLabel) SessionMode.Terminal else SessionMode.Chat) },
@@ -197,14 +281,30 @@ fun HarnessChatScreen(
             showStop = st.inFlight && st.gate.canInterrupt && !st.draft,
             onStop = vm::stop,
         )
+        if (searchActive && st.mode == SessionMode.Chat) {
+            RivetField(
+                value = query,
+                onValueChange = { query = it },
+                placeholder = stringResource(R.string.search_messages_hint),
+                size = RivetFieldSize.Filter,
+                modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp).focusRequester(searchFocus),
+            )
+            LaunchedEffect(Unit) { searchFocus.requestFocus() }
+        }
+        if (renameNotice > 0) {
+            ChatStatusStrip(
+                stringResource(R.string.rename_needs_turns),
+                error = false,
+                modifier = Modifier.semantics { liveRegion = LiveRegionMode.Polite },
+            )
+        }
         if (st.ws == WsStatus.CONNECTING) {
             ChatStatusStrip(reconnecting, error = false)
         } else if (st.ws == WsStatus.CLOSED) {
             ChatStatusStrip(stringResource(R.string.ws_disconnected), error = true)
         }
         stripError?.let { ChatStatusStrip("✗ $it", error = true) }
-        // Phil 2026-09-03: the Terminal|Chat segment is the ONLY mode switch —
-        // horizontal swipes belong to the drawers, so the pager never swipes.
+        // Horizontal swipes belong to the drawers; mode changes use header controls.
         ModePager(
             pages = pages,
             selected = selected,
@@ -233,7 +333,16 @@ fun HarnessChatScreen(
                     )
                 }
             } else {
-                ChatTranscript(vm, accent)
+                if (searchActive) {
+                    val hits = remember(st.turns, query) { searchTurns(st.turns, query) }
+                    MessageSearchResults(query, hits) { hit ->
+                        jumpToTurn = hit.turnIndex
+                        searchActive = false
+                        query = ""
+                    }
+                } else {
+                    ChatTranscript(vm, accent, listState, transcriptPin, jumpToTurn) { jumpToTurn = null }
+                }
             }
         }
         if (st.mode == SessionMode.Terminal) {
@@ -352,11 +461,17 @@ fun HarnessChatScreen(
 }
 
 @Composable
-private fun ChatTranscript(vm: HarnessChatViewModel, accent: androidx.compose.ui.graphics.Color) {
+private fun ChatTranscript(
+    vm: HarnessChatViewModel,
+    accent: androidx.compose.ui.graphics.Color,
+    list: LazyListState,
+    pin: TranscriptPin,
+    jumpToTurn: Int?,
+    onJumpConsumed: () -> Unit,
+) {
     val st by vm.state.collectAsState()
     val ctx = LocalContext.current
     val colors = RivetTheme.colors
-    val list = rememberLazyListState()
     val scope = rememberCoroutineScope()
     val liveExtra = if (st.inFlight || st.liveText.isNotBlank() || st.liveReasoning.isNotBlank()) 1 else 0
     val count = st.turns.size + liveExtra
@@ -364,8 +479,7 @@ private fun ChatTranscript(vm: HarnessChatViewModel, accent: androidx.compose.ui
     // true; the first non-empty load jumps to the end unconditionally (a chat
     // opens at the bottom of the thread); afterwards new content follows ONLY
     // while within 120dp of the bottom; the ↓ latest pill re-pins.
-    val pin = remember { TranscriptPin() }
-    var pinned by remember { mutableStateOf(true) }
+    var pinned by remember(pin) { mutableStateOf(pin.pinned) }
     val density = LocalDensity.current
     val distanceFromBottom by remember {
         derivedStateOf {
@@ -378,14 +492,24 @@ private fun ChatTranscript(vm: HarnessChatViewModel, accent: androidx.compose.ui
             }
         }
     }
-    LaunchedEffect(Unit) {
+    LaunchedEffect(pin, jumpToTurn) {
         snapshotFlow { distanceFromBottom }.collect { d ->
-            pin.onScroll(with(density) { d.toDp().value })
+            if (jumpToTurn == null) pin.onScroll(with(density) { d.toDp().value })
             pinned = pin.pinned
         }
     }
-    LaunchedEffect(count, st.liveText.length, st.liveReasoning.length) {
-        if (pin.onContent(count)) {
+    LaunchedEffect(jumpToTurn) {
+        if (jumpToTurn != null) {
+            // Stored turns start at item zero; live output and the spacer follow them.
+            pin.onContent(count)
+            pin.onScroll(Float.POSITIVE_INFINITY)
+            pinned = false
+            list.animateScrollToItem(jumpToTurn)
+            onJumpConsumed()
+        }
+    }
+    LaunchedEffect(count, st.liveText.length, st.liveReasoning.length, jumpToTurn) {
+        if (jumpToTurn == null && pin.onContent(count)) {
             // Index `count` = the trailing spacer — scrolling it into view
             // lands on the very bottom of the thread.
             runCatching { list.scrollToItem(count) }
@@ -482,4 +606,50 @@ private fun ChatTranscript(vm: HarnessChatViewModel, accent: androidx.compose.ui
             }
         }
     }
+}
+
+@Composable
+private fun MessageSearchResults(query: String, hits: List<SearchHit>, onHit: (SearchHit) -> Unit) {
+    val colors = RivetTheme.colors
+    if (query.isBlank()) {
+        EmptyLine(stringResource(R.string.search_type_to_find))
+        return
+    }
+    if (hits.isEmpty()) {
+        EmptyLine(stringResource(R.string.search_no_matches))
+        return
+    }
+    LazyColumn(
+        modifier = Modifier.fillMaxSize().padding(horizontal = 12.dp),
+        verticalArrangement = Arrangement.spacedBy(4.dp),
+    ) {
+        items(hits, key = { it.turnIndex }) { hit ->
+            val snippet = buildAnnotatedString {
+                append(hit.snippet.replace('\n', ' ').replace('\r', ' '))
+                val range = highlightRanges(hit)
+                addStyle(SpanStyle(color = colors.em, fontWeight = FontWeight.Bold), range.first, range.last + 1)
+            }
+            Text(
+                snippet,
+                color = colors.ink,
+                style = RivetType.sm,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+                modifier = Modifier.fillMaxWidth()
+                    .clip(RoundedCornerShape(Radius.sm))
+                    .clickable(role = Role.Button) { onHit(hit) }
+                    .padding(horizontal = 12.dp, vertical = 14.dp),
+            )
+        }
+    }
+}
+
+@Composable
+private fun EmptyLine(text: String) {
+    Text(
+        text,
+        color = RivetTheme.colors.inkDim,
+        style = RivetType.xs,
+        modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp),
+    )
 }

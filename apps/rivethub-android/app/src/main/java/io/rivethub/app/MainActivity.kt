@@ -488,6 +488,23 @@ fun App(
                             vm = vm,
                             onOpenDrawer = openDrawer,
                             onOpenHistory = openHistory,
+                            hubVm = hubVm,
+                            harnessId = s.harnessId,
+                            initialAgentId = s.agentId,
+                            onNewChat = { sessionAgentId ->
+                                val current = hubVm.state.value
+                                when (val action = newConversationAction(
+                                    currentAgentId = current.prefs.currentAgentId,
+                                    agentIds = current.agents.map { it.agentId },
+                                    sessionAgentId = sessionAgentId,
+                                )) {
+                                    is NewConversationAction.ForAgent -> {
+                                        val agent = current.agents.first { it.agentId == action.agentId }
+                                        openChatScreen(hubVm.openAgentAction(agent, AgentAction.Plus))
+                                    }
+                                    NewConversationAction.PickAgent -> openNewDraft()
+                                }
+                            },
                             shareUris = shareUris,
                             onShareConsumed = onShareConsumed,
                         )

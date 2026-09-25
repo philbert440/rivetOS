@@ -77,12 +77,14 @@ private fun GalleryThemeBlock(label: String, mode: ThemeMode) {
             Spacer(Modifier.height(8.dp))
             TopBar(title = "RivetHub", onOpenDrawer = null, padStatusBar = false)
             Spacer(Modifier.height(8.dp))
-            // Session one-row header (chat.tsx:1645): ☰ · id · ctx % · Stop · Terminal|Chat · history.
+            // U1 chat row: menu, title, Stop, Terminal chip, search, new chat.
             ChatSessionHeader(
                 sessionLabel = "claude-code:e256ef81-dbaf-4e75-bf8f-8c8f3553bcc7",
                 context = contextBarView(50_202, "claude", listOf("hello")),
                 modeOptions = listOf("Terminal", "Chat"),
                 selectedMode = "Chat",
+                mode = io.rivethub.app.plane.SessionMode.Chat,
+                titleBlock = io.rivethub.app.plane.TitleBlock("Release notes", "Rivet / Claude · 50.2k/30%"),
                 onSelectMode = {},
                 onOpenMenu = {},
                 onOpenHistory = {},
@@ -249,6 +251,8 @@ private fun GalleryThemeBlock(label: String, mode: ThemeMode) {
                 context = contextBarView(50_202, "claude", emptyList()),
                 modeOptions = listOf("Terminal", "Chat"),
                 selectedMode = "Chat",
+                mode = io.rivethub.app.plane.SessionMode.Chat,
+                titleBlock = io.rivethub.app.plane.TitleBlock("Release notes", "Rivet / Claude · 50.2k/30%"),
                 onSelectMode = {},
                 onOpenMenu = {},
                 onOpenHistory = {},
@@ -262,6 +266,8 @@ private fun GalleryThemeBlock(label: String, mode: ThemeMode) {
                 context = contextBarView(50_202, "claude", emptyList()),
                 modeOptions = listOf("Terminal", "Chat"),
                 selectedMode = "Chat",
+                mode = io.rivethub.app.plane.SessionMode.Chat,
+                titleBlock = io.rivethub.app.plane.TitleBlock("Release notes", "Rivet / Claude · 50.2k/30%"),
                 onSelectMode = {},
                 onOpenMenu = {},
                 onOpenHistory = {},
@@ -275,6 +281,8 @@ private fun GalleryThemeBlock(label: String, mode: ThemeMode) {
                 context = null,
                 modeOptions = listOf("Terminal", "Chat"),
                 selectedMode = "Chat",
+                mode = io.rivethub.app.plane.SessionMode.Chat,
+                titleBlock = io.rivethub.app.plane.TitleBlock("New chat", "Rivet / Claude"),
                 onSelectMode = {},
                 onOpenMenu = {},
                 onOpenHistory = {},
