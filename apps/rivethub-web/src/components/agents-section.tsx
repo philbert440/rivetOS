@@ -84,6 +84,7 @@ import { useChat } from '../stores/chat.js'
 import { useChatSettings } from '../stores/chat-settings.js'
 import { useSidebarPrefs } from '../stores/sidebar-prefs.js'
 import { Tooltip } from './ui/tooltip.js'
+import { cn } from '../lib/utils.js'
 
 type RosterAgent = ResolvedRosterAgent
 
@@ -611,10 +612,44 @@ function AgentEditor({
   )
 }
 
+function agentAccent(agent: Pick<RosterAgent, 'color' | 'harnessId' | 'model'>): string {
+  return accentFor({
+    presetColor: agent.color,
+    harnessId: agent.harnessId,
+    command: rosterCommandFor(agent.harnessId) ?? agent.model,
+  })
+}
+
+/** Agent colour dot; the current agent gets a ring in its own accent. */
+function AgentSwatch(props: {
+  accent: string
+  compact?: boolean
+  current?: boolean
+  /** Folded rail dot only: separate a dark accent from the Bot stroke. */
+  halo?: boolean
+}): JSX.Element {
+  return (
+    <span
+      className={cn('inline-block shrink-0 rounded-full', props.compact ? 'size-3' : 'size-2')}
+      style={{
+        background: props.accent,
+        ...(props.current
+          ? { boxShadow: `0 0 0 2px var(--color-panel-2), 0 0 0 3.5px ${props.accent}` }
+          : props.halo
+            ? { boxShadow: '0 0 0 1.5px var(--color-panel)' }
+            : {}),
+      }}
+      aria-hidden
+    />
+  )
+}
+
 interface AgentRowProps {
   agent: RosterAgent
   nodeKnown: boolean
   compact?: boolean
+  /** The active chat session belongs to this agent. */
+  current?: boolean
   onOpen: () => void
   onStartOver: () => void
   onEdit: () => void
@@ -625,6 +660,7 @@ function AgentRow({
   agent,
   nodeKnown,
   compact,
+  current,
   onOpen,
   onStartOver,
   onEdit,
@@ -713,29 +749,22 @@ function AgentRow({
       ? `${agent.name} (node unknown) — ${place}`
       : `${agent.name} (node unknown)`
 
-  const swatch = (
-    <span
-      className={compact ? 'size-3 shrink-0 rounded-full' : 'size-2 shrink-0 rounded-full'}
-      style={{
-        background: accentFor({
-          presetColor: agent.color,
-          harnessId: agent.harnessId,
-          command: rosterCommandFor(agent.harnessId) ?? agent.model,
-        }),
-      }}
-      aria-hidden
-    />
-  )
+  const accent = agentAccent(agent)
+  const swatch = <AgentSwatch accent={accent} compact={compact} current={current} />
 
   if (compact) {
     return (
-      <Tooltip label={rowTitle} block>
+      <Tooltip label={current ? `${rowTitle} (current)` : rowTitle} block>
         <button
           type="button"
           onClick={onOpen}
           disabled={!nodeKnown}
           aria-label={agent.name}
-          className="flex w-full items-center justify-center rounded py-1.5 hover:bg-panel-2 disabled:opacity-50"
+          aria-current={current ? 'true' : undefined}
+          className={cn(
+            'flex w-full items-center justify-center rounded py-1.5 hover:bg-panel-2 disabled:opacity-50',
+            current && 'bg-panel-2',
+          )}
         >
           {swatch}
         </button>
@@ -744,17 +773,34 @@ function AgentRow({
   }
 
   return (
-    <div className="group flex items-center gap-2 rounded px-2 py-1.5 hover:bg-panel-2">
+    <div
+      className={cn(
+        'group relative flex items-center gap-2 rounded px-2 py-1.5 hover:bg-panel-2',
+        current && 'bg-panel-2',
+      )}
+    >
+      {current && (
+        <span
+          className="absolute inset-y-1 left-0 w-0.5 rounded-full"
+          style={{ background: accent }}
+          aria-hidden
+        />
+      )}
       <button
         id={`agent-row-${agent.id}`}
         onClick={onOpen}
         disabled={!nodeKnown}
+        aria-current={current ? 'true' : undefined}
         aria-keyshortcuts="Alt+ArrowUp Alt+ArrowDown"
         className="flex min-w-0 flex-1 items-center gap-2 text-left disabled:opacity-50"
-        title={rowTitle}
+        title={current ? `${rowTitle} (current)` : rowTitle}
       >
         {swatch}
-        <span className="min-w-0 truncate text-xs text-ink">{agent.name}</span>
+        <span
+          className={cn('min-w-0 truncate text-xs', current ? 'font-medium text-em' : 'text-ink')}
+        >
+          {agent.name}
+        </span>
         {activityLabel && (
           <span
             className={`size-1.5 shrink-0 rounded-full ${
@@ -825,7 +871,9 @@ export function AgentsSection(props: { compact?: boolean }): JSX.Element {
   const queryClient = useQueryClient()
   const navigate = useNavigate()
   const { baseUrl, roster, transportEpoch } = useConnection()
+  // Whole-store useChat() keeps the marker fresh; agentForSession is not reactive.
   const { addDraft, setActive } = useChat()
+  const activeSession = useChat((s) => s.active)
   const chatSettings = useChatSettings()
   const [collapsed, setCollapsed] = useState(false)
   const [editing, setEditing] = useState<RosterAgent | null>(null)
@@ -1211,19 +1259,30 @@ export function AgentsSection(props: { compact?: boolean }): JSX.Element {
     openFresh(agent, { replace: true })
   }
 
+  // The agent whose pinned session is the active chat (bound at open time).
+  const currentAgentId = activeSession ? agentForSession(activeSession) : undefined
+  const currentAgent = agents.find((a) => a.id === currentAgentId)
+  const currentAccent = currentAgent ? agentAccent(currentAgent) : undefined
+
   return (
     <div className={compact ? 'border-t border-line px-1 py-2' : 'border-t border-line px-2 py-2'}>
       {dialog.element}
       <div className="flex w-full items-center justify-between">
-        <Tooltip label="Agents" disabled={!compact} block>
+        <Tooltip
+          label={currentAgent ? `Agents — current: ${currentAgent.name}` : 'Agents'}
+          disabled={!compact}
+          block
+        >
           <button
             type="button"
             onClick={() => setCollapsed((c) => !c)}
-            aria-label="Agents"
+            aria-label={
+              collapsed && currentAgent ? `Agents, current: ${currentAgent.name}` : 'Agents'
+            }
             aria-expanded={!collapsed}
             className={
               compact
-                ? 'flex w-full items-center justify-center rounded py-2 text-ink-dim hover:bg-panel-2 hover:text-ink'
+                ? 'relative flex w-full items-center justify-center rounded py-2 text-ink-dim hover:bg-panel-2 hover:text-ink'
                 : 'flex min-w-0 flex-1 items-center rounded px-3 py-2 text-sm text-ink-dim hover:bg-panel-2 hover:text-ink'
             }
           >
@@ -1231,9 +1290,23 @@ export function AgentsSection(props: { compact?: boolean }): JSX.Element {
             {!compact && <span>Agents</span>}
             {!compact &&
               (collapsed ? (
-                <ChevronRight className="ml-1 size-3 text-ink-dim" />
+                <ChevronRight className="ml-1 size-3 shrink-0 text-ink-dim" />
               ) : (
-                <ChevronDown className="ml-1 size-3 text-ink-dim" />
+                <ChevronDown className="ml-1 size-3 shrink-0 text-ink-dim" />
+              ))}
+            {/* Folded list hides the highlighted row — keep the current agent visible. */}
+            {collapsed &&
+              currentAgent &&
+              currentAccent &&
+              (compact ? (
+                <span className="absolute left-1/2 top-1.5 ml-1" aria-hidden>
+                  <AgentSwatch accent={currentAccent} halo />
+                </span>
+              ) : (
+                <span className="ml-auto flex min-w-0 items-center gap-1.5 pl-2 text-xs text-em">
+                  <AgentSwatch accent={currentAccent} />
+                  <span className="min-w-0 truncate">{currentAgent.name}</span>
+                </span>
               ))}
           </button>
         </Tooltip>
@@ -1266,6 +1339,7 @@ export function AgentsSection(props: { compact?: boolean }): JSX.Element {
               <AgentRow
                 agent={agent}
                 compact={compact}
+                current={agent.id === currentAgentId}
                 nodeKnown={Boolean(agent.sourceNodeBaseUrl)}
                 onOpen={() => handleOpen(agent)}
                 onStartOver={() => handleStartOver(agent)}
