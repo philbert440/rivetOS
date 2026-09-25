@@ -262,4 +262,14 @@ class ChatChromeTest {
         assertTrue(composerShowsMic(compact = false))
         assertFalse(composerShowsMic(compact = true))
     }
+
+    @Test
+    fun `stats line needs the setting and a usage block with tokens`() {
+        val usage = MessageUsage(promptTokens = 1_200, completionTokens = 40, cachedTokens = 900)
+        assertTrue(statsLineVisible(showStats = true, usage = usage))
+        assertFalse(statsLineVisible(showStats = false, usage = usage))
+        assertFalse(statsLineVisible(showStats = true, usage = null))
+        assertFalse(statsLineVisible(showStats = true, usage = MessageUsage()))
+        assertTrue(statsLineVisible(showStats = true, usage = MessageUsage(completionTokens = 3)))
+    }
 }

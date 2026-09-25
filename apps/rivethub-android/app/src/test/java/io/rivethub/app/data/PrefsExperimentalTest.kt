@@ -38,4 +38,15 @@ class PrefsExperimentalTest {
         assertEquals(on, on.copy())
         assertFalse(on.copy(taskNotifications = false).taskNotifications)
     }
+
+    @Test
+    fun `message display flags default off and persist through copy`() {
+        val p = Prefs()
+        assertFalse(p.showStats)
+        assertFalse(p.actionRowAlways)
+        val on = p.copy(showStats = true, actionRowAlways = true)
+        assertTrue(on.showStats)
+        assertTrue(on.actionRowAlways)
+        assertFalse(on.copy(actionRowAlways = false).actionRowAlways)
+    }
 }

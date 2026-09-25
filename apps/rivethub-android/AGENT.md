@@ -147,6 +147,8 @@ setters are gone.
 `expWorkflows` (experimental drawer sections, default false), `favouriteModels` (string set of
 model ids — the composer model sheet's Favourites group, U5). Leftover Grok-Bot keys (`handle`,
 `expWorkflows` (experimental drawer sections, default false). `taskNotifications` (Settings → Notifications → "Task notifications (system)", default false; slice D3). Leftover Grok-Bot keys (`handle`,
+`expWorkflows` (experimental drawer sections, default false), `showStats` / `actionRowAlways`
+(Settings → Messages, default false). Leftover Grok-Bot keys (`handle`,
 `pinned`, `hidden`, `sessionOverrides`, `lastSeen`, `desktopUrl`) are still decoded so a wipe is
 not required; their setters are gone.
 
@@ -406,6 +408,49 @@ Terminal attach errors (`TermAttachController` publish) set `UiState.termError` 
 `TerminalRetryState`, and each distinct text is stacked once per session via
 `RepeatErrorGate.admit` — the controller republishes on every change, so repeats add nothing and
 a dismissed card does not come back.
+
+**Messages: bubbles, actions, jumper (UX slice U3b, UX-SPEC §1.2/§1.3).** User turn = avatar
+row, then a right-aligned bubble (`Radius.xxl` 14dp, `em` 12% fill, 1dp `em` 35% border, max
+85% width) holding the body with the trailing `[attached: uri]` lines stripped
+(`plane/AttachedLines.kt splitAttachedLines`; only the trailing run of well-formed lines, a
+malformed/mid-text line stays text), then `AttachmentChips` (image types = 72dp thumbnails, tap →
+full-screen `ImageViewerSheet`; others = file pill with name; an image that cannot load falls
+back to a pill). **Tap** the bubble = edit, **long-press** = reveal its action row. Assistant =
+markdown as before; **tap** reveals the action row (long-press still copies); the per-message
+CopyGlyph is gone (Copy lives in the row). Action row (`ui/components/MessageActions.kt`, rules
+in `plane/MessageActions.kt`): Copy · Regenerate · More → sheet (Select & copy →
+`SelectCopySheet`, Edit (user), Share = `ACTION_SEND` text/plain). Revealed one-at-a-time
+(screen-local `MessageActionsState`) or always (`actionRowAlways`). The long-press reveal sits on
+the bubble container (text + chips; thumbnails forward it; TalkBack "Message actions"), so an
+attachment-only turn still reveals a row (Copy/Select/Share act on the attachment names, no Edit);
+a completed tool-only assistant turn gets a Regenerate-only row when `actionRowAlways` is on
+(`messageActions(hasBody = false)`, `actionRowShown`). **Semantics** — the den has
+no message ids / replace / fork / delete: Edit = `editSource` pre-fills the composer and Send
+makes a NEW turn (the original stays); Regenerate = `regenerateSource` (nearest preceding user
+body, attachments stripped) re-sent as a NEW turn via the normal pump after a confirm; offered
+only with a preceding user turn and nothing in flight. Fork and Delete are not offered. VM
+`editFromTurn` goes through `beginEditCompat` — a shim for slice U5's `beginEdit(text)` + "Editing
+✕" banner (not in the U3b tree; swap at merge). **Stats line** only when `showStats` and the
+usage block has tokens (`statsLineVisible`): prompt (+cached) and completion tokens; no rate or
+duration (no timings on the wire). **Jumper** (`ui/components/MessageJumper.kt`,
+`plane/MessageJumper.kt`): four 36dp round buttons at the trailing edge (top · previous user
+turn · next user turn · bottom), shown while the user drags/flings and for 3 s
+(`JUMPER_VISIBLE_MS`) after that scroll goes idle, hidden while pinned to bottom; the hide is a
+one-shot `delay` in a `LaunchedEffect` keyed on the last scroll time (no poll); bottom re-pins
+like the `↓ latest` pill. **Image loading** — no image library: `AttachmentImageLoader.kt`
+decodes with `BitmapFactory` off main, sampled by `plane.sampleSizeFor` (view rule, then hard caps
+`MAX_DECODE_PIXELS` 4 MP / `MAX_DECODE_DIM` 4096, absurd sources refused → pill), into a 24 MB
+process LRU keyed by `plane.imageCacheKey(namespace, size, uri)` — namespace = session node
+origin + identity generation (`vm.attachmentNamespace`), so two nodes never share a bitmap; the
+state is created under `key(cacheKey)` so a replaced uri never shows the old bitmap. Bytes
+come from `vm.attachmentBytes(uri)`: a file THIS VM uploaded is read back from its local content
+uri (`localPreviews`) or the bytes `stageBytes` kept (`localPreviewBytes`, ≤ 20 MB total), else `attachmentFetchUrl` (same-origin https or an `/api/` path
+on the session node only — the client cert never goes elsewhere) via
+`HarnessGateway.fetchBytes` (mTLS client, no redirects, 20 MB cap; cancellation cancels the
+OkHttp call and `gateway.readCapped` checks `ensureActive()` per chunk; CancellationException is
+rethrown through the VM and loader, never turned into a pill). NOTE: den stages uploads
+as node-local filesystem paths and has no GET for them, so an image sent from another device
+(or after the VM is gone) shows as a pill, not a thumbnail — needs a den read route to fix.
 
 ## Terminal mode (M4)
 

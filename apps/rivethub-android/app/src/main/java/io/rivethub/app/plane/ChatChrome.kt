@@ -83,6 +83,14 @@ fun statsLineOrNull(usage: MessageUsage?): StatsLine? {
     return statsLine(usage.promptTokens, usage.completionTokens, usage.cachedTokens)
 }
 
+/**
+ * The stats line under an assistant turn (UX-SPEC §1.3): only with the
+ * setting on and a usage block that carries tokens. The wire has no turn
+ * timings, so it is tokens only — no rate, no duration.
+ */
+fun statsLineVisible(showStats: Boolean, usage: MessageUsage?): Boolean =
+    showStats && usage != null && (usage.promptTokens > 0 || usage.completionTokens > 0)
+
 fun statsLine(
     promptTokens: Int,
     completionTokens: Int,

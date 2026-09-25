@@ -4,6 +4,7 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.combinedClickable
+import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
@@ -22,20 +23,26 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.role
+import androidx.compose.ui.semantics.CustomAccessibilityAction
+import androidx.compose.ui.semantics.customActions
+import androidx.compose.ui.semantics.onLongClick
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import io.rivethub.app.R
+import io.rivethub.app.plane.AttachedRef
 import io.rivethub.app.plane.CotFold
 import io.rivethub.app.plane.CotStep
 import io.rivethub.app.plane.ReasoningSpan
@@ -52,52 +59,108 @@ data class ToolRow(
     val status: String,
 )
 
+/**
+ * User turn (UX-SPEC §1.3): a right-aligned bubble in the accent-tinted
+ * surface ([text] is the body with attachment lines already stripped), the
+ * [attachments] as chips under it, then the [actionRow] when revealed.
+ * [onTap] starts edit (only when there is a body); [onLongPress] reveals the
+ * action row (it copies when the caller wires no actions).
+ *
+ * The long-press lives on the bubble container (body + chips), so a turn that
+ * is only attachments still has a reveal path: the text bubble and image
+ * thumbnails consume their own presses and forward long-press to the same
+ * handler, a file pill or the gap between chips falls through to the
+ * container, and TalkBack gets a "Message actions" long-click / custom action
+ * on the container.
+ */
 @Composable
 fun TranscriptUserTurn(
     text: String,
     time: String?,
     onCopy: (String) -> Unit,
     modifier: Modifier = Modifier,
+    attachments: List<AttachedRef> = emptyList(),
+    images: AttachmentImageSource? = null,
+    onTap: () -> Unit = {},
+    onLongPress: (() -> Unit)? = null,
+    actionRow: (@Composable () -> Unit)? = null,
 ) {
     val colors = RivetTheme.colors
+    val longPress = onLongPress ?: { onCopy(text) }
+    // The gesture detector reads the latest handler instead of restarting on
+    // every recomposition (a restart would drop a long-press in progress).
+    val currentLongPress by rememberUpdatedState(longPress)
+    val actionsLabel = stringResource(R.string.message_actions_cd)
+    val editLabel = stringResource(R.string.message_edit_cd)
     Column(
         modifier.fillMaxWidth(),
         horizontalAlignment = Alignment.End,
         verticalArrangement = Arrangement.spacedBy(6.dp),
     ) {
         AvatarRow(mine = true, time = time)
-        BoxWithConstraints(Modifier.fillMaxWidth()) {
-            Box(Modifier.align(Alignment.CenterEnd).widthIn(max = maxWidth * 0.85f)) {
-                val shape = RoundedCornerShape(Radius.lg)
-                Text(
-                    text,
-                    color = colors.ink,
-                    style = RivetType.sm,
-                    modifier = Modifier
-                        .border(Dimens.line, colors.emDim.copy(alpha = 0.4f), shape)
-                        .background(colors.emDim.copy(alpha = 0.1f), shape)
-                        .combinedClickable(
-                            onClick = {},
-                            onLongClick = { onCopy(text) },
+        if (text.isNotBlank() || attachments.isNotEmpty()) {
+            BoxWithConstraints(Modifier.fillMaxWidth()) {
+                Column(
+                    Modifier
+                        .align(Alignment.CenterEnd)
+                        .widthIn(max = maxWidth * 0.85f)
+                        .pointerInput(Unit) { detectTapGestures(onLongPress = { currentLongPress() }) }
+                        .then(
+                            // Chips present: the container is a TalkBack stop (file pills merge
+                            // into it) carrying the reveal. Text-only turns use the bubble's own.
+                            if (attachments.isEmpty()) {
+                                Modifier
+                            } else {
+                                Modifier.semantics(mergeDescendants = true) {
+                                    onLongClick(label = actionsLabel) {
+                                        longPress()
+                                        true
+                                    }
+                                    customActions = listOf(
+                                        CustomAccessibilityAction(actionsLabel) {
+                                            longPress()
+                                            true
+                                        },
+                                    )
+                                }
+                            },
+                        ),
+                    horizontalAlignment = Alignment.End,
+                    verticalArrangement = Arrangement.spacedBy(6.dp),
+                ) {
+                    if (text.isNotBlank()) {
+                        val shape = RoundedCornerShape(Radius.xxl)
+                        Text(
+                            text,
+                            color = colors.ink,
+                            style = RivetType.sm,
+                            modifier = Modifier
+                                .clip(shape)
+                                .background(colors.em.copy(alpha = 0.12f), shape)
+                                .border(Dimens.line, colors.em.copy(alpha = 0.35f), shape)
+                                .combinedClickable(
+                                    onClickLabel = editLabel,
+                                    onClick = onTap,
+                                    onLongClickLabel = actionsLabel,
+                                    onLongClick = longPress,
+                                )
+                                .padding(horizontal = Dimens.bubblePadH, vertical = Dimens.bubblePadV),
                         )
-                        .padding(horizontal = 16.dp, vertical = 10.dp)
-                        // N19: reserve the same 44dp the CopyGlyph occupies, like
-                        // the assistant side, so short messages clear the glyph.
-                        .padding(end = 28.dp),
-                )
-                CopyGlyph(
-                    copied = false,
-                    onCopy = { onCopy(text) },
-                    modifier = Modifier.align(Alignment.TopEnd),
-                )
+                    }
+                    if (attachments.isNotEmpty()) {
+                        AttachmentChips(attachments, images, onLongPress = longPress)
+                    }
+                }
             }
         }
+        actionRow?.invoke()
     }
 }
 
 /**
  * Assistant turn: avatar row, the chain-of-thought timeline ([steps] folded
- * to [fold]; UX-SPEC §1.3), then the markdown body. [liveSpan] is the phone
+ * to [fold]; UX-SPEC §1.3), then the markdown body, the [actionRow] (tap
+ * the body to reveal it, or always per settings) and the token [stats]. [liveSpan] is the phone
  * reasoning clock and is set only for the in-flight turn; [nowMs] is the
  * clock the span was sampled with, so the live label ticks on the same base.
  */
@@ -119,6 +182,8 @@ fun TranscriptAssistantTurn(
     codeWrap: Boolean = false,
     liveSpan: ReasoningSpan? = null,
     nowMs: () -> Long = System::currentTimeMillis,
+    onTap: () -> Unit = {},
+    actionRow: (@Composable () -> Unit)? = null,
 ) {
     Column(
         modifier.fillMaxWidth(),
@@ -140,25 +205,20 @@ fun TranscriptAssistantTurn(
         if (text.isNotBlank()) {
             BoxWithConstraints(Modifier.fillMaxWidth()) {
                 Box(Modifier.widthIn(max = maxWidth * 0.85f).fillMaxWidth()) {
+                    // Tap reveals the action row (UX-SPEC §1.3); long-press still copies.
                     MarkdownBody(
                         text,
                         codeLineNumbers = codeLineNumbers,
                         codeWrap = codeWrap,
-                        modifier = Modifier
-                            .padding(end = Dimens.touchTarget)
-                            .combinedClickable(
-                                onClick = {},
-                                onLongClick = { onCopy(text) },
-                            ),
-                    )
-                    CopyGlyph(
-                        copied = false,
-                        onCopy = { onCopy(text) },
-                        modifier = Modifier.align(Alignment.TopEnd),
+                        modifier = Modifier.combinedClickable(
+                            onClick = onTap,
+                            onLongClick = { onCopy(text) },
+                        ),
                     )
                 }
             }
         }
+        actionRow?.invoke()
         if (stats != null) {
             StatsLineRow(stats)
         }
