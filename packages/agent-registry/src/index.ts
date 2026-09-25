@@ -6,6 +6,7 @@ export type {
 } from './store.js'
 export {
   PresetConflictError,
+  PresetMigrationRequiredError,
   nameKey,
   sortPresets,
   findPresetByHandle,

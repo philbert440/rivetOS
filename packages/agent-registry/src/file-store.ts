@@ -55,6 +55,20 @@ function quarantineCorrupt(file: string, reason: string): Registry {
   return { agents: [] }
 }
 
+/**
+ * `sortOrder` is cosmetic. A non-integer (a string, a float, null) must not
+ * fail `isAgentPreset` — that filter drops the whole preset on the next write.
+ * Integers stay. Every other field is still strict.
+ */
+function withoutInvalidSortOrder(row: unknown): unknown {
+  if (!isRecord(row) || !('sortOrder' in row)) return row
+  const sortOrder = row.sortOrder
+  if (typeof sortOrder === 'number' && Number.isInteger(sortOrder)) return row
+  const next = { ...row }
+  delete next.sortOrder
+  return next
+}
+
 function loadRegistry(file: string): Registry {
   if (!existsSync(file)) return { agents: [] }
   try {
@@ -64,7 +78,10 @@ function loadRegistry(file: string): Registry {
     }
     return {
       agents: (raw.agents as unknown[])
-        .map((row): unknown => (isAgentPreset(row) ? migrateAgentPreset(row) : row))
+        .map((row): unknown => {
+          const cleaned = withoutInvalidSortOrder(row)
+          return isAgentPreset(cleaned) ? migrateAgentPreset(cleaned) : cleaned
+        })
         .filter(isAgentPreset),
     }
   } catch {

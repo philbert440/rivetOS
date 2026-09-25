@@ -63,6 +63,15 @@ export class PresetConflictError extends Error {
   }
 }
 
+/** DataHub has no `sort_order` column yet (migration 0018). */
+export class PresetMigrationRequiredError extends Error {
+  readonly code = 'preset_migration_required'
+  constructor(message: string) {
+    super(message)
+    this.name = 'PresetMigrationRequiredError'
+  }
+}
+
 /**
  * Case-insensitive trimmed name, the uniqueness key both stores share.
  *

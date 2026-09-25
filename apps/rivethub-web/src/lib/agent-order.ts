@@ -3,15 +3,20 @@
  * move one agent, and list the per-agent writes a new order needs.
  *
  * Each den sorts its own list, but the roster merges several dens, so the
- * merged list is sorted again here. Unordered agents (no `sortOrder`) keep
- * their merged position, after every ordered one.
+ * merged list is sorted again here. Unordered rows keep that merged input
+ * order — roster order, then each den's createdAt — after every ordered one.
+ * That is not the registry's global createdAt order.
  */
 
 import type { AgentPreset } from '@rivetos/types'
 
 type Ordered = Pick<AgentPreset, 'id' | 'sortOrder'>
 
-/** Stable: ordered agents by ascending `sortOrder`, then unordered ones in input order. */
+/**
+ * Stable: ordered agents by ascending `sortOrder`. Unordered rows keep merged
+ * input order (roster order, then each den's createdAt), not the registry's
+ * global createdAt.
+ */
 export function sortRosterAgents<T extends Ordered>(agents: readonly T[]): T[] {
   return agents
     .map((agent, index) => ({ agent, index }))
@@ -40,17 +45,21 @@ export function moveAgentId(ids: readonly string[], id: string, toIndex: number)
 /**
  * Writes that make `orderedIds` the stored order: every agent gets its index
  * as `sortOrder`, and only agents whose stored value differs are returned.
- * Ids missing from `agents` are skipped.
+ * Ids missing from `agents` are skipped. `known`, when passed, overlays the
+ * snapshot's `sortOrder` — including an explicit unordered `undefined`.
  */
 export function sortOrderWrites<T extends Ordered>(
   agents: readonly T[],
   orderedIds: readonly string[],
+  known?: ReadonlyMap<string, number | undefined>,
 ): { agent: T; sortOrder: number }[] {
   const byId = new Map(agents.map((agent) => [agent.id, agent]))
   const writes: { agent: T; sortOrder: number }[] = []
   orderedIds.forEach((id, index) => {
     const agent = byId.get(id)
-    if (agent && agent.sortOrder !== index) writes.push({ agent, sortOrder: index })
+    if (!agent) return
+    const stored = known?.has(id) ? known.get(id) : agent.sortOrder
+    if (stored !== index) writes.push({ agent, sortOrder: index })
   })
   return writes
 }

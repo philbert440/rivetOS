@@ -34,6 +34,7 @@ import {
 } from '@rivetos/types'
 import {
   PresetConflictError,
+  PresetMigrationRequiredError,
   defaultDirectoryFor,
   directoryWarnings,
   ensureAgentDirectory,
@@ -199,9 +200,9 @@ export function createAgentsRoutes(opts: {
     log(msg, 'error')
   }
 
-  const unavailable = (res: ServerResponse, err: unknown): void => {
+  const unavailable = (res: ServerResponse, err: unknown, publicError?: string): void => {
     error(`agent registry unavailable: ${errorMessage(err)}`)
-    json(res, 503, { error: 'agent registry unavailable' })
+    json(res, 503, { error: publicError ?? 'agent registry unavailable' })
   }
 
   const chains = new Map<string, Promise<void>>()
@@ -553,6 +554,10 @@ export function createAgentsRoutes(opts: {
     } catch (err) {
       if (err instanceof PresetConflictError) {
         json(res, 409, { error: `an agent named "${name}" already exists` })
+        return
+      }
+      if (err instanceof PresetMigrationRequiredError) {
+        unavailable(res, err, err.message)
         return
       }
       unavailable(res, err)

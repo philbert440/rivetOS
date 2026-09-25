@@ -43,6 +43,26 @@ describe('sortOrderWrites', () => {
   it('skips ids that are not in the roster', () => {
     expect(sortOrderWrites([a('a')], ['gone', 'a'])).toEqual([{ agent: a('a'), sortOrder: 1 }])
   })
+
+  it('a second order computed against the overlay writes what the snapshot alone would skip', () => {
+    const agents = [a('a', 0), a('b', 1), a('c', 2)]
+    expect(sortOrderWrites(agents, ['a', 'c', 'b']).map((w) => [w.agent.id, w.sortOrder])).toEqual([
+      ['c', 1],
+      ['b', 2],
+    ])
+    const known = new Map<string, number | undefined>([
+      ['a', 0],
+      ['c', 1],
+      ['b', 2],
+    ])
+    expect(sortOrderWrites(agents, ['a', 'b', 'c'])).toEqual([])
+    expect(
+      sortOrderWrites(agents, ['a', 'b', 'c'], known).map((w) => [w.agent.id, w.sortOrder]),
+    ).toEqual([
+      ['b', 1],
+      ['c', 2],
+    ])
+  })
 })
 
 describe('applyPendingOrder', () => {

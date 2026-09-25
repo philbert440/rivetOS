@@ -16,6 +16,7 @@ import { join } from 'node:path'
 import {
   FileAgentPresetStore,
   PresetConflictError,
+  PresetMigrationRequiredError,
   type AgentPresetInput,
   type AgentPresetStore,
 } from '@rivetos/agent-registry'
@@ -239,6 +240,54 @@ describe('agents routes', () => {
     expect(((await cleared.json()) as { agent: AgentPreset }).agent.sortOrder).toBeUndefined()
     // An unordered preset sorts after every ordered one.
     expect(await names()).toEqual(['Second', 'First'])
+  })
+
+  it('PATCH sortOrder when migration 0018 is missing is 503 naming the migration', async () => {
+    const logs: string[] = []
+    const migration =
+      'agent preset ordering needs DataHub migration 0018_agent_preset_sort_order (run `rivetos db migrate`)'
+    await start({
+      log: (msg, level) => {
+        logs.push(`${level ?? 'error'}:${msg}`)
+      },
+      store: (root) => {
+        const real = new FileAgentPresetStore(join(root, 'agents.json'), { now: () => now })
+        return {
+          backend: 'file',
+          file: real.file,
+          isReady: () => real.isReady(),
+          list: (filter) => real.list(filter),
+          get: (id) => real.get(id),
+          findByHandle: (handle) => real.findByHandle(handle),
+          create: (input) => real.create(input),
+          update: (id, patch) => {
+            if (patch.sortOrder !== undefined) {
+              return Promise.reject(new PresetMigrationRequiredError(migration))
+            }
+            return real.update(id, patch)
+          },
+          delete: (id) => real.delete(id),
+        }
+      },
+    })
+    const created = await createAgent({ name: 'Alpha' })
+    expect(created.status).toBe(201)
+    const res = await fetch(`${base}/api/agents/${created.json.agent!.id}`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ sortOrder: 1 }),
+    })
+    const body = (await res.json()) as { error?: string }
+    expect(res.status).toBe(503)
+    expect(body.error).toBe(migration)
+    expect(
+      logs.some(
+        (line) =>
+          line.startsWith('error:') &&
+          line.includes('agent registry unavailable') &&
+          line.includes('0018_agent_preset_sort_order'),
+      ),
+    ).toBe(true)
   })
 
   it('POST nodeBaseUrl is stored, not required', async () => {
