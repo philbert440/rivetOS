@@ -1214,11 +1214,13 @@ export function AgentsSection(props: { compact?: boolean }): JSX.Element {
     }
   }
 
-  // One generation per agent per click/start-over: a stale completion
-  // (double-click, start-over racing a slow liveness probe, node switched
-  // mid-await) must not navigate or mint a second draft — and one agent's
-  // click must not cancel another's in-flight open.
+  // Per-agent generation: a stale completion (double-click, start-over racing
+  // a slow liveness probe, node switched mid-await) must not navigate or mint
+  // a second draft for THAT agent. A newer open of any agent supersedes older
+  // in-flight ones (last click/keypress wins) via openSeq — that is what the
+  // user means by cycling to C and not landing on A's late probe.
   const openGen = useRef(new Map<string, number>())
+  const openSeq = useRef(0)
 
   const bumpGen = (agentId: string): number => {
     const gen = (openGen.current.get(agentId) ?? 0) + 1
@@ -1228,6 +1230,7 @@ export function AgentsSection(props: { compact?: boolean }): JSX.Element {
 
   const handleOpen = (agent: RosterAgent): void => {
     if (!agent.sourceNodeBaseUrl) return
+    const seq = ++openSeq.current
     const gen = bumpGen(agent.id)
     void (async () => {
       collapseAgentSlots(agent.id, agent.sourceNodeBaseUrl)
@@ -1237,6 +1240,7 @@ export function AgentsSection(props: { compact?: boolean }): JSX.Element {
         return
       }
       const verdict = await probeSession(pin.sessionId, pin.nodeBaseUrl)
+      if (seq !== openSeq.current) return
       if (gen !== openGen.current.get(agent.id)) return
       if (verdict === 'dead') {
         clearAgentSessionPointer(agent.id, pin.nodeBaseUrl, pin.sessionId)
@@ -1256,6 +1260,7 @@ export function AgentsSection(props: { compact?: boolean }): JSX.Element {
     // spawn itself is already fail-closed at spawnPty; this keeps a ↺ click
     // from minting a draft pinned to a node that cannot run it.
     if (!agent.sourceNodeBaseUrl) return
+    ++openSeq.current
     bumpGen(agent.id)
     openFresh(agent, { replace: true })
   }
@@ -1269,6 +1274,7 @@ export function AgentsSection(props: { compact?: boolean }): JSX.Element {
   // currentAgentId lags a key press — advance from a cursor that tracks the
   // last targeted agent, reset whenever the active session catches up).
   const cycleCursor = useRef<string | undefined>(undefined)
+  const openTimer = useRef<number | undefined>(undefined)
   const dialogOpen = editing !== null || creating || duplicating !== null
   const cycleRef = useRef({ agents, currentAgentId, handleOpen, dialogOpen })
   cycleRef.current = { agents, currentAgentId, handleOpen, dialogOpen }
@@ -1279,6 +1285,11 @@ export function AgentsSection(props: { compact?: boolean }): JSX.Element {
     const onKey = (e: KeyboardEvent): void => {
       const action = matchHubKey(e)
       if (action !== 'agent-next' && action !== 'agent-prev') return
+      if (e.repeat) {
+        e.preventDefault()
+        e.stopPropagation()
+        return
+      }
       const {
         agents: list,
         currentAgentId: current,
@@ -1297,12 +1308,19 @@ export function AgentsSection(props: { compact?: boolean }): JSX.Element {
       e.preventDefault()
       e.stopPropagation()
       cycleCursor.current = id
-      if (id === current) return
-      const agent = byId.get(id)
-      if (agent) open(agent)
+      // A pinned remote session mounts chat in terminal fallback and spawns a PTY, so every intermediate open would spawn.
+      if (openTimer.current !== undefined) window.clearTimeout(openTimer.current)
+      openTimer.current = window.setTimeout(() => {
+        openTimer.current = undefined
+        const agent = byId.get(id)
+        if (agent) open(agent)
+      }, 200)
     }
     window.addEventListener('keydown', onKey, { capture: true })
-    return () => window.removeEventListener('keydown', onKey, { capture: true })
+    return () => {
+      if (openTimer.current !== undefined) window.clearTimeout(openTimer.current)
+      window.removeEventListener('keydown', onKey, { capture: true })
+    }
   }, [])
 
   return (

@@ -200,6 +200,11 @@ export function Sidebar(): JSX.Element {
   useEffect(() => {
     const onKey = (e: KeyboardEvent): void => {
       if (matchHubKey(e) !== 'toggle-sidebar') return
+      if (e.repeat) {
+        e.preventDefault()
+        e.stopPropagation()
+        return
+      }
       if (focusInForeignDialog(document.activeElement)) return
       const prefs = useSidebarPrefs.getState()
       if (narrow) prefs.setDrawerOpen(!prefs.drawerOpen)

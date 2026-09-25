@@ -21,9 +21,9 @@ describe('matchHubKey', () => {
   })
 
   it('maps Ctrl+Shift+Tab to agent-prev', () => {
-    expect(
-      matchHubKey(keyEvent({ key: 'Tab', code: 'Tab', ctrlKey: true, shiftKey: true })),
-    ).toBe('agent-prev')
+    expect(matchHubKey(keyEvent({ key: 'Tab', code: 'Tab', ctrlKey: true, shiftKey: true }))).toBe(
+      'agent-prev',
+    )
   })
 
   it('maps Ctrl+Shift+KeyE to toggle-sidebar', () => {
@@ -41,7 +41,9 @@ describe('matchHubKey', () => {
   })
 
   it('ignores Ctrl+Alt+Tab', () => {
-    expect(matchHubKey(keyEvent({ key: 'Tab', code: 'Tab', ctrlKey: true, altKey: true }))).toBeNull()
+    expect(
+      matchHubKey(keyEvent({ key: 'Tab', code: 'Tab', ctrlKey: true, altKey: true })),
+    ).toBeNull()
   })
 
   it('ignores Meta+Ctrl+Tab', () => {
@@ -51,7 +53,9 @@ describe('matchHubKey', () => {
   })
 
   it('ignores Ctrl+Shift+KeyF', () => {
-    expect(matchHubKey(keyEvent({ key: 'f', code: 'KeyF', ctrlKey: true, shiftKey: true }))).toBeNull()
+    expect(
+      matchHubKey(keyEvent({ key: 'f', code: 'KeyF', ctrlKey: true, shiftKey: true })),
+    ).toBeNull()
   })
 })
 
@@ -99,6 +103,18 @@ describe('cycleAgentId', () => {
   it('returns the current id when it is the only eligible one', () => {
     expect(cycleAgentId(ids, (id) => id === 'b', 'b', 1)).toBe('b')
     expect(cycleAgentId(ids, (id) => id === 'b', 'b', -1)).toBe('b')
+  })
+
+  it('steps past a current id that is present but ineligible', () => {
+    const eligible = (id: string): boolean => id !== 'b'
+    expect(cycleAgentId(ids, eligible, 'b', 1)).toBe('c')
+    expect(cycleAgentId(ids, eligible, 'b', -1)).toBe('a')
+  })
+
+  it('steps from the cursor when it differs from the active agent', () => {
+    // Active agent is 'a'; cursor already advanced to 'b'.
+    expect(cycleAgentId(ids, all, 'b', 1)).toBe('c')
+    expect(cycleAgentId(ids, all, 'b', -1)).toBe('a')
   })
 
   it('returns undefined for an empty list', () => {
