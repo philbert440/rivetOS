@@ -308,6 +308,18 @@ fun SettingsScreen(
                     modifier = Modifier.padding(top = 8.dp),
                 )
 
+                SettingsH2(stringResource(R.string.section_code))
+                ToggleRow(
+                    label = stringResource(R.string.code_line_numbers),
+                    checked = prefs.codeLineNumbers,
+                    onChange = { v -> scope.launch { c.settings.setCodeLineNumbers(v) } },
+                )
+                ToggleRow(
+                    label = stringResource(R.string.code_wrap),
+                    checked = prefs.codeWrap,
+                    onChange = { v -> scope.launch { c.settings.setCodeWrap(v) } },
+                )
+
                 SettingsH2(stringResource(R.string.section_terminal))
                 ThemeGroup(
                     options = listOf(fontSmall, fontMedium, fontLarge),
@@ -329,17 +341,17 @@ fun SettingsScreen(
                     style = RivetType.xs,
                     modifier = Modifier.padding(bottom = 8.dp),
                 )
-                ExperimentalToggleRow(
+                ToggleRow(
                     label = stringResource(R.string.nav_files),
                     checked = prefs.expFiles,
                     onChange = { v -> scope.launch { c.settings.setExpFiles(v) } },
                 )
-                ExperimentalToggleRow(
+                ToggleRow(
                     label = stringResource(R.string.nav_tasks),
                     checked = prefs.expTasks,
                     onChange = { v -> scope.launch { c.settings.setExpTasks(v) } },
                 )
-                ExperimentalToggleRow(
+                ToggleRow(
                     label = stringResource(R.string.nav_workflows),
                     checked = prefs.expWorkflows,
                     onChange = { v -> scope.launch { c.settings.setExpWorkflows(v) } },
@@ -371,7 +383,7 @@ fun SettingsScreen(
 }
 
 @Composable
-private fun ExperimentalToggleRow(
+private fun ToggleRow(
     label: String,
     checked: Boolean,
     onChange: (Boolean) -> Unit,

@@ -116,6 +116,18 @@ not required; their setters are gone.
 
 ## Design system
 
+U4 fenced code (built from `docs/UX-SPEC.md` only): `Radius.sm` block with a `panel`
+header (mono 11sp language, Copy, Lucide download/Save; 1dp `line` bottom), then
+`codeBg` code and a fold/expand footer. `plane/CodeHighlight.kt` supplies contiguous
+syntax spans: Keyword → `em`, String → `warn`, Comment → `inkDim`, Number → `link`,
+Type → bold `ink`, Plain/Punct → `ink`. No syntax dependency; unknown languages stay
+plain. `CODE_FOLD_AFTER_LINES = 10` in `plane/CodeFold.kt`; expansion is remembered
+for the block's composition lifetime. DataStore `codeLineNumbers` / `codeWrap`
+(default false) control the right-aligned mono gutter and wrap vs horizontal scroll,
+including live chat. Wiki topics (`MemoryTopicScreen`) and the gallery render code
+blocks with default prefs (line numbers and wrap off). Copy and Save always use the full original code; Save uses
+CreateDocument and UTF-8 output on IO, with success/failure toast.
+
 Every visual decision traces to a desktop file under `apps/rivethub-web` (`theme.css`,
 `sidebar.tsx`, `agents-section.tsx`, `node-switcher.tsx`, `pages/chat.tsx` ConversationsPane,
 `pages/settings.tsx`, `components/ui/button.tsx`, `segmented-control.tsx`, `den-bot.tsx`).
