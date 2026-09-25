@@ -58,3 +58,48 @@ export function focusInForeignDialog(active: Element | null): boolean {
   if (!dialog) return false
   return dialog.id !== 'hub-rail'
 }
+
+/** How long a Ctrl+Tab burst waits before the last target opens. Long enough
+ *  to collapse a fast chord; a settled burst still feels instant. */
+export const HUB_CYCLE_OPEN_DELAY_MS = 250
+
+export interface PressScheduler {
+  /** Clear any pending run and arm `run` after the configured delay. */
+  press(run: () => void): void
+  /** Drop a pending run without invoking it. */
+  cancel(): void
+}
+
+/** Timer bookkeeping for a burst of keypresses. Each `press` clears the
+ *  previous timer and arms a new one; `cancel` clears. Timers are injected so
+ *  tests can drive them without a DOM. */
+export function createPressScheduler(opts: {
+  delayMs: number
+  setTimeout: (fn: () => void, ms: number) => number
+  clearTimeout: (id: number) => void
+}): PressScheduler {
+  let timer: number | undefined
+  return {
+    press(run) {
+      if (timer !== undefined) {
+        opts.clearTimeout(timer)
+        timer = undefined
+      }
+      timer = opts.setTimeout(() => {
+        timer = undefined
+        run()
+      }, opts.delayMs)
+    },
+    cancel() {
+      if (timer !== undefined) {
+        opts.clearTimeout(timer)
+        timer = undefined
+      }
+    },
+  }
+}
+
+/** True when a captured open sequence is still the latest selection. */
+export function isCurrentSeq(seq: number, current: number): boolean {
+  return seq === current
+}

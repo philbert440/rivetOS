@@ -24,9 +24,10 @@ a focused xterm still sees neither the key nor a stray Tab:
   Shift. Implemented in `agents-section.tsx` with a `cycleCursor` ref, because
   `handleOpen`'s async liveness probe means `currentAgentId` lags a key press.
   Auto-repeat is ignored (the terminal must not see a held Tab). The cursor
-  advances on every press; `open()` is debounced 200 ms so only the final
-  target mounts. A newer open of any agent supersedes older in-flight probes
-  (latest open wins). Chrome and Firefox both reserve Ctrl+Tab / Ctrl+Shift+Tab
+  advances on every press; `open()` is debounced 250 ms so only the final
+  target mounts. The sequence is taken at the keypress, so a newer click or ↺
+  cancels a queued keyboard open and a keypress cancels older in-flight
+  probes. Chrome and Firefox both reserve Ctrl+Tab / Ctrl+Shift+Tab
   in a plain browser tab and the page cannot claim them, so agent cycling is an
   Electron-shell feature.
 - **Ctrl+Shift+E** — toggle the left sidebar: wide (≥768px) collapses/expands
@@ -35,11 +36,13 @@ a focused xterm still sees neither the key nor a stray Tab:
   Works in Chromium tabs; Firefox reserves this chord. Auto-repeat is ignored.
 
 Rules: match only `ctrlKey` with no `altKey`/`metaKey`; **plain Ctrl+E is left
-untouched** (end-of-line in terminals). While focus is inside any Radix
-dialog/popover (agent editor, confirm dialog, model picker) the chords are
-intentionally inert — this also protects the agent editor's Tab focus trap.
-The narrow rail (`#hub-rail`) is itself `role="dialog"` and is not treated as
-foreign.
+untouched** (end-of-line in terminals). While focus is inside any
+`[role="dialog"]` other than `#hub-rail` the chords are intentionally inert.
+The agent editor is a hand-rolled `role="dialog"` form, not Radix; the same
+guard covers Radix dialogs (confirm dialog, model picker) and protects the
+editor's Tab focus trap. Auto-repeat is swallowed before the dialog check, so
+a held chord inside a dialog does nothing. The narrow rail (`#hub-rail`) is
+itself `role="dialog"` and is not treated as foreign.
 
 ## Status (2026-07-10)
 

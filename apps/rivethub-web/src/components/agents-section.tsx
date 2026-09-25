@@ -73,7 +73,14 @@ import {
   sortOrderWrites,
   sortRosterAgents,
 } from '../lib/agent-order.js'
-import { cycleAgentId, focusInForeignDialog, matchHubKey } from '../lib/hub-keys.js'
+import {
+  createPressScheduler,
+  cycleAgentId,
+  focusInForeignDialog,
+  HUB_CYCLE_OPEN_DELAY_MS,
+  isCurrentSeq,
+  matchHubKey,
+} from '../lib/hub-keys.js'
 import { nativeIdOf } from '../lib/harness-chat.js'
 import { accentFor } from '../lib/agent-accent.js'
 import {
@@ -1217,10 +1224,40 @@ export function AgentsSection(props: { compact?: boolean }): JSX.Element {
   // Per-agent generation: a stale completion (double-click, start-over racing
   // a slow liveness probe, node switched mid-await) must not navigate or mint
   // a second draft for THAT agent. A newer open of any agent supersedes older
-  // in-flight ones (last click/keypress wins) via openSeq — that is what the
-  // user means by cycling to C and not landing on A's late probe.
+  // in-flight ones (last click/keypress wins) via openSeq. That holds because
+  // the sequence is taken at the click or keypress, not when the debounced
+  // open runs — cycling to C cannot land on A's late probe.
   const openGen = useRef(new Map<string, number>())
   const openSeq = useRef(0)
+  // Mirrored from the press scheduler so a direct click / ↺ can clear the
+  // queued keyboard open without waiting for its callback.
+  const openTimer = useRef<number | undefined>(undefined)
+  const cycleScheduler = useRef<ReturnType<typeof createPressScheduler> | null>(null)
+  if (cycleScheduler.current === null) {
+    cycleScheduler.current = createPressScheduler({
+      delayMs: HUB_CYCLE_OPEN_DELAY_MS,
+      setTimeout: (fn, ms) => {
+        const id = window.setTimeout(() => {
+          if (openTimer.current === id) openTimer.current = undefined
+          fn()
+        }, ms)
+        openTimer.current = id
+        return id
+      },
+      clearTimeout: (id) => {
+        window.clearTimeout(id)
+        if (openTimer.current === id) openTimer.current = undefined
+      },
+    })
+  }
+
+  const cancelQueuedKeyboardOpen = (): void => {
+    if (openTimer.current !== undefined) {
+      window.clearTimeout(openTimer.current)
+      openTimer.current = undefined
+    }
+    cycleScheduler.current?.cancel()
+  }
 
   const bumpGen = (agentId: string): number => {
     const gen = (openGen.current.get(agentId) ?? 0) + 1
@@ -1228,9 +1265,14 @@ export function AgentsSection(props: { compact?: boolean }): JSX.Element {
     return gen
   }
 
-  const handleOpen = (agent: RosterAgent): void => {
+  const handleOpen = (agent: RosterAgent, opts?: { seq?: number }): void => {
     if (!agent.sourceNodeBaseUrl) return
-    const seq = ++openSeq.current
+    if (opts?.seq !== undefined) {
+      if (!isCurrentSeq(opts.seq, openSeq.current)) return
+    } else {
+      cancelQueuedKeyboardOpen()
+    }
+    const seq = opts?.seq !== undefined ? opts.seq : ++openSeq.current
     const gen = bumpGen(agent.id)
     void (async () => {
       collapseAgentSlots(agent.id, agent.sourceNodeBaseUrl)
@@ -1240,7 +1282,7 @@ export function AgentsSection(props: { compact?: boolean }): JSX.Element {
         return
       }
       const verdict = await probeSession(pin.sessionId, pin.nodeBaseUrl)
-      if (seq !== openSeq.current) return
+      if (!isCurrentSeq(seq, openSeq.current)) return
       if (gen !== openGen.current.get(agent.id)) return
       if (verdict === 'dead') {
         clearAgentSessionPointer(agent.id, pin.nodeBaseUrl, pin.sessionId)
@@ -1260,6 +1302,7 @@ export function AgentsSection(props: { compact?: boolean }): JSX.Element {
     // spawn itself is already fail-closed at spawnPty; this keeps a ↺ click
     // from minting a draft pinned to a node that cannot run it.
     if (!agent.sourceNodeBaseUrl) return
+    cancelQueuedKeyboardOpen()
     ++openSeq.current
     bumpGen(agent.id)
     openFresh(agent, { replace: true })
@@ -1274,7 +1317,6 @@ export function AgentsSection(props: { compact?: boolean }): JSX.Element {
   // currentAgentId lags a key press — advance from a cursor that tracks the
   // last targeted agent, reset whenever the active session catches up).
   const cycleCursor = useRef<string | undefined>(undefined)
-  const openTimer = useRef<number | undefined>(undefined)
   const dialogOpen = editing !== null || creating || duplicating !== null
   const cycleRef = useRef({ agents, currentAgentId, handleOpen, dialogOpen })
   cycleRef.current = { agents, currentAgentId, handleOpen, dialogOpen }
@@ -1308,17 +1350,20 @@ export function AgentsSection(props: { compact?: boolean }): JSX.Element {
       e.preventDefault()
       e.stopPropagation()
       cycleCursor.current = id
-      // A pinned remote session mounts chat in terminal fallback and spawns a PTY, so every intermediate open would spawn.
-      if (openTimer.current !== undefined) window.clearTimeout(openTimer.current)
-      openTimer.current = window.setTimeout(() => {
-        openTimer.current = undefined
+      // Taken at the press, so older in-flight probes bail and a later click
+      // or ↺ (which bumps openSeq) turns this timer into a no-op.
+      const seq = ++openSeq.current
+      // Pinned Terminal-mode and remote-fallback sessions mount chat and
+      // spawn a PTY. No-pin agents only get a draft, so a burst must open
+      // the final target once — not every intermediate agent.
+      cycleScheduler.current?.press(() => {
         const agent = byId.get(id)
-        if (agent) open(agent)
-      }, 200)
+        if (agent) open(agent, { seq })
+      })
     }
     window.addEventListener('keydown', onKey, { capture: true })
     return () => {
-      if (openTimer.current !== undefined) window.clearTimeout(openTimer.current)
+      cancelQueuedKeyboardOpen()
       window.removeEventListener('keydown', onKey, { capture: true })
     }
   }, [])

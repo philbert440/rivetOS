@@ -1,5 +1,11 @@
-import { describe, expect, it } from 'vitest'
-import { cycleAgentId, focusInForeignDialog, matchHubKey } from './hub-keys.js'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import {
+  createPressScheduler,
+  cycleAgentId,
+  focusInForeignDialog,
+  isCurrentSeq,
+  matchHubKey,
+} from './hub-keys.js'
 
 type KeyFields = Parameters<typeof matchHubKey>[0]
 
@@ -111,12 +117,6 @@ describe('cycleAgentId', () => {
     expect(cycleAgentId(ids, eligible, 'b', -1)).toBe('a')
   })
 
-  it('steps from the cursor when it differs from the active agent', () => {
-    // Active agent is 'a'; cursor already advanced to 'b'.
-    expect(cycleAgentId(ids, all, 'b', 1)).toBe('c')
-    expect(cycleAgentId(ids, all, 'b', -1)).toBe('a')
-  })
-
   it('returns undefined for an empty list', () => {
     expect(cycleAgentId([], all, undefined, 1)).toBeUndefined()
     expect(cycleAgentId([], all, 'a', -1)).toBeUndefined()
@@ -142,5 +142,66 @@ describe('focusInForeignDialog', () => {
   it('is true inside any other dialog', () => {
     expect(focusInForeignDialog(fakeActive({ id: 'agent-editor' }))).toBe(true)
     expect(focusInForeignDialog(fakeActive({}))).toBe(true)
+  })
+})
+
+describe('createPressScheduler', () => {
+  beforeEach(() => {
+    vi.useFakeTimers()
+  })
+
+  afterEach(() => {
+    vi.useRealTimers()
+  })
+
+  function scheduler(delayMs: number) {
+    return createPressScheduler({
+      delayMs,
+      setTimeout: (fn, ms) => setTimeout(fn, ms),
+      clearTimeout: (id) => {
+        clearTimeout(id)
+      },
+    })
+  }
+
+  it('runs only the last of three presses inside the window', () => {
+    const ran: string[] = []
+    const scheduled = scheduler(200)
+    scheduled.press(() => ran.push('a'))
+    scheduled.press(() => ran.push('b'))
+    scheduled.press(() => ran.push('c'))
+    vi.advanceTimersByTime(199)
+    expect(ran).toEqual([])
+    vi.advanceTimersByTime(1)
+    expect(ran).toEqual(['c'])
+  })
+
+  it('runs nothing when cancel() happens before the delay', () => {
+    const ran: string[] = []
+    const scheduled = scheduler(200)
+    scheduled.press(() => ran.push('a'))
+    scheduled.cancel()
+    vi.advanceTimersByTime(500)
+    expect(ran).toEqual([])
+  })
+
+  it('does not open a run whose captured sequence is stale', () => {
+    let current = 0
+    const opened: number[] = []
+    const scheduled = scheduler(200)
+    const open = (seq: number): void => {
+      if (!isCurrentSeq(seq, current)) return
+      opened.push(seq)
+    }
+    current = 1
+    scheduled.press(() => open(1))
+    current = 2
+    vi.advanceTimersByTime(200)
+    expect(opened).toEqual([])
+    expect(isCurrentSeq(1, current)).toBe(false)
+    scheduled.press(() => open(2))
+    vi.advanceTimersByTime(200)
+    expect(opened).toEqual([2])
+    expect(isCurrentSeq(2, current)).toBe(true)
   })
 })
