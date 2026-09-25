@@ -146,6 +146,7 @@ pin/hide sets; `Settings.pin/unpin/hide/unhide/migrateKeys`). Leftover Grok-Bot 
 setters are gone.
 `expWorkflows` (experimental drawer sections, default false), `favouriteModels` (string set of
 model ids — the composer model sheet's Favourites group, U5). Leftover Grok-Bot keys (`handle`,
+`expWorkflows` (experimental drawer sections, default false). `taskNotifications` (Settings → Notifications → "Task notifications (system)", default false; slice D3). Leftover Grok-Bot keys (`handle`,
 `pinned`, `hidden`, `sessionOverrides`, `lastSeen`, `desktopUrl`) are still decoded so a wipe is
 not required; their setters are gone.
 
@@ -468,6 +469,61 @@ In Terminal mode the header is that back arrow, the title (program title, else
 model or harness · conversation, plus " (ended)" and " · remote"), and Stop when the turn is
 interruptible — the segmented control and the history button are not shown. Detach-never-kill
 is unchanged: leave, background, and the Detach menu still send detach only.
+
+## Notifications inbox (slice D3)
+
+UX-SPEC §6 "Inbox". ONE socket, `WS /api/notifications/ws`, on the ENTRY node only
+(`Gateway.watchNotifications` over `WsSubscription`); every den rebroadcasts task completions from any
+node, so one socket is enough. Owned by `HubViewModel.reconcileNotificationWatch` — the ONE place it
+changes — keyed by the SAVED entry URL + identity generation (`plane/NotificationsWatch.kt`), never by
+discovery: it runs from the prefs collector (so Settings "Test connection", which saves the entry
+without a refresh, still moves the socket even when its health check fails) and from `refreshOnce` (an
+identity bump that does not touch prefs). A key change closes and reopens it under a new subscription
+generation; a different entry node also empties the inbox; closed in `shutdown()`/`onCleared()`. It
+opens against the key's URL (`transport.gateway(NodeRef(denUrl = key.entryUrl))`), not
+`transport.entry()`, which may not be retargeted yet. Frames are marshalled onto one Channel stamped
+with the generation captured at subscribe time; a frame from a superseded socket is dropped
+(`acceptNotificationFrame`). Ephemeral, NO replay: a reconnect is not a catch-up,
+and nothing polls. Parsing: `gateway/Wire.kt parseNotificationFrame` (escalation · task.done ·
+workflow.gate; unknown kind → `Other`, dropped; malformed → null).
+
+Inbox = in-memory only, newest first, capped at `INBOX_MAX` = 50 (`/api/outcomes` is the durable record
+on the den). Dedupe by entry id — escalation/gate `<kind>:<taskId|runId>:<ts>`, completion
+`<kind>:<taskId>:<status>` — so the same completion from two dens is one row and a duplicate does not
+re-fire hooks. Sheet (HubScreen `InboxSheet`): title/body/relative time/unread dot, Clear; bell badge =
+`formatUnreadBadge(unread)`; open state lives in `UiState.inboxOpen` so a notification tap can open it.
+Unread rows carry `stateDescription` = `inbox_row_unread` (the dot is colour-only). Tap intent flags:
+`NEW_TASK | SINGLE_TOP | CLEAR_TOP`; small icon `R.mipmap.ic_launcher_mono` (transparent background, alpha-mask safe).
+
+System notification (`notify/TaskNotifier.kt`, channel `tasks` "Task updates"): task.done ONLY, only
+while the process is alive AND the app is not on screen, only with the Settings toggle on
+(`shouldPostSystemNotification`). App-on-screen = `notify/AppVisibility` observing MainActivity's
+start/stop (single `singleTask` activity, so that IS the app's foreground) — **no dependency added**
+(`lifecycle-process` was not needed). `POST_NOTIFICATIONS` is requested at runtime (API 33+) only when
+the user turns the toggle on; the toggle only sticks once granted. No foreground service (a
+turn-scoped FGS does not fit task completion). **Phase 2**: delivery after process death (push, or a
+persistent FGS) — not built. Tap → MainActivity extras `open_task_id` + `open_task_nonce` (post-time
+nonce). Consumed durably (`plane/OpenTaskTap.kt openTaskFromIntent` / `ConsumedTaps`): once App()
+handles a tap the extras are removed from the Activity intent and its marker (task id + nonce) is saved
+in the Activity instance state. The marker of the tap read in `onCreate` (the launch intent — the only
+intent the system restores after process death) is PINNED in its own field for the Activity's lifetime;
+`onNewIntent` taps go to a separate recent list capped at `CONSUMED_TAPS_MAX` = 8, so later taps can
+never evict the launch marker. A launch tap superseded by a newer tap before App() handled it is pinned
+too. So recreation, and process-death restore of the original launch intent however many taps came
+since, does not re-fire; a fresh tap, same task or not, has a new nonce and opens.
+
+Wording: `plane/InboxLabels` has NO English defaults — strings.xml is the one source; MainActivity builds
+the labels from resources and passes them to the `HubViewModel` constructor (and re-hands them on
+recomposition, e.g. after a locale change). Tests use their own fixture (`TEST_INBOX_LABELS`).
+Frame side effects (`onTaskDone`, the OS post) run inside `plane/Inbox.kt runNotificationHook` on the one
+frame-reading coroutine: a throw is logged and swallowed so the inbox keeps updating; cancellation propagates.
+
+D2 seam (Tasks screen, built in a parallel slice): `MainActivity.App` has `val openTask: ((String) -> Unit)? = null`
+— set it to push `Screen.TaskDetail(id)`; it is passed to every `HubDrawer(onOpenTask = …)` (inbox row
+tap) and used for a tapped notification. While null: a task row shows the "not available" strip and a
+tapped notification opens the inbox sheet over the current screen — leaving the component Gallery
+first, the one post-enroll screen HubDrawer does not host. Also set
+`hubVm.onTaskDone = { tasksVm.refresh() }` (null here) — invoked on each new task.done frame.
 
 ## Build / test / install
 

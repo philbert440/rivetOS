@@ -3,6 +3,9 @@ package io.rivethub.app.gateway
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.JsonPrimitive
+import kotlinx.serialization.json.doubleOrNull
+import kotlinx.serialization.json.longOrNull
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
 
@@ -517,3 +520,74 @@ data class TaskResponse(val task: TaskWire = TaskWire())
 data class TaskSteerRequest(val message: String)
 @Serializable
 data class TaskKillResponse(val ok: Boolean = false, val prior: String? = null)
+/**
+ * Frames on WS /api/notifications/ws (gateway-api.ts `NotificationFrame`):
+ * ephemeral, no replay — a reconnect is not a catch-up. Unknown kinds decode
+ * to [Other] so a newer den never breaks an older phone.
+ */
+sealed interface NotificationFrame {
+    data class Escalation(
+        val taskId: String,
+        val agentId: String,
+        val summary: String,
+        val href: String,
+        val ts: Long,
+    ) : NotificationFrame
+
+    /** status ∈ completed | failed | timeout | killed (kept as a string — new states pass through). */
+    data class TaskDone(val taskId: String, val status: String, val ts: Long) : NotificationFrame
+
+    data class WorkflowGate(
+        val runId: String,
+        val workflowId: String,
+        val label: String,
+        val prompt: String?,
+        val href: String,
+        val ts: Long,
+    ) : NotificationFrame
+
+    data class Other(val kind: String) : NotificationFrame
+}
+
+/**
+ * Tolerant decode: not JSON / no string `kind` / a known kind missing its id
+ * → null; an unknown kind → [NotificationFrame.Other]; other missing fields
+ * default to blank / 0.
+ */
+fun parseNotificationFrame(text: String): NotificationFrame? {
+    val el = runCatching { wireJson.parseToJsonElement(text) as? JsonObject }.getOrNull() ?: return null
+    fun str(key: String): String? = (el[key] as? JsonPrimitive)?.takeIf { it.isString }?.content
+    fun ts(): Long {
+        val p = el["ts"] as? JsonPrimitive ?: return 0L
+        if (p.isString) return 0L
+        return p.longOrNull ?: p.doubleOrNull?.toLong() ?: 0L
+    }
+    return when (val kind = str("kind") ?: return null) {
+        "escalation" -> {
+            val taskId = str("taskId")?.takeIf { it.isNotBlank() } ?: return null
+            NotificationFrame.Escalation(
+                taskId = taskId,
+                agentId = str("agentId").orEmpty(),
+                summary = str("summary").orEmpty(),
+                href = str("href") ?: "/tasks/$taskId",
+                ts = ts(),
+            )
+        }
+        "task.done" -> {
+            val taskId = str("taskId")?.takeIf { it.isNotBlank() } ?: return null
+            NotificationFrame.TaskDone(taskId = taskId, status = str("status").orEmpty(), ts = ts())
+        }
+        "workflow.gate" -> {
+            val runId = str("runId")?.takeIf { it.isNotBlank() } ?: return null
+            NotificationFrame.WorkflowGate(
+                runId = runId,
+                workflowId = str("workflowId").orEmpty(),
+                label = str("label").orEmpty(),
+                prompt = str("prompt"),
+                href = str("href") ?: "/workflows/runs/$runId",
+                ts = ts(),
+            )
+        }
+        else -> NotificationFrame.Other(kind)
+    }
+}

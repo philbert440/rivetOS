@@ -7,6 +7,8 @@ import io.rivethub.app.data.HttpGatewayClients
 import io.rivethub.app.data.LanNetwork
 import io.rivethub.app.data.Settings
 import io.rivethub.app.gateway.HarnessGateway
+import io.rivethub.app.notify.AppVisibility
+import io.rivethub.app.notify.TaskNotifier
 import io.rivethub.app.transport.DirectTransport
 import io.rivethub.app.transport.NodeTransport
 import io.rivethub.app.update.Updater
@@ -31,6 +33,12 @@ class AppContainer(app: Application) {
 
     val transport: NodeTransport = DirectTransport("", emptySet(), clients)
     val updater = Updater(app.cacheDir, BuildConfig.VERSION_CODE, BuildConfig.VERSION_NAME)
+
+    /** App on screen or not — MainActivity observes its lifecycle into this. */
+    val visibility = AppVisibility()
+
+    /** OS notification for a backgrounded task completion (Settings toggle). */
+    val taskNotifier = TaskNotifier(app)
 
     init {
         // Seed the TLS posture synchronously so the first request honours it.

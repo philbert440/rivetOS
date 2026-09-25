@@ -107,8 +107,16 @@
     <string name="pick_agent">Choose an agent</string>
     <string name="discovering_progress">discovering… %1$d/%2$d</string>
     <string name="empty_agents">no agents yet</string>
-    <string name="empty_inbox">No notifications</string>
-    <string name="inbox_title">Notifications</string>
+    <string name="inbox_title">Inbox</string>
+    <string name="inbox_empty">Nothing here yet — finished tasks, escalations and workflow gates will show up as they happen.</string>
+    <string name="inbox_clear">Clear</string>
+    <string name="inbox_escalation_title">Escalation — %1$s</string>
+    <string name="inbox_task_done_title">Task %1$s</string>
+    <string name="inbox_gate_title">Workflow paused — %1$s</string>
+    <string name="inbox_task_done_status_fallback">done</string>
+    <string name="inbox_row_unread">Unread</string>
+    <string name="inbox_task_unavailable">Task details are not available in this build yet.</string>
+    <string name="notif_channel_tasks">Task updates</string>
     <string name="everything_archived">everything is archived</string>
 
     <string name="mode_chat">Chat</string>
@@ -172,6 +180,9 @@
     <string name="section_terminal">Terminal</string>
     <string name="section_experimental">Experimental features</string>
     <string name="experimental_helper">These are unfinished — turn them on to try them.</string>
+    <string name="section_notifications">Notifications</string>
+    <string name="settings_task_notifications">Task notifications (system)</string>
+    <string name="settings_task_notifications_helper">When a task finishes while RivetHub is in the background, show an Android notification. Only works while the app is still running.</string>
     <string name="label_fingerprint">Fingerprint</string>
     <string name="label_subject">Subject</string>
     <string name="no_identity">No device certificate imported.</string>

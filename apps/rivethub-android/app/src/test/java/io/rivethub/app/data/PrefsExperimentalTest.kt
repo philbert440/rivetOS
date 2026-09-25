@@ -29,4 +29,13 @@ class PrefsExperimentalTest {
         assertFalse(cleared.expTasks)
         assertTrue(cleared.expWorkflows)
     }
+
+    @Test
+    fun `task notifications default off and survive copy`() {
+        assertFalse(Prefs().taskNotifications)
+        val on = Prefs().copy(taskNotifications = true)
+        assertTrue(on.taskNotifications)
+        assertEquals(on, on.copy())
+        assertFalse(on.copy(taskNotifications = false).taskNotifications)
+    }
 }

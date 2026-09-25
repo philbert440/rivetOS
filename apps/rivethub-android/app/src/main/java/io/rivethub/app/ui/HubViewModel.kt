@@ -3,6 +3,7 @@ package io.rivethub.app.ui
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import io.rivethub.app.AppContainer
+import io.rivethub.app.data.AndroidLogger
 import io.rivethub.app.data.Prefs
 import io.rivethub.app.gateway.HarnessDescriptor
 import io.rivethub.app.gateway.HarnessEvent
@@ -11,6 +12,7 @@ import io.rivethub.app.gateway.LegacyHarnessSession
 import io.rivethub.app.gateway.AgentPreset
 import io.rivethub.app.gateway.CatalogAgent
 import io.rivethub.app.gateway.WsStatus
+import io.rivethub.app.gateway.NotificationFrame
 import io.rivethub.app.plane.AgentAction
 import io.rivethub.app.plane.AgentEditFields
 import io.rivethub.app.plane.AgentNodeHint
@@ -49,6 +51,21 @@ import io.rivethub.app.plane.NODE_BUNDLE_TIMEOUT_MS
 import io.rivethub.app.plane.fetchAfterHealthz
 import io.rivethub.app.plane.fetchBundlesProgressively
 import io.rivethub.app.plane.nodeErrorBadge
+import io.rivethub.app.plane.InboxEntry
+import io.rivethub.app.plane.InboxLabels
+import io.rivethub.app.plane.SystemNotifier
+import io.rivethub.app.plane.inboxEntryFor
+import io.rivethub.app.plane.markRead
+import io.rivethub.app.plane.NotificationsWatch
+import io.rivethub.app.plane.acceptNotificationFrame
+import io.rivethub.app.plane.closeNotificationsWatch
+import io.rivethub.app.plane.notificationsWatchKey
+import io.rivethub.app.plane.notificationsWatchOpened
+import io.rivethub.app.plane.reconcileNotificationsWatch
+import io.rivethub.app.plane.pushInbox
+import io.rivethub.app.plane.runNotificationHook
+import io.rivethub.app.plane.shouldPostSystemNotification
+import io.rivethub.app.plane.unreadCount
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.coroutineScope
@@ -59,7 +76,11 @@ import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import java.io.Closeable
 
-class HubViewModel(private val c: AppContainer) : ViewModel() {
+/**
+ * [inboxLabels] — the inbox titles, built by MainActivity from strings.xml
+ * (plane/InboxLabels has no English defaults; resources are the one source).
+ */
+class HubViewModel(private val c: AppContainer, inboxLabels: InboxLabels) : ViewModel() {
     enum class Tab { Conversations, Settings }
 
     data class DraftRow(
@@ -70,8 +91,6 @@ class HubViewModel(private val c: AppContainer) : ViewModel() {
         val harnessId: String?,
         val createdAt: Long,
     )
-
-    data class InboxItem(val id: String, val text: String, val atMs: Long)
 
     data class UiState(
         val tab: Tab = Tab.Conversations,
@@ -91,7 +110,11 @@ class HubViewModel(private val c: AppContainer) : ViewModel() {
         val nodeErrors: Map<String, String> = emptyMap(),
         val discoveringDone: Int = 0,
         val discoveringTotal: Int = 0,
-        val inbox: List<InboxItem> = emptyList(),
+        /** In-memory notifications inbox (newest first, capped — plane/Inbox.kt). */
+        val inbox: List<InboxEntry> = emptyList(),
+        val unread: Int = 0,
+        /** The inbox sheet is showing (lifted here so a tapped OS notification can open it). */
+        val inboxOpen: Boolean = false,
         val prefs: Prefs = Prefs(),
         val identityGen: Int = 0,
         val registryOpen: Boolean = false,
@@ -116,14 +139,52 @@ class HubViewModel(private val c: AppContainer) : ViewModel() {
 
     private data class RegistryMail(val nodeUrl: String, val event: HarnessEvent, val identityGen: Int)
 
+    /**
+     * The ONE notifications socket (entry node) and its ownership state —
+     * key + subscription generation (plane/NotificationsWatch.kt).
+     */
+    private var notifSocket: Closeable? = null
+    private var notifWatch = NotificationsWatch()
+    private val notifFrames = Channel<NotifMail>(Channel.UNLIMITED)
+
+    /** [gen] is the subscription generation captured when the socket was opened. */
+    private data class NotifMail(val gen: Int, val frame: NotificationFrame)
+
+    /**
+     * Titles for inbox entries, from strings.xml: set at construction and
+     * refreshed by MainActivity on recomposition (a locale change outlives
+     * the VM).
+     */
+    @Volatile var inboxLabels: InboxLabels = inboxLabels
+
+    /**
+     * Called on every `task.done` frame with its task id. The Tasks screen
+     * (slice D2) wires this to `TasksViewModel.refresh()`; null until then.
+     */
+    @Volatile var onTaskDone: ((taskId: String) -> Unit)? = null
+
+    /** Posts the OS notification for a backgrounded completion (notify/TaskNotifier). */
+    @Volatile var systemNotifier: SystemNotifier? = null
+
+    /** True while the app is on screen; read per frame (see notify/AppVisibility). */
+    @Volatile var appResumed: () -> Boolean = { true }
+
     init {
         viewModelScope.launch {
             for (mail in registryFrames) onRegistry(mail.nodeUrl, mail.event, mail.identityGen)
         }
         viewModelScope.launch {
+            for (mail in notifFrames) onNotification(mail.gen, mail.frame)
+        }
+        viewModelScope.launch {
             c.settings.prefs.collect { p ->
                 c.setStrictHostnames(p.strictHostnames)
                 loadPointers(p)
+                // The saved entry URL is authoritative for the notifications
+                // socket: an entry saved without a refresh (Settings "Test
+                // connection", even when its health check then fails) still
+                // moves the socket and empties the old node's inbox here.
+                reconcileNotificationWatch(p.entryUrl, c.identity.generation())
                 val filter = when {
                     p.viewNodeId.isNotBlank() ->
                         _state.value.nodes.find { it.id == p.viewNodeId }?.let {
@@ -336,6 +397,21 @@ class HubViewModel(private val c: AppContainer) : ViewModel() {
         }
     }
 
+    fun markInboxRead(id: String) {
+        _state.update {
+            val next = markRead(it.inbox, id)
+            it.copy(inbox = next, unread = unreadCount(next))
+        }
+    }
+
+    fun setInboxOpen(open: Boolean) {
+        _state.update { it.copy(inboxOpen = open) }
+    }
+
+    fun clearInbox() {
+        _state.update { it.copy(inbox = emptyList(), unread = 0) }
+    }
+
     fun refresh() {
         val started = requestRefresh(refreshLatch)
         refreshLatch = started.latch
@@ -348,6 +424,7 @@ class HubViewModel(private val c: AppContainer) : ViewModel() {
         refreshJob?.cancel()
         refreshJob = null
         closeWatches()
+        closeNotificationWatch()
         c.dropClients()
         pointersLoaded = false
         drafts.clear()
@@ -359,6 +436,7 @@ class HubViewModel(private val c: AppContainer) : ViewModel() {
 
     override fun onCleared() {
         closeWatches()
+        closeNotificationWatch()
         super.onCleared()
     }
 
@@ -401,10 +479,16 @@ class HubViewModel(private val c: AppContainer) : ViewModel() {
             }
             val prefs = c.settings.snapshot()
             if (prefs.entryUrl.isBlank()) {
+                reconcileNotificationWatch("", identityGen)
                 _state.update { it.copy(nodes = emptyList(), items = emptyList(), agents = emptyList()) }
                 return
             }
             c.transport.retarget(prefs.entryUrl, prefs.extraNodes)
+            // The notifications socket needs only the entry URL; it reconnects on
+            // its own, so it opens even when discovery below fails. Also run
+            // here (not only from the prefs collector) for an identity bump
+            // that does not touch prefs.
+            reconcileNotificationWatch(prefs.entryUrl, identityGen)
             val nodes = c.transport.discover()
             if (c.identity.generation() != identityGen) return
             if (gen != refreshLatch.gen) return
@@ -674,6 +758,69 @@ class HubViewModel(private val c: AppContainer) : ViewModel() {
             for (item in items) located += locate(item, d.nodeId, d.nodeName, d.nodeDenUrl)
         }
         _state.update { it.copy(items = sortLocatedByRecency(located)) }
+    }
+
+    /**
+     * Open, keep, or swap the ONE notifications socket — the single place it
+     * changes. Keyed by the saved entry URL + identity generation, never by
+     * discovery (plane/NotificationsWatch.kt reconcileNotificationsWatch): an
+     * identity bump or an entry change closes the old socket and opens a new
+     * one under a new generation; a different entry node also empties the
+     * inbox. No replay — reopening is not a catch-up. Main thread only (the
+     * prefs collector and refreshOnce both run on viewModelScope).
+     */
+    private fun reconcileNotificationWatch(entryUrl: String, identityGen: Int) {
+        val step = reconcileNotificationsWatch(notifWatch, notificationsWatchKey(entryUrl, identityGen))
+        if (step.watch == notifWatch) return
+        // step.close mirrors notifSocket != null; closing by the handle keeps
+        // the two from ever disagreeing.
+        notifSocket?.close()
+        notifSocket = null
+        notifWatch = step.watch
+        if (step.clearInbox) clearInbox()
+        val key = step.open ?: return
+        val gen = step.watch.gen
+        // Opened against the key's URL, not transport.entry(): the prefs
+        // emission can land before the transport is retargeted. A malformed
+        // URL must not fail the caller; the next reconcile retries (same key,
+        // socketOpen false).
+        notifSocket = runCatching {
+            c.transport.gateway(NodeRef(id = "", name = "", denUrl = key.entryUrl, online = true, fromMesh = false))
+                .watchNotifications(onFrame = { frame -> notifFrames.trySend(NotifMail(gen, frame)) })
+        }.getOrNull()
+        notifWatch = notificationsWatchOpened(notifWatch, notifSocket != null)
+    }
+
+    private fun onNotification(gen: Int, frame: NotificationFrame) {
+        if (!acceptNotificationFrame(notifWatch, gen)) return // from a socket we already replaced
+        val entry = inboxEntryFor(frame, inboxLabels, System.currentTimeMillis()) ?: return
+        val before = _state.value.inbox
+        val next = pushInbox(before, entry)
+        if (next === before) return // duplicate (second den, or re-delivery)
+        _state.update { it.copy(inbox = next, unread = unreadCount(next)) }
+        if (frame is NotificationFrame.TaskDone) {
+            // This runs on the ONE frame-reading coroutine: a throw from a hook
+            // or the OS post would end it and freeze the inbox until the VM is
+            // cleared. Log and carry on (cancellation still propagates).
+            runNotificationHook(onError = { logHookFailure("onTaskDone", it) }) {
+                onTaskDone?.invoke(frame.taskId)
+            }
+            runNotificationHook(onError = { logHookFailure("system notification", it) }) {
+                if (shouldPostSystemNotification(entry, appResumed(), _state.value.prefs.taskNotifications)) {
+                    systemNotifier?.post(entry)
+                }
+            }
+        }
+    }
+
+    private fun logHookFailure(what: String, e: Exception) {
+        AndroidLogger.warn("RivetHub", "notification $what failed: ${e.javaClass.simpleName}: ${e.message}", e)
+    }
+
+    private fun closeNotificationWatch() {
+        notifSocket?.close()
+        notifSocket = null
+        notifWatch = closeNotificationsWatch(notifWatch)
     }
 
     private fun closeWatches() {

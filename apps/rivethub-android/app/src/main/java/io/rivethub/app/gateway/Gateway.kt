@@ -203,6 +203,16 @@ class Gateway(
             parseDenFrame(text)?.let(onFrame)
         }
 
+    /**
+     * `WS /api/notifications/ws` — escalation / task.done / workflow.gate
+     * frames. Ephemeral (no replay); every node rebroadcasts completions, so
+     * the phone holds ONE of these on the entry node.
+     */
+    fun watchNotifications(onFrame: (NotificationFrame) -> Unit, onStatus: (WsStatus) -> Unit = {}): Closeable =
+        WsSubscription(clients(), url(listOf("api", "notifications", "ws")).toString(), onStatus) { text ->
+            parseNotificationFrame(text)?.let(onFrame)
+        }
+
     suspend fun termConfig(): TermConfigResponse =
         get(listOf("api", "terminal", "config"), TermConfigResponse.serializer())
 
