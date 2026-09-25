@@ -302,6 +302,13 @@ describe('MODEL_TOKEN_RE / EFFORT_TOKEN_RE', () => {
     expect(MODEL_TOKEN_RE.test('a b')).toBe(false)
     expect(EFFORT_TOKEN_RE.test('a b')).toBe(false)
   })
+
+  it('accepts a non-leading ~ (OpenRouter aliases) and rejects a leading ~', () => {
+    expect(MODEL_TOKEN_RE.test('openrouter/~z-ai/glm-latest')).toBe(true)
+    expect(MODEL_TOKEN_RE.test('openrouter/~deepseek/deepseek-flash-latest')).toBe(true)
+    expect(MODEL_TOKEN_RE.test('~z-ai/glm-latest')).toBe(false)
+    expect(MODEL_TOKEN_RE.test('~')).toBe(false)
+  })
 })
 
 describe('hermesSheet', () => {
