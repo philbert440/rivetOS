@@ -73,6 +73,7 @@ import {
   sortOrderWrites,
   sortRosterAgents,
 } from '../lib/agent-order.js'
+import { cycleAgentId, focusInForeignDialog, matchHubKey } from '../lib/hub-keys.js'
 import { nativeIdOf } from '../lib/harness-chat.js'
 import { accentFor } from '../lib/agent-accent.js'
 import {
@@ -1263,6 +1264,46 @@ export function AgentsSection(props: { compact?: boolean }): JSX.Element {
   const currentAgentId = activeSession ? agentForSession(activeSession) : undefined
   const currentAgent = agents.find((a) => a.id === currentAgentId)
   const currentAccent = currentAgent ? agentAccent(currentAgent) : undefined
+
+  // Ctrl+Tab / Ctrl+Shift+Tab cycle the roster (handleOpen is async, so
+  // currentAgentId lags a key press — advance from a cursor that tracks the
+  // last targeted agent, reset whenever the active session catches up).
+  const cycleCursor = useRef<string | undefined>(undefined)
+  const dialogOpen = editing !== null || creating || duplicating !== null
+  const cycleRef = useRef({ agents, currentAgentId, handleOpen, dialogOpen })
+  cycleRef.current = { agents, currentAgentId, handleOpen, dialogOpen }
+  useEffect(() => {
+    cycleCursor.current = undefined
+  }, [currentAgentId])
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent): void => {
+      const action = matchHubKey(e)
+      if (action !== 'agent-next' && action !== 'agent-prev') return
+      const {
+        agents: list,
+        currentAgentId: current,
+        handleOpen: open,
+        dialogOpen: modal,
+      } = cycleRef.current
+      if (modal || focusInForeignDialog(document.activeElement)) return
+      const byId = new Map(list.map((a) => [a.id, a]))
+      const id = cycleAgentId(
+        list.map((a) => a.id),
+        (candidate) => Boolean(byId.get(candidate)?.sourceNodeBaseUrl),
+        cycleCursor.current ?? current,
+        action === 'agent-next' ? 1 : -1,
+      )
+      if (!id) return
+      e.preventDefault()
+      e.stopPropagation()
+      cycleCursor.current = id
+      if (id === current) return
+      const agent = byId.get(id)
+      if (agent) open(agent)
+    }
+    window.addEventListener('keydown', onKey, { capture: true })
+    return () => window.removeEventListener('keydown', onKey, { capture: true })
+  }, [])
 
   return (
     <div className={compact ? 'border-t border-line px-1 py-2' : 'border-t border-line px-2 py-2'}>

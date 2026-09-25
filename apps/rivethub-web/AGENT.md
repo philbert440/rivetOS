@@ -12,6 +12,30 @@
 
 ## Status (2026-07-10)
 
+### Keyboard shortcuts (2026-09-25)
+
+Three app-wide chords, matched by `lib/hub-keys.ts` and registered on `window`
+in the **capture** phase (`preventDefault` + `stopPropagation` when handled) so
+a focused xterm still sees neither the key nor a stray Tab:
+
+- **Ctrl+Tab** / **Ctrl+Shift+Tab** — open the next / previous agent in the
+  sidebar roster, in the rendered `AgentsSection` order (sort + pending
+  reorder), wrapping at both ends. Agents whose row is disabled (no
+  `sourceNodeBaseUrl`) are skipped; with no current agent the first / last
+  eligible agent opens. `Ctrl+Tab` requires no Shift; `Ctrl+Shift+Tab` requires
+  Shift. Implemented in `agents-section.tsx` with a `cycleCursor` ref, because
+  `handleOpen`'s async liveness probe means `currentAgentId` lags a key press.
+- **Ctrl+Shift+E** — toggle the left sidebar: wide (≥768px) collapses/expands
+  the icon rail, narrow opens/closes the drawer. Same branch as the logo
+  button (`sidebar.tsx`), state read fresh via `useSidebarPrefs.getState()`.
+
+Rules: match only `ctrlKey` with no `altKey`/`metaKey`; **plain Ctrl+E is left
+untouched** (end-of-line in terminals). While focus is inside a modal dialog
+other than the narrow rail (`#hub-rail`), no chord is handled — this protects
+the agent editor's Tab focus trap and Radix dialogs. Note Firefox reserves
+Ctrl+Shift+E in plain browser tabs, so the sidebar chord may not fire there;
+the Electron shell and Chromium are unaffected.
+
 ### Sidebar pages (2026-07-10)
 
 Rail: Conversations (`/`), Sessions — Memory, Files — separator — Tasks, Workflows — Settings. "Conversations" is the rail label only — the per-conversation toggle stays [Terminal | Chat]. The standalone Terminal page is gone; terminal is a per-session mode inside Chat.
