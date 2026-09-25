@@ -67,6 +67,12 @@ import {
   type NodeChoice,
   type ResolvedRosterAgent,
 } from '../lib/agent-roster.js'
+import {
+  applyPendingOrder,
+  moveAgentId,
+  sortOrderWrites,
+  sortRosterAgents,
+} from '../lib/agent-order.js'
 import { nativeIdOf } from '../lib/harness-chat.js'
 import { accentFor } from '../lib/agent-accent.js'
 import {
@@ -855,12 +861,45 @@ export function AgentsSection(props: { compact?: boolean }): JSX.Element {
     placeholderData: (prev) => prev,
   })
 
-  const agents = dedupeRosterAgents(nodeQueries.data ?? [], {
-    currentBaseUrl: baseUrl,
-    mesh: meshNodes,
-    roster: rosterForResolve,
-  })
+  const storedAgents = sortRosterAgents(
+    dedupeRosterAgents(nodeQueries.data ?? [], {
+      currentBaseUrl: baseUrl,
+      mesh: meshNodes,
+      roster: rosterForResolve,
+    }),
+  )
+  // Optimistic order while a reorder saves; cleared once the refetch lands.
+  const [pendingOrder, setPendingOrder] = useState<string[] | null>(null)
+  const agents = applyPendingOrder(storedAgents, pendingOrder)
   const isLoading = nodeQueries.isLoading
+
+  const [dragId, setDragId] = useState<string | null>(null)
+  const [dropIndex, setDropIndex] = useState<number | null>(null)
+  const reorderMutation = useMutation({
+    mutationFn: async (orderedIds: string[]) => {
+      const writes = sortOrderWrites(storedAgents, orderedIds)
+      await Promise.all(
+        writes.map(async ({ agent, sortOrder }) =>
+          (await gatewayFor(agentUpdateTarget(agent))).agentUpdate(agent.id, { sortOrder }),
+        ),
+      )
+    },
+    onSettled: async () => {
+      await queryClient.invalidateQueries({ queryKey: ['agents-all-nodes'] })
+      setPendingOrder(null)
+    },
+  })
+  const reorder = (id: string, toIndex: number): void => {
+    const current = agents.map((agent) => agent.id)
+    const next = moveAgentId(current, id, toIndex)
+    if (next.every((value, i) => value === current[i])) return
+    setPendingOrder(next)
+    reorderMutation.mutate(next)
+  }
+  const endDrag = (): void => {
+    setDragId(null)
+    setDropIndex(null)
+  }
 
   const createMutation = useMutation({
     mutationFn: async (agent: AgentWrite) => {
@@ -1146,36 +1185,81 @@ export function AgentsSection(props: { compact?: boolean }): JSX.Element {
           {!isLoading && agents.length === 0 && !creating && !duplicating && !compact && (
             <div className="px-2 text-xs text-ink-dim">no agents yet</div>
           )}
-          {agents.map((agent) => (
-            <AgentRow
+          {agents.map((agent, index) => (
+            <div
               key={agent.id}
-              agent={agent}
-              compact={compact}
-              nodeKnown={Boolean(agent.sourceNodeBaseUrl)}
-              onOpen={() => handleOpen(agent)}
-              onStartOver={() => handleStartOver(agent)}
-              onEdit={() => {
-                setCreating(false)
-                setDuplicating(null)
-                resetUpdate()
-                setEditing(agent)
+              draggable={!compact}
+              aria-keyshortcuts={compact ? undefined : 'Alt+ArrowUp Alt+ArrowDown'}
+              title={compact ? undefined : 'drag or Alt+↑/↓ to reorder'}
+              onDragStart={(e) => {
+                setDragId(agent.id)
+                e.dataTransfer.effectAllowed = 'move'
+                e.dataTransfer.setData('text/plain', agent.id)
               }}
-              onDelete={() => {
-                void (async () => {
-                  if (
-                    await dialog.confirm(`Delete agent "${agent.name}"?`, {
-                      danger: true,
-                    })
-                  ) {
-                    deleteMutation.mutate({
-                      id: agent.id,
-                      targetNode: agentDeleteTarget(agent),
-                    })
-                  }
-                })()
+              onDragOver={(e) => {
+                if (dragId === null) return
+                e.preventDefault()
+                e.dataTransfer.dropEffect = 'move'
+                const rect = e.currentTarget.getBoundingClientRect()
+                setDropIndex(e.clientY > rect.top + rect.height / 2 ? index + 1 : index)
               }}
-            />
+              onDrop={(e) => {
+                e.preventDefault()
+                if (dragId !== null && dropIndex !== null) {
+                  const from = agents.findIndex((a) => a.id === dragId)
+                  reorder(dragId, dropIndex > from ? dropIndex - 1 : dropIndex)
+                }
+                endDrag()
+              }}
+              onDragEnd={endDrag}
+              onKeyDown={(e) => {
+                if (compact || !e.altKey || (e.key !== 'ArrowUp' && e.key !== 'ArrowDown')) return
+                e.preventDefault()
+                reorder(agent.id, index + (e.key === 'ArrowUp' ? -1 : 1))
+              }}
+              className={`border-y-2 ${
+                dropIndex === index
+                  ? 'border-t-em border-b-transparent'
+                  : dropIndex === index + 1 && index === agents.length - 1
+                    ? 'border-t-transparent border-b-em'
+                    : 'border-transparent'
+              } ${dragId === agent.id ? 'opacity-50' : ''}`}
+            >
+              <AgentRow
+                agent={agent}
+                compact={compact}
+                nodeKnown={Boolean(agent.sourceNodeBaseUrl)}
+                onOpen={() => handleOpen(agent)}
+                onStartOver={() => handleStartOver(agent)}
+                onEdit={() => {
+                  setCreating(false)
+                  setDuplicating(null)
+                  resetUpdate()
+                  setEditing(agent)
+                }}
+                onDelete={() => {
+                  void (async () => {
+                    if (
+                      await dialog.confirm(`Delete agent "${agent.name}"?`, {
+                        danger: true,
+                      })
+                    ) {
+                      deleteMutation.mutate({
+                        id: agent.id,
+                        targetNode: agentDeleteTarget(agent),
+                      })
+                    }
+                  })()
+                }}
+              />
+            </div>
           ))}
+        </div>
+      )}
+
+      {reorderMutation.error && (
+        <div role="alert" className="px-2 text-xs text-red">
+          Could not save agent order: {mutationError(reorderMutation.error)}
         </div>
       )}
 

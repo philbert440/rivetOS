@@ -310,5 +310,43 @@ export function describePresetStoreContract(contract: PresetStoreContract): void
       expect((await store.get(created.id))?.name).toBe('Named')
       expect(await contract.readStored(created.id)).toMatchObject({ name: 'Named' })
     })
+
+    it('lists by sortOrder, unordered presets after ordered ones by creation time', async () => {
+      const store = contract.newStore()
+      const base = { node: 'ct115', directory: '/tmp/agents/order' }
+      const a = await store.create({ ...base, name: 'A', createdAt: 1_000 })
+      const b = await store.create({ ...base, name: 'B', createdAt: 2_000 })
+      const c = await store.create({ ...base, name: 'C', createdAt: 3_000 })
+      const d = await store.create({ ...base, name: 'D', createdAt: 4_000 })
+      expect((await store.list()).map((p) => p.name)).toEqual(['A', 'B', 'C', 'D'])
+
+      await store.update(c.id, { sortOrder: 0 })
+      await store.update(a.id, { sortOrder: 1 })
+      expect((await store.list()).map((p) => p.name)).toEqual(['C', 'A', 'B', 'D'])
+      expect((await store.get(c.id))?.sortOrder).toBe(0)
+
+      await store.update(d.id, { sortOrder: 0 })
+      await store.update(c.id, { sortOrder: 2 })
+      expect((await store.list()).map((p) => p.name)).toEqual(['D', 'A', 'C', 'B'])
+      expect((await store.list({ node: 'ct115' })).map((p) => p.name)).toEqual(['D', 'A', 'C', 'B'])
+      expect(b.sortOrder).toBeUndefined()
+    })
+
+    it('clears sortOrder with null and keeps it across unrelated patches', async () => {
+      const store = contract.newStore()
+      const base = { node: 'ct115', directory: '/tmp/agents/order-clear' }
+      const first = await store.create({ ...base, name: 'First', createdAt: 1_000 })
+      const second = await store.create({ ...base, name: 'Second', createdAt: 2_000 })
+      await store.update(second.id, { sortOrder: 5 })
+      await store.update(second.id, { color: '#3b82f6' })
+      expect((await store.get(second.id))?.sortOrder).toBe(5)
+      expect((await store.list()).map((p) => p.name)).toEqual(['Second', 'First'])
+
+      const cleared = await store.update(second.id, { sortOrder: null })
+      expect(cleared?.sortOrder).toBeUndefined()
+      expect((await store.get(second.id))?.sortOrder).toBeUndefined()
+      expect((await store.list()).map((p) => p.name)).toEqual(['First', 'Second'])
+      expect(first.sortOrder).toBeUndefined()
+    })
   })
 }

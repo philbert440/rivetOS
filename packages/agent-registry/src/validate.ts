@@ -40,6 +40,11 @@ export function isAgentPreset(value: unknown): value is AgentPreset {
     (typeof value.harnessId !== 'string' || !isHarnessId(value.harnessId))
   )
     return false
+  if (
+    value.sortOrder !== undefined &&
+    (typeof value.sortOrder !== 'number' || !Number.isInteger(value.sortOrder))
+  )
+    return false
   return (
     typeof value.id === 'string' &&
     value.id.length > 0 &&

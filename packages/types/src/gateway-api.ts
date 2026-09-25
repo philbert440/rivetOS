@@ -1278,6 +1278,8 @@ export interface AgentPreset {
    * written by pre-registry dens (ones that answer 400 `nodeBaseUrl is required`).
    */
   nodeBaseUrl?: string
+  /** User-chosen sidebar position (ascending). Absent = unordered: after ordered presets, by createdAt. */
+  sortOrder?: number
   /** epoch ms */
   createdAt: number
   /** epoch ms */
@@ -1331,6 +1333,8 @@ export interface AgentUpdateRequest {
   nodeBaseUrl?: string
   directory?: string
   sharedLink?: boolean
+  /** Sidebar position, an integer 0–1,000,000. `null` clears it (unordered). */
+  sortOrder?: number | null
 }
 
 export interface AgentResponse {

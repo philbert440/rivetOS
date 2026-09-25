@@ -59,6 +59,13 @@ const MIGRATION_SQL = readFileSync(
   ),
   'utf8',
 )
+const SORT_ORDER_SQL = readFileSync(
+  resolve(
+    __dirname,
+    '../../../plugins/memory/postgres/src/schema/migrations/0018_agent_preset_sort_order.sql',
+  ),
+  'utf8',
+)
 const NOW = 1_700_000_000_000
 
 function input(overrides: Partial<AgentPresetInput> = {}): AgentPresetInput {
@@ -74,15 +81,24 @@ describe.skipIf(!TEST_PG_URL)('PgAgentPresetStore (scratch schema)', () => {
   const suffix = Math.random().toString(36).slice(2, 10)
   const schema = `ros_agent_presets_test_${suffix}`
   const emptySchema = `ros_agent_presets_empty_${suffix}`
+  const pre0018Schema = `ros_agent_presets_pre0018_${suffix}`
   let admin: pg.Pool
   let pool: pg.Pool
   let emptyPool: pg.Pool
+  let pre0018Pool: pg.Pool
   let store: PgAgentPresetStore
 
   beforeAll(async () => {
     admin = new pg.Pool({ connectionString: TEST_PG_URL, max: 1 })
     await admin.query(`CREATE SCHEMA ${schema}`)
     await admin.query(`CREATE SCHEMA ${emptySchema}`)
+    await admin.query(`CREATE SCHEMA ${pre0018Schema}`)
+    pre0018Pool = new pg.Pool({
+      connectionString: TEST_PG_URL,
+      max: 1,
+      options: `-c search_path=${pre0018Schema}`,
+    })
+    await pre0018Pool.query(MIGRATION_SQL)
 
     emptyPool = new pg.Pool({
       connectionString: TEST_PG_URL,
@@ -100,6 +116,7 @@ describe.skipIf(!TEST_PG_URL)('PgAgentPresetStore (scratch schema)', () => {
     store = new PgAgentPresetStore(pool, { now: () => NOW })
     expect(await store.isReady()).toBe(false)
     await pool.query(MIGRATION_SQL)
+    await pool.query(SORT_ORDER_SQL)
     expect(await store.isReady()).toBe(true)
     expect(await store.isReady()).toBe(true)
   }, 60_000)
@@ -111,11 +128,24 @@ describe.skipIf(!TEST_PG_URL)('PgAgentPresetStore (scratch schema)', () => {
   afterAll(async () => {
     await pool?.end()
     await emptyPool?.end()
+    await pre0018Pool?.end()
     if (admin) {
       await admin.query(`DROP SCHEMA IF EXISTS ${schema} CASCADE`)
       await admin.query(`DROP SCHEMA IF EXISTS ${emptySchema} CASCADE`)
+      await admin.query(`DROP SCHEMA IF EXISTS ${pre0018Schema} CASCADE`)
       await admin.end()
     }
+  })
+
+  it('before 0018: lists by creation time and names the migration when ordering', async () => {
+    const legacy = new PgAgentPresetStore(pre0018Pool, { now: () => NOW })
+    const older = await legacy.create(input({ name: 'Older', createdAt: 1_000 }))
+    await legacy.create(input({ name: 'Newer', createdAt: 2_000 }))
+    expect((await legacy.list()).map((p) => p.name)).toEqual(['Older', 'Newer'])
+    await expect(legacy.update(older.id, { sortOrder: 0 })).rejects.toThrow(
+      /0018_agent_preset_sort_order/,
+    )
+    expect((await legacy.get(older.id))?.sortOrder).toBeUndefined()
   })
 
   it('is ready after 0017', async () => {
