@@ -210,4 +210,56 @@ class ChatChromeTest {
             }
         }
     }
+
+    @Test
+    fun `plus panel always offers photo camera and file in order`() {
+        // PTY harnesses take images as `[attached: uri]` lines, so no image gate —
+        // an unknown harness (older den, no capability sheet) gets them too.
+        val media = listOf(PlusItem.Photo, PlusItem.Camera, PlusItem.File)
+        assertEquals(media, plusPanelItems("codex", inFlight = false, draft = false))
+        assertEquals(media, plusPanelItems(null, inFlight = false, draft = false))
+        assertEquals(media, plusPanelItems("codex", inFlight = true, draft = true))
+    }
+
+    @Test
+    fun `plus panel photo and camera stay on a claude pty session`() {
+        val items = plusPanelItems("claude-code", inFlight = true, draft = false)
+        assertEquals(listOf(PlusItem.Photo, PlusItem.Camera, PlusItem.File), items)
+    }
+
+    @Test
+    fun `plus panel offers compress for claude only when idle`() {
+        assertEquals(
+            listOf(PlusItem.Photo, PlusItem.Camera, PlusItem.File, PlusItem.Compress),
+            plusPanelItems("claude-code", inFlight = false, draft = false),
+        )
+        assertEquals(
+            listOf(PlusItem.Photo, PlusItem.Camera, PlusItem.File, PlusItem.Compress),
+            plusPanelItems("claude", inFlight = false, draft = false),
+        )
+        assertFalse(PlusItem.Compress in plusPanelItems("claude-code", inFlight = true, draft = false))
+        assertFalse(PlusItem.Compress in plusPanelItems("codex", inFlight = false, draft = false))
+    }
+
+    @Test
+    fun `plus panel hides compress on a draft`() {
+        assertEquals(
+            listOf(PlusItem.Photo, PlusItem.Camera, PlusItem.File),
+            plusPanelItems("claude-code", inFlight = false, draft = true),
+        )
+    }
+
+    @Test
+    fun `long press queues only in flight with a body`() {
+        assertTrue(composerLongPressQueues(inFlight = true, text = "next", hasReadyAttachment = false))
+        assertTrue(composerLongPressQueues(inFlight = true, text = " ", hasReadyAttachment = true))
+        assertFalse(composerLongPressQueues(inFlight = true, text = "  ", hasReadyAttachment = false))
+        assertFalse(composerLongPressQueues(inFlight = false, text = "next", hasReadyAttachment = true))
+    }
+
+    @Test
+    fun `mic placeholder is hidden on a compact row`() {
+        assertTrue(composerShowsMic(compact = false))
+        assertFalse(composerShowsMic(compact = true))
+    }
 }

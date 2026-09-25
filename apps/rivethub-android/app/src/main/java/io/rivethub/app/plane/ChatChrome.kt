@@ -114,6 +114,33 @@ fun composerShowsStop(inFlight: Boolean, canInterrupt: Boolean): Boolean =
 
 fun pickerRowCompact(widthDp: Float): Boolean = widthDp < PICKER_COMPACT_MAX_DP
 
+/** The voice-input placeholder is dropped entirely from a compact picker row. */
+fun composerShowsMic(compact: Boolean): Boolean = !compact
+
+/**
+ * Long-press on Send queues the composer (UX-SPEC §4) — only while a turn is
+ * in flight and only when there is something to queue.
+ */
+fun composerLongPressQueues(inFlight: Boolean, text: String, hasReadyAttachment: Boolean): Boolean =
+    inFlight && (text.trim().isNotEmpty() || hasReadyAttachment)
+
+/** Entries of the composer "+" panel, in display order. */
+enum class PlusItem { Photo, Camera, File, Compress }
+
+/**
+ * Photo, Camera and File always: every harness takes a staged upload — PTY
+ * harnesses as an `[attached: <uri>]` line, protocol ones natively — so the
+ * sheet's `imageAttachments` (protocol-native only) is not a gate here.
+ * Compress only per [canCompact] (claude-code, not in flight) and never on a
+ * draft (no session to compact yet).
+ */
+fun plusPanelItems(harnessId: String?, inFlight: Boolean, draft: Boolean): List<PlusItem> = buildList {
+    add(PlusItem.Photo)
+    add(PlusItem.Camera)
+    add(PlusItem.File)
+    if (!draft && canCompact(harnessId, inFlight)) add(PlusItem.Compress)
+}
+
 /**
  * Ordered items of the one-row narrow session header — rivethub-web
  * lib/session-header.ts:17-29 (rendered at chat.tsx:1645-1674):

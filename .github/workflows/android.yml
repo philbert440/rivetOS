@@ -73,7 +73,7 @@ jobs:
         run: |
           python3 - <<'EOF'
           import glob, os, xml.etree.ElementTree as ET
-          FLOOR = 649  # bump deliberately when the suite grows; never lower it silently
+          FLOOR = 691  # bump deliberately when the suite grows; never lower it silently
           t = f = e = 0
           for p in glob.glob('app/build/test-results/testDebugUnitTest/*.xml'):
               r = ET.parse(p).getroot()
