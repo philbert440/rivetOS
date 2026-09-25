@@ -164,7 +164,18 @@ class TranscriptMachine(
             val t = committed.last()
             liveText = t.text
             liveReasoning = t.thinking.orEmpty()
-            liveTools = t.tools.orEmpty().map { LiveTool(it.name, it.input ?: it.args, it.status) }
+            liveTools = t.tools.orEmpty().map {
+                val preview = boundedResult(it.resultText)
+                LiveTool(
+                    name = it.name,
+                    args = it.input ?: it.args,
+                    status = it.status,
+                    id = it.id,
+                    resultPreview = preview?.text,
+                    isError = it.status == "error",
+                    resultTruncated = preview?.truncated == true,
+                )
+            }
         } else {
             liveText = ""
             liveReasoning = ""
@@ -311,18 +322,14 @@ class TranscriptMachine(
                 }
             }
             is HarnessEvent.ToolUse -> if (hooks) {
-                liveTools = liveTools + LiveTool(event.name, event.input, "running")
+                liveTools = liveTools + LiveTool(event.name, event.input, "running", id = event.toolCallId.ifBlank { null })
                 if (!inFlight) {
                     inFlight = true
                     if (turnStartTs == null) turnStartTs = lastFrameTs
                 }
             }
             is HarnessEvent.ToolResult -> if (hooks) {
-                liveTools = liveTools.map { t ->
-                    if (t.name == event.name && t.status == "running") {
-                        t.copy(status = if (event.isError) "error" else "done")
-                    } else t
-                }
+                liveTools = applyToolResult(liveTools, event)
                 if (!inFlight) {
                     inFlight = true
                     if (turnStartTs == null) turnStartTs = lastFrameTs
@@ -393,6 +400,48 @@ class TranscriptMachine(
         }
         optimistic.clear()
         optimistic.addAll(kept)
+    }
+}
+
+/**
+ * Fold a live tool result onto its call. Replay-safe:
+ *
+ * - a non-blank `toolCallId` that names a call completes that call, once — a
+ *   result for an already finished call (a duplicate or replay) is ignored;
+ * - a non-blank id that names no call can only belong to a call that arrived
+ *   without an id: the oldest running id-less call of the same name takes it
+ *   and the id is bound onto it, so a repeat of that result then matches by
+ *   id (and is ignored) instead of completing the next call;
+ * - a blank id falls back to the oldest running call of the same name.
+ *
+ * Anything else is dropped. The result is rendered once into a bounded
+ * [LiveTool.resultPreview]; the raw JSON is not kept.
+ */
+fun applyToolResult(tools: List<LiveTool>, event: HarnessEvent.ToolResult): List<LiveTool> {
+    val id = event.toolCallId.takeIf { it.isNotBlank() }
+    val idx: Int
+    if (id != null) {
+        val byId = tools.indexOfFirst { it.id == id }
+        idx = if (byId >= 0) {
+            if (tools[byId].status != "running") return tools
+            byId
+        } else {
+            tools.indexOfFirst { it.id == null && it.name == event.name && it.status == "running" }
+        }
+    } else {
+        idx = tools.indexOfFirst { it.name == event.name && it.status == "running" }
+    }
+    if (idx < 0) return tools
+    val preview = liveResultPreview(event.output)
+    return tools.mapIndexed { i, t ->
+        if (i != idx) t
+        else t.copy(
+            id = t.id ?: id,
+            status = if (event.isError) "error" else "done",
+            resultPreview = preview?.text,
+            resultTruncated = preview?.truncated == true,
+            isError = event.isError,
+        )
     }
 }
 

@@ -36,6 +36,9 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import io.rivethub.app.R
+import io.rivethub.app.plane.CotFold
+import io.rivethub.app.plane.CotStep
+import io.rivethub.app.plane.ReasoningSpan
 import io.rivethub.app.plane.StatsLine
 import io.rivethub.app.ui.theme.Dimens
 import io.rivethub.app.ui.theme.Radius
@@ -92,20 +95,30 @@ fun TranscriptUserTurn(
     }
 }
 
+/**
+ * Assistant turn: avatar row, the chain-of-thought timeline ([steps] folded
+ * to [fold]; UX-SPEC §1.3), then the markdown body. [liveSpan] is the phone
+ * reasoning clock and is set only for the in-flight turn; [nowMs] is the
+ * clock the span was sampled with, so the live label ticks on the same base.
+ */
 @Composable
 fun TranscriptAssistantTurn(
     text: String,
-    thinking: String?,
     model: String?,
     time: String?,
     accent: Color,
-    tools: List<ToolRow>,
+    steps: List<CotStep>,
+    fold: CotFold,
+    expanded: Boolean,
+    onToggleFold: () -> Unit,
+    onToolTap: (CotStep.Tool) -> Unit,
     stats: StatsLine?,
     onCopy: (String) -> Unit,
-    thinkingOpenDefault: Boolean = false,
     modifier: Modifier = Modifier,
     codeLineNumbers: Boolean = false,
     codeWrap: Boolean = false,
+    liveSpan: ReasoningSpan? = null,
+    nowMs: () -> Long = System::currentTimeMillis,
 ) {
     Column(
         modifier.fillMaxWidth(),
@@ -113,13 +126,16 @@ fun TranscriptAssistantTurn(
         verticalArrangement = Arrangement.spacedBy(6.dp),
     ) {
         AvatarRow(mine = false, time = time, model = model, accent = accent)
-        if (!thinking.isNullOrBlank()) {
-            ThinkingFold(text = thinking, initiallyOpen = thinkingOpenDefault)
-        }
-        if (tools.isNotEmpty()) {
-            Column(Modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                tools.forEach { tool -> ToolStatusRow(tool) }
-            }
+        if (steps.isNotEmpty()) {
+            CotTimeline(
+                fold = fold,
+                stepCount = steps.size,
+                expanded = expanded,
+                onToggleFold = onToggleFold,
+                onToolTap = onToolTap,
+                liveSpan = liveSpan,
+                nowMs = nowMs,
+            )
         }
         if (text.isNotBlank()) {
             BoxWithConstraints(Modifier.fillMaxWidth()) {
@@ -235,15 +251,36 @@ fun ThinkingFold(text: String, initiallyOpen: Boolean = false, modifier: Modifie
         }
         if (open) {
             Box(Modifier.fillMaxWidth().height(1.dp).background(colors.line.copy(alpha = 0.6f)))
-            Text(
-                text,
-                color = colors.inkDim,
-                style = RivetType.mono11,
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(horizontal = 8.dp, vertical = 6.dp),
-            )
+            ThinkingText(text)
         }
+    }
+}
+
+/** The open body of [ThinkingFold]: mono 11sp `inkDim`. */
+@Composable
+private fun ThinkingText(text: String) {
+    Text(
+        text,
+        color = RivetTheme.colors.inkDim,
+        style = RivetType.mono11,
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 8.dp, vertical = 6.dp),
+    )
+}
+
+/** Full reasoning text in the [ThinkingFold] frame, for the timeline's tap-to-expand. */
+@Composable
+internal fun ThinkingBody(text: String, modifier: Modifier = Modifier) {
+    val colors = RivetTheme.colors
+    val shape = RoundedCornerShape(Radius.sm)
+    Box(
+        modifier
+            .fillMaxWidth()
+            .border(1.dp, colors.line.copy(alpha = 0.8f), shape)
+            .background(colors.bg.copy(alpha = 0.4f), shape),
+    ) {
+        ThinkingText(text)
     }
 }
 
@@ -255,13 +292,25 @@ fun AgentStatusLine(text: String, modifier: Modifier = Modifier) {
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.spacedBy(8.dp),
     ) {
-        Box(Modifier.size(8.dp).clip(CircleShape).background(colors.em))
+        // The app's loading animation (no spinners): the pulsing em dot.
+        PulseDot(colors.em)
         Text(text, color = colors.inkDim, style = RivetType.mono11)
     }
 }
 
+/**
+ * One tool call. In the chain-of-thought timeline the rail dot carries the
+ * status ([showDot] = false), an [icon] leads the title and [onClick] opens
+ * the tool detail sheet.
+ */
 @Composable
-fun ToolStatusRow(tool: ToolRow, modifier: Modifier = Modifier) {
+fun ToolStatusRow(
+    tool: ToolRow,
+    modifier: Modifier = Modifier,
+    showDot: Boolean = true,
+    icon: Int? = null,
+    onClick: (() -> Unit)? = null,
+) {
     val colors = RivetTheme.colors
     val shape = RoundedCornerShape(Radius.sm)
     val dot = when (tool.status) {
@@ -272,13 +321,16 @@ fun ToolStatusRow(tool: ToolRow, modifier: Modifier = Modifier) {
     Row(
         modifier
             .fillMaxWidth()
+            .clip(shape)
             .border(Dimens.line, colors.line, shape)
             .background(colors.bg.copy(alpha = 0.6f), shape)
+            .then(if (onClick != null) Modifier.clickable(role = Role.Button, onClick = onClick) else Modifier)
             .padding(horizontal = 8.dp, vertical = 4.dp),
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.spacedBy(8.dp),
     ) {
-        Box(Modifier.size(6.dp).clip(CircleShape).background(dot))
+        if (showDot) Box(Modifier.size(6.dp).clip(CircleShape).background(dot))
+        if (icon != null) Lucide(icon, contentDescription = null, tint = colors.inkDim, modifier = Modifier.size(12.dp))
         Text(
             tool.title,
             color = colors.ink,
@@ -287,11 +339,15 @@ fun ToolStatusRow(tool: ToolRow, modifier: Modifier = Modifier) {
             overflow = TextOverflow.Ellipsis,
             modifier = Modifier.weight(1f),
         )
-        Text(
-            tool.status,
-            color = colors.inkDim.copy(alpha = 0.7f),
-            style = RivetType.mono10,
-        )
+        when (tool.status) {
+            "done" -> Lucide(R.drawable.lucide_check, contentDescription = stringResource(R.string.tool_status_done), tint = colors.inkDim, modifier = Modifier.size(12.dp))
+            "error" -> Lucide(R.drawable.lucide_x, contentDescription = stringResource(R.string.tool_status_failed), tint = colors.red, modifier = Modifier.size(12.dp))
+            else -> Text(
+                tool.status,
+                color = colors.inkDim.copy(alpha = 0.7f),
+                style = RivetType.mono10,
+            )
+        }
     }
 }
 

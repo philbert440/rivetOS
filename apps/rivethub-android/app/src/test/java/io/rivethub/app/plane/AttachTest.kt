@@ -6,6 +6,7 @@ import io.rivethub.app.gateway.HarnessSessionSummary
 import io.rivethub.app.gateway.HarnessTranscriptTurn
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeout
+import kotlinx.serialization.json.JsonPrimitive
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
@@ -624,5 +625,160 @@ class AttachTest {
         assertTrue(adoptCanonicalIsNoOp(canonical = "", currentSessionId = sid, draft = false))
         assertFalse(adoptCanonicalIsNoOp(canonical = sid, currentSessionId = "draft-uuid", draft = true))
         assertFalse(adoptCanonicalIsNoOp(canonical = sid, currentSessionId = sid, draft = true))
+    }
+
+    @Test fun `tool result sets output and done on the matching call by id`() {
+        val m = TranscriptMachine({ 0 })
+        m.beginTurn()
+        m.onFrame(HarnessEvent.ToolUse("s", "c1", "Bash"))
+        m.onFrame(HarnessEvent.ToolUse("s", "c2", "Bash"))
+        m.onFrame(HarnessEvent.ToolResult("s", "c2", "Bash", output = JsonPrimitive("ok")))
+        assertEquals(listOf("c1", "c2"), m.liveTools.map { it.id })
+        assertEquals("running", m.liveTools[0].status)
+        assertNull(m.liveTools[0].resultPreview)
+        assertEquals("done", m.liveTools[1].status)
+        assertEquals("ok", m.liveTools[1].resultPreview)
+        assertFalse(m.liveTools[1].isError)
+    }
+
+    @Test fun `tool result error sets isError and error status`() {
+        val m = TranscriptMachine({ 0 })
+        m.beginTurn()
+        m.onFrame(HarnessEvent.ToolUse("s", "c1", "Read"))
+        m.onFrame(HarnessEvent.ToolResult("s", "c1", "Read", output = JsonPrimitive("ENOENT"), isError = true))
+        val t = m.liveTools.single()
+        assertEquals("error", t.status)
+        assertTrue(t.isError)
+        assertEquals("ENOENT", t.resultPreview)
+    }
+
+    @Test fun `an unknown result id never completes a call that holds another id`() {
+        val m = TranscriptMachine({ 0 })
+        m.beginTurn()
+        m.onFrame(HarnessEvent.ToolUse("s", "c1", "Grep"))
+        m.onFrame(HarnessEvent.ToolUse("s", "c2", "Grep"))
+        m.onFrame(HarnessEvent.ToolResult("s", "zz", "Grep", output = JsonPrimitive("hit")))
+        assertEquals(listOf("running", "running"), m.liveTools.map { it.status })
+        assertNull(m.liveTools[0].resultPreview)
+    }
+
+    @Test fun `a blank result id falls back to the oldest running call of that name`() {
+        val m = TranscriptMachine({ 0 })
+        m.beginTurn()
+        m.onFrame(HarnessEvent.ToolUse("s", "c1", "Grep"))
+        m.onFrame(HarnessEvent.ToolUse("s", "c2", "Grep"))
+        m.onFrame(HarnessEvent.ToolResult("s", "", "Grep", output = JsonPrimitive("hit")))
+        assertEquals(listOf("done", "running"), m.liveTools.map { it.status })
+        assertEquals("hit", m.liveTools[0].resultPreview)
+        // no running call of that name: dropped
+        m.onFrame(HarnessEvent.ToolResult("s", "", "Write"))
+        assertEquals(listOf("done", "running"), m.liveTools.map { it.status })
+    }
+
+    @Test fun `an unknown id binds onto the id-less call it completes so a replay is ignored`() {
+        val m = TranscriptMachine({ 0 })
+        m.beginTurn()
+        m.onFrame(HarnessEvent.ToolUse("s", "", "Bash"))
+        m.onFrame(HarnessEvent.ToolUse("s", "b", "Bash"))
+        m.onFrame(HarnessEvent.ToolResult("s", "a", "Bash", output = JsonPrimitive("A")))
+        assertEquals(listOf("a", "b"), m.liveTools.map { it.id })
+        assertEquals(listOf("done", "running"), m.liveTools.map { it.status })
+        assertEquals("A", m.liveTools[0].resultPreview)
+        // the same result again must not complete b with a's output
+        m.onFrame(HarnessEvent.ToolResult("s", "a", "Bash", output = JsonPrimitive("A again")))
+        assertEquals(listOf("done", "running"), m.liveTools.map { it.status })
+        assertEquals("A", m.liveTools[0].resultPreview)
+        assertNull(m.liveTools[1].resultPreview)
+        // b's own result still lands on b
+        m.onFrame(HarnessEvent.ToolResult("s", "b", "Bash", output = JsonPrimitive("B")))
+        assertEquals(listOf("A", "B"), m.liveTools.map { it.resultPreview })
+    }
+
+    @Test fun `a known id picks its call past an earlier id-less call of the same name`() {
+        val m = TranscriptMachine({ 0 })
+        m.beginTurn()
+        m.onFrame(HarnessEvent.ToolUse("s", "", "Bash"))
+        m.onFrame(HarnessEvent.ToolUse("s", "b", "Bash"))
+        m.onFrame(HarnessEvent.ToolResult("s", "b", "Bash", output = JsonPrimitive("B")))
+        assertEquals(listOf("running", "done"), m.liveTools.map { it.status })
+        assertNull(m.liveTools[0].id)
+        assertEquals("B", m.liveTools[1].resultPreview)
+    }
+
+    @Test fun `two id-less calls take unknown ids oldest first and each binds`() {
+        val m = TranscriptMachine({ 0 })
+        m.beginTurn()
+        m.onFrame(HarnessEvent.ToolUse("s", "", "Read"))
+        m.onFrame(HarnessEvent.ToolUse("s", "", "Read"))
+        m.onFrame(HarnessEvent.ToolResult("s", "x", "Read", output = JsonPrimitive("X")))
+        m.onFrame(HarnessEvent.ToolResult("s", "x", "Read", output = JsonPrimitive("X dup")))
+        assertEquals(listOf("done", "running"), m.liveTools.map { it.status })
+        m.onFrame(HarnessEvent.ToolResult("s", "y", "Read", output = JsonPrimitive("Y")))
+        assertEquals(listOf("x", "y"), m.liveTools.map { it.id })
+        assertEquals(listOf("X", "Y"), m.liveTools.map { it.resultPreview })
+    }
+
+    @Test fun `results arriving out of order land on their own calls`() {
+        val m = TranscriptMachine({ 0 })
+        m.beginTurn()
+        m.onFrame(HarnessEvent.ToolUse("s", "c1", "Read"))
+        m.onFrame(HarnessEvent.ToolUse("s", "c2", "Read"))
+        m.onFrame(HarnessEvent.ToolUse("s", "c3", "Read"))
+        m.onFrame(HarnessEvent.ToolResult("s", "c3", "Read", output = JsonPrimitive("three")))
+        m.onFrame(HarnessEvent.ToolResult("s", "c1", "Read", output = JsonPrimitive("one"), isError = true))
+        assertEquals(listOf("error", "running", "done"), m.liveTools.map { it.status })
+        m.onFrame(HarnessEvent.ToolResult("s", "c2", "Read", output = JsonPrimitive("two")))
+        assertEquals(listOf("one", "two", "three"), m.liveTools.map { it.resultPreview })
+        assertEquals(listOf(true, false, false), m.liveTools.map { it.isError })
+    }
+
+    @Test fun `a large live result is kept only as a bounded preview`() {
+        val m = TranscriptMachine({ 0 })
+        m.beginTurn()
+        m.onFrame(HarnessEvent.ToolUse("s", "c1", "Bash"))
+        m.onFrame(HarnessEvent.ToolResult("s", "c1", "Bash", output = JsonPrimitive("x".repeat(200_000))))
+        val t = m.liveTools.single()
+        assertEquals(LIVE_RESULT_PREVIEW_MAX, t.resultPreview!!.length)
+        assertTrue(t.resultTruncated)
+        // a small one is kept whole and not flagged
+        m.onFrame(HarnessEvent.ToolUse("s", "c2", "Bash"))
+        m.onFrame(HarnessEvent.ToolResult("s", "c2", "Bash", output = JsonPrimitive("ok")))
+        assertEquals("ok", m.liveTools[1].resultPreview)
+        assertFalse(m.liveTools[1].resultTruncated)
+    }
+
+    @Test fun `transcript-sourced live tools carry id and stored result`() {
+        val m = TranscriptMachine({ 0 })
+        val live = HarnessTranscriptTurn(
+            role = "assistant",
+            text = "",
+            tools = listOf(
+                io.rivethub.app.gateway.HarnessTranscriptTool("Read", status = "done", id = "t1", resultText = "body"),
+                io.rivethub.app.gateway.HarnessTranscriptTool("Bash", status = "error", id = "t2"),
+            ),
+        )
+        assertTrue(m.applyTranscriptFrame(tx(0, 0, 2, listOf(u("hi"), live))))
+        m.onStatus(HarnessEvent.Status("s", "working", 0))
+        assertEquals(listOf("t1", "t2"), m.liveTools.map { it.id })
+        assertEquals("body", m.liveTools[0].resultPreview)
+        assertFalse(m.liveTools[0].isError)
+        assertNull(m.liveTools[1].resultPreview)
+        assertTrue(m.liveTools[1].isError)
+    }
+
+    @Test fun `transcript-sourced live results are bounded too`() {
+        val m = TranscriptMachine({ 0 })
+        val live = HarnessTranscriptTurn(
+            role = "assistant",
+            text = "",
+            tools = listOf(
+                io.rivethub.app.gateway.HarnessTranscriptTool("Bash", status = "done", id = "t1", resultText = "y".repeat(50_000)),
+            ),
+        )
+        assertTrue(m.applyTranscriptFrame(tx(0, 0, 2, listOf(u("hi"), live))))
+        m.onStatus(HarnessEvent.Status("s", "working", 0))
+        val t = m.liveTools.single()
+        assertEquals(LIVE_RESULT_PREVIEW_MAX, t.resultPreview!!.length)
+        assertTrue(t.resultTruncated)
     }
 }

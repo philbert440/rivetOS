@@ -360,6 +360,52 @@ map index → labels/`other`. Approvals stay bound to
 params are unpadded base64url (`sessionKeyEnc`). Hermes display/live strip stays
 `data/HermesReasoning.kt`.
 
+**Assistant turn chrome (UX slice U3a, UX-SPEC §1.2/§1.3).** Every assistant turn renders a
+chain-of-thought timeline above its markdown (`ui/components/CotTimeline.kt`): steps come from
+`plane/CotTimeline.kt cotSteps` — stored turns = reasoning from `thinking` (Hermes: the
+`splitHermesReasoning` reasoning) then `tools` in order; the live turn = `liveReasoning` +
+`liveTools`. **Fold rule** (`foldSteps`): collapsed by default to the LAST 2 steps plus an
+"N more" row; expanded shows all plus "Collapse" (`showCollapse`). Expansion is
+`UiState.cotExpanded` (turn index; live turn = -1), toggled by `toggleCot`. Rail dots map status →
+token via `stepDotColorKey` (running em pulse · error red · else inkDim). Tool tap opens
+`ToolDetailSheet` (name, pretty `args ?: input`, result = stored `resultText` or the live
+bounded preview with a "preview only" note; "(no result yet)" while running). The open sheet is
+held by identity, not position (`plane/ToolSheet.kt`: `ToolSheetTarget` = turn, live-turn
+generation `UiState.liveTurn`, toolCallId, per-turn tool position; `resolveToolSheet`): it
+refreshes only on proof — same live generation + sequence + call, or `toolCallId` (which also
+follows a live call onto its committed turn); an id-less call outside its live generation (any
+stored id-less tap) never re-resolves and keeps its tap-time snapshot, since the wire has no turn
+ids and equal content is not ownership. **Reasoning clock**
+(`plane/ReasoningClock.kt`): the wire has no per-turn timestamps, so the phone measures it —
+span opens on the first reasoning (a `reasoning-delta` frame, or `advanceReasoning` seeing
+live reasoning on a transcript-sourced store) and closes on the first text delta / ToolUse /
+turn-complete (or the turn leaving flight). Live label ticks via a 1 s `LaunchedEffect`
+in the composable (UI-only, never in the VM); an ended span auto-collapses the 6-line live
+preview to "Reasoned for X.Xs". Finished measurements land in `UiState.reasoningDurations`
+(stored turn index → ms, via `reasoningOwnerIndex`) — **in memory only**; reloaded/older turns
+show the fold with a plain "Reasoning" label. VM clock is the injectable `clock` ctor param
+(`vm.clockMs` also drives the label ticker). The VM holds a `ReasoningLedger`: every turn start
+(`startTurn`, incl. a queued send fired straight out of turn-complete) FILES the previous span
+first, and turn-complete files before `pump.onTurnComplete()`; finished measurements wait in
+`pending` keyed by their turn start and `settle` hands them out oldest first, one assistant run
+(up to the next user turn) each, only once that run is closed. `LiveTool` keeps NO raw result
+JSON: `resultPreview` is rendered once at ingestion and capped at `LIVE_RESULT_PREVIEW_MAX`
+(4096 chars) with `resultTruncated`; the full text is the committed turn's `resultText`.
+`applyToolResult` is replay-safe: a known id completes its call once (a repeat is ignored); an
+unknown id only goes to the oldest running id-less call of that name and is bound onto it; a
+blank id falls back to the oldest running call of that name. Loading row = pulsing
+em dot + `loadingLabel` (newest running tool title, else `agentStatusText`, else "Working…").
+**Error stack vs strip** (`plane/ErrorStack.kt`): free-text transport/turn errors (send,
+inject, answer, approval, upload failure, boot, attach fatal) go to `UiState.errors`
+(`pushError`, cap 5, newest last) and render as dismissible cards above the composer
+(`ChatErrorStack`, "Clear all" when > 1). The five composer/attachment codes
+(`isStripError`: uploading, too_large, failed_attachment, image_only, image_unsupported) keep
+`error`/`errorCode` and the one-line strip (the screen shows the strip ONLY for those codes).
+Terminal attach errors (`TermAttachController` publish) set `UiState.termError` for
+`TerminalRetryState`, and each distinct text is stacked once per session via
+`RepeatErrorGate.admit` — the controller republishes on every change, so repeats add nothing and
+a dismissed card does not come back.
+
 ## Terminal mode (M4)
 
 Attach protocol (den-server `term/ws.ts`, rivethub-web `xterm-attach.tsx`):
