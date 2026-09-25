@@ -26,9 +26,15 @@ import type { IncomingMessage, ServerResponse } from 'node:http'
 import { existsSync, lstatSync, readlinkSync, realpathSync, rmdirSync, unlinkSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { dirname, join, resolve } from 'node:path'
-import { SYSTEM_PROMPT_MAX_CHARS, type AgentPreset, type HarnessId } from '@rivetos/types'
+import {
+  AGENT_SORT_ORDER_MAX,
+  SYSTEM_PROMPT_MAX_CHARS,
+  type AgentPreset,
+  type HarnessId,
+} from '@rivetos/types'
 import {
   PresetConflictError,
+  PresetMigrationRequiredError,
   defaultDirectoryFor,
   directoryWarnings,
   ensureAgentDirectory,
@@ -194,9 +200,9 @@ export function createAgentsRoutes(opts: {
     log(msg, 'error')
   }
 
-  const unavailable = (res: ServerResponse, err: unknown): void => {
+  const unavailable = (res: ServerResponse, err: unknown, publicError?: string): void => {
     error(`agent registry unavailable: ${errorMessage(err)}`)
-    json(res, 503, { error: 'agent registry unavailable' })
+    json(res, 503, { error: publicError ?? 'agent registry unavailable' })
   }
 
   const chains = new Map<string, Promise<void>>()
@@ -477,6 +483,23 @@ export function createAgentsRoutes(opts: {
     if (typeof raw.systemPrompt === 'string') {
       patch.systemPrompt = raw.systemPrompt.trim().slice(0, SYSTEM_PROMPT_MAX_CHARS)
     }
+    if (raw.sortOrder !== undefined) {
+      if (
+        raw.sortOrder !== null &&
+        !(
+          typeof raw.sortOrder === 'number' &&
+          Number.isInteger(raw.sortOrder) &&
+          raw.sortOrder >= 0 &&
+          raw.sortOrder <= AGENT_SORT_ORDER_MAX
+        )
+      ) {
+        json(res, 400, {
+          error: `sortOrder must be an integer 0-${String(AGENT_SORT_ORDER_MAX)} or null`,
+        })
+        return
+      }
+      patch.sortOrder = raw.sortOrder
+    }
 
     // An unchanged directory or sharedLink is not a placement request. A form
     // that round-trips every field must not 409 a foreign preset. Compare the
@@ -531,6 +554,10 @@ export function createAgentsRoutes(opts: {
     } catch (err) {
       if (err instanceof PresetConflictError) {
         json(res, 409, { error: `an agent named "${name}" already exists` })
+        return
+      }
+      if (err instanceof PresetMigrationRequiredError) {
+        unavailable(res, err, err.message)
         return
       }
       unavailable(res, err)

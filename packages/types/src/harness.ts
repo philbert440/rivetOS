@@ -391,6 +391,9 @@ export type StartSessionOpts = {
 /** Cap for a session/turn system-prompt override. Same bound as `/api/agents`. */
 export const SYSTEM_PROMPT_MAX_CHARS = 16_384
 
+/** Largest agent preset `sortOrder` accepted by `PATCH /api/agents/:id`. */
+export const AGENT_SORT_ORDER_MAX = 1_000_000
+
 /**
  * PTY harnesses have no system-prompt channel, so the first injected turn
  * prefixes the override. Shared by den-server drivers and the hub raw-inject

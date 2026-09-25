@@ -8,7 +8,7 @@
  * RivetGateway on an https base cannot authenticate from the desktop shell.
  */
 
-import { useCallback, useEffect, useRef, useState, type JSX } from 'react'
+import { Fragment, useCallback, useEffect, useRef, useState, type JSX } from 'react'
 import { useMutation, useQueries, useQuery, useQueryClient } from '@tanstack/react-query'
 import { useNavigate } from '@tanstack/react-router'
 import { Bot, ChevronDown, ChevronRight, Pencil, Plus, RotateCcw, Trash2, X } from 'lucide-react'
@@ -67,6 +67,12 @@ import {
   type NodeChoice,
   type ResolvedRosterAgent,
 } from '../lib/agent-roster.js'
+import {
+  applyPendingOrder,
+  moveAgentId,
+  sortOrderWrites,
+  sortRosterAgents,
+} from '../lib/agent-order.js'
 import { nativeIdOf } from '../lib/harness-chat.js'
 import { accentFor } from '../lib/agent-accent.js'
 import {
@@ -78,6 +84,7 @@ import { useChat } from '../stores/chat.js'
 import { useChatSettings } from '../stores/chat-settings.js'
 import { useSidebarPrefs } from '../stores/sidebar-prefs.js'
 import { Tooltip } from './ui/tooltip.js'
+import { cn } from '../lib/utils.js'
 
 type RosterAgent = ResolvedRosterAgent
 
@@ -605,10 +612,44 @@ function AgentEditor({
   )
 }
 
+function agentAccent(agent: Pick<RosterAgent, 'color' | 'harnessId' | 'model'>): string {
+  return accentFor({
+    presetColor: agent.color,
+    harnessId: agent.harnessId,
+    command: rosterCommandFor(agent.harnessId) ?? agent.model,
+  })
+}
+
+/** Agent colour dot; the current agent gets a ring in its own accent. */
+function AgentSwatch(props: {
+  accent: string
+  compact?: boolean
+  current?: boolean
+  /** Folded rail dot only: separate a dark accent from the Bot stroke. */
+  halo?: boolean
+}): JSX.Element {
+  return (
+    <span
+      className={cn('inline-block shrink-0 rounded-full', props.compact ? 'size-3' : 'size-2')}
+      style={{
+        background: props.accent,
+        ...(props.current
+          ? { boxShadow: `0 0 0 2px var(--color-panel-2), 0 0 0 3.5px ${props.accent}` }
+          : props.halo
+            ? { boxShadow: '0 0 0 1.5px var(--color-panel)' }
+            : {}),
+      }}
+      aria-hidden
+    />
+  )
+}
+
 interface AgentRowProps {
   agent: RosterAgent
   nodeKnown: boolean
   compact?: boolean
+  /** The active chat session belongs to this agent. */
+  current?: boolean
   onOpen: () => void
   onStartOver: () => void
   onEdit: () => void
@@ -619,6 +660,7 @@ function AgentRow({
   agent,
   nodeKnown,
   compact,
+  current,
   onOpen,
   onStartOver,
   onEdit,
@@ -707,29 +749,22 @@ function AgentRow({
       ? `${agent.name} (node unknown) — ${place}`
       : `${agent.name} (node unknown)`
 
-  const swatch = (
-    <span
-      className={compact ? 'size-3 shrink-0 rounded-full' : 'size-2 shrink-0 rounded-full'}
-      style={{
-        background: accentFor({
-          presetColor: agent.color,
-          harnessId: agent.harnessId,
-          command: rosterCommandFor(agent.harnessId) ?? agent.model,
-        }),
-      }}
-      aria-hidden
-    />
-  )
+  const accent = agentAccent(agent)
+  const swatch = <AgentSwatch accent={accent} compact={compact} current={current} />
 
   if (compact) {
     return (
-      <Tooltip label={rowTitle} block>
+      <Tooltip label={current ? `${rowTitle} (current)` : rowTitle} block>
         <button
           type="button"
           onClick={onOpen}
           disabled={!nodeKnown}
           aria-label={agent.name}
-          className="flex w-full items-center justify-center rounded py-1.5 hover:bg-panel-2 disabled:opacity-50"
+          aria-current={current ? 'true' : undefined}
+          className={cn(
+            'flex w-full items-center justify-center rounded py-1.5 hover:bg-panel-2 disabled:opacity-50',
+            current && 'bg-panel-2',
+          )}
         >
           {swatch}
         </button>
@@ -738,15 +773,34 @@ function AgentRow({
   }
 
   return (
-    <div className="group flex items-center gap-2 rounded px-2 py-1.5 hover:bg-panel-2">
+    <div
+      className={cn(
+        'group relative flex items-center gap-2 rounded px-2 py-1.5 hover:bg-panel-2',
+        current && 'bg-panel-2',
+      )}
+    >
+      {current && (
+        <span
+          className="absolute inset-y-1 left-0 w-0.5 rounded-full"
+          style={{ background: accent }}
+          aria-hidden
+        />
+      )}
       <button
+        id={`agent-row-${agent.id}`}
         onClick={onOpen}
         disabled={!nodeKnown}
+        aria-current={current ? 'true' : undefined}
+        aria-keyshortcuts="Alt+ArrowUp Alt+ArrowDown"
         className="flex min-w-0 flex-1 items-center gap-2 text-left disabled:opacity-50"
-        title={rowTitle}
+        title={current ? `${rowTitle} (current)` : rowTitle}
       >
         {swatch}
-        <span className="min-w-0 truncate text-xs text-ink">{agent.name}</span>
+        <span
+          className={cn('min-w-0 truncate text-xs', current ? 'font-medium text-em' : 'text-ink')}
+        >
+          {agent.name}
+        </span>
         {activityLabel && (
           <span
             className={`size-1.5 shrink-0 rounded-full ${
@@ -790,12 +844,36 @@ function AgentRow({
 const mutationError = (err: unknown): string =>
   err instanceof Error ? err.message : 'request failed'
 
+function orderNodeLabel(
+  agent: Pick<RosterAgent, 'node' | 'sourceNodeBaseUrl' | 'listedBaseUrl'>,
+): string {
+  const target = agentUpdateTarget(agent).trim()
+  const host = agent.sourceNodeBaseUrl.trim()
+  // agentUpdateTarget sends the PATCH to listedBaseUrl when the hosting URL is
+  // empty. Name that den, not the unresolved node name.
+  if (target && target !== host) return urlLabel(target)
+  const name = agent.node?.trim()
+  if (name) return name
+  return target ? urlLabel(target) : 'node unknown'
+}
+
+function storedSortKey(agents: readonly { id: string; sortOrder?: number }[]): string {
+  return agents.map((agent) => `${agent.id}\0${agent.sortOrder ?? ''}`).join('\n')
+}
+
+/** `null` clears the order; the echoed preset then omits `sortOrder`. */
+function sortOrderEcho(sent: number | null): number | undefined {
+  return sent === null ? undefined : sent
+}
+
 export function AgentsSection(props: { compact?: boolean }): JSX.Element {
   const compact = props.compact ?? false
   const queryClient = useQueryClient()
   const navigate = useNavigate()
   const { baseUrl, roster, transportEpoch } = useConnection()
+  // Whole-store useChat() keeps the marker fresh; agentForSession is not reactive.
   const { addDraft, setActive } = useChat()
+  const activeSession = useChat((s) => s.active)
   const chatSettings = useChatSettings()
   const [collapsed, setCollapsed] = useState(false)
   const [editing, setEditing] = useState<RosterAgent | null>(null)
@@ -855,12 +933,97 @@ export function AgentsSection(props: { compact?: boolean }): JSX.Element {
     placeholderData: (prev) => prev,
   })
 
-  const agents = dedupeRosterAgents(nodeQueries.data ?? [], {
-    currentBaseUrl: baseUrl,
-    mesh: meshNodes,
-    roster: rosterForResolve,
-  })
+  const storedAgents = sortRosterAgents(
+    dedupeRosterAgents(nodeQueries.data ?? [], {
+      currentBaseUrl: baseUrl,
+      mesh: meshNodes,
+      roster: rosterForResolve,
+    }),
+  )
+  // Optimistic order while a reorder saves. Cleared only when this save is
+  // still the latest request; a queued save keeps the order on screen.
+  const [pendingOrder, setPendingOrder] = useState<string[] | null>(null)
+  const agents = applyPendingOrder(storedAgents, pendingOrder)
   const isLoading = nodeQueries.isLoading
+
+  // Latest sortOrder this client knows. Re-seeded from the query whenever no
+  // save is pending, then updated from each successful PATCH so the next save
+  // does not diff a stale snapshot. An entry of `NaN` means unknown → always write.
+  const knownSortOrder = useRef<Map<string, number | undefined>>(new Map())
+  const reorderSeq = useRef(0)
+  const savesPending = useRef(0)
+  const seededFrom = useRef<string | null>(null)
+  const focusRowId = useRef<string | null>(null)
+  const storedKey = storedSortKey(storedAgents)
+  if (savesPending.current === 0 && seededFrom.current !== storedKey) {
+    seededFrom.current = storedKey
+    knownSortOrder.current = new Map(storedAgents.map((agent) => [agent.id, agent.sortOrder]))
+  }
+
+  useEffect(() => {
+    const id = focusRowId.current
+    if (!id || pendingOrder === null) return
+    document.getElementById(`agent-row-${id}`)?.focus()
+    focusRowId.current = null
+  }, [pendingOrder])
+
+  const [dragId, setDragId] = useState<string | null>(null)
+  const [dropIndex, setDropIndex] = useState<number | null>(null)
+  const reorderMutation = useMutation({
+    scope: { id: 'agent-order' },
+    mutationFn: async ({ ids }: { ids: string[]; seq: number }) => {
+      const writes = sortOrderWrites(storedAgents, ids, knownSortOrder.current)
+      const settled = await Promise.allSettled(
+        writes.map(async ({ agent, sortOrder }) => {
+          const nodeLabel = orderNodeLabel(agent)
+          let updated: { agent: { sortOrder?: number } }
+          try {
+            updated = await (
+              await gatewayFor(agentUpdateTarget(agent))
+            ).agentUpdate(agent.id, { sortOrder })
+          } catch (err) {
+            knownSortOrder.current.set(agent.id, Number.NaN)
+            const message = err instanceof Error ? err.message : 'request failed'
+            throw new Error(`${nodeLabel}: ${message}`, { cause: err })
+          }
+          const echoed = updated.agent.sortOrder
+          if (echoed !== sortOrderEcho(sortOrder)) {
+            knownSortOrder.current.set(agent.id, Number.NaN)
+            throw new Error(`${nodeLabel} does not support agent ordering (update that den)`)
+          }
+          knownSortOrder.current.set(agent.id, echoed)
+        }),
+      )
+      const failed = settled.flatMap((result) =>
+        result.status === 'rejected'
+          ? [result.reason instanceof Error ? result.reason.message : 'request failed']
+          : [],
+      )
+      if (failed.length > 0) throw new Error(failed.join('; '))
+    },
+    onSettled: async (_data, _err, variables) => {
+      try {
+        await queryClient.invalidateQueries({ queryKey: ['agents-all-nodes'] })
+      } finally {
+        savesPending.current -= 1
+        if (variables.seq === reorderSeq.current) setPendingOrder(null)
+      }
+    },
+  })
+  const reorder = (id: string, toIndex: number, restoreFocus = false): void => {
+    const current = agents.map((agent) => agent.id)
+    const next = moveAgentId(current, id, toIndex)
+    if (next.every((value, i) => value === current[i])) return
+    if (restoreFocus) focusRowId.current = id
+    const seq = ++reorderSeq.current
+    savesPending.current += 1
+    setPendingOrder(next)
+    reorderMutation.mutate({ ids: next, seq })
+  }
+  const endDrag = (): void => {
+    setDragId(null)
+    setDropIndex(null)
+  }
 
   const createMutation = useMutation({
     mutationFn: async (agent: AgentWrite) => {
@@ -1096,19 +1259,30 @@ export function AgentsSection(props: { compact?: boolean }): JSX.Element {
     openFresh(agent, { replace: true })
   }
 
+  // The agent whose pinned session is the active chat (bound at open time).
+  const currentAgentId = activeSession ? agentForSession(activeSession) : undefined
+  const currentAgent = agents.find((a) => a.id === currentAgentId)
+  const currentAccent = currentAgent ? agentAccent(currentAgent) : undefined
+
   return (
     <div className={compact ? 'border-t border-line px-1 py-2' : 'border-t border-line px-2 py-2'}>
       {dialog.element}
       <div className="flex w-full items-center justify-between">
-        <Tooltip label="Agents" disabled={!compact} block>
+        <Tooltip
+          label={currentAgent ? `Agents — current: ${currentAgent.name}` : 'Agents'}
+          disabled={!compact}
+          block
+        >
           <button
             type="button"
             onClick={() => setCollapsed((c) => !c)}
-            aria-label="Agents"
+            aria-label={
+              collapsed && currentAgent ? `Agents, current: ${currentAgent.name}` : 'Agents'
+            }
             aria-expanded={!collapsed}
             className={
               compact
-                ? 'flex w-full items-center justify-center rounded py-2 text-ink-dim hover:bg-panel-2 hover:text-ink'
+                ? 'relative flex w-full items-center justify-center rounded py-2 text-ink-dim hover:bg-panel-2 hover:text-ink'
                 : 'flex min-w-0 flex-1 items-center rounded px-3 py-2 text-sm text-ink-dim hover:bg-panel-2 hover:text-ink'
             }
           >
@@ -1116,9 +1290,23 @@ export function AgentsSection(props: { compact?: boolean }): JSX.Element {
             {!compact && <span>Agents</span>}
             {!compact &&
               (collapsed ? (
-                <ChevronRight className="ml-1 size-3 text-ink-dim" />
+                <ChevronRight className="ml-1 size-3 shrink-0 text-ink-dim" />
               ) : (
-                <ChevronDown className="ml-1 size-3 text-ink-dim" />
+                <ChevronDown className="ml-1 size-3 shrink-0 text-ink-dim" />
+              ))}
+            {/* Folded list hides the highlighted row — keep the current agent visible. */}
+            {collapsed &&
+              currentAgent &&
+              currentAccent &&
+              (compact ? (
+                <span className="absolute left-1/2 top-1.5 ml-1" aria-hidden>
+                  <AgentSwatch accent={currentAccent} halo />
+                </span>
+              ) : (
+                <span className="ml-auto flex min-w-0 items-center gap-1.5 pl-2 text-xs text-em">
+                  <AgentSwatch accent={currentAccent} />
+                  <span className="min-w-0 truncate">{currentAgent.name}</span>
+                </span>
               ))}
           </button>
         </Tooltip>
@@ -1146,36 +1334,91 @@ export function AgentsSection(props: { compact?: boolean }): JSX.Element {
           {!isLoading && agents.length === 0 && !creating && !duplicating && !compact && (
             <div className="px-2 text-xs text-ink-dim">no agents yet</div>
           )}
-          {agents.map((agent) => (
-            <AgentRow
-              key={agent.id}
-              agent={agent}
-              compact={compact}
-              nodeKnown={Boolean(agent.sourceNodeBaseUrl)}
-              onOpen={() => handleOpen(agent)}
-              onStartOver={() => handleStartOver(agent)}
-              onEdit={() => {
-                setCreating(false)
-                setDuplicating(null)
-                resetUpdate()
-                setEditing(agent)
-              }}
-              onDelete={() => {
-                void (async () => {
-                  if (
-                    await dialog.confirm(`Delete agent "${agent.name}"?`, {
-                      danger: true,
-                    })
-                  ) {
-                    deleteMutation.mutate({
-                      id: agent.id,
-                      targetNode: agentDeleteTarget(agent),
-                    })
+          {agents.map((agent, index) => {
+            const row = (
+              <AgentRow
+                agent={agent}
+                compact={compact}
+                current={agent.id === currentAgentId}
+                nodeKnown={Boolean(agent.sourceNodeBaseUrl)}
+                onOpen={() => handleOpen(agent)}
+                onStartOver={() => handleStartOver(agent)}
+                onEdit={() => {
+                  setCreating(false)
+                  setDuplicating(null)
+                  resetUpdate()
+                  setEditing(agent)
+                }}
+                onDelete={() => {
+                  void (async () => {
+                    if (
+                      await dialog.confirm(`Delete agent "${agent.name}"?`, {
+                        danger: true,
+                      })
+                    ) {
+                      deleteMutation.mutate({
+                        id: agent.id,
+                        targetNode: agentDeleteTarget(agent),
+                      })
+                    }
+                  })()
+                }}
+              />
+            )
+            // Compact rows are not draggable. No wrapper classes or handlers —
+            // a border here used to grow every row, including the rail.
+            if (compact) return <Fragment key={agent.id}>{row}</Fragment>
+            const showBefore = dropIndex === index
+            const showAfter = dropIndex === index + 1 && index === agents.length - 1
+            return (
+              <div
+                key={agent.id}
+                draggable
+                title="drag or Alt+↑/↓ to reorder"
+                onDragStart={(e) => {
+                  setDragId(agent.id)
+                  e.dataTransfer.effectAllowed = 'move'
+                  e.dataTransfer.setData('text/plain', agent.id)
+                }}
+                onDragOver={(e) => {
+                  if (dragId === null) return
+                  e.preventDefault()
+                  e.dataTransfer.dropEffect = 'move'
+                  const rect = e.currentTarget.getBoundingClientRect()
+                  setDropIndex(e.clientY > rect.top + rect.height / 2 ? index + 1 : index)
+                }}
+                onDrop={(e) => {
+                  e.preventDefault()
+                  if (dragId !== null && dropIndex !== null) {
+                    const from = agents.findIndex((a) => a.id === dragId)
+                    reorder(dragId, dropIndex > from ? dropIndex - 1 : dropIndex)
                   }
-                })()
-              }}
-            />
-          ))}
+                  endDrag()
+                }}
+                onDragEnd={endDrag}
+                onKeyDown={(e) => {
+                  if (!e.altKey || (e.key !== 'ArrowUp' && e.key !== 'ArrowDown')) return
+                  e.preventDefault()
+                  reorder(agent.id, index + (e.key === 'ArrowUp' ? -1 : 1), true)
+                }}
+                className={dragId === agent.id ? 'relative opacity-50' : 'relative'}
+              >
+                {showBefore && (
+                  <span className="absolute inset-x-0 -top-px h-0.5 bg-em" aria-hidden />
+                )}
+                {showAfter && (
+                  <span className="absolute inset-x-0 -bottom-px h-0.5 bg-em" aria-hidden />
+                )}
+                {row}
+              </div>
+            )
+          })}
+        </div>
+      )}
+
+      {reorderMutation.error && (
+        <div role="alert" className="px-2 text-xs text-red">
+          Could not save agent order: {mutationError(reorderMutation.error)}
         </div>
       )}
 

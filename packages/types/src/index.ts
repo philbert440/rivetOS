@@ -166,6 +166,7 @@ export {
   migrateAgentPreset,
 } from './agent-preset.js'
 export {
+  AGENT_SORT_ORDER_MAX,
   HARNESS_IDS,
   ROSTER_COMMAND,
   SYSTEM_PROMPT_MAX_CHARS,

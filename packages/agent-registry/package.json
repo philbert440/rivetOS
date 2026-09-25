@@ -56,7 +56,8 @@
         "inputs": [
           "default",
           "^production",
-          "{workspaceRoot}/plugins/memory/postgres/src/schema/migrations/0017_agent_presets.sql"
+          "{workspaceRoot}/plugins/memory/postgres/src/schema/migrations/0017_agent_presets.sql",
+          "{workspaceRoot}/plugins/memory/postgres/src/schema/migrations/0018_agent_preset_sort_order.sql"
         ]
       }
     }

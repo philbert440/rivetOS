@@ -28,6 +28,8 @@ export interface AgentPresetPatch {
   systemPrompt?: string
   directory?: string
   sharedLink?: boolean
+  /** null clears (unordered) */
+  sortOrder?: number | null
   /**
    * @deprecated — legacy import / pre-registry rows only. No in-repo route
    * builds this patch.
@@ -61,6 +63,15 @@ export class PresetConflictError extends Error {
   }
 }
 
+/** DataHub has no `sort_order` column yet (migration 0018). */
+export class PresetMigrationRequiredError extends Error {
+  readonly code = 'preset_migration_required'
+  constructor(message: string) {
+    super(message)
+    this.name = 'PresetMigrationRequiredError'
+  }
+}
+
 /**
  * Case-insensitive trimmed name, the uniqueness key both stores share.
  *
@@ -81,6 +92,14 @@ export function requireAgentName(name: string): string {
 
 export function sortPresets(presets: readonly AgentPreset[]): AgentPreset[] {
   return presets.slice().sort((a, b) => {
+    // Ordered presets first (ascending sortOrder); unordered ones after, as before.
+    const ao = a.sortOrder
+    const bo = b.sortOrder
+    if (ao !== undefined || bo !== undefined) {
+      if (ao === undefined) return 1
+      if (bo === undefined) return -1
+      if (ao !== bo) return ao - bo
+    }
     if (a.createdAt !== b.createdAt) return a.createdAt - b.createdAt
     if (a.id < b.id) return -1
     if (a.id > b.id) return 1
@@ -142,6 +161,8 @@ export function presetFromPatch(
   if (patch.systemPrompt !== undefined) next.systemPrompt = patch.systemPrompt
   if (patch.directory !== undefined) next.directory = patch.directory
   if (patch.sharedLink !== undefined) next.sharedLink = patch.sharedLink
+  if (patch.sortOrder === null) delete next.sortOrder
+  else if (patch.sortOrder !== undefined) next.sortOrder = patch.sortOrder
   // eslint-disable-next-line @typescript-eslint/no-deprecated -- legacy import rows; remove with the node_base_url column
   if (patch.nodeBaseUrl !== undefined) {
     // Legacy import / pre-registry rows only.

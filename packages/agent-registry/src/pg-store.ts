@@ -11,7 +11,9 @@ import {
   findPresetByHandle,
   presetFromCreate,
   PresetConflictError,
+  PresetMigrationRequiredError,
   requireAgentName,
+  sortPresets,
   type AgentPresetInput,
   type AgentPresetPatch,
   type AgentPresetStore,
@@ -41,6 +43,8 @@ interface PresetRow {
   directory: string
   shared_link: boolean
   node_base_url: string
+  /** Absent before migration 0018. */
+  sort_order?: number | null
   created_at: Date | string
   updated_at: Date | string
 }
@@ -73,8 +77,18 @@ function conflictMessage(err: unknown): string {
     : 'agent preset conflicts with an existing id or name'
 }
 
+function isMissingSortOrder(err: unknown): boolean {
+  if (typeof err !== 'object' || err === null || !('code' in err)) return false
+  return err.code === '42703' && 'message' in err && String(err.message).includes('sort_order')
+}
+
 function rethrow(err: unknown): never {
   if (isUniqueViolation(err)) throw new PresetConflictError(conflictMessage(err))
+  if (isMissingSortOrder(err)) {
+    throw new PresetMigrationRequiredError(
+      'agent preset ordering needs DataHub migration 0018_agent_preset_sort_order (run `rivetos db migrate`)',
+    )
+  }
   throw err
 }
 
@@ -100,6 +114,7 @@ function rowToPreset(row: PresetRow): AgentPreset {
     createdAt: epochMs(row.created_at),
     updatedAt: epochMs(row.updated_at),
   }
+  if (typeof row.sort_order === 'number') preset.sortOrder = row.sort_order
   const harness = row.harness_id
   // A harness_id this build does not know (a newer den in a mixed-version
   // fleet) is dropped, so the preset reads as harness-less. migrateAgentPreset
@@ -174,13 +189,15 @@ export class PgAgentPresetStore implements AgentPresetStore {
   }
 
   async list(filter?: { node?: string }): Promise<AgentPreset[]> {
+    // sort_order is applied in JS (sortPresets) so this query also works on a
+    // DataHub that has not applied 0018 yet.
     const result = await this.pool.query<PresetRow>(
       `SELECT * FROM ros_agent_presets
        WHERE ($1::text IS NULL OR node = $1)
        ORDER BY created_at ASC, id ASC`,
       [filter?.node ?? null],
     )
-    return result.rows.map(rowToPreset)
+    return sortPresets(result.rows.map(rowToPreset))
   }
 
   async get(id: string): Promise<AgentPreset | undefined> {
@@ -266,6 +283,7 @@ export class PgAgentPresetStore implements AgentPresetStore {
     if (patch.systemPrompt !== undefined) set('system_prompt', patch.systemPrompt)
     if (patch.directory !== undefined) set('directory', patch.directory)
     if (patch.sharedLink !== undefined) set('shared_link', patch.sharedLink)
+    if (patch.sortOrder !== undefined) set('sort_order', patch.sortOrder)
     // eslint-disable-next-line @typescript-eslint/no-deprecated -- legacy import rows; remove with the node_base_url column
     if (patch.nodeBaseUrl !== undefined) set('node_base_url', patch.nodeBaseUrl)
 

@@ -21,6 +21,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - The task runner bounds each preset lookup at 2s (the same window as roster reads). A timeout or a rejection materialises nothing and runs with the spec working directory, and the liveness heartbeat starts before that lookup so a hung resolver cannot strand the claimed task.
 - A mesh node with no `node_name` takes its registry id, TLS cert lookup name, and task affinity from `nodeNameFor` (`HOSTNAME`, then `local`) instead of the literal `unknown`.
 - MCP sidecar `delegate_task` / `list_agents` for CLI harnesses. With `RIVETOS_PG_URL` set, a preset name or id becomes the same `harness-session` row the runtime engine creates (Postgres direct — no gateway mTLS client), and a runtime agent id becomes a `chat-loop` row pinned to the newest online mesh node that hosts it. `RIVETOS_TASK_ID` is the chain guard (refuse when the next depth would pass 3) and is stored as `parentTaskId`. `RIVETOS_MCP_ENABLE_DELEGATE=0` turns both tools off. A row nobody claims is killed, and the reply names the node whose runtime never picked it up. `PresetDelegationEngine.delegate` takes an optional `parentTaskId` so that sidecar row can record its parent; in-process callers omit it.
+- Migration `0018` adds a nullable `sort_order`. `AgentPreset.sortOrder` is the user-chosen sidebar position. `PATCH /api/agents/:id` accepts `{ sortOrder }` as an integer 0–1,000,000 or `null`; anything else is 400 `sortOrder must be an integer 0-1000000 or null`. A DataHub without 0018 still lists presets, and saving an order there fails with an error naming the migration.
 
 ### Den
 
@@ -48,6 +49,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `apps/rivethub-web`: prevent sidebar and composer node pickers flashing while discovery is pending or failed with one saved node; keep multiple saved nodes available immediately (#809).
 - `apps/rivethub-web`: hide node pickers only when connected to the sole saved node (or the app origin with no saved nodes) and mesh discovery confirms no peers; keep discovery and first-peer saving available.
 - `apps/rivethub-web`: a send refused because the Terminal input holds unsent text (`reason: 'harness_draft'`) shows `DRAFT_NOTE`. The outbound pump retries that 409 up to six times (about 57s) and then leaves the turn queued; press the inject button again after the draft is sent or cleared.
+- Agents: drag a row, or Alt+↑/↓ on a focused row, to reorder. The order is saved per preset on its hosting den. A den that does not support ordering is reported.
+- Sidebar Agents: the agent bound to the active chat is marked (accent bar, ringed swatch and highlighted name; a folded list or the collapsed rail keeps a dot for it, and the row carries `aria-current`).
 
 ### Harness integrations
 
