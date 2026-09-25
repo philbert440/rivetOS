@@ -92,6 +92,7 @@ fun HubDrawer(
     onNavTab: (HubTab) -> Unit,
     rightDrawer: DrawerState? = null,
     onOpenMemory: (() -> Unit)? = null,
+    onOpenTasks: (() -> Unit)? = null,
     content: @Composable (openDrawer: () -> Unit) -> Unit,
 ) {
     val st by vm.state.collectAsState()
@@ -159,7 +160,8 @@ fun HubDrawer(
                     onNav = { dest ->
                         // Memory is its own screen (plane/DrawerNav.kt
                         // drawerOpensMemoryScreen), never a hub tab.
-                        if (drawerOpensMemoryScreen(dest)) onOpenMemory?.invoke()
+                        if (io.rivethub.app.plane.drawerOpensTasksScreen(dest)) onOpenTasks?.invoke()
+                        else if (drawerOpensMemoryScreen(dest)) onOpenMemory?.invoke()
                         else drawerTabRoute(dest)?.let { onNavTab(it) }
                         closeDrawer()
                     },

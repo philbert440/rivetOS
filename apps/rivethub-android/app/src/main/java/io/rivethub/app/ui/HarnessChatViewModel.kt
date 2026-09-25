@@ -464,6 +464,8 @@ class HarnessChatViewModel(
         }
     }
 
+    fun clearComposer() { _state.update { it.copy(composer = "") } }
+
     fun setComposer(v: String) {
         val edit = composerOnInput(v)
         _state.update { it.copy(composer = edit.value, error = edit.error) }

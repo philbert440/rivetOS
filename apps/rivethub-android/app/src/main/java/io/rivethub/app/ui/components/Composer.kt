@@ -6,6 +6,8 @@ import androidx.compose.animation.core.animateFloat
 import androidx.compose.animation.core.infiniteRepeatable
 import androidx.compose.animation.core.rememberInfiniteTransition
 import androidx.compose.animation.core.tween
+import androidx.compose.foundation.horizontalScroll
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -77,6 +79,7 @@ fun Composer(
     onAttach: () -> Unit,
     onSend: () -> Unit,
     onStop: () -> Unit,
+    onDelegate: (() -> Unit)? = null,
     modifier: Modifier = Modifier,
     enabled: Boolean = true,
     ask: @Composable () -> Unit = {},
@@ -159,6 +162,15 @@ fun Composer(
                     horizontalArrangement = Arrangement.spacedBy(4.dp),
                 ) {
                     pickers(compact)
+                    if (onDelegate != null && io.rivethub.app.plane.delegateGoalFromComposer(value) != null) {
+                        Text(
+                            stringResource(R.string.delegate), color = colors.inkDim, style = RivetType.sm,
+                            modifier = Modifier.heightIn(min = Dimens.touchTarget)
+                                .clip(RoundedCornerShape(Radius.full))
+                                .clickable(enabled = enabled, role = Role.Button, onClick = onDelegate)
+                                .padding(horizontal = 8.dp, vertical = 12.dp),
+                        )
+                    }
                     Spacer(Modifier.weight(1f))
                     if (composerShowsMic(compact)) MicPlaceholder()
                     val plusCd = stringResource(R.string.cd_plus_panel)

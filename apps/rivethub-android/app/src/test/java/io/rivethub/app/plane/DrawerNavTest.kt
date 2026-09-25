@@ -21,7 +21,7 @@ class DrawerNavTest {
 
     @Test
     fun `phase-two rows never resolve as active`() {
-        for (dest in listOf(DrawerDest.Files, DrawerDest.Tasks, DrawerDest.Workflows)) {
+        for (dest in listOf(DrawerDest.Files, DrawerDest.Workflows)) {
             assertFalse(drawerDestEnabled(dest))
             assertFalse(drawerItemActive(dest, HubTab.Conversations))
             assertFalse(drawerItemActive(dest, HubTab.Settings))
@@ -116,7 +116,7 @@ class DrawerExperimentalTest {
                 val expected = when (dest) {
                     DrawerDest.Conversations, DrawerDest.Memory, DrawerDest.Settings -> true
                     DrawerDest.Files -> c.files
-                    DrawerDest.Tasks -> c.tasks
+                    DrawerDest.Tasks -> true
                     DrawerDest.Workflows -> c.workflows
                 }
                 assertEquals("$dest files=${c.files} tasks=${c.tasks} workflows=${c.workflows}", expected, drawerDestVisible(dest, exp))
@@ -134,7 +134,7 @@ class DrawerExperimentalTest {
         assertTrue(drawerDestEnabled(DrawerDest.Memory, off))
         assertTrue(drawerDestEnabled(DrawerDest.Memory, on))
         assertFalse(drawerDestEnabled(DrawerDest.Files, off))
-        assertFalse(drawerDestEnabled(DrawerDest.Tasks, off))
+        assertTrue(drawerDestEnabled(DrawerDest.Tasks, off))
         assertFalse(drawerDestEnabled(DrawerDest.Workflows, off))
         assertTrue(drawerDestEnabled(DrawerDest.Files, on))
         assertTrue(drawerDestEnabled(DrawerDest.Tasks, on))
@@ -151,14 +151,14 @@ class DrawerExperimentalTest {
             listOf(DrawerDest.Conversations, DrawerDest.Memory),
             drawerVisiblePrimary(off),
         )
-        assertEquals(emptyList<DrawerDest>(), drawerVisibleSecondary(off))
+        assertEquals(listOf(DrawerDest.Tasks), drawerVisibleSecondary(off))
         assertEquals(
             listOf(DrawerDest.Conversations, DrawerDest.Memory, DrawerDest.Files),
             drawerVisiblePrimary(ExperimentalFlags(files = true)),
         )
         assertEquals(listOf(DrawerDest.Tasks), drawerVisibleSecondary(ExperimentalFlags(tasks = true)))
         assertEquals(
-            listOf(DrawerDest.Workflows),
+            listOf(DrawerDest.Tasks, DrawerDest.Workflows),
             drawerVisibleSecondary(ExperimentalFlags(workflows = true)),
         )
         val all = ExperimentalFlags(files = true, tasks = true, workflows = true)

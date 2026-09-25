@@ -1,5 +1,6 @@
 package io.rivethub.app.gateway
 
+import io.rivethub.app.plane.isTaskId
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.Dispatchers
@@ -89,6 +90,46 @@ class Gateway(
         }.getOrNull()
         return msg ?: "HTTP ${res.code}"
     }
+
+    private suspend fun <T> post(segments: List<String>, body: String, ser: KSerializer<T>): T =
+        withContext(Dispatchers.IO) {
+            val request = Request.Builder().url(url(segments))
+                .post(body.toRequestBody("application/json".toMediaType())).build()
+            withClients { client ->
+                client.newCall(request).execute().use { response ->
+                    val text = response.body.string()
+                    if (!response.isSuccessful) throw GatewayException(response.code, errorText(response, text))
+                    wireJson.decodeFromString(ser, text)
+                }
+            }
+        }
+
+    suspend fun tasks(status: String? = null, agentId: String? = null, limit: Int = 100): TasksListResponse =
+        get(listOf("api", "tasks"), TasksListResponse.serializer(),
+            mapOf("status" to status, "agentId" to agentId, "limit" to limit.toString()))
+
+    suspend fun taskCreate(req: TaskCreateRequest): TaskResponse =
+        post(listOf("api", "tasks"), wireJson.encodeToString(TaskCreateRequest.serializer(), req), TaskResponse.serializer())
+
+    private fun taskPath(id: String): List<String> {
+        require(isTaskId(id)) { "Invalid task UUID" }
+        return listOf("api", "tasks", id)
+    }
+
+    suspend fun task(id: String): TaskResponse = get(taskPath(id), TaskResponse.serializer())
+
+    suspend fun taskWait(id: String, timeoutMs: Long): TaskResponse? = try {
+        get(taskPath(id) + "wait", TaskResponse.serializer(), mapOf("timeoutMs" to timeoutMs.toString()))
+    } catch (e: GatewayException) {
+        if (e.status == 504) null else throw e
+    }
+
+    suspend fun taskSteer(id: String, message: String): kotlinx.serialization.json.JsonObject =
+        post(taskPath(id) + "steer", wireJson.encodeToString(TaskSteerRequest.serializer(), TaskSteerRequest(message)),
+            kotlinx.serialization.json.JsonObject.serializer())
+
+    suspend fun taskKill(id: String): TaskKillResponse =
+        post(taskPath(id) + "kill", "{}", TaskKillResponse.serializer())
 
     suspend fun healthz(): Healthz = get(listOf("healthz"), Healthz.serializer())
     suspend fun mesh(): MeshOverview = get(listOf("api", "mesh"), MeshOverview.serializer())

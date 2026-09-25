@@ -542,3 +542,31 @@ is unchanged: leave, background, and the Detach menu still send detach only.
 - ComponentGallery has `systemBarsPadding()` (M1.5 emulator pass, fixed in D1); gallery TopBar samples pass `padStatusBar = false` so they show the true 48dp bar mid-scroll.
 - `archived` / `sessionModes` / `titleOverrides` / `agentPointers` maps are not pruned when a session
   ends. Do not GC them on a partial discover.
+
+## UX slice D2 — Tasks and delegation
+
+Tasks is always visible and enabled in the drawer, routed by MainActivity.openTasks()
+to Screen.Tasks; Screen.TaskDetail(id) shares the same HubDrawer and activity-scoped
+TasksViewModel (`key=tasks`). The old expTasks preference remains decoded, but its
+Settings toggle is removed. Task rows, status filtering, New task, detail, steer and
+confirmed Kill use the existing design tokens. DelegateSheet is shared by New task
+and the composer's Delegate… pill; delegation pre-fills the goal, clears composer text
+only after successful creation, then opens detail. Normal Send never delegates.
+
+All task HTTP calls, including the catalog used for task targets, route through
+`transport.entry()`; never route tasks to the currently selected chat node. Presets
+omit executor on creation so the den chooses harness-session, target and affinity.
+Unimplemented presets stay visible but disabled, with their catalog gap text.
+Pure rules live in plane/Tasks.kt. SelectOption now lives in plane with a UI typealias
+so filters stay Android-free; disabled/helper options render in RivetSelect.
+
+No task polling or timers. TasksViewModel.refresh() fetches list and catalog once;
+D3 drives refresh via task.done. open(id) fetches one detail; create refreshes
+list/catalog and navigation opens detail; steer/kill refresh and reopen detail. taskWait is an unused, one-call
+long-poll API helper; 504 returns null. UI refresh buttons permit manual refresh
+before D3 lands. Result/spec/budget/usage/eval/context objects retain their JSON wire
+content without imposing unused nested schemas.
+
+Built from docs/UX-SPEC.md only (UI specification), with the explicitly authorized
+wire contracts, existing components and owned web behavior references. Neither the retired tree nor its excluded libraries were consulted. JVM/emulator and
+migration 0017 integration gates remain for the integrator; Gradle unavailable here.

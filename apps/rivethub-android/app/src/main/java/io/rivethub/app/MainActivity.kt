@@ -224,6 +224,7 @@ fun App(
     val scope = rememberCoroutineScope()
     val stores: ScreenStores = viewModel(key = "screen-stores")
     val hubVm: HubViewModel = viewModel(key = "hub") { HubViewModel(c) }
+    val tasksVm: io.rivethub.app.ui.TasksViewModel = viewModel(key = "tasks") { io.rivethub.app.ui.TasksViewModel(c) }
     val memoryVm: MemoryViewModel = viewModel(key = "memory") { MemoryViewModel(c) }
     BackHandler(enabled = nav.stack.size > 1) { nav.pop() }
     val liveKeys = nav.stack.mapNotNull { it.storeKey() }.toSet()
@@ -326,6 +327,14 @@ fun App(
                 hubVm.setTab(HubViewModel.Tab.Settings)
                 if (nav.current != Screen.Hub) nav.push(Screen.Hub)
             }
+        }
+    }
+
+    fun openTasks() {
+        when {
+            nav.current == Screen.Tasks -> Unit
+            Screen.Tasks in nav.stack -> nav.popTo { it == Screen.Tasks }
+            else -> nav.push(Screen.Tasks)
         }
     }
 
@@ -440,6 +449,7 @@ fun App(
             onOpenChat = { openChatScreen(it) },
             onNavTab = { onNavTab(it) },
             onOpenMemory = { openMemory() },
+            onOpenTasks = { openTasks() },
         ) { openDrawer ->
             HubScreen(
                 vm = hubVm,
@@ -478,6 +488,7 @@ fun App(
                     onNavTab = { onNavTab(it) },
                     rightDrawer = historyState,
                     onOpenMemory = { openMemory() },
+                    onOpenTasks = { openTasks() },
                 ) { openDrawer ->
                     HistoryDrawer(
                         vm = hubVm,
@@ -488,6 +499,8 @@ fun App(
                     ) { openHistory ->
                         HarnessChatScreen(
                             vm = vm,
+                            tasksVm = tasksVm,
+                            onTaskCreated = { nav.push(Screen.TaskDetail(it)) },
                             onOpenDrawer = openDrawer,
                             onOpenHistory = openHistory,
                             hubVm = hubVm,
@@ -523,6 +536,7 @@ fun App(
             onOpenChat = { openChatScreen(it) },
             onNavTab = { onNavTab(it) },
             onOpenMemory = { openMemory() },
+            onOpenTasks = { openTasks() },
         ) { openDrawer ->
             MemoryScreen(
                 vm = memoryVm,
@@ -536,12 +550,25 @@ fun App(
             onOpenChat = { openChatScreen(it) },
             onNavTab = { onNavTab(it) },
             onOpenMemory = { openMemory() },
+            onOpenTasks = { openTasks() },
         ) {
             MemoryTopicScreen(
                 vm = memoryVm,
                 slug = s.slug,
                 onBack = { nav.pop() },
             )
+        }
+        Screen.Tasks -> HubDrawer(
+            vm = hubVm, onOpenChat = { openChatScreen(it) }, onNavTab = { onNavTab(it) },
+            onOpenMemory = { openMemory() }, onOpenTasks = { openTasks() },
+        ) { openDrawer ->
+            io.rivethub.app.ui.screens.TasksScreen(tasksVm, openDrawer) { nav.push(Screen.TaskDetail(it)) }
+        }
+        is Screen.TaskDetail -> HubDrawer(
+            vm = hubVm, onOpenChat = { openChatScreen(it) }, onNavTab = { onNavTab(it) },
+            onOpenMemory = { openMemory() }, onOpenTasks = { openTasks() },
+        ) {
+            io.rivethub.app.ui.screens.TaskDetailScreen(tasksVm, s.id) { nav.pop() }
         }
         Screen.Gallery -> ComponentGallery()
     }

@@ -460,3 +460,60 @@ fun parseTermFrame(text: String): TermFrame? {
         else -> null
     }
 }
+
+@Serializable
+data class TaskAcceptanceCriterion(val id: String, val description: String, val kind: String)
+
+@Serializable
+data class TaskWire(
+    val id: String = "",
+    val goal: String = "",
+    val contextRefs: List<JsonObject> = emptyList(),
+    val acceptanceCriteria: List<TaskAcceptanceCriterion> = emptyList(),
+    val spec: JsonObject = JsonObject(emptyMap()),
+    val executor: String = "",
+    val executorTarget: String? = null,
+    val agentId: String = "",
+    val requestedBy: String? = null,
+    val origin: String = "",
+    val parentTaskId: String? = null,
+    val chainDepth: Int = 0,
+    val nodeAffinity: String? = null,
+    val claimedBy: String? = null,
+    val budget: JsonObject = JsonObject(emptyMap()),
+    val usage: JsonObject? = null,
+    val status: String = "queued",
+    val attempt: Int = 0,
+    val maxAttempts: Int = 0,
+    val pendingMessage: String? = null,
+    val error: String? = null,
+    val result: JsonObject? = null,
+    val conversationId: String? = null,
+    val sessionKey: String? = null,
+    val harnessSessionIds: List<String> = emptyList(),
+    val eval: JsonObject? = null,
+    val evalAttempt: Int = 0,
+    val createdAt: Long = 0,
+    val updatedAt: Long? = null,
+    val startedAt: Long? = null,
+    val lastHeartbeatAt: Long? = null,
+    val completedAt: Long? = null,
+    val durationMs: Long? = null,
+)
+
+@Serializable
+data class TaskCreateRequest(
+    val goal: String,
+    val agentId: String,
+    val acceptanceCriteria: List<TaskAcceptanceCriterion>? = null,
+    @OptIn(kotlinx.serialization.ExperimentalSerializationApi::class)
+    @kotlinx.serialization.EncodeDefault val requestedBy: String = "rivethub",
+)
+@Serializable
+data class TasksListResponse(val tasks: List<TaskWire> = emptyList())
+@Serializable
+data class TaskResponse(val task: TaskWire = TaskWire())
+@Serializable
+data class TaskSteerRequest(val message: String)
+@Serializable
+data class TaskKillResponse(val ok: Boolean = false, val prior: String? = null)

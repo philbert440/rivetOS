@@ -1,6 +1,6 @@
 package io.rivethub.app.plane
 
-/** Destinations in the left rail. Phase-2 rows render but do not navigate; Memory routes to its own screen. */
+/** Destinations in the left rail. Memory and Tasks route to their own screens. */
 enum class DrawerDest {
     Conversations,
     Memory,
@@ -22,14 +22,14 @@ data class ExperimentalFlags(
 fun drawerDestVisible(dest: DrawerDest, exp: ExperimentalFlags = ExperimentalFlags()): Boolean = when (dest) {
     DrawerDest.Conversations, DrawerDest.Memory, DrawerDest.Settings -> true
     DrawerDest.Files -> exp.files
-    DrawerDest.Tasks -> exp.tasks
+    DrawerDest.Tasks -> true
     DrawerDest.Workflows -> exp.workflows
 }
 
 fun drawerDestEnabled(dest: DrawerDest, exp: ExperimentalFlags = ExperimentalFlags()): Boolean = when (dest) {
     DrawerDest.Conversations, DrawerDest.Memory, DrawerDest.Settings -> true
     DrawerDest.Files -> exp.files
-    DrawerDest.Tasks -> exp.tasks
+    DrawerDest.Tasks -> true
     DrawerDest.Workflows -> exp.workflows
 }
 
@@ -68,8 +68,8 @@ fun hubTabOf(dest: DrawerDest): HubTab? = when (dest) {
  * Drawer nav resolves to the same hub tab from EVERY origin — the hub itself
  * or an open session (session-header slice: the session screen lives inside
  * the same left drawer; from a session the UI additionally pops back to the
- * hub, but the tab rule is identical). Phase-2 rows stay inert (null) from
- * every origin. MainActivity routes both origins through this one function.
+ * hub, but the tab rule is identical). Standalone destinations return null from
+ * every origin and route separately. MainActivity routes both origins through this one function.
  */
 fun drawerTabRoute(dest: DrawerDest): HubTab? = hubTabOf(dest)
 
@@ -110,3 +110,5 @@ fun formatUnreadBadge(unread: Int): String? = when {
     unread > 99 -> "99+"
     else -> unread.toString()
 }
+
+fun drawerOpensTasksScreen(dest: DrawerDest): Boolean = dest == DrawerDest.Tasks
