@@ -45,6 +45,25 @@ import io.rivethub.app.plane.PtyReadyGate
 import io.rivethub.app.plane.SessionAttach
 import io.rivethub.app.plane.SessionMode
 import io.rivethub.app.plane.TranscriptMachine
+import io.rivethub.app.plane.ChatError
+import io.rivethub.app.plane.ERR_CODE_FAILED_ATTACHMENT
+import io.rivethub.app.plane.ERR_CODE_IMAGE_ONLY
+import io.rivethub.app.plane.ERR_CODE_IMAGE_UNSUPPORTED
+import io.rivethub.app.plane.ERR_CODE_TOO_LARGE
+import io.rivethub.app.plane.ERR_CODE_UPLOADING
+import io.rivethub.app.plane.ReasoningLedger
+import io.rivethub.app.plane.ReasoningSpan
+import io.rivethub.app.plane.RepeatErrorGate
+import io.rivethub.app.plane.admit
+import io.rivethub.app.plane.advance
+import io.rivethub.app.plane.fileSpan
+import io.rivethub.app.plane.nonReasoning
+import io.rivethub.app.plane.pushError
+import io.rivethub.app.plane.reasoningDelta
+import io.rivethub.app.plane.settle
+import io.rivethub.app.plane.startTurn
+import io.rivethub.app.plane.clearErrors as clearChatErrors
+import io.rivethub.app.plane.dismissError as dismissChatError
 import io.rivethub.app.plane.agentStatusLine
 import io.rivethub.app.plane.registryEventMatchesOpen
 import io.rivethub.app.plane.registryStamp
@@ -157,6 +176,8 @@ class HarnessChatViewModel(
     private val openStream: (Uri) -> java.io.InputStream? = { null },
     private val agentId: String = "",
     private val onAdoptPointer: ((from: String, canonical: String) -> Unit)? = null,
+    /** Wall clock for the reasoning timer; injectable so tests can drive it. */
+    private val clock: () -> Long = System::currentTimeMillis,
 ) : ViewModel() {
     data class UiState(
         val title: String,
@@ -214,6 +235,18 @@ class HarnessChatViewModel(
          * the user must confirm before a forced retry.
          */
         val spawnConflict: SpawnConflict? = null,
+        /** Phone-measured reasoning span of the live turn (UX-SPEC §1.3); reset per turn. */
+        val reasoning: ReasoningSpan? = null,
+        /** Measured reasoning ms by stored turn index — in memory only; older turns have none. */
+        val reasoningDurations: Map<Int, Long> = emptyMap(),
+        /** Transport/turn error cards above the composer. Composer/attachment codes stay on [error]/[errorCode]. */
+        val errors: List<ChatError> = emptyList(),
+        /** Expanded chain-of-thought timelines by turn index; the live turn is -1. */
+        val cotExpanded: Set<Int> = emptySet(),
+        /** Generation of the live turn; a tool sheet opened on it stays with it (plane/ToolSheet.kt). */
+        val liveTurn: Long = 0L,
+        /** Terminal attach error for the retry surface; each new occurrence is also stacked once. */
+        val termError: String? = null,
     )
 
     private val _state = MutableStateFlow(
@@ -253,6 +286,9 @@ class HarnessChatViewModel(
             val bubble = optimisticUserText(text, attachments)
             machine.appendOptimisticUser(bubble)
             machine.beginTurn()
+            // Files the previous turn's span first: a queued send starts here
+            // straight out of turn-complete, before that turn is on disk.
+            beginLiveTurn()
             injectCompleted = false
             publishMachine()
             rearmIdleWatch()
@@ -321,6 +357,16 @@ class HarnessChatViewModel(
     /** True after inject ok / sendTurn landed — a fetch before this cannot complete the turn. */
     private var injectCompleted: Boolean = false
 
+    /** Reasoning clock (plane/ReasoningClock.kt): the live span plus finished measurements keyed by
+     *  their turn start until those turns land on disk. [wasInFlight] = previous publish's inFlight. */
+    private var ledger = ReasoningLedger()
+    private var wasInFlight: Boolean = false
+    /** Live-turn generation for the tool sheet's identity (plane/ToolSheet.kt); bumped per turn start. */
+    private var liveTurnGen: Long = 0L
+    private var errorSeq: Long = 0L
+    /** Terminal errors already stacked this session: the controller republishes its error on every change. */
+    private var termErrorGate = RepeatErrorGate()
+
     private val termScreen = AnsiScreen()
     private val termCtl = TermAttachController(
         scope = viewModelScope,
@@ -363,6 +409,11 @@ class HarnessChatViewModel(
             spawnModelEffort(st.sheet, harnessId, st.model, st.effort)
         },
         onPublish = { v ->
+            // Stack each new terminal failure once; the retry surface keeps reading termError.
+            val termErr = v.error
+            val (gate, stack) = termErrorGate.admit(_state.value.sessionId, termErr)
+            termErrorGate = gate
+            if (stack && termErr != null) _state.update { it.copy(errors = stackError(it.errors, termErr)) }
             _state.update {
                 it.copy(
                     termStatus = v.status,
@@ -371,7 +422,7 @@ class HarnessChatViewModel(
                     attachCommand = v.attachCommand,
                     termClipboard = v.clipboard,
                     termOwner = v.owner,
-                    error = v.error ?: it.error,
+                    termError = v.error,
                 )
             }
         },
@@ -656,7 +707,7 @@ class HarnessChatViewModel(
                         if (cardError != null) {
                             it.copy(answeringPrompt = false, askError = cardError)
                         } else {
-                            it.copy(answeringPrompt = false, error = e.message ?: e.javaClass.simpleName)
+                            it.copy(answeringPrompt = false, errors = stackError(it.errors, e))
                         }
                     }
                 }.onSuccess {
@@ -685,7 +736,7 @@ class HarnessChatViewModel(
             runCatching {
                 c.harness(nodeDenUrl).resolveApproval(sessionKeyEnc(st.sessionId), reqId, decision)
             }.onFailure { e ->
-                _state.update { it.copy(error = e.message ?: e.javaClass.simpleName) }
+                _state.update { it.copy(errors = stackError(it.errors, e)) }
             }
         }
     }
@@ -808,7 +859,7 @@ class HarnessChatViewModel(
                         attachments = s.attachments.map { a ->
                             if (a.id == id) a.copy(status = AttachmentStatus.FAILED) else a
                         },
-                        error = e.message ?: e.javaClass.simpleName,
+                        errors = stackError(s.errors, e),
                     )
                 }
                 onDone(false)
@@ -861,7 +912,7 @@ class HarnessChatViewModel(
                         attachments = s.attachments.map { a ->
                             if (a.id == id) a.copy(status = AttachmentStatus.FAILED) else a
                         },
-                        error = e.message ?: e.javaClass.simpleName,
+                        errors = stackError(s.errors, e),
                     )
                 }
             }
@@ -962,7 +1013,7 @@ class HarnessChatViewModel(
             _state.update { it.copy(sheet = sheet, model = model, effort = effort, transport = transport) }
             recomputeGate()
         } catch (e: Exception) {
-            _state.update { it.copy(error = e.message ?: e.javaClass.simpleName) }
+            _state.update { it.copy(errors = stackError(it.errors, e)) }
         }
         startRegistry()
         if (!_state.value.draft) startAttach(_state.value.sessionId)
@@ -1101,7 +1152,7 @@ class HarnessChatViewModel(
             },
             onFatal = { msg ->
                 AndroidLogger.warn("RivetHub", "attach fatal: $msg", null)
-                _state.update { it.copy(error = msg, ws = WsStatus.CLOSED) }
+                _state.update { it.copy(errors = stackError(it.errors, msg), ws = WsStatus.CLOSED) }
             },
             closeWatch = { myWatch[0]?.close() },
         )
@@ -1169,6 +1220,9 @@ class HarnessChatViewModel(
                             }
                             is HarnessEvent.TurnComplete -> {
                                 machineAttach.onFrame(e)
+                                // File this turn's measurement BEFORE draining the queue: the
+                                // pump can start the next send synchronously.
+                                updateLedger { it.fileSpan(clock()) }
                                 runCatching { pump.onTurnComplete() }
                                 // Hook-sourced stores: the post-turn hard resync after the
                                 // settle window (one-shot, re-armed by the frame).
@@ -1183,6 +1237,12 @@ class HarnessChatViewModel(
                             }
                             else -> {
                                 machineAttach.onFrame(e)
+                                when (e) {
+                                    is HarnessEvent.ReasoningDelta -> updateLedger { it.reasoningDelta(clock()) }
+                                    is HarnessEvent.AssistantDelta, is HarnessEvent.ToolUse ->
+                                        updateLedger { it.nonReasoning(clock()) }
+                                    else -> Unit
+                                }
                                 onSessionEvent(e)
                             }
                         }
@@ -1498,13 +1558,30 @@ class HarnessChatViewModel(
     }
 
     private fun publishMachine() {
-        val thinking = machine.liveReasoning.ifBlank {
-            splitHermesReasoning(machine.liveText).reasoning
-        }
+        val split = splitHermesReasoning(machine.liveText)
+        val thinking = machine.liveReasoning.ifBlank { split.reasoning }
         val st = machine.agentStatus
+        val now = clock()
+        val inFlightNow = machine.inFlight
+        val advanced = ledger.advance(
+            nowMs = now,
+            wasInFlight = wasInFlight,
+            inFlight = inFlightNow,
+            reasoningSeen = thinking.isNotBlank(),
+            nonReasoningSeen = split.text.isNotBlank() || machine.liveTools.isNotEmpty(),
+            committedSize = machine.committedTurns.size,
+        )
+        if (!wasInFlight && inFlightNow) liveTurnGen++
+        wasInFlight = inFlightNow
+        val transcript = machine.transcript
+        val settled = advanced.settle(transcript, inFlightNow, ::turnHasReasoning)
+        ledger = settled.ledger
         _state.update {
             it.copy(
-                turns = machine.transcript,
+                reasoning = ledger.span,
+                reasoningDurations = if (settled.durations.isEmpty()) it.reasoningDurations else it.reasoningDurations + settled.durations,
+                liveTurn = liveTurnGen,
+                turns = transcript,
                 liveText = machine.liveText,
                 liveReasoning = thinking,
                 liveTools = machine.liveTools,
@@ -1513,6 +1590,42 @@ class HarnessChatViewModel(
                 agentStatusText = agentStatusLine(st?.status, st?.phase, st?.toolName),
             )
         }
+    }
+
+    private fun updateLedger(f: (ReasoningLedger) -> ReasoningLedger) {
+        ledger = f(ledger)
+        _state.update { it.copy(reasoning = ledger.span) }
+    }
+
+    /** A send starts a turn: file the old span, reset the clock and the live-turn identity. */
+    private fun beginLiveTurn() {
+        ledger = ledger.startTurn(clock(), machine.committedTurns.size)
+        liveTurnGen++
+        // machine.beginTurn() already set inFlight; the publish that follows must not start it again.
+        wasInFlight = machine.inFlight
+        _state.update { it.copy(reasoning = ledger.span, liveTurn = liveTurnGen) }
+    }
+
+    /** Hermes keeps its reasoning in the text, so an owner check looks there too. */
+    private fun turnHasReasoning(t: io.rivethub.app.gateway.HarnessTranscriptTurn): Boolean =
+        !t.thinking.isNullOrBlank() || splitHermesReasoning(t.text).reasoning.isNotBlank()
+
+    /** Clock for the live "Reasoned for" label, so it ticks on the same time base as the span. */
+    val clockMs: () -> Long get() = clock
+
+    private fun stackError(list: List<ChatError>, e: Throwable): List<ChatError> =
+        stackError(list, e.message ?: e.javaClass.simpleName)
+
+    private fun stackError(list: List<ChatError>, text: String, code: String? = null): List<ChatError> =
+        pushError(list, text, code, id = ++errorSeq)
+
+    fun dismissError(id: Long) = _state.update { it.copy(errors = dismissChatError(it.errors, id)) }
+
+    fun clearErrors() = _state.update { it.copy(errors = clearChatErrors(it.errors)) }
+
+    /** Expand/fold one turn's chain-of-thought timeline; the live turn is -1. */
+    fun toggleCot(turnIndex: Int) = _state.update {
+        it.copy(cotExpanded = if (turnIndex in it.cotExpanded) it.cotExpanded - turnIndex else it.cotExpanded + turnIndex)
     }
 
     fun effortOptions(): List<Pair<String, String>> {
@@ -1557,11 +1670,11 @@ class HarnessChatViewModel(
     }
 
     companion object {
-        const val ERR_UPLOADING = "uploading"
-        const val ERR_TOO_LARGE = "too_large"
-        const val ERR_FAILED_ATTACHMENT = "failed_attachment"
-        const val ERR_IMAGE_ONLY = "image_only"
-        const val ERR_IMAGE_UNSUPPORTED = "image_unsupported"
+        const val ERR_UPLOADING = ERR_CODE_UPLOADING
+        const val ERR_TOO_LARGE = ERR_CODE_TOO_LARGE
+        const val ERR_FAILED_ATTACHMENT = ERR_CODE_FAILED_ATTACHMENT
+        const val ERR_IMAGE_ONLY = ERR_CODE_IMAGE_ONLY
+        const val ERR_IMAGE_UNSUPPORTED = ERR_CODE_IMAGE_UNSUPPORTED
         const val ERR_COMPACT_BUSY = "compact_busy"
     }
 }

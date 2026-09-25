@@ -35,7 +35,24 @@ data class PendingApproval(
     val input: JsonObject? = null,
 )
 
-data class LiveTool(val name: String, val args: JsonElement? = null, val status: String = "running")
+/**
+ * One tool call on the in-flight turn. [id] is the wire `toolCallId` when
+ * known; [resultPreview] / [isError] arrive with the matching tool result.
+ *
+ * The raw result is never kept: at ingestion it is rendered once to text and
+ * cut to a bounded preview ([boundedResult], [LIVE_RESULT_PREVIEW_MAX] chars)
+ * with [resultTruncated] set when cut. The full text is the committed
+ * transcript's `resultText` once the turn lands.
+ */
+data class LiveTool(
+    val name: String,
+    val args: JsonElement? = null,
+    val status: String = "running",
+    val id: String? = null,
+    val resultPreview: String? = null,
+    val isError: Boolean = false,
+    val resultTruncated: Boolean = false,
+)
 
 private val ASK_JSON = Json { ignoreUnknownKeys = true; isLenient = true }
 

@@ -27,6 +27,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.SideEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
@@ -75,7 +76,16 @@ import io.rivethub.app.plane.accentFor
 import io.rivethub.app.plane.composerCanSend
 import io.rivethub.app.plane.composerIsEnabled
 import io.rivethub.app.plane.contextBarView
-import io.rivethub.app.plane.humanToolTitle
+import io.rivethub.app.plane.CotStep
+import io.rivethub.app.plane.cotSteps
+import io.rivethub.app.plane.foldSteps
+import io.rivethub.app.plane.LIVE_TURN_INDEX
+import io.rivethub.app.plane.ToolSheetTarget
+import io.rivethub.app.plane.resolveToolSheet
+import io.rivethub.app.plane.toolSheetTarget
+import io.rivethub.app.plane.isStripError
+import io.rivethub.app.plane.loadingLabel
+import io.rivethub.app.gateway.HarnessTranscriptTurn
 import io.rivethub.app.plane.statsLineOrNull
 import io.rivethub.app.plane.toolArgStrings
 import io.rivethub.app.ui.HubViewModel
@@ -98,7 +108,8 @@ import io.rivethub.app.ui.components.NativeTurnControls
 import io.rivethub.app.ui.components.ModePager
 import io.rivethub.app.ui.components.SelectOption
 import io.rivethub.app.ui.components.TerminalRetryState
-import io.rivethub.app.ui.components.ToolRow
+import io.rivethub.app.ui.components.ChatErrorStack
+import io.rivethub.app.ui.components.ToolDetailSheet
 import io.rivethub.app.ui.components.TranscriptAssistantTurn
 import io.rivethub.app.ui.components.TranscriptUserTurn
 import io.rivethub.app.ui.components.rememberComposerMediaLaunchers
@@ -253,7 +264,9 @@ fun HarnessChatScreen(
         command = st.sessionId.substringBefore(':').takeIf { st.sessionId.contains(':') } ?: st.model,
     )
     val accent = rivetHexColor(accentHex)
-    val stripError = when (st.errorCode) {
+    // The strip is only for the five composer/attachment codes; every free-text
+    // error (transport, turn, terminal attach) is a card in the stack.
+    val stripError = when (st.errorCode?.takeIf { isStripError(it) }) {
         HarnessChatViewModel.ERR_UPLOADING -> stringResource(R.string.error_upload_in_progress)
         HarnessChatViewModel.ERR_TOO_LARGE -> stringResource(R.string.error_upload_too_large)
         HarnessChatViewModel.ERR_FAILED_ATTACHMENT -> stringResource(R.string.error_failed_attachment)
@@ -338,7 +351,7 @@ fun HarnessChatScreen(
             if (page == termLabel) {
                 if (st.termStatus == TermStatus.Exited) {
                     Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-                        TerminalRetryState(st.error ?: stringResource(R.string.term_status_exited))
+                        TerminalRetryState(st.termError ?: stringResource(R.string.term_status_exited))
                     }
                 } else {
                     TerminalPane(
@@ -387,6 +400,11 @@ fun HarnessChatScreen(
                 modifier = Modifier.navigationBarsPadding(),
             )
         } else {
+            ChatErrorStack(
+                errors = st.errors,
+                onDismiss = vm::dismissError,
+                onClearAll = vm::clearErrors,
+            )
             QueuedStrip(
                 items = st.queued,
                 onInject = vm::injectQueued,
@@ -510,6 +528,30 @@ private fun ChatTranscript(
     val scope = rememberCoroutineScope()
     val liveExtra = if (st.inFlight || st.liveText.isNotBlank() || st.liveReasoning.isNotBlank()) 1 else 0
     val count = st.turns.size + liveExtra
+    // Chain-of-thought steps for the in-flight turn; stored turns build theirs per item.
+    // Tool steps rebuild only when the tools change (results are pre-rendered,
+    // bounded previews), not on every reasoning delta.
+    val liveToolSteps = remember(st.liveTools) {
+        cotSteps(null, "", st.liveTools, null, live = true).filterIsInstance<CotStep.Tool>()
+    }
+    val liveReasoningMs = st.reasoning?.let { span -> span.endMs?.let { it - span.startMs } }
+    val liveSteps = remember(st.liveReasoning, liveReasoningMs, liveToolSteps) {
+        val head = cotSteps(null, st.liveReasoning, emptyList(), liveReasoningMs, live = true)
+        head + liveToolSteps
+    }
+    // Open tool sheet, held by identity (plane/ToolSheet.kt): a live result
+    // lands while it is open, the call follows its turn onto the committed
+    // transcript, and it never switches to another turn's call.
+    var detail by remember { mutableStateOf<ToolSheetTarget?>(null) }
+    detail?.let { key ->
+        val resolved = remember(key, st.liveTurn, liveToolSteps, st.turns) {
+            resolveToolSheet(key, st.liveTurn, liveToolSteps, st.turns) { i ->
+                storedCotSteps(st.turns[i], null).filterIsInstance<CotStep.Tool>()
+            }
+        }
+        SideEffect { if (detail == key && resolved != key) detail = resolved }
+        ToolDetailSheet(resolved.shown, onDismiss = { detail = null })
+    }
     // transcript.tsx:385-480 port (plane/TranscriptPin.kt): pinned starts
     // true; the first non-empty load jumps to the end unconditionally (a chat
     // opens at the bottom of the thread); afterwards new content follows ONLY
@@ -543,7 +585,7 @@ private fun ChatTranscript(
             onJumpConsumed()
         }
     }
-    LaunchedEffect(count, st.liveText.length, st.liveReasoning.length, jumpToTurn) {
+    LaunchedEffect(count, st.liveText.length, st.liveReasoning.length, st.liveTools.size, jumpToTurn) {
         if (jumpToTurn == null && pin.onContent(count)) {
             // Index `count` = the trailing spacer — scrolling it into view
             // lands on the very bottom of the thread.
@@ -557,9 +599,8 @@ private fun ChatTranscript(
             modifier = Modifier.fillMaxSize().padding(horizontal = 16.dp, vertical = 12.dp),
             verticalArrangement = Arrangement.spacedBy(16.dp),
         ) {
-        itemsIndexed(st.turns, key = { i, turn -> "$i:${turn.role}" }) { _, turn ->
+        itemsIndexed(st.turns, key = { i, turn -> "$i:${turn.role}" }) { i, turn ->
             val split = if (turn.role != "user") splitHermesReasoning(turn.text) else null
-            val thinking = turn.thinking?.takeIf { it.isNotBlank() } ?: split?.reasoning.orEmpty()
             val body = split?.text ?: turn.text
             if (turn.role == "user") {
                 TranscriptUserTurn(
@@ -568,17 +609,22 @@ private fun ChatTranscript(
                     onCopy = { copyText(ctx, it) },
                 )
             } else {
+                val durationMs = st.reasoningDurations[i]
+                val steps = remember(turn, durationMs) { storedCotSteps(turn, durationMs) }
+                val expanded = i in st.cotExpanded
+                val fold = remember(steps, expanded) { foldSteps(steps, expanded) }
                 TranscriptAssistantTurn(
                     codeLineNumbers = st.codeLineNumbers,
                     codeWrap = st.codeWrap,
                     text = body,
-                    thinking = thinking.takeIf { it.isNotBlank() },
                     model = turn.model,
                     time = null,
                     accent = accent,
-                    tools = turn.tools.orEmpty().map {
-                        ToolRow(humanToolTitle(it.name, toolArgStrings(it.args)), it.status)
-                    },
+                    steps = steps,
+                    fold = fold,
+                    expanded = expanded,
+                    onToggleFold = { vm.toggleCot(i) },
+                    onToolTap = { tool -> detail = toolSheetTarget(i, st.liveTurn, steps, tool) },
                     stats = statsLineOrNull(turn.usage),
                     onCopy = { copyText(ctx, it) },
                 )
@@ -586,22 +632,28 @@ private fun ChatTranscript(
         }
         if (st.inFlight || st.liveText.isNotBlank() || st.liveReasoning.isNotBlank() || st.liveTools.isNotEmpty()) {
             item {
+                val expanded = LIVE_TURN in st.cotExpanded
+                val fold = remember(liveSteps, expanded) { foldSteps(liveSteps, expanded) }
                 TranscriptAssistantTurn(
                     codeLineNumbers = st.codeLineNumbers,
                     codeWrap = st.codeWrap,
-                    text = st.liveText,
-                    thinking = st.liveReasoning.takeIf { it.isNotBlank() },
+                    text = splitHermesReasoning(st.liveText).text,
                     model = st.model.takeIf { it.isNotBlank() },
                     time = null,
                     accent = accent,
-                    tools = st.liveTools.map {
-                        ToolRow(humanToolTitle(it.name, toolArgStrings(it.args as? kotlinx.serialization.json.JsonObject)), it.status)
-                    },
+                    steps = liveSteps,
+                    fold = fold,
+                    expanded = expanded,
+                    onToggleFold = { vm.toggleCot(LIVE_TURN) },
+                    onToolTap = { tool -> detail = toolSheetTarget(LIVE_TURN, st.liveTurn, liveSteps, tool) },
                     stats = null,
                     onCopy = { copyText(ctx, it) },
-                    thinkingOpenDefault = st.liveReasoning.isNotBlank() && st.liveText.isBlank(),
+                    liveSpan = st.reasoning,
+                    nowMs = vm.clockMs,
                 )
-                st.agentStatusText?.let { AgentStatusLine(it) }
+                if (st.inFlight) {
+                    AgentStatusLine(loadingLabel(liveSteps, st.agentStatusText) ?: stringResource(R.string.working))
+                }
             }
         }
             item { Spacer(Modifier.height(Dimens.grid2)) }
@@ -686,5 +738,20 @@ private fun EmptyLine(text: String) {
         color = RivetTheme.colors.inkDim,
         style = RivetType.xs,
         modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp),
+    )
+}
+
+/** Timeline key of the in-flight turn (stored turns use their index). */
+private const val LIVE_TURN = LIVE_TURN_INDEX
+
+/** Stored-turn steps; Hermes keeps its reasoning inside the text, so fold that in as `thinking`. */
+private fun storedCotSteps(turn: HarnessTranscriptTurn, durationMs: Long?): List<CotStep> {
+    val thinking = turn.thinking?.takeIf { it.isNotBlank() } ?: splitHermesReasoning(turn.text).reasoning
+    return cotSteps(
+        turn = turn.copy(thinking = thinking.takeIf { it.isNotBlank() }),
+        liveReasoning = "",
+        liveTools = emptyList(),
+        reasoningDurationMs = durationMs,
+        live = false,
     )
 }

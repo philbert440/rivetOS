@@ -502,7 +502,7 @@ fun App(
                                 )) {
                                     is NewConversationAction.ForAgent -> {
                                         val agent = current.agents.first { it.agentId == action.agentId }
-                                        openChatScreen(hubVm.openAgentAction(agent, AgentAction.Plus))
+                                        hubVm.openAgentAction(agent, AgentAction.Plus)?.let { openChatScreen(it) }
                                     }
                                     NewConversationAction.PickAgent -> openNewDraft()
                                 }

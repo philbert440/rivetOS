@@ -39,6 +39,11 @@ import io.rivethub.app.plane.PendingAttachment
 import io.rivethub.app.plane.TermStatus
 import io.rivethub.app.plane.contextBarView
 import io.rivethub.app.plane.fontScaleLabel
+import io.rivethub.app.plane.ChatError
+import io.rivethub.app.plane.cotSteps
+import io.rivethub.app.plane.foldSteps
+import io.rivethub.app.gateway.HarnessTranscriptTool
+import io.rivethub.app.gateway.HarnessTranscriptTurn
 import io.rivethub.app.plane.statsLine
 import io.rivethub.app.ui.term.AnsiScreen
 import io.rivethub.app.ui.term.TerminalPane
@@ -318,16 +323,43 @@ private fun GalleryThemeBlock(label: String, mode: ThemeMode) {
                     onCopy = {},
                 )
                 Spacer(Modifier.height(12.dp))
+                val gallerySteps = remember {
+                    cotSteps(
+                        turn = HarnessTranscriptTurn(
+                            role = "assistant",
+                            thinking = "the user wants a one-word reply",
+                            tools = listOf(
+                                HarnessTranscriptTool("Read", status = "done"),
+                                HarnessTranscriptTool("Grep", status = "error"),
+                                HarnessTranscriptTool("Bash", status = "running"),
+                            ),
+                        ),
+                        liveReasoning = "",
+                        liveTools = emptyList(),
+                        reasoningDurationMs = 3_400,
+                        live = false,
+                    )
+                }
+                var galleryCotOpen by remember { mutableStateOf(false) }
                 TranscriptAssistantTurn(
                     text = "PONG with `code` and a [link](https://example.com).",
-                    thinking = "the user wants a one-word reply",
                     model = "claude-fable-5-1",
                     time = "07:00 PM",
                     accent = rivetHexColor("#CC785C"),
-                    tools = listOf(ToolRow("Read", "done"), ToolRow("Bash", "running")),
+                    steps = gallerySteps,
+                    fold = foldSteps(gallerySteps, galleryCotOpen),
+                    expanded = galleryCotOpen,
+                    onToggleFold = { galleryCotOpen = !galleryCotOpen },
+                    onToolTap = {},
                     stats = statsLine(50_202, 5, 30_032),
                     onCopy = {},
-                    thinkingOpenDefault = true,
+                )
+                Spacer(Modifier.height(12.dp))
+                GalleryH("Error stack")
+                ChatErrorStack(
+                    errors = listOf(ChatError(1, "connection reset"), ChatError(2, "turn timed out")),
+                    onDismiss = {},
+                    onClearAll = {},
                 )
                 Spacer(Modifier.height(12.dp))
                 GalleryH("Composer · idle")

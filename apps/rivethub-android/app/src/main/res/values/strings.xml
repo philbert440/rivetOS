@@ -284,4 +284,21 @@
     <string name="cd_plus_panel">Add photo, file, or action</string>
     <string name="error_compact_busy">Compress skipped: a message went out first.</string>
     <string name="queue_message">Queue message</string>
+
+    <!-- Chain-of-thought timeline, tool sheet, loading row, error stack (UX-SPEC §1.2, §1.3) -->
+    <string name="cot_more">%1$d more</string>
+    <string name="cot_collapse">Collapse</string>
+    <string name="reasoned_for">Reasoned for %1$s</string>
+    <string name="reasoning_step">Reasoning</string>
+    <string name="tool_arguments">Arguments</string>
+    <string name="tool_result">Result</string>
+    <string name="tool_no_result_yet">(no result yet)</string>
+    <string name="tool_no_result">(no result recorded)</string>
+    <string name="tool_result_truncated">Preview only: the result is long. The full text appears here once the turn is saved.</string>
+    <string name="tool_no_arguments">(no arguments)</string>
+    <string name="tool_status_done">done</string>
+    <string name="tool_status_failed">failed</string>
+    <string name="working">Working…</string>
+    <string name="dismiss">Dismiss</string>
+    <string name="clear_all">Clear all</string>
 </resources>
