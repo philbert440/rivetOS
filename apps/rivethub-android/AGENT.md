@@ -125,8 +125,9 @@ When the moved row is the open conversation, `currentAgentId` follows it (so `+ 
 Rename is still the pane's inline sheet (a shared `RenameSheet` is U1's).
 
 Agents live in the drawer (tap / long-press ↺ / + pointer semantics; 2026-09-04 long-press
-also has Edit — `AgentEditSheet` name/color/node/model/effort/prompt via `PATCH
-/api/agents/{id}` — and Go to node, guarded so it never toggles the filter off). Nodes live in the
+also has Edit — `AgentEditSheet` name/color/model/effort/prompt/directory/shared link via `PATCH
+/api/agents/{id}`; the node is read-only — and Go to node, guarded so it never toggles the filter off).
+A dim second line shows `node · basename(directory)` when that subtitle is non-blank. Nodes live in the
 drawer footer sheet (view filter only; never rebinds an open chat; error badge is
 timeout/5xx only — 404 harness = plane-less, no badge). The drawer Memory row is ENABLED
 (2026-09-04, native wiki hub): `drawerDestEnabled(Memory) = true`, routed by
@@ -273,6 +274,30 @@ before sending — claude's store row is created by the first turn. After inject
 `listSessions` every 3s (≤ 30s) and adopt by native id; if still a draft at 15s, one-shot bare
 submit (`text:""`, `submit:true`). After adopt, `sendTurn`. LRU-evicted PTY: drop the pty ref,
 respawn, wait-ready, inject once more. API-only agent: commanded spawn then `{ session }` fallback.
+A preset-opened session (`Screen.Chat.agentId`) spawns in three attempts:
+`{ session, agentId, command }` (cols and rows go on every body; model and
+effort are omitted — the den fills those and the cwd from the preset, while
+the command keeps a pre-registry den on that harness), then
+`{ session, command, model, effort }`, then `{ session }`. The later attempts
+run only after a failure that is not a stopping 409. A blank command drops
+the middle attempt and is left off the first. A blank agentId keeps the
+two-attempt commanded fallback. A 409 whose error contains `session runs in`
+stops the loop and asks "Resume here anyway" — that retries the same attempt
+with `force=true`, and only after the user confirms. Never auto-force.
+Confirming does not send the pending composer text; the message stays in the
+composer. A live codex app-server thread still answers `session runs in`
+when `force` is true (den `server.ts` app-server resume branch, ~1690) —
+resume cannot chdir that thread — and the raw den text is shown on the
+error strip. A 409 containing `hosted on` or `has no directory` also stops:
+the den text is the error, nothing is spawned, and there is no force offer.
+Any other 409 surfaces the den text and continues. A non-409 on the agentId
+attempt surfaces the den text and continues, except 404, which stays silent
+and falls through. A later attempt that succeeds does not clear that text
+(the fallback's cwd is the den default, and the hub does not render it).
+The next send clears the strip. ct114 and ct117 are pre-deploy dens: they ignore
+`agentId` and return no `cwd`. The command on the first attempt is what
+starts the right harness there.
+
 A pinned id without `:` is still a draft (do not `startAttach`). PTY-driven sessions often
 deliver no live-tail frames: optimistic user turn on send, registry `SessionUpdated`
 idle/ended (or `updatedAt` change) fetches the transcript but does **not** end the turn
@@ -391,8 +416,13 @@ is the detach.
   smoke is mandatory for anything touching networking.
 - New app id ⇒ fresh `filesDir`: the phone re-imports its device p12 once on first install.
 
-## Contract facts (verified 2026-09-03, main `0c9abd3f`)
+## Contract facts (verified 2026-09-03, main `0c9abd3f`; D1 roster facts 2026-09-24, main `7e236c20`)
 
+- `GET /healthz` is `{ok, sessions, name, node}`. `node` is the mesh node name (`ct115`). Older dens omit it — decode as `""`.
+- `POST /api/terminal` accepts `agentId` and `force` in addition to command/session/model/effort. Explicit command, model, and effort win; `agentId` fills whatever the client left out and sets the cwd to the preset directory. The hub's first preset attempt sends `agentId` and `command` and omits model and effort, so the den fills model, effort, and cwd. The response may include `cwd` (absent on older dens).
+- Spawn errors: `404` `agent not found` (the hub stays silent and falls through); `400` (`agent has no harness and no command was given`, or `model must be a 1-64 token` / `effort must be a 1-64 token`) and `500` `could not create agent directory` are shown, then the next attempt runs; `409` `agent "<name>" is hosted on <node>` and `409` `agent "<name>" has no directory` stop the loop, show that text, and do not spawn again or offer force; `503` `agent registry unavailable` is shown and the next attempt runs. A `409` whose error contains `session is running in` (live PTY, cannot move) is not a stop: the text is shown and the next attempt runs. A success on that later attempt does not clear the text already on the strip. The next send does. A session recorded in a different cwd is a `409` whose error contains `session runs in` — the hub asks before retrying with `force:true`. That force resumes a movable PTY into the preset directory. A live codex app-server thread still returns the same `session runs in` text when `force` is true (den `server.ts` ~1690), and the hub shows that raw text. Do not auto-force. "Resume here anyway" does not resend; the pending message stays in the composer.
+- ct114 and ct117 are pre-deploy dens (no `healthz.node`; unknown body fields ignored). The first attempt still carries the roster command, so those dens start that command instead of only the default.
+- A non-blank preset `node` that matches no discovered hint (`meshNode`, id, or name) is an offline row named after that node (`denUrl` empty). The drawer and both new-conversation pickers dim it and do not open it. `openAgentRow` returns null before any draft or pointer write, so it cannot become a chat destination with an empty URL. Edit is omitted while the row is offline (`agentSheetActions(online)`), so Save is not sent at that empty URL. Legacy `nodeBaseUrl` applies only when `node` is blank.
 - `POST /api/devices/enroll` is WireGuard pairing only (requires a WG `publicKey`, returns mesh config,
   issues NO cert). v1 enrollment = p12 import; QR-to-cert is a separate den+CA program.
 - Desktop `+ new` = bare UUID draft, adopted to `harness:uuid` via the registry stream. Never call

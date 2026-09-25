@@ -34,13 +34,28 @@ data class CatalogAgent(
     val local: Boolean = false,
     val provider: String? = null,
     val model: String? = null,
+    val kind: String? = null,
+    val name: String = "",
+    val harnessId: String? = null,
+    val directory: String? = null,
+    val implemented: Boolean? = null,
+    val gap: String? = null,
 )
+
+/** Catalog row whose `kind` is the preset variant (locals and remotes omit it). */
+val CatalogAgent.isPreset: Boolean get() = kind == "preset"
 
 @Serializable
 data class CatalogAgentsResponse(val agents: List<CatalogAgent> = emptyList())
 
 @Serializable
-data class Healthz(val ok: Boolean = false, val sessions: Int = 0, val name: String = "")
+data class Healthz(
+    val ok: Boolean = false,
+    val sessions: Int = 0,
+    val name: String = "",
+    /** Mesh node name. Older dens omit it; decode as empty. */
+    val node: String = "",
+)
 
 @Serializable
 data class MessageUsage(val promptTokens: Int = 0, val completionTokens: Int = 0, val cachedTokens: Int = 0)
@@ -252,6 +267,10 @@ data class TermSpawnRequest(
     val rows: Int? = null,
     val model: String? = null,
     val effort: String? = null,
+    /** Preset id. The den fills command, model, effort, and cwd from it. */
+    val agentId: String? = null,
+    /** Resume a session recorded in another cwd into the preset directory. */
+    val force: Boolean? = null,
 )
 
 @Serializable
@@ -273,6 +292,8 @@ data class TermSpawnResponse(
     val mux: String? = null,
     val reattached: Boolean = false,
     val attach: TermAttachInfo? = null,
+    /** Preset directory the PTY started in. Absent on older dens. */
+    val cwd: String? = null,
 )
 
 @Serializable
@@ -374,13 +395,29 @@ data class AgentPreset(
     val model: String = "",
     val effort: String = "",
     val systemPrompt: String = "",
+    /** Mesh node name. Empty on dens that predate the field. */
+    val node: String = "",
+    /** Absolute cwd for this preset. Empty when unset. */
+    val directory: String = "",
+    /** Link the shared directory into the preset cwd. Default on. */
+    val sharedLink: Boolean = true,
+    /** @deprecated Legacy den URL. Kept so older payloads still decode. */
     val nodeBaseUrl: String = "",
     val createdAt: Long = 0,
     val updatedAt: Long = 0,
 )
 
 @Serializable
-data class AgentsListResponse(val agents: List<AgentPreset> = emptyList())
+data class AgentsListResponse(
+    val agents: List<AgentPreset> = emptyList(),
+    /** Mesh node name of the den that served the list, when it reports one. */
+    val node: String? = null,
+    /** Root the editor uses for a `<directoryRoot>/<slug>` placeholder. */
+    val directoryRoot: String? = null,
+    val sharedDir: String? = null,
+    /** "postgres" (DataHub, one roster) or "file" (per-den rows). */
+    val backend: String? = null,
+)
 
 /**
  * `PATCH /api/agents/{id}` body (@rivetos/gateway-client `AgentUpdateRequest`).
@@ -396,7 +433,12 @@ data class AgentUpdateRequest(
     val model: String? = null,
     val effort: String? = null,
     val systemPrompt: String? = null,
+    /** Legacy field. This app no longer sends it; node is immutable. */
     val nodeBaseUrl: String? = null,
+    /** Trimmed absolute cwd. Omitted unless the editor changed it to a non-blank value. */
+    val directory: String? = null,
+    /** Omitted unless the editor toggled the shared-directory link. */
+    val sharedLink: Boolean? = null,
 )
 
 @Serializable

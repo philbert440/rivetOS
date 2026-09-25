@@ -18,21 +18,31 @@ import io.rivethub.app.ui.theme.Dimens
 import io.rivethub.app.ui.theme.Shape
 import io.rivethub.app.ui.theme.RivetTheme
 
+/**
+ * Visual switch. [interactive] is false when a parent row owns the
+ * toggle action, so TalkBack gets one labeled switch instead of a nameless one.
+ */
 @Composable
 fun RivetToggle(
     checked: Boolean,
     onChange: (Boolean) -> Unit,
     modifier: Modifier = Modifier,
+    interactive: Boolean = true,
 ) {
     val colors = RivetTheme.colors
     val trackShape = RoundedCornerShape(Shape.row)
+    val toggle = if (interactive) {
+        Modifier.toggleable(value = checked, role = Role.Switch, onValueChange = onChange)
+    } else {
+        Modifier
+    }
     Box(
         modifier
             .size(Dimens.toggleTrackW, Dimens.toggleTrackH)
             .clip(trackShape)
             .background(if (checked) colors.em else colors.bg)
             .border(Dimens.line, if (checked) colors.em else colors.line, trackShape)
-            .toggleable(value = checked, role = Role.Switch, onValueChange = onChange),
+            .then(toggle),
         contentAlignment = Alignment.CenterStart,
     ) {
         Box(

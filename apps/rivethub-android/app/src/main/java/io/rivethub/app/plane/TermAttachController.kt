@@ -250,6 +250,12 @@ class TermAttachController(
             client = pty
             socket = sock
             publish()
+        } catch (_: SpawnNeedsConfirm) {
+            // Chat owns this: the confirm dialog, or a den error already on the strip.
+            // Do not replace that with a terminal error.
+            status = TermStatus.Closed
+            error = null
+            publish()
         } catch (e: CancellationException) {
             throw e
         } catch (e: Exception) {

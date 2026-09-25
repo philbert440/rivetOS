@@ -9,7 +9,9 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.sizeIn
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.selection.toggleable
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Text
@@ -22,34 +24,36 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.unit.dp
 import io.rivethub.app.R
 import io.rivethub.app.plane.AgentEditFields
 import io.rivethub.app.plane.AgentRow
 import io.rivethub.app.plane.HarnessSheet
 import io.rivethub.app.plane.agentColorValid
+import io.rivethub.app.plane.agentDirectoryPlaceholder
 import io.rivethub.app.plane.agentEffortOptions
 import io.rivethub.app.plane.agentModelOptions
 import io.rivethub.app.plane.defaultEffort
+import io.rivethub.app.ui.theme.Dimens
 import io.rivethub.app.ui.theme.Radius
 import io.rivethub.app.ui.theme.RivetTheme
 import io.rivethub.app.ui.theme.RivetType
 
 /**
  * Agent edit surface (web `agents-section.tsx` AgentEditor → a
- * [RivetModalSheet], the only Material chrome allowed): name, color, target
- * node, model, effort, system prompt. Unlike the web the node stays EDITABLE
- * on an existing agent (task 2026-09-04) and the harness is intentionally not
- * editable (no picker in the field list; `harnessId` never enters the PATCH).
- * Model/effort options come from the TARGET node's capability sheet via
- * [sheetFor], with the current value unshifted when unlisted (web
- * harness-options.ts behavior); changing the model re-derives the effort
- * default like the web editor. Save PATCHes through `HubViewModel.saveAgent`.
+ * [RivetModalSheet], the only Material chrome allowed): name, color, a
+ * read-only node, directory, shared-directory link, model, effort, system
+ * prompt. The node is immutable. The harness is intentionally not editable
+ * (`harnessId` never enters the PATCH). Model/effort options come from the
+ * node's capability sheet via [sheetFor], with the current value unshifted
+ * when unlisted; changing the model re-derives the effort default. Save
+ * PATCHes through `HubViewModel.saveAgent`.
  */
 @Composable
 fun AgentEditSheet(
     row: AgentRow,
-    nodeOptions: List<SelectOption>,
+    directoryRoot: String?,
     sheetFor: (nodeDenUrl: String) -> HarnessSheet?,
     onSave: (fields: AgentEditFields, onDone: (ok: Boolean) -> Unit) -> Unit,
     onDismiss: () -> Unit,
@@ -60,18 +64,16 @@ fun AgentEditSheet(
     var model by remember { mutableStateOf(row.model) }
     var effort by remember { mutableStateOf(row.effort) }
     var prompt by remember { mutableStateOf(row.systemPrompt) }
-    var nodeBaseUrl by remember { mutableStateOf(row.nodeDenUrl.trim().trimEnd('/')) }
+    var directory by remember { mutableStateOf(row.directory) }
+    var sharedLink by remember { mutableStateOf(row.sharedLink) }
     var saving by remember { mutableStateOf(false) }
     var failed by remember { mutableStateOf(false) }
 
-    val nodes = remember(nodeOptions, nodeBaseUrl) {
-        if (nodeBaseUrl.isBlank() || nodeOptions.any { it.value == nodeBaseUrl }) {
-            nodeOptions
-        } else {
-            listOf(SelectOption(nodeBaseUrl, nodeBaseUrl)) + nodeOptions
-        }
-    }
-    val sheet = sheetFor(nodeBaseUrl)
+    val sheet = sheetFor(row.nodeDenUrl)
+    val directoryPlaceholder = agentDirectoryPlaceholder(directoryRoot, name)
+        .ifBlank { stringResource(R.string.agent_directory_hint) }
+    val nodeLabel = row.node.ifBlank { row.nodeName }
+    val nodeValue = nodeLabel.ifBlank { stringResource(R.string.agent_node_empty) }
     val models = agentModelOptions(sheet, model).map { SelectOption(it.first, it.second) }
     val efforts = agentEffortOptions(sheet, model, effort).map { SelectOption(it.first, it.second) }
     val saveEnabled = name.isNotBlank() && agentColorValid(color) && !saving
@@ -124,12 +126,52 @@ fun AgentEditSheet(
                 }
                 Column {
                     FieldLabel(stringResource(R.string.agent_field_node))
-                    RivetSelect(
-                        value = nodeBaseUrl,
-                        options = nodes,
-                        onChange = { nodeBaseUrl = it },
-                        title = stringResource(R.string.agent_field_node),
-                        modifier = Modifier.fillMaxWidth(),
+                    Text(
+                        nodeValue,
+                        color = colors.ink,
+                        style = RivetType.xs,
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .border(1.dp, colors.line, RoundedCornerShape(Radius.sm))
+                            .background(colors.panel2, RoundedCornerShape(Radius.sm))
+                            .padding(horizontal = 12.dp, vertical = 6.dp),
+                    )
+                    Text(
+                        stringResource(R.string.agent_node_fixed),
+                        color = colors.inkDim,
+                        style = RivetType.xs,
+                    )
+                }
+                Column {
+                    FieldLabel(stringResource(R.string.agent_directory))
+                    RivetField(
+                        value = directory,
+                        onValueChange = { directory = it },
+                        placeholder = directoryPlaceholder,
+                        size = RivetFieldSize.Rename,
+                    )
+                }
+                Row(
+                    Modifier
+                        .fillMaxWidth()
+                        .sizeIn(minHeight = Dimens.touchTarget)
+                        .toggleable(
+                            value = sharedLink,
+                            role = Role.Switch,
+                            onValueChange = { sharedLink = it },
+                        ),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                ) {
+                    RivetToggle(
+                        checked = sharedLink,
+                        onChange = { sharedLink = it },
+                        interactive = false,
+                    )
+                    Text(
+                        stringResource(R.string.agent_shared_link),
+                        color = colors.inkDim,
+                        style = RivetType.xs,
                     )
                 }
                 if (models.isNotEmpty()) {
@@ -194,7 +236,8 @@ fun AgentEditSheet(
                             model = model,
                             effort = effort,
                             systemPrompt = prompt,
-                            nodeBaseUrl = if (nodeBaseUrl == row.nodeDenUrl.trim().trimEnd('/')) "" else nodeBaseUrl,
+                            directory = directory,
+                            sharedLink = sharedLink,
                         )
                         onSave(fields) { ok ->
                             saving = false

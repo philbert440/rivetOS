@@ -7,6 +7,7 @@ import io.rivethub.app.AppContainer
 import io.rivethub.app.data.AndroidLogger
 import io.rivethub.app.data.OscFilter
 import io.rivethub.app.data.splitHermesReasoning
+import io.rivethub.app.gateway.GatewayException
 import io.rivethub.app.gateway.HarnessDescriptor
 import io.rivethub.app.gateway.HarnessEvent
 import io.rivethub.app.gateway.TermSpawnResponse
@@ -96,8 +97,17 @@ import io.rivethub.app.plane.persistSessionMode
 import io.rivethub.app.plane.ptySpawnIsFresh
 import io.rivethub.app.plane.rosterCommandFor
 import io.rivethub.app.plane.sessionMatchesNative
+import io.rivethub.app.plane.SpawnAttempt
+import io.rivethub.app.plane.SpawnConflict
+import io.rivethub.app.plane.SpawnNeedsConfirm
+import io.rivethub.app.plane.forcedRetry
+import io.rivethub.app.plane.agentAttemptFallbackError
 import io.rivethub.app.plane.spawnAttempts
+import io.rivethub.app.plane.spawnConflict
+import io.rivethub.app.plane.spawnConflictStops
 import io.rivethub.app.plane.spawnModelEffort
+import io.rivethub.app.plane.spawnStopError
+import io.rivethub.app.plane.spawnSuccessError
 import io.rivethub.app.plane.TermAttachController
 import io.rivethub.app.plane.TermScreenPort
 import io.rivethub.app.plane.TermSocket
@@ -197,6 +207,13 @@ class HarnessChatViewModel(
         val editing: EditState? = null,
         /** Model-sheet favourites (Settings `favouriteModels`). */
         val favouriteModels: Set<String> = emptySet(),
+        /** PTY cwd from the spawn response. Null on older dens. */
+        val spawnCwd: String? = null,
+        /**
+         * Set only for a recorded-directory 409. The attempt loop stops;
+         * the user must confirm before a forced retry.
+         */
+        val spawnConflict: SpawnConflict? = null,
     )
 
     private val _state = MutableStateFlow(
@@ -220,6 +237,8 @@ class HarnessChatViewModel(
     private val identityGen = c.identity.generation()
     private var ptyId: String? = null
     private var lastSpawn: TermSpawnResponse? = null
+    /** The agentId attempt a recorded-directory 409 stopped on. */
+    private var conflictAttempt: SpawnAttempt? = null
     private var descriptors: List<HarnessDescriptor> = emptyList()
     private var frames = Channel<Frame>(Channel.UNLIMITED)
     private var frameJob: Job? = null
@@ -388,6 +407,51 @@ class HarnessChatViewModel(
 
     fun setEffort(id: String) = _state.update { it.copy(effort = id) }
 
+    /** Recorded-directory confirm. Re-runs that attempt with force. Never automatic. */
+    fun resumeHereAnyway() {
+        val attempt = conflictAttempt ?: return
+        conflictAttempt = null
+        val forced = forcedRetry(attempt)
+        _state.update { it.copy(spawnConflict = null) }
+        viewModelScope.launch {
+            try {
+                val spawned = spawnMu.withLock {
+                    val existing = ptyId
+                    if (existing != null) {
+                        lastSpawn ?: TermSpawnResponse(id = existing)
+                    } else {
+                        val response = withContext(Dispatchers.IO) {
+                            gateway().termSpawn(
+                                session = forced.session,
+                                cols = 80,
+                                rows = 24,
+                                command = forced.command,
+                                model = forced.model,
+                                effort = forced.effort,
+                                agentId = forced.agentId,
+                                force = true,
+                            )
+                        }
+                        ptyId = response.id
+                        lastSpawn = response
+                        response
+                    }
+                }
+                _state.update { it.copy(spawnCwd = spawned.cwd, spawnConflict = null) }
+                if (_state.value.mode == SessionMode.Terminal) termCtl.ensure()
+            } catch (e: kotlinx.coroutines.CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                _state.update { it.copy(error = e.message ?: e.javaClass.simpleName) }
+            }
+        }
+    }
+
+    fun dismissSpawnConflict() {
+        conflictAttempt = null
+        _state.update { it.copy(spawnConflict = null) }
+    }
+
     /** Composer text + staged turn attachments, validated; null after publishing the refusal. */
     private data class PreparedSend(val text: String, val atts: List<StagedTurnAttachment>, val keptComposer: String)
 
@@ -441,6 +505,10 @@ class HarnessChatViewModel(
                         }
                         publishMachine()
                     }.onFailure { e ->
+                        if (e is SpawnNeedsConfirm) {
+                            publishMachine()
+                            return@onFailure
+                        }
                         // The failed item's text / chips / edit are back via onPumpOutcome.
                         AndroidLogger.warn("RivetHub", "send failed: ${e.javaClass.simpleName}: ${e.message}", e)
                         publishMachine()
@@ -1226,6 +1294,7 @@ class HarnessChatViewModel(
                 injectCompleted = true
                 return
             } catch (e: Exception) {
+                if (e is SpawnNeedsConfirm || e is kotlinx.coroutines.CancellationException) throw e
                 if (nextInjectTry(failed = true, alreadyRetried = retried) == null) throw e
                 retried = true
                 ptyId = null
@@ -1241,8 +1310,15 @@ class HarnessChatViewModel(
         val command = rosterCommandFor(harnessId)
         val flags = spawnModelEffort(st.sheet, harnessId, st.model, st.effort)
         val gw = gateway()
-        val attempts = spawnAttempts(sessionOverride ?: st.sessionId, command, flags.model, flags.effort)
+        val attempts = spawnAttempts(
+            sessionOverride ?: st.sessionId,
+            command,
+            flags.model,
+            flags.effort,
+            agentId,
+        )
         var last: Exception? = null
+        var surfaced: String? = null
         for (attempt in attempts) {
             try {
                 val spawned = withContext(Dispatchers.IO) {
@@ -1253,14 +1329,50 @@ class HarnessChatViewModel(
                         command = attempt.command,
                         model = attempt.model,
                         effort = attempt.effort,
+                        agentId = attempt.agentId,
+                        force = if (attempt.force) true else null,
                     )
                 }
                 val fresh = ptySpawnIsFresh(alreadyHeld = false, reattached = spawned.reattached)
                 ptyId = spawned.id
                 lastSpawn = spawned
-                AndroidLogger.debug("RivetHub", "spawned pty=${spawned.id} for session=${attempt.session} cmd=${attempt.command}", null)
+                _state.update { stNow ->
+                    stNow.copy(
+                        spawnCwd = spawned.cwd,
+                        spawnConflict = null,
+                        // A continued agentId failure stays on the strip. A stop throws
+                        // before this update. The next send clears the text.
+                        error = spawnSuccessError(stNow.error, surfaced),
+                    )
+                }
+                AndroidLogger.debug(
+                    "RivetHub",
+                    "spawned pty=${spawned.id} for session=${attempt.session} cmd=${attempt.command} agent=${attempt.agentId} cwd=${spawned.cwd}",
+                    null,
+                )
                 return@withLock PtySlot(spawned.id, fresh)
+            } catch (e: kotlinx.coroutines.CancellationException) {
+                throw e
             } catch (e: Exception) {
+                val http = e as? GatewayException
+                if (http != null && !attempt.agentId.isNullOrBlank()) {
+                    val conflict = spawnConflict(http.status, http.message)
+                    if (conflict != null && spawnConflictStops(conflict)) {
+                        if (conflict == SpawnConflict.RecordedDir) {
+                            conflictAttempt = attempt
+                            _state.update { it.copy(spawnConflict = conflict) }
+                            throw SpawnNeedsConfirm()
+                        }
+                        val text = spawnStopError(conflict, http.message, http.status)
+                        _state.update { it.copy(error = text, spawnConflict = null) }
+                        throw SpawnNeedsConfirm()
+                    }
+                    val fallback = agentAttemptFallbackError(http.status, http.message)
+                    if (fallback != null) {
+                        surfaced = fallback
+                        _state.update { it.copy(error = fallback) }
+                    }
+                }
                 AndroidLogger.warn("RivetHub", "spawn attempt failed session=${attempt.session} cmd=${attempt.command}: ${e.message}", e)
                 last = e
             }

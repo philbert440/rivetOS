@@ -1,20 +1,23 @@
 package io.rivethub.app.plane
 
 import io.rivethub.app.gateway.AgentUpdateRequest
+import java.util.Locale
 
 /**
  * Agent long-press actions (2026-09-04, Phil: Edit + Go-to-node next to the
  * existing pointer semantics). The action sheet UI iterates
  * [agentSheetActions] so the order lives here, not in the composable.
+ * Edit is omitted when [online] is false: an unmatched preset has an empty
+ * den URL, and saving it reports that the node refused the update.
  */
 enum class AgentSheetAction { StartOver, New, Edit, GoToNode }
 
-fun agentSheetActions(): List<AgentSheetAction> = listOf(
-    AgentSheetAction.StartOver,
-    AgentSheetAction.New,
-    AgentSheetAction.Edit,
-    AgentSheetAction.GoToNode,
-)
+fun agentSheetActions(online: Boolean = true): List<AgentSheetAction> = buildList {
+    add(AgentSheetAction.StartOver)
+    add(AgentSheetAction.New)
+    if (online) add(AgentSheetAction.Edit)
+    add(AgentSheetAction.GoToNode)
+}
 
 /** The edit sheet's form values (web agents-section.tsx AgentEditor). */
 data class AgentEditFields(
@@ -23,25 +26,60 @@ data class AgentEditFields(
     val model: String = "",
     val effort: String = "",
     val systemPrompt: String = "",
-    /** New target node; "" means "unchanged" and is omitted from the PATCH. */
-    val nodeBaseUrl: String = "",
+    /** Absolute cwd. Blank is omitted; node is not editable from this form. */
+    val directory: String = "",
+    /** Shared-directory link. Sent only when it differs from [AgentRow.sharedLink]. */
+    val sharedLink: Boolean = true,
 )
 
+/** Slug cap copied from the agent-registry rule the web editor uses. */
+const val AGENT_SLUG_MAX = 48
+
 /**
- * Fields → the den PATCH shape. Blank values become null and drop out of the
- * JSON (`wireJson` omits nulls), so the wire only carries what the form
- * actually sets. The harness is deliberately NOT patchable here — the task's
- * field list omits a harness picker, and leaving `harnessId` out of the body
- * avoids the explicit-nulls problem (`harnessId: null` CLEARS it server-side).
+ * Working-directory slug: lowercase, non-alnum runs become `-`, trim `-`,
+ * cap at [AGENT_SLUG_MAX]. Empty becomes `agent`.
  */
-fun agentPatchRequest(fields: AgentEditFields): AgentUpdateRequest = AgentUpdateRequest(
-    name = fields.name.trim().takeIf { it.isNotEmpty() },
-    color = fields.color.trim().takeIf { it.isNotEmpty() },
-    model = fields.model.trim().takeIf { it.isNotEmpty() },
-    effort = fields.effort.trim().takeIf { it.isNotEmpty() },
-    systemPrompt = fields.systemPrompt.trim().takeIf { it.isNotEmpty() },
-    nodeBaseUrl = fields.nodeBaseUrl.trim().trimEnd('/').takeIf { it.isNotEmpty() },
-)
+fun agentSlug(name: String): String {
+    val slug = name.lowercase(Locale.ROOT)
+        .replace(Regex("[^a-z0-9]+"), "-")
+        .trim('-')
+        .take(AGENT_SLUG_MAX)
+        .trim('-')
+    return slug.ifEmpty { "agent" }
+}
+
+/**
+ * Placeholder `directoryRoot/slug`. No root yet yields empty so the sheet
+ * can show its generic hint string instead.
+ */
+fun agentDirectoryPlaceholder(directoryRoot: String?, name: String): String {
+    val root = directoryRoot?.trim()?.trimEnd('/')?.trimEnd('\\').orEmpty()
+    if (root.isEmpty()) return ""
+    return "$root/${agentSlug(name)}"
+}
+
+/**
+ * Fields → the den PATCH shape. Blank name/color/model/effort/prompt become
+ * null and drop out of the JSON (`wireJson` omits nulls). [directory] is
+ * sent only when trimmed, non-blank, and different from [original].
+ * [AgentEditFields.sharedLink] is sent only when it changed. `nodeBaseUrl`
+ * is never sent — the node is immutable — and `harnessId` stays out so a
+ * null cannot clear it server-side.
+ */
+fun agentPatchRequest(fields: AgentEditFields, original: AgentRow): AgentUpdateRequest {
+    val directory = fields.directory.trim().let { trimmed ->
+        trimmed.takeIf { it.isNotEmpty() && it != original.directory.trim() }
+    }
+    return AgentUpdateRequest(
+        name = fields.name.trim().takeIf { it.isNotEmpty() },
+        color = fields.color.trim().takeIf { it.isNotEmpty() },
+        model = fields.model.trim().takeIf { it.isNotEmpty() },
+        effort = fields.effort.trim().takeIf { it.isNotEmpty() },
+        systemPrompt = fields.systemPrompt.trim().takeIf { it.isNotEmpty() },
+        directory = directory,
+        sharedLink = fields.sharedLink.takeIf { it != original.sharedLink },
+    )
+}
 
 /**
  * The web editor's color gate (`agents-section.tsx` save-disabled regex):

@@ -68,6 +68,7 @@ import io.rivethub.app.plane.SearchHit
 import io.rivethub.app.plane.AttachmentStatus
 import io.rivethub.app.plane.PlusItem
 import io.rivethub.app.plane.SessionMode
+import io.rivethub.app.plane.SpawnConflict
 import io.rivethub.app.plane.TermStatus
 import io.rivethub.app.plane.TranscriptPin
 import io.rivethub.app.plane.accentFor
@@ -90,6 +91,7 @@ import io.rivethub.app.ui.components.ChatStatusStrip
 import io.rivethub.app.ui.components.Composer
 import io.rivethub.app.ui.components.QueuedStrip
 import io.rivethub.app.ui.components.ComposerModelPicker
+import io.rivethub.app.ui.components.RivetConfirmDialog
 import io.rivethub.app.ui.components.ComposerPicker
 import io.rivethub.app.ui.components.Lucide
 import io.rivethub.app.ui.components.NativeTurnControls
@@ -262,6 +264,16 @@ fun HarnessChatScreen(
     }
     val nativeImages = vm.nativeImagesEnabled()
     val reconnecting = stringResource(R.string.ws_reconnecting_ellipsis)
+
+    if (st.spawnConflict == SpawnConflict.RecordedDir) {
+        RivetConfirmDialog(
+            title = stringResource(R.string.spawn_conflict_title),
+            message = stringResource(R.string.spawn_conflict_recorded_dir),
+            confirmLabel = stringResource(R.string.spawn_conflict_resume_anyway),
+            onConfirm = vm::resumeHereAnyway,
+            onDismiss = vm::dismissSpawnConflict,
+        )
+    }
 
     Column(
         Modifier

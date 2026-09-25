@@ -1,13 +1,21 @@
 package io.rivethub.app
 
+import io.rivethub.app.gateway.AgentPreset
+import io.rivethub.app.gateway.AgentsListResponse
+import io.rivethub.app.gateway.CatalogAgent
 import io.rivethub.app.gateway.CatalogAgentsResponse
 import io.rivethub.app.gateway.DenFrame
+import io.rivethub.app.gateway.Healthz
 import io.rivethub.app.gateway.MeshOverview
 import io.rivethub.app.gateway.SessionFrame
+import io.rivethub.app.gateway.TermSpawnRequest
+import io.rivethub.app.gateway.TermSpawnResponse
+import io.rivethub.app.gateway.isPreset
 import io.rivethub.app.gateway.parseDenFrame
 import io.rivethub.app.gateway.parseSessionFrame
 import io.rivethub.app.gateway.wireJson
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -68,5 +76,73 @@ class WireTest {
         )
         assertTrue(encoded.contains("\"interrupt\":true"))
         assertTrue(!encoded.contains("\\r"))
+    }
+
+    @Test fun `healthz node decodes and defaults to empty`() {
+        val live = wireJson.decodeFromString(Healthz.serializer(), """{"ok":true,"sessions":1,"name":"den","node":"ct115"}""")
+        assertEquals("ct115", live.node)
+        assertTrue(live.ok)
+        val old = wireJson.decodeFromString(Healthz.serializer(), """{"ok":true,"sessions":2,"name":"den"}""")
+        assertEquals("", old.node)
+        assertEquals(2, old.sessions)
+    }
+
+    @Test fun `agent preset decodes node directory sharedLink and list meta`() {
+        val agents = wireJson.decodeFromString(
+            AgentsListResponse.serializer(),
+            """{"agents":[{"id":"reviewer","name":"reviewer","node":"ct115","directory":"/srv/agents/reviewer","sharedLink":false,"nodeBaseUrl":"https://192.0.2.15:5174"}],"node":"ct115","directoryRoot":"/srv/agents","sharedDir":"/srv/shared","backend":"postgres"}""",
+        )
+        val preset = agents.agents.single()
+        assertEquals("ct115", preset.node)
+        assertEquals("/srv/agents/reviewer", preset.directory)
+        assertEquals(false, preset.sharedLink)
+        assertEquals("https://192.0.2.15:5174", preset.nodeBaseUrl)
+        assertEquals("ct115", agents.node)
+        assertEquals("/srv/agents", agents.directoryRoot)
+        assertEquals("/srv/shared", agents.sharedDir)
+        assertEquals("postgres", agents.backend)
+        val bare = wireJson.decodeFromString(AgentPreset.serializer(), """{"id":"old"}""")
+        assertEquals("", bare.node)
+        assertEquals("", bare.directory)
+        assertEquals(true, bare.sharedLink)
+    }
+
+    @Test fun `catalog preset kind carries implemented and gap`() {
+        val cat = wireJson.decodeFromString(
+            CatalogAgentsResponse.serializer(),
+            """{"agents":[{"kind":"preset","id":"reviewer","name":"reviewer","node":"ct115","local":false,"harnessId":"claude-code","directory":"/srv/agents/reviewer","implemented":false,"gap":"no pty"}]}""",
+        )
+        val agent = cat.agents.single()
+        assertTrue(agent.isPreset)
+        assertEquals("reviewer", agent.name)
+        assertEquals("claude-code", agent.harnessId)
+        assertEquals("/srv/agents/reviewer", agent.directory)
+        assertEquals(false, agent.implemented)
+        assertEquals("no pty", agent.gap)
+        val local = CatalogAgent(id = "claude", node = "n1", local = true)
+        assertFalse(local.isPreset)
+        assertNull(local.kind)
+    }
+
+    @Test fun `term spawn response carries cwd and the request encodes agentId and force`() {
+        val spawned = wireJson.decodeFromString(
+            TermSpawnResponse.serializer(),
+            """{"id":"pty-1","cwd":"/srv/agents/reviewer"}""",
+        )
+        assertEquals("/srv/agents/reviewer", spawned.cwd)
+        val old = wireJson.decodeFromString(TermSpawnResponse.serializer(), """{"id":"pty-2"}""")
+        assertNull(old.cwd)
+        val body = wireJson.encodeToString(
+            TermSpawnRequest.serializer(),
+            TermSpawnRequest(session = "s1", agentId = "reviewer", force = true),
+        )
+        assertTrue(body.contains("\"agentId\":\"reviewer\""))
+        assertTrue(body.contains("\"force\":true"))
+        val plain = wireJson.encodeToString(
+            TermSpawnRequest.serializer(),
+            TermSpawnRequest(session = "s1"),
+        )
+        assertFalse(plain.contains("agentId"))
+        assertFalse(plain.contains("force"))
     }
 }

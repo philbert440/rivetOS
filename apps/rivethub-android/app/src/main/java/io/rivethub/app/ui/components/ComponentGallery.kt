@@ -195,6 +195,8 @@ private fun GalleryThemeBlock(label: String, mode: ThemeMode) {
                         nodeDenUrl = "https://192.0.2.10:5174",
                         pointerSessionId = "s",
                         color = "#CC785C",
+                        node = "ct115",
+                        directory = "/srv/agents/rivet",
                     ),
                     onTap = {},
                     onLong = {},

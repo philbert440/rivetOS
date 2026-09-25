@@ -30,6 +30,7 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.drawBehind
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
@@ -42,6 +43,7 @@ import androidx.compose.ui.unit.LayoutDirection
 import androidx.compose.ui.unit.dp
 import io.rivethub.app.AppContainer
 import io.rivethub.app.R
+import io.rivethub.app.plane.agentRowSubtitle
 import io.rivethub.app.plane.AgentAction
 import io.rivethub.app.plane.AgentOpen
 import io.rivethub.app.plane.AgentRow
@@ -63,7 +65,6 @@ import io.rivethub.app.ui.HubViewModel
 import io.rivethub.app.ui.components.AgentEditSheet
 import io.rivethub.app.ui.components.RivetDrawerContent
 import io.rivethub.app.ui.components.RivetModalSheet
-import io.rivethub.app.ui.components.SelectOption
 import io.rivethub.app.ui.theme.RivetTheme
 import io.rivethub.app.ui.theme.RivetType
 import kotlinx.coroutines.CoroutineScope
@@ -173,19 +174,21 @@ fun HubDrawer(
                     },
                     onAgentTap = { row ->
                         closeDrawer()
-                        onOpenChat(vm.openAgentAction(row, AgentAction.Tap))
+                        vm.openAgentAction(row, AgentAction.Tap)?.let(onOpenChat)
                     },
                     onAgentStartOver = { row ->
                         closeDrawer()
-                        onOpenChat(vm.openAgentAction(row, AgentAction.Replace))
+                        vm.openAgentAction(row, AgentAction.Replace)?.let(onOpenChat)
                     },
                     onAgentNew = { row ->
                         closeDrawer()
-                        onOpenChat(vm.openAgentAction(row, AgentAction.Plus))
+                        vm.openAgentAction(row, AgentAction.Plus)?.let(onOpenChat)
                     },
                     onAgentEdit = { row ->
-                        closeDrawer()
-                        editAgent = row
+                        if (row.online) {
+                            closeDrawer()
+                            editAgent = row
+                        }
                     },
                     onAgentGoToNode = { row ->
                         vm.goToAgentNode(row)
@@ -223,18 +226,22 @@ fun HubDrawer(
                 )
             } else {
                 st.agents.forEach { agent ->
-                    Text(
-                        "${agent.name} · ${agent.nodeName}",
-                        color = colors.ink,
-                        style = RivetType.xs,
-                        modifier = Modifier
+                    val subtitle = agentRowSubtitle(agent).ifBlank { agent.nodeName }
+                    Column(
+                        Modifier
                             .sizeIn(minHeight = 44.dp)
-                            .clickable {
+                            .alpha(if (agent.online) 1f else 0.5f)
+                            .clickable(enabled = agent.online) {
                                 addAgentOpen = false
-                                onOpenChat(vm.openAgentAction(agent, AgentAction.Plus))
+                                vm.openAgentAction(agent, AgentAction.Plus)?.let(onOpenChat)
                             }
                             .padding(8.dp),
-                    )
+                    ) {
+                        Text(agent.name, color = colors.ink, style = RivetType.xs)
+                        if (subtitle.isNotBlank()) {
+                            Text(subtitle, color = colors.inkDim, style = RivetType.mono10)
+                        }
+                    }
                 }
             }
         }
@@ -243,12 +250,7 @@ fun HubDrawer(
     editAgent?.let { row ->
         AgentEditSheet(
             row = row,
-            nodeOptions = st.nodes.map {
-                SelectOption(
-                    it.denUrl.trimEnd('/'),
-                    "${it.name.ifBlank { it.id }} · ${it.denUrl.trimEnd('/')}",
-                )
-            },
+            directoryRoot = st.directoryRoot,
             sheetFor = { denUrl -> vm.sheetFor(denUrl, row.harnessId) },
             onSave = { fields, onDone ->
                 vm.saveAgent(row, fields) { ok ->

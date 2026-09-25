@@ -61,6 +61,7 @@ import io.rivethub.app.plane.HubTab
 import io.rivethub.app.plane.NodeSheetModel
 import io.rivethub.app.plane.NodeSheetRow
 import io.rivethub.app.plane.accentForDrawer
+import io.rivethub.app.plane.agentRowSubtitle
 import io.rivethub.app.plane.agentSheetActions
 import io.rivethub.app.plane.discoveredNodeLabel
 import io.rivethub.app.plane.ExperimentalFlags
@@ -179,6 +180,7 @@ fun RivetDrawerContent(
     agentSheet?.let { row ->
         AgentActionSheet(
             name = row.name,
+            online = row.online,
             onDismiss = { agentSheet = null },
             onAction = { action ->
                 when (action) {
@@ -385,14 +387,25 @@ fun AgentRowChrome(
                 .clip(CircleShape)
                 .background(rivetHexColor(hex)),
         )
-        Text(
-            row.name,
-            color = colors.ink,
-            style = RivetType.xs,
-            maxLines = 1,
-            overflow = TextOverflow.Ellipsis,
-            modifier = Modifier.weight(1f),
-        )
+        Column(Modifier.weight(1f)) {
+            Text(
+                row.name,
+                color = colors.ink,
+                style = RivetType.xs,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+            )
+            val subtitle = agentRowSubtitle(row)
+            if (subtitle.isNotBlank()) {
+                Text(
+                    subtitle,
+                    color = colors.inkDim,
+                    style = RivetType.mono10,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                )
+            }
+        }
         when {
             activityActive -> PulseDot(colors.em)
             activityIdle -> Box(
@@ -587,13 +600,14 @@ private fun NodeSheetSavedRow(row: NodeSheetRow, onSelect: () -> Unit, onRemove:
 @Composable
 private fun AgentActionSheet(
     name: String,
+    online: Boolean,
     onDismiss: () -> Unit,
     onAction: (AgentSheetAction) -> Unit,
 ) {
     val colors = RivetTheme.colors
     RivetModalSheet(onDismiss = onDismiss) {
         Text(name, color = colors.em, style = RivetType.sm.copy(fontWeight = FontWeight.SemiBold), modifier = Modifier.padding(8.dp))
-        agentSheetActions().forEach { action ->
+        agentSheetActions(online).forEach { action ->
             when (action) {
                 AgentSheetAction.StartOver -> SheetAction(
                     R.drawable.lucide_rotate_ccw,
