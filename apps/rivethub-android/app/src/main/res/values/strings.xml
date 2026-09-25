@@ -249,4 +249,13 @@
     <string name="move_to_agent_title">Hand this conversation to</string>
     <string name="hide_conversation">Hide</string>
     <string name="hide_conversation_confirm">Hide this conversation from the list? It stays on the node.</string>
+    <string name="font_size">Text size</string>
+    <string name="gallery_shapes">Shapes</string>
+    <string name="gallery_shape_sample">Sample</string>
+    <string name="gallery_card">Card · composer and sheets</string>
+    <string name="gallery_bubble">Message bubble</string>
+    <string name="gallery_tight">Code · tool row · tag</string>
+    <string name="gallery_open_sheet">Open sample sheet</string>
+    <string name="gallery_font_scale">Font scale</string>
+    <string name="gallery_font_sample">%1$s · A message at this text size.</string>
 </resources>

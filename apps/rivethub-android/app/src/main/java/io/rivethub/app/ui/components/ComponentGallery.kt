@@ -1,6 +1,7 @@
 package io.rivethub.app.ui.components
 
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -12,31 +13,40 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.systemBarsPadding
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.tooling.preview.Preview
+import androidx.compose.ui.unit.Density
 import androidx.compose.ui.unit.dp
 import io.rivethub.app.R
 import io.rivethub.app.plane.AgentRow
 import io.rivethub.app.plane.AttachmentStatus
+import io.rivethub.app.plane.FONT_SCALE_STEPS
 import io.rivethub.app.plane.HubTab
 import io.rivethub.app.plane.NodeSheetModel
 import io.rivethub.app.plane.NodeSheetRow
 import io.rivethub.app.plane.PendingAttachment
 import io.rivethub.app.plane.TermStatus
 import io.rivethub.app.plane.contextBarView
+import io.rivethub.app.plane.fontScaleLabel
 import io.rivethub.app.plane.statsLine
 import io.rivethub.app.ui.term.AnsiScreen
 import io.rivethub.app.ui.term.TerminalPane
 import io.rivethub.app.ui.theme.Dimens
+import io.rivethub.app.ui.theme.LocalUiFontScale
 import io.rivethub.app.ui.theme.RivetTheme
 import io.rivethub.app.ui.theme.RivetType
+import io.rivethub.app.ui.theme.Shape
 import io.rivethub.app.ui.theme.ThemeMode
 import io.rivethub.app.ui.theme.blueprintGrid
 
@@ -67,6 +77,7 @@ private fun GalleryThemeBlock(label: String, mode: ThemeMode) {
                 .blueprintGrid(colors.gridLine)
                 .padding(bottom = Dimens.grid2),
         ) {
+            ShapeGallery(mode)
             TopBar(title = "RivetHub · $label", onOpenDrawer = {}, padStatusBar = false)
             Column(Modifier.padding(horizontal = 16.dp, vertical = 8.dp)) {
                 GalleryH("Top bar · $label")
@@ -539,6 +550,69 @@ private fun GalleryThemeBlock(label: String, mode: ThemeMode) {
                 Text("ON THE MESH", color = colors.inkDim, style = RivetType.mono10, modifier = Modifier.padding(top = 8.dp))
                 Text("+ peer (4 sessions)", color = colors.inkDim, style = RivetType.xs)
             }
+        }
+    }
+}
+
+@Composable
+private fun ShapeGallery(mode: ThemeMode) {
+    val colors = RivetTheme.colors
+    var field by remember { mutableStateOf("") }
+    var checked by remember { mutableStateOf(true) }
+    var selected by remember { mutableStateOf("M") }
+    var sheetOpen by remember { mutableStateOf(false) }
+    val sample = stringResource(R.string.gallery_shape_sample)
+    Column(
+        Modifier.fillMaxWidth().padding(16.dp),
+        verticalArrangement = Arrangement.spacedBy(8.dp),
+    ) {
+        GalleryH(stringResource(R.string.gallery_shapes))
+        SectionHeader(stringResource(R.string.gallery_shapes))
+        NavRow(sample, R.drawable.lucide_message_square, active = true, onClick = {})
+        Pill(sample)
+        HarnessChip(sample)
+        SegmentedControl(FONT_SCALE_STEPS.map(::fontScaleLabel), selected, { selected = it })
+        RivetButton(sample, onClick = {})
+        RivetField(field, { field = it }, sample)
+        RivetToggle(checked, { checked = it })
+        RivetSelect(selected, FONT_SCALE_STEPS.map { SelectOption(fontScaleLabel(it), fontScaleLabel(it)) }, { selected = it })
+        Text(
+            stringResource(R.string.gallery_card), color = colors.ink, style = RivetType.sm,
+            modifier = Modifier.fillMaxWidth()
+                .background(colors.panel, RoundedCornerShape(Shape.card))
+                .border(1.dp, colors.line, RoundedCornerShape(Shape.card)).padding(16.dp),
+        )
+        Text(
+            stringResource(R.string.gallery_bubble), color = colors.ink, style = RivetType.sm,
+            modifier = Modifier.background(colors.emDim, RoundedCornerShape(Shape.bubble)).padding(16.dp),
+        )
+        Text(
+            stringResource(R.string.gallery_tight), color = colors.inkDim, style = RivetType.mono11,
+            modifier = Modifier.background(colors.panel2, RoundedCornerShape(Shape.tight)).padding(8.dp),
+        )
+        RivetButton(stringResource(R.string.gallery_open_sheet), onClick = { sheetOpen = true })
+        GalleryH(stringResource(R.string.gallery_font_scale))
+        val density = LocalDensity.current
+        val uiScale = LocalUiFontScale.current
+        FONT_SCALE_STEPS.forEach { step ->
+            CompositionLocalProvider(
+                LocalDensity provides if (uiScale == 1f) density else Density(density.density, density.fontScale / uiScale),
+                LocalUiFontScale provides 1f,
+            ) {
+                RivetTheme(mode = mode, fontScale = step) {
+                    Text(
+                        stringResource(R.string.gallery_font_sample, fontScaleLabel(step)),
+                        color = RivetTheme.colors.ink,
+                        style = RivetType.sm,
+                    )
+                }
+            }
+        }
+    }
+    if (sheetOpen) {
+        RivetModalSheet(onDismiss = { sheetOpen = false }) {
+            SectionHeader(stringResource(R.string.gallery_shapes))
+            Text(stringResource(R.string.gallery_card), color = colors.ink, style = RivetType.sm)
         }
     }
 }

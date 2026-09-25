@@ -11,16 +11,21 @@ import androidx.compose.material3.lightColorScheme
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.ReadOnlyComposable
+import androidx.compose.runtime.compositionLocalOf
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.drawBehind
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.unit.Density
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+
+val LocalUiFontScale = compositionLocalOf { 1f }
 
 enum class ThemeMode { System, Light, Dark }
 
@@ -109,22 +114,28 @@ private fun scheme(c: RivetColors, dark: Boolean) = if (dark) {
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun RivetTheme(mode: ThemeMode = ThemeMode.System, content: @Composable () -> Unit) {
+fun RivetTheme(mode: ThemeMode = ThemeMode.System, fontScale: Float = 1f, content: @Composable () -> Unit) {
     val dark = when (mode) {
         ThemeMode.System -> isSystemInDarkTheme()
         ThemeMode.Light -> false
         ThemeMode.Dark -> true
     }
     val colors = if (dark) RivetDark else RivetLight
+    val current = LocalDensity.current
+    // Keep the platform density (including non-linear font scaling) at M.
+    val density = if (fontScale == 1f) current else Density(current.density, current.fontScale * fontScale)
     CompositionLocalProvider(
         LocalRivetColors provides colors,
+        LocalUiFontScale provides LocalUiFontScale.current * fontScale,
         LocalRippleConfiguration provides RippleConfiguration(color = colors.ink.copy(alpha = 0.12f)),
     ) {
         MaterialTheme(
             colorScheme = scheme(colors, dark),
             typography = RivetMaterialTypography,
-            content = content,
-        )
+        ) {
+            // One structural position preserves remembered app state across text-size changes.
+            CompositionLocalProvider(LocalDensity provides density, content = content)
+        }
     }
 }
 

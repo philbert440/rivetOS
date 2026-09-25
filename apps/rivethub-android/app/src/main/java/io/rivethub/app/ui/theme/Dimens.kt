@@ -8,7 +8,17 @@ object Radius {
     val md = 6.dp
     val lg = 8.dp
     val xl = 12.dp
+    val xxl = 14.dp
     val full = 999.dp
+}
+
+// Semantic phone shapes, shared across components.
+object Shape {
+    val row = Radius.full
+    val card = Radius.xl
+    val bubble = Radius.xxl
+    val control = Radius.md
+    val tight = Radius.sm
 }
 
 /** Blueprint grid step — `background-size: 32px 32px` on desktop `body`. */

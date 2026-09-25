@@ -13,6 +13,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.unit.dp
 import io.rivethub.app.ui.theme.Dimens
+import io.rivethub.app.ui.theme.Shape
 import io.rivethub.app.ui.theme.RivetFonts
 import io.rivethub.app.ui.theme.RivetTheme
 import io.rivethub.app.ui.theme.RivetType
@@ -32,7 +33,7 @@ fun Pill(
         PillTone.Em -> colors.em
         PillTone.Warn -> colors.warn
     }
-    val shape = RoundedCornerShape(Dimens.radiusPill)
+    val shape = RoundedCornerShape(Shape.row)
     Box(
         modifier
             .height(Dimens.pillHeight)
