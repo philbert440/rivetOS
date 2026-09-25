@@ -195,4 +195,77 @@ class ChatHomeNavTest {
     fun `left-nav conversations with no session on the stack resolves a launch pick`() {
         assertEquals(ChatHomeNav.Resolve, chatHomeNav(currentIsChat = false, stackHasChat = false))
     }
+
+    @Test
+    fun `footer shows agents tasks memory settings unconditionally`() {
+        assertEquals(
+            listOf(DrawerFooterAction.Agents, DrawerFooterAction.Tasks, DrawerFooterAction.Memory, DrawerFooterAction.Settings),
+            drawerFooterActions(ExperimentalFlags()),
+        )
+    }
+
+    @Test
+    fun `footer keeps tasks after agents whatever the flags say`() {
+        assertEquals(
+            listOf(
+                DrawerFooterAction.Agents,
+                DrawerFooterAction.Tasks,
+                DrawerFooterAction.Memory,
+                DrawerFooterAction.Settings,
+            ),
+            drawerFooterActions(ExperimentalFlags(tasks = true)),
+        )
+        assertEquals(
+            listOf(DrawerFooterAction.Agents, DrawerFooterAction.Tasks, DrawerFooterAction.Memory, DrawerFooterAction.Settings),
+            drawerFooterActions(ExperimentalFlags(files = true, workflows = true)),
+        )
+    }
+
+    @Test
+    fun `footer buttons route through the drawer destinations`() {
+        assertNull(drawerFooterDest(DrawerFooterAction.Agents))
+        assertEquals(DrawerDest.Tasks, drawerFooterDest(DrawerFooterAction.Tasks))
+        assertEquals(DrawerDest.Memory, drawerFooterDest(DrawerFooterAction.Memory))
+        assertEquals(DrawerDest.Settings, drawerFooterDest(DrawerFooterAction.Settings))
+        assertTrue(drawerOpensMemoryScreen(drawerFooterDest(DrawerFooterAction.Memory)!!))
+        assertEquals(HubTab.Settings, drawerTabRoute(drawerFooterDest(DrawerFooterAction.Settings)!!))
+        assertNull(drawerTabRoute(drawerFooterDest(DrawerFooterAction.Tasks)!!))
+    }
+
+    @Test
+    fun `only files and workflows remain as flagged rows`() {
+        assertEquals(emptyList<DrawerDest>(), drawerFlaggedRows(ExperimentalFlags(tasks = true)))
+        assertEquals(
+            listOf(DrawerDest.Files, DrawerDest.Workflows),
+            drawerFlaggedRows(ExperimentalFlags(files = true, tasks = true, workflows = true)),
+        )
+        assertEquals(listOf(DrawerDest.Workflows), drawerFlaggedRows(ExperimentalFlags(workflows = true)))
+    }
+
+    @Test
+    fun `agent picker subtitle is the node plus the directory basename when known`() {
+        assertEquals("ct115", agentPickerSubtitle("ct115", null))
+        assertEquals("ct115", agentPickerSubtitle("ct115", "  "))
+        assertEquals("ct115 · rivetOS", agentPickerSubtitle("ct115", "/opt/work/rivetOS/"))
+        assertEquals("ct115 · proj", agentPickerSubtitle("ct115", "proj"))
+        assertEquals("ct115 · repo", agentPickerSubtitle("ct115", "C:\\src\\repo"))
+    }
+
+    @Test fun `agents picker height caps at 70 percent of the window and never below one row`() {
+        assertEquals(560, agentPickerMaxHeightDp(800))
+        assertEquals(420, agentPickerMaxHeightDp(600))
+        assertEquals(44, agentPickerMaxHeightDp(40))
+    }
+
+    @Test fun `agents picker keys are node scoped and unique even for repeated rows`() {
+        fun row(agent: String, node: String) = AgentRow(
+            agentId = agent, name = agent, harnessId = null, nodeId = node,
+            nodeName = node, nodeDenUrl = "https://$node.example:5174", pointerSessionId = null,
+        )
+        val rows = listOf(row("rivet", "ct115"), row("rivet", "ct112"), row("rivet", "ct115"), row("grok", "ct115"))
+        val keys = agentPickerKeys(rows)
+        assertEquals(listOf("ct115/rivet", "ct112/rivet", "ct115/rivet#1", "ct115/grok"), keys)
+        assertEquals(keys.size, keys.toSet().size)
+        assertEquals(emptyList<String>(), agentPickerKeys(emptyList()))
+    }
 }

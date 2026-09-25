@@ -7,6 +7,7 @@ import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.interaction.DragInteraction
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -32,6 +33,7 @@ import androidx.compose.runtime.SideEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
@@ -92,6 +94,24 @@ import io.rivethub.app.gateway.HarnessTranscriptTurn
 import io.rivethub.app.plane.statsLineOrNull
 import io.rivethub.app.plane.toolArgStrings
 import io.rivethub.app.ui.HubViewModel
+import io.rivethub.app.plane.statsLineVisible
+import io.rivethub.app.plane.MessageAction
+import io.rivethub.app.plane.actionRowShown
+import io.rivethub.app.plane.messageActions
+import io.rivethub.app.plane.regenerateSource
+import io.rivethub.app.plane.splitAttachedLines
+import io.rivethub.app.plane.userActionText
+import io.rivethub.app.plane.jumpTargets
+import io.rivethub.app.plane.jumperHideDelayMs
+import io.rivethub.app.plane.jumperVisible
+import io.rivethub.app.ui.components.AttachmentImageSource
+import io.rivethub.app.ui.components.MessageActionRow
+import io.rivethub.app.ui.components.MessageActionsState
+import io.rivethub.app.ui.components.MessageJumper
+import io.rivethub.app.ui.components.MessageMoreSheet
+import io.rivethub.app.ui.components.RivetConfirmDialog
+import io.rivethub.app.ui.components.SelectCopySheet
+import io.rivethub.app.ui.components.shareMessageText
 import io.rivethub.app.ui.HarnessChatViewModel
 import io.rivethub.app.ui.components.RenameSheet
 import io.rivethub.app.ui.components.RivetField
@@ -128,6 +148,7 @@ import io.rivethub.app.ui.theme.Dimens
 import io.rivethub.app.ui.theme.Radius
 import io.rivethub.app.ui.theme.RivetTheme
 import io.rivethub.app.ui.theme.RivetType
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.delay
 
@@ -135,10 +156,10 @@ import kotlinx.coroutines.delay
  * The session screen. There is NO wordmark TopBar here (web
  * lib/session-header.ts: the bar shows on every narrow screen EXCEPT an open
  * session). Chat mode has no back control (Phil 2026-09-03: "back" is the
- * right-side history drawer). Terminal mode swaps in [TerminalHeader]: back
- * returns to Chat and resyncs the transcript. The header owns the status-bar
- * inset; [onOpenDrawer] opens the left navigation drawer, [onOpenHistory] the
- * right history drawer.
+ * conversation history, which since drawer v2 / U2b is the left drawer's body).
+ * Terminal mode swaps in [TerminalHeader]: back returns to Chat and resyncs the
+ * transcript. The header owns the status-bar inset; [onOpenDrawer] (☰) and
+ * [onOpenHistory] both open the one left drawer — there is no right drawer.
  */
 @Composable
 fun HarnessChatScreen(
@@ -605,6 +626,54 @@ private fun ChatTranscript(
         SideEffect { if (detail == key && resolved != key) detail = resolved }
         ToolDetailSheet(resolved.shown, onDismiss = { detail = null })
     }
+    // Message actions (UX-SPEC §1.3): screen-local reveal / More / Select & copy
+    // / Regenerate-confirm state; the VM only sees regenerate and edit.
+    val actionsUi = remember { MessageActionsState() }
+    val attachmentImages = remember(vm) { AttachmentImageSource(vm.attachmentNamespace, vm::attachmentBytes) }
+    fun onMessageAction(index: Int, action: MessageAction, text: String) {
+        when (action) {
+            MessageAction.Copy -> copyText(ctx, text)
+            MessageAction.Regenerate -> actionsUi.confirmRegenerate = index
+            MessageAction.SelectCopy -> actionsUi.selectText = text
+            MessageAction.Edit -> vm.editFromTurn(index)
+            MessageAction.Share -> shareMessageText(ctx, text)
+        }
+    }
+    actionsUi.moreFor?.let { index ->
+        val turn = st.turns.getOrNull(index)
+        if (turn == null) {
+            SideEffect { actionsUi.moreFor = null }
+        } else {
+            val text = messageBody(turn)
+            MessageMoreSheet(
+                actions = messageActions(
+                    turn.role,
+                    st.inFlight,
+                    regenerateSource(st.turns, index) != null,
+                    hasBody = messageHasBody(turn),
+                ),
+                onAction = { onMessageAction(index, it, text) },
+                onDismiss = { actionsUi.moreFor = null },
+            )
+        }
+    }
+    actionsUi.selectText?.let { text ->
+        SelectCopySheet(text, onDismiss = { actionsUi.selectText = null })
+    }
+    actionsUi.confirmRegenerate?.let { index ->
+        RivetConfirmDialog(
+            title = stringResource(R.string.regenerate),
+            message = stringResource(R.string.regenerate_confirm),
+            confirmLabel = stringResource(R.string.regenerate),
+            cancelLabel = stringResource(R.string.action_cancel),
+            onConfirm = {
+                actionsUi.confirmRegenerate = null
+                actionsUi.revealed = null
+                vm.regenerate(index)
+            },
+            onDismiss = { actionsUi.confirmRegenerate = null },
+        )
+    }
     // transcript.tsx:385-480 port (plane/TranscriptPin.kt): pinned starts
     // true; the first non-empty load jumps to the end unconditionally (a chat
     // opens at the bottom of the thread); afterwards new content follows ONLY
@@ -646,6 +715,52 @@ private fun ChatTranscript(
         }
         pinned = pin.pinned
     }
+    // Message jumper (UX-SPEC §1.2): shown while the user drags/flings and for
+    // JUMPER_VISIBLE_MS after it goes idle, hidden while pinned. The hide is a
+    // one-shot delay keyed on the last scroll time — not a poll.
+    var userScrolling by remember { mutableStateOf(false) }
+    var lastIdleMs by remember { mutableLongStateOf(0L) }
+    var jumperShown by remember { mutableStateOf(false) }
+    LaunchedEffect(list) {
+        list.interactionSource.interactions.collect { ia ->
+            when (ia) {
+                is DragInteraction.Start -> userScrolling = true
+                is DragInteraction.Stop, is DragInteraction.Cancel -> if (!list.isScrollInProgress && userScrolling) {
+                    userScrolling = false
+                    lastIdleMs = System.currentTimeMillis()
+                }
+            }
+        }
+    }
+    LaunchedEffect(list) {
+        snapshotFlow { list.isScrollInProgress }.collect { scrolling ->
+            if (!scrolling && userScrolling) {
+                userScrolling = false
+                lastIdleMs = System.currentTimeMillis()
+            }
+        }
+    }
+    LaunchedEffect(userScrolling, lastIdleMs) {
+        val now = System.currentTimeMillis()
+        val scrolled = userScrolling || lastIdleMs > 0L
+        jumperShown = jumperVisible(scrolled, if (userScrolling) now else lastIdleMs, now)
+        if (jumperShown && !userScrolling) {
+            delay(jumperHideDelayMs(lastIdleMs, now))
+            jumperShown = jumperVisible(scrolled, lastIdleMs, System.currentTimeMillis())
+        }
+    }
+    val userStops = remember(st.turns) { st.turns.indices.filter { st.turns[it].role == "user" } }
+    val targets by remember(userStops) {
+        derivedStateOf {
+            val info = list.layoutInfo
+            jumpTargets(
+                firstVisible = list.firstVisibleItemIndex,
+                lastVisible = info.visibleItemsInfo.lastOrNull()?.index ?: 0,
+                count = info.totalItemsCount,
+                stops = userStops,
+            )
+        }
+    }
     Box(Modifier.fillMaxSize()) {
         LazyColumn(
             state = list,
@@ -653,19 +768,46 @@ private fun ChatTranscript(
             verticalArrangement = Arrangement.spacedBy(16.dp),
         ) {
         itemsIndexed(st.turns, key = { i, turn -> "$i:${turn.role}" }) { i, turn ->
-            val split = if (turn.role != "user") splitHermesReasoning(turn.text) else null
-            val body = split?.text ?: turn.text
             if (turn.role == "user") {
+                val (body, refs) = remember(turn.text) { splitAttachedLines(turn.text) }
+                val hasBody = body.isNotBlank()
+                val actions = messageActions("user", st.inFlight, hasPrecedingUser = false, hasBody = hasBody)
                 TranscriptUserTurn(
                     text = body,
                     time = null,
                     onCopy = { copyText(ctx, it) },
+                    attachments = refs,
+                    images = attachmentImages,
+                    onTap = { if (hasBody) vm.editFromTurn(i) },
+                    onLongPress = { actionsUi.toggle(i) },
+                    actionRow = if (actionRowShown(st.actionRowAlways, actionsUi.revealed == i, actions)) {
+                        {
+                            MessageActionRow(
+                                actions = actions,
+                                onAction = { onMessageAction(i, it, userActionText(body, refs)) },
+                                onMore = { actionsUi.moreFor = i },
+                            )
+                        }
+                    } else {
+                        null
+                    },
                 )
             } else {
+                val body = remember(turn.text) { splitHermesReasoning(turn.text).text }
                 val durationMs = st.reasoningDurations[i]
                 val steps = remember(turn, durationMs) { storedCotSteps(turn, durationMs) }
                 val expanded = i in st.cotExpanded
                 val fold = remember(steps, expanded) { foldSteps(steps, expanded) }
+                val actions = if (st.actionRowAlways || actionsUi.revealed == i) {
+                    messageActions(
+                        turn.role,
+                        st.inFlight,
+                        hasPrecedingUser = regenerateSource(st.turns, i) != null,
+                        hasBody = body.isNotBlank(),
+                    )
+                } else {
+                    emptyList()
+                }
                 TranscriptAssistantTurn(
                     codeLineNumbers = st.codeLineNumbers,
                     codeWrap = st.codeWrap,
@@ -678,8 +820,22 @@ private fun ChatTranscript(
                     expanded = expanded,
                     onToggleFold = { vm.toggleCot(i) },
                     onToolTap = { tool -> detail = toolSheetTarget(i, st.liveTurn, steps, tool) },
-                    stats = statsLineOrNull(turn.usage),
+                    stats = if (statsLineVisible(st.showStats, turn.usage)) statsLineOrNull(turn.usage) else null,
                     onCopy = { copyText(ctx, it) },
+                    onTap = { actionsUi.toggle(i) },
+                    // A completed tool-only turn (blank body) still gets a row when
+                    // the "always" setting is on: Regenerate only (plane/MessageActions.kt).
+                    actionRow = if (actionRowShown(st.actionRowAlways, actionsUi.revealed == i, actions)) {
+                        {
+                            MessageActionRow(
+                                actions = actions,
+                                onAction = { onMessageAction(i, it, body) },
+                                onMore = { actionsUi.moreFor = i },
+                            )
+                        }
+                    } else {
+                        null
+                    },
                 )
             }
         }
@@ -710,6 +866,23 @@ private fun ChatTranscript(
             }
         }
             item { Spacer(Modifier.height(Dimens.grid2)) }
+        }
+        if (jumperShown && !pinned) {
+            MessageJumper(
+                targets = targets,
+                onJump = { index ->
+                    lastIdleMs = System.currentTimeMillis()
+                    scope.launch { runCatching { list.animateScrollToItem(index) } }
+                },
+                onBottom = {
+                    pin.jump()
+                    pinned = true
+                    scope.launch { runCatching { list.scrollToItem(count) } }
+                },
+                modifier = Modifier
+                    .align(Alignment.CenterEnd)
+                    .padding(end = 8.dp),
+            )
         }
         if (!pinned) {
             // transcript.tsx:470-479 — the jump pill: absolute bottom-center
@@ -793,6 +966,23 @@ private fun EmptyLine(text: String) {
         modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp),
     )
 }
+
+/** The text a message action works on: user body without attachment lines, assistant text without Hermes reasoning. */
+/** The text Copy / Select & copy / Share act on (attachment names for an attachment-only user turn). */
+private fun messageBody(turn: HarnessTranscriptTurn): String =
+    if (turn.role == "user") {
+        splitAttachedLines(turn.text).let { (body, refs) -> userActionText(body, refs) }
+    } else {
+        splitHermesReasoning(turn.text).text
+    }
+
+/** Whether the turn has text of its own (not only attachments / tool calls). */
+private fun messageHasBody(turn: HarnessTranscriptTurn): Boolean =
+    if (turn.role == "user") {
+        splitAttachedLines(turn.text).first.isNotBlank()
+    } else {
+        splitHermesReasoning(turn.text).text.isNotBlank()
+    }
 
 /** Timeline key of the in-flight turn (stored turns use their index). */
 private const val LIVE_TURN = LIVE_TURN_INDEX

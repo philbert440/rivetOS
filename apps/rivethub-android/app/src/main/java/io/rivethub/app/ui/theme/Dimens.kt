@@ -8,6 +8,7 @@ object Radius {
     val md = 6.dp
     val lg = 8.dp
     val xl = 12.dp
+    /** Message bubble corners (UX-SPEC §0.4 soft shapes). */
     val xxl = 14.dp
     val full = 999.dp
 }
@@ -55,8 +56,8 @@ object Dimens {
     val composerPadH = 16.dp
     val composerPadBottom = 10.dp
 
-    /** sidebar.tsx:189 — the phone drawer sheet is `w-64`. */
-    val drawerWidth = 256.dp
+    /** Drawer v2 (UX-SPEC §2): the phone drawer sheet is about 300dp. */
+    val drawerWidth = 300.dp
     val pageHeader = 48.dp
     val denBotHeader = 28.dp
     val denBotEnroll = 64.dp

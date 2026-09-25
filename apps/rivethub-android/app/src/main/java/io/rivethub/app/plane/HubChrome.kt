@@ -21,10 +21,11 @@ fun topBarTitle(tab: HubTab): TopBarTitle = when (tab) {
 }
 
 /**
- * Mobile drawer width — sidebar.tsx:189 fixes the phone sheet at `w-64`
- * (256dp), never wider than 85% of a narrow screen.
+ * Mobile drawer width — drawer v2 (UX-SPEC §2, slice U2b): about 300dp now
+ * that the conversation list lives in the left drawer, never wider than 85%
+ * of a narrow screen.
  */
-fun drawerWidthDp(maxWidthDp: Float): Float = minOf(256f, maxWidthDp * 0.85f)
+fun drawerWidthDp(maxWidthDp: Float): Float = minOf(300f, maxWidthDp * 0.85f)
 
 /**
  * Conversation pane rows — chat.tsx:833 maps the recency list 1:1 into rows.

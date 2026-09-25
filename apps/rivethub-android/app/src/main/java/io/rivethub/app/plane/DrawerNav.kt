@@ -82,8 +82,8 @@ fun drawerOpensMemoryScreen(dest: DrawerDest): Boolean = dest == DrawerDest.Memo
 
 /**
  * Left-nav Conversations → the CHAT HOME, never a list screen (Phil
- * 2026-09-04: the list is not an app screen; it lives only in the right
- * history drawer). The home is the ACTIVE session when one is on the back
+ * 2026-09-04: the list is not an app screen; it lives only in the drawer —
+ * the left drawer's body since U2b). The home is the ACTIVE session when one is on the back
  * stack — popping to it beats resolving a pick — and only a stack without
  * any session needs the pick/new resolution.
  */
@@ -112,3 +112,63 @@ fun formatUnreadBadge(unread: Int): String? = when {
 }
 
 fun drawerOpensTasksScreen(dest: DrawerDest): Boolean = dest == DrawerDest.Tasks
+/**
+ * Drawer v2 footer (UX-SPEC §2 item 4): round icon buttons under the node
+ * switcher. Conversations is no longer a row — it IS the drawer body. Tasks
+ * shows only behind its experimental flag; Files and Workflows stay flagged
+ * rows above the footer ([drawerFlaggedRows]).
+ */
+enum class DrawerFooterAction { Agents, Tasks, Memory, Settings }
+
+fun drawerFooterActions(exp: ExperimentalFlags): List<DrawerFooterAction> = buildList {
+    add(DrawerFooterAction.Agents)
+    add(DrawerFooterAction.Tasks) // unconditional since D2 (its experimental toggle is gone)
+    add(DrawerFooterAction.Memory)
+    add(DrawerFooterAction.Settings)
+}
+
+/** Flagged destinations that still render as rows in drawer v2 (above the footer). */
+fun drawerFlaggedRows(exp: ExperimentalFlags): List<DrawerDest> = buildList {
+    if (exp.files) add(DrawerDest.Files)
+    if (exp.workflows) add(DrawerDest.Workflows)
+}
+
+/** The destination a footer button routes through (the same routing as the old nav rows); Agents opens a sheet instead. */
+fun drawerFooterDest(action: DrawerFooterAction): DrawerDest? = when (action) {
+    DrawerFooterAction.Agents -> null
+    DrawerFooterAction.Tasks -> DrawerDest.Tasks
+    DrawerFooterAction.Memory -> DrawerDest.Memory
+    DrawerFooterAction.Settings -> DrawerDest.Settings
+}
+
+/**
+ * Agents picker row subtitle (UX-SPEC §2 item 4: node and directory
+ * basename). While [directory] is null or blank (until the agent carries
+ * one) the subtitle is just the node name; with one it is
+ * `node · basename`.
+ */
+fun agentPickerSubtitle(nodeName: String, directory: String?): String {
+    val base = directory?.trim()?.trimEnd('/', '\\')?.substringAfterLast('/')?.substringAfterLast('\\').orEmpty()
+    return if (base.isBlank()) nodeName else "$nodeName · $base"
+}
+
+/**
+ * Agents picker list height cap (fix1): 70% of the window height, so the
+ * sheet leaves the scrim visible and its rows scroll instead of running off
+ * a short screen. Never below one 44dp row.
+ */
+fun agentPickerMaxHeightDp(screenHeightDp: Int): Int = maxOf(44, screenHeightDp * 7 / 10)
+
+/**
+ * Stable, unique LazyColumn keys for the picker rows: `nodeId/agentId`, with
+ * a `#n` suffix on a repeat (a duplicate key would crash the list).
+ */
+fun agentPickerKeys(rows: List<AgentRow>): List<String> {
+    val seen = HashMap<String, Int>()
+    return rows.map { row ->
+        val base = "${row.nodeId}/${row.agentId}"
+        val n = seen[base] ?: 0
+        seen[base] = n + 1
+        if (n == 0) base else "$base#$n"
+    }
+}

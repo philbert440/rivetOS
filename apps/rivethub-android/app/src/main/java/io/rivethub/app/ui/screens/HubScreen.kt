@@ -1,11 +1,12 @@
 package io.rivethub.app.ui.screens
 
 import androidx.activity.compose.BackHandler
-import androidx.compose.foundation.background
-import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.awaitEachGesture
 import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.layout.sizeIn
 import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -18,22 +19,18 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.layout.sizeIn
-import androidx.compose.foundation.layout.statusBarsPadding
-import androidx.compose.foundation.layout.width
 import androidx.compose.material3.DrawerState
 import androidx.compose.material3.DrawerValue
 import androidx.compose.material3.ModalNavigationDrawer
 import androidx.compose.material3.Text
 import androidx.compose.material3.rememberDrawerState
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.key
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -48,19 +45,20 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.input.pointer.PointerEventPass
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.input.pointer.positionChanged
-import androidx.compose.ui.platform.LocalLayoutDirection
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.semantics.stateDescription
 import androidx.compose.ui.unit.LayoutDirection
 import androidx.compose.ui.unit.dp
 import io.rivethub.app.AppContainer
+import io.rivethub.app.gateway.WsStatus
 import io.rivethub.app.R
 import io.rivethub.app.plane.agentRowSubtitle
 import io.rivethub.app.plane.AgentAction
 import io.rivethub.app.plane.AgentOpen
 import io.rivethub.app.plane.AgentRow
-import io.rivethub.app.plane.DrawerSide
+import io.rivethub.app.plane.AgentSheetAction
+import io.rivethub.app.plane.DrawerDest
 import io.rivethub.app.plane.DrawerSwipeAction
 import io.rivethub.app.plane.EDGE_TRAVEL_DP
 import io.rivethub.app.plane.EDGE_ZONE_DP
@@ -73,12 +71,18 @@ import io.rivethub.app.plane.NodeSheetInput
 import io.rivethub.app.plane.buildNodeSheet
 import io.rivethub.app.plane.ExperimentalFlags
 import io.rivethub.app.plane.decideDrawerSwipe
+import io.rivethub.app.plane.drawerFooterDest
 import io.rivethub.app.plane.drawerOpensMemoryScreen
 import io.rivethub.app.plane.drawerTabRoute
 import io.rivethub.app.plane.drawerWidthDp
 import io.rivethub.app.plane.hubTabOnBack
+import io.rivethub.app.plane.entryAnsweredFor
+import io.rivethub.app.plane.nodeDots
+import io.rivethub.app.plane.statusActiveNodeId
+import io.rivethub.app.plane.statusEntryNodeId
 import io.rivethub.app.ui.HubViewModel
 import io.rivethub.app.ui.components.AgentEditSheet
+import io.rivethub.app.ui.components.AgentsPickerSheet
 import io.rivethub.app.ui.components.RivetDrawerContent
 import io.rivethub.app.ui.components.RivetModalSheet
 import io.rivethub.app.ui.components.RivetButton
@@ -91,43 +95,72 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.launch
 
 /**
- * The ONE left navigation drawer (session-header slice: lifted out of the hub
- * content so MainActivity can host BOTH the hub and a chat session inside the
- * same ModalNavigationDrawer — the rail is reachable by ☰ or left-edge swipe
- * from every screen, Phil 2026-09-03). 2026-09-04: BOTH drawers run
- * `gesturesEnabled = false` (the two nested built-in gestures competed, so
- * the left swipe lost arbitration); ONE unified edge-swipe layer
- * ([unifiedDrawerSwipe], decision in `plane/DrawerSwipe.kt`, web
- * `lib/edge-swipe.ts` semantics) drives both DrawerStates — left bezel
- * opens/closes the rail, right bezel (session only, [rightDrawer] non-null)
- * opens/closes the history drawer, and a drag on an open drawer back toward
- * its bezel closes it. Drawer nav routes through `drawerTabRoute` identically
- * from the hub and from a session; [onNavTab] applies the tab and (from a
- * session) pops back to the hub. [content] receives the ☰ opener.
+ * The ONE navigation drawer (drawer v2, UX-SPEC §2, slice U2b — there is no
+ * right drawer). The hub, a chat session and the Memory screens all live
+ * inside this same left ModalNavigationDrawer, reachable by ☰ (or the chat
+ * header's history button) and by a left-edge swipe from every screen. The
+ * drawer runs `gesturesEnabled = false`; [unifiedDrawerSwipe] (decision in
+ * `plane/DrawerSwipe.kt`, web `lib/edge-swipe.ts` semantics) owns the
+ * left-bezel open and the drag-back close.
+ *
+ * The drawer body is the conversation list ([ConversationsPane]).
+ * [currentSessionKey] is the open chat's key (null off a chat); the pane
+ * highlights and scrolls to it each time the drawer starts opening — the
+ * open tick is derived from this drawer's own state, so the button and the
+ * edge swipe both count. Row tap / `+ new` close the drawer and hand off to
+ * [onOpenRow] / [onOpenChat]. Footer buttons route Agents → the agents
+ * picker sheet, Tasks → the flagged route (inert until it exists), Memory →
+ * [onOpenMemory], Settings → the settings tab via [onNavTab].
+ *
+ * The node status strip derives from state already held — hub state here,
+ * plus the open chat's socket ([chatWs]) and node ([chatNodeDenUrl]) when a
+ * chat is open (`plane/NodeStatus.kt`). A tap is one `vm.refresh()`; nothing
+ * polls.
  */
 @Composable
 fun HubDrawer(
     vm: HubViewModel,
+    currentSessionKey: String?,
     onOpenChat: (AgentOpen) -> Unit,
+    onOpenRow: (LocatedChatItem) -> Unit,
     onNavTab: (HubTab) -> Unit,
-    rightDrawer: DrawerState? = null,
     onOpenMemory: (() -> Unit)? = null,
     onOpenTasks: (() -> Unit)? = null,
     onOpenTask: ((taskId: String) -> Unit)? = null,
+    chatWs: WsStatus? = null,
+    chatNodeDenUrl: String? = null,
     content: @Composable (openDrawer: () -> Unit) -> Unit,
 ) {
     val st by vm.state.collectAsState()
     val drawerState = rememberDrawerState(DrawerValue.Closed)
     val scope = rememberCoroutineScope()
-    var addAgentOpen by remember { mutableStateOf(false) }
+    var inboxOpen by remember { mutableStateOf(false) }
+    var agentsPickerOpen by remember { mutableStateOf(false) }
     var editAgent by remember { mutableStateOf<AgentRow?>(null) }
+    var openTick by remember { mutableIntStateOf(0) }
+    LaunchedEffect(drawerState) {
+        snapshotFlow { drawerState.targetValue }.collect { if (it == DrawerValue.Open) openTick += 1 }
+    }
     val tab = when (st.tab) {
         HubViewModel.Tab.Settings -> HubTab.Settings
         HubViewModel.Tab.Conversations -> HubTab.Conversations
     }
     fun openDrawer() { scope.launch { drawerState.open() } }
     fun closeDrawer() { scope.launch { drawerState.close() } }
+    fun navTo(dest: DrawerDest) {
+        // Memory is its own screen (plane/DrawerNav.kt
+        // drawerOpensMemoryScreen), never a hub tab.
+        if (io.rivethub.app.plane.drawerOpensTasksScreen(dest)) onOpenTasks?.invoke()
+        else if (drawerOpensMemoryScreen(dest)) onOpenMemory?.invoke()
+        else drawerTabRoute(dest)?.let { onNavTab(it) }
+        closeDrawer()
+    }
     val colors = RivetTheme.colors
+    val exp = ExperimentalFlags(
+        files = st.prefs.expFiles,
+        tasks = st.prefs.expTasks,
+        workflows = st.prefs.expWorkflows,
+    )
     val nodeSheet = remember(
         st.prefs.entryUrl,
         st.prefs.extraNodes,
@@ -151,11 +184,21 @@ fun HubDrawer(
         ?: st.nodes.find { it.denUrl.trimEnd('/') == st.prefs.entryUrl.trim().trimEnd('/') }
         ?: st.nodes.firstOrNull()
     val currentName = currentNode?.name?.ifBlank { currentNode.id } ?: st.prefs.entryUrl.ifBlank { "—" }
+    val dots = nodeDots(
+        entryNodeId = statusEntryNodeId(st.nodes, st.prefs.entryUrl),
+        nodes = st.nodes,
+        nodeErrors = st.nodeErrors,
+        registryOpen = st.registryOpen,
+        activeNodeId = statusActiveNodeId(st.nodes, chatNodeDenUrl, st.prefs.viewNodeId, st.prefs.entryUrl),
+        chatWs = chatWs,
+        discovering = st.loading,
+        entryAnswered = entryAnsweredFor(st.entryAnswer, st.prefs.entryUrl, st.identityGen),
+    )
 
     BoxWithConstraints(
         Modifier
             .fillMaxSize()
-            .unifiedDrawerSwipe(drawerState, rightDrawer, scope),
+            .unifiedDrawerSwipe(drawerState, scope),
     ) {
         val drawerWidth = drawerWidthDp(maxWidth.value).dp
         ModalNavigationDrawer(
@@ -167,55 +210,26 @@ fun HubDrawer(
                     width = drawerWidth,
                     tab = tab,
                     unread = st.unread,
-                    agents = st.agents,
-                    agentsCollapsed = st.prefs.agentsCollapsed,
+                    dots = dots,
                     currentNodeName = currentName,
                     nodeSheet = nodeSheet,
-                    exp = ExperimentalFlags(
-                        files = st.prefs.expFiles,
-                        tasks = st.prefs.expTasks,
-                        workflows = st.prefs.expWorkflows,
-                    ),
+                    exp = exp,
                     onClose = { closeDrawer() },
-                    onNav = { dest ->
-                        // Memory is its own screen (plane/DrawerNav.kt
-                        // drawerOpensMemoryScreen), never a hub tab.
-                        if (io.rivethub.app.plane.drawerOpensTasksScreen(dest)) onOpenTasks?.invoke()
-                        else if (drawerOpensMemoryScreen(dest)) onOpenMemory?.invoke()
-                        else drawerTabRoute(dest)?.let { onNavTab(it) }
-                        closeDrawer()
+                    onNav = { dest -> navTo(dest) },
+                    onFooter = { action ->
+                        val dest = drawerFooterDest(action)
+                        if (dest != null) {
+                            navTo(dest)
+                        } else {
+                            closeDrawer()
+                            agentsPickerOpen = true
+                        }
                     },
                     onUnread = {
                         vm.setInboxOpen(true)
                         closeDrawer()
                     },
-                    onToggleAgents = { vm.setAgentsCollapsed(!st.prefs.agentsCollapsed) },
-                    onAddAgent = {
-                        closeDrawer()
-                        addAgentOpen = true
-                    },
-                    onAgentTap = { row ->
-                        closeDrawer()
-                        vm.openAgentAction(row, AgentAction.Tap)?.let(onOpenChat)
-                    },
-                    onAgentStartOver = { row ->
-                        closeDrawer()
-                        vm.openAgentAction(row, AgentAction.Replace)?.let(onOpenChat)
-                    },
-                    onAgentNew = { row ->
-                        closeDrawer()
-                        vm.openAgentAction(row, AgentAction.Plus)?.let(onOpenChat)
-                    },
-                    onAgentEdit = { row ->
-                        if (row.online) {
-                            closeDrawer()
-                            editAgent = row
-                        }
-                    },
-                    onAgentGoToNode = { row ->
-                        vm.goToAgentNode(row)
-                        closeDrawer()
-                    },
+                    onRefreshStatus = { vm.refresh() },
                     onSelectNode = { row ->
                         if (row.selectable) {
                             vm.selectViewNode(row.id, row.name)
@@ -224,49 +238,60 @@ fun HubDrawer(
                     },
                     onRemoveNode = { row -> vm.removeSavedNode(row.denUrl) },
                     onSaveDiscovered = { row -> vm.addSavedNode(row.denUrl) },
-                )
+                ) {
+                    ConversationsPane(
+                        vm = vm,
+                        currentSessionKey = currentSessionKey,
+                        openTick = openTick,
+                        onOpenRow = { row ->
+                            closeDrawer()
+                            onOpenRow(row)
+                        },
+                        onOpenChat = { open ->
+                            closeDrawer()
+                            onOpenChat(open)
+                        },
+                        modifier = Modifier.fillMaxSize(),
+                    )
+                }
             },
         ) {
             content { openDrawer() }
         }
     }
 
-    if (addAgentOpen) {
-        RivetModalSheet(onDismiss = { addAgentOpen = false }) {
-            Text(
-                stringResource(R.string.pick_agent),
-                color = colors.inkDim,
-                style = RivetType.mono10,
-                modifier = Modifier.padding(8.dp),
-            )
-            if (st.agents.isEmpty()) {
-                Text(
-                    stringResource(R.string.empty_agents),
-                    color = colors.inkDim,
-                    style = RivetType.xs,
-                    modifier = Modifier.padding(8.dp),
-                )
-            } else {
-                st.agents.forEach { agent ->
-                    val subtitle = agentRowSubtitle(agent).ifBlank { agent.nodeName }
-                    Column(
-                        Modifier
-                            .sizeIn(minHeight = 44.dp)
-                            .alpha(if (agent.online) 1f else 0.5f)
-                            .clickable(enabled = agent.online) {
-                                addAgentOpen = false
-                                vm.openAgentAction(agent, AgentAction.Plus)?.let(onOpenChat)
-                            }
-                            .padding(8.dp),
-                    ) {
-                        Text(agent.name, color = colors.ink, style = RivetType.xs)
-                        if (subtitle.isNotBlank()) {
-                            Text(subtitle, color = colors.inkDim, style = RivetType.mono10)
-                        }
-                    }
-                }
-            }
+    // Back closes the open (or opening) drawer before anything underneath
+    // handles it — nav.pop() in MainActivity, the Settings → Conversations
+    // tab step in HubScreen, a screen's own handler. The dispatcher runs the
+    // most recently ADDED enabled callback, so this handler is composed after
+    // the drawer's content and re-added on every open (key(openTick)): it is
+    // newer than any handler the content registered before this open, even
+    // one that appeared after an earlier open. Sheets opened from the drawer are their own
+    // windows and dismiss on Back first.
+    key(openTick) {
+        BackHandler(enabled = drawerState.isOpen || drawerState.targetValue == DrawerValue.Open) {
+            closeDrawer()
         }
+    }
+
+    if (agentsPickerOpen) {
+        AgentsPickerSheet(
+            agents = st.agents,
+            onDismiss = { agentsPickerOpen = false },
+            onPick = { row ->
+                agentsPickerOpen = false
+                vm.openAgentAction(row, AgentAction.Plus)?.let(onOpenChat)
+            },
+            onAction = { row, action ->
+                when (action) {
+                    AgentSheetAction.StartOver -> vm.openAgentAction(row, AgentAction.Replace)?.let(onOpenChat)
+                    AgentSheetAction.New -> vm.openAgentAction(row, AgentAction.Plus)?.let(onOpenChat)
+                    AgentSheetAction.Edit -> { editAgent = row }
+                    AgentSheetAction.GoToNode -> vm.goToAgentNode(row)
+                }
+                agentsPickerOpen = false
+            },
+        )
     }
 
     editAgent?.let { row ->
@@ -410,82 +435,6 @@ private fun InboxRow(entry: InboxEntry, onClick: () -> Unit) {
     }
 }
 
-/**
- * The RIGHT history drawer in a session (web chat.tsx:585-626): an end-side
- * ModalNavigationDrawer — the RTL wrap is the standard Compose end-drawer
- * pattern — whose content is the same D1a [ConversationsPane] the hub shows
- * (filter · rows · `+ new`), at the left rail's width rule (`drawerWidthDp`;
- * web `w-64`, sidebar.tsx:186-197) with `border-l border-line bg-panel`
- * (chat.tsx:612) and the `bg-bg/70` scrim (chat.tsx:600). 2026-09-04:
- * `gesturesEnabled = false` — [state] is lifted to MainActivity and shared
- * with [HubDrawer]'s unified edge-swipe layer, which owns the right-bezel
- * open and the drag-back close (plane/DrawerSwipe.kt). The history button in
- * the session header opens it via the [content] opener. Row tap / `+ new`
- * close it; MainActivity switches the session. [currentSessionKey] is the
- * open chat's key; the pane highlights and scrolls to it each time the drawer
- * starts opening (by button or by edge swipe — both move [state]).
- */
-@Composable
-fun HistoryDrawer(
-    vm: HubViewModel,
-    state: DrawerState,
-    currentSessionKey: String?,
-    onOpenRow: (LocatedChatItem) -> Unit,
-    onOpenChat: (AgentOpen) -> Unit,
-    content: @Composable (openHistory: () -> Unit) -> Unit,
-) {
-    val scope = rememberCoroutineScope()
-    fun openHistory() { scope.launch { state.open() } }
-    fun closeHistory() { scope.launch { state.close() } }
-    var openTick by remember { mutableIntStateOf(0) }
-    LaunchedEffect(state) {
-        snapshotFlow { state.targetValue }.collect { if (it == DrawerValue.Open) openTick += 1 }
-    }
-    val colors = RivetTheme.colors
-    CompositionLocalProvider(LocalLayoutDirection provides LayoutDirection.Rtl) {
-        BoxWithConstraints(Modifier.fillMaxSize()) {
-            val drawerWidth = drawerWidthDp(maxWidth.value).dp
-            ModalNavigationDrawer(
-                drawerState = state,
-                gesturesEnabled = false,
-                scrimColor = colors.bg.copy(alpha = 0.7f),
-                drawerContent = {
-                    CompositionLocalProvider(LocalLayoutDirection provides LayoutDirection.Ltr) {
-                        Column(
-                            Modifier
-                                .width(drawerWidth)
-                                .fillMaxHeight()
-                                .background(colors.panel)
-                                .drawStartBorder(colors.line),
-                        ) {
-                            ConversationsPane(
-                                vm = vm,
-                                currentSessionKey = currentSessionKey,
-                                openTick = openTick,
-                                onOpenRow = { row ->
-                                    closeHistory()
-                                    onOpenRow(row)
-                                },
-                                onOpenChat = { open ->
-                                    closeHistory()
-                                    onOpenChat(open)
-                                },
-                                modifier = Modifier
-                                    .fillMaxSize()
-                                    .statusBarsPadding(),
-                            )
-                        }
-                    }
-                },
-            ) {
-                CompositionLocalProvider(LocalLayoutDirection provides LayoutDirection.Ltr) {
-                    content { openHistory() }
-                }
-            }
-        }
-    }
-}
-
 /** The hub content — the launch surface (Conversations tab) or Settings —
  *  inside [HubDrawer]. 2026-09-04: the Conversations tab is no longer a
  *  full-screen list; it renders [ChatLaunchScreen] while MainActivity's
@@ -525,34 +474,30 @@ fun HubScreen(
     }
 }
 
-private fun Modifier.drawStartBorder(color: Color): Modifier =
-    drawBehind {
-        val stroke = 1.dp.toPx()
-        drawLine(color, Offset(stroke / 2f, 0f), Offset(stroke / 2f, size.height), stroke)
-    }
-
 /**
- * The ONE unified edge-swipe layer for both drawers (2026-09-04). Sits on
- * [HubDrawer]'s root — an ancestor of both ModalNavigationDrawers — and
- * observes events on `PointerEventPass.Initial`, so drags that start on an
- * OPEN drawer panel still reach it (that is what makes swipe-to-close work
- * with `gesturesEnabled = false`). The down is recorded WITHOUT consuming it,
- * so taps, the ☰/history buttons, scrim tap-to-close, and system Back keep
- * working; each move is evaluated by the pure `decideDrawerSwipe`
- * (`leftState`/`rightState` read live), and only once it fires does the layer
- * consume the rest of the gesture (so the drawer drag cannot start a text
- * selection) and launch the open/close — once per gesture.
+ * The edge-swipe layer for the one left drawer. Sits on [HubDrawer]'s root —
+ * an ancestor of the ModalNavigationDrawer — and observes events on
+ * `PointerEventPass.Initial`, so it sees every drag even with
+ * `gesturesEnabled = false`. While the drawer is open only a drag that
+ * starts on the scrim (right of the sheet) closes it (fix1); a drag on the
+ * sheet is never consumed, so row swipe-to-archive keeps working. The down is recorded WITHOUT consuming it, so
+ * taps, the ☰ button, scrim tap-to-close, and system Back keep working; each
+ * move is evaluated by the pure `decideDrawerSwipe` ([state] read live), and
+ * only once it fires does the layer consume the rest of the gesture (so the
+ * drawer drag cannot start a text selection) and launch the open/close —
+ * once per gesture.
  */
 private fun Modifier.unifiedDrawerSwipe(
-    leftState: DrawerState,
-    rightState: DrawerState?,
+    state: DrawerState,
     scope: CoroutineScope,
-): Modifier = pointerInput(rightState != null) {
+): Modifier = pointerInput(state) {
     val zone = EDGE_ZONE_DP.dp.toPx()
     val travel = EDGE_TRAVEL_DP.dp.toPx()
     awaitEachGesture {
         val down = awaitFirstDown(requireUnconsumed = false)
-        val width = size.width.toFloat()
+        // The open sheet's width, from this layer's own size (it spans the
+        // drawer host): a close drag must start right of it, on the scrim.
+        val sheet = drawerWidthDp(size.width.toDp().value).dp.toPx()
         var decided = false
         while (true) {
             val event = awaitPointerEvent(PointerEventPass.Initial)
@@ -566,10 +511,8 @@ private fun Modifier.unifiedDrawerSwipe(
                 startX = down.position.x,
                 dx = change.position.x - down.position.x,
                 dy = change.position.y - down.position.y,
-                viewportWidth = width,
-                sessionOpen = rightState != null,
-                leftOpen = leftState.isOpen,
-                rightOpen = rightState?.isOpen == true,
+                leftOpen = state.isOpen,
+                sheetWidth = sheet,
                 zone = zone,
                 travel = travel,
             )
@@ -578,14 +521,8 @@ private fun Modifier.unifiedDrawerSwipe(
                 change.consume()
                 scope.launch {
                     when (action) {
-                        is DrawerSwipeAction.Open -> when (action.side) {
-                            DrawerSide.Left -> leftState.open()
-                            DrawerSide.Right -> rightState?.open()
-                        }
-                        is DrawerSwipeAction.Close -> when (action.side) {
-                            DrawerSide.Left -> leftState.close()
-                            DrawerSide.Right -> rightState?.close()
-                        }
+                        is DrawerSwipeAction.Open -> state.open()
+                        is DrawerSwipeAction.Close -> state.close()
                     }
                 }
             }

@@ -7,3 +7,6 @@ package io.rivethub.app.ui.screens
 // survived as ConversationsPane → ui/screens/ConversationsPane.kt, hosted by
 // HistoryDrawer (ui/screens/HubScreen.kt). The launch/loading surface that
 // replaced this screen is ui/screens/ChatLaunchScreen.kt.
+//
+// U2b (drawer v2): HistoryDrawer and the right drawer are gone too — the pane
+// is now the LEFT drawer's body (HubDrawer in ui/screens/HubScreen.kt).
