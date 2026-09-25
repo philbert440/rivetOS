@@ -15,6 +15,7 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.unit.dp
 import io.rivethub.app.ui.theme.Dimens
+import io.rivethub.app.ui.theme.Shape
 import io.rivethub.app.ui.theme.RivetTheme
 
 @Composable
@@ -24,7 +25,7 @@ fun RivetToggle(
     modifier: Modifier = Modifier,
 ) {
     val colors = RivetTheme.colors
-    val trackShape = RoundedCornerShape(Dimens.radiusPill)
+    val trackShape = RoundedCornerShape(Shape.row)
     Box(
         modifier
             .size(Dimens.toggleTrackW, Dimens.toggleTrackH)

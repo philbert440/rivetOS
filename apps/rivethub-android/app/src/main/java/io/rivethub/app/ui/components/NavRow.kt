@@ -5,11 +5,13 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.interaction.collectIsPressedAsState
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.sizeIn
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -25,7 +27,8 @@ import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.semantics.stateDescription
 import androidx.compose.ui.unit.dp
-import io.rivethub.app.ui.theme.Radius
+import io.rivethub.app.ui.theme.Dimens
+import io.rivethub.app.ui.theme.Shape
 import io.rivethub.app.ui.theme.RivetTheme
 import io.rivethub.app.ui.theme.RivetType
 
@@ -54,13 +57,11 @@ fun NavRow(
         pressed && enabled -> colors.panel2
         else -> androidx.compose.ui.graphics.Color.Transparent
     }
-    Row(
+    Box(
         modifier
             .fillMaxWidth()
-            .sizeIn(minHeight = 44.dp)
+            .sizeIn(minHeight = Dimens.touchTarget)
             .alpha(if (enabled) 1f else 0.4f)
-            .clip(RoundedCornerShape(Radius.sm))
-            .background(bg)
             .then(
                 if (comingSoon != null) Modifier.semantics { stateDescription = comingSoon }
                 else Modifier,
@@ -71,12 +72,21 @@ fun NavRow(
                 enabled = enabled,
                 role = Role.Button,
                 onClick = onClick,
-            )
-            .padding(horizontal = 12.dp, vertical = 8.dp),
-        verticalAlignment = Alignment.CenterVertically,
+            ),
+        contentAlignment = Alignment.Center,
     ) {
-        Lucide(icon, contentDescription = null, tint = fg, modifier = Modifier.size(16.dp))
-        Spacer(Modifier.width(8.dp))
-        Text(label, color = fg, style = RivetType.sm, maxLines = 1)
+        Row(
+            Modifier
+                .fillMaxWidth()
+                .heightIn(min = 40.dp)
+                .clip(RoundedCornerShape(Shape.row))
+                .background(bg)
+                .padding(horizontal = 12.dp, vertical = 8.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Lucide(icon, contentDescription = null, tint = fg, modifier = Modifier.size(16.dp))
+            Spacer(Modifier.width(8.dp))
+            Text(label, color = fg, style = RivetType.sm, maxLines = 1)
+        }
     }
 }

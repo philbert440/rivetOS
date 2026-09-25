@@ -102,7 +102,7 @@ class MainActivity : ComponentActivity() {
                     isAppearanceLightNavigationBars = !dark
                 }
             }
-            RivetTheme(mode) {
+            RivetTheme(mode, fontScale = prefs?.fontScale ?: 1f) {
                 App(
                     container,
                     openStream = { uri -> contentResolver.openInputStream(uri) },

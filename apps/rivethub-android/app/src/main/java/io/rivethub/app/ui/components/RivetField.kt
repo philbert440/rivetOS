@@ -20,7 +20,7 @@ import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.ui.unit.dp
-import io.rivethub.app.ui.theme.Radius
+import io.rivethub.app.ui.theme.Shape
 import io.rivethub.app.ui.theme.RivetTheme
 import io.rivethub.app.ui.theme.RivetType
 
@@ -38,9 +38,9 @@ fun RivetField(
     singleLine: Boolean = true,
     size: RivetFieldSize = RivetFieldSize.Settings,
 ) {
-    val colors = RivetTheme.colors
     var focused by remember { mutableStateOf(false) }
-    val shape = RoundedCornerShape(Radius.sm)
+    val colors = RivetTheme.colors
+    val shape = RoundedCornerShape(Shape.control)
     val style: TextStyle
     val padH: Int
     val padV: Int
@@ -65,7 +65,7 @@ fun RivetField(
             placeholderAlpha = 1f
         }
     }
-    val bg = if (size == RivetFieldSize.Rename) colors.panel2 else colors.panel
+    val bg = colors.panel
     BasicTextField(
         value = value,
         onValueChange = onValueChange,

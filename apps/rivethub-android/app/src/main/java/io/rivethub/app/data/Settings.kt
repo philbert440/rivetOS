@@ -5,12 +5,14 @@ import androidx.datastore.core.DataStore
 import androidx.datastore.preferences.core.Preferences
 import androidx.datastore.preferences.core.booleanPreferencesKey
 import androidx.datastore.preferences.core.edit
+import androidx.datastore.preferences.core.floatPreferencesKey
 import androidx.datastore.preferences.core.intPreferencesKey
 import androidx.datastore.preferences.core.stringPreferencesKey
 import androidx.datastore.preferences.core.stringSetPreferencesKey
 import androidx.datastore.preferences.preferencesDataStore
 import io.rivethub.app.gateway.wireJson
 import io.rivethub.app.plane.migrateLocalPrefs
+import io.rivethub.app.plane.nearestFontScale
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.map
@@ -31,6 +33,7 @@ data class Prefs(
     val onboarded: Boolean = false,
     val desktopUrl: String = "",
     val themeMode: String = "system",
+    val fontScale: Float = 1.0f,
     val sessionModes: Map<String, String> = emptyMap(),
     val archived: Set<String> = emptySet(),
     val titleOverrides: Map<String, String> = emptyMap(),
@@ -68,6 +71,7 @@ class Settings(context: Context) {
             onboarded = p[ONBOARDED] ?: false,
             desktopUrl = p[DESKTOP_URL] ?: "",
             themeMode = p[THEME] ?: "system",
+            fontScale = nearestFontScale(p[FONT_SCALE] ?: 1.0f),
             sessionModes = decodeMap(p[SESSION_MODES]),
             archived = p[ARCHIVED] ?: emptySet(),
             titleOverrides = decodeMap(p[TITLES]),
@@ -95,6 +99,7 @@ class Settings(context: Context) {
     suspend fun addExtraNode(url: String) = ds.edit { it[EXTRA_NODES] = (it[EXTRA_NODES] ?: emptySet()) + url.trim().trimEnd('/') }
     suspend fun removeExtraNode(url: String) = ds.edit { it[EXTRA_NODES] = (it[EXTRA_NODES] ?: emptySet()) - url }
 
+    suspend fun setFontScale(v: Float) = ds.edit { it[FONT_SCALE] = nearestFontScale(v) }
     suspend fun setThemeMode(mode: String) = ds.edit { it[THEME] = mode }
     suspend fun setCodeLineNumbers(v: Boolean) = ds.edit { it[CODE_LINE_NUMBERS] = v }
     suspend fun setCodeWrap(v: Boolean) = ds.edit { it[CODE_WRAP] = v }
@@ -172,6 +177,7 @@ class Settings(context: Context) {
         private val LAST_SEEN = stringPreferencesKey("lastSeen")
         private val ONBOARDED = booleanPreferencesKey("onboarded")
         private val DESKTOP_URL = stringPreferencesKey("desktopUrl")
+        private val FONT_SCALE = floatPreferencesKey("fontScale")
         private val THEME = stringPreferencesKey("themeMode")
         private val SESSION_MODES = stringPreferencesKey("sessionModes")
         private val ARCHIVED = stringSetPreferencesKey("archived")

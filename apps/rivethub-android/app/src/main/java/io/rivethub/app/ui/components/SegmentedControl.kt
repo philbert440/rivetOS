@@ -16,11 +16,11 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.unit.dp
-import io.rivethub.app.ui.theme.Radius
+import io.rivethub.app.ui.theme.Shape
 import io.rivethub.app.ui.theme.RivetTheme
 import io.rivethub.app.ui.theme.RivetType
 
-/** Desktop `segmented-control.tsx`: 1-dp `line` border, 4-dp radius, 2-dp padding/gap, 11-sp mono, active bg `panel2`. */
+/** Desktop `segmented-control.tsx`: 1-dp `line` border, pill radius, 2-dp padding/gap, 11-sp mono, active bg `panel2`. */
 @Composable
 fun SegmentedControl(
     options: List<String>,
@@ -29,7 +29,7 @@ fun SegmentedControl(
     modifier: Modifier = Modifier,
 ) {
     val colors = RivetTheme.colors
-    val shape = RoundedCornerShape(Radius.sm)
+    val shape = RoundedCornerShape(Shape.row)
     Row(
         modifier
             .clip(shape)
@@ -46,7 +46,7 @@ fun SegmentedControl(
                 color = if (active) colors.em else colors.inkDim,
                 style = RivetType.mono11,
                 modifier = Modifier
-                    .clip(RoundedCornerShape(Radius.sm))
+                    .clip(RoundedCornerShape(Shape.row))
                     .background(if (active) colors.panel2 else Color.Transparent)
                     .selectable(selected = active, role = Role.RadioButton, onClick = { onSelect(option) })
                     .padding(horizontal = 10.dp, vertical = 4.dp),
