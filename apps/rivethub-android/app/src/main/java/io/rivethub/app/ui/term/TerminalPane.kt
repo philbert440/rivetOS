@@ -16,8 +16,10 @@ import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
@@ -28,6 +30,7 @@ import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
@@ -38,6 +41,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.drawBehind
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.geometry.Offset
@@ -54,6 +58,7 @@ import androidx.compose.ui.input.pointer.util.VelocityTracker
 import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalSoftwareKeyboardController
+import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
@@ -67,6 +72,7 @@ import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.TextFieldValue
 import androidx.compose.ui.text.rememberTextMeasurer
 import androidx.compose.ui.text.style.TextDecoration
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.em
@@ -84,6 +90,9 @@ import io.rivethub.app.plane.termColsRows
 import io.rivethub.app.ui.components.DenBot
 import io.rivethub.app.ui.components.KeyToolbar
 import io.rivethub.app.ui.components.RivetButton
+import io.rivethub.app.ui.components.RivetButtonSize
+import io.rivethub.app.ui.components.RivetButtonVariant
+import io.rivethub.app.ui.components.TerminalRetryState
 import io.rivethub.app.ui.components.ToolbarKey
 import io.rivethub.app.ui.theme.LocalUiFontScale
 import io.rivethub.app.ui.theme.Dimens
@@ -111,11 +120,26 @@ fun TerminalPane(
     status: TermStatus,
     onResize: (Int, Int) -> Unit,
     onBytes: (ByteArray) -> Unit,
+    onBytesRaw: (ByteArray) -> Unit = onBytes,
     ctrl: Boolean,
     owner: TermOwner? = null,
     onClaim: () -> Unit = {},
+    error: String? = null,
+    remote: Boolean = false,
+    onRestart: () -> Unit = {},
+    onBackToChat: () -> Unit = {},
     modifier: Modifier = Modifier,
 ) {
+    val view = LocalView.current
+    DisposableEffect(view) {
+        val previous = view.keepScreenOn
+        view.keepScreenOn = true
+        onDispose { view.keepScreenOn = previous }
+    }
+    if (status == TermStatus.Closed && remote && !error.isNullOrBlank()) {
+        RemoteTermError(error, onRestart, onBackToChat, modifier)
+        return
+    }
     val colors = RivetTheme.colors
     val density = LocalDensity.current
     val uiFontScale = LocalUiFontScale.current
@@ -306,7 +330,13 @@ fun TerminalPane(
                 // still replays in order. Hardware/soft Backspace keys keep their key-event path.
                 val cur = next.text
                 val edit = imeEdit(imeSeen, cur, IME_SENTINEL)
-                if (edit.backspaces > 0) onBytes(TermKeys.backspaces(edit.backspaces))
+                // A replace (deletes and additions in one edit) must not spend ALT
+                // on the DEL burst. Pure deletes still go through onBytes.
+                val replacing = edit.backspaces > 0 && edit.added.isNotEmpty()
+                if (edit.backspaces > 0) {
+                    val burst = TermKeys.backspaces(edit.backspaces)
+                    if (replacing) onBytesRaw(burst) else onBytes(burst)
+                }
                 if (edit.added.isNotEmpty()) onBytes(TermKeys.ime(edit.added, ctrl))
                 if (cur.length > 256 || !cur.startsWith(IME_SENTINEL)) {
                     imeSeen = IME_SENTINEL
@@ -356,7 +386,8 @@ fun TerminalPane(
             TermStatus.Exited -> stringResource(R.string.term_status_exited)
             TermStatus.Closed -> stringResource(R.string.term_status_closed)
         }
-        if (status != TermStatus.Attached) {
+        // The attached label stays hidden. Exited is the ended bar, not this chip.
+        if (status != TermStatus.Attached && status != TermStatus.Exited) {
             Text(
                 label,
                 color = colors.inkDim,
@@ -438,15 +469,18 @@ fun TerminalKeyBar(
     onOpenInTerminal: () -> Unit,
     onDetach: () -> Unit,
     applicationCursor: Boolean = false,
+    alt: Boolean = false,
+    onAlt: () -> Unit = {},
     modifier: Modifier = Modifier,
 ) {
     var menu by remember { mutableStateOf(false) }
     val pasteCd = stringResource(R.string.term_paste)
     val menuCd = stringResource(R.string.cd_term_menu)
     val keys = listOf(
+        ToolbarKey.Sticky("ctrl", stringResource(R.string.term_ctrl)),
+        ToolbarKey.Sticky("alt", stringResource(R.string.term_alt)),
         ToolbarKey.Label("esc", stringResource(R.string.term_esc)),
         ToolbarKey.Label("tab", stringResource(R.string.term_tab)),
-        ToolbarKey.Sticky("ctrl", stringResource(R.string.term_ctrl)),
         ToolbarKey.Label("up", stringResource(R.string.term_up)),
         ToolbarKey.Label("down", stringResource(R.string.term_down)),
         ToolbarKey.Label("left", stringResource(R.string.term_left)),
@@ -454,15 +488,20 @@ fun TerminalKeyBar(
         ToolbarKey.Label("paste", pasteCd),
         ToolbarKey.IconAction("menu", R.drawable.lucide_ellipsis, menuCd),
     )
+    val latched = buildSet {
+        if (ctrl) add("ctrl")
+        if (alt) add("alt")
+    }
     Box(modifier.fillMaxWidth()) {
         KeyToolbar(
             keys = keys,
-            latched = if (ctrl) setOf("ctrl") else emptySet(),
+            latched = latched,
             onKey = { key ->
                 when (key.id) {
+                    "ctrl" -> onCtrl()
+                    "alt" -> onAlt()
                     "esc" -> onBytes(TermKeys.ESC)
                     "tab" -> onBytes(TermKeys.TAB)
-                    "ctrl" -> onCtrl()
                     "up" -> onBytes(TermKeys.up(applicationCursor))
                     "down" -> onBytes(TermKeys.down(applicationCursor))
                     "left" -> onBytes(TermKeys.left(applicationCursor))
@@ -507,6 +546,82 @@ fun TerminalKeyBar(
                     menu = false
                     onDetach()
                 },
+            )
+        }
+    }
+}
+
+/**
+ * Replaces the key row after the PTY exits. Panel surface, 1dp line on top.
+ */
+@Composable
+fun TermEndedBar(
+    onRestart: () -> Unit,
+    onBackToChat: () -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    val colors = RivetTheme.colors
+    Row(
+        modifier
+            .fillMaxWidth()
+            .background(colors.panel)
+            .navigationBarsPadding()
+            .drawBehind {
+                val y = Dimens.line.toPx() / 2f
+                drawLine(colors.line, Offset(0f, y), Offset(size.width, y), Dimens.line.toPx())
+            }
+            .padding(horizontal = Dimens.grid, vertical = Dimens.gridHalf),
+        horizontalArrangement = Arrangement.spacedBy(Dimens.grid),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Text(
+            stringResource(R.string.term_session_ended),
+            color = colors.ink,
+            style = RivetType.sm,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
+            modifier = Modifier.weight(1f),
+        )
+        RivetButton(
+            text = stringResource(R.string.term_restart),
+            onClick = onRestart,
+            size = RivetButtonSize.Sm,
+        )
+        RivetButton(
+            text = stringResource(R.string.term_back_to_chat),
+            onClick = onBackToChat,
+            variant = RivetButtonVariant.Outline,
+            size = RivetButtonSize.Sm,
+        )
+    }
+}
+
+@Composable
+private fun RemoteTermError(
+    message: String,
+    onRestart: () -> Unit,
+    onBackToChat: () -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    val colors = RivetTheme.colors
+    Column(
+        modifier
+            .fillMaxSize()
+            .background(colors.panel)
+            .navigationBarsPadding(),
+        horizontalAlignment = Alignment.CenterHorizontally,
+        verticalArrangement = Arrangement.Center,
+    ) {
+        TerminalRetryState(message)
+        Row(horizontalArrangement = Arrangement.spacedBy(Dimens.grid)) {
+            RivetButton(
+                text = stringResource(R.string.retry),
+                onClick = onRestart,
+            )
+            RivetButton(
+                text = stringResource(R.string.back),
+                onClick = onBackToChat,
+                variant = RivetButtonVariant.Outline,
             )
         }
     }

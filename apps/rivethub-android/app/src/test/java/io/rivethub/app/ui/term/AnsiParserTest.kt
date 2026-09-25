@@ -12,6 +12,33 @@ import org.junit.Test
  */
 class AnsiParserTest {
     @Test
+    fun `scrollback cap stays at or above the spec floor`() {
+        assertTrue(AnsiScreen.SCROLLBACK_LINES >= 4000)
+    }
+
+    @Test
+    fun `scrollback keeps the cap and drops the oldest line`() {
+        val rows = 5
+        val s = AnsiScreen(40, rows)
+        // CR+LF homes each marker at column 0. LF alone would pad the row.
+        val n = AnsiScreen.SCROLLBACK_LINES + 100
+        repeat(n) { i -> s.feedStr("L$i\r\n") }
+        val pushed = n - rows + 1
+        val dropped = pushed - AnsiScreen.SCROLLBACK_LINES
+        // Push p archives feed line p. The first `dropped` lines are gone.
+        val firstRetained = dropped
+        assertTrue(dropped > 0)
+        assertEquals(dropped, s.scrollbackDroppedTotal)
+        assertEquals(AnsiScreen.SCROLLBACK_LINES + rows, s.lineCount)
+        fun rowText(line: TermLine) = line.spans.joinToString("") { it.text }.trimEnd()
+        assertEquals("L$firstRetained", rowText(s.snapshot(0, 1).single()))
+        val live = s.snapshot(s.lineCount - rows, rows).map { rowText(it) }
+        // The final LF scrolls the newest marker up one row and leaves the bottom blank.
+        assertEquals("L${n - 1}", live[rows - 2])
+        assertEquals("", live[rows - 1])
+    }
+
+    @Test
     fun `DECSTBM IND at region bottom scrolls only the region`() {
         val s = AnsiScreen(20, 5)
         s.fillRows("ABCDE")

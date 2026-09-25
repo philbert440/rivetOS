@@ -116,6 +116,13 @@
     <string name="term_esc">Esc</string>
     <string name="term_tab">Tab</string>
     <string name="term_ctrl">Ctrl</string>
+    <string name="term_alt">ALT</string>
+    <string name="term_session_ended">Session ended.</string>
+    <string name="term_restart">Restart</string>
+    <string name="term_back_to_chat">Back to chat</string>
+    <string name="term_untitled">session</string>
+    <string name="retry">Retry</string>
+    <string name="back">Back</string>
     <string name="term_up">↑</string>
     <string name="term_down">↓</string>
     <string name="term_left">←</string>

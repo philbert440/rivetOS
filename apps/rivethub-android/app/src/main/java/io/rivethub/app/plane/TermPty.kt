@@ -96,6 +96,9 @@ object TermKeys {
 
     fun ctrl(ch: Char): ByteArray = byteArrayOf((ch.code and 0x1f).toByte())
 
+    /** ALT is an ESC prefix. Ctrl+ALT is ESC followed by the ctrl byte. */
+    fun alt(bytes: ByteArray): ByteArray = byteArrayOf(0x1b) + bytes
+
     fun arrow(dir: Char, applicationCursor: Boolean): ByteArray {
         val intro = if (applicationCursor) 'O' else '['
         return byteArrayOf(0x1b, intro.code.toByte(), dir.code.toByte())
