@@ -23,10 +23,12 @@ import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
+import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.drawBehind
 import androidx.compose.ui.geometry.Offset
@@ -293,12 +295,15 @@ fun HubDrawer(
  * with [HubDrawer]'s unified edge-swipe layer, which owns the right-bezel
  * open and the drag-back close (plane/DrawerSwipe.kt). The history button in
  * the session header opens it via the [content] opener. Row tap / `+ new`
- * close it; MainActivity switches the session.
+ * close it; MainActivity switches the session. [currentSessionKey] is the
+ * open chat's key; the pane highlights and scrolls to it each time the drawer
+ * starts opening (by button or by edge swipe — both move [state]).
  */
 @Composable
 fun HistoryDrawer(
     vm: HubViewModel,
     state: DrawerState,
+    currentSessionKey: String?,
     onOpenRow: (LocatedChatItem) -> Unit,
     onOpenChat: (AgentOpen) -> Unit,
     content: @Composable (openHistory: () -> Unit) -> Unit,
@@ -306,6 +311,10 @@ fun HistoryDrawer(
     val scope = rememberCoroutineScope()
     fun openHistory() { scope.launch { state.open() } }
     fun closeHistory() { scope.launch { state.close() } }
+    var openTick by remember { mutableIntStateOf(0) }
+    LaunchedEffect(state) {
+        snapshotFlow { state.targetValue }.collect { if (it == DrawerValue.Open) openTick += 1 }
+    }
     val colors = RivetTheme.colors
     CompositionLocalProvider(LocalLayoutDirection provides LayoutDirection.Rtl) {
         BoxWithConstraints(Modifier.fillMaxSize()) {
@@ -325,6 +334,8 @@ fun HistoryDrawer(
                         ) {
                             ConversationsPane(
                                 vm = vm,
+                                currentSessionKey = currentSessionKey,
+                                openTick = openTick,
                                 onOpenRow = { row ->
                                     closeHistory()
                                     onOpenRow(row)

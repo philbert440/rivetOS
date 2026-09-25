@@ -10,6 +10,7 @@ import androidx.datastore.preferences.core.stringPreferencesKey
 import androidx.datastore.preferences.core.stringSetPreferencesKey
 import androidx.datastore.preferences.preferencesDataStore
 import io.rivethub.app.gateway.wireJson
+import io.rivethub.app.plane.migrateLocalPrefs
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.map
@@ -129,6 +130,24 @@ class Settings(context: Context) {
     suspend fun setArchived(keys: Set<String>) = ds.edit { it[ARCHIVED] = keys }
     suspend fun archive(key: String) = ds.edit { it[ARCHIVED] = (it[ARCHIVED] ?: emptySet()) + key }
     suspend fun unarchive(key: String) = ds.edit { it[ARCHIVED] = (it[ARCHIVED] ?: emptySet()) - key }
+
+    /** Local-only list chrome (UX-SPEC §2): pin floats a row into the Pinned
+     *  section; hide drops it from the list. Neither touches the den. */
+    suspend fun pin(key: String) = ds.edit { it[PINNED] = (it[PINNED] ?: emptySet()) + key }
+    suspend fun unpin(key: String) = ds.edit { it[PINNED] = (it[PINNED] ?: emptySet()) - key }
+    suspend fun hide(key: String) = ds.edit { it[HIDDEN] = (it[HIDDEN] ?: emptySet()) + key }
+    suspend fun unhide(key: String) = ds.edit { it[HIDDEN] = (it[HIDDEN] ?: emptySet()) - key }
+
+    /** A session key moved (draft adopted, id rotated): carry its pin and
+     *  hide marks from [from] to [to] in ONE edit, so no reader ever sees one
+     *  set migrated and the other not (plane/ConversationIdentity.kt). */
+    suspend fun migrateKeys(from: String, to: String) = ds.edit {
+        val pinned = it[PINNED] ?: emptySet()
+        val hidden = it[HIDDEN] ?: emptySet()
+        val (nextPinned, nextHidden) = migrateLocalPrefs(pinned, hidden, from, to)
+        if (nextPinned != pinned) it[PINNED] = nextPinned
+        if (nextHidden != hidden) it[HIDDEN] = nextHidden
+    }
 
     suspend fun setTitleOverride(key: String, title: String) = ds.edit {
         val cur = decodeMap(it[TITLES])

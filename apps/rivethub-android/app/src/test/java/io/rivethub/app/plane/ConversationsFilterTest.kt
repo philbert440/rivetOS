@@ -69,6 +69,32 @@ class ConversationsFilterTest {
         assertEquals(0, filterConversations(items, ConversationFilter.All, emptySet(), "xyz").live.size)
     }
 
+    @Test fun `hidden rows drop out of both lists`() {
+        val items = listOf(loc("a", updatedAt = 3), loc("b", updatedAt = 2), loc("c", updatedAt = 1))
+        val lists = filterConversations(
+            items,
+            ConversationFilter.All,
+            archived = setOf("c"),
+            query = "",
+            hidden = setOf("b", "c"),
+        )
+        assertEquals(listOf("a"), lists.live.map { it.item.key })
+        assertEquals(emptyList<String>(), lists.archived.map { it.item.key })
+    }
+
+    @Test fun `hide matches the canonical session id and defaults to nothing hidden`() {
+        val row = LocatedChatItem(
+            item("abc", sessionId = "claude-code:abc"),
+            nodeId = "ct115",
+            nodeName = "ct115",
+            nodeDenUrl = "https://192.0.2.10:5174",
+        )
+        assertEquals(0, filterConversations(listOf(row), ConversationFilter.All, emptySet(), "", hidden = setOf("claude-code:abc")).live.size)
+        assertEquals(1, filterConversations(listOf(row), ConversationFilter.All, emptySet(), "").live.size)
+        assertEquals(true, isHidden(row.item, setOf("abc")))
+        assertEquals(false, isHidden(row.item, emptySet()))
+    }
+
     @Test fun `displayTitle prefers override`() {
         val it = item(uuid, title = "native")
         assertEquals("renamed", displayTitle(it, mapOf(uuid to "renamed")))

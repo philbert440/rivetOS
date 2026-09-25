@@ -20,6 +20,14 @@ fun isArchived(item: ChatItem, archived: Set<String>): Boolean {
     return sid != null && sid != item.key && sid in archived
 }
 
+/** Locally hidden (UX-SPEC §2 Hide): key or canonical session id in [hidden]. */
+fun isHidden(item: ChatItem, hidden: Set<String>): Boolean {
+    if (hidden.isEmpty()) return false
+    if (item.key in hidden) return true
+    val sid = item.sessionId
+    return sid != null && sid != item.key && sid in hidden
+}
+
 fun displayTitle(item: ChatItem, overrides: Map<String, String>): String {
     overrides[item.key]?.takeIf { it.isNotBlank() }?.let { return it }
     val sid = item.sessionId
@@ -39,6 +47,7 @@ data class ConversationLists(
  * [ConversationLists.live] and land in [ConversationLists.archived] (still
  * recency-ordered). A node filter matches both sides on node id/name.
  * Query matches display title, key, and harnessId (desktop ConversationsPane).
+ * Rows in [hidden] (local-only Hide; the den has no delete) drop out of both lists.
  */
 fun filterConversations(
     items: List<LocatedChatItem>,
@@ -46,6 +55,7 @@ fun filterConversations(
     archived: Set<String>,
     query: String,
     titleOverrides: Map<String, String> = emptyMap(),
+    hidden: Set<String> = emptySet(),
 ): ConversationLists {
     fun passesFilter(it: LocatedChatItem): Boolean = when (filter) {
         ConversationFilter.All -> true
@@ -56,6 +66,7 @@ fun filterConversations(
     val archivedRows = ArrayList<LocatedChatItem>()
     for (it in items) {
         if (!passesFilter(it)) continue
+        if (isHidden(it.item, hidden)) continue
         val title = displayTitle(it.item, titleOverrides)
         if (!conversationMatchesFilter(title, it.item.key, it.item.harnessId, query)) continue
         if (isArchived(it.item, archived)) archivedRows += it else live += it

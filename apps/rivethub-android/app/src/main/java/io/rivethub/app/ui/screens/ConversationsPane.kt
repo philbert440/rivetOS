@@ -20,6 +20,7 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.sizeIn
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.Snackbar
@@ -30,9 +31,11 @@ import androidx.compose.material3.pulltorefresh.PullToRefreshBox
 import androidx.compose.material3.pulltorefresh.PullToRefreshDefaults
 import androidx.compose.material3.pulltorefresh.rememberPullToRefreshState
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
@@ -44,24 +47,38 @@ import androidx.compose.ui.draw.drawBehind
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleEventObserver
+import androidx.lifecycle.compose.LocalLifecycleOwner
 import io.rivethub.app.R
 import io.rivethub.app.plane.AgentAction
 import io.rivethub.app.plane.AgentOpen
-import io.rivethub.app.plane.ChatItemKind
+import io.rivethub.app.plane.ConversationAction
 import io.rivethub.app.plane.ConversationEmptyKind
 import io.rivethub.app.plane.EnrollErrorKind
 import io.rivethub.app.plane.LocatedChatItem
 import io.rivethub.app.plane.NewConversationAction
+import io.rivethub.app.plane.SectionLabels
+import io.rivethub.app.plane.activeIndexIn
+import io.rivethub.app.plane.activeRowIn
 import io.rivethub.app.plane.accentForConversation
+import io.rivethub.app.plane.conversationActions
 import io.rivethub.app.plane.conversationEmptyKind
+import io.rivethub.app.plane.dayKeyOf
 import io.rivethub.app.plane.discoveringLineVisible
 import io.rivethub.app.plane.displayTitle
 import io.rivethub.app.plane.filterConversations
 import io.rivethub.app.plane.isActiveStatus
+import io.rivethub.app.plane.isArchived
+import io.rivethub.app.plane.isDraftRow
+import io.rivethub.app.plane.isPinnedItem
 import io.rivethub.app.plane.newConversationAction
 import io.rivethub.app.plane.paneRows
 import io.rivethub.app.plane.rowPillText
+import io.rivethub.app.plane.sectionRows
+import io.rivethub.app.plane.sectionsKey
 import io.rivethub.app.plane.showConversationFilter
 import io.rivethub.app.ui.HubViewModel
 import io.rivethub.app.ui.components.ConversationRowChrome
@@ -70,12 +87,16 @@ import io.rivethub.app.ui.components.RivetConfirmDialog
 import io.rivethub.app.ui.components.RivetField
 import io.rivethub.app.ui.components.RivetFieldSize
 import io.rivethub.app.ui.components.RivetModalSheet
+import io.rivethub.app.ui.components.SectionHeader
 import io.rivethub.app.ui.components.SheetTextRow
 import io.rivethub.app.ui.components.rivetHexColor
 import io.rivethub.app.ui.theme.Dimens
 import io.rivethub.app.ui.theme.Radius
 import io.rivethub.app.ui.theme.RivetTheme
 import io.rivethub.app.ui.theme.RivetType
+import java.time.ZoneId
+import java.time.format.DateTimeFormatter
+import java.util.Locale
 import kotlinx.coroutines.launch
 
 /**
@@ -86,10 +107,22 @@ import kotlinx.coroutines.launch
  * is not an app screen anymore, so the full-screen ConversationsScreen host
  * was deleted (the file is emptied; this pane is its surviving content).
  * The caller bounds the height (the drawer sheet's own size).
+ *
+ * U2a (UX-SPEC §2 item 2): live rows are sectioned (Pinned · Today ·
+ * Yesterday · per day, plane/ConversationSections.kt) and drawn as pills; the
+ * long-press menu comes from plane/ConversationMenu.kt.
+ *
+ * Host contract: [currentSessionKey] is the open chat's session key (a draft
+ * id included; native and canonical ids both resolve to the row), or null
+ * when no chat is open. [openTick] goes up each time the drawer opens. The
+ * active row is highlighted, scrolled into view on every open, and the
+ * archived block expands when the open conversation is archived.
  */
 @Composable
 fun ConversationsPane(
     vm: HubViewModel,
+    currentSessionKey: String?,
+    openTick: Int,
     onOpenRow: (LocatedChatItem) -> Unit,
     onOpenChat: (AgentOpen) -> Unit,
     modifier: Modifier = Modifier,
@@ -102,11 +135,41 @@ fun ConversationsPane(
         archived = st.archived,
         query = st.query,
         titleOverrides = st.titleOverrides,
+        hidden = st.hidden,
     )
+    val labels = rememberSectionLabels()
+    // Clock and zone are sampled in composition. Two things recompose the
+    // pane without a timer: a drawer open (openTick, a new parameter value)
+    // and ON_RESUME. The resume counter is state owned by this body and its
+    // value is read right here (resumeTick.intValue feeds sectionsKey), so
+    // the snapshot read is recorded on the pane's own restart group and a
+    // resume invalidates the pane. Every open, resume, new local day or zone
+    // change then yields a new key and the sections are rebuilt.
+    val lifecycleOwner = LocalLifecycleOwner.current
+    val resumeTick = remember { mutableIntStateOf(0) }
+    DisposableEffect(lifecycleOwner) {
+        val observer = LifecycleEventObserver { _, event ->
+            if (event == Lifecycle.Event.ON_RESUME) resumeTick.intValue += 1
+        }
+        lifecycleOwner.lifecycle.addObserver(observer)
+        onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
+    }
+    val zone = ZoneId.systemDefault()
+    val nowMs = System.currentTimeMillis()
+    val today = dayKeyOf(nowMs, zone).date
+    val sectionsCacheKey = sectionsKey(openTick, resumeTick.intValue, zone.id, today)
+    val sections = remember(lists.live, st.pinned, labels, sectionsCacheKey) {
+        sectionRows(lists.live, st.pinned, nowMs, zone, labels)
+    }
+    val active = activeRowIn(lists.live, lists.archived, currentSessionKey)
+    val activeKey = active?.key
+    val listState = rememberLazyListState()
     var archivedOpen by remember { mutableStateOf(false) }
     var menuTarget by remember { mutableStateOf<LocatedChatItem?>(null) }
     var renameTarget by remember { mutableStateOf<LocatedChatItem?>(null) }
     var discardTarget by remember { mutableStateOf<LocatedChatItem?>(null) }
+    var hideTarget by remember { mutableStateOf<LocatedChatItem?>(null) }
+    var moveTarget by remember { mutableStateOf<LocatedChatItem?>(null) }
     var renameText by remember { mutableStateOf("") }
     var pickerOpen by remember { mutableStateOf(false) }
     val snackbar = remember { SnackbarHostState() }
@@ -119,6 +182,24 @@ fun ConversationsPane(
         lists.archived.size,
         st.query,
     )
+    val leadingItems = if (empty == ConversationEmptyKind.None) 0 else 1
+    // An archived open conversation is only reachable with the block open.
+    LaunchedEffect(openTick, activeKey) {
+        if (active?.archived == true) archivedOpen = true
+    }
+    // Scroll the open conversation into view on every drawer open, and when
+    // its row first lands. The archived case waits for the block to expand
+    // (the key flips once archivedOpen is applied). Event driven, no timer.
+    val archivedReady = active?.archived == true && archivedOpen
+    LaunchedEffect(openTick, activeKey, archivedReady) {
+        val index = activeIndexIn(
+            sections,
+            activeKey,
+            archived = if (archivedOpen) lists.archived else emptyList(),
+            leading = leadingItems,
+        )
+        index?.let { listState.scrollToItem(it) }
+    }
     val ptr = rememberPullToRefreshState()
     // D2-8: no circular spinner floats over the rows on auto-refresh — the pull
     // indicator only answers a user pull; progress is the `discovering… n/m` line.
@@ -204,7 +285,7 @@ fun ConversationsPane(
                         )
                     },
                 ) {
-                    LazyColumn(Modifier.fillMaxSize().padding(horizontal = 8.dp)) {
+                    LazyColumn(state = listState, modifier = Modifier.fillMaxSize().padding(horizontal = 8.dp)) {
                         when (empty) {
                             ConversationEmptyKind.NoConversations -> item {
                                 EmptyLine(stringResource(R.string.empty_conversations))
@@ -217,21 +298,32 @@ fun ConversationsPane(
                             }
                             ConversationEmptyKind.None -> Unit
                         }
-                        items(paneRows(lists.live), key = { it.item.key }) { row ->
-                            val title = displayTitle(row.item, st.titleOverrides)
-                            val agentId = vm.agentForSession(row.item.key)
-                            val preset = st.agents.find { it.agentId == agentId }?.color
-                            val hex = accentForConversation(preset, row.item.harnessId, row.item.command)
-                            ConversationRowChrome(
-                                title = title,
-                                accent = rivetHexColor(hex),
-                                onOpen = { onOpenRow(row) },
-                                onArchive = { vm.archive(row.item.key) },
-                                onLong = { menuTarget = row },
-                                rowKey = row.item.key,
-                                status = rowStatus(row),
-                                harness = rowPillText(row.item.model, null, row.item.harnessId),
-                            )
+                        sections.forEach { section ->
+                            item(key = "sec-${section.kind}-${section.label}") {
+                                SectionHeader(
+                                    section.label,
+                                    Modifier.padding(start = 14.dp, end = 14.dp, top = 10.dp, bottom = 4.dp),
+                                )
+                            }
+                            items(paneRows(section.rows), key = { it.item.key }) { row ->
+                                val title = displayTitle(row.item, st.titleOverrides)
+                                val agentId = vm.agentForSession(row.item.key)
+                                val preset = st.agents.find { it.agentId == agentId }?.color
+                                val hex = accentForConversation(preset, row.item.harnessId, row.item.command)
+                                ConversationRowChrome(
+                                    title = title,
+                                    accent = rivetHexColor(hex),
+                                    onOpen = { onOpenRow(row) },
+                                    onArchive = { vm.archive(row.item.key) },
+                                    onLong = { menuTarget = row },
+                                    rowKey = row.item.key,
+                                    active = row.item.key == activeKey,
+                                    status = rowStatus(row),
+                                    harness = rowPillText(row.item.model, null, row.item.harnessId),
+                                    pill = true,
+                                    pinned = isPinnedItem(row.item, st.pinned),
+                                )
+                            }
                         }
                         if (archivedOpen) {
                             items(paneRows(lists.archived), key = { "arch-${it.item.key}" }) { row ->
@@ -246,8 +338,11 @@ fun ConversationsPane(
                                     onArchive = { vm.unarchive(row.item.key) },
                                     onLong = { menuTarget = row },
                                     rowKey = "arch-${row.item.key}",
+                                    active = row.item.key == activeKey,
                                     archived = true,
                                     harness = rowPillText(row.item.model, null, row.item.harnessId),
+                                    pill = true,
+                                    pinned = isPinnedItem(row.item, st.pinned),
                                 )
                             }
                         }
@@ -315,24 +410,100 @@ fun ConversationsPane(
     }
 
     menuTarget?.let { target ->
+        val key = target.item.key
+        val actions = conversationActions(
+            pinned = isPinnedItem(target.item, st.pinned),
+            archived = isArchived(target.item, st.archived),
+            draft = isDraftRow(target.item, st.agents.mapNotNull { it.pointerSessionId }),
+            agentCount = st.agents.size,
+        )
         ConversationMenuSheet(
-            target = target,
             title = displayTitle(target.item, st.titleOverrides),
-            archived = target.item.key in st.archived,
+            actions = actions,
             onDismiss = { menuTarget = null },
-            onRename = {
-                renameText = displayTitle(target.item, st.titleOverrides)
-                renameTarget = target
+            onAction = { action ->
                 menuTarget = null
+                when (action) {
+                    ConversationAction.Pin -> vm.pin(key)
+                    ConversationAction.Unpin -> {
+                        vm.unpin(key)
+                        target.item.sessionId?.takeIf { it != key }?.let(vm::unpin)
+                    }
+                    ConversationAction.Rename -> {
+                        renameText = displayTitle(target.item, st.titleOverrides)
+                        renameTarget = target
+                    }
+                    ConversationAction.MoveToAgent -> moveTarget = target
+                    ConversationAction.Archive -> vm.archive(key)
+                    ConversationAction.Unarchive -> {
+                        vm.unarchive(key)
+                        target.item.sessionId?.takeIf { it != key }?.let(vm::unarchive)
+                    }
+                    ConversationAction.Hide -> hideTarget = target
+                    ConversationAction.DiscardDraft -> discardTarget = target
+                }
             },
-            onArchive = {
-                if (target.item.key in st.archived) vm.unarchive(target.item.key) else vm.archive(target.item.key)
-                menuTarget = null
+        )
+    }
+
+    moveTarget?.let { target ->
+        val current = vm.agentForSession(target.item.key)
+        RivetModalSheet(onDismiss = { moveTarget = null }) {
+            Text(
+                stringResource(R.string.move_to_agent_title),
+                color = colors.inkDim,
+                style = RivetType.mono10,
+                modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp),
+            )
+            st.agents.forEach { agent ->
+                Row(
+                    Modifier
+                        .fillMaxWidth()
+                        .sizeIn(minHeight = 44.dp)
+                        .clip(RoundedCornerShape(Radius.sm))
+                        .clickable(role = Role.Button) {
+                            moveTarget = null
+                            vm.moveToAgent(target.item.key, agent.agentId, isOpen = target.item.key == activeKey)
+                        }
+                        .padding(horizontal = 8.dp, vertical = 6.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                ) {
+                    Box(
+                        Modifier
+                            .size(8.dp)
+                            .clip(CircleShape)
+                            .background(rivetHexColor(accentForConversation(agent.color, agent.harnessId, null))),
+                    )
+                    Text(
+                        agent.name,
+                        color = if (agent.agentId == current) colors.em else colors.ink,
+                        style = RivetType.sm,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                        modifier = Modifier.weight(1f),
+                    )
+                    Text(
+                        agent.nodeName,
+                        color = colors.inkDim,
+                        style = RivetType.mono10,
+                        maxLines = 1,
+                    )
+                }
+            }
+        }
+    }
+
+    hideTarget?.let { target ->
+        RivetConfirmDialog(
+            message = stringResource(R.string.hide_conversation_confirm),
+            confirmLabel = stringResource(R.string.hide_conversation),
+            cancelLabel = stringResource(R.string.action_cancel),
+            onConfirm = {
+                vm.hide(target.item.key)
+                hideTarget = null
             },
-            onDiscard = {
-                discardTarget = target
-                menuTarget = null
-            },
+            onDismiss = { hideTarget = null },
         )
     }
 
@@ -390,27 +561,55 @@ fun ConversationsPane(
 
 @Composable
 private fun ConversationMenuSheet(
-    target: LocatedChatItem,
     title: String,
-    archived: Boolean,
+    actions: List<ConversationAction>,
     onDismiss: () -> Unit,
-    onRename: () -> Unit,
-    onArchive: () -> Unit,
-    onDiscard: () -> Unit,
+    onAction: (ConversationAction) -> Unit,
 ) {
     val colors = RivetTheme.colors
-    val draft = target.item.kind == ChatItemKind.DRAFT && !target.item.pin
     RivetModalSheet(onDismiss = onDismiss) {
-        Text(title, color = colors.em, style = RivetType.sm, modifier = Modifier.padding(8.dp), maxLines = 1)
-        SheetTextRow(stringResource(R.string.action_rename), colors.ink, onRename)
-        SheetTextRow(
-            stringResource(if (archived) R.string.action_unarchive else R.string.action_archive),
-            colors.ink,
-            onArchive,
+        Text(
+            title,
+            color = colors.em,
+            style = RivetType.sm,
+            modifier = Modifier.padding(8.dp),
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
         )
-        if (draft) {
-            SheetTextRow(stringResource(R.string.action_discard), colors.red, onDiscard)
+        actions.forEach { action ->
+            val label = when (action) {
+                ConversationAction.Pin -> R.string.pin
+                ConversationAction.Unpin -> R.string.unpin
+                ConversationAction.Rename -> R.string.action_rename
+                ConversationAction.MoveToAgent -> R.string.move_to_agent
+                ConversationAction.Archive -> R.string.action_archive
+                ConversationAction.Unarchive -> R.string.action_unarchive
+                ConversationAction.Hide -> R.string.hide_conversation
+                ConversationAction.DiscardDraft -> R.string.action_discard
+            }
+            val danger = action == ConversationAction.DiscardDraft
+            SheetTextRow(stringResource(label), if (danger) colors.red else colors.ink) { onAction(action) }
         }
+    }
+}
+
+/** Header labels + day formatters, rebuilt only when the locale changes. */
+@Composable
+private fun rememberSectionLabels(): SectionLabels {
+    val pinned = stringResource(R.string.section_pinned)
+    val today = stringResource(R.string.section_today)
+    val yesterday = stringResource(R.string.section_yesterday)
+    val dayPattern = stringResource(R.string.section_day_pattern)
+    val dayYearPattern = stringResource(R.string.section_day_year_pattern)
+    val locale = Locale.getDefault()
+    return remember(pinned, today, yesterday, dayPattern, dayYearPattern, locale) {
+        SectionLabels(
+            pinned = pinned,
+            today = today,
+            yesterday = yesterday,
+            dayFormat = DateTimeFormatter.ofPattern(dayPattern, locale),
+            dayWithYearFormat = DateTimeFormatter.ofPattern(dayYearPattern, locale),
+        )
     }
 }
 
