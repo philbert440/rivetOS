@@ -25,6 +25,36 @@ keeps Settings + the drawer. `ConversationsScreen.kt` is emptied (delete list); 
 lives in `ui/screens/ConversationsPane.kt`, hosted by `HistoryDrawer`. Grok-Bot screens/VMs are gone from the tree
 (removed in the M3b commit).
 
+## Clean-room (UX program 2026-09-24)
+
+This app rebuilds the RikkaHub-era chat/terminal UX from `docs/UX-SPEC.md` only. The retired
+`apps/rivet-android` tree is AGPL and is a behavioural reference for the orchestrator, never for
+builders. `NoAgplLineageTest` is the guard.
+
+**Builder rules**
+
+- Never open `apps/rivet-android`, nor any `com.github.rikkahub`, `hugeicons`, `jlatexmath`, or
+  `me.rerere` source.
+- Only permissive dependencies (Apache-2.0 / MIT / BSD / OFL). Allowed additions in this program:
+  `org.jetbrains:markdown`, Coil, Termux `terminal-view` / `terminal-emulator` (Apache-2.0) if ever
+  needed.
+- Forbidden: any `com.github.rikkahub:*`, `hugeicons-compose`, the jlatexmath fork.
+- Every PR body states "built from docs/UX-SPEC.md only".
+- Never name a resource, colour or symbol `highlight_*` (it is a lineage token).
+
+**Reviewer checklist**
+
+- `NoAgplLineageTest` green.
+- Lineage grep of the diff for the token list is empty outside `NoAgplLineageTest`, this section and the
+  provenance header of `docs/UX-SPEC.md` (they name the markers they forbid). Product sources and Gradle
+  coordinates must not contain them.
+- No new Gradle coordinate outside the allowed licences.
+- New user-visible strings are original wording (reviewer may compare against the retired tree,
+  builder may not).
+
+**Plan pointer**: `/rivet-shared/plans/rivethub-android-rikkahub-ux-2026-09-24.md`. The slice table
+lives there.
+
 ## Where this tree came from (slice M1a, 2026-09-03)
 
 `git mv` of `apps/rivet-bots-android` (the Grok-Bot-style client, package `dev.rivetos.bots`) with the
@@ -85,6 +115,18 @@ pointer, written on every chat open; drafts never written), `expFiles` / `expTas
 not required; their setters are gone.
 
 ## Design system
+
+U4 fenced code (built from `docs/UX-SPEC.md` only): `Radius.sm` block with a `panel`
+header (mono 11sp language, Copy, Lucide download/Save; 1dp `line` bottom), then
+`codeBg` code and a fold/expand footer. `plane/CodeHighlight.kt` supplies contiguous
+syntax spans: Keyword → `em`, String → `warn`, Comment → `inkDim`, Number → `link`,
+Type → bold `ink`, Plain/Punct → `ink`. No syntax dependency; unknown languages stay
+plain. `CODE_FOLD_AFTER_LINES = 10` in `plane/CodeFold.kt`; expansion is remembered
+for the block's composition lifetime. DataStore `codeLineNumbers` / `codeWrap`
+(default false) control the right-aligned mono gutter and wrap vs horizontal scroll,
+including live chat. Wiki topics (`MemoryTopicScreen`) and the gallery render code
+blocks with default prefs (line numbers and wrap off). Copy and Save always use the full original code; Save uses
+CreateDocument and UTF-8 output on IO, with success/failure toast.
 
 Every visual decision traces to a desktop file under `apps/rivethub-web` (`theme.css`,
 `sidebar.tsx`, `agents-section.tsx`, `node-switcher.tsx`, `pages/chat.tsx` ConversationsPane,
@@ -230,8 +272,9 @@ is the detach.
 - Build host: the fleet's Android build box (JDK 21 + SDK 37 + warm Gradle cache) — host names and
   paths are ops notes in Rivet's memory, not here. `./gradlew :app:assembleDebug :app:testDebugUnitTest`.
   Full-suite test counts only — a `--tests` filter can match nothing and still print green; CI
-  (`.github/workflows/android.yml`) enforces a floor of 532 (codex harness wiring: +6
-  `@Test` on the 526-floor tree; FLOOR = estimated real count − 1).
+  (`.github/workflows/android.yml`) enforces a floor of 572 (ux-u0: +2 `@Test` on the 571-test tree;
+  FLOOR = real count − 1).
+- CI `FLOOR` in `.github/workflows/android.yml` = real full-suite count − 1; bump it in every PR that adds tests.
 - Nx targets in `project.json`: `check` → `:app:testDebugUnitTest`, `apk` → `:app:assembleDebug`,
   `verify` → dependsOn check+apk (command `true`), `lint-android` → `:app:lintDebug`. There are no
   nx `build` / `test` / `lint` targets on purpose — Gradle owns those, and the SDK-less monorepo
