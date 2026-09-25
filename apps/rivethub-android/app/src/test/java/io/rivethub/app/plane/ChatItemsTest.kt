@@ -295,4 +295,21 @@ class ChatItemsTest {
         assertNull(findChatItem(items, "nope"))
         assertNull(findChatItem(items, null))
     }
+
+    @Test fun `createdAt rides along and is 0 when unparsable`() {
+        val good = HarnessSessionSummary(
+            sessionId = "claude-code:$uuidA",
+            harnessId = "claude-code",
+            createdAt = "2026-08-08T00:00:00.000Z",
+            updatedAt = "",
+        )
+        val bad = good.copy(sessionId = "claude-code:$uuidB", createdAt = "yesterday-ish")
+        val items = chatItems(mapOf("claude-code" to Result.success(listOf(good, bad))), emptyList())
+        val byKey = items.associateBy { it.key }
+        assertEquals(java.time.Instant.parse("2026-08-08T00:00:00Z").toEpochMilli(), byKey.getValue("claude-code:$uuidA").createdAt)
+        assertEquals(0L, byKey.getValue("claude-code:$uuidA").updatedAt)
+        assertEquals(0L, byKey.getValue("claude-code:$uuidB").createdAt)
+        val draft = chatItems(emptyMap(), emptyList(), listOf(uuidC), mapOf(uuidC to 42L)).single()
+        assertEquals(42L, draft.createdAt)
+    }
 }

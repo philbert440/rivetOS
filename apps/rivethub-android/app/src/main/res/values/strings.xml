@@ -234,4 +234,19 @@
     <string name="action_history">History</string>
     <string name="rename_needs_turns">Send a message before renaming this conversation</string>
     <string name="cd_conversation_title">Conversation title</string>
+    <!-- U2a conversation list: sections, pill rows, long-press menu -->
+    <string name="section_pinned">Pinned</string>
+    <string name="section_today">Today</string>
+    <string name="section_yesterday">Yesterday</string>
+    <!-- java.time DateTimeFormatter patterns for older day headers (this year / an earlier year).
+         Not prose: a translation must stay a valid pattern or the drawer throws on first draw. -->
+    <string name="section_day_pattern">EEE d MMM</string>
+    <string name="section_day_year_pattern">d MMM yyyy</string>
+    <string name="pin">Pin to top</string>
+    <string name="unpin">Unpin</string>
+    <string name="cd_pinned">pinned</string>
+    <string name="move_to_agent">Move to agent…</string>
+    <string name="move_to_agent_title">Hand this conversation to</string>
+    <string name="hide_conversation">Hide</string>
+    <string name="hide_conversation_confirm">Hide this conversation from the list? It stays on the node.</string>
 </resources>
