@@ -329,7 +329,7 @@ export function describePresetStoreContract(contract: PresetStoreContract): void
       await store.update(c.id, { sortOrder: 2 })
       expect((await store.list()).map((p) => p.name)).toEqual(['D', 'A', 'C', 'B'])
       expect((await store.list({ node: 'ct115' })).map((p) => p.name)).toEqual(['D', 'A', 'C', 'B'])
-      expect(b.sortOrder).toBeUndefined()
+      expect((await store.get(b.id))?.sortOrder).toBeUndefined()
     })
 
     it('clears sortOrder with null and keeps it across unrelated patches', async () => {
@@ -346,7 +346,7 @@ export function describePresetStoreContract(contract: PresetStoreContract): void
       expect(cleared?.sortOrder).toBeUndefined()
       expect((await store.get(second.id))?.sortOrder).toBeUndefined()
       expect((await store.list()).map((p) => p.name)).toEqual(['First', 'Second'])
-      expect(first.sortOrder).toBeUndefined()
+      expect((await store.get(first.id))?.sortOrder).toBeUndefined()
     })
   })
 }

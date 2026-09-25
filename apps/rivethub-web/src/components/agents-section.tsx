@@ -8,7 +8,7 @@
  * RivetGateway on an https base cannot authenticate from the desktop shell.
  */
 
-import { useCallback, useEffect, useRef, useState, type JSX } from 'react'
+import { Fragment, useCallback, useEffect, useRef, useState, type JSX } from 'react'
 import { useMutation, useQueries, useQuery, useQueryClient } from '@tanstack/react-query'
 import { useNavigate } from '@tanstack/react-router'
 import { Bot, ChevronDown, ChevronRight, Pencil, Plus, RotateCcw, Trash2, X } from 'lucide-react'
@@ -787,9 +787,11 @@ function AgentRow({
         />
       )}
       <button
+        id={`agent-row-${agent.id}`}
         onClick={onOpen}
         disabled={!nodeKnown}
         aria-current={current ? 'true' : undefined}
+        aria-keyshortcuts="Alt+ArrowUp Alt+ArrowDown"
         className="flex min-w-0 flex-1 items-center gap-2 text-left disabled:opacity-50"
         title={current ? `${rowTitle} (current)` : rowTitle}
       >
@@ -841,6 +843,28 @@ function AgentRow({
 
 const mutationError = (err: unknown): string =>
   err instanceof Error ? err.message : 'request failed'
+
+function orderNodeLabel(
+  agent: Pick<RosterAgent, 'node' | 'sourceNodeBaseUrl' | 'listedBaseUrl'>,
+): string {
+  const target = agentUpdateTarget(agent).trim()
+  const host = agent.sourceNodeBaseUrl.trim()
+  // agentUpdateTarget sends the PATCH to listedBaseUrl when the hosting URL is
+  // empty. Name that den, not the unresolved node name.
+  if (target && target !== host) return urlLabel(target)
+  const name = agent.node?.trim()
+  if (name) return name
+  return target ? urlLabel(target) : 'node unknown'
+}
+
+function storedSortKey(agents: readonly { id: string; sortOrder?: number }[]): string {
+  return agents.map((agent) => `${agent.id}\0${agent.sortOrder ?? ''}`).join('\n')
+}
+
+/** `null` clears the order; the echoed preset then omits `sortOrder`. */
+function sortOrderEcho(sent: number | null): number | undefined {
+  return sent === null ? undefined : sent
+}
 
 export function AgentsSection(props: { compact?: boolean }): JSX.Element {
   const compact = props.compact ?? false
@@ -916,33 +940,85 @@ export function AgentsSection(props: { compact?: boolean }): JSX.Element {
       roster: rosterForResolve,
     }),
   )
-  // Optimistic order while a reorder saves; cleared once the refetch lands.
+  // Optimistic order while a reorder saves. Cleared only when this save is
+  // still the latest request; a queued save keeps the order on screen.
   const [pendingOrder, setPendingOrder] = useState<string[] | null>(null)
   const agents = applyPendingOrder(storedAgents, pendingOrder)
   const isLoading = nodeQueries.isLoading
 
+  // Latest sortOrder this client knows. Re-seeded from the query whenever no
+  // save is pending, then updated from each successful PATCH so the next save
+  // does not diff a stale snapshot. An entry of `NaN` means unknown → always write.
+  const knownSortOrder = useRef<Map<string, number | undefined>>(new Map())
+  const reorderSeq = useRef(0)
+  const savesPending = useRef(0)
+  const seededFrom = useRef<string | null>(null)
+  const focusRowId = useRef<string | null>(null)
+  const storedKey = storedSortKey(storedAgents)
+  if (savesPending.current === 0 && seededFrom.current !== storedKey) {
+    seededFrom.current = storedKey
+    knownSortOrder.current = new Map(storedAgents.map((agent) => [agent.id, agent.sortOrder]))
+  }
+
+  useEffect(() => {
+    const id = focusRowId.current
+    if (!id || pendingOrder === null) return
+    document.getElementById(`agent-row-${id}`)?.focus()
+    focusRowId.current = null
+  }, [pendingOrder])
+
   const [dragId, setDragId] = useState<string | null>(null)
   const [dropIndex, setDropIndex] = useState<number | null>(null)
   const reorderMutation = useMutation({
-    mutationFn: async (orderedIds: string[]) => {
-      const writes = sortOrderWrites(storedAgents, orderedIds)
-      await Promise.all(
-        writes.map(async ({ agent, sortOrder }) =>
-          (await gatewayFor(agentUpdateTarget(agent))).agentUpdate(agent.id, { sortOrder }),
-        ),
+    scope: { id: 'agent-order' },
+    mutationFn: async ({ ids }: { ids: string[]; seq: number }) => {
+      const writes = sortOrderWrites(storedAgents, ids, knownSortOrder.current)
+      const settled = await Promise.allSettled(
+        writes.map(async ({ agent, sortOrder }) => {
+          const nodeLabel = orderNodeLabel(agent)
+          let updated: { agent: { sortOrder?: number } }
+          try {
+            updated = await (
+              await gatewayFor(agentUpdateTarget(agent))
+            ).agentUpdate(agent.id, { sortOrder })
+          } catch (err) {
+            knownSortOrder.current.set(agent.id, Number.NaN)
+            const message = err instanceof Error ? err.message : 'request failed'
+            throw new Error(`${nodeLabel}: ${message}`, { cause: err })
+          }
+          const echoed = updated.agent.sortOrder
+          if (echoed !== sortOrderEcho(sortOrder)) {
+            knownSortOrder.current.set(agent.id, Number.NaN)
+            throw new Error(`${nodeLabel} does not support agent ordering (update that den)`)
+          }
+          knownSortOrder.current.set(agent.id, echoed)
+        }),
       )
+      const failed = settled.flatMap((result) =>
+        result.status === 'rejected'
+          ? [result.reason instanceof Error ? result.reason.message : 'request failed']
+          : [],
+      )
+      if (failed.length > 0) throw new Error(failed.join('; '))
     },
-    onSettled: async () => {
-      await queryClient.invalidateQueries({ queryKey: ['agents-all-nodes'] })
-      setPendingOrder(null)
+    onSettled: async (_data, _err, variables) => {
+      try {
+        await queryClient.invalidateQueries({ queryKey: ['agents-all-nodes'] })
+      } finally {
+        savesPending.current -= 1
+        if (variables.seq === reorderSeq.current) setPendingOrder(null)
+      }
     },
   })
-  const reorder = (id: string, toIndex: number): void => {
+  const reorder = (id: string, toIndex: number, restoreFocus = false): void => {
     const current = agents.map((agent) => agent.id)
     const next = moveAgentId(current, id, toIndex)
     if (next.every((value, i) => value === current[i])) return
+    if (restoreFocus) focusRowId.current = id
+    const seq = ++reorderSeq.current
+    savesPending.current += 1
     setPendingOrder(next)
-    reorderMutation.mutate(next)
+    reorderMutation.mutate({ ids: next, seq })
   }
   const endDrag = (): void => {
     setDragId(null)
@@ -1258,46 +1334,8 @@ export function AgentsSection(props: { compact?: boolean }): JSX.Element {
           {!isLoading && agents.length === 0 && !creating && !duplicating && !compact && (
             <div className="px-2 text-xs text-ink-dim">no agents yet</div>
           )}
-          {agents.map((agent, index) => (
-            <div
-              key={agent.id}
-              draggable={!compact}
-              aria-keyshortcuts={compact ? undefined : 'Alt+ArrowUp Alt+ArrowDown'}
-              title={compact ? undefined : 'drag or Alt+↑/↓ to reorder'}
-              onDragStart={(e) => {
-                setDragId(agent.id)
-                e.dataTransfer.effectAllowed = 'move'
-                e.dataTransfer.setData('text/plain', agent.id)
-              }}
-              onDragOver={(e) => {
-                if (dragId === null) return
-                e.preventDefault()
-                e.dataTransfer.dropEffect = 'move'
-                const rect = e.currentTarget.getBoundingClientRect()
-                setDropIndex(e.clientY > rect.top + rect.height / 2 ? index + 1 : index)
-              }}
-              onDrop={(e) => {
-                e.preventDefault()
-                if (dragId !== null && dropIndex !== null) {
-                  const from = agents.findIndex((a) => a.id === dragId)
-                  reorder(dragId, dropIndex > from ? dropIndex - 1 : dropIndex)
-                }
-                endDrag()
-              }}
-              onDragEnd={endDrag}
-              onKeyDown={(e) => {
-                if (compact || !e.altKey || (e.key !== 'ArrowUp' && e.key !== 'ArrowDown')) return
-                e.preventDefault()
-                reorder(agent.id, index + (e.key === 'ArrowUp' ? -1 : 1))
-              }}
-              className={`border-y-2 ${
-                dropIndex === index
-                  ? 'border-t-em border-b-transparent'
-                  : dropIndex === index + 1 && index === agents.length - 1
-                    ? 'border-t-transparent border-b-em'
-                    : 'border-transparent'
-              } ${dragId === agent.id ? 'opacity-50' : ''}`}
-            >
+          {agents.map((agent, index) => {
+            const row = (
               <AgentRow
                 agent={agent}
                 compact={compact}
@@ -1326,8 +1364,55 @@ export function AgentsSection(props: { compact?: boolean }): JSX.Element {
                   })()
                 }}
               />
-            </div>
-          ))}
+            )
+            // Compact rows are not draggable. No wrapper classes or handlers —
+            // a border here used to grow every row, including the rail.
+            if (compact) return <Fragment key={agent.id}>{row}</Fragment>
+            const showBefore = dropIndex === index
+            const showAfter = dropIndex === index + 1 && index === agents.length - 1
+            return (
+              <div
+                key={agent.id}
+                draggable
+                title="drag or Alt+↑/↓ to reorder"
+                onDragStart={(e) => {
+                  setDragId(agent.id)
+                  e.dataTransfer.effectAllowed = 'move'
+                  e.dataTransfer.setData('text/plain', agent.id)
+                }}
+                onDragOver={(e) => {
+                  if (dragId === null) return
+                  e.preventDefault()
+                  e.dataTransfer.dropEffect = 'move'
+                  const rect = e.currentTarget.getBoundingClientRect()
+                  setDropIndex(e.clientY > rect.top + rect.height / 2 ? index + 1 : index)
+                }}
+                onDrop={(e) => {
+                  e.preventDefault()
+                  if (dragId !== null && dropIndex !== null) {
+                    const from = agents.findIndex((a) => a.id === dragId)
+                    reorder(dragId, dropIndex > from ? dropIndex - 1 : dropIndex)
+                  }
+                  endDrag()
+                }}
+                onDragEnd={endDrag}
+                onKeyDown={(e) => {
+                  if (!e.altKey || (e.key !== 'ArrowUp' && e.key !== 'ArrowDown')) return
+                  e.preventDefault()
+                  reorder(agent.id, index + (e.key === 'ArrowUp' ? -1 : 1), true)
+                }}
+                className={dragId === agent.id ? 'relative opacity-50' : 'relative'}
+              >
+                {showBefore && (
+                  <span className="absolute inset-x-0 -top-px h-0.5 bg-em" aria-hidden />
+                )}
+                {showAfter && (
+                  <span className="absolute inset-x-0 -bottom-px h-0.5 bg-em" aria-hidden />
+                )}
+                {row}
+              </div>
+            )
+          })}
         </div>
       )}
 

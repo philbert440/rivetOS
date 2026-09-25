@@ -302,6 +302,17 @@ describe('MODEL_TOKEN_RE / EFFORT_TOKEN_RE', () => {
     expect(MODEL_TOKEN_RE.test('a b')).toBe(false)
     expect(EFFORT_TOKEN_RE.test('a b')).toBe(false)
   })
+
+  it('accepts a non-leading ~ (OpenRouter aliases) and rejects a leading ~', () => {
+    expect(MODEL_TOKEN_RE.test('openrouter/~z-ai/glm-latest')).toBe(true)
+    expect(MODEL_TOKEN_RE.test('openrouter/~deepseek/deepseek-flash-latest')).toBe(true)
+    expect(MODEL_TOKEN_RE.test('~z-ai/glm-latest')).toBe(false)
+    expect(MODEL_TOKEN_RE.test('~')).toBe(false)
+    expect(MODEL_TOKEN_RE.test('a~' + 'b'.repeat(62))).toBe(true)
+    expect(MODEL_TOKEN_RE.test('a~' + 'b'.repeat(63))).toBe(false)
+    expect(MODEL_TOKEN_RE.test('openrouter/~z-ai/../x')).toBe(false)
+    expect(MODEL_TOKEN_RE.test('a:~b')).toBe(true)
+  })
 })
 
 describe('hermesSheet', () => {
@@ -472,6 +483,25 @@ describe('opencodeSheet', () => {
         },
       }).map((m) => m.id),
     ).toEqual(['zai/glm-5.3-flash', 'zai/glm-5'])
+  })
+
+  it('keeps OpenRouter ~ aliases in the sheet and on argv', () => {
+    expect(
+      parseOpencodeConfig({
+        provider: { openrouter: { models: { '~z-ai/glm-latest': {} } } },
+      }),
+    ).toEqual([{ id: 'openrouter/~z-ai/glm-latest', label: 'openrouter/~z-ai/glm-latest' }])
+    const sheet = opencodeSheet((path) => {
+      if (path.endsWith('opencode.json')) {
+        return { provider: { openrouter: { models: { '~z-ai/glm-latest': {} } } } }
+      }
+      throw new Error('missing')
+    }, '/home/tester')
+    expect(appendModelEffortArgv(['opencode'], sheet, 'openrouter/~z-ai/glm-latest')).toEqual([
+      'opencode',
+      '--model',
+      'openrouter/~z-ai/glm-latest',
+    ])
   })
 
   it('empty models when config is missing or the model token is junk', () => {

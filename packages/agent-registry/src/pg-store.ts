@@ -11,6 +11,7 @@ import {
   findPresetByHandle,
   presetFromCreate,
   PresetConflictError,
+  PresetMigrationRequiredError,
   requireAgentName,
   sortPresets,
   type AgentPresetInput,
@@ -84,7 +85,7 @@ function isMissingSortOrder(err: unknown): boolean {
 function rethrow(err: unknown): never {
   if (isUniqueViolation(err)) throw new PresetConflictError(conflictMessage(err))
   if (isMissingSortOrder(err)) {
-    throw new Error(
+    throw new PresetMigrationRequiredError(
       'agent preset ordering needs DataHub migration 0018_agent_preset_sort_order (run `rivetos db migrate`)',
     )
   }

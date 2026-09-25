@@ -181,6 +181,46 @@ describe('FileAgentPresetStore', () => {
     expect(updated?.updatedAt).toBe(2_000)
   })
 
+  it('drops a non-integer sortOrder and keeps the preset across the next write', async () => {
+    const file = join(dir, 'agents.json')
+    writeFileSync(
+      file,
+      JSON.stringify({
+        agents: [
+          {
+            id: 'keep-me',
+            name: 'Alpha',
+            color: '',
+            model: 'fable',
+            effort: 'medium',
+            systemPrompt: '',
+            nodeBaseUrl: '',
+            node: 'ct115',
+            directory: '/tmp/agents/alpha',
+            sharedLink: true,
+            createdAt: 1,
+            updatedAt: 1,
+            sortOrder: '1',
+          },
+        ],
+      }),
+    )
+    const registry = new FileAgentPresetStore(file, { now: () => 2 })
+    const loaded = await registry.list()
+    expect(loaded).toHaveLength(1)
+    expect(loaded[0]?.id).toBe('keep-me')
+    expect(loaded[0]?.sortOrder).toBeUndefined()
+    const updated = await registry.update('keep-me', { color: '#fff' })
+    expect(updated?.name).toBe('Alpha')
+    expect(updated?.sortOrder).toBeUndefined()
+    const parsed: unknown = JSON.parse(readFileSync(file, 'utf8'))
+    expect(isRecord(parsed) && Array.isArray(parsed.agents)).toBe(true)
+    const saved = isRecord(parsed) && Array.isArray(parsed.agents) ? parsed.agents : []
+    expect(saved).toHaveLength(1)
+    expect(isRecord(saved[0]) && saved[0].id).toBe('keep-me')
+    expect(isRecord(saved[0]) && saved[0].sortOrder).toBeUndefined()
+  })
+
   it('loads a legacy row with no node or directory and migrates a catalog model', async () => {
     const file = join(dir, 'agents.json')
     writeFileSync(
