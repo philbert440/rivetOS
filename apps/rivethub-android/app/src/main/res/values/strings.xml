@@ -91,7 +91,6 @@
     <string name="action_forget_device">Forget this device</string>
     <string name="action_install_cert">Install certificate</string>
     <string name="action_replace_p12">Replace…</string>
-    <string name="cd_attach">Attach</string>
     <string name="cd_send">Send</string>
     <string name="cd_stop">Stop</string>
 
@@ -258,4 +257,23 @@
     <string name="gallery_open_sheet">Open sample sheet</string>
     <string name="gallery_font_scale">Font scale</string>
     <string name="gallery_font_sample">%1$s · A message at this text size.</string>
+    <!-- Composer v2 (U5): edit banner, "+" panel, model sheet, long-press queue -->
+    <string name="editing">Editing</string>
+    <string name="cancel_edit">Cancel edit</string>
+    <string name="plus_photo">Photo</string>
+    <string name="plus_camera">Camera</string>
+    <string name="plus_file">File</string>
+    <string name="plus_compress">Compress context</string>
+    <string name="compress_confirm_title">Compress context</string>
+    <string name="compress_confirm_body">Ask the agent to compress its context?</string>
+    <string name="compress_confirm_action">Compress</string>
+    <string name="voice_coming_soon">Voice input (coming soon)</string>
+    <string name="models_search_hint">Search models</string>
+    <string name="models_favourites">Favourites</string>
+    <string name="models_all">All models</string>
+    <string name="favourite_model">Favourite %1$s</string>
+    <string name="models_state_favourite">In favourites</string>
+    <string name="cd_plus_panel">Add photo, file, or action</string>
+    <string name="error_compact_busy">Compress skipped: a message went out first.</string>
+    <string name="queue_message">Queue message</string>
 </resources>

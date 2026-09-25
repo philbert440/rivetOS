@@ -143,6 +143,10 @@ pointer, written on every chat open; drafts never written), `expFiles` / `expTas
 pin/hide sets; `Settings.pin/unpin/hide/unhide/migrateKeys`). Leftover Grok-Bot keys (`handle`,
 `sessionOverrides`, `lastSeen`, `desktopUrl`) are still decoded so a wipe is not required; their
 setters are gone.
+`expWorkflows` (experimental drawer sections, default false), `favouriteModels` (string set of
+model ids — the composer model sheet's Favourites group, U5). Leftover Grok-Bot keys (`handle`,
+`pinned`, `hidden`, `sessionOverrides`, `lastSeen`, `desktopUrl`) are still decoded so a wipe is
+not required; their setters are gone.
 
 ## Design system
 
@@ -205,7 +209,7 @@ Chat mapping (phone session view ← rivethub-web):
 | `components/transcript.tsx` | `ui/components/Transcript.kt` |
 | `components/markdown.tsx` | `ui/components/MarkdownBody.kt` (`plane/Markdown.kt`) |
 | `components/ask-user-card.tsx` | `ui/components/AskUserCard.kt` |
-| `components/composer.tsx` + pickers | `ui/components/Composer.kt` |
+| `components/composer.tsx` + pickers | `ui/components/Composer.kt` (+ `ModelSheet.kt`, `PlusPanel.kt`, U5) |
 | `components/xterm-attach.tsx` chrome | `ui/term/TerminalPane.kt` host + `KeyToolbar.kt` |
 
 Chat VM is keyed `chat:<nodeDenUrl>:<sessionKey>` and torn down when that back-stack entry leaves.
@@ -230,6 +234,16 @@ frame). Turn-complete settle is deferred so it does not block frame intake. Netw
 Refresh publishes the mesh roster as soon as `discover()` returns, then merges each per-node
 bundle as it completes (`healthz` first, `withTimeout(8s)`). A "discovering… n/m" line tracks
 pending bundles so an offline peer cannot hide the healthy ones.
+
+Composer v2 (U5, UX-SPEC §4): bottom row = pickers · spacer · mic placeholder (disabled,
+"Voice input (coming soon)", hidden on a compact row — `composerShowsMic`) · **+** · Send/Stop
+(Stop tints `red`). The **+** replaces the paperclip and opens `PlusPanel` (a `RivetModalSheet`, not a
+popover — keeps 44dp rows; items from `plane/ChatChrome.kt plusPanelItems`). The Model pill is
+`ComposerModelPicker` → `ModelSheet` (autofocused `RivetField` search, `SectionHeader` groups from
+`plane/ModelPicker.kt`, check on the current row, dim id under the label, long-press = favourite
+star `lucide_star` in `warn`); Effort keeps `ComposerPicker`. `ComposerPickerPill` is the shared
+trigger. "Editing ✕" banner (`panel2` row, pencil + `em` mono label, ✕ "Cancel edit") sits at the
+top of the card while `editing`.
 
 ## Core packages
 
@@ -271,7 +285,40 @@ the send pending-on-server (`injectCompleted` true, poll stays armed, retry on t
 a later transcript with our assistant ends the turn and drops the queued retry. Resync fetches
 carry the session id and are discarded if the open session changed mid-fetch. `sendTurn`
 `redirectedTo`/`sessionId` adopts only when `sessionMatchesNative`. Same-id adopt (redirectedTo
-echo) is a no-op. Attachments are `[attached: uri]` lines after streaming
+echo) is a no-op. Composer v2 (U5): **"+" panel** = Photo (`PickVisualMedia` ImageOnly) · Camera (`TakePicture`
+into `cacheDir/camera/`, FileProvider `cache-path camera/`, staged via `stageUri` with the file's
+size so the upload streams on IO) · File (the existing `OpenDocument` launcher) · Compress
+context. Photo, Camera and File are ALWAYS offered — every harness takes an upload (PTY ones as an
+`[attached: uri]` line); `HarnessSheet.imageAttachments` means protocol-native attachments only and
+is not a panel gate. Compress is hidden on a draft. Camera files are held in the VM's
+`CaptureRegistry` (`plane/CameraCaptures.kt`) from launch until their upload finishes
+(`vm.captureStarted` / `captureAbandoned` / `stageCapture`); unheld captures older than 1 h are swept
+only after a capture staged successfully, never ahead of a new capture. Launchers are registered by the screen via
+`rememberComposerMediaLaunchers` (a launcher inside the sheet would die with it). **Compaction**:
+`plane/CompactCommand.kt` — `/compact` for claude-code only (ids normalised through
+`harnessIdForAgent`), `canCompact` never in flight; `vm.compactContext()` (confirm dialog first)
+types it into the PTY exactly like the stale-409 fallback (`ensurePty(native)` → wait-ready if
+fresh → `termInject`), never on a draft. The PTY setup suspends, so the inject runs under
+`OutboundPump.withSendLock` and re-checks `compactMayDispatch` there (turn in flight, queued/sending
+item, draft or changed session → dropped with `ERR_COMPACT_BUSY`, also when confirm lands after the
+idle snapshot went stale); no pump send starts in between. **Long-press Send** while in flight = `vm.enqueueSend()`:
+same validation/`[attached: …]` text as `send()` (shared `prepareOutbound`), `pump.tryEnqueue`
+WITHOUT pumping — the queue drains on idle/turn-complete and shows in `QueuedStrip`; refused while
+uploading (`ERR_UPLOADING`). **Edit banner API**: `UiState.editing: EditState?`,
+`vm.beginEdit(text)` / `vm.cancelEdit()` (empties the composer). The edit rides on the queued item
+(`OutboundItem.editing`, set once via `editForEnqueue`) for both `send()` and `enqueueSend()` — local
+enqueue is not acceptance. Every pump pass reports a `PumpOutcome` (`Dispatched` / `Deferred` /
+`Rejected(TURN_IN_FLIGHT | FAILED)` / `Idle`) to `OutboundPump(onOutcome)` from any entry point
+(pump, inject, onIdle, onTurnComplete; `acknowledgePending` reports `Dispatched`); the VM's
+`onPumpOutcome` applies `editAfterOutcome`: the banner clears only on that item's `Dispatched`, a
+deferred / 409-queued item keeps it, and `FAILED` puts the item's text, chips and edit back
+(`restoredEdit`) with the error — so a hard failure after a 409 retry no longer drops the edit.
+Cancelling a queued item also restores its edit. Bubble-tap → `beginEdit` arrives in U3b. **Favourites**:
+`Prefs.favouriteModels` via `vm.toggleFavouriteModel(id)` → `Settings.toggleFavouriteModel(id)`,
+which applies `toggleFavourite` inside ONE `ds.edit` (overlapping long-presses serialise) and
+returns the committed set. Order is the string-set's insertion order — not contractually kept by
+DataStore; verify across restart on device.
+Attachments are `[attached: uri]` lines after streaming
 `POST /api/uploads` on the session's node (1 GiB cap, den-server), except
 protocol-owned Codex sessions (`transport: protocol` + `imageAttachments`):
 those send staged PNG/JPEG/WebP/GIF as `UserTurn.attachments` with the

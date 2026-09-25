@@ -13,6 +13,7 @@ import androidx.datastore.preferences.preferencesDataStore
 import io.rivethub.app.gateway.wireJson
 import io.rivethub.app.plane.migrateLocalPrefs
 import io.rivethub.app.plane.nearestFontScale
+import io.rivethub.app.plane.toggleFavourite
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.map
@@ -53,6 +54,8 @@ data class Prefs(
     val expWorkflows: Boolean = false,
     val codeLineNumbers: Boolean = false,
     val codeWrap: Boolean = false,
+    /** Composer model sheet favourites (model ids), shown as the first group. */
+    val favouriteModels: Set<String> = emptySet(),
 )
 
 class Settings(context: Context) {
@@ -87,6 +90,7 @@ class Settings(context: Context) {
             expWorkflows = p[EXP_WORKFLOWS] ?: false,
             codeLineNumbers = p[CODE_LINE_NUMBERS] ?: false,
             codeWrap = p[CODE_WRAP] ?: false,
+            favouriteModels = p[FAVOURITE_MODELS] ?: emptySet(),
         )
     }
 
@@ -110,6 +114,14 @@ class Settings(context: Context) {
     suspend fun setViewNodeId(id: String) = ds.edit { it[VIEW_NODE] = id }
     suspend fun setCurrentAgentId(id: String) = ds.edit { it[CURRENT_AGENT] = id }
     suspend fun setAgentsCollapsed(v: Boolean) = ds.edit { it[AGENTS_COLLAPSED] = v }
+    /**
+     * Add / remove [id] from the favourites inside ONE DataStore transaction
+     * (like [archive]), so overlapping long-presses serialise instead of
+     * overwriting each other. Returns the committed set.
+     */
+    suspend fun toggleFavouriteModel(id: String): Set<String> =
+        ds.edit { it[FAVOURITE_MODELS] = toggleFavourite(it[FAVOURITE_MODELS] ?: emptySet(), id) }[FAVOURITE_MODELS]
+            ?: emptySet()
 
     /** The instant-resume pointer — written on every chat open (see
      *  MainActivity openChat); read once at nav init. */
@@ -194,6 +206,7 @@ class Settings(context: Context) {
         private val EXP_FILES = booleanPreferencesKey("expFiles")
         private val EXP_TASKS = booleanPreferencesKey("expTasks")
         private val EXP_WORKFLOWS = booleanPreferencesKey("expWorkflows")
+        private val FAVOURITE_MODELS = stringSetPreferencesKey("favouriteModels")
 
         private val mapSer = MapSerializer(String.serializer(), String.serializer())
         private val longMapSer = MapSerializer(String.serializer(), Long.serializer())

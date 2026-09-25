@@ -66,6 +66,7 @@ import io.rivethub.app.plane.searchTurns
 import io.rivethub.app.plane.highlightRanges
 import io.rivethub.app.plane.SearchHit
 import io.rivethub.app.plane.AttachmentStatus
+import io.rivethub.app.plane.PlusItem
 import io.rivethub.app.plane.SessionMode
 import io.rivethub.app.plane.TermStatus
 import io.rivethub.app.plane.TranscriptPin
@@ -88,6 +89,7 @@ import io.rivethub.app.ui.components.ChatSessionHeader
 import io.rivethub.app.ui.components.ChatStatusStrip
 import io.rivethub.app.ui.components.Composer
 import io.rivethub.app.ui.components.QueuedStrip
+import io.rivethub.app.ui.components.ComposerModelPicker
 import io.rivethub.app.ui.components.ComposerPicker
 import io.rivethub.app.ui.components.Lucide
 import io.rivethub.app.ui.components.NativeTurnControls
@@ -97,6 +99,7 @@ import io.rivethub.app.ui.components.TerminalRetryState
 import io.rivethub.app.ui.components.ToolRow
 import io.rivethub.app.ui.components.TranscriptAssistantTurn
 import io.rivethub.app.ui.components.TranscriptUserTurn
+import io.rivethub.app.ui.components.rememberComposerMediaLaunchers
 import io.rivethub.app.ui.components.rivetHexColor
 import io.rivethub.app.ui.term.TerminalKeyBar
 import io.rivethub.app.ui.term.TerminalPane
@@ -186,6 +189,12 @@ fun HarnessChatScreen(
         uri ?: return@rememberLauncherForActivityResult
         stageFromUri(uri)
     }
+    val media = rememberComposerMediaLaunchers(
+        onPhoto = { stageFromUri(it) },
+        onCamera = { uri, file -> vm.stageCapture(uri, file) },
+        onCaptureStart = { vm.captureStarted(it) },
+        onCaptureAbandoned = { vm.captureAbandoned(it) },
+    )
     LaunchedEffect(shareUris) {
         if (shareUris.isEmpty()) return@LaunchedEffect
         shareUris.forEach { stageFromUri(it) }
@@ -248,6 +257,7 @@ fun HarnessChatScreen(
         HarnessChatViewModel.ERR_FAILED_ATTACHMENT -> stringResource(R.string.error_failed_attachment)
         HarnessChatViewModel.ERR_IMAGE_ONLY -> stringResource(R.string.error_image_only)
         HarnessChatViewModel.ERR_IMAGE_UNSUPPORTED -> stringResource(R.string.error_image_unsupported)
+        HarnessChatViewModel.ERR_COMPACT_BUSY -> stringResource(R.string.error_compact_busy)
         else -> st.error
     }
     val nativeImages = vm.nativeImagesEnabled()
@@ -397,6 +407,18 @@ fun HarnessChatScreen(
                 onSend = vm::send,
                 onStop = vm::stop,
                 enabled = composerEnabled,
+                editing = st.editing != null,
+                onCancelEdit = vm::cancelEdit,
+                onSendLongPress = vm::enqueueSend,
+                plusItems = vm.plusItems(),
+                onPlusItem = { item ->
+                    when (item) {
+                        PlusItem.Photo -> media.pickPhoto()
+                        PlusItem.Camera -> media.takePhoto()
+                        PlusItem.File -> pick.launch(if (nativeImages) arrayOf("image/*") else arrayOf("*/*"))
+                        PlusItem.Compress -> vm.compactContext()
+                    }
+                },
                 ask = {
                     when {
                         st.ask != null -> AskUserCardView(
@@ -427,16 +449,17 @@ fun HarnessChatScreen(
                         title = stringResource(R.string.node_picker),
                     )
                     if (nativeModels.isEmpty()) {
-                        val models = st.sheet?.models.orEmpty().map { SelectOption(it.id, it.label) }
+                        val models = st.sheet?.models.orEmpty()
                         if (models.isNotEmpty()) {
-                            val modelLabel = models.find { it.value == st.model }?.label ?: st.model
-                            ComposerPicker(
-                                icon = R.drawable.lucide_bot,
+                            val modelLabel = models.find { it.id == st.model }?.label ?: st.model
+                            ComposerModelPicker(
                                 label = modelLabel.ifBlank { stringResource(R.string.model_picker) },
                                 compact = compact,
-                                options = models,
+                                models = models,
+                                favourites = st.favouriteModels,
                                 value = st.model,
-                                onChange = vm::setModel,
+                                onPick = vm::setModel,
+                                onToggleFavourite = vm::toggleFavouriteModel,
                                 title = stringResource(R.string.model_picker),
                             )
                         }
