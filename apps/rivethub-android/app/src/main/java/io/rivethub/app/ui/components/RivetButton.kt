@@ -27,7 +27,8 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
-import io.rivethub.app.ui.theme.Radius
+import io.rivethub.app.ui.theme.Shape
+import io.rivethub.app.ui.theme.Dimens
 import io.rivethub.app.ui.theme.RivetTheme
 import io.rivethub.app.ui.theme.RivetType
 
@@ -51,7 +52,7 @@ fun RivetButton(
 ) {
     val colors = RivetTheme.colors
     val pressed by interactionSource.collectIsPressedAsState()
-    val shape = RoundedCornerShape(Radius.md)
+    val shape = RoundedCornerShape(Shape.control)
     val height = when (size) {
         RivetButtonSize.Default, RivetButtonSize.Icon -> 36.dp
         RivetButtonSize.Sm -> 32.dp
@@ -81,7 +82,7 @@ fun RivetButton(
     }
     val sized = if (iconBox) Modifier.size(height) else Modifier.height(height)
     Box(
-        modifier.sizeIn(minWidth = if (iconBox) 44.dp else 0.dp, minHeight = 44.dp),
+        modifier.sizeIn(minWidth = if (iconBox) Dimens.touchTarget else 0.dp, minHeight = Dimens.touchTarget),
         contentAlignment = Alignment.Center,
     ) {
         Row(

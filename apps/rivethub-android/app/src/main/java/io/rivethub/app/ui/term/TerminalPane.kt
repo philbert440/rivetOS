@@ -85,6 +85,7 @@ import io.rivethub.app.ui.components.DenBot
 import io.rivethub.app.ui.components.KeyToolbar
 import io.rivethub.app.ui.components.RivetButton
 import io.rivethub.app.ui.components.ToolbarKey
+import io.rivethub.app.ui.theme.LocalUiFontScale
 import io.rivethub.app.ui.theme.Dimens
 import io.rivethub.app.ui.theme.Radius
 import io.rivethub.app.ui.theme.RivetFonts
@@ -117,6 +118,7 @@ fun TerminalPane(
 ) {
     val colors = RivetTheme.colors
     val density = LocalDensity.current
+    val uiFontScale = LocalUiFontScale.current
     val focus = remember { FocusRequester() }
     val keyboard = LocalSoftwareKeyboardController.current
     val scroll = remember { TermScroll() }
@@ -132,11 +134,11 @@ fun TerminalPane(
     val measurer = rememberTextMeasurer()
     val mono = TextStyle(
         fontFamily = RivetFonts.Mono,
-        fontSize = fontSp.sp,
+        fontSize = (fontSp / uiFontScale).sp,
         fontWeight = FontWeight.Normal,
         lineHeight = TERM_LINE_HEIGHT.em,
     )
-    val measured = remember(fontSp, density.density, density.fontScale, measurer) {
+    val measured = remember(fontSp, uiFontScale, density.density, density.fontScale, measurer) {
         // cellW = mean advance of 10 "M" so hinting averages out; cellH =
         // measured layout height of one line with lineHeight set above, so
         // glyph rows and the cursor rect share the same grid.
@@ -144,7 +146,7 @@ fun TerminalPane(
         val one = measurer.measure(AnnotatedString("M"), style = mono)
         Triple(ten.size.width / 10f, one.size.height.toFloat(), one.firstBaseline)
     }
-    val fallback = termCellSizePx(fontSp.toFloat(), density.density, density.fontScale)
+    val fallback = termCellSizePx(fontSp / uiFontScale, density.density, density.fontScale)
     val cellW = measured.first.takeIf { it > 1f } ?: fallback.first
     val cellH = measured.second.takeIf { it > 1f } ?: fallback.second
     // Baseline of the mono "M" line; every run is drawn so its first baseline lands here,

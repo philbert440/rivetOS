@@ -171,6 +171,30 @@ Tailwind → Compose: `text-lg` 18sp semibold · `text-sm` 14sp · `text-xs` 13s
 surfaces — no `Icons.*`. App root is `bg` + `Modifier.blueprintGrid()` (1dp `--grid-line`
 rects every 32dp — a 1px `drawLine` stroke anti-aliases to half coverage and reads too dim). Touch targets: keep desktop paddings for the look, add 44dp hit areas.
 
+Phone shape tokens (`ui/theme/Dimens.kt`): `Shape.row = Radius.full` for Pill,
+HarnessChip, toggle tracks, both segmented-control layers and selected NavRow (40dp);
+`Shape.card = Radius.xl` (12dp) for sheets, composer cards and cards;
+`Shape.bubble = Radius.xxl` (14dp) for message bubbles (U3b adopts it in Transcript);
+`Shape.control = Radius.md` (6dp) for buttons, fields and select triggers;
+`Shape.tight = Radius.sm` (4dp) for code, tool rows and tags. Buttons retain their
+variants and `Dimens.touchTarget` (44dp) minimum outer height. Fields use panel fill
+and a 1dp border (em while focused, line otherwise). NavRow has a growing 40dp visual
+row inside a minimum 44dp hit area. Modal sheets have card top corners, a centred 32×4dp line
+handle and 16dp side padding. SectionHeader uses uppercase 11sp inkDim, tracking 0.6sp.
+
+UI text size is `Prefs.fontScale` (float DataStore key `fontScale`, default 1.0).
+`plane/FontScale.kt` snaps writes to 0.9/1.0/1.1/1.25 (S/M/L/XL). Settings Appearance
+uses ThemeGroup; MainActivity passes the preference to RivetTheme. The theme multiplies
+LocalDensity's existing fontScale using a plain `Density` at S/L/XL; Android 14+
+non-linear system scaling applies only at M, which keeps the platform density object
+(accepted limit). One composition path preserves remembered app state across size changes.
+The theme exposes the cumulative
+UI multiplier through LocalUiFontScale. TerminalPane divides its terminal text size by
+that multiplier in both the text style and fallback cell measurement: terminalFontSp
+(10–22) remains independent.
+ComponentGallery shows Shapes and Font scale in both themes; sample scales cancel the
+inherited UI multiplier first so previews show each step exactly once.
+
 Chat mapping (phone session view ← rivethub-web):
 
 | desktop | phone file |

@@ -26,6 +26,7 @@ import androidx.compose.ui.unit.sp
 import io.rivethub.app.R
 import io.rivethub.app.ui.theme.Dimens
 import io.rivethub.app.ui.theme.Radius
+import io.rivethub.app.ui.theme.Shape
 import io.rivethub.app.ui.theme.RivetTheme
 import io.rivethub.app.ui.theme.RivetType
 
@@ -45,7 +46,7 @@ fun RivetSelect(
     var open by remember { mutableStateOf(false) }
     val current = options.find { it.value == value }
     val triggerLabel = current?.label ?: title ?: "Select…"
-    val shape = RoundedCornerShape(Radius.md)
+    val shape = RoundedCornerShape(Shape.control)
     Row(
         modifier
             .heightIn(min = 32.dp)

@@ -38,6 +38,9 @@ import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.unit.dp
 import io.rivethub.app.AppContainer
 import io.rivethub.app.R
+import io.rivethub.app.plane.FONT_SCALE_STEPS
+import io.rivethub.app.plane.fontScaleLabel
+import io.rivethub.app.plane.fontScaleFromLabel
 import io.rivethub.app.plane.EntryUrlError
 import io.rivethub.app.plane.HubTab
 import io.rivethub.app.plane.TopBarTitle
@@ -306,6 +309,14 @@ fun SettingsScreen(
                     color = colors.inkDim,
                     style = RivetType.xs,
                     modifier = Modifier.padding(top = 8.dp),
+                )
+
+                Spacer(Modifier.height(16.dp))
+                FieldLabel(stringResource(R.string.font_size))
+                ThemeGroup(
+                    options = FONT_SCALE_STEPS.map(::fontScaleLabel),
+                    selected = fontScaleLabel(prefs.fontScale),
+                    onSelect = { scope.launch { c.settings.setFontScale(fontScaleFromLabel(it)) } },
                 )
 
                 SettingsH2(stringResource(R.string.section_code))
