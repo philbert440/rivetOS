@@ -25,6 +25,7 @@ import {
   createSubagentTools,
   createTaskDelegationRecorder,
   createTaskCompletionWaiter,
+  createTaskDoneBroadcaster,
   createTaskApiRoute,
   createOutcomesApiRoute,
   createWikiApiRoute,
@@ -527,6 +528,21 @@ export async function registerAgentTools(
       await notifications.close()
     })
   }
+  // task.done — LISTEN ros_task_done. The runner hook is the latency and dedupe
+  // path on the node that ran the task, and covers a LISTEN reconnect.
+  let notifyTaskFinished: ((taskId: string) => Promise<void>) | undefined
+  if (notifications && taskEngineStore) {
+    const channel = notifications
+    const store = taskEngineStore
+    const broadcaster = createTaskDoneBroadcaster({
+      store,
+      broadcast: (frame) => channel.broadcast(frame),
+      pgUrl,
+    })
+    notifyTaskFinished = (taskId) => broadcaster.onTaskFinished(taskId)
+    void broadcaster.start()
+    runtime.addShutdownHook(() => broadcaster.stop())
+  }
   const gatewayUpgrades = notifications ? [notifications.upgrade] : []
 
   if (tasksEnabled && pgUrl && pool && taskEngineStore) {
@@ -592,6 +608,7 @@ export async function registerAgentTools(
       memory: runtime.getMemory(),
       resolvePreset: resolvePresetForRunner,
       invalidatePreset: invalidatePresetForRunner,
+      onTaskFinished: notifyTaskFinished,
     })
     runTaskRef.current = taskRunner.handler
     await taskRunner.start()

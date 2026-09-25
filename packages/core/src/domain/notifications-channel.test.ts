@@ -5,6 +5,8 @@ import type { NotificationFrame } from '@rivetos/types'
 import { createNotificationsChannel, type NotificationsChannelHandle } from './notifications-channel.js'
 import { createGatewayEscalationNotifier } from './task/escalation.js'
 import type { TaskEscalationPayload } from './task/escalation.js'
+import { InMemoryTaskStore } from './task/store.js'
+import { createTaskDoneBroadcaster } from './task/task-done-broadcaster.js'
 
 let server: Server | undefined
 let channel: NotificationsChannelHandle | undefined
@@ -94,6 +96,44 @@ describe('notifications channel', () => {
       expect(frame.summary).toContain('do the thing')
       expect(frame.summary).toContain('refuted after 1 retry')
     }
+    ws.close()
+  })
+
+  it('task.done from the broadcaster reaches a connected client', async () => {
+    const { port, chan } = await start()
+    const ws = await connect(port)
+    const got = new Promise<NotificationFrame>((resolve) =>
+      ws.on('message', (data: Buffer) => resolve(JSON.parse(data.toString()))),
+    )
+
+    const store = new InMemoryTaskStore()
+    const task = await store.create({
+      goal: 'finish me',
+      executor: 'chat-loop',
+      agentId: 'opus',
+      origin: 'tool',
+    })
+    await store.finish(task.id, 'completed', {
+      verdict: 'completed',
+      summary: 'done',
+      artifacts: [],
+      usage: { inputTokens: 0, outputTokens: 0, totalTokens: 0, turns: 1, wallClockMs: 1 },
+    })
+    const broadcaster = createTaskDoneBroadcaster({
+      store,
+      broadcast: (frame) => chan.broadcast(frame),
+      now: () => 1_700_000_000_000,
+    })
+    await broadcaster.onTaskFinished(task.id)
+    await broadcaster.stop()
+
+    const frame = await got
+    expect(frame).toEqual({
+      kind: 'task.done',
+      taskId: task.id,
+      status: 'completed',
+      ts: 1_700_000_000_000,
+    })
     ws.close()
   })
 })

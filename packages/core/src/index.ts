@@ -79,6 +79,7 @@ export { createChatLoopExecutor } from './domain/task/chat-loop-executor.js'
 export type { ChatLoopExecutorConfig } from './domain/task/chat-loop-executor.js'
 export { TaskBackedSubagentManager } from './domain/task/subagent-task-manager.js'
 export { createTaskCompletionWaiter } from './domain/task/completion-waiter.js'
+export { createTaskDoneBroadcaster } from './domain/task/task-done-broadcaster.js'
 export { createTaskApiRoute } from './domain/task/task-api.js'
 export {
   normalizeCriteria,
@@ -150,6 +151,10 @@ export {
 } from './domain/openai-compat.js'
 export type { OpenAICompatOptions } from './domain/openai-compat.js'
 export type { TaskCompletionWaiter } from './domain/task/completion-waiter.js'
+export type {
+  TaskDoneBroadcaster,
+  TaskDoneBroadcasterOptions,
+} from './domain/task/task-done-broadcaster.js'
 export { runHeartbeatViaTasks } from './domain/task/heartbeat-task.js'
 export type { TaskBackedSubagentManagerConfig } from './domain/task/subagent-task-manager.js'
 export {

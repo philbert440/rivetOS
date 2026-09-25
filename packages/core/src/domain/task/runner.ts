@@ -170,6 +170,15 @@ export interface TaskHandlerOptions {
    * row's workingDir disagrees with the first lookup.
    */
   invalidatePreset?: () => void
+  /**
+   * Invoked after a terminal finish() resolves (completed, failed, killed,
+   * timeout) — both the success path and the failure paths. Not called when
+   * the row parks at awaiting-input, and not called if finish() itself throws.
+   * Boot broadcasts task.done from here so PGlite and in-process runs still
+   * reach the notifications socket when LISTEN/NOTIFY cannot. A rejection is
+   * logged and swallowed: the row is already terminal.
+   */
+  onTaskFinished?: (taskId: string) => void | Promise<void>
 }
 
 const HEARTBEAT_INTERVAL_MS_DEFAULT = 30_000
@@ -263,6 +272,23 @@ const ZERO_USAGE: TaskUsage = {
   wallClockMs: 0,
 }
 
+/** Persist a terminal outcome, then notify. Hook errors never change the row. */
+async function finishTerminal(
+  opts: TaskHandlerOptions,
+  taskId: string,
+  status: TaskStatus,
+  result: TaskResult,
+): Promise<void> {
+  await opts.store.finish(taskId, status, result)
+  if (!opts.onTaskFinished) return
+  try {
+    await opts.onTaskFinished(taskId)
+  } catch (err: unknown) {
+    const msg = err instanceof Error ? err.message : String(err)
+    log.warn(`onTaskFinished for task ${taskId} failed: ${msg}`)
+  }
+}
+
 export function createTaskHandler(opts: TaskHandlerOptions): (taskId: string) => Promise<void> {
   return async (taskId: string): Promise<void> => {
     // Retry only the claim, never the turn. heartbeat-task.ts sets
@@ -301,7 +327,7 @@ export function createTaskHandler(opts: TaskHandlerOptions): (taskId: string) =>
       const msg = err instanceof Error ? err.message : String(err)
       log.error(`Task ${task.id} handler crashed: ${msg}`)
       try {
-        await opts.store.finish(task.id, 'failed', {
+        await finishTerminal(opts, task.id, 'failed', {
           verdict: 'failed',
           summary: `Task handler crashed: ${msg}`,
           artifacts: [],
@@ -434,7 +460,7 @@ async function pinPresetDirectory(
     }
   }
   if (conflicts(presetDir)) {
-    await opts.store.finish(task.id, 'failed', {
+    await finishTerminal(opts, task.id, 'failed', {
       verdict: 'failed',
       summary: `Working directory does not match preset "${preset.name || presetId}"`,
       artifacts: [],
@@ -452,7 +478,7 @@ async function pinPresetDirectory(
       )
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : String(err)
-      await opts.store.finish(task.id, 'failed', {
+      await finishTerminal(opts, task.id, 'failed', {
         verdict: 'failed',
         summary: `Working directory unavailable: ${msg}`,
         artifacts: [],
@@ -468,7 +494,7 @@ async function pinPresetDirectory(
 async function runClaimedTask(task: TaskRow, opts: TaskHandlerOptions): Promise<void> {
   const executor = opts.executors.resolve(task.executor, task.executorTarget)
   if (!executor) {
-    await opts.store.finish(task.id, 'failed', {
+    await finishTerminal(opts, task.id, 'failed', {
       verdict: 'failed',
       summary: `No executor registered for (${task.executor}, ${task.executorTarget ?? '-'})`,
       artifacts: [],
@@ -579,7 +605,7 @@ async function runClaimedTask(task: TaskRow, opts: TaskHandlerOptions): Promise<
       const totalResult: TaskResult = { ...result, usage: totalUsage }
 
       if (exceededReason) {
-        await opts.store.finish(task.id, 'killed', {
+        await finishTerminal(opts, task.id, 'killed', {
           ...totalResult,
           verdict: 'budget-exceeded',
           error: result.error ?? `budget-exceeded: ${exceededReason}`,
@@ -593,7 +619,7 @@ async function runClaimedTask(task: TaskRow, opts: TaskHandlerOptions): Promise<
       // result" semantics.
       const rowAfterTurn = await opts.store.get(task.id)
       if (rowAfterTurn?.status === 'killed') {
-        await opts.store.finish(task.id, 'killed', {
+        await finishTerminal(opts, task.id, 'killed', {
           ...totalResult,
           verdict: 'killed',
           error: totalResult.error ?? 'killed',
@@ -660,7 +686,7 @@ async function runClaimedTask(task: TaskRow, opts: TaskHandlerOptions): Promise<
           continue
         }
       }
-      await opts.store.finish(task.id, verdictToStatus(totalResult), totalResult)
+      await finishTerminal(opts, task.id, verdictToStatus(totalResult), totalResult)
       return
     }
   } finally {

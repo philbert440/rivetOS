@@ -315,6 +315,61 @@ describe('createTaskHandler', () => {
     expect(heartbeats.length).toBeGreaterThanOrEqual(2)
     expect(heartbeats.every((id) => id === task.id)).toBe(true)
   })
+
+  it('onTaskFinished fires with the task id after finish resolves', async () => {
+    const fake = makeFakeExecutor()
+    const store = new InMemoryTaskStore()
+    const seen: Array<{ taskId: string; status: string | undefined }> = []
+    const executors = createExecutorRegistry()
+    executors.register('chat-loop', fake)
+    const handler = createTaskHandler({
+      store,
+      executors,
+      nodeId: 'test-node',
+      onTaskFinished: async (taskId) => {
+        seen.push({ taskId, status: (await store.get(taskId))?.status })
+      },
+    })
+    const task = await store.create(taskInput())
+
+    await handler(task.id)
+
+    expect(seen).toEqual([{ taskId: task.id, status: 'completed' }])
+  })
+
+  it('onTaskFinished fires when the task fails, not when it parks', async () => {
+    const store = new InMemoryTaskStore()
+    const finished: string[] = []
+    const executors = createExecutorRegistry()
+    const handler = createTaskHandler({
+      store,
+      executors,
+      nodeId: 'test-node',
+      onTaskFinished: (taskId) => {
+        finished.push(taskId)
+      },
+    })
+    const task = await store.create(taskInput())
+    await handler(task.id)
+    expect((await store.get(task.id))?.status).toBe('failed')
+    expect(finished).toEqual([task.id])
+
+    const interactive = makeFakeExecutor()
+    executors.register('chat-loop', interactive)
+    const parked: string[] = []
+    const parkHandler = createTaskHandler({
+      store,
+      executors,
+      nodeId: 'test-node',
+      onTaskFinished: (taskId) => {
+        parked.push(taskId)
+      },
+    })
+    const parkedTask = await store.create(taskInput({ spec: { interactive: true } }))
+    await parkHandler(parkedTask.id)
+    expect((await store.get(parkedTask.id))?.status).toBe('awaiting-input')
+    expect(parked).toEqual([])
+  })
 })
 
 function directoryPreset(directory: string, sharedLink = true): AgentPreset {
