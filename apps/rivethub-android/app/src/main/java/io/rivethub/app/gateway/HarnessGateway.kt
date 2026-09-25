@@ -3,6 +3,7 @@ package io.rivethub.app.gateway
 import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.coroutines.withContext
@@ -329,6 +330,45 @@ class HarnessGateway(
                             }
                             handle(res)
                         }
+                    } finally {
+                        watch.cancel()
+                    }
+                }
+            }
+        }
+
+    /**
+     * GET an attachment preview from THIS node ([url] must already be vetted
+     * by `plane.attachmentFetchUrl`: same origin, or an `/api/` path). No
+     * redirects; a body over [maxBytes] is refused. Null on any HTTP error.
+     *
+     * Cancellation-aware like [filesDownload]: cancelling the coroutine
+     * cancels the OkHttp call (which unblocks `execute()` or a socket read),
+     * the chunk loop checks `ensureActive()` between reads, the response is
+     * closed on every path, and the caller sees CancellationException rather
+     * than the IOException the cancelled socket throws.
+     */
+    suspend fun fetchBytes(url: String, maxBytes: Long): ByteArray? =
+        withContext(Dispatchers.IO) {
+            withClientsSuspend { c ->
+                val client = c.newBuilder().followRedirects(false).followSslRedirects(false).build()
+                val call = client.newCall(Request.Builder().url(url).get().build())
+                coroutineScope {
+                    val watch = launch(start = CoroutineStart.UNDISPATCHED) {
+                        suspendCancellableCoroutine<Unit> { cont ->
+                            cont.invokeOnCancellation { call.cancel() }
+                        }
+                    }
+                    try {
+                        call.execute().use { res ->
+                            if (!res.isSuccessful) return@use null
+                            val body = res.body
+                            if (body.contentLength() > maxBytes) return@use null
+                            readCapped(body.byteStream(), maxBytes) { ensureActive() }
+                        }
+                    } catch (e: java.io.IOException) {
+                        ensureActive()
+                        throw e
                     } finally {
                         watch.cancel()
                     }

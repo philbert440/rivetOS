@@ -373,6 +373,17 @@ fun SettingsScreen(
                     style = RivetType.xs,
                     modifier = Modifier.padding(top = 4.dp),
                 )
+                SettingsH2(stringResource(R.string.settings_messages))
+                ToggleRow(
+                    label = stringResource(R.string.settings_show_stats),
+                    checked = prefs.showStats,
+                    onChange = { v -> scope.launch { c.settings.setShowStats(v) } },
+                )
+                ToggleRow(
+                    label = stringResource(R.string.settings_action_row_always),
+                    checked = prefs.actionRowAlways,
+                    onChange = { v -> scope.launch { c.settings.setActionRowAlways(v) } },
+                )
 
                 SettingsH2(stringResource(R.string.section_experimental))
                 Text(

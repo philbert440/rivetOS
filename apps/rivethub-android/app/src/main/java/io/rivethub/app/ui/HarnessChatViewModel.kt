@@ -15,6 +15,7 @@ import io.rivethub.app.gateway.HARNESS_IDS
 import io.rivethub.app.gateway.WsStatus
 import io.rivethub.app.gateway.WsSubscription
 import io.rivethub.app.gateway.sessionKeyEnc
+import io.rivethub.app.gateway.readCapped
 import io.rivethub.app.plane.serverInFlightIsStale
 import io.rivethub.app.gateway.nativeIdOf
 import io.rivethub.app.gateway.isTurnInFlight
@@ -106,6 +107,10 @@ import io.rivethub.app.plane.nativeImageAttachments
 import io.rivethub.app.plane.nativeImageTurn
 import io.rivethub.app.plane.nativeTurnModels
 import io.rivethub.app.plane.optimisticUserText
+import io.rivethub.app.plane.attachmentFetchUrl
+import io.rivethub.app.plane.imageSourceNamespace
+import io.rivethub.app.plane.editSource
+import io.rivethub.app.plane.regenerateSource
 import io.rivethub.app.plane.readyAttachments
 import io.rivethub.app.plane.reconcileSummaryControls
 import io.rivethub.app.plane.restoreQueuedComposer
@@ -151,6 +156,7 @@ import kotlinx.coroutines.Job
 import kotlinx.coroutines.TimeoutCancellationException
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -256,6 +262,9 @@ class HarnessChatViewModel(
         val cotExpanded: Set<Int> = emptySet(),
         /** Generation of the live turn; a tool sheet opened on it stays with it (plane/ToolSheet.kt). */
         val liveTurn: Long = 0L,
+        /** Settings → Messages (UX-SPEC §7): token stats line, action row always shown. */
+        val showStats: Boolean = false,
+        val actionRowAlways: Boolean = false,
     )
 
     private val _state = MutableStateFlow(
@@ -271,6 +280,12 @@ class HarnessChatViewModel(
         ),
     )
     val state: StateFlow<UiState> = _state.asStateFlow()
+
+    /** Staged upload uri → the local content uri it came from (thumbnails; in memory only). */
+    private val localPreviews = java.util.concurrent.ConcurrentHashMap<String, Uri>()
+
+    /** Staged upload uri → the image bytes [stageBytes] sent (in memory, insertion order, bounded). */
+    private val localPreviewBytes = LinkedHashMap<String, ByteArray>()
 
     private val machine = TranscriptMachine(nowMs = { System.currentTimeMillis() })
     private var attach: SessionAttach? = null
@@ -459,7 +474,7 @@ class HarnessChatViewModel(
         viewModelScope.launch { boot() }
         viewModelScope.launch {
             c.settings.prefs.collect { p ->
-                _state.update { it.copy(termFontSp = p.terminalFontSp, codeLineNumbers = p.codeLineNumbers, codeWrap = p.codeWrap, favouriteModels = p.favouriteModels, termRemote = terminalNodeIsRemote(nodeDenUrl, p.entryUrl)) }
+                _state.update { it.copy(termFontSp = p.terminalFontSp, codeLineNumbers = p.codeLineNumbers, codeWrap = p.codeWrap, favouriteModels = p.favouriteModels, termRemote = terminalNodeIsRemote(nodeDenUrl, p.entryUrl), showStats = p.showStats, actionRowAlways = p.actionRowAlways) }
             }
         }
     }
@@ -579,24 +594,111 @@ class HarnessChatViewModel(
             is EnqueueResult.Uploading -> {
                 _state.update { it.copy(composer = keptComposer, attachments = st.attachments, errorCode = ERR_UPLOADING) }
             }
-            is EnqueueResult.Accepted -> {
-                publishMachine()
-                viewModelScope.launch {
-                    runCatching { pump.pump() }.onSuccess {
-                        if (pump.pendingOnServer) {
-                            injectCompleted = injectCompletedAfterSend(ok = false, turnInFlight409 = true)
-                        }
-                        publishMachine()
-                    }.onFailure { e ->
-                        if (e is SpawnNeedsConfirm) {
-                            publishMachine()
-                            return@onFailure
-                        }
-                        // The failed item's text / chips / edit are back via onPumpOutcome.
-                        AndroidLogger.warn("RivetHub", "send failed: ${e.javaClass.simpleName}: ${e.message}", e)
-                        publishMachine()
-                    }
+            is EnqueueResult.Accepted -> pumpAccepted { s, _ -> s } // a hard failure is surfaced and restored by onPumpOutcome
+        }
+    }
+
+    /** Pump a just-accepted outbound item; [onFailure] folds a send failure into state. */
+    private fun pumpAccepted(onFailure: (UiState, Throwable) -> UiState) {
+        publishMachine()
+        viewModelScope.launch {
+            runCatching { pump.pump() }.onSuccess {
+                if (pump.pendingOnServer) {
+                    injectCompleted = injectCompletedAfterSend(ok = false, turnInFlight409 = true)
                 }
+                publishMachine()
+            }.onFailure { e ->
+                AndroidLogger.warn("RivetHub", "send failed: ${e.javaClass.simpleName}: ${e.message}", e)
+                publishMachine()
+                _state.update { onFailure(it, e) }
+            }
+        }
+    }
+
+    /**
+     * Regenerate (UX-SPEC §1.3; the screen confirms first): the den has no
+     * replace route, so the nearest preceding user text (attachment lines
+     * stripped) goes out again as a NEW turn through the normal send path.
+     * The composer is left alone.
+     */
+    fun regenerate(index: Int) {
+        val st = _state.value
+        if (st.inFlight) return
+        val text = regenerateSource(st.turns, index) ?: return
+        when (pump.tryEnqueue(text)) {
+            is EnqueueResult.Uploading -> _state.update { it.copy(error = composerOnSendAttempt(), errorCode = ERR_UPLOADING) }
+            is EnqueueResult.Accepted -> pumpAccepted { s, e -> s.copy(errors = stackError(s.errors, e)) }
+        }
+    }
+
+    /**
+     * Tap-to-edit on a user bubble: pre-fill the composer with that turn's
+     * text (attachments stripped); Send submits it as a NEW turn.
+     */
+    fun editFromTurn(index: Int) {
+        val text = editSource(_state.value.turns, index) ?: return
+        beginEditCompat(text)
+    }
+
+    /**
+     * Shim for slice U5's composer edit API (`beginEdit(text)` + the
+     * "Editing ✕" banner), which is not in this tree. The integrator replaces
+     * this body with `beginEdit(text)` at merge.
+     */
+    private fun beginEditCompat(text: String) = setComposer(text)
+
+    /**
+     * The namespace [attachmentBytes] resolves uris in (session node origin +
+     * identity generation), for the process-wide thumbnail cache key.
+     */
+    val attachmentNamespace: String = imageSourceNamespace(nodeDenUrl, identityGen)
+
+    /**
+     * Bytes for an attachment thumbnail. A file this VM uploaded is read back
+     * from its local content uri (or, for [stageBytes], the bytes it kept);
+     * otherwise a vetted same-node url ([attachmentFetchUrl]) is fetched with
+     * the device mTLS client. Null when none exists (the den serves no GET for
+     * staged uploads) — the chip then falls back to a named pill. Cancelling
+     * the caller cancels the read and rethrows CancellationException.
+     */
+    suspend fun attachmentBytes(uri: String): ByteArray? {
+        synchronized(localPreviewBytes) { localPreviewBytes[uri] }?.let { return it }
+        localPreviews[uri]?.let { local ->
+            return withContext(Dispatchers.IO) {
+                try {
+                    openStream(local)?.let { readCapped(it, PREVIEW_MAX_BYTES) { ensureActive() } }
+                } catch (e: CancellationException) {
+                    throw e
+                } catch (e: Exception) {
+                    null
+                }
+            }
+        }
+        val url = attachmentFetchUrl(uri, nodeDenUrl) ?: return null
+        return try {
+            c.harness(nodeDenUrl).fetchBytes(url, PREVIEW_MAX_BYTES)
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            null
+        }
+    }
+
+    /**
+     * Keeps [bytes] as the in-session preview for staged [uri]. The kept set is
+     * bounded to PREVIEW_MAX_BYTES in total; the oldest entries go first.
+     */
+    private fun keepPreviewBytes(uri: String, bytes: ByteArray) {
+        if (bytes.size.toLong() > PREVIEW_MAX_BYTES) return
+        synchronized(localPreviewBytes) {
+            localPreviewBytes[uri] = bytes
+            var total = localPreviewBytes.values.sumOf { it.size.toLong() }
+            val iter = localPreviewBytes.entries.iterator()
+            while (total > PREVIEW_MAX_BYTES && iter.hasNext()) {
+                val e = iter.next()
+                if (e.key == uri) continue
+                total -= e.value.size.toLong()
+                iter.remove()
             }
         }
     }
@@ -877,6 +979,7 @@ class HarnessChatViewModel(
                         openStream(uri) ?: throw java.io.IOException("could not open attachment")
                     }
                 }
+                if (resolvedMime?.startsWith("image/") == true) localPreviews[staged.uri] = uri
                 _state.update { s ->
                     s.copy(
                         attachments = s.attachments.map { a ->
@@ -931,6 +1034,7 @@ class HarnessChatViewModel(
                 val staged = withContext(Dispatchers.IO) {
                     c.harness(base).stageUpload(bytes, name, resolvedMime)
                 }
+                if (resolvedMime?.startsWith("image/") == true) keepPreviewBytes(staged.uri, bytes)
                 _state.update { s ->
                     s.copy(
                         attachments = s.attachments.map { a ->
@@ -1719,5 +1823,8 @@ class HarnessChatViewModel(
         const val ERR_IMAGE_ONLY = ERR_CODE_IMAGE_ONLY
         const val ERR_IMAGE_UNSUPPORTED = ERR_CODE_IMAGE_UNSUPPORTED
         const val ERR_COMPACT_BUSY = "compact_busy"
+
+        /** Largest attachment body read for a thumbnail or the full-screen view. */
+        const val PREVIEW_MAX_BYTES: Long = 20L * 1024L * 1024L
     }
 }

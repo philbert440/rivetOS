@@ -8,6 +8,7 @@ object Radius {
     val md = 6.dp
     val lg = 8.dp
     val xl = 12.dp
+    /** Message bubble corners (UX-SPEC §0.4 soft shapes). */
     val xxl = 14.dp
     val full = 999.dp
 }

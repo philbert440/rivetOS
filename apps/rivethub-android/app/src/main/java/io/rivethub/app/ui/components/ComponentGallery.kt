@@ -321,6 +321,16 @@ private fun GalleryThemeBlock(label: String, mode: ThemeMode) {
                     text = "Reply with exactly the word PONG and nothing else.",
                     time = "07:00 PM",
                     onCopy = {},
+                    attachments = listOf(
+                        io.rivethub.app.plane.AttachedRef("/up/notes.pdf", "notes.pdf", isImage = false),
+                    ),
+                    actionRow = {
+                        MessageActionRow(
+                            actions = io.rivethub.app.plane.messageActions("user", inFlight = false, hasPrecedingUser = false),
+                            onAction = {},
+                            onMore = {},
+                        )
+                    },
                 )
                 Spacer(Modifier.height(12.dp))
                 val gallerySteps = remember {
@@ -353,6 +363,13 @@ private fun GalleryThemeBlock(label: String, mode: ThemeMode) {
                     onToolTap = {},
                     stats = statsLine(50_202, 5, 30_032),
                     onCopy = {},
+                    actionRow = {
+                        MessageActionRow(
+                            actions = io.rivethub.app.plane.messageActions("assistant", inFlight = false, hasPrecedingUser = true),
+                            onAction = {},
+                            onMore = {},
+                        )
+                    },
                 )
                 Spacer(Modifier.height(12.dp))
                 GalleryH("Error stack")

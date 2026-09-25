@@ -58,6 +58,9 @@ data class Prefs(
     val favouriteModels: Set<String> = emptySet(),
     /** Post an OS notification when a task completes while the app is in the background. Off by default. */
     val taskNotifications: Boolean = false,
+    /** Chat message display (UX-SPEC §7): token stats under assistant turns, action row always shown. */
+    val showStats: Boolean = false,
+    val actionRowAlways: Boolean = false,
 )
 
 class Settings(context: Context) {
@@ -94,6 +97,8 @@ class Settings(context: Context) {
             codeWrap = p[CODE_WRAP] ?: false,
             favouriteModels = p[FAVOURITE_MODELS] ?: emptySet(),
             taskNotifications = p[TASK_NOTIFICATIONS] ?: false,
+            showStats = p[SHOW_STATS] ?: false,
+            actionRowAlways = p[ACTION_ROW_ALWAYS] ?: false,
         )
     }
 
@@ -114,6 +119,8 @@ class Settings(context: Context) {
     suspend fun setExpTasks(v: Boolean) = ds.edit { it[EXP_TASKS] = v }
     suspend fun setExpWorkflows(v: Boolean) = ds.edit { it[EXP_WORKFLOWS] = v }
     suspend fun setTaskNotifications(v: Boolean) = ds.edit { it[TASK_NOTIFICATIONS] = v }
+    suspend fun setShowStats(v: Boolean) = ds.edit { it[SHOW_STATS] = v }
+    suspend fun setActionRowAlways(v: Boolean) = ds.edit { it[ACTION_ROW_ALWAYS] = v }
     suspend fun setTerminalFontSp(sp: Int) = ds.edit { it[TERM_FONT] = sp.coerceIn(10, 22) }
     suspend fun setViewNodeId(id: String) = ds.edit { it[VIEW_NODE] = id }
     suspend fun setCurrentAgentId(id: String) = ds.edit { it[CURRENT_AGENT] = id }
@@ -212,6 +219,8 @@ class Settings(context: Context) {
         private val EXP_WORKFLOWS = booleanPreferencesKey("expWorkflows")
         private val FAVOURITE_MODELS = stringSetPreferencesKey("favouriteModels")
         private val TASK_NOTIFICATIONS = booleanPreferencesKey("taskNotifications")
+        private val SHOW_STATS = booleanPreferencesKey("showStats")
+        private val ACTION_ROW_ALWAYS = booleanPreferencesKey("actionRowAlways")
 
         private val mapSer = MapSerializer(String.serializer(), String.serializer())
         private val longMapSer = MapSerializer(String.serializer(), Long.serializer())
