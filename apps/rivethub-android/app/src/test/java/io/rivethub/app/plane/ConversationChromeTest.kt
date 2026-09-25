@@ -80,4 +80,34 @@ class ConversationChromeTest {
         assertEquals(NewConversationAction.PickAgent, newConversationAction("gone", listOf("agent-1")))
         assertEquals(NewConversationAction.PickAgent, newConversationAction("agent-1", emptyList()))
     }
+
+    @Test
+    fun `chat plus prefers its session agent over the current agent`() {
+        assertEquals(
+            NewConversationAction.ForAgent("session"),
+            newConversationAction("current", listOf("current", "session"), "session"),
+        )
+    }
+
+    @Test
+    fun `chat plus uses the current agent when the session agent is missing or blank`() {
+        for (session in listOf(null, "", " ", "gone")) {
+            assertEquals(
+                NewConversationAction.ForAgent("current"),
+                newConversationAction("current", listOf("current"), session),
+            )
+        }
+    }
+
+    @Test
+    fun `chat plus falls back only when neither agent is available`() {
+        assertEquals(
+            NewConversationAction.PickAgent,
+            newConversationAction("gone-current", listOf("other"), "gone-session"),
+        )
+        assertEquals(
+            NewConversationAction.ForAgent("session"),
+            newConversationAction("gone-current", listOf("session"), "session"),
+        )
+    }
 }

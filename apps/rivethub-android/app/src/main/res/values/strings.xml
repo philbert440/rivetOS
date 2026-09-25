@@ -224,4 +224,14 @@
     <string name="save_code">Save code</string>
     <string name="code_saved">Code saved</string>
     <string name="code_save_failed">Could not save code</string>
+    <string name="terminal_chip">Terminal</string>
+    <string name="search_messages">Search messages</string>
+    <string name="close_search">Close search</string>
+    <string name="search_messages_hint">Search messages…</string>
+    <string name="search_type_to_find">Type to find a message</string>
+    <string name="new_chat">New chat</string>
+    <string name="search_no_matches">No messages match</string>
+    <string name="action_history">History</string>
+    <string name="rename_needs_turns">Send a message before renaming this conversation</string>
+    <string name="cd_conversation_title">Conversation title</string>
 </resources>

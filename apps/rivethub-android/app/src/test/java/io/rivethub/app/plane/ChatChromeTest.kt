@@ -183,4 +183,31 @@ class ChatChromeTest {
         assertTrue(items.indexOf(NarrowHeaderItem.Stop) < items.indexOf(NarrowHeaderItem.Segmented))
         assertTrue(items.indexOf(NarrowHeaderItem.Remote) < items.indexOf(NarrowHeaderItem.Context))
     }
+    @Test
+    fun `v2 chat header ordering covers running remote and search states`() {
+        for (running in listOf(false, true)) {
+            for (remote in listOf(false, true)) {
+                for (search in listOf(false, true)) {
+                    val expected = mutableListOf(NarrowHeaderItem.Menu, NarrowHeaderItem.TitleBlock)
+                    if (remote) expected.add(NarrowHeaderItem.Remote)
+                    if (running) expected.add(NarrowHeaderItem.Stop)
+                    if (!search) expected.add(NarrowHeaderItem.TerminalChip)
+                    expected.add(NarrowHeaderItem.Search)
+                    if (!search) expected.add(NarrowHeaderItem.NewChat)
+                    assertEquals(expected, headerItemsV2(running, remote, search, SessionMode.Chat))
+                }
+            }
+        }
+    }
+
+    @Test
+    fun `v2 terminal header is unchanged including while search is active`() {
+        for (running in listOf(false, true)) {
+            for (remote in listOf(false, true)) {
+                for (search in listOf(false, true)) {
+                    assertEquals(narrowHeaderItems(running, remote), headerItemsV2(running, remote, search, SessionMode.Terminal))
+                }
+            }
+        }
+    }
 }

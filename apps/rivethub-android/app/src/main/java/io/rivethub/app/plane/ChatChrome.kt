@@ -123,7 +123,28 @@ fun pickerRowCompact(widthDp: Float): Boolean = widthDp < PICKER_COMPACT_MAX_DP
  * opens every session against its own node, so it passes `remote = false`
  * today; the slot exists for parity.
  */
-enum class NarrowHeaderItem { Menu, Title, Remote, Context, Stop, Segmented, History }
+enum class NarrowHeaderItem { Menu, Title, Remote, Context, Stop, Segmented, History, TitleBlock, TerminalChip, Search, NewChat }
+
+fun headerItemsV2(
+    running: Boolean,
+    remote: Boolean,
+    searchActive: Boolean,
+    mode: SessionMode,
+): List<NarrowHeaderItem> {
+    if (mode == SessionMode.Terminal) return narrowHeaderItems(running, remote)
+    return buildList {
+        add(NarrowHeaderItem.Menu)
+        add(NarrowHeaderItem.TitleBlock)
+        if (remote) add(NarrowHeaderItem.Remote)
+        if (running) add(NarrowHeaderItem.Stop)
+        if (!searchActive) add(NarrowHeaderItem.TerminalChip)
+        add(NarrowHeaderItem.Search)
+        if (!searchActive) add(NarrowHeaderItem.NewChat)
+    }
+}
+
+fun ContextBarView.compactLabel(): String =
+    String.format(Locale.US, "%.1fk/%d%%", tokens / 1000.0, pct)
 
 fun narrowHeaderItems(running: Boolean, remote: Boolean): List<NarrowHeaderItem> = buildList {
     add(NarrowHeaderItem.Menu)
