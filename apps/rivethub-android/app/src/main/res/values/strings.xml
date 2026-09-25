@@ -130,8 +130,6 @@
     <string name="tap_terminal_retry">tap Terminal to retry</string>
     <string name="ws_reconnecting_ellipsis">reconnecting…</string>
     <string name="cd_copy_message">copy message</string>
-    <string name="cd_copy_code">copy code</string>
-    <string name="action_copy">copy</string>
     <string name="cd_copied">copied</string>
     <string name="cd_remove_attachment">remove %1$s</string>
     <string name="node_picker">Node</string>
@@ -214,4 +212,16 @@
     <string name="updates_install_body">The build is downloaded from the connected node (%1$s), verified, and the installer is launched — RivetHub will QUIT and you reopen it when the install finishes.</string>
     <string name="updates_install_confirm">Install v%1$s</string>
     <string name="updates_hint_unknown_sources">allow installs from RivetHub</string>
+    <string name="section_code">Code</string>
+    <string name="code_line_numbers">Line numbers</string>
+    <string name="code_wrap">Wrap long lines</string>
+    <plurals name="code_more_lines">
+        <item quantity="one">%1$d more line</item>
+        <item quantity="other">%1$d more lines</item>
+    </plurals>
+    <string name="code_collapse">Collapse</string>
+    <string name="copy_code">Copy code</string>
+    <string name="save_code">Save code</string>
+    <string name="code_saved">Code saved</string>
+    <string name="code_save_failed">Could not save code</string>
 </resources>

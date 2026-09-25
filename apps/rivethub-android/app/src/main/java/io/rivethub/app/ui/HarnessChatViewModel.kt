@@ -166,6 +166,8 @@ class HarnessChatViewModel(
         val termStatus: TermStatus = TermStatus.Closed,
         val termRev: Int = 0,
         val termFontSp: Int = 13,
+        val codeLineNumbers: Boolean = false,
+        val codeWrap: Boolean = false,
         val termCtrl: Boolean = false,
         val attachCommand: String? = null,
         val termClipboard: String? = null,
@@ -316,7 +318,7 @@ class HarnessChatViewModel(
         viewModelScope.launch { boot() }
         viewModelScope.launch {
             c.settings.prefs.collect { p ->
-                _state.update { it.copy(termFontSp = p.terminalFontSp) }
+                _state.update { it.copy(termFontSp = p.terminalFontSp, codeLineNumbers = p.codeLineNumbers, codeWrap = p.codeWrap) }
             }
         }
     }
@@ -657,7 +659,7 @@ class HarnessChatViewModel(
     private suspend fun boot() {
         val prefs = c.settings.snapshot()
         val mode = parseSessionMode(prefs.sessionModes[_state.value.sessionId])
-        _state.update { it.copy(mode = mode, termFontSp = prefs.terminalFontSp) }
+        _state.update { it.copy(mode = mode, termFontSp = prefs.terminalFontSp, codeLineNumbers = prefs.codeLineNumbers, codeWrap = prefs.codeWrap) }
         if (c.identity.generation() != identityGen) return
         try {
             val hg = c.harness(nodeDenUrl)

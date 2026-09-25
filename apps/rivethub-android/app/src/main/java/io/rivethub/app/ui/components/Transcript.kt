@@ -104,6 +104,8 @@ fun TranscriptAssistantTurn(
     onCopy: (String) -> Unit,
     thinkingOpenDefault: Boolean = false,
     modifier: Modifier = Modifier,
+    codeLineNumbers: Boolean = false,
+    codeWrap: Boolean = false,
 ) {
     Column(
         modifier.fillMaxWidth(),
@@ -124,6 +126,8 @@ fun TranscriptAssistantTurn(
                 Box(Modifier.widthIn(max = maxWidth * 0.85f).fillMaxWidth()) {
                     MarkdownBody(
                         text,
+                        codeLineNumbers = codeLineNumbers,
+                        codeWrap = codeWrap,
                         modifier = Modifier
                             .padding(end = Dimens.touchTarget)
                             .combinedClickable(
@@ -321,18 +325,19 @@ fun CopyGlyph(
     onCopy: () -> Unit,
     modifier: Modifier = Modifier,
     copied: Boolean = false,
+    contentDescription: String = stringResource(R.string.cd_copy_message),
 ) {
     val colors = RivetTheme.colors
     val scope = rememberCoroutineScope()
     var flash by remember { mutableStateOf(copied) }
     val shape = RoundedCornerShape(Radius.sm)
-    val cd = stringResource(if (flash) R.string.cd_copied else R.string.cd_copy_message)
+    val cd = if (flash) stringResource(R.string.cd_copied) else contentDescription
     Box(
         modifier
             .size(Dimens.touchTarget)
             .clip(shape)
             .semantics {
-                contentDescription = cd
+                this.contentDescription = cd
                 role = Role.Button
             }
             .clickable(role = Role.Button, onClick = {

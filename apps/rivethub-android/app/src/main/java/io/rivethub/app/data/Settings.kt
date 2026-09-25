@@ -47,6 +47,8 @@ data class Prefs(
     val expFiles: Boolean = false,
     val expTasks: Boolean = false,
     val expWorkflows: Boolean = false,
+    val codeLineNumbers: Boolean = false,
+    val codeWrap: Boolean = false,
 )
 
 class Settings(context: Context) {
@@ -78,6 +80,8 @@ class Settings(context: Context) {
             expFiles = p[EXP_FILES] ?: false,
             expTasks = p[EXP_TASKS] ?: false,
             expWorkflows = p[EXP_WORKFLOWS] ?: false,
+            codeLineNumbers = p[CODE_LINE_NUMBERS] ?: false,
+            codeWrap = p[CODE_WRAP] ?: false,
         )
     }
 
@@ -91,6 +95,8 @@ class Settings(context: Context) {
     suspend fun removeExtraNode(url: String) = ds.edit { it[EXTRA_NODES] = (it[EXTRA_NODES] ?: emptySet()) - url }
 
     suspend fun setThemeMode(mode: String) = ds.edit { it[THEME] = mode }
+    suspend fun setCodeLineNumbers(v: Boolean) = ds.edit { it[CODE_LINE_NUMBERS] = v }
+    suspend fun setCodeWrap(v: Boolean) = ds.edit { it[CODE_WRAP] = v }
     suspend fun setExpFiles(v: Boolean) = ds.edit { it[EXP_FILES] = v }
     suspend fun setExpTasks(v: Boolean) = ds.edit { it[EXP_TASKS] = v }
     suspend fun setExpWorkflows(v: Boolean) = ds.edit { it[EXP_WORKFLOWS] = v }
@@ -158,6 +164,8 @@ class Settings(context: Context) {
         private val AGENTS_COLLAPSED = booleanPreferencesKey("agentsCollapsed")
         private val LAST_SESSION_KEY = stringPreferencesKey("lastSessionKey")
         private val LAST_SESSION_NODE = stringPreferencesKey("lastSessionNode")
+        private val CODE_LINE_NUMBERS = booleanPreferencesKey("codeLineNumbers")
+        private val CODE_WRAP = booleanPreferencesKey("codeWrap")
         private val EXP_FILES = booleanPreferencesKey("expFiles")
         private val EXP_TASKS = booleanPreferencesKey("expTasks")
         private val EXP_WORKFLOWS = booleanPreferencesKey("expWorkflows")

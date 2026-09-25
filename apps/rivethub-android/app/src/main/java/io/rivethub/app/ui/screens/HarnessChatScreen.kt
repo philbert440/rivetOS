@@ -410,6 +410,8 @@ private fun ChatTranscript(vm: HarnessChatViewModel, accent: androidx.compose.ui
                 )
             } else {
                 TranscriptAssistantTurn(
+                    codeLineNumbers = st.codeLineNumbers,
+                    codeWrap = st.codeWrap,
                     text = body,
                     thinking = thinking.takeIf { it.isNotBlank() },
                     model = turn.model,
@@ -426,6 +428,8 @@ private fun ChatTranscript(vm: HarnessChatViewModel, accent: androidx.compose.ui
         if (st.inFlight || st.liveText.isNotBlank() || st.liveReasoning.isNotBlank() || st.liveTools.isNotEmpty()) {
             item {
                 TranscriptAssistantTurn(
+                    codeLineNumbers = st.codeLineNumbers,
+                    codeWrap = st.codeWrap,
                     text = st.liveText,
                     thinking = st.liveReasoning.takeIf { it.isNotBlank() },
                     model = st.model.takeIf { it.isNotBlank() },
