@@ -143,6 +143,8 @@ import kotlinx.coroutines.delay
 @Composable
 fun HarnessChatScreen(
     vm: HarnessChatViewModel,
+    tasksVm: io.rivethub.app.ui.TasksViewModel,
+    onTaskCreated: (String) -> Unit,
     onOpenDrawer: () -> Unit,
     onOpenHistory: () -> Unit,
     hubVm: HubViewModel,
@@ -169,6 +171,18 @@ fun HarnessChatScreen(
             delay(2_000)
             renameNotice = 0
         }
+    }
+    var delegateGoal by remember { mutableStateOf<String?>(null) }
+    delegateGoal?.let { goal ->
+        io.rivethub.app.ui.components.DelegateSheet(
+            vm = tasksVm, initialGoal = goal,
+            onDismiss = { delegateGoal = null },
+            onCreated = { id ->
+                vm.clearComposer()
+                delegateGoal = null
+                onTaskCreated(id)
+            },
+        )
     }
     val ctx = LocalContext.current
     val chatLabel = stringResource(R.string.mode_chat)
@@ -474,6 +488,7 @@ fun HarnessChatScreen(
                 onAttach = { pick.launch(if (nativeImages) arrayOf("image/*") else arrayOf("*/*")) },
                 onSend = vm::send,
                 onStop = vm::stop,
+                onDelegate = { delegateGoal = io.rivethub.app.plane.delegateGoalFromComposer(st.composer) },
                 enabled = composerEnabled,
                 editing = st.editing != null,
                 onCancelEdit = vm::cancelEdit,

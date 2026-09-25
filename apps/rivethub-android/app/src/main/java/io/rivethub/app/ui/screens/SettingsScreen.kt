@@ -358,11 +358,6 @@ fun SettingsScreen(
                     onChange = { v -> scope.launch { c.settings.setExpFiles(v) } },
                 )
                 ToggleRow(
-                    label = stringResource(R.string.nav_tasks),
-                    checked = prefs.expTasks,
-                    onChange = { v -> scope.launch { c.settings.setExpTasks(v) } },
-                )
-                ToggleRow(
                     label = stringResource(R.string.nav_workflows),
                     checked = prefs.expWorkflows,
                     onChange = { v -> scope.launch { c.settings.setExpWorkflows(v) } },

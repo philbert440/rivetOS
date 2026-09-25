@@ -18,7 +18,7 @@ import io.rivethub.app.ui.theme.RivetFonts
 import io.rivethub.app.ui.theme.RivetTheme
 import io.rivethub.app.ui.theme.RivetType
 
-enum class PillTone { Dim, Em, Warn }
+enum class PillTone { Dim, Em, Warn, Good, Bad }
 
 @Composable
 fun Pill(
@@ -32,6 +32,8 @@ fun Pill(
         PillTone.Dim -> colors.inkDim
         PillTone.Em -> colors.em
         PillTone.Warn -> colors.warn
+        PillTone.Good -> colors.emDim
+        PillTone.Bad -> colors.red
     }
     val shape = RoundedCornerShape(Shape.row)
     Box(

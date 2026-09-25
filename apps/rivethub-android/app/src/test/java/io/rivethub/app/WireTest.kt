@@ -1,5 +1,8 @@
 package io.rivethub.app
 
+import io.rivethub.app.gateway.*
+import kotlinx.serialization.json.jsonObject
+import kotlinx.serialization.json.jsonPrimitive
 import io.rivethub.app.gateway.AgentPreset
 import io.rivethub.app.gateway.AgentsListResponse
 import io.rivethub.app.gateway.CatalogAgent
@@ -21,6 +24,45 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class WireTest {
+    @Test fun `task fixtures preserve full detail and tolerate future fields`() {
+        val response = wireJson.decodeFromString(TaskResponse.serializer(), """{"task":{
+            "id":"12345678-1234-4234-8234-123456789abc","goal":"Review","contextRefs":[{"kind":"file","path":"README.md"}],
+            "acceptanceCriteria":[{"id":"c1","description":"Tests pass","kind":"manual","future":true}],
+            "spec":{"branch":"main"},"executor":"harness-session","executorTarget":"claude-code","agentId":"reviewer",
+            "requestedBy":"rivethub","origin":"api","parentTaskId":"parent","chainDepth":1,"nodeAffinity":"den-a",
+            "claimedBy":"worker","budget":{"maxTokens":10},"usage":{"tokens":5},"status":"completed","attempt":1,
+            "maxAttempts":3,"pendingMessage":"steer","error":"diagnostic","result":{"verdict":"pass","summary":"Done"},
+            "conversationId":"conversation","sessionKey":"session","harnessSessionIds":["session"],"eval":{"verdict":"verified"},
+            "evalAttempt":1,"createdAt":100,"updatedAt":200,"startedAt":110,"lastHeartbeatAt":180,"completedAt":200,"durationMs":90,
+            "future":true}}""")
+        val task = response.task
+        assertEquals("harness-session", task.executor)
+        assertEquals("den-a", task.nodeAffinity)
+        assertEquals("Tests pass", task.acceptanceCriteria.single().description)
+        assertEquals("Done", task.result!!["summary"]!!.jsonPrimitive.content)
+        assertEquals(200L, task.completedAt)
+        assertEquals(90L, task.durationMs)
+        assertEquals(task, wireJson.decodeFromString(TaskWire.serializer(), wireJson.encodeToString(TaskWire.serializer(), task)))
+        assertEquals(TaskWire(), wireJson.decodeFromString(TaskWire.serializer(), "{}"))
+        assertTrue(wireJson.decodeFromString(TasksListResponse.serializer(), "{}" ).tasks.isEmpty())
+        assertEquals(listOf(task), wireJson.decodeFromString(TasksListResponse.serializer(),
+            "{\"tasks\":[${wireJson.encodeToString(TaskWire.serializer(), task)}]}").tasks)
+    }
+
+    @Test fun `task create explicitly sends requester and omits optional criteria and executor`() {
+        val body = wireJson.parseToJsonElement(wireJson.encodeToString(TaskCreateRequest.serializer(), TaskCreateRequest("Review", "reviewer"))).jsonObject
+        assertEquals("rivethub", body["requestedBy"]!!.jsonPrimitive.content)
+        assertFalse(body.containsKey("executor"))
+        assertFalse(body.containsKey("acceptanceCriteria"))
+        val withCriteria = TaskCreateRequest("Review", "reviewer", listOf(TaskAcceptanceCriterion("c1", "Tests pass", "manual")))
+        val encoded = wireJson.encodeToString(TaskCreateRequest.serializer(), withCriteria)
+        assertTrue(encoded.contains("\"kind\":\"manual\""))
+        assertEquals(withCriteria, wireJson.decodeFromString(TaskCreateRequest.serializer(), encoded))
+        assertEquals("{\"message\":\"Continue\"}", wireJson.encodeToString(TaskSteerRequest.serializer(), TaskSteerRequest("Continue")))
+        assertEquals(TaskKillResponse(true, "running"), wireJson.decodeFromString(TaskKillResponse.serializer(), """{"ok":true,"prior":"running","future":1}"""))
+        assertNull(wireJson.decodeFromString(TaskKillResponse.serializer(), """{"ok":true}""").prior)
+    }
+
     @Test fun `message frame is flattened with kind`() {
         val f = parseSessionFrame("""{"kind":"message","id":"m1","sessionId":"s1","role":"assistant","text":"hi","ts":5,"tools":[{"name":"Bash","status":"done"}]}""")
         val m = (f as SessionFrame.Message).message

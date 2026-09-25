@@ -17,6 +17,8 @@ sealed interface Screen {
         val transport: String? = null,
     ) : Screen
     data object Gallery : Screen
+    data object Tasks : Screen
+    data class TaskDetail(val id: String) : Screen
     /** Native Memory wiki hub (drawer Memory row); the topic page pushes over it. */
     data object Memory : Screen
     data class MemoryTopic(val slug: String) : Screen

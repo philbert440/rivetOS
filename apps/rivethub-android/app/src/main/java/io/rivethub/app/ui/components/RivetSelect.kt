@@ -1,5 +1,9 @@
 package io.rivethub.app.ui.components
 
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
+import androidx.compose.ui.draw.alpha
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -30,7 +34,7 @@ import io.rivethub.app.ui.theme.Shape
 import io.rivethub.app.ui.theme.RivetTheme
 import io.rivethub.app.ui.theme.RivetType
 
-data class SelectOption(val value: String, val label: String)
+typealias SelectOption = io.rivethub.app.plane.SelectOption
 
 /** Desktop `select.tsx` as a bottom sheet (phone popover stand-in). */
 @Composable
@@ -105,31 +109,36 @@ fun RivetSelectSheet(
                 modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp),
             )
         }
-        options.forEach { option ->
-            val active = option.value == value
-            Row(
-                Modifier
-                    .fillMaxWidth()
-                    .heightIn(min = Dimens.touchTarget)
-                    .clip(RoundedCornerShape(Radius.sm))
-                    .clickable(role = Role.Button, onClick = { onChange(option.value) })
-                    .padding(horizontal = 8.dp, vertical = 6.dp),
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(8.dp),
-            ) {
-                Text(
-                    if (active) "●" else "○",
-                    color = if (active) colors.em else colors.inkDim,
-                    style = RivetType.mono11,
-                )
-                Text(
-                    option.label,
-                    color = if (active) colors.em else colors.inkDim,
-                    style = RivetType.mono11.copy(fontSize = 13.sp),
-                    modifier = Modifier.weight(1f),
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis,
-                )
+        Column(Modifier.verticalScroll(rememberScrollState())) {
+            options.forEach { option ->
+                val active = option.value == value
+                Row(
+                    Modifier
+                        .fillMaxWidth()
+                        .alpha(if (option.enabled) 1f else 0.5f)
+                        .heightIn(min = Dimens.touchTarget)
+                        .clip(RoundedCornerShape(Radius.sm))
+                        .clickable(enabled = option.enabled, role = Role.Button, onClick = { onChange(option.value) })
+                        .padding(horizontal = 8.dp, vertical = 6.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                ) {
+                    Text(
+                        if (active) "●" else "○",
+                        color = if (active) colors.em else colors.inkDim,
+                        style = RivetType.mono11,
+                    )
+                    Column(Modifier.weight(1f)) {
+                        Text(
+                            option.label,
+                            color = if (active) colors.em else colors.inkDim,
+                            style = RivetType.mono11.copy(fontSize = 13.sp),
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                        )
+                        option.helper?.let { Text(it, color = colors.inkDim, style = RivetType.xs) }
+                    }
+                }
             }
         }
     }
