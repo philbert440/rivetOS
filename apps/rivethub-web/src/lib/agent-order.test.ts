@@ -63,6 +63,17 @@ describe('sortOrderWrites', () => {
       ['c', 2],
     ])
   })
+
+  it('writes an id overlaid with NaN even when the snapshot already has that index', () => {
+    const agents = [a('a', 0), a('b', 1)]
+    const known = new Map<string, number | undefined>([
+      ['a', 0],
+      ['b', Number.NaN],
+    ])
+    expect(
+      sortOrderWrites(agents, ['a', 'b'], known).map((w) => [w.agent.id, w.sortOrder]),
+    ).toEqual([['b', 1]])
+  })
 })
 
 describe('applyPendingOrder', () => {

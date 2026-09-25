@@ -801,14 +801,14 @@ const mutationError = (err: unknown): string =>
 function orderNodeLabel(
   agent: Pick<RosterAgent, 'node' | 'sourceNodeBaseUrl' | 'listedBaseUrl'>,
 ): string {
+  const target = agentUpdateTarget(agent).trim()
+  const host = agent.sourceNodeBaseUrl.trim()
+  // agentUpdateTarget sends the PATCH to listedBaseUrl when the hosting URL is
+  // empty. Name that den, not the unresolved node name.
+  if (target && target !== host) return urlLabel(target)
   const name = agent.node?.trim()
   if (name) return name
-  const target = agentUpdateTarget(agent).trim()
   return target ? urlLabel(target) : 'node unknown'
-}
-
-function sameIdOrder(a: readonly string[] | null, b: readonly string[]): boolean {
-  return a !== null && a.length === b.length && a.every((id, index) => id === b[index])
 }
 
 function storedSortKey(agents: readonly { id: string; sortOrder?: number }[]): string {
@@ -900,9 +900,9 @@ export function AgentsSection(props: { compact?: boolean }): JSX.Element {
 
   // Latest sortOrder this client knows. Re-seeded from the query whenever no
   // save is pending, then updated from each successful PATCH so the next save
-  // does not diff a stale snapshot.
+  // does not diff a stale snapshot. An entry of `NaN` means unknown → always write.
   const knownSortOrder = useRef<Map<string, number | undefined>>(new Map())
-  const latestRequested = useRef<string[] | null>(null)
+  const reorderSeq = useRef(0)
   const savesPending = useRef(0)
   const seededFrom = useRef<string | null>(null)
   const focusRowId = useRef<string | null>(null)
@@ -923,8 +923,8 @@ export function AgentsSection(props: { compact?: boolean }): JSX.Element {
   const [dropIndex, setDropIndex] = useState<number | null>(null)
   const reorderMutation = useMutation({
     scope: { id: 'agent-order' },
-    mutationFn: async (orderedIds: string[]) => {
-      const writes = sortOrderWrites(storedAgents, orderedIds, knownSortOrder.current)
+    mutationFn: async ({ ids }: { ids: string[]; seq: number }) => {
+      const writes = sortOrderWrites(storedAgents, ids, knownSortOrder.current)
       const settled = await Promise.allSettled(
         writes.map(async ({ agent, sortOrder }) => {
           const nodeLabel = orderNodeLabel(agent)
@@ -934,11 +934,13 @@ export function AgentsSection(props: { compact?: boolean }): JSX.Element {
               await gatewayFor(agentUpdateTarget(agent))
             ).agentUpdate(agent.id, { sortOrder })
           } catch (err) {
+            knownSortOrder.current.set(agent.id, Number.NaN)
             const message = err instanceof Error ? err.message : 'request failed'
             throw new Error(`${nodeLabel}: ${message}`, { cause: err })
           }
           const echoed = updated.agent.sortOrder
           if (echoed !== sortOrderEcho(sortOrder)) {
+            knownSortOrder.current.set(agent.id, Number.NaN)
             throw new Error(`${nodeLabel} does not support agent ordering (update that den)`)
           }
           knownSortOrder.current.set(agent.id, echoed)
@@ -951,12 +953,12 @@ export function AgentsSection(props: { compact?: boolean }): JSX.Element {
       )
       if (failed.length > 0) throw new Error(failed.join('; '))
     },
-    onSettled: async (_data, _err, orderedIds) => {
+    onSettled: async (_data, _err, variables) => {
       try {
         await queryClient.invalidateQueries({ queryKey: ['agents-all-nodes'] })
       } finally {
         savesPending.current -= 1
-        if (sameIdOrder(latestRequested.current, orderedIds)) setPendingOrder(null)
+        if (variables.seq === reorderSeq.current) setPendingOrder(null)
       }
     },
   })
@@ -965,10 +967,10 @@ export function AgentsSection(props: { compact?: boolean }): JSX.Element {
     const next = moveAgentId(current, id, toIndex)
     if (next.every((value, i) => value === current[i])) return
     if (restoreFocus) focusRowId.current = id
-    latestRequested.current = next
+    const seq = ++reorderSeq.current
     savesPending.current += 1
     setPendingOrder(next)
-    reorderMutation.mutate(next)
+    reorderMutation.mutate({ ids: next, seq })
   }
   const endDrag = (): void => {
     setDragId(null)

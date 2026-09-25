@@ -3,7 +3,11 @@ import { resolve } from 'node:path'
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest'
 import pg from 'pg'
 import { PgAgentPresetStore } from './pg-store.js'
-import { PresetConflictError, type AgentPresetInput } from './store.js'
+import {
+  PresetConflictError,
+  PresetMigrationRequiredError,
+  type AgentPresetInput,
+} from './store.js'
 import {
   describePresetStoreContract,
   type RawPresetSeed,
@@ -144,6 +148,9 @@ describe.skipIf(!TEST_PG_URL)('PgAgentPresetStore (scratch schema)', () => {
     expect((await legacy.list()).map((p) => p.name)).toEqual(['Older', 'Newer'])
     await expect(legacy.update(older.id, { sortOrder: 0 })).rejects.toThrow(
       /0018_agent_preset_sort_order/,
+    )
+    await expect(legacy.update(older.id, { sortOrder: 0 })).rejects.toBeInstanceOf(
+      PresetMigrationRequiredError,
     )
     expect((await legacy.get(older.id))?.sortOrder).toBeUndefined()
   })

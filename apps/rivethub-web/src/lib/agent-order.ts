@@ -47,6 +47,7 @@ export function moveAgentId(ids: readonly string[], id: string, toIndex: number)
  * as `sortOrder`, and only agents whose stored value differs are returned.
  * Ids missing from `agents` are skipped. `known`, when passed, overlays the
  * snapshot's `sortOrder` — including an explicit unordered `undefined`.
+ * An entry of `NaN` means unknown → always write.
  */
 export function sortOrderWrites<T extends Ordered>(
   agents: readonly T[],
