@@ -16,8 +16,8 @@ import type { EffortOption, HarnessId, HarnessModelOption } from '@rivetos/types
 /**
  * Model id on POST /term and as a sheet id.
  * `/` is allowed (kimi `provider/model`); `..` is not (`../x` is rejected).
- * `~` is allowed after the first char for OpenRouter aliases
- * (`openrouter/~z-ai/glm-latest`); never leading, so no shell tilde expansion.
+ * `~` is allowed after the first char for OpenRouter aliases (`openrouter/~z-ai/glm-latest`).
+ * A leading `~` (home-directory shorthand) is rejected; argv or quoted word, never shell-evaluated.
  */
 export const MODEL_TOKEN_RE = /^(?!.*\.\.)[A-Za-z0-9._[\]:/-][A-Za-z0-9._[\]:/~-]{0,63}$/
 
