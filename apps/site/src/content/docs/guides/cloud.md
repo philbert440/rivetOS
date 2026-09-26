@@ -135,9 +135,9 @@ same as the other `rivetos memory` subcommands.
 
 - **messages** — `created_at >= --since`.
 - **conversations** — the union of (1) rows with `created_at` or `updated_at`
-  > = `--since` and (2) the conversation of every exported message (and of
-  > selected summaries, including recursive parents). Older conversations are
-  > pulled in when a recent message needs them.
+  at or after `--since` and (2) the conversation of every exported message (and
+  of selected summaries, including recursive parents). Older conversations are
+  pulled in when a recent message needs them.
 - **summaries** — `created_at >= --since`, plus each selected row's
   `parent_id` chain (recursive) so the DAG can be inserted.
 - **summary_sources** — only rows whose `summary_id` is in the exported
