@@ -3,7 +3,10 @@ import starlight from '@astrojs/starlight';
 
 export default defineConfig({
   site: 'https://rivetos.dev',
-  redirects: { '/docs': '/guides/getting-started/' },
+  redirects: {
+    '/docs': '/guides/getting-started/',
+    '/docs/cloud': '/guides/cloud/',
+  },
   integrations: [
     starlight({
       title: 'RivetOS',
