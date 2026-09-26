@@ -1,4 +1,4 @@
-import type { JSX } from 'react'
+import { useEffect, type JSX } from 'react'
 import { Link, useNavigate, useRouterState } from '@tanstack/react-router'
 import {
   Bell,
@@ -15,6 +15,7 @@ import { useNotifications } from '../stores/notifications.js'
 import { useExperimental } from '../stores/experimental.js'
 import { useSidebarPrefs } from '../stores/sidebar-prefs.js'
 import { shouldCloseDrawerOnSelection } from '../lib/drawer-selection.js'
+import { focusInForeignDialog, matchHubKey } from '../lib/hub-keys.js'
 import { visibleNav } from '../lib/visible-nav.js'
 import { useIsNarrow } from '../lib/use-narrow.js'
 import { cn } from '../lib/utils.js'
@@ -194,6 +195,27 @@ export function Sidebar(): JSX.Element {
   const logoLabel = narrow ? (drawerOpen ? 'Close sidebar' : 'Open sidebar') : toggle.label
   const logoExpanded = narrow ? drawerOpen : toggle.ariaExpanded
 
+  // Ctrl+Shift+E mirrors the logo toggle. Read prefs fresh from the store so
+  // the listener never closes over a stale drawer/rail value.
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent): void => {
+      if (matchHubKey(e) !== 'toggle-sidebar') return
+      if (e.repeat) {
+        e.preventDefault()
+        e.stopPropagation()
+        return
+      }
+      if (focusInForeignDialog(document.activeElement)) return
+      const prefs = useSidebarPrefs.getState()
+      if (narrow) prefs.setDrawerOpen(!prefs.drawerOpen)
+      else prefs.setRailCollapsed(!prefs.railCollapsed)
+      e.preventDefault()
+      e.stopPropagation()
+    }
+    window.addEventListener('keydown', onKey, { capture: true })
+    return () => window.removeEventListener('keydown', onKey, { capture: true })
+  }, [narrow])
+
   return (
     <aside
       id="hub-rail"
@@ -216,7 +238,7 @@ export function Sidebar(): JSX.Element {
       }
     >
       <div className={railHeaderClass(collapsed)}>
-        <Tooltip label={logoLabel}>
+        <Tooltip label={`${logoLabel} (Ctrl+Shift+E)`}>
           <Button
             variant="ghost"
             size="icon"

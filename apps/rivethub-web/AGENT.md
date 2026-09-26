@@ -10,6 +10,40 @@
 - Talks to RivetOS gateway (`@rivetos/gateway-client`, `@rivetos/types`).
 - Seamless modes: chat inject → harness PTY → den events → `bridgeAgentEvent` → sessions WS.
 
+## Keyboard shortcuts (2026-09-25)
+
+Three app-wide chords, matched by `lib/hub-keys.ts` and registered on `window`
+in the **capture** phase (`preventDefault` + `stopPropagation` when handled) so
+a focused xterm still sees neither the key nor a stray Tab:
+
+- **Ctrl+Tab** / **Ctrl+Shift+Tab** — open the next / previous agent in the
+  sidebar roster, in the rendered `AgentsSection` order (sort + pending
+  reorder), wrapping at both ends. Agents whose row is disabled (no
+  `sourceNodeBaseUrl`) are skipped; with no current agent the first / last
+  eligible agent opens. `Ctrl+Tab` requires no Shift; `Ctrl+Shift+Tab` requires
+  Shift. Implemented in `agents-section.tsx` with a `cycleCursor` ref, because
+  `handleOpen`'s async liveness probe means `currentAgentId` lags a key press.
+  Auto-repeat is ignored (the terminal must not see a held Tab). The cursor
+  advances on every press; `open()` is debounced 250 ms so only the final
+  target mounts. The sequence is taken at the keypress, so a newer click or ↺
+  cancels a queued keyboard open and a keypress cancels older in-flight
+  probes. Chrome and Firefox both reserve Ctrl+Tab / Ctrl+Shift+Tab
+  in a plain browser tab and the page cannot claim them, so agent cycling is an
+  Electron-shell feature.
+- **Ctrl+Shift+E** — toggle the left sidebar: wide (≥768px) collapses/expands
+  the icon rail, narrow opens/closes the drawer. Same branch as the logo
+  button (`sidebar.tsx`), state read fresh via `useSidebarPrefs.getState()`.
+  Works in Chromium tabs; Firefox reserves this chord. Auto-repeat is ignored.
+
+Rules: match only `ctrlKey` with no `altKey`/`metaKey`; **plain Ctrl+E is left
+untouched** (end-of-line in terminals). While focus is inside any
+`[role="dialog"]` other than `#hub-rail` the chords are intentionally inert.
+The agent editor is a hand-rolled `role="dialog"` form, not Radix; the same
+guard covers Radix dialogs (confirm dialog, model picker) and protects the
+editor's Tab focus trap. Auto-repeat is swallowed before the dialog check, so
+a held chord inside a dialog does nothing. The narrow rail (`#hub-rail`) is
+itself `role="dialog"` and is not treated as foreign.
+
 ## Status (2026-07-10)
 
 ### Sidebar pages (2026-07-10)

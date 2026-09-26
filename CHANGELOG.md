@@ -51,6 +51,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `apps/rivethub-web`: a send refused because the Terminal input holds unsent text (`reason: 'harness_draft'`) shows `DRAFT_NOTE`. The outbound pump retries that 409 up to six times (about 57s) and then leaves the turn queued; press the inject button again after the draft is sent or cleared.
 - Agents: drag a row, or Alt+↑/↓ on a focused row, to reorder. The order is saved per preset on its hosting den. A den that does not support ordering is reported.
 - Sidebar Agents: the agent bound to the active chat is marked (accent bar, ringed swatch and highlighted name; a folded list or the collapsed rail keeps a dot for it, and the row carries `aria-current`).
+- Ctrl+Tab / Ctrl+Shift+Tab cycle agents in the sidebar roster order; Ctrl+Shift+E toggles the rail (wide) or the narrow drawer. Capture-phase listeners handle the chords before the terminal sees them. Agent cycling works in the RivetHub desktop app only (browsers reserve Ctrl+Tab).
 
 ### Harness integrations
 
