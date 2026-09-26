@@ -6,7 +6,6 @@ export default defineConfig({
   redirects: {
     '/docs': '/guides/getting-started/',
     '/docs/cloud': '/guides/cloud/',
-    '/docs/cloud/': '/guides/cloud/',
   },
   integrations: [
     starlight({
