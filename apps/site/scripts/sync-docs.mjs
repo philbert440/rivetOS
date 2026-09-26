@@ -23,10 +23,12 @@ const LINK_MAP = {
   'CHANGELOG.md': '/reference/changelog/',
   'mesh.md': '/guides/mesh/',
   'mcp-auth.md': '/guides/mcp-auth/',
+  'cloud.md': '/guides/cloud/',
   'FILESYSTEM.md': '/reference/filesystem/',
   'MEMORY-DESIGN.md': '/reference/memory-design/',
   'docs/mesh.md': '/guides/mesh/',
   'docs/mcp-auth.md': '/guides/mcp-auth/',
+  'docs/cloud.md': '/guides/cloud/',
   'docs/FILESYSTEM.md': '/reference/filesystem/',
   'docs/MEMORY-DESIGN.md': '/reference/memory-design/',
   'docs/CONFIG-REFERENCE.md': '/reference/config/',
@@ -129,6 +131,15 @@ const MAPPINGS = [
     },
   },
   {
+    src: 'docs/cloud.md',
+    dest: 'guides/cloud.md',
+    frontmatter: {
+      title: 'Rivet Cloud',
+      sidebar: { order: 10 },
+      description: 'Connect a laptop to hosted memory, then export and import dumps',
+    },
+  },
+  {
     src: 'docs/CONFIG-REFERENCE.md',
     dest: 'reference/config.md',
     frontmatter: {
@@ -227,6 +238,7 @@ function rewriteLinks(body) {
 - **[Provider Setup](/guides/providers/)** — API, local, and harness CLI providers
 - **[Channels](/guides/channels/)** — RivetHub is the human UX. The agent channel is mesh only
 - **[Hub Setup](/guides/hub-setup/)** — Run RivetHub clients against a node
+- **[Rivet Cloud](/guides/cloud/)** — Connect a laptop to hosted memory; export and import
 - **[Mesh Networking](/guides/mesh/)** — Multi-node fleets with mTLS delegation
 - **[Configuration Reference](/reference/config/)** — Every config option explained
 - **[Architecture](/reference/architecture/)** — How the system works

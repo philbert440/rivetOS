@@ -423,6 +423,7 @@ rivetos skills list
 - **[Provider Setup](/guides/providers/)** — API, local, and harness CLI providers
 - **[Channels](/guides/channels/)** — RivetHub is the human UX. The agent channel is mesh only
 - **[Hub Setup](/guides/hub-setup/)** — Run RivetHub clients against a node
+- **[Rivet Cloud](/guides/cloud/)** — Connect a laptop to hosted memory; export and import
 - **[Mesh Networking](/guides/mesh/)** — Multi-node fleets with mTLS delegation
 - **[Configuration Reference](/reference/config/)** — Every config option explained
 - **[Architecture](/reference/architecture/)** — How the system works
