@@ -17,23 +17,23 @@ harness hooks talk to Postgres and the embed endpoint directly.
 
 ## Connect
 
-You get a customer bundle when the tenant is created:
+Copy these values from your rivetos.cloud dashboard.
 
 ```
-RIVETOS_PG_URL=postgres://tenant_<slug>:<password>@rivetos.cloud:5432/tenant_<slug>?sslmode=require
-RIVETOS_EMBED_URL=https://rivetos.cloud/embed/<embed_token>
+RIVETOS_PG_URL=<connection string from your rivetos.cloud dashboard>
+RIVETOS_EMBED_URL=<embed URL from your dashboard>
 RIVETOS_EMBED_MODEL=qwen3-embedding-0.6b
 RIVETOS_CLOUD_TOKEN=<tenant_token>
 ```
 
-(`sslmode` must be `require`, `verify-ca`, or `verify-full`. `disable`,
-`allow`, `prefer`, and a missing sslmode are rejected. node-pg verifies
-against system CAs. Do not add `sslrootcert=system` — node-pg ENOENTs on
-that parameter.)
+(`sslmode` on the Postgres URL must be `require`, `verify-ca`, or
+`verify-full`. `disable`, `allow`, `prefer`, and a missing sslmode are
+rejected. node-pg verifies against system CAs. Do not add
+`sslrootcert=system` — node-pg ENOENTs on that parameter.)
 
 ```bash
-rivetos cloud connect 'postgres://tenant_demo:…@rivetos.cloud:5432/tenant_demo?sslmode=require' \
-  --embed-url 'https://rivetos.cloud/embed/…' \
+rivetos cloud connect '<connection string from your rivetos.cloud dashboard>' \
+  --embed-url '<embed URL from your dashboard>' \
   --token '…'
 ```
 
@@ -97,13 +97,13 @@ rivetos cloud export > mem.ndjson.gz
 rivetos cloud import mem.ndjson.gz
 ```
 
-- `GET https://<host>/api/t/<slug>/export` — `Authorization: Bearer <token>`,
+- `GET /api/t/<slug>/export` — `Authorization: Bearer <token>`,
   `Accept: application/gzip`. Uses `node:https` `request()` and streams the
   response to `--out` or stdout (does not buffer the gzip, no socket timeout).
   Default destination is stdout; refuses gzip to a TTY (redirect or `--out`).
   Progress (bytes received) is printed when writing to `--out`. An inactivity
   guard of 120 seconds applies to the response.
-- `POST https://<host>/api/t/<slug>/import` — streams the gzip file with
+- `POST /api/t/<slug>/import` — streams the gzip file with
   `fs.createReadStream` piped into `node:https` `request()`
   (`Content-Type: application/gzip`, `Content-Length` from `fs.stat`,
   `Authorization: Bearer <token>`). No socket timeout; an inactivity guard of
