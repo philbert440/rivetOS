@@ -6,8 +6,9 @@
 # Cursor events (hooks.json): beforeSubmitPrompt, postToolUse, stop,
 # sessionEnd, afterAgentResponse, subagentStop.
 #
-# Until a dedicated Cursor capture worker lands in-tree, this spools the
-# raw payload under ~/.rivetos/cursor-capture/ (not yet ingested).
+# Spools the raw payload under ~/.rivetos/cursor-capture/, then hands the
+# same payload to the built capture worker when that file exists. The spool
+# stays the retry record for `cursor-rivet-memory-capture --backfill`.
 
 umask 077
 
@@ -74,7 +75,7 @@ while len(files) > 500 or total > 50 * 1024 * 1024:
     total -= sizes[oldest]
 PYTHON
       then
-        log_line "spooled $SPOOL_FILE (not yet ingested; retention applied)"
+        log_line "spooled $SPOOL_FILE (retention applied)"
       else
         # Retention could not be enforced: roll the new payload back so the bound holds.
         rm -f -- "$SPOOL_FILE"
@@ -90,11 +91,21 @@ else
   log_line "spool write failed"
 fi
 
-# Prefer a built Cursor capture worker when present (future). No npx from a hook:
-# a network fetch can sit until Cursor's timeout, and the spool is the record.
-CAPTURE_BUILT="$RIVETOS_ROOT/integrations/cursor/rivet-memory/capture/dist/cursor-memory-capture.js"
-if [ -f "$CAPTURE_BUILT" ]; then
-  printf '%s' "$PAYLOAD" | node "$CAPTURE_BUILT" --hook "$HOOK_EVENT" >>"$LOG" 2>&1 || true
+# Prefer the worker built beside this kit, then $RIVETOS_ROOT. No npx from a
+# hook: a missing build leaves the spool for --backfill.
+HOOK_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+LOCAL_BUILT="$HOOK_DIR/../capture/dist/cursor-memory-capture.js"
+ROOT_BUILT="${RIVETOS_ROOT:-}/integrations/cursor/rivet-memory/capture/dist/cursor-memory-capture.js"
+CAPTURE_BUILT=""
+if [ -f "$LOCAL_BUILT" ]; then
+  CAPTURE_BUILT="$LOCAL_BUILT"
+elif [ -n "${RIVETOS_ROOT:-}" ] && [ -f "$ROOT_BUILT" ]; then
+  CAPTURE_BUILT="$ROOT_BUILT"
+fi
+if [ -n "$CAPTURE_BUILT" ]; then
+  printf '%s' "$PAYLOAD" | node "$CAPTURE_BUILT" --hook "$HOOK_EVENT" >>"$LOG" 2>&1 || log_line "capture worker failed"
+else
+  log_line "capture worker not built; spool not ingested"
 fi
 
 exit 0

@@ -39,7 +39,7 @@ with tempfile.TemporaryDirectory() as tmp:
     assert stat.S_IMODE(payload.stat().st_mode) == 0o600
     assert json.loads(payload.read_text())['payload'] == {'text': 'private', 'n': 1}
     log = home / '.rivetos/cursor-capture.log'
-    assert 'spooled ' in log.read_text() and '(not yet ingested' in log.read_text()
+    assert 'spooled ' in log.read_text() and 'retention applied' in log.read_text()
     for i in range(505):
         p = spool / f'old-{i}.json'
         p.write_text('{}')
