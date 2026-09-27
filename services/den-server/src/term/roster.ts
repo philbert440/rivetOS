@@ -105,6 +105,11 @@ export function defaultRoster(): TermRoster {
       // (same rationale as kimi `--yolo`). `--session-id` / `--resume` via
       // HARNESS_FLAGS.
       qwen: { label: 'Qwen Code', cmd: ['qwen', '--approval-mode', 'yolo'], room: true },
+      // Cursor agent CLI (`agent`). `--force` auto-approves tools (alias
+      // `--yolo`); `--trust` skips the workspace trust prompt. `--resume`
+      // via HARNESS_FLAGS. No pin flag — the CLI mints the chat id. The
+      // operator can trade up in den-term.json (same rationale as kimi --yolo).
+      cursor: { label: 'Cursor', cmd: ['agent', '--force', '--trust'], room: true },
       shell: { label: 'Shell', cmd: ['bash', '-l'], room: false },
     },
   }

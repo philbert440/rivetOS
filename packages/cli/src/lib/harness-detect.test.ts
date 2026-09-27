@@ -27,7 +27,12 @@ describe('HARNESS_BINARIES', () => {
   })
 
   it('matches den-server BY_COMMAND binary names (read from source)', () => {
-    expect(Object.values(HARNESS_BINARIES).sort()).toEqual(byCommandKeysFromSource().sort())
+    // The roster key is `cursor`; the CLI argv0 is `agent`.
+    expect(Object.values(HARNESS_BINARIES).sort()).toEqual(
+      byCommandKeysFromSource()
+        .map((key) => (key === 'cursor' ? 'agent' : key))
+        .sort(),
+    )
   })
 })
 

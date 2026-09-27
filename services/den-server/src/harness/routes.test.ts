@@ -215,7 +215,7 @@ const post = (base: string, path: string, body?: unknown): Promise<Response> =>
   })
 
 describe('GET /api/harnesses', () => {
-  it('lists the eight built-in drivers a real node boots with', async () => {
+  it('lists the nine built-in drivers a real node boots with', async () => {
     // No fakes: this is what `createDenServer` actually registers. Reading the
     // capability sheet touches no harness store, so it is safe to boot for
     // real here.
@@ -230,6 +230,7 @@ describe('GET /api/harnesses', () => {
       'kimi-code',
       'pi',
       'qwen-code',
+      'cursor',
       'opencode',
       'codex',
     ])
@@ -254,6 +255,7 @@ describe('GET /api/harnesses', () => {
       'kimi-code',
       'pi',
       'qwen-code',
+      'cursor',
       'opencode',
       'codex',
     ])
@@ -1248,6 +1250,7 @@ describe('capability runtime truthing', () => {
       'kimi-code',
       'pi',
       'qwen-code',
+      'cursor',
       'opencode',
       'codex',
     ])
@@ -1281,6 +1284,7 @@ describe('capability runtime truthing', () => {
       'kimi-code',
       'pi',
       'qwen-code',
+      'cursor',
       'opencode',
       'codex',
     ])

@@ -10,6 +10,7 @@ private fun isOpencodeAgent(agentId: String, provider: String?): Boolean {
         prov == "opencode-cli"
 }
 private val QWEN_TOKEN = Regex("""(?:^|[^a-z0-9])qwen(?:-code)?(?:[^a-z0-9]|$)""")
+private val CURSOR_TOKEN = Regex("""(?:^|[^a-z0-9])cursor(?:[^a-z0-9]|$)""")
 private val PI_TOKEN = Regex("""(?:^|[^a-z0-9])pi(?:-cli)?(?:[^a-z0-9]|$)""")
 
 fun harnessIdForAgent(agentId: String, provider: String? = null): String? {
@@ -23,6 +24,7 @@ fun harnessIdForAgent(agentId: String, provider: String? = null): String? {
         "codex" in s -> "codex"
         // qwen before pi so the short token never collides either way.
         QWEN_TOKEN.containsMatchIn(s) -> "qwen-code"
+        CURSOR_TOKEN.containsMatchIn(s) -> "cursor"
         PI_TOKEN.containsMatchIn(s) -> "pi"
         else -> null
     }

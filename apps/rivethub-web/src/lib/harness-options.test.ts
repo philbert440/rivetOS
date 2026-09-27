@@ -78,6 +78,7 @@ describe('harnessLabel', () => {
     expect(harnessLabel('codex')).toBe('Codex')
     expect(harnessLabel('opencode')).toBe('opencode')
     expect(harnessLabel('qwen-code')).toBe('Qwen Code')
+    expect(harnessLabel('cursor')).toBe('Cursor')
     expect(harnessLabel('nope')).toBe('nope')
   })
 })

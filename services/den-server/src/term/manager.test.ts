@@ -517,6 +517,18 @@ describe('term manager', () => {
     expect(qwenProj.spawns[0].opts.cwd).toBe(qwenDir)
     qwenProj.manager.close()
 
+    // Cursor: `--resume` only (no sessionFlag). A new chat gets no pin;
+    // an existing transcript resumes with `agent --resume <uuid>`.
+    const cursorBase = ['agent', '--force', '--trust']
+    const cursorNew = makeManager({}, { sessionExists: () => false })
+    cursorNew.manager.spawn('cursor', 80, 24, '', uuid)
+    expect(cursorNew.spawns[0].argv).toEqual(cursorBase)
+    const cursorResume = makeManager({}, { sessionExists: () => true })
+    cursorResume.manager.spawn('cursor', 80, 24, '', uuid)
+    expect(cursorResume.spawns[0].argv).toEqual([...cursorBase, '--resume', uuid])
+    cursorResume.manager.close()
+    cursorNew.manager.close()
+
     const qwenNewCwd = makeManager(
       {},
       { sessionExists: () => false, sessionCwd: () => '/home/example/proj' },
