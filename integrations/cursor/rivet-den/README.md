@@ -7,15 +7,23 @@ and maps Cursor events to the Claude Code spellings that switch understands.
 
 ## Install
 
-Link the kit as a local plugin; its manifest wires `hooks/hooks.json`
-(commands are relative to the plugin root):
+The Cursor CLI does not scan `~/.cursor/plugins/local/`. Wire the hooks
+globally by adding one entry per event in `hooks/hooks.json` to
+`~/.cursor/hooks.json`, with the absolute script path:
 
-```bash
-ln -sfn "$PWD/integrations/cursor/rivet-den" ~/.cursor/plugins/local/rivet-den-cursor
+```json
+{ "command": "/path/to/rivetos/integrations/cursor/rivet-den/bin/cursor-den-hook.sh sessionStart", "timeout": 5 }
 ```
 
-If you wired den hooks into `~/.cursor/hooks.json` by hand, remove those
-entries so events are not sent twice.
+Or load the kit as a plugin for a session (its manifest wires
+`hooks/hooks.json`; commands are relative to the plugin root):
+
+```bash
+agent --plugin-dir integrations/cursor/rivet-den
+```
+
+Use one form, not both, or events are sent twice. When the workspace is
+`$HOME`, the CLI loads `~/.cursor/hooks.json` twice regardless.
 
 Requires a RivetOS checkout that includes the Claude Code den translator.
 `RIVETOS_ROOT` overrides the checkout; otherwise the hook resolves it from its

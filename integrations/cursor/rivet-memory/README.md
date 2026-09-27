@@ -24,13 +24,17 @@ integrations/cursor/rivet-memory/bin/setup-cursor-rivet-memory.sh --apply
 
 With `--apply` the script:
 
-1. Symlinks the kit to `~/.cursor/plugins/local/rivet-memory-cursor`. The plugin manifest wires the MCP server (`${CURSOR_PLUGIN_ROOT}/bin/rivet-memory-mcp.sh`), hooks, skills, rules, and agent.
-2. Copies `AGENT.md` -> `~/.cursor/AGENT.md` and `MEMORY.md` -> `~/.cursor/MEMORY.md`.
-3. Removes legacy global wiring that points into this kit: `rivet-memory-hook.sh` entries in `~/.cursor/hooks.json`, the `rivetos` server in `~/.cursor/mcp.json`, and skill symlinks in `~/.cursor/skills/`. Earlier versions of this script wrote those.
+1. Writes one `rivet-memory-hook.sh <event>` entry per event in `hooks/hooks.json` to `~/.cursor/hooks.json`, using the kit's absolute path. Older entries pointing into this kit (or a previous kit path) are replaced; other hooks are kept.
+2. Adds the `rivetos` server (absolute `bin/rivet-memory-mcp.sh`) to `~/.cursor/mcp.json`, unless a `rivetos` server that does not point into the kit already exists.
+3. Symlinks each skill into `~/.cursor/skills/` and `memory-researcher.md` into `~/.cursor/agents/`. Existing links into the kit are replaced; anything else is left alone.
+4. Copies `AGENT.md` -> `~/.cursor/AGENT.md` and `MEMORY.md` -> `~/.cursor/MEMORY.md`, backing up edited copies as `.bak-<timestamp>`.
+5. Removes a `~/.cursor/plugins/local/` symlink into the kit. Where plugins are loaded, the plugin would register the same hooks and MCP server a second time.
 
-The CLI does not read `~/.cursor/plugins/local/` (see Verified behaviour), so this step removes the only hooks and kit MCP server a CLI session has.
+Edited JSON keeps its file mode (new files are 0600); invalid JSON is refused, not overwritten. Rerunning is a no-op. Without `--apply` it prints what it would do.
 
-Without `--apply` it prints what it would do.
+The kit also works as a plugin without setup (`agent --plugin-dir integrations/cursor/rivet-memory`). Don't combine the two.
+
+The CLI reads `~/.cursor/agents/` only when the workspace is `$HOME`; elsewhere, put `memory-researcher.md` in the project's `.cursor/agents/`.
 
 Uses a built RivetOS checkout (`services/mcp-sidecar`) or the shared pinned npm fallback. An explicitly selected unbuilt checkout fails instead of falling back. Configure den or DataHub/Postgres access in `~/.rivetos/.env`.
 
@@ -47,7 +51,9 @@ Uses a built RivetOS checkout (`services/mcp-sidecar`) or the shared pinned npm 
 
 ## Verified behaviour
 
-Checked 2026-09-27 against Cursor Agent CLI `2026.09.26-dd393fe` in headless sessions (`agent -p --plugin-dir <kit>`). The desktop app was not tested.
+Checked 2026-09-27 against Cursor Agent CLI `2026.09.26-dd393fe` in headless sessions, both as a plugin (`agent -p --plugin-dir <kit>`) and with the global wiring `setup-cursor-rivet-memory.sh --apply` writes. The desktop app was not tested.
+
+- **Global wiring.** The `rivetos` server from `~/.cursor/mcp.json` loads and `echo` round-trips; the skills in `~/.cursor/skills/` are listed; hooks from `~/.cursor/hooks.json` fire once per event outside `$HOME`. `~/.cursor/agents/` is not read (symlink or plain file) unless the workspace is `$HOME`; the project's `.cursor/agents/` is.
 
 - **Plugin discovery.** The CLI loads a local plugin only through `--plugin-dir`. It does not scan `~/.cursor/plugins/local/`.
 - **MCP.** `${CURSOR_PLUGIN_ROOT}` is substituted in `command` and `args`. The server process runs in the workspace directory and does not receive `CURSOR_PLUGIN_ROOT` in its environment, so a relative MCP command would not resolve. The server registers as `plugin-RivetOS Memory (Cursor)-rivetos` (from `displayName`); `echo` round-trips.
