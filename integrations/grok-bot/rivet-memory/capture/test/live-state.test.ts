@@ -10,6 +10,9 @@ import {
   oldStuckPolicyPath,
   resolveIdentityWithRefresh,
   shouldIngest,
+  shouldIngestStore,
+  storeCursor,
+  writeStoreCursor,
 } from '../live-state.mjs'
 
 const HERE = dirname(fileURLToPath(import.meta.url))
@@ -39,6 +42,18 @@ describe('watcher / run-once live state', () => {
       { encoding: 'utf8' },
     ).trim()
     expect(viaCli).toBe(viaJs)
+  })
+
+  it('persists store.db seq cursors keyed by id plus -v3-store', () => {
+    const id = '00df02ea-4f5f-4d3e-945a-864e1c9c78dc'
+    const state = {}
+    expect(storeCursor(state, id, '-v3-store')).toBe(-1)
+    expect(shouldIngestStore(state, id, '-v3-store', 4)).toBe(true)
+    writeStoreCursor(state, id, '-v3-store', 4)
+    expect(storeCursor(state, id, '-v3-store')).toBe(4)
+    expect(shouldIngestStore(state, id, '-v3-store', 4)).toBe(false)
+    expect(shouldIngestStore(state, id, '-v3-store', 5)).toBe(true)
+    expect(isWatcherStateMap(state)).toBe(true)
   })
 
   it('run-once.sh calls live-state.mjs for the stuck-policy path', () => {

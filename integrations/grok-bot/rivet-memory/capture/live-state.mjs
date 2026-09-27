@@ -12,11 +12,30 @@ export function shouldIngest(state, id, suffix, sig) {
   return state[captureStateKey(id, suffix)] !== sig
 }
 
+export function storeCursor(state, id, suffix) {
+  const raw = state[captureStateKey(id, suffix)]
+  if (typeof raw === 'string' && raw.startsWith('seq:')) {
+    const n = Number(raw.slice(4))
+    return Number.isFinite(n) ? n : -1
+  }
+  return -1
+}
+
+export function writeStoreCursor(state, id, suffix, seq) {
+  state[captureStateKey(id, suffix)] = `seq:${seq}`
+}
+
+export function shouldIngestStore(state, id, suffix, maxSeq) {
+  return maxSeq > storeCursor(state, id, suffix)
+}
+
 export function isWatcherStateMap(obj) {
   if (!obj || typeof obj !== 'object' || Array.isArray(obj)) return false
   const vals = Object.values(obj)
   if (vals.length === 0) return false
-  return vals.every((v) => typeof v === 'string' && /^\d+:\d+$/.test(v))
+  return vals.every(
+    (v) => typeof v === 'string' && (/^\d+:\d+$/.test(v) || /^seq:-?\d+$/.test(v)),
+  )
 }
 
 export function isStuckPolicyState(obj) {

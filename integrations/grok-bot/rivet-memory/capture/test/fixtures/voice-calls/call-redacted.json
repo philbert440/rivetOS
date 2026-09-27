@@ -1,0 +1,16 @@
+{
+  "id": "vc-redacted-001",
+  "started_at": "2026-09-20T15:04:00.000Z",
+  "turns": [
+    {
+      "role": "user",
+      "text": "redacted user turn from a reconstructed voice-call fixture",
+      "started_at": "2026-09-20T15:04:01.000Z"
+    },
+    {
+      "role": "assistant",
+      "text": "redacted assistant turn; not from a live dump",
+      "started_at": "2026-09-20T15:04:08.000Z"
+    }
+  ]
+}

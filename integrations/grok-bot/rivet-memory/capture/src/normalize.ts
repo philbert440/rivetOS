@@ -293,6 +293,13 @@ export function normalizeRecords(records: unknown[], opts: NormalizeOptions): No
   }
 }
 
+function captureSource(format?: NormalizeOptions['format']): string {
+  if (format === 'page') return 'grokbot-readtranscript'
+  if (format === 'store') return 'grokbot-store'
+  if (format === 'voice') return 'grokbot-voice'
+  return 'grokbot-transcript'
+}
+
 function createdAtFor(args: {
   role: string
   userText: boolean
@@ -497,7 +504,7 @@ function makeMessage(args: {
   const sub = nextSub(args.subByPos, args.position)
   const metadata: Record<string, unknown> = {
     channel: args.opts.channel ?? CAPTURE_CHANNEL,
-    source: args.opts.format === 'page' ? 'grokbot-readtranscript' : 'grokbot-transcript',
+    source: captureSource(args.opts.format),
     position: args.position,
     ordinal: args.position * ORDINAL_STRIDE + sub,
   }

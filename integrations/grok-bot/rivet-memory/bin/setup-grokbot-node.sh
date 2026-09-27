@@ -525,7 +525,7 @@ prove_door1() {
         fi
         echo "  Door 1 stored row OK: ${session_id}"
         proved=1
-    done < <(jq -c '.models[]' "${models_json}")
+    done < <(jq -c '.overrides | to_entries[] | {id:.key, sessionId:.value.session, agentId:.value.agent, persona:.value.persona}' "${models_json}")
 
     if [[ "${proved}" -eq 0 ]]; then
         echo "ERROR: Door 1 proof unavailable: no transcripts found to prove" >&2
@@ -869,6 +869,8 @@ echo "  1. Ensure GROKBOT_TRANSCRIPT_ROOT is set in the watcher unit environment
 echo "  2. Cutover: stop any old unsuffixed watcher/converter before enabling this unit."
 echo "     Rebuild /opt/rivetos (memory-postgres and mcp-sidecar) before any -v3 ingest."
 echo "     Enabling the watcher ingests every transcript's full history into <session>-v3."
-echo "     New rows go to <session>-v3 (GROKBOT_SESSION_SUFFIX). Do not run both."
+echo "     New on-disk/page rows go to <session>-v3 (GROKBOT_SESSION_SUFFIX)."
+echo "     store.db seq goes to <session>-v3-store; voice-calls to <session>-v3-voice-<stem>."
+echo "     Do not mix those formats into one session. Do not run old and new watchers together."
 echo "  3. Monitor capture logs and state"
 echo

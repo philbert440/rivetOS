@@ -15,7 +15,13 @@ import { dirname, join, resolve } from 'node:path'
 import { homedir } from 'node:os'
 import { fileURLToPath } from 'node:url'
 import { makeIdentityLookup } from './discover-models.mjs'
-import { captureStateKey, resolveIdentityWithRefresh, shouldIngest } from './live-state.mjs'
+import {
+  captureStateKey,
+  resolveIdentityWithRefresh,
+  shouldIngest,
+  storeCursor,
+  writeStoreCursor,
+} from './live-state.mjs'
 
 const HERE = dirname(fileURLToPath(import.meta.url))
 const HOME = process.env.HOME || homedir()
@@ -24,12 +30,16 @@ const TRANSCRIPTS =
   process.env.GROKBOT_TRANSCRIPTS ||
   process.env.GROKBOT_TRANSCRIPT_ROOT ||
   join(HOME, 'agent-data', 'agent-transcripts')
+const AGENTS = process.env.GROKBOT_AGENTS || join(HOME, 'agent-data', 'agents')
 const CONVERTER = process.env.CONVERTER || join(HERE, 'convert-transcript.py')
 const INGEST = process.env.GROKBOT_INGEST || join(CAPTURE_DIR, 'ingest.mjs')
+const CLI = join(HERE, 'dist', 'cli.js')
 const SPOOL = join(CAPTURE_DIR, 'spool')
 const NEW_STATE = join(HOME, '.rivetos', 'grokbot-capture-state.json')
 const OLD_STATE = join(HOME, '.rivetos', 'capture', 'state.json')
 const SESSION_SUFFIX = process.env.GROKBOT_SESSION_SUFFIX ?? '-v3'
+const STORE_SUFFIX = '-v3-store'
+const VOICE_SUFFIX = '-v3-voice'
 
 function resolveStateFile() {
   if (process.env.GROKBOT_CAPTURE_STATE) return process.env.GROKBOT_CAPTURE_STATE
@@ -83,13 +93,13 @@ const sig = (p) => {
 const timers = new Map()
 const queue = []
 let busy = false
-function enqueue(id) {
-  clearTimeout(timers.get(id))
+function enqueue(job) {
+  clearTimeout(timers.get(job))
   timers.set(
-    id,
+    job,
     setTimeout(() => {
-      timers.delete(id)
-      if (!queue.includes(id)) queue.push(id)
+      timers.delete(job)
+      if (!queue.includes(job)) queue.push(job)
       drain()
     }, DEBOUNCE_MS),
   )
@@ -108,7 +118,27 @@ function run(cmd, args) {
     p.on('error', (e) => res({ code: -1, out, err: String(e) }))
   })
 }
-async function process1(id) {
+async function ingestSpool(session, who, dst) {
+  const i = await run(process.execPath, [
+    INGEST,
+    'ingest',
+    '--session-id',
+    session,
+    '--agent',
+    who.agent,
+    '--persona',
+    who.persona,
+    dst,
+  ])
+  if (i.code !== 0) {
+    log(`ingest FAIL ${session} exit=${i.code}: ${(i.err || i.out).slice(0, 300)}`)
+    return false
+  }
+  log(`ok ${session} agent=${who.agent} ${i.out.split('\n').pop()?.slice(0, 200) || ''}`)
+  return true
+}
+
+async function processTranscript(id) {
   const src = transcriptPath(id)
   if (!existsSync(src)) return
   const s = sig(src)
@@ -134,24 +164,88 @@ async function process1(id) {
     log(`convert FAIL ${id} (${who.persona}): ${c.err.slice(0, 300)}`)
     return
   }
-  const i = await run(process.execPath, [
-    INGEST,
-    'ingest',
-    '--session-id',
-    session,
-    '--agent',
-    who.agent,
-    '--persona',
-    who.persona,
+  if (await ingestSpool(session, who, dst)) {
+    state[captureStateKey(id, SESSION_SUFFIX)] = s
+    saveState()
+  }
+}
+
+async function processStore(id) {
+  const src = join(AGENTS, id, 'store.db')
+  if (!existsSync(src) || !existsSync(CLI)) return
+  const who = identity(id)
+  const session = who.session.endsWith(STORE_SUFFIX)
+    ? who.session
+    : `${who.session}${STORE_SUFFIX}`
+  const after = storeCursor(state, id, STORE_SUFFIX)
+  const dst = join(SPOOL, `${session}.jsonl`)
+  const c = await run(process.execPath, [
+    CLI,
+    'convert-store',
+    src,
     dst,
+    '--agent-id',
+    id,
+    '--session',
+    session,
+    '--after-seq',
+    String(after),
   ])
-  if (i.code !== 0) {
-    log(`ingest FAIL ${who.session} exit=${i.code}: ${(i.err || i.out).slice(0, 300)}`)
+  if (c.code !== 0) {
+    log(`store convert FAIL ${id}: ${(c.err || c.out).slice(0, 300)}`)
     return
   }
-  state[captureStateKey(id, SESSION_SUFFIX)] = s
+  let info = {}
+  try {
+    info = JSON.parse(c.out.split('\n').pop() || '{}')
+  } catch {
+    info = {}
+  }
+  if (!info.out) return
+  if (!(await ingestSpool(session, who, dst))) return
+  writeStoreCursor(state, id, STORE_SUFFIX, info.max_seq ?? after)
   saveState()
-  log(`ok ${session} agent=${who.agent} ${i.out.split('\n').pop()?.slice(0, 200) || ''}`)
+}
+
+async function processVoice(id, fileName) {
+  const src = join(AGENTS, id, 'voice-calls', fileName)
+  if (!existsSync(src) || !existsSync(CLI)) return
+  const s = sig(src)
+  const suffix = `${VOICE_SUFFIX}:${fileName}`
+  if (!shouldIngest(state, id, suffix, s)) return
+  const who = identity(id)
+  const stem = fileName.replace(/\.json$/i, '')
+  const session = `${who.session}${VOICE_SUFFIX}-${stem}`
+  const dst = join(SPOOL, `${session}.jsonl`)
+  const c = await run(process.execPath, [
+    CLI,
+    'convert-voice',
+    src,
+    dst,
+    '--agent-id',
+    id,
+    '--session',
+    session,
+  ])
+  if (c.code !== 0) {
+    log(`voice convert FAIL ${id} ${fileName}: ${(c.err || c.out).slice(0, 300)}`)
+    return
+  }
+  if (await ingestSpool(session, who, dst)) {
+    state[captureStateKey(id, suffix)] = s
+    saveState()
+  }
+}
+
+async function process1(job) {
+  if (job.startsWith('store:')) return processStore(job.slice('store:'.length))
+  if (job.startsWith('voice:')) {
+    const rest = job.slice('voice:'.length)
+    const slash = rest.indexOf(':')
+    if (slash < 0) return
+    return processVoice(rest.slice(0, slash), rest.slice(slash + 1))
+  }
+  return processTranscript(job)
 }
 async function drain() {
   if (busy) return
@@ -188,12 +282,42 @@ try {
   console.error(`watch: cannot read transcripts dir: ${e.message}`)
   process.exit(2)
 }
+if (existsSync(AGENTS) && existsSync(CLI)) {
+  try {
+    for (const id of readdirSync(AGENTS)) {
+      const store = join(AGENTS, id, 'store.db')
+      if (existsSync(store)) {
+        queue.push(`store:${id}`)
+        pending++
+      }
+      const voiceDir = join(AGENTS, id, 'voice-calls')
+      if (existsSync(voiceDir)) {
+        for (const name of readdirSync(voiceDir)) {
+          if (!name.endsWith('.json')) continue
+          const p = join(voiceDir, name)
+          try {
+            if (shouldIngest(state, id, `${VOICE_SUFFIX}:${name}`, sig(p))) {
+              queue.push(`voice:${id}:${name}`)
+              pending++
+            }
+          } catch {
+            /* skip */
+          }
+        }
+      }
+    }
+  } catch {
+    /* optional */
+  }
+}
 log(
-  `watch: ${Object.keys(state).length} known, ${pending} changed/new transcripts; watching transcripts dir`,
+  `watch: ${Object.keys(state).length} known, ${pending} changed/new sources; watching transcripts + store.db + voice-calls`,
 )
 drain()
 
 const re = /^([0-9a-f-]{36})[\\/]\1\.jsonl$/
+const storeRe = /^([0-9a-f-]{36})[\\/]store\.db$/
+const voiceRe = /^([0-9a-f-]{36})[\\/]voice-calls[\\/]([^/]+\.json)$/
 const w = watch(TRANSCRIPTS, { recursive: true }, (_ev, file) => {
   const m = file && String(file).match(re)
   if (m) enqueue(m[1])
@@ -202,6 +326,20 @@ w.on('error', (e) => {
   console.error('watch error, exiting for restart:', e.message)
   process.exit(1)
 })
+if (existsSync(AGENTS)) {
+  const aw = watch(AGENTS, { recursive: true }, (_ev, file) => {
+    const s = file && String(file)
+    if (!s) return
+    const sm = s.match(storeRe)
+    if (sm) enqueue(`store:${sm[1]}`)
+    const vm = s.match(voiceRe)
+    if (vm) enqueue(`voice:${vm[1]}:${vm[2]}`)
+  })
+  aw.on('error', (e) => {
+    console.error('agents watch error, exiting for restart:', e.message)
+    process.exit(1)
+  })
+}
 process.on('SIGTERM', () => {
   log('SIGTERM')
   saveState()

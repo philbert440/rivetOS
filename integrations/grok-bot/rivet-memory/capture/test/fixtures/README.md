@@ -27,3 +27,16 @@ or `Transcript of this conversation, positions A–B of N:`. Footer
 
 `synthetic-wrappers.jsonl` covers wrapper types that do not appear in the
 trimmed real windows.
+
+## Format (c): store.db transcript_entries
+
+No live `agents/<id>/store.db` dump was available. Tests build a redacted
+sqlite file from the published grok-bot-mcp / xopc schema
+(`entry_id, session_id, seq, entry_kind, role, payload_json, created_at`)
+via `writeRedactedStoreFixture`. Positions are `seq`, ingested as `-v3-store`.
+
+## Format (d): voice-calls/*.json
+
+No live voice-call dump was available. `voice-calls/call-redacted.json` is a
+reconstructed fixture (role/text turns). Positions are turn indices,
+ingested as `-v3-voice-<stem>`.

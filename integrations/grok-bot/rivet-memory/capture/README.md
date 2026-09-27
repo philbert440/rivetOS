@@ -48,16 +48,22 @@ DELETEs or UPDATEs existing rows.
   `ingestSession` honors `item.ordinal` / `item.event_id` and merges
   `item.metadata` (agent_id, kind, position, truncated, …). Tool results
   land in `ros_messages.tool_result`. The normalizer source is kept as
-  `metadata.capture_source` (`grokbot-transcript` / `grokbot-readtranscript`)
-  because ingest overwrites `metadata.source` with the write tag.
+  `metadata.capture_source` (`grokbot-transcript` / `grokbot-readtranscript` /
+  `grokbot-store` / `grokbot-voice`) because ingest overwrites
+  `metadata.source` with the write tag.
 - Live capture writes to `<session>-v3` by default (`GROKBOT_SESSION_SUFFIX`).
   Row-based re-clean (`--from-rows` / Postgres) writes `<session>-v3-rows`
   so stored-row positions never mix with source-transcript ordinals.
+  `agents/<id>/store.db` `transcript_entries.seq` writes `<session>-v3-store`
+  (seq is not the on-disk line index). `voice-calls/*.json` writes
+  `<session>-v3-voice-<stem>` (turn index is not the line index).
   Watcher state is keyed by agent id plus the target suffix, so a copied
   unsuffixed `~/.rivetos/capture/state.json` cannot skip `-v3` ingest.
-  The old path is still copied to `~/.rivetos/grokbot-capture-state.json`
-  on first run. `run-once.sh` does not treat that file as per-session
-  stuck-policy state. `RIVETOS_ROOT` defaults to `/opt/rivetos`.
+  Store cursors are `seq:N` under the same map. `run-once.sh` does not treat
+  the watcher `state.json` as per-session stuck-policy. `RIVETOS_ROOT`
+  defaults to `/opt/rivetos`.
+- Search, browse, and session recall prefer a `-v3` or `-v3-rows` sibling
+  over the unsuffixed and `-v2` copies at query time. No rows are deleted.
 
 ## Layout
 
@@ -71,12 +77,29 @@ capture/
 ├── watch.mjs
 ├── ingest.mjs
 ├── run-once.sh
-└── models.json          # overrides + excludeNames (+ legacy models[] for setup)
+└── models.json          # historical overrides + excludeNames (typed source: src/identity.ts)
 ```
 
 Paths come from env (`GROKBOT_AGENTS`, `GROKBOT_TRANSCRIPTS` /
 `GROKBOT_TRANSCRIPT_ROOT`, `GROKBOT_MODELS`, `GROKBOT_SESSION_SUFFIX`).
 Nothing in this tree names a host, address, port, or lab layout.
+
+## Session suffixes (do not mix formats)
+
+| suffix | source | position |
+| --- | --- | --- |
+| `-v3` | on-disk jsonl / ReadTranscript pages | line index / page position |
+| `-v3-rows` | Postgres / `--from-rows` reclean | stored ordinal |
+| `-v3-store` | `agents/<id>/store.db` `transcript_entries` | `seq` |
+| `-v3-voice-<stem>` | `voice-calls/*.json` | turn index |
+
+`seq` and voice turn indices are **not** the on-disk line index. Ingesting
+them into `-v3` would hit `ordinal exists, event_id differs, skip`.
+
+There was no live `store.db` or `voice-calls/*.json` dump in this
+environment. The store reader uses the published grok-bot-mcp / xopc
+columns only. The voice fixture is reconstructed from "turns" plus the
+on-disk role/text shape. Say so plainly if a real dump disagrees.
 
 ## Commands
 
@@ -105,6 +128,21 @@ python3 integrations/grok-bot/rivet-memory/capture/convert-transcript.py \
 
 On-disk input without `--agent-id` or a page header takes the id from
 `<uuid>/<uuid>.jsonl`.
+
+```bash
+# store.db (read-only, seq cursor) → -v3-store
+node integrations/grok-bot/rivet-memory/capture/dist/cli.js convert-store \
+  path/to/agents/<id>/store.db spool/grokbot-bob-v3-store.jsonl \
+  --agent-id <id> --after-seq -1
+
+# voice-calls/*.json (reconstructed schema if no live dump) → -v3-voice-<stem>
+node integrations/grok-bot/rivet-memory/capture/dist/cli.js convert-voice \
+  path/to/agents/<id>/voice-calls/call.json \
+  spool/grokbot-bob-v3-voice-call.jsonl --agent-id <id>
+
+# ReadTranscript header (used by pull-bridge.py)
+node integrations/grok-bot/rivet-memory/capture/dist/cli.js parse-page page.txt
+```
 
 ### Backfill Sep 15+ (both formats)
 
@@ -147,7 +185,7 @@ rows into the same `-v3` session.
 ```bash
 node integrations/grok-bot/rivet-memory/capture/dist/cli.js discover --json
 
-# one ingest per agent (example: Rivet). Repeat for each models[] entry.
+# one ingest per agent (example: Rivet). Repeat for each discover --json model.
 node integrations/grok-bot/rivet-memory/bin/ingest-session.mjs \
   --session-id grokbot-rivet-grokbot-v3 --agent rivet-grokbot --persona Rivet \
   spool/grokbot-rivet-grokbot-v3.jsonl
@@ -225,22 +263,30 @@ node integrations/grok-bot/rivet-memory/capture/dist/cli.js compare \
 
 ## Models
 
-`models.json` is not the live roster. Discovery scans
+`src/identity.ts` is the typed source. `discover-models.mjs` is a thin
+wrapper over `dist/identity.js`. Historical Rivet/eggbot (and other) tags
+live only in `models.json` `overrides`. Discovery scans
 `$GROKBOT_AGENTS/*/profile.json`, skips `group.json` and `excludeNames`
-(default includes `New Bot`), and applies `overrides` so historical tags do
-not move. `identityFor` consults that roster before the subagent fallback.
-A leftover `models[]` array is treated as more overrides so
-`setup-grokbot-node.sh` / `run-once.sh` keep working.
+(default includes `New Bot`), and applies those overrides so historical
+tags do not move. `identityFor` consults that roster before the subagent
+fallback. `capture/ingest.mjs` is ingest-only (search/browse/stats are the
+memory tools). `pull-bridge.py` calls `cli.js parse-page` instead of its
+own header regex.
 
 ## Live capture
 
 `watch.mjs` and `run-once.sh` write new-shape rows to `<session>-v3`
-(`GROKBOT_SESSION_SUFFIX`, default `-v3`). Watcher state is keyed by
-`id + suffix` so migrating `~/.rivetos/capture/state.json` (unsuffixed
-size:mtime keys) does not skip the `-v3` sessions. `run-once.sh` stuck
-state lives only under `~/.rivetos/grokbot-capture-state/` — it does not
-copy the watcher's single `state.json`. `RIVETOS_ROOT` defaults to
-`/opt/rivetos`.
+(`GROKBOT_SESSION_SUFFIX`, default `-v3`), watch `agents/<id>/store.db`
+into `<session>-v3-store` (persisted `seq` cursor), and
+`agents/<id>/voice-calls/*.json` into `<session>-v3-voice-<stem>`.
+Watcher state is keyed by `id + suffix` so migrating
+`~/.rivetos/capture/state.json` (unsuffixed size:mtime keys) does not
+skip the `-v3` sessions. `run-once.sh` stuck state lives only under
+`~/.rivetos/grokbot-capture-state/` — it does not copy the watcher's
+single `state.json`. `RIVETOS_ROOT` defaults to `/opt/rivetos`.
+
+Current Grok Bot chats may be server-side, so local `transcript_entries`
+can be empty. The reader still opens the DB read-only and no-ops.
 
 ### Deploy notes (no deploy from this PR)
 
@@ -251,7 +297,8 @@ copy the watcher's single `state.json`. `RIVETOS_ROOT` defaults to
   history** into `<session>-v3` (there have been no new on-disk files
   since Sep 16). Stop the old watcher/converter first. Do not run both.
 - Row-based re-clean (`-v3-rows`) is a separate session from source
-  backfill (`-v3`). Pick one per conversation.
+  backfill (`-v3`). store.db and voice-calls have their own suffixes.
+  Pick one format per session; do not mix.
 
 ## Tests
 

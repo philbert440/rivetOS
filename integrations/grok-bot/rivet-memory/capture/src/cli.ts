@@ -31,8 +31,10 @@ import {
   v3RowsSession,
   v3Session,
 } from './reclean.js'
-import { SESSION_SUFFIX_V3 } from './types.js'
+import { readStoreSince, v3StoreSession } from './store.js'
+import { SESSION_SUFFIX_V3, SESSION_SUFFIX_V3_STORE, SESSION_SUFFIX_V3_VOICE } from './types.js'
 import type { IngestRow, ParsedInput } from './types.js'
+import { parseVoiceCall, v3VoiceSession, voiceCallToRecords } from './voice.js'
 
 const HELP = `Usage: grokbot-rivet-memory-capture <command> [opts]
 
@@ -40,6 +42,20 @@ const HELP = `Usage: grokbot-rivet-memory-capture <command> [opts]
           [--session-suffix -v3]
       Normalize one on-disk jsonl or ReadTranscript page to ingest jsonl.
       Live capture defaults to session suffix -v3 (GROKBOT_SESSION_SUFFIX).
+
+  convert-store SRC.DB DST [--agent-id UUID] [--session KEY] [--after-seq N]
+          [--session-suffix -v3-store]
+      Read-only sqlite over agents/<id>/store.db transcript_entries.
+      Positions are seq (not the on-disk line index). Default suffix -v3-store.
+
+  convert-voice SRC.json DST [--agent-id UUID] [--session KEY]
+          [--session-suffix -v3-voice]
+      Normalize one voice-calls/*.json file. Turn indices are not the on-disk
+      line index. Default suffix -v3-voice-<stem>.
+
+  parse-page [FILE|-]
+      Parse a ReadTranscript page (header + JSON lines) and print JSON
+      {header, records, hasOlderFooter, format}. pull-bridge.py calls this.
 
   backfill --input PATH [--format auto|ondisk|page] [--agent-id UUID]
            [--session-suffix -v3] [--out DIR] [--write]
@@ -80,6 +96,9 @@ async function main(argv: string[]): Promise<number> {
     return 0
   }
   if (cmd === 'convert') return cmdConvert(argv.slice(1))
+  if (cmd === 'convert-store') return cmdConvertStore(argv.slice(1))
+  if (cmd === 'convert-voice') return cmdConvertVoice(argv.slice(1))
+  if (cmd === 'parse-page') return cmdParsePage(argv.slice(1))
   if (cmd === 'backfill') return cmdBackfill(argv.slice(1))
   if (cmd === 'reclean') return cmdReclean(argv.slice(1))
   if (cmd === 'compare') return cmdCompare(argv.slice(1))
@@ -155,6 +174,147 @@ function cmdConvert(argv: string[]): number {
     console.error('created_at: unset (no timestamp in source; DB default on ingest)')
   }
   return 0
+}
+
+function writeIngest(dst: string, rows: IngestRow[]): void {
+  mkdirSync(dirname(resolve(dst)), { recursive: true })
+  writeFileSync(dst, rows.map((r) => JSON.stringify(r)).join('\n') + (rows.length ? '\n' : ''))
+}
+
+function cmdConvertStore(argv: string[]): number {
+  const { values, positionals } = parseArgs({
+    args: argv,
+    allowPositionals: true,
+    options: {
+      'agent-id': { type: 'string' },
+      session: { type: 'string' },
+      agent: { type: 'string' },
+      'after-seq': { type: 'string' },
+      'session-suffix': { type: 'string' },
+    },
+  })
+  const src = positionals[0]
+  const dst = positionals[1]
+  if (!src || !dst) {
+    console.error('convert-store needs SRC.DB DST')
+    return 2
+  }
+  const ident = resolveIdent(values['agent-id'], values.session, values.agent)
+  const suffix = values['session-suffix'] ?? SESSION_SUFFIX_V3_STORE
+  const session = values.session
+    ? values.session.endsWith(suffix)
+      ? values.session
+      : `${values.session}${suffix}`
+    : v3StoreSession(ident.session)
+  const afterSeq = values['after-seq'] !== undefined ? Number(values['after-seq']) : -1
+  const read = readStoreSince(src, { afterSeq })
+  const result = normalizeRecords(read.records, {
+    sessionKey: session,
+    agent: ident.agent ?? 'rivet-grokbot',
+    agentId: ident.id,
+    persona: ident.persona,
+    format: 'store',
+    positions: read.positions,
+    useStoredCreatedAt: true,
+  })
+  writeIngest(
+    dst,
+    result.messages.map((m) => toIngestRows([m])[0]),
+  )
+  console.log(
+    JSON.stringify({
+      in: result.stats.in,
+      out: result.stats.out,
+      dropped: result.stats.dropped,
+      max_seq: read.maxSeq,
+      min_seq: read.minSeq,
+      after_seq: afterSeq,
+      session,
+      time_known: result.stats.timeKnown,
+    }),
+  )
+  return 0
+}
+
+function cmdConvertVoice(argv: string[]): number {
+  const { values, positionals } = parseArgs({
+    args: argv,
+    allowPositionals: true,
+    options: {
+      'agent-id': { type: 'string' },
+      session: { type: 'string' },
+      agent: { type: 'string' },
+      'session-suffix': { type: 'string' },
+    },
+  })
+  const src = positionals[0]
+  const dst = positionals[1]
+  if (!src || !dst) {
+    console.error('convert-voice needs SRC.json DST')
+    return 2
+  }
+  const ident = resolveIdent(values['agent-id'], values.session, values.agent)
+  const call = parseVoiceCall(readFileSync(src, 'utf8'), src)
+  const suffix = values['session-suffix'] ?? SESSION_SUFFIX_V3_VOICE
+  const session = values.session
+    ? values.session.includes(suffix)
+      ? values.session
+      : v3VoiceSession(values.session, src)
+    : v3VoiceSession(ident.session, src)
+  const { records, positions } = voiceCallToRecords(call)
+  const result = normalizeRecords(records, {
+    sessionKey: session,
+    agent: ident.agent ?? 'rivet-grokbot',
+    agentId: ident.id,
+    persona: ident.persona,
+    format: 'voice',
+    positions,
+    useStoredCreatedAt: true,
+  })
+  writeIngest(
+    dst,
+    result.messages.map((m) => toIngestRows([m])[0]),
+  )
+  console.log(
+    JSON.stringify({
+      in: result.stats.in,
+      out: result.stats.out,
+      dropped: result.stats.dropped,
+      call_id: call.id,
+      session,
+      time_known: result.stats.timeKnown,
+    }),
+  )
+  return 0
+}
+
+function cmdParsePage(argv: string[]): number {
+  const src = argv[0]
+  if (!src) {
+    console.error('parse-page needs FILE or -')
+    return 2
+  }
+  const text = src === '-' ? readStdin() : readFileSync(src, 'utf8')
+  try {
+    const parsed = parseInput(text, 'page')
+    process.stdout.write(
+      `${JSON.stringify({
+        header: parsed.header ?? null,
+        records: parsed.records,
+        hasOlderFooter: parsed.hasOlderFooter,
+        format: parsed.format,
+      })}\n`,
+    )
+    return 0
+  } catch (err) {
+    const message = err instanceof Error ? err.message : 'parse-page failed'
+    console.error(message)
+    return 2
+  }
+}
+
+function readStdin(): string {
+  return readFileSync(0, 'utf8')
 }
 
 function cmdBackfill(argv: string[]): number {

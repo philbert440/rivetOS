@@ -7,12 +7,27 @@ export const SUBAGENT_AGENT = 'rivet-grokbot-run'
 export const SESSION_SUFFIX_V3 = '-v3'
 /** Row-based re-clean (--from-rows / PG) — positions do not match source transcripts. */
 export const SESSION_SUFFIX_V3_ROWS = '-v3-rows'
+/**
+ * agents/<id>/store.db transcript_entries.seq — not the on-disk line index.
+ * Never mix into -v3.
+ */
+export const SESSION_SUFFIX_V3_STORE = '-v3-store'
+/**
+ * voice-calls/*.json turn index — not the on-disk line index.
+ * Never mix into -v3. Per-call files append `-<stem>` after this suffix.
+ */
+export const SESSION_SUFFIX_V3_VOICE = '-v3-voice'
 export const STORAGE_LIMIT = 16_000
 /** Stable ingest ordinal = source position * stride + per-position sub-index. */
 export const ORDINAL_STRIDE = 1000
 
-/** Strip -v3-rows, -v3, or -v2 so identity and dest-session helpers share one rule. */
+/** Strip -v3-voice*, -v3-store, -v3-rows, -v3, or -v2 so identity helpers share one rule. */
 export function stripSessionSuffix(session: string): string {
+  const voiceAt = session.indexOf(SESSION_SUFFIX_V3_VOICE)
+  if (voiceAt >= 0) return session.slice(0, voiceAt)
+  if (session.endsWith(SESSION_SUFFIX_V3_STORE)) {
+    return session.slice(0, -SESSION_SUFFIX_V3_STORE.length)
+  }
   if (session.endsWith(SESSION_SUFFIX_V3_ROWS)) {
     return session.slice(0, -SESSION_SUFFIX_V3_ROWS.length)
   }
@@ -32,7 +47,7 @@ export type HiddenKind =
   | 'instructions_update'
   | 'agent_message'
 
-export type InputFormat = 'ondisk' | 'page'
+export type InputFormat = 'ondisk' | 'page' | 'store' | 'voice'
 
 export interface PageHeader {
   name?: string
