@@ -64,6 +64,7 @@
     "services/*",
     "integrations/herdr",
     "integrations/cursor/rivet-memory/capture",
+    "integrations/grok-bot/rivet-memory/capture",
     "integrations/grok/rivet-memory/capture",
     "integrations/kimi/rivet-memory/capture",
     "integrations/kimi/rivet-den",

@@ -21,7 +21,7 @@ Full mesh mTLS join is out of scope.
 
 ## Install
 
-**Version:** 0.2.1 (plugin-var / DataHub launcher alignment; capture/ unchanged)
+**Version:** 0.3.0 (Grok Bot capture fidelity: wrapper strip, real timestamps, per-bot tags, system turns, v3 re-clean)
 
 **Strangers** should install the member kit **`rivethub-grokbot`** and run
 `rivetos-onboard` (cloud vs local). This package is the MCP sibling that kit
@@ -60,7 +60,7 @@ Use memory_append or memory_ingest_session. Pass role (user, assistant, system, 
 Ingest skips ordinals already stored for that session.
 
 Offline: node bin/ingest-session.mjs --session-id ID --agent rivet-grokbot [--persona P] file.jsonl
-That calls the same ingestSession() as the sidecar (requires a built checkout).
+That uses the grok-bot ingest writer (requires a built capture package).
 
 ## Capture (Automated Ingestion)
 
@@ -72,7 +72,7 @@ The `capture/` directory provides automated transcript conversion and ingestion 
 
 1. Set `GROKBOT_TRANSCRIPT_ROOT` to the directory containing per-model transcript folders (e.g. `/home/box/grokbot/transcripts`)
 2. Set `RIVETOS_PG_URL` in `~/.rivetos/.env` or environment
-3. Ensure RivetOS is built at `RIVETOS_ROOT` (default `/opt/rivetos`)
+3. Ensure RivetOS is built at `RIVETOS_ROOT` (default `/opt/rivetos`). Rebuild `memory-postgres` and `@rivetos/grok-bot-rivet-memory-capture` before any `-v3` ingest. Enabling the watcher ingests every transcript's full history into `<session>-v3`.
 4. Run the setup script (see Setup/Restore section below)
 
 **Run watcher (scheduled):**
@@ -82,7 +82,7 @@ cd capture/
 ./run-once.sh
 ```
 
-The runner converts each model's transcript from `$GROKBOT_TRANSCRIPT_ROOT/<id>/<id>.jsonl` to `spool/<session>.jsonl`, then ingests to Postgres when reachable. Fails loud when session files exist but ingest fails. State tracking in `~/.rivetos/grokbot-capture-state/` detects stuck sessions (3+ consecutive failures within 2 hours).
+The runner converts each model's transcript from `$GROKBOT_TRANSCRIPT_ROOT/<id>/<id>.jsonl` to `spool/<session>-v3.jsonl` (`GROKBOT_SESSION_SUFFIX`, default `-v3`), then ingests to Postgres when reachable. Fails loud when session files exist but ingest fails. State tracking in `~/.rivetos/grokbot-capture-state/` detects stuck sessions (3+ consecutive failures within 2 hours). The watcher keys size:mtime state by agent id plus the session suffix (so a copied `~/.rivetos/capture/state.json` cannot skip `-v3`). See `capture/README.md`.
 
 **Schedule:** Typically via cron/systemd hourly. Reports stuck sessions and failures via exit code.
 

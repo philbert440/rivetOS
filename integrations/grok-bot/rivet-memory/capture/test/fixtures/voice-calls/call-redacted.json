@@ -1,0 +1,27 @@
+{
+  "callId": "vc-redacted-001",
+  "startedAtMs": 1789916640000,
+  "turns": [
+    {
+      "speaker": "user",
+      "atMs": 1789916641000,
+      "text": "redacted user turn from a real-shape voice-call fixture"
+    },
+    {
+      "speaker": "assistant",
+      "atMs": 1789916648000,
+      "text": "redacted assistant turn; synthetic content only"
+    }
+  ],
+  "toolCalls": [
+    {
+      "name": "lookup",
+      "argumentsJson": "{\"q\":\"redacted\"}",
+      "result": {
+        "atMs": 1789916645000,
+        "json": { "ok": true, "n": 1 }
+      }
+    }
+  ],
+  "nudges": [{ "kind": "silence" }]
+}
