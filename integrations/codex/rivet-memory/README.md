@@ -104,6 +104,15 @@ $RIVETOS_ROOT/integrations/codex/rivet-memory/bin/codex-memory-capture.sh --stat
 Logs: `~/.rivetos/logs/codex-capture.log`.
 State: `~/.rivetos/codex-capture-state.json`.
 
+## Transport
+
+Capture posts batches to this node's den (`POST /api/capture`) by default.
+`RIVETOS_CAPTURE_TRANSPORT=den|pg` forces one or the other; `pg` stays for one
+release. When the den is down the batch is spooled under
+`~/.rivetos/capture-spool` and replayed on the next write. A non-empty
+`RIVETOS_USER_ID` stays on Postgres, because loopback den is the owner pool.
+The launcher calls `rivetos_resolve_den` so Node trusts the den CA.
+
 ## Recall of truncated rows
 
 Capture caps stored bodies at 16K and keeps `metadata.session_jsonl_path` +

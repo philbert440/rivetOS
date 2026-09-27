@@ -34,6 +34,7 @@ import os from 'node:os'
 import path from 'node:path'
 import { spawn } from 'node:child_process'
 import { fileURLToPath } from 'node:url'
+import { resolveCaptureTransport } from '@rivetos/capture-core'
 import {
   ingestTranscript,
   ingestHookEvent,
@@ -362,6 +363,12 @@ async function dispatchIngest(
   const event = payload.hook_event_name ?? 'unknown'
   const ingestHook = deps.ingestHookEvent ?? ingestHookEvent
   const ingestTx = deps.ingestTranscript ?? ingestTranscript
+  if (!deps.ingestHookEvent && !deps.ingestTranscript) {
+    const transport = resolveCaptureTransport(process.env)
+    if (transport.kind === 'none') {
+      throw new Error(`capture transport unavailable: ${transport.reason}`)
+    }
+  }
 
   // Deprecation window: a `task:<id>` write-key override means this spawn came
   // from an executor that predates the task-association migration (a task

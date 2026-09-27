@@ -130,6 +130,16 @@ Server exits at start: with an embed URL and Postgres/DataHub URL set, check
 `RIVETOS_EMBED_MODEL`. Set the missing model in plugin settings or rerun onboard.
 `rivetos-status` reports `embed_model: set|unset` and names this configuration problem.
 
+## Transport
+
+Capture posts batches to this node's den (`POST /api/capture`) by default.
+`RIVETOS_CAPTURE_TRANSPORT=den|pg` forces one or the other; `pg` stays for one
+release. When the den is down the batch is spooled under
+`~/.rivetos/capture-spool` and replayed on the next write. A non-empty
+`RIVETOS_USER_ID` stays on Postgres, because loopback den is the owner pool.
+`rivet-memory-hook.sh` calls `rivetos_resolve_den` before `node` so Node trusts
+the den CA.
+
 ## Capture is best-effort
 
 `rivet-memory-hook.sh` always exits 0. A capture failure — DB down, dist

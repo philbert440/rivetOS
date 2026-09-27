@@ -22,6 +22,9 @@ import {
   type Queryable,
 } from '../src/codex-memory-capture.ts'
 
+process.env.RIVETOS_CAPTURE_TRANSPORT = 'pg'
+if (!process.env.RIVETOS_PG_URL?.trim()) process.env.RIVETOS_PG_URL = 'postgres://unit-test/unused'
+
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
 const FIXTURE = path.join(
   __dirname,

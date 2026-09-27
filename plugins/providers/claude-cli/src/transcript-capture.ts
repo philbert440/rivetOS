@@ -32,6 +32,14 @@
 import fs from 'node:fs'
 import path from 'node:path'
 import os from 'node:os'
+import {
+  createCaptureWriter,
+  eventIdFromContent,
+  resolveCaptureTransport,
+  type CaptureBatch,
+  type CaptureMessage,
+  type CaptureTransport,
+} from '@rivetos/capture-core'
 import pg from 'pg'
 import type { Pool, PoolClient } from 'pg'
 
@@ -138,7 +146,15 @@ export interface ParsedMessage {
   ts: string | null
   uuid: string | null
   sidechain: boolean
-  tools: Array<{ name: string; input: unknown; id: string | null; result: string | null }>
+  /** 0-based line in the transcript file (`memory_get_full` pointer). */
+  lineIndex: number
+  tools: Array<{
+    name: string
+    input: unknown
+    id: string | null
+    result: string | null
+    resultLine: number | null
+  }>
 }
 
 /** Result of parsing one transcript file. */
@@ -190,6 +206,12 @@ export interface IngestOptions {
   /** herdr pane identity, when the session runs inside a herdr pane. Merged
    *  into every inserted message's metadata (see herdrMeta). */
   herdr?: HerdrPaneContext
+  /** Test override for transport resolution. Production reads `process.env`. */
+  env?: NodeJS.ProcessEnv
+  /** Injected fetch for the den writer (tests). */
+  fetch?: typeof globalThis.fetch
+  /** Override the capture spool directory (tests). */
+  spoolDir?: string
 }
 
 /** herdr pane identity for one captured session (spooled by the hook from
@@ -326,7 +348,9 @@ export function parseTranscript(file: string): ParsedTranscript {
   // tool_result block referencing the tool_use_id). Build the id→result map up
   // front so we can attach each result to its call in the single forward pass.
   const resultById = new Map<string, string>()
-  for (const line of lines) {
+  const resultLineById = new Map<string, number>()
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i] ?? ''
     const t = line.trim()
     if (!t) continue
     let o: Record<string, unknown>
@@ -348,10 +372,12 @@ export function parseTranscript(file: string): ParsedTranscript {
           .join('\n')
       }
       resultById.set(id, typeof rc === 'string' ? rc : JSON.stringify(rc))
+      if (!resultLineById.has(id)) resultLineById.set(id, i)
     }
   }
 
-  for (const line of lines) {
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i] ?? ''
     const t = line.trim()
     if (!t) continue
     let o: Record<string, unknown>
@@ -380,8 +406,13 @@ export function parseTranscript(file: string): ParsedTranscript {
     let toolName: string | null = null
     let toolArgs: unknown = null
     let toolResult: string | null = null
-    const tools: Array<{ name: string; input: unknown; id: string | null; result: string | null }> =
-      []
+    const tools: Array<{
+      name: string
+      input: unknown
+      id: string | null
+      result: string | null
+      resultLine: number | null
+    }> = []
 
     if (typeof c === 'string') {
       text = c
@@ -399,6 +430,7 @@ export function parseTranscript(file: string): ParsedTranscript {
             input: b.input,
             id,
             result: id ? (resultById.get(id) ?? null) : null,
+            resultLine: id ? (resultLineById.get(id) ?? null) : null,
           })
         } else if (b.type === 'tool_result') {
           let rc = b.content
@@ -425,13 +457,14 @@ export function parseTranscript(file: string): ParsedTranscript {
 
     msgs.push({
       role,
-      content: trunc(text || '') ?? '',
+      content: text || '',
       toolName,
       toolArgs,
-      toolResult: trunc(toolResult),
+      toolResult,
       ts: asStr(o.timestamp),
       uuid: asStr(o.uuid),
       sidechain: !!o.isSidechain,
+      lineIndex: i,
       tools,
     })
   }
@@ -668,6 +701,43 @@ async function insertMessage(
   )
 }
 
+function selectTransport(opts: { env?: NodeJS.ProcessEnv; pgUrl?: string }): CaptureTransport {
+  // An explicit pgUrl is a direct "write to this database" request (the
+  // task-association integration test). The worker does not pass one.
+  if (opts.env) return resolveCaptureTransport(opts.env)
+  if (opts.pgUrl) return { kind: 'pg', pgUrl: opts.pgUrl }
+  return resolveCaptureTransport(process.env)
+}
+
+function isoTimestamp(ts: string | null | undefined): string | undefined {
+  if (!ts) return undefined
+  const ms = Date.parse(ts)
+  if (Number.isNaN(ms)) return undefined
+  return new Date(ms).toISOString()
+}
+
+async function postCaptureBatch(
+  batch: CaptureBatch,
+  denUrl: string,
+  opts: { fetch?: typeof globalThis.fetch; spoolDir?: string },
+): Promise<{ conversationId: string; inserted: number; skipped: number }> {
+  const writer = createCaptureWriter({ denUrl, fetch: opts.fetch, spoolDir: opts.spoolDir })
+  const result = await writer.write(batch)
+  if ('spooled' in result) {
+    if (!result.spooled) throw new Error(result.error)
+    return { conversationId: '', inserted: batch.messages.length, skipped: 0 }
+  }
+  return {
+    conversationId: result.conversation_id,
+    inserted: result.inserted,
+    skipped: result.skipped,
+  }
+}
+
+function pointerMeta(file: string, line: number): Record<string, unknown> {
+  return { session_jsonl_path: path.resolve(file), session_jsonl_line: line }
+}
+
 /**
  * Reconcile `transcriptPath` into its conversation: insert every turn the DB is
  * missing — assistant text/reasoning, user prompts, and tool calls — and nothing
@@ -726,7 +796,7 @@ export async function ingestTranscript(opts: IngestOptions): Promise<IngestResul
   )
   // One tool row per tool_use block, carrying its paired result.
   const toolCalls = parsed.msgs.flatMap((m) =>
-    m.tools.map((t) => ({ ...t, uuid: m.uuid, ts: m.ts })),
+    m.tools.map((t) => ({ ...t, uuid: m.uuid, ts: m.ts, lineIndex: m.lineIndex })),
   )
 
   if (assistantMsgs.length === 0 && userMsgs.length === 0 && toolCalls.length === 0) {
@@ -753,7 +823,109 @@ export async function ingestTranscript(opts: IngestOptions): Promise<IngestResul
     fallbackKey,
   })
 
-  return await withCaptureClient(opts.pgUrl ?? resolvePgUrl(), async (client) => {
+  const transport = selectTransport(opts)
+  if (transport.kind === 'none') {
+    throw new Error(`capture transport unavailable: ${transport.reason}`)
+  }
+  if (transport.kind === 'den') {
+    const sessionPart = opts.sessionId || parsed.sessionId || 'unknown'
+    const file = path.resolve(transcriptPath)
+    const messages: CaptureMessage[] = []
+    for (const m of assistantMsgs) {
+      const created = isoTimestamp(m.ts)
+      messages.push({
+        event_id: m.uuid
+          ? `claude-code:${sessionPart}:${m.uuid}`
+          : eventIdFromContent({ sessionKey, role: 'assistant', content: m.content }),
+        role: 'assistant',
+        content: m.content,
+        metadata: {
+          source: 'claude-code-hook',
+          uuid: m.uuid,
+          sidechain: m.sidechain,
+          ...pointerMeta(file, m.lineIndex),
+          ...herdrMeta(opts.herdr),
+        },
+        ...(created ? { created_at: created } : {}),
+      })
+    }
+    for (const t of toolCalls) {
+      const created = isoTimestamp(t.ts)
+      const content = `[tool call] ${t.name}`
+      messages.push({
+        event_id: t.id
+          ? `claude-code:${sessionPart}:tool:${t.id}`
+          : eventIdFromContent({
+              sessionKey,
+              role: 'tool',
+              content,
+              toolName: t.name,
+              toolArgs: t.input ?? undefined,
+            }),
+        role: 'tool',
+        content,
+        tool_name: t.name,
+        ...(t.input != null ? { tool_args: t.input } : {}),
+        ...(typeof t.result === 'string' ? { tool_result: t.result } : {}),
+        metadata: {
+          source: 'claude-code-hook',
+          uuid: t.uuid,
+          hook_event: 'PostToolUse',
+          recovered: true,
+          ...pointerMeta(file, t.resultLine ?? t.lineIndex),
+          ...herdrMeta(opts.herdr),
+        },
+        ...(created ? { created_at: created } : {}),
+      })
+    }
+    for (const m of userMsgs) {
+      const created = isoTimestamp(m.ts)
+      messages.push({
+        event_id: eventIdFromContent({ sessionKey, role: 'user', content: m.content }),
+        role: 'user',
+        content: m.content,
+        metadata: {
+          source: 'claude-code-hook',
+          uuid: m.uuid,
+          recovered: true,
+          ...pointerMeta(file, m.lineIndex),
+          ...herdrMeta(opts.herdr),
+        },
+        ...(created ? { created_at: created } : {}),
+      })
+    }
+    const settings = {
+      source: 'claude-code-hook',
+      file: transcriptPath,
+      session_id: opts.sessionId ?? parsed.sessionId,
+      pr_url: parsed.prUrl ?? null,
+      last_event: event ?? null,
+      last_ingest_at: new Date().toISOString(),
+    }
+    const posted = await postCaptureBatch(
+      {
+        session_key: sessionKey,
+        agent: CAPTURE_AGENT,
+        channel: CAPTURE_CHANNEL,
+        title: fallbackTitle(parsed).slice(0, 120),
+        settings,
+        ...(isTaskId(opts.taskId) ? { task_id: opts.taskId } : {}),
+        ...(markInactive ? { finalize: true } : {}),
+        messages,
+      },
+      transport.denUrl,
+      opts,
+    )
+    return {
+      sessionKey,
+      conversationId: posted.conversationId,
+      created: false,
+      inserted: posted.inserted,
+      alreadyStored: posted.skipped,
+    }
+  }
+
+  return await withCaptureClient(opts.pgUrl ?? transport.pgUrl, async (client) => {
     await client.query('BEGIN')
     try {
       // Serialise concurrent ingests of the same session (find-or-create +
@@ -795,7 +967,7 @@ export async function ingestTranscript(opts: IngestOptions): Promise<IngestResul
       for (const m of assistantMsgs.filter((m) => !m.uuid || !seenA.has(m.uuid))) {
         await insertMessage(client, conv.id, {
           role: 'assistant',
-          content: m.content,
+          content: trunc(m.content) ?? '',
           metadata: {
             source: 'claude-code-hook',
             uuid: m.uuid,
@@ -853,14 +1025,15 @@ export async function ingestTranscript(opts: IngestOptions): Promise<IngestResul
       for (const r of storedU.rows) userHave.set(r.content, (userHave.get(r.content) ?? 0) + 1)
       alreadyStored += storedU.rows.length
       for (const m of userMsgs) {
-        const have = userHave.get(m.content) ?? 0
+        const stored = trunc(m.content) ?? ''
+        const have = userHave.get(stored) ?? 0
         if (have > 0) {
-          userHave.set(m.content, have - 1)
+          userHave.set(stored, have - 1)
           continue
         }
         await insertMessage(client, conv.id, {
           role: 'user',
-          content: m.content,
+          content: stored,
           metadata: {
             source: 'claude-code-hook',
             uuid: m.uuid,
@@ -937,6 +1110,12 @@ export interface HookEventOptions {
   pgUrl?: string
   /** herdr pane identity — see IngestOptions.herdr. */
   herdr?: HerdrPaneContext
+  /** Test override for transport resolution. Production reads `process.env`. */
+  env?: NodeJS.ProcessEnv
+  /** Injected fetch for the den writer (tests). */
+  fetch?: typeof globalThis.fetch
+  /** Override the capture spool directory (tests). */
+  spoolDir?: string
   /**
    * Stable per-spool key (basename stem). A retried hook event after COMMIT
    * but before spool delete, or a double-claimed leftover, must not insert
@@ -1007,7 +1186,7 @@ export async function ingestHookEvent(opts: HookEventOptions): Promise<HookEvent
         skipped: 'empty prompt',
       }
     }
-    row = { role: 'user', content: trunc(prompt) ?? '' }
+    row = { role: 'user', content: prompt }
     title = prompt
   } else if (event === 'PostToolUse') {
     const toolName = typeof payload.tool_name === 'string' ? payload.tool_name : 'unknown'
@@ -1017,7 +1196,7 @@ export async function ingestHookEvent(opts: HookEventOptions): Promise<HookEvent
       content: `[tool call] ${toolName}`,
       toolName,
       toolArgs: payload.tool_input ?? null,
-      toolResult: trunc(result),
+      toolResult: result,
     }
   } else {
     return {
@@ -1029,7 +1208,66 @@ export async function ingestHookEvent(opts: HookEventOptions): Promise<HookEvent
     }
   }
 
-  return await withCaptureClient(opts.pgUrl ?? resolvePgUrl(), async (client) => {
+  const transport = selectTransport(opts)
+  if (transport.kind === 'none') {
+    throw new Error(`capture transport unavailable: ${transport.reason}`)
+  }
+  if (transport.kind === 'den') {
+    const sessionPart = payload.session_id || sessionKey
+    const eventId = opts.idempotencyKey
+      ? `claude-code:${sessionPart}:hook:${opts.idempotencyKey}`
+      : eventIdFromContent({
+          sessionKey,
+          role: row.role,
+          content: row.content,
+          toolName: row.toolName ?? undefined,
+          toolArgs: row.toolArgs === undefined ? undefined : row.toolArgs,
+        })
+    const settings = {
+      source: 'claude-code-hook',
+      session_id: sessionId,
+      cwd: payload.cwd ?? null,
+      last_event: event,
+      last_ingest_at: new Date().toISOString(),
+    }
+    const posted = await postCaptureBatch(
+      {
+        session_key: sessionKey,
+        agent: CAPTURE_AGENT,
+        channel: CAPTURE_CHANNEL,
+        title: title.slice(0, 120),
+        settings,
+        ...(isTaskId(opts.taskId) ? { task_id: opts.taskId } : {}),
+        messages: [
+          {
+            event_id: eventId,
+            role: row.role === 'tool' ? 'tool' : 'user',
+            content: row.content,
+            ...(row.toolName ? { tool_name: row.toolName } : {}),
+            ...(row.toolArgs != null ? { tool_args: row.toolArgs } : {}),
+            ...(typeof row.toolResult === 'string' ? { tool_result: row.toolResult } : {}),
+            metadata: {
+              source: 'claude-code-hook',
+              hook_event: event,
+              ...(opts.idempotencyKey ? { ingest_key: opts.idempotencyKey } : {}),
+              ...herdrMeta(opts.herdr),
+            },
+          },
+        ],
+      },
+      transport.denUrl,
+      opts,
+    )
+    return {
+      sessionKey,
+      conversationId: posted.conversationId,
+      created: false,
+      inserted: posted.inserted,
+      ...(posted.inserted === 0 ? { skipped: 'duplicate ingest_key' } : {}),
+    }
+  }
+
+  return await withCaptureClient(opts.pgUrl ?? transport.pgUrl, async (client) => {
     await client.query('BEGIN')
     try {
       await client.query('SELECT pg_advisory_xact_lock(hashtext($1))', [sessionKey])
@@ -1075,10 +1313,10 @@ export async function ingestHookEvent(opts: HookEventOptions): Promise<HookEvent
 
       await insertMessage(client, conv.id, {
         role: row.role,
-        content: row.content,
+        content: trunc(row.content) ?? '',
         toolName: row.toolName,
         toolArgs: row.toolArgs,
-        toolResult: row.toolResult,
+        toolResult: trunc(row.toolResult ?? null),
         metadata: {
           source: 'claude-code-hook',
           hook_event: event,

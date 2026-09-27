@@ -33,6 +33,26 @@ fi
 SCRIPT_DIR="$(cd "$(dirname "$SELF")" && pwd)"
 PLUGIN_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 
+# Den URL + CA, same discovery as bin/rivet-memory-mcp.sh. A missing CA
+# unsets RIVET_DEN_URL so capture can fall back to Postgres.
+# shellcheck disable=SC1090
+_rivet_paths=""
+for _rivet_candidate in \
+  "$SCRIPT_DIR/../../../shared/rivet-paths.sh" \
+  "${RIVETOS_ROOT:-/opt/rivetos}/integrations/shared/rivet-paths.sh"; do
+  if [ -f "$_rivet_candidate" ]; then
+    _rivet_paths="$_rivet_candidate"
+    break
+  fi
+done
+if [ -n "${_rivet_paths}" ]; then
+  . "$_rivet_paths"
+  rivetos_resolve_den || true
+else
+  echo "qwen-memory-capture: rivet-paths.sh not found; den CA trust was not configured" >&2
+fi
+unset _rivet_paths _rivet_candidate
+
 if [ -n "${RIVETOS_ROOT:-}" ] && [ -d "$RIVETOS_ROOT/integrations/qwen-code/rivet-memory/capture" ]; then
   CAPTURE_DIR="$RIVETOS_ROOT/integrations/qwen-code/rivet-memory/capture"
 else
