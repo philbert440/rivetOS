@@ -14,7 +14,10 @@ from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
 DIST = HERE / "dist" / "cli.js"
-SRC_CLI = HERE / "src" / "cli.ts"
+BUILD_FIRST = (
+    "Build the capture package first "
+    "(npx nx build @rivetos/grok-bot-rivet-memory-capture)."
+)
 
 
 def node_bin() -> str:
@@ -27,6 +30,51 @@ def node_bin() -> str:
     raise FileNotFoundError("convert-transcript: node not found on PATH (set NODE)")
 
 
+def require_dist() -> Path:
+    if DIST.is_file():
+        return DIST
+    print(BUILD_FIRST, file=sys.stderr)
+    raise SystemExit(2)
+
+
+def take_flag(args: list[str], i: int, names: tuple[str, ...]) -> tuple[str, int] | None:
+    """Accept both `--flag value` and `--flag=value`."""
+    cur = args[i]
+    for name in names:
+        if cur == name and i + 1 < len(args):
+            return args[i + 1], i + 2
+        prefix = f"{name}="
+        if cur.startswith(prefix):
+            return cur[len(prefix) :], i + 1
+    return None
+
+
+def parse_convert_args(
+    args: list[str],
+) -> tuple[str | None, str | None, str | None, list[str]]:
+    agent_id = os.environ.get("GROKBOT_AGENT_ID")
+    session = os.environ.get("GROKBOT_SESSION")
+    session_suffix = os.environ.get("GROKBOT_SESSION_SUFFIX")
+    rest: list[str] = []
+    i = 0
+    while i < len(args):
+        taken = take_flag(args, i, ("--agent-id", "--agent_id"))
+        if taken:
+            agent_id, i = taken
+            continue
+        taken = take_flag(args, i, ("--session",))
+        if taken:
+            session, i = taken
+            continue
+        taken = take_flag(args, i, ("--session-suffix", "--session_suffix"))
+        if taken:
+            session_suffix, i = taken
+            continue
+        rest.append(args[i])
+        i += 1
+    return agent_id, session, session_suffix, rest
+
+
 def convert_cmd(
     src: str,
     dst: str,
@@ -37,38 +85,17 @@ def convert_cmd(
     node = node_bin()
     extra: list[str] = []
     if agent_id:
-        extra.extend(["--agent-id", agent_id])
+        extra.append(f"--agent-id={agent_id}")
     if session:
-        extra.extend(["--session", session])
+        extra.append(f"--session={session}")
     if session_suffix is not None:
         extra.append(f"--session-suffix={session_suffix}")
-    if DIST.is_file():
-        return [node, str(DIST), "convert", src, dst, *extra]
-    return [node, "--import", "tsx", str(SRC_CLI), "convert", src, dst, *extra]
+    return [node, str(require_dist()), "convert", src, dst, *extra]
 
 
 def main() -> int:
     args = [a for a in sys.argv[1:] if a != "--"]
-    agent_id = os.environ.get("GROKBOT_AGENT_ID")
-    session = os.environ.get("GROKBOT_SESSION")
-    session_suffix = os.environ.get("GROKBOT_SESSION_SUFFIX")
-    rest: list[str] = []
-    i = 0
-    while i < len(args):
-        if args[i] in ("--agent-id", "--agent_id") and i + 1 < len(args):
-            agent_id = args[i + 1]
-            i += 2
-            continue
-        if args[i] == "--session" and i + 1 < len(args):
-            session = args[i + 1]
-            i += 2
-            continue
-        if args[i] in ("--session-suffix", "--session_suffix") and i + 1 < len(args):
-            session_suffix = args[i + 1]
-            i += 2
-            continue
-        rest.append(args[i])
-        i += 1
+    agent_id, session, session_suffix, rest = parse_convert_args(args)
     if len(rest) != 2:
         print(
             f"Usage: {sys.argv[0]} SRC.jsonl DST.jsonl [--agent-id UUID] [--session KEY] [--session-suffix=-v3]",

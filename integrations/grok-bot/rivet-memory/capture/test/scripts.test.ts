@@ -1,13 +1,19 @@
 import { execFileSync } from 'node:child_process'
-import { mkdtempSync, readFileSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { describe, expect, it } from 'vitest'
+import { beforeAll, describe, expect, it } from 'vitest'
 import { coalesceDashArgs } from '../src/argv.js'
 
 const HERE = dirname(fileURLToPath(import.meta.url))
 const ROOT = join(HERE, '..')
+const BOB = '00df02ea-4f5f-4d3e-945a-864e1c9c78dc'
+
+function ensureDist() {
+  if (existsSync(join(ROOT, 'dist', 'cli.js'))) return
+  execFileSync('npx', ['tsc', '-p', 'tsconfig.json'], { cwd: ROOT, encoding: 'utf8' })
+}
 
 function loadPyFn(file: string, snippet: string): string {
   return execFileSync(
@@ -29,6 +35,10 @@ function loadPyFn(file: string, snippet: string): string {
 }
 
 describe('node capture scripts', () => {
+  beforeAll(() => {
+    ensureDist()
+  })
+
   it('pull-bridge convert_cmd passes --session so event ids match ingest', () => {
     const out = loadPyFn(
       join(ROOT, 'pull-bridge.py'),
@@ -124,6 +134,73 @@ describe('node capture scripts', () => {
     ])
     expect(coalesceDashArgs(['--after-seq', '-1'])).toEqual(['--after-seq=-1'])
     expect(coalesceDashArgs(['--after-seq=-1'])).toEqual(['--after-seq=-1'])
+  })
+
+  it('parse_convert_args accepts both space and = forms', () => {
+    const out = loadPyFn(
+      join(ROOT, 'convert-transcript.py'),
+      [
+        'a,s,x,r = mod.parse_convert_args(["in.jsonl","out.jsonl","--agent-id=id1","--session=sess1","--session-suffix=-v3"])',
+        'print(a, s, x, len(r))',
+        'a,s,x,r = mod.parse_convert_args(["in.jsonl","out.jsonl","--agent-id","id2","--session","sess2","--session-suffix","-v3"])',
+        'print(a, s, x, len(r))',
+      ].join('\n'),
+    )
+    const lines = out.trim().split('\n')
+    expect(lines[0]).toBe('id1 sess1 -v3 2')
+    expect(lines[1]).toBe('id2 sess2 -v3 2')
+  })
+
+  it("runs the watcher's exact argv through convert-transcript.py with GROKBOT_SESSION_SUFFIX=-v3", () => {
+    const dir = mkdtempSync(join(tmpdir(), 'gb-watch-argv-'))
+    const src = join(dir, 'in.jsonl')
+    const dst = join(dir, 'out.jsonl')
+    writeFileSync(
+      src,
+      `${JSON.stringify({
+        role: 'user',
+        message: {
+          content: [
+            {
+              type: 'text',
+              text: '<timestamp>Sunday, Sep 20, 2026, 3:04 PM (UTC-05:00)</timestamp>\n<user_query>\nwatch argv\n</user_query>',
+            },
+          ],
+        },
+      })}\n`,
+    )
+    const out = execFileSync(
+      'python3',
+      [
+        join(ROOT, 'convert-transcript.py'),
+        src,
+        dst,
+        '--agent-id',
+        BOB,
+        '--session',
+        'grokbot-bob-v3',
+        '--session-suffix=-v3',
+      ],
+      {
+        encoding: 'utf8',
+        env: { ...process.env, GROKBOT_SESSION_SUFFIX: '-v3' },
+      },
+    )
+    const info = JSON.parse(out.trim().split('\n').pop() ?? '{}') as { session?: string; out?: number }
+    expect(info.session).toBe('grokbot-bob-v3')
+    expect(info.out).toBeGreaterThan(0)
+    expect(readFileSync(dst, 'utf8')).toContain('watch argv')
+  })
+
+  it('convert-transcript.py and pull-bridge fail closed when dist is missing', () => {
+    const py = readFileSync(join(ROOT, 'convert-transcript.py'), 'utf8')
+    const bridge = readFileSync(join(ROOT, 'pull-bridge.py'), 'utf8')
+    expect(py).toContain('Build the capture package first')
+    expect(py).not.toContain('--import')
+    expect(py).not.toContain('tsx')
+    expect(bridge).toContain('Build the capture package first')
+    expect(bridge).not.toContain('--import')
+    expect(bridge).not.toContain('tsx')
   })
 
   it('runs the real converter with GROKBOT_SESSION_SUFFIX=-v3', () => {

@@ -11,7 +11,7 @@ import { parseVoiceCall, v3VoiceSession, voiceCallToRecords } from '../src/voice
 const HERE = dirname(fileURLToPath(import.meta.url))
 const FIX = join(HERE, 'fixtures', 'voice-calls', 'call-redacted.json')
 
-describe('voice-calls reader (real callId/speaker/atMs shape)', () => {
+describe('voice-calls reader (real callId/speaker/atMs + call-level toolCalls)', () => {
   it('maps speaker to role and atMs/startedAtMs to ISO, using callId as id', () => {
     const call = parseVoiceCall(readFileSync(FIX, 'utf8'), FIX)
     expect(call.id).toBe('vc-redacted-001')
@@ -21,27 +21,27 @@ describe('voice-calls reader (real callId/speaker/atMs shape)', () => {
     expect(call.turns[0]?.started_at).toBe('2026-09-20T15:04:01.000Z')
     expect(call.turns[1]?.role).toBe('assistant')
     expect(call.turns[1]?.started_at).toBe('2026-09-20T15:04:08.000Z')
-    expect(call.turns[1]?.toolCalls).toHaveLength(1)
-    expect(call.turns[1]?.nudgeCount).toBe(1)
+    expect(call.toolCalls).toHaveLength(1)
+    expect(call.toolCalls[0]?.name).toBe('lookup')
+    expect(call.toolCalls[0]?.atMs).toBe(1789916645000)
+    expect(call.toolCalls[0]?.result).toContain('"ok":true')
   })
 
   it('uses a distinct -v3-voice-<stem> session so turn indices never mix with -v3', () => {
     expect(v3VoiceSession('grokbot-bob', FIX)).toBe('grokbot-bob-v3-voice-call-redacted')
   })
 
-  it('feeds the same normalizer with role, time, and tool rows; drops nudges', () => {
+  it('emits call-level tool rows in time order next to the nearest turn', () => {
     const call = parseVoiceCall(readFileSync(FIX, 'utf8'), FIX)
     const { records, positions } = voiceCallToRecords(call)
     expect(records).toHaveLength(3)
+    expect(records.map((r) => (r as { role: string }).role)).toEqual(['user', 'tool', 'assistant'])
+    expect(records.map((r) => (r as { created_at: string }).created_at)).toEqual([
+      '2026-09-20T15:04:01.000Z',
+      '2026-09-20T15:04:05.000Z',
+      '2026-09-20T15:04:08.000Z',
+    ])
     expect(positions).toEqual([0, 1, 1])
-    expect(records[0]).toMatchObject({
-      role: 'user',
-      created_at: '2026-09-20T15:04:01.000Z',
-    })
-    expect(records[1]).toMatchObject({
-      role: 'assistant',
-      created_at: '2026-09-20T15:04:08.000Z',
-    })
     expect(JSON.stringify(records)).not.toContain('nudges')
     expect(JSON.stringify(records)).not.toContain('silence')
     const result = normalizeRecords(records, {
@@ -54,6 +54,9 @@ describe('voice-calls reader (real callId/speaker/atMs shape)', () => {
     expect(result.messages.some((m) => m.role === 'user')).toBe(true)
     expect(result.messages.some((m) => m.role === 'assistant')).toBe(true)
     expect(result.messages.some((m) => m.role === 'tool')).toBe(true)
+    const tool = result.messages.find((m) => m.role === 'tool')
+    expect(tool?.created_at).toBe('2026-09-20T15:04:05.000Z')
+    expect(tool?.tool_result).toContain('"ok":true')
     expect(result.messages.find((m) => m.role === 'user')?.created_at).toBe(
       '2026-09-20T15:04:01.000Z',
     )
@@ -70,6 +73,7 @@ describe('voice-calls reader (real callId/speaker/atMs shape)', () => {
     )
     expect(call.turns).toHaveLength(2)
     expect(call.id).toBe('array')
+    expect(call.toolCalls).toEqual([])
     expect(call.turns[0]?.role).toBe('user')
     expect(call.turns[0]?.started_at).toBe('2026-09-20T15:04:00.000Z')
   })
@@ -98,7 +102,7 @@ describe('voice-calls reader (real callId/speaker/atMs shape)', () => {
       }
       expect(info.session).toBe('grokbot-bob-v3-voice-call-redacted')
       expect(info.call_id).toBe('vc-redacted-001')
-      expect(info.out).toBeGreaterThanOrEqual(2)
+      expect(info.out).toBeGreaterThanOrEqual(3)
     } finally {
       console.log = log
     }

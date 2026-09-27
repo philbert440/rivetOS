@@ -103,28 +103,49 @@ export function grokbotLastPositionSql(conversationAlias: string, messageAlias: 
 }
 
 /**
+ * Last source position per conversation, computed once (GROUP BY).
+ * Used inside an uncorrelated NOT IN subquery so search does not re-run
+ * MAX(position) for every message.
+ */
+export function sqlGrokbotLastPosCte(name = 'grokbot_last_pos'): string {
+  return `${name} AS (
+    SELECT gm.conversation_id,
+           COALESCE(MAX(${grokbotMessagePositionSql('gm')}), -1) AS last_pos
+      FROM ros_messages gm
+     GROUP BY gm.conversation_id
+  )`
+}
+
+/** Uncorrelated: last positions are aggregated once, then joined. */
+export function sqlSupersededGrokbotConversationIds(): string {
+  return `
+    WITH ${sqlGrokbotLastPosCte('grokbot_last_pos')}
+    SELECT grokbot_legacy.id
+      FROM ros_conversations grokbot_legacy
+      INNER JOIN ros_conversations grokbot_pref
+        ON grokbot_pref.agent = grokbot_legacy.agent
+       AND grokbot_pref.channel = 'grokbot'
+       AND grokbot_pref.session_key IN (
+         regexp_replace(grokbot_legacy.session_key, '-v2$', '') || '-v3',
+         regexp_replace(grokbot_legacy.session_key, '-v2$', '') || '-v3-rows'
+       )
+      INNER JOIN grokbot_last_pos pref_last
+        ON pref_last.conversation_id = grokbot_pref.id
+      INNER JOIN grokbot_last_pos leg_last
+        ON leg_last.conversation_id = grokbot_legacy.id
+     WHERE grokbot_legacy.channel = 'grokbot'
+       AND grokbot_legacy.session_key NOT LIKE '%-v3%'
+       AND pref_last.last_pos >= leg_last.last_pos
+  `
+}
+
+/**
  * SQL: message alias is not in a superseded unsuffixed/-v2 grokbot session.
  * Uses conversation_id; safe to AND into ros_messages / ros_summaries WHERE.
  * Legacy is hidden only when the sibling last position covers it.
  */
 export function sqlNotSupersededGrokbotMessage(alias = 'm'): string {
-  return `NOT EXISTS (
-    SELECT 1 FROM ros_conversations grokbot_legacy
-    WHERE grokbot_legacy.id = ${alias}.conversation_id
-      AND grokbot_legacy.channel = 'grokbot'
-      AND grokbot_legacy.session_key NOT LIKE '%-v3%'
-      AND EXISTS (
-        SELECT 1 FROM ros_conversations grokbot_pref
-        WHERE grokbot_pref.agent = grokbot_legacy.agent
-          AND grokbot_pref.channel = 'grokbot'
-          AND grokbot_pref.session_key IN (
-            regexp_replace(grokbot_legacy.session_key, '-v2$', '') || '-v3',
-            regexp_replace(grokbot_legacy.session_key, '-v2$', '') || '-v3-rows'
-          )
-          AND ${grokbotLastPositionSql('grokbot_pref', 'pref_m')}
-              >= ${grokbotLastPositionSql('grokbot_legacy', 'leg_m')}
-      )
-  )`
+  return `${alias}.conversation_id NOT IN (${sqlSupersededGrokbotConversationIds()})`
 }
 
 /** SQL: conversation alias is not a superseded unsuffixed/-v2 grokbot session. */
@@ -132,31 +153,21 @@ export function sqlNotSupersededGrokbotConversation(alias = 'c'): string {
   return `(
     ${alias}.channel IS DISTINCT FROM 'grokbot'
     OR ${alias}.session_key LIKE '%-v3%'
-    OR NOT EXISTS (
-      SELECT 1 FROM ros_conversations grokbot_pref
-      WHERE grokbot_pref.agent = ${alias}.agent
-        AND grokbot_pref.channel = 'grokbot'
-        AND grokbot_pref.session_key IN (
-          regexp_replace(${alias}.session_key, '-v2$', '') || '-v3',
-          regexp_replace(${alias}.session_key, '-v2$', '') || '-v3-rows'
-        )
-        AND ${grokbotLastPositionSql('grokbot_pref', 'pref_m')}
-            >= ${grokbotLastPositionSql(alias, 'leg_m')}
-    )
+    OR ${alias}.id NOT IN (${sqlSupersededGrokbotConversationIds()})
   )`
 }
 
 export const RESOLVE_PREFERRED_GROKBOT_SESSION_SQL = `
+WITH ${sqlGrokbotLastPosCte('grokbot_last_pos')}
 SELECT c.session_key
   FROM ros_conversations c
+  INNER JOIN grokbot_last_pos pref_last ON pref_last.conversation_id = c.id
+  INNER JOIN ros_conversations src
+    ON src.session_key = $1 AND src.agent = c.agent
+  INNER JOIN grokbot_last_pos leg_last ON leg_last.conversation_id = src.id
  WHERE c.channel = 'grokbot'
    AND c.session_key IN ($2 || '-v3', $2 || '-v3-rows')
-   AND EXISTS (
-     SELECT 1 FROM ros_conversations src
-      WHERE src.session_key = $1 AND src.agent = c.agent
-        AND ${grokbotLastPositionSql('c', 'pref_m')}
-            >= ${grokbotLastPositionSql('src', 'leg_m')}
-   )
+   AND pref_last.last_pos >= leg_last.last_pos
  ORDER BY CASE WHEN c.session_key LIKE '%-v3-rows' THEN 1 ELSE 0 END
  LIMIT 1
 `

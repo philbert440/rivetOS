@@ -105,7 +105,8 @@ Store schema (13 live stores, opened read-only):
 `spend-initiation`, `user-attachment`, `feedback`) and integer
 `timestampMs`. Other tables (`kv`, `blobs`, `automation_completion_inbox`)
 are unused. Voice-call JSON has top-level `callId` + `startedAtMs`; each
-turn has `speaker` and `atMs`, plus optional `toolCalls` / `nudges`.
+turn has `speaker` and `atMs`. `toolCalls` is a call-level list
+(`argumentsJson` + `result.atMs` / `result.json`); nudges are dropped.
 Fixtures use that real shape with synthetic content only.
 
 Node `parseArgs` rejects `--session-suffix -v3` and `--after-seq -1`.

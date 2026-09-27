@@ -35,9 +35,12 @@ SPOOL = CAP / "spool"
 NODE = os.environ.get("NODE") or shutil.which("node") or "node"
 SUFFIX = os.environ.get("PULL_SESSION_SUFFIX", "-v3")
 CLI_JS = HERE / "dist" / "cli.js"
-CLI_TS = HERE / "src" / "cli.ts"
 DISCOVER = HERE / "discover-models.mjs"
 INGEST = HERE / "ingest.mjs"
+BUILD_FIRST = (
+    "Build the capture package first "
+    "(npx nx build @rivetos/grok-bot-rivet-memory-capture)."
+)
 
 
 def load_state() -> dict:
@@ -62,10 +65,15 @@ def h(line: str) -> str:
     return hashlib.sha1(line.encode("utf8")).hexdigest()
 
 
-def parse_cmd() -> list[str]:
+def require_dist() -> Path:
     if CLI_JS.is_file():
-        return [NODE, str(CLI_JS), "parse-page", "-"]
-    return [NODE, "--import", "tsx", str(CLI_TS), "parse-page", "-"]
+        return CLI_JS
+    print(BUILD_FIRST, file=sys.stderr)
+    raise SystemExit(2)
+
+
+def parse_cmd() -> list[str]:
+    return [NODE, str(require_dist()), "parse-page", "-"]
 
 
 def parse_page(text: str):
@@ -179,12 +187,10 @@ def identities():
 
 
 def convert_cmd(src: Path, dst: Path, agent_id: str, session: str | None = None) -> list[str]:
-    extra = ["--agent-id", agent_id]
+    extra = [f"--agent-id={agent_id}"]
     if session:
-        extra.extend(["--session", session])
-    if CLI_JS.is_file():
-        return [NODE, str(CLI_JS), "convert", str(src), str(dst), *extra]
-    return [NODE, "--import", "tsx", str(CLI_TS), "convert", str(src), str(dst), *extra]
+        extra.append(f"--session={session}")
+    return [NODE, str(require_dist()), "convert", str(src), str(dst), *extra]
 
 
 def cmd_ingest(ids: list[str], dry: bool, suffix: str) -> int:

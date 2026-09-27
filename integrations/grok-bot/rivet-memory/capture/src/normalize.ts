@@ -105,44 +105,52 @@ function recordCreatedAtKey(rec: unknown): string | undefined {
  */
 function skipIdenticalCreatedAtRuns(records: unknown[], hashes: string[], skip: Set<number>): void {
   const times = records.map(recordCreatedAtKey)
+  const byHash = new Map<string, number[]>()
   let j = 0
   while (j < hashes.length) {
+    const hash = hashes[j] ?? ''
     if (skip.has(j)) {
+      rememberHash(byHash, hash, j)
       j += 1
       continue
     }
-    let prev = -1
-    for (let p = 0; p < j; p++) {
-      if (hashes[p] === hashes[j]) {
-        prev = p
-        break
+    const earlier = byHash.get(hash) ?? []
+    let bestLen = 0
+    let bestSawTime = false
+    for (const prev of earlier) {
+      let len = 0
+      let sawTime = false
+      while (prev + len < j && j + len < hashes.length && !skip.has(j + len)) {
+        if (hashes[prev + len] !== hashes[j + len]) break
+        const later = times[j + len]
+        const earlierTime = times[prev + len]
+        if (later) {
+          if (later !== earlierTime) break
+          sawTime = true
+        } else if (earlierTime) {
+          break
+        }
+        len += 1
+      }
+      if (len > bestLen) {
+        bestLen = len
+        bestSawTime = sawTime
       }
     }
-    if (prev < 0) {
-      j += 1
-      continue
-    }
-    let len = 0
-    let sawTime = false
-    while (prev + len < j && j + len < hashes.length && !skip.has(j + len)) {
-      if (hashes[prev + len] !== hashes[j + len]) break
-      const later = times[j + len]
-      const earlier = times[prev + len]
-      if (later) {
-        if (later !== earlier) break
-        sawTime = true
-      } else if (earlier) {
-        break
-      }
-      len += 1
-    }
-    if (len >= REPLAY_IDENTICAL_RUN_MIN && sawTime) {
-      for (let k = 0; k < len; k++) skip.add(j + k)
-      j += len
+    if (bestLen >= REPLAY_IDENTICAL_RUN_MIN && bestSawTime) {
+      for (let k = 0; k < bestLen; k++) skip.add(j + k)
+      j += bestLen
     } else {
+      rememberHash(byHash, hash, j)
       j += 1
     }
   }
+}
+
+function rememberHash(byHash: Map<string, number[]>, hash: string, idx: number): void {
+  const arr = byHash.get(hash)
+  if (arr) arr.push(idx)
+  else byHash.set(hash, [idx])
 }
 
 export function clampCreatedAt(clock: TimeClock, candidate?: string): string | undefined {
