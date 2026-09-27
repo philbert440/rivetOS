@@ -91,6 +91,43 @@ const READ_ONLY = { readOnlyHint: true, idempotentHint: true } as const
 export const DELEGATE_TASK_HTTP_REASON =
   'delegate_task needs a per-harness stdio sidecar for the chain guard'
 
+export const delegateTaskDefinition = {
+  description:
+    'Delegate work to a RivetHub agent (preset name or id) or a runtime agent id. ' +
+    'Call list_agents first. A preset name or id wins when it also matches a runtime agent id. ' +
+    'Presets run as a harness session in the agent directory; ' +
+    'runtime agents run as a chat-loop on the newest online node that hosts them. ' +
+    'Waits until the task finishes or the timeout elapses (default 20 minutes, max 30). ' +
+    'Set the client tool-call timeout above that wait — Codex tool_timeout_sec ' +
+    '(its default of 60s aborts the call) and Claude Code MCP timeout. ' +
+    'An aborted call kills the row.',
+  inputSchema: {
+    to_agent: z
+      .string()
+      .min(1)
+      .describe('RivetHub agent name or id, or a runtime agent id — call list_agents first'),
+    task: z.string().min(1).describe('What the delegate should do'),
+    context: z.array(z.string()).optional().describe('Extra context lines included with the task'),
+    timeout_ms: z
+      .number()
+      .int()
+      .positive()
+      .max(1_800_000)
+      .optional()
+      .describe('How long to wait, in milliseconds (default 20 minutes, max 30)'),
+    model: z.string().optional().describe('Optional model override for this delegation'),
+  },
+}
+
+export const listAgentsDefinition = {
+  description:
+    'List RivetHub agents (presets) and runtime agents on online mesh nodes. ' +
+    'Pass a preset name or id, or a runtime agent id, as delegate_task to_agent. ' +
+    'A preset name or id wins when it also matches a runtime agent id.',
+  annotations: READ_ONLY,
+  inputSchema: {},
+}
+
 export interface DelegateToolsDeps {
   store: TaskStore
   waiter: TaskCompletionWaiter
@@ -648,34 +685,7 @@ export function createDelegateTools(deps: DelegateToolsDeps): DelegateToolsHandl
   const tools: ToolRegistration[] = [
     {
       name: 'delegate_task',
-      description:
-        'Delegate work to a RivetHub agent (preset name or id) or a runtime agent id. ' +
-        'Call list_agents first. A preset name or id wins when it also matches a runtime agent id. ' +
-        'Presets run as a harness session in the agent directory; ' +
-        'runtime agents run as a chat-loop on the newest online node that hosts them. ' +
-        'Waits until the task finishes or the timeout elapses (default 20 minutes, max 30). ' +
-        'Set the client tool-call timeout above that wait — Codex tool_timeout_sec ' +
-        '(its default of 60s aborts the call) and Claude Code MCP timeout. ' +
-        'An aborted call kills the row.',
-      inputSchema: {
-        to_agent: z
-          .string()
-          .min(1)
-          .describe('RivetHub agent name or id, or a runtime agent id — call list_agents first'),
-        task: z.string().min(1).describe('What the delegate should do'),
-        context: z
-          .array(z.string())
-          .optional()
-          .describe('Extra context lines included with the task'),
-        timeout_ms: z
-          .number()
-          .int()
-          .positive()
-          .max(1_800_000)
-          .optional()
-          .describe('How long to wait, in milliseconds (default 20 minutes, max 30)'),
-        model: z.string().optional().describe('Optional model override for this delegation'),
-      },
+      ...delegateTaskDefinition,
       async execute(args: Record<string, unknown>, ctx?: ToolExecuteContext): Promise<string> {
         try {
           const call = readDelegateCall(args)
@@ -762,12 +772,7 @@ export function createDelegateTools(deps: DelegateToolsDeps): DelegateToolsHandl
     },
     {
       name: 'list_agents',
-      description:
-        'List RivetHub agents (presets) and runtime agents on online mesh nodes. ' +
-        'Pass a preset name or id, or a runtime agent id, as delegate_task to_agent. ' +
-        'A preset name or id wins when it also matches a runtime agent id.',
-      annotations: READ_ONLY,
-      inputSchema: {},
+      ...listAgentsDefinition,
       async execute(): Promise<string> {
         try {
           return await renderAgents()

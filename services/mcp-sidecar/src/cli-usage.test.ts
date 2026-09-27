@@ -24,5 +24,8 @@ describe('mcp-sidecar CLI usage', () => {
     expect(USAGE).toMatch(/mesh\.node_name/)
     expect(USAGE).toMatch(/tool_timeout_sec/)
     expect(USAGE).toMatch(/delegate_task needs a per-harness stdio sidecar for the chain guard/)
+    expect(USAGE).toMatch(/RIVETOS_MCP_TRANSPORT=den\|pg/)
+    expect(USAGE).toMatch(/RIVET_DEN_URL/)
+    expect(USAGE).toMatch(/RIVETOS_USER_ID/)
   })
 })
