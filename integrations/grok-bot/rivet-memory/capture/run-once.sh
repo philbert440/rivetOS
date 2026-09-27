@@ -270,7 +270,7 @@ while IFS= read -r model_json; do
     spool_path="${SPOOL_DIR}/${session_id}.jsonl"
     echo "  Converting: ${transcript_path} -> ${spool_path}"
 
-    if ! python3 "${CONVERTER}" "${transcript_path}" "${spool_path}" 2>&1; then
+    if ! python3 "${CONVERTER}" "${transcript_path}" "${spool_path}" --agent-id "${model_id}" 2>&1; then
         echo "  ERROR: Conversion failed for ${model_name}" >&2
         record_failure "${state_file}" "${session_id}" "conversion failed"
         if warn_if_stuck "${state_file}"; then

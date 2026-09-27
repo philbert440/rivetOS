@@ -21,7 +21,7 @@ Full mesh mTLS join is out of scope.
 
 ## Install
 
-**Version:** 0.2.1 (plugin-var / DataHub launcher alignment; capture/ unchanged)
+**Version:** 0.3.0 (Grok Bot capture fidelity: wrapper strip, real timestamps, per-bot tags, system turns, v3 re-clean)
 
 **Strangers** should install the member kit **`rivethub-grokbot`** and run
 `rivetos-onboard` (cloud vs local). This package is the MCP sibling that kit

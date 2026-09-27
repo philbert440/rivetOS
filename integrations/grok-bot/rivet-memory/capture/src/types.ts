@@ -1,0 +1,129 @@
+import type { CaptureMessage } from '@rivetos/capture-core'
+
+export const CAPTURE_CHANNEL = 'grokbot'
+export const CAPTURE_SOURCE = 'grokbot'
+export const DEFAULT_NODE_ID = 'grokbot'
+export const SUBAGENT_AGENT = 'rivet-grokbot-run'
+export const SESSION_SUFFIX_V3 = '-v3'
+export const STORAGE_LIMIT = 16_000
+
+export type HiddenKind =
+  | 'first_run'
+  | 'profile_update'
+  | 'routine'
+  | 'background_task'
+  | 'skipped_prompt'
+  | 'reaction'
+  | 'event'
+  | 'instructions_update'
+  | 'agent_message'
+
+export type InputFormat = 'ondisk' | 'page'
+
+export interface PageHeader {
+  name?: string
+  id?: string
+  a: number
+  b: number
+  total: number
+  thisConversation: boolean
+}
+
+export interface ParsedInput {
+  format: InputFormat
+  header?: PageHeader
+  records: unknown[]
+  hasOlderFooter: boolean
+}
+
+export interface BotIdentity {
+  id: string
+  persona: string
+  session: string
+  agent: string
+}
+
+export interface NormalizeOptions {
+  sessionKey: string
+  agent: string
+  /** Grok Bot roster id (UUID). Stored on every row's metadata. */
+  agentId?: string
+  persona?: string
+  channel?: string
+  format?: InputFormat
+  /** Source ordinal of the first record (page header `A`, else 0). */
+  startPosition?: number
+  /** Last known message time from a prior page, as ISO-8601 UTC. */
+  lastKnownTime?: string
+}
+
+export interface NormalizeStats {
+  in: number
+  out: number
+  dropped: number
+  systemEvents: number
+  user: number
+  assistant: number
+  tool: number
+  system: number
+  truncated: number
+  timeKnown: boolean
+  lastKnownTime?: string
+}
+
+export interface NormalizeResult {
+  messages: CaptureMessage[]
+  stats: NormalizeStats
+  lastKnownTime?: string
+  timeKnown: boolean
+}
+
+export interface IngestRow {
+  role: 'user' | 'assistant' | 'system' | 'tool'
+  content: string
+  createdAt?: string
+  toolCalls?: Array<{ id?: string; name: string; input?: unknown }>
+  metadata?: Record<string, unknown>
+}
+
+export interface NoiseCounts {
+  timestamp: number
+  user_query: number
+  SAND_HIDDEN_PROMPT: number
+  SAND_TRUSTED_AUTOMATION_PROMPT: number
+  system_reminder: number
+  automation_status: number
+  address_tag: number
+  sent_from_machine: number
+  profile_blob: number
+  agent_profile_update: number
+  memory_context: number
+  user_info: number
+  agent_skills: number
+  dynamic_tool_catalog: number
+  mcp_server_catalog: number
+  instructions_update: number
+  attached_files: number
+  image: number
+}
+
+export const EMPTY_NOISE: NoiseCounts = {
+  timestamp: 0,
+  user_query: 0,
+  SAND_HIDDEN_PROMPT: 0,
+  SAND_TRUSTED_AUTOMATION_PROMPT: 0,
+  system_reminder: 0,
+  automation_status: 0,
+  address_tag: 0,
+  sent_from_machine: 0,
+  profile_blob: 0,
+  agent_profile_update: 0,
+  memory_context: 0,
+  user_info: 0,
+  agent_skills: 0,
+  dynamic_tool_catalog: 0,
+  mcp_server_catalog: 0,
+  instructions_update: 0,
+  attached_files: 0,
+  image: 0,
+}
