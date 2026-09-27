@@ -7,7 +7,8 @@ if [ "${RIVETOS_DEN_HOOK_DISABLED:-}" = "1" ]; then
 fi
 
 if [ -z "${RIVETOS_ROOT:-}" ]; then
-  RIVETOS_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../../.." && pwd -P)"
+  SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
+  RIVETOS_ROOT="$(cd "$SCRIPT_DIR/../../../.." && pwd -P)"
   [ -f "$RIVETOS_ROOT/integrations/claude-code/rivet-den/hooks/den-hook.mjs" ] || RIVETOS_ROOT=/opt/rivetos
 fi
 RIVETOS_ENV="${RIVETOS_ENV_FILE:-$HOME/.rivetos/.env}"

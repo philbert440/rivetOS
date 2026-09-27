@@ -1,6 +1,6 @@
 ---
 name: memory-today
-description: 'Quick recall of everything from today (local time). Use when user says "what happened today", "anything today about X", "show me today\'s work", or similar time-bounded requests for the current day.'
+description: 'Quick recall of everything from today (local time). Use when user says "what happened today", "anything today about X", "show me today''s work", or similar time-bounded requests for the current day.'
 tags: [rivetos, memory, recall]
 version: 0.2.0
 ---

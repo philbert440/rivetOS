@@ -30,11 +30,11 @@ With `--apply` the script:
 
 Without `--apply` it prints what it would do.
 
-Requires a built RivetOS checkout (`services/mcp-sidecar`) and `~/.rivetos/.env` with `RIVETOS_PG_URL`.
+Uses a built RivetOS checkout (`services/mcp-sidecar`) or the shared pinned npm fallback. An explicitly selected unbuilt checkout fails instead of falling back. Configure den or DataHub/Postgres access in `~/.rivetos/.env`.
 
 ## Capture status
 
-`bin/rivet-memory-hook.sh` spools each hook payload to `~/.rivetos/cursor-capture/spool/` and logs to `~/.rivetos/cursor-capture.log`. Nothing ingests the spool into memory yet. When `capture/dist/cursor-memory-capture.js` (or `capture/src/cursor-memory-capture.ts`) exists, the hook pipes each payload to it.
+`bin/rivet-memory-hook.sh` spools each hook payload to `~/.rivetos/cursor-capture/spool/` and logs to `~/.rivetos/cursor-capture.log`. Nothing ingests the spool into memory yet. The spool directory is 0700 and new payload files are 0600; writes prune oldest payloads to retain at most 500 files and 50 MiB (an oversized payload may itself be removed). Diagnostics rotate at 1 MiB with one previous log retained. When a built `capture/dist/cursor-memory-capture.js` exists, the hook pipes each payload to it (never `npx` from a hook). Until that worker lands, Cursor's own turns are not searchable; memory written by the other harnesses is.
 
 ## Related
 
@@ -42,3 +42,5 @@ Requires a built RivetOS checkout (`services/mcp-sidecar`) and `~/.rivetos/.env`
 - Claude Code: `integrations/claude-code/rivet-memory/`
 - Grok Bot: `integrations/grok-bot/rivet-memory/`
 - RivetHub member kit: `integrations/grok-bot/rivethub-grokbot/`
+
+TODO(phil): Verify `${CURSOR_PLUGIN_ROOT}` expansion, plugin-relative hook cwd, and the agent tool allowlist in Cursor; record the verification date and Cursor version here. These vendor behaviours are not yet verified.

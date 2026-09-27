@@ -37,20 +37,32 @@ echo "Plugin directory: $PLUGIN_DIR"
 echo "Cursor home:      $CURSOR_HOME"
 echo
 
+local_plugin="$CURSOR_HOME/plugins/local/rivet-memory-cursor"
+previous_plugin=""
+if [ -L "$local_plugin" ]; then
+  target="$(readlink -f -- "$local_plugin" || true)"
+  case "$target" in
+    "$PLUGIN_DIR" | */integrations/cursor/rivet-memory) previous_plugin="$target" ;;
+    *) echo "Refusing to replace foreign plugin symlink: $local_plugin" >&2
+       [ "$DO_APPLY" -ne 1 ] && exit 0
+       exit 1 ;;
+  esac
+elif [ -e "$local_plugin" ]; then
+  echo "Refusing to replace existing plugin path (not a kit symlink): $local_plugin" >&2
+  [ "$DO_APPLY" -ne 1 ] && exit 0
+  exit 1
+fi
+
 if [ "$DO_APPLY" -ne 1 ]; then
   cat <<EOF
 Dry run (pass --apply to install).
-
-Will:
-  cp AGENT.md -> $CURSOR_HOME/AGENT.md
-  cp MEMORY.md -> $CURSOR_HOME/MEMORY.md
-  symlink plugin -> $CURSOR_HOME/plugins/local/rivet-memory-cursor
-  remove legacy rivet-memory entries from $CURSOR_HOME/hooks.json and $CURSOR_HOME/mcp.json
-  remove legacy skill symlinks in $CURSOR_HOME/skills/ that point into this kit
+Will copy AGENT.md/MEMORY.md, backing up user edits; link $local_plugin;
+remove only legacy kit-owned hooks, MCP launchers, and skill symlinks.
 EOF
   exit 0
 fi
 
+umask 077
 mkdir -p "$CURSOR_HOME" "$CURSOR_HOME/plugins/local"
 
 for name in AGENT.md MEMORY.md; do
@@ -58,33 +70,73 @@ for name in AGENT.md MEMORY.md; do
   if cmp -s "$PLUGIN_DIR/$name" "$dest" 2>/dev/null; then
     echo "OK  $dest (unchanged)"
   else
-    cp "$PLUGIN_DIR/$name" "$dest"
+    if [ -e "$dest" ] && { [ -z "$previous_plugin" ] || ! cmp -s "$previous_plugin/$name" "$dest"; }; then
+      backup="$dest.bak-$(date -u +%Y%m%dT%H%M%S%N)"
+      cp -p -- "$dest" "$backup"
+      echo "Backed up $dest -> $backup"
+    fi
+    cp -- "$PLUGIN_DIR/$name" "$dest"
     echo "Wrote $dest"
   fi
 done
 
-local_plugin="$CURSOR_HOME/plugins/local/rivet-memory-cursor"
-if [ -L "$local_plugin" ] || [ -e "$local_plugin" ]; then
-  rm -rf "$local_plugin"
-fi
-ln -sfn "$PLUGIN_DIR" "$local_plugin"
+# Preflight above verified ownership. Unlink only; never recursively delete.
+[ ! -L "$local_plugin" ] || rm -- "$local_plugin"
+ln -s -- "$PLUGIN_DIR" "$local_plugin"
 echo "Linked $local_plugin -> $PLUGIN_DIR"
 
 for link in "$CURSOR_HOME"/skills/*; do
   [ -L "$link" ] || continue
-  target="$(readlink "$link")"
+  target="$(readlink -f -- "$link" || true)"
   case "$target" in
     "$PLUGIN_DIR"/skills/* | */integrations/cursor/rivet-memory/skills/*)
-      rm "$link"
+      rm -- "$link"
       echo "Removed legacy skill link $link"
       ;;
   esac
 done
 
-python3 - "$CURSOR_HOME/hooks.json" "$CURSOR_HOME/mcp.json" <<'PY'
-import json, os, sys
+python3 - "$CURSOR_HOME/hooks.json" "$CURSOR_HOME/mcp.json" "$PLUGIN_DIR" <<'PYTHON'
+import json, os, shlex, shutil, subprocess, sys, tempfile
 
-hooks_path, mcp_path = sys.argv[1], sys.argv[2]
+hooks_path, mcp_path, plugin = sys.argv[1:]
+
+def resolve(word):
+    if not isinstance(word, str) or not word:
+        return ""
+    if not os.path.isabs(word):
+        word = shutil.which(word) or ""
+    return os.path.realpath(word) if word else ""
+
+def owned(word, launcher=False):
+    resolved = resolve(word)
+    names = ("rivet-memory-mcp.sh",) if launcher else ("rivet-memory-hook.sh", "rivet-memory-mcp.sh")
+    if resolved in [os.path.realpath(os.path.join(plugin, "bin", n)) for n in names]:
+        return True
+    marker = "/integrations/cursor/rivet-memory/bin/"
+    if marker not in resolved:
+        return False
+    return not launcher or resolved.endswith(marker + "rivet-memory-mcp.sh")
+
+def owned_hook(entry):
+    if not isinstance(entry, dict) or not isinstance(entry.get("command"), str):
+        return False
+    try:
+        words = shlex.split(entry["command"])
+        return bool(words) and owned(words[0])
+    except ValueError:
+        return False
+
+def owned_server(entry):
+    if not isinstance(entry, dict):
+        return False
+    command = entry.get("command")
+    if owned(command, launcher=True):
+        return True
+    # Only recognize an interpreter + launcher, never arbitrary argument/env text.
+    args = entry.get("args")
+    return (resolve(command) in {resolve(p) for p in ("bash", "sh")} - {""}
+            and isinstance(args, list) and bool(args) and owned(args[0], launcher=True))
 
 def load(path):
     try:
@@ -95,11 +147,16 @@ def load(path):
         return None
 
 def save(path, data):
-    tmp = path + ".rivet.tmp"
-    with open(tmp, "w", encoding="utf-8") as f:
-        json.dump(data, f, indent=2)
-        f.write("\n")
-    os.replace(tmp, path)
+    fd, tmp = tempfile.mkstemp(prefix=".rivet-", dir=os.path.dirname(path))
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            json.dump(data, f, indent=2)
+            f.write("\n")
+        subprocess.run(["chmod", "--reference=" + path, tmp], check=True)
+        os.replace(tmp, path)
+    finally:
+        if os.path.exists(tmp):
+            os.unlink(tmp)
 
 hooks = load(hooks_path)
 if hooks and isinstance(hooks.get("hooks"), dict):
@@ -107,10 +164,7 @@ if hooks and isinstance(hooks.get("hooks"), dict):
     for ev, entries in list(hooks["hooks"].items()):
         if not isinstance(entries, list):
             continue
-        kept = [
-            e for e in entries
-            if not (isinstance(e, dict) and "rivet-memory-hook.sh" in str(e.get("command", "")))
-        ]
+        kept = [e for e in entries if not owned_hook(e)]
         removed += len(entries) - len(kept)
         if kept:
             hooks["hooks"][ev] = kept
@@ -123,12 +177,13 @@ if hooks and isinstance(hooks.get("hooks"), dict):
 mcp = load(mcp_path)
 servers = mcp.get("mcpServers") if mcp else None
 if isinstance(servers, dict):
-    entry = servers.get("rivetos")
-    if isinstance(entry, dict) and "integrations/cursor/rivet-memory/bin/rivet-memory-mcp.sh" in json.dumps(entry):
-        del servers["rivetos"]
+    removed = [name for name, entry in servers.items() if owned_server(entry)]
+    for name in removed:
+        del servers[name]
+    if removed:
         save(mcp_path, mcp)
-        print(f"Removed legacy rivetos server from {mcp_path} (the plugin provides it)")
-PY
+        print(f"Removed {len(removed)} legacy kit MCP server(s) from {mcp_path}")
+PYTHON
 
 echo
 echo "Done. Restart Cursor (or reload MCP) to pick up the plugin."

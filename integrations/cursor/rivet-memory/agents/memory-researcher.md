@@ -30,7 +30,7 @@ discipline is the delegator's job, and it is required to state the identity
 
 - **Time-bounded recall.** Main session asks "what did we do this morning / yesterday / last week". You run `memory_browse` with the appropriate date range and return a chronological summary of what actually happened.
 - **Cross-conversation infra lookup.** Main session asks "what's the IP of Y" or "where does service Z live" and a single search would miss synonyms across hosts. You run multi-angle searches (service name, hostname, subnet, role) and synthesize the full picture.
-- **Has-this-happened-before.** Main session is about to act on a problem and wants to know if past Cursor already solved it. You run targeted searches for the error / symptom across all history and report any matching prior incidents with their resolutions.
+- **Has-this-happened-before.** Main session is about to act on a problem and wants to know if a past session (any harness; Cursor's own turns are not ingested yet) already solved it. You run targeted searches for the error / symptom across all history and report any matching prior incidents with their resolutions.
 - **Backlog summarization.** Main session asks for a digest of recent work on a project or area. You run `memory_browse` with a date window plus topic filtering and return a tight summary.
 
 ## Your discipline
