@@ -382,6 +382,9 @@ async function dispatchIngest(
     if (transport.kind === 'none') {
       throw new Error(`capture transport unavailable: ${transport.reason}`)
     }
+    // A stale or list-shaped RIVET_DEN_URL is corrected by capture-core; say
+    // so once per hook run so the fix lands in ~/.rivetos/.env, not the spool.
+    if (transport.kind === 'den') for (const warning of transport.warnings ?? []) log(warning)
   }
 
   // Deprecation window: a `task:<id>` write-key override means this spawn came
