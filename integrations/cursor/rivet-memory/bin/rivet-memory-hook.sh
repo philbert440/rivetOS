@@ -27,10 +27,19 @@ fi
 PAYLOAD="$(cat || true)"
 TS="$(date -u +%Y%m%dT%H%M%SZ 2>/dev/null || date +%s)"
 
-# Serialize creation and pruning so concurrent hooks share the same limits.
-if { mkdir -p "$SPOOL_DIR" && chmod 700 "$SPOOL_DIR"; } 2>/dev/null; then
+log_line() {
+  # Diagnostics stay bounded on every path; one previous log is retained.
+  if [ -f "$LOG" ] && [ "$(stat -c %s "$LOG" 2>/dev/null || echo 0)" -ge 1048576 ]; then
+    mv -f -- "$LOG" "$LOG.1" 2>/dev/null || true
+  fi
+  printf '%s hook=%s %s\n' "$TS" "$HOOK_EVENT" "$1" >>"$LOG" 2>/dev/null || true
+}
+
+# Serialize creation and pruning so concurrent hooks share the same limits. The lock has a
+# deadline: a stuck holder must not park every later hook until Cursor's timeout.
+if command -v python3 >/dev/null 2>&1 && { mkdir -p "$SPOOL_DIR" && chmod 700 "$SPOOL_DIR"; } 2>/dev/null; then
   (
-    flock -x 9 || exit 1
+    flock -w 3 9 || exit 1
     SPOOL_FILE="$(mktemp --tmpdir="$SPOOL_DIR" XXXXXX.json)" || exit 1
     if {
       printf '%s\n' "{\"hook\":\"${HOOK_EVENT}\",\"ts\":\"${TS}\",\"payload\":"
@@ -38,7 +47,7 @@ if { mkdir -p "$SPOOL_DIR" && chmod 700 "$SPOOL_DIR"; } 2>/dev/null; then
       printf '}\n'
     } >"$SPOOL_FILE"; then
       # Bound the undrained spool by both count and bytes, oldest first.
-      python3 - "$SPOOL_DIR" <<'PYTHON'
+      if python3 - "$SPOOL_DIR" <<'PYTHON'
 import sys
 from pathlib import Path
 files = sorted((p for p in Path(sys.argv[1]).glob('*.json') if p.is_file()),
@@ -50,22 +59,21 @@ while len(files) > 500 or total > 50 * 1024 * 1024:
     oldest.unlink()
     total -= sizes[oldest]
 PYTHON
-      [ "$?" -eq 0 ] || exit 1
-      # Keep diagnostics bounded too; one previous log is retained.
-      if [ -f "$LOG" ] && [ "$(stat -c %s "$LOG")" -ge 1048576 ]; then
-        mv -f -- "$LOG" "$LOG.1" || true
+      then
+        log_line "spooled $SPOOL_FILE (not yet ingested; retention applied)"
+      else
+        # Retention could not be enforced: roll the new payload back so the bound holds.
+        rm -f -- "$SPOOL_FILE"
+        log_line "spool prune failed; payload discarded"
+        exit 2
       fi
-      printf '%s hook=%s spooled %s (not yet ingested; retention applied)\n' \
-        "$TS" "$HOOK_EVENT" "$SPOOL_FILE" >>"$LOG"
     else
       rm -f -- "$SPOOL_FILE"
       exit 1
     fi
-  ) 9>"$SPOOL_DIR/.lock" 2>/dev/null || {
-    printf '%s hook=%s spool write failed\n' "$TS" "$HOOK_EVENT" >>"$LOG" 2>/dev/null || true
-  }
+  ) 9>"$SPOOL_DIR/.lock" 2>/dev/null || { [ "$?" -eq 2 ] || log_line "spool write failed"; }
 else
-  printf '%s hook=%s spool write failed\n' "$TS" "$HOOK_EVENT" >>"$LOG" 2>/dev/null || true
+  log_line "spool write failed"
 fi
 
 # Prefer a built Cursor capture worker when present (future). No npx from a hook:

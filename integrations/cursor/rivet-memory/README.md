@@ -24,13 +24,13 @@ integrations/cursor/rivet-memory/bin/setup-cursor-rivet-memory.sh --apply
 
 With `--apply` the script:
 
-1. Writes one `rivet-memory-hook.sh <event>` entry per event in `hooks/hooks.json` to `~/.cursor/hooks.json`, using the kit's absolute path. Older entries pointing into this kit (or a previous kit path) are replaced; other hooks are kept.
+1. Writes one `rivet-memory-hook.sh <event>` entry per event in `hooks/hooks.json` to `~/.cursor/hooks.json`, using the kit's absolute path. Earlier kit entries are replaced; other hooks are kept.
 2. Adds the `rivetos` server (absolute `bin/rivet-memory-mcp.sh`) to `~/.cursor/mcp.json`, unless a `rivetos` server that does not point into the kit already exists.
 3. Symlinks each skill into `~/.cursor/skills/` and `memory-researcher.md` into `~/.cursor/agents/`. Existing links into the kit are replaced; anything else is left alone.
 4. Copies `AGENT.md` -> `~/.cursor/AGENT.md` and `MEMORY.md` -> `~/.cursor/MEMORY.md`, backing up edited copies as `.bak-<timestamp>`.
 5. Removes a `~/.cursor/plugins/local/` symlink into the kit. Where plugins are loaded, the plugin would register the same hooks and MCP server a second time.
 
-Edited JSON keeps its file mode (new files are 0600); invalid JSON is refused, not overwritten. Rerunning is a no-op. Without `--apply` it prints what it would do.
+An entry counts as the kit's only when its absolute command (or an absolute system shell plus the launcher as first argument) resolves to this kit's launchers or a previous checkout's; relative or bare commands, including a bare `bash`, are left alone. `hooks.json` / `mcp.json` are backed up as `<name>.bak-<ts>` before a rewrite, keep their file mode (new files are 0600), and are refused, not overwritten, when invalid. Rerunning is a no-op. Without `--apply` it prints what it would do.
 
 The kit also works as a plugin without setup (`agent --plugin-dir integrations/cursor/rivet-memory`). Don't combine the two.
 
@@ -40,7 +40,7 @@ Uses a built RivetOS checkout (`services/mcp-sidecar`) or the shared pinned npm 
 
 ## Capture status
 
-`bin/rivet-memory-hook.sh` spools each hook payload to `~/.rivetos/cursor-capture/spool/` and logs to `~/.rivetos/cursor-capture.log`. Nothing ingests the spool into memory yet. The spool directory is 0700 and new payload files are 0600; writes prune oldest payloads to retain at most 500 files and 50 MiB (an oversized payload may itself be removed). Diagnostics rotate at 1 MiB with one previous log retained. When a built `capture/dist/cursor-memory-capture.js` exists, the hook pipes each payload to it (never `npx` from a hook). Until that worker lands, Cursor's own turns are not searchable; memory written by the other harnesses is.
+`bin/rivet-memory-hook.sh` spools each hook payload to `~/.rivetos/cursor-capture/spool/` and logs to `~/.rivetos/cursor-capture.log`. Nothing ingests the spool into memory yet. The spool directory is 0700 and new payload files are 0600; writes prune oldest payloads to retain at most 500 files and 50 MiB (an oversized payload may itself be removed). Writes take a 3 s lock deadline; if retention cannot be enforced (no `python3`), the new payload is discarded rather than growing the spool, and the failure is logged. Diagnostics rotate at 1 MiB with one previous log retained. When a built `capture/dist/cursor-memory-capture.js` exists, the hook pipes each payload to it (never `npx` from a hook). Until that worker lands, Cursor's own turns are not searchable; memory written by the other harnesses is.
 
 ## Related
 
