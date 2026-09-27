@@ -13,8 +13,8 @@
  * (`--ingest-file <transcript> --delay-ms 400`, plus `--close-session` on
  * SessionEnd) so the parent exits in milliseconds. Codex clamps SessionEnd
  * hooks to 3s; inline ingest would get killed on any non-trivial rollout.
- * The child tails the file from a persisted per-file cursor under the
- * cross-process state lock, folds with the same rules as den-server's
+ * The child tails the file from a persisted per-file cursor under a
+ * file lock, folds with the same rules as den-server's
  * `codexTurnsFromLines` (drop developer / injection wrappers; keep user +
  * assistant + tool), and upserts ros_conversations / ros_messages.
  * `--backfill` is the one-shot walk of existing rollouts.
@@ -36,6 +36,21 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
+import {
+  asString,
+  createCaptureWriter,
+  isRecord,
+  loadEnvFile as readEnvFile,
+  LockTimeout,
+  resolveCaptureTransport,
+  safeJson,
+  withFileLock,
+  type CaptureBatch,
+  type CaptureMessage,
+  type CaptureRole,
+  type CaptureTransport,
+  type CaptureWriter,
+} from '@rivetos/capture-core'
 import pg from 'pg'
 import type { PoolClient } from 'pg'
 
@@ -159,22 +174,6 @@ export function uuidFromRolloutName(name: string): string | undefined {
 
 export function isNativeSessionId(id: string): boolean {
   return CODEX_NATIVE_RE.test(id) && !id.includes('/') && !id.includes('..')
-}
-
-function isRecord(v: unknown): v is Record<string, unknown> {
-  return typeof v === 'object' && v !== null && !Array.isArray(v)
-}
-
-function asString(v: unknown): string | null {
-  return typeof v === 'string' && v.length > 0 ? v : null
-}
-
-function safeJson(v: unknown): string {
-  try {
-    return JSON.stringify(v)
-  } catch {
-    return String(v)
-  }
 }
 
 /**
@@ -930,67 +929,40 @@ function sleep(ms: number): Promise<void> {
   })
 }
 
-/** Bounded wait for the per-harness state lock (a Postgres advisory lock). */
+/** Bounded wait for the per-harness state file lock. */
 export const STATE_LOCK_WAIT_MS = 120_000
 
 // ---------------------------------------------------------------------------
-// Per-harness state lock = Postgres session-level advisory lock on the client
-// that does the ingest. True mutual exclusion across processes, no stale-lock
-// reclamation (the server releases it when a holder's connection drops),
-// bounded wait via lock_timeout. A run that cannot take it is SKIPPED (null).
+// Per-harness state lock. The state file is local, so the lock is a directory
+// next to it — both transports use it, and it never opens Postgres.
+// A run that cannot take it is SKIPPED (null); `--retry-once` respawns on
+// LockTimeout.
 // ---------------------------------------------------------------------------
 
 export function stateLockKey(stateFile = captureStatePath()): string {
   return `rivetos-capture-state:${os.hostname()}:${path.resolve(stateFile)}`
 }
 
-function isLockTimeout(err: unknown): boolean {
-  const code = (err as { code?: unknown }).code
-  const msg = err instanceof Error ? err.message : String(err)
-  return code === '55P03' || /lock timeout|lock_not_available/i.test(msg)
+export function stateLockDir(stateFile = captureStatePath()): string {
+  return `${path.resolve(stateFile)}.lock`
 }
 
 export async function withStateLock<T>(
-  client: Queryable,
+  _client: Queryable | undefined,
   fn: () => Promise<T>,
   stateFile = captureStatePath(),
   waitMs = STATE_LOCK_WAIT_MS,
 ): Promise<T | null> {
-  const key = stateLockKey(stateFile)
+  const lockDir = stateLockDir(stateFile)
   try {
-    // withPool caps every statement at the ingest statement_timeout, which would
-    // also cap this blocking wait; lift it for the acquisition only and put it
-    // back before the critical section (and on failure).
-    await client.query('SET statement_timeout = 0')
-    await client.query(`SET lock_timeout = ${String(Math.max(1, Math.floor(waitMs)))}`)
-    await client.query('SELECT pg_advisory_lock(hashtext($1))', [key])
-    await client.query(`SET statement_timeout = ${String(STATEMENT_TIMEOUT_MS)}`)
+    return await withFileLock(lockDir, fn, { waitMs, staleMs: 120_000, pollMs: 100 })
   } catch (err) {
-    try {
-      await client.query(`SET statement_timeout = ${String(STATEMENT_TIMEOUT_MS)}`)
-    } catch {
-      // ignore
-    }
-    if (isLockTimeout(err)) {
-      log(`state lock busy (${key}); skipping this run — the next hook retries`)
+    if (err instanceof LockTimeout) {
+      log(`state lock busy (${lockDir}); skipping this run — the next hook retries`)
     } else {
       log(`state lock unavailable (${err instanceof Error ? err.message : String(err)}); skipping`)
     }
     return null
-  }
-  try {
-    return await fn()
-  } finally {
-    try {
-      await client.query('SELECT pg_advisory_unlock(hashtext($1))', [key])
-    } catch {
-      // connection gone → the server already released it
-    }
-    try {
-      await client.query('RESET lock_timeout')
-    } catch {
-      // ignore
-    }
   }
 }
 
@@ -998,24 +970,21 @@ export async function withStateLock<T>(
  *  scripts must not race detached workers with an unlocked write). */
 export async function runStampInstalled(stateFile = captureStatePath()): Promise<void> {
   try {
-    const r = await withPool((client) =>
-      withStateLock(
-        client,
-        () => {
-          const st = loadCaptureState(stateFile)
-          const now = new Date().toISOString()
-          saveCaptureState({ ...st, hookInstalledAt: st.hookInstalledAt ?? now }, stateFile)
-          console.log(`hookInstalledAt=${st.hookInstalledAt ?? now} ${stateFile}`)
-          return Promise.resolve(true)
-        },
-        stateFile,
-      ),
+    const r = await withStateLock(
+      undefined,
+      () => {
+        const st = loadCaptureState(stateFile)
+        const now = new Date().toISOString()
+        saveCaptureState({ ...st, hookInstalledAt: st.hookInstalledAt ?? now }, stateFile)
+        console.log(`hookInstalledAt=${st.hookInstalledAt ?? now} ${stateFile}`)
+        return Promise.resolve(true)
+      },
+      stateFile,
     )
     if (r === null) {
       log('stamp-installed deferred: state lock busy — the next ingest records hookInstalledAt')
     }
   } catch (err) {
-    // no database from setup: never write shared state unlocked; the next ingest stamps it
     log(`stamp-installed deferred (${err instanceof Error ? err.message : String(err)})`)
   }
 }
@@ -1185,6 +1154,133 @@ export function primeCursor(file: string, fromStart: boolean): FileCursor {
   }
 }
 
+interface DenSink {
+  denUrl: string
+  fetch?: typeof globalThis.fetch
+  spoolDir?: string
+}
+
+function asCaptureRole(role: string): CaptureRole | undefined {
+  if (role === 'system' || role === 'user' || role === 'assistant' || role === 'tool') return role
+  return undefined
+}
+
+function createdAtIso(m: PendingMessage): string | undefined {
+  const raw = m.createdAt ?? m.eventTs ?? null
+  if (!raw) return undefined
+  const ms = Date.parse(raw)
+  if (Number.isNaN(ms)) return undefined
+  return new Date(ms).toISOString()
+}
+
+function toCaptureMessage(m: PendingMessage, transcriptPath: string): CaptureMessage | null {
+  const role = asCaptureRole(m.role)
+  if (!role) return null
+  const fromExtra =
+    typeof m.extra?.session_jsonl_path === 'string' ? m.extra.session_jsonl_path : ''
+  const pointerPath = transcriptPath || fromExtra
+  const lineIndex =
+    typeof m.lineIndex === 'number'
+      ? m.lineIndex
+      : typeof m.extra?.session_jsonl_line === 'number'
+        ? m.extra.session_jsonl_line
+        : undefined
+  const metadata: Record<string, unknown> = { ...(m.extra ?? {}) }
+  if (m.eventTs) metadata.event_ts = m.eventTs
+  if (pointerPath) {
+    metadata.session_jsonl_path = pointerPath
+    metadata.sessionJsonlPath = pointerPath
+  }
+  if (typeof lineIndex === 'number') {
+    metadata.session_jsonl_line = lineIndex
+    metadata.sessionJsonlLine = lineIndex
+  }
+  const created = createdAtIso(m)
+  const message: CaptureMessage = {
+    event_id: m.eventId,
+    role,
+    content: m.content ?? '',
+    metadata,
+  }
+  if (m.toolName) message.tool_name = m.toolName
+  if (m.toolArgs !== undefined && m.toolArgs !== null) message.tool_args = m.toolArgs
+  if (typeof m.toolResult === 'string') message.tool_result = m.toolResult
+  if (created) message.created_at = created
+  return message
+}
+
+function batchFromParsed(
+  parsed: ParseResult,
+  file: string,
+  triggerEvent: string,
+  finalize: boolean,
+): CaptureBatch {
+  const abs = path.resolve(file)
+  return {
+    session_key: deriveSessionKey(parsed.sessionId),
+    agent: CAPTURE_AGENT,
+    channel: CAPTURE_CHANNEL,
+    title: (parsed.title || 'Codex session').slice(0, 120),
+    settings: {
+      source: CAPTURE_SOURCE,
+      sessionId: parsed.sessionId,
+      cwd: parsed.cwd,
+      triggerEvent,
+      session_jsonl_path: abs,
+    },
+    ...(finalize ? { finalize: true } : {}),
+    messages: parsed.messages
+      .map((m) => toCaptureMessage(m, abs))
+      .filter((m): m is CaptureMessage => m !== null),
+  }
+}
+
+async function deliverParsed(
+  parsed: ParseResult,
+  file: string,
+  triggerEvent: string,
+  finalize: boolean,
+  sink: DenSink,
+): Promise<{ inserted: number; skipped: number }> {
+  const batch = batchFromParsed(parsed, file, triggerEvent, finalize)
+  const writer: CaptureWriter = createCaptureWriter({
+    denUrl: sink.denUrl,
+    fetch: sink.fetch,
+    spoolDir: sink.spoolDir,
+    log: (line) => {
+      log(line)
+    },
+  })
+  const result = await writer.write(batch)
+  if ('spooled' in result) {
+    if (!result.spooled) throw new Error(result.error)
+    log(
+      `spooled ${batch.session_key} file=${result.file} messages=${String(batch.messages.length)}`,
+    )
+    return { inserted: batch.messages.length, skipped: 0 }
+  }
+  return { inserted: result.inserted, skipped: result.skipped }
+}
+
+async function ingestNewLinesDen(
+  file: string,
+  cursor: FileCursor,
+  sink: DenSink,
+  triggerEvent: string,
+  finalize: boolean,
+): Promise<{ inserted: number; skipped: number } | null> {
+  const newLines = consumeNewLines(file, cursor)
+  if (newLines.length === 0 && !finalize) return null
+  const parsed = parseRolloutFile(file)
+  if (parsed.messages.length === 0 && !finalize) return { inserted: 0, skipped: 0 }
+  const result = await deliverParsed(parsed, file, triggerEvent, finalize, sink)
+  const abs = path.resolve(file)
+  log(
+    `ingest ${deriveSessionKey(parsed.sessionId)}: file=${abs} newLines=${String(newLines.length)} msgs=${String(parsed.messages.length)} inserted=${String(result.inserted)} skipped=${String(result.skipped)} event=${triggerEvent} transport=den`,
+  )
+  return result
+}
+
 async function ingestNewLines(
   file: string,
   cursor: FileCursor,
@@ -1225,17 +1321,18 @@ async function ingestNewLines(
 
 export async function scanOnce(
   root: string,
-  client: Queryable,
+  client: Queryable | null,
   state: WatcherState,
   fromStart: boolean,
-  opts: { days?: number; triggerEvent?: string } = {},
-): Promise<{ files: number; inserted: number; skipped: number }> {
+  opts: { days?: number; triggerEvent?: string; den?: DenSink } = {},
+): Promise<{ files: number; inserted: number; skipped: number; failed: number }> {
   let files = discoverRolloutFiles(root)
   if (typeof opts.days === 'number' && opts.days >= 0) {
     files = files.filter((f) => rolloutWithinDays(f, opts.days as number))
   }
   let inserted = 0
   let skipped = 0
+  let failed = 0
   const triggerEvent = opts.triggerEvent ?? 'backfill'
   for (const file of files) {
     const abs = path.resolve(file)
@@ -1247,7 +1344,14 @@ export async function scanOnce(
     const cursor = state.cursors.get(abs)!
     const before = { ...cursor }
     try {
-      const r = await ingestNewLines(abs, cursor, client, state.seen, triggerEvent, false)
+      let r: { inserted: number; skipped: number } | null
+      if (opts.den) {
+        r = await ingestNewLinesDen(abs, cursor, opts.den, triggerEvent, false)
+      } else if (client) {
+        r = await ingestNewLines(abs, cursor, client, state.seen, triggerEvent, false)
+      } else {
+        throw new Error('scanOnce requires a pg client or den transport')
+      }
       if (r) {
         inserted += r.inserted
         skipped += r.skipped
@@ -1255,10 +1359,11 @@ export async function scanOnce(
     } catch (err) {
       // Retry even if the file stops growing after a database failure.
       Object.assign(cursor, before)
+      if (opts.den) failed++
       log(`scan ${file} failed: ${err instanceof Error ? err.message : String(err)}`)
     }
   }
-  return { files: files.length, inserted, skipped }
+  return { files: files.length, inserted, skipped, failed }
 }
 
 async function withPool<T>(fn: (client: PoolClient) => Promise<T>): Promise<T> {
@@ -1280,15 +1385,26 @@ export async function runBackfill(
   delayMs = 0,
 ): Promise<void> {
   if (delayMs > 0) await sleep(delayMs)
+  const transport = resolveCaptureTransport(process.env)
+  if (transport.kind === 'none') {
+    log(`backfill skipped: ${transport.reason}`)
+    process.exitCode = 1
+    return
+  }
   const root = sessionsDir ?? codexSessionsDir()
   const source = typeof days === 'number' ? `backfill:${String(days)}d` : 'backfill'
-  const done = await withPool((client) =>
+  const den = transport.kind === 'den' ? { denUrl: transport.denUrl } : undefined
+  const run = (client: Queryable | null): Promise<boolean | null> =>
     withStateLock(
-      client,
+      client ?? undefined,
       async () => {
         const persisted = loadCaptureState(stateFile)
         const state = stateToWatcher(persisted)
-        const summary = await scanOnce(root, client, state, true, { days, triggerEvent: source })
+        const summary = await scanOnce(root, client, state, true, {
+          days,
+          triggerEvent: source,
+          den,
+        })
         const latest = loadCaptureState(stateFile)
         const next = mergeCaptureState(latest, {
           lastIngestAt: new Date().toISOString(),
@@ -1305,11 +1421,12 @@ export async function runBackfill(
         console.log(
           `codex-memory-capture --backfill: files=${summary.files} inserted=${summary.inserted} skipped=${summary.skipped}`,
         )
+        if (summary.failed > 0) process.exitCode = 1
         return true
       },
       stateFile,
-    ),
-  )
+    )
+  const done = transport.kind === 'den' ? await run(null) : await withPool((client) => run(client))
   if (done === null) log('backfill skipped: state lock busy')
 }
 
@@ -1319,17 +1436,20 @@ export async function runOnce(sessionsDir?: string): Promise<void> {
 }
 
 export interface HookHandleOpts {
-  client: Queryable
+  client?: Queryable
   stateFile?: string
   sessionsDir?: string
   delayMs?: number
   lockWaitMs?: number
+  fetch?: typeof globalThis.fetch
+  spoolDir?: string
+  env?: NodeJS.ProcessEnv
 }
 
 export interface IngestFileOpts {
   /** Internal: run without taking the state lock (the caller holds it). */
   alreadyLocked?: boolean
-  client: Queryable
+  client?: Queryable
   stateFile?: string
   delayMs?: number
   lockWaitMs?: number
@@ -1337,6 +1457,9 @@ export interface IngestFileOpts {
   sessionId?: string | null
   triggerEvent?: string
   reason?: string
+  fetch?: typeof globalThis.fetch
+  spoolDir?: string
+  env?: NodeJS.ProcessEnv
 }
 
 export interface HookHandleResult {
@@ -1378,6 +1501,16 @@ export async function ingestTranscriptFile(
     sessionId: opts.sessionId ?? uuidFromRolloutName(path.basename(abs)) ?? null,
   }
 
+  const transport = resolveCaptureTransport(opts.env ?? process.env)
+  if (transport.kind === 'none') {
+    log(`ingest ${triggerEvent} skipped: ${transport.reason}`)
+    return { ...empty, failed: true }
+  }
+  if (transport.kind === 'pg' && !opts.client) {
+    log(`ingest ${triggerEvent} skipped: pg transport has no client`)
+    return { ...empty, failed: true }
+  }
+
   try {
     if (opts.delayMs && opts.delayMs > 0) await sleep(opts.delayMs)
     const finalize = Boolean(opts.closeSession)
@@ -1389,7 +1522,23 @@ export async function ingestTranscriptFile(
       let inserted = 0
       let skipped = 0
       try {
-        const r = await ingestNewLines(abs, cursor, opts.client, seenByKey, triggerEvent, finalize)
+        const r =
+          transport.kind === 'den'
+            ? await ingestNewLinesDen(
+                abs,
+                cursor,
+                { denUrl: transport.denUrl, fetch: opts.fetch, spoolDir: opts.spoolDir },
+                triggerEvent,
+                finalize,
+              )
+            : await ingestNewLines(
+                abs,
+                cursor,
+                opts.client as Queryable,
+                seenByKey,
+                triggerEvent,
+                finalize,
+              )
         if (r) {
           inserted = r.inserted
           skipped = r.skipped
@@ -1485,6 +1634,9 @@ export async function handleHookPayload(
       sessionId,
       triggerEvent: source,
       reason: pickPayloadString(payload, 'reason') ?? undefined,
+      fetch: opts.fetch,
+      spoolDir: opts.spoolDir,
+      env: opts.env,
     })
   } catch (err) {
     log(`hook ${event} failed: ${err instanceof Error ? err.message : String(err)}`)
@@ -1702,6 +1854,13 @@ async function runHook(): Promise<void> {
   }
 }
 
+export function captureTransportLabel(env: NodeJS.ProcessEnv = process.env): string {
+  const transport: CaptureTransport = resolveCaptureTransport(env)
+  if (transport.kind === 'den') return `den ${transport.denUrl}`
+  if (transport.kind === 'pg') return 'pg'
+  return `none (${transport.reason})`
+}
+
 export function statusPayload(
   state: CaptureState,
   file = captureStatePath(),
@@ -1716,12 +1875,14 @@ export function statusPayload(
     skipped: state.skipped ?? 0,
     closed,
     stateFile: file,
+    transport: captureTransportLabel(),
   }
 }
 
 export function formatStatus(state: CaptureState, file = captureStatePath()): string {
+  const transport = captureTransportLabel()
   if (!state.lastIngestAt && Object.keys(state.cursors).length === 0) {
-    return `codex-memory-capture --status: no ingest yet (${file})`
+    return `codex-memory-capture --status: no ingest yet (${file}) transport=${transport}`
   }
   const payload = statusPayload(state, file)
   return (
@@ -1729,7 +1890,7 @@ export function formatStatus(state: CaptureState, file = captureStatePath()): st
     `lastIngestSource=${state.lastIngestSource ?? 'n/a'} ` +
     `files=${String(payload.files)} ` +
     `inserted=${String(payload.inserted)} skipped=${String(payload.skipped)} ` +
-    `closed=${String(payload.closed)}`
+    `closed=${String(payload.closed)} transport=${transport}`
   )
 }
 
@@ -1741,16 +1902,10 @@ export function runStatus(stateFile = captureStatePath()): void {
 
 function loadEnvFile(): void {
   const envFile = process.env.RIVETOS_ENV_FILE ?? path.join(os.homedir(), '.rivetos', '.env')
-  if (!fs.existsSync(envFile)) return
-  try {
-    const raw = fs.readFileSync(envFile, 'utf8')
-    for (const line of raw.split('\n')) {
-      const m = /^\s*([A-Z0-9_]+)\s*=\s*(.*)\s*$/.exec(line)
-      if (!m || process.env[m[1]]) continue
-      process.env[m[1]] = m[2].replace(/^["']|["']$/g, '')
-    }
-  } catch {
-    // ignore
+  const values = readEnvFile(envFile)
+  for (const [key, value] of Object.entries(values)) {
+    if (process.env[key]) continue
+    process.env[key] = value
   }
 }
 
@@ -1817,17 +1972,12 @@ async function main(): Promise<void> {
     const hookEvent = flagValue(args, '--hook-event')
     const sessionId = flagValue(args, '--session-id')
     const triggerEvent = hookEvent ? `hook:${hookEvent}` : 'ingest-file'
-    await withPool(async (client) => {
-      const result = await ingestTranscriptFile(file, {
-        client,
-        delayMs: parseDelayMs(args),
-        closeSession: flagPresent(args, '--close-session'),
-        sessionId: sessionId ?? null,
-        triggerEvent,
-      })
+    const transport = resolveCaptureTransport(process.env)
+    const noteResult = (result: HookHandleResult): void => {
       console.log(
         `${file}: event=${result.event} inserted=${result.inserted} skipped=${result.skipped}${result.finalized ? ' finalized' : ''}`,
       )
+      if (transport.kind === 'den' && result.failed) process.exitCode = 1
       if (result.lockBusy && flagPresent(args, '--retry-once')) {
         log(`${file} skipped twice on a busy state lock; run --backfill to catch up`)
       } else if (result.lockBusy && !flagPresent(args, '--retry-once')) {
@@ -1838,6 +1988,33 @@ async function main(): Promise<void> {
         defaultSpawn(entry.command, hop, { env: process.env })
         log(`lock busy for ${file}; re-queued once with --delay-ms ${String(RETRY_HOP_DELAY_MS)}`)
       }
+    }
+    if (transport.kind === 'none') {
+      log(`ingest skipped: ${transport.reason}`)
+      process.exitCode = 1
+      return
+    }
+    if (transport.kind === 'den') {
+      noteResult(
+        await ingestTranscriptFile(file, {
+          delayMs: parseDelayMs(args),
+          closeSession: flagPresent(args, '--close-session'),
+          sessionId: sessionId ?? null,
+          triggerEvent,
+        }),
+      )
+      return
+    }
+    await withPool(async (client) => {
+      noteResult(
+        await ingestTranscriptFile(file, {
+          client,
+          delayMs: parseDelayMs(args),
+          closeSession: flagPresent(args, '--close-session'),
+          sessionId: sessionId ?? null,
+          triggerEvent,
+        }),
+      )
     })
     return
   }

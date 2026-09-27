@@ -130,6 +130,37 @@ Server exits at start: with an embed URL and Postgres/DataHub URL set, check
 `RIVETOS_EMBED_MODEL`. Set the missing model in plugin settings or rerun onboard.
 `rivetos-status` reports `embed_model: set|unset` and names this configuration problem.
 
+## Transport
+
+Capture posts batches to this node's den (`POST /api/capture`) by default.
+`RIVETOS_CAPTURE_TRANSPORT=den|pg` forces one or the other; `pg` stays for one
+release. When the den is down the batch is spooled under
+`~/.rivetos/capture-spool` and replayed on the next write. A non-empty
+`RIVETOS_USER_ID` stays on Postgres, because loopback den is the owner pool.
+`rivet-memory-hook.sh` calls `rivetos_resolve_den` before `node` so Node trusts
+the den CA.
+
+A `PostToolUse` payload that carries `tool_use_id` is stored as
+`claude-code:<session>:tool:<tool_use_id>` with no transcript read and no
+poll. That native id is what makes live capture exact. Without it, the hook
+polls `transcript_path` for up to 2s, every 100ms, and binds to the last
+`tool_use` with the same name and args anywhere in the file — the match does
+not have to be the tail. The id is `claude-code:<session>:tool:<id>` when
+that entry has one, otherwise `claude-code:<session>:occ:<hash>:<n>` (`n` is
+that entry's occurrence index). If no matching entry appears, the id is the
+occurrence id of the hook tuple (`n` is 0). Two identical calls without
+`tool_use_id` stay ambiguous: both hooks bind to the last match.
+
+A `UserPromptSubmit` hook polls the same way for the last user entry whose
+content equals the prompt, anywhere in the file. The id is
+`claude-code:<session>:<uuid>` when that entry has a uuid, otherwise the
+occurrence id. If the prompt never appears, the id is
+`claude-code:<session>:hook:<spool stem>` and `metadata.source` is
+`hook-only`: a later Stop may insert a second row for that turn under the
+occurrence id (rare). The worker writes the resolved id back onto the spool
+payload as `rivetos_event_id` before ingest, and a retry reuses it instead
+of binding again.
+
 ## Capture is best-effort
 
 `rivet-memory-hook.sh` always exits 0. A capture failure — DB down, dist

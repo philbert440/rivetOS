@@ -23,6 +23,30 @@ if [ -f "$RIVETOS_ENV" ]; then
   set +a
 fi
 
+# Den URL + CA before node, same discovery as bin/rivet-memory-mcp.sh
+# (plugin lib/ first). A missing CA unsets RIVET_DEN_URL.
+# Builtins only: the standalone test runs this hook with an empty PATH.
+_src="${BASH_SOURCE[0]}"; SCRIPT_DIR="$(cd "${_src%/*}" 2>/dev/null && pwd -P)"; unset _src
+_rivet_paths=""
+for _rivet_candidate in \
+  "$SCRIPT_DIR/../lib/rivet-paths.sh" \
+  "$SCRIPT_DIR/../../../shared/rivet-paths.sh" \
+  "${RIVETOS_ROOT:-/opt/rivetos}/integrations/shared/rivet-paths.sh"; do
+  if [ -f "$_rivet_candidate" ]; then
+    _rivet_paths="$_rivet_candidate"
+    break
+  fi
+done
+if [ -n "${_rivet_paths:-}" ]; then
+  # shellcheck disable=SC1090
+  . "$_rivet_paths"
+  rivetos_resolve_den || true
+else
+  # No plugin lib, shared tree, or /opt helper: do not synthesize a den URL.
+  export RIVETOS_CAPTURE_TRANSPORT="${RIVETOS_CAPTURE_TRANSPORT:-pg}"
+fi
+unset _rivet_paths _rivet_candidate
+
 HOOK="$RIVETOS_ROOT/plugins/providers/claude-cli/dist/hooks.js"
 
 _rivetos_hook_fail_loud() {

@@ -74,8 +74,17 @@ import {
   type HarnessId,
   type MeshConfig,
   type MeshRegistry,
+  type Tool,
 } from '@rivetos/types'
-import { WikiIndex, createMemoryApiRoute } from '@rivetos/memory-postgres'
+import {
+  PostgresMemory,
+  WikiIndex,
+  createGetFullTool,
+  createMemoryApiRoute,
+  createCaptureApiRoute,
+  createMemoryTools,
+  createMemoryWriteTools,
+} from '@rivetos/memory-postgres'
 import type { RivetConfig } from '../config.js'
 import { logger } from '@rivetos/core'
 import { denTlsConfigured } from './gateway.js'
@@ -769,6 +778,16 @@ export async function registerAgentTools(
     // the same directory. Unknown/tombstoned users are refused by the routes.
     const wikiRoot = process.env.WIKI_DIR ?? sharedPath('wiki')
     const wikiFor = makeWikiFor(userPools, wikiRoot, (p) => new WikiIndex(p))
+    const memoryFor = createApiMemoryLookup({
+      ownerPool: pool,
+      pgUrl,
+      registered: runtime.getMemory(),
+      embed: {
+        embedEndpoint: embedEndpoint || undefined,
+        embedModel: embedModel || undefined,
+        ...memoryApiEmbedFromEnv(),
+      },
+    })
     gatewayRoutes.push(
       createWikiApiRoute({ index: wikiIndex, wikiDir: wikiRoot, forUser: wikiFor }),
       createWikiHtmlRoute({
@@ -777,12 +796,14 @@ export async function registerAgentTools(
         nodeName: config.mesh?.node_name,
         forUser: wikiFor,
       }),
+      createCaptureApiRoute({ pool, userPools }),
       createMemoryApiRoute({
         pool,
         userPools,
         embedEndpoint: embedEndpoint || undefined,
         embedModel: embedModel || undefined,
         ...memoryApiEmbedFromEnv(),
+        tools: (p) => memoryHttpTools(memoryFor(p), p),
       }),
     )
   }
@@ -1328,6 +1349,60 @@ export function makeWikiFor<T>(
     }
     return entry
   }
+}
+
+/**
+ * PostgresMemory for each memory-API pool. Borrows the pool (no new
+ * connections). Reuses the runtime's owner adapter when it is a
+ * PostgresMemory on that exact pool. RoutingMemory does not expose per-user
+ * stores, so a routed user gets a borrower on the pool this registrar
+ * already opened — write tools are included because that borrower exists.
+ */
+export function createApiMemoryLookup(opts: {
+  ownerPool: pg.Pool
+  pgUrl: string | undefined
+  /** runtime.getMemory() — PostgresMemory, RoutingMemory, or unset. */
+  registered: unknown
+  embed: {
+    embedEndpoint?: string
+    embedModel?: string
+    embedQueryInstruction?: string
+    embedTimeoutMs?: string
+    hnswEfSearch?: string
+  }
+}): (pool: pg.Pool) => PostgresMemory {
+  const memories = new WeakMap<pg.Pool, PostgresMemory>()
+  return (pool) => {
+    const cached = memories.get(pool)
+    if (cached) return cached
+    if (
+      pool === opts.ownerPool &&
+      opts.registered instanceof PostgresMemory &&
+      opts.registered.getPool() === opts.ownerPool
+    ) {
+      memories.set(pool, opts.registered)
+      return opts.registered
+    }
+    const created = new PostgresMemory({
+      connectionString: opts.pgUrl ?? '',
+      pool,
+      ...opts.embed,
+    })
+    memories.set(pool, created)
+    return created
+  }
+}
+
+/** Read tools (search/browse/stats/get_full) plus the write pair. */
+export function memoryHttpTools(memory: PostgresMemory, pool: pg.Pool): Tool[] {
+  const read = createMemoryTools(memory.getSearchEngine(), memory.getExpander(), { pool })
+  const names = new Set(read.map((tool) => tool.name))
+  const extra: Tool[] = []
+  if (!names.has('memory_get_full')) extra.push(createGetFullTool(pool))
+  for (const tool of createMemoryWriteTools(memory)) {
+    if (!names.has(tool.name)) extra.push(tool)
+  }
+  return [...read, ...extra]
 }
 
 /** Env keys forwarded into Hub `/api/memory` SearchEngine. */

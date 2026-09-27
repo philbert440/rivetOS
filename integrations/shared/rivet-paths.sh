@@ -41,6 +41,14 @@
 #                              it as RIVETOS_PG_URL. No-op for https den /
 #                              other schemes (v1 contract is one PG-shaped
 #                              DataHub endpoint).
+#   rivetos_resolve_den        If RIVET_DEN_URL is unset, set it from
+#                              den.port in ~/.rivetos/config.yaml (default
+#                              5174) as https://127.0.0.1:<port>. Resolve
+#                              RIVET_DEN_CA from den.tls_ca, else
+#                              RIVETOS_DEN_TLS_CA, else the fleet chain.
+#                              A missing CA file unsets RIVET_DEN_URL.
+#                              Exports NODE_EXTRA_CA_CERTS from that CA
+#                              when it is unset.
 #   rivetos_find_root          Echo the install root:
 #                                1. RIVETOS_ROOT env (authoritative — set in
 #                                   the process env or by rivetos_load_env)
@@ -760,6 +768,97 @@ rivetos_npx_capture_spec() {
 rivetos_tree_at() {
   local root="$1"
   [ -f "$root/nx.json" ] && [ -d "$root/services/mcp-sidecar" ]
+}
+
+# Scalar under the top-level `den:` mapping. grep/sed only — no yq.
+# Prints nothing when the file or key is absent. Quotes around the value
+# are stripped. `port` and `tls_ca` are the only keys read.
+rivetos_yaml_den_value() {
+  local file="$1" key="$2" section line value indent child_indent="" char quote="" cleaned="" previous="" i
+  [ -f "$file" ] || return 0
+  case "$key" in
+    port|tls_ca) ;;
+    *) return 0 ;;
+  esac
+  # From `den:` through the line before the next column-0 key. The header
+  # itself matches a "next key" pattern, so it is skipped rather than used
+  # as the end of the range.
+  section="$(sed -n '/^den:[[:space:]]*\(#.*\)\{0,1\}$/,${ /^den:[[:space:]]*\(#.*\)\{0,1\}$/b; /^[^[:space:]#]/q; p; }' "$file" 2>/dev/null || true)"
+  value=""
+  while IFS= read -r line; do
+    [[ "$line" =~ ^[[:space:]]*($|#) ]] && continue
+    indent="${line%%[![:space:]]*}"
+    [ -n "$child_indent" ] || child_indent="$indent"
+    [ "$indent" = "$child_indent" ] || continue
+    case "${line#"$indent"}" in
+      "$key":*) value="${line#*:}"; break ;;
+    esac
+  done <<< "$section"
+  # A space-prefixed # begins a comment only outside quoted scalars.
+  for ((i=0; i<${#value}; i++)); do
+    char="${value:i:1}"
+    if [ -z "$quote" ]; then
+      [ "$char" != '#' ] || [ "$previous" != ' ' ] || break
+      case "$char" in
+        \"|\') quote="$char" ;;
+      esac
+    elif [ "$char" = "$quote" ] && { [ "$quote" = "'" ] || [ "$previous" != '\' ]; }; then
+      quote=""
+    fi
+    cleaned="$cleaned$char"
+    previous="$char"
+  done
+  value="$cleaned"
+  value="${value#"${value%%[![:space:]]*}"}"
+  value="${value%"${value##*[![:space:]]}"}"
+  case "$value" in
+    \"*\") value="${value#\"}"; value="${value%\"}" ;;
+    \'*\') value="${value#\'}"; value="${value%\'}" ;;
+  esac
+  printf '%s\n' "$value"
+}
+
+# Den origin + CA for the MCP sidecar. Keep RIVET_DEN_URL / RIVET_DEN_CA
+# when a den-spawned harness already set them. Otherwise read den.port
+# (default 5174) and den.tls_ca. CA falls back to RIVETOS_DEN_TLS_CA, then
+# the fleet intermediate chain. A missing CA file unsets RIVET_DEN_URL so
+# the sidecar does not select den transport. Node's global fetch trusts
+# NODE_EXTRA_CA_CERTS only if it is set before the process starts.
+rivetos_resolve_den() {
+  local config="${RIVETOS_CONFIG_FILE:-$HOME/.rivetos/config.yaml}"
+  local url="${RIVET_DEN_URL:-}"
+  if [ -z "$url" ]; then
+    local port
+    port="$(rivetos_yaml_den_value "$config" port)"
+    case "$port" in
+      ''|*[!0-9]*) port=5174 ;;
+    esac
+    url="https://127.0.0.1:${port}"
+    export RIVET_DEN_URL="$url"
+  fi
+
+  local ca="${RIVET_DEN_CA:-}"
+  if [ -z "$ca" ]; then
+    ca="$(rivetos_yaml_den_value "$config" tls_ca)"
+    if [ -z "$ca" ]; then
+      ca="${RIVETOS_DEN_TLS_CA:-}"
+    fi
+    if [ -z "$ca" ]; then
+      ca="/rivet-shared/rivet-ca/intermediate/chain.pem"
+    fi
+    export RIVET_DEN_CA="$ca"
+  fi
+
+  if [ ! -f "$ca" ]; then
+    # Silent: the launcher tests count stderr lines, and the "no den URL and
+    # no DataHub/PG URL" line already covers the real no-backend case.
+    unset RIVET_DEN_URL
+    return 0
+  fi
+
+  if [ -z "${NODE_EXTRA_CA_CERTS:-}" ]; then
+    export NODE_EXTRA_CA_CERTS="$RIVET_DEN_CA"
+  fi
 }
 
 # Prints "checkout <abs-path-to-cli.js>" or "npx". Never prints secrets.

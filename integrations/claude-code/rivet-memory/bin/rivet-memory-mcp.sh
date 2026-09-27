@@ -43,6 +43,9 @@ rivetos_collect_plugin_options
 rivetos_load_env
 unset RIVETOS_PLUGIN_KEYS
 
+# Local den (URL + CA) before exec, so Node trusts the loopback certificate.
+rivetos_resolve_den
+
 # Safe defaults: do not enable shell / file / search write tools.
 # Memory write stays off unless the user opted in during onboard.
 export RIVETOS_MCP_STDIO=1
@@ -59,8 +62,8 @@ if [ "$kind" = npx ] && ! command -v npx >/dev/null 2>&1; then
   echo "rivet-memory-mcp: install Node.js/npm, or point RIVETOS_ROOT at a built RivetOS checkout" >&2
   exit 127
 fi
-if [ -z "${RIVETOS_PG_URL:-}" ] && [ -z "${RIVETOS_DATAHUB_URL:-}" ] && [ -z "${RIVETOS_CLOUD_TOKEN:-}" ]; then
-  echo "rivet-memory-mcp: no DataHub/PG URL or cloud token — run rivetos-onboard or add ~/.rivetos/.env" >&2
+if [ -z "${RIVET_DEN_URL:-}" ] && [ -z "${RIVETOS_PG_URL:-}" ] && [ -z "${RIVETOS_DATAHUB_URL:-}" ] && [ -z "${RIVETOS_CLOUD_TOKEN:-}" ]; then
+  echo "rivet-memory-mcp: no den URL and no DataHub/PG URL — run rivetos-onboard or add ~/.rivetos/.env" >&2
 fi
 
 if rivetos_embed_model_missing; then

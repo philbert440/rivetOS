@@ -34,6 +34,12 @@ import {
   type SpawnOpts,
 } from '../src/codex-memory-capture.ts'
 
+// These cases drive the stub Queryable. Pin pg so a resolvable den URL
+// cannot send the batch over HTTP instead. Forced pg needs a URL or the
+// resolver returns none and the stub is never used.
+process.env.RIVETOS_CAPTURE_TRANSPORT = 'pg'
+if (!process.env.RIVETOS_PG_URL?.trim()) process.env.RIVETOS_PG_URL = 'postgres://unit-test/unused'
+
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
 const FIXTURE = path.join(
   __dirname,

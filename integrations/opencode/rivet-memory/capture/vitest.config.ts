@@ -9,6 +9,11 @@ export default defineConfig({
   root: packageRoot,
   test: {
     environment: 'node',
-    include: ['plugin/test/**/*.test.ts', 'capture/test/state.test.ts'],
+    include: [
+      'capture/test/den-transport.test.ts',
+      'capture/test/wrapper.test.ts',
+      'plugin/test/**/*.test.ts',
+      'capture/test/state.test.ts',
+    ],
   },
 })
