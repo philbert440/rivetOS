@@ -26,7 +26,9 @@ With `--apply` the script:
 
 1. Symlinks the kit to `~/.cursor/plugins/local/rivet-memory-cursor`. The plugin manifest wires the MCP server (`${CURSOR_PLUGIN_ROOT}/bin/rivet-memory-mcp.sh`), hooks, skills, rules, and agent.
 2. Copies `AGENT.md` -> `~/.cursor/AGENT.md` and `MEMORY.md` -> `~/.cursor/MEMORY.md`.
-3. Removes legacy global wiring that points into this kit: `rivet-memory-hook.sh` entries in `~/.cursor/hooks.json`, the `rivetos` server in `~/.cursor/mcp.json`, and skill symlinks in `~/.cursor/skills/`. Earlier versions of this script wrote those, and together with the plugin they made every hook fire twice.
+3. Removes legacy global wiring that points into this kit: `rivet-memory-hook.sh` entries in `~/.cursor/hooks.json`, the `rivetos` server in `~/.cursor/mcp.json`, and skill symlinks in `~/.cursor/skills/`. Earlier versions of this script wrote those.
+
+The CLI does not read `~/.cursor/plugins/local/` (see Verified behaviour), so this step removes the only hooks and kit MCP server a CLI session has.
 
 Without `--apply` it prints what it would do.
 
@@ -43,4 +45,13 @@ Uses a built RivetOS checkout (`services/mcp-sidecar`) or the shared pinned npm 
 - Grok Bot: `integrations/grok-bot/rivet-memory/`
 - RivetHub member kit: `integrations/grok-bot/rivethub-grokbot/`
 
-TODO(phil): Verify `${CURSOR_PLUGIN_ROOT}` expansion, plugin-relative hook cwd, and the agent tool allowlist in Cursor; record the verification date and Cursor version here. These vendor behaviours are not yet verified.
+## Verified behaviour
+
+Checked 2026-09-27 against Cursor Agent CLI `2026.09.26-dd393fe` in headless sessions (`agent -p --plugin-dir <kit>`). The desktop app was not tested.
+
+- **Plugin discovery.** The CLI loads a local plugin only through `--plugin-dir`. It does not scan `~/.cursor/plugins/local/`.
+- **MCP.** `${CURSOR_PLUGIN_ROOT}` is substituted in `command` and `args`. The server process runs in the workspace directory and does not receive `CURSOR_PLUGIN_ROOT` in its environment, so a relative MCP command would not resolve. The server registers as `plugin-RivetOS Memory (Cursor)-rivetos` (from `displayName`); `echo` round-trips.
+- **Hooks.** Plugin hooks run with the plugin root as the working directory and `CURSOR_PLUGIN_ROOT` exported, so `./bin/...` resolves. Each event fired once per occurrence. Headless runs fired only `sessionEnd` and `postToolUse`.
+- **Duplicate hooks.** When the workspace is `$HOME`, the CLI loads `~/.cursor/hooks.json` as both user and project hooks, so every entry fires twice.
+- **Agent.** `memory-researcher` registers only when the manifest omits `agents` and relies on default discovery; `"agents": ["./agents/"]` is ignored. The subagent receives the plugin's MCP tools. Its Claude-style `tools:` ids are not what Cursor registers and are not enforced.
+- **Rules.** `rules/memory-reflex.md` did not reach the model's context under any manifest form tried (no key, string, array, `.mdc` with `alwaysApply: true`).
