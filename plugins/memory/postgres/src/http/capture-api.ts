@@ -37,13 +37,17 @@ export function createCaptureApiRoute(opts: CaptureApiOptions): GatewayRoute {
           }
           pool = userPool
         }
+        const socket = req.socket
         const chunks: Buffer[] = []
         let size = 0
         for await (const chunk of req.iterator({ destroyOnReturn: false })) {
           const bytes = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk as string)
           size += bytes.length
           if (size > 1024 * 1024) {
-            req.resume()
+            const closeSocket = () => socket?.destroy()
+            res.once('finish', closeSocket)
+            res.once('close', closeSocket)
+            res.setHeader('connection', 'close')
             return json(res, 413, { error: 'body too large' })
           }
           chunks.push(bytes)

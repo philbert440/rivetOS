@@ -1,5 +1,11 @@
 import { Readable } from 'node:stream'
-import type { IncomingMessage, ServerResponse } from 'node:http'
+import {
+  createServer,
+  request as httpRequest,
+  type IncomingMessage,
+  type ServerResponse,
+} from 'node:http'
+import type { AddressInfo, Socket } from 'node:net'
 import { describe, expect, it, vi } from 'vitest'
 import type pg from 'pg'
 import { captureBatch, type CaptureBatch } from '../tools/write-tools.js'
@@ -39,6 +45,8 @@ async function request(
   let status = 0
   let response = ''
   const res = {
+    once: vi.fn(),
+    setHeader: vi.fn(),
     writeHead: (code: number) => {
       status = code
     },
@@ -179,6 +187,70 @@ describe('capture HTTP validation and routing', () => {
     expect((await request(db, { ...batch, title: 'é'.repeat(524288) })).status).toBe(413)
     expect(db.pool.connect).not.toHaveBeenCalled()
   })
+  it('sends 413 and closes the socket for an unfinished chunked upload over 1 MiB', async () => {
+    let serverSocket: Socket | undefined
+    const db = database()
+    const api = createCaptureApiRoute(db)
+    const server = createServer((req, res) => {
+      void api.handler(req, res)
+    })
+    server.on('connection', (socket) => {
+      serverSocket = socket
+    })
+    try {
+      await new Promise<void>((resolve, reject) => {
+        server.once('error', reject)
+        server.listen(0, '127.0.0.1', resolve)
+      })
+      const base = `http://127.0.0.1:${(server.address() as AddressInfo).port}`
+      await new Promise<void>((resolve, reject) => {
+        const client = httpRequest(`${base}/api/capture`, { method: 'POST' })
+        const timer = setTimeout(() => {
+          client.destroy()
+          reject(new Error('unfinished oversized upload socket did not close within 2 seconds'))
+        }, 2000)
+        let responseEnded = false
+        client.on('error', reject)
+        client.on('socket', (socket) => {
+          socket.once('close', () => {
+            clearTimeout(timer)
+            try {
+              expect(responseEnded).toBe(true)
+              expect(socket.destroyed).toBe(true)
+              expect(serverSocket?.destroyed).toBe(true)
+              resolve()
+            } catch (error) {
+              reject(error)
+            }
+          })
+        })
+        client.on('response', (res) => {
+          let body = ''
+          res.setEncoding('utf8')
+          res.on('data', (chunk: string) => {
+            body += chunk
+          })
+          res.on('end', () => {
+            try {
+              expect(res.statusCode).toBe(413)
+              expect(res.headers.connection).toBe('close')
+              expect(JSON.parse(body)).toEqual({ error: 'body too large' })
+              responseEnded = true
+            } catch (error) {
+              reject(error)
+            }
+          })
+        })
+        for (let chunk = 0; chunk < 65; chunk++) client.write(Buffer.alloc(16 * 1024, 'q'))
+        // Deliberately never end the request: the server must close the connection.
+      })
+      expect(db.pool.connect).not.toHaveBeenCalled()
+    } finally {
+      server.closeAllConnections()
+      await new Promise<void>((resolve) => server.close(() => resolve()))
+    }
+  })
+
   it.each(['', ['alice', 'bob'], 'unknown'])(
     'refuses malformed or unknown identity %#',
     async (identity) => {

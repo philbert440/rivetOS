@@ -33,6 +33,8 @@ export interface CaptureWriterOptions {
   now?: () => Date
 }
 export interface CaptureWriter {
-  write(batch: CaptureBatch): Promise<CaptureResult | { spooled: true; file: string }>
+  write(
+    batch: CaptureBatch,
+  ): Promise<CaptureResult | { spooled: true; file: string } | { spooled: false; error: string }>
   replay(opts?: { max?: number }): Promise<{ replayed: number; remaining: number; dead: number }>
 }

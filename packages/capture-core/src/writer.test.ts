@@ -1,4 +1,4 @@
-import { mkdtemp, readFile, readdir, rm, stat } from 'node:fs/promises'
+import { mkdtemp, readFile, readdir, rm, stat, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, describe, expect, it, vi } from 'vitest'
@@ -50,11 +50,38 @@ describe('capture writer', () => {
       const { writer, spoolDir } = await setup(fetch)
       const saved = await writer.write(batch)
       expect(saved).toMatchObject({ spooled: true })
-      if (!('spooled' in saved)) throw new Error('expected spool')
+      if (!('spooled' in saved) || !saved.spooled) throw new Error('expected spool')
       expect(saved.file).toMatch(/1000-.*\.json$/)
       expect(await readFile(saved.file, 'utf8')).toBe(JSON.stringify(batch))
       expect((await stat(saved.file)).mode & 0o777).toBe(0o600)
       expect(await readdir(spoolDir)).toHaveLength(1)
+    },
+  )
+  it.each(['network', 'server'])(
+    'returns explicit failure when %s and spooling fail',
+    async (failure) => {
+      const fetch = vi.fn<typeof globalThis.fetch>()
+      if (failure === 'network') fetch.mockRejectedValue(new Error('offline'))
+      else fetch.mockResolvedValue(new Response('', { status: 503 }))
+      const { spoolDir: parent } = await setup(fetch)
+      const spoolDir = join(parent, 'not-a-directory')
+      await writeFile(spoolDir, 'blocked')
+      const log = vi.fn()
+      const writer = createCaptureWriter({ denUrl: 'https://localhost:5174', fetch, spoolDir, log })
+      const failed = await writer.write(batch)
+      expect(failed).toEqual({
+        spooled: false,
+        error: expect.stringContaining('capture spool failed; batch was not saved:'),
+      })
+      if (!('spooled' in failed) || failed.spooled) throw new Error('expected spool failure')
+      expect(failed.error).toContain(spoolDir)
+      expect(log).toHaveBeenCalledWith(failed.error)
+      expect(log).toHaveBeenCalledWith(
+        failure === 'network' ? 'Error: offline' : 'Error: capture HTTP 503',
+      )
+      expect(fetch).toHaveBeenCalledOnce()
+      expect(await readFile(spoolDir, 'utf8')).toBe('blocked')
+      expect(await readdir(parent)).toEqual(['not-a-directory'])
     },
   )
   it.each([400, 401, 403, 405, 413, 429])('throws on %s without spooling', async (status) => {

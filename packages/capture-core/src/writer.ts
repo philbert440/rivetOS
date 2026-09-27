@@ -73,9 +73,9 @@ export function createCaptureWriter(opts: CaptureWriterOptions): CaptureWriter {
             file: await spoolBatch(dir, batch, (opts.now ?? (() => new Date()))()),
           }
         } catch (spoolError) {
-          log(`capture spool failed; batch was not saved: ${String(spoolError)}`)
-          // The public contract has no failure result; an empty path means no durable file.
-          return { spooled: true, file: '' }
+          const message = `capture spool failed; batch was not saved: ${String(spoolError)}`
+          log(message)
+          return { spooled: false, error: message }
         }
       }
     },
