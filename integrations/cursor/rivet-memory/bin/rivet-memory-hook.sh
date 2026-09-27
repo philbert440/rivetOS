@@ -27,6 +27,20 @@ fi
 PAYLOAD="$(cat || true)"
 TS="$(date -u +%Y%m%dT%H%M%SZ 2>/dev/null || date +%s)"
 
+# With the workspace at $HOME, Cursor loads ~/.cursor/hooks.json twice and every event
+# arrives twice. Payloads carry conversation/generation/tool ids, so an identical
+# event + payload within the window is the same occurrence.
+first_delivery() {
+  local dir="$HOME/.rivetos/cursor-hook-seen/$1" key
+  [ -n "$PAYLOAD" ] || return 0
+  key="$(printf '%s\n%s' "$HOOK_EVENT" "$PAYLOAD" | sha256sum 2>/dev/null)" || return 0
+  key="${key%% *}"
+  mkdir -p -m 700 "$dir" 2>/dev/null || return 0
+  find "$dir" -mindepth 1 -maxdepth 1 -mmin +10 -exec rm -rf -- {} + 2>/dev/null
+  mkdir "$dir/$key" 2>/dev/null || [ ! -d "$dir/$key" ]
+}
+first_delivery memory || exit 0
+
 log_line() {
   # Diagnostics stay bounded on every path; one previous log is retained.
   if [ -f "$LOG" ] && [ "$(stat -c %s "$LOG" 2>/dev/null || echo 0)" -ge 1048576 ]; then

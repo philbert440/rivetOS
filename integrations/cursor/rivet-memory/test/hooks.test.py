@@ -17,15 +17,27 @@ with tempfile.TemporaryDirectory() as tmp:
            'RIVETOS_ROOT': str(base / 'missing')}
     spool = home / '.rivetos/cursor-capture/spool'
 
-    def capture():
-        subprocess.run(['bash', str(HOOK), 'stop'], input='{"text":"private"}',
+    count = 0
+    def capture(payload=None):
+        global count
+        count += 1
+        subprocess.run(['bash', str(HOOK), 'stop'], input=payload or json.dumps({'text': 'private', 'n': count}),
                        text=True, env=env, check=True)
+
+    # The same event + payload twice (Cursor loading ~/.cursor/hooks.json as user and project
+    # hooks) is spooled once; another event or payload is not a duplicate.
+    dup_home = base / 'dup'
+    dup_env = {**env, 'HOME': str(dup_home)}
+    for ev, body in [('stop', '{"generation_id":"g1"}')] * 2 + [('stop', '{"generation_id":"g2"}'),
+                                                              ('sessionEnd', '{"generation_id":"g1"}')]:
+        subprocess.run(['bash', str(HOOK), ev], input=body, text=True, env=dup_env, check=True)
+    assert len(list((dup_home / '.rivetos/cursor-capture/spool').glob('*.json'))) == 3
 
     capture()
     assert stat.S_IMODE(spool.stat().st_mode) == 0o700
     payload = next(spool.glob('*.json'))
     assert stat.S_IMODE(payload.stat().st_mode) == 0o600
-    assert json.loads(payload.read_text())['payload'] == {'text': 'private'}
+    assert json.loads(payload.read_text())['payload'] == {'text': 'private', 'n': 1}
     log = home / '.rivetos/cursor-capture.log'
     assert 'spooled ' in log.read_text() and '(not yet ingested' in log.read_text()
     for i in range(505):
@@ -44,8 +56,8 @@ with tempfile.TemporaryDirectory() as tmp:
     assert sum(p.stat().st_size for p in spool.glob('*.json')) <= 50 * 1024 * 1024
     processes = [subprocess.Popen(['bash', str(HOOK), 'stop'], stdin=subprocess.PIPE,
                                  text=True, env=env) for _ in range(12)]
-    for p in processes:
-        p.communicate('{}')
+    for i, p in enumerate(processes):
+        p.communicate(json.dumps({'n': i}))
         assert p.returncode == 0
     assert len(list(spool.glob('*.json'))) <= 500
     shutil.rmtree(spool)
@@ -77,6 +89,14 @@ with tempfile.TemporaryDirectory() as tmp:
                    input='{}', text=True, env=denenv, check=True)
     assert args_out.read_text().splitlines() == [str(translator), '--harness', 'cursor', 'AfterAgentResponse']
 
+    # The den shim forwards the payload on stdin and drops a duplicate delivery.
+    fake_node.write_text('#!/bin/sh\ncat >> "$ARGS_OUT"; echo >> "$ARGS_OUT"\n')
+    args_out.unlink()
+    for body in ['{"generation_id":"d1"}', '{"generation_id":"d1"}', '{"generation_id":"d2"}']:
+        subprocess.run(['bash', str(plugin / 'bin/cursor-den-hook.sh'), 'stop'],
+                       input=body, text=True, env=denenv, check=True)
+    assert args_out.read_text().splitlines() == ['{"generation_id":"d1"}', '{"generation_id":"d2"}']
+
     # Intercept fetch in-process: no network, and inspect the real translator's batch.
     preload = base / 'fetch.mjs'
     output = base / 'events.json'
@@ -96,4 +116,4 @@ with tempfile.TemporaryDirectory() as tmp:
         events = json.loads(output.read_text())
         assert any(e['type'] == 'message.agent' and e['text'] == field for e in events)
         assert not any(e['type'] == 'turn.end' for e in events)
-print('PASS: spool permissions, count/size/concurrency retention, failure log, symlink discovery, response dispatch')
+print('PASS: spool permissions, duplicate delivery, count/size/concurrency retention, failure log, symlink discovery, response dispatch')

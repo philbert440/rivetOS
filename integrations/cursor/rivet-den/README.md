@@ -22,8 +22,9 @@ Or load the kit as a plugin for a session (its manifest wires
 agent --plugin-dir integrations/cursor/rivet-den
 ```
 
-Use one form, not both, or events are sent twice. When the workspace is
-`$HOME`, the CLI loads `~/.cursor/hooks.json` twice regardless.
+Use one form, not both. When the workspace is `$HOME`, the CLI loads
+`~/.cursor/hooks.json` twice; the hook drops the second delivery of an
+identical event + payload (markers under `~/.rivetos/cursor-hook-seen/den`).
 
 Requires a RivetOS checkout that includes the Claude Code den translator.
 `RIVETOS_ROOT` overrides the checkout; otherwise the hook resolves it from its
