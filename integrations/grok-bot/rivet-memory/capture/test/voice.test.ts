@@ -63,6 +63,56 @@ describe('voice-calls reader (real callId/speaker/atMs + call-level toolCalls)',
     expect(result.messages.every((m) => m.metadata?.source === 'grokbot-voice')).toBe(true)
   })
 
+  it('records truncated metadata and keeps capped argumentsJson when a result exists', () => {
+    const bigArgs = 'a'.repeat(18_000)
+    const bigResult = 'b'.repeat(18_000)
+    const call = parseVoiceCall(
+      JSON.stringify({
+        callId: 'vc-cap',
+        startedAtMs: 1789916640000,
+        turns: [
+          { speaker: 'user', atMs: 1789916641000, text: 'ask' },
+          { speaker: 'assistant', atMs: 1789916648000, text: 'ans' },
+        ],
+        toolCalls: [
+          {
+            name: 'lookup',
+            argumentsJson: JSON.stringify({ q: bigArgs }),
+            result: { atMs: 1789916645000, json: { body: bigResult } },
+          },
+        ],
+      }),
+    )
+    expect(call.toolCalls[0]?.argumentsJson).toBeTruthy()
+    expect(call.toolCalls[0]?.result).toBeTruthy()
+    expect(call.toolCalls[0]?.truncated).toBe(true)
+    expect(Number(call.toolCalls[0]?.fullArgumentsLength)).toBeGreaterThan(16_000)
+    expect(Number(call.toolCalls[0]?.fullResultLength)).toBeGreaterThan(16_000)
+    const { records, positions } = voiceCallToRecords(call)
+    const toolRec = records.find((r) => (r as { role: string }).role === 'tool') as {
+      message?: { content?: Array<Record<string, unknown>> }
+    }
+    const part = toolRec?.message?.content?.[0]
+    expect(part?.argumentsJson).toBeTruthy()
+    expect(part?.result).toBeTruthy()
+    expect(part?.truncated).toBe(true)
+    const result = normalizeRecords(records, {
+      sessionKey: 'grokbot-bob-v3-voice-cap',
+      agent: 'rivet-bob',
+      format: 'voice',
+      positions,
+      useStoredCreatedAt: true,
+    })
+    const tool = result.messages.find((m) => m.role === 'tool')
+    expect(tool?.metadata?.truncated).toBe(true)
+    expect(tool?.tool_args).toBeTruthy()
+    expect(tool?.tool_result).toBeTruthy()
+    expect(Number(tool?.metadata?.full_tool_result_length)).toBeGreaterThan(16_000)
+    expect(Number(tool?.metadata?.full_arguments_length)).toBeGreaterThan(16_000)
+    expect(String(tool?.tool_args).length).toBeLessThanOrEqual(16_000)
+    expect(String(tool?.tool_result).length).toBeLessThanOrEqual(16_000)
+  })
+
   it('accepts a top-level array of turns with speaker/atMs', () => {
     const call = parseVoiceCall(
       JSON.stringify([

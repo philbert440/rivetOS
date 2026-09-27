@@ -295,6 +295,50 @@ describe('timestamps', () => {
     expect(messages.filter((m) => m.role === 'assistant')).toHaveLength(2)
   })
 
+  it('drops a third 12-row identical created_at copy after skipped-run rows stay in byHash', () => {
+    const rec = (n: number) => ({
+      role: 'assistant',
+      created_at: '2026-09-20T20:04:00.000Z',
+      message: { content: [{ type: 'text', text: `block-${String(n)}` }] },
+    })
+    const first = Array.from({ length: 12 }, (_, i) => rec(i))
+    const records = [...first, ...first.map((r) => ({ ...r })), ...first.map((r) => ({ ...r }))]
+    const skips = replaySkipIndices(records)
+    expect(skips.size).toBe(24)
+    for (let i = 0; i < 12; i++) expect(skips.has(i)).toBe(false)
+    for (let i = 12; i < 36; i++) expect(skips.has(i)).toBe(true)
+  })
+
+  it('drops later 10+ copies of one often-repeated hash and created_at without O(k²) candidates', () => {
+    const rec = {
+      role: 'assistant',
+      created_at: '2026-09-20T20:04:00.000Z',
+      message: { content: [{ type: 'text', text: 'same' }] },
+    }
+    const many = Array.from({ length: 40 }, () => ({ ...rec }))
+    const pollA = {
+      role: 'assistant',
+      created_at: '2026-09-20T20:05:00.000Z',
+      message: {
+        content: [{ type: 'tool_use', name: 'shell', input: { command: 'gh pr checks' } }],
+      },
+    }
+    const pollB = {
+      role: 'tool',
+      created_at: '2026-09-20T20:05:00.000Z',
+      message: { content: [{ type: 'tool_result', name: 'shell', result: 'pending\n' }] },
+    }
+    const records = [...many, pollA, pollB, pollA, pollB]
+    const skips = replaySkipIndices(records)
+    expect(skips.size).toBeGreaterThanOrEqual(10)
+    for (let i = 0; i < 10; i++) expect(skips.has(i)).toBe(false)
+    expect(skips.has(10)).toBe(true)
+    expect(skips.has(40)).toBe(false)
+    expect(skips.has(41)).toBe(false)
+    const { messages } = normalizeRecords(records, rivetOpts())
+    expect(messages.filter((m) => m.role === 'tool')).toHaveLength(2)
+  })
+
   it('drops a 10+ identical created_at run and keeps a short polling pair', () => {
     const rec = (n: number) => ({
       role: 'assistant',
@@ -306,7 +350,9 @@ describe('timestamps', () => {
     const pollA = {
       role: 'assistant',
       created_at: '2026-09-20T20:05:00.000Z',
-      message: { content: [{ type: 'tool_use', name: 'shell', input: { command: 'gh pr checks' } }] },
+      message: {
+        content: [{ type: 'tool_use', name: 'shell', input: { command: 'gh pr checks' } }],
+      },
     }
     const pollB = {
       role: 'tool',
@@ -320,9 +366,9 @@ describe('timestamps', () => {
     expect(skips.has(24)).toBe(false)
     expect(skips.has(25)).toBe(false)
     const { messages } = normalizeRecords(records, rivetOpts())
-    expect(messages.filter((m) => m.role === 'assistant' && m.content.startsWith('block-'))).toHaveLength(
-      12,
-    )
+    expect(
+      messages.filter((m) => m.role === 'assistant' && m.content.startsWith('block-')),
+    ).toHaveLength(12)
     expect(messages.filter((m) => m.role === 'tool')).toHaveLength(2)
   })
 

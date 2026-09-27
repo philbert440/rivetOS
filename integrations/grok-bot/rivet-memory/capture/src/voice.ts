@@ -20,10 +20,15 @@ export { SESSION_SUFFIX_V3_VOICE }
 export interface VoiceToolCall {
   name: string
   input?: unknown
+  /** Capped arguments JSON; kept on the tool row even when a result exists. */
+  argumentsJson?: string
   id?: string
   result?: string
   atMs?: number
   started_at?: string
+  truncated?: boolean
+  fullResultLength?: number
+  fullArgumentsLength?: number
 }
 
 export interface VoiceTurn {
@@ -153,16 +158,25 @@ export function voiceCallToRecords(call: VoiceCall): { records: unknown[]; posit
     }
     if (ev.kind === 'tool' && ev.tool) {
       const created = ev.tool.started_at ?? msToIso(ev.atMs) ?? call.started_at
+      const part: Record<string, unknown> = {
+        type: 'tool_result',
+        name: ev.tool.name,
+        result: summarizeToolCall(ev.tool),
+      }
+      if (ev.tool.argumentsJson !== undefined) part.argumentsJson = ev.tool.argumentsJson
+      if (ev.tool.truncated) {
+        part.truncated = true
+        if (ev.tool.fullResultLength !== undefined) {
+          part.full_tool_result_length = ev.tool.fullResultLength
+        }
+        if (ev.tool.fullArgumentsLength !== undefined) {
+          part.full_arguments_length = ev.tool.fullArgumentsLength
+        }
+      }
       records.push({
         role: 'tool',
         message: {
-          content: [
-            {
-              type: 'tool_result',
-              name: ev.tool.name,
-              result: summarizeToolCall(ev.tool),
-            },
-          ],
+          content: [part],
         },
         created_at: created,
         voice_call_id: call.id,
@@ -286,15 +300,21 @@ function parseToolCalls(raw: unknown): VoiceToolCall[] {
         : '') ||
       'tool'
     const input = parseArgumentsJson(item)
-    const resultPayload = toolResultPayload(item)
+    const argsCap = capUnknown(argumentsJsonRaw(item, input))
+    const resultCap = capUnknown(toolResultRaw(item))
     const atMs = toolAtMs(item)
+    const truncated = Boolean((argsCap && argsCap.truncated) || (resultCap && resultCap.truncated))
     out.push({
       name,
       input,
+      argumentsJson: argsCap?.text,
       id: typeof item.id === 'string' ? item.id : undefined,
-      result: resultPayload,
+      result: resultCap?.text,
       atMs,
       started_at: msToIso(atMs),
+      truncated: truncated || undefined,
+      fullResultLength: resultCap?.truncated ? resultCap.fullLength : undefined,
+      fullArgumentsLength: argsCap?.truncated ? argsCap.fullLength : undefined,
     })
   }
   return out
@@ -309,12 +329,19 @@ function parseArgumentsJson(item: Record<string, unknown>): unknown {
   return undefined
 }
 
-function toolResultPayload(item: Record<string, unknown>): string | undefined {
+function argumentsJsonRaw(item: Record<string, unknown>, input: unknown): string | undefined {
+  if (typeof item.argumentsJson === 'string') return item.argumentsJson
+  if (input === undefined) return undefined
+  return typeof input === 'string' ? input : safeJson(input)
+}
+
+function toolResultRaw(item: Record<string, unknown>): string | undefined {
   const res = item.result
-  if (isRecord(res) && res.json !== undefined) return capUnknown(res.json)
-  if (typeof res === 'string') return capUnknown(res)
-  if (typeof item.output === 'string') return capUnknown(item.output)
-  if (typeof item.argumentsJson === 'string') return capUnknown(parseJsonString(item.argumentsJson))
+  if (isRecord(res) && res.json !== undefined) {
+    return typeof res.json === 'string' ? res.json : safeJson(res.json)
+  }
+  if (typeof res === 'string') return res
+  if (typeof item.output === 'string') return item.output
   return undefined
 }
 
@@ -333,9 +360,12 @@ function parseJsonString(raw: string): unknown {
   }
 }
 
-function capUnknown(value: unknown): string {
+function capUnknown(
+  value: unknown,
+): { text: string; truncated: boolean; fullLength: number } | undefined {
+  if (value === undefined) return undefined
   const raw = typeof value === 'string' ? value : safeJson(value)
-  return capForStorage(raw, { limit: STORAGE_LIMIT }).text
+  return capForStorage(raw, { limit: STORAGE_LIMIT })
 }
 
 function safeJson(value: unknown): string {
@@ -349,6 +379,7 @@ function safeJson(value: unknown): string {
 function summarizeToolCall(tool: VoiceToolCall): string {
   if (tool.result) return tool.result
   const name = tool.name || 'tool'
+  if (tool.argumentsJson) return tool.argumentsJson
   if (tool.input == null) return name
   const raw = typeof tool.input === 'string' ? tool.input : safeJson(tool.input)
   const capped = capForStorage(raw, { limit: STORAGE_LIMIT }).text

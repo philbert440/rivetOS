@@ -102,6 +102,13 @@ function recordCreatedAtKey(rec: unknown): string | undefined {
  * identical to an earlier run and share a defined created_at. A later run
  * must have at least one defined time. Unstamped short polling pairs and
  * 10+ identical tools at different times are kept.
+ *
+ * Matches every earlier row with the same hash, not just the first. That
+ * drops 15 more real re-append rows than first-match-only. Candidate
+ * walks are bounded (next-hash filter + a small cap) so one record that
+ * repeats many times is not O(k²). Rows skipped inside a matched run are
+ * still added to byHash so a later copy can match after older starts
+ * fall out of the candidate window.
  */
 function skipIdenticalCreatedAtRuns(records: unknown[], hashes: string[], skip: Set<number>): void {
   const times = records.map(recordCreatedAtKey)
@@ -114,7 +121,7 @@ function skipIdenticalCreatedAtRuns(records: unknown[], hashes: string[], skip: 
       j += 1
       continue
     }
-    const earlier = byHash.get(hash) ?? []
+    const earlier = identicalRunCandidates(byHash.get(hash) ?? [], hashes, j)
     let bestLen = 0
     let bestSawTime = false
     for (const prev of earlier) {
@@ -138,13 +145,33 @@ function skipIdenticalCreatedAtRuns(records: unknown[], hashes: string[], skip: 
       }
     }
     if (bestLen >= REPLAY_IDENTICAL_RUN_MIN && bestSawTime) {
-      for (let k = 0; k < bestLen; k++) skip.add(j + k)
+      for (let k = 0; k < bestLen; k++) {
+        skip.add(j + k)
+        rememberHash(byHash, hashes[j + k] ?? '', j + k)
+      }
       j += bestLen
     } else {
       rememberHash(byHash, hash, j)
       j += 1
     }
   }
+}
+
+/** Prefer starts whose next hash also matches, then keep earliest + recent. */
+const IDENTICAL_RUN_CANDIDATE_CAP = 8
+
+function identicalRunCandidates(earlier: number[], hashes: string[], j: number): number[] {
+  if (earlier.length === 0) return []
+  let filtered = earlier
+  if (j + 1 < hashes.length) {
+    const next = hashes[j + 1]
+    const nextMatch = earlier.filter((prev) => hashes[prev + 1] === next)
+    if (nextMatch.length > 0) filtered = nextMatch
+  }
+  if (filtered.length <= IDENTICAL_RUN_CANDIDATE_CAP) return filtered
+  const head = filtered[0]
+  const tail = filtered.slice(-(IDENTICAL_RUN_CANDIDATE_CAP - 1))
+  return head === tail[0] ? tail : [head, ...tail.filter((i) => i !== head)]
 }
 
 function rememberHash(byHash: Map<string, number[]>, hash: string, idx: number): void {
@@ -457,12 +484,14 @@ function emitAssistantParts(
         role: 'tool',
         content: '',
         toolName: name,
+        toolArgs: toolArgsFromPart(part),
         toolResult: body,
         position: ctx.position,
         createdAt: ctx.createdAt,
         occKeys: ctx.occKeys,
         subByPos: ctx.subByPos,
         clock: ctx.clock,
+        extra: truncationExtra(part),
       })
       if (row.metadata?.truncated) truncated += 1
       rows.push(row)
@@ -524,17 +553,20 @@ function emitToolParts(
       saw = true
       const body = toolResultBody(part)
       const name = typeof part.name === 'string' ? part.name : undefined
+      const toolArgs = toolArgsFromPart(part)
       const row = makeMessage({
         opts: ctx.opts,
         role: 'tool',
         content: '',
         toolName: name,
+        toolArgs,
         toolResult: body,
         position: ctx.position,
         createdAt: ctx.createdAt,
         occKeys: ctx.occKeys,
         subByPos: ctx.subByPos,
         clock: ctx.clock,
+        extra: truncationExtra(part),
       })
       if (row.metadata?.truncated) truncated += 1
       rows.push(row)
@@ -604,11 +636,22 @@ function makeMessage(args: {
     }
   }
 
+  let toolArgs = args.toolArgs
+  if (toolArgs !== undefined) {
+    const raw = typeof toolArgs === 'string' ? toolArgs : safeToolArgsJson(toolArgs)
+    if (raw.length > STORAGE_LIMIT) {
+      const cap = capForStorage(raw, { limit: STORAGE_LIMIT })
+      toolArgs = cap.text
+      metadata.truncated = true
+      metadata.full_arguments_length = cap.fullLength
+    }
+  }
+
   const occKey: OccurrenceKey = {
     role: args.role,
     content: content || toolResult || args.toolName || '',
     toolName: args.toolName,
-    toolArgs: args.toolArgs,
+    toolArgs,
   }
   args.occKeys.push(occKey)
 
@@ -620,7 +663,7 @@ function makeMessage(args: {
     role: args.role,
     content: content || toolResult || '',
     toolName: args.toolName,
-    toolArgs: args.toolArgs,
+    toolArgs,
     occurrence: metadata.ordinal as number,
   })
 
@@ -631,11 +674,38 @@ function makeMessage(args: {
     metadata,
   }
   if (args.toolName) msg.tool_name = args.toolName
-  if (args.toolArgs !== undefined) msg.tool_args = args.toolArgs
+  if (toolArgs !== undefined) msg.tool_args = toolArgs
   if (toolResult !== undefined) msg.tool_result = toolResult
   const createdAt = clampCreatedAt(args.clock, args.createdAt)
   if (createdAt) msg.created_at = createdAt
   return msg
+}
+
+function toolArgsFromPart(part: Record<string, unknown>): unknown {
+  if (part.argumentsJson !== undefined) return part.argumentsJson
+  if (part.arguments !== undefined) return part.arguments
+  if (part.input !== undefined) return part.input
+  return undefined
+}
+
+function truncationExtra(part: Record<string, unknown>): Record<string, unknown> | undefined {
+  const extra: Record<string, unknown> = {}
+  if (part.truncated === true) extra.truncated = true
+  if (typeof part.full_tool_result_length === 'number') {
+    extra.full_tool_result_length = part.full_tool_result_length
+  }
+  if (typeof part.full_arguments_length === 'number') {
+    extra.full_arguments_length = part.full_arguments_length
+  }
+  return Object.keys(extra).length > 0 ? extra : undefined
+}
+
+function safeToolArgsJson(value: unknown): string {
+  try {
+    return JSON.stringify(value) || ''
+  } catch {
+    return ''
+  }
 }
 
 function hiddenExtra(kind: HiddenKind, raw: string): string | undefined {

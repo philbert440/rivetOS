@@ -63,9 +63,10 @@ existing rows.
   the watcher `state.json` as per-session stuck-policy. `RIVETOS_ROOT`
   defaults to `/opt/rivetos`.
 - Re-ingest of the same session skips a row whose `event_id` is already
-  stored, and skips an ordinal that is already taken. That is the dedup.
-  Nothing is deleted or updated. Search, browse, and recall read the rows
-  that were stored.
+  stored, and skips an ordinal that is already taken. Dedup holds within
+  one session only. After a full-history `-v3` backfill, search and
+  recall return both the legacy session and the `-v3` copy until the
+  legacy sessions are retired. Nothing is deleted or updated.
 
 ## Layout
 
@@ -88,12 +89,12 @@ Nothing in this tree names a host, address, port, or lab layout.
 
 ## Session suffixes (do not mix formats)
 
-| suffix | source | position |
-| --- | --- | --- |
-| `-v3` | on-disk jsonl / ReadTranscript pages | line index / page position |
-| `-v3-rows` | Postgres / `--from-rows` reclean | stored ordinal |
-| `-v3-store` | `agents/<id>/store.db` `transcript_entries` | `seq` |
-| `-v3-voice-<stem>` | `voice-calls/*.json` | turn index |
+| suffix             | source                                      | position                   |
+| ------------------ | ------------------------------------------- | -------------------------- |
+| `-v3`              | on-disk jsonl / ReadTranscript pages        | line index / page position |
+| `-v3-rows`         | Postgres / `--from-rows` reclean            | stored ordinal             |
+| `-v3-store`        | `agents/<id>/store.db` `transcript_entries` | `seq`                      |
+| `-v3-voice-<stem>` | `voice-calls/*.json`                        | turn index                 |
 
 `seq` and voice turn indices are **not** the on-disk line index. Ingesting
 them into `-v3` would hit `ordinal exists, event_id differs, skip`.
@@ -122,8 +123,9 @@ npx nx build @rivetos/grok-bot-rivet-memory-capture
 
 ### Convert one file (either input format)
 
-On-disk agent-transcripts jsonl, or a ReadTranscript page (header + JSON lines
-+ optional footer). Live / convert defaults to session suffix `-v3`.
+On-disk agent-transcripts jsonl, or a ReadTranscript page (header, JSON
+lines, and optional footer). Live / convert defaults to session suffix
+`-v3`.
 
 ```bash
 node integrations/grok-bot/rivet-memory/capture/dist/cli.js convert \
@@ -316,6 +318,10 @@ can be empty. The reader still opens the DB read-only and no-ops.
 - Row-based re-clean (`-v3-rows`) is a separate session from source
   backfill (`-v3`). store.db and voice-calls have their own suffixes.
   Pick one format per session; do not mix.
+- Cutover: retire the unsuffixed / `-v2` sessions after the `-v3`
+  sibling is the live writer (stop the old watcher first). This PR does
+  not DELETE or UPDATE those rows. Until they are retired, search and
+  recall show both the legacy session and the `-v3` copy.
 
 ## Tests
 

@@ -186,7 +186,10 @@ describe('node capture scripts', () => {
         env: { ...process.env, GROKBOT_SESSION_SUFFIX: '-v3' },
       },
     )
-    const info = JSON.parse(out.trim().split('\n').pop() ?? '{}') as { session?: string; out?: number }
+    const info = JSON.parse(out.trim().split('\n').pop() ?? '{}') as {
+      session?: string
+      out?: number
+    }
     expect(info.session).toBe('grokbot-bob-v3')
     expect(info.out).toBeGreaterThan(0)
     expect(readFileSync(dst, 'utf8')).toContain('watch argv')
@@ -201,6 +204,49 @@ describe('node capture scripts', () => {
     expect(bridge).toContain('Build the capture package first')
     expect(bridge).not.toContain('--import')
     expect(bridge).not.toContain('tsx')
+  })
+
+  it('pull-bridge ingest calls require_dist before identities and exits 2 when dist is missing', () => {
+    const out = execFileSync(
+      'python3',
+      [
+        '-c',
+        [
+          'import importlib.util, io, pathlib, sys',
+          'p = sys.argv[1]',
+          'spec = importlib.util.spec_from_file_location("mod", p)',
+          'mod = importlib.util.module_from_spec(spec)',
+          'spec.loader.exec_module(mod)',
+          'mod.CLI_JS = pathlib.Path("/tmp/missing-grokbot-cli.js")',
+          'called = []',
+          'def boom():',
+          '    called.append(1)',
+          '    raise RuntimeError("identities should not run")',
+          'mod.identities = boom',
+          'stderr = io.StringIO()',
+          'old = sys.stderr',
+          'sys.stderr = stderr',
+          'code = 0',
+          'try:',
+          '    mod.cmd_ingest([], True, "-v3")',
+          '    print("NO_EXIT")',
+          'except SystemExit as e:',
+          '    code = e.code',
+          'finally:',
+          '    sys.stderr = old',
+          'err = stderr.getvalue()',
+          'print(code)',
+          'print(len(called))',
+          'print("BUILD" if "Build the capture package first" in err else err[-200:])',
+        ].join('\n'),
+        join(ROOT, 'pull-bridge.py'),
+      ],
+      { encoding: 'utf8' },
+    )
+    const lines = out.trim().split('\n')
+    expect(lines[0]).toBe('2')
+    expect(lines[1]).toBe('0')
+    expect(lines[2]).toBe('BUILD')
   })
 
   it('runs the real converter with GROKBOT_SESSION_SUFFIX=-v3', () => {
@@ -234,7 +280,10 @@ describe('node capture scripts', () => {
         GROKBOT_AGENT_ID: '00df02ea-4f5f-4d3e-945a-864e1c9c78dc',
       },
     })
-    const info = JSON.parse(out.trim().split('\n').pop() ?? '{}') as { session?: string; out?: number }
+    const info = JSON.parse(out.trim().split('\n').pop() ?? '{}') as {
+      session?: string
+      out?: number
+    }
     expect(info.session).toBe('grokbot-bob-v3')
     expect(info.out).toBeGreaterThan(0)
     const rows = readFileSync(dst, 'utf8')

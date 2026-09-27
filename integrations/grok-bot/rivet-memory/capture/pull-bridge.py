@@ -194,6 +194,7 @@ def convert_cmd(src: Path, dst: Path, agent_id: str, session: str | None = None)
 
 
 def cmd_ingest(ids: list[str], dry: bool, suffix: str) -> int:
+    require_dist()
     st = load_state()
     models, node_id = identities()
     rc = 0
