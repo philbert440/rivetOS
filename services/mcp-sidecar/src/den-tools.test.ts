@@ -394,7 +394,11 @@ Hello
 
   function delegationGateway(waitTask: DenToolsGateway['waitTask'], parentTaskId?: string) {
     const createTask = vi.fn(async () => ({ task: taskWire({ status: 'queued' }) }))
-    const killTask = vi.fn(async () => ({ ok: true as const, prior: 'running' as const }))
+    const killTask = vi.fn<DenToolsGateway['killTask']>(async () => ({
+      ok: true,
+      prior: 'running',
+    }))
+    const getTask = vi.fn(async () => ({ task: taskWire() }))
     const handle = createDenTools({
       denUrl: DEN,
       enableWrite: false,
@@ -402,9 +406,9 @@ Hello
       requestedBy: 'test',
       log: () => undefined,
       parentTaskId,
-      gateway: { createTask, waitTask, killTask } as unknown as DenToolsGateway,
+      gateway: { createTask, waitTask, killTask, getTask } as unknown as DenToolsGateway,
     })
-    return { execute: tool(handle, 'delegate_task').execute, createTask, killTask }
+    return { execute: tool(handle, 'delegate_task').execute, createTask, killTask, getTask }
   }
 
   it.each([undefined, '   '])('starts parentless children at depth 1 (%s)', async (parent) => {
@@ -430,13 +434,30 @@ Hello
 
   it('kills on the observation-only wait deadline without a task body', async () => {
     const { execute, killTask } = delegationGateway(async () => {
-      throw new GatewayError(504, 'deadline', { error: 'wait deadline exceeded' })
+      throw new GatewayError(504, 'deadline', undefined)
     })
     expect(await execute({ to_agent: 'reviewer', task: 'go', timeout_ms: 5000 })).toContain(
       '[timeout] Remote delegation to reviewer timed out after 5000ms (task task-1 killed)',
     )
     expect(killTask).toHaveBeenCalledExactlyOnceWith('task-1')
   })
+
+  it.each(['terminal', 'missing'])(
+    'returns completion after a 504 and %s kill response',
+    async (killOutcome) => {
+      vi.spyOn(Date, 'now').mockReturnValueOnce(100).mockReturnValue(6100)
+      const { execute, killTask, getTask } = delegationGateway(async () => {
+        throw new GatewayError(504, 'deadline', undefined)
+      })
+      if (killOutcome === 'terminal') killTask.mockResolvedValueOnce({ ok: true, prior: null })
+      else killTask.mockRejectedValueOnce(new GatewayError(404, 'missing', undefined))
+      expect(await execute({ to_agent: 'reviewer', task: 'go', timeout_ms: 5000 })).toBe(
+        'done\n\n---\n_Delegation [completed]: 6000ms | tokens: 3_',
+      )
+      expect(killTask).toHaveBeenCalledExactlyOnceWith('task-1')
+      expect(getTask).toHaveBeenCalledExactlyOnceWith('task-1')
+    },
+  )
 
   it.each([
     { id: 't', status: 'completed', result: { output: { toString: null } } },
@@ -475,10 +496,67 @@ Hello
         signal: controller.signal,
       })
       controller.abort()
-      await expect(pending).rejects.toBe(abort)
+      await expect(pending).rejects.toMatchObject({ name: 'AbortError' })
       expect(killTask).toHaveBeenCalledExactlyOnceWith('task-1')
     },
   )
+
+  it.each([false, true])(
+    'normalizes string-reason cancellation during wait (kill failure %s)',
+    async (killFails) => {
+      const controller = new AbortController()
+      const waitTask = vi.fn<DenToolsGateway['waitTask']>(async (_id, opts) => {
+        return new Promise((_resolve, reject) => {
+          opts?.signal?.addEventListener(
+            'abort',
+            () => {
+              reject(new GatewayError(0, 'gateway unreachable: user cancelled', undefined))
+            },
+            { once: true },
+          )
+        })
+      })
+      const { execute, killTask } = delegationGateway(waitTask)
+      if (killFails) killTask.mockRejectedValueOnce(new Error('offline'))
+      const pending = execute({ to_agent: 'reviewer', task: 'go' }, { signal: controller.signal })
+      await Promise.resolve()
+      expect(waitTask).toHaveBeenCalledOnce()
+      controller.abort('user cancelled')
+      await expect(pending).rejects.toMatchObject({ name: 'AbortError' })
+      expect(killTask).toHaveBeenCalledExactlyOnceWith('task-1')
+    },
+  )
+
+  it.each([false, true])(
+    'normalizes cancellation during creation (creation failure %s)',
+    async (createFails) => {
+      const controller = new AbortController()
+      const waitTask = vi.fn<DenToolsGateway['waitTask']>()
+      const { execute, createTask, killTask } = delegationGateway(waitTask)
+      createTask.mockImplementationOnce(async () => {
+        controller.abort('user cancelled')
+        if (createFails) throw new GatewayError(0, 'gateway unreachable: user cancelled', undefined)
+        return { task: taskWire({ status: 'queued' }) }
+      })
+      await expect(
+        execute({ to_agent: 'reviewer', task: 'go' }, { signal: controller.signal }),
+      ).rejects.toMatchObject({ name: 'AbortError' })
+      expect(waitTask).not.toHaveBeenCalled()
+      if (createFails) expect(killTask).not.toHaveBeenCalled()
+      else expect(killTask).toHaveBeenCalledExactlyOnceWith('task-1')
+    },
+  )
+
+  it('rejects an already-aborted call without creating a task', async () => {
+    const controller = new AbortController()
+    controller.abort('user cancelled')
+    const { execute, createTask, killTask } = delegationGateway(vi.fn())
+    await expect(
+      execute({ to_agent: 'reviewer', task: 'go' }, { signal: controller.signal }),
+    ).rejects.toMatchObject({ name: 'AbortError' })
+    expect(createTask).not.toHaveBeenCalled()
+    expect(killTask).not.toHaveBeenCalled()
+  })
 
   it('formats failure and empty completion with elapsed time and no absent tokens', async () => {
     vi.spyOn(Date, 'now').mockReturnValue(100)

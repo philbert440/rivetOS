@@ -40,7 +40,6 @@ const TASK_ID_UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{
 /** Tool default. Same as the pg delegate tool. */
 const DEFAULT_TIMEOUT_MS = 1_200_000
 const MAX_TIMEOUT_MS = 1_800_000
-const CLIENT_ABORT_TEXT = '[killed] delegate_task aborted by the client'
 /** Fail-closed child depth: parent is treated as `MAX_CHAIN_DEPTH - 1`. */
 const FAIL_CLOSED_CHILD_DEPTH = MAX_CHAIN_DEPTH
 
@@ -89,6 +88,7 @@ export interface DenToolsGateway {
   catalogAgents: RivetGateway['catalogAgents']
   createTask: RivetGateway['createTask']
   waitTask: RivetGateway['waitTask']
+  getTask: RivetGateway['getTask']
   killTask: RivetGateway['killTask']
 }
 
@@ -523,7 +523,7 @@ export function createDenTools(opts: DenToolsOptions): DenToolsHandle {
         async execute(args, ctx?: ToolExecuteContext): Promise<string> {
           const call = readDelegateCall(args)
           if (typeof call === 'string') return call
-          if (ctx?.signal?.aborted) return CLIENT_ABORT_TEXT
+          if (ctx?.signal?.aborted) throw new DOMException('delegate_task aborted', 'AbortError')
           const goal = delegationGoal(call.task, call.context)
           const startTime = Date.now()
           let taskId: string | undefined
@@ -541,13 +541,14 @@ export function createDenTools(opts: DenToolsOptions): DenToolsHandle {
               },
             })
             taskId = created.task.id
+            if (ctx?.signal?.aborted) throw new DOMException('delegate_task aborted', 'AbortError')
             const settled = await gateway.waitTask(taskId, {
               timeoutMs: call.timeoutMs,
               ...(ctx?.signal ? { signal: ctx.signal } : {}),
             })
             return formatSettledTask(settled.task, call.toAgent, Date.now() - startTime)
           } catch (err: unknown) {
-            if (isAbort(err)) {
+            if (ctx?.signal?.aborted === true || isAbort(err)) {
               if (taskId) {
                 try {
                   await gateway.killTask(taskId)
@@ -555,7 +556,7 @@ export function createDenTools(opts: DenToolsOptions): DenToolsHandle {
                   /* best effort */
                 }
               }
-              throw err
+              throw new DOMException('delegate_task aborted', 'AbortError')
             }
             if (err instanceof GatewayError) {
               if (err.status === 0) return unreachable(denUrl, err)
@@ -567,17 +568,32 @@ export function createDenTools(opts: DenToolsOptions): DenToolsHandle {
                 // GET /wait only observes: the creating caller owns cancellation.
                 let killed = false
                 if (taskId) {
+                  let reread: boolean
                   try {
-                    await gateway.killTask(taskId)
-                    killed = true
-                  } catch {
-                    /* best effort */
+                    const result = await gateway.killTask(taskId)
+                    killed = result.prior !== null
+                    reread = result.prior === null
+                  } catch (killError: unknown) {
+                    reread = killError instanceof GatewayError && killError.status === 404
+                  }
+                  if (reread) {
+                    try {
+                      const task = timeoutTask(await gateway.getTask(taskId))
+                      if (
+                        task &&
+                        ['completed', 'failed', 'killed', 'timeout'].includes(task.status)
+                      ) {
+                        return formatSettledTask(task, call.toAgent, Date.now() - startTime)
+                      }
+                    } catch {
+                      /* best effort */
+                    }
                   }
                 }
                 try {
                   const task = timeoutTask(err.body)
                   if (isRecord(err.body) && err.body.task !== undefined && !task) return fallback
-                  const id = task?.status === 'killed' ? task.id : killed ? taskId : undefined
+                  const id = killed ? taskId : undefined
                   const diagnostic =
                     isRecord(err.body) && typeof err.body.error === 'string'
                       ? `: ${err.body.error}` +
