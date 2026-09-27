@@ -28,6 +28,7 @@ import {
   printRecleanStats,
   recleanFromSource,
   recleanStoredRows,
+  v3RowsSession,
   v3Session,
 } from './reclean.js'
 import { SESSION_SUFFIX_V3 } from './types.js'
@@ -52,7 +53,9 @@ const HELP = `Usage: grokbot-rivet-memory-capture <command> [opts]
   reclean [--session KEY] [--agent NAME] [--agent-id UUID]
           [--from-transcript FILE] [--from-rows FILE] [--out DIR]
           [--dry-run|--write]
-      Re-clean existing grokbot rows or source transcripts into <session>-v3.
+      Re-clean source transcripts into <session>-v3. --from-rows and PG
+      reads write <session>-v3-rows (stored-row positions do not match
+      source-transcript positions).
       --dry-run (default) performs zero writes and prints stats.
       Without --from-transcript/--from-rows, reads RIVETOS_PG_URL from the
       environment or ~/.rivetos/.env inside BEGIN TRANSACTION READ ONLY
@@ -273,7 +276,9 @@ async function cmdReclean(argv: string[]): Promise<number> {
   })
   const dry = !values.write
   const ident = resolveIdent(values['agent-id'], values.session, values.agent)
-  const session = v3Session(values.session || ident.session)
+  const sourceSession = values.session || ident.session
+  const fromSource = Boolean(values['from-transcript'])
+  const session = fromSource ? v3Session(sourceSession) : v3RowsSession(sourceSession)
 
   const writeOut = (ingest: IngestRow[], destSession: string) => {
     if (dry || !values.out) return

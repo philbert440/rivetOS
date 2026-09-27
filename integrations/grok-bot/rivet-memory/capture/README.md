@@ -39,16 +39,18 @@ DELETEs or UPDATEs existing rows.
   `created_at` is clamped to `max(stamp, lastEmitted+1ms)`. A position
   that emits ≥1000 rows throws.
 - Ingest ordinal is `position * 1000 + sub-index` (stable across overlapping
-  pages). A position that emits ≥1000 rows throws. `event_id` includes
-  `occurrenceIndex` over the whole run, so it is stable when conversion
-  starts at position 0 (watcher, run-once, pull-bridge). `convert` on a
-  mid-transcript page is not; the ordinal check is what prevents duplicates.
+  pages). A position that emits ≥1000 rows throws. `event_id` hashes the
+  ingest ordinal (`eventIdFromContent` `occurrence`), so the same content at
+  two positions cannot collide and a mid-transcript page (Sep 15+, pull-bridge
+  gap fill) produces the same id as a full run from position 0.
   `ingestSession` honors `item.ordinal` / `item.event_id` and merges
   `item.metadata` (agent_id, kind, position, truncated, …). Tool results
   land in `ros_messages.tool_result`. The normalizer source is kept as
   `metadata.capture_source` (`grokbot-transcript` / `grokbot-readtranscript`)
   because ingest overwrites `metadata.source` with the write tag.
 - Live capture writes to `<session>-v3` by default (`GROKBOT_SESSION_SUFFIX`).
+  Row-based re-clean (`--from-rows` / Postgres) writes `<session>-v3-rows`
+  so stored-row positions never mix with source-transcript ordinals.
   Watcher state is keyed by agent id plus the target suffix, so a copied
   unsuffixed `~/.rivetos/capture/state.json` cannot skip `-v3` ingest.
   The old path is still copied to `~/.rivetos/grokbot-capture-state.json`
@@ -134,10 +136,16 @@ python3 integrations/grok-bot/rivet-memory/capture/pull-bridge.py ingest --dry-r
 python3 integrations/grok-bot/rivet-memory/capture/pull-bridge.py ingest --suffix -v3
 ```
 
-Ingest the spool with the existing helper (INSERT only; skips event_ids /
-ordinals already present on that **new** `-v3` session):
+Backfill writes **one spool per agent**. Ingest each spool with its own
+`ingest-session.mjs` command. Session / agent / persona come from
+`cli.js discover --json` (or the roster). Page backfill and `pull-bridge.py`
+are alternatives for ReadTranscript pages — do not mix on-disk and page
+rows into the same `-v3` session.
 
 ```bash
+node integrations/grok-bot/rivet-memory/capture/dist/cli.js discover --json
+
+# one ingest per agent (example: Rivet). Repeat for each models[] entry.
 node integrations/grok-bot/rivet-memory/bin/ingest-session.mjs \
   --session-id grokbot-rivet-grokbot-v3 --agent rivet-grokbot --persona Rivet \
   spool/grokbot-rivet-grokbot-v3.jsonl
@@ -152,10 +160,14 @@ SELECTs inside `BEGIN TRANSACTION READ ONLY` and `ROLLBACK`. Rows are grouped
 by `conversation_id` (prod has two conversation rows for
 `grokbot-rivet-grokbot` with the same agent).
 
-`--from-rows` cannot restore tool results: the old converter ignored
-`result`, so stored tool rows average ~38 chars. Assistant rows keep the
-legacy `[tool X]` / `[thinking]` text. Full fidelity needs a backfill from
-the source transcripts.
+`--from-rows` and the Postgres path write `<session>-v3-rows`, not `-v3`.
+Stored-row positions are the old sequential ingest ordinals and do not
+match source-transcript positions; mixing them in one session would
+collide. `--from-rows` cannot restore tool results: the old converter
+ignored `result`, so stored tool rows have empty `tool_result` (legacy
+rows average ~38 chars). Assistant rows keep the legacy `[tool X]` /
+`[thinking]` text. Full fidelity needs a backfill from the source
+transcripts.
 
 ```bash
 # from a source transcript (preferred — full tool_result fidelity)
@@ -172,11 +184,11 @@ node integrations/grok-bot/rivet-memory/capture/dist/cli.js reclean \
   --from-transcript path/to/rivet.jsonl \
   --out spool --write
 
-# from a read-only dump of existing rows (SELECT output as jsonl)
+# from a read-only dump of existing rows (SELECT output as jsonl) → -v3-rows
 node integrations/grok-bot/rivet-memory/capture/dist/cli.js reclean \
   --session grokbot-rivet-grokbot --from-rows rows.jsonl --dry-run
 
-# from Postgres (RIVETOS_PG_URL in env or ~/.rivetos/.env — never --pg-url)
+# from Postgres (RIVETOS_PG_URL in env or ~/.rivetos/.env — never --pg-url) → -v3-rows
 node integrations/grok-bot/rivet-memory/capture/dist/cli.js reclean \
   --session grokbot-rivet-grokbot --agent rivet-grokbot --dry-run
 ```
@@ -227,6 +239,17 @@ size:mtime keys) does not skip the `-v3` sessions. `run-once.sh` stuck
 state lives only under `~/.rivetos/grokbot-capture-state/` — it does not
 copy the watcher's single `state.json`. `RIVETOS_ROOT` defaults to
 `/opt/rivetos`.
+
+### Deploy notes (no deploy from this PR)
+
+- Rebuild `/opt/rivetos` (`memory-postgres` and `mcp-sidecar`) **before**
+  any `-v3` ingest. The ingest path now honors caller `ordinal` /
+  `event_id` / `toolResult` / `metadata`.
+- Enabling the new watcher ingests every on-disk transcript's **full
+  history** into `<session>-v3` (there have been no new on-disk files
+  since Sep 16). Stop the old watcher/converter first. Do not run both.
+- Row-based re-clean (`-v3-rows`) is a separate session from source
+  backfill (`-v3`). Pick one per conversation.
 
 ## Tests
 

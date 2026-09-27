@@ -72,7 +72,7 @@ The `capture/` directory provides automated transcript conversion and ingestion 
 
 1. Set `GROKBOT_TRANSCRIPT_ROOT` to the directory containing per-model transcript folders (e.g. `/home/box/grokbot/transcripts`)
 2. Set `RIVETOS_PG_URL` in `~/.rivetos/.env` or environment
-3. Ensure RivetOS is built at `RIVETOS_ROOT` (default `/opt/rivetos`)
+3. Ensure RivetOS is built at `RIVETOS_ROOT` (default `/opt/rivetos`). Rebuild `memory-postgres` and `mcp-sidecar` before any `-v3` ingest. Enabling the watcher ingests every transcript's full history into `<session>-v3`.
 4. Run the setup script (see Setup/Restore section below)
 
 **Run watcher (scheduled):**

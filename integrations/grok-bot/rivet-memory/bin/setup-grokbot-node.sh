@@ -867,6 +867,8 @@ echo
 echo "Next steps:"
 echo "  1. Ensure GROKBOT_TRANSCRIPT_ROOT is set in the watcher unit environment"
 echo "  2. Cutover: stop any old unsuffixed watcher/converter before enabling this unit."
+echo "     Rebuild /opt/rivetos (memory-postgres and mcp-sidecar) before any -v3 ingest."
+echo "     Enabling the watcher ingests every transcript's full history into <session>-v3."
 echo "     New rows go to <session>-v3 (GROKBOT_SESSION_SUFFIX). Do not run both."
 echo "  3. Monitor capture logs and state"
 echo

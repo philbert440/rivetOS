@@ -6,7 +6,9 @@ import { extractTimestampTag } from './timestamps.js'
 import {
   ORDINAL_STRIDE,
   SESSION_SUFFIX_V3,
+  SESSION_SUFFIX_V3_ROWS,
   STORAGE_LIMIT,
+  stripSessionSuffix,
   type IngestRow,
   type NormalizeStats,
   type StoredRow,
@@ -29,12 +31,13 @@ export interface RecleanResult {
   dryRun: boolean
 }
 
-const EXISTING_SESSION_RE = /^(grokbot-.+?)(?:-v2)?$/
-
 export function v3Session(session: string): string {
-  if (session.endsWith(SESSION_SUFFIX_V3)) return session
-  const m = EXISTING_SESSION_RE.exec(session)
-  return `${m?.[1] ?? session}${SESSION_SUFFIX_V3}`
+  return `${stripSessionSuffix(session)}${SESSION_SUFFIX_V3}`
+}
+
+/** Row-based re-clean writes here so source-transcript -v3 ordinals never collide. */
+export function v3RowsSession(session: string): string {
+  return `${stripSessionSuffix(session)}${SESSION_SUFFIX_V3_ROWS}`
 }
 
 export function recleanFromSource(
@@ -65,15 +68,33 @@ export function recleanFromSource(
  * Re-strip already-ingested grokbot rows (content still carries wrappers).
  * Used when source transcripts are gone. Never mutates the input rows.
  */
-/** Decode a stored ingest ordinal to a source position. NULL ordinals stay unset. */
+/**
+ * Decode a stored ingest ordinal to a source position. NULL ordinals stay unset.
+ *
+ * Production grokbot rows use old-style sequential ordinals (0, 1, 2, …).
+ * Dividing those by ORDINAL_STRIDE collapses 15k Rivet rows onto ~1000
+ * positions. Only decode the new stride when the row already carries
+ * new-style metadata (`position` or `capture_source`).
+ */
 export function storedRowPosition(row: StoredRow): number | undefined {
-  const raw = row.ordinal ?? row.metadata?.ordinal
-  if (typeof raw === 'number' && Number.isFinite(raw)) {
-    return raw >= ORDINAL_STRIDE ? Math.floor(raw / ORDINAL_STRIDE) : raw
-  }
   const pos = row.metadata?.position
   if (typeof pos === 'number' && Number.isFinite(pos)) return pos
+
+  const raw = row.ordinal ?? row.metadata?.ordinal
+  if (typeof raw === 'number' && Number.isFinite(raw)) {
+    if (hasNewStyleOrdinal(row) && raw >= ORDINAL_STRIDE) {
+      return Math.floor(raw / ORDINAL_STRIDE)
+    }
+    return raw
+  }
   return undefined
+}
+
+function hasNewStyleOrdinal(row: StoredRow): boolean {
+  const meta = row.metadata
+  if (!meta || typeof meta !== 'object') return false
+  if (typeof meta.position === 'number' && Number.isFinite(meta.position)) return true
+  return typeof meta.capture_source === 'string' && meta.capture_source.length > 0
 }
 
 /**
@@ -94,7 +115,7 @@ export function recleanStoredRows(
   rows: StoredRow[],
   opts: NormalizeOptions & { dryRun?: boolean },
 ): RecleanResult {
-  const session = v3Session(opts.sessionKey)
+  const session = v3RowsSession(opts.sessionKey)
   const records = rows.map((r) => ({
     role: r.role,
     message: {
@@ -147,7 +168,8 @@ export function recleanContentOnly(content: string): {
 }
 
 export const FROM_ROWS_LIMITS = [
-  '--from-rows cannot restore tool results: the old converter ignored `result`, so stored tool rows average ~38 chars.',
+  '--from-rows / PG write <session>-v3-rows (not -v3): stored-row positions do not match source-transcript positions.',
+  '--from-rows cannot restore tool results: the old converter ignored `result`, so stored tool rows have empty tool_result.',
   'Assistant rows keep the legacy [tool X] / [thinking] text.',
   'Full fidelity needs a backfill from the source transcripts.',
 ].join(' ')

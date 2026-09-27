@@ -5,9 +5,21 @@ export const CAPTURE_SOURCE = 'grokbot'
 export const DEFAULT_NODE_ID = 'grokbot'
 export const SUBAGENT_AGENT = 'rivet-grokbot-run'
 export const SESSION_SUFFIX_V3 = '-v3'
+/** Row-based re-clean (--from-rows / PG) — positions do not match source transcripts. */
+export const SESSION_SUFFIX_V3_ROWS = '-v3-rows'
 export const STORAGE_LIMIT = 16_000
 /** Stable ingest ordinal = source position * stride + per-position sub-index. */
 export const ORDINAL_STRIDE = 1000
+
+/** Strip -v3-rows, -v3, or -v2 so identity and dest-session helpers share one rule. */
+export function stripSessionSuffix(session: string): string {
+  if (session.endsWith(SESSION_SUFFIX_V3_ROWS)) {
+    return session.slice(0, -SESSION_SUFFIX_V3_ROWS.length)
+  }
+  if (session.endsWith(SESSION_SUFFIX_V3)) return session.slice(0, -SESSION_SUFFIX_V3.length)
+  if (session.endsWith('-v2')) return session.slice(0, -3)
+  return session
+}
 
 export type HiddenKind =
   | 'first_run'

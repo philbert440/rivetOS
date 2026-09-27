@@ -1,7 +1,13 @@
 import { existsSync, readdirSync, readFileSync, statSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { isAbsolute, join, resolve } from 'node:path'
-import { DEFAULT_NODE_ID, SESSION_SUFFIX_V3, SUBAGENT_AGENT, type BotIdentity } from './types.js'
+import {
+  DEFAULT_NODE_ID,
+  SESSION_SUFFIX_V3,
+  SUBAGENT_AGENT,
+  stripSessionSuffix,
+  type BotIdentity,
+} from './types.js'
 
 const UUID_RE = /^[0-9a-f-]{36}$/i
 const DEFAULT_EXCLUDE = ['new bot']
@@ -237,12 +243,12 @@ export function listInputFiles(path: string): string[] {
   return out
 }
 
-/** Look up a roster/override identity from a session key (with or without -v2/-v3). */
+/** Look up a roster/override identity from a session key (with or without -v2/-v3/-v3-rows). */
 export function identityForSession(
   session: string,
   opts?: { config?: IdentityConfig; modelsPath?: string; agentsDir?: string },
 ): BotIdentity | undefined {
-  const stripped = session.replace(/-v3$/, '').replace(/-v2$/, '')
+  const stripped = stripSessionSuffix(session)
   const lookup = makeIdentityLookup({
     agentsDir: opts?.agentsDir,
     modelsPath: opts?.modelsPath,

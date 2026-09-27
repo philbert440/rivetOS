@@ -34,6 +34,7 @@ export {
   recleanStoredRows,
   printRecleanStats,
   v3Session,
+  v3RowsSession,
   FROM_ROWS_LIMITS,
   assignRecleanPositions,
   storedRowPosition,
@@ -43,9 +44,11 @@ export {
   CAPTURE_CHANNEL,
   CAPTURE_SOURCE,
   SESSION_SUFFIX_V3,
+  SESSION_SUFFIX_V3_ROWS,
   STORAGE_LIMIT,
   SUBAGENT_AGENT,
   ORDINAL_STRIDE,
+  stripSessionSuffix,
 } from './types.js'
 export type {
   BotIdentity,

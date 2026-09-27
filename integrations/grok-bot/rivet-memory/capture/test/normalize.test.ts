@@ -1,7 +1,7 @@
 import { readFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { capForStorage } from '@rivetos/capture-core'
+import { capForStorage, eventIdFromContent } from '@rivetos/capture-core'
 import { describe, expect, it } from 'vitest'
 import { classifyHidden, extractAgentMessage } from '../src/hidden.js'
 import {
@@ -28,6 +28,8 @@ import {
   assignRecleanPositions,
   recleanFromSource,
   recleanStoredRows,
+  storedRowPosition,
+  v3RowsSession,
   v3Session,
 } from '../src/reclean.js'
 import { resolveIdent } from '../src/cli.js'
@@ -253,6 +255,56 @@ describe('timestamps', () => {
     const stamped = result.messages.filter((m) => m.created_at)
     expect(result.timeKnown).toBe(false)
     expect(stamped).toEqual([])
+  })
+
+  it('ties event_id to ordinal so a later 0-200 run does not drop 0-99 repeats', () => {
+    const stamp = (text: string) =>
+      `<timestamp>Sunday, Sep 27, 2026, 4:06 PM (UTC-4)</timestamp>\n<user_query>\n${text}\n</user_query>`
+    const rec = (text: string) => ({
+      role: 'user',
+      message: { content: [{ type: 'text', text: stamp(text) }] },
+    })
+    const records = Array.from({ length: 201 }, (_, i) =>
+      rec(i === 5 || i === 150 ? 'ok' : `msg-${String(i)}`),
+    )
+    const opts = { sessionKey: 'grokbot-rivet-grokbot-v3', agent: 'rivet-grokbot' }
+    const mid = normalizeRecords(records.slice(100), { ...opts, startPosition: 100 })
+    const full = normalizeRecords(records, { ...opts, startPosition: 0 })
+
+    const midByPos = new Map(mid.messages.map((m) => [m.metadata?.position, m]))
+    const fullByPos = new Map(full.messages.map((m) => [m.metadata?.position, m]))
+    for (const [pos, msg] of midByPos) {
+      expect(fullByPos.get(pos)?.event_id, `pos ${String(pos)}`).toBe(msg.event_id)
+    }
+    expect(fullByPos.get(5)?.content).toBe('ok')
+    expect(fullByPos.get(150)?.content).toBe('ok')
+    expect(fullByPos.get(5)?.event_id).not.toBe(fullByPos.get(150)?.event_id)
+
+    const pos5 = fullByPos.get(5)!
+    expect(pos5.event_id).toBe(
+      eventIdFromContent({
+        sessionKey: opts.sessionKey,
+        role: 'user',
+        content: 'ok',
+        occurrence: pos5.metadata?.ordinal as number,
+      }),
+    )
+
+    const seenIds = new Set(mid.messages.map((m) => m.event_id))
+    const seenOrdinals = new Set(mid.messages.map((m) => m.metadata?.ordinal))
+    const ingested: number[] = []
+    const skipped: number[] = []
+    for (const m of full.messages) {
+      const pos = m.metadata?.position as number
+      if (seenIds.has(m.event_id) || seenOrdinals.has(m.metadata?.ordinal)) skipped.push(pos)
+      else ingested.push(pos)
+    }
+    expect(ingested).toContain(5)
+    expect(ingested.every((p) => p < 100)).toBe(true)
+    expect(skipped.every((p) => p >= 100)).toBe(true)
+    expect(ingested).toHaveLength(100)
+    expect(skipped).toHaveLength(full.messages.length - 100)
+    expect(new Set(full.messages.map((m) => m.event_id)).size).toBe(full.messages.length)
   })
 })
 
@@ -623,9 +675,9 @@ describe('reclean', () => {
     const positions = assignRecleanPositions([
       { role: 'user', content: 'a', ordinal: 5 },
       { role: 'user', content: 'gap', ordinal: null },
-      { role: 'assistant', content: 'b', ordinal: 1880_000 },
+      { role: 'assistant', content: 'b', ordinal: 40 },
     ])
-    expect(positions).toEqual([5, 1881, 1880])
+    expect(positions).toEqual([5, 41, 40])
     const result = recleanStoredRows(
       [
         { role: 'user', content: 'keep', ordinal: 12 },
@@ -644,6 +696,84 @@ describe('reclean', () => {
     const unknown = resolveIdent(undefined, 'grokbot-not-a-real-session', undefined)
     expect(unknown.agent).toBeUndefined()
     expect(identityForSession('grokbot-rivet-grokbot-v3')?.agent).toBe('rivet-grokbot')
+    expect(identityForSession('grokbot-rivet-grokbot-v3-rows')?.agent).toBe('rivet-grokbot')
+  })
+
+  it('writes stored-row reclean under -v3-rows, not -v3', () => {
+    expect(v3RowsSession('grokbot-rivet-grokbot')).toBe('grokbot-rivet-grokbot-v3-rows')
+    expect(v3RowsSession('grokbot-rivet-grokbot-v3')).toBe('grokbot-rivet-grokbot-v3-rows')
+    expect(v3RowsSession('grokbot-rivet-grokbot-v2')).toBe('grokbot-rivet-grokbot-v3-rows')
+    const result = recleanStoredRows([{ role: 'user', content: 'keep', ordinal: 0 }], {
+      sessionKey: 'grokbot-rivet-grokbot',
+      agent: 'rivet-grokbot',
+      dryRun: true,
+    })
+    expect(result.session).toBe('grokbot-rivet-grokbot-v3-rows')
+  })
+
+  it('keeps old-style sequential ordinals 0..2500 as positions without collapsing', () => {
+    const rows = Array.from({ length: 2501 }, (_, i) => ({
+      role: i % 2 === 0 ? 'user' : 'assistant',
+      content: `row-${String(i)}`,
+      ordinal: i,
+    }))
+    const positions = assignRecleanPositions(rows)
+    expect(positions).toEqual(Array.from({ length: 2501 }, (_, i) => i))
+    expect(new Set(positions).size).toBe(2501)
+    expect(Math.max(...positions)).toBe(2500)
+    const result = recleanStoredRows(rows, {
+      sessionKey: 'grokbot-rivet-grokbot',
+      agent: 'rivet-grokbot',
+      dryRun: true,
+    })
+    const outPos = result.messages.map((m) => m.metadata?.position as number)
+    expect(outPos).toEqual(positions)
+    expect(outPos).toEqual([...outPos].sort((a, b) => a - b))
+    expect(new Set(outPos).size).toBe(2501)
+    expect(result.session).toBe('grokbot-rivet-grokbot-v3-rows')
+  })
+
+  it('decodes new-style stride ordinals only when capture_source or position is present', () => {
+    expect(storedRowPosition({ role: 'assistant', content: 'b', ordinal: 1880_000 })).toBe(1880_000)
+    expect(
+      storedRowPosition({
+        role: 'assistant',
+        content: 'b',
+        ordinal: 1880_000,
+        metadata: { capture_source: 'grokbot-transcript' },
+      }),
+    ).toBe(1880)
+    expect(
+      storedRowPosition({
+        role: 'assistant',
+        content: 'b',
+        ordinal: 1880_000,
+        metadata: { position: 1880 },
+      }),
+    ).toBe(1880)
+  })
+
+  it('reports time_known when a timestamp was seen even if inheritance stops', () => {
+    const result = recleanStoredRows(
+      [
+        {
+          role: 'user',
+          content:
+            '<timestamp>Sunday, Sep 27, 2026, 4:06 PM (UTC-4)</timestamp>\n<user_query>\nfirst\n</user_query>',
+          created_at: '2026-09-27T20:06:00.000Z',
+          ordinal: 0,
+        },
+        {
+          role: 'user',
+          content: 'later unstamped',
+          created_at: '2026-09-27T21:00:00.000Z',
+          ordinal: 1,
+        },
+      ],
+      { sessionKey: 'grokbot-rivet-grokbot', agent: 'rivet-grokbot', dryRun: true },
+    )
+    expect(result.stats.timeKnown).toBe(true)
+    expect(result.ingest.every((r) => Boolean(r.createdAt))).toBe(true)
   })
 })
 

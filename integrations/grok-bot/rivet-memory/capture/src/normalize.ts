@@ -2,7 +2,6 @@ import {
   capForStorage,
   eventIdFromContent,
   isRecord,
-  occurrenceIndex,
   type CaptureMessage,
   type CaptureRole,
   type OccurrenceKey,
@@ -100,6 +99,7 @@ export function normalizeRecords(records: unknown[], opts: NormalizeOptions): No
   let dropped = 0
   let systemEvents = 0
   let truncated = 0
+  let sawTimestamp = Boolean(opts.lastKnownTime)
 
   for (let i = 0; i < records.length; i++) {
     if (replaySkips.has(i)) {
@@ -120,6 +120,7 @@ export function normalizeRecords(records: unknown[], opts: NormalizeOptions): No
 
     if (userLike) {
       if (stamped) {
+        sawTimestamp = true
         lastStampedUser = { time: stamped, position }
       } else if (userText) {
         // Later real user turn with no stamp: stop inheriting for the rest of the run.
@@ -261,14 +262,14 @@ export function normalizeRecords(records: unknown[], opts: NormalizeOptions): No
     tool: countRole(messages, 'tool'),
     system: countRole(messages, 'system'),
     truncated,
-    timeKnown: Boolean(lastStampedUser),
-    lastKnownTime: lastStampedUser?.time,
+    timeKnown: sawTimestamp || messages.some((m) => Boolean(m.created_at)),
+    lastKnownTime: lastStampedUser?.time ?? clock.last,
   }
   return {
     messages,
     stats,
-    lastKnownTime: lastStampedUser?.time,
-    timeKnown: Boolean(lastStampedUser),
+    lastKnownTime: lastStampedUser?.time ?? clock.last,
+    timeKnown: stats.timeKnown,
   }
 }
 
@@ -510,16 +511,18 @@ function makeMessage(args: {
     toolName: args.toolName,
     toolArgs: args.toolArgs,
   }
-  const occurrence = occurrenceIndex([...args.occKeys, occKey], occKey)
   args.occKeys.push(occKey)
 
+  // Hash the ingest ordinal so the same content at two positions cannot
+  // collide, and a mid-transcript page produces the same event_id as a
+  // full run from position 0.
   const event_id = eventIdFromContent({
     sessionKey: args.opts.sessionKey,
     role: args.role,
     content: content || toolResult || '',
     toolName: args.toolName,
     toolArgs: args.toolArgs,
-    occurrence,
+    occurrence: metadata.ordinal as number,
   })
 
   const msg: CaptureMessage = {

@@ -281,4 +281,53 @@ describe('shared ingest transaction', () => {
       warn.mockRestore()
     }
   })
+
+  it('ingesting 100-200 then 0-200 keeps 0-99 repeats and does not duplicate', async () => {
+    const messages = Array.from({ length: 201 }, (_, i) => ({
+      role: 'user' as const,
+      content: i === 5 || i === 150 ? 'ok' : `msg-${String(i)}`,
+      ordinal: i * 1000,
+      event_id: `evt-${String(i)}-${i === 5 || i === 150 ? 'ok' : `msg-${String(i)}`}`,
+      metadata: { position: i, ordinal: i * 1000 },
+    }))
+    const stored = new Map<string, { ordinal: string; event_id: string }>()
+    const query = vi.fn(async (sql: string) => {
+      if (sql.includes('AS ordinal')) {
+        return { rows: [...stored.values()] }
+      }
+      return { rows: [] }
+    })
+    const release = vi.fn()
+    const client = { query, release }
+    const append = vi.fn(async (row: { metadata?: { event_id?: string; ordinal?: number } }) => {
+      const eventId = String(row.metadata?.event_id)
+      const ordinal = String(row.metadata?.ordinal)
+      stored.set(eventId, { ordinal, event_id: eventId })
+      return `id-${eventId}`
+    })
+    const memory = {
+      getPool: () => ({ connect: async () => client }),
+      append,
+    } as unknown as PostgresMemory
+
+    const mid = await ingestSession(memory, {
+      sessionId: 'grokbot-rivet-grokbot-v3',
+      agent: 'rivet-grokbot',
+      messages: messages.slice(100),
+    })
+    expect(mid.ingested).toBe(101)
+    expect(mid.skipped).toBe(0)
+
+    const full = await ingestSession(memory, {
+      sessionId: 'grokbot-rivet-grokbot-v3',
+      agent: 'rivet-grokbot',
+      messages,
+    })
+    expect(full.ingested).toBe(100)
+    expect(full.skipped).toBe(101)
+    expect(stored.size).toBe(201)
+    expect(stored.has('evt-5-ok')).toBe(true)
+    expect(stored.has('evt-150-ok')).toBe(true)
+    expect(append).toHaveBeenCalledTimes(201)
+  })
 })
