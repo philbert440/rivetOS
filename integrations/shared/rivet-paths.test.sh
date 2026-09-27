@@ -508,6 +508,96 @@ else
   done
 fi
 
+# 23. rivetos_resolve_den
+_saved_home="$HOME"
+resolve_den_reset() {
+  unset RIVET_DEN_URL RIVET_DEN_CA RIVETOS_DEN_TLS_CA NODE_EXTRA_CA_CERTS RIVETOS_CONFIG_FILE
+  if [ -n "${DEN_DIR:-}" ]; then
+    rm -rf "$DEN_DIR"
+    unset DEN_DIR
+  fi
+  HOME="$_saved_home"
+}
+
+resolve_den_reset
+DEN_DIR="$(mktemp -d "${TMPDIR:-/tmp}/rivetos-den.XXXXXX")"
+export HOME="$DEN_DIR/home"
+mkdir -p "$HOME/.rivetos"
+ca_file="$DEN_DIR/ca.pem"
+printf '%s\n' 'ca' >"$ca_file"
+printf '%s\n' 'den:' '  port: 5999' '  tls_ca: /no/such/ca.pem' >"$HOME/.rivetos/config.yaml"
+export RIVET_DEN_URL='https://den.example:9999'
+export RIVET_DEN_CA="$ca_file"
+unset NODE_EXTRA_CA_CERTS
+rivetos_resolve_den
+if [ "$RIVET_DEN_URL" = 'https://den.example:9999' ] && [ "$NODE_EXTRA_CA_CERTS" = "$ca_file" ]; then
+  pass "den URL already set is kept and CA is exported"
+else
+  fail "den URL already set should be kept"
+fi
+export NODE_EXTRA_CA_CERTS='/already.pem'
+rivetos_resolve_den
+if [ "$NODE_EXTRA_CA_CERTS" = '/already.pem' ] && [ "$RIVET_DEN_URL" = 'https://den.example:9999' ]; then
+  pass "NODE_EXTRA_CA_CERTS already set is kept"
+else
+  fail "NODE_EXTRA_CA_CERTS should not be overwritten"
+fi
+resolve_den_reset
+
+DEN_DIR="$(mktemp -d "${TMPDIR:-/tmp}/rivetos-den.XXXXXX")"
+export HOME="$DEN_DIR/home"
+mkdir -p "$HOME/.rivetos"
+ca_file="$DEN_DIR/ca.pem"
+printf '%s\n' 'ca' >"$ca_file"
+printf '%s\n' 'other:' '  port: 1' 'den:' '  port: "5999"' "  tls_ca: \"$ca_file\"" 'mesh:' '  port: 2' >"$HOME/.rivetos/config.yaml"
+unset RIVET_DEN_URL RIVET_DEN_CA RIVETOS_DEN_TLS_CA NODE_EXTRA_CA_CERTS
+rivetos_resolve_den
+if [ "${RIVET_DEN_URL:-}" = 'https://127.0.0.1:5999' ] && [ "${RIVET_DEN_CA:-}" = "$ca_file" ] && [ "${NODE_EXTRA_CA_CERTS:-}" = "$ca_file" ]; then
+  pass "config den.port and tls_ca"
+else
+  fail "config den.port and tls_ca"
+fi
+resolve_den_reset
+
+DEN_DIR="$(mktemp -d "${TMPDIR:-/tmp}/rivetos-den.XXXXXX")"
+export HOME="$DEN_DIR/home"
+mkdir -p "$HOME/.rivetos"
+ca_file="$DEN_DIR/ca.pem"
+printf '%s\n' 'ca' >"$ca_file"
+printf '%s\n' 'den:' '  enabled: true' >"$HOME/.rivetos/config.yaml"
+unset RIVET_DEN_URL RIVET_DEN_CA NODE_EXTRA_CA_CERTS
+export RIVETOS_DEN_TLS_CA="$ca_file"
+rivetos_resolve_den
+if [ "${RIVET_DEN_URL:-}" = 'https://127.0.0.1:5174' ] && [ "${RIVET_DEN_CA:-}" = "$ca_file" ]; then
+  pass "default den port 5174"
+else
+  fail "default den port should be 5174"
+fi
+resolve_den_reset
+
+DEN_DIR="$(mktemp -d "${TMPDIR:-/tmp}/rivetos-den.XXXXXX")"
+export HOME="$DEN_DIR/home"
+mkdir -p "$HOME/.rivetos"
+ca_file="$DEN_DIR/ca.pem"
+printf '%s\n' 'ca' >"$ca_file"
+missing="$DEN_DIR/missing.pem"
+printf '%s\n' 'den:' '  port: 5174' "  tls_ca: $missing" >"$HOME/.rivetos/config.yaml"
+unset RIVET_DEN_URL RIVET_DEN_CA NODE_EXTRA_CA_CERTS
+export RIVETOS_DEN_TLS_CA="$ca_file"
+err="$(rivetos_resolve_den 2>&1)"
+if [ -z "${RIVET_DEN_URL:-}" ] && printf '%s\n' "$err" | grep -q 'den CA not found'; then
+  pass "missing CA disables den transport"
+else
+  fail "missing CA should unset RIVET_DEN_URL"
+fi
+if [ -n "${NODE_EXTRA_CA_CERTS:-}" ]; then
+  fail "missing CA must not export NODE_EXTRA_CA_CERTS"
+else
+  pass "missing CA does not export NODE_EXTRA_CA_CERTS"
+fi
+resolve_den_reset
+unset _saved_home
+
 if [ "$failed" -ne 0 ]; then
   echo "$failed rivet-paths test(s) failed" >&2
   exit 1

@@ -19,6 +19,7 @@
   "dependencies": {
     "@rivetos/agent-registry": "0.5.0",
     "@rivetos/core": "0.5.0",
+    "@rivetos/gateway-client": "0.5.0",
     "@rivetos/mcp": "0.5.0",
     "@rivetos/mcp-v2": "0.5.0",
     "@rivetos/memory-postgres": "0.5.0",
