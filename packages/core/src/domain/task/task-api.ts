@@ -39,6 +39,7 @@ import {
   type CriteriaPolicy,
 } from './criteria.js'
 import type { TaskCompletionWaiter } from './completion-waiter.js'
+import { guardTaskChain, readChainFields } from './chain-guard.js'
 import { logger } from '../../logger.js'
 
 const log = logger('TaskApi')
@@ -135,6 +136,8 @@ function parseCreate(body: Record<string, unknown>): NewTaskInput | string {
   const executor = body.executor ?? 'chat-loop'
   if (executor !== 'chat-loop' && executor !== 'harness-session' && executor !== 'mesh')
     return `unknown executor ${JSON.stringify(executor)}`
+  const chain = readChainFields(body)
+  if (typeof chain === 'string') return chain
   return {
     goal: body.goal,
     agentId: body.agentId,
@@ -143,6 +146,8 @@ function parseCreate(body: Record<string, unknown>): NewTaskInput | string {
     origin: 'api',
     requestedBy: typeof body.requestedBy === 'string' ? body.requestedBy : 'gateway',
     nodeAffinity: typeof body.nodeAffinity === 'string' ? body.nodeAffinity : undefined,
+    parentTaskId: chain.parentTaskId,
+    chainDepth: chain.chainDepth,
     spec:
       typeof body.spec === 'object' && body.spec !== null && !Array.isArray(body.spec)
         ? (body.spec as Record<string, unknown>)
@@ -300,6 +305,21 @@ export function createTaskApiRoute(opts: TaskApiOptions): GatewayRoute {
             if (typeof resolved === 'object' && resolved !== null)
               return json(res, 400, { error: resolved.error })
             input.nodeAffinity = resolved
+          }
+
+          const chain = await guardTaskChain({
+            parentTaskId: input.parentTaskId,
+            chainDepth: input.chainDepth,
+            lookup: async (parentTaskId) => {
+              const parent = await store.get(parentTaskId)
+              return parent ? { chainDepth: parent.chainDepth } : undefined
+            },
+            log: (message) => log.warn(message),
+          })
+          if (!chain.ok) return json(res, 409, { error: chain.error })
+          if (chain.stamp) {
+            input.chainDepth = chain.stamp.chainDepth
+            input.parentTaskId = chain.stamp.parentTaskId
           }
 
           const row = await store.create(input)

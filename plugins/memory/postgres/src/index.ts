@@ -42,8 +42,24 @@ export type {
 export { Expander } from './expand.js'
 export type { SummaryNode, ExpandResult } from './expand.js'
 
-export { createMemoryTools } from './tools/index.js'
-export type { MemoryToolsConfig } from './tools/index.js'
+export {
+  appendEventId,
+  createGetFullTool,
+  createMemoryTools,
+  createMemoryWriteTools,
+  ingestEventId,
+  ingestSession,
+  memoryAppendInputSchema,
+  memoryIngestSessionInputSchema,
+  resolveMemoryWriteTags,
+  truncateContent,
+} from './tools/index.js'
+export type {
+  IngestMessage,
+  IngestSessionInput,
+  MemoryToolsConfig,
+  MemoryWriteTags,
+} from './tools/index.js'
 export {
   HEARTBEAT_SESSION_PREFIX,
   isHeartbeatSessionKey,
