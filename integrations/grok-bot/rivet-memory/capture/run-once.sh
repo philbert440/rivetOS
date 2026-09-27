@@ -56,15 +56,15 @@ if [[ -z "${GROKBOT_TRANSCRIPT_ROOT}" ]]; then
     exit 1
 fi
 
-# Fail-closed check: memory-postgres and sidecar dist must exist
+# Fail-closed check: memory-postgres and the grok-bot ingest writer must exist
 SKIP_INGEST=0
 if [[ ! -d "${RIVETOS_ROOT}/node_modules/@rivetos/memory-postgres" ]]; then
     echo "WARN: RivetOS memory-postgres package not built or missing, skipping ingest (fail closed)" >&2
     SKIP_INGEST=1
 fi
 
-if [[ ! -f "${RIVETOS_ROOT}/services/mcp-sidecar/dist/memory-write.js" ]]; then
-    echo "WARN: RivetOS sidecar dist not built, skipping ingest (fail closed)" >&2
+if [[ ! -f "${RIVETOS_ROOT}/integrations/grok-bot/rivet-memory/capture/dist/ingest-rows.js" ]]; then
+    echo "WARN: grok-bot ingest writer not built, skipping ingest (fail closed)" >&2
     SKIP_INGEST=1
 fi
 

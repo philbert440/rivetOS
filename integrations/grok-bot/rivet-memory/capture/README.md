@@ -6,9 +6,9 @@ Normalizes Grok Bot transcripts onto `@rivetos/capture-core` (`capForStorage`,
 claude-code / grok-build / cursor capture.
 
 The node ingest path writes ingest jsonl (including per-row `metadata`,
-`ordinal`, and `event_id`) and calls `ingestSession()`, which now preserves
-that metadata and honors the caller ordinal / event_id. This CLI never
-DELETEs or UPDATEs existing rows.
+`ordinal`, and `event_id`) and `ingestGrokbotSession()` stores that metadata,
+the caller ordinal, and the event id. This CLI never DELETEs or UPDATEs
+existing rows.
 
 ## What changed in 0.3.0
 
@@ -45,12 +45,12 @@ DELETEs or UPDATEs existing rows.
   ingest ordinal (`eventIdFromContent` `occurrence`), so the same content at
   two positions cannot collide and a mid-transcript page (Sep 15+, pull-bridge
   gap fill) produces the same id as a full run from position 0.
-  `ingestSession` honors `item.ordinal` / `item.event_id` and merges
+  `ingestGrokbotSession` honors `item.ordinal` / `item.event_id` and merges
   `item.metadata` (agent_id, kind, position, truncated, …). Tool results
   land in `ros_messages.tool_result`. The normalizer source is kept as
   `metadata.capture_source` (`grokbot-transcript` / `grokbot-readtranscript` /
-  `grokbot-store` / `grokbot-voice`) because ingest overwrites
-  `metadata.source` with the write tag.
+  `grokbot-store` / `grokbot-voice`) because the grok-bot ingest writer stores
+  the write tag in `metadata.source`.
 - Live capture writes to `<session>-v3` by default (`GROKBOT_SESSION_SUFFIX`).
   Row-based re-clean (`--from-rows` / Postgres) writes `<session>-v3-rows`
   so stored-row positions never mix with source-transcript ordinals.
@@ -305,9 +305,10 @@ can be empty. The reader still opens the DB read-only and no-ops.
 
 ### Deploy notes (no deploy from this PR)
 
-- Rebuild `/opt/rivetos` (`memory-postgres` and `mcp-sidecar`) **before**
-  any `-v3` ingest. The ingest path now honors caller `ordinal` /
-  `event_id` / `toolResult` / `metadata`.
+- Rebuild `/opt/rivetos` (`memory-postgres` and
+  `@rivetos/grok-bot-rivet-memory-capture`) **before** any `-v3` ingest.
+  The grok-bot writer stores caller `ordinal` / `event_id` / `toolResult` /
+  `metadata`. Search still prefers a `-v3` sibling inside memory-postgres.
 - Enabling the new watcher ingests every on-disk transcript's **full
   history** into `<session>-v3` (there have been no new on-disk files
   since Sep 16). Stop the old watcher/converter first. Do not run both.

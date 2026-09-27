@@ -24,8 +24,6 @@ export {
   ingestSession,
   memoryAppendInputSchema,
   memoryIngestSessionInputSchema,
-  resolveIngestEventId,
-  resolveIngestOrdinal,
   resolveMemoryWriteTags,
   truncateContent,
 } from './write-tools.js'

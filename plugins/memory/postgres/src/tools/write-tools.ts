@@ -27,15 +27,6 @@ export interface IngestMessage {
   content: string
   createdAt?: Date | string
   toolCalls?: Array<{ id?: string; name: string; input?: Record<string, unknown> }>
-  /** Caller-supplied ordinal (position * stride + sub-index). Falls back to array index. */
-  ordinal?: number
-  /** Caller-supplied idempotency key. Preferred over a freshly hashed ingestEventId. */
-  event_id?: string
-  eventId?: string
-  /** Per-row metadata preserved through ingest (agent_id, kind, position, truncation, …). */
-  metadata?: Record<string, unknown>
-  /** Stored on ros_messages.tool_result. */
-  toolResult?: string
 }
 
 export interface IngestSessionInput {
@@ -256,29 +247,6 @@ async function existingOrdinalsAndEventIds(
   return { ordinals, eventIds }
 }
 
-function asFiniteInt(value: unknown): number | undefined {
-  if (typeof value === 'number' && Number.isFinite(value)) return Math.trunc(value)
-  if (typeof value === 'string' && value.trim() !== '') {
-    const n = Number.parseInt(value, 10)
-    if (!Number.isNaN(n)) return n
-  }
-  return undefined
-}
-
-/** Honor item.ordinal / item.metadata.ordinal; otherwise the array index. */
-export function resolveIngestOrdinal(item: IngestMessage, index: number): number {
-  return asFiniteInt(item.ordinal) ?? asFiniteInt(item.metadata?.ordinal) ?? index
-}
-
-/** Prefer a caller event_id so capture-core hashes survive ingest. */
-export function resolveIngestEventId(item: IngestMessage): string | undefined {
-  if (typeof item.event_id === 'string' && item.event_id.trim()) return item.event_id.trim()
-  if (typeof item.eventId === 'string' && item.eventId.trim()) return item.eventId.trim()
-  const fromMeta = item.metadata?.event_id
-  if (typeof fromMeta === 'string' && fromMeta.trim()) return fromMeta.trim()
-  return undefined
-}
-
 export async function ingestSession(
   memory: PostgresMemory,
   input: IngestSessionInput,
@@ -316,66 +284,52 @@ export async function ingestSession(
       const role = item.role
       const content = item.content
       const toolCalls = item.toolCalls
-      const toolResult = typeof item.toolResult === 'string' ? item.toolResult : undefined
-      const ordinal = resolveIngestOrdinal(item, i)
 
-      // Allow empty content if tool calls or a tool_result payload are present
-      if (!content && !toolResult && (!toolCalls || toolCalls.length === 0)) {
+      // Allow empty content if tool calls are present
+      if (!content && (!toolCalls || toolCalls.length === 0)) {
         skipped += 1
         continue
       }
 
-      // Prefer a caller event_id (capture-core). Otherwise hash PRE-truncation
-      // content with the resolved ordinal so retries and repeated text dedupe.
-      const eventId =
-        resolveIngestEventId(item) ??
-        ingestEventId({
-          sessionId: input.sessionId,
-          agent: tags.agent,
-          role,
-          content: content || toolResult || '', // pre-truncation (may be empty)
-          ordinal,
-          toolName: toolCalls?.[0]?.name,
-        })
+      // Ingest-domain event_id includes ordinal (prevents data loss on repeated text)
+      // Hash the PRE-truncation content so retry of oversized payload dedupes correctly
+      // For tool-only messages, use first tool name in hash
+      const eventId = ingestEventId({
+        sessionId: input.sessionId,
+        agent: tags.agent,
+        role,
+        content, // pre-truncation (may be empty)
+        ordinal: i,
+        toolName: toolCalls?.[0]?.name,
+      })
 
       // C2/H2: Check event_id FIRST, then ordinal. Allows session extension with
       // new event_id even if ordinal is taken (rewritten history).
       if (seenEventIds.has(eventId)) {
         skipped += 1
-        seenOrdinals.add(ordinal)
+        seenOrdinals.add(i)
         continue
       }
 
-      if (seenOrdinals.has(ordinal)) {
+      if (seenOrdinals.has(i)) {
         // H2: Ordinal is taken but event_id differs — likely rewritten session head.
         // Warn and skip to preserve existing data.
         console.warn(
-          `[ingestSession] Ordinal ${String(ordinal)} already exists in session ${input.sessionId} but event_id differs. Skipping to preserve existing data.`,
+          `[ingestSession] Ordinal ${i} already exists in session ${input.sessionId} but event_id differs. Skipping to preserve existing data.`,
         )
         skipped += 1
         continue
       }
 
       const metadata: Record<string, unknown> = {
-        ...(item.metadata ?? {}),
+        source: tags.source,
+        ordinal: i,
+        event_id: eventId,
       }
-      if (
-        typeof metadata.source === 'string' &&
-        metadata.source &&
-        metadata.source !== tags.source
-      ) {
-        metadata.capture_source = metadata.source
-      }
-      metadata.source = tags.source
-      metadata.ordinal = ordinal
-      metadata.event_id = eventId
       if (tags.persona) metadata.persona = tags.persona
 
       // Truncate content after hashing
       const truncatedContent = truncateContent(content, metadata)
-      const truncatedToolResult = toolResult
-        ? truncateContent(toolResult, metadata, 'tool_result')
-        : undefined
       if (metadata.truncated) anyTruncated = true
       if (metadata.full_content_length) {
         maxFullLength = Math.max(maxFullLength ?? 0, metadata.full_content_length as number)
@@ -389,7 +343,7 @@ export async function ingestSession(
         const candidate = new Date(item.createdAt)
         if (Number.isNaN(candidate.getTime())) {
           console.warn(
-            `[ingestSession] Invalid createdAt for message ${String(ordinal)} in session ${input.sessionId}: ${String(item.createdAt)}`,
+            `[ingestSession] Invalid createdAt for message ${i} in session ${input.sessionId}: ${String(item.createdAt)}`,
           )
           skipped += 1
           continue
@@ -417,7 +371,6 @@ export async function ingestSession(
           content: truncatedContent,
           toolName,
           toolArgs,
-          toolResult: truncatedToolResult,
           metadata,
           createdAt,
         },
@@ -425,7 +378,7 @@ export async function ingestSession(
       )
 
       ids.push(id)
-      seenOrdinals.add(ordinal)
+      seenOrdinals.add(i)
       seenEventIds.add(eventId)
     }
 

@@ -1,10 +1,10 @@
 #!/usr/bin/env node
-// Offline ingest: same ingestSession() as the sidecar write tool.
+// Offline ingest: grok-bot's own writer (ordinal, event id, tool_result).
 // Usage: node ingest-session.mjs --session-id ID --agent NAME [--persona P] [file]
 // capture/ingest.mjs is a thin wrapper over this file (ingest subcommand).
 import { existsSync, readFileSync } from 'node:fs'
 import { homedir } from 'node:os'
-import { resolve } from 'node:path'
+import { dirname, resolve } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 import { parseArgs } from 'node:util'
 import { isUnsetVal, parseRivetEnv } from './env-parse.mjs'
@@ -72,20 +72,22 @@ export async function runIngest(argv = process.argv.slice(2)) {
     : t.split('\n').filter(Boolean).map((line) => JSON.parse(line))
 
   const root = process.env.RIVETOS_ROOT || '/opt/rivetos'
+  const here = dirname(fileURLToPath(import.meta.url))
   const memoryEntry = resolve(root, 'node_modules/@rivetos/memory-postgres/dist/index.js')
-  const writeEntry = resolve(root, 'services/mcp-sidecar/dist/memory-write.js')
-  if (!existsSync(memoryEntry) || !existsSync(writeEntry)) {
+  const writerEntry = resolve(here, '../capture/dist/ingest-rows.js')
+  if (!existsSync(memoryEntry) || !existsSync(writerEntry)) {
     console.error(
       [
-        'ingest-session: RivetOS memory packages not found on this node.',
-        '  need memory package + memory-write under RIVETOS_ROOT',
+        'ingest-session: RivetOS memory package or the grok-bot ingest writer is missing.',
+        '  need @rivetos/memory-postgres under RIVETOS_ROOT and capture/dist/ingest-rows.js',
+        '  (npx nx build @rivetos/grok-bot-rivet-memory-capture)',
       ].join('\n'),
     )
     return 4
   }
 
   const memoryMod = await import(pathToFileURL(memoryEntry).href)
-  const writeMod = await import(pathToFileURL(writeEntry).href)
+  const writer = await import(pathToFileURL(writerEntry).href)
 
   const memory = new memoryMod.PostgresMemory({
     connectionString: process.env.RIVETOS_PG_URL,
@@ -93,7 +95,7 @@ export async function runIngest(argv = process.argv.slice(2)) {
     embedModel: process.env.RIVETOS_EMBED_MODEL,
   })
   try {
-    const result = await writeMod.ingestSession(memory, {
+    const result = await writer.ingestGrokbotSession(memory, {
       sessionId,
       messages: parsed,
       agent: values.agent || 'rivet-grokbot',

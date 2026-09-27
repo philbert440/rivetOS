@@ -436,7 +436,7 @@ load_pg_url() {
 
 ingest_packages_ok() {
     [[ -d "${RIVETOS_ROOT}/node_modules/@rivetos/memory-postgres" ]] \
-        && [[ -f "${RIVETOS_ROOT}/services/mcp-sidecar/dist/memory-write.js" ]]
+        && [[ -f "${RIVETOS_ROOT}/integrations/grok-bot/rivet-memory/capture/dist/ingest-rows.js" ]]
 }
 
 # Returns 0 if a matching row exists for session_key+agent.
@@ -867,7 +867,7 @@ echo
 echo "Next steps:"
 echo "  1. Ensure GROKBOT_TRANSCRIPT_ROOT is set in the watcher unit environment"
 echo "  2. Cutover: stop any old unsuffixed watcher/converter before enabling this unit."
-echo "     Rebuild /opt/rivetos (memory-postgres and mcp-sidecar) before any -v3 ingest."
+echo "     Rebuild /opt/rivetos (memory-postgres and the grok-bot capture package) before any -v3 ingest."
 echo "     Enabling the watcher ingests every transcript's full history into <session>-v3."
 echo "     New on-disk/page rows go to <session>-v3 (GROKBOT_SESSION_SUFFIX)."
 echo "     store.db seq goes to <session>-v3-store; voice-calls to <session>-v3-voice-<stem>."
