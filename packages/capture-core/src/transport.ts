@@ -16,7 +16,10 @@ import { resolveDenUrl } from './den-url.js'
  */
 
 export type CaptureTransport =
-  { kind: 'den'; denUrl: string } | { kind: 'pg'; pgUrl: string } | { kind: 'none'; reason: string }
+  /** `warnings` — one line per `RIVET_DEN_URL` guard that fired (see `guardDenUrl`); callers log them. */
+  | { kind: 'den'; denUrl: string; warnings?: string[] }
+  | { kind: 'pg'; pgUrl: string }
+  | { kind: 'none'; reason: string }
 
 const USER_BLOCKS_DEN =
   'RIVETOS_USER_ID is set — den transport would hit the owner pool on loopback — and RIVETOS_PG_URL is not set'
@@ -32,7 +35,12 @@ export function resolveCaptureTransport(
   const forced = trimmed(env.RIVETOS_CAPTURE_TRANSPORT)
   const launcherDisabledDen =
     trimmed(env.RIVET_DEN_URL).length === 0 && trimmed(env.RIVET_DEN_CA).length > 0
-  const denUrl = launcherDisabledDen ? undefined : resolveDenUrl(env, readConfig)?.denUrl
+  const resolved = launcherDisabledDen ? undefined : resolveDenUrl(env, readConfig)
+  const denUrl = resolved?.denUrl
+  const den = (url: string): CaptureTransport =>
+    resolved?.warnings
+      ? { kind: 'den', denUrl: url, warnings: resolved.warnings }
+      : { kind: 'den', denUrl: url }
   const pgUrl = trimmed(env.RIVETOS_PG_URL)
   const userBlocksDen = env.RIVETOS_USER_ID !== undefined && env.RIVETOS_USER_ID !== ''
 
@@ -47,7 +55,7 @@ export function resolveCaptureTransport(
       if (pgUrl) return { kind: 'pg', pgUrl }
       return { kind: 'none', reason: USER_BLOCKS_DEN }
     }
-    return { kind: 'den', denUrl }
+    return den(denUrl)
   }
 
   if (forced === 'pg') {
@@ -57,7 +65,7 @@ export function resolveCaptureTransport(
     return { kind: 'pg', pgUrl }
   }
 
-  if (denUrl && !userBlocksDen) return { kind: 'den', denUrl }
+  if (denUrl && !userBlocksDen) return den(denUrl)
   if (pgUrl) return { kind: 'pg', pgUrl }
   if (userBlocksDen && denUrl) return { kind: 'none', reason: USER_BLOCKS_DEN }
   return { kind: 'none', reason: 'RIVET_DEN_URL and RIVETOS_PG_URL are not set' }

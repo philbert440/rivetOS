@@ -7,7 +7,13 @@ export type {
   CaptureWriter,
 } from './types.js'
 export { createCaptureWriter } from './writer.js'
-export { resolveDenUrl } from './den-url.js'
+export {
+  resolveDenUrl,
+  guardDenUrl,
+  denTlsConfigured,
+  type DenConfigScalars,
+  type ResolveDenUrlProbes,
+} from './den-url.js'
 export { capForStorage, loadEnvFile, isRecord, asString, safeJson } from './helpers.js'
 export { resolveCaptureTransport, type CaptureTransport } from './transport.js'
 export { withFileLock, LockTimeout, type FileLockOptions } from './lock.js'
