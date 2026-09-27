@@ -65,6 +65,13 @@ export {
   isHeartbeatSessionKey,
   sqlNotHeartbeatConversation,
 } from './tools/helpers.js'
+export {
+  grokbotSessionBase,
+  preferredGrokbotSession,
+  resolvePreferredGrokbotSession,
+  sqlNotSupersededGrokbotConversation,
+  sqlNotSupersededGrokbotMessage,
+} from './grokbot-prefer-v3.js'
 
 // Schema migration helpers — still needed by agent CTs to ensure columns exist
 export { ensureEmbedderSchema } from './embedder.js'

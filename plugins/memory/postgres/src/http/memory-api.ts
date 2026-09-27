@@ -33,6 +33,7 @@ import {
   type SearchResults,
 } from '../search.js'
 import { applyWindowArgs } from '../tools/helpers.js'
+import { sqlNotSupersededGrokbotMessage } from '../grokbot-prefer-v3.js'
 
 /** One engine per pool so the chunk-arm privilege probe and the M1 query-embed
  *  cache survive across HTTP requests. Keyed by pool identity (owner vs each
@@ -429,6 +430,7 @@ async function handleBrowse(url: URL, res: ServerResponse, pool: pg.Pool): Promi
     conditions.push(`m.created_at < $${String(pi++)}`)
     params.push(before)
   }
+  conditions.push(sqlNotSupersededGrokbotMessage('m'))
   const limit = Math.min(Math.max(intParam(url, 'limit', 50), 1), 200)
   params.push(limit)
   const where = conditions.length > 0 ? `WHERE ${conditions.join(' AND ')}` : ''

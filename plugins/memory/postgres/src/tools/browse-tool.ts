@@ -4,6 +4,7 @@
 
 import pg from 'pg'
 import type { Tool } from '@rivetos/types'
+import { sqlNotSupersededGrokbotMessage } from '../grokbot-prefer-v3.js'
 import {
   applyWindowArgs,
   fmtLocalTs,
@@ -99,6 +100,8 @@ export function createBrowseTool(pool: pg.Pool): Tool {
       if (!includeTools) {
         conditions.push(`m.role <> 'tool'`)
       }
+
+      conditions.push(sqlNotSupersededGrokbotMessage('m'))
 
       let since: string | undefined
       let before: string | undefined
