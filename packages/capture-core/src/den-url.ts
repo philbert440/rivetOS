@@ -6,15 +6,27 @@ import { join } from 'node:path'
 function denSettings(raw: string): Partial<Record<string, string>> {
   const result: Partial<Record<string, string>> = {}
   let inDen = false
+  let childIndent: number | undefined
   for (const line of raw.split(/\r?\n/)) {
     if (/^den:\s*(?:#.*)?$/.test(line)) {
       inDen = true
+      childIndent = undefined
       continue
     }
     if (/^\S/.test(line) && !line.startsWith('#')) inDen = false
     if (!inDen) continue
-    const match = /^\s+(port|tls_ca):\s*("[^"]*"|'[^']*'|[^#]*)(?:\s*#.*)?$/.exec(line)
-    if (match) result[match[1]] = match[2].trim().replace(/^["']|["']$/g, '')
+    if (/^\s*(?:#.*)?$/.test(line)) continue
+    const indent = /^\s+/.exec(line)?.[0].length
+    if (indent === undefined) continue
+    childIndent ??= indent
+    if (indent !== childIndent) continue
+    const match = /^\s+(port|tls_ca):(.*)$/.exec(line)
+    if (match && result[match[1]] === undefined) {
+      result[match[1]] = match[2]
+        .replace(/("[^"]*"|'[^']*')| #.*$/g, (_match, quoted: string | undefined) => quoted ?? '')
+        .trim()
+        .replace(/^("|')(.*)\1$/, '$2')
+    }
   }
   return result
 }
@@ -35,7 +47,7 @@ export function resolveDenUrl(
   } catch {
     /* Config is optional. */
   }
-  const port = Number(config.port ?? 5174)
+  const port = /^\d+$/.test(config.port ?? '') ? Number(config.port) : 5174
   const denUrl = env.RIVET_DEN_URL?.trim() || `https://127.0.0.1:${port}`
   try {
     const url = new URL(denUrl)
@@ -45,6 +57,7 @@ export function resolveDenUrl(
   }
   return {
     denUrl,
+    // The launcher checks CA existence and disables den transport when it is missing.
     caPath:
       env.RIVET_DEN_CA?.trim() ||
       config.tls_ca ||

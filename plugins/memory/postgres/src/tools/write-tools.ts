@@ -710,7 +710,8 @@ export async function captureBatch(
         if (text.length <= MAX_CONTENT) return text
         metadata[`full_${field}_length`] = text.length
         metadata.truncated = true
-        return text.slice(0, MAX_CONTENT)
+        const charCode = text.charCodeAt(MAX_CONTENT - 1)
+        return text.slice(0, MAX_CONTENT - (charCode >= 0xd800 && charCode <= 0xdbff ? 1 : 0))
       }
       const content = cap(message.content, 'content')
       const toolResult =

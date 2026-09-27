@@ -111,6 +111,10 @@ describe('capture transaction', () => {
       skipped: 0,
     })
     expect(db.query.mock.calls[2][1]?.slice(-3)).toEqual([false, false, false])
+    expect(db.query).toHaveBeenCalledWith(
+      'UPDATE ros_conversations SET active=false, updated_at=now() WHERE id=$1 AND active=true',
+      ['conversation'],
+    )
     expect(db.query.mock.calls.some(([sql]) => sql.includes('INSERT INTO ros_messages'))).toBe(
       false,
     )
@@ -146,6 +150,25 @@ describe('capture transaction', () => {
       truncated: true,
     })
     expect(params?.[9]).toBe(created_at)
+  })
+  it('backs off split surrogate pairs in both capture text fields', async () => {
+    const db = database()
+    const prefix = 'x'.repeat(15999)
+    const text = `${prefix}😀`
+    await captureBatch(db.pool, {
+      ...batch,
+      messages: [{ ...batch.messages[0], content: text, tool_result: text }],
+    })
+    const params = db.query.mock.calls.find(([sql]) =>
+      sql.includes('INSERT INTO ros_messages'),
+    )?.[1]
+    expect(params?.[4]).toBe(prefix)
+    expect(params?.[7]).toBe(prefix)
+    expect(JSON.parse(String(params?.[8]))).toMatchObject({
+      full_content_length: 16001,
+      full_tool_result_length: 16001,
+      truncated: true,
+    })
   })
   it('rolls back and releases on error; a supplied client remains caller-owned', async () => {
     const db = database()

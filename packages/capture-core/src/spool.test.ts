@@ -1,4 +1,4 @@
-import { mkdtemp, readdir, rm, writeFile } from 'node:fs/promises'
+import { mkdir, mkdtemp, readdir, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { expect, it } from 'vitest'
@@ -11,8 +11,13 @@ it('creates the directory and ignores temp files and dead letters', async () => 
     expect(await spoolFiles(nested)).toEqual([])
     await spoolBatch(nested, { session_key: 's', agent: 'a', messages: [] }, new Date(10))
     await writeFile(join(nested, '1-old.json.tmp'), 'partial')
-    expect(await spoolFiles(nested)).toHaveLength(1)
-    expect(await readdir(nested)).toHaveLength(2)
+    await mkdir(join(nested, 'dead'))
+    await writeFile(join(nested, 'dead', '2-rejected.json'), '{}')
+    const files = await spoolFiles(nested)
+    expect(files).toHaveLength(1)
+    expect(files).not.toContain('2-rejected.json')
+    expect(files).not.toContain('dead/2-rejected.json')
+    expect(await readdir(nested)).toHaveLength(3)
   } finally {
     await rm(dir, { recursive: true, force: true })
   }

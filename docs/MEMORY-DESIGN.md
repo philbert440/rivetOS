@@ -170,6 +170,10 @@ Both tools register only when `RIVETOS_MCP_ENABLE_MEMORY_WRITE=1` (the write sur
 
 `POST /api/capture` is the canonical harness capture write path: the den locks the session inside one transaction, dedupes batch event IDs within the conversation, and finalizes last. Dedupe remains convention-enforced, with no new schema constraint. `@rivetos/capture-core` spools network/5xx failures as private JSON files in `~/.rivetos/capture-spool`, replays at most 50 oldest files before the next write, and moves 4xx replay failures to `dead/`.
 
+### Capture metadata for full-payload recovery
+
+The server hard-caps `content` and `tool_result` at 16,000 UTF-16 code units without an inline marker, recording the corresponding `full_content_length` / `full_tool_result_length` and `truncated: true` in metadata when capped. `memory_get_full` rehydrates only when `metadata.truncated === true` and the row carries a disk pointer in metadata: `session_jsonl_path` (string) plus `session_jsonl_line` (number), or for OpenCode `session_sqlite_path` plus `session_sqlite_part_id`. The server does not cap `tool_args` and never writes `full_tool_args_length` / `full_reasoning_length`; hooks that elide those fields must set the corresponding lengths themselves as numbers. A row over 16k capped without a disk pointer is unrecoverable.
+
 ## Background processing
 
 ### Embedder
