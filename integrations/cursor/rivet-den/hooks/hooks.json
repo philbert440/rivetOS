@@ -1,0 +1,41 @@
+{
+  "version": 1,
+  "hooks": {
+    "sessionStart": [
+      {
+        "command": "./bin/cursor-den-hook.sh sessionStart",
+        "timeout": 5
+      }
+    ],
+    "sessionEnd": [
+      {
+        "command": "./bin/cursor-den-hook.sh sessionEnd",
+        "timeout": 5
+      }
+    ],
+    "beforeSubmitPrompt": [
+      {
+        "command": "./bin/cursor-den-hook.sh beforeSubmitPrompt",
+        "timeout": 5
+      }
+    ],
+    "postToolUse": [
+      {
+        "command": "./bin/cursor-den-hook.sh postToolUse",
+        "timeout": 5
+      }
+    ],
+    "afterAgentResponse": [
+      {
+        "command": "./bin/cursor-den-hook.sh afterAgentResponse",
+        "timeout": 5
+      }
+    ],
+    "stop": [
+      {
+        "command": "./bin/cursor-den-hook.sh stop",
+        "timeout": 5
+      }
+    ]
+  }
+}

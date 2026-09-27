@@ -1,0 +1,20 @@
+{
+  "name": "rivet-memory-cursor",
+  "displayName": "RivetOS Memory (Cursor)",
+  "version": "0.1.0",
+  "description": "Persistent cross-agent RivetOS memory for Cursor: MCP recall, capture hooks, discipline skills, AGENT.md + MEMORY.md. Requires a built RivetOS checkout and ~/.rivetos/.env with RIVETOS_PG_URL.",
+  "author": {
+    "name": "RivetOS",
+    "email": "rivetphilbot@gmail.com"
+  },
+  "license": "MIT",
+  "keywords": ["rivetos", "memory", "mcp", "capture", "cursor"],
+  "category": "productivity",
+  "homepage": "https://github.com/philbert440/rivetOS",
+  "repository": "https://github.com/philbert440/rivetOS",
+  "skills": ["./skills/"],
+  "rules": ["./rules/"],
+  "agents": ["./agents/"],
+  "hooks": "./hooks/hooks.json",
+  "mcpServers": "./.mcp.json"
+}

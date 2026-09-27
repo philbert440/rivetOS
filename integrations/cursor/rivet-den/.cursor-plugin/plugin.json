@@ -1,0 +1,16 @@
+{
+  "name": "rivet-den-cursor",
+  "displayName": "Rivet Den (Cursor)",
+  "version": "0.1.0",
+  "description": "Live rivet-den diorama for Cursor sessions — lifecycle hooks translate prompts, tools, and replies into den protocol events (reuses the Claude Code translator with harness=cursor).",
+  "author": {
+    "name": "RivetOS",
+    "email": "rivetphilbot@gmail.com"
+  },
+  "license": "Apache-2.0",
+  "keywords": ["den", "visualizer", "diorama", "hooks", "rivetos", "cursor"],
+  "category": "productivity",
+  "hooks": "./hooks/hooks.json",
+  "homepage": "https://github.com/philbert440/rivetOS",
+  "repository": "https://github.com/philbert440/rivetOS"
+}
