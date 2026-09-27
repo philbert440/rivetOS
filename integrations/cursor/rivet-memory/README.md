@@ -9,7 +9,7 @@ Sibling of Claude Code, Grok Build, Codex, and Grok Bot kits. Same Postgres stor
 | Layer | Path | Role |
 | --- | --- | --- |
 | MCP | `bin/rivet-memory-mcp.sh` + `.mcp.json` | stdio RivetOS sidecar (`memory_search` / `browse` / `stats` / `get_full`, wiki, gated writes) |
-| Hooks | `hooks/hooks.json` + `bin/rivet-memory-hook.sh` | Cursor lifecycle events -> spool under `~/.rivetos/cursor-capture/spool/` (no ingest worker yet) |
+| Hooks | `hooks/hooks.json` + `bin/rivet-memory-hook.sh` | Cursor lifecycle events -> den capture (`rivet-cursor` / `cursor`), with a spool under `~/.rivetos/cursor-capture/spool/` |
 | Skills | `skills/{memory-recall,memory-today,memory-yesterday,memory-stats}/` | Recall discipline |
 | Agent | `agents/memory-researcher.md` | Read-only multi-step recall subagent |
 | Reflex | `AGENT.md`, `MEMORY.md`, `rules/memory-reflex.md` | Memory-first gate + shelf map |
@@ -40,7 +40,15 @@ Uses a built RivetOS checkout (`services/mcp-sidecar`) or the shared pinned npm 
 
 ## Capture status
 
-`bin/rivet-memory-hook.sh` spools each hook payload to `~/.rivetos/cursor-capture/spool/` and logs to `~/.rivetos/cursor-capture.log`. Nothing ingests the spool into memory yet. The spool directory is 0700 and new payload files are 0600; writes prune oldest payloads to retain at most 500 files and 50 MiB (an oversized payload may itself be removed). Writes take a 3 s lock deadline; if retention cannot be enforced (no `python3`), the new payload is discarded rather than growing the spool, and the failure is logged. Diagnostics rotate at 1 MiB with one previous log retained. When a built `capture/dist/cursor-memory-capture.js` exists, the hook pipes each payload to it (never `npx` from a hook). Until that worker lands, Cursor's own turns are not searchable; memory written by the other harnesses is.
+`bin/rivet-memory-hook.sh` spools each hook payload to `~/.rivetos/cursor-capture/spool/` and logs to `~/.rivetos/cursor-capture.log`. The spool directory is 0700 and new payload files are 0600; writes prune oldest payloads to retain at most 500 files and 50 MiB (an oversized payload may itself be removed). Writes take a 3 s lock deadline; if retention cannot be enforced (no `python3`), the new payload is discarded rather than growing the spool, and the failure is logged. Diagnostics rotate at 1 MiB with one previous log retained.
+
+When `capture/dist/cursor-memory-capture.js` is built, the hook pipes each payload to it (never `npx` from a hook). The worker posts to the local den as agent `rivet-cursor`, channel `cursor`, session key `cursor:<conversation_id>`. Prompt, assistant text, tool use, subagent stop, and session end become messages. Turn `stop` does not. Event ids are stable, so a replay skips rows already stored. `user_email` is not stored. Content and tool results are capped at 16,000 characters.
+
+```bash
+node integrations/cursor/rivet-memory/capture/dist/cursor-memory-capture.js --backfill
+```
+
+`--backfill` walks the spool that is still on disk. Retention has already dropped anything past 500 files or 50 MiB, so a backfill cannot recover those. A missing build leaves the spool in place and logs `capture worker not built`.
 
 ## Related
 

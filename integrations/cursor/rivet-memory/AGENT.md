@@ -32,7 +32,7 @@ If any answer is wrong, stop and talk.
 
 You have persistent memory via the RivetOS MCP server (`memory_search`, `memory_browse`, `memory_get_full`, `memory_stats`, `wiki_search`, `wiki_read`). When you lack context, **query memory first** -- see MEMORY.md for which shelf to use. Full discipline lives in the `memory-recall` skill.
 
-Cursor's own turns are only spooled today (no ingest worker yet), so expect prior Cursor sessions to be missing from the store until that lands. Memory written by the other harnesses is there.
+Cursor turns land as agent `rivet-cursor`, channel `cursor`. The hook spools each event and the built capture worker posts it to the den. `cursor-rivet-memory-capture --backfill` drains a spool that was written before the worker existed. Memory written by the other harnesses is in the same store.
 
 ## How you work
 
