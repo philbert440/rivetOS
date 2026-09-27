@@ -52,15 +52,19 @@ function sessionFileFromCtx(...args: unknown[]): string | null {
   return null
 }
 
-function spawnIngest(sessionFile: string): ChildHandle | null {
+function spawnIngest(sessionFile: string, finalize = false): ChildHandle | null {
   const pluginPath = PLUGIN_PATH
   if (!pluginPath) return null
   const script = path.join(pluginPath, 'bin', 'pi-memory-capture.sh')
-  const child = spawn('bash', [script, '--ingest-file', sessionFile], {
-    stdio: 'ignore',
-    detached: true,
-    env: process.env,
-  })
+  const child = spawn(
+    'bash',
+    [script, '--ingest-file', sessionFile, ...(finalize ? ['--close-session'] : [])],
+    {
+      stdio: 'ignore',
+      detached: true,
+      env: process.env,
+    },
+  )
   // an asynchronous 'error' (ENOENT/EAGAIN) with no listener would throw into pi
   child.on('error', () => {})
   return child as unknown as ChildHandle
@@ -72,7 +76,7 @@ export default function (pi: Pi): void {
 
     const timers = new Map<string, ReturnType<typeof setTimeout>>()
 
-    const spawnNow = (file: string): void => {
+    const spawnNow = (file: string, finalize = false): void => {
       const timer = timers.get(file)
       if (timer) {
         clearTimeout(timer)
@@ -80,7 +84,7 @@ export default function (pi: Pi): void {
       }
       let child: ChildHandle | null = null
       try {
-        child = spawnIngest(file)
+        child = spawnIngest(file, finalize)
       } catch {
         child = null
       }
@@ -130,7 +134,10 @@ export default function (pi: Pi): void {
 
     pi.on('turn_end', onDebounced)
     pi.on('agent_end', onFlush)
-    pi.on('session_shutdown', onFlush)
+    pi.on('session_shutdown', (...args: unknown[]) => {
+      const file = sessionFileFromCtx(...args)
+      if (file) spawnNow(file, true)
+    })
     pi.on('session_before_switch', onFlush)
     pi.on('session_info_changed', onFlush)
   } catch {

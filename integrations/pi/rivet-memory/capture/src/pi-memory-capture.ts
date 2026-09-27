@@ -34,15 +34,22 @@
  * ~/.rivetos/pi-capture-state.json (cursors + lastIngestAt).
  */
 
+import {
+  isRecord,
+  asString,
+  safeJson,
+  loadEnvFile,
+  createCaptureWriter,
+  resolveCaptureTransport,
+  withFileLock,
+  LockTimeout,
+} from '@rivetos/capture-core'
+import type { CaptureBatch, CaptureMessage } from '@rivetos/capture-core'
 import { spawn } from 'node:child_process'
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
-import pg from 'pg'
-import type { PoolClient } from 'pg'
-
-const { Pool } = pg
 
 export const CAPTURE_AGENT = 'rivet-deepseek'
 export const CAPTURE_CHANNEL = 'pi'
@@ -189,28 +196,12 @@ export function encodePiCwd(cwd: string): string {
   return `-${slashed.replaceAll('/', '-')}-`
 }
 
-function isRecord(v: unknown): v is Record<string, unknown> {
-  return typeof v === 'object' && v !== null && !Array.isArray(v)
-}
-
-function asString(v: unknown): string | null {
-  return typeof v === 'string' && v.length > 0 ? v : null
-}
-
 function pickStr(obj: Record<string, unknown>, ...keys: string[]): string | null {
   for (const key of keys) {
     const v = asString(obj[key])
     if (v) return v
   }
   return null
-}
-
-function safeJson(v: unknown): string {
-  try {
-    return JSON.stringify(v)
-  } catch {
-    return String(v)
-  }
 }
 
 function contentItems(message: Record<string, unknown>): Record<string, unknown>[] {
@@ -876,11 +867,57 @@ export async function insertMessage(
   return 'inserted'
 }
 
+export function toCaptureMessage(m: PendingMessage, sourcePath: string | null): CaptureMessage {
+  if (!['user', 'assistant', 'tool', 'system'].includes(m.role))
+    throw new Error(`Invalid role: ${m.role}`)
+  const metadata: Record<string, unknown> = {
+    source: CAPTURE_SOURCE,
+    event_id: m.eventId,
+    ...m.extra,
+  }
+  if (m.eventTs) metadata.event_ts = m.eventTs
+  const pointerPath = sourcePath ?? m.extra?.session_jsonl_path
+  if (typeof pointerPath === 'string') metadata.session_jsonl_path = pointerPath
+  const line = m.lineIndex ?? m.extra?.session_jsonl_line
+  if (typeof line === 'number') metadata.session_jsonl_line = line
+  const hasPointer = typeof pointerPath === 'string' && typeof line === 'number'
+  if (m.reasoning) {
+    metadata.reasoning = hasPointer ? m.reasoning.slice(0, 16_000) : m.reasoning
+    if (hasPointer && m.reasoning.length > 16_000) {
+      metadata.full_reasoning_length = m.reasoning.length
+      metadata.truncated = true
+    }
+  }
+  let toolArgs = m.toolArgs
+  if (toolArgs != null) {
+    const raw = typeof toolArgs === 'string' ? toolArgs : safeJson(toolArgs)
+    if (hasPointer && raw.length > 16_000) {
+      toolArgs = raw.slice(0, 16_000)
+      metadata.full_tool_args_length = raw.length
+      metadata.truncated = true
+    }
+  }
+  const createdAt =
+    m.createdAt ?? (m.eventTs && !Number.isNaN(Date.parse(m.eventTs)) ? m.eventTs : undefined)
+  return {
+    event_id: m.eventId,
+    role: m.role as CaptureMessage['role'],
+    content: m.content ?? '',
+    metadata,
+    ...(m.toolName ? { tool_name: m.toolName } : {}),
+    ...(toolArgs != null ? { tool_args: toolArgs } : {}),
+    ...(typeof m.toolResult === 'string' ? { tool_result: m.toolResult } : {}),
+    ...(createdAt ? { created_at: createdAt } : {}),
+  }
+}
+
 export async function ingestMessages(
-  client: Queryable,
+  client: Queryable | null,
   sessionId: string,
   messages: PendingMessage[],
   opts: {
+    fetch?: typeof globalThis.fetch
+    spoolDir?: string
     title?: string
     cwd?: string | null
     transcriptPath?: string | null
@@ -895,6 +932,45 @@ export async function ingestMessages(
   } = {},
 ): Promise<{ inserted: number; skipped: number; conversationId: string; sessionKey: string }> {
   const sessionKey = deriveSessionKey(sessionId)
+  const transport = resolveCaptureTransport(process.env)
+  if (transport.kind === 'none') throw new Error(transport.reason)
+  if (transport.kind === 'den') {
+    const batch: CaptureBatch = {
+      session_key: sessionKey,
+      agent: captureAgent(),
+      channel: CAPTURE_CHANNEL,
+      title: (opts.title || 'Pi session').slice(0, 120),
+      settings: {
+        source: CAPTURE_SOURCE,
+        sessionId,
+        cwd: opts.cwd ?? null,
+        model: opts.model ?? null,
+        provider: opts.provider ?? null,
+        thinkingLevel: opts.thinkingLevel ?? null,
+        triggerEvent: opts.triggerEvent ?? 'ingest',
+        session_jsonl_path: opts.transcriptPath ?? null,
+      },
+      finalize: opts.finalize,
+      messages: messages.map((m) => toCaptureMessage(m, opts.transcriptPath ?? null)),
+    }
+    const result = await createCaptureWriter({
+      denUrl: transport.denUrl,
+      fetch: opts.fetch,
+      spoolDir: opts.spoolDir,
+      log,
+    }).write(batch)
+    if ('spooled' in result) {
+      if (!result.spooled) throw new Error(result.error)
+      return { inserted: 0, skipped: 0, conversationId: '', sessionKey }
+    }
+    return {
+      inserted: result.inserted,
+      skipped: result.skipped,
+      conversationId: result.conversation_id,
+      sessionKey,
+    }
+  }
+  if (!client) throw new Error('pg capture requires a client')
   // Publish dedup progress only after commit so rolled-back INSERTs replay.
   const seen = opts.seen ? new Set(opts.seen) : undefined
   // BEGIN/lock live inside try so a lock timeout ROLLBACKs before the
@@ -967,7 +1043,7 @@ export async function ingestMessages(
 
 export async function ingestSessionFile(
   file: string,
-  client: Queryable,
+  client: Queryable | null,
   opts: { finalize?: boolean; triggerEvent?: string } = {},
 ): Promise<{ parsed: ParseResult; result: Awaited<ReturnType<typeof ingestMessages>> }> {
   const parsed = parseSessionFile(file)
@@ -1062,53 +1138,18 @@ export function stateLockKey(stateFile = captureStatePath()): string {
   return `rivetos-capture-state:${os.hostname()}:${path.resolve(stateFile)}`
 }
 
-function isLockTimeout(err: unknown): boolean {
-  const code = isRecord(err) && typeof err.code === 'string' ? err.code : ''
-  const msg = err instanceof Error ? err.message : String(err)
-  return code === '55P03' || /lock timeout|lock_not_available/i.test(msg)
-}
-
 export async function withStateLock<T>(
-  client: Queryable,
+  _client: Queryable | null,
   fn: () => Promise<T>,
   stateFile = captureStatePath(),
   waitMs = STATE_LOCK_WAIT_MS,
 ): Promise<T | null> {
-  const key = stateLockKey(stateFile)
   try {
-    // withPool caps every statement at the ingest statement_timeout, which would
-    // also cap this blocking wait; lift it for the acquisition only and put it
-    // back before the critical section (and on failure).
-    await client.query('SET statement_timeout = 0')
-    await client.query(`SET lock_timeout = ${String(Math.max(1, Math.floor(waitMs)))}`)
-    await client.query('SELECT pg_advisory_lock(hashtext($1))', [key])
-    await client.query(`SET statement_timeout = ${String(STATEMENT_TIMEOUT_MS)}`)
+    return await withFileLock(`${path.resolve(stateFile)}.lock`, fn, { waitMs })
   } catch (err) {
-    try {
-      await client.query(`SET statement_timeout = ${String(STATEMENT_TIMEOUT_MS)}`)
-    } catch {
-      // ignore
-    }
-    if (isLockTimeout(err)) {
-      log(`state lock busy (${key}); skipping this run — the next event retries`)
-    } else {
-      log(`state lock unavailable (${err instanceof Error ? err.message : String(err)}); skipping`)
-    }
+    if (!(err instanceof LockTimeout)) throw err
+    log(`state lock busy (${stateFile}); the next event retries`)
     return null
-  }
-  try {
-    return await fn()
-  } finally {
-    try {
-      await client.query('SELECT pg_advisory_unlock(hashtext($1))', [key])
-    } catch {
-      // connection gone → the server already released it
-    }
-    try {
-      await client.query('RESET lock_timeout')
-    } catch {
-      // ignore
-    }
   }
 }
 
@@ -1137,7 +1178,12 @@ function writeStateAtomic(dest: string, next: PersistedCaptureState): void {
 
 export function saveCaptureState(
   patch: Partial<PersistedCaptureState>,
-  opts: { alreadyLocked?: boolean } = {},
+  opts: {
+    alreadyLocked?: boolean
+    fetch?: typeof globalThis.fetch
+    spoolDir?: string
+    finalize?: boolean
+  } = {},
 ): PersistedCaptureState {
   const run = (): PersistedCaptureState => {
     const prev = loadCaptureState()
@@ -1168,7 +1214,7 @@ export function saveCaptureState(
     }
     return next
   }
-  // Ingest paths hold the Postgres state lock; the write itself is a merged
+  // Ingest paths hold the local state lock; the write itself is a merged
   // atomic replace (cursors never regress) so a metadata-only write is safe too.
   void opts
   return run()
@@ -1197,6 +1243,7 @@ export function persistWatcherCursors(
 
 export function formatStatus(state: PersistedCaptureState = loadCaptureState()): string {
   return [
+    `transport: ${resolveCaptureTransport(process.env).kind}`,
     `lastIngestAt: ${state.lastIngestAt ?? 'never'}`,
     `lastIngestSource: ${state.lastIngestSource ?? 'unknown'}`,
     `files: ${String(state.files)}`,
@@ -1218,16 +1265,17 @@ export function isNewerThanDays(file: string, days: number): boolean {
 async function ingestNewLines(
   file: string,
   cursor: FileCursor,
-  client: Queryable,
+  client: Queryable | null,
   seenByKey?: Map<string, Set<string>>,
   triggerEvent = 'ingest',
+  sink: { fetch?: typeof globalThis.fetch; spoolDir?: string; finalize?: boolean } = {},
 ): Promise<{ inserted: number; skipped: number } | null> {
   const newLines = consumeNewLines(file, cursor)
-  if (newLines.length === 0) return null
+  if (newLines.length === 0 && !sink.finalize) return null
   // Re-parse the whole file so tool call/result pairing still works when the
   // pair straddles two ingest ticks. The in-memory seen-set keeps re-ticks O(new).
   const parsed = parseSessionFile(file)
-  if (parsed.messages.length === 0) return { inserted: 0, skipped: 0 }
+  if (parsed.messages.length === 0 && !sink.finalize) return { inserted: 0, skipped: 0 }
   const abs = path.resolve(file)
   let seen: Set<string> | undefined
   if (seenByKey) {
@@ -1247,6 +1295,7 @@ async function ingestNewLines(
     provider: parsed.provider,
     thinkingLevel: parsed.thinkingLevel,
     seen,
+    ...sink,
   })
   log(
     `ingest ${result.sessionKey}: file=${abs} newLines=${newLines.length} msgs=${parsed.messages.length} inserted=${result.inserted} skipped=${result.skipped}`,
@@ -1256,7 +1305,7 @@ async function ingestNewLines(
 
 export async function scanOnce(
   root: string,
-  client: Queryable,
+  client: Queryable | null,
   state: WatcherState,
   fromStart: boolean,
   opts: { days?: number; triggerEvent?: string } = {},
@@ -1284,14 +1333,19 @@ export async function scanOnce(
     } catch (err) {
       // Retry even if the file stops growing after a database failure.
       Object.assign(cursor, before)
+      if (resolveCaptureTransport(process.env).kind === 'den') process.exitCode = 1
       log(`scan ${file} failed: ${err instanceof Error ? err.message : String(err)}`)
     }
   }
   return { files: files.length, inserted, skipped }
 }
 
-async function withPool<T>(fn: (client: PoolClient) => Promise<T>): Promise<T> {
-  const pool = new Pool({ connectionString: resolvePgUrl(), max: 1 })
+async function withPool<T>(fn: (client: Queryable | null) => Promise<T>): Promise<T> {
+  const transport = resolveCaptureTransport(process.env)
+  if (transport.kind === 'none') throw new Error(transport.reason)
+  if (transport.kind === 'den') return fn(null)
+  const { default: pg } = await import('pg')
+  const pool = new pg.Pool({ connectionString: resolvePgUrl(), max: 1 })
   const client = await pool.connect()
   try {
     await client.query(`SET statement_timeout = ${STATEMENT_TIMEOUT_MS}`)
@@ -1367,8 +1421,13 @@ export function retryHopOnce(argv: string[]): void {
 
 export async function ingestFileFromCursor(
   file: string,
-  client: Queryable,
-  opts: { alreadyLocked?: boolean } = {},
+  client: Queryable | null,
+  opts: {
+    alreadyLocked?: boolean
+    fetch?: typeof globalThis.fetch
+    spoolDir?: string
+    finalize?: boolean
+  } = {},
 ): Promise<{ inserted: number; skipped: number; lockBusy?: boolean }> {
   const abs = path.resolve(file)
   const body = async (): Promise<{ inserted: number; skipped: number }> => {
@@ -1379,7 +1438,7 @@ export async function ingestFileFromCursor(
       : { offset: 0, pending: '' }
     const before = { offset: cursor.offset, pending: cursor.pending }
     try {
-      const r = await ingestNewLines(file, cursor, client, new Map(), 'extension')
+      const r = await ingestNewLines(file, cursor, client, new Map(), 'extension', opts)
       saveCaptureState(
         {
           lastIngestAt: new Date().toISOString(),
@@ -1402,8 +1461,8 @@ export async function ingestFileFromCursor(
   return locked ?? { inserted: 0, skipped: 0, lockBusy: true }
 }
 
-/** `--ingest-file` CLI: never throws out of this function; caller exits 0. */
-export async function runIngestFile(file: string, delayMs = 0): Promise<void> {
+/** `--ingest-file` CLI: log failures; den delivery failures exit non-zero. */
+export async function runIngestFile(file: string, delayMs = 0, finalize = false): Promise<void> {
   try {
     if (delayMs > 0) {
       await new Promise<void>((resolve) => {
@@ -1411,7 +1470,7 @@ export async function runIngestFile(file: string, delayMs = 0): Promise<void> {
       })
     }
     await withPool(async (client) => {
-      const result = await ingestFileFromCursor(file, client)
+      const result = await ingestFileFromCursor(file, client, { finalize })
       console.log(`${file}: inserted=${result.inserted} skipped=${result.skipped}`)
       if (result.lockBusy) {
         const argv = process.argv.slice(2)
@@ -1423,22 +1482,8 @@ export async function runIngestFile(file: string, delayMs = 0): Promise<void> {
       }
     })
   } catch (err) {
+    if (resolveCaptureTransport(process.env).kind === 'den') process.exitCode = 1
     log(`ingest-file ${file} failed: ${err instanceof Error ? err.message : String(err)}`)
-  }
-}
-
-function loadEnvFile(): void {
-  const envFile = process.env.RIVETOS_ENV_FILE ?? path.join(os.homedir(), '.rivetos', '.env')
-  if (!fs.existsSync(envFile)) return
-  try {
-    const raw = fs.readFileSync(envFile, 'utf8')
-    for (const line of raw.split('\n')) {
-      const m = /^\s*([A-Z0-9_]+)\s*=\s*(.*)\s*$/.exec(line)
-      if (!m || process.env[m[1]]) continue
-      process.env[m[1]] = m[2].replace(/^["']|["']$/g, '')
-    }
-  } catch {
-    // ignore
   }
 }
 
@@ -1448,7 +1493,8 @@ export const USAGE = `pi-memory-capture — ingest pi v3 session jsonl into Rive
   pi-rivet-memory-capture --backfill [--days N] [--sessions-dir DIR]
   pi-rivet-memory-capture --status
 
-  --ingest-file FILE tail one session from the persisted cursor then exit (always 0)
+  --ingest-file FILE tail one session from the persisted cursor then exit
+  --close-session    finalize the conversation after ingest
   --delay-ms N       sleep N ms before reading (coalesce overlapping children)
   --backfill         ingest existing session files then exit
   --days N           with --backfill, only files whose mtime is within N days
@@ -1463,6 +1509,7 @@ export interface CliArgs {
   sessionsDir?: string
   days?: number
   delayMs?: number
+  finalize?: boolean
 }
 
 export function parseCli(argv: string[]): CliArgs {
@@ -1492,6 +1539,8 @@ export function parseCli(argv: string[]): CliArgs {
       const n = Number(argv[i + 1])
       i++
       if (Number.isFinite(n) && n >= 0) out.delayMs = n
+    } else if (arg === '--close-session') {
+      out.finalize = true
     } else if (arg === '--watch') {
       out.mode = 'unknown'
     }
@@ -1500,7 +1549,11 @@ export function parseCli(argv: string[]): CliArgs {
 }
 
 async function main(): Promise<void> {
-  loadEnvFile()
+  for (const [key, value] of Object.entries(
+    loadEnvFile(process.env.RIVETOS_ENV_FILE ?? path.join(os.homedir(), '.rivetos', '.env')),
+  )) {
+    if (!process.env[key]) process.env[key] = value
+  }
   const args = process.argv.slice(2)
   const cli = parseCli(args)
   if (args.length === 0 || cli.mode === 'help') {
@@ -1548,7 +1601,7 @@ async function main(): Promise<void> {
       console.error('Usage: pi-memory-capture --ingest-file <session.jsonl>')
       return
     }
-    await runIngestFile(cli.file, cli.delayMs ?? 0)
+    await runIngestFile(cli.file, cli.delayMs ?? 0, cli.finalize)
     return
   }
 
