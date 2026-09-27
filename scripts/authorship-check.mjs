@@ -16,7 +16,8 @@
 //   - philbert440 <philbert440@gmail.com>
 //   - philbert440 <philbert440@users.noreply.github.com>
 //
-// Repository collaborators (matched by email): xreed88, tomthornton
+// Repository collaborators (matched by email): xreed88, tomthornton,
+//   wSedlacek, cesarulo, zzhang-1
 //   Add one by appending { login, emails } to COLLABORATORS below.
 //
 // Blocked: Cursor, Cursor Agent, cursoragent@cursor.com, Claude, Anthropic,
@@ -56,7 +57,31 @@ const COLLABORATORS = [
     emails: [
       '40962668+tomthornton@users.noreply.github.com',
       'tomthornton@users.noreply.github.com',
-      // TODO: add his commit email here when known.
+      'tombozwell@gmail.com',
+    ],
+  },
+  {
+    login: 'wSedlacek',
+    emails: [
+      'william.sedlacek@icloud.com',
+      '8206108+wSedlacek@users.noreply.github.com',
+      'wSedlacek@users.noreply.github.com',
+    ],
+  },
+  {
+    login: 'cesarulo',
+    emails: [
+      'cdragunsky@gmail.com',
+      '13575641+cesarulo@users.noreply.github.com',
+      'cesarulo@users.noreply.github.com',
+    ],
+  },
+  {
+    login: 'zzhang-1',
+    emails: [
+      'zhangzhen52013147654@gmail.com',
+      '54903512+zzhang-1@users.noreply.github.com',
+      'zzhang-1@users.noreply.github.com',
     ],
   },
 ]
@@ -315,7 +340,7 @@ function main() {
       '\n  - Philip <philbert440@users.noreply.github.com>' +
       '\n  - philbert440 <philbert440@gmail.com>' +
       '\n  - philbert440 <philbert440@users.noreply.github.com>' +
-      '\n\nRepository collaborators (matched by email): xreed88, tomthornton' +
+      '\n\nRepository collaborators (matched by email): xreed88, tomthornton, wSedlacek, cesarulo, zzhang-1' +
       '\n  Add one by appending { login, emails } to COLLABORATORS in scripts/authorship-check.mjs.' +
       '\n\nBlocked: Cursor, Claude, Anthropic, Dependabot, Renovate, and any Co-authored-by trailers.' +
       '\n\nException: GitHub <noreply@github.com> as committer when the author is an allowed identity (GitHub merge/squash).\n',
