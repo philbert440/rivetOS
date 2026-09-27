@@ -15,4 +15,4 @@ chmod +x "$TEST_ROOT/bin/node"
 # An isolated installed tree has neither a shared helper nor an /opt fallback.
 env -i PATH="$TEST_ROOT/bin:$PATH" HOME="$TEST_ROOT" RIVETOS_ROOT="$TEST_ROOT"   CAPTURE_TEST_RESULT="$TEST_ROOT/result"   bash "$PLUGIN/bin/kimi-memory-hook.sh" SessionEnd 2> "$TEST_ROOT/stderr"
 [[ "$(cat "$TEST_ROOT/result")" == pg ]]
-rg -q 'den transport disabled: rivet-paths.sh not found; using pg' "$TEST_ROOT/stderr"
+grep -Eq 'den transport disabled: rivet-paths.sh not found; using pg' "$TEST_ROOT/stderr"

@@ -2,7 +2,8 @@ import { mkdtempSync, writeFileSync, readdirSync, rmSync, existsSync } from 'nod
 import os from 'node:os'
 import path from 'node:path'
 import { afterEach, beforeEach, expect, it, vi } from 'vitest'
-import type { CaptureBatch } from '@rivetos/capture-core'
+import * as captureCore from '@rivetos/capture-core'
+import type { CaptureBatch, CaptureWriter } from '@rivetos/capture-core'
 
 vi.mock('pg', () => {
   class Pool {
@@ -50,8 +51,16 @@ import {
   loadState,
 } from '../src/opencode-memory-capture.js'
 
-it('posts exact sqlite pointers and lengths with uncapped content and finalize', async () => {
+it('passes uncapped text to the writer and posts capped text, sqlite pointers, lengths and finalize', async () => {
   const content = 'x'.repeat(17000)
+  const toolResult = 'y'.repeat(18000)
+  const createCaptureWriter = captureCore.createCaptureWriter
+  const write = vi.fn<CaptureWriter['write']>()
+  vi.spyOn(captureCore, 'createCaptureWriter').mockImplementationOnce((options) => {
+    const writer = createCaptureWriter(options)
+    write.mockImplementation(writer.write)
+    return { ...writer, write }
+  })
   await ingestMessages(
     null,
     'sid',
@@ -60,6 +69,7 @@ it('posts exact sqlite pointers and lengths with uncapped content and finalize',
         eventId: 'prt_1',
         role: 'tool',
         content,
+        toolResult,
         toolArgs: content,
         extra: { session_sqlite_part_id: 'prt_1' },
         createdAt: '2026-09-27T00:00:00Z',
@@ -67,6 +77,11 @@ it('posts exact sqlite pointers and lengths with uncapped content and finalize',
     ],
     { ...sink(), title: 'Title', dbPath: '/opencode.db', finalize: true },
   )
+  expect(write).toHaveBeenCalledTimes(1)
+  expect(write.mock.calls[0][0].messages[0]).toMatchObject({
+    content,
+    tool_result: toolResult,
+  })
   expect(bodies).toEqual([
     {
       session_key: 'opencode:sid',
@@ -85,7 +100,8 @@ it('posts exact sqlite pointers and lengths with uncapped content and finalize',
         {
           event_id: 'prt_1',
           role: 'tool',
-          content,
+          content: content.slice(0, 16000),
+          tool_result: toolResult.slice(0, 16000),
           tool_args: content.slice(0, 16000),
           created_at: '2026-09-27T00:00:00Z',
           metadata: {
@@ -94,6 +110,8 @@ it('posts exact sqlite pointers and lengths with uncapped content and finalize',
             session_sqlite_path: '/opencode.db',
             session_sqlite_part_id: 'prt_1',
             full_tool_args_length: 17000,
+            full_content_length: 17000,
+            full_tool_result_length: 18000,
             truncated: true,
           },
         },

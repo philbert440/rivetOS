@@ -2,7 +2,8 @@ import { mkdtempSync, writeFileSync, readdirSync, rmSync } from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { afterEach, beforeEach, expect, it, vi } from 'vitest'
-import type { CaptureBatch } from '@rivetos/capture-core'
+import * as captureCore from '@rivetos/capture-core'
+import type { CaptureBatch, CaptureWriter } from '@rivetos/capture-core'
 
 vi.mock('pg', () => {
   class Pool {
@@ -43,8 +44,16 @@ function sink(offline = false, failedSpool = false, rejected = false) {
 }
 import { ingestMessages, ingestFileFromCursor, loadCaptureState } from '../src/pi-memory-capture.js'
 
-it('posts the exact batch with uncapped content, auxiliary lengths, pointers and finalize', async () => {
+it('passes uncapped text to the writer and posts capped text, lengths, pointers and finalize', async () => {
   const content = 'x'.repeat(17000)
+  const toolResult = 'y'.repeat(18000)
+  const createCaptureWriter = captureCore.createCaptureWriter
+  const write = vi.fn<CaptureWriter['write']>()
+  vi.spyOn(captureCore, 'createCaptureWriter').mockImplementationOnce((options) => {
+    const writer = createCaptureWriter(options)
+    write.mockImplementation(writer.write)
+    return { ...writer, write }
+  })
   await ingestMessages(
     null,
     'sid',
@@ -53,6 +62,7 @@ it('posts the exact batch with uncapped content, auxiliary lengths, pointers and
         eventId: 'pi:sid:line',
         role: 'assistant',
         content,
+        toolResult,
         toolArgs: content,
         reasoning: content,
         lineIndex: 3,
@@ -61,6 +71,11 @@ it('posts the exact batch with uncapped content, auxiliary lengths, pointers and
     ],
     { ...sink(), title: 'Title', transcriptPath: '/session.jsonl', finalize: true },
   )
+  expect(write).toHaveBeenCalledTimes(1)
+  expect(write.mock.calls[0][0].messages[0]).toMatchObject({
+    content,
+    tool_result: toolResult,
+  })
   expect(bodies).toEqual([
     {
       session_key: 'pi:sid',
@@ -82,7 +97,8 @@ it('posts the exact batch with uncapped content, auxiliary lengths, pointers and
         {
           event_id: 'pi:sid:line',
           role: 'assistant',
-          content,
+          content: content.slice(0, 16000),
+          tool_result: toolResult.slice(0, 16000),
           tool_args: content.slice(0, 16000),
           created_at: '2026-09-27T00:00:00Z',
           metadata: {
@@ -93,6 +109,8 @@ it('posts the exact batch with uncapped content, auxiliary lengths, pointers and
             reasoning: content.slice(0, 16000),
             full_reasoning_length: 17000,
             full_tool_args_length: 17000,
+            full_content_length: 17000,
+            full_tool_result_length: 18000,
             truncated: true,
           },
         },
