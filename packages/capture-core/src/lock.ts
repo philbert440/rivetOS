@@ -1,5 +1,15 @@
-import { readdirSync, readFileSync, statSync, unlinkSync, utimesSync } from 'node:fs'
-import { mkdir, writeFile } from 'node:fs/promises'
+import {
+  closeSync,
+  fchmodSync,
+  fsyncSync,
+  openSync,
+  readFileSync,
+  readdirSync,
+  statSync,
+  unlinkSync,
+  utimesSync,
+} from 'node:fs'
+import { mkdir, rename, writeFile } from 'node:fs/promises'
 import { hostname } from 'node:os'
 import { join } from 'node:path'
 
@@ -14,7 +24,12 @@ export class LockTimeout extends Error {
 }
 
 export interface FileLockOptions {
-  /** Other-host owner files older than this are stale. Default 120_000. */
+  /**
+   * Heartbeat interval basis. The holder refreshes its mtime every
+   * `staleMs / 3`. Not a reclamation threshold: age never deletes a lock
+   * file. Default 120_000, so the heartbeat is 40s. Informational for
+   * operators.
+   */
   staleMs?: number
   /** Throw `LockTimeout` after this long without acquiring. Default 10_000. */
   waitMs?: number
@@ -39,29 +54,39 @@ interface OwnerRecord {
 type Log = (line: string) => void
 type Presence = 'alone' | 'pending' | 'lost'
 type Decision = 'acquired' | 'pending' | 'lost'
-type OtherFile = 'missing' | 'dead' | 'stale' | 'live'
+type Created = 'none' | 'temp' | 'final'
 
 /**
  * Cross-process lock held as a unique owner file. The directory stays.
  *
  * `lockDir` is created once (`mkdir -p`) and never removed. A contender
- * publishes `owner.<token>` with `wx`, where `token` is
- * `<hostname>.<pid>.<startTimeMs>.<random>`, and writes
- * `{ pid, host, ts, token }`. The random suffix starts with a per-process
- * counter so two tokens minted in the same millisecond still order by
- * creation. Nothing is renamed, and `rm -rf` is not used.
+ * writes the full body to `.publish.<token>` (`wx`, mode `0600`, fsync) and
+ * renames it to `owner.<token>`. `token` is
+ * `<hostname>.<pid>.<startTimeMs>.<random>`. The random suffix starts with
+ * a per-process counter so two tokens minted in the same millisecond still
+ * order by creation. The destination name is unique to this contender, so
+ * the rename cannot clobber anyone, and the final file is never a partial
+ * body. `rm -rf` is not used. `/`, `\`, and NUL in the hostname are replaced
+ * so the name stays one directory entry.
  *
  * After publishing, the contender reads the directory (see `beforeReaddir`)
- * and classifies every other `owner.*`:
+ * and classifies every other `owner.*` from the filename, not the body.
+ * Bodies are read only to log what was removed. `.publish.*` temps are not
+ * contenders.
  *
  * - Same host and `process.kill(pid, 0)` throws `ESRCH`: the creator is
- *   dead. Unlink that unique name. A reused pid publishes a different token,
- *   so the name cannot belong to a live process, and a dead creator is not
- *   inside `fn`.
- * - Other host, mtime older than `staleMs` (default 120s): unlink that
- *   unique name. State lives on local `~/.rivetos`; this path is defensive.
- *   The holder `utimes` its own file every `staleMs / 3`, so a live holder
- *   is not stale. The mtime is re-read immediately before the unlink.
+ *   dead, even when the body is empty or not valid JSON. Unlink that unique
+ *   name. A reused pid publishes a different token, so the name cannot
+ *   belong to a live process, and a dead creator is not inside `fn`.
+ *   `EPERM` or any other kill error is not death.
+ * - A same-host `.publish.<token>` whose pid is dead (`ESRCH`) is an orphan
+ *   from a creator that died mid-publish. Unlink that name. Every other
+ *   `.publish.*` file is ignored.
+ * - Any other host is live for as long as the file exists. Age is not death.
+ *   A lock file is removed by another process only when its creator is
+ *   provably dead (same host, `kill(pid, 0)` → ESRCH). Lock directories must
+ *   be host-local (`~/.rivetos`); a foreign-host owner file blocks until its
+ *   creator removes it.
  * - Otherwise the file is a live contender and is left alone. A live loser
  *   unlinks only its own file.
  *
@@ -73,9 +98,16 @@ type OtherFile = 'missing' | 'dead' | 'stale' | 'live'
  * not dropped its file, and a later smaller token waits instead of walking
  * in beside a caller already inside `fn`.
  *
+ * The holder `utimes` its own file every `staleMs / 3` (default `staleMs`
+ * 120s, so every 40s) while `fn` runs, and again on each wait while it is
+ * the smallest live token. That heartbeat is informational for operators.
+ * It is not a liveness proof and it never authorizes deletion.
+ *
  * `LockTimeout` is thrown after `waitMs` (default 10s). The timed-out
  * contender unlinks its own file first. Release always unlinks that same
- * name and clears the heartbeat, including when `fn` throws.
+ * name and clears the heartbeat, including when `fn` throws. An error after
+ * the publish file is created (write failure, `ENOSPC`, or a throw) unlinks
+ * this contender's temp or final name before the error propagates.
  */
 export async function withFileLock<T>(
   lockDir: string,
@@ -90,15 +122,7 @@ export async function withFileLock<T>(
   const host = hostname()
   await mkdir(lockDir, { recursive: true })
 
-  const ownerPath = await acquire(
-    lockDir,
-    host,
-    staleMs,
-    deadline,
-    pollMs,
-    opts?.beforeReaddir,
-    log,
-  )
+  const ownerPath = await acquire(lockDir, host, deadline, pollMs, opts?.beforeReaddir, log)
   const heartbeatMs = Math.max(1, Math.floor(staleMs / 3))
   const timer = setInterval(() => {
     try {
@@ -120,11 +144,15 @@ export async function withFileLock<T>(
 
 let tokenSeq = 0
 
+function safeHost(host: string): string {
+  const safe = host.replace(/[/\\\0]/g, '_')
+  return safe.length > 0 ? safe : 'unknown'
+}
+
 function makeToken(host: string): string {
   tokenSeq += 1
-  const safeHost = host.replace(/[/\\\0]/g, '_') || 'unknown'
   const random = `${tokenSeq.toString(36).padStart(6, '0')}${Math.random().toString(36).slice(2)}`
-  return `${safeHost}.${String(process.pid)}.${String(Date.now())}.${random}`
+  return `${safeHost(host)}.${String(process.pid)}.${String(Date.now())}.${random}`
 }
 
 function makeLog(log: FileLockOptions['log']): Log {
@@ -153,7 +181,6 @@ function errorCode(error: unknown): string | undefined {
 async function acquire(
   lockDir: string,
   host: string,
-  staleMs: number,
   deadline: number,
   pollMs: number,
   beforeReaddir: FileLockOptions['beforeReaddir'],
@@ -161,6 +188,7 @@ async function acquire(
 ): Promise<string> {
   for (;;) {
     const token = makeToken(host)
+    const tempPath = join(lockDir, `.publish.${token}`)
     const ownerPath = join(lockDir, `owner.${token}`)
     const record: OwnerRecord = {
       pid: process.pid,
@@ -169,7 +197,7 @@ async function acquire(
       token,
     }
     try {
-      await writeFile(ownerPath, JSON.stringify(record), { flag: 'wx', mode: 0o600 })
+      await publishOwner(tempPath, ownerPath, JSON.stringify(record), log)
     } catch (error) {
       if (errorCode(error) === 'EEXIST') continue
       throw error
@@ -178,7 +206,7 @@ async function acquire(
     try {
       if (beforeReaddir) await beforeReaddir()
       for (;;) {
-        const decision = judge(lockDir, ownerPath, token, host, staleMs, log)
+        const decision = judge(lockDir, ownerPath, token, host, log)
         if (decision === 'acquired') return ownerPath
         if (decision === 'lost') break
         if (Date.now() >= deadline) throw new LockTimeout(lockDir)
@@ -186,6 +214,7 @@ async function acquire(
       }
     } catch (error) {
       unlinkOwn(ownerPath, log)
+      unlinkOwn(tempPath, log)
       throw error
     }
 
@@ -194,15 +223,53 @@ async function acquire(
   }
 }
 
+/**
+ * Exclusive create of `.publish.<token>`, fsync, then rename onto the unique
+ * `owner.<token>`. A rejected `writeFile` may already have created the temp
+ * (`ENOSPC`); that name is removed before the error propagates.
+ */
+async function publishOwner(
+  tempPath: string,
+  ownerPath: string,
+  body: string,
+  log: Log,
+): Promise<void> {
+  let created: Created = 'none'
+  try {
+    await writeFile(tempPath, body, { flag: 'wx', mode: 0o600 })
+    created = 'temp'
+    fsyncFile(tempPath)
+    await rename(tempPath, ownerPath)
+    created = 'final'
+  } catch (error) {
+    if (created === 'none' && errorCode(error) !== 'EEXIST' && fileExists(tempPath)) {
+      created = 'temp'
+    }
+    if (created === 'temp') unlinkOwn(tempPath, log)
+    if (created === 'final') unlinkOwn(ownerPath, log)
+    throw error
+  }
+}
+
+/** Force `0600` (umask does not apply) and fsync before the name is published. */
+function fsyncFile(path: string): void {
+  const fd = openSync(path, 'r+')
+  try {
+    fchmodSync(fd, 0o600)
+    fsyncSync(fd)
+  } finally {
+    closeSync(fd)
+  }
+}
+
 function judge(
   lockDir: string,
   ownerPath: string,
   token: string,
   host: string,
-  staleMs: number,
   log: Log,
 ): Decision {
-  const first = inspect(lockDir, token, host, staleMs, log)
+  const first = inspect(lockDir, token, host, log)
   if (first === 'lost') {
     // Stay on this file if it is still here, so a failed unlink cannot leave
     // a live owner behind while a new token is published.
@@ -211,7 +278,7 @@ function judge(
   if (first === 'pending') {
     return touchOwn(ownerPath) ? 'pending' : 'lost'
   }
-  const second = inspect(lockDir, token, host, staleMs, log)
+  const second = inspect(lockDir, token, host, log)
   if (second === 'lost') {
     return unlinkOwn(ownerPath, log) ? 'lost' : 'pending'
   }
@@ -223,18 +290,12 @@ function judge(
 }
 
 /**
- * `readdir` plus liveness. Dead and stale files are unlinked here, by the
- * unique name just classified, before the caller decides whether to enter.
- * Sync so another contender in this process cannot publish between the read
- * and the decision.
+ * `readdir` plus liveness. Dead same-host names are unlinked here, before
+ * the caller decides whether to enter. Sync so another contender in this
+ * process cannot publish between the read and the decision. Foreign-host
+ * files are never unlinked.
  */
-function inspect(
-  lockDir: string,
-  token: string,
-  host: string,
-  staleMs: number,
-  log: Log,
-): Presence {
+function inspect(lockDir: string, token: string, host: string, log: Log): Presence {
   let names: string[]
   try {
     names = readdirSync(lockDir)
@@ -243,23 +304,29 @@ function inspect(
     throw error
   }
 
+  for (const name of names) {
+    if (!name.startsWith('.publish.')) continue
+    const publishToken = name.slice('.publish.'.length)
+    if (!sameHostDead(publishToken, host)) continue
+    log(`removing dead publish ${name}`)
+    unlinkOther(join(lockDir, name), log)
+  }
+
   const ours = `owner.${token}`
   let live = 0
   let smallest = true
   for (const name of names) {
     if (!name.startsWith('owner.') || name === ours) continue
     const full = join(lockDir, name)
-    const kind = classifyOther(full, host, staleMs)
-    if (kind === 'missing') continue
-    if (kind === 'dead') {
-      // Unique name of a same-host pid that is not running.
+    if (!ownerStillThere(full)) continue
+    const otherToken = name.slice('owner.'.length)
+    if (sameHostDead(otherToken, host)) {
+      // Unique name of a same-host pid that is not running. The body is not
+      // consulted; it is only described in the log line.
+      log(`removing dead owner ${name}: ${ownerBodyNote(full, otherToken)}`)
       if (unlinkOther(full, log)) continue
-    } else if (kind === 'stale') {
-      // Unique name of an other-host file whose mtime is still past staleMs.
-      if (unlinkIfStillStale(full, staleMs, log)) continue
     }
     live += 1
-    const otherToken = name.slice('owner.'.length)
     if (otherToken <= token) smallest = false
   }
   if (live === 0) return 'alone'
@@ -267,28 +334,77 @@ function inspect(
   return 'lost'
 }
 
-function classifyOther(path: string, host: string, staleMs: number): OtherFile {
+/**
+ * Token shape is `<host>.<pid>.<startTimeMs>.<random>`. Host may contain
+ * dots, so the pid is the third field from the right. Anything else is not
+ * provably ours and not provably dead.
+ */
+function parseToken(token: string): { host: string; pid: number } | undefined {
+  const parts = token.split('.')
+  if (parts.length < 4) return undefined
+  const random = parts[parts.length - 1] ?? ''
+  const startRaw = parts[parts.length - 2] ?? ''
+  const pidRaw = parts[parts.length - 3] ?? ''
+  const host = parts.slice(0, -3).join('.')
+  if (host.length === 0 || random.length === 0) return undefined
+  if (!/^\d+$/.test(startRaw) || !/^[1-9]\d*$/.test(pidRaw)) return undefined
+  const pid = Number(pidRaw)
+  if (!Number.isSafeInteger(pid)) return undefined
+  return { host, pid }
+}
+
+function sameHostDead(token: string, host: string): boolean {
+  const parsed = parseToken(token)
+  if (!parsed) return false
+  if (parsed.host !== safeHost(host)) return false
+  return pidDead(parsed.pid)
+}
+
+/** `kill(pid, 0)` throws `ESRCH` only when that pid is not running. */
+function pidDead(pid: number): boolean {
+  if (!Number.isInteger(pid) || pid <= 0) return false
+  try {
+    process.kill(pid, 0)
+    return false
+  } catch (error) {
+    return errorCode(error) === 'ESRCH'
+  }
+}
+
+function ownerStillThere(path: string): boolean {
+  try {
+    statSync(path)
+    return true
+  } catch (error) {
+    if (errorCode(error) === 'ENOENT') return false
+    // Not provably absent. Count it as live so this caller does not enter.
+    return true
+  }
+}
+
+function fileExists(path: string): boolean {
+  try {
+    statSync(path)
+    return true
+  } catch (error) {
+    return errorCode(error) !== 'ENOENT'
+  }
+}
+
+/** Log text only. The liveness decision has already been made from the name. */
+function ownerBodyNote(path: string, token: string): string {
   let text: string
   try {
     text = readFileSync(path, 'utf8')
   } catch (error) {
-    if (errorCode(error) === 'ENOENT') return 'missing'
-    // Not provably dead. Leave it for its owner.
-    return 'live'
+    if (errorCode(error) === 'ENOENT') return 'body missing'
+    return 'body unreadable'
   }
+  if (text.length === 0) return 'body empty'
   const record = parseOwner(text)
-  if (!record) return 'live'
-  if (record.host === host) return pidDead(record.pid) ? 'dead' : 'live'
-
-  let mtimeMs: number
-  try {
-    mtimeMs = statSync(path).mtimeMs
-  } catch (error) {
-    if (errorCode(error) === 'ENOENT') return 'missing'
-    throw error
-  }
-  if (Date.now() - mtimeMs > staleMs) return 'stale'
-  return 'live'
+  if (!record) return 'body invalid'
+  if (record.token !== token) return 'body token differs from name'
+  return 'body ok'
 }
 
 function parseOwner(text: string): OwnerRecord | undefined {
@@ -307,28 +423,6 @@ function parseOwner(text: string): OwnerRecord | undefined {
   if (typeof pid !== 'number' || typeof host !== 'string') return undefined
   if (typeof ts !== 'string' || typeof token !== 'string') return undefined
   return { pid, host, ts, token }
-}
-
-/** `kill(pid, 0)` throws `ESRCH` only when that pid is not running. */
-function pidDead(pid: number): boolean {
-  if (!Number.isInteger(pid) || pid <= 0) return false
-  try {
-    process.kill(pid, 0)
-    return false
-  } catch (error) {
-    return errorCode(error) === 'ESRCH'
-  }
-}
-
-function unlinkIfStillStale(path: string, staleMs: number, log: Log): boolean {
-  try {
-    const info = statSync(path)
-    if (Date.now() - info.mtimeMs <= staleMs) return false
-  } catch (error) {
-    if (errorCode(error) === 'ENOENT') return true
-    throw error
-  }
-  return unlinkOther(path, log)
 }
 
 function unlinkOther(path: string, log: Log): boolean {

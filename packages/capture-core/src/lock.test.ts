@@ -12,11 +12,33 @@ import {
 } from 'node:fs'
 import { hostname, tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { afterEach, expect, it } from 'vitest'
+import { afterEach, expect, it, vi } from 'vitest'
 import { LockTimeout, withFileLock } from './lock.js'
+
+const enospc = vi.hoisted(() => ({ armed: false }))
+
+vi.mock('node:fs/promises', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('node:fs/promises')>()
+  return {
+    ...actual,
+    writeFile: (async (...args: Parameters<typeof actual.writeFile>) => {
+      const path = args[0]
+      if (enospc.armed && typeof path === 'string') {
+        enospc.armed = false
+        const { writeFileSync } = await import('node:fs')
+        writeFileSync(path, '', { flag: 'wx', mode: 0o600 })
+        const error = new Error('ENOSPC: no space left on device') as NodeJS.ErrnoException
+        error.code = 'ENOSPC'
+        throw error
+      }
+      return actual.writeFile(...args)
+    }) as typeof actual.writeFile,
+  }
+})
 
 const dirs: string[] = []
 afterEach(() => {
+  enospc.armed = false
   for (const dir of dirs.splice(0)) rmSync(dir, { recursive: true, force: true })
 })
 
@@ -205,10 +227,11 @@ it('times out on a live owner instead of taking it', async () => {
   expect(ownerNames(lockDir)).toEqual([`owner.${token}`])
 })
 
-it('times out on a fresh other-host owner and takes a stale one', async () => {
+it('times out on a foreign-host owner however old and leaves the file', async () => {
   const freshDir = lockPath()
   const freshToken = 'remote-host.99.1.fresh'
   const fresh = writeOwner(freshDir, { pid: 99, host: 'remote-host', token: freshToken })
+  const freshBytes = readFileSync(fresh)
   let entered = false
   await expect(
     withFileLock(
@@ -216,33 +239,35 @@ it('times out on a fresh other-host owner and takes a stale one', async () => {
       () => {
         entered = true
       },
-      { waitMs: 200, pollMs: 20, staleMs: 60_000 },
+      { waitMs: 200, pollMs: 20, staleMs: 1_000 },
     ),
   ).rejects.toBeInstanceOf(LockTimeout)
   expect(entered).toBe(false)
-  expect(existsSync(fresh)).toBe(true)
+  expect(readFileSync(fresh).equals(freshBytes)).toBe(true)
   expect(ownerNames(freshDir)).toEqual([`owner.${freshToken}`])
 
-  const staleDir = lockPath()
-  const staleToken = 'remote-host.99.1.stale'
-  const stale = writeOwner(
-    staleDir,
-    { pid: 99, host: 'remote-host', token: staleToken },
-    new Date(Date.now() - 5_000),
-  )
-  let took = false
-  await withFileLock(
-    staleDir,
-    () => {
-      took = true
-      expect(existsSync(stale)).toBe(false)
-    },
-    { waitMs: 1_000, pollMs: 20, staleMs: 1_000 },
-  )
-  expect(took).toBe(true)
-  expect(existsSync(stale)).toBe(false)
-  expect(existsSync(staleDir)).toBe(true)
-  expect(ownerNames(staleDir)).toEqual([])
+  const ancientDir = lockPath()
+  const ancientToken = 'remote-host.99.1.ancient'
+  mkdirSync(ancientDir, { recursive: true })
+  const ancient = join(ancientDir, `owner.${ancientToken}`)
+  writeFileSync(ancient, '', { mode: 0o600 })
+  const ancientBytes = readFileSync(ancient)
+  const old = new Date(Date.now() - 86_400_000)
+  utimesSync(ancient, old, old)
+  entered = false
+  await expect(
+    withFileLock(
+      ancientDir,
+      () => {
+        entered = true
+      },
+      { waitMs: 200, pollMs: 20, staleMs: 1_000 },
+    ),
+  ).rejects.toBeInstanceOf(LockTimeout)
+  expect(entered).toBe(false)
+  expect(readFileSync(ancient).equals(ancientBytes)).toBe(true)
+  expect(statSync(ancient).mtimeMs).toBeLessThan(Date.now() - 60_000)
+  expect(ownerNames(ancientDir)).toEqual([`owner.${ancientToken}`])
 })
 
 it('gives the first turn to the lexicographically smaller token', async () => {
@@ -333,6 +358,111 @@ it('advances the holder file mtime while fn runs', async () => {
   expect(advanced).toBe(true)
   expect(existsSync(lockDir)).toBe(true)
   expect(ownerNames(lockDir)).toEqual([])
+})
+
+it('removes a same-host dead owner even when the body is empty or invalid', async () => {
+  for (const body of ['', '{']) {
+    const lockDir = lockPath()
+    const pid = deadPid()
+    const token = `${hostname()}.${String(pid)}.1.incomplete`
+    mkdirSync(lockDir, { recursive: true })
+    const dead = join(lockDir, `owner.${token}`)
+    writeFileSync(dead, body, { mode: 0o600 })
+    let entered = false
+    await withFileLock(
+      lockDir,
+      () => {
+        entered = true
+        expect(existsSync(dead)).toBe(false)
+      },
+      { waitMs: 1_000, pollMs: 20 },
+    )
+    expect(entered).toBe(true)
+    expect(existsSync(dead)).toBe(false)
+    expect(existsSync(lockDir)).toBe(true)
+  }
+})
+
+it('times out on an empty same-host owner whose pid is live', async () => {
+  const lockDir = lockPath()
+  const token = `${hostname()}.${String(process.pid)}.1.empty-live`
+  mkdirSync(lockDir, { recursive: true })
+  const live = join(lockDir, `owner.${token}`)
+  writeFileSync(live, '', { mode: 0o600 })
+  let entered = false
+  await expect(
+    withFileLock(
+      lockDir,
+      () => {
+        entered = true
+      },
+      { waitMs: 250, pollMs: 20 },
+    ),
+  ).rejects.toBeInstanceOf(LockTimeout)
+  expect(entered).toBe(false)
+  expect(existsSync(live)).toBe(true)
+  expect(readFileSync(live, 'utf8')).toBe('')
+  expect(ownerNames(lockDir)).toEqual([`owner.${token}`])
+})
+
+it('removes an orphan publish file for a dead same-host pid', async () => {
+  const lockDir = lockPath()
+  const pid = deadPid()
+  const token = `${hostname()}.${String(pid)}.1.partial`
+  mkdirSync(lockDir, { recursive: true })
+  const partial = join(lockDir, `.publish.${token}`)
+  writeFileSync(partial, '', { mode: 0o600 })
+  let entered = false
+  await withFileLock(
+    lockDir,
+    () => {
+      entered = true
+      expect(existsSync(partial)).toBe(false)
+    },
+    { waitMs: 1_000, pollMs: 20 },
+  )
+  expect(entered).toBe(true)
+  expect(existsSync(partial)).toBe(false)
+  expect(ownerNames(lockDir)).toEqual([])
+})
+
+it('leaves a live same-host publish temp in place and still acquires', async () => {
+  const lockDir = lockPath()
+  const token = `${hostname()}.${String(process.pid)}.1.publishing`
+  mkdirSync(lockDir, { recursive: true })
+  const partial = join(lockDir, `.publish.${token}`)
+  writeFileSync(partial, 'partial', { mode: 0o600 })
+  await withFileLock(
+    lockDir,
+    () => {
+      expect(existsSync(partial)).toBe(true)
+      expect(readFileSync(partial, 'utf8')).toBe('partial')
+    },
+    { waitMs: 1_000, pollMs: 20 },
+  )
+  expect(existsSync(partial)).toBe(true)
+  expect(ownerNames(lockDir)).toEqual([])
+})
+
+it('rethrows ENOSPC from writeFile and leaves no owner or publish file', async () => {
+  const lockDir = lockPath()
+  enospc.armed = true
+  let entered = false
+  await expect(
+    withFileLock(
+      lockDir,
+      () => {
+        entered = true
+      },
+      { waitMs: 1_000, pollMs: 20 },
+    ),
+  ).rejects.toMatchObject({ code: 'ENOSPC' })
+  expect(entered).toBe(false)
+  expect(enospc.armed).toBe(false)
+  const names = readdirSync(lockDir).filter(
+    (name) => name.startsWith('owner.') || name.startsWith('.publish.'),
+  )
+  expect(names).toEqual([])
 })
 
 it('removes the owner file when fn throws and keeps the directory', async () => {
