@@ -199,6 +199,10 @@ jobs:
       contents: read
     env:
       NPM_TOKEN_PRESENT: ${{ secrets.NODE_AUTH_TOKEN != '' }}
+      # Job-level: when registry-url is set, setup-node writes an .npmrc with the
+      # ${NODE_AUTH_TOKEN} placeholder for EVERY later step, so `npm ci` and the
+      # build must see the real value too (grok review, PR #1015).
+      NODE_AUTH_TOKEN: ${{ secrets.NODE_AUTH_TOKEN }}
 
     steps:
       - uses: actions/checkout@v4
