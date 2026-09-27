@@ -277,15 +277,22 @@ export interface TaskWire {
 }
 
 export interface TaskCreateRequest {
-  /** Id of the task that is delegating this one; the den stamps the child's chain depth from it. */
-  parentTaskId?: string
-  /** Explicit chain depth for the child; wins over the parent lookup. Non-negative integer. */
-  chainDepth?: number
   goal: string
   agentId: string
   executor?: TaskExecutorKind
   executorTarget?: string
   requestedBy?: string
+  /**
+   * Parent `ros_tasks` id. The created row's `chainDepth` is that parent's
+   * stored depth plus one. A parent id that is not in the store counts as
+   * depth 0 (the child is stamped 1) and is not stored on the row.
+   */
+  parentTaskId?: string
+  /**
+   * Explicit child chain depth. When present it wins over the parent lookup.
+   * Must be a non-negative integer. A depth greater than 3 is refused.
+   */
+  chainDepth?: number
   nodeAffinity?: string
   spec?: Record<string, unknown>
   budget?: TaskBudget
@@ -500,7 +507,7 @@ export interface MemoryAppendToolArgs {
   /** Message text. */
   content: string
   /** Message role. */
-  role?: 'user' | 'assistant' | 'system' | 'tool'
+  role: 'user' | 'assistant' | 'system' | 'tool'
   /** Name of the invoked tool. */
   tool_name?: string
   /** Tool arguments as a JSON object. */

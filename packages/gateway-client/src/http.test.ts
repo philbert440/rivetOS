@@ -54,6 +54,12 @@ describe.each([true, false])('fetch injection enabled: %s', (injected) => {
     fetch.mockResolvedValue(Response.json({ ok: true }))
     expect(await client.health()).toBe(true)
     expect(fetch).toHaveBeenCalledOnce()
+    const [url, opts] = fetch.mock.calls[0]
+    expect(String(url)).toMatch(/\/healthz$/)
+    expect(opts?.method).toBe('GET')
+    expect(
+      Object.keys(opts?.headers ?? {}).some((name) => name.toLowerCase() === 'authorization'),
+    ).toBe(false)
     expect(fallback).not.toHaveBeenCalled()
   })
 })
