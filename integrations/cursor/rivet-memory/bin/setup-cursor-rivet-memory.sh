@@ -124,13 +124,10 @@ def owned(word, launcher=False):
     return False
 
 def is_shell(word):
-    # A literal shell: bare `bash`/`sh`, or an absolute path into a system bin dir. No PATH lookup.
-    if not isinstance(word, str) or not word:
-        return False
-    if os.sep not in word:
-        return word in ("bash", "sh")
+    # Only an absolute interpreter in a system bin dir proves a shell. A bare `bash` depends on the
+    # PATH Cursor launches the server with, which may name something else: preserve it.
     resolved = resolve(word)
-    return (os.path.dirname(resolved) in SHELL_DIRS
+    return (bool(resolved) and os.path.dirname(resolved) in SHELL_DIRS
             and os.path.basename(resolved) in ("bash", "sh", "dash"))
 
 def owned_hook(entry):

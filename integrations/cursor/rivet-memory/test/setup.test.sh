@@ -37,7 +37,8 @@ servers = {
     'direct': {'command': str(kit / 'bin/rivet-memory-mcp.sh')},
     'alias': {'command': str(tmp / 'mcp alias')},
     'old-shell': {'command': '/bin/bash', 'args': [str(old / 'bin/rivet-memory-mcp.sh')]},
-    'bare-shell': {'command': 'bash', 'args': [str(kit / 'bin/rivet-memory-mcp.sh')]},
+    'bare-shell': {'command': 'bash', 'args': [str(kit / 'bin/rivet-memory-mcp.sh')], 'env': {'PATH': '/srv/independent/bin:/usr/bin'}},
+    'system-shell': {'command': '/usr/bin/bash', 'args': [str(kit / 'bin/rivet-memory-mcp.sh')]},
     'wrapper': {'command': str(tmp / 'bash'), 'args': [str(kit / 'bin/rivet-memory-mcp.sh')]},
     'path-launcher': {'command': 'rivet-memory-mcp.sh', 'env': {'PATH': '/srv/independent/bin:/usr/bin'}},
 }
@@ -86,7 +87,7 @@ assert [e['command'] for e in hooks] == [
     '/srv/personal/integrations/cursor/rivet-memory/bin/custom-hook.py',
 ], hooks
 servers = json.loads((home / 'mcp.json').read_text())['mcpServers']
-assert set(servers) == {'rivetos', 'argument-only', 'wrapper', 'path-launcher'}
+assert set(servers) == {'rivetos', 'argument-only', 'wrapper', 'path-launcher', 'bare-shell'}, set(servers)
 for name in ['hooks.json', 'mcp.json']:
     backups = list(home.glob(name + '.bak-*'))
     assert len(backups) == 1 and backups[0].read_bytes() == Path(os.environ['TMP'], name.split('.')[0] + '.before').read_bytes()
