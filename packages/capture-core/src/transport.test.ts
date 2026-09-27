@@ -65,15 +65,35 @@ it('defaults to den when the den URL resolves and the user id is empty', () => {
     kind: 'den',
     denUrl: DEN,
   })
-  expect(resolveCaptureTransport({ RIVETOS_USER_ID: '   ' }, noConfig)).toEqual({
+  expect(resolveCaptureTransport({ RIVET_DEN_URL: DEN, RIVETOS_USER_ID: '' }, noConfig)).toEqual({
     kind: 'den',
     denUrl: DEN,
   })
+  expect(
+    resolveCaptureTransport(
+      { RIVETOS_CAPTURE_TRANSPORT: 'den', RIVET_DEN_URL: DEN, RIVETOS_PG_URL: PG, RIVETOS_USER_ID: '' },
+      noConfig,
+    ),
+  ).toEqual({ kind: 'den', denUrl: DEN })
   expect(resolveCaptureTransport({}, () => 'den:\n  port: 5999')).toEqual({
     kind: 'den',
     denUrl: 'https://127.0.0.1:5999',
   })
 })
+
+it.each(['den', undefined])(
+  'blocks a whitespace user id by raw presence with transport %s',
+  (forced) => {
+    const reason =
+      'RIVETOS_USER_ID is set — den transport would hit the owner pool on loopback — and RIVETOS_PG_URL is not set'
+    const env = { RIVETOS_CAPTURE_TRANSPORT: forced, RIVET_DEN_URL: DEN, RIVETOS_USER_ID: '   ' }
+    expect(resolveCaptureTransport(env, noConfig)).toEqual({ kind: 'none', reason })
+    expect(resolveCaptureTransport({ ...env, RIVETOS_PG_URL: PG }, noConfig)).toEqual({
+      kind: 'pg',
+      pgUrl: PG,
+    })
+  },
+)
 
 it('keeps pg for a routed user even when den is forced', () => {
   expect(

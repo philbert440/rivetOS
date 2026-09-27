@@ -4,10 +4,11 @@ import { resolveDenUrl } from './den-url.js'
  * Which backend a short-lived capture hook writes to.
  *
  * `den` posts to the node's own den and opens no Postgres connection.
- * `pg` is the direct pool, kept for one release. A non-empty
- * `RIVETOS_USER_ID` never selects `den`: loopback callers are the owner,
- * so a routed user would write the wrong pool. That holds even when
- * transport is forced to `den`.
+ * `pg` is the direct pool, kept for one release. A present
+ * `RIVETOS_USER_ID` (any value except unset or `''`, including whitespace)
+ * never selects `den`: loopback callers are the owner, so a routed user
+ * would write the wrong pool. That holds even when transport is forced
+ * to `den`.
  *
  * `rivetos_resolve_den` unsets `RIVET_DEN_URL` when the CA file is missing
  * but still exports `RIVET_DEN_CA`. That pair means the launcher disabled
@@ -33,7 +34,7 @@ export function resolveCaptureTransport(
     trimmed(env.RIVET_DEN_URL).length === 0 && trimmed(env.RIVET_DEN_CA).length > 0
   const denUrl = launcherDisabledDen ? undefined : resolveDenUrl(env, readConfig)?.denUrl
   const pgUrl = trimmed(env.RIVETOS_PG_URL)
-  const userBlocksDen = trimmed(env.RIVETOS_USER_ID).length > 0
+  const userBlocksDen = env.RIVETOS_USER_ID !== undefined && env.RIVETOS_USER_ID !== ''
 
   if (forced === 'den') {
     if (!denUrl) {

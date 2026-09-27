@@ -1,5 +1,5 @@
 import { expect, it } from 'vitest'
-import { eventIdFromContent } from './event-id.js'
+import { contentTupleHash, eventIdFromContent, occurrenceIndex } from './event-id.js'
 
 const base = {
   sessionKey: 'claude-code:sess',
@@ -20,4 +20,40 @@ it('is stable across calls and changes when any field changes', () => {
   expect(eventIdFromContent({ ...base, toolArgs: { command: 'pwd' } })).not.toBe(id)
   expect(eventIdFromContent({ ...base, toolName: undefined })).not.toBe(id)
   expect(eventIdFromContent({ ...base, toolArgs: undefined })).not.toBe(id)
+})
+
+it('folds occurrence into the hash without changing the hash that omits it', () => {
+  const id = eventIdFromContent(base)
+  expect(eventIdFromContent({ ...base })).toBe(id)
+  const zero = eventIdFromContent({ ...base, occurrence: 0 })
+  const one = eventIdFromContent({ ...base, occurrence: 1 })
+  expect(zero).not.toBe(id)
+  expect(one).not.toBe(zero)
+  expect(eventIdFromContent({ ...base, occurrence: 1 })).toBe(one)
+})
+
+it('hashes the content tuple without session or occurrence', () => {
+  const hash = contentTupleHash(base)
+  expect(hash).toMatch(/^[0-9a-f]{64}$/)
+  expect(contentTupleHash({ ...base })).toBe(hash)
+  expect(hash).not.toBe(eventIdFromContent(base))
+  expect(contentTupleHash({ ...base, content: 'other' })).not.toBe(hash)
+})
+
+it('returns the index of the last matching row in the inclusive prefix', () => {
+  const row = { role: 'user', content: 'continue' }
+  const other = { role: 'assistant', content: 'ok' }
+  expect(occurrenceIndex([], row)).toBe(0)
+  expect(occurrenceIndex([row], row)).toBe(0)
+  expect(occurrenceIndex([row, other, row], row)).toBe(1)
+  expect(occurrenceIndex([{ role: 'user', content: 'other' }], row)).toBe(0)
+  const tool = {
+    role: 'tool',
+    content: '[tool call] Bash',
+    toolName: 'Bash',
+    toolArgs: { command: 'ls' },
+  }
+  const otherTool = { ...tool, toolArgs: { command: 'pwd' } }
+  expect(occurrenceIndex([tool, otherTool], otherTool)).toBe(0)
+  expect(occurrenceIndex([tool, tool], tool)).toBe(1)
 })

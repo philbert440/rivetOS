@@ -49,7 +49,9 @@ if [ -n "${_rivet_paths}" ]; then
   . "$_rivet_paths"
   rivetos_resolve_den || true
 else
-  echo "qwen-memory-capture: rivet-paths.sh not found; den CA trust was not configured" >&2
+  # No shared tree and no /opt helper: do not synthesize a den URL.
+  export RIVETOS_CAPTURE_TRANSPORT="${RIVETOS_CAPTURE_TRANSPORT:-pg}"
+  echo "qwen-memory-capture: den transport disabled: rivet-paths.sh not found; using pg" >&2
 fi
 unset _rivet_paths _rivet_candidate
 

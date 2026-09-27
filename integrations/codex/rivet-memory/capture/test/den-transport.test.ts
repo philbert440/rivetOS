@@ -7,13 +7,20 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 vi.mock('pg', () => {
   class Pool {
     constructor() {
-      throw new Error('pg.Pool must not be constructed on the den path')
+      // pg is still statically imported. This only proves no pool was constructed.
+      throw new Error('no pool constructed')
     }
   }
   return { default: { Pool }, Pool }
 })
 
-import { ingestTranscriptFile, parseRolloutFile, loadCaptureState, deriveSessionKey } from '../src/codex-memory-capture.ts'
+import {
+  deriveSessionKey,
+  ingestTranscriptFile,
+  loadCaptureState,
+  parseRolloutFile,
+  saveCaptureState,
+} from '../src/codex-memory-capture.ts'
 
 const denEnv: NodeJS.ProcessEnv = {
   RIVETOS_CAPTURE_TRANSPORT: 'den',
@@ -30,8 +37,18 @@ const FIXTURE = path.join(
 
 interface PostedMessage {
   event_id: string
+  role: string
   content: string
-  metadata?: { session_jsonl_path?: unknown; session_jsonl_line?: unknown }
+  tool_name?: string
+  tool_args?: unknown
+  tool_result?: string
+  created_at?: string
+  metadata?: {
+    session_jsonl_path?: unknown
+    session_jsonl_line?: unknown
+    full_content_length?: number
+    truncated?: boolean
+  }
 }
 interface PostedBatch {
   session_key: string
@@ -85,6 +102,35 @@ describe('codex den transport', () => {
     expect(batch?.finalize).toBeUndefined()
     expect(batch?.messages.map((m) => m.event_id)).toEqual(parsed.messages.map((m) => m.eventId))
     expect(batch?.messages.map((m) => m.content)).toEqual(parsed.messages.map((m) => m.content))
+    expect(batch?.messages.map((m) => m.role)).toEqual([
+      'user',
+      'assistant',
+      'tool',
+      'tool',
+      'assistant',
+    ])
+    const byId = new Map((batch?.messages ?? []).map((message) => [message.event_id, message]))
+    expect(byId.get('rs_user1')).toMatchObject({ role: 'user', content: 'list the files' })
+    expect(byId.get('rs_user1')?.tool_name).toBeUndefined()
+    expect(byId.get('rs_user1')?.created_at).toBeUndefined()
+    expect(byId.get('rs_think1')).toMatchObject({
+      role: 'assistant',
+      content: '[thinking] I should list',
+    })
+    expect(byId.get('ctc_1')).toMatchObject({
+      role: 'tool',
+      content: '[tool] shell',
+      tool_name: 'shell',
+      tool_args: { command: 'ls', extra: { nested: true } },
+    })
+    expect(byId.get('ctc_1')?.tool_result).toBeUndefined()
+    expect(byId.get('ctco_1')).toMatchObject({
+      role: 'tool',
+      content: '[tool-result] shell',
+      tool_name: 'shell',
+      tool_result: 'a.txt',
+    })
+    expect(byId.get('rs_asst1')).toMatchObject({ role: 'assistant', content: 'here they are' })
     for (const message of batch?.messages ?? []) {
       expect(message.metadata?.session_jsonl_path).toBe(path.resolve(FIXTURE))
       expect(typeof message.metadata?.session_jsonl_line).toBe('number')
@@ -93,7 +139,68 @@ describe('codex den transport', () => {
       statSync(FIXTURE).size,
     )
     const pg = (await import('pg')).default as { Pool: new () => unknown }
-    expect(() => new pg.Pool()).toThrow(/pg\.Pool/)
+    expect(() => new pg.Pool()).toThrow(/no pool constructed/)
+  })
+
+  it('posts created_at and capped oversized metadata', async () => {
+    const dir = tmpDir()
+    const file = path.join(
+      dir,
+      'rollout-2026-09-07T12-00-00-89965427-b96f-4d5e-8ad5-c3dd138e33dc.jsonl',
+    )
+    const content = 'x'.repeat(16_001)
+    writeFileSync(
+      file,
+      [
+        JSON.stringify({
+          timestamp: '2026-09-07T12:00:00.000Z',
+          type: 'session_meta',
+          payload: { id: '89965427-b96f-4d5e-8ad5-c3dd138e33dc', cwd: '/tmp/demo' },
+        }),
+        JSON.stringify({
+          timestamp: '2026-09-07T12:00:01.000Z',
+          type: 'response_item',
+          payload: {
+            type: 'message',
+            role: 'user',
+            id: 'user-ts',
+            content: [{ type: 'input_text', text: content }],
+          },
+        }),
+      ].join('\n') + '\n',
+    )
+    const bodies: PostedBatch[] = []
+    await ingestTranscriptFile(file, {
+      stateFile: path.join(dir, 'state.json'),
+      env: denEnv,
+      fetch: okFetch(bodies, []),
+      spoolDir: path.join(dir, 'spool'),
+    })
+    expect(bodies[0]?.messages[0]).toMatchObject({
+      event_id: 'user-ts',
+      role: 'user',
+      content: 'x'.repeat(16_000),
+      created_at: '2026-09-07T12:00:01.000Z',
+      metadata: { full_content_length: 16_001, truncated: true },
+    })
+  })
+
+  it('rolls the cursor back to the previous offset on a thrown 4xx', async () => {
+    const dir = tmpDir()
+    const stateFile = path.join(dir, 'state.json')
+    const abs = path.resolve(FIXTURE)
+    saveCaptureState(
+      { version: 1, cursors: { [abs]: { offset: 20, pending: 'keep-me' } } },
+      stateFile,
+    )
+    const result = await ingestTranscriptFile(FIXTURE, {
+      stateFile,
+      env: denEnv,
+      fetch: () => Promise.resolve(new Response('', { status: 400 })),
+      spoolDir: path.join(dir, 'spool'),
+    })
+    expect(result.failed).toBe(true)
+    expect(loadCaptureState(stateFile).cursors[abs]).toEqual({ offset: 20, pending: 'keep-me' })
   })
 
   it('sets finalize when the session closes', async () => {

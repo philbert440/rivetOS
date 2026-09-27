@@ -41,7 +41,9 @@ if [ -n "${_rivet_paths:-}" ]; then
   . "$_rivet_paths"
   rivetos_resolve_den || true
 else
-  echo "rivet-memory-hook: rivet-paths.sh not found; den CA trust was not configured" >&2
+  # No plugin lib, shared tree, or /opt helper: do not synthesize a den URL.
+  export RIVETOS_CAPTURE_TRANSPORT="${RIVETOS_CAPTURE_TRANSPORT:-pg}"
+  echo "rivet-memory-hook: den transport disabled: rivet-paths.sh not found; using pg" >&2
 fi
 unset _rivet_paths _rivet_candidate
 

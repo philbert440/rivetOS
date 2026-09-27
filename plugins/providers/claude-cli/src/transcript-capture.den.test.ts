@@ -2,12 +2,13 @@ import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { eventIdFromContent } from '@rivetos/capture-core'
+import { contentTupleHash } from '@rivetos/capture-core'
 
 vi.mock('pg', () => {
   class Pool {
     constructor() {
-      throw new Error('pg.Pool must not be constructed on the den path')
+      // pg is still statically imported. This only proves no pool was constructed.
+      throw new Error('no pool constructed')
     }
   }
   return { default: { Pool }, Pool }
@@ -27,8 +28,11 @@ interface PostedMessage {
   tool_name?: string
   tool_result?: string
   metadata?: {
+    source?: unknown
     session_jsonl_path?: unknown
     session_jsonl_line?: unknown
+    full_content_length?: number
+    truncated?: boolean
   }
 }
 interface PostedBatch {
@@ -122,13 +126,9 @@ describe('claude-cli den transport', () => {
     expect(bodies[1]?.messages.map((m) => m.event_id)).toEqual(ids)
     expect(ids).toEqual([
       'claude-code:sess-1:a1',
-      eventIdFromContent({
-        sessionKey: 'claude-code:sess-1',
-        role: 'assistant',
-        content: 'no uuid',
-      }),
+      `claude-code:sess-1:occ:${contentTupleHash({ role: 'assistant', content: 'no uuid' })}:0`,
       'claude-code:sess-1:tool:toolu_1',
-      eventIdFromContent({ sessionKey: 'claude-code:sess-1', role: 'user', content: 'hello' }),
+      `claude-code:sess-1:occ:${contentTupleHash({ role: 'user', content: 'hello' })}:0`,
     ])
     expect(bodies[0]?.task_id).toBe('cccccccc-3333-4333-8333-cccccccccccc')
     expect(bodies[0]?.finalize).toBeUndefined()
@@ -139,7 +139,7 @@ describe('claude-cli den transport', () => {
     expect(tool?.metadata?.session_jsonl_line).toBe(2)
     expect(bodies[0]?.messages[3]?.metadata?.session_jsonl_line).toBe(0)
     const pg = (await import('pg')).default as { Pool: new () => unknown }
-    expect(() => new pg.Pool()).toThrow(/pg\.Pool/)
+    expect(() => new pg.Pool()).toThrow(/no pool constructed/)
   })
 
   it('finalizes on SessionEnd', async () => {
@@ -155,7 +155,7 @@ describe('claude-cli den transport', () => {
     expect(bodies[0]?.finalize).toBe(true)
   })
 
-  it('ids a hook event from the spool stem and sends uncapped content', async () => {
+  it('ids an unreadable hook from the spool stem and lets the writer cap it', async () => {
     const bodies: PostedBatch[] = []
     const prompt = 'p'.repeat(16_001)
     await ingestHookEvent({
@@ -166,7 +166,178 @@ describe('claude-cli den transport', () => {
     })
     expect(bodies[0]?.session_key).toBe('claude-code:sess-1')
     expect(bodies[0]?.messages[0]?.event_id).toBe('claude-code:sess-1:hook:stem1')
-    expect(bodies[0]?.messages[0]?.content).toBe(prompt)
+    expect(bodies[0]?.messages[0]?.content).toBe('p'.repeat(16_000))
     expect(bodies[0]?.messages[0]?.metadata?.session_jsonl_path).toBeUndefined()
+    expect(bodies[0]?.messages[0]?.metadata).toMatchObject({
+      source: 'hook-only',
+      full_content_length: 16_001,
+      truncated: true,
+    })
+  })
+
+  it('gives two identical user turns distinct ids that survive a second ingest', async () => {
+    const dir = mkdtempSync(path.join(tmpdir(), 'claude-den-'))
+    dirs.push(dir)
+    const file = path.join(dir, 'sess.jsonl')
+    const user = (uuid: string) =>
+      JSON.stringify({
+        type: 'user',
+        sessionId: 'sess-1',
+        uuid,
+        message: { role: 'user', content: 'continue' },
+      })
+    writeFileSync(
+      file,
+      [
+        user('u1'),
+        JSON.stringify({
+          type: 'assistant',
+          sessionId: 'sess-1',
+          uuid: 'a1',
+          message: { role: 'assistant', content: 'ok' },
+        }),
+        user('u2'),
+      ].join('\n') + '\n',
+    )
+    const bodies: PostedBatch[] = []
+    const fetch = okFetch(bodies)
+    await ingestTranscript({ transcriptPath: file, env: denEnv, fetch })
+    await ingestTranscript({ transcriptPath: file, env: denEnv, fetch })
+    const ids = bodies[0]?.messages.filter((m) => m.role === 'user').map((m) => m.event_id) ?? []
+    expect(ids).toHaveLength(2)
+    expect(ids[0]).not.toBe(ids[1])
+    expect(ids[0]).toMatch(/:occ:[0-9a-f]{64}:0$/)
+    expect(ids[1]).toMatch(/:occ:[0-9a-f]{64}:1$/)
+    expect(ids[0]?.slice(0, ids[0].lastIndexOf(':'))).toBe(ids[1]?.slice(0, ids[1].lastIndexOf(':')))
+    expect(bodies[1]?.messages.filter((m) => m.role === 'user').map((m) => m.event_id)).toEqual(ids)
+  })
+
+  it('reconciles a hook prompt with the transcript in either order', async () => {
+    const write = (): string => {
+      const dir = mkdtempSync(path.join(tmpdir(), 'claude-den-'))
+      dirs.push(dir)
+      const file = path.join(dir, 'sess.jsonl')
+      writeFileSync(
+        file,
+        [
+          JSON.stringify({
+            type: 'user',
+            sessionId: 'sess-1',
+            uuid: 'u1',
+            message: { role: 'user', content: 'continue' },
+          }),
+          JSON.stringify({
+            type: 'assistant',
+            sessionId: 'sess-1',
+            uuid: 'a1',
+            message: { role: 'assistant', content: 'ok' },
+          }),
+          JSON.stringify({
+            type: 'user',
+            sessionId: 'sess-1',
+            uuid: 'u2',
+            message: { role: 'user', content: 'continue' },
+          }),
+        ].join('\n') + '\n',
+      )
+      return file
+    }
+    const userId = (bodies: PostedBatch[]): string =>
+      bodies
+        .flatMap((batch) => batch.messages)
+        .filter((m) => m.role === 'user')
+        .map((m) => m.event_id)
+        .at(-1) ?? ''
+    const hookFirstFile = write()
+    const hookFirst: PostedBatch[] = []
+    await ingestHookEvent({
+      payload: {
+        hook_event_name: 'UserPromptSubmit',
+        session_id: 'sess-1',
+        prompt: 'continue',
+        transcript_path: hookFirstFile,
+      },
+      idempotencyKey: 'stem-a',
+      env: denEnv,
+      fetch: okFetch(hookFirst),
+    })
+    await ingestTranscript({ transcriptPath: hookFirstFile, env: denEnv, fetch: okFetch(hookFirst) })
+    const hookId = hookFirst[0]?.messages[0]?.event_id
+    expect(hookId).toMatch(/:occ:[0-9a-f]{64}:1$/)
+    expect(hookFirst[0]?.messages[0]?.metadata).toMatchObject({ source: 'claude-code-hook' })
+    expect(userId(hookFirst)).toBe(hookId)
+
+    const transcriptFirstFile = write()
+    const transcriptFirst: PostedBatch[] = []
+    await ingestTranscript({
+      transcriptPath: transcriptFirstFile,
+      env: denEnv,
+      fetch: okFetch(transcriptFirst),
+    })
+    await ingestHookEvent({
+      payload: {
+        hook_event_name: 'UserPromptSubmit',
+        session_id: 'sess-1',
+        prompt: 'continue',
+        transcript_path: transcriptFirstFile,
+      },
+      idempotencyKey: 'stem-b',
+      env: denEnv,
+      fetch: okFetch(transcriptFirst),
+    })
+    const transcriptUser = transcriptFirst[0]?.messages.filter((m) => m.role === 'user').at(-1)?.event_id
+    expect(transcriptFirst.at(-1)?.messages[0]?.event_id).toBe(transcriptUser)
+  })
+
+  it('assigns occ ids to tool rows that have no tool_use id', async () => {
+    const dir = mkdtempSync(path.join(tmpdir(), 'claude-den-'))
+    dirs.push(dir)
+    const file = path.join(dir, 'sess.jsonl')
+    writeFileSync(
+      file,
+      JSON.stringify({
+        type: 'assistant',
+        sessionId: 'sess-1',
+        uuid: 'a-tools',
+        message: {
+          role: 'assistant',
+          content: [
+            { type: 'tool_use', name: 'Read', input: { path: 'a' } },
+            { type: 'tool_use', name: 'Read', input: { path: 'a' } },
+          ],
+        },
+      }) + '\n',
+    )
+    const bodies: PostedBatch[] = []
+    await ingestTranscript({ transcriptPath: file, env: denEnv, fetch: okFetch(bodies) })
+    const ids = bodies[0]?.messages.map((m) => m.event_id) ?? []
+    expect(ids).toHaveLength(2)
+    expect(ids[0]).toMatch(/:occ:[0-9a-f]{64}:0$/)
+    expect(ids[1]).toMatch(/:occ:[0-9a-f]{64}:1$/)
+    expect(ids[0]).not.toContain(':tool:')
+    expect(bodies[0]?.messages[0]).toMatchObject({
+      role: 'tool',
+      tool_name: 'Read',
+      content: '[tool call] Read',
+    })
+  })
+
+  it('falls back to the hook stem when the transcript cannot be read', async () => {
+    const bodies: PostedBatch[] = []
+    await ingestHookEvent({
+      payload: {
+        hook_event_name: 'PostToolUse',
+        session_id: 'sess-1',
+        transcript_path: path.join(tmpdir(), 'missing-claude-transcript.jsonl'),
+        tool_name: 'Bash',
+        tool_input: { command: 'ls' },
+        tool_response: 'ok',
+      },
+      idempotencyKey: 'stem-missing',
+      env: denEnv,
+      fetch: okFetch(bodies),
+    })
+    expect(bodies[0]?.messages[0]?.event_id).toBe('claude-code:sess-1:hook:stem-missing')
+    expect(bodies[0]?.messages[0]?.metadata).toMatchObject({ source: 'hook-only' })
   })
 })
