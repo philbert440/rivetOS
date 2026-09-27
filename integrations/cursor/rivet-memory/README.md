@@ -42,13 +42,15 @@ Uses a built RivetOS checkout (`services/mcp-sidecar`) or the shared pinned npm 
 
 `bin/rivet-memory-hook.sh` spools each hook payload to `~/.rivetos/cursor-capture/spool/` and logs to `~/.rivetos/cursor-capture.log`. The spool directory is 0700 and new payload files are 0600; writes prune oldest payloads to retain at most 500 files and 50 MiB (an oversized payload may itself be removed). Writes take a 3 s lock deadline; if retention cannot be enforced (no `python3`), the new payload is discarded rather than growing the spool, and the failure is logged. Diagnostics rotate at 1 MiB with one previous log retained.
 
-When `capture/dist/cursor-memory-capture.js` is built, the hook pipes each payload to it (never `npx` from a hook). The worker posts to the local den as agent `rivet-cursor`, channel `cursor`, session key `cursor:<conversation_id>`. Prompt, assistant text, tool use, subagent stop, and session end become messages. Turn `stop` does not. Event ids are stable, so a replay skips rows already stored. `user_email` is not stored. Content and tool results are capped at 16,000 characters.
+When `capture/dist/cursor-memory-capture.js` is built, the hook pipes each payload to it (never `npx` from a hook). The worker posts to the local den as agent `rivet-cursor`, channel `cursor`, session key `cursor:<conversation_id>`.
+
+When the payload names `transcript_path`, that agent jsonl is the source: one row per user text, assistant text, and tool call, stamped with `session_jsonl_path` and `session_jsonl_line` so a truncated row can be re-read. `postToolUse` supplies the tool result (the transcript has none). A Read result that is only a path and a length is replaced by the file slice that call asked for. Hook user, assistant, and tool bodies are not stored again. `stop` and `sessionEnd` flush a tool call that never received a result. Without a transcript path, the hook payload itself is stored (prompt, assistant text, tool use, subagent stop, session end). `user_email` is not stored. Content and tool results are capped at 16,000 characters. A byte offset in `~/.rivetos/cursor-transcript-state.json` keeps each hook from re-reading the file. Event ids are stable, so a replay skips rows already stored.
 
 ```bash
 node integrations/cursor/rivet-memory/capture/dist/cursor-memory-capture.js --backfill
 ```
 
-`--backfill` walks the spool that is still on disk. Retention has already dropped anything past 500 files or 50 MiB, so a backfill cannot recover those. A missing build leaves the spool in place and logs `capture worker not built`.
+`--backfill` tails `~/.cursor/projects/*/agent-transcripts/*/*.jsonl` and joins spool `postToolUse` results onto those tool rows. It does not re-post hook user and assistant blobs. Retention has already dropped spool files past 500 or 50 MiB, so a result from a pruned payload cannot be joined. A missing build leaves the spool in place and logs `capture worker not built`. Cursor does not write reasoning into the transcript, so those parts are not captured.
 
 ## Related
 
