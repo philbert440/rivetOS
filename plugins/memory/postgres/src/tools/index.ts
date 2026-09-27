@@ -16,6 +16,18 @@ import { createStatsTool } from './stats-tool.js'
 import { createGetFullTool } from './get-full-tool.js'
 
 export type { MemoryToolsConfig } from './helpers.js'
+export { createGetFullTool } from './get-full-tool.js'
+export {
+  appendEventId,
+  createMemoryWriteTools,
+  ingestEventId,
+  ingestSession,
+  memoryAppendInputSchema,
+  memoryIngestSessionInputSchema,
+  resolveMemoryWriteTags,
+  truncateContent,
+} from './write-tools.js'
+export type { IngestMessage, IngestSessionInput, MemoryWriteTags } from './write-tools.js'
 
 export function createMemoryTools(
   searchEngine: SearchEngine,

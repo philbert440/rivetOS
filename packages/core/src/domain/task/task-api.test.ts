@@ -178,6 +178,84 @@ describe('/api/tasks', () => {
     expect((await fetch(`${base}/api/tasks?status=wat`)).status).toBe(400)
   })
 
+  it('stamps parent depth + 1 when the parent row exists', async () => {
+    const { base, store } = await startApi({ hang: true })
+    const parent = await store.create({
+      goal: 'parent',
+      agentId: 'opus',
+      executor: 'chat-loop',
+      origin: 'api',
+      chainDepth: 2,
+    })
+    const res = await create(base, { goal: 'child', agentId: 'opus', parentTaskId: parent.id })
+    expect(res.status).toBe(201)
+    const { task } = (await res.json()) as { task: { chainDepth: number; parentTaskId?: string } }
+    expect(task.chainDepth).toBe(3)
+    expect(task.parentTaskId).toBe(parent.id)
+  })
+
+  it('stamps depth 1 and omits parentTaskId when the parent is missing', async () => {
+    const { base } = await startApi({ hang: true })
+    const res = await create(base, {
+      goal: 'child',
+      agentId: 'opus',
+      parentTaskId: '00000000-0000-4000-8000-000000000099',
+    })
+    expect(res.status).toBe(201)
+    const { task } = (await res.json()) as { task: { chainDepth: number; parentTaskId?: string } }
+    expect(task.chainDepth).toBe(1)
+    expect(task.parentTaskId).toBeUndefined()
+  })
+
+  it('lets an explicit chainDepth win over the parent lookup', async () => {
+    const { base, store } = await startApi({ hang: true })
+    const parent = await store.create({
+      goal: 'parent',
+      agentId: 'opus',
+      executor: 'chat-loop',
+      origin: 'api',
+      chainDepth: 0,
+    })
+    const res = await create(base, {
+      goal: 'child',
+      agentId: 'opus',
+      parentTaskId: parent.id,
+      chainDepth: 2,
+    })
+    expect(res.status).toBe(201)
+    const { task } = (await res.json()) as { task: { chainDepth: number; parentTaskId?: string } }
+    expect(task.chainDepth).toBe(2)
+    expect(task.parentTaskId).toBe(parent.id)
+  })
+
+  it('refuses depth 4 with the delegation-chain message', async () => {
+    const { base, store } = await startApi({ hang: true })
+    const explicit = await create(base, { goal: 'too deep', agentId: 'opus', chainDepth: 4 })
+    expect(explicit.status).toBe(409)
+    expect(await explicit.json()).toEqual({ error: 'delegation chain too deep (4 > 3)' })
+
+    const parent = await store.create({
+      goal: 'parent',
+      agentId: 'opus',
+      executor: 'chat-loop',
+      origin: 'api',
+      chainDepth: 3,
+    })
+    const fromParent = await create(base, {
+      goal: 'child',
+      agentId: 'opus',
+      parentTaskId: parent.id,
+    })
+    expect(fromParent.status).toBe(409)
+    expect(await fromParent.json()).toEqual({ error: 'delegation chain too deep (4 > 3)' })
+  })
+
+  it('400s a negative or non-numeric chainDepth', async () => {
+    const { base } = await startApi({ hang: true })
+    expect((await create(base, { goal: 'g', agentId: 'opus', chainDepth: -1 })).status).toBe(400)
+    expect((await create(base, { goal: 'g', agentId: 'opus', chainDepth: 'x' })).status).toBe(400)
+  })
+
   it('GET lists with filters', async () => {
     const { base } = await startApi()
     await (await create(base, { goal: 'a', agentId: 'opus' }, '?wait=1&timeoutMs=5000')).json()

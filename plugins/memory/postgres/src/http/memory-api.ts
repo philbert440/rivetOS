@@ -8,9 +8,11 @@
  *   GET /api/memory/browse?role=&agent=&limit=&window=
  *   GET /api/memory/stats
  *   GET /api/memory/health
+ *   POST /api/memory/tool/<name>   MCP-shaped tool call (search/browse/stats/
+ *                                  get_full/append/ingest_session)
  */
 
-import type { ServerResponse } from 'node:http'
+import type { IncomingMessage, ServerResponse } from 'node:http'
 import {
   routedUserResult,
   type GatewayRoute,
@@ -20,6 +22,7 @@ import {
   type MemorySearchHit,
   type MemorySearchResponse,
   type MemoryStatsResponse,
+  type Tool,
 } from '@rivetos/types'
 import type pg from 'pg'
 import { queryEmbeddingHealth, queryCompactionHealth, queryQueueHealth } from '../health.js'
@@ -93,6 +96,57 @@ export interface MemoryApiOptions {
   hnswEfSearch?: number | string
   /** Test seam — production uses SearchEngine. */
   search?: MemorySearchFn
+  /**
+   * Tool list for `POST /api/memory/tool/<name>`. Called at most once per
+   * pool. Omit (or return a list without the write tools) when that pool
+   * has no PostgresMemory — append / ingest_session then 404.
+   */
+  tools?: (pool: pg.Pool, routed: { kind: 'owner' } | { kind: 'user'; id: string }) => Tool[]
+}
+
+/** Tool-call bodies are one JSON object of MCP arguments. 256 KiB is plenty. */
+const MAX_TOOL_BODY_BYTES = 256 * 1024
+
+class ToolBodyTooLarge extends Error {}
+
+type MemoryRouted = { kind: 'owner' } | { kind: 'user'; id: string }
+
+function toolsForPool(
+  cache: WeakMap<pg.Pool, Tool[]>,
+  opts: MemoryApiOptions,
+  pool: pg.Pool,
+  routed: MemoryRouted,
+): Tool[] {
+  const cached = cache.get(pool)
+  if (cached) return cached
+  const created = opts.tools?.(pool, routed) ?? []
+  cache.set(pool, created)
+  return created
+}
+
+async function readToolBody(req: IncomingMessage): Promise<Record<string, unknown>> {
+  const chunks: Buffer[] = []
+  let size = 0
+  for await (const chunk of req) {
+    const buf = chunk as Buffer
+    size += buf.length
+    if (size > MAX_TOOL_BODY_BYTES) {
+      req.pause()
+      throw new ToolBodyTooLarge('body too large')
+    }
+    chunks.push(buf)
+  }
+  if (size === 0) throw new SyntaxError('invalid JSON')
+  let parsed: unknown
+  try {
+    parsed = JSON.parse(Buffer.concat(chunks).toString('utf8'))
+  } catch {
+    throw new SyntaxError('invalid JSON')
+  }
+  if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) {
+    throw new TypeError('body must be a JSON object')
+  }
+  return parsed as Record<string, unknown>
 }
 
 function json(res: ServerResponse, code: number, body: unknown): void {
@@ -167,12 +221,23 @@ export function createMemoryApiRoute(opts: MemoryApiOptions): GatewayRoute {
   const search: MemorySearchFn =
     opts.search ??
     ((pool, query, options) => engineForPool(pool, engineConfig).search(query, options))
+  const toolsByPool = new WeakMap<pg.Pool, Tool[]>()
 
   return {
     prefix: '/api/memory',
     handler: async (req, res) => {
       try {
-        if (req.method !== 'GET') return json(res, 405, { error: 'method not allowed' })
+        const url = new URL(req.url ?? '/', 'http://localhost')
+        const rest = url.pathname.slice('/api/memory'.length).replace(/^\//, '')
+        const parts = rest.split('/')
+        const head = parts[0]
+        // POST is only the tool route. GET behaviour is unchanged, including
+        // 405 for every non-GET on the existing resources.
+        if (head === 'tool') {
+          if (req.method !== 'POST') return json(res, 405, { error: 'method not allowed' })
+        } else if (req.method !== 'GET') {
+          return json(res, 405, { error: 'method not allowed' })
+        }
         // HARD INVARIANT: this route must only ever be dispatched by den-server
         // AFTER its unconditional strip-and-stamp of x-rivetos-user (embedded
         // gateway extraRoutes). den stamps only resolved non-owner identities,
@@ -180,7 +245,7 @@ export function createMemoryApiRoute(opts: MemoryApiOptions): GatewayRoute {
         // stamped user must resolve to their own pool — unknown or tombstoned
         // entries are refused too. Falling through to the owner pool is exactly
         // the cross-tenant leak this routing exists to close. Never mount this
-        // route on an unauthenticated port.
+        // route on an unauthenticated port. The tool route uses the same gate.
         const routed = routedUserResult(req.headers)
         if (routed.kind === 'invalid') {
           return json(res, 503, { error: 'malformed routing identity' })
@@ -195,9 +260,12 @@ export function createMemoryApiRoute(opts: MemoryApiOptions): GatewayRoute {
           }
           pool = userPool
         }
-        const url = new URL(req.url ?? '/', 'http://localhost')
-        const rest = url.pathname.slice('/api/memory'.length).replace(/^\//, '')
-        const [head] = rest.split('/')
+
+        if (head === 'tool') {
+          const name = parts[1]
+          if (parts.length !== 2 || !name) return json(res, 404, { error: 'unknown memory tool' })
+          return await handleTool(req, res, name, pool, routed, toolsByPool, opts)
+        }
 
         if (head === 'search') return await handleSearch(url, res, search, pool, embedOk)
         if (head === 'browse') return await handleBrowse(url, res, pool)
@@ -212,13 +280,48 @@ export function createMemoryApiRoute(opts: MemoryApiOptions): GatewayRoute {
         return json(res, 404, { error: 'unknown memory resource' })
       } catch (err) {
         const msg = err instanceof Error ? err.message : String(err)
-        if (/does not exist|relation/i.test(msg)) {
+        // GET routes still degrade a missing schema to an empty 200. A tool
+        // call is a normal 500 — the client must see the failure, not an
+        // empty search payload.
+        const path = new URL(req.url ?? '/', 'http://localhost').pathname
+        const isTool = /\/api\/memory\/tool(\/|$)/.test(path)
+        if (!isTool && /does not exist|relation/i.test(msg)) {
           return json(res, 200, emptyFor(req.url ?? ''))
         }
         json(res, 500, { error: msg })
       }
     },
   }
+}
+
+async function handleTool(
+  req: IncomingMessage,
+  res: ServerResponse,
+  name: string,
+  pool: pg.Pool,
+  routed: MemoryRouted,
+  toolsByPool: WeakMap<pg.Pool, Tool[]>,
+  opts: MemoryApiOptions,
+): Promise<void> {
+  let args: Record<string, unknown>
+  try {
+    args = await readToolBody(req)
+  } catch (err) {
+    if (err instanceof ToolBodyTooLarge) {
+      json(res, 413, { error: 'body too large' })
+      res.once('finish', () => req.destroy())
+      return
+    }
+    const message = err instanceof Error ? err.message : 'invalid JSON'
+    json(res, 400, { error: message })
+    return
+  }
+  const tool = toolsForPool(toolsByPool, opts, pool, routed).find(
+    (candidate) => candidate.name === name,
+  )
+  if (!tool) return json(res, 404, { error: 'unknown memory tool' })
+  const result = await tool.execute(args)
+  json(res, 200, { ok: true, result })
 }
 
 async function handleSearch(

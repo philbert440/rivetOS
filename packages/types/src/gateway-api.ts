@@ -276,6 +276,17 @@ export interface TaskCreateRequest {
   executor?: TaskExecutorKind
   executorTarget?: string
   requestedBy?: string
+  /**
+   * Parent `ros_tasks` id. The created row's `chainDepth` is that parent's
+   * stored depth plus one. A parent id that is not in the store counts as
+   * depth 0 (the child is stamped 1) and is not stored on the row.
+   */
+  parentTaskId?: string
+  /**
+   * Explicit child chain depth. When present it wins over the parent lookup.
+   * Must be a non-negative integer. A depth greater than 3 is refused.
+   */
+  chainDepth?: number
   nodeAffinity?: string
   spec?: Record<string, unknown>
   budget?: TaskBudget

@@ -5,6 +5,7 @@
 import { createServer, type Server } from 'node:http'
 import type { AddressInfo } from 'node:net'
 import { afterEach, describe, expect, it, vi } from 'vitest'
+import type { Tool } from '@rivetos/types'
 import type pg from 'pg'
 import { SearchEngine, type SearchHit } from '../search.js'
 import { createMemoryApiRoute } from './memory-api.js'
@@ -541,6 +542,206 @@ describe('/api/memory', () => {
         res as never,
       )
       expect(code).toBe(503)
+    })
+  })
+
+  describe('POST /api/memory/tool/<name>', () => {
+    const TOOL_NAMES = [
+      'memory_search',
+      'memory_browse',
+      'memory_stats',
+      'memory_get_full',
+      'memory_append',
+      'memory_ingest_session',
+    ] as const
+
+    function fakeTools(execute?: Tool['execute']): Tool[] {
+      return TOOL_NAMES.map((name) => ({
+        name,
+        description: name,
+        parameters: {},
+        execute: execute ?? vi.fn(async (args) => JSON.stringify({ name, args })),
+      }))
+    }
+
+    it.each(TOOL_NAMES)('runs %s and returns its ToolResult unchanged', async (name) => {
+      const tools = fakeTools()
+      const base = await serve({
+        pool: fakePool(),
+        tools: () => tools,
+      })
+      const body = { query: 'loopback', limit: 2 }
+      const res = await fetch(`${base}/api/memory/tool/${name}`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify(body),
+      })
+      expect(res.status).toBe(200)
+      const payload = (await res.json()) as { ok: boolean; result: string }
+      expect(payload.ok).toBe(true)
+      expect(JSON.parse(payload.result)).toEqual({ name, args: body })
+      expect(tools.find((tool) => tool.name === name)?.execute).toHaveBeenCalledWith(body)
+    })
+
+    it('passes a ContentPart[] result through', async () => {
+      const parts = [{ type: 'text' as const, text: 'full row' }]
+      const base = await serve({
+        pool: fakePool(),
+        tools: () => [
+          {
+            name: 'memory_get_full',
+            description: 'full',
+            parameters: {},
+            execute: async () => parts,
+          },
+        ],
+      })
+      const res = await fetch(`${base}/api/memory/tool/memory_get_full`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ id: 'row-1' }),
+      })
+      expect(res.status).toBe(200)
+      const payload = (await res.json()) as { ok: boolean; result: typeof parts }
+      expect(payload).toEqual({ ok: true, result: parts })
+    })
+
+    it('404s an unknown tool and write tools that were not mounted', async () => {
+      const base = await serve({
+        pool: fakePool(),
+        tools: () => fakeTools().filter((tool) => tool.name !== 'memory_append'),
+      })
+      const missing = await fetch(`${base}/api/memory/tool/memory_nope`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: '{}',
+      })
+      expect(missing.status).toBe(404)
+      expect(await missing.json()).toEqual({ error: 'unknown memory tool' })
+      const append = await fetch(`${base}/api/memory/tool/memory_append`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: '{}',
+      })
+      expect(append.status).toBe(404)
+      expect(await append.json()).toEqual({ error: 'unknown memory tool' })
+    })
+
+    it('rejects a non-object body, invalid JSON, and a non-POST', async () => {
+      const base = await serve({ pool: fakePool(), tools: () => fakeTools() })
+      const post = (body: string) =>
+        fetch(`${base}/api/memory/tool/memory_search`, {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body,
+        })
+      expect((await post('[1]')).status).toBe(400)
+      expect((await post('null')).status).toBe(400)
+      expect((await post('{')).status).toBe(400)
+      expect((await post('')).status).toBe(400)
+      expect(
+        (await fetch(`${base}/api/memory/tool/memory_search`, { method: 'GET' })).status,
+      ).toBe(405)
+      expect((await fetch(`${base}/api/memory/tool/memory_search`, { method: 'PUT' })).status).toBe(
+        405,
+      )
+    })
+
+    it('413s a body over 256 KiB', async () => {
+      const base = await serve({ pool: fakePool(), tools: () => fakeTools() })
+      const res = await fetch(`${base}/api/memory/tool/memory_search`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: `{"query":"${'q'.repeat(256 * 1024)}"}`,
+      })
+      expect(res.status).toBe(413)
+      expect(await res.json()).toEqual({ error: 'body too large' })
+    })
+
+    it('memoizes the tool factory once per pool', async () => {
+      const owner = fakePool()
+      const coco = fakePool()
+      const factory = vi.fn(() => fakeTools())
+      const base = await serve({
+        pool: owner,
+        userPools: new Map([['coco', coco]]),
+        tools: factory,
+      })
+      const post = (headers?: Record<string, string>) =>
+        fetch(`${base}/api/memory/tool/memory_stats`, {
+          method: 'POST',
+          headers: { 'content-type': 'application/json', ...headers },
+          body: '{}',
+        })
+      expect((await post()).status).toBe(200)
+      expect((await post()).status).toBe(200)
+      expect(factory).toHaveBeenCalledTimes(1)
+      expect((await post({ 'x-rivetos-user': 'coco' })).status).toBe(200)
+      expect(factory).toHaveBeenCalledTimes(2)
+      expect((await post({ 'x-rivetos-user': 'coco' })).status).toBe(200)
+      expect(factory).toHaveBeenCalledTimes(2)
+    })
+
+    it('500s a thrown execute without the stack, including a missing relation', async () => {
+      const boom = new Error('boom')
+      boom.stack = 'boom\n    at secretFrame (secret.ts:1:1)'
+      const base = await serve({
+        pool: fakePool(),
+        tools: () => [
+          {
+            name: 'memory_search',
+            description: 'search',
+            parameters: {},
+            execute: async () => {
+              throw boom
+            },
+          },
+          {
+            name: 'memory_browse',
+            description: 'browse',
+            parameters: {},
+            execute: async () => {
+              throw new Error('relation "ros_messages" does not exist')
+            },
+          },
+        ],
+      })
+      const thrown = await fetch(`${base}/api/memory/tool/memory_search`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: '{}',
+      })
+      expect(thrown.status).toBe(500)
+      const text = await thrown.text()
+      expect(JSON.parse(text)).toEqual({ error: 'boom' })
+      expect(text).not.toContain('secretFrame')
+      const missing = await fetch(`${base}/api/memory/tool/memory_browse`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: '{}',
+      })
+      expect(missing.status).toBe(500)
+      expect(await missing.json()).toEqual({ error: 'relation "ros_messages" does not exist' })
+    })
+
+    it('refuses a bad routing identity on the tool route', async () => {
+      const base = await serve({
+        pool: fakePool(),
+        userPools: new Map([['coco', null]]),
+        tools: () => fakeTools(),
+      })
+      const malformed = await fetch(`${base}/api/memory/tool/memory_search`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', 'x-rivetos-user': '' },
+        body: '{}',
+      })
+      expect(malformed.status).toBe(503)
+      const tombstone = await fetch(`${base}/api/memory/tool/memory_search`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', 'x-rivetos-user': 'coco' },
+        body: '{}',
+      })
+      expect(tombstone.status).toBe(503)
     })
   })
 })
