@@ -276,6 +276,7 @@ Type=oneshot
 ${user_line}
 Environment="RIVETOS_ROOT=${RIVETOS_ROOT}"
 Environment="GROKBOT_TRANSCRIPT_ROOT=${GROKBOT_TRANSCRIPT_ROOT:-}"
+Environment="GROKBOT_SESSION_SUFFIX=${GROKBOT_SESSION_SUFFIX--v3}"
 Environment="RIVETOS_ENV_FILE=${env_file}"
 ExecStart=${exec_start}
 StandardOutput=journal
@@ -435,7 +436,7 @@ load_pg_url() {
 
 ingest_packages_ok() {
     [[ -d "${RIVETOS_ROOT}/node_modules/@rivetos/memory-postgres" ]] \
-        && [[ -f "${RIVETOS_ROOT}/services/mcp-sidecar/dist/memory-write.js" ]]
+        && [[ -f "${RIVETOS_ROOT}/integrations/grok-bot/rivet-memory/capture/dist/ingest-rows.js" ]]
 }
 
 # Returns 0 if a matching row exists for session_key+agent.
@@ -524,7 +525,7 @@ prove_door1() {
         fi
         echo "  Door 1 stored row OK: ${session_id}"
         proved=1
-    done < <(jq -c '.models[]' "${models_json}")
+    done < <(jq -c '.overrides | to_entries[] | {id:.key, sessionId:.value.session, agentId:.value.agent, persona:.value.persona}' "${models_json}")
 
     if [[ "${proved}" -eq 0 ]]; then
         echo "ERROR: Door 1 proof unavailable: no transcripts found to prove" >&2
@@ -865,5 +866,11 @@ echo "  Share snapshot: ${SHARE_ROOT}/snapshot/"
 echo
 echo "Next steps:"
 echo "  1. Ensure GROKBOT_TRANSCRIPT_ROOT is set in the watcher unit environment"
-echo "  2. Monitor capture logs and state"
+echo "  2. Cutover: stop any old unsuffixed watcher/converter before enabling this unit."
+echo "     Rebuild /opt/rivetos (memory-postgres and the grok-bot capture package) before any -v3 ingest."
+echo "     Enabling the watcher ingests every transcript's full history into <session>-v3."
+echo "     New on-disk/page rows go to <session>-v3 (GROKBOT_SESSION_SUFFIX)."
+echo "     store.db seq goes to <session>-v3-store; voice-calls to <session>-v3-voice-<stem>."
+echo "     Do not mix those formats into one session. Do not run old and new watchers together."
+echo "  3. Monitor capture logs and state"
 echo

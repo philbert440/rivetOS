@@ -61,6 +61,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Harness integrations
 
+- Grok Bot capture (`integrations/grok-bot/rivet-memory`, plugin 0.3.0): one normalizer on `@rivetos/capture-core` for on-disk jsonl and ReadTranscript pages. Strips wrapper noise, stamps real message times (UTC offset + N ms inheritance), tags each bot (Rivet/eggbot historical tags unchanged), stores hidden turns as `role=system`, reads `tool_result.result`, and caps at `capForStorage` 16,000. Re-clean writes new `-v3` sessions only — never DELETE/UPDATE.
 - `opencode` harness (id `opencode`, provider `opencode-cli`, roster `opencode`) surfaced in RivetHub web, Android, and docs. Default `model` is `zai/glm-5.3-flash`. The installed OpenCode CLI owns backend, endpoint, and credentials.
 - `pi` memory capture (`integrations/pi/rivet-memory`): v3 session jsonl watcher under `agent=rivet-deepseek` / `channel=pi`, systemd user unit `pi-memory-capture.service` / launchd `dev.rivetos.pi-capture`, wired into `rivetos plugins install` and doctor.
 

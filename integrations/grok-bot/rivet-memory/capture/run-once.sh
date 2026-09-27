@@ -11,7 +11,14 @@ RIVETOS_ROOT="${RIVETOS_ROOT:-/opt/rivetos}"
 INGEST_BIN="${RIVETOS_ROOT}/integrations/grok-bot/rivet-memory/bin/ingest-session.mjs"
 SPOOL_DIR="${SCRIPT_DIR}/spool"
 STATE_DIR="${HOME}/.rivetos/grokbot-capture-state"
+SESSION_SUFFIX="${GROKBOT_SESSION_SUFFIX--v3}"
+# Watcher's single size:mtime map. Per-session stuck-policy lived next to it
+# under the unsuffixed session id (never copy state.json into STATE_DIR).
+OLD_STATE_DIR="${HOME}/.rivetos/capture"
+OLD_WATCHER_STATE="${OLD_STATE_DIR}/state.json"
 GROKBOT_TRANSCRIPT_ROOT="${GROKBOT_TRANSCRIPT_ROOT:-}"
+GROKBOT_AGENTS="${GROKBOT_AGENTS:-${HOME}/agent-data/agents}"
+CLI_JS="${SCRIPT_DIR}/dist/cli.js"
 
 # Stuck policy — MUST match grok-memory-capture.ts:
 # ≥3 failures whose timestamps fall inside a rolling 2h window ending at now.
@@ -49,17 +56,22 @@ if [[ -z "${GROKBOT_TRANSCRIPT_ROOT}" ]]; then
     exit 1
 fi
 
-# Fail-closed check: memory-postgres and sidecar dist must exist
+# Fail-closed check: memory-postgres and the grok-bot ingest writer must exist
 SKIP_INGEST=0
 if [[ ! -d "${RIVETOS_ROOT}/node_modules/@rivetos/memory-postgres" ]]; then
     echo "WARN: RivetOS memory-postgres package not built or missing, skipping ingest (fail closed)" >&2
     SKIP_INGEST=1
 fi
 
-if [[ ! -f "${RIVETOS_ROOT}/services/mcp-sidecar/dist/memory-write.js" ]]; then
-    echo "WARN: RivetOS sidecar dist not built, skipping ingest (fail closed)" >&2
+if [[ ! -f "${RIVETOS_ROOT}/integrations/grok-bot/rivet-memory/capture/dist/ingest-rows.js" ]]; then
+    echo "WARN: grok-bot ingest writer not built, skipping ingest (fail closed)" >&2
     SKIP_INGEST=1
 fi
+
+# Fall back to models.json overrides (not a leftover models[] array).
+overrides_as_models() {
+    jq -c '.overrides | to_entries[] | {id:.key, persona:.value.persona, name:.value.persona, sessionId:.value.session, session:.value.session, agentId:.value.agent, agent:.value.agent}' "${MODELS_JSON}"
+}
 
 # Align .env check: ingest-session.mjs loads ~/.rivetos/.env itself, so check
 # there rather than requiring RIVETOS_PG_URL in process env. Ingest only maps
@@ -231,14 +243,35 @@ warn_if_stuck() {
     return 1
 }
 
-# Parse models.json
-if [[ ! -f "${MODELS_JSON}" ]]; then
+# Same roster as the watcher: discover-models.mjs (agent profiles + overrides).
+# Fall back to models.json overrides only if discovery cannot run.
+DISCOVER_JS="${SCRIPT_DIR}/discover-models.mjs"
+if [[ ! -f "${MODELS_JSON}" && ! -f "${DISCOVER_JS}" ]]; then
     echo "ERROR: models.json not found at ${MODELS_JSON}" >&2
     exit 1
 fi
 
-models=$(jq -r '.models[] | @json' "${MODELS_JSON}")
-transcript_rel=$(jq -r '.transcriptRel' "${MODELS_JSON}")
+transcript_rel=$(jq -r '.transcriptRel // empty' "${MODELS_JSON}" 2>/dev/null || true)
+if [[ -f "${DISCOVER_JS}" ]]; then
+    if roster_json="$(node "${DISCOVER_JS}" --json 2>/dev/null)"; then
+        roster_n="$(printf '%s' "${roster_json}" | jq -r '.models | length' 2>/dev/null || echo 0)"
+        if [[ -z "${roster_n}" || "${roster_n}" == "0" || "${roster_n}" == "null" ]]; then
+            echo "ERROR: discover-models.mjs --json returned an empty roster" >&2
+            exit 1
+        fi
+        models="$(printf '%s' "${roster_json}" | jq -c '.models[]')"
+    elif [[ -f "${MODELS_JSON}" ]]; then
+        models="$(overrides_as_models)"
+    else
+        echo "ERROR: cannot discover models (discover failed and no models.json)" >&2
+        exit 1
+    fi
+elif [[ -f "${MODELS_JSON}" ]]; then
+    models="$(overrides_as_models)"
+else
+    echo "ERROR: cannot discover models (no roster and no models.json)" >&2
+    exit 1
+fi
 
 any_model_failed=0
 any_model_processed=0
@@ -247,15 +280,21 @@ any_stuck=0
 # Process each model
 while IFS= read -r model_json; do
     model_id=$(echo "${model_json}" | jq -r '.id')
-    model_name=$(echo "${model_json}" | jq -r '.name')
-    session_id=$(echo "${model_json}" | jq -r '.sessionId')
-    agent_id=$(echo "${model_json}" | jq -r '.agentId')
+    model_name=$(echo "${model_json}" | jq -r '.name // .persona')
+    session_id=$(echo "${model_json}" | jq -r '.sessionId // .session')
+    agent_id=$(echo "${model_json}" | jq -r '.agentId // .agent')
+    if [[ -n "${SESSION_SUFFIX}" && "${session_id}" != *"${SESSION_SUFFIX}" ]]; then
+        session_id="${session_id}${SESSION_SUFFIX}"
+    fi
 
     echo "Processing model: ${model_name} (${model_id})"
 
-    # Resolve transcript path
-    transcript_path="${transcript_rel//<id>/${model_id}}"
-    transcript_path="${transcript_path//\$GROKBOT_TRANSCRIPT_ROOT/${GROKBOT_TRANSCRIPT_ROOT}}"
+    # Resolve transcript path (roster .transcript, else models.json transcriptRel)
+    transcript_path=$(echo "${model_json}" | jq -r '.transcript // empty')
+    if [[ -z "${transcript_path}" ]]; then
+        transcript_path="${transcript_rel//<id>/${model_id}}"
+        transcript_path="${transcript_path//\$GROKBOT_TRANSCRIPT_ROOT/${GROKBOT_TRANSCRIPT_ROOT}}"
+    fi
 
     if [[ ! -f "${transcript_path}" ]]; then
         echo "  SKIP: Transcript not found at ${transcript_path}"
@@ -265,12 +304,17 @@ while IFS= read -r model_json; do
     any_model_processed=1
 
     state_file="${STATE_DIR}/${session_id}.json"
+    old_stuck="$(node "${SCRIPT_DIR}/live-state.mjs" old-stuck "${OLD_STATE_DIR}" "${session_id}" "${SESSION_SUFFIX}")"
+    if [[ ! -f "${state_file}" && -f "${old_stuck}" && "${old_stuck}" != "${OLD_WATCHER_STATE}" ]]; then
+        mkdir -p "${STATE_DIR}"
+        cp "${old_stuck}" "${state_file}"
+    fi
 
     # Convert
     spool_path="${SPOOL_DIR}/${session_id}.jsonl"
     echo "  Converting: ${transcript_path} -> ${spool_path}"
 
-    if ! python3 "${CONVERTER}" "${transcript_path}" "${spool_path}" 2>&1; then
+    if ! python3 "${CONVERTER}" "${transcript_path}" "${spool_path}" --agent-id "${model_id}" --session "${session_id}" 2>&1; then
         echo "  ERROR: Conversion failed for ${model_name}" >&2
         record_failure "${state_file}" "${session_id}" "conversion failed"
         if warn_if_stuck "${state_file}"; then
@@ -308,6 +352,62 @@ while IFS= read -r model_json; do
         fi
     else
         echo "  SKIP: Ingest (fail closed, see warnings above)"
+    fi
+
+    # store.db (seq cursor; suffix -v3-store — positions are not the jsonl index)
+    store_db="${GROKBOT_AGENTS}/${model_id}/store.db"
+    if [[ -f "${store_db}" && -f "${CLI_JS}" && "${SKIP_INGEST}" -eq 0 ]]; then
+        store_session="${session_id%-v3}-v3-store"
+        if [[ "${session_id}" == *"-v3-store" ]]; then
+            store_session="${session_id}"
+        fi
+        store_spool="${SPOOL_DIR}/${store_session}.jsonl"
+        store_cursor_file="${STATE_DIR}/${store_session}.seq"
+        after_seq=-1
+        if [[ -s "${store_cursor_file}" ]]; then
+            after_seq="$(tr -d '[:space:]' < "${store_cursor_file}" || echo -1)"
+        fi
+        echo "  Converting store.db seq>${after_seq} -> ${store_spool}"
+        if store_out="$(node "${CLI_JS}" convert-store "${store_db}" "${store_spool}" --agent-id "${model_id}" --session "${store_session}" --after-seq="${after_seq}" 2>&1)"; then
+            echo "  ${store_out}"
+            store_max="$(printf '%s' "${store_out}" | jq -r '.max_seq // empty' 2>/dev/null || true)"
+            store_n="$(printf '%s' "${store_out}" | jq -r '.out // 0' 2>/dev/null || echo 0)"
+            if [[ "${store_n}" != "0" && -n "${store_n}" ]]; then
+                if node "${INGEST_BIN}" --session-id="${store_session}" --agent="${agent_id}" "${store_spool}"; then
+                    if [[ -n "${store_max}" && "${store_max}" != "null" ]]; then
+                        printf '%s\n' "${store_max}" > "${store_cursor_file}"
+                    fi
+                else
+                    echo "  ERROR: store ingest failed for ${model_name}" >&2
+                    any_model_failed=1
+                fi
+            fi
+        else
+            echo "  ERROR: store convert failed for ${model_name}: ${store_out}" >&2
+            any_model_failed=1
+        fi
+    fi
+
+    # voice-calls/*.json (suffix -v3-voice-<stem> — turn index ≠ jsonl index)
+    voice_dir="${GROKBOT_AGENTS}/${model_id}/voice-calls"
+    if [[ -d "${voice_dir}" && -f "${CLI_JS}" && "${SKIP_INGEST}" -eq 0 ]]; then
+        shopt -s nullglob
+        for voice_file in "${voice_dir}"/*.json; do
+            voice_stem="$(basename "${voice_file}" .json)"
+            voice_session="${session_id%-v3}-v3-voice-${voice_stem}"
+            voice_spool="${SPOOL_DIR}/${voice_session}.jsonl"
+            echo "  Converting voice ${voice_stem} -> ${voice_spool}"
+            if ! node "${CLI_JS}" convert-voice "${voice_file}" "${voice_spool}" --agent-id "${model_id}" --session "${voice_session}"; then
+                echo "  ERROR: voice convert failed for ${voice_stem}" >&2
+                any_model_failed=1
+                continue
+            fi
+            if ! node "${INGEST_BIN}" --session-id="${voice_session}" --agent="${agent_id}" "${voice_spool}"; then
+                echo "  ERROR: voice ingest failed for ${voice_stem}" >&2
+                any_model_failed=1
+            fi
+        done
+        shopt -u nullglob
     fi
 
     echo "  Done: ${model_name}"
