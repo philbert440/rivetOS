@@ -22,10 +22,6 @@ import { WikiIndex } from './wiki/index-reader.js'
 import type { SearchEngineConfig } from './search.js'
 import { Expander } from './expand.js'
 import { fmtHitWhen } from './tools/helpers.js'
-import {
-  resolvePreferredGrokbotSession,
-  sqlNotSupersededGrokbotConversation,
-} from './grokbot-prefer-v3.js'
 
 const { Pool } = pg
 
@@ -360,7 +356,6 @@ export class PostgresMemory implements Memory {
        JOIN ros_conversations c ON c.id = m.conversation_id
        WHERE c.agent = $1 AND c.active = true
          AND (c.session_key NOT LIKE 'heartbeat:%' OR c.session_key IS NULL)
-         AND ${sqlNotSupersededGrokbotConversation('c')}
        ORDER BY m.created_at DESC
        LIMIT 5`,
       [agent],
@@ -449,7 +444,6 @@ export class PostgresMemory implements Memory {
    */
   async getSessionHistory(sessionId: string, options?: { limit?: number }): Promise<Message[]> {
     const limit = options?.limit ?? 100
-    const preferred = await resolvePreferredGrokbotSession(this.pool, sessionId)
 
     const result = await this.pool.query<SessionMessageRow>(
       `SELECT m.role, m.content
@@ -458,7 +452,7 @@ export class PostgresMemory implements Memory {
        WHERE c.session_key = $1 AND c.active = true
        ORDER BY m.created_at DESC, m.id DESC
        LIMIT $2`,
-      [preferred, limit],
+      [sessionId, limit],
     )
 
     // Reverse to chronological order

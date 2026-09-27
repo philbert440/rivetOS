@@ -19,7 +19,6 @@
  */
 
 import pg from 'pg'
-import { sqlNotSupersededGrokbotMessage } from './grokbot-prefer-v3.js'
 import {
   W_FTS,
   W_SEMANTIC,
@@ -893,11 +892,7 @@ export class SearchEngine {
 
       if (scope === 'messages' || scope === 'both') {
         const params: unknown[] = [vecLiteral]
-        const conds = [
-          'm.embedding IS NOT NULL',
-          MESSAGE_QUALITY_SQL,
-          sqlNotSupersededGrokbotMessage('m'),
-        ]
+        const conds = ['m.embedding IS NOT NULL', MESSAGE_QUALITY_SQL]
         if (options?.agent) {
           params.push(options.agent)
           conds.push(`m.agent = $${String(params.length)}`)
@@ -940,7 +935,6 @@ export class SearchEngine {
         const conds = [
           's.embedding IS NOT NULL', // summaries are cross-agent
           `length(btrim(s.content)) >= ${String(MIN_CONTENT_LEN)}`,
-          sqlNotSupersededGrokbotMessage('s'),
         ]
         if (options?.since) {
           params.push(options.since)
@@ -994,11 +988,7 @@ export class SearchEngine {
     const params: unknown[] = [vecLiteral]
     // Deliberately omit `m.embedding IS NOT NULL`: a message with chunk vectors
     // but no parent vector must still surface from this arm.
-    const conds = [
-      'c.embedding IS NOT NULL',
-      MESSAGE_QUALITY_SQL,
-      sqlNotSupersededGrokbotMessage('m'),
-    ]
+    const conds = ['c.embedding IS NOT NULL', MESSAGE_QUALITY_SQL]
     if (options?.agent) {
       params.push(options.agent)
       conds.push(`m.agent = $${String(params.length)}`)
@@ -1218,7 +1208,6 @@ export class SearchEngine {
                ${boostExpr} AS boost
         FROM ros_messages m
         WHERE m.embedding IS NOT NULL ${agentFilter}
-          AND ${sqlNotSupersededGrokbotMessage('m')}
         ORDER BY m.embedding <=> $1::halfvec
         LIMIT $${String(limitIdx)}
       `
@@ -1258,7 +1247,6 @@ export class SearchEngine {
                ) AS score
         FROM ros_summaries s
         WHERE s.embedding IS NOT NULL
-          AND ${sqlNotSupersededGrokbotMessage('s')}
         ORDER BY s.embedding <=> $1::halfvec
         LIMIT $2
       `
@@ -1531,8 +1519,6 @@ export class SearchEngine {
           : `length(btrim(s.content)) >= ${String(MIN_CONTENT_LEN)}`,
       )
     }
-
-    conditions.push(sqlNotSupersededGrokbotMessage(alias))
 
     // Mode-specific match condition and FTS score
     const queryParamIdx = pi

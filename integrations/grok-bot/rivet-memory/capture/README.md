@@ -62,11 +62,10 @@ existing rows.
   Store cursors are `seq:N` under the same map. `run-once.sh` does not treat
   the watcher `state.json` as per-session stuck-policy. `RIVETOS_ROOT`
   defaults to `/opt/rivetos`.
-- Search, browse, and session recall prefer a `-v3` or `-v3-rows` sibling
-  over the unsuffixed and `-v2` copies at query time, but only when that
-  sibling's last source position covers the legacy session's last
-  position (incomplete `-v3` does not hide history). No rows are deleted
-  and no completion marker is written.
+- Re-ingest of the same session skips a row whose `event_id` is already
+  stored, and skips an ordinal that is already taken. That is the dedup.
+  Nothing is deleted or updated. Search, browse, and recall read the rows
+  that were stored.
 
 ## Layout
 
@@ -309,7 +308,8 @@ can be empty. The reader still opens the DB read-only and no-ops.
 - Rebuild `/opt/rivetos` (`memory-postgres` and
   `@rivetos/grok-bot-rivet-memory-capture`) **before** any `-v3` ingest.
   The grok-bot writer stores caller `ordinal` / `event_id` / `toolResult` /
-  `metadata`. Search still prefers a `-v3` sibling inside memory-postgres.
+  `metadata`, and skips an `event_id` or ordinal already present in that
+  session.
 - Enabling the new watcher ingests every on-disk transcript's **full
   history** into `<session>-v3` (there have been no new on-disk files
   since Sep 16). Stop the old watcher/converter first. Do not run both.
