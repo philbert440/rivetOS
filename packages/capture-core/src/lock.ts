@@ -1,7 +1,7 @@
-import { utimesSync } from 'node:fs'
-import { mkdir, readFile, rename, rm, stat, writeFile } from 'node:fs/promises'
+import { readdirSync, readFileSync, statSync, unlinkSync, utimesSync } from 'node:fs'
+import { mkdir, writeFile } from 'node:fs/promises'
 import { hostname } from 'node:os'
-import { dirname, join } from 'node:path'
+import { join } from 'node:path'
 
 export class LockTimeout extends Error {
   readonly lockDir: string
@@ -14,66 +14,68 @@ export class LockTimeout extends Error {
 }
 
 export interface FileLockOptions {
+  /** Other-host owner files older than this are stale. Default 120_000. */
   staleMs?: number
+  /** Throw `LockTimeout` after this long without acquiring. Default 10_000. */
   waitMs?: number
+  /** Delay between attempts that did not acquire. Default 100. */
   pollMs?: number
   log?: (line: string) => void
   /**
-   * Runs after a stale directory is observed and before the reclaim mutex
-   * is taken. Tests use it to delay one taker until the other has entered.
-   * Production callers leave it unset.
+   * Runs after this contender's owner file exists and before it reads the
+   * directory. Tests hold one contender here so others can run. Production
+   * callers leave it unset.
    */
-  afterStaleStat?: () => Promise<void> | void
-  /**
-   * Runs inside the reclaim mutex, after the stat that authorized the
-   * takeover and before the rename. Tests delay here so other contenders
-   * arrive while the mutex is held. Production callers leave it unset.
-   */
-  afterValidatingStat?: () => Promise<void> | void
-  /**
-   * Runs after an abandoned reclaim directory is observed and before it is
-   * renamed aside. Tests delay one contender there. Production callers leave
-   * it unset.
-   */
-  afterAbandonedReclaimStat?: () => Promise<void> | void
+  beforeReaddir?: () => Promise<void> | void
 }
 
 interface OwnerRecord {
   pid: number
   host: string
   ts: string
+  token: string
 }
 
-function sleep(ms: number): Promise<void> {
-  return new Promise((resolve) => {
-    setTimeout(resolve, ms)
-  })
-}
-
-function sameOwner(current: Partial<OwnerRecord>, owner: OwnerRecord): boolean {
-  return current.pid === owner.pid && current.host === owner.host && current.ts === owner.ts
-}
-
-/** A reclaim directory older than this may be recovered by one contender. */
-const RECLAIM_ABANDON_MS = 30_000
-/** Holders refresh the reclaim mutex at least this often so it is never judged abandoned. */
-const RECLAIM_HEARTBEAT_MS = 10_000
-
-interface HeldReclaim {
-  ino: number
-  timer: ReturnType<typeof setInterval>
-}
-
-const heldReclaims = new Map<string, HeldReclaim>()
+type Log = (line: string) => void
+type Presence = 'alone' | 'pending' | 'lost'
+type Decision = 'acquired' | 'pending' | 'lost'
+type OtherFile = 'missing' | 'dead' | 'stale' | 'live'
 
 /**
- * Exclusive lock implemented as `mkdir(lockDir)`. A holder that dies leaves
- * the directory; a lock older than `staleMs` (mtime) may be taken over only
- * inside the `<lockDir>.reclaim` mutex, and only after a stat taken while
- * holding that mutex still shows the directory is stale. An abandoned reclaim
- * directory is renamed aside (not removed in place) before a new mutex is
- * created. The holder refreshes both directories' mtimes and removes the lock
- * on the way out only when `owner.json` is still the record it wrote.
+ * Cross-process lock held as a unique owner file. The directory stays.
+ *
+ * `lockDir` is created once (`mkdir -p`) and never removed. A contender
+ * publishes `owner.<token>` with `wx`, where `token` is
+ * `<hostname>.<pid>.<startTimeMs>.<random>`, and writes
+ * `{ pid, host, ts, token }`. The random suffix starts with a per-process
+ * counter so two tokens minted in the same millisecond still order by
+ * creation. Nothing is renamed, and `rm -rf` is not used.
+ *
+ * After publishing, the contender reads the directory (see `beforeReaddir`)
+ * and classifies every other `owner.*`:
+ *
+ * - Same host and `process.kill(pid, 0)` throws `ESRCH`: the creator is
+ *   dead. Unlink that unique name. A reused pid publishes a different token,
+ *   so the name cannot belong to a live process, and a dead creator is not
+ *   inside `fn`.
+ * - Other host, mtime older than `staleMs` (default 120s): unlink that
+ *   unique name. State lives on local `~/.rivetos`; this path is defensive.
+ *   The holder `utimes` its own file every `staleMs / 3`, so a live holder
+ *   is not stale. The mtime is re-read immediately before the unlink.
+ * - Otherwise the file is a live contender and is left alone. A live loser
+ *   unlinks only its own file.
+ *
+ * If no live contender remains, a second read confirms it and this caller
+ * holds the lock. If some remain, the lexicographically smallest token keeps
+ * its file; every other contender unlinks its own file, waits `pollMs`, and
+ * retries from publishing a new file. The smallest enters only on a read
+ * that shows it is alone, so it does not share `fn` with a holder that has
+ * not dropped its file, and a later smaller token waits instead of walking
+ * in beside a caller already inside `fn`.
+ *
+ * `LockTimeout` is thrown after `waitMs` (default 10s). The timed-out
+ * contender unlinks its own file first. Release always unlinks that same
+ * name and clears the heartbeat, including when `fn` throws.
  */
 export async function withFileLock<T>(
   lockDir: string,
@@ -84,247 +86,290 @@ export async function withFileLock<T>(
   const waitMs = opts?.waitMs ?? 10_000
   const pollMs = opts?.pollMs ?? 100
   const deadline = Date.now() + waitMs
-  const log = (line: string): void => {
-    try {
-      ;(opts?.log ?? ((message: string) => console.error(message)))(line)
-    } catch {
-      /* Logging must not interrupt the lock. */
-    }
-  }
-  await mkdir(dirname(lockDir), { recursive: true })
+  const log = makeLog(opts?.log)
+  const host = hostname()
+  await mkdir(lockDir, { recursive: true })
 
-  for (;;) {
-    try {
-      await mkdir(lockDir)
-      break
-    } catch (error) {
-      if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error
-      if (
-        await takeoverIfStale(
-          lockDir,
-          staleMs,
-          opts?.afterStaleStat,
-          opts?.afterValidatingStat,
-          opts?.afterAbandonedReclaimStat,
-          log,
-        )
-      ) {
-        break
-      }
-      if (Date.now() >= deadline) throw new LockTimeout(lockDir)
-      await sleep(pollMs)
-    }
-  }
-
-  const owner: OwnerRecord = { pid: process.pid, host: hostname(), ts: new Date().toISOString() }
-  await writeFile(join(lockDir, 'owner.json'), JSON.stringify(owner), { mode: 0o600 })
+  const ownerPath = await acquire(
+    lockDir,
+    host,
+    staleMs,
+    deadline,
+    pollMs,
+    opts?.beforeReaddir,
+    log,
+  )
   const heartbeatMs = Math.max(1, Math.floor(staleMs / 3))
   const timer = setInterval(() => {
-    const now = new Date()
     try {
-      utimesSync(lockDir, now, now)
+      const now = new Date()
+      utimesSync(ownerPath, now, now)
     } catch {
-      /* The directory may already have been removed. */
+      // The owner file may already have been removed.
     }
   }, heartbeatMs)
+  timer.unref()
 
   try {
     return await fn()
   } finally {
     clearInterval(timer)
-    await releaseOwnLock(lockDir, owner, log)
+    unlinkOwn(ownerPath, log)
   }
 }
 
-function startReclaimHeartbeat(reclaimDir: string, ino: number): void {
-  const previous = heldReclaims.get(reclaimDir)
-  if (previous) clearInterval(previous.timer)
-  const beat = (): void => {
-    const now = new Date()
+let tokenSeq = 0
+
+function makeToken(host: string): string {
+  tokenSeq += 1
+  const safeHost = host.replace(/[/\\\0]/g, '_') || 'unknown'
+  const random = `${tokenSeq.toString(36).padStart(6, '0')}${Math.random().toString(36).slice(2)}`
+  return `${safeHost}.${String(process.pid)}.${String(Date.now())}.${random}`
+}
+
+function makeLog(log: FileLockOptions['log']): Log {
+  return (line: string): void => {
     try {
-      utimesSync(reclaimDir, now, now)
+      if (log) log(line)
+      else console.error(line)
     } catch {
-      /* The directory may already have been removed. */
+      // Logging must not interrupt the lock.
     }
   }
-  beat()
-  const timer = setInterval(beat, RECLAIM_HEARTBEAT_MS)
-  timer.unref()
-  heldReclaims.set(reclaimDir, { ino, timer })
+}
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => {
+    setTimeout(resolve, ms)
+  })
+}
+
+function errorCode(error: unknown): string | undefined {
+  if (typeof error !== 'object' || error === null || !('code' in error)) return undefined
+  const code = error.code
+  return typeof code === 'string' ? code : undefined
+}
+
+async function acquire(
+  lockDir: string,
+  host: string,
+  staleMs: number,
+  deadline: number,
+  pollMs: number,
+  beforeReaddir: FileLockOptions['beforeReaddir'],
+  log: Log,
+): Promise<string> {
+  for (;;) {
+    const token = makeToken(host)
+    const ownerPath = join(lockDir, `owner.${token}`)
+    const record: OwnerRecord = {
+      pid: process.pid,
+      host,
+      ts: new Date().toISOString(),
+      token,
+    }
+    try {
+      await writeFile(ownerPath, JSON.stringify(record), { flag: 'wx', mode: 0o600 })
+    } catch (error) {
+      if (errorCode(error) === 'EEXIST') continue
+      throw error
+    }
+
+    try {
+      if (beforeReaddir) await beforeReaddir()
+      for (;;) {
+        const decision = judge(lockDir, ownerPath, token, host, staleMs, log)
+        if (decision === 'acquired') return ownerPath
+        if (decision === 'lost') break
+        if (Date.now() >= deadline) throw new LockTimeout(lockDir)
+        await sleep(pollMs)
+      }
+    } catch (error) {
+      unlinkOwn(ownerPath, log)
+      throw error
+    }
+
+    if (Date.now() >= deadline) throw new LockTimeout(lockDir)
+    await sleep(pollMs)
+  }
+}
+
+function judge(
+  lockDir: string,
+  ownerPath: string,
+  token: string,
+  host: string,
+  staleMs: number,
+  log: Log,
+): Decision {
+  const first = inspect(lockDir, token, host, staleMs, log)
+  if (first === 'lost') {
+    // Stay on this file if it is still here, so a failed unlink cannot leave
+    // a live owner behind while a new token is published.
+    return unlinkOwn(ownerPath, log) ? 'lost' : 'pending'
+  }
+  if (first === 'pending') {
+    return touchOwn(ownerPath) ? 'pending' : 'lost'
+  }
+  const second = inspect(lockDir, token, host, staleMs, log)
+  if (second === 'lost') {
+    return unlinkOwn(ownerPath, log) ? 'lost' : 'pending'
+  }
+  if (second === 'pending') {
+    return touchOwn(ownerPath) ? 'pending' : 'lost'
+  }
+  if (!ourFileExists(ownerPath)) return 'lost'
+  return 'acquired'
 }
 
 /**
- * `mkdir(reclaimDir)` is the mutex. EEXIST on a directory younger than 30s
- * means another taker is inside the critical section; this caller waits.
- * An older directory is abandoned: rename it to
- * `<lockDir>.reclaim.abandoned-<pid>-<rand>` (one winner; the loser sees
- * ENOENT and retries), remove the renamed directory, then mkdir the mutex.
- * That mkdir can still EEXIST if a third contender created a fresh one.
+ * `readdir` plus liveness. Dead and stale files are unlinked here, by the
+ * unique name just classified, before the caller decides whether to enter.
+ * Sync so another contender in this process cannot publish between the read
+ * and the decision.
  */
-async function acquireReclaim(
+function inspect(
   lockDir: string,
-  afterAbandonedReclaimStat: FileLockOptions['afterAbandonedReclaimStat'],
-): Promise<boolean> {
-  const reclaimDir = `${lockDir}.reclaim`
-  try {
-    await mkdir(reclaimDir)
-    return await holdReclaim(reclaimDir)
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error
-  }
-
-  const seen = await abandonedReclaim(reclaimDir)
-  if (!seen) return false
-  if (afterAbandonedReclaimStat) await afterAbandonedReclaimStat()
-  // The delay above yields. Rename only the directory this stat still describes.
-  const again = await abandonedReclaim(reclaimDir)
-  if (!again || again.ino !== seen.ino) return false
-
-  const suffix = `${String(process.pid)}-${Math.random().toString(36).slice(2)}`
-  const abandonedPath = `${reclaimDir}.abandoned-${suffix}`
-  try {
-    await rename(reclaimDir, abandonedPath)
-  } catch (error) {
-    const code = (error as NodeJS.ErrnoException).code
-    // ENOENT: another contender renamed it first. EEXIST/ENOTEMPTY: the
-    // destination was taken. Either way this caller does not own the mutex.
-    if (code === 'ENOENT' || code === 'EEXIST' || code === 'ENOTEMPTY') return false
-    throw error
-  }
-  await rm(abandonedPath, { recursive: true, force: true }).catch(() => undefined)
-  try {
-    await mkdir(reclaimDir)
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === 'EEXIST') return false
-    throw error
-  }
-  return await holdReclaim(reclaimDir)
-}
-
-/** Inode of `reclaimDir` when its mtime is older than the abandon threshold. */
-async function abandonedReclaim(reclaimDir: string): Promise<{ ino: number } | undefined> {
-  try {
-    const info = await stat(reclaimDir)
-    if (Date.now() - info.mtimeMs <= RECLAIM_ABANDON_MS) return undefined
-    return { ino: info.ino }
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return undefined
-    throw error
-  }
-}
-
-async function holdReclaim(reclaimDir: string): Promise<boolean> {
-  const info = await stat(reclaimDir)
-  startReclaimHeartbeat(reclaimDir, info.ino)
-  return true
-}
-
-async function releaseReclaim(lockDir: string): Promise<void> {
-  const reclaimDir = `${lockDir}.reclaim`
-  const held = heldReclaims.get(reclaimDir)
-  if (held) {
-    clearInterval(held.timer)
-    heldReclaims.delete(reclaimDir)
-  }
-  if (!held) return
-  try {
-    const info = await stat(reclaimDir)
-    // A replacement landed after we dropped the heartbeat. Do not remove it.
-    if (info.ino !== held.ino) return
-  } catch {
-    return
-  }
-  await rm(reclaimDir, { recursive: true, force: true }).catch(() => undefined)
-}
-
-async function takeoverIfStale(
-  lockDir: string,
+  token: string,
+  host: string,
   staleMs: number,
-  afterStaleStat: FileLockOptions['afterStaleStat'],
-  afterValidatingStat: FileLockOptions['afterValidatingStat'],
-  afterAbandonedReclaimStat: FileLockOptions['afterAbandonedReclaimStat'],
-  log: (line: string) => void,
-): Promise<boolean> {
+  log: Log,
+): Presence {
+  let names: string[]
   try {
-    const first = await stat(lockDir)
-    if (Date.now() - first.mtimeMs <= staleMs) return false
+    names = readdirSync(lockDir)
   } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return false
+    if (errorCode(error) === 'ENOENT') return 'lost'
     throw error
   }
-  // Outside the mutex on purpose: a delayed taker must not block the contender
-  // that acquires the lock while this one is paused.
-  if (afterStaleStat) await afterStaleStat()
 
-  if (!(await acquireReclaim(lockDir, afterAbandonedReclaimStat))) return false
+  const ours = `owner.${token}`
+  let live = 0
+  let smallest = true
+  for (const name of names) {
+    if (!name.startsWith('owner.') || name === ours) continue
+    const full = join(lockDir, name)
+    const kind = classifyOther(full, host, staleMs)
+    if (kind === 'missing') continue
+    if (kind === 'dead') {
+      // Unique name of a same-host pid that is not running.
+      if (unlinkOther(full, log)) continue
+    } else if (kind === 'stale') {
+      // Unique name of an other-host file whose mtime is still past staleMs.
+      if (unlinkIfStillStale(full, staleMs, log)) continue
+    }
+    live += 1
+    const otherToken = name.slice('owner.'.length)
+    if (otherToken <= token) smallest = false
+  }
+  if (live === 0) return 'alone'
+  if (smallest) return 'pending'
+  return 'lost'
+}
+
+function classifyOther(path: string, host: string, staleMs: number): OtherFile {
+  let text: string
   try {
-    let validated
-    try {
-      validated = await stat(lockDir)
-    } catch (error) {
-      if ((error as NodeJS.ErrnoException).code === 'ENOENT') return false
-      throw error
-    }
-    // Someone re-acquired it. Do not rename; go back to waiting.
-    if (Date.now() - validated.mtimeMs <= staleMs) return false
-    if (afterValidatingStat) await afterValidatingStat()
+    text = readFileSync(path, 'utf8')
+  } catch (error) {
+    if (errorCode(error) === 'ENOENT') return 'missing'
+    // Not provably dead. Leave it for its owner.
+    return 'live'
+  }
+  const record = parseOwner(text)
+  if (!record) return 'live'
+  if (record.host === host) return pidDead(record.pid) ? 'dead' : 'live'
 
-    // The delay above yields. Rename only the directory this stat still describes.
-    try {
-      const again = await stat(lockDir)
-      if (again.ino !== validated.ino || again.mtimeMs !== validated.mtimeMs) return false
-      if (Date.now() - again.mtimeMs <= staleMs) return false
-    } catch (error) {
-      if ((error as NodeJS.ErrnoException).code === 'ENOENT') return false
-      throw error
-    }
+  let mtimeMs: number
+  try {
+    mtimeMs = statSync(path).mtimeMs
+  } catch (error) {
+    if (errorCode(error) === 'ENOENT') return 'missing'
+    throw error
+  }
+  if (Date.now() - mtimeMs > staleMs) return 'stale'
+  return 'live'
+}
 
-    const stalePath = `${lockDir}.stale-${String(Date.now())}-${Math.random().toString(36).slice(2)}`
-    try {
-      await rename(lockDir, stalePath)
-    } catch (error) {
-      const code = (error as NodeJS.ErrnoException).code
-      // ENOENT: it vanished. EEXIST/ENOTEMPTY: the destination was taken.
-      // Either way someone else won; go back to waiting. Never put it back.
-      if (code === 'ENOENT' || code === 'EEXIST' || code === 'ENOTEMPTY') return false
-      throw error
-    }
-    await rm(stalePath, { recursive: true, force: true }).catch((error: unknown) => {
-      log(`stale takeover remove ${stalePath} failed: ${String(error)}`)
-    })
-    try {
-      await mkdir(lockDir)
-    } catch (error) {
-      // A third contender mkdir'd the vacant path between rename and here.
-      // That contender holds the lock.
-      if ((error as NodeJS.ErrnoException).code === 'EEXIST') return false
-      throw error
-    }
-    return true
-  } finally {
-    await releaseReclaim(lockDir)
+function parseOwner(text: string): OwnerRecord | undefined {
+  let value: unknown
+  try {
+    value = JSON.parse(text) as unknown
+  } catch {
+    return undefined
+  }
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) return undefined
+  const record = value as Record<string, unknown>
+  const pid = record.pid
+  const host = record.host
+  const ts = record.ts
+  const token = record.token
+  if (typeof pid !== 'number' || typeof host !== 'string') return undefined
+  if (typeof ts !== 'string' || typeof token !== 'string') return undefined
+  return { pid, host, ts, token }
+}
+
+/** `kill(pid, 0)` throws `ESRCH` only when that pid is not running. */
+function pidDead(pid: number): boolean {
+  if (!Number.isInteger(pid) || pid <= 0) return false
+  try {
+    process.kill(pid, 0)
+    return false
+  } catch (error) {
+    return errorCode(error) === 'ESRCH'
   }
 }
 
-async function releaseOwnLock(
-  lockDir: string,
-  owner: OwnerRecord,
-  log: (line: string) => void,
-): Promise<void> {
-  let current: Partial<OwnerRecord>
+function unlinkIfStillStale(path: string, staleMs: number, log: Log): boolean {
   try {
-    current = JSON.parse(
-      await readFile(join(lockDir, 'owner.json'), 'utf8'),
-    ) as Partial<OwnerRecord>
+    const info = statSync(path)
+    if (Date.now() - info.mtimeMs <= staleMs) return false
   } catch (error) {
-    log(`not releasing ${lockDir}: ${String(error)}`)
-    return
+    if (errorCode(error) === 'ENOENT') return true
+    throw error
   }
-  if (!sameOwner(current, owner)) {
-    log(`not releasing ${lockDir}: owner is ${JSON.stringify(current)}`)
-    return
+  return unlinkOther(path, log)
+}
+
+function unlinkOther(path: string, log: Log): boolean {
+  try {
+    unlinkSync(path)
+    return true
+  } catch (error) {
+    if (errorCode(error) === 'ENOENT') return true
+    log(`not removing ${path}: ${String(error)}`)
+    return false
   }
-  await rm(lockDir, { recursive: true, force: true }).catch((error: unknown) => {
-    log(`release ${lockDir} failed: ${String(error)}`)
-  })
+}
+
+/** True when this owner's file is gone. False when it is still on disk. */
+function unlinkOwn(path: string, log: Log): boolean {
+  try {
+    unlinkSync(path)
+    return true
+  } catch (error) {
+    if (errorCode(error) === 'ENOENT') return true
+    log(`release ${path} failed: ${String(error)}`)
+    return false
+  }
+}
+
+function touchOwn(path: string): boolean {
+  try {
+    const now = new Date()
+    utimesSync(path, now, now)
+    return true
+  } catch (error) {
+    return errorCode(error) !== 'ENOENT'
+  }
+}
+
+function ourFileExists(path: string): boolean {
+  try {
+    statSync(path)
+    return true
+  } catch (error) {
+    if (errorCode(error) === 'ENOENT') return false
+    throw error
+  }
 }
