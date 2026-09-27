@@ -1356,7 +1356,7 @@ export function makeWikiFor<T>(
  * stores, so a routed user gets a borrower on the pool this registrar
  * already opened — write tools are included because that borrower exists.
  */
-function createApiMemoryLookup(opts: {
+export function createApiMemoryLookup(opts: {
   ownerPool: pg.Pool
   pgUrl: string | undefined
   /** runtime.getMemory() — PostgresMemory, RoutingMemory, or unset. */

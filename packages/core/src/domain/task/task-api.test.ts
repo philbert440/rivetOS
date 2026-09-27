@@ -207,6 +207,15 @@ describe('/api/tasks', () => {
     expect(task.parentTaskId).toBeUndefined()
   })
 
+  it('creates at depth 3 without a parent for a malformed parentTaskId', async () => {
+    const { base } = await startApi({ hang: true })
+    const res = await create(base, { goal: 'child', agentId: 'opus', parentTaskId: 'not-a-uuid' })
+    expect(res.status).toBe(201)
+    const { task } = (await res.json()) as { task: { chainDepth: number; parentTaskId?: string } }
+    expect(task.chainDepth).toBe(3)
+    expect(task.parentTaskId).toBeUndefined()
+  })
+
   it('lets an explicit chainDepth win over the parent lookup', async () => {
     const { base, store } = await startApi({ hang: true })
     const parent = await store.create({

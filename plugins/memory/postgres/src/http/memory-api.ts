@@ -107,7 +107,7 @@ export interface MemoryApiOptions {
 /** Tool-call bodies are one JSON object of MCP arguments. 256 KiB is plenty. */
 const MAX_TOOL_BODY_BYTES = 256 * 1024
 
-class ToolBodyTooLarge extends Error {}
+const TOOL_BODY_TOO_LARGE = Symbol('body too large')
 
 type MemoryRouted = { kind: 'owner' } | { kind: 'user'; id: string }
 
@@ -124,15 +124,18 @@ function toolsForPool(
   return created
 }
 
-async function readToolBody(req: IncomingMessage): Promise<Record<string, unknown>> {
+async function readToolBody(
+  req: IncomingMessage,
+): Promise<Record<string, unknown> | typeof TOOL_BODY_TOO_LARGE> {
   const chunks: Buffer[] = []
   let size = 0
-  for await (const chunk of req) {
+  // Leave the request intact on overflow so the 413 can flush before socket teardown.
+  for await (const chunk of req.iterator({ destroyOnReturn: false })) {
     const buf = chunk as Buffer
     size += buf.length
     if (size > MAX_TOOL_BODY_BYTES) {
       req.pause()
-      throw new ToolBodyTooLarge('body too large')
+      return TOOL_BODY_TOO_LARGE
     }
     chunks.push(buf)
   }
@@ -303,17 +306,21 @@ async function handleTool(
   toolsByPool: WeakMap<pg.Pool, Tool[]>,
   opts: MemoryApiOptions,
 ): Promise<void> {
-  let args: Record<string, unknown>
+  const socket = req.socket
+  let args: Record<string, unknown> | typeof TOOL_BODY_TOO_LARGE
   try {
     args = await readToolBody(req)
   } catch (err) {
-    if (err instanceof ToolBodyTooLarge) {
-      json(res, 413, { error: 'body too large' })
-      res.once('finish', () => req.destroy())
-      return
-    }
     const message = err instanceof Error ? err.message : 'invalid JSON'
     json(res, 400, { error: message })
+    return
+  }
+  if (args === TOOL_BODY_TOO_LARGE) {
+    const closeSocket = () => socket?.destroy()
+    res.once('finish', closeSocket)
+    res.once('close', closeSocket)
+    res.setHeader('connection', 'close')
+    json(res, 413, { error: 'body too large' })
     return
   }
   const tool = toolsForPool(toolsByPool, opts, pool, routed).find(
