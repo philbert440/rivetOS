@@ -588,10 +588,10 @@ export RIVET_DEN_URL='https://den.example:9999'
 export NODE_EXTRA_CA_CERTS='/already.pem'
 rivetos_resolve_den 2>"$DEN_DIR/error"
 err="$(cat "$DEN_DIR/error")"
-if [ -z "${RIVET_DEN_URL:-}" ] && printf '%s\n' "$err" | grep -q 'den CA not found'; then
-  pass "missing CA disables den transport"
+if [ -z "${RIVET_DEN_URL:-}" ] && [ -z "$err" ]; then
+  pass "missing CA disables den transport silently"
 else
-  fail "missing CA should unset RIVET_DEN_URL"
+  fail "missing CA should unset RIVET_DEN_URL with no stderr (launcher tests count stderr lines)"
 fi
 if [ "${NODE_EXTRA_CA_CERTS:-}" != "/already.pem" ]; then
   fail "missing CA must leave NODE_EXTRA_CA_CERTS untouched"
