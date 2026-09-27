@@ -250,6 +250,67 @@ describe('timestamps', () => {
     expect(stats.dropped).toBe(2)
   })
 
+  it('keeps repeated identical tool_use and tool_result pairs (polling gh pr checks)', () => {
+    const toolUse = {
+      role: 'assistant',
+      message: {
+        content: [{ type: 'tool_use', name: 'shell', input: { command: 'gh pr checks' } }],
+      },
+    }
+    const toolRes = {
+      role: 'tool',
+      message: {
+        content: [{ type: 'tool_result', name: 'shell', result: 'pending\n' }],
+      },
+    }
+    const records = [toolUse, toolRes, toolUse, toolRes]
+    expect(replaySkipIndices(records).size).toBe(0)
+    const { messages } = normalizeRecords(records, rivetOpts())
+    expect(messages.filter((m) => m.role === 'assistant')).toHaveLength(2)
+    expect(messages.filter((m) => m.role === 'tool')).toHaveLength(2)
+  })
+
+  it('keeps an unstamped routine fire followed by an identical first tool call', () => {
+    const routine = {
+      role: 'user',
+      message: {
+        content: [
+          {
+            type: 'text',
+            text: '[SAND_HIDDEN_PROMPT][routine] "poll checks" (folder x) is due\nThis is your own standing order firing on schedule.',
+          },
+        ],
+      },
+    }
+    const tool = {
+      role: 'assistant',
+      message: {
+        content: [{ type: 'tool_use', name: 'shell', input: { command: 'gh pr checks' } }],
+      },
+    }
+    const records = [routine, tool, routine, tool]
+    expect(replaySkipIndices(records).size).toBe(0)
+    const { messages } = normalizeRecords(records, rivetOpts())
+    expect(messages.filter((m) => m.metadata?.kind === 'routine')).toHaveLength(2)
+    expect(messages.filter((m) => m.role === 'assistant')).toHaveLength(2)
+  })
+
+  it('drops the first-run fixture replay at positions 204/225', () => {
+    const records = readFix('ondisk-rivet-first-run-0-240.jsonl')
+      .trim()
+      .split('\n')
+      .map((line) => JSON.parse(line) as unknown)
+    const skips = replaySkipIndices(records)
+    expect(skips.has(204)).toBe(false)
+    expect(skips.has(225)).toBe(true)
+    const { messages } = normalizeRecords(records, rivetOpts())
+    const asked = messages.filter(
+      (m) => m.role === 'user' && /did you address all the further reviews/i.test(m.content),
+    )
+    expect(asked).toHaveLength(1)
+    expect(asked[0].metadata?.position).toBe(204)
+  })
+
   it('leaves created_at unset when no time is known', () => {
     const { result } = normalizeFile('page-rivet-this-conversation-3040-3056.txt')
     const stamped = result.messages.filter((m) => m.created_at)
@@ -348,6 +409,41 @@ describe('wrappers', () => {
     }
   })
 
+  it('keeps every hidden tag quoted in a normal user message as a user row', () => {
+    const tags = [
+      '[agent]',
+      '[first run]',
+      'treat it as skipped',
+      '[The user reacted',
+      '<instructions_update>',
+      '[event]',
+      '[routine]',
+      '[A background task just completed]',
+      'A background task you started has finished',
+      'Earlier you prompted the user and they moved on without responding',
+      '<agent_profile_update>',
+      '<<SAND_AGENT_PROFILE_UPDATE',
+    ]
+    for (const tag of tags) {
+      const rec = {
+        role: 'user',
+        message: {
+          content: [
+            {
+              type: 'text',
+              text: `<user_query>\nplease keep the ${tag} phrase in this note\n</user_query>`,
+            },
+          ],
+        },
+      }
+      const { messages } = normalizeRecords([rec], rivetOpts())
+      expect(messages, tag).toHaveLength(1)
+      expect(messages[0].role, tag).toBe('user')
+      expect(messages[0].content, tag).toContain(tag)
+      expect(messages[0].content, tag).toContain('please keep')
+    }
+  })
+
   it('strips wrappers on the first-run Rivet sample', () => {
     const { result } = normalizeFile('ondisk-rivet-first-run-0-240.jsonl')
     const blob = result.messages.map((m) => m.content).join('\n')
@@ -439,9 +535,38 @@ describe('hidden turns', () => {
   it('classifies reactions and events', () => {
     expect(classifyHidden('[The user reacted ❤️ to your message]')).toBe('reaction')
     expect(classifyHidden('[event] Something about this conversation just changed.')).toBe('event')
-    const { result } = normalizeFile('synthetic-wrappers.jsonl')
-    expect(result.messages.some((m) => m.metadata?.kind === 'reaction')).toBe(true)
-    expect(result.messages.some((m) => m.metadata?.kind === 'event')).toBe(true)
+    const sandReaction = {
+      role: 'user',
+      message: {
+        content: [
+          {
+            type: 'text',
+            text: '[SAND_HIDDEN_PROMPT][The user reacted +1 to your message]',
+          },
+        ],
+      },
+    }
+    const sandEvent = {
+      role: 'user',
+      message: {
+        content: [
+          {
+            type: 'text',
+            text: '[SAND_HIDDEN_PROMPT][event] Something about this conversation just changed.',
+          },
+        ],
+      },
+    }
+    const { messages } = normalizeRecords([sandReaction, sandEvent], rivetOpts())
+    expect(messages.some((m) => m.metadata?.kind === 'reaction')).toBe(true)
+    expect(messages.some((m) => m.metadata?.kind === 'event')).toBe(true)
+    const unmarked = normalizeFile('synthetic-wrappers.jsonl')
+    expect(unmarked.result.messages.some((m) => m.metadata?.kind === 'reaction')).toBe(false)
+    expect(
+      unmarked.result.messages.some(
+        (m) => m.role === 'user' && /\[The user reacted/.test(m.content),
+      ),
+    ).toBe(true)
   })
 })
 

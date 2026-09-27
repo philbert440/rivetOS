@@ -1,6 +1,9 @@
 // Shared live-capture state helpers. Watcher size:mtime keys are
 // `${agentId}${SESSION_SUFFIX}` so a copied unsuffixed state.json cannot
 // skip -v3 ingest. run-once stuck-policy files are a different shape.
+import { resolve } from 'node:path'
+import { fileURLToPath } from 'node:url'
+
 export function captureStateKey(id, suffix = '') {
   return `${id}${suffix ?? ''}`
 }
@@ -29,4 +32,29 @@ export function oldStuckPolicyPath(oldDir, sessionId, suffix) {
   const unsuffixed =
     suffix && sessionId.endsWith(suffix) ? sessionId.slice(0, -suffix.length) : sessionId
   return `${oldDir.replace(/\/$/, '')}/${unsuffixed}.json`
+}
+
+/** Refresh the roster when the first lookup falls back to rivet-grokbot-run. */
+export function resolveIdentityWithRefresh(lookup, id, remake) {
+  let who = lookup.identity(id)
+  if (who.agent === 'rivet-grokbot-run') {
+    lookup = remake()
+    who = lookup.identity(id)
+  }
+  return { lookup, who }
+}
+
+const invoked =
+  process.argv[1] && resolve(process.argv[1]) === resolve(fileURLToPath(import.meta.url))
+if (invoked) {
+  const cmd = process.argv[2]
+  if (cmd === 'old-stuck') {
+    const oldDir = process.argv[3] ?? ''
+    const sessionId = process.argv[4] ?? ''
+    const suffix = process.argv[5] ?? ''
+    process.stdout.write(`${oldStuckPolicyPath(oldDir, sessionId, suffix)}\n`)
+  } else {
+    console.error('usage: live-state.mjs old-stuck OLD_DIR SESSION SUFFIX')
+    process.exit(2)
+  }
 }

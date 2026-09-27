@@ -2,7 +2,7 @@ export { capForStorage, eventIdFromContent, createCaptureWriter } from '@rivetos
 export type { CaptureMessage, CaptureBatch } from '@rivetos/capture-core'
 export { normalizeRecords, toIngestRows, replaySkipIndices, clampCreatedAt } from './normalize.js'
 export { parseInput, parsePageHeader, detectFormat, toolResultBody } from './parse.js'
-export { stripWrappers, extractUserText, countNoise, addNoise } from './wrappers.js'
+export { stripWrappers, extractUserText, hasSandMarker, countNoise, addNoise } from './wrappers.js'
 export { parseGrokTimestamp, extractTimestampTag, addMs } from './timestamps.js'
 export { classifyHidden, extractAgentMessage, systemMarker } from './hidden.js'
 export {

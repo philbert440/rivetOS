@@ -15,7 +15,7 @@ import { dirname, join, resolve } from 'node:path'
 import { homedir } from 'node:os'
 import { fileURLToPath } from 'node:url'
 import { makeIdentityLookup } from './discover-models.mjs'
-import { captureStateKey, shouldIngest } from './live-state.mjs'
+import { captureStateKey, resolveIdentityWithRefresh, shouldIngest } from './live-state.mjs'
 
 const HERE = dirname(fileURLToPath(import.meta.url))
 const HOME = process.env.HOME || homedir()
@@ -61,12 +61,9 @@ mkdirSync(dirname(STATE_FILE), { recursive: true })
 
 let lookup = makeIdentityLookup()
 function identity(id) {
-  let who = lookup.identity(id)
-  if (who.agent === 'rivet-grokbot-run') {
-    lookup = makeIdentityLookup()
-    who = lookup.identity(id)
-  }
-  return who
+  const next = resolveIdentityWithRefresh(lookup, id, makeIdentityLookup)
+  lookup = next.lookup
+  return next.who
 }
 log(`models: ${lookup.catalog.models.length} bots from agent profiles`)
 

@@ -32,7 +32,9 @@ DELETEs or UPDATEs existing rows.
 - Hidden system turns are stored as `role=system` with `metadata.kind`.
   Repeated routine / background fires stay distinct by position. Genuine
   same-minute user repeats stay distinct by position; only a replayed
-  consecutive block (page concat) is dropped. Hidden-body strip runs only
+  consecutive block that starts with a stamped user turn whose stamp
+  repeats (page concat) is dropped. Repeated tool_use / tool_result
+  pairs are kept. Hidden-body strip runs only
   when `[SAND_HIDDEN_PROMPT]` is present, so a normal user message that
   mentions `[event]` survives. `role=system` records stay system.
   `[agent]` messages keep the payload with `from_agent` / `from_agent_id`.

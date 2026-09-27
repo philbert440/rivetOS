@@ -98,6 +98,10 @@ const HIDDEN_BODY_RES: RegExp[] = [
   /\[event\][\s\S]*/i,
 ]
 
+export function hasSandMarker(text: string): boolean {
+  return /\[SAND_HIDDEN_PROMPT\]/.test(text) || /\[SAND_TRUSTED_AUTOMATION_PROMPT\]/.test(text)
+}
+
 /**
  * After wrapper strip, drop hidden-turn bodies so mixed user turns keep only
  * the real typed text. Only runs when the original text has
@@ -105,8 +109,7 @@ const HIDDEN_BODY_RES: RegExp[] = [
  * `[event]` / `[routine]` / `[agent]` is left intact.
  */
 export function extractUserText(text: string): string {
-  const hasHiddenPrompt =
-    /\[SAND_HIDDEN_PROMPT\]/.test(text) || /\[SAND_TRUSTED_AUTOMATION_PROMPT\]/.test(text)
+  const hasHiddenPrompt = hasSandMarker(text)
   let out = stripWrappers(text)
   if (hasHiddenPrompt) {
     for (const re of HIDDEN_BODY_RES) {

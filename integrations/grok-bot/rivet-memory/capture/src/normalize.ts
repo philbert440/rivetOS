@@ -19,41 +19,61 @@ import {
 } from './types.js'
 import { partText, recordParts, recordRole, toolResultBody } from './parse.js'
 import { addMs, extractTimestampTag } from './timestamps.js'
-import { extractUserText } from './wrappers.js'
+import { extractUserText, hasSandMarker } from './wrappers.js'
 
 export interface TimeClock {
   last?: string
 }
 
+/** A replay is a stamped user turn plus at least one following record. */
+export const REPLAY_MIN_LEN = 2
+
+function recordHash(rec: unknown): string {
+  try {
+    return JSON.stringify(rec)
+  } catch {
+    return String(rec)
+  }
+}
+
+function stampedUserTime(rec: unknown): string | undefined {
+  const role = recordRole(rec)
+  if (role !== 'user' && role !== 'human') return undefined
+  const raw = recordParts(rec).map(partText).filter(Boolean).join('\n')
+  return extractTimestampTag(raw)
+}
+
 /**
- * Skip a concatenated replay block: a run of ≥2 consecutive records whose
- * JSON matches an earlier consecutive run. Isolated same-time same-text
- * user turns (minute precision) are kept — those are genuine repeats.
+ * Skip a concatenated replay: a stamped user turn whose stamp repeats an
+ * earlier stamped user, followed by the same next records. Isolated
+ * same-minute user turns and repeated tool_use/tool_result pairs are kept.
+ * Indexed by stamp so a long transcript is linear in the number of records.
  */
 export function replaySkipIndices(records: unknown[]): Set<number> {
-  const hashes = records.map((r) => {
-    try {
-      return JSON.stringify(r)
-    } catch {
-      return String(r)
-    }
-  })
+  const hashes = records.map(recordHash)
+  const stamps = records.map(stampedUserTime)
+  const firstByStamp = new Map<string, number>()
   const skip = new Set<number>()
   let j = 0
   while (j < hashes.length) {
-    let matchedAt = -1
-    for (let i = 0; i < j; i++) {
-      if (hashes[i] === hashes[j] && j + 1 < hashes.length && hashes[i + 1] === hashes[j + 1]) {
-        matchedAt = i
-        break
-      }
+    const stamp = stamps[j]
+    if (!stamp) {
+      j += 1
+      continue
     }
-    if (matchedAt >= 0) {
-      while (j < hashes.length && matchedAt < hashes.length && hashes[j] === hashes[matchedAt]) {
-        skip.add(j)
-        j += 1
-        matchedAt += 1
-      }
+    const prev = firstByStamp.get(stamp)
+    if (prev === undefined) {
+      firstByStamp.set(stamp, j)
+      j += 1
+      continue
+    }
+    let len = 0
+    while (prev + len < j && j + len < hashes.length && hashes[prev + len] === hashes[j + len]) {
+      len += 1
+    }
+    if (len >= REPLAY_MIN_LEN) {
+      for (let k = 0; k < len; k++) skip.add(j + k)
+      j += len
     } else {
       j += 1
     }
@@ -115,7 +135,8 @@ export function normalizeRecords(records: unknown[], opts: NormalizeOptions): No
     const storedTime = opts.useStoredCreatedAt ? recordStoredTime(rec) : undefined
     const userLike = role === 'user'
     const stamped = userLike ? extractTimestampTag(rawText) : undefined
-    const kind = userLike ? classifyHidden(rawText) : undefined
+    const sand = userLike && hasSandMarker(rawText)
+    const kind = sand ? classifyHidden(rawText) : undefined
     const userText = userLike ? extractUserText(rawText) : ''
 
     if (userLike) {
@@ -173,11 +194,10 @@ export function normalizeRecords(records: unknown[], opts: NormalizeOptions): No
       continue
     }
 
-    // Real user prose wins. If the leftover still classifies as a hidden
-    // body (unsanded start-of-line [event], reaction, …), fall through and
-    // store it as a system event so we don't keep the injected text as user.
-    const leftoverHidden = userText ? classifyHidden(userText) : undefined
-    if (userText && !leftoverHidden) {
+    // Real user prose wins. Do not re-classify leftover text: unanchored
+    // hidden tags in a normal message ("the [agent] tag should…") must stay
+    // user. Hidden-only SAND turns have empty userText after extractUserText.
+    if (userText) {
       const row = makeMessage({
         opts,
         role: 'user',

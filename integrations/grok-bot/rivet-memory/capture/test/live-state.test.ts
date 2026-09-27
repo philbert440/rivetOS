@@ -1,3 +1,4 @@
+import { execFileSync } from 'node:child_process'
 import { readFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -7,10 +8,12 @@ import {
   isStuckPolicyState,
   isWatcherStateMap,
   oldStuckPolicyPath,
+  resolveIdentityWithRefresh,
   shouldIngest,
 } from '../live-state.mjs'
 
 const HERE = dirname(fileURLToPath(import.meta.url))
+const ROOT = join(HERE, '..')
 
 describe('watcher / run-once live state', () => {
   it('keys size:mtime by id plus suffix so unsuffixed keys do not skip -v3', () => {
@@ -27,13 +30,52 @@ describe('watcher / run-once live state', () => {
 
   it('looks up run-once stuck-policy under the unsuffixed session, not state.json', () => {
     const oldDir = '/home/user/.rivetos/capture'
-    expect(oldStuckPolicyPath(oldDir, 'grokbot-eggbot-v3', '-v3')).toBe(
-      `${oldDir}/grokbot-eggbot.json`,
-    )
-    expect(oldStuckPolicyPath(oldDir, 'grokbot-eggbot-v3', '-v3')).not.toBe(`${oldDir}/state.json`)
-    const runOnce = readFileSync(join(HERE, '..', 'run-once.sh'), 'utf8')
-    expect(runOnce).toContain('OLD_WATCHER_STATE')
-    expect(runOnce).toContain('discover-models.mjs')
-    expect(runOnce).toContain('unsuffixed_session')
+    const viaJs = oldStuckPolicyPath(oldDir, 'grokbot-eggbot-v3', '-v3')
+    expect(viaJs).toBe(`${oldDir}/grokbot-eggbot.json`)
+    expect(viaJs).not.toBe(`${oldDir}/state.json`)
+    const viaCli = execFileSync(
+      'node',
+      [join(ROOT, 'live-state.mjs'), 'old-stuck', oldDir, 'grokbot-eggbot-v3', '-v3'],
+      { encoding: 'utf8' },
+    ).trim()
+    expect(viaCli).toBe(viaJs)
+  })
+
+  it('run-once.sh calls live-state.mjs for the stuck-policy path', () => {
+    const runOnce = readFileSync(join(ROOT, 'run-once.sh'), 'utf8')
+    expect(runOnce).toContain('live-state.mjs')
+    expect(runOnce).toContain('old-stuck')
+    expect(runOnce).not.toMatch(/unsuffixed_session="\$\{session_id%/)
+    expect(runOnce).toContain('empty roster')
+  })
+})
+
+describe('roster refresh', () => {
+  it('refreshes the lookup when the first hit is rivet-grokbot-run', () => {
+    const unknown = {
+      identity: () => ({ agent: 'rivet-grokbot-run', session: 'grokbot-run-x', persona: 'run' }),
+    }
+    const known = {
+      identity: () => ({ agent: 'rivet-arch', session: 'grokbot-arch', persona: 'Arch' }),
+    }
+    let remade = 0
+    const { who } = resolveIdentityWithRefresh(unknown, 'new-id', () => {
+      remade += 1
+      return known
+    })
+    expect(remade).toBe(1)
+    expect(who.agent).toBe('rivet-arch')
+  })
+
+  it('does not remake when the first lookup already has a real agent', () => {
+    const known = {
+      identity: () => ({ agent: 'rivet-bob', session: 'grokbot-bob', persona: 'Bob' }),
+    }
+    let remade = 0
+    resolveIdentityWithRefresh(known, 'bob', () => {
+      remade += 1
+      return known
+    })
+    expect(remade).toBe(0)
   })
 })

@@ -245,8 +245,20 @@ if [[ ! -f "${MODELS_JSON}" && ! -f "${DISCOVER_JS}" ]]; then
 fi
 
 transcript_rel=$(jq -r '.transcriptRel // empty' "${MODELS_JSON}" 2>/dev/null || true)
-if [[ -f "${DISCOVER_JS}" ]] && models=$(node "${DISCOVER_JS}" --json 2>/dev/null | jq -c '.models[]'); then
-    :
+if [[ -f "${DISCOVER_JS}" ]]; then
+    if roster_json="$(node "${DISCOVER_JS}" --json 2>/dev/null)"; then
+        roster_n="$(printf '%s' "${roster_json}" | jq -r '.models | length' 2>/dev/null || echo 0)"
+        if [[ -z "${roster_n}" || "${roster_n}" == "0" || "${roster_n}" == "null" ]]; then
+            echo "ERROR: discover-models.mjs --json returned an empty roster" >&2
+            exit 1
+        fi
+        models="$(printf '%s' "${roster_json}" | jq -c '.models[]')"
+    elif [[ -f "${MODELS_JSON}" ]]; then
+        models=$(jq -c '.models[]' "${MODELS_JSON}")
+    else
+        echo "ERROR: cannot discover models (discover failed and no models.json)" >&2
+        exit 1
+    fi
 elif [[ -f "${MODELS_JSON}" ]]; then
     models=$(jq -c '.models[]' "${MODELS_JSON}")
 else
@@ -285,8 +297,7 @@ while IFS= read -r model_json; do
     any_model_processed=1
 
     state_file="${STATE_DIR}/${session_id}.json"
-    unsuffixed_session="${session_id%"${SESSION_SUFFIX}"}"
-    old_stuck="${OLD_STATE_DIR}/${unsuffixed_session}.json"
+    old_stuck="$(node "${SCRIPT_DIR}/live-state.mjs" old-stuck "${OLD_STATE_DIR}" "${session_id}" "${SESSION_SUFFIX}")"
     if [[ ! -f "${state_file}" && -f "${old_stuck}" && "${old_stuck}" != "${OLD_WATCHER_STATE}" ]]; then
         mkdir -p "${STATE_DIR}"
         cp "${old_stuck}" "${state_file}"
