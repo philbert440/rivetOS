@@ -49,12 +49,19 @@ function sessionIdOf(event: PluginEvent | null | undefined): string | null {
   return typeof raw === 'string' && raw.length > 0 ? raw : null
 }
 
-function spawnIngest(sessionId: string): void {
+function spawnIngest(sessionId: string, finalize = false): void {
   try {
     const script = path.join(PLUGIN_PATH, 'bin', 'opencode-memory-capture.sh')
     const child = spawn(
       'bash',
-      [script, '--ingest-session', sessionId, '--delay-ms', String(CHILD_DELAY_MS)],
+      [
+        script,
+        '--ingest-session',
+        sessionId,
+        '--delay-ms',
+        String(CHILD_DELAY_MS),
+        ...(finalize ? ['--close-session'] : []),
+      ],
       { stdio: 'ignore', detached: true, env: { ...process.env } },
     )
     // an asynchronous 'error' (ENOENT/EAGAIN) with no listener would throw into opencode
@@ -76,9 +83,9 @@ export const RivetMemory = async ({ directory: _directory }: { directory?: strin
         if (!sessionId) return
         const now = Date.now()
         const prev = lastSpawn.get(sessionId)
-        if (prev !== undefined && now - prev < RATE_LIMIT_MS) return
+        if (type !== 'session.deleted' && prev !== undefined && now - prev < RATE_LIMIT_MS) return
         lastSpawn.set(sessionId, now)
-        spawnIngest(sessionId)
+        spawnIngest(sessionId, type === 'session.deleted')
       } catch {
         // never throw into opencode
       }

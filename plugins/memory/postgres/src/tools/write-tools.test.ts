@@ -1,9 +1,11 @@
-import { describe, expect, it, afterEach } from 'vitest'
+import { describe, expect, it, afterEach, vi } from 'vitest'
+import type { PostgresMemory } from '../adapter.js'
 import {
   appendEventId,
   ingestEventId,
   resolveMemoryWriteTags,
   truncateContent,
+  ingestSession,
 } from './write-tools.js'
 
 const MAX_CONTENT = 16000
@@ -67,5 +69,43 @@ describe('memory write helpers', () => {
       agent: 'env-agent',
       channel: 'mcp',
     })
+  })
+})
+
+describe('shared ingest transaction', () => {
+  it('keeps MCP ordinal dedupe and appends on the locked client', async () => {
+    const query = vi.fn(async (sql: string) => ({
+      rows: sql.includes('AS ordinal') ? [{ ordinal: '0', event_id: 'old' }] : [],
+    }))
+    const release = vi.fn()
+    const client = { query, release }
+    const append = vi.fn(async () => 'new-id')
+    const memory = {
+      getPool: () => ({ connect: async () => client }),
+      append,
+    } as unknown as PostgresMemory
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    try {
+      const result = await ingestSession(memory, {
+        sessionId: 'session',
+        agent: 'rivet',
+        messages: [
+          { role: 'user', content: 'old text' },
+          { role: 'assistant', content: 'new text' },
+        ],
+      })
+      expect(result).toMatchObject({ ingested: 1, skipped: 1, ids: ['new-id'] })
+      expect(append).toHaveBeenCalledWith(expect.objectContaining({ content: 'new text' }), {
+        client,
+      })
+      expect(query.mock.calls.map(([sql]) => sql).slice(0, 2)).toEqual([
+        'BEGIN',
+        'SELECT pg_advisory_xact_lock(hashtext($1))',
+      ])
+      expect(query.mock.calls.at(-1)).toEqual(['COMMIT'])
+      expect(release).toHaveBeenCalledOnce()
+    } finally {
+      warn.mockRestore()
+    }
   })
 })

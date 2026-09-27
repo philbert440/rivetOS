@@ -117,6 +117,15 @@ references `qwen-memory-capture.sh`.
 
 There was never a watcher unit for qwen — `--apply` migrates nothing.
 
+## Transport
+
+Capture posts batches to this node's den (`POST /api/capture`) by default.
+`RIVETOS_CAPTURE_TRANSPORT=den|pg` forces one or the other; `pg` stays for one
+release. When the den is down the batch is spooled under
+`~/.rivetos/capture-spool` and replayed on the next write. A non-empty
+`RIVETOS_USER_ID` stays on Postgres, because loopback den is the owner pool.
+The launcher calls `rivetos_resolve_den` so Node trusts the den CA.
+
 ## Uninstall
 
 ```bash

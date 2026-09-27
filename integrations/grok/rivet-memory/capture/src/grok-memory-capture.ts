@@ -24,24 +24,28 @@
  *                       5. INSERT only parsed[count:]
  *                       6. (finalize) flip ros_conversations.active = false
  *
- *   Idempotency comes from slice-by-count, identical to Claude transcript-capture:
- *   the parser is deterministic, updates.jsonl is append-only, so parsed[k] always
- *   maps to stored message k. A per-session pg_advisory_xact_lock serialises
- *   concurrent worker fires (Grok bursts events).
+ *   Den transport sends the entire session with grok-build:<sid>:<ordinal>
+ *   event ids. The den deduplicates retries; the legacy pg transport retains
+ *   slice-by-count. A local directory lock serializes state publication.
  *
  *   "Best effort": every error path swallows; the calling Grok session is
  *   never blocked. Failures go to ~/.rivetos/grok-memory-capture.log.
  */
 
+import {
+  isRecord,
+  asString,
+  createCaptureWriter,
+  resolveCaptureTransport,
+  withFileLock,
+} from '@rivetos/capture-core'
+import type { CaptureBatch, CaptureMessage, CaptureWriterOptions } from '@rivetos/capture-core'
 import fs from 'node:fs'
 import path from 'node:path'
 import os from 'node:os'
 import { spawn } from 'node:child_process'
 import { fileURLToPath } from 'node:url'
-import pg from 'pg'
 import type { PoolClient } from 'pg'
-
-const { Pool } = pg
 
 // ---------------------------------------------------------------------------
 // Constants (must match other Rivet agents)
@@ -51,8 +55,8 @@ export const CAPTURE_CHANNEL = 'grok-build'
 
 const LOG_FILE = path.join(os.homedir(), '.rivetos', 'grok-memory-capture.log')
 const SPOOL_DIR = path.join(os.tmpdir(), 'rivetos-grok-capture')
-const STATE_DIR = path.join(os.homedir(), '.rivetos', 'capture-state')
-const SESSIONS_ROOT = path.join(os.homedir(), '.grok', 'sessions')
+const stateDir = (): string => path.join(os.homedir(), '.rivetos', 'capture-state')
+const sessionsRoot = (): string => path.join(os.homedir(), '.grok', 'sessions')
 const MAX_CONTENT = 16000 // keep in sync with plugins/providers/claude-cli/src/transcript-capture.ts
 const STATEMENT_TIMEOUT_MS = 15000 // keep in sync with plugins/providers/claude-cli/src/transcript-capture.ts
 
@@ -180,7 +184,7 @@ function isUnresolvablePath(err: unknown): boolean {
 
 function readSessionState(sessionId: string): SessionState | null {
   try {
-    const statePath = path.join(STATE_DIR, `${sessionId}.json`)
+    const statePath = path.join(stateDir(), `${sessionId}.json`)
     const raw = fs.readFileSync(statePath, 'utf8')
     return JSON.parse(raw) as SessionState
   } catch {
@@ -189,13 +193,13 @@ function readSessionState(sessionId: string): SessionState | null {
 }
 
 function writeSessionState(state: SessionState): void {
-  const statePath = path.join(STATE_DIR, `${state.sessionId}.json`)
+  const statePath = path.join(stateDir(), `${state.sessionId}.json`)
   const tmpPath = path.join(
-    STATE_DIR,
+    stateDir(),
     `.${state.sessionId}.${process.pid}.${Date.now()}.${Math.random().toString(36).slice(2, 8)}.tmp`,
   )
   try {
-    fs.mkdirSync(STATE_DIR, { recursive: true })
+    fs.mkdirSync(stateDir(), { recursive: true })
     fs.writeFileSync(tmpPath, JSON.stringify(state, null, 2))
     fs.renameSync(tmpPath, statePath)
   } catch (err) {
@@ -208,88 +212,16 @@ function writeSessionState(state: SessionState): void {
   }
 }
 
-function sleep(ms: number): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, ms))
-}
-
 function lockPathFor(sessionId: string): string {
   const safe = sessionId.replace(/[^A-Za-z0-9._-]/g, '_')
-  return path.join(STATE_DIR, `.${safe}.lock`)
-}
-
-function pidIsAlive(pid: number): boolean {
-  if (!Number.isInteger(pid) || pid <= 0) return false
-  try {
-    process.kill(pid, 0)
-    return true
-  } catch {
-    return false
-  }
-}
-
-function tryStealStaleLock(lockPath: string): void {
-  try {
-    const raw = fs.readFileSync(lockPath, 'utf8').trim()
-    const pid = Number.parseInt(raw, 10)
-    if (!pidIsAlive(pid)) fs.unlinkSync(lockPath)
-  } catch {
-    // ignore
-  }
+  return path.join(stateDir(), `.${safe}.lock`)
 }
 
 /**
- * Exclusive lockfile (O_EXCL) keyed by sessionId in STATE_DIR. Held across
+ * Directory lock keyed by sessionId in stateDir(). Held across
  * read → modify → publish so state serializes even when Postgres is down.
  * The PG advisory lock still covers DB writes; this lock covers local state.
  */
-async function acquireSessionFileLock(sessionId: string): Promise<() => void> {
-  fs.mkdirSync(STATE_DIR, { recursive: true })
-  const lockPath = lockPathFor(sessionId)
-  const deadline = Date.now() + STATE_LOCK_TIMEOUT_MS
-  let fd: number | undefined
-  while (fd === undefined) {
-    try {
-      fd = fs.openSync(lockPath, 'wx')
-      fs.writeSync(fd, String(process.pid))
-    } catch (err) {
-      if (fd !== undefined) {
-        try {
-          fs.closeSync(fd)
-        } catch {
-          // ignore
-        }
-        try {
-          fs.unlinkSync(lockPath)
-        } catch {
-          // ignore
-        }
-        fd = undefined
-      }
-      if (!isErrnoCode(err, 'EEXIST')) throw err
-      tryStealStaleLock(lockPath)
-      if (Date.now() >= deadline) {
-        throw new Error(`timed out acquiring session state lock for ${sessionId}`)
-      }
-      await sleep(STATE_LOCK_RETRY_MS)
-    }
-  }
-  const ownedFd = fd
-  let released = false
-  return () => {
-    if (released) return
-    released = true
-    try {
-      fs.closeSync(ownedFd)
-    } catch {
-      // ignore
-    }
-    try {
-      fs.unlinkSync(lockPath)
-    } catch {
-      // ignore
-    }
-  }
-}
 
 function pruneFailureTimestamps(timestamps: number[], now: number): number[] {
   return timestamps
@@ -353,13 +285,13 @@ function isStuckSession(state: SessionState, now = Date.now()): boolean {
 function checkStuckSessions(): string[] {
   const stuck: string[] = []
   try {
-    fs.mkdirSync(STATE_DIR, { recursive: true })
-    const files = fs.readdirSync(STATE_DIR).filter(f => f.endsWith('.json'))
+    fs.mkdirSync(stateDir(), { recursive: true })
+    const files = fs.readdirSync(stateDir()).filter((f) => f.endsWith('.json'))
     const now = Date.now()
 
     for (const file of files) {
       try {
-        const statePath = path.join(STATE_DIR, file)
+        const statePath = path.join(stateDir(), file)
         const state = JSON.parse(fs.readFileSync(statePath, 'utf8')) as SessionState
         if (isStuckSession(state, now)) {
           stuck.push(
@@ -388,7 +320,9 @@ function resolvePgUrl(): string {
       const m = /^\s*RIVETOS_PG_URL\s*=\s*(.+?)\s*$/.exec(line)
       if (m) return m[1].replace(/^["']|["']$/g, '')
     }
-  } catch {}
+  } catch {
+    /* best effort */
+  }
   throw new Error('RIVETOS_PG_URL not set and not found in ~/.rivetos/.env')
 }
 
@@ -410,7 +344,7 @@ export function findSessionDir(sessionId: string, workspaceRootHint?: string): s
   // does not delete a spool for an inaccessible session.
   if (workspaceRootHint) {
     const enc = encodeURIComponent(workspaceRootHint)
-    const candidate = path.join(SESSIONS_ROOT, enc, sessionId)
+    const candidate = path.join(sessionsRoot(), enc, sessionId)
     try {
       if (fs.statSync(candidate).isDirectory()) return candidate
     } catch (err) {
@@ -419,14 +353,14 @@ export function findSessionDir(sessionId: string, workspaceRootHint?: string): s
   }
   let cwdEntries: string[]
   try {
-    cwdEntries = fs.readdirSync(SESSIONS_ROOT)
+    cwdEntries = fs.readdirSync(sessionsRoot())
   } catch (err) {
     if (isErrnoCode(err, 'ENOENT')) return null
     throw err
   }
   let accessError: unknown
   for (const cwd of cwdEntries) {
-    const candidate = path.join(SESSIONS_ROOT, cwd, sessionId)
+    const candidate = path.join(sessionsRoot(), cwd, sessionId)
     try {
       if (fs.statSync(candidate).isDirectory()) return candidate
     } catch (err) {
@@ -434,7 +368,10 @@ export function findSessionDir(sessionId: string, workspaceRootHint?: string): s
       accessError = err
     }
   }
-  if (accessError) throw accessError
+  if (accessError)
+    throw accessError instanceof Error
+      ? accessError
+      : new Error('session directory inaccessible', { cause: accessError })
   return null
 }
 
@@ -479,20 +416,21 @@ export function parseUpdates(jsonlText: string): PendingMessage[] {
   for (const rawLine of lines) {
     const line = rawLine.trim()
     if (!line) continue
-    let evt: any
+    let evt: unknown
     try {
       evt = JSON.parse(line)
     } catch {
       continue
     }
-    const promptId = evt?.params?._meta?.promptId
+    if (!isRecord(evt) || !isRecord(evt.params)) continue
+    const promptId = isRecord(evt.params._meta) ? evt.params._meta.promptId : undefined
     if (typeof promptId === 'string' && !promptIdToTurn.has(promptId)) {
       promptIdToTurn.set(promptId, promptIdToTurn.size)
     }
   }
 
   // ---------- Pass 2: emit normalized PendingMessages with ordinals. ----------
-  const SUB_USER = 0
+  const userChunks = new Map<number, number>()
   const SUB_OTHER_BASE = 10_000
   const TURN_STRIDE = 1_000_000
   const out: PendingMessage[] = []
@@ -513,33 +451,39 @@ export function parseUpdates(jsonlText: string): PendingMessage[] {
   for (let i = 0; i < lines.length; i++) {
     const line = lines[i].trim()
     if (!line) continue
-    let evt: any
+    let evt: unknown
     try {
       evt = JSON.parse(line)
     } catch {
       continue
     }
-    const params = evt?.params
-    const update = params?.update
-    if (!update) continue
+    if (!isRecord(evt) || !isRecord(evt.params)) continue
+    const params = evt.params
+    const update = params.update
+    if (!isRecord(update)) continue
+    const meta = isRecord(params._meta) ? params._meta : {}
+    const updateMeta = isRecord(update._meta) ? update._meta : {}
     const type = update.sessionUpdate
     if (!type) continue
-    const eventId: string | null = params?._meta?.eventId ?? null
-    const eventTs: string | null = params?._meta?.agentTimestampMs
-      ? new Date(params._meta.agentTimestampMs).toISOString()
-      : null
+    const eventId: string | null = asString(meta.eventId)
+    const eventTs: string | null =
+      typeof meta.agentTimestampMs === 'number' && meta.agentTimestampMs
+        ? new Date(meta.agentTimestampMs).toISOString()
+        : null
 
     // Resolve turn + sub_order. user_message_chunk uses promptIndex directly;
     // everything else looks up the outer promptId in the map from Pass 1.
     let turn: number
     let subOrder: number
     if (type === 'user_message_chunk') {
-      const pi = update?._meta?.promptIndex
+      const pi = updateMeta.promptIndex
       turn = typeof pi === 'number' ? pi : currentTurn < 0 ? 0 : currentTurn
-      subOrder = SUB_USER
+      // Preserve sub-order zero for the first chunk, including existing fixtures.
+      subOrder = userChunks.get(turn) ?? 0
+      userChunks.set(turn, subOrder + 1)
       currentTurn = turn
     } else {
-      const promptId = params?._meta?.promptId
+      const promptId = meta.promptId
       if (typeof promptId === 'string' && promptIdToTurn.has(promptId)) {
         turn = promptIdToTurn.get(promptId)!
         currentTurn = turn
@@ -562,8 +506,8 @@ export function parseUpdates(jsonlText: string): PendingMessage[] {
           lineIndex: i,
           extra: {
             sessionUpdate: type,
-            modelId: update._meta?.modelId,
-            promptIndex: update._meta?.promptIndex,
+            modelId: updateMeta.modelId,
+            promptIndex: updateMeta.promptIndex,
           },
         })
       }
@@ -597,7 +541,7 @@ export function parseUpdates(jsonlText: string): PendingMessage[] {
       const id = update.toolCallId
       if (typeof id === 'string') {
         pendingTools.set(id, {
-          name: update.title ?? null,
+          name: asString(update.title),
           rawInput: update.rawInput,
           eventId,
           eventTs,
@@ -615,7 +559,7 @@ export function parseUpdates(jsonlText: string): PendingMessage[] {
         }
         // Some tool calls only show up via tool_call_update (no preceding tool_call),
         // so fall back to update.title / update.rawInput.
-        const toolName = initial.name ?? update.title ?? null
+        const toolName = initial.name ?? asString(update.title)
         const rawInput = initial.rawInput ?? update.rawInput ?? undefined
         const toolResult = formatToolResult(update)
         out.push({
@@ -670,23 +614,25 @@ function extractText(content: unknown): string | null {
  * field per known type. For unknown types we still fall back to JSON, but with
  * byte arrays decoded/elided defensively.
  */
-function formatToolResult(update: any): string | null {
+function formatToolResult(update: Record<string, unknown>): string | null {
   // Returns the full (un-truncated) human-readable result; truncation happens
   // at the insertion layer so we can record the original length + a disk
   // pointer in metadata when truncation occurs.
   const out = update?.rawOutput
-  if (out && typeof out === 'object') {
+  if (isRecord(out)) {
     const t = out.type
     if (t === 'Bash') {
       if (typeof out.output_for_prompt === 'string') {
-        const tail = `exit_code=${out.exit_code ?? '?'}${out.timed_out ? ' timed_out=true' : ''}${out.truncated ? ' truncated=true' : ''}`
+        const tail = `exit_code=${typeof out.exit_code === 'number' ? out.exit_code : '?'}${out.timed_out ? ' timed_out=true' : ''}${out.truncated ? ' truncated=true' : ''}`
         return `${out.output_for_prompt}\n[${tail}]`
       }
     } else if (t === 'GrepSearch') {
       if (typeof out.output_for_prompt === 'string') return out.output_for_prompt
-      if (Array.isArray(out.stdout)) return bytesToString(out.stdout)
+      if (Array.isArray(out.stdout))
+        return bytesToString(out.stdout.filter((v): v is number => typeof v === 'number'))
     } else if (t === 'ReadFile') {
-      if (typeof out.FileContent?.content === 'string') return out.FileContent.content
+      if (isRecord(out.FileContent) && typeof out.FileContent.content === 'string')
+        return out.FileContent.content
     } else if (t === 'SearchTool') {
       if (typeof out.content === 'string') {
         const prefix =
@@ -694,19 +640,23 @@ function formatToolResult(update: any): string | null {
         return prefix + out.content
       }
     } else if (t === 'MCP') {
-      const header = `[mcp ${out.server_name ?? '?'}/${out.tool_name ?? '?'}]`
+      const header = `[mcp ${asString(out.server_name) ?? '?'}/${asString(out.tool_name) ?? '?'}]`
       const o = out.output
       if (typeof o === 'string') return `${header}\n${o}`
-      if (typeof o?.OkayOutput === 'string') return `${header}\n${o.OkayOutput}`
-      if (typeof o?.ErrorOutput === 'string') return `${header} ERROR\n${o.ErrorOutput}`
+      if (isRecord(o) && typeof o.OkayOutput === 'string') return `${header}\n${o.OkayOutput}`
+      if (isRecord(o) && typeof o.ErrorOutput === 'string')
+        return `${header} ERROR\n${o.ErrorOutput}`
       // Unknown MCP envelope — JSON-stringify after stripping byte arrays.
       try {
         return `${header}\n${JSON.stringify(stripByteArrays(o))}`
-      } catch {}
+      } catch {
+        /* best effort */
+      }
     } else if (t === 'ListDir') {
-      if (typeof out.Content?.content === 'string') return out.Content.content
+      if (isRecord(out.Content) && typeof out.Content.content === 'string')
+        return out.Content.content
     } else if (t === 'Todo') {
-      if (typeof out.TodosUpdated?.summary_for_prompt === 'string') {
+      if (isRecord(out.TodosUpdated) && typeof out.TodosUpdated.summary_for_prompt === 'string') {
         return out.TodosUpdated.summary_for_prompt
       }
     }
@@ -714,14 +664,16 @@ function formatToolResult(update: any): string | null {
     // the row stays human-readable.
     try {
       return JSON.stringify(stripByteArrays(out))
-    } catch {}
+    } catch {
+      /* best effort */
+    }
   }
   // Final fallback: textual content payload (rare; some tool_call_updates
   // carry a content[] array instead of rawOutput).
   if (Array.isArray(update?.content)) {
     const parts: string[] = []
     for (const item of update.content) {
-      const inner = item?.content
+      const inner: unknown = isRecord(item) ? item.content : undefined
       const t = extractText(inner)
       if (t) parts.push(t)
     }
@@ -770,13 +722,18 @@ function stripByteArrays(obj: unknown, depth = 0): unknown {
 export function readSessionSummary(sessionDir: string): SessionSummary {
   const p = path.join(sessionDir, 'summary.json')
   try {
-    const raw = JSON.parse(fs.readFileSync(p, 'utf8'))
+    const parsed: unknown = JSON.parse(fs.readFileSync(p, 'utf8'))
+    const raw = isRecord(parsed) ? parsed : {}
     return {
-      title: raw.generated_title ?? raw.session_summary ?? raw.title,
-      modelId: raw.current_model_id ?? raw.model,
-      agentName: raw.agent_name,
-      cwd: raw.info?.cwd,
-      generatedTitle: raw.generated_title,
+      title:
+        asString(raw.generated_title) ??
+        asString(raw.session_summary) ??
+        asString(raw.title) ??
+        undefined,
+      modelId: asString(raw.current_model_id) ?? asString(raw.model) ?? undefined,
+      agentName: asString(raw.agent_name) ?? undefined,
+      cwd: isRecord(raw.info) ? (asString(raw.info.cwd) ?? undefined) : undefined,
+      generatedTitle: asString(raw.generated_title) ?? undefined,
     }
   } catch {
     return {}
@@ -950,27 +907,75 @@ export function enqueue(op: CaptureOp): void {
 // ---------------------------------------------------------------------------
 // Worker: ingest one session
 // ---------------------------------------------------------------------------
-async function ingestSession(op: CaptureOp): Promise<void> {
+export function toCaptureMessage(
+  m: PendingMessage,
+  sessionKey: string,
+  sourcePath: string,
+  herdr?: CaptureOp['herdr'],
+): CaptureMessage {
+  if (!['user', 'assistant', 'tool', 'system'].includes(m.role))
+    throw new Error(`Invalid role: ${m.role}`)
+  const eventId = `${sessionKey}:${String(m.ordinal)}`
+  const metadata: Record<string, unknown> = {
+    source: 'grok-jsonl',
+    ...m.extra,
+    event_id: eventId,
+    ordinal: m.ordinal,
+    session_jsonl_path: sourcePath,
+  }
+  if (typeof m.lineIndex === 'number') metadata.session_jsonl_line = m.lineIndex
+  if (m.eventId) metadata.native_event_id = m.eventId
+  if (m.eventTs) metadata.event_ts = m.eventTs
+  if (herdr?.paneId) {
+    metadata.herdr_pane_id = herdr.paneId
+    if (herdr.workspaceId) metadata.herdr_workspace_id = herdr.workspaceId
+    if (herdr.host) metadata.herdr_host = herdr.host
+  }
+  return {
+    event_id: eventId,
+    role: m.role as CaptureMessage['role'],
+    content: m.content ?? '',
+    metadata,
+    ...(m.toolName ? { tool_name: m.toolName } : {}),
+    ...(m.toolArgs != null ? { tool_args: m.toolArgs } : {}),
+    ...(typeof m.toolResult === 'string' ? { tool_result: m.toolResult } : {}),
+    ...(m.eventTs && !Number.isNaN(Date.parse(m.eventTs)) ? { created_at: m.eventTs } : {}),
+  }
+}
+
+export async function ingestSession(
+  op: CaptureOp,
+  sink: Partial<CaptureWriterOptions> = {},
+): Promise<void> {
+  return withFileLock(lockPathFor(op.sessionId), () => ingestSessionLocked(op, sink), {
+    waitMs: STATE_LOCK_TIMEOUT_MS,
+    pollMs: STATE_LOCK_RETRY_MS,
+  })
+}
+
+async function ingestSessionLocked(
+  op: CaptureOp,
+  sink: Partial<CaptureWriterOptions>,
+): Promise<void> {
+  const transport = resolveCaptureTransport(process.env)
+
   const sessionKey = deriveSessionKey(op.sessionId)
-  let pool: InstanceType<typeof Pool> | undefined
+  let pool: import('pg').Pool | undefined
   let client: PoolClient | undefined
   let inTx = false
   let statePublished = false
-  let releaseLock: (() => void) | undefined
 
   try {
-    // Local file lock covers read → modify → publish even when PG is down.
-    // PG advisory lock still serializes the DB writes when a connection exists.
-    releaseLock = await acquireSessionFileLock(op.sessionId)
-
-    const pgUrl = resolvePgUrl()
-    pool = new Pool({ connectionString: pgUrl, max: 1 })
-    client = await pool.connect()
-
-    await client.query(`SET statement_timeout = ${STATEMENT_TIMEOUT_MS}`)
-    await client.query('BEGIN')
-    inTx = true
-    await client.query('SELECT pg_advisory_xact_lock(hashtext($1))', [sessionKey])
+    if (transport.kind === 'none') throw new Error(transport.reason)
+    if (transport.kind === 'pg') {
+      const { default: pg } = await import('pg')
+      pool = new pg.Pool({ connectionString: resolvePgUrl(), max: 1 })
+      client = await pool.connect()
+      await client.query(`SET statement_timeout = ${STATEMENT_TIMEOUT_MS}`)
+      await client.query('BEGIN')
+      inTx = true
+      await client.query('SELECT pg_advisory_xact_lock(hashtext($1))', [sessionKey])
+    }
 
     // Read → mutate → publish entirely inside the per-session locks.
     const priorState = readSessionState(op.sessionId)
@@ -981,7 +986,7 @@ async function ingestSession(op: CaptureOp): Promise<void> {
       log(`ingest ${sessionKey}: ${err}`)
       // Genuine miss under <sessions>/<cwd>/<id>. Access errors throw above
       // and are recorded as failures; do not treat them as not-found.
-      await client.query('COMMIT')
+      if (client) await client.query('COMMIT')
       inTx = false
       return
     }
@@ -995,12 +1000,39 @@ async function ingestSession(op: CaptureOp): Promise<void> {
       log(`ingest ${sessionKey}: ${msg}`)
       writeSessionState(nextFailureState(op.sessionId, msg, priorState))
       statePublished = true
-      throw new Error(msg)
+      throw new Error(msg, { cause: err })
     }
 
     const parsed = parseUpdates(jsonlText)
     const summary = readSessionSummary(sessionDir)
     const title = summary.title?.trim() || 'Grok Build session'
+
+    if (transport.kind === 'den') {
+      const batch: CaptureBatch = {
+        session_key: sessionKey,
+        agent: CAPTURE_AGENT,
+        channel: CAPTURE_CHANNEL,
+        title: title.slice(0, 120),
+        settings: {
+          source: 'grok-jsonl',
+          sessionId: op.sessionId,
+          sessionDir,
+          modelId: summary.modelId ?? null,
+          agentName: summary.agentName ?? null,
+          triggerEvent: op.sourceEvent ?? null,
+        },
+        finalize: op.finalize,
+        messages: parsed.map((m) => toCaptureMessage(m, sessionKey, updatesPath, op.herdr)),
+      }
+      const result = await createCaptureWriter({ ...sink, denUrl: transport.denUrl, log }).write(
+        batch,
+      )
+      if ('spooled' in result && !result.spooled) throw new Error(result.error)
+      writeSessionState(nextSuccessState(op.sessionId))
+      statePublished = true
+      return
+    }
+    if (!client) throw new Error('pg capture requires a client')
 
     const conv = await findOrCreateConversation(client, sessionKey, {
       title,
@@ -1052,12 +1084,10 @@ async function ingestSession(op: CaptureOp): Promise<void> {
     if (!statePublished) {
       const priorState = readSessionState(op.sessionId)
       writeSessionState(nextFailureState(op.sessionId, errMsg, priorState))
-      statePublished = true
     }
 
     if (inTx && client) {
       await client.query('ROLLBACK').catch(() => {})
-      inTx = false
     }
 
     throw err
@@ -1071,13 +1101,6 @@ async function ingestSession(op: CaptureOp): Promise<void> {
     }
     if (pool) {
       await pool.end().catch(() => {})
-    }
-    if (releaseLock) {
-      try {
-        releaseLock()
-      } catch {
-        // ignore
-      }
     }
   }
 }
@@ -1146,6 +1169,10 @@ async function runWorker(spoolFile?: string) {
 // ---------------------------------------------------------------------------
 async function main() {
   const args = process.argv.slice(2)
+  if (args[0] === '--status') {
+    console.log(`transport=${resolveCaptureTransport(process.env).kind}`)
+    return
+  }
 
   if (args[0] === '--worker') {
     await runWorker(args[1])
@@ -1175,16 +1202,23 @@ async function main() {
     try {
       const input = await new Promise<string>((resolve) => {
         let data = ''
-        process.stdin.on('data', (chunk) => (data += chunk))
+        process.stdin.on('data', (chunk: Buffer) => {
+          data += chunk.toString()
+        })
         process.stdin.on('end', () => resolve(data))
       })
-      if (input.trim()) payload = JSON.parse(input)
-    } catch {}
+      if (input.trim()) {
+        const parsed: unknown = JSON.parse(input)
+        if (isRecord(parsed)) payload = parsed
+      }
+    } catch {
+      /* best effort */
+    }
 
     const sessionId =
       process.env.GROK_SESSION_ID ||
       (typeof payload.sessionId === 'string' ? payload.sessionId : undefined) ||
-      'unknown-' + Date.now()
+      `unknown-${String(Date.now())}`
 
     // SessionEnd marks the conversation inactive. Other events just trigger an
     // ingest pass; the worker is fully idempotent so extra fires are harmless.
@@ -1211,7 +1245,7 @@ async function main() {
   console.log('  grok-memory-capture --health        # check for stuck sessions')
 }
 
-main().catch((err) => {
+main().catch((err: unknown) => {
   log(`fatal: ${err}`)
   // Worker init (mkdir/readdir of spool, etc.) must fail loud. Hook mode
   // still exits 0 so the Grok session is never blocked.
