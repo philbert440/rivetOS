@@ -81,6 +81,7 @@ import {
   WikiIndex,
   createGetFullTool,
   createMemoryApiRoute,
+  createCaptureApiRoute,
   createMemoryTools,
   createMemoryWriteTools,
 } from '@rivetos/memory-postgres'
@@ -795,6 +796,7 @@ export async function registerAgentTools(
         nodeName: config.mesh?.node_name,
         forUser: wikiFor,
       }),
+      createCaptureApiRoute({ pool, userPools }),
       createMemoryApiRoute({
         pool,
         userPools,

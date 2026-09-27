@@ -391,3 +391,8 @@ export type {
   ImportResult,
   PortabilityPool,
 } from './portability.js'
+
+export { createCaptureApiRoute } from './http/capture-api.js'
+export type { CaptureApiOptions } from './http/capture-api.js'
+export { captureBatch } from './tools/write-tools.js'
+export type { CaptureBatch, CaptureResult, CaptureWriteFn } from './tools/write-tools.js'
