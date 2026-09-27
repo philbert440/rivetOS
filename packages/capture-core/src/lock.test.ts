@@ -86,17 +86,17 @@ function delay(ms: number): Promise<void> {
   })
 }
 
-function ownerNames(lockDir: string): string[] {
-  return readdirSync(lockDir).filter((name) => name.startsWith('owner.'))
+function holderNames(lockDir: string): string[] {
+  return readdirSync(lockDir).filter((name) => name.startsWith('holder.'))
 }
 
 function hexHost(host: string): string {
   return Buffer.from(host, 'utf8').toString('hex')
 }
 
-/** `v2.<hexHost>.<pid>.<start>.<random>` for a host this process should recognise. */
+/** `<hexHost>.<pid>.<start>.<random>` for a host this process should recognise. */
 function hostToken(pid: number, label: string, host: string = hostname()): string {
-  return `v2.${hexHost(host)}.${String(pid)}.1.${label}`
+  return `${hexHost(host)}.${String(pid)}.1.${label}`
 }
 
 function writeOwner(
@@ -105,7 +105,7 @@ function writeOwner(
   mtime?: Date,
 ): string {
   mkdirSync(lockDir, { recursive: true })
-  const full = join(lockDir, `owner.${owner.token}`)
+  const full = join(lockDir, `holder.${owner.token}`)
   writeFileSync(
     full,
     JSON.stringify({
@@ -158,7 +158,7 @@ it('runs two contenders one at a time', async () => {
   expect(results.sort()).toEqual(['a', 'b'])
   expect(maxInside).toBe(1)
   expect(existsSync(lockDir)).toBe(true)
-  expect(ownerNames(lockDir)).toEqual([])
+  expect(holderNames(lockDir)).toEqual([])
 })
 
 it('keeps a single holder when one contender is paused before readdir', async () => {
@@ -210,7 +210,7 @@ it('keeps a single holder when one contender is paused before readdir', async ()
   expect(maxInside).toBe(1)
   expect(inside).toBe(0)
   expect(existsSync(lockDir)).toBe(true)
-  expect(ownerNames(lockDir)).toEqual([])
+  expect(holderNames(lockDir)).toEqual([])
 })
 
 it('acquires immediately when the only other owner is dead', async () => {
@@ -224,7 +224,7 @@ it('acquires immediately when the only other owner is dead', async () => {
     lockDir,
     () => {
       sawDead = existsSync(dead)
-      const names = ownerNames(lockDir)
+      const names = holderNames(lockDir)
       expect(names).toHaveLength(1)
       const name = names[0]
       if (!name) throw new Error('expected the live owner file')
@@ -236,7 +236,7 @@ it('acquires immediately when the only other owner is dead', async () => {
       }
       expect(body.pid).toBe(process.pid)
       expect(body.host).toBe(hostname())
-      expect(name).toBe(`owner.${body.token}`)
+      expect(name).toBe(`holder.${body.token}`)
       expect(body.ts.length).toBeGreaterThan(0)
     },
     { waitMs: 1_000, pollMs: 20, staleMs: 60_000 },
@@ -245,7 +245,7 @@ it('acquires immediately when the only other owner is dead', async () => {
   expect(sawDead).toBe(false)
   expect(existsSync(dead)).toBe(false)
   expect(existsSync(lockDir)).toBe(true)
-  expect(ownerNames(lockDir)).toEqual([])
+  expect(holderNames(lockDir)).toEqual([])
 })
 
 it('times out on a live owner instead of taking it', async () => {
@@ -265,13 +265,15 @@ it('times out on a live owner instead of taking it', async () => {
   expect(entered).toBe(false)
   expect(existsSync(live)).toBe(true)
   expect(readFileSync(live, 'utf8')).toContain(`"pid":${String(process.pid)}`)
-  expect(ownerNames(lockDir)).toEqual([`owner.${token}`])
+  expect(holderNames(lockDir)).toEqual([`holder.${token}`])
 })
 
-it('times out on a foreign-host owner however old and leaves the file', async () => {
+it('times out on a foreign-host holder however old and leaves the file', async () => {
+  const foreign = 'remote-host'
+  const foreignHex = hexHost(foreign)
   const freshDir = lockPath()
-  const freshToken = 'remote-host.99.1.fresh'
-  const fresh = writeOwner(freshDir, { pid: 99, host: 'remote-host', token: freshToken })
+  const freshToken = `${foreignHex}.99.1.fresh`
+  const fresh = writeOwner(freshDir, { pid: 99, host: foreign, token: freshToken })
   const freshBytes = readFileSync(fresh)
   let entered = false
   await expect(
@@ -285,12 +287,12 @@ it('times out on a foreign-host owner however old and leaves the file', async ()
   ).rejects.toBeInstanceOf(LockTimeout)
   expect(entered).toBe(false)
   expect(readFileSync(fresh).equals(freshBytes)).toBe(true)
-  expect(ownerNames(freshDir)).toEqual([`owner.${freshToken}`])
+  expect(holderNames(freshDir)).toEqual([`holder.${freshToken}`])
 
   const ancientDir = lockPath()
-  const ancientToken = 'remote-host.99.1.ancient'
+  const ancientToken = `${foreignHex}.99.1.ancient`
   mkdirSync(ancientDir, { recursive: true })
-  const ancient = join(ancientDir, `owner.${ancientToken}`)
+  const ancient = join(ancientDir, `holder.${ancientToken}`)
   writeFileSync(ancient, '', { mode: 0o600 })
   const ancientBytes = readFileSync(ancient)
   const old = new Date(Date.now() - 86_400_000)
@@ -308,7 +310,7 @@ it('times out on a foreign-host owner however old and leaves the file', async ()
   expect(entered).toBe(false)
   expect(readFileSync(ancient).equals(ancientBytes)).toBe(true)
   expect(statSync(ancient).mtimeMs).toBeLessThan(Date.now() - 60_000)
-  expect(ownerNames(ancientDir)).toEqual([`owner.${ancientToken}`])
+  expect(holderNames(ancientDir)).toEqual([`holder.${ancientToken}`])
 })
 
 it('does not take a dead owner whose raw host collides only under lossy normalisation', async () => {
@@ -325,12 +327,12 @@ it('does not take a dead owner whose raw host collides only under lossy normalis
       const full =
         body === 'record'
           ? writeOwner(lockDir, { pid, host: foreign, token })
-          : join(lockDir, `owner.${token}`)
+          : join(lockDir, `holder.${token}`)
       if (body === 'empty') {
         mkdirSync(lockDir, { recursive: true })
         writeFileSync(full, '', { mode: 0o600 })
       }
-      const publish = join(lockDir, `.publish.${hostToken(pid, 'pub', foreign)}`)
+      const publish = join(lockDir, `.holderpub.${hostToken(pid, 'pub', foreign)}`)
       writeFileSync(publish, '', { mode: 0o600 })
       const bytes = readFileSync(full)
       let entered = false
@@ -346,18 +348,26 @@ it('does not take a dead owner whose raw host collides only under lossy normalis
       expect(entered).toBe(false)
       expect(readFileSync(full).equals(bytes)).toBe(true)
       expect(readFileSync(publish, 'utf8')).toBe('')
-      expect(ownerNames(lockDir)).toEqual([`owner.${token}`])
+      expect(holderNames(lockDir)).toEqual([`holder.${token}`])
     }
   }
 })
 
-it('treats a legacy-format owner as live and does not remove it', async () => {
+it('treats a legacy-format owner as a blocker and does not remove it', async () => {
   hostBox.value = 'node_a'
   const lockDir = lockPath()
   const pid = deadPid()
   // Previous scheme mapped both `node/a` and `node_a` to `node_a`.
   const token = `node_a.${String(pid)}.1.legacy`
-  const file = writeOwner(lockDir, { pid, host: 'node_a', token })
+  mkdirSync(lockDir, { recursive: true })
+  const file = join(lockDir, `owner.${token}`)
+  const body = JSON.stringify({
+    pid,
+    host: 'node_a',
+    ts: new Date().toISOString(),
+    token,
+  })
+  writeFileSync(file, body, { mode: 0o600 })
   const bytes = readFileSync(file)
   const publish = join(lockDir, `.publish.${token}`)
   writeFileSync(publish, 'old', { mode: 0o600 })
@@ -374,7 +384,7 @@ it('treats a legacy-format owner as live and does not remove it', async () => {
   expect(entered).toBe(false)
   expect(readFileSync(file).equals(bytes)).toBe(true)
   expect(readFileSync(publish, 'utf8')).toBe('old')
-  expect(ownerNames(lockDir)).toEqual([`owner.${token}`])
+  expect(holderNames(lockDir)).toEqual([])
 })
 
 it('does not reclaim a legacy hex-host token that equals this host', async () => {
@@ -387,16 +397,15 @@ it('does not reclaim a legacy hex-host token that equals this host', async () =>
     // four-field parser would actually delete if it were still accepted.
     const tokens = [...new Set([`6e6f64655f61.99.1.x`, `6e6f64655f61.${String(dead)}.1.x`])]
     const files: string[] = []
+    mkdirSync(lockDir, { recursive: true })
     for (const token of tokens) {
       const pid = Number(token.split('.')[1])
-      const full =
+      const full = join(lockDir, `owner.${token}`)
+      const text =
         body === 'record'
-          ? writeOwner(lockDir, { pid, host: 'node_a', token })
-          : join(lockDir, `owner.${token}`)
-      if (body === 'empty') {
-        mkdirSync(lockDir, { recursive: true })
-        writeFileSync(full, '', { mode: 0o600 })
-      }
+          ? JSON.stringify({ pid, host: 'node_a', ts: new Date().toISOString(), token })
+          : ''
+      writeFileSync(full, text, { mode: 0o600 })
       const publish = join(lockDir, `.publish.${token}`)
       writeFileSync(publish, 'old', { mode: 0o600 })
       files.push(full, publish)
@@ -418,7 +427,10 @@ it('does not reclaim a legacy hex-host token that equals this host', async () =>
       if (!prior) throw new Error('missing snapshot')
       expect(readFileSync(file).equals(prior)).toBe(true)
     })
-    expect(ownerNames(lockDir).sort()).toEqual(tokens.map((token) => `owner.${token}`).sort())
+    expect(holderNames(lockDir)).toEqual([])
+    expect(readdirSync(lockDir).filter((name) => name.startsWith('owner.')).sort()).toEqual(
+      tokens.map((token) => `owner.${token}`).sort(),
+    )
   }
 })
 
@@ -442,7 +454,7 @@ it('treats an unreadable same-host v2 body as live', async () => {
   readFault.path = undefined
   expect(entered).toBe(false)
   expect(readFileSync(file).equals(bytes)).toBe(true)
-  expect(ownerNames(lockDir)).toEqual([`owner.${token}`])
+  expect(holderNames(lockDir)).toEqual([`holder.${token}`])
 })
 
 it('treats ENOENT while reading a same-host body as already released', async () => {
@@ -466,23 +478,32 @@ it('treats ENOENT while reading a same-host body as already released', async () 
   expect(existsSync(file)).toBe(false)
 })
 
-it('rejects a host field of v2 and any four-field token', async () => {
-  hostBox.value = 'v2'
-  const hex = hexHost('v2')
-  expect(hex).toBe('7632')
+it('rejects holder.v2.<hex> (five fields) and any wrong field count', async () => {
+  const hex = hexHost(hostname())
   const pid = deadPid()
-  const tokens = [`v2.v2.${String(pid)}.1.x`, `v2.${hex}.${String(pid)}.x`]
-  for (const token of tokens) {
+  // Five fields, three fields, five fields without v2, and one field.
+  // A parser that skips a leading `v2` would see a dead same-host holder.
+  const names = [
+    `holder.v2.${hex}.${String(pid)}.1.x`,
+    `holder.${hex}.${String(pid)}.x`,
+    `holder.${hex}.${String(pid)}.1.x.extra`,
+    `holder.${hex}`,
+  ]
+  for (const name of names) {
     for (const body of ['record', 'empty'] as const) {
       const lockDir = lockPath()
-      const full =
+      mkdirSync(lockDir, { recursive: true })
+      const full = join(lockDir, name)
+      const text =
         body === 'record'
-          ? writeOwner(lockDir, { pid, host: 'v2', token })
-          : join(lockDir, `owner.${token}`)
-      if (body === 'empty') {
-        mkdirSync(lockDir, { recursive: true })
-        writeFileSync(full, '', { mode: 0o600 })
-      }
+          ? JSON.stringify({
+              pid,
+              host: hostname(),
+              ts: new Date().toISOString(),
+              token: name.slice('holder.'.length),
+            })
+          : ''
+      writeFileSync(full, text, { mode: 0o600 })
       const bytes = readFileSync(full)
       let entered = false
       await expect(
@@ -496,7 +517,54 @@ it('rejects a host field of v2 and any four-field token', async () => {
       ).rejects.toBeInstanceOf(LockTimeout)
       expect(entered).toBe(false)
       expect(readFileSync(full).equals(bytes)).toBe(true)
-      expect(ownerNames(lockDir)).toEqual([`owner.${token}`])
+      expect(holderNames(lockDir)).toEqual([name])
+    }
+  }
+})
+
+it('blocks on a legacy owner whose dotted hostname imitated a v2 token', async () => {
+  hostBox.value = 'node_a'
+  expect(hexHost('node_a')).toBe('6e6f64655f61')
+  let pid99Dead = false
+  try {
+    process.kill(99, 0)
+  } catch (error) {
+    pid99Dead = (error as NodeJS.ErrnoException).code === 'ESRCH'
+  }
+  expect(pid99Dead).toBe(true)
+  // Body host is this process, so a parser that accepts the dotted name
+  // cannot hide behind the host cross-check. Empty and `{` are the bodies
+  // the previous five-field parser deleted.
+  const real = JSON.stringify({
+    pid: 99,
+    host: 'node_a',
+    ts: '2020-01-01T00:00:00.000Z',
+    token: 'v2.6e6f64655f61.99.1.x',
+  })
+  const cases = [
+    { name: 'owner.v2.6e6f64655f61.99.1.x', bodies: ['', '{', real] },
+    { name: '.publish.v2.6e6f64655f61.99.1.x', bodies: ['', '{', real] },
+    { name: 'notes.txt', bodies: ['leftover'] },
+  ]
+  for (const { name, bodies } of cases) {
+    for (const body of bodies) {
+      const lockDir = lockPath()
+      mkdirSync(lockDir, { recursive: true })
+      const full = join(lockDir, name)
+      writeFileSync(full, body, { mode: 0o600 })
+      const bytes = readFileSync(full)
+      let entered = false
+      await expect(
+        withFileLock(
+          lockDir,
+          () => {
+            entered = true
+          },
+          { waitMs: 200, pollMs: 20 },
+        ),
+      ).rejects.toBeInstanceOf(LockTimeout)
+      expect(entered).toBe(false)
+      expect(readFileSync(full).equals(bytes)).toBe(true)
     }
   }
 })
@@ -508,13 +576,12 @@ it('round-trips a hostname with dots, dashes, slashes, and unicode through the h
   await withFileLock(
     lockDir,
     () => {
-      const name = ownerNames(lockDir)[0]
+      const name = holderNames(lockDir)[0]
       if (!name) throw new Error('expected the holder file')
-      const token = name.slice('owner.'.length)
+      const token = name.slice('holder.'.length)
       const parts = token.split('.')
-      expect(parts).toHaveLength(5)
-      expect(parts[0]).toBe('v2')
-      const hex = parts[1] ?? ''
+      expect(parts).toHaveLength(4)
+      const hex = parts[0] ?? ''
       expect(hex).toBe(hexHost(host))
       expect(Buffer.from(hex, 'hex').toString('utf8')).toBe(host)
       const body = JSON.parse(readFileSync(join(lockDir, name), 'utf8')) as {
@@ -523,7 +590,7 @@ it('round-trips a hostname with dots, dashes, slashes, and unicode through the h
       }
       expect(body.host).toBe(host)
       expect(body.token).toBe(token)
-      expect(parts[2]).toBe(String(process.pid))
+      expect(parts[1]).toBe(String(process.pid))
     },
     { waitMs: 1_000, pollMs: 20 },
   )
@@ -561,7 +628,7 @@ it('does not remove a dead owner when the filename hex matches but the body host
   ).rejects.toBeInstanceOf(LockTimeout)
   expect(entered).toBe(false)
   expect(readFileSync(file).equals(bytes)).toBe(true)
-  expect(ownerNames(lockDir)).toEqual([`owner.${token}`])
+  expect(holderNames(lockDir)).toEqual([`holder.${token}`])
 })
 
 it('gives the first turn to the lexicographically smaller token', async () => {
@@ -576,8 +643,8 @@ it('gives the first turn to the lexicographically smaller token', async () => {
   const seam = async (): Promise<void> => {
     arrived += 1
     if (arrived === 2) {
-      const tokens = ownerNames(lockDir)
-        .map((name) => name.slice('owner.'.length))
+      const tokens = holderNames(lockDir)
+        .map((name) => name.slice('holder.'.length))
         .sort()
       smaller = tokens[0] ?? ''
       larger = tokens[1] ?? ''
@@ -599,8 +666,8 @@ it('gives the first turn to the lexicographically smaller token', async () => {
       async () => {
         inside += 1
         maxInside = Math.max(maxInside, inside)
-        const present = ownerNames(lockDir)
-          .map((name) => name.slice('owner.'.length))
+        const present = holderNames(lockDir)
+          .map((name) => name.slice('holder.'.length))
           .sort()
         order.push(present[0] ?? label)
         if (order.length === 1) {
@@ -640,7 +707,7 @@ it('advances the holder file mtime while fn runs', async () => {
   await withFileLock(
     lockDir,
     async () => {
-      const name = ownerNames(lockDir)[0]
+      const name = holderNames(lockDir)[0]
       if (!name) throw new Error('expected the holder file')
       const full = join(lockDir, name)
       const before = statSync(full).mtimeMs
@@ -651,17 +718,18 @@ it('advances the holder file mtime while fn runs', async () => {
   )
   expect(advanced).toBe(true)
   expect(existsSync(lockDir)).toBe(true)
-  expect(ownerNames(lockDir)).toEqual([])
+  expect(holderNames(lockDir)).toEqual([])
 })
 
-it('removes a same-host dead owner even when the body is empty or invalid', async () => {
+it('reclaims a holder file for a dead same-host pid when the body is empty or invalid', async () => {
   for (const body of ['', '{']) {
     const lockDir = lockPath()
     const pid = deadPid()
     const token = hostToken(pid, 'incomplete')
-    expect(token.startsWith(`v2.${hexHost(hostname())}.`)).toBe(true)
+    expect(token.split('.')).toHaveLength(4)
+    expect(token.startsWith(`${hexHost(hostname())}.`)).toBe(true)
     mkdirSync(lockDir, { recursive: true })
-    const dead = join(lockDir, `owner.${token}`)
+    const dead = join(lockDir, `holder.${token}`)
     writeFileSync(dead, body, { mode: 0o600 })
     let entered = false
     await withFileLock(
@@ -682,7 +750,7 @@ it('times out on an empty same-host owner whose pid is live', async () => {
   const lockDir = lockPath()
   const token = hostToken(process.pid, 'empty-live')
   mkdirSync(lockDir, { recursive: true })
-  const live = join(lockDir, `owner.${token}`)
+  const live = join(lockDir, `holder.${token}`)
   writeFileSync(live, '', { mode: 0o600 })
   let entered = false
   await expect(
@@ -697,15 +765,15 @@ it('times out on an empty same-host owner whose pid is live', async () => {
   expect(entered).toBe(false)
   expect(existsSync(live)).toBe(true)
   expect(readFileSync(live, 'utf8')).toBe('')
-  expect(ownerNames(lockDir)).toEqual([`owner.${token}`])
+  expect(holderNames(lockDir)).toEqual([`holder.${token}`])
 })
 
-it('removes an orphan publish file for a dead same-host pid', async () => {
+it('removes an orphan .holderpub file for a dead same-host pid', async () => {
   const lockDir = lockPath()
   const pid = deadPid()
   const token = hostToken(pid, 'partial')
   mkdirSync(lockDir, { recursive: true })
-  const partial = join(lockDir, `.publish.${token}`)
+  const partial = join(lockDir, `.holderpub.${token}`)
   writeFileSync(partial, '', { mode: 0o600 })
   let entered = false
   await withFileLock(
@@ -718,14 +786,14 @@ it('removes an orphan publish file for a dead same-host pid', async () => {
   )
   expect(entered).toBe(true)
   expect(existsSync(partial)).toBe(false)
-  expect(ownerNames(lockDir)).toEqual([])
+  expect(holderNames(lockDir)).toEqual([])
 })
 
-it('leaves a live same-host publish temp in place and still acquires', async () => {
+it('leaves a live same-host .holderpub temp in place and still acquires', async () => {
   const lockDir = lockPath()
   const token = hostToken(process.pid, 'publishing')
   mkdirSync(lockDir, { recursive: true })
-  const partial = join(lockDir, `.publish.${token}`)
+  const partial = join(lockDir, `.holderpub.${token}`)
   writeFileSync(partial, 'partial', { mode: 0o600 })
   await withFileLock(
     lockDir,
@@ -736,7 +804,7 @@ it('leaves a live same-host publish temp in place and still acquires', async () 
     { waitMs: 1_000, pollMs: 20 },
   )
   expect(existsSync(partial)).toBe(true)
-  expect(ownerNames(lockDir)).toEqual([])
+  expect(holderNames(lockDir)).toEqual([])
 })
 
 it('rethrows ENOSPC from writeFile and leaves no owner or publish file', async () => {
@@ -755,7 +823,11 @@ it('rethrows ENOSPC from writeFile and leaves no owner or publish file', async (
   expect(entered).toBe(false)
   expect(enospc.armed).toBe(false)
   const names = readdirSync(lockDir).filter(
-    (name) => name.startsWith('owner.') || name.startsWith('.publish.'),
+    (name) =>
+      name.startsWith('holder.') ||
+      name.startsWith('.holderpub.') ||
+      name.startsWith('owner.') ||
+      name.startsWith('.publish.'),
   )
   expect(names).toEqual([])
 })
@@ -768,7 +840,7 @@ it('removes the owner file when fn throws and keeps the directory', async () => 
     }),
   ).rejects.toThrow('boom')
   expect(existsSync(lockDir)).toBe(true)
-  expect(ownerNames(lockDir)).toEqual([])
+  expect(holderNames(lockDir)).toEqual([])
 
   let entered = false
   await withFileLock(lockDir, () => {

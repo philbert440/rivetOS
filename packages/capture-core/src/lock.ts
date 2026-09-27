@@ -57,64 +57,70 @@ type Decision = 'acquired' | 'pending' | 'lost'
 type Created = 'none' | 'temp' | 'final'
 
 /**
- * Cross-process lock held as a unique owner file. The directory stays.
+ * Cross-process lock held as a unique holder file. The directory stays.
  *
  * `lockDir` is created once (`mkdir -p`) and never removed. A contender
- * writes the full body to `.publish.<token>` (`wx`, mode `0600`, fsync) and
- * renames it to `owner.<token>`. `token` is
- * `v2.<hexHost>.<pid>.<startTimeMs>.<random>`. The literal `v2` is a version
- * field. The previous scheme was one host field and four fields in total, so
- * it cannot mint this shape, and a host field of `v2` is not hex. `hexHost`
- * is the lowercase hex of the hostname's UTF-8 bytes
- * (`Buffer.from(hostname, 'utf8')`), so distinct hostnames never share a
- * filename identity and the name contains no `.`, `/`, or `\`. The random
- * suffix starts with a per-process counter so two tokens minted in the same
- * millisecond still order by creation. The destination name is unique to
- * this contender, so the rename cannot clobber anyone, and the final file
- * is never a partial body. `rm -rf` is not used.
+ * writes the full body to `.holderpub.<token>` (`wx`, mode `0600`, fsync)
+ * and renames it to `holder.<token>`. `token` is
+ * `<hexHost>.<pid>.<startTimeMs>.<random>` — four fields after the prefix.
+ * The version discriminator is that prefix, outside the token. The hostname
+ * cannot contain a `/`, so it cannot forge a prefix; and both legacy
+ * grammars used the `owner.`/`.publish.` prefixes, so no legacy name can
+ * match `holder.*` or `.holderpub.*`. `hexHost` is the lowercase hex of the
+ * hostname's UTF-8 bytes (`Buffer.from(hostname, 'utf8')`), so distinct
+ * hostnames never share a filename identity and the name contains no `.`,
+ * `/`, or `\`. The random suffix starts with a per-process counter so two
+ * tokens minted in the same millisecond still order by creation. The
+ * destination name is unique to this contender, so the rename cannot
+ * clobber anyone, and the final file is never a partial body. `rm -rf` is
+ * not used.
  *
- * After publishing, the contender reads the directory (see `beforeReaddir`)
- * and classifies every other `owner.*` from the filename. When that body
- * parses, its `host` must also be this hostname before the file is treated
- * as same-host. An empty or invalid body does not override the filename. A
+ * After publishing, the contender reads the directory (see `beforeReaddir`).
+ * Only `holder.*` names are contenders for the tie-break and for
+ * reclamation. `.holderpub.*` is orphan cleanup and nothing else. Every
+ * other name (`owner.*`, `.publish.*`, anything) is a blocker: the caller
+ * waits as it would for a live foreign contender, and the file is never
+ * deleted. Those prefixes never shipped and such files are not expected; an
+ * operator removes them by hand if ever seen. When a `holder.*` body parses,
+ * its `host` must also be this hostname before the file is treated as
+ * same-host. An empty or invalid body does not override the filename. A
  * body that cannot be read (any error other than ENOENT) is live. ENOENT
  * means the file is already gone. Other body fields are only logged.
- * `.publish.*` temps are not contenders.
  *
  * - Same host and `process.kill(pid, 0)` throws `ESRCH`: the creator is
  *   dead, even when the body is empty or not valid JSON. Same host means
- *   the filename is `v2.<hexHost>.<pid>.<startTimeMs>.<random>`, the hex
- *   equals `Buffer.from(hostname).toString('hex')`, and, when the body
+ *   the filename is `holder.<hexHost>.<pid>.<startTimeMs>.<random>`, the
+ *   hex equals `Buffer.from(hostname).toString('hex')`, and, when the body
  *   parses, `body.host === hostname`. An unreadable body is not death.
  *   Unlink that unique name. A reused pid publishes a different token, so
  *   the name cannot belong to a live process, and a dead creator is not
  *   inside `fn`. `EPERM` or any other kill error is not death.
- * - A same-host `.publish.<token>` whose pid is dead (`ESRCH`) is an orphan
- *   from a creator that died mid-publish, under that same host rule,
+ * - A same-host `.holderpub.<token>` whose pid is dead (`ESRCH`) is an
+ *   orphan from a creator that died mid-publish, under that same host rule,
  *   including the unreadable-body rule. Unlink that name. Every other
- *   `.publish.*` file is ignored.
+ *   `.holderpub.*` file is ignored. It is not a contender.
  * - Any other host is live for as long as the file exists. Age is not death.
- *   A token that is not exactly `v2.<hexHost>.<pid>.<startTimeMs>.<random>`
- *   (version `v2`, lowercase even-length hex, integer pid, integer start
- *   time, non-empty random) is a live foreign contender and is never
- *   deleted. A host field of `v2` does not parse. That includes files from
- *   the previous raw-hostname scheme and the previous four-field hex scheme
- *   left when a node upgrades mid-flight; they clear when their creator
- *   releases them or an operator removes them. A lock file is removed by
- *   another process only when its creator is provably dead (same host,
- *   `kill(pid, 0)` → ESRCH, and the body was read or was empty or invalid).
- *   Lock directories must be host-local (`~/.rivetos`); a foreign-host owner
- *   file blocks until its creator removes it.
+ *   A `holder.*` name that is not exactly four fields (lowercase even-length
+ *   hex, integer pid, integer start time, non-empty random) is a live
+ *   foreign contender and is never deleted. That includes
+ *   `holder.v2.<hex>.…` (five fields) and any other field count. A lock
+ *   file is removed by another process only when its creator is provably
+ *   dead (same host, `kill(pid, 0)` → ESRCH, and the body was read or was
+ *   empty or invalid). Lock directories must be host-local (`~/.rivetos`);
+ *   a foreign-host holder file blocks until its creator removes it.
  * - Otherwise the file is a live contender and is left alone. A live loser
- *   unlinks only its own file.
+ *   unlinks only its own file. A blocker does not enter the tie-break; while
+ *   one remains, this caller is not alone and does not enter.
  *
- * If no live contender remains, a second read confirms it and this caller
- * holds the lock. If some remain, the lexicographically smallest token keeps
- * its file; every other contender unlinks its own file, waits `pollMs`, and
- * retries from publishing a new file. The smallest enters only on a read
- * that shows it is alone, so it does not share `fn` with a holder that has
- * not dropped its file, and a later smaller token waits instead of walking
- * in beside a caller already inside `fn`.
+ * If no live holder and no blocker remains, a second read confirms it and
+ * this caller holds the lock. If some holders remain, the lexicographically
+ * smallest token keeps its file; every other contender unlinks its own file,
+ * waits `pollMs`, and retries from publishing a new file. A blocker is not
+ * part of that comparison: while one exists the caller waits and does not
+ * enter. The smallest enters only on a read that shows it is alone, so it
+ * does not share `fn` with a holder that has not dropped its file, and a
+ * later smaller token waits instead of walking in beside a caller already
+ * inside `fn`.
  *
  * The holder `utimes` its own file every `staleMs / 3` (default `staleMs`
  * 120s, so every 40s) while `fn` runs, and again on each wait while it is
@@ -163,10 +169,14 @@ export async function withFileLock<T>(
 let tokenSeq = 0
 
 /**
- * Leading token field. The previous scheme had no version field (its first
- * field was the host), so a legacy name cannot parse as this shape.
+ * Filename prefixes are the version discriminator. They sit outside the
+ * token, where a hostname cannot put them: the hostname cannot contain a
+ * `/`, so it cannot forge a prefix; and both legacy grammars used the
+ * `owner.`/`.publish.` prefixes, so no legacy name can match `holder.*` or
+ * `.holderpub.*`.
  */
-const TOKEN_VERSION = 'v2'
+const HOLDER_PREFIX = 'holder.'
+const PUBLISH_PREFIX = '.holderpub.'
 
 /** Lowercase hex of the hostname's UTF-8 bytes. Injective, and has no `.` or `/`. */
 function hexHost(host: string): string {
@@ -176,7 +186,7 @@ function hexHost(host: string): string {
 function makeToken(host: string): string {
   tokenSeq += 1
   const random = `${tokenSeq.toString(36).padStart(6, '0')}${Math.random().toString(36).slice(2)}`
-  return `${TOKEN_VERSION}.${hexHost(host)}.${String(process.pid)}.${String(Date.now())}.${random}`
+  return `${hexHost(host)}.${String(process.pid)}.${String(Date.now())}.${random}`
 }
 
 function makeLog(log: FileLockOptions['log']): Log {
@@ -212,8 +222,8 @@ async function acquire(
 ): Promise<string> {
   for (;;) {
     const token = makeToken(host)
-    const tempPath = join(lockDir, `.publish.${token}`)
-    const ownerPath = join(lockDir, `owner.${token}`)
+    const tempPath = join(lockDir, `${PUBLISH_PREFIX}${token}`)
+    const ownerPath = join(lockDir, `${HOLDER_PREFIX}${token}`)
     const record: OwnerRecord = {
       pid: process.pid,
       host,
@@ -248,8 +258,8 @@ async function acquire(
 }
 
 /**
- * Exclusive create of `.publish.<token>`, fsync, then rename onto the unique
- * `owner.<token>`. A rejected `writeFile` may already have created the temp
+ * Exclusive create of `.holderpub.<token>`, fsync, then rename onto the unique
+ * `holder.<token>`. A rejected `writeFile` may already have created the temp
  * (`ENOSPC`); that name is removed before the error propagates.
  */
 async function publishOwner(
@@ -314,10 +324,11 @@ function judge(
 }
 
 /**
- * `readdir` plus liveness. Dead same-host names are unlinked here, before
- * the caller decides whether to enter. Sync so another contender in this
- * process cannot publish between the read and the decision. Foreign-host
- * files are never unlinked.
+ * `readdir` plus liveness. Dead same-host `holder.*` and `.holderpub.*`
+ * names are unlinked here, before the caller decides whether to enter. Sync
+ * so another contender in this process cannot publish between the read and
+ * the decision. Foreign-host files and every non-holder name are never
+ * unlinked.
  */
 function inspect(lockDir: string, token: string, host: string, log: Log): Presence {
   let names: string[]
@@ -329,50 +340,56 @@ function inspect(lockDir: string, token: string, host: string, log: Log): Presen
   }
 
   for (const name of names) {
-    if (!name.startsWith('.publish.')) continue
-    const publishToken = name.slice('.publish.'.length)
+    if (!name.startsWith(PUBLISH_PREFIX)) continue
+    const publishToken = name.slice(PUBLISH_PREFIX.length)
     const publishPath = join(lockDir, name)
     if (!sameHostDead(publishToken, host, publishPath)) continue
     log(`removing dead publish ${name}`)
     unlinkOther(publishPath, log)
   }
 
-  const ours = `owner.${token}`
+  const ours = `${HOLDER_PREFIX}${token}`
   let live = 0
   let smallest = true
+  let blocked = false
   for (const name of names) {
-    if (!name.startsWith('owner.') || name === ours) continue
+    if (name === ours || name.startsWith(PUBLISH_PREFIX)) continue
     const full = join(lockDir, name)
     if (!ownerStillThere(full)) continue
-    const otherToken = name.slice('owner.'.length)
+    // `owner.*`, `.publish.*`, and every other non-holder name. Never deleted.
+    if (!name.startsWith(HOLDER_PREFIX)) {
+      blocked = true
+      continue
+    }
+    const otherToken = name.slice(HOLDER_PREFIX.length)
     if (sameHostDead(otherToken, host, full)) {
-      log(`removing dead owner ${name}: ${ownerBodyNote(full, otherToken)}`)
+      log(`removing dead holder ${name}: ${ownerBodyNote(full, otherToken)}`)
       if (unlinkOther(full, log)) continue
     }
     live += 1
     if (otherToken <= token) smallest = false
   }
-  if (live === 0) return 'alone'
-  if (smallest) return 'pending'
-  return 'lost'
+  // A strictly smaller holder wins the tie-break. A blocker is not a holder
+  // token: it cannot be outranked, so the caller waits and does not enter.
+  if (live > 0 && !smallest) return 'lost'
+  if (blocked || live > 0) return 'pending'
+  return 'alone'
 }
 
 /**
- * Token shape is exactly `v2.<hexHost>.<pid>.<startTimeMs>.<random>` — five
- * fields. Anything else, including a four-field legacy name and a host field
- * of `v2`, is not this shape: not provably ours and not provably dead.
+ * Token shape, after the `holder.` or `.holderpub.` prefix, is exactly
+ * `<hexHost>.<pid>.<startTimeMs>.<random>` — four fields. Five fields
+ * (`v2.<hex>.…`) and any other count are not this shape: not provably ours
+ * and not provably dead.
  */
 function parseToken(token: string): { host: string; pid: number } | undefined {
   const parts = token.split('.')
-  if (parts.length !== 5) return undefined
-  if (parts[0] !== TOKEN_VERSION) return undefined
-  const host = parts[1] ?? ''
-  const pidRaw = parts[2] ?? ''
-  const startRaw = parts[3] ?? ''
-  const random = parts[4] ?? ''
-  // `v2` as the host field is the old hostname, not a hex identity. Hex is
-  // one pair of digits per byte, so the length is even.
-  if (host === TOKEN_VERSION) return undefined
+  if (parts.length !== 4) return undefined
+  const host = parts[0] ?? ''
+  const pidRaw = parts[1] ?? ''
+  const startRaw = parts[2] ?? ''
+  const random = parts[3] ?? ''
+  // One pair of hex digits per hostname byte, lowercase, even length.
   if (!/^[0-9a-f]+$/.test(host) || host.length % 2 !== 0) return undefined
   if (random.length === 0) return undefined
   if (!/^\d+$/.test(startRaw) || !/^[1-9]\d*$/.test(pidRaw)) return undefined
@@ -388,8 +405,8 @@ type BodyHost =
   | { kind: 'host'; host: string }
 
 /**
- * Filename must be version `v2` plus this host's hex, and the pid must be
- * dead. A parsed body must also record this hostname. An empty or
+ * Filename must be this host's hex (four fields after the prefix), and the
+ * pid must be dead. A parsed body must also record this hostname. An empty or
  * unparseable body leaves the filename decision in place so a dead creator
  * can still be recovered. ENOENT means the file is already gone. Any other
  * read error is live: the host cross-check could not be performed.
