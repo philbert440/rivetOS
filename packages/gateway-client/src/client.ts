@@ -26,6 +26,17 @@ import type {
   WikiGapsResponse,
   WikiIndexResponse,
   WikiPageResponse,
+  MemoryToolName,
+  MemorySearchToolArgs,
+  MemoryBrowseToolArgs,
+  MemoryStatsToolArgs,
+  MemoryGetFullToolArgs,
+  MemoryAppendToolArgs,
+  MemoryIngestSessionToolArgs,
+  MemoryToolArgsByName,
+  MemoryToolResponse,
+  WikiMissBody,
+  ToolResult,
   MemorySearchResponse,
   MemoryBrowseResponse,
   MemoryStatsResponse,
@@ -337,6 +348,23 @@ export class RivetGateway {
     })
   }
 
+  /** Read raw markdown, or suggestions when the topic is missing. */
+  async wikiRead(
+    slug: string,
+    signal?: AbortSignal,
+  ): Promise<
+    { kind: 'hit'; markdown: string } | { kind: 'miss'; suggestions: WikiMissBody['suggestions'] }
+  > {
+    try {
+      return { kind: 'hit', markdown: await this.wikiRaw(slug, signal) }
+    } catch (err: unknown) {
+      if (err instanceof GatewayError && err.status === 404 && isWikiMissBody(err.body)) {
+        return { kind: 'miss', suggestions: err.body.suggestions }
+      }
+      throw err
+    }
+  }
+
   // -- memory (datahub Search / Browse / Stats) --------------------------------
 
   memorySearch(
@@ -375,6 +403,47 @@ export class RivetGateway {
 
   memoryHealth(signal?: AbortSignal): Promise<MemoryHealthResponse> {
     return request(this.config, '/api/memory/health', { signal })
+  }
+
+  /** Invoke a den-hosted MCP memory tool and unwrap its result. */
+  async memoryTool<N extends MemoryToolName>(
+    name: N,
+    args: MemoryToolArgsByName[N],
+    signal?: AbortSignal,
+  ): Promise<ToolResult> {
+    const body = await request<MemoryToolResponse>(this.config, `/api/memory/tool/${name}`, {
+      method: 'POST',
+      body: args,
+      signal,
+    })
+    return body.result
+  }
+
+  memorySearchTool(args: MemorySearchToolArgs, signal?: AbortSignal): Promise<ToolResult> {
+    return this.memoryTool('memory_search', args, signal)
+  }
+
+  memoryBrowseTool(args: MemoryBrowseToolArgs, signal?: AbortSignal): Promise<ToolResult> {
+    return this.memoryTool('memory_browse', args, signal)
+  }
+
+  memoryStatsTool(args: MemoryStatsToolArgs, signal?: AbortSignal): Promise<ToolResult> {
+    return this.memoryTool('memory_stats', args, signal)
+  }
+
+  memoryGetFull(args: MemoryGetFullToolArgs, signal?: AbortSignal): Promise<ToolResult> {
+    return this.memoryTool('memory_get_full', args, signal)
+  }
+
+  memoryAppend(args: MemoryAppendToolArgs, signal?: AbortSignal): Promise<ToolResult> {
+    return this.memoryTool('memory_append', args, signal)
+  }
+
+  memoryIngestSession(
+    args: MemoryIngestSessionToolArgs,
+    signal?: AbortSignal,
+  ): Promise<ToolResult> {
+    return this.memoryTool('memory_ingest_session', args, signal)
   }
 
   // -- mesh devices (Settings → Devices) --------------------------------------
@@ -703,7 +772,7 @@ export class RivetGateway {
     const url = this.fileDownloadUrl(path)
     let res: Response
     try {
-      res = await fetch(url, {
+      res = await (this.config.fetch ?? globalThis.fetch)(url, {
         method: 'GET',
         headers: undefined,
         signal,
@@ -764,8 +833,13 @@ export class RivetGateway {
     u.searchParams.set('dir', dir)
     u.searchParams.set('name', name)
     if (opts.overwrite) u.searchParams.set('overwrite', '1')
-    return (await rawBodyPost(u, body, 'application/octet-stream', opts.signal, (res) =>
-      res.json(),
+    return (await rawBodyPost(
+      this.config,
+      u,
+      body,
+      'application/octet-stream',
+      opts.signal,
+      (res) => res.json(),
     )) as FilesUploadResponse
   }
 
@@ -784,8 +858,13 @@ export class RivetGateway {
     )
     u.searchParams.set('name', name)
     if (opts.mime) u.searchParams.set('mime', opts.mime)
-    return (await rawBodyPost(u, body, 'application/octet-stream', opts.signal, (res) =>
-      res.json(),
+    return (await rawBodyPost(
+      this.config,
+      u,
+      body,
+      'application/octet-stream',
+      opts.signal,
+      (res) => res.json(),
     )) as StagedUploadResponse
   }
 
@@ -800,7 +879,7 @@ export class RivetGateway {
       '/api/voice/transcribe',
       this.config.baseUrl.endsWith('/') ? this.config.baseUrl : `${this.config.baseUrl}/`,
     )
-    return (await rawBodyPost(u, audio, mime, opts.signal, (res) =>
+    return (await rawBodyPost(this.config, u, audio, mime, opts.signal, (res) =>
       res.json(),
     )) as VoiceTranscribeResponse
   }
@@ -815,8 +894,13 @@ export class RivetGateway {
       '/api/voice/speak',
       this.config.baseUrl.endsWith('/') ? this.config.baseUrl : `${this.config.baseUrl}/`,
     )
-    return (await rawBodyPost(u, JSON.stringify(req), 'application/json', opts.signal, (res) =>
-      res.arrayBuffer(),
+    return (await rawBodyPost(
+      this.config,
+      u,
+      JSON.stringify(req),
+      'application/json',
+      opts.signal,
+      (res) => res.arrayBuffer(),
     )) as ArrayBuffer
   }
 
@@ -870,7 +954,7 @@ export class RivetGateway {
    *  tokenless probe — no client cert required for /healthz. */
   async health(signal?: AbortSignal): Promise<boolean> {
     try {
-      await request({ baseUrl: this.config.baseUrl }, '/healthz', { signal })
+      await request(this.config, '/healthz', { signal })
       return true
     } catch {
       return false
@@ -882,6 +966,7 @@ export class RivetGateway {
  *  staging, voice): one unreachable/error mapping, parameterized success
  *  extraction. Not exported — the class methods are the API. */
 async function rawBodyPost(
+  config: GatewayClientConfig,
   u: URL,
   body: string | Blob | ArrayBuffer,
   contentType: string,
@@ -890,7 +975,7 @@ async function rawBodyPost(
 ): Promise<unknown> {
   let res: Response
   try {
-    res = await fetch(u.toString(), {
+    res = await (config.fetch ?? globalThis.fetch)(u.toString(), {
       method: 'POST',
       headers: { 'content-type': contentType },
       body,
@@ -912,4 +997,19 @@ async function rawBodyPost(
     throw new GatewayError(res.status, message, parsed)
   }
   return extract(res)
+}
+
+/** Only a well-formed wiki miss is a successful suggestion lookup. */
+function isWikiMissBody(body: unknown): body is WikiMissBody {
+  if (typeof body !== 'object' || body === null) return false
+  const value = body as Record<string, unknown>
+  return (
+    typeof value.error === 'string' &&
+    Array.isArray(value.suggestions) &&
+    value.suggestions.every((suggestion: unknown) => {
+      if (typeof suggestion !== 'object' || suggestion === null) return false
+      const entry = suggestion as Record<string, unknown>
+      return typeof entry.slug === 'string' && typeof entry.title === 'string'
+    })
+  )
 }
