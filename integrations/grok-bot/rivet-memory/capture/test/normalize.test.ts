@@ -9,6 +9,7 @@ import {
   agentIdFromTranscriptPath,
   discoverModels,
   identityFor,
+  identityForSession,
   listInputFiles,
   resolveSourceAgentId,
   slug,
@@ -23,7 +24,13 @@ import {
   toIngestRows,
 } from '../src/normalize.js'
 import { detectFormat, parseInput, parsePageHeader, toolResultBody } from '../src/parse.js'
-import { recleanFromSource, recleanStoredRows, v3Session } from '../src/reclean.js'
+import {
+  assignRecleanPositions,
+  recleanFromSource,
+  recleanStoredRows,
+  v3Session,
+} from '../src/reclean.js'
+import { resolveIdent } from '../src/cli.js'
 import { addMs, parseGrokTimestamp } from '../src/timestamps.js'
 import { countNoise, extractUserText, stripWrappers } from '../src/wrappers.js'
 import { STORAGE_LIMIT } from '../src/types.js'
@@ -268,23 +275,25 @@ describe('wrappers', () => {
     expect(leftover.image).toBe(1)
   })
 
-  it('keeps a normal user message that mentions [event]', () => {
-    const rec = {
-      role: 'user',
-      message: {
-        content: [
-          { type: 'text', text: '<user_query>\nI got an [event] at work today\n</user_query>' },
-        ],
-      },
+  it('keeps a normal user message that mentions [event] or [routine]', () => {
+    for (const tag of ['[event]', '[routine]'] as const) {
+      const rec = {
+        role: 'user',
+        message: {
+          content: [
+            {
+              type: 'text',
+              text: `<user_query>\nthe ${tag} tag should stay in this note\n</user_query>`,
+            },
+          ],
+        },
+      }
+      const { messages } = normalizeRecords([rec], rivetOpts())
+      expect(messages).toHaveLength(1)
+      expect(messages[0].role).toBe('user')
+      expect(messages[0].content).toContain(tag)
+      expect(messages[0].content).toContain('should stay')
     }
-    const { messages } = normalizeRecords([rec], rivetOpts())
-    expect(messages).toHaveLength(1)
-    expect(messages[0].role).toBe('user')
-    expect(messages[0].content).toContain('[event]')
-    expect(messages[0].content).toContain('at work today')
-    expect(
-      extractUserText('<user_query>\nI got an [event] at work today\n</user_query>'),
-    ).toContain('[event]')
   })
 
   it('strips wrappers on the first-run Rivet sample', () => {
@@ -445,7 +454,7 @@ describe('per-bot tags', () => {
   it('reads on-disk agent id from <uuid>/<uuid>.jsonl', () => {
     expect(
       agentIdFromTranscriptPath(
-        '/home/box/agent-data/agent-transcripts/00df02ea-4f5f-4d3e-945a-864e1c9c78dc/00df02ea-4f5f-4d3e-945a-864e1c9c78dc.jsonl',
+        '/home/user/agent-data/agent-transcripts/00df02ea-4f5f-4d3e-945a-864e1c9c78dc/00df02ea-4f5f-4d3e-945a-864e1c9c78dc.jsonl',
       ),
     ).toBe(BOB_ID)
     expect(agentIdFromTranscriptPath('/tmp/page.txt')).toBeUndefined()
@@ -609,6 +618,33 @@ describe('reclean', () => {
     expect(users[0].created_at).toBe('2026-09-27T20:06:00.000Z')
     expect(users[1].created_at).toBe('2026-09-27T21:00:00.000Z')
   })
+
+  it('uses each stored ordinal and parks NULL ordinals after the last known position', () => {
+    const positions = assignRecleanPositions([
+      { role: 'user', content: 'a', ordinal: 5 },
+      { role: 'user', content: 'gap', ordinal: null },
+      { role: 'assistant', content: 'b', ordinal: 1880_000 },
+    ])
+    expect(positions).toEqual([5, 1881, 1880])
+    const result = recleanStoredRows(
+      [
+        { role: 'user', content: 'keep', ordinal: 12 },
+        { role: 'assistant', content: 'later', ordinal: 40 },
+      ],
+      { sessionKey: 'grokbot-bob', agent: 'rivet-bob', dryRun: true },
+    )
+    expect(result.messages[0].metadata?.position).toBe(12)
+    expect(result.messages[1].metadata?.position).toBe(40)
+  })
+
+  it('does not force rivet-grokbot when reclean is given only --session', () => {
+    const egg = resolveIdent(undefined, 'grokbot-eggbot', undefined)
+    expect(egg.agent).toBe('rivet-eggbot')
+    expect(egg.session).toBe('grokbot-eggbot')
+    const unknown = resolveIdent(undefined, 'grokbot-not-a-real-session', undefined)
+    expect(unknown.agent).toBeUndefined()
+    expect(identityForSession('grokbot-rivet-grokbot-v3')?.agent).toBe('rivet-grokbot')
+  })
 })
 
 describe('ingest mapping + compare', () => {
@@ -629,7 +665,10 @@ describe('ingest mapping + compare', () => {
     const tool = rows.find((r) => r.role === 'tool' && r.metadata?.truncated)
     if (tool) {
       expect(typeof tool.metadata?.full_tool_result_length).toBe('number')
+      expect(typeof tool.toolResult).toBe('string')
+      expect(tool.content).not.toBe(tool.toolResult)
     }
+    expect(rows.some((r) => r.metadata?.capture_source === 'grokbot-transcript')).toBe(true)
   })
 
   it('before/after comparison shrinks noise and average length on real samples', () => {

@@ -4,7 +4,7 @@
   "private": true,
   "type": "module",
   "description": "Grok Bot transcript normalizer on @rivetos/capture-core. Strips wrapper noise, stamps real message times, tags each bot, and emits CaptureMessage rows.",
-  "license": "Apache-2.0",
+  "license": "MIT",
   "main": "dist/index.js",
   "bin": {
     "grokbot-rivet-memory-capture": "dist/cli.js"

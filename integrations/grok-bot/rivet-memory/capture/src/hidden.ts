@@ -18,9 +18,9 @@ export function classifyHidden(text: string): HiddenKind | undefined {
   ) {
     return 'background_task'
   }
-  if (/\[routine\]/i.test(text) || /\[SAND_TRUSTED_AUTOMATION_PROMPT\]/.test(text)) {
-    return 'routine'
-  }
+  if (/\[SAND_TRUSTED_AUTOMATION_PROMPT\]/.test(text)) return 'routine'
+  if (/\[SAND_HIDDEN_PROMPT\]/.test(text) && /\[routine\]/i.test(text)) return 'routine'
+  if (/(?:^|\n)\s*\[routine\]/i.test(text)) return 'routine'
   if (
     /treat it as skipped/i.test(text) ||
     /Earlier you prompted the user and they moved on without responding/i.test(text)

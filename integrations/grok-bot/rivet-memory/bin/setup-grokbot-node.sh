@@ -276,6 +276,7 @@ Type=oneshot
 ${user_line}
 Environment="RIVETOS_ROOT=${RIVETOS_ROOT}"
 Environment="GROKBOT_TRANSCRIPT_ROOT=${GROKBOT_TRANSCRIPT_ROOT:-}"
+Environment="GROKBOT_SESSION_SUFFIX=${GROKBOT_SESSION_SUFFIX--v3}"
 Environment="RIVETOS_ENV_FILE=${env_file}"
 ExecStart=${exec_start}
 StandardOutput=journal
@@ -865,5 +866,7 @@ echo "  Share snapshot: ${SHARE_ROOT}/snapshot/"
 echo
 echo "Next steps:"
 echo "  1. Ensure GROKBOT_TRANSCRIPT_ROOT is set in the watcher unit environment"
-echo "  2. Monitor capture logs and state"
+echo "  2. Cutover: stop any old unsuffixed watcher/converter before enabling this unit."
+echo "     New rows go to <session>-v3 (GROKBOT_SESSION_SUFFIX). Do not run both."
+echo "  3. Monitor capture logs and state"
 echo

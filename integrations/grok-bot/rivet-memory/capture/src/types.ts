@@ -109,6 +109,8 @@ export interface IngestRow {
   content: string
   createdAt?: string
   toolCalls?: Array<{ id?: string; name: string; input?: unknown }>
+  /** Stored on ros_messages.tool_result (not folded into content). */
+  toolResult?: string
   metadata?: Record<string, unknown>
   ordinal?: number
   event_id?: string

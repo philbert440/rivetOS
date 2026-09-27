@@ -162,6 +162,40 @@ describe('shared ingest transaction', () => {
     expect(append).not.toHaveBeenCalled()
   })
 
+  it('writes toolResult onto the append payload and keeps capture_source', async () => {
+    const query = vi.fn(async () => ({ rows: [] }))
+    const release = vi.fn()
+    const client = { query, release }
+    const append = vi.fn(async () => 'new-id')
+    const memory = {
+      getPool: () => ({ connect: async () => client }),
+      append,
+    } as unknown as PostgresMemory
+    await ingestSession(memory, {
+      sessionId: 'session',
+      agent: 'rivet',
+      source: 'grokbot',
+      messages: [
+        {
+          role: 'tool',
+          content: '',
+          toolResult: '{"ok":true}',
+          metadata: { source: 'grokbot-transcript', position: 3 },
+        },
+      ],
+    })
+    expect(append).toHaveBeenCalledWith(
+      expect.objectContaining({
+        toolResult: '{"ok":true}',
+        metadata: expect.objectContaining({
+          capture_source: 'grokbot-transcript',
+          source: 'grokbot',
+        }),
+      }),
+      { client },
+    )
+  })
+
   it('rows without ordinal/event_id/metadata keep array-index ordinal and ingestEventId', async () => {
     const query = vi.fn(async () => ({ rows: [] }))
     const release = vi.fn()

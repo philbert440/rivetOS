@@ -34,6 +34,8 @@ export interface IngestMessage {
   eventId?: string
   /** Per-row metadata preserved through ingest (agent_id, kind, position, truncation, …). */
   metadata?: Record<string, unknown>
+  /** Stored on ros_messages.tool_result. */
+  toolResult?: string
 }
 
 export interface IngestSessionInput {
@@ -314,10 +316,11 @@ export async function ingestSession(
       const role = item.role
       const content = item.content
       const toolCalls = item.toolCalls
+      const toolResult = typeof item.toolResult === 'string' ? item.toolResult : undefined
       const ordinal = resolveIngestOrdinal(item, i)
 
-      // Allow empty content if tool calls are present
-      if (!content && (!toolCalls || toolCalls.length === 0)) {
+      // Allow empty content if tool calls or a tool_result payload are present
+      if (!content && !toolResult && (!toolCalls || toolCalls.length === 0)) {
         skipped += 1
         continue
       }
@@ -330,7 +333,7 @@ export async function ingestSession(
           sessionId: input.sessionId,
           agent: tags.agent,
           role,
-          content, // pre-truncation (may be empty)
+          content: content || toolResult || '', // pre-truncation (may be empty)
           ordinal,
           toolName: toolCalls?.[0]?.name,
         })
@@ -355,14 +358,24 @@ export async function ingestSession(
 
       const metadata: Record<string, unknown> = {
         ...(item.metadata ?? {}),
-        source: tags.source,
-        ordinal,
-        event_id: eventId,
       }
+      if (
+        typeof metadata.source === 'string' &&
+        metadata.source &&
+        metadata.source !== tags.source
+      ) {
+        metadata.capture_source = metadata.source
+      }
+      metadata.source = tags.source
+      metadata.ordinal = ordinal
+      metadata.event_id = eventId
       if (tags.persona) metadata.persona = tags.persona
 
       // Truncate content after hashing
       const truncatedContent = truncateContent(content, metadata)
+      const truncatedToolResult = toolResult
+        ? truncateContent(toolResult, metadata, 'tool_result')
+        : undefined
       if (metadata.truncated) anyTruncated = true
       if (metadata.full_content_length) {
         maxFullLength = Math.max(maxFullLength ?? 0, metadata.full_content_length as number)
@@ -404,6 +417,7 @@ export async function ingestSession(
           content: truncatedContent,
           toolName,
           toolArgs,
+          toolResult: truncatedToolResult,
           metadata,
           createdAt,
         },

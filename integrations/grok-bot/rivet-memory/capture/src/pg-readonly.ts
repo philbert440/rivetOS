@@ -9,6 +9,11 @@ import { resolve } from 'node:path'
 import pg from 'pg'
 import type { StoredRow } from './types.js'
 
+export const READONLY_POOL_OPTIONS = {
+  max: 1,
+  options: '-c default_transaction_read_only=on',
+} as const
+
 const WRITE_SQL_RE =
   /\b(INSERT|UPDATE|DELETE|MERGE|TRUNCATE|ALTER|DROP|CREATE|GRANT|REVOKE|COPY|CALL|DO)\b/i
 
@@ -133,7 +138,10 @@ export async function connectAndFetchGrokbotRows(
       'reclean: RIVETOS_PG_URL is not set (environment or ~/.rivetos/.env). Do not pass the URL on argv.',
     )
   }
-  const pool = new pg.Pool({ connectionString: url })
+  const pool = new pg.Pool({
+    connectionString: url,
+    ...READONLY_POOL_OPTIONS,
+  })
   const client = await pool.connect()
   try {
     return await fetchGrokbotRows(client, sessionKey, agent)

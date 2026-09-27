@@ -105,7 +105,8 @@ const HIDDEN_BODY_RES: RegExp[] = [
  * `[event]` / `[routine]` / `[agent]` is left intact.
  */
 export function extractUserText(text: string): string {
-  const hasHiddenPrompt = /\[SAND_HIDDEN_PROMPT\]/.test(text)
+  const hasHiddenPrompt =
+    /\[SAND_HIDDEN_PROMPT\]/.test(text) || /\[SAND_TRUSTED_AUTOMATION_PROMPT\]/.test(text)
   let out = stripWrappers(text)
   if (hasHiddenPrompt) {
     for (const re of HIDDEN_BODY_RES) {

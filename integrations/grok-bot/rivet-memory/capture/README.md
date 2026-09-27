@@ -39,8 +39,15 @@ DELETEs or UPDATEs existing rows.
   `created_at` is clamped to `max(stamp, lastEmitted+1ms)`. A position
   that emits ≥1000 rows throws.
 - Ingest ordinal is `position * 1000 + sub-index` (stable across overlapping
-  pages). `ingestSession` honors `item.ordinal` / `item.event_id` and merges
-  `item.metadata` (agent_id, kind, position, truncated, …).
+  pages). A position that emits ≥1000 rows throws. `event_id` includes
+  `occurrenceIndex` over the whole run, so it is stable when conversion
+  starts at position 0 (watcher, run-once, pull-bridge). `convert` on a
+  mid-transcript page is not; the ordinal check is what prevents duplicates.
+  `ingestSession` honors `item.ordinal` / `item.event_id` and merges
+  `item.metadata` (agent_id, kind, position, truncated, …). Tool results
+  land in `ros_messages.tool_result`. The normalizer source is kept as
+  `metadata.capture_source` (`grokbot-transcript` / `grokbot-readtranscript`)
+  because ingest overwrites `metadata.source` with the write tag.
 - Live capture writes to `<session>-v3` by default (`GROKBOT_SESSION_SUFFIX`).
   Watcher state is keyed by agent id plus the target suffix, so a copied
   unsuffixed `~/.rivetos/capture/state.json` cannot skip `-v3` ingest.

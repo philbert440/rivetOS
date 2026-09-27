@@ -15,6 +15,7 @@ export {
   slug,
   agentIdFromTranscriptPath,
   resolveSourceAgentId,
+  identityForSession,
   listInputFiles,
   applySessionSuffix,
 } from './identity.js'
@@ -28,21 +29,15 @@ export {
   LIST_CONVERSATIONS_SQL,
   ROWS_BY_CONVERSATION_SQL,
 } from './pg-readonly.js'
-export { compareInput, formatCompareTable, formatNoiseBreakdown } from './compare.js'
 export {
   recleanFromSource,
   recleanStoredRows,
-  recleanContentOnly,
   printRecleanStats,
   v3Session,
   FROM_ROWS_LIMITS,
+  assignRecleanPositions,
+  storedRowPosition,
 } from './reclean.js'
-export {
-  legacyNormalizeRecords,
-  legacyFlatten,
-  shrinkToolResults,
-  LEGACY_TOOL_RESULT_MAX,
-} from './legacy.js'
 export { main as runCli } from './cli.js'
 export {
   CAPTURE_CHANNEL,

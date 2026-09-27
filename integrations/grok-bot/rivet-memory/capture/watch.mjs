@@ -15,6 +15,7 @@ import { dirname, join, resolve } from 'node:path'
 import { homedir } from 'node:os'
 import { fileURLToPath } from 'node:url'
 import { makeIdentityLookup } from './discover-models.mjs'
+import { captureStateKey, shouldIngest } from './live-state.mjs'
 
 const HERE = dirname(fileURLToPath(import.meta.url))
 const HOME = process.env.HOME || homedir()
@@ -47,10 +48,6 @@ function resolveStateFile() {
 const STATE_FILE = resolveStateFile()
 const DEBOUNCE_MS = 20_000
 const PYTHON = process.env.PYTHON || 'python3'
-// Key by agent id + target session suffix so a copied unsuffixed
-// ~/.rivetos/capture/state.json cannot skip -v3 ingest.
-const stateKey = (id) => `${id}${SESSION_SUFFIX}`
-
 const log = (...a) => console.log(new Date().toISOString(), ...a)
 
 for (const p of [TRANSCRIPTS, CONVERTER, INGEST]) {
@@ -62,8 +59,16 @@ for (const p of [TRANSCRIPTS, CONVERTER, INGEST]) {
 mkdirSync(SPOOL, { recursive: true })
 mkdirSync(dirname(STATE_FILE), { recursive: true })
 
-const { catalog, identity } = makeIdentityLookup()
-log(`models: ${catalog.models.length} bots from agent profiles`)
+let lookup = makeIdentityLookup()
+function identity(id) {
+  let who = lookup.identity(id)
+  if (who.agent === 'rivet-grokbot-run') {
+    lookup = makeIdentityLookup()
+    who = lookup.identity(id)
+  }
+  return who
+}
+log(`models: ${lookup.catalog.models.length} bots from agent profiles`)
 
 let state = {}
 try {
@@ -110,7 +115,7 @@ async function process1(id) {
   const src = transcriptPath(id)
   if (!existsSync(src)) return
   const s = sig(src)
-  if (state[stateKey(id)] === s) return
+  if (!shouldIngest(state, id, SESSION_SUFFIX, s)) return
   const who = identity(id)
   const session =
     !SESSION_SUFFIX || who.session.endsWith(SESSION_SUFFIX)
@@ -147,7 +152,7 @@ async function process1(id) {
     log(`ingest FAIL ${who.session} exit=${i.code}: ${(i.err || i.out).slice(0, 300)}`)
     return
   }
-  state[stateKey(id)] = s
+  state[captureStateKey(id, SESSION_SUFFIX)] = s
   saveState()
   log(`ok ${session} agent=${who.agent} ${i.out.split('\n').pop()?.slice(0, 200) || ''}`)
 }
@@ -174,7 +179,7 @@ try {
     const p = transcriptPath(id)
     if (!existsSync(p)) continue
     try {
-      if (state[stateKey(id)] !== sig(p)) {
+      if (shouldIngest(state, id, SESSION_SUFFIX, sig(p))) {
         queue.push(id)
         pending++
       }

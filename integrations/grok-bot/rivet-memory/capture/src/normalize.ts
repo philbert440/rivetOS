@@ -195,7 +195,7 @@ export function normalizeRecords(records: unknown[], opts: NormalizeOptions): No
     if (kind === 'agent_message') {
       const agent = extractAgentMessage(rawText)
       const content = agent?.text ?? systemMarker('agent_message')
-      const dedupeKey = `agent_message\0${content}`
+      const dedupeKey = `agent_message\0${String(position)}\0${content}`
       if (seenSystem.has(dedupeKey)) {
         dropped += 1
         continue
@@ -224,12 +224,9 @@ export function normalizeRecords(records: unknown[], opts: NormalizeOptions): No
     if (kind) {
       const extra = hiddenExtra(kind, rawText)
       const content = systemMarker(kind, extra)
-      // Routine / background fires stay distinct by position so overlapping
-      // pages merge to the same rows instead of collapsing by content.
-      const distinctByPosition = kind === 'routine' || kind === 'background_task'
-      const dedupeKey = distinctByPosition
-        ? `${kind}\0${String(position)}\0${content}`
-        : `${kind}\0${content}`
+      // Hidden kinds stay distinct by position so overlapping pages merge
+      // stably and zero-text kinds (reaction, first_run, …) are not collapsed.
+      const dedupeKey = `${kind}\0${String(position)}\0${content}`
       if (seenSystem.has(dedupeKey)) {
         dropped += 1
         continue
@@ -565,10 +562,14 @@ function countRole(messages: CaptureMessage[], role: CaptureRole): number {
 
 export function toIngestRows(messages: CaptureMessage[]): IngestRow[] {
   return messages.map((m) => {
+    const metadata = m.metadata ? { ...m.metadata } : undefined
+    if (metadata && typeof metadata.source === 'string') {
+      metadata.capture_source = metadata.source
+    }
     const row: IngestRow = {
       role: m.role,
-      content: m.role === 'tool' ? (m.tool_result ?? m.content) : m.content,
-      metadata: m.metadata,
+      content: m.content,
+      metadata,
       event_id: m.event_id,
     }
     if (typeof m.metadata?.ordinal === 'number') row.ordinal = m.metadata.ordinal
@@ -576,6 +577,7 @@ export function toIngestRows(messages: CaptureMessage[]): IngestRow[] {
     if (m.tool_name) {
       row.toolCalls = [{ name: m.tool_name, input: m.tool_args }]
     }
+    if (m.tool_result !== undefined) row.toolResult = m.tool_result
     return row
   })
 }

@@ -237,6 +237,35 @@ export function listInputFiles(path: string): string[] {
   return out
 }
 
+/** Look up a roster/override identity from a session key (with or without -v2/-v3). */
+export function identityForSession(
+  session: string,
+  opts?: { config?: IdentityConfig; modelsPath?: string; agentsDir?: string },
+): BotIdentity | undefined {
+  const stripped = session.replace(/-v3$/, '').replace(/-v2$/, '')
+  const lookup = makeIdentityLookup({
+    agentsDir: opts?.agentsDir,
+    modelsPath: opts?.modelsPath,
+  })
+  const fromRoster = lookup.catalog.models.find(
+    (m) => m.session === session || m.session === stripped,
+  )
+  if (fromRoster) {
+    return {
+      id: fromRoster.id,
+      persona: fromRoster.persona,
+      session: fromRoster.session,
+      agent: fromRoster.agent,
+    }
+  }
+  const cfg = opts?.config ?? loadIdentityConfig(opts?.modelsPath)
+  for (const id of Object.keys(cfg.overrides)) {
+    const ident = resolveIdentity(id, { config: cfg })
+    if (ident.session === session || ident.session === stripped) return ident
+  }
+  return undefined
+}
+
 export function applySessionSuffix(session: string, suffix?: string): string {
   const s = suffix ?? process.env.GROKBOT_SESSION_SUFFIX ?? SESSION_SUFFIX_V3
   if (!s) return session

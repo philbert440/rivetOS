@@ -18,7 +18,13 @@ SRC_CLI = HERE / "src" / "cli.ts"
 
 
 def node_bin() -> str:
-    return os.environ.get("NODE") or shutil.which("node") or sys.executable
+    env = os.environ.get("NODE")
+    if env:
+        return env
+    found = shutil.which("node")
+    if found:
+        return found
+    raise FileNotFoundError("convert-transcript: node not found on PATH (set NODE)")
 
 
 def convert_cmd(

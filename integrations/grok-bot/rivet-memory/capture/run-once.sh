@@ -12,8 +12,10 @@ INGEST_BIN="${RIVETOS_ROOT}/integrations/grok-bot/rivet-memory/bin/ingest-sessio
 SPOOL_DIR="${SCRIPT_DIR}/spool"
 STATE_DIR="${HOME}/.rivetos/grokbot-capture-state"
 SESSION_SUFFIX="${GROKBOT_SESSION_SUFFIX--v3}"
-# ~/.rivetos/capture/state.json is the watcher's single size:mtime file, not
-# per-session stuck-policy JSON. Do not copy it into STATE_DIR.
+# Watcher's single size:mtime map. Per-session stuck-policy lived next to it
+# under the unsuffixed session id (never copy state.json into STATE_DIR).
+OLD_STATE_DIR="${HOME}/.rivetos/capture"
+OLD_WATCHER_STATE="${OLD_STATE_DIR}/state.json"
 GROKBOT_TRANSCRIPT_ROOT="${GROKBOT_TRANSCRIPT_ROOT:-}"
 
 # Stuck policy — MUST match grok-memory-capture.ts:
@@ -234,14 +236,23 @@ warn_if_stuck() {
     return 1
 }
 
-# Parse models.json
-if [[ ! -f "${MODELS_JSON}" ]]; then
+# Same roster as the watcher: discover-models.mjs (agent profiles + overrides).
+# Fall back to the leftover models[] array only if discovery cannot run.
+DISCOVER_JS="${SCRIPT_DIR}/discover-models.mjs"
+if [[ ! -f "${MODELS_JSON}" && ! -f "${DISCOVER_JS}" ]]; then
     echo "ERROR: models.json not found at ${MODELS_JSON}" >&2
     exit 1
 fi
 
-models=$(jq -r '.models[] | @json' "${MODELS_JSON}")
-transcript_rel=$(jq -r '.transcriptRel' "${MODELS_JSON}")
+transcript_rel=$(jq -r '.transcriptRel // empty' "${MODELS_JSON}" 2>/dev/null || true)
+if [[ -f "${DISCOVER_JS}" ]] && models=$(node "${DISCOVER_JS}" --json 2>/dev/null | jq -c '.models[]'); then
+    :
+elif [[ -f "${MODELS_JSON}" ]]; then
+    models=$(jq -c '.models[]' "${MODELS_JSON}")
+else
+    echo "ERROR: cannot discover models (no roster and no models.json)" >&2
+    exit 1
+fi
 
 any_model_failed=0
 any_model_processed=0
@@ -250,18 +261,21 @@ any_stuck=0
 # Process each model
 while IFS= read -r model_json; do
     model_id=$(echo "${model_json}" | jq -r '.id')
-    model_name=$(echo "${model_json}" | jq -r '.name')
-    session_id=$(echo "${model_json}" | jq -r '.sessionId')
-    agent_id=$(echo "${model_json}" | jq -r '.agentId')
+    model_name=$(echo "${model_json}" | jq -r '.name // .persona')
+    session_id=$(echo "${model_json}" | jq -r '.sessionId // .session')
+    agent_id=$(echo "${model_json}" | jq -r '.agentId // .agent')
     if [[ -n "${SESSION_SUFFIX}" && "${session_id}" != *"${SESSION_SUFFIX}" ]]; then
         session_id="${session_id}${SESSION_SUFFIX}"
     fi
 
     echo "Processing model: ${model_name} (${model_id})"
 
-    # Resolve transcript path
-    transcript_path="${transcript_rel//<id>/${model_id}}"
-    transcript_path="${transcript_path//\$GROKBOT_TRANSCRIPT_ROOT/${GROKBOT_TRANSCRIPT_ROOT}}"
+    # Resolve transcript path (roster .transcript, else models.json transcriptRel)
+    transcript_path=$(echo "${model_json}" | jq -r '.transcript // empty')
+    if [[ -z "${transcript_path}" ]]; then
+        transcript_path="${transcript_rel//<id>/${model_id}}"
+        transcript_path="${transcript_path//\$GROKBOT_TRANSCRIPT_ROOT/${GROKBOT_TRANSCRIPT_ROOT}}"
+    fi
 
     if [[ ! -f "${transcript_path}" ]]; then
         echo "  SKIP: Transcript not found at ${transcript_path}"
@@ -271,6 +285,12 @@ while IFS= read -r model_json; do
     any_model_processed=1
 
     state_file="${STATE_DIR}/${session_id}.json"
+    unsuffixed_session="${session_id%"${SESSION_SUFFIX}"}"
+    old_stuck="${OLD_STATE_DIR}/${unsuffixed_session}.json"
+    if [[ ! -f "${state_file}" && -f "${old_stuck}" && "${old_stuck}" != "${OLD_WATCHER_STATE}" ]]; then
+        mkdir -p "${STATE_DIR}"
+        cp "${old_stuck}" "${state_file}"
+    fi
 
     # Convert
     spool_path="${SPOOL_DIR}/${session_id}.jsonl"

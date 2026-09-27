@@ -12,6 +12,7 @@ import {
   applySessionSuffix,
   discoverModels,
   identityFor,
+  identityForSession,
   listInputFiles,
   resolveSourceAgentId,
 } from './identity.js'
@@ -57,6 +58,8 @@ const HELP = `Usage: grokbot-rivet-memory-capture <command> [opts]
       environment or ~/.rivetos/.env inside BEGIN TRANSACTION READ ONLY
       (then ROLLBACK). Never pass the URL on argv. Groups by conversation_id
       (prod has two conversations for grokbot-rivet-grokbot).
+      Without --agent/--agent-id, the agent filter is derived from the session
+      or left NULL (do not force rivet-grokbot).
       --from-rows cannot restore tool results (old converter ignored result;
       stored tool rows average ~38 chars). Assistant rows keep legacy
       [tool X]/[thinking] text. Full fidelity needs a source-transcript backfill.
@@ -122,7 +125,7 @@ function cmdConvert(argv: string[]): number {
   )
   const result = normalizeRecords(parsed.records, {
     sessionKey: session,
-    agent: ident.agent,
+    agent: ident.agent ?? 'rivet-grokbot',
     agentId: ident.id ?? parsed.header?.id,
     persona: ident.persona,
     format: parsed.format,
@@ -200,10 +203,11 @@ function cmdBackfill(argv: string[]): number {
     }
     const ident = resolveIdent(id, undefined, undefined)
     const session = applySessionSuffix(ident.session, suffix)
-    const key = `${session}\0${ident.agent}\0${ident.id ?? ''}`
+    const agent = ident.agent ?? 'rivet-grokbot'
+    const key = `${session}\0${agent}\0${ident.id ?? ''}`
     const bucket = buckets.get(key) ?? {
       session,
-      agent: ident.agent,
+      agent,
       persona: ident.persona,
       id: ident.id,
       parsed: [],
@@ -286,7 +290,7 @@ async function cmdReclean(argv: string[]): Promise<number> {
     const text = readFileSync(values['from-transcript'], 'utf8')
     const result = recleanFromSource(text, {
       sessionKey: values.session || ident.session,
-      agent: ident.agent,
+      agent: ident.agent ?? 'unknown',
       agentId: ident.id,
       persona: ident.persona,
       dryRun: dry,
@@ -300,7 +304,7 @@ async function cmdReclean(argv: string[]): Promise<number> {
     const rows = loadStoredRowsJson(values['from-rows'])
     const result = recleanStoredRows(rows, {
       sessionKey: values.session || ident.session,
-      agent: ident.agent,
+      agent: ident.agent ?? 'unknown',
       agentId: ident.id,
       persona: ident.persona,
       dryRun: dry,
@@ -427,13 +431,24 @@ function resolveIdent(agentId?: string, session?: string, agent?: string) {
       persona: ident.persona,
     }
   }
+  if (session) {
+    const fromSession = identityForSession(session)
+    return {
+      id: fromSession?.id,
+      session,
+      agent: agent || fromSession?.agent,
+      persona: fromSession?.persona,
+    }
+  }
   return {
     id: undefined as string | undefined,
-    session: session || 'grokbot-unknown',
-    agent: agent || 'rivet-grokbot',
+    session: 'grokbot-unknown',
+    agent,
     persona: undefined as string | undefined,
   }
 }
+
+export { resolveIdent }
 
 function fileDir(): string {
   return resolve(new URL('..', import.meta.url).pathname)

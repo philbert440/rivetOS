@@ -1,10 +1,13 @@
 /**
- * Faithful port of the pre-v0.3 converter + pull-bridge shrink path, used only
- * for before/after comparison. Not the capture path.
+ * Comparison-only model of the **node-deployed** pre-v0.3 converter (the
+ * copy that was running on the grokbot node), not the in-repo
+ * convert-transcript.py (which now emits toolCalls). Used only by compare.ts
+ * / tests — not a runtime capture export.
  *
- * convert-transcript.py: flatten content/output/text (not `result`), dump
- * tool_use into content, keep wrappers. pull-bridge.py: move result → content
- * and chop tool_result at 4096 with an inline marker.
+ * That deployed converter: flatten content/output/text (not `result`), dump
+ * tool_use into `[tool X]` / `[thinking]` text, keep wrappers. pull-bridge
+ * then moved result → content and chopped tool_result at 4096 with an inline
+ * marker. The "before" numbers are against that path.
  */
 import { isRecord } from '@rivetos/capture-core'
 import { recordParts, recordRole, toolResultBody } from './parse.js'

@@ -186,8 +186,10 @@ def identities():
     return {m["id"]: m for m in cat["models"]}, cat.get("nodeId", "grokbot")
 
 
-def convert_cmd(src: Path, dst: Path, agent_id: str) -> list[str]:
+def convert_cmd(src: Path, dst: Path, agent_id: str, session: str | None = None) -> list[str]:
     extra = ["--agent-id", agent_id]
+    if session:
+        extra.extend(["--session", session])
     if CLI_JS.is_file():
         return [NODE, str(CLI_JS), "convert", str(src), str(dst), *extra]
     return [NODE, "--import", "tsx", str(CLI_TS), "convert", str(src), str(dst), *extra]
@@ -226,7 +228,9 @@ def cmd_ingest(ids: list[str], dry: bool, suffix: str) -> int:
             f'{m["persona"]} session={session} agent={m["agent"]} '
             f"positions=0–{max_pos} held={len(held)}"
         )
-        conv = subprocess.run(convert_cmd(tmp_page, spool, aid), capture_output=True, text=True)
+        conv = subprocess.run(
+            convert_cmd(tmp_page, spool, aid, session), capture_output=True, text=True
+        )
         if conv.returncode != 0:
             rc = 1
             print(f"FAIL convert {info}: {(conv.stderr or conv.stdout)[-300:]}")

@@ -4,6 +4,7 @@ import { classifyHidden, extractAgentMessage, systemMarker } from './hidden.js'
 import { toIngestRows } from './normalize.js'
 import { extractTimestampTag } from './timestamps.js'
 import {
+  ORDINAL_STRIDE,
   SESSION_SUFFIX_V3,
   STORAGE_LIMIT,
   type IngestRow,
@@ -64,6 +65,31 @@ export function recleanFromSource(
  * Re-strip already-ingested grokbot rows (content still carries wrappers).
  * Used when source transcripts are gone. Never mutates the input rows.
  */
+/** Decode a stored ingest ordinal to a source position. NULL ordinals stay unset. */
+export function storedRowPosition(row: StoredRow): number | undefined {
+  const raw = row.ordinal ?? row.metadata?.ordinal
+  if (typeof raw === 'number' && Number.isFinite(raw)) {
+    return raw >= ORDINAL_STRIDE ? Math.floor(raw / ORDINAL_STRIDE) : raw
+  }
+  const pos = row.metadata?.position
+  if (typeof pos === 'number' && Number.isFinite(pos)) return pos
+  return undefined
+}
+
+/**
+ * Honor each row's stored ordinal/position. NULL ordinals are assigned after
+ * the highest known position so they are not mixed in as 0.
+ */
+export function assignRecleanPositions(rows: StoredRow[]): number[] {
+  const known = rows.map(storedRowPosition)
+  let maxKnown = -1
+  for (const p of known) {
+    if (p !== undefined) maxKnown = Math.max(maxKnown, p)
+  }
+  let nextNull = maxKnown + 1
+  return known.map((p) => (p === undefined ? nextNull++ : p))
+}
+
 export function recleanStoredRows(
   rows: StoredRow[],
   opts: NormalizeOptions & { dryRun?: boolean },
@@ -82,10 +108,12 @@ export function recleanStoredRows(
     },
     created_at: r.created_at,
   }))
+  const positions = assignRecleanPositions(rows)
   const result = normalizeRecords(records, {
     ...opts,
     sessionKey: session,
-    startPosition: typeof rows[0]?.ordinal === 'number' ? rows[0].ordinal : 0,
+    startPosition: positions[0] ?? 0,
+    positions,
     useStoredCreatedAt: true,
   })
   return {

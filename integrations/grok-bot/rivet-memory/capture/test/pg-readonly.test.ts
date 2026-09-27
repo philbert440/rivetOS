@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import {
   LIST_CONVERSATIONS_SQL,
+  READONLY_POOL_OPTIONS,
   ROWS_BY_CONVERSATION_SQL,
   assertReadOnlySql,
   fetchGrokbotRows,
@@ -10,15 +11,26 @@ import {
 import { FROM_ROWS_LIMITS } from '../src/reclean.js'
 
 describe('read-only rows source', () => {
+  it('uses a single-connection read-only pool', () => {
+    expect(READONLY_POOL_OPTIONS.max).toBe(1)
+    expect(READONLY_POOL_OPTIONS.options).toContain('default_transaction_read_only=on')
+  })
+
   it('refuses INSERT/UPDATE/DELETE', () => {
     expect(() => assertReadOnlySql('SELECT 1')).not.toThrow()
     expect(() => assertReadOnlySql('BEGIN TRANSACTION READ ONLY')).not.toThrow()
     expect(() => assertReadOnlySql('ROLLBACK')).not.toThrow()
     expect(() => assertReadOnlySql(LIST_CONVERSATIONS_SQL)).not.toThrow()
     expect(() => assertReadOnlySql(ROWS_BY_CONVERSATION_SQL)).not.toThrow()
-    expect(() => assertReadOnlySql('INSERT INTO ros_messages (id) VALUES (1)')).toThrow(/refusing write/)
-    expect(() => assertReadOnlySql('UPDATE ros_messages SET content = $1')).toThrow(/refusing write/)
-    expect(() => assertReadOnlySql('DELETE FROM ros_messages WHERE id = $1')).toThrow(/refusing write/)
+    expect(() => assertReadOnlySql('INSERT INTO ros_messages (id) VALUES (1)')).toThrow(
+      /refusing write/,
+    )
+    expect(() => assertReadOnlySql('UPDATE ros_messages SET content = $1')).toThrow(
+      /refusing write/,
+    )
+    expect(() => assertReadOnlySql('DELETE FROM ros_messages WHERE id = $1')).toThrow(
+      /refusing write/,
+    )
   })
 
   it('does not read a URL from argv-shaped env keys', () => {
