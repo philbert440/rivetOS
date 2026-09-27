@@ -168,7 +168,9 @@ export function normalizeRecords(records: unknown[], opts: NormalizeOptions): No
       // Routine / background fires stay distinct by position so overlapping
       // pages merge to the same rows instead of collapsing by content.
       const distinctByPosition = kind === 'routine' || kind === 'background_task'
-      const dedupeKey = distinctByPosition ? `${kind}\0${String(position)}\0${content}` : `${kind}\0${content}`
+      const dedupeKey = distinctByPosition
+        ? `${kind}\0${String(position)}\0${content}`
+        : `${kind}\0${content}`
       if (seenSystem.has(dedupeKey)) {
         dropped += 1
         continue
@@ -227,12 +229,18 @@ function createdAtFor(args: {
     if (args.userText) return args.useStored ? args.storedTime : undefined
     // Hidden user-role turns inherit from the current stamped user when present.
     if (args.lastStampedUser) {
-      return addMs(args.lastStampedUser.time, Math.max(0, args.position - args.lastStampedUser.position))
+      return addMs(
+        args.lastStampedUser.time,
+        Math.max(0, args.position - args.lastStampedUser.position),
+      )
     }
     return args.useStored ? args.storedTime : undefined
   }
   if (args.lastStampedUser) {
-    return addMs(args.lastStampedUser.time, Math.max(0, args.position - args.lastStampedUser.position))
+    return addMs(
+      args.lastStampedUser.time,
+      Math.max(0, args.position - args.lastStampedUser.position),
+    )
   }
   return args.useStored ? args.storedTime : undefined
 }

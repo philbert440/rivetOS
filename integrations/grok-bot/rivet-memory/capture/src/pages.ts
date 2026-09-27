@@ -21,7 +21,12 @@ export function mergeParsedInputs(inputs: ParsedInput[]): MergedPages {
     })
   }
   const positions = [...byPos.keys()].sort((a, b) => a - b)
-  return { records: positions.map((p) => byPos.get(p) as unknown), positions }
+  const records: unknown[] = []
+  for (const p of positions) {
+    const rec = byPos.get(p)
+    if (rec !== undefined) records.push(rec)
+  }
+  return { records, positions }
 }
 
 export function normalizePages(inputs: ParsedInput[], opts: NormalizeOptions): NormalizeResult {
@@ -29,8 +34,8 @@ export function normalizePages(inputs: ParsedInput[], opts: NormalizeOptions): N
   const headerId = inputs.find((p) => p.header?.id)?.header?.id
   return normalizeRecords(merged.records, {
     ...opts,
-    format: opts.format ?? inputs.find((p) => p.format)?.format,
-    startPosition: merged.positions[0] ?? opts.startPosition ?? 0,
+    format: opts.format ?? inputs[0]?.format,
+    startPosition: merged.positions[0] ?? 0,
     positions: merged.positions,
     agentId: opts.agentId ?? headerId,
   })

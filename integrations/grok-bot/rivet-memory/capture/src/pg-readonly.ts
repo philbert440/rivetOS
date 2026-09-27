@@ -6,9 +6,11 @@
 import { readFileSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { resolve } from 'node:path'
+import pg from 'pg'
 import type { StoredRow } from './types.js'
 
-const WRITE_SQL_RE = /\b(INSERT|UPDATE|DELETE|MERGE|TRUNCATE|ALTER|DROP|CREATE|GRANT|REVOKE|COPY|CALL|DO)\b/i
+const WRITE_SQL_RE =
+  /\b(INSERT|UPDATE|DELETE|MERGE|TRUNCATE|ALTER|DROP|CREATE|GRANT|REVOKE|COPY|CALL|DO)\b/i
 
 export interface Queryable {
   query: (sql: string, params?: unknown[]) => Promise<{ rows: unknown[] }>
@@ -64,13 +66,13 @@ export function loadRivetosPgUrlFromEnv(env: NodeJS.ProcessEnv = process.env): s
   return undefined
 }
 
-export function wrapReadOnlyClient<T extends Queryable>(client: T): T {
-  const orig = client.query.bind(client)
-  client.query = (async (sql: string, params?: unknown[]) => {
-    assertReadOnlySql(sql)
-    return orig(sql, params)
-  }) as T['query']
-  return client
+export function wrapReadOnlyClient(client: Queryable): Queryable {
+  return {
+    query: async (sql: string, params?: unknown[]) => {
+      assertReadOnlySql(sql)
+      return client.query(sql, params)
+    },
+  }
 }
 
 export async function withReadOnlyTransaction<T>(
@@ -131,10 +133,7 @@ export async function connectAndFetchGrokbotRows(
       'reclean: RIVETOS_PG_URL is not set (environment or ~/.rivetos/.env). Do not pass the URL on argv.',
     )
   }
-  const pg = (await import('pg')) as { default?: { Pool: new (c: { connectionString: string }) => PgPool }; Pool?: new (c: { connectionString: string }) => PgPool }
-  const Pool = pg.Pool ?? pg.default?.Pool
-  if (!Pool) throw new Error('reclean: the pg package is not available')
-  const pool = new Pool({ connectionString: url })
+  const pool = new pg.Pool({ connectionString: url })
   const client = await pool.connect()
   try {
     return await fetchGrokbotRows(client, sessionKey, agent)
@@ -142,9 +141,4 @@ export async function connectAndFetchGrokbotRows(
     client.release()
     await pool.end()
   }
-}
-
-interface PgPool {
-  connect: () => Promise<Queryable & { release: () => void }>
-  end: () => Promise<void>
 }

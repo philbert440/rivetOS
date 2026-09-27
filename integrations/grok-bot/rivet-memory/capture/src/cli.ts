@@ -29,7 +29,7 @@ import {
   v3Session,
 } from './reclean.js'
 import { SESSION_SUFFIX_V3 } from './types.js'
-import type { ParsedInput } from './types.js'
+import type { IngestRow, ParsedInput } from './types.js'
 
 const HELP = `Usage: grokbot-rivet-memory-capture <command> [opts]
 
@@ -252,14 +252,13 @@ async function cmdReclean(argv: string[]): Promise<number> {
   const ident = resolveIdent(values['agent-id'], values.session, values.agent)
   const session = v3Session(values.session || ident.session)
 
-  const writeOut = (ingest: unknown[], destSession: string) => {
+  const writeOut = (ingest: IngestRow[], destSession: string) => {
     if (dry || !values.out) return
     mkdirSync(values.out, { recursive: true })
     const dest = join(values.out, `${destSession}.jsonl`)
     writeFileSync(
       dest,
-      (ingest as Array<Record<string, unknown>>).map((r) => JSON.stringify(r)).join('\n') +
-        ((ingest as unknown[]).length ? '\n' : ''),
+      ingest.map((r) => JSON.stringify(r)).join('\n') + (ingest.length ? '\n' : ''),
     )
     console.log(`wrote ${dest}`)
   }
@@ -301,14 +300,19 @@ async function cmdReclean(argv: string[]): Promise<number> {
   }
 
   if (dry) {
-    console.log(`DRY SELECT (read-only txn, then ROLLBACK) session=${values.session || ident.session} -> ${session}`)
+    console.log(
+      `DRY SELECT (read-only txn, then ROLLBACK) session=${values.session || ident.session} -> ${session}`,
+    )
     console.log(LIST_CONVERSATIONS_SQL.replace(/\s+/g, ' '))
     console.log(ROWS_BY_CONVERSATION_SQL.replace(/\s+/g, ' '))
     console.log(FROM_ROWS_LIMITS)
   }
 
   try {
-    const groups = await connectAndFetchGrokbotRows(values.session || ident.session, values.agent || ident.agent)
+    const groups = await connectAndFetchGrokbotRows(
+      values.session || ident.session,
+      values.agent || ident.agent,
+    )
     if (groups.length === 0) {
       console.log('no conversations matched')
       return 0

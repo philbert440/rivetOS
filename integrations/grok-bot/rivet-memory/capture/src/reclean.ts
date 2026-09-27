@@ -138,12 +138,8 @@ export function printRecleanStats(result: RecleanResult): string {
   return lines.join('\n')
 }
 
-export {
-  LIST_CONVERSATIONS_SQL,
-  ROWS_BY_CONVERSATION_SQL,
-} from './pg-readonly.js'
+export { LIST_CONVERSATIONS_SQL, ROWS_BY_CONVERSATION_SQL } from './pg-readonly.js'
 
-/** @deprecated Use ROWS_BY_CONVERSATION_SQL (filter by conversation_id). */
 export const EXISTING_ROWS_SQL = `
 SELECT m.role, m.content, m.tool_name, m.tool_args, m.tool_result, m.created_at, m.metadata,
        (m.metadata->>'ordinal')::int AS ordinal, m.conversation_id

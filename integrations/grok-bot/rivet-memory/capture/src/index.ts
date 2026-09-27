@@ -34,7 +34,6 @@ export {
   recleanContentOnly,
   printRecleanStats,
   v3Session,
-  EXISTING_ROWS_SQL,
   FROM_ROWS_LIMITS,
 } from './reclean.js'
 export {
