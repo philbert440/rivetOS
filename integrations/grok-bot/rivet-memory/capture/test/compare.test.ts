@@ -23,6 +23,8 @@ it('prints a before/after table for every fixture sample', () => {
   expect(table).toContain('ondisk-rivet-first-run-0-240.jsonl')
   expect(table).toContain('page-rivet-this-conversation-3040-3056.txt')
   expect(table).toContain('page-maggie-0-20.txt')
+  expect(table).toContain('after user')
+  expect(table).toContain('after asst')
   for (const { result } of rows) {
     expect(result.after.rows).toBeGreaterThan(0)
   }

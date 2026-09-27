@@ -18,7 +18,25 @@ const TRANSCRIPTS =
 const CONVERTER = process.env.CONVERTER || join(HERE, 'convert-transcript.py')
 const INGEST = process.env.GROKBOT_INGEST || join(CAPTURE_DIR, 'ingest.mjs')
 const SPOOL = join(CAPTURE_DIR, 'spool')
-const STATE_FILE = process.env.GROKBOT_CAPTURE_STATE || join(HOME, '.rivetos', 'grokbot-capture-state.json')
+const NEW_STATE = join(HOME, '.rivetos', 'grokbot-capture-state.json')
+const OLD_STATE = join(HOME, '.rivetos', 'capture', 'state.json')
+const SESSION_SUFFIX = process.env.GROKBOT_SESSION_SUFFIX ?? '-v3'
+
+function resolveStateFile() {
+  if (process.env.GROKBOT_CAPTURE_STATE) return process.env.GROKBOT_CAPTURE_STATE
+  if (existsSync(NEW_STATE)) return NEW_STATE
+  if (existsSync(OLD_STATE)) {
+    try {
+      mkdirSync(dirname(NEW_STATE), { recursive: true })
+      writeFileSync(NEW_STATE, readFileSync(OLD_STATE))
+      return NEW_STATE
+    } catch {
+      return OLD_STATE
+    }
+  }
+  return NEW_STATE
+}
+const STATE_FILE = resolveStateFile()
 const DEBOUNCE_MS = 20_000
 const PYTHON = process.env.PYTHON || 'python3'
 
@@ -67,7 +85,7 @@ function run(cmd, args) {
   return new Promise((res) => {
     const p = spawn(cmd, args, {
       stdio: ['ignore', 'pipe', 'pipe'],
-      env: { ...process.env, RIVETOS_ROOT: process.env.RIVETOS_ROOT || process.cwd() },
+      env: { ...process.env, RIVETOS_ROOT: process.env.RIVETOS_ROOT || '/opt/rivetos' },
     })
     let out = ''
     let err = ''
@@ -83,8 +101,22 @@ async function process1(id) {
   const s = sig(src)
   if (state[id] === s) return
   const who = identity(id)
-  const dst = join(SPOOL, `${who.session}.jsonl`)
-  const c = await run(PYTHON, [CONVERTER, src, dst, '--agent-id', id])
+  const session =
+    !SESSION_SUFFIX || who.session.endsWith(SESSION_SUFFIX)
+      ? who.session
+      : `${who.session}${SESSION_SUFFIX}`
+  const dst = join(SPOOL, `${session}.jsonl`)
+  const c = await run(PYTHON, [
+    CONVERTER,
+    src,
+    dst,
+    '--agent-id',
+    id,
+    '--session',
+    session,
+    '--session-suffix',
+    SESSION_SUFFIX,
+  ])
   if (c.code !== 0) {
     log(`convert FAIL ${id} (${who.persona}): ${c.err.slice(0, 300)}`)
     return
@@ -93,7 +125,7 @@ async function process1(id) {
     INGEST,
     'ingest',
     '--session-id',
-    who.session,
+    session,
     '--agent',
     who.agent,
     '--persona',
@@ -106,7 +138,7 @@ async function process1(id) {
   }
   state[id] = s
   saveState()
-  log(`ok ${who.session} agent=${who.agent} ${i.out.split('\n').pop()?.slice(0, 200) || ''}`)
+  log(`ok ${session} agent=${who.agent} ${i.out.split('\n').pop()?.slice(0, 200) || ''}`)
 }
 async function drain() {
   if (busy) return

@@ -54,7 +54,7 @@ if (!process.env.RIVETOS_PG_URL) {
   process.exit(1)
 }
 
-const root = process.env.RIVETOS_ROOT || process.cwd()
+const root = process.env.RIVETOS_ROOT || '/opt/rivetos'
 
 const memoryEntry = resolve(root, 'node_modules/@rivetos/memory-postgres/dist/index.js')
 const writeEntry = resolve(root, 'services/mcp-sidecar/dist/memory-write.js')

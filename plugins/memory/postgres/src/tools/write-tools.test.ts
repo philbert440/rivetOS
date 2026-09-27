@@ -73,6 +73,97 @@ describe('memory write helpers', () => {
 })
 
 describe('shared ingest transaction', () => {
+  it('preserves item.metadata and honors item.ordinal / event_id', async () => {
+    const query = vi.fn(async (sql: string) => ({
+      rows: sql.includes('AS ordinal') ? [] : [],
+    }))
+    const release = vi.fn()
+    const client = { query, release }
+    const append = vi.fn(async () => 'new-id')
+    const memory = {
+      getPool: () => ({ connect: async () => client }),
+      append,
+    } as unknown as PostgresMemory
+    const result = await ingestSession(memory, {
+      sessionId: 'grokbot-rivet-grokbot-v3',
+      agent: 'rivet-grokbot',
+      persona: 'Rivet',
+      source: 'grokbot',
+      channel: 'grokbot',
+      messages: [
+        {
+          role: 'system',
+          content: '[grokbot.agent_message] Told Philip.',
+          createdAt: '2026-09-27T20:06:00.000Z',
+          ordinal: 1880_000,
+          event_id: 'capture-core-event-id',
+          metadata: {
+            channel: 'grokbot',
+            source: 'grokbot-transcript',
+            agent_id: '6a155e75-0dd5-4c8a-8391-994878ed683a',
+            kind: 'agent_message',
+            from_agent: 'Bob',
+            from_agent_id: '00df02ea-4f5f-4d3e-945a-864e1c9c78dc',
+            position: 1880,
+            ordinal: 1880_000,
+            truncated: true,
+            full_tool_result_length: 20_000,
+          },
+        },
+      ],
+    })
+    expect(result).toMatchObject({ ingested: 1, skipped: 0, ids: ['new-id'] })
+    expect(append).toHaveBeenCalledWith(
+      expect.objectContaining({
+        metadata: expect.objectContaining({
+          agent_id: '6a155e75-0dd5-4c8a-8391-994878ed683a',
+          kind: 'agent_message',
+          from_agent: 'Bob',
+          from_agent_id: '00df02ea-4f5f-4d3e-945a-864e1c9c78dc',
+          position: 1880,
+          truncated: true,
+          full_tool_result_length: 20_000,
+          ordinal: 1880_000,
+          event_id: 'capture-core-event-id',
+          source: 'grokbot',
+          persona: 'Rivet',
+        }),
+      }),
+      { client },
+    )
+  })
+
+  it('dedupes by caller event_id across overlapping page order', async () => {
+    const query = vi.fn(async (sql: string) => ({
+      rows: sql.includes('AS ordinal')
+        ? [{ ordinal: '1000', event_id: 'same-event' }]
+        : [],
+    }))
+    const release = vi.fn()
+    const client = { query, release }
+    const append = vi.fn(async () => 'should-not-run')
+    const memory = {
+      getPool: () => ({ connect: async () => client }),
+      append,
+    } as unknown as PostgresMemory
+    const result = await ingestSession(memory, {
+      sessionId: 'session',
+      agent: 'rivet',
+      messages: [
+        {
+          role: 'user',
+          content: 'hello',
+          ordinal: 5000,
+          event_id: 'same-event',
+          metadata: { position: 5, ordinal: 5000 },
+        },
+      ],
+    })
+    expect(result.ingested).toBe(0)
+    expect(result.skipped).toBe(1)
+    expect(append).not.toHaveBeenCalled()
+  })
+
   it('keeps MCP ordinal dedupe and appends on the locked client', async () => {
     const query = vi.fn(async (sql: string) => ({
       rows: sql.includes('AS ordinal') ? [{ ordinal: '0', event_id: 'old' }] : [],

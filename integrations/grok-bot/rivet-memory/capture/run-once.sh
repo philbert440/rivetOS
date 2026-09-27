@@ -11,6 +11,9 @@ RIVETOS_ROOT="${RIVETOS_ROOT:-/opt/rivetos}"
 INGEST_BIN="${RIVETOS_ROOT}/integrations/grok-bot/rivet-memory/bin/ingest-session.mjs"
 SPOOL_DIR="${SCRIPT_DIR}/spool"
 STATE_DIR="${HOME}/.rivetos/grokbot-capture-state"
+SESSION_SUFFIX="${GROKBOT_SESSION_SUFFIX--v3}"
+# Keep reading per-session files from the previous directory name if present.
+OLD_STATE_DIR="${HOME}/.rivetos/capture"
 GROKBOT_TRANSCRIPT_ROOT="${GROKBOT_TRANSCRIPT_ROOT:-}"
 
 # Stuck policy — MUST match grok-memory-capture.ts:
@@ -250,6 +253,9 @@ while IFS= read -r model_json; do
     model_name=$(echo "${model_json}" | jq -r '.name')
     session_id=$(echo "${model_json}" | jq -r '.sessionId')
     agent_id=$(echo "${model_json}" | jq -r '.agentId')
+    if [[ -n "${SESSION_SUFFIX}" && "${session_id}" != *"${SESSION_SUFFIX}" ]]; then
+        session_id="${session_id}${SESSION_SUFFIX}"
+    fi
 
     echo "Processing model: ${model_name} (${model_id})"
 
@@ -265,12 +271,16 @@ while IFS= read -r model_json; do
     any_model_processed=1
 
     state_file="${STATE_DIR}/${session_id}.json"
+    if [[ ! -f "${state_file}" && -f "${OLD_STATE_DIR}/${session_id}.json" ]]; then
+        mkdir -p "${STATE_DIR}"
+        cp "${OLD_STATE_DIR}/${session_id}.json" "${state_file}"
+    fi
 
     # Convert
     spool_path="${SPOOL_DIR}/${session_id}.jsonl"
     echo "  Converting: ${transcript_path} -> ${spool_path}"
 
-    if ! python3 "${CONVERTER}" "${transcript_path}" "${spool_path}" --agent-id "${model_id}" 2>&1; then
+    if ! python3 "${CONVERTER}" "${transcript_path}" "${spool_path}" --agent-id "${model_id}" --session "${session_id}" 2>&1; then
         echo "  ERROR: Conversion failed for ${model_name}" >&2
         record_failure "${state_file}" "${session_id}" "conversion failed"
         if warn_if_stuck "${state_file}"; then

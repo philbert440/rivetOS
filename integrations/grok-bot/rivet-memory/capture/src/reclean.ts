@@ -3,23 +3,20 @@ import { capForStorage } from '@rivetos/capture-core'
 import { classifyHidden, extractAgentMessage, systemMarker } from './hidden.js'
 import { toIngestRows } from './normalize.js'
 import { extractTimestampTag } from './timestamps.js'
-import { SESSION_SUFFIX_V3, STORAGE_LIMIT, type IngestRow, type NormalizeStats } from './types.js'
+import {
+  SESSION_SUFFIX_V3,
+  STORAGE_LIMIT,
+  type IngestRow,
+  type NormalizeStats,
+  type StoredRow,
+} from './types.js'
 import { extractUserText } from './wrappers.js'
 import { normalizeRecords } from './normalize.js'
 import { parseInput } from './parse.js'
 import type { NormalizeOptions } from './types.js'
 import type { CaptureMessage } from '@rivetos/capture-core'
 
-export interface StoredRow {
-  role: string
-  content: string
-  tool_name?: string | null
-  tool_args?: unknown
-  tool_result?: string | null
-  created_at?: string | Date | null
-  metadata?: Record<string, unknown> | null
-  ordinal?: number | null
-}
+export type { StoredRow }
 
 export interface RecleanResult {
   session: string
@@ -89,6 +86,7 @@ export function recleanStoredRows(
     ...opts,
     sessionKey: session,
     startPosition: typeof rows[0]?.ordinal === 'number' ? rows[0].ordinal : 0,
+    useStoredCreatedAt: true,
   })
   return {
     session,
@@ -120,6 +118,12 @@ export function recleanContentOnly(content: string): {
   return { content: '', dropped: true, created_at }
 }
 
+export const FROM_ROWS_LIMITS = [
+  '--from-rows cannot restore tool results: the old converter ignored `result`, so stored tool rows average ~38 chars.',
+  'Assistant rows keep the legacy [tool X] / [thinking] text.',
+  'Full fidelity needs a backfill from the source transcripts.',
+].join(' ')
+
 export function printRecleanStats(result: RecleanResult): string {
   const s = result.stats
   const lines = [
@@ -134,14 +138,21 @@ export function printRecleanStats(result: RecleanResult): string {
   return lines.join('\n')
 }
 
+export {
+  LIST_CONVERSATIONS_SQL,
+  ROWS_BY_CONVERSATION_SQL,
+} from './pg-readonly.js'
+
+/** @deprecated Use ROWS_BY_CONVERSATION_SQL (filter by conversation_id). */
 export const EXISTING_ROWS_SQL = `
 SELECT m.role, m.content, m.tool_name, m.tool_args, m.tool_result, m.created_at, m.metadata,
-       (m.metadata->>'ordinal')::int AS ordinal
+       (m.metadata->>'ordinal')::int AS ordinal, m.conversation_id
   FROM ros_messages m
   JOIN ros_conversations c ON c.id = m.conversation_id
  WHERE c.channel = 'grokbot'
    AND c.session_key = $1
- ORDER BY COALESCE((m.metadata->>'ordinal')::int, 0), m.created_at
+   AND ($2::text IS NULL OR c.agent = $2)
+ ORDER BY m.conversation_id, COALESCE((m.metadata->>'ordinal')::int, 0), m.created_at
 `.trim()
 
 export function loadStoredRowsJson(path: string): StoredRow[] {

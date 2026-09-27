@@ -60,12 +60,13 @@ export function compareInput(text: string, opts: NormalizeOptions): CompareResul
 
 export function formatCompareTable(rows: Array<{ name: string; result: CompareResult }>): string {
   const lines = [
-    '| sample | before rows | after rows | dropped | system events | before avg chars | after avg chars | before noise markers | after noise markers |',
-    '|---|---:|---:|---:|---:|---:|---:|---:|---:|',
+    '| sample | before rows | after rows | dropped | system events | before avg | after avg | after user | after asst | after tool | after system | before noise | after noise |',
+    '|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|',
   ]
   for (const { name, result } of rows) {
+    const after = result.after.avgChars
     lines.push(
-      `| ${name} | ${String(result.before.rows)} | ${String(result.after.rows)} | ${String(result.dropped)} | ${String(result.systemEvents)} | ${result.before.avgChars.all.toFixed(1)} | ${result.after.avgChars.all.toFixed(1)} | ${String(sumNoise(result.before.noise))} | ${String(sumNoise(result.after.noise))} |`,
+      `| ${name} | ${String(result.before.rows)} | ${String(result.after.rows)} | ${String(result.dropped)} | ${String(result.systemEvents)} | ${result.before.avgChars.all.toFixed(1)} | ${after.all.toFixed(1)} | ${after.user.toFixed(1)} | ${after.assistant.toFixed(1)} | ${after.tool.toFixed(1)} | ${after.system.toFixed(1)} | ${String(sumNoise(result.before.noise))} | ${String(sumNoise(result.after.noise))} |`,
     )
   }
   return lines.join('\n')
@@ -115,12 +116,18 @@ function noiseFromMessages(messages: CaptureMessage[]): NoiseCounts {
   return noise
 }
 
+function isEmptyToolUse(m: CaptureMessage): boolean {
+  return m.role === 'assistant' && !m.content && Boolean(m.tool_name)
+}
+
 function averagesFromMessages(messages: CaptureMessage[]): RoleAverages {
   return averages(
-    messages.map((m) => ({
-      role: m.role,
-      content: m.role === 'tool' ? (m.tool_result ?? m.content) : m.content,
-    })),
+    messages
+      .filter((m) => !isEmptyToolUse(m))
+      .map((m) => ({
+        role: m.role,
+        content: m.role === 'tool' ? (m.tool_result ?? m.content) : m.content,
+      })),
   )
 }
 

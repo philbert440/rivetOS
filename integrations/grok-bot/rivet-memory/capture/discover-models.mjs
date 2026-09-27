@@ -91,13 +91,29 @@ export function discoverModels() {
 }
 
 export function makeIdentityLookup() {
-  const catalog = discoverModels()
+  const cfg = loadConfig()
+  let catalog
+  try {
+    catalog = discoverModels()
+  } catch {
+    catalog = { nodeId: cfg.nodeId, models: [] }
+  }
   const byId = new Map(catalog.models.map((m) => [m.id, m]))
   return {
     catalog,
     identity(id) {
       const m = byId.get(id)
       if (m) return { session: m.session, agent: m.agent, persona: m.persona }
+      const ov = cfg.overrides[id]
+      if (ov) {
+        const name = ov.persona || ov.name || id.slice(0, 8)
+        const s = slug(name)
+        return {
+          session: ov.session || ov.sessionId || `${catalog.nodeId}-${s}`,
+          agent: ov.agent || ov.agentId || `rivet-${s}`,
+          persona: name,
+        }
+      }
       return {
         session: `${catalog.nodeId}-run-${id}`,
         agent: 'rivet-grokbot-run',

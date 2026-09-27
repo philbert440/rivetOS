@@ -3,15 +3,25 @@
  * Grok Bot capture CLI — convert, backfill, reclean, compare, discover.
  * Never prints secrets, hostnames, or connection strings.
  */
-import { mkdirSync, readFileSync, readdirSync, statSync, writeFileSync } from 'node:fs'
-import { basename, dirname, join, resolve } from 'node:path'
+import { mkdirSync, readFileSync, readdirSync, writeFileSync } from 'node:fs'
+import { dirname, join, resolve } from 'node:path'
 import { parseArgs } from 'node:util'
 import { compareInput, formatCompareTable, formatNoiseBreakdown } from './compare.js'
-import { discoverModels, identityFor } from './identity.js'
-import { normalizeRecords, toIngestRows } from './normalize.js'
-import { parseInput } from './parse.js'
 import {
-  EXISTING_ROWS_SQL,
+  agentIdFromTranscriptPath,
+  applySessionSuffix,
+  discoverModels,
+  identityFor,
+  listInputFiles,
+} from './identity.js'
+import { normalizeRecords, toIngestRows } from './normalize.js'
+import { normalizePages } from './pages.js'
+import { parseInput } from './parse.js'
+import { connectAndFetchGrokbotRows } from './pg-readonly.js'
+import {
+  FROM_ROWS_LIMITS,
+  LIST_CONVERSATIONS_SQL,
+  ROWS_BY_CONVERSATION_SQL,
   loadStoredRowsJson,
   printRecleanStats,
   recleanFromSource,
@@ -19,21 +29,34 @@ import {
   v3Session,
 } from './reclean.js'
 import { SESSION_SUFFIX_V3 } from './types.js'
+import type { ParsedInput } from './types.js'
 
 const HELP = `Usage: grokbot-rivet-memory-capture <command> [opts]
 
   convert SRC DST [--agent-id UUID] [--session KEY] [--agent NAME]
+          [--session-suffix -v3]
       Normalize one on-disk jsonl or ReadTranscript page to ingest jsonl.
+      Live capture defaults to session suffix -v3 (GROKBOT_SESSION_SUFFIX).
 
   backfill --input PATH [--format auto|ondisk|page] [--agent-id UUID]
            [--session-suffix -v3] [--out DIR] [--write]
-      Walk a file or directory of transcripts/pages through the normalizer.
-      --write emits ingest jsonl under --out (default ./spool). Dry by default.
+      Walk a file or directory (recursive) of transcripts/pages.
+      Pages for one agent are merged by position into a single spool.
+      On-disk agent id is taken from <uuid>/<uuid>.jsonl when there is no
+      header or --agent-id. --write emits ingest jsonl. Dry by default.
 
-  reclean [--session KEY] [--agent-id UUID] [--from-transcript FILE]
-          [--from-rows FILE] [--pg-url URL] [--out DIR] [--dry-run|--write]
+  reclean [--session KEY] [--agent NAME] [--agent-id UUID]
+          [--from-transcript FILE] [--from-rows FILE] [--out DIR]
+          [--dry-run|--write]
       Re-clean existing grokbot rows or source transcripts into <session>-v3.
       --dry-run (default) performs zero writes and prints stats.
+      Without --from-transcript/--from-rows, reads RIVETOS_PG_URL from the
+      environment or ~/.rivetos/.env inside BEGIN TRANSACTION READ ONLY
+      (then ROLLBACK). Never pass the URL on argv. Groups by conversation_id
+      (prod has two conversations for grokbot-rivet-grokbot).
+      --from-rows cannot restore tool results (old converter ignored result;
+      stored tool rows average ~38 chars). Assistant rows keep legacy
+      [tool X]/[thinking] text. Full fidelity needs a source-transcript backfill.
 
   compare [--fixtures DIR]
       Before (legacy convert-transcript + pull-bridge) vs after (normalizer).
@@ -41,7 +64,7 @@ const HELP = `Usage: grokbot-rivet-memory-capture <command> [opts]
   discover [--agents-dir DIR] [--models FILE] [--json]
 `
 
-function main(argv: string[]): number {
+async function main(argv: string[]): Promise<number> {
   const cmd = argv[0]
   if (!cmd || cmd === '-h' || cmd === '--help' || cmd === 'help') {
     console.log(HELP)
@@ -57,6 +80,11 @@ function main(argv: string[]): number {
   return 2
 }
 
+function sessionSuffixFromArgs(explicit?: string): string {
+  if (explicit !== undefined) return explicit
+  return process.env.GROKBOT_SESSION_SUFFIX ?? SESSION_SUFFIX_V3
+}
+
 function cmdConvert(argv: string[]): number {
   const { values, positionals } = parseArgs({
     args: argv,
@@ -66,6 +94,7 @@ function cmdConvert(argv: string[]): number {
       session: { type: 'string' },
       agent: { type: 'string' },
       format: { type: 'string' },
+      'session-suffix': { type: 'string' },
     },
   })
   const src = positionals[0]
@@ -74,16 +103,24 @@ function cmdConvert(argv: string[]): number {
     console.error('convert needs SRC DST')
     return 2
   }
-  const ident = resolveIdent(values['agent-id'], values.session, values.agent)
+  const ident = resolveIdent(
+    values['agent-id'] ?? agentIdFromTranscriptPath(src),
+    values.session,
+    values.agent,
+  )
+  const suffix = sessionSuffixFromArgs(values['session-suffix'])
+  const session = values.session
+    ? applySessionSuffix(values.session, suffix)
+    : applySessionSuffix(ident.session, suffix)
   const text = readFileSync(src, 'utf8')
   const parsed = parseInput(
     text,
     values.format === 'page' || values.format === 'ondisk' ? values.format : undefined,
   )
   const result = normalizeRecords(parsed.records, {
-    sessionKey: ident.session,
+    sessionKey: session,
     agent: ident.agent,
-    agentId: ident.id,
+    agentId: ident.id ?? parsed.header?.id,
     persona: ident.persona,
     format: parsed.format,
     startPosition: parsed.header?.a ?? 0,
@@ -102,6 +139,7 @@ function cmdConvert(argv: string[]): number {
       system_events: result.stats.systemEvents,
       time_known: result.stats.timeKnown,
       last_known: result.stats.lastKnownTime ?? null,
+      session,
     }),
   )
   if (!result.stats.timeKnown) {
@@ -117,7 +155,7 @@ function cmdBackfill(argv: string[]): number {
       input: { type: 'string' },
       format: { type: 'string' },
       'agent-id': { type: 'string' },
-      'session-suffix': { type: 'string', default: SESSION_SUFFIX_V3 },
+      'session-suffix': { type: 'string' },
       out: { type: 'string', default: 'spool' },
       write: { type: 'boolean', default: false },
     },
@@ -126,31 +164,54 @@ function cmdBackfill(argv: string[]): number {
     console.error('backfill needs --input PATH')
     return 2
   }
-  const files = listInputs(values.input)
-  const suffix = values['session-suffix'] || SESSION_SUFFIX_V3
+  const files = listInputFiles(values.input)
+  const suffix = sessionSuffixFromArgs(values['session-suffix'])
   const outDir = values.out || 'spool'
   if (values.write) mkdirSync(outDir, { recursive: true })
-  let n = 0
+
+  type Bucket = {
+    session: string
+    agent: string
+    persona?: string
+    id?: string
+    parsed: ParsedInput[]
+    files: string[]
+  }
+  const buckets = new Map<string, Bucket>()
   for (const file of files) {
     const text = readFileSync(file, 'utf8')
     const parsed = parseInput(
       text,
       values.format === 'page' || values.format === 'ondisk' ? values.format : undefined,
     )
-    const id = values['agent-id'] ?? parsed.header?.id
+    const id = values['agent-id'] ?? parsed.header?.id ?? agentIdFromTranscriptPath(file)
     const ident = resolveIdent(id, undefined, undefined)
-    const session = ident.session.endsWith(suffix) ? ident.session : ident.session + suffix
-    const result = normalizeRecords(parsed.records, {
-      sessionKey: session,
+    const session = applySessionSuffix(ident.session, suffix)
+    const key = `${session}\0${ident.agent}\0${ident.id ?? ''}`
+    const bucket = buckets.get(key) ?? {
+      session,
       agent: ident.agent,
-      agentId: ident.id || id,
       persona: ident.persona,
-      format: parsed.format,
-      startPosition: parsed.header?.a ?? 0,
+      id: ident.id,
+      parsed: [],
+      files: [],
+    }
+    bucket.parsed.push(parsed)
+    bucket.files.push(file)
+    buckets.set(key, bucket)
+  }
+
+  let n = 0
+  for (const bucket of buckets.values()) {
+    const result = normalizePages(bucket.parsed, {
+      sessionKey: bucket.session,
+      agent: bucket.agent,
+      agentId: bucket.id,
+      persona: bucket.persona,
     })
-    const dest = join(outDir, `${session}-${basename(file)}.jsonl`)
+    const dest = join(outDir, `${bucket.session}.jsonl`)
     console.log(
-      `${values.write ? 'WRITE' : 'DRY'} ${basename(file)} format=${parsed.format} session=${session} agent=${ident.agent} in=${String(result.stats.in)} out=${String(result.stats.out)} dropped=${String(result.stats.dropped)} system=${String(result.stats.systemEvents)} time_known=${String(result.stats.timeKnown)}`,
+      `${values.write ? 'WRITE' : 'DRY'} files=${String(bucket.files.length)} session=${bucket.session} agent=${bucket.agent} in=${String(result.stats.in)} out=${String(result.stats.out)} dropped=${String(result.stats.dropped)} system=${String(result.stats.systemEvents)} time_known=${String(result.stats.timeKnown)}`,
     )
     if (values.write) {
       writeFileSync(
@@ -159,13 +220,21 @@ function cmdBackfill(argv: string[]): number {
           (result.messages.length ? '\n' : ''),
       )
     }
-    n += 1
+    n += bucket.files.length
   }
-  console.log(`backfill files=${String(n)} write=${values.write ? 'true' : 'false'}`)
+  console.log(
+    `backfill files=${String(n)} agents=${String(buckets.size)} write=${values.write ? 'true' : 'false'}`,
+  )
   return 0
 }
 
-function cmdReclean(argv: string[]): number {
+async function cmdReclean(argv: string[]): Promise<number> {
+  if (argv.includes('--pg-url')) {
+    console.error(
+      'reclean: do not pass the database URL on argv. Set RIVETOS_PG_URL in the environment or ~/.rivetos/.env',
+    )
+    return 2
+  }
   const { values } = parseArgs({
     args: argv,
     options: {
@@ -174,7 +243,6 @@ function cmdReclean(argv: string[]): number {
       agent: { type: 'string' },
       'from-transcript': { type: 'string' },
       'from-rows': { type: 'string' },
-      'pg-url': { type: 'string' },
       out: { type: 'string' },
       'dry-run': { type: 'boolean', default: true },
       write: { type: 'boolean', default: false },
@@ -183,6 +251,18 @@ function cmdReclean(argv: string[]): number {
   const dry = !values.write
   const ident = resolveIdent(values['agent-id'], values.session, values.agent)
   const session = v3Session(values.session || ident.session)
+
+  const writeOut = (ingest: unknown[], destSession: string) => {
+    if (dry || !values.out) return
+    mkdirSync(values.out, { recursive: true })
+    const dest = join(values.out, `${destSession}.jsonl`)
+    writeFileSync(
+      dest,
+      (ingest as Array<Record<string, unknown>>).map((r) => JSON.stringify(r)).join('\n') +
+        ((ingest as unknown[]).length ? '\n' : ''),
+    )
+    console.log(`wrote ${dest}`)
+  }
 
   if (values['from-transcript']) {
     const text = readFileSync(values['from-transcript'], 'utf8')
@@ -194,15 +274,7 @@ function cmdReclean(argv: string[]): number {
       dryRun: dry,
     })
     console.log(printRecleanStats({ ...result, session, dryRun: dry }))
-    if (!dry && values.out) {
-      mkdirSync(values.out, { recursive: true })
-      const dest = join(values.out, `${session}.jsonl`)
-      writeFileSync(
-        dest,
-        result.ingest.map((r) => JSON.stringify(r)).join('\n') + (result.ingest.length ? '\n' : ''),
-      )
-      console.log(`wrote ${dest}`)
-    }
+    writeOut(result.ingest, session)
     return 0
   }
 
@@ -216,36 +288,54 @@ function cmdReclean(argv: string[]): number {
       dryRun: dry,
     })
     console.log(printRecleanStats({ ...result, session, dryRun: dry }))
-    if (!dry && values.out) {
-      mkdirSync(values.out, { recursive: true })
-      const dest = join(values.out, `${session}.jsonl`)
-      writeFileSync(
-        dest,
-        result.ingest.map((r) => JSON.stringify(r)).join('\n') + (result.ingest.length ? '\n' : ''),
-      )
-      console.log(`wrote ${dest}`)
-    }
+    console.log(FROM_ROWS_LIMITS)
+    writeOut(result.ingest, session)
     return 0
   }
 
-  if (values['pg-url'] && values.session) {
-    if (dry) {
-      console.log(`DRY SELECT (no writes) session=${values.session} -> ${session}`)
-      console.log(EXISTING_ROWS_SQL.replace(/\s+/g, ' '))
-      console.log('created_at: inherited from stored rows / remaining <timestamp> tags, else unset')
-      return 0
-    }
+  if (!values.session && !ident.id) {
     console.error(
-      'reclean --write against Postgres is a two-step: SELECT then ingest to the -v3 session.',
+      'reclean needs --from-transcript FILE, --from-rows FILE, or --session (reads RIVETOS_PG_URL, never argv)',
     )
-    console.error('This CLI will not UPDATE or DELETE. Use --from-rows with the SELECT output.')
     return 2
   }
 
-  console.error(
-    'reclean needs --from-transcript FILE, --from-rows FILE, or --pg-url + --session (dry-run)',
-  )
-  return 2
+  if (dry) {
+    console.log(`DRY SELECT (read-only txn, then ROLLBACK) session=${values.session || ident.session} -> ${session}`)
+    console.log(LIST_CONVERSATIONS_SQL.replace(/\s+/g, ' '))
+    console.log(ROWS_BY_CONVERSATION_SQL.replace(/\s+/g, ' '))
+    console.log(FROM_ROWS_LIMITS)
+  }
+
+  try {
+    const groups = await connectAndFetchGrokbotRows(values.session || ident.session, values.agent || ident.agent)
+    if (groups.length === 0) {
+      console.log('no conversations matched')
+      return 0
+    }
+    for (const { conversation, rows } of groups) {
+      const destSession =
+        groups.length > 1 ? `${session}-${conversation.conversation_id.slice(0, 8)}` : session
+      const result = recleanStoredRows(rows, {
+        sessionKey: values.session || ident.session,
+        agent: conversation.agent,
+        agentId: ident.id,
+        persona: ident.persona,
+        dryRun: dry,
+      })
+      console.log(
+        `conversation_id=${conversation.conversation_id} agent=${conversation.agent} rows=${String(conversation.n)}`,
+      )
+      console.log(printRecleanStats({ ...result, session: destSession, dryRun: dry }))
+      console.log(FROM_ROWS_LIMITS)
+      writeOut(result.ingest, destSession)
+    }
+  } catch (err) {
+    const message = err instanceof Error ? err.message : 'unknown error'
+    console.error(message)
+    return 2
+  }
+  return 0
 }
 
 function cmdCompare(argv: string[]): number {
@@ -277,7 +367,7 @@ function cmdCompare(argv: string[]): number {
       `roles before avg user=${result.before.avgChars.user.toFixed(1)} assistant=${result.before.avgChars.assistant.toFixed(1)} tool=${result.before.avgChars.tool.toFixed(1)}`,
     )
     console.log(
-      `roles after  avg user=${result.after.avgChars.user.toFixed(1)} assistant=${result.after.avgChars.assistant.toFixed(1)} tool=${result.after.avgChars.tool.toFixed(1)} system=${result.after.avgChars.system.toFixed(1)}`,
+      `roles after  avg user=${result.after.avgChars.user.toFixed(1)} assistant=${result.after.avgChars.assistant.toFixed(1)} tool=${result.after.avgChars.tool.toFixed(1)} system=${result.after.avgChars.system.toFixed(1)} (empty tool_use excluded from after avg)`,
     )
   }
   return 0
@@ -322,15 +412,6 @@ function resolveIdent(agentId?: string, session?: string, agent?: string) {
   }
 }
 
-function listInputs(path: string): string[] {
-  const st = statSync(path)
-  if (st.isFile()) return [path]
-  return readdirSync(path)
-    .filter((f) => f.endsWith('.jsonl') || f.endsWith('.txt'))
-    .map((f) => join(path, f))
-    .sort()
-}
-
 function fileDir(): string {
   return resolve(new URL('..', import.meta.url).pathname)
 }
@@ -338,7 +419,7 @@ function fileDir(): string {
 const invoked =
   process.argv[1] && resolve(process.argv[1]) === resolve(new URL(import.meta.url).pathname)
 if (invoked) {
-  process.exitCode = main(process.argv.slice(2))
+  process.exitCode = await main(process.argv.slice(2))
 }
 
 export { main }

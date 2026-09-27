@@ -1,7 +1,7 @@
 import { existsSync, readdirSync, readFileSync, statSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { isAbsolute, join, resolve } from 'node:path'
-import { DEFAULT_NODE_ID, SUBAGENT_AGENT, type BotIdentity } from './types.js'
+import { DEFAULT_NODE_ID, SESSION_SUFFIX_V3, SUBAGENT_AGENT, type BotIdentity } from './types.js'
 
 const UUID_RE = /^[0-9a-f-]{36}$/i
 const DEFAULT_EXCLUDE = ['new bot']
@@ -182,16 +182,48 @@ export function resolveIdentity(
 
 export function identityFor(
   id: string,
-  opts?: { config?: IdentityConfig; modelsPath?: string },
+  opts?: { config?: IdentityConfig; modelsPath?: string; agentsDir?: string },
 ): BotIdentity {
-  const cfg = opts?.config ?? loadIdentityConfig(opts?.modelsPath)
-  if (Object.hasOwn(cfg.overrides, id)) return resolveIdentity(id, { config: cfg })
-  return {
-    id,
-    persona: 'run',
-    session: `${cfg.nodeId}-run-${id}`,
-    agent: SUBAGENT_AGENT,
+  if (opts?.config && Object.hasOwn(opts.config.overrides, id)) {
+    return resolveIdentity(id, { config: opts.config })
   }
+  return makeIdentityLookup({
+    agentsDir: opts?.agentsDir,
+    modelsPath: opts?.modelsPath,
+  }).identity(id)
+}
+
+const TRANSCRIPT_PATH_RE =
+  /([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})[/\\]\1\.jsonl$/i
+
+/** On-disk agent-transcripts layout: `<uuid>/<uuid>.jsonl`. */
+export function agentIdFromTranscriptPath(file: string): string | undefined {
+  const m = TRANSCRIPT_PATH_RE.exec(file.replace(/\\/g, '/'))
+  return m?.[1]
+}
+
+export function listInputFiles(path: string): string[] {
+  const st = statSync(path)
+  if (st.isFile()) return [path]
+  const out: string[] = []
+  for (const name of readdirSync(path).sort()) {
+    const full = join(path, name)
+    let child: ReturnType<typeof statSync>
+    try {
+      child = statSync(full)
+    } catch {
+      continue
+    }
+    if (child.isDirectory()) out.push(...listInputFiles(full))
+    else if (name.endsWith('.jsonl') || name.endsWith('.txt')) out.push(full)
+  }
+  return out
+}
+
+export function applySessionSuffix(session: string, suffix?: string): string {
+  const s = suffix ?? process.env.GROKBOT_SESSION_SUFFIX ?? SESSION_SUFFIX_V3
+  if (!s) return session
+  return session.endsWith(s) ? session : session + s
 }
 
 export function makeIdentityLookup(opts?: { agentsDir?: string; modelsPath?: string }) {

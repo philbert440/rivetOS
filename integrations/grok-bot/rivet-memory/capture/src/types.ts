@@ -6,6 +6,8 @@ export const DEFAULT_NODE_ID = 'grokbot'
 export const SUBAGENT_AGENT = 'rivet-grokbot-run'
 export const SESSION_SUFFIX_V3 = '-v3'
 export const STORAGE_LIMIT = 16_000
+/** Stable ingest ordinal = source position * stride + per-position sub-index. */
+export const ORDINAL_STRIDE = 1000
 
 export type HiddenKind =
   | 'first_run'
@@ -53,8 +55,18 @@ export interface NormalizeOptions {
   format?: InputFormat
   /** Source ordinal of the first record (page header `A`, else 0). */
   startPosition?: number
+  /**
+   * Explicit source positions, one per record. Used when merging overlapping
+   * or gapped ReadTranscript pages so `position = start + i` is not assumed.
+   */
+  positions?: number[]
   /** Last known message time from a prior page, as ISO-8601 UTC. */
   lastKnownTime?: string
+  /**
+   * Re-clean path: when a later user turn has no `<timestamp>`, keep the
+   * stored row's created_at instead of inheriting or leaving the field unset.
+   */
+  useStoredCreatedAt?: boolean
 }
 
 export interface NormalizeStats {
@@ -78,12 +90,26 @@ export interface NormalizeResult {
   timeKnown: boolean
 }
 
+export interface StoredRow {
+  role: string
+  content: string
+  tool_name?: string | null
+  tool_args?: unknown
+  tool_result?: string | null
+  created_at?: string | Date | null
+  metadata?: Record<string, unknown> | null
+  ordinal?: number | null
+  conversation_id?: string | null
+}
+
 export interface IngestRow {
   role: 'user' | 'assistant' | 'system' | 'tool'
   content: string
   createdAt?: string
   toolCalls?: Array<{ id?: string; name: string; input?: unknown }>
   metadata?: Record<string, unknown>
+  ordinal?: number
+  event_id?: string
 }
 
 export interface NoiseCounts {

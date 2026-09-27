@@ -14,14 +14,15 @@ const INJECTED_TAGS = [
   'attached_files',
 ] as const
 
-const PROFILE_BLOB_RE = /<<SAND_AGENT_PROFILE_UPDATE:v\d+:[A-Za-z0-9+/=]+>>/g
+const PROFILE_BLOB_RE = /<<SAND_AGENT_PROFILE_UPDATE:v\d+:[A-Za-z0-9+/=_-]+>>/g
 const SAND_HIDDEN_RE = /\[SAND_HIDDEN_PROMPT\]/g
 const SAND_TRUSTED_RE = /\[SAND_TRUSTED_AUTOMATION_PROMPT\]/g
 const ADDRESS_TAG_RE = /\[t\d+u\]/g
 const SENT_FROM_RE = /\[Sent from machine[^\]]*\]/gi
 const IMAGE_RE = /\[Image\]/g
 const USER_QUERY_RE = /<user_query>\s*([\s\S]*?)\s*<\/user_query>/gi
-const SIMILAR_BLOCK_RE = /<([a-z][a-z0-9]*_[a-z0-9_]*)\b[^>]*>[\s\S]*?<\/\1>/gi
+const INJECTED_TAG_ALT = INJECTED_TAGS.join('|')
+const SIMILAR_BLOCK_RE = new RegExp(`<(${INJECTED_TAG_ALT})\\b[^>]*>[\\s\\S]*?<\\/\\1>`, 'gi')
 
 export function countNoise(text: string): NoiseCounts {
   const c: NoiseCounts = { ...EMPTY_NOISE }

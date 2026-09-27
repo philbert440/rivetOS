@@ -10,6 +10,7 @@ import {
 import { classifyHidden, extractAgentMessage, systemMarker } from './hidden.js'
 import {
   CAPTURE_CHANNEL,
+  ORDINAL_STRIDE,
   STORAGE_LIMIT,
   type HiddenKind,
   type IngestRow,
@@ -33,28 +34,49 @@ const ROLE_MAP: Partial<Record<string, CaptureRole>> = {
 
 export function normalizeRecords(records: unknown[], opts: NormalizeOptions): NormalizeResult {
   const start = opts.startPosition ?? 0
-  let lastKnown: string | undefined = opts.lastKnownTime
-  let lastTsPos = lastKnown ? start - 1 : undefined
+  let lastStampedUser: { time: string; position: number } | undefined = opts.lastKnownTime
+    ? { time: opts.lastKnownTime, position: start - 1 }
+    : undefined
   const messages: CaptureMessage[] = []
   const seenSystem = new Set<string>()
+  const seenUsers = new Set<string>()
   const occKeys: OccurrenceKey[] = []
+  const subByPos = new Map<number, number>()
   let dropped = 0
   let systemEvents = 0
   let truncated = 0
 
   for (let i = 0; i < records.length; i++) {
-    const position = start + i
+    const position = opts.positions?.[i] ?? start + i
     const rec = records[i]
     const rawRole = recordRole(rec)
     const role = ROLE_MAP[rawRole] ?? (rawRole ? undefined : 'assistant')
     const parts = recordParts(rec)
     const rawText = parts.map(partText).filter(Boolean).join('\n')
-    const stamped = extractTimestampTag(rawText)
-    if (stamped) {
-      lastKnown = stamped
-      lastTsPos = position
+    const storedTime = opts.useStoredCreatedAt ? recordStoredTime(rec) : undefined
+    const userLike = role === 'user'
+    const stamped = userLike ? extractTimestampTag(rawText) : undefined
+    const kind = userLike ? classifyHidden(rawText) : undefined
+    const userText = userLike ? extractUserText(rawText) : ''
+
+    if (userLike) {
+      if (stamped) {
+        lastStampedUser = { time: stamped, position }
+      } else if (userText) {
+        // Later real user turn with no stamp: stop inheriting for the rest of the run.
+        lastStampedUser = undefined
+      }
     }
-    const createdAt = inheritTime(lastKnown, lastTsPos, position)
+
+    const createdAt = createdAtFor({
+      role: role ?? 'assistant',
+      userText: Boolean(userText),
+      stamped,
+      storedTime,
+      position,
+      lastStampedUser,
+      useStored: Boolean(opts.useStoredCreatedAt),
+    })
 
     if (role === 'tool') {
       const emitted = emitToolParts(parts, {
@@ -62,6 +84,7 @@ export function normalizeRecords(records: unknown[], opts: NormalizeOptions): No
         position,
         createdAt,
         occKeys,
+        subByPos,
       })
       truncated += emitted.truncated
       messages.push(...emitted.rows)
@@ -74,7 +97,8 @@ export function normalizeRecords(records: unknown[], opts: NormalizeOptions): No
         position,
         createdAt,
         occKeys,
-        role: role === 'system' ? 'assistant' : 'assistant',
+        subByPos,
+        role: 'assistant',
       })
       truncated += emitted.truncated
       if (emitted.rows.length === 0) dropped += 1
@@ -87,9 +111,15 @@ export function normalizeRecords(records: unknown[], opts: NormalizeOptions): No
       continue
     }
 
-    const kind = classifyHidden(rawText)
-    const userText = extractUserText(rawText)
     if (userText) {
+      if (createdAt) {
+        const userKey = `${createdAt}\0${userText}`
+        if (seenUsers.has(userKey)) {
+          dropped += 1
+          continue
+        }
+        seenUsers.add(userKey)
+      }
       const row = makeMessage({
         opts,
         role: 'user',
@@ -97,6 +127,7 @@ export function normalizeRecords(records: unknown[], opts: NormalizeOptions): No
         position,
         createdAt,
         occKeys,
+        subByPos,
       })
       if (row.metadata?.truncated) truncated += 1
       messages.push(row)
@@ -119,6 +150,7 @@ export function normalizeRecords(records: unknown[], opts: NormalizeOptions): No
         position,
         createdAt,
         occKeys,
+        subByPos,
         extra: {
           kind: 'agent_message',
           from_agent: agent?.fromAgent,
@@ -133,7 +165,10 @@ export function normalizeRecords(records: unknown[], opts: NormalizeOptions): No
     if (kind) {
       const extra = hiddenExtra(kind, rawText)
       const content = systemMarker(kind, extra)
-      const dedupeKey = `${kind}\0${content}`
+      // Routine / background fires stay distinct by position so overlapping
+      // pages merge to the same rows instead of collapsing by content.
+      const distinctByPosition = kind === 'routine' || kind === 'background_task'
+      const dedupeKey = distinctByPosition ? `${kind}\0${String(position)}\0${content}` : `${kind}\0${content}`
       if (seenSystem.has(dedupeKey)) {
         dropped += 1
         continue
@@ -146,6 +181,7 @@ export function normalizeRecords(records: unknown[], opts: NormalizeOptions): No
         position,
         createdAt,
         occKeys,
+        subByPos,
         extra: { kind },
       })
       messages.push(row)
@@ -166,20 +202,50 @@ export function normalizeRecords(records: unknown[], opts: NormalizeOptions): No
     tool: countRole(messages, 'tool'),
     system: countRole(messages, 'system'),
     truncated,
-    timeKnown: Boolean(lastKnown),
-    lastKnownTime: lastKnown,
+    timeKnown: Boolean(lastStampedUser),
+    lastKnownTime: lastStampedUser?.time,
   }
-  return { messages, stats, lastKnownTime: lastKnown, timeKnown: Boolean(lastKnown) }
+  return {
+    messages,
+    stats,
+    lastKnownTime: lastStampedUser?.time,
+    timeKnown: Boolean(lastStampedUser),
+  }
 }
 
-function inheritTime(
-  lastKnown: string | undefined,
-  lastTsPos: number | undefined,
-  position: number,
-): string | undefined {
-  if (!lastKnown) return undefined
-  const basePos = lastTsPos ?? position
-  return addMs(lastKnown, Math.max(0, position - basePos))
+function createdAtFor(args: {
+  role: string
+  userText: boolean
+  stamped?: string
+  storedTime?: string
+  position: number
+  lastStampedUser?: { time: string; position: number }
+  useStored: boolean
+}): string | undefined {
+  if (args.role === 'user') {
+    if (args.stamped) return args.stamped
+    if (args.userText) return args.useStored ? args.storedTime : undefined
+    // Hidden user-role turns inherit from the current stamped user when present.
+    if (args.lastStampedUser) {
+      return addMs(args.lastStampedUser.time, Math.max(0, args.position - args.lastStampedUser.position))
+    }
+    return args.useStored ? args.storedTime : undefined
+  }
+  if (args.lastStampedUser) {
+    return addMs(args.lastStampedUser.time, Math.max(0, args.position - args.lastStampedUser.position))
+  }
+  return args.useStored ? args.storedTime : undefined
+}
+
+function recordStoredTime(rec: unknown): string | undefined {
+  if (!isRecord(rec)) return undefined
+  const raw = rec.created_at ?? rec.createdAt
+  if (raw instanceof Date && !Number.isNaN(raw.getTime())) return raw.toISOString()
+  if (typeof raw === 'string' && raw.trim()) {
+    const dt = new Date(raw)
+    if (!Number.isNaN(dt.getTime())) return dt.toISOString()
+  }
+  return undefined
 }
 
 function emitAssistantParts(
@@ -189,6 +255,7 @@ function emitAssistantParts(
     position: number
     createdAt?: string
     occKeys: OccurrenceKey[]
+    subByPos: Map<number, number>
     role: CaptureRole
   },
 ): { rows: CaptureMessage[]; truncated: number } {
@@ -228,6 +295,7 @@ function emitAssistantParts(
         position: ctx.position,
         createdAt: ctx.createdAt,
         occKeys: ctx.occKeys,
+        subByPos: ctx.subByPos,
       })
       if (row.metadata?.truncated) truncated += 1
       rows.push(row)
@@ -245,6 +313,7 @@ function emitAssistantParts(
       position: ctx.position,
       createdAt: ctx.createdAt,
       occKeys: ctx.occKeys,
+      subByPos: ctx.subByPos,
     })
     if (row.metadata?.truncated) truncated += 1
     rows.push(row)
@@ -259,6 +328,7 @@ function emitAssistantParts(
       position: ctx.position,
       createdAt: ctx.createdAt,
       occKeys: ctx.occKeys,
+      subByPos: ctx.subByPos,
       extra: tool.id ? { tool_id: tool.id } : undefined,
     })
     rows.push(row)
@@ -273,6 +343,7 @@ function emitToolParts(
     position: number
     createdAt?: string
     occKeys: OccurrenceKey[]
+    subByPos: Map<number, number>
   },
 ): { rows: CaptureMessage[]; truncated: number } {
   const rows: CaptureMessage[] = []
@@ -292,6 +363,7 @@ function emitToolParts(
         position: ctx.position,
         createdAt: ctx.createdAt,
         occKeys: ctx.occKeys,
+        subByPos: ctx.subByPos,
       })
       if (row.metadata?.truncated) truncated += 1
       rows.push(row)
@@ -307,6 +379,7 @@ function emitToolParts(
       position: ctx.position,
       createdAt: ctx.createdAt,
       occKeys: ctx.occKeys,
+      subByPos: ctx.subByPos,
     })
     if (row.metadata?.truncated) truncated += 1
     rows.push(row)
@@ -321,16 +394,18 @@ function makeMessage(args: {
   position: number
   createdAt?: string
   occKeys: OccurrenceKey[]
+  subByPos: Map<number, number>
   toolName?: string
   toolArgs?: unknown
   toolResult?: string
   extra?: Record<string, unknown>
 }): CaptureMessage {
+  const sub = nextSub(args.subByPos, args.position)
   const metadata: Record<string, unknown> = {
     channel: args.opts.channel ?? CAPTURE_CHANNEL,
     source: args.opts.format === 'page' ? 'grokbot-readtranscript' : 'grokbot-transcript',
     position: args.position,
-    ordinal: args.position,
+    ordinal: args.position * ORDINAL_STRIDE + sub,
   }
   if (args.opts.agentId) metadata.agent_id = args.opts.agentId
   if (args.opts.persona) metadata.persona = args.opts.persona
@@ -417,11 +492,19 @@ export function toIngestRows(messages: CaptureMessage[]): IngestRow[] {
       role: m.role,
       content: m.role === 'tool' ? (m.tool_result ?? m.content) : m.content,
       metadata: m.metadata,
+      event_id: m.event_id,
     }
+    if (typeof m.metadata?.ordinal === 'number') row.ordinal = m.metadata.ordinal
     if (m.created_at) row.createdAt = m.created_at
     if (m.tool_name) {
       row.toolCalls = [{ name: m.tool_name, input: m.tool_args }]
     }
     return row
   })
+}
+
+function nextSub(subByPos: Map<number, number>, position: number): number {
+  const n = subByPos.get(position) ?? 0
+  subByPos.set(position, n + 1)
+  return n
 }

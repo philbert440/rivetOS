@@ -249,7 +249,7 @@ def cmd_ingest(ids: list[str], dry: bool, suffix: str) -> int:
             ],
             capture_output=True,
             text=True,
-            env={**os.environ, "RIVETOS_ROOT": os.environ.get("RIVETOS_ROOT", str(HERE.parents[3]))},
+            env={**os.environ, "RIVETOS_ROOT": os.environ.get("RIVETOS_ROOT", "/opt/rivetos")},
         )
         if r.returncode == 0:
             res = json.loads(r.stdout.strip().splitlines()[-1])

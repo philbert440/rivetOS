@@ -13,7 +13,20 @@ export {
   loadIdentityConfig,
   HISTORICAL_OVERRIDES,
   slug,
+  agentIdFromTranscriptPath,
+  listInputFiles,
+  applySessionSuffix,
 } from './identity.js'
+export { mergeParsedInputs, normalizePages } from './pages.js'
+export {
+  assertReadOnlySql,
+  loadRivetosPgUrlFromEnv,
+  wrapReadOnlyClient,
+  withReadOnlyTransaction,
+  fetchGrokbotRows,
+  LIST_CONVERSATIONS_SQL,
+  ROWS_BY_CONVERSATION_SQL,
+} from './pg-readonly.js'
 export { compareInput, formatCompareTable, formatNoiseBreakdown } from './compare.js'
 export {
   recleanFromSource,
@@ -22,6 +35,7 @@ export {
   printRecleanStats,
   v3Session,
   EXISTING_ROWS_SQL,
+  FROM_ROWS_LIMITS,
 } from './reclean.js'
 export {
   legacyNormalizeRecords,
@@ -36,6 +50,7 @@ export {
   SESSION_SUFFIX_V3,
   STORAGE_LIMIT,
   SUBAGENT_AGENT,
+  ORDINAL_STRIDE,
 } from './types.js'
 export type {
   BotIdentity,
@@ -48,4 +63,5 @@ export type {
   NoiseCounts,
   PageHeader,
   ParsedInput,
+  StoredRow,
 } from './types.js'

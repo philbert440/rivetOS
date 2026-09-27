@@ -4,7 +4,16 @@ import { fileURLToPath } from 'node:url'
 import { capForStorage } from '@rivetos/capture-core'
 import { describe, expect, it } from 'vitest'
 import { classifyHidden, extractAgentMessage } from '../src/hidden.js'
-import { HISTORICAL_OVERRIDES, discoverModels, identityFor, slug } from '../src/identity.js'
+import {
+  HISTORICAL_OVERRIDES,
+  agentIdFromTranscriptPath,
+  discoverModels,
+  identityFor,
+  listInputFiles,
+  slug,
+} from '../src/identity.js'
+import { ORDINAL_STRIDE } from '../src/types.js'
+import { mergeParsedInputs, normalizePages } from '../src/pages.js'
 import { LEGACY_TOOL_RESULT_MAX, legacyNormalizeRecords } from '../src/legacy.js'
 import { normalizeRecords, toIngestRows } from '../src/normalize.js'
 import { detectFormat, parseInput, parsePageHeader, toolResultBody } from '../src/parse.js'
@@ -51,7 +60,7 @@ describe('timestamps', () => {
     expect(parseGrokTimestamp('Monday, Jan 5, 2026, 9:30 AM (UTC+5:30)')).toBe('2026-01-05T04:00:00.000Z')
   })
 
-  it('inherits last known time plus N ms per position', () => {
+  it('inherits last known time plus N ms only onto assistant/tool after a stamped user', () => {
     const records = [
       {
         role: 'user',
@@ -67,12 +76,84 @@ describe('timestamps', () => {
       { role: 'assistant', message: { content: [{ type: 'text', text: 'hi' }] } },
       { role: 'tool', message: { content: [{ type: 'tool_result', name: 'x', result: 'ok' }] } },
       { role: 'user', message: { content: [{ type: 'text', text: '[t2u]\nlater turn, no stamp' }] } },
+      { role: 'assistant', message: { content: [{ type: 'text', text: 'after unstamped user' }] } },
     ]
     const { messages } = normalizeRecords(records, rivetOpts())
     expect(messages[0].created_at).toBe('2026-09-27T20:06:00.000Z')
     expect(messages[1].created_at).toBe(addMs('2026-09-27T20:06:00.000Z', 1))
     expect(messages[2].created_at).toBe(addMs('2026-09-27T20:06:00.000Z', 2))
-    expect(messages[3].created_at).toBe(addMs('2026-09-27T20:06:00.000Z', 3))
+    expect(messages[3].created_at).toBeUndefined()
+    expect(messages[4].created_at).toBeUndefined()
+  })
+
+  it('does not parse <timestamp> quoted inside assistant or tool text', () => {
+    const records = [
+      {
+        role: 'assistant',
+        message: {
+          content: [
+            {
+              type: 'text',
+              text: 'earlier you said <timestamp>Sunday, Sep 27, 2026, 4:06 PM (UTC-4)</timestamp>',
+            },
+          ],
+        },
+      },
+      { role: 'tool', message: { content: [{ type: 'tool_result', name: 'x', result: '<timestamp>Monday, Jan 5, 2026, 9:30 AM (UTC+5:30)</timestamp>' }] } },
+      { role: 'user', message: { content: [{ type: 'text', text: 'plain' }] } },
+    ]
+    const { messages } = normalizeRecords(records, rivetOpts())
+    expect(messages.every((m) => !m.created_at)).toBe(true)
+  })
+
+  it('assistant/tool inherit only from the immediately preceding stamped user', () => {
+    const records = [
+      {
+        role: 'user',
+        message: {
+          content: [
+            {
+              type: 'text',
+              text: '<timestamp>Sunday, Sep 27, 2026, 4:06 PM (UTC-4)</timestamp>\n<user_query>\nfirst\n</user_query>',
+            },
+          ],
+        },
+      },
+      { role: 'assistant', message: { content: [{ type: 'text', text: 'a1' }] } },
+      {
+        role: 'user',
+        message: {
+          content: [
+            {
+              type: 'text',
+              text: '<timestamp>Sunday, Sep 27, 2026, 4:07 PM (UTC-4)</timestamp>\n<user_query>\nsecond\n</user_query>',
+            },
+          ],
+        },
+      },
+      { role: 'assistant', message: { content: [{ type: 'text', text: 'a2' }] } },
+    ]
+    const { messages } = normalizeRecords(records, rivetOpts())
+    expect(messages[0].created_at).toBe('2026-09-27T20:06:00.000Z')
+    expect(messages[1].created_at).toBe(addMs('2026-09-27T20:06:00.000Z', 1))
+    expect(messages[2].created_at).toBe('2026-09-27T20:07:00.000Z')
+    expect(messages[3].created_at).toBe(addMs('2026-09-27T20:07:00.000Z', 1))
+  })
+
+  it('dedupes identical user turns stamped at the same time', () => {
+    const rec = {
+      role: 'user',
+      message: {
+        content: [
+          {
+            type: 'text',
+            text: '<timestamp>Sunday, Sep 27, 2026, 4:06 PM (UTC-4)</timestamp>\n<user_query>\nhello\n</user_query>',
+          },
+        ],
+      },
+    }
+    const { messages } = normalizeRecords([rec, rec], rivetOpts())
+    expect(messages.filter((m) => m.role === 'user')).toHaveLength(1)
   })
 
   it('leaves created_at unset when no time is known', () => {
@@ -142,7 +223,7 @@ describe('hidden turns', () => {
     expect(desc?.content).not.toMatch(/SAND_AGENT_PROFILE_UPDATE|agent_profile_update/)
   })
 
-  it('dedupes repeated hidden system markers', () => {
+  it('keeps repeated routine fires distinct by position', () => {
     const rec = {
       role: 'user',
       message: {
@@ -156,7 +237,11 @@ describe('hidden turns', () => {
     }
     const { messages } = normalizeRecords([rec, rec], rivetOpts())
     const routines = messages.filter((m) => m.metadata?.kind === 'routine')
-    expect(routines).toHaveLength(1)
+    expect(routines).toHaveLength(2)
+    expect(routines[0].metadata?.position).toBe(0)
+    expect(routines[1].metadata?.position).toBe(1)
+    expect(routines[0].metadata?.ordinal).toBe(0 * ORDINAL_STRIDE)
+    expect(routines[1].metadata?.ordinal).toBe(1 * ORDINAL_STRIDE)
   })
 
   it('classifies reactions and events', () => {
@@ -191,6 +276,10 @@ describe('per-bot tags', () => {
     expect(ids).toContain(RIVET_ID)
     expect(ids).toContain(BOB_ID)
     expect(ids).toContain(EGG_ID)
+    expect(ids).toContain('cccccccc-dddd-4eee-8fff-aaaaaaaaaaaa')
+    expect(catalog.models.find((m) => m.id === 'cccccccc-dddd-4eee-8fff-aaaaaaaaaaaa')?.agent).toBe(
+      'rivet-arch',
+    )
     expect(ids).not.toContain('aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee')
     expect(ids).not.toContain('11111111-2222-4333-8444-555555555555')
     expect(catalog.models.find((m) => m.id === RIVET_ID)?.session).toBe('grokbot-rivet-grokbot')
@@ -198,9 +287,35 @@ describe('per-bot tags', () => {
 
   it('tags subagents as rivet-grokbot-run / grokbot-run-<id>', () => {
     const id = '99999999-aaaa-4bbb-8ccc-dddddddddddd'
-    const ident = identityFor(id)
+    const ident = identityFor(id, { agentsDir: join(FIX, 'agents') })
     expect(ident.agent).toBe('rivet-grokbot-run')
     expect(ident.session).toBe(`grokbot-run-${id}`)
+  })
+
+  it('consults the roster before the subagent fallback (un-overridden Arch)', () => {
+    const id = 'cccccccc-dddd-4eee-8fff-aaaaaaaaaaaa'
+    const ident = identityFor(id, {
+      agentsDir: join(FIX, 'agents'),
+      modelsPath: join(dirname(FIX), '..', 'models.json'),
+    })
+    expect(ident.persona).toBe('Arch')
+    expect(ident.session).toBe('grokbot-arch')
+    expect(ident.agent).toBe('rivet-arch')
+  })
+
+  it('reads on-disk agent id from <uuid>/<uuid>.jsonl', () => {
+    expect(
+      agentIdFromTranscriptPath(
+        '/home/box/agent-data/agent-transcripts/00df02ea-4f5f-4d3e-945a-864e1c9c78dc/00df02ea-4f5f-4d3e-945a-864e1c9c78dc.jsonl',
+      ),
+    ).toBe(BOB_ID)
+    expect(agentIdFromTranscriptPath('/tmp/page.txt')).toBeUndefined()
+  })
+
+  it('lists input files recursively so the agent-transcripts root works', () => {
+    const root = join(FIX, 'agent-transcripts')
+    const files = listInputFiles(root)
+    expect(files.some((f) => f.endsWith(`${BOB_ID}/${BOB_ID}.jsonl`))).toBe(true)
   })
 
   it('puts the agent id on every message metadata', () => {
@@ -331,6 +446,30 @@ describe('reclean', () => {
     expect(result.ingest[0].content).toBe('keep me')
     expect(result.ingest[0].createdAt).toBe('2026-09-27T20:06:00.000Z')
   })
+
+  it('uses stored created_at for a later unstamped user turn', () => {
+    const result = recleanStoredRows(
+      [
+        {
+          role: 'user',
+          content:
+            '<timestamp>Sunday, Sep 27, 2026, 4:06 PM (UTC-4)</timestamp>\n<user_query>\nfirst\n</user_query>',
+          created_at: '2026-09-27T20:06:00.000Z',
+          ordinal: 0,
+        },
+        {
+          role: 'user',
+          content: 'later unstamped',
+          created_at: '2026-09-27T21:00:00.000Z',
+          ordinal: 1,
+        },
+      ],
+      { sessionKey: 'grokbot-rivet-grokbot', agent: 'rivet-grokbot', dryRun: true },
+    )
+    const users = result.messages.filter((m) => m.role === 'user')
+    expect(users[0].created_at).toBe('2026-09-27T20:06:00.000Z')
+    expect(users[1].created_at).toBe('2026-09-27T21:00:00.000Z')
+  })
 })
 
 describe('ingest mapping + compare', () => {
@@ -344,6 +483,14 @@ describe('ingest mapping + compare', () => {
     expect(rows.every((r) => r.role !== undefined)).toBe(true)
     expect(rows.some((r) => r.createdAt)).toBe(true)
     expect(rows.some((r) => r.toolCalls && r.toolCalls.length > 0)).toBe(true)
+    expect(rows.every((r) => r.metadata?.agent_id === BOB_ID)).toBe(true)
+    expect(rows.every((r) => typeof r.metadata?.position === 'number')).toBe(true)
+    expect(rows.every((r) => typeof r.ordinal === 'number')).toBe(true)
+    expect(rows.every((r) => typeof r.event_id === 'string' && r.event_id.length > 0)).toBe(true)
+    const tool = rows.find((r) => r.role === 'tool' && r.metadata?.truncated)
+    if (tool) {
+      expect(typeof tool.metadata?.full_tool_result_length).toBe('number')
+    }
   })
 
   it('before/after comparison shrinks noise and average length on real samples', () => {
@@ -379,6 +526,18 @@ If it needs a reply or an action, handle it: reply to Gary with SendToAgent`,
 describe('stripWrappers leaves user prose', () => {
   it('does not eat a short real reply', () => {
     expect(stripWrappers('<user_query>\nSkip for now\n\n</user_query>')).toBe('Skip for now')
+  })
+
+  it('does not eat pasted XML outside the injected-tag allowlist', () => {
+    const raw = 'see <my_custom_tag>keep me</my_custom_tag> please'
+    expect(stripWrappers(raw)).toContain('<my_custom_tag>keep me</my_custom_tag>')
+  })
+
+  it('strips profile blobs that include - and _', () => {
+    const raw =
+      '<<SAND_AGENT_PROFILE_UPDATE:v1:abc-DEF_123+/=>>\n<user_query>\nhello\n</user_query>'
+    expect(extractUserText(raw)).toBe('hello')
+    expect(countNoise(raw).profile_blob).toBe(1)
   })
 })
 
