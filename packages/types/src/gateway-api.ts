@@ -12,6 +12,7 @@
  * opaque passthrough strings from git frontmatter.
  */
 
+import type { ToolResult } from './tool.js'
 import type { StreamEvent } from './events.js'
 import type {
   HarnessCapabilities,
@@ -61,11 +62,16 @@ export interface GatewayClientConfig {
   authMode?: GatewayAuthMode
   /**
    * Optional PEM material for native Node agents that build their own
-   * undici Agent / custom fetch. Not consumed by gateway-client itself
+   * undici Agent / custom fetch via `fetch` below. Not consumed by gateway-client itself
    * (keeps the package browser-safe with zero deps). Browsers install the
    * device cert in the OS store after admin enrollment.
    */
   tls?: GatewayTlsClientConfig
+  /**
+   * Node callers that need a private CA or a client certificate pass a fetch
+   * bound to an undici Agent; browsers leave it unset.
+   */
+  fetch?: typeof globalThis.fetch
 }
 
 // ---------------------------------------------------------------------------
@@ -422,6 +428,149 @@ export interface OutcomesResponse {
 // ---------------------------------------------------------------------------
 // /api/wiki — page/index shapes live in wiki.ts; only _gaps was untyped
 // ---------------------------------------------------------------------------
+
+/** A missing wiki topic, with nearby topics suggested by the den. */
+export interface WikiMissBody {
+  error: string
+  suggestions: Array<{ slug: string; title: string }>
+}
+
+/** MCP memory tools exposed by POST /api/memory/tool/<name>. */
+export type MemoryToolName =
+  | 'memory_search'
+  | 'memory_browse'
+  | 'memory_stats'
+  | 'memory_get_full'
+  | 'memory_append'
+  | 'memory_ingest_session'
+
+/** Search shared memory using the MCP tool's argument names. */
+export interface MemorySearchToolArgs {
+  /** Search text or pattern. */
+  query: string
+  /** Retrieval strategy. */
+  mode?: 'hybrid' | 'fts' | 'trigram' | 'regex' | 'vector'
+  /** Which memory records to search. */
+  scope?: 'messages' | 'summaries' | 'both'
+  /** Maximum results, 1–50. */
+  limit?: number
+  /** Filter by agent. */
+  agent?: string
+  /** Lower time bound. */
+  since?: string
+  /** Upper time bound. */
+  before?: string
+  /** Relative time window. */
+  window?: string
+  /** Expand summary hits into source messages. */
+  expand?: boolean
+  /** Synthesize an answer from the results. */
+  synthesize?: boolean
+}
+
+/** Browse a chronological memory window. */
+export interface MemoryBrowseToolArgs {
+  /** Restrict to a conversation. */
+  conversation_id?: string
+  /** Lower time bound. */
+  since?: string
+  /** Upper time bound. */
+  before?: string
+  /** Relative time window. */
+  window?: string
+  /** Filter by agent. */
+  agent?: string
+  /** Include tool calls and results. */
+  include_tools?: boolean
+  /** Maximum messages, 1–200. */
+  limit?: number
+  /** Chronological ordering. */
+  order?: 'asc' | 'desc'
+}
+
+/** Inspect memory counts, optionally scoped to an agent. */
+export interface MemoryStatsToolArgs {
+  /** Filter by agent. */
+  agent?: string
+}
+
+/** Retrieve the full memory record behind a hit. */
+export interface MemoryGetFullToolArgs {
+  /** Memory record identifier. */
+  id: string
+}
+
+/** Append a single message to a capture session. */
+export interface MemoryAppendToolArgs {
+  /** Capture session identifier. */
+  session_id: string
+  /** Message text. */
+  content: string
+  /** Message role. */
+  role: 'user' | 'assistant' | 'system' | 'tool'
+  /** Name of the invoked tool. */
+  tool_name?: string
+  /** Tool arguments as a JSON object. */
+  tool_args?: Record<string, unknown>
+  /** Text returned by the tool. */
+  tool_result?: string
+  /** Optional idempotency key. */
+  event_id?: string
+  /** Capturing agent. */
+  agent?: string
+  /** Agent persona. */
+  persona?: string
+  /** Capture source. */
+  source?: string
+  /** Capture channel. */
+  channel?: string
+}
+
+/** A message in a session ingestion batch. */
+export interface MemoryIngestMessage {
+  /** Message role. */
+  role: 'user' | 'assistant' | 'system' | 'tool'
+  /** Message text. */
+  content: string
+  /** ISO timestamp. */
+  created_at?: string
+  /** Tool calls attached to the message. */
+  tool_calls?: Array<{ id?: string; name: string; input?: Record<string, unknown> }>
+}
+
+/** Ingest a batch of messages from a capture session. */
+export interface MemoryIngestSessionToolArgs {
+  /** Capture session identifier. */
+  session_id: string
+  /** Messages in capture order. */
+  messages: MemoryIngestMessage[]
+  /** Capturing agent. */
+  agent?: string
+  /** Agent persona. */
+  persona?: string
+  /** Capture source. */
+  source?: string
+  /** Capture channel. */
+  channel?: string
+}
+
+/** Argument type selected by memory tool name. */
+export type MemoryToolArgsByName = {
+  [N in MemoryToolName]: {
+    memory_search: MemorySearchToolArgs
+    memory_browse: MemoryBrowseToolArgs
+    memory_stats: MemoryStatsToolArgs
+    memory_get_full: MemoryGetFullToolArgs
+    memory_append: MemoryAppendToolArgs
+    memory_ingest_session: MemoryIngestSessionToolArgs
+  }[N]
+}
+
+/** Successful MCP memory tool response. */
+export interface MemoryToolResponse {
+  ok: true
+  result: ToolResult
+}
 
 export interface WikiGapsResponse {
   redLinks: { entity: string; referencedBy: string[] }[]

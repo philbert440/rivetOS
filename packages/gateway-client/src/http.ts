@@ -66,8 +66,8 @@ export async function request<T>(
     // Client certs: browsers use the OS/browser store (no fetch option).
     // Node/native callers that need explicit PEM material should pass a custom
     // fetch bound to an undici Agent — this package stays dependency-free for
-    // the web bundle (see GatewayClientConfig.tls).
-    res = await fetch(buildUrl(config.baseUrl, path, opts.query), {
+    // the web bundle (see GatewayClientConfig.fetch).
+    res = await (config.fetch ?? globalThis.fetch)(buildUrl(config.baseUrl, path, opts.query), {
       method: opts.method ?? 'GET',
       headers,
       body: opts.body !== undefined ? JSON.stringify(opts.body) : undefined,
