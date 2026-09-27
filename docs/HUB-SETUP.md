@@ -189,7 +189,11 @@ remains the harness TUI + Hub chat.
 
 ## Memory wiki
 
-- Native Hub UI (no iframe) over datahub wiki API.
+- Native Hub UI (no iframe) over datahub wiki API (`GET /api/wiki`).
+- A missing topic (`GET /api/wiki/<slug>` and `.../raw`) is
+  `{ error: "no topic <slug>", suggestions: [{ slug, title }] }` — the same
+  fuzzy candidates `wiki_read` offers. Search, browse, and stats stay on
+  `GET /api/memory/*`; `POST /api/memory/tool/<name>` is the tool-shaped twin.
 - Set datahub origin in Settings (`rivethub.wikiUrl`); blank → mesh-discover datahub.
 - Requires postgres memory stack healthy (`rivetos doctor`, migrate role applied).
 

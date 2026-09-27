@@ -35,14 +35,28 @@ Shell, filesystem, workspace-search, and memory-write tools are **off** unless
 you enable them explicitly. `skill_manage` is the exception: it always writes,
 but only under the configured skill directories.
 
+## Den or Postgres
+
+`RIVETOS_MCP_TRANSPORT=den|pg` selects the backend for memory, wiki, and
+delegate tools. The default is `den` when `RIVET_DEN_URL` is set and
+`RIVETOS_USER_ID` is empty: every one of those tools is an HTTPS call to the
+node's own den and this process opens no Postgres pool. Otherwise `pg` is
+used when `RIVETOS_PG_URL` is set. A non-empty `RIVETOS_USER_ID` stays on `pg`
+even if transport is forced to `den`, because a loopback den call is the
+owner pool. The launcher resolves `RIVET_DEN_URL` from `den.port` (default
+5174) and exports the CA as `NODE_EXTRA_CA_CERTS`. Tool names and input
+schemas are the same on both transports. `delegate_task` is still stdio-only.
+
 ## `RIVETOS_PG_URL`
 
-When set, also registers the read-only memory tools (`memory_search`,
+On transport `pg`, this also registers the read-only memory tools (`memory_search`,
 `memory_browse`, `memory_stats`, `memory_get_full`) and the wiki tools
 (`wiki_search`, `wiki_read`). `WIKI_DIR` is the wiki repo root used by
 `wiki_read` (default `$RIVETOS_SHARED_DIR/wiki`, and `RIVETOS_SHARED_DIR`
 defaults to `/rivet-shared`). Memory write tools stay off until
-`RIVETOS_MCP_ENABLE_MEMORY_WRITE=1`.
+`RIVETOS_MCP_ENABLE_MEMORY_WRITE=1`. On transport `den` the same flag registers
+sidecar proxies for `memory_append` / `memory_ingest_session`. The den must
+independently have those write tools mounted; otherwise it returns 404.
 
 ## Environment
 
@@ -54,7 +68,10 @@ defaults to `/rivet-shared`). Memory write tools stay off until
 | `RIVETOS_MCP_SOCKET` | unset | Unix socket path instead of TCP. Created mode `0600`; filesystem perms are the auth boundary. |
 | `RIVETOS_MCP_TOKEN` | unset | Bearer token. Compared in constant time against `Authorization: Bearer <token>`. Unset + TCP bind = unauthenticated. |
 | `RIVETOS_MCP_REQUIRE_BEARER` | unset | `1` — demand bearer even on the unix socket. |
-| `RIVETOS_PG_URL` | unset | Postgres URL. Enables read-only `memory_*` tools and `wiki_search` / `wiki_read`. |
+| `RIVETOS_MCP_TRANSPORT` | `den` when `RIVET_DEN_URL` is set and `RIVETOS_USER_ID` is empty, else `pg` when `RIVETOS_PG_URL` is set | `den` or `pg`. `den` calls the local den over HTTPS and opens no Postgres pool. A non-empty `RIVETOS_USER_ID` keeps `pg`. |
+| `RIVET_DEN_URL` | unset | Den origin, for example `https://127.0.0.1:5174`. The memory launcher fills this from `den.port` when unset. |
+| `RIVET_DEN_CA` | unset | CA PEM. The launcher exports it as `NODE_EXTRA_CA_CERTS` before `node` starts. A missing file disables den transport. |
+| `RIVETOS_PG_URL` | unset | Postgres URL for transport `pg`. Enables read-only `memory_*` tools and `wiki_search` / `wiki_read`. |
 | `WIKI_DIR` | `$RIVETOS_SHARED_DIR/wiki` | Wiki repo root for `wiki_read`. Used only when `RIVETOS_PG_URL` is set. |
 | `RIVETOS_SHARED_DIR` | `/rivet-shared` | Shared-storage root; `WIKI_DIR` defaults under this. |
 | `RIVETOS_EMBED_URL` | unset | Optional embedding endpoint for hybrid search. |
@@ -67,7 +84,7 @@ defaults to `/rivet-shared`). Memory write tools stay off until
 | `RIVETOS_MCP_ENABLE_SHELL` | unset | `1` — enable `shell` (write surface, off by default). |
 | `RIVETOS_MCP_ENABLE_FILE` | unset | `1` — enable `file_read`, `file_write`, `file_edit` (write surface, off by default). |
 | `RIVETOS_MCP_ENABLE_SEARCH` | unset | `1` — enable `search_glob`, `search_grep` (read-only, off by default). |
-| `RIVETOS_MCP_ENABLE_MEMORY_WRITE` | unset | `1` — enable `memory_append` and `memory_ingest_session` (write surface, off by default). Requires `RIVETOS_PG_URL`. |
+| `RIVETOS_MCP_ENABLE_MEMORY_WRITE` | unset | `1` — enable `memory_append` and `memory_ingest_session` (write surface, off by default). Requires den or `RIVETOS_PG_URL`. |
 
 ## License
 

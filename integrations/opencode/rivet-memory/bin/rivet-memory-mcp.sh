@@ -39,6 +39,9 @@ unset SCRIPT_DIR # don't leak a global into the sourced namespace
 # Load RIVETOS_PG_URL / RIVETOS_EMBED_URL (and a possible RIVETOS_ROOT
 # override) from ~/.rivetos/.env, then locate the install root.
 rivetos_load_env
+
+# Local den (URL + CA) before exec, so Node trusts the loopback certificate.
+rivetos_resolve_den
 RIVETOS_ROOT="$(rivetos_find_root)"
 export RIVETOS_ROOT
 

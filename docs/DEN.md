@@ -231,8 +231,15 @@ shape (per-entry `cwd`/`env`) and the PTY knobs.
 ## Gateway (G0–G7)
 
 The den server is embedded in the rivetos process as the per-node gateway
-(`/api/tasks`, `/api/catalog`, `/api/sessions`, plus `/api/events|mesh|terminal`
-aliases). Two G7 knobs:
+(`/api/tasks`, `/api/catalog`, `/api/sessions`, `/api/memory`, `/api/wiki`,
+plus `/api/events|mesh|terminal` aliases). `POST /api/memory/tool/<name>` runs
+the sidecar memory tools (`memory_search`, `memory_browse`, `memory_stats`,
+`memory_get_full`, and `memory_append` / `memory_ingest_session` when that
+pool has a Postgres memory) and returns `{ ok: true, result }` with the tool's
+own result. A missing wiki page (`GET /api/wiki/<slug>` and `.../raw`) answers
+`{ error: "no topic <slug>", suggestions: [{ slug, title }] }`. `POST /api/tasks`
+accepts optional `parentTaskId` and `chainDepth`; a chain deeper than 3 is
+`409` `delegation chain too deep (N > 3)`. Two G7 knobs:
 
 - **Serving a different web app at `/`** (e.g. rivethub-web in phase 4): set
   `den.static_dir` to the built app's directory; the SPA fallback serves it
