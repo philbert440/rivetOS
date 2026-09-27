@@ -18,11 +18,9 @@ Never prints secrets.
 from __future__ import annotations
 
 import datetime
-import glob
 import hashlib
 import json
 import os
-import re
 import shutil
 import subprocess
 import sys
@@ -40,12 +38,6 @@ CLI_JS = HERE / "dist" / "cli.js"
 CLI_TS = HERE / "src" / "cli.ts"
 DISCOVER = HERE / "discover-models.mjs"
 INGEST = HERE / "ingest.mjs"
-
-HDR = re.compile(
-    r'^Transcript of (?:agent "(?P<name>.*)" \((?P<id>[0-9a-f-]{36})\)|this conversation),\s*'
-    r'positions\s+(?P<a>\d+)\s*[–—-]\s*(?P<b>\d+)\s+of\s+(?P<total>\d+):?\s*$'
-)
-FTR = re.compile(r"Older messages remain:.*before=(\d+)")
 
 
 def load_state() -> dict:
@@ -70,33 +62,33 @@ def h(line: str) -> str:
     return hashlib.sha1(line.encode("utf8")).hexdigest()
 
 
+def parse_cmd() -> list[str]:
+    if CLI_JS.is_file():
+        return [NODE, str(CLI_JS), "parse-page", "-"]
+    return [NODE, "--import", "tsx", str(CLI_TS), "parse-page", "-"]
+
+
 def parse_page(text: str):
-    hdr = None
-    recs = []
-    before = None
-    for raw in text.splitlines():
-        line = raw.strip()
-        if not line:
-            continue
-        m = HDR.match(line)
-        if m and hdr is None:
-            hdr = m.groupdict()
-            continue
-        f = FTR.search(line)
-        if f and not line.startswith("{"):
-            before = int(f.group(1))
-            continue
-        if line.startswith("{"):
-            json.loads(line)
-            recs.append(line)
-    if hdr is None:
+    """Parse a ReadTranscript page via the TypeScript parser (one implementation)."""
+    r = subprocess.run(parse_cmd(), input=text, capture_output=True, text=True)
+    if r.returncode != 0:
+        raise SystemExit((r.stderr or r.stdout or "parse-page failed")[-400:])
+    try:
+        data = json.loads(r.stdout)
+    except json.JSONDecodeError as e:
+        raise SystemExit(f"ERROR: parse-page returned non-JSON: {e}") from e
+    hdr = data.get("header") or {}
+    if not hdr:
         raise SystemExit('ERROR: no "Transcript of ... positions A–B of T:" header found')
+    recs = []
+    for rec in data.get("records") or []:
+        recs.append(rec if isinstance(rec, str) else json.dumps(rec, ensure_ascii=False))
     a, b, total = int(hdr["a"]), int(hdr["b"]), int(hdr["total"])
     if b - a + 1 != len(recs):
         raise SystemExit(
             f"ERROR: header says {b - a + 1} records ({a}–{b}) but page has {len(recs)} JSON lines"
         )
-    return hdr, a, b, total, recs, before
+    return hdr, a, b, total, recs, None
 
 
 def load_pull(aid: str) -> dict:

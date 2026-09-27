@@ -15,6 +15,37 @@ function page(a: number, text: string): string {
   )}\n`
 }
 
+describe('parse-page CLI', () => {
+  it('prints header + records JSON for a ReadTranscript page', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'gb-parse-'))
+    const file = join(dir, 'p.txt')
+    writeFileSync(file, page(0, 'hello from parse-page'))
+    const logs: string[] = []
+    const log = console.log
+    const write = process.stdout.write.bind(process.stdout)
+    const chunks: string[] = []
+    process.stdout.write = ((s: string) => {
+      chunks.push(String(s))
+      return true
+    }) as typeof process.stdout.write
+    try {
+      const code = await main(['parse-page', file])
+      expect(code).toBe(0)
+      const data = JSON.parse(chunks.join('')) as {
+        header: { id: string; a: number }
+        records: unknown[]
+      }
+      expect(data.header.id).toBe(BOB)
+      expect(data.header.a).toBe(0)
+      expect(data.records).toHaveLength(1)
+    } finally {
+      process.stdout.write = write
+      console.log = log
+      void logs
+    }
+  })
+})
+
 describe('backfill CLI', () => {
   it('skips unidentified files instead of tagging grokbot-unknown', async () => {
     const dir = mkdtempSync(join(tmpdir(), 'gb-unident-'))

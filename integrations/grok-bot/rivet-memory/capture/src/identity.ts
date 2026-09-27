@@ -12,21 +12,7 @@ import {
 const UUID_RE = /^[0-9a-f-]{36}$/i
 const DEFAULT_EXCLUDE = ['new bot']
 
-export const HISTORICAL_OVERRIDES: Record<
-  string,
-  { persona: string; session: string; agent: string }
-> = {
-  '6a155e75-0dd5-4c8a-8391-994878ed683a': {
-    persona: 'Rivet',
-    session: 'grokbot-rivet-grokbot',
-    agent: 'rivet-grokbot',
-  },
-  'fe09510f-c3ce-49bc-9d93-8c5ab5705809': {
-    persona: 'dr eggbot',
-    session: 'grokbot-eggbot',
-    agent: 'rivet-eggbot',
-  },
-}
+/** Historical Rivet/eggbot tags live in models.json `overrides` only. */
 
 export interface IdentityConfig {
   nodeId: string
@@ -55,7 +41,7 @@ export function loadIdentityConfig(modelsPath?: string): IdentityConfig {
   const cfg: IdentityConfig = {
     nodeId: process.env.GROKBOT_NODE_ID || DEFAULT_NODE_ID,
     excludeNames: new Set(DEFAULT_EXCLUDE),
-    overrides: { ...HISTORICAL_OVERRIDES },
+    overrides: {},
   }
   const path = modelsPath ?? defaultModelsPath()
   if (!path || !existsSync(path)) return cfg

@@ -5,12 +5,12 @@ import { capForStorage, eventIdFromContent } from '@rivetos/capture-core'
 import { describe, expect, it } from 'vitest'
 import { classifyHidden, extractAgentMessage } from '../src/hidden.js'
 import {
-  HISTORICAL_OVERRIDES,
   agentIdFromTranscriptPath,
   discoverModels,
   identityFor,
   identityForSession,
   listInputFiles,
+  loadIdentityConfig,
   resolveSourceAgentId,
   slug,
 } from '../src/identity.js'
@@ -575,7 +575,7 @@ describe('per-bot tags', () => {
     const ident = identityFor(RIVET_ID)
     expect(ident.session).toBe('grokbot-rivet-grokbot')
     expect(ident.agent).toBe('rivet-grokbot')
-    expect(HISTORICAL_OVERRIDES[RIVET_ID].session).toBe('grokbot-rivet-grokbot')
+    expect(loadIdentityConfig().overrides[RIVET_ID]?.session).toBe('grokbot-rivet-grokbot')
   })
 
   it('keeps the historical eggbot tags', () => {
@@ -822,6 +822,10 @@ describe('reclean', () => {
     expect(unknown.agent).toBeUndefined()
     expect(identityForSession('grokbot-rivet-grokbot-v3')?.agent).toBe('rivet-grokbot')
     expect(identityForSession('grokbot-rivet-grokbot-v3-rows')?.agent).toBe('rivet-grokbot')
+    expect(identityForSession('grokbot-rivet-grokbot-v3-store')?.agent).toBe('rivet-grokbot')
+    expect(identityForSession('grokbot-rivet-grokbot-v3-voice-call-redacted')?.agent).toBe(
+      'rivet-grokbot',
+    )
   })
 
   it('writes stored-row reclean under -v3-rows, not -v3', () => {
