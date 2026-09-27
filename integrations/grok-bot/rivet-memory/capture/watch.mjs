@@ -20,6 +20,7 @@ import {
   resolveIdentityWithRefresh,
   shouldIngest,
   storeCursor,
+  STORE_WATCH_RE,
   writeStoreCursor,
 } from './live-state.mjs'
 
@@ -59,6 +60,13 @@ const STATE_FILE = resolveStateFile()
 const DEBOUNCE_MS = 20_000
 const PYTHON = process.env.PYTHON || 'python3'
 const log = (...a) => console.log(new Date().toISOString(), ...a)
+
+const BUILD_FIRST =
+  'watch: build the capture package first (npx nx build @rivetos/grok-bot-rivet-memory-capture).'
+if (!existsSync(CLI)) {
+  console.error(BUILD_FIRST)
+  process.exit(2)
+}
 
 for (const p of [TRANSCRIPTS, CONVERTER, INGEST]) {
   if (!existsSync(p)) {
@@ -157,8 +165,7 @@ async function processTranscript(id) {
     id,
     '--session',
     session,
-    '--session-suffix',
-    SESSION_SUFFIX,
+    `--session-suffix=${SESSION_SUFFIX}`,
   ])
   if (c.code !== 0) {
     log(`convert FAIL ${id} (${who.persona}): ${c.err.slice(0, 300)}`)
@@ -172,7 +179,7 @@ async function processTranscript(id) {
 
 async function processStore(id) {
   const src = join(AGENTS, id, 'store.db')
-  if (!existsSync(src) || !existsSync(CLI)) return
+  if (!existsSync(src)) return
   const who = identity(id)
   const session = who.session.endsWith(STORE_SUFFIX)
     ? who.session
@@ -188,8 +195,7 @@ async function processStore(id) {
     id,
     '--session',
     session,
-    '--after-seq',
-    String(after),
+    `--after-seq=${after}`,
   ])
   if (c.code !== 0) {
     log(`store convert FAIL ${id}: ${(c.err || c.out).slice(0, 300)}`)
@@ -209,7 +215,7 @@ async function processStore(id) {
 
 async function processVoice(id, fileName) {
   const src = join(AGENTS, id, 'voice-calls', fileName)
-  if (!existsSync(src) || !existsSync(CLI)) return
+  if (!existsSync(src)) return
   const s = sig(src)
   const suffix = `${VOICE_SUFFIX}:${fileName}`
   if (!shouldIngest(state, id, suffix, s)) return
@@ -282,7 +288,7 @@ try {
   console.error(`watch: cannot read transcripts dir: ${e.message}`)
   process.exit(2)
 }
-if (existsSync(AGENTS) && existsSync(CLI)) {
+if (existsSync(AGENTS)) {
   try {
     for (const id of readdirSync(AGENTS)) {
       const store = join(AGENTS, id, 'store.db')
@@ -316,7 +322,7 @@ log(
 drain()
 
 const re = /^([0-9a-f-]{36})[\\/]\1\.jsonl$/
-const storeRe = /^([0-9a-f-]{36})[\\/]store\.db$/
+const storeRe = STORE_WATCH_RE
 const voiceRe = /^([0-9a-f-]{36})[\\/]voice-calls[\\/]([^/]+\.json)$/
 const w = watch(TRANSCRIPTS, { recursive: true }, (_ev, file) => {
   const m = file && String(file).match(re)

@@ -1,10 +1,18 @@
 /**
  * Query-time preference for grokbot -v3 / -v3-rows siblings.
  *
- * When a conversation has a -v3 or -v3-rows sibling for the same agent,
- * search / browse / recall hide the unsuffixed and -v2 copies. Nothing is
- * DELETE/UPDATE'd. -v3-store and -v3-voice contain "-v3" and stay visible
- * (they are different formats, not recleans of the same session).
+ * Hide unsuffixed and -v2 copies only when a -v3 or -v3-rows sibling for
+ * the same agent is *complete*: its last source position covers the legacy
+ * session's last position. Completeness is query-time only — no completion
+ * marker is written, and nothing is DELETE/UPDATE'd.
+ *
+ * Position (same rule as storedRowPosition / new-style ingest):
+ *   metadata.position when present;
+ *   else metadata.ordinal / 1000 when metadata.capture_source is set;
+ *   else metadata.ordinal (legacy sequential 0..N).
+ *
+ * -v3-store and -v3-voice contain "-v3" and stay visible (they are different
+ * formats, not recleans of the same session).
  */
 
 export const GROKBOT_PREFERRED_SESSION_SUFFIXES = ['-v3', '-v3-rows'] as const
@@ -23,25 +31,81 @@ export function isPreferredGrokbotSession(session: string): boolean {
   return session.includes('-v3')
 }
 
-export function preferredGrokbotSession(requested: string, existingKeys: Iterable<string>): string {
+export type GrokbotCoverage = {
+  preferredLast: number | null
+  legacyLast: number | null
+}
+
+/** Sibling covers legacy when its last position is at least the legacy last. */
+export function grokbotSiblingCoversLegacy(
+  preferredLast: number | null,
+  legacyLast: number | null,
+): boolean {
+  if (preferredLast == null) return false
+  return preferredLast >= (legacyLast ?? 0)
+}
+
+export function preferredGrokbotSession(
+  requested: string,
+  existingKeys: Iterable<string>,
+  coverage?: GrokbotCoverage,
+): string {
   if (isPreferredGrokbotSession(requested)) return requested
   const keys = new Set(existingKeys)
   const base = grokbotSessionBase(requested)
-  if (keys.has(`${base}-v3`)) return `${base}-v3`
-  if (keys.has(`${base}-v3-rows`)) return `${base}-v3-rows`
-  return requested
+  const v3 = `${base}-v3`
+  const rows = `${base}-v3-rows`
+  const pick = keys.has(v3) ? v3 : keys.has(rows) ? rows : undefined
+  if (!pick) return requested
+  if (coverage && !grokbotSiblingCoversLegacy(coverage.preferredLast, coverage.legacyLast)) {
+    return requested
+  }
+  if (!coverage) return pick
+  return pick
 }
 
-export function shouldHideGrokbotSession(session: string, existingKeys: Iterable<string>): boolean {
+export function shouldHideGrokbotSession(
+  session: string,
+  existingKeys: Iterable<string>,
+  coverage?: GrokbotCoverage,
+): boolean {
   if (isPreferredGrokbotSession(session)) return false
   const keys = new Set(existingKeys)
   const base = grokbotSessionBase(session)
-  return keys.has(`${base}-v3`) || keys.has(`${base}-v3-rows`)
+  const hasSibling = keys.has(`${base}-v3`) || keys.has(`${base}-v3-rows`)
+  if (!hasSibling) return false
+  if (!coverage) return false
+  return grokbotSiblingCoversLegacy(coverage.preferredLast, coverage.legacyLast)
+}
+
+/**
+ * Last source position of messages in a conversation.
+ * metadata.position wins; new-style capture_source rows decode ordinal/1000;
+ * old sequential ordinals are used as-is. COALESCE to -1 when empty.
+ */
+export function grokbotMessagePositionSql(alias = 'm'): string {
+  return `COALESCE(
+    NULLIF(${alias}.metadata->>'position', '')::int,
+    CASE
+      WHEN ${alias}.metadata->'capture_source' IS NOT NULL
+        THEN NULLIF(${alias}.metadata->>'ordinal', '')::int / 1000
+      ELSE NULLIF(${alias}.metadata->>'ordinal', '')::int
+    END
+  )`
+}
+
+export function grokbotLastPositionSql(conversationAlias: string, messageAlias: string): string {
+  return `COALESCE((
+    SELECT MAX(${grokbotMessagePositionSql(messageAlias)})
+      FROM ros_messages ${messageAlias}
+     WHERE ${messageAlias}.conversation_id = ${conversationAlias}.id
+  ), -1)`
 }
 
 /**
  * SQL: message alias is not in a superseded unsuffixed/-v2 grokbot session.
  * Uses conversation_id; safe to AND into ros_messages / ros_summaries WHERE.
+ * Legacy is hidden only when the sibling last position covers it.
  */
 export function sqlNotSupersededGrokbotMessage(alias = 'm'): string {
   return `NOT EXISTS (
@@ -57,6 +121,8 @@ export function sqlNotSupersededGrokbotMessage(alias = 'm'): string {
             regexp_replace(grokbot_legacy.session_key, '-v2$', '') || '-v3',
             regexp_replace(grokbot_legacy.session_key, '-v2$', '') || '-v3-rows'
           )
+          AND ${grokbotLastPositionSql('grokbot_pref', 'pref_m')}
+              >= ${grokbotLastPositionSql('grokbot_legacy', 'leg_m')}
       )
   )`
 }
@@ -74,6 +140,8 @@ export function sqlNotSupersededGrokbotConversation(alias = 'c'): string {
           regexp_replace(${alias}.session_key, '-v2$', '') || '-v3',
           regexp_replace(${alias}.session_key, '-v2$', '') || '-v3-rows'
         )
+        AND ${grokbotLastPositionSql('grokbot_pref', 'pref_m')}
+            >= ${grokbotLastPositionSql(alias, 'leg_m')}
     )
   )`
 }
@@ -86,6 +154,8 @@ SELECT c.session_key
    AND EXISTS (
      SELECT 1 FROM ros_conversations src
       WHERE src.session_key = $1 AND src.agent = c.agent
+        AND ${grokbotLastPositionSql('c', 'pref_m')}
+            >= ${grokbotLastPositionSql('src', 'leg_m')}
    )
  ORDER BY CASE WHEN c.session_key LIKE '%-v3-rows' THEN 1 ELSE 0 END
  LIMIT 1

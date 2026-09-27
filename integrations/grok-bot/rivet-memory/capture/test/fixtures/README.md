@@ -30,13 +30,18 @@ trimmed real windows.
 
 ## Format (c): store.db transcript_entries
 
-No live `agents/<id>/store.db` dump was available. Tests build a redacted
-sqlite file from the published grok-bot-mcp / xopc schema
-(`entry_id, session_id, seq, entry_kind, role, payload_json, created_at`)
-via `writeRedactedStoreFixture`. Positions are `seq`, ingested as `-v3-store`.
+Real schema from 13 live stores (read-only):
+`transcript_entries(seq INTEGER PRIMARY KEY, id TEXT, entry TEXT)` plus
+unused `kv` / `blobs` / `automation_completion_inbox`. `seq` is 1..N.
+`entry` is JSON with `kind` (`message`, `send-message`, `event`,
+`spend-initiation`, `user-attachment`, `feedback`) and integer
+`timestampMs`. Tests build a redacted sqlite file with synthetic content
+via `writeRedactedStoreFixture`. Positions are `seq`, ingested as
+`-v3-store`.
 
 ## Format (d): voice-calls/*.json
 
-No live voice-call dump was available. `voice-calls/call-redacted.json` is a
-reconstructed fixture (role/text turns). Positions are turn indices,
-ingested as `-v3-voice-<stem>`.
+Real shape: top-level `callId` + `startedAtMs`; turns have `speaker`,
+`atMs`, optional `toolCalls` / `nudges`. `voice-calls/call-redacted.json`
+is synthetic content on that shape. Positions are turn indices, ingested
+as `-v3-voice-<stem>`.

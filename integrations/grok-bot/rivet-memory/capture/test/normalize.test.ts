@@ -295,6 +295,37 @@ describe('timestamps', () => {
     expect(messages.filter((m) => m.role === 'assistant')).toHaveLength(2)
   })
 
+  it('drops a 10+ identical created_at run and keeps a short polling pair', () => {
+    const rec = (n: number) => ({
+      role: 'assistant',
+      created_at: '2026-09-20T20:04:00.000Z',
+      message: { content: [{ type: 'text', text: `block-${String(n)}` }] },
+    })
+    const first = Array.from({ length: 12 }, (_, i) => rec(i))
+    const replay = first.map((r) => ({ ...r }))
+    const pollA = {
+      role: 'assistant',
+      created_at: '2026-09-20T20:05:00.000Z',
+      message: { content: [{ type: 'tool_use', name: 'shell', input: { command: 'gh pr checks' } }] },
+    }
+    const pollB = {
+      role: 'tool',
+      created_at: '2026-09-20T20:05:00.000Z',
+      message: { content: [{ type: 'tool_result', name: 'shell', result: 'pending\n' }] },
+    }
+    const records = [...first, ...replay, pollA, pollB, pollA, pollB]
+    const skips = replaySkipIndices(records)
+    expect(skips.size).toBe(12)
+    for (let i = 12; i < 24; i++) expect(skips.has(i)).toBe(true)
+    expect(skips.has(24)).toBe(false)
+    expect(skips.has(25)).toBe(false)
+    const { messages } = normalizeRecords(records, rivetOpts())
+    expect(messages.filter((m) => m.role === 'assistant' && m.content.startsWith('block-'))).toHaveLength(
+      12,
+    )
+    expect(messages.filter((m) => m.role === 'tool')).toHaveLength(2)
+  })
+
   it('drops the first-run fixture replay at positions 204/225', () => {
     const records = readFix('ondisk-rivet-first-run-0-240.jsonl')
       .trim()

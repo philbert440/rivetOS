@@ -27,6 +27,12 @@ export interface TimeClock {
 
 /** A replay is a stamped user turn plus at least one following record. */
 export const REPLAY_MIN_LEN = 2
+/**
+ * Re-append blocks on real transcripts are 20+ identical rows. Drop a run of
+ * this many consecutive records that match an earlier run and share a defined
+ * created_at (or user timestamp tag). Short identical polling pairs stay.
+ */
+export const REPLAY_IDENTICAL_RUN_MIN = 10
 
 function recordHash(rec: unknown): string {
   try {
@@ -78,7 +84,65 @@ export function replaySkipIndices(records: unknown[]): Set<number> {
       j += 1
     }
   }
+  skipIdenticalCreatedAtRuns(records, hashes, skip)
   return skip
+}
+
+function recordCreatedAtKey(rec: unknown): string | undefined {
+  if (isRecord(rec)) {
+    const raw = rec.created_at ?? rec.createdAt
+    if (typeof raw === 'string' && raw.trim()) return raw
+    if (raw instanceof Date && !Number.isNaN(raw.getTime())) return raw.toISOString()
+  }
+  return stampedUserTime(rec)
+}
+
+/**
+ * Drop runs of REPLAY_IDENTICAL_RUN_MIN+ consecutive records that are
+ * identical to an earlier run and share a defined created_at. A later run
+ * must have at least one defined time. Unstamped short polling pairs and
+ * 10+ identical tools at different times are kept.
+ */
+function skipIdenticalCreatedAtRuns(records: unknown[], hashes: string[], skip: Set<number>): void {
+  const times = records.map(recordCreatedAtKey)
+  let j = 0
+  while (j < hashes.length) {
+    if (skip.has(j)) {
+      j += 1
+      continue
+    }
+    let prev = -1
+    for (let p = 0; p < j; p++) {
+      if (hashes[p] === hashes[j]) {
+        prev = p
+        break
+      }
+    }
+    if (prev < 0) {
+      j += 1
+      continue
+    }
+    let len = 0
+    let sawTime = false
+    while (prev + len < j && j + len < hashes.length && !skip.has(j + len)) {
+      if (hashes[prev + len] !== hashes[j + len]) break
+      const later = times[j + len]
+      const earlier = times[prev + len]
+      if (later) {
+        if (later !== earlier) break
+        sawTime = true
+      } else if (earlier) {
+        break
+      }
+      len += 1
+    }
+    if (len >= REPLAY_IDENTICAL_RUN_MIN && sawTime) {
+      for (let k = 0; k < len; k++) skip.add(j + k)
+      j += len
+    } else {
+      j += 1
+    }
+  }
 }
 
 export function clampCreatedAt(clock: TimeClock, candidate?: string): string | undefined {

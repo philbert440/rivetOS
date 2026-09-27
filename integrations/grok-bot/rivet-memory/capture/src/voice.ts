@@ -1,11 +1,9 @@
 /**
  * Reader for Grok Bot `agents/<id>/voice-calls/*.json` turns.
  *
- * No live voice-calls/*.json sample was available in this environment. The
- * shape below is reconstructed from the review's "voice-calls/*.json turns"
- * description plus the same role/text fields as on-disk transcript records.
- * If a real dump appears with different keys, update this file from that
- * structure only.
+ * Real call JSON (verified read-only) has top-level `callId` and
+ * `startedAtMs` (int). Each turn has `speaker` and `atMs` (int). Other
+ * fields include `toolCalls` and `nudges`. Fixture content is synthetic.
  *
  * Turn indices are not the on-disk jsonl line index, so ingest uses
  * SESSION_SUFFIX_V3_VOICE (plus `-<stem>` per call file).
@@ -17,11 +15,20 @@ import { SESSION_SUFFIX_V3_VOICE } from './types.js'
 
 export { SESSION_SUFFIX_V3_VOICE }
 
+export interface VoiceToolCall {
+  name: string
+  input?: unknown
+  id?: string
+  result?: string
+}
+
 export interface VoiceTurn {
   role: string
   text: string
   started_at?: string
-  ended_at?: string
+  toolCalls: VoiceToolCall[]
+  /** Present on the wire; dropped at record emit (hidden-turn policy). */
+  nudgeCount: number
 }
 
 export interface VoiceCall {
@@ -65,13 +72,12 @@ export function parseVoiceCall(text: string, file = 'voice.json'): VoiceCall {
     throw new Error('voice-calls file is missing a turns/messages/utterances array')
   }
   const id =
-    (typeof raw.id === 'string' && raw.id) ||
+    (typeof raw.callId === 'string' && raw.callId) ||
     (typeof raw.call_id === 'string' && raw.call_id) ||
+    (typeof raw.id === 'string' && raw.id) ||
     stemOf(file)
   const started =
-    (typeof raw.started_at === 'string' && raw.started_at) ||
-    (typeof raw.startedAt === 'string' && raw.startedAt) ||
-    undefined
+    msToIso(raw.startedAtMs ?? raw.started_at_ms) ?? stringTime(raw, ['started_at', 'startedAt'])
   return { id, started_at: started, file, turns: turnsRaw.map(turnFromUnknown) }
 }
 
@@ -80,17 +86,42 @@ export function readVoiceCallFile(file: string): VoiceCall {
 }
 
 export function voiceCallToRecords(call: VoiceCall): { records: unknown[]; positions: number[] } {
-  const records = call.turns.map((t, i) => {
-    if (isOnDiskTurn(t)) return t
-    return {
-      role: t.role || 'assistant',
-      message: { role: t.role || 'assistant', content: [{ type: 'text', text: t.text }] },
-      created_at: t.started_at,
-      voice_call_id: call.id,
-      voice_turn: i,
+  const records: unknown[] = []
+  const positions: number[] = []
+  for (let i = 0; i < call.turns.length; i++) {
+    const t = call.turns[i]
+    const created = t.started_at ?? call.started_at
+    if (t.text) {
+      records.push({
+        role: t.role || 'assistant',
+        message: { role: t.role || 'assistant', content: [{ type: 'text', text: t.text }] },
+        created_at: created,
+        voice_call_id: call.id,
+        voice_turn: i,
+      })
+      positions.push(i)
     }
-  })
-  return { records, positions: call.turns.map((_, i) => i) }
+    for (const tool of t.toolCalls) {
+      records.push({
+        role: 'tool',
+        message: {
+          content: [
+            {
+              type: 'tool_result',
+              name: tool.name,
+              result: summarizeToolCall(tool),
+            },
+          ],
+        },
+        created_at: created,
+        voice_call_id: call.id,
+        voice_turn: i,
+      })
+      positions.push(i)
+    }
+    // nudges are hidden-turn noise — dropped, not stored as content
+  }
+  return { records, positions }
 }
 
 export function v3VoiceSession(session: string, callStem?: string): string {
@@ -112,20 +143,28 @@ export function slugStem(fileOrStem: string): string {
   )
 }
 
+export function msToIso(raw: unknown): string | undefined {
+  if (typeof raw !== 'number' || !Number.isFinite(raw)) return undefined
+  const ms = raw < 1e12 ? raw * 1000 : raw
+  const d = new Date(ms)
+  return Number.isNaN(d.getTime()) ? undefined : d.toISOString()
+}
+
 function stemOf(file: string): string {
   return slugStem(file)
 }
 
-function isOnDiskTurn(t: unknown): boolean {
-  return isRecord(t) && Boolean(t.message || (Array.isArray(t.content) && t.role))
+function speakerToRole(speaker: unknown): string {
+  if (typeof speaker !== 'string') return 'assistant'
+  const s = speaker.toLowerCase()
+  if (s === 'user' || s === 'human') return 'user'
+  if (s === 'assistant' || s === 'model' || s === 'bot' || s === 'agent') return 'assistant'
+  if (s === 'tool') return 'tool'
+  if (s === 'system') return 'system'
+  return 'assistant'
 }
 
 function turnFromUnknown(raw: unknown): VoiceTurn {
-  if (isRecord(raw) && isOnDiskTurn(raw)) {
-    const role = typeof raw.role === 'string' ? raw.role : 'assistant'
-    const text = onDiskText(raw)
-    return { role, text, started_at: stringField(raw, ['started_at', 'startedAt', 'created_at']) }
-  }
   if (!isRecord(raw)) {
     const text =
       typeof raw === 'string'
@@ -133,31 +172,64 @@ function turnFromUnknown(raw: unknown): VoiceTurn {
         : typeof raw === 'number' || typeof raw === 'boolean'
           ? String(raw)
           : ''
-    return { role: 'assistant', text }
+    return { role: 'assistant', text, toolCalls: [], nudgeCount: 0 }
   }
-  const role = typeof raw.role === 'string' ? raw.role : 'assistant'
+  const role = speakerToRole(raw.speaker ?? raw.role)
   const text =
     stringField(raw, ['text', 'content', 'transcript', 'utterance']) ||
     (typeof raw.message === 'string' ? raw.message : '')
-  return {
-    role,
-    text,
-    started_at: stringField(raw, ['started_at', 'startedAt', 'created_at']),
-    ended_at: stringField(raw, ['ended_at', 'endedAt']),
-  }
+  const started_at =
+    msToIso(raw.atMs ?? raw.at_ms ?? raw.timestampMs) ??
+    stringField(raw, ['started_at', 'startedAt', 'created_at'])
+  const toolCalls = parseToolCalls(raw.toolCalls ?? raw.tool_calls)
+  const nudges = raw.nudges ?? raw.nudge
+  const nudgeCount = Array.isArray(nudges) ? nudges.length : nudges == null ? 0 : 1
+  return { role, text, started_at, toolCalls, nudgeCount }
 }
 
-function onDiskText(raw: Record<string, unknown>): string {
-  const msg = isRecord(raw.message) ? raw.message : raw
-  const content = msg.content
-  if (typeof content === 'string') return content
-  if (Array.isArray(content)) {
-    return content
-      .map((p) => (isRecord(p) && typeof p.text === 'string' ? p.text : ''))
-      .filter(Boolean)
-      .join('\n')
+function parseToolCalls(raw: unknown): VoiceToolCall[] {
+  if (!Array.isArray(raw)) return []
+  const out: VoiceToolCall[] = []
+  for (const item of raw) {
+    if (!isRecord(item)) continue
+    const name =
+      (typeof item.name === 'string' && item.name) ||
+      (typeof item.toolName === 'string' && item.toolName) ||
+      (isRecord(item.function) && typeof item.function.name === 'string'
+        ? item.function.name
+        : '') ||
+      'tool'
+    const input =
+      item.input ??
+      item.arguments ??
+      item.args ??
+      (isRecord(item.function) ? item.function.arguments : undefined)
+    const result =
+      typeof item.result === 'string'
+        ? item.result
+        : typeof item.output === 'string'
+          ? item.output
+          : undefined
+    out.push({
+      name,
+      input,
+      id: typeof item.id === 'string' ? item.id : undefined,
+      result,
+    })
   }
-  return ''
+  return out
+}
+
+function summarizeToolCall(tool: VoiceToolCall): string {
+  if (tool.result) return tool.result
+  const name = tool.name || 'tool'
+  if (tool.input == null) return name
+  try {
+    const raw = typeof tool.input === 'string' ? tool.input : JSON.stringify(tool.input)
+    return raw.length > 240 ? `${name} ${raw.slice(0, 240)}…` : `${name} ${raw}`
+  } catch {
+    return name
+  }
 }
 
 function stringField(obj: Record<string, unknown>, keys: string[]): string | undefined {
@@ -166,4 +238,11 @@ function stringField(obj: Record<string, unknown>, keys: string[]): string | und
     if (typeof v === 'string' && v) return v
   }
   return undefined
+}
+
+function stringTime(obj: Record<string, unknown>, keys: string[]): string | undefined {
+  const s = stringField(obj, keys)
+  if (!s) return undefined
+  const d = new Date(s)
+  return Number.isNaN(d.getTime()) ? s : d.toISOString()
 }

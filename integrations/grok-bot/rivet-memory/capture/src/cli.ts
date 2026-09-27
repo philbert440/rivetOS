@@ -6,6 +6,7 @@
 import { mkdirSync, readFileSync, readdirSync, writeFileSync } from 'node:fs'
 import { dirname, join, resolve } from 'node:path'
 import { parseArgs } from 'node:util'
+import { coalesceDashArgs } from './argv.js'
 import { compareInput, formatCompareTable, formatNoiseBreakdown } from './compare.js'
 import {
   agentIdFromTranscriptPath,
@@ -39,17 +40,20 @@ import { parseVoiceCall, v3VoiceSession, voiceCallToRecords } from './voice.js'
 const HELP = `Usage: grokbot-rivet-memory-capture <command> [opts]
 
   convert SRC DST [--agent-id UUID] [--session KEY] [--agent NAME]
-          [--session-suffix -v3]
+          [--session-suffix=-v3]
       Normalize one on-disk jsonl or ReadTranscript page to ingest jsonl.
       Live capture defaults to session suffix -v3 (GROKBOT_SESSION_SUFFIX).
+      Use the = form: --session-suffix=-v3 (space form is rewritten).
 
-  convert-store SRC.DB DST [--agent-id UUID] [--session KEY] [--after-seq N]
-          [--session-suffix -v3-store]
-      Read-only sqlite over agents/<id>/store.db transcript_entries.
-      Positions are seq (not the on-disk line index). Default suffix -v3-store.
+  convert-store SRC.DB DST [--agent-id UUID] [--session KEY] [--after-seq=-1]
+          [--session-suffix=-v3-store]
+      Read-only sqlite over agents/<id>/store.db transcript_entries
+      (seq INTEGER PRIMARY KEY, id TEXT, entry TEXT). Positions are seq
+      (not the on-disk line index). Default suffix -v3-store. First run
+      uses --after-seq=-1 (seq is 1..N).
 
   convert-voice SRC.json DST [--agent-id UUID] [--session KEY]
-          [--session-suffix -v3-voice]
+          [--session-suffix=-v3-voice]
       Normalize one voice-calls/*.json file. Turn indices are not the on-disk
       line index. Default suffix -v3-voice-<stem>.
 
@@ -58,7 +62,7 @@ const HELP = `Usage: grokbot-rivet-memory-capture <command> [opts]
       {header, records, hasOlderFooter, format}. pull-bridge.py calls this.
 
   backfill --input PATH [--format auto|ondisk|page] [--agent-id UUID]
-           [--session-suffix -v3] [--out DIR] [--write]
+           [--session-suffix=-v3] [--out DIR] [--write]
       Walk a file or directory (recursive) of transcripts/pages.
       Pages for one agent are merged by position into a single spool.
       On-disk agent id is taken from <uuid>/<uuid>.jsonl when there is no
@@ -115,7 +119,7 @@ function sessionSuffixFromArgs(explicit?: string): string {
 
 function cmdConvert(argv: string[]): number {
   const { values, positionals } = parseArgs({
-    args: argv,
+    args: coalesceDashArgs(argv),
     allowPositionals: true,
     options: {
       'agent-id': { type: 'string' },
@@ -183,7 +187,7 @@ function writeIngest(dst: string, rows: IngestRow[]): void {
 
 function cmdConvertStore(argv: string[]): number {
   const { values, positionals } = parseArgs({
-    args: argv,
+    args: coalesceDashArgs(argv),
     allowPositionals: true,
     options: {
       'agent-id': { type: 'string' },
@@ -229,6 +233,7 @@ function cmdConvertStore(argv: string[]): number {
       max_seq: read.maxSeq,
       min_seq: read.minSeq,
       after_seq: afterSeq,
+      skipped: read.skipped,
       session,
       time_known: result.stats.timeKnown,
     }),
@@ -238,7 +243,7 @@ function cmdConvertStore(argv: string[]): number {
 
 function cmdConvertVoice(argv: string[]): number {
   const { values, positionals } = parseArgs({
-    args: argv,
+    args: coalesceDashArgs(argv),
     allowPositionals: true,
     options: {
       'agent-id': { type: 'string' },
@@ -319,7 +324,7 @@ function readStdin(): string {
 
 function cmdBackfill(argv: string[]): number {
   const { values } = parseArgs({
-    args: argv,
+    args: coalesceDashArgs(argv),
     options: {
       input: { type: 'string' },
       format: { type: 'string' },
@@ -422,7 +427,7 @@ async function cmdReclean(argv: string[]): Promise<number> {
     return 2
   }
   const { values } = parseArgs({
-    args: argv,
+    args: coalesceDashArgs(argv),
     options: {
       session: { type: 'string' },
       'agent-id': { type: 'string' },
@@ -532,7 +537,7 @@ async function cmdReclean(argv: string[]): Promise<number> {
 
 function cmdCompare(argv: string[]): number {
   const { values } = parseArgs({
-    args: argv,
+    args: coalesceDashArgs(argv),
     options: { fixtures: { type: 'string' } },
   })
   const dir = values.fixtures ?? join(fileDir(), 'test', 'fixtures')
@@ -567,7 +572,7 @@ function cmdCompare(argv: string[]): number {
 
 function cmdDiscover(argv: string[]): number {
   const { values } = parseArgs({
-    args: argv,
+    args: coalesceDashArgs(argv),
     options: {
       'agents-dir': { type: 'string' },
       models: { type: 'string' },

@@ -4,6 +4,9 @@
 import { resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
+/** Matches agents/<uuid>/store.db and the WAL sidecar, same debounce key. */
+export const STORE_WATCH_RE = /^([0-9a-f-]{36})[\\/]store\.db(?:-wal)?$/
+
 export function captureStateKey(id, suffix = '') {
   return `${id}${suffix ?? ''}`
 }

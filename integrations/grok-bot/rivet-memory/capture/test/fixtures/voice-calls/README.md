@@ -1,9 +1,6 @@
-# Voice-call fixture (reconstructed)
+# Voice-call fixture (real shape, synthetic content)
 
-No live `agents/<id>/voice-calls/*.json` dump was available in this
-environment. `call-redacted.json` is a redacted fixture built from the
-review's "voice-calls/*.json turns" description plus the same role/text
-shape as on-disk transcript records. It is not a captured call.
-
-If a real file appears with different keys, update `src/voice.ts` from
-that structure only.
+`call-redacted.json` matches the real Grok Bot voice-call JSON: top-level
+`callId` and `startedAtMs` (int); each turn has `speaker` and `atMs` (int),
+plus optional `toolCalls` and `nudges`. Text is synthetic. Positions are
+turn indices, ingested as `-v3-voice-<stem>`.

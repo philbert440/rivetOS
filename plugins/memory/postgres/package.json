@@ -29,6 +29,7 @@
     "name": "postgres"
   },
   "devDependencies": {
+    "@electric-sql/pglite": "^0.5.8",
     "@types/pg": "^8.20.3",
     "vitest": "^4.1.10"
   },

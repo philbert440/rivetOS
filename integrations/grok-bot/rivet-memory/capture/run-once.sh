@@ -368,7 +368,7 @@ while IFS= read -r model_json; do
             after_seq="$(tr -d '[:space:]' < "${store_cursor_file}" || echo -1)"
         fi
         echo "  Converting store.db seq>${after_seq} -> ${store_spool}"
-        if store_out="$(node "${CLI_JS}" convert-store "${store_db}" "${store_spool}" --agent-id "${model_id}" --session "${store_session}" --after-seq "${after_seq}" 2>&1)"; then
+        if store_out="$(node "${CLI_JS}" convert-store "${store_db}" "${store_spool}" --agent-id "${model_id}" --session "${store_session}" --after-seq="${after_seq}" 2>&1)"; then
             echo "  ${store_out}"
             store_max="$(printf '%s' "${store_out}" | jq -r '.max_seq // empty' 2>/dev/null || true)"
             store_n="$(printf '%s' "${store_out}" | jq -r '.out // 0' 2>/dev/null || echo 0)"

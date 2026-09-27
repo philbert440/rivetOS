@@ -1,8 +1,10 @@
 import { execFileSync } from 'node:child_process'
-import { readFileSync } from 'node:fs'
+import { mkdtempSync, readFileSync, writeFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { describe, expect, it } from 'vitest'
+import { coalesceDashArgs } from '../src/argv.js'
 
 const HERE = dirname(fileURLToPath(import.meta.url))
 const ROOT = join(HERE, '..')
@@ -81,6 +83,88 @@ describe('node capture scripts', () => {
     expect(src).toContain('dist/identity.js')
     expect(src).not.toContain('DEFAULT_EXCLUDE_NAMES')
     expect(src).not.toContain('readdirSync(AGENTS)')
+  })
+
+  it('watcher matches store.db-wal on the same agent debounce key', async () => {
+    const { STORE_WATCH_RE } = await import('../live-state.mjs')
+    const id = '00df02ea-4f5f-4d3e-945a-864e1c9c78dc'
+    expect(`${id}/store.db`.match(STORE_WATCH_RE)?.[1]).toBe(id)
+    expect(`${id}/store.db-wal`.match(STORE_WATCH_RE)?.[1]).toBe(id)
+    expect(`${id}/store.db-shm`.match(STORE_WATCH_RE)).toBeNull()
+    const src = readFileSync(join(ROOT, 'watch.mjs'), 'utf8')
+    expect(src).toContain('STORE_WATCH_RE')
+    expect(src).toContain('`store:${sm[1]}`')
+    expect(src).toContain('`--session-suffix=${SESSION_SUFFIX}`')
+    expect(src).toContain('`--after-seq=${after}`')
+    expect(src).toMatch(/build the capture package first/i)
+  })
+
+  it('run-once.sh and convert-transcript.py use the = form for dash values', () => {
+    const runOnce = readFileSync(join(ROOT, 'run-once.sh'), 'utf8')
+    expect(runOnce).toContain('--after-seq="${after_seq}"')
+    expect(runOnce).not.toMatch(/--after-seq "\$\{after_seq\}"/)
+    const py = readFileSync(join(ROOT, 'convert-transcript.py'), 'utf8')
+    expect(py).toContain('--session-suffix={session_suffix}')
+    expect(py).not.toContain('["--session-suffix", session_suffix]')
+  })
+
+  it('ingest.mjs is a wrapper over bin/ingest-session.mjs', () => {
+    const src = readFileSync(join(ROOT, 'ingest.mjs'), 'utf8')
+    expect(src).toContain("from '../bin/ingest-session.mjs'")
+    expect(src).toContain('runIngest')
+    const bin = readFileSync(join(ROOT, '..', 'bin', 'ingest-session.mjs'), 'utf8')
+    expect(bin).toContain('export async function runIngest')
+  })
+
+  it('coalesceDashArgs rewrites space-form -v3 and -1 for parseArgs', () => {
+    expect(coalesceDashArgs(['--session-suffix', '-v3', 'src', 'dst'])).toEqual([
+      '--session-suffix=-v3',
+      'src',
+      'dst',
+    ])
+    expect(coalesceDashArgs(['--after-seq', '-1'])).toEqual(['--after-seq=-1'])
+    expect(coalesceDashArgs(['--after-seq=-1'])).toEqual(['--after-seq=-1'])
+  })
+
+  it('runs the real converter with GROKBOT_SESSION_SUFFIX=-v3', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'gb-conv-'))
+    const src = join(dir, 'in.jsonl')
+    const dst = join(dir, 'out.jsonl')
+    writeFileSync(
+      src,
+      `${JSON.stringify({
+        role: 'user',
+        message: {
+          content: [
+            {
+              type: 'text',
+              text: '<timestamp>Sunday, Sep 20, 2026, 3:04 PM (UTC-05:00)</timestamp>\n<user_query>\nhello suffix\n</user_query>',
+            },
+          ],
+        },
+      })}\n`,
+    )
+    const listed = loadPyFn(
+      join(ROOT, 'convert-transcript.py'),
+      'print(" ".join(mod.convert_cmd("/tmp/in.jsonl", "/tmp/out.jsonl", "id", None, "-v3")))',
+    )
+    expect(listed).toContain('--session-suffix=-v3')
+    const out = execFileSync('python3', [join(ROOT, 'convert-transcript.py'), src, dst], {
+      encoding: 'utf8',
+      env: {
+        ...process.env,
+        GROKBOT_SESSION_SUFFIX: '-v3',
+        GROKBOT_AGENT_ID: '00df02ea-4f5f-4d3e-945a-864e1c9c78dc',
+      },
+    })
+    const info = JSON.parse(out.trim().split('\n').pop() ?? '{}') as { session?: string; out?: number }
+    expect(info.session).toBe('grokbot-bob-v3')
+    expect(info.out).toBeGreaterThan(0)
+    const rows = readFileSync(dst, 'utf8')
+      .trim()
+      .split('\n')
+      .map((line) => JSON.parse(line) as { content?: string })
+    expect(rows.some((r) => r.content?.includes('hello suffix'))).toBe(true)
   })
 
   it('convert-transcript node_bin falls back to node, not python', () => {

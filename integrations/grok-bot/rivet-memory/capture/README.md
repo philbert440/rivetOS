@@ -63,7 +63,10 @@ DELETEs or UPDATEs existing rows.
   the watcher `state.json` as per-session stuck-policy. `RIVETOS_ROOT`
   defaults to `/opt/rivetos`.
 - Search, browse, and session recall prefer a `-v3` or `-v3-rows` sibling
-  over the unsuffixed and `-v2` copies at query time. No rows are deleted.
+  over the unsuffixed and `-v2` copies at query time, but only when that
+  sibling's last source position covers the legacy session's last
+  position (incomplete `-v3` does not hide history). No rows are deleted
+  and no completion marker is written.
 
 ## Layout
 
@@ -96,10 +99,18 @@ Nothing in this tree names a host, address, port, or lab layout.
 `seq` and voice turn indices are **not** the on-disk line index. Ingesting
 them into `-v3` would hit `ordinal exists, event_id differs, skip`.
 
-There was no live `store.db` or `voice-calls/*.json` dump in this
-environment. The store reader uses the published grok-bot-mcp / xopc
-columns only. The voice fixture is reconstructed from "turns" plus the
-on-disk role/text shape. Say so plainly if a real dump disagrees.
+Store schema (13 live stores, opened read-only):
+`transcript_entries(seq INTEGER PRIMARY KEY, id TEXT, entry TEXT)`.
+`entry` is JSON with `kind` (`message`, `send-message`, `event`,
+`spend-initiation`, `user-attachment`, `feedback`) and integer
+`timestampMs`. Other tables (`kv`, `blobs`, `automation_completion_inbox`)
+are unused. Voice-call JSON has top-level `callId` + `startedAtMs`; each
+turn has `speaker` and `atMs`, plus optional `toolCalls` / `nudges`.
+Fixtures use that real shape with synthetic content only.
+
+Node `parseArgs` rejects `--session-suffix -v3` and `--after-seq -1`.
+Every spawn site uses the `=` form (`--session-suffix=-v3`,
+`--after-seq=-1`). The CLI also rewrites the space form.
 
 ## Commands
 
@@ -133,9 +144,9 @@ On-disk input without `--agent-id` or a page header takes the id from
 # store.db (read-only, seq cursor) → -v3-store
 node integrations/grok-bot/rivet-memory/capture/dist/cli.js convert-store \
   path/to/agents/<id>/store.db spool/grokbot-bob-v3-store.jsonl \
-  --agent-id <id> --after-seq -1
+  --agent-id <id> --after-seq=-1
 
-# voice-calls/*.json (reconstructed schema if no live dump) → -v3-voice-<stem>
+# voice-calls/*.json (callId / speaker / atMs) → -v3-voice-<stem>
 node integrations/grok-bot/rivet-memory/capture/dist/cli.js convert-voice \
   path/to/agents/<id>/voice-calls/call.json \
   spool/grokbot-bob-v3-voice-call.jsonl --agent-id <id>
@@ -156,11 +167,11 @@ position, the CLI prints `CONFLICT` and refuses `--write`.
 ```bash
 # dry (default): stats only, zero writes
 node integrations/grok-bot/rivet-memory/capture/dist/cli.js backfill \
-  --input path/to/agent-transcripts --format ondisk --session-suffix -v3
+  --input path/to/agent-transcripts --format ondisk --session-suffix=-v3
 
 # write ingest jsonl (still no DB writes) — one file per agent
 node integrations/grok-bot/rivet-memory/capture/dist/cli.js backfill \
-  --input path/to/agent-transcripts --format ondisk --session-suffix -v3 \
+  --input path/to/agent-transcripts --format ondisk --session-suffix=-v3 \
   --out spool --write
 ```
 
@@ -168,7 +179,7 @@ Newer content arrives as ReadTranscript pages. Save each page verbatim, then:
 
 ```bash
 node integrations/grok-bot/rivet-memory/capture/dist/cli.js backfill \
-  --input path/to/pages-dir --format page --session-suffix -v3 --out spool --write
+  --input path/to/pages-dir --format page --session-suffix=-v3 --out spool --write
 
 # or the pull bridge (stores by position, then converts through the same normalizer)
 python3 integrations/grok-bot/rivet-memory/capture/pull-bridge.py add <agentId> /tmp/rt-page.txt
@@ -277,13 +288,17 @@ own header regex.
 
 `watch.mjs` and `run-once.sh` write new-shape rows to `<session>-v3`
 (`GROKBOT_SESSION_SUFFIX`, default `-v3`), watch `agents/<id>/store.db`
-into `<session>-v3-store` (persisted `seq` cursor), and
+and `store.db-wal` (WAL mode; both debounce to the same agent) into
+`<session>-v3-store` (persisted `seq` cursor), and
 `agents/<id>/voice-calls/*.json` into `<session>-v3-voice-<stem>`.
-Watcher state is keyed by `id + suffix` so migrating
-`~/.rivetos/capture/state.json` (unsuffixed size:mtime keys) does not
-skip the `-v3` sessions. `run-once.sh` stuck state lives only under
-`~/.rivetos/grokbot-capture-state/` — it does not copy the watcher's
-single `state.json`. `RIVETOS_ROOT` defaults to `/opt/rivetos`.
+The watcher exits with "build the capture package first" when
+`dist/cli.js` / `dist/identity.js` is missing. Watcher state is keyed by
+`id + suffix` so migrating `~/.rivetos/capture/state.json` (unsuffixed
+size:mtime keys) does not skip the `-v3` sessions. `run-once.sh` stuck
+state lives only under `~/.rivetos/grokbot-capture-state/` — it does not
+copy the watcher's single `state.json`. `RIVETOS_ROOT` defaults to
+`/opt/rivetos`. `capture/ingest.mjs` is a thin wrapper over
+`bin/ingest-session.mjs`.
 
 Current Grok Bot chats may be server-side, so local `transcript_entries`
 can be empty. The reader still opens the DB read-only and no-ops.

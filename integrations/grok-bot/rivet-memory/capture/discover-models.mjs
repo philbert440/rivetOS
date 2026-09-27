@@ -13,9 +13,10 @@ async function loadIdentity() {
   if (existsSync(DIST)) {
     return import(pathToFileURL(DIST).href)
   }
-  throw new Error(
-    'discover-models: dist/identity.js is missing. Build @rivetos/grok-bot-rivet-memory-capture first.',
+  console.error(
+    'Build the capture package first (npx nx build @rivetos/grok-bot-rivet-memory-capture).',
   )
+  process.exit(2)
 }
 
 const ident = await loadIdentity()

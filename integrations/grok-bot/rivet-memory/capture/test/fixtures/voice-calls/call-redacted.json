@@ -1,16 +1,23 @@
 {
-  "id": "vc-redacted-001",
-  "started_at": "2026-09-20T15:04:00.000Z",
+  "callId": "vc-redacted-001",
+  "startedAtMs": 1789916640000,
   "turns": [
     {
-      "role": "user",
-      "text": "redacted user turn from a reconstructed voice-call fixture",
-      "started_at": "2026-09-20T15:04:01.000Z"
+      "speaker": "user",
+      "atMs": 1789916641000,
+      "text": "redacted user turn from a real-shape voice-call fixture"
     },
     {
-      "role": "assistant",
-      "text": "redacted assistant turn; not from a live dump",
-      "started_at": "2026-09-20T15:04:08.000Z"
+      "speaker": "assistant",
+      "atMs": 1789916648000,
+      "text": "redacted assistant turn; synthetic content only",
+      "toolCalls": [
+        {
+          "name": "lookup",
+          "arguments": { "q": "redacted" }
+        }
+      ],
+      "nudges": [{ "kind": "silence" }]
     }
   ]
 }

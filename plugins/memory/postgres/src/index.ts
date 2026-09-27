@@ -67,6 +67,7 @@ export {
 } from './tools/helpers.js'
 export {
   grokbotSessionBase,
+  grokbotSiblingCoversLegacy,
   preferredGrokbotSession,
   resolvePreferredGrokbotSession,
   sqlNotSupersededGrokbotConversation,

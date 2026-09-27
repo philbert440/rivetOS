@@ -41,7 +41,7 @@ def convert_cmd(
     if session:
         extra.extend(["--session", session])
     if session_suffix is not None:
-        extra.extend(["--session-suffix", session_suffix])
+        extra.append(f"--session-suffix={session_suffix}")
     if DIST.is_file():
         return [node, str(DIST), "convert", src, dst, *extra]
     return [node, "--import", "tsx", str(SRC_CLI), "convert", src, dst, *extra]
@@ -71,7 +71,7 @@ def main() -> int:
         i += 1
     if len(rest) != 2:
         print(
-            f"Usage: {sys.argv[0]} SRC.jsonl DST.jsonl [--agent-id UUID] [--session KEY] [--session-suffix -v3]",
+            f"Usage: {sys.argv[0]} SRC.jsonl DST.jsonl [--agent-id UUID] [--session KEY] [--session-suffix=-v3]",
             file=sys.stderr,
         )
         return 2
