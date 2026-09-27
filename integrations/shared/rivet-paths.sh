@@ -850,7 +850,8 @@ rivetos_resolve_den() {
   fi
 
   if [ ! -f "$ca" ]; then
-    echo "rivet-memory: den CA not found at ${ca} — den transport disabled" >&2
+    # Silent: the launcher tests count stderr lines, and the "no den URL and
+    # no DataHub/PG URL" line already covers the real no-backend case.
     unset RIVET_DEN_URL
     return 0
   fi
