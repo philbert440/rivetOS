@@ -11,6 +11,9 @@ import {
   STALE_MINUTES,
   STALE_MIN_BATCH,
 } from '../health.js'
+import { readdir } from 'node:fs/promises'
+import { homedir } from 'node:os'
+import { join } from 'node:path'
 import pg from 'pg'
 import type { Tool } from '@rivetos/types'
 import type { SearchRuntimeStats } from '../search.js'
@@ -46,6 +49,8 @@ export interface StatsReportBlocks {
   stuckJobs?: string
   orphans?: string
   queueHealth?: string
+  /** Local capture-spool depth — batches hooks could not deliver to the den. */
+  captureSpool?: string
   embeddingQueue: string
   searchRuntime?: string
   unsummarized: string
@@ -78,6 +83,7 @@ export function assembleStatsReport(blocks: StatsReportBlocks): string {
   if (blocks.stuckJobs) parts.push(blocks.stuckJobs)
   if (blocks.orphans) parts.push(blocks.orphans)
   if (blocks.queueHealth) parts.push(blocks.queueHealth)
+  if (blocks.captureSpool) parts.push(blocks.captureSpool)
 
   parts.push(blocks.embeddingQueue)
   if (blocks.searchRuntime) parts.push(blocks.searchRuntime)
@@ -135,9 +141,72 @@ export function formatQueueHealth(rows: QueueHealthRow[]): string {
   return '\n**Queue health (graphile-worker):**\n' + lines.join('\n')
 }
 
+/** Depth of the on-disk capture spool (`@rivetos/capture-core` writer fallback). */
+export interface CaptureSpoolStatus {
+  waiting: number
+  /** Epoch ms of the oldest waiting batch (from its filename), or null when empty. */
+  oldestMs: number | null
+  dead: number
+}
+
+const SPOOL_FILE = /^\d+-[^/]+\.json$/
+
+/**
+ * Read the spool dir this process's user owns. The sidecar and the den both
+ * run on the node whose hooks spool, so this is the node's backlog. A missing
+ * directory is an empty spool; any other read error yields `null` and the
+ * block is omitted rather than failing the whole report.
+ */
+export async function readCaptureSpool(
+  dir: string = join(homedir(), '.rivetos', 'capture-spool'),
+): Promise<CaptureSpoolStatus | null> {
+  const list = async (d: string): Promise<string[]> => {
+    try {
+      return (await readdir(d)).filter((f) => SPOOL_FILE.test(f))
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException).code === 'ENOENT') return []
+      throw err
+    }
+  }
+  try {
+    const waiting = await list(dir)
+    const dead = (await list(join(dir, 'dead'))).length
+    const oldestMs =
+      waiting.length > 0 ? Math.min(...waiting.map((f) => Number(f.split('-')[0]))) : null
+    return { waiting: waiting.length, oldestMs, dead }
+  } catch {
+    return null
+  }
+}
+
+/**
+ * One line when healthy; an alert with age and cause when batches wait. The
+ * spool is the crash-safe fallback, so a growing one is the only sign that
+ * hooks cannot reach the den (2026-09-27: a stale http:// RIVET_DEN_URL
+ * spooled every capture for four hours with nothing else showing red).
+ */
+export function formatCaptureSpool(status: CaptureSpoolStatus, nowMs: number = Date.now()): string {
+  if (status.waiting === 0 && status.dead === 0) return '\n**Capture spool:** ✅ empty'
+  const parts: string[] = []
+  if (status.waiting > 0) {
+    const ageMin = status.oldestMs === null ? 0 : Math.max(0, (nowMs - status.oldestMs) / 60000)
+    parts.push(`${String(status.waiting)} batch(es) waiting (oldest ${fmtQueueAge(ageMin)})`)
+  }
+  if (status.dead > 0) parts.push(`${String(status.dead)} dead-lettered`)
+  const hint =
+    status.waiting > 0
+      ? '\n  Hooks could not deliver to the den; they replay on their next fire once it answers. Check RIVET_DEN_URL (scheme must match den TLS) and `rivetos doctor`.'
+      : '\n  Dead-lettered batches exhausted replay; inspect ~/.rivetos/capture-spool/dead.'
+  return `\n**Capture spool:** ⚠️ ${parts.join(', ')}${hint}`
+}
+
 export function createStatsTool(
   pool: pg.Pool,
-  opts?: { searchRuntime?: () => SearchRuntimeStats },
+  opts?: {
+    searchRuntime?: () => SearchRuntimeStats
+    /** Test seam / override for the local capture-spool reader. `null` omits the block. */
+    captureSpool?: (() => Promise<CaptureSpoolStatus | null>) | null
+  },
 ): Tool {
   return {
     name: 'memory_stats',
@@ -438,11 +507,16 @@ export function createStatsTool(
         const runtime = opts?.searchRuntime?.()
         const searchRuntime = runtime ? formatSearchRuntimeStats(runtime) : undefined
 
+        const spoolReader = opts?.captureSpool === undefined ? readCaptureSpool : opts.captureSpool
+        const spoolStatus = spoolReader ? await spoolReader() : null
+        const captureSpool = spoolStatus ? formatCaptureSpool(spoolStatus) : undefined
+
         return assembleStatsReport({
           headline,
           stuckJobs,
           orphans,
           queueHealth,
+          captureSpool,
           embeddingQueue,
           searchRuntime,
           unsummarized,

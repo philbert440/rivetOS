@@ -164,3 +164,22 @@ it('treats a launcher-cleared den URL as pg fallback', () => {
     reason: 'RIVETOS_CAPTURE_TRANSPORT=den but RIVET_DEN_URL is not set',
   })
 })
+
+it('den transport carries RIVET_DEN_URL guard warnings for the caller to log', () => {
+  const tlsConfig = (): string => 'den:\n  tls_cert: /c\n  tls_key: /k\n'
+  expect(
+    resolveCaptureTransport({ RIVET_DEN_URL: 'http://127.0.0.1:5174', RIVETOS_PG_URL: PG }, tlsConfig),
+  ).toEqual({
+    kind: 'den',
+    denUrl: DEN,
+    warnings: [expect.stringContaining('serves https only')],
+  })
+  expect(
+    resolveCaptureTransport(
+      { RIVETOS_CAPTURE_TRANSPORT: 'den', RIVET_DEN_URL: `${DEN},http://10.0.0.9:5174` },
+      noConfig,
+    ),
+  ).toEqual({ kind: 'den', denUrl: DEN, warnings: [expect.stringContaining('several origins')] })
+  // A clean URL attaches no warnings key at all.
+  expect(resolveCaptureTransport({ RIVET_DEN_URL: DEN }, noConfig)).toEqual({ kind: 'den', denUrl: DEN })
+})
