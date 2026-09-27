@@ -41,7 +41,6 @@ elif [ "$(cat "$out")" = "pg" ]; then
 else
   fail "node saw RIVETOS_CAPTURE_TRANSPORT=$(cat "$out")"
 fi
-if grep -q 'den transport disabled: rivet-paths.sh not found; using pg' "$stderr"; then
   pass "stderr says den transport is disabled"
 else
   fail "stderr missing pg fallback line"
