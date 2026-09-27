@@ -1,5 +1,9 @@
-# Rivet Cloud — connect, export, import
-
+---
+title: Rivet Cloud
+sidebar:
+  order: 10
+description: Connect a laptop to hosted memory, then export and import dumps
+---
 > **Note:** The `rivetos cloud` commands ship in the next RivetHub release and
 > are not in the current installer yet.
 
