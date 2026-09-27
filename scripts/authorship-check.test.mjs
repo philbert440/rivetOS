@@ -212,7 +212,6 @@ test('accepts repository collaborators by email with any display name', () => {
     ['wSedlacek', 'william.sedlacek@icloud.com'],
     ['wSedlacek', '8206108+wSedlacek@users.noreply.github.com'],
     ['wSedlacek', 'wSedlacek@users.noreply.github.com'],
-    ['cesarulo', 'cdragunsky@gmail.com'],
     ['cesarulo', '13575641+cesarulo@users.noreply.github.com'],
     ['cesarulo', 'cesarulo@users.noreply.github.com'],
     ['zzhang-1', 'zhangzhen52013147654@gmail.com'],

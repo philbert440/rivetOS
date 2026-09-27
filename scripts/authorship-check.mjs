@@ -71,7 +71,6 @@ const COLLABORATORS = [
   {
     login: 'cesarulo',
     emails: [
-      'cdragunsky@gmail.com',
       '13575641+cesarulo@users.noreply.github.com',
       'cesarulo@users.noreply.github.com',
     ],
