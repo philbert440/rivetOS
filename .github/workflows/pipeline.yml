@@ -248,6 +248,7 @@ jobs:
             packages/wiki-core
             packages/types
             packages/gateway-client
+            packages/capture-core
             packages/agent-registry
             packages/harness-kimi-code
             packages/harness-opencode

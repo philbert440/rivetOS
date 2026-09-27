@@ -32,6 +32,17 @@
 import fs from 'node:fs'
 import path from 'node:path'
 import os from 'node:os'
+import {
+  contentTupleHash,
+  createCaptureWriter,
+  eventIdFromContent,
+  occurrenceIndex,
+  resolveCaptureTransport,
+  type CaptureBatch,
+  type CaptureMessage,
+  type CaptureTransport,
+  type OccurrenceKey,
+} from '@rivetos/capture-core'
 import pg from 'pg'
 import type { Pool, PoolClient } from 'pg'
 
@@ -138,7 +149,15 @@ export interface ParsedMessage {
   ts: string | null
   uuid: string | null
   sidechain: boolean
-  tools: Array<{ name: string; input: unknown; id: string | null; result: string | null }>
+  /** 0-based line in the transcript file (`memory_get_full` pointer). */
+  lineIndex: number
+  tools: Array<{
+    name: string
+    input: unknown
+    id: string | null
+    result: string | null
+    resultLine: number | null
+  }>
 }
 
 /** Result of parsing one transcript file. */
@@ -190,6 +209,12 @@ export interface IngestOptions {
   /** herdr pane identity, when the session runs inside a herdr pane. Merged
    *  into every inserted message's metadata (see herdrMeta). */
   herdr?: HerdrPaneContext
+  /** Test override for transport resolution. Production reads `process.env`. */
+  env?: NodeJS.ProcessEnv
+  /** Injected fetch for the den writer (tests). */
+  fetch?: typeof globalThis.fetch
+  /** Override the capture spool directory (tests). */
+  spoolDir?: string
 }
 
 /** herdr pane identity for one captured session (spooled by the hook from
@@ -326,7 +351,9 @@ export function parseTranscript(file: string): ParsedTranscript {
   // tool_result block referencing the tool_use_id). Build the id→result map up
   // front so we can attach each result to its call in the single forward pass.
   const resultById = new Map<string, string>()
-  for (const line of lines) {
+  const resultLineById = new Map<string, number>()
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i] ?? ''
     const t = line.trim()
     if (!t) continue
     let o: Record<string, unknown>
@@ -348,10 +375,12 @@ export function parseTranscript(file: string): ParsedTranscript {
           .join('\n')
       }
       resultById.set(id, typeof rc === 'string' ? rc : JSON.stringify(rc))
+      if (!resultLineById.has(id)) resultLineById.set(id, i)
     }
   }
 
-  for (const line of lines) {
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i] ?? ''
     const t = line.trim()
     if (!t) continue
     let o: Record<string, unknown>
@@ -380,8 +409,13 @@ export function parseTranscript(file: string): ParsedTranscript {
     let toolName: string | null = null
     let toolArgs: unknown = null
     let toolResult: string | null = null
-    const tools: Array<{ name: string; input: unknown; id: string | null; result: string | null }> =
-      []
+    const tools: Array<{
+      name: string
+      input: unknown
+      id: string | null
+      result: string | null
+      resultLine: number | null
+    }> = []
 
     if (typeof c === 'string') {
       text = c
@@ -399,6 +433,7 @@ export function parseTranscript(file: string): ParsedTranscript {
             input: b.input,
             id,
             result: id ? (resultById.get(id) ?? null) : null,
+            resultLine: id ? (resultLineById.get(id) ?? null) : null,
           })
         } else if (b.type === 'tool_result') {
           let rc = b.content
@@ -425,13 +460,14 @@ export function parseTranscript(file: string): ParsedTranscript {
 
     msgs.push({
       role,
-      content: trunc(text || '') ?? '',
+      content: text || '',
       toolName,
       toolArgs,
-      toolResult: trunc(toolResult),
+      toolResult,
       ts: asStr(o.timestamp),
       uuid: asStr(o.uuid),
       sidechain: !!o.isSidechain,
+      lineIndex: i,
       tools,
     })
   }
@@ -668,6 +704,281 @@ async function insertMessage(
   )
 }
 
+function selectTransport(opts: { env?: NodeJS.ProcessEnv; pgUrl?: string }): CaptureTransport {
+  // An explicit pgUrl is a direct "write to this database" request (the
+  // task-association integration test). The worker does not pass one.
+  if (opts.env) return resolveCaptureTransport(opts.env)
+  if (opts.pgUrl) return { kind: 'pg', pgUrl: opts.pgUrl }
+  return resolveCaptureTransport(process.env)
+}
+
+function isoTimestamp(ts: string | null | undefined): string | undefined {
+  if (!ts) return undefined
+  const ms = Date.parse(ts)
+  if (Number.isNaN(ms)) return undefined
+  return new Date(ms).toISOString()
+}
+
+async function postCaptureBatch(
+  batch: CaptureBatch,
+  denUrl: string,
+  opts: { fetch?: typeof globalThis.fetch; spoolDir?: string },
+): Promise<{ conversationId: string; inserted: number; skipped: number }> {
+  const writer = createCaptureWriter({ denUrl, fetch: opts.fetch, spoolDir: opts.spoolDir })
+  const result = await writer.write(batch)
+  if ('spooled' in result) {
+    if (!result.spooled) throw new Error(result.error)
+    return { conversationId: '', inserted: batch.messages.length, skipped: 0 }
+  }
+  return {
+    conversationId: result.conversation_id,
+    inserted: result.inserted,
+    skipped: result.skipped,
+  }
+}
+
+function pointerMeta(file: string, line: number): Record<string, unknown> {
+  return { session_jsonl_path: path.resolve(file), session_jsonl_line: line }
+}
+
+function isTextAssistant(m: ParsedMessage): boolean {
+  return m.role === 'assistant' && m.content !== '' && !m.content.startsWith('[tool call]')
+}
+
+function isPromptUser(m: ParsedMessage): boolean {
+  return (
+    m.role === 'user' &&
+    m.toolResult == null &&
+    m.content !== '' &&
+    !m.content.startsWith('[tool call]')
+  )
+}
+
+function normalizeToolArgs(value: unknown): unknown {
+  return value === undefined || value === null ? undefined : value
+}
+
+/** `claude-code:<session>:occ:<sha256(role|content|toolName|toolArgs)>:<n>`. */
+function occEventId(sessionPart: string, key: OccurrenceKey, n: number): string {
+  return `claude-code:${sessionPart}:occ:${contentTupleHash(key)}:${String(n)}`
+}
+
+/**
+ * Walk captured rows in transcript order. `n` is the 0-based count of the same
+ * (role, content, tool) tuple earlier in the file, including rows that keep a
+ * native id, so a later fallback stays stable.
+ */
+function forEachCaptured(
+  parsed: ParsedTranscript,
+  visit: (
+    key: OccurrenceKey,
+    n: number,
+    slot:
+      | { kind: 'assistant'; message: ParsedMessage }
+      | { kind: 'tool'; tool: ParsedMessage['tools'][number] }
+      | { kind: 'user'; message: ParsedMessage },
+  ) => void,
+): void {
+  const rows: OccurrenceKey[] = []
+  const push = (key: OccurrenceKey): number => {
+    rows.push(key)
+    return occurrenceIndex(rows, key)
+  }
+  for (const message of parsed.msgs) {
+    if (isTextAssistant(message)) {
+      const key: OccurrenceKey = { role: 'assistant', content: message.content }
+      visit(key, push(key), { kind: 'assistant', message })
+    }
+    for (const tool of message.tools) {
+      const key: OccurrenceKey = {
+        role: 'tool',
+        content: `[tool call] ${tool.name}`,
+        toolName: tool.name,
+        toolArgs: normalizeToolArgs(tool.input),
+      }
+      visit(key, push(key), { kind: 'tool', tool })
+    }
+    if (isPromptUser(message)) {
+      const key: OccurrenceKey = { role: 'user', content: message.content }
+      visit(key, push(key), { kind: 'user', message })
+    }
+  }
+}
+
+function denEventIds(
+  parsed: ParsedTranscript,
+  sessionPart: string,
+): { assistant: string[]; tool: string[]; user: string[] } {
+  const assistant: string[] = []
+  const tool: string[] = []
+  const user: string[] = []
+  forEachCaptured(parsed, (key, n, slot) => {
+    if (slot.kind === 'assistant') {
+      assistant.push(
+        slot.message.uuid
+          ? `claude-code:${sessionPart}:${slot.message.uuid}`
+          : occEventId(sessionPart, key, n),
+      )
+      return
+    }
+    if (slot.kind === 'tool') {
+      tool.push(
+        slot.tool.id
+          ? `claude-code:${sessionPart}:tool:${slot.tool.id}`
+          : occEventId(sessionPart, key, n),
+      )
+      return
+    }
+    user.push(
+      slot.message.uuid
+        ? `claude-code:${sessionPart}:${slot.message.uuid}`
+        : occEventId(sessionPart, key, n),
+    )
+  })
+  return { assistant, tool, user }
+}
+
+/** How long a live hook waits for its transcript row to appear. */
+const HOOK_TRANSCRIPT_POLL_MS = 100
+const HOOK_TRANSCRIPT_POLL_FOR_MS = 2_000
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => {
+    setTimeout(resolve, ms)
+  })
+}
+
+function hookOnlyEventId(eventId: string): boolean {
+  return eventId.includes(':hook:') || !eventId.startsWith('claude-code:')
+}
+
+/**
+ * Id of the last captured row matching `key`, anywhere in the file. A native
+ * tool id or entry uuid wins; otherwise the occurrence id the Stop walk
+ * assigns to that same row. Undefined when the file cannot be read or nothing
+ * matches. A later captured row does not reject the match.
+ */
+function lastMatchEventId(
+  transcriptPath: string,
+  key: OccurrenceKey,
+  sessionHint: string,
+): string | undefined {
+  let parsed: ParsedTranscript
+  try {
+    parsed = parseTranscript(transcriptPath)
+  } catch {
+    return undefined
+  }
+  const sessionPart = sessionHint || parsed.sessionId || 'unknown'
+  const want = contentTupleHash(key)
+  let found: string | undefined
+  forEachCaptured(parsed, (rowKey, n, slot) => {
+    if (contentTupleHash(rowKey) !== want) return
+    if (slot.kind === 'tool' && slot.tool.id) {
+      found = `claude-code:${sessionPart}:tool:${slot.tool.id}`
+      return
+    }
+    if (slot.kind === 'user' && slot.message.uuid) {
+      found = `claude-code:${sessionPart}:${slot.message.uuid}`
+      return
+    }
+    found = occEventId(sessionPart, rowKey, n)
+  })
+  return found
+}
+
+/** Claude Code PostToolUse field. Empty means the payload did not carry one. */
+function payloadToolUseId(payload: HookEventPayload): string | undefined {
+  const id = payload.tool_use_id
+  return typeof id === 'string' && id !== '' ? id : undefined
+}
+
+function hookOccurrenceKey(payload: HookEventPayload): OccurrenceKey | undefined {
+  const event = payload.hook_event_name
+  if (event === 'UserPromptSubmit') {
+    const prompt = typeof payload.prompt === 'string' ? payload.prompt : ''
+    if (prompt.trim() === '') return undefined
+    return { role: 'user', content: prompt }
+  }
+  if (event === 'PostToolUse') {
+    const toolName = typeof payload.tool_name === 'string' ? payload.tool_name : 'unknown'
+    return {
+      role: 'tool',
+      content: `[tool call] ${toolName}`,
+      toolName,
+      toolArgs: normalizeToolArgs(payload.tool_input ?? null),
+    }
+  }
+  return undefined
+}
+
+function hookFallbackId(
+  sessionPart: string,
+  idempotencyKey: string | undefined,
+  sessionKey: string,
+  key: OccurrenceKey | undefined,
+): string {
+  if (idempotencyKey) return `claude-code:${sessionPart}:hook:${idempotencyKey}`
+  return eventIdFromContent({
+    sessionKey,
+    role: key?.role ?? 'user',
+    content: key?.content ?? '',
+    toolName: key?.toolName,
+    toolArgs: key?.toolArgs,
+  })
+}
+
+/**
+ * Bind a UserPromptSubmit / PostToolUse row to one transcript position.
+ * A PostToolUse `tool_use_id` is the event id with no transcript read.
+ * Otherwise poll for the last matching entry anywhere in the file (it does
+ * not have to be the tail) and use that entry's native id or occurrence id.
+ * A tool payload that never matches uses the occurrence id of its tuple.
+ * A prompt that never appears uses the hook stem. A stored `rivetos_event_id`
+ * is returned as-is so a spool retry does not recompute against a grown
+ * transcript. Two identical tool calls without `tool_use_id` both bind to
+ * the last match; the native id is what makes that exact.
+ */
+export async function resolveHookEventId(opts: {
+  payload: HookEventPayload
+  idempotencyKey?: string
+  sessionKeyOverride?: string
+  pollMs?: number
+  pollForMs?: number
+}): Promise<{ eventId: string; hookOnly: boolean }> {
+  const stored = opts.payload.rivetos_event_id
+  if (typeof stored === 'string' && stored !== '') {
+    return { eventId: stored, hookOnly: hookOnlyEventId(stored) }
+  }
+  const sessionKey = resolveConversationKey({
+    override: opts.sessionKeyOverride,
+    hookSessionId: opts.payload.session_id,
+    fallbackKey: '',
+  })
+  const sessionPart = opts.payload.session_id || sessionKey || 'unknown'
+  const key = hookOccurrenceKey(opts.payload)
+  const toolUseId = payloadToolUseId(opts.payload)
+  if (opts.payload.hook_event_name === 'PostToolUse' && toolUseId) {
+    return { eventId: `claude-code:${sessionPart}:tool:${toolUseId}`, hookOnly: false }
+  }
+  const transcriptPath = opts.payload.transcript_path
+  if (transcriptPath && key) {
+    const pollMs = opts.pollMs ?? HOOK_TRANSCRIPT_POLL_MS
+    const deadline = Date.now() + (opts.pollForMs ?? HOOK_TRANSCRIPT_POLL_FOR_MS)
+    for (;;) {
+      const bound = lastMatchEventId(transcriptPath, key, opts.payload.session_id ?? '')
+      if (bound) return { eventId: bound, hookOnly: false }
+      if (Date.now() >= deadline) break
+      await sleep(pollMs)
+    }
+  }
+  if (opts.payload.hook_event_name === 'PostToolUse' && key) {
+    return { eventId: occEventId(sessionPart, key, 0), hookOnly: false }
+  }
+  const eventId = hookFallbackId(sessionPart, opts.idempotencyKey, sessionKey, key)
+  return { eventId, hookOnly: true }
+}
+
 /**
  * Reconcile `transcriptPath` into its conversation: insert every turn the DB is
  * missing — assistant text/reasoning, user prompts, and tool calls — and nothing
@@ -687,9 +998,13 @@ async function insertMessage(
  * tool calls. Safe to call repeatedly and concurrently for the same session (a
  * per-session advisory lock serialises ingests).
  *
- * Caveat: a tool row recovered here can race a still-spooled offline replay of
- * the same PostToolUse, producing a rare duplicate; the offline outbox is the
- * unreliable edge and the recovered call is the higher-value record.
+ * On the den path, Stop and a live hook share an event id when the hook bound
+ * the transcript row (native tool id or entry uuid, otherwise the occurrence
+ * id). A PostToolUse payload carrying `tool_use_id` uses that id and does not
+ * read the transcript. A prompt that never appears uses `hook:<stem>` with
+ * `source: hook-only`; Stop may then insert a second row for that turn.
+ * That case is rare. Two identical tool calls without `tool_use_id` both
+ * bind to the last match.
  */
 export async function ingestTranscript(opts: IngestOptions): Promise<IngestResult> {
   const { transcriptPath, markInactive = false, event } = opts
@@ -711,22 +1026,14 @@ export async function ingestTranscript(opts: IngestOptions): Promise<IngestResul
   // Desired state from the transcript, split by role.
   // Assistant turns carrying real text/reasoning (pure "[tool call]" placeholder
   // turns are represented by their tool rows below, not as assistant rows).
-  const assistantMsgs = parsed.msgs.filter(
-    (m) => m.role === 'assistant' && m.content !== '' && !m.content.startsWith('[tool call]'),
-  )
+  const assistantMsgs = parsed.msgs.filter(isTextAssistant)
   // Genuine user prompts only. A user turn that carries a tool_result (parseTranscript
   // folds the result into content and sets toolResult) is not a prompt — the live
   // UserPromptSubmit never captured those, so importing them would be noise.
-  const userMsgs = parsed.msgs.filter(
-    (m) =>
-      m.role === 'user' &&
-      m.toolResult == null &&
-      m.content !== '' &&
-      !m.content.startsWith('[tool call]'),
-  )
+  const userMsgs = parsed.msgs.filter(isPromptUser)
   // One tool row per tool_use block, carrying its paired result.
   const toolCalls = parsed.msgs.flatMap((m) =>
-    m.tools.map((t) => ({ ...t, uuid: m.uuid, ts: m.ts })),
+    m.tools.map((t) => ({ ...t, uuid: m.uuid, ts: m.ts, lineIndex: m.lineIndex })),
   )
 
   if (assistantMsgs.length === 0 && userMsgs.length === 0 && toolCalls.length === 0) {
@@ -753,7 +1060,103 @@ export async function ingestTranscript(opts: IngestOptions): Promise<IngestResul
     fallbackKey,
   })
 
-  return await withCaptureClient(opts.pgUrl ?? resolvePgUrl(), async (client) => {
+  const transport = selectTransport(opts)
+  if (transport.kind === 'none') {
+    throw new Error(`capture transport unavailable: ${transport.reason}`)
+  }
+  if (transport.kind === 'den') {
+    const sessionPart = opts.sessionId || parsed.sessionId || 'unknown'
+    const file = path.resolve(transcriptPath)
+    const ids = denEventIds(parsed, sessionPart)
+    const messages: CaptureMessage[] = []
+    let assistantAt = 0
+    for (const m of assistantMsgs) {
+      const created = isoTimestamp(m.ts)
+      messages.push({
+        event_id: ids.assistant[assistantAt++] ?? '',
+        role: 'assistant',
+        content: m.content,
+        metadata: {
+          source: 'claude-code-hook',
+          uuid: m.uuid,
+          sidechain: m.sidechain,
+          ...pointerMeta(file, m.lineIndex),
+          ...herdrMeta(opts.herdr),
+        },
+        ...(created ? { created_at: created } : {}),
+      })
+    }
+    let toolAt = 0
+    for (const t of toolCalls) {
+      const created = isoTimestamp(t.ts)
+      const content = `[tool call] ${t.name}`
+      messages.push({
+        event_id: ids.tool[toolAt++] ?? '',
+        role: 'tool',
+        content,
+        tool_name: t.name,
+        ...(t.input != null ? { tool_args: t.input } : {}),
+        ...(typeof t.result === 'string' ? { tool_result: t.result } : {}),
+        metadata: {
+          source: 'claude-code-hook',
+          uuid: t.uuid,
+          hook_event: 'PostToolUse',
+          recovered: true,
+          ...pointerMeta(file, t.resultLine ?? t.lineIndex),
+          ...herdrMeta(opts.herdr),
+        },
+        ...(created ? { created_at: created } : {}),
+      })
+    }
+    let userAt = 0
+    for (const m of userMsgs) {
+      const created = isoTimestamp(m.ts)
+      messages.push({
+        event_id: ids.user[userAt++] ?? '',
+        role: 'user',
+        content: m.content,
+        metadata: {
+          source: 'claude-code-hook',
+          uuid: m.uuid,
+          recovered: true,
+          ...pointerMeta(file, m.lineIndex),
+          ...herdrMeta(opts.herdr),
+        },
+        ...(created ? { created_at: created } : {}),
+      })
+    }
+    const settings = {
+      source: 'claude-code-hook',
+      file: transcriptPath,
+      session_id: opts.sessionId ?? parsed.sessionId,
+      pr_url: parsed.prUrl ?? null,
+      last_event: event ?? null,
+      last_ingest_at: new Date().toISOString(),
+    }
+    const posted = await postCaptureBatch(
+      {
+        session_key: sessionKey,
+        agent: CAPTURE_AGENT,
+        channel: CAPTURE_CHANNEL,
+        title: fallbackTitle(parsed).slice(0, 120),
+        settings,
+        ...(isTaskId(opts.taskId) ? { task_id: opts.taskId } : {}),
+        ...(markInactive ? { finalize: true } : {}),
+        messages,
+      },
+      transport.denUrl,
+      opts,
+    )
+    return {
+      sessionKey,
+      conversationId: posted.conversationId,
+      created: false,
+      inserted: posted.inserted,
+      alreadyStored: posted.skipped,
+    }
+  }
+
+  return await withCaptureClient(opts.pgUrl ?? transport.pgUrl, async (client) => {
     await client.query('BEGIN')
     try {
       // Serialise concurrent ingests of the same session (find-or-create +
@@ -795,7 +1198,7 @@ export async function ingestTranscript(opts: IngestOptions): Promise<IngestResul
       for (const m of assistantMsgs.filter((m) => !m.uuid || !seenA.has(m.uuid))) {
         await insertMessage(client, conv.id, {
           role: 'assistant',
-          content: m.content,
+          content: trunc(m.content) ?? '',
           metadata: {
             source: 'claude-code-hook',
             uuid: m.uuid,
@@ -853,14 +1256,15 @@ export async function ingestTranscript(opts: IngestOptions): Promise<IngestResul
       for (const r of storedU.rows) userHave.set(r.content, (userHave.get(r.content) ?? 0) + 1)
       alreadyStored += storedU.rows.length
       for (const m of userMsgs) {
-        const have = userHave.get(m.content) ?? 0
+        const stored = trunc(m.content) ?? ''
+        const have = userHave.get(stored) ?? 0
         if (have > 0) {
-          userHave.set(m.content, have - 1)
+          userHave.set(stored, have - 1)
           continue
         }
         await insertMessage(client, conv.id, {
           role: 'user',
-          content: m.content,
+          content: stored,
           metadata: {
             source: 'claude-code-hook',
             uuid: m.uuid,
@@ -914,6 +1318,8 @@ export async function ingestTranscript(opts: IngestOptions): Promise<IngestResul
 export interface HookEventPayload {
   hook_event_name?: string
   session_id?: string
+  /** Claude Code hook field. Used to reconcile this row with the transcript. */
+  transcript_path?: string
   cwd?: string
   model?: string
   /** UserPromptSubmit */
@@ -921,9 +1327,20 @@ export interface HookEventPayload {
   /** PostToolUse */
   tool_name?: string
   tool_input?: unknown
+  /**
+   * Native tool id from the Claude Code PostToolUse payload (`tool_use_id`).
+   * When set, the event id is `claude-code:<session>:tool:<tool_use_id>` and
+   * the transcript is not consulted.
+   */
+  tool_use_id?: string
   /** Claude Code names the result `tool_response`; some payloads use `tool_result`. */
   tool_response?: unknown
   tool_result?: unknown
+  /**
+   * Event id resolved on the first spool attempt. A retry reuses it instead
+   * of binding again against a transcript that may have grown.
+   */
+  rivetos_event_id?: string
 }
 
 export interface HookEventOptions {
@@ -937,12 +1354,22 @@ export interface HookEventOptions {
   pgUrl?: string
   /** herdr pane identity — see IngestOptions.herdr. */
   herdr?: HerdrPaneContext
+  /** Test override for transport resolution. Production reads `process.env`. */
+  env?: NodeJS.ProcessEnv
+  /** Injected fetch for the den writer (tests). */
+  fetch?: typeof globalThis.fetch
+  /** Override the capture spool directory (tests). */
+  spoolDir?: string
   /**
    * Stable per-spool key (basename stem). A retried hook event after COMMIT
    * but before spool delete, or a double-claimed leftover, must not insert
    * another ros_messages row — ingestHookEvent has no uuid/multiset dedup.
    */
   idempotencyKey?: string
+  /** Test override. Production polls every 100ms for up to 2s. */
+  pollMs?: number
+  /** Test override for how long to wait for a matching transcript row. Default 2000. */
+  pollForMs?: number
 }
 
 export interface HookEventResult {
@@ -1007,7 +1434,7 @@ export async function ingestHookEvent(opts: HookEventOptions): Promise<HookEvent
         skipped: 'empty prompt',
       }
     }
-    row = { role: 'user', content: trunc(prompt) ?? '' }
+    row = { role: 'user', content: prompt }
     title = prompt
   } else if (event === 'PostToolUse') {
     const toolName = typeof payload.tool_name === 'string' ? payload.tool_name : 'unknown'
@@ -1017,7 +1444,7 @@ export async function ingestHookEvent(opts: HookEventOptions): Promise<HookEvent
       content: `[tool call] ${toolName}`,
       toolName,
       toolArgs: payload.tool_input ?? null,
-      toolResult: trunc(result),
+      toolResult: result,
     }
   } else {
     return {
@@ -1029,7 +1456,65 @@ export async function ingestHookEvent(opts: HookEventOptions): Promise<HookEvent
     }
   }
 
-  return await withCaptureClient(opts.pgUrl ?? resolvePgUrl(), async (client) => {
+  const transport = selectTransport(opts)
+  if (transport.kind === 'none') {
+    throw new Error(`capture transport unavailable: ${transport.reason}`)
+  }
+  if (transport.kind === 'den') {
+    const resolved = await resolveHookEventId({
+      payload,
+      idempotencyKey: opts.idempotencyKey,
+      sessionKeyOverride: opts.sessionKeyOverride,
+      pollMs: opts.pollMs,
+      pollForMs: opts.pollForMs,
+    })
+    const eventId = resolved.eventId
+    const hookOnly = resolved.hookOnly
+    const settings = {
+      source: 'claude-code-hook',
+      session_id: sessionId,
+      cwd: payload.cwd ?? null,
+      last_event: event,
+      last_ingest_at: new Date().toISOString(),
+    }
+    const posted = await postCaptureBatch(
+      {
+        session_key: sessionKey,
+        agent: CAPTURE_AGENT,
+        channel: CAPTURE_CHANNEL,
+        title: title.slice(0, 120),
+        settings,
+        ...(isTaskId(opts.taskId) ? { task_id: opts.taskId } : {}),
+        messages: [
+          {
+            event_id: eventId,
+            role: row.role === 'tool' ? 'tool' : 'user',
+            content: row.content,
+            ...(row.toolName ? { tool_name: row.toolName } : {}),
+            ...(row.toolArgs != null ? { tool_args: row.toolArgs } : {}),
+            ...(typeof row.toolResult === 'string' ? { tool_result: row.toolResult } : {}),
+            metadata: {
+              source: hookOnly ? 'hook-only' : 'claude-code-hook',
+              hook_event: event,
+              ...(opts.idempotencyKey ? { ingest_key: opts.idempotencyKey } : {}),
+              ...herdrMeta(opts.herdr),
+            },
+          },
+        ],
+      },
+      transport.denUrl,
+      opts,
+    )
+    return {
+      sessionKey,
+      conversationId: posted.conversationId,
+      created: false,
+      inserted: posted.inserted,
+      ...(posted.inserted === 0 ? { skipped: 'duplicate ingest_key' } : {}),
+    }
+  }
+
+  return await withCaptureClient(opts.pgUrl ?? transport.pgUrl, async (client) => {
     await client.query('BEGIN')
     try {
       await client.query('SELECT pg_advisory_xact_lock(hashtext($1))', [sessionKey])
@@ -1075,10 +1560,10 @@ export async function ingestHookEvent(opts: HookEventOptions): Promise<HookEvent
 
       await insertMessage(client, conv.id, {
         role: row.role,
-        content: row.content,
+        content: trunc(row.content) ?? '',
         toolName: row.toolName,
         toolArgs: row.toolArgs,
-        toolResult: row.toolResult,
+        toolResult: trunc(row.toolResult ?? null),
         metadata: {
           source: 'claude-code-hook',
           hook_event: event,

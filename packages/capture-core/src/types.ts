@@ -31,10 +31,16 @@ export interface CaptureWriterOptions {
   spoolDir?: string
   log?: (line: string) => void
   now?: () => Date
+  /** UTF-8 byte budget of one posted JSON body. Default 768 KiB. */
+  maxChunkBytes?: number
 }
 export interface CaptureWriter {
   write(
     batch: CaptureBatch,
-  ): Promise<CaptureResult | { spooled: true; file: string } | { spooled: false; error: string }>
+  ): Promise<
+    | CaptureResult
+    | { spooled: true; file: string; files: string[] }
+    | { spooled: false; error: string }
+  >
   replay(opts?: { max?: number }): Promise<{ replayed: number; remaining: number; dead: number }>
 }
