@@ -280,6 +280,84 @@ it('keeps a single holder when a taker pauses after the validating stat', async 
   expect(readdirSync(parent).some((name) => name.includes('.stale-'))).toBe(false)
 })
 
+it('does not let a delayed abandoned-reclaim observer steal the recovered mutex', async () => {
+  const lockDir = lockPath()
+  mkdirSync(lockDir)
+  writeFileSync(join(lockDir, 'owner.json'), '{"pid":1}')
+  const old = new Date(Date.now() - 10_000)
+  utimesSync(lockDir, old, old)
+  const reclaim = `${lockDir}.reclaim`
+  mkdirSync(reclaim)
+  const abandoned = new Date(Date.now() - 31_000)
+  utimesSync(reclaim, abandoned, abandoned)
+
+  let observed = false
+  let releaseObserved: () => void = () => undefined
+  const observedGate = new Promise<void>((resolve) => {
+    releaseObserved = resolve
+  })
+  let validated = false
+  let releaseValidated: () => void = () => undefined
+  const validatedGate = new Promise<void>((resolve) => {
+    releaseValidated = resolve
+  })
+  let inside = 0
+  let maxInside = 0
+  const track = async (who: string): Promise<string> => {
+    inside += 1
+    maxInside = Math.max(maxInside, inside)
+    await new Promise((resolve) => setTimeout(resolve, 40))
+    inside -= 1
+    return who
+  }
+
+  const delayed = withFileLock(lockDir, () => track('B'), {
+    staleMs: 1_000,
+    waitMs: 4_000,
+    pollMs: 10,
+    afterAbandonedReclaimStat: async () => {
+      observed = true
+      await observedGate
+    },
+  })
+  const started = Date.now()
+  while (!observed && Date.now() - started < 1_000) {
+    await new Promise((resolve) => setTimeout(resolve, 10))
+  }
+  expect(observed).toBe(true)
+
+  const recoverer = withFileLock(lockDir, () => track('A'), {
+    staleMs: 1_000,
+    waitMs: 4_000,
+    pollMs: 10,
+    afterValidatingStat: async () => {
+      validated = true
+      await validatedGate
+    },
+  })
+  const startedA = Date.now()
+  while (!validated && Date.now() - startedA < 1_000) {
+    await new Promise((resolve) => setTimeout(resolve, 10))
+  }
+  expect(validated).toBe(true)
+  expect(maxInside).toBe(0)
+
+  releaseObserved()
+  await new Promise((resolve) => setTimeout(resolve, 50))
+  expect(maxInside).toBe(0)
+  expect(inside).toBe(0)
+
+  releaseValidated()
+  const results = await Promise.all([delayed, recoverer])
+  expect(maxInside).toBe(1)
+  expect(results.sort()).toEqual(['A', 'B'])
+  expect(existsSync(lockDir)).toBe(false)
+  expect(existsSync(reclaim)).toBe(false)
+  const parent = lockDir.slice(0, lockDir.lastIndexOf('/'))
+  expect(readdirSync(parent).some((name) => name.includes('.stale-'))).toBe(false)
+  expect(readdirSync(parent).some((name) => name.includes('.abandoned-'))).toBe(false)
+})
+
 it('recovers an abandoned reclaim mutex', async () => {
   const lockDir = lockPath()
   mkdirSync(lockDir)

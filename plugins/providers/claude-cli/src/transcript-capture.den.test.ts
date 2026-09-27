@@ -321,7 +321,7 @@ describe('claude-cli den transport', () => {
     })
   })
 
-  it('falls back to the hook stem when the transcript cannot be read', async () => {
+  it('uses an occurrence id when a tool transcript cannot be read', async () => {
     const bodies: PostedBatch[] = []
     await ingestHookEvent({
       payload: {
@@ -338,8 +338,14 @@ describe('claude-cli den transport', () => {
       pollForMs: 120,
       pollMs: 40,
     })
-    expect(bodies[0]?.messages[0]?.event_id).toBe('claude-code:sess-1:hook:stem-missing')
-    expect(bodies[0]?.messages[0]?.metadata).toMatchObject({ source: 'hook-only' })
+    const hash = contentTupleHash({
+      role: 'tool',
+      content: '[tool call] Bash',
+      toolName: 'Bash',
+      toolArgs: { command: 'ls' },
+    })
+    expect(bodies[0]?.messages[0]?.event_id).toBe(`claude-code:sess-1:occ:${hash}:0`)
+    expect(bodies[0]?.messages[0]?.metadata).toMatchObject({ source: 'claude-code-hook' })
   })
 
   function readCall(id: string | undefined, input: unknown = { file_path: 'a' }): string {
@@ -432,24 +438,25 @@ describe('claude-cli den transport', () => {
     expect(bodies[1]?.messages.find((m) => m.role === 'tool')?.event_id).toBe(hookId)
   })
 
-  it('waits until the new prompt is the transcript tail before binding', async () => {
+  it('waits until the matching prompt appears even when an assistant row follows it', async () => {
     const dir = mkdtempSync(path.join(tmpdir(), 'claude-den-'))
     dirs.push(dir)
     const file = path.join(dir, 'sess.jsonl')
-    const user = (uuid: string) =>
+    const user = (uuid: string, content: string) =>
       JSON.stringify({
         type: 'user',
         sessionId: 'sess-1',
         uuid,
-        message: { role: 'user', content: 'continue' },
+        message: { role: 'user', content },
       })
-    const assistant = JSON.stringify({
-      type: 'assistant',
-      sessionId: 'sess-1',
-      uuid: 'a1',
-      message: { role: 'assistant', content: 'ok' },
-    })
-    writeFileSync(file, `${user('u1')}\n${assistant}\n`)
+    const assistant = (uuid: string) =>
+      JSON.stringify({
+        type: 'assistant',
+        sessionId: 'sess-1',
+        uuid,
+        message: { role: 'assistant', content: 'ok' },
+      })
+    writeFileSync(file, `${user('u0', 'older')}\n${assistant('a0')}\n`)
     const bodies: PostedBatch[] = []
     const pending = ingestHookEvent({
       payload: {
@@ -465,27 +472,29 @@ describe('claude-cli den transport', () => {
       pollForMs: 1_000,
     })
     await new Promise((resolve) => setTimeout(resolve, 50))
-    writeFileSync(file, `${user('u1')}\n${assistant}\n${user('u2')}\n`)
+    writeFileSync(
+      file,
+      [user('u0', 'older'), assistant('a0'), user('u2', 'continue'), assistant('a2')].join('\n') +
+        '\n',
+    )
     await pending
     expect(bodies[0]?.messages[0]?.event_id).toBe('claude-code:sess-1:u2')
     expect(bodies[0]?.messages[0]?.metadata).toMatchObject({ source: 'claude-code-hook' })
   })
 
-  it('does not bind a delayed hook once a later turn is already the tail', async () => {
+  it('binds a prompt when the assistant response is already present', async () => {
     const dir = mkdtempSync(path.join(tmpdir(), 'claude-den-'))
     dirs.push(dir)
     const file = path.join(dir, 'sess.jsonl')
-    const user = (uuid: string) =>
-      JSON.stringify({
-        type: 'user',
-        sessionId: 'sess-1',
-        uuid,
-        message: { role: 'user', content: 'continue' },
-      })
     writeFileSync(
       file,
       [
-        user('u1'),
+        JSON.stringify({
+          type: 'user',
+          sessionId: 'sess-1',
+          uuid: 'u1',
+          message: { role: 'user', content: 'continue' },
+        }),
         JSON.stringify({
           type: 'assistant',
           sessionId: 'sess-1',
@@ -508,7 +517,135 @@ describe('claude-cli den transport', () => {
       pollMs: 20,
       pollForMs: 80,
     })
-    expect(bodies[0]?.messages[0]?.event_id).toBe('claude-code:sess-1:hook:stem-late')
-    expect(bodies[0]?.messages[0]?.metadata).toMatchObject({ source: 'hook-only' })
+    expect(bodies[0]?.messages).toHaveLength(1)
+    expect(bodies[0]?.messages[0]?.event_id).toBe('claude-code:sess-1:u1')
+    expect(bodies[0]?.messages[0]?.metadata).toMatchObject({ source: 'claude-code-hook' })
+  })
+
+  function multiRead(ids: Array<{ id: string; path: string }>): string {
+    return JSON.stringify({
+      type: 'assistant',
+      sessionId: 'sess-1',
+      uuid: 'a-multi',
+      message: {
+        role: 'assistant',
+        content: ids.map((tool) => ({
+          type: 'tool_use',
+          id: tool.id,
+          name: 'Read',
+          input: { file_path: tool.path },
+        })),
+      },
+    })
+  }
+
+  it('binds PostToolUse(Read a) then Stop to exactly t1 and t2', async () => {
+    const dir = mkdtempSync(path.join(tmpdir(), 'claude-den-'))
+    dirs.push(dir)
+    const file = path.join(dir, 'sess.jsonl')
+    writeFileSync(
+      file,
+      `${multiRead([
+        { id: 't1', path: 'a' },
+        { id: 't2', path: 'b' },
+      ])}\n`,
+    )
+    const bodies: PostedBatch[] = []
+    await ingestHookEvent({
+      payload: {
+        hook_event_name: 'PostToolUse',
+        session_id: 'sess-1',
+        transcript_path: file,
+        tool_name: 'Read',
+        tool_input: { file_path: 'a' },
+        tool_response: 'ok',
+      },
+      idempotencyKey: 'multi-a',
+      env: denEnv,
+      fetch: okFetch(bodies),
+      pollMs: 20,
+      pollForMs: 200,
+    })
+    await ingestTranscript({ transcriptPath: file, env: denEnv, fetch: okFetch(bodies) })
+    expect(bodies[0]?.messages).toHaveLength(1)
+    expect(bodies[0]?.messages[0]?.event_id).toBe('claude-code:sess-1:tool:t1')
+    expect(bodies[1]?.messages.filter((m) => m.role === 'tool').map((m) => m.event_id)).toEqual([
+      'claude-code:sess-1:tool:t1',
+      'claude-code:sess-1:tool:t2',
+    ])
+    const ids = new Set(bodies.flatMap((batch) => batch.messages.map((m) => m.event_id)))
+    expect([...ids].sort()).toEqual(['claude-code:sess-1:tool:t1', 'claude-code:sess-1:tool:t2'])
+  })
+
+  it('resolves two identical Reads to their own tool_use_ids', async () => {
+    const dir = mkdtempSync(path.join(tmpdir(), 'claude-den-'))
+    dirs.push(dir)
+    const file = path.join(dir, 'sess.jsonl')
+    writeFileSync(
+      file,
+      `${multiRead([
+        { id: 't1', path: 'a' },
+        { id: 't2', path: 'a' },
+      ])}\n`,
+    )
+    const bodies: PostedBatch[] = []
+    for (const id of ['t1', 't2']) {
+      await ingestHookEvent({
+        payload: {
+          hook_event_name: 'PostToolUse',
+          session_id: 'sess-1',
+          transcript_path: file,
+          tool_name: 'Read',
+          tool_input: { file_path: 'a' },
+          tool_response: 'ok',
+          tool_use_id: id,
+        },
+        idempotencyKey: `same-${id}`,
+        env: denEnv,
+        fetch: okFetch(bodies),
+        pollMs: 20,
+        pollForMs: 200,
+      })
+    }
+    expect(bodies[0]?.messages[0]?.event_id).toBe('claude-code:sess-1:tool:t1')
+    expect(bodies[1]?.messages[0]?.event_id).toBe('claude-code:sess-1:tool:t2')
+  })
+
+  it('binds a payload with no tool_use_id to the last matching tool_use', async () => {
+    const dir = mkdtempSync(path.join(tmpdir(), 'claude-den-'))
+    dirs.push(dir)
+    const file = path.join(dir, 'sess.jsonl')
+    const later = JSON.stringify({
+      type: 'assistant',
+      sessionId: 'sess-1',
+      uuid: 'a-done',
+      message: { role: 'assistant', content: 'done' },
+    })
+    writeFileSync(
+      file,
+      `${multiRead([
+        { id: 't1', path: 'a' },
+        { id: 't2', path: 'a' },
+      ])}\n${later}\n`,
+    )
+    const bodies: PostedBatch[] = []
+    await ingestHookEvent({
+      payload: {
+        hook_event_name: 'PostToolUse',
+        session_id: 'sess-1',
+        transcript_path: file,
+        tool_name: 'Read',
+        tool_input: { file_path: 'a' },
+        tool_response: 'ok',
+      },
+      idempotencyKey: 'no-id',
+      env: denEnv,
+      fetch: okFetch(bodies),
+      pollMs: 20,
+      pollForMs: 200,
+    })
+    expect(bodies[0]?.messages).toHaveLength(1)
+    expect(bodies[0]?.messages[0]?.event_id).toBe('claude-code:sess-1:tool:t2')
+    expect(bodies[0]?.messages[0]?.metadata).toMatchObject({ source: 'claude-code-hook' })
   })
 })

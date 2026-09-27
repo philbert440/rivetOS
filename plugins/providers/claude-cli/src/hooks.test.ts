@@ -321,6 +321,60 @@ describe('ingestSpoolFile claim', () => {
     expect(existsSync(retained)).toBe(false)
   })
 
+  it('binds a delayed UserPromptSubmit worker to the user uuid when the assistant is already present', async () => {
+    const dir = tempDir()
+    const transcript = join(dir, 'sess.jsonl')
+    writeFileSync(
+      transcript,
+      [
+        JSON.stringify({
+          type: 'user',
+          sessionId: 'sess-1',
+          uuid: 'u-delayed',
+          message: { role: 'user', content: 'continue' },
+        }),
+        JSON.stringify({
+          type: 'assistant',
+          sessionId: 'sess-1',
+          uuid: 'a-delayed',
+          message: { role: 'assistant', content: 'already here' },
+        }),
+      ].join('\n') + '\n',
+    )
+    const file = writeSpool(dir, 'late.a1.json', {
+      hook_event_name: 'UserPromptSubmit',
+      session_id: 'sess-1',
+      prompt: 'continue',
+      transcript_path: transcript,
+    })
+    const denEnv: NodeJS.ProcessEnv = {
+      RIVETOS_CAPTURE_TRANSPORT: 'den',
+      RIVET_DEN_URL: 'https://127.0.0.1:5174',
+    }
+    let posted: Array<{ event_id?: string; role?: string }> = []
+    await ingestSpoolFile(file, {
+      env: denEnv,
+      captureSpoolDir: join(dir, 'capture'),
+      pollMs: 20,
+      pollForMs: 80,
+      fetch: async (_input, init) => {
+        const body = JSON.parse(String(init?.body ?? '{}')) as {
+          messages?: Array<{ event_id?: string; role?: string }>
+        }
+        posted = body.messages ?? []
+        return new Response(
+          JSON.stringify({ ok: true, conversation_id: 'c', inserted: 1, skipped: 0 }),
+          { status: 200, headers: { 'content-type': 'application/json' } },
+        )
+      },
+      log: () => undefined,
+    })
+    expect(posted).toHaveLength(1)
+    expect(posted[0]?.role).toBe('user')
+    expect(posted[0]?.event_id).toBe('claude-code:sess-1:u-delayed')
+    expect(existsSync(file)).toBe(false)
+  })
+
   it('passes a stable spool-stem idempotency key to ingestHookEvent', async () => {
     const dir = tempDir()
     const file = writeSpool(dir, 'abc123.a1.json', promptPayload)

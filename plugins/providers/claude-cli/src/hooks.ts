@@ -307,6 +307,8 @@ interface HookPayload {
   tool_input?: unknown
   tool_response?: unknown
   tool_result?: unknown
+  /** Claude Code PostToolUse native id. Live capture uses it verbatim. */
+  tool_use_id?: string
   /**
    * Written back on the first resolution of a payload event. Retries reuse it
    * instead of binding against a transcript that has grown since.
@@ -405,8 +407,8 @@ async function dispatchIngest(
     : undefined
 
   // Payload events (UserPromptSubmit / PostToolUse). The row comes from the
-  // stdin payload; its event id is bound to the transcript tail when that
-  // file is readable (see resolveHookEventId).
+  // stdin payload; its event id is the payload tool_use_id or the last
+  // matching transcript row (see resolveHookEventId).
   if ((PAYLOAD_EVENTS as readonly string[]).includes(event)) {
     const res = await ingestHook({
       payload,

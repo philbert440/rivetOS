@@ -838,7 +838,7 @@ function denEventIds(
   return { assistant, tool, user }
 }
 
-/** How long a live hook waits for its transcript row to land at the tail. */
+/** How long a live hook waits for its transcript row to appear. */
 const HOOK_TRANSCRIPT_POLL_MS = 100
 const HOOK_TRANSCRIPT_POLL_FOR_MS = 2_000
 
@@ -853,12 +853,12 @@ function hookOnlyEventId(eventId: string): boolean {
 }
 
 /**
- * Id of the last captured row matching `key`, when that row is the tail of
- * the file. A native tool id or entry uuid wins; otherwise the occurrence id
- * the Stop walk assigns to that same row. Undefined when the file cannot be
- * read, nothing matches, or a later captured row means this is still a prefix.
+ * Id of the last captured row matching `key`, anywhere in the file. A native
+ * tool id or entry uuid wins; otherwise the occurrence id the Stop walk
+ * assigns to that same row. Undefined when the file cannot be read or nothing
+ * matches. A later captured row does not reject the match.
  */
-function tailEventId(
+function lastMatchEventId(
   transcriptPath: string,
   key: OccurrenceKey,
   sessionHint: string,
@@ -872,12 +872,8 @@ function tailEventId(
   const sessionPart = sessionHint || parsed.sessionId || 'unknown'
   const want = contentTupleHash(key)
   let found: string | undefined
-  let foundAt = -1
-  let index = -1
   forEachCaptured(parsed, (rowKey, n, slot) => {
-    index += 1
     if (contentTupleHash(rowKey) !== want) return
-    foundAt = index
     if (slot.kind === 'tool' && slot.tool.id) {
       found = `claude-code:${sessionPart}:tool:${slot.tool.id}`
       return
@@ -888,8 +884,13 @@ function tailEventId(
     }
     found = occEventId(sessionPart, rowKey, n)
   })
-  if (found === undefined || foundAt !== index) return undefined
   return found
+}
+
+/** Claude Code PostToolUse field. Empty means the payload did not carry one. */
+function payloadToolUseId(payload: HookEventPayload): string | undefined {
+  const id = payload.tool_use_id
+  return typeof id === 'string' && id !== '' ? id : undefined
 }
 
 function hookOccurrenceKey(payload: HookEventPayload): OccurrenceKey | undefined {
@@ -929,9 +930,14 @@ function hookFallbackId(
 
 /**
  * Bind a UserPromptSubmit / PostToolUse row to one transcript position.
- * Polls until the last matching entry is the tail, then uses that entry's
- * native id or occurrence id. A stored `rivetos_event_id` is returned as-is
- * so a spool retry does not recompute against a grown transcript.
+ * A PostToolUse `tool_use_id` is the event id with no transcript read.
+ * Otherwise poll for the last matching entry anywhere in the file (it does
+ * not have to be the tail) and use that entry's native id or occurrence id.
+ * A tool payload that never matches uses the occurrence id of its tuple.
+ * A prompt that never appears uses the hook stem. A stored `rivetos_event_id`
+ * is returned as-is so a spool retry does not recompute against a grown
+ * transcript. Two identical tool calls without `tool_use_id` both bind to
+ * the last match; the native id is what makes that exact.
  */
 export async function resolveHookEventId(opts: {
   payload: HookEventPayload
@@ -951,16 +957,23 @@ export async function resolveHookEventId(opts: {
   })
   const sessionPart = opts.payload.session_id || sessionKey || 'unknown'
   const key = hookOccurrenceKey(opts.payload)
+  const toolUseId = payloadToolUseId(opts.payload)
+  if (opts.payload.hook_event_name === 'PostToolUse' && toolUseId) {
+    return { eventId: `claude-code:${sessionPart}:tool:${toolUseId}`, hookOnly: false }
+  }
   const transcriptPath = opts.payload.transcript_path
   if (transcriptPath && key) {
     const pollMs = opts.pollMs ?? HOOK_TRANSCRIPT_POLL_MS
     const deadline = Date.now() + (opts.pollForMs ?? HOOK_TRANSCRIPT_POLL_FOR_MS)
     for (;;) {
-      const bound = tailEventId(transcriptPath, key, opts.payload.session_id ?? '')
+      const bound = lastMatchEventId(transcriptPath, key, opts.payload.session_id ?? '')
       if (bound) return { eventId: bound, hookOnly: false }
       if (Date.now() >= deadline) break
       await sleep(pollMs)
     }
+  }
+  if (opts.payload.hook_event_name === 'PostToolUse' && key) {
+    return { eventId: occEventId(sessionPart, key, 0), hookOnly: false }
   }
   const eventId = hookFallbackId(sessionPart, opts.idempotencyKey, sessionKey, key)
   return { eventId, hookOnly: true }
@@ -987,8 +1000,11 @@ export async function resolveHookEventId(opts: {
  *
  * On the den path, Stop and a live hook share an event id when the hook bound
  * the transcript row (native tool id or entry uuid, otherwise the occurrence
- * id). A hook that never saw its row uses `hook:<stem>` with `source: hook-only`;
- * Stop may then insert a second row for that turn. That case is rare.
+ * id). A PostToolUse payload carrying `tool_use_id` uses that id and does not
+ * read the transcript. A prompt that never appears uses `hook:<stem>` with
+ * `source: hook-only`; Stop may then insert a second row for that turn.
+ * That case is rare. Two identical tool calls without `tool_use_id` both
+ * bind to the last match.
  */
 export async function ingestTranscript(opts: IngestOptions): Promise<IngestResult> {
   const { transcriptPath, markInactive = false, event } = opts
@@ -1311,6 +1327,12 @@ export interface HookEventPayload {
   /** PostToolUse */
   tool_name?: string
   tool_input?: unknown
+  /**
+   * Native tool id from the Claude Code PostToolUse payload (`tool_use_id`).
+   * When set, the event id is `claude-code:<session>:tool:<tool_use_id>` and
+   * the transcript is not consulted.
+   */
+  tool_use_id?: string
   /** Claude Code names the result `tool_response`; some payloads use `tool_result`. */
   tool_response?: unknown
   tool_result?: unknown
@@ -1346,7 +1368,7 @@ export interface HookEventOptions {
   idempotencyKey?: string
   /** Test override. Production polls every 100ms for up to 2s. */
   pollMs?: number
-  /** Test override for the transcript-tail wait. Default 2000. */
+  /** Test override for how long to wait for a matching transcript row. Default 2000. */
   pollForMs?: number
 }
 

@@ -30,6 +30,12 @@ export interface FileLockOptions {
    * arrive while the mutex is held. Production callers leave it unset.
    */
   afterValidatingStat?: () => Promise<void> | void
+  /**
+   * Runs after an abandoned reclaim directory is observed and before it is
+   * renamed aside. Tests delay one contender there. Production callers leave
+   * it unset.
+   */
+  afterAbandonedReclaimStat?: () => Promise<void> | void
 }
 
 interface OwnerRecord {
@@ -48,16 +54,26 @@ function sameOwner(current: Partial<OwnerRecord>, owner: OwnerRecord): boolean {
   return current.pid === owner.pid && current.host === owner.host && current.ts === owner.ts
 }
 
-/** A reclaim directory older than this is removed as abandoned. */
+/** A reclaim directory older than this may be recovered by one contender. */
 const RECLAIM_ABANDON_MS = 30_000
+/** Holders refresh the reclaim mutex at least this often so it is never judged abandoned. */
+const RECLAIM_HEARTBEAT_MS = 10_000
+
+interface HeldReclaim {
+  ino: number
+  timer: ReturnType<typeof setInterval>
+}
+
+const heldReclaims = new Map<string, HeldReclaim>()
 
 /**
  * Exclusive lock implemented as `mkdir(lockDir)`. A holder that dies leaves
  * the directory; a lock older than `staleMs` (mtime) may be taken over only
  * inside the `<lockDir>.reclaim` mutex, and only after a stat taken while
- * holding that mutex still shows the directory is stale. The holder refreshes
- * mtime while `fn` runs and removes the directory on the way out only when
- * `owner.json` is still the record it wrote.
+ * holding that mutex still shows the directory is stale. An abandoned reclaim
+ * directory is renamed aside (not removed in place) before a new mutex is
+ * created. The holder refreshes both directories' mtimes and removes the lock
+ * on the way out only when `owner.json` is still the record it wrote.
  */
 export async function withFileLock<T>(
   lockDir: string,
@@ -89,6 +105,7 @@ export async function withFileLock<T>(
           staleMs,
           opts?.afterStaleStat,
           opts?.afterValidatingStat,
+          opts?.afterAbandonedReclaimStat,
           log,
         )
       ) {
@@ -119,38 +136,105 @@ export async function withFileLock<T>(
   }
 }
 
+function startReclaimHeartbeat(reclaimDir: string, ino: number): void {
+  const previous = heldReclaims.get(reclaimDir)
+  if (previous) clearInterval(previous.timer)
+  const beat = (): void => {
+    const now = new Date()
+    try {
+      utimesSync(reclaimDir, now, now)
+    } catch {
+      /* The directory may already have been removed. */
+    }
+  }
+  beat()
+  const timer = setInterval(beat, RECLAIM_HEARTBEAT_MS)
+  timer.unref()
+  heldReclaims.set(reclaimDir, { ino, timer })
+}
+
 /**
- * `mkdir(reclaimDir)` is the mutex. EEXIST means another taker is inside the
- * critical section (or abandoned it). Returns true when this caller holds it.
+ * `mkdir(reclaimDir)` is the mutex. EEXIST on a directory younger than 30s
+ * means another taker is inside the critical section; this caller waits.
+ * An older directory is abandoned: rename it to
+ * `<lockDir>.reclaim.abandoned-<pid>-<rand>` (one winner; the loser sees
+ * ENOENT and retries), remove the renamed directory, then mkdir the mutex.
+ * That mkdir can still EEXIST if a third contender created a fresh one.
  */
-async function acquireReclaim(lockDir: string): Promise<boolean> {
+async function acquireReclaim(
+  lockDir: string,
+  afterAbandonedReclaimStat: FileLockOptions['afterAbandonedReclaimStat'],
+): Promise<boolean> {
   const reclaimDir = `${lockDir}.reclaim`
   try {
     await mkdir(reclaimDir)
-    return true
+    return await holdReclaim(reclaimDir)
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error
   }
-  let info
+
+  const seen = await abandonedReclaim(reclaimDir)
+  if (!seen) return false
+  if (afterAbandonedReclaimStat) await afterAbandonedReclaimStat()
+  // The delay above yields. Rename only the directory this stat still describes.
+  const again = await abandonedReclaim(reclaimDir)
+  if (!again || again.ino !== seen.ino) return false
+
+  const suffix = `${String(process.pid)}-${Math.random().toString(36).slice(2)}`
+  const abandonedPath = `${reclaimDir}.abandoned-${suffix}`
   try {
-    info = await stat(reclaimDir)
+    await rename(reclaimDir, abandonedPath)
   } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return false
+    const code = (error as NodeJS.ErrnoException).code
+    // ENOENT: another contender renamed it first. EEXIST/ENOTEMPTY: the
+    // destination was taken. Either way this caller does not own the mutex.
+    if (code === 'ENOENT' || code === 'EEXIST' || code === 'ENOTEMPTY') return false
     throw error
   }
-  if (Date.now() - info.mtimeMs <= RECLAIM_ABANDON_MS) return false
-  await rm(reclaimDir, { recursive: true, force: true }).catch(() => undefined)
+  await rm(abandonedPath, { recursive: true, force: true }).catch(() => undefined)
   try {
     await mkdir(reclaimDir)
-    return true
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code === 'EEXIST') return false
     throw error
   }
+  return await holdReclaim(reclaimDir)
+}
+
+/** Inode of `reclaimDir` when its mtime is older than the abandon threshold. */
+async function abandonedReclaim(reclaimDir: string): Promise<{ ino: number } | undefined> {
+  try {
+    const info = await stat(reclaimDir)
+    if (Date.now() - info.mtimeMs <= RECLAIM_ABANDON_MS) return undefined
+    return { ino: info.ino }
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return undefined
+    throw error
+  }
+}
+
+async function holdReclaim(reclaimDir: string): Promise<boolean> {
+  const info = await stat(reclaimDir)
+  startReclaimHeartbeat(reclaimDir, info.ino)
+  return true
 }
 
 async function releaseReclaim(lockDir: string): Promise<void> {
-  await rm(`${lockDir}.reclaim`, { recursive: true, force: true }).catch(() => undefined)
+  const reclaimDir = `${lockDir}.reclaim`
+  const held = heldReclaims.get(reclaimDir)
+  if (held) {
+    clearInterval(held.timer)
+    heldReclaims.delete(reclaimDir)
+  }
+  if (!held) return
+  try {
+    const info = await stat(reclaimDir)
+    // A replacement landed after we dropped the heartbeat. Do not remove it.
+    if (info.ino !== held.ino) return
+  } catch {
+    return
+  }
+  await rm(reclaimDir, { recursive: true, force: true }).catch(() => undefined)
 }
 
 async function takeoverIfStale(
@@ -158,6 +242,7 @@ async function takeoverIfStale(
   staleMs: number,
   afterStaleStat: FileLockOptions['afterStaleStat'],
   afterValidatingStat: FileLockOptions['afterValidatingStat'],
+  afterAbandonedReclaimStat: FileLockOptions['afterAbandonedReclaimStat'],
   log: (line: string) => void,
 ): Promise<boolean> {
   try {
@@ -171,7 +256,7 @@ async function takeoverIfStale(
   // that acquires the lock while this one is paused.
   if (afterStaleStat) await afterStaleStat()
 
-  if (!(await acquireReclaim(lockDir))) return false
+  if (!(await acquireReclaim(lockDir, afterAbandonedReclaimStat))) return false
   try {
     let validated
     try {
