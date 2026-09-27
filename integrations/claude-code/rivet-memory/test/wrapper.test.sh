@@ -41,9 +41,10 @@ elif [ "$(cat "$out")" = "pg" ]; then
 else
   fail "node saw RIVETOS_CAPTURE_TRANSPORT=$(cat "$out")"
 fi
-  pass "stderr says den transport is disabled"
+if [ ! -s "$stderr" ]; then
+  pass "fallback is silent on stderr (the standalone test counts stderr lines)"
 else
-  fail "stderr missing pg fallback line"
+  fail "fallback wrote to stderr: $(head -c 200 "$stderr")"
 fi
 
 if [ "$failed" -ne 0 ]; then
