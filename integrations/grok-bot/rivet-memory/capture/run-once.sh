@@ -12,8 +12,8 @@ INGEST_BIN="${RIVETOS_ROOT}/integrations/grok-bot/rivet-memory/bin/ingest-sessio
 SPOOL_DIR="${SCRIPT_DIR}/spool"
 STATE_DIR="${HOME}/.rivetos/grokbot-capture-state"
 SESSION_SUFFIX="${GROKBOT_SESSION_SUFFIX--v3}"
-# Keep reading per-session files from the previous directory name if present.
-OLD_STATE_DIR="${HOME}/.rivetos/capture"
+# ~/.rivetos/capture/state.json is the watcher's single size:mtime file, not
+# per-session stuck-policy JSON. Do not copy it into STATE_DIR.
 GROKBOT_TRANSCRIPT_ROOT="${GROKBOT_TRANSCRIPT_ROOT:-}"
 
 # Stuck policy — MUST match grok-memory-capture.ts:
@@ -271,10 +271,6 @@ while IFS= read -r model_json; do
     any_model_processed=1
 
     state_file="${STATE_DIR}/${session_id}.json"
-    if [[ ! -f "${state_file}" && -f "${OLD_STATE_DIR}/${session_id}.json" ]]; then
-        mkdir -p "${STATE_DIR}"
-        cp "${OLD_STATE_DIR}/${session_id}.json" "${state_file}"
-    fi
 
     # Convert
     spool_path="${SPOOL_DIR}/${session_id}.jsonl"

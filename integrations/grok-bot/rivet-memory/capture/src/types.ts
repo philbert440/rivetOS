@@ -88,6 +88,8 @@ export interface NormalizeResult {
   stats: NormalizeStats
   lastKnownTime?: string
   timeKnown: boolean
+  /** Positions where overlapping pages disagreed (set by normalizePages). */
+  conflicts?: number[]
 }
 
 export interface StoredRow {

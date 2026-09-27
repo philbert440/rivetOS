@@ -82,7 +82,7 @@ cd capture/
 ./run-once.sh
 ```
 
-The runner converts each model's transcript from `$GROKBOT_TRANSCRIPT_ROOT/<id>/<id>.jsonl` to `spool/<session>-v3.jsonl` (`GROKBOT_SESSION_SUFFIX`, default `-v3`), then ingests to Postgres when reachable. Fails loud when session files exist but ingest fails. State tracking in `~/.rivetos/grokbot-capture-state/` detects stuck sessions (3+ consecutive failures within 2 hours). Watcher state also keeps or migrates `~/.rivetos/capture/state.json`. See `capture/README.md`.
+The runner converts each model's transcript from `$GROKBOT_TRANSCRIPT_ROOT/<id>/<id>.jsonl` to `spool/<session>-v3.jsonl` (`GROKBOT_SESSION_SUFFIX`, default `-v3`), then ingests to Postgres when reachable. Fails loud when session files exist but ingest fails. State tracking in `~/.rivetos/grokbot-capture-state/` detects stuck sessions (3+ consecutive failures within 2 hours). The watcher keys size:mtime state by agent id plus the session suffix (so a copied `~/.rivetos/capture/state.json` cannot skip `-v3`). See `capture/README.md`.
 
 **Schedule:** Typically via cron/systemd hourly. Reports stuck sessions and failures via exit code.
 

@@ -135,9 +135,7 @@ describe('shared ingest transaction', () => {
 
   it('dedupes by caller event_id across overlapping page order', async () => {
     const query = vi.fn(async (sql: string) => ({
-      rows: sql.includes('AS ordinal')
-        ? [{ ordinal: '1000', event_id: 'same-event' }]
-        : [],
+      rows: sql.includes('AS ordinal') ? [{ ordinal: '1000', event_id: 'same-event' }] : [],
     }))
     const release = vi.fn()
     const client = { query, release }
@@ -162,6 +160,56 @@ describe('shared ingest transaction', () => {
     expect(result.ingested).toBe(0)
     expect(result.skipped).toBe(1)
     expect(append).not.toHaveBeenCalled()
+  })
+
+  it('rows without ordinal/event_id/metadata keep array-index ordinal and ingestEventId', async () => {
+    const query = vi.fn(async () => ({ rows: [] }))
+    const release = vi.fn()
+    const client = { query, release }
+    const append = vi.fn(async () => 'new-id')
+    const memory = {
+      getPool: () => ({ connect: async () => client }),
+      append,
+    } as unknown as PostgresMemory
+    const result = await ingestSession(memory, {
+      sessionId: 'session',
+      agent: 'rivet',
+      messages: [
+        { role: 'user', content: 'hello' },
+        { role: 'assistant', content: 'world' },
+      ],
+    })
+    expect(result.ingested).toBe(2)
+    const firstId = ingestEventId({
+      sessionId: 'session',
+      agent: 'rivet',
+      role: 'user',
+      content: 'hello',
+      ordinal: 0,
+    })
+    const secondId = ingestEventId({
+      sessionId: 'session',
+      agent: 'rivet',
+      role: 'assistant',
+      content: 'world',
+      ordinal: 1,
+    })
+    expect(append).toHaveBeenNthCalledWith(
+      1,
+      expect.objectContaining({
+        content: 'hello',
+        metadata: expect.objectContaining({ ordinal: 0, event_id: firstId }),
+      }),
+      { client },
+    )
+    expect(append).toHaveBeenNthCalledWith(
+      2,
+      expect.objectContaining({
+        content: 'world',
+        metadata: expect.objectContaining({ ordinal: 1, event_id: secondId }),
+      }),
+      { client },
+    )
   })
 
   it('keeps MCP ordinal dedupe and appends on the locked client', async () => {

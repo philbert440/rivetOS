@@ -30,16 +30,23 @@ DELETEs or UPDATEs existing rows.
   `grokbot-arch` / `rivet-arch`). Unknown ids stay `rivet-grokbot-run` /
   `grokbot-run-<id>`. The agent UUID is in metadata.
 - Hidden system turns are stored as `role=system` with `metadata.kind`.
-  Repeated routine / background fires stay distinct by position. Identical
-  user turns at the same timestamp are deduped. `[agent]` messages keep the
-  payload with `from_agent` / `from_agent_id`.
+  Repeated routine / background fires stay distinct by position. Genuine
+  same-minute user repeats stay distinct by position; only a replayed
+  consecutive block (page concat) is dropped. Hidden-body strip runs only
+  when `[SAND_HIDDEN_PROMPT]` is present, so a normal user message that
+  mentions `[event]` survives. `role=system` records stay system.
+  `[agent]` messages keep the payload with `from_agent` / `from_agent_id`.
+  `created_at` is clamped to `max(stamp, lastEmitted+1ms)`. A position
+  that emits ≥1000 rows throws.
 - Ingest ordinal is `position * 1000 + sub-index` (stable across overlapping
   pages). `ingestSession` honors `item.ordinal` / `item.event_id` and merges
   `item.metadata` (agent_id, kind, position, truncated, …).
 - Live capture writes to `<session>-v3` by default (`GROKBOT_SESSION_SUFFIX`).
-  Watcher state stays at `~/.rivetos/capture/state.json` when that file
-  already exists, otherwise `~/.rivetos/grokbot-capture-state.json` (old path
-  is migrated). `RIVETOS_ROOT` defaults to `/opt/rivetos`.
+  Watcher state is keyed by agent id plus the target suffix, so a copied
+  unsuffixed `~/.rivetos/capture/state.json` cannot skip `-v3` ingest.
+  The old path is still copied to `~/.rivetos/grokbot-capture-state.json`
+  on first run. `run-once.sh` does not treat that file as per-session
+  stuck-policy state. `RIVETOS_ROOT` defaults to `/opt/rivetos`.
 
 ## Layout
 
@@ -92,7 +99,10 @@ On-disk input without `--agent-id` or a page header takes the id from
 
 `--input` walks recursively, so the `agent-transcripts` root works. All pages
 for one agent are merged by position into a single spool (overlapping or
-out-of-order pages produce the same rows as a single pass).
+out-of-order pages produce the same rows as a single pass). Files with no
+`--agent-id`, page header id, or `<uuid>/<uuid>.jsonl` path are skipped
+(not tagged `grokbot-unknown`). If overlapping pages disagree at a
+position, the CLI prints `CONFLICT` and refuses `--write`.
 
 ```bash
 # dry (default): stats only, zero writes
@@ -204,10 +214,12 @@ A leftover `models[]` array is treated as more overrides so
 ## Live capture
 
 `watch.mjs` and `run-once.sh` write new-shape rows to `<session>-v3`
-(`GROKBOT_SESSION_SUFFIX`, default `-v3`). Watcher state: keep
-`~/.rivetos/capture/state.json` if it exists (copied to
-`~/.rivetos/grokbot-capture-state.json` on first run). `RIVETOS_ROOT`
-defaults to `/opt/rivetos`.
+(`GROKBOT_SESSION_SUFFIX`, default `-v3`). Watcher state is keyed by
+`id + suffix` so migrating `~/.rivetos/capture/state.json` (unsuffixed
+size:mtime keys) does not skip the `-v3` sessions. `run-once.sh` stuck
+state lives only under `~/.rivetos/grokbot-capture-state/` — it does not
+copy the watcher's single `state.json`. `RIVETOS_ROOT` defaults to
+`/opt/rivetos`.
 
 ## Tests
 

@@ -100,15 +100,20 @@ const HIDDEN_BODY_RES: RegExp[] = [
 
 /**
  * After wrapper strip, drop hidden-turn bodies so mixed user turns keep only
- * the real typed text.
+ * the real typed text. Only runs when the original text has
+ * `[SAND_HIDDEN_PROMPT]` — otherwise a normal user message that mentions
+ * `[event]` / `[routine]` / `[agent]` is left intact.
  */
 export function extractUserText(text: string): string {
+  const hasHiddenPrompt = /\[SAND_HIDDEN_PROMPT\]/.test(text)
   let out = stripWrappers(text)
-  for (const re of HIDDEN_BODY_RES) {
-    out = out.replace(re, '')
+  if (hasHiddenPrompt) {
+    for (const re of HIDDEN_BODY_RES) {
+      out = out.replace(re, '')
+    }
+    out = out.replace(/^\s*This is another assistant reaching out[\s\S]*?in this chat\.\s*/i, '')
+    out = out.replace(/^\s*This is your own standing order[\s\S]*/i, '')
+    out = out.replace(/^\s*This is a system event recorded in your timeline[\s\S]*/i, '')
   }
-  out = out.replace(/^\s*This is another assistant reaching out[\s\S]*?in this chat\.\s*/i, '')
-  out = out.replace(/^\s*This is your own standing order[\s\S]*/i, '')
-  out = out.replace(/^\s*This is a system event recorded in your timeline[\s\S]*/i, '')
   return out.replace(/\n{3,}/g, '\n\n').trim()
 }

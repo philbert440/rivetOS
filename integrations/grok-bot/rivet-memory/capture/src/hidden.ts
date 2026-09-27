@@ -29,7 +29,9 @@ export function classifyHidden(text: string): HiddenKind | undefined {
   }
   if (/\[The user reacted/i.test(text)) return 'reaction'
   if (/<instructions_update>/i.test(text)) return 'instructions_update'
-  if (/\[event\]/.test(text)) return 'event'
+  // Mid-sentence "[event]" in a real user message is not a hidden turn.
+  if (/\[SAND_HIDDEN_PROMPT\]/.test(text) && /\[event\]/.test(text)) return 'event'
+  if (/(?:^|\n)\s*\[event\]/.test(text)) return 'event'
   if (/<<SAND_AGENT_PROFILE_UPDATE/.test(text) || /<agent_profile_update>/i.test(text)) {
     return 'profile_update'
   }

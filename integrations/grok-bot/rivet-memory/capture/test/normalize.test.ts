@@ -10,12 +10,18 @@ import {
   discoverModels,
   identityFor,
   listInputFiles,
+  resolveSourceAgentId,
   slug,
 } from '../src/identity.js'
 import { ORDINAL_STRIDE } from '../src/types.js'
 import { mergeParsedInputs, normalizePages } from '../src/pages.js'
 import { LEGACY_TOOL_RESULT_MAX, legacyNormalizeRecords } from '../src/legacy.js'
-import { normalizeRecords, toIngestRows } from '../src/normalize.js'
+import {
+  clampCreatedAt,
+  normalizeRecords,
+  replaySkipIndices,
+  toIngestRows,
+} from '../src/normalize.js'
 import { detectFormat, parseInput, parsePageHeader, toolResultBody } from '../src/parse.js'
 import { recleanFromSource, recleanStoredRows, v3Session } from '../src/reclean.js'
 import { addMs, parseGrokTimestamp } from '../src/timestamps.js'
@@ -36,7 +42,10 @@ function rivetOpts(session = 'grokbot-rivet-grokbot') {
   return { sessionKey: session, agent: 'rivet-grokbot', agentId: RIVET_ID, persona: 'Rivet' }
 }
 
-function normalizeFile(name: string, extra?: { sessionKey?: string; agent?: string; agentId?: string }) {
+function normalizeFile(
+  name: string,
+  extra?: { sessionKey?: string; agent?: string; agentId?: string },
+) {
   const text = readFix(name)
   const parsed = parseInput(text)
   return {
@@ -53,11 +62,15 @@ function normalizeFile(name: string, extra?: { sessionKey?: string; agent?: stri
 
 describe('timestamps', () => {
   it('parses UTC-4 into absolute ISO UTC', () => {
-    expect(parseGrokTimestamp('Sunday, Sep 27, 2026, 4:06 PM (UTC-4)')).toBe('2026-09-27T20:06:00.000Z')
+    expect(parseGrokTimestamp('Sunday, Sep 27, 2026, 4:06 PM (UTC-4)')).toBe(
+      '2026-09-27T20:06:00.000Z',
+    )
   })
 
   it('parses UTC+5:30 into absolute ISO UTC', () => {
-    expect(parseGrokTimestamp('Monday, Jan 5, 2026, 9:30 AM (UTC+5:30)')).toBe('2026-01-05T04:00:00.000Z')
+    expect(parseGrokTimestamp('Monday, Jan 5, 2026, 9:30 AM (UTC+5:30)')).toBe(
+      '2026-01-05T04:00:00.000Z',
+    )
   })
 
   it('inherits last known time plus N ms only onto assistant/tool after a stamped user', () => {
@@ -75,7 +88,10 @@ describe('timestamps', () => {
       },
       { role: 'assistant', message: { content: [{ type: 'text', text: 'hi' }] } },
       { role: 'tool', message: { content: [{ type: 'tool_result', name: 'x', result: 'ok' }] } },
-      { role: 'user', message: { content: [{ type: 'text', text: '[t2u]\nlater turn, no stamp' }] } },
+      {
+        role: 'user',
+        message: { content: [{ type: 'text', text: '[t2u]\nlater turn, no stamp' }] },
+      },
       { role: 'assistant', message: { content: [{ type: 'text', text: 'after unstamped user' }] } },
     ]
     const { messages } = normalizeRecords(records, rivetOpts())
@@ -99,7 +115,18 @@ describe('timestamps', () => {
           ],
         },
       },
-      { role: 'tool', message: { content: [{ type: 'tool_result', name: 'x', result: '<timestamp>Monday, Jan 5, 2026, 9:30 AM (UTC+5:30)</timestamp>' }] } },
+      {
+        role: 'tool',
+        message: {
+          content: [
+            {
+              type: 'tool_result',
+              name: 'x',
+              result: '<timestamp>Monday, Jan 5, 2026, 9:30 AM (UTC+5:30)</timestamp>',
+            },
+          ],
+        },
+      },
       { role: 'user', message: { content: [{ type: 'text', text: 'plain' }] } },
     ]
     const { messages } = normalizeRecords(records, rivetOpts())
@@ -140,8 +167,61 @@ describe('timestamps', () => {
     expect(messages[3].created_at).toBe(addMs('2026-09-27T20:07:00.000Z', 1))
   })
 
-  it('dedupes identical user turns stamped at the same time', () => {
+  it('keeps genuine same-minute user repeats at different positions', () => {
+    const stamp =
+      '<timestamp>Sunday, Sep 27, 2026, 4:06 PM (UTC-4)</timestamp>\n<user_query>\nyes\n</user_query>'
     const rec = {
+      role: 'user',
+      message: { content: [{ type: 'text', text: stamp }] },
+    }
+    const after = {
+      role: 'assistant',
+      message: { content: [{ type: 'text', text: 'ok' }] },
+    }
+    const later = {
+      role: 'user',
+      message: { content: [{ type: 'text', text: stamp }] },
+    }
+    const { messages } = normalizeRecords([rec, after, later], rivetOpts())
+    const users = messages.filter((m) => m.role === 'user')
+    expect(users).toHaveLength(2)
+    expect(users[0].content).toBe('yes')
+    expect(users[1].content).toBe('yes')
+    expect(users[0].metadata?.position).toBe(0)
+    expect(users[1].metadata?.position).toBe(2)
+    expect(users[1].created_at).toBe(addMs(users[0].created_at ?? '', 2))
+  })
+
+  it('clamps created_at to max(stamp, lastEmitted+1ms)', () => {
+    const stamp =
+      '<timestamp>Sunday, Sep 27, 2026, 4:06 PM (UTC-4)</timestamp>\n<user_query>\nfirst\n</user_query>'
+    const records = [
+      { role: 'user', message: { content: [{ type: 'text', text: stamp }] } },
+      { role: 'assistant', message: { content: [{ type: 'text', text: 'a' }] } },
+      {
+        role: 'user',
+        message: {
+          content: [
+            {
+              type: 'text',
+              text: '<timestamp>Sunday, Sep 27, 2026, 4:06 PM (UTC-4)</timestamp>\n<user_query>\nsecond\n</user_query>',
+            },
+          ],
+        },
+      },
+    ]
+    const { messages } = normalizeRecords(records, rivetOpts())
+    expect(messages[0].created_at).toBe('2026-09-27T20:06:00.000Z')
+    expect(messages[1].created_at).toBe(addMs('2026-09-27T20:06:00.000Z', 1))
+    expect(messages[2].created_at).toBe(addMs('2026-09-27T20:06:00.000Z', 2))
+    const clock = { last: '2026-09-27T20:06:00.000Z' }
+    expect(clampCreatedAt(clock, '2026-09-27T20:06:00.000Z')).toBe(
+      addMs('2026-09-27T20:06:00.000Z', 1),
+    )
+  })
+
+  it('drops a replayed block of two or more identical consecutive records', () => {
+    const user = {
       role: 'user',
       message: {
         content: [
@@ -152,8 +232,13 @@ describe('timestamps', () => {
         ],
       },
     }
-    const { messages } = normalizeRecords([rec, rec], rivetOpts())
+    const asst = { role: 'assistant', message: { content: [{ type: 'text', text: 'hi' }] } }
+    const records = [user, asst, user, asst]
+    expect([...replaySkipIndices(records)].sort()).toEqual([2, 3])
+    const { messages, stats } = normalizeRecords(records, rivetOpts())
     expect(messages.filter((m) => m.role === 'user')).toHaveLength(1)
+    expect(messages.filter((m) => m.role === 'assistant')).toHaveLength(1)
+    expect(stats.dropped).toBe(2)
   })
 
   it('leaves created_at unset when no time is known', () => {
@@ -172,7 +257,9 @@ describe('wrappers', () => {
     const cleaned = extractUserText(text)
     expect(cleaned).toContain('look at this')
     expect(cleaned).toContain('[Image]')
-    expect(cleaned).not.toMatch(/<timestamp>|user_query|SAND_|system_reminder|automation_status|t152u|Sent from machine|memory_context|user_info|agent_skills|dynamic_tool_catalog|mcp_server_catalog|instructions_update|attached_files/)
+    expect(cleaned).not.toMatch(
+      /<timestamp>|user_query|SAND_|system_reminder|automation_status|t152u|Sent from machine|memory_context|user_info|agent_skills|dynamic_tool_catalog|mcp_server_catalog|instructions_update|attached_files/,
+    )
     const leftover = countNoise(cleaned)
     expect(leftover.timestamp).toBe(0)
     expect(leftover.user_query).toBe(0)
@@ -181,10 +268,31 @@ describe('wrappers', () => {
     expect(leftover.image).toBe(1)
   })
 
+  it('keeps a normal user message that mentions [event]', () => {
+    const rec = {
+      role: 'user',
+      message: {
+        content: [
+          { type: 'text', text: '<user_query>\nI got an [event] at work today\n</user_query>' },
+        ],
+      },
+    }
+    const { messages } = normalizeRecords([rec], rivetOpts())
+    expect(messages).toHaveLength(1)
+    expect(messages[0].role).toBe('user')
+    expect(messages[0].content).toContain('[event]')
+    expect(messages[0].content).toContain('at work today')
+    expect(
+      extractUserText('<user_query>\nI got an [event] at work today\n</user_query>'),
+    ).toContain('[event]')
+  })
+
   it('strips wrappers on the first-run Rivet sample', () => {
     const { result } = normalizeFile('ondisk-rivet-first-run-0-240.jsonl')
     const blob = result.messages.map((m) => m.content).join('\n')
-    expect(blob).not.toMatch(/<timestamp>|<user_query>|\[SAND_HIDDEN_PROMPT\]|<<SAND_AGENT_PROFILE_UPDATE|<agent_profile_update>/)
+    expect(blob).not.toMatch(
+      /<timestamp>|<user_query>|\[SAND_HIDDEN_PROMPT\]|<<SAND_AGENT_PROFILE_UPDATE|<agent_profile_update>/,
+    )
     expect(blob).not.toMatch(/\[t\d+u\]/)
   })
 })
@@ -194,9 +302,11 @@ describe('hidden turns', () => {
     const { result } = normalizeFile('ondisk-rivet-first-run-0-240.jsonl')
     const users = result.messages.filter((m) => m.role === 'user')
     const systems = result.messages.filter((m) => m.role === 'system')
-    expect(users.every((m) => !/\[first run\]|treat it as skipped|\[routine\]|\[A background task/.test(m.content))).toBe(
-      true,
-    )
+    expect(
+      users.every(
+        (m) => !/\[first run\]|treat it as skipped|\[routine\]|\[A background task/.test(m.content),
+      ),
+    ).toBe(true)
     expect(systems.some((m) => m.metadata?.kind === 'first_run')).toBe(true)
     expect(systems.some((m) => m.metadata?.kind === 'profile_update')).toBe(true)
     expect(systems.some((m) => m.metadata?.kind === 'background_task')).toBe(true)
@@ -242,6 +352,27 @@ describe('hidden turns', () => {
     expect(routines[1].metadata?.position).toBe(1)
     expect(routines[0].metadata?.ordinal).toBe(0 * ORDINAL_STRIDE)
     expect(routines[1].metadata?.ordinal).toBe(1 * ORDINAL_STRIDE)
+  })
+
+  it('stores role=system records as system, not assistant', () => {
+    const rec = {
+      role: 'system',
+      message: { content: [{ type: 'text', text: 'sys note' }] },
+    }
+    const { messages } = normalizeRecords([rec], rivetOpts())
+    expect(messages).toHaveLength(1)
+    expect(messages[0].role).toBe('system')
+    expect(messages[0].content).toBe('sys note')
+  })
+
+  it('throws when per-position sub-index reaches ORDINAL_STRIDE', () => {
+    const parts = Array.from({ length: ORDINAL_STRIDE + 1 }, (_, i) => ({
+      type: 'tool_use',
+      name: `t${String(i)}`,
+      input: {},
+    }))
+    const rec = { role: 'assistant', message: { content: parts } }
+    expect(() => normalizeRecords([rec], rivetOpts())).toThrow(/ordinal sub-index/)
   })
 
   it('classifies reactions and events', () => {
@@ -301,6 +432,14 @@ describe('per-bot tags', () => {
     expect(ident.persona).toBe('Arch')
     expect(ident.session).toBe('grokbot-arch')
     expect(ident.agent).toBe('rivet-arch')
+  })
+
+  it('refuses unidentified backfill files without --agent-id, header, or uuid/uuid.jsonl', () => {
+    expect(resolveSourceAgentId({ file: '/tmp/orphan.jsonl' })).toBeUndefined()
+    expect(resolveSourceAgentId({ file: '/tmp/page.txt' })).toBeUndefined()
+    expect(resolveSourceAgentId({ file: `/tmp/${BOB_ID}/${BOB_ID}.jsonl` })).toBe(BOB_ID)
+    expect(resolveSourceAgentId({ file: '/tmp/x.jsonl', headerId: BOB_ID })).toBe(BOB_ID)
+    expect(resolveSourceAgentId({ file: '/tmp/x.jsonl', explicitId: BOB_ID })).toBe(BOB_ID)
   })
 
   it('reads on-disk agent id from <uuid>/<uuid>.jsonl', () => {

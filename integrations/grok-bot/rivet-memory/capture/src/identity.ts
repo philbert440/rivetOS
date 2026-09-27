@@ -202,6 +202,23 @@ export function agentIdFromTranscriptPath(file: string): string | undefined {
   return m?.[1]
 }
 
+/**
+ * Backfill / convert agent id: `--agent-id`, then page header, then
+ * `<uuid>/<uuid>.jsonl`. Undefined means the file is unidentified — skip it
+ * rather than tagging `grokbot-unknown`.
+ */
+export function resolveSourceAgentId(opts: {
+  file: string
+  headerId?: string
+  explicitId?: string
+}): string | undefined {
+  const explicit = opts.explicitId?.trim()
+  if (explicit) return explicit
+  const header = opts.headerId?.trim()
+  if (header) return header
+  return agentIdFromTranscriptPath(opts.file)
+}
+
 export function listInputFiles(path: string): string[] {
   const st = statSync(path)
   if (st.isFile()) return [path]

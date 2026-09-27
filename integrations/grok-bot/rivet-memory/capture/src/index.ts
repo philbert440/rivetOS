@@ -1,6 +1,6 @@
 export { capForStorage, eventIdFromContent, createCaptureWriter } from '@rivetos/capture-core'
 export type { CaptureMessage, CaptureBatch } from '@rivetos/capture-core'
-export { normalizeRecords, toIngestRows } from './normalize.js'
+export { normalizeRecords, toIngestRows, replaySkipIndices, clampCreatedAt } from './normalize.js'
 export { parseInput, parsePageHeader, detectFormat, toolResultBody } from './parse.js'
 export { stripWrappers, extractUserText, countNoise, addNoise } from './wrappers.js'
 export { parseGrokTimestamp, extractTimestampTag, addMs } from './timestamps.js'
@@ -14,10 +14,11 @@ export {
   HISTORICAL_OVERRIDES,
   slug,
   agentIdFromTranscriptPath,
+  resolveSourceAgentId,
   listInputFiles,
   applySessionSuffix,
 } from './identity.js'
-export { mergeParsedInputs, normalizePages } from './pages.js'
+export { mergeParsedInputs, normalizePages, formatMergeConflicts } from './pages.js'
 export {
   assertReadOnlySql,
   loadRivetosPgUrlFromEnv,

@@ -22,6 +22,60 @@ import { partText, recordParts, recordRole, toolResultBody } from './parse.js'
 import { addMs, extractTimestampTag } from './timestamps.js'
 import { extractUserText } from './wrappers.js'
 
+export interface TimeClock {
+  last?: string
+}
+
+/**
+ * Skip a concatenated replay block: a run of ≥2 consecutive records whose
+ * JSON matches an earlier consecutive run. Isolated same-time same-text
+ * user turns (minute precision) are kept — those are genuine repeats.
+ */
+export function replaySkipIndices(records: unknown[]): Set<number> {
+  const hashes = records.map((r) => {
+    try {
+      return JSON.stringify(r)
+    } catch {
+      return String(r)
+    }
+  })
+  const skip = new Set<number>()
+  let j = 0
+  while (j < hashes.length) {
+    let matchedAt = -1
+    for (let i = 0; i < j; i++) {
+      if (hashes[i] === hashes[j] && j + 1 < hashes.length && hashes[i + 1] === hashes[j + 1]) {
+        matchedAt = i
+        break
+      }
+    }
+    if (matchedAt >= 0) {
+      while (j < hashes.length && matchedAt < hashes.length && hashes[j] === hashes[matchedAt]) {
+        skip.add(j)
+        j += 1
+        matchedAt += 1
+      }
+    } else {
+      j += 1
+    }
+  }
+  return skip
+}
+
+export function clampCreatedAt(clock: TimeClock, candidate?: string): string | undefined {
+  if (!candidate) return undefined
+  const t = Date.parse(candidate)
+  if (Number.isNaN(t)) return candidate
+  const min = clock.last !== undefined ? Date.parse(clock.last) + 1 : Number.NEGATIVE_INFINITY
+  if (t >= min) {
+    clock.last = candidate
+    return candidate
+  }
+  const iso = new Date(min).toISOString()
+  clock.last = iso
+  return iso
+}
+
 const ROLE_MAP: Partial<Record<string, CaptureRole>> = {
   user: 'user',
   human: 'user',
@@ -39,14 +93,19 @@ export function normalizeRecords(records: unknown[], opts: NormalizeOptions): No
     : undefined
   const messages: CaptureMessage[] = []
   const seenSystem = new Set<string>()
-  const seenUsers = new Set<string>()
   const occKeys: OccurrenceKey[] = []
   const subByPos = new Map<number, number>()
+  const clock: TimeClock = {}
+  const replaySkips = replaySkipIndices(records)
   let dropped = 0
   let systemEvents = 0
   let truncated = 0
 
   for (let i = 0; i < records.length; i++) {
+    if (replaySkips.has(i)) {
+      dropped += 1
+      continue
+    }
     const position = opts.positions?.[i] ?? start + i
     const rec = records[i]
     const rawRole = recordRole(rec)
@@ -85,6 +144,7 @@ export function normalizeRecords(records: unknown[], opts: NormalizeOptions): No
         createdAt,
         occKeys,
         subByPos,
+        clock,
       })
       truncated += emitted.truncated
       messages.push(...emitted.rows)
@@ -98,7 +158,8 @@ export function normalizeRecords(records: unknown[], opts: NormalizeOptions): No
         createdAt,
         occKeys,
         subByPos,
-        role: 'assistant',
+        clock,
+        role: role === 'system' ? 'system' : 'assistant',
       })
       truncated += emitted.truncated
       if (emitted.rows.length === 0) dropped += 1
@@ -111,15 +172,11 @@ export function normalizeRecords(records: unknown[], opts: NormalizeOptions): No
       continue
     }
 
-    if (userText) {
-      if (createdAt) {
-        const userKey = `${createdAt}\0${userText}`
-        if (seenUsers.has(userKey)) {
-          dropped += 1
-          continue
-        }
-        seenUsers.add(userKey)
-      }
+    // Real user prose wins. If the leftover still classifies as a hidden
+    // body (unsanded start-of-line [event], reaction, …), fall through and
+    // store it as a system event so we don't keep the injected text as user.
+    const leftoverHidden = userText ? classifyHidden(userText) : undefined
+    if (userText && !leftoverHidden) {
       const row = makeMessage({
         opts,
         role: 'user',
@@ -128,6 +185,7 @@ export function normalizeRecords(records: unknown[], opts: NormalizeOptions): No
         createdAt,
         occKeys,
         subByPos,
+        clock,
       })
       if (row.metadata?.truncated) truncated += 1
       messages.push(row)
@@ -156,6 +214,7 @@ export function normalizeRecords(records: unknown[], opts: NormalizeOptions): No
           from_agent: agent?.fromAgent,
           from_agent_id: agent?.fromAgentId,
         },
+        clock,
       })
       messages.push(row)
       systemEvents += 1
@@ -185,6 +244,7 @@ export function normalizeRecords(records: unknown[], opts: NormalizeOptions): No
         occKeys,
         subByPos,
         extra: { kind },
+        clock,
       })
       messages.push(row)
       systemEvents += 1
@@ -265,6 +325,7 @@ function emitAssistantParts(
     occKeys: OccurrenceKey[]
     subByPos: Map<number, number>
     role: CaptureRole
+    clock: TimeClock
   },
 ): { rows: CaptureMessage[]; truncated: number } {
   const rows: CaptureMessage[] = []
@@ -304,6 +365,7 @@ function emitAssistantParts(
         createdAt: ctx.createdAt,
         occKeys: ctx.occKeys,
         subByPos: ctx.subByPos,
+        clock: ctx.clock,
       })
       if (row.metadata?.truncated) truncated += 1
       rows.push(row)
@@ -316,12 +378,13 @@ function emitAssistantParts(
   if (content) {
     const row = makeMessage({
       opts: ctx.opts,
-      role: 'assistant',
+      role: ctx.role,
       content,
       position: ctx.position,
       createdAt: ctx.createdAt,
       occKeys: ctx.occKeys,
       subByPos: ctx.subByPos,
+      clock: ctx.clock,
     })
     if (row.metadata?.truncated) truncated += 1
     rows.push(row)
@@ -329,7 +392,7 @@ function emitAssistantParts(
   for (const tool of tools) {
     const row = makeMessage({
       opts: ctx.opts,
-      role: 'assistant',
+      role: ctx.role,
       content: '',
       toolName: tool.name,
       toolArgs: tool.input,
@@ -337,6 +400,7 @@ function emitAssistantParts(
       createdAt: ctx.createdAt,
       occKeys: ctx.occKeys,
       subByPos: ctx.subByPos,
+      clock: ctx.clock,
       extra: tool.id ? { tool_id: tool.id } : undefined,
     })
     rows.push(row)
@@ -352,6 +416,7 @@ function emitToolParts(
     createdAt?: string
     occKeys: OccurrenceKey[]
     subByPos: Map<number, number>
+    clock: TimeClock
   },
 ): { rows: CaptureMessage[]; truncated: number } {
   const rows: CaptureMessage[] = []
@@ -372,6 +437,7 @@ function emitToolParts(
         createdAt: ctx.createdAt,
         occKeys: ctx.occKeys,
         subByPos: ctx.subByPos,
+        clock: ctx.clock,
       })
       if (row.metadata?.truncated) truncated += 1
       rows.push(row)
@@ -388,6 +454,7 @@ function emitToolParts(
       createdAt: ctx.createdAt,
       occKeys: ctx.occKeys,
       subByPos: ctx.subByPos,
+      clock: ctx.clock,
     })
     if (row.metadata?.truncated) truncated += 1
     rows.push(row)
@@ -407,6 +474,7 @@ function makeMessage(args: {
   toolArgs?: unknown
   toolResult?: string
   extra?: Record<string, unknown>
+  clock: TimeClock
 }): CaptureMessage {
   const sub = nextSub(args.subByPos, args.position)
   const metadata: Record<string, unknown> = {
@@ -466,7 +534,8 @@ function makeMessage(args: {
   if (args.toolName) msg.tool_name = args.toolName
   if (args.toolArgs !== undefined) msg.tool_args = args.toolArgs
   if (toolResult !== undefined) msg.tool_result = toolResult
-  if (args.createdAt) msg.created_at = args.createdAt
+  const createdAt = clampCreatedAt(args.clock, args.createdAt)
+  if (createdAt) msg.created_at = createdAt
   return msg
 }
 
@@ -513,6 +582,11 @@ export function toIngestRows(messages: CaptureMessage[]): IngestRow[] {
 
 function nextSub(subByPos: Map<number, number>, position: number): number {
   const n = subByPos.get(position) ?? 0
+  if (n >= ORDINAL_STRIDE) {
+    throw new Error(
+      `ordinal sub-index ${String(n)} >= ${String(ORDINAL_STRIDE)} at position ${String(position)}`,
+    )
+  }
   subByPos.set(position, n + 1)
   return n
 }

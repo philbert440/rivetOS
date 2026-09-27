@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { normalizeRecords, toIngestRows } from '../src/normalize.js'
-import { normalizePages } from '../src/pages.js'
+import { formatMergeConflicts, mergeParsedInputs, normalizePages } from '../src/pages.js'
 import { parseInput } from '../src/parse.js'
 import { ORDINAL_STRIDE } from '../src/types.js'
 
@@ -34,10 +34,16 @@ function pageText(a: number, records: unknown[]): string {
 }
 
 const ALL = [
-  rec('user', '<timestamp>Sunday, Sep 27, 2026, 4:06 PM (UTC-4)</timestamp>\n<user_query>\none\n</user_query>'),
+  rec(
+    'user',
+    '<timestamp>Sunday, Sep 27, 2026, 4:06 PM (UTC-4)</timestamp>\n<user_query>\none\n</user_query>',
+  ),
   rec('assistant', 'reply one', { cmd: 'ls' }),
   rec('tool', '{"ok":true}'),
-  rec('user', '<timestamp>Sunday, Sep 27, 2026, 4:07 PM (UTC-4)</timestamp>\n<user_query>\ntwo\n</user_query>'),
+  rec(
+    'user',
+    '<timestamp>Sunday, Sep 27, 2026, 4:07 PM (UTC-4)</timestamp>\n<user_query>\ntwo\n</user_query>',
+  ),
   rec('assistant', 'reply two'),
 ]
 
@@ -64,6 +70,21 @@ describe('page merge / stable ordinals', () => {
     expect(toIngestRows(merged.messages).map((r) => r.ordinal)).toEqual(
       toIngestRows(single.messages).map((r) => r.ordinal),
     )
+  })
+
+  it('reports position conflicts when overlapping pages disagree', () => {
+    const first = parseInput(pageText(10, [rec('user', 'one')]))
+    const second = parseInput(pageText(10, [rec('user', 'OTHER')]))
+    const merged = mergeParsedInputs([first, second])
+    expect(merged.conflicts).toEqual([10])
+    expect(merged.records[0]).toEqual(first.records[0])
+    expect(formatMergeConflicts(merged.conflicts)).toMatch(/CONFLICT positions 10/)
+    const result = normalizePages([first, second], {
+      sessionKey: 'grokbot-bob-v3',
+      agent: 'rivet-bob',
+      agentId: BOB,
+    })
+    expect(result.conflicts).toEqual([10])
   })
 
   it('derives ordinal from position * stride + sub-index', () => {

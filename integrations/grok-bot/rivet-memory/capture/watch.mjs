@@ -1,7 +1,15 @@
 #!/usr/bin/env node
 // Event-driven Grok Bot transcript capture (fs.watch, no polling).
 // Paths come from env; nothing here names a host, IP, port, or lab layout.
-import { watch, statSync, readdirSync, readFileSync, writeFileSync, existsSync, mkdirSync } from 'node:fs'
+import {
+  watch,
+  statSync,
+  readdirSync,
+  readFileSync,
+  writeFileSync,
+  existsSync,
+  mkdirSync,
+} from 'node:fs'
 import { spawn } from 'node:child_process'
 import { dirname, join, resolve } from 'node:path'
 import { homedir } from 'node:os'
@@ -39,6 +47,9 @@ function resolveStateFile() {
 const STATE_FILE = resolveStateFile()
 const DEBOUNCE_MS = 20_000
 const PYTHON = process.env.PYTHON || 'python3'
+// Key by agent id + target session suffix so a copied unsuffixed
+// ~/.rivetos/capture/state.json cannot skip -v3 ingest.
+const stateKey = (id) => `${id}${SESSION_SUFFIX}`
 
 const log = (...a) => console.log(new Date().toISOString(), ...a)
 
@@ -99,7 +110,7 @@ async function process1(id) {
   const src = transcriptPath(id)
   if (!existsSync(src)) return
   const s = sig(src)
-  if (state[id] === s) return
+  if (state[stateKey(id)] === s) return
   const who = identity(id)
   const session =
     !SESSION_SUFFIX || who.session.endsWith(SESSION_SUFFIX)
@@ -136,7 +147,7 @@ async function process1(id) {
     log(`ingest FAIL ${who.session} exit=${i.code}: ${(i.err || i.out).slice(0, 300)}`)
     return
   }
-  state[id] = s
+  state[stateKey(id)] = s
   saveState()
   log(`ok ${session} agent=${who.agent} ${i.out.split('\n').pop()?.slice(0, 200) || ''}`)
 }
@@ -163,7 +174,7 @@ try {
     const p = transcriptPath(id)
     if (!existsSync(p)) continue
     try {
-      if (state[id] !== sig(p)) {
+      if (state[stateKey(id)] !== sig(p)) {
         queue.push(id)
         pending++
       }
@@ -175,7 +186,9 @@ try {
   console.error(`watch: cannot read transcripts dir: ${e.message}`)
   process.exit(2)
 }
-log(`watch: ${Object.keys(state).length} known, ${pending} changed/new transcripts; watching transcripts dir`)
+log(
+  `watch: ${Object.keys(state).length} known, ${pending} changed/new transcripts; watching transcripts dir`,
+)
 drain()
 
 const re = /^([0-9a-f-]{36})[\\/]\1\.jsonl$/

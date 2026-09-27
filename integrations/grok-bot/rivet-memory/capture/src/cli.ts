@@ -13,9 +13,10 @@ import {
   discoverModels,
   identityFor,
   listInputFiles,
+  resolveSourceAgentId,
 } from './identity.js'
 import { normalizeRecords, toIngestRows } from './normalize.js'
-import { normalizePages } from './pages.js'
+import { formatMergeConflicts, normalizePages } from './pages.js'
 import { parseInput } from './parse.js'
 import { connectAndFetchGrokbotRows } from './pg-readonly.js'
 import {
@@ -43,7 +44,9 @@ const HELP = `Usage: grokbot-rivet-memory-capture <command> [opts]
       Walk a file or directory (recursive) of transcripts/pages.
       Pages for one agent are merged by position into a single spool.
       On-disk agent id is taken from <uuid>/<uuid>.jsonl when there is no
-      header or --agent-id. --write emits ingest jsonl. Dry by default.
+      header or --agent-id. Files with no id are skipped (not grokbot-unknown).
+      Overlapping pages that disagree at a position print CONFLICT and
+      refuse --write. --write emits ingest jsonl. Dry by default.
 
   reclean [--session KEY] [--agent NAME] [--agent-id UUID]
           [--from-transcript FILE] [--from-rows FILE] [--out DIR]
@@ -184,7 +187,17 @@ function cmdBackfill(argv: string[]): number {
       text,
       values.format === 'page' || values.format === 'ondisk' ? values.format : undefined,
     )
-    const id = values['agent-id'] ?? parsed.header?.id ?? agentIdFromTranscriptPath(file)
+    const id = resolveSourceAgentId({
+      file,
+      headerId: parsed.header?.id,
+      explicitId: values['agent-id'],
+    })
+    if (!id) {
+      console.error(
+        `SKIP unidentified: ${file} (no --agent-id, no header id, no <uuid>/<uuid>.jsonl)`,
+      )
+      continue
+    }
     const ident = resolveIdent(id, undefined, undefined)
     const session = applySessionSuffix(ident.session, suffix)
     const key = `${session}\0${ident.agent}\0${ident.id ?? ''}`
@@ -202,6 +215,7 @@ function cmdBackfill(argv: string[]): number {
   }
 
   let n = 0
+  let writeConflicts = false
   for (const bucket of buckets.values()) {
     const result = normalizePages(bucket.parsed, {
       sessionKey: bucket.session,
@@ -210,10 +224,15 @@ function cmdBackfill(argv: string[]): number {
       persona: bucket.persona,
     })
     const dest = join(outDir, `${bucket.session}.jsonl`)
+    const conflicts = result.conflicts ?? []
     console.log(
       `${values.write ? 'WRITE' : 'DRY'} files=${String(bucket.files.length)} session=${bucket.session} agent=${bucket.agent} in=${String(result.stats.in)} out=${String(result.stats.out)} dropped=${String(result.stats.dropped)} system=${String(result.stats.systemEvents)} time_known=${String(result.stats.timeKnown)}`,
     )
-    if (values.write) {
+    if (conflicts.length > 0) {
+      console.error(formatMergeConflicts(conflicts))
+      if (values.write) writeConflicts = true
+    }
+    if (values.write && conflicts.length === 0) {
       writeFileSync(
         dest,
         result.messages.map((m) => JSON.stringify(toIngestRows([m])[0])).join('\n') +
@@ -225,7 +244,7 @@ function cmdBackfill(argv: string[]): number {
   console.log(
     `backfill files=${String(n)} agents=${String(buckets.size)} write=${values.write ? 'true' : 'false'}`,
   )
-  return 0
+  return writeConflicts ? 3 : 0
 }
 
 async function cmdReclean(argv: string[]): Promise<number> {
