@@ -2,8 +2,8 @@
  * /api/memory — HTTP routing over a fake pool + injected search.
  */
 
-import { createServer, type Server } from 'node:http'
-import type { AddressInfo } from 'node:net'
+import { createServer, request, type Server } from 'node:http'
+import type { AddressInfo, Socket } from 'node:net'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import type { Tool } from '@rivetos/types'
 import type pg from 'pg'
@@ -123,12 +123,19 @@ afterEach(async () => {
   for (const fn of cleanups.splice(0)) await fn()
 })
 
-async function serve(opts: Parameters<typeof createMemoryApiRoute>[0]): Promise<string> {
+async function serve(
+  opts: Parameters<typeof createMemoryApiRoute>[0],
+  onConnection?: (socket: Socket) => void,
+): Promise<string> {
   const api = createMemoryApiRoute(opts)
   const server: Server = createServer((req, res) => {
     void api.handler(req, res)
   })
-  await new Promise<void>((r) => server.listen(0, '127.0.0.1', r))
+  if (onConnection) server.on('connection', onConnection)
+  await new Promise<void>((resolve, reject) => {
+    server.once('error', reject)
+    server.listen(0, '127.0.0.1', resolve)
+  })
   cleanups.push(() => new Promise((r) => server.close(r)))
   return `http://127.0.0.1:${(server.address() as AddressInfo).port}`
 }
@@ -639,9 +646,9 @@ describe('/api/memory', () => {
       expect((await post('null')).status).toBe(400)
       expect((await post('{')).status).toBe(400)
       expect((await post('')).status).toBe(400)
-      expect(
-        (await fetch(`${base}/api/memory/tool/memory_search`, { method: 'GET' })).status,
-      ).toBe(405)
+      expect((await fetch(`${base}/api/memory/tool/memory_search`, { method: 'GET' })).status).toBe(
+        405,
+      )
       expect((await fetch(`${base}/api/memory/tool/memory_search`, { method: 'PUT' })).status).toBe(
         405,
       )
@@ -658,10 +665,65 @@ describe('/api/memory', () => {
       expect(await res.json()).toEqual({ error: 'body too large' })
     })
 
+    it('sends 413 and closes the socket for an unfinished chunked upload over 256 KiB', async () => {
+      let serverSocket: Socket | undefined
+      const base = await serve({ pool: fakePool(), tools: () => fakeTools() }, (socket) => {
+        serverSocket = socket
+      })
+      await new Promise<void>((resolve, reject) => {
+        const client = request(`${base}/api/memory/tool/memory_search`, { method: 'POST' })
+        const timer = setTimeout(() => {
+          client.destroy()
+          reject(new Error('unfinished oversized upload socket did not close within 2 seconds'))
+        }, 2000)
+        let responseEnded = false
+        client.on('error', reject)
+        client.on('socket', (socket) => {
+          socket.once('close', () => {
+            clearTimeout(timer)
+            try {
+              expect(responseEnded).toBe(true)
+              expect(socket.destroyed).toBe(true)
+              expect(serverSocket?.destroyed).toBe(true)
+              resolve()
+            } catch (error) {
+              reject(error)
+            }
+          })
+        })
+        client.on('response', (res) => {
+          let body = ''
+          res.setEncoding('utf8')
+          res.on('data', (chunk: string) => {
+            body += chunk
+          })
+          res.on('end', () => {
+            try {
+              expect(res.statusCode).toBe(413)
+              expect(res.headers.connection).toBe('close')
+              expect(JSON.parse(body)).toEqual({ error: 'body too large' })
+              responseEnded = true
+            } catch (error) {
+              reject(error)
+            }
+          })
+        })
+        for (let chunk = 0; chunk < 17; chunk++) client.write(Buffer.alloc(16 * 1024, 'q'))
+        // Deliberately never end the request: the server must close the connection.
+      })
+    })
+
     it('memoizes the tool factory once per pool', async () => {
       const owner = fakePool()
       const coco = fakePool()
-      const factory = vi.fn(() => fakeTools())
+      const ownerQuery = vi.spyOn(owner, 'query')
+      const userQuery = vi.spyOn(coco, 'query')
+      const factory = vi.fn((pool: pg.Pool) =>
+        fakeTools(async () => {
+          await pool.query('SELECT 1')
+          return pool === owner ? 'owner' : 'coco'
+        }),
+      )
       const base = await serve({
         pool: owner,
         userPools: new Map([['coco', coco]]),
@@ -676,10 +738,18 @@ describe('/api/memory', () => {
       expect((await post()).status).toBe(200)
       expect((await post()).status).toBe(200)
       expect(factory).toHaveBeenCalledTimes(1)
+      expect(factory).toHaveBeenNthCalledWith(1, owner, { kind: 'owner' })
+      expect(ownerQuery).toHaveBeenCalledTimes(2)
+      expect(userQuery).not.toHaveBeenCalled()
       expect((await post({ 'x-rivetos-user': 'coco' })).status).toBe(200)
       expect(factory).toHaveBeenCalledTimes(2)
-      expect((await post({ 'x-rivetos-user': 'coco' })).status).toBe(200)
+      const userResponse = await post({ 'x-rivetos-user': 'coco' })
+      expect(userResponse.status).toBe(200)
+      expect(await userResponse.json()).toEqual({ ok: true, result: 'coco' })
       expect(factory).toHaveBeenCalledTimes(2)
+      expect(factory).toHaveBeenNthCalledWith(2, coco, { kind: 'user', id: 'coco' })
+      expect(userQuery).toHaveBeenCalledTimes(2)
+      expect(ownerQuery).toHaveBeenCalledTimes(2)
     })
 
     it('500s a thrown execute without the stack, including a missing relation', async () => {

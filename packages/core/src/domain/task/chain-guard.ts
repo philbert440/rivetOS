@@ -5,10 +5,13 @@
  *
  * An explicit `chainDepth` on the request is the child's depth and wins over
  * the parent lookup. A parent id that is not in ros_tasks counts as depth 0
- * (the child is then 1) and is not stamped onto the row.
+ * (the child is then 1) and is not stamped onto the row. A malformed parent
+ * fails closed at parent depth 2 without a lookup or parent stamp.
  */
 
 export const MAX_CHAIN_DEPTH = 3
+const FAIL_CLOSED_PARENT_DEPTH = MAX_CHAIN_DEPTH - 1
+const TASK_ID_UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
 
 export interface ChainStamp {
   chainDepth: number
@@ -54,7 +57,12 @@ export async function guardTaskChain(input: {
 
   let parentDepth = 0
   let stampParent = false
-  if (parentId) {
+  if (parentId && !TASK_ID_UUID.test(parentId)) {
+    parentDepth = FAIL_CLOSED_PARENT_DEPTH
+    input.log?.(
+      `parentTaskId "${parentId}" is not a UUID — delegate tools registered at chain depth ${String(FAIL_CLOSED_PARENT_DEPTH)} (fail closed)`,
+    )
+  } else if (parentId) {
     const parent = await input.lookup(parentId)
     if (parent) {
       parentDepth = parent.chainDepth
