@@ -31,16 +31,24 @@
  * ~/.rivetos/logs/opencode-capture.log.
  */
 
+import {
+  isRecord,
+  asString,
+  safeJson,
+  loadEnvFile,
+  createCaptureWriter,
+  resolveCaptureTransport,
+  withFileLock,
+  LockTimeout,
+} from '@rivetos/capture-core'
+import type { CaptureBatch, CaptureMessage } from '@rivetos/capture-core'
 import { spawn } from 'node:child_process'
 import fs from 'node:fs'
 import { createRequire } from 'node:module'
 import os from 'node:os'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
-import pg from 'pg'
-import type { PoolClient } from 'pg'
 
-const { Pool } = pg
 const require_ = createRequire(import.meta.url)
 
 export const DEFAULT_CAPTURE_AGENT = 'rivet-glm'
@@ -181,24 +189,8 @@ export function deriveSessionKey(sessionId: string): string {
   return `opencode:${sessionId}`
 }
 
-function isRecord(v: unknown): v is Record<string, unknown> {
-  return typeof v === 'object' && v !== null && !Array.isArray(v)
-}
-
-function asString(v: unknown): string | null {
-  return typeof v === 'string' && v.length > 0 ? v : null
-}
-
 function asNumber(v: unknown): number {
   return typeof v === 'number' && Number.isFinite(v) ? v : 0
-}
-
-function safeJson(v: unknown): string {
-  try {
-    return JSON.stringify(v)
-  } catch {
-    return String(v)
-  }
 }
 
 function parseJson(value: unknown): Record<string, unknown> {
@@ -371,64 +363,27 @@ export function saveState(state: CaptureState, file = captureStatePath()): void 
 }
 
 // ---------------------------------------------------------------------------
-// Per-harness state lock = Postgres session-level advisory lock on the client
-// that does the ingest. True mutual exclusion across processes and hosts, no
-// stale-lock reclamation (the server releases it when a holder's connection
-// drops), bounded wait via lock_timeout. A run that cannot take it is SKIPPED
-// (null) — the persistence critical section never runs unowned.
+// Per-harness file lock shared by both transports, with stale-lock reclamation
+// and a bounded 120-second wait. LockTimeout skips the run (null), allowing
+// the caller's retry hop to try again without entering the critical section.
 // ---------------------------------------------------------------------------
 
 export function stateLockKey(stateFile = captureStatePath()): string {
   return `rivetos-capture-state:${os.hostname()}:${path.resolve(stateFile)}`
 }
 
-function isLockTimeout(err: unknown): boolean {
-  const code = isRecord(err) && typeof err.code === 'string' ? err.code : ''
-  const msg = err instanceof Error ? err.message : String(err)
-  return code === '55P03' || /lock timeout|lock_not_available/i.test(msg)
-}
-
 export async function withStateLock<T>(
-  client: Queryable,
+  _client: Queryable | null,
   fn: () => Promise<T>,
   stateFile = captureStatePath(),
   waitMs = STATE_LOCK_WAIT_MS,
 ): Promise<T | null> {
-  const key = stateLockKey(stateFile)
   try {
-    // withPool caps every statement at the ingest statement_timeout, which would
-    // also cap this blocking wait; lift it for the acquisition only and put it
-    // back before the critical section (and on failure).
-    await client.query('SET statement_timeout = 0')
-    await client.query(`SET lock_timeout = ${String(Math.max(1, Math.floor(waitMs)))}`)
-    await client.query('SELECT pg_advisory_lock(hashtext($1))', [key])
-    await client.query(`SET statement_timeout = ${String(STATEMENT_TIMEOUT_MS)}`)
+    return await withFileLock(`${path.resolve(stateFile)}.lock`, fn, { waitMs })
   } catch (err) {
-    try {
-      await client.query(`SET statement_timeout = ${String(STATEMENT_TIMEOUT_MS)}`)
-    } catch {
-      // ignore
-    }
-    if (isLockTimeout(err)) {
-      log(`state lock busy (${key}); skipping this run — the next event retries`)
-    } else {
-      log(`state lock unavailable (${err instanceof Error ? err.message : String(err)}); skipping`)
-    }
+    if (!(err instanceof LockTimeout)) throw err
+    log(`state lock busy (${stateFile}); the next event retries`)
     return null
-  }
-  try {
-    return await fn()
-  } finally {
-    try {
-      await client.query('SELECT pg_advisory_unlock(hashtext($1))', [key])
-    } catch {
-      // connection gone → the server already released it
-    }
-    try {
-      await client.query('RESET lock_timeout')
-    } catch {
-      // ignore
-    }
   }
 }
 
@@ -858,11 +813,50 @@ export async function insertMessage(
   return 'inserted'
 }
 
+export function toCaptureMessage(m: PendingMessage, sourcePath: string | null): CaptureMessage {
+  if (!['user', 'assistant', 'tool', 'system'].includes(m.role))
+    throw new Error(`Invalid role: ${m.role}`)
+  const metadata: Record<string, unknown> = {
+    source: CAPTURE_SOURCE,
+    event_id: m.eventId,
+    ...m.extra,
+  }
+  if (m.eventTs) metadata.event_ts = m.eventTs
+  const pointerPath = sourcePath ?? m.extra?.session_sqlite_path
+  if (typeof pointerPath === 'string') metadata.session_sqlite_path = pointerPath
+  metadata.session_sqlite_part_id = m.extra?.session_sqlite_part_id ?? m.eventId
+  const hasPointer =
+    typeof pointerPath === 'string' && typeof metadata.session_sqlite_part_id === 'string'
+  let toolArgs = m.toolArgs
+  if (toolArgs != null) {
+    const raw = typeof toolArgs === 'string' ? toolArgs : safeJson(toolArgs)
+    if (hasPointer && raw.length > 16_000) {
+      toolArgs = raw.slice(0, 16_000)
+      metadata.full_tool_args_length = raw.length
+      metadata.truncated = true
+    }
+  }
+  const createdAt =
+    m.createdAt ?? (m.eventTs && !Number.isNaN(Date.parse(m.eventTs)) ? m.eventTs : undefined)
+  return {
+    event_id: m.eventId,
+    role: m.role as CaptureMessage['role'],
+    content: m.content ?? '',
+    metadata,
+    ...(m.toolName ? { tool_name: m.toolName } : {}),
+    ...(toolArgs != null ? { tool_args: toolArgs } : {}),
+    ...(typeof m.toolResult === 'string' ? { tool_result: m.toolResult } : {}),
+    ...(createdAt ? { created_at: createdAt } : {}),
+  }
+}
+
 export async function ingestMessages(
-  client: Queryable,
+  client: Queryable | null,
   sessionId: string,
   messages: PendingMessage[],
   opts: {
+    fetch?: typeof globalThis.fetch
+    spoolDir?: string
     title?: string
     cwd?: string | null
     dbPath?: string | null
@@ -873,6 +867,42 @@ export async function ingestMessages(
   } = {},
 ): Promise<{ inserted: number; skipped: number; conversationId: string; sessionKey: string }> {
   const sessionKey = deriveSessionKey(sessionId)
+  const transport = resolveCaptureTransport(process.env)
+  if (transport.kind === 'none') throw new Error(transport.reason)
+  if (transport.kind === 'den') {
+    const batch: CaptureBatch = {
+      session_key: sessionKey,
+      agent: captureAgent(),
+      channel: CAPTURE_CHANNEL,
+      title: (opts.title || 'OpenCode session').slice(0, 120),
+      settings: {
+        source: CAPTURE_SOURCE,
+        sessionId,
+        cwd: opts.cwd ?? null,
+        triggerEvent: opts.triggerEvent ?? 'ingest',
+        session_sqlite_path: opts.dbPath ?? null,
+      },
+      finalize: opts.finalize,
+      messages: messages.map((m) => toCaptureMessage(m, opts.dbPath ?? null)),
+    }
+    const result = await createCaptureWriter({
+      denUrl: transport.denUrl,
+      fetch: opts.fetch,
+      spoolDir: opts.spoolDir,
+      log,
+    }).write(batch)
+    if ('spooled' in result) {
+      if (!result.spooled) throw new Error(result.error)
+      return { inserted: 0, skipped: 0, conversationId: '', sessionKey }
+    }
+    return {
+      inserted: result.inserted,
+      skipped: result.skipped,
+      conversationId: result.conversation_id,
+      sessionKey,
+    }
+  }
+  if (!client) throw new Error('pg capture requires a client')
   const seen = opts.seen ? new Set(opts.seen) : undefined
   if (opts.lock !== false) {
     await client.query('BEGIN')
@@ -989,7 +1019,7 @@ function mergeSessionCursors(state: CaptureState, parts: PartRow[]): Record<stri
 
 export async function scanOnce(
   dbPath: string,
-  client: Queryable,
+  client: Queryable | null,
   state: WatcherState,
   opts: { backfillDays?: number; stateFile?: string; source?: string } = {},
 ): Promise<{ parts: number; inserted: number; skipped: number }> {
@@ -1074,9 +1104,14 @@ export async function scanOnce(
 export async function ingestSession(
   dbPath: string,
   sessionId: string,
-  client: Queryable,
+  client: Queryable | null,
   state: WatcherState,
-  opts: { stateFile?: string; source?: string } = {},
+  opts: {
+    stateFile?: string
+    source?: string
+    fetch?: typeof globalThis.fetch
+    spoolDir?: string
+  } = {},
 ): Promise<{ parts: number; inserted: number; skipped: number; failed?: boolean }> {
   const sid = sessionId.trim()
   if (!sid) return { parts: 0, inserted: 0, skipped: 0 }
@@ -1103,7 +1138,7 @@ export async function ingestSession(
     const msgs = parsed.messages.filter((m) => m.sessionId === sid)
     let inserted = 0
     let skipped = 0
-    if (msgs.length > 0) {
+    if (msgs.length > 0 || source === 'session.deleted') {
       const meta = parsed.sessions.get(sid)
       let seen = state.seen.get(deriveSessionKey(sid))
       if (!seen) {
@@ -1117,6 +1152,8 @@ export async function ingestSession(
         triggerEvent: source,
         seen,
         finalize: source === 'session.deleted',
+        fetch: opts.fetch,
+        spoolDir: opts.spoolDir,
       })
       inserted = result.inserted
       skipped = result.skipped
@@ -1138,8 +1175,12 @@ export async function ingestSession(
   }
 }
 
-async function withPool<T>(fn: (client: PoolClient) => Promise<T>): Promise<T> {
-  const pool = new Pool({ connectionString: resolvePgUrl(), max: 1 })
+async function withPool<T>(fn: (client: Queryable | null) => Promise<T>): Promise<T> {
+  const transport = resolveCaptureTransport(process.env)
+  if (transport.kind === 'none') throw new Error(transport.reason)
+  if (transport.kind === 'den') return fn(null)
+  const { default: pg } = await import('pg')
+  const pool = new pg.Pool({ connectionString: resolvePgUrl(), max: 1 })
   const client = await pool.connect()
   try {
     await client.query(`SET statement_timeout = ${STATEMENT_TIMEOUT_MS}`)
@@ -1178,6 +1219,7 @@ export async function runOnce(
       `opencode-memory-capture --backfill: parts=${summary.parts} inserted=${summary.inserted} skipped=${summary.skipped}`,
     )
   } catch (err) {
+    if (resolveCaptureTransport(process.env).kind === 'den') process.exitCode = 1
     log(`backfill failed: ${err instanceof Error ? err.message : String(err)}`)
   }
 }
@@ -1218,7 +1260,7 @@ export function retryHopOnce(argv: string[]): void {
 
 export async function runIngestSession(
   sessionId: string,
-  opts: { dbPath?: string; delayMs?: number; argv?: string[] } = {},
+  opts: { dbPath?: string; delayMs?: number; argv?: string[]; finalize?: boolean } = {},
 ): Promise<void> {
   try {
     // Several plugin events for one session may spawn several children within
@@ -1236,7 +1278,7 @@ export async function runIngestSession(
           const state = createWatcherState(loadState(stateFile))
           const mine = await ingestSession(dbPath, sessionId, client, state, {
             stateFile,
-            source: 'plugin',
+            source: opts.finalize ? 'session.deleted' : 'plugin',
           })
           return mine
         },
@@ -1257,6 +1299,7 @@ export async function runIngestSession(
       `ingest-session ${sessionId}: parts=${summary.parts} inserted=${summary.inserted} skipped=${summary.skipped}`,
     )
   } catch (err) {
+    if (resolveCaptureTransport(process.env).kind === 'den') process.exitCode = 1
     log(`ingest-session ${sessionId} failed: ${err instanceof Error ? err.message : String(err)}`)
   }
 }
@@ -1266,6 +1309,7 @@ export function formatStatus(state: CaptureState, file = captureStatePath()): st
   return [
     'opencode-memory-capture --status',
     `  stateFile: ${file}`,
+    `  transport: ${resolveCaptureTransport(process.env).kind}`,
     `  lastIngestAt: ${state.lastIngestAt ?? 'never'}`,
     `  lastIngestSource: ${state.lastIngestSource ?? 'none'}`,
     `  partTimeUpdated: ${state.partTimeUpdated}`,
@@ -1277,21 +1321,6 @@ export function formatStatus(state: CaptureState, file = captureStatePath()): st
 export function runStatus(): void {
   const file = captureStatePath()
   console.log(formatStatus(loadState(file), file))
-}
-
-function loadEnvFile(): void {
-  const envFile = process.env.RIVETOS_ENV_FILE ?? path.join(os.homedir(), '.rivetos', '.env')
-  if (!fs.existsSync(envFile)) return
-  try {
-    const raw = fs.readFileSync(envFile, 'utf8')
-    for (const line of raw.split('\n')) {
-      const m = /^\s*([A-Z0-9_]+)\s*=\s*(.*)\s*$/.exec(line)
-      if (!m || process.env[m[1]]) continue
-      process.env[m[1]] = m[2].replace(/^["']|["']$/g, '')
-    }
-  } catch {
-    // ignore
-  }
 }
 
 export function parseBackfill(args: string[]): number {
@@ -1342,7 +1371,11 @@ export const USAGE = `opencode-memory-capture — ingest OpenCode SQLite session
 `
 
 async function main(): Promise<void> {
-  loadEnvFile()
+  for (const [key, value] of Object.entries(
+    loadEnvFile(process.env.RIVETOS_ENV_FILE ?? path.join(os.homedir(), '.rivetos', '.env')),
+  )) {
+    if (!process.env[key]) process.env[key] = value
+  }
   const args = process.argv.slice(2)
   if (args.length === 0 || args[0] === '-h' || args[0] === '--help') {
     console.log(USAGE)
@@ -1366,7 +1399,12 @@ async function main(): Promise<void> {
       log('ingest-session: missing session id')
       return
     }
-    await runIngestSession(sessionId, { dbPath, delayMs: parseDelayMs(args), argv: args })
+    await runIngestSession(sessionId, {
+      dbPath,
+      delayMs: parseDelayMs(args),
+      argv: args,
+      finalize: args.includes('--close-session'),
+    })
     return
   }
   if (args[0] === '--backfill' || args[0] === '--once') {

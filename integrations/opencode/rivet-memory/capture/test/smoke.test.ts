@@ -42,6 +42,9 @@ import {
   type PartRow,
 } from '../src/opencode-memory-capture.ts'
 
+process.env.RIVETOS_CAPTURE_TRANSPORT = 'pg'
+process.env.RIVETOS_PG_URL = 'postgres://test:test@localhost/test'
+
 const SESSION = 'ses_abcdefghijklmnopqrstuvwxyz'
 
 let failed = 0

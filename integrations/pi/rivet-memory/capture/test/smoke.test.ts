@@ -54,6 +54,9 @@ import {
   type PendingMessage,
 } from '../src/pi-memory-capture.ts'
 
+process.env.RIVETOS_CAPTURE_TRANSPORT = 'pg'
+process.env.RIVETOS_PG_URL = 'postgres://test:test@localhost/test'
+
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
 const FIXTURE = path.join(
   __dirname,

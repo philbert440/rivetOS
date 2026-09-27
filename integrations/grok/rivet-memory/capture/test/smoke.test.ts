@@ -30,7 +30,17 @@ function run(args: string[], stdin = ''): SpawnSyncReturns<string> {
   const useBuilt = fs.existsSync(DIST)
   const cmd = useBuilt ? process.execPath : 'npx'
   const argv = useBuilt ? [DIST, ...args] : ['--yes', 'tsx', SRC, ...args]
-  return spawnSync(cmd, argv, { input: stdin, encoding: 'utf8', env: childEnv, timeout: 30000 })
+  // A file descriptor also works in sandboxes that restrict child stdin pipes.
+  const inputDir = fs.mkdtempSync(path.join(os.tmpdir(), 'capture-stdin-'))
+  const inputFile = path.join(inputDir, 'input.json')
+  fs.writeFileSync(inputFile, stdin)
+  const fd = fs.openSync(inputFile, 'r')
+  try {
+    return spawnSync(cmd, argv, { stdio: [fd, 'pipe', 'pipe'], encoding: 'utf8', env: childEnv, timeout: 30000 })
+  } finally {
+    fs.closeSync(fd)
+    fs.rmSync(inputDir, { recursive: true, force: true })
+  }
 }
 
 function listSpool(): string[] {

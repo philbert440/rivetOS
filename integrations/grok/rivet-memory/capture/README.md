@@ -162,7 +162,7 @@ slice-by-count, every row gets a stable `metadata.ordinal`:
 ordinal = turn * 1_000_000 + sub_order
   turn          = promptIndex for user_message_chunk
                   = position of outer._meta.promptId in file-order list of distinct promptIds (otherwise)
-  sub_order     = 0 for user_message_chunk
+  sub_order     = 0, 1, … for successive user_message_chunk events per resolved prompt turn (including blank chunks that emit no row)
                   = 10_000 + line_index for anything else
 ```
 
