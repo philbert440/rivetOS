@@ -97,26 +97,41 @@ for link in "$CURSOR_HOME"/skills/*; do
 done
 
 python3 - "$CURSOR_HOME/hooks.json" "$CURSOR_HOME/mcp.json" "$PLUGIN_DIR" <<'PYTHON'
-import json, os, shlex, shutil, subprocess, sys, tempfile
+import json, os, shlex, shutil, subprocess, sys, tempfile, time
 
 hooks_path, mcp_path, plugin = sys.argv[1:]
 
+MARKER = "/integrations/cursor/rivet-memory/bin/"
+SHELL_DIRS = ("/bin", "/usr/bin", "/usr/local/bin")
+
 def resolve(word):
-    if not isinstance(word, str) or not word:
+    # Only an absolute command can prove ownership. Relative or bare commands depend on
+    # the cwd/PATH Cursor runs hooks with, which this installer cannot know: preserve them.
+    if not isinstance(word, str) or not os.path.isabs(word):
         return ""
-    if not os.path.isabs(word):
-        word = shutil.which(word) or ""
-    return os.path.realpath(word) if word else ""
+    return os.path.realpath(word)
 
 def owned(word, launcher=False):
     resolved = resolve(word)
-    names = ("rivet-memory-mcp.sh",) if launcher else ("rivet-memory-hook.sh", "rivet-memory-mcp.sh")
-    if resolved in [os.path.realpath(os.path.join(plugin, "bin", n)) for n in names]:
-        return True
-    marker = "/integrations/cursor/rivet-memory/bin/"
-    if marker not in resolved:
+    if not resolved:
         return False
-    return not launcher or resolved.endswith(marker + "rivet-memory-mcp.sh")
+    names = ("rivet-memory-mcp.sh",) if launcher else ("rivet-memory-hook.sh", "rivet-memory-mcp.sh")
+    for name in names:
+        if resolved == os.path.realpath(os.path.join(plugin, "bin", name)):
+            return True
+        if resolved.endswith(MARKER + name):  # a previous checkout of this kit
+            return True
+    return False
+
+def is_shell(word):
+    # A literal shell: bare `bash`/`sh`, or an absolute path into a system bin dir. No PATH lookup.
+    if not isinstance(word, str) or not word:
+        return False
+    if os.sep not in word:
+        return word in ("bash", "sh")
+    resolved = resolve(word)
+    return (os.path.dirname(resolved) in SHELL_DIRS
+            and os.path.basename(resolved) in ("bash", "sh", "dash"))
 
 def owned_hook(entry):
     if not isinstance(entry, dict) or not isinstance(entry.get("command"), str):
@@ -133,10 +148,9 @@ def owned_server(entry):
     command = entry.get("command")
     if owned(command, launcher=True):
         return True
-    # Only recognize an interpreter + launcher, never arbitrary argument/env text.
+    # Only a literal shell running the kit launcher; never argument or env text alone.
     args = entry.get("args")
-    return (resolve(command) in {resolve(p) for p in ("bash", "sh")} - {""}
-            and isinstance(args, list) and bool(args) and owned(args[0], launcher=True))
+    return is_shell(command) and isinstance(args, list) and bool(args) and owned(args[0], launcher=True)
 
 def load(path):
     try:
@@ -147,6 +161,9 @@ def load(path):
         return None
 
 def save(path, data):
+    backup = "%s.bak-%s%09d" % (path, time.strftime("%Y%m%dT%H%M%S", time.gmtime()), time.time_ns() % 1_000_000_000)
+    shutil.copy2(path, backup)
+    print(f"Backed up {path} -> {backup}")
     fd, tmp = tempfile.mkstemp(prefix=".rivet-", dir=os.path.dirname(path))
     try:
         with os.fdopen(fd, "w", encoding="utf-8") as f:

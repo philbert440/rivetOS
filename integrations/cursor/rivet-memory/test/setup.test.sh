@@ -26,6 +26,9 @@ hooks = [
     f'"{tmp}/hook alias" stop',
     f'"{old}/bin/rivet-memory-hook.sh" stop',
     f'"{kit}/bin/rivet-memory-mcp.sh"',
+    './bin/rivet-memory-hook.sh stop',                       # relative: depends on runtime cwd, keep
+    'rivet-memory-hook.sh stop',                              # bare: depends on runtime PATH, keep
+    '/srv/personal/integrations/cursor/rivet-memory/bin/custom-hook.py',  # kit-like dir, foreign name, keep
 ]
 (home / 'hooks.json').write_text(json.dumps({'hooks': {'stop': [{'command': c} for c in hooks]}}))
 servers = {
@@ -34,7 +37,11 @@ servers = {
     'direct': {'command': str(kit / 'bin/rivet-memory-mcp.sh')},
     'alias': {'command': str(tmp / 'mcp alias')},
     'old-shell': {'command': '/bin/bash', 'args': [str(old / 'bin/rivet-memory-mcp.sh')]},
+    'bare-shell': {'command': 'bash', 'args': [str(kit / 'bin/rivet-memory-mcp.sh')]},
+    'wrapper': {'command': str(tmp / 'bash'), 'args': [str(kit / 'bin/rivet-memory-mcp.sh')]},
+    'path-launcher': {'command': 'rivet-memory-mcp.sh', 'env': {'PATH': '/srv/independent/bin:/usr/bin'}},
 }
+(tmp / 'bash').touch()
 (home / 'mcp.json').write_text(json.dumps({'mcpServers': servers}))
 for name in ['hooks.json', 'mcp.json']:
     (home / name).chmod(0o600)
@@ -71,9 +78,19 @@ from pathlib import Path
 home, kit = map(Path, (os.environ['CURSOR_HOME'], os.environ['KIT']))
 assert (home / 'plugins/local/rivet-memory-cursor').resolve() == kit
 hooks = json.loads((home / 'hooks.json').read_text())['hooks']['stop']
-assert len(hooks) == 2 and all(e['command'].startswith('/srv/other/') for e in hooks)
+assert [e['command'] for e in hooks] == [
+    '/srv/other/bin/rivet-memory-hook.sh stop',
+    f'/srv/other/bin/hook --note {kit}/bin/rivet-memory-hook.sh',
+    './bin/rivet-memory-hook.sh stop',
+    'rivet-memory-hook.sh stop',
+    '/srv/personal/integrations/cursor/rivet-memory/bin/custom-hook.py',
+], hooks
 servers = json.loads((home / 'mcp.json').read_text())['mcpServers']
-assert set(servers) == {'rivetos', 'argument-only'}
+assert set(servers) == {'rivetos', 'argument-only', 'wrapper', 'path-launcher'}
+for name in ['hooks.json', 'mcp.json']:
+    backups = list(home.glob(name + '.bak-*'))
+    assert len(backups) == 1 and backups[0].read_bytes() == Path(os.environ['TMP'], name.split('.')[0] + '.before').read_bytes()
+    assert stat.S_IMODE(backups[0].stat().st_mode) == 0o600
 for name in ['hooks.json', 'mcp.json']:
     assert stat.S_IMODE((home / name).stat().st_mode) == 0o600
 for name, content in [('AGENT.md', 'user edited agent\n'), ('MEMORY.md', 'user edited memory\n')]:
@@ -82,7 +99,7 @@ for name, content in [('AGENT.md', 'user edited agent\n'), ('MEMORY.md', 'user e
     assert (home / name).read_bytes() == (kit / name).read_bytes()
 PY
 bash "$KIT/bin/setup-cursor-rivet-memory.sh" --apply
-[ "$(find "$CURSOR_HOME" -name '*.bak-*' | wc -l)" -eq 2 ]
+[ "$(find "$CURSOR_HOME" -name '*.bak-*' | wc -l)" -eq 4 ]
 # An older checkout's unedited copies can be replaced without another backup.
 OLD="$TMP/old checkout/integrations/cursor/rivet-memory"
 printf 'old kit agent\n' > "$OLD/AGENT.md"
@@ -92,5 +109,5 @@ cp "$OLD/MEMORY.md" "$CURSOR_HOME/MEMORY.md"
 rm "$CURSOR_HOME/plugins/local/rivet-memory-cursor"
 ln -s "$OLD" "$CURSOR_HOME/plugins/local/rivet-memory-cursor"
 bash "$KIT/bin/setup-cursor-rivet-memory.sh" --apply
-[ "$(find "$CURSOR_HOME" -name '*.bak-*' | wc -l)" -eq 2 ]
+[ "$(find "$CURSOR_HOME" -name '*.bak-*' | wc -l)" -eq 4 ]
 echo 'PASS: setup ownership, dry run, refusal, backups, modes, and idempotence'
