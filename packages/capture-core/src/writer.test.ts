@@ -12,13 +12,19 @@ const batch: CaptureBatch = {
   messages: [{ event_id: 'e', role: 'user', content: 'hello' }],
 }
 const result = { ok: true, conversation_id: 'c', inserted: 1, skipped: 0 }
+const DEFAULT_LIMIT = 768 * 1024
 const dirs: string[] = []
+const spoolLimit = new Map<string, number>()
 function byteLength(value: unknown): number {
   return Buffer.byteLength(JSON.stringify(value), 'utf8')
 }
 async function setup(fetch: typeof globalThis.fetch, extra?: Partial<CaptureWriterOptions>) {
   const spoolDir = await mkdtemp(join(tmpdir(), 'capture-'))
   dirs.push(spoolDir)
+  const requested = extra?.maxChunkBytes ?? DEFAULT_LIMIT
+  const limit =
+    Number.isFinite(requested) && requested > 0 ? Math.floor(requested) : DEFAULT_LIMIT
+  spoolLimit.set(spoolDir, limit)
   return {
     spoolDir,
     writer: createCaptureWriter({
@@ -33,7 +39,24 @@ async function setup(fetch: typeof globalThis.fetch, extra?: Partial<CaptureWrit
 function okResult(inserted: number, skipped = 0) {
   return { ok: true as const, conversation_id: 'c', inserted, skipped }
 }
+async function assertSpoolWithinLimit(dir: string, maxBytes: number): Promise<void> {
+  let names: string[] = []
+  try {
+    names = await readdir(dir)
+  } catch {
+    return
+  }
+  for (const name of names) {
+    if (!name.endsWith('.json')) continue
+    const body = await readFile(join(dir, name))
+    expect(body.byteLength).toBeLessThanOrEqual(maxBytes)
+  }
+}
 afterEach(async () => {
+  await Promise.all(
+    [...spoolLimit.entries()].map(async ([dir, limit]) => assertSpoolWithinLimit(dir, limit)),
+  )
+  spoolLimit.clear()
   await Promise.all(dirs.splice(0).map((dir) => rm(dir, { recursive: true, force: true })))
 })
 
@@ -260,7 +283,14 @@ describe('capture writer', () => {
       content: 'x'.repeat(30),
     }))
     const source: CaptureBatch = { session_key: 's', agent: 'a', finalize: true, messages }
-    const one = byteLength({ session_key: 's', agent: 'a', messages: messages.slice(0, 1) })
+    // Budget fits one message plus finalize, so the last chunk is deliverable
+    // and the three messages still travel as separate chunks.
+    const one = byteLength({
+      session_key: 's',
+      agent: 'a',
+      finalize: true,
+      messages: messages.slice(0, 1),
+    })
     const offline = vi.fn<typeof globalThis.fetch>().mockRejectedValue(new Error('offline'))
     const { spoolDir } = await setup(offline, { maxChunkBytes: one })
     const writer = createCaptureWriter({
@@ -378,5 +408,105 @@ describe('capture writer', () => {
     expect(log).toHaveBeenCalledWith(expect.stringContaining('413'))
     expect(await writer.replay()).toEqual({ replayed: 0, dead: 0, remaining: 0 })
     expect(fetch).toHaveBeenCalledTimes(1)
+  })
+
+  it('elides a huge metadata value instead of posting it', async () => {
+    const note = 'm'.repeat(1_100_000)
+    const source: CaptureBatch = {
+      session_key: 's',
+      agent: 'a',
+      messages: [
+        {
+          event_id: 'meta',
+          role: 'user',
+          content: 'hi',
+          metadata: {
+            source: 'codex',
+            session_jsonl_path: '/tmp/session.jsonl',
+            session_jsonl_line: 4,
+            note,
+          },
+        },
+      ],
+    }
+    expect(byteLength(source)).toBeGreaterThan(DEFAULT_LIMIT)
+    const fetch = vi.fn<typeof globalThis.fetch>().mockResolvedValue(Response.json(okResult(1)))
+    const { writer, spoolDir } = await setup(fetch)
+    await writer.write(source)
+    const raw = String(fetch.mock.calls[0]?.[1]?.body)
+    expect(Buffer.byteLength(raw, 'utf8')).toBeLessThanOrEqual(DEFAULT_LIMIT)
+    const posted = JSON.parse(raw) as CaptureBatch
+    const metadata = posted.messages[0]?.metadata
+    expect(metadata).toMatchObject({
+      source: 'codex',
+      session_jsonl_path: '/tmp/session.jsonl',
+      session_jsonl_line: 4,
+      metadata_elided: true,
+    })
+    expect(metadata?.note).toBeUndefined()
+    expect(metadata?.full_metadata_bytes).toBeGreaterThan(1_100_000)
+    expect(await readdir(spoolDir)).toEqual([])
+  })
+
+  it('elides settings when the header alone exceeds the limit', async () => {
+    const settings = { blob: 's'.repeat(8_000) }
+    const bytes = Buffer.byteLength(JSON.stringify(settings), 'utf8')
+    const source: CaptureBatch = {
+      session_key: 's',
+      agent: 'a',
+      settings,
+      messages: [],
+      finalize: true,
+    }
+    const limit = 500
+    expect(byteLength({ ...source, messages: [] })).toBeGreaterThan(limit)
+    const fetch = vi.fn<typeof globalThis.fetch>().mockResolvedValue(Response.json(okResult(0)))
+    const { writer } = await setup(fetch, { maxChunkBytes: limit })
+    await writer.write(source)
+    const raw = String(fetch.mock.calls[0]?.[1]?.body)
+    expect(Buffer.byteLength(raw, 'utf8')).toBeLessThanOrEqual(limit)
+    expect(JSON.parse(raw)).toMatchObject({
+      settings: { _elided: true, bytes },
+      messages: [],
+      finalize: true,
+    })
+  })
+
+  it('refuses a singleton whose finalize overhead still exceeds the limit', async () => {
+    const messages: CaptureMessage[] = [1, 2].map((n) => ({
+      event_id: `e${String(n)}`,
+      role: 'user',
+      content: 'x'.repeat(40),
+    }))
+    const source: CaptureBatch = { session_key: 's', agent: 'a', finalize: true, messages }
+    const one = byteLength({ session_key: 's', agent: 'a', messages: messages.slice(0, 1) })
+    expect(byteLength({ ...source, messages: messages.slice(1) })).toBeGreaterThan(one)
+    const fetch = vi.fn<typeof globalThis.fetch>().mockResolvedValue(Response.json(okResult(1)))
+    const log = vi.fn()
+    const { writer, spoolDir } = await setup(fetch, { maxChunkBytes: one, log })
+    const failed = await writer.write(source)
+    expect(failed).toEqual({ spooled: false, error: 'chunk exceeds maxChunkBytes after elision' })
+    expect(fetch).toHaveBeenCalledOnce()
+    expect(JSON.parse(String(fetch.mock.calls[0]?.[1]?.body)).messages[0].event_id).toBe('e1')
+    expect(log).toHaveBeenCalledWith('chunk exceeds maxChunkBytes after elision')
+    expect(await readdir(spoolDir)).toEqual([])
+  })
+
+  it('does not spool a header that still exceeds the limit after settings elision', async () => {
+    const source: CaptureBatch = {
+      session_key: 's',
+      agent: 'a',
+      title: 't'.repeat(5_000),
+      settings: { blob: 's'.repeat(5_000) },
+      messages: [{ event_id: 'e', role: 'user', content: 'hi' }],
+    }
+    const fetch = vi.fn<typeof globalThis.fetch>().mockResolvedValue(Response.json(okResult(1)))
+    const log = vi.fn()
+    const { writer, spoolDir } = await setup(fetch, { maxChunkBytes: 200, log })
+    const failed = await writer.write(source)
+    expect(failed).toEqual({ spooled: false, error: 'chunk exceeds maxChunkBytes after elision' })
+    expect(fetch).not.toHaveBeenCalled()
+    expect(log).toHaveBeenCalledWith('chunk exceeds maxChunkBytes after elision')
+    expect(await readdir(spoolDir)).toEqual([])
   })
 })

@@ -38,6 +38,7 @@ import { resolveCaptureTransport } from '@rivetos/capture-core'
 import {
   ingestTranscript,
   ingestHookEvent,
+  resolveHookEventId,
   resolveTaskContext,
   LEGACY_TASK_KEY_PREFIX,
   closeAllCapturePools,
@@ -230,6 +231,12 @@ export interface WorkerDeps {
   now?: () => number
   skipFiles?: Set<string>
   log?: (msg: string) => void
+  /** Passed through to the real ingest. Injected ingest functions ignore these. */
+  env?: NodeJS.ProcessEnv
+  fetch?: typeof globalThis.fetch
+  captureSpoolDir?: string
+  pollMs?: number
+  pollForMs?: number
 }
 
 function removeSpool(spoolFile: string): void {
@@ -300,6 +307,11 @@ interface HookPayload {
   tool_input?: unknown
   tool_response?: unknown
   tool_result?: unknown
+  /**
+   * Written back on the first resolution of a payload event. Retries reuse it
+   * instead of binding against a transcript that has grown since.
+   */
+  rivetos_event_id?: string
 }
 
 async function readStdin(): Promise<string> {
@@ -392,8 +404,9 @@ async function dispatchIngest(
       }
     : undefined
 
-  // Payload events (UserPromptSubmit / PostToolUse) — ingest straight from
-  // the stdin payload; no transcript involved.
+  // Payload events (UserPromptSubmit / PostToolUse). The row comes from the
+  // stdin payload; its event id is bound to the transcript tail when that
+  // file is readable (see resolveHookEventId).
   if ((PAYLOAD_EVENTS as readonly string[]).includes(event)) {
     const res = await ingestHook({
       payload,
@@ -401,6 +414,11 @@ async function dispatchIngest(
       taskId: payload.rivetos_task_id,
       herdr,
       idempotencyKey,
+      env: deps.env,
+      fetch: deps.fetch,
+      spoolDir: deps.captureSpoolDir,
+      pollMs: deps.pollMs,
+      pollForMs: deps.pollForMs,
     })
     if (res.skipped) {
       logFn(`${event} ${res.sessionKey}: skipped (${res.skipped})`)
@@ -437,6 +455,30 @@ async function dispatchIngest(
   }
 }
 
+/**
+ * Persist the id before ingest. A crash or a failed post retries the same
+ * spool; the next pass must not bind a different row if the transcript grew.
+ */
+async function stampResolvedEventId(
+  payload: HookPayload,
+  claimed: string,
+  idempotencyKey: string,
+  deps: WorkerDeps,
+): Promise<void> {
+  const event = payload.hook_event_name ?? ''
+  if (!(PAYLOAD_EVENTS as readonly string[]).includes(event)) return
+  if (typeof payload.rivetos_event_id === 'string' && payload.rivetos_event_id !== '') return
+  const resolved = await resolveHookEventId({
+    payload,
+    idempotencyKey,
+    sessionKeyOverride: payload.rivetos_session_key,
+    pollMs: deps.pollMs,
+    pollForMs: deps.pollForMs,
+  })
+  payload.rivetos_event_id = resolved.eventId
+  fs.writeFileSync(claimed, JSON.stringify(payload))
+}
+
 /** Ingest one spool file. Delete only after success; retain/rename on failure. */
 export async function ingestSpoolFile(spoolFile: string, deps: WorkerDeps = {}): Promise<void> {
   const logFn = deps.log ?? log
@@ -458,6 +500,7 @@ export async function ingestSpoolFile(spoolFile: string, deps: WorkerDeps = {}):
   }
 
   try {
+    await stampResolvedEventId(payload, claimed, spoolStem(claimed), deps)
     await dispatchIngest(payload, deps, spoolStem(claimed))
     removeSpool(claimed)
   } catch (err) {

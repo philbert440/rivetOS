@@ -14,6 +14,26 @@ class CaptureClientError extends Error {}
 
 const CONTENT_LIMIT = 16_000
 const DEFAULT_CHUNK_BYTES = 768 * 1024
+const CHUNK_OVER_LIMIT = 'chunk exceeds maxChunkBytes after elision'
+
+/** Keys memory_get_full and the capture server still need after metadata elision. */
+const METADATA_KEEP = new Set([
+  'event_id',
+  'session_jsonl_path',
+  'session_jsonl_line',
+  'session_sqlite_path',
+  'session_sqlite_part_id',
+  'truncated',
+  'ordinal',
+  'native_event_id',
+  'source',
+  'metadata_elided',
+  'full_metadata_bytes',
+])
+
+function keepMetadataKey(key: string): boolean {
+  return METADATA_KEEP.has(key) || /^full_.+_length$/.test(key)
+}
 
 /**
  * Same cut as the den's capture writer: 16,000 UTF-16 units, no inline marker,
@@ -68,9 +88,15 @@ export function createCaptureWriter(opts: CaptureWriterOptions): CaptureWriter {
   const fits = (batch: CaptureBatch, messages: CaptureMessage[], isLast: boolean): boolean =>
     encodedBytes(chunkFor(batch, messages, isLast)) <= maxChunkBytes
   const elided = new WeakSet<CaptureMessage>()
+  const metaElided = new WeakSet<CaptureMessage>()
   const elideToolArgs = (message: CaptureMessage): CaptureMessage => {
     if (elided.has(message)) return message
-    const serialized = message.tool_args === undefined ? '' : JSON.stringify(message.tool_args)
+    // Nothing to drop. Mark it so a later pass moves on to metadata.
+    if (message.tool_args === undefined) {
+      elided.add(message)
+      return message
+    }
+    const serialized = JSON.stringify(message.tool_args)
     const bytes = Buffer.byteLength(serialized, 'utf8')
     log(`elided tool_args for event ${message.event_id} (${String(bytes)} bytes)`)
     const next: CaptureMessage = {
@@ -81,7 +107,47 @@ export function createCaptureWriter(opts: CaptureWriterOptions): CaptureWriter {
     elided.add(next)
     return next
   }
-  const splitChunks = (batch: CaptureBatch): CaptureBatch[] => {
+  const elideMetadata = (message: CaptureMessage): CaptureMessage => {
+    if (metaElided.has(message)) return message
+    const metadata = message.metadata ?? {}
+    const bytes = Buffer.byteLength(JSON.stringify(metadata), 'utf8')
+    log(`elided metadata for event ${message.event_id} (${String(bytes)} bytes)`)
+    const kept: Record<string, unknown> = {}
+    for (const [key, value] of Object.entries(metadata)) {
+      if (keepMetadataKey(key)) kept[key] = value
+    }
+    kept.metadata_elided = true
+    kept.full_metadata_bytes = bytes
+    const next: CaptureMessage = { ...message, metadata: kept }
+    elided.add(next)
+    metaElided.add(next)
+    return next
+  }
+  /**
+   * Tool args first, then metadata. Returns the same object once neither
+   * elision can change it, so the caller can stop.
+   */
+  const shrinkSingleton = (
+    message: CaptureMessage,
+    isLast: boolean,
+    batch: CaptureBatch,
+  ): CaptureMessage => {
+    let current = message
+    if (fits(batch, [current], isLast)) return current
+    if (!elided.has(current)) current = elideToolArgs(current)
+    if (fits(batch, [current], isLast)) return current
+    if (!metaElided.has(current)) current = elideMetadata(current)
+    return current
+  }
+  const splitChunks = (batchIn: CaptureBatch): CaptureBatch[] => {
+    // Header bytes do not depend on messages. A settings blob that already
+    // exceeds the budget would make every chunk undeliverable.
+    let batch = batchIn
+    if (batch.settings !== undefined && encodedBytes(chunkFor(batch, [], true)) > maxChunkBytes) {
+      const bytes = Buffer.byteLength(JSON.stringify(batch.settings), 'utf8')
+      log(`elided settings (${String(bytes)} bytes)`)
+      batch = { ...batch, settings: { _elided: true, bytes } }
+    }
     const messages = batch.messages
     if (messages.length === 0) return [chunkFor(batch, [], true)]
     const groups: CaptureMessage[][] = []
@@ -111,13 +177,21 @@ export function createCaptureWriter(opts: CaptureWriterOptions): CaptureWriter {
       if (fits(batch, last, true)) break
       if (last.length <= 1) {
         const only = last[0]
-        if (elided.has(only)) break
-        last[0] = elideToolArgs(only)
+        const next = shrinkSingleton(only, true, batch)
+        if (next === only) break
+        last[0] = next
         continue
       }
       const peeled = last.pop()
       if (peeled === undefined) break
       groups.push([peeled])
+    }
+    for (let index = 0; index < groups.length; index += 1) {
+      const group = groups[index]
+      if (group.length !== 1) continue
+      const isLast = index === groups.length - 1
+      if (fits(batch, group, isLast)) continue
+      groups[index] = [shrinkSingleton(group[0], isLast, batch)]
     }
     return groups.map((msgs, index) => chunkFor(batch, msgs, index === groups.length - 1))
   }
@@ -175,6 +249,13 @@ export function createCaptureWriter(opts: CaptureWriterOptions): CaptureWriter {
       let conversationId = ''
       const files: string[] = []
       for (const [index, chunk] of chunks.entries()) {
+        // Never post or spool a body the server will refuse. Earlier chunks
+        // may already have been delivered; they are idempotent. This return
+        // is not an acknowledgement, so the caller must not advance.
+        if (encodedBytes(chunk) > maxChunkBytes) {
+          log(CHUNK_OVER_LIMIT)
+          return { spooled: false, error: CHUNK_OVER_LIMIT }
+        }
         try {
           const result = await post(JSON.stringify(chunk))
           inserted += result.inserted

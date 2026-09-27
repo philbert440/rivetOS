@@ -128,7 +128,7 @@ describe('claude-cli den transport', () => {
       'claude-code:sess-1:a1',
       `claude-code:sess-1:occ:${contentTupleHash({ role: 'assistant', content: 'no uuid' })}:0`,
       'claude-code:sess-1:tool:toolu_1',
-      `claude-code:sess-1:occ:${contentTupleHash({ role: 'user', content: 'hello' })}:0`,
+      'claude-code:sess-1:u1',
     ])
     expect(bodies[0]?.task_id).toBe('cccccccc-3333-4333-8333-cccccccccccc')
     expect(bodies[0]?.finalize).toBeUndefined()
@@ -179,24 +179,23 @@ describe('claude-cli den transport', () => {
     const dir = mkdtempSync(path.join(tmpdir(), 'claude-den-'))
     dirs.push(dir)
     const file = path.join(dir, 'sess.jsonl')
-    const user = (uuid: string) =>
+    const user = () =>
       JSON.stringify({
         type: 'user',
         sessionId: 'sess-1',
-        uuid,
         message: { role: 'user', content: 'continue' },
       })
     writeFileSync(
       file,
       [
-        user('u1'),
+        user(),
         JSON.stringify({
           type: 'assistant',
           sessionId: 'sess-1',
           uuid: 'a1',
           message: { role: 'assistant', content: 'ok' },
         }),
-        user('u2'),
+        user(),
       ].join('\n') + '\n',
     )
     const bodies: PostedBatch[] = []
@@ -263,7 +262,7 @@ describe('claude-cli den transport', () => {
     })
     await ingestTranscript({ transcriptPath: hookFirstFile, env: denEnv, fetch: okFetch(hookFirst) })
     const hookId = hookFirst[0]?.messages[0]?.event_id
-    expect(hookId).toMatch(/:occ:[0-9a-f]{64}:1$/)
+    expect(hookId).toBe('claude-code:sess-1:u2')
     expect(hookFirst[0]?.messages[0]?.metadata).toMatchObject({ source: 'claude-code-hook' })
     expect(userId(hookFirst)).toBe(hookId)
 
@@ -336,8 +335,180 @@ describe('claude-cli den transport', () => {
       idempotencyKey: 'stem-missing',
       env: denEnv,
       fetch: okFetch(bodies),
+      pollForMs: 120,
+      pollMs: 40,
     })
     expect(bodies[0]?.messages[0]?.event_id).toBe('claude-code:sess-1:hook:stem-missing')
+    expect(bodies[0]?.messages[0]?.metadata).toMatchObject({ source: 'hook-only' })
+  })
+
+  function readCall(id: string | undefined, input: unknown = { file_path: 'a' }): string {
+    return JSON.stringify({
+      type: 'assistant',
+      sessionId: 'sess-1',
+      uuid: `a-${id ?? 'none'}`,
+      message: {
+        role: 'assistant',
+        content: [{ type: 'tool_use', ...(id ? { id } : {}), name: 'Read', input }],
+      },
+    })
+  }
+
+  async function postTool(file: string, bodies: PostedBatch[], stem: string): Promise<void> {
+    await ingestHookEvent({
+      payload: {
+        hook_event_name: 'PostToolUse',
+        session_id: 'sess-1',
+        transcript_path: file,
+        tool_name: 'Read',
+        tool_input: { file_path: 'a' },
+        tool_response: 'ok',
+      },
+      idempotencyKey: stem,
+      env: denEnv,
+      fetch: okFetch(bodies),
+      pollMs: 20,
+      pollForMs: 1_000,
+    })
+  }
+
+  it('shares the native tool id when PostToolUse runs before Stop', async () => {
+    const dir = mkdtempSync(path.join(tmpdir(), 'claude-den-'))
+    dirs.push(dir)
+    const file = path.join(dir, 'sess.jsonl')
+    writeFileSync(file, `${readCall('toolu_1')}\n`)
+    const bodies: PostedBatch[] = []
+    await postTool(file, bodies, 'stem-tool-hook-first')
+    await ingestTranscript({ transcriptPath: file, env: denEnv, fetch: okFetch(bodies) })
+    const hookId = bodies[0]?.messages[0]?.event_id
+    const stopId = bodies[1]?.messages.find((m) => m.role === 'tool')?.event_id
+    expect(hookId).toBe('claude-code:sess-1:tool:toolu_1')
+    expect(stopId).toBe(hookId)
+    expect(bodies[0]?.messages[0]?.metadata).toMatchObject({ source: 'claude-code-hook' })
+  })
+
+  it('shares the native tool id when Stop runs before PostToolUse', async () => {
+    const dir = mkdtempSync(path.join(tmpdir(), 'claude-den-'))
+    dirs.push(dir)
+    const file = path.join(dir, 'sess.jsonl')
+    writeFileSync(file, `${readCall('toolu_1')}\n`)
+    const bodies: PostedBatch[] = []
+    await ingestTranscript({ transcriptPath: file, env: denEnv, fetch: okFetch(bodies) })
+    await postTool(file, bodies, 'stem-tool-stop-first')
+    const stopId = bodies[0]?.messages.find((m) => m.role === 'tool')?.event_id
+    expect(stopId).toBe('claude-code:sess-1:tool:toolu_1')
+    expect(bodies.at(-1)?.messages[0]?.event_id).toBe(stopId)
+  })
+
+  it('gives two identical Read calls distinct native ids on both paths', async () => {
+    const dir = mkdtempSync(path.join(tmpdir(), 'claude-den-'))
+    dirs.push(dir)
+    const file = path.join(dir, 'sess.jsonl')
+    writeFileSync(file, `${readCall('toolu_1')}\n`)
+    const bodies: PostedBatch[] = []
+    await postTool(file, bodies, 'stem-read-1')
+    writeFileSync(file, `${readCall('toolu_1')}\n${readCall('toolu_2')}\n`)
+    await postTool(file, bodies, 'stem-read-2')
+    await ingestTranscript({ transcriptPath: file, env: denEnv, fetch: okFetch(bodies) })
+    expect(bodies[0]?.messages[0]?.event_id).toBe('claude-code:sess-1:tool:toolu_1')
+    expect(bodies[1]?.messages[0]?.event_id).toBe('claude-code:sess-1:tool:toolu_2')
+    expect(bodies[2]?.messages.filter((m) => m.role === 'tool').map((m) => m.event_id)).toEqual([
+      'claude-code:sess-1:tool:toolu_1',
+      'claude-code:sess-1:tool:toolu_2',
+    ])
+  })
+
+  it('uses the occurrence id when the matching Read has no tool_use id', async () => {
+    const dir = mkdtempSync(path.join(tmpdir(), 'claude-den-'))
+    dirs.push(dir)
+    const file = path.join(dir, 'sess.jsonl')
+    writeFileSync(file, `${readCall(undefined)}\n`)
+    const bodies: PostedBatch[] = []
+    await postTool(file, bodies, 'stem-read-occ')
+    await ingestTranscript({ transcriptPath: file, env: denEnv, fetch: okFetch(bodies) })
+    const hookId = bodies[0]?.messages[0]?.event_id ?? ''
+    expect(hookId).toMatch(/:occ:[0-9a-f]{64}:0$/)
+    expect(hookId).not.toContain(':tool:')
+    expect(bodies[1]?.messages.find((m) => m.role === 'tool')?.event_id).toBe(hookId)
+  })
+
+  it('waits until the new prompt is the transcript tail before binding', async () => {
+    const dir = mkdtempSync(path.join(tmpdir(), 'claude-den-'))
+    dirs.push(dir)
+    const file = path.join(dir, 'sess.jsonl')
+    const user = (uuid: string) =>
+      JSON.stringify({
+        type: 'user',
+        sessionId: 'sess-1',
+        uuid,
+        message: { role: 'user', content: 'continue' },
+      })
+    const assistant = JSON.stringify({
+      type: 'assistant',
+      sessionId: 'sess-1',
+      uuid: 'a1',
+      message: { role: 'assistant', content: 'ok' },
+    })
+    writeFileSync(file, `${user('u1')}\n${assistant}\n`)
+    const bodies: PostedBatch[] = []
+    const pending = ingestHookEvent({
+      payload: {
+        hook_event_name: 'UserPromptSubmit',
+        session_id: 'sess-1',
+        prompt: 'continue',
+        transcript_path: file,
+      },
+      idempotencyKey: 'stem-wait',
+      env: denEnv,
+      fetch: okFetch(bodies),
+      pollMs: 20,
+      pollForMs: 1_000,
+    })
+    await new Promise((resolve) => setTimeout(resolve, 50))
+    writeFileSync(file, `${user('u1')}\n${assistant}\n${user('u2')}\n`)
+    await pending
+    expect(bodies[0]?.messages[0]?.event_id).toBe('claude-code:sess-1:u2')
+    expect(bodies[0]?.messages[0]?.metadata).toMatchObject({ source: 'claude-code-hook' })
+  })
+
+  it('does not bind a delayed hook once a later turn is already the tail', async () => {
+    const dir = mkdtempSync(path.join(tmpdir(), 'claude-den-'))
+    dirs.push(dir)
+    const file = path.join(dir, 'sess.jsonl')
+    const user = (uuid: string) =>
+      JSON.stringify({
+        type: 'user',
+        sessionId: 'sess-1',
+        uuid,
+        message: { role: 'user', content: 'continue' },
+      })
+    writeFileSync(
+      file,
+      [
+        user('u1'),
+        JSON.stringify({
+          type: 'assistant',
+          sessionId: 'sess-1',
+          uuid: 'a-late',
+          message: { role: 'assistant', content: 'already moved on' },
+        }),
+      ].join('\n') + '\n',
+    )
+    const bodies: PostedBatch[] = []
+    await ingestHookEvent({
+      payload: {
+        hook_event_name: 'UserPromptSubmit',
+        session_id: 'sess-1',
+        prompt: 'continue',
+        transcript_path: file,
+      },
+      idempotencyKey: 'stem-late',
+      env: denEnv,
+      fetch: okFetch(bodies),
+      pollMs: 20,
+      pollForMs: 80,
+    })
+    expect(bodies[0]?.messages[0]?.event_id).toBe('claude-code:sess-1:hook:stem-late')
     expect(bodies[0]?.messages[0]?.metadata).toMatchObject({ source: 'hook-only' })
   })
 })

@@ -140,6 +140,18 @@ release. When the den is down the batch is spooled under
 `rivet-memory-hook.sh` calls `rivetos_resolve_den` before `node` so Node trusts
 the den CA.
 
+A `UserPromptSubmit` or `PostToolUse` hook polls `transcript_path` for up to
+2s, every 100ms, until the last matching entry is the tail of the transcript.
+That entry's id is `claude-code:<session>:tool:<tool_use id>` or
+`claude-code:<session>:<uuid>` when the row has one, otherwise
+`claude-code:<session>:occ:<hash>:<n>` (`n` is that entry's occurrence index).
+If the entry never shows up at the tail, the id is
+`claude-code:<session>:hook:<spool stem>` and `metadata.source` is `hook-only`:
+a later Stop may insert a second row for that turn under the occurrence id
+(rare). The worker writes the resolved id back onto the spool payload as
+`rivetos_event_id` before ingest, and a retry reuses it instead of binding
+again.
+
 ## Capture is best-effort
 
 `rivet-memory-hook.sh` always exits 0. A capture failure — DB down, dist

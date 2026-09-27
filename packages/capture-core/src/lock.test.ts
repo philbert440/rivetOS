@@ -227,3 +227,91 @@ it('does not remove a foreign lock', async () => {
   expect(readFileSync(join(lockDir, 'owner.json'), 'utf8')).toContain('"pid":999')
   expect(log).toHaveBeenCalledWith(expect.stringContaining('not releasing'))
 })
+
+it('keeps a single holder when a taker pauses after the validating stat', async () => {
+  const lockDir = lockPath()
+  mkdirSync(lockDir)
+  writeFileSync(join(lockDir, 'owner.json'), '{"pid":1}')
+  const old = new Date(Date.now() - 10_000)
+  utimesSync(lockDir, old, old)
+
+  let validated = false
+  let releaseValidated: () => void = () => undefined
+  const validatedGate = new Promise<void>((resolve) => {
+    releaseValidated = resolve
+  })
+  let inside = 0
+  let maxInside = 0
+  const track = async (who: string): Promise<string> => {
+    inside += 1
+    maxInside = Math.max(maxInside, inside)
+    await new Promise((resolve) => setTimeout(resolve, 30))
+    inside -= 1
+    return who
+  }
+
+  const delayed = withFileLock(lockDir, () => track('B'), {
+    staleMs: 1_000,
+    waitMs: 4_000,
+    pollMs: 10,
+    afterValidatingStat: async () => {
+      validated = true
+      await validatedGate
+    },
+  })
+  const started = Date.now()
+  while (!validated && Date.now() - started < 1_000) {
+    await new Promise((resolve) => setTimeout(resolve, 10))
+  }
+  expect(validated).toBe(true)
+
+  const contenders = ['A', 'C'].map((who) =>
+    withFileLock(lockDir, () => track(who), { staleMs: 1_000, waitMs: 4_000, pollMs: 10 }),
+  )
+  await new Promise((resolve) => setTimeout(resolve, 50))
+  expect(maxInside).toBe(0)
+  releaseValidated()
+  const results = await Promise.all([delayed, ...contenders])
+  expect(maxInside).toBe(1)
+  expect(results.sort()).toEqual(['A', 'B', 'C'])
+  expect(existsSync(lockDir)).toBe(false)
+  expect(existsSync(`${lockDir}.reclaim`)).toBe(false)
+  const parent = lockDir.slice(0, lockDir.lastIndexOf('/'))
+  expect(readdirSync(parent).some((name) => name.includes('.stale-'))).toBe(false)
+})
+
+it('recovers an abandoned reclaim mutex', async () => {
+  const lockDir = lockPath()
+  mkdirSync(lockDir)
+  const old = new Date(Date.now() - 10_000)
+  utimesSync(lockDir, old, old)
+  const reclaim = `${lockDir}.reclaim`
+  mkdirSync(reclaim)
+  const abandoned = new Date(Date.now() - 31_000)
+  utimesSync(reclaim, abandoned, abandoned)
+  let entered = false
+  await withFileLock(
+    lockDir,
+    () => {
+      entered = true
+    },
+    { staleMs: 1_000, waitMs: 2_000, pollMs: 20 },
+  )
+  expect(entered).toBe(true)
+  expect(existsSync(reclaim)).toBe(false)
+  expect(existsSync(lockDir)).toBe(false)
+})
+
+it('waits on a fresh reclaim mutex instead of removing it', async () => {
+  const lockDir = lockPath()
+  mkdirSync(lockDir)
+  const old = new Date(Date.now() - 10_000)
+  utimesSync(lockDir, old, old)
+  const reclaim = `${lockDir}.reclaim`
+  mkdirSync(reclaim)
+  await expect(
+    withFileLock(lockDir, () => 'entered', { staleMs: 1_000, waitMs: 250, pollMs: 20 }),
+  ).rejects.toBeInstanceOf(LockTimeout)
+  expect(existsSync(reclaim)).toBe(true)
+  expect(existsSync(lockDir)).toBe(true)
+})

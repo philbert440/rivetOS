@@ -829,16 +829,36 @@ function denEventIds(
       )
       return
     }
-    user.push(occEventId(sessionPart, key, n))
+    user.push(
+      slot.message.uuid
+        ? `claude-code:${sessionPart}:${slot.message.uuid}`
+        : occEventId(sessionPart, key, n),
+    )
   })
   return { assistant, tool, user }
 }
 
+/** How long a live hook waits for its transcript row to land at the tail. */
+const HOOK_TRANSCRIPT_POLL_MS = 100
+const HOOK_TRANSCRIPT_POLL_FOR_MS = 2_000
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => {
+    setTimeout(resolve, ms)
+  })
+}
+
+function hookOnlyEventId(eventId: string): boolean {
+  return eventId.includes(':hook:') || !eventId.startsWith('claude-code:')
+}
+
 /**
- * Same occ id the transcript walk would assign if this event is the last
- * matching row. Undefined when the transcript cannot be read.
+ * Id of the last captured row matching `key`, when that row is the tail of
+ * the file. A native tool id or entry uuid wins; otherwise the occurrence id
+ * the Stop walk assigns to that same row. Undefined when the file cannot be
+ * read, nothing matches, or a later captured row means this is still a prefix.
  */
-function occIdFromTranscript(
+function tailEventId(
   transcriptPath: string,
   key: OccurrenceKey,
   sessionHint: string,
@@ -849,12 +869,101 @@ function occIdFromTranscript(
   } catch {
     return undefined
   }
-  const rows: OccurrenceKey[] = []
-  forEachCaptured(parsed, (row) => {
-    rows.push(row)
-  })
   const sessionPart = sessionHint || parsed.sessionId || 'unknown'
-  return occEventId(sessionPart, key, occurrenceIndex(rows, key))
+  const want = contentTupleHash(key)
+  let found: string | undefined
+  let foundAt = -1
+  let index = -1
+  forEachCaptured(parsed, (rowKey, n, slot) => {
+    index += 1
+    if (contentTupleHash(rowKey) !== want) return
+    foundAt = index
+    if (slot.kind === 'tool' && slot.tool.id) {
+      found = `claude-code:${sessionPart}:tool:${slot.tool.id}`
+      return
+    }
+    if (slot.kind === 'user' && slot.message.uuid) {
+      found = `claude-code:${sessionPart}:${slot.message.uuid}`
+      return
+    }
+    found = occEventId(sessionPart, rowKey, n)
+  })
+  if (found === undefined || foundAt !== index) return undefined
+  return found
+}
+
+function hookOccurrenceKey(payload: HookEventPayload): OccurrenceKey | undefined {
+  const event = payload.hook_event_name
+  if (event === 'UserPromptSubmit') {
+    const prompt = typeof payload.prompt === 'string' ? payload.prompt : ''
+    if (prompt.trim() === '') return undefined
+    return { role: 'user', content: prompt }
+  }
+  if (event === 'PostToolUse') {
+    const toolName = typeof payload.tool_name === 'string' ? payload.tool_name : 'unknown'
+    return {
+      role: 'tool',
+      content: `[tool call] ${toolName}`,
+      toolName,
+      toolArgs: normalizeToolArgs(payload.tool_input ?? null),
+    }
+  }
+  return undefined
+}
+
+function hookFallbackId(
+  sessionPart: string,
+  idempotencyKey: string | undefined,
+  sessionKey: string,
+  key: OccurrenceKey | undefined,
+): string {
+  if (idempotencyKey) return `claude-code:${sessionPart}:hook:${idempotencyKey}`
+  return eventIdFromContent({
+    sessionKey,
+    role: key?.role ?? 'user',
+    content: key?.content ?? '',
+    toolName: key?.toolName,
+    toolArgs: key?.toolArgs,
+  })
+}
+
+/**
+ * Bind a UserPromptSubmit / PostToolUse row to one transcript position.
+ * Polls until the last matching entry is the tail, then uses that entry's
+ * native id or occurrence id. A stored `rivetos_event_id` is returned as-is
+ * so a spool retry does not recompute against a grown transcript.
+ */
+export async function resolveHookEventId(opts: {
+  payload: HookEventPayload
+  idempotencyKey?: string
+  sessionKeyOverride?: string
+  pollMs?: number
+  pollForMs?: number
+}): Promise<{ eventId: string; hookOnly: boolean }> {
+  const stored = opts.payload.rivetos_event_id
+  if (typeof stored === 'string' && stored !== '') {
+    return { eventId: stored, hookOnly: hookOnlyEventId(stored) }
+  }
+  const sessionKey = resolveConversationKey({
+    override: opts.sessionKeyOverride,
+    hookSessionId: opts.payload.session_id,
+    fallbackKey: '',
+  })
+  const sessionPart = opts.payload.session_id || sessionKey || 'unknown'
+  const key = hookOccurrenceKey(opts.payload)
+  const transcriptPath = opts.payload.transcript_path
+  if (transcriptPath && key) {
+    const pollMs = opts.pollMs ?? HOOK_TRANSCRIPT_POLL_MS
+    const deadline = Date.now() + (opts.pollForMs ?? HOOK_TRANSCRIPT_POLL_FOR_MS)
+    for (;;) {
+      const bound = tailEventId(transcriptPath, key, opts.payload.session_id ?? '')
+      if (bound) return { eventId: bound, hookOnly: false }
+      if (Date.now() >= deadline) break
+      await sleep(pollMs)
+    }
+  }
+  const eventId = hookFallbackId(sessionPart, opts.idempotencyKey, sessionKey, key)
+  return { eventId, hookOnly: true }
 }
 
 /**
@@ -876,9 +985,10 @@ function occIdFromTranscript(
  * tool calls. Safe to call repeatedly and concurrently for the same session (a
  * per-session advisory lock serialises ingests).
  *
- * Caveat: a tool row recovered here can race a still-spooled offline replay of
- * the same PostToolUse, producing a rare duplicate; the offline outbox is the
- * unreliable edge and the recovered call is the higher-value record.
+ * On the den path, Stop and a live hook share an event id when the hook bound
+ * the transcript row (native tool id or entry uuid, otherwise the occurrence
+ * id). A hook that never saw its row uses `hook:<stem>` with `source: hook-only`;
+ * Stop may then insert a second row for that turn. That case is rare.
  */
 export async function ingestTranscript(opts: IngestOptions): Promise<IngestResult> {
   const { transcriptPath, markInactive = false, event } = opts
@@ -1204,6 +1314,11 @@ export interface HookEventPayload {
   /** Claude Code names the result `tool_response`; some payloads use `tool_result`. */
   tool_response?: unknown
   tool_result?: unknown
+  /**
+   * Event id resolved on the first spool attempt. A retry reuses it instead
+   * of binding again against a transcript that may have grown.
+   */
+  rivetos_event_id?: string
 }
 
 export interface HookEventOptions {
@@ -1229,6 +1344,10 @@ export interface HookEventOptions {
    * another ros_messages row — ingestHookEvent has no uuid/multiset dedup.
    */
   idempotencyKey?: string
+  /** Test override. Production polls every 100ms for up to 2s. */
+  pollMs?: number
+  /** Test override for the transcript-tail wait. Default 2000. */
+  pollForMs?: number
 }
 
 export interface HookEventResult {
@@ -1320,28 +1439,15 @@ export async function ingestHookEvent(opts: HookEventOptions): Promise<HookEvent
     throw new Error(`capture transport unavailable: ${transport.reason}`)
   }
   if (transport.kind === 'den') {
-    const sessionPart = payload.session_id || sessionKey
-    const occKey: OccurrenceKey = {
-      role: row.role,
-      content: row.content,
-      toolName: row.toolName ?? undefined,
-      toolArgs: normalizeToolArgs(row.toolArgs),
-    }
-    const fromTranscript = payload.transcript_path
-      ? occIdFromTranscript(payload.transcript_path, occKey, payload.session_id ?? '')
-      : undefined
-    const hookOnly = fromTranscript === undefined
-    const eventId =
-      fromTranscript ??
-      (opts.idempotencyKey
-        ? `claude-code:${sessionPart}:hook:${opts.idempotencyKey}`
-        : eventIdFromContent({
-            sessionKey,
-            role: row.role,
-            content: row.content,
-            toolName: row.toolName ?? undefined,
-            toolArgs: row.toolArgs === undefined ? undefined : row.toolArgs,
-          }))
+    const resolved = await resolveHookEventId({
+      payload,
+      idempotencyKey: opts.idempotencyKey,
+      sessionKeyOverride: opts.sessionKeyOverride,
+      pollMs: opts.pollMs,
+      pollForMs: opts.pollForMs,
+    })
+    const eventId = resolved.eventId
+    const hookOnly = resolved.hookOnly
     const settings = {
       source: 'claude-code-hook',
       session_id: sessionId,
