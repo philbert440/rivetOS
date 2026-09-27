@@ -277,10 +277,6 @@ export interface TaskWire {
 }
 
 export interface TaskCreateRequest {
-  /** Id of the task that is delegating this one; the den stamps the child's chain depth from it. */
-  parentTaskId?: string
-  /** Explicit chain depth for the child; wins over the parent lookup. Non-negative integer. */
-  chainDepth?: number
   goal: string
   agentId: string
   executor?: TaskExecutorKind
