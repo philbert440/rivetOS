@@ -27,12 +27,13 @@ afterEach(() => {
   vi.restoreAllMocks()
   rmSync(dir, { recursive: true, force: true })
 })
-function sink(offline = false, failedSpool = false) {
+function sink(offline = false, failedSpool = false, rejected = false) {
   const spoolDir = path.join(dir, 'spool')
   if (failedSpool) writeFileSync(spoolDir, 'not a directory')
   const fetch: typeof globalThis.fetch = async (url, init) => {
     expect(String(url)).toBe('https://127.0.0.1:5174/api/capture')
     bodies.push(JSON.parse(String(init?.body)) as CaptureBatch)
+    if (rejected) return new Response('bad request', { status: 400 })
     if (offline) throw new Error('offline')
     return new Response(
       JSON.stringify({ ok: true, conversation_id: 'conv', inserted: 1, skipped: 0 }),
@@ -83,7 +84,17 @@ it('posts exact hook and wire rows with finalize and disk pointer', async () => 
     .update(['sid', 'assistant', 'hello', '', '', 'wire:content.part:uuid'].join('\0'))
     .digest('hex')
   const hookId = createHash('sha256')
-    .update(['sid', 'system', '[kimi.SessionEnd]', '', '', 'SessionEnd'].join('\0'))
+    .update(
+      [
+        'sid',
+        'system',
+        '[kimi.SessionEnd]',
+        '',
+        '',
+        'SessionEnd',
+        'identity:timestamp:2026-09-27T00:00:00Z',
+      ].join('\0'),
+    )
     .digest('hex')
   expect(bodies[0]).toEqual({
     session_key: 'kimi-code:sid',
@@ -125,13 +136,14 @@ it('posts exact hook and wire rows with finalize and disk pointer', async () => 
     },
   })
 })
-it.each(['spooled', 'failed'] as const)('durability: %s', async (mode) => {
-  const options = sink(true, mode === 'failed')
+it.each(['spooled', 'failed', 'rejected'] as const)('durability: %s', async (mode) => {
+  const options = sink(true, mode === 'failed', mode === 'rejected')
   const ingest = processOp(
     { kind: 'hook', sessionId: 'sid', sourceEvent: 'SessionEnd', finalize: true, payload: {} },
     options,
   )
-  if (mode === 'failed') await expect(ingest).rejects.toThrow('spool failed')
+  if (mode === 'failed' || mode === 'rejected')
+    await expect(ingest).rejects.toThrow(mode === 'rejected' ? 'capture HTTP 400' : 'spool failed')
   else {
     await ingest
     expect(readdirSync(options.spoolDir)).toHaveLength(1)

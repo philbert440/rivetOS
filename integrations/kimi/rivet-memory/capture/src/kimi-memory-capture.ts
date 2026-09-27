@@ -208,7 +208,7 @@ export function pickContentText(
 // ---------------------------------------------------------------------------
 /**
  * Stable SHA-256 hex of the fields that define message identity. Same payload
- * twice → same event_id → second insert skipped. Keep this six-field contract:
+ * twice → same event_id → second insert skipped. Keep the six-field base:
  * capture-core eventIdFromContent omits toolResult and sourceEvent and would
  * change existing Kimi ids.
  */
@@ -219,8 +219,11 @@ export function contentHashEventId(parts: {
   toolName?: string | null
   toolResult?: string | null
   sourceEvent?: string
+  identity?: string
+  toolArgs?: unknown
+  occurrence?: number
 }): string {
-  const material = [
+  let material = [
     parts.sessionId,
     parts.role,
     parts.content,
@@ -228,6 +231,9 @@ export function contentHashEventId(parts: {
     parts.toolResult ?? '',
     parts.sourceEvent ?? '',
   ].join('\0')
+  if (parts.identity) material += `\0identity:${parts.identity}`
+  if (parts.toolArgs != null) material += `\0toolArgs:${safeJson(parts.toolArgs)}`
+  if (parts.occurrence) material += `\0occurrence:${parts.occurrence}`
   return crypto.createHash('sha256').update(material, 'utf8').digest('hex')
 }
 
@@ -252,6 +258,7 @@ export function parseWireJsonl(
 ): PendingMessage[] {
   const out: PendingMessage[] = []
   let lastMs = 0
+  const occurrences = new Map<string, number>()
 
   const push = (msg: Omit<PendingMessage, 'createdAt'>, wireMs: number): void => {
     const ms = wireMs > lastMs ? wireMs : lastMs + 1
@@ -298,12 +305,16 @@ export function parseWireJsonl(
 
     // `[thinking] ` prefix matches rivet-claude and grok-build convention
     const content = partType === 'think' ? `[thinking] ${body}` : body
+    const tuple = JSON.stringify(['assistant', content, null])
+    const occurrence = occurrences.get(tuple) ?? 0
+    occurrences.set(tuple, occurrence + 1)
     const sourceEvent = `wire:content.part:${uuid}`
     const eventId = contentHashEventId({
       sessionId,
       role: 'assistant',
       content,
       sourceEvent,
+      occurrence,
     })
 
     push(
@@ -374,11 +385,33 @@ export function messagesFromHookPayload(
 ): PendingMessage[] {
   const event = sourceEvent || pickString(payload, 'hook_event_name', 'hookEventName') || 'unknown'
   const out: PendingMessage[] = []
-  const eventTs =
-    pickString(payload, 'timestamp', 'event_ts', 'eventTs') ??
-    (typeof payload.timestamp === 'number'
-      ? new Date(payload.timestamp).toISOString()
-      : new Date().toISOString())
+  const nativeId = pickString(
+    payload,
+    'message_id',
+    'messageId',
+    'event_id',
+    'eventId',
+    'tool_call_id',
+    'toolCallId',
+    'tool_use_id',
+    'toolUseId',
+    'id',
+    'uuid',
+  )
+  const suppliedTimestamp = pickUnknown(payload, 'timestamp', 'event_ts', 'eventTs')
+  const stableTimestamp =
+    typeof suppliedTimestamp === 'string'
+      ? suppliedTimestamp
+      : typeof suppliedTimestamp === 'number' && Number.isFinite(suppliedTimestamp)
+        ? new Date(suppliedTimestamp).toISOString()
+        : undefined
+  // The display timestamp may use now; identity must only use harness data.
+  const eventTs = stableTimestamp ?? new Date().toISOString()
+  const identity = nativeId
+    ? `id:${nativeId}`
+    : stableTimestamp
+      ? `timestamp:${stableTimestamp}`
+      : undefined
 
   // User prompt
   if (/userpromptsubmit/i.test(event) || /UserPromptSubmit/i.test(event)) {
@@ -396,6 +429,7 @@ export function messagesFromHookPayload(
         role: 'user',
         content: prompt,
         sourceEvent: event,
+        identity,
       })
       out.push({
         role: 'user',
@@ -436,7 +470,9 @@ export function messagesFromHookPayload(
       content,
       toolName,
       toolResult: toolResult ?? '',
+      toolArgs: toolInput,
       sourceEvent: event,
+      identity,
     })
     out.push({
       role: 'tool',
@@ -483,6 +519,7 @@ export function messagesFromHookPayload(
         role: 'assistant',
         content: assistant,
         sourceEvent: event,
+        identity,
       })
       out.push({
         role: 'assistant',
@@ -504,6 +541,7 @@ export function messagesFromHookPayload(
       role: 'system',
       content,
       sourceEvent: event,
+      identity,
     })
     out.push({
       role: 'system',
@@ -523,6 +561,7 @@ export function messagesFromHookPayload(
         role: 'user',
         content: prompt,
         sourceEvent: event,
+        identity,
       })
       out.push({
         role: 'user',

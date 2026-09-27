@@ -1128,10 +1128,9 @@ export function loadCaptureState(): PersistedCaptureState {
 }
 
 // ---------------------------------------------------------------------------
-// Per-harness state lock = Postgres session-level advisory lock on the client
-// that does the ingest. True mutual exclusion across processes, no stale-lock
-// reclamation (the server releases it when a holder's connection drops),
-// bounded wait via lock_timeout. A run that cannot take it is SKIPPED (null).
+// Per-harness file lock shared by both transports, with stale-lock reclamation
+// and a bounded 120-second wait. LockTimeout skips the run (null), allowing
+// the caller's retry hop to try again without entering the critical section.
 // ---------------------------------------------------------------------------
 
 export function stateLockKey(stateFile = captureStatePath()): string {

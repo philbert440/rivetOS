@@ -27,12 +27,13 @@ afterEach(() => {
   vi.restoreAllMocks()
   rmSync(dir, { recursive: true, force: true })
 })
-function sink(offline = false, failedSpool = false) {
+function sink(offline = false, failedSpool = false, rejected = false) {
   const spoolDir = path.join(dir, 'spool')
   if (failedSpool) writeFileSync(spoolDir, 'not a directory')
   const fetch: typeof globalThis.fetch = async (url, init) => {
     expect(String(url)).toBe('https://127.0.0.1:5174/api/capture')
     bodies.push(JSON.parse(String(init?.body)) as CaptureBatch)
+    if (rejected) return new Response('bad request', { status: 400 })
     if (offline) throw new Error('offline')
     return new Response(
       JSON.stringify({ ok: true, conversation_id: 'conv', inserted: 1, skipped: 0 }),
@@ -100,35 +101,40 @@ it('posts the exact batch with uncapped content, auxiliary lengths, pointers and
   ])
 })
 
-it.each(['delivered', 'spooled', 'failed'] as const)('cursor acknowledgment: %s', async (mode) => {
-  vi.stubEnv('RIVETOS_PI_CAPTURE_STATE', path.join(dir, 'state.json'))
-  const file = path.join(dir, 'session.jsonl')
-  const text =
-    [
-      JSON.stringify({ type: 'session', version: 3, id: 'sid' }),
-      JSON.stringify({
-        type: 'message',
-        id: 'line',
-        message: { role: 'user', content: [{ type: 'text', text: 'hello' }] },
-      }),
-    ].join('\n') + '\n'
-  writeFileSync(file, text)
-  const options = sink(mode !== 'delivered', mode === 'failed')
-  const ingest = ingestFileFromCursor(file, null, options)
-  if (mode === 'failed') {
-    await expect(ingest).rejects.toThrow('spool failed')
-    expect(loadCaptureState().cursors[file]).toBeUndefined()
-  } else {
-    await ingest
-    expect(loadCaptureState().cursors[file].offset).toBe(Buffer.byteLength(text))
-    if (mode === 'spooled') expect(readdirSync(options.spoolDir)).toHaveLength(1)
-    if (mode === 'delivered') {
-      await ingestFileFromCursor(file, null, { ...options, finalize: true })
-      expect(bodies[1].finalize).toBe(true)
+it.each(['delivered', 'spooled', 'failed', 'rejected'] as const)(
+  'cursor acknowledgment: %s',
+  async (mode) => {
+    vi.stubEnv('RIVETOS_PI_CAPTURE_STATE', path.join(dir, 'state.json'))
+    const file = path.join(dir, 'session.jsonl')
+    const text =
+      [
+        JSON.stringify({ type: 'session', version: 3, id: 'sid' }),
+        JSON.stringify({
+          type: 'message',
+          id: 'line',
+          message: { role: 'user', content: [{ type: 'text', text: 'hello' }] },
+        }),
+      ].join('\n') + '\n'
+    writeFileSync(file, text)
+    const options = sink(mode !== 'delivered', mode === 'failed', mode === 'rejected')
+    const ingest = ingestFileFromCursor(file, null, options)
+    if (mode === 'failed' || mode === 'rejected') {
+      await expect(ingest).rejects.toThrow(
+        mode === 'rejected' ? 'capture HTTP 400' : 'spool failed',
+      )
+      expect(loadCaptureState().cursors[file]).toBeUndefined()
+    } else {
+      await ingest
+      expect(loadCaptureState().cursors[file].offset).toBe(Buffer.byteLength(text))
+      if (mode === 'spooled') expect(readdirSync(options.spoolDir)).toHaveLength(1)
+      if (mode === 'delivered') {
+        await ingestFileFromCursor(file, null, { ...options, finalize: true })
+        expect(bodies[1].finalize).toBe(true)
+      }
     }
-  }
-  expect(bodies[0].messages[0].metadata).toMatchObject({
-    session_jsonl_path: file,
-    session_jsonl_line: 1,
-  })
-})
+    expect(bodies[0].messages[0].metadata).toMatchObject({
+      session_jsonl_path: file,
+      session_jsonl_line: 1,
+    })
+  },
+)

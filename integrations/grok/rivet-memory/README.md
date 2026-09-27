@@ -214,3 +214,5 @@ release. When the den is down the batch is spooled under
 `~/.rivetos/capture-spool` and replayed on the next write. A non-empty
 `RIVETOS_USER_ID` stays on Postgres, because loopback den is the owner pool.
 The launcher calls `rivetos_resolve_den` so Node trusts the den CA.
+
+Sessions with rows captured by the pg path before the switch get a second copy of their history on the first den ingest (the server dedupes on the new `grok-build:<sid>:<ordinal>` ids); later ingests are clean.

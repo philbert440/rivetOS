@@ -430,7 +430,7 @@ export function parseUpdates(jsonlText: string): PendingMessage[] {
   }
 
   // ---------- Pass 2: emit normalized PendingMessages with ordinals. ----------
-  const SUB_USER = 0
+  const userChunks = new Map<number, number>()
   const SUB_OTHER_BASE = 10_000
   const TURN_STRIDE = 1_000_000
   const out: PendingMessage[] = []
@@ -478,7 +478,9 @@ export function parseUpdates(jsonlText: string): PendingMessage[] {
     if (type === 'user_message_chunk') {
       const pi = updateMeta.promptIndex
       turn = typeof pi === 'number' ? pi : currentTurn < 0 ? 0 : currentTurn
-      subOrder = SUB_USER
+      // Preserve sub-order zero for the first chunk, including existing fixtures.
+      subOrder = userChunks.get(turn) ?? 0
+      userChunks.set(turn, subOrder + 1)
       currentTurn = turn
     } else {
       const promptId = meta.promptId
@@ -922,6 +924,7 @@ export function toCaptureMessage(
     session_jsonl_path: sourcePath,
   }
   if (typeof m.lineIndex === 'number') metadata.session_jsonl_line = m.lineIndex
+  if (m.eventId) metadata.native_event_id = m.eventId
   if (m.eventTs) metadata.event_ts = m.eventTs
   if (herdr?.paneId) {
     metadata.herdr_pane_id = herdr.paneId

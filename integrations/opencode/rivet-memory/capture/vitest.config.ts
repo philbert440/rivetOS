@@ -11,6 +11,7 @@ export default defineConfig({
     environment: 'node',
     include: [
       'capture/test/den-transport.test.ts',
+      'capture/test/wrapper.test.ts',
       'plugin/test/**/*.test.ts',
       'capture/test/state.test.ts',
     ],

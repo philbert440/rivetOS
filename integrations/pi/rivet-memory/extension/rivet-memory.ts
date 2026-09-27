@@ -135,8 +135,12 @@ export default function (pi: Pi): void {
     pi.on('turn_end', onDebounced)
     pi.on('agent_end', onFlush)
     pi.on('session_shutdown', (...args: unknown[]) => {
-      const file = sessionFileFromCtx(...args)
-      if (file) spawnNow(file, true)
+      try {
+        const file = sessionFileFromCtx(...args)
+        if (file) spawnNow(file, true)
+      } catch {
+        // never throw into pi
+      }
     })
     pi.on('session_before_switch', onFlush)
     pi.on('session_info_changed', onFlush)

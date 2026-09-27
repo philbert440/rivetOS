@@ -27,12 +27,13 @@ afterEach(() => {
   vi.restoreAllMocks()
   rmSync(dir, { recursive: true, force: true })
 })
-function sink(offline = false, failedSpool = false) {
+function sink(offline = false, failedSpool = false, rejected = false) {
   const spoolDir = path.join(dir, 'spool')
   if (failedSpool) writeFileSync(spoolDir, 'not a directory')
   const fetch: typeof globalThis.fetch = async (url, init) => {
     expect(String(url)).toBe('https://127.0.0.1:5174/api/capture')
     bodies.push(JSON.parse(String(init?.body)) as CaptureBatch)
+    if (rejected) return new Response('bad request', { status: 400 })
     if (offline) throw new Error('offline')
     return new Response(
       JSON.stringify({ ok: true, conversation_id: 'conv', inserted: 1, skipped: 0 }),
@@ -49,7 +50,7 @@ function fixture() {
   const text =
     JSON.stringify({
       params: {
-        _meta: { agentTimestampMs: 1000 },
+        _meta: { agentTimestampMs: 1000, eventId: 'native-1' },
         update: {
           sessionUpdate: 'user_message_chunk',
           content: { type: 'text', text: 'hello' },
@@ -98,6 +99,7 @@ it('posts an exact batch and replays identical ordinal ids', async () => {
           source: 'grok-jsonl',
           event_id: 'grok-build:sid:0',
           ordinal: 0,
+          native_event_id: 'native-1',
           session_jsonl_path: file,
           session_jsonl_line: 0,
           event_ts: '1970-01-01T00:00:01.000Z',
@@ -108,11 +110,12 @@ it('posts an exact batch and replays identical ordinal ids', async () => {
     ],
   })
 })
-it.each(['spooled', 'failed'] as const)('durability: %s', async (mode) => {
+it.each(['spooled', 'failed', 'rejected'] as const)('durability: %s', async (mode) => {
   fixture()
-  const options = sink(true, mode === 'failed')
+  const options = sink(true, mode === 'failed', mode === 'rejected')
   const ingest = ingestSession({ kind: 'ingest', sessionId: 'sid' }, options)
-  if (mode === 'failed') await expect(ingest).rejects.toThrow('spool failed')
+  if (mode === 'failed' || mode === 'rejected')
+    await expect(ingest).rejects.toThrow(mode === 'rejected' ? 'capture HTTP 400' : 'spool failed')
   else {
     await ingest
     expect(readdirSync(options.spoolDir)).toHaveLength(1)
@@ -120,5 +123,21 @@ it.each(['spooled', 'failed'] as const)('durability: %s', async (mode) => {
   const state = JSON.parse(
     readFileSync(path.join(dir, '.rivetos', 'capture-state', 'sid.json'), 'utf8'),
   )
-  expect(state.lastStatus).toBe(mode === 'failed' ? 'failure' : 'success')
+  expect(state.lastStatus).toBe(mode === 'spooled' ? 'success' : 'failure')
+})
+
+it('keeps the first user chunk id and gives a second chunk its own replay-stable id', async () => {
+  const { file, text } = fixture()
+  const options = sink()
+  const op = { kind: 'ingest' as const, sessionId: 'sid' }
+  await ingestSession(op, options)
+  writeFileSync(file, text + text.replace('native-1', 'native-2'))
+  await ingestSession(op, options)
+  await ingestSession(op, options)
+  expect(bodies[1].messages.map((m) => m.event_id)).toEqual([
+    'grok-build:sid:0',
+    'grok-build:sid:1',
+  ])
+  expect(bodies[1].messages[0].event_id).toBe(bodies[0].messages[0].event_id)
+  expect(bodies[2]).toEqual(bodies[1])
 })

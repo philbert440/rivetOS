@@ -80,7 +80,8 @@ if [ -n "${_rivet_paths}" ]; then
   . "$_rivet_paths"
   rivetos_resolve_den || true
 else
-  echo "opencode-memory-capture: rivet-paths.sh not found; den CA trust was not configured" >&2
+  export RIVETOS_CAPTURE_TRANSPORT="${RIVETOS_CAPTURE_TRANSPORT:-pg}"
+  echo "den transport disabled: rivet-paths.sh not found; using pg" >&2
 fi
 unset _rivet_paths _rivet_candidate
 

@@ -27,12 +27,13 @@ afterEach(() => {
   vi.restoreAllMocks()
   rmSync(dir, { recursive: true, force: true })
 })
-function sink(offline = false, failedSpool = false) {
+function sink(offline = false, failedSpool = false, rejected = false) {
   const spoolDir = path.join(dir, 'spool')
   if (failedSpool) writeFileSync(spoolDir, 'not a directory')
   const fetch: typeof globalThis.fetch = async (url, init) => {
     expect(String(url)).toBe('https://127.0.0.1:5174/api/capture')
     bodies.push(JSON.parse(String(init?.body)) as CaptureBatch)
+    if (rejected) return new Response('bad request', { status: 400 })
     if (offline) throw new Error('offline')
     return new Response(
       JSON.stringify({ ok: true, conversation_id: 'conv', inserted: 1, skipped: 0 }),
@@ -100,50 +101,55 @@ it('posts exact sqlite pointers and lengths with uncapped content and finalize',
     },
   ])
 })
-it.each(['delivered', 'spooled', 'failed'] as const)('cursor acknowledgment: %s', async (mode) => {
-  const file = path.join(dir, 'opencode.db')
-  const db = new DatabaseSync(file)
-  db.exec(`CREATE TABLE session (id TEXT, title TEXT, directory TEXT, time_updated INTEGER);
+it.each(['delivered', 'spooled', 'failed', 'rejected'] as const)(
+  'cursor acknowledgment: %s',
+  async (mode) => {
+    const file = path.join(dir, 'opencode.db')
+    const db = new DatabaseSync(file)
+    db.exec(`CREATE TABLE session (id TEXT, title TEXT, directory TEXT, time_updated INTEGER);
     CREATE TABLE message (id TEXT, data TEXT, time_updated INTEGER);
     CREATE TABLE part (id TEXT, message_id TEXT, session_id TEXT, time_created INTEGER, time_updated INTEGER, data TEXT);`)
-  db.prepare('INSERT INTO session VALUES (?, ?, ?, ?)').run('sid', 'Title', '/tmp', 100)
-  db.prepare('INSERT INTO message VALUES (?, ?, ?)').run(
-    'msg',
-    JSON.stringify({ role: 'user' }),
-    100,
-  )
-  db.prepare('INSERT INTO part VALUES (?, ?, ?, ?, ?, ?)').run(
-    'prt_1',
-    'msg',
-    'sid',
-    100,
-    100,
-    JSON.stringify({ type: 'text', text: 'hello' }),
-  )
-  db.close()
-  const stateFile = path.join(dir, 'state.json')
-  const options = sink(mode !== 'delivered', mode === 'failed')
-  const state = createWatcherState(emptyState())
-  const ingest = ingestSession(file, 'sid', null, state, {
-    ...options,
-    stateFile,
-    source: 'session.deleted',
-  })
-  if (mode === 'failed') {
-    await expect(ingest).rejects.toThrow('spool failed')
-    expect(existsSync(stateFile)).toBe(false)
-    expect(state.capture.sessions).toEqual({})
-  } else {
-    await ingest
-    expect(loadState(stateFile).sessions?.sid).toEqual({
-      partTimeUpdated: 100,
-      messageTimeUpdated: 100,
+    db.prepare('INSERT INTO session VALUES (?, ?, ?, ?)').run('sid', 'Title', '/tmp', 100)
+    db.prepare('INSERT INTO message VALUES (?, ?, ?)').run(
+      'msg',
+      JSON.stringify({ role: 'user' }),
+      100,
+    )
+    db.prepare('INSERT INTO part VALUES (?, ?, ?, ?, ?, ?)').run(
+      'prt_1',
+      'msg',
+      'sid',
+      100,
+      100,
+      JSON.stringify({ type: 'text', text: 'hello' }),
+    )
+    db.close()
+    const stateFile = path.join(dir, 'state.json')
+    const options = sink(mode !== 'delivered', mode === 'failed', mode === 'rejected')
+    const state = createWatcherState(emptyState())
+    const ingest = ingestSession(file, 'sid', null, state, {
+      ...options,
+      stateFile,
+      source: 'session.deleted',
     })
-    if (mode === 'spooled') expect(readdirSync(options.spoolDir)).toHaveLength(1)
-  }
-  expect(bodies[0].finalize).toBe(true)
-  expect(bodies[0].messages[0].metadata).toMatchObject({
-    session_sqlite_path: file,
-    session_sqlite_part_id: 'prt_1',
-  })
-})
+    if (mode === 'failed' || mode === 'rejected') {
+      await expect(ingest).rejects.toThrow(
+        mode === 'rejected' ? 'capture HTTP 400' : 'spool failed',
+      )
+      expect(existsSync(stateFile)).toBe(false)
+      expect(state.capture.sessions).toEqual({})
+    } else {
+      await ingest
+      expect(loadState(stateFile).sessions?.sid).toEqual({
+        partTimeUpdated: 100,
+        messageTimeUpdated: 100,
+      })
+      if (mode === 'spooled') expect(readdirSync(options.spoolDir)).toHaveLength(1)
+    }
+    expect(bodies[0].finalize).toBe(true)
+    expect(bodies[0].messages[0].metadata).toMatchObject({
+      session_sqlite_path: file,
+      session_sqlite_part_id: 'prt_1',
+    })
+  },
+)
