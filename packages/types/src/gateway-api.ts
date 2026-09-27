@@ -507,7 +507,7 @@ export interface MemoryAppendToolArgs {
   /** Message text. */
   content: string
   /** Message role. */
-  role?: 'user' | 'assistant' | 'system' | 'tool'
+  role: 'user' | 'assistant' | 'system' | 'tool'
   /** Name of the invoked tool. */
   tool_name?: string
   /** Tool arguments as a JSON object. */
