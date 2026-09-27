@@ -8,7 +8,7 @@
 
 import crypto from 'node:crypto'
 import type { Tool } from '@rivetos/types'
-import type { PoolClient } from 'pg'
+import type { Pool, PoolClient } from 'pg'
 import { z } from 'zod'
 import type { PostgresMemory } from '../adapter.js'
 
@@ -220,14 +220,18 @@ async function existingOrdinalsAndEventIds(
   client: PoolClient,
   sessionId: string,
   agent: string,
+  capture?: { conversationId: string; eventIds: string[] },
 ): Promise<{ ordinals: Set<number>; eventIds: Set<string> }> {
   const result = await client.query<{ ordinal: string | null; event_id: string | null }>(
-    `SELECT m.metadata->>'ordinal' AS ordinal,
+    capture
+      ? `SELECT metadata->>'event_id' AS event_id FROM ros_messages
+      WHERE conversation_id = $1 AND metadata->>'event_id' = ANY($2::text[])`
+      : `SELECT m.metadata->>'ordinal' AS ordinal,
             m.metadata->>'event_id' AS event_id
        FROM ros_messages m
        JOIN ros_conversations c ON c.id = m.conversation_id
       WHERE c.session_key = $1 AND c.agent = $2`,
-    [sessionId, agent],
+    capture ? [capture.conversationId, capture.eventIds] : [sessionId, agent],
   )
   const ordinals = new Set<number>()
   const eventIds = new Set<string>()
@@ -263,17 +267,7 @@ export async function ingestSession(
     channel: input.channel,
   })
 
-  const pool = memory.getPool()
-  const client = await pool.connect()
-
-  try {
-    // Advisory lock + transaction for concurrent-ingest safety (grok/kimi pattern)
-    await client.query('BEGIN')
-    // CONVENTION (load-bearing): every ros_messages writer — grok/kimi capture
-    // workers and both sidecar write tools — takes pg_advisory_xact_lock on
-    // hashtext(session_key) before check-then-insert. New writers MUST too.
-    await client.query('SELECT pg_advisory_xact_lock(hashtext($1))', [input.sessionId])
-
+  return withSessionTransaction(memory.getPool(), input.sessionId, async (client) => {
     // Fetch existing ordinals and event_ids once (performance: single query)
     const { ordinals: seenOrdinals, eventIds: seenEventIds } = await existingOrdinalsAndEventIds(
       client,
@@ -388,8 +382,6 @@ export async function ingestSession(
       seenEventIds.add(eventId)
     }
 
-    await client.query('COMMIT')
-
     const result: {
       session_id: string
       ingested: number
@@ -411,12 +403,7 @@ export async function ingestSession(
     }
 
     return result
-  } catch (err) {
-    await client.query('ROLLBACK').catch(() => {})
-    throw err
-  } finally {
-    client.release()
-  }
+  })
 }
 
 /**
@@ -624,4 +611,141 @@ export function createMemoryWriteTools(memory: PostgresMemory, prefix = ''): Too
   }
 
   return [appendTool, ingestTool]
+}
+
+/** Both session writers own one transaction and follow the same lock convention. */
+async function withSessionTransaction<T>(
+  source: Pool | PoolClient,
+  sessionKey: string,
+  write: (client: PoolClient) => Promise<T>,
+): Promise<T> {
+  const owned = !('release' in source)
+  const client = owned ? await source.connect() : source
+  try {
+    await client.query('BEGIN')
+    await client.query('SELECT pg_advisory_xact_lock(hashtext($1))', [sessionKey])
+    const result = await write(client)
+    await client.query('COMMIT')
+    return result
+  } catch (error) {
+    await client.query('ROLLBACK').catch(() => {})
+    throw error
+  } finally {
+    if (owned) client.release()
+  }
+}
+
+// Kept separate from MCP schemas: HTTP capture preserves hook-native event IDs.
+export const captureBatchSchema = z.object({
+  session_key: z
+    .string()
+    .min(1)
+    .refine((value) => value.trim().length > 0),
+  agent: z
+    .string()
+    .min(1)
+    .refine((value) => value.trim().length > 0),
+  channel: z.string().optional(),
+  title: z.string().optional(),
+  settings: z.record(z.string(), z.unknown()).optional(),
+  task_id: z.string().optional(),
+  finalize: z.boolean().optional(),
+  messages: z.array(
+    z.object({
+      event_id: z.string().min(1),
+      role: z.enum(['system', 'user', 'assistant', 'tool']),
+      content: z.string(),
+      tool_name: z.string().optional(),
+      tool_args: z.unknown().optional(),
+      tool_result: z.string().optional(),
+      metadata: z.record(z.string(), z.unknown()).optional(),
+      created_at: z.iso.datetime({ offset: true }).optional(),
+    }),
+  ),
+})
+export type CaptureBatch = z.infer<typeof captureBatchSchema>
+export interface CaptureResult {
+  ok: true
+  conversation_id: string
+  inserted: number
+  skipped: number
+}
+export type CaptureWriteFn = (batch: CaptureBatch) => Promise<CaptureResult>
+
+export async function captureBatch(
+  source: Pool | PoolClient,
+  batch: CaptureBatch,
+): Promise<CaptureResult> {
+  return withSessionTransaction(source, batch.session_key, async (client) => {
+    const { rows } = await client.query<{ id: string }>(
+      `INSERT INTO ros_conversations (session_key, agent, channel, title, settings, task_id)
+       VALUES ($1, $2, $3, $4, COALESCE($5::jsonb, '{}'::jsonb), $6)
+       ON CONFLICT (session_key, agent) DO UPDATE SET updated_at = now(),
+         title = CASE WHEN $7 THEN EXCLUDED.title ELSE ros_conversations.title END,
+         settings = CASE WHEN $8 THEN EXCLUDED.settings ELSE ros_conversations.settings END,
+         task_id = CASE WHEN $9 THEN EXCLUDED.task_id ELSE ros_conversations.task_id END
+       RETURNING id`,
+      [
+        batch.session_key,
+        batch.agent,
+        batch.channel ?? 'unknown',
+        batch.title ?? null,
+        batch.settings === undefined ? null : JSON.stringify(batch.settings),
+        batch.task_id ?? null,
+        batch.title !== undefined,
+        batch.settings !== undefined,
+        batch.task_id !== undefined,
+      ],
+    )
+    const conversationId = rows[0].id
+    const { eventIds } = await existingOrdinalsAndEventIds(client, batch.session_key, batch.agent, {
+      conversationId,
+      eventIds: batch.messages.map((message) => message.event_id),
+    })
+    let inserted = 0
+    for (const message of batch.messages) {
+      if (eventIds.has(message.event_id)) continue
+      const metadata: Record<string, unknown> = { ...message.metadata, event_id: message.event_id }
+      const cap = (text: string, field: string): string => {
+        if (text.length <= MAX_CONTENT) return text
+        metadata[`full_${field}_length`] = text.length
+        metadata.truncated = true
+        return text.slice(0, MAX_CONTENT)
+      }
+      const content = cap(message.content, 'content')
+      const toolResult =
+        message.tool_result === undefined ? null : cap(message.tool_result, 'tool_result')
+      await client.query(
+        `INSERT INTO ros_messages
+          (conversation_id, agent, channel, role, content, tool_name, tool_args, tool_result, metadata, created_at)
+         VALUES ($1, $2, $3, $4, $5, $6, $7::jsonb, $8, $9::jsonb, COALESCE($10::timestamptz, now()))`,
+        [
+          conversationId,
+          batch.agent,
+          batch.channel ?? 'unknown',
+          message.role,
+          content,
+          message.tool_name ?? null,
+          message.tool_args === undefined ? null : JSON.stringify(message.tool_args),
+          toolResult,
+          JSON.stringify(metadata),
+          message.created_at ?? null,
+        ],
+      )
+      inserted++
+      eventIds.add(message.event_id)
+    }
+    if (batch.finalize) {
+      await client.query(
+        'UPDATE ros_conversations SET active=false, updated_at=now() WHERE id=$1 AND active=true',
+        [conversationId],
+      )
+    }
+    return {
+      ok: true,
+      conversation_id: conversationId,
+      inserted,
+      skipped: batch.messages.length - inserted,
+    }
+  })
 }

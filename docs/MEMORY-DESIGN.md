@@ -168,6 +168,8 @@ Both tools register only when `RIVETOS_MCP_ENABLE_MEMORY_WRITE=1` (the write sur
 
 **Writer convention (load-bearing):** every `ros_messages` writer, capture workers and sidecar tools alike, takes `pg_advisory_xact_lock(hashtext(session_key))` before check-then-insert. Dedupe is convention-enforced, not schema-enforced; a new writer that skips the lock can race in duplicates.
 
+`POST /api/capture` is the canonical harness capture write path: the den locks the session inside one transaction, dedupes batch event IDs within the conversation, and finalizes last. Dedupe remains convention-enforced, with no new schema constraint. `@rivetos/capture-core` spools network/5xx failures as private JSON files in `~/.rivetos/capture-spool`, replays at most 50 oldest files before the next write, and moves 4xx replay failures to `dead/`.
+
 ## Background processing
 
 ### Embedder
