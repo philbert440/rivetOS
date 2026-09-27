@@ -25,8 +25,24 @@ fi
 TRANSLATOR="$RIVETOS_ROOT/integrations/claude-code/rivet-den/hooks/den-hook.mjs"
 [ -f "$TRANSLATOR" ] || exit 0
 
-# Map Cursor lifecycle names to Claude Code spellings the translator switch uses.
 CURSOR_EVENT="${1:-}"
+PAYLOAD="$(cat || true)"
+
+# With the workspace at $HOME, Cursor loads ~/.cursor/hooks.json twice and every event
+# arrives twice. Payloads carry conversation/generation/tool ids, so an identical
+# event + payload within the window is the same occurrence.
+first_delivery() {
+  local dir="$HOME/.rivetos/cursor-hook-seen/$1" key
+  [ -n "$PAYLOAD" ] || return 0
+  key="$(printf '%s\n%s' "$CURSOR_EVENT" "$PAYLOAD" | sha256sum 2>/dev/null)" || return 0
+  key="${key%% *}"
+  mkdir -p -m 700 "$dir" 2>/dev/null || return 0
+  find "$dir" -mindepth 1 -maxdepth 1 -mmin +10 -exec rm -rf -- {} + 2>/dev/null
+  mkdir "$dir/$key" 2>/dev/null || [ ! -d "$dir/$key" ]
+}
+first_delivery den || exit 0
+
+# Map Cursor lifecycle names to Claude Code spellings the translator switch uses.
 case "$CURSOR_EVENT" in
   sessionStart) EV=SessionStart ;;
   sessionEnd) EV=SessionEnd ;;
@@ -38,5 +54,5 @@ case "$CURSOR_EVENT" in
   *) EV="$CURSOR_EVENT" ;;
 esac
 
-node "$TRANSLATOR" --harness cursor ${EV:+"$EV"} || true
+printf '%s' "$PAYLOAD" | node "$TRANSLATOR" --harness cursor ${EV:+"$EV"} || true
 exit 0
