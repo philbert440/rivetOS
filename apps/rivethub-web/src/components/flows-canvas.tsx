@@ -290,7 +290,7 @@ function drawScene(
     ctx.fillStyle = colors.label
     ctx.textAlign = 'center'
     ctx.textBaseline = 'middle'
-    ctx.font = '13px "DM Sans", system-ui, sans-serif'
+    ctx.font = '13px "JetBrains Mono", ui-monospace, monospace'
     const maxW = FLOW_NODE_SIZE - 16
     let label = n.label
     if (ctx.measureText(label).width > maxW) {

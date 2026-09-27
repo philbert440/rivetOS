@@ -21,7 +21,7 @@ import { useIsNarrow } from '../lib/use-narrow.js'
 import { cn } from '../lib/utils.js'
 import { hubPageTitle, railHeaderClass, railToggle } from './sidebar-chrome.js'
 import { NodeSwitcher } from './node-switcher.js'
-import { DenBot } from './den-bot.js'
+import { RhMark, Wordmark } from './brand.js'
 import { AgentsSection } from './agents-section.js'
 import { Button } from './ui/button.js'
 import { Tooltip } from './ui/tooltip.js'
@@ -129,7 +129,7 @@ function ConversationsNav(props: { collapsed: boolean }): JSX.Element {
   )
 }
 
-/** Narrow top bar — ☰ opens the rail drawer; DenBot stays as brand. */
+/** Narrow top bar — ☰ opens the rail drawer; the R-H monogram is the brand. */
 export function MobileTopBar(): JSX.Element {
   const unread = useNotifications((s) => s.unread)
   const markAllRead = useNotifications((s) => s.markAllRead)
@@ -152,7 +152,7 @@ export function MobileTopBar(): JSX.Element {
       >
         <Menu className="size-5 shrink-0" aria-hidden />
       </Button>
-      <DenBot className="size-7 shrink-0" decorative />
+      <RhMark className="w-[22px]" />
       <span className="min-w-0 truncate font-mono text-sm text-em">{hubPageTitle(pathname)}</span>
       {unread > 0 && (
         <span className="ml-auto">
@@ -232,7 +232,7 @@ export function Sidebar(): JSX.Element {
               drawerOpen ? 'translate-x-0' : '-translate-x-full',
             )
           : cn(
-              'relative z-20 flex shrink-0 flex-col border-r border-line bg-panel/80 transition-[width] duration-150',
+              'relative z-20 flex shrink-0 flex-col border-2 border-line bg-panel transition-[width] duration-150',
               collapsed ? 'w-12' : 'w-56',
             )
       }
@@ -249,17 +249,21 @@ export function Sidebar(): JSX.Element {
               if (narrow) setDrawerOpen(!drawerOpen)
               else setRailCollapsed(!railCollapsed)
             }}
-            className={cn('shrink-0 p-0', narrow ? 'size-11' : 'size-7')}
+            className={cn(
+              'shrink-0 p-0',
+              collapsed ? 'h-9 w-10' : 'h-9 w-auto justify-start px-1',
+              narrow && 'min-h-11',
+            )}
           >
-            <DenBot className="size-7 shrink-0" decorative />
+            {/* Type, not a mascot: the wordmark expanded, the R-H monogram
+                collapsed. Either one IS the rail toggle. */}
+            {collapsed ? <RhMark className="w-[33px]" /> : <Wordmark className="text-xl" />}
           </Button>
         </Tooltip>
-        {!collapsed && (
-          <span className="font-mono text-sm font-semibold tracking-wide text-em">RivetHub</span>
-        )}
         {/* Unread escalations/outcomes — toasts are ephemeral, this isn't.
-            Click = jump to Tasks (the durable record) and mark read. */}
-        {unread > 0 && (
+            Click = jump to Tasks (the durable record) and mark read. Desktop
+            shows the count in the top status strip instead. */}
+        {narrow && unread > 0 && (
           <span className={collapsed ? 'absolute left-7 top-3' : 'ml-auto'}>
             <Tooltip label={`${String(unread)} unread notifications`} disabled={!collapsed}>
               <button

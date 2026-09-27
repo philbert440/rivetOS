@@ -24,7 +24,7 @@ import {
   sendClaim,
   type TermOwner,
 } from '../lib/owner-banner.js'
-import { DenBot } from './den-bot.js'
+import { RhMark } from './brand.js'
 import { Button } from './ui/button.js'
 
 /**
@@ -901,7 +901,7 @@ export function XtermAttach(props: {
           className="absolute inset-0 z-20 flex items-center justify-center bg-bg/70 p-4"
         >
           <div className="flex flex-col items-center gap-3 rounded-lg border border-line bg-panel px-6 py-5">
-            <DenBot className="size-9" decorative />
+            <RhMark className="w-[44px]" />
             <p className="font-mono text-xs text-ink">{banner.label}</p>
             <Button onClick={() => claimRef.current?.()}>Use terminal here</Button>
           </div>

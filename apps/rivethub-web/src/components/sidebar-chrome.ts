@@ -18,7 +18,8 @@ export function hubPageTitle(pathname: string): string {
   return 'RivetHub'
 }
 
-/** The DenBot logo button IS the rail toggle; there is no collapse/expand icon. */
+/** The brand (wordmark expanded, R-H monogram collapsed) IS the rail toggle;
+ *  there is no separate collapse/expand icon. */
 export function railToggle(collapsed: boolean): {
   kind: 'collapse' | 'expand'
   label: string
@@ -27,4 +28,25 @@ export function railToggle(collapsed: boolean): {
   return collapsed
     ? { kind: 'expand', label: 'Expand sidebar', ariaExpanded: false }
     : { kind: 'collapse', label: 'Collapse sidebar', ariaExpanded: true }
+}
+
+/** Label for the strip's theme slot: the Omarchy theme name when one drives
+ *  the palette, else the preference itself. */
+export function themeLabel(preference: string, omarchyName: string | undefined): string {
+  if (preference === 'omarchy') return omarchyName ?? 'omarchy'
+  return preference
+}
+
+/** The roster name for the active endpoint, else its host. */
+export function nodeLabel(
+  baseUrl: string,
+  roster: readonly { name: string; baseUrl: string }[],
+): string {
+  const hit = roster.find((n) => n.baseUrl === baseUrl)
+  if (hit) return hit.name
+  try {
+    return new URL(baseUrl).host
+  } catch {
+    return 'no node'
+  }
 }

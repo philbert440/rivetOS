@@ -5,7 +5,6 @@ import type { LiveTurn, LiveToolEntry } from '../lib/fold-stream.js'
 import { humanToolTitle, type ToolArgs } from '../lib/tool-titles.js'
 import { formatSpinnerMeta, parseSpinnerMeta } from '../lib/spinner-meta.js'
 import { copyTextToClipboard } from '../lib/clipboard.js'
-import { DenBot } from './den-bot.js'
 import { Markdown } from './markdown.js'
 import { SpeakMessage } from './speak-message.js'
 
@@ -146,9 +145,9 @@ function ReasoningBlock(props: { text: string; open?: boolean }): JSX.Element | 
   )
 }
 
-/** Avatar + name + model + timestamp row above a message. Assistant is the
- *  den bot ("Rivet"); user is right-aligned. `accent` colors the bot per
- *  harness (claude clay / grok grey / emerald). */
+/** Name + model + timestamp row above a message: a mono `rivet ›` label for
+ *  the assistant (no avatar), `you ›` right-aligned for the user. `accent`
+ *  colors the label per harness (claude clay / grok grey / emerald). */
 function AvatarRow(props: {
   mine: boolean
   ts?: number
@@ -159,23 +158,18 @@ function AvatarRow(props: {
   if (props.mine) {
     return (
       <div className="flex items-center justify-end gap-2 px-1">
-        <span className="text-sm font-medium text-ink/90">You</span>
+        <span className="font-mono text-sm font-bold text-em">you ›</span>
         {time && <span className="font-mono text-[10px] text-ink-dim">{time}</span>}
       </div>
     )
   }
   return (
     <div className="flex items-center gap-2 px-1">
-      <DenBot
-        decorative
-        className="size-7 rounded-md bg-panel-2 p-0.5"
-        style={props.accent ? { boxShadow: `inset 0 0 0 1px ${props.accent}` } : undefined}
-      />
       <span
-        className="text-sm font-medium"
+        className="font-mono text-sm font-bold"
         style={{ color: props.accent ?? 'var(--color-em, #34d399)' }}
       >
-        Rivet
+        rivet ›
       </span>
       {props.model && (
         <span className="truncate font-mono text-[10px] text-ink-dim" title={props.model}>

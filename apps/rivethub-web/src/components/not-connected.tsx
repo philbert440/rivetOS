@@ -1,7 +1,7 @@
 import type { JSX } from 'react'
 import { Link } from '@tanstack/react-router'
 import { useConnection, isValidGatewayUrl } from '../stores/connection.js'
-import { DenBot } from './den-bot.js'
+import { RhMark } from './brand.js'
 
 /** True when the active endpoint is a usable http(s) gateway. */
 export function useGatewayReady(): boolean {
@@ -13,7 +13,7 @@ export function useGatewayReady(): boolean {
 export function NotConnected(): JSX.Element {
   return (
     <div className="flex h-full flex-1 flex-col items-center justify-center gap-3">
-      <DenBot className="size-16 opacity-90" />
+      <RhMark className="w-[66px] opacity-90" />
       <div className="text-sm text-ink-dim">No node connected.</div>
       <Link
         to="/settings"

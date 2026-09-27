@@ -34,10 +34,13 @@ export async function syncOmarchyTheme(
   if (!entry?.colorsToml) return false
   const colors = parseOmarchyColors(entry.colorsToml)
   if (!colors) return false
-  const next: OmarchySnapshot = entry.themeName ? { name: entry.themeName, colors } : { colors }
+  const next: OmarchySnapshot = entry.themeName
+    ? { name: entry.themeName, colors, source: 'live' }
+    : { colors, source: 'live' }
   const current = store.getState().omarchy
   if (
     current &&
+    current.source === 'live' &&
     current.name === next.name &&
     JSON.stringify(current.colors) === JSON.stringify(colors)
   ) {

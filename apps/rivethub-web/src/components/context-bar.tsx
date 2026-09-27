@@ -1,5 +1,8 @@
-import { memo, useMemo, type JSX } from 'react'
+import { memo, useMemo, type JSX, type ReactNode } from 'react'
+import { useNavigate } from '@tanstack/react-router'
 import { cn } from '../lib/utils.js'
+import { useNotifications } from '../stores/notifications.js'
+import { Popover, PopoverContent, PopoverTrigger } from './ui/popover.js'
 import {
   compactAtFor,
   compactTokens,
@@ -33,6 +36,11 @@ export const ContextBar = memo(function ContextBar(props: {
   compactAt?: number
   /** Narrow session header: full-width 2px track on the header's bottom edge. */
   hairline?: boolean
+  /** Desktop: the meter opens a session-details panel. Primitive props
+   *  (not an object) so the memo still holds across streaming renders. */
+  withDetails?: boolean
+  harness?: string
+  node?: string
 }): JSX.Element | null {
   const reported = props.tokens && props.tokens > 0 ? props.tokens : undefined
   const texts = props.transcriptTexts
@@ -93,14 +101,14 @@ export const ContextBar = memo(function ContextBar(props: {
     )
   }
 
-  return (
+  const meter = (
     <div
       className="flex items-center gap-2"
       role="progressbar"
       aria-valuenow={pct}
       aria-valuemin={0}
       aria-valuemax={100}
-      title={title}
+      title={props.withDetails ? undefined : title}
     >
       <div className="hidden h-1.5 w-24 overflow-hidden rounded-full bg-panel-2 sm:block">
         <div
@@ -111,4 +119,107 @@ export const ContextBar = memo(function ContextBar(props: {
       {label}
     </div>
   )
+
+  if (!props.withDetails) return meter
+
+  // The meter doubles as the toggle for session details — what used to be
+  // a permanent right-hand column is one click away instead.
+  return (
+    <Popover>
+      <PopoverTrigger
+        className="shrink-0 border border-line px-2 py-1 hover:border-em data-[state=open]:border-em"
+        aria-label={`Context ${String(pct)}% — session details`}
+        title={title}
+      >
+        {meter}
+      </PopoverTrigger>
+      <PopoverContent align="end" className="w-72 p-0 font-mono text-xs">
+        <ContextDetailsPanel
+          tokens={tokens}
+          windowTokens={windowTokens}
+          compactAt={compactAt}
+          pct={pct}
+          fillClass={fillClass}
+          estimated={est}
+          details={{ harness: props.harness, model: props.model, node: props.node }}
+        />
+      </PopoverContent>
+    </Popover>
+  )
 })
+
+/** Session facts shown beside the context numbers. Each is optional. */
+export interface ContextDetails {
+  harness?: string
+  model?: string
+  node?: string
+}
+
+function Fact(props: { label: string; children: ReactNode }): JSX.Element {
+  return (
+    <div className="min-w-0">
+      <div className="text-ink-dim">{props.label}</div>
+      <div className="truncate text-ink">{props.children}</div>
+    </div>
+  )
+}
+
+function ContextDetailsPanel(props: {
+  tokens: number
+  windowTokens: number
+  compactAt: number
+  pct: number
+  fillClass: string
+  estimated: boolean
+  details: ContextDetails
+}): JSX.Element {
+  const unread = useNotifications((s) => s.unread)
+  const markAllRead = useNotifications((s) => s.markAllRead)
+  const navigate = useNavigate()
+  const d = props.details
+  return (
+    <div className="flex flex-col">
+      <div className="border-b border-line px-3 py-2 text-[10px] uppercase tracking-widest text-ink-dim">
+        details
+      </div>
+      <section className="flex flex-col gap-2 px-3 py-3">
+        <div className="flex justify-between text-ink">
+          <span>context</span>
+          <span>
+            {props.estimated ? '~' : ''}
+            {compactTokens(props.tokens)} / {compactTokens(props.windowTokens)}
+          </span>
+        </div>
+        <div className="h-1.5 bg-bg">
+          <div
+            className={cn('h-full', props.fillClass)}
+            style={{ width: `${String(props.pct)}%` }}
+          />
+        </div>
+        <div className="text-ink-dim">
+          compacts at {compactTokens(props.compactAt)} · amber at 70%, red at 90%
+          {props.estimated ? ' · estimated from the transcript' : ''}
+        </div>
+        {(d.harness || d.model || d.node) && (
+          <div className="mt-1 grid grid-cols-2 gap-x-3 gap-y-2">
+            {d.harness && <Fact label="harness">{d.harness}</Fact>}
+            {d.model && <Fact label="model">{d.model}</Fact>}
+            {d.node && <Fact label="node">{d.node}</Fact>}
+          </div>
+        )}
+      </section>
+      {unread > 0 && (
+        <button
+          type="button"
+          onClick={() => {
+            markAllRead()
+            void navigate({ to: '/tasks' })
+          }}
+          className="border-t border-line px-3 py-2 text-left text-red hover:bg-panel"
+        >
+          ! {unread > 99 ? '99+' : unread} need you → tasks
+        </button>
+      )}
+    </div>
+  )
+}

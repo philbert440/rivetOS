@@ -119,7 +119,7 @@ import {
   type HarnessGate,
 } from '../lib/harness-chat.js'
 import { rowPillText } from '../lib/harness-options.js'
-import { DenBot } from '../components/den-bot.js'
+import { RhMark } from '../components/brand.js'
 import { ContextBar } from '../components/context-bar.js'
 import { SegmentedControl } from '../components/segmented-control.js'
 import {
@@ -1973,6 +1973,9 @@ function ActiveSession(props: {
         contextWindow={transcriptCtx?.contextWindow}
         compactAt={transcriptCtx?.compactAt}
         hairline={narrow}
+        withDetails={!narrow}
+        harness={harnessCommand}
+        node={remoteNodeName ?? urlLabel(sessionBase)}
       />
       {/* Interrupt is the driver's capability, not a UI preference: shown
           only when the control plane owns this session AND reports one. */}
@@ -2168,7 +2171,7 @@ function ActiveSession(props: {
 function EmptyState(): JSX.Element {
   return (
     <div className="flex flex-1 flex-col items-center justify-center gap-2">
-      <DenBot className="size-16 opacity-90" />
+      <RhMark className="w-[66px] opacity-90" />
       <div className="text-sm text-ink-dim">Pick a conversation or start a new one.</div>
     </div>
   )
@@ -2193,7 +2196,7 @@ function ChatLaunchLoading(): JSX.Element {
       role="status"
       aria-label="Loading most recent conversation"
     >
-      <DenBot className="size-16 opacity-90" />
+      <RhMark className="w-[66px] opacity-90" />
       <div className="text-sm text-ink-dim">Loading most recent conversation…</div>
       <button
         type="button"

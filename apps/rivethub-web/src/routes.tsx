@@ -13,6 +13,7 @@ import {
   useRouterState,
 } from '@tanstack/react-router'
 import { MobileTopBar, Sidebar } from './components/sidebar.js'
+import { StatusStrip } from './components/status-strip.js'
 import { Toasts } from './components/toasts.js'
 import { EdgeSwipeTracker } from './lib/edge-swipe.js'
 import { showMobileTopBar } from './lib/session-header.js'
@@ -133,32 +134,48 @@ function RootLayout(): JSX.Element {
     }
   }, [narrow, sessionOpen])
 
+  // Desktop is tiled (Omarchy / Hyprland): a status strip on top, then the
+  // rail and the page as separate bordered tiles with a gap, the page tile
+  // carrying the accent border as the focused window. Narrow keeps the
+  // full-bleed drawer layout. Fixed overlays position against these vars.
+  const railWidth = narrow ? '0rem' : railCollapsed ? '3rem' : '14rem'
+  const tiled = !narrow
+
   return (
     <div
-      className="flex h-full"
+      className="flex h-full flex-col"
       style={{
-        ['--hub-rail' as string]: narrow ? '0rem' : railCollapsed ? '3rem' : '14rem',
+        ['--hub-rail' as string]: tiled ? `calc(${railWidth} + 20px)` : railWidth,
+        ['--hub-top' as string]: tiled ? '40px' : '0px',
+        ['--hub-inset' as string]: tiled ? '10px' : '0px',
       }}
     >
-      <Sidebar />
-      {narrow && drawerOpen && (
-        <button
-          type="button"
-          tabIndex={-1}
-          aria-hidden={true}
-          aria-label="Close sidebar"
-          className="fixed inset-0 z-30 bg-bg/70"
-          onClick={() => setDrawerOpen(false)}
-        />
-      )}
-      <div
-        className="flex min-h-0 min-w-0 flex-1 flex-col"
-        inert={narrow && drawerOpen ? true : undefined}
-      >
-        {showMobileTopBar(narrow, sessionOpen) && <MobileTopBar />}
-        <main className="min-h-0 min-w-0 flex-1 overflow-y-auto">
-          <Outlet />
-        </main>
+      {tiled && <StatusStrip />}
+      <div className={tiled ? 'flex min-h-0 flex-1 gap-2.5 p-2.5' : 'flex min-h-0 flex-1'}>
+        <Sidebar />
+        {narrow && drawerOpen && (
+          <button
+            type="button"
+            tabIndex={-1}
+            aria-hidden={true}
+            aria-label="Close sidebar"
+            className="fixed inset-0 z-30 bg-bg/70"
+            onClick={() => setDrawerOpen(false)}
+          />
+        )}
+        <div
+          className={
+            tiled
+              ? 'flex min-h-0 min-w-0 flex-1 flex-col border-2 border-em bg-panel'
+              : 'flex min-h-0 min-w-0 flex-1 flex-col'
+          }
+          inert={narrow && drawerOpen ? true : undefined}
+        >
+          {showMobileTopBar(narrow, sessionOpen) && <MobileTopBar />}
+          <main className="min-h-0 min-w-0 flex-1 overflow-y-auto">
+            <Outlet />
+          </main>
+        </div>
       </div>
       <Toasts />
     </div>

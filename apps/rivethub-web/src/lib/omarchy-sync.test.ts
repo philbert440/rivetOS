@@ -115,7 +115,7 @@ describe('syncOmarchyTheme', () => {
 
   it('dedupes an unchanged snapshot', async () => {
     const colors = parseOmarchyColors(osakaJadeToml)!
-    const store = fakeStore({ name: 'osaka-jade', colors })
+    const store = fakeStore({ name: 'osaka-jade', colors, source: 'live' })
     const shell = fakeShell([
       {
         kind: 'omarchy',
@@ -128,6 +128,23 @@ describe('syncOmarchyTheme', () => {
     ])
     expect(await syncOmarchyTheme(shell as RivetShell, store)).toBe(true)
     expect(store.setOmarchy).not.toHaveBeenCalled()
+  })
+
+  it('replaces a preset snapshot with the live theme, even when the name matches', async () => {
+    const colors = parseOmarchyColors(osakaJadeToml)!
+    const store = fakeStore({ name: 'osaka-jade', colors, source: 'preset' })
+    const shell = fakeShell([
+      {
+        kind: 'omarchy',
+        path: '/theme/alacritty.toml',
+        text: '',
+        includes: {},
+        themeName: 'osaka-jade',
+        colorsToml: osakaJadeToml,
+      },
+    ])
+    expect(await syncOmarchyTheme(shell as RivetShell, store)).toBe(true)
+    expect(store.setOmarchy).toHaveBeenCalledWith({ name: 'osaka-jade', colors, source: 'live' })
   })
 
   it('throttles focus to ≥ 2s', async () => {

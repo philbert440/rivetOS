@@ -188,6 +188,34 @@ Residual: Hermes/claude-cli adapters may still omit tool args; chips degrade cle
   flows canvas via `canvasSceneColors(theme)` in `lib/workflow-runs/flow-overlay.ts`.
   Settings has the Light / Dark / System toggle.
 
+### Omarchy look + palettes (2026-09-27)
+
+Redesign "A · Tiled" (mockups in `docs/mockups/rivethub-redesign/`).
+
+- **Brand is type, not a mascot.** The den bot is gone. `components/brand.tsx`:
+  `Wordmark` (`rivet` accent + `hub` dim) heads the expanded rail;
+  `RhMark` (R-H monogram on an 11×7 pixel grid, `currentColor`) is the
+  collapsed rail, narrow top bar and empty states. Either one IS the rail
+  toggle. Keep `RhMark` widths a multiple of 11px so cells stay crisp.
+  Transcript rows are mono `rivet ›` / `you ›` labels, no avatar.
+- **Look:** JetBrains Mono for all UI (`--font-sans`), every `--radius*`
+  token 0 (only `rounded-full` stays round), no blueprint grid. Desktop is
+  tiled: `StatusStrip` (page · theme · "N need you" · node) above the rail
+  and page as bordered tiles, the page tile carrying the accent border.
+  Fixed overlays position via `--hub-rail` / `--hub-top` / `--hub-inset`.
+- **Context details:** the chat header's `ContextBar` is a Popover trigger on
+  desktop (`withDetails`) — context numbers, harness/model/node and the
+  unread count. There is no permanent right-hand column.
+- **Omarchy palettes:** `theme = omarchy` maps a colors.toml onto every
+  `--color-*` token (`lib/omarchy-theme.ts`). Desktop reads the live theme
+  (`lib/omarchy-sync.ts`, snapshot `source: 'live'`, re-read on focus);
+  everywhere else Settings offers the 14 built-in palettes in
+  `lib/omarchy-presets.ts` (verbatim `themes/<id>/colors.toml` from
+  basecamp/omarchy, `source: 'preset'`). Live always replaces a preset.
+  With no stored preference, an available Omarchy palette is followed
+  automatically (`effectivePreference`); the `index.html` boot script mirrors
+  that rule.
+
 ### Responsive
 
 Below 768px (`md`) the left rail is an off-canvas drawer (`w-64`, never the

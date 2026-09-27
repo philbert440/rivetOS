@@ -1,5 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import {
+  effectivePreference,
+  loadStoredThemePreference,
   loadThemePreference,
   parseThemePreference,
   resolveTheme,
@@ -66,5 +68,26 @@ describe('resolveTheme', () => {
     expect(resolveTheme('omarchy', false, 'dark')).toBe('dark')
     expect(resolveTheme('omarchy', true)).toBe('dark')
     expect(resolveTheme('omarchy', false)).toBe('light')
+  })
+})
+
+describe('loadStoredThemePreference', () => {
+  it('returns the stored choice, or null when none was made', () => {
+    expect(loadStoredThemePreference(() => 'dark')).toBe('dark')
+    expect(loadStoredThemePreference(() => 'system')).toBe('system')
+    expect(loadStoredThemePreference(() => null)).toBeNull()
+    expect(loadStoredThemePreference(() => 'garbage')).toBeNull()
+  })
+})
+
+describe('effectivePreference', () => {
+  it('an explicit choice always wins', () => {
+    expect(effectivePreference('system', true)).toBe('system')
+    expect(effectivePreference('light', true)).toBe('light')
+  })
+
+  it('with no choice, follows Omarchy when a palette is available', () => {
+    expect(effectivePreference(null, true)).toBe('omarchy')
+    expect(effectivePreference(null, false)).toBe('system')
   })
 })

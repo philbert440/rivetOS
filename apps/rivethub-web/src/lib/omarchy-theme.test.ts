@@ -114,7 +114,10 @@ describe('omarchyAppTokens', () => {
       '--mono',
     ])
     for (const name of [...declared]) {
-      if (name.startsWith('--font-') || aliases.has(name)) declared.delete(name)
+      // Font and corner-radius tokens are type/shape, not palette.
+      if (name.startsWith('--font-') || name.startsWith('--radius') || aliases.has(name)) {
+        declared.delete(name)
+      }
     }
     const osakaJade = parseOmarchyColors(osakaJadeToml)
     expect(osakaJade).not.toBeNull()
