@@ -584,16 +584,40 @@ missing="$DEN_DIR/missing.pem"
 printf '%s\n' 'den:' '  port: 5174' "  tls_ca: $missing" >"$HOME/.rivetos/config.yaml"
 unset RIVET_DEN_URL RIVET_DEN_CA NODE_EXTRA_CA_CERTS
 export RIVETOS_DEN_TLS_CA="$ca_file"
-err="$(rivetos_resolve_den 2>&1)"
+export RIVET_DEN_URL='https://den.example:9999'
+export NODE_EXTRA_CA_CERTS='/already.pem'
+rivetos_resolve_den 2>"$DEN_DIR/error"
+err="$(cat "$DEN_DIR/error")"
 if [ -z "${RIVET_DEN_URL:-}" ] && printf '%s\n' "$err" | grep -q 'den CA not found'; then
   pass "missing CA disables den transport"
 else
   fail "missing CA should unset RIVET_DEN_URL"
 fi
-if [ -n "${NODE_EXTRA_CA_CERTS:-}" ]; then
-  fail "missing CA must not export NODE_EXTRA_CA_CERTS"
+if [ "${NODE_EXTRA_CA_CERTS:-}" != "/already.pem" ]; then
+  fail "missing CA must leave NODE_EXTRA_CA_CERTS untouched"
 else
   pass "missing CA does not export NODE_EXTRA_CA_CERTS"
+fi
+
+printf '%s\n' 'den:' '  nested:' '    port: 1234' '    tls_ca: /missing.pem' '  port: 5999 # local' "  tls_ca: $ca_file # trust" >"$HOME/.rivetos/config.yaml"
+unset RIVET_DEN_URL RIVET_DEN_CA NODE_EXTRA_CA_CERTS
+rivetos_resolve_den
+if [ "${RIVET_DEN_URL:-}" = 'https://127.0.0.1:5999' ] && [ "${RIVET_DEN_CA:-}" = "$ca_file" ]; then
+  pass "direct den scalars ignore nested keys and inline comments"
+else
+  fail "direct den scalars ignore nested keys and inline comments"
+fi
+printf '%s\n' 'den:' '  nested:' '    port: 1234' >"$HOME/.rivetos/config.yaml"
+if [ -z "$(rivetos_yaml_den_value "$HOME/.rivetos/config.yaml" port)" ]; then
+  pass "nested port alone is ignored"
+else
+  fail "nested port alone is ignored"
+fi
+printf '%s\n' 'den:' '  tls_ca: "/valid/ca # trust.pem" # comment' >"$HOME/.rivetos/config.yaml"
+if [ "$(rivetos_yaml_den_value "$HOME/.rivetos/config.yaml" tls_ca)" = '/valid/ca # trust.pem' ]; then
+  pass "quoted scalar preserves hash"
+else
+  fail "quoted scalar preserves hash"
 fi
 resolve_den_reset
 unset _saved_home

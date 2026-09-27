@@ -54,9 +54,9 @@ On transport `pg`, this also registers the read-only memory tools (`memory_searc
 (`wiki_search`, `wiki_read`). `WIKI_DIR` is the wiki repo root used by
 `wiki_read` (default `$RIVETOS_SHARED_DIR/wiki`, and `RIVETOS_SHARED_DIR`
 defaults to `/rivet-shared`). Memory write tools stay off until
-`RIVETOS_MCP_ENABLE_MEMORY_WRITE=1`. On transport `den` the same flag asks
-the den to mount `memory_append` / `memory_ingest_session`; a 404 means those
-write tools are not mounted.
+`RIVETOS_MCP_ENABLE_MEMORY_WRITE=1`. On transport `den` the same flag registers
+sidecar proxies for `memory_append` / `memory_ingest_session`. The den must
+independently have those write tools mounted; otherwise it returns 404.
 
 ## Environment
 

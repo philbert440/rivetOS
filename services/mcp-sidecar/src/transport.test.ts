@@ -50,9 +50,7 @@ describe('resolveSidecarTransport', () => {
   })
 
   it('forced pg without a URL is none', () => {
-    expect(
-      resolveSidecarTransport({ RIVETOS_MCP_TRANSPORT: 'pg', RIVET_DEN_URL: DEN }),
-    ).toEqual({
+    expect(resolveSidecarTransport({ RIVETOS_MCP_TRANSPORT: 'pg', RIVET_DEN_URL: DEN })).toEqual({
       kind: 'none',
       reason: 'RIVETOS_MCP_TRANSPORT=pg but RIVETOS_PG_URL is not set',
     })
@@ -63,11 +61,32 @@ describe('resolveSidecarTransport', () => {
       kind: 'den',
       denUrl: DEN,
     })
-    expect(resolveSidecarTransport({ RIVET_DEN_URL: DEN, RIVETOS_USER_ID: '   ' })).toEqual({
+    expect(resolveSidecarTransport({ RIVET_DEN_URL: DEN, RIVETOS_USER_ID: '' })).toEqual({
       kind: 'den',
       denUrl: DEN,
     })
   })
+
+  it.each(['den', undefined])(
+    'blocks raw whitespace and routed ids with transport %s',
+    (forced) => {
+      for (const userId of ['   ', 'alice']) {
+        const env = { RIVETOS_MCP_TRANSPORT: forced, RIVET_DEN_URL: DEN, RIVETOS_USER_ID: userId }
+        expect(resolveSidecarTransport(env)).toEqual({
+          kind: 'none',
+          reason:
+            'RIVETOS_USER_ID is set — den transport would hit the owner pool on loopback — and RIVETOS_PG_URL is not set',
+        })
+        expect(resolveSidecarTransport({ ...env, RIVETOS_PG_URL: PG })).toEqual({
+          kind: 'pg',
+          pgUrl: PG,
+        })
+        expect(sidecarTransportLog({ kind: 'pg', pgUrl: PG }, env)).toContain(
+          'RIVETOS_USER_ID is set',
+        )
+      }
+    },
+  )
 
   it('keeps pg for a routed user even when den is forced', () => {
     const env = {
@@ -94,9 +113,7 @@ describe('resolveSidecarTransport', () => {
   })
 
   it('is none when a routed user has a den URL but no Postgres URL', () => {
-    expect(
-      resolveSidecarTransport({ RIVET_DEN_URL: DEN, RIVETOS_USER_ID: 'alice' }),
-    ).toEqual({
+    expect(resolveSidecarTransport({ RIVET_DEN_URL: DEN, RIVETOS_USER_ID: 'alice' })).toEqual({
       kind: 'none',
       reason:
         'RIVETOS_USER_ID is set — den transport would hit the owner pool on loopback — and RIVETOS_PG_URL is not set',
@@ -119,8 +136,9 @@ describe('resolveSidecarTransport', () => {
   })
 
   it('ignores an unknown transport value and uses the default', () => {
-    expect(
-      resolveSidecarTransport({ RIVETOS_MCP_TRANSPORT: 'http', RIVET_DEN_URL: DEN }),
-    ).toEqual({ kind: 'den', denUrl: DEN })
+    expect(resolveSidecarTransport({ RIVETOS_MCP_TRANSPORT: 'http', RIVET_DEN_URL: DEN })).toEqual({
+      kind: 'den',
+      denUrl: DEN,
+    })
   })
 })

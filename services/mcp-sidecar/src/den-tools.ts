@@ -20,7 +20,6 @@ import type {
   ToolResult,
   WikiMissBody,
 } from '@rivetos/types'
-import { z } from 'zod'
 
 import {
   memoryBrowseInputSchema,
@@ -29,12 +28,10 @@ import {
   memoryStatsInputSchema,
 } from './memory.js'
 import { memoryAppendInputSchema, memoryIngestSessionInputSchema } from './memory-write.js'
-import {
-  WIKI_READ_SECTIONS,
-  WIKI_READ_VERBATIM_MAX_CHARS,
-  formatWikiRead,
-  type WikiReadSection,
-} from './wiki-read-format.js'
+import { formatWikiRead, type WikiReadSection } from './wiki-read-format.js'
+
+import { wikiSearchDefinition, wikiReadDefinition } from './wiki.js'
+import { delegateTaskDefinition, listAgentsDefinition } from './delegate.js'
 
 const READ_ONLY = { readOnlyHint: true, idempotentHint: true } as const
 const WRITE_ANNOTATIONS = { readOnlyHint: false, idempotentHint: true } as const
@@ -84,73 +81,6 @@ const MEMORY_APPEND_DESCRIPTION =
 const MEMORY_INGEST_DESCRIPTION =
   'Ingest a session into RivetOS memory. Skips ordinals and event_ids already stored for that session. Content is capped at 16,000 chars; the elided tail is unrecoverable. Returns truncated+full_content_length when truncation occurs.'
 
-const WIKI_SEARCH_DESCRIPTION =
-  'Search the RivetOS memory wiki — curated topic pages distilled from ' +
-  'conversation memory ("what is currently true about X"). Higher signal ' +
-  'than memory_search for standing facts about projects, hosts, and ' +
-  'services; use memory_search when you need what was actually said. ' +
-  'Returns slugs — read the page (dated history + provenance) with wiki_read.'
-
-const WIKI_READ_DESCRIPTION =
-  'Read one RivetOS wiki topic page: Wikipedia-style Summary (lead), ' +
-  'Article body, See also crosslinks, dated History, and Citations ' +
-  '(summary UUIDs usable with memory tools for drill-down). Use the slug ' +
-  'from wiki_search. Small pages are returned verbatim. Pages larger than ' +
-  `${WIKI_READ_VERBATIM_MAX_CHARS.toLocaleString('en-US')} characters ` +
-  '(hub topics with thousands of YAML aliases) return a bounded ' +
-  'encyclopedia view so MCP/capture truncation cannot hide Summary ' +
-  'behind the alias dump. Pass section=summary|article|history|aliases|' +
-  'citations for a slice; section=full is refused on oversized pages.'
-
-const DELEGATE_TASK_DESCRIPTION =
-  'Delegate work to a RivetHub agent (preset name or id) or a runtime agent id. ' +
-  'Call list_agents first. A preset name or id wins when it also matches a runtime agent id. ' +
-  'Presets run as a harness session in the agent directory; ' +
-  'runtime agents run as a chat-loop on the newest online node that hosts them. ' +
-  'Waits until the task finishes or the timeout elapses (default 20 minutes, max 30). ' +
-  'Set the client tool-call timeout above that wait — Codex tool_timeout_sec ' +
-  '(its default of 60s aborts the call) and Claude Code MCP timeout. ' +
-  'An aborted call kills the row.'
-
-const LIST_AGENTS_DESCRIPTION =
-  'List RivetHub agents (presets) and runtime agents on online mesh nodes. ' +
-  'Pass a preset name or id, or a runtime agent id, as delegate_task to_agent. ' +
-  'A preset name or id wins when it also matches a runtime agent id.'
-
-const wikiSearchInputSchema = {
-  query: z.string().describe('Topic to look for (name, alias, or content terms)'),
-  limit: z.number().int().min(1).max(20).optional().describe('Max results (default 5)'),
-} satisfies z.ZodRawShape
-
-const wikiReadInputSchema = {
-  slug: z.string().describe('Topic slug, e.g. rivetos-task-engine'),
-  section: z
-    .enum(WIKI_READ_SECTIONS)
-    .optional()
-    .describe(
-      'Slice of an oversized page. Default: verbatim when small, encyclopedia ' +
-        'view (Summary + Article + recent history) when large. full is refused ' +
-        'while the page exceeds 24,000 characters.',
-    ),
-} satisfies z.ZodRawShape
-
-const delegateTaskInputSchema = {
-  to_agent: z
-    .string()
-    .min(1)
-    .describe('RivetHub agent name or id, or a runtime agent id — call list_agents first'),
-  task: z.string().min(1).describe('What the delegate should do'),
-  context: z.array(z.string()).optional().describe('Extra context lines included with the task'),
-  timeout_ms: z
-    .number()
-    .int()
-    .positive()
-    .max(1_800_000)
-    .optional()
-    .describe('How long to wait, in milliseconds (default 20 minutes, max 30)'),
-  model: z.string().optional().describe('Optional model override for this delegation'),
-} satisfies z.ZodRawShape
-
 /** Methods the den tools call. `RivetGateway` satisfies this; tests pass a fake. */
 export interface DenToolsGateway {
   memoryTool: RivetGateway['memoryTool']
@@ -158,6 +88,8 @@ export interface DenToolsGateway {
   wikiRead: RivetGateway['wikiRead']
   catalogAgents: RivetGateway['catalogAgents']
   createTask: RivetGateway['createTask']
+  waitTask: RivetGateway['waitTask']
+  killTask: RivetGateway['killTask']
 }
 
 export interface DenToolsOptions {
@@ -339,7 +271,7 @@ function parentCreateFields(
   log: (message: string) => void,
 ): Pick<TaskCreateRequest, 'parentTaskId' | 'chainDepth'> {
   const parentId = parentTaskId?.trim()
-  if (!parentId) return {}
+  if (!parentId) return { chainDepth: 1 }
   if (!TASK_ID_UUID.test(parentId)) {
     log(
       `RIVETOS_TASK_ID "${parentId}" is not a UUID — delegate tools registered at chain depth ${String(MAX_CHAIN_DEPTH - 1)} (fail closed)`,
@@ -349,7 +281,7 @@ function parentCreateFields(
   return { parentTaskId: parentId }
 }
 
-function formatSettledTask(task: TaskWire, toAgent: string): string {
+function formatSettledTask(task: SettledTask, toAgent: string, elapsedMs: number): string {
   const where = task.nodeAffinity ? ` on ${task.nodeAffinity}` : ''
   const describe = `Remote delegation to ${toAgent}${where}`
   let status: 'completed' | 'failed' | 'timeout'
@@ -365,7 +297,7 @@ function formatSettledTask(task: TaskWire, toAgent: string): string {
     response = `${describe} ${task.status}${task.error ? `: ${task.error}` : ''}`
   }
   const meta: string[] = []
-  if (task.durationMs != null) meta.push(`${String(task.durationMs)}ms`)
+  meta.push(`${String(elapsedMs)}ms`)
   const usage = task.result?.usage ?? task.usage
   if (usage) meta.push(`tokens: ${String(usage.inputTokens + usage.outputTokens)}`)
   const metaLine = meta.length ? `\n\n---\n_Delegation [${status}]: ${meta.join(' | ')}_` : ''
@@ -373,13 +305,67 @@ function formatSettledTask(task: TaskWire, toAgent: string): string {
   return `[${status}] ${response}${metaLine}`
 }
 
-function timeoutTask(body: unknown): TaskWire | undefined {
-  if (typeof body !== 'object' || body === null || !('task' in body)) return undefined
+interface SettledTask {
+  id: string
+  status: TaskWire['status']
+  nodeAffinity?: string
+  result?: { output?: string; summary?: string; usage?: TokenUsage }
+  usage?: TokenUsage
+  durationMs?: number
+  error?: string
+}
+
+interface TokenUsage {
+  inputTokens: number
+  outputTokens: number
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value)
+}
+
+function isUsage(value: unknown): value is TokenUsage | undefined {
+  return (
+    value === undefined ||
+    (isRecord(value) &&
+      typeof value.inputTokens === 'number' &&
+      Number.isFinite(value.inputTokens) &&
+      typeof value.outputTokens === 'number' &&
+      Number.isFinite(value.outputTokens))
+  )
+}
+
+function isTaskStatus(value: unknown): value is TaskWire['status'] {
+  return (
+    typeof value === 'string' &&
+    ['queued', 'running', 'completed', 'failed', 'killed', 'timeout', 'awaiting-input'].includes(
+      value,
+    )
+  )
+}
+
+function timeoutTask(body: unknown): SettledTask | undefined {
+  if (!isRecord(body) || !isRecord(body.task)) return undefined
   const task = body.task
-  if (typeof task !== 'object' || task === null || !('status' in task) || !('id' in task)) {
+  if (typeof task.id !== 'string' || !isTaskStatus(task.status)) return undefined
+  if (task.nodeAffinity !== undefined && typeof task.nodeAffinity !== 'string') return undefined
+  if (task.error !== undefined && typeof task.error !== 'string') return undefined
+  if (
+    task.durationMs !== undefined &&
+    (typeof task.durationMs !== 'number' || !Number.isFinite(task.durationMs))
+  )
     return undefined
-  }
-  return task as TaskWire
+  if (!isUsage(task.usage)) return undefined
+  const result = task.result
+  if (
+    result !== undefined &&
+    (!isRecord(result) ||
+      (result.output !== undefined && typeof result.output !== 'string') ||
+      (result.summary !== undefined && typeof result.summary !== 'string') ||
+      !isUsage(result.usage))
+  )
+    return undefined
+  return task as unknown as SettledTask
 }
 
 export function createDenTools(opts: DenToolsOptions): DenToolsHandle {
@@ -494,9 +480,7 @@ export function createDenTools(opts: DenToolsOptions): DenToolsHandle {
   tools.push(
     {
       name: 'wiki_search',
-      description: WIKI_SEARCH_DESCRIPTION,
-      annotations: READ_ONLY,
-      inputSchema: wikiSearchInputSchema,
+      ...wikiSearchDefinition,
       async execute(args, ctx): Promise<string> {
         const query = typeof args.query === 'string' ? args.query : ''
         const limit = typeof args.limit === 'number' ? args.limit : 5
@@ -512,9 +496,7 @@ export function createDenTools(opts: DenToolsOptions): DenToolsHandle {
     },
     {
       name: 'wiki_read',
-      description: WIKI_READ_DESCRIPTION,
-      annotations: READ_ONLY,
-      inputSchema: wikiReadInputSchema,
+      ...wikiReadDefinition,
       async execute(args, ctx): Promise<string> {
         const slug = typeof args.slug === 'string' ? args.slug : ''
         const section =
@@ -537,45 +519,86 @@ export function createDenTools(opts: DenToolsOptions): DenToolsHandle {
     tools.push(
       {
         name: 'delegate_task',
-        description: DELEGATE_TASK_DESCRIPTION,
-        inputSchema: delegateTaskInputSchema,
+        ...delegateTaskDefinition,
         async execute(args, ctx?: ToolExecuteContext): Promise<string> {
           const call = readDelegateCall(args)
           if (typeof call === 'string') return call
           if (ctx?.signal?.aborted) return CLIENT_ABORT_TEXT
           const goal = delegationGoal(call.task, call.context)
+          const startTime = Date.now()
+          let taskId: string | undefined
           try {
-            const created = await gateway.createTask(
-              {
-                goal,
-                agentId: call.toAgent,
-                requestedBy: opts.requestedBy,
-                ...parent,
-                budget: { maxWallClockMs: call.timeoutMs },
-                spec: {
-                  delegation: true,
-                  excludeTools: ['delegate_task'],
-                  ...(call.model ? { model: call.model } : {}),
-                },
+            const created = await gateway.createTask({
+              goal,
+              agentId: call.toAgent,
+              requestedBy: opts.requestedBy,
+              ...parent,
+              budget: { maxWallClockMs: call.timeoutMs },
+              spec: {
+                delegation: true,
+                excludeTools: ['delegate_task'],
+                ...(call.model ? { model: call.model } : {}),
               },
-              {
-                wait: true,
-                timeoutMs: call.timeoutMs,
-                ...(ctx?.signal ? { signal: ctx.signal } : {}),
-              },
-            )
-            return formatSettledTask(created.task, call.toAgent)
+            })
+            taskId = created.task.id
+            const settled = await gateway.waitTask(taskId, {
+              timeoutMs: call.timeoutMs,
+              ...(ctx?.signal ? { signal: ctx.signal } : {}),
+            })
+            return formatSettledTask(settled.task, call.toAgent, Date.now() - startTime)
           } catch (err: unknown) {
-            if (isAbort(err)) throw err
+            if (isAbort(err)) {
+              if (taskId) {
+                try {
+                  await gateway.killTask(taskId)
+                } catch {
+                  /* best effort */
+                }
+              }
+              throw err
+            }
             if (err instanceof GatewayError) {
               if (err.status === 0) return unreachable(denUrl, err)
               if (err.status === 409 && err.message.startsWith('delegation chain too deep')) {
                 return `[failed] ${err.message}`
               }
               if (err.status === 504) {
-                const task = timeoutTask(err.body)
-                if (task) return formatSettledTask(task, call.toAgent)
-                return `[timeout] Remote delegation to ${call.toAgent} timed out after ${String(call.timeoutMs)}ms`
+                const fallback = `[timeout] Remote delegation to ${call.toAgent} timed out after ${String(call.timeoutMs)}ms`
+                // GET /wait only observes: the creating caller owns cancellation.
+                let killed = false
+                if (taskId) {
+                  try {
+                    await gateway.killTask(taskId)
+                    killed = true
+                  } catch {
+                    /* best effort */
+                  }
+                }
+                try {
+                  const task = timeoutTask(err.body)
+                  if (isRecord(err.body) && err.body.task !== undefined && !task) return fallback
+                  const id = task?.status === 'killed' ? task.id : killed ? taskId : undefined
+                  const diagnostic =
+                    isRecord(err.body) && typeof err.body.error === 'string'
+                      ? `: ${err.body.error}` +
+                        ' — no runner claimed or finished it in time' +
+                        (task?.nodeAffinity
+                          ? ` — is the rivetos runtime running on "${task.nodeAffinity}"?`
+                          : '')
+                      : ''
+                  return (
+                    fallback +
+                    (id ? ` (task ${id} killed)` : '') +
+                    diagnostic +
+                    `
+
+---
+_Delegation [timeout]: ${String(Date.now() - startTime)}ms_`
+                  )
+                } catch (formatError: unknown) {
+                  if (isAbort(formatError)) throw formatError
+                  return fallback
+                }
               }
               return `[failed] delegate_task failed: ${err.message}`
             }
@@ -585,9 +608,7 @@ export function createDenTools(opts: DenToolsOptions): DenToolsHandle {
       },
       {
         name: 'list_agents',
-        description: LIST_AGENTS_DESCRIPTION,
-        annotations: READ_ONLY,
-        inputSchema: {},
+        ...listAgentsDefinition,
         async execute(_args, ctx): Promise<string> {
           try {
             const catalog = await gateway.catalogAgents(ctx?.signal)

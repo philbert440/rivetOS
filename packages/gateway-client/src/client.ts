@@ -290,6 +290,13 @@ export class RivetGateway {
     return request(this.config, `/api/tasks/${encodeURIComponent(taskId)}`, { signal })
   }
 
+  waitTask(taskId: string, opts: Omit<WaitOptions, 'wait'> = {}): Promise<TaskResponse> {
+    return request(this.config, `/api/tasks/${encodeURIComponent(taskId)}/wait`, {
+      query: { timeoutMs: opts.timeoutMs },
+      signal: opts.signal,
+    })
+  }
+
   steerTask(taskId: string, message: string): Promise<TaskSteerAccepted> {
     return request(this.config, `/api/tasks/${encodeURIComponent(taskId)}/steer`, {
       method: 'POST',

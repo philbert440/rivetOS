@@ -51,8 +51,11 @@ unset SCRIPT_DIR # don't leak a global into the sourced namespace
 # Never print PG URLs or tokens.
 export RIVETOS_PLUGIN_ENV=1
 rivetos_load_env
-if [ -z "${RIVETOS_PG_URL:-}" ] && [ -z "${RIVETOS_DATAHUB_URL:-}" ] && [ -z "${RIVETOS_CLOUD_TOKEN:-}" ]; then
-  echo "rivet-memory-mcp: no DataHub/PG URL or cloud token — run rivetos-onboard or add ~/.rivetos/.env" >&2
+
+# Local den (URL + CA) before exec, so Node trusts the loopback certificate.
+rivetos_resolve_den
+if [ -z "${RIVET_DEN_URL:-}" ] && [ -z "${RIVETOS_PG_URL:-}" ] && [ -z "${RIVETOS_DATAHUB_URL:-}" ] && [ -z "${RIVETOS_CLOUD_TOKEN:-}" ]; then
+  echo "rivet-memory-mcp: no den URL and no DataHub/PG URL — run rivetos-onboard or add ~/.rivetos/.env" >&2
 fi
 RIVETOS_ROOT="$(rivetos_find_root)"
 export RIVETOS_ROOT

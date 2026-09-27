@@ -774,7 +774,7 @@ rivetos_tree_at() {
 # Prints nothing when the file or key is absent. Quotes around the value
 # are stripped. `port` and `tls_ca` are the only keys read.
 rivetos_yaml_den_value() {
-  local file="$1" key="$2" section line value
+  local file="$1" key="$2" section line value indent child_indent="" char quote="" cleaned="" previous="" i
   [ -f "$file" ] || return 0
   case "$key" in
     port|tls_ca) ;;
@@ -784,9 +784,31 @@ rivetos_yaml_den_value() {
   # itself matches a "next key" pattern, so it is skipped rather than used
   # as the end of the range.
   section="$(sed -n '/^den:[[:space:]]*\(#.*\)\{0,1\}$/,${ /^den:[[:space:]]*\(#.*\)\{0,1\}$/b; /^[^[:space:]#]/q; p; }' "$file" 2>/dev/null || true)"
-  line="$(printf '%s\n' "$section" | grep -E "^[[:space:]]+${key}:" | head -n 1 || true)"
-  [ -n "$line" ] || return 0
-  value="${line#*:}"
+  value=""
+  while IFS= read -r line; do
+    [[ "$line" =~ ^[[:space:]]*($|#) ]] && continue
+    indent="${line%%[![:space:]]*}"
+    [ -n "$child_indent" ] || child_indent="$indent"
+    [ "$indent" = "$child_indent" ] || continue
+    case "${line#"$indent"}" in
+      "$key":*) value="${line#*:}"; break ;;
+    esac
+  done <<< "$section"
+  # A space-prefixed # begins a comment only outside quoted scalars.
+  for ((i=0; i<${#value}; i++)); do
+    char="${value:i:1}"
+    if [ -z "$quote" ]; then
+      [ "$char" != '#' ] || [ "$previous" != ' ' ] || break
+      case "$char" in
+        \"|\') quote="$char" ;;
+      esac
+    elif [ "$char" = "$quote" ] && { [ "$quote" = "'" ] || [ "$previous" != '\' ]; }; then
+      quote=""
+    fi
+    cleaned="$cleaned$char"
+    previous="$char"
+  done
+  value="$cleaned"
   value="${value#"${value%%[![:space:]]*}"}"
   value="${value%"${value##*[![:space:]]}"}"
   case "$value" in

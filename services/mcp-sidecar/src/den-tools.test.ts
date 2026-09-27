@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 import { GatewayError } from '@rivetos/gateway-client'
 import type { ContentPart, TaskCreateRequest, TaskWire, ToolResult } from '@rivetos/types'
 
@@ -11,6 +11,14 @@ import {
   memoryStatsInputSchema,
 } from './memory.js'
 import { memoryAppendInputSchema, memoryIngestSessionInputSchema } from './memory-write.js'
+
+import { createMemoryTools } from './memory.js'
+import { createWikiTools } from './wiki.js'
+import { createDelegateTools, type DelegateToolsDeps } from './delegate.js'
+
+afterEach(() => {
+  vi.restoreAllMocks()
+})
 
 const DEN = 'https://127.0.0.1:5174'
 const PARENT = '11111111-1111-4111-8111-111111111111'
@@ -53,9 +61,7 @@ function tool(handle: ReturnType<typeof createDenTools>, name: string) {
 
 describe('createDenTools', () => {
   it('forwards memory_search args and returns a string result', async () => {
-    const memoryTool = vi.fn(
-      async (): Promise<ToolResult> => 'found it',
-    )
+    const memoryTool = vi.fn(async (): Promise<ToolResult> => 'found it')
     const handle = createDenTools({
       denUrl: DEN,
       enableWrite: false,
@@ -82,7 +88,10 @@ describe('createDenTools', () => {
   })
 
   it('returns memory_browse content parts as structured content', async () => {
-    const parts: ContentPart[] = [{ type: 'text', text: 'line' }, { type: 'text', text: 'two' }]
+    const parts: ContentPart[] = [
+      { type: 'text', text: 'line' },
+      { type: 'text', text: 'two' },
+    ]
     const memoryTool = vi.fn(async (): Promise<ToolResult> => parts)
     const handle = createDenTools({
       denUrl: DEN,
@@ -245,6 +254,11 @@ Hello
 
   it('renders list_agents from the catalog and forwards delegate_task', async () => {
     const createTask = vi.fn(async () => ({ task: taskWire() }))
+    const waitTask = vi.fn(async () => {
+      vi.spyOn(Date, 'now').mockReturnValue(110)
+      return { task: taskWire() }
+    })
+    vi.spyOn(Date, 'now').mockReturnValue(100)
     const catalogAgents = vi.fn(async () => ({
       agents: [
         { id: 'grok', provider: 'xai', model: 'grok', node: 'ct115', local: true as const },
@@ -266,7 +280,7 @@ Hello
       requestedBy: 'claude',
       parentTaskId: PARENT,
       log: () => undefined,
-      gateway: { createTask, catalogAgents } as unknown as DenToolsGateway,
+      gateway: { createTask, waitTask, catalogAgents } as unknown as DenToolsGateway,
     })
     expect(await tool(handle, 'list_agents').execute({})).toBe(
       [
@@ -295,7 +309,8 @@ Hello
         model: 'grok-4',
       }),
     ).toBe('done\n\n---\n_Delegation [completed]: 10ms | tokens: 3_')
-    expect(createTask).toHaveBeenCalledWith(body, { wait: true, timeoutMs: 5_000 })
+    expect(createTask).toHaveBeenCalledWith(body)
+    expect(waitTask).toHaveBeenCalledWith('task-1', { timeoutMs: 5_000 })
   })
 
   it('maps chain-too-deep 409 and den unreachable on delegate_task', async () => {
@@ -316,9 +331,7 @@ Hello
       await tool(handle, 'delegate_task').execute({ to_agent: 'reviewer', task: 'again' }),
     ).toBe('[failed] delegation chain too deep (4 > 3)')
 
-    createTask.mockRejectedValueOnce(
-      new GatewayError(0, 'gateway unreachable: down', undefined),
-    )
+    createTask.mockRejectedValueOnce(new GatewayError(0, 'gateway unreachable: down', undefined))
     expect(
       await tool(handle, 'delegate_task').execute({ to_agent: 'reviewer', task: 'again' }),
     ).toBe(`den unreachable at ${DEN}: gateway unreachable: down`)
@@ -326,7 +339,9 @@ Hello
 
   it('fail-closes a non-UUID parent as chain depth 3 and omits parentTaskId', async () => {
     const lines: string[] = []
-    const createTask = vi.fn(async () => ({ task: taskWire({ result: undefined, durationMs: undefined }) }))
+    const createTask = vi.fn(async () => ({
+      task: taskWire({ result: undefined, durationMs: undefined }),
+    }))
     const handle = createDenTools({
       denUrl: DEN,
       enableWrite: false,
@@ -336,18 +351,149 @@ Hello
       log: (message) => {
         lines.push(message)
       },
-      gateway: { createTask } as unknown as DenToolsGateway,
+      gateway: { createTask, waitTask: createTask } as unknown as DenToolsGateway,
     })
     expect(lines).toEqual([
       'RIVETOS_TASK_ID "not-a-uuid" is not a UUID — delegate tools registered at chain depth 2 (fail closed)',
     ])
-    await tool(handle, 'delegate_task').execute({ to_agent: 'reviewer', task: 'go' })
+    expect(
+      await tool(handle, 'delegate_task').execute({ to_agent: 'reviewer', task: 'go' }),
+    ).toContain('[no response from remote agent]')
     expect(createTask).toHaveBeenCalledWith(
       expect.objectContaining({ chainDepth: 3, agentId: 'reviewer' }),
-      { wait: true, timeoutMs: 1_200_000 },
     )
     const body = createTask.mock.calls[0]?.[0] as TaskCreateRequest
     expect(body.parentTaskId).toBeUndefined()
+  })
+
+  it('shares all ten registration schemas and metadata with pg', async () => {
+    const memory = createMemoryTools({ pgUrl: 'postgres://unused', enableWrite: true })
+    const wiki = createWikiTools({ pgUrl: 'postgres://unused' })
+    const delegate = createDelegateTools({
+      waiter: { stop: async () => undefined },
+    } as DelegateToolsDeps)
+    const den = createDenTools({
+      denUrl: DEN,
+      enableWrite: true,
+      enableDelegate: true,
+      requestedBy: 'test',
+      log: () => undefined,
+      gateway: {} as DenToolsGateway,
+    })
+    const pg = [...memory.tools, ...wiki.tools, ...delegate.tools]
+    expect(pg).toHaveLength(10)
+    for (const registration of pg) {
+      const proxy = tool(den, registration.name)
+      expect(Object.is(proxy.inputSchema, registration.inputSchema)).toBe(true)
+      expect(proxy.name).toBe(registration.name)
+      expect(proxy.description).toBe(registration.description)
+      expect(proxy.annotations).toEqual(registration.annotations)
+    }
+    await Promise.all([memory.close(), wiki.close(), delegate.close()])
+  })
+
+  function delegationGateway(waitTask: DenToolsGateway['waitTask'], parentTaskId?: string) {
+    const createTask = vi.fn(async () => ({ task: taskWire({ status: 'queued' }) }))
+    const killTask = vi.fn(async () => ({ ok: true as const, prior: 'running' as const }))
+    const handle = createDenTools({
+      denUrl: DEN,
+      enableWrite: false,
+      enableDelegate: true,
+      requestedBy: 'test',
+      log: () => undefined,
+      parentTaskId,
+      gateway: { createTask, waitTask, killTask } as unknown as DenToolsGateway,
+    })
+    return { execute: tool(handle, 'delegate_task').execute, createTask, killTask }
+  }
+
+  it.each([undefined, '   '])('starts parentless children at depth 1 (%s)', async (parent) => {
+    const { execute, createTask } = delegationGateway(async () => ({ task: taskWire() }), parent)
+    await execute({ to_agent: 'reviewer', task: 'go' })
+    expect(createTask).toHaveBeenCalledWith(expect.objectContaining({ chainDepth: 1 }))
+    expect(createTask.mock.calls[0]?.[0]).not.toHaveProperty('parentTaskId')
+  })
+
+  it('reports a killed 504 as timeout with elapsed time and diagnostic', async () => {
+    vi.spyOn(Date, 'now').mockReturnValueOnce(100).mockReturnValue(6100)
+    const { execute, killTask } = delegationGateway(async () => {
+      throw new GatewayError(504, 'deadline', {
+        task: taskWire({ status: 'killed', nodeAffinity: 'ct115' }),
+        error: 'wait deadline exceeded — task killed',
+      })
+    })
+    expect(await execute({ to_agent: 'reviewer', task: 'go', timeout_ms: 5000 })).toBe(
+      '[timeout] Remote delegation to reviewer timed out after 5000ms (task task-1 killed): wait deadline exceeded — task killed — no runner claimed or finished it in time — is the rivetos runtime running on "ct115"?\n\n---\n_Delegation [timeout]: 6000ms_',
+    )
+    expect(killTask).toHaveBeenCalledExactlyOnceWith('task-1')
+  })
+
+  it('kills on the observation-only wait deadline without a task body', async () => {
+    const { execute, killTask } = delegationGateway(async () => {
+      throw new GatewayError(504, 'deadline', { error: 'wait deadline exceeded' })
+    })
+    expect(await execute({ to_agent: 'reviewer', task: 'go', timeout_ms: 5000 })).toContain(
+      '[timeout] Remote delegation to reviewer timed out after 5000ms (task task-1 killed)',
+    )
+    expect(killTask).toHaveBeenCalledExactlyOnceWith('task-1')
+  })
+
+  it.each([
+    { id: 't', status: 'completed', result: { output: { toString: null } } },
+    { id: 't', status: {} },
+    { id: 't', status: 'killed', nodeAffinity: {} },
+    { id: 't', status: 'completed', result: { summary: {} } },
+    { id: 't', status: 'completed', result: { usage: { inputTokens: '1', outputTokens: 2 } } },
+    { id: 't', status: 'killed', usage: null },
+    { id: 't', status: 'killed', durationMs: '1' },
+    { id: 't', status: 'killed', error: {} },
+  ])('falls back to text for malformed timeout task %j', async (task) => {
+    const { execute } = delegationGateway(async () => {
+      throw new GatewayError(504, 'deadline', { task })
+    })
+    expect(await execute({ to_agent: 'reviewer', task: 'go', timeout_ms: 5000 })).toBe(
+      '[timeout] Remote delegation to reviewer timed out after 5000ms',
+    )
+  })
+
+  it.each([false, true])(
+    'kills exactly once and rethrows mid-wait abort (kill failure %s)',
+    async (killFails) => {
+      const controller = new AbortController()
+      const abort = new DOMException('cancelled', 'AbortError')
+      const waitTask = vi.fn<DenToolsGateway['waitTask']>(async (_id, opts) => {
+        return new Promise((_resolve, reject) => {
+          opts?.signal?.addEventListener('abort', () => reject(abort), { once: true })
+        })
+      })
+      const { execute, killTask } = delegationGateway(waitTask)
+      if (killFails) killTask.mockRejectedValueOnce(new Error('offline'))
+      const pending = execute({ to_agent: 'reviewer', task: 'go' }, { signal: controller.signal })
+      await Promise.resolve()
+      expect(waitTask).toHaveBeenCalledWith('task-1', {
+        timeoutMs: 1200000,
+        signal: controller.signal,
+      })
+      controller.abort()
+      await expect(pending).rejects.toBe(abort)
+      expect(killTask).toHaveBeenCalledExactlyOnceWith('task-1')
+    },
+  )
+
+  it('formats failure and empty completion with elapsed time and no absent tokens', async () => {
+    vi.spyOn(Date, 'now').mockReturnValue(100)
+    const { execute } = delegationGateway(async () => ({
+      task: taskWire({ status: 'failed', result: undefined, error: 'boom', nodeAffinity: 'ct115' }),
+    }))
+    expect(await execute({ to_agent: 'reviewer', task: 'go' })).toBe(
+      '[failed] Remote delegation to reviewer on ct115 failed: boom\n\n---\n_Delegation [failed]: 0ms_',
+    )
+    const summary = delegationGateway(async () => ({
+      task: taskWire({ result: undefined }),
+    }))
+    expect(await summary.execute({ to_agent: 'reviewer', task: 'go' })).toBe(
+      '[no response from remote agent]\n\n---\n_Delegation [completed]: 0ms_',
+    )
   })
 
   it('omits delegate tools when enableDelegate is false', () => {

@@ -27,7 +27,7 @@ export function resolveSidecarTransport(env: NodeJS.ProcessEnv): SidecarTranspor
   const forced = trimmed(env.RIVETOS_MCP_TRANSPORT)
   const denUrl = trimmed(env.RIVET_DEN_URL)
   const pgUrl = trimmed(env.RIVETOS_PG_URL)
-  const userBlocksDen = trimmed(env.RIVETOS_USER_ID).length > 0
+  const userBlocksDen = env.RIVETOS_USER_ID !== undefined && env.RIVETOS_USER_ID !== ''
 
   if (forced === 'den') {
     if (!denUrl) {
@@ -59,7 +59,7 @@ export function sidecarTransportLog(transport: SidecarTransport, env: NodeJS.Pro
     return `[rivetos-mcp-sidecar] transport=den ${transport.denUrl}`
   }
   if (transport.kind === 'pg') {
-    const userId = trimmed(env.RIVETOS_USER_ID)
+    const userId = env.RIVETOS_USER_ID
     const denUrl = trimmed(env.RIVET_DEN_URL)
     if (userId && denUrl) {
       return '[rivetos-mcp-sidecar] transport=pg — RIVETOS_USER_ID is set; den transport would hit the owner pool on loopback'
