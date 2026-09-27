@@ -107,8 +107,9 @@ describe('store.db read-only reader', () => {
     })
     expect(result.messages.some((m) => m.metadata?.position === 4)).toBe(true)
     expect(result.messages.some((m) => m.metadata?.position === 0)).toBe(true)
-    expect(result.messages.every((m) => m.metadata?.capture_source === 'grokbot-store')).toBe(true)
+    expect(result.messages.every((m) => m.metadata?.source === 'grokbot-store')).toBe(true)
     const ingest = result.messages.map((m) => toIngestRows([m])[0])
+    expect(ingest.every((r) => r?.metadata?.capture_source === 'grokbot-store')).toBe(true)
     expect(ingest[0]?.ordinal).toBe(0)
   })
 
@@ -139,8 +140,7 @@ describe('store.db read-only reader', () => {
         dst,
         '--agent-id',
         '00df02ea-4f5f-4d3e-945a-864e1c9c78dc',
-        '--after-seq',
-        '-1',
+        '--after-seq=-1',
       ])
       expect(code).toBe(0)
       const info = JSON.parse(logs[logs.length - 1] ?? '{}') as { max_seq?: number; session?: string }

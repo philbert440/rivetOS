@@ -39,7 +39,7 @@ describe('voice-calls reader (reconstructed fixture, not a live dump)', () => {
       useStoredCreatedAt: true,
     })
     expect(result.messages.map((m) => m.metadata?.position)).toEqual([0, 1])
-    expect(result.messages.every((m) => m.metadata?.capture_source === 'grokbot-voice')).toBe(true)
+    expect(result.messages.every((m) => m.metadata?.source === 'grokbot-voice')).toBe(true)
   })
 
   it('accepts a top-level array of turns', () => {

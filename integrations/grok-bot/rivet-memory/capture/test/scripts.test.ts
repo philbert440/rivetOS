@@ -71,9 +71,9 @@ describe('node capture scripts', () => {
   it('ingest.mjs no longer exposes search/browse/stats', () => {
     const src = readFileSync(join(ROOT, 'ingest.mjs'), 'utf8')
     expect(src).toContain('was removed')
-    expect(src).not.toContain('memory.search')
+    expect(src).toContain("cmd === 'search' || cmd === 'browse' || cmd === 'stats'")
+    expect(src).not.toContain('memory.search(')
     expect(src).not.toContain('getSessionHistory')
-    expect(src).not.toContain('cmd === \'stats\'')
   })
 
   it('discover-models.mjs is a thin wrapper over dist/identity.js', () => {
