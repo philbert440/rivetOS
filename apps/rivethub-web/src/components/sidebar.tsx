@@ -16,6 +16,7 @@ import { useExperimental } from '../stores/experimental.js'
 import { useSidebarPrefs } from '../stores/sidebar-prefs.js'
 import { shouldCloseDrawerOnSelection } from '../lib/drawer-selection.js'
 import { focusInForeignDialog, matchHubKey } from '../lib/hub-keys.js'
+import { startNewConversation } from '../lib/new-conversation.js'
 import { visibleNav } from '../lib/visible-nav.js'
 import { useIsNarrow } from '../lib/use-narrow.js'
 import { cn } from '../lib/utils.js'
@@ -195,26 +196,43 @@ export function Sidebar(): JSX.Element {
   const logoLabel = narrow ? (drawerOpen ? 'Close sidebar' : 'Open sidebar') : toggle.label
   const logoExpanded = narrow ? drawerOpen : toggle.ariaExpanded
 
-  // Ctrl+Shift+E mirrors the logo toggle. Read prefs fresh from the store so
-  // the listener never closes over a stale drawer/rail value.
+  // Ctrl+Shift+E collapses every side pane — the rail AND the conversations
+  // pane — for a full-width session, and a second press brings both back.
+  // Anything still open counts as "expanded", so the first press always
+  // finishes the collapse. Narrow keeps the drawer toggle. Ctrl+T starts a
+  // new conversation from any page. Prefs are read fresh from the store so
+  // the listener never closes over stale values.
   useEffect(() => {
     const onKey = (e: KeyboardEvent): void => {
-      if (matchHubKey(e) !== 'toggle-sidebar') return
+      const action = matchHubKey(e)
+      if (action !== 'toggle-sidebar' && action !== 'new-conversation') return
       if (e.repeat) {
         e.preventDefault()
         e.stopPropagation()
         return
       }
       if (focusInForeignDialog(document.activeElement)) return
-      const prefs = useSidebarPrefs.getState()
-      if (narrow) prefs.setDrawerOpen(!prefs.drawerOpen)
-      else prefs.setRailCollapsed(!prefs.railCollapsed)
       e.preventDefault()
       e.stopPropagation()
+      if (action === 'new-conversation') {
+        startNewConversation()
+        const prefs = useSidebarPrefs.getState()
+        if (narrow) prefs.setDrawerOpen(false)
+        void navigate({ to: '/' })
+        return
+      }
+      const prefs = useSidebarPrefs.getState()
+      if (narrow) {
+        prefs.setDrawerOpen(!prefs.drawerOpen)
+        return
+      }
+      const collapse = !(prefs.railCollapsed && prefs.conversationsCollapsed)
+      prefs.setRailCollapsed(collapse)
+      prefs.setConversationsCollapsed(collapse)
     }
     window.addEventListener('keydown', onKey, { capture: true })
     return () => window.removeEventListener('keydown', onKey, { capture: true })
-  }, [narrow])
+  }, [narrow, navigate])
 
   return (
     <aside
@@ -238,7 +256,7 @@ export function Sidebar(): JSX.Element {
       }
     >
       <div className={railHeaderClass(collapsed)}>
-        <Tooltip label={`${logoLabel} (Ctrl+Shift+E)`}>
+        <Tooltip label={`${logoLabel} · Ctrl+Shift+E hides all panes`}>
           <Button
             variant="ghost"
             size="icon"

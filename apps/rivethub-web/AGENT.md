@@ -30,10 +30,18 @@ a focused xterm still sees neither the key nor a stray Tab:
   probes. Chrome and Firefox both reserve Ctrl+Tab / Ctrl+Shift+Tab
   in a plain browser tab and the page cannot claim them, so agent cycling is an
   Electron-shell feature.
-- **Ctrl+Shift+E** — toggle the left sidebar: wide (≥768px) collapses/expands
-  the icon rail, narrow opens/closes the drawer. Same branch as the logo
-  button (`sidebar.tsx`), state read fresh via `useSidebarPrefs.getState()`.
-  Works in Chromium tabs; Firefox reserves this chord. Auto-repeat is ignored.
+- **Ctrl+Shift+E** — collapse every side pane: wide (≥768px) collapses the
+  icon rail AND the conversations pane together (anything still open counts
+  as expanded, so the first press finishes the collapse; the next expands
+  both). Narrow opens/closes the drawer. The logo button still toggles the
+  rail alone. Handled in `sidebar.tsx`, state read fresh via
+  `useSidebarPrefs.getState()`. Works in Chromium tabs; Firefox reserves this
+  chord. Auto-repeat is ignored.
+- **Ctrl+T** — start a new conversation from any page, exactly the pane's
+  `+ new` (`lib/new-conversation.ts`): with an agent selected, a fresh
+  session with it; otherwise a bare draft. Claims readline's transpose-chars
+  in the terminal. Browsers keep Ctrl+T for a new tab, so it is a
+  desktop-shell chord like Ctrl+Tab.
 
 Rules: match only `ctrlKey` with no `altKey`/`metaKey`; **plain Ctrl+E is left
 untouched** (end-of-line in terminals). While focus is inside any

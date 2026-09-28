@@ -32,6 +32,18 @@ describe('matchHubKey', () => {
     )
   })
 
+  it('maps Ctrl+T to new-conversation, but not Ctrl+Shift+T', () => {
+    expect(matchHubKey(keyEvent({ key: 't', code: 'KeyT', ctrlKey: true }))).toBe(
+      'new-conversation',
+    )
+    expect(
+      matchHubKey(keyEvent({ key: 'T', code: 'KeyT', ctrlKey: true, shiftKey: true })),
+    ).toBeNull()
+    expect(
+      matchHubKey(keyEvent({ key: 't', code: 'KeyT', ctrlKey: true, altKey: true })),
+    ).toBeNull()
+  })
+
   it('maps Ctrl+Shift+KeyE to toggle-sidebar', () => {
     expect(matchHubKey(keyEvent({ key: 'e', code: 'KeyE', ctrlKey: true, shiftKey: true }))).toBe(
       'toggle-sidebar',

@@ -135,6 +135,7 @@ import { useSessionNames } from '../stores/session-names.js'
 import { useArchived } from '../stores/archived.js'
 import { useSidebarPrefs } from '../stores/sidebar-prefs.js'
 import { useAgentFilter } from '../stores/agent-filter.js'
+import { startNewConversation } from '../lib/new-conversation.js'
 import { discardDraft } from '../lib/discard-session.js'
 import { shouldCloseHistoryOnSelect } from '../lib/drawer-selection.js'
 import { narrowLaunchTarget } from '../lib/launch-session.js'
@@ -842,7 +843,6 @@ function SessionDrawer(props: {
   fullWidth?: boolean
 }): JSX.Element {
   const setActive = useChat((s) => s.setActive)
-  const addDraft = useChat((s) => s.addDraft)
   const wsStatus = useChat((s) => s.wsStatus)
   const baseUrl = useConnection((s) => s.baseUrl)
   const names = useSessionNames((s) => s.byKey)
@@ -893,13 +893,7 @@ function SessionDrawer(props: {
   const archivedCount = agentItems.reduce((n, it) => n + (isArchived(it) ? 1 : 0), 0)
 
   const startNew = (): void => {
-    if (agentFilter.startNew) {
-      agentFilter.startNew()
-    } else {
-      const id = newSessionId()
-      addDraft(id)
-      setActive(id)
-    }
+    startNewConversation()
     if (shouldCloseHistoryOnSelect(narrow)) {
       useSidebarPrefs.getState().setHistoryOpen(false)
     }
@@ -937,7 +931,11 @@ function SessionDrawer(props: {
         </span>
         <button
           onClick={startNew}
-          title={agentFilter.name ? `new session with ${agentFilter.name}` : 'new session'}
+          title={
+            agentFilter.name
+              ? `new session with ${agentFilter.name} (Ctrl+T)`
+              : 'new session (Ctrl+T)'
+          }
           className="rounded border border-line px-2 py-1 text-xs text-ink-dim hover:border-em hover:text-em"
         >
           + new
