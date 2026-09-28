@@ -4,6 +4,7 @@ import assert from 'node:assert/strict'
 import { createHash } from 'node:crypto'
 import {
   isFakeUuid,
+  loadDenyHashes,
   parseDenyHashes,
   removedHashes,
   scanText,
@@ -86,27 +87,41 @@ test('removedHashes detects a shrink', () => {
   assert.deepEqual(removedHashes(a, b), ['aa'])
 })
 
-test('grok-bot scan flags rivet-grokbot and house personas', () => {
+test('grok-bot scan flags rivet-grokbot, rivet default prefix, and hashed personas', () => {
   const file = 'integrations/grok-bot/rivet-memory/capture/src/identity.ts'
+  const denyHashes = loadDenyHashes()
   assert.equal(
-    scanText('agent: rivet-grokbot', { file }).some((h) => h.rule === 'grokbot-legacy-tag'),
+    scanText('agent: rivet-grokbot', { file, denyHashes }).some((h) => h.rule === 'grokbot-legacy-tag'),
     true,
   )
-  assert.equal(scanText('persona: "Bob"', { file }).some((h) => h.rule === 'grokbot-persona'), true)
-  assert.equal(scanText('name Maggie', { file }).some((h) => h.match === 'Maggie'), true)
-  assert.equal(scanText('Gary: Cleanup', { file }).some((h) => h.match === 'Gary'), true)
-  assert.equal(scanText('persona Rivet', { file }).some((h) => h.match === 'Rivet'), true)
+  assert.equal(
+    scanText("DEFAULT_AGENT_PREFIX = 'rivet'", { file, denyHashes }).some(
+      (h) => h.rule === 'grokbot-legacy-prefix',
+    ),
+    true,
+  )
+  assert.equal(
+    scanText('agentPrefix: "rivet"', { file, denyHashes }).some((h) => h.rule === 'grokbot-legacy-prefix'),
+    true,
+  )
+  assert.equal(scanText('persona: "Bob"', { file, denyHashes }).some((h) => h.rule === 'grokbot-persona'), true)
+  assert.equal(scanText('name Maggie', { file, denyHashes }).some((h) => h.rule === 'grokbot-persona'), true)
+  assert.equal(scanText('tinkabot profile', { file, denyHashes }).some((h) => h.rule === 'grokbot-persona'), true)
+  assert.equal(denyHashes.has(sha256('rivet')), false)
 })
 
-test('grok-bot scan allows RivetOS product language and local overrides', () => {
+test('grok-bot scan allows Rivet as product/example and Alpha/Beta fixtures', () => {
   const file = 'integrations/grok-bot/rivet-memory/README.md'
-  assert.equal(scanText('RivetOS shared memory', { file }).length, 0)
-  assert.equal(scanText('every Rivet agent serving this user', { file }).length, 0)
-  assert.equal(scanText('Rivet Cloud account', { file }).length, 0)
+  const denyHashes = loadDenyHashes()
+  assert.equal(scanText('RivetOS shared memory', { file, denyHashes }).length, 0)
+  assert.equal(scanText('every Rivet agent serving this user', { file, denyHashes }).length, 0)
+  assert.equal(scanText('Rivet Cloud account', { file, denyHashes }).length, 0)
+  assert.equal(scanText('persona Rivet', { file, denyHashes }).length, 0)
+  assert.equal(scanText('architecture notes', { file, denyHashes }).length, 0)
   assert.equal(
     scanText('agent: rivet-grokbot', { file: 'integrations/grok-bot/rivet-memory/capture/models.local.json' })
       .length,
     0,
   )
-  assert.equal(scanText('persona Alpha / agent grokbot-alpha', { file }).length, 0)
+  assert.equal(scanText('persona Alpha / agent grokbot-alpha', { file, denyHashes }).length, 0)
 })

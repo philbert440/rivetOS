@@ -161,7 +161,8 @@ export function discoverModels(opts?: {
     const prof = readProfileObject(profPath)
     if (!prof) continue
     if (isPlaceholderProfile(prof) || isSubagentProfile(prof)) continue
-    const name = typeof prof.name === 'string' && prof.name.trim() ? prof.name.trim() : id.slice(0, 8)
+    const name =
+      typeof prof.name === 'string' && prof.name.trim() ? prof.name.trim() : id.slice(0, 8)
     candidates.push({ id, name })
     seen.add(id)
   }

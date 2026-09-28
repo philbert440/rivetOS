@@ -91,29 +91,29 @@ integrations/grok-bot/rivet-memory/capture/test/fixtures/agent-transcripts/<uuid
 integrations/grok-bot/rivet-memory/capture/test/fixtures/agents/<uuid>/profile.json
   ea3eabc276f73b113196750beeab43a985f3a6ce
 
-integrations/grok-bot/rivet-memory/capture/test/fixtures/ondisk-bob-0-16.jsonl
+integrations/grok-bot/rivet-memory/capture/test/fixtures/ondisk-<persona>-0-16.jsonl
   ea3eabc276f73b113196750beeab43a985f3a6ce
 
-integrations/grok-bot/rivet-memory/capture/test/fixtures/ondisk-rivet-agent-msgs-1880-1920.jsonl
+integrations/grok-bot/rivet-memory/capture/test/fixtures/ondisk-<persona>-agent-msgs-1880-1920.jsonl
   ea3eabc276f73b113196750beeab43a985f3a6ce
 
-integrations/grok-bot/rivet-memory/capture/test/fixtures/ondisk-rivet-first-run-0-240.jsonl
+integrations/grok-bot/rivet-memory/capture/test/fixtures/ondisk-<persona>-first-run-0-240.jsonl
   ea3eabc276f73b113196750beeab43a985f3a6ce
 
-integrations/grok-bot/rivet-memory/capture/test/fixtures/page-bob-4110-4148.txt
+integrations/grok-bot/rivet-memory/capture/test/fixtures/page-<persona>-4110-4148.txt
   ea3eabc276f73b113196750beeab43a985f3a6ce
 
-integrations/grok-bot/rivet-memory/capture/test/fixtures/page-maggie-0-20.txt
+integrations/grok-bot/rivet-memory/capture/test/fixtures/page-<persona>-0-20.txt
   ea3eabc276f73b113196750beeab43a985f3a6ce
 
-integrations/grok-bot/rivet-memory/capture/test/fixtures/page-maggie-175-195.txt
+integrations/grok-bot/rivet-memory/capture/test/fixtures/page-<persona>-175-195.txt
   ea3eabc276f73b113196750beeab43a985f3a6ce
 
-integrations/grok-bot/rivet-memory/capture/test/fixtures/page-rivet-2395-2445.txt
+integrations/grok-bot/rivet-memory/capture/test/fixtures/page-<persona>-2395-2445.txt
   ea3eabc276f73b113196750beeab43a985f3a6ce
 
-integrations/grok-bot/rivet-memory/capture/test/fixtures/page-rivet-4730-4738.txt
+integrations/grok-bot/rivet-memory/capture/test/fixtures/page-<persona>-4730-4738.txt
   ea3eabc276f73b113196750beeab43a985f3a6ce
 
-integrations/grok-bot/rivet-memory/capture/test/fixtures/page-rivet-this-conversation-3040-3056.txt
+integrations/grok-bot/rivet-memory/capture/test/fixtures/page-<persona>-this-conversation-3040-3056.txt
   ea3eabc276f73b113196750beeab43a985f3a6ce

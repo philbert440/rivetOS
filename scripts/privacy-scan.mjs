@@ -83,20 +83,9 @@ export function isGrokBotPersonaScanPath(file) {
 }
 
 const GROKBOT_BANNED_TAG_RE = /rivet-grokbot/i
-const GROKBOT_BANNED_PERSONAS = [
-  { re: /\bBob\b/, name: 'Bob' },
-  { re: /\bMaggie\b/, name: 'Maggie' },
-  { re: /\bGary\b/, name: 'Gary' },
-  { re: /\bFrank\b/, name: 'Frank' },
-  { re: /\beggbot\b/i, name: 'eggbot' },
-]
-
-const RIVET_PRODUCT_RE =
-  /RivetOS|Rivet Cloud|Rivet mesh|Rivet Philbot|Rivet Hub|Rivet agents?|@rivetos/g
-
-export function rivetPersonaRemaining(line) {
-  return /\bRivet\b/.test(String(line).replace(RIVET_PRODUCT_RE, ''))
-}
+/** Hardcoded default prefix `rivet` (tags now come from the slug rule). */
+const GROKBOT_BANNED_PREFIX_RE = /(?:DEFAULT_AGENT_PREFIX|agentPrefix)\s*[:=]\s*['"`]rivet['"`]/
+const PERSONA_TOKEN_RE = /\b[A-Za-z][A-Za-z0-9]*\b/g
 
 export function scanLine(line, { file = '', denyHashes = new Set() } = {}) {
   const out = []
@@ -133,21 +122,22 @@ export function scanLine(line, { file = '', denyHashes = new Set() } = {}) {
         hint: 'owner-specific agent tag — use the derived generic prefix',
       })
     }
-    if (rivetPersonaRemaining(line)) {
+    if (GROKBOT_BANNED_PREFIX_RE.test(line)) {
       out.push({
-        rule: 'grokbot-persona',
+        rule: 'grokbot-legacy-prefix',
         severity: 'block',
-        match: 'Rivet',
-        hint: 'owner-specific persona name inside integrations/grok-bot',
+        match: 'rivet',
+        hint: 'hardcoded rivet- agent prefix — tags come from the slug rule',
       })
     }
-    for (const { re, name } of GROKBOT_BANNED_PERSONAS) {
-      if (re.test(line)) {
+    for (const m of line.matchAll(PERSONA_TOKEN_RE)) {
+      const token = m[0].toLowerCase()
+      if (denyHashes.has(sha256(token))) {
         out.push({
           rule: 'grokbot-persona',
           severity: 'block',
-          match: name,
-          hint: 'owner-specific persona name inside integrations/grok-bot',
+          match: m[0],
+          hint: 'hashed denylist persona token inside integrations/grok-bot',
         })
       }
     }
