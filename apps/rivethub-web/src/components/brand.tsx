@@ -2,7 +2,7 @@ import type { JSX } from 'react'
 import { cn } from '../lib/utils.js'
 
 /**
- * RivetHub brand — type, not a mascot. The expanded rail shows the
+ * RivetHub brand, set in type. The expanded rail shows the
  * `rivethub` wordmark; the collapsed rail, the narrow top bar and the empty
  * states show its `r` and `h` as the R-H monogram. Both take their color from the active theme
  * (accent `em`, dim `ink-dim`), so an Omarchy theme switch restyles them.

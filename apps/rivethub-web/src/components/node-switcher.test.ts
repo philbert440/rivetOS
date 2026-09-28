@@ -109,7 +109,7 @@ for (const name of ['switcher', 'picker']) {
       if (name === 'switcher') expect(html).toContain('aria-expanded')
     }
     // With nothing to switch to, the picker disappears; the rail switcher
-    // stays as a plain label naming the current node (no top bar carries it).
+    // stays as a plain label naming the current node.
     function expectHidden(): void {
       const html = render()
       if (name === 'picker') {

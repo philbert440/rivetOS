@@ -72,8 +72,7 @@ body {
   background-color: var(--color-bg);
   color: var(--color-ink);
   font-family: var(--font-sans);
-  /* Flat canvas — the blueprint grid is gone with the Omarchy look.
-     --grid-line stays defined for anything that still reads it. */
+  /* Flat canvas. --grid-line stays defined to mirror the Android palette. */
 }
 
 /* Scrollbars. color-scheme tells the UA this is a dark page, so every

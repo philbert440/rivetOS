@@ -122,8 +122,7 @@ export const ContextBar = memo(function ContextBar(props: {
 
   if (!props.withDetails) return meter
 
-  // The meter doubles as the toggle for session details — what used to be
-  // a permanent right-hand column is one click away instead.
+  // The meter doubles as the toggle for the session details popover.
   return (
     <Popover>
       <PopoverTrigger

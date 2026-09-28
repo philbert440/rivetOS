@@ -273,8 +273,8 @@ export function Sidebar(): JSX.Element {
               narrow && 'min-h-11',
             )}
           >
-            {/* Type, not a mascot: the wordmark expanded, the R-H monogram
-                collapsed. Either one IS the rail toggle. */}
+            {/* The wordmark expanded, the R-H monogram collapsed. Either
+                one IS the rail toggle. */}
             {collapsed ? <RhMark className="text-xl" /> : <Wordmark className="text-xl" />}
           </Button>
         </Tooltip>

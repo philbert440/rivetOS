@@ -196,18 +196,16 @@ Residual: Hermes/claude-cli adapters may still omit tool args; chips degrade cle
   flows canvas via `canvasSceneColors(theme)` in `lib/workflow-runs/flow-overlay.ts`.
   Settings has the Light / Dark / System toggle.
 
-### Omarchy look + palettes (2026-09-27)
+### Omarchy look + palettes
 
-Redesign "A · Tiled" (mockups in `docs/mockups/rivethub-redesign/`).
-
-- **Brand is type, not a mascot.** The den bot is gone. `components/brand.tsx`:
+- **Brand is type.** `components/brand.tsx`:
   `Wordmark` (`rivet` accent + `hub` dim) heads the expanded rail;
   `RhMark` (the wordmark's own `r` + `h`, same face, weight and colors) is
   the collapsed rail, narrow top bar and empty states. Either one IS the rail
   toggle. Size `RhMark` with a text size; `text-xl` matches the wordmark.
-  Transcript rows are mono `rivet ›` / `you ›` labels, no avatar.
+  Transcript rows are mono `rivet ›` / `you ›` labels.
 - **Look:** JetBrains Mono for all UI (`--font-sans`), every `--radius*`
-  token 0 (only `rounded-full` stays round), no blueprint grid. Desktop is
+  token 0 (only `rounded-full` stays round), flat background. Desktop is
   tiled: the rail and page as bordered tiles, the page tile carrying the
   accent border; no top bar. The rail header carries the unread pill and
   the rail foot always names the current node (`NodeSwitcher`, a plain label
@@ -217,9 +215,9 @@ Redesign "A · Tiled" (mockups in `docs/mockups/rivethub-redesign/`).
   it) opens its pinned session AND narrows the pane to that agent's sessions
   (`stores/agent-filter.ts`, chip with ✕ to clear, not persisted). With an
   agent selected the pane's `+ new` starts a fresh session with it and
-  re-pins; there is no separate start-over button. Membership comes from the
-  ownership tag `rivethub.agent.of.<sessionId>` (`agentOwningSession`), which
-  unlike the pin bind survives a re-pin. It lives in this client's storage,
+  re-pins. Membership comes from the ownership tag
+  `rivethub.agent.of.<sessionId>` (`agentOwningSession`), which unlike the
+  pin bind survives a re-pin. It lives in this client's storage,
   so sessions opened on another device or before the tag existed show only
   in the unfiltered list.
 - **Default view:** Settings → Conversations picks Terminal or Chat for new
@@ -228,7 +226,7 @@ Redesign "A · Tiled" (mockups in `docs/mockups/rivethub-redesign/`).
   wins over it, and a TUI-only legacy session still opens on the terminal.
 - **Context details:** the chat header's `ContextBar` is a Popover trigger on
   desktop (`withDetails`) — context numbers, harness/model/node and the
-  unread count. There is no permanent right-hand column.
+  unread count.
 - **Omarchy palettes:** `theme = omarchy` maps a colors.toml onto every
   `--color-*` token (`lib/omarchy-theme.ts`). Desktop reads the live theme
   (`lib/omarchy-sync.ts`, snapshot `source: 'live'`, re-read on focus);
