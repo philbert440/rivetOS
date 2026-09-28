@@ -1159,6 +1159,14 @@ function ActiveSession(props: {
 
   /** Canonical `<harness-id>:<native>` for a harness row (including legacy PTY rows). */
   const canonicalId = gate.bound ? item?.sessionId : undefined
+  // The header names the conversation the way the pane does — the user's
+  // rename, else the derived title — and keeps the raw id as a tooltip.
+  const nameBase = item?.pinNodeBaseUrl ?? baseUrl
+  const customName = useSessionNames((s) =>
+    persisted(s.byKey, nameBase, item?.key ?? props.sessionId),
+  )
+  const headerTitle = customName ?? item?.title ?? 'new conversation'
+  const headerId = canonicalId ?? props.sessionId
   const { mode, setMode } = useSessionView(
     storageKey(sessionBase, props.sessionId),
     isDraft ? { kind: 'draft' } : (item ?? props.item),
@@ -2071,11 +2079,11 @@ function ActiveSession(props: {
           >
             <Menu className="size-5 shrink-0" aria-hidden />
           </Button>
-          {/* Canonical `<harness-id>:<native>` once the control plane owns the
-              session; the bare den join key until then. flex-1 min-w-0: the
-              id absorbs the squeeze so the row never wraps. */}
-          <span className="min-w-0 flex-1 truncate font-mono text-xs text-ink-dim">
-            {canonicalId ?? props.sessionId}
+          {/* The conversation's name (rename or derived title); the session id
+              is the tooltip. flex-1 min-w-0: the name absorbs the squeeze so
+              the row never wraps. */}
+          <span title={headerId} className="min-w-0 flex-1 truncate font-mono text-xs text-ink">
+            {headerTitle}
           </span>
           {headerTail}
           <Button
@@ -2092,12 +2100,12 @@ function ActiveSession(props: {
         </div>
       ) : (
         <div className="flex max-md:flex-wrap items-center gap-3 border-b border-line bg-panel/40 px-4 py-1.5">
-          {/* Canonical `<harness-id>:<native>` once the control plane owns the
-              session; the bare den join key until then. It takes the slack
-              (flex-1) so the tail packs right — context box directly left of
-              Terminal|Chat — and truncates first when the header wraps. */}
-          <span className="min-w-0 flex-1 truncate font-mono text-xs text-ink-dim">
-            {canonicalId ?? props.sessionId}
+          {/* The conversation's name (rename or derived title); the session id
+              is the tooltip. It takes the slack (flex-1) so the tail packs
+              right — context box directly left of Terminal|Chat — and
+              truncates first when the header wraps. */}
+          <span title={headerId} className="min-w-0 flex-1 truncate font-mono text-xs text-ink">
+            {headerTitle}
           </span>
           {headerTail}
         </div>
