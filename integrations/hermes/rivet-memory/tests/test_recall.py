@@ -135,7 +135,7 @@ def test_trigram_messages_skip_embedding_clause():
     fake = _FakeClient([])
     eng = SearchEngine(fake)
     eng._search_messages(
-        "phildez",  # typo of desktop
+        "desktpo",  # typo of desktop
         mode="trigram",
         limit=3,
         agent=None,
@@ -147,7 +147,7 @@ def test_trigram_messages_skip_embedding_clause():
     # Trigram message form binds the query twice per expression (content +
     # coalesce(tool_result)): GREATEST(...) in SELECT, then the OR match in
     # WHERE — four %s before LIMIT.
-    assert params == ["phildez", "phildez", "phildez", "phildez", 3]
+    assert params == ["desktpo", "desktpo", "desktpo", "desktpo", 3]
     assert "similarity(m.content, %s) > 0.3" in sql
     assert "websearch_to_tsquery" not in sql
 
@@ -258,11 +258,11 @@ def test_hybrid_trigram_candidate_uses_similarity():
 
     fake = _FakeClient([_cand_msg_row()])
     eng = SearchEngine(fake)
-    eng._retrieve_text_candidates("trigram", "phildez", "messages", 50, None, None, None)
+    eng._retrieve_text_candidates("trigram", "desktpo", "messages", 50, None, None, None)
     sql, params = fake.cursor.executed[0]
     # Trigram message arm binds the query 4x: content + tool_result in the
     # SELECT GREATEST(...), then again in the WHERE OR-match.
-    assert params == ["phildez", "phildez", "phildez", "phildez", 50]
+    assert params == ["desktpo", "desktpo", "desktpo", "desktpo", 50]
     assert "similarity(m.content, %s)" in sql
     assert "websearch_to_tsquery" not in sql
 
