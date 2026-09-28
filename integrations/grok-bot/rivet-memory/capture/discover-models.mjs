@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 // Thin wrapper over identity.ts (built dist/identity.js). All roster logic
-// lives in src/identity.ts; historical tags live in models.json overrides.
-import { existsSync, readFileSync } from 'node:fs'
+// lives in src/identity.ts; historical tags live in models.local.json overrides.
+import { existsSync } from 'node:fs'
 import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 
@@ -28,11 +28,10 @@ export const resolveIdentity = ident.resolveIdentity
 export const identityFor = ident.identityFor
 export const loadIdentityConfig = ident.loadIdentityConfig
 
-/** Last-resort dump of models.json overrides when dist is present but discovery throws. */
+/** Last-resort dump of committed + local overrides when discovery throws. */
 export function modelsJsonOverrides() {
-  const raw = JSON.parse(readFileSync(MODELS_FILE, 'utf8'))
-  const overrides = raw.overrides && typeof raw.overrides === 'object' ? raw.overrides : {}
-  const models = Object.entries(overrides).map(([id, o]) => ({
+  const cfg = ident.loadIdentityConfig(MODELS_FILE)
+  const models = Object.entries(cfg.overrides).map(([id, o]) => ({
     id,
     persona: o.persona || o.name,
     name: o.persona || o.name,
@@ -41,7 +40,7 @@ export function modelsJsonOverrides() {
     agent: o.agent || o.agentId,
     agentId: o.agent || o.agentId,
   }))
-  return { nodeId: raw.nodeId || 'grokbot', models }
+  return { nodeId: cfg.nodeId || 'grokbot', models }
 }
 
 const invoked =

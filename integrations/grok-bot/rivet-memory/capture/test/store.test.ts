@@ -14,6 +14,7 @@ import {
   writeRedactedStoreFixture,
 } from '../src/store.js'
 import { SESSION_SUFFIX_V3_STORE } from '../src/types.js'
+import { BOB_ID, RIVET_ID } from './ids.js'
 
 const T0 = Date.parse('2026-09-20T20:04:00.000Z')
 
@@ -60,8 +61,8 @@ function redactedRows() {
         kind: 'message',
         role: 'user',
         content: 'agent to agent body',
-        fromAgent: { name: 'Bob', id: '00df02ea-4f5f-4d3e-945a-864e1c9c78dc' },
-        toAgent: { name: 'Rivet', id: '6a155e75-0dd5-4c8a-8391-994878ed683a' },
+        fromAgent: { name: 'Bob', id: BOB_ID },
+        toAgent: { name: 'Rivet', id: RIVET_ID },
         timestampMs: T0 + 4000,
       },
     },
@@ -219,7 +220,7 @@ describe('store.db read-only reader (real seq/id/entry schema)', () => {
         path,
         dst,
         '--agent-id',
-        '00df02ea-4f5f-4d3e-945a-864e1c9c78dc',
+        BOB_ID,
       ])
       expect(code).toBe(0)
       const info = JSON.parse(logs[logs.length - 1] ?? '{}') as {
@@ -254,7 +255,7 @@ describe('store.db read-only reader (real seq/id/entry schema)', () => {
         path,
         dst,
         '--agent-id',
-        '00df02ea-4f5f-4d3e-945a-864e1c9c78dc',
+        BOB_ID,
         '--after-seq',
         '-1',
       ])

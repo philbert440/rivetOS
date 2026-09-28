@@ -84,9 +84,9 @@ existing rows.
   `<session>${SUFFIX}-voice-<stem>` (turn index is not the line index).
   Watcher state is a per-suffix file
   (`~/.rivetos/grokbot-capture-state${SUFFIX}.json`). `-v3` may inherit
-  unsuffixed `state.json`; `-v4` starts empty. Discovery merges
-  `models.json` overrides into the roster so override-only bots (Gary)
-  are included. Unmapped `<uuid>/<uuid>.jsonl` transcripts are reported
+  unsuffixed `state.json`; `-v4` starts empty.   Discovery merges
+  `models.json` plus gitignored `models.local.json` overrides into the
+  roster so override-only bots (Gary) are included. Unmapped `<uuid>/<uuid>.jsonl` transcripts are reported
   (stderr / `unmappedTranscripts`), not dropped silently. Reclean follows
   `GROKBOT_SESSION_SUFFIX` and refuses already row-shaped sessions.
   Store cursors are `seq:N` under the same map. `run-once.sh` does not treat
@@ -103,14 +103,16 @@ existing rows.
 ```
 capture/
 ├── src/                 # normalizer (capture-core)
-├── test/fixtures/       # redacted real samples
+├── test/fixtures/       # synthetic samples (fake UUIDs / invented text)
 ├── convert-transcript.py
 ├── pull-bridge.py
 ├── discover-models.mjs
 ├── watch.mjs
 ├── ingest.mjs
 ├── run-once.sh
-└── models.json          # historical overrides + excludeNames (typed source: src/identity.ts)
+├── models.json          # excludeNames + empty overrides (typed source: src/identity.ts)
+├── models.local.example.json
+└── models.local.json    # gitignored host overrides (optional)
 ```
 
 Paths come from env (`GROKBOT_AGENTS`, `GROKBOT_TRANSCRIPTS` /
@@ -160,12 +162,12 @@ lines, and optional footer). Live / convert defaults to session suffix
 ```bash
 node integrations/grok-bot/rivet-memory/capture/dist/cli.js convert \
   path/to/agent.jsonl spool/grokbot-rivet-grokbot-v3.jsonl \
-  --agent-id 6a155e75-0dd5-4c8a-8391-994878ed683a
+  --agent-id 00000000-0000-4000-8000-000000000001
 
 # same interface the watcher already calls
 python3 integrations/grok-bot/rivet-memory/capture/convert-transcript.py \
   path/to/agent.jsonl spool/out.jsonl \
-  --agent-id 6a155e75-0dd5-4c8a-8391-994878ed683a \
+  --agent-id 00000000-0000-4000-8000-000000000001 \
   --session grokbot-rivet-grokbot-v3
 ```
 
@@ -286,14 +288,14 @@ transcripts.
 # from a source transcript (preferred — full tool_result fidelity)
 node integrations/grok-bot/rivet-memory/capture/dist/cli.js reclean \
   --session grokbot-rivet-grokbot \
-  --agent-id 6a155e75-0dd5-4c8a-8391-994878ed683a \
+  --agent-id 00000000-0000-4000-8000-000000000001 \
   --from-transcript path/to/rivet.jsonl \
   --dry-run
 
 # same, then write ingest jsonl for the NEW session (suffix -v3)
 node integrations/grok-bot/rivet-memory/capture/dist/cli.js reclean \
   --session grokbot-rivet-grokbot \
-  --agent-id 6a155e75-0dd5-4c8a-8391-994878ed683a \
+  --agent-id 00000000-0000-4000-8000-000000000001 \
   --from-transcript path/to/rivet.jsonl \
   --out spool --write
 
@@ -337,14 +339,18 @@ node integrations/grok-bot/rivet-memory/capture/dist/cli.js compare \
 ## Models
 
 `src/identity.ts` is the typed source. `discover-models.mjs` is a thin
-wrapper over `dist/identity.js`. Historical Rivet/eggbot (and other) tags
-live only in `models.json` `overrides`. Discovery scans
-`$GROKBOT_AGENTS/*/profile.json`, skips `group.json` and `excludeNames`
-(default includes `New Bot`), and applies those overrides so historical
-tags do not move. `identityFor` consults that roster before the subagent
-fallback. `capture/ingest.mjs` is ingest-only (search/browse/stats are the
-memory tools). `pull-bridge.py` calls `cli.js parse-page` instead of its
-own header regex.
+wrapper over `dist/identity.js`. Committed `models.json` `overrides` stay
+empty so real agent ids never land in git. A deployed host copies
+`models.local.example.json` to `models.local.json` (gitignored, same
+directory) and fills in the real session/agent mapping. Discovery loads
+`models.json` then merges `models.local.json` when present (local wins).
+`GROKBOT_MODELS` / `GROKBOT_MODELS_LOCAL` override those paths. Discovery
+scans `$GROKBOT_AGENTS/*/profile.json`, skips `group.json` and
+`excludeNames` (default includes `New Bot`), and applies those overrides
+so historical tags do not move. `identityFor` consults that roster before
+the subagent fallback. `capture/ingest.mjs` is ingest-only
+(search/browse/stats are the memory tools). `pull-bridge.py` calls
+`cli.js parse-page` instead of its own header regex.
 
 ## Live capture
 
@@ -389,5 +395,12 @@ can be empty. The reader still opens the DB read-only and no-ops.
 npx nx test @rivetos/grok-bot-rivet-memory-capture
 ```
 
-Fixtures are redacted real samples (TEST-NET `192.0.2.1` only). No unredacted
-transcripts.
+Fixtures are synthetic (fake UUIDs, `example.com`, invented text). They
+still cover hidden turns, `<timestamp>` shapes, `send_message` epochs,
+tool calls/results, replay blocks, voice calls, and store.db entries.
+
+CI `privacy-scan` hashes every UUID (and grok-bot emails) and compares
+against `scripts/privacy-denylist.json`. Add a hash locally with
+`node scripts/privacy-denylist-add.mjs '<value>'` — the value is never
+written. Fixture `/home/<user>` and `agent-data/agents/<non-fake-uuid>`
+paths fail the same job.

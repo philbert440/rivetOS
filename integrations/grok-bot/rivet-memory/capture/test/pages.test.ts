@@ -3,8 +3,9 @@ import { normalizeRecords, toIngestRows } from '../src/normalize.js'
 import { formatMergeConflicts, mergeParsedInputs, normalizePages } from '../src/pages.js'
 import { parseInput } from '../src/parse.js'
 import { ORDINAL_STRIDE } from '../src/types.js'
+import { BOB_ID } from './ids.js'
 
-const BOB = '00df02ea-4f5f-4d3e-945a-864e1c9c78dc'
+const BOB = BOB_ID
 
 function rec(role: string, text: string, extra?: unknown) {
   if (role === 'tool') {

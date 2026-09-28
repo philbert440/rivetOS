@@ -1,0 +1,38 @@
+{
+  "nodeId": "grokbot",
+  "excludeNames": [
+    "New Bot"
+  ],
+  "overrides": {
+    "00000000-0000-4000-8000-000000000001": {
+      "persona": "Rivet",
+      "session": "grokbot-rivet-grokbot",
+      "agent": "rivet-grokbot"
+    },
+    "00000000-0000-4000-8000-000000000004": {
+      "persona": "dr eggbot",
+      "session": "grokbot-eggbot",
+      "agent": "rivet-eggbot"
+    },
+    "00000000-0000-4000-8000-000000000002": {
+      "persona": "Bob",
+      "session": "grokbot-bob",
+      "agent": "rivet-bob"
+    },
+    "00000000-0000-4000-8000-000000000005": {
+      "persona": "Gary",
+      "session": "grokbot-gary",
+      "agent": "rivet-gary"
+    },
+    "00000000-0000-4000-8000-000000000003": {
+      "persona": "Maggie",
+      "session": "grokbot-maggie",
+      "agent": "rivet-maggie"
+    },
+    "00000000-0000-4000-8000-000000000006": {
+      "persona": "Frank",
+      "session": "grokbot-frank",
+      "agent": "rivet-frank"
+    }
+  }
+}

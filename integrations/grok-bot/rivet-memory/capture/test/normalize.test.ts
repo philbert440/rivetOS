@@ -48,12 +48,10 @@ import { stubImagePayloads } from '../src/storage.js'
 import { countNoise, extractUserText, stripWrappers } from '../src/wrappers.js'
 import { STORAGE_LIMIT } from '../src/types.js'
 import { compareInput } from '../src/compare.js'
+import { ARCH_ID, BOB_ID, EGG_ID, GARY_ID, GROUP_ID, NEW_BOT_ID, ORPHAN_ID, RIVET_ID, SUBAGENT_ID } from './ids.js'
 
 const FIX = join(dirname(fileURLToPath(import.meta.url)), 'fixtures')
-const RIVET_ID = '6a155e75-0dd5-4c8a-8391-994878ed683a'
-const EGG_ID = 'fe09510f-c3ce-49bc-9d93-8c5ab5705809'
-const BOB_ID = '00df02ea-4f5f-4d3e-945a-864e1c9c78dc'
-const GARY_ID = '71aebcf6-8b3b-4649-abe1-ad6d653e6156'
+const MODELS = join(FIX, 'models.json')
 
 function readFix(name: string): string {
   return readFileSync(join(FIX, name), 'utf8')
@@ -648,7 +646,7 @@ describe('hidden turns', () => {
     const agents = result.messages.filter((m) => m.metadata?.kind === 'agent_message')
     expect(agents.length).toBeGreaterThan(0)
     expect(agents[0].role).toBe('system')
-    expect(agents[0].content).toMatch(/Told Philip|Cleanup done|Rivet Team removal/)
+    expect(agents[0].content).toMatch(/Cleanup done|Rivet Team removal queued/)
     expect(agents[0].content).not.toMatch(/A message just arrived from another/)
     expect(agents[0].metadata?.from_agent).toMatch(/Gary|Bob/)
     expect(String(agents[0].metadata?.from_agent_id)).toMatch(/^[0-9a-f-]{36}$/)
@@ -747,7 +745,7 @@ describe('per-bot tags', () => {
     const ident = identityFor(RIVET_ID)
     expect(ident.session).toBe('grokbot-rivet-grokbot')
     expect(ident.agent).toBe('rivet-grokbot')
-    expect(loadIdentityConfig().overrides[RIVET_ID]?.session).toBe('grokbot-rivet-grokbot')
+    expect(loadIdentityConfig(MODELS).overrides[RIVET_ID]?.session).toBe('grokbot-rivet-grokbot')
   })
 
   it('keeps the historical eggbot tags', () => {
@@ -756,21 +754,44 @@ describe('per-bot tags', () => {
     expect(ident.agent).toBe('rivet-eggbot')
   })
 
+  it('keeps committed models.json overrides empty', () => {
+    const raw = JSON.parse(readFileSync(join(dirname(FIX), '..', 'models.json'), 'utf8')) as {
+      overrides?: Record<string, unknown>
+    }
+    expect(raw.overrides).toEqual({})
+  })
+
+  it('merges models.local.json over committed overrides', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'gb-local-models-'))
+    writeFileSync(join(dir, 'models.json'), JSON.stringify({ nodeId: 'grokbot', overrides: {} }))
+    writeFileSync(
+      join(dir, 'models.local.json'),
+      JSON.stringify({
+        overrides: {
+          [RIVET_ID]: { persona: 'Rivet', session: 'grokbot-rivet-grokbot', agent: 'rivet-grokbot' },
+        },
+      }),
+    )
+    const cfg = loadIdentityConfig(join(dir, 'models.json'))
+    expect(cfg.overrides[RIVET_ID]?.session).toBe('grokbot-rivet-grokbot')
+    expect(cfg.overrides[RIVET_ID]?.agent).toBe('rivet-grokbot')
+  })
+
   it('discovers roster bots, skips group.json and excludeNames', () => {
     const catalog = discoverModels({
       agentsDir: join(FIX, 'agents'),
-      modelsPath: join(dirname(FIX), '..', 'models.json'),
+      modelsPath: MODELS,
     })
     const ids = catalog.models.map((m) => m.id)
     expect(ids).toContain(RIVET_ID)
     expect(ids).toContain(BOB_ID)
     expect(ids).toContain(EGG_ID)
-    expect(ids).toContain('cccccccc-dddd-4eee-8fff-aaaaaaaaaaaa')
-    expect(catalog.models.find((m) => m.id === 'cccccccc-dddd-4eee-8fff-aaaaaaaaaaaa')?.agent).toBe(
+    expect(ids).toContain(ARCH_ID)
+    expect(catalog.models.find((m) => m.id === ARCH_ID)?.agent).toBe(
       'rivet-arch',
     )
-    expect(ids).not.toContain('aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee')
-    expect(ids).not.toContain('11111111-2222-4333-8444-555555555555')
+    expect(ids).not.toContain(NEW_BOT_ID)
+    expect(ids).not.toContain(GROUP_ID)
     expect(catalog.models.find((m) => m.id === RIVET_ID)?.session).toBe('grokbot-rivet-grokbot')
     expect(ids).toContain(GARY_ID)
     expect(catalog.models.find((m) => m.id === GARY_ID)?.agent).toBe('rivet-gary')
@@ -778,12 +799,12 @@ describe('per-bot tags', () => {
 
   it('reports unmapped <uuid>/<uuid>.jsonl transcripts instead of dropping them', () => {
     const dir = mkdtempSync(join(tmpdir(), 'gb-unmapped-'))
-    const orphan = 'eb245c0c-0000-4000-8000-000000000001'
+    const orphan = ORPHAN_ID
     mkdirSync(join(dir, orphan), { recursive: true })
     writeFileSync(join(dir, orphan, `${orphan}.jsonl`), '{}\n')
     const catalog = discoverModels({
       agentsDir: join(FIX, 'agents'),
-      modelsPath: join(dirname(FIX), '..', 'models.json'),
+      modelsPath: MODELS,
       transcriptsDir: dir,
     })
     expect(catalog.unmappedTranscripts).toContain(orphan)
@@ -791,17 +812,17 @@ describe('per-bot tags', () => {
   })
 
   it('tags subagents as rivet-grokbot-run / grokbot-run-<id>', () => {
-    const id = '99999999-aaaa-4bbb-8ccc-dddddddddddd'
+    const id = SUBAGENT_ID
     const ident = identityFor(id, { agentsDir: join(FIX, 'agents') })
     expect(ident.agent).toBe('rivet-grokbot-run')
     expect(ident.session).toBe(`grokbot-run-${id}`)
   })
 
   it('consults the roster before the subagent fallback (un-overridden Arch)', () => {
-    const id = 'cccccccc-dddd-4eee-8fff-aaaaaaaaaaaa'
+    const id = ARCH_ID
     const ident = identityFor(id, {
       agentsDir: join(FIX, 'agents'),
-      modelsPath: join(dirname(FIX), '..', 'models.json'),
+      modelsPath: MODELS,
     })
     expect(ident.persona).toBe('Arch')
     expect(ident.session).toBe('grokbot-arch')
@@ -819,7 +840,7 @@ describe('per-bot tags', () => {
   it('reads on-disk agent id from <uuid>/<uuid>.jsonl', () => {
     expect(
       agentIdFromTranscriptPath(
-        '/home/user/agent-data/agent-transcripts/00df02ea-4f5f-4d3e-945a-864e1c9c78dc/00df02ea-4f5f-4d3e-945a-864e1c9c78dc.jsonl',
+        `/tmp/agent-transcripts/${BOB_ID}/${BOB_ID}.jsonl`,
       ),
     ).toBe(BOB_ID)
     expect(agentIdFromTranscriptPath('/tmp/page.txt')).toBeUndefined()
@@ -947,8 +968,8 @@ describe('unstamped on-disk transcript + createdAt', () => {
   })
 
   it('skips parent seeding when only parentId is known (not the last stamp)', () => {
-    const parentId = 'aaaaaaaa-bbbb-4ccc-8ddd-111111111111'
-    const childId = 'bbbbbbbb-cccc-4ddd-8eee-222222222222'
+    const parentId = '00000000-0000-4000-8000-000000000011'
+    const childId = '00000000-0000-4000-8000-000000000012'
     const root = mkdtempSync(join(tmpdir(), 'gb-parent-skip-'))
     mkdirSync(join(root, parentId), { recursive: true })
     mkdirSync(join(root, 'agents', childId), { recursive: true })
@@ -980,8 +1001,8 @@ describe('unstamped on-disk transcript + createdAt', () => {
   })
 
   it('peeks the parent stamp nearest the child spawn mention, not the last stamp', () => {
-    const parentId = 'aaaaaaaa-bbbb-4ccc-8ddd-111111111111'
-    const childId = 'bbbbbbbb-cccc-4ddd-8eee-222222222222'
+    const parentId = '00000000-0000-4000-8000-000000000011'
+    const childId = '00000000-0000-4000-8000-000000000012'
     const root = mkdtempSync(join(tmpdir(), 'gb-parent-near-'))
     mkdirSync(join(root, parentId), { recursive: true })
     mkdirSync(join(root, 'agents', childId), { recursive: true })
@@ -1025,8 +1046,8 @@ describe('unstamped on-disk transcript + createdAt', () => {
   })
 
   it('uses profile createdAt to pick the nearest parent stamp', () => {
-    const parentId = 'aaaaaaaa-bbbb-4ccc-8ddd-333333333333'
-    const childId = 'bbbbbbbb-cccc-4ddd-8eee-444444444444'
+    const parentId = '00000000-0000-4000-8000-000000000013'
+    const childId = '00000000-0000-4000-8000-000000000014'
     const root = mkdtempSync(join(tmpdir(), 'gb-parent-created-'))
     mkdirSync(join(root, parentId), { recursive: true })
     mkdirSync(join(root, 'agents', childId), { recursive: true })
@@ -1501,17 +1522,17 @@ describe('ingest mapping + compare', () => {
 describe('extractAgentMessage', () => {
   it('pulls the named body out of the boilerplate', () => {
     const got = extractAgentMessage(
-      `[agent] A message just arrived from another of your user's agents: Gary (id: 71aebcf6-8b3b-4649-abe1-ad6d653e6156).
+      `[agent] A message just arrived from another of your user's agents: Gary (id: ${GARY_ID}).
 This is another assistant reaching out — not the user typing here. It arrived asynchronously, and your user can already see it in this chat.
 
-Gary: Told Philip. PRs clean.
+Gary: Cleanup done.
 
 If it needs a reply or an action, handle it: reply to Gary with SendToAgent`,
     )
     expect(got).toEqual({
       fromAgent: 'Gary',
-      fromAgentId: '71aebcf6-8b3b-4649-abe1-ad6d653e6156',
-      text: 'Told Philip. PRs clean.',
+      fromAgentId: GARY_ID,
+      text: 'Cleanup done.',
     })
   })
 })

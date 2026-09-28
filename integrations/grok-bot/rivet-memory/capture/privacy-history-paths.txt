@@ -1,0 +1,96 @@
+# Paths under integrations/grok-bot that held real ids, emails, host paths,
+# or transcript text in git history (all reachable commits).
+# Directory names that were UUIDs are written as <uuid>.
+# Values themselves are omitted. For optional history scrub.
+
+integrations/grok-bot/rivet-memory/GROKBOT.md
+  15fe1604311f3dd9607c8cd3ac420faea0d66da5
+  7700e0acd1fa572f8c7bd32f1a30880084487591
+  b17594463fa58b7a10ac616ff4f68d8ad0e17783
+  edcc5f6f08eb5a8a62f56f2130edf3e7430c3b25
+
+integrations/grok-bot/rivet-memory/README.md
+  15fe1604311f3dd9607c8cd3ac420faea0d66da5
+  6036ec3308c142caf6794a54f5177c65eb204d70
+  7700e0acd1fa572f8c7bd32f1a30880084487591
+  9a658b4fd6180675de7de3c7e704729c2e0dc793
+  b17594463fa58b7a10ac616ff4f68d8ad0e17783
+  c8f0c4c9f2113e37e7af4f9d2aa752265dc3a564
+  ea3eabc276f73b113196750beeab43a985f3a6ce
+  edcc5f6f08eb5a8a62f56f2130edf3e7430c3b25
+  0c5a89b34f1c5136b869f4d5958faf52240bcda7
+
+integrations/grok-bot/rivet-memory/capture/models.json
+  15fe1604311f3dd9607c8cd3ac420faea0d66da5
+  ea3eabc276f73b113196750beeab43a985f3a6ce
+
+integrations/grok-bot/rivet-memory/capture/README.md
+  22cae250d5953a350012b323e4c04b9ec2fb3124
+  ea3eabc276f73b113196750beeab43a985f3a6ce
+
+integrations/grok-bot/rivet-memory/capture/src/cli.ts
+  22cae250d5953a350012b323e4c04b9ec2fb3124
+  ea3eabc276f73b113196750beeab43a985f3a6ce
+
+integrations/grok-bot/rivet-memory/capture/test/cli.test.ts
+  ea3eabc276f73b113196750beeab43a985f3a6ce
+
+integrations/grok-bot/rivet-memory/capture/test/compare.test.ts
+  ea3eabc276f73b113196750beeab43a985f3a6ce
+
+integrations/grok-bot/rivet-memory/capture/test/live-state.test.ts
+  ea3eabc276f73b113196750beeab43a985f3a6ce
+
+integrations/grok-bot/rivet-memory/capture/test/normalize.test.ts
+  22cae250d5953a350012b323e4c04b9ec2fb3124
+  ea3eabc276f73b113196750beeab43a985f3a6ce
+
+integrations/grok-bot/rivet-memory/capture/test/pages.test.ts
+  ea3eabc276f73b113196750beeab43a985f3a6ce
+
+integrations/grok-bot/rivet-memory/capture/test/scripts.test.ts
+  22cae250d5953a350012b323e4c04b9ec2fb3124
+  ea3eabc276f73b113196750beeab43a985f3a6ce
+
+integrations/grok-bot/rivet-memory/capture/test/store.test.ts
+  ea3eabc276f73b113196750beeab43a985f3a6ce
+
+integrations/grok-bot/rivet-memory/capture/test/voice.test.ts
+  ea3eabc276f73b113196750beeab43a985f3a6ce
+
+integrations/grok-bot/rivet-memory/capture/test/fixtures/README.md
+  22cae250d5953a350012b323e4c04b9ec2fb3124
+  ea3eabc276f73b113196750beeab43a985f3a6ce
+
+integrations/grok-bot/rivet-memory/capture/test/fixtures/agent-transcripts/<uuid>/<uuid>.jsonl
+  ea3eabc276f73b113196750beeab43a985f3a6ce
+
+integrations/grok-bot/rivet-memory/capture/test/fixtures/agents/<uuid>/profile.json
+  ea3eabc276f73b113196750beeab43a985f3a6ce
+
+integrations/grok-bot/rivet-memory/capture/test/fixtures/ondisk-bob-0-16.jsonl
+  ea3eabc276f73b113196750beeab43a985f3a6ce
+
+integrations/grok-bot/rivet-memory/capture/test/fixtures/ondisk-rivet-agent-msgs-1880-1920.jsonl
+  ea3eabc276f73b113196750beeab43a985f3a6ce
+
+integrations/grok-bot/rivet-memory/capture/test/fixtures/ondisk-rivet-first-run-0-240.jsonl
+  ea3eabc276f73b113196750beeab43a985f3a6ce
+
+integrations/grok-bot/rivet-memory/capture/test/fixtures/page-bob-4110-4148.txt
+  ea3eabc276f73b113196750beeab43a985f3a6ce
+
+integrations/grok-bot/rivet-memory/capture/test/fixtures/page-maggie-0-20.txt
+  ea3eabc276f73b113196750beeab43a985f3a6ce
+
+integrations/grok-bot/rivet-memory/capture/test/fixtures/page-maggie-175-195.txt
+  ea3eabc276f73b113196750beeab43a985f3a6ce
+
+integrations/grok-bot/rivet-memory/capture/test/fixtures/page-rivet-2395-2445.txt
+  ea3eabc276f73b113196750beeab43a985f3a6ce
+
+integrations/grok-bot/rivet-memory/capture/test/fixtures/page-rivet-4730-4738.txt
+  ea3eabc276f73b113196750beeab43a985f3a6ce
+
+integrations/grok-bot/rivet-memory/capture/test/fixtures/page-rivet-this-conversation-3040-3056.txt
+  ea3eabc276f73b113196750beeab43a985f3a6ce

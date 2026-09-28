@@ -3,6 +3,7 @@ import { readFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { describe, expect, it } from 'vitest'
+import { BOB_ID, RIVET_ID } from './ids.js'
 import {
   captureStateKey,
   isStuckPolicyState,
@@ -20,7 +21,7 @@ const ROOT = join(HERE, '..')
 
 describe('watcher / run-once live state', () => {
   it('keys size:mtime by id plus suffix so unsuffixed keys do not skip -v3', () => {
-    const id = '6a155e75-0dd5-4c8a-8391-994878ed683a'
+    const id = RIVET_ID
     const sig = '100:123'
     const copiedOld = { [id]: sig }
     expect(captureStateKey(id, '-v3')).toBe(`${id}-v3`)
@@ -32,7 +33,7 @@ describe('watcher / run-once live state', () => {
   })
 
   it('looks up run-once stuck-policy under the unsuffixed session, not state.json', () => {
-    const oldDir = '/home/user/.rivetos/capture'
+    const oldDir = '/tmp/rivetos/capture'
     const viaJs = oldStuckPolicyPath(oldDir, 'grokbot-eggbot-v3', '-v3')
     expect(viaJs).toBe(`${oldDir}/grokbot-eggbot.json`)
     expect(viaJs).not.toBe(`${oldDir}/state.json`)
@@ -45,7 +46,7 @@ describe('watcher / run-once live state', () => {
   })
 
   it('persists store.db seq cursors keyed by id plus -v3-store', () => {
-    const id = '00df02ea-4f5f-4d3e-945a-864e1c9c78dc'
+    const id = BOB_ID
     const state = {}
     expect(storeCursor(state, id, '-v3-store')).toBe(-1)
     expect(shouldIngestStore(state, id, '-v3-store', 4)).toBe(true)

@@ -16,7 +16,9 @@ The grokbot node runs multiple Grok Bot agents, each with its own agent key and 
 - **Frank** (`rivet-frank`): session `grokbot-frank`
 - **dr eggbot** (`rivet-eggbot`): session `grokbot-eggbot`
 
-Convention: each bot gets its own agent key. See `capture/models.json` for full model IDs and mappings.
+Convention: each bot gets its own agent key. Committed `capture/models.json`
+overrides stay empty. Real ids and personas live in gitignored
+`capture/models.local.json` (copy `capture/models.local.example.json`).
 Full mesh mTLS join is out of scope.
 
 ## Install
@@ -70,7 +72,7 @@ The `capture/` directory provides automated transcript conversion and ingestion 
 
 **Setup:**
 
-1. Set `GROKBOT_TRANSCRIPT_ROOT` to the directory containing per-model transcript folders (e.g. `/home/box/grokbot/transcripts`)
+1. Set `GROKBOT_TRANSCRIPT_ROOT` to the directory containing per-model transcript folders (e.g. `$HOME/agent-data/agent-transcripts`)
 2. Set `RIVETOS_PG_URL` in `~/.rivetos/.env` or environment
 3. Ensure RivetOS is built at `RIVETOS_ROOT` (default `/opt/rivetos`). Rebuild `memory-postgres` and `@rivetos/grok-bot-rivet-memory-capture` before any `-v3` ingest. Enabling the watcher ingests every transcript's full history into `<session>-v3`.
 4. Run the setup script (see Setup/Restore section below)

@@ -3,8 +3,9 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { describe, expect, it } from 'vitest'
 import { main } from '../src/cli.js'
+import { BOB_ID } from './ids.js'
 
-const BOB = '00df02ea-4f5f-4d3e-945a-864e1c9c78dc'
+const BOB = BOB_ID
 
 function page(a: number, text: string): string {
   return `Transcript of agent "Bob" (${BOB}), positions ${String(a)}–${String(a)} of 2:\n${JSON.stringify(

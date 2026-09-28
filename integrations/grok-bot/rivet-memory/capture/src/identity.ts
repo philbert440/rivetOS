@@ -21,7 +21,11 @@ import {
 const UUID_RE = /^[0-9a-f-]{36}$/i
 const DEFAULT_EXCLUDE = ['new bot']
 
-/** Historical Rivet/eggbot tags live in models.json `overrides` only. */
+/**
+ * Historical session/agent tags live in models.json `overrides` plus an
+ * optional sibling `models.local.json` (gitignored). Committed overrides stay
+ * empty; a deployed host drops the local file in place.
+ */
 
 export interface IdentityConfig {
   nodeId: string
@@ -46,6 +50,58 @@ export function slug(s: string): string {
   )
 }
 
+function applyModelsFile(cfg: IdentityConfig, raw: Record<string, unknown>): void {
+  if (typeof raw.nodeId === 'string' && raw.nodeId) cfg.nodeId = raw.nodeId
+  if (Array.isArray(raw.excludeNames)) {
+    for (const n of raw.excludeNames) cfg.excludeNames.add(String(n).toLowerCase())
+  }
+  if (raw.overrides && typeof raw.overrides === 'object') {
+    for (const [id, o] of Object.entries(
+      raw.overrides as Record<string, Record<string, unknown>>,
+    )) {
+      cfg.overrides[id] = o
+    }
+  }
+  if (Array.isArray(raw.models)) {
+    for (const m of raw.models as Array<Record<string, unknown>>) {
+      if (typeof m.id === 'string') {
+        cfg.overrides[m.id] = {
+          persona: typeof m.name === 'string' ? m.name : undefined,
+          session:
+            typeof m.sessionId === 'string'
+              ? m.sessionId
+              : typeof m.session === 'string'
+                ? m.session
+                : undefined,
+          agent:
+            typeof m.agentId === 'string'
+              ? m.agentId
+              : typeof m.agent === 'string'
+                ? m.agent
+                : undefined,
+          id: m.id,
+        }
+      }
+    }
+  }
+}
+
+function readModelsObject(path: string): Record<string, unknown> | undefined {
+  try {
+    const raw = JSON.parse(readFileSync(path, 'utf8')) as unknown
+    if (raw && typeof raw === 'object' && !Array.isArray(raw)) return raw as Record<string, unknown>
+  } catch {
+    /* ignore bad file */
+  }
+  return undefined
+}
+
+export function localModelsPath(modelsPath?: string): string {
+  if (process.env.GROKBOT_MODELS_LOCAL) return process.env.GROKBOT_MODELS_LOCAL
+  const base = modelsPath ?? defaultModelsPath()
+  return join(dirname(base), 'models.local.json')
+}
+
 export function loadIdentityConfig(modelsPath?: string): IdentityConfig {
   const cfg: IdentityConfig = {
     nodeId: process.env.GROKBOT_NODE_ID || DEFAULT_NODE_ID,
@@ -53,50 +109,20 @@ export function loadIdentityConfig(modelsPath?: string): IdentityConfig {
     overrides: {},
   }
   const path = modelsPath ?? defaultModelsPath()
-  if (!path || !existsSync(path)) return cfg
-  try {
-    const raw = JSON.parse(readFileSync(path, 'utf8')) as Record<string, unknown>
-    if (typeof raw.nodeId === 'string' && raw.nodeId) cfg.nodeId = raw.nodeId
-    if (Array.isArray(raw.excludeNames)) {
-      for (const n of raw.excludeNames) cfg.excludeNames.add(String(n).toLowerCase())
-    }
-    if (raw.overrides && typeof raw.overrides === 'object') {
-      for (const [id, o] of Object.entries(
-        raw.overrides as Record<string, Record<string, unknown>>,
-      )) {
-        cfg.overrides[id] = o
-      }
-    }
-    if (Array.isArray(raw.models)) {
-      for (const m of raw.models as Array<Record<string, unknown>>) {
-        if (typeof m.id === 'string') {
-          cfg.overrides[m.id] = {
-            persona: typeof m.name === 'string' ? m.name : undefined,
-            session:
-              typeof m.sessionId === 'string'
-                ? m.sessionId
-                : typeof m.session === 'string'
-                  ? m.session
-                  : undefined,
-            agent:
-              typeof m.agentId === 'string'
-                ? m.agentId
-                : typeof m.agent === 'string'
-                  ? m.agent
-                  : undefined,
-            id: m.id,
-          }
-        }
-      }
-    }
-  } catch {
-    /* ignore bad file */
+  if (path && existsSync(path)) {
+    const raw = readModelsObject(path)
+    if (raw) applyModelsFile(cfg, raw)
+  }
+  const localPath = localModelsPath(path)
+  if (localPath && existsSync(localPath) && localPath !== path) {
+    const raw = readModelsObject(localPath)
+    if (raw) applyModelsFile(cfg, raw)
   }
   return cfg
 }
 
 export function defaultModelsPath(): string {
-  return join(fileDir(), 'models.json')
+  return process.env.GROKBOT_MODELS || join(fileDir(), 'models.json')
 }
 
 function fileDir(): string {

@@ -588,13 +588,12 @@ function cmdCompare(argv: string[]): number {
     .sort()
   const rows = files.map((name) => {
     const text = readFileSync(join(dir, name), 'utf8')
-    const ident = identityFor('6a155e75-0dd5-4c8a-8391-994878ed683a')
     return {
       name,
       result: compareInput(text, {
-        sessionKey: ident.session,
-        agent: ident.agent,
-        agentId: ident.id,
+        sessionKey: 'grokbot-compare',
+        agent: 'rivet-compare',
+        agentId: '00000000-0000-4000-8000-000000000001',
       }),
     }
   })

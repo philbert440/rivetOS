@@ -7,9 +7,11 @@ import { describe, expect, it } from 'vitest'
 import { main } from '../src/cli.js'
 import { normalizeRecords } from '../src/normalize.js'
 import { parseVoiceCall, v3VoiceSession, voiceCallToRecords } from '../src/voice.js'
+import { BOB_ID } from './ids.js'
 
 const HERE = dirname(fileURLToPath(import.meta.url))
 const FIX = join(HERE, 'fixtures', 'voice-calls', 'call-redacted.json')
+const BOB = BOB_ID
 
 describe('voice-calls reader (real callId/speaker/atMs + call-level toolCalls)', () => {
   it('maps speaker to role and atMs/startedAtMs to ISO, using callId as id', () => {
@@ -142,7 +144,7 @@ describe('voice-calls reader (real callId/speaker/atMs + call-level toolCalls)',
         FIX,
         dst,
         '--agent-id',
-        '00df02ea-4f5f-4d3e-945a-864e1c9c78dc',
+        BOB,
       ])
       expect(code).toBe(0)
       const info = JSON.parse(logs[logs.length - 1] ?? '{}') as {

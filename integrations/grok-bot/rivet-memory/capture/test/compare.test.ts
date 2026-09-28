@@ -3,6 +3,7 @@ import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { expect, it } from 'vitest'
 import { compareInput, formatCompareTable } from '../src/compare.js'
+import { RIVET_ID } from './ids.js'
 
 const FIX = join(dirname(fileURLToPath(import.meta.url)), 'fixtures')
 
@@ -15,7 +16,7 @@ it('prints a before/after table for every fixture sample', () => {
     result: compareInput(readFileSync(join(FIX, name), 'utf8'), {
       sessionKey: 'grokbot-rivet-grokbot',
       agent: 'rivet-grokbot',
-      agentId: '6a155e75-0dd5-4c8a-8391-994878ed683a',
+      agentId: RIVET_ID,
     }),
   }))
   const table = formatCompareTable(rows)

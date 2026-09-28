@@ -5,10 +5,11 @@ import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { beforeAll, describe, expect, it } from 'vitest'
 import { coalesceDashArgs } from '../src/argv.js'
+import { BOB_ID } from './ids.js'
 
 const HERE = dirname(fileURLToPath(import.meta.url))
 const ROOT = join(HERE, '..')
-const BOB = '00df02ea-4f5f-4d3e-945a-864e1c9c78dc'
+const BOB = BOB_ID
 
 function ensureDist() {
   if (existsSync(join(ROOT, 'dist', 'cli.js'))) return
@@ -73,7 +74,7 @@ describe('node capture scripts', () => {
       { encoding: 'utf8' },
     )
     const lines = viaEnv.trim().split('\n')
-    expect(lines[0]).toBe('00df02ea-4f5f-4d3e-945a-864e1c9c78dc')
+    expect(lines[0]).toBe(BOB)
     const [a, b, total, n] = lines[1].split(' ').map(Number)
     expect(n).toBe(b - a + 1)
     expect(total).toBeGreaterThan(0)
@@ -97,7 +98,7 @@ describe('node capture scripts', () => {
 
   it('watcher matches store.db-wal on the same agent debounce key', async () => {
     const { STORE_WATCH_RE } = await import('../live-state.mjs')
-    const id = '00df02ea-4f5f-4d3e-945a-864e1c9c78dc'
+    const id = BOB
     expect(`${id}/store.db`.match(STORE_WATCH_RE)?.[1]).toBe(id)
     expect(`${id}/store.db-wal`.match(STORE_WATCH_RE)?.[1]).toBe(id)
     expect(`${id}/store.db-shm`.match(STORE_WATCH_RE)).toBeNull()
@@ -332,7 +333,7 @@ describe('node capture scripts', () => {
       env: {
         ...process.env,
         GROKBOT_SESSION_SUFFIX: '-v3',
-        GROKBOT_AGENT_ID: '00df02ea-4f5f-4d3e-945a-864e1c9c78dc',
+        GROKBOT_AGENT_ID: BOB,
       },
     })
     const info = JSON.parse(out.trim().split('\n').pop() ?? '{}') as {

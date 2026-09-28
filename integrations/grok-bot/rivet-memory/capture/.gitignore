@@ -3,4 +3,5 @@ dist/
 pull/
 pull-state.json
 *.tmp
+models.local.json
 

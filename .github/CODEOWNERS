@@ -4,6 +4,9 @@
 # checks for removed entries vs origin/main). Require owner review on all three.
 /scripts/secret-scan.mjs        @philbert440
 /scripts/secret-denylist.json   @philbert440
+/scripts/privacy-scan.mjs       @philbert440
+/scripts/privacy-denylist.json  @philbert440
+/scripts/privacy-denylist-add.mjs @philbert440
 /scripts/git-hooks/             @philbert440
 /.github/workflows/pipeline.yml @philbert440
 /.github/CODEOWNERS             @philbert440
