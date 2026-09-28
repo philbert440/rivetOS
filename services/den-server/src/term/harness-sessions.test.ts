@@ -500,7 +500,7 @@ describe('listHarnessSessions', () => {
     expect((await describeKimiSession(v1))?.title).toBe('ship the release') // scan fallback
   })
 
-  it('harnessSessionExists: kimi checks the session DIR, written before state.json', () => {
+  it('harnessSessionExists: kimi checks the session DIR, written before state.json', async () => {
     const { home, v2 } = fakeKimiStore()
     expect(harnessSessionExists('kimi', v2)).toBe(true)
     expect(harnessSessionExists('kimi', 'session_deadbeef')).toBe(false)
@@ -508,7 +508,7 @@ describe('listHarnessSessions', () => {
     // the dir first, so describability is a strict subset of existence.
     mkdirSync(join(home, 'sessions', 'wd_rivet_abc123', 'session_fresh'), { recursive: true })
     expect(harnessSessionExists('kimi', 'session_fresh')).toBe(true)
-    expect(describeKimiSession('session_fresh')).resolves.toBeUndefined()
+    await expect(describeKimiSession('session_fresh')).resolves.toBeUndefined()
   })
 
   it('empty when the harness has no store / is not a known harness', async () => {
