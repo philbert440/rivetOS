@@ -170,7 +170,7 @@ class AgentsTest {
             pointerSessionId = null,
         )
         assertEquals("", agentRowSubtitle(base))
-        assertEquals("node-f", agentRowSubtitle(base.copy(node = " nodeF ")))
+        assertEquals("node-f", agentRowSubtitle(base.copy(node = " node-f ")))
         assertEquals("reviewer", agentRowSubtitle(base.copy(directory = "/srv/agents/reviewer/")))
         assertEquals(
             "node-f · reviewer",
