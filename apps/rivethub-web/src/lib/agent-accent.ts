@@ -45,3 +45,9 @@ export function inkOn(fill: string): string {
   // Contrast is equal against #111 and #fff near L≈0.18; above it, dark wins.
   return luminance > 0.18 ? '#111111' : '#ffffff'
 }
+
+/** True when two labels read the same, ignoring case, spaces, `-` and `_`. */
+export function sameLabel(a: string, b: string): boolean {
+  const norm = (v: string): string => v.toLowerCase().replace(/[\s\-_]+/g, '')
+  return norm(a) === norm(b)
+}

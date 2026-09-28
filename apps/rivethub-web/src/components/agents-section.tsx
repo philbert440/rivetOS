@@ -82,7 +82,7 @@ import {
   matchHubKey,
 } from '../lib/hub-keys.js'
 import { nativeIdOf } from '../lib/harness-chat.js'
-import { accentFor, agentInitials, inkOn } from '../lib/agent-accent.js'
+import { accentFor, agentInitials, inkOn, sameLabel } from '../lib/agent-accent.js'
 import {
   clearSessionNodeBinding,
   rekeySessionNodeBinding,
@@ -774,7 +774,11 @@ function AgentRow({
       : `${agent.name} (node unknown)`
 
   const accent = agentAccent(agent)
-  const harness = harnessLabel(agent.harnessId)
+  // Spelled out only when it adds something: an agent named after its
+  // harness ("Claude Code" on claude-code) would just say it twice.
+  const harness = sameLabel(agent.name, harnessLabel(agent.harnessId))
+    ? ''
+    : harnessLabel(agent.harnessId)
   // The harness is spelled out beside the name (expanded) or in the tooltip
   // (collapsed); the tile's initials tell same-harness agents apart.
   const tile = (

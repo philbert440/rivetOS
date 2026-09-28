@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { accentFor, agentInitials, inkOn } from './agent-accent.js'
+import { accentFor, agentInitials, inkOn, sameLabel } from './agent-accent.js'
 import { harnessAccent } from './harness-colors.js'
 
 describe('accentFor', () => {
@@ -107,5 +107,18 @@ describe('inkOn', () => {
   it('puts white ink on dark fills', () => {
     expect(inkOn('#1e3a8a')).toBe('#ffffff')
     expect(inkOn('#000')).toBe('#ffffff')
+  })
+})
+
+describe('sameLabel', () => {
+  it('matches an agent named after its harness', () => {
+    expect(sameLabel('Claude Code', 'Claude Code')).toBe(true)
+    expect(sameLabel('Grok Build', 'grok Build')).toBe(true)
+    expect(sameLabel('qwen_code', 'Qwen Code')).toBe(true)
+  })
+
+  it('keeps distinct names apart', () => {
+    expect(sameLabel('Nemotron Free', 'opencode')).toBe(false)
+    expect(sameLabel('Claude Code 2', 'Claude Code')).toBe(false)
   })
 })
