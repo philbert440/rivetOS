@@ -15,7 +15,7 @@ capture/
 ├── test/
 │   ├── smoke.test.ts
 │   └── fixtures/
-│       └── sample-session/      # mirrors a real ~/.grok/sessions/.../<sid>/
+│       └── sample-session/      # synthetic Grok CLI session shape
 │           ├── updates.jsonl
 │           └── summary.json
 └── dist/                 # built by `npm run build` — gitignored
@@ -219,8 +219,8 @@ npm test
 The test suite has four layers:
 
 1. **Parser tests** (no DB, no subprocess) against `fixtures/sample-session/updates.jsonl`
-   — a real 76-event session captured from rivet-grok on 2026-05-25. Asserts
-   the exact role/count breakdown, that tool results are populated (not just
+   — a hand-written synthetic session (one case per parser behavior). Asserts
+   the role/count breakdown, that tool results are populated (not just
    `{"status":"completed"}`), and the slice-by-count idempotency invariants
    (parser determinism, prefix-stability).
 2. **summary.json reader** — verifies generated_title / current_model_id /

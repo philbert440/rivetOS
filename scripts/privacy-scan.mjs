@@ -134,6 +134,8 @@ export function inTagOrIdContext(line, index, token) {
   }
   const q = before.slice(-1)
   if ((q === "'" || q === '"' || q === '`') && after.startsWith(q)) {
+    // process.arch comparisons (`=== 'arch'`) are not persona tags.
+    if (/^arch$/i.test(token)) return false
     const pre = before.slice(0, -1)
     // Foo('x'), ['x'], or `fn("x")` are call/list args, not tags.
     if (/[A-Za-z0-9_]$/.test(pre) || /[[(,]$/.test(pre) || /,\s*$/.test(pre)) return false

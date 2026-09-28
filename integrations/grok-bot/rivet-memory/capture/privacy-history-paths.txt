@@ -41,8 +41,14 @@ integrations/cursor/rivet-memory/rules/memory-reflex.md
   7d4267bb935aa412538d5b624f368dc9bca4a92e
   81787004c2243aae1b9e338fa4efb06a186d2978
 
+integrations/grok/rivet-memory/capture/test/fixtures/sample-session/summary.json
+  6ddda1797232ac5ea46f5b2b2f002cb81d08da0b
+  7fe51c9131916c9794d102f1c2c9fd2149174313
+  ce173ebb46e515c60cff5643630990ceed8895e3
+
 integrations/grok/rivet-memory/capture/test/fixtures/sample-session/updates.jsonl
   6ddda1797232ac5ea46f5b2b2f002cb81d08da0b
+  7fe51c9131916c9794d102f1c2c9fd2149174313
   ce173ebb46e515c60cff5643630990ceed8895e3
 
 integrations/grok-bot/rivet-memory/GROKBOT.md

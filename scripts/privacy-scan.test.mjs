@@ -263,6 +263,30 @@ test('short persona tokens hit tags, quotes, and Title-case — not prose lowerc
     ),
     false,
   )
+  assert.equal(
+    scanText(`process.arch === '${SHORT_FALSE}'`, { file, denyHashes }).some(
+      (h) => h.rule === 'denylist-persona',
+    ),
+    false,
+  )
+  assert.equal(
+    scanText(`process.arch === '${SHORT_FALSE.toUpperCase()}'`, { file, denyHashes }).some(
+      (h) => h.rule === 'denylist-persona',
+    ),
+    false,
+  )
+  assert.equal(
+    scanText(`agent rivet-${SHORT_FALSE}`, { file, denyHashes }).some(
+      (h) => h.rule === 'denylist-tag',
+    ),
+    true,
+  )
+  assert.equal(
+    scanText(`agent grokbot-${SHORT_FALSE}`, { file, denyHashes }).some(
+      (h) => h.rule === 'denylist-tag',
+    ),
+    true,
+  )
 })
 
 test('owner-identity paths skip persona and email only', () => {
