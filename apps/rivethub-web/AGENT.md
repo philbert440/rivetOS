@@ -242,7 +242,7 @@ Redesign "A · Tiled" (mockups in `docs/mockups/rivethub-redesign/`).
 ### Responsive
 
 Below 768px (`md`) the left rail is an off-canvas drawer (`w-64`, never the
-collapsed 48px strip). A 48px top bar (DenBot + page title + unread bell)
+collapsed 48px strip). A 48px top bar (☰ + `rh` mark + page title + unread bell)
 opens it. Chat shows either the conversation list or the session, full width
 — back in the session header clears selection (same path as the error
 boundary). Other pages only change container padding (`px-4 md:px-6`) and
