@@ -7,6 +7,7 @@ import { describe, expect, it } from 'vitest'
 import { classifyHidden, extractAgentMessage } from '../src/hidden.js'
 import {
   agentIdFromTranscriptPath,
+  applySessionSuffix,
   discoverModels,
   identityFor,
   identityForSession,
@@ -20,6 +21,8 @@ import {
   slug,
   type IdentityConfig,
 } from '../src/identity.js'
+import { captureStateKey, oldStuckPolicyPath } from '../live-state.mjs'
+import { v3StoreSession } from '../src/store.js'
 import { ORDINAL_STRIDE } from '../src/types.js'
 import { mergeParsedInputs, normalizePages } from '../src/pages.js'
 import { LEGACY_TOOL_RESULT_MAX, legacyNormalizeRecords } from '../src/legacy.js'
@@ -63,6 +66,7 @@ import {
   OMEGA_ID,
   ORPHAN_ID,
   SUBAGENT_ID,
+  ZETA_ID,
 } from './ids.js'
 
 const FIX = join(dirname(fileURLToPath(import.meta.url)), 'fixtures')
@@ -798,33 +802,109 @@ describe('per-bot tags', () => {
     expect(raw.excludeNames ?? []).toEqual([])
   })
 
-  it('pins a legacy session and agent tag from models.local.json', () => {
-    const dir = mkdtempSync(join(tmpdir(), 'gb-local-models-'))
+  it('discovers from profiles with no local override file', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'gb-no-local-'))
+    writeFileSync(join(dir, 'models.json'), JSON.stringify({ nodeId: 'grokbot', overrides: {} }))
+    const catalog = discoverModels({
+      agentsDir,
+      modelsPath: join(dir, 'models.json'),
+    })
+    const alpha = catalog.models.find((m) => m.id === ALPHA_ID)
+    expect(alpha).toMatchObject({
+      persona: 'Alpha',
+      session: 'grokbot-alpha',
+      agent: 'grokbot-alpha',
+    })
+    expect(catalog.models.find((m) => m.id === BETA_ID)?.agent).toBe('grokbot-beta')
+    expect(catalog.models.find((m) => m.id === EPSILON_ID)).toBeUndefined()
+  })
+
+  it('a local file shaped like today\'s committed overrides pins tags and leaves -v4 state on id+suffix', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'gb-host-local-'))
     writeFileSync(join(dir, 'models.json'), JSON.stringify({ nodeId: 'grokbot', overrides: {} }))
     writeFileSync(
       join(dir, 'models.local.json'),
       JSON.stringify({
+        nodeId: 'grokbot',
+        agentPrefix: 'legacy',
+        excludeNames: ['New Bot'],
+        transcriptRel: '$GROKBOT_TRANSCRIPT_ROOT/<id>/<id>.jsonl',
         overrides: {
           [ALPHA_ID]: {
             persona: 'Alpha',
             session: 'grokbot-alpha-legacy',
             agent: 'legacy-alpha',
           },
+          [BETA_ID]: { persona: 'Beta', session: 'grokbot-beta', agent: 'legacy-beta' },
+          [GAMMA_ID]: { persona: 'Gamma', session: 'grokbot-gamma', agent: 'legacy-gamma' },
+          [DELTA_ID]: {
+            persona: 'Delta Prime',
+            session: 'grokbot-delta',
+            agent: 'legacy-delta',
+          },
+          [EPSILON_ID]: {
+            persona: 'Epsilon',
+            session: 'grokbot-epsilon',
+            agent: 'legacy-epsilon',
+          },
+          [ZETA_ID]: { persona: 'Zeta', session: 'grokbot-zeta', agent: 'legacy-zeta' },
         },
       }),
     )
-    const cfg = loadIdentityConfig(join(dir, 'models.json'))
-    expect(cfg.overrides[ALPHA_ID]?.session).toBe('grokbot-alpha-legacy')
-    expect(cfg.overrides[ALPHA_ID]?.agent).toBe('legacy-alpha')
     const catalog = discoverModels({
       agentsDir,
       modelsPath: join(dir, 'models.json'),
     })
-    const alpha = catalog.models.find((m) => m.id === ALPHA_ID)
-    expect(alpha?.persona).toBe('Alpha')
-    expect(alpha?.session).toBe('grokbot-alpha-legacy')
-    expect(alpha?.agent).toBe('legacy-alpha')
-    expect(catalog.models.find((m) => m.id === BETA_ID)?.agent).toBe('grokbot-beta')
+    const byId = Object.fromEntries(catalog.models.map((m) => [m.id, m]))
+    expect(byId[ALPHA_ID]).toMatchObject({
+      persona: 'Alpha',
+      session: 'grokbot-alpha-legacy',
+      agent: 'legacy-alpha',
+    })
+    expect(byId[BETA_ID]).toMatchObject({
+      persona: 'Beta',
+      session: 'grokbot-beta',
+      agent: 'legacy-beta',
+    })
+    expect(byId[GAMMA_ID]).toMatchObject({
+      persona: 'Gamma',
+      session: 'grokbot-gamma',
+      agent: 'legacy-gamma',
+    })
+    expect(byId[DELTA_ID]).toMatchObject({
+      persona: 'Delta Prime',
+      session: 'grokbot-delta',
+      agent: 'legacy-delta',
+    })
+    expect(byId[EPSILON_ID]).toMatchObject({
+      persona: 'Epsilon',
+      session: 'grokbot-epsilon',
+      agent: 'legacy-epsilon',
+    })
+    expect(byId[ZETA_ID]).toMatchObject({
+      persona: 'Zeta',
+      session: 'grokbot-zeta',
+      agent: 'legacy-zeta',
+    })
+    expect(byId[NEW_BOT_ID]).toBeUndefined()
+    expect(byId[GROUP_ID]).toBeUndefined()
+    expect(byId[OMEGA_ID]).toMatchObject({
+      persona: 'Omega',
+      session: 'grokbot-omega',
+      agent: 'legacy-omega',
+    })
+
+    for (const m of catalog.models) {
+      expect(applySessionSuffix(m.session, '-v4')).toBe(`${m.session}-v4`)
+      expect(captureStateKey(m.id, '-v4')).toBe(`${m.id}-v4`)
+      expect(oldStuckPolicyPath('/tmp/rivetos/capture', `${m.session}-v4`, '-v4')).toBe(
+        `/tmp/rivetos/capture/${m.session}.json`,
+      )
+      expect(v3StoreSession(m.session, '-v4-store')).toBe(`${m.session}-v4-store`)
+    }
+    const watch = readFileSync(join(dirname(FIX), '..', 'watch.mjs'), 'utf8')
+    expect(watch).toContain('grokbot-capture-state${SESSION_SUFFIX}')
+    expect(watch).toContain("SESSION_SUFFIX = process.env.GROKBOT_SESSION_SUFFIX ?? '-v3'")
   })
 
   it('discovers roster bots and skips groups, placeholders, and subagents by structure', () => {

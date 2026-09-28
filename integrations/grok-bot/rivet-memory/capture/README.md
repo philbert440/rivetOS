@@ -342,15 +342,17 @@ node integrations/grok-bot/rivet-memory/capture/dist/cli.js compare \
 
 `src/identity.ts` is the typed source. `discover-models.mjs` is a thin
 wrapper over `dist/identity.js`. Committed `models.json` `overrides` stay
-empty so real agent ids never land in git.
+empty so real agent ids never land in git. Discovery works with no local
+file.
 
 Slug rule: persona = `profile.json` `name`; session = `${GROKBOT_NODE_ID:-grokbot}-<slug>`;
-agent = `${GROKBOT_AGENT_PREFIX:-grokbot}-<slug>`. A deployed host that
-needs a non-default prefix or a one-off legacy tag copies
-`models.local.example.json` to `models.local.json` (gitignored, same
-directory). Discovery loads `models.json` then merges `models.local.json`
-when present (local wins). `GROKBOT_MODELS` / `GROKBOT_MODELS_LOCAL` /
-`GROKBOT_AGENT_PREFIX` override those paths and the prefix.
+agent = `${GROKBOT_AGENT_PREFIX:-grokbot}-<slug>`. Optional host pins live
+in `models.local.json` (gitignored) next to `models.json` — default path
+`integrations/grok-bot/rivet-memory/capture/models.local.json`. Relocate
+with `GROKBOT_MODELS_LOCAL`. Discovery loads `models.json` then merges
+`models.local.json` when present (local wins on the same key). Copy
+`models.local.example.json` for the full key set. `GROKBOT_MODELS` /
+`GROKBOT_AGENT_PREFIX` override the committed path and the prefix.
 
 Discovery scans `$GROKBOT_AGENTS/*/profile.json` and skips, by structure:
 `group.json` present; placeholder / unused-slot profiles (`placeholder`,

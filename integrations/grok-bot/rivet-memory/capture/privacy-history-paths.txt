@@ -32,6 +32,20 @@ integrations/grok-bot/rivet-memory/capture/src/cli.ts
   22cae250d5953a350012b323e4c04b9ec2fb3124
   ea3eabc276f73b113196750beeab43a985f3a6ce
 
+integrations/grok-bot/rivet-memory/capture/src/identity.ts
+  22cae250d5953a350012b323e4c04b9ec2fb3124
+  ea3eabc276f73b113196750beeab43a985f3a6ce
+
+integrations/grok-bot/rivet-memory/capture/src/ingest-rows.ts
+  22cae250d5953a350012b323e4c04b9ec2fb3124
+
+integrations/grok-bot/rivet-memory/capture/src/reclean.ts
+  22cae250d5953a350012b323e4c04b9ec2fb3124
+
+integrations/grok-bot/rivet-memory/capture/src/types.ts
+  22cae250d5953a350012b323e4c04b9ec2fb3124
+  ea3eabc276f73b113196750beeab43a985f3a6ce
+
 integrations/grok-bot/rivet-memory/capture/test/cli.test.ts
   ea3eabc276f73b113196750beeab43a985f3a6ce
 
@@ -41,9 +55,18 @@ integrations/grok-bot/rivet-memory/capture/test/compare.test.ts
 integrations/grok-bot/rivet-memory/capture/test/live-state.test.ts
   ea3eabc276f73b113196750beeab43a985f3a6ce
 
+integrations/grok-bot/rivet-memory/capture/test/ingest-rows.test.ts
+  22cae250d5953a350012b323e4c04b9ec2fb3124
+
+integrations/grok-bot/rivet-memory/capture/test/ingest-session-dist.test.ts
+  22cae250d5953a350012b323e4c04b9ec2fb3124
+
 integrations/grok-bot/rivet-memory/capture/test/normalize.test.ts
   22cae250d5953a350012b323e4c04b9ec2fb3124
   ea3eabc276f73b113196750beeab43a985f3a6ce
+
+integrations/grok-bot/rivet-memory/capture/test/pg-readonly.test.ts
+  22cae250d5953a350012b323e4c04b9ec2fb3124
 
 integrations/grok-bot/rivet-memory/capture/test/pages.test.ts
   ea3eabc276f73b113196750beeab43a985f3a6ce
