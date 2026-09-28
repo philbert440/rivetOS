@@ -260,6 +260,11 @@ if [[ -f "${DISCOVER_JS}" ]]; then
             exit 1
         fi
         models="$(printf '%s' "${roster_json}" | jq -c '.models[]')"
+        unmapped="$(printf '%s' "${roster_json}" | jq -r '.unmappedTranscripts[]? // empty' 2>/dev/null || true)"
+        if [[ -n "${unmapped}" ]]; then
+            echo "WARN: unmapped transcripts (not on roster/overrides):" >&2
+            printf '%s\n' "${unmapped}" >&2
+        fi
     elif [[ -f "${MODELS_JSON}" ]]; then
         models="$(overrides_as_models)"
     else

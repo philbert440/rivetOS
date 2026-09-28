@@ -18,8 +18,19 @@ export const SESSION_SUFFIX_V3_STORE = '-v3-store'
  */
 export const SESSION_SUFFIX_V3_VOICE = '-v3-voice'
 export const STORAGE_LIMIT = 16_000
+/**
+ * Transcript content / toolResult bound (256 KiB). Image payloads are stubbed
+ * first; this cap then keeps shell dumps off the trigram GIN index and the
+ * embedding queue. Pointer + full_*_length recover the rest.
+ */
+export const CONTENT_LIMIT = 262_144
+/** After the last real stamp, space inherited rows by this many ms. */
+export const INHERIT_STEP_MS = 1_000
 /** Stable ingest ordinal = source position * stride + per-position sub-index. */
 export const ORDINAL_STRIDE = 1000
+
+export type TimeSource =
+  'tag' | 'tool_epoch' | 'stored' | 'inherited' | 'interpolated' | 'lookahead' | 'mtime'
 
 /**
  * Strip `-vN-voice*`, `-vN-store`, `-vN-rows`, `-vN`, or `-v2` so identity
@@ -41,6 +52,10 @@ export function sessionVoiceSuffix(sessionSuffix = SESSION_SUFFIX_V3): string {
 
 export function sessionRowsSuffix(sessionSuffix = SESSION_SUFFIX_V3): string {
   return `${sessionSuffix}-rows`
+}
+
+export function isRowShapedSession(session: string): boolean {
+  return /-v\d+-rows(?:-|$)/.test(session)
 }
 
 export type HiddenKind =
@@ -70,6 +85,8 @@ export interface ParsedInput {
   header?: PageHeader
   records: unknown[]
   hasOlderFooter: boolean
+  /** 0-based file line of each record (blank / header lines skipped). */
+  sourceLines?: number[]
 }
 
 export interface BotIdentity {
@@ -106,6 +123,12 @@ export interface NormalizeOptions {
    * every row still gets a monotonic createdAt (mtime − remaining positions).
    */
   fileMtimeMs?: number
+  /** Absolute source transcript / page path for memory_get_full pointers. */
+  sourcePath?: string
+  /** 0-based source file line per record. Falls back to position. */
+  sourceLines?: number[]
+  /** Live session suffix (`-v3`, `-v4`) for reclean targets. */
+  sessionSuffix?: string
 }
 
 export interface NormalizeStats {

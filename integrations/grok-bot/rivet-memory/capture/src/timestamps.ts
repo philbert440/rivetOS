@@ -1,3 +1,7 @@
+import { INHERIT_STEP_MS } from './types.js'
+
+export { INHERIT_STEP_MS }
+
 const MONTHS: Record<string, number> = {
   jan: 0,
   january: 0,
@@ -88,34 +92,45 @@ export function parseEpochMs(raw: unknown): string | undefined {
   return undefined
 }
 
-export function parseFlexibleTime(raw: unknown): string | undefined {
+const ISO_RE = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})$/
+
+/** Known shapes only: epoch, Date, Grok wall-clock, ISO-8601. No `new Date(any)`. */
+export function parseKnownTime(raw: unknown): string | undefined {
   const epoch = parseEpochMs(raw)
   if (epoch) return epoch
   if (raw instanceof Date && !Number.isNaN(raw.getTime())) return raw.toISOString()
   if (typeof raw === 'string' && raw.trim()) {
-    const grok = parseGrokTimestamp(raw.trim())
+    const text = raw.trim()
+    const grok = parseGrokTimestamp(text)
     if (grok) return grok
-    const dt = new Date(raw.trim())
-    if (!Number.isNaN(dt.getTime())) return dt.toISOString()
+    if (ISO_RE.test(text)) {
+      const dt = new Date(text)
+      if (!Number.isNaN(dt.getTime())) return dt.toISOString()
+    }
   }
   return undefined
+}
+
+export function parseFlexibleTime(raw: unknown): string | undefined {
+  return parseKnownTime(raw)
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value)
 }
 
-/** send_message / communicate_update `result.success.timestamp` (epoch ms). */
+/**
+ * send_message / communicate_update `result.success.timestamp` only (epoch).
+ * Ignores result.timestamp / part.timestamp / free-form date strings.
+ */
 export function extractToolResultTimestamp(part: unknown): string | undefined {
   if (!isRecord(part)) return undefined
   const result = isRecord(part.result) ? part.result : part
   const success = isRecord(result.success) ? result.success : undefined
-  return (
-    parseFlexibleTime(success?.timestamp) ??
-    parseFlexibleTime(result.timestamp) ??
-    parseFlexibleTime(part.timestamp)
-  )
+  return parseEpochMs(success?.timestamp)
 }
+
+export type ExplicitTimeSource = 'tag' | 'tool_epoch' | 'stored'
 
 /**
  * Explicit wall-clock for one source record. `<timestamp>` on user/hidden
@@ -127,46 +142,82 @@ export function recordExplicitTime(
   rawText: string,
   role: string,
   parts: unknown[],
-): string | undefined {
+): { time: string; source: ExplicitTimeSource } | undefined {
   const userLike = role === 'user' || role === 'human'
   if (userLike) {
     const tag = extractTimestampTag(rawText)
-    if (tag) return tag
+    if (tag) return { time: tag, source: 'tag' }
   }
   if (isRecord(rec)) {
-    const stored = parseFlexibleTime(rec.created_at ?? rec.createdAt ?? rec.timestampMs)
-    if (stored) return stored
+    const stored = parseKnownTime(rec.created_at ?? rec.createdAt ?? rec.timestampMs)
+    if (stored) return { time: stored, source: 'stored' }
   }
   for (const part of parts) {
     const stamped = extractToolResultTimestamp(part)
-    if (stamped) return stamped
+    if (stamped) return { time: stamped, source: 'tool_epoch' }
   }
   return undefined
+}
+
+const EQUAL_SPAN_STEP_MS = 1
+
+export type DerivedTime = {
+  time: string
+  source: 'tag' | 'tool_epoch' | 'stored' | 'inherited' | 'interpolated' | 'lookahead' | 'mtime'
 }
 
 /**
  * Every output row gets a time. Order:
  * 1. explicit stamp on this record
- * 2. inherit nearest earlier stamp + (position delta) ms
- * 3. look ahead to the nearest later stamp − (position delta) ms
- * 4. file mtime − (lastPosition − position) ms (Date.now() if mtime unknown)
+ * 2. interpolate evenly between the previous and next real stamps
+ * 3. after the last stamp, inherit at INHERIT_STEP_MS per position
+ * 4. look ahead from the first later stamp − INHERIT_STEP_MS per position
+ * 5. file mtime − (lastPosition − position) ms (Date.now() if mtime unknown)
  */
 export function deriveCreatedAt(args: {
-  explicit?: string
+  explicit?: { time: string; source: ExplicitTimeSource }
   position: number
   earlier?: { time: string; position: number }
   later?: { time: string; position: number }
   fileMtimeMs?: number
   maxPosition: number
-}): string {
-  if (args.explicit) return args.explicit
+}): DerivedTime {
+  if (args.explicit) return { time: args.explicit.time, source: args.explicit.source }
+  if (args.earlier && args.later) {
+    const t0 = Date.parse(args.earlier.time)
+    const t1 = Date.parse(args.later.time)
+    const span = args.later.position - args.earlier.position
+    if (t1 > t0 && span > 0) {
+      const t = t0 + ((t1 - t0) * (args.position - args.earlier.position)) / span
+      return { time: new Date(t).toISOString(), source: 'interpolated' }
+    }
+    return {
+      time: addMs(
+        args.earlier.time,
+        EQUAL_SPAN_STEP_MS * Math.max(0, args.position - args.earlier.position),
+      ),
+      source: 'inherited',
+    }
+  }
   if (args.earlier) {
-    return addMs(args.earlier.time, Math.max(0, args.position - args.earlier.position))
+    return {
+      time: addMs(
+        args.earlier.time,
+        INHERIT_STEP_MS * Math.max(0, args.position - args.earlier.position),
+      ),
+      source: 'inherited',
+    }
   }
   if (args.later) {
-    return addMs(args.later.time, -Math.max(0, args.later.position - args.position))
+    return {
+      time: addMs(
+        args.later.time,
+        -INHERIT_STEP_MS * Math.max(0, args.later.position - args.position),
+      ),
+      source: 'lookahead',
+    }
   }
   const end = args.fileMtimeMs ?? Date.now()
   const back = Math.max(0, args.maxPosition - args.position)
-  return new Date(end - back).toISOString()
+  return { time: new Date(end - back).toISOString(), source: 'mtime' }
 }

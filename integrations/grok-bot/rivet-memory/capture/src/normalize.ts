@@ -17,10 +17,13 @@ import {
 } from './types.js'
 import { partText, recordParts, recordRole, toolResultBody } from './parse.js'
 import { deriveCreatedAt, extractTimestampTag, recordExplicitTime } from './timestamps.js'
+import { boundStoredText, pointerMeta } from './storage.js'
 import { extractUserText, hasSandMarker } from './wrappers.js'
 
 export interface TimeClock {
   last?: string
+  lastOriginal?: string
+  lastAdjustmentMs?: number
 }
 
 /** A replay is a stamped user turn plus at least one following record. */
@@ -181,14 +184,22 @@ function rememberHash(byHash: Map<string, number[]>, hash: string, idx: number):
 export function clampCreatedAt(clock: TimeClock, candidate?: string): string | undefined {
   if (!candidate) return undefined
   const t = Date.parse(candidate)
-  if (Number.isNaN(t)) return candidate
+  if (Number.isNaN(t)) {
+    clock.lastOriginal = undefined
+    clock.lastAdjustmentMs = 0
+    return candidate
+  }
   const min = clock.last !== undefined ? Date.parse(clock.last) + 1 : Number.NEGATIVE_INFINITY
   if (t >= min) {
     clock.last = candidate
+    clock.lastOriginal = undefined
+    clock.lastAdjustmentMs = 0
     return candidate
   }
   const iso = new Date(min).toISOString()
   clock.last = iso
+  clock.lastOriginal = candidate
+  clock.lastAdjustmentMs = min - t
   return iso
 }
 
@@ -212,7 +223,10 @@ export function normalizeRecords(records: unknown[], opts: NormalizeOptions): No
     const rawText = parts.map(partText).filter(Boolean).join('\n')
     const tagged = recordExplicitTime(rec, rawText, rawRole, parts)
     if (tagged) return tagged
-    if (opts.useStoredCreatedAt) return recordStoredTime(rec)
+    if (opts.useStoredCreatedAt) {
+      const stored = recordStoredTime(rec)
+      if (stored) return { time: stored, source: 'stored' as const }
+    }
     return undefined
   })
   const laterByIndex: Array<{ time: string; position: number } | undefined> = Array.from(
@@ -223,7 +237,7 @@ export function normalizeRecords(records: unknown[], opts: NormalizeOptions): No
   for (let i = records.length - 1; i >= 0; i--) {
     laterByIndex[i] = nextLater
     const stamp = explicits[i]
-    if (stamp) nextLater = { time: stamp, position: positions[i] ?? start + i }
+    if (stamp) nextLater = { time: stamp.time, position: positions[i] ?? start + i }
   }
   let lastStampedUser: { time: string; position: number } | undefined = opts.lastKnownTime
     ? { time: opts.lastKnownTime, position: start - 1 }
@@ -259,10 +273,10 @@ export function normalizeRecords(records: unknown[], opts: NormalizeOptions): No
     const earlier = lastStampedUser
     if (stamped) {
       sawTimestamp = true
-      lastStampedUser = { time: stamped, position }
+      lastStampedUser = { time: stamped.time, position }
     }
 
-    const createdAt = deriveCreatedAt({
+    const derived = deriveCreatedAt({
       explicit: stamped,
       position,
       earlier,
@@ -270,12 +284,17 @@ export function normalizeRecords(records: unknown[], opts: NormalizeOptions): No
       fileMtimeMs: opts.fileMtimeMs,
       maxPosition,
     })
+    const createdAt = derived.time
+    const timeSource = derived.source
+    const sourceLine = opts.sourceLines?.[i] ?? position
 
     if (role === 'tool') {
       const emitted = emitToolParts(parts, {
         opts,
         position,
         createdAt,
+        timeSource,
+        sourceLine,
         occKeys,
         subByPos,
         clock,
@@ -290,6 +309,8 @@ export function normalizeRecords(records: unknown[], opts: NormalizeOptions): No
         opts,
         position,
         createdAt,
+        timeSource,
+        sourceLine,
         occKeys,
         subByPos,
         clock,
@@ -316,6 +337,8 @@ export function normalizeRecords(records: unknown[], opts: NormalizeOptions): No
         content: userText,
         position,
         createdAt,
+        timeSource,
+        sourceLine,
         occKeys,
         subByPos,
         clock,
@@ -340,6 +363,8 @@ export function normalizeRecords(records: unknown[], opts: NormalizeOptions): No
         content,
         position,
         createdAt,
+        timeSource,
+        sourceLine,
         occKeys,
         subByPos,
         extra: {
@@ -371,6 +396,8 @@ export function normalizeRecords(records: unknown[], opts: NormalizeOptions): No
         content,
         position,
         createdAt,
+        timeSource,
+        sourceLine,
         occKeys,
         subByPos,
         extra: { kind },
@@ -429,6 +456,8 @@ function emitAssistantParts(
     opts: NormalizeOptions
     position: number
     createdAt?: string
+    timeSource?: string
+    sourceLine?: number
     occKeys: OccurrenceKey[]
     subByPos: Map<number, number>
     role: CaptureRole
@@ -471,6 +500,8 @@ function emitAssistantParts(
         toolResult: body,
         position: ctx.position,
         createdAt: ctx.createdAt,
+        timeSource: ctx.timeSource,
+        sourceLine: ctx.sourceLine,
         occKeys: ctx.occKeys,
         subByPos: ctx.subByPos,
         clock: ctx.clock,
@@ -491,6 +522,8 @@ function emitAssistantParts(
       content,
       position: ctx.position,
       createdAt: ctx.createdAt,
+      timeSource: ctx.timeSource,
+      sourceLine: ctx.sourceLine,
       occKeys: ctx.occKeys,
       subByPos: ctx.subByPos,
       clock: ctx.clock,
@@ -507,6 +540,8 @@ function emitAssistantParts(
       toolArgs: tool.input,
       position: ctx.position,
       createdAt: ctx.createdAt,
+      timeSource: ctx.timeSource,
+      sourceLine: ctx.sourceLine,
       occKeys: ctx.occKeys,
       subByPos: ctx.subByPos,
       clock: ctx.clock,
@@ -523,6 +558,8 @@ function emitToolParts(
     opts: NormalizeOptions
     position: number
     createdAt?: string
+    timeSource?: string
+    sourceLine?: number
     occKeys: OccurrenceKey[]
     subByPos: Map<number, number>
     clock: TimeClock
@@ -546,6 +583,8 @@ function emitToolParts(
         toolResult: body,
         position: ctx.position,
         createdAt: ctx.createdAt,
+        timeSource: ctx.timeSource,
+        sourceLine: ctx.sourceLine,
         occKeys: ctx.occKeys,
         subByPos: ctx.subByPos,
         clock: ctx.clock,
@@ -564,6 +603,8 @@ function emitToolParts(
       toolResult: body,
       position: ctx.position,
       createdAt: ctx.createdAt,
+      timeSource: ctx.timeSource,
+      sourceLine: ctx.sourceLine,
       occKeys: ctx.occKeys,
       subByPos: ctx.subByPos,
       clock: ctx.clock,
@@ -580,6 +621,8 @@ function makeMessage(args: {
   content: string
   position: number
   createdAt?: string
+  timeSource?: string
+  sourceLine?: number
   occKeys: OccurrenceKey[]
   subByPos: Map<number, number>
   toolName?: string
@@ -597,11 +640,28 @@ function makeMessage(args: {
   }
   if (args.opts.agentId) metadata.agent_id = args.opts.agentId
   if (args.opts.persona) metadata.persona = args.opts.persona
+  if (args.timeSource) metadata.time_source = args.timeSource
   if (args.extra) Object.assign(metadata, args.extra)
 
-  const content = args.content
-  const toolResult = args.toolResult
+  const contentBound = boundStoredText(args.content)
+  const toolBound = args.toolResult !== undefined ? boundStoredText(args.toolResult) : undefined
+  const content = contentBound.text
+  const toolResult = toolBound?.text
   const toolArgs = args.toolArgs
+  const cut = contentBound.truncated || Boolean(toolBound?.truncated)
+  if (cut) {
+    metadata.truncated = true
+    if (contentBound.truncated || contentBound.stubbed) {
+      metadata.full_content_length = contentBound.fullLength
+    }
+    if (toolBound && (toolBound.truncated || toolBound.stubbed)) {
+      metadata.full_tool_result_length = toolBound.fullLength
+    }
+    if (contentBound.stubbed || toolBound?.stubbed) metadata.image_stubbed = true
+    if (args.opts.sourcePath) {
+      Object.assign(metadata, pointerMeta(args.opts.sourcePath, args.sourceLine ?? args.position))
+    }
+  }
 
   const occKey: OccurrenceKey = {
     role: args.role,
@@ -634,6 +694,10 @@ function makeMessage(args: {
   if (toolResult !== undefined) msg.tool_result = toolResult
   const createdAt = clampCreatedAt(args.clock, args.createdAt)
   if (createdAt) msg.created_at = createdAt
+  if (args.clock.lastAdjustmentMs !== undefined && args.clock.lastAdjustmentMs > 1_000) {
+    metadata.created_at_original = args.clock.lastOriginal
+    metadata.created_at_adjusted_ms = args.clock.lastAdjustmentMs
+  }
   return msg
 }
 

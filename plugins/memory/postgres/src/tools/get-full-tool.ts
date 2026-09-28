@@ -531,6 +531,49 @@ function isQwenCaptureMeta(meta?: Record<string, unknown> | null): boolean {
   return meta.source === 'qwen-session'
 }
 
+function isGrokbotCaptureMeta(meta?: Record<string, unknown> | null): boolean {
+  if (!meta) return false
+  if (meta.source === 'grokbot') return true
+  const cs = meta.capture_source
+  return typeof cs === 'string' && cs.startsWith('grokbot')
+}
+
+/**
+ * Grok Bot on-disk / ReadTranscript jsonl:
+ * `{role, message:{content:[{type:'text'|'tool_result', …}]}}`.
+ */
+export function extractGrokbotFromLine(j: unknown): ExtractedFull | null {
+  if (!j || typeof j !== 'object' || Array.isArray(j)) return null
+  const rec = j as Record<string, unknown>
+  const role = typeof rec.role === 'string' ? rec.role : ''
+  if (!role) return null
+  const message =
+    rec.message && typeof rec.message === 'object' && !Array.isArray(rec.message)
+      ? (rec.message as Record<string, unknown>)
+      : rec
+  if (!Array.isArray(message.content)) return null
+  const texts: string[] = []
+  let toolResult: string | null = null
+  for (const part of message.content) {
+    if (!part || typeof part !== 'object' || Array.isArray(part)) continue
+    const p = part as Record<string, unknown>
+    if (p.type === 'tool_result' || role === 'tool') {
+      const body = p.result ?? p.content ?? p.output
+      if (typeof body === 'string') toolResult = body
+      else if (body != null) {
+        try {
+          toolResult = JSON.stringify(body)
+        } catch {
+          toolResult = '[unserializable tool result]'
+        }
+      }
+      continue
+    }
+    if (p.type === 'text' && typeof p.text === 'string' && p.text) texts.push(p.text)
+  }
+  return { content: texts.join('\n'), toolResult }
+}
+
 function partTextFromData(part: Record<string, unknown>): string {
   if (typeof part.text === 'string') return part.text
   if (part.text && typeof part.text === 'object' && !Array.isArray(part.text)) {
@@ -643,6 +686,11 @@ export function extractFullFromLine(
     j = JSON.parse(raw)
   } catch {
     return { content: '', toolResult: null }
+  }
+
+  if (isGrokbotCaptureMeta(meta)) {
+    const gb = extractGrokbotFromLine(j)
+    if (gb) return gb
   }
 
   if (isPiCaptureMeta(meta)) {

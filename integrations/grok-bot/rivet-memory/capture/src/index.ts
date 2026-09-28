@@ -18,10 +18,18 @@ export {
   addMs,
   parseEpochMs,
   parseFlexibleTime,
+  parseKnownTime,
   extractToolResultTimestamp,
   recordExplicitTime,
   deriveCreatedAt,
 } from './timestamps.js'
+export {
+  pointerMeta,
+  stubImagePayloads,
+  capStoredText,
+  boundStoredText,
+  imageStub,
+} from './storage.js'
 export { classifyHidden, extractAgentMessage, systemMarker } from './hidden.js'
 export {
   discoverModels,
@@ -35,6 +43,7 @@ export {
   identityForSession,
   listInputFiles,
   applySessionSuffix,
+  listUnmappedTranscripts,
 } from './identity.js'
 export {
   openStoreReadonly,
@@ -71,6 +80,7 @@ export {
   FROM_ROWS_LIMITS,
   assignRecleanPositions,
   storedRowPosition,
+  rowsAreCaptureShaped,
 } from './reclean.js'
 export { main as runCli } from './cli.js'
 export {
@@ -81,12 +91,15 @@ export {
   SESSION_SUFFIX_V3_STORE,
   SESSION_SUFFIX_V3_VOICE,
   STORAGE_LIMIT,
+  CONTENT_LIMIT,
+  INHERIT_STEP_MS,
   SUBAGENT_AGENT,
   ORDINAL_STRIDE,
   stripSessionSuffix,
   sessionStoreSuffix,
   sessionVoiceSuffix,
   sessionRowsSuffix,
+  isRowShapedSession,
 } from './types.js'
 export type {
   BotIdentity,

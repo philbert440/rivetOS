@@ -58,5 +58,10 @@ if (invoked) {
     process.stdout.write(`${JSON.stringify(catalog, null, 2)}\n`)
   } else {
     for (const m of catalog.models) process.stdout.write(`${JSON.stringify(m)}\n`)
+    if (catalog.unmappedTranscripts?.length) {
+      console.error(
+        `unmapped transcripts (not on roster/overrides): ${catalog.unmappedTranscripts.join(', ')}`,
+      )
+    }
   }
 }

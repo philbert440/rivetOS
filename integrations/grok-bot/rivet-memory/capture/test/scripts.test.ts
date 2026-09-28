@@ -128,7 +128,9 @@ describe('node capture scripts', () => {
     const watch = readFileSync(join(ROOT, 'watch.mjs'), 'utf8')
     expect(watch).toContain('`${SESSION_SUFFIX}-store`')
     expect(watch).toContain('`${SESSION_SUFFIX}-voice`')
+    expect(watch).toContain('grokbot-capture-state${SESSION_SUFFIX}')
     expect(watch).not.toContain("const STORE_SUFFIX = '-v3-store'")
+    expect(runOnce).toContain('unmappedTranscripts')
   })
 
   it('ingest.mjs is a wrapper over bin/ingest-session.mjs', () => {

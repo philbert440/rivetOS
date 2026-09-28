@@ -6,8 +6,9 @@ import { extractTimestampTag } from './timestamps.js'
 import {
   ORDINAL_STRIDE,
   SESSION_SUFFIX_V3,
-  SESSION_SUFFIX_V3_ROWS,
   STORAGE_LIMIT,
+  isRowShapedSession,
+  sessionRowsSuffix,
   stripSessionSuffix,
   type IngestRow,
   type NormalizeStats,
@@ -31,21 +32,36 @@ export interface RecleanResult {
   dryRun: boolean
 }
 
-export function v3Session(session: string): string {
-  return `${stripSessionSuffix(session)}${SESSION_SUFFIX_V3}`
+export function v3Session(session: string, suffix = SESSION_SUFFIX_V3): string {
+  return `${stripSessionSuffix(session)}${suffix}`
 }
 
-/** Row-based re-clean writes here so source-transcript -v3 ordinals never collide. */
-export function v3RowsSession(session: string): string {
-  return `${stripSessionSuffix(session)}${SESSION_SUFFIX_V3_ROWS}`
+/** Row-based re-clean writes here so source-transcript ordinals never collide. */
+export function v3RowsSession(session: string, suffix = SESSION_SUFFIX_V3): string {
+  return `${stripSessionSuffix(session)}${sessionRowsSuffix(suffix)}`
+}
+
+export { isRowShapedSession }
+
+export function rowsAreCaptureShaped(rows: StoredRow[]): boolean {
+  return rows.some((row) => {
+    const meta = row.metadata
+    if (!meta || typeof meta !== 'object') return false
+    return typeof meta.capture_source === 'string' || typeof meta.position === 'number'
+  })
 }
 
 export function recleanFromSource(
   text: string,
   opts: NormalizeOptions & { dryRun?: boolean },
 ): RecleanResult {
+  if (isRowShapedSession(opts.sessionKey)) {
+    throw new Error(
+      `reclean: ${opts.sessionKey} is already row-shaped; refuse to split tool calls again`,
+    )
+  }
   const parsed = parseInput(text)
-  const session = v3Session(opts.sessionKey)
+  const session = v3Session(opts.sessionKey, opts.sessionSuffix)
   const result = normalizeRecords(parsed.records, {
     ...opts,
     sessionKey: session,
@@ -116,7 +132,17 @@ export function recleanStoredRows(
   rows: StoredRow[],
   opts: NormalizeOptions & { dryRun?: boolean },
 ): RecleanResult {
-  const session = v3RowsSession(opts.sessionKey)
+  if (isRowShapedSession(opts.sessionKey)) {
+    throw new Error(
+      `reclean: ${opts.sessionKey} is already row-shaped; refuse to split tool calls again`,
+    )
+  }
+  if (rowsAreCaptureShaped(rows)) {
+    throw new Error(
+      'reclean: stored rows already have capture_source/position; refuse to split tool calls again',
+    )
+  }
+  const session = v3RowsSession(opts.sessionKey, opts.sessionSuffix)
   const records = rows.map((r) => ({
     role: r.role,
     message: {
@@ -169,7 +195,8 @@ export function recleanContentOnly(content: string): {
 }
 
 export const FROM_ROWS_LIMITS = [
-  '--from-rows / PG write <session>-v3-rows (not -v3): stored-row positions do not match source-transcript positions.',
+  '--from-rows / PG write <session>${SUFFIX}-rows (not the live suffix): stored-row positions do not match source-transcript positions.',
+  'Already row-shaped sessions and capture-shaped rows are refused.',
   '--from-rows cannot restore tool results: the old converter ignored `result`, so stored tool rows have empty tool_result.',
   'Assistant rows keep the legacy [tool X] / [thinking] text.',
   'Full fidelity needs a backfill from the source transcripts.',

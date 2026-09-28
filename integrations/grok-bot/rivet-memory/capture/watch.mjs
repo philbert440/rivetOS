@@ -36,22 +36,27 @@ const CONVERTER = process.env.CONVERTER || join(HERE, 'convert-transcript.py')
 const INGEST = process.env.GROKBOT_INGEST || join(CAPTURE_DIR, 'ingest.mjs')
 const CLI = join(HERE, 'dist', 'cli.js')
 const SPOOL = join(CAPTURE_DIR, 'spool')
-const NEW_STATE = join(HOME, '.rivetos', 'grokbot-capture-state.json')
-const OLD_STATE = join(HOME, '.rivetos', 'capture', 'state.json')
 const SESSION_SUFFIX = process.env.GROKBOT_SESSION_SUFFIX ?? '-v3'
 const STORE_SUFFIX = `${SESSION_SUFFIX}-store`
 const VOICE_SUFFIX = `${SESSION_SUFFIX}-voice`
+const NEW_STATE = join(HOME, '.rivetos', `grokbot-capture-state${SESSION_SUFFIX}.json`)
+const LEGACY_STATE = join(HOME, '.rivetos', 'grokbot-capture-state.json')
+const OLD_STATE = join(HOME, '.rivetos', 'capture', 'state.json')
 
 function resolveStateFile() {
   if (process.env.GROKBOT_CAPTURE_STATE) return process.env.GROKBOT_CAPTURE_STATE
   if (existsSync(NEW_STATE)) return NEW_STATE
-  if (existsSync(OLD_STATE)) {
-    try {
-      mkdirSync(dirname(NEW_STATE), { recursive: true })
-      writeFileSync(NEW_STATE, readFileSync(OLD_STATE))
-      return NEW_STATE
-    } catch {
-      return OLD_STATE
+  // Only -v3 inherits unsuffixed watcher state. -v4+ starts empty.
+  if (SESSION_SUFFIX === '-v3') {
+    const inherit = existsSync(LEGACY_STATE) ? LEGACY_STATE : existsSync(OLD_STATE) ? OLD_STATE : ''
+    if (inherit) {
+      try {
+        mkdirSync(dirname(NEW_STATE), { recursive: true })
+        writeFileSync(NEW_STATE, readFileSync(inherit))
+        return NEW_STATE
+      } catch {
+        return inherit
+      }
     }
   }
   return NEW_STATE
@@ -83,7 +88,12 @@ function identity(id) {
   lookup = next.lookup
   return next.who
 }
-log(`models: ${lookup.catalog.models.length} bots from agent profiles`)
+log(`models: ${lookup.catalog.models.length} bots from agent profiles + overrides`)
+if (lookup.catalog.unmappedTranscripts?.length) {
+  log(
+    `WARN unmapped transcripts (not on roster/overrides): ${lookup.catalog.unmappedTranscripts.join(', ')}`,
+  )
+}
 
 let state = {}
 try {

@@ -106,15 +106,23 @@ export function defaultTranscriptsDir(): string {
   )
 }
 
+export interface DiscoverResult {
+  nodeId: string
+  models: Array<BotIdentity & { transcript: string }>
+  /** Transcript `<uuid>/<uuid>.jsonl` ids not on the roster or overrides. */
+  unmappedTranscripts: string[]
+}
+
 export function discoverModels(opts?: {
   agentsDir?: string
   modelsPath?: string
   transcriptsDir?: string
-}): { nodeId: string; models: Array<BotIdentity & { transcript: string }> } {
+}): DiscoverResult {
   const cfg = loadIdentityConfig(opts?.modelsPath)
   const agentsDir = opts?.agentsDir ?? defaultAgentsDir()
   const transcriptsDir = opts?.transcriptsDir ?? defaultTranscriptsDir()
   const out: Array<BotIdentity & { transcript: string }> = []
+  const seen = new Set<string>()
   let entries: string[]
   try {
     entries = readdirSync(agentsDir)
@@ -151,9 +159,44 @@ export function discoverModels(opts?: {
       ...identity,
       transcript: isAbsolute(transcript) ? transcript : join(transcriptsDir, transcript),
     })
+    seen.add(id)
   }
+  for (const id of Object.keys(cfg.overrides)) {
+    if (seen.has(id)) continue
+    if (!UUID_RE.test(id)) continue
+    const identity = resolveIdentity(id, { config: cfg })
+    const ov = cfg.overrides[id] ?? {}
+    if (ov.persona && cfg.excludeNames.has(ov.persona.toLowerCase())) continue
+    const transcript =
+      typeof ov.transcript === 'string' && ov.transcript
+        ? ov.transcript
+        : join(transcriptsDir, id, `${id}.jsonl`)
+    out.push({
+      ...identity,
+      transcript: isAbsolute(transcript) ? transcript : join(transcriptsDir, transcript),
+    })
+    seen.add(id)
+  }
+  const unmappedTranscripts = listUnmappedTranscripts(transcriptsDir, seen)
   out.sort((a, b) => a.persona.localeCompare(b.persona))
-  return { nodeId: cfg.nodeId, models: out }
+  return { nodeId: cfg.nodeId, models: out, unmappedTranscripts }
+}
+
+export function listUnmappedTranscripts(transcriptsDir: string, knownIds: Set<string>): string[] {
+  const out: string[] = []
+  let entries: string[]
+  try {
+    entries = readdirSync(transcriptsDir)
+  } catch {
+    return out
+  }
+  for (const id of entries) {
+    if (!UUID_RE.test(id) || knownIds.has(id)) continue
+    const file = join(transcriptsDir, id, `${id}.jsonl`)
+    if (existsSync(file)) out.push(id)
+  }
+  out.sort()
+  return out
 }
 
 export function resolveIdentity(
@@ -265,12 +308,12 @@ export function applySessionSuffix(session: string, suffix?: string): string {
 }
 
 export function makeIdentityLookup(opts?: { agentsDir?: string; modelsPath?: string }) {
-  let catalog: { nodeId: string; models: Array<BotIdentity & { transcript: string }> }
+  let catalog: DiscoverResult
   try {
     catalog = discoverModels(opts)
   } catch {
     const cfg = loadIdentityConfig(opts?.modelsPath)
-    catalog = { nodeId: cfg.nodeId, models: [] }
+    catalog = { nodeId: cfg.nodeId, models: [], unmappedTranscripts: [] }
   }
   const byId = new Map(catalog.models.map((m) => [m.id, m]))
   const cfg = loadIdentityConfig(opts?.modelsPath)
