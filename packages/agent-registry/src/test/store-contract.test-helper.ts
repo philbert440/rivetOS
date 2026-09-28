@@ -328,7 +328,12 @@ export function describePresetStoreContract(contract: PresetStoreContract): void
       await store.update(d.id, { sortOrder: 0 })
       await store.update(c.id, { sortOrder: 2 })
       expect((await store.list()).map((p) => p.name)).toEqual(['D', 'A', 'C', 'B'])
-      expect((await store.list({ node: 'node-f' })).map((p) => p.name)).toEqual(['D', 'A', 'C', 'B'])
+      expect((await store.list({ node: 'node-f' })).map((p) => p.name)).toEqual([
+        'D',
+        'A',
+        'C',
+        'B',
+      ])
       expect((await store.get(b.id))?.sortOrder).toBeUndefined()
     })
 

@@ -192,7 +192,9 @@ export function remoteOwnershipFailure(
   const chownTargets = probe.blockers.map((b) => b.path).join(' ')
   console.error(`    ${tag} ❌ Install tree not writable by ${sshUser}: ${detail}`)
   console.error(`    ${tag}    git/npm will fail with EACCES. Common after sudo installs (root) or`)
-  console.error(`    ${tag}    desktop copies owned by another user while mesh update SSHs as rivet.`)
+  console.error(
+    `    ${tag}    desktop copies owned by another user while mesh update SSHs as rivet.`,
+  )
   console.error(
     `    ${tag}    Fix on ${nodeName}: sudo chown -R ${sshUser}:${sshUser} ${chownTargets}`,
   )

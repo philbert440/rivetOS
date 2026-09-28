@@ -965,7 +965,9 @@ function assertInstallWritable(root: string, ignore: boolean): void {
 
   console.error(`❌ Install tree not writable by ${who}: ${detail}`)
   console.error('   npm/nx/git will fail with EACCES. Common after sudo installs (root) or')
-  console.error('   desktop copies owned by another user while the update runs as rivet (or vice versa).')
+  console.error(
+    '   desktop copies owned by another user while the update runs as rivet (or vice versa).',
+  )
   console.error(`   Fix: sudo chown -R "$(whoami):$(whoami)" ${chownTargets}`)
   console.error('   Or re-run as the install owner (mesh nodes: usually rivet).')
   console.error('   Escape hatch (not recommended): --ignore-ownership')
