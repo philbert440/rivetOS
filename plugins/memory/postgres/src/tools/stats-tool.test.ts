@@ -3,7 +3,16 @@
  */
 import { describe, expect, it } from 'vitest'
 import type pg from 'pg'
-import { assembleStatsReport, createStatsTool, formatSearchRuntimeStats } from './stats-tool.js'
+import {
+  assembleStatsReport,
+  createStatsTool,
+  formatCaptureSpool,
+  formatSearchRuntimeStats,
+  readCaptureSpool,
+} from './stats-tool.js'
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 import type { StatsReportBlocks } from './stats-tool.js'
 
 function censusBlocks(overrides: Partial<StatsReportBlocks> = {}): StatsReportBlocks {
@@ -132,5 +141,72 @@ describe('createStatsTool searchRuntime integration', () => {
     expect(out).toContain('chunkArmHits: 4')
     expect(out).toContain('parentArmHits: 11')
     expect(out).toContain('chunkArmUnavailable: 1')
+  })
+})
+
+describe('capture spool block', () => {
+  it('formats an empty spool as one healthy line', () => {
+    expect(formatCaptureSpool({ waiting: 0, oldestMs: null, dead: 0 })).toBe('\n**Capture spool:** ✅ empty')
+  })
+
+  it('alerts with depth, oldest age, dead count and the RIVET_DEN_URL hint', () => {
+    const now = 10 * 60 * 60 * 1000
+    const out = formatCaptureSpool({ waiting: 561, oldestMs: now - 4 * 60 * 60 * 1000, dead: 2 }, now)
+    expect(out).toContain('**Capture spool:** ⚠️ 561 batch(es) waiting (oldest 4h), 2 dead-lettered')
+    expect(out).toContain('RIVET_DEN_URL')
+    expect(out).toContain('rivetos doctor')
+  })
+
+  it('places the spool block right after queue health, before the embedding queue', () => {
+    const out = assembleStatsReport(
+      censusBlocks({
+        queueHealth: '\n**Queue health:** ok',
+        captureSpool: '\n**Capture spool:** ⚠️ 3 batch(es) waiting (oldest 5m)',
+      }),
+    )
+    const q = out.indexOf('**Queue health:**')
+    const s = out.indexOf('**Capture spool:**')
+    const e = out.indexOf('**Embedding queue:**')
+    expect(q).toBeGreaterThan(-1)
+    expect(s).toBeGreaterThan(q)
+    expect(e).toBeGreaterThan(s)
+  })
+
+  it('reads waiting and dead batches from disk, ignoring temp files, and treats a missing dir as empty', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'spool-'))
+    try {
+      expect(await readCaptureSpool(join(dir, 'missing'))).toEqual({ waiting: 0, oldestMs: null, dead: 0 })
+      writeFileSync(join(dir, '1700000000000-a.json'), '{}')
+      writeFileSync(join(dir, '1700000005000-b.json'), '{}')
+      writeFileSync(join(dir, '1700000009000-c.json.tmp'), '')
+      mkdirSync(join(dir, 'dead'))
+      writeFileSync(join(dir, 'dead', '1600000000000-d.json'), '{}')
+      expect(await readCaptureSpool(dir)).toEqual({ waiting: 2, oldestMs: 1700000000000, dead: 1 })
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
+  it('createStatsTool renders the spool block from the injected reader and omits it when null', async () => {
+    const pool = {
+      query: async () => ({
+        rows: [
+          {
+            total: '0', oldest: null, newest: null, agent: 'grok', count: '0', role: 'user', active: '0',
+            kind: 'leaf', max_depth: 0, msg_queue: '0', sum_queue: '0', unembeddable: '0', embedded: '0',
+            eligible_msgs: '0', eligible_convs: '0', active_tail_msgs: '0', active_tail_convs: '0',
+            below_floor_msgs: '0', below_floor_convs: '0', conversation_id: 'c', unsummarized: '0',
+            trigger: 'idle_floor', task: 'x', oldest_run_at: null, sample_error: null, root_count: '0',
+            child_count: '0', newest_message: null, newest_summary: null,
+          },
+        ],
+      }),
+    } as unknown as pg.Pool
+    const withSpool = createStatsTool(pool, {
+      captureSpool: async () => ({ waiting: 7, oldestMs: Date.now() - 60_000, dead: 0 }),
+    })
+    expect(await withSpool.execute({})).toContain('**Capture spool:** ⚠️ 7 batch(es) waiting')
+    const noSpool = createStatsTool(pool, { captureSpool: null })
+    expect(await noSpool.execute({})).not.toContain('Capture spool')
   })
 })

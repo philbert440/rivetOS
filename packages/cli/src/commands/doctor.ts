@@ -46,6 +46,8 @@ import { createHash } from 'node:crypto'
 import { homedir } from 'node:os'
 import { join, resolve } from 'node:path'
 import { execSync, execFileSync } from 'node:child_process'
+import { request as httpRequest } from 'node:http'
+import { request as httpsRequest } from 'node:https'
 import { parse as parseYaml } from 'yaml'
 import {
   embeddedPgLockAlive,
@@ -2031,6 +2033,9 @@ export default async function doctor(): Promise<void> {
   const leafCertResults = await checkLeafCert(rawConfig)
   allResults.push(...leafCertResults)
 
+  const denResults = await checkDen(rawConfig)
+  allResults.push(...denResults)
+
   // Summary
   const summary = {
     pass: allResults.filter((r) => r.status === 'pass').length,
@@ -2104,4 +2109,267 @@ export function herdrAutoDefault(
 ): boolean {
   const bin = findHerdrBin(env, home)
   return bin !== null && readHerdrVersion(bin) === HERDR_VERSION
+}
+
+// ---------------------------------------------------------------------------
+// Check: Den URL + capture spool
+// ---------------------------------------------------------------------------
+//
+// 2026-09-27: `~/.rivetos/.env` on three nodes carried
+// `RIVET_DEN_URL=http://127.0.0.1:5174` from before gateway TLS. Nothing read
+// it until the memory sidecar and every capture hook switched to den
+// transport; then reads failed on every call and captures spooled for hours
+// with no visible signal. These rows make that state loud: the env line is
+// drift (the den injects the URL and the launcher derives it), a scheme that
+// disagrees with the den's TLS is a fail, the den is dialed once, and the
+// capture spool depth is reported.
+
+export interface DenDoctorProbe {
+  home?: string
+  env?: NodeJS.ProcessEnv
+  /** `~/.rivetos/.env` contents; `null` = absent. Undefined = read from disk. */
+  dotEnv?: string | null
+  exists?: (path: string) => boolean
+  /** GET `<url>/healthz`, trusting `caPath`. Resolves to the HTTP status; throws when unreachable. */
+  fetchHealth?: (url: string, caPath: string) => Promise<number>
+  spoolDir?: string
+  now?: () => number
+}
+
+const DEN_LOOPBACK_HTTP = /^http:\/\/(127\.0\.0\.1|localhost|\[::1\])(:\d+)?(\/.*)?$/
+
+/** Mirrors boot `resolveDenTls` / den-server `tlsReady`: explicit den.tls_* →
+ *  RIVETOS_DEN_TLS_* → mesh issue-node files for `mesh.node_name`. */
+function denTlsMaterial(
+  den: Record<string, unknown>,
+  nodeName: string,
+  env: NodeJS.ProcessEnv,
+  exists: (path: string) => boolean,
+): { cert: string; key: string; ca: string } {
+  const str = (v: unknown): string => (typeof v === 'string' ? v.trim() : '')
+  let cert = str(den.tls_cert) || env.RIVETOS_DEN_TLS_CERT?.trim() || ''
+  let key = str(den.tls_key) || env.RIVETOS_DEN_TLS_KEY?.trim() || ''
+  if (nodeName) {
+    const issuedCert = sharedPath('rivet-ca', 'issued', `${nodeName}.crt`)
+    const issuedKey = sharedPath('rivet-ca', 'issued', `${nodeName}.key`)
+    if (!cert && exists(issuedCert)) cert = issuedCert
+    if (!key && exists(issuedKey)) key = issuedKey
+  }
+  const ca =
+    str(den.tls_ca) ||
+    env.RIVETOS_DEN_TLS_CA?.trim() ||
+    sharedPath('rivet-ca', 'intermediate', 'chain.pem')
+  return { cert, key, ca }
+}
+
+/** One GET /healthz with a 3 s budget. Resolves to the status code; rejects when the dial fails. */
+function probeDenHealthz(url: string, caPath: string): Promise<number> {
+  return new Promise((resolvePromise, reject) => {
+    const target = new URL('/healthz', url)
+    const secure = target.protocol === 'https:'
+    let ca: Buffer | undefined
+    if (secure) {
+      try {
+        ca = readFileSync(caPath)
+      } catch {
+        /* fall back to the system trust store */
+      }
+    }
+    const req = (secure ? httpsRequest : httpRequest)(
+      target,
+      { method: 'GET', timeout: 3000, ...(ca ? { ca } : {}) },
+      (res) => {
+        res.resume()
+        resolvePromise(res.statusCode ?? 0)
+      },
+    )
+    req.on('timeout', () => req.destroy(new Error('timeout')))
+    req.on('error', reject)
+    req.end()
+  })
+}
+
+function fmtSpoolAge(minutes: number): string {
+  if (minutes < 1) return 'under a minute'
+  if (minutes < 60) return `${String(Math.round(minutes))}m`
+  if (minutes < 24 * 60) return `${String(Math.round(minutes / 60))}h`
+  return `${String(Math.round(minutes / (24 * 60)))}d`
+}
+
+export async function checkDen(
+  rawConfig: string | null,
+  probe: DenDoctorProbe = {},
+): Promise<CheckResult[]> {
+  const results: CheckResult[] = []
+  const home = probe.home ?? homedir()
+  const env = probe.env ?? process.env
+  const exists = probe.exists ?? existsSync
+  const now = probe.now ?? Date.now
+  const dotEnv = probe.dotEnv === undefined ? readRivetosDotEnv(home) : probe.dotEnv
+
+  let den: Record<string, unknown> = {}
+  let nodeName = ''
+  if (rawConfig) {
+    try {
+      const parsed = parseYaml(rawConfig) as {
+        den?: Record<string, unknown>
+        mesh?: { node_name?: unknown }
+      } | null
+      den = parsed?.den ?? {}
+      nodeName = typeof parsed?.mesh?.node_name === 'string' ? parsed.mesh.node_name.trim() : ''
+    } catch {
+      /* the config schema check already reports parse errors */
+    }
+  }
+  const denEnabled = den.enabled === true
+  const portRaw = den.port
+  const port =
+    typeof portRaw === 'number' && Number.isInteger(portRaw)
+      ? portRaw
+      : typeof portRaw === 'string' && /^\d+$/.test(portRaw)
+        ? Number(portRaw)
+        : 5174
+  const tls = denTlsMaterial(den, nodeName, env, exists)
+  const tlsOn = Boolean(tls.cert && tls.key)
+  const expected = `${tlsOn ? 'https' : 'http'}://127.0.0.1:${String(port)}`
+
+  // RIVET_DEN_URL in ~/.rivetos/.env — drift by definition on a den node.
+  let dial = expected
+  const line = dotEnv ? /^\s*(?:export\s+)?RIVET_DEN_URL=(.*)$/m.exec(dotEnv) : null
+  if (line) {
+    const raw = line[1]
+      .trim()
+      .replace(/^(["'])(.*)\1$/, '$2')
+      .trim()
+    const removeHint = `Set RIVET_DEN_URL=${expected} or remove the line — the den injects it into spawned sessions and the memory launcher derives it from config`
+    let first = raw
+    if (raw.includes(',')) {
+      first = raw.split(',')[0].trim()
+      results.push(
+        check(
+          'den',
+          'url',
+          'fail',
+          `Den URL: RIVET_DEN_URL in ~/.rivetos/.env lists several origins (${raw}) — den transport takes one`,
+          removeHint,
+        ),
+      )
+    } else if (tlsOn && DEN_LOOPBACK_HTTP.test(raw)) {
+      results.push(
+        check(
+          'den',
+          'url',
+          'fail',
+          `Den URL: RIVET_DEN_URL=${raw} in ~/.rivetos/.env but this den serves https only`,
+          removeHint,
+        ),
+      )
+    } else if (raw === expected) {
+      results.push(
+        check(
+          'den',
+          'url',
+          'warn',
+          `Den URL: RIVET_DEN_URL is set in ~/.rivetos/.env (${raw}) — redundant`,
+          'Remove the line so a later scheme or port change cannot leave it stale',
+        ),
+      )
+    } else {
+      results.push(
+        check(
+          'den',
+          'url',
+          'warn',
+          `Den URL: RIVET_DEN_URL=${raw} in ~/.rivetos/.env differs from this den's ${expected}`,
+          'Remove the line unless the override is deliberate',
+        ),
+      )
+    }
+    // What the launcher and capture-core dial after their guards.
+    dial =
+      tlsOn && DEN_LOOPBACK_HTTP.test(first) ? `https://${first.slice('http://'.length)}` : first
+  } else if (denEnabled) {
+    results.push(check('den', 'url', 'pass', `Den URL: derived from config (${expected})`))
+  }
+
+  // One dial. On failure, try the other scheme so a mismatch names itself.
+  if (denEnabled) {
+    const fetchHealth = probe.fetchHealth ?? probeDenHealthz
+    try {
+      const status = await fetchHealth(dial, tls.ca)
+      results.push(
+        status === 200
+          ? check('den', 'healthz', 'pass', `Den: ${dial}/healthz ok`)
+          : check('den', 'healthz', 'warn', `Den: ${dial}/healthz returned ${String(status)}`),
+      )
+    } catch (err) {
+      const alt = dial.startsWith('https://')
+        ? `http://${dial.slice('https://'.length)}`
+        : `https://${dial.slice('http://'.length)}`
+      let altOk = false
+      try {
+        altOk = (await fetchHealth(alt, tls.ca)) === 200
+      } catch {
+        /* both down */
+      }
+      const reason = err instanceof Error ? err.message : String(err)
+      results.push(
+        altOk
+          ? check(
+              'den',
+              'healthz',
+              'fail',
+              `Den: ${dial} unreachable but ${alt} answers — scheme mismatch`,
+              'Fix or remove RIVET_DEN_URL in ~/.rivetos/.env; RIVETOS_DEN_TLS_CERT/KEY decide the scheme',
+            )
+          : check(
+              'den',
+              'healthz',
+              'fail',
+              `Den: ${dial} unreachable (${reason})`,
+              'Is rivetos.service running? journalctl -u rivetos.service -n 50',
+            ),
+      )
+    }
+  }
+
+  // Capture spool — the crash-safe fallback hides a dead den until someone looks.
+  const spoolDir = probe.spoolDir ?? join(home, '.rivetos', 'capture-spool')
+  const listJson = (dir: string): string[] => {
+    try {
+      return readdirSync(dir).filter((f) => /^\d+-[^/]+\.json$/.test(f))
+    } catch {
+      return []
+    }
+  }
+  const waiting = listJson(spoolDir)
+  const dead = listJson(join(spoolDir, 'dead')).length
+  if (waiting.length === 0 && dead === 0) {
+    results.push(check('den', 'capture-spool', 'pass', 'Capture spool: empty'))
+  } else if (waiting.length === 0) {
+    results.push(
+      check(
+        'den',
+        'capture-spool',
+        'warn',
+        `Capture spool: ${String(dead)} dead-lettered batch(es) in ${spoolDir}/dead`,
+        'These exhausted their replay attempts; inspect, then re-queue or delete',
+      ),
+    )
+  } else {
+    const oldestTs = Math.min(...waiting.map((f) => Number(f.split('-')[0])))
+    const ageMin = Math.max(0, (now() - oldestTs) / 60000)
+    const deadNote = dead > 0 ? `, ${String(dead)} dead-lettered` : ''
+    results.push(
+      check(
+        'den',
+        'capture-spool',
+        ageMin > 60 ? 'fail' : 'warn',
+        `Capture spool: ${String(waiting.length)} batch(es) waiting (oldest ${fmtSpoolAge(ageMin)})${deadNote}`,
+        'Hooks could not reach the den and will replay on their next fire once it answers; see the Den rows above',
+      ),
+    )
+  }
+
+  return results
 }

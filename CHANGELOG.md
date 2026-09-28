@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Den URL guards
+
+- A pre-set `RIVET_DEN_URL` is checked before the memory sidecar and the capture hooks dial it. A comma list (the old den-hook fallback form) is not one origin: the first entry is used. A plain-http loopback URL against a den that serves https is rewritten to https. Each guard prints one line to stderr naming the value to put in `~/.rivetos/.env`, or says to remove the line. Shared between the shell launcher (`rivetos_guard_den_url` in `integrations/shared/rivet-paths.sh`) and `@rivetos/capture-core` (`guardDenUrl`; `resolveCaptureTransport` returns the warnings and the claude-cli hook logs them). "Serves https" mirrors boot's `resolveDenTls`: `den.tls_cert`/`tls_key`, then `RIVETOS_DEN_TLS_CERT`/`KEY`, then the mesh issue-node files for `mesh.node_name`. A non-loopback http URL is left alone. Background: `~/.rivetos/.env` on three nodes kept `RIVET_DEN_URL=http://127.0.0.1:5174` from before gateway TLS; nothing dialed it until #1012 and #1013/#1014 moved the sidecar and every hook onto den transport, and the launcher loads that file after the den-injected env, so the stale line overrode the correct https the den hands its own sessions. Reads failed on every call and captures spooled for four hours with nothing else showing red.
+- `rivetos doctor` gains a `den` group: `RIVET_DEN_URL` present in `~/.rivetos/.env` is reported (fail on a comma list or an http scheme against a TLS den, warn when redundant or a differing override; the den injects the URL and the launcher derives it, so the line is drift by definition), the den is dialed once at `/healthz` with the CA and a failure that the other scheme answers is named a scheme mismatch, and the capture spool is reported (warn when batches wait, fail when the oldest is over an hour old, dead-lettered count included).
+- `memory_stats` reports the local capture spool in the alerts block, right after queue health: `✅ empty`, or the waiting count, oldest age, dead-lettered count and the `RIVET_DEN_URL` / `rivetos doctor` hint. `createStatsTool` takes `captureSpool` (a reader, or `null` to omit the block).
+
 ### Agent registry
 
 - `POST /term { agentId }` spawns that preset's harness in its directory (materialized, with the `rivet-shared` link) and uses the preset's roster command, model, and effort unless the request sets them. Per-agent cwd for interactive sessions: a session cwd store records a non-default directory and a later resume starts there. PTY drivers accept `cwd`. `SessionSummary.cwd` is filled for every PTY harness. One `defaultSpawnCwd` rule is shared by the term manager and the harness roster getter. Clients never send a raw cwd.
@@ -55,6 +61,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Harness integrations
 
+- Grok Bot capture (`integrations/grok-bot/rivet-memory`, plugin 0.3.0): one normalizer on `@rivetos/capture-core` for on-disk jsonl and ReadTranscript pages. Strips wrapper noise, stamps real message times (UTC offset + N ms inheritance), tags each bot (Rivet/eggbot historical tags unchanged), stores hidden turns as `role=system`, reads `tool_result.result`, and caps at `capForStorage` 16,000. Re-clean writes new `-v3` sessions only — never DELETE/UPDATE.
 - `opencode` harness (id `opencode`, provider `opencode-cli`, roster `opencode`) surfaced in RivetHub web, Android, and docs. Default `model` is `zai/glm-5.3-flash`. The installed OpenCode CLI owns backend, endpoint, and credentials.
 - `pi` memory capture (`integrations/pi/rivet-memory`): v3 session jsonl watcher under `agent=rivet-deepseek` / `channel=pi`, systemd user unit `pi-memory-capture.service` / launchd `dev.rivetos.pi-capture`, wired into `rivetos plugins install` and doctor.
 

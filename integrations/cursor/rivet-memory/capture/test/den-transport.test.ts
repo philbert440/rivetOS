@@ -5,9 +5,15 @@ import { afterEach, beforeEach, expect, it, vi } from 'vitest'
 import type { CaptureBatch } from '@rivetos/capture-core'
 import {
   batchesFromEvents,
+  canonicalTool,
+  consumeTranscript,
+  emptyConvState,
+  enrichReadOutput,
   ingestBatches,
   loadSpoolDir,
   messagesFromCursorEvent,
+  planCursorHook,
+  splitCompleteLines,
   spoolStampToIso,
   type SpoolEvent,
 } from '../src/cursor-memory-capture.ts'
@@ -162,4 +168,150 @@ it('caps tool output and reports a rejected batch as failed', async () => {
   )
   expect(counts.failed).toBe(1)
   expect(counts.inserted).toBe(0)
+})
+
+it('keeps a trailing partial transcript line unconsumed', () => {
+  const split = splitCompleteLines(Buffer.from('{"role":"user"}\n{"role":"assi'))
+  expect(split.lines).toEqual(['{"role":"user"}'])
+  expect(split.consumed).toBe('{"role":"user"}\n'.length)
+  expect(splitCompleteLines(Buffer.from('no newline yet'))).toEqual({ lines: [], consumed: 0 })
+})
+
+it('joins hook results onto transcript rows and does not store the hook text again', () => {
+  const file = path.join(dir, 'conv.jsonl')
+  const lines = [
+    {
+      role: 'user',
+      message: { content: [{ type: 'text', text: 'tail the transcript' }] },
+    },
+    {
+      role: 'assistant',
+      message: {
+        content: [
+          { type: 'text', text: 'Reading it.' },
+          { type: 'tool_use', name: 'Shell', input: { command: 'echo hi', description: 'say hi' } },
+          {
+            type: 'tool_use',
+            name: 'CallDynamicTool',
+            input: { namespace: 'rivetos', toolName: 'echo', arguments: { message: 'ping' } },
+          },
+        ],
+      },
+    },
+  ]
+  writeFileSync(file, `${lines.map((line) => JSON.stringify(line)).join('\n')}\n`)
+  const shell = planCursorHook(
+    event('postToolUse', {
+      ...base,
+      transcript_path: file,
+      tool_name: 'Shell',
+      tool_use_id: 'tool-shell',
+      tool_input: { command: 'echo hi', cwd: '', timeout: 30000 },
+      tool_output: 'hi\n',
+    }),
+    null,
+  )
+  expect(shell.messages.map((row) => row.role)).toEqual(['user', 'assistant', 'tool'])
+  expect(shell.messages.map((row) => row.event_id)).toEqual([
+    'cursor:conv-1:line:0:part:0',
+    'cursor:conv-1:line:1:part:0',
+    'cursor:conv-1:line:1:part:1',
+  ])
+  expect(shell.messages[2]).toMatchObject({
+    tool_name: 'Shell',
+    tool_result: 'hi\n',
+    metadata: { source: 'cursor-transcript', session_jsonl_path: file, session_jsonl_line: 1 },
+  })
+  expect(shell.messages.some((row) => String(row.event_id).includes(':assistant:'))).toBe(false)
+  const echo = planCursorHook(
+    event('postToolUse', {
+      ...base,
+      transcript_path: file,
+      tool_name: 'MCP:echo',
+      tool_use_id: 'tool-echo',
+      tool_input: { message: 'ping' },
+      tool_output: 'pong',
+    }),
+    shell.state,
+  )
+  expect(echo.messages).toHaveLength(1)
+  expect(echo.messages[0]).toMatchObject({
+    event_id: 'cursor:conv-1:line:1:part:2',
+    tool_name: 'CallDynamicTool',
+    tool_result: 'pong',
+  })
+  const reply = planCursorHook(
+    event('afterAgentResponse', { ...base, transcript_path: file, text: 'Reading it.' }),
+    echo.state,
+  )
+  expect(reply.messages).toEqual([])
+  expect(canonicalTool('Shell', { command: 'echo hi', cwd: '', timeout: 1 }).inputKey).toBe(
+    canonicalTool('Shell', { command: 'echo hi', description: 'say hi' }).inputKey,
+  )
+})
+
+it('snapshots a Read stub from the transcript offset and leaves Grep stubs alone', () => {
+  const file = path.join(dir, 'notes.txt')
+  writeFileSync(file, 'alpha\nbeta\ngamma\n')
+  const transcript = path.join(dir, 'read.jsonl')
+  writeFileSync(
+    transcript,
+    `${JSON.stringify({
+      role: 'assistant',
+      message: { content: [{ type: 'tool_use', name: 'Read', input: { path: file, offset: 2, limit: 1 } }] },
+    })}\n`,
+  )
+  const planned = planCursorHook(
+    event('postToolUse', {
+      ...base,
+      transcript_path: transcript,
+      tool_name: 'Read',
+      tool_use_id: 'tool-read',
+      tool_input: { file_path: file },
+      tool_output: { file_path: file, content_length: 16 },
+    }),
+    null,
+  )
+  expect(planned.messages[0].tool_result).toBe('beta')
+  const stub = JSON.stringify({ file_path: file, content_length: 16 })
+  expect(enrichReadOutput('Grep', { path: file, pattern: 'beta' }, stub)).toBe(stub)
+})
+
+it('emits a tool row once the result arrives, and flushes a result with no transcript line', () => {
+  const file = path.join(dir, 'late.jsonl')
+  writeFileSync(file, '')
+  const queued = planCursorHook(
+    event('postToolUse', {
+      ...base,
+      transcript_path: file,
+      tool_name: 'Shell',
+      tool_use_id: 'tool-late',
+      tool_input: { command: 'true', cwd: '', timeout: 1000 },
+      tool_output: 'ok',
+    }),
+    null,
+  )
+  expect(queued.messages).toEqual([])
+  expect(queued.state.results).toHaveLength(1)
+  const flushed = planCursorHook(event('stop', { ...base, transcript_path: file, status: 'completed' }), queued.state)
+  expect(flushed.messages[0]).toMatchObject({
+    event_id: 'cursor:conv-1:tool:tool-late',
+    role: 'tool',
+    tool_result: 'ok',
+  })
+  const joined = consumeTranscript({
+    conversationId: 'conv-1',
+    file,
+    chunk: Buffer.from(
+      `${JSON.stringify({
+        role: 'assistant',
+        message: { content: [{ type: 'tool_use', name: 'Shell', input: { command: 'true', description: 'noop' } }] },
+      })}\n`,
+    ),
+    state: { ...emptyConvState(file), results: queued.state.results },
+    mtimeMs: Date.parse('2026-09-27T17:00:00.000Z'),
+  })
+  expect(joined.messages[0].event_id).toBe('cursor:conv-1:line:0:part:0')
+  expect(joined.messages[0].tool_result).toBe('ok')
+  expect(joined.state.results).toEqual([])
 })
