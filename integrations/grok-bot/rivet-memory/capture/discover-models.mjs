@@ -22,6 +22,7 @@ const ident = await loadIdentity()
 
 export const slug = ident.slug
 export const uniqueSlug = ident.uniqueSlug
+export const suffixedSlug = ident.suffixedSlug
 export const deriveIdentity = ident.deriveIdentity
 export const discoverModels = ident.discoverModels
 export const makeIdentityLookup = ident.makeIdentityLookup

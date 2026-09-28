@@ -37,9 +37,10 @@ const PROFILE_META_KEYS = new Set(['name', 'placeholder', 'unused', 'kind'])
  *   session = `${nodeId}-${slug}`   (nodeId default `grokbot`)
  *   agent   = `${prefix}-${slug}`   (prefix default `grokbot`)
  *
- * Collision: candidates sorted by UUID. The first unique slug keeps the bare
- * form. Later collisions get `${slug}-${id.slice(0, 8)}`. If that is still
- * taken, more of the hyphen-stripped id is appended until unique.
+ * Collision: if two or more profiles share a slug, every colliding member
+ * is suffixed `${slug}-${compactId.slice(0, 8)}` (more of the id if that
+ * is still taken). Solo slugs stay bare. Adding a bot never steals a bare
+ * slug via UUID sort order. A new collision (1→2) suffixes the original.
  */
 
 export interface IdentityConfig {
@@ -77,9 +78,8 @@ export function slug(s: string): string {
   )
 }
 
-/** First unused slug; collisions append a growing prefix of the UUID. */
-export function uniqueSlug(base: string, id: string, used: Set<string>): string {
-  if (!used.has(base)) return base
+/** Always `${base}-<id prefix>`; grows the prefix until the candidate is free. */
+export function suffixedSlug(base: string, id: string, used: Set<string>): string {
   const compact = id.replace(/-/g, '')
   for (let n = 8; n <= compact.length; n++) {
     const candidate = `${base}-${compact.slice(0, n)}`
@@ -88,14 +88,21 @@ export function uniqueSlug(base: string, id: string, used: Set<string>): string 
   return `${base}-${compact}`
 }
 
+/** First unused slug; a taken base appends a growing prefix of the UUID. */
+export function uniqueSlug(base: string, id: string, used: Set<string>): string {
+  if (!used.has(base)) return base
+  return suffixedSlug(base, id, used)
+}
+
 export function deriveIdentity(
   id: string,
   persona: string,
   cfg: IdentityConfig,
   used?: Set<string>,
+  collide = false,
 ): BotIdentity {
   const base = slug(persona)
-  const s = used ? uniqueSlug(base, id, used) : base
+  const s = !used ? base : collide ? suffixedSlug(base, id, used) : uniqueSlug(base, id, used)
   used?.add(s)
   return {
     id,
@@ -167,9 +174,15 @@ export function discoverModels(opts?: {
     seen.add(id)
   }
   candidates.sort((a, b) => a.id.localeCompare(b.id))
+  const slugCounts = new Map<string, number>()
+  for (const c of candidates) {
+    const s = slug(c.name)
+    slugCounts.set(s, (slugCounts.get(s) ?? 0) + 1)
+  }
   const used = new Set<string>()
   const out: Array<BotIdentity & { transcript: string }> = candidates.map(({ id, name }) => {
-    const identity = deriveIdentity(id, name, cfg, used)
+    const collide = (slugCounts.get(slug(name)) ?? 0) > 1
+    const identity = deriveIdentity(id, name, cfg, used, collide)
     const transcript = join(transcriptsDir, id, `${id}.jsonl`)
     return { ...identity, transcript }
   })

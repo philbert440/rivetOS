@@ -846,10 +846,10 @@ describe('per-bot tags', () => {
     expect(isSubagentProfile({ name: 'spawn', parentId: ALPHA_ID })).toBe(true)
   })
 
-  it('appends a short id suffix when two profiles slugify to the same value', () => {
+  it('suffixes every colliding slug, including the first, independent of UUID order', () => {
     const dir = mkdtempSync(join(tmpdir(), 'gb-collide-'))
-    const first = '00000000-0000-4000-8000-000000000011'
-    const second = '11111111-0000-4000-8000-000000000022'
+    const first = 'aaaaaaaa-0000-4000-8000-000000000011'
+    const second = 'bbbbbbbb-0000-4000-8000-000000000022'
     for (const id of [first, second]) {
       mkdirSync(join(dir, id), { recursive: true })
       writeFileSync(join(dir, id, 'profile.json'), JSON.stringify({ name: 'Alpha Twin' }))
@@ -858,14 +858,24 @@ describe('per-bot tags', () => {
     const byId = Object.fromEntries(catalog.models.map((m) => [m.id, m]))
     expect(byId[first]).toMatchObject({
       persona: 'Alpha Twin',
-      session: 'grokbot-alpha-twin',
-      agent: 'grokbot-alpha-twin',
+      session: 'grokbot-alpha-twin-aaaaaaaa',
+      agent: 'grokbot-alpha-twin-aaaaaaaa',
     })
     expect(byId[second]).toMatchObject({
       persona: 'Alpha Twin',
-      session: 'grokbot-alpha-twin-11111111',
-      agent: 'grokbot-alpha-twin-11111111',
+      session: 'grokbot-alpha-twin-bbbbbbbb',
+      agent: 'grokbot-alpha-twin-bbbbbbbb',
     })
+    expect(catalog.models.map((m) => m.agent)).not.toContain('grokbot-alpha-twin')
+
+    const early = '00000000-0000-4000-8000-000000000033'
+    mkdirSync(join(dir, early), { recursive: true })
+    writeFileSync(join(dir, early, 'profile.json'), JSON.stringify({ name: 'Alpha Twin' }))
+    const next = discoverModels({ agentsDir: dir })
+    const nextById = Object.fromEntries(next.models.map((m) => [m.id, m]))
+    expect(nextById[first].agent).toBe('grokbot-alpha-twin-aaaaaaaa')
+    expect(nextById[second].agent).toBe('grokbot-alpha-twin-bbbbbbbb')
+    expect(nextById[early].agent).toBe('grokbot-alpha-twin-00000000')
   })
 
   it('reports unmapped <uuid>/<uuid>.jsonl transcripts instead of dropping them', () => {
@@ -906,11 +916,9 @@ describe('per-bot tags', () => {
   })
 
   it('reads on-disk agent id from <uuid>/<uuid>.jsonl', () => {
-    expect(
-      agentIdFromTranscriptPath(
-        `/tmp/agent-transcripts/${BETA_ID}/${BETA_ID}.jsonl`,
-      ),
-    ).toBe(BETA_ID)
+    expect(agentIdFromTranscriptPath(`/tmp/agent-transcripts/${BETA_ID}/${BETA_ID}.jsonl`)).toBe(
+      BETA_ID,
+    )
     expect(agentIdFromTranscriptPath('/tmp/page.txt')).toBeUndefined()
   })
 
@@ -1217,9 +1225,7 @@ describe('unstamped on-disk transcript + createdAt', () => {
     expect(stripSessionSuffix('grokbot-omega-v4-store')).toBe('grokbot-omega')
     expect(stripSessionSuffix('grokbot-omega-v4-rows')).toBe('grokbot-omega')
     expect(stripSessionSuffix('grokbot-omega-v4-voice-call')).toBe('grokbot-omega')
-    expect(stripSessionSuffix('grokbot-alpha-v3-voice-call-redacted')).toBe(
-      'grokbot-alpha',
-    )
+    expect(stripSessionSuffix('grokbot-alpha-v3-voice-call-redacted')).toBe('grokbot-alpha')
   })
 })
 
@@ -1261,7 +1267,9 @@ describe('tool_result + capForStorage', () => {
 
   it('keeps a real oversized ReadTranscript shell result in full', () => {
     const { result } = normalizeFile('page-alpha-2395-2445.txt')
-    const tools = result.messages.filter((m) => m.role === 'tool' && (m.tool_result?.length ?? 0) > 4_096)
+    const tools = result.messages.filter(
+      (m) => m.role === 'tool' && (m.tool_result?.length ?? 0) > 4_096,
+    )
     expect(tools.length).toBeGreaterThan(0)
     expect(tools.every((m) => m.metadata?.truncated !== true)).toBe(true)
     expect(tools.every((m) => !m.tool_result?.includes('…[truncated'))).toBe(true)
@@ -1466,9 +1474,7 @@ describe('reclean', () => {
     expect(identityForSession('grokbot-alpha-v3')?.agent).toBe('grokbot-alpha')
     expect(identityForSession('grokbot-alpha-v3-rows')?.agent).toBe('grokbot-alpha')
     expect(identityForSession('grokbot-alpha-v3-store')?.agent).toBe('grokbot-alpha')
-    expect(identityForSession('grokbot-alpha-v3-voice-call-redacted')?.agent).toBe(
-      'grokbot-alpha',
-    )
+    expect(identityForSession('grokbot-alpha-v3-voice-call-redacted')?.agent).toBe('grokbot-alpha')
     expect(identityForSession('grokbot-alpha-v4')?.agent).toBe('grokbot-alpha')
     expect(identityForSession('grokbot-alpha-v4-store')?.agent).toBe('grokbot-alpha')
   })

@@ -4,12 +4,13 @@
 //   --tracked  scan every tracked file                      → CI push/PR
 //   --text     scan stdin (a PR title+body, etc.)           → CI pull_request
 //
-// Design: denylisted UUIDs and emails are stored only as SHA-256 hashes.
-// The scanner hashes every UUID / email it finds and compares. Plaintext of
-// denylisted values is never committed. Findings are redacted in CI.
+// Design: denylisted UUIDs, emails, persona tokens, and hyphenated tags are
+// stored only as SHA-256 hashes. The scanner hashes every candidate it finds
+// and compares. Plaintext of denylisted values is never committed. Findings
+// are redacted in CI.
 //
-// Marker rules (fixtures only): agent-data/agents/<non-fake-uuid> and
-// /home/box or /home/<user> paths.
+// Marker rules (docs, READMEs, and fixtures): agent-data/agents/<non-fake-uuid>
+// and /home/<user> paths.
 
 import { execFileSync } from 'node:child_process'
 import { createHash } from 'node:crypto'
@@ -26,8 +27,14 @@ const MAX_FILE_BYTES = 5 * 1024 * 1024
 
 const UUID_RE = /\b[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\b/gi
 const EMAIL_RE = /\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}\b/g
-const AGENT_DATA_RE = /agent-data\/agents\/([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})/gi
+const AGENT_DATA_RE =
+  /agent-data\/agents\/([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})/gi
 const HOME_RE = /\/home\/([A-Za-z0-9._-]+)/g
+const FC_ID_RE = /\bfc_[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}_0\b/gi
+const WORD_RE = /\b[A-Za-z][A-Za-z0-9]*\b/g
+const HYPHEN_TOKEN_RE = /\b[A-Za-z][A-Za-z0-9]*(?:-[A-Za-z0-9]+)+\b/g
+/** Hardcoded default prefix (tags now come from the slug rule). */
+const BANNED_PREFIX_RE = /(?:DEFAULT_AGENT_PREFIX|agentPrefix)\s*[:=]\s*['"`]rivet['"`]/
 
 const FAKE_UUIDS = new Set([
   'aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee',
@@ -37,6 +44,29 @@ const FAKE_UUIDS = new Set([
   '22222222-2222-4222-8222-222222222222',
   '99999999-aaaa-4bbb-8ccc-dddddddddddd',
 ])
+
+const ALLOWED_HOME_USERS = new Set(['ubuntu', 'runner', 'rivet', 'rivetos', 'user', 'example'])
+
+/** Path markers apply to READMEs, docs, fixtures — not application source. */
+const PATH_MARKER_RE = [
+  /(^|\/)README(\.[A-Za-z0-9]+)?$/i,
+  /(^|\/)docs\//,
+  /(^|\/)fixtures\//,
+  /\.(md|mdx)$/i,
+]
+
+export function isPathMarkerFile(file) {
+  if (!file || file === '<input>') return true
+  return PATH_MARKER_RE.some((re) => re.test(file))
+}
+
+/** Owner-identity files: skip persona + email only. UUIDs and tags still scan. */
+const OWNER_IDENTITY_RE = [
+  /^LICENSE$/,
+  /(^|\/)package\.json$/,
+  /^scripts\/authorship-check(\.test)?\.mjs$/,
+  /^\.claude-plugin\/marketplace\.json$/,
+]
 
 export function sha256(s) {
   return createHash('sha256').update(s, 'utf8').digest('hex')
@@ -61,34 +91,35 @@ export function parseDenyHashes(json) {
 export function loadDenyHashes() {
   if (!existsSync(DENYLIST_FILE)) throw new Error(`privacy denylist missing: ${DENYLIST_FILE}`)
   const hashes = parseDenyHashes(JSON.parse(readFileSync(DENYLIST_FILE, 'utf8')))
-  if (!hashes.size) throw new Error(`privacy denylist has no valid sha256 entries: ${DENYLIST_FILE}`)
+  if (!hashes.size)
+    throw new Error(`privacy denylist has no valid sha256 entries: ${DENYLIST_FILE}`)
   return hashes
 }
 
-export function isFixturePath(file) {
-  return /(^|\/)(test\/)?fixtures\//.test(file) || /(^|\/)fixtures\//.test(file)
+export function isOwnerIdentityPath(file) {
+  return OWNER_IDENTITY_RE.some((re) => re.test(file))
 }
 
-export function isGrokBotFixturePath(file) {
-  return file.startsWith('integrations/grok-bot/') && isFixturePath(file)
+/** ALL-CAPS tokens of length 2–4 (PAM, SSH) are not persona names. */
+export function isAcronymToken(token) {
+  return token.length >= 2 && token.length <= 4 && /^[A-Z]+$/.test(token)
 }
 
-export function isEmailScanPath(file) {
-  return file.startsWith('integrations/grok-bot/') || isFixturePath(file) || file === '<input>'
+/**
+ * Short tokens are checked only as Title-case words so PAM auth,
+ * `--disable-pam`, `architecture`, and generic lowercase names in tests
+ * do not trip. Longer tokens match any case.
+ */
+export function shouldCheckPersonaToken(token) {
+  if (isAcronymToken(token)) return false
+  if (token.length <= 4 && !/^[A-Z][a-z]+$/.test(token)) return false
+  return true
 }
-
-export function isGrokBotPersonaScanPath(file) {
-  if (/(^|\/)models\.local\.json$/.test(file)) return false
-  return file.startsWith('integrations/grok-bot/') || file === '<input>'
-}
-
-const GROKBOT_BANNED_TAG_RE = /rivet-grokbot/i
-/** Hardcoded default prefix `rivet` (tags now come from the slug rule). */
-const GROKBOT_BANNED_PREFIX_RE = /(?:DEFAULT_AGENT_PREFIX|agentPrefix)\s*[:=]\s*['"`]rivet['"`]/
-const PERSONA_TOKEN_RE = /\b[A-Za-z][A-Za-z0-9]*\b/g
 
 export function scanLine(line, { file = '', denyHashes = new Set() } = {}) {
   const out = []
+  const skipOwnerTokens = isOwnerIdentityPath(file)
+
   for (const m of line.matchAll(UUID_RE)) {
     const id = m[0].toLowerCase()
     if (denyHashes.has(sha256(id))) {
@@ -100,7 +131,18 @@ export function scanLine(line, { file = '', denyHashes = new Set() } = {}) {
       })
     }
   }
-  if (isEmailScanPath(file)) {
+  for (const m of line.matchAll(FC_ID_RE)) {
+    const id = m[0].toLowerCase()
+    if (denyHashes.has(sha256(id))) {
+      out.push({
+        rule: 'denylist-tool-id',
+        severity: 'block',
+        match: id,
+        hint: 'hashed denylist tool-call id',
+      })
+    }
+  }
+  if (!skipOwnerTokens) {
     for (const m of line.matchAll(EMAIL_RE)) {
       const email = m[0].toLowerCase()
       if (denyHashes.has(sha256(email))) {
@@ -112,37 +154,39 @@ export function scanLine(line, { file = '', denyHashes = new Set() } = {}) {
         })
       }
     }
-  }
-  if (isGrokBotPersonaScanPath(file)) {
-    if (GROKBOT_BANNED_TAG_RE.test(line)) {
-      out.push({
-        rule: 'grokbot-legacy-tag',
-        severity: 'block',
-        match: 'rivet-grokbot',
-        hint: 'owner-specific agent tag — use the derived generic prefix',
-      })
-    }
-    if (GROKBOT_BANNED_PREFIX_RE.test(line)) {
-      out.push({
-        rule: 'grokbot-legacy-prefix',
-        severity: 'block',
-        match: 'rivet',
-        hint: 'hardcoded rivet- agent prefix — tags come from the slug rule',
-      })
-    }
-    for (const m of line.matchAll(PERSONA_TOKEN_RE)) {
+    for (const m of line.matchAll(HYPHEN_TOKEN_RE)) {
+      if (/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(m[0])) continue
       const token = m[0].toLowerCase()
       if (denyHashes.has(sha256(token))) {
         out.push({
-          rule: 'grokbot-persona',
+          rule: 'denylist-tag',
           severity: 'block',
           match: m[0],
-          hint: 'hashed denylist persona token inside integrations/grok-bot',
+          hint: 'hashed denylist hyphenated tag',
+        })
+      }
+    }
+    for (const m of line.matchAll(WORD_RE)) {
+      if (!shouldCheckPersonaToken(m[0])) continue
+      if (denyHashes.has(sha256(m[0].toLowerCase()))) {
+        out.push({
+          rule: 'denylist-persona',
+          severity: 'block',
+          match: m[0],
+          hint: 'hashed denylist persona token',
         })
       }
     }
   }
-  if (isGrokBotFixturePath(file)) {
+  if (BANNED_PREFIX_RE.test(line)) {
+    out.push({
+      rule: 'legacy-prefix',
+      severity: 'block',
+      match: 'rivet',
+      hint: 'hardcoded rivet- agent prefix — tags come from the slug rule',
+    })
+  }
+  if (isPathMarkerFile(file)) {
     for (const m of line.matchAll(AGENT_DATA_RE)) {
       const id = m[1].toLowerCase()
       if (!isFakeUuid(id)) {
@@ -150,17 +194,17 @@ export function scanLine(line, { file = '', denyHashes = new Set() } = {}) {
           rule: 'agent-data-path',
           severity: 'block',
           match: m[0],
-          hint: 'agent-data/agents/<uuid> in a fixture must use a fake UUID',
+          hint: 'agent-data/agents/<uuid> must use a fake UUID',
         })
       }
     }
     for (const m of line.matchAll(HOME_RE)) {
-      if (m[1] === 'ubuntu') continue
+      if (ALLOWED_HOME_USERS.has(m[1])) continue
       out.push({
         rule: 'home-path',
         severity: 'block',
         match: m[0],
-        hint: '/home/<user> in fixtures — use /tmp or $HOME',
+        hint: '/home/<user> — use /tmp or $HOME',
       })
     }
   }
@@ -211,9 +255,7 @@ function trackedFiles() {
 
 const SKIP = [
   /^scripts\/privacy-denylist\.json$/,
-  /^scripts\/privacy-scan\.(mjs|test\.mjs)$/,
   /^scripts\/privacy-denylist-add\.mjs$/,
-  /^integrations\/grok-bot\/rivet-memory\/capture\/privacy-history-paths\.txt$/,
   /^scripts\/secret-denylist\.json$/,
   /^scripts\/secret-scan\.(mjs|test\.mjs)$/,
   /(^|\/)(package-lock\.json|pnpm-lock\.yaml|yarn\.lock)$/,
@@ -311,11 +353,16 @@ function main() {
     }
     const bad = report(findings, 'tracked files')
     if (unscannable > 0)
-      console.error(`\n❌ privacy-scan: ${unscannable} tracked file(s) could not be safely scanned.`)
+      console.error(
+        `\n❌ privacy-scan: ${unscannable} tracked file(s) could not be safely scanned.`,
+      )
     if (bad || unscannable > 0) process.exit(1)
   } else if (mode === '--text') {
     const text = readFileSync(0, 'utf8')
-    findings = scanText(text, { file: '<input>', denyHashes }).map((f) => ({ ...f, file: '<input>' }))
+    findings = scanText(text, { file: '<input>', denyHashes }).map((f) => ({
+      ...f,
+      file: '<input>',
+    }))
     if (report(findings, 'input text')) process.exit(1)
   } else {
     console.error('usage: privacy-scan.mjs --staged | --tracked | --text (stdin)')

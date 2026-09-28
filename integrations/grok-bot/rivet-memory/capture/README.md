@@ -50,7 +50,7 @@ existing rows.
   **before** the subagent fallback. Persona is the profile name. Session is
   `grokbot-<slug>` (`GROKBOT_NODE_ID`, default `grokbot`). Agent is
   `<prefix>-<slug>` (`GROKBOT_AGENT_PREFIX`, default `grokbot`). Duplicate
-  slugs append a short id suffix (first-UUID-wins). Groups, unused-slot /
+  slugs all take a short id suffix (including the first). Groups, unused-slot /
   placeholder profiles, and subagent transcripts are skipped by structure.
   Unknown ids stay `<prefix>-run` / `grokbot-run-<id>`. The agent UUID is
   in metadata.
@@ -344,10 +344,11 @@ file. Discovery reads the host's `agents/<uuid>/profile.json` files.
 Slug rule: persona = `profile.json` `name`; slug = lowercased name with
 non-alphanumeric runs replaced by `-` (empty → `agent`); session =
 `${GROKBOT_NODE_ID:-grokbot}-<slug>`; agent =
-`${GROKBOT_AGENT_PREFIX:-grokbot}-<slug>`. When two profiles produce the
-same slug, candidates are sorted by UUID: the first keeps the bare slug,
-later ones get `${slug}-<first 8 of id>` (more of the id if that is still
-taken).
+`${GROKBOT_AGENT_PREFIX:-grokbot}-<slug>`. When two or more profiles
+produce the same slug, every colliding member (including the first) gets
+`${slug}-<first 8 of id>` (more of the id if that is still taken). Solo
+slugs stay bare. Adding a bot never steals an existing slug via UUID
+order; a new collision (1→2) suffixes the original.
 
 Discovery scans `$GROKBOT_AGENTS/<uuid>/profile.json` and skips, by structure:
 `group.json` present; placeholder / unused-slot profiles (`placeholder`,

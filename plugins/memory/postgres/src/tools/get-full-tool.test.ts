@@ -816,7 +816,7 @@ describe('extractGrokbotFromLine', () => {
       content: '',
       tool_name: 'shell',
       tool_result: 'preview',
-      agent: 'rivet-gary',
+      agent: 'grokbot-alpha',
       metadata: {
         truncated: true,
         source: 'grokbot',

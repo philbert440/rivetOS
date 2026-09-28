@@ -43,6 +43,7 @@ export {
   loadIdentityConfig,
   deriveIdentity,
   uniqueSlug,
+  suffixedSlug,
   slug,
   resolveAgentPrefix,
   subagentAgent,
