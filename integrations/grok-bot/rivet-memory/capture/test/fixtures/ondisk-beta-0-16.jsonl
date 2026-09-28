@@ -1,7 +1,7 @@
 {"role":"user","message":{"content":[{"type":"text","text":"<timestamp>Sunday, Aug 16, 2026, 11:46 PM (UTC-4)</timestamp>\n<user_query>\n[t0u]\nplease greet and check your profile\n</user_query>"}]}}
 {"role":"assistant","message":{"content":[{"type":"text","text":"Checking the roster card."},{"type":"tool_use","name":"SendMessage","input":{"type":"text","content":"Hey Pat — good to meet you."}},{"type":"tool_use","name":"Read","input":{"path":"/tmp/agents/00000000-0000-4000-8000-000000000002/profile.json"}}]}}
 {"role":"tool","message":{"content":[{"type":"tool_result","name":"SendMessage","result":{"success":{"timestamp":"1787270900000"}}}]}}
-{"role":"tool","message":{"content":[{"type":"tool_result","name":"Read","result":{"success":{"stdout":"{\"name\":\"Bob\"}"}}}]}}
+{"role":"tool","message":{"content":[{"type":"tool_result","name":"Read","result":{"success":{"stdout":"{\"name\":\"Beta\"}"}}}]}}
 {"role":"assistant","message":{"content":[{"type":"text","text":"Roster card looks fine."}]}}
 {"role":"user","message":{"content":[{"type":"text","text":"<timestamp>Sunday, Aug 16, 2026, 11:46 PM (UTC-4)</timestamp>\n<user_query>\n[t1u]\nlist open work items\n</user_query>"}]}}
 {"role":"assistant","message":{"content":[{"type":"text","text":"Listing work items."},{"type":"tool_use","name":"shell","input":{"command":"echo open-items"}}]}}

@@ -3,12 +3,12 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { describe, expect, it } from 'vitest'
 import { main } from '../src/cli.js'
-import { BOB_ID } from './ids.js'
+import { BETA_ID } from './ids.js'
 
-const BOB = BOB_ID
+const BETA = BETA_ID
 
 function page(a: number, text: string): string {
-  return `Transcript of agent "Bob" (${BOB}), positions ${String(a)}–${String(a)} of 2:\n${JSON.stringify(
+  return `Transcript of agent "Beta" (${BETA}), positions ${String(a)}–${String(a)} of 2:\n${JSON.stringify(
     {
       role: 'user',
       message: { content: [{ type: 'text', text }] },
@@ -36,7 +36,7 @@ describe('parse-page CLI', () => {
         header: { id: string; a: number }
         records: unknown[]
       }
-      expect(data.header.id).toBe(BOB)
+      expect(data.header.id).toBe(BETA)
       expect(data.header.a).toBe(0)
       expect(data.records).toHaveLength(1)
     } finally {
@@ -104,7 +104,7 @@ describe('backfill CLI', () => {
       ])
       expect(code).toBe(3)
       expect(errs.some((l) => l.includes('CONFLICT positions'))).toBe(true)
-      expect(existsSync(join(out, 'grokbot-bob-v3.jsonl'))).toBe(false)
+      expect(existsSync(join(out, 'grokbot-beta-v3.jsonl'))).toBe(false)
     } finally {
       console.error = err
       console.log = log

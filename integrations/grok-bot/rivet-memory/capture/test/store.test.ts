@@ -14,7 +14,7 @@ import {
   writeRedactedStoreFixture,
 } from '../src/store.js'
 import { SESSION_SUFFIX_V3_STORE } from '../src/types.js'
-import { BOB_ID, RIVET_ID } from './ids.js'
+import { BETA_ID, ALPHA_ID } from './ids.js'
 
 const T0 = Date.parse('2026-09-20T20:04:00.000Z')
 
@@ -61,8 +61,8 @@ function redactedRows() {
         kind: 'message',
         role: 'user',
         content: 'agent to agent body',
-        fromAgent: { name: 'Bob', id: BOB_ID },
-        toAgent: { name: 'Rivet', id: RIVET_ID },
+        fromAgent: { name: 'Beta', id: BETA_ID },
+        toAgent: { name: 'Alpha', id: ALPHA_ID },
         timestampMs: T0 + 4000,
       },
     },
@@ -171,11 +171,11 @@ describe('store.db read-only reader (real seq/id/entry schema)', () => {
     const path = join(dir, 'store.db')
     writeRedactedStoreFixture(path, redactedRows())
     const read = readStoreSince(path)
-    const session = v3StoreSession('grokbot-bob')
-    expect(session).toBe(`grokbot-bob${SESSION_SUFFIX_V3_STORE}`)
+    const session = v3StoreSession('grokbot-beta')
+    expect(session).toBe(`grokbot-beta${SESSION_SUFFIX_V3_STORE}`)
     const result = normalizeRecords(read.records, {
       sessionKey: session,
-      agent: 'rivet-bob',
+      agent: 'grokbot-beta',
       format: 'store',
       positions: read.positions,
       useStoredCreatedAt: true,
@@ -220,7 +220,7 @@ describe('store.db read-only reader (real seq/id/entry schema)', () => {
         path,
         dst,
         '--agent-id',
-        BOB_ID,
+        BETA_ID,
       ])
       expect(code).toBe(0)
       const info = JSON.parse(logs[logs.length - 1] ?? '{}') as {
@@ -232,7 +232,7 @@ describe('store.db read-only reader (real seq/id/entry schema)', () => {
       expect(info.max_seq).toBe(8)
       expect(info.after_seq).toBe(-1)
       expect(info.skipped).toBe(1)
-      expect(info.session).toBe('grokbot-bob-v3-store')
+      expect(info.session).toBe('grokbot-beta-v3-store')
     } finally {
       console.log = log
       console.warn = warn
@@ -255,7 +255,7 @@ describe('store.db read-only reader (real seq/id/entry schema)', () => {
         path,
         dst,
         '--agent-id',
-        BOB_ID,
+        BETA_ID,
         '--after-seq',
         '-1',
       ])

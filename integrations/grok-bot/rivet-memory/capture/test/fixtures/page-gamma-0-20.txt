@@ -1,6 +1,6 @@
-Transcript of agent "Maggie" (00000000-0000-4000-8000-000000000003), positions 0–20 of 21:
+Transcript of agent "Gamma" (00000000-0000-4000-8000-000000000003), positions 0–20 of 21:
 {"role":"user","message":{"content":[{"type":"text","text":"<timestamp>Sunday, Aug 16, 2026, 11:46 PM (UTC-4)</timestamp>\n<user_query>\n[t0u]\nhello from the maggie fixture\n</user_query>"}]}}
-{"role":"assistant","message":{"content":[{"type":"text","text":"Hello from Maggie."},{"type":"tool_use","name":"SendMessage","input":{"type":"text","content":"Hi Pat."}}]}}
+{"role":"assistant","message":{"content":[{"type":"text","text":"Hello from Gamma."},{"type":"tool_use","name":"SendMessage","input":{"type":"text","content":"Hi Pat."}}]}}
 {"role":"tool","message":{"content":[{"type":"tool_result","name":"SendMessage","result":{"success":{"timestamp":"1787271100000"}}}]}}
 {"role":"assistant","message":{"content":[{"type":"text","text":"plain reply 303"}]}}
 {"role":"user","message":{"content":[{"type":"text","text":"unstamped follow-up 304"}]}}

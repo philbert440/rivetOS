@@ -1,4 +1,4 @@
-Transcript of agent "Maggie" (00000000-0000-4000-8000-000000000003), positions 175–195 of 400:
+Transcript of agent "Gamma" (00000000-0000-4000-8000-000000000003), positions 175–195 of 400:
 {"role":"user","message":{"content":[{"type":"text","text":"<timestamp>Sunday, Aug 16, 2026, 11:46 PM (UTC-4)</timestamp>\n<user_query>\n[t400u]\nsynthetic note 400 about the adapter loop\n</user_query>"}]}}
 {"role":"assistant","message":{"content":[{"type":"text","text":"ack 401"},{"type":"tool_use","name":"Read","input":{"path":"notes/item-401.md"}}]}}
 {"role":"tool","message":{"content":[{"type":"tool_result","name":"Read","result":{"success":{"stdout":"ok-402"}}}]}}

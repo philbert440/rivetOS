@@ -56,10 +56,18 @@ export function oldStuckPolicyPath(oldDir, sessionId, suffix) {
   return `${oldDir.replace(/\/$/, '')}/${unsuffixed}.json`
 }
 
-/** Refresh the roster when the first lookup falls back to rivet-grokbot-run. */
+/** Unknown / spawn transcripts use persona `run` and an agent tag ending in `-run`. */
+export function isSubagentFallback(who) {
+  return Boolean(
+    who &&
+      (who.persona === 'run' || (typeof who.agent === 'string' && /(?:^|-)run$/.test(who.agent))),
+  )
+}
+
+/** Refresh the roster when the first lookup falls back to the subagent tag. */
 export function resolveIdentityWithRefresh(lookup, id, remake) {
   let who = lookup.identity(id)
-  if (who.agent === 'rivet-grokbot-run') {
+  if (isSubagentFallback(who)) {
     lookup = remake()
     who = lookup.identity(id)
   }

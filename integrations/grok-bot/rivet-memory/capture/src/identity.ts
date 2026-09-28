@@ -11,24 +11,30 @@ import { homedir } from 'node:os'
 import { dirname, isAbsolute, join, resolve } from 'node:path'
 import { parseKnownTime, timestampTagsInText } from './timestamps.js'
 import {
+  DEFAULT_AGENT_PREFIX,
   DEFAULT_NODE_ID,
   SESSION_SUFFIX_V3,
-  SUBAGENT_AGENT,
   stripSessionSuffix,
   type BotIdentity,
 } from './types.js'
 
 const UUID_RE = /^[0-9a-f-]{36}$/i
-const DEFAULT_EXCLUDE = ['new bot']
+/** Grok Bot unused-slot product name. Not a house-bot list. */
+const UNUSED_SLOT_NAME = 'new bot'
+const PLACEHOLDER_KINDS = new Set(['placeholder', 'unused'])
+const PROFILE_META_KEYS = new Set(['name', 'placeholder', 'unused', 'kind'])
 
 /**
- * Historical session/agent tags live in models.json `overrides` plus an
- * optional sibling `models.local.json` (gitignored). Committed overrides stay
- * empty; a deployed host drops the local file in place.
+ * Roster tags are derived at runtime from `agent-data/agents/*/profile.json`.
+ * Committed `models.json` ships no overrides. Per-install pins, prefix, and
+ * exclusions live in gitignored `models.local.json` or env.
  */
 
 export interface IdentityConfig {
   nodeId: string
+  /** First segment of the agent tag. Default `grokbot` → `grokbot-<slug>`. */
+  agentPrefix: string
+  /** Optional per-install exclusions from models.local.json. Default empty. */
   excludeNames: Set<string>
   overrides: Record<
     string,
@@ -39,6 +45,26 @@ export interface IdentityConfig {
       transcript?: string
     }
   >
+}
+
+export function sanitizeAgentPrefix(raw: string): string {
+  return raw.replace(/^-+|-+$/g, '') || DEFAULT_AGENT_PREFIX
+}
+
+export function resolveAgentPrefix(explicit?: string): string {
+  return sanitizeAgentPrefix(explicit || process.env.GROKBOT_AGENT_PREFIX || DEFAULT_AGENT_PREFIX)
+}
+
+export function subagentAgent(prefix?: string): string {
+  return `${resolveAgentPrefix(prefix)}-run`
+}
+
+export function sessionTag(nodeId: string, personaSlug: string): string {
+  return `${nodeId}-${personaSlug}`
+}
+
+export function agentTag(prefix: string, personaSlug: string): string {
+  return `${prefix}-${personaSlug}`
 }
 
 export function slug(s: string): string {
@@ -52,6 +78,9 @@ export function slug(s: string): string {
 
 function applyModelsFile(cfg: IdentityConfig, raw: Record<string, unknown>): void {
   if (typeof raw.nodeId === 'string' && raw.nodeId) cfg.nodeId = raw.nodeId
+  if (typeof raw.agentPrefix === 'string' && raw.agentPrefix) {
+    cfg.agentPrefix = sanitizeAgentPrefix(raw.agentPrefix)
+  }
   if (Array.isArray(raw.excludeNames)) {
     for (const n of raw.excludeNames) cfg.excludeNames.add(String(n).toLowerCase())
   }
@@ -105,7 +134,8 @@ export function localModelsPath(modelsPath?: string): string {
 export function loadIdentityConfig(modelsPath?: string): IdentityConfig {
   const cfg: IdentityConfig = {
     nodeId: process.env.GROKBOT_NODE_ID || DEFAULT_NODE_ID,
-    excludeNames: new Set(DEFAULT_EXCLUDE),
+    agentPrefix: resolveAgentPrefix(),
+    excludeNames: new Set(),
     overrides: {},
   }
   const path = modelsPath ?? defaultModelsPath()
@@ -176,13 +206,10 @@ export function discoverModels(opts?: {
     if (existsSync(join(dir, 'group.json'))) continue
     const profPath = join(dir, 'profile.json')
     if (!existsSync(profPath)) continue
-    let name: string
-    try {
-      const prof = JSON.parse(readFileSync(profPath, 'utf8')) as { name?: string }
-      name = prof.name || id.slice(0, 8)
-    } catch {
-      continue
-    }
+    const prof = readProfileObject(profPath)
+    if (!prof) continue
+    if (isPlaceholderProfile(prof) || isSubagentProfile(prof)) continue
+    const name = typeof prof.name === 'string' && prof.name.trim() ? prof.name.trim() : id.slice(0, 8)
     if (cfg.excludeNames.has(name.toLowerCase())) continue
     const identity = resolveIdentity(id, { config: cfg, name })
     const ov = cfg.overrides[id] ?? {}
@@ -245,8 +272,8 @@ export function resolveIdentity(
   return {
     id,
     persona,
-    session: ov.session || ov.sessionId || `${cfg.nodeId}-${s}`,
-    agent: ov.agent || ov.agentId || `rivet-${s}`,
+    session: ov.session || ov.sessionId || sessionTag(cfg.nodeId, s),
+    agent: ov.agent || ov.agentId || agentTag(cfg.agentPrefix, s),
   }
 }
 
@@ -347,6 +374,40 @@ const PARENT_ID_KEYS = [
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value)
+}
+
+function readProfileObject(profPath: string): Record<string, unknown> | undefined {
+  try {
+    const raw = JSON.parse(readFileSync(profPath, 'utf8')) as unknown
+    return isRecord(raw) ? raw : undefined
+  } catch {
+    return undefined
+  }
+}
+
+function hasExtraIdentity(prof: Record<string, unknown>): boolean {
+  for (const [key, value] of Object.entries(prof)) {
+    if (PROFILE_META_KEYS.has(key)) continue
+    if (value == null || value === '' || value === false) continue
+    return true
+  }
+  return false
+}
+
+/** Unused-slot / placeholder profiles: flags, kind, or the product unused name. */
+export function isPlaceholderProfile(prof: Record<string, unknown>): boolean {
+  if (prof.placeholder === true || prof.unused === true) return true
+  if (typeof prof.kind === 'string' && PLACEHOLDER_KINDS.has(prof.kind.toLowerCase())) return true
+  const name = typeof prof.name === 'string' ? prof.name.trim() : ''
+  if (!name) return true
+  return name.toLowerCase() === UNUSED_SLOT_NAME && !hasExtraIdentity(prof)
+}
+
+/** Child / spawn transcripts: parent id, or an explicit subagent flag. */
+export function isSubagentProfile(prof: Record<string, unknown>): boolean {
+  if (prof.subagent === true) return true
+  if (typeof prof.kind === 'string' && prof.kind.toLowerCase() === 'subagent') return true
+  return Boolean(parentSessionIdFromUnknown(prof))
 }
 
 /** Cheap parent UUID from a profile / first record (`parentId` and aliases). */
@@ -509,7 +570,7 @@ export function makeIdentityLookup(opts?: { agentsDir?: string; modelsPath?: str
         id,
         persona: 'run',
         session: `${catalog.nodeId}-run-${id}`,
-        agent: SUBAGENT_AGENT,
+        agent: subagentAgent(cfg.agentPrefix),
       }
     },
   }

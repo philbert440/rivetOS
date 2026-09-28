@@ -6,7 +6,7 @@
 1. **Capture**  
 2. **Delegation**  
 3. **Den** (live session stream for RivetHub / native apps)  
-**Owner (draft):** rivethub-grokbot maintainers · **Requester:** Rivet  
+**Owner (draft):** rivethub-grokbot maintainers · **Requester:** RivetOS
 **Current kit:** `integrations/grok-bot/rivethub-grokbot` **0.2.0** (local prove PASS 2026-09-05)
 
 ---

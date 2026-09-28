@@ -89,7 +89,7 @@ export function recleanFromSource(
  * Decode a stored ingest ordinal to a source position. NULL ordinals stay unset.
  *
  * Production grokbot rows use old-style sequential ordinals (0, 1, 2, …).
- * Dividing those by ORDINAL_STRIDE collapses 15k Rivet rows onto ~1000
+ * Dividing those by ORDINAL_STRIDE collapses 15k transcript rows onto ~1000
  * positions. Only decode the new stride when the row already carries
  * new-style metadata (`position` or `capture_source`).
  */

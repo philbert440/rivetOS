@@ -7,18 +7,18 @@ Query and write the same Postgres store. Ingest sessions tagged source=grokbot w
 
 ## Node and Models
 
-The grokbot node runs multiple Grok Bot agents, each with its own agent key and session ID:
+Discovery reads every bot from the host's `agent-data/agents/*/profile.json`
+at runtime. Persona is the profile name. Session is `grokbot-<slug>`; agent
+is `<prefix>-<slug>`. The prefix defaults to `grokbot` and is set with
+`GROKBOT_AGENT_PREFIX` or `models.local.json` `agentPrefix`. Groups,
+placeholder unused-slot profiles, and subagent transcripts are skipped by
+structure (presence of `group.json`, placeholder flags / unused-slot shape,
+or a parent id).
 
-- **Rivet** (`rivet-grokbot`): Main bot, session `grokbot-rivet-grokbot`
-- **Bob** (`rivet-bob`): session `grokbot-bob`
-- **Gary** (`rivet-gary`): session `grokbot-gary`
-- **Maggie** (`rivet-maggie`): session `grokbot-maggie`
-- **Frank** (`rivet-frank`): session `grokbot-frank`
-- **dr eggbot** (`rivet-eggbot`): session `grokbot-eggbot`
-
-Convention: each bot gets its own agent key. Committed `capture/models.json`
-overrides stay empty. Real ids and personas live in gitignored
-`capture/models.local.json` (copy `capture/models.local.example.json`).
+Committed `capture/models.json` ships no overrides. Per-install pins,
+exclusions, and a non-default prefix live in gitignored
+`capture/models.local.json` (copy `capture/models.local.example.json`) or
+env. Print the resolved roster with `discover --json` before ingesting.
 Full mesh mTLS join is out of scope.
 
 ## Install
@@ -57,11 +57,11 @@ When pointing directly at the script, use the absolute path: `/opt/rivetos/integ
 
 ## Write
 
-The launcher sets RIVETOS_MCP_ENABLE_MEMORY_WRITE=1 and default tag env vars (agent=rivet-grokbot, source/channel=grokbot).
-Use memory_append or memory_ingest_session. Pass role (user, assistant, system, or tool) on each memory_append call, and persona when relevant; agent defaults to rivet-grokbot and should not be overridden.
+The launcher sets RIVETOS_MCP_ENABLE_MEMORY_WRITE=1 and default tag env vars (agent=grokbot, source/channel=grokbot).
+Use memory_append or memory_ingest_session. Pass role (user, assistant, system, or tool) on each memory_append call, and persona when relevant; set `RIVETOS_MEMORY_AGENT` per bot (or pass `--agent`) so writes match that bot's discovered tag.
 Ingest skips ordinals already stored for that session.
 
-Offline: node bin/ingest-session.mjs --session-id ID --agent rivet-grokbot [--persona P] file.jsonl
+Offline: node bin/ingest-session.mjs --session-id ID --agent grokbot-alpha [--persona Alpha] file.jsonl
 That uses the grok-bot ingest writer (requires a built capture package).
 
 ## Capture (Automated Ingestion)

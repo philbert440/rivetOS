@@ -98,7 +98,7 @@ export async function runIngest(argv = process.argv.slice(2)) {
     const result = await writer.ingestGrokbotSession(memory, {
       sessionId,
       messages: parsed,
-      agent: values.agent || 'rivet-grokbot',
+      agent: values.agent || process.env.RIVETOS_MEMORY_AGENT || 'grokbot',
       persona: values.persona,
       source: process.env.RIVETOS_MEMORY_SOURCE || 'grokbot',
       channel: process.env.RIVETOS_MEMORY_CHANNEL || 'grokbot',

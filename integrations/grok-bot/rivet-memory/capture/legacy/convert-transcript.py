@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Convert Grok Bot transcript jsonl to Rivet ingest jsonl.
+"""Convert Grok Bot transcript jsonl to RivetOS ingest jsonl.
 Emits one output row per source line (strict 1:1) so ordinals stay stable.
 Blank/unparseable/contentless source lines become placeholder rows.
 Each assistant row keeps all text plus every tool_use in full.

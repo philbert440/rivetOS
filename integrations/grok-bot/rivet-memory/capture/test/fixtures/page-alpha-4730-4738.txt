@@ -1,4 +1,4 @@
-Transcript of agent "Rivet" (00000000-0000-4000-8000-000000000001), positions 4730–4738 of 15456:
+Transcript of agent "Alpha" (00000000-0000-4000-8000-000000000001), positions 4730–4738 of 15456:
 {"role":"user","message":{"content":[{"type":"text","text":"<timestamp>Sunday, Aug 16, 2026, 11:46 PM (UTC-4)</timestamp>\n<user_query>\n[t600u]\nsynthetic note 600 about the adapter loop\n</user_query>"}]}}
 {"role":"assistant","message":{"content":[{"type":"text","text":"ack 601"},{"type":"tool_use","name":"Read","input":{"path":"notes/item-601.md"}}]}}
 {"role":"tool","message":{"content":[{"type":"tool_result","name":"Read","result":{"success":{"stdout":"ok-602"}}}]}}

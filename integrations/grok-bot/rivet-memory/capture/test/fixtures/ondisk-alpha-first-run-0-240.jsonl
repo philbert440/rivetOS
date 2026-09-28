@@ -1,7 +1,7 @@
 {"role":"user","message":{"content":[{"type":"text","text":"[SAND_HIDDEN_PROMPT][first run] This is your very first turn. The user just created you and has not sent anything yet."}]}}
 {"role":"assistant","message":{"content":[{"type":"text","text":"Opening with a short hello."},{"type":"tool_use","name":"SendMessage","input":{"type":"text","content":"Hello — what should I help with?"}}]}}
 {"role":"tool","message":{"content":[{"type":"tool_result","name":"SendMessage","result":{"success":{"timestamp":"1787270750000","messageId":"t0s0"}}}]}}
-{"role":"user","message":{"content":[{"type":"text","text":"[SAND_HIDDEN_PROMPT]<<SAND_AGENT_PROFILE_UPDATE:v1:abc-DEF_123+/=>>\n<agent_profile_update>name=Rivet</agent_profile_update>"}]}}
+{"role":"user","message":{"content":[{"type":"text","text":"[SAND_HIDDEN_PROMPT]<<SAND_AGENT_PROFILE_UPDATE:v1:abc-DEF_123+/=>>\n<agent_profile_update>name=Alpha</agent_profile_update>"}]}}
 {"role":"user","message":{"content":[{"type":"text","text":"[SAND_HIDDEN_PROMPT]Earlier you prompted the user and they moved on without responding — treat it as skipped."}]}}
 {"role":"user","message":{"content":[{"type":"text","text":"[SAND_HIDDEN_PROMPT][routine] \"poll checks\" (folder x) is due"}]}}
 {"role":"user","message":{"content":[{"type":"text","text":"[SAND_HIDDEN_PROMPT][A background task just completed] Synthetic cleanup finished."}]}}

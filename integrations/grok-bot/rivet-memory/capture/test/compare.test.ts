@@ -3,7 +3,7 @@ import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { expect, it } from 'vitest'
 import { compareInput, formatCompareTable } from '../src/compare.js'
-import { RIVET_ID } from './ids.js'
+import { ALPHA_ID } from './ids.js'
 
 const FIX = join(dirname(fileURLToPath(import.meta.url)), 'fixtures')
 
@@ -14,16 +14,16 @@ it('prints a before/after table for every fixture sample', () => {
   const rows = files.map((name) => ({
     name,
     result: compareInput(readFileSync(join(FIX, name), 'utf8'), {
-      sessionKey: 'grokbot-rivet-grokbot',
-      agent: 'rivet-grokbot',
-      agentId: RIVET_ID,
+      sessionKey: 'grokbot-alpha',
+      agent: 'grokbot-alpha',
+      agentId: ALPHA_ID,
     }),
   }))
   const table = formatCompareTable(rows)
   console.log(`\n${table}\n`)
-  expect(table).toContain('ondisk-rivet-first-run-0-240.jsonl')
-  expect(table).toContain('page-rivet-this-conversation-3040-3056.txt')
-  expect(table).toContain('page-maggie-0-20.txt')
+  expect(table).toContain('ondisk-alpha-first-run-0-240.jsonl')
+  expect(table).toContain('page-alpha-this-conversation-3040-3056.txt')
+  expect(table).toContain('page-gamma-0-20.txt')
   expect(table).toContain('after user')
   expect(table).toContain('after asst')
   for (const { name, result } of rows) {
@@ -37,7 +37,7 @@ it('prints a before/after table for every fixture sample', () => {
       expect(result.after.avgChars.user, name).toBeLessThanOrEqual(result.before.avgChars.user)
     }
   }
-  const firstRun = rows.find((r) => r.name === 'ondisk-rivet-first-run-0-240.jsonl')
+  const firstRun = rows.find((r) => r.name === 'ondisk-alpha-first-run-0-240.jsonl')
   expect(firstRun).toBeTruthy()
   expect(firstRun!.result.after.stats.systemEvents).toBeGreaterThan(0)
   expect(firstRun!.result.after.avgChars.user).toBeLessThan(firstRun!.result.before.avgChars.user)

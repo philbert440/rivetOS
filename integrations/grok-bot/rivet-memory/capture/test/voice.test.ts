@@ -7,11 +7,11 @@ import { describe, expect, it } from 'vitest'
 import { main } from '../src/cli.js'
 import { normalizeRecords } from '../src/normalize.js'
 import { parseVoiceCall, v3VoiceSession, voiceCallToRecords } from '../src/voice.js'
-import { BOB_ID } from './ids.js'
+import { BETA_ID } from './ids.js'
 
 const HERE = dirname(fileURLToPath(import.meta.url))
 const FIX = join(HERE, 'fixtures', 'voice-calls', 'call-redacted.json')
-const BOB = BOB_ID
+const BETA = BETA_ID
 
 describe('voice-calls reader (real callId/speaker/atMs + call-level toolCalls)', () => {
   it('maps speaker to role and atMs/startedAtMs to ISO, using callId as id', () => {
@@ -30,7 +30,7 @@ describe('voice-calls reader (real callId/speaker/atMs + call-level toolCalls)',
   })
 
   it('uses a distinct -v3-voice-<stem> session so turn indices never mix with -v3', () => {
-    expect(v3VoiceSession('grokbot-bob', FIX)).toBe('grokbot-bob-v3-voice-call-redacted')
+    expect(v3VoiceSession('grokbot-beta', FIX)).toBe('grokbot-beta-v3-voice-call-redacted')
   })
 
   it('emits call-level tool rows in time order next to the nearest turn', () => {
@@ -47,8 +47,8 @@ describe('voice-calls reader (real callId/speaker/atMs + call-level toolCalls)',
     expect(JSON.stringify(records)).not.toContain('nudges')
     expect(JSON.stringify(records)).not.toContain('silence')
     const result = normalizeRecords(records, {
-      sessionKey: v3VoiceSession('grokbot-bob', FIX),
-      agent: 'rivet-bob',
+      sessionKey: v3VoiceSession('grokbot-beta', FIX),
+      agent: 'grokbot-beta',
       format: 'voice',
       positions,
       useStoredCreatedAt: true,
@@ -99,8 +99,8 @@ describe('voice-calls reader (real callId/speaker/atMs + call-level toolCalls)',
     expect(part?.result).toBeTruthy()
     expect(part?.truncated).toBe(true)
     const result = normalizeRecords(records, {
-      sessionKey: 'grokbot-bob-v3-voice-cap',
-      agent: 'rivet-bob',
+      sessionKey: 'grokbot-beta-v3-voice-cap',
+      agent: 'grokbot-beta',
       format: 'voice',
       positions,
       useStoredCreatedAt: true,
@@ -144,7 +144,7 @@ describe('voice-calls reader (real callId/speaker/atMs + call-level toolCalls)',
         FIX,
         dst,
         '--agent-id',
-        BOB,
+        BETA,
       ])
       expect(code).toBe(0)
       const info = JSON.parse(logs[logs.length - 1] ?? '{}') as {
@@ -152,7 +152,7 @@ describe('voice-calls reader (real callId/speaker/atMs + call-level toolCalls)',
         out?: number
         call_id?: string
       }
-      expect(info.session).toBe('grokbot-bob-v3-voice-call-redacted')
+      expect(info.session).toBe('grokbot-beta-v3-voice-call-redacted')
       expect(info.call_id).toBe('vc-redacted-001')
       expect(info.out).toBeGreaterThanOrEqual(3)
     } finally {

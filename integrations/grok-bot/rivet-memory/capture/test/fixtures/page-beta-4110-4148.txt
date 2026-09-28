@@ -1,4 +1,4 @@
-Transcript of agent "Bob" (00000000-0000-4000-8000-000000000002), positions 4110–4148 of 4149:
+Transcript of agent "Beta" (00000000-0000-4000-8000-000000000002), positions 4110–4148 of 4149:
 {"role":"user","message":{"content":[{"type":"text","text":"<timestamp>Sunday, Aug 16, 2026, 11:46 PM (UTC-4)</timestamp>\n<user_query>\n[t500u]\nsynthetic note 500 about the adapter loop\n</user_query>"}]}}
 {"role":"assistant","message":{"content":[{"type":"text","text":"ack 501"},{"type":"tool_use","name":"Read","input":{"path":"notes/item-501.md"}}]}}
 {"role":"tool","message":{"content":[{"type":"tool_result","name":"Read","result":{"success":{"stdout":"ok-502"}}}]}}

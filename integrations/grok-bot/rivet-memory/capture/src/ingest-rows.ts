@@ -122,7 +122,7 @@ export async function ingestGrokbotSession(
   input: GrokbotIngestInput,
 ): Promise<GrokbotIngestResult> {
   const source = (input.source ?? process.env.RIVETOS_MEMORY_SOURCE ?? 'grokbot').trim()
-  const agent = (input.agent ?? process.env.RIVETOS_MEMORY_AGENT ?? 'rivet-grokbot').trim()
+  const agent = (input.agent ?? process.env.RIVETOS_MEMORY_AGENT ?? 'grokbot').trim()
   const channel = (input.channel ?? process.env.RIVETOS_MEMORY_CHANNEL ?? 'grokbot').trim()
   const persona = (input.persona ?? process.env.RIVETOS_MEMORY_PERSONA ?? '').trim()
 

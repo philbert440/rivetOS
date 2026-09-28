@@ -85,3 +85,28 @@ test('removedHashes detects a shrink', () => {
   const b = new Set(['bb'])
   assert.deepEqual(removedHashes(a, b), ['aa'])
 })
+
+test('grok-bot scan flags rivet-grokbot and house personas', () => {
+  const file = 'integrations/grok-bot/rivet-memory/capture/src/identity.ts'
+  assert.equal(
+    scanText('agent: rivet-grokbot', { file }).some((h) => h.rule === 'grokbot-legacy-tag'),
+    true,
+  )
+  assert.equal(scanText('persona: "Bob"', { file }).some((h) => h.rule === 'grokbot-persona'), true)
+  assert.equal(scanText('name Maggie', { file }).some((h) => h.match === 'Maggie'), true)
+  assert.equal(scanText('Gary: Cleanup', { file }).some((h) => h.match === 'Gary'), true)
+  assert.equal(scanText('persona Rivet', { file }).some((h) => h.match === 'Rivet'), true)
+})
+
+test('grok-bot scan allows RivetOS product language and local overrides', () => {
+  const file = 'integrations/grok-bot/rivet-memory/README.md'
+  assert.equal(scanText('RivetOS shared memory', { file }).length, 0)
+  assert.equal(scanText('every Rivet agent serving this user', { file }).length, 0)
+  assert.equal(scanText('Rivet Cloud account', { file }).length, 0)
+  assert.equal(
+    scanText('agent: rivet-grokbot', { file: 'integrations/grok-bot/rivet-memory/capture/models.local.json' })
+      .length,
+    0,
+  )
+  assert.equal(scanText('persona Alpha / agent grokbot-alpha', { file }).length, 0)
+})

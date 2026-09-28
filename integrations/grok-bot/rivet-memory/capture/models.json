@@ -1,6 +1,5 @@
 {
   "nodeId": "grokbot",
-  "excludeNames": ["New Bot"],
   "overrides": {},
   "transcriptRel": "$GROKBOT_TRANSCRIPT_ROOT/<id>/<id>.jsonl"
 }
