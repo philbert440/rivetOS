@@ -1,0 +1,4 @@
+{"role":"user","message":{"content":[{"type":"text","text":"<timestamp>Sunday, Sep 27, 2026, 4:06 PM (UTC-4)</timestamp>\n<user_query>\n[t0u]\nhello\n</user_query>"}]}}
+{"role":"assistant","message":{"content":[{"type":"text","text":"hi"},{"type":"tool_use","name":"shell","input":{"command":"echo ok"}}]}}
+{"role":"tool","message":{"content":[{"type":"tool_result","name":"shell","result":{"success":{"stdout":"ok"}}}]}}
+{"role":"assistant","message":{"content":[{"type":"text","text":"done"}]}}

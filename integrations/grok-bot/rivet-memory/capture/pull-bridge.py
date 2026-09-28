@@ -207,7 +207,7 @@ def cmd_ingest(ids: list[str], dry: bool, suffix: str) -> int:
             continue
         m = models.get(aid) or {
             "session": f"{node_id}-run-{aid}",
-            "agent": "rivet-grokbot-run",
+            "agent": "grokbot-run",
             "persona": "run",
         }
         session = m["session"] + suffix

@@ -75,7 +75,7 @@ const STREAM_PONG: unknown[] = [
 ]
 
 const prompt: LanguageModelV3Prompt = [
-  { role: 'system', content: 'You are Maggie.' },
+  { role: 'system', content: 'You are Rivet.' },
   { role: 'user', content: [{ type: 'text', text: 'hello' }] },
   {
     role: 'assistant',
@@ -108,7 +108,7 @@ function cfg(binary: string, extra: Partial<GrokCliModelConfig> = {}): GrokCliMo
     allow: undefined,
     tools: undefined,
     cwd: undefined,
-    agentId: 'maggie',
+    agentId: 'rivet',
     conversationId: 'test-conv',
     sessionMode: 'resume',
     sessionMapPath: tmpMap(),
@@ -172,7 +172,7 @@ async function collectAllowingError(
 describe('renderPromptForCli / composePrompt', () => {
   it('splits system text from a USER/ASSISTANT/TOOL transcript', () => {
     const r = renderPromptForCli(prompt)
-    expect(r.systemText).toBe('You are Maggie.')
+    expect(r.systemText).toBe('You are Rivet.')
     expect(r.userText).toContain('USER:\nhello')
     expect(r.userText).toContain('ASSISTANT:\nhi')
     expect(r.userText).toContain('ASSISTANT TOOL CALLS:\n  - memory_search({"q":"x"})')
@@ -183,11 +183,11 @@ describe('renderPromptForCli / composePrompt', () => {
   it('prepend mode puts the system text into the prompt; override mode moves it to the flag', () => {
     const r = renderPromptForCli(prompt)
     const pre = composePrompt(r, 'prepend')
-    expect(pre.prompt.startsWith('SYSTEM:\nYou are Maggie.')).toBe(true)
+    expect(pre.prompt.startsWith('SYSTEM:\nYou are Rivet.')).toBe(true)
     expect(pre.systemPromptOverride).toBe('')
     const ovr = composePrompt(r, 'override')
     expect(ovr.prompt.startsWith('USER:')).toBe(true)
-    expect(ovr.systemPromptOverride).toBe('You are Maggie.')
+    expect(ovr.systemPromptOverride).toBe('You are Rivet.')
     const off = composePrompt(r, 'off')
     expect(off.prompt).not.toContain('SYSTEM:')
     expect(off.systemPromptOverride).toBe('')
@@ -457,7 +457,7 @@ describe('GrokCliModel.doStream', () => {
     const reason = parts.find((p) => p.type === 'reasoning-delta')
     expect(text && 'delta' in text ? text.delta : '').toContain('USER:\nand now?')
     expect(text && 'delta' in text ? text.delta : '').not.toContain('SYSTEM:')
-    expect(reason && 'delta' in reason ? reason.delta : '').toBe('You are Maggie.')
+    expect(reason && 'delta' in reason ? reason.delta : '').toBe('You are Rivet.')
   })
 
   it('a non-zero exit without JSON becomes a stream error', async () => {
@@ -703,7 +703,7 @@ describe('session resume / replay', () => {
     expect(text).not.toContain('--session-id')
     expect(text).toContain('USER:\nand now?')
     expect(text).not.toContain('USER:\nhello')
-    expect(text).toContain('SYSTEM:\nYou are Maggie.')
+    expect(text).toContain('SYSTEM:\nYou are Rivet.')
   })
 
   it('replay mode sends the full prompt and no session flags, and does not write the map', async () => {

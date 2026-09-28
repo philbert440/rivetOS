@@ -23,6 +23,7 @@ dep-graph.json
 # Secrets & runtime-generated
 .secrets/
 .npmrc
+integrations/grok-bot/rivet-memory/capture/models.local.json
 
 # Mesh roster (IPs managed outside git)
 scripts/mesh-nodes.conf

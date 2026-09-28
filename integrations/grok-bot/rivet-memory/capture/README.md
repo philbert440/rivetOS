@@ -30,7 +30,7 @@ existing rows.
      (`interpolated`).
   5. After the last stamp, inherit at 1s per position (`inherited`).
   6. Before the first stamp, look ahead at −1s per position (`lookahead`).
-  7. If the file has no stamps (anne / reed / eggbot / …), use
+  7. If the file has no stamps, use
      `file mtime − (lastPosition − position)` ms so the last row ≈ mtime
      (`mtime`).
   Clamp still enforces order. When it moves a time by more than 1s,
@@ -46,12 +46,14 @@ existing rows.
   `truncated: true`, `full_*_length`, and
   `session_jsonl_path` + `session_jsonl_line` (claude-code `pointerMeta`)
   let `memory_get_full` re-read the source line.
-- Each bot is tagged from the roster (`agent-data/agents/*/profile.json`)
-  **before** the subagent fallback. Historical overrides stay stable: Rivet →
-  `grokbot-rivet-grokbot` / `rivet-grokbot`; eggbot → `grokbot-eggbot` /
-  `rivet-eggbot`. Un-overridden roster bots get real tags (e.g. Arch →
-  `grokbot-arch` / `rivet-arch`). Unknown ids stay `rivet-grokbot-run` /
-  `grokbot-run-<id>`. The agent UUID is in metadata.
+-   Each bot is tagged from the roster (`agent-data/agents/<uuid>/profile.json`)
+  **before** the subagent fallback. Persona is the profile name. Session is
+  `grokbot-<slug>` (`GROKBOT_NODE_ID`, default `grokbot`). Agent is
+  `<prefix>-<slug>` (`GROKBOT_AGENT_PREFIX`, default `grokbot`). Duplicate
+  slugs all take a short id suffix (including the first). Groups, unused-slot /
+  placeholder profiles, and subagent transcripts are skipped by structure.
+  Unknown ids stay `<prefix>-run` / `grokbot-run-<id>`. The agent UUID is
+  in metadata.
 - Hidden system turns are stored as `role=system` with `metadata.kind`.
   Repeated routine / background fires stay distinct by position. Genuine
   same-minute user repeats stay distinct by position; only a replayed
@@ -84,9 +86,9 @@ existing rows.
   `<session>${SUFFIX}-voice-<stem>` (turn index is not the line index).
   Watcher state is a per-suffix file
   (`~/.rivetos/grokbot-capture-state${SUFFIX}.json`). `-v3` may inherit
-  unsuffixed `state.json`; `-v4` starts empty. Discovery merges
-  `models.json` overrides into the roster so override-only bots (Gary)
-  are included. Unmapped `<uuid>/<uuid>.jsonl` transcripts are reported
+  unsuffixed `state.json`; `-v4` starts empty. The roster is discovery
+  only — no bot list and no override file.
+  Unmapped `<uuid>/<uuid>.jsonl` transcripts are reported
   (stderr / `unmappedTranscripts`), not dropped silently. Reclean follows
   `GROKBOT_SESSION_SUFFIX` and refuses already row-shaped sessions.
   Store cursors are `seq:N` under the same map. `run-once.sh` does not treat
@@ -103,18 +105,17 @@ existing rows.
 ```
 capture/
 ├── src/                 # normalizer (capture-core)
-├── test/fixtures/       # redacted real samples
+├── test/fixtures/       # synthetic samples (fake UUIDs / invented text)
 ├── convert-transcript.py
 ├── pull-bridge.py
 ├── discover-models.mjs
 ├── watch.mjs
 ├── ingest.mjs
-├── run-once.sh
-└── models.json          # historical overrides + excludeNames (typed source: src/identity.ts)
+└── run-once.sh
 ```
 
-Paths come from env (`GROKBOT_AGENTS`, `GROKBOT_TRANSCRIPTS` /
-`GROKBOT_TRANSCRIPT_ROOT`, `GROKBOT_MODELS`, `GROKBOT_SESSION_SUFFIX`).
+Paths come from env (`GROKBOT_NODE_ID`, `GROKBOT_AGENTS`, `GROKBOT_TRANSCRIPTS` /
+`GROKBOT_TRANSCRIPT_ROOT`, `GROKBOT_AGENT_PREFIX`, `GROKBOT_SESSION_SUFFIX`).
 Nothing in this tree names a host, address, port, or lab layout.
 
 ## Session suffixes (do not mix formats)
@@ -159,14 +160,14 @@ lines, and optional footer). Live / convert defaults to session suffix
 
 ```bash
 node integrations/grok-bot/rivet-memory/capture/dist/cli.js convert \
-  path/to/agent.jsonl spool/grokbot-rivet-grokbot-v3.jsonl \
-  --agent-id 6a155e75-0dd5-4c8a-8391-994878ed683a
+  path/to/agent.jsonl spool/grokbot-alpha-v3.jsonl \
+  --agent-id 00000000-0000-4000-8000-000000000001
 
 # same interface the watcher already calls
 python3 integrations/grok-bot/rivet-memory/capture/convert-transcript.py \
   path/to/agent.jsonl spool/out.jsonl \
-  --agent-id 6a155e75-0dd5-4c8a-8391-994878ed683a \
-  --session grokbot-rivet-grokbot-v3
+  --agent-id 00000000-0000-4000-8000-000000000001 \
+  --session grokbot-alpha-v3
 ```
 
 On-disk input without `--agent-id` or a page header takes the id from
@@ -175,13 +176,13 @@ On-disk input without `--agent-id` or a page header takes the id from
 ```bash
 # store.db (read-only, seq cursor) → -v3-store
 node integrations/grok-bot/rivet-memory/capture/dist/cli.js convert-store \
-  path/to/agents/<id>/store.db spool/grokbot-bob-v3-store.jsonl \
+  path/to/agents/<id>/store.db spool/grokbot-beta-v3-store.jsonl \
   --agent-id <id> --after-seq=-1
 
 # voice-calls/*.json (callId / speaker / atMs) → -v3-voice-<stem>
 node integrations/grok-bot/rivet-memory/capture/dist/cli.js convert-voice \
   path/to/agents/<id>/voice-calls/call.json \
-  spool/grokbot-bob-v3-voice-call.jsonl --agent-id <id>
+  spool/grokbot-beta-v3-voice-call.jsonl --agent-id <id>
 
 # ReadTranscript header (used by pull-bridge.py)
 node integrations/grok-bot/rivet-memory/capture/dist/cli.js parse-page page.txt
@@ -228,11 +229,11 @@ rows into the same `-v3` session.
 ```bash
 node integrations/grok-bot/rivet-memory/capture/dist/cli.js discover --json
 
-# one ingest per agent (example: Rivet). Repeat for each discover --json model.
-# Agent ids are rivet-<slug> (rivet-ollie, rivet-arch), not <name>-grokbot.
+# one ingest per agent (example: Alpha). Repeat for each discover --json model.
+# Agent tags are <prefix>-<slug> (default prefix grokbot).
 node integrations/grok-bot/rivet-memory/bin/ingest-session.mjs \
-  --session-id grokbot-rivet-grokbot-v3 --agent rivet-grokbot --persona Rivet \
-  spool/grokbot-rivet-grokbot-v3.jsonl
+  --session-id grokbot-alpha-v3 --agent grokbot-alpha --persona Alpha \
+  spool/grokbot-alpha-v3.jsonl
 ```
 
 ### Re-spool as `-v4` (leaves `-v3` rows and state alone)
@@ -258,8 +259,8 @@ python3 integrations/grok-bot/rivet-memory/capture/convert-transcript.py \
   --agent-id <id> --session grokbot-<slug>-v4 --session-suffix=-v4
 
 node integrations/grok-bot/rivet-memory/bin/ingest-session.mjs \
-  --session-id grokbot-rivet-grokbot-v4 --agent rivet-grokbot --persona Rivet \
-  integrations/grok-bot/rivet-memory/capture/spool/grokbot-rivet-grokbot-v4.jsonl
+  --session-id grokbot-alpha-v4 --agent grokbot-alpha --persona Alpha \
+  integrations/grok-bot/rivet-memory/capture/spool/grokbot-alpha-v4.jsonl
 ```
 
 ### Re-clean existing grokbot rows (`--dry-run` default)
@@ -269,7 +270,7 @@ Do **not** pass the database URL on argv. The read-only rows source loads
 `RIVETOS_PG_URL` from the environment or `~/.rivetos/.env`, then runs its
 SELECTs inside `BEGIN TRANSACTION READ ONLY` and `ROLLBACK`. Rows are grouped
 by `conversation_id` (prod has two conversation rows for
-`grokbot-rivet-grokbot` with the same agent).
+`grokbot-alpha` with the same agent).
 
 `--from-rows` and the Postgres path write `<session>${SUFFIX}-rows`.
 Already row-shaped sessions (`*-vN-rows` or rows with `capture_source`)
@@ -285,25 +286,25 @@ transcripts.
 ```bash
 # from a source transcript (preferred — full tool_result fidelity)
 node integrations/grok-bot/rivet-memory/capture/dist/cli.js reclean \
-  --session grokbot-rivet-grokbot \
-  --agent-id 6a155e75-0dd5-4c8a-8391-994878ed683a \
-  --from-transcript path/to/rivet.jsonl \
+  --session grokbot-alpha \
+  --agent-id 00000000-0000-4000-8000-000000000001 \
+  --from-transcript path/to/agent.jsonl \
   --dry-run
 
 # same, then write ingest jsonl for the NEW session (suffix -v3)
 node integrations/grok-bot/rivet-memory/capture/dist/cli.js reclean \
-  --session grokbot-rivet-grokbot \
-  --agent-id 6a155e75-0dd5-4c8a-8391-994878ed683a \
-  --from-transcript path/to/rivet.jsonl \
+  --session grokbot-alpha \
+  --agent-id 00000000-0000-4000-8000-000000000001 \
+  --from-transcript path/to/agent.jsonl \
   --out spool --write
 
 # from a read-only dump of existing rows (SELECT output as jsonl) → -v3-rows
 node integrations/grok-bot/rivet-memory/capture/dist/cli.js reclean \
-  --session grokbot-rivet-grokbot --from-rows rows.jsonl --dry-run
+  --session grokbot-alpha --from-rows rows.jsonl --dry-run
 
 # from Postgres (RIVETOS_PG_URL in env or ~/.rivetos/.env — never --pg-url) → -v3-rows
 node integrations/grok-bot/rivet-memory/capture/dist/cli.js reclean \
-  --session grokbot-rivet-grokbot --agent rivet-grokbot --dry-run
+  --session grokbot-alpha --agent grokbot-alpha --dry-run
 ```
 
 The SELECT (read-only, per conversation):
@@ -337,14 +338,28 @@ node integrations/grok-bot/rivet-memory/capture/dist/cli.js compare \
 ## Models
 
 `src/identity.ts` is the typed source. `discover-models.mjs` is a thin
-wrapper over `dist/identity.js`. Historical Rivet/eggbot (and other) tags
-live only in `models.json` `overrides`. Discovery scans
-`$GROKBOT_AGENTS/*/profile.json`, skips `group.json` and `excludeNames`
-(default includes `New Bot`), and applies those overrides so historical
-tags do not move. `identityFor` consults that roster before the subagent
-fallback. `capture/ingest.mjs` is ingest-only (search/browse/stats are the
-memory tools). `pull-bridge.py` calls `cli.js parse-page` instead of its
-own header regex.
+wrapper over `dist/identity.js`. There is no bot list and no override
+file. Discovery reads the host's `agents/<uuid>/profile.json` files.
+
+Slug rule: persona = `profile.json` `name`; slug = lowercased name with
+non-alphanumeric runs replaced by `-` (empty → `agent`); session =
+`${GROKBOT_NODE_ID:-grokbot}-<slug>`; agent =
+`${GROKBOT_AGENT_PREFIX:-grokbot}-<slug>`. When two or more profiles
+produce the same slug, every colliding member (including the first) gets
+`${slug}-<first 8 of id>` (more of the id if that is still taken). Solo
+slugs stay bare. Adding a bot never steals an existing slug via UUID
+order; a new collision (1→2) suffixes the original.
+
+Discovery scans `$GROKBOT_AGENTS/<uuid>/profile.json` and skips, by structure:
+`group.json` present; placeholder / unused-slot profiles (`placeholder`,
+`unused`, `kind`, or the product unused-slot name with no extra identity);
+subagent profiles (`parentId` / `subagent`). `identityFor` consults that
+roster before the subagent fallback. Verify the resolved roster with
+`discover --json` before a backfill. `-v4` state and cursor files stay
+keyed by `id + suffix` / `grokbot-capture-state-v4.json` — they follow the
+derived session ids. `capture/ingest.mjs` is ingest-only
+(search/browse/stats are the memory tools). `pull-bridge.py` calls
+`cli.js parse-page` instead of its own header regex.
 
 ## Live capture
 
@@ -389,5 +404,12 @@ can be empty. The reader still opens the DB read-only and no-ops.
 npx nx test @rivetos/grok-bot-rivet-memory-capture
 ```
 
-Fixtures are redacted real samples (TEST-NET `192.0.2.1` only). No unredacted
-transcripts.
+Fixtures are synthetic (fake UUIDs, `example.com`, invented text). They
+still cover hidden turns, `<timestamp>` shapes, `send_message` epochs,
+tool calls/results, replay blocks, voice calls, and store.db entries.
+
+CI `privacy-scan` hashes every UUID (and grok-bot emails) and compares
+against `scripts/privacy-denylist.json`. Add a hash locally with
+`node scripts/privacy-denylist-add.mjs '<value>'` — the value is never
+written. Fixture `/home/<user>` and `agent-data/agents/<non-fake-uuid>`
+paths fail the same job.

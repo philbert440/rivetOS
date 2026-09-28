@@ -499,17 +499,31 @@ prove_door1() {
         return 1
     fi
 
-    local models_json="${PLUGIN_ROOT}/capture/models.json"
-    local transcript_rel proved=0
-    transcript_rel="$(jq -r '.transcriptRel' "${models_json}")"
+    local discover_js="${PLUGIN_ROOT}/capture/discover-models.mjs"
+    local roster_json proved=0
+    local session_suffix="${GROKBOT_SESSION_SUFFIX--v3}"
+    if [[ ! -f "${discover_js}" ]]; then
+        echo "ERROR: Door 1 proof unavailable: discover-models.mjs missing" >&2
+        return 2
+    fi
+    if ! roster_json="$(node "${discover_js}" --json)"; then
+        echo "ERROR: Door 1 proof unavailable: discovery failed" >&2
+        return 2
+    fi
 
     local model_json model_id session_id agent_id tpath pr
     while IFS= read -r model_json; do
+        [[ -n "${model_json}" ]] || continue
         model_id="$(echo "${model_json}" | jq -r '.id')"
-        session_id="$(echo "${model_json}" | jq -r '.sessionId')"
-        agent_id="$(echo "${model_json}" | jq -r '.agentId')"
-        tpath="${transcript_rel//<id>/${model_id}}"
-        tpath="${tpath//\$GROKBOT_TRANSCRIPT_ROOT/${GROKBOT_TRANSCRIPT_ROOT}}"
+        session_id="$(echo "${model_json}" | jq -r '.session')"
+        agent_id="$(echo "${model_json}" | jq -r '.agent')"
+        if [[ -n "${session_suffix}" && "${session_id}" != *"${session_suffix}" ]]; then
+            session_id="${session_id}${session_suffix}"
+        fi
+        tpath="$(echo "${model_json}" | jq -r '.transcript // empty')"
+        if [[ -z "${tpath}" ]]; then
+            tpath="${GROKBOT_TRANSCRIPT_ROOT}/${model_id}/${model_id}.jsonl"
+        fi
         if [[ ! -f "${tpath}" ]]; then
             continue
         fi
@@ -525,7 +539,7 @@ prove_door1() {
         fi
         echo "  Door 1 stored row OK: ${session_id}"
         proved=1
-    done < <(jq -c '.overrides | to_entries[] | {id:.key, sessionId:.value.session, agentId:.value.agent, persona:.value.persona}' "${models_json}")
+    done < <(printf '%s' "${roster_json}" | jq -c '.models[]?')
 
     if [[ "${proved}" -eq 0 ]]; then
         echo "ERROR: Door 1 proof unavailable: no transcripts found to prove" >&2

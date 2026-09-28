@@ -1,0 +1,274 @@
+# Paths that held denylisted UUIDs, emails, persona tokens, hyphenated
+# tags, or tool-call ids in git history (all reachable commits).
+# Directory names that were UUIDs are written as <uuid>.
+# Persona tokens in filenames are written as <persona>.
+# Values themselves are omitted. For optional history scrub.
+
+CHANGELOG.md
+  4079472c289c0cb8799362122dbf5d4b551e4c45
+  ea3eabc276f73b113196750beeab43a985f3a6ce
+
+GROK_TOOL_CAPTURE_VERIFICATION.md
+  c14ee4dd1432803b9728451fb1a0ac7ea262df4b
+
+apps/rivethub-desktop/README.md
+  0562e3c4935eb6ac3e254f8f1d350e8d1f220eb4
+  09b8d9b97e427c9d1a09dd0eda3220d9a50989f9
+  17f04fad548a2dba45f57a9478dbf737a439003a
+  2095c0a1f185b1d9faf28c26ba139c5908947835
+  2c716a654836d2622d5651ddcc95b7f0d9716b68
+  35081fc5cf13f361b6019766393b7efa749e351e
+  3fdd86376c10b60a0975bc1c1d43281738ae06f6
+  5d2f423afd3bd3214ad4a3439fbf87b55438bb14
+  7c9994cc97826652838c102be192b75cfd0bc0dc
+  832c6625aec10f04aac40d8f491cfd665c24a4cb
+
+apps/rivethub-site/scripts/posthog-env.test.mjs
+  b3f0e93548ad0946146c882a3b567cb59e83a1c5
+
+apps/site/src/content/docs/reference/memory-design.md
+  41ce489756dd29a1b9a01661f6fd36e31551f9cc
+  dcac4fc1f17c31084c006132528f0062f50f2089
+
+docs/MEMORY-DESIGN.md
+  052778831ed0cc7e923b1639a67fbae10a057a14
+  0989e66536fbaac5fc8dc2fd18991165b4624457
+  41ce489756dd29a1b9a01661f6fd36e31551f9cc
+  5b93760c1dd7e265027b55cba30af9c947007471
+  b29d19cb544fe23982bcac2554ff9f7ac91040fa
+
+integrations/cursor/rivet-memory/rules/memory-reflex.md
+  7d4267bb935aa412538d5b624f368dc9bca4a92e
+  81787004c2243aae1b9e338fa4efb06a186d2978
+
+integrations/grok/rivet-memory/capture/test/fixtures/sample-session/summary.json
+  6ddda1797232ac5ea46f5b2b2f002cb81d08da0b
+  7fe51c9131916c9794d102f1c2c9fd2149174313
+  ce173ebb46e515c60cff5643630990ceed8895e3
+
+integrations/grok/rivet-memory/capture/test/fixtures/sample-session/updates.jsonl
+  6ddda1797232ac5ea46f5b2b2f002cb81d08da0b
+  7fe51c9131916c9794d102f1c2c9fd2149174313
+  ce173ebb46e515c60cff5643630990ceed8895e3
+
+integrations/grok-bot/rivet-memory/GROKBOT.md
+  15fe1604311f3dd9607c8cd3ac420faea0d66da5
+  7700e0acd1fa572f8c7bd32f1a30880084487591
+  b17594463fa58b7a10ac616ff4f68d8ad0e17783
+
+integrations/grok-bot/rivet-memory/README.md
+  0c5a89b34f1c5136b869f4d5958faf52240bcda7
+  15fe1604311f3dd9607c8cd3ac420faea0d66da5
+  31b76d37b7ee832ea69990f5c3881f46bbccdf57
+  6036ec3308c142caf6794a54f5177c65eb204d70
+  7700e0acd1fa572f8c7bd32f1a30880084487591
+  9a658b4fd6180675de7de3c7e704729c2e0dc793
+  b17594463fa58b7a10ac616ff4f68d8ad0e17783
+  c8f0c4c9f2113e37e7af4f9d2aa752265dc3a564
+  ea3eabc276f73b113196750beeab43a985f3a6ce
+
+integrations/grok-bot/rivet-memory/bin/ingest-session.mjs
+  0c5a89b34f1c5136b869f4d5958faf52240bcda7
+  9a658b4fd6180675de7de3c7e704729c2e0dc793
+  c8f0c4c9f2113e37e7af4f9d2aa752265dc3a564
+  ea3eabc276f73b113196750beeab43a985f3a6ce
+
+integrations/grok-bot/rivet-memory/bin/rivet-memory-mcp.sh
+  0c5a89b34f1c5136b869f4d5958faf52240bcda7
+  19cfc01664bb2061f96910774da652e6a87fa5e8
+  20a1130f2cd6025bab163a05b07da0cd89f44912
+  215b7147ee416cbd913b71fae60aac2b880fc0ee
+  9a658b4fd6180675de7de3c7e704729c2e0dc793
+  b17594463fa58b7a10ac616ff4f68d8ad0e17783
+  c3f0bf99bd1707b7791f22098c35ad0a9593ab9e
+  c8f0c4c9f2113e37e7af4f9d2aa752265dc3a564
+
+integrations/grok-bot/rivet-memory/capture/README.md
+  22cae250d5953a350012b323e4c04b9ec2fb3124
+  31b76d37b7ee832ea69990f5c3881f46bbccdf57
+  ea3eabc276f73b113196750beeab43a985f3a6ce
+
+integrations/grok-bot/rivet-memory/capture/live-state.mjs
+  851d6483d861c85afd53fb381e8ddbe81bd7baf8
+  ea3eabc276f73b113196750beeab43a985f3a6ce
+
+integrations/grok-bot/rivet-memory/capture/models.json
+  15fe1604311f3dd9607c8cd3ac420faea0d66da5
+  ea3eabc276f73b113196750beeab43a985f3a6ce
+
+integrations/grok-bot/rivet-memory/capture/models.local.example.json
+  31b76d37b7ee832ea69990f5c3881f46bbccdf57
+
+integrations/grok-bot/rivet-memory/capture/privacy-history-paths.txt
+  31b76d37b7ee832ea69990f5c3881f46bbccdf57
+  a73c642d567e6de52455e9372426e46e7fcba0d3
+
+integrations/grok-bot/rivet-memory/capture/pull-bridge.py
+  851d6483d861c85afd53fb381e8ddbe81bd7baf8
+  ea3eabc276f73b113196750beeab43a985f3a6ce
+
+integrations/grok-bot/rivet-memory/capture/src/cli.ts
+  22cae250d5953a350012b323e4c04b9ec2fb3124
+  31b76d37b7ee832ea69990f5c3881f46bbccdf57
+  ea3eabc276f73b113196750beeab43a985f3a6ce
+
+integrations/grok-bot/rivet-memory/capture/src/identity.ts
+  22cae250d5953a350012b323e4c04b9ec2fb3124
+  ea3eabc276f73b113196750beeab43a985f3a6ce
+
+integrations/grok-bot/rivet-memory/capture/src/ingest-rows.ts
+  22cae250d5953a350012b323e4c04b9ec2fb3124
+  ea3eabc276f73b113196750beeab43a985f3a6ce
+
+integrations/grok-bot/rivet-memory/capture/src/types.ts
+  851d6483d861c85afd53fb381e8ddbe81bd7baf8
+  ea3eabc276f73b113196750beeab43a985f3a6ce
+
+integrations/grok-bot/rivet-memory/capture/test/cli.test.ts
+  31b76d37b7ee832ea69990f5c3881f46bbccdf57
+  ea3eabc276f73b113196750beeab43a985f3a6ce
+
+integrations/grok-bot/rivet-memory/capture/test/compare.test.ts
+  31b76d37b7ee832ea69990f5c3881f46bbccdf57
+  ea3eabc276f73b113196750beeab43a985f3a6ce
+
+integrations/grok-bot/rivet-memory/capture/test/fixtures/README.md
+  22cae250d5953a350012b323e4c04b9ec2fb3124
+  31b76d37b7ee832ea69990f5c3881f46bbccdf57
+  ea3eabc276f73b113196750beeab43a985f3a6ce
+
+integrations/grok-bot/rivet-memory/capture/test/fixtures/agents/<uuid>/profile.json
+  31b76d37b7ee832ea69990f5c3881f46bbccdf57
+  ea3eabc276f73b113196750beeab43a985f3a6ce
+
+integrations/grok-bot/rivet-memory/capture/test/fixtures/models.json
+  31b76d37b7ee832ea69990f5c3881f46bbccdf57
+
+integrations/grok-bot/rivet-memory/capture/test/fixtures/ondisk-<persona>-0-16.jsonl
+  31b76d37b7ee832ea69990f5c3881f46bbccdf57
+  ea3eabc276f73b113196750beeab43a985f3a6ce
+
+integrations/grok-bot/rivet-memory/capture/test/fixtures/ondisk-rivet-agent-msgs-1880-1920.jsonl
+  31b76d37b7ee832ea69990f5c3881f46bbccdf57
+  ea3eabc276f73b113196750beeab43a985f3a6ce
+
+integrations/grok-bot/rivet-memory/capture/test/fixtures/ondisk-rivet-first-run-0-240.jsonl
+  ea3eabc276f73b113196750beeab43a985f3a6ce
+
+integrations/grok-bot/rivet-memory/capture/test/fixtures/page-<persona>-0-20.txt
+  31b76d37b7ee832ea69990f5c3881f46bbccdf57
+  ea3eabc276f73b113196750beeab43a985f3a6ce
+
+integrations/grok-bot/rivet-memory/capture/test/fixtures/page-<persona>-175-195.txt
+  31b76d37b7ee832ea69990f5c3881f46bbccdf57
+  ea3eabc276f73b113196750beeab43a985f3a6ce
+
+integrations/grok-bot/rivet-memory/capture/test/fixtures/page-<persona>-4110-4148.txt
+  31b76d37b7ee832ea69990f5c3881f46bbccdf57
+  ea3eabc276f73b113196750beeab43a985f3a6ce
+
+integrations/grok-bot/rivet-memory/capture/test/fixtures/page-gamma-0-20.txt
+  851d6483d861c85afd53fb381e8ddbe81bd7baf8
+
+integrations/grok-bot/rivet-memory/capture/test/fixtures/page-rivet-2395-2445.txt
+  ea3eabc276f73b113196750beeab43a985f3a6ce
+
+integrations/grok-bot/rivet-memory/capture/test/fixtures/page-rivet-4730-4738.txt
+  ea3eabc276f73b113196750beeab43a985f3a6ce
+
+integrations/grok-bot/rivet-memory/capture/test/fixtures/page-rivet-this-conversation-3040-3056.txt
+  ea3eabc276f73b113196750beeab43a985f3a6ce
+
+integrations/grok-bot/rivet-memory/capture/test/ingest-rows.test.ts
+  22cae250d5953a350012b323e4c04b9ec2fb3124
+  ea3eabc276f73b113196750beeab43a985f3a6ce
+
+integrations/grok-bot/rivet-memory/capture/test/ingest-session-dist.test.ts
+  22cae250d5953a350012b323e4c04b9ec2fb3124
+
+integrations/grok-bot/rivet-memory/capture/test/live-state.test.ts
+  31b76d37b7ee832ea69990f5c3881f46bbccdf57
+  ea3eabc276f73b113196750beeab43a985f3a6ce
+
+integrations/grok-bot/rivet-memory/capture/test/normalize.test.ts
+  22cae250d5953a350012b323e4c04b9ec2fb3124
+  31b76d37b7ee832ea69990f5c3881f46bbccdf57
+  ea3eabc276f73b113196750beeab43a985f3a6ce
+
+integrations/grok-bot/rivet-memory/capture/test/pages.test.ts
+  31b76d37b7ee832ea69990f5c3881f46bbccdf57
+  ea3eabc276f73b113196750beeab43a985f3a6ce
+
+integrations/grok-bot/rivet-memory/capture/test/pg-readonly.test.ts
+  22cae250d5953a350012b323e4c04b9ec2fb3124
+  ea3eabc276f73b113196750beeab43a985f3a6ce
+
+integrations/grok-bot/rivet-memory/capture/test/scripts.test.ts
+  22cae250d5953a350012b323e4c04b9ec2fb3124
+  31b76d37b7ee832ea69990f5c3881f46bbccdf57
+  ea3eabc276f73b113196750beeab43a985f3a6ce
+
+integrations/grok-bot/rivet-memory/capture/test/store.test.ts
+  31b76d37b7ee832ea69990f5c3881f46bbccdf57
+  ea3eabc276f73b113196750beeab43a985f3a6ce
+
+integrations/grok-bot/rivet-memory/capture/test/voice.test.ts
+  31b76d37b7ee832ea69990f5c3881f46bbccdf57
+  ea3eabc276f73b113196750beeab43a985f3a6ce
+
+integrations/grok-bot/rivet-memory/rules/memory-reflex.md
+  9a658b4fd6180675de7de3c7e704729c2e0dc793
+
+integrations/grok-bot/rivet-memory/skills/memory-recall/SKILL.md
+  88abe0f3775f554a89cb950faf1d3d59f2f675cc
+  b17594463fa58b7a10ac616ff4f68d8ad0e17783
+  eca4ee8028d6169a75837b39fe451ce8f8e1112f
+
+integrations/grok-bot/rivethub-grokbot/skills/memory-recall/SKILL.md
+  c8f0c4c9f2113e37e7af4f9d2aa752265dc3a564
+
+plugins/memory/postgres/src/tools/get-full-tool.test.ts
+  00b5490f62c73631b07836102b07157a5ff37386
+  10896cdb793b3420d5b8cb1d9a8ca4918ff8def6
+  229d2a397f00dcfae14981e1a2a8f58cfa61b146
+  22cae250d5953a350012b323e4c04b9ec2fb3124
+  2eb8c31db075d3c36664ba0946993c4dca905ed0
+  4a5d7d064eb910b52105076099752b699159a0e0
+  525705d886eb1081fee0cd11c9e2c7488d81ab1d
+  5971974a4f44fb6f05a3d596551f267df5574ff5
+  5b93760c1dd7e265027b55cba30af9c947007471
+  78f8f5279051870206f5ceac86979a3dc5cee119
+  85bb1233e4e42f3d1a480ed4d2d33b9ccd32f6ce
+  94cff190eb27a77293f0f5abc2643073abf3eec9
+  b3238a7c588109ff828b299156bda888bff6ab5b
+  df5bb78290898341be33a04a22b099fa186f8ec6
+
+plugins/providers/grok-cli/src/grok-cli-model.test.ts
+  15f2269987fef87bc54834cc60f7f27c32af01c6
+  6cfa408df3c5814d0d364a64ff27923e4ae3a5a3
+  ced37f7812201c999a887f0e852844119c6c4c62
+  fe9e58fb824b640bb1519a3dbe09beb47ca2eed8
+
+plugins/providers/grok-cli/src/index.test.ts
+  6cfa408df3c5814d0d364a64ff27923e4ae3a5a3
+  fe9e58fb824b640bb1519a3dbe09beb47ca2eed8
+
+plugins/providers/grok-cli/src/spawn-turn.test.ts
+  15f2269987fef87bc54834cc60f7f27c32af01c6
+  6cfa408df3c5814d0d364a64ff27923e4ae3a5a3
+  ced37f7812201c999a887f0e852844119c6c4c62
+  fe9e58fb824b640bb1519a3dbe09beb47ca2eed8
+
+scripts/privacy-scan.mjs
+  31b76d37b7ee832ea69990f5c3881f46bbccdf57
+  76f67e279e20d14b8d57efe43fef91b5bedc6110
+  851d6483d861c85afd53fb381e8ddbe81bd7baf8
+  d42954ceef46df32154743a50c48be2172b44832
+
+scripts/privacy-scan.test.mjs
+  31b76d37b7ee832ea69990f5c3881f46bbccdf57
+  76f67e279e20d14b8d57efe43fef91b5bedc6110
+  851d6483d861c85afd53fb381e8ddbe81bd7baf8
+
+services/mcp-sidecar/src/memory-tags.test.ts
+  b17594463fa58b7a10ac616ff4f68d8ad0e17783

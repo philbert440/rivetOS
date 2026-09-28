@@ -27,9 +27,9 @@ describe('ingestGrokbotSession', () => {
   it('stores the normalizer ordinal, event id, tool result, and capture source', async () => {
     const { memory, appended, client } = fakeMemory()
     const result = await ingestGrokbotSession(memory, {
-      sessionId: 'grokbot-rivet-grokbot-v3',
-      agent: 'rivet-grokbot',
-      persona: 'Rivet',
+      sessionId: 'grokbot-alpha-v3',
+      agent: 'grokbot-alpha',
+      persona: 'Alpha',
       source: 'grokbot',
       channel: 'grokbot',
       messages: [
@@ -47,11 +47,11 @@ describe('ingestGrokbotSession', () => {
     })
 
     expect(result).toMatchObject({
-      session_id: 'grokbot-rivet-grokbot-v3',
+      session_id: 'grokbot-alpha-v3',
       ingested: 1,
       skipped: 0,
-      agent: 'rivet-grokbot',
-      persona: 'Rivet',
+      agent: 'grokbot-alpha',
+      persona: 'Alpha',
     })
     expect(appended[0]).toMatchObject({
       content: '',
@@ -64,11 +64,11 @@ describe('ingestGrokbotSession', () => {
         ordinal: 4000,
         event_id: 'evt-1',
         position: 4,
-        persona: 'Rivet',
+        persona: 'Alpha',
       },
     })
     expect(client.query).toHaveBeenCalledWith('SELECT pg_advisory_xact_lock(hashtext($1))', [
-      'grokbot-rivet-grokbot-v3',
+      'grokbot-alpha-v3',
     ])
     expect(client.query).toHaveBeenCalledWith('COMMIT')
   })
@@ -85,15 +85,15 @@ describe('ingestGrokbotSession', () => {
           message: { content: [{ type: 'tool_result', name: 'shell', result: longTool }] },
         },
       ],
-      { sessionKey: 'grokbot-rivet-grokbot-v4', agent: 'rivet-grokbot' },
+      { sessionKey: 'grokbot-alpha-v4', agent: 'grokbot-alpha' },
     )
     const rows = toIngestRows(messages)
     expect(rows[0]?.content.length).toBe(5_000)
     expect(rows[1]?.toolResult?.length).toBe(12_000)
     expect(rows.every((r) => r.metadata?.truncated !== true)).toBe(true)
     const result = await ingestGrokbotSession(memory, {
-      sessionId: 'grokbot-rivet-grokbot-v4',
-      agent: 'rivet-grokbot',
+      sessionId: 'grokbot-alpha-v4',
+      agent: 'grokbot-alpha',
       messages: rows,
     })
     expect(result.truncated).toBeUndefined()
@@ -107,8 +107,8 @@ describe('ingestGrokbotSession', () => {
     const longMsg = 'm'.repeat(5_000)
     const longTool = 't'.repeat(12_000)
     const result = await ingestGrokbotSession(memory, {
-      sessionId: 'grokbot-rivet-grokbot-v4',
-      agent: 'rivet-grokbot',
+      sessionId: 'grokbot-alpha-v4',
+      agent: 'grokbot-alpha',
       messages: [
         { role: 'user', content: longMsg, ordinal: 0, event_id: 'evt-big-user' },
         {
@@ -136,7 +136,7 @@ describe('ingestGrokbotSession', () => {
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined)
     const result = await ingestGrokbotSession(memory, {
       sessionId: 's',
-      agent: 'rivet-grokbot',
+      agent: 'grokbot-alpha',
       messages: [
         { role: 'user', content: 'again', ordinal: 9, event_id: 'evt-keep' },
         { role: 'user', content: 'clash', ordinal: 1, event_id: 'evt-new' },

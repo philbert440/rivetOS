@@ -84,9 +84,9 @@ const HELP = `Usage: grokbot-rivet-memory-capture <command> [opts]
       Without --from-transcript/--from-rows, reads RIVETOS_PG_URL from the
       environment or ~/.rivetos/.env inside BEGIN TRANSACTION READ ONLY
       (then ROLLBACK). Never pass the URL on argv. Groups by conversation_id
-      (prod has two conversations for grokbot-rivet-grokbot).
+      (a session may have more than one conversation_id).
       Without --agent/--agent-id, the agent filter is derived from the session
-      or left NULL (do not force rivet-grokbot).
+      or left NULL (do not force a default agent tag).
       --from-rows cannot restore tool results (old converter ignored result;
       stored tool rows average ~38 chars). Assistant rows keep legacy
       [tool X]/[thinking] text. Full fidelity needs a source-transcript backfill.
@@ -94,7 +94,7 @@ const HELP = `Usage: grokbot-rivet-memory-capture <command> [opts]
   compare [--fixtures DIR]
       Before (legacy convert-transcript + pull-bridge) vs after (normalizer).
 
-  discover [--agents-dir DIR] [--models FILE] [--json]
+  discover [--agents-dir DIR] [--json]
 `
 
 async function main(argv: string[]): Promise<number> {
@@ -156,7 +156,7 @@ function cmdConvert(argv: string[]): number {
   const srcPath = resolve(src)
   const result = normalizeRecords(parsed.records, {
     sessionKey: session,
-    agent: ident.agent ?? 'rivet-grokbot',
+    agent: ident.agent ?? 'unknown',
     agentId: ident.id ?? parsed.header?.id,
     persona: ident.persona,
     format: parsed.format,
@@ -226,7 +226,7 @@ function cmdConvertStore(argv: string[]): number {
   const read = readStoreSince(src, { afterSeq })
   const result = normalizeRecords(read.records, {
     sessionKey: session,
-    agent: ident.agent ?? 'rivet-grokbot',
+    agent: ident.agent ?? 'unknown',
     agentId: ident.id,
     persona: ident.persona,
     format: 'store',
@@ -281,7 +281,7 @@ function cmdConvertVoice(argv: string[]): number {
   const { records, positions } = voiceCallToRecords(call)
   const result = normalizeRecords(records, {
     sessionKey: session,
-    agent: ident.agent ?? 'rivet-grokbot',
+    agent: ident.agent ?? 'unknown',
     agentId: ident.id,
     persona: ident.persona,
     format: 'voice',
@@ -383,7 +383,7 @@ function cmdBackfill(argv: string[]): number {
     }
     const ident = resolveIdent(id, undefined, undefined)
     const session = applySessionSuffix(ident.session, suffix)
-    const agent = ident.agent ?? 'rivet-grokbot'
+    const agent = ident.agent ?? 'unknown'
     const key = `${session}\0${agent}\0${ident.id ?? ''}`
     const bucket = buckets.get(key) ?? {
       session,
@@ -588,13 +588,12 @@ function cmdCompare(argv: string[]): number {
     .sort()
   const rows = files.map((name) => {
     const text = readFileSync(join(dir, name), 'utf8')
-    const ident = identityFor('6a155e75-0dd5-4c8a-8391-994878ed683a')
     return {
       name,
       result: compareInput(text, {
-        sessionKey: ident.session,
-        agent: ident.agent,
-        agentId: ident.id,
+        sessionKey: 'grokbot-compare',
+        agent: 'grokbot-compare',
+        agentId: '00000000-0000-4000-8000-000000000001',
       }),
     }
   })
@@ -617,13 +616,11 @@ function cmdDiscover(argv: string[]): number {
     args: coalesceDashArgs(argv),
     options: {
       'agents-dir': { type: 'string' },
-      models: { type: 'string' },
       json: { type: 'boolean', default: false },
     },
   })
   const catalog = discoverModels({
     agentsDir: values['agents-dir'],
-    modelsPath: values.models,
   })
   if (values.json) {
     process.stdout.write(`${JSON.stringify(catalog, null, 2)}\n`)
@@ -632,7 +629,7 @@ function cmdDiscover(argv: string[]): number {
   }
   if (catalog.unmappedTranscripts.length > 0) {
     console.error(
-      `unmapped transcripts (not on roster/overrides): ${catalog.unmappedTranscripts.join(', ')}`,
+      `unmapped transcripts (not on the discovered roster): ${catalog.unmappedTranscripts.join(', ')}`,
     )
   }
   return 0

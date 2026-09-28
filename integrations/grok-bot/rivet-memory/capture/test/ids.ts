@@ -1,0 +1,12 @@
+/** Clearly-fake UUIDs for fixtures and tests. Never use production ids here. */
+export const ALPHA_ID = '00000000-0000-4000-8000-000000000001'
+export const BETA_ID = '00000000-0000-4000-8000-000000000002'
+export const GAMMA_ID = '00000000-0000-4000-8000-000000000003'
+export const DELTA_ID = '00000000-0000-4000-8000-000000000004'
+export const EPSILON_ID = '00000000-0000-4000-8000-000000000005'
+export const ZETA_ID = '00000000-0000-4000-8000-000000000006'
+export const OMEGA_ID = 'cccccccc-dddd-4eee-8fff-aaaaaaaaaaaa'
+export const NEW_BOT_ID = 'aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee'
+export const GROUP_ID = '11111111-2222-4333-8444-555555555555'
+export const SUBAGENT_ID = '99999999-aaaa-4bbb-8ccc-dddddddddddd'
+export const ORPHAN_ID = '00000000-0000-4000-8000-000000000099'

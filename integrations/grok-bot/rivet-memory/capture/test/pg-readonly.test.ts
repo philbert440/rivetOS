@@ -58,14 +58,14 @@ describe('read-only rows source', () => {
             rows: [
               {
                 conversation_id: '11111111-1111-4111-8111-111111111111',
-                session_key: 'grokbot-rivet-grokbot',
-                agent: 'rivet-grokbot',
+                session_key: 'grokbot-alpha',
+                agent: 'grokbot-alpha',
                 n: 2,
               },
               {
                 conversation_id: '22222222-2222-4222-8222-222222222222',
-                session_key: 'grokbot-rivet-grokbot',
-                agent: 'rivet-grokbot',
+                session_key: 'grokbot-alpha',
+                agent: 'grokbot-alpha',
                 n: 1,
               },
             ],
@@ -76,7 +76,7 @@ describe('read-only rows source', () => {
         }
       },
     })
-    const groups = await fetchGrokbotRows(client, 'grokbot-rivet-grokbot', 'rivet-grokbot')
+    const groups = await fetchGrokbotRows(client, 'grokbot-alpha', 'grokbot-alpha')
     expect(sqls[0]).toMatch(/BEGIN TRANSACTION READ ONLY/i)
     expect(sqls.at(-1)).toMatch(/ROLLBACK/i)
     expect(sqls.some((s) => /INSERT|UPDATE|DELETE/i.test(s))).toBe(false)

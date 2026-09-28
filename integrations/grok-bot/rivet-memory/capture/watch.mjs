@@ -88,10 +88,10 @@ function identity(id) {
   lookup = next.lookup
   return next.who
 }
-log(`models: ${lookup.catalog.models.length} bots from agent profiles + overrides`)
+log(`models: ${lookup.catalog.models.length} bots from agent profiles`)
 if (lookup.catalog.unmappedTranscripts?.length) {
   log(
-    `WARN unmapped transcripts (not on roster/overrides): ${lookup.catalog.unmappedTranscripts.join(', ')}`,
+    `WARN unmapped transcripts (not on the discovered roster): ${lookup.catalog.unmappedTranscripts.join(', ')}`,
   )
 }
 

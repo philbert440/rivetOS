@@ -8,33 +8,65 @@ import {
   statSync,
 } from 'node:fs'
 import { homedir } from 'node:os'
-import { dirname, isAbsolute, join, resolve } from 'node:path'
+import { dirname, join } from 'node:path'
 import { parseKnownTime, timestampTagsInText } from './timestamps.js'
 import {
+  DEFAULT_AGENT_PREFIX,
   DEFAULT_NODE_ID,
   SESSION_SUFFIX_V3,
-  SUBAGENT_AGENT,
   stripSessionSuffix,
   type BotIdentity,
 } from './types.js'
 
 const UUID_RE = /^[0-9a-f-]{36}$/i
-const DEFAULT_EXCLUDE = ['new bot']
+/** Grok Bot unused-slot product name. Not a house-bot list. */
+const UNUSED_SLOT_NAME = 'new bot'
+const PLACEHOLDER_KINDS = new Set(['placeholder', 'unused'])
+const PROFILE_META_KEYS = new Set(['name', 'placeholder', 'unused', 'kind'])
 
-/** Historical Rivet/eggbot tags live in models.json `overrides` only. */
+/**
+ * Roster tags are derived at runtime from each host agents/<uuid>/profile.json.
+ * There is no bot list and no override file. Generic settings are env only:
+ * GROKBOT_NODE_ID, GROKBOT_AGENTS, GROKBOT_TRANSCRIPTS /
+ * GROKBOT_TRANSCRIPT_ROOT, GROKBOT_AGENT_PREFIX, GROKBOT_SESSION_SUFFIX.
+ *
+ * Derivation (one rule):
+ *   persona = profile.json name
+ *   slug    = slugify(name): lowercased, non-alphanumeric runs become "-",
+ *             trim "-", empty becomes "agent"
+ *   session = `${nodeId}-${slug}`   (nodeId default `grokbot`)
+ *   agent   = `${prefix}-${slug}`   (prefix default `grokbot`)
+ *
+ * Collision: if two or more profiles share a slug, every colliding member
+ * is suffixed `${slug}-${compactId.slice(0, 8)}` (more of the id if that
+ * is still taken). Solo slugs stay bare. Adding a bot never steals a bare
+ * slug via UUID sort order. A new collision (1→2) suffixes the original.
+ */
 
 export interface IdentityConfig {
   nodeId: string
-  excludeNames: Set<string>
-  overrides: Record<
-    string,
-    Partial<BotIdentity> & {
-      name?: string
-      sessionId?: string
-      agentId?: string
-      transcript?: string
-    }
-  >
+  /** First segment of the agent tag. Default `grokbot` → `grokbot-<slug>`. */
+  agentPrefix: string
+}
+
+export function sanitizeAgentPrefix(raw: string): string {
+  return raw.replace(/^-+|-+$/g, '') || DEFAULT_AGENT_PREFIX
+}
+
+export function resolveAgentPrefix(explicit?: string): string {
+  return sanitizeAgentPrefix(explicit || process.env.GROKBOT_AGENT_PREFIX || DEFAULT_AGENT_PREFIX)
+}
+
+export function subagentAgent(prefix?: string): string {
+  return `${resolveAgentPrefix(prefix)}-run`
+}
+
+export function sessionTag(nodeId: string, personaSlug: string): string {
+  return `${nodeId}-${personaSlug}`
+}
+
+export function agentTag(prefix: string, personaSlug: string): string {
+  return `${prefix}-${personaSlug}`
 }
 
 export function slug(s: string): string {
@@ -46,61 +78,45 @@ export function slug(s: string): string {
   )
 }
 
-export function loadIdentityConfig(modelsPath?: string): IdentityConfig {
-  const cfg: IdentityConfig = {
+/** Always `${base}-<id prefix>`; grows the prefix until the candidate is free. */
+export function suffixedSlug(base: string, id: string, used: Set<string>): string {
+  const compact = id.replace(/-/g, '')
+  for (let n = 8; n <= compact.length; n++) {
+    const candidate = `${base}-${compact.slice(0, n)}`
+    if (!used.has(candidate)) return candidate
+  }
+  return `${base}-${compact}`
+}
+
+/** First unused slug; a taken base appends a growing prefix of the UUID. */
+export function uniqueSlug(base: string, id: string, used: Set<string>): string {
+  if (!used.has(base)) return base
+  return suffixedSlug(base, id, used)
+}
+
+export function deriveIdentity(
+  id: string,
+  persona: string,
+  cfg: IdentityConfig,
+  used?: Set<string>,
+  collide = false,
+): BotIdentity {
+  const base = slug(persona)
+  const s = !used ? base : collide ? suffixedSlug(base, id, used) : uniqueSlug(base, id, used)
+  used?.add(s)
+  return {
+    id,
+    persona,
+    session: sessionTag(cfg.nodeId, s),
+    agent: agentTag(cfg.agentPrefix, s),
+  }
+}
+
+export function loadIdentityConfig(): IdentityConfig {
+  return {
     nodeId: process.env.GROKBOT_NODE_ID || DEFAULT_NODE_ID,
-    excludeNames: new Set(DEFAULT_EXCLUDE),
-    overrides: {},
+    agentPrefix: resolveAgentPrefix(),
   }
-  const path = modelsPath ?? defaultModelsPath()
-  if (!path || !existsSync(path)) return cfg
-  try {
-    const raw = JSON.parse(readFileSync(path, 'utf8')) as Record<string, unknown>
-    if (typeof raw.nodeId === 'string' && raw.nodeId) cfg.nodeId = raw.nodeId
-    if (Array.isArray(raw.excludeNames)) {
-      for (const n of raw.excludeNames) cfg.excludeNames.add(String(n).toLowerCase())
-    }
-    if (raw.overrides && typeof raw.overrides === 'object') {
-      for (const [id, o] of Object.entries(
-        raw.overrides as Record<string, Record<string, unknown>>,
-      )) {
-        cfg.overrides[id] = o
-      }
-    }
-    if (Array.isArray(raw.models)) {
-      for (const m of raw.models as Array<Record<string, unknown>>) {
-        if (typeof m.id === 'string') {
-          cfg.overrides[m.id] = {
-            persona: typeof m.name === 'string' ? m.name : undefined,
-            session:
-              typeof m.sessionId === 'string'
-                ? m.sessionId
-                : typeof m.session === 'string'
-                  ? m.session
-                  : undefined,
-            agent:
-              typeof m.agentId === 'string'
-                ? m.agentId
-                : typeof m.agent === 'string'
-                  ? m.agent
-                  : undefined,
-            id: m.id,
-          }
-        }
-      }
-    }
-  } catch {
-    /* ignore bad file */
-  }
-  return cfg
-}
-
-export function defaultModelsPath(): string {
-  return join(fileDir(), 'models.json')
-}
-
-function fileDir(): string {
-  return resolve(new URL('..', import.meta.url).pathname)
 }
 
 export function defaultAgentsDir(): string {
@@ -118,19 +134,18 @@ export function defaultTranscriptsDir(): string {
 export interface DiscoverResult {
   nodeId: string
   models: Array<BotIdentity & { transcript: string }>
-  /** Transcript `<uuid>/<uuid>.jsonl` ids not on the roster or overrides. */
+  /** On-disk transcript ids not on the discovered roster. */
   unmappedTranscripts: string[]
 }
 
 export function discoverModels(opts?: {
   agentsDir?: string
-  modelsPath?: string
   transcriptsDir?: string
 }): DiscoverResult {
-  const cfg = loadIdentityConfig(opts?.modelsPath)
+  const cfg = loadIdentityConfig()
   const agentsDir = opts?.agentsDir ?? defaultAgentsDir()
   const transcriptsDir = opts?.transcriptsDir ?? defaultTranscriptsDir()
-  const out: Array<BotIdentity & { transcript: string }> = []
+  const candidates: Array<{ id: string; name: string }> = []
   const seen = new Set<string>()
   let entries: string[]
   try {
@@ -150,44 +165,29 @@ export function discoverModels(opts?: {
     if (existsSync(join(dir, 'group.json'))) continue
     const profPath = join(dir, 'profile.json')
     if (!existsSync(profPath)) continue
-    let name: string
-    try {
-      const prof = JSON.parse(readFileSync(profPath, 'utf8')) as { name?: string }
-      name = prof.name || id.slice(0, 8)
-    } catch {
-      continue
-    }
-    if (cfg.excludeNames.has(name.toLowerCase())) continue
-    const identity = resolveIdentity(id, { config: cfg, name })
-    const ov = cfg.overrides[id] ?? {}
-    const transcript =
-      typeof ov.transcript === 'string' && ov.transcript
-        ? ov.transcript
-        : join(transcriptsDir, id, `${id}.jsonl`)
-    out.push({
-      ...identity,
-      transcript: isAbsolute(transcript) ? transcript : join(transcriptsDir, transcript),
-    })
+    const prof = readProfileObject(profPath)
+    if (!prof) continue
+    if (isPlaceholderProfile(prof) || isSubagentProfile(prof)) continue
+    const name =
+      typeof prof.name === 'string' && prof.name.trim() ? prof.name.trim() : id.slice(0, 8)
+    candidates.push({ id, name })
     seen.add(id)
   }
-  for (const id of Object.keys(cfg.overrides)) {
-    if (seen.has(id)) continue
-    if (!UUID_RE.test(id)) continue
-    const identity = resolveIdentity(id, { config: cfg })
-    const ov = cfg.overrides[id] ?? {}
-    if (ov.persona && cfg.excludeNames.has(ov.persona.toLowerCase())) continue
-    const transcript =
-      typeof ov.transcript === 'string' && ov.transcript
-        ? ov.transcript
-        : join(transcriptsDir, id, `${id}.jsonl`)
-    out.push({
-      ...identity,
-      transcript: isAbsolute(transcript) ? transcript : join(transcriptsDir, transcript),
-    })
-    seen.add(id)
+  candidates.sort((a, b) => a.id.localeCompare(b.id))
+  const slugCounts = new Map<string, number>()
+  for (const c of candidates) {
+    const s = slug(c.name)
+    slugCounts.set(s, (slugCounts.get(s) ?? 0) + 1)
   }
+  const used = new Set<string>()
+  const out: Array<BotIdentity & { transcript: string }> = candidates.map(({ id, name }) => {
+    const collide = (slugCounts.get(slug(name)) ?? 0) > 1
+    const identity = deriveIdentity(id, name, cfg, used, collide)
+    const transcript = join(transcriptsDir, id, `${id}.jsonl`)
+    return { ...identity, transcript }
+  })
   const unmappedTranscripts = listUnmappedTranscripts(transcriptsDir, seen)
-  out.sort((a, b) => a.persona.localeCompare(b.persona))
+  out.sort((a, b) => a.persona.localeCompare(b.persona) || a.id.localeCompare(b.id))
   return { nodeId: cfg.nodeId, models: out, unmappedTranscripts }
 }
 
@@ -210,37 +210,26 @@ export function listUnmappedTranscripts(transcriptsDir: string, knownIds: Set<st
 
 export function resolveIdentity(
   id: string,
-  opts?: { config?: IdentityConfig; name?: string; modelsPath?: string },
+  opts?: { config?: IdentityConfig; name?: string },
 ): BotIdentity {
-  const cfg = opts?.config ?? loadIdentityConfig(opts?.modelsPath)
-  const ov = cfg.overrides[id] ?? {}
-  const persona = ov.persona || ov.name || opts?.name || id.slice(0, 8)
-  const s = slug(persona)
-  return {
-    id,
-    persona,
-    session: ov.session || ov.sessionId || `${cfg.nodeId}-${s}`,
-    agent: ov.agent || ov.agentId || `rivet-${s}`,
-  }
+  const cfg = opts?.config ?? loadIdentityConfig()
+  const persona = opts?.name || id.slice(0, 8)
+  return deriveIdentity(id, persona, cfg)
 }
 
 export function identityFor(
   id: string,
-  opts?: { config?: IdentityConfig; modelsPath?: string; agentsDir?: string },
+  opts?: { config?: IdentityConfig; agentsDir?: string },
 ): BotIdentity {
-  if (opts?.config && Object.hasOwn(opts.config.overrides, id)) {
-    return resolveIdentity(id, { config: opts.config })
-  }
   return makeIdentityLookup({
     agentsDir: opts?.agentsDir,
-    modelsPath: opts?.modelsPath,
   }).identity(id)
 }
 
 const TRANSCRIPT_PATH_RE =
   /([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})[/\\]\1\.jsonl$/i
 
-/** On-disk agent-transcripts layout: `<uuid>/<uuid>.jsonl`. */
+/** On-disk agent-transcripts layout: uuid/uuid.jsonl. */
 export function agentIdFromTranscriptPath(file: string): string | undefined {
   const m = TRANSCRIPT_PATH_RE.exec(file.replace(/\\/g, '/'))
   return m?.[1]
@@ -281,15 +270,14 @@ export function listInputFiles(path: string): string[] {
   return out
 }
 
-/** Look up a roster/override identity from a session key (with or without -v2/-v3/-v3-rows). */
+/** Look up a discovered identity from a session key (with or without -v2/-v3/-v3-rows). */
 export function identityForSession(
   session: string,
-  opts?: { config?: IdentityConfig; modelsPath?: string; agentsDir?: string },
+  opts?: { agentsDir?: string },
 ): BotIdentity | undefined {
   const stripped = stripSessionSuffix(session)
   const lookup = makeIdentityLookup({
     agentsDir: opts?.agentsDir,
-    modelsPath: opts?.modelsPath,
   })
   const fromRoster = lookup.catalog.models.find(
     (m) => m.session === session || m.session === stripped,
@@ -301,11 +289,6 @@ export function identityForSession(
       session: fromRoster.session,
       agent: fromRoster.agent,
     }
-  }
-  const cfg = opts?.config ?? loadIdentityConfig(opts?.modelsPath)
-  for (const id of Object.keys(cfg.overrides)) {
-    const ident = resolveIdentity(id, { config: cfg })
-    if (ident.session === session || ident.session === stripped) return ident
   }
   return undefined
 }
@@ -321,6 +304,40 @@ const PARENT_ID_KEYS = [
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value)
+}
+
+function readProfileObject(profPath: string): Record<string, unknown> | undefined {
+  try {
+    const raw = JSON.parse(readFileSync(profPath, 'utf8')) as unknown
+    return isRecord(raw) ? raw : undefined
+  } catch {
+    return undefined
+  }
+}
+
+function hasExtraIdentity(prof: Record<string, unknown>): boolean {
+  for (const [key, value] of Object.entries(prof)) {
+    if (PROFILE_META_KEYS.has(key)) continue
+    if (value == null || value === '' || value === false) continue
+    return true
+  }
+  return false
+}
+
+/** Unused-slot / placeholder profiles: flags, kind, or the product unused name. */
+export function isPlaceholderProfile(prof: Record<string, unknown>): boolean {
+  if (prof.placeholder === true || prof.unused === true) return true
+  if (typeof prof.kind === 'string' && PLACEHOLDER_KINDS.has(prof.kind.toLowerCase())) return true
+  const name = typeof prof.name === 'string' ? prof.name.trim() : ''
+  if (!name) return true
+  return name.toLowerCase() === UNUSED_SLOT_NAME && !hasExtraIdentity(prof)
+}
+
+/** Child / spawn transcripts: parent id, or an explicit subagent flag. */
+export function isSubagentProfile(prof: Record<string, unknown>): boolean {
+  if (prof.subagent === true) return true
+  if (typeof prof.kind === 'string' && prof.kind.toLowerCase() === 'subagent') return true
+  return Boolean(parentSessionIdFromUnknown(prof))
 }
 
 /** Cheap parent UUID from a profile / first record (`parentId` and aliases). */
@@ -463,27 +480,26 @@ export function applySessionSuffix(session: string, suffix?: string): string {
   return session.endsWith(s) ? session : session + s
 }
 
-export function makeIdentityLookup(opts?: { agentsDir?: string; modelsPath?: string }) {
+export function makeIdentityLookup(opts?: { agentsDir?: string }) {
   let catalog: DiscoverResult
   try {
     catalog = discoverModels(opts)
   } catch {
-    const cfg = loadIdentityConfig(opts?.modelsPath)
+    const cfg = loadIdentityConfig()
     catalog = { nodeId: cfg.nodeId, models: [], unmappedTranscripts: [] }
   }
   const byId = new Map(catalog.models.map((m) => [m.id, m]))
-  const cfg = loadIdentityConfig(opts?.modelsPath)
+  const cfg = loadIdentityConfig()
   return {
     catalog,
     identity(id: string): BotIdentity {
       const m = byId.get(id)
       if (m) return { id: m.id, persona: m.persona, session: m.session, agent: m.agent }
-      if (Object.hasOwn(cfg.overrides, id)) return resolveIdentity(id, { config: cfg })
       return {
         id,
         persona: 'run',
         session: `${catalog.nodeId}-run-${id}`,
-        agent: SUBAGENT_AGENT,
+        agent: subagentAgent(cfg.agentPrefix),
       }
     },
   }

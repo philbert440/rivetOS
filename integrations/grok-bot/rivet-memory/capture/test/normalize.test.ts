@@ -1,4 +1,4 @@
-import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -7,15 +7,21 @@ import { describe, expect, it } from 'vitest'
 import { classifyHidden, extractAgentMessage } from '../src/hidden.js'
 import {
   agentIdFromTranscriptPath,
+  applySessionSuffix,
   discoverModels,
   identityFor,
   identityForSession,
   listInputFiles,
-  loadIdentityConfig,
+  isPlaceholderProfile,
+  isSubagentProfile,
   peekParentLastKnownTime,
+  resolveIdentity,
   resolveSourceAgentId,
   slug,
+  type IdentityConfig,
 } from '../src/identity.js'
+import { captureStateKey, oldStuckPolicyPath } from '../live-state.mjs'
+import { v3StoreSession } from '../src/store.js'
 import { ORDINAL_STRIDE } from '../src/types.js'
 import { mergeParsedInputs, normalizePages } from '../src/pages.js'
 import { LEGACY_TOOL_RESULT_MAX, legacyNormalizeRecords } from '../src/legacy.js'
@@ -48,19 +54,27 @@ import { stubImagePayloads } from '../src/storage.js'
 import { countNoise, extractUserText, stripWrappers } from '../src/wrappers.js'
 import { STORAGE_LIMIT } from '../src/types.js'
 import { compareInput } from '../src/compare.js'
+import {
+  ALPHA_ID,
+  BETA_ID,
+  DELTA_ID,
+  EPSILON_ID,
+  GAMMA_ID,
+  GROUP_ID,
+  NEW_BOT_ID,
+  OMEGA_ID,
+  ORPHAN_ID,
+  SUBAGENT_ID,
+} from './ids.js'
 
 const FIX = join(dirname(fileURLToPath(import.meta.url)), 'fixtures')
-const RIVET_ID = '6a155e75-0dd5-4c8a-8391-994878ed683a'
-const EGG_ID = 'fe09510f-c3ce-49bc-9d93-8c5ab5705809'
-const BOB_ID = '00df02ea-4f5f-4d3e-945a-864e1c9c78dc'
-const GARY_ID = '71aebcf6-8b3b-4649-abe1-ad6d653e6156'
 
 function readFix(name: string): string {
   return readFileSync(join(FIX, name), 'utf8')
 }
 
-function rivetOpts(session = 'grokbot-rivet-grokbot') {
-  return { sessionKey: session, agent: 'rivet-grokbot', agentId: RIVET_ID, persona: 'Rivet' }
+function alphaOpts(session = 'grokbot-alpha') {
+  return { sessionKey: session, agent: 'grokbot-alpha', agentId: ALPHA_ID, persona: 'Alpha' }
 }
 
 function normalizeFile(
@@ -72,11 +86,11 @@ function normalizeFile(
   return {
     parsed,
     result: normalizeRecords(parsed.records, {
-      ...rivetOpts(extra?.sessionKey),
+      ...alphaOpts(extra?.sessionKey),
       ...extra,
       format: parsed.format,
       startPosition: parsed.header?.a ?? 0,
-      agentId: extra?.agentId ?? parsed.header?.id ?? RIVET_ID,
+      agentId: extra?.agentId ?? parsed.header?.id ?? ALPHA_ID,
     }),
   }
 }
@@ -115,7 +129,7 @@ describe('timestamps', () => {
       },
       { role: 'assistant', message: { content: [{ type: 'text', text: 'after unstamped user' }] } },
     ]
-    const { messages } = normalizeRecords(records, rivetOpts())
+    const { messages } = normalizeRecords(records, alphaOpts())
     expect(messages[0].created_at).toBe('2026-09-27T20:06:00.000Z')
     expect(messages[0].metadata?.time_source).toBe('tag')
     expect(messages[1].created_at).toBe(addMs('2026-09-27T20:06:00.000Z', 1_000))
@@ -156,7 +170,7 @@ describe('timestamps', () => {
       { role: 'user', message: { content: [{ type: 'text', text: 'plain' }] } },
     ]
     const { messages } = normalizeRecords(records, {
-      ...rivetOpts(),
+      ...alphaOpts(),
       fileMtimeMs: Date.parse('2026-09-01T12:00:00.000Z'),
     })
     expect(messages.every((m) => Boolean(m.created_at))).toBe(true)
@@ -191,7 +205,7 @@ describe('timestamps', () => {
       },
       { role: 'assistant', message: { content: [{ type: 'text', text: 'a2' }] } },
     ]
-    const { messages } = normalizeRecords(records, rivetOpts())
+    const { messages } = normalizeRecords(records, alphaOpts())
     expect(messages[0].created_at).toBe('2026-09-27T20:06:00.000Z')
     expect(messages[1].created_at).toBe('2026-09-27T20:06:30.000Z')
     expect(messages[1].metadata?.time_source).toBe('interpolated')
@@ -215,7 +229,7 @@ describe('timestamps', () => {
       role: 'user',
       message: { content: [{ type: 'text', text: stamp }] },
     }
-    const { messages } = normalizeRecords([rec, after, later], rivetOpts())
+    const { messages } = normalizeRecords([rec, after, later], alphaOpts())
     const users = messages.filter((m) => m.role === 'user')
     expect(users).toHaveLength(2)
     expect(users[0].content).toBe('yes')
@@ -243,7 +257,7 @@ describe('timestamps', () => {
         },
       },
     ]
-    const { messages } = normalizeRecords(records, rivetOpts())
+    const { messages } = normalizeRecords(records, alphaOpts())
     expect(messages[0].created_at).toBe('2026-09-27T20:06:00.000Z')
     expect(messages[1].created_at).toBe(addMs('2026-09-27T20:06:00.000Z', INHERIT_STEP_MS))
     expect(messages[1].metadata?.time_source).toBe('inherited')
@@ -279,7 +293,7 @@ describe('timestamps', () => {
         },
       },
     ]
-    const { messages } = normalizeRecords(records, rivetOpts())
+    const { messages } = normalizeRecords(records, alphaOpts())
     expect(messages[0].created_at).toBe('2026-09-27T20:06:00.000Z')
     expect(Date.parse(messages[1].created_at ?? '')).toBeGreaterThan(
       Date.parse(messages[0].created_at ?? ''),
@@ -305,7 +319,7 @@ describe('timestamps', () => {
       },
     ]
     const { messages } = normalizeRecords(records, {
-      ...rivetOpts(),
+      ...alphaOpts(),
       fileMtimeMs: Date.parse('2026-09-01T12:00:00.000Z'),
     })
     expect(messages[0].created_at).not.toBe('2026-01-05T04:00:00.000Z')
@@ -330,7 +344,7 @@ describe('timestamps', () => {
     const asst = { role: 'assistant', message: { content: [{ type: 'text', text: 'hi' }] } }
     const records = [user, asst, user, asst]
     expect([...replaySkipIndices(records)].sort()).toEqual([2, 3])
-    const { messages, stats } = normalizeRecords(records, rivetOpts())
+    const { messages, stats } = normalizeRecords(records, alphaOpts())
     expect(messages.filter((m) => m.role === 'user')).toHaveLength(1)
     expect(messages.filter((m) => m.role === 'assistant')).toHaveLength(1)
     expect(stats.dropped).toBe(2)
@@ -351,7 +365,7 @@ describe('timestamps', () => {
     }
     const records = [toolUse, toolRes, toolUse, toolRes]
     expect(replaySkipIndices(records).size).toBe(0)
-    const { messages } = normalizeRecords(records, rivetOpts())
+    const { messages } = normalizeRecords(records, alphaOpts())
     expect(messages.filter((m) => m.role === 'assistant')).toHaveLength(2)
     expect(messages.filter((m) => m.role === 'tool')).toHaveLength(2)
   })
@@ -376,7 +390,7 @@ describe('timestamps', () => {
     }
     const records = [routine, tool, routine, tool]
     expect(replaySkipIndices(records).size).toBe(0)
-    const { messages } = normalizeRecords(records, rivetOpts())
+    const { messages } = normalizeRecords(records, alphaOpts())
     expect(messages.filter((m) => m.metadata?.kind === 'routine')).toHaveLength(2)
     expect(messages.filter((m) => m.role === 'assistant')).toHaveLength(2)
   })
@@ -421,7 +435,7 @@ describe('timestamps', () => {
     expect(skips.has(10)).toBe(true)
     expect(skips.has(40)).toBe(false)
     expect(skips.has(41)).toBe(false)
-    const { messages } = normalizeRecords(records, rivetOpts())
+    const { messages } = normalizeRecords(records, alphaOpts())
     expect(messages.filter((m) => m.role === 'tool')).toHaveLength(2)
   })
 
@@ -451,34 +465,18 @@ describe('timestamps', () => {
     for (let i = 12; i < 24; i++) expect(skips.has(i)).toBe(true)
     expect(skips.has(24)).toBe(false)
     expect(skips.has(25)).toBe(false)
-    const { messages } = normalizeRecords(records, rivetOpts())
+    const { messages } = normalizeRecords(records, alphaOpts())
     expect(
       messages.filter((m) => m.role === 'assistant' && m.content.startsWith('block-')),
     ).toHaveLength(12)
     expect(messages.filter((m) => m.role === 'tool')).toHaveLength(2)
   })
 
-  it('drops the first-run fixture replay at positions 204/225', () => {
-    const records = readFix('ondisk-rivet-first-run-0-240.jsonl')
-      .trim()
-      .split('\n')
-      .map((line) => JSON.parse(line) as unknown)
-    const skips = replaySkipIndices(records)
-    expect(skips.has(204)).toBe(false)
-    expect(skips.has(225)).toBe(true)
-    const { messages } = normalizeRecords(records, rivetOpts())
-    const asked = messages.filter(
-      (m) => m.role === 'user' && /did you address all the further reviews/i.test(m.content),
-    )
-    expect(asked).toHaveLength(1)
-    expect(asked[0].metadata?.position).toBe(204)
-  })
-
   it('reads send_message epoch stamps when a page has no <timestamp> tags', () => {
-    const text = readFix('page-rivet-this-conversation-3040-3056.txt')
+    const text = readFix('page-this-conversation.txt')
     const parsed = parseInput(text)
     const result = normalizeRecords(parsed.records, {
-      ...rivetOpts(),
+      ...alphaOpts(),
       format: parsed.format,
       startPosition: parsed.header?.a ?? 0,
     })
@@ -500,7 +498,7 @@ describe('timestamps', () => {
     const records = Array.from({ length: 201 }, (_, i) =>
       rec(i === 5 || i === 150 ? 'ok' : `msg-${String(i)}`),
     )
-    const opts = { sessionKey: 'grokbot-rivet-grokbot-v3', agent: 'rivet-grokbot' }
+    const opts = { sessionKey: 'grokbot-alpha-v3', agent: 'grokbot-alpha' }
     const mid = normalizeRecords(records.slice(100), { ...opts, startPosition: 100 })
     const full = normalizeRecords(records, { ...opts, startPosition: 0 })
 
@@ -543,7 +541,7 @@ describe('timestamps', () => {
 
 describe('wrappers', () => {
   it('strips every documented wrapper type and keeps [Image]', () => {
-    const raw = readFix('synthetic-wrappers.jsonl').split('\n')[0]
+    const raw = readFix('ondisk-wrappers.jsonl').split('\n')[0]
     const rec = JSON.parse(raw) as { message: { content: Array<{ text: string }> } }
     const text = rec.message.content[0].text
     const cleaned = extractUserText(text)
@@ -573,7 +571,7 @@ describe('wrappers', () => {
           ],
         },
       }
-      const { messages } = normalizeRecords([rec], rivetOpts())
+      const { messages } = normalizeRecords([rec], alphaOpts())
       expect(messages).toHaveLength(1)
       expect(messages[0].role).toBe('user')
       expect(messages[0].content).toContain(tag)
@@ -608,7 +606,7 @@ describe('wrappers', () => {
           ],
         },
       }
-      const { messages } = normalizeRecords([rec], rivetOpts())
+      const { messages } = normalizeRecords([rec], alphaOpts())
       expect(messages, tag).toHaveLength(1)
       expect(messages[0].role, tag).toBe('user')
       expect(messages[0].content, tag).toContain(tag)
@@ -616,8 +614,8 @@ describe('wrappers', () => {
     }
   })
 
-  it('strips wrappers on the first-run Rivet sample', () => {
-    const { result } = normalizeFile('ondisk-rivet-first-run-0-240.jsonl')
+  it('strips wrappers on the wrapper fixture', () => {
+    const { result } = normalizeFile('ondisk-wrappers.jsonl')
     const blob = result.messages.map((m) => m.content).join('\n')
     expect(blob).not.toMatch(
       /<timestamp>|<user_query>|\[SAND_HIDDEN_PROMPT\]|<<SAND_AGENT_PROFILE_UPDATE|<agent_profile_update>/,
@@ -628,7 +626,7 @@ describe('wrappers', () => {
 
 describe('hidden turns', () => {
   it('stores first-run, profile, routine, skipped, background as system — not user', () => {
-    const { result } = normalizeFile('ondisk-rivet-first-run-0-240.jsonl')
+    const { result } = normalizeFile('ondisk-hidden.jsonl')
     const users = result.messages.filter((m) => m.role === 'user')
     const systems = result.messages.filter((m) => m.role === 'system')
     expect(
@@ -644,19 +642,30 @@ describe('hidden turns', () => {
   })
 
   it('keeps [agent] payload as a system event with from_agent / from_agent_id', () => {
-    const { result } = normalizeFile('ondisk-rivet-agent-msgs-1880-1920.jsonl')
+    const { result } = normalizeFile('ondisk-hidden.jsonl')
     const agents = result.messages.filter((m) => m.metadata?.kind === 'agent_message')
     expect(agents.length).toBeGreaterThan(0)
     expect(agents[0].role).toBe('system')
-    expect(agents[0].content).toMatch(/Told Philip|Cleanup done|Rivet Team removal/)
+    expect(agents[0].content).toMatch(/Cleanup done|Team removal queued/)
     expect(agents[0].content).not.toMatch(/A message just arrived from another/)
-    expect(agents[0].metadata?.from_agent).toMatch(/Gary|Bob/)
+    expect(agents[0].metadata?.from_agent).toMatch(/Epsilon|Beta/)
     expect(String(agents[0].metadata?.from_agent_id)).toMatch(/^[0-9a-f-]{36}$/)
   })
 
   it('mixed real text + hidden block keeps only the real text as the user turn', () => {
-    const { result } = normalizeFile('ondisk-rivet-first-run-0-240.jsonl')
-    const users = result.messages.filter((m) => m.role === 'user')
+    const rec = {
+      role: 'user',
+      message: {
+        content: [
+          {
+            type: 'text',
+            text: '[SAND_HIDDEN_PROMPT]a good grok bot description\n<<SAND_AGENT_PROFILE_UPDATE:v1:abc>>\n<agent_profile_update>\nname: Alpha\n</agent_profile_update>',
+          },
+        ],
+      },
+    }
+    const { messages } = normalizeRecords([rec], alphaOpts())
+    const users = messages.filter((m) => m.role === 'user')
     const desc = users.find((m) => /good grok bot description/i.test(m.content))
     expect(desc).toBeTruthy()
     expect(desc?.content).not.toMatch(/SAND_AGENT_PROFILE_UPDATE|agent_profile_update/)
@@ -674,7 +683,7 @@ describe('hidden turns', () => {
         ],
       },
     }
-    const { messages } = normalizeRecords([rec, rec], rivetOpts())
+    const { messages } = normalizeRecords([rec, rec], alphaOpts())
     const routines = messages.filter((m) => m.metadata?.kind === 'routine')
     expect(routines).toHaveLength(2)
     expect(routines[0].metadata?.position).toBe(0)
@@ -688,7 +697,7 @@ describe('hidden turns', () => {
       role: 'system',
       message: { content: [{ type: 'text', text: 'sys note' }] },
     }
-    const { messages } = normalizeRecords([rec], rivetOpts())
+    const { messages } = normalizeRecords([rec], alphaOpts())
     expect(messages).toHaveLength(1)
     expect(messages[0].role).toBe('system')
     expect(messages[0].content).toBe('sys note')
@@ -701,7 +710,7 @@ describe('hidden turns', () => {
       input: {},
     }))
     const rec = { role: 'assistant', message: { content: parts } }
-    expect(() => normalizeRecords([rec], rivetOpts())).toThrow(/ordinal sub-index/)
+    expect(() => normalizeRecords([rec], alphaOpts())).toThrow(/ordinal sub-index/)
   })
 
   it('classifies reactions and events', () => {
@@ -729,10 +738,10 @@ describe('hidden turns', () => {
         ],
       },
     }
-    const { messages } = normalizeRecords([sandReaction, sandEvent], rivetOpts())
+    const { messages } = normalizeRecords([sandReaction, sandEvent], alphaOpts())
     expect(messages.some((m) => m.metadata?.kind === 'reaction')).toBe(true)
     expect(messages.some((m) => m.metadata?.kind === 'event')).toBe(true)
-    const unmarked = normalizeFile('synthetic-wrappers.jsonl')
+    const unmarked = normalizeFile('ondisk-wrappers.jsonl')
     expect(unmarked.result.messages.some((m) => m.metadata?.kind === 'reaction')).toBe(false)
     expect(
       unmarked.result.messages.some(
@@ -743,113 +752,196 @@ describe('hidden turns', () => {
 })
 
 describe('per-bot tags', () => {
-  it('keeps the historical Rivet session/agent tags unchanged', () => {
-    const ident = identityFor(RIVET_ID)
-    expect(ident.session).toBe('grokbot-rivet-grokbot')
-    expect(ident.agent).toBe('rivet-grokbot')
-    expect(loadIdentityConfig().overrides[RIVET_ID]?.session).toBe('grokbot-rivet-grokbot')
-  })
+  const agentsDir = join(FIX, 'agents')
 
-  it('keeps the historical eggbot tags', () => {
-    const ident = identityFor(EGG_ID)
-    expect(ident.session).toBe('grokbot-eggbot')
-    expect(ident.agent).toBe('rivet-eggbot')
-  })
+  function emptyCfg(extra?: Partial<IdentityConfig>): IdentityConfig {
+    return {
+      nodeId: 'grokbot',
+      agentPrefix: 'grokbot',
+      ...extra,
+    }
+  }
 
-  it('discovers roster bots, skips group.json and excludeNames', () => {
-    const catalog = discoverModels({
-      agentsDir: join(FIX, 'agents'),
-      modelsPath: join(dirname(FIX), '..', 'models.json'),
+  it('derives session grokbot-<slug> and agent <prefix>-<slug> from the profile name', () => {
+    const ident = identityFor(ALPHA_ID, { agentsDir })
+    expect(ident.persona).toBe('Alpha')
+    expect(ident.session).toBe('grokbot-alpha')
+    expect(ident.agent).toBe('grokbot-alpha')
+    expect(identityFor(DELTA_ID, { agentsDir })).toMatchObject({
+      persona: 'Delta',
+      session: 'grokbot-delta',
+      agent: 'grokbot-delta',
     })
+  })
+
+  it('uses GROKBOT_AGENT_PREFIX for the agent tag only', () => {
+    const ident = resolveIdentity(ALPHA_ID, {
+      config: emptyCfg({ agentPrefix: 'legacy' }),
+      name: 'Alpha',
+    })
+    expect(ident.session).toBe('grokbot-alpha')
+    expect(ident.agent).toBe('legacy-alpha')
+  })
+
+  it('does not ship a committed bot list or override file', () => {
+    const captureRoot = join(dirname(FIX), '..')
+    expect(existsSync(join(captureRoot, 'models.json'))).toBe(false)
+    expect(existsSync(join(captureRoot, 'models.local.example.json'))).toBe(false)
+    expect(existsSync(join(FIX, 'models.json'))).toBe(false)
+  })
+
+  it('discovers from profiles with no config file', () => {
+    const catalog = discoverModels({ agentsDir })
+    const alpha = catalog.models.find((m) => m.id === ALPHA_ID)
+    expect(alpha).toMatchObject({
+      persona: 'Alpha',
+      session: 'grokbot-alpha',
+      agent: 'grokbot-alpha',
+    })
+    expect(catalog.models.find((m) => m.id === BETA_ID)?.agent).toBe('grokbot-beta')
+    expect(catalog.models.find((m) => m.id === EPSILON_ID)).toBeUndefined()
+  })
+
+  it('keeps -v4 state and cursor names on the derived session id', () => {
+    const catalog = discoverModels({ agentsDir })
+    expect(catalog.models.length).toBeGreaterThan(0)
+    for (const m of catalog.models) {
+      expect(applySessionSuffix(m.session, '-v4')).toBe(`${m.session}-v4`)
+      expect(captureStateKey(m.id, '-v4')).toBe(`${m.id}-v4`)
+      expect(oldStuckPolicyPath('/tmp/rivetos/capture', `${m.session}-v4`, '-v4')).toBe(
+        `/tmp/rivetos/capture/${m.session}.json`,
+      )
+      expect(v3StoreSession(m.session, '-v4-store')).toBe(`${m.session}-v4-store`)
+    }
+    const watch = readFileSync(join(dirname(FIX), '..', 'watch.mjs'), 'utf8')
+    expect(watch).toContain('grokbot-capture-state${SESSION_SUFFIX}')
+    expect(watch).toContain("SESSION_SUFFIX = process.env.GROKBOT_SESSION_SUFFIX ?? '-v3'")
+  })
+
+  it('discovers roster bots and skips groups, placeholders, and subagents by structure', () => {
+    const catalog = discoverModels({ agentsDir })
     const ids = catalog.models.map((m) => m.id)
-    expect(ids).toContain(RIVET_ID)
-    expect(ids).toContain(BOB_ID)
-    expect(ids).toContain(EGG_ID)
-    expect(ids).toContain('cccccccc-dddd-4eee-8fff-aaaaaaaaaaaa')
-    expect(catalog.models.find((m) => m.id === 'cccccccc-dddd-4eee-8fff-aaaaaaaaaaaa')?.agent).toBe(
-      'rivet-arch',
-    )
-    expect(ids).not.toContain('aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee')
-    expect(ids).not.toContain('11111111-2222-4333-8444-555555555555')
-    expect(catalog.models.find((m) => m.id === RIVET_ID)?.session).toBe('grokbot-rivet-grokbot')
-    expect(ids).toContain(GARY_ID)
-    expect(catalog.models.find((m) => m.id === GARY_ID)?.agent).toBe('rivet-gary')
+    expect(ids).toContain(ALPHA_ID)
+    expect(ids).toContain(BETA_ID)
+    expect(ids).toContain(GAMMA_ID)
+    expect(ids).toContain(DELTA_ID)
+    expect(ids).toContain(OMEGA_ID)
+    expect(catalog.models.find((m) => m.id === OMEGA_ID)).toMatchObject({
+      persona: 'Omega',
+      session: 'grokbot-omega',
+      agent: 'grokbot-omega',
+    })
+    expect(ids).not.toContain(NEW_BOT_ID)
+    expect(ids).not.toContain(GROUP_ID)
+    expect(ids).not.toContain(SUBAGENT_ID)
+    expect(ids).not.toContain(EPSILON_ID)
+    expect(isPlaceholderProfile({ name: 'New Bot' })).toBe(true)
+    expect(isPlaceholderProfile({ name: 'Unused slot', placeholder: true })).toBe(true)
+    expect(isPlaceholderProfile({ name: 'Alpha' })).toBe(false)
+    expect(isSubagentProfile({ name: 'spawn', parentId: ALPHA_ID })).toBe(true)
+  })
+
+  it('suffixes every colliding slug, including the first, independent of UUID order', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'gb-collide-'))
+    const first = 'aaaaaaaa-0000-4000-8000-000000000011'
+    const second = 'bbbbbbbb-0000-4000-8000-000000000022'
+    for (const id of [first, second]) {
+      mkdirSync(join(dir, id), { recursive: true })
+      writeFileSync(join(dir, id, 'profile.json'), JSON.stringify({ name: 'Alpha Twin' }))
+    }
+    const catalog = discoverModels({ agentsDir: dir })
+    const byId = Object.fromEntries(catalog.models.map((m) => [m.id, m]))
+    expect(byId[first]).toMatchObject({
+      persona: 'Alpha Twin',
+      session: 'grokbot-alpha-twin-aaaaaaaa',
+      agent: 'grokbot-alpha-twin-aaaaaaaa',
+    })
+    expect(byId[second]).toMatchObject({
+      persona: 'Alpha Twin',
+      session: 'grokbot-alpha-twin-bbbbbbbb',
+      agent: 'grokbot-alpha-twin-bbbbbbbb',
+    })
+    expect(catalog.models.map((m) => m.agent)).not.toContain('grokbot-alpha-twin')
+
+    const early = '00000000-0000-4000-8000-000000000033'
+    mkdirSync(join(dir, early), { recursive: true })
+    writeFileSync(join(dir, early, 'profile.json'), JSON.stringify({ name: 'Alpha Twin' }))
+    const next = discoverModels({ agentsDir: dir })
+    const nextById = Object.fromEntries(next.models.map((m) => [m.id, m]))
+    expect(nextById[first].agent).toBe('grokbot-alpha-twin-aaaaaaaa')
+    expect(nextById[second].agent).toBe('grokbot-alpha-twin-bbbbbbbb')
+    expect(nextById[early].agent).toBe('grokbot-alpha-twin-00000000')
   })
 
   it('reports unmapped <uuid>/<uuid>.jsonl transcripts instead of dropping them', () => {
     const dir = mkdtempSync(join(tmpdir(), 'gb-unmapped-'))
-    const orphan = 'eb245c0c-0000-4000-8000-000000000001'
+    const orphan = ORPHAN_ID
     mkdirSync(join(dir, orphan), { recursive: true })
     writeFileSync(join(dir, orphan, `${orphan}.jsonl`), '{}\n')
     const catalog = discoverModels({
-      agentsDir: join(FIX, 'agents'),
-      modelsPath: join(dirname(FIX), '..', 'models.json'),
+      agentsDir,
       transcriptsDir: dir,
     })
     expect(catalog.unmappedTranscripts).toContain(orphan)
     expect(catalog.models.map((m) => m.id)).not.toContain(orphan)
   })
 
-  it('tags subagents as rivet-grokbot-run / grokbot-run-<id>', () => {
-    const id = '99999999-aaaa-4bbb-8ccc-dddddddddddd'
-    const ident = identityFor(id, { agentsDir: join(FIX, 'agents') })
-    expect(ident.agent).toBe('rivet-grokbot-run')
+  it('tags unknown ids as <prefix>-run / <node>-run-<id>', () => {
+    const id = 'aaaaaaaa-bbbb-4ccc-8ddd-111111111111'
+    const ident = identityFor(id, { agentsDir })
+    expect(ident.persona).toBe('run')
+    expect(ident.agent).toBe('grokbot-run')
     expect(ident.session).toBe(`grokbot-run-${id}`)
   })
 
-  it('consults the roster before the subagent fallback (un-overridden Arch)', () => {
-    const id = 'cccccccc-dddd-4eee-8fff-aaaaaaaaaaaa'
-    const ident = identityFor(id, {
-      agentsDir: join(FIX, 'agents'),
-      modelsPath: join(dirname(FIX), '..', 'models.json'),
-    })
-    expect(ident.persona).toBe('Arch')
-    expect(ident.session).toBe('grokbot-arch')
-    expect(ident.agent).toBe('rivet-arch')
+  it('skips a profiled subagent and still consults the roster first', () => {
+    expect(identityFor(SUBAGENT_ID, { agentsDir }).agent).toBe('grokbot-run')
+    const ident = identityFor(OMEGA_ID, { agentsDir })
+    expect(ident.persona).toBe('Omega')
+    expect(ident.session).toBe('grokbot-omega')
+    expect(ident.agent).toBe('grokbot-omega')
   })
 
   it('refuses unidentified backfill files without --agent-id, header, or uuid/uuid.jsonl', () => {
     expect(resolveSourceAgentId({ file: '/tmp/orphan.jsonl' })).toBeUndefined()
     expect(resolveSourceAgentId({ file: '/tmp/page.txt' })).toBeUndefined()
-    expect(resolveSourceAgentId({ file: `/tmp/${BOB_ID}/${BOB_ID}.jsonl` })).toBe(BOB_ID)
-    expect(resolveSourceAgentId({ file: '/tmp/x.jsonl', headerId: BOB_ID })).toBe(BOB_ID)
-    expect(resolveSourceAgentId({ file: '/tmp/x.jsonl', explicitId: BOB_ID })).toBe(BOB_ID)
+    expect(resolveSourceAgentId({ file: `/tmp/${BETA_ID}/${BETA_ID}.jsonl` })).toBe(BETA_ID)
+    expect(resolveSourceAgentId({ file: '/tmp/x.jsonl', headerId: BETA_ID })).toBe(BETA_ID)
+    expect(resolveSourceAgentId({ file: '/tmp/x.jsonl', explicitId: BETA_ID })).toBe(BETA_ID)
   })
 
   it('reads on-disk agent id from <uuid>/<uuid>.jsonl', () => {
-    expect(
-      agentIdFromTranscriptPath(
-        '/home/user/agent-data/agent-transcripts/00df02ea-4f5f-4d3e-945a-864e1c9c78dc/00df02ea-4f5f-4d3e-945a-864e1c9c78dc.jsonl',
-      ),
-    ).toBe(BOB_ID)
+    expect(agentIdFromTranscriptPath(`/tmp/agent-transcripts/${BETA_ID}/${BETA_ID}.jsonl`)).toBe(
+      BETA_ID,
+    )
     expect(agentIdFromTranscriptPath('/tmp/page.txt')).toBeUndefined()
   })
 
   it('lists input files recursively so the agent-transcripts root works', () => {
     const root = join(FIX, 'agent-transcripts')
     const files = listInputFiles(root)
-    expect(files.some((f) => f.endsWith(`${BOB_ID}/${BOB_ID}.jsonl`))).toBe(true)
+    expect(files.some((f) => f.endsWith(`${BETA_ID}/${BETA_ID}.jsonl`))).toBe(true)
   })
 
   it('puts the agent id on every message metadata', () => {
-    const { result } = normalizeFile('ondisk-bob-0-16.jsonl', {
-      sessionKey: 'grokbot-bob',
-      agent: 'rivet-bob',
-      agentId: BOB_ID,
+    const { result } = normalizeFile('ondisk-basic.jsonl', {
+      sessionKey: 'grokbot-beta',
+      agent: 'grokbot-beta',
+      agentId: BETA_ID,
     })
-    expect(result.messages.every((m) => m.metadata?.agent_id === BOB_ID)).toBe(true)
+    expect(result.messages.every((m) => m.metadata?.agent_id === BETA_ID)).toBe(true)
   })
 
-  it('slugs New Bot-style names', () => {
-    expect(slug('dr eggbot')).toBe('dr-eggbot')
+  it('slugs multi-word persona names', () => {
+    expect(slug('Delta Prime')).toBe('delta-prime')
   })
 })
 
 describe('unstamped on-disk transcript + createdAt', () => {
   it('stamps every line on a bot with no inline <timestamp> tags and hidden turns', () => {
-    const { result } = normalizeFile('ondisk-unstamped-hidden.jsonl', {
-      sessionKey: 'grokbot-ollie-v4',
-      agent: 'rivet-ollie',
+    const { result } = normalizeFile('ondisk-unstamped.jsonl', {
+      sessionKey: 'grokbot-omega-v4',
+      agent: 'grokbot-omega',
     })
     expect(result.messages.length).toBeGreaterThan(0)
     expect(result.messages.every((m) => Boolean(m.created_at))).toBe(true)
@@ -879,7 +971,7 @@ describe('unstamped on-disk transcript + createdAt', () => {
       { role: 'assistant', message: { content: [{ type: 'text', text: 'hello' }] } },
       { role: 'user', message: { content: [{ type: 'text', text: '[t0u]\nplain note' }] } },
     ]
-    const { messages } = normalizeRecords(records, { ...rivetOpts(), fileMtimeMs: mtime })
+    const { messages } = normalizeRecords(records, { ...alphaOpts(), fileMtimeMs: mtime })
     expect(messages.every((m) => Boolean(m.created_at))).toBe(true)
     const times = messages.map((m) => Date.parse(m.created_at ?? ''))
     expect(times.every((t, i) => i === 0 || t > times[i - 1])).toBe(true)
@@ -898,7 +990,7 @@ describe('unstamped on-disk transcript + createdAt', () => {
       { role: 'user', message: { content: [{ type: 'text', text: '[t1u]\nthree' }] } },
     ]
     const { messages } = normalizeRecords(records, {
-      ...rivetOpts(),
+      ...alphaOpts(),
       fileMtimeMs: mtime,
       fileBirthtimeMs: birth,
     })
@@ -917,7 +1009,7 @@ describe('unstamped on-disk transcript + createdAt', () => {
       { role: 'user', message: { content: [{ type: 'text', text: '[t1u]\nthree' }] } },
     ]
     const { messages } = normalizeRecords(records, {
-      ...rivetOpts(),
+      ...alphaOpts(),
       fileMtimeMs: mtime,
       fileBirthtimeMs: mtime - 4,
     })
@@ -936,7 +1028,7 @@ describe('unstamped on-disk transcript + createdAt', () => {
       { role: 'assistant', message: { content: [{ type: 'text', text: 'ok' }] } },
     ]
     const { messages } = normalizeRecords(records, {
-      ...rivetOpts(),
+      ...alphaOpts(),
       fileMtimeMs: mtime,
       lastKnownTime: parent,
     })
@@ -947,8 +1039,8 @@ describe('unstamped on-disk transcript + createdAt', () => {
   })
 
   it('skips parent seeding when only parentId is known (not the last stamp)', () => {
-    const parentId = 'aaaaaaaa-bbbb-4ccc-8ddd-111111111111'
-    const childId = 'bbbbbbbb-cccc-4ddd-8eee-222222222222'
+    const parentId = '00000000-0000-4000-8000-000000000011'
+    const childId = '00000000-0000-4000-8000-000000000012'
     const root = mkdtempSync(join(tmpdir(), 'gb-parent-skip-'))
     mkdirSync(join(root, parentId), { recursive: true })
     mkdirSync(join(root, 'agents', childId), { recursive: true })
@@ -980,8 +1072,8 @@ describe('unstamped on-disk transcript + createdAt', () => {
   })
 
   it('peeks the parent stamp nearest the child spawn mention, not the last stamp', () => {
-    const parentId = 'aaaaaaaa-bbbb-4ccc-8ddd-111111111111'
-    const childId = 'bbbbbbbb-cccc-4ddd-8eee-222222222222'
+    const parentId = '00000000-0000-4000-8000-000000000011'
+    const childId = '00000000-0000-4000-8000-000000000012'
     const root = mkdtempSync(join(tmpdir(), 'gb-parent-near-'))
     mkdirSync(join(root, parentId), { recursive: true })
     mkdirSync(join(root, 'agents', childId), { recursive: true })
@@ -1025,8 +1117,8 @@ describe('unstamped on-disk transcript + createdAt', () => {
   })
 
   it('uses profile createdAt to pick the nearest parent stamp', () => {
-    const parentId = 'aaaaaaaa-bbbb-4ccc-8ddd-333333333333'
-    const childId = 'bbbbbbbb-cccc-4ddd-8eee-444444444444'
+    const parentId = '00000000-0000-4000-8000-000000000013'
+    const childId = '00000000-0000-4000-8000-000000000014'
     const root = mkdtempSync(join(tmpdir(), 'gb-parent-created-'))
     mkdirSync(join(root, parentId), { recursive: true })
     mkdirSync(join(root, 'agents', childId), { recursive: true })
@@ -1106,7 +1198,7 @@ describe('unstamped on-disk transcript + createdAt', () => {
         },
       },
     ]
-    const { messages } = normalizeRecords(records, rivetOpts())
+    const { messages } = normalizeRecords(records, alphaOpts())
     expect(messages[1].created_at).toBe(addMs('2026-09-27T20:07:00.000Z', INHERIT_STEP_MS))
     expect(messages[1].metadata?.time_source).toBe('inherited')
   })
@@ -1124,19 +1216,17 @@ describe('unstamped on-disk transcript + createdAt', () => {
   })
 
   it('strips -v4 store/voice/rows suffixes the same way as -v3', () => {
-    expect(stripSessionSuffix('grokbot-ollie-v4')).toBe('grokbot-ollie')
-    expect(stripSessionSuffix('grokbot-ollie-v4-store')).toBe('grokbot-ollie')
-    expect(stripSessionSuffix('grokbot-ollie-v4-rows')).toBe('grokbot-ollie')
-    expect(stripSessionSuffix('grokbot-ollie-v4-voice-call')).toBe('grokbot-ollie')
-    expect(stripSessionSuffix('grokbot-rivet-grokbot-v3-voice-call-redacted')).toBe(
-      'grokbot-rivet-grokbot',
-    )
+    expect(stripSessionSuffix('grokbot-omega-v4')).toBe('grokbot-omega')
+    expect(stripSessionSuffix('grokbot-omega-v4-store')).toBe('grokbot-omega')
+    expect(stripSessionSuffix('grokbot-omega-v4-rows')).toBe('grokbot-omega')
+    expect(stripSessionSuffix('grokbot-omega-v4-voice-call')).toBe('grokbot-omega')
+    expect(stripSessionSuffix('grokbot-alpha-v3-voice-call-redacted')).toBe('grokbot-alpha')
   })
 })
 
 describe('tool_result + capForStorage', () => {
   it('reads tool_result from result (old converter ignored it)', () => {
-    const page = readFix('page-rivet-this-conversation-3040-3056.txt')
+    const page = readFix('page-this-conversation.txt')
     const parsed = parseInput(page)
     const tool = parsed.records.find((r) => {
       const rec = r as { role?: string }
@@ -1149,7 +1239,7 @@ describe('tool_result + capForStorage', () => {
     const legacy = legacyNormalizeRecords([tool], { page: false })
     expect(legacy[0]?.content ?? '').not.toMatch(/success|spawnError/)
 
-    const after = normalizeRecords([tool], rivetOpts())
+    const after = normalizeRecords([tool], alphaOpts())
     expect(after.messages[0].role).toBe('tool')
     expect(after.messages[0].tool_result).toMatch(/success|spawnError|timestamp/)
   })
@@ -1160,7 +1250,7 @@ describe('tool_result + capForStorage', () => {
       role: 'tool',
       message: { content: [{ type: 'tool_result', name: 'shell', result: huge }] },
     }
-    const { messages } = normalizeRecords([rec], rivetOpts())
+    const { messages } = normalizeRecords([rec], alphaOpts())
     expect(messages[0].tool_result).toBe(huge)
     expect(messages[0].tool_result?.length).toBe(20_000)
     expect(messages[0].tool_result).not.toContain('…[truncated')
@@ -1168,15 +1258,6 @@ describe('tool_result + capForStorage', () => {
     expect(LEGACY_TOOL_RESULT_MAX).toBe(4096)
     expect(capForStorage(huge).truncated).toBe(true)
     expect(STORAGE_LIMIT).toBe(16_000)
-  })
-
-  it('keeps a real oversized ReadTranscript shell result in full', () => {
-    const { result } = normalizeFile('page-rivet-2395-2445.txt')
-    const tools = result.messages.filter((m) => m.role === 'tool' && (m.tool_result?.length ?? 0) > 4_096)
-    expect(tools.length).toBeGreaterThan(0)
-    expect(tools.every((m) => m.metadata?.truncated !== true)).toBe(true)
-    expect(tools.every((m) => !m.tool_result?.includes('…[truncated'))).toBe(true)
-    expect(tools.some((m) => (m.tool_result?.length ?? 0) > STORAGE_LIMIT)).toBe(true)
   })
 
   it('stubs base64/data-URI images and caps huge tool results with a source pointer', () => {
@@ -1189,7 +1270,7 @@ describe('tool_result + capForStorage', () => {
     expect(stubbed.text).not.toContain(png)
 
     const huge = 'x'.repeat(CONTENT_LIMIT + 50)
-    const src = join(FIX, 'ondisk-unstamped-hidden.jsonl')
+    const src = join(FIX, 'ondisk-unstamped.jsonl')
     const { messages } = normalizeRecords(
       [
         {
@@ -1203,7 +1284,7 @@ describe('tool_result + capForStorage', () => {
           message: { content: [{ type: 'tool_result', name: 'shell', result: huge }] },
         },
       ],
-      { ...rivetOpts(), sourcePath: src, sourceLines: [0, 1] },
+      { ...alphaOpts(), sourcePath: src, sourceLines: [0, 1] },
     )
     const img = messages[0]
     expect(img.metadata?.truncated).toBe(true)
@@ -1226,26 +1307,26 @@ describe('tool_result + capForStorage', () => {
 
 describe('both input formats', () => {
   it('parses on-disk jsonl (no header)', () => {
-    const parsed = parseInput(readFix('ondisk-bob-0-16.jsonl'))
+    const parsed = parseInput(readFix('ondisk-basic.jsonl'))
     expect(parsed.format).toBe('ondisk')
-    expect(parsed.records.length).toBe(17)
+    expect(parsed.records.length).toBe(4)
     expect(parsed.header).toBeUndefined()
   })
 
   it('parses a named-agent page with footer', () => {
-    const parsed = parseInput(readFix('page-rivet-2395-2445.txt'))
+    const parsed = parseInput(readFix('page-named.txt'))
     expect(parsed.format).toBe('page')
-    expect(parsed.header?.name).toBe('Rivet')
-    expect(parsed.header?.id).toBe(RIVET_ID)
-    expect(parsed.header?.a).toBe(2395)
+    expect(parsed.header?.name).toBe('Beta')
+    expect(parsed.header?.id).toBe(BETA_ID)
+    expect(parsed.header?.a).toBe(10)
     expect(parsed.hasOlderFooter).toBe(true)
   })
 
   it('parses the this-conversation header variant', () => {
-    const parsed = parseInput(readFix('page-rivet-this-conversation-3040-3056.txt'))
+    const parsed = parseInput(readFix('page-this-conversation.txt'))
     expect(parsed.header?.thisConversation).toBe(true)
-    expect(parsed.header?.a).toBe(3040)
-    expect(parsed.header?.b).toBe(3056)
+    expect(parsed.header?.a).toBe(0)
+    expect(parsed.header?.b).toBe(2)
     expect(parsePageHeader('Transcript of this conversation, positions 0–0 of 1:')).toMatchObject({
       thisConversation: true,
       a: 0,
@@ -1253,45 +1334,45 @@ describe('both input formats', () => {
   })
 
   it('parses an A=0 page with no footer', () => {
-    const parsed = parseInput(readFix('page-maggie-0-20.txt'))
+    const parsed = parseInput(readFix('page-start.txt'))
     expect(parsed.header?.a).toBe(0)
-    expect(parsed.header?.name).toBe('Maggie')
+    expect(parsed.header?.name).toBe('Gamma')
     expect(parsed.hasOlderFooter).toBe(false)
-    expect(detectFormat(readFix('page-maggie-0-20.txt'))).toBe('page')
+    expect(detectFormat(readFix('page-start.txt'))).toBe('page')
   })
 })
 
 describe('reclean', () => {
   it('writes under -v3 and never targets the original session', () => {
-    expect(v3Session('grokbot-rivet-grokbot')).toBe('grokbot-rivet-grokbot-v3')
-    expect(v3Session('grokbot-rivet-grokbot-v2')).toBe('grokbot-rivet-grokbot-v3')
-    const result = recleanFromSource(readFix('ondisk-bob-0-16.jsonl'), {
-      sessionKey: 'grokbot-bob',
-      agent: 'rivet-bob',
-      agentId: BOB_ID,
+    expect(v3Session('grokbot-alpha')).toBe('grokbot-alpha-v3')
+    expect(v3Session('grokbot-alpha-v2')).toBe('grokbot-alpha-v3')
+    const result = recleanFromSource(readFix('ondisk-basic.jsonl'), {
+      sessionKey: 'grokbot-beta',
+      agent: 'grokbot-beta',
+      agentId: BETA_ID,
       dryRun: true,
     })
-    expect(result.session).toBe('grokbot-bob-v3')
+    expect(result.session).toBe('grokbot-beta-v3')
     expect(result.dryRun).toBe(true)
     expect(result.wrote).toBe(false)
   })
 
   it('follows GROKBOT_SESSION_SUFFIX and refuses already row-shaped sessions', () => {
-    expect(v3Session('grokbot-bob', '-v4')).toBe('grokbot-bob-v4')
-    expect(v3RowsSession('grokbot-bob', '-v4')).toBe('grokbot-bob-v4-rows')
-    expect(isRowShapedSession('grokbot-bob-v3-rows')).toBe(true)
-    expect(isRowShapedSession('grokbot-bob-v4')).toBe(false)
-    const v4 = recleanFromSource(readFix('ondisk-bob-0-16.jsonl'), {
-      sessionKey: 'grokbot-bob',
-      agent: 'rivet-bob',
+    expect(v3Session('grokbot-beta', '-v4')).toBe('grokbot-beta-v4')
+    expect(v3RowsSession('grokbot-beta', '-v4')).toBe('grokbot-beta-v4-rows')
+    expect(isRowShapedSession('grokbot-beta-v3-rows')).toBe(true)
+    expect(isRowShapedSession('grokbot-beta-v4')).toBe(false)
+    const v4 = recleanFromSource(readFix('ondisk-basic.jsonl'), {
+      sessionKey: 'grokbot-beta',
+      agent: 'grokbot-beta',
       sessionSuffix: '-v4',
       dryRun: true,
     })
-    expect(v4.session).toBe('grokbot-bob-v4')
+    expect(v4.session).toBe('grokbot-beta-v4')
     expect(() =>
-      recleanFromSource(readFix('ondisk-bob-0-16.jsonl'), {
-        sessionKey: 'grokbot-bob-v3-rows',
-        agent: 'rivet-bob',
+      recleanFromSource(readFix('ondisk-basic.jsonl'), {
+        sessionKey: 'grokbot-beta-v3-rows',
+        agent: 'grokbot-beta',
         dryRun: true,
       }),
     ).toThrow(/row-shaped/)
@@ -1304,7 +1385,7 @@ describe('reclean', () => {
             metadata: { capture_source: 'grokbot-transcript', position: 0 },
           },
         ],
-        { sessionKey: 'grokbot-bob-v3', agent: 'rivet-bob', dryRun: true },
+        { sessionKey: 'grokbot-beta-v3', agent: 'grokbot-beta', dryRun: true },
       ),
     ).toThrow(/capture_source/)
   })
@@ -1319,7 +1400,7 @@ describe('reclean', () => {
           ordinal: 0,
         },
       ],
-      { sessionKey: 'grokbot-rivet-grokbot', agent: 'rivet-grokbot', dryRun: true },
+      { sessionKey: 'grokbot-alpha', agent: 'grokbot-alpha', dryRun: true },
     )
     expect(result.wrote).toBe(false)
     expect(result.ingest[0].content).toBe('keep me')
@@ -1343,7 +1424,7 @@ describe('reclean', () => {
           ordinal: 1,
         },
       ],
-      { sessionKey: 'grokbot-rivet-grokbot', agent: 'rivet-grokbot', dryRun: true },
+      { sessionKey: 'grokbot-alpha', agent: 'grokbot-alpha', dryRun: true },
     )
     const users = result.messages.filter((m) => m.role === 'user')
     expect(users[0].created_at).toBe('2026-09-27T20:06:00.000Z')
@@ -1362,38 +1443,36 @@ describe('reclean', () => {
         { role: 'user', content: 'keep', ordinal: 12 },
         { role: 'assistant', content: 'later', ordinal: 40 },
       ],
-      { sessionKey: 'grokbot-bob', agent: 'rivet-bob', dryRun: true },
+      { sessionKey: 'grokbot-beta', agent: 'grokbot-beta', dryRun: true },
     )
     expect(result.messages[0].metadata?.position).toBe(12)
     expect(result.messages[1].metadata?.position).toBe(40)
   })
 
-  it('does not force rivet-grokbot when reclean is given only --session', () => {
-    const egg = resolveIdent(undefined, 'grokbot-eggbot', undefined)
-    expect(egg.agent).toBe('rivet-eggbot')
-    expect(egg.session).toBe('grokbot-eggbot')
+  it('does not force grokbot-alpha when reclean is given only --session', () => {
+    const egg = resolveIdent(undefined, 'grokbot-delta', undefined)
+    expect(egg.agent).toBe('grokbot-delta')
+    expect(egg.session).toBe('grokbot-delta')
     const unknown = resolveIdent(undefined, 'grokbot-not-a-real-session', undefined)
     expect(unknown.agent).toBeUndefined()
-    expect(identityForSession('grokbot-rivet-grokbot-v3')?.agent).toBe('rivet-grokbot')
-    expect(identityForSession('grokbot-rivet-grokbot-v3-rows')?.agent).toBe('rivet-grokbot')
-    expect(identityForSession('grokbot-rivet-grokbot-v3-store')?.agent).toBe('rivet-grokbot')
-    expect(identityForSession('grokbot-rivet-grokbot-v3-voice-call-redacted')?.agent).toBe(
-      'rivet-grokbot',
-    )
-    expect(identityForSession('grokbot-rivet-grokbot-v4')?.agent).toBe('rivet-grokbot')
-    expect(identityForSession('grokbot-rivet-grokbot-v4-store')?.agent).toBe('rivet-grokbot')
+    expect(identityForSession('grokbot-alpha-v3')?.agent).toBe('grokbot-alpha')
+    expect(identityForSession('grokbot-alpha-v3-rows')?.agent).toBe('grokbot-alpha')
+    expect(identityForSession('grokbot-alpha-v3-store')?.agent).toBe('grokbot-alpha')
+    expect(identityForSession('grokbot-alpha-v3-voice-call-redacted')?.agent).toBe('grokbot-alpha')
+    expect(identityForSession('grokbot-alpha-v4')?.agent).toBe('grokbot-alpha')
+    expect(identityForSession('grokbot-alpha-v4-store')?.agent).toBe('grokbot-alpha')
   })
 
   it('writes stored-row reclean under -v3-rows, not -v3', () => {
-    expect(v3RowsSession('grokbot-rivet-grokbot')).toBe('grokbot-rivet-grokbot-v3-rows')
-    expect(v3RowsSession('grokbot-rivet-grokbot-v3')).toBe('grokbot-rivet-grokbot-v3-rows')
-    expect(v3RowsSession('grokbot-rivet-grokbot-v2')).toBe('grokbot-rivet-grokbot-v3-rows')
+    expect(v3RowsSession('grokbot-alpha')).toBe('grokbot-alpha-v3-rows')
+    expect(v3RowsSession('grokbot-alpha-v3')).toBe('grokbot-alpha-v3-rows')
+    expect(v3RowsSession('grokbot-alpha-v2')).toBe('grokbot-alpha-v3-rows')
     const result = recleanStoredRows([{ role: 'user', content: 'keep', ordinal: 0 }], {
-      sessionKey: 'grokbot-rivet-grokbot',
-      agent: 'rivet-grokbot',
+      sessionKey: 'grokbot-alpha',
+      agent: 'grokbot-alpha',
       dryRun: true,
     })
-    expect(result.session).toBe('grokbot-rivet-grokbot-v3-rows')
+    expect(result.session).toBe('grokbot-alpha-v3-rows')
   })
 
   it('keeps old-style sequential ordinals 0..2500 as positions without collapsing', () => {
@@ -1407,15 +1486,15 @@ describe('reclean', () => {
     expect(new Set(positions).size).toBe(2501)
     expect(Math.max(...positions)).toBe(2500)
     const result = recleanStoredRows(rows, {
-      sessionKey: 'grokbot-rivet-grokbot',
-      agent: 'rivet-grokbot',
+      sessionKey: 'grokbot-alpha',
+      agent: 'grokbot-alpha',
       dryRun: true,
     })
     const outPos = result.messages.map((m) => m.metadata?.position as number)
     expect(outPos).toEqual(positions)
     expect(outPos).toEqual([...outPos].sort((a, b) => a - b))
     expect(new Set(outPos).size).toBe(2501)
-    expect(result.session).toBe('grokbot-rivet-grokbot-v3-rows')
+    expect(result.session).toBe('grokbot-alpha-v3-rows')
   })
 
   it('decodes new-style stride ordinals only when capture_source or position is present', () => {
@@ -1455,7 +1534,7 @@ describe('reclean', () => {
           ordinal: 1,
         },
       ],
-      { sessionKey: 'grokbot-rivet-grokbot', agent: 'rivet-grokbot', dryRun: true },
+      { sessionKey: 'grokbot-alpha', agent: 'grokbot-alpha', dryRun: true },
     )
     expect(result.stats.timeKnown).toBe(true)
     expect(result.ingest.every((r) => Boolean(r.createdAt))).toBe(true)
@@ -1464,16 +1543,16 @@ describe('reclean', () => {
 
 describe('ingest mapping + compare', () => {
   it('maps CaptureMessage to ingest camelCase rows', () => {
-    const { result } = normalizeFile('ondisk-bob-0-16.jsonl', {
-      sessionKey: 'grokbot-bob',
-      agent: 'rivet-bob',
-      agentId: BOB_ID,
+    const { result } = normalizeFile('ondisk-basic.jsonl', {
+      sessionKey: 'grokbot-beta',
+      agent: 'grokbot-beta',
+      agentId: BETA_ID,
     })
     const rows = toIngestRows(result.messages)
     expect(rows.every((r) => r.role !== undefined)).toBe(true)
     expect(rows.every((r) => Boolean(r.createdAt))).toBe(true)
     expect(rows.some((r) => r.toolCalls && r.toolCalls.length > 0)).toBe(true)
-    expect(rows.every((r) => r.metadata?.agent_id === BOB_ID)).toBe(true)
+    expect(rows.every((r) => r.metadata?.agent_id === BETA_ID)).toBe(true)
     expect(rows.every((r) => typeof r.metadata?.position === 'number')).toBe(true)
     expect(rows.every((r) => typeof r.ordinal === 'number')).toBe(true)
     expect(rows.every((r) => typeof r.event_id === 'string' && r.event_id.length > 0)).toBe(true)
@@ -1487,31 +1566,32 @@ describe('ingest mapping + compare', () => {
   })
 
   it('before/after comparison shrinks noise and average length on real samples', () => {
-    const cmp = compareInput(readFix('ondisk-rivet-first-run-0-240.jsonl'), rivetOpts())
+    const cmp = compareInput(readFix('ondisk-wrappers.jsonl'), alphaOpts())
     // After splits each tool_use onto its own CaptureMessage (capture-core shape),
     // so row count can rise; noise and mean content length must fall.
     expect(cmp.after.avgChars.all).toBeLessThan(cmp.before.avgChars.all)
     expect(cmp.after.avgChars.user).toBeLessThan(cmp.before.avgChars.user)
-    expect(cmp.after.stats.user).toBeLessThan(cmp.before.rows)
-    expect(cmp.systemEvents).toBeGreaterThan(0)
+    expect(cmp.after.stats.user).toBeLessThanOrEqual(cmp.before.rows)
     expect(sumNoise(cmp.after.noise)).toBeLessThan(sumNoise(cmp.before.noise))
+    const hidden = compareInput(readFix('ondisk-hidden.jsonl'), alphaOpts())
+    expect(hidden.systemEvents).toBeGreaterThan(0)
   })
 })
 
 describe('extractAgentMessage', () => {
   it('pulls the named body out of the boilerplate', () => {
     const got = extractAgentMessage(
-      `[agent] A message just arrived from another of your user's agents: Gary (id: 71aebcf6-8b3b-4649-abe1-ad6d653e6156).
+      `[agent] A message just arrived from another of your user's agents: Epsilon (id: ${EPSILON_ID}).
 This is another assistant reaching out — not the user typing here. It arrived asynchronously, and your user can already see it in this chat.
 
-Gary: Told Philip. PRs clean.
+Epsilon: Cleanup done.
 
-If it needs a reply or an action, handle it: reply to Gary with SendToAgent`,
+If it needs a reply or an action, handle it: reply to Epsilon with SendToAgent`,
     )
     expect(got).toEqual({
-      fromAgent: 'Gary',
-      fromAgentId: '71aebcf6-8b3b-4649-abe1-ad6d653e6156',
-      text: 'Told Philip. PRs clean.',
+      fromAgent: 'Epsilon',
+      fromAgentId: EPSILON_ID,
+      text: 'Cleanup done.',
     })
   })
 })

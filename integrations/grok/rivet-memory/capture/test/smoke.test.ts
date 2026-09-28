@@ -2,9 +2,9 @@
  * Smoke + unit tests for grok-memory-capture.
  *
  * Two layers:
- *   1. Pure parser tests against a real captured updates.jsonl fixture
- *      (fixtures/session-updates.jsonl, 76 ACP events from rivet-grok on
- *      2026-05-25). No DB required — verifies parseUpdates() mapping logic.
+ *   1. Pure parser tests against a hand-written synthetic updates.jsonl
+ *      (fixtures/sample-session/). No DB required — verifies parseUpdates()
+ *      mapping logic.
  *   2. End-to-end --hook spool test — runs the script via tsx (or the built
  *      dist/ artifact when present), confirms it spools an ingest CaptureOp
  *      without spawning the detached worker (GROK_CAPTURE_NO_WORKER=1).
@@ -64,9 +64,9 @@ console.log('— parser tests against fixtures/session-updates.jsonl —')
   const jsonl = fs.readFileSync(path.join(SAMPLE_SESSION_DIR, 'updates.jsonl'), 'utf8')
   const parsed = parseUpdates(jsonl)
 
-  // Expected from the real session: 3 user prompts, 3 assistant replies,
-  // 8 thoughts, 10 tool calls completed, 2 memory_flush markers. The hook
-  // chatter (hook_execution, available_commands_update, in-progress
+  // One case per parser behavior: user, assistant reply, thought, Bash
+  // tool, MCP tool, memory_flush started+completed. Hook chatter
+  // (hook_execution, available_commands_update, in-progress
   // tool_call_update) should be filtered out.
   const byRole: Record<string, number> = {}
   let thoughts = 0
@@ -77,12 +77,14 @@ console.log('— parser tests against fixtures/session-updates.jsonl —')
     if (m.content.startsWith('[grok.memory_flush')) memoryMarkers++
   }
 
-  check('parsed >= 26 messages from 76-line file', parsed.length >= 26, `got ${parsed.length}`)
-  check('3 user prompts captured', byRole.user === 3, `got ${byRole.user}`)
-  check('3 assistant replies captured (the bug that motivated this PR)', byRole.assistant !== undefined && byRole.assistant >= 3,
-    `got ${byRole.assistant}`)
-  check('agent_thought_chunk captured as [thinking] prefix', thoughts >= 1, `got ${thoughts}`)
-  check('10 tool rows captured', byRole.tool === 10, `got ${byRole.tool}`)
+  check('parsed 7 messages from the synthetic file', parsed.length === 7, `got ${parsed.length}`)
+  check('1 user prompt captured', byRole.user === 1, `got ${byRole.user}`)
+  const replies = parsed.filter(
+    (m) => m.role === 'assistant' && !m.content.startsWith('[thinking] '),
+  )
+  check('1 assistant reply captured', replies.length === 1, `got ${replies.length}`)
+  check('agent_thought_chunk captured as [thinking] prefix', thoughts === 1, `got ${thoughts}`)
+  check('2 tool rows captured (Bash + MCP)', byRole.tool === 2, `got ${byRole.tool}`)
   check('memory_flush markers captured as system rows', memoryMarkers === 2, `got ${memoryMarkers}`)
   check('no hook_execution leaked through', !parsed.some(m => JSON.stringify(m.extra ?? {}).includes('hook_execution')))
   check('no available_commands leaked through', !parsed.some(m => JSON.stringify(m.extra ?? {}).includes('available_commands')))

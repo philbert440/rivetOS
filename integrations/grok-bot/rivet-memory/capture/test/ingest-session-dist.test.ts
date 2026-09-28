@@ -38,7 +38,7 @@ describe('ingest-session against built dist', () => {
     let err = ''
     let code = 0
     try {
-      execFileSync(process.execPath, [BIN, '--session-id=grokbot-ci-guard-v4', '--agent=rivet-grokbot', fixture], {
+      execFileSync(process.execPath, [BIN, '--session-id=grokbot-ci-guard-v4', '--agent=grokbot-alpha', fixture], {
         encoding: 'utf8',
         env: {
           ...process.env,

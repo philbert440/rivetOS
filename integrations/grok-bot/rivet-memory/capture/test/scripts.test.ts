@@ -5,10 +5,11 @@ import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { beforeAll, describe, expect, it } from 'vitest'
 import { coalesceDashArgs } from '../src/argv.js'
+import { BETA_ID } from './ids.js'
 
 const HERE = dirname(fileURLToPath(import.meta.url))
 const ROOT = join(HERE, '..')
-const BOB = '00df02ea-4f5f-4d3e-945a-864e1c9c78dc'
+const BETA = BETA_ID
 
 function ensureDist() {
   if (existsSync(join(ROOT, 'dist', 'cli.js'))) return
@@ -42,15 +43,15 @@ describe('node capture scripts', () => {
   it('pull-bridge convert_cmd passes --session so event ids match ingest', () => {
     const out = loadPyFn(
       join(ROOT, 'pull-bridge.py'),
-      'print(" ".join(mod.convert_cmd("/tmp/page.txt", "/tmp/out.jsonl", "agent-id", "grokbot-bob-v3")))',
+      'print(" ".join(mod.convert_cmd("/tmp/page.txt", "/tmp/out.jsonl", "agent-id", "grokbot-beta-v3")))',
     )
     expect(out).toContain('--session')
-    expect(out).toContain('grokbot-bob-v3')
+    expect(out).toContain('grokbot-beta-v3')
     expect(out).toContain('convert')
   })
 
   it('pull-bridge parse_page calls the CLI parser and returns header + records', () => {
-    const page = join(HERE, 'fixtures', 'page-bob-4110-4148.txt')
+    const page = join(HERE, 'fixtures', 'page-named.txt')
     const viaEnv = execFileSync(
       'python3',
       [
@@ -73,7 +74,7 @@ describe('node capture scripts', () => {
       { encoding: 'utf8' },
     )
     const lines = viaEnv.trim().split('\n')
-    expect(lines[0]).toBe('00df02ea-4f5f-4d3e-945a-864e1c9c78dc')
+    expect(lines[0]).toBe(BETA)
     const [a, b, total, n] = lines[1].split(' ').map(Number)
     expect(n).toBe(b - a + 1)
     expect(total).toBeGreaterThan(0)
@@ -93,11 +94,14 @@ describe('node capture scripts', () => {
     expect(src).toContain('dist/identity.js')
     expect(src).not.toContain('DEFAULT_EXCLUDE_NAMES')
     expect(src).not.toContain('readdirSync(AGENTS)')
+    expect(src).not.toContain('overrides')
+    expect(src).not.toContain('models.json')
+    expect(src).not.toContain('models.local')
   })
 
   it('watcher matches store.db-wal on the same agent debounce key', async () => {
     const { STORE_WATCH_RE } = await import('../live-state.mjs')
-    const id = '00df02ea-4f5f-4d3e-945a-864e1c9c78dc'
+    const id = BETA
     expect(`${id}/store.db`.match(STORE_WATCH_RE)?.[1]).toBe(id)
     expect(`${id}/store.db-wal`.match(STORE_WATCH_RE)?.[1]).toBe(id)
     expect(`${id}/store.db-shm`.match(STORE_WATCH_RE)).toBeNull()
@@ -131,6 +135,8 @@ describe('node capture scripts', () => {
     expect(watch).toContain('grokbot-capture-state${SESSION_SUFFIX}')
     expect(watch).not.toContain("const STORE_SUFFIX = '-v3-store'")
     expect(runOnce).toContain('unmappedTranscripts')
+    expect(runOnce).not.toContain('overrides')
+    expect(runOnce).not.toContain('models.json')
   })
 
   it('ingest.mjs is a wrapper over bin/ingest-session.mjs', () => {
@@ -191,9 +197,9 @@ describe('node capture scripts', () => {
         src,
         dst,
         '--agent-id',
-        BOB,
+        BETA,
         '--session',
-        'grokbot-bob-v3',
+        'grokbot-beta-v3',
         '--session-suffix=-v3',
       ],
       {
@@ -205,7 +211,7 @@ describe('node capture scripts', () => {
       session?: string
       out?: number
     }
-    expect(info.session).toBe('grokbot-bob-v3')
+    expect(info.session).toBe('grokbot-beta-v3')
     expect(info.out).toBeGreaterThan(0)
     expect(readFileSync(dst, 'utf8')).toContain('watch argv')
   })
@@ -287,14 +293,14 @@ describe('node capture scripts', () => {
       env: {
         ...process.env,
         GROKBOT_SESSION_SUFFIX: '-v4',
-        GROKBOT_AGENT_ID: BOB,
+        GROKBOT_AGENT_ID: BETA,
       },
     })
     const info = JSON.parse(out.trim().split('\n').pop() ?? '{}') as {
       session?: string
       out?: number
     }
-    expect(info.session).toBe('grokbot-bob-v4')
+    expect(info.session).toBe('grokbot-beta-v4')
     expect(info.out).toBeGreaterThan(0)
     const rows = readFileSync(dst, 'utf8')
       .trim()
@@ -332,14 +338,14 @@ describe('node capture scripts', () => {
       env: {
         ...process.env,
         GROKBOT_SESSION_SUFFIX: '-v3',
-        GROKBOT_AGENT_ID: '00df02ea-4f5f-4d3e-945a-864e1c9c78dc',
+        GROKBOT_AGENT_ID: BETA,
       },
     })
     const info = JSON.parse(out.trim().split('\n').pop() ?? '{}') as {
       session?: string
       out?: number
     }
-    expect(info.session).toBe('grokbot-bob-v3')
+    expect(info.session).toBe('grokbot-beta-v3')
     expect(info.out).toBeGreaterThan(0)
     const rows = readFileSync(dst, 'utf8')
       .trim()

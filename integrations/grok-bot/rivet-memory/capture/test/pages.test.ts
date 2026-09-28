@@ -3,8 +3,9 @@ import { normalizeRecords, toIngestRows } from '../src/normalize.js'
 import { formatMergeConflicts, mergeParsedInputs, normalizePages } from '../src/pages.js'
 import { parseInput } from '../src/parse.js'
 import { ORDINAL_STRIDE } from '../src/types.js'
+import { BETA_ID } from './ids.js'
 
-const BOB = '00df02ea-4f5f-4d3e-945a-864e1c9c78dc'
+const BETA = BETA_ID
 
 function rec(role: string, text: string, extra?: unknown) {
   if (role === 'tool') {
@@ -29,7 +30,7 @@ function rec(role: string, text: string, extra?: unknown) {
 
 function pageText(a: number, records: unknown[]): string {
   const b = a + records.length - 1
-  const header = `Transcript of agent "Bob" (${BOB}), positions ${String(a)}–${String(b)} of 20:`
+  const header = `Transcript of agent "Beta" (${BETA}), positions ${String(a)}–${String(b)} of 20:`
   return [header, ...records.map((r) => JSON.stringify(r))].join('\n') + '\n'
 }
 
@@ -52,7 +53,7 @@ describe('page merge / stable ordinals', () => {
     const full = parseInput(pageText(10, ALL))
     const first = parseInput(pageText(10, ALL.slice(0, 3)))
     const second = parseInput(pageText(12, ALL.slice(2)))
-    const opts = { sessionKey: 'grokbot-bob-v3', agent: 'rivet-bob', agentId: BOB }
+    const opts = { sessionKey: 'grokbot-beta-v3', agent: 'grokbot-beta', agentId: BETA }
     const single = normalizeRecords(full.records, {
       ...opts,
       format: 'page',
@@ -80,9 +81,9 @@ describe('page merge / stable ordinals', () => {
     expect(merged.records[0]).toEqual(first.records[0])
     expect(formatMergeConflicts(merged.conflicts)).toMatch(/CONFLICT positions 10/)
     const result = normalizePages([first, second], {
-      sessionKey: 'grokbot-bob-v3',
-      agent: 'rivet-bob',
-      agentId: BOB,
+      sessionKey: 'grokbot-beta-v3',
+      agent: 'grokbot-beta',
+      agentId: BETA,
     })
     expect(result.conflicts).toEqual([10])
   })
@@ -90,8 +91,8 @@ describe('page merge / stable ordinals', () => {
   it('derives ordinal from position * stride + sub-index', () => {
     const parsed = parseInput(pageText(10, ALL.slice(0, 2)))
     const { messages } = normalizeRecords(parsed.records, {
-      sessionKey: 'grokbot-bob-v3',
-      agent: 'rivet-bob',
+      sessionKey: 'grokbot-beta-v3',
+      agent: 'grokbot-beta',
       format: 'page',
       startPosition: 10,
     })

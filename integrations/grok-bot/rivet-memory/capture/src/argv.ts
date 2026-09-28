@@ -19,7 +19,6 @@ const DASH_VALUE_FLAGS = new Set([
   '--from-rows',
   '--input',
   '--agents-dir',
-  '--models',
   '--fixtures',
 ])
 

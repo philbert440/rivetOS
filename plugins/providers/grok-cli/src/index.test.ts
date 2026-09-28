@@ -9,7 +9,7 @@ describe('GrokCliProvider', () => {
     expect(p.getModel()).toBe('default')
     const bridge = p.aiSdkBridge()
     const model = bridge.getModel({
-      agentId: 'maggie',
+      agentId: 'rivet',
       conversationId: 'conv-1',
     }) as unknown as { modelId: string; provider: string }
     expect(model.provider).toBe('grok-cli')
