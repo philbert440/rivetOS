@@ -39,8 +39,8 @@ const SPOOL = join(CAPTURE_DIR, 'spool')
 const NEW_STATE = join(HOME, '.rivetos', 'grokbot-capture-state.json')
 const OLD_STATE = join(HOME, '.rivetos', 'capture', 'state.json')
 const SESSION_SUFFIX = process.env.GROKBOT_SESSION_SUFFIX ?? '-v3'
-const STORE_SUFFIX = '-v3-store'
-const VOICE_SUFFIX = '-v3-voice'
+const STORE_SUFFIX = `${SESSION_SUFFIX}-store`
+const VOICE_SUFFIX = `${SESSION_SUFFIX}-voice`
 
 function resolveStateFile() {
   if (process.env.GROKBOT_CAPTURE_STATE) return process.env.GROKBOT_CAPTURE_STATE

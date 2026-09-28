@@ -1,5 +1,6 @@
 export { coalesceDashArgs } from './argv.js'
 export { capForStorage, eventIdFromContent, createCaptureWriter } from '@rivetos/capture-core'
+export { ingestGrokbotSession } from './ingest-rows.js'
 export type { CaptureMessage, CaptureBatch } from '@rivetos/capture-core'
 export {
   normalizeRecords,
@@ -11,7 +12,16 @@ export {
 } from './normalize.js'
 export { parseInput, parsePageHeader, detectFormat, toolResultBody } from './parse.js'
 export { stripWrappers, extractUserText, hasSandMarker, countNoise, addNoise } from './wrappers.js'
-export { parseGrokTimestamp, extractTimestampTag, addMs } from './timestamps.js'
+export {
+  parseGrokTimestamp,
+  extractTimestampTag,
+  addMs,
+  parseEpochMs,
+  parseFlexibleTime,
+  extractToolResultTimestamp,
+  recordExplicitTime,
+  deriveCreatedAt,
+} from './timestamps.js'
 export { classifyHidden, extractAgentMessage, systemMarker } from './hidden.js'
 export {
   discoverModels,
@@ -74,6 +84,9 @@ export {
   SUBAGENT_AGENT,
   ORDINAL_STRIDE,
   stripSessionSuffix,
+  sessionStoreSuffix,
+  sessionVoiceSuffix,
+  sessionRowsSuffix,
 } from './types.js'
 export type {
   BotIdentity,

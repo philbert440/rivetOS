@@ -33,7 +33,8 @@ import {
   v3Session,
 } from '../src/reclean.js'
 import { resolveIdent } from '../src/cli.js'
-import { addMs, parseGrokTimestamp } from '../src/timestamps.js'
+import { addMs, parseEpochMs, parseGrokTimestamp } from '../src/timestamps.js'
+import { stripSessionSuffix } from '../src/types.js'
 import { countNoise, extractUserText, stripWrappers } from '../src/wrappers.js'
 import { STORAGE_LIMIT } from '../src/types.js'
 import { compareInput } from '../src/compare.js'
@@ -82,7 +83,7 @@ describe('timestamps', () => {
     )
   })
 
-  it('inherits last known time plus N ms only onto assistant/tool after a stamped user', () => {
+  it('inherits last known time plus N ms onto assistant/tool and later unstamped users', () => {
     const records = [
       {
         role: 'user',
@@ -107,8 +108,11 @@ describe('timestamps', () => {
     expect(messages[0].created_at).toBe('2026-09-27T20:06:00.000Z')
     expect(messages[1].created_at).toBe(addMs('2026-09-27T20:06:00.000Z', 1))
     expect(messages[2].created_at).toBe(addMs('2026-09-27T20:06:00.000Z', 2))
-    expect(messages[3].created_at).toBeUndefined()
-    expect(messages[4].created_at).toBeUndefined()
+    expect(messages[3].created_at).toBe(addMs('2026-09-27T20:06:00.000Z', 3))
+    expect(messages[4].created_at).toBe(addMs('2026-09-27T20:06:00.000Z', 4))
+    expect(messages.every((m) => Boolean(m.created_at))).toBe(true)
+    const times = messages.map((m) => Date.parse(m.created_at ?? ''))
+    expect(times.every((t, i) => i === 0 || t > times[i - 1])).toBe(true)
   })
 
   it('does not parse <timestamp> quoted inside assistant or tool text', () => {
@@ -138,8 +142,13 @@ describe('timestamps', () => {
       },
       { role: 'user', message: { content: [{ type: 'text', text: 'plain' }] } },
     ]
-    const { messages } = normalizeRecords(records, rivetOpts())
-    expect(messages.every((m) => !m.created_at)).toBe(true)
+    const { messages } = normalizeRecords(records, {
+      ...rivetOpts(),
+      fileMtimeMs: Date.parse('2026-09-01T12:00:00.000Z'),
+    })
+    expect(messages.every((m) => Boolean(m.created_at))).toBe(true)
+    expect(messages.some((m) => m.created_at === '2026-09-27T20:06:00.000Z')).toBe(false)
+    expect(messages.some((m) => m.created_at === '2026-01-05T04:00:00.000Z')).toBe(false)
   })
 
   it('assistant/tool inherit only from the immediately preceding stamped user', () => {
@@ -388,11 +397,20 @@ describe('timestamps', () => {
     expect(asked[0].metadata?.position).toBe(204)
   })
 
-  it('leaves created_at unset when no time is known', () => {
-    const { result } = normalizeFile('page-rivet-this-conversation-3040-3056.txt')
-    const stamped = result.messages.filter((m) => m.created_at)
-    expect(result.timeKnown).toBe(false)
-    expect(stamped).toEqual([])
+  it('reads send_message epoch stamps when a page has no <timestamp> tags', () => {
+    const text = readFix('page-rivet-this-conversation-3040-3056.txt')
+    const parsed = parseInput(text)
+    const result = normalizeRecords(parsed.records, {
+      ...rivetOpts(),
+      format: parsed.format,
+      startPosition: parsed.header?.a ?? 0,
+    })
+    expect(result.timeKnown).toBe(true)
+    expect(result.messages.length).toBeGreaterThan(0)
+    expect(result.messages.every((m) => Boolean(m.created_at))).toBe(true)
+    const times = result.messages.map((m) => Date.parse(m.created_at ?? ''))
+    expect(times.every((t, i) => i === 0 || t > times[i - 1])).toBe(true)
+    expect(result.messages.some((m) => m.created_at === parseEpochMs('1787358088946'))).toBe(true)
   })
 
   it('ties event_id to ordinal so a later 0-200 run does not drop 0-99 repeats', () => {
@@ -734,6 +752,58 @@ describe('per-bot tags', () => {
   })
 })
 
+describe('unstamped on-disk transcript + createdAt', () => {
+  it('stamps every line on a bot with no inline <timestamp> tags and hidden turns', () => {
+    const { result } = normalizeFile('ondisk-unstamped-hidden.jsonl', {
+      sessionKey: 'grokbot-ollie-v4',
+      agent: 'rivet-ollie',
+    })
+    expect(result.messages.length).toBeGreaterThan(0)
+    expect(result.messages.every((m) => Boolean(m.created_at))).toBe(true)
+    const times = result.messages.map((m) => Date.parse(m.created_at ?? ''))
+    expect(times.every((t) => Number.isFinite(t))).toBe(true)
+    expect(times.every((t, i) => i === 0 || t > times[i - 1])).toBe(true)
+    expect(result.messages.some((m) => m.metadata?.kind === 'first_run')).toBe(true)
+    expect(result.messages.some((m) => m.metadata?.kind === 'routine')).toBe(true)
+    expect(result.messages.some((m) => m.created_at === parseEpochMs('1787270751113'))).toBe(true)
+    expect(result.messages.map((m) => m.content).join('\n')).not.toMatch(/<timestamp>/)
+  })
+
+  it('falls back to file mtime + position when a bot has no stamps at all', () => {
+    const mtime = Date.parse('2026-08-11T15:00:00.000Z')
+    const records = [
+      {
+        role: 'user',
+        message: {
+          content: [
+            {
+              type: 'text',
+              text: '[SAND_HIDDEN_PROMPT][first run] This is your very first turn.',
+            },
+          ],
+        },
+      },
+      { role: 'assistant', message: { content: [{ type: 'text', text: 'hello' }] } },
+      { role: 'user', message: { content: [{ type: 'text', text: '[t0u]\nplain note' }] } },
+    ]
+    const { messages } = normalizeRecords(records, { ...rivetOpts(), fileMtimeMs: mtime })
+    expect(messages.every((m) => Boolean(m.created_at))).toBe(true)
+    const times = messages.map((m) => Date.parse(m.created_at ?? ''))
+    expect(times.every((t, i) => i === 0 || t > times[i - 1])).toBe(true)
+    expect(times[times.length - 1]).toBeLessThanOrEqual(mtime)
+  })
+
+  it('strips -v4 store/voice/rows suffixes the same way as -v3', () => {
+    expect(stripSessionSuffix('grokbot-ollie-v4')).toBe('grokbot-ollie')
+    expect(stripSessionSuffix('grokbot-ollie-v4-store')).toBe('grokbot-ollie')
+    expect(stripSessionSuffix('grokbot-ollie-v4-rows')).toBe('grokbot-ollie')
+    expect(stripSessionSuffix('grokbot-ollie-v4-voice-call')).toBe('grokbot-ollie')
+    expect(stripSessionSuffix('grokbot-rivet-grokbot-v3-voice-call-redacted')).toBe(
+      'grokbot-rivet-grokbot',
+    )
+  })
+})
+
 describe('tool_result + capForStorage', () => {
   it('reads tool_result from result (old converter ignored it)', () => {
     const page = readFix('page-rivet-this-conversation-3040-3056.txt')
@@ -754,29 +824,29 @@ describe('tool_result + capForStorage', () => {
     expect(after.messages[0].tool_result).toMatch(/success|spawnError|timestamp/)
   })
 
-  it('caps tool_result at the capture-core 16_000 UTF-16 limit with no inline marker', () => {
+  it('keeps a 20_000-char tool_result without the legacy 4 KB chop or 16K recap', () => {
     const huge = 'x'.repeat(20_000)
     const rec = {
       role: 'tool',
       message: { content: [{ type: 'tool_result', name: 'shell', result: huge }] },
     }
     const { messages } = normalizeRecords([rec], rivetOpts())
-    const cap = capForStorage(huge)
-    expect(messages[0].tool_result).toBe(cap.text)
-    expect(messages[0].tool_result?.length).toBe(STORAGE_LIMIT)
+    expect(messages[0].tool_result).toBe(huge)
+    expect(messages[0].tool_result?.length).toBe(20_000)
     expect(messages[0].tool_result).not.toContain('…[truncated')
-    expect(messages[0].metadata?.truncated).toBe(true)
-    expect(messages[0].metadata?.full_tool_result_length).toBe(20_000)
+    expect(messages[0].metadata?.truncated).toBeUndefined()
     expect(LEGACY_TOOL_RESULT_MAX).toBe(4096)
+    expect(capForStorage(huge).truncated).toBe(true)
+    expect(STORAGE_LIMIT).toBe(16_000)
   })
 
-  it('caps a real oversized ReadTranscript shell result the same way', () => {
+  it('keeps a real oversized ReadTranscript shell result in full', () => {
     const { result } = normalizeFile('page-rivet-2395-2445.txt')
-    const tools = result.messages.filter((m) => m.role === 'tool' && m.metadata?.truncated)
+    const tools = result.messages.filter((m) => m.role === 'tool' && (m.tool_result?.length ?? 0) > 4_096)
     expect(tools.length).toBeGreaterThan(0)
-    expect(tools[0].tool_result?.length).toBeLessThanOrEqual(STORAGE_LIMIT)
-    expect(tools[0].tool_result).not.toContain('…[truncated')
-    expect(Number(tools[0].metadata?.full_tool_result_length)).toBeGreaterThan(STORAGE_LIMIT)
+    expect(tools.every((m) => m.metadata?.truncated !== true)).toBe(true)
+    expect(tools.every((m) => !m.tool_result?.includes('…[truncated'))).toBe(true)
+    expect(tools.some((m) => (m.tool_result?.length ?? 0) > STORAGE_LIMIT)).toBe(true)
   })
 })
 
@@ -903,6 +973,8 @@ describe('reclean', () => {
     expect(identityForSession('grokbot-rivet-grokbot-v3-voice-call-redacted')?.agent).toBe(
       'rivet-grokbot',
     )
+    expect(identityForSession('grokbot-rivet-grokbot-v4')?.agent).toBe('rivet-grokbot')
+    expect(identityForSession('grokbot-rivet-grokbot-v4-store')?.agent).toBe('rivet-grokbot')
   })
 
   it('writes stored-row reclean under -v3-rows, not -v3', () => {
@@ -992,7 +1064,7 @@ describe('ingest mapping + compare', () => {
     })
     const rows = toIngestRows(result.messages)
     expect(rows.every((r) => r.role !== undefined)).toBe(true)
-    expect(rows.some((r) => r.createdAt)).toBe(true)
+    expect(rows.every((r) => Boolean(r.createdAt))).toBe(true)
     expect(rows.some((r) => r.toolCalls && r.toolCalls.length > 0)).toBe(true)
     expect(rows.every((r) => r.metadata?.agent_id === BOB_ID)).toBe(true)
     expect(rows.every((r) => typeof r.metadata?.position === 'number')).toBe(true)

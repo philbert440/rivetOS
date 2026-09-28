@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from 'vitest'
 import { ingestGrokbotSession, type GrokbotIngestMemory } from '../src/ingest-rows.js'
+import { normalizeRecords, toIngestRows } from '../src/normalize.js'
 
 function fakeMemory(existing: Array<{ ordinal: string | null; event_id: string | null }> = []) {
   const appended: Array<Record<string, unknown>> = []
@@ -70,6 +71,61 @@ describe('ingestGrokbotSession', () => {
       'grokbot-rivet-grokbot-v3',
     ])
     expect(client.query).toHaveBeenCalledWith('COMMIT')
+  })
+
+  it('keeps a >4 KB message and large tool result end to end (normalize + ingest)', async () => {
+    const { memory, appended } = fakeMemory()
+    const longMsg = 'm'.repeat(5_000)
+    const longTool = 't'.repeat(12_000)
+    const { messages } = normalizeRecords(
+      [
+        { role: 'user', message: { content: [{ type: 'text', text: longMsg }] } },
+        {
+          role: 'tool',
+          message: { content: [{ type: 'tool_result', name: 'shell', result: longTool }] },
+        },
+      ],
+      { sessionKey: 'grokbot-rivet-grokbot-v4', agent: 'rivet-grokbot' },
+    )
+    const rows = toIngestRows(messages)
+    expect(rows[0]?.content.length).toBe(5_000)
+    expect(rows[1]?.toolResult?.length).toBe(12_000)
+    expect(rows.every((r) => r.metadata?.truncated !== true)).toBe(true)
+    const result = await ingestGrokbotSession(memory, {
+      sessionId: 'grokbot-rivet-grokbot-v4',
+      agent: 'rivet-grokbot',
+      messages: rows,
+    })
+    expect(result.truncated).toBeUndefined()
+    expect(result.truncated === true).toBe(false)
+    expect(appended[0]?.content).toBe(longMsg)
+    expect(appended[1]?.toolResult).toBe(longTool)
+  })
+
+  it('stores a >4 KB message and a large tool result without truncated: true', async () => {
+    const { memory, appended } = fakeMemory()
+    const longMsg = 'm'.repeat(5_000)
+    const longTool = 't'.repeat(12_000)
+    const result = await ingestGrokbotSession(memory, {
+      sessionId: 'grokbot-rivet-grokbot-v4',
+      agent: 'rivet-grokbot',
+      messages: [
+        { role: 'user', content: longMsg, ordinal: 0, event_id: 'evt-big-user' },
+        {
+          role: 'tool',
+          content: '',
+          ordinal: 1000,
+          event_id: 'evt-big-tool',
+          toolResult: longTool,
+          toolCalls: [{ name: 'shell', input: { command: 'cat big.txt' } }],
+        },
+      ],
+    })
+    expect(result.truncated).toBeUndefined()
+    expect(appended[0]?.content).toBe(longMsg)
+    expect(appended[1]?.toolResult).toBe(longTool)
+    expect((appended[0]?.metadata as { truncated?: boolean } | undefined)?.truncated).toBeUndefined()
+    expect((appended[1]?.metadata as { truncated?: boolean } | undefined)?.truncated).toBeUndefined()
   })
 
   it('skips a repeated event id and an ordinal that already belongs to another id', async () => {

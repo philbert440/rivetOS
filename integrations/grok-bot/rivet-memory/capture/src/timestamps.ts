@@ -71,3 +71,102 @@ export function extractTimestampTag(text: string): string | undefined {
 export function addMs(iso: string, ms: number): string {
   return new Date(Date.parse(iso) + ms).toISOString()
 }
+
+/**
+ * Epoch seconds/ms as a number or numeric string (send_message
+ * `result.success.timestamp`, store.db `timestampMs`).
+ */
+export function parseEpochMs(raw: unknown): string | undefined {
+  if (typeof raw === 'number' && Number.isFinite(raw)) {
+    const ms = raw < 1e12 ? raw * 1000 : raw
+    const dt = new Date(ms)
+    return Number.isNaN(dt.getTime()) ? undefined : dt.toISOString()
+  }
+  if (typeof raw === 'string' && /^\d{10,16}$/.test(raw.trim())) {
+    return parseEpochMs(Number(raw.trim()))
+  }
+  return undefined
+}
+
+export function parseFlexibleTime(raw: unknown): string | undefined {
+  const epoch = parseEpochMs(raw)
+  if (epoch) return epoch
+  if (raw instanceof Date && !Number.isNaN(raw.getTime())) return raw.toISOString()
+  if (typeof raw === 'string' && raw.trim()) {
+    const grok = parseGrokTimestamp(raw.trim())
+    if (grok) return grok
+    const dt = new Date(raw.trim())
+    if (!Number.isNaN(dt.getTime())) return dt.toISOString()
+  }
+  return undefined
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value)
+}
+
+/** send_message / communicate_update `result.success.timestamp` (epoch ms). */
+export function extractToolResultTimestamp(part: unknown): string | undefined {
+  if (!isRecord(part)) return undefined
+  const result = isRecord(part.result) ? part.result : part
+  const success = isRecord(result.success) ? result.success : undefined
+  return (
+    parseFlexibleTime(success?.timestamp) ??
+    parseFlexibleTime(result.timestamp) ??
+    parseFlexibleTime(part.timestamp)
+  )
+}
+
+/**
+ * Explicit wall-clock for one source record. `<timestamp>` on user/hidden
+ * text only — assistant/tool quotes are ignored. Record-level created_at
+ * (store/voice) and tool-result epoch stamps are first-class sources.
+ */
+export function recordExplicitTime(
+  rec: unknown,
+  rawText: string,
+  role: string,
+  parts: unknown[],
+): string | undefined {
+  const userLike = role === 'user' || role === 'human'
+  if (userLike) {
+    const tag = extractTimestampTag(rawText)
+    if (tag) return tag
+  }
+  if (isRecord(rec)) {
+    const stored = parseFlexibleTime(rec.created_at ?? rec.createdAt ?? rec.timestampMs)
+    if (stored) return stored
+  }
+  for (const part of parts) {
+    const stamped = extractToolResultTimestamp(part)
+    if (stamped) return stamped
+  }
+  return undefined
+}
+
+/**
+ * Every output row gets a time. Order:
+ * 1. explicit stamp on this record
+ * 2. inherit nearest earlier stamp + (position delta) ms
+ * 3. look ahead to the nearest later stamp − (position delta) ms
+ * 4. file mtime − (lastPosition − position) ms (Date.now() if mtime unknown)
+ */
+export function deriveCreatedAt(args: {
+  explicit?: string
+  position: number
+  earlier?: { time: string; position: number }
+  later?: { time: string; position: number }
+  fileMtimeMs?: number
+  maxPosition: number
+}): string {
+  if (args.explicit) return args.explicit
+  if (args.earlier) {
+    return addMs(args.earlier.time, Math.max(0, args.position - args.earlier.position))
+  }
+  if (args.later) {
+    return addMs(args.later.time, -Math.max(0, args.later.position - args.position))
+  }
+  const end = args.fileMtimeMs ?? Date.now()
+  const back = Math.max(0, args.maxPosition - args.position)
+  return new Date(end - back).toISOString()
+}

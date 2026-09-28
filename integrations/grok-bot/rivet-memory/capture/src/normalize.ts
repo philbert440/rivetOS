@@ -1,5 +1,4 @@
 import {
-  capForStorage,
   eventIdFromContent,
   isRecord,
   type CaptureMessage,
@@ -10,7 +9,6 @@ import { classifyHidden, extractAgentMessage, systemMarker } from './hidden.js'
 import {
   CAPTURE_CHANNEL,
   ORDINAL_STRIDE,
-  STORAGE_LIMIT,
   type HiddenKind,
   type IngestRow,
   type NormalizeOptions,
@@ -18,7 +16,7 @@ import {
   type NormalizeStats,
 } from './types.js'
 import { partText, recordParts, recordRole, toolResultBody } from './parse.js'
-import { addMs, extractTimestampTag } from './timestamps.js'
+import { deriveCreatedAt, extractTimestampTag, recordExplicitTime } from './timestamps.js'
 import { extractUserText, hasSandMarker } from './wrappers.js'
 
 export interface TimeClock {
@@ -206,6 +204,27 @@ const ROLE_MAP: Partial<Record<string, CaptureRole>> = {
 
 export function normalizeRecords(records: unknown[], opts: NormalizeOptions): NormalizeResult {
   const start = opts.startPosition ?? 0
+  const positions = records.map((_, i) => opts.positions?.[i] ?? start + i)
+  const maxPosition = positions.length ? Math.max(...positions) : start
+  const explicits = records.map((rec) => {
+    const rawRole = recordRole(rec)
+    const parts = recordParts(rec)
+    const rawText = parts.map(partText).filter(Boolean).join('\n')
+    const tagged = recordExplicitTime(rec, rawText, rawRole, parts)
+    if (tagged) return tagged
+    if (opts.useStoredCreatedAt) return recordStoredTime(rec)
+    return undefined
+  })
+  const laterByIndex: Array<{ time: string; position: number } | undefined> = Array.from(
+    { length: records.length },
+    () => undefined,
+  )
+  let nextLater: { time: string; position: number } | undefined
+  for (let i = records.length - 1; i >= 0; i--) {
+    laterByIndex[i] = nextLater
+    const stamp = explicits[i]
+    if (stamp) nextLater = { time: stamp, position: positions[i] ?? start + i }
+  }
   let lastStampedUser: { time: string; position: number } | undefined = opts.lastKnownTime
     ? { time: opts.lastKnownTime, position: start - 1 }
     : undefined
@@ -225,37 +244,31 @@ export function normalizeRecords(records: unknown[], opts: NormalizeOptions): No
       dropped += 1
       continue
     }
-    const position = opts.positions?.[i] ?? start + i
+    const position = positions[i] ?? start + i
     const rec = records[i]
     const rawRole = recordRole(rec)
     const role = ROLE_MAP[rawRole] ?? (rawRole ? undefined : 'assistant')
     const parts = recordParts(rec)
     const rawText = parts.map(partText).filter(Boolean).join('\n')
-    const storedTime = opts.useStoredCreatedAt ? recordStoredTime(rec) : undefined
     const userLike = role === 'user'
-    const stamped = userLike ? extractTimestampTag(rawText) : undefined
+    const stamped = explicits[i]
     const sand = userLike && hasSandMarker(rawText)
     const kind = sand ? classifyHidden(rawText) : undefined
     const userText = userLike ? extractUserText(rawText) : ''
 
-    if (userLike) {
-      if (stamped) {
-        sawTimestamp = true
-        lastStampedUser = { time: stamped, position }
-      } else if (userText) {
-        // Later real user turn with no stamp: stop inheriting for the rest of the run.
-        lastStampedUser = undefined
-      }
+    const earlier = lastStampedUser
+    if (stamped) {
+      sawTimestamp = true
+      lastStampedUser = { time: stamped, position }
     }
 
-    const createdAt = createdAtFor({
-      role: role ?? 'assistant',
-      userText: Boolean(userText),
-      stamped,
-      storedTime,
+    const createdAt = deriveCreatedAt({
+      explicit: stamped,
       position,
-      lastStampedUser,
-      useStored: Boolean(opts.useStoredCreatedAt),
+      earlier,
+      later: laterByIndex[i],
+      fileMtimeMs: opts.fileMtimeMs,
+      maxPosition,
     })
 
     if (role === 'tool') {
@@ -397,36 +410,6 @@ function captureSource(format?: NormalizeOptions['format']): string {
   if (format === 'store') return 'grokbot-store'
   if (format === 'voice') return 'grokbot-voice'
   return 'grokbot-transcript'
-}
-
-function createdAtFor(args: {
-  role: string
-  userText: boolean
-  stamped?: string
-  storedTime?: string
-  position: number
-  lastStampedUser?: { time: string; position: number }
-  useStored: boolean
-}): string | undefined {
-  if (args.role === 'user') {
-    if (args.stamped) return args.stamped
-    if (args.userText) return args.useStored ? args.storedTime : undefined
-    // Hidden user-role turns inherit from the current stamped user when present.
-    if (args.lastStampedUser) {
-      return addMs(
-        args.lastStampedUser.time,
-        Math.max(0, args.position - args.lastStampedUser.position),
-      )
-    }
-    return args.useStored ? args.storedTime : undefined
-  }
-  if (args.lastStampedUser) {
-    return addMs(
-      args.lastStampedUser.time,
-      Math.max(0, args.position - args.lastStampedUser.position),
-    )
-  }
-  return args.useStored ? args.storedTime : undefined
 }
 
 function recordStoredTime(rec: unknown): string | undefined {
@@ -616,36 +599,9 @@ function makeMessage(args: {
   if (args.opts.persona) metadata.persona = args.opts.persona
   if (args.extra) Object.assign(metadata, args.extra)
 
-  let content = args.content
-  if (content) {
-    const cap = capForStorage(content, { limit: STORAGE_LIMIT })
-    content = cap.text
-    if (cap.truncated) {
-      metadata.truncated = true
-      metadata.full_content_length = cap.fullLength
-    }
-  }
-
-  let toolResult = args.toolResult
-  if (toolResult !== undefined) {
-    const cap = capForStorage(toolResult, { limit: STORAGE_LIMIT })
-    toolResult = cap.text
-    if (cap.truncated) {
-      metadata.truncated = true
-      metadata.full_tool_result_length = cap.fullLength
-    }
-  }
-
-  let toolArgs = args.toolArgs
-  if (toolArgs !== undefined) {
-    const raw = typeof toolArgs === 'string' ? toolArgs : safeToolArgsJson(toolArgs)
-    if (raw.length > STORAGE_LIMIT) {
-      const cap = capForStorage(raw, { limit: STORAGE_LIMIT })
-      toolArgs = cap.text
-      metadata.truncated = true
-      metadata.full_arguments_length = cap.fullLength
-    }
-  }
+  const content = args.content
+  const toolResult = args.toolResult
+  const toolArgs = args.toolArgs
 
   const occKey: OccurrenceKey = {
     role: args.role,
@@ -698,14 +654,6 @@ function truncationExtra(part: Record<string, unknown>): Record<string, unknown>
     extra.full_arguments_length = part.full_arguments_length
   }
   return Object.keys(extra).length > 0 ? extra : undefined
-}
-
-function safeToolArgsJson(value: unknown): string {
-  try {
-    return JSON.stringify(value) || ''
-  } catch {
-    return ''
-  }
 }
 
 function hiddenExtra(kind: HiddenKind, raw: string): string | undefined {

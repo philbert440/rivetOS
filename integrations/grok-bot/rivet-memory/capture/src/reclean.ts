@@ -52,6 +52,7 @@ export function recleanFromSource(
     format: parsed.format,
     startPosition: parsed.header?.a ?? opts.startPosition ?? 0,
     agentId: parsed.header?.id ?? opts.agentId,
+    fileMtimeMs: opts.fileMtimeMs,
   })
   return {
     session,

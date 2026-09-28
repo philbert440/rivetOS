@@ -118,6 +118,19 @@ describe('node capture scripts', () => {
     expect(py).not.toContain('["--session-suffix", session_suffix]')
   })
 
+  it('run-once.sh and watch.mjs derive store/voice suffixes from GROKBOT_SESSION_SUFFIX', () => {
+    const runOnce = readFileSync(join(ROOT, 'run-once.sh'), 'utf8')
+    expect(runOnce).toContain('${SESSION_SUFFIX}-store')
+    expect(runOnce).toContain('${SESSION_SUFFIX}-voice-')
+    expect(runOnce).not.toContain('${session_id%-v3}-v3-store')
+    expect(runOnce).not.toContain('${session_id%-v3}-v3-voice-')
+    expect(runOnce).toContain('SESSION_SUFFIX}" == "-v3"')
+    const watch = readFileSync(join(ROOT, 'watch.mjs'), 'utf8')
+    expect(watch).toContain('`${SESSION_SUFFIX}-store`')
+    expect(watch).toContain('`${SESSION_SUFFIX}-voice`')
+    expect(watch).not.toContain("const STORE_SUFFIX = '-v3-store'")
+  })
+
   it('ingest.mjs is a wrapper over bin/ingest-session.mjs', () => {
     const src = readFileSync(join(ROOT, 'ingest.mjs'), 'utf8')
     expect(src).toContain("from '../bin/ingest-session.mjs'")
@@ -247,6 +260,46 @@ describe('node capture scripts', () => {
     expect(lines[0]).toBe('2')
     expect(lines[1]).toBe('0')
     expect(lines[2]).toBe('BUILD')
+  })
+
+  it('runs the real converter with GROKBOT_SESSION_SUFFIX=-v4', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'gb-conv-v4-'))
+    const src = join(dir, 'in.jsonl')
+    const dst = join(dir, 'out.jsonl')
+    writeFileSync(
+      src,
+      `${JSON.stringify({
+        role: 'user',
+        message: {
+          content: [
+            {
+              type: 'text',
+              text: '<timestamp>Sunday, Sep 20, 2026, 3:04 PM (UTC-05:00)</timestamp>\n<user_query>\nhello v4\n</user_query>',
+            },
+          ],
+        },
+      })}\n`,
+    )
+    const out = execFileSync('python3', [join(ROOT, 'convert-transcript.py'), src, dst], {
+      encoding: 'utf8',
+      env: {
+        ...process.env,
+        GROKBOT_SESSION_SUFFIX: '-v4',
+        GROKBOT_AGENT_ID: BOB,
+      },
+    })
+    const info = JSON.parse(out.trim().split('\n').pop() ?? '{}') as {
+      session?: string
+      out?: number
+    }
+    expect(info.session).toBe('grokbot-bob-v4')
+    expect(info.out).toBeGreaterThan(0)
+    const rows = readFileSync(dst, 'utf8')
+      .trim()
+      .split('\n')
+      .map((line) => JSON.parse(line) as { content?: string; createdAt?: string })
+    expect(rows.every((r) => Boolean(r.createdAt))).toBe(true)
+    expect(rows.some((r) => r.content?.includes('hello v4'))).toBe(true)
   })
 
   it('runs the real converter with GROKBOT_SESSION_SUFFIX=-v3', () => {

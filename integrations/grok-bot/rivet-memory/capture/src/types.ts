@@ -21,19 +21,26 @@ export const STORAGE_LIMIT = 16_000
 /** Stable ingest ordinal = source position * stride + per-position sub-index. */
 export const ORDINAL_STRIDE = 1000
 
-/** Strip -v3-voice*, -v3-store, -v3-rows, -v3, or -v2 so identity helpers share one rule. */
+/**
+ * Strip `-vN-voice*`, `-vN-store`, `-vN-rows`, `-vN`, or `-v2` so identity
+ * helpers share one rule across -v3 / -v4 / later suffixes.
+ */
 export function stripSessionSuffix(session: string): string {
-  const voiceAt = session.indexOf(SESSION_SUFFIX_V3_VOICE)
-  if (voiceAt >= 0) return session.slice(0, voiceAt)
-  if (session.endsWith(SESSION_SUFFIX_V3_STORE)) {
-    return session.slice(0, -SESSION_SUFFIX_V3_STORE.length)
-  }
-  if (session.endsWith(SESSION_SUFFIX_V3_ROWS)) {
-    return session.slice(0, -SESSION_SUFFIX_V3_ROWS.length)
-  }
-  if (session.endsWith(SESSION_SUFFIX_V3)) return session.slice(0, -SESSION_SUFFIX_V3.length)
-  if (session.endsWith('-v2')) return session.slice(0, -3)
-  return session
+  const voice = /-v\d+-voice(?:-|$)/.exec(session)
+  if (voice) return session.slice(0, voice.index)
+  return session.replace(/-v\d+(?:-store|-rows)?$/, '')
+}
+
+export function sessionStoreSuffix(sessionSuffix = SESSION_SUFFIX_V3): string {
+  return `${sessionSuffix}-store`
+}
+
+export function sessionVoiceSuffix(sessionSuffix = SESSION_SUFFIX_V3): string {
+  return `${sessionSuffix}-voice`
+}
+
+export function sessionRowsSuffix(sessionSuffix = SESSION_SUFFIX_V3): string {
+  return `${sessionSuffix}-rows`
 }
 
 export type HiddenKind =
@@ -94,6 +101,11 @@ export interface NormalizeOptions {
    * stored row's created_at instead of inheriting or leaving the field unset.
    */
   useStoredCreatedAt?: boolean
+  /**
+   * Source file mtime in ms. Used when a session has no inline stamps so
+   * every row still gets a monotonic createdAt (mtime − remaining positions).
+   */
+  fileMtimeMs?: number
 }
 
 export interface NormalizeStats {

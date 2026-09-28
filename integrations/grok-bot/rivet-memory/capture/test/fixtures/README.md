@@ -11,6 +11,9 @@ CT-REDACTED; home dirs → /home/user.
 - `ondisk-rivet-first-run-0-240.jsonl`
 - `ondisk-rivet-agent-msgs-1880-1920.jsonl`
 - `ondisk-bob-0-16.jsonl`
+- `ondisk-unstamped-hidden.jsonl` — real on-disk shape for a bot with no
+  `<timestamp>` tags: hidden first-run + routine, `[tNu]` user turn, and a
+  `send_message` `result.success.timestamp` epoch. Synthetic content only.
 
 ## Format (b): ReadTranscript page text
 

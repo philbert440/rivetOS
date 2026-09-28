@@ -3,7 +3,7 @@
  * Grok Bot capture CLI — convert, backfill, reclean, compare, discover.
  * Never prints secrets, hostnames, or connection strings.
  */
-import { mkdirSync, readFileSync, readdirSync, writeFileSync } from 'node:fs'
+import { mkdirSync, readFileSync, readdirSync, statSync, writeFileSync } from 'node:fs'
 import { dirname, join, resolve } from 'node:path'
 import { parseArgs } from 'node:util'
 import { coalesceDashArgs } from './argv.js'
@@ -33,7 +33,7 @@ import {
   v3Session,
 } from './reclean.js'
 import { readStoreSince, v3StoreSession } from './store.js'
-import { SESSION_SUFFIX_V3, SESSION_SUFFIX_V3_STORE, SESSION_SUFFIX_V3_VOICE } from './types.js'
+import { SESSION_SUFFIX_V3, sessionStoreSuffix, sessionVoiceSuffix } from './types.js'
 import type { IngestRow, ParsedInput } from './types.js'
 import { parseVoiceCall, v3VoiceSession, voiceCallToRecords } from './voice.js'
 
@@ -43,7 +43,8 @@ const HELP = `Usage: grokbot-rivet-memory-capture <command> [opts]
           [--session-suffix=-v3]
       Normalize one on-disk jsonl or ReadTranscript page to ingest jsonl.
       Live capture defaults to session suffix -v3 (GROKBOT_SESSION_SUFFIX).
-      Use the = form: --session-suffix=-v3 (space form is rewritten).
+      Set GROKBOT_SESSION_SUFFIX=-v4 for a fresh sibling of -v3.
+      Use the = form: --session-suffix=-v4 (space form is rewritten).
 
   convert-store SRC.DB DST [--agent-id UUID] [--session KEY] [--after-seq=-1]
           [--session-suffix=-v3-store]
@@ -156,6 +157,7 @@ function cmdConvert(argv: string[]): number {
     persona: ident.persona,
     format: parsed.format,
     startPosition: parsed.header?.a ?? 0,
+    fileMtimeMs: statSync(src).mtimeMs,
   })
   mkdirSync(dirname(resolve(dst)), { recursive: true })
   writeFileSync(
@@ -175,7 +177,7 @@ function cmdConvert(argv: string[]): number {
     }),
   )
   if (!result.stats.timeKnown) {
-    console.error('created_at: unset (no timestamp in source; DB default on ingest)')
+    console.error('created_at: derived from file mtime + position (no inline stamps)')
   }
   return 0
 }
@@ -204,12 +206,12 @@ function cmdConvertStore(argv: string[]): number {
     return 2
   }
   const ident = resolveIdent(values['agent-id'], values.session, values.agent)
-  const suffix = values['session-suffix'] ?? SESSION_SUFFIX_V3_STORE
+  const suffix = values['session-suffix'] ?? sessionStoreSuffix(sessionSuffixFromArgs())
   const session = values.session
     ? values.session.endsWith(suffix)
       ? values.session
       : `${values.session}${suffix}`
-    : v3StoreSession(ident.session)
+    : v3StoreSession(ident.session, suffix)
   const afterSeq = values['after-seq'] !== undefined ? Number(values['after-seq']) : -1
   const read = readStoreSince(src, { afterSeq })
   const result = normalizeRecords(read.records, {
@@ -260,12 +262,12 @@ function cmdConvertVoice(argv: string[]): number {
   }
   const ident = resolveIdent(values['agent-id'], values.session, values.agent)
   const call = parseVoiceCall(readFileSync(src, 'utf8'), src)
-  const suffix = values['session-suffix'] ?? SESSION_SUFFIX_V3_VOICE
+  const suffix = values['session-suffix'] ?? sessionVoiceSuffix(sessionSuffixFromArgs())
   const session = values.session
     ? values.session.includes(suffix)
       ? values.session
-      : v3VoiceSession(values.session, src)
-    : v3VoiceSession(ident.session, src)
+      : v3VoiceSession(values.session, src, suffix)
+    : v3VoiceSession(ident.session, src, suffix)
   const { records, positions } = voiceCallToRecords(call)
   const result = normalizeRecords(records, {
     sessionKey: session,
@@ -389,11 +391,21 @@ function cmdBackfill(argv: string[]): number {
   let n = 0
   let writeConflicts = false
   for (const bucket of buckets.values()) {
+    const fileMtimeMs = Math.max(
+      ...bucket.files.map((file) => {
+        try {
+          return statSync(file).mtimeMs
+        } catch {
+          return 0
+        }
+      }),
+    )
     const result = normalizePages(bucket.parsed, {
       sessionKey: bucket.session,
       agent: bucket.agent,
       agentId: bucket.id,
       persona: bucket.persona,
+      fileMtimeMs: Number.isFinite(fileMtimeMs) && fileMtimeMs > 0 ? fileMtimeMs : undefined,
     })
     const dest = join(outDir, `${bucket.session}.jsonl`)
     const conflicts = result.conflicts ?? []
@@ -464,6 +476,7 @@ async function cmdReclean(argv: string[]): Promise<number> {
       agentId: ident.id,
       persona: ident.persona,
       dryRun: dry,
+      fileMtimeMs: statSync(values['from-transcript']).mtimeMs,
     })
     console.log(printRecleanStats({ ...result, session, dryRun: dry }))
     writeOut(result.ingest, session)
