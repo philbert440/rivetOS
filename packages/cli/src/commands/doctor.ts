@@ -1604,6 +1604,19 @@ function pluginMarker(h: DetectedHarness, home: string, probe: HarnessDoctorProb
       return hermesPluginInstalled(h.configHome)
     case 'claude-code':
       return false // decided by `claude plugin list` below
+    case 'cursor': {
+      try {
+        const hooks = readFileSync(join(h.configHome, 'hooks.json'), 'utf-8')
+        if (hooks.includes('rivet-memory')) return true
+      } catch {
+        // missing hooks.json
+      }
+      try {
+        return readFileSync(join(h.configHome, 'mcp.json'), 'utf-8').includes('"rivetos"')
+      } catch {
+        return false
+      }
+    }
   }
 }
 

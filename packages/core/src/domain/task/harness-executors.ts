@@ -249,6 +249,11 @@ export const HARNESS_EXECUTOR_GAPS: Readonly<Partial<Record<string, string>>> = 
     'the codex driver cannot START a session for a task to run in: Codex mints its own ' +
     'rollout UUID and `codex resume` references existing sessions only (no --session-id). ' +
     'The den term manager spawns the interactive TUI; a headless executor is not wired',
+  cursor:
+    'the cursor driver cannot START a session for a task to run in: the Cursor agent CLI ' +
+    'mints its own chat id and `agent --resume <chatId>` references existing chats only ' +
+    '(no --session-id). The den term manager spawns the interactive CLI; a headless ' +
+    'executor is not wired',
 })
 
 /** The recorded gap for a harness, or a generic one for an unlisted id. */

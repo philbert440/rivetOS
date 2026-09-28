@@ -212,6 +212,7 @@ describe('term endpoints', () => {
     expect(body.commands.map((c) => c.id).sort()).toEqual([
       'claude',
       'codex',
+      'cursor',
       'grok',
       'hermes',
       'kimi',

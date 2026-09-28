@@ -13,7 +13,7 @@ import { spawn } from 'node:child_process'
 import { accessSync, constants, existsSync, statSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { delimiter, join, resolve } from 'node:path'
-import { HARNESS_IDS, type HarnessId } from '@rivetos/types'
+import { HARNESS_IDS, ROSTER_COMMAND, type HarnessId } from '@rivetos/types'
 
 /** Binary name on PATH for each harness id. `codex` is already a HarnessId;
  *  the `| 'codex'` is kept so the map reads the same as the install task. */
@@ -26,6 +26,8 @@ export const HARNESS_BINARIES: Record<HarnessId | 'codex', string> = {
   opencode: 'opencode',
   pi: 'pi',
   'qwen-code': 'qwen',
+  // Roster key is `cursor`. The CLI argv0 is `agent`.
+  cursor: 'agent',
 }
 
 /** `providers.<key>` in config.yaml. */
@@ -48,6 +50,7 @@ export const HARNESS_PROVIDER_KEYS: Record<HarnessId, HarnessProviderKey | undef
   opencode: 'opencode-cli',
   pi: 'pi-cli',
   'qwen-code': 'qwen-code',
+  cursor: undefined,
 }
 
 export const HARNESS_CONFIG_DIRS: Record<HarnessId, string> = {
@@ -60,6 +63,7 @@ export const HARNESS_CONFIG_DIRS: Record<HarnessId, string> = {
   opencode: '.config/opencode',
   pi: '.pi/agent',
   'qwen-code': '.qwen',
+  cursor: '.cursor',
 }
 
 const HERMES_VENV_REL = join('hermes-agent', 'venv')
@@ -242,8 +246,8 @@ export async function detectHarnesses(opts: DetectHarnessesOpts = {}): Promise<D
   const pending: Array<Promise<void>> = []
 
   for (const id of HARNESS_IDS) {
-    const command = HARNESS_BINARIES[id]
-    const binary = findOnPath(command, {
+    const binName = HARNESS_BINARIES[id]
+    const binary = findOnPath(binName, {
       pathEnv: opts.pathEnv,
       extraDirs: opts.extraDirs,
       home,
@@ -255,7 +259,7 @@ export async function detectHarnesses(opts: DetectHarnessesOpts = {}): Promise<D
         : join(home, HARNESS_CONFIG_DIRS[id])
     const harness: DetectedHarness = {
       id,
-      command,
+      command: ROSTER_COMMAND[id],
       binary,
       providerKey: HARNESS_PROVIDER_KEYS[id],
       configHome,

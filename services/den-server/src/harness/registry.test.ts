@@ -93,6 +93,7 @@ describe('isHarnessId', () => {
         'opencode',
         'pi',
         'qwen-code',
+        'cursor',
       ].every(isHarnessId),
     ).toBe(true)
     expect(isHarnessId('claude')).toBe(false)

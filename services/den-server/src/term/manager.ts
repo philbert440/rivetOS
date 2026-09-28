@@ -525,6 +525,9 @@ const HARNESS_FLAGS: Partial<Record<string, { sessionFlag?: string; resumeFlag: 
   // (transcript filename == id). `--resume <uuid>` resumes. Re-running
   // `--session-id` with an existing id is not resume.
   qwen: { sessionFlag: '--session-id', resumeFlag: '--resume' },
+  // Cursor agent CLI: `--resume <chatId>` reopens an existing chat. There is
+  // no --session-id; a fresh spawn is `agent` and the CLI mints the uuid.
+  cursor: { resumeFlag: '--resume' },
 }
 
 /** Set an env var only when the value is non-empty. NEVER pass '' through:

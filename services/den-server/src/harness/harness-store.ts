@@ -22,9 +22,11 @@ import {
   describeOpencodeSession,
   describePiSession,
   describeQwenCodeSession,
+  describeCursorSession,
   harnessSessionExists,
   listHarnessSessions,
   newestOpencodeSessionAfter,
+  newestCursorSessionAfter,
   readClaudeTranscript,
   readCodexTranscript,
   readGrokTranscript,
@@ -33,6 +35,7 @@ import {
   readOpencodeTranscript,
   readPiTranscript,
   readQwenCodeTranscript,
+  readCursorTranscript,
   type HarnessSession,
   type HarnessTranscript,
 } from '../term/harness-sessions.js'
@@ -44,10 +47,11 @@ import { KIMI_ROSTER_COMMAND, type KimiStoreHost } from './kimi-driver.js'
 import { OPENCODE_ROSTER_COMMAND, type OpencodeStoreHost } from './opencode-driver.js'
 import { PI_ROSTER_COMMAND, type PiStoreHost } from './pi-driver.js'
 import { QWEN_CODE_ROSTER_COMMAND, type QwenCodeStoreHost } from './qwen-code-driver.js'
+import { CURSOR_ROSTER_COMMAND, type CursorStoreHost } from './cursor-driver.js'
 import type { HarnessStoreHost } from './pty-harness-driver.js'
 
 export type HarnessStoreName =
-  'claude' | 'grok' | 'hermes' | 'kimi' | 'codex' | 'opencode' | 'pi' | 'qwen-code'
+  'claude' | 'grok' | 'hermes' | 'kimi' | 'codex' | 'opencode' | 'pi' | 'qwen-code' | 'cursor'
 
 type StoreByName = {
   claude: ClaudeStoreHost
@@ -58,6 +62,7 @@ type StoreByName = {
   opencode: OpencodeStoreHost
   pi: PiStoreHost
   'qwen-code': QwenCodeStoreHost
+  cursor: CursorStoreHost
 }
 
 type Adapter = {
@@ -107,6 +112,11 @@ const ADAPTERS: Record<HarnessStoreName, Adapter> = {
     describe: describeQwenCodeSession,
     transcript: readQwenCodeTranscript,
   },
+  cursor: {
+    roster: CURSOR_ROSTER_COMMAND,
+    describe: describeCursorSession,
+    transcript: readCursorTranscript,
+  },
 }
 
 export function createHarnessStore<N extends HarnessStoreName>(name: N): StoreByName[N] {
@@ -130,6 +140,9 @@ export function createHarnessStore<N extends HarnessStoreName>(name: N): StoreBy
   }
   if (name === 'opencode') {
     ;(host as OpencodeStoreHost).newestAfter = newestOpencodeSessionAfter
+  }
+  if (name === 'cursor') {
+    ;(host as CursorStoreHost).newestAfter = newestCursorSessionAfter
   }
   return host as StoreByName[N]
 }
