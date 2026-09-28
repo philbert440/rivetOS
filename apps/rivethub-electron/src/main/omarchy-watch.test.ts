@@ -1,6 +1,10 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import path from 'node:path'
-import { OMARCHY_WATCH_DEBOUNCE_MS, omarchyCurrentDirs, watchOmarchyTheme } from './omarchy-watch.js'
+import {
+  OMARCHY_WATCH_DEBOUNCE_MS,
+  omarchyCurrentDirs,
+  watchOmarchyTheme,
+} from './omarchy-watch.js'
 
 const env = { home: '/home/u', platform: 'linux' as const, env: {} }
 const current = path.join('/home/u', '.local', 'state', 'omarchy', 'current')
@@ -55,7 +59,11 @@ describe('watchOmarchyTheme', () => {
     vi.useFakeTimers()
     const w = fakeWatch()
     const onChange = vi.fn()
-    const dispose = watchOmarchyTheme(onChange, { env, watch: w.watch, isDir: (p) => p === current })
+    const dispose = watchOmarchyTheme(onChange, {
+      env,
+      watch: w.watch,
+      isDir: (p) => p === current,
+    })
     w.listeners.get(current)!('change', 'theme.name')
     dispose()
     vi.advanceTimersByTime(OMARCHY_WATCH_DEBOUNCE_MS * 2)

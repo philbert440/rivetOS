@@ -21,7 +21,9 @@ describe('tintBitmap', () => {
   // BGRA pixels: opaque white, half-covered edge, transparent.
   it('repaints premultiplied masks and keeps alpha', () => {
     const mask = Buffer.from([255, 255, 255, 255, 128, 128, 128, 128, 0, 0, 0, 0])
-    expect([...tintBitmap(mask, '#ff8000')]).toEqual([0, 128, 255, 255, 0, 64, 128, 128, 0, 0, 0, 0])
+    expect([...tintBitmap(mask, '#ff8000')]).toEqual([
+      0, 128, 255, 255, 0, 64, 128, 128, 0, 0, 0, 0,
+    ])
   })
 
   it('repaints straight-alpha masks without scaling color', () => {

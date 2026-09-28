@@ -20,7 +20,10 @@ export const OMARCHY_WATCH_DEBOUNCE_MS = 150
 /** Entries in `current/` whose change means a new theme landed. */
 const THEME_ENTRIES = new Set(['theme.name', 'theme'])
 
-type Watch = (dir: string, listener: (event: string, filename: string | null) => void) => {
+type Watch = (
+  dir: string,
+  listener: (event: string, filename: string | null) => void,
+) => {
   close(): void
 }
 

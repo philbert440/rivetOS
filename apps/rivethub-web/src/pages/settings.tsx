@@ -307,8 +307,8 @@ export function SettingsPage(): JSX.Element {
       {themePreference === 'omarchy' &&
         (liveOmarchy ? (
           <p className="mt-3 text-xs text-ink-dim">
-            Following your Omarchy theme{omarchy?.name ? ` — ${omarchy.name}` : ''}. Switch themes
-            in Omarchy and RivetHub restyles right away.
+            Following your Omarchy theme{omarchy.name ? ` — ${omarchy.name}` : ''}. Switch themes in
+            Omarchy and RivetHub restyles right away.
           </p>
         ) : (
           <div className="mt-3 flex items-center gap-3">

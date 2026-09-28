@@ -102,7 +102,9 @@ for (const name of ['switcher', 'picker']) {
     }
     function expectVisible(): void {
       const html = render()
-      expect(html).toContain(name === 'switcher' ? 'aria-label="Current node:' : 'aria-label="node:')
+      expect(html).toContain(
+        name === 'switcher' ? 'aria-label="Current node:' : 'aria-label="node:',
+      )
       // The switcher's interactive form is the button that opens the list.
       if (name === 'switcher') expect(html).toContain('aria-expanded')
     }
