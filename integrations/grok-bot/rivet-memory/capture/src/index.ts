@@ -41,6 +41,8 @@ export {
   identityFor,
   makeIdentityLookup,
   loadIdentityConfig,
+  deriveIdentity,
+  uniqueSlug,
   slug,
   resolveAgentPrefix,
   subagentAgent,

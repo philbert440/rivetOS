@@ -130,7 +130,7 @@ export function scanLine(line, { file = '', denyHashes = new Set() } = {}) {
         rule: 'grokbot-legacy-tag',
         severity: 'block',
         match: 'rivet-grokbot',
-        hint: 'owner-specific agent tag — use models.local.json or a generic prefix',
+        hint: 'owner-specific agent tag — use the derived generic prefix',
       })
     }
     if (rivetPersonaRemaining(line)) {

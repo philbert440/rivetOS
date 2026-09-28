@@ -94,6 +94,9 @@ describe('node capture scripts', () => {
     expect(src).toContain('dist/identity.js')
     expect(src).not.toContain('DEFAULT_EXCLUDE_NAMES')
     expect(src).not.toContain('readdirSync(AGENTS)')
+    expect(src).not.toContain('overrides')
+    expect(src).not.toContain('models.json')
+    expect(src).not.toContain('models.local')
   })
 
   it('watcher matches store.db-wal on the same agent debounce key', async () => {
@@ -132,6 +135,8 @@ describe('node capture scripts', () => {
     expect(watch).toContain('grokbot-capture-state${SESSION_SUFFIX}')
     expect(watch).not.toContain("const STORE_SUFFIX = '-v3-store'")
     expect(runOnce).toContain('unmappedTranscripts')
+    expect(runOnce).not.toContain('overrides')
+    expect(runOnce).not.toContain('models.json')
   })
 
   it('ingest.mjs is a wrapper over bin/ingest-session.mjs', () => {

@@ -46,13 +46,14 @@ existing rows.
   `truncated: true`, `full_*_length`, and
   `session_jsonl_path` + `session_jsonl_line` (claude-code `pointerMeta`)
   let `memory_get_full` re-read the source line.
-- Each bot is tagged from the roster (`agent-data/agents/*/profile.json`)
+-   Each bot is tagged from the roster (`agent-data/agents/<uuid>/profile.json`)
   **before** the subagent fallback. Persona is the profile name. Session is
   `grokbot-<slug>` (`GROKBOT_NODE_ID`, default `grokbot`). Agent is
-  `<prefix>-<slug>` (`GROKBOT_AGENT_PREFIX` or `models.local.json`
-  `agentPrefix`, default `grokbot`). Groups, unused-slot / placeholder
-  profiles, and subagent transcripts are skipped by structure. Unknown ids
-  stay `<prefix>-run` / `grokbot-run-<id>`. The agent UUID is in metadata.
+  `<prefix>-<slug>` (`GROKBOT_AGENT_PREFIX`, default `grokbot`). Duplicate
+  slugs append a short id suffix (first-UUID-wins). Groups, unused-slot /
+  placeholder profiles, and subagent transcripts are skipped by structure.
+  Unknown ids stay `<prefix>-run` / `grokbot-run-<id>`. The agent UUID is
+  in metadata.
 - Hidden system turns are stored as `role=system` with `metadata.kind`.
   Repeated routine / background fires stay distinct by position. Genuine
   same-minute user repeats stay distinct by position; only a replayed
@@ -85,9 +86,8 @@ existing rows.
   `<session>${SUFFIX}-voice-<stem>` (turn index is not the line index).
   Watcher state is a per-suffix file
   (`~/.rivetos/grokbot-capture-state${SUFFIX}.json`). `-v3` may inherit
-  unsuffixed `state.json`; `-v4` starts empty.   Discovery merges
-  `models.json` plus gitignored `models.local.json` overrides into the
-  roster so a host can pin a legacy tag or add an override-only bot.
+  unsuffixed `state.json`; `-v4` starts empty. The roster is discovery
+  only — no bot list and no override file.
   Unmapped `<uuid>/<uuid>.jsonl` transcripts are reported
   (stderr / `unmappedTranscripts`), not dropped silently. Reclean follows
   `GROKBOT_SESSION_SUFFIX` and refuses already row-shaped sessions.
@@ -111,14 +111,11 @@ capture/
 ├── discover-models.mjs
 ├── watch.mjs
 ├── ingest.mjs
-├── run-once.sh
-├── models.json          # empty overrides (typed source: src/identity.ts)
-├── models.local.example.json
-└── models.local.json    # gitignored host overrides (optional)
+└── run-once.sh
 ```
 
-Paths come from env (`GROKBOT_AGENTS`, `GROKBOT_TRANSCRIPTS` /
-`GROKBOT_TRANSCRIPT_ROOT`, `GROKBOT_MODELS`, `GROKBOT_SESSION_SUFFIX`).
+Paths come from env (`GROKBOT_NODE_ID`, `GROKBOT_AGENTS`, `GROKBOT_TRANSCRIPTS` /
+`GROKBOT_TRANSCRIPT_ROOT`, `GROKBOT_AGENT_PREFIX`, `GROKBOT_SESSION_SUFFIX`).
 Nothing in this tree names a host, address, port, or lab layout.
 
 ## Session suffixes (do not mix formats)
@@ -341,28 +338,25 @@ node integrations/grok-bot/rivet-memory/capture/dist/cli.js compare \
 ## Models
 
 `src/identity.ts` is the typed source. `discover-models.mjs` is a thin
-wrapper over `dist/identity.js`. Committed `models.json` `overrides` stay
-empty so real agent ids never land in git. Discovery works with no local
-file.
+wrapper over `dist/identity.js`. There is no bot list and no override
+file. Discovery reads the host's `agents/<uuid>/profile.json` files.
 
-Slug rule: persona = `profile.json` `name`; session = `${GROKBOT_NODE_ID:-grokbot}-<slug>`;
-agent = `${GROKBOT_AGENT_PREFIX:-grokbot}-<slug>`. Optional host pins live
-in `models.local.json` (gitignored) next to `models.json` — default path
-`integrations/grok-bot/rivet-memory/capture/models.local.json`. Relocate
-with `GROKBOT_MODELS_LOCAL`. Discovery loads `models.json` then merges
-`models.local.json` when present (local wins on the same key). Copy
-`models.local.example.json` for the full key set. `GROKBOT_MODELS` /
-`GROKBOT_AGENT_PREFIX` override the committed path and the prefix.
+Slug rule: persona = `profile.json` `name`; slug = lowercased name with
+non-alphanumeric runs replaced by `-` (empty → `agent`); session =
+`${GROKBOT_NODE_ID:-grokbot}-<slug>`; agent =
+`${GROKBOT_AGENT_PREFIX:-grokbot}-<slug>`. When two profiles produce the
+same slug, candidates are sorted by UUID: the first keeps the bare slug,
+later ones get `${slug}-<first 8 of id>` (more of the id if that is still
+taken).
 
-Discovery scans `$GROKBOT_AGENTS/*/profile.json` and skips, by structure:
+Discovery scans `$GROKBOT_AGENTS/<uuid>/profile.json` and skips, by structure:
 `group.json` present; placeholder / unused-slot profiles (`placeholder`,
 `unused`, `kind`, or the product unused-slot name with no extra identity);
-subagent profiles (`parentId` / `subagent`). Optional `excludeNames` is
-only for per-install local config. `identityFor` consults that roster
-before the subagent fallback. Verify the resolved roster with
+subagent profiles (`parentId` / `subagent`). `identityFor` consults that
+roster before the subagent fallback. Verify the resolved roster with
 `discover --json` before a backfill. `-v4` state and cursor files stay
-keyed by `id + suffix` / `grokbot-capture-state-v4.json` — they do not
-depend on persona names. `capture/ingest.mjs` is ingest-only
+keyed by `id + suffix` / `grokbot-capture-state-v4.json` — they follow the
+derived session ids. `capture/ingest.mjs` is ingest-only
 (search/browse/stats are the memory tools). `pull-bridge.py` calls
 `cli.js parse-page` instead of its own header regex.
 

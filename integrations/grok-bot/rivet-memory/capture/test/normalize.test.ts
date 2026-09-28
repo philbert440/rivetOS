@@ -1,4 +1,4 @@
-import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -14,7 +14,6 @@ import {
   listInputFiles,
   isPlaceholderProfile,
   isSubagentProfile,
-  loadIdentityConfig,
   peekParentLastKnownTime,
   resolveIdentity,
   resolveSourceAgentId,
@@ -66,11 +65,9 @@ import {
   OMEGA_ID,
   ORPHAN_ID,
   SUBAGENT_ID,
-  ZETA_ID,
 } from './ids.js'
 
 const FIX = join(dirname(fileURLToPath(import.meta.url)), 'fixtures')
-const MODELS = join(FIX, 'models.json')
 
 function readFix(name: string): string {
   return readFileSync(join(FIX, name), 'utf8')
@@ -766,18 +763,16 @@ describe('per-bot tags', () => {
     return {
       nodeId: 'grokbot',
       agentPrefix: 'grokbot',
-      excludeNames: new Set(),
-      overrides: {},
       ...extra,
     }
   }
 
   it('derives session grokbot-<slug> and agent <prefix>-<slug> from the profile name', () => {
-    const ident = identityFor(ALPHA_ID, { agentsDir, modelsPath: MODELS })
+    const ident = identityFor(ALPHA_ID, { agentsDir })
     expect(ident.persona).toBe('Alpha')
     expect(ident.session).toBe('grokbot-alpha')
     expect(ident.agent).toBe('grokbot-alpha')
-    expect(identityFor(DELTA_ID, { agentsDir, modelsPath: MODELS })).toMatchObject({
+    expect(identityFor(DELTA_ID, { agentsDir })).toMatchObject({
       persona: 'Delta',
       session: 'grokbot-delta',
       agent: 'grokbot-delta',
@@ -793,22 +788,15 @@ describe('per-bot tags', () => {
     expect(ident.agent).toBe('legacy-alpha')
   })
 
-  it('keeps committed models.json overrides empty', () => {
-    const raw = JSON.parse(readFileSync(join(dirname(FIX), '..', 'models.json'), 'utf8')) as {
-      overrides?: Record<string, unknown>
-      excludeNames?: unknown
-    }
-    expect(raw.overrides).toEqual({})
-    expect(raw.excludeNames ?? []).toEqual([])
+  it('does not ship a committed bot list or override file', () => {
+    const captureRoot = join(dirname(FIX), '..')
+    expect(existsSync(join(captureRoot, 'models.json'))).toBe(false)
+    expect(existsSync(join(captureRoot, 'models.local.example.json'))).toBe(false)
+    expect(existsSync(join(FIX, 'models.json'))).toBe(false)
   })
 
-  it('discovers from profiles with no local override file', () => {
-    const dir = mkdtempSync(join(tmpdir(), 'gb-no-local-'))
-    writeFileSync(join(dir, 'models.json'), JSON.stringify({ nodeId: 'grokbot', overrides: {} }))
-    const catalog = discoverModels({
-      agentsDir,
-      modelsPath: join(dir, 'models.json'),
-    })
+  it('discovers from profiles with no config file', () => {
+    const catalog = discoverModels({ agentsDir })
     const alpha = catalog.models.find((m) => m.id === ALPHA_ID)
     expect(alpha).toMatchObject({
       persona: 'Alpha',
@@ -819,81 +807,9 @@ describe('per-bot tags', () => {
     expect(catalog.models.find((m) => m.id === EPSILON_ID)).toBeUndefined()
   })
 
-  it('a local file shaped like today\'s committed overrides pins tags and leaves -v4 state on id+suffix', () => {
-    const dir = mkdtempSync(join(tmpdir(), 'gb-host-local-'))
-    writeFileSync(join(dir, 'models.json'), JSON.stringify({ nodeId: 'grokbot', overrides: {} }))
-    writeFileSync(
-      join(dir, 'models.local.json'),
-      JSON.stringify({
-        nodeId: 'grokbot',
-        agentPrefix: 'legacy',
-        excludeNames: ['New Bot'],
-        transcriptRel: '$GROKBOT_TRANSCRIPT_ROOT/<id>/<id>.jsonl',
-        overrides: {
-          [ALPHA_ID]: {
-            persona: 'Alpha',
-            session: 'grokbot-alpha-legacy',
-            agent: 'legacy-alpha',
-          },
-          [BETA_ID]: { persona: 'Beta', session: 'grokbot-beta', agent: 'legacy-beta' },
-          [GAMMA_ID]: { persona: 'Gamma', session: 'grokbot-gamma', agent: 'legacy-gamma' },
-          [DELTA_ID]: {
-            persona: 'Delta Prime',
-            session: 'grokbot-delta',
-            agent: 'legacy-delta',
-          },
-          [EPSILON_ID]: {
-            persona: 'Epsilon',
-            session: 'grokbot-epsilon',
-            agent: 'legacy-epsilon',
-          },
-          [ZETA_ID]: { persona: 'Zeta', session: 'grokbot-zeta', agent: 'legacy-zeta' },
-        },
-      }),
-    )
-    const catalog = discoverModels({
-      agentsDir,
-      modelsPath: join(dir, 'models.json'),
-    })
-    const byId = Object.fromEntries(catalog.models.map((m) => [m.id, m]))
-    expect(byId[ALPHA_ID]).toMatchObject({
-      persona: 'Alpha',
-      session: 'grokbot-alpha-legacy',
-      agent: 'legacy-alpha',
-    })
-    expect(byId[BETA_ID]).toMatchObject({
-      persona: 'Beta',
-      session: 'grokbot-beta',
-      agent: 'legacy-beta',
-    })
-    expect(byId[GAMMA_ID]).toMatchObject({
-      persona: 'Gamma',
-      session: 'grokbot-gamma',
-      agent: 'legacy-gamma',
-    })
-    expect(byId[DELTA_ID]).toMatchObject({
-      persona: 'Delta Prime',
-      session: 'grokbot-delta',
-      agent: 'legacy-delta',
-    })
-    expect(byId[EPSILON_ID]).toMatchObject({
-      persona: 'Epsilon',
-      session: 'grokbot-epsilon',
-      agent: 'legacy-epsilon',
-    })
-    expect(byId[ZETA_ID]).toMatchObject({
-      persona: 'Zeta',
-      session: 'grokbot-zeta',
-      agent: 'legacy-zeta',
-    })
-    expect(byId[NEW_BOT_ID]).toBeUndefined()
-    expect(byId[GROUP_ID]).toBeUndefined()
-    expect(byId[OMEGA_ID]).toMatchObject({
-      persona: 'Omega',
-      session: 'grokbot-omega',
-      agent: 'legacy-omega',
-    })
-
+  it('keeps -v4 state and cursor names on the derived session id', () => {
+    const catalog = discoverModels({ agentsDir })
+    expect(catalog.models.length).toBeGreaterThan(0)
     for (const m of catalog.models) {
       expect(applySessionSuffix(m.session, '-v4')).toBe(`${m.session}-v4`)
       expect(captureStateKey(m.id, '-v4')).toBe(`${m.id}-v4`)
@@ -908,7 +824,7 @@ describe('per-bot tags', () => {
   })
 
   it('discovers roster bots and skips groups, placeholders, and subagents by structure', () => {
-    const catalog = discoverModels({ agentsDir, modelsPath: MODELS })
+    const catalog = discoverModels({ agentsDir })
     const ids = catalog.models.map((m) => m.id)
     expect(ids).toContain(ALPHA_ID)
     expect(ids).toContain(BETA_ID)
@@ -930,26 +846,26 @@ describe('per-bot tags', () => {
     expect(isSubagentProfile({ name: 'spawn', parentId: ALPHA_ID })).toBe(true)
   })
 
-  it('includes an override-only bot and honors local excludeNames', () => {
-    const dir = mkdtempSync(join(tmpdir(), 'gb-exclude-'))
-    writeFileSync(join(dir, 'models.json'), JSON.stringify({ nodeId: 'grokbot', overrides: {} }))
-    writeFileSync(
-      join(dir, 'models.local.json'),
-      JSON.stringify({
-        excludeNames: ['Omega'],
-        overrides: {
-          [EPSILON_ID]: { persona: 'Epsilon', session: 'grokbot-epsilon', agent: 'legacy-epsilon' },
-        },
-      }),
-    )
-    const catalog = discoverModels({
-      agentsDir,
-      modelsPath: join(dir, 'models.json'),
+  it('appends a short id suffix when two profiles slugify to the same value', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'gb-collide-'))
+    const first = '00000000-0000-4000-8000-000000000011'
+    const second = '11111111-0000-4000-8000-000000000022'
+    for (const id of [first, second]) {
+      mkdirSync(join(dir, id), { recursive: true })
+      writeFileSync(join(dir, id, 'profile.json'), JSON.stringify({ name: 'Alpha Twin' }))
+    }
+    const catalog = discoverModels({ agentsDir: dir })
+    const byId = Object.fromEntries(catalog.models.map((m) => [m.id, m]))
+    expect(byId[first]).toMatchObject({
+      persona: 'Alpha Twin',
+      session: 'grokbot-alpha-twin',
+      agent: 'grokbot-alpha-twin',
     })
-    const ids = catalog.models.map((m) => m.id)
-    expect(ids).toContain(EPSILON_ID)
-    expect(catalog.models.find((m) => m.id === EPSILON_ID)?.agent).toBe('legacy-epsilon')
-    expect(ids).not.toContain(OMEGA_ID)
+    expect(byId[second]).toMatchObject({
+      persona: 'Alpha Twin',
+      session: 'grokbot-alpha-twin-11111111',
+      agent: 'grokbot-alpha-twin-11111111',
+    })
   })
 
   it('reports unmapped <uuid>/<uuid>.jsonl transcripts instead of dropping them', () => {
@@ -959,7 +875,6 @@ describe('per-bot tags', () => {
     writeFileSync(join(dir, orphan, `${orphan}.jsonl`), '{}\n')
     const catalog = discoverModels({
       agentsDir,
-      modelsPath: MODELS,
       transcriptsDir: dir,
     })
     expect(catalog.unmappedTranscripts).toContain(orphan)
@@ -968,15 +883,15 @@ describe('per-bot tags', () => {
 
   it('tags unknown ids as <prefix>-run / <node>-run-<id>', () => {
     const id = 'aaaaaaaa-bbbb-4ccc-8ddd-111111111111'
-    const ident = identityFor(id, { agentsDir, modelsPath: MODELS })
+    const ident = identityFor(id, { agentsDir })
     expect(ident.persona).toBe('run')
     expect(ident.agent).toBe('grokbot-run')
     expect(ident.session).toBe(`grokbot-run-${id}`)
   })
 
   it('skips a profiled subagent and still consults the roster first', () => {
-    expect(identityFor(SUBAGENT_ID, { agentsDir, modelsPath: MODELS }).agent).toBe('grokbot-run')
-    const ident = identityFor(OMEGA_ID, { agentsDir, modelsPath: MODELS })
+    expect(identityFor(SUBAGENT_ID, { agentsDir }).agent).toBe('grokbot-run')
+    const ident = identityFor(OMEGA_ID, { agentsDir })
     expect(ident.persona).toBe('Omega')
     expect(ident.session).toBe('grokbot-omega')
     expect(ident.agent).toBe('grokbot-omega')

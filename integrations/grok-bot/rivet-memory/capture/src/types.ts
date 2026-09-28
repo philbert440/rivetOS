@@ -3,7 +3,7 @@ import type { CaptureMessage } from '@rivetos/capture-core'
 export const CAPTURE_CHANNEL = 'grokbot'
 export const CAPTURE_SOURCE = 'grokbot'
 export const DEFAULT_NODE_ID = 'grokbot'
-/** Agent-tag prefix when none is set via GROKBOT_AGENT_PREFIX or models.local.json. */
+/** Agent-tag prefix when none is set via GROKBOT_AGENT_PREFIX. */
 export const DEFAULT_AGENT_PREFIX = 'grokbot'
 /** Fallback agent tag for unknown / subagent transcripts: `<prefix>-run`. */
 export const SUBAGENT_AGENT = `${DEFAULT_AGENT_PREFIX}-run`

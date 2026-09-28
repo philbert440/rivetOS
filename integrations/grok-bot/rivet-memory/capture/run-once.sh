@@ -5,7 +5,6 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-MODELS_JSON="${SCRIPT_DIR}/models.json"
 CONVERTER="${CONVERTER:-${SCRIPT_DIR}/convert-transcript.py}"
 RIVETOS_ROOT="${RIVETOS_ROOT:-/opt/rivetos}"
 INGEST_BIN="${RIVETOS_ROOT}/integrations/grok-bot/rivet-memory/bin/ingest-session.mjs"
@@ -67,11 +66,6 @@ if [[ ! -f "${RIVETOS_ROOT}/integrations/grok-bot/rivet-memory/capture/dist/inge
     echo "WARN: grok-bot ingest writer not built, skipping ingest (fail closed)" >&2
     SKIP_INGEST=1
 fi
-
-# Fall back to models.json overrides (not a leftover models[] array).
-overrides_as_models() {
-    jq -c '.overrides | to_entries[] | {id:.key, persona:.value.persona, name:.value.persona, sessionId:.value.session, session:.value.session, agentId:.value.agent, agent:.value.agent}' "${MODELS_JSON}"
-}
 
 # Align .env check: ingest-session.mjs loads ~/.rivetos/.env itself, so check
 # there rather than requiring RIVETOS_PG_URL in process env. Ingest only maps
@@ -243,39 +237,27 @@ warn_if_stuck() {
     return 1
 }
 
-# Same roster as the watcher: discover-models.mjs (agent profiles + overrides).
-# Fall back to models.json overrides only if discovery cannot run.
+# Same roster as the watcher: discover-models.mjs (agent profiles only).
 DISCOVER_JS="${SCRIPT_DIR}/discover-models.mjs"
-if [[ ! -f "${MODELS_JSON}" && ! -f "${DISCOVER_JS}" ]]; then
-    echo "ERROR: models.json not found at ${MODELS_JSON}" >&2
+if [[ ! -f "${DISCOVER_JS}" ]]; then
+    echo "ERROR: discover-models.mjs not found at ${DISCOVER_JS}" >&2
     exit 1
 fi
 
-transcript_rel=$(jq -r '.transcriptRel // empty' "${MODELS_JSON}" 2>/dev/null || true)
-if [[ -f "${DISCOVER_JS}" ]]; then
-    if roster_json="$(node "${DISCOVER_JS}" --json 2>/dev/null)"; then
-        roster_n="$(printf '%s' "${roster_json}" | jq -r '.models | length' 2>/dev/null || echo 0)"
-        if [[ -z "${roster_n}" || "${roster_n}" == "0" || "${roster_n}" == "null" ]]; then
-            echo "ERROR: discover-models.mjs --json returned an empty roster" >&2
-            exit 1
-        fi
-        models="$(printf '%s' "${roster_json}" | jq -c '.models[]')"
-        unmapped="$(printf '%s' "${roster_json}" | jq -r '.unmappedTranscripts[]? // empty' 2>/dev/null || true)"
-        if [[ -n "${unmapped}" ]]; then
-            echo "WARN: unmapped transcripts (not on roster/overrides):" >&2
-            printf '%s\n' "${unmapped}" >&2
-        fi
-    elif [[ -f "${MODELS_JSON}" ]]; then
-        models="$(overrides_as_models)"
-    else
-        echo "ERROR: cannot discover models (discover failed and no models.json)" >&2
-        exit 1
-    fi
-elif [[ -f "${MODELS_JSON}" ]]; then
-    models="$(overrides_as_models)"
-else
-    echo "ERROR: cannot discover models (no roster and no models.json)" >&2
+if ! roster_json="$(node "${DISCOVER_JS}" --json)"; then
+    echo "ERROR: cannot discover models (discover-models.mjs failed)" >&2
     exit 1
+fi
+roster_n="$(printf '%s' "${roster_json}" | jq -r '.models | length' 2>/dev/null || echo 0)"
+if [[ -z "${roster_n}" || "${roster_n}" == "0" || "${roster_n}" == "null" ]]; then
+    echo "ERROR: discover-models.mjs --json returned an empty roster" >&2
+    exit 1
+fi
+models="$(printf '%s' "${roster_json}" | jq -c '.models[]')"
+unmapped="$(printf '%s' "${roster_json}" | jq -r '.unmappedTranscripts[]? // empty' 2>/dev/null || true)"
+if [[ -n "${unmapped}" ]]; then
+    echo "WARN: unmapped transcripts (not on the discovered roster):" >&2
+    printf '%s\n' "${unmapped}" >&2
 fi
 
 any_model_failed=0
@@ -294,11 +276,10 @@ while IFS= read -r model_json; do
 
     echo "Processing model: ${model_name} (${model_id})"
 
-    # Resolve transcript path (roster .transcript, else models.json transcriptRel)
+    # Resolve transcript path from discovery (uuid/uuid.jsonl under the transcript root).
     transcript_path=$(echo "${model_json}" | jq -r '.transcript // empty')
     if [[ -z "${transcript_path}" ]]; then
-        transcript_path="${transcript_rel//<id>/${model_id}}"
-        transcript_path="${transcript_path//\$GROKBOT_TRANSCRIPT_ROOT/${GROKBOT_TRANSCRIPT_ROOT}}"
+        transcript_path="${GROKBOT_TRANSCRIPT_ROOT}/${model_id}/${model_id}.jsonl"
     fi
 
     if [[ ! -f "${transcript_path}" ]]; then

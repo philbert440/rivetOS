@@ -9,7 +9,6 @@ export default defineConfig({
     environment: 'node',
     include: ['test/**/*.test.ts'],
     env: {
-      GROKBOT_MODELS: join(ROOT, 'test/fixtures/models.json'),
       GROKBOT_AGENTS: join(ROOT, 'test/fixtures/agents'),
     },
   },

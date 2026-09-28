@@ -7,19 +7,19 @@ Query and write the same Postgres store. Ingest sessions tagged source=grokbot w
 
 ## Node and Models
 
-Discovery reads every bot from the host's `agent-data/agents/*/profile.json`
+Discovery reads every bot from the host's `agent-data/agents/<uuid>/profile.json`
 at runtime. Persona is the profile name. Session is `grokbot-<slug>`; agent
 is `<prefix>-<slug>`. The prefix defaults to `grokbot` and is set with
-`GROKBOT_AGENT_PREFIX` or `models.local.json` `agentPrefix`. Groups,
+`GROKBOT_AGENT_PREFIX`. Duplicate slugs append a short id suffix. Groups,
 placeholder unused-slot profiles, and subagent transcripts are skipped by
 structure (presence of `group.json`, placeholder flags / unused-slot shape,
 or a parent id).
 
-Committed `capture/models.json` ships no overrides. Per-install pins,
-exclusions, and a non-default prefix live in gitignored
-`capture/models.local.json` (copy `capture/models.local.example.json`) or
-env. Print the resolved roster with `discover --json` before ingesting.
-Full mesh mTLS join is out of scope.
+There is no bot list and no override file. Only generic env settings
+(`GROKBOT_NODE_ID`, `GROKBOT_AGENTS`, `GROKBOT_TRANSCRIPTS` /
+`GROKBOT_TRANSCRIPT_ROOT`, `GROKBOT_AGENT_PREFIX`, `GROKBOT_SESSION_SUFFIX`)
+are configurable. Print the resolved roster with `discover --json` before
+ingesting. Full mesh mTLS join is out of scope.
 
 ## Install
 

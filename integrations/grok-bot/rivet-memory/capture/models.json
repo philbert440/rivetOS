@@ -1,5 +1,0 @@
-{
-  "nodeId": "grokbot",
-  "overrides": {},
-  "transcriptRel": "$GROKBOT_TRANSCRIPT_ROOT/<id>/<id>.jsonl"
-}

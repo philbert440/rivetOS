@@ -94,7 +94,7 @@ const HELP = `Usage: grokbot-rivet-memory-capture <command> [opts]
   compare [--fixtures DIR]
       Before (legacy convert-transcript + pull-bridge) vs after (normalizer).
 
-  discover [--agents-dir DIR] [--models FILE] [--json]
+  discover [--agents-dir DIR] [--json]
 `
 
 async function main(argv: string[]): Promise<number> {
@@ -616,13 +616,11 @@ function cmdDiscover(argv: string[]): number {
     args: coalesceDashArgs(argv),
     options: {
       'agents-dir': { type: 'string' },
-      models: { type: 'string' },
       json: { type: 'boolean', default: false },
     },
   })
   const catalog = discoverModels({
     agentsDir: values['agents-dir'],
-    modelsPath: values.models,
   })
   if (values.json) {
     process.stdout.write(`${JSON.stringify(catalog, null, 2)}\n`)
@@ -631,7 +629,7 @@ function cmdDiscover(argv: string[]): number {
   }
   if (catalog.unmappedTranscripts.length > 0) {
     console.error(
-      `unmapped transcripts (not on roster/overrides): ${catalog.unmappedTranscripts.join(', ')}`,
+      `unmapped transcripts (not on the discovered roster): ${catalog.unmappedTranscripts.join(', ')}`,
     )
   }
   return 0
