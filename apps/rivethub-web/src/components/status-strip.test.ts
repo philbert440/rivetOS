@@ -1,17 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { nodeLabel, themeLabel } from './sidebar-chrome.js'
-
-describe('themeLabel', () => {
-  it('names the Omarchy theme when one drives the palette', () => {
-    expect(themeLabel('omarchy', 'Gruvbox')).toBe('Gruvbox')
-    expect(themeLabel('omarchy', undefined)).toBe('omarchy')
-  })
-
-  it('shows the preference otherwise', () => {
-    expect(themeLabel('dark', 'Gruvbox')).toBe('dark')
-    expect(themeLabel('system', undefined)).toBe('system')
-  })
-})
+import { nodeLabel } from './sidebar-chrome.js'
 
 describe('nodeLabel', () => {
   const roster = [{ name: 'den-01', baseUrl: 'https://den-01:5174' }]

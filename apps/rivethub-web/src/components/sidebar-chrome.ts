@@ -30,13 +30,6 @@ export function railToggle(collapsed: boolean): {
     : { kind: 'collapse', label: 'Collapse sidebar', ariaExpanded: true }
 }
 
-/** Label for the strip's theme slot: the Omarchy theme name when one drives
- *  the palette, else the preference itself. */
-export function themeLabel(preference: string, omarchyName: string | undefined): string {
-  if (preference === 'omarchy') return omarchyName ?? 'omarchy'
-  return preference
-}
-
 /** The roster name for the active endpoint, else its host. */
 export function nodeLabel(
   baseUrl: string,
