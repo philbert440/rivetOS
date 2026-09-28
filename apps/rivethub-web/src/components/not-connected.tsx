@@ -13,7 +13,7 @@ export function useGatewayReady(): boolean {
 export function NotConnected(): JSX.Element {
   return (
     <div className="flex h-full flex-1 flex-col items-center justify-center gap-3">
-      <RhMark className="w-[66px] opacity-90" />
+      <RhMark className="text-5xl opacity-90" />
       <div className="text-sm text-ink-dim">No node connected.</div>
       <Link
         to="/settings"

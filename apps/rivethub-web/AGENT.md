@@ -194,9 +194,9 @@ Redesign "A · Tiled" (mockups in `docs/mockups/rivethub-redesign/`).
 
 - **Brand is type, not a mascot.** The den bot is gone. `components/brand.tsx`:
   `Wordmark` (`rivet` accent + `hub` dim) heads the expanded rail;
-  `RhMark` (R-H monogram on an 11×7 pixel grid, `currentColor`) is the
-  collapsed rail, narrow top bar and empty states. Either one IS the rail
-  toggle. Keep `RhMark` widths a multiple of 11px so cells stay crisp.
+  `RhMark` (the wordmark's own `r` + `h`, same face, weight and colors) is
+  the collapsed rail, narrow top bar and empty states. Either one IS the rail
+  toggle. Size `RhMark` with a text size; `text-xl` matches the wordmark.
   Transcript rows are mono `rivet ›` / `you ›` labels, no avatar.
 - **Look:** JetBrains Mono for all UI (`--font-sans`), every `--radius*`
   token 0 (only `rounded-full` stays round), no blueprint grid. Desktop is

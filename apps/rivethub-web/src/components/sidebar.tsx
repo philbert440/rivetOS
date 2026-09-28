@@ -152,7 +152,7 @@ export function MobileTopBar(): JSX.Element {
       >
         <Menu className="size-5 shrink-0" aria-hidden />
       </Button>
-      <RhMark className="w-[22px]" />
+      <RhMark className="text-lg" />
       <span className="min-w-0 truncate font-mono text-sm text-em">{hubPageTitle(pathname)}</span>
       {unread > 0 && (
         <span className="ml-auto">
@@ -257,7 +257,7 @@ export function Sidebar(): JSX.Element {
           >
             {/* Type, not a mascot: the wordmark expanded, the R-H monogram
                 collapsed. Either one IS the rail toggle. */}
-            {collapsed ? <RhMark className="w-[33px]" /> : <Wordmark className="text-xl" />}
+            {collapsed ? <RhMark className="text-xl" /> : <Wordmark className="text-xl" />}
           </Button>
         </Tooltip>
         {/* Unread escalations/outcomes — toasts are ephemeral, this isn't.

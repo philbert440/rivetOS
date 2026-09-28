@@ -2171,7 +2171,7 @@ function ActiveSession(props: {
 function EmptyState(): JSX.Element {
   return (
     <div className="flex flex-1 flex-col items-center justify-center gap-2">
-      <RhMark className="w-[66px] opacity-90" />
+      <RhMark className="text-5xl opacity-90" />
       <div className="text-sm text-ink-dim">Pick a conversation or start a new one.</div>
     </div>
   )
@@ -2196,7 +2196,7 @@ function ChatLaunchLoading(): JSX.Element {
       role="status"
       aria-label="Loading most recent conversation"
     >
-      <RhMark className="w-[66px] opacity-90" />
+      <RhMark className="text-5xl opacity-90" />
       <div className="text-sm text-ink-dim">Loading most recent conversation…</div>
       <button
         type="button"
