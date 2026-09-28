@@ -198,4 +198,42 @@ describe('syncOmarchyTheme', () => {
     await Promise.resolve()
     expect(read).toHaveBeenCalledTimes(3)
   })
+
+  it('re-syncs on every pushed theme switch, unthrottled', async () => {
+    const read = vi.fn(async () => [
+      {
+        kind: 'omarchy' as const,
+        path: '/theme/colors.toml',
+        text: '',
+        includes: {},
+        themeName: 'osaka-jade',
+        colorsToml: osakaJadeToml,
+      },
+    ])
+    let pushed: (() => void) | undefined
+    const shell: RivetShell = {
+      kind: 'electron',
+      mtlsProxyPort: async () => 1,
+      openExternal: async () => undefined,
+      clipboardWriteText: async () => undefined,
+      clipboardReadText: async () => '',
+      sendNotification: async () => undefined,
+      setUnread: async () => undefined,
+      readTerminalConfigs: read,
+      onOmarchyThemeChanged: (cb) => {
+        pushed = cb
+        return () => undefined
+      },
+    }
+    ;(globalThis as { rivetShell?: RivetShell }).rivetShell = shell
+
+    installOmarchySync({ addEventListener: () => undefined })
+    await Promise.resolve()
+    expect(read).toHaveBeenCalledTimes(1)
+
+    pushed?.()
+    pushed?.()
+    await Promise.resolve()
+    expect(read).toHaveBeenCalledTimes(3)
+  })
 })

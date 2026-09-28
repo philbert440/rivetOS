@@ -97,6 +97,16 @@ const api = {
         colorsToml?: string
       }>
     >,
+  /** Subscribe to live Omarchy theme switches (main watches current/). The
+   *  callback gets no payload — re-read via readTerminalConfigs. Returns an
+   *  unsubscribe. */
+  onOmarchyThemeChanged: (callback: () => void): (() => void) => {
+    const listener = (): void => callback()
+    ipcRenderer.on('omarchy:changed', listener)
+    return () => {
+      ipcRenderer.removeListener('omarchy:changed', listener)
+    }
+  },
   /** Read all settings from the main process's settings.json file. */
   settingsGetAll: (): Promise<Record<string, unknown>> =>
     ipcRenderer.invoke('settings:getAll') as Promise<Record<string, unknown>>,

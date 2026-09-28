@@ -49,6 +49,8 @@ export interface RivetShell {
       colorsToml?: string
     }>
   >
+  /** Live Omarchy theme switches (desktop). Returns an unsubscribe. */
+  onOmarchyThemeChanged?(callback: () => void): () => void
   /** Read all settings from the main process's settings.json file. */
   settingsGetAll?(): Promise<Record<string, unknown>>
   /** Write a single setting to the main process's settings.json file. */

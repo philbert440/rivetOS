@@ -1,7 +1,7 @@
 /**
  * Pull the live Omarchy `colors.toml` through the desktop shell and park it
- * on the theme store. Called at boot and on window focus (throttled) so
- * switching themes in Omarchy and alt-tabbing back restyles the hub.
+ * on the theme store. Called at boot, on each theme switch the desktop pushes,
+ * and on window focus (throttled) as a fallback.
  *
  * No `window` access at module-eval time — only inside installOmarchySync.
  */
@@ -54,6 +54,9 @@ export function installOmarchySync(
   win: { addEventListener(type: string, listener: () => void): void } = window,
 ): void {
   void syncOmarchyTheme()
+  // Desktop pushes each theme switch as it happens; focus stays as the
+  // fallback for shells without the push (and anything it misses).
+  getRivetShell()?.onOmarchyThemeChanged?.(() => void syncOmarchyTheme())
   let last = Number.NEGATIVE_INFINITY
   win.addEventListener('focus', () => {
     const now = Date.now()

@@ -32,6 +32,7 @@ import { adoptLocalDenIfUnconfigured } from './local-den.js'
 import { PipeState } from './mtls-pipe.js'
 import { SettingsStore } from './settings-store.js'
 import { registerIpc } from './ipc.js'
+import { watchOmarchyTheme } from './omarchy-watch.js'
 import {
   allowMediaCheck,
   allowMediaRequest,
@@ -554,6 +555,9 @@ if (!app.requestSingleInstanceLock()) {
   })
 }
 
+/** Disposes the Omarchy theme watcher started in startup(). */
+let stopOmarchyWatch: (() => void) | undefined
+
 function startup(): void {
   // FIRST, before anything that can throw: with the menu left at Electron's
   // default, every keydown round-trips the main-process accelerator matcher
@@ -568,6 +572,13 @@ function startup(): void {
   serveDist(protocol, distDir(), {
     snapshot: app.isPackaged,
     onError: (err) => logFault('dist-snapshot', err instanceof Error ? err.message : err),
+  })
+  // Live Omarchy restyle: tell every window the theme switched; each re-reads
+  // colors.toml through the fenced terminal:readConfigs channel.
+  stopOmarchyWatch = watchOmarchyTheme(() => {
+    for (const w of BrowserWindow.getAllWindows()) {
+      if (!w.isDestroyed()) w.webContents.send('omarchy:changed')
+    }
   })
   registerIpc({
     pipes,
@@ -708,5 +719,6 @@ app.on('before-quit', () => {
 
 app.on('will-quit', () => {
   globalShortcut.unregisterAll()
+  stopOmarchyWatch?.()
   pipes.dispose()
 })
