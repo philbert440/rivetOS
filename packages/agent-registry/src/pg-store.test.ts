@@ -75,7 +75,7 @@ const NOW = 1_700_000_000_000
 function input(overrides: Partial<AgentPresetInput> = {}): AgentPresetInput {
   return {
     name: 'Reviewer',
-    node: 'ct115',
+    node: 'node-f',
     directory: '/tmp/agents/reviewer',
     ...overrides,
   }
@@ -171,7 +171,7 @@ describe.skipIf(!TEST_PG_URL)('PgAgentPresetStore (scratch schema)', () => {
       systemPrompt: '',
       sharedLink: true,
       nodeBaseUrl: '',
-      node: 'ct115',
+      node: 'node-f',
       directory: '/tmp/agents/reviewer',
       createdAt: 1_600_000_000_000,
       updatedAt: NOW,
@@ -235,7 +235,7 @@ describe.skipIf(!TEST_PG_URL)('PgAgentPresetStore (scratch schema)', () => {
     expect(updated?.harnessId).toBeUndefined()
     expect(updated?.model).toBe('opus')
     expect(updated?.id).toBe(created.id)
-    expect(updated?.node).toBe('ct115')
+    expect(updated?.node).toBe('node-f')
     expect(updated?.createdAt).toBe(1_500_000_000_000)
     expect(updated?.updatedAt).toBe(NOW)
   })
@@ -258,7 +258,7 @@ describe.skipIf(!TEST_PG_URL)('PgAgentPresetStore (scratch schema)', () => {
     )
     await store.create(input({ id: 'a', name: 'A', createdAt: 1_000, directory: '/a' }))
     expect((await store.list()).map((preset) => preset.id)).toEqual(['a', 'c', 'b'])
-    expect((await store.list({ node: 'ct115' })).map((preset) => preset.id)).toEqual(['a', 'b'])
+    expect((await store.list({ node: 'node-f' })).map((preset) => preset.id)).toEqual(['a', 'b'])
     expect(await store.delete('missing')).toBe(false)
     expect(await store.delete('a')).toBe(true)
     expect(await store.get('a')).toBeUndefined()

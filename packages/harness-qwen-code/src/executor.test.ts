@@ -38,7 +38,7 @@ afterAll(() => {
   cleanupFakeQwen()
 })
 
-const SESSION = '857b4b7d-3d13-4281-a648-11947cf530ed'
+const SESSION = '00000000-0000-4000-8000-000000000049'
 
 function makeExecutor(fake: FakeQwen): QwenCodeExecutor {
   return new QwenCodeExecutor({

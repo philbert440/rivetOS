@@ -118,7 +118,7 @@ def test_fts_summary_search_param_order_with_since():
     fake = _FakeClient([])
     eng = SearchEngine(fake)
     eng._search_summaries(
-        "phildesk",
+        "desktop",
         mode="fts",
         limit=5,
         since="2026-01-01",
@@ -126,7 +126,7 @@ def test_fts_summary_search_param_order_with_since():
         query_embedding=None,
     )
     _sql, params = fake.cursor.executed[0]
-    assert params == ["phildesk", "phildesk", "2026-01-01", 5]
+    assert params == ["desktop", "desktop", "2026-01-01", 5]
 
 
 def test_trigram_messages_skip_embedding_clause():
@@ -135,7 +135,7 @@ def test_trigram_messages_skip_embedding_clause():
     fake = _FakeClient([])
     eng = SearchEngine(fake)
     eng._search_messages(
-        "phildez",  # typo of phildesk
+        "phildez",  # typo of desktop
         mode="trigram",
         limit=3,
         agent=None,

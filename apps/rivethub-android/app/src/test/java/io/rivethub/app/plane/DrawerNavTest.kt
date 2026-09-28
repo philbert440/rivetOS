@@ -244,11 +244,11 @@ class ChatHomeNavTest {
 
     @Test
     fun `agent picker subtitle is the node plus the directory basename when known`() {
-        assertEquals("ct115", agentPickerSubtitle("ct115", null))
-        assertEquals("ct115", agentPickerSubtitle("ct115", "  "))
-        assertEquals("ct115 · rivetOS", agentPickerSubtitle("ct115", "/opt/work/rivetOS/"))
-        assertEquals("ct115 · proj", agentPickerSubtitle("ct115", "proj"))
-        assertEquals("ct115 · repo", agentPickerSubtitle("ct115", "C:\\src\\repo"))
+        assertEquals("node-f", agentPickerSubtitle("node-f", null))
+        assertEquals("node-f", agentPickerSubtitle("node-f", "  "))
+        assertEquals("node-f · rivetOS", agentPickerSubtitle("node-f", "/opt/work/rivetOS/"))
+        assertEquals("node-f · proj", agentPickerSubtitle("node-f", "proj"))
+        assertEquals("node-f · repo", agentPickerSubtitle("node-f", "C:\\src\\repo"))
     }
 
     @Test fun `agents picker height caps at 70 percent of the window and never below one row`() {
@@ -262,9 +262,9 @@ class ChatHomeNavTest {
             agentId = agent, name = agent, harnessId = null, nodeId = node,
             nodeName = node, nodeDenUrl = "https://$node.example:5174", pointerSessionId = null,
         )
-        val rows = listOf(row("rivet", "ct115"), row("rivet", "ct112"), row("rivet", "ct115"), row("grok", "ct115"))
+        val rows = listOf(row("rivet", "node-f"), row("rivet", "node-c"), row("rivet", "node-f"), row("grok", "node-f"))
         val keys = agentPickerKeys(rows)
-        assertEquals(listOf("ct115/rivet", "ct112/rivet", "ct115/rivet#1", "ct115/grok"), keys)
+        assertEquals(listOf("node-f/rivet", "node-c/rivet", "node-f/rivet#1", "node-f/grok"), keys)
         assertEquals(keys.size, keys.toSet().size)
         assertEquals(emptyList<String>(), agentPickerKeys(emptyList()))
     }

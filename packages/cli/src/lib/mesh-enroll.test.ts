@@ -38,16 +38,16 @@ import {
 const SNIPPET = `${ENROLL_SNIPPET_MARKER}. Merge into the node's rivet.config.yaml.
 mesh:
   enabled: true
-  node_name: "ct110"
+  node_name: "node-a"
 `
 
 const MESH_ONE = `{
   "version": 1,
   "updatedAt": 1,
   "nodes": {
-    "ct110": {
-      "id": "ct110",
-      "name": "ct110",
+    "node-a": {
+      "id": "node-a",
+      "name": "node-a",
       "host": "192.0.2.10",
       "port": 3000,
       "status": "offline"
@@ -56,7 +56,7 @@ const MESH_ONE = `{
 }
 `
 
-function enrollMembers(name = 'ct110'): Record<string, string> {
+function enrollMembers(name = 'node-a'): Record<string, string> {
   return {
     [`${name}.crt`]: 'CERT',
     [`${name}.key`]: 'KEY',
@@ -66,7 +66,7 @@ function enrollMembers(name = 'ct110'): Record<string, string> {
   }
 }
 
-function enrollB64(name = 'ct110'): string {
+function enrollB64(name = 'node-a'): string {
   return packTarGz(enrollMembers(name)).toString('base64')
 }
 
@@ -97,7 +97,7 @@ describe('arg parsing', () => {
       parseEnrollArgs([
         'rivet@192.0.2.1',
         '--name',
-        'ct110',
+        'node-a',
         '--advertise',
         '192.0.2.10',
         '--hub-cmd',
@@ -107,26 +107,26 @@ describe('arg parsing', () => {
       user: 'rivet',
       host: '192.0.2.1',
       target: 'rivet@192.0.2.1',
-      name: 'ct110',
+      name: 'node-a',
       advertise: '192.0.2.10',
       hubCmd: DEFAULT_HUB_CMD,
     })
   })
 
   it('accepts flags before the positional target', () => {
-    const parsed = parseEnrollArgs(['--name', 'phildesk', 'philip@datahub'])
-    expect(parsed.name).toBe('phildesk')
-    expect(parsed.target).toBe('philip@datahub')
+    const parsed = parseEnrollArgs(['--name', 'desktop', 'user@datahub'])
+    expect(parsed.name).toBe('desktop')
+    expect(parsed.target).toBe('user@datahub')
     expect(parsed.advertise).toBeUndefined()
   })
 
   it('requires --name and user@host', () => {
     expect(() => parseEnrollArgs(['rivet@datahub'])).toThrow(/--name/)
-    expect(() => parseEnrollArgs(['--name', 'ct110'])).toThrow(/Usage: rivetos mesh enroll/)
+    expect(() => parseEnrollArgs(['--name', 'node-a'])).toThrow(/Usage: rivetos mesh enroll/)
   })
 
   it('rejects invalid node names', () => {
-    expect(validateNodeName('ct110')).toBe(true)
+    expect(validateNodeName('node-a')).toBe(true)
     expect(validateNodeName('-bad')).toBe(false)
     expect(() => parseEnrollArgs(['rivet@h', '--name', 'Bad_Name'])).toThrow(/invalid node name/)
   })
@@ -149,15 +149,15 @@ describe('arg parsing', () => {
       target: 'rivet@datahub',
       hubCmd: DEFAULT_HUB_CMD,
     })
-    expect(parseRenewArgs(['--name', 'ct110', 'rivet@datahub']).name).toBe('ct110')
+    expect(parseRenewArgs(['--name', 'node-a', 'rivet@datahub']).name).toBe('node-a')
     expect(() => parseRenewArgs(['rivet@datahub'])).toThrow(/--name/)
     expect(() => parseSyncArgs([])).toThrow(/mesh sync/)
   })
 
   it('builds a PATH-prefixed remote command with quoted args', () => {
-    const cmd = hubRemoteCommand('rivethub-hub', 'enroll', 'ct110', '192.0.2.10')
+    const cmd = hubRemoteCommand('rivethub-hub', 'enroll', 'node-a', '192.0.2.10')
     expect(cmd.startsWith('PATH=/usr/local/bin:/usr/bin:/bin:$PATH')).toBe(true)
-    expect(cmd).toContain("'rivethub-hub' enroll 'ct110' '192.0.2.10'")
+    expect(cmd).toContain("'rivethub-hub' enroll 'node-a' '192.0.2.10'")
   })
 })
 
@@ -165,16 +165,16 @@ describe('tarball unpack', () => {
   it('round-trips gzip ustar members', () => {
     const gz = packTarGz(enrollMembers())
     const files = extractTarGz(gz)
-    expect(files.get('ct110.crt')?.toString()).toBe('CERT')
-    expect(files.get('mesh.json')?.toString()).toContain('"ct110"')
+    expect(files.get('node-a.crt')?.toString()).toBe('CERT')
+    expect(files.get('mesh.json')?.toString()).toContain('"node-a"')
   })
 
   it('places certs on the issued/ layout mtls.ts expects', async () => {
-    const unpacked = parseEnrollTarball(enrollB64(), 'ct110')
+    const unpacked = parseEnrollTarball(enrollB64(), 'node-a')
     await writeEnrollLayout(unpacked)
     const shared = process.env.RIVETOS_SHARED_DIR!
-    const crt = join(shared, 'rivet-ca', 'issued', 'ct110.crt')
-    const key = join(shared, 'rivet-ca', 'issued', 'ct110.key')
+    const crt = join(shared, 'rivet-ca', 'issued', 'node-a.crt')
+    const key = join(shared, 'rivet-ca', 'issued', 'node-a.key')
     const chain = join(shared, 'rivet-ca', 'intermediate', 'ca-chain.pem')
     const chainAlias = join(shared, 'rivet-ca', 'intermediate', 'chain.pem')
     const mesh = join(shared, 'mesh.json')
@@ -184,22 +184,22 @@ describe('tarball unpack', () => {
     expect(statSync(join(shared, 'rivet-ca', 'issued')).mode & 0o777).toBe(0o700)
     expect(readFileSync(chain, 'utf-8')).toBe('CHAIN')
     expect(readFileSync(chainAlias, 'utf-8')).toBe('CHAIN')
-    expect(JSON.parse(readFileSync(mesh, 'utf-8')).nodes.ct110.host).toBe('192.0.2.10')
+    expect(JSON.parse(readFileSync(mesh, 'utf-8')).nodes['node-a'].host).toBe('192.0.2.10')
   })
 
   it('rejects missing members, bad base64, non-gzip, and path traversal', () => {
     expect(() => decodeEnrollB64('   ')).toThrow(MeshHubError)
     expect(() => extractTarGz(Buffer.from('not-gzip'))).toThrow(/not gzip/)
-    const incomplete = packTarGz({ 'ct110.crt': 'CERT', 'mesh.json': MESH_ONE })
-    expect(() => parseEnrollTarball(incomplete.toString('base64'), 'ct110')).toThrow(
-      /missing ct110.key/,
+    const incomplete = packTarGz({ 'node-a.crt': 'CERT', 'mesh.json': MESH_ONE })
+    expect(() => parseEnrollTarball(incomplete.toString('base64'), 'node-a')).toThrow(
+      /missing node-a.key/,
     )
     const sneaky = packTarGz({ '../etc/passwd': 'nope' })
     expect(() => extractTarGz(sneaky)).toThrow(/unsafe path/)
   })
 
   it('rejects subdir members and `..` paths (flat-member contract)', () => {
-    expect(() => extractTarGz(packTarGz({ 'sub/ct110.crt': 'nope' }))).toThrow(/unsafe path/)
+    expect(() => extractTarGz(packTarGz({ 'sub/node-a.crt': 'nope' }))).toThrow(/unsafe path/)
     expect(() => extractTarGz(packTarGz({ 'a/b/../c': 'nope' }))).toThrow(/unsafe path/)
   })
 
@@ -234,7 +234,7 @@ describe('tarball unpack', () => {
   it('accepts base64 with wrapping whitespace', () => {
     const b64 = enrollB64()
     const wrapped = b64.slice(0, 40) + '\n' + b64.slice(40)
-    expect(parseEnrollTarball(wrapped, 'ct110').name).toBe('ct110')
+    expect(parseEnrollTarball(wrapped, 'node-a').name).toBe('node-a')
   })
 })
 
@@ -251,10 +251,10 @@ describe('config-snippet merge', () => {
 
   it('warns when a later --name would change node_name under the marker no-op', () => {
     const first = mergeConfigSnippet(null, SNIPPET)
-    const renamed = SNIPPET.replace('ct110', 'phildesk')
+    const renamed = SNIPPET.replace('node-a', 'desktop')
     const second = mergeConfigSnippet(first.next, renamed)
     expect(second.changed).toBe(false)
-    expect(second.warning).toMatch(/node_name "ct110".*incoming "phildesk"/)
+    expect(second.warning).toMatch(/node_name "node-a".*incoming "desktop"/)
     expect(second.next).toBe(first.next)
   })
 
@@ -275,13 +275,13 @@ describe('config-snippet merge', () => {
 })
 
 describe('meshSectionFromEnroll / formatEnrollSnippet', () => {
-  const unpacked = { name: 'ct110', snippet: SNIPPET }
+  const unpacked = { name: 'node-a', snippet: SNIPPET }
 
   it('fills tls when the hub snippet omits it', () => {
     const section = meshSectionFromEnroll(unpacked)
     expect(section).toEqual({
       enabled: true,
-      node_name: 'ct110',
+      node_name: 'node-a',
       tls: true,
     })
     expect(section.advertise_host).toBeUndefined()
@@ -320,83 +320,83 @@ describe('cert expiry math', () => {
   it('leafCertExpiryCheck names the exact renew command', () => {
     // Self-signed fixture from packages/core test-ca (notAfter ~2036).
     const pem = `-----BEGIN CERTIFICATE-----
-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
+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
-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
+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
 -----END CERTIFICATE-----
 `
     const notAfter = parseCertNotAfter(pem)
     expect(notAfter.getUTCFullYear()).toBe(2036)
     const warn = leafCertExpiryCheck({
       certPem: pem,
-      nodeName: 'ct110',
+      nodeName: 'node-a',
       hubTarget: 'rivet@datahub',
       now: new Date(notAfter.getTime() - 30 * DAY_MS),
     })
     expect(warn.status).toBe('warn')
-    expect(warn.detail).toBe(`Run: ${renewCommand('rivet@datahub', 'ct110')}`)
-    expect(warn.detail).toBe('Run: rivetos mesh renew rivet@datahub --name ct110')
+    expect(warn.detail).toBe(`Run: ${renewCommand('rivet@datahub', 'node-a')}`)
+    expect(warn.detail).toBe('Run: rivetos mesh renew rivet@datahub --name node-a')
     const expired = leafCertExpiryCheck({
       certPem: pem,
-      nodeName: 'ct110',
+      nodeName: 'node-a',
       hubTarget: 'user@datahub',
       now: notAfter,
     })
     expect(expired.status).toBe('fail')
-    expect(expired.detail).toBe('Run: rivetos mesh renew user@datahub --name ct110')
+    expect(expired.detail).toBe('Run: rivetos mesh renew user@datahub --name node-a')
     expect(renewHubTargetFromSeed('192.0.2.1')).toBe('rivet@192.0.2.1')
     expect(renewHubTargetFromSeed(undefined)).toBe('user@datahub')
   })
 
   it('classifies expiry against a hardcoded UTC now (not derived from parsed notAfter)', () => {
     const pem = `-----BEGIN CERTIFICATE-----
-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
+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
-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
+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
 -----END CERTIFICATE-----
 `
     const notAfter = parseCertNotAfter(pem)
     expect(notAfter.toISOString().endsWith('Z')).toBe(true)
     const now = new Date('2026-04-22T12:54:20.000Z')
     expect(classifyCertExpiry(notAfter, now)).toBe('ok')
-    const warnNow = new Date('2036-04-01T00:00:00.000Z')
+    const warnNow = new Date('2036-08-01T00:00:00.000Z')
     expect(classifyCertExpiry(notAfter, warnNow)).toBe('warn')
   })
 })
 
 describe('defaultAdvertiseHost', () => {
   it('prefers a non-localhost hostname that passes isSafeArg', () => {
-    expect(defaultAdvertiseHost('phildesk', {})).toBe('phildesk')
+    expect(defaultAdvertiseHost('desktop', {})).toBe('desktop')
   })
 
   it('skips localhost and uses the first non-internal IPv4', () => {

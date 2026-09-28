@@ -119,7 +119,7 @@ export function makeFakePi(opts: FakePiOptions = {}): FakePi {
     const usage = opts.usage ?? [{ input: 100, output: 25, cacheRead: 10 }]
     // Custom `--session-dir` is flat: <dir>/<ts>_<id>.jsonl (no cwd bucket).
     const sessionsDir = path.join(home, 'sessions')
-    const wire = path.join(sessionsDir, `2026-09-11T14-25-16-803Z_${sessionId}.jsonl`)
+    const wire = path.join(sessionsDir, `2020-01-01T00-00-00-000Z_${sessionId}.jsonl`)
     script.push(
       'NOW=$(date +%s%3N)',
       `mkdir -p ${shellQuote(sessionsDir)}`,

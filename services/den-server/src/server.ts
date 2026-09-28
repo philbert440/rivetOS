@@ -2096,7 +2096,7 @@ export function createDenServer(config: DenConfig, opts: DenServerOptions = {}):
         // layer ever runs. Enforcement lives in isGatewayAuthorized: remote
         // API access requires socket.authorized && a device leaf, so an
         // absent, expired, or foreign cert is still refused everything but
-        // liveness. (Found live on the ct113 canary, 2026-08-10.)
+        // liveness. (Found live on the node-d canary, 2026-08-10.)
         requestCert: config.tls.requireClientCert,
         rejectUnauthorized: false,
         // Terminal keystrokes are 1-byte WS frames. Nagle + Windows delayed

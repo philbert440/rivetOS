@@ -252,13 +252,13 @@ function rawUpgrade(url: string, tls: Tls): Promise<string> {
 }
 
 const remoteIp = lanIp()
-const PHIL_EV = {
+const OWNER_EV = {
   v: 1,
-  session: 'phil-room',
+  session: 'owner-room',
   name: 'phi',
   ts: 100,
   type: 'session.start',
-  title: 'phil',
+  title: 'owner',
 }
 const COCO_EV = {
   v: 1,
@@ -361,10 +361,9 @@ describe.skipIf(!haveOpenssl() || !remoteIp)('tenancy route inventory (real TLS)
     })
     config.usersRegistry = parseUsersRegistry(
       JSON.stringify({
-        ownerUserId: 'phil',
+        ownerUserId: 'owner',
         unmappedIsOwner: false,
-        users: {
-          phil: { devices: [], pgUrl: 'postgres://phil@db/phil_memory' },
+        users: { owner: { devices: [], pgUrl: 'postgres://owner@db/rivet_memory' },
           coco: { devices: ['win-coco'], pgUrl: 'postgres://coco@db/coco_memory' },
         },
       }),
@@ -385,15 +384,15 @@ describe.skipIf(!haveOpenssl() || !remoteIp)('tenancy route inventory (real TLS)
     coco = { ca: pki.ca, cert: pki.cocoCert, key: pki.cocoKey }
     stranger = { ca: pki.ca, cert: pki.strangerCert, key: pki.strangerKey }
 
-    // Seed: the owner (loopback) opens phil-room with a live PTY; coco opens
+    // Seed: the owner (loopback) opens owner-room with a live PTY; coco opens
     // coco-room with hers. Ownership is tagged at spawn by the bound ctx.
-    await call('POST', `${loopback}/event`, { ca: pki.ca }, PHIL_EV)
+    await call('POST', `${loopback}/event`, { ca: pki.ca }, OWNER_EV)
     await call('POST', `${loopback}/event`, { ca: pki.ca }, COCO_EV)
     const spawn1 = await call(
       'POST',
       `${loopback}/term`,
       { ca: pki.ca },
-      { command: 'claude', session: 'phil-room' },
+      { command: 'claude', session: 'owner-room' },
     )
     expect(spawn1.status).toBe(201)
     philPtyId = (JSON.parse(spawn1.body) as { id: string }).id
@@ -401,7 +400,7 @@ describe.skipIf(!haveOpenssl() || !remoteIp)('tenancy route inventory (real TLS)
       'POST',
       `${loopback}/term`,
       { ca: pki.ca },
-      { command: 'shell', session: 'phil-room-2' },
+      { command: 'shell', session: 'owner-room-2' },
     )
     expect(spawn2.status).toBe(201)
     philPtyId2 = (JSON.parse(spawn2.body) as { id: string }).id
@@ -432,32 +431,32 @@ describe.skipIf(!haveOpenssl() || !remoteIp)('tenancy route inventory (real TLS)
     expect(res.status).toBe(200)
     const ids = (JSON.parse(res.body) as { sessions: { id: string }[] }).sessions.map((s) => s.id)
     expect(ids).toContain('coco-room')
-    expect(ids).not.toContain('phil-room')
+    expect(ids).not.toContain('owner-room')
   })
 
   it("GET /state refuses another user's room", async () => {
-    expect((await call('GET', `${remote}/state?session=phil-room`, coco)).status).toBe(403)
+    expect((await call('GET', `${remote}/state?session=owner-room`, coco)).status).toBe(403)
     expect((await call('GET', `${remote}/state?session=coco-room`, coco)).status).toBe(200)
-    expect((await call('GET', `${loopback}/state?session=phil-room`, { ca: pki.ca })).status).toBe(
+    expect((await call('GET', `${loopback}/state?session=owner-room`, { ca: pki.ca })).status).toBe(
       200,
     )
   })
 
   it("GET transcript refuses another user's session by id", async () => {
     expect(
-      (await call('GET', `${remote}/term/harness-sessions/phil-room/transcript`, coco)).status,
+      (await call('GET', `${remote}/term/harness-sessions/owner-room/transcript`, coco)).status,
     ).toBe(403)
     // the owner is never 403 on his own (unknown store → whatever the reader
     // answers, just not refused)
     expect(
-      (await call('GET', `${loopback}/term/harness-sessions/phil-room/transcript`, { ca: pki.ca }))
+      (await call('GET', `${loopback}/term/harness-sessions/owner-room/transcript`, { ca: pki.ca }))
         .status,
     ).not.toBe(403)
   })
 
   it("POST /term/inject refuses to write into another user's live harness", async () => {
     expect(
-      (await call('POST', `${remote}/term/inject`, coco, { session: 'phil-room', text: 'pwned' }))
+      (await call('POST', `${remote}/term/inject`, coco, { session: 'owner-room', text: 'pwned' }))
         .status,
     ).toBe(403)
     // and nothing was written
@@ -469,7 +468,7 @@ describe.skipIf(!haveOpenssl() || !remoteIp)('tenancy route inventory (real TLS)
           'POST',
           `${loopback}/term/inject`,
           { ca: pki.ca },
-          { session: 'phil-room', text: 'ok' },
+          { session: 'owner-room', text: 'ok' },
         )
       ).status,
     ).toBe(202)
@@ -489,16 +488,16 @@ describe.skipIf(!haveOpenssl() || !remoteIp)('tenancy route inventory (real TLS)
     const res = await call('GET', `${remote}/term/list`, coco)
     expect(res.status).toBe(200)
     expect(res.body).toContain('coco-room')
-    expect(res.body).not.toContain('phil-room')
+    expect(res.body).not.toContain('owner-room')
   })
 
   it("POST /term refuses to claim or resume another user's session", async () => {
     expect(
-      (await call('POST', `${remote}/term`, coco, { command: 'shell', session: 'phil-room' }))
+      (await call('POST', `${remote}/term`, coco, { command: 'shell', session: 'owner-room' }))
         .status,
     ).toBe(403)
     expect(
-      (await call('POST', `${remote}/term`, coco, { command: 'shell', resume: 'phil-room' }))
+      (await call('POST', `${remote}/term`, coco, { command: 'shell', resume: 'owner-room' }))
         .status,
     ).toBe(403)
     // but an untagged key is a new room she may claim
@@ -509,16 +508,16 @@ describe.skipIf(!haveOpenssl() || !remoteIp)('tenancy route inventory (real TLS)
   })
 
   it("DELETE /session refuses another user's room", async () => {
-    expect((await call('DELETE', `${remote}/session?session=phil-room`, coco)).status).toBe(403)
+    expect((await call('DELETE', `${remote}/session?session=owner-room`, coco)).status).toBe(403)
     // room survives
-    expect((await call('GET', `${loopback}/state?session=phil-room`, { ca: pki.ca })).status).toBe(
+    expect((await call('GET', `${loopback}/state?session=owner-room`, { ca: pki.ca })).status).toBe(
       200,
     )
   })
 
   it("WS /ws attach to another user's session closes 4403", async () => {
     const ws = new WebSocket(
-      `wss://${remoteIp ?? ''}:${new URL(remote).port}/ws?session=phil-room`,
+      `wss://${remoteIp ?? ''}:${new URL(remote).port}/ws?session=owner-room`,
       {
         ca: pki.ca,
         cert: pki.cocoCert,
@@ -546,9 +545,9 @@ describe.skipIf(!haveOpenssl() || !remoteIp)('tenancy route inventory (real TLS)
     expect(snapshot.type).toBe('snapshot')
     const rooms = Object.keys(snapshot.rooms as Record<string, unknown>)
     expect(rooms).toContain('coco-room')
-    expect(rooms).not.toContain('phil-room')
+    expect(rooms).not.toContain('owner-room')
     const ids = (snapshot.sessions as { id: string }[]).map((s) => s.id)
-    expect(ids).not.toContain('phil-room')
+    expect(ids).not.toContain('owner-room')
   })
 
   it("WS /term attach to another user's PTY is destroyed pre-handshake", async () => {
@@ -564,7 +563,7 @@ describe.skipIf(!haveOpenssl() || !remoteIp)('tenancy route inventory (real TLS)
       {
         ca: pki.ca,
       },
-      { nativeSessionId: 'list-phil' },
+      { nativeSessionId: 'list-owner' },
     )
     expect(philStart.status).toBe(201)
     const cocoStart = await call('POST', `${remote}/api/harnesses/claude-code/sessions`, coco, {
@@ -578,7 +577,7 @@ describe.skipIf(!haveOpenssl() || !remoteIp)('tenancy route inventory (real TLS)
       JSON.parse(cocoList.body) as { sessions: { sessionId: string }[] }
     ).sessions.map((x) => x.sessionId)
     expect(cocoIds).toContain('claude-code:list-coco')
-    expect(cocoIds).not.toContain('claude-code:list-phil')
+    expect(cocoIds).not.toContain('claude-code:list-owner')
     // unowned rows are invisible to a routed user…
     expect(cocoIds).not.toContain('claude-code:list-legacy')
 
@@ -588,7 +587,7 @@ describe.skipIf(!haveOpenssl() || !remoteIp)('tenancy route inventory (real TLS)
     const philIds = (
       JSON.parse(philList.body) as { sessions: { sessionId: string }[] }
     ).sessions.map((x) => x.sessionId)
-    expect(philIds).toContain('claude-code:list-phil')
+    expect(philIds).toContain('claude-code:list-owner')
     expect(philIds).not.toContain('claude-code:list-coco')
     // …and fall to the node owner
     expect(philIds).toContain('claude-code:list-legacy')
@@ -601,10 +600,10 @@ describe.skipIf(!haveOpenssl() || !remoteIp)('tenancy route inventory (real TLS)
       {
         ca: pki.ca,
       },
-      { nativeSessionId: 'fence-phil' },
+      { nativeSessionId: 'fence-owner' },
     )
     expect(start.status).toBe(201)
-    const philEnc = encodeSessionIdSegment('claude-code:fence-phil')
+    const philEnc = encodeSessionIdSegment('claude-code:fence-owner')
     expect((await call('GET', `${remote}/api/harness-sessions/${philEnc}`, coco)).status).toBe(403)
     expect(
       (await call('GET', `${remote}/api/harness-sessions/${philEnc}/transcript`, coco)).status,

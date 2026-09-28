@@ -97,7 +97,7 @@ private fun GalleryThemeBlock(label: String, mode: ThemeMode) {
             Spacer(Modifier.height(8.dp))
             // U1 chat row: menu, title, Stop, Terminal chip, search, new chat.
             ChatSessionHeader(
-                sessionLabel = "claude-code:e256ef81-dbaf-4e75-bf8f-8c8f3553bcc7",
+                sessionLabel = "claude-code:00000000-0000-4000-8000-000000000045",
                 context = contextBarView(50_202, "claude", listOf("hello")),
                 modeOptions = listOf("Terminal", "Chat"),
                 selectedMode = "Chat",
@@ -202,7 +202,7 @@ private fun GalleryThemeBlock(label: String, mode: ThemeMode) {
                         nodeDenUrl = "https://192.0.2.10:5174",
                         pointerSessionId = "s",
                         color = "#CC785C",
-                        node = "ct115",
+                        node = "node-f",
                         directory = "/srv/agents/rivet",
                     ),
                     onTap = {},
@@ -267,7 +267,7 @@ private fun GalleryThemeBlock(label: String, mode: ThemeMode) {
                 GalleryH("Chat header · idle")
             }
             ChatSessionHeader(
-                sessionLabel = "claude-code:e256ef81-dbaf-4e75-bf8f-8c8f3553bcc7",
+                sessionLabel = "claude-code:00000000-0000-4000-8000-000000000045",
                 context = contextBarView(50_202, "claude", emptyList()),
                 modeOptions = listOf("Terminal", "Chat"),
                 selectedMode = "Chat",
@@ -282,7 +282,7 @@ private fun GalleryThemeBlock(label: String, mode: ThemeMode) {
             )
             GalleryH("Chat header · in-flight")
             ChatSessionHeader(
-                sessionLabel = "claude-code:e256ef81-dbaf-4e75-bf8f-8c8f3553bcc7",
+                sessionLabel = "claude-code:00000000-0000-4000-8000-000000000045",
                 context = contextBarView(50_202, "claude", emptyList()),
                 modeOptions = listOf("Terminal", "Chat"),
                 selectedMode = "Chat",
@@ -320,7 +320,7 @@ private fun GalleryThemeBlock(label: String, mode: ThemeMode) {
                 Spacer(Modifier.height(12.dp))
                 GalleryH("Transcript")
                 TranscriptUserTurn(
-                    text = "Reply with exactly the word PONG and nothing else.",
+                    text = "Demo prompt",
                     time = "07:00 PM",
                     onCopy = {},
                     attachments = listOf(
@@ -354,7 +354,7 @@ private fun GalleryThemeBlock(label: String, mode: ThemeMode) {
                 }
                 var galleryCotOpen by remember { mutableStateOf(false) }
                 TranscriptAssistantTurn(
-                    text = "PONG with `code` and a [link](https://example.com).",
+                    text = "Demo reply with `code` and a [link](https://example.com).",
                     model = "claude-fable-5-1",
                     time = "07:00 PM",
                     accent = rivetHexColor("#CC785C"),
@@ -397,9 +397,9 @@ private fun GalleryThemeBlock(label: String, mode: ThemeMode) {
                     pickers = { compact ->
                         ComposerPicker(
                             icon = R.drawable.lucide_server,
-                            label = "ct115",
+                            label = "node-f",
                             compact = compact,
-                            options = listOf(SelectOption("n", "ct115")),
+                            options = listOf(SelectOption("n", "node-f")),
                             value = "n",
                             onChange = {},
                             title = "Node",
@@ -524,12 +524,12 @@ private fun GalleryThemeBlock(label: String, mode: ThemeMode) {
                     tab = HubTab.Conversations,
                     unread = 2,
                     dots = NodeDots(agent = Dot.Up, mesh = Dot.Down, hub = Dot.Unknown),
-                    currentNodeName = "ct115",
+                    currentNodeName = "node-f",
                     nodeSheet = NodeSheetModel(
                         saved = listOf(
                             NodeSheetRow(
-                                id = "ct115",
-                                name = "ct115",
+                                id = "node-f",
+                                name = "node-f",
                                 denUrl = "https://192.0.2.10:5174",
                                 current = true,
                                 saved = true,
@@ -576,8 +576,8 @@ private fun GalleryThemeBlock(label: String, mode: ThemeMode) {
             Column(Modifier.padding(horizontal = 16.dp, vertical = 8.dp)) {
                 GalleryH("Node sheet")
                 Text("NODES", color = colors.inkDim, style = RivetType.mono10)
-                Text("● ct115", color = colors.em, style = RivetType.xs)
-                Text("○ ct119  offline", color = colors.inkDim, style = RivetType.xs)
+                Text("● node-f", color = colors.em, style = RivetType.xs)
+                Text("○ node-j  offline", color = colors.inkDim, style = RivetType.xs)
                 Text("ON THE MESH", color = colors.inkDim, style = RivetType.mono10, modifier = Modifier.padding(top = 8.dp))
                 Text("+ peer (4 sessions)", color = colors.inkDim, style = RivetType.xs)
             }

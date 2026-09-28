@@ -55,7 +55,7 @@ describe('parseSessionId', () => {
     expectInvalid(() => parseSessionId('CLAUDE-CODE:abc'))
     expectInvalid(() => parseSessionId('task:t_123'))
     expectInvalid(() =>
-      parseSessionId('deepseek-harness:session-86ffe759-cd7b-49a7-955d-c282631a935d'),
+      parseSessionId('deepseek-harness:session-00000000-0000-4000-8000-000000000043'),
     )
   })
 
@@ -75,10 +75,10 @@ describe('formatSessionId', () => {
       ['grok-build', 'sess_01HZX:2:3'],
       ['kimi-code', 'c7f2-uuid'],
       ['hermes', '9b41-uuid'],
-      ['codex', '89965427-b96f-4d5e-8ad5-c3dd138e33dc'],
+      ['codex', '00000000-0000-4000-8000-000000000020'],
       ['opencode', 'ses_01K8ABCDEFGHIJKLMNOPQRSTUV'],
-      ['pi', '89965427-b96f-4d5e-8ad5-c3dd138e33dc'],
-      ['qwen-code', '857b4b7d-3d13-4281-a648-11947cf530ed'],
+      ['pi', '00000000-0000-4000-8000-000000000020'],
+      ['qwen-code', '00000000-0000-4000-8000-000000000049'],
     ]
     for (const [harnessId, nativeSessionId] of cases) {
       const id = formatSessionId(harnessId, nativeSessionId)

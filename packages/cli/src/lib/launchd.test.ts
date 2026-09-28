@@ -15,19 +15,19 @@ describe('renderLaunchdPlist', () => {
       nodePath: '/usr/bin/node',
       cliEntry: '/opt/rivetos/packages/cli/dist/index.js',
       workingDir: '/opt/rivetos',
-      logDir: '/home/tester/.rivetos/logs',
+      logDir: '/home/user/.rivetos/logs',
       env: {
-        PATH: '/usr/bin:/home/tester/.local/bin',
+        PATH: '/usr/bin:/home/user/.local/bin',
         ANTHROPIC_API_KEY: 'sk&<>"',
       },
     })
     expect(xml).toContain('<string>/usr/bin/node</string>')
     expect(xml).toContain('<string>start</string>')
     expect(xml).toContain('<key>PATH</key>')
-    expect(xml).toContain('/home/tester/.local/bin')
+    expect(xml).toContain('/home/user/.local/bin')
     expect(xml).toContain('sk&amp;&lt;&gt;&quot;')
-    expect(xml).toContain('/home/tester/.rivetos/logs/launchd.out.log')
-    expect(xml).toContain('/home/tester/.rivetos/logs/launchd.err.log')
+    expect(xml).toContain('/home/user/.rivetos/logs/launchd.out.log')
+    expect(xml).toContain('/home/user/.rivetos/logs/launchd.err.log')
     expect(xml).not.toContain('/opt/rivetos/launchd.out.log')
     expect(xml).toContain('<key>KeepAlive</key>')
     expect(xml).toContain('<key>RunAtLoad</key>')
@@ -49,14 +49,14 @@ describe('installLaunchdAgent / stopLaunchdAgent', () => {
         nodePath: '/usr/bin/node',
         cliEntry: '/opt/rivetos/packages/cli/dist/index.js',
         workingDir: '/opt/rivetos',
-        env: { PATH: '/usr/bin:/home/tester/.local/bin', RIVETOS_MODE: 'workspace' },
+        env: { PATH: '/usr/bin:/home/user/.local/bin', RIVETOS_MODE: 'workspace' },
         exec,
       })
       expect(plistPath).toBe(join(home, 'Library', 'LaunchAgents', `${LAUNCHD_LABEL}.plist`))
       expect(statSync(plistPath).mode & 0o777).toBe(0o600)
       const body = readFileSync(plistPath, 'utf-8')
       expect(body).toContain('RIVETOS_MODE')
-      expect(body).toContain('/home/tester/.local/bin')
+      expect(body).toContain('/home/user/.local/bin')
       expect(calls[0]).toEqual(['bootout', `gui/501/${LAUNCHD_LABEL}`])
       expect(calls[1]).toEqual(['enable', `gui/501/${LAUNCHD_LABEL}`])
       expect(calls[2]?.[0]).toBe('bootstrap')

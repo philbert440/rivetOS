@@ -44,7 +44,7 @@ function legacySeed(overrides: Partial<RawPresetSeed> & Pick<RawPresetSeed, 'id'
     name: 'Legacy',
     model: 'claude',
     harnessId: null,
-    node: 'ct115',
+    node: 'node-f',
     directory: '/tmp/agents/legacy',
     sharedLink: true,
     ...overrides,
@@ -58,7 +58,7 @@ function canonicalSeed(
     name: 'Canonical',
     model: 'claude',
     harnessId: 'codex',
-    node: 'ct115',
+    node: 'node-f',
     directory: '/tmp/agents/canonical-row',
     sharedLink: true,
     ...overrides,
@@ -77,7 +77,7 @@ export function describePresetStoreContract(contract: PresetStoreContract): void
       const store = contract.newStore()
       const created = await store.create({
         name: 'Catalog',
-        node: 'ct115',
+        node: 'node-f',
         directory: '/tmp/agents/catalog',
         model: 'claude',
       })
@@ -185,7 +185,7 @@ export function describePresetStoreContract(contract: PresetStoreContract): void
       const store = contract.newStore()
       const created = await store.create({
         name: 'Plain',
-        node: 'ct115',
+        node: 'node-f',
         directory: '/tmp/agents/plain',
         model: 'gpt-4',
       })
@@ -202,7 +202,7 @@ export function describePresetStoreContract(contract: PresetStoreContract): void
       const store = contract.newStore()
       const created = await store.create({
         name: 'Canonical',
-        node: 'ct115',
+        node: 'node-f',
         directory: '/tmp/agents/canonical',
         model: 'gpt-4',
       })
@@ -218,7 +218,7 @@ export function describePresetStoreContract(contract: PresetStoreContract): void
       const store = contract.newStore()
       const created = await store.create({
         name: 'Kept',
-        node: 'ct115',
+        node: 'node-f',
         directory: '/tmp/agents/kept',
         harnessId: 'codex',
         model: 'opus',
@@ -235,7 +235,7 @@ export function describePresetStoreContract(contract: PresetStoreContract): void
       const store = contract.newStore()
       const created = await store.create({
         name: 'ClearCatalog',
-        node: 'ct115',
+        node: 'node-f',
         directory: '/tmp/agents/clear-catalog',
         harnessId: 'codex',
         model: 'claude',
@@ -253,7 +253,7 @@ export function describePresetStoreContract(contract: PresetStoreContract): void
       const store = contract.newStore()
       const created = await store.create({
         name: 'Swap',
-        node: 'ct115',
+        node: 'node-f',
         directory: '/tmp/agents/swap',
         harnessId: 'codex',
         model: 'opus',
@@ -270,7 +270,7 @@ export function describePresetStoreContract(contract: PresetStoreContract): void
       const store = contract.newStore()
       const created = await store.create({
         name: 'Explicit',
-        node: 'ct115',
+        node: 'node-f',
         directory: '/tmp/agents/explicit',
         harnessId: 'grok-build',
         model: 'real-model',
@@ -287,7 +287,7 @@ export function describePresetStoreContract(contract: PresetStoreContract): void
       const store = contract.newStore()
       const created = await store.create({
         name: 'Solo',
-        node: 'ct115',
+        node: 'node-f',
         directory: '/tmp/agents/solo',
         sharedLink: false,
       })
@@ -298,7 +298,7 @@ export function describePresetStoreContract(contract: PresetStoreContract): void
 
     it('rejects an empty or whitespace name', async () => {
       const store = contract.newStore()
-      const base = { node: 'ct115', directory: '/tmp/agents/named' }
+      const base = { node: 'node-f', directory: '/tmp/agents/named' }
       await expect(store.create({ ...base, name: '' })).rejects.toThrow('agent name is required')
       await expect(store.create({ ...base, name: '   ' })).rejects.toThrow('agent name is required')
       await expect(store.create({ ...base, name: '\t' })).rejects.toThrow('agent name is required')
@@ -313,7 +313,7 @@ export function describePresetStoreContract(contract: PresetStoreContract): void
 
     it('lists by sortOrder, unordered presets after ordered ones by creation time', async () => {
       const store = contract.newStore()
-      const base = { node: 'ct115', directory: '/tmp/agents/order' }
+      const base = { node: 'node-f', directory: '/tmp/agents/order' }
       const a = await store.create({ ...base, name: 'A', createdAt: 1_000 })
       const b = await store.create({ ...base, name: 'B', createdAt: 2_000 })
       const c = await store.create({ ...base, name: 'C', createdAt: 3_000 })
@@ -328,13 +328,13 @@ export function describePresetStoreContract(contract: PresetStoreContract): void
       await store.update(d.id, { sortOrder: 0 })
       await store.update(c.id, { sortOrder: 2 })
       expect((await store.list()).map((p) => p.name)).toEqual(['D', 'A', 'C', 'B'])
-      expect((await store.list({ node: 'ct115' })).map((p) => p.name)).toEqual(['D', 'A', 'C', 'B'])
+      expect((await store.list({ node: 'node-f' })).map((p) => p.name)).toEqual(['D', 'A', 'C', 'B'])
       expect((await store.get(b.id))?.sortOrder).toBeUndefined()
     })
 
     it('clears sortOrder with null and keeps it across unrelated patches', async () => {
       const store = contract.newStore()
-      const base = { node: 'ct115', directory: '/tmp/agents/order-clear' }
+      const base = { node: 'node-f', directory: '/tmp/agents/order-clear' }
       const first = await store.create({ ...base, name: 'First', createdAt: 1_000 })
       const second = await store.create({ ...base, name: 'Second', createdAt: 2_000 })
       await store.update(second.id, { sortOrder: 5 })

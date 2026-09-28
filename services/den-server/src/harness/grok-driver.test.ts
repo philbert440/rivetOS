@@ -17,8 +17,8 @@ import { createHarnessRegistry, type HarnessRegistry } from './registry.js'
 import { FIVE_FLAGS, pick } from './test/driver-conformance.js'
 
 /** A real grok id: UUIDv7, as `grok --session-id` mints and requires. */
-const UUID = '019e5f82-f0e5-7d41-a38c-4eefced7e570'
-const UUID2 = '019e5f83-1111-7222-8333-444455556666'
+const UUID = '00000000-0000-4000-8000-000000000040'
+const UUID2 = '00000000-0000-4000-8000-000000000041'
 const SID = `grok-build:${UUID}` as SessionId
 
 interface Fakes {

@@ -544,7 +544,7 @@ describe('/api/memory', () => {
         {
           method: 'GET',
           url: '/api/memory/browse',
-          headers: { 'x-rivetos-user': ['coco', 'phil'] },
+          headers: { 'x-rivetos-user': ['coco', 'owner'] },
         } as never,
         res as never,
       )

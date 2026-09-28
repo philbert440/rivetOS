@@ -16,7 +16,7 @@ export async function settleDelegatedTask(args: {
   rowId: string
   waitMs: number
   startTime: number
-  /** Prefix for timeout / failure text, e.g. `Remote delegation to grok on ct112`. */
+  /** Prefix for timeout / failure text, e.g. `Remote delegation to grok on node-c`. */
   describe: string
   /** One clock with the caller. Default `Date.now`. */
   now?: () => number

@@ -40,8 +40,8 @@ local node processes (hooks, embed). **Off-loopback without TLS refuses to bind.
 On the CA host (typically the datahub host):
 
 ```bash
-/opt/rivetos/scripts/rivet-ca.sh issue-client pixel-phil
-# → issued/device-pixel-phil.{crt,key}
+/opt/rivetos/scripts/rivet-ca.sh issue-client pixel-owner
+# → issued/device-pixel-owner.{crt,key}
 ```
 
 Install the cert+key (or a PKCS#12 export) into:
@@ -53,7 +53,7 @@ Install the cert+key (or a PKCS#12 export) into:
 Revoke:
 
 ```bash
-/opt/rivetos/scripts/rivet-ca.sh revoke 'device:pixel-phil'
+/opt/rivetos/scripts/rivet-ca.sh revoke 'device:pixel-owner'
 /opt/rivetos/scripts/rivet-ca.sh crl
 ```
 

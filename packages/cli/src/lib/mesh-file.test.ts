@@ -14,7 +14,7 @@ describe('mesh-file', () => {
             host: '192.0.2.1',
             port: 3100,
             status: 'online',
-            sshUser: 'philip',
+            sshUser: 'user',
             installRoot: '/srv/rivetos',
           },
         },
@@ -22,7 +22,7 @@ describe('mesh-file', () => {
       '/tmp/test-mesh.json',
     )
     expect(mesh.nodes.a.name).toBe('a')
-    expect(mesh.nodes.a.sshUser).toBe('philip')
+    expect(mesh.nodes.a.sshUser).toBe('user')
     expect(mesh.nodes.a.installRoot).toBe('/srv/rivetos')
     expect(mesh.updatedAt).toBe(42)
   })

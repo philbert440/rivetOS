@@ -39,7 +39,7 @@ function tmpHome(): string {
   return dir
 }
 
-const SID = '857b4b7d-3d13-4281-a648-11947cf530ed'
+const SID = '00000000-0000-4000-8000-000000000049'
 const TOOL_SID = '22222222-2222-4222-8222-222222222222'
 const CWD = '/home/example'
 

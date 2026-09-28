@@ -12,7 +12,7 @@ import {
 } from './hub-identity.js'
 import { localCaPaths } from './local-ca.js'
 
-const HOME = '/home/tester'
+const HOME = '/home/user'
 
 describe('rivethubUserDataDir', () => {
   it('linux → ~/.config/RivetHub', () => {

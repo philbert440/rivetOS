@@ -981,7 +981,7 @@ describe('wiki contextRefs (3f)', () => {
     mkdirSync(join(wikiDir, 'topics'), { recursive: true })
     writeFileSync(
       join(wikiDir, 'topics', 'gerty.md'),
-      '---\ntitle: GERTY\nslug: gerty\n---\n\n## Current state\n\npve3 serves qwen-27b.\n\n## History\n',
+      '---\ntitle: GERTY\nslug: gerty\n---\n\n## Current state\n\nhv-c serves qwen-27b.\n\n## History\n',
     )
     const executors = createExecutorRegistry()
     let seenContext = ''
@@ -1030,7 +1030,7 @@ describe('wiki contextRefs (3f)', () => {
     await waiter.wait(row.id, { deadlineMs: 5_000 })
     await waiter.stop()
     expect(seenContext).toContain('Wiki: GERTY (gerty)')
-    expect(seenContext).toContain('pve3 serves qwen-27b.')
+    expect(seenContext).toContain('hv-c serves qwen-27b.')
     expect(seenContext).toContain('no-such-topic')
     expect(seenContext).toContain('red link')
     expect(seenContext).toContain('mem-context')

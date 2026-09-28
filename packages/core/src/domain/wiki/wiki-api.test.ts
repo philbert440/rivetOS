@@ -403,7 +403,7 @@ describe('per-user routing (x-rivetos-user)', () => {
     expect(JSON.stringify(emptyBody)).not.toContain(TOPIC.title)
 
     // duplicated header (array form) via direct handler invocation, both surfaces
-    const badHeaders = { 'x-rivetos-user': ['coco', 'phil'] }
+    const badHeaders = { 'x-rivetos-user': ['coco', 'owner'] }
     for (const route of [
       createWikiApiRoute({ index: fakeIndex(), wikiDir, forUser }),
       createWikiHtmlRoute({ index: fakeIndex(), wikiDir, forUser }),
@@ -459,7 +459,7 @@ describe('per-user routing (x-rivetos-user)', () => {
     // malformed header shapes
     for (const headers of [
       { 'x-rivetos-user': '' },
-      { 'x-rivetos-user': ['coco', 'phil'] as never },
+      { 'x-rivetos-user': ['coco', 'owner'] as never },
     ]) {
       const r = resolveWikiSurface(opts, '/owner', headers)
       expect(r).toEqual({ ok: false, error: 'malformed routing identity' })

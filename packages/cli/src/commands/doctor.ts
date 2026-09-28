@@ -854,7 +854,7 @@ export interface MemoryQueueDeadRow {
  * rot, not a blockage). Keyed dead rows still need `rivetos memory requeue`;
  * keyless corpses are deleted by the hourly reap-dead-jobs sweep after 7 days
  * and must never be requeued (no job_key → no dedupe). Live proof
- * (phil_memory, 2026-09-01): 3,435 extract-wiki + 510 compact-conversation
+ * (rivet_memory, 2026-09-01): 3,435 extract-wiki + 510 compact-conversation
  * jobs dead with nothing surfacing them — those piles are keyless.
  */
 export const MEMORY_QUEUE_DEAD_SQL = `SELECT t.identifier AS task,

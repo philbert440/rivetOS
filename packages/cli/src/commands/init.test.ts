@@ -57,8 +57,8 @@ describe('init()', () => {
   })
 
   it('forwards --join host to the wizard entry', async () => {
-    await init(['--join', 'ct110.mesh'])
-    expect(runInitWizard).toHaveBeenCalledWith({ joinHost: 'ct110.mesh', answersFile: undefined })
+    await init(['--join', 'node-a.mesh'])
+    expect(runInitWizard).toHaveBeenCalledWith({ joinHost: 'node-a.mesh', answersFile: undefined })
   })
 
   it('forwards --answers-file to the wizard entry', async () => {

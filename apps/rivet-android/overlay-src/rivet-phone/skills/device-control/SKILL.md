@@ -1,7 +1,7 @@
 ---
 name: device-control
 description: >
-  Drive Phil's phone via the RivetHub accessibility control plane using the
+  Drive the owner's phone via the RivetHub accessibility control plane using the
   `phone` CLI (loopback ControlServer). Trigger phrases: phone control, tap
   the screen, take a screenshot, open Settings, swipe, type into a field,
   dump UI tree, click a node, device control, accessibility automation,
@@ -12,7 +12,7 @@ metadata:
 
 # Device control (Fidelity MVP + PR6b)
 
-You are on Phil's personal phone inside RivetHub proot. Control the screen with
+You are on the owner's personal phone inside RivetHub proot. Control the screen with
 the **`phone`** CLI (not hand-rolled curl unless debugging). Canonical docs:
 **`~/.rivet/device-control.md`** (refreshed every app launch).
 
@@ -78,8 +78,8 @@ phone mode full     # normal automation
 ```
 
 - Check current mode: `phone status` → `"mode"`.
-- If an action returns **403** / `error: "forbidden_mode"`: stop actuating. Tell Phil.
-  Do not retry the same action in a loop. Switch mode only if Phil asked.
+- If an action returns **403** / `error: "forbidden_mode"`: stop actuating. Tell the user.
+  Do not retry the same action in a loop. Switch mode only if the user asked.
 - Feature-detect: if `capabilities.modes` is missing, modes may not be on this build.
 
 ## Commands
@@ -120,7 +120,7 @@ summaries may appear on stderr.
 | Code | Meaning | Agent response |
 |------|---------|----------------|
 | **0** | Success (`ok:true` / 2xx) | Continue |
-| **1** | Error: `ok:false`, HTTP 4xx/5xx, auth, mode gate, `stale_node`, connection refused, capability missing, wait timed_out | Read JSON `error`; for `stale_node` re-dump; for `forbidden_mode` stop; for connection refused ask Phil to enable accessibility |
+| **1** | Error: `ok:false`, HTTP 4xx/5xx, auth, mode gate, `stale_node`, connection refused, capability missing, wait timed_out | Read JSON `error`; for `stale_node` re-dump; for `forbidden_mode` stop; for connection refused ask the user to enable accessibility |
 | **2** | Usage error | Fix args |
 | **3** | `error:"busy"` (gesture queue full) | Brief backoff (~200–500ms), **retry once**; if still busy, re-dump and reconsider |
 
@@ -128,11 +128,11 @@ summaries may appear on stderr.
 
 1. **NEVER** `rivet-shared put` anything under `~/.rivet/screenshots/` (or any screenshot
    bytes/base64). Screenshots stay on-device. Mesh exfil is forbidden.
-2. **Ask Phil before** SMS / share / payments / posting / anything outward-facing or hard
+2. **Ask the user before** SMS / share / payments / posting / anything outward-facing or hard
    to undo. The server's SafetyPolicy now returns `needs_confirm` for those intent surfaces;
-   re-send with `phone intent … --confirm` **only after Phil approves** — the flag is your
+   re-send with `phone intent … --confirm` **only after the user approves** — the flag is your
    attestation that a human OK'd it, not a bypass to click past.
-3. Do not log or paste full screenshot base64 into chat or memory unless Phil needs it.
+3. Do not log or paste full screenshot base64 into chat or memory unless the user needs it.
 4. Prefer `phone shot` → path (`last.jpg`) over `dest=json` base64.
 
 ## Surface status
@@ -146,9 +146,9 @@ listed above, it isn't there.
 
 | Symptom | Action |
 |---------|--------|
-| connection refused | Rivet accessibility off? Phil enables it in Android Settings. |
+| connection refused | Rivet accessibility off? the user enables it in Android Settings. |
 | 401 `unauthorized` | Stale token; relaunch agent session so `control.json` refreshes. |
-| 403 `forbidden_mode` | Mode is eyes/parked; stop or ask Phil to `phone mode full`. |
+| 403 `forbidden_mode` | Mode is eyes/parked; stop or ask the user to `phone mode full`. |
 | 400 `stale_node` | Re-run `phone ui`, new id, act same turn. |
 | 429 `busy` | Exit 3 — backoff, retry once. |
 | 429 `rate_limited` | Honor `retry_after_ms`; slow down shots. |
@@ -178,7 +178,7 @@ phone text --append ' more'
 phone long-press --node n3
 phone clipboard get
 
-# Observe-only while Phil demos
+# Observe-only while the user demos
 phone mode eyes
 phone shot
 phone ui --format compact

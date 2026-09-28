@@ -13,21 +13,21 @@ import {
 } from './users-registry.js'
 
 const cocoDb = { pgUrl: 'postgres://coco@db/coco_memory' }
-const philDb = { pgUrl: 'postgres://phil@db/phil_memory' }
+const ownerDb = { pgUrl: 'postgres://owner@db/rivet_memory' }
 
 describe('parseUsersRegistry', () => {
   it('parses a file document and strips device: prefixes', () => {
     const reg = parseUsersRegistry(
       JSON.stringify({
-        ownerUserId: 'phil',
+        ownerUserId: 'owner',
         unmappedIsOwner: false,
         users: {
-          phil: { devices: ['pixel-phil'], pgUrl: philDb.pgUrl, persona: 'phil' },
+          owner: { devices: ['pixel-owner'], pgUrl: ownerDb.pgUrl, persona: 'owner' },
           coco: { devices: ['device:win-coco'], pgUrl: cocoDb.pgUrl, persona: 'coco' },
         },
       }),
     )
-    expect(reg?.ownerUserId).toBe('phil')
+    expect(reg?.ownerUserId).toBe('owner')
     expect(reg?.unmappedIsOwner).toBe(false)
     expect(reg?.users.coco.devices).toEqual(['win-coco'])
     expect(reg?.users.coco.db).toEqual(cocoDb)
@@ -45,13 +45,13 @@ describe('registryFromEnv', () => {
     const reg = registryFromEnv({
       deviceUsers: { 'win-coco': 'coco' },
       userDbs: { coco: cocoDb },
-      ownerPgUrl: philDb.pgUrl,
-      ownerUserId: 'phil',
+      ownerPgUrl: ownerDb.pgUrl,
+      ownerUserId: 'owner',
     })
     expect(reg?.unmappedIsOwner).toBe(true)
     expect(reg?.users.coco.devices).toEqual(['win-coco'])
     expect(reg?.users.coco.db).toEqual(cocoDb)
-    expect(reg?.users.phil.db).toEqual(philDb)
+    expect(reg?.users.owner.db).toEqual(ownerDb)
   })
 })
 
@@ -59,21 +59,21 @@ describe('resolveUser', () => {
   const reg = mergeUserDbs(
     parseUsersRegistry(
       JSON.stringify({
-        ownerUserId: 'phil',
+        ownerUserId: 'owner',
         unmappedIsOwner: false,
         users: {
-          phil: { devices: ['pixel-phil'], persona: 'phil' },
+          owner: { devices: ['pixel-owner'], persona: 'owner' },
           coco: { devices: ['win-coco'], persona: 'coco' },
         },
       }),
     )!,
     { coco: cocoDb },
-    philDb.pgUrl,
+    ownerDb.pgUrl,
   )
 
   it('resolves loopback as the owner', () => {
     const r = resolveUser(reg, null)
-    expect(r.ok && r.ctx.userId).toBe('phil')
+    expect(r.ok && r.ctx.userId).toBe('owner')
     expect(r.ok && r.ctx.isOwner).toBe(true)
     expect(r.ok && r.ctx.deviceId).toBeNull()
   })
@@ -94,10 +94,9 @@ describe('resolveUser', () => {
   it('fails closed when a mapped user has no database', () => {
     const broken = parseUsersRegistry(
       JSON.stringify({
-        ownerUserId: 'phil',
+        ownerUserId: 'owner',
         unmappedIsOwner: false,
-        users: {
-          phil: { devices: [], pgUrl: philDb.pgUrl },
+        users: { owner: { devices: [], pgUrl: ownerDb.pgUrl },
           coco: { devices: ['win-coco'] },
         },
       }),
@@ -111,10 +110,10 @@ describe('resolveUser', () => {
     const envReg = registryFromEnv({
       deviceUsers: { 'win-coco': 'coco' },
       userDbs: { coco: cocoDb },
-      ownerPgUrl: philDb.pgUrl,
+      ownerPgUrl: ownerDb.pgUrl,
     })!
-    const r = resolveUser(envReg, 'pixel-phil')
-    expect(r.ok && r.ctx.userId).toBe('phil')
+    const r = resolveUser(envReg, 'pixel-owner')
+    expect(r.ok && r.ctx.userId).toBe('owner')
     expect(r.ok && r.ctx.isOwner).toBe(true)
   })
 })
@@ -137,19 +136,18 @@ describe('loadUsersRegistry', () => {
     writeFileSync(
       file,
       JSON.stringify({
-        ownerUserId: 'phil',
+        ownerUserId: 'owner',
         unmappedIsOwner: false,
-        users: {
-          phil: { devices: [] },
+        users: { owner: { devices: [] },
           coco: { devices: ['win-coco'], pgUrl: cocoDb.pgUrl },
         },
       }),
     )
     const reg = loadUsersRegistry(
-      { RIVETOS_PG_URL: philDb.pgUrl },
+      { RIVETOS_PG_URL: ownerDb.pgUrl },
       { path: file, homedir: () => dir },
     )
-    expect(reg?.users.phil.db).toEqual(philDb)
+    expect(reg?.users.owner.db).toEqual(ownerDb)
     expect(reg?.users.coco.db).toEqual(cocoDb)
     const r = resolveUser(reg!, 'win-coco')
     expect(r.ok && r.ctx.userId).toBe('coco')
@@ -161,10 +159,9 @@ describe('loadUsersRegistry', () => {
     writeFileSync(
       join(dir, 'rivetos', 'users.json'),
       JSON.stringify({
-        ownerUserId: 'phil',
+        ownerUserId: 'owner',
         unmappedIsOwner: false,
-        users: {
-          phil: { devices: [], pgUrl: philDb.pgUrl },
+        users: { owner: { devices: [], pgUrl: ownerDb.pgUrl },
           coco: { devices: ['win-coco'], pgUrl: cocoDb.pgUrl },
         },
       }),
@@ -185,16 +182,15 @@ describe('loadUsersRegistry', () => {
     writeFileSync(
       join(home, '.rivetos', 'users.json'),
       JSON.stringify({
-        ownerUserId: 'phil',
+        ownerUserId: 'owner',
         unmappedIsOwner: false,
-        users: {
-          phil: { devices: [], pgUrl: philDb.pgUrl },
+        users: { owner: { devices: [], pgUrl: ownerDb.pgUrl },
           coco: { devices: ['win-coco'], pgUrl: cocoDb.pgUrl },
         },
       }),
     )
     const reg = loadUsersRegistry(
-      { RIVETOS_SHARED_DIR: dir, RIVETOS_PG_URL: philDb.pgUrl },
+      { RIVETOS_SHARED_DIR: dir, RIVETOS_PG_URL: ownerDb.pgUrl },
       { homedir: () => home },
     )
     expect(reg?.unmappedIsOwner).toBe(false)
@@ -210,10 +206,9 @@ describe('loadUsersRegistry', () => {
     writeFileSync(
       join(home, '.rivetos', 'users.json'),
       JSON.stringify({
-        ownerUserId: 'phil',
+        ownerUserId: 'owner',
         unmappedIsOwner: false,
-        users: {
-          phil: { devices: [], pgUrl: philDb.pgUrl },
+        users: { owner: { devices: [], pgUrl: ownerDb.pgUrl },
           coco: { devices: ['win-coco'], pgUrl: cocoDb.pgUrl },
         },
       }),
@@ -227,7 +222,7 @@ describe('loadUsersRegistry', () => {
     const reg = loadUsersRegistry(
       {
         RIVETOS_USERS_FILE: join(dir, 'missing.json'),
-        RIVETOS_PG_URL: philDb.pgUrl,
+        RIVETOS_PG_URL: ownerDb.pgUrl,
       },
       { homedir: () => dir },
     )
@@ -243,7 +238,7 @@ describe('loadUsersRegistry', () => {
       {
         RIVETOS_USER_DBS: '{"coco":{"pgUrl":"postgres://coco@db/coco_memory"}}',
         RIVETOS_DEN_DEVICE_USERS: '{"win-coco":"coco"}',
-        RIVETOS_PG_URL: philDb.pgUrl,
+        RIVETOS_PG_URL: ownerDb.pgUrl,
         RIVETOS_SHARED_DIR: dir,
       },
       { homedir: () => dir },
@@ -257,10 +252,9 @@ describe('userDbsFromRegistry', () => {
   it('omits the owner and drops users without a usable db', () => {
     const reg = parseUsersRegistry(
       JSON.stringify({
-        ownerUserId: 'phil',
+        ownerUserId: 'owner',
         unmappedIsOwner: false,
-        users: {
-          phil: { devices: [], pgUrl: philDb.pgUrl },
+        users: { owner: { devices: [], pgUrl: ownerDb.pgUrl },
           coco: { devices: ['win-coco'], pgUrl: cocoDb.pgUrl },
           ghost: { devices: ['win-ghost'] },
         },
@@ -278,9 +272,9 @@ describe('sessionVisibleTo', () => {
     isOwner: false,
   }
   const phil = {
-    userId: 'phil',
+    userId: 'owner',
     deviceId: null,
-    db: philDb,
+    db: ownerDb,
     isOwner: true,
   }
   it('hides untagged sessions from a routed user', () => {
@@ -290,6 +284,6 @@ describe('sessionVisibleTo', () => {
   it('shows a session only to its owner', () => {
     expect(sessionVisibleTo('coco', coco)).toBe(true)
     expect(sessionVisibleTo('coco', phil)).toBe(false)
-    expect(sessionVisibleTo('phil', phil)).toBe(true)
+    expect(sessionVisibleTo('owner', phil)).toBe(true)
   })
 })

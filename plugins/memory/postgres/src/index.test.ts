@@ -127,10 +127,9 @@ describe('memory-postgres manifest', () => {
     writeFileSync(
       file,
       JSON.stringify({
-        ownerUserId: 'phil',
+        ownerUserId: 'owner',
         unmappedIsOwner: false,
-        users: {
-          phil: { devices: [], pgUrl: 'postgres://phil@db/phil' },
+        users: { owner: { devices: [], pgUrl: 'postgres://owner@db/phil' },
           coco: { devices: ['win-coco'], pgUrl: 'postgres://coco@db/coco_memory' },
         },
       }),

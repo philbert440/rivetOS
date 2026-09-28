@@ -7,7 +7,7 @@ afterEach(() => vi.unstubAllEnvs())
 describe('nodeNameFor', () => {
   it('prefers a trimmed mesh.node_name over HOSTNAME', () => {
     vi.stubEnv('HOSTNAME', 'from-host')
-    expect(nodeNameFor({ mesh: { node_name: '  ct115  ' } } as RivetConfig)).toBe('ct115')
+    expect(nodeNameFor({ mesh: { node_name: '  node-f  ' } } as RivetConfig)).toBe('node-f')
   })
 
   it('falls through a blank mesh.node_name to a trimmed HOSTNAME', () => {

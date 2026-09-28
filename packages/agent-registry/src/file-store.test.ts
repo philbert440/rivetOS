@@ -49,7 +49,7 @@ function readContractRow(file: string, id: string): StoredPreset | undefined {
 function input(overrides: Partial<AgentPresetInput> = {}): AgentPresetInput {
   return {
     name: 'Reviewer',
-    node: 'ct115',
+    node: 'node-f',
     directory: '/tmp/agents/reviewer',
     ...overrides,
   }
@@ -119,7 +119,7 @@ describe('FileAgentPresetStore', () => {
       systemPrompt: '',
       sharedLink: true,
       nodeBaseUrl: '',
-      node: 'ct115',
+      node: 'node-f',
       directory: '/tmp/agents/reviewer',
       createdAt: 5_000,
       updatedAt: 5_000,
@@ -169,14 +169,14 @@ describe('FileAgentPresetStore', () => {
     let now = 1_000
     const registry = store(() => now)
     const created = await registry.create(
-      input({ harnessId: 'codex', model: 'opus', node: 'ct115' }),
+      input({ harnessId: 'codex', model: 'opus', node: 'node-f' }),
     )
     now = 2_000
     const updated = await registry.update(created.id, { harnessId: null })
     expect(updated?.harnessId).toBeUndefined()
     expect(updated?.model).toBe('opus')
     expect(updated?.id).toBe(created.id)
-    expect(updated?.node).toBe('ct115')
+    expect(updated?.node).toBe('node-f')
     expect(updated?.createdAt).toBe(1_000)
     expect(updated?.updatedAt).toBe(2_000)
   })
@@ -195,7 +195,7 @@ describe('FileAgentPresetStore', () => {
             effort: 'medium',
             systemPrompt: '',
             nodeBaseUrl: '',
-            node: 'ct115',
+            node: 'node-f',
             directory: '/tmp/agents/alpha',
             sharedLink: true,
             createdAt: 1,
@@ -258,7 +258,7 @@ describe('FileAgentPresetStore', () => {
     )
     await registry.create(input({ id: 'a', name: 'A', createdAt: 1, directory: '/a' }))
     expect((await registry.list()).map((preset) => preset.id)).toEqual(['a', 'c', 'b'])
-    expect((await registry.list({ node: 'ct115' })).map((preset) => preset.id)).toEqual(['a', 'b'])
+    expect((await registry.list({ node: 'node-f' })).map((preset) => preset.id)).toEqual(['a', 'b'])
     expect(await registry.delete('a')).toBe(true)
     expect(await registry.delete('a')).toBe(false)
     expect(await registry.get('a')).toBeUndefined()

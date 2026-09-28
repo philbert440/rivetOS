@@ -938,7 +938,7 @@ describe('mesh.advertise_host', () => {
 
   it('accepts a DNS name', () => {
     const cfg = validConfig()
-    cfg.mesh = { advertise_host: 'phildesk.mesh' }
+    cfg.mesh = { advertise_host: 'desktop.mesh' }
     assertValid(validateConfig(cfg))
   })
 

@@ -5,11 +5,120 @@
 # Values themselves are omitted. For optional history scrub.
 
 CHANGELOG.md
+  0267411188a9aaa0df1cf96b9ae6083c5b6b7471
   4079472c289c0cb8799362122dbf5d4b551e4c45
   ea3eabc276f73b113196750beeab43a985f3a6ce
 
 GROK_TOOL_CAPTURE_VERIFICATION.md
   c14ee4dd1432803b9728451fb1a0ac7ea262df4b
+
+apps/rivet-android/.gitignore
+  0267411188a9aaa0df1cf96b9ae6083c5b6b7471
+
+apps/rivet-android/AGENT.md
+  0267411188a9aaa0df1cf96b9ae6083c5b6b7471
+
+apps/rivet-android/app/build.gradle.kts
+  0267411188a9aaa0df1cf96b9ae6083c5b6b7471
+
+apps/rivet-android/app/src/main/assets/CLAUDE.md
+  0267411188a9aaa0df1cf96b9ae6083c5b6b7471
+
+apps/rivet-android/app/src/main/assets/GROK.md
+  0267411188a9aaa0df1cf96b9ae6083c5b6b7471
+
+apps/rivet-android/app/src/main/assets/device-control.md
+  0267411188a9aaa0df1cf96b9ae6083c5b6b7471
+
+apps/rivet-android/app/src/main/assets/rivet-den-overlay.bin
+  0267411188a9aaa0df1cf96b9ae6083c5b6b7471
+
+apps/rivet-android/app/src/main/assets/rivet-memory-overlay.bin
+  0267411188a9aaa0df1cf96b9ae6083c5b6b7471
+
+apps/rivet-android/app/src/main/assets/rivet-net-tools-overlay.bin
+  0267411188a9aaa0df1cf96b9ae6083c5b6b7471
+
+apps/rivet-android/app/src/main/assets/rivet-phone-overlay.bin
+  0267411188a9aaa0df1cf96b9ae6083c5b6b7471
+
+apps/rivet-android/app/src/main/assets/rivet-shared-overlay.bin
+  0267411188a9aaa0df1cf96b9ae6083c5b6b7471
+
+apps/rivet-android/app/src/main/assets/rivet-web-overlay.bin
+  0267411188a9aaa0df1cf96b9ae6083c5b6b7471
+
+apps/rivet-android/app/src/main/java/dev/rivet/app/data/tls/DeviceIdentityCrypto.kt
+  0267411188a9aaa0df1cf96b9ae6083c5b6b7471
+
+apps/rivet-android/app/src/main/java/dev/rivet/app/ui/components/node/NodeSwitcher.kt
+  0267411188a9aaa0df1cf96b9ae6083c5b6b7471
+
+apps/rivet-android/app/src/test/java/dev/rivet/app/data/datastore/NodeChatBackendTest.kt
+  0267411188a9aaa0df1cf96b9ae6083c5b6b7471
+
+apps/rivet-android/app/src/test/java/dev/rivet/app/data/datastore/NodeRosterDefaultsTest.kt
+  0267411188a9aaa0df1cf96b9ae6083c5b6b7471
+
+apps/rivet-android/app/src/test/java/dev/rivet/app/ui/pages/terminal/TerminalEscalateTest.kt
+  0267411188a9aaa0df1cf96b9ae6083c5b6b7471
+
+apps/rivet-android/native/dropbear/README.md
+  0267411188a9aaa0df1cf96b9ae6083c5b6b7471
+
+apps/rivet-android/overlay-src/rivet-memory/README.md
+  0267411188a9aaa0df1cf96b9ae6083c5b6b7471
+
+apps/rivet-android/overlay-src/rivet-phone/skills/device-control/SKILL.md
+  0267411188a9aaa0df1cf96b9ae6083c5b6b7471
+
+apps/rivet-android/scripts/build-overlays.sh
+  0267411188a9aaa0df1cf96b9ae6083c5b6b7471
+
+apps/rivethub-android/AGENT.md
+  0267411188a9aaa0df1cf96b9ae6083c5b6b7471
+
+apps/rivethub-android/app/src/main/java/io/rivethub/app/ui/components/ComponentGallery.kt
+  0267411188a9aaa0df1cf96b9ae6083c5b6b7471
+
+apps/rivethub-android/app/src/test/java/io/rivethub/app/WireTest.kt
+  0267411188a9aaa0df1cf96b9ae6083c5b6b7471
+
+apps/rivethub-android/app/src/test/java/io/rivethub/app/plane/ActiveScrollTest.kt
+  0267411188a9aaa0df1cf96b9ae6083c5b6b7471
+
+apps/rivethub-android/app/src/test/java/io/rivethub/app/plane/AgentEditTest.kt
+  0267411188a9aaa0df1cf96b9ae6083c5b6b7471
+
+apps/rivethub-android/app/src/test/java/io/rivethub/app/plane/AgentOpenTest.kt
+  0267411188a9aaa0df1cf96b9ae6083c5b6b7471
+
+apps/rivethub-android/app/src/test/java/io/rivethub/app/plane/AgentsTest.kt
+  0267411188a9aaa0df1cf96b9ae6083c5b6b7471
+
+apps/rivethub-android/app/src/test/java/io/rivethub/app/plane/ChatSendTest.kt
+  0267411188a9aaa0df1cf96b9ae6083c5b6b7471
+
+apps/rivethub-android/app/src/test/java/io/rivethub/app/plane/ConversationIdentityTest.kt
+  0267411188a9aaa0df1cf96b9ae6083c5b6b7471
+
+apps/rivethub-android/app/src/test/java/io/rivethub/app/plane/ConversationSectionsTest.kt
+  0267411188a9aaa0df1cf96b9ae6083c5b6b7471
+
+apps/rivethub-android/app/src/test/java/io/rivethub/app/plane/ConversationsFilterTest.kt
+  0267411188a9aaa0df1cf96b9ae6083c5b6b7471
+
+apps/rivethub-android/app/src/test/java/io/rivethub/app/plane/DrawerNavTest.kt
+  0267411188a9aaa0df1cf96b9ae6083c5b6b7471
+
+apps/rivethub-android/app/src/test/java/io/rivethub/app/plane/HubReducersTest.kt
+  0267411188a9aaa0df1cf96b9ae6083c5b6b7471
+
+apps/rivethub-android/app/src/test/java/io/rivethub/app/plane/MemoryWikiTest.kt
+  0267411188a9aaa0df1cf96b9ae6083c5b6b7471
+
+apps/rivethub-android/app/src/test/java/io/rivethub/app/plane/NodeSheetTest.kt
+  0267411188a9aaa0df1cf96b9ae6083c5b6b7471
 
 apps/rivethub-desktop/README.md
   0562e3c4935eb6ac3e254f8f1d350e8d1f220eb4
@@ -23,12 +132,48 @@ apps/rivethub-desktop/README.md
   7c9994cc97826652838c102be192b75cfd0bc0dc
   832c6625aec10f04aac40d8f491cfd665c24a4cb
 
+apps/rivethub-electron/src/main/mtls-pipe.test.ts
+  0267411188a9aaa0df1cf96b9ae6083c5b6b7471
+
 apps/rivethub-site/scripts/posthog-env.test.mjs
   b3f0e93548ad0946146c882a3b567cb59e83a1c5
+
+apps/rivethub-web/src/lib/agent-form.test.ts
+  0267411188a9aaa0df1cf96b9ae6083c5b6b7471
+
+apps/rivethub-web/src/lib/agent-roster.test.ts
+  0267411188a9aaa0df1cf96b9ae6083c5b6b7471
+
+apps/rivethub-web/src/lib/task-create.test.ts
+  0267411188a9aaa0df1cf96b9ae6083c5b6b7471
+
+apps/rivethub-web/src/lib/wiki-base.test.ts
+  0267411188a9aaa0df1cf96b9ae6083c5b6b7471
+
+apps/rivethub-web/src/pages/chat.tsx
+  0267411188a9aaa0df1cf96b9ae6083c5b6b7471
+
+apps/site/src/content/docs/guides/deployment.md
+  0267411188a9aaa0df1cf96b9ae6083c5b6b7471
+
+apps/site/src/content/docs/reference/config.md
+  0267411188a9aaa0df1cf96b9ae6083c5b6b7471
 
 apps/site/src/content/docs/reference/memory-design.md
   41ce489756dd29a1b9a01661f6fd36e31551f9cc
   dcac4fc1f17c31084c006132528f0062f50f2089
+
+docs/CODEX-GAP-FILL-2026-09-07.md
+  0267411188a9aaa0df1cf96b9ae6083c5b6b7471
+
+docs/CONFIG-REFERENCE.md
+  0267411188a9aaa0df1cf96b9ae6083c5b6b7471
+
+docs/DEPLOYMENT.md
+  0267411188a9aaa0df1cf96b9ae6083c5b6b7471
+
+docs/GATEWAY-MTLS.md
+  0267411188a9aaa0df1cf96b9ae6083c5b6b7471
 
 docs/MEMORY-DESIGN.md
   052778831ed0cc7e923b1639a67fbae10a057a14
@@ -37,19 +182,69 @@ docs/MEMORY-DESIGN.md
   5b93760c1dd7e265027b55cba30af9c947007471
   b29d19cb544fe23982bcac2554ff9f7ac91040fa
 
+docs/examples/homelab.yaml
+  0267411188a9aaa0df1cf96b9ae6083c5b6b7471
+
+infra/scripts/provision-ct.sh
+  0267411188a9aaa0df1cf96b9ae6083c5b6b7471
+
+infra/scripts/setup-mesh-hosts.sh
+  0267411188a9aaa0df1cf96b9ae6083c5b6b7471
+
+infra/templates/env-anthropic.template
+  0267411188a9aaa0df1cf96b9ae6083c5b6b7471
+
+infra/templates/env-claude-cli.template
+  0267411188a9aaa0df1cf96b9ae6083c5b6b7471
+
+infra/templates/env-google.template
+  0267411188a9aaa0df1cf96b9ae6083c5b6b7471
+
+infra/templates/env-llama-server.template
+  0267411188a9aaa0df1cf96b9ae6083c5b6b7471
+
+infra/templates/env-ollama.template
+  0267411188a9aaa0df1cf96b9ae6083c5b6b7471
+
+infra/templates/env-vllm.template
+  0267411188a9aaa0df1cf96b9ae6083c5b6b7471
+
+infra/templates/env-xai.template
+  0267411188a9aaa0df1cf96b9ae6083c5b6b7471
+
+integrations/claude-code/rivet-memory/skills/memory-recall/SKILL.md
+  0267411188a9aaa0df1cf96b9ae6083c5b6b7471
+
+integrations/codex/rivet-memory/backfill/test/backfill.test.ts
+  0267411188a9aaa0df1cf96b9ae6083c5b6b7471
+
+integrations/codex/rivet-memory/bin/merge-requirements.py
+  0267411188a9aaa0df1cf96b9ae6083c5b6b7471
+
+integrations/codex/rivet-memory/capture/test/den-transport.test.ts
+  0267411188a9aaa0df1cf96b9ae6083c5b6b7471
+
+integrations/codex/rivet-memory/capture/test/fixtures/sample-rollout/rollout-2020-01-01T00-00-00-<uuid>.jsonl
+  0267411188a9aaa0df1cf96b9ae6083c5b6b7471
+
+integrations/codex/rivet-memory/capture/test/fixtures/sample-rollout/rollout-<timestamp>-<uuid>.jsonl
+  0267411188a9aaa0df1cf96b9ae6083c5b6b7471
+
+integrations/codex/rivet-memory/capture/test/hook.test.ts
+  0267411188a9aaa0df1cf96b9ae6083c5b6b7471
+
+integrations/codex/rivet-memory/capture/test/smoke.test.ts
+  0267411188a9aaa0df1cf96b9ae6083c5b6b7471
+
+integrations/codex/rivet-memory/capture/test/state.test.ts
+  0267411188a9aaa0df1cf96b9ae6083c5b6b7471
+
+integrations/cursor/rivet-memory/capture/test/den-transport.test.ts
+  0267411188a9aaa0df1cf96b9ae6083c5b6b7471
+
 integrations/cursor/rivet-memory/rules/memory-reflex.md
   7d4267bb935aa412538d5b624f368dc9bca4a92e
   81787004c2243aae1b9e338fa4efb06a186d2978
-
-integrations/grok/rivet-memory/capture/test/fixtures/sample-session/summary.json
-  6ddda1797232ac5ea46f5b2b2f002cb81d08da0b
-  7fe51c9131916c9794d102f1c2c9fd2149174313
-  ce173ebb46e515c60cff5643630990ceed8895e3
-
-integrations/grok/rivet-memory/capture/test/fixtures/sample-session/updates.jsonl
-  6ddda1797232ac5ea46f5b2b2f002cb81d08da0b
-  7fe51c9131916c9794d102f1c2c9fd2149174313
-  ce173ebb46e515c60cff5643630990ceed8895e3
 
 integrations/grok-bot/rivet-memory/GROKBOT.md
   15fe1604311f3dd9607c8cd3ac420faea0d66da5
@@ -57,6 +252,7 @@ integrations/grok-bot/rivet-memory/GROKBOT.md
   b17594463fa58b7a10ac616ff4f68d8ad0e17783
 
 integrations/grok-bot/rivet-memory/README.md
+  0267411188a9aaa0df1cf96b9ae6083c5b6b7471
   0c5a89b34f1c5136b869f4d5958faf52240bcda7
   15fe1604311f3dd9607c8cd3ac420faea0d66da5
   31b76d37b7ee832ea69990f5c3881f46bbccdf57
@@ -227,8 +423,283 @@ integrations/grok-bot/rivet-memory/skills/memory-recall/SKILL.md
 integrations/grok-bot/rivethub-grokbot/skills/memory-recall/SKILL.md
   c8f0c4c9f2113e37e7af4f9d2aa752265dc3a564
 
+integrations/grok/rivet-memory/capture/test/fixtures/sample-session/summary.json
+  6ddda1797232ac5ea46f5b2b2f002cb81d08da0b
+  7fe51c9131916c9794d102f1c2c9fd2149174313
+  ce173ebb46e515c60cff5643630990ceed8895e3
+
+integrations/grok/rivet-memory/capture/test/fixtures/sample-session/updates.jsonl
+  6ddda1797232ac5ea46f5b2b2f002cb81d08da0b
+  7fe51c9131916c9794d102f1c2c9fd2149174313
+  ce173ebb46e515c60cff5643630990ceed8895e3
+
+integrations/herdr/README.md
+  0267411188a9aaa0df1cf96b9ae6083c5b6b7471
+
+integrations/herdr/manifests/grok.toml
+  0267411188a9aaa0df1cf96b9ae6083c5b6b7471
+
+integrations/hermes/memory-recall/SKILL.md
+  0267411188a9aaa0df1cf96b9ae6083c5b6b7471
+
+integrations/hermes/rivet-den/config.hooks.yaml
+  0267411188a9aaa0df1cf96b9ae6083c5b6b7471
+
+integrations/hermes/rivet-memory/get_full.py
+  0267411188a9aaa0df1cf96b9ae6083c5b6b7471
+
+integrations/hermes/rivet-memory/schema.py
+  0267411188a9aaa0df1cf96b9ae6083c5b6b7471
+
+integrations/hermes/rivet-memory/tests/test_capture.py
+  0267411188a9aaa0df1cf96b9ae6083c5b6b7471
+
+integrations/hermes/rivet-memory/tests/test_recall.py
+  0267411188a9aaa0df1cf96b9ae6083c5b6b7471
+
+integrations/kimi/rivet-memory/backfill/README.md
+  0267411188a9aaa0df1cf96b9ae6083c5b6b7471
+
+integrations/kimi/rivet-memory/backfill/src/kimi-transcript-backfill.ts
+  0267411188a9aaa0df1cf96b9ae6083c5b6b7471
+
+integrations/pi/rivet-memory/capture/test/fixtures/sample-session/<timestamp>_<uuid>.jsonl
+  0267411188a9aaa0df1cf96b9ae6083c5b6b7471
+
+integrations/pi/rivet-memory/capture/test/smoke.test.ts
+  0267411188a9aaa0df1cf96b9ae6083c5b6b7471
+
+integrations/pi/rivet-memory/extension/test/extension.test.ts
+  0267411188a9aaa0df1cf96b9ae6083c5b6b7471
+
+integrations/qwen-code/rivet-memory/capture/test/fixtures/sample-session/<uuid>.jsonl
+  0267411188a9aaa0df1cf96b9ae6083c5b6b7471
+
+integrations/qwen-code/rivet-memory/capture/test/smoke.test.ts
+  0267411188a9aaa0df1cf96b9ae6083c5b6b7471
+
+packages/agent-registry/src/fallback-store.test.ts
+  0267411188a9aaa0df1cf96b9ae6083c5b6b7471
+
+packages/agent-registry/src/file-store.test.ts
+  0267411188a9aaa0df1cf96b9ae6083c5b6b7471
+
+packages/agent-registry/src/import-legacy.test.ts
+  0267411188a9aaa0df1cf96b9ae6083c5b6b7471
+
+packages/agent-registry/src/pg-store.test.ts
+  0267411188a9aaa0df1cf96b9ae6083c5b6b7471
+
+packages/agent-registry/src/test/store-contract.test-helper.ts
+  0267411188a9aaa0df1cf96b9ae6083c5b6b7471
+
+packages/boot/src/node-name.test.ts
+  0267411188a9aaa0df1cf96b9ae6083c5b6b7471
+
+packages/boot/src/registrars/agents.test.ts
+  0267411188a9aaa0df1cf96b9ae6083c5b6b7471
+
+packages/boot/src/registrars/agents.ts
+  0267411188a9aaa0df1cf96b9ae6083c5b6b7471
+
+packages/boot/src/registrars/gateway.test.ts
+  0267411188a9aaa0df1cf96b9ae6083c5b6b7471
+
+packages/boot/src/registrars/mdns.test.ts
+  0267411188a9aaa0df1cf96b9ae6083c5b6b7471
+
+packages/boot/src/validate.test.ts
+  0267411188a9aaa0df1cf96b9ae6083c5b6b7471
+
+packages/cli/src/cli.test.ts
+  0267411188a9aaa0df1cf96b9ae6083c5b6b7471
+
+packages/cli/src/commands/config.test.ts
+  0267411188a9aaa0df1cf96b9ae6083c5b6b7471
+
+packages/cli/src/commands/doctor-leaf-cert.test.ts
+  0267411188a9aaa0df1cf96b9ae6083c5b6b7471
+
+packages/cli/src/commands/doctor-memory-queue.test.ts
+  0267411188a9aaa0df1cf96b9ae6083c5b6b7471
+
+packages/cli/src/commands/doctor.ts
+  0267411188a9aaa0df1cf96b9ae6083c5b6b7471
+
+packages/cli/src/commands/init.test.ts
+  0267411188a9aaa0df1cf96b9ae6083c5b6b7471
+
+packages/cli/src/commands/init/generate.test.ts
+  0267411188a9aaa0df1cf96b9ae6083c5b6b7471
+
+packages/cli/src/commands/local.test.ts
+  0267411188a9aaa0df1cf96b9ae6083c5b6b7471
+
+packages/cli/src/commands/mesh.test.ts
+  0267411188a9aaa0df1cf96b9ae6083c5b6b7471
+
+packages/cli/src/commands/update.ts
+  0267411188a9aaa0df1cf96b9ae6083c5b6b7471
+
+packages/cli/src/commands/update/detect-deployment.ts
+  0267411188a9aaa0df1cf96b9ae6083c5b6b7471
+
+packages/cli/src/commands/update/remote-nodes.test.ts
+  0267411188a9aaa0df1cf96b9ae6083c5b6b7471
+
+packages/cli/src/commands/update/remote-nodes.ts
+  0267411188a9aaa0df1cf96b9ae6083c5b6b7471
+
+packages/cli/src/lib/hub-identity.test.ts
+  0267411188a9aaa0df1cf96b9ae6083c5b6b7471
+
+packages/cli/src/lib/launchd.test.ts
+  0267411188a9aaa0df1cf96b9ae6083c5b6b7471
+
+packages/cli/src/lib/mesh-enroll.test.ts
+  0267411188a9aaa0df1cf96b9ae6083c5b6b7471
+
+packages/cli/src/lib/mesh-file.test.ts
+  0267411188a9aaa0df1cf96b9ae6083c5b6b7471
+
+packages/core/src/domain/delegation.test.ts
+  0267411188a9aaa0df1cf96b9ae6083c5b6b7471
+
+packages/core/src/domain/hooks-aisdk.test.ts
+  0267411188a9aaa0df1cf96b9ae6083c5b6b7471
+
+packages/core/src/domain/mesh-delegation.test.ts
+  0267411188a9aaa0df1cf96b9ae6083c5b6b7471
+
+packages/core/src/domain/preset-delegation.test.ts
+  0267411188a9aaa0df1cf96b9ae6083c5b6b7471
+
+packages/core/src/domain/preset-delegation.ts
+  0267411188a9aaa0df1cf96b9ae6083c5b6b7471
+
+packages/core/src/domain/safety-hooks.test.ts
+  0267411188a9aaa0df1cf96b9ae6083c5b6b7471
+
+packages/core/src/domain/session-hooks.test.ts
+  0267411188a9aaa0df1cf96b9ae6083c5b6b7471
+
+packages/core/src/domain/task/catalog-api.test.ts
+  0267411188a9aaa0df1cf96b9ae6083c5b6b7471
+
+packages/core/src/domain/task/delegation-wait.ts
+  0267411188a9aaa0df1cf96b9ae6083c5b6b7471
+
+packages/core/src/domain/task/escalation.ts
+  0267411188a9aaa0df1cf96b9ae6083c5b6b7471
+
+packages/core/src/domain/task/evaluation-coordinator.test.ts
+  0267411188a9aaa0df1cf96b9ae6083c5b6b7471
+
+packages/core/src/domain/task/evaluation-coordinator.ts
+  0267411188a9aaa0df1cf96b9ae6083c5b6b7471
+
+packages/core/src/domain/task/heartbeat-task.test.ts
+  0267411188a9aaa0df1cf96b9ae6083c5b6b7471
+
+packages/core/src/domain/task/runner.test.ts
+  0267411188a9aaa0df1cf96b9ae6083c5b6b7471
+
+packages/core/src/domain/task/store.test.ts
+  0267411188a9aaa0df1cf96b9ae6083c5b6b7471
+
+packages/core/src/domain/task/task-api.test.ts
+  0267411188a9aaa0df1cf96b9ae6083c5b6b7471
+
+packages/core/src/domain/tools-aisdk.test.ts
+  0267411188a9aaa0df1cf96b9ae6083c5b6b7471
+
+packages/core/src/domain/tools-aisdk.ts
+  0267411188a9aaa0df1cf96b9ae6083c5b6b7471
+
+packages/core/src/domain/wiki/wiki-api.test.ts
+  0267411188a9aaa0df1cf96b9ae6083c5b6b7471
+
+packages/core/src/runtime/__fixtures__/test-ca/node.crt
+  0267411188a9aaa0df1cf96b9ae6083c5b6b7471
+
+packages/core/src/runtime/agent-channel.test.ts
+  0267411188a9aaa0df1cf96b9ae6083c5b6b7471
+
+packages/harness-pi/src/executor.test.ts
+  0267411188a9aaa0df1cf96b9ae6083c5b6b7471
+
+packages/harness-pi/src/spawn-turn.test.ts
+  0267411188a9aaa0df1cf96b9ae6083c5b6b7471
+
+packages/harness-pi/src/test/fake-pi.ts
+  0267411188a9aaa0df1cf96b9ae6083c5b6b7471
+
+packages/harness-pi/src/wire.test.ts
+  0267411188a9aaa0df1cf96b9ae6083c5b6b7471
+
+packages/harness-pi/src/wire.ts
+  0267411188a9aaa0df1cf96b9ae6083c5b6b7471
+
+packages/harness-qwen-code/src/executor.test.ts
+  0267411188a9aaa0df1cf96b9ae6083c5b6b7471
+
+packages/harness-qwen-code/src/spawn-turn.test.ts
+  0267411188a9aaa0df1cf96b9ae6083c5b6b7471
+
+packages/harness-qwen-code/src/test/fake-qwen.ts
+  0267411188a9aaa0df1cf96b9ae6083c5b6b7471
+
+packages/harness-qwen-code/src/wire.test.ts
+  0267411188a9aaa0df1cf96b9ae6083c5b6b7471
+
+packages/types/src/harness-session-id.test.ts
+  0267411188a9aaa0df1cf96b9ae6083c5b6b7471
+
+packages/types/src/index.test.ts
+  0267411188a9aaa0df1cf96b9ae6083c5b6b7471
+
+packages/types/src/mesh.test.ts
+  0267411188a9aaa0df1cf96b9ae6083c5b6b7471
+
+packages/types/src/mesh.ts
+  0267411188a9aaa0df1cf96b9ae6083c5b6b7471
+
+packages/types/src/task.test.ts
+  0267411188a9aaa0df1cf96b9ae6083c5b6b7471
+
+packages/types/src/users-registry.test.ts
+  0267411188a9aaa0df1cf96b9ae6083c5b6b7471
+
+packages/types/src/users-registry.ts
+  0267411188a9aaa0df1cf96b9ae6083c5b6b7471
+
+packages/wiki-core/src/identity.test.ts
+  0267411188a9aaa0df1cf96b9ae6083c5b6b7471
+
+packages/wiki-core/src/page.test.ts
+  0267411188a9aaa0df1cf96b9ae6083c5b6b7471
+
+plugins/memory/postgres/src/chunk-search.test.ts
+  0267411188a9aaa0df1cf96b9ae6083c5b6b7471
+
+plugins/memory/postgres/src/http/memory-api.test.ts
+  0267411188a9aaa0df1cf96b9ae6083c5b6b7471
+
+plugins/memory/postgres/src/index.test.ts
+  0267411188a9aaa0df1cf96b9ae6083c5b6b7471
+
+plugins/memory/postgres/src/schema/migrations/0008_message_tool_result_search.sql
+  0267411188a9aaa0df1cf96b9ae6083c5b6b7471
+
+plugins/memory/postgres/src/schema/migrations/0009_conversation_session_key_unique.sql
+  0267411188a9aaa0df1cf96b9ae6083c5b6b7471
+
+plugins/memory/postgres/src/schema/migrations/0016_defer_embed_enqueue.sql
+  0267411188a9aaa0df1cf96b9ae6083c5b6b7471
+
 plugins/memory/postgres/src/tools/get-full-tool.test.ts
   00b5490f62c73631b07836102b07157a5ff37386
+  0267411188a9aaa0df1cf96b9ae6083c5b6b7471
   10896cdb793b3420d5b8cb1d9a8ca4918ff8def6
   229d2a397f00dcfae14981e1a2a8f58cfa61b146
   22cae250d5953a350012b323e4c04b9ec2fb3124
@@ -243,6 +714,21 @@ plugins/memory/postgres/src/tools/get-full-tool.test.ts
   b3238a7c588109ff828b299156bda888bff6ab5b
   df5bb78290898341be33a04a22b099fa186f8ec6
 
+plugins/memory/postgres/src/tools/get-full-tool.ts
+  0267411188a9aaa0df1cf96b9ae6083c5b6b7471
+
+plugins/memory/postgres/src/tools/stats-assemble.test.ts
+  0267411188a9aaa0df1cf96b9ae6083c5b6b7471
+
+plugins/memory/postgres/src/wiki/index-reader.test.ts
+  0267411188a9aaa0df1cf96b9ae6083c5b6b7471
+
+plugins/memory/postgres/src/wiki/prompts.test.ts
+  0267411188a9aaa0df1cf96b9ae6083c5b6b7471
+
+plugins/memory/postgres/src/wiki/prompts.ts
+  0267411188a9aaa0df1cf96b9ae6083c5b6b7471
+
 plugins/providers/grok-cli/src/grok-cli-model.test.ts
   15f2269987fef87bc54834cc60f7f27c32af01c6
   6cfa408df3c5814d0d364a64ff27923e4ae3a5a3
@@ -253,22 +739,183 @@ plugins/providers/grok-cli/src/index.test.ts
   6cfa408df3c5814d0d364a64ff27923e4ae3a5a3
   fe9e58fb824b640bb1519a3dbe09beb47ca2eed8
 
+plugins/providers/grok-cli/src/session-map.ts
+  0267411188a9aaa0df1cf96b9ae6083c5b6b7471
+
 plugins/providers/grok-cli/src/spawn-turn.test.ts
   15f2269987fef87bc54834cc60f7f27c32af01c6
   6cfa408df3c5814d0d364a64ff27923e4ae3a5a3
   ced37f7812201c999a887f0e852844119c6c4c62
   fe9e58fb824b640bb1519a3dbe09beb47ca2eed8
 
+plugins/providers/hermes-cli/README.md
+  0267411188a9aaa0df1cf96b9ae6083c5b6b7471
+
+plugins/providers/hermes-cli/src/index.ts
+  0267411188a9aaa0df1cf96b9ae6083c5b6b7471
+
+plugins/providers/kimi-code/README.md
+  0267411188a9aaa0df1cf96b9ae6083c5b6b7471
+
+plugins/providers/kimi-code/src/index.ts
+  0267411188a9aaa0df1cf96b9ae6083c5b6b7471
+
+plugins/providers/pi-cli/src/index.test.ts
+  0267411188a9aaa0df1cf96b9ae6083c5b6b7471
+
+plugins/providers/qwen-code/src/fixtures/headless-tool-turn-stream-json.ndjson
+  0267411188a9aaa0df1cf96b9ae6083c5b6b7471
+
+plugins/providers/qwen-code/src/index.test.ts
+  0267411188a9aaa0df1cf96b9ae6083c5b6b7471
+
+scripts/bootstrap-certs.sh
+  0267411188a9aaa0df1cf96b9ae6083c5b6b7471
+
+scripts/mesh-nodes.example.conf
+  0267411188a9aaa0df1cf96b9ae6083c5b6b7471
+
+scripts/privacy-denylist.json
+  0267411188a9aaa0df1cf96b9ae6083c5b6b7471
+
 scripts/privacy-scan.mjs
+  0267411188a9aaa0df1cf96b9ae6083c5b6b7471
   31b76d37b7ee832ea69990f5c3881f46bbccdf57
   76f67e279e20d14b8d57efe43fef91b5bedc6110
   851d6483d861c85afd53fb381e8ddbe81bd7baf8
   d42954ceef46df32154743a50c48be2172b44832
 
 scripts/privacy-scan.test.mjs
+  0267411188a9aaa0df1cf96b9ae6083c5b6b7471
   31b76d37b7ee832ea69990f5c3881f46bbccdf57
   76f67e279e20d14b8d57efe43fef91b5bedc6110
   851d6483d861c85afd53fb381e8ddbe81bd7baf8
 
+scripts/rivet-ca.sh
+  0267411188a9aaa0df1cf96b9ae6083c5b6b7471
+
+services/compaction-worker/src/tasks/reschedule-dead.ts
+  0267411188a9aaa0df1cf96b9ae6083c5b6b7471
+
+services/den-server/src/agents-fallback.test.ts
+  0267411188a9aaa0df1cf96b9ae6083c5b6b7471
+
+services/den-server/src/agents.test.ts
+  0267411188a9aaa0df1cf96b9ae6083c5b6b7471
+
+services/den-server/src/auth.test.ts
+  0267411188a9aaa0df1cf96b9ae6083c5b6b7471
+
+services/den-server/src/auth.ts
+  0267411188a9aaa0df1cf96b9ae6083c5b6b7471
+
+services/den-server/src/config.test.ts
+  0267411188a9aaa0df1cf96b9ae6083c5b6b7471
+
+services/den-server/src/devices.test.ts
+  0267411188a9aaa0df1cf96b9ae6083c5b6b7471
+
+services/den-server/src/devices.ts
+  0267411188a9aaa0df1cf96b9ae6083c5b6b7471
+
+services/den-server/src/harness/__fixtures__/kimi-config-<host>.toml
+  0267411188a9aaa0df1cf96b9ae6083c5b6b7471
+
+services/den-server/src/harness/__fixtures__/kimi-config-sample.toml
+  0267411188a9aaa0df1cf96b9ae6083c5b6b7471
+
+services/den-server/src/harness/adapters/__fixtures__/qwen-code-tool-turn.jsonl
+  0267411188a9aaa0df1cf96b9ae6083c5b6b7471
+
+services/den-server/src/harness/adapters/codex.test.ts
+  0267411188a9aaa0df1cf96b9ae6083c5b6b7471
+
+services/den-server/src/harness/codex-driver.test.ts
+  0267411188a9aaa0df1cf96b9ae6083c5b6b7471
+
+services/den-server/src/harness/codex-protocol-driver.test.ts
+  0267411188a9aaa0df1cf96b9ae6083c5b6b7471
+
+services/den-server/src/harness/grok-driver.test.ts
+  0267411188a9aaa0df1cf96b9ae6083c5b6b7471
+
+services/den-server/src/harness/kimi-driver.test.ts
+  0267411188a9aaa0df1cf96b9ae6083c5b6b7471
+
+services/den-server/src/harness/model-sheets.test.ts
+  0267411188a9aaa0df1cf96b9ae6083c5b6b7471
+
+services/den-server/src/harness/pi-driver.test.ts
+  0267411188a9aaa0df1cf96b9ae6083c5b6b7471
+
+services/den-server/src/harness/pty-harness-driver.test.ts
+  0267411188a9aaa0df1cf96b9ae6083c5b6b7471
+
+services/den-server/src/harness/qwen-code-driver.test.ts
+  0267411188a9aaa0df1cf96b9ae6083c5b6b7471
+
+services/den-server/src/harness/routes.test.ts
+  0267411188a9aaa0df1cf96b9ae6083c5b6b7471
+
+services/den-server/src/identity.test.ts
+  0267411188a9aaa0df1cf96b9ae6083c5b6b7471
+
+services/den-server/src/mesh.test.ts
+  0267411188a9aaa0df1cf96b9ae6083c5b6b7471
+
+services/den-server/src/server-presets.test.ts
+  0267411188a9aaa0df1cf96b9ae6083c5b6b7471
+
+services/den-server/src/server.test.ts
+  0267411188a9aaa0df1cf96b9ae6083c5b6b7471
+
+services/den-server/src/server.ts
+  0267411188a9aaa0df1cf96b9ae6083c5b6b7471
+
+services/den-server/src/session-owners.test.ts
+  0267411188a9aaa0df1cf96b9ae6083c5b6b7471
+
+services/den-server/src/tenancy.e2e.test.ts
+  0267411188a9aaa0df1cf96b9ae6083c5b6b7471
+
+services/den-server/src/term/codex-room.test.ts
+  0267411188a9aaa0df1cf96b9ae6083c5b6b7471
+
+services/den-server/src/term/cursor-sessions.test.ts
+  0267411188a9aaa0df1cf96b9ae6083c5b6b7471
+
+services/den-server/src/term/harness-sessions.test.ts
+  0267411188a9aaa0df1cf96b9ae6083c5b6b7471
+
+services/den-server/src/term/harness-sessions.ts
+  0267411188a9aaa0df1cf96b9ae6083c5b6b7471
+
+services/den-server/src/term/herdr.test.ts
+  0267411188a9aaa0df1cf96b9ae6083c5b6b7471
+
+services/den-server/src/term/http.test.ts
+  0267411188a9aaa0df1cf96b9ae6083c5b6b7471
+
+services/den-server/src/term/manager.test.ts
+  0267411188a9aaa0df1cf96b9ae6083c5b6b7471
+
+services/den-server/src/term/tmux.test.ts
+  0267411188a9aaa0df1cf96b9ae6083c5b6b7471
+
+services/den-server/src/term/tui-screen-fixtures.ts
+  0267411188a9aaa0df1cf96b9ae6083c5b6b7471
+
+services/mcp-sidecar/src/delegate.test.ts
+  0267411188a9aaa0df1cf96b9ae6083c5b6b7471
+
+services/mcp-sidecar/src/den-tools.test.ts
+  0267411188a9aaa0df1cf96b9ae6083c5b6b7471
+
 services/mcp-sidecar/src/memory-tags.test.ts
   b17594463fa58b7a10ac616ff4f68d8ad0e17783
+
+services/mcp-sidecar/src/wiki-read-format.test.ts
+  0267411188a9aaa0df1cf96b9ae6083c5b6b7471
+
+services/mcp-sidecar/src/wiki.test.ts
+  0267411188a9aaa0df1cf96b9ae6083c5b6b7471

@@ -32,7 +32,7 @@ afterAll(() => {
   cleanupFakePi()
 })
 
-const SESSION = '01a090db-c402-71cb-a954-6066b9493630'
+const SESSION = '00000000-0000-4000-8000-000000000030'
 
 function makeExecutor(fake: FakePi): PiExecutor {
   return new PiExecutor({

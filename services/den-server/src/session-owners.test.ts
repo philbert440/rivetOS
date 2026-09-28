@@ -16,10 +16,10 @@ const coco: UserContext = {
   db: { pgUrl: 'postgres://coco@db/coco' },
   isOwner: false,
 }
-const phil: UserContext = {
-  userId: 'phil',
+const owner: UserContext = {
+  userId: 'owner',
   deviceId: null,
-  db: { pgUrl: 'postgres://phil@db/phil' },
+  db: { pgUrl: 'postgres://owner@db/phil' },
   isOwner: true,
 }
 
@@ -28,8 +28,8 @@ describe('session owners', () => {
     const dir = mkdtempSync(join(tmpdir(), 'owners-'))
     dirs.push(dir)
     const owners = createSessionOwners(join(dir, 'session-owners.json'))
-    expect(owners.visible('dead-phil-session', phil)).toBe(true)
-    expect(owners.visible('dead-phil-session', coco)).toBe(false)
+    expect(owners.visible('dead-owner-session', phil)).toBe(true)
+    expect(owners.visible('dead-owner-session', coco)).toBe(false)
   })
 
   it('persists coco ownership and hides the row from phil', () => {

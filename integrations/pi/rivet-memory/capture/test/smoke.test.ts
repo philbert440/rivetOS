@@ -62,10 +62,10 @@ const FIXTURE = path.join(
   __dirname,
   'fixtures',
   'sample-session',
-  '2026-09-11T14-25-16-803Z_01a091f5-6deb-723d-8737-eb83070c9154.jsonl',
+  '2020-01-01T00-00-00-000Z_00000000-0000-4000-8000-000000000048.jsonl',
 )
 
-const SESSION = '01a091f5-6deb-723d-8737-eb83070c9154'
+const SESSION = '00000000-0000-4000-8000-000000000048'
 
 let failed = 0
 function check(name: string, cond: boolean, detail = ''): void {
@@ -106,7 +106,7 @@ console.log('— identity constants —')
   )
   eq(
     'uuidFromSessionName accepts non-uuid --session-id',
-    uuidFromSessionName('2026-09-11T14-25-16-803Z_custom-id.jsonl'),
+    uuidFromSessionName('2020-01-01T00-00-00-000Z_custom-id.jsonl'),
     'custom-id',
   )
   eq('isNativeSessionId accepts a custom --session-id', isNativeSessionId('custom-id'), true)
@@ -252,7 +252,7 @@ console.log('\n— parseSessionText (fixture) —')
         type: 'session_info',
         id: SESSION,
         parentId: null,
-        timestamp: '2026-09-11T14:25:16.803Z',
+        timestamp: '2020-01-01T00:00:00.000Z',
         name: 'first name',
       }),
       JSON.stringify({
@@ -710,7 +710,7 @@ console.log('\n— lock error recovers the pooled client —')
 console.log('\n— consumeNewLines cursor —')
 {
   const dir = mkdtempSync(path.join(tmpdir(), 'pi-cap-'))
-  const file = path.join(dir, `2026-09-11T14-25-16-803Z_${SESSION}.jsonl`)
+  const file = path.join(dir, `2020-01-01T00-00-00-000Z_${SESSION}.jsonl`)
   writeFileSync(
     file,
     '{"type":"session","version":3,"id":"' + SESSION + '","cwd":"/tmp/demo"}\n',
@@ -822,7 +822,7 @@ console.log('\n— second scan updates title and model settings —')
   const stub = stubClient()
   const dir = mkdtempSync(path.join(tmpdir(), 'pi-rename-'))
   try {
-    const file = path.join(dir, `2026-09-11T14-25-16-803Z_${SESSION}.jsonl`)
+    const file = path.join(dir, `2020-01-01T00-00-00-000Z_${SESSION}.jsonl`)
     writeFileSync(
       file,
       [

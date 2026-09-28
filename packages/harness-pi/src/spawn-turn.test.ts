@@ -48,7 +48,7 @@ describe('buildArgs', () => {
       {
         binary: 'pi',
         modelId: 'deepseek/deepseek-v4-flash',
-        resumeSessionId: '01a090db-c402-71cb-a954-6066b9493630',
+        resumeSessionId: '00000000-0000-4000-8000-000000000030',
         thinking: 'high',
       },
       'go on',
@@ -58,7 +58,7 @@ describe('buildArgs', () => {
       '--mode',
       'json',
       '--session',
-      '01a090db-c402-71cb-a954-6066b9493630',
+      '00000000-0000-4000-8000-000000000030',
       '--model',
       'deepseek/deepseek-v4-flash',
       '--thinking',
@@ -83,7 +83,7 @@ describe('buildArgs', () => {
     const args = buildArgs(
       {
         binary: 'pi',
-        pinSessionId: '01a090db-c402-71cb-a954-6066b9493630',
+        pinSessionId: '00000000-0000-4000-8000-000000000030',
         sessionDir: '/tmp/pi-sessions',
       },
       'hi',
@@ -93,7 +93,7 @@ describe('buildArgs', () => {
       '--mode',
       'json',
       '--session-id',
-      '01a090db-c402-71cb-a954-6066b9493630',
+      '00000000-0000-4000-8000-000000000030',
       '--session-dir',
       '/tmp/pi-sessions',
       '--',

@@ -18,17 +18,17 @@ describe('criteriaFromLines', () => {
 
 describe('taskAgentOptions', () => {
   const agents: CatalogAgent[] = [
-    { id: 'remote-g', node: 'ct112', local: false, provider: 'xai' },
+    { id: 'remote-g', node: 'node-c', local: false, provider: 'xai' },
     { id: 'claude', provider: 'claude-cli', model: 'opus', node: 'here', local: true },
     { id: 'claude', provider: 'claude-cli', node: 'here', local: true }, // dupe
-    { id: 'grok', node: 'ct112', local: false },
+    { id: 'grok', node: 'node-c', local: false },
   ]
 
   it('lists locals first, then mesh; de-dupes by id', () => {
     const opts = taskAgentOptions(agents)
     expect(opts.map((o) => o.value)).toEqual(['claude', 'remote-g', 'grok'])
     expect(opts[0]?.label).toContain('this node')
-    expect(opts[1]?.label).toContain('@ ct112')
+    expect(opts[1]?.label).toContain('@ node-c')
   })
 
   it('lists presets after config agents; unimplemented ones are disabled with the gap', () => {
@@ -38,7 +38,7 @@ describe('taskAgentOptions', () => {
         kind: 'preset',
         id: 'preset-reviewer',
         name: 'reviewer',
-        node: 'ct116',
+        node: 'node-g',
         local: false,
         harnessId: 'claude-code',
         implemented: true,
@@ -47,7 +47,7 @@ describe('taskAgentOptions', () => {
         kind: 'preset',
         id: 'preset-codex',
         name: 'codex reviewer',
-        node: 'ct115',
+        node: 'node-f',
         local: true,
         harnessId: 'codex',
         implemented: false,
@@ -63,10 +63,10 @@ describe('taskAgentOptions', () => {
       'preset-codex',
     ])
     const reviewer = opts.find((o) => o.value === 'preset-reviewer')
-    expect(reviewer?.label).toBe('reviewer (agent · claude-code @ ct116)')
+    expect(reviewer?.label).toBe('reviewer (agent · claude-code @ node-g)')
     expect(reviewer?.disabled).toBeFalsy()
     const codex = opts.find((o) => o.value === 'preset-codex')
-    expect(codex?.label).toBe('codex reviewer (agent · codex @ ct115)')
+    expect(codex?.label).toBe('codex reviewer (agent · codex @ node-f)')
     expect(codex?.disabled).toBe(true)
     expect(codex?.title).toBe('no headless executor for codex')
 
@@ -74,7 +74,7 @@ describe('taskAgentOptions', () => {
     const selectCodex = select.find((o) => o.value === 'preset-codex')
     expect(selectCodex).toEqual({
       value: 'preset-codex',
-      label: 'codex reviewer (agent · codex @ ct115)',
+      label: 'codex reviewer (agent · codex @ node-f)',
       disabled: true,
       title: 'no headless executor for codex',
     })

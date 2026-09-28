@@ -57,7 +57,7 @@ function preset(overrides: Partial<AgentPreset> = {}): AgentPreset {
     model: 'opus',
     effort: 'high',
     systemPrompt: 'be strict',
-    node: 'ct115',
+    node: 'node-f',
     directory: '/home/rivet/.rivetos/agents/reviewer',
     sharedLink: true,
     nodeBaseUrl: '',
@@ -155,7 +155,7 @@ function engineFor(
     resolver: resolver(rows),
     taskStore: opts.store,
     waiter,
-    nodeName: opts.nodeName ?? 'ct115',
+    nodeName: opts.nodeName ?? 'node-f',
     executors: opts.executors,
     meshRegistry: opts.mesh,
   })
@@ -171,7 +171,7 @@ describe('PresetDelegationEngine', () => {
   it('creates a harness-session row pinned to the hosting node', async () => {
     const store: InMemoryTaskStore = new InMemoryTaskStore((id) => {
       void (async () => {
-        await store.claim(id, 'ct115')
+        await store.claim(id, 'node-f')
         await store.finish(id, 'completed', {
           verdict: 'completed',
           summary: 'reviewed',
@@ -209,7 +209,7 @@ describe('PresetDelegationEngine', () => {
       executorTarget: 'claude-code',
       agentId: 'preset-1',
       origin: 'tool',
-      nodeAffinity: 'ct115',
+      nodeAffinity: 'node-f',
       requestedBy: 'local',
       chainDepth: 2,
       parentTaskId: 'parent-1',
@@ -220,7 +220,7 @@ describe('PresetDelegationEngine', () => {
       delegation: true,
       presetId: 'preset-1',
       presetName: 'reviewer',
-      meshFrom: 'ct115',
+      meshFrom: 'node-f',
       workingDir: '/home/rivet/.rivetos/agents/reviewer',
       sharedLink: true,
       model: 'override-model',
@@ -338,7 +338,7 @@ describe('PresetDelegationEngine', () => {
     expect(deep.response).not.toContain('mesh')
     expect(await store.list()).toHaveLength(0)
 
-    const far = preset({ id: 'd', name: 'far', node: 'ct116' })
+    const far = preset({ id: 'd', name: 'far', node: 'node-g' })
     const remoteCap = await engine.delegate(
       { fromAgent: 'local', toAgent: 'far', task: 't' },
       far,
@@ -384,50 +384,50 @@ describe('PresetDelegationEngine', () => {
 
   it('pre-flight: hosting node offline or unknown', async () => {
     const store = new InMemoryTaskStore()
-    const remote = preset({ node: 'ct116', harnessId: 'claude-code' })
+    const remote = preset({ node: 'node-g', harnessId: 'claude-code' })
     const engine = engineFor([remote], {
       store,
-      nodeName: 'ct115',
+      nodeName: 'node-f',
       executors: executors(['claude-code']),
-      mesh: mesh([node('ct116', 'offline', ['claude-code'])]),
+      mesh: mesh([node('node-g', 'offline', ['claude-code'])]),
     })
     const result = await engine.delegate(
       { fromAgent: 'local', toAgent: 'reviewer', task: 't' },
       remote,
       0,
     )
-    expect(result.response).toContain('hosting node "ct116" is offline or unknown')
+    expect(result.response).toContain('hosting node "node-g" is offline or unknown')
     expect(await store.list()).toHaveLength(0)
   })
 
   it('pre-flight: remote node advertising executors without the harness', async () => {
     const store = new InMemoryTaskStore()
-    const remote = preset({ node: 'ct116', harnessId: 'codex' })
+    const remote = preset({ node: 'node-g', harnessId: 'codex' })
     const engine = engineFor([remote], {
       store,
-      nodeName: 'ct115',
-      mesh: mesh([node('ct116', 'online', ['claude-code'])]),
+      nodeName: 'node-f',
+      mesh: mesh([node('node-g', 'online', ['claude-code'])]),
     })
     const result = await engine.delegate(
       { fromAgent: 'local', toAgent: 'reviewer', task: 't' },
       remote,
       0,
     )
-    expect(result.response).toContain('agent "reviewer" (codex on ct116):')
+    expect(result.response).toContain('agent "reviewer" (codex on node-g):')
     expect(result.response).toContain(harnessExecutorGap('codex'))
     expect(await store.list()).toHaveLength(0)
   })
 
   it('pre-flight: no mesh registry cannot reach a remote node', async () => {
     const store = new InMemoryTaskStore()
-    const remote = preset({ node: 'ct116' })
-    const engine = engineFor([remote], { store, nodeName: 'ct115' })
+    const remote = preset({ node: 'node-g' })
+    const engine = engineFor([remote], { store, nodeName: 'node-f' })
     const result = await engine.delegate(
       { fromAgent: 'local', toAgent: 'reviewer', task: 't' },
       remote,
       0,
     )
-    expect(result.response).toContain('no mesh registry; cannot reach node "ct116"')
+    expect(result.response).toContain('no mesh registry; cannot reach node "node-g"')
     expect(await store.list()).toHaveLength(0)
   })
 
@@ -437,20 +437,20 @@ describe('PresetDelegationEngine', () => {
       getNodes: () => Promise.reject(new NoMeshRegistryError()),
     }
     const remoteStore = new InMemoryTaskStore()
-    const remote = preset({ node: 'ct116' })
-    const refused = engineFor([remote], { store: remoteStore, nodeName: 'ct115', mesh: absent })
+    const remote = preset({ node: 'node-g' })
+    const refused = engineFor([remote], { store: remoteStore, nodeName: 'node-f', mesh: absent })
     const denied = await refused.delegate(
       { fromAgent: 'local', toAgent: 'reviewer', task: 't' },
       remote,
       0,
     )
-    expect(denied.response).toContain('no mesh registry; cannot reach node "ct116"')
+    expect(denied.response).toContain('no mesh registry; cannot reach node "node-g"')
     expect(await remoteStore.list()).toHaveLength(0)
 
     const localStore = autoFinish('completed')
-    const local = preset({ node: 'ct115' })
+    const local = preset({ node: 'node-f' })
     let seen: string | undefined
-    const allowed = engineFor([local], { store: localStore, nodeName: 'ct115', mesh: absent })
+    const allowed = engineFor([local], { store: localStore, nodeName: 'node-f', mesh: absent })
     const result = await allowed.delegate(
       { fromAgent: 'local', toAgent: 'reviewer', task: 't' },
       local,
@@ -463,7 +463,7 @@ describe('PresetDelegationEngine', () => {
     expect(result.status).toBe('completed')
     expect(result.response).not.toContain('no mesh registry')
     const row = (await localStore.list())[0]
-    expect(row?.nodeAffinity).toBe('ct115')
+    expect(row?.nodeAffinity).toBe('node-f')
     expect(seen).toBe(row?.id)
   })
 
@@ -477,11 +477,11 @@ describe('PresetDelegationEngine', () => {
         usage: USAGE,
       })
     })
-    const remote = preset({ node: 'ct116' })
+    const remote = preset({ node: 'node-g' })
     const engine = engineFor([remote], {
       store,
-      nodeName: 'ct115',
-      mesh: mesh([node('ct116', 'online', ['claude-code'])]),
+      nodeName: 'node-f',
+      mesh: mesh([node('node-g', 'online', ['claude-code'])]),
     })
     const result = await engine.delegate(
       { fromAgent: 'local', toAgent: 'reviewer', task: 't' },
@@ -491,7 +491,7 @@ describe('PresetDelegationEngine', () => {
     expect(result.status).toBe('completed')
     expect((await store.list())[0]).toMatchObject({
       origin: 'mesh',
-      nodeAffinity: 'ct116',
+      nodeAffinity: 'node-g',
       executor: 'harness-session',
     })
   })
@@ -503,35 +503,35 @@ describe('PresetDelegationEngine', () => {
         id: '1',
         name: 'reviewer',
         harnessId: 'codex',
-        node: 'ct114',
+        node: 'node-e',
         directory: '/home/rivet/.rivetos/agents/reviewer',
       }),
       preset({
         id: '2',
         name: 'kimi reviewer',
         harnessId: 'kimi-code',
-        node: 'ct116',
+        node: 'node-g',
         directory: '/home/rivet/.rivetos/agents/kimi',
       }),
-      preset({ id: '3', name: 'bare', harnessId: undefined, node: 'ct114', directory: undefined }),
+      preset({ id: '3', name: 'bare', harnessId: undefined, node: 'node-e', directory: undefined }),
     ]
     const engine = engineFor(rows, {
       store,
-      nodeName: 'ct114',
+      nodeName: 'node-e',
       executors: executors([], ['codex']),
-      mesh: mesh([node('ct116', 'online', ['claude-code'])]),
+      mesh: mesh([node('node-g', 'online', ['claude-code'])]),
     })
     await engine.find('reviewer')
     const text = engine.rosterText()
     expect(text).toContain(
-      '- reviewer (agent: codex on ct114 — this node, dir /home/rivet/.rivetos/agents/reviewer) — NO headless executor:',
+      '- reviewer (agent: codex on node-e — this node, dir /home/rivet/.rivetos/agents/reviewer) — NO headless executor:',
     )
     expect(text).toContain('not wired')
     expect(text).toContain(harnessExecutorGap('kimi-code'))
     expect(text).toContain(
-      '- kimi reviewer (agent: kimi-code on ct116, dir /home/rivet/.rivetos/agents/kimi) — NO headless executor:',
+      '- kimi reviewer (agent: kimi-code on node-g, dir /home/rivet/.rivetos/agents/kimi) — NO headless executor:',
     )
-    expect(text).toContain('- bare (on ct114 — this node) — no harness configured')
+    expect(text).toContain('- bare (on node-e — this node) — no harness configured')
   })
 
   function autoFinish(
@@ -561,7 +561,7 @@ describe('PresetDelegationEngine', () => {
       0,
     )
     expect(result.status).toBe('failed')
-    expect(result.response).toContain('Delegation to reviewer on ct115 failed')
+    expect(result.response).toContain('Delegation to reviewer on node-f failed')
     expect(result.response).toContain('binary not resolvable')
   })
 
@@ -575,7 +575,7 @@ describe('PresetDelegationEngine', () => {
       0,
     )
     expect(result.status).toBe('timeout')
-    expect(result.response).toContain('Delegation to reviewer on ct115 timeout')
+    expect(result.response).toContain('Delegation to reviewer on node-f timeout')
     expect(result.response).toContain('deadline')
   })
 
@@ -588,7 +588,7 @@ describe('PresetDelegationEngine', () => {
       resolver: resolver([rowPreset]),
       taskStore: store,
       waiter,
-      nodeName: 'ct115',
+      nodeName: 'node-f',
       executors: executors(['claude-code']),
       now: () => 1_000_000,
     })
@@ -602,11 +602,11 @@ describe('PresetDelegationEngine', () => {
 
   it('an older peer with no harnessExecutors metadata gets a row', async () => {
     const store = autoFinish('completed')
-    const remote = preset({ node: 'ct116' })
+    const remote = preset({ node: 'node-g' })
     const engine = engineFor([remote], {
       store,
-      nodeName: 'ct115',
-      mesh: mesh([node('ct116', 'online')]),
+      nodeName: 'node-f',
+      mesh: mesh([node('node-g', 'online')]),
     })
     const result = await engine.delegate(
       { fromAgent: 'local', toAgent: 'reviewer', task: 't' },
@@ -619,11 +619,11 @@ describe('PresetDelegationEngine', () => {
 
   it('canonicalises advertised executor targets before the coverage check', async () => {
     const store = autoFinish('completed')
-    const remote = preset({ node: 'ct116', harnessId: 'claude-code' })
+    const remote = preset({ node: 'node-g', harnessId: 'claude-code' })
     const engine = engineFor([remote], {
       store,
-      nodeName: 'ct115',
-      mesh: mesh([node('ct116', 'online', ['claude-cli'])]),
+      nodeName: 'node-f',
+      mesh: mesh([node('node-g', 'online', ['claude-cli'])]),
     })
     const result = await engine.delegate(
       { fromAgent: 'local', toAgent: 'reviewer', task: 't' },
@@ -636,11 +636,11 @@ describe('PresetDelegationEngine', () => {
 
   it('a local preset with no executor registry uses its own mesh entry', async () => {
     const store = autoFinish('completed')
-    const local = preset({ node: 'ct115' })
+    const local = preset({ node: 'node-f' })
     const engine = engineFor([local], {
       store,
-      nodeName: 'ct115',
-      mesh: mesh([node('ct115', 'online', ['claude-code'])]),
+      nodeName: 'node-f',
+      mesh: mesh([node('node-f', 'online', ['claude-code'])]),
     })
     const allowed = await engine.delegate(
       { fromAgent: 'local', toAgent: 'reviewer', task: 't' },
@@ -652,8 +652,8 @@ describe('PresetDelegationEngine', () => {
     const refusedStore = new InMemoryTaskStore()
     const refused = engineFor([local], {
       store: refusedStore,
-      nodeName: 'ct115',
-      mesh: mesh([node('ct115', 'online', ['kimi-code'])]),
+      nodeName: 'node-f',
+      mesh: mesh([node('node-f', 'online', ['kimi-code'])]),
     })
     const blocked = await refused.delegate(
       { fromAgent: 'local', toAgent: 'reviewer', task: 't' },
@@ -666,8 +666,8 @@ describe('PresetDelegationEngine', () => {
 
   it('a local preset with no executor registry and no mesh registry is created', async () => {
     const store = autoFinish('completed')
-    const local = preset({ node: 'ct115' })
-    const engine = engineFor([local], { store, nodeName: 'ct115' })
+    const local = preset({ node: 'node-f' })
+    const engine = engineFor([local], { store, nodeName: 'node-f' })
     const result = await engine.delegate(
       { fromAgent: 'local', toAgent: 'reviewer', task: 't' },
       local,
@@ -692,7 +692,7 @@ describe('PresetDelegationEngine', () => {
       resolver: cached,
       taskStore: store,
       waiter,
-      nodeName: 'ct115',
+      nodeName: 'node-f',
       executors: executors(['claude-code']),
       now: () => now,
     })
@@ -714,7 +714,7 @@ describe('PresetDelegationEngine', () => {
     rows.push(preset({ id: 'c', name: 'third' }))
     now += 30_000
     const agents = await buildCatalogAgents({
-      nodeName: 'ct115',
+      nodeName: 'node-f',
       router: { getAgents: () => [] } as unknown as Router,
       tools: () => [],
       executors: executors(['claude-code']),
@@ -735,7 +735,7 @@ describe('PresetDelegationEngine', () => {
     const hungMesh = mesh([])
     hungMesh.getNodes = () => new Promise(() => {})
     return {
-      nodeName: 'ct115',
+      nodeName: 'node-f',
       router: { getAgents: () => [] } as unknown as Router,
       tools: () => [],
       executors: executors(['claude-code']),
@@ -771,7 +771,7 @@ describe('PresetDelegationEngine', () => {
       resolver: cached,
       taskStore: store,
       waiter,
-      nodeName: 'ct115',
+      nodeName: 'node-f',
       executors: executors(['claude-code']),
       now: () => now,
     })
@@ -832,8 +832,8 @@ describe('PresetDelegationEngine', () => {
   })
 
   it('a timed-out mesh read does not overwrite a newer snapshot', async () => {
-    const staleNode = node('ct116', 'online', ['kimi-code'])
-    const freshNode = node('ct116', 'online', ['claude-code'])
+    const staleNode = node('node-g', 'online', ['kimi-code'])
+    const freshNode = node('node-g', 'online', ['claude-code'])
     let call = 0
     let releaseFirst: (nodes: MeshNode[]) => void = () => {}
     const registry = mesh([])
@@ -847,7 +847,7 @@ describe('PresetDelegationEngine', () => {
       return Promise.resolve([freshNode])
     }
     const store = new InMemoryTaskStore()
-    const remote = preset({ node: 'ct116' })
+    const remote = preset({ node: 'node-g' })
     const engine = engineFor([remote], { store, mesh: registry })
     expect(call).toBe(1)
     await engine.rosterEntriesFresh({ timeoutMs: 20 })

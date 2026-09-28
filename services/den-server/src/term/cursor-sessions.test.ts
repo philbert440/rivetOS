@@ -34,7 +34,7 @@ function writeChat(home: string, slug: string, id: string, lines: string, mtimeM
 
 describe('cursor transcripts', () => {
   it('slugs a workspace path the way Cursor names project dirs', () => {
-    expect(cursorProjectSlug('/home/phil/Work')).toBe('home-phil-Work')
+    expect(cursorProjectSlug('/home/user/Work')).toBe('home-user-Work')
   })
 
   it('lists a chat, describes it, and folds the transcript', async () => {
@@ -43,7 +43,7 @@ describe('cursor transcripts', () => {
     setCursorHomeForTest(home)
     const file = writeChat(
       home,
-      'home-phil-Work',
+      'home-user-Work',
       ID,
       JSON.stringify({
         role: 'user',
@@ -72,10 +72,10 @@ describe('cursor transcripts', () => {
     dirs.push(home)
     setCursorHomeForTest(home)
     const older = 'bbbbbbbb-1111-4222-8333-444455556666'
-    writeChat(home, 'home-phil-Work', older, '{"role":"user","message":{"content":[]}}', 1_000)
-    writeChat(home, 'home-phil-Work', ID, '{"role":"user","message":{"content":[]}}', 5_000)
-    expect(newestCursorSessionAfter('/home/phil/Work', 2_000)).toBe(ID)
-    expect(newestCursorSessionAfter('/home/phil/Work', 9_000)).toBeUndefined()
+    writeChat(home, 'home-user-Work', older, '{"role":"user","message":{"content":[]}}', 1_000)
+    writeChat(home, 'home-user-Work', ID, '{"role":"user","message":{"content":[]}}', 5_000)
+    expect(newestCursorSessionAfter('/home/user/Work', 2_000)).toBe(ID)
+    expect(newestCursorSessionAfter('/home/user/Work', 9_000)).toBeUndefined()
     expect(newestCursorSessionAfter('/other', 0)).toBeUndefined()
   })
 })

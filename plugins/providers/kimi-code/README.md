@@ -4,7 +4,7 @@ Kimi Code CLI provider. Each turn runs the local `kimi -p <prompt> --output-form
 and replays the stream as a turn; per-conversation continuity via a session map in
 `~/.rivetos/kimi-code-sessions.json`. Implements `aiSdkBridge()` (LanguageModelV3).
 
-History: written 2026-08-18 and deployed untracked to ct116 WITHOUT a package.json, so boot never
+History: written 2026-08-18 and deployed untracked to node-g WITHOUT a package.json, so boot never
 discovered it (`Unknown provider type "kimi-code"`); ported to TypeScript and committed 2026-09-05 with a manifest (typed against @ai-sdk/provider LanguageModelV3), behavior unchanged.
 
 ```yaml

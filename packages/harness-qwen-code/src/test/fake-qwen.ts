@@ -91,7 +91,7 @@ export function makeFakeQwen(opts: FakeQwenOptions = {}): FakeQwen {
   fs.mkdirSync(cwd, { recursive: true })
 
   const binary = path.join(dir, 'qwen')
-  const sessionId = opts.sessionId ?? '857b4b7d-3d13-4281-a648-11947cf530ed'
+  const sessionId = opts.sessionId ?? '00000000-0000-4000-8000-000000000049'
   const stdout = (opts.raw ?? (opts.lines ?? []).map((l) => JSON.stringify(l))).join('\n')
   fs.writeFileSync(path.join(dir, 'stdout.txt'), stdout === '' ? '' : stdout + '\n')
 

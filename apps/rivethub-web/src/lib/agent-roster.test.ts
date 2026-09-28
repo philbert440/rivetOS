@@ -129,7 +129,7 @@ describe('resolveAgentNodeUrl', () => {
   const legacy = 'https://192.0.2.12:5174'
   const ctx = {
     sourceBaseUrl: source,
-    sourceNode: 'ct115',
+    sourceNode: 'node-f',
     mesh: [] as MeshDenNode[],
     roster: [] as NodeChoice[],
   }
@@ -138,14 +138,14 @@ describe('resolveAgentNodeUrl', () => {
     const agent = preset({
       id: 'a',
       name: 'Reviewer',
-      node: 'ct115',
+      node: 'node-f',
       nodeBaseUrl: legacy,
     })
     expect(
       resolveAgentNodeUrl(agent, {
         ...ctx,
-        mesh: [mesh({ id: 'ct115', name: 'ct115', denUrl: '' })],
-        roster: [{ name: 'other', baseUrl: peer, node: 'ct115' }],
+        mesh: [mesh({ id: 'node-f', name: 'node-f', denUrl: '' })],
+        roster: [{ name: 'other', baseUrl: peer, node: 'node-f' }],
       }),
     ).toBe(source)
   })
@@ -164,20 +164,20 @@ describe('resolveAgentNodeUrl', () => {
   })
 
   it('uses a mesh denUrl when the name or id matches and the URL is non-empty', () => {
-    const agent = preset({ id: 'a', name: 'Reviewer', node: 'ct116', nodeBaseUrl: legacy })
+    const agent = preset({ id: 'a', name: 'Reviewer', node: 'node-g', nodeBaseUrl: legacy })
     expect(
       resolveAgentNodeUrl(agent, {
         ...ctx,
         mesh: [
-          mesh({ id: 'ct116', name: 'ct116', denUrl: '' }),
-          mesh({ id: 'node-116', name: 'ct116', denUrl: `${peer}/` }),
+          mesh({ id: 'node-g', name: 'node-g', denUrl: '' }),
+          mesh({ id: 'node-116', name: 'node-g', denUrl: `${peer}/` }),
         ],
       }),
     ).toBe(peer)
     expect(
       resolveAgentNodeUrl(agent, {
         ...ctx,
-        mesh: [mesh({ id: 'ct116', name: 'display', denUrl: peer })],
+        mesh: [mesh({ id: 'node-g', name: 'display', denUrl: peer })],
       }),
     ).toBe(peer)
   })
@@ -193,20 +193,20 @@ describe('resolveAgentNodeUrl', () => {
   })
 
   it('uses a roster entry whose recorded healthz node matches', () => {
-    const agent = preset({ id: 'a', name: 'Reviewer', node: 'ct116', nodeBaseUrl: legacy })
+    const agent = preset({ id: 'a', name: 'Reviewer', node: 'node-g', nodeBaseUrl: legacy })
     const roster: NodeChoice[] = [
-      { name: 'Rivet-Grok', baseUrl: source, node: 'ct115' },
-      { name: 'saved label', baseUrl: peer, node: 'ct116' },
+      { name: 'Rivet-Grok', baseUrl: source, node: 'node-f' },
+      { name: 'saved label', baseUrl: peer, node: 'node-g' },
     ]
     expect(resolveAgentNodeUrl(agent, { ...ctx, roster })).toBe(peer)
   })
 
   it('does not treat the roster display name as the mesh node name', () => {
-    const agent = preset({ id: 'a', name: 'Reviewer', node: 'ct116', nodeBaseUrl: '' })
+    const agent = preset({ id: 'a', name: 'Reviewer', node: 'node-g', nodeBaseUrl: '' })
     expect(
       resolveAgentNodeUrl(agent, {
         ...ctx,
-        roster: [{ name: 'ct116', baseUrl: peer }],
+        roster: [{ name: 'node-g', baseUrl: peer }],
       }),
     ).toBeUndefined()
   })
@@ -227,13 +227,13 @@ describe('resolveAgentNodeUrl', () => {
     const agent = preset({
       id: 'a',
       name: 'Reviewer',
-      node: 'ct115',
+      node: 'node-f',
       nodeBaseUrl: legacy,
     })
     const full = {
       ...ctx,
-      mesh: [mesh({ id: 'ct115', name: 'ct115', denUrl: peer })],
-      roster: [{ name: 'saved', baseUrl: 'https://192.0.2.13:5174', node: 'ct115' }],
+      mesh: [mesh({ id: 'node-f', name: 'node-f', denUrl: peer })],
+      roster: [{ name: 'saved', baseUrl: 'https://192.0.2.13:5174', node: 'node-f' }],
     }
     expect(resolveAgentNodeUrl(agent, full)).toBe(source)
     expect(resolveAgentNodeUrl(agent, { ...full, sourceNode: 'other' })).toBe(peer)
@@ -241,7 +241,7 @@ describe('resolveAgentNodeUrl', () => {
       resolveAgentNodeUrl(agent, {
         ...full,
         sourceNode: 'other',
-        mesh: [mesh({ id: 'ct115', name: 'ct115', denUrl: '  ' })],
+        mesh: [mesh({ id: 'node-f', name: 'node-f', denUrl: '  ' })],
       }),
     ).toBe('https://192.0.2.13:5174')
     expect(
@@ -280,26 +280,26 @@ describe('nodeOptionLabel', () => {
     expect(
       nodeOptionLabel(
         { name: 'Current Node', baseUrl: 'https://192.0.2.10:5174' },
-        { currentBaseUrl: 'https://192.0.2.10:5174/', healthzNode: 'ct115', meshName: 'other' },
+        { currentBaseUrl: 'https://192.0.2.10:5174/', healthzNode: 'node-f', meshName: 'other' },
       ),
-    ).toBe('ct115')
+    ).toBe('node-f')
   })
 
   it('labels other nodes by mesh name, then the recorded healthz node, then the roster name', () => {
-    const choice: NodeChoice = { name: 'saved', baseUrl: 'https://192.0.2.11:5174', node: 'ct116' }
-    expect(nodeOptionLabel(choice, { currentBaseUrl: 'https://192.0.2.10:5174' })).toBe('ct116')
+    const choice: NodeChoice = { name: 'saved', baseUrl: 'https://192.0.2.11:5174', node: 'node-g' }
+    expect(nodeOptionLabel(choice, { currentBaseUrl: 'https://192.0.2.10:5174' })).toBe('node-g')
     expect(
       nodeOptionLabel(choice, { currentBaseUrl: 'https://192.0.2.10:5174', meshName: 'from-mesh' }),
     ).toBe('from-mesh')
     expect(
       meshDenName(
         [
-          mesh({ id: 'ct116', name: 'ct116', denUrl: '' }),
-          mesh({ id: 'x', name: 'ct116', denUrl: 'https://192.0.2.11:5174/' }),
+          mesh({ id: 'node-g', name: 'node-g', denUrl: '' }),
+          mesh({ id: 'x', name: 'node-g', denUrl: 'https://192.0.2.11:5174/' }),
         ],
         'https://192.0.2.11:5174',
       ),
-    ).toBe('ct116')
+    ).toBe('node-g')
   })
 })
 
@@ -309,13 +309,13 @@ describe('dedupeRosterAgents', () => {
   const agent = preset({
     id: 'same',
     name: 'Reviewer',
-    node: 'ct116',
+    node: 'node-g',
     directory: '/srv/reviewer',
     nodeBaseUrl: '',
   })
   const saved = [
-    { name: 'current', baseUrl: current, node: 'ct115' },
-    { name: 'host', baseUrl: host, node: 'ct116' },
+    { name: 'current', baseUrl: current, node: 'node-f' },
+    { name: 'host', baseUrl: host, node: 'node-g' },
   ]
 
   it('prefers the hosting den’s own copy over a mesh alias of the same node', () => {
@@ -324,18 +324,18 @@ describe('dedupeRosterAgents', () => {
       [
         {
           baseUrl: current,
-          node: 'ct115',
+          node: 'node-f',
           agents: [{ ...agent, name: 'from-current', directory: '/from/current' }],
         },
         {
           baseUrl: host,
-          node: 'ct116',
+          node: 'node-g',
           agents: [{ ...agent, name: 'from-host', directory: '/on/host' }],
         },
       ],
       {
         currentBaseUrl: current,
-        mesh: [mesh({ id: 'ct116', name: 'ct116', denUrl: meshAlias })],
+        mesh: [mesh({ id: 'node-g', name: 'node-g', denUrl: meshAlias })],
         roster: saved,
       },
     )
@@ -349,10 +349,10 @@ describe('dedupeRosterAgents', () => {
 
   it('leaves a mesh-only host unresolved when its denUrl is not on the roster', () => {
     const meshOnly = 'https://mesh-only.example:5174'
-    const rows = dedupeRosterAgents([{ baseUrl: current, node: 'ct115', agents: [agent] }], {
+    const rows = dedupeRosterAgents([{ baseUrl: current, node: 'node-f', agents: [agent] }], {
       currentBaseUrl: current,
-      mesh: [mesh({ id: 'ct116', name: 'ct116', denUrl: meshOnly })],
-      roster: [{ name: 'current', baseUrl: current, node: 'ct115' }],
+      mesh: [mesh({ id: 'node-g', name: 'node-g', denUrl: meshOnly })],
+      roster: [{ name: 'current', baseUrl: current, node: 'node-f' }],
     })
     expect(rows[0]?.sourceNodeBaseUrl).toBe('')
     expect(rows[0]?.listedBaseUrl).toBe(current)
@@ -363,8 +363,8 @@ describe('dedupeRosterAgents', () => {
     const legacy = preset({ id: 'same', name: 'Reviewer', nodeBaseUrl: alias })
     const rows = dedupeRosterAgents(
       [
-        { baseUrl: current, node: 'ct115', agents: [{ ...legacy, name: 'from-current' }] },
-        { baseUrl: host, node: 'ct116', agents: [{ ...legacy, name: 'from-host' }] },
+        { baseUrl: current, node: 'node-f', agents: [{ ...legacy, name: 'from-current' }] },
+        { baseUrl: host, node: 'node-g', agents: [{ ...legacy, name: 'from-host' }] },
       ],
       {
         currentBaseUrl: current,
@@ -380,8 +380,8 @@ describe('dedupeRosterAgents', () => {
   it('keeps another den’s copy when that copy is the hosting den', () => {
     const rows = dedupeRosterAgents(
       [
-        { baseUrl: current, node: 'ct115', agents: [agent] },
-        { baseUrl: host, node: 'ct116', agents: [{ ...agent, directory: '/on/host' }] },
+        { baseUrl: current, node: 'node-f', agents: [agent] },
+        { baseUrl: host, node: 'node-g', agents: [{ ...agent, directory: '/on/host' }] },
       ],
       { currentBaseUrl: current, mesh: [], roster: saved },
     )
@@ -391,7 +391,7 @@ describe('dedupeRosterAgents', () => {
   })
 
   it('leaves sourceNodeBaseUrl empty when nothing resolves', () => {
-    const rows = dedupeRosterAgents([{ baseUrl: current, node: 'ct115', agents: [agent] }], {
+    const rows = dedupeRosterAgents([{ baseUrl: current, node: 'node-f', agents: [agent] }], {
       currentBaseUrl: current,
       mesh: [],
       roster: [],
@@ -410,11 +410,11 @@ describe('agent delete and update targets', () => {
     expect(agentDeleteTarget(legacy)).toBe(listed)
     expect(agentUpdateTarget(legacy)).toBe(listed)
 
-    const placed = { node: 'ct116', sourceNodeBaseUrl: resolved, listedBaseUrl: listed }
+    const placed = { node: 'node-g', sourceNodeBaseUrl: resolved, listedBaseUrl: listed }
     expect(agentDeleteTarget(placed)).toBe(listed)
     expect(agentUpdateTarget(placed)).toBe(resolved)
 
-    const unresolved = { node: 'ct116', sourceNodeBaseUrl: '', listedBaseUrl: listed }
+    const unresolved = { node: 'node-g', sourceNodeBaseUrl: '', listedBaseUrl: listed }
     expect(agentUpdateTarget(unresolved)).toBe(listed)
   })
 })

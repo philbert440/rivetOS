@@ -50,13 +50,13 @@ describe('doctor leaf-cert check', () => {
   })
 
   it('skips when the node is named but has no issued cert', async () => {
-    process.env.RIVETOS_NODE_NAME = 'ct110'
+    process.env.RIVETOS_NODE_NAME = 'node-a'
     expect(await checkLeafCert(null)).toEqual([])
   })
 
   it('passes with a far-future leaf and default user@datahub renew target', async () => {
-    process.env.RIVETOS_NODE_NAME = 'ct110'
-    const pem = writeIssuedCert('ct110')
+    process.env.RIVETOS_NODE_NAME = 'node-a'
+    const pem = writeIssuedCert('node-a')
     const now = new Date('2026-04-22T12:54:20.000Z')
     const results = await checkLeafCert(null, now)
     expect(results).toHaveLength(1)
@@ -68,20 +68,20 @@ describe('doctor leaf-cert check', () => {
   })
 
   it('warns within 30 days and renders the 5th check() arg as detail with seed_host', async () => {
-    process.env.RIVETOS_NODE_NAME = 'ct110'
-    const pem = writeIssuedCert('ct110')
+    process.env.RIVETOS_NODE_NAME = 'node-a'
+    const pem = writeIssuedCert('node-a')
     const notAfter = parseCertNotAfter(pem)
     const results = await checkLeafCert(
       'mesh:\n  discovery:\n    seed_host: 192.0.2.1\n',
       new Date(notAfter.getTime() - 30 * DAY_MS),
     )
     expect(results[0]?.status).toBe('warn')
-    expect(results[0]?.detail).toBe('Run: rivetos mesh renew rivet@192.0.2.1 --name ct110')
+    expect(results[0]?.detail).toBe('Run: rivetos mesh renew rivet@192.0.2.1 --name node-a')
   })
 
   it('accepts camelCase seedHost', async () => {
-    process.env.RIVETOS_NODE_NAME = 'ct110'
-    const pem = writeIssuedCert('ct110')
+    process.env.RIVETOS_NODE_NAME = 'node-a'
+    const pem = writeIssuedCert('node-a')
     const notAfter = parseCertNotAfter(pem)
     const results = await checkLeafCert(
       'mesh:\n  discovery:\n    seedHost: datahub.example\n',
@@ -92,11 +92,11 @@ describe('doctor leaf-cert check', () => {
   })
 
   it('fails when the leaf is expired (doctor maps any fail to exit 1)', async () => {
-    process.env.RIVETOS_NODE_NAME = 'ct110'
-    const pem = writeIssuedCert('ct110')
+    process.env.RIVETOS_NODE_NAME = 'node-a'
+    const pem = writeIssuedCert('node-a')
     const notAfter = parseCertNotAfter(pem)
     const results = await checkLeafCert(null, notAfter)
     expect(results[0]?.status).toBe('fail')
-    expect(results[0]?.detail).toBe('Run: rivetos mesh renew user@datahub --name ct110')
+    expect(results[0]?.detail).toBe('Run: rivetos mesh renew user@datahub --name node-a')
   })
 })

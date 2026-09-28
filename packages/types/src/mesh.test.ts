@@ -17,7 +17,7 @@ const validDoc = {
       host: '192.0.2.1',
       port: 3100,
       status: 'online',
-      sshUser: 'philip',
+      sshUser: 'user',
       installRoot: '/srv/rivetos',
       platform: 'linux',
       unknownNodeField: 'ok',
@@ -34,7 +34,7 @@ describe('parseMeshFile', () => {
     expect(mesh.nodes.a.host).toBe('192.0.2.1')
     expect(mesh.nodes.a.port).toBe(3100)
     expect(mesh.nodes.a.status).toBe('online')
-    expect(mesh.nodes.a.sshUser).toBe('philip')
+    expect(mesh.nodes.a.sshUser).toBe('user')
     expect(mesh.nodes.a.installRoot).toBe('/srv/rivetos')
     expect(mesh.nodes.a.platform).toBe('linux')
     expect(mesh.nodes.a.agents).toEqual([])
@@ -57,14 +57,14 @@ describe('parseMeshFile', () => {
       JSON.stringify({
         version: 1,
         updatedAt: 0,
-        nodes: { ct110: { host: '192.0.2.10', port: 3000, status: 'offline' } },
+        nodes: { 'node-a': { host: '192.0.2.10', port: 3000, status: 'offline' } },
       }),
     )
-    expect(mesh.nodes.ct110.id).toBe('ct110')
-    expect(mesh.nodes.ct110.name).toBe('ct110')
-    expect(mesh.nodes.ct110.agents).toEqual([])
-    expect(mesh.nodes.ct110.lastSeen).toBe(0)
-    expect(mesh.nodes.ct110.version).toBe('')
+    expect(mesh.nodes['node-a'].id).toBe('node-a')
+    expect(mesh.nodes['node-a'].name).toBe('node-a')
+    expect(mesh.nodes['node-a'].agents).toEqual([])
+    expect(mesh.nodes['node-a'].lastSeen).toBe(0)
+    expect(mesh.nodes['node-a'].version).toBe('')
   })
 
   it('throws MeshParseError on pre-capabilities flat-array', () => {
@@ -210,7 +210,7 @@ describe('assertRecordMeshFile', () => {
             host: '192.0.2.1',
             port: 3100,
             status: 'online',
-            sshUser: 'philip',
+            sshUser: 'user',
             installRoot: '/srv/rivetos',
           },
         },
@@ -218,7 +218,7 @@ describe('assertRecordMeshFile', () => {
       '/tmp/test-mesh.json',
     )
     expect(mesh.nodes.a.name).toBe('a')
-    expect(mesh.nodes.a.sshUser).toBe('philip')
+    expect(mesh.nodes.a.sshUser).toBe('user')
     expect(mesh.nodes.a.installRoot).toBe('/srv/rivetos')
     expect(mesh.updatedAt).toBe(42)
   })

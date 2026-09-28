@@ -307,7 +307,7 @@ def test_invalid_role_raises_in_append_message():
 
 # ---------------------------------------------------------------------------
 # Time-bounded prefetch skip — regression guard for the noisy-prefetch issue
-# that grok-4.3 surfaced in the first phildesk Hermes session against this
+# that grok-4.3 surfaced in the first desktop Hermes session against this
 # plugin: prefetch ran FTS for "what did we do today?" and injected March
 # hits that competed with the agent's own browse.
 # ---------------------------------------------------------------------------

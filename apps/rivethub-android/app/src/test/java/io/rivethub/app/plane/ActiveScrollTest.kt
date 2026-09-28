@@ -27,8 +27,8 @@ class ActiveScrollTest {
 
     private fun loc(key: String, updatedAt: Long) = LocatedChatItem(
         ChatItem(key = key, kind = ChatItemKind.HARNESS, title = key, sessionId = key, updatedAt = updatedAt),
-        nodeId = "ct115",
-        nodeName = "ct115",
+        nodeId = "node-f",
+        nodeName = "node-f",
         nodeDenUrl = "https://192.0.2.10:5174",
     )
 

@@ -174,8 +174,8 @@ console.log('— identity constants —')
   eq('deriveSessionKey prefixes qwen-code:', deriveSessionKey(SESSION), `qwen-code:${SESSION}`)
   eq(
     'eventIdFromLine uses line uuid',
-    eventIdFromLine(SESSION, '181c8cae-c294-4d77-b993-166db8e5788b', 0),
-    `qwen-code:${SESSION}:181c8cae-c294-4d77-b993-166db8e5788b`,
+    eventIdFromLine(SESSION, '00000000-0000-4000-8000-000000000047', 0),
+    `qwen-code:${SESSION}:00000000-0000-4000-8000-000000000047`,
   )
   eq(
     'eventIdFromLine falls back to line index',
@@ -221,7 +221,7 @@ console.log('\n— parseTranscriptText (fixture) —')
   )
   check(
     'dedup key uses line uuid',
-    parsed.messages[0]?.eventId === `qwen-code:${SESSION}:181c8cae-c294-4d77-b993-166db8e5788b`,
+    parsed.messages[0]?.eventId === `qwen-code:${SESSION}:00000000-0000-4000-8000-000000000047`,
   )
   eq('no private tmp paths', parsed.cwd?.includes('/tmp/claude') ?? true, false)
   const existingToolCall = parsed.messages.find(

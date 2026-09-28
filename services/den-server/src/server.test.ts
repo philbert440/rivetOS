@@ -351,7 +351,7 @@ describe('den-server', () => {
   it('/healthz includes node', async () => {
     const stateDir = mkdtempSync(join(tmpdir(), 'den-server-'))
     dirs.push(stateDir)
-    const den = createDenServer(baseTestDenConfig(stateDir, { nodeName: 'ct115' }))
+    const den = createDenServer(baseTestDenConfig(stateDir, { nodeName: 'node-f' }))
     servers.push(den)
     await new Promise<void>((resolve) => den.server.listen(0, '127.0.0.1', resolve))
     const port = (den.server.address() as AddressInfo).port
@@ -361,7 +361,7 @@ describe('den-server', () => {
       node: string
     }
     expect(body.ok).toBe(true)
-    expect(body.node).toBe('ct115')
+    expect(body.node).toBe('node-f')
     expect(body.name).toBe(hostname())
   })
 
@@ -1063,7 +1063,7 @@ it('rejects protocol inject text without submit before interrupting or sending',
       term: true,
       codexAppServerUrl: `ws://127.0.0.1:${address.port}`,
     })
-    const session = '89965427-b96f-4d5e-8ad5-c3dd138e33dc'
+    const session = '00000000-0000-4000-8000-000000000020'
     expect((await post(base, '/term', { command: 'codex', session })).status).toBe(201)
     expect((await post(base, '/term/inject', { session, text: 'first' })).status).toBe(202)
     methods.length = 0

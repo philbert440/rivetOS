@@ -77,7 +77,7 @@ def command_is_ours(command: Any) -> bool:
 def our_entry(plugin_bin: str) -> dict[str, Any]:
     """One HookHandlerConfig group: `[[hooks.<Event>]]` + `[[hooks.<Event>.hooks]]`.
 
-    This is the shape Codex 0.154 actually loads (verified on ct113 2026-09-12);
+    This is the shape Codex 0.154 actually loads (verified on node-d 2026-09-12);
     a flat `command =` directly under `[[hooks.<Event>]]` is ignored.
     """
     return {

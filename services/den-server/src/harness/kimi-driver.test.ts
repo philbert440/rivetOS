@@ -25,8 +25,8 @@ import { createHarnessRegistry, type HarnessRegistry } from './registry.js'
 import { FIVE_FLAGS, pick, runHarnessRotationConformance } from './test/driver-conformance.js'
 
 /** Real kimi ids: `session_<uuidv4>` — the store DIR name, verbatim. */
-const NAT = 'session_89965427-b96f-4d5e-8ad5-c3dd138e33dc'
-const NAT2 = 'session_42accb06-524a-47a6-b4b3-0991552914d7'
+const NAT = 'session_00000000-0000-4000-8000-000000000020'
+const NAT2 = 'session_00000000-0000-4000-8000-000000000031'
 const NAT3 = 'session_15cb936c-3364-49d6-8769-21f0c635f160'
 const SID = `kimi-code:${NAT}` as SessionId
 /** A den room the term manager minted, because kimi could not be pinned. */

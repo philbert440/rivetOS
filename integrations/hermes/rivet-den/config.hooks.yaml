@@ -10,7 +10,7 @@
 #
 # NOTE: Hermes splits the command into argv WITHOUT shell expansion, so `$HOME`
 # would reach node literally — every command is wrapped in `sh -c` so the shell
-# expands it (keeps the block portable across users: /home/rivet, /home/philip).
+# expands it (keeps the block portable across users: /home/rivet, /home/user).
 #
 # Event names + the assistant_response field are from the Hermes docs
 # (hermes-agent.nousresearch.com/docs/user-guide/features/hooks): the reply is

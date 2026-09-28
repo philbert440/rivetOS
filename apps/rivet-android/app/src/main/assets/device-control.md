@@ -333,7 +333,7 @@ curl -s -H "X-Rivet-Token: $TOKEN" -H "Content-Type: application/json" \
   127.0.0.1:9876/action
 # → {"ok":false,"error":"needs_confirm","requires_confirm":true,"reason":"sms",…}
 
-# After Phil approves — re-issue with confirm
+# After the user approves — re-issue with confirm
 curl -s -H "X-Rivet-Token: $TOKEN" -H "Content-Type: application/json" \
   -d '{"type":"intent","action":"android.intent.action.VIEW","data":"sms:5551234","confirm":true}' \
   127.0.0.1:9876/action

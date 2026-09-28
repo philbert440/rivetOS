@@ -7,7 +7,7 @@ the conversation the hook capture worker never wrote.
 ## Why it exists
 
 The hook capture (`../capture`) landed tool calls and lifecycle markers but
-essentially no conversation. Counted on `phil_memory`, 2026-08-09:
+essentially no conversation. Counted on `rivet_memory`, 2026-08-09:
 
 | role | rows |
 |------|------|
@@ -60,7 +60,7 @@ dropped; the tool does not currently write it.
 
 ### Protocol version drift
 
-The transcripts on ct116 span protocol `1.4` (68 files) and `1.5` (4 files). The
+The transcripts on node-g span protocol `1.4` (68 files) and `1.5` (4 files). The
 drift is purely additive and touches nothing this parser reads:
 
 | | 1.4 | 1.5 |
@@ -219,7 +219,7 @@ Two refinements on top of that:
 
 ## Operator runbook
 
-Run on the kimi node (ct116, `rivet-kimi`), which has both the transcripts and
+Run on the kimi node (node-g, `rivet-kimi`), which has both the transcripts and
 `RIVETOS_PG_URL` in `~/.rivetos/.env`.
 
 ```bash
@@ -253,7 +253,7 @@ per session rather than filling in the existing one. The dry run's `skipped=1`
 does not prove alignment (one skip could be an intra-batch duplicate). A rehearsal
 against an already-captured session that adds rows and no conversation does.
 
-Expected volumes, measured by a real dry run on ct116 on 2026-08-09 (73
+Expected volumes, measured by a real dry run on node-g on 2026-08-09 (73
 transcripts, 44 sessions). The set grows every time kimi runs, so treat these as
 the shape of the answer rather than exact figures:
 

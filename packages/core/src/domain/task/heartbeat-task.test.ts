@@ -122,7 +122,7 @@ describe('runHeartbeatViaTasks', () => {
   it('foreign node cannot claim a pinned heartbeat row (fleet race guard)', async () => {
     // Create-only path: pin then exercise the store claim guard used by the
     // runner (same CAS as production — unpinned heartbeats were the 2026-07-26
-    // failure mode where ct116 claimed ct114's agent work).
+    // failure mode where node-g claimed node-e's agent work).
     const store = new InMemoryTaskStore()
     const row = await store.create({
       goal: hb.prompt,
@@ -132,12 +132,12 @@ describe('runHeartbeatViaTasks', () => {
       requestedBy: 'system:heartbeat',
       spec: { promptMode: 'heartbeat' },
       maxAttempts: 1,
-      nodeAffinity: 'ct114',
+      nodeAffinity: 'node-e',
     })
-    expect(row.nodeAffinity).toBe('ct114')
-    expect(await store.claim(row.id, 'ct116')).toBeUndefined()
-    const claimed = await store.claim(row.id, 'ct114')
-    expect(claimed?.claimedBy).toBe('ct114')
+    expect(row.nodeAffinity).toBe('node-e')
+    expect(await store.claim(row.id, 'node-g')).toBeUndefined()
+    const claimed = await store.claim(row.id, 'node-e')
+    expect(claimed?.claimedBy).toBe('node-e')
   })
 
   it('failed run: no delivery, row records the failure', async () => {

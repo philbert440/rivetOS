@@ -319,7 +319,7 @@ aliases: []
 tags: []
 entities: []
 related:
-  - pve3
+  - hv-c
 sources: []
 ---
 
@@ -331,7 +331,7 @@ Lead paragraph about the model.
 
 ### Configuration
 
-Runs on [[pve3]].
+Runs on [[hv-c]].
 
 ### Operations
 
@@ -351,7 +351,7 @@ vLLM on :8003.
     const page = parseWikiPage(md)
     expect(page.currentState).toContain('Lead paragraph')
     expect(page.article).toContain('### Configuration')
-    expect(page.seeAlso).toEqual(expect.arrayContaining(['pve3', '1cat-vllm', 'rivetos']))
+    expect(page.seeAlso).toEqual(expect.arrayContaining(['hv-c', '1cat-vllm', 'rivetos']))
     const round = parseWikiPage(serializeWikiPage(page))
     expect(round.currentState).toBe(page.currentState)
     expect(round.article).toContain('Configuration')
@@ -532,7 +532,7 @@ vLLM on :8003.
       action: 'update',
       slug: 'legacy',
       summaryDelta: 'Now also serves :9000.',
-      articlePatches: [{ heading: 'Role', mode: 'merge', body: 'Runs on [[pve3]].' }],
+      articlePatches: [{ heading: 'Role', mode: 'merge', body: 'Runs on [[hv-c]].' }],
       addRelated: ['datahub'],
       addCitations: [{ summaryId: '8f3a0000-0000-0000-0000-000000000009' }],
       verifiedAt: '2026-07-27T00:00:00Z',
@@ -542,7 +542,7 @@ vLLM on :8003.
     expect(page.currentState).toContain(':9000')
     expect(page.article).toContain('### Role')
     expect(page.citations).toHaveLength(1)
-    expect(page.seeAlso).toEqual(expect.arrayContaining(['datahub', 'pve3']))
+    expect(page.seeAlso).toEqual(expect.arrayContaining(['datahub', 'hv-c']))
     // And the result is a well-formed page.
     expect(parseWikiPage(serializeWikiPage(page)).article).toContain('Runs on')
   })

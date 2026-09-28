@@ -1,6 +1,6 @@
 """SQL constants for the RivetOS ros_* tables.
 
-Schema reference: ``/rivet-shared/baseline-schema-ct110.sql``. Generated columns
+Schema reference: ``/rivet-shared/baseline-schema-node-a.sql``. Generated columns
 (``content_tsv``), embedding columns (``embedding``, ``embed_*``), and access
 counters (``access_count``, ``last_accessed_at``) are maintained by RivetOS
 background workers — we never write them from the plugin.

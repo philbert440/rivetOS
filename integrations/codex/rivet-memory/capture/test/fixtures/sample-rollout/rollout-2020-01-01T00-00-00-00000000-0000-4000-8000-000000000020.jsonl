@@ -1,4 +1,4 @@
-{"type":"session_meta","payload":{"id":"89965427-b96f-4d5e-8ad5-c3dd138e33dc","cwd":"/tmp/demo"}}
+{"type":"session_meta","payload":{"id":"00000000-0000-4000-8000-000000000020","cwd":"/tmp/demo"}}
 {"type":"response_item","payload":{"type":"message","role":"developer","content":[{"type":"input_text","text":"<environment_context>cwd=/tmp</environment_context>"}]}}
 {"type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"<skills_instructions>never show this</skills_instructions>"}]}}
 {"type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"<multi_agent_foo>also skip</multi_agent_foo>"}]}}

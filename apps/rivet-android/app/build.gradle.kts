@@ -385,3 +385,17 @@ tasks.configureEach {
         }
     }
 }
+
+val overlayScript = rootProject.file("scripts/build-overlays.sh")
+val buildPhoneOverlay by tasks.registering(Exec::class) {
+    workingDir = rootProject.projectDir
+    commandLine("bash", overlayScript.absolutePath)
+    inputs.dir(rootProject.file("overlay-src/rivet-phone"))
+    outputs.file(rootProject.file("app/src/main/assets/rivet-phone-overlay.bin"))
+    onlyIf { overlayScript.exists() }
+}
+afterEvaluate {
+    tasks.matching { it.name == "preBuild" }.configureEach {
+        dependsOn(buildPhoneOverlay)
+    }
+}

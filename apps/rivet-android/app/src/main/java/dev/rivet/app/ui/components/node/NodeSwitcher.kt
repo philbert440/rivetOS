@@ -718,7 +718,7 @@ private fun AddNodeForm(
             label = { Text("Name") },
             singleLine = true,
             modifier = Modifier.fillMaxWidth(),
-            placeholder = { Text("phildesk") },
+            placeholder = { Text("desktop") },
         )
         OutlinedTextField(
             value = host,

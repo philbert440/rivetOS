@@ -3,7 +3,7 @@
 #
 # See docs/mcp-auth.md for the design. Layout:
 #
-#   $ROOT_DIR (default /var/lib/rivet-ca/root, CT110 local disk only)
+#   $ROOT_DIR (default /var/lib/rivet-ca/root, CA-host local disk only)
 #     ├── ca.crt                self-signed root (10y)
 #     ├── ca.key                root private key — chmod 600, do not copy
 #     ├── ca.srl                serial state for root signing
@@ -270,7 +270,7 @@ cmd_issue_agent() {
 # handoff); never commit issued/*.key to git.
 cmd_issue_client() {
   local device_id="${1:-}"
-  [[ -n "$device_id" ]] || err "usage: issue-client <device-id>   (e.g. pixel-phil, desk-chrome)"
+  [[ -n "$device_id" ]] || err "usage: issue-client <device-id>   (e.g. pixel-owner, desk-chrome)"
   # Safe filename: alnum, dash, underscore only
   if [[ ! "$device_id" =~ ^[A-Za-z0-9][A-Za-z0-9._-]*$ ]]; then
     err "device-id must be alphanumeric / . _ - (got: $device_id)"
@@ -303,7 +303,7 @@ cmd_issue_client() {
 
 cmd_revoke() {
   local cn="${1:-}"
-  [[ -n "$cn" ]] || err "usage: revoke <cn>   (e.g. ct111.mesh, opus@ct111)"
+  [[ -n "$cn" ]] || err "usage: revoke <cn>   (e.g. node-b.mesh, opus@node-b)"
   write_int_cnf
 
   # Find the issued cert by CN scan

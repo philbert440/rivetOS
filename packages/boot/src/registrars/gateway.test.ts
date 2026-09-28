@@ -17,15 +17,15 @@ describe('buildGatewayEnv — den node name', () => {
   it('sets RIVETOS_DEN_NODE_NAME from mesh.node_name', () => {
     vi.stubEnv('RIVETOS_DEN_NODE_NAME', '')
     vi.stubEnv('RIVETOS_SHARED_DIR', tmpdir())
-    const env = buildGatewayEnv(base({}, { node_name: 'ct115' }), '/opt/rivetos')
-    expect(env.RIVETOS_DEN_NODE_NAME).toBe('ct115')
+    const env = buildGatewayEnv(base({}, { node_name: 'node-f' }), '/opt/rivetos')
+    expect(env.RIVETOS_DEN_NODE_NAME).toBe('node-f')
   })
 
   it('config wins over process env', () => {
     vi.stubEnv('RIVETOS_DEN_NODE_NAME', 'from-env')
     vi.stubEnv('RIVETOS_SHARED_DIR', tmpdir())
-    const env = buildGatewayEnv(base({}, { node_name: 'ct115' }), '/opt/rivetos')
-    expect(env.RIVETOS_DEN_NODE_NAME).toBe('ct115')
+    const env = buildGatewayEnv(base({}, { node_name: 'node-f' }), '/opt/rivetos')
+    expect(env.RIVETOS_DEN_NODE_NAME).toBe('node-f')
   })
 })
 
@@ -165,14 +165,14 @@ describe('buildGatewayEnv — device enrollment', () => {
         devices: {
           enabled: true,
           pool: '192.0.2.10-192.0.2.20',
-          pg_admin_url: 'postgres://admin:s3cret@192.0.2.50:5432/phil_memory',
+          pg_admin_url: 'postgres://admin:s3cret@192.0.2.50:5432/rivet_memory',
           pg_device_group: 'rivet_device',
         },
       }),
       '/opt/rivetos',
     )
     expect(env.RIVETOS_DEN_DEVICES_PG_ADMIN_URL).toBe(
-      'postgres://admin:s3cret@192.0.2.50:5432/phil_memory',
+      'postgres://admin:s3cret@192.0.2.50:5432/rivet_memory',
     )
     expect(env.RIVETOS_DEN_DEVICES_PG_DEVICE_GROUP).toBe('rivet_device')
   })
@@ -180,14 +180,14 @@ describe('buildGatewayEnv — device enrollment', () => {
   it('forwards RIVETOS_DEN_DEVICES_PG_ADMIN_URL from process env when config omits it', () => {
     vi.stubEnv(
       'RIVETOS_DEN_DEVICES_PG_ADMIN_URL',
-      'postgres://admin:s3cret@192.0.2.50:5432/phil_memory',
+      'postgres://admin:s3cret@192.0.2.50:5432/rivet_memory',
     )
     const env = buildGatewayEnv(
       base({ devices: { enabled: true, pool: '192.0.2.10-192.0.2.20' } }),
       '/opt/rivetos',
     )
     expect(env.RIVETOS_DEN_DEVICES_PG_ADMIN_URL).toBe(
-      'postgres://admin:s3cret@192.0.2.50:5432/phil_memory',
+      'postgres://admin:s3cret@192.0.2.50:5432/rivet_memory',
     )
   })
 

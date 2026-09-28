@@ -32,7 +32,7 @@ const FIXTURE = path.join(
   __dirname,
   'fixtures',
   'sample-rollout',
-  'rollout-2026-09-07T12-00-00-89965427-b96f-4d5e-8ad5-c3dd138e33dc.jsonl',
+  'rollout-2026-09-07T12-00-00-00000000-0000-4000-8000-000000000020.jsonl',
 )
 
 interface PostedMessage {
@@ -146,7 +146,7 @@ describe('codex den transport', () => {
     const dir = tmpDir()
     const file = path.join(
       dir,
-      'rollout-2026-09-07T12-00-00-89965427-b96f-4d5e-8ad5-c3dd138e33dc.jsonl',
+      'rollout-2026-09-07T12-00-00-00000000-0000-4000-8000-000000000020.jsonl',
     )
     const content = 'x'.repeat(16_001)
     writeFileSync(
@@ -155,7 +155,7 @@ describe('codex den transport', () => {
         JSON.stringify({
           timestamp: '2026-09-07T12:00:00.000Z',
           type: 'session_meta',
-          payload: { id: '89965427-b96f-4d5e-8ad5-c3dd138e33dc', cwd: '/tmp/demo' },
+          payload: { id: '00000000-0000-4000-8000-000000000020', cwd: '/tmp/demo' },
         }),
         JSON.stringify({
           timestamp: '2026-09-07T12:00:01.000Z',

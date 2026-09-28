@@ -22,7 +22,7 @@ describe('hostAllowed', () => {
     expect(hostAllowed('127.0.0.1')).toBe(true)
     expect(hostAllowed('100.64.0.7')).toBe(true) // CGNAT (WG overlay)
     expect(hostAllowed('fd00::7')).toBe(true) // v6 ULA (WG overlay) — generic RFC4193 example, secret-scan-allow
-    expect(hostAllowed('ct112.mesh')).toBe(true)
+    expect(hostAllowed('node-c.mesh')).toBe(true)
     expect(hostAllowed('localhost')).toBe(true)
     expect(hostAllowed('8.8.8.8')).toBe(false)
     expect(hostAllowed('100.128.0.1')).toBe(false) // past CGNAT /10
@@ -45,8 +45,8 @@ describe('parseTarget', () => {
   it('parses gateway bases', () => {
     expect(() => parseTarget('https://192.0.2.7:5174')).toThrow(/refusing to proxy/)
     expect(parseTarget('https://10.0.0.7:5174')).toEqual({ host: '10.0.0.7', port: 5174 })
-    expect(parseTarget('https://ct112.mesh:5174/')).toEqual({ host: 'ct112.mesh', port: 5174 })
-    expect(parseTarget('https://ct112.mesh')).toEqual({ host: 'ct112.mesh', port: 5174 })
+    expect(parseTarget('https://node-c.mesh:5174/')).toEqual({ host: 'node-c.mesh', port: 5174 })
+    expect(parseTarget('https://node-c.mesh')).toEqual({ host: 'node-c.mesh', port: 5174 })
     expect(() => parseTarget('http://10.0.0.7:5174')).toThrow(/not an https url/)
     expect(() => parseTarget('https://10.0.0.7:5174/den')).toThrow(/must not carry a path/)
     // bracketed v6 — ULA overlay with explicit port (generic RFC4193 examples, secret-scan-allow)
@@ -70,13 +70,13 @@ describe('tlsConnectOptions', () => {
   const identity = { cert: Buffer.from('c'), key: Buffer.from('k'), ca: Buffer.from('a') }
 
   it('sends SNI only for DNS names, never IP literals', () => {
-    expect(tlsConnectOptions('ct112.mesh', 5174, identity).servername).toBe('ct112.mesh')
+    expect(tlsConnectOptions('node-c.mesh', 5174, identity).servername).toBe('node-c.mesh')
     expect(tlsConnectOptions('10.0.0.7', 5174, identity).servername).toBeUndefined()
     expect(tlsConnectOptions('fd00::7', 5174, identity).servername).toBeUndefined() // secret-scan-allow
   })
 
   it('verifies against the Rivet CA only, no ALPN', () => {
-    const opts = tlsConnectOptions('ct112.mesh', 5174, identity)
+    const opts = tlsConnectOptions('node-c.mesh', 5174, identity)
     expect(opts.rejectUnauthorized).toBe(true)
     expect(opts.ca).toBe(identity.ca)
     expect(opts.cert).toBe(identity.cert)
@@ -138,11 +138,11 @@ describe('ListenerSet', () => {
     expect(evicted).toEqual([]) // at cap, nothing evicted yet
     // One past the cap evicts the stalest (no activity: first-inserted) and
     // only that one.
-    set.insert('https://ct112.mesh:5174', 9999, (t) => evicted.push(t))
+    set.insert('https://node-c.mesh:5174', 9999, (t) => evicted.push(t))
     expect(evicted).toEqual(['https://10.0.0.0:5174'])
     expect(set.get('https://10.0.0.0:5174')).toBeUndefined()
     expect(set.get('https://10.0.0.7:5174')).toBe(7)
-    expect(set.get('https://ct112.mesh:5174')).toBe(9999)
+    expect(set.get('https://node-c.mesh:5174')).toBe(9999)
   })
 
   it('get refreshes recency', () => {
@@ -154,7 +154,7 @@ describe('ListenerSet', () => {
     // Re-asking for the first-inserted entry (a window re-resolving its port)
     // makes it most-recent: the SECOND-oldest is evicted instead.
     expect(set.get('https://10.0.0.0:5174')).toBe(0)
-    set.insert('https://ct112.mesh:5174', 9999, (t) => evicted.push(t))
+    set.insert('https://node-c.mesh:5174', 9999, (t) => evicted.push(t))
     expect(evicted).toEqual(['https://10.0.0.1:5174'])
     expect(set.get('https://10.0.0.0:5174')).toBe(0)
   })
@@ -170,7 +170,7 @@ describe('ListenerSet', () => {
       set.insert(`https://10.0.1.${i}:5174`, i, (t) => evicted.push(t))
     }
     set.touch('https://10.0.0.1:5174')
-    set.insert('https://ct112.mesh:5174', 9999, (t) => evicted.push(t))
+    set.insert('https://node-c.mesh:5174', 9999, (t) => evicted.push(t))
     expect(evicted).toEqual(['https://10.0.1.0:5174']) // generic RFC1918 example, secret-scan-allow
     expect(set.get('https://10.0.0.1:5174')).toBe(1)
     // Touching an evicted/unknown key is a no-op (a connection accepted just

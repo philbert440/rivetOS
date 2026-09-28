@@ -35,7 +35,7 @@ function tmpHome(): string {
   return dir
 }
 
-const SID = '01a090db-c402-71cb-a954-6066b9493630'
+const SID = '00000000-0000-4000-8000-000000000030'
 const CWD = '/home/rivet'
 
 interface WriteOpts {
@@ -49,7 +49,7 @@ function writeSession(opts: WriteOpts): string {
   const cwd = opts.cwd ?? CWD
   const bucket = path.join(sessionsRoot(opts.home), encodePiCwd(cwd))
   fs.mkdirSync(bucket, { recursive: true })
-  const file = path.join(bucket, `2026-09-11T14-25-16-803Z_${opts.sessionId}.jsonl`)
+  const file = path.join(bucket, `2020-01-01T00-00-00-000Z_${opts.sessionId}.jsonl`)
   fs.writeFileSync(
     file,
     opts.lines.map((l) => (typeof l === 'string' ? l : JSON.stringify(l))).join('\n') + '\n',
@@ -78,7 +78,7 @@ describe('home + session resolution', () => {
     const home = tmpHome()
     const root = sessionsRoot(home)
     fs.mkdirSync(root, { recursive: true })
-    const file = path.join(root, `2026-09-11T14-25-16-803Z_${SID}.jsonl`)
+    const file = path.join(root, `2020-01-01T00-00-00-000Z_${SID}.jsonl`)
     fs.writeFileSync(file, '')
     expect(findSessionFile({ home, cwd: CWD, sessionId: SID })).toBe(file)
     expect([...listSessionIds(home, CWD)]).toEqual([SID])
@@ -95,7 +95,7 @@ describe('home + session resolution', () => {
 describe('listSessionIds', () => {
   it('walks every cwd bucket for *_<uuid>.jsonl files', () => {
     const home = tmpHome()
-    const other = '42accb06-524a-47a6-b4b3-0991552914d7'
+    const other = '00000000-0000-4000-8000-000000000031'
     writeSession({ home, sessionId: SID, cwd: '/home/rivet', lines: [] })
     writeSession({ home, sessionId: other, cwd: '/srv/work', lines: [] })
 

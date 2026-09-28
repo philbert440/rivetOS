@@ -28,8 +28,8 @@ class ConversationSectionsTest {
 
     private fun loc(key: String, updatedAt: Long, sessionId: String? = key) = LocatedChatItem(
         ChatItem(key = key, kind = ChatItemKind.HARNESS, title = key, sessionId = sessionId, updatedAt = updatedAt),
-        nodeId = "ct115",
-        nodeName = "ct115",
+        nodeId = "node-f",
+        nodeName = "node-f",
         nodeDenUrl = "https://192.0.2.10:5174",
     )
 
@@ -205,7 +205,7 @@ class ConversationSectionsTest {
         updatedAt = updatedAt,
     )
 
-    private fun locateAll(items: List<ChatItem>) = items.map { locate(it, "ct115", "ct115", "https://192.0.2.10:5174") }
+    private fun locateAll(items: List<ChatItem>) = items.map { locate(it, "node-f", "node-f", "https://192.0.2.10:5174") }
 
     @Test fun `a blank or invalid updatedAt files under a valid createdAt`() {
         val items = chatItems(
@@ -268,8 +268,8 @@ class ConversationSectionsTest {
             loc("claude-code:$uuid", ms(2026, 9, 25, 9)),
             LocatedChatItem(
                 ChatItem(key = "d7e8f9a0-4444-4555-8666-777788889999", kind = ChatItemKind.DRAFT, title = "new conversation"),
-                nodeId = "ct115",
-                nodeName = "ct115",
+                nodeId = "node-f",
+                nodeName = "node-f",
                 nodeDenUrl = "https://192.0.2.10:5174",
             ),
         )

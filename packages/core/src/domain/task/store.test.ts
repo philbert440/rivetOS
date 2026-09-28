@@ -500,22 +500,22 @@ describe.skipIf(!TEST_PG_URL)('PgTaskStore (scratch schema)', () => {
   })
 
   it('nodeAffinity rows enqueue under the per-node job name (Appendix E)', async () => {
-    const pinned = await store.create(input({ nodeAffinity: 'ct112' }))
+    const pinned = await store.create(input({ nodeAffinity: 'node-c' }))
     expect(await jobCount(pinned.id)).toBe(0)
-    expect(await jobCount(pinned.id, taskJobName('ct112'))).toBe(1)
+    expect(await jobCount(pinned.id, taskJobName('node-c'))).toBe(1)
 
     // send() re-enqueues under the same per-node name.
-    await store.claim(pinned.id, 'ct112')
+    await store.claim(pinned.id, 'node-c')
     await store.markAwaitingInput(pinned.id)
     await store.send(pinned.id, 'more')
-    expect(await jobCount(pinned.id, taskJobName('ct112'))).toBe(1)
+    expect(await jobCount(pinned.id, taskJobName('node-c'))).toBe(1)
     expect(await jobCount(pinned.id)).toBe(0)
 
     // reenqueue (stranding interim) also lands on the per-node name.
-    const stranded = await store.create(input({ nodeAffinity: 'ct113' }))
+    const stranded = await store.create(input({ nodeAffinity: 'node-d' }))
     await pool.query(`SELECT ${graphileSchema}.remove_job($1)`, [taskJobKey(stranded.id)])
     await store.reenqueue(stranded.id)
-    expect(await jobCount(stranded.id, taskJobName('ct113'))).toBe(1)
+    expect(await jobCount(stranded.id, taskJobName('node-d'))).toBe(1)
   })
 
   it('LISTEN ros_task_done wakes the completion waiter (real NOTIFY)', async () => {

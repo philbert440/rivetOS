@@ -402,7 +402,7 @@ Any other 409 surfaces the den text and continues. A non-409 on the agentId
 attempt surfaces the den text and continues, except 404, which stays silent
 and falls through. A later attempt that succeeds does not clear that text
 (the fallback's cwd is the den default, and the hub does not render it).
-The next send clears the strip. ct114 and ct117 are pre-deploy dens: they ignore
+The next send clears the strip. node-e and node-h are pre-deploy dens: they ignore
 `agentId` and return no `cwd`. The command on the first attempt is what
 starts the right harness there.
 
@@ -694,10 +694,10 @@ first, the one post-enroll screen HubDrawer does not host. Also set
 
 ## Contract facts (verified 2026-09-03, main `0c9abd3f`; D1 roster facts 2026-09-24, main `7e236c20`)
 
-- `GET /healthz` is `{ok, sessions, name, node}`. `node` is the mesh node name (`ct115`). Older dens omit it — decode as `""`.
+- `GET /healthz` is `{ok, sessions, name, node}`. `node` is the mesh node name (`node-f`). Older dens omit it — decode as `""`.
 - `POST /api/terminal` accepts `agentId` and `force` in addition to command/session/model/effort. Explicit command, model, and effort win; `agentId` fills whatever the client left out and sets the cwd to the preset directory. The hub's first preset attempt sends `agentId` and `command` and omits model and effort, so the den fills model, effort, and cwd. The response may include `cwd` (absent on older dens).
 - Spawn errors: `404` `agent not found` (the hub stays silent and falls through); `400` (`agent has no harness and no command was given`, or `model must be a 1-64 token` / `effort must be a 1-64 token`) and `500` `could not create agent directory` are shown, then the next attempt runs; `409` `agent "<name>" is hosted on <node>` and `409` `agent "<name>" has no directory` stop the loop, show that text, and do not spawn again or offer force; `503` `agent registry unavailable` is shown and the next attempt runs. A `409` whose error contains `session is running in` (live PTY, cannot move) is not a stop: the text is shown and the next attempt runs. A success on that later attempt does not clear the text already on the strip. The next send does. A session recorded in a different cwd is a `409` whose error contains `session runs in` — the hub asks before retrying with `force:true`. That force resumes a movable PTY into the preset directory. A live codex app-server thread still returns the same `session runs in` text when `force` is true (den `server.ts` ~1690), and the hub shows that raw text. Do not auto-force. "Resume here anyway" does not resend; the pending message stays in the composer.
-- ct114 and ct117 are pre-deploy dens (no `healthz.node`; unknown body fields ignored). The first attempt still carries the roster command, so those dens start that command instead of only the default.
+- node-e and node-h are pre-deploy dens (no `healthz.node`; unknown body fields ignored). The first attempt still carries the roster command, so those dens start that command instead of only the default.
 - A non-blank preset `node` that matches no discovered hint (`meshNode`, id, or name) is an offline row named after that node (`denUrl` empty). The drawer and both new-conversation pickers dim it and do not open it. `openAgentRow` returns null before any draft or pointer write, so it cannot become a chat destination with an empty URL. Edit is omitted while the row is offline (`agentSheetActions(online)`), so Save is not sent at that empty URL. Legacy `nodeBaseUrl` applies only when `node` is blank.
 - `POST /api/devices/enroll` is WireGuard pairing only (requires a WG `publicKey`, returns mesh config,
   issues NO cert). v1 enrollment = p12 import; QR-to-cert is a separate den+CA program.

@@ -38,6 +38,7 @@ import type {
   ToolResult,
 } from '@rivetos/types'
 import {
+  DEFAULT_OWNER_USER_ID,
   buildLocalSessionContext,
   getToolResultImages,
   getToolResultText,
@@ -59,7 +60,7 @@ export interface ToolMiddlewareBinding {
   workingDir?: string
   /** Node id for the SessionContext (defaults to RIVETOS_NODE_ID env or 'local'). */
   nodeId?: string
-  /** User id for the SessionContext (defaults to RIVETOS_USER_ID env or 'phil'). */
+  /** User id for the SessionContext (defaults to RIVETOS_USER_ID env or DEFAULT_OWNER_USER_ID). */
   userId?: string
   /** Optional pipeline — if absent, hooks are skipped entirely. */
   hooks?: HookPipeline
@@ -131,7 +132,7 @@ function buildAiSdkTool(def: RivetosTool, binding: ToolMiddlewareBinding): ToolS
         agentId: binding.agentId ?? 'unknown',
         nodeId: binding.nodeId ?? process.env.RIVETOS_NODE_ID ?? 'local',
         conversationId: binding.sessionId ?? 'ad-hoc',
-        userId: binding.userId ?? process.env.RIVETOS_USER_ID ?? 'phil',
+        userId: binding.userId ?? process.env.RIVETOS_USER_ID ?? DEFAULT_OWNER_USER_ID,
         workingDir: binding.workingDir,
         traceId: binding.sessionId,
       })

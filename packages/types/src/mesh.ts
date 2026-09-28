@@ -71,7 +71,7 @@ export interface MeshNode {
 
   /**
    * SSH login for update/deploy tooling when it isn't `rivet`
-   * (e.g. phildesk → `philip`). Consumed by CLI `update` / `mesh` / `keys`.
+   * (e.g. desktop → `user`). Consumed by CLI `update` / `mesh` / `keys`.
    */
   sshUser?: string
 

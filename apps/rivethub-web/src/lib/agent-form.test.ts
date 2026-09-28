@@ -104,13 +104,13 @@ describe('createWithLegacyRetry', () => {
 })
 
 describe('catalogNameClashes', () => {
-  const local: CatalogAgent = { id: 'reviewer', provider: 'claude', node: 'ct115', local: true }
-  const remote: CatalogAgent = { id: 'reviewer', node: 'ct116', local: false }
+  const local: CatalogAgent = { id: 'reviewer', provider: 'claude', node: 'node-f', local: true }
+  const remote: CatalogAgent = { id: 'reviewer', node: 'node-g', local: false }
   const preset: CatalogAgent = {
     kind: 'preset',
     id: 'reviewer',
     name: 'Reviewer',
-    node: 'ct115',
+    node: 'node-f',
     local: true,
   }
 

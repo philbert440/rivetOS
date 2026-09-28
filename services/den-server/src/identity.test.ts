@@ -3,13 +3,13 @@ import { registryFromEnv, resolveUser } from '@rivetos/types'
 import { captureEnvFor } from './identity.js'
 
 const cocoDb = { pgUrl: 'postgres://coco@db/coco_memory', envFile: '/tmp/coco.env' }
-const philDb = { pgUrl: 'postgres://phil@db/phil_memory' }
+const ownerDb = { pgUrl: 'postgres://owner@db/rivet_memory' }
 
 describe('captureEnvFor', () => {
   const reg = registryFromEnv({
     deviceUsers: { 'win-coco': 'coco' },
     userDbs: { coco: cocoDb },
-    ownerPgUrl: philDb.pgUrl,
+    ownerPgUrl: ownerDb.pgUrl,
   })!
 
   it('does not emit env for the owner (main store stays the process default)', () => {

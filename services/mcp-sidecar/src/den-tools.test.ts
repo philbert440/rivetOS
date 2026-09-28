@@ -261,12 +261,12 @@ Hello
     vi.spyOn(Date, 'now').mockReturnValue(100)
     const catalogAgents = vi.fn(async () => ({
       agents: [
-        { id: 'grok', provider: 'xai', model: 'grok', node: 'ct115', local: true as const },
+        { id: 'grok', provider: 'xai', model: 'grok', node: 'node-f', local: true as const },
         {
           kind: 'preset' as const,
           id: 'preset-1',
           name: 'reviewer',
-          node: 'ct115',
+          node: 'node-f',
           local: true,
           harnessId: 'claude-code' as const,
           directory: '/tmp/reviewer',
@@ -284,10 +284,10 @@ Hello
     })
     expect(await tool(handle, 'list_agents').execute({})).toBe(
       [
-        '- reviewer (agent: claude-code on ct115 — this node, dir /tmp/reviewer)',
+        '- reviewer (agent: claude-code on node-f — this node, dir /tmp/reviewer)',
         '',
         'Runtime agents (mesh):',
-        '- grok (ct115)',
+        '- grok (node-f)',
         '',
         'to_agent accepts a preset name or id, or a runtime agent id.',
       ].join('\n'),
@@ -422,12 +422,12 @@ Hello
     vi.spyOn(Date, 'now').mockReturnValueOnce(100).mockReturnValue(6100)
     const { execute, killTask } = delegationGateway(async () => {
       throw new GatewayError(504, 'deadline', {
-        task: taskWire({ status: 'killed', nodeAffinity: 'ct115' }),
+        task: taskWire({ status: 'killed', nodeAffinity: 'node-f' }),
         error: 'wait deadline exceeded — task killed',
       })
     })
     expect(await execute({ to_agent: 'reviewer', task: 'go', timeout_ms: 5000 })).toBe(
-      '[timeout] Remote delegation to reviewer timed out after 5000ms (task task-1 killed): wait deadline exceeded — task killed — no runner claimed or finished it in time — is the rivetos runtime running on "ct115"?\n\n---\n_Delegation [timeout]: 6000ms_',
+      '[timeout] Remote delegation to reviewer timed out after 5000ms (task task-1 killed): wait deadline exceeded — task killed — no runner claimed or finished it in time — is the rivetos runtime running on "node-f"?\n\n---\n_Delegation [timeout]: 6000ms_',
     )
     expect(killTask).toHaveBeenCalledExactlyOnceWith('task-1')
   })
@@ -561,10 +561,10 @@ Hello
   it('formats failure and empty completion with elapsed time and no absent tokens', async () => {
     vi.spyOn(Date, 'now').mockReturnValue(100)
     const { execute } = delegationGateway(async () => ({
-      task: taskWire({ status: 'failed', result: undefined, error: 'boom', nodeAffinity: 'ct115' }),
+      task: taskWire({ status: 'failed', result: undefined, error: 'boom', nodeAffinity: 'node-f' }),
     }))
     expect(await execute({ to_agent: 'reviewer', task: 'go' })).toBe(
-      '[failed] Remote delegation to reviewer on ct115 failed: boom\n\n---\n_Delegation [failed]: 0ms_',
+      '[failed] Remote delegation to reviewer on node-f failed: boom\n\n---\n_Delegation [failed]: 0ms_',
     )
     const summary = delegationGateway(async () => ({
       task: taskWire({ result: undefined }),

@@ -55,7 +55,7 @@ slug: gerty
 
 ## Current state
 
-pve3 lab.
+hv-c lab.
 
 ## History
 
