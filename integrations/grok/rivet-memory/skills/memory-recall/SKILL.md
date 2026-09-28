@@ -117,7 +117,7 @@ Hits from `rivet-claude` / `rivet-hermes` / `grok` are equally valid. Filter by 
 
 ## Why This Exists
 
-2026-05-23 WAP-DHCP: keyword search returned nothing; `memory_browse` over the morning window recovered the full incident. 2026-08-25 status miss: `memory_stats` + stale `memory/*.md` buried a live Claude workboard (#545 merged, on-device validation).
+Made-up example, not a real incident: topic search for a lab service, a generic host nickname, and a documentation-range subnet all return empty. Only `memory_browse` over the morning window recovers the thread. Status questions belong on `memory_browse` over the last day, not `memory_stats` or stale local notes.
 
 ## Related
 

@@ -8,10 +8,10 @@
 # fully working agent with zero manual config steps.
 #
 # Usage:
-#   ./provision-ct.sh --ctid 114 --hostname rivet-local --node pve3 \
-#       --ip 192.0.2.114 --agent local --provider openai-compat \
+#   ./provision-ct.sh --ctid 14 --hostname rivet-local --node hv-c \
+#       --ip 192.0.2.14 --agent local --provider openai-compat \
 #       --model qwen2.5-coder-32b --base-url http://192.0.2.12:8000/v1 \
-#       --secrets-from 192.0.2.111
+#       --secrets-from 192.0.2.11 --datahub-ip 192.0.2.10
 #
 # Prerequisites:
 #   - SSH access to the Proxmox node (as root)
@@ -106,10 +106,10 @@ while [[ $# -gt 0 ]]; do
 Usage: provision-ct.sh --ctid ID --hostname NAME --node PVE --ip IP --agent AGENT --provider PROVIDER [options]
 
 Required:
-  --ctid        Container ID (e.g., 114)
+  --ctid        Container ID (e.g., 14)
   --hostname    Container hostname (e.g., rivet-local)
-  --node        Proxmox node SSH alias or IP (e.g., pve3)
-  --ip          Container IP (e.g., 192.0.2.114)
+  --node        Proxmox node SSH alias or IP (e.g., hv-c)
+  --ip          Container IP (e.g., 192.0.2.14)
   --agent       RivetOS agent name (e.g., local, opus, grok, gemini)
   --provider    AI provider (anthropic, xai, google, claude-cli, ollama, openai-compat)
 
@@ -130,7 +130,7 @@ Infrastructure:
   --gateway     Network gateway (default: 192.0.2.1)
   --privileged  Create privileged CT (default)
   --unprivileged  Create unprivileged CT
-  --datahub-ip  IP of DataHub/NFS server (default: auto-detect or 192.0.2.110)
+  --datahub-ip  IP of DataHub/NFS server (from --datahub-ip or nodes.json; required if neither)
   --restore     Path to backup tarball for workspace restoration
   --dry-run     Print commands without executing
   --skip-destroy  Don't destroy existing CT
@@ -268,9 +268,8 @@ for n in d.get('nodes', {}).values():
 " 2>/dev/null || echo "")
 fi
 if [[ -z "$DATAHUB_IP" ]]; then
-    # Convention: DataHub is CT110 at x.x.x.110
-    DATAHUB_IP="$(echo "$IP" | sed 's/\.[0-9]*$/.110/')"
-    log "  Using convention DataHub IP: $DATAHUB_IP"
+    err "DataHub IP unknown. Pass --datahub-ip or list a datahub agent in ${SECRETS_DIR}/nodes.json."
+    exit 1
 else
     log "  DataHub IP: $DATAHUB_IP"
 fi
@@ -517,7 +516,7 @@ if $PRIVILEGED && [[ -n "$DATAHUB_IP" ]]; then
     if run_on_ct "test -d /rivet-shared && ls /rivet-shared/ &>/dev/null" 2>/dev/null; then
         log "  ✅ NFS mounted: ${DATAHUB_IP}:/rivet-shared → /rivet-shared"
     else
-        warn "  ⚠ NFS mount failed. Check that CT110 exports /rivet-shared to this subnet."
+        warn "  ⚠ NFS mount failed. Check that the datahub host exports /rivet-shared to this subnet."
         warn "  Manual fix: ssh root@${IP} 'mount -t nfs ${DATAHUB_IP}:/rivet-shared /rivet-shared'"
     fi
 fi
@@ -836,7 +835,7 @@ done
 # Phase 8.5: Mesh /etc/hosts block
 # ──────────────────────────────────────────────────────────────────────────────
 #
-# Write ctNNN.mesh / ctNNN entries to /etc/hosts using the shared mesh.json.
+# Write node-*.mesh / node-* entries to /etc/hosts using the shared mesh.json.
 # Idempotent — also gets re-run by `update --mesh` so drift heals on every
 # deploy. On a fresh CT, the new node may not be in mesh.json yet (it'll
 # self-register on first start), but populating peers is enough to bootstrap.

@@ -30,7 +30,7 @@ const FIXTURE = path.join(
   __dirname,
   'fixtures',
   'sample-rollout',
-  'rollout-2026-09-07T12-00-00-89965427-b96f-4d5e-8ad5-c3dd138e33dc.jsonl',
+  'rollout-2020-01-01T00-00-00-00000000-0000-4000-8000-000000000020.jsonl',
 )
 
 let failed = 0

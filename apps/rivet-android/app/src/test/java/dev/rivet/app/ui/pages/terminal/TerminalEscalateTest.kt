@@ -6,7 +6,7 @@ import org.junit.Test
 
 class TerminalEscalateTest {
 
-    private val conv = "f594456b-a75c-46d6-a598-baa1b1805795"
+    private val conv = "00000000-0000-4000-8000-000000000046"
 
     @Test
     fun `roster keys accept local and den model ids`() {

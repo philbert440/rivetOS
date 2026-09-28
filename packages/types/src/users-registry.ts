@@ -133,10 +133,10 @@ export function parseUsersRegistry(raw: string | undefined): UsersRegistry | und
 
 /**
  * Default node-owner user id when users.json / RIVETOS_OWNER_USER_ID is unset.
- * Fleet installs historically used `phil`; deployments override via
- * RIVETOS_OWNER_USER_ID (forwarded to the embedded den by buildGatewayEnv).
+ * Deployments override via RIVETOS_OWNER_USER_ID (forwarded to the embedded
+ * den by buildGatewayEnv).
  */
-export const DEFAULT_OWNER_USER_ID = 'phil'
+export const DEFAULT_OWNER_USER_ID = 'owner'
 
 export type EnvLike = Record<string, string | undefined>
 

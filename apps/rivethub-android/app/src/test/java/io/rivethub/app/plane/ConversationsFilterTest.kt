@@ -27,8 +27,8 @@ class ConversationsFilterTest {
 
     private fun loc(
         key: String,
-        nodeName: String = "ct115",
-        nodeId: String = "ct115",
+        nodeName: String = "node-f",
+        nodeId: String = "node-f",
         title: String = key,
         status: String? = "idle",
         pin: Boolean = false,
@@ -49,8 +49,8 @@ class ConversationsFilterTest {
     }
 
     @Test fun `node chip filters by node name`() {
-        val items = listOf(loc("a", nodeName = "ct115"), loc("b", nodeName = "ct119"))
-        val lists = filterConversations(items, ConversationFilter.Node("ct119", "ct119"), emptySet(), "")
+        val items = listOf(loc("a", nodeName = "node-f"), loc("b", nodeName = "node-j"))
+        val lists = filterConversations(items, ConversationFilter.Node("node-j", "node-j"), emptySet(), "")
         assertEquals(listOf("b"), lists.live.map { it.item.key })
     }
 
@@ -85,8 +85,8 @@ class ConversationsFilterTest {
     @Test fun `hide matches the canonical session id and defaults to nothing hidden`() {
         val row = LocatedChatItem(
             item("abc", sessionId = "claude-code:abc"),
-            nodeId = "ct115",
-            nodeName = "ct115",
+            nodeId = "node-f",
+            nodeName = "node-f",
             nodeDenUrl = "https://192.0.2.10:5174",
         )
         assertEquals(0, filterConversations(listOf(row), ConversationFilter.All, emptySet(), "", hidden = setOf("claude-code:abc")).live.size)
@@ -102,7 +102,7 @@ class ConversationsFilterTest {
     }
 
     @Test fun `a node named All is not the All filter`() {
-        val items = listOf(loc("a", nodeName = "All", nodeId = "n-all"), loc("b", nodeName = "ct115", nodeId = "ct115"))
+        val items = listOf(loc("a", nodeName = "All", nodeId = "n-all"), loc("b", nodeName = "node-f", nodeId = "node-f"))
         val all = filterConversations(items, ConversationFilter.All, emptySet(), "")
         assertEquals(listOf("a", "b"), all.live.map { it.item.key })
         val node = filterConversations(items, ConversationFilter.Node("n-all", "All"), emptySet(), "")

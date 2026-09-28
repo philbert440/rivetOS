@@ -4,7 +4,7 @@ min_engine_version = 2
 updated_at = "2026-09-04T00:00:00Z"
 aliases = ["grok-build"]
 
-# RivetOS override for grok 1.0.13 (evidence: live herdr pane reads on ct112, 2026-09-04).
+# RivetOS override for grok 1.0.13 (evidence: live herdr pane reads on node-c, 2026-09-04).
 # grok 1.0.13 NEVER changes its OSC title ("grok" in 34/34 samples) and emits no [stop] chip, so the
 # upstream title/[stop]-based rules can't see a turn. The one universal working signature is the
 # live status line: a braille spinner, activity text, an elapsed "N.Ns", and a "⇣<tokens>" tail —

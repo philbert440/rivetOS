@@ -45,9 +45,9 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url))
 const FIXTURE = path.join(
   __dirname,
   '../../capture/test/fixtures/sample-rollout',
-  'rollout-2026-09-07T12-00-00-89965427-b96f-4d5e-8ad5-c3dd138e33dc.jsonl',
+  'rollout-2020-01-01T00-00-00-00000000-0000-4000-8000-000000000020.jsonl',
 )
-const SESSION = '89965427-b96f-4d5e-8ad5-c3dd138e33dc'
+const SESSION = '00000000-0000-4000-8000-000000000020'
 
 let failed = 0
 function check(name: string, cond: boolean, detail = ''): void {
@@ -310,7 +310,7 @@ console.log('\n— discovery —')
   const root = mkdtempSync(path.join(tmpdir(), 'codex-bf-'))
   const day = path.join(root, '2026', '09', '07')
   mkdirSync(day, { recursive: true })
-  const dest = path.join(day, `rollout-2026-09-07T12-00-00-${SESSION}.jsonl`)
+  const dest = path.join(day, `rollout-2020-01-01T00-00-00-${SESSION}.jsonl`)
   writeFileSync(dest, fixtureText)
   writeFileSync(path.join(day, 'notes.txt'), 'ignore')
   const found = discoverTranscripts(root)

@@ -11,7 +11,7 @@ import io.rivethub.app.ui.theme.RivetType
  * Desktop `context-bar.tsx` at phone width: the track is `hidden sm:block` and
  * the token counts are `hidden sm:inline` (context-bar.tsx:44-56), so below the
  * `sm` breakpoint only `{pct}%` survives — mono 10sp inkDim. The app is a phone
- * app, so it renders the phone branch. Phil 2026-09-04: the pill is the label
+ * app, so it renders the phone branch. 2026-09-04: the pill is the label
  * for the header's hairline compaction track, so its colour shifts with the
  * same thresholds — inkDim → `warn` (≥70%) → `red` (≥90%).
  */

@@ -381,8 +381,8 @@ export class PresetDelegationEngine {
 
   /**
    * One line per preset.
-   * `- reviewer (agent: codex on ct114 — this node, dir /path)`
-   * `- reviewer (agent: kimi-code on ct116, dir /path)`
+   * `- reviewer (agent: codex on node-e — this node, dir /path)`
+   * `- reviewer (agent: kimi-code on node-g, dir /path)`
    * Unimplemented harnesses append ` — NO headless executor: <gap>`.
    * No harness: ` — no harness configured`.
    */

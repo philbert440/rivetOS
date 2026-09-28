@@ -1,7 +1,7 @@
 # RivetHub Android — chat & terminal UX spec
 
 _Behavioural specification. Written by Rivet (orchestrator) on 2026-09-24 from observing the retired
-RikkaHub-derived client and from Phil's feedback. This document describes what the user sees and can do.
+RikkaHub-derived client and from owner feedback. This document describes what the user sees and can do.
 It contains no code, identifiers, string resources or drawables from any other codebase; the numeric
 thresholds in it are observed behaviour, restated. Builders implement from this document plus the design tokens already in `ui/theme/`; they do
 not consult other apps' source. Reviewers enforce that (see "Clean-room" in AGENT.md)._

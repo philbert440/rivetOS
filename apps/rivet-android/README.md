@@ -37,7 +37,7 @@ so CI's SDK-less sweeps skip them (`build`/`test`/`lint` aren't defined). On a m
 with an Android SDK, from the monorepo root:
 
 ```
-nx apk @rivetos/rivet-android          # assemblePhilDebug
+nx apk @rivetos/rivet-android          # assemblePersonalDebug
 nx check @rivetos/rivet-android        # unit tests
 nx verify @rivetos/rivet-android       # android lint
 nx apk-release @rivetos/rivet-android  # signed release build

@@ -31,7 +31,7 @@ function loadFixtureTls(): AgentChannelTlsConfig {
     ca: readFileSync(join(FIXTURES, 'ca.crt')),
     cert: readFileSync(join(FIXTURES, 'node.crt')),
     key: readFileSync(join(FIXTURES, 'node.key')),
-    cn: 'ct110',
+    cn: 'node-a',
   }
 }
 
@@ -144,7 +144,7 @@ describe('AgentChannelServer (mTLS)', () => {
     const body = JSON.parse(res.body) as Record<string, unknown>
     expect(body.ok).toBe(true)
     expect(body.tls).toBe(true)
-    expect(body.node).toBe('ct110')
+    expect(body.node).toBe('node-a')
   })
 
   it('refuses browser requests (any Origin) even with a valid client cert', async () => {
@@ -358,10 +358,10 @@ describe('loadTlsConfig', () => {
         certPath: join(FIXTURES, 'node.crt'),
         keyPath: join(FIXTURES, 'node.key'),
       },
-      'ct110',
+      'node-a',
     )
 
-    expect(result.cn).toBe('ct110')
+    expect(result.cn).toBe('node-a')
     expect(result.ca).toBeInstanceOf(Buffer)
     expect(result.cert).toBeInstanceOf(Buffer)
     expect(result.key).toBeInstanceOf(Buffer)
@@ -376,7 +376,7 @@ describe('loadTlsConfig', () => {
           certPath: join(FIXTURES, 'node.crt'),
           keyPath: join(FIXTURES, 'node.key'),
         },
-        'ct110',
+        'node-a',
       ),
     ).toThrow(/mesh TLS configured but CA chain.*not readable/)
   })
@@ -389,7 +389,7 @@ describe('loadTlsConfig', () => {
           certPath: '/nonexistent/node.crt',
           keyPath: join(FIXTURES, 'node.key'),
         },
-        'ct110',
+        'node-a',
       ),
     ).toThrow(/mesh TLS configured but node cert.*not readable/)
   })
@@ -402,7 +402,7 @@ describe('loadTlsConfig', () => {
           certPath: join(FIXTURES, 'node.crt'),
           keyPath: '/nonexistent/node.key',
         },
-        'ct110',
+        'node-a',
       ),
     ).toThrow(/mesh TLS configured but node key.*not readable/)
   })

@@ -102,19 +102,19 @@ describeIf('WikiIndex (PG)', () => {
         action: 'create',
         slug: 'gerty-vllm-stack',
         title: 'GERTY vLLM stack',
-        addAliases: ['pve3-llm'],
-        currentState: 'Deckard W4A16 serves qwen-27b on pve3 port 8003 for the mesh.',
+        addAliases: ['hv-c-llm'],
+        currentState: 'Deckard W4A16 serves qwen-27b on hv-c port 8003 for the mesh.',
         verifiedAt: '2026-07-07T00:00:00Z',
       }),
     )
     // FTS retriever (vector needs an embedder — not wired in tests; the
     // purely semantic phrasing is covered by the hybrid design, not here).
-    const byContent = await index.searchTopics('qwen-27b pve3')
+    const byContent = await index.searchTopics('qwen-27b hv-c')
     expect(byContent.map((h) => h.slug)).toContain('gerty-vllm-stack')
     const byFuzzy = await index.searchTopics('gerty vlm stak')
     expect(byFuzzy.map((h) => h.slug)).toContain('gerty-vllm-stack')
 
-    const resolved = await index.resolveTopic('pve3-llm')
+    const resolved = await index.resolveTopic('hv-c-llm')
     expect(resolved.exact?.slug).toBe('gerty-vllm-stack')
 
     // memory v6: stem child folds onto parent; create gated to update
@@ -124,7 +124,7 @@ describeIf('WikiIndex (PG)', () => {
         slug: 'deckard-40b',
         title: 'Deckard 40B',
         addEntities: ['model:deckard-40b'],
-        currentState: 'Serves on pve3:8003.',
+        currentState: 'Serves on hv-c:8003.',
         verifiedAt: '2026-07-07T00:00:00Z',
       }),
     )
@@ -147,8 +147,8 @@ describeIf('WikiIndex (PG)', () => {
         action: 'create',
         slug: 'deckard-40b-fp8',
         title: 'Deckard 40B FP8',
-        addEntities: ['model:deckard-40b', 'host:pve3'],
-        currentState: 'FP8 variant on pve3.',
+        addEntities: ['model:deckard-40b', 'host:hv-c'],
+        currentState: 'FP8 variant on hv-c.',
         verifiedAt: '2026-07-07T00:00:00Z',
       }),
     )
@@ -156,7 +156,7 @@ describeIf('WikiIndex (PG)', () => {
     // the intersection-count term and only keeps updated_at DESC.
     await pool.query(`UPDATE ros_wiki_topics SET updated_at = now() WHERE slug = 'deckard-40b'`)
     const richerEntity = await index.resolveTopicIdentity('session-shaped-extract', {
-      entities: ['model:deckard-40b', 'host:pve3'],
+      entities: ['model:deckard-40b', 'host:hv-c'],
     })
     expect(richerEntity.match?.slug).toBe('deckard-40b-fp8')
     expect(richerEntity.reason).toBe('entity')
@@ -214,15 +214,15 @@ describeIf('WikiIndex (PG)', () => {
     await index.upsertTopic(
       applyPatch(undefined, {
         action: 'create',
-        slug: 'phildesk',
-        title: 'phildesk',
-        addEntities: ['host:phildesk', 'host:ct999-missing'],
+        slug: 'desktop',
+        title: 'desktop',
+        addEntities: ['host:desktop', 'host:ct999-missing'],
         currentState: 'WSL2 mesh peer.',
         verifiedAt: '2020-01-01T00:00:00Z',
       }),
     )
     const gaps = await index.gaps({ staleLimit: 2 })
-    expect(gaps.stalest[0].slug).toBe('phildesk') // oldest last_verified first
+    expect(gaps.stalest[0].slug).toBe('desktop') // oldest last_verified first
     expect(gaps.redLinks.map((r) => r.entity)).toContain('host:ct999-missing')
   })
 })

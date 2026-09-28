@@ -53,7 +53,7 @@ const base = {
   model: 'grok-4.7',
   cursor_version: '2026.09.26',
   user_email: 'person@example.com',
-  workspace_roots: ['/home/phil/Work'],
+  workspace_roots: ['/home/user/Work'],
   transcript_path: '/tmp/transcript.jsonl',
 }
 

@@ -78,7 +78,7 @@ describe('herdr name encoding', () => {
   it('classify matches tmux: untagged decodable → adopt; tagged mismatch → refuse', () => {
     expect(classifyExistingHerdrSession({ ...sample, command: '', user: '' })).toBe('adopt')
     expect(
-      classifyExistingHerdrSession({ ...sample, command: 'claude', user: 'phil' }, 'coco'),
+      classifyExistingHerdrSession({ ...sample, command: 'claude', user: 'owner' }, 'coco'),
     ).toBe('user-mismatch')
     expect(
       classifyExistingHerdrSession({ ...sample, command: 'claude', user: 'coco' }, 'coco'),

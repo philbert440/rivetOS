@@ -59,9 +59,9 @@ describe('isDenTmuxName / classifyExistingTmuxSession', () => {
       'foreign',
     )
     expect(
-      classifyExistingTmuxSession({ ...sample, command: 'claude', user: 'phil' }, 'coco'),
+      classifyExistingTmuxSession({ ...sample, command: 'claude', user: 'owner' }, 'coco'),
     ).toBe('user-mismatch')
-    expect(classifyExistingTmuxSession({ ...sample, command: '', user: 'phil' }, 'coco')).toBe(
+    expect(classifyExistingTmuxSession({ ...sample, command: '', user: 'owner' }, 'coco')).toBe(
       'user-mismatch',
     )
     expect(

@@ -18,9 +18,9 @@ function hello(owner?: { device: string; self: boolean }): TermHelloFrame {
 
 describe('ownerBanner', () => {
   it('shows for a non-self owner with the device in the label', () => {
-    const b = ownerBanner({ device: "Phil's phone", self: false })
+    const b = ownerBanner({ device: "Pat's phone", self: false })
     expect(b.show).toBe(true)
-    expect(b.label).toBe("This terminal is active on Phil's phone.")
+    expect(b.label).toBe("This terminal is active on Pat's phone.")
   })
 
   it('hides when this device owns the terminal', () => {

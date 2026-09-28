@@ -1,7 +1,7 @@
 package io.rivethub.app.plane
 
 /**
- * Chat-first launch (Phil 2026-09-03/04): opening the app lands IN a session,
+ * Chat-first launch (2026-09-03/04): opening the app lands IN a session,
  * never the conversations list — the list is only reached via the history
  * icon. Preference order: the persisted last session (instant resume, see
  * [LastSession] / [narrowLaunchTarget]), then the most recent session on the
@@ -59,7 +59,7 @@ fun persistableLastSession(sessionKey: String, nodeDenUrl: String, draft: Boolea
     if (draft) null else LastSession(sessionKey, nodeDenUrl.trimEnd('/'))
 
 /**
- * What the initial surface resolves to (Phil 2026-09-04: the conversations
+ * What the initial surface resolves to (2026-09-04: the conversations
  * list is not an app screen — the home IS a session). Mirrors web
  * lib/launch-session.ts `narrowLaunchTarget` case for case:
  *   1. [Resume] — the persisted last session, taken IMMEDIATELY (before the

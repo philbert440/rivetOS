@@ -194,7 +194,7 @@ export const DEVICE_GROUP_GRANTS_SQL = `
 -- Validate against a NON-PROD role before enabling on the live datahub.
 CREATE ROLE rivet_device NOLOGIN;
 
-GRANT CONNECT ON DATABASE :dbname TO rivet_device;  -- replace :dbname with the datahub database (e.g. phil_memory)
+GRANT CONNECT ON DATABASE :dbname TO rivet_device;  -- replace :dbname with the datahub database (e.g. rivet_memory)
 GRANT USAGE ON SCHEMA public TO rivet_device;
 
 -- Capture + recall tables (on-device SQL only — see devices.ts header).

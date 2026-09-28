@@ -18,8 +18,8 @@ import {
   codexThreadTurns,
 } from './codex-protocol-driver.js'
 import type { CodexFrame, CodexRpc } from './codex-rpc.js'
-const id = '89965427-b96f-4d5e-8ad5-c3dd138e33dc'
-const native = '42accb06-524a-47a6-b4b3-0991552914d7'
+const id = '00000000-0000-4000-8000-000000000020'
+const native = '00000000-0000-4000-8000-000000000031'
 const sid = CodexDriver.sessionId(id)
 const cleanup: Array<() => void> = []
 afterEach(() => {

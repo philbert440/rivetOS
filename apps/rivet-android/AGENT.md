@@ -11,19 +11,24 @@ Native Android RivetOS node (Kotlin / Compose): multi-LLM chat, on-device agents
 | Package | `dev.rivet.app` (debug `.debug`, friend `.friend`) |
 | Namespace | `dev.rivet.*` · minSdk 26 · targetSdk 37 · AGPL-3.0 |
 | Build | **Gradle** (not npm). `package.json` is nx graph only |
-| Host | pve3 `/root/rivethub-monorepo-build` (JDK 21, SDK `/opt/android-sdk`) |
+| Host | build machine with JDK 21 and SDK `/opt/android-sdk` |
 
 ## Build
 
 ```bash
-./gradlew :app:assemblePhilDebug
-./gradlew :app:testPhilDebugUnitTest
+./gradlew :app:assemblePersonalDebug
+./gradlew :app:testPersonalDebugUnitTest
 # monorepo root:
 nx apk @rivetos/rivet-android
 ```
 
-- **phil** flavor: personal rootfs. **friend**: sanitized rootfs via `scripts/sanitize-rootfs.sh`.
+- **personal** flavor: personal rootfs. **friend**: sanitized rootfs via `scripts/sanitize-rootfs.sh`.
 - Rootfs is gitignored (`app/src/main/assets/rivet-rootfs.bin`). Never commit it.
+- Overlay `*overlay*.bin` archives are gitignored. Build them with
+  `scripts/build-overlays.sh` (phone is offline from `overlay-src`; memory/den/web
+  and the deb-based overlays need `MEMORY_PLUGIN_STASH` / `DEN_BUNDLE` /
+  `WEB_DIST` / `BUILD_NETWORK_OVERLAYS=1`). Gradle `preBuild` builds the phone
+  overlay via bash so a fresh clone does not depend on the +x bit.
 - Debug APKs are ABI-split (`app-arm64-v8a-*.apk`). `./gradlew clean` after big asset changes.
 
 ## Architecture

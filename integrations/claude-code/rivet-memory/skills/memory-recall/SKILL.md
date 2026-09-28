@@ -83,8 +83,8 @@ vocabulary doesn't co-occur.
 
 Run three queries from different vectors:
 - by **service name** (`"frigate"`, `"nginx"`)
-- by **host nickname** (`"minipc"`, `"deckard"`, `"pve3"`)
-- by **subnet prefix** (`"10.4.20"`, `"192.168.1"`)
+- by **host nickname** (`"lab-host"`, `"edge-box"`)
+- by **subnet prefix** (`"192.0.2"`, `"198.51.100"`)
 - by **role** (`"NVR"`, `"router"`, `"WAP"`)
 
 Three queries from different vectors beats one query, every time.
@@ -106,8 +106,7 @@ that as a **search-quality signal** — re-search with a different mode or
 nmap, asking the user, etc).
 
 After locating a fact via probing or pushback, write a synonym-bridging memory
-entry (see `host-inventory.md` and `minipc-host.md` for the canonical pattern)
-so the next session finds it from any angle.
+entry so the next session finds it from any angle.
 
 ## Decision flow
 
@@ -158,13 +157,13 @@ or evening for any US local timezone.
 **"What's the frigate IP?"**
 → Topic question, no timeframe. Run three searches:
 1. `memory_search("frigate NVR")` — semantic, by role
-2. `memory_search("minipc")` — by host nickname
-3. `memory_search("10.4.20")` — by subnet, with `mode: "trigram"` if semantic is thin
+2. `memory_search("lab-host")` — by host nickname
+3. `memory_search("192.0.2")` — by subnet, with `mode: "trigram"` if semantic is thin
 
 **"Did we touch the router today?"**
 → Time-bounded ("today"). Compute local-today 00:00 → UTC, browse from
 there. Then scan results for router-related entries. Don't search by
-keyword first — the conversation might be tagged "openwrt", "192.168.1.1",
+keyword first — the conversation might be tagged "openwrt", "198.51.100.1",
 "WAP", "DHCP", any of which a single semantic query could miss.
 
 **"Have we seen this error before?"**
@@ -172,30 +171,12 @@ keyword first — the conversation might be tagged "openwrt", "192.168.1.1",
 string in `mode: "trigram"` first — error messages are literal tokens, not
 semantic concepts.
 
-## Case study: 2026-05-23 WAP-DHCP incident
+## Why this exists
 
-Phil reported a new WAP wasn't giving DHCP. I ran `memory_search` for
-`"tp-link omada EAP setup"`, `"added wireless AP today"`, `"192.168.1.3"`,
-`"daughter tablet wifi DHCP"` — **all returned zero hits**. I started
-recommending external probes (nmap, ssh-by-hand) instead.
+Made-up example, not a real incident: an agent is asked what happened to a
+lab service that morning. Topic search for the service name, a generic host
+nickname, and a documentation-range subnet all return empty. Only
+`memory_browse` over the morning window recovers the thread.
 
-Phil twice nudged me: first "check memory from this morning", then "add a
-date range to your query". Only then did I switch to:
-
-```
-memory_browse(since="2026-05-23T08:00:00Z", before="2026-05-23T14:30:00Z")
-```
-
-That call surfaced the **entire morning conversation**: WAP IP, MAC, SSH
-creds, the duplicate static-lease that broke dnsmasq. Everything I needed.
-
-The failure wasn't the tools. It was reaching for the wrong tool first. This
-skill exists so future-me doesn't burn the same ten minutes.
-
-## Related memories
-
-- `feedback-memory-search-discipline.md` — the rule source
-- `host-inventory.md` — the synonym-bridging entry pattern
-- `minipc-host.md` — example of a dual-homed host write-up that survives
-  vocabulary drift
-- `project-rivetos-memory-cc-plugin.md` — why this plugin exists
+The tools were fine. The first reflex was wrong. This skill exists so the
+next session does not repeat that.

@@ -32,7 +32,7 @@ import io.rivethub.app.ui.theme.RivetTheme
 import io.rivethub.app.ui.theme.RivetType
 
 /**
- * The launch surface while the initial session resolves (Phil 2026-09-04: the
+ * The launch surface while the initial session resolves (2026-09-04: the
  * home is a session, never the conversations list — web `ChatLaunchLoading`,
  * chat.tsx): the wordmark TopBar (it renders on every narrow non-session
  * screen) over the centered DenBot + "Loading most recent conversation…"

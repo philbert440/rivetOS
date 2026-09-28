@@ -297,7 +297,7 @@ describe('GET /api/harnesses', () => {
 })
 
 describe('more than one driver on a node', () => {
-  const GROK_UUID = '019e5f82-f0e5-7d41-a38c-4eefced7e570'
+  const GROK_UUID = '00000000-0000-4000-8000-000000000040'
   const GROK_SID = `grok-build:${GROK_UUID}` as SessionId
   /** hermes ids are its own `YYYYMMDD_HHMMSS_<hex>`, never uuids. */
   const HERMES_NATIVE = '20260802_225647_6ad0b9'
@@ -1145,7 +1145,7 @@ describe('POST /api/harness-sessions/:enc/approvals/:reqId', () => {
     expect(await res.json()).toEqual({ ok: true, sessionId: SID, requestId: 'req-1' })
     expect(resolved).toEqual([{ sessionId: SID, requestId: 'req-1', decision: 'allow' }])
 
-    const permId = 'perm:f1191d56-d41b-4126-b07d-d0c4f92ea3da:2'
+    const permId = 'perm:00000000-0000-4000-8000-000000000042:2'
     const encoded = await post(
       base,
       `/api/harness-sessions/${enc(SID)}/approvals/${encodeURIComponent(permId)}`,
@@ -1184,7 +1184,7 @@ describe('POST /api/harness-sessions/:enc/prompts/:promptId', () => {
 
     // Screen-read prompt ids carry colons; clients percent-encode the path segment and the
     // driver must see the decoded id (a raw `screen%3A…` lookup 404s as unknown_prompt).
-    const screenId = 'screen:f1191d56-d41b-4126-b07d-d0c4f92ea3da:1'
+    const screenId = 'screen:00000000-0000-4000-8000-000000000042:1'
     const encoded = await post(
       base,
       `/api/harness-sessions/${enc(SID)}/prompts/${encodeURIComponent(screenId)}`,

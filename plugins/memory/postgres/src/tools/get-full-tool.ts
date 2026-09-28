@@ -126,8 +126,8 @@ function formatToolResult(update: any): string | null {
  * Diagnose a missing capture JSONL path for memory_get_full.
  *
  * Daily-use footgun (residual from #431 / #482): capture stores an absolute
- * path from the node that ran the session. Central MCP (phildesk, datahub)
- * cannot read `/home/rivet/.grok/...` on ct112 etc., but the old message
+ * path from the node that ran the session. Central MCP (desktop, datahub)
+ * cannot read `/home/rivet/.grok/...` on node-c etc., but the old message
  * said "gone or invalid — unrecoverable", so agents stopped trying and
  * treated multi-host layout as permanent data loss.
  *
@@ -139,10 +139,16 @@ export function formatMissingJsonlMessage(file: string, opts?: { agent?: string 
 
   // Path shape → which machine likely owns the session files.
   let layoutHint: string
+  const home = (process.env.HOME ?? '').replace(/\/$/, '')
+  const deskHome =
+    (home && !home.startsWith('/home/rivet') && file.startsWith(`${home}/`)) ||
+    file.startsWith('/Users/') ||
+    /^\/home\/(?!rivet(?:\/|$))/.test(file)
+
   if (file.startsWith('/home/rivet/')) {
     layoutHint =
-      'Path is under /home/rivet/ — fleet agent home. The JSONL almost certainly lives on the mesh node that ran that harness session (ctNNN / agent CT), not on the host serving this MCP query.'
-  } else if (file.startsWith('/home/philip/') || file.startsWith('/Users/')) {
+      'Path is under /home/rivet/ — fleet agent home. The JSONL almost certainly lives on the mesh node that ran that harness session, not on the host serving this MCP query.'
+  } else if (deskHome) {
     layoutHint =
       'Path is a desk/user home directory. The JSONL is local to that machine’s interactive session store, not shared mesh storage.'
   } else if (

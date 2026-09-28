@@ -85,9 +85,9 @@ class HubReducersTest {
 
     @Test fun `locate tags the node without rewriting the item key`() {
         val item = ChatItem("k", ChatItemKind.DRAFT, "new conversation")
-        val loc = locate(item, "ct115", "ct115", "https://192.0.2.10:5174")
+        val loc = locate(item, "node-f", "node-f", "https://192.0.2.10:5174")
         assertEquals("k", loc.item.key)
-        assertEquals("ct115", loc.nodeId)
+        assertEquals("node-f", loc.nodeId)
         assertEquals("https://192.0.2.10:5174", loc.nodeDenUrl)
     }
 }

@@ -54,17 +54,17 @@ function makeEngine(nodes: MeshNode[]): MeshDelegationEngine {
     tls: { ca: '', cert: '', key: '' },
     httpsDispatcher: {}, // skip dispatcher auto-create
     localAgents: ['local', 'grok'],
-    nodeName: 'ct114',
+    nodeName: 'node-e',
   })
 }
 
 describe('MeshDelegationEngine roster', () => {
   it('lists local agents and remote mesh agents, excluding self', async () => {
     const engine = makeEngine([
-      node('ct114', ['local', 'grok']), // self — excluded from remote
-      node('ct115', ['opus', 'grok']),
-      node('ct112', ['grok', 'grok-fast']),
-      node('ct113', ['local']),
+      node('node-e', ['local', 'grok']), // self — excluded from remote
+      node('node-f', ['opus', 'grok']),
+      node('node-c', ['grok', 'grok-fast']),
+      node('node-d', ['local']),
     ])
 
     const reachable = await engine.listReachableAgents()
@@ -75,24 +75,24 @@ describe('MeshDelegationEngine roster', () => {
     expect(byId.get('grok')?.local).toBe(true)
     // remote-only agent is discovered with its location
     expect(byId.get('opus')?.local).toBe(false)
-    expect(byId.get('opus')?.remoteNodes).toContain('ct115')
+    expect(byId.get('opus')?.remoteNodes).toContain('node-f')
     expect(byId.get('grok-fast')?.local).toBe(false)
-    expect(byId.get('grok-fast')?.remoteNodes).toContain('ct112')
-    // self's own agents are not advertised as "remote on ct114"
-    expect(byId.get('grok')?.remoteNodes).not.toContain('ct114')
+    expect(byId.get('grok-fast')?.remoteNodes).toContain('node-c')
+    // self's own agents are not advertised as "remote on node-e"
+    expect(byId.get('grok')?.remoteNodes).not.toContain('node-e')
   })
 
   it('ignores offline nodes', async () => {
     const engine = makeEngine([
-      node('ct114', ['local', 'grok']),
-      node('ct115', ['opus'], 'offline'),
+      node('node-e', ['local', 'grok']),
+      node('node-f', ['opus'], 'offline'),
     ])
     const ids = (await engine.listReachableAgents()).map((e) => e.agentId)
     expect(ids).not.toContain('opus')
   })
 
   it('advertises the roster in the live delegate_task description', async () => {
-    const engine = makeEngine([node('ct114', ['local', 'grok']), node('ct115', ['opus'])])
+    const engine = makeEngine([node('node-e', ['local', 'grok']), node('node-f', ['opus'])])
     // Let the constructor's primed refresh settle.
     await new Promise((r) => setTimeout(r, 10))
 
@@ -100,7 +100,7 @@ describe('MeshDelegationEngine roster', () => {
     const desc = tool.description
     expect(desc).toContain('delegate to right now')
     expect(desc).toContain('opus')
-    expect(desc).toContain('remote: ct115')
+    expect(desc).toContain('remote: node-f')
     expect(desc).toContain('local')
   })
 })
@@ -125,7 +125,7 @@ function makePgEngine(
     tls: { ca: '', cert: '', key: '' },
     httpsDispatcher: {},
     localAgents: ['local'],
-    nodeName: 'ct115',
+    nodeName: 'node-f',
     taskStore: store,
     waiter: createTaskCompletionWaiter({ store, pollFallbackMs: 10 }),
     transport,
@@ -134,13 +134,13 @@ function makePgEngine(
 }
 
 describe('MeshDelegationEngine postgres transport', () => {
-  const remote = [node('ct112', ['grok'])]
+  const remote = [node('node-c', ['grok'])]
 
   it('creates a node_affinity mesh task and returns the terminal result', async () => {
     // Simulated remote runner: claim + finish whatever gets enqueued.
     const store: InMemoryTaskStore = new InMemoryTaskStore((id) => {
       void (async () => {
-        await store.claim(id, 'ct112')
+        await store.claim(id, 'node-c')
         await store.finish(id, 'completed', {
           verdict: 'completed',
           summary: 'remote grok says hi',
@@ -164,12 +164,12 @@ describe('MeshDelegationEngine postgres transport', () => {
     const rows = await store.list()
     expect(rows).toHaveLength(1)
     expect(rows[0].origin).toBe('mesh')
-    expect(rows[0].nodeAffinity).toBe('ct112')
+    expect(rows[0].nodeAffinity).toBe('node-c')
     expect(rows[0].requestedBy).toBe('local')
     expect(rows[0].chainDepth).toBe(2)
     expect(rows[0].spec).toMatchObject({
       delegation: true,
-      meshFrom: 'ct115',
+      meshFrom: 'node-f',
       excludeTools: ['delegate_task'],
     })
     expect(rows[0].maxAttempts).toBe(1)
@@ -191,7 +191,7 @@ describe('MeshDelegationEngine postgres transport', () => {
   it('failed remote run maps to failed with the error text', async () => {
     const store: InMemoryTaskStore = new InMemoryTaskStore((id) => {
       void (async () => {
-        await store.claim(id, 'ct112')
+        await store.claim(id, 'node-c')
         await store.finish(id, 'failed', {
           verdict: 'failed',
           summary: 'boom',
@@ -243,7 +243,7 @@ function presetDouble(found: boolean, rosterLine: string) {
   const engine = {
     find: async (handle: string) =>
       found && handle === 'reviewer'
-        ? { id: 'preset-1', name: 'reviewer', node: 'ct116', harnessId: 'codex' }
+        ? { id: 'preset-1', name: 'reviewer', node: 'node-g', harnessId: 'codex' }
         : undefined,
     delegate,
     rosterText: () => rosterLine,
@@ -253,7 +253,7 @@ function presetDouble(found: boolean, rosterLine: string) {
             {
               id: 'preset-1',
               name: 'reviewer',
-              node: 'ct116',
+              node: 'node-g',
               local: false,
               directory: '/agents/reviewer',
             },
@@ -265,17 +265,17 @@ function presetDouble(found: boolean, rosterLine: string) {
 
 describe('MeshDelegationEngine presets', () => {
   it('resolves a preset before the mesh registry', async () => {
-    const findByAgent = vi.fn(async () => [node('ct112', ['reviewer'])])
-    const { delegate, engine: presets } = presetDouble(true, '- reviewer (agent: codex on ct116)')
+    const findByAgent = vi.fn(async () => [node('node-c', ['reviewer'])])
+    const { delegate, engine: presets } = presetDouble(true, '- reviewer (agent: codex on node-g)')
     const localDelegate = vi.fn()
     const engine = new MeshDelegationEngine({
       localEngine: { delegate: localDelegate } as unknown as DelegationEngine,
       router: { getAgents: () => [] } as unknown as Router,
-      meshRegistry: { ...makeRegistry([node('ct112', ['reviewer'])]), findByAgent },
+      meshRegistry: { ...makeRegistry([node('node-c', ['reviewer'])]), findByAgent },
       tls: { ca: '', cert: '', key: '' },
       httpsDispatcher: {},
       localAgents: ['local'],
-      nodeName: 'ct115',
+      nodeName: 'node-f',
       presets,
     })
 
@@ -287,8 +287,8 @@ describe('MeshDelegationEngine presets', () => {
   })
 
   it('a config agent with the same id as a preset wins', async () => {
-    const findByAgent = vi.fn(async () => [node('ct112', ['reviewer'])])
-    const { delegate, engine: presets } = presetDouble(true, '- reviewer (agent: codex on ct116)')
+    const findByAgent = vi.fn(async () => [node('node-c', ['reviewer'])])
+    const { delegate, engine: presets } = presetDouble(true, '- reviewer (agent: codex on node-g)')
     const localDelegate = vi.fn(async () => ({
       status: 'completed' as const,
       response: 'local wins',
@@ -298,11 +298,11 @@ describe('MeshDelegationEngine presets', () => {
       router: {
         getAgents: () => [{ id: 'reviewer', provider: 'xai', name: 'reviewer' }],
       } as unknown as Router,
-      meshRegistry: { ...makeRegistry([node('ct112', ['reviewer'])]), findByAgent },
+      meshRegistry: { ...makeRegistry([node('node-c', ['reviewer'])]), findByAgent },
       tls: { ca: '', cert: '', key: '' },
       httpsDispatcher: {},
       localAgents: ['reviewer'],
-      nodeName: 'ct115',
+      nodeName: 'node-f',
       presets,
     })
 
@@ -316,26 +316,26 @@ describe('MeshDelegationEngine presets', () => {
   it('roster advertises presets', async () => {
     const { engine: presets } = presetDouble(
       true,
-      '- reviewer (agent: codex on ct116, dir /agents/reviewer)',
+      '- reviewer (agent: codex on node-g, dir /agents/reviewer)',
     )
     const engine = new MeshDelegationEngine({
       localEngine: {} as DelegationEngine,
       router: { getAgents: () => [] } as unknown as Router,
-      meshRegistry: makeRegistry([node('ct114', ['local', 'grok']), node('ct115', ['opus'])]),
+      meshRegistry: makeRegistry([node('node-e', ['local', 'grok']), node('node-f', ['opus'])]),
       tls: { ca: '', cert: '', key: '' },
       httpsDispatcher: {},
       localAgents: ['local', 'grok'],
-      nodeName: 'ct114',
+      nodeName: 'node-e',
       presets,
     })
     await new Promise((r) => setTimeout(r, 10))
     const desc = engine.createDelegationTool().description
     expect(desc).toContain('Agents (RivetHub presets):')
-    expect(desc).toContain('reviewer (agent: codex on ct116')
+    expect(desc).toContain('reviewer (agent: codex on node-g')
   })
 
   it('not-found message lists preset names', async () => {
-    const { engine: presets } = presetDouble(false, '- reviewer (agent: codex on ct116)')
+    const { engine: presets } = presetDouble(false, '- reviewer (agent: codex on node-g)')
     const engine = new MeshDelegationEngine({
       localEngine: {} as DelegationEngine,
       router: { getAgents: () => [] } as unknown as Router,
@@ -343,7 +343,7 @@ describe('MeshDelegationEngine presets', () => {
       tls: { ca: '', cert: '', key: '' },
       httpsDispatcher: {},
       localAgents: ['local'],
-      nodeName: 'ct115',
+      nodeName: 'node-f',
       presets,
     })
     const result = await engine.delegate({ fromAgent: 'local', toAgent: 'nobody', task: 'x' })

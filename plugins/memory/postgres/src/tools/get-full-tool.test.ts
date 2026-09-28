@@ -35,7 +35,7 @@ describe('formatMissingJsonlMessage', () => {
   })
 
   it('flags desk-user home paths distinctly', () => {
-    const msg = formatMissingJsonlMessage('/home/philip/.grok/sessions/foo/updates.jsonl')
+    const msg = formatMissingJsonlMessage('/home/user/.grok/sessions/foo/updates.jsonl')
     expect(msg).toContain('desk/user home')
     expect(msg).not.toMatch(/unrecoverable/i)
   })
@@ -258,7 +258,7 @@ describe('extractFullFromLine', () => {
 
   it('extracts qwen-code gemini-style user/assistant/tool_result lines', () => {
     const user = JSON.stringify({
-      uuid: '181c8cae-c294-4d77-b993-166db8e5788b',
+      uuid: '00000000-0000-4000-8000-000000000047',
       sessionId: '11111111-2222-4333-8444-555555555555',
       type: 'user',
       provenance: 'real_user',
@@ -334,7 +334,7 @@ describe('isCaptureTranscriptPath', () => {
     expect(isCaptureTranscriptPath('/tmp/session.jsonl.zst')).toBe(true)
     expect(
       isCaptureTranscriptPath(
-        '/home/rivet/.codex/sessions/2026/09/07/rollout-2026-09-07T12-00-00-89965427-b96f-4d5e-8ad5-c3dd138e33dc.jsonl',
+        '/home/rivet/.codex/sessions/2026/09/07/rollout-2020-01-01T00-00-00-00000000-0000-4000-8000-000000000020.jsonl',
       ),
     ).toBe(true)
     expect(isCaptureTranscriptPath('/tmp/notes.txt')).toBe(false)
@@ -343,7 +343,7 @@ describe('isCaptureTranscriptPath', () => {
 
 describe('isCodexSessionKey', () => {
   it('accepts codex:<uuid> and rejects other schemes', () => {
-    expect(isCodexSessionKey('codex:89965427-b96f-4d5e-8ad5-c3dd138e33dc')).toBe(true)
+    expect(isCodexSessionKey('codex:00000000-0000-4000-8000-000000000020')).toBe(true)
     expect(isCodexSessionKey('kimi-code:abc')).toBe(false)
     expect(isCodexSessionKey('codex:not-a-uuid')).toBe(false)
     expect(isCodexSessionKey(null)).toBe(false)
@@ -453,11 +453,11 @@ describe('createGetFullTool end-to-end (stub pool + real temp JSONL)', () => {
   it('recovers a truncated Codex rollout line from disk', async () => {
     const big = 'z'.repeat(30_000)
     const dir = mkdtempSync(join(tmpdir(), 'getfull-codex-'))
-    const file = join(dir, 'rollout-2026-09-07T12-00-00-89965427-b96f-4d5e-8ad5-c3dd138e33dc.jsonl')
+    const file = join(dir, 'rollout-2020-01-01T00-00-00-00000000-0000-4000-8000-000000000020.jsonl')
     const lines = [
       JSON.stringify({
         type: 'session_meta',
-        payload: { id: '89965427-b96f-4d5e-8ad5-c3dd138e33dc' },
+        payload: { id: '00000000-0000-4000-8000-000000000020' },
       }),
       JSON.stringify({
         type: 'response_item',
@@ -495,12 +495,12 @@ describe('createGetFullTool end-to-end (stub pool + real temp JSONL)', () => {
     const bigThink = 'r'.repeat(20_000)
     const bigResult = 't'.repeat(25_000)
     const dir = mkdtempSync(join(tmpdir(), 'getfull-pi-'))
-    const file = join(dir, '2026-09-11T14-25-16-803Z_01a091f5-6deb-723d-8737-eb83070c9154.jsonl')
+    const file = join(dir, '2020-01-01T00-00-00-000Z_00000000-0000-4000-8000-000000000048.jsonl')
     const lines = [
       JSON.stringify({
         type: 'session',
         version: 3,
-        id: '01a091f5-6deb-723d-8737-eb83070c9154',
+        id: '00000000-0000-4000-8000-000000000048',
       }),
       JSON.stringify({
         type: 'message',

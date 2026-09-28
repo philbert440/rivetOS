@@ -21,16 +21,16 @@ const sshExecCaptureMock = vi.mocked(sshExecCapture)
 const SNIPPET = `${ENROLL_SNIPPET_MARKER}. Merge into the node's rivet.config.yaml.
 mesh:
   enabled: true
-  node_name: "ct110"
+  node_name: "node-a"
 `
 
 const MESH_ONE = `{
   "version": 1,
   "updatedAt": 1,
   "nodes": {
-    "ct110": {
-      "id": "ct110",
-      "name": "ct110",
+    "node-a": {
+      "id": "node-a",
+      "name": "node-a",
       "host": "192.0.2.10",
       "port": 3000,
       "status": "offline"
@@ -43,16 +43,16 @@ const MESH_TWO = `{
   "version": 1,
   "updatedAt": 2,
   "nodes": {
-    "ct110": {
-      "id": "ct110",
-      "name": "ct110",
+    "node-a": {
+      "id": "node-a",
+      "name": "node-a",
       "host": "192.0.2.10",
       "port": 3000,
       "status": "offline"
     },
-    "phildesk": {
-      "id": "phildesk",
-      "name": "phildesk",
+    "desktop": {
+      "id": "desktop",
+      "name": "desktop",
       "host": "192.0.2.20",
       "port": 3000,
       "status": "offline"
@@ -63,8 +63,8 @@ const MESH_TWO = `{
 
 function enrollB64(): string {
   return packTarGz({
-    'ct110.crt': 'CERT',
-    'ct110.key': 'KEY',
+    'node-a.crt': 'CERT',
+    'node-a.key': 'KEY',
     'ca-chain.pem': 'CHAIN',
     'mesh.json': MESH_ONE,
     'node-config-snippet.yaml': SNIPPET,
@@ -139,21 +139,21 @@ describe('mesh enroll (mocked ssh)', () => {
     sshExecCaptureMock.mockImplementation(async (_host, command) => {
       if (command === 'echo ok') return { stdout: 'ok\n', stderr: '' }
       if (command.includes('enroll')) {
-        return { stdout: b64, stderr: 'rivethub-hub: enrolled ct110\n' }
+        return { stdout: b64, stderr: 'rivethub-hub: enrolled node-a\n' }
       }
       throw new Error(`unexpected ssh command: ${command}`)
     })
 
-    await meshEnroll(['rivet@192.0.2.1', '--name', 'ct110', '--advertise', '192.0.2.10'])
+    await meshEnroll(['rivet@192.0.2.1', '--name', 'node-a', '--advertise', '192.0.2.10'])
 
     expect(sshExecCaptureMock.mock.calls[0]?.[1]).toBe('echo ok')
     const enrollCmd = sshExecCaptureMock.mock.calls[1]?.[1] ?? ''
-    expect(enrollCmd).toContain("enroll 'ct110' '192.0.2.10'")
+    expect(enrollCmd).toContain("enroll 'node-a' '192.0.2.10'")
     expect(enrollCmd).toContain('PATH=/usr/local/bin:/usr/bin:/bin:$PATH')
 
     const shared = process.env.RIVETOS_SHARED_DIR!
-    expect(readFileSync(join(shared, 'rivet-ca', 'issued', 'ct110.crt'), 'utf-8')).toBe('CERT')
-    expect(readFileSync(join(shared, 'mesh.json'), 'utf-8')).toContain('ct110')
+    expect(readFileSync(join(shared, 'rivet-ca', 'issued', 'node-a.crt'), 'utf-8')).toBe('CERT')
+    expect(readFileSync(join(shared, 'mesh.json'), 'utf-8')).toContain('node-a')
     const config = readFileSync(join(process.env.HOME!, '.rivetos', 'config.yaml'), 'utf-8')
     expect(config).toContain(ENROLL_SNIPPET_MARKER)
     expect(config).toMatch(/tls:\s*true/)
@@ -170,12 +170,12 @@ describe('mesh enroll (mocked ssh)', () => {
       throw new Error(`unexpected ssh command: ${command}`)
     })
 
-    await meshEnroll(['rivet@192.0.2.1', '--name', 'ct110'])
+    await meshEnroll(['rivet@192.0.2.1', '--name', 'node-a'])
 
     const config = readFileSync(join(process.env.HOME!, '.rivetos', 'config.yaml'), 'utf-8')
     expect(config).toContain(ENROLL_SNIPPET_MARKER)
     expect(config).toMatch(/tls:\s*true/)
-    expect(config).toMatch(/node_name:\s*"?ct110"?/)
+    expect(config).toMatch(/node_name:\s*"?node-a"?/)
     expect(config).not.toMatch(/advertise_host:/)
   })
 
@@ -185,7 +185,7 @@ describe('mesh enroll (mocked ssh)', () => {
       if (command === 'echo ok') return { stdout: 'ok\n', stderr: '' }
       return { stdout: b64, stderr: '' }
     })
-    const args = ['rivet@192.0.2.1', '--name', 'ct110', '--advertise', '192.0.2.10']
+    const args = ['rivet@192.0.2.1', '--name', 'node-a', '--advertise', '192.0.2.10']
     await meshEnroll(args)
     await meshEnroll(args)
     const config = readFileSync(join(process.env.HOME!, '.rivetos', 'config.yaml'), 'utf-8')
@@ -200,7 +200,7 @@ describe('mesh enroll (mocked ssh)', () => {
       }),
     )
     await expect(
-      meshEnroll(['rivet@192.0.2.1', '--name', 'ct110', '--advertise', '192.0.2.10']),
+      meshEnroll(['rivet@192.0.2.1', '--name', 'node-a', '--advertise', '192.0.2.10']),
     ).rejects.toThrow(/ssh-copy-id rivet@192.0.2.1/)
     expect(sshExecCaptureMock).toHaveBeenCalledTimes(1)
   })
@@ -214,7 +214,7 @@ describe('mesh enroll (mocked ssh)', () => {
       })
     })
     await expect(
-      meshEnroll(['rivet@192.0.2.1', '--name', 'ct110', '--advertise', '192.0.2.10']),
+      meshEnroll(['rivet@192.0.2.1', '--name', 'node-a', '--advertise', '192.0.2.10']),
     ).rejects.toThrow(/hub helper rivethub-hub not found/)
   })
 
@@ -224,7 +224,7 @@ describe('mesh enroll (mocked ssh)', () => {
       return { stdout: 'not-valid-base64-$$$', stderr: '' }
     })
     await expect(
-      meshEnroll(['rivet@192.0.2.1', '--name', 'ct110', '--advertise', '192.0.2.10']),
+      meshEnroll(['rivet@192.0.2.1', '--name', 'node-a', '--advertise', '192.0.2.10']),
     ).rejects.toThrow(/tarball/)
   })
 
@@ -237,7 +237,7 @@ describe('mesh enroll (mocked ssh)', () => {
       })
     })
     try {
-      await meshEnroll(['rivet@192.0.2.1', '--name', 'ct110', '--advertise', '192.0.2.10'])
+      await meshEnroll(['rivet@192.0.2.1', '--name', 'node-a', '--advertise', '192.0.2.10'])
       throw new Error('should throw')
     } catch (err) {
       expect(err).toBeInstanceOf(MeshHubError)
@@ -258,7 +258,7 @@ describe('mesh sync / renew (mocked ssh)', () => {
     })
     await meshSync(['rivet@datahub'])
     const written = readFileSync(join(process.env.RIVETOS_SHARED_DIR!, 'mesh.json'), 'utf-8')
-    expect(JSON.parse(written).nodes.phildesk.name).toBe('phildesk')
+    expect(JSON.parse(written).nodes.desktop.name).toBe('desktop')
     const text = vi.mocked(console.log).mock.calls.flat().join('\n')
     expect(text).toMatch(/1 → 2 nodes \(\+1\)/)
   })
@@ -285,12 +285,12 @@ describe('mesh sync / renew (mocked ssh)', () => {
       if (command.includes('renew')) return { stdout: b64, stderr: '' }
       throw new Error(`unexpected ssh command: ${command}`)
     })
-    await meshRenew(['rivet@datahub', '--name', 'ct110'])
+    await meshRenew(['rivet@datahub', '--name', 'node-a'])
     const enrollCmd = sshExecCaptureMock.mock.calls[1]?.[1] ?? ''
-    expect(enrollCmd).toContain("renew 'ct110'")
+    expect(enrollCmd).toContain("renew 'node-a'")
     expect(enrollCmd).not.toContain('enroll')
     expect(
-      readFileSync(join(process.env.RIVETOS_SHARED_DIR!, 'rivet-ca', 'issued', 'ct110.crt'), 'utf-8'),
+      readFileSync(join(process.env.RIVETOS_SHARED_DIR!, 'rivet-ca', 'issued', 'node-a.crt'), 'utf-8'),
     ).toBe('CERT')
   })
 })
@@ -313,24 +313,24 @@ const node = (id: string, extra: Record<string, unknown> = {}) => ({
 
 describe('forgetBlockedReason', () => {
   it('blocks the local node', () => {
-    expect(forgetBlockedReason(node('phildesk') as never, 'phildesk', NOW)).toMatch(/this node/)
+    expect(forgetBlockedReason(node('desktop') as never, 'desktop', NOW)).toMatch(/this node/)
   })
 
   it('blocks a node that heartbeat inside the live window', () => {
-    const recent = node('ct112', { lastSeen: NOW - 60_000 })
-    expect(forgetBlockedReason(recent as never, 'phildesk', NOW)).toMatch(/heartbeat/)
+    const recent = node('node-c', { lastSeen: NOW - 60_000 })
+    expect(forgetBlockedReason(recent as never, 'desktop', NOW)).toMatch(/heartbeat/)
   })
 
   it('allows a long-dead node', () => {
     const dead = node('grokbot', { lastSeen: NOW - 48 * 3600_000 })
-    expect(forgetBlockedReason(dead as never, 'phildesk', NOW)).toBeNull()
+    expect(forgetBlockedReason(dead as never, 'desktop', NOW)).toBeNull()
   })
 
   // A decommissioned peer keeps whatever status it died with — the timestamp
   // is the signal, not the field.
   it('allows a node whose status still reads online but never heartbeat', () => {
     const stale = node('datahub', { status: 'online', lastSeen: 0 })
-    expect(forgetBlockedReason(stale as never, 'phildesk', NOW)).toBeNull()
+    expect(forgetBlockedReason(stale as never, 'desktop', NOW)).toBeNull()
   })
 })
 
@@ -340,11 +340,11 @@ describe('mesh forget', () => {
   it('removes a dead node and reports the delta', async () => {
     writeFileSync(
       meshPath(),
-      meshWith({ ct110: node('ct110'), grokbot: node('grokbot', { host: '192.0.2.99' }) }),
+      meshWith({ 'node-a': node('node-a'), grokbot: node('grokbot', { host: '192.0.2.99' }) }),
     )
     await meshForget('grokbot')
     const after = JSON.parse(readFileSync(meshPath(), 'utf-8')) as { nodes: Record<string, unknown> }
-    expect(Object.keys(after.nodes)).toEqual(['ct110'])
+    expect(Object.keys(after.nodes)).toEqual(['node-a'])
     const text = vi.mocked(console.log).mock.calls.flat().join('\n')
     expect(text).toMatch(/2 → 1 nodes/)
   })
@@ -357,21 +357,21 @@ describe('mesh forget', () => {
   })
 
   it('refuses a node that heartbeat recently, and leaves the file alone', async () => {
-    const body = meshWith({ ct112: node('ct112', { lastSeen: Date.now() }) })
+    const body = meshWith({ 'node-c': node('node-c', { lastSeen: Date.now() }) })
     writeFileSync(meshPath(), body)
-    await expect(meshForget('ct112')).rejects.toBeInstanceOf(MeshHubError)
+    await expect(meshForget('node-c')).rejects.toBeInstanceOf(MeshHubError)
     expect(readFileSync(meshPath(), 'utf-8')).toBe(body)
   })
 
   it('--force overrides the live guard', async () => {
-    writeFileSync(meshPath(), meshWith({ ct112: node('ct112', { lastSeen: Date.now() }) }))
-    await meshForget('ct112', { force: true })
+    writeFileSync(meshPath(), meshWith({ 'node-c': node('node-c', { lastSeen: Date.now() }) }))
+    await meshForget('node-c', { force: true })
     const after = JSON.parse(readFileSync(meshPath(), 'utf-8')) as { nodes: Record<string, unknown> }
     expect(Object.keys(after.nodes)).toEqual([])
   })
 
   it('rejects an unknown node without touching mesh.json', async () => {
-    const body = meshWith({ ct110: node('ct110') })
+    const body = meshWith({ 'node-a': node('node-a') })
     writeFileSync(meshPath(), body)
     await expect(meshForget('nope')).rejects.toThrow(/No mesh node "nope"/)
     expect(readFileSync(meshPath(), 'utf-8')).toBe(body)

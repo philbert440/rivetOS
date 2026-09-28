@@ -145,7 +145,7 @@ describe('registerMdnsAdvertiser', () => {
   })
 
   it('logs advertised instance name on up (dots become dashes)', async () => {
-    const service = Object.assign(new EventEmitter(), { name: 'ct115-lan' })
+    const service = Object.assign(new EventEmitter(), { name: 'node-f-lan' })
     class Bonjour {
       publish = vi.fn(() => service)
       unpublishAll = vi.fn((cb?: () => void) => {
@@ -162,7 +162,7 @@ describe('registerMdnsAdvertiser', () => {
     expect(
       info.mock.calls.some(
         (call) =>
-          String(call[0]).includes('mDNS advertised ct115-lan') &&
+          String(call[0]).includes('mDNS advertised node-f-lan') &&
           String(call[0]).includes('rivethub'),
       ),
     ).toBe(true)

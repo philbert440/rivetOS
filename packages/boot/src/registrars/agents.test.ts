@@ -380,9 +380,9 @@ describe('registerAgentTools shared pool wiring', () => {
   it('registers a whitespace-padded mesh.node_name trimmed', async () => {
     vi.stubEnv('HOSTNAME', 'from-host')
     const { runtime } = stubRuntime({})
-    await registerAgentTools(runtime, meshConfig('  ct115  '), '/tmp')
-    expect(coreMocks.nodeNames).toEqual(['ct115'])
-    expect(coreMocks.started).toEqual([{ id: 'ct115', name: 'ct115' }])
+    await registerAgentTools(runtime, meshConfig('  node-f  '), '/tmp')
+    expect(coreMocks.nodeNames).toEqual(['node-f'])
+    expect(coreMocks.started).toEqual([{ id: 'node-f', name: 'node-f' }])
   })
 
   it('registers HOSTNAME when mesh.node_name is absent', async () => {
@@ -403,7 +403,7 @@ describe('registerAgentTools shared pool wiring', () => {
       runtime,
       {
         ...config(),
-        mesh: { enabled: true, tls: true, node_name: 'ct115' },
+        mesh: { enabled: true, tls: true, node_name: 'node-f' },
       },
       '/tmp',
     )

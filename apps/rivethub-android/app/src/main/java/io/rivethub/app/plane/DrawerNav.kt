@@ -81,8 +81,8 @@ fun drawerTabRoute(dest: DrawerDest): HubTab? = hubTabOf(dest)
 fun drawerOpensMemoryScreen(dest: DrawerDest): Boolean = dest == DrawerDest.Memory
 
 /**
- * Left-nav Conversations → the CHAT HOME, never a list screen (Phil
- * 2026-09-04: the list is not an app screen; it lives only in the drawer —
+ * Left-nav Conversations → the CHAT HOME, never a list screen
+ * (2026-09-04: the list is not an app screen; it lives only in the drawer —
  * the left drawer's body since U2b). The home is the ACTIVE session when one is on the back
  * stack — popping to it beats resolving a pick — and only a stack without
  * any session needs the pick/new resolution.

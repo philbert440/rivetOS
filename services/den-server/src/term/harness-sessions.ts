@@ -450,7 +450,7 @@ const KIMI_ID_PREFIX = 'session_'
 /**
  * `state.json` timestamps come in two shapes, and BOTH are live on a real box:
  * kimi ≥0.34 writes `"version": 2` state with epoch-ms NUMBERS, while an older
- * install (0.26 was still writing into the same store on ct116) writes ISO
+ * install (0.26 was still writing into the same store on node-g) writes ISO
  * STRINGS. Neither is "the" format, so parse both and fall back to the file's
  * mtime rather than picking a winner.
  */
@@ -916,7 +916,7 @@ export async function readPiTranscript(id: string): Promise<HarnessTranscript> {
 
 // ---- Cursor: ~/.cursor/projects/<slug>/agent-transcripts/<uuid>/<uuid>.jsonl
 // slug is the absolute cwd with the leading slash dropped and `/` → `-`
-// (`/home/phil/Work` → `home-phil-Work`). Native id IS the directory name.
+// (`/home/user/Work` → `home-user-Work`). Native id IS the directory name.
 // `--resume <id>` is global (not cwd-scoped). No tool results in the file.
 
 const CURSOR_UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
@@ -933,7 +933,7 @@ function cursorProjectsDir(): string {
   return join(base, 'projects')
 }
 
-/** `/home/phil/Work` → `home-phil-Work`. */
+/** `/home/user/Work` → `home-user-Work`. */
 export function cursorProjectSlug(cwd: string): string {
   return resolve(cwd)
     .replace(/^[/\\]+/, '')

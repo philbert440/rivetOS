@@ -1,7 +1,7 @@
 /**
  * /wiki — the human-facing wiki (phase 3e; v2 layout 2026-07-07).
  *
- * Wikipedia form and function, Rivet style (Phil's ask): fixed sidebar with
+ * Wikipedia form and function, Rivet style: fixed sidebar with
  * search + navigation, article layout with a floated infobox, article/
  * history/raw views, emerald/red wiki links (emerald = exists, red = gap),
  * category bar from tags, recent-changes and random pages. Server-rendered,

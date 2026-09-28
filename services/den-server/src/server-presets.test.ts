@@ -91,7 +91,7 @@ describe('preset store wiring', () => {
       },
     } as unknown as Pool
 
-    const den = createDenServer(baseTestDenConfig(stateDir, { nodeName: 'ct115' }), {
+    const den = createDenServer(baseTestDenConfig(stateDir, { nodeName: 'node-f' }), {
       presetPool: pool,
       aliasBreadcrumbs: null,
     })
@@ -108,7 +108,7 @@ describe('preset store wiring', () => {
     }
 
     expect(queries[0]).toMatch(/to_regclass/)
-    expect(rows[0]).toMatchObject({ name: 'Reviewer', node: 'ct115' })
+    expect(rows[0]).toMatchObject({ name: 'Reviewer', node: 'node-f' })
     expect(existsSync(rows[0]?.directory ?? '')).toBe(true)
     expect(existsSync(join(stateDir, 'agents.json'))).toBe(false)
     expect(readdirSync(stateDir).some((name) => name.includes('.imported-'))).toBe(true)

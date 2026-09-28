@@ -307,17 +307,17 @@ describe('MeshView.localIdentity', () => {
   it('reads host and sshUser from the roster without probing', async () => {
     const file = join(tmp(), 'mesh.json')
     writeMesh(file, {
-      ct116: node('ct116', { host: '192.0.2.116', sshUser: 'philip' }),
+      'node-g': node('node-g', { host: '192.0.2.116', sshUser: 'user' }),
     })
     const view = createMeshView({
       meshFile: file,
       cacheMs: 10_000,
       probeTimeoutMs: 50,
-      localNodeId: 'ct116',
+      localNodeId: 'node-g',
     })
     await expect(view.localIdentity()).resolves.toEqual({
       host: '192.0.2.116',
-      sshUser: 'philip',
+      sshUser: 'user',
     })
   })
 
@@ -333,7 +333,7 @@ describe('MeshView.localIdentity', () => {
     const view = createMeshView({
       meshFile: file,
       cacheMs: 10_000,
-      localNodeId: 'ct116',
+      localNodeId: 'node-g',
     })
     await expect(view.localIdentity()).resolves.toEqual({
       host: hostname(),
@@ -346,28 +346,28 @@ describe('localMeshIdentity', () => {
   it('reads host and sshUser from the roster entry for this node', () => {
     expect(
       localMeshIdentity(
-        { nodes: { ct116: { id: 'ct116', host: '192.0.2.116', sshUser: 'philip' } } },
-        'ct116',
+        { nodes: { 'node-g': { id: 'node-g', host: '192.0.2.116', sshUser: 'user' } } },
+        'node-g',
         'fallback',
       ),
     ).toEqual({
       host: '192.0.2.116',
-      sshUser: 'philip',
+      sshUser: 'user',
     })
   })
 
   it('defaults sshUser to rivet and falls back to hostname when the node is missing', () => {
-    expect(localMeshIdentity(null, 'ct116', 'box')).toEqual({ host: 'box', sshUser: 'rivet' })
+    expect(localMeshIdentity(null, 'node-g', 'box')).toEqual({ host: 'box', sshUser: 'rivet' })
     expect(
-      localMeshIdentity({ nodes: { other: { id: 'other', host: '192.0.2.10' } } }, 'ct116', 'box'),
+      localMeshIdentity({ nodes: { other: { id: 'other', host: '192.0.2.10' } } }, 'node-g', 'box'),
     ).toEqual({ host: 'box', sshUser: 'rivet' })
   })
 
   it('matches by node.id when the map key differs', () => {
     expect(
       localMeshIdentity(
-        { nodes: { alias: { id: 'ct116', host: '192.0.2.10', sshUser: 'rivet' } } },
-        'ct116',
+        { nodes: { alias: { id: 'node-g', host: '192.0.2.10', sshUser: 'rivet' } } },
+        'node-g',
         'box',
       ),
     ).toEqual({

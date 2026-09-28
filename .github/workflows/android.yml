@@ -2,7 +2,7 @@ name: android
 
 # RivetHub Android gate. Runs ONLY when the app tree (or this file) changes, on a
 # standard ubuntu-latest runner — public repo, so Actions minutes are free. No
-# larger runners, no macOS: keep it that way (Phil's condition for having this job).
+# larger runners, no macOS: keep it that way (condition for having this job).
 
 on:
   push:

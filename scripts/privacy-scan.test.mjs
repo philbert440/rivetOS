@@ -4,9 +4,12 @@ import assert from 'node:assert/strict'
 import { createHash } from 'node:crypto'
 import {
   isAcronymToken,
+  isArchivePath,
+  isCommittedOverlayArchive,
   isFakeUuid,
   isOwnerIdentityPath,
   isPathMarkerFile,
+  isVendoredPath,
   parseDenyHashes,
   shouldCheckPersonaToken,
   removedHashes,
@@ -135,6 +138,15 @@ test('/home/<user> is blocked in docs and fixtures', () => {
   assert.equal(
     src.some((h) => h.rule === 'home-path'),
     false,
+  )
+  const hashedUser = ['Qx', 'ypHome'].join('')
+  const hashed = scanText(`cd /home/${hashedUser}/app`, {
+    file: 'apps/rivet-android/app/src/main/java/dev/rivet/app/runtime/RivetRuntime.kt',
+    denyHashes: new Set([sha256(hashedUser.toLowerCase())]),
+  })
+  assert.equal(
+    hashed.some((h) => h.rule === 'home-path'),
+    true,
   )
 })
 
@@ -291,6 +303,8 @@ test('short persona tokens hit tags, quotes, and Title-case — not prose lowerc
 
 test('owner-identity paths skip persona and email only', () => {
   assert.equal(isOwnerIdentityPath('LICENSE'), true)
+  assert.equal(isOwnerIdentityPath('packages/cli/LICENSE'), true)
+  assert.equal(isOwnerIdentityPath('NOTICE'), true)
   assert.equal(isOwnerIdentityPath('package.json'), true)
   assert.equal(isOwnerIdentityPath('apps/site/package.json'), true)
   assert.equal(isOwnerIdentityPath('scripts/authorship-check.test.mjs'), true)
@@ -312,4 +326,54 @@ test('owner-identity paths skip persona and email only', () => {
     hits.some((h) => h.rule === 'denylist-uuid'),
     true,
   )
+})
+
+test('hashed IPv4 prefix matches a full address and the 3-octet prefix', () => {
+  const prefix = ['203', '0', '113'].join('.')
+  const hashes = new Set([sha256(prefix)])
+  assert.equal(
+    scanText(`gw ${prefix}.10`, { denyHashes: hashes }).some((h) => h.rule === 'denylist-ip-prefix'),
+    true,
+  )
+  assert.equal(
+    scanText(`net ${prefix}`, { denyHashes: hashes }).some((h) => h.rule === 'denylist-ip-prefix'),
+    true,
+  )
+  assert.equal(scanText('other 198.51.100.1', { denyHashes: hashes }).length, 0)
+})
+
+test('short hashed host tokens are caught outside tag context', () => {
+  const host = ['zv', '3'].join('')
+  const hashes = new Set([sha256(host)])
+  assert.equal(
+    scanText(`ssh ${host}`, { file: 'scripts/foo.sh', denyHashes: hashes }).some(
+      (h) => h.rule === 'denylist-host',
+    ),
+    true,
+  )
+})
+
+test('vendored paths skip home and host rules; dropbear README still scans', () => {
+  assert.equal(
+    isVendoredPath('apps/rivet-android/document/src/main/java/com/artifex/mupdf/fitz/Archive.java'),
+    true,
+  )
+  assert.equal(isVendoredPath('apps/rivet-android/native/dropbear/localoptions.h'), true)
+  assert.equal(isVendoredPath('apps/rivet-android/native/dropbear/README.md'), false)
+  const someone = ['al', 'ice'].join('')
+  assert.equal(
+    scanText(`cd /home/${someone}/x`, {
+      file: 'apps/rivet-android/native/dropbear/localoptions.h',
+    }).some((h) => h.rule === 'home-path'),
+    false,
+  )
+})
+
+test('overlay archives are identified as committed assets', () => {
+  assert.equal(isArchivePath('apps/rivet-android/app/src/main/assets/rivet-phone-overlay.bin'), true)
+  assert.equal(
+    isCommittedOverlayArchive('apps/rivet-android/app/src/main/assets/rivet-phone-overlay.bin'),
+    true,
+  )
+  assert.equal(isCommittedOverlayArchive('docs/foo.md'), false)
 })

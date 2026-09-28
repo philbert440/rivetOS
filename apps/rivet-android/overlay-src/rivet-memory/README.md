@@ -16,5 +16,13 @@ phone-specific and tracked here for review.
 - `grok/grok-memory-hook.sh` → `/opt/rivet-memory-grok/bin/grok-memory-hook.sh` — Grok hook launcher
   (rivet-phone-grok), routed through the outbox (stores the per-event arg so replays use the original event).
 
-To rebuild the overlay: extract the current `.bin`, drop these in at the paths above, bump
-`MEMORY_OVERLAY_REV` in `RivetRuntime.kt`, re-tar (`tar -czf rivet-memory-overlay.bin -C <root> .`).
+To rebuild the overlay (never commit the `.bin`):
+
+```bash
+MEMORY_PLUGIN_STASH=/path/to/memory-plugin \
+  apps/rivet-android/scripts/build-overlays.sh --all
+```
+
+The script copies this directory's hooks into the stash tree, then tars
+`app/src/main/assets/rivet-memory-overlay.bin`. Bump `MEMORY_OVERLAY_REV` in
+`RivetRuntime.kt` so devices re-provision.

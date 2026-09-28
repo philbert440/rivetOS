@@ -204,9 +204,9 @@ export const OWNERSHIP_PREFLIGHT_PATHS: readonly string[] = [
  * Paths under the install tree that the current user cannot write.
  *
  * Historical footgun: updates ran as `rivet` against trees left root-owned
- * (sudo installs) or philip-owned (desktop checkouts / manual copies). npm/nx
+ * (sudo installs) or user-owned (desktop checkouts / manual copies). npm/nx
  * then die mid-flight with EACCES after a long git pull. Root-only detection
- * missed philip-owned paths; write-access is the real gate.
+ * missed user-owned paths; write-access is the real gate.
  *
  * Returns relative path labels ('.' → install root) that exist but fail W_OK.
  * Root (uid 0) is never blocked — it can always chown/write.

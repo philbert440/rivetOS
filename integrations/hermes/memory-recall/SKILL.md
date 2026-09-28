@@ -118,8 +118,8 @@ vocabulary doesn't co-occur.
 
 Run three queries from different vectors:
 - by **service name** (`"frigate"`, `"nginx"`)
-- by **host nickname** (`"minipc"`, `"deckard"`, `"pve3"`)
-- by **subnet prefix** (`"10.4.20"`, `"192.168.1"`)
+- by **host nickname** (`"lab-host"`, `"edge-box"`)
+- by **subnet prefix** (`"192.0.2"`, `"198.51.100"`)
 - by **role** (`"NVR"`, `"router"`, `"WAP"`)
 
 For non-infra topics (decisions, preferences, prior reasoning), vary by
@@ -159,7 +159,7 @@ entry so the next session finds it from any angle.
 Because every Rivet agent serving the same user writes into that user's
 store, recall hits may carry
 an `agent` tag of `rivet-claude`, `opus`, `grok`, etc. Treat those as
-first-class — Phil's "did we ever do X" includes work done by other Rivet
+first-class — the owner's "did we ever do X" includes work done by other Rivet
 faces. Only filter by `agent="rivet-hermes"` when the user explicitly means
 "in this Hermes session lineage."
 
@@ -210,16 +210,16 @@ those words verbatim.
 
 **"What's the frigate IP?"**
 → Topic question, no timeframe. One OR-joined call OR three separate ones:
-- `rivet_memory_search(query="frigate OR minipc OR NVR")` — one call, three angles.
+- `rivet_memory_search(query="frigate OR lab-host OR NVR")` — one call, three angles.
 - Or, if you'd rather see each result set independently:
   1. `rivet_memory_search(query="frigate NVR")`
-  2. `rivet_memory_search(query="minipc")`
-  3. `rivet_memory_search(query="10.4.20", mode="trigram")` — literal subnet via trigram.
+  2. `rivet_memory_search(query="lab-host")`
+  3. `rivet_memory_search(query="192.0.2", mode="trigram")` — literal subnet via trigram.
 
 **"Did we touch the router today?"**
 → Time-bounded ("today"). `rivet_memory_browse(window="today")` first, then
 scan for router-related entries. Don't search by keyword first — the
-conversation might be tagged "openwrt", "192.168.1.1", "WAP", "DHCP", any of
+conversation might be tagged "openwrt", "198.51.100.1", "WAP", "DHCP", any of
 which a single semantic query could miss.
 
 **"Have we seen this error before?"**
@@ -227,31 +227,13 @@ which a single semantic query could miss.
 error string in `mode: "trigram"` first — error messages are literal tokens,
 not semantic concepts.
 
-## Case study: 2026-05-23 WAP-DHCP incident (rivet-claude session, same lesson)
+## Why this exists
 
-A sibling Rivet session reported a new WAP wasn't giving DHCP. The agent ran
-`memory_search` for `"tp-link omada EAP setup"`, `"added wireless AP today"`,
-`"192.168.1.3"`, `"daughter tablet wifi DHCP"` — **all returned zero hits**.
-It started recommending external probes (nmap, ssh-by-hand) instead.
+Made-up example, not a real incident: an agent is asked what happened to a
+lab service that morning. Topic search for the service name, a generic host
+nickname, and a documentation-range subnet all return empty. Only
+`rivet_memory_browse` over the morning window recovers the thread.
 
-Phil twice nudged: first "check memory from this morning", then "add a date
-range to your query". Only then did the agent switch to:
-
-```
-memory_browse(since="2026-05-23T08:00:00Z", before="2026-05-23T14:30:00Z")
-```
-
-That call surfaced the **entire morning conversation**: WAP IP, MAC, SSH
-creds, the duplicate static-lease that broke dnsmasq.
-
-The failure wasn't the tools. It was reaching for the wrong tool first.
-This skill exists so future Hermes turns don't burn the same ten minutes.
-The lesson lives in memory shared across every Rivet agent serving that
-user — same per-user store,
-same discipline.
-
-## Related memories
-
-- `feedback-memory-search-discipline.md` — the rule source
-- `host-inventory.md` — the synonym-bridging entry pattern
-- `hermes-rivet-memory-plugin-plan.md` — why this plugin exists
+The tools were fine. The first reflex was wrong. This skill exists so
+future Hermes turns do not repeat that. The lesson lives in the per-user
+store shared across every Rivet agent serving that user.

@@ -1665,7 +1665,7 @@ describe('term manager', () => {
 
   it('refuses to reuse a live session across users', () => {
     const { manager } = makeManager()
-    manager.spawn('shell', 80, 24, '', 'chat-x', undefined, undefined, 'phil')
+    manager.spawn('shell', 80, 24, '', 'chat-x', undefined, undefined, 'owner')
     expect(() =>
       manager.spawn('shell', 80, 24, '', 'chat-x', undefined, undefined, 'coco'),
     ).toThrowError(/owned by another user/)
@@ -2039,7 +2039,7 @@ describe('term manager (tmux mux)', () => {
         '',
         'chat-e',
         undefined,
-        { RIVETOS_ENV_FILE: '/home/coco/.env' },
+        { RIVETOS_ENV_FILE: '/home/user/.env' },
         'coco',
       )
       const argv = spawns[0].argv
@@ -2062,7 +2062,7 @@ describe('term manager (tmux mux)', () => {
       ])
       const body = envFiles[0]?.body ?? ''
       expect(body).toContain("RIVET_DEN_TOKEN='sekrit'")
-      expect(body).toContain("RIVETOS_ENV_FILE='/home/coco/.env'")
+      expect(body).toContain("RIVETOS_ENV_FILE='/home/user/.env'")
       expect(body).toContain('unset RIVETOS_PG_URL')
       expect(body).toContain('unset RIVETOS_USER_ID')
       expect(body).not.toContain('RIVETOS_USER_DBS')
@@ -2429,7 +2429,7 @@ describe('term manager (tmux mux)', () => {
 
   it('refuses @rivet_user mismatch when the user tag is set, including untagged command', () => {
     const ctl = new FakeTmuxCtl()
-    ctl.serverCreated(encodeTmuxName('chat-u'), '', 'phil')
+    ctl.serverCreated(encodeTmuxName('chat-u'), '', 'owner')
     const { manager } = makeManager({ mux: 'tmux' }, { tmuxCtl: ctl })
     expect(() =>
       manager.spawn('claude', 80, 24, '', 'chat-u', undefined, undefined, 'coco'),
@@ -2452,7 +2452,7 @@ describe('term manager (tmux mux)', () => {
 
   it('refuses to attach a persisted session owned by another user (#7)', () => {
     const ctl = new FakeTmuxCtl()
-    ctl.serverCreated(encodeTmuxName('chat-x'), 'claude', 'phil')
+    ctl.serverCreated(encodeTmuxName('chat-x'), 'claude', 'owner')
     const { manager } = makeManager({ mux: 'tmux' }, { tmuxCtl: ctl })
     expect(() =>
       manager.spawn('claude', 80, 24, '', 'chat-x', undefined, undefined, 'coco'),

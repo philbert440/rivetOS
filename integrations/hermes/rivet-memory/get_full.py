@@ -164,13 +164,22 @@ def format_missing_jsonl_message(
     """
     agent_bit = f" agent={agent.strip()}" if isinstance(agent, str) and agent.strip() else ""
 
+    home = os.environ.get("HOME", "").rstrip("/")
+    desk_home = (
+        bool(home)
+        and not home.startswith("/home/rivet")
+        and file.startswith(home + "/")
+    ) or file.startswith("/Users/") or (
+        file.startswith("/home/") and not file.startswith("/home/rivet/")
+    )
+
     if file.startswith("/home/rivet/"):
         layout_hint = (
             "Path is under /home/rivet/ — fleet agent home. The JSONL almost "
-            "certainly lives on the mesh node that ran that harness session "
-            "(ctNNN / agent CT), not on the host serving this MCP query."
+            "certainly lives on the mesh node that ran that harness session, "
+            "not on the host serving this MCP query."
         )
-    elif file.startswith("/home/philip/") or file.startswith("/Users/"):
+    elif desk_home:
         layout_hint = (
             "Path is a desk/user home directory. The JSONL is local to that "
             "machine’s interactive session store, not shared mesh storage."

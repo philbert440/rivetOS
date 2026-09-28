@@ -85,7 +85,7 @@ describe('isLanDenHost', () => {
     expect(isLanDenHost('192.168.1.10')).toBe(true)
     expect(isLanDenHost('172.16.0.1')).toBe(true) // generic RFC1918 example, secret-scan-allow
     expect(isLanDenHost('100.64.0.7')).toBe(true) // CGNAT (WG overlay), secret-scan-allow
-    expect(isLanDenHost('ct110.mesh')).toBe(true)
+    expect(isLanDenHost('node-a.mesh')).toBe(true)
     expect(isLanDenHost('datahub.example.com')).toBe(false)
     expect(isLanDenHost('8.8.8.8')).toBe(false)
   })
@@ -99,7 +99,7 @@ describe('preferHttpsOrigin', () => {
   it('pins implicit LAN ports to 5174 (http upgrade and bare https)', () => {
     expect(preferHttpsOrigin('http://192.168.1.10')).toBe('https://192.168.1.10:5174')
     expect(preferHttpsOrigin('https://10.0.0.5')).toBe('https://10.0.0.5:5174')
-    expect(preferHttpsOrigin('https://ct110.mesh')).toBe('https://ct110.mesh:5174')
+    expect(preferHttpsOrigin('https://node-a.mesh')).toBe('https://node-a.mesh:5174')
   })
 
   it('keeps an explicit den port and does not rewrite public hosts', () => {

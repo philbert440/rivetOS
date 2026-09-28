@@ -22,7 +22,7 @@ describe('wiki tools (3g)', () => {
     mkdirSync(join(wikiDir, 'topics'))
     writeFileSync(
       join(wikiDir, 'topics', 'gerty.md'),
-      '---\ntitle: GERTY\nslug: gerty\n---\n\n## Current state\n\npve3 lab.\n\n## History\n\n### 2026-07-01 — Setup\n\n- racked\n',
+      '---\ntitle: GERTY\nslug: gerty\n---\n\n## Current state\n\nhv-c lab.\n\n## History\n\n### 2026-07-01 — Setup\n\n- racked\n',
     )
   })
   afterAll(() => rmSync(wikiDir, { recursive: true, force: true }))
@@ -36,7 +36,7 @@ describe('wiki tools (3g)', () => {
       {
         slug: 'gerty',
         title: 'GERTY',
-        currentState: 'pve3 lab.',
+        currentState: 'hv-c lab.',
         lastVerifiedAt: '2026-07-01T00:00:00Z',
       },
     ])

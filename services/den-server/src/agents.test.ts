@@ -42,7 +42,7 @@ async function start(opts?: {
   const routes = createAgentsRoutes({
     store:
       opts?.store?.(dir) ?? new FileAgentPresetStore(join(dir, 'agents.json'), { now: () => now }),
-    nodeName: 'ct115',
+    nodeName: 'node-f',
     directoryRoot: opts?.directoryRoot?.(dir) ?? join(dir, 'agents'),
     sharedDir: join(dir, 'shared'),
     now: () => now,
@@ -125,7 +125,7 @@ describe('agents routes', () => {
       effort: 'high',
       systemPrompt: 'be terse',
       nodeBaseUrl: NODE,
-      node: 'ct115',
+      node: 'node-f',
       directory,
       sharedLink: true,
     })
@@ -146,7 +146,7 @@ describe('agents routes', () => {
     }
     expect(listBody.agents).toHaveLength(1)
     expect(listBody.agents[0].id).toBe(agent!.id)
-    expect(listBody.node).toBe('ct115')
+    expect(listBody.node).toBe('node-f')
     expect(listBody.directoryRoot).toBe(join(dir!, 'agents'))
     expect(listBody.sharedDir).toBe(join(dir!, 'shared'))
     expect(listBody.backend).toBe('file')
@@ -177,14 +177,14 @@ describe('agents routes', () => {
     await start()
     const res = await createAgent({ name: 'Bare' })
     expect(res.status).toBe(201)
-    expect(res.json.agent).toMatchObject({ node: 'ct115', nodeBaseUrl: '' })
+    expect(res.json.agent).toMatchObject({ node: 'node-f', nodeBaseUrl: '' })
   })
 
   it('POST with a foreign node → 400', async () => {
     await start()
-    const res = await createAgent({ name: 'x', node: 'ct114' })
+    const res = await createAgent({ name: 'x', node: 'node-e' })
     expect(res.status).toBe(400)
-    expect(res.json.error).toBe('agent must be created on its hosting node (ct115)')
+    expect(res.json.error).toBe('agent must be created on its hosting node (node-f)')
     expect(existsSync(join(dir!, 'agents', 'x'))).toBe(false)
   })
 
@@ -194,14 +194,14 @@ describe('agents routes', () => {
     const res = await fetch(`${base}/api/agents/${created.json.agent!.id}`, {
       method: 'PATCH',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ node: 'ct114' }),
+      body: JSON.stringify({ node: 'node-e' }),
     })
     expect(res.status).toBe(400)
     expect(((await res.json()) as { error: string }).error).toBe(
       'node is immutable; recreate the agent',
     )
     const got = await fetch(`${base}/api/agents/${created.json.agent!.id}`)
-    expect(((await got.json()) as { agent: AgentPreset }).agent.node).toBe('ct115')
+    expect(((await got.json()) as { agent: AgentPreset }).agent.node).toBe('node-f')
   })
 
   it('PATCH sortOrder orders the list; null clears it; bad values are 400', async () => {
@@ -300,7 +300,7 @@ describe('agents routes', () => {
     expect(res.status).toBe(201)
     const stored = sent.trim().slice(0, 512)
     expect(stored.length).toBe(512)
-    expect(res.json.agent).toMatchObject({ node: 'ct115', nodeBaseUrl: stored })
+    expect(res.json.agent).toMatchObject({ node: 'node-f', nodeBaseUrl: stored })
 
     const omitted = await createAgent({ name: 'Omitted' })
     expect(omitted.status).toBe(201)
@@ -751,7 +751,7 @@ describe('agents routes', () => {
             effort: 'medium',
             systemPrompt: '',
             nodeBaseUrl: '',
-            node: 'ct115',
+            node: 'node-f',
             directory: join(dir!, 'agents', 'local'),
             sharedLink: true,
             createdAt: 1,
@@ -765,7 +765,7 @@ describe('agents routes', () => {
             effort: 'medium',
             systemPrompt: '',
             nodeBaseUrl: '',
-            node: 'ct114',
+            node: 'node-e',
             directory: join(dir!, 'agents', 'remote'),
             sharedLink: true,
             createdAt: 2,
@@ -774,11 +774,11 @@ describe('agents routes', () => {
         ],
       }),
     )
-    const filtered = (await (await fetch(`${base}/api/agents?node=ct114`)).json()) as {
+    const filtered = (await (await fetch(`${base}/api/agents?node=node-e`)).json()) as {
       agents: AgentPreset[]
     }
     expect(filtered.agents.map((agent) => agent.name)).toEqual(['Remote'])
-    const local = (await (await fetch(`${base}/api/agents?node=ct115`)).json()) as {
+    const local = (await (await fetch(`${base}/api/agents?node=node-f`)).json()) as {
       agents: AgentPreset[]
     }
     expect(local.agents.map((agent) => agent.name)).toEqual(['Local'])
@@ -807,7 +807,7 @@ describe('agents routes', () => {
             effort: 'medium',
             systemPrompt: '',
             nodeBaseUrl: '',
-            node: 'ct114',
+            node: 'node-e',
             directory: remoteDir,
             sharedLink: true,
             createdAt: 1,
@@ -823,7 +823,7 @@ describe('agents routes', () => {
     })
     expect(denied.status).toBe(409)
     expect(((await denied.json()) as { error: string }).error).toBe(
-      'agent "Remote" is hosted on ct114',
+      'agent "Remote" is hosted on node-e',
     )
     expect(expanded).toBe(false)
     expect(readlinkSync(join(remoteDir, 'rivet-shared'))).toBe(join(dir!, 'shared'))
@@ -840,7 +840,7 @@ describe('agents routes', () => {
       name: 'Renamed',
       model: 'opus',
       directory: remoteDir,
-      node: 'ct114',
+      node: 'node-e',
     })
     expect(readlinkSync(join(remoteDir, 'rivet-shared'))).toBe(join(dir!, 'shared'))
   })
@@ -868,7 +868,7 @@ describe('agents routes', () => {
     const sameNode = await fetch(`${base}/api/agents/legacy-1`, {
       method: 'PATCH',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ node: 'ct115' }),
+      body: JSON.stringify({ node: 'node-f' }),
     })
     expect(sameNode.status).toBe(200)
 
@@ -1028,7 +1028,7 @@ describe('agents routes', () => {
             effort: 'medium',
             systemPrompt: '',
             nodeBaseUrl: '',
-            node: 'ct114',
+            node: 'node-e',
             directory: remoteDir,
             sharedLink: true,
             createdAt: 1,
@@ -1055,7 +1055,7 @@ describe('agents routes', () => {
       model: 'opus',
       directory: remoteDir,
       sharedLink: true,
-      node: 'ct114',
+      node: 'node-e',
     })
     expect(readlinkSync(join(remoteDir, 'rivet-shared'))).toBe(join(dir!, 'shared'))
   })
@@ -1067,7 +1067,7 @@ describe('agents routes', () => {
           if (input.name === 'Loser') {
             await real.create({
               name: 'Keeper',
-              node: 'ct115',
+              node: 'node-f',
               directory: input.directory,
               sharedLink: false,
               createdAt: 1,

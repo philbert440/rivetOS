@@ -102,7 +102,7 @@ class NodeChatBackendTest {
             chatModelId = DEFAULT_AUTO_MODEL_ID,
             assistants = emptyList(),
             nodeRoster = NodeRosterDefaults.seed() + listOf(
-                RosterNode(name = "phildesk", denUrl = "http://192.0.2.10:5174"),
+                RosterNode(name = "desktop", denUrl = "http://192.0.2.10:5174"),
             ),
             activeNodeDenUrl = NodeRosterDefaults.localDenUrl(),
         )

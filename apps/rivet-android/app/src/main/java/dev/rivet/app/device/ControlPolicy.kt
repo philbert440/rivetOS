@@ -28,7 +28,7 @@ enum class ControlMode(val wire: String) {
 
 /**
  * Control endpoints that participate in the mode matrix.
- * [MODE] is always allowed (so Phil can unpark); [STATUS]/[NOTIFY] always allowed.
+ * [MODE] is always allowed (so the owner can unpark); [STATUS]/[NOTIFY] always allowed.
  */
 enum class ControlEndpoint {
     STATUS,

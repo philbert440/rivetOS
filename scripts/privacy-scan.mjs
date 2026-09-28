@@ -30,6 +30,7 @@ const EMAIL_RE = /\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}\b/g
 const AGENT_DATA_RE =
   /agent-data\/agents\/([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})/gi
 const HOME_RE = /\/home\/([A-Za-z0-9._-]+)/g
+const IPV4_LIKE_RE = /\b(\d{1,3}(?:\.\d{1,3}){1,3})\b/g
 const FC_ID_RE = /\bfc_[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}_0\b/gi
 const WORD_RE = /\b[A-Za-z][A-Za-z0-9]*\b/g
 const HYPHEN_TOKEN_RE = /\b[A-Za-z][A-Za-z0-9]*(?:-[A-Za-z0-9]+)+\b/g
@@ -47,6 +48,28 @@ const FAKE_UUIDS = new Set([
 
 const ALLOWED_HOME_USERS = new Set(['ubuntu', 'runner', 'rivet', 'rivetos', 'user', 'example'])
 
+/** Vendored trees: skip persona/home false positives. Still scan README at dropbear root. */
+const VENDORED_RE = [
+  /(^|\/)com\/artifex\/mupdf\//,
+  /(^|\/)material-color-utilities\//,
+  /(^|\/)native\/dropbear\/(?!README\.md$)/,
+  /(^|\/)highlight\/src\/main\/res\/raw\/prism\.js$/,
+  /(^|\/)simple_dict\//,
+  /(^|\/)jieba\//,
+]
+
+export function isVendoredPath(file) {
+  return VENDORED_RE.some((re) => re.test(file))
+}
+
+export function isArchivePath(file) {
+  return /\.(bin|tar\.gz|tgz)$/i.test(file)
+}
+
+export function isCommittedOverlayArchive(file) {
+  return /(^|\/)assets\/[^/]*overlay[^/]*\.(bin|tar\.gz|tgz)$/i.test(file)
+}
+
 /** Path markers apply to READMEs, docs, fixtures — not application source. */
 const PATH_MARKER_RE = [
   /(^|\/)README(\.[A-Za-z0-9]+)?$/i,
@@ -62,9 +85,11 @@ export function isPathMarkerFile(file) {
 
 /** Owner-identity files: skip persona + email only. UUIDs and tags still scan. */
 const OWNER_IDENTITY_RE = [
-  /^LICENSE$/,
+  /(^|\/)LICENSE$/,
+  /(^|\/)NOTICE$/,
   /(^|\/)package\.json$/,
   /^scripts\/authorship-check(\.test)?\.mjs$/,
+  /^scripts\/git-hooks\/commit-msg$/,
   /^\.claude-plugin\/marketplace\.json$/,
 ]
 
@@ -235,6 +260,47 @@ export function scanLine(line, { file = '', denyHashes = new Set() } = {}) {
       hint: 'hardcoded rivet- agent prefix — tags come from the slug rule',
     })
   }
+  if (!isVendoredPath(file)) {
+    for (const m of line.matchAll(IPV4_LIKE_RE)) {
+      const token = m[0]
+      const parts = token.split('.')
+      const candidates = [token]
+      if (parts.length >= 3) candidates.push(parts.slice(0, 3).join('.'))
+      if (parts.length >= 2) candidates.push(parts.slice(0, 2).join('.'))
+      if (candidates.some((c) => denyHashes.has(sha256(c)))) {
+        out.push({
+          rule: 'denylist-ip-prefix',
+          severity: 'block',
+          match: token,
+          hint: 'hashed denylist address or prefix',
+        })
+      }
+    }
+    for (const m of line.matchAll(WORD_RE)) {
+      if (shouldCheckPersonaToken(m[0], line, m.index ?? 0)) continue
+      // Short letter+digit tokens (lab hosts like box3) skip the persona gate.
+      if (!/^[A-Za-z]{2,}\d+$/.test(m[0])) continue
+      if (denyHashes.has(sha256(m[0].toLowerCase()))) {
+        out.push({
+          rule: 'denylist-host',
+          severity: 'block',
+          match: m[0],
+          hint: 'hashed denylist host or token',
+        })
+      }
+    }
+    for (const m of line.matchAll(HOME_RE)) {
+      if (ALLOWED_HOME_USERS.has(m[1])) continue
+      const personal = denyHashes.has(sha256(m[1].toLowerCase()))
+      if (!personal && !isPathMarkerFile(file)) continue
+      out.push({
+        rule: 'home-path',
+        severity: 'block',
+        match: m[0],
+        hint: '/home/<user> — use /home/user, /home/ubuntu, /home/rivet, or $HOME',
+      })
+    }
+  }
   if (isPathMarkerFile(file)) {
     for (const m of line.matchAll(AGENT_DATA_RE)) {
       const id = m[1].toLowerCase()
@@ -246,15 +312,6 @@ export function scanLine(line, { file = '', denyHashes = new Set() } = {}) {
           hint: 'agent-data/agents/<uuid> must use a fake UUID',
         })
       }
-    }
-    for (const m of line.matchAll(HOME_RE)) {
-      if (ALLOWED_HOME_USERS.has(m[1])) continue
-      out.push({
-        rule: 'home-path',
-        severity: 'block',
-        match: m[0],
-        hint: '/home/<user> — use /tmp or $HOME',
-      })
     }
   }
   return out
@@ -314,9 +371,70 @@ const SKIP = [
   /(^|\/)__pycache__\//,
   /(^|\/)prebuilt\//,
   /(^|\/)simple_dict\/idf\.utf8$/,
-  /\.(png|jpg|jpeg|gif|webp|ico|svg|pdf|zip|gz|woff2?|ttf|otf|mp3|wav|ogg|mp4|m4a|webm|so|a|dll|dylib|jar|class|keystore|jks|bin|wasm|pyc|pyo)$/i,
+  /\.(png|jpg|jpeg|gif|webp|ico|svg|pdf|zip|woff2?|ttf|otf|mp3|wav|ogg|mp4|m4a|webm|so|a|dll|dylib|jar|class|keystore|jks|wasm|pyc|pyo)$/i,
 ]
-const skip = (f) => SKIP.some((re) => re.test(f))
+const skip = (f) => SKIP.some((re) => re.test(f)) || isVendoredPath(f)
+
+function archiveMembers(file) {
+  try {
+    const out = execFileSync('tar', ['-tzf', file], {
+      encoding: 'utf8',
+      maxBuffer: 32 * 1024 * 1024,
+      stdio: ['ignore', 'pipe', 'pipe'],
+    })
+    return out.split('\n').filter(Boolean)
+  } catch {
+    return null
+  }
+}
+
+function archiveMemberText(file, member) {
+  try {
+    const buf = execFileSync('tar', ['-xOf', file, member], {
+      maxBuffer: 8 * 1024 * 1024,
+      stdio: ['ignore', 'pipe', 'pipe'],
+    })
+    if (buf.includes(0)) return null
+    return buf.toString('utf8')
+  } catch {
+    return null
+  }
+}
+
+export function scanArchiveFile(file, denyHashes) {
+  const findings = []
+  if (isCommittedOverlayArchive(file)) {
+    findings.push({
+      rule: 'committed-archive',
+      severity: 'block',
+      match: file,
+      hint: 'overlay archives must be built from overlay-src, not committed',
+      file,
+      line: 1,
+    })
+  }
+  const members = archiveMembers(file)
+  if (members === null) {
+    findings.push({
+      rule: 'unreadable-archive',
+      severity: 'block',
+      match: file,
+      hint: 'tracked .bin/.tar.gz could not be listed as a tar archive',
+      file,
+      line: 1,
+    })
+    return findings
+  }
+  for (const member of members) {
+    if (member.endsWith('/')) continue
+    const text = archiveMemberText(file, member)
+    if (text == null) continue
+    for (const f of scanText(text, { file: `${file}!${member}`, denyHashes })) {
+      findings.push({ ...f, file: `${file}!${member}` })
+    }
+  }
+  return findings
+}
 
 function denylistRemovedVsMain(current) {
   let mainJson
@@ -364,8 +482,20 @@ function main() {
 
   if (mode === '--staged') {
     for (const { file, text, line } of stagedAddedLines()) {
-      if (skip(file)) continue
+      if (isArchivePath(file) || skip(file)) continue
       for (const f of scanText(text, { file, denyHashes })) findings.push({ ...f, file, line })
+    }
+    let stagedNames = ''
+    try {
+      stagedNames = execFileSync('git', ['diff', '--cached', '--name-only', '--diff-filter=ACMR'], {
+        encoding: 'utf8',
+        maxBuffer: 16 * 1024 * 1024,
+      })
+    } catch {
+      stagedNames = ''
+    }
+    for (const file of stagedNames.split('\n').filter(Boolean)) {
+      if (isArchivePath(file)) findings.push(...scanArchiveFile(file, denyHashes))
     }
     if (report(findings, 'staged changes')) process.exit(1)
   } else if (mode === '--tracked') {
@@ -383,6 +513,10 @@ function main() {
     }
     let unscannable = 0
     for (const file of trackedFiles()) {
+      if (isArchivePath(file)) {
+        findings.push(...scanArchiveFile(file, denyHashes))
+        continue
+      }
       if (skip(file)) continue
       let buf
       try {

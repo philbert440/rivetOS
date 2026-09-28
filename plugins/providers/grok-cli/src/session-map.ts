@@ -48,7 +48,7 @@ export function saveSessionMap(path: string, map: SessionMap): void {
 
 /**
  * Deterministic UUID (SHA-1, RFC 4122 v5 shape, no namespace) from a
- * conversation key. Same helper the ct112/ct114 grok-cli plugin used so a
+ * conversation key. Same helper the node-c/node-e grok-cli plugin used so a
  * conversation always mints the same `--session-id`.
  */
 export function uuidForConversation(key: string): string {

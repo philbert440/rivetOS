@@ -17,7 +17,7 @@ export interface TaskEscalationPayload {
   result: TaskResult
   outcome: EvalOutcome
   refutation?: string
-  /** Gateway base for the drill-down link, e.g. http://ct115:5174. */
+  /** Gateway base for the drill-down link, e.g. http://node-f:5174. */
   gatewayBase?: string
 }
 

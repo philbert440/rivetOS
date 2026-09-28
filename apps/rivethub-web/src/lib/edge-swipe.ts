@@ -1,5 +1,5 @@
 /**
- * Edge-swipe recognizer for the narrow drawers (Phil 2026-09-03: horizontal
+ * Edge-swipe recognizer for the narrow drawers (2026-09-03: horizontal
  * swipes belong to the drawers — the chat↔terminal swipe is gone; the
  * Terminal|Chat segment is the only mode switch).
  *

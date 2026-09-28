@@ -121,13 +121,13 @@ deployment:
   proxmox:
     api_url: https://192.168.1.1:8006
     nodes:
-      - name: pve1
+      - name: hv-a
         host: 192.168.1.1
         role: datahub        # Runs Postgres + NFS
-      - name: pve2
+      - name: hv-b
         host: 192.168.1.2
         role: agents          # Runs agent containers
-      - name: pve3
+      - name: hv-c
         host: 192.168.1.3
         role: agents
     network:
@@ -149,7 +149,7 @@ you keep full control over Proxmox/Docker semantics.
 ┌────────────────────────────────────────────────────────┐
 │  Mesh LAN (example bridge: vmbr1)                      │
 │                                                        │
-│  PVE1 (datahub)    PVE2 (agents)    PVE3 (agents)      │
+│  hv-a (datahub)    hv-b (agents)    hv-c (agents)      │
 │  ┌───────────────┐ ┌───────────────┐ ┌───────────────┐ │
 │  │ datahub       │ │ agent-a       │ │ agent-b       │ │
 │  │ postgres      │ │               │ │               │ │

@@ -504,11 +504,11 @@ describe('term endpoints', () => {
         version: 1,
         updatedAt: 1,
         nodes: {
-          ct116: {
-            id: 'ct116',
-            name: 'ct116',
+          'node-g': {
+            id: 'node-g',
+            name: 'node-g',
             host: '192.0.2.116',
-            sshUser: 'philip',
+            sshUser: 'user',
             port: 3000,
             agents: [],
             providers: [],
@@ -522,7 +522,7 @@ describe('term endpoints', () => {
     const { base, stateDir, procs } = await start(
       { meshFile },
       { mux: 'tmux' },
-      { tmuxCtl: ctl, localNodeId: 'ct116' },
+      { tmuxCtl: ctl, localNodeId: 'node-g' },
     )
     const sock = tmuxSocketName(stateDir, 0)
     const first = (await (
@@ -544,7 +544,7 @@ describe('term endpoints', () => {
       socket: sock,
       session: encodeTmuxName('chat-p1'),
       host: '192.0.2.116',
-      sshUser: 'philip',
+      sshUser: 'user',
       local: true,
     })
     expect(first.attach).not.toHaveProperty('argv')
@@ -604,7 +604,7 @@ describe('term endpoints', () => {
     const { base } = await start(
       { meshFile },
       { mux: 'tmux' },
-      { tmuxCtl: ctl, localNodeId: 'ct116' },
+      { tmuxCtl: ctl, localNodeId: 'node-g' },
     )
     const listed = await fetch(`${base}/term/list`)
     expect(listed.status).toBe(200)
@@ -628,10 +628,9 @@ describe('term endpoints', () => {
     )
     const usersRegistry = parseUsersRegistry(
       JSON.stringify({
-        ownerUserId: 'phil',
+        ownerUserId: 'owner',
         unmappedIsOwner: false,
-        users: {
-          phil: { devices: [], pgUrl: 'postgres://phil@db/phil' },
+        users: { owner: { devices: [], pgUrl: 'postgres://owner@db/rivet_memory' },
           alice: { devices: ['win-alice'], pgUrl: 'postgres://alice@db/alice' },
         },
       }),

@@ -11,7 +11,7 @@ describe('parseWikiPatches', () => {
           action: 'create',
           slug: 'GERTY vLLM Stack',
           title: 'GERTY vLLM stack',
-          entities: ['host:pve3'],
+          entities: ['host:hv-c'],
           current_state: 'Deckard serves qwen-27b on :8003.',
           history_entry: { date: '2026-07-07', title: 'Cutover', body: '- moved' },
         },
@@ -86,7 +86,7 @@ describe('v7 summary_delta + article_patches', () => {
         {
           action: 'update',
           slug: 'deckard-40b',
-          related: ['pve3', '1cat-vllm'],
+          related: ['hv-c', '1cat-vllm'],
           summary_delta: 'Now serves MTP k=4.',
           article_patches: [
             { heading: 'Configuration', mode: 'merge', body: 'MTP k=4 on :8003.' },
@@ -105,7 +105,7 @@ describe('v7 summary_delta + article_patches', () => {
     expect(patches[0]).toMatchObject({
       slug: 'deckard-40b',
       summaryDelta: 'Now serves MTP k=4.',
-      addRelated: ['pve3', '1cat-vllm'],
+      addRelated: ['hv-c', '1cat-vllm'],
     })
     expect(patches[0].articlePatches?.[0]).toMatchObject({
       heading: 'Configuration',

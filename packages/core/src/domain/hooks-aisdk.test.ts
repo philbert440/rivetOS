@@ -84,7 +84,7 @@ describe('hookPipelineToMiddleware — transformParams', () => {
     const mw = hookPipelineToMiddleware(pipeline, {
       providerId: 'xai',
       model: 'grok-4',
-      agentId: 'phil',
+      agentId: 'owner',
       sessionId: 'session-123',
     })
 
@@ -93,7 +93,7 @@ describe('hookPipelineToMiddleware — transformParams', () => {
     assert.equal(captured?.event, 'provider:before')
     assert.equal(captured?.providerId, 'xai')
     assert.equal(captured?.model, 'grok-4')
-    assert.equal(captured?.agentId, 'phil')
+    assert.equal(captured?.agentId, 'owner')
     assert.equal(captured?.sessionId, 'session-123')
   })
 

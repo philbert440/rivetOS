@@ -50,9 +50,9 @@ function grokHarness(): DetectedHarness {
   return {
     id: 'grok-build',
     command: 'grok',
-    binary: '/home/tester/.local/bin/grok',
+    binary: '/home/user/.local/bin/grok',
     providerKey: 'grok-cli',
-    configHome: '/home/tester/.grok',
+    configHome: '/home/user/.grok',
   }
 }
 
@@ -64,7 +64,7 @@ function localFixture(overrides: Partial<WizardLocal> = {}): WizardLocal {
     exposeLan: true,
     tls: true,
     harnesses: [
-      { id: 'grok-build', binary: '/home/tester/.local/bin/grok', providerKey: 'grok-cli' },
+      { id: 'grok-build', binary: '/home/user/.local/bin/grok', providerKey: 'grok-cli' },
     ],
     sharedDir: '/tmp/rivetos-shared',
     hostname: 'testhost',
@@ -233,7 +233,7 @@ describe('config/env emission lan vs no-lan', () => {
     expect(yaml).toContain('~/.rivetos/pglite')
     expect(yaml).toMatch(/auto_migrate:\s*true/)
     expect(yaml).toMatch(/max_connections:\s*96/)
-    expect(yaml).toContain('/home/tester/.local/bin/grok')
+    expect(yaml).toContain('/home/user/.local/bin/grok')
     expect(yaml).toContain('grok-build:')
     expect(yaml).toMatch(/grok-cli:\s*\{\}/)
     expect(yaml).toContain('testhost')
@@ -355,10 +355,10 @@ describe('dry boot check + service env', () => {
   it('systemd user unit still loads EnvironmentFile (RIVETOS_MODE from .env)', () => {
     const unit = renderSystemdUserUnit({
       workingDir: '/opt/rivetos',
-      envFile: '/home/tester/.rivetos/.env',
+      envFile: '/home/user/.rivetos/.env',
       execStart: '/usr/bin/node /opt/rivetos/packages/cli/dist/index.js start',
     })
-    expect(unit).toContain('EnvironmentFile=/home/tester/.rivetos/.env')
+    expect(unit).toContain('EnvironmentFile=/home/user/.rivetos/.env')
   })
 
   it('lastNLines keeps the tail', () => {
@@ -461,23 +461,23 @@ describe('parseLocalArgs error paths', () => {
 describe('service PATH + systemd unit', () => {
   it('servicePathEnv puts node dir and ~/.local/bin first', () => {
     const path = servicePathEnv({
-      home: '/home/tester',
+      home: '/home/user',
       nodePath: '/usr/bin/node',
       pathEnv: '/usr/bin:/bin',
     })
-    expect(path.startsWith('/usr/bin:/home/tester/.local/bin:')).toBe(true)
+    expect(path.startsWith('/usr/bin:/home/user/.local/bin:')).toBe(true)
     expect(path).toContain('/opt/homebrew/bin')
   })
 
   it('systemd unit quotes PATH and EnvironmentFile', () => {
     const unit = renderSystemdUserUnit({
       workingDir: '/opt/rivetos',
-      envFile: '/home/tester/.rivetos/.env',
+      envFile: '/home/user/.rivetos/.env',
       execStart: '"/usr/bin/node" "/opt/rivetos/packages/cli/dist/index.js" start',
-      path: '/usr/bin:/home/tester/.local/bin:/bin',
+      path: '/usr/bin:/home/user/.local/bin:/bin',
     })
-    expect(unit).toContain('EnvironmentFile=/home/tester/.rivetos/.env')
-    expect(unit).toContain('Environment="PATH=/usr/bin:/home/tester/.local/bin:/bin"')
+    expect(unit).toContain('EnvironmentFile=/home/user/.rivetos/.env')
+    expect(unit).toContain('Environment="PATH=/usr/bin:/home/user/.local/bin:/bin"')
     expect(unit).toContain('ExecStart="/usr/bin/node"')
   })
 })

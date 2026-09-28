@@ -68,7 +68,7 @@ That uses the grok-bot ingest writer (requires a built capture package).
 
 The `capture/` directory provides automated transcript conversion and ingestion for the grokbot node.
 
-**Door 1: Transcript watcher** — monitors per-model transcript files and ingests to phil_memory.
+**Door 1: Transcript watcher** — monitors per-model transcript files and ingests to rivet_memory.
 
 **Setup:**
 

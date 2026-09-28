@@ -71,7 +71,7 @@ class ChatSendTest {
     }
 
     @Test fun `spawnConflict maps only 409 texts`() {
-        val hosted = "agent \"reviewer\" is hosted on ct115"
+        val hosted = "agent \"reviewer\" is hosted on node-f"
         val recorded = "session runs in /tmp/old; edit the agent or start a new conversation"
         val running = "session is running in /x; edit the agent or start a new conversation"
         assertNull(spawnConflict(404, "agent not found"))
@@ -116,7 +116,7 @@ class ChatSendTest {
     }
 
     @Test fun `a stopping conflict keeps the den error`() {
-        val hosted = "agent \"reviewer\" is hosted on ct115"
+        val hosted = "agent \"reviewer\" is hosted on node-f"
         val missing = "agent \"reviewer\" has no directory"
         val recorded = "session runs in /tmp/old; edit the agent or start a new conversation"
         assertEquals(hosted, spawnStopError(SpawnConflict.HostedElsewhere, hosted, 409))
@@ -140,7 +140,7 @@ class ChatSendTest {
         assertEquals("HTTP 400", agentAttemptFallbackError(400, null))
         assertNull(agentAttemptFallbackError(404, "agent not found"))
         assertNull(agentAttemptFallbackError(409, recorded))
-        assertNull(agentAttemptFallbackError(409, "agent \"reviewer\" is hosted on ct115"))
+        assertNull(agentAttemptFallbackError(409, "agent \"reviewer\" is hosted on node-f"))
         assertNull(agentAttemptFallbackError(409, "agent \"reviewer\" has no directory"))
     }
 

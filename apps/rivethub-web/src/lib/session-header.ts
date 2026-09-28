@@ -1,5 +1,5 @@
 /**
- * Narrow session-chrome rules (Phil 2026-09-03): on the phone a session owns
+ * Narrow session-chrome rules (2026-09-03): on the phone a session owns
  * ONE 48px header row — the wordmark bar (MobileTopBar) is not shown while a
  * session is open, and there is no back chevron ("back" is the right-side
  * history drawer). Wide layout is untouched.

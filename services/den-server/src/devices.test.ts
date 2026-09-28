@@ -110,7 +110,7 @@ function fakeDatahubAdmin(
       ensured.push(deviceId)
       const role = deviceRoleName(deviceId)
       return {
-        url: `postgres://${role}:secret@192.0.2.50:5432/phil_memory`,
+        url: `postgres://${role}:secret@192.0.2.50:5432/rivet_memory`,
         role,
       }
     },
@@ -632,7 +632,7 @@ describe('devices routes', () => {
     expect(admin.ensured[0]).toBe(deviceId)
     const expectedRole = deviceRoleName(deviceId)
     expect(open.body.qr.config.pgUrl).toBe(
-      `postgres://${expectedRole}:secret@192.0.2.50:5432/phil_memory`,
+      `postgres://${expectedRole}:secret@192.0.2.50:5432/rivet_memory`,
     )
     expect(open.body.qr.config.pgUrl).not.toBe(CONFIG.pgUrl)
 
@@ -743,8 +743,8 @@ describe('devices routes', () => {
 
 describe('deviceRoleName', () => {
   it('derives a stable allowlisted role from a UUID', () => {
-    expect(deviceRoleName('019e5f82-f0e5-7d41-a38c-4eefced7e570')).toBe(
-      'rivet_dev_019e5f82_f0e5_7d41_a38c_4eefced7e570',
+    expect(deviceRoleName('00000000-0000-4000-8000-000000000040')).toBe(
+      'rivet_dev_00000000_0000_4000_8000_000000000040',
     )
   })
 

@@ -59,9 +59,9 @@ describe('parseArgv', () => {
   })
 
   it('hands `config init --join` to the config handler as remaining args', () => {
-    expect(parseArgv(['config', 'init', '--join', 'ct110.mesh'])).toEqual({
+    expect(parseArgv(['config', 'init', '--join', 'node-a.mesh'])).toEqual({
       command: 'config',
-      args: ['init', '--join', 'ct110.mesh'],
+      args: ['init', '--join', 'node-a.mesh'],
       wantsHelp: false,
     })
   })

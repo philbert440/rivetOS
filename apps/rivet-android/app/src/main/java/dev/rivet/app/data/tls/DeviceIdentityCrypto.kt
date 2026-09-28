@@ -22,7 +22,7 @@ import javax.net.ssl.X509TrustManager
  * committed to the public repo.
  */
 data class DeviceCertSummary(
-    /** Leaf subject CN, e.g. `device:pixel-phil`. */
+    /** Leaf subject CN, e.g. `device:pixel-owner`. */
     val commonName: String,
     /** Leaf `notAfter` as epoch milliseconds. */
     val notAfterEpochMs: Long,

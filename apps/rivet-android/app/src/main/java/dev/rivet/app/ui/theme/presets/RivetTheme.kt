@@ -8,7 +8,7 @@ import androidx.compose.ui.res.stringResource
 import dev.rivet.app.R
 import dev.rivet.app.ui.theme.PresetTheme
 
-// Canonical Rivet brand: emerald-on-dark engineering scheme (philtompkins.com palette).
+// Canonical Rivet brand: emerald-on-dark engineering scheme.
 // Dark is the primary look. Accent #34d399 emerald on a green-tinted near-black canvas.
 val RivetThemePreset by lazy {
     PresetTheme(
