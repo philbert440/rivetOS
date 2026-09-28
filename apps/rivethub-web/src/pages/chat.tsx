@@ -98,7 +98,7 @@ import { XtermAttach } from '../components/xterm-attach.js'
 import { SessionErrorBoundary } from '../components/session-error-boundary.js'
 import { HarnessApprovalCard } from '../components/harness-approval-card.js'
 import { isAskUserTool, questionsFromLiveTools } from '../lib/ask-user.js'
-import { accentFor } from '../lib/agent-accent.js'
+import { accentFor, sameLabel } from '../lib/agent-accent.js'
 import { attachHarnessSession } from '../lib/harness-attach.js'
 import { statusActivity } from '../lib/harness-fold.js'
 import { deriveReplyWait, nextWaitClock, type ReplyWaitClock } from '../lib/harness-turns.js'
@@ -769,7 +769,9 @@ function DrawerItem(props: {
           <span className="size-1.5 shrink-0 rounded-full bg-em/40" title="session alive" />
         )}
         {(() => {
-          const pill = rowPillText({ model: props.item.model }, undefined, props.item.harnessId)
+          const raw = rowPillText({ model: props.item.model }, undefined, props.item.harnessId)
+          // A pin row titled after its harness would read it twice.
+          const pill = sameLabel(customName ?? props.item.title, raw) ? '' : raw
           const native = shortNativeId(props.item.key)
           const tip = props.item.harnessId
             ? `${props.item.harnessId} ${native}`
