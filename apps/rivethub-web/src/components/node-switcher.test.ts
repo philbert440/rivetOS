@@ -101,19 +101,32 @@ for (const name of ['switcher', 'picker']) {
       client.setQueryData(['mesh', useConnection.getState().baseUrl], data)
     }
     function expectVisible(): void {
-      expect(render()).toContain(
-        name === 'switcher' ? 'aria-label="Current node:' : 'aria-label="node:',
-      )
+      const html = render()
+      expect(html).toContain(name === 'switcher' ? 'aria-label="Current node:' : 'aria-label="node:')
+      // The switcher's interactive form is the button that opens the list.
+      if (name === 'switcher') expect(html).toContain('aria-expanded')
+    }
+    // With nothing to switch to, the picker disappears; the rail switcher
+    // stays as a plain label naming the current node (no top bar carries it).
+    function expectHidden(): void {
+      const html = render()
+      if (name === 'picker') {
+        expect(html).toBe('')
+        return
+      }
+      expect(html).toContain('role="status"')
+      expect(html).toContain('aria-label="Current node:')
+      expect(html).not.toContain('aria-expanded')
     }
 
     it('hides for the sole saved active node after successful discovery', () => {
       discover()
-      expect(render()).toBe('')
+      expectHidden()
     })
 
     it('does not mistake the active node in the mesh response for a peer', () => {
       discover({ ...empty, nodes: [{ ...peer.nodes[0], denUrl: `${A.baseUrl}/` }] })
-      expect(render()).toBe('')
+      expectHidden()
     })
 
     it('shows a saved B while connected to unsaved A', () => {
@@ -124,18 +137,18 @@ for (const name of ['switcher', 'picker']) {
 
     it('appears when discovery finds the first peer', () => {
       discover()
-      expect(render()).toBe('')
+      expectHidden()
       discover(peer)
       expectVisible()
     })
 
     it('appears after saving a second node and hides after removing it', () => {
       discover()
-      expect(render()).toBe('')
+      expectHidden()
       useConnection.getState().addNode(B)
       expectVisible()
       useConnection.getState().removeNode(B.baseUrl)
-      expect(render()).toBe('')
+      expectHidden()
     })
 
     it('stays visible when the active node is removed from a two-node roster', () => {
@@ -153,13 +166,13 @@ for (const name of ['switcher', 'picker']) {
           resolve = done
         }),
       )
-      expect(render()).toBe('')
+      expectHidden()
       const observer = new QueryObserver(client, captured.options!)
       const unsubscribe = observer.subscribe(() => {})
       try {
         await vi.waitFor(() => expect(request).toHaveBeenCalledTimes(1))
         expect(client.getQueryState(['mesh', A.baseUrl])?.status).toBe('pending')
-        expect(render()).toBe('')
+        expectHidden()
         resolve(peer)
         await vi.waitFor(() =>
           expect(client.getQueryState(['mesh', A.baseUrl])?.status).toBe('success'),
@@ -183,14 +196,14 @@ for (const name of ['switcher', 'picker']) {
           queryFn: () => Promise.reject(new Error('unavailable')),
         })
         .catch(() => undefined)
-      if (count === 1) expect(render()).toBe('')
+      if (count === 1) expectHidden()
       else expectVisible()
     })
 
     it('hides an empty roster only on the app origin', () => {
       useConnection.setState({ roster: [] })
       discover()
-      expect(render()).toBe('')
+      expectHidden()
       useConnection.setState({ baseUrl: B.baseUrl })
       discover()
       expectVisible()
@@ -215,7 +228,7 @@ for (const name of ['switcher', 'picker']) {
       // A stale successful snapshot hides the control; mounting its observer
       // must still fetch, without ever opening the dropdown.
       client.setQueryData(['mesh', A.baseUrl], empty, { updatedAt: Date.now() - 31_000 })
-      expect(render()).toBe('')
+      expectHidden()
       expect(captured.options).toBeDefined()
       const observer = new QueryObserver(client, captured.options!)
       const unsubscribe = observer.subscribe(() => {})

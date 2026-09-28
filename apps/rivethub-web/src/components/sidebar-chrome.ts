@@ -29,17 +29,3 @@ export function railToggle(collapsed: boolean): {
     ? { kind: 'expand', label: 'Expand sidebar', ariaExpanded: false }
     : { kind: 'collapse', label: 'Collapse sidebar', ariaExpanded: true }
 }
-
-/** The roster name for the active endpoint, else its host. */
-export function nodeLabel(
-  baseUrl: string,
-  roster: readonly { name: string; baseUrl: string }[],
-): string {
-  const hit = roster.find((n) => n.baseUrl === baseUrl)
-  if (hit) return hit.name
-  try {
-    return new URL(baseUrl).host
-  } catch {
-    return 'no node'
-  }
-}

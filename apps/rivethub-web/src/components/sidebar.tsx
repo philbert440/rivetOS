@@ -261,9 +261,8 @@ export function Sidebar(): JSX.Element {
           </Button>
         </Tooltip>
         {/* Unread escalations/outcomes — toasts are ephemeral, this isn't.
-            Click = jump to Tasks (the durable record) and mark read. Desktop
-            shows the count in the top status strip instead. */}
-        {narrow && unread > 0 && (
+            Click = jump to Tasks (the durable record) and mark read. */}
+        {unread > 0 && (
           <span className={collapsed ? 'absolute left-7 top-3' : 'ml-auto'}>
             <Tooltip label={`${String(unread)} unread notifications`} disabled={!collapsed}>
               <button

@@ -200,8 +200,10 @@ Redesign "A · Tiled" (mockups in `docs/mockups/rivethub-redesign/`).
   Transcript rows are mono `rivet ›` / `you ›` labels, no avatar.
 - **Look:** JetBrains Mono for all UI (`--font-sans`), every `--radius*`
   token 0 (only `rounded-full` stays round), no blueprint grid. Desktop is
-  tiled: `StatusStrip` (page · "N need you" · node) above the rail
-  and page as bordered tiles, the page tile carrying the accent border.
+  tiled: the rail and page as bordered tiles, the page tile carrying the
+  accent border; no top bar. The rail header carries the unread pill and
+  the rail foot always names the current node (`NodeSwitcher`, a plain label
+  when there is nothing to switch to).
   Fixed overlays position via `--hub-rail` / `--hub-top` / `--hub-inset`.
 - **Context details:** the chat header's `ContextBar` is a Popover trigger on
   desktop (`withDetails`) — context numbers, harness/model/node and the

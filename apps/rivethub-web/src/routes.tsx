@@ -13,7 +13,6 @@ import {
   useRouterState,
 } from '@tanstack/react-router'
 import { MobileTopBar, Sidebar } from './components/sidebar.js'
-import { StatusStrip } from './components/status-strip.js'
 import { Toasts } from './components/toasts.js'
 import { EdgeSwipeTracker } from './lib/edge-swipe.js'
 import { showMobileTopBar } from './lib/session-header.js'
@@ -134,9 +133,9 @@ function RootLayout(): JSX.Element {
     }
   }, [narrow, sessionOpen])
 
-  // Desktop is tiled (Omarchy / Hyprland): a status strip on top, then the
-  // rail and the page as separate bordered tiles with a gap, the page tile
-  // carrying the accent border as the focused window. Narrow keeps the
+  // Desktop is tiled (Omarchy / Hyprland): the rail and the page as separate
+  // bordered tiles with a gap, the page tile carrying the accent border as
+  // the focused window. The node and what needs you live in the rail. Narrow keeps the
   // full-bleed drawer layout. Fixed overlays position against these vars.
   const railWidth = narrow ? '0rem' : railCollapsed ? '3rem' : '14rem'
   const tiled = !narrow
@@ -146,11 +145,10 @@ function RootLayout(): JSX.Element {
       className="flex h-full flex-col"
       style={{
         ['--hub-rail' as string]: tiled ? `calc(${railWidth} + 20px)` : railWidth,
-        ['--hub-top' as string]: tiled ? '40px' : '0px',
+        ['--hub-top' as string]: tiled ? '10px' : '0px',
         ['--hub-inset' as string]: tiled ? '10px' : '0px',
       }}
     >
-      {tiled && <StatusStrip />}
       <div className={tiled ? 'flex min-h-0 flex-1 gap-2.5 p-2.5' : 'flex min-h-0 flex-1'}>
         <Sidebar />
         {narrow && drawerOpen && (
