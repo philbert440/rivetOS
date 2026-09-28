@@ -909,6 +909,25 @@ describe('unstamped on-disk transcript + createdAt', () => {
     expect(messages.every((m) => m.metadata?.time_source === 'mtime')).toBe(true)
   })
 
+  it('uses 1s mtime steps when birth is only 4 ms earlier (copied sand-subagent)', () => {
+    const mtime = Date.parse('2026-08-11T15:00:00.000Z')
+    const records = [
+      { role: 'user', message: { content: [{ type: 'text', text: '[t0u]\none' }] } },
+      { role: 'assistant', message: { content: [{ type: 'text', text: 'two' }] } },
+      { role: 'user', message: { content: [{ type: 'text', text: '[t1u]\nthree' }] } },
+    ]
+    const { messages } = normalizeRecords(records, {
+      ...rivetOpts(),
+      fileMtimeMs: mtime,
+      fileBirthtimeMs: mtime - 4,
+    })
+    const times = messages.map((m) => Date.parse(m.created_at ?? ''))
+    expect(times[times.length - 1]).toBe(mtime)
+    expect(times[1] - times[0]).toBe(INHERIT_STEP_MS)
+    expect(times[2] - times[1]).toBe(INHERIT_STEP_MS)
+    expect(messages.every((m) => m.metadata?.time_source === 'mtime')).toBe(true)
+  })
+
   it('inherits from a parent session stamp when lastKnownTime is set', () => {
     const parent = '2026-08-11T14:00:00.000Z'
     const mtime = Date.parse('2026-08-11T15:00:00.000Z')
@@ -927,10 +946,10 @@ describe('unstamped on-disk transcript + createdAt', () => {
     expect(messages[1].metadata?.time_source).toBe('inherited')
   })
 
-  it('peeks a parent transcript stamp from profile parentId', () => {
+  it('skips parent seeding when only parentId is known (not the last stamp)', () => {
     const parentId = 'aaaaaaaa-bbbb-4ccc-8ddd-111111111111'
     const childId = 'bbbbbbbb-cccc-4ddd-8eee-222222222222'
-    const root = mkdtempSync(join(tmpdir(), 'gb-parent-peek-'))
+    const root = mkdtempSync(join(tmpdir(), 'gb-parent-skip-'))
     mkdirSync(join(root, parentId), { recursive: true })
     mkdirSync(join(root, 'agents', childId), { recursive: true })
     writeFileSync(
@@ -948,6 +967,97 @@ describe('unstamped on-disk transcript + createdAt', () => {
       })}\n`,
     )
     writeFileSync(join(root, 'agents', childId, 'profile.json'), JSON.stringify({ parentId }))
+    const childPath = join(root, childId, `${childId}.jsonl`)
+    mkdirSync(join(root, childId), { recursive: true })
+    writeFileSync(childPath, '{}\n')
+    expect(
+      peekParentLastKnownTime({
+        sourcePath: childPath,
+        agentsDir: join(root, 'agents'),
+        transcriptsDir: root,
+      }),
+    ).toBeUndefined()
+  })
+
+  it('peeks the parent stamp nearest the child spawn mention, not the last stamp', () => {
+    const parentId = 'aaaaaaaa-bbbb-4ccc-8ddd-111111111111'
+    const childId = 'bbbbbbbb-cccc-4ddd-8eee-222222222222'
+    const root = mkdtempSync(join(tmpdir(), 'gb-parent-near-'))
+    mkdirSync(join(root, parentId), { recursive: true })
+    mkdirSync(join(root, 'agents', childId), { recursive: true })
+    const early = {
+      role: 'user',
+      message: {
+        content: [
+          {
+            type: 'text',
+            text: `<timestamp>Sunday, Sep 27, 2026, 4:06 PM (UTC-4)</timestamp>\n<user_query>\nspawn ${childId}\n</user_query>`,
+          },
+        ],
+      },
+    }
+    const late = {
+      role: 'user',
+      message: {
+        content: [
+          {
+            type: 'text',
+            text: '<timestamp>Sunday, Sep 27, 2026, 5:06 PM (UTC-4)</timestamp>\n<user_query>\nlater parent turn\n</user_query>',
+          },
+        ],
+      },
+    }
+    writeFileSync(
+      join(root, parentId, `${parentId}.jsonl`),
+      `${JSON.stringify(early)}\n${JSON.stringify(late)}\n`,
+    )
+    writeFileSync(join(root, 'agents', childId, 'profile.json'), JSON.stringify({ parentId }))
+    const childPath = join(root, childId, `${childId}.jsonl`)
+    mkdirSync(join(root, childId), { recursive: true })
+    writeFileSync(childPath, '{}\n')
+    expect(
+      peekParentLastKnownTime({
+        sourcePath: childPath,
+        agentsDir: join(root, 'agents'),
+        transcriptsDir: root,
+      }),
+    ).toBe('2026-09-27T20:06:00.000Z')
+  })
+
+  it('uses profile createdAt to pick the nearest parent stamp', () => {
+    const parentId = 'aaaaaaaa-bbbb-4ccc-8ddd-333333333333'
+    const childId = 'bbbbbbbb-cccc-4ddd-8eee-444444444444'
+    const root = mkdtempSync(join(tmpdir(), 'gb-parent-created-'))
+    mkdirSync(join(root, parentId), { recursive: true })
+    mkdirSync(join(root, 'agents', childId), { recursive: true })
+    writeFileSync(
+      join(root, parentId, `${parentId}.jsonl`),
+      `${JSON.stringify({
+        role: 'user',
+        message: {
+          content: [
+            {
+              type: 'text',
+              text: '<timestamp>Sunday, Sep 27, 2026, 4:06 PM (UTC-4)</timestamp>\n<user_query>\nearly\n</user_query>',
+            },
+          ],
+        },
+      })}\n${JSON.stringify({
+        role: 'user',
+        message: {
+          content: [
+            {
+              type: 'text',
+              text: '<timestamp>Sunday, Sep 27, 2026, 5:06 PM (UTC-4)</timestamp>\n<user_query>\nlate\n</user_query>',
+            },
+          ],
+        },
+      })}\n`,
+    )
+    writeFileSync(
+      join(root, 'agents', childId, 'profile.json'),
+      JSON.stringify({ parentId, createdAt: '2026-09-27T20:06:20.000Z' }),
+    )
     const childPath = join(root, childId, `${childId}.jsonl`)
     mkdirSync(join(root, childId), { recursive: true })
     writeFileSync(childPath, '{}\n')

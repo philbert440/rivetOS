@@ -186,16 +186,22 @@ export function sourceFileTimes(stat: { mtimeMs: number; birthtimeMs?: number })
   }
 }
 
-/** Last `<timestamp>` in a text window (parent-transcript peek). */
-export function lastTimestampTagInText(text: string): string | undefined {
-  let last: string | undefined
+/** `<timestamp>` tags in a text window, in file order. */
+export function timestampTagsInText(text: string): Array<{ time: string; index: number }> {
+  const out: Array<{ time: string; index: number }> = []
   const re = /<timestamp>\s*([^<]+?)\s*<\/timestamp>/gi
   let m: RegExpExecArray | null
   while ((m = re.exec(text))) {
     const parsed = parseGrokTimestamp(m[1])
-    if (parsed) last = parsed
+    if (parsed) out.push({ time: parsed, index: m.index })
   }
-  return last
+  return out
+}
+
+/** Last `<timestamp>` in a text window (parent-transcript peek). */
+export function lastTimestampTagInText(text: string): string | undefined {
+  const tags = timestampTagsInText(text)
+  return tags[tags.length - 1]?.time
 }
 
 /**
@@ -204,8 +210,10 @@ export function lastTimestampTagInText(text: string): string | undefined {
  * 2. interpolate evenly between the previous and next real stamps
  * 3. after the last stamp, inherit at INHERIT_STEP_MS per position
  * 4. look ahead from the first later stamp − INHERIT_STEP_MS per position
- * 5. mtime tier: INHERIT_STEP_MS back from mtime (last row = mtime), or
- *    interpolate birthtime→mtime when birth is earlier. Date.now() if unknown.
+ * 5. mtime tier: INHERIT_STEP_MS back from mtime (last row = mtime).
+ *    Interpolate birthtime→mtime only when the file span covers
+ *    (rows − 1) × INHERIT_STEP_MS; copies with birth ≈ mtime use 1s steps.
+ *    Date.now() if unknown.
  */
 export function deriveCreatedAt(args: {
   explicit?: { time: string; source: ExplicitTimeSource }
@@ -256,7 +264,14 @@ export function deriveCreatedAt(args: {
   const minP = args.minPosition ?? 0
   const span = Math.max(0, args.maxPosition - minP)
   const birth = args.fileBirthtimeMs
-  if (typeof birth === 'number' && Number.isFinite(birth) && birth > 0 && birth < end && span > 0) {
+  if (
+    typeof birth === 'number' &&
+    Number.isFinite(birth) &&
+    birth > 0 &&
+    birth < end &&
+    span > 0 &&
+    end - birth >= span * INHERIT_STEP_MS
+  ) {
     const t = birth + ((end - birth) * (args.position - minP)) / span
     return { time: new Date(t).toISOString(), source: 'mtime' }
   }

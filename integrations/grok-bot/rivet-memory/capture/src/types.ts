@@ -121,7 +121,8 @@ export interface NormalizeOptions {
   /**
    * Source file mtime in ms. Used when a session has no inline stamps so
    * every row still gets a monotonic createdAt (last row = mtime, earlier
-   * rows step back by INHERIT_STEP_MS — or interpolate from birthtime).
+   * rows step back by INHERIT_STEP_MS). Birthtime→mtime interpolate only
+   * when mtime − birth covers (rows − 1) × INHERIT_STEP_MS.
    */
   fileMtimeMs?: number
   /** Source file birthtime in ms when it is finite, > 0, and earlier than mtime. */

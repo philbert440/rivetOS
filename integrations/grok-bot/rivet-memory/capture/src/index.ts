@@ -25,6 +25,7 @@ export {
   sourceFileTimes,
   usableBirthtimeMs,
   lastTimestampTagInText,
+  timestampTagsInText,
 } from './timestamps.js'
 export {
   pointerMeta,

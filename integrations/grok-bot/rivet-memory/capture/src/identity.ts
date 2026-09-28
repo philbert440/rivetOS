@@ -9,7 +9,7 @@ import {
 } from 'node:fs'
 import { homedir } from 'node:os'
 import { dirname, isAbsolute, join, resolve } from 'node:path'
-import { lastTimestampTagInText } from './timestamps.js'
+import { parseKnownTime, timestampTagsInText } from './timestamps.js'
 import {
   DEFAULT_NODE_ID,
   SESSION_SUFFIX_V3,
@@ -337,33 +337,66 @@ export function parentSessionIdFromUnknown(raw: unknown): string | undefined {
 
 const PARENT_PEEK_BYTES = 32_768
 
-function peekLastTimestampInFile(file: string): string | undefined {
+function peekFileWindows(file: string): string[] {
   try {
     const size = statSync(file).size
-    if (size <= 0) return undefined
+    if (size <= 0) return []
     const fd = openSync(file, 'r')
     try {
-      const start = Math.max(0, size - PARENT_PEEK_BYTES)
-      const len = Math.min(PARENT_PEEK_BYTES, size - start)
-      const buf = Buffer.alloc(len)
-      readSync(fd, buf, 0, len, start)
-      const fromEnd = lastTimestampTagInText(buf.toString('utf8'))
-      if (fromEnd) return fromEnd
-      if (start === 0) return undefined
-      const head = Buffer.alloc(Math.min(PARENT_PEEK_BYTES, size))
-      readSync(fd, head, 0, head.length, 0)
-      return lastTimestampTagInText(head.toString('utf8'))
+      const tailStart = Math.max(0, size - PARENT_PEEK_BYTES)
+      const tailLen = Math.min(PARENT_PEEK_BYTES, size - tailStart)
+      const tail = Buffer.alloc(tailLen)
+      readSync(fd, tail, 0, tailLen, tailStart)
+      const windows = [tail.toString('utf8')]
+      if (tailStart > 0) {
+        const head = Buffer.alloc(Math.min(PARENT_PEEK_BYTES, tailStart))
+        readSync(fd, head, 0, head.length, 0)
+        windows.push(head.toString('utf8'))
+      }
+      return windows
     } finally {
       closeSync(fd)
     }
   } catch {
-    return undefined
+    return []
   }
 }
 
+function profileCreatedAt(raw: unknown): string | undefined {
+  if (!isRecord(raw)) return undefined
+  return parseKnownTime(raw.createdAt ?? raw.created_at ?? raw.createdAtMs ?? raw.timestampMs)
+}
+
+function stampAtOrBefore(
+  tags: Array<{ time: string; index: number }>,
+  mentionIndex: number,
+): string | undefined {
+  let best: string | undefined
+  for (const tag of tags) {
+    if (tag.index <= mentionIndex) best = tag.time
+  }
+  return best
+}
+
+function stampNearestSpawn(stamps: string[], spawnMs: number): string | undefined {
+  let best: string | undefined
+  let bestDist = Number.POSITIVE_INFINITY
+  for (const stamp of stamps) {
+    const t = Date.parse(stamp)
+    if (Number.isNaN(t)) continue
+    const dist = Math.abs(t - spawnMs)
+    if (dist < bestDist) {
+      best = stamp
+      bestDist = dist
+    }
+  }
+  return best
+}
+
 /**
- * Inherit from a parent session when the child profile or first records
- * carry a parent UUID and that parent's transcript has a cheap `<timestamp>`.
+ * Inherit from a parent session only when the child's spawn time is knowable:
+ * the parent transcript mentions the child UUID near a `<timestamp>`, or the
+ * child profile has createdAt. Never seed from the parent's last stamp alone.
  */
 export function peekParentLastKnownTime(opts: {
   sourcePath?: string
@@ -372,20 +405,29 @@ export function peekParentLastKnownTime(opts: {
   transcriptsDir?: string
 }): string | undefined {
   let parentId: string | undefined
+  let spawnFromRecords: string | undefined
   for (const rec of opts.records ?? []) {
-    parentId = parentSessionIdFromUnknown(rec)
-    if (!parentId && isRecord(rec) && isRecord(rec.message)) {
-      parentId = parentSessionIdFromUnknown(rec.message)
+    if (!parentId) {
+      parentId = parentSessionIdFromUnknown(rec)
+      if (!parentId && isRecord(rec) && isRecord(rec.message)) {
+        parentId = parentSessionIdFromUnknown(rec.message)
+      }
     }
-    if (parentId) break
+    if (!spawnFromRecords && isRecord(rec)) {
+      spawnFromRecords = parseKnownTime(rec.created_at ?? rec.createdAt ?? rec.timestampMs)
+    }
+    if (parentId && spawnFromRecords) break
   }
   const childId = opts.sourcePath ? agentIdFromTranscriptPath(opts.sourcePath) : undefined
-  if (!parentId && childId) {
+  let spawnFromProfile: string | undefined
+  if (childId) {
     const agentsDir = opts.agentsDir ?? defaultAgentsDir()
     const profPath = join(agentsDir, childId, 'profile.json')
     if (existsSync(profPath)) {
       try {
-        parentId = parentSessionIdFromUnknown(JSON.parse(readFileSync(profPath, 'utf8')))
+        const prof = JSON.parse(readFileSync(profPath, 'utf8')) as unknown
+        parentId ??= parentSessionIdFromUnknown(prof)
+        spawnFromProfile = profileCreatedAt(prof)
       } catch {
         /* ignore bad profile */
       }
@@ -397,7 +439,22 @@ export function peekParentLastKnownTime(opts: {
     (opts.sourcePath ? dirname(dirname(opts.sourcePath)) : defaultTranscriptsDir())
   const parentFile = join(transcriptsDir, parentId, `${parentId}.jsonl`)
   if (!existsSync(parentFile)) return undefined
-  return peekLastTimestampInFile(parentFile)
+
+  const windows = peekFileWindows(parentFile)
+  const stamps: string[] = []
+  let mentionStamp: string | undefined
+  for (const text of windows) {
+    const tags = timestampTagsInText(text)
+    for (const tag of tags) stamps.push(tag.time)
+    if (!mentionStamp && childId) {
+      const mention = text.toLowerCase().indexOf(childId.toLowerCase())
+      if (mention >= 0) mentionStamp = stampAtOrBefore(tags, mention) ?? tags[0]?.time
+    }
+  }
+  if (mentionStamp) return mentionStamp
+  const spawn = spawnFromProfile ?? spawnFromRecords
+  if (!spawn) return undefined
+  return stampNearestSpawn(stamps, Date.parse(spawn))
 }
 
 export function applySessionSuffix(session: string, suffix?: string): string {
