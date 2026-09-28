@@ -9,7 +9,7 @@
       "apk": {
         "executor": "nx:run-commands",
         "options": {
-          "command": "./gradlew :app:assemblePhilDebug",
+          "command": "./gradlew :app:assemblePersonalDebug",
           "cwd": "apps/rivet-android"
         },
         "cache": false
@@ -17,7 +17,7 @@
       "apk-release": {
         "executor": "nx:run-commands",
         "options": {
-          "command": "./gradlew :app:assemblePhilRelease",
+          "command": "./gradlew :app:assemblePersonalRelease",
           "cwd": "apps/rivet-android"
         },
         "cache": false
@@ -25,7 +25,7 @@
       "check": {
         "executor": "nx:run-commands",
         "options": {
-          "command": "./gradlew testPhilDebugUnitTest",
+          "command": "./gradlew testPersonalDebugUnitTest",
           "cwd": "apps/rivet-android"
         },
         "cache": false
@@ -33,7 +33,7 @@
       "verify": {
         "executor": "nx:run-commands",
         "options": {
-          "command": "./gradlew :app:lintPhilDebug",
+          "command": "./gradlew :app:lintPersonalDebug",
           "cwd": "apps/rivet-android"
         },
         "cache": false

@@ -44,14 +44,14 @@ android {
         }
     }
 
-    // "phil" = the personal build (personal rootfs asset).
+    // "personal" = the personal build (personal rootfs asset).
     // "friend" = shareable build: src/friend/assets overrides the rootfs with a sanitized one
     // (scripts/sanitize-rootfs.sh) plus de-personalized CLAUDE.md/GROK.md. All mesh/datahub
     // config is runtime user settings in both flavors — neither carries baked coordinates. The
     // .friend applicationId suffix lets both installs coexist on one device.
     flavorDimensions += "dist"
     productFlavors {
-        create("phil") {
+        create("personal") {
             dimension = "dist"
         }
         create("friend") {
