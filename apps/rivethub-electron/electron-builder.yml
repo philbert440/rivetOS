@@ -11,6 +11,7 @@ directories:
 files:
   - dist-electron/**
   - icons/icon.png
+  - icons/tray-mask.png
   - "!**/node_modules/**"
 extraResources:
   - from: ../rivethub-web/dist

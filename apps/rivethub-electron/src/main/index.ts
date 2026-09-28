@@ -33,6 +33,8 @@ import { PipeState } from './mtls-pipe.js'
 import { SettingsStore } from './settings-store.js'
 import { registerIpc } from './ipc.js'
 import { watchOmarchyTheme } from './omarchy-watch.js'
+import { readTerminalConfigs } from './terminal-config.js'
+import { parseForeground, tintBitmap } from './tray-icon.js'
 import {
   allowMediaCheck,
   allowMediaRequest,
@@ -555,6 +557,29 @@ if (!app.requestSingleInstanceLock()) {
   })
 }
 
+/**
+ * The tray image: the `rh` mask painted in the Omarchy theme's foreground so
+ * it reads on whatever bar the theme draws (tray-icon.ts). Without an Omarchy
+ * theme — or if the mask is unreadable — the app icon, as before.
+ */
+function trayImage(): Electron.NativeImage {
+  const size = { width: 24, height: 24 }
+  try {
+    const toml = readTerminalConfigs().find((c) => c.kind === 'omarchy')?.colorsToml
+    const fg = toml ? parseForeground(toml) : undefined
+    const mask = nativeImage.createFromPath(path.join(__dirname, '../icons/tray-mask.png'))
+    if (fg && !mask.isEmpty()) {
+      const { width, height } = mask.getSize()
+      return nativeImage
+        .createFromBitmap(tintBitmap(mask.toBitmap(), fg), { width, height })
+        .resize(size)
+    }
+  } catch (err) {
+    logFault('tray-tint', err instanceof Error ? err.message : err)
+  }
+  return nativeImage.createFromPath(path.join(__dirname, '../icons/icon.png')).resize(size)
+}
+
 /** Disposes the Omarchy theme watcher started in startup(). */
 let stopOmarchyWatch: (() => void) | undefined
 
@@ -579,6 +604,8 @@ function startup(): void {
     for (const w of BrowserWindow.getAllWindows()) {
       if (!w.isDestroyed()) w.webContents.send('omarchy:changed')
     }
+    // The bar behind the tray just changed color; repaint to match.
+    if (tray && !tray.isDestroyed()) tray.setImage(trayImage())
   })
   registerIpc({
     pipes,
@@ -636,10 +663,9 @@ function startup(): void {
   // to a broken Electron fails the release flow instead of shipping a dead
   // tray (RIVET_SKIP_SNI_CHECK=1 is the no-dbus escape hatch).
   try {
-    const iconPath = path.join(__dirname, '../icons/icon.png')
-    const icon = nativeImage.createFromPath(iconPath)
-    if (icon.isEmpty()) throw new Error(`tray icon unreadable: ${iconPath}`)
-    tray = new Tray(icon.resize({ width: 24, height: 24 }))
+    const icon = trayImage()
+    if (icon.isEmpty()) throw new Error('tray icon unreadable')
+    tray = new Tray(icon)
     tray.setToolTip(baseTip)
     tray.setContextMenu(
       Menu.buildFromTemplate([
