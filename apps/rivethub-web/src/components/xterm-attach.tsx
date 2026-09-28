@@ -25,6 +25,7 @@ import {
   type TermOwner,
 } from '../lib/owner-banner.js'
 import { RhMark } from './brand.js'
+import { focusIsInUse } from '../lib/composer-autofocus.js'
 import { Button } from './ui/button.js'
 
 /**
@@ -523,6 +524,13 @@ export function XtermAttach(props: {
 
       instance.open(host)
       termRef.current = instance
+      // Land in the terminal when it opens — a new or reopened conversation,
+      // or a switch to Terminal — so typing works with no click first. Same
+      // guards as the composer's autofocus: never take focus from something
+      // in use (a rename, the filter, a dialog), and not on touch, where a
+      // programmatic focus would raise the keyboard over the output.
+      const coarse = window.matchMedia('(pointer: coarse)').matches
+      if (!coarse && !focusIsInUse(document.activeElement)) instance.focus()
       fitRef.current = fit
       searchRef.current = search
 
