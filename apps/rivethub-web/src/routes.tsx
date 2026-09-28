@@ -56,7 +56,7 @@ function RootLayout(): JSX.Element {
   const wasDrawerOpen = useRef(drawerOpen)
   const wasHistoryOpen = useRef(historyOpen)
   // Narrow with a session open: the one-row session header owns the top of
-  // the screen — the wordmark bar is not shown (Phil 2026-09-03).
+  // the screen — the wordmark bar is not shown (2026-09-03).
   const sessionOpen = pathname === '/' && active !== undefined
 
   // App-lifetime notifications socket (escalations etc.) — root-level so
@@ -108,7 +108,7 @@ function RootLayout(): JSX.Element {
     return () => window.removeEventListener('keydown', onKey)
   }, [drawerOpen, historyOpen, setDrawerOpen, setHistoryOpen])
 
-  // Edge swipes own horizontal gestures on narrow (Phil 2026-09-03): left
+  // Edge swipes own horizontal gestures on narrow (2026-09-03): left
   // bezel → navigation drawer from EVERY screen; right bezel → history
   // (conversations) drawer while a session is open.
   useEffect(() => {

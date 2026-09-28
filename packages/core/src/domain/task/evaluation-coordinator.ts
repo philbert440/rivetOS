@@ -33,7 +33,7 @@ import { logger } from '../../logger.js'
 const log = logger('TaskEval')
 
 export interface EvaluationConfig {
-  /** Verifier-driven retries before giving up (default 1 — Phil's call). */
+  /** Verifier-driven retries before giving up (default 1). */
   maxRetries?: number
   /** Verifier agent — defaults to the parent task's agent. */
   agentId?: string

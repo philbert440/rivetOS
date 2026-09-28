@@ -12,9 +12,9 @@ import org.junit.Test
 class TermOwnerTest {
     @Test
     fun `overlay shows for a non-self owner with the device in the label`() {
-        val o = ownerOverlay(TermOwner(device = "Phil's phone", self = false))
+        val o = ownerOverlay(TermOwner(device = "Pat's phone", self = false))
         assertTrue(o.show)
-        assertEquals("This terminal is active on Phil's phone.", o.label)
+        assertEquals("This terminal is active on Pat's phone.", o.label)
     }
 
     @Test

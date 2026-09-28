@@ -269,7 +269,7 @@ fun ChatDrawerContent(
                 }
             )
 
-            // Node switcher (replaces the drawer assistant-profile picker — Phil's ask).
+            // Node switcher (replaces the drawer assistant-profile picker).
             // Assistants remain chat-config; selection lives in Settings / the menu below.
             NodeSwitcher(
                 settings = settings,

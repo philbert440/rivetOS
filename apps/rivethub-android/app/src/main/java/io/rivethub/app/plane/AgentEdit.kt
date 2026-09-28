@@ -4,7 +4,7 @@ import io.rivethub.app.gateway.AgentUpdateRequest
 import java.util.Locale
 
 /**
- * Agent long-press actions (2026-09-04, Phil: Edit + Go-to-node next to the
+ * Agent long-press actions (2026-09-04: Edit + Go-to-node next to the
  * existing pointer semantics). The action sheet UI iterates
  * [agentSheetActions] so the order lives here, not in the composable.
  * Edit is omitted when [online] is false: an unmatched preset has an empty

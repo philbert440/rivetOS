@@ -1,8 +1,7 @@
 @import 'tailwindcss';
 
 /* Rivet brand — emerald on dark, DM Sans / JetBrains Mono, blueprint grid.
-   Tokens mirror the wiki UI (packages/core wiki-html.ts) and
-   philtompkins.com. */
+   Tokens mirror the wiki UI (packages/core wiki-html.ts). */
 @theme {
   --color-em: #34d399;
   --color-em-dim: #10b981;

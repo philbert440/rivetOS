@@ -103,7 +103,7 @@ function ConversationsNav(props: { collapsed: boolean }): JSX.Element {
         className={navClass(onChat, props.collapsed)}
         onClick={() => {
           if (narrow) {
-            // Narrow (Phil 2026-09-04): the list is not a screen — the rail's
+            // Narrow (2026-09-04): the list is not a screen — the rail's
             // Conversations item returns to the CHAT HOME (the active
             // session). The selection is left alone: remounting ChatPage
             // rewrites ?session= from `active`, and with no active session

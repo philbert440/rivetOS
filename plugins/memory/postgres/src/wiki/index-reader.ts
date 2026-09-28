@@ -593,7 +593,7 @@ export class WikiIndex {
   }
 
   /**
-   * Gap surfacing (Phil 2026-07-07): red links — entities referenced by
+   * Gap surfacing (2026-07-07): red links — entities referenced by
    * pages that have no page of their own — plus stalest pages. Cheap index
    * queries for the landing view (3e).
    */

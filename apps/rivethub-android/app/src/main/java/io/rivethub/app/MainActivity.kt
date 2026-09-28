@@ -265,7 +265,7 @@ fun App(
         Box(Modifier.fillMaxSize().background(colors.bg).blueprintGrid(colors.gridLine))
         return
     }
-    // Home IS the chat surface (Phil 2026-09-04: the conversations list is
+    // Home IS the chat surface (2026-09-04: the conversations list is
     // not an app screen; it lives only in the drawer — the left one since U2b). Instant
     // resume: a persisted last session (plane/LaunchSession.kt LastSession,
     // written by openChat) starts the nav stack straight on Screen.Chat —
@@ -418,8 +418,8 @@ fun App(
             NewConversationAction.PickAgent -> Unit
         }
     }
-    // Left-nav Conversations → the chat home, never a list screen (Phil
-    // 2026-09-04): the ACTIVE session when one is on the stack; otherwise the
+    // Left-nav Conversations → the chat home, never a list screen
+    // (2026-09-04): the ACTIVE session when one is on the stack; otherwise the
     // launch surface, whose effect below resolves the pick/new.
     fun routeChatHome() {
         when (chatHomeNav(nav.current is Screen.Chat, nav.stack.any { it is Screen.Chat })) {

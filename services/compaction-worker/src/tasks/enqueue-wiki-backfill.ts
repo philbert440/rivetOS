@@ -1,7 +1,7 @@
 /**
  * enqueue-wiki-backfill (phase 3h) — sweep leaf summaries that have no
  * extraction row (or a failed / stale-pipeline one) into extract-wiki jobs.
- * ALL history per Phil's call: no date floor — the wiki starts complete,
+ * ALL history: no date floor — the wiki starts complete,
  * even if the first pass takes days on the local LLM.
  *
  * Cron (every 10 min) while WIKI_EXTRACTION=1; each sweep enqueues a

@@ -7,7 +7,7 @@
  * structural WikiIndexLike so core carries no plugin dependency.
  *
  *   GET /api/wiki                 index (?q= search | ?tag= | ?entity=)
- *   GET /api/wiki/gaps            red links + stalest pages (Phil's ask)
+ *   GET /api/wiki/gaps            red links + stalest pages
  *   GET /api/wiki/:slug           WikiPageResponse (file + index merged)
  *   GET /api/wiki/:slug/raw       text/markdown, verbatim file
  */

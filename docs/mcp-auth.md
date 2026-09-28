@@ -69,8 +69,8 @@ Certs cannot be used to impersonate another agent.
 
 | Step | Who | How |
 |---|---|---|
-| Root issued | Phil, manually | `scripts/rivet-ca.sh init` (once, ever) |
-| Intermediate issued | Phil, manually | `scripts/rivet-ca.sh issue-intermediate` |
+| Root issued | the operator, manually | `scripts/rivet-ca.sh init` (once, ever) |
+| Intermediate issued | the operator, manually | `scripts/rivet-ca.sh issue-intermediate` |
 | Node enrolls | `provision-ct.sh` on a new node | posts CSR + `mesh.secret` bootstrap auth → CA signs → certs land in `/etc/rivetos/` |
 | Agent cert minted | boot-time registrar | if missing, CSR against local intermediate (CA host only) |
 | Renewal | systemd timer, 30 days before expiry | re-uses existing private key, rotates cert |

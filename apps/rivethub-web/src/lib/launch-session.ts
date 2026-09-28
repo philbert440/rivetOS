@@ -1,5 +1,5 @@
 /**
- * Chat-first launch on narrow (Phil 2026-09-03): opening the app on the
+ * Chat-first launch on narrow (2026-09-03): opening the app on the
  * phone lands in the most recent session for the current node instead of the
  * conversations list. An in-progress draft wins — it holds unsent composer
  * intent, which outranks any finished thread. No sessions at all →
@@ -49,7 +49,7 @@ export function pickLaunchSession(
 }
 
 /**
- * What the narrow chat surface should open to (Phil 2026-09-04: the
+ * What the narrow chat surface should open to (2026-09-04: the
  * conversations list is not an app screen — the home IS a session).
  *
  * Resolution order:

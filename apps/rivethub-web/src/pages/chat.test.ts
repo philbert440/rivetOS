@@ -1,4 +1,4 @@
-// The conversations list is not an app screen on narrow (Phil 2026-09-04):
+// The conversations list is not an app screen on narrow (2026-09-04):
 // the phone's home is the chat surface, the list lives only in the right
 // history drawer. These scans pin the render contract in pages/chat.tsx and
 // the rail behavior in components/sidebar.tsx — each fails if the narrow

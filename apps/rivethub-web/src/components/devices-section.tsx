@@ -181,7 +181,7 @@ export function DevicesSection(): JSX.Element | null {
         <input
           value={name}
           onChange={(e) => setName(e.target.value)}
-          placeholder="device name (e.g. Phil's phone)"
+          placeholder="device name (e.g. My phone)"
           className="w-64 rounded border border-line bg-panel px-3 py-2 text-sm outline-none focus:border-em"
         />
         <button
