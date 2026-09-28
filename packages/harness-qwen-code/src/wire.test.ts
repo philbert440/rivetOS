@@ -144,7 +144,7 @@ describe('toHarnessEvents (runtime stdout)', () => {
       toHarnessEvents(
         {
           type: 'stream_event',
-          uuid: '8eab0e7f-9a9a-4275-945a-f332aea8ef2c',
+          uuid: '00000000-0000-4000-8000-000000000055',
           session_id: SID,
           parent_tool_use_id: null,
           event: {
@@ -160,7 +160,7 @@ describe('toHarnessEvents (runtime stdout)', () => {
       toHarnessEvents(
         {
           type: 'stream_event',
-          uuid: '6a05e9cf-d29b-4bc4-8d7a-a64b5f8a8185',
+          uuid: '00000000-0000-4000-8000-000000000051',
           session_id: SID,
           parent_tool_use_id: null,
           event: {
@@ -176,11 +176,11 @@ describe('toHarnessEvents (runtime stdout)', () => {
       toHarnessEvents(
         {
           type: 'assistant',
-          uuid: 'ac4e1e91-b4e5-4a25-b238-35b8071f0dfa',
+          uuid: '00000000-0000-4000-8000-00000000005a',
           session_id: TOOL_SID,
           parent_tool_use_id: null,
           message: {
-            id: 'ac4e1e91-b4e5-4a25-b238-35b8071f0dfa',
+            id: '00000000-0000-4000-8000-00000000005a',
             type: 'message',
             role: 'assistant',
             model: 'qwen-27b',
@@ -216,7 +216,7 @@ describe('toHarnessEvents (runtime stdout)', () => {
       toHarnessEvents(
         {
           type: 'user',
-          uuid: 'f4b72359-349a-4ba5-b7e3-3cf0967cb8cf',
+          uuid: '00000000-0000-4000-8000-00000000005b',
           session_id: TOOL_SID,
           parent_tool_use_id: null,
           message: {
@@ -250,11 +250,11 @@ describe('toHarnessEvents (runtime stdout)', () => {
       toHarnessEvents(
         {
           type: 'assistant',
-          uuid: '1323af5d-03d7-4986-8936-f4aa04df7f05',
+          uuid: '00000000-0000-4000-8000-000000000057',
           session_id: SID,
           parent_tool_use_id: null,
           message: {
-            id: '1323af5d-03d7-4986-8936-f4aa04df7f05',
+            id: '00000000-0000-4000-8000-000000000057',
             type: 'message',
             role: 'assistant',
             model: 'qwen-27b',
@@ -282,7 +282,7 @@ describe('toHarnessEvents (runtime stdout)', () => {
         {
           type: 'result',
           subtype: 'success',
-          uuid: 'ca5a15ad-638b-4be8-becd-a268b0d266bd',
+          uuid: '00000000-0000-4000-8000-000000000058',
           session_id: SID,
           is_error: false,
           duration_ms: 49029,
@@ -304,7 +304,7 @@ describe('toHarnessEvents (runtime stdout)', () => {
         {
           type: 'result',
           subtype: 'error_max_turns',
-          uuid: 'ca5a15ad-638b-4be8-becd-a268b0d266bd',
+          uuid: '00000000-0000-4000-8000-000000000058',
           session_id: SID,
           is_error: true,
           result: '',
@@ -344,7 +344,7 @@ describe('toHarnessEventsFromDisk (session jsonl)', () => {
       toHarnessEventsFromDisk(
         {
           type: 'assistant',
-          uuid: '8135b5a6-0277-4cc5-87b8-780fd52d0f3e',
+          uuid: '00000000-0000-4000-8000-00000000005e',
           sessionId: TOOL_SID,
           timestamp: '2026-09-15T20:26:32.134Z',
           provenance: 'assistant_output',
@@ -391,7 +391,7 @@ describe('toHarnessEventsFromDisk (session jsonl)', () => {
       toHarnessEventsFromDisk(
         {
           type: 'tool_result',
-          uuid: 'a7339e8d-239e-42db-8a8f-7bbb41a8a494',
+          uuid: '00000000-0000-4000-8000-00000000005f',
           sessionId: TOOL_SID,
           timestamp: '2026-09-15T20:26:32.341Z',
           provenance: 'tool_result',
@@ -527,7 +527,7 @@ describe('reconcileTurn', () => {
       sessionId: SID,
       lines: [
         {
-          uuid: '88038e15-95b1-4c70-9058-837a5ea716db',
+          uuid: '00000000-0000-4000-8000-000000000060',
           sessionId: SID,
           timestamp: '2026-09-15T20:21:15.392Z',
           type: 'user',
@@ -540,7 +540,7 @@ describe('reconcileTurn', () => {
           },
         },
         {
-          uuid: '8acca8ca-ac64-47a4-a889-848e35724829',
+          uuid: '00000000-0000-4000-8000-000000000050',
           sessionId: SID,
           timestamp: '2026-09-15T20:21:45.793Z',
           type: 'assistant',
