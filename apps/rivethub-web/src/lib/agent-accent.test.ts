@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { accentFor } from './agent-accent.js'
+import { accentFor, agentInitials, inkOn } from './agent-accent.js'
 import { harnessAccent } from './harness-colors.js'
 
 describe('accentFor', () => {
@@ -73,5 +73,39 @@ describe('accentFor', () => {
         command: preset.model,
       }),
     ).not.toBe(rail)
+  })
+})
+
+describe('agentInitials', () => {
+  it('takes the first letter of a one-word name', () => {
+    expect(agentInitials('reviewer')).toBe('R')
+  })
+
+  it('takes the first letters of the first two words', () => {
+    expect(agentInitials('grok scout')).toBe('GS')
+    expect(agentInitials('claude-code-builder')).toBe('CC')
+    expect(agentInitials('my_agent')).toBe('MA')
+  })
+
+  it('skips punctuation-only words and leading symbols', () => {
+    expect(agentInitials('  — (beta) helper')).toBe('BH')
+  })
+
+  it('falls back to ? with no letters', () => {
+    expect(agentInitials('')).toBe('?')
+    expect(agentInitials('---')).toBe('?')
+  })
+})
+
+describe('inkOn', () => {
+  it('puts dark ink on light fills', () => {
+    expect(inkOn('#CC785C')).toBe('#111111')
+    expect(inkOn('#9ca3af')).toBe('#111111')
+    expect(inkOn('#fff')).toBe('#111111')
+  })
+
+  it('puts white ink on dark fills', () => {
+    expect(inkOn('#1e3a8a')).toBe('#ffffff')
+    expect(inkOn('#000')).toBe('#ffffff')
   })
 })

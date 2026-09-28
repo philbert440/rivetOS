@@ -82,7 +82,7 @@ import {
   matchHubKey,
 } from '../lib/hub-keys.js'
 import { nativeIdOf } from '../lib/harness-chat.js'
-import { accentFor } from '../lib/agent-accent.js'
+import { accentFor, agentInitials, inkOn } from '../lib/agent-accent.js'
 import {
   clearSessionNodeBinding,
   rekeySessionNodeBinding,
@@ -628,19 +628,33 @@ function agentAccent(agent: Pick<RosterAgent, 'color' | 'harnessId' | 'model'>):
   })
 }
 
-/** Agent colour dot; the current agent gets a ring in its own accent. */
-function AgentSwatch(props: {
+/**
+ * Agent letter tile, Waybar-workspace style: the agent's initials on its
+ * accent, so same-harness agents stay apart. The current agent gets a ring in
+ * its own accent. Without `initials` it is a plain square marker (the folded
+ * rail's badge over the Bot icon, too small for letters).
+ */
+function AgentTile(props: {
   accent: string
+  initials?: string
   compact?: boolean
   current?: boolean
-  /** Folded rail dot only: separate a dark accent from the Bot stroke. */
+  /** Folded rail badge only: separate a dark accent from the Bot stroke. */
   halo?: boolean
 }): JSX.Element {
   return (
     <span
-      className={cn('inline-block shrink-0 rounded-full', props.compact ? 'size-3' : 'size-2')}
+      className={cn(
+        'inline-flex shrink-0 items-center justify-center font-mono font-extrabold leading-none select-none',
+        props.initials === undefined
+          ? 'size-2'
+          : props.compact
+            ? 'size-5 text-[10px]'
+            : 'size-4 text-[9px]',
+      )}
       style={{
         background: props.accent,
+        color: inkOn(props.accent),
         ...(props.current
           ? { boxShadow: `0 0 0 2px var(--color-panel-2), 0 0 0 3.5px ${props.accent}` }
           : props.halo
@@ -648,7 +662,9 @@ function AgentSwatch(props: {
             : {}),
       }}
       aria-hidden
-    />
+    >
+      {props.initials}
+    </span>
   )
 }
 
@@ -758,11 +774,22 @@ function AgentRow({
       : `${agent.name} (node unknown)`
 
   const accent = agentAccent(agent)
-  const swatch = <AgentSwatch accent={accent} compact={compact} current={current} />
+  const harness = harnessLabel(agent.harnessId)
+  // The harness is spelled out beside the name (expanded) or in the tooltip
+  // (collapsed); the tile's initials tell same-harness agents apart.
+  const tile = (
+    <AgentTile
+      accent={accent}
+      initials={agentInitials(agent.name)}
+      compact={compact}
+      current={current}
+    />
+  )
 
   if (compact) {
+    const label = harness ? `${rowTitle} · ${harness}` : rowTitle
     return (
-      <Tooltip label={current ? `${rowTitle} (current)` : rowTitle} block>
+      <Tooltip label={current ? `${label} (current)` : label} block>
         <button
           type="button"
           onClick={onOpen}
@@ -774,7 +801,7 @@ function AgentRow({
             current && 'bg-panel-2',
           )}
         >
-          {swatch}
+          {tile}
         </button>
       </Tooltip>
     )
@@ -803,12 +830,13 @@ function AgentRow({
         className="flex min-w-0 flex-1 items-center gap-2 text-left disabled:opacity-50"
         title={current ? `${rowTitle} (current)` : rowTitle}
       >
-        {swatch}
+        {tile}
         <span
           className={cn('min-w-0 truncate text-xs', current ? 'font-medium text-em' : 'text-ink')}
         >
           {agent.name}
         </span>
+        {harness && <span className="shrink-0 font-mono text-[10px] text-ink-dim">{harness}</span>}
         {activityLabel && (
           <span
             className={`size-1.5 shrink-0 rounded-full ${
@@ -1404,11 +1432,11 @@ export function AgentsSection(props: { compact?: boolean }): JSX.Element {
               currentAccent &&
               (compact ? (
                 <span className="absolute left-1/2 top-1.5 ml-1" aria-hidden>
-                  <AgentSwatch accent={currentAccent} halo />
+                  <AgentTile accent={currentAccent} halo />
                 </span>
               ) : (
                 <span className="ml-auto flex min-w-0 items-center gap-1.5 pl-2 text-xs text-em">
-                  <AgentSwatch accent={currentAccent} />
+                  <AgentTile accent={currentAccent} initials={agentInitials(currentAgent.name)} />
                   <span className="min-w-0 truncate">{currentAgent.name}</span>
                 </span>
               ))}
