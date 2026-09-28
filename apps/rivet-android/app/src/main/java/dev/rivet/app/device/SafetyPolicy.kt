@@ -10,7 +10,7 @@ import org.json.JSONObject
  * only classifies action risk and applies the `confirm:true` override.
  *
  * Default strictness (Open Question 4): SMS / share / pay / install → [SafetyVerdict.NeedConfirm].
- * Phil can loosen later. Hard [SafetyVerdict.Deny] is reserved for destructive system intents
+ * The owner can loosen later. Hard [SafetyVerdict.Deny] is reserved for destructive system intents
  * and is **never** overridable by `confirm`.
  */
 

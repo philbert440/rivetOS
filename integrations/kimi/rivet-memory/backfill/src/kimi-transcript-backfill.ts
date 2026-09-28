@@ -8,7 +8,7 @@
  * The hook-payload capture worker (`../capture`) landed tool rows and lifecycle
  * markers but almost no conversation:
  *
- *   agent='rivet-kimi' on phil_memory, 2026-08-09:
+ *   agent='rivet-kimi' on rivet_memory, 2026-08-09:
  *     tool      1896
  *     system      83
  *     user         1   ← a smoke-test row, not a real prompt

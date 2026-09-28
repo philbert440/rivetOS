@@ -220,12 +220,12 @@ describe('toAiSdkTools', () => {
           return 'ok'
         }),
       ],
-      { agentId: 'phil', workingDir: '/tmp/work', sessionId: 'sess-1' },
+      { agentId: 'owner', workingDir: '/tmp/work', sessionId: 'sess-1' },
     )
     await tools.inspect!.execute!({}, execOpts())
-    assert.equal(receivedAgent, 'phil')
+    assert.equal(receivedAgent, 'owner')
     assert.equal(receivedWorkdir, '/tmp/work')
-    assert.equal(receivedSessionAgent, 'phil')
+    assert.equal(receivedSessionAgent, 'owner')
   })
 
   it('toModelOutput: string result → text output', () => {

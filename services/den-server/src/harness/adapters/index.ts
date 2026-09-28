@@ -6,6 +6,7 @@ import { kimiAdapter } from './kimi.js'
 import { opencodeAdapter } from './opencode.js'
 import { piAdapter } from './pi.js'
 import { qwenCodeAdapter } from './qwen-code.js'
+import { cursorAdapter } from './cursor.js'
 import type { HarnessAdapter } from './types.js'
 
 export type { HarnessAdapter, HarnessStoreRef } from './types.js'
@@ -17,6 +18,7 @@ export { codexTurnsFromLines, codexAdapter } from './codex.js'
 export { opencodeTurnsFromMessages, readOpencodeTurns, opencodeAdapter } from './opencode.js'
 export { piTurnsFromLines, piAdapter } from './pi.js'
 export { qwenCodeTurnsFromLines, qwenCodeAdapter } from './qwen-code.js'
+export { cursorTurnsFromObjects, cursorAdapter } from './cursor.js'
 
 const BY_COMMAND: Record<string, HarnessAdapter> = {
   claude: claudeAdapter,
@@ -27,6 +29,7 @@ const BY_COMMAND: Record<string, HarnessAdapter> = {
   opencode: opencodeAdapter,
   pi: piAdapter,
   qwen: qwenCodeAdapter,
+  cursor: cursorAdapter,
 }
 
 export function adapterForCommand(command: string): HarnessAdapter | undefined {

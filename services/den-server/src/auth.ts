@@ -23,7 +23,7 @@ export const LOOPBACK_HOSTS = new Set(['127.0.0.1', '::1', 'localhost', '::ffff:
 
 /** Parsed identity from a verified peer certificate, or null if not a device. */
 export interface DeviceIdentity {
-  /** Full subject CN (e.g. device:pixel-phil). */
+  /** Full subject CN (e.g. device:pixel-owner). */
   cn: string
   /** Device id without the `device:` prefix when present. */
   deviceId: string

@@ -11,7 +11,7 @@ Same Postgres store every Rivet mesh agent shares.
 ## Recall
 1. `memory_browse` or `memory_stats` for recent context
 2. `memory_search` with a concrete query (default scope `messages`; embeddings can time out)
-3. Prefer agent/session tags when known (`rivet-grokbot`, …)
+3. Prefer agent/session tags when known (`<prefix>-<slug>`, `grokbot-<slug>`)
 
 ## Write
 - `memory_append` — always pass `role` (`user`|`assistant`|`system`|`tool`)

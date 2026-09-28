@@ -38,7 +38,7 @@ function scriptedExecutor(fn: (spec: TaskSpec) => TaskResult): HarnessExecutor {
     capabilities: () => caps,
     start: (spec: TaskSpec) => ({
       // Emit a real turn.end so the runner's between-turns budget check runs
-      // — a silent events stream masked the maxTurns:1 verifier kill (ct114).
+      // — a silent events stream masked the maxTurns:1 verifier kill (node-e).
       events: (async function* () {
         await Promise.resolve()
         yield { ts: 1, type: 'turn.end' as const, turn: 1, usage }

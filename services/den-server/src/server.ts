@@ -111,6 +111,7 @@ import { KimiCodeDriver } from './harness/kimi-driver.js'
 import { OpencodeDriver } from './harness/opencode-driver.js'
 import { PiDriver } from './harness/pi-driver.js'
 import { QwenCodeDriver } from './harness/qwen-code-driver.js'
+import { CursorDriver } from './harness/cursor-driver.js'
 import { CodexDriver } from './harness/codex-driver.js'
 import { CodexProtocolDriver, codexThreadDefaults } from './harness/codex-protocol-driver.js'
 import { CodexRpcClient } from './harness/codex-rpc.js'
@@ -830,6 +831,20 @@ export function createDenServer(config: DenConfig, opts: DenServerOptions = {}):
         recordSessionCwd: writeSessionCwd,
         log: console.error,
         sheetOverride: config.harnesses?.['qwen-code'],
+        transcript: opts.transcriptWatcher,
+        screen: screenFor,
+      }),
+      new CursorDriver({
+        store: createHarnessStore('cursor'),
+        pty: termEnabled ? () => ensureManager() : undefined,
+        events: denEventTap,
+        herdrStatus: () => termManager?.mux() === 'herdr',
+        cwd: rosterCwdFor('cursor'),
+        sessionCwd: recordedSessionCwd,
+        recordSessionCwd: writeSessionCwd,
+        sessionCwdMtime,
+        log: console.error,
+        sheetOverride: config.harnesses?.cursor,
         transcript: opts.transcriptWatcher,
         screen: screenFor,
       }),
@@ -2081,7 +2096,7 @@ export function createDenServer(config: DenConfig, opts: DenServerOptions = {}):
         // layer ever runs. Enforcement lives in isGatewayAuthorized: remote
         // API access requires socket.authorized && a device leaf, so an
         // absent, expired, or foreign cert is still refused everything but
-        // liveness. (Found live on the ct113 canary, 2026-08-10.)
+        // liveness. (Found live on the node-d canary, 2026-08-10.)
         requestCert: config.tls.requireClientCert,
         rejectUnauthorized: false,
         // Terminal keystrokes are 1-byte WS frames. Nagle + Windows delayed

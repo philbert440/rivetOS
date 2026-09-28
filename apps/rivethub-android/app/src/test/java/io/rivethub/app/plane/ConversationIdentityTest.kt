@@ -31,8 +31,8 @@ class ConversationIdentityTest {
         agentId = "a1",
         name = "Scout",
         harnessId = "claude-code",
-        nodeId = "ct115",
-        nodeName = "ct115",
+        nodeId = "node-f",
+        nodeName = "node-f",
         nodeDenUrl = nodeA,
         pointerSessionId = pointerSessionId,
     )
@@ -45,7 +45,7 @@ class ConversationIdentityTest {
         status = "idle",
     )
 
-    private fun located(items: List<ChatItem>) = items.map { locate(it, "ct115", "ct115", nodeA) }
+    private fun located(items: List<ChatItem>) = items.map { locate(it, "node-f", "node-f", nodeA) }
 
     /** The agent's unopened draft as the list builds it: pointer on a bare id, draft row suppressed. */
     private fun agentDraftList(pointers: AgentPointers): List<ChatItem> {

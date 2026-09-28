@@ -198,7 +198,15 @@ async function main() {
     stop: 'Stop',
   }
   const rawEvent = p.hook_event_name ?? p.hookEventName ?? eventArg ?? ''
-  const hookEvent = SNAKE[rawEvent] ?? rawEvent
+  const CURSOR = {
+    sessionStart: 'SessionStart',
+    sessionEnd: 'SessionEnd',
+    beforeSubmitPrompt: 'UserPromptSubmit',
+    postToolUse: 'PostToolUse',
+    afterAgentResponse: 'AfterAgentResponse',
+    stop: 'Stop',
+  }
+  const hookEvent = (harness === 'cursor' ? CURSOR[rawEvent] : undefined) ?? SNAKE[rawEvent] ?? rawEvent
   const toolInput = p.tool_input ?? p.toolInput ?? {}
   const toolResponse = p.tool_response ?? p.toolResult
 
@@ -548,6 +556,10 @@ async function main() {
         emit({ type: 'tool.end', tool: toolName || undefined })
       }
       break
+    }
+    case 'AfterAgentResponse': {
+      if (typeof p.text === 'string') emitAgentText(p.text)
+      break // Stop owns turn.end.
     }
     case 'PreCompact': {
       // context compaction → nap in the bed until the next event wakes him

@@ -44,9 +44,9 @@ const UUID = 'a1b2c3d4-1111-4222-8333-444455556666'
 /** hermes mints its own, and they are not uuids. */
 const HERMES_NATIVE = '20260802_225647_6ad0b9'
 /** kimi's are uuid-class, behind a fixed `session_` prefix. */
-const KIMI_NATIVE = 'session_89965427-b96f-4d5e-8ad5-c3dd138e33dc'
+const KIMI_NATIVE = 'session_00000000-0000-4000-8000-000000000020'
 /** Codex natives are a bare rollout UUID. */
-const CODEX_NATIVE = '89965427-b96f-4d5e-8ad5-c3dd138e33dc'
+const CODEX_NATIVE = '00000000-0000-4000-8000-000000000020'
 /** OpenCode natives are `ses_` + alphanumerics. */
 const OPENCODE_NATIVE = 'ses_01K8ABCDEFGHIJKLMNOPQRSTUV'
 const PI_NATIVE = '15cb936c-3364-49d6-8769-21f0c635f160'

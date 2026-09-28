@@ -1,0 +1,32 @@
+{
+  "name": "@rivetos/cursor-rivet-memory-capture",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Capture worker for the Cursor rivet-memory integration. Ingests lifecycle hook payloads into the shared RivetOS memory store under agent='rivet-cursor'.",
+  "license": "MIT",
+  "main": "dist/cursor-memory-capture.js",
+  "bin": {
+    "cursor-rivet-memory-capture": "dist/cursor-memory-capture.js"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc --noEmit -p tsconfig.json",
+    "test": "vitest run",
+    "clean": "rm -rf dist",
+    "lint": "eslint src/ package.json"
+  },
+  "dependencies": {
+    "@rivetos/capture-core": "0.5.0"
+  },
+  "devDependencies": {
+    "@types/node": "^26.1.2"
+  },
+  "nx": {
+    "tags": [
+      "scope:adapter",
+      "type:plugin",
+      "domain:memory"
+    ]
+  }
+}

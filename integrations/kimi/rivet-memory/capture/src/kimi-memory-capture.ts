@@ -31,16 +31,21 @@
  *   never blocked. Failures go to ~/.rivetos/kimi-memory-capture.log.
  */
 
+import {
+  isRecord,
+  asString,
+  safeJson,
+  createCaptureWriter,
+  resolveCaptureTransport,
+} from '@rivetos/capture-core'
+import type { CaptureBatch, CaptureMessage, CaptureWriterOptions } from '@rivetos/capture-core'
 import crypto from 'node:crypto'
 import fs from 'node:fs'
 import path from 'node:path'
 import os from 'node:os'
 import { spawn } from 'node:child_process'
 import { fileURLToPath } from 'node:url'
-import pg from 'pg'
 import type { PoolClient } from 'pg'
-
-const { Pool } = pg
 
 // ---------------------------------------------------------------------------
 // Constants (adjust after live verify — config home / sessions layout)
@@ -70,10 +75,7 @@ export function resolveKimiHomes(): string[] {
  * where workspace is typically "wd_<label>_<hash>".
  */
 export const SESSIONS_ROOT_CANDIDATES = (): string[] =>
-  resolveKimiHomes().flatMap(h => [
-    path.join(h, 'sessions'),
-    path.join(h, 'projects'),
-  ])
+  resolveKimiHomes().flatMap((h) => [path.join(h, 'sessions'), path.join(h, 'projects')])
 
 const MAX_CONTENT = 16000
 const STATEMENT_TIMEOUT_MS = 15000
@@ -182,7 +184,7 @@ export function contentText(value: unknown): string | undefined {
       (part): part is { type: string; text?: unknown } =>
         typeof part === 'object' && part !== null && (part as { type?: unknown }).type === 'text',
     )
-    .map(part => (typeof part.text === 'string' ? part.text : ''))
+    .map((part) => (typeof part.text === 'string' ? part.text : ''))
     .filter(Boolean)
     .join(' ')
     .trim()
@@ -206,7 +208,9 @@ export function pickContentText(
 // ---------------------------------------------------------------------------
 /**
  * Stable SHA-256 hex of the fields that define message identity. Same payload
- * twice → same event_id → second insert skipped.
+ * twice → same event_id → second insert skipped. Keep the six-field base:
+ * capture-core eventIdFromContent omits toolResult and sourceEvent and would
+ * change existing Kimi ids.
  */
 export function contentHashEventId(parts: {
   sessionId: string
@@ -215,8 +219,11 @@ export function contentHashEventId(parts: {
   toolName?: string | null
   toolResult?: string | null
   sourceEvent?: string
+  identity?: string
+  toolArgs?: unknown
+  occurrence?: number
 }): string {
-  const material = [
+  let material = [
     parts.sessionId,
     parts.role,
     parts.content,
@@ -224,19 +231,15 @@ export function contentHashEventId(parts: {
     parts.toolResult ?? '',
     parts.sourceEvent ?? '',
   ].join('\0')
+  if (parts.identity) material += `\0identity:${parts.identity}`
+  if (parts.toolArgs != null) material += `\0toolArgs:${safeJson(parts.toolArgs)}`
+  if (parts.occurrence) material += `\0occurrence:${parts.occurrence}`
   return crypto.createHash('sha256').update(material, 'utf8').digest('hex')
 }
 
 // ---------------------------------------------------------------------------
 // wire.jsonl parser (for thinking + assistant text)
 // ---------------------------------------------------------------------------
-function isRecord(v: unknown): v is Record<string, unknown> {
-  return typeof v === 'object' && v !== null && !Array.isArray(v)
-}
-
-function asString(v: unknown): string | null {
-  return typeof v === 'string' && v.length > 0 ? v : null
-}
 
 /**
  * Parse wire.jsonl to extract assistant text and thinking that hooks never carry.
@@ -244,16 +247,18 @@ function asString(v: unknown): string | null {
  * - No tool rows (hooks already capture those)
  * - No user rows (hooks already capture those)
  * - Only assistant text + thinking
- * 
+ *
  * Returns messages in wire order with monotonic created_at nudging.
  */
 export function parseWireJsonl(
   text: string,
   sessionId: string,
-  agentSlot: string = 'main'
+  agentSlot: string = 'main',
+  sourcePath?: string,
 ): PendingMessage[] {
   const out: PendingMessage[] = []
   let lastMs = 0
+  const occurrences = new Map<string, number>()
 
   const push = (msg: Omit<PendingMessage, 'createdAt'>, wireMs: number): void => {
     const ms = wireMs > lastMs ? wireMs : lastMs + 1
@@ -262,7 +267,7 @@ export function parseWireJsonl(
   }
 
   const lines = text.split('\n')
-  for (const raw of lines) {
+  for (const [lineIndex, raw] of lines.entries()) {
     const line = raw.trim()
     if (!line) continue
 
@@ -300,12 +305,16 @@ export function parseWireJsonl(
 
     // `[thinking] ` prefix matches rivet-claude and grok-build convention
     const content = partType === 'think' ? `[thinking] ${body}` : body
+    const tuple = JSON.stringify(['assistant', content, null])
+    const occurrence = occurrences.get(tuple) ?? 0
+    occurrences.set(tuple, occurrence + 1)
     const sourceEvent = `wire:content.part:${uuid}`
     const eventId = contentHashEventId({
       sessionId,
       role: 'assistant',
       content,
       sourceEvent,
+      occurrence,
     })
 
     push(
@@ -320,13 +329,14 @@ export function parseWireJsonl(
           partType,
           uuid,
           source: 'kimi-wire',
+          ...(sourcePath ? { session_jsonl_path: sourcePath, session_jsonl_line: lineIndex } : {}),
           ...(typeof event.turnId === 'string' || typeof event.turnId === 'number'
             ? { turnId: String(event.turnId) }
             : {}),
           ...(typeof event.step === 'number' ? { step: event.step } : {}),
         },
       },
-      wireMs
+      wireMs,
     )
   }
 
@@ -337,7 +347,10 @@ export function parseWireJsonl(
  * Find and read the wire.jsonl file for a session.
  * Returns { found: true, content: string } or { found: false }.
  */
-export function readWireJsonl(sessionId: string, workspaceHint?: string): { found: boolean; content?: string } {
+export function readWireJsonl(
+  sessionId: string,
+  workspaceHint?: string,
+): { found: boolean; content?: string; path?: string; slot?: string } {
   const sessionDir = findSessionDir(sessionId, workspaceHint)
   if (!sessionDir) return { found: false }
 
@@ -347,9 +360,11 @@ export function readWireJsonl(sessionId: string, workspaceHint?: string): { foun
     const wirePath = path.join(sessionDir, 'agents', slot, 'wire.jsonl')
     try {
       if (fs.existsSync(wirePath)) {
-        return { found: true, content: fs.readFileSync(wirePath, 'utf8') }
+        return { found: true, content: fs.readFileSync(wirePath, 'utf8'), path: wirePath, slot }
       }
-    } catch {}
+    } catch {
+      /* best effort */
+    }
   }
 
   return { found: false }
@@ -366,25 +381,55 @@ export function readWireJsonl(sessionId: string, workspaceHint?: string): { foun
 export function messagesFromHookPayload(
   sourceEvent: string,
   sessionId: string,
-  payload: Record<string, unknown>
+  payload: Record<string, unknown>,
 ): PendingMessage[] {
   const event = sourceEvent || pickString(payload, 'hook_event_name', 'hookEventName') || 'unknown'
   const out: PendingMessage[] = []
-  const eventTs =
-    pickString(payload, 'timestamp', 'event_ts', 'eventTs') ??
-    (typeof payload.timestamp === 'number'
-      ? new Date(payload.timestamp).toISOString()
-      : new Date().toISOString())
+  const nativeId = pickString(
+    payload,
+    'message_id',
+    'messageId',
+    'event_id',
+    'eventId',
+    'tool_call_id',
+    'toolCallId',
+    'tool_use_id',
+    'toolUseId',
+    'id',
+    'uuid',
+  )
+  const suppliedTimestamp = pickUnknown(payload, 'timestamp', 'event_ts', 'eventTs')
+  const stableTimestamp =
+    typeof suppliedTimestamp === 'string'
+      ? suppliedTimestamp
+      : typeof suppliedTimestamp === 'number' && Number.isFinite(suppliedTimestamp)
+        ? new Date(suppliedTimestamp).toISOString()
+        : undefined
+  // The display timestamp may use now; identity must only use harness data.
+  const eventTs = stableTimestamp ?? new Date().toISOString()
+  const identity = nativeId
+    ? `id:${nativeId}`
+    : stableTimestamp
+      ? `timestamp:${stableTimestamp}`
+      : undefined
 
   // User prompt
   if (/userpromptsubmit/i.test(event) || /UserPromptSubmit/i.test(event)) {
-    const prompt = pickContentText(payload, 'prompt', 'user_prompt', 'userPrompt', 'text', 'content')
+    const prompt = pickContentText(
+      payload,
+      'prompt',
+      'user_prompt',
+      'userPrompt',
+      'text',
+      'content',
+    )
     if (prompt) {
       const eventId = contentHashEventId({
         sessionId,
         role: 'user',
         content: prompt,
         sourceEvent: event,
+        identity,
       })
       out.push({
         role: 'user',
@@ -398,8 +443,7 @@ export function messagesFromHookPayload(
 
   // Tool success / failure
   if (/posttooluse/i.test(event)) {
-    const toolName =
-      pickString(payload, 'tool_name', 'toolName', 'name') ?? 'unknown'
+    const toolName = pickString(payload, 'tool_name', 'toolName', 'name') ?? 'unknown'
     const toolInput = pickUnknown(payload, 'tool_input', 'toolInput', 'input', 'arguments')
     const toolOutput = pickUnknown(
       payload,
@@ -408,7 +452,7 @@ export function messagesFromHookPayload(
       'output',
       'result',
       'error',
-      'message'
+      'message',
     )
     const isFailure = /failure/i.test(event)
     const toolResult =
@@ -419,16 +463,16 @@ export function messagesFromHookPayload(
         : typeof toolOutput === 'string'
           ? toolOutput
           : safeJson(toolOutput)
-    const content = isFailure
-      ? `[tool-failure] ${toolName}`
-      : `[tool] ${toolName}`
+    const content = isFailure ? `[tool-failure] ${toolName}` : `[tool] ${toolName}`
     const eventId = contentHashEventId({
       sessionId,
       role: 'tool',
       content,
       toolName,
       toolResult: toolResult ?? '',
+      toolArgs: toolInput,
       sourceEvent: event,
+      identity,
     })
     out.push({
       role: 'tool',
@@ -475,6 +519,7 @@ export function messagesFromHookPayload(
         role: 'assistant',
         content: assistant,
         sourceEvent: event,
+        identity,
       })
       out.push({
         role: 'assistant',
@@ -496,6 +541,7 @@ export function messagesFromHookPayload(
       role: 'system',
       content,
       sourceEvent: event,
+      identity,
     })
     out.push({
       role: 'system',
@@ -515,6 +561,7 @@ export function messagesFromHookPayload(
         role: 'user',
         content: prompt,
         sourceEvent: event,
+        identity,
       })
       out.push({
         role: 'user',
@@ -529,14 +576,6 @@ export function messagesFromHookPayload(
   return out
 }
 
-function safeJson(v: unknown): string {
-  try {
-    return JSON.stringify(v)
-  } catch {
-    return String(v)
-  }
-}
-
 // ---------------------------------------------------------------------------
 // Env / DB helpers
 // ---------------------------------------------------------------------------
@@ -549,7 +588,9 @@ function resolvePgUrl(): string {
       const m = /^\s*RIVETOS_PG_URL\s*=\s*(.+?)\s*$/.exec(line)
       if (m) return m[1].replace(/^["']|["']$/g, '')
     }
-  } catch {}
+  } catch {
+    /* best effort */
+  }
   throw new Error('RIVETOS_PG_URL not set and not found in ~/.rivetos/.env')
 }
 
@@ -579,9 +620,13 @@ export function findSessionDir(sessionId: string, workspaceRootHint?: string): s
         const candidate = path.join(root, cwd, sessionId)
         try {
           if (fs.statSync(candidate).isDirectory()) return candidate
-        } catch {}
+        } catch {
+          /* best effort */
+        }
       }
-    } catch {}
+    } catch {
+      /* best effort */
+    }
   }
   return null
 }
@@ -592,11 +637,11 @@ export function findSessionDir(sessionId: string, workspaceRootHint?: string): s
 async function findOrCreateConversation(
   client: PoolClient,
   sessionKey: string,
-  init: { title: string; settings: Record<string, unknown>; active: boolean }
+  init: { title: string; settings: Record<string, unknown>; active: boolean },
 ): Promise<{ id: string; created: boolean }> {
   const existing = await client.query<{ id: string }>(
     `SELECT id FROM ros_conversations WHERE session_key = $1 AND agent = $2`,
-    [sessionKey, CAPTURE_AGENT]
+    [sessionKey, CAPTURE_AGENT],
   )
   if (existing.rows.length > 0) {
     return { id: existing.rows[0].id, created: false }
@@ -612,7 +657,7 @@ async function findOrCreateConversation(
       init.title.slice(0, 120),
       JSON.stringify(init.settings),
       init.active,
-    ]
+    ],
   )
   return { id: conv.rows[0].id, created: true }
 }
@@ -620,14 +665,14 @@ async function findOrCreateConversation(
 async function eventIdExists(
   client: PoolClient,
   conversationId: string,
-  eventId: string
+  eventId: string,
 ): Promise<boolean> {
   const r = await client.query(
     `SELECT 1 FROM ros_messages
       WHERE conversation_id = $1
         AND metadata->>'event_id' = $2
       LIMIT 1`,
-    [conversationId, eventId]
+    [conversationId, eventId],
   )
   return (r.rowCount ?? 0) > 0
 }
@@ -635,7 +680,7 @@ async function eventIdExists(
 async function insertMessage(
   client: PoolClient,
   conversationId: string,
-  m: PendingMessage
+  m: PendingMessage,
 ): Promise<'inserted' | 'skipped'> {
   if (await eventIdExists(client, conversationId, m.eventId)) {
     return 'skipped'
@@ -694,7 +739,7 @@ async function insertMessage(
       toolResultStored,
       JSON.stringify(meta),
       createdAtValue,
-    ]
+    ],
   )
   return 'inserted'
 }
@@ -707,7 +752,7 @@ export function enqueue(op: CaptureOp): void {
     fs.mkdirSync(SPOOL_DIR, { recursive: true })
     const spoolFile = path.join(
       SPOOL_DIR,
-      `${Date.now()}-${Math.random().toString(36).slice(2, 8)}.json`
+      `${Date.now()}-${Math.random().toString(36).slice(2, 8)}.json`,
     )
     fs.writeFileSync(spoolFile, JSON.stringify(op))
 
@@ -742,22 +787,75 @@ export function enqueue(op: CaptureOp): void {
 // ---------------------------------------------------------------------------
 // Worker: process one spool op
 // ---------------------------------------------------------------------------
-async function processOp(op: CaptureOp): Promise<void> {
+export function toCaptureMessage(m: PendingMessage): CaptureMessage {
+  if (!['user', 'assistant', 'tool', 'system'].includes(m.role))
+    throw new Error(`Invalid role: ${m.role}`)
+  return {
+    event_id: m.eventId,
+    role: m.role as CaptureMessage['role'],
+    content: m.content ?? '',
+    metadata: {
+      source: 'kimi-hook',
+      event_id: m.eventId,
+      ...m.extra,
+      ...(m.eventTs ? { event_ts: m.eventTs } : {}),
+    },
+    ...(m.toolName ? { tool_name: m.toolName } : {}),
+    ...(m.toolArgs != null ? { tool_args: m.toolArgs } : {}),
+    ...(typeof m.toolResult === 'string' ? { tool_result: m.toolResult } : {}),
+    ...(m.createdAt ? { created_at: m.createdAt } : {}),
+  }
+}
+
+export async function processOp(
+  op: CaptureOp,
+  sink: Partial<CaptureWriterOptions> = {},
+): Promise<void> {
+  const transport = resolveCaptureTransport(process.env)
   // Extract messages from hook payload (user prompts + tool calls)
   const hookMessages = messagesFromHookPayload(op.sourceEvent, op.sessionId, op.payload)
 
   // Try to read wire.jsonl for assistant text + thinking
   const workspaceHint = pickString(op.payload, 'cwd', 'working_directory', 'workingDirectory')
   const wireResult = readWireJsonl(op.sessionId, workspaceHint)
-  const wireMessages = wireResult.found && wireResult.content
-    ? parseWireJsonl(wireResult.content, op.sessionId)
-    : []
+  const wireMessages =
+    wireResult.found && wireResult.content
+      ? parseWireJsonl(wireResult.content, op.sessionId, wireResult.slot, wireResult.path)
+      : []
 
   // Combine: hook messages (user + tool) + wire messages (assistant + thinking)
   const messages = [...hookMessages, ...wireMessages]
 
   if (messages.length === 0 && !op.finalize) {
-    log(`process ${op.sessionId}: no messages extracted from ${op.sourceEvent} (hook=${hookMessages.length} wire=${wireMessages.length})`)
+    log(
+      `process ${op.sessionId}: no messages extracted from ${op.sourceEvent} (hook=${hookMessages.length} wire=${wireMessages.length})`,
+    )
+    return
+  }
+
+  if (transport.kind === 'none') throw new Error(transport.reason)
+  if (transport.kind === 'den') {
+    const batch: CaptureBatch = {
+      session_key: deriveSessionKey(op.sessionId),
+      agent: CAPTURE_AGENT,
+      channel: CAPTURE_CHANNEL,
+      title: (
+        pickString(op.payload, 'title', 'session_title', 'sessionTitle')?.trim() ||
+        'Kimi Code session'
+      ).slice(0, 120),
+      settings: {
+        source: 'kimi-hook',
+        sessionId: op.sessionId,
+        cwd: workspaceHint ?? null,
+        triggerEvent: op.sourceEvent,
+      },
+      finalize: op.finalize,
+      messages: messages.map(toCaptureMessage),
+    }
+    const result = await createCaptureWriter({ ...sink, denUrl: transport.denUrl, log }).write(
+      batch,
+    )
+    if ('spooled' in result && !result.spooled) throw new Error(result.error)
     return
   }
 
@@ -769,7 +867,8 @@ async function processOp(op: CaptureOp): Promise<void> {
     return
   }
 
-  const pool = new Pool({ connectionString: pgUrl, max: 1 })
+  const { default: pg } = await import('pg')
+  const pool = new pg.Pool({ connectionString: pgUrl, max: 1 })
   const client = await pool.connect()
 
   try {
@@ -807,18 +906,15 @@ async function processOp(op: CaptureOp): Promise<void> {
         `UPDATE ros_conversations
             SET active = false, updated_at = now()
           WHERE id = $1 AND active = true`,
-        [conv.id]
+        [conv.id],
       )
     } else if (inserted > 0) {
-      await client.query(
-        `UPDATE ros_conversations SET updated_at = now() WHERE id = $1`,
-        [conv.id]
-      )
+      await client.query(`UPDATE ros_conversations SET updated_at = now() WHERE id = $1`, [conv.id])
     }
 
     await client.query('COMMIT')
     log(
-      `process ${sessionKey}: event=${op.sourceEvent} msgs=${messages.length} (hook=${hookMessages.length} wire=${wireMessages.length}) inserted=${inserted} skipped=${skipped}${op.finalize ? ' finalized' : ''}`
+      `process ${sessionKey}: event=${op.sourceEvent} msgs=${messages.length} (hook=${hookMessages.length} wire=${wireMessages.length}) inserted=${inserted} skipped=${skipped}${op.finalize ? ' finalized' : ''}`,
     )
   } catch (err) {
     await client.query('ROLLBACK').catch(() => {})
@@ -833,7 +929,10 @@ async function runWorker(spoolFile?: string) {
   fs.mkdirSync(SPOOL_DIR, { recursive: true })
   const files = spoolFile
     ? [spoolFile]
-    : fs.readdirSync(SPOOL_DIR).filter(f => f.endsWith('.json')).map(f => path.join(SPOOL_DIR, f))
+    : fs
+        .readdirSync(SPOOL_DIR)
+        .filter((f) => f.endsWith('.json'))
+        .map((f) => path.join(SPOOL_DIR, f))
 
   for (const file of files) {
     try {
@@ -841,7 +940,9 @@ async function runWorker(spoolFile?: string) {
       await processOp(op)
       fs.unlinkSync(file)
     } catch (e) {
+      if (isRecord(e) && e.code === 'ENOENT') continue
       log(`worker failed on ${file}: ${e}`)
+      process.exitCode = 1
     }
   }
 }
@@ -851,6 +952,10 @@ async function runWorker(spoolFile?: string) {
 // ---------------------------------------------------------------------------
 async function main() {
   const args = process.argv.slice(2)
+  if (args[0] === '--status') {
+    console.log(`transport=${resolveCaptureTransport(process.env).kind}`)
+    return
+  }
 
   if (args[0] === '--worker') {
     await runWorker(args[1])
@@ -865,17 +970,24 @@ async function main() {
     try {
       const input = await new Promise<string>((resolve) => {
         let data = ''
-        process.stdin.on('data', chunk => (data += chunk))
+        process.stdin.on('data', (chunk: Buffer) => {
+          data += chunk.toString()
+        })
         process.stdin.on('end', () => resolve(data))
       })
-      if (input.trim()) payload = JSON.parse(input)
-    } catch {}
+      if (input.trim()) {
+        const parsed: unknown = JSON.parse(input)
+        if (isRecord(parsed)) payload = parsed
+      }
+    } catch {
+      /* best effort */
+    }
 
     const sessionId =
       process.env.KIMI_SESSION_ID ||
       process.env.KIMI_CODE_SESSION_ID ||
       pickString(payload, 'session_id', 'sessionId') ||
-      ('unknown-' + Date.now())
+      `unknown-${String(Date.now())}`
 
     // SessionEnd marks the conversation inactive.
     const finalize = /^sessionend$/i.test(event)
@@ -893,7 +1005,7 @@ async function main() {
   console.log('Usage: kimi-memory-capture --hook <event>  |  --worker [file]')
 }
 
-main().catch(err => {
+main().catch((err: unknown) => {
   log(`fatal: ${err}`)
   process.exit(0) // never fail the caller
 })

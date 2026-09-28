@@ -49,8 +49,8 @@ Rules:
 - One real subject → one slug. Session detail goes in history_entry, not a new page.
 - Prefer **summary_delta** (new sentences to fold into the lead) over full **summary** rewrite. Full **summary** only when creating a page or the standing lead is wrong/stale.
 - Prefer **article_patches** over full **article**. Never shrink a rich lead into a narrow session blurb.
-- Crosslink peers with [[slug]] using candidate slugs when possible (e.g. [[pve3]], [[rivetos-dev]]).
-- entities: stable kind:name ids (host:pve3, model:deckard-40b, project:rivetos, domain:rivetos.dev).
+- Crosslink peers with [[slug]] using candidate slugs when possible (e.g. [[hv-c]], [[rivetos-dev]]).
+- entities: stable kind:name ids (host:hv-c, model:deckard-40b, project:rivetos, domain:rivetos.dev).
 - Keep identifiers verbatim (hostnames, ports, versions, paths, domains).
 - 0-3 patches per summary. Less is more. action "create" only when no candidate matches the subject.
 

@@ -208,6 +208,15 @@ test('accepts repository collaborators by email with any display name', () => {
     ['xreed88', 'xreed88@users.noreply.github.com'],
     ['tomthornton', '40962668+tomthornton@users.noreply.github.com'],
     ['tomthornton', 'tomthornton@users.noreply.github.com'],
+    ['tomthornton', 'tombozwell@gmail.com'],
+    ['wSedlacek', 'william.sedlacek@icloud.com'],
+    ['wSedlacek', '8206108+wSedlacek@users.noreply.github.com'],
+    ['wSedlacek', 'wSedlacek@users.noreply.github.com'],
+    ['cesarulo', '13575641+cesarulo@users.noreply.github.com'],
+    ['cesarulo', 'cesarulo@users.noreply.github.com'],
+    ['zzhang-1', 'zhangzhen52013147654@gmail.com'],
+    ['zzhang-1', '54903512+zzhang-1@users.noreply.github.com'],
+    ['zzhang-1', 'zzhang-1@users.noreply.github.com'],
   ]
   for (const [login, email] of collaboratorEmails) {
     const identity = { name: 'Arbitrary Display Name', email }

@@ -27,7 +27,7 @@ describe('doctor memory queue check', () => {
             task: 'extract-wiki',
             keyed_dead: '12',
             keyless_dead: '0',
-            last_error: 'LLM unreachable at http://pve3:8003/v1 (fetch failed)',
+            last_error: 'LLM unreachable at http://hv-c:8003/v1 (fetch failed)',
           },
           {
             task: 'compact-conversation',
@@ -90,7 +90,7 @@ describe('doctor memory queue check', () => {
     const client = fakeClient(async () => ({
       rows: [
         {
-          task: 'run-task:ct117',
+          task: 'run-task:node-h',
           keyed_dead: '1',
           keyless_dead: '0',
           last_error: 'remaining connection slots are reserved',
@@ -99,7 +99,7 @@ describe('doctor memory queue check', () => {
     }))
     const results = await checkMemoryQueue(client)
     expect(results[0].status).toBe('warn')
-    expect(results[0].detail).not.toContain('rivetos memory requeue --task run-task:ct117')
+    expect(results[0].detail).not.toContain('rivetos memory requeue --task run-task:node-h')
     expect(results[0].detail).toContain('not a memory task')
   })
 

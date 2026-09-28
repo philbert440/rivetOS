@@ -18,7 +18,7 @@ class NodeRosterDefaultsTest {
     @Test
     fun bareRemoteHostDefaultsToHttps() {
         assertEquals("https://192.0.2.10:5174", NodeRosterDefaults.buildDenUrl("192.0.2.10", 5174))
-        assertEquals("https://ct112.mesh:5174", NodeRosterDefaults.buildDenUrl("ct112.mesh", 5174))
+        assertEquals("https://node-c.mesh:5174", NodeRosterDefaults.buildDenUrl("node-c.mesh", 5174))
     }
 
     @Test
@@ -81,8 +81,8 @@ class NodeRosterDefaultsTest {
             NodeRosterDefaults.buildDenUrl("192.0.2.10:9999", 5174),
         )
         assertEquals(
-            "https://ct112.mesh:5174",
-            NodeRosterDefaults.buildDenUrl("ct112.mesh:9999", 5174),
+            "https://node-c.mesh:5174",
+            NodeRosterDefaults.buildDenUrl("node-c.mesh:9999", 5174),
         )
         assertEquals(
             "https://[2001:db8::1]:5174",
@@ -117,14 +117,14 @@ class NodeRosterDefaultsTest {
         val roster = listOf(
             local,
             RosterNode("desk", "http://192.0.2.10:5174"),
-            RosterNode("mesh", "https://ct112.mesh:5174"),
+            RosterNode("mesh", "https://node-c.mesh:5174"),
             RosterNode("loop", "http://localhost:5174"),
         )
         val next = NodeRosterDefaults.migrateRosterHttps(roster)
         assertEquals(NodeRosterDefaults.normalizeDenUrl(local.denUrl), next[0].denUrl)
         assertEquals("https://192.0.2.10:5174", next[1].denUrl)
         assertEquals("desk", next[1].name)
-        assertEquals("https://ct112.mesh:5174", next[2].denUrl)
+        assertEquals("https://node-c.mesh:5174", next[2].denUrl)
         assertEquals("http://localhost:5174", next[3].denUrl)
     }
 
@@ -233,8 +233,8 @@ class NodeRosterDefaultsTest {
             NodeRosterDefaults.normalizeDenUrl("HTTP://LOCALHOST:4820"),
         )
         assertEquals(
-            "https://ct112.mesh:5174",
-            NodeRosterDefaults.normalizeDenUrl("HTTPS://CT112.MESH:5174/"),
+            "https://node-c.mesh:5174",
+            NodeRosterDefaults.normalizeDenUrl("HTTPS://NODE-C.MESH:5174/"),
         )
     }
 

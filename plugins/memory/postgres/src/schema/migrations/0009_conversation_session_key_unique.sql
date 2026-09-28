@@ -7,13 +7,13 @@
 -- rule 3) requires "one SessionId + agent => exactly one conversation". Today the
 -- adapter does SELECT ... LIMIT 1 then INSERT with no constraint behind it, so two
 -- concurrent appends for the same session both miss the SELECT and both INSERT.
--- Live phil_memory carries 5 such duplicate pairs (10 rows) produced exactly this
+-- Live rivet_memory carries 5 such duplicate pairs (10 rows) produced exactly this
 -- way. Without a DB constraint, `session_id_collision` is unimplementable and the
 -- transcript for a session can silently fork in two.
 --
 -- NULL semantics (deliberate):
 --   session_key is declared NOT NULL in 0001_baseline and holds zero NULLs and zero
---   empty strings on live phil_memory (2115 rows checked). A partial index
+--   empty strings on live rivet_memory (2115 rows checked). A partial index
 --   (WHERE session_key IS NOT NULL) would therefore cover exactly the same rows as a
 --   plain unique index, while forcing every writer to repeat the predicate in its
 --   ON CONFLICT clause for the index to be usable as an arbiter. So: PLAIN unique

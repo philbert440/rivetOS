@@ -103,6 +103,7 @@ describe('RivetMemory plugin', () => {
     expect(spawn).toHaveBeenCalledTimes(3)
     expect(spawn.mock.calls[0][1]?.[2]).toBe(SESSION)
     expect(spawn.mock.calls[1][1]?.[2]).toBe('ses_deleted0000000000000001')
+    expect(spawn.mock.calls[1][1]).toContain('--close-session')
     expect(spawn.mock.calls[2][1]?.[2]).toBe('ses_error000000000000000001')
   })
 

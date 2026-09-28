@@ -52,7 +52,7 @@ describe('buildArgs', () => {
         ...base,
         modelId: 'grok-4.5',
         reasoningEffort: 'high',
-        systemPromptOverride: 'You are Maggie.',
+        systemPromptOverride: 'You are Rivet.',
         tools: 'read_file',
         allow: ['Read', 'Grep'],
         cwd: '/tmp/w',
@@ -64,7 +64,7 @@ describe('buildArgs', () => {
     expect(args).not.toContain('--no-plan')
     expect(args.slice(args.indexOf('-m'), args.indexOf('-m') + 2)).toEqual(['-m', 'grok-4.5'])
     expect(args).toContain('--reasoning-effort')
-    expect(args[args.indexOf('--system-prompt-override') + 1]).toBe('You are Maggie.')
+    expect(args[args.indexOf('--system-prompt-override') + 1]).toBe('You are Rivet.')
     expect(args[args.indexOf('--tools') + 1]).toBe('read_file')
     expect(args.filter((a) => a === '--allow')).toHaveLength(2)
     expect(args[args.indexOf('--cwd') + 1]).toBe('/tmp/w')

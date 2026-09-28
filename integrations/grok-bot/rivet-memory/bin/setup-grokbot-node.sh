@@ -276,6 +276,7 @@ Type=oneshot
 ${user_line}
 Environment="RIVETOS_ROOT=${RIVETOS_ROOT}"
 Environment="GROKBOT_TRANSCRIPT_ROOT=${GROKBOT_TRANSCRIPT_ROOT:-}"
+Environment="GROKBOT_SESSION_SUFFIX=${GROKBOT_SESSION_SUFFIX--v3}"
 Environment="RIVETOS_ENV_FILE=${env_file}"
 ExecStart=${exec_start}
 StandardOutput=journal
@@ -435,7 +436,7 @@ load_pg_url() {
 
 ingest_packages_ok() {
     [[ -d "${RIVETOS_ROOT}/node_modules/@rivetos/memory-postgres" ]] \
-        && [[ -f "${RIVETOS_ROOT}/services/mcp-sidecar/dist/memory-write.js" ]]
+        && [[ -f "${RIVETOS_ROOT}/integrations/grok-bot/rivet-memory/capture/dist/ingest-rows.js" ]]
 }
 
 # Returns 0 if a matching row exists for session_key+agent.
@@ -498,17 +499,31 @@ prove_door1() {
         return 1
     fi
 
-    local models_json="${PLUGIN_ROOT}/capture/models.json"
-    local transcript_rel proved=0
-    transcript_rel="$(jq -r '.transcriptRel' "${models_json}")"
+    local discover_js="${PLUGIN_ROOT}/capture/discover-models.mjs"
+    local roster_json proved=0
+    local session_suffix="${GROKBOT_SESSION_SUFFIX--v3}"
+    if [[ ! -f "${discover_js}" ]]; then
+        echo "ERROR: Door 1 proof unavailable: discover-models.mjs missing" >&2
+        return 2
+    fi
+    if ! roster_json="$(node "${discover_js}" --json)"; then
+        echo "ERROR: Door 1 proof unavailable: discovery failed" >&2
+        return 2
+    fi
 
     local model_json model_id session_id agent_id tpath pr
     while IFS= read -r model_json; do
+        [[ -n "${model_json}" ]] || continue
         model_id="$(echo "${model_json}" | jq -r '.id')"
-        session_id="$(echo "${model_json}" | jq -r '.sessionId')"
-        agent_id="$(echo "${model_json}" | jq -r '.agentId')"
-        tpath="${transcript_rel//<id>/${model_id}}"
-        tpath="${tpath//\$GROKBOT_TRANSCRIPT_ROOT/${GROKBOT_TRANSCRIPT_ROOT}}"
+        session_id="$(echo "${model_json}" | jq -r '.session')"
+        agent_id="$(echo "${model_json}" | jq -r '.agent')"
+        if [[ -n "${session_suffix}" && "${session_id}" != *"${session_suffix}" ]]; then
+            session_id="${session_id}${session_suffix}"
+        fi
+        tpath="$(echo "${model_json}" | jq -r '.transcript // empty')"
+        if [[ -z "${tpath}" ]]; then
+            tpath="${GROKBOT_TRANSCRIPT_ROOT}/${model_id}/${model_id}.jsonl"
+        fi
         if [[ ! -f "${tpath}" ]]; then
             continue
         fi
@@ -524,7 +539,7 @@ prove_door1() {
         fi
         echo "  Door 1 stored row OK: ${session_id}"
         proved=1
-    done < <(jq -c '.models[]' "${models_json}")
+    done < <(printf '%s' "${roster_json}" | jq -c '.models[]?')
 
     if [[ "${proved}" -eq 0 ]]; then
         echo "ERROR: Door 1 proof unavailable: no transcripts found to prove" >&2
@@ -865,5 +880,11 @@ echo "  Share snapshot: ${SHARE_ROOT}/snapshot/"
 echo
 echo "Next steps:"
 echo "  1. Ensure GROKBOT_TRANSCRIPT_ROOT is set in the watcher unit environment"
-echo "  2. Monitor capture logs and state"
+echo "  2. Cutover: stop any old unsuffixed watcher/converter before enabling this unit."
+echo "     Rebuild /opt/rivetos (memory-postgres and the grok-bot capture package) before any -v4 ingest."
+echo "     GROKBOT_SESSION_SUFFIX=-v4 re-spools into a sibling of -v3 (do not delete -v3 rows)."
+echo "     New on-disk/page rows go to <session>\${GROKBOT_SESSION_SUFFIX} (default -v3)."
+echo "     store.db seq goes to <session>\${SUFFIX}-store; voice-calls to <session>\${SUFFIX}-voice-<stem>."
+echo "     Do not mix those formats into one session. Do not run old and new watchers together."
+echo "  3. Monitor capture logs and state"
 echo

@@ -34,15 +34,21 @@ import {
   type SpawnOpts,
 } from '../src/codex-memory-capture.ts'
 
+// These cases drive the stub Queryable. Pin pg so a resolvable den URL
+// cannot send the batch over HTTP instead. Forced pg needs a URL or the
+// resolver returns none and the stub is never used.
+process.env.RIVETOS_CAPTURE_TRANSPORT = 'pg'
+if (!process.env.RIVETOS_PG_URL?.trim()) process.env.RIVETOS_PG_URL = 'postgres://unit-test/unused'
+
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
 const FIXTURE = path.join(
   __dirname,
   'fixtures',
   'sample-rollout',
-  'rollout-2026-09-07T12-00-00-89965427-b96f-4d5e-8ad5-c3dd138e33dc.jsonl',
+  'rollout-2020-01-01T00-00-00-00000000-0000-4000-8000-000000000020.jsonl',
 )
 const HOOKS_JSON = path.join(__dirname, '../../hooks/hooks.json')
-const SESSION = '89965427-b96f-4d5e-8ad5-c3dd138e33dc'
+const SESSION = '00000000-0000-4000-8000-000000000020'
 
 let failed = 0
 function check(name: string, cond: boolean, detail = ''): void {

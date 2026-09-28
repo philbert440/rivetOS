@@ -286,7 +286,7 @@ describe('chunk arm in the vector path', () => {
         parentRows: [
           // The short message matches the whole-message vector better; the long
           // message's mean-pooled vector dilutes chunk 3 into noise.
-          parentRow(MSG_SHORT, '0.62', 'unrelated note about the pve3 GPU service map'),
+          parentRow(MSG_SHORT, '0.62', 'unrelated note about the hv-c GPU service map'),
           parentRow(MSG_LONG, '0.41', LONG_CONTENT),
         ],
         chunkRows: [chunkRow(MSG_LONG, '0.91')],
@@ -541,7 +541,7 @@ describe.skipIf(!TEST_PG_URL)('chunk arm against Postgres', () => {
       `INSERT INTO ${schema}.ros_messages (id, conversation_id, role, agent, content, embedding)
        VALUES ($1,$2,'assistant','rivet',$3,'[0.2,0.9,0.1]'),
               ($4,$2,'assistant','rivet',$5,'[0.9,0.3,0.1]')`,
-      [MSG_LONG, CONV, long, MSG_SHORT, 'a shorter unrelated note about the pve3 GPU map'],
+      [MSG_LONG, CONV, long, MSG_SHORT, 'a shorter unrelated note about the hv-c GPU map'],
     )
     for (let i = 0; i < 7; i++) {
       await pool.query(

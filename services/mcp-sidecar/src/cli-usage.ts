@@ -25,12 +25,28 @@ Always-on tools:
   internet_search, web_fetch
       Outbound network.
 
-RIVETOS_PG_URL enables:
+Memory, wiki, and delegate tools:
+  RIVETOS_MCP_TRANSPORT=den|pg
+      den (default when RIVET_DEN_URL is set and RIVETOS_USER_ID is empty)
+      calls the local den over HTTPS and opens no Postgres pool. pg uses
+      RIVETOS_PG_URL. A non-empty RIVETOS_USER_ID stays on pg: loopback den
+      calls are the owner pool, even if transport is forced to den.
+      Forced den without RIVET_DEN_URL disables these tools.
+  RIVET_DEN_URL
+      Den origin, for example https://127.0.0.1:5174. The memory launcher
+      fills this from den.port in ~/.rivetos/config.yaml when it is unset.
+  RIVET_DEN_CA
+      PEM the launcher exports as NODE_EXTRA_CA_CERTS before node starts.
+      Resolved from den.tls_ca, else RIVETOS_DEN_TLS_CA, else the fleet
+      intermediate chain. A missing file disables den transport.
+
+RIVETOS_PG_URL (transport=pg) enables:
   memory_search, memory_browse, memory_stats, memory_get_full (read-only)
   wiki_search, wiki_read
   delegate_task, list_agents
       Preset name or id wins over a runtime agent id. Postgres direct
-      (no gateway). RIVETOS_MCP_ENABLE_DELEGATE=0 disables both.
+      (no gateway) on transport=pg; transport=den uses the den's task API.
+      RIVETOS_MCP_ENABLE_DELEGATE=0 disables both.
       delegate_task is registered only in stdio mode (--stdio or
       RIVETOS_MCP_STDIO=1). HTTP and unix-socket mode do not register it:
       delegate_task needs a per-harness stdio sidecar for the chain guard.
@@ -48,6 +64,7 @@ Opt-in (off by default):
   RIVETOS_MCP_ENABLE_FILE=1            file_read, file_write, file_edit
   RIVETOS_MCP_ENABLE_SEARCH=1          search_glob, search_grep
   RIVETOS_MCP_ENABLE_MEMORY_WRITE=1    memory_append, memory_ingest_session
+      On transport=den a 404 means the den has no write tools mounted.
 
 Other environment:
   RIVETOS_MCP_TOKEN, RIVETOS_MCP_REQUIRE_BEARER

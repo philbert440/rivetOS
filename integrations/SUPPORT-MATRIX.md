@@ -11,7 +11,7 @@ otherwise. Nothing here is a publish or listing promise.
 | VS Code agent plugins | vendor-claimed, untested | — | Reads Claude-format plugins. |
 | OpenAI Codex CLI | vendor-claimed, untested | — | Agent Plugins 1.0 + legacy Claude marketplace. |
 | xAI Grok Build | vendor-claimed, untested | — | Reads Claude marketplaces. |
-| Cursor | vendor-claimed, untested | — | Separate grok-bot kit; not this Claude plugin. |
+| Cursor | local kit, partial | 2026-09-27 | `integrations/cursor/rivet-memory`: MCP launcher smoke-tested (15 tools); hooks spool only, no ingest worker yet. `integrations/cursor/rivet-den` for den events. |
 | Qwen Code | vendor-claimed, untested | — | Installs Claude marketplaces. |
 | Gemini CLI | vendor-claimed, untested | — | Own extension manifest; not this kit. |
 | Kimi Code CLI | vendor-claimed, untested | — | Own plugin filename. |

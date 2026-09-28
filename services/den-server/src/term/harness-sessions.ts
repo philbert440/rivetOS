@@ -12,8 +12,9 @@
 // (~/.local/share/opencode/opencode.db SQLite). An unknown harness
 // yields [] — the drawer just shows nothing for it rather than breaking.
 // (~/.codex/sessions/YYYY/MM/DD/rollout-<ISO>-<uuid>.jsonl), Pi
-// (~/.pi/agent/sessions/<encoded-cwd>/<ISO-timestamp>_<uuid>.jsonl) and Qwen Code
-// (~/.qwen/projects/<cwd with / → ->/chats/<uuid>.jsonl). An unknown
+// (~/.pi/agent/sessions/<encoded-cwd>/<ISO-timestamp>_<uuid>.jsonl), Qwen Code
+// (~/.qwen/projects/<cwd with / → ->/chats/<uuid>.jsonl) and Cursor
+// (~/.cursor/projects/<slug>/agent-transcripts/<uuid>/<uuid>.jsonl). An unknown
 // harness yields [] — the drawer just shows nothing for it rather than breaking.
 
 import { readdir, stat, open, readFile } from 'node:fs/promises'
@@ -32,6 +33,7 @@ import {
   readOpencodeTurns,
   piTurnsFromLines,
   qwenCodeTurnsFromLines,
+  cursorTurnsFromObjects,
 } from '../harness/adapters/index.js'
 import { extractTurnText } from '../harness/adapters/parse-helpers.js'
 import { stripPastedContentWrapper } from '../harness/adapters/claude.js'
@@ -50,6 +52,7 @@ export {
   readOpencodeTurns,
   piTurnsFromLines,
   qwenCodeTurnsFromLines,
+  cursorTurnsFromObjects,
 } from '../harness/adapters/index.js'
 export type { HarnessStoreRef } from '../harness/adapters/types.js'
 
@@ -447,7 +450,7 @@ const KIMI_ID_PREFIX = 'session_'
 /**
  * `state.json` timestamps come in two shapes, and BOTH are live on a real box:
  * kimi ≥0.34 writes `"version": 2` state with epoch-ms NUMBERS, while an older
- * install (0.26 was still writing into the same store on ct116) writes ISO
+ * install (0.26 was still writing into the same store on node-g) writes ISO
  * STRINGS. Neither is "the" format, so parse both and fall back to the file's
  * mtime rather than picking a winner.
  */
@@ -907,6 +910,208 @@ export async function readPiTranscript(id: string): Promise<HarnessTranscript> {
   const parsed = await parseJsonlObjects(path)
   return withTruncated(
     { id, command: 'pi', turns: piTurnsFromLines(parsed.objects) },
+    parsed.truncated,
+  )
+}
+
+// ---- Cursor: ~/.cursor/projects/<slug>/agent-transcripts/<uuid>/<uuid>.jsonl
+// slug is the absolute cwd with the leading slash dropped and `/` → `-`
+// (`/home/user/Work` → `home-user-Work`). Native id IS the directory name.
+// `--resume <id>` is global (not cwd-scoped). No tool results in the file.
+
+const CURSOR_UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
+
+let cursorHomeOverride: string | undefined
+
+/** Test-only: point the Cursor store at a temp dir. Call with no args to reset. */
+export function setCursorHomeForTest(home?: string): void {
+  cursorHomeOverride = home
+}
+
+function cursorProjectsDir(): string {
+  const base = cursorHomeOverride ?? join(homedir(), '.cursor')
+  return join(base, 'projects')
+}
+
+/** `/home/user/Work` → `home-user-Work`. */
+export function cursorProjectSlug(cwd: string): string {
+  return resolve(cwd)
+    .replace(/^[/\\]+/, '')
+    .replace(/[/\\]/g, '-')
+}
+
+function cursorTranscriptPath(id: string): string | undefined {
+  if (!id || !CURSOR_UUID_RE.test(id) || id.includes('/') || id.includes('..')) return undefined
+  const root = cursorProjectsDir()
+  let projects: string[]
+  try {
+    projects = readdirSync(root)
+  } catch {
+    return undefined
+  }
+  let best: { path: string; mtime: number } | undefined
+  for (const project of projects) {
+    if (project.startsWith('.')) continue
+    const path = join(root, project, 'agent-transcripts', id, `${id}.jsonl`)
+    let st
+    try {
+      st = statSync(path)
+    } catch {
+      continue
+    }
+    if (!st.isFile()) continue
+    if (!best || st.mtimeMs >= best.mtime) best = { path, mtime: st.mtimeMs }
+  }
+  return best?.path
+}
+
+/**
+ * Newest Cursor chat whose transcript was modified at or after `sinceMs`,
+ * scoped to the project slug for `cwd`. Sync: the adopting driver calls it
+ * on the den event path.
+ */
+export function newestCursorSessionAfter(cwd: string, sinceMs: number): string | undefined {
+  const dir = join(cursorProjectsDir(), cursorProjectSlug(cwd), 'agent-transcripts')
+  let ids: string[]
+  try {
+    ids = readdirSync(dir)
+  } catch {
+    return undefined
+  }
+  let best: { id: string; mtime: number } | undefined
+  for (const id of ids) {
+    if (!CURSOR_UUID_RE.test(id)) continue
+    const path = join(dir, id, `${id}.jsonl`)
+    let st
+    try {
+      st = statSync(path)
+    } catch {
+      continue
+    }
+    if (!st.isFile() || st.mtimeMs < sinceMs) continue
+    if (!best || st.mtimeMs >= best.mtime) best = { id, mtime: st.mtimeMs }
+  }
+  return best?.id
+}
+
+async function cursorPreviewTitle(file: string): Promise<string> {
+  const fh = await open(file, 'r')
+  try {
+    const buf = Buffer.alloc(16_384)
+    const { bytesRead } = await fh.read(buf, 0, buf.length, 0)
+    const raw = buf.subarray(0, bytesRead).toString('utf8')
+    for (const line of raw.split('\n')) {
+      const t = line.trim()
+      if (!t.startsWith('{')) continue
+      try {
+        const obj = JSON.parse(t) as Record<string, unknown>
+        const turn = cursorTurnsFromObjects([obj])[0]
+        if (!turn || turn.role !== 'user') continue
+        const text = turn.text.trim()
+        if (text) return text.replace(/\s+/g, ' ').slice(0, 120)
+      } catch {
+        // partial first line — try the next
+      }
+    }
+  } catch {
+    return ''
+  } finally {
+    await fh.close()
+  }
+  return ''
+}
+
+async function collectCursorTranscripts(): Promise<
+  { id: string; path: string; mtime: number; birth: number }[]
+> {
+  const root = cursorProjectsDir()
+  let projects: string[]
+  try {
+    projects = await readdir(root)
+  } catch {
+    return []
+  }
+  const out: { id: string; path: string; mtime: number; birth: number }[] = []
+  for (const project of projects) {
+    if (project.startsWith('.')) continue
+    const dir = join(root, project, 'agent-transcripts')
+    let ids: string[]
+    try {
+      ids = await readdir(dir)
+    } catch {
+      continue
+    }
+    for (const id of ids) {
+      if (!CURSOR_UUID_RE.test(id)) continue
+      const path = join(dir, id, `${id}.jsonl`)
+      let st
+      try {
+        st = await stat(path)
+      } catch {
+        continue
+      }
+      if (!st.isFile()) continue
+      out.push({ id, path, mtime: st.mtimeMs, birth: st.birthtimeMs || st.mtimeMs })
+    }
+  }
+  return out
+}
+
+async function listCursorSessions(limit: number): Promise<HarnessSession[]> {
+  const found = await collectCursorTranscripts()
+  const newest = new Map<string, { id: string; path: string; mtime: number; birth: number }>()
+  for (const row of found) {
+    const prev = newest.get(row.id)
+    if (!prev || row.mtime >= prev.mtime) newest.set(row.id, row)
+  }
+  const ranked = [...newest.values()].sort((a, b) => b.mtime - a.mtime).slice(0, limit)
+  const out: HarnessSession[] = []
+  for (const row of ranked) {
+    const title = (await cursorPreviewTitle(row.path)) || row.id
+    out.push({
+      id: row.id,
+      command: 'cursor',
+      title,
+      updatedAt: row.mtime,
+      createdAt: row.birth,
+    })
+  }
+  return out
+}
+
+/** Describe ONE Cursor chat by native id — the `cursor` driver's `getSession`. */
+export async function describeCursorSession(id: string): Promise<HarnessSession | undefined> {
+  if (!id || id.includes('/') || id.includes('..')) return undefined
+  const path = cursorTranscriptPath(id)
+  if (!path) return undefined
+  let st
+  try {
+    st = await stat(path)
+  } catch {
+    return undefined
+  }
+  const title = (await cursorPreviewTitle(path)) || id
+  return {
+    id,
+    command: 'cursor',
+    title,
+    updatedAt: st.mtimeMs,
+    createdAt: st.birthtimeMs || st.mtimeMs,
+  }
+}
+
+function cursorSessionExists(id: string): boolean {
+  return cursorTranscriptPath(id) !== undefined
+}
+
+/** Cursor-only transcript read — the `cursor` driver's hard-resync source. */
+export async function readCursorTranscript(id: string): Promise<HarnessTranscript> {
+  if (!id || id.includes('/') || id.includes('..')) return { id, command: '', turns: [] }
+  const path = cursorTranscriptPath(id)
+  if (!path) return { id, command: '', turns: [] }
+  const parsed = await parseJsonlObjects(path)
+  return withTruncated(
+    { id, command: 'cursor', turns: cursorTurnsFromObjects(parsed.objects) },
     parsed.truncated,
   )
 }
@@ -1599,6 +1804,7 @@ export function harnessSessionExists(command: string, id: string): boolean {
   if (command === 'opencode') return opencodeSessionExists(id)
   if (command === 'pi') return piSessionExists(id)
   if (command === 'qwen') return qwenSessionExists(id)
+  if (command === 'cursor') return cursorSessionExists(id)
   let dir: string
   let hit: (top: string) => string
   if (command === 'claude') {
@@ -1641,6 +1847,7 @@ export async function listHarnessSessions(
   if (commands.includes('opencode')) all.push(...listOpencodeSessions(limit))
   if (commands.includes('pi')) all.push(...(await listPiSessions(limit)))
   if (commands.includes('qwen')) all.push(...(await listQwenSessions(limit)))
+  if (commands.includes('cursor')) all.push(...(await listCursorSessions(limit)))
   all.sort((a, b) => b.updatedAt - a.updatedAt) // last-updated first
   return all.slice(0, limit)
 }
@@ -1835,6 +2042,11 @@ export async function readHarnessTranscript(id: string): Promise<HarnessTranscri
     if (qwen.turns.length > 0) return { ...qwen, id }
   }
 
+  if (wants('cursor')) {
+    const cursor = await readCursorTranscript(native)
+    if (cursor.turns.length > 0) return { ...cursor, id }
+  }
+
   return { id, command: '', turns: [] }
 }
 
@@ -2011,6 +2223,10 @@ export async function resolveHarnessStore(id: string): Promise<HarnessStoreRef |
     const path = qwenTranscriptPath(native)
     if (path) return { command: 'qwen', path }
   }
+  if (wants('cursor')) {
+    const path = cursorTranscriptPath(native)
+    if (path) return { command: 'cursor', path }
+  }
   return undefined
 }
 
@@ -2026,6 +2242,7 @@ export function harnessStoreDirs(): string[] {
     opencodeDataDir(),
     piSessionsDir(),
     qwenProjectsDir(),
+    cursorProjectsDir(),
   ]
   return candidates.filter((d) => existsSync(d))
 }

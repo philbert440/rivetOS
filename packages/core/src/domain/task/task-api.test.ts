@@ -178,6 +178,93 @@ describe('/api/tasks', () => {
     expect((await fetch(`${base}/api/tasks?status=wat`)).status).toBe(400)
   })
 
+  it('stamps parent depth + 1 when the parent row exists', async () => {
+    const { base, store } = await startApi({ hang: true })
+    const parent = await store.create({
+      goal: 'parent',
+      agentId: 'opus',
+      executor: 'chat-loop',
+      origin: 'api',
+      chainDepth: 2,
+    })
+    const res = await create(base, { goal: 'child', agentId: 'opus', parentTaskId: parent.id })
+    expect(res.status).toBe(201)
+    const { task } = (await res.json()) as { task: { chainDepth: number; parentTaskId?: string } }
+    expect(task.chainDepth).toBe(3)
+    expect(task.parentTaskId).toBe(parent.id)
+  })
+
+  it('stamps depth 1 and omits parentTaskId when the parent is missing', async () => {
+    const { base } = await startApi({ hang: true })
+    const res = await create(base, {
+      goal: 'child',
+      agentId: 'opus',
+      parentTaskId: '00000000-0000-4000-8000-000000000099',
+    })
+    expect(res.status).toBe(201)
+    const { task } = (await res.json()) as { task: { chainDepth: number; parentTaskId?: string } }
+    expect(task.chainDepth).toBe(1)
+    expect(task.parentTaskId).toBeUndefined()
+  })
+
+  it('creates at depth 3 without a parent for a malformed parentTaskId', async () => {
+    const { base } = await startApi({ hang: true })
+    const res = await create(base, { goal: 'child', agentId: 'opus', parentTaskId: 'not-a-uuid' })
+    expect(res.status).toBe(201)
+    const { task } = (await res.json()) as { task: { chainDepth: number; parentTaskId?: string } }
+    expect(task.chainDepth).toBe(3)
+    expect(task.parentTaskId).toBeUndefined()
+  })
+
+  it('lets an explicit chainDepth win over the parent lookup', async () => {
+    const { base, store } = await startApi({ hang: true })
+    const parent = await store.create({
+      goal: 'parent',
+      agentId: 'opus',
+      executor: 'chat-loop',
+      origin: 'api',
+      chainDepth: 0,
+    })
+    const res = await create(base, {
+      goal: 'child',
+      agentId: 'opus',
+      parentTaskId: parent.id,
+      chainDepth: 2,
+    })
+    expect(res.status).toBe(201)
+    const { task } = (await res.json()) as { task: { chainDepth: number; parentTaskId?: string } }
+    expect(task.chainDepth).toBe(2)
+    expect(task.parentTaskId).toBe(parent.id)
+  })
+
+  it('refuses depth 4 with the delegation-chain message', async () => {
+    const { base, store } = await startApi({ hang: true })
+    const explicit = await create(base, { goal: 'too deep', agentId: 'opus', chainDepth: 4 })
+    expect(explicit.status).toBe(409)
+    expect(await explicit.json()).toEqual({ error: 'delegation chain too deep (4 > 3)' })
+
+    const parent = await store.create({
+      goal: 'parent',
+      agentId: 'opus',
+      executor: 'chat-loop',
+      origin: 'api',
+      chainDepth: 3,
+    })
+    const fromParent = await create(base, {
+      goal: 'child',
+      agentId: 'opus',
+      parentTaskId: parent.id,
+    })
+    expect(fromParent.status).toBe(409)
+    expect(await fromParent.json()).toEqual({ error: 'delegation chain too deep (4 > 3)' })
+  })
+
+  it('400s a negative or non-numeric chainDepth', async () => {
+    const { base } = await startApi({ hang: true })
+    expect((await create(base, { goal: 'g', agentId: 'opus', chainDepth: -1 })).status).toBe(400)
+    expect((await create(base, { goal: 'g', agentId: 'opus', chainDepth: 'x' })).status).toBe(400)
+  })
+
   it('GET lists with filters', async () => {
     const { base } = await startApi()
     await (await create(base, { goal: 'a', agentId: 'opus' }, '?wait=1&timeoutMs=5000')).json()
@@ -268,7 +355,7 @@ describe('agent-aware dispatch (resolveAffinity)', () => {
         agentId === 'local-agent'
           ? 'this-node'
           : agentId === 'remote-agent'
-            ? 'ct112'
+            ? 'node-c'
             : { error: `agent "${agentId}" not found locally or on the mesh` },
     })
     const server: Server = createServer((req, res) => {
@@ -288,14 +375,14 @@ describe('agent-aware dispatch (resolveAffinity)', () => {
     const res = await create(base, { goal: 'x', agentId: 'remote-agent' })
     expect(res.status).toBe(201)
     const { task } = (await res.json()) as { task: { id: string } }
-    expect((await store.get(task.id))?.nodeAffinity).toBe('ct112')
+    expect((await store.get(task.id))?.nodeAffinity).toBe('node-c')
   })
 
   it('explicit nodeAffinity wins over the resolver', async () => {
     const { base, store } = await startWithResolver()
-    const res = await create(base, { goal: 'x', agentId: 'remote-agent', nodeAffinity: 'ct113' })
+    const res = await create(base, { goal: 'x', agentId: 'remote-agent', nodeAffinity: 'node-d' })
     const { task } = (await res.json()) as { task: { id: string } }
-    expect((await store.get(task.id))?.nodeAffinity).toBe('ct113')
+    expect((await store.get(task.id))?.nodeAffinity).toBe('node-d')
   })
 
   it('unknown agents 400 instead of creating a doomed row', async () => {
@@ -329,7 +416,7 @@ describe('agent-aware dispatch (resolveAffinity)', () => {
       model: 'opus',
       effort: 'high',
       systemPrompt: 'be strict',
-      node: 'ct116',
+      node: 'node-g',
       directory: '/home/rivet/.rivetos/agents/reviewer',
       nodeBaseUrl: '',
       createdAt: 1,
@@ -373,8 +460,8 @@ describe('agent-aware dispatch (resolveAffinity)', () => {
   it('a preset create builds the harness-session row, not a chat-loop row', async () => {
     const reviewer = reviewerPreset()
     const host: MeshNode = {
-      id: 'ct116',
-      name: 'ct116',
+      id: 'node-g',
+      name: 'node-g',
       agents: [],
       host: '10.0.0.1',
       port: 3000,
@@ -389,7 +476,7 @@ describe('agent-aware dispatch (resolveAffinity)', () => {
     }
     const { base, store } = await startPresetApi({
       preset: reviewer,
-      presetHost: { nodeName: 'ct115', meshRegistry: presetMesh([host]) },
+      presetHost: { nodeName: 'node-f', meshRegistry: presetMesh([host]) },
     })
     const res = await create(base, { goal: 'review the diff', agentId: 'reviewer' })
     expect(res.status).toBe(201)
@@ -420,8 +507,8 @@ describe('agent-aware dispatch (resolveAffinity)', () => {
   it('a body model wins over the preset model', async () => {
     const reviewer = reviewerPreset()
     const host: MeshNode = {
-      id: 'ct116',
-      name: 'ct116',
+      id: 'node-g',
+      name: 'node-g',
       agents: [],
       host: '10.0.0.1',
       port: 3000,
@@ -436,7 +523,7 @@ describe('agent-aware dispatch (resolveAffinity)', () => {
     }
     const { base, store } = await startPresetApi({
       preset: reviewer,
-      presetHost: { nodeName: 'ct115', meshRegistry: presetMesh([host]) },
+      presetHost: { nodeName: 'node-f', meshRegistry: presetMesh([host]) },
     })
     const res = await create(base, {
       goal: 'review',
@@ -451,8 +538,8 @@ describe('agent-aware dispatch (resolveAffinity)', () => {
   it('blank model is dropped and the preset owns effort and systemPromptAppend', async () => {
     const reviewer = reviewerPreset()
     const host: MeshNode = {
-      id: 'ct116',
-      name: 'ct116',
+      id: 'node-g',
+      name: 'node-g',
       agents: [],
       host: '10.0.0.1',
       port: 3000,
@@ -467,7 +554,7 @@ describe('agent-aware dispatch (resolveAffinity)', () => {
     }
     const { base, store } = await startPresetApi({
       preset: reviewer,
-      presetHost: { nodeName: 'ct115', meshRegistry: presetMesh([host]) },
+      presetHost: { nodeName: 'node-f', meshRegistry: presetMesh([host]) },
     })
     const res = await create(base, {
       goal: 'review',
@@ -497,7 +584,7 @@ describe('agent-aware dispatch (resolveAffinity)', () => {
   })
 
   it('an unimplemented preset is 400 with the gap text and creates no row', async () => {
-    const reviewer = reviewerPreset({ harnessId: 'codex', node: 'ct115' })
+    const reviewer = reviewerPreset({ harnessId: 'codex', node: 'node-f' })
     const executors = createExecutorRegistry()
     executors.register(
       'harness-session',
@@ -506,7 +593,7 @@ describe('agent-aware dispatch (resolveAffinity)', () => {
     )
     const { base, store } = await startPresetApi({
       preset: reviewer,
-      presetHost: { nodeName: 'ct115', executors },
+      presetHost: { nodeName: 'node-f', executors },
     })
     const res = await create(base, { goal: 'review', agentId: 'reviewer' })
     expect(res.status).toBe(400)
@@ -517,10 +604,10 @@ describe('agent-aware dispatch (resolveAffinity)', () => {
   })
 
   it('an offline hosting node is 409', async () => {
-    const reviewer = reviewerPreset({ node: 'ct116' })
+    const reviewer = reviewerPreset({ node: 'node-g' })
     const host: MeshNode = {
-      id: 'ct116',
-      name: 'ct116',
+      id: 'node-g',
+      name: 'node-g',
       agents: [],
       host: '10.0.0.1',
       port: 3000,
@@ -534,12 +621,12 @@ describe('agent-aware dispatch (resolveAffinity)', () => {
     }
     const { base, store } = await startPresetApi({
       preset: reviewer,
-      presetHost: { nodeName: 'ct115', meshRegistry: presetMesh([host]) },
+      presetHost: { nodeName: 'node-f', meshRegistry: presetMesh([host]) },
     })
     const res = await create(base, { goal: 'review', agentId: 'reviewer' })
     expect(res.status).toBe(409)
     const body = (await res.json()) as { error: string }
-    expect(body.error).toContain('hosting node "ct116" is offline or unknown')
+    expect(body.error).toContain('hosting node "node-g" is offline or unknown')
     expect(await store.list()).toHaveLength(0)
   })
 

@@ -1,169 +1,119 @@
 #!/usr/bin/env python3
-"""Convert Grok Bot transcript jsonl to Rivet ingest jsonl.
-Emits one output row per source line (strict 1:1) so ordinals stay stable.
-Blank/unparseable/contentless source lines become placeholder rows.
-Each assistant row keeps all text plus every tool_use in full.
-Output uses camelCase (toolCalls, createdAt) matching ingestSession interface.
+"""Convert a Grok Bot transcript through the capture-core normalizer.
+
+Keeps the historic `SRC DST` interface so run-once.sh / watch.mjs keep working.
+Optional `--agent-id UUID` stamps per-bot metadata. Never prints secrets.
 """
-import json
+from __future__ import annotations
+
+import os
+import shutil
+import subprocess
 import sys
-from datetime import datetime
+from pathlib import Path
+
+HERE = Path(__file__).resolve().parent
+DIST = HERE / "dist" / "cli.js"
+BUILD_FIRST = (
+    "Build the capture package first "
+    "(npx nx build @rivetos/grok-bot-rivet-memory-capture)."
+)
 
 
-if len(sys.argv) != 3:
-    print(f'Usage: {sys.argv[0]} SRC.jsonl DST.jsonl', file=sys.stderr)
-    sys.exit(2)
-SRC, DST = sys.argv[1], sys.argv[2]
+def node_bin() -> str:
+    env = os.environ.get("NODE")
+    if env:
+        return env
+    found = shutil.which("node")
+    if found:
+        return found
+    raise FileNotFoundError("convert-transcript: node not found on PATH (set NODE)")
 
 
-def normalize_timestamp(raw):
-    """Normalize various timestamp formats to ISO-8601 for new Date()."""
-    if not raw:
-        return None
-    # If already a string, assume ISO or parseable
-    if isinstance(raw, str):
-        try:
-            # Validate it's parseable
-            datetime.fromisoformat(raw.replace('Z', '+00:00'))
-            return raw
-        except (ValueError, AttributeError):
-            pass
-    # Unix timestamp (seconds or milliseconds)
-    if isinstance(raw, (int, float)):
-        try:
-            # Heuristic: > 1e10 is likely milliseconds
-            if raw > 1e10:
-                dt = datetime.utcfromtimestamp(raw / 1000.0)
-            else:
-                dt = datetime.utcfromtimestamp(raw)
-            return dt.isoformat() + 'Z'
-        except (ValueError, OSError):
-            pass
+def require_dist() -> Path:
+    if DIST.is_file():
+        return DIST
+    print(BUILD_FIRST, file=sys.stderr)
+    raise SystemExit(2)
+
+
+def take_flag(args: list[str], i: int, names: tuple[str, ...]) -> tuple[str, int] | None:
+    """Accept both `--flag value` and `--flag=value`."""
+    cur = args[i]
+    for name in names:
+        if cur == name and i + 1 < len(args):
+            return args[i + 1], i + 2
+        prefix = f"{name}="
+        if cur.startswith(prefix):
+            return cur[len(prefix) :], i + 1
     return None
 
 
-def extract_tool_result_text(content):
-    """Extract text from tool_result content (may be string, list, or dict)."""
-    if isinstance(content, str):
-        return content[:8000]
-    if isinstance(content, list):
-        # Claude-shaped: list of text blocks
-        chunks = []
-        for block in content:
-            if isinstance(block, dict) and block.get('type') == 'text':
-                chunks.append(str(block.get('text', '')))
-            elif isinstance(block, str):
-                chunks.append(block)
-            else:
-                chunks.append(str(block))
-        return '\n'.join(chunks)[:8000]
-    if isinstance(content, dict):
-        # Extract text field if present
-        return str(content.get('text') or content)[:8000]
-    return str(content)[:8000]
-
-
-def parts_of(rec):
-    """Extract role and content from various Grok Bot message shapes."""
-    if not isinstance(rec, dict):
-        return '', rec if isinstance(rec, str) else None
-
-    role = rec.get('role') or ''
-    msg = rec.get('message') if isinstance(rec.get('message'), dict) else rec
-    if isinstance(msg, dict):
-        role = role or msg.get('role') or ''
-        content = msg.get('content')
-    else:
-        content = rec.get('content')
-    return role, content
-
-
-def flatten(rec):
-    """Flatten Grok Bot message into role, text, and toolCalls."""
-    role, content = parts_of(rec)
-    chunks = []
-    tools = []
-    if isinstance(content, str):
-        if content.strip():
-            chunks.append(content.strip())
-    elif isinstance(content, list):
-        for p in content:
-            if not isinstance(p, dict):
-                # Non-dict content part (e.g. string in list)
-                if p:
-                    chunks.append(str(p))
-                continue
-            t = p.get('type')
-            if t in ('text', 'output_text') and p.get('text'):
-                chunks.append(p['text'].strip())
-            elif t in ('thinking', 'reasoning', 'redacted_thinking'):
-                body = p.get('thinking') or p.get('text') or ''
-                if body:
-                    chunks.append('[thinking] ' + str(body).strip())
-            elif t == 'tool_use':
-                tools.append({'id': p.get('id'), 'name': p.get('name'), 'input': p.get('input')})
-            elif t == 'tool_result':
-                # Keep tool_result text inline (not as toolCalls)
-                result_text = extract_tool_result_text(p.get('content'))
-                if result_text:
-                    chunks.append('[tool_result] ' + result_text)
-    text = '\n'.join(c for c in chunks if c)
-    # Default role to assistant if missing (common in Grok Bot transcripts)
-    return role or 'assistant', text, tools
-
-
-n_in = n_out = 0
-n_bad = 0
-tmp_dst = DST + '.tmp'
-
-with open(SRC, encoding='utf-8', errors='replace') as fin, open(tmp_dst, 'w', encoding='utf-8') as fout:
-    for line_no, line in enumerate(fin, start=1):
-        line = line.strip()
-        n_in += 1
-
-        # Parse source record
-        rec = None
-        if line:
-            try:
-                rec = json.loads(line)
-                if not isinstance(rec, dict):
-                    rec = None
-            except (json.JSONDecodeError, UnicodeDecodeError, ValueError):
-                n_bad += 1
-                rec = None
-
-        # Emit placeholder for blank/bad/contentless lines (ordinal stability)
-        if not rec:
-            out = {'role': 'assistant', 'content': ''}
-            fout.write(json.dumps(out, ensure_ascii=False) + '\n')
-            n_out += 1
+def parse_convert_args(
+    args: list[str],
+) -> tuple[str | None, str | None, str | None, list[str]]:
+    agent_id = os.environ.get("GROKBOT_AGENT_ID")
+    session = os.environ.get("GROKBOT_SESSION")
+    session_suffix = os.environ.get("GROKBOT_SESSION_SUFFIX")
+    rest: list[str] = []
+    i = 0
+    while i < len(args):
+        taken = take_flag(args, i, ("--agent-id", "--agent_id"))
+        if taken:
+            agent_id, i = taken
             continue
+        taken = take_flag(args, i, ("--session",))
+        if taken:
+            session, i = taken
+            continue
+        taken = take_flag(args, i, ("--session-suffix", "--session_suffix"))
+        if taken:
+            session_suffix, i = taken
+            continue
+        rest.append(args[i])
+        i += 1
+    return agent_id, session, session_suffix, rest
 
-        role, text, tools = flatten(rec)
 
-        # Even if text/tools empty, emit row (ordinal stability)
-        out = {'role': role, 'content': text}
-        if tools:
-            # camelCase to match IngestMessage interface
-            out['toolCalls'] = tools
+def convert_cmd(
+    src: str,
+    dst: str,
+    agent_id: str | None,
+    session: str | None = None,
+    session_suffix: str | None = None,
+) -> list[str]:
+    node = node_bin()
+    extra: list[str] = []
+    if agent_id:
+        extra.append(f"--agent-id={agent_id}")
+    if session:
+        extra.append(f"--session={session}")
+    if session_suffix is not None:
+        extra.append(f"--session-suffix={session_suffix}")
+    return [node, str(require_dist()), "convert", src, dst, *extra]
 
-        # Preserve timing, normalizing to ISO-8601, using camelCase
-        for k in ('createdAt', 'timestamp', 'created_at'):
-            if rec.get(k) is not None:
-                normalized = normalize_timestamp(rec[k])
-                if normalized:
-                    out['createdAt'] = normalized
-                    break
 
-        # Preserve id if present
-        if rec.get('id') is not None:
-            out['id'] = rec['id']
+def main() -> int:
+    args = [a for a in sys.argv[1:] if a != "--"]
+    agent_id, session, session_suffix, rest = parse_convert_args(args)
+    if len(rest) != 2:
+        print(
+            f"Usage: {sys.argv[0]} SRC.jsonl DST.jsonl [--agent-id UUID] [--session KEY] [--session-suffix=-v3]",
+            file=sys.stderr,
+        )
+        return 2
+    src, dst = rest
+    env = os.environ.copy()
+    env.setdefault("RIVETOS_ROOT", "/opt/rivetos")
+    try:
+        proc = subprocess.run(
+            convert_cmd(src, dst, agent_id, session, session_suffix), env=env, check=False
+        )
+    except FileNotFoundError as exc:
+        print(f"convert-transcript: cannot run normalizer: {exc}", file=sys.stderr)
+        return 1
+    return proc.returncode
 
-        fout.write(json.dumps(out, ensure_ascii=False) + '\n')
-        n_out += 1
 
-# Atomic replace
-import os
-os.replace(tmp_dst, DST)
-
-print(f'in={n_in} out={n_out} bad={n_bad}', file=sys.stderr)
+if __name__ == "__main__":
+    raise SystemExit(main())

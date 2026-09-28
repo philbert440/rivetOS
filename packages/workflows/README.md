@@ -137,7 +137,7 @@ const engine = new WorkflowEngine({
   workflowsRoots: ['/path/to/workflows'],
 })
 
-const started = await engine.startRun('hello-world', { name: 'Ada' }, { type: 'human', id: 'phil' })
+const started = await engine.startRun('hello-world', { name: 'Ada' }, { type: 'human', id: 'owner' })
 if (started.suspended) {
   // notify human; later:
   await engine.resumeRun(started.run.id, { gateResponse: { approved: true } })

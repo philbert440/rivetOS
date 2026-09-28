@@ -10,7 +10,7 @@
  * session. Implements `aiSdkBridge()` (LanguageModelV3) for the agent loop.
  *
  * TypeScript port (2026-09-05) of the CommonJS plugin that ran untracked on
- * ct113/ct114 since 2026-08-18 — behavior unchanged.
+ * node-d/node-e since 2026-08-18 — behavior unchanged.
  */
 import { spawn } from 'node:child_process'
 import { existsSync } from 'node:fs'

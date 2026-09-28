@@ -1,0 +1,6 @@
+{"role":"user","message":{"content":[{"type":"text","text":"[SAND_HIDDEN_PROMPT][first run] This is your very first turn."}]}}
+{"role":"user","message":{"content":[{"type":"text","text":"[SAND_HIDDEN_PROMPT]<<SAND_AGENT_PROFILE_UPDATE:v1:abc>>\n<agent_profile_update>\nname: Alpha\n</agent_profile_update>"}]}}
+{"role":"user","message":{"content":[{"type":"text","text":"[SAND_HIDDEN_PROMPT][routine] \"poll\" (folder x) is due"}]}}
+{"role":"user","message":{"content":[{"type":"text","text":"[SAND_HIDDEN_PROMPT]treat it as skipped. the user moved on"}]}}
+{"role":"user","message":{"content":[{"type":"text","text":"[SAND_HIDDEN_PROMPT][A background task just completed] job-1"}]}}
+{"role":"user","message":{"content":[{"type":"text","text":"[SAND_HIDDEN_PROMPT][agent] A message just arrived from another of your user's agents: Epsilon (id: 00000000-0000-4000-8000-000000000005).\nThis is another assistant reaching out — not the user typing here. It arrived asynchronously, and your user can already see it in this chat.\n\nEpsilon: Cleanup done.\n\nIf it needs a reply or an action, handle it: reply to Epsilon with SendToAgent"}]}}

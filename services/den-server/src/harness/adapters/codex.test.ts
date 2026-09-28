@@ -64,7 +64,7 @@ describe('codexTurnsFromLines', () => {
 
   it('folds user → reasoning + tool + assistant into one complete turn and drops injections', () => {
     const turns = codexTurnsFromLines([
-      { type: 'session_meta', payload: { id: '89965427-b96f-4d5e-8ad5-c3dd138e33dc' } },
+      { type: 'session_meta', payload: { id: '00000000-0000-4000-8000-000000000020' } },
       item({
         type: 'message',
         role: 'developer',

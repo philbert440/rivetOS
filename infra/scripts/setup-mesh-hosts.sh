@@ -7,7 +7,7 @@
 # block between
 #       # --- BEGIN RIVETOS MESH ---
 #       # --- END RIVETOS MESH ---
-# in /etc/hosts so that ctNNN.mesh / ctNNN entries resolve to the right IPs.
+# in /etc/hosts so that node-*.mesh / node-* entries resolve to the right IPs.
 #
 # Idempotent. Safe to run repeatedly. Used during provisioning and during
 # `update --mesh` so /etc/hosts heals from drift on every deploy.

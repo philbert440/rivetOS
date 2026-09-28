@@ -123,8 +123,8 @@ class WireTest {
     }
 
     @Test fun `healthz node decodes and defaults to empty`() {
-        val live = wireJson.decodeFromString(Healthz.serializer(), """{"ok":true,"sessions":1,"name":"den","node":"ct115"}""")
-        assertEquals("ct115", live.node)
+        val live = wireJson.decodeFromString(Healthz.serializer(), """{"ok":true,"sessions":1,"name":"den","node":"node-f"}""")
+        assertEquals("node-f", live.node)
         assertTrue(live.ok)
         val old = wireJson.decodeFromString(Healthz.serializer(), """{"ok":true,"sessions":2,"name":"den"}""")
         assertEquals("", old.node)
@@ -134,14 +134,14 @@ class WireTest {
     @Test fun `agent preset decodes node directory sharedLink and list meta`() {
         val agents = wireJson.decodeFromString(
             AgentsListResponse.serializer(),
-            """{"agents":[{"id":"reviewer","name":"reviewer","node":"ct115","directory":"/srv/agents/reviewer","sharedLink":false,"nodeBaseUrl":"https://192.0.2.15:5174"}],"node":"ct115","directoryRoot":"/srv/agents","sharedDir":"/srv/shared","backend":"postgres"}""",
+            """{"agents":[{"id":"reviewer","name":"reviewer","node":"node-f","directory":"/srv/agents/reviewer","sharedLink":false,"nodeBaseUrl":"https://192.0.2.15:5174"}],"node":"node-f","directoryRoot":"/srv/agents","sharedDir":"/srv/shared","backend":"postgres"}""",
         )
         val preset = agents.agents.single()
-        assertEquals("ct115", preset.node)
+        assertEquals("node-f", preset.node)
         assertEquals("/srv/agents/reviewer", preset.directory)
         assertEquals(false, preset.sharedLink)
         assertEquals("https://192.0.2.15:5174", preset.nodeBaseUrl)
-        assertEquals("ct115", agents.node)
+        assertEquals("node-f", agents.node)
         assertEquals("/srv/agents", agents.directoryRoot)
         assertEquals("/srv/shared", agents.sharedDir)
         assertEquals("postgres", agents.backend)
@@ -154,7 +154,7 @@ class WireTest {
     @Test fun `catalog preset kind carries implemented and gap`() {
         val cat = wireJson.decodeFromString(
             CatalogAgentsResponse.serializer(),
-            """{"agents":[{"kind":"preset","id":"reviewer","name":"reviewer","node":"ct115","local":false,"harnessId":"claude-code","directory":"/srv/agents/reviewer","implemented":false,"gap":"no pty"}]}""",
+            """{"agents":[{"kind":"preset","id":"reviewer","name":"reviewer","node":"node-f","local":false,"harnessId":"claude-code","directory":"/srv/agents/reviewer","implemented":false,"gap":"no pty"}]}""",
         )
         val agent = cat.agents.single()
         assertTrue(agent.isPreset)

@@ -44,14 +44,14 @@ android {
         }
     }
 
-    // "phil" = the personal build (personal rootfs asset).
+    // "personal" = the personal build (personal rootfs asset).
     // "friend" = shareable build: src/friend/assets overrides the rootfs with a sanitized one
     // (scripts/sanitize-rootfs.sh) plus de-personalized CLAUDE.md/GROK.md. All mesh/datahub
     // config is runtime user settings in both flavors — neither carries baked coordinates. The
     // .friend applicationId suffix lets both installs coexist on one device.
     flavorDimensions += "dist"
     productFlavors {
-        create("phil") {
+        create("personal") {
             dimension = "dist"
         }
         create("friend") {
@@ -383,5 +383,19 @@ tasks.configureEach {
                 "friend builds need a sanitized rootfs at $clean — run scripts/sanitize-rootfs.sh first"
             }
         }
+    }
+}
+
+val overlayScript = rootProject.file("scripts/build-overlays.sh")
+val buildPhoneOverlay by tasks.registering(Exec::class) {
+    workingDir = rootProject.projectDir
+    commandLine("bash", overlayScript.absolutePath)
+    inputs.dir(rootProject.file("overlay-src/rivet-phone"))
+    outputs.file(rootProject.file("app/src/main/assets/rivet-phone-overlay.bin"))
+    onlyIf { overlayScript.exists() }
+}
+afterEvaluate {
+    tasks.matching { it.name == "preBuild" }.configureEach {
+        dependsOn(buildPhoneOverlay)
     }
 }

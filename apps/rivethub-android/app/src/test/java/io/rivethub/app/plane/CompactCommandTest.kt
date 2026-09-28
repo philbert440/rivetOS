@@ -16,7 +16,7 @@ class CompactCommandTest {
 
     @Test
     fun `other harnesses and blanks have no compact command`() {
-        for (id in listOf("codex", "grok-build", "kimi-code", "hermes", "opencode", "pi", "qwen-code")) {
+        for (id in listOf("codex", "grok-build", "kimi-code", "hermes", "opencode", "pi", "qwen-code", "cursor")) {
             assertNull(id, compactCommandFor(id))
         }
         assertNull(compactCommandFor(null))

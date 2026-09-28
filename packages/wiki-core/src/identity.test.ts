@@ -56,7 +56,7 @@ describe('clusterSlugsByStem', () => {
 
 describe('entitiesOverlap / slugTokenPrefix', () => {
   it('entity set intersection', () => {
-    expect(entitiesOverlap(['model:deckard-40b'], ['host:pve3', 'model:deckard-40b'])).toBe(true)
+    expect(entitiesOverlap(['model:deckard-40b'], ['host:hv-c', 'model:deckard-40b'])).toBe(true)
     expect(entitiesOverlap(['a'], ['b'])).toBe(false)
     expect(entitiesOverlap([], ['a'])).toBe(false)
   })

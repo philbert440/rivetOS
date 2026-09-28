@@ -160,9 +160,10 @@ Only filter by `agent` when the user explicitly wants the history from one speci
 
 ## Why This Exists (Case Study)
 
-See the 2026-05-23 WAP-DHCP incident (documented in the Claude and Hermes versions
-of this skill). Multiple rounds of `memory_search` on topic keywords returned nothing.
-Only a forced `memory_browse` over the known morning window surfaced the full context.
+Made-up example, not a real incident: an agent is asked what happened to a
+lab service that morning. Topic search for the service name, a generic host
+nickname, and a documentation-range subnet all return empty. Only
+`memory_browse` over the morning window recovers the thread.
 
 This skill prevents repeating that expensive mistake.
 

@@ -68,6 +68,7 @@ export const ROSTER_TO_HARNESS: Record<string, HarnessId> = {
   opencode: 'opencode',
   pi: 'pi',
   qwen: 'qwen-code',
+  cursor: 'cursor',
 }
 
 const CLAUDE_EFFORTS: EffortOption[] = [
@@ -792,7 +793,18 @@ export function sheetForHarness(harnessId: HarnessId, readers?: SheetReaders): M
       return piSheet(readJson, home)
     case 'qwen-code':
       return qwenCodeSheet(readJson, home)
+    case 'cursor':
+      return cursorSheet()
   }
+}
+
+/**
+ * Cursor CLI accepts `--model`, but this node has no Cursor model catalog.
+ * An empty list leaves the picker blank; a sheet override can add ids later
+ * and `appendModelEffortArgv` will pass `--model` only for a listed id.
+ */
+export function cursorSheet(): ModelSheet {
+  return { modelFlag: '--model', models: [] }
 }
 
 export function sheetForRosterCommand(

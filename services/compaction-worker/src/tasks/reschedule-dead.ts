@@ -3,9 +3,7 @@
  *
  * graphile-worker 0.17 `add_jobs` does NOT leave a dead row holding its key.
  * On a key conflict with an unavailable row it sets `key = null, attempts =
- * max_attempts` and inserts a fresh job. Live datahub (phil_memory): all 510
- * dead compact-conversation and 65 dead embed-target rows are keyless
- * corpses; enqueue-idle has been re-enqueueing all along. Rescheduling those
+ * max_attempts` and inserts a fresh job. Rescheduling those keyless
  * corpses would mint a second concurrent job for the same conversation
  * (no job_key → no dedupe) and reset attempts every tick, bypassing the
  * 24 h poison backoff.

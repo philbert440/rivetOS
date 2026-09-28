@@ -337,6 +337,11 @@ class HarnessWireTest {
         assertTrue("qwen-code" in HARNESS_IDS)
     }
 
+    @Test fun `nativeIdOf accepts cursor`() {
+        assertEquals("a1b2c3d4-1111-4222-8333-444455556666", nativeIdOf("cursor:a1b2c3d4-1111-4222-8333-444455556666"))
+        assertTrue("cursor" in HARNESS_IDS)
+    }
+
     @Test fun `isTurnInFlight matches only the typed 409`() {
         assertTrue(isTurnInFlight(TurnInFlight()))
         assertTrue(isTurnInFlightStatus(409, "turn_in_flight"))

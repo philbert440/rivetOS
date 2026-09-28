@@ -1,0 +1,4 @@
+Transcript of this conversation, positions 0–2 of 3:
+{"role":"user","message":{"content":[{"type":"text","text":"[t0u]\nplease check"}]}}
+{"role":"assistant","message":{"content":[{"type":"text","text":"Checking."},{"type":"tool_use","name":"send_message","input":{"type":"text","content":"On it."}}]}}
+{"role":"tool","message":{"content":[{"type":"tool_result","name":"send_message","result":{"success":{"timestamp":"1787358088946","messageId":"sm-1"}}}]}}

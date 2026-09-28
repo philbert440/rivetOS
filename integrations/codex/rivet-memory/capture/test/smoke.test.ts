@@ -49,7 +49,7 @@ const FIXTURE = path.join(
   __dirname,
   'fixtures',
   'sample-rollout',
-  'rollout-2026-09-07T12-00-00-89965427-b96f-4d5e-8ad5-c3dd138e33dc.jsonl',
+  'rollout-2020-01-01T00-00-00-00000000-0000-4000-8000-000000000020.jsonl',
 )
 
 const mappingDir = mkdtempSync(path.join(tmpdir(), 'codex-bindings-'))
@@ -70,7 +70,7 @@ try {
   rmSync(mappingDir, { recursive: true, force: true })
 }
 
-const SESSION = '89965427-b96f-4d5e-8ad5-c3dd138e33dc'
+const SESSION = '00000000-0000-4000-8000-000000000020'
 
 let failed = 0
 function check(name: string, cond: boolean, detail = ''): void {
@@ -472,7 +472,7 @@ console.log('\n— stub pool ingest —')
 console.log('\n— consumeNewLines cursor —')
 {
   const dir = mkdtempSync(path.join(tmpdir(), 'codex-cap-'))
-  const file = path.join(dir, `rollout-2026-09-07T12-00-00-${SESSION}.jsonl`)
+  const file = path.join(dir, `rollout-2020-01-01T00-00-00-${SESSION}.jsonl`)
   writeFileSync(file, '{"type":"session_meta","payload":{"id":"' + SESSION + '"}}\n', 'utf8')
   const cursor: FileCursor = { offset: 0, pending: '' }
   const first = consumeNewLines(file, cursor)

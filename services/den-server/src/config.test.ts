@@ -14,7 +14,7 @@ describe('loadUsersRegistry — explicit RIVETOS_USERS_FILE', () => {
   it('fails CLOSED when the configured file is missing: every device 403s, owner survives', () => {
     const config = loadConfig({
       RIVETOS_USERS_FILE: '/nonexistent/definitely-not-here/users.json',
-      RIVETOS_PG_URL: 'postgres://phil@db/phil_memory',
+      RIVETOS_PG_URL: 'postgres://owner@db/rivet_memory',
     } as NodeJS.ProcessEnv)
     // a registry exists (tenancy ON) — but one that refuses all devices
     expect(config.usersRegistry).toBeDefined()
@@ -29,7 +29,7 @@ describe('loadUsersRegistry — explicit RIVETOS_USERS_FILE', () => {
   it('an invalid JSON file fails closed the same way', () => {
     const config = loadConfig({
       RIVETOS_USERS_FILE: '/dev/null',
-      RIVETOS_PG_URL: 'postgres://phil@db/phil_memory',
+      RIVETOS_PG_URL: 'postgres://owner@db/rivet_memory',
     } as NodeJS.ProcessEnv)
     expect(config.usersRegistry).toBeDefined()
     expect(config.usersRegistry!.unmappedIsOwner).toBe(false)
@@ -42,10 +42,9 @@ describe('loadUsersRegistry — explicit RIVETOS_USERS_FILE', () => {
     writeFileSync(
       file,
       JSON.stringify({
-        ownerUserId: 'phil',
+        ownerUserId: 'owner',
         unmappedIsOwner: false,
-        users: {
-          phil: { devices: [], pgUrl: 'postgres://phil@db/phil_memory' },
+        users: { owner: { devices: [], pgUrl: 'postgres://owner@db/rivet_memory' },
           coco: { devices: ['win-coco'], pgUrl: 'postgres://coco@db/coco_memory' },
         },
       }),
@@ -55,7 +54,7 @@ describe('loadUsersRegistry — explicit RIVETOS_USERS_FILE', () => {
       // leftover #561 env maps disagree with the file — they must be ignored
       RIVETOS_DEN_DEVICE_USERS: '{"win-coco":"mallory"}',
       RIVETOS_USER_DBS: '{"mallory":{"pgUrl":"postgres://mallory@db/mallory"}}',
-      RIVETOS_PG_URL: 'postgres://phil@db/phil_memory',
+      RIVETOS_PG_URL: 'postgres://owner@db/rivet_memory',
     } as NodeJS.ProcessEnv)
     expect(config.usersRegistry).toBeDefined()
     expect(config.usersRegistry!.unmappedIsOwner).toBe(false)
@@ -74,7 +73,7 @@ describe('loadUsersRegistry — explicit RIVETOS_USERS_FILE', () => {
       RIVETOS_USERS_FILE: join(dir, 'missing.json'),
       RIVETOS_USER_DBS: '{"coco":{"pgUrl":"postgres://coco@db/coco_memory"}}',
       RIVETOS_DEN_DEVICE_USERS: '{"win-coco":"coco"}',
-      RIVETOS_PG_URL: 'postgres://phil@db/phil_memory',
+      RIVETOS_PG_URL: 'postgres://owner@db/rivet_memory',
     } as NodeJS.ProcessEnv)
     expect(config.usersRegistry).toBeDefined()
     expect(config.usersRegistry!.users.coco).toBeUndefined()

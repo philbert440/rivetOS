@@ -157,7 +157,7 @@ describe('gitUpdateNodeAsync — remote ownership preflight', () => {
     sshExecMock.mockResolvedValue(undefined)
     stubQuiet({}, 'missing')
 
-    const res = await gitUpdateNodeAsync('192.0.2.110', 'ct112', OPTS, true)
+    const res = await gitUpdateNodeAsync('192.0.2.110', 'node-c', OPTS, true)
 
     expect(res.success).toBe(false)
     expect(res.failedStep).toBe('ownership')
@@ -260,7 +260,7 @@ describe('gitUpdateNodeAsync — datahub worker restart resilience', () => {
 
 describe('gitUpdateNodeAsync — remote mesh-hosts stderr', () => {
   function passwordRequiredErr(): Error {
-    return Object.assign(new Error('[ct112] mesh-hosts exited with code 1'), {
+    return Object.assign(new Error('[node-c] mesh-hosts exited with code 1'), {
       stderr: 'sudo: a password is required\n',
       stdout: '',
       status: 1,
@@ -289,12 +289,12 @@ describe('gitUpdateNodeAsync — remote mesh-hosts stderr', () => {
     sshExecCaptureMock.mockRejectedValue(passwordRequiredErr())
     stubQuiet({})
 
-    const res = await gitUpdateNodeAsync('192.0.2.110', 'ct112', OPTS, true)
+    const res = await gitUpdateNodeAsync('192.0.2.110', 'node-c', OPTS, true)
 
     expect(res.success).toBe(true)
     expect(console.log).toHaveBeenCalledWith(
       expect.stringMatching(
-        /\[ct112\].*\/etc\/hosts mesh block update skipped:.*password is required.*passwordless sudo/,
+        /\[node-c\].*\/etc\/hosts mesh block update skipped:.*password is required.*passwordless sudo/,
       ),
     )
   })

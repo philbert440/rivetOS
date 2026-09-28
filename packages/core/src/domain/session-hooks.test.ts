@@ -70,7 +70,7 @@ function makeCompactAfterCtx(overrides?: Partial<CompactAfterContext>): CompactA
 
 function makeContext(overrides?: Partial<SessionHooksContext>): SessionHooksContext {
   return {
-    workspaceDir: '/home/philbot/workspace',
+    workspaceDir: '/home/user/workspace',
     fileWriter: {
       write: vi.fn().mockResolvedValue(undefined),
       read: vi.fn().mockResolvedValue(null),

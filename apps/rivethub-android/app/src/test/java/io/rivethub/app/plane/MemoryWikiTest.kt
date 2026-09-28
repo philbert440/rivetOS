@@ -143,7 +143,7 @@ class MemoryWikiTest {
 
     @Test
     fun `datahub node matches by id or name and tolerates absence`() {
-        val pve = NodeRef(id = "pve3", name = "pve3", denUrl = "https://pve3.example:5174", online = true)
+        val pve = NodeRef(id = "hv-c", name = "hv-c", denUrl = "https://hv-c.example:5174", online = true)
         val hub = NodeRef(id = "datahub", name = "hub", denUrl = "https://hub.example:5174", online = true)
         val named = NodeRef(id = "n1", name = "datahub-west", denUrl = "https://w.example:5174", online = true)
         assertEquals(hub, datahubNode(listOf(pve, hub)))

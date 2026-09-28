@@ -1,0 +1,41 @@
+{
+  "version": 1,
+  "hooks": {
+    "beforeSubmitPrompt": [
+      {
+        "command": "./bin/rivet-memory-hook.sh beforeSubmitPrompt",
+        "timeout": 10
+      }
+    ],
+    "postToolUse": [
+      {
+        "command": "./bin/rivet-memory-hook.sh postToolUse",
+        "timeout": 10
+      }
+    ],
+    "afterAgentResponse": [
+      {
+        "command": "./bin/rivet-memory-hook.sh afterAgentResponse",
+        "timeout": 10
+      }
+    ],
+    "stop": [
+      {
+        "command": "./bin/rivet-memory-hook.sh stop",
+        "timeout": 10
+      }
+    ],
+    "sessionEnd": [
+      {
+        "command": "./bin/rivet-memory-hook.sh sessionEnd",
+        "timeout": 10
+      }
+    ],
+    "subagentStop": [
+      {
+        "command": "./bin/rivet-memory-hook.sh subagentStop",
+        "timeout": 10
+      }
+    ]
+  }
+}

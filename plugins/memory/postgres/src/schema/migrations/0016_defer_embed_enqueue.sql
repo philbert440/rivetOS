@@ -5,7 +5,7 @@
 -- Compaction's summary INSERT used to fire embed-target inside the same
 -- transaction that also locked ros_messages / ros_summaries — the pair
 -- that deadlocked against the embedding worker (510 dead compact-conversation
--- jobs on phil_memory, 2026-09-01). The worker now defers the enqueue until
+-- jobs on rivet_memory, 2026-09-01). The worker now defers the enqueue until
 -- after COMMIT and calls add_job itself.
 --
 -- Custom GUC: current_setting(..., missing_ok=true) is NULL when unset, so

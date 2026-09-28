@@ -21,7 +21,7 @@ const spawnMock = vi.mocked(spawn)
 type Handler = (...args: unknown[]) => void
 
 const SESSION_FILE =
-  '/tmp/sessions/2026-09-11T14-25-16-803Z_01a091f5-6deb-723d-8737-eb83070c9154.jsonl'
+  '/tmp/sessions/2020-01-01T00-00-00-000Z_00000000-0000-4000-8000-000000000048.jsonl'
 const OTHER_FILE =
   '/tmp/sessions/2026-09-11T15-00-00-000Z_aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee.jsonl'
 const EXPECTED_SCRIPT = path.join(
@@ -58,7 +58,7 @@ function install(sessionFile: string | null): {
   const ctx = {
     sessionManager: {
       getSessionFile: () => sessionFile,
-      getSessionId: () => '01a091f5-6deb-723d-8737-eb83070c9154',
+      getSessionId: () => '00000000-0000-4000-8000-000000000048',
     },
   }
   const fire = (event: string, payload: unknown = {}): void => {
@@ -127,7 +127,12 @@ describe('rivet-memory pi extension', () => {
     expect(spawnMock).toHaveBeenCalledTimes(1)
     await vi.advanceTimersByTimeAsync(2000)
     expect(spawnMock).toHaveBeenCalledTimes(1)
-    expect(spawnMock.mock.calls[0]?.[1]).toEqual([EXPECTED_SCRIPT, '--ingest-file', SESSION_FILE])
+    expect(spawnMock.mock.calls[0]?.[1]).toEqual([
+      EXPECTED_SCRIPT,
+      '--ingest-file',
+      SESSION_FILE,
+      '--close-session',
+    ])
   })
 
   it('session_info_changed and session_before_switch flush immediately', () => {

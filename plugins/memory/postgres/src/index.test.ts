@@ -22,7 +22,18 @@ vi.mock('./adapter.js', () => {
   return { PostgresMemory }
 })
 vi.mock('./embedder.js', () => ({ ensureEmbedderSchema: vi.fn(async () => undefined) }))
-vi.mock('./tools/index.js', () => ({ createMemoryTools: () => [] }))
+vi.mock('./tools/index.js', () => ({
+  createMemoryTools: () => [],
+  createMemoryWriteTools: () => [],
+  createGetFullTool: () => ({ name: 'memory_get_full' }),
+  ingestSession: async () => ({ ingested: 0 }),
+  ingestEventId: () => 'ingest',
+  appendEventId: () => 'append',
+  truncateContent: (content: string) => content,
+  resolveMemoryWriteTags: () => ({ source: 'mcp', agent: 'mcp', channel: 'mcp' }),
+  memoryAppendInputSchema: {},
+  memoryIngestSessionInputSchema: {},
+}))
 
 import { PostgresMemory } from './adapter.js'
 import { manifest } from './index.js'
@@ -116,10 +127,9 @@ describe('memory-postgres manifest', () => {
     writeFileSync(
       file,
       JSON.stringify({
-        ownerUserId: 'phil',
+        ownerUserId: 'owner',
         unmappedIsOwner: false,
-        users: {
-          phil: { devices: [], pgUrl: 'postgres://phil@db/phil' },
+        users: { owner: { devices: [], pgUrl: 'postgres://owner@db/rivet_memory' },
           coco: { devices: ['win-coco'], pgUrl: 'postgres://coco@db/coco_memory' },
         },
       }),

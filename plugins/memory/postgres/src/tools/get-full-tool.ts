@@ -126,8 +126,8 @@ function formatToolResult(update: any): string | null {
  * Diagnose a missing capture JSONL path for memory_get_full.
  *
  * Daily-use footgun (residual from #431 / #482): capture stores an absolute
- * path from the node that ran the session. Central MCP (phildesk, datahub)
- * cannot read `/home/rivet/.grok/...` on ct112 etc., but the old message
+ * path from the node that ran the session. Central MCP (desktop, datahub)
+ * cannot read `/home/rivet/.grok/...` on node-c etc., but the old message
  * said "gone or invalid — unrecoverable", so agents stopped trying and
  * treated multi-host layout as permanent data loss.
  *
@@ -139,10 +139,16 @@ export function formatMissingJsonlMessage(file: string, opts?: { agent?: string 
 
   // Path shape → which machine likely owns the session files.
   let layoutHint: string
+  const home = (process.env.HOME ?? '').replace(/\/$/, '')
+  const deskHome =
+    (home && !home.startsWith('/home/rivet') && file.startsWith(`${home}/`)) ||
+    file.startsWith('/Users/') ||
+    /^\/home\/(?!rivet(?:\/|$))/.test(file)
+
   if (file.startsWith('/home/rivet/')) {
     layoutHint =
-      'Path is under /home/rivet/ — fleet agent home. The JSONL almost certainly lives on the mesh node that ran that harness session (ctNNN / agent CT), not on the host serving this MCP query.'
-  } else if (file.startsWith('/home/philip/') || file.startsWith('/Users/')) {
+      'Path is under /home/rivet/ — fleet agent home. The JSONL almost certainly lives on the mesh node that ran that harness session, not on the host serving this MCP query.'
+  } else if (deskHome) {
     layoutHint =
       'Path is a desk/user home directory. The JSONL is local to that machine’s interactive session store, not shared mesh storage.'
   } else if (
@@ -531,6 +537,98 @@ function isQwenCaptureMeta(meta?: Record<string, unknown> | null): boolean {
   return meta.source === 'qwen-session'
 }
 
+function isGrokbotCaptureMeta(meta?: Record<string, unknown> | null): boolean {
+  if (!meta) return false
+  if (meta.source === 'grokbot') return true
+  const cs = meta.capture_source
+  return typeof cs === 'string' && cs.startsWith('grokbot')
+}
+
+function grokbotToolResultBody(part: Record<string, unknown>): string | null {
+  const body = part.result ?? part.content ?? part.output
+  if (typeof body === 'string') return body
+  if (body != null) {
+    try {
+      return JSON.stringify(body)
+    } catch {
+      return '[unserializable tool result]'
+    }
+  }
+  return null
+}
+
+function grokbotToolUseId(part: Record<string, unknown>): string | undefined {
+  if (typeof part.tool_use_id === 'string' && part.tool_use_id) return part.tool_use_id
+  if (typeof part.toolUseId === 'string' && part.toolUseId) return part.toolUseId
+  if (typeof part.id === 'string' && part.id) return part.id
+  return undefined
+}
+
+/**
+ * Grok Bot on-disk / ReadTranscript jsonl:
+ * `{role, message:{content:[{type:'text'|'tool_result', …}]}}`.
+ * When several tool_results share a line, pick by metadata.tool_id or the
+ * ordinal sub-index (ordinal % 1000).
+ */
+export function extractGrokbotFromLine(
+  j: unknown,
+  meta?: Record<string, unknown> | null,
+): ExtractedFull | null {
+  if (!j || typeof j !== 'object' || Array.isArray(j)) return null
+  const rec = j as Record<string, unknown>
+  const role = typeof rec.role === 'string' ? rec.role : ''
+  if (!role) return null
+  const message =
+    rec.message && typeof rec.message === 'object' && !Array.isArray(rec.message)
+      ? (rec.message as Record<string, unknown>)
+      : rec
+  if (!Array.isArray(message.content)) return null
+  const texts: string[] = []
+  const results: Array<{ body: string; id?: string; name?: string }> = []
+  for (const part of message.content) {
+    if (!part || typeof part !== 'object' || Array.isArray(part)) continue
+    const p = part as Record<string, unknown>
+    if (p.type === 'tool_result' || role === 'tool') {
+      const body = grokbotToolResultBody(p)
+      if (body != null) {
+        results.push({
+          body,
+          id: grokbotToolUseId(p),
+          name: typeof p.name === 'string' ? p.name : undefined,
+        })
+      }
+      continue
+    }
+    if (p.type === 'text' && typeof p.text === 'string' && p.text) texts.push(p.text)
+  }
+  return { content: texts.join('\n'), toolResult: pickGrokbotToolResult(results, meta) }
+}
+
+function pickGrokbotToolResult(
+  results: Array<{ body: string; id?: string; name?: string }>,
+  meta?: Record<string, unknown> | null,
+): string | null {
+  if (results.length === 0) return null
+  const toolId = typeof meta?.tool_id === 'string' && meta.tool_id ? meta.tool_id : undefined
+  if (toolId) {
+    const byId = results.find((r) => r.id === toolId)
+    if (byId) return byId.body
+  }
+  const ordinal =
+    typeof meta?.ordinal === 'number' && Number.isFinite(meta.ordinal) ? meta.ordinal : undefined
+  if (ordinal !== undefined) {
+    const idx = ((ordinal % 1000) + 1000) % 1000
+    if (results[idx]) return results[idx].body
+  }
+  const toolName =
+    typeof meta?.tool_name === 'string' && meta.tool_name ? meta.tool_name : undefined
+  if (toolName) {
+    const matches = results.filter((r) => r.name === toolName)
+    if (matches.length === 1) return matches[0].body
+  }
+  return results[results.length - 1]?.body ?? null
+}
+
 function partTextFromData(part: Record<string, unknown>): string {
   if (typeof part.text === 'string') return part.text
   if (part.text && typeof part.text === 'object' && !Array.isArray(part.text)) {
@@ -643,6 +741,11 @@ export function extractFullFromLine(
     j = JSON.parse(raw)
   } catch {
     return { content: '', toolResult: null }
+  }
+
+  if (isGrokbotCaptureMeta(meta)) {
+    const gb = extractGrokbotFromLine(j, meta)
+    if (gb) return gb
   }
 
   if (isPiCaptureMeta(meta)) {
@@ -830,7 +933,10 @@ export function createGetFullTool(pool: pg.Pool): Tool {
       if (raw === null)
         return `Line ${String(line)} not found in ${file} (file rotated/rewritten?).`
 
-      const extracted = extractFullFromLine(raw, meta)
+      const extracted = extractFullFromLine(raw, {
+        ...meta,
+        tool_name: typeof meta.tool_name === 'string' ? meta.tool_name : row.tool_name,
+      })
       const { content, toolResult } = extracted
       const reasoning = extracted.reasoning ?? null
       const sections: string[] = [`## Full payload for ${id} (from ${file}:${String(line)})`]

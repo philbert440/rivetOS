@@ -28,7 +28,7 @@ describe('task contract types', () => {
         agentId: 'opus',
         nodeId: 'n1',
         conversationId: 'conv',
-        userId: 'phil',
+        userId: 'owner',
       }),
     }
 

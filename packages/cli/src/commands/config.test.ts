@@ -13,8 +13,8 @@ describe('config init alias', () => {
   })
 
   it('invokes the wizard entry and forwards remaining args', async () => {
-    await config(['init', '--join', 'ct110.mesh'])
-    expect(runInit).toHaveBeenCalledWith(['--join', 'ct110.mesh'])
+    await config(['init', '--join', 'node-a.mesh'])
+    expect(runInit).toHaveBeenCalledWith(['--join', 'node-a.mesh'])
   })
 
   it('forwards an empty rest list when config init has no flags', async () => {

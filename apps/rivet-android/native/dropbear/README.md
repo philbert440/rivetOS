@@ -131,6 +131,6 @@ Apply to a fresh `dropbear-2024.86` source (`patch -p1 < android.patch`; drop in
 - adb shell reaps backgrounded processes on exit, AND a child that inherits the adb stdio
   pipe keeps the `adb shell` call from returning → run the server in a held foreground call
   (a backgrounded task on the driving host), connect from a separate call.
-- Device testing path: rivet-claude → `ssh rivet@<phildesk-host>` (phildesk) →
-  `"/mnt/c/Users/philb/AppData/Local/Android/Sdk/platform-tools/adb.exe"` (one wireless
-  device, drop `-s`). Phone mesh IP `<phone-ip>` for direct `ssh -p <port>` from rivet-claude.
+- Device testing path: from a workstation with adb on PATH (or the Android SDK
+  platform-tools), one wireless device (drop `-s`). Phone mesh IP `<phone-ip>`
+  for direct `ssh -p <port>` from the mesh node driving the test.

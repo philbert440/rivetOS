@@ -1,0 +1,9 @@
+{
+  "name": "rivet-memory-cursor",
+  "version": "0.1.0",
+  "description": "RivetOS memory for Cursor IDE/CLI. MCP recall, lifecycle capture hooks, discipline skills, AGENT.md + MEMORY.md reflex. Unpublished, local use only.",
+  "license": "MIT",
+  "author": {
+    "name": "RivetOS"
+  }
+}

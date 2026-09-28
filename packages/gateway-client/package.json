@@ -1,8 +1,9 @@
 {
   "name": "@rivetos/gateway-client",
   "version": "0.5.0",
-  "private": true,
+  "license": "Apache-2.0",
   "main": "dist/index.js",
+  "types": "dist/index.d.ts",
   "scripts": {
     "build": "tsc -p tsconfig.json",
     "typecheck": "tsc --noEmit -p tsconfig.json",
@@ -11,7 +12,7 @@
     "clean": "rm -rf dist"
   },
   "dependencies": {
-    "@rivetos/types": "*"
+    "@rivetos/types": "0.5.0"
   },
   "devDependencies": {
     "@types/node": "^26.1.2",
@@ -25,5 +26,29 @@
       "domain:shared"
     ]
   },
-  "description": "Typed HTTP+WS client for the RivetOS gateway API — the only bridge RivetHub clients use"
+  "description": "Typed HTTP+WS client for the RivetOS gateway API \u2014 the only bridge RivetHub clients use",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js",
+      "require": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/philbert440/rivetOS.git",
+    "directory": "packages/gateway-client"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "engines": {
+    "node": ">=22.0.0"
+  },
+  "type": "module"
 }

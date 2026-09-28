@@ -129,13 +129,13 @@ describe('Workspace Fence Hook', () => {
     pipeline = new HookPipelineImpl()
     pipeline.register(
       createWorkspaceFenceHook({
-        allowedDirs: ['/home/philbot/workspace', '/opt/rivetos'],
+        allowedDirs: ['/home/user/workspace', '/opt/rivetos'],
       }),
     )
   })
 
   it('allows files inside workspace', async () => {
-    const ctx = makeToolBeforeCtx('file_read', { path: '/home/philbot/workspace/AGENT.md' })
+    const ctx = makeToolBeforeCtx('file_read', { path: '/home/user/workspace/AGENT.md' })
     await pipeline.run(ctx)
     expect(ctx.blocked).toBeUndefined()
   })

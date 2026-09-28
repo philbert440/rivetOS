@@ -121,7 +121,7 @@ const text = (parts: LanguageModelV3StreamPart[]): string =>
 const reason = (parts: LanguageModelV3StreamPart[]): string =>
   parts.filter((p) => p.type === 'reasoning-delta').map((p) => ('delta' in p ? p.delta : '')).join('')
 
-const SID = '01a090db-c402-71cb-a954-6066b9493630'
+const SID = '00000000-0000-4000-8000-000000000030'
 
 describe('helpers', () => {
   it('promptFromV3 → newest user text; empty prompt gets the placeholder in args', () => {

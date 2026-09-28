@@ -60,7 +60,7 @@ herdr uses the newest manifest and its updater then leaves it alone
 
 - `manifests/grok.toml` — status-line-based working/idle detection for
   grok 1.0.13, which never changes its OSC title and emits no `[stop]` chip
-  (evidence: live pane reads on ct112, 2026-09-04).
+  (evidence: live pane reads on node-c, 2026-09-04).
 
 ## Flipping `term.mux`
 

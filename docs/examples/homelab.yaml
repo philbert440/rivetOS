@@ -58,13 +58,13 @@ providers:
 # this block differs per node. The datahub node acts as the discovery seed.
 mesh:
   enabled: true
-  node_name: pve2              # must match this node's certificate CN
+  node_name: hv-b              # must match this node's certificate CN
   tls: true                    # default cert paths under $RIVETOS_SHARED_DIR/rivet-ca
   agent_channel_port: 3000
   # storage_dir omitted → $RIVETOS_SHARED_DIR (unset → product default)
   discovery:
     mode: seed
-    seed_host: pve1.mesh       # datahub node; use .mesh DNS (matches cert SAN)
+    seed_host: hv-a.mesh       # datahub node; use .mesh DNS (matches cert SAN)
     seed_port: 3000
 
 memory:
@@ -91,15 +91,15 @@ deployment:
     api_url: https://192.168.1.1:8006
     # API token via env: PROXMOX_API_TOKEN
     nodes:
-      - name: pve1
+      - name: hv-a
         host: 192.168.1.1
         role: datahub          # Postgres + NFS + shared storage
         ctid_start: 106
-      - name: pve2
+      - name: hv-b
         host: 192.168.1.2
         role: agents            # Opus + Grok
         ctid_start: 101
-      - name: pve3
+      - name: hv-c
         host: 192.168.1.3
         role: agents            # Local (Ollama)
         ctid_start: 100

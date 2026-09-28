@@ -51,8 +51,11 @@ unset SCRIPT_DIR # don't leak a global into the sourced namespace
 # Never print PG URLs or tokens.
 export RIVETOS_PLUGIN_ENV=1
 rivetos_load_env
-if [ -z "${RIVETOS_PG_URL:-}" ] && [ -z "${RIVETOS_DATAHUB_URL:-}" ] && [ -z "${RIVETOS_CLOUD_TOKEN:-}" ]; then
-  echo "rivet-memory-mcp: no DataHub/PG URL or cloud token — run rivetos-onboard or add ~/.rivetos/.env" >&2
+
+# Local den (URL + CA) before exec, so Node trusts the loopback certificate.
+rivetos_resolve_den
+if [ -z "${RIVET_DEN_URL:-}" ] && [ -z "${RIVETOS_PG_URL:-}" ] && [ -z "${RIVETOS_DATAHUB_URL:-}" ] && [ -z "${RIVETOS_CLOUD_TOKEN:-}" ]; then
+  echo "rivet-memory-mcp: no den URL and no DataHub/PG URL — run rivetos-onboard or add ~/.rivetos/.env" >&2
 fi
 RIVETOS_ROOT="$(rivetos_find_root)"
 export RIVETOS_ROOT
@@ -60,7 +63,7 @@ export RIVETOS_ROOT
 # Grok Bot write-tag defaults. Sidecar write tools stay gated.
 export RIVETOS_MEMORY_SOURCE="${RIVETOS_MEMORY_SOURCE:-grokbot}"
 export RIVETOS_MEMORY_CHANNEL="${RIVETOS_MEMORY_CHANNEL:-grokbot}"
-export RIVETOS_MEMORY_AGENT="${RIVETOS_MEMORY_AGENT:-rivet-grokbot}"
+export RIVETOS_MEMORY_AGENT="${RIVETOS_MEMORY_AGENT:-grokbot}"
 export RIVETOS_MCP_ENABLE_MEMORY_WRITE="${RIVETOS_MCP_ENABLE_MEMORY_WRITE:-1}"
 
 # Tell the MCP server we're running in stdio mode.

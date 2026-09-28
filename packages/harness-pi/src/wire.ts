@@ -26,7 +26,7 @@
  *
  * encoded-cwd replaces every `/` with `-` and wraps in dashes
  * (`/home/rivet` → `--home-rivet--`). Timestamp colons/dots become dashes
- * (`2026-09-11T14-25-16-803Z`). Native id is a UUID (any version; pi mints v7).
+ * (`2020-01-01T00-00-00-000Z`). Native id is a UUID (any version; pi mints v7).
  *
  * Assistant `content` items on disk: `{type:text,text}`, `{type:thinking,thinking}`,
  * `{type:toolCall, id, name, arguments}`. Tool results are a SEPARATE

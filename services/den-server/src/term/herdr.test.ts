@@ -78,7 +78,7 @@ describe('herdr name encoding', () => {
   it('classify matches tmux: untagged decodable → adopt; tagged mismatch → refuse', () => {
     expect(classifyExistingHerdrSession({ ...sample, command: '', user: '' })).toBe('adopt')
     expect(
-      classifyExistingHerdrSession({ ...sample, command: 'claude', user: 'phil' }, 'coco'),
+      classifyExistingHerdrSession({ ...sample, command: 'claude', user: 'owner' }, 'coco'),
     ).toBe('user-mismatch')
     expect(
       classifyExistingHerdrSession({ ...sample, command: 'claude', user: 'coco' }, 'coco'),
@@ -136,15 +136,35 @@ describe('herdr argv builders', () => {
     expect(herdrKindForArgv0('operator-key')).toBeUndefined()
   })
 
-  // Every room:true entry in defaultRoster() must resolve to a kind from its
-  // OWN argv[0]. These three were never pinned, so a herdr enum rename could
-  // drop one and only surface as a dropped first turn on that harness.
+  // Every room:true entry whose argv[0] is in herdr's closed enum must resolve
+  // to that kind. A herdr enum rename could drop one and only surface as a
+  // dropped first turn on that harness. Cursor is the exception: herdr's kind
+  // `cursor` launches the `cursor` binary, and this roster runs the agent CLI
+  // (`agent`), so it stays a plain pane.
   it('every built-in harness argv[0] is a herdr agent kind', () => {
     const roster = defaultRoster()
     const harnesses = Object.entries(roster.commands).filter(([, e]) => e.room)
-    expect(harnesses.length).toBe(8)
+    expect(harnesses.map(([key]) => key).sort()).toEqual([
+      'claude',
+      'codex',
+      'cursor',
+      'grok',
+      'hermes',
+      'kimi',
+      'opencode',
+      'pi',
+      'qwen',
+    ])
     for (const [key, entry] of harnesses) {
       const argv0 = entry.cmd[0] ?? ''
+      if (key === 'cursor') {
+        expect(argv0).toBe('agent')
+        expect(herdrKindForArgv0(argv0), `${key} → ${argv0}`).toBeUndefined()
+        expect(herdrUseAgent(herdrKindForArgv0(argv0), argv0), `${key} is a plain pane`).toBe(
+          false,
+        )
+        continue
+      }
       expect(herdrKindForArgv0(argv0), `${key} → ${argv0}`).toBe(argv0)
       expect(herdrUseAgent(herdrKindForArgv0(argv0), argv0), `${key} is an agent pane`).toBe(true)
     }

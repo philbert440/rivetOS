@@ -7,21 +7,23 @@ Query and write the same Postgres store. Ingest sessions tagged source=grokbot w
 
 ## Node and Models
 
-The grokbot node runs multiple Grok Bot agents, each with its own agent key and session ID:
+Discovery reads every bot from the host's `agent-data/agents/<uuid>/profile.json`
+at runtime. Persona is the profile name. Session is `grokbot-<slug>`; agent
+is `<prefix>-<slug>`. The prefix defaults to `grokbot` and is set with
+`GROKBOT_AGENT_PREFIX`. Duplicate slugs append a short id suffix. Groups,
+placeholder unused-slot profiles, and subagent transcripts are skipped by
+structure (presence of `group.json`, placeholder flags / unused-slot shape,
+or a parent id).
 
-- **Rivet** (`rivet-grokbot`): Main bot, session `grokbot-rivet-grokbot`
-- **Bob** (`rivet-bob`): session `grokbot-bob`
-- **Gary** (`rivet-gary`): session `grokbot-gary`
-- **Maggie** (`rivet-maggie`): session `grokbot-maggie`
-- **Frank** (`rivet-frank`): session `grokbot-frank`
-- **dr eggbot** (`rivet-eggbot`): session `grokbot-eggbot`
-
-Convention: each bot gets its own agent key. See `capture/models.json` for full model IDs and mappings.
-Full mesh mTLS join is out of scope.
+There is no bot list and no override file. Only generic env settings
+(`GROKBOT_NODE_ID`, `GROKBOT_AGENTS`, `GROKBOT_TRANSCRIPTS` /
+`GROKBOT_TRANSCRIPT_ROOT`, `GROKBOT_AGENT_PREFIX`, `GROKBOT_SESSION_SUFFIX`)
+are configurable. Print the resolved roster with `discover --json` before
+ingesting. Full mesh mTLS join is out of scope.
 
 ## Install
 
-**Version:** 0.2.1 (plugin-var / DataHub launcher alignment; capture/ unchanged)
+**Version:** 0.3.0 (Grok Bot capture fidelity: wrapper strip, real timestamps, per-bot tags, system turns, v3 re-clean)
 
 **Strangers** should install the member kit **`rivethub-grokbot`** and run
 `rivetos-onboard` (cloud vs local). This package is the MCP sibling that kit
@@ -55,24 +57,24 @@ When pointing directly at the script, use the absolute path: `/opt/rivetos/integ
 
 ## Write
 
-The launcher sets RIVETOS_MCP_ENABLE_MEMORY_WRITE=1 and default tag env vars (agent=rivet-grokbot, source/channel=grokbot).
-Use memory_append or memory_ingest_session. Pass role (user, assistant, system, or tool) on each memory_append call, and persona when relevant; agent defaults to rivet-grokbot and should not be overridden.
+The launcher sets RIVETOS_MCP_ENABLE_MEMORY_WRITE=1 and default tag env vars (agent=grokbot, source/channel=grokbot).
+Use memory_append or memory_ingest_session. Pass role (user, assistant, system, or tool) on each memory_append call, and persona when relevant; set `RIVETOS_MEMORY_AGENT` per bot (or pass `--agent`) so writes match that bot's discovered tag.
 Ingest skips ordinals already stored for that session.
 
-Offline: node bin/ingest-session.mjs --session-id ID --agent rivet-grokbot [--persona P] file.jsonl
-That calls the same ingestSession() as the sidecar (requires a built checkout).
+Offline: node bin/ingest-session.mjs --session-id ID --agent grokbot-alpha [--persona Alpha] file.jsonl
+That uses the grok-bot ingest writer (requires a built capture package).
 
 ## Capture (Automated Ingestion)
 
 The `capture/` directory provides automated transcript conversion and ingestion for the grokbot node.
 
-**Door 1: Transcript watcher** — monitors per-model transcript files and ingests to phil_memory.
+**Door 1: Transcript watcher** — monitors per-model transcript files and ingests to rivet_memory.
 
 **Setup:**
 
-1. Set `GROKBOT_TRANSCRIPT_ROOT` to the directory containing per-model transcript folders (e.g. `/home/box/grokbot/transcripts`)
+1. Set `GROKBOT_TRANSCRIPT_ROOT` to the directory containing per-model transcript folders (e.g. `$HOME/agent-data/agent-transcripts`)
 2. Set `RIVETOS_PG_URL` in `~/.rivetos/.env` or environment
-3. Ensure RivetOS is built at `RIVETOS_ROOT` (default `/opt/rivetos`)
+3. Ensure RivetOS is built at `RIVETOS_ROOT` (default `/opt/rivetos`). Rebuild `memory-postgres` and `@rivetos/grok-bot-rivet-memory-capture` before any `-v3` ingest. Enabling the watcher ingests every transcript's full history into `<session>-v3`.
 4. Run the setup script (see Setup/Restore section below)
 
 **Run watcher (scheduled):**
@@ -82,7 +84,7 @@ cd capture/
 ./run-once.sh
 ```
 
-The runner converts each model's transcript from `$GROKBOT_TRANSCRIPT_ROOT/<id>/<id>.jsonl` to `spool/<session>.jsonl`, then ingests to Postgres when reachable. Fails loud when session files exist but ingest fails. State tracking in `~/.rivetos/grokbot-capture-state/` detects stuck sessions (3+ consecutive failures within 2 hours).
+The runner converts each model's transcript from `$GROKBOT_TRANSCRIPT_ROOT/<id>/<id>.jsonl` to `spool/<session>-v3.jsonl` (`GROKBOT_SESSION_SUFFIX`, default `-v3`), then ingests to Postgres when reachable. Fails loud when session files exist but ingest fails. State tracking in `~/.rivetos/grokbot-capture-state/` detects stuck sessions (3+ consecutive failures within 2 hours). The watcher keys size:mtime state by agent id plus the session suffix (so a copied `~/.rivetos/capture/state.json` cannot skip `-v3`). See `capture/README.md`.
 
 **Schedule:** Typically via cron/systemd hourly. Reports stuck sessions and failures via exit code.
 

@@ -130,7 +130,7 @@ describe('agents routes with a fallback store', () => {
       pending = importAndMaterializeLegacyAgents({
         file,
         store: primary,
-        nodeName: 'ct115',
+        nodeName: 'node-f',
         directoryRoot,
         sharedDir,
       }).then(() => undefined)
@@ -138,7 +138,7 @@ describe('agents routes with a fallback store', () => {
 
     const routes = createAgentsRoutes({
       store: wrapper,
-      nodeName: 'ct115',
+      nodeName: 'node-f',
       directoryRoot,
       sharedDir,
     })
@@ -181,7 +181,7 @@ describe('agents routes with a fallback store', () => {
     expect(readdirSync(dir).filter((name) => name.includes('.imported-'))).toHaveLength(1)
     expect(primary.rows).toHaveLength(1)
     expect(primary.rows[0]).toMatchObject({
-      node: 'ct115',
+      node: 'node-f',
       directory: importedDir,
       name: 'Reviewer',
     })
@@ -216,7 +216,7 @@ describe('agents routes with a fallback store', () => {
         model: '',
         effort: 'medium',
         systemPrompt: '',
-        node: 'ct115',
+        node: 'node-f',
         directory,
         sharedLink: true,
         nodeBaseUrl: '',
@@ -230,7 +230,7 @@ describe('agents routes with a fallback store', () => {
         model: '',
         effort: 'medium',
         systemPrompt: '',
-        node: 'ct114',
+        node: 'node-e',
         directory: elsewhere,
         sharedLink: true,
         nodeBaseUrl: '',
@@ -241,7 +241,7 @@ describe('agents routes with a fallback store', () => {
     const result = await importAndMaterializeLegacyAgents({
       file: join(dir, 'agents.json'),
       store: primary,
-      nodeName: 'ct115',
+      nodeName: 'node-f',
       directoryRoot: join(dir, 'agents'),
       sharedDir,
     })

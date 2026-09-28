@@ -117,7 +117,7 @@ export type RemoteOwnershipProbe =
  *
  * Historical footgun (residual from local ownership preflight / #423): mesh
  * updates SSHed in, burned minutes on git pull or mid-npm, then died with
- * EACCES when `/opt/rivetos` (or node_modules) was owned by root/philip while
+ * EACCES when `/opt/rivetos` (or node_modules) was owned by root/another user while
  * the update user is `rivet`. Fail fast with a copy-paste chown.
  *
  * Uses only fixed path strings (no remote shell variables) so `sshExecQuiet`'s
@@ -192,7 +192,9 @@ export function remoteOwnershipFailure(
   const chownTargets = probe.blockers.map((b) => b.path).join(' ')
   console.error(`    ${tag} ❌ Install tree not writable by ${sshUser}: ${detail}`)
   console.error(`    ${tag}    git/npm will fail with EACCES. Common after sudo installs (root) or`)
-  console.error(`    ${tag}    desktop copies owned by philip while mesh update SSHs as rivet.`)
+  console.error(
+    `    ${tag}    desktop copies owned by another user while mesh update SSHs as rivet.`,
+  )
   console.error(
     `    ${tag}    Fix on ${nodeName}: sudo chown -R ${sshUser}:${sshUser} ${chownTargets}`,
   )
@@ -463,7 +465,7 @@ export async function gitUpdateNodeAsync(
   // Step 6: validate the node's config against the code we just deployed.
   // An update that invalidates config (renamed provider, removed key) makes
   // the service crash-loop SILENTLY until someone notices the node "offline"
-  // — that exact failure hid ct114 for a week. Non-fatal, but loud.
+  // — that exact failure hid node-e for a week. Non-fatal, but loud.
   let configInvalid = false
   if (isAgent) {
     const validateOut = sshExecQuiet(

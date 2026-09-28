@@ -135,7 +135,7 @@ describe('formatQueueHealth', () => {
         pending: '12',
         dead: '3435',
         oldest_pending_age_min: 45.2,
-        last_error: 'LLM unreachable at http://pve3:8003/v1 (fetch failed)',
+        last_error: 'LLM unreachable at http://hv-c:8003/v1 (fetch failed)',
       },
       {
         task: 'compact-conversation',

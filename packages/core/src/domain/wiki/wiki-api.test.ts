@@ -126,7 +126,12 @@ describe('/api/wiki', () => {
     expect(raw.headers.get('content-type')).toContain('text/markdown')
     expect(await raw.text()).toMatch(/## (Summary|Current state)/)
 
-    expect((await fetch(`${base}/api/wiki/no-such-page`)).status).toBe(404)
+    const miss = await fetch(`${base}/api/wiki/no-such-page`)
+    expect(miss.status).toBe(404)
+    expect(await miss.json()).toEqual({ error: 'no topic no-such-page', suggestions: [] })
+    const rawMiss = await fetch(`${base}/api/wiki/no-such-page/raw`)
+    expect(rawMiss.status).toBe(404)
+    expect(await rawMiss.json()).toEqual({ error: 'no topic no-such-page', suggestions: [] })
     expect((await fetch(`${base}/api/wiki/Bad_Slug!`)).status).toBe(400)
     expect((await fetch(`${base}/api/wiki`, { method: 'POST' })).status).toBe(405)
   })
@@ -163,6 +168,56 @@ describe('/api/wiki', () => {
     expect(page.sources).toHaveLength(SOURCES_MAX)
     // Oldest-first sources: JSON keeps the newest tail.
     expect(page.sources[0].ids[0]).toContain(String(20).padStart(12, '0'))
+  })
+})
+
+describe('wiki 404 suggestions', () => {
+  async function serveWith(resolveTopic: WikiIndexLike['resolveTopic']): Promise<string> {
+    const index: WikiIndexLike = { ...fakeIndex(), resolveTopic }
+    const api = createWikiApiRoute({ index, wikiDir })
+    const server: Server = createServer((req, res) => {
+      void api.handler(req, res)
+    })
+    await new Promise<void>((r) => server.listen(0, '127.0.0.1', r))
+    cleanups.push(() => new Promise((r) => server.close(r)))
+    return `http://127.0.0.1:${(server.address() as AddressInfo).port}`
+  }
+
+  it('returns a hit without suggestions', async () => {
+    const base = await serveWith(async () => ({
+      candidates: [{ slug: 'other', title: 'Other' }],
+    }))
+    const res = await fetch(`${base}/api/wiki/${TOPIC.slug}`)
+    expect(res.status).toBe(200)
+    const page = (await res.json()) as { slug: string; suggestions?: unknown }
+    expect(page.slug).toBe(TOPIC.slug)
+    expect(page.suggestions).toBeUndefined()
+  })
+
+  it('includes resolveTopic candidates on a page miss and a raw miss', async () => {
+    const suggestions = [{ slug: 'rivetos-task-engine', title: 'RivetOS Task Engine' }]
+    const base = await serveWith(async () => ({ candidates: suggestions }))
+    const page = await fetch(`${base}/api/wiki/tasl-engine`)
+    expect(page.status).toBe(404)
+    expect(await page.json()).toEqual({ error: 'no topic tasl-engine', suggestions })
+    const raw = await fetch(`${base}/api/wiki/tasl-engine/raw`)
+    expect(raw.status).toBe(404)
+    expect(await raw.json()).toEqual({ error: 'no topic tasl-engine', suggestions })
+  })
+
+  it('uses an empty list when resolveTopic finds nothing or throws', async () => {
+    const empty = await serveWith(async () => ({ candidates: [] }))
+    expect(await (await fetch(`${empty}/api/wiki/nowhere`)).json()).toEqual({
+      error: 'no topic nowhere',
+      suggestions: [],
+    })
+    const broken = await serveWith(async () => {
+      throw new Error('index down')
+    })
+    expect(await (await fetch(`${broken}/api/wiki/nowhere/raw`)).json()).toEqual({
+      error: 'no topic nowhere',
+      suggestions: [],
+    })
   })
 })
 
@@ -348,7 +403,7 @@ describe('per-user routing (x-rivetos-user)', () => {
     expect(JSON.stringify(emptyBody)).not.toContain(TOPIC.title)
 
     // duplicated header (array form) via direct handler invocation, both surfaces
-    const badHeaders = { 'x-rivetos-user': ['coco', 'phil'] }
+    const badHeaders = { 'x-rivetos-user': ['coco', 'owner'] }
     for (const route of [
       createWikiApiRoute({ index: fakeIndex(), wikiDir, forUser }),
       createWikiHtmlRoute({ index: fakeIndex(), wikiDir, forUser }),
@@ -404,7 +459,7 @@ describe('per-user routing (x-rivetos-user)', () => {
     // malformed header shapes
     for (const headers of [
       { 'x-rivetos-user': '' },
-      { 'x-rivetos-user': ['coco', 'phil'] as never },
+      { 'x-rivetos-user': ['coco', 'owner'] as never },
     ]) {
       const r = resolveWikiSurface(opts, '/owner', headers)
       expect(r).toEqual({ ok: false, error: 'malformed routing identity' })

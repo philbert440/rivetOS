@@ -25,7 +25,7 @@ import type { WizardLocal, WizardState } from './types.js'
 const SNIPPET = `${ENROLL_SNIPPET_MARKER}. Merge into the node's rivet.config.yaml.
 mesh:
   enabled: true
-  node_name: "ct110"
+  node_name: "node-a"
 `
 
 const baseState = (): WizardState => ({
@@ -41,10 +41,10 @@ const baseState = (): WizardState => ({
 
 describe('meshSectionFromEnroll', () => {
   it('builds a valid mesh section from a fixture enroll result', () => {
-    const section = meshSectionFromEnroll({ name: 'ct110', snippet: SNIPPET }, '192.0.2.11')
+    const section = meshSectionFromEnroll({ name: 'node-a', snippet: SNIPPET }, '192.0.2.11')
     expect(section).toEqual({
       enabled: true,
-      node_name: 'ct110',
+      node_name: 'node-a',
       tls: true,
       advertise_host: '192.0.2.11',
     })
@@ -62,8 +62,8 @@ describe('meshSectionFromEnroll', () => {
   })
 
   it('still produces a mesh section when the snippet is unparseable', () => {
-    const section = meshSectionFromEnroll({ name: 'phildesk', snippet: 'not: [yaml' })
-    expect(section.node_name).toBe('phildesk')
+    const section = meshSectionFromEnroll({ name: 'desktop', snippet: 'not: [yaml' })
+    expect(section.node_name).toBe('desktop')
     expect(section.enabled).toBe(true)
     expect(section.tls).toBe(true)
   })
@@ -94,18 +94,18 @@ describe('buildConfigYaml mesh branch', () => {
   })
 
   it('writes the enroll mesh section into generated config', () => {
-    const meshSection = meshSectionFromEnroll({ name: 'ct110', snippet: SNIPPET }, '192.0.2.11')
+    const meshSection = meshSectionFromEnroll({ name: 'node-a', snippet: SNIPPET }, '192.0.2.11')
     const yaml = buildConfigYaml({ ...baseState(), meshSection })
     expect(yaml).toContain(ENROLL_SNIPPET_MARKER)
     expect(yaml).toMatch(/^mesh:/m)
     expect(yaml).toMatch(/enabled:\s*true/)
-    expect(yaml).toMatch(/node_name:\s*"?ct110"?/)
+    expect(yaml).toMatch(/node_name:\s*"?node-a"?/)
     expect(yaml).toMatch(/tls:\s*true/)
     expect(yaml).toMatch(/advertise_host:\s*"?192\.0\.2\.11"?/)
   })
 
   it('omits advertise_host when enroll did not pass an explicit one', () => {
-    const meshSection = meshSectionFromEnroll({ name: 'ct110', snippet: SNIPPET })
+    const meshSection = meshSectionFromEnroll({ name: 'node-a', snippet: SNIPPET })
     const yaml = buildConfigYaml({ ...baseState(), meshSection })
     expect(yaml).toContain(ENROLL_SNIPPET_MARKER)
     expect(yaml).toMatch(/tls:\s*true/)

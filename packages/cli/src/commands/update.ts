@@ -279,7 +279,7 @@ export default async function update(): Promise<void> {
   console.log(`   Current: v${oldPkg.version} (${oldCommit})`)
   console.log('')
 
-  // Step 0: Fail fast on unwritable install trees (root-/philip-owned leftovers)
+  // Step 0: Fail fast on unwritable install trees (root- or user-owned leftovers)
   // BEFORE git pull / npm / nx burn minutes and then die with EACCES.
   assertInstallWritable(ROOT, opts.ignoreOwnership)
 
@@ -597,7 +597,7 @@ async function meshRollingUpdate(opts: UpdateOptions): Promise<void> {
   // Probe EVERY node — roster status is not reachability. A node whose
   // service is crash-looping heartbeats nothing and shows 'offline' in the
   // roster while its host is perfectly reachable, and pushing the update is
-  // often exactly what fixes it (ct114, 2026-07-04: config invalidated by a
+  // often exactly what fixes it (node-e, 2026-07-04: config invalidated by a
   // provider rename crash-looped for days as roster-'offline'). The per-node
   // SSH check is the real gate; genuinely dead hosts fail fast there.
   const nodes = Object.values(meshFile.nodes)
@@ -936,7 +936,7 @@ async function detectDeployment(forceBareMetal = false): Promise<DeploymentMode>
  * Hard-fail when the install tree is not writable by the current user.
  *
  * Soft-warn-after-npm was useless: the damage (EACCES mid-install) already
- * happened, and root-only detection missed philip-owned desktop trees that
+ * happened, and root-only detection missed user-owned desktop trees that
  * agents often hit when they run as `rivet`.
  */
 function assertInstallWritable(root: string, ignore: boolean): void {
@@ -965,7 +965,9 @@ function assertInstallWritable(root: string, ignore: boolean): void {
 
   console.error(`❌ Install tree not writable by ${who}: ${detail}`)
   console.error('   npm/nx/git will fail with EACCES. Common after sudo installs (root) or')
-  console.error('   desktop copies owned by philip while the update runs as rivet (or vice versa).')
+  console.error(
+    '   desktop copies owned by another user while the update runs as rivet (or vice versa).',
+  )
   console.error(`   Fix: sudo chown -R "$(whoami):$(whoami)" ${chownTargets}`)
   console.error('   Or re-run as the install owner (mesh nodes: usually rivet).')
   console.error('   Escape hatch (not recommended): --ignore-ownership')

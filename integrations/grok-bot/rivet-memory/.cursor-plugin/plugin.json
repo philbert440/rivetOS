@@ -1,7 +1,7 @@
 {
   "name": "rivet-memory-grokbot",
   "displayName": "RivetOS memory for Grok Bot",
-  "version": "0.2.1",
+  "version": "0.3.0",
   "description": "RivetOS memory MCP for Cursor Grok Bot. Sibling launcher for rivethub-grokbot. Plugin vars first, then ~/.rivetos/.env.",
   "author": { "name": "RivetOS", "email": "rivetphilbot@gmail.com" },
   "license": "MIT",

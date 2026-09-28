@@ -1,0 +1,11 @@
+{
+  "name": "rivet-den-cursor",
+  "version": "0.1.0",
+  "description": "Live rivet-den diorama for Cursor sessions — lifecycle hooks stream agent activity to den-server.",
+  "keywords": ["den", "visualizer", "hooks", "rivetos", "cursor"],
+  "homepage": "https://github.com/philbert440/rivetOS",
+  "license": "Apache-2.0",
+  "author": {
+    "name": "RivetOS"
+  }
+}

@@ -7,7 +7,7 @@ inference box). Per-conversation continuity via `--resume` with a session map in
 `~/.rivetos/hermes-cli-sessions.json`. Implements `aiSdkBridge()` (LanguageModelV3) so the
 RivetOS agent loop drives it via `streamText`.
 
-History: written 2026-08-18 and deployed untracked to ct113/ct114 (survived every
+History: written 2026-08-18 and deployed untracked to node-d/node-e (survived every
 `git reset --hard` deploy); ported to TypeScript and committed 2026-09-05 (typed against @ai-sdk/provider LanguageModelV3), behavior unchanged.
 
 ```yaml

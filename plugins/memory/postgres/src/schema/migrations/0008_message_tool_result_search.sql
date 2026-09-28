@@ -19,7 +19,7 @@ ALTER TABLE ros_messages
   DROP COLUMN IF EXISTS content_tsv;
 
 -- Cap inputs before to_tsvector: Postgres hard-limits tsvector at 1,048,575
--- bytes. Live phil_memory already has content up to ~900k chars; combining
+-- bytes. Live rivet_memory already has content up to ~900k chars; combining
 -- uncapped content+tool_result leaves only ~4.5% headroom, so a future
 -- insert would fail at capture time (GENERATED ALWAYS recomputes on write).
 -- FTS lexemes past ~300KB of content have negligible recall; trigram/regex

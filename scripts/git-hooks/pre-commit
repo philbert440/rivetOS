@@ -5,7 +5,12 @@
 # script setting core.hooksPath=scripts/git-hooks.
 #
 # Bypass (rare, e.g. an intentional example): git commit --no-verify
-node "$(git rev-parse --show-toplevel)/scripts/secret-scan.mjs" --staged || {
+ROOT="$(git rev-parse --show-toplevel)"
+node "$ROOT/scripts/secret-scan.mjs" --staged || {
   echo "pre-commit: blocked by secret-scan (see above). Override with --no-verify only if certain." >&2
+  exit 1
+}
+node "$ROOT/scripts/privacy-scan.mjs" --staged || {
+  echo "pre-commit: blocked by privacy-scan (see above). Override with --no-verify only if certain." >&2
   exit 1
 }

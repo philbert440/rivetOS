@@ -25,6 +25,7 @@ export const HARNESS_IDS = [
   'opencode',
   'pi',
   'qwen-code',
+  'cursor',
 ] as const
 export type HarnessId = (typeof HARNESS_IDS)[number]
 
@@ -43,6 +44,7 @@ export const ROSTER_COMMAND: Record<HarnessId, string> = {
   codex: 'codex',
   pi: 'pi',
   'qwen-code': 'qwen',
+  cursor: 'cursor',
 }
 
 export function rosterCommandFor(harnessId: string | undefined): string | undefined {

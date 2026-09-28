@@ -8,7 +8,7 @@ describe('Codex terminal room discovery', () => {
   let root: string
   let proc: string
   let sessions: string
-  const filename = 'rollout-2026-09-07T17-50-11-01a07dd9-a82b-7ea2-83a0-45005097dd41.jsonl'
+  const filename = 'rollout-2026-09-07T17-50-11-00000000-0000-4000-8000-000000000044.jsonl'
   beforeEach(async () => {
     root = await mkdtemp(join(tmpdir(), 'codex-room-'))
     proc = join(root, 'proc')

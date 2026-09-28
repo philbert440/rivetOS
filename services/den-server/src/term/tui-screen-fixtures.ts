@@ -1,4 +1,4 @@
-/** Shared herdr screen captures. Claude Code 2.1.280 auto-mode dialog and /model picker; 2.1.263 perm/picker. */
+/** Synthetic TUI screens covering each detection behavior. */
 
 export const AUTO_MODE_DIALOG_SCREEN = `\
   │ claude (this session)                          │ about 17%      │ Drops when I'm idle.                          │
@@ -76,26 +76,22 @@ Here is the reply after the dialog was dismissed.
   ⏵⏵ auto mode on (shift+tab to cycle) · ← for agents
 `
 
-/** Claude Code 2.1.280 `/model` picker (captured live 2026-09-23): a `↓` scroll
- *  marker on the last visible row, extra rows before the footer, a `▔` top
- *  border, and no input box below — the picker replaces it. */
+/** Scrolled /model picker: `↓` on the last visible row, extra rows before
+ *  the footer, a `▔` top border, and no input box (the picker replaces it). */
 export const MODEL_PICKER_SCREEN = `\
 ▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔
    Select model
-   Switch between Claude models. Your pick becomes the default for new
-   sessions. For other/previous model names, specify with --model.
 
-     1.  Default (recommended)  Opus 5.5 · Best for everyday, complex tasks
+     1.  Default
    ❯ 2.  Opus 5.5 ✔             Most capable for ambitious work
-     3.  Sonnet 5               Most efficient for everyday tasks
-     4.  Fable 5.1              For your toughest challenges
-     5.  Haiku 4.5              Fastest for quick answers
-     6.  Opus 5                 Best for everyday, complex tasks
-     7.  Fable 5                Most capable for your hardest and
-                                longest-running tasks
-     8.  Opus 4.8               Best for everyday, complex tasks
-     9.  Opus 4.7               Best for everyday, complex tasks
-   ↓ 10. Opus 4.6               Best for everyday, complex tasks
+     3.  Sonnet 5
+     4.  Fable 5.1
+     5.  Haiku 4.5
+     6.  Opus 5
+     7.  Fable 5
+     8.  Opus 4.8
+     9.  Opus 4.7
+   ↓ 10. Opus 4.6
       … +1 model
 
    ◐ Medium effort (default) ←/→ to adjust
@@ -103,58 +99,20 @@ export const MODEL_PICKER_SCREEN = `\
    Enter to set as default · s to use this session only · Esc to cancel
 `
 
-/** Claude Code 2.1.280, fresh session (captured 2026-09-24): the empty input box
- *  shows a dim rotating example (`Try "refactor <filepath>"`). Not typed text. */
+/** Fresh session: empty input box with a dim rotating example. Not typed text. */
 export const FRESH_CLAUDE_PROMPT_SCREEN = `\
- ▐▛███▛█   Claude Code v2.1.280
-▝▜██████▀  Opus 5.5 · Claude Pro
-  ▝▝ ▝▝    /home/alex
+  Claude Code
+  /home/user
 
-▎ Using Opus 5.5 (from .claude/settings.json) · /model
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-                                                                                                    ◐ medium · /effort
 ────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
 ❯\u00a0Try "refactor <filepath>"
 ────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
   ⏵⏵ auto mode on (shift+tab to cycle) · ← for agents
 `
 
-/** Claude Code 2.1.280 with `/model` typed but not sent (captured live 2026-09-23):
- *  the slash-command list is drawn above the input box. A chat paste here became
- *  `/modeltest 1`. */
+/** `/model` typed but not sent: slash-command list above the input box. */
 export const SLASH_DRAFT_SCREEN = `\
-  /model                         Set the AI model for Claude Code (currently
-                                 Opus 5.5)
-  /claude-api                    Reference for the Claude API / Anthropic SDK
-                                 — model ids, pricing, params, streaming, to…
+  /model                         Set the AI model
 ───────────────────────────────────────────────────────────────────────────────
 ❯\u00a0/model
 ───────────────────────────────────────────────────────────────────────────────

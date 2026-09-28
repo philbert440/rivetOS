@@ -418,7 +418,7 @@ export function ChatPage(): JSX.Element {
       void navigate({ to: '/', search: urlTarget ? { session: urlTarget } : {}, replace: true })
     }
   }, [sessionFromUrl, active, drafts, setActive, navigate])
-  // Chat home on narrow (Phil 2026-09-04): the conversations list is NOT an
+  // Chat home on narrow : the conversations list is NOT an
   // app screen — the surface IS a session, so `active` must always resolve.
   // Order (narrowLaunchTarget, lib/launch-session.ts):
   //   resume — the persisted last-opened session, IMMEDIATELY, before the
@@ -564,8 +564,7 @@ export function ChatPage(): JSX.Element {
 
   // The conversations list is a screen only on wide, where it is a side
   // COLUMN (a pane), not a landing — narrow never renders it full-screen
-  // (Phil 2026-09-04: on the phone the list lives only in the right history
-  // drawer; the home is the chat surface).
+  // .
   const showList = !narrow && !conversationsCollapsed
   const showEmpty = !narrow && !active
 
@@ -621,8 +620,7 @@ export function ChatPage(): JSX.Element {
       ) : (
         showEmpty && <EmptyState />
       )}
-      {/* Narrow RIGHT history drawer (Phil 2026-09-03: "back" in a session is
-          the conversations list as a right-side drawer). Same pane, same
+      {/* Narrow RIGHT history drawer . Same pane, same
           width rule as the left rail (w-64, sidebar.tsx:186-197). Mounted
           only while a session is open; stays mounted closed so the slide
           transition runs. Row selection closes it via
@@ -884,7 +882,7 @@ function SessionDrawer(props: {
   const openRow = (key: string): void => {
     setActive(key)
     // Narrow right history drawer: picking a row switches the session and
-    // closes the drawer (Phil 2026-09-03). No-op anywhere else.
+    // closes the drawer . No-op anywhere else.
     if (shouldCloseHistoryOnSelect(narrow)) {
       useSidebarPrefs.getState().setHistoryOpen(false)
     }
@@ -2062,7 +2060,7 @@ function ActiveSession(props: {
   return (
     <div className="relative flex min-w-0 flex-1 flex-col">
       {narrow ? (
-        /* ONE 48px row on the phone (Phil 2026-09-03) — same tokens as the
+        /* ONE 48px row on the phone — same tokens as the
            desktop header below (border-b border-line, bg-panel/40, mono
            text-xs title): ☰ · id (truncates) · ctx % · Stop · Terminal|Chat ·
            history. No back chevron: "back" is the right history drawer.
@@ -2227,7 +2225,7 @@ function EmptyState(): JSX.Element {
   )
 }
 
-/** Narrow launch surface (Phil 2026-09-04): the same centered layout as the
+/** Narrow launch surface : the same centered layout as the
  *  empty state, but the copy reads "Loading most recent conversation." with a
  *  New-conversation button that opens a fresh thread INSTANTLY — bypassing the
  *  most-recent resolve so the user never has to wait. Never a bare spinner,

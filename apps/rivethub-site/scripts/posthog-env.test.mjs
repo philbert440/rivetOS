@@ -408,7 +408,7 @@ describe('own-your-data landing', () => {
     assert.match(html, /data-sticky-cta/);
     assert.match(html, /Install on your laptop/);
     assert.doesNotMatch(html, /Install on your laptop\./);
-    assert.doesNotMatch(html, /Maggie: voice-pass/);
+    assert.doesNotMatch(html, /Pat: voice-pass/);
     assert.match(html, /og:image:alt"[^>]+Your agents\. Your memory\. Your hardware/);
     assert.doesNotMatch(html, /Automatic memory\. Nothing to remember to write down/);
   });

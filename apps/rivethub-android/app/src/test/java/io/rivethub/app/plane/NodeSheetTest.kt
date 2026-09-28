@@ -11,18 +11,18 @@ class NodeSheetTest {
     private val mesh = "https://192.0.2.12:5174"
 
     private val nodes = listOf(
-        NodeSheetInput("ct115", "ct115", entry, sessions = 3),
-        NodeSheetInput("ct119", "ct119", extra, sessions = 1),
+        NodeSheetInput("node-f", "node-f", entry, sessions = 3),
+        NodeSheetInput("node-j", "node-j", extra, sessions = 1),
         NodeSheetInput("peer", "peer", mesh, sessions = 4),
     )
 
     @Test
     fun `current saved node gets a filled bullet`() {
-        val model = buildNodeSheet(entry, setOf(extra), nodes, viewNodeId = "ct115")
-        val cur = model.saved.find { it.id == "ct115" }!!
+        val model = buildNodeSheet(entry, setOf(extra), nodes, viewNodeId = "node-f")
+        val cur = model.saved.find { it.id == "node-f" }!!
         assertTrue(cur.current)
         assertEquals("●", cur.marker)
-        val other = model.saved.find { it.id == "ct119" }!!
+        val other = model.saved.find { it.id == "node-j" }!!
         assertFalse(other.current)
         assertEquals("○", other.marker)
     }
@@ -38,7 +38,7 @@ class NodeSheetTest {
 
     @Test
     fun `discovered nodes are the mesh remainder`() {
-        val model = buildNodeSheet(entry, setOf(extra), nodes, viewNodeId = "ct115")
+        val model = buildNodeSheet(entry, setOf(extra), nodes, viewNodeId = "node-f")
         assertEquals(listOf("peer"), model.discovered.map { it.id })
         assertFalse(model.discovered.first().saved)
         assertEquals("+ peer (4 sessions)", discoveredNodeLabel("peer", 4))
@@ -62,19 +62,19 @@ class NodeSheetTest {
     @Test
     fun `node error badge rides on the matching id`() {
         val model = buildNodeSheet(
-            entry, emptySet(), nodes, viewNodeId = "ct115",
-            nodeErrors = mapOf("ct115" to "timed out"),
+            entry, emptySet(), nodes, viewNodeId = "node-f",
+            nodeErrors = mapOf("node-f" to "timed out"),
         )
-        assertEquals("timed out", model.saved.find { it.id == "ct115" }?.error)
+        assertEquals("timed out", model.saved.find { it.id == "node-f" }?.error)
     }
 
     @Test
     fun `offline discovered nodes are not offered`() {
         val mixed = listOf(
-            NodeSheetInput("ct115", "ct115", entry, sessions = 3, online = true),
+            NodeSheetInput("node-f", "node-f", entry, sessions = 3, online = true),
             NodeSheetInput("down", "down", "https://192.0.2.99:5174", sessions = 1, online = false),
         )
-        val model = buildNodeSheet(entry, emptySet(), mixed, viewNodeId = "ct115")
+        val model = buildNodeSheet(entry, emptySet(), mixed, viewNodeId = "node-f")
         assertTrue(model.discovered.none { it.id == "down" })
     }
 

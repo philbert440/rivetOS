@@ -136,9 +136,9 @@ class AgentEditTest {
     }
 
     @Test fun `go to node returns the node unless it is already viewed`() {
-        assertEquals("ct115", agentGoToNodeId("", "ct115"))
-        assertEquals("ct115", agentGoToNodeId("ct119", "ct115"))
-        assertNull(agentGoToNodeId("ct115", "ct115"))
+        assertEquals("node-f", agentGoToNodeId("", "node-f"))
+        assertEquals("node-f", agentGoToNodeId("node-j", "node-f"))
+        assertNull(agentGoToNodeId("node-f", "node-f"))
         assertNull(agentGoToNodeId("", ""))
     }
 

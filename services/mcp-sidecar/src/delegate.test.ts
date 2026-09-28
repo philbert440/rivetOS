@@ -27,7 +27,7 @@ import {
 
 const USAGE = { inputTokens: 1, outputTokens: 2, totalTokens: 3, turns: 1, wallClockMs: 4 }
 const DIR = '/home/rivet/.rivetos/agents/reviewer'
-const NODE = 'ct115'
+const NODE = 'node-f'
 
 const closers: Array<() => Promise<void>> = []
 afterEach(async () => {
@@ -181,7 +181,7 @@ async function setup(opts: {
 }
 
 const HOST = meshNode({ name: NODE, agents: ['local-grok'] })
-const REMOTE = meshNode({ name: 'ct112', agents: ['grok'], lastSeen: 10 })
+const REMOTE = meshNode({ name: 'node-c', agents: ['grok'], lastSeen: 10 })
 const OFFLINE = meshNode({
   name: 'ct-down',
   agents: ['hidden'],
@@ -194,7 +194,7 @@ const LISTING = [
   '',
   'Runtime agents (mesh):',
   `- local-grok (${NODE})`,
-  '- grok (ct112)',
+  '- grok (node-c)',
   '',
   'to_agent accepts a preset name or id, or a runtime agent id.',
 ].join('\n')
@@ -765,7 +765,7 @@ describe('delegate tool registration and node identity', () => {
   })
 
   it('matches boot: RIVETOS_NODE_NAME, else HOSTNAME, else local', () => {
-    expect(sidecarNodeName({ RIVETOS_NODE_NAME: ' ct115 ', HOSTNAME: 'other' })).toBe('ct115')
+    expect(sidecarNodeName({ RIVETOS_NODE_NAME: ' node-f ', HOSTNAME: 'other' })).toBe('node-f')
     expect(sidecarNodeName({ HOSTNAME: 'box' })).toBe('box')
     expect(sidecarNodeName({})).toBe('local')
     expect(sidecarNodeName({ RIVETOS_NODE_NAME: '  ', HOSTNAME: '   ' })).toBe('local')
@@ -883,7 +883,7 @@ describe('createDelegateToolsFromEnv', () => {
     const booted = await bootEnv({
       presets: [
         preset({ id: 'home', name: 'home', node: 'local' }),
-        preset({ id: 'away', name: 'away', node: 'ct112' }),
+        preset({ id: 'away', name: 'away', node: 'node-c' }),
       ],
       nodeName: 'local',
       autoFinish: true,
@@ -891,8 +891,8 @@ describe('createDelegateToolsFromEnv', () => {
     const handle = mustHandle(booted.handle)
     const listed = await text(handle, 'list_agents', {})
     expect(listed).toContain('on local — this node')
-    expect(listed).toContain('on ct112')
-    expect(listed).not.toContain('ct112 — this node')
+    expect(listed).toContain('on node-c')
+    expect(listed).not.toContain('node-c — this node')
     expect(listed).not.toContain('(mesh unavailable)')
     expect(booted.logs.filter((line) => line.includes('ENOENT'))).toHaveLength(1)
     const body = await text(handle, 'delegate_task', { to_agent: 'home', task: 'review' })
@@ -902,13 +902,13 @@ describe('createDelegateToolsFromEnv', () => {
     expect(row.origin).toBe('tool')
     expect(row.executor).toBe('harness-session')
     const denied = await text(handle, 'delegate_task', { to_agent: 'away', task: 'go' })
-    expect(denied).toContain('no mesh registry; cannot reach node "ct112"')
+    expect(denied).toContain('no mesh registry; cannot reach node "node-c"')
     const rows = await booted.store.list()
     expect(rows).toHaveLength(1)
     expect(rows[0]?.nodeAffinity).toBe('local')
     const listedAgain = await text(handle, 'list_agents', {})
     expect(listedAgain).toContain('on local — this node')
-    expect(listedAgain).not.toContain('ct112 — this node')
+    expect(listedAgain).not.toContain('node-c — this node')
     expect(booted.logs.filter((line) => line.includes('ENOENT'))).toHaveLength(1)
   })
 
@@ -941,14 +941,14 @@ describe('createDelegateToolsFromEnv', () => {
     expect(local.logs.some((line) => line.includes('EACCES'))).toBe(true)
 
     const remote = await bootEnv({
-      presets: [preset({ node: 'ct112' })],
+      presets: [preset({ node: 'node-c' })],
       nodeName: 'local',
       autoFinish: true,
       stat,
     })
     const remoteHandle = mustHandle(remote.handle)
     const denied = await text(remoteHandle, 'delegate_task', { to_agent: 'reviewer', task: 'go' })
-    expect(denied).toContain('no mesh registry; cannot reach node "ct112"')
+    expect(denied).toContain('no mesh registry; cannot reach node "node-c"')
     expect(await remote.store.list()).toHaveLength(0)
   })
 
@@ -958,7 +958,7 @@ describe('createDelegateToolsFromEnv', () => {
     })
     let reads = 0
     const booted = await bootEnv({
-      presets: [preset({ node: 'ct112' })],
+      presets: [preset({ node: 'node-c' })],
       nodeName: 'local',
       stat: () => Promise.resolve({ mtimeMs: 5 }),
       readFile: () => {
@@ -968,7 +968,7 @@ describe('createDelegateToolsFromEnv', () => {
     })
     const handle = mustHandle(booted.handle)
     const denied = await text(handle, 'delegate_task', { to_agent: 'reviewer', task: 'go' })
-    expect(denied).toContain('hosting node "ct112" is offline or unknown')
+    expect(denied).toContain('hosting node "node-c" is offline or unknown')
     expect(await booted.store.list()).toHaveLength(0)
     expect(reads).toBe(1)
   })

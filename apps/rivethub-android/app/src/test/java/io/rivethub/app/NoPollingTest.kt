@@ -6,7 +6,7 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 
 /**
- * The chat path must stay frame-driven (Phil, 2026-09-06): no poll loops, no
+ * The chat path must stay frame-driven (2026-09-06): no poll loops, no
  * periodic refresh. A source-substring guard, like the web's `refetchInterval`
  * assertion, keeps a `while { delay() }` loop from creeping back.
  */

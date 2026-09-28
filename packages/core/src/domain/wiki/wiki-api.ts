@@ -7,7 +7,7 @@
  * structural WikiIndexLike so core carries no plugin dependency.
  *
  *   GET /api/wiki                 index (?q= search | ?tag= | ?entity=)
- *   GET /api/wiki/gaps            red links + stalest pages (Phil's ask)
+ *   GET /api/wiki/gaps            red links + stalest pages
  *   GET /api/wiki/:slug           WikiPageResponse (file + index merged)
  *   GET /api/wiki/:slug/raw       text/markdown, verbatim file
  */
@@ -64,6 +64,12 @@ export interface WikiIndexLike {
     redLinks: Array<{ entity: string; referencedBy: string[] }>
     stalest: WikiTopicSummary[]
   }>
+  /**
+   * Fuzzy candidates for a slug that has no page. Same call the sidecar's
+   * `wiki_read` makes on a miss (`WikiIndex.resolveTopic`). Optional so a
+   * test double that never 404s can omit it; a real index always has it.
+   */
+  resolveTopic?(slug: string): Promise<{ candidates: Array<{ slug: string; title: string }> }>
 }
 
 interface WikiTopicSummary {
@@ -94,6 +100,22 @@ const SLUG_RE = /^[a-z0-9-]{1,80}$/
 function json(res: ServerResponse, code: number, body: unknown): void {
   res.writeHead(code, { 'Content-Type': 'application/json' })
   res.end(JSON.stringify(body))
+}
+
+/** 404 for a missing topic file — page and /raw share this, before the raw branch. */
+async function topicNotFound(
+  index: WikiIndexLike,
+  slug: string,
+): Promise<{ error: string; suggestions: Array<{ slug: string; title: string }> }> {
+  let suggestions: Array<{ slug: string; title: string }> = []
+  if (index.resolveTopic) {
+    const resolved = await index.resolveTopic(slug).catch(() => ({ candidates: [] }))
+    suggestions = resolved.candidates.map((candidate) => ({
+      slug: candidate.slug,
+      title: candidate.title,
+    }))
+  }
+  return { error: `no topic ${slug}`, suggestions }
 }
 
 /** A userId that may participate in a file-root path join. Anything with a
@@ -176,7 +198,7 @@ export function createWikiApiRoute(opts: WikiApiOptions): GatewayRoute {
         const markdown = await readFile(join(wikiDir, 'topics', `${slug}.md`), 'utf8').catch(
           () => undefined,
         )
-        if (markdown === undefined) return json(res, 404, { error: `no topic ${slug}` })
+        if (markdown === undefined) return json(res, 404, await topicNotFound(index, slug))
 
         // GET /api/wiki/:slug/raw
         if (sub === 'raw') {

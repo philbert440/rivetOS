@@ -56,7 +56,7 @@ afterEach(() => {
  * ≥0.34 writes `"version": 2` state with epoch-ms numbers, an `id` and a `cwd`
  * and NO title, while an older install writes ISO strings, `workDir`, `title`
  * and `lastPrompt` — and the two coexist in one `~/.kimi-code/sessions` when a
- * node has both installed (observed on ct116).
+ * node has both installed (observed on node-g).
  */
 function fakeKimiStore(): { home: string; v1: string; v2: string; untitled: string } {
   const home = mkdtempSync(join(tmpdir(), 'kimi-store-'))
@@ -500,7 +500,7 @@ describe('listHarnessSessions', () => {
     expect((await describeKimiSession(v1))?.title).toBe('ship the release') // scan fallback
   })
 
-  it('harnessSessionExists: kimi checks the session DIR, written before state.json', () => {
+  it('harnessSessionExists: kimi checks the session DIR, written before state.json', async () => {
     const { home, v2 } = fakeKimiStore()
     expect(harnessSessionExists('kimi', v2)).toBe(true)
     expect(harnessSessionExists('kimi', 'session_deadbeef')).toBe(false)
@@ -508,7 +508,7 @@ describe('listHarnessSessions', () => {
     // the dir first, so describability is a strict subset of existence.
     mkdirSync(join(home, 'sessions', 'wd_rivet_abc123', 'session_fresh'), { recursive: true })
     expect(harnessSessionExists('kimi', 'session_fresh')).toBe(true)
-    expect(describeKimiSession('session_fresh')).resolves.toBeUndefined()
+    await expect(describeKimiSession('session_fresh')).resolves.toBeUndefined()
   })
 
   it('empty when the harness has no store / is not a known harness', async () => {
@@ -544,8 +544,8 @@ describe('listHarnessSessions', () => {
     const home = mkdtempSync(join(tmpdir(), 'pi-store-'))
     dirs.push(home)
     setPiHomeForTest(home)
-    const id = '89965427-b96f-4d5e-8ad5-c3dd138e33dc'
-    const file = join(home, 'sessions', '--home-rivet--', `2026-09-11T14-25-16-803Z_${id}.jsonl`)
+    const id = '00000000-0000-4000-8000-000000000020'
+    const file = join(home, 'sessions', '--home-rivet--', `2020-01-01T00-00-00-000Z_${id}.jsonl`)
     mkdirSync(join(home, 'sessions', '--home-rivet--'), { recursive: true })
     writeFileSync(
       file,
@@ -554,7 +554,7 @@ describe('listHarnessSessions', () => {
           type: 'session',
           version: 3,
           id,
-          timestamp: '2026-09-11T14:25:16.803Z',
+          timestamp: '2020-01-01T00:00:00.000Z',
           cwd: '/home/rivet',
         }),
         JSON.stringify({
@@ -611,7 +611,7 @@ describe('listHarnessSessions', () => {
     const home = mkdtempSync(join(tmpdir(), 'pi-buckets-'))
     dirs.push(home)
     setPiHomeForTest(home)
-    const id = '42accb06-524a-47a6-b4b3-0991552914d7'
+    const id = '00000000-0000-4000-8000-000000000031'
     const other = '15cb936c-3364-49d6-8769-21f0c635f160'
     mkdirSync(join(home, 'sessions', '--home-rivet--'), { recursive: true })
     mkdirSync(join(home, 'sessions', '--srv-work--'), { recursive: true })
@@ -660,7 +660,7 @@ describe('listHarnessSessions', () => {
     setPiHomeForTest(home)
     const id = '7e1c2a90-3b44-4d1a-9c0e-2f8b6d5a1c03'
     mkdirSync(join(home, 'sessions'), { recursive: true })
-    const file = join(home, 'sessions', `2026-09-11T14-25-16-803Z_${id}.jsonl`)
+    const file = join(home, 'sessions', `2020-01-01T00-00-00-000Z_${id}.jsonl`)
     writeFileSync(
       file,
       JSON.stringify({
@@ -737,7 +737,7 @@ describe('listHarnessSessions', () => {
       file,
       [
         JSON.stringify({
-          uuid: '181c8cae-c294-4d77-b993-166db8e5788b',
+          uuid: '00000000-0000-4000-8000-000000000047',
           sessionId: id,
           type: 'user',
           provenance: 'real_user',
@@ -816,7 +816,7 @@ describe('listHarnessSessions', () => {
     dirs.push(home)
     setQwenHomeForTest(home)
     const id = '22222222-2222-4222-8222-222222222222'
-    const other = '857b4b7d-3d13-4281-a648-11947cf530ed'
+    const other = '00000000-0000-4000-8000-000000000049'
     const a = join(home, 'projects', '-home-example-a', 'chats')
     const b = join(home, 'projects', '-home-example-b', 'chats')
     mkdirSync(a, { recursive: true })
@@ -1804,8 +1804,8 @@ describe('kimi completion (hook-free turn-complete)', () => {
 })
 
 describe('codex store: ~/.codex/sessions/YYYY/MM/DD/rollout-*.jsonl', () => {
-  const ID = '89965427-b96f-4d5e-8ad5-c3dd138e33dc'
-  const ID2 = '42accb06-524a-47a6-b4b3-0991552914d7'
+  const ID = '00000000-0000-4000-8000-000000000020'
+  const ID2 = '00000000-0000-4000-8000-000000000031'
 
   function fakeCodexStore(): string {
     const home = mkdtempSync(join(tmpdir(), 'codex-store-'))
@@ -1843,7 +1843,7 @@ describe('codex store: ~/.codex/sessions/YYYY/MM/DD/rollout-*.jsonl', () => {
       },
     ]
     writeFileSync(
-      join(day, `rollout-2026-09-07T12-00-00-${ID}.jsonl`),
+      join(day, `rollout-2020-01-01T00-00-00-${ID}.jsonl`),
       lines.map((l) => JSON.stringify(l)).join('\n') + '\n',
     )
     return home
@@ -1871,7 +1871,7 @@ describe('codex store: ~/.codex/sessions/YYYY/MM/DD/rollout-*.jsonl', () => {
       '2026',
       '09',
       '07',
-      `rollout-2026-09-07T12-00-00-${ID}.jsonl`,
+      `rollout-2020-01-01T00-00-00-${ID}.jsonl`,
     )
     utimesSync(newer, 2_000_000_000, 2_000_000_000)
     utimesSync(olderFile, 1_000_000_000, 1_000_000_000)
@@ -1922,7 +1922,7 @@ describe('codex store: ~/.codex/sessions/YYYY/MM/DD/rollout-*.jsonl', () => {
       '2026',
       '09',
       '07',
-      `rollout-2026-09-07T12-00-00-${ID}.jsonl`,
+      `rollout-2020-01-01T00-00-00-${ID}.jsonl`,
     )
     const discover = vi.spyOn(codexRoom, 'resolveCodexRoomRollout').mockResolvedValue(path)
     const expected = await readCodexTranscript(ID)

@@ -26,8 +26,8 @@ import {
 } from './model-sheets.js'
 import type { ReadJson } from './model-sheets.js'
 
-const CT116_TOML = readFileSync(
-  join(dirname(fileURLToPath(import.meta.url)), '__fixtures__/kimi-config-ct116.toml'),
+const SAMPLE_TOML = readFileSync(
+  join(dirname(fileURLToPath(import.meta.url)), '__fixtures__/kimi-config-sample.toml'),
   'utf8',
 )
 
@@ -262,7 +262,7 @@ x = 1
     const sheet = kimiSheet((path) => {
       if (path.endsWith('.kimi/config.toml')) return toml
       throw new Error('missing')
-    }, '/home/tester')
+    }, '/home/user')
     expect(sheet.modelFlag).toBe('--model')
     expect(sheet.effortFlag).toBeUndefined()
     expect(sheet.efforts).toBeUndefined()
@@ -276,8 +276,8 @@ x = 1
     expect(sheet).toEqual({ models: [], modelFlag: '--model' })
   })
 
-  it('parses the ct116 real config fixture (quoted slash aliases)', () => {
-    const models = parseKimiToml(CT116_TOML)
+  it('parses the sample config fixture (quoted slash aliases)', () => {
+    const models = parseKimiToml(SAMPLE_TOML)
     expect(models.length).toBeGreaterThanOrEqual(3)
     expect(models.find((m) => m.default)?.id).toBe('moonshotai/kimi-k3')
     expect(models.find((m) => m.id === 'moonshotai/kimi-k2-0905-preview')).toMatchObject({
@@ -438,7 +438,7 @@ describe('opencodeSheet', () => {
     const sheet = opencodeSheet((path) => {
       if (path.endsWith('opencode.json')) return { model: 'zai/glm-5.3-flash' }
       throw new Error('missing')
-    }, '/home/tester')
+    }, '/home/user')
     expect(sheet.modelFlag).toBe('--model')
     expect(sheet.effortFlag).toBe('--variant')
     expect(sheet.efforts?.map((e) => e.id)).toEqual(['low', 'medium', 'high', 'max'])
@@ -496,7 +496,7 @@ describe('opencodeSheet', () => {
         return { provider: { openrouter: { models: { '~z-ai/glm-latest': {} } } } }
       }
       throw new Error('missing')
-    }, '/home/tester')
+    }, '/home/user')
     expect(appendModelEffortArgv(['opencode'], sheet, 'openrouter/~z-ai/glm-latest')).toEqual([
       'opencode',
       '--model',
@@ -610,7 +610,7 @@ describe('appendModelEffortArgv', () => {
   })
 
   it('kimi spawn is --model <slash-id> with no effort flag', () => {
-    const sheet = kimiSheet(() => CT116_TOML, '/home/tester')
+    const sheet = kimiSheet(() => SAMPLE_TOML, '/home/user')
     expect(sheet.effortFlag).toBeUndefined()
     expect(appendModelEffortArgv(['kimi'], sheet, 'moonshotai/kimi-k3', 'high')).toEqual([
       'kimi',

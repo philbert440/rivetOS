@@ -44,7 +44,7 @@ describe('buildArgs', () => {
       {
         binary: 'qwen',
         modelId: 'qwen-27b',
-        resumeSessionId: '857b4b7d-3d13-4281-a648-11947cf530ed',
+        resumeSessionId: '00000000-0000-4000-8000-000000000049',
       },
       'go on',
     )
@@ -57,7 +57,7 @@ describe('buildArgs', () => {
       '--approval-mode',
       'yolo',
       '--resume',
-      '857b4b7d-3d13-4281-a648-11947cf530ed',
+      '00000000-0000-4000-8000-000000000049',
       '-m',
       'qwen-27b',
     ])
@@ -81,7 +81,7 @@ describe('buildArgs', () => {
     const args = buildArgs(
       {
         binary: 'qwen',
-        pinSessionId: '857b4b7d-3d13-4281-a648-11947cf530ed',
+        pinSessionId: '00000000-0000-4000-8000-000000000049',
         resumeSessionId: '11111111-2222-4333-8444-555555555555',
         maxSessionTurns: 8,
       },
@@ -96,7 +96,7 @@ describe('buildArgs', () => {
       '--approval-mode',
       'yolo',
       '--session-id',
-      '857b4b7d-3d13-4281-a648-11947cf530ed',
+      '00000000-0000-4000-8000-000000000049',
       '--max-session-turns',
       '8',
     ])
@@ -163,7 +163,7 @@ describe('RESUME_REJECTED_RE', () => {
   it('matches the refuse shape this executor treats as "start fresh"', () => {
     expect(
       RESUME_REJECTED_RE.test(
-        'No saved session found with ID 857b4b7d-3d13-4281-a648-11947cf530ed. Run `qwen --resume` to list available sessions.',
+        'No saved session found with ID 00000000-0000-4000-8000-000000000049. Run `qwen --resume` to list available sessions.',
       ),
     ).toBe(true)
     expect(RESUME_REJECTED_RE.test('error: provider auth failed')).toBe(false)

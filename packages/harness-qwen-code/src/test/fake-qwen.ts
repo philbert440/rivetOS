@@ -91,7 +91,7 @@ export function makeFakeQwen(opts: FakeQwenOptions = {}): FakeQwen {
   fs.mkdirSync(cwd, { recursive: true })
 
   const binary = path.join(dir, 'qwen')
-  const sessionId = opts.sessionId ?? '857b4b7d-3d13-4281-a648-11947cf530ed'
+  const sessionId = opts.sessionId ?? '00000000-0000-4000-8000-000000000049'
   const stdout = (opts.raw ?? (opts.lines ?? []).map((l) => JSON.stringify(l))).join('\n')
   fs.writeFileSync(path.join(dir, 'stdout.txt'), stdout === '' ? '' : stdout + '\n')
 
@@ -139,7 +139,7 @@ export function makeFakeQwen(opts: FakeQwenOptions = {}): FakeQwen {
       cachedContentTokenCount += u.cachedContentTokenCount ?? u.cache_read_input_tokens ?? 0
     }
     const diskAssistant = {
-      uuid: '8acca8ca-ac64-47a4-a889-848e35724829',
+      uuid: '00000000-0000-4000-8000-000000000050',
       sessionId,
       timestamp: '2026-09-15T20:21:45.793Z',
       type: 'assistant',
@@ -254,7 +254,7 @@ export function successLines(
   if (head) {
     textDeltas.push({
       type: 'stream_event',
-      uuid: '6a05e9cf-d29b-4bc4-8d7a-a64b5f8a8185',
+      uuid: '00000000-0000-4000-8000-000000000051',
       session_id: sessionId,
       parent_tool_use_id: null,
       event: { type: 'content_block_delta', index: 0, delta: { type: 'text_delta', text: head } },
@@ -263,7 +263,7 @@ export function successLines(
   if (rest) {
     textDeltas.push({
       type: 'stream_event',
-      uuid: '0809a04e-49cc-4c3b-8366-dee2238f5369',
+      uuid: '00000000-0000-4000-8000-000000000052',
       session_id: sessionId,
       parent_tool_use_id: null,
       event: { type: 'content_block_delta', index: 0, delta: { type: 'text_delta', text: rest } },
@@ -284,13 +284,13 @@ export function successLines(
     },
     {
       type: 'stream_event',
-      uuid: 'dc8260a1-4daa-427f-a19a-bb92b5c45a3e',
+      uuid: '00000000-0000-4000-8000-000000000053',
       session_id: sessionId,
       parent_tool_use_id: null,
       event: {
         type: 'message_start',
         message: {
-          id: '91bd39e1-0da1-42c1-a67d-0a86cb6741d9',
+          id: '00000000-0000-4000-8000-000000000054',
           role: 'assistant',
           model: 'qwen-27b',
           content: [],
@@ -299,18 +299,18 @@ export function successLines(
     },
     {
       type: 'stream_event',
-      uuid: '8eab0e7f-9a9a-4275-945a-f332aea8ef2c',
+      uuid: '00000000-0000-4000-8000-000000000055',
       session_id: sessionId,
       parent_tool_use_id: null,
       event: { type: 'content_block_delta', index: 0, delta: { type: 'thinking_delta', thinking } },
     },
     {
       type: 'assistant',
-      uuid: '91bd39e1-0da1-42c1-a67d-0a86cb6741d9',
+      uuid: '00000000-0000-4000-8000-000000000054',
       session_id: sessionId,
       parent_tool_use_id: null,
       message: {
-        id: '91bd39e1-0da1-42c1-a67d-0a86cb6741d9',
+        id: '00000000-0000-4000-8000-000000000054',
         type: 'message',
         role: 'assistant',
         model: 'qwen-27b',
@@ -321,7 +321,7 @@ export function successLines(
     },
     {
       type: 'stream_event',
-      uuid: '16ba3b6a-df86-4583-93de-c9bc8043b529',
+      uuid: '00000000-0000-4000-8000-000000000056',
       session_id: sessionId,
       parent_tool_use_id: null,
       event: { type: 'content_block_start', index: 0, content_block: { type: 'text', text: '' } },
@@ -329,11 +329,11 @@ export function successLines(
     ...textDeltas,
     {
       type: 'assistant',
-      uuid: '1323af5d-03d7-4986-8936-f4aa04df7f05',
+      uuid: '00000000-0000-4000-8000-000000000057',
       session_id: sessionId,
       parent_tool_use_id: null,
       message: {
-        id: '1323af5d-03d7-4986-8936-f4aa04df7f05',
+        id: '00000000-0000-4000-8000-000000000057',
         type: 'message',
         role: 'assistant',
         model: 'qwen-27b',
@@ -345,7 +345,7 @@ export function successLines(
     {
       type: 'result',
       subtype: 'success',
-      uuid: 'ca5a15ad-638b-4be8-becd-a268b0d266bd',
+      uuid: '00000000-0000-4000-8000-000000000058',
       session_id: sessionId,
       is_error: false,
       duration_ms: 49029,
@@ -381,11 +381,11 @@ export function toolTurnLines(sessionId: string, finalText = 'tool-sample-ok'): 
     },
     {
       type: 'assistant',
-      uuid: 'd5634782-c4cc-4e28-8903-7d02485ec728',
+      uuid: '00000000-0000-4000-8000-000000000059',
       session_id: sessionId,
       parent_tool_use_id: null,
       message: {
-        id: 'd5634782-c4cc-4e28-8903-7d02485ec728',
+        id: '00000000-0000-4000-8000-000000000059',
         type: 'message',
         role: 'assistant',
         model: 'qwen-27b',
@@ -396,11 +396,11 @@ export function toolTurnLines(sessionId: string, finalText = 'tool-sample-ok'): 
     },
     {
       type: 'assistant',
-      uuid: 'ac4e1e91-b4e5-4a25-b238-35b8071f0dfa',
+      uuid: '00000000-0000-4000-8000-00000000005a',
       session_id: sessionId,
       parent_tool_use_id: null,
       message: {
-        id: 'ac4e1e91-b4e5-4a25-b238-35b8071f0dfa',
+        id: '00000000-0000-4000-8000-00000000005a',
         type: 'message',
         role: 'assistant',
         model: 'qwen-27b',
@@ -426,7 +426,7 @@ export function toolTurnLines(sessionId: string, finalText = 'tool-sample-ok'): 
     },
     {
       type: 'user',
-      uuid: 'f4b72359-349a-4ba5-b7e3-3cf0967cb8cf',
+      uuid: '00000000-0000-4000-8000-00000000005b',
       session_id: sessionId,
       parent_tool_use_id: null,
       message: {
@@ -443,7 +443,7 @@ export function toolTurnLines(sessionId: string, finalText = 'tool-sample-ok'): 
     },
     {
       type: 'stream_event',
-      uuid: '6a05e9cf-d29b-4bc4-8d7a-a64b5f8a8185',
+      uuid: '00000000-0000-4000-8000-000000000051',
       session_id: sessionId,
       parent_tool_use_id: null,
       event: {
@@ -454,11 +454,11 @@ export function toolTurnLines(sessionId: string, finalText = 'tool-sample-ok'): 
     },
     {
       type: 'assistant',
-      uuid: '384e2637-774e-45ed-991f-13f676f358db',
+      uuid: '00000000-0000-4000-8000-00000000005c',
       session_id: sessionId,
       parent_tool_use_id: null,
       message: {
-        id: '384e2637-774e-45ed-991f-13f676f358db',
+        id: '00000000-0000-4000-8000-00000000005c',
         type: 'message',
         role: 'assistant',
         model: 'qwen-27b',
@@ -475,7 +475,7 @@ export function toolTurnLines(sessionId: string, finalText = 'tool-sample-ok'): 
     {
       type: 'result',
       subtype: 'success',
-      uuid: 'dd4b16a8-a444-4005-aab4-674978f71d81',
+      uuid: '00000000-0000-4000-8000-00000000005d',
       session_id: sessionId,
       is_error: false,
       duration_ms: 48376,

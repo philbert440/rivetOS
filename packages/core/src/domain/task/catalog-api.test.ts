@@ -53,9 +53,9 @@ function node(
 
 async function start(): Promise<string> {
   return startWith([
-    node('ct115', ['claude']),
-    // ct112 advertises per-agent detail (#272); 'down' is offline
-    node('ct112', ['grok'], 'online', { grok: { provider: 'xai', model: 'grok-4-1' } }),
+    node('node-f', ['claude']),
+    // node-c advertises per-agent detail (#272); 'down' is offline
+    node('node-c', ['grok'], 'online', { grok: { provider: 'xai', model: 'grok-4-1' } }),
     node('down', ['x'], 'offline'),
   ])
 }
@@ -100,7 +100,7 @@ async function startWith(nodes: MeshNode[]): Promise<string> {
   } as unknown as MeshRegistry
 
   const route = createCatalogApiRoute({
-    nodeName: 'ct115',
+    nodeName: 'node-f',
     router,
     tools: () => [{ name: 'memory_search' } as never],
     executors,
@@ -136,15 +136,15 @@ describe('/api/catalog', () => {
       tools: string[]
       skills: Array<{ name: string }>
     }
-    expect(body.node).toBe('ct115')
+    expect(body.node).toBe('node-f')
     // local claude + remote grok; self + offline nodes excluded from remote
     expect(body.agents.map((a) => `${a.id}@${a.node}`).sort()).toEqual([
-      'claude@ct115',
-      'grok@ct112',
+      'claude@node-f',
+      'grok@node-c',
     ])
     // #272: the remote grok carries its advertised provider/model
     const grokDetail = body.agents.find((a) => a.id === 'grok')
-    expect(grokDetail).toMatchObject({ node: 'ct112', provider: 'xai', model: 'grok-4-1' })
+    expect(grokDetail).toMatchObject({ node: 'node-c', provider: 'xai', model: 'grok-4-1' })
     const harness = body.executors.find((e) => e.key === 'harness-session:claude-code')
     expect(harness?.commands).toEqual([{ name: '/compact', description: 'compact context' }])
     // harness-session entries carry the harness id + whether it is runnable
@@ -163,14 +163,14 @@ describe('/api/catalog', () => {
 
   it('remote agents without advertised detail stay bare (older peers)', async () => {
     const base = await startWith([
-      node('ct115', ['claude']),
-      node('ct112', ['grok']), // no agentDetails
+      node('node-f', ['claude']),
+      node('node-c', ['grok']), // no agentDetails
     ])
     const body = (await (await fetch(`${base}/api/catalog/agents`)).json()) as {
       agents: Array<{ id: string; node: string; provider?: string; model?: string }>
     }
     const grok = body.agents.find((a) => a.id === 'grok')
-    expect(grok).toEqual({ id: 'grok', node: 'ct112', local: false })
+    expect(grok).toEqual({ id: 'grok', node: 'node-c', local: false })
     expect(grok?.provider).toBeUndefined()
   })
 
@@ -189,7 +189,7 @@ describe('/api/catalog', () => {
       {
         id: 'preset-1',
         name: 'reviewer',
-        node: 'ct116',
+        node: 'node-g',
         local: false,
         harnessId: 'claude-code' as const,
         directory: '/home/rivet/.rivetos/agents/reviewer',
@@ -205,7 +205,7 @@ describe('/api/catalog', () => {
     const executors = createExecutorRegistry()
     const router = { getAgents: () => [] } as unknown as Router
     const route = createCatalogApiRoute({
-      nodeName: 'ct115',
+      nodeName: 'node-f',
       router,
       tools: () => [],
       executors,
@@ -225,7 +225,7 @@ describe('/api/catalog', () => {
         kind: 'preset',
         id: 'preset-1',
         name: 'reviewer',
-        node: 'ct116',
+        node: 'node-g',
         local: false,
         harnessId: 'claude-code',
         directory: '/home/rivet/.rivetos/agents/reviewer',

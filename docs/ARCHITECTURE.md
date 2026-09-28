@@ -138,10 +138,10 @@ RivetHub (web + Electron desktop) and Android are **remote faces of the node**. 
 Contract types live in `@rivetos/types` (`harness.ts`, `harness-session-id.ts`).
 Implementations live under `services/den-server/src/harness/`. Claude (`claude-code`)
 is the **reference** PTY driver; grok-build matches it on `PtyHarnessDriver`.
-kimi-code, hermes, opencode, and Codex PTY are **adopting** (no pin flag); pi and qwen-code pin via `--session-id`.
+kimi-code, hermes, opencode, Codex PTY, and cursor are **adopting** (no pin flag); pi and qwen-code pin via `--session-id`.
 Codex also has `CodexProtocolDriver` (app-server RPC).
 
-opencode and pi landed 2026-09-11 (#757/#758); qwen-code is the eighth harness; deepseek-harness was removed (#764).
+opencode and pi landed 2026-09-11 (#757/#758); qwen-code is the eighth harness; cursor is the ninth; deepseek-harness was removed (#764).
 
 | HarnessId     | Driver                                                     | Transcript store                                            | startSession                  | Approvals                                   | liveStream                          | Models / efforts                                                     |
 | ------------- | ---------------------------------------------------------- | ----------------------------------------------------------- | ----------------------------- | ------------------------------------------- | ----------------------------------- | -------------------------------------------------------------------- |
@@ -153,6 +153,7 @@ opencode and pi landed 2026-09-11 (#757/#758); qwen-code is the eighth harness; 
 | `opencode`    | `OpencodeDriver` (adopting)                                | `~/.local/share/opencode/opencode.db` (SQLite, WAL-watched) | **unsupported** (no pin flag) | false (opencode's own TUI prompts)          | yes                                 | `~/.config/opencode/opencode.json` / `--variant` low,med,high,max    |
 | `pi`          | `PiDriver` (PTY)                                           | `~/.pi/agent/sessions/<cwd>/<ts>_<uuid>.jsonl`              | yes (pins via `--session-id`) | false (pi's own TUI prompts)                | yes                                 | `~/.pi/agent/settings.json` / `--thinking` low..max                  |
 | `qwen-code`   | `QwenCodeDriver` (PTY)                                     | `~/.qwen/projects/<cwd>/chats/<uuid>.jsonl`                 | yes (pins via `--session-id`) | false                                       | yes                                 | `~/.qwen/settings.json` modelProviders / `-m`; effort per-model only |
+| `cursor`      | `CursorDriver` (adopting)                                  | `~/.cursor/projects/<slug>/agent-transcripts/<uuid>/<uuid>.jsonl` | **unsupported** (no pin flag) | false (`agent --force --trust`)            | yes                                 | `--model` exists; no catalog, so the picker stays empty     |
 
 ### Capability flags (as wired)
 
@@ -164,7 +165,7 @@ PTY + herdr + adapter sheet (`PtyHarnessDriver.capabilities`).
 | -------------- | ---------------------------------------------- | ---------------------------------------------------------------------------- |
 | `interrupt`    | true if terminals enabled and PTY is available | Esc via term manager inject; Codex RPC: true                                 |
 | `resume`       | true if terminals enabled and PTY is available | `--resume` / `--session` through spawn-or-get                                |
-| `approvals`    | PTY + herdr + adapter; not a constant false    | hermes/opencode/pi/qwen-code false; `claude-code` true when those gates pass |
+| `approvals`    | PTY + herdr + adapter; not a constant false    | hermes/opencode/pi/qwen-code/cursor false; `claude-code` true when those gates pass |
 | `liveStream`   | true if den event tap present                  | kimi stream is thinner (see above); pi and qwen-code tap-only                |
 | `listSessions` | true                                           | store scan                                                                   |
 
@@ -523,6 +524,7 @@ export const HARNESS_IDS = [
   'opencode',
   'pi',
   'qwen-code',
+  'cursor',
 ] as const
 export type HarnessId = (typeof HARNESS_IDS)[number]
 export type SessionId = `${HarnessId}:${string}`
@@ -777,7 +779,7 @@ like pi.
 
 ## Tasks
 
-All eight ids in `HARNESS_IDS` have a **driver** on the control plane. That is
+All nine ids in `HARNESS_IDS` have a **driver** on the control plane. That is
 not the same as a **task executor**. `GET /api/catalog` exposes `harnessId` +
 `implemented` so UIs can offer a live session without offering a spawn-for-task
 trap.
@@ -794,6 +796,7 @@ The task engine's `harness-session` registry is keyed by the same harness ids.
 | `grok-build`  | yes    | Explicit rejecting executor (`capability_unsupported` + reason); ACP noted as future path                   |
 | `hermes`      | yes    | Explicit rejecting executor (cannot pin session for spawn-for-task)                                         |
 | `codex`       | yes    | Explicit rejecting executor (no `--session-id`; TUI adopt only)                                             |
+| `cursor`      | yes    | Explicit rejecting executor (no `--session-id`; `agent --resume` adopt only)                                |
 
 `GET /api/catalog` exposes `harnessId` + `implemented` so UIs grey traps.
 Env contract for real executors: `RIVETOS_TASK_ID` set, inherited

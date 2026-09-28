@@ -75,6 +75,12 @@ jobs:
       - name: Scan tracked files (private IPs / WG keys / .lan / denylist)
         run: node scripts/secret-scan.mjs --tracked
 
+      - name: Self-test the privacy scanner
+        run: node --test scripts/privacy-scan.test.mjs
+
+      - name: Scan tracked files (hashed UUID/email denylist + fixture markers)
+        run: node scripts/privacy-scan.mjs --tracked
+
       # PR prose is invisible to a file scan — a real leak (#361 leaked an
       # internal IP in the description) hides here. Scan title+body too.
       - name: Scan PR title + body
@@ -83,6 +89,13 @@ jobs:
           PR_TITLE: ${{ github.event.pull_request.title }}
           PR_BODY: ${{ github.event.pull_request.body }}
         run: printf '%s\n%s\n' "$PR_TITLE" "$PR_BODY" | node scripts/secret-scan.mjs --text
+
+      - name: Scan PR title + body (privacy denylist)
+        if: github.event_name == 'pull_request'
+        env:
+          PR_TITLE: ${{ github.event.pull_request.title }}
+          PR_BODY: ${{ github.event.pull_request.body }}
+        run: printf '%s\n%s\n' "$PR_TITLE" "$PR_BODY" | node scripts/privacy-scan.mjs --text
 
       - name: Check for API keys and tokens
         run: |
@@ -197,6 +210,12 @@ jobs:
     permissions:
       id-token: write
       contents: read
+    env:
+      NPM_TOKEN_PRESENT: ${{ secrets.NODE_AUTH_TOKEN != '' }}
+      # Job-level: when registry-url is set, setup-node writes an .npmrc with the
+      # ${NODE_AUTH_TOKEN} placeholder for EVERY later step, so `npm ci` and the
+      # build must see the real value too (grok review, PR #1015).
+      NODE_AUTH_TOKEN: ${{ secrets.NODE_AUTH_TOKEN }}
 
     steps:
       - uses: actions/checkout@v4
@@ -204,11 +223,9 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 24
-          # NO registry-url here: it writes an .npmrc auth line fed by
-          # setup-node's placeholder NODE_AUTH_TOKEN, and current npm sends
-          # that placeholder instead of doing the OIDC exchange → E404 on
-          # every publish. These packages use npm Trusted Publishing
-          # (id-token: write + --provenance); tokenless is the correct config.
+          # Configure registry auth only with a real token: setup-node's
+          # placeholder NODE_AUTH_TOKEN would otherwise block OIDC exchange.
+          registry-url: ${{ env.NPM_TOKEN_PRESENT == 'true' && 'https://registry.npmjs.org' || '' }}
           cache: npm
 
       - name: Restore Nx cache
@@ -227,16 +244,17 @@ jobs:
         run: npx nx run-many -t build --all --parallel=5 --exclude container-rivetos,site
 
       - name: Publish changed packages
-        # Publishing requires npm Trusted Publishing to be configured on
-        # npmjs.com for every package below (registry-side, owner-only).
-        # Until then, attempting to publish fails ENEEDAUTH and reddens every
-        # main run while masking real regressions and skipping Notify Deploy.
-        # The gate is EXPLICIT and LOUD, never silent: flip it with
+        # An owner-minted NODE_AUTH_TOKEN enables automation-token publishing
+        # and bootstraps first publishes for packages not yet on npm.
+        # Without a token, use OIDC + provenance. Trusted Publishing remains
+        # the long-term target and requires registry-side, owner-only setup
+        # for every package below. Enable that path with
         #   gh variable set NPM_TRUSTED_PUBLISHING_READY --body true
-        # once the trusted publishers exist. Do not remove the gate in favor
-        # of tolerating publish errors — a red publish must mean a real
-        # publish failure.
+        # once the trusted publishers exist. With neither path ready, the
+        # gate stays EXPLICIT and LOUD. Do not tolerate publish errors — a
+        # red publish must mean a real publish failure.
         env:
+          NODE_AUTH_TOKEN: ${{ secrets.NODE_AUTH_TOKEN }}
           NPM_TRUSTED_PUBLISHING_READY: ${{ vars.NPM_TRUSTED_PUBLISHING_READY }}
         run: |
           set -euo pipefail
@@ -247,6 +265,8 @@ jobs:
             packages/den-protocol
             packages/wiki-core
             packages/types
+            packages/gateway-client
+            packages/capture-core
             packages/agent-registry
             packages/harness-kimi-code
             packages/harness-opencode
@@ -292,10 +312,18 @@ jobs:
             echo "::warning title=npm publish BLOCKED::$PKG_NAME ($pkg_dir) is not publishable: @rivetos/boot depends on private @rivetos/den-server — owner decision pending"
           done
 
-          if [[ "${NPM_TRUSTED_PUBLISHING_READY:-}" != "true" ]]; then
+          if [[ "${NPM_TOKEN_PRESENT:-}" != "true" && "${NPM_TRUSTED_PUBLISHING_READY:-}" != "true" ]]; then
             echo "::warning title=npm publish SKIPPED::NPM_TRUSTED_PUBLISHING_READY is not 'true' — packages are NOT being published. Configure npm Trusted Publishing for the @rivetos packages (repo philbert440/rivetOS, workflow pipeline.yml), then: gh variable set NPM_TRUSTED_PUBLISHING_READY --body true"
             echo "⚠️  npm publish gated off — registry-side Trusted Publishing not configured yet."
             exit 0
+          fi
+
+          if [[ "${NPM_TOKEN_PRESENT:-}" == "true" ]]; then
+            NPMRC=$(mktemp "${RUNNER_TEMP}/publish-XXXXXX.npmrc")
+            trap 'rm -f "$NPMRC"' EXIT
+            chmod 600 "$NPMRC"
+            printf '%s\n' '//registry.npmjs.org/:_authToken=${NODE_AUTH_TOKEN}' > "$NPMRC"
+            export NPM_CONFIG_USERCONFIG="$NPMRC"
           fi
 
           TAG="beta"
@@ -333,7 +361,11 @@ jobs:
             fi
 
             echo "📦 Publishing $PKG_NAME@$PKG_VERSION (tag: $TAG)..."
-            (cd "$pkg_dir" && npm publish --tag "$TAG" --access public --provenance)
+            if [[ "${NPM_TOKEN_PRESENT:-}" == "true" ]]; then
+              (cd "$pkg_dir" && npm publish --tag "$TAG" --access public)
+            else
+              (cd "$pkg_dir" && npm publish --tag "$TAG" --access public --provenance)
+            fi
             ((++PUBLISHED))
           done
 

@@ -55,6 +55,7 @@ export const DEFAULT_ROSTER_COMMANDS: Record<
   opencode: { label: 'OpenCode', cmd: ['opencode'], room: true },
   pi: { label: 'Pi', cmd: ['pi'], room: true },
   qwen: { label: 'Qwen Code', cmd: ['qwen', '--approval-mode', 'yolo'], room: true },
+  cursor: { label: 'Cursor', cmd: ['agent', '--force', '--trust'], room: true },
   shell: { label: 'Shell', cmd: ['bash', '-l'], room: false },
 }
 
@@ -142,6 +143,7 @@ const SETUP_SCRIPTS: Partial<Record<HarnessId, string>> = {
     'bin',
     'setup-qwen-rivet-memory.sh',
   ),
+  cursor: join('integrations', 'cursor', 'rivet-memory', 'bin', 'setup-cursor-rivet-memory.sh'),
 }
 
 export function parseInstallArgs(args: string[]): ParsedInstallArgs {
@@ -314,6 +316,8 @@ function stepsFor(h: DetectedHarness, root: string): string[] {
         `run ${SETUP_SCRIPTS['qwen-code']} --apply`,
         'install qwen extension (hooks + MCP + skills)',
       ]
+    case 'cursor':
+      return [`run ${SETUP_SCRIPTS.cursor} --apply`, 'install Cursor hooks + MCP']
   }
 }
 
@@ -1342,6 +1346,7 @@ export async function runPluginsInstall(
         case 'codex':
         case 'pi':
         case 'qwen-code':
+        case 'cursor':
           result = await runSetupScript(
             h.id,
             h,

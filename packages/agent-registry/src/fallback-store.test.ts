@@ -375,7 +375,7 @@ describe('createFallbackPresetStore', () => {
         importDone = importLegacyAgentsJson({
           file,
           store: primary,
-          node: 'ct115',
+          node: 'node-f',
           directoryRoot: '/home/agents',
         }).then(() => undefined)
       })
@@ -385,7 +385,7 @@ describe('createFallbackPresetStore', () => {
 
       const creating = store.create({
         name: 'Late',
-        node: 'ct115',
+        node: 'node-f',
         directory: '/tmp/late-agent',
       })
       await entered

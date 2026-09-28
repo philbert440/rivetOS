@@ -1,7 +1,11 @@
 import { describe, it, expect, afterEach, vi } from 'vitest'
+import pg from 'pg'
+import { PostgresMemory, RoutingMemory } from '@rivetos/memory-postgres'
 import type { Runtime } from '@rivetos/core'
 import type { RivetConfig } from '../config.js'
 import {
+  createApiMemoryLookup,
+  memoryHttpTools,
   makeWikiFor,
   memoryApiEmbedFromEnv,
   registerAgentTools,
@@ -116,17 +120,19 @@ const meshCapture = vi.hoisted(() => {
 })
 
 const pgMocks = vi.hoisted(() => {
+  const constructed = vi.fn()
   class Pool {
     static instances: Pool[] = []
     options: { connectionString?: string; max?: number }
     end = vi.fn(async () => undefined)
     query = vi.fn(async () => ({ rows: [] }))
     constructor(options: { connectionString?: string; max?: number }) {
+      constructed(options)
       this.options = options
       Pool.instances.push(this)
     }
   }
-  return { Pool }
+  return { Pool, constructed }
 })
 
 vi.mock('@rivetos/core', async (importOriginal) => {
@@ -374,9 +380,9 @@ describe('registerAgentTools shared pool wiring', () => {
   it('registers a whitespace-padded mesh.node_name trimmed', async () => {
     vi.stubEnv('HOSTNAME', 'from-host')
     const { runtime } = stubRuntime({})
-    await registerAgentTools(runtime, meshConfig('  ct115  '), '/tmp')
-    expect(coreMocks.nodeNames).toEqual(['ct115'])
-    expect(coreMocks.started).toEqual([{ id: 'ct115', name: 'ct115' }])
+    await registerAgentTools(runtime, meshConfig('  node-f  '), '/tmp')
+    expect(coreMocks.nodeNames).toEqual(['node-f'])
+    expect(coreMocks.started).toEqual([{ id: 'node-f', name: 'node-f' }])
   })
 
   it('registers HOSTNAME when mesh.node_name is absent', async () => {
@@ -397,7 +403,7 @@ describe('registerAgentTools shared pool wiring', () => {
       runtime,
       {
         ...config(),
-        mesh: { enabled: true, tls: true, node_name: 'ct115' },
+        mesh: { enabled: true, tls: true, node_name: 'node-f' },
       },
       '/tmp',
     )
@@ -442,4 +448,57 @@ describe('registerAgentTools shared pool wiring', () => {
     expect(hostPool.query).not.toHaveBeenCalled()
     for (const hook of hooks) await hook()
   })
+})
+
+describe('memory API pool-to-tools composition', () => {
+  it.each(['postgres', 'routing', 'unset'] as const)(
+    'reuses or caches adapters with %s registered and never constructs a pool',
+    (kind) => {
+      const ownerPool = { query: vi.fn() } as unknown as pg.Pool
+      const userPool = { query: vi.fn() } as unknown as pg.Pool
+      pgMocks.constructed.mockClear()
+      const poolConstructor = vi.spyOn(pg, 'Pool')
+      try {
+        const owner = new PostgresMemory({ connectionString: '', pool: ownerPool })
+        const registered =
+          kind === 'postgres'
+            ? owner
+            : kind === 'routing'
+              ? new RoutingMemory(owner, new Map())
+              : undefined
+        const lookup = createApiMemoryLookup({ ownerPool, registered, pgUrl: undefined, embed: {} })
+        const ownerMemory = lookup(ownerPool)
+        expect(ownerMemory).toBeInstanceOf(PostgresMemory)
+        if (kind === 'postgres') expect(ownerMemory).toBe(owner)
+        else expect(ownerMemory).not.toBe(owner)
+        expect(ownerMemory.getPool()).toBe(ownerPool)
+        expect(lookup(ownerPool)).toBe(ownerMemory)
+        const userMemory = lookup(userPool)
+        expect(userMemory).not.toBe(ownerMemory)
+        expect(userMemory.getPool()).toBe(userPool)
+        expect(lookup(userPool)).toBe(userMemory)
+        for (const [memory, pool] of [
+          [ownerMemory, ownerPool],
+          [userMemory, userPool],
+        ] as const) {
+          const names = memoryHttpTools(memory, pool).map((tool) => tool.name)
+          expect(names.sort()).toEqual(
+            [
+              'memory_search',
+              'memory_browse',
+              'memory_stats',
+              'memory_get_full',
+              'memory_append',
+              'memory_ingest_session',
+            ].sort(),
+          )
+          expect(new Set(names).size).toBe(6)
+        }
+        expect(poolConstructor).not.toHaveBeenCalled()
+        expect(pgMocks.constructed).not.toHaveBeenCalled()
+      } finally {
+        poolConstructor.mockRestore()
+      }
+    },
+  )
 })

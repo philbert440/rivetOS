@@ -147,7 +147,7 @@ describe('DelegationEngine', () => {
         find: async () => undefined,
         delegate: async () => ({ status: 'completed' as const, response: '' }),
         rosterText: () => '',
-        rosterEntries: () => [{ id: 'p', name: 'reviewer', node: 'ct116', local: false }],
+        rosterEntries: () => [{ id: 'p', name: 'reviewer', node: 'node-g', local: false }],
       }
       const engine = new DelegationEngine({
         ...createBaseConfig(),
@@ -168,10 +168,10 @@ describe('DelegationEngine', () => {
       const presets = {
         find: async (handle: string) =>
           handle === 'reviewer'
-            ? { id: 'p1', name: 'reviewer', node: 'ct116', harnessId: 'codex' }
+            ? { id: 'p1', name: 'reviewer', node: 'node-g', harnessId: 'codex' }
             : undefined,
         delegate,
-        rosterText: () => '- reviewer (agent: codex on ct116)',
+        rosterText: () => '- reviewer (agent: codex on node-g)',
         rosterEntries: () => [],
       }
       const engine = new DelegationEngine({

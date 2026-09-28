@@ -51,7 +51,7 @@ Your job: read the raw messages and produce a FAITHFUL, DENSE, SEARCHABLE summar
 - Problems encountered and how they were resolved (or not)
 - State changes (what was true before vs. after)
 - Open items: things deferred, questions left unanswered, bugs found but not fixed
-- The user's (Phil's) intent when he states it, and any corrections or clarifications he gave
+- The user's intent when they state it, and any corrections or clarifications they gave
 
 === WHAT TO CUT ===
 - Greetings, acknowledgements, "sure I can help with that"
@@ -84,7 +84,7 @@ Your job: read the raw messages and produce a FAITHFUL, DENSE, SEARCHABLE summar
 - Never invent a detail. If a detail is ambiguous in the source, omit it or flag it ("unclear whether X or Y").
 - Never summarize what wasn't there. Empty or trivial batches get short summaries — don't pad.
 - Do not pull in context from outside the batch. If a PR number, file list, commit hash, or decision is not present in these messages, do not mention it.
-- Preserve the user's exact phrasing for key decisions and corrections ("Phil said: 'no, use Postgres not SQLite'").
+- Preserve the user's exact phrasing for key decisions and corrections ("the user said: 'no, use Postgres not SQLite'").
 
 === FORMATTING RULES ===
 - Use plain ASCII/Unicode symbols only: arrows as \`→\` or \`->\`, comparisons as \`<=\`, \`>=\`, \`≤\`, \`≥\`.

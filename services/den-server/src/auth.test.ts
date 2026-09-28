@@ -43,7 +43,7 @@ describe('parseCertSubject / isDeviceClientCert', () => {
   it('rejects mesh node leaves', () => {
     expect(
       isDeviceClientCert({
-        subject: { CN: 'ct112.mesh' },
+        subject: { CN: 'node-c.mesh' },
       } as PeerCertificate),
     ).toBe(false)
   })
@@ -108,7 +108,7 @@ describe('isGatewayAuthorized', () => {
       isGatewayAuthorized(
         fakeReq('192.0.2.50', {
           authorized: true,
-          subject: { CN: 'ct112.mesh' },
+          subject: { CN: 'node-c.mesh' },
         }),
         { tlsConfigured: true, requireClientCert: true },
       ),

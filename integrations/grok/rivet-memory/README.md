@@ -200,8 +200,19 @@ This makes the full rivet-memory experience (including capture) available for an
 - Hermes sibling: `../hermes/rivet-memory/`
 - Grok Bot sibling (Cursor agents, `source=grokbot`): `../grok-bot/rivet-memory/`
 - Core memory design: `/docs/MEMORY-DESIGN.md`
-- The 2026-05-23 WAP-DHCP incident is the canonical case study for why this discipline exists.
+- See the memory-recall skill's made-up morning-window example for why browse-first exists.
 
 ---
 
 Pull requests that improve capture robustness, add high-value skills, or help with Grok hook integration are very welcome.
+
+## Transport
+
+Capture posts batches to this node's den (`POST /api/capture`) by default.
+`RIVETOS_CAPTURE_TRANSPORT=den|pg` forces one or the other; `pg` stays for one
+release. When the den is down the batch is spooled under
+`~/.rivetos/capture-spool` and replayed on the next write. A non-empty
+`RIVETOS_USER_ID` stays on Postgres, because loopback den is the owner pool.
+The launcher calls `rivetos_resolve_den` so Node trusts the den CA.
+
+Sessions with rows captured by the pg path before the switch get a second copy of their history on the first den ingest (the server dedupes on the new `grok-build:<sid>:<ordinal>` ids); later ingests are clean.
