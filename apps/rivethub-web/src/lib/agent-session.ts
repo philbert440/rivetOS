@@ -4,13 +4,20 @@
  * Storage shape stays the per-(agent, node) map so a stale tab that still
  * writes the pre-#570 `{sessionId, nodeBaseUrl}` row cannot ping-pong with
  * `isLegacyRow`. The product rule is one slot: `setAgentLastSession` is
- * set-once unless `{ replace: true }` (↺ / claimed-session 404).
+ * set-once unless `{ replace: true }` (`+ new` with the agent selected /
+ * claimed-session 404).
  *
- * Reverse bind: `rivethub.agent.<sessionId>` → agentId.
+ * Reverse bind: `rivethub.agent.<sessionId>` → agentId, for the PINNED
+ * session only (dropped when the pin moves).
+ *
+ * Ownership tag: `rivethub.agent.of.<sessionId>` → agentId, for EVERY session
+ * an agent ever opened. Never dropped on re-pin, so an agent's older
+ * sessions stay findable (the conversations filter reads it).
  */
 
 const LAST_KEY = 'rivethub.agent.lastSession'
 const BIND_PREFIX = 'rivethub.agent.'
+const OWNER_PREFIX = 'rivethub.agent.of.'
 
 export interface AgentSessionPointer {
   sessionId: string
@@ -119,6 +126,7 @@ function dropBind(sessionId: string | undefined): void {
 function bind(sessionId: string, agentId: string): void {
   try {
     localStorage.setItem(`${BIND_PREFIX}${sessionId}`, agentId)
+    localStorage.setItem(`${OWNER_PREFIX}${sessionId}`, agentId)
   } catch {
     /* storage full / disabled */
   }
@@ -186,6 +194,22 @@ export function collapseAgentSlots(
     clearAgentSessionPointer(agentId, p.nodeBaseUrl, p.sessionId)
   }
   return keep
+}
+
+/**
+ * The agent that opened this session, pinned or not. Falls back to the pin
+ * bind so sessions pinned before the ownership tag existed still resolve.
+ */
+export function agentOwningSession(sessionId: string): string | undefined {
+  try {
+    return (
+      localStorage.getItem(`${OWNER_PREFIX}${sessionId}`) ??
+      localStorage.getItem(`${BIND_PREFIX}${sessionId}`) ??
+      undefined
+    )
+  } catch {
+    return undefined
+  }
 }
 
 export function agentForSession(sessionId: string): string | undefined {
@@ -259,13 +283,30 @@ export function rekeyAgentLastSessions(fromSessionId: string, toSessionId: strin
   }
   if (changed) writeMap(map)
   try {
-    const agentId = localStorage.getItem(`${BIND_PREFIX}${fromSessionId}`)
-    if (agentId) {
-      localStorage.setItem(`${BIND_PREFIX}${toSessionId}`, agentId)
-      localStorage.removeItem(`${BIND_PREFIX}${fromSessionId}`)
+    for (const prefix of [BIND_PREFIX, OWNER_PREFIX]) {
+      const agentId = localStorage.getItem(`${prefix}${fromSessionId}`)
+      if (agentId) {
+        localStorage.setItem(`${prefix}${toSessionId}`, agentId)
+        localStorage.removeItem(`${prefix}${fromSessionId}`)
+      }
     }
   } catch {
     /* storage full / disabled */
   }
   if (!changed) bump()
+}
+
+/**
+ * Does this conversation row belong to the agent? The ownership tag is filed
+ * under the id the session was opened with; a claimed row's key is the
+ * canonical `<harness>:<native>`, so the native half is checked too.
+ */
+export function rowOwnedByAgent(
+  rowKey: string,
+  agentId: string,
+  nativeOf: (key: string) => string | undefined,
+): boolean {
+  if (agentOwningSession(rowKey) === agentId) return true
+  const native = nativeOf(rowKey)
+  return native !== undefined && native !== rowKey && agentOwningSession(native) === agentId
 }

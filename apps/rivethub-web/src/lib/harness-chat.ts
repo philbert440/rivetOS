@@ -84,7 +84,8 @@ export interface ChatItem {
   accent?: string
   /** Agent-pin rows: the session's node, for name/archive keys. */
   pinNodeBaseUrl?: string
-  /** Agent-pin rows: hide discard; ↺ on the rail is the replace. */
+  /** Agent-pin rows: hide discard; the pane's `+ new` with the agent
+   *  selected is the replace. */
   pin?: boolean
 }
 

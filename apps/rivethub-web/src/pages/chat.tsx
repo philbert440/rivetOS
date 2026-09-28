@@ -64,6 +64,7 @@ import {
   listAgentSessions,
   listAllAgentPins,
   rekeyAgentLastSessions,
+  rowOwnedByAgent,
   subscribeAgentSessions,
   getAgentSessionsVersion,
 } from '../lib/agent-session.js'
@@ -128,11 +129,12 @@ import {
   DRAWER_WIDTH_MIN,
   SplitHandle,
 } from '../components/split-handle.js'
-import { Archive, ArchiveRestore, History, Menu, Pencil, Square, Trash2 } from 'lucide-react'
+import { Archive, ArchiveRestore, History, Menu, Pencil, Square, Trash2, X } from 'lucide-react'
 import { Button } from '../components/ui/button.js'
 import { useSessionNames } from '../stores/session-names.js'
 import { useArchived } from '../stores/archived.js'
 import { useSidebarPrefs } from '../stores/sidebar-prefs.js'
+import { useAgentFilter } from '../stores/agent-filter.js'
 import { discardDraft } from '../lib/discard-session.js'
 import { shouldCloseHistoryOnSelect } from '../lib/drawer-selection.js'
 import { narrowLaunchTarget } from '../lib/launch-session.js'
@@ -848,16 +850,22 @@ function SessionDrawer(props: {
   const [showArchived, setShowArchived] = useState(false)
   const [filter, setFilter] = useState('')
   const narrow = useIsNarrow()
+  // Picking an agent in the rail narrows the list to its sessions; `+ new`
+  // then starts one with that agent (see stores/agent-filter).
+  const agentFilter = useAgentFilter()
 
   const itemBase = (it: ChatItem): string => it.pinNodeBaseUrl ?? baseUrl
   const isArchived = (it: ChatItem): boolean =>
     archivedKeys.includes(storageKey(itemBase(it), it.key))
-  const archivedCount = props.items.reduce((n, it) => n + (isArchived(it) ? 1 : 0), 0)
 
   // Filter on what the user actually SEES: custom name first, then the
   // derived title, then the raw id (so pasting a session uuid works too).
   const q = filter.trim().toLowerCase()
-  const items = props.items.filter((it) => {
+  const agentId = agentFilter.agentId
+  const agentItems = agentId
+    ? props.items.filter((it) => rowOwnedByAgent(it.key, agentId, nativeIdOf))
+    : props.items
+  const items = agentItems.filter((it) => {
     // The active thread always stays listed — hiding the row under the
     // user's feet would strand the open conversation.
     if (!showArchived && isArchived(it) && it.key !== props.active) return false
@@ -875,6 +883,21 @@ function SessionDrawer(props: {
     setActive(key)
     // Narrow right history drawer: picking a row switches the session and
     // closes the drawer (Phil 2026-09-03). No-op anywhere else.
+    if (shouldCloseHistoryOnSelect(narrow)) {
+      useSidebarPrefs.getState().setHistoryOpen(false)
+    }
+  }
+
+  const archivedCount = agentItems.reduce((n, it) => n + (isArchived(it) ? 1 : 0), 0)
+
+  const startNew = (): void => {
+    if (agentFilter.startNew) {
+      agentFilter.startNew()
+    } else {
+      const id = newSessionId()
+      addDraft(id)
+      setActive(id)
+    }
     if (shouldCloseHistoryOnSelect(narrow)) {
       useSidebarPrefs.getState().setHistoryOpen(false)
     }
@@ -908,23 +931,37 @@ function SessionDrawer(props: {
           <span className={wsStatus === 'open' ? 'text-em' : 'text-red'}>
             {wsStatus === 'open' ? '●' : '○'}
           </span>{' '}
-          ({props.items.length - archivedCount})
+          ({agentItems.length - archivedCount})
         </span>
         <button
-          onClick={() => {
-            const id = newSessionId()
-            addDraft(id)
-            setActive(id)
-            if (shouldCloseHistoryOnSelect(narrow)) {
-              useSidebarPrefs.getState().setHistoryOpen(false)
-            }
-          }}
+          onClick={startNew}
+          title={agentFilter.name ? `new session with ${agentFilter.name}` : 'new session'}
           className="rounded border border-line px-2 py-1 text-xs text-ink-dim hover:border-em hover:text-em"
         >
           + new
         </button>
       </div>
-      {(props.items.length >= DRAWER_FILTER_MIN || q) && (
+      {agentFilter.agentId && (
+        <div className="px-3 pb-2">
+          <span className="inline-flex max-w-full items-center gap-1.5 border border-line bg-panel px-2 py-0.5 font-mono text-[11px] text-ink">
+            <span
+              className="size-2 shrink-0"
+              style={{ background: agentFilter.accent }}
+              aria-hidden
+            />
+            <span className="min-w-0 truncate">{agentFilter.name}</span>
+            <button
+              onClick={() => agentFilter.clear()}
+              aria-label="show all conversations"
+              title="show all conversations"
+              className="shrink-0 text-ink-dim hover:text-em"
+            >
+              <X className="size-3" />
+            </button>
+          </span>
+        </div>
+      )}
+      {(agentItems.length >= DRAWER_FILTER_MIN || q) && (
         <div className="px-3 pb-2">
           <input
             value={filter}
@@ -945,8 +982,12 @@ function SessionDrawer(props: {
           {items.length === 0 && !q && archivedCount > 0 && (
             <div className="px-3 py-2 text-xs text-ink-dim">everything is archived</div>
           )}
-          {props.items.length === 0 && !props.error && (
-            <div className="px-3 py-2 text-xs text-ink-dim">no conversations yet</div>
+          {agentItems.length === 0 && !props.error && (
+            <div className="px-3 py-2 text-xs text-ink-dim">
+              {agentFilter.name
+                ? `no conversations with ${agentFilter.name} yet — + new starts one`
+                : 'no conversations yet'}
+            </div>
           )}
         </div>
         {archivedCount > 0 && (

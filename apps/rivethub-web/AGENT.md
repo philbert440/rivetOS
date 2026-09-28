@@ -25,7 +25,7 @@ a focused xterm still sees neither the key nor a stray Tab:
   `handleOpen`'s async liveness probe means `currentAgentId` lags a key press.
   Auto-repeat is ignored (the terminal must not see a held Tab). The cursor
   advances on every press; `open()` is debounced 250 ms so only the final
-  target mounts. The sequence is taken at the keypress, so a newer click or ↺
+  target mounts. The sequence is taken at the keypress, so a newer click or `+ new`
   cancels a queued keyboard open and a keypress cancels older in-flight
   probes. Chrome and Firefox both reserve Ctrl+Tab / Ctrl+Shift+Tab
   in a plain browser tab and the page cannot claim them, so agent cycling is an
@@ -205,6 +205,15 @@ Redesign "A · Tiled" (mockups in `docs/mockups/rivethub-redesign/`).
   the rail foot always names the current node (`NodeSwitcher`, a plain label
   when there is nothing to switch to).
   Fixed overlays position via `--hub-rail` / `--hub-top` / `--hub-inset`.
+- **Agents and the conversations pane:** clicking an agent (or Ctrl+Tab to
+  it) opens its pinned session AND narrows the pane to that agent's sessions
+  (`stores/agent-filter.ts`, chip with ✕ to clear, not persisted). With an
+  agent selected the pane's `+ new` starts a fresh session with it and
+  re-pins; there is no separate start-over button. Membership comes from the
+  ownership tag `rivethub.agent.of.<sessionId>` (`agentOwningSession`), which
+  unlike the pin bind survives a re-pin. It lives in this client's storage,
+  so sessions opened on another device or before the tag existed show only
+  in the unfiltered list.
 - **Context details:** the chat header's `ContextBar` is a Popover trigger on
   desktop (`withDetails`) — context numbers, harness/model/node and the
   unread count. There is no permanent right-hand column.
