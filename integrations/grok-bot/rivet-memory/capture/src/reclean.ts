@@ -195,7 +195,7 @@ export function recleanContentOnly(content: string): {
 }
 
 export const FROM_ROWS_LIMITS = [
-  '--from-rows / PG write <session>${SUFFIX}-rows (not the live suffix): stored-row positions do not match source-transcript positions.',
+  '--from-rows / PG write <session>-vN-rows (not the live suffix): stored-row positions do not match source-transcript positions.',
   'Already row-shaped sessions and capture-shaped rows are refused.',
   '--from-rows cannot restore tool results: the old converter ignored `result`, so stored tool rows have empty tool_result.',
   'Assistant rows keep the legacy [tool X] / [thinking] text.',

@@ -182,7 +182,11 @@ function rememberHash(byHash: Map<string, number[]>, hash: string, idx: number):
 }
 
 export function clampCreatedAt(clock: TimeClock, candidate?: string): string | undefined {
-  if (!candidate) return undefined
+  if (!candidate) {
+    clock.lastOriginal = undefined
+    clock.lastAdjustmentMs = 0
+    return undefined
+  }
   const t = Date.parse(candidate)
   if (Number.isNaN(t)) {
     clock.lastOriginal = undefined
@@ -217,6 +221,7 @@ export function normalizeRecords(records: unknown[], opts: NormalizeOptions): No
   const start = opts.startPosition ?? 0
   const positions = records.map((_, i) => opts.positions?.[i] ?? start + i)
   const maxPosition = positions.length ? Math.max(...positions) : start
+  const minPosition = positions.length ? Math.min(...positions) : start
   const explicits = records.map((rec) => {
     const rawRole = recordRole(rec)
     const parts = recordParts(rec)
@@ -282,6 +287,8 @@ export function normalizeRecords(records: unknown[], opts: NormalizeOptions): No
       earlier,
       later: laterByIndex[i],
       fileMtimeMs: opts.fileMtimeMs,
+      fileBirthtimeMs: opts.fileBirthtimeMs,
+      minPosition,
       maxPosition,
     })
     const createdAt = derived.time
@@ -505,7 +512,7 @@ function emitAssistantParts(
         occKeys: ctx.occKeys,
         subByPos: ctx.subByPos,
         clock: ctx.clock,
-        extra: truncationExtra(part),
+        extra: toolResultExtra(part),
       })
       if (row.metadata?.truncated) truncated += 1
       rows.push(row)
@@ -588,7 +595,7 @@ function emitToolParts(
         occKeys: ctx.occKeys,
         subByPos: ctx.subByPos,
         clock: ctx.clock,
-        extra: truncationExtra(part),
+        extra: toolResultExtra(part),
       })
       if (row.metadata?.truncated) truncated += 1
       rows.push(row)
@@ -708,6 +715,13 @@ function toolArgsFromPart(part: Record<string, unknown>): unknown {
   return undefined
 }
 
+function toolUseIdFromPart(part: Record<string, unknown>): string | undefined {
+  if (typeof part.tool_use_id === 'string' && part.tool_use_id) return part.tool_use_id
+  if (typeof part.toolUseId === 'string' && part.toolUseId) return part.toolUseId
+  if (typeof part.id === 'string' && part.id) return part.id
+  return undefined
+}
+
 function truncationExtra(part: Record<string, unknown>): Record<string, unknown> | undefined {
   const extra: Record<string, unknown> = {}
   if (part.truncated === true) extra.truncated = true
@@ -717,6 +731,13 @@ function truncationExtra(part: Record<string, unknown>): Record<string, unknown>
   if (typeof part.full_arguments_length === 'number') {
     extra.full_arguments_length = part.full_arguments_length
   }
+  return Object.keys(extra).length > 0 ? extra : undefined
+}
+
+function toolResultExtra(part: Record<string, unknown>): Record<string, unknown> | undefined {
+  const extra = truncationExtra(part) ?? {}
+  const id = toolUseIdFromPart(part)
+  if (id) extra.tool_id = id
   return Object.keys(extra).length > 0 ? extra : undefined
 }
 

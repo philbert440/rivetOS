@@ -15,6 +15,7 @@ import {
   identityFor,
   identityForSession,
   listInputFiles,
+  peekParentLastKnownTime,
   resolveSourceAgentId,
 } from './identity.js'
 import { normalizeRecords, toIngestRows } from './normalize.js'
@@ -34,6 +35,7 @@ import {
   v3Session,
 } from './reclean.js'
 import { readStoreSince, v3StoreSession } from './store.js'
+import { sourceFileTimes } from './timestamps.js'
 import { SESSION_SUFFIX_V3, sessionStoreSuffix, sessionVoiceSuffix } from './types.js'
 import type { IngestRow, ParsedInput } from './types.js'
 import { parseVoiceCall, v3VoiceSession, voiceCallToRecords } from './voice.js'
@@ -151,6 +153,7 @@ function cmdConvert(argv: string[]): number {
     text,
     values.format === 'page' || values.format === 'ondisk' ? values.format : undefined,
   )
+  const srcPath = resolve(src)
   const result = normalizeRecords(parsed.records, {
     sessionKey: session,
     agent: ident.agent ?? 'rivet-grokbot',
@@ -158,8 +161,12 @@ function cmdConvert(argv: string[]): number {
     persona: ident.persona,
     format: parsed.format,
     startPosition: parsed.header?.a ?? 0,
-    fileMtimeMs: statSync(src).mtimeMs,
-    sourcePath: resolve(src),
+    ...sourceFileTimes(statSync(src)),
+    lastKnownTime: peekParentLastKnownTime({
+      sourcePath: srcPath,
+      records: parsed.records.slice(0, 8),
+    }),
+    sourcePath: srcPath,
     sourceLines: parsed.sourceLines,
   })
   mkdirSync(dirname(resolve(dst)), { recursive: true })
@@ -394,21 +401,17 @@ function cmdBackfill(argv: string[]): number {
   let n = 0
   let writeConflicts = false
   for (const bucket of buckets.values()) {
-    const fileMtimeMs = Math.max(
-      ...bucket.files.map((file) => {
-        try {
-          return statSync(file).mtimeMs
-        } catch {
-          return 0
-        }
-      }),
-    )
+    const times = sourceFileTimesFromPaths(bucket.files)
     const result = normalizePages(bucket.parsed, {
       sessionKey: bucket.session,
       agent: bucket.agent,
       agentId: bucket.id,
       persona: bucket.persona,
-      fileMtimeMs: Number.isFinite(fileMtimeMs) && fileMtimeMs > 0 ? fileMtimeMs : undefined,
+      ...times,
+      lastKnownTime: peekParentLastKnownTime({
+        sourcePath: bucket.files[0],
+        records: bucket.parsed[0]?.records.slice(0, 8),
+      }),
     })
     const dest = join(outDir, `${bucket.session}.jsonl`)
     const conflicts = result.conflicts ?? []
@@ -489,7 +492,10 @@ async function cmdReclean(argv: string[]): Promise<number> {
       agentId: ident.id,
       persona: ident.persona,
       dryRun: dry,
-      fileMtimeMs: statSync(values['from-transcript']).mtimeMs,
+      ...sourceFileTimes(statSync(values['from-transcript'])),
+      lastKnownTime: peekParentLastKnownTime({
+        sourcePath: resolve(values['from-transcript']),
+      }),
       sourcePath: resolve(values['from-transcript']),
       sessionSuffix: suffix,
     })
@@ -660,6 +666,29 @@ function resolveIdent(agentId?: string, session?: string, agent?: string) {
 }
 
 export { resolveIdent }
+
+function sourceFileTimesFromPaths(files: string[]): {
+  fileMtimeMs?: number
+  fileBirthtimeMs?: number
+} {
+  let mtime = 0
+  let birth: number | undefined
+  for (const file of files) {
+    try {
+      const t = sourceFileTimes(statSync(file))
+      if (t.fileMtimeMs) mtime = Math.max(mtime, t.fileMtimeMs)
+      if (t.fileBirthtimeMs !== undefined) {
+        birth = birth === undefined ? t.fileBirthtimeMs : Math.min(birth, t.fileBirthtimeMs)
+      }
+    } catch {
+      /* skip unreadable */
+    }
+  }
+  return {
+    fileMtimeMs: mtime > 0 ? mtime : undefined,
+    fileBirthtimeMs: birth !== undefined && (mtime <= 0 || birth < mtime) ? birth : undefined,
+  }
+}
 
 function fileDir(): string {
   return resolve(new URL('..', import.meta.url).pathname)

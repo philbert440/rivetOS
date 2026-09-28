@@ -792,6 +792,22 @@ describe('extractGrokbotFromLine', () => {
     const extracted = extractGrokbotFromLine(JSON.parse(line))
     expect(extracted?.toolResult).toBe(big)
 
+    const multi = {
+      role: 'tool',
+      message: {
+        content: [
+          { type: 'tool_result', name: 'shell', tool_use_id: 'call-a', result: 'first-out' },
+          { type: 'tool_result', name: 'read_file', tool_use_id: 'call-b', result: 'second-out' },
+        ],
+      },
+    }
+    expect(extractGrokbotFromLine(multi)?.toolResult).toBe('second-out')
+    expect(extractGrokbotFromLine(multi, { tool_id: 'call-a' })?.toolResult).toBe('first-out')
+    expect(extractGrokbotFromLine(multi, { tool_id: 'call-b' })?.toolResult).toBe('second-out')
+    expect(extractGrokbotFromLine(multi, { ordinal: 1000 })?.toolResult).toBe('first-out')
+    expect(extractGrokbotFromLine(multi, { ordinal: 1001 })?.toolResult).toBe('second-out')
+    expect(extractGrokbotFromLine(multi, { tool_name: 'shell' })?.toolResult).toBe('first-out')
+
     const dir = mkdtempSync(join(tmpdir(), 'gb-get-full-'))
     const file = join(dir, 'agent.jsonl')
     writeFileSync(file, `${line}\n`)

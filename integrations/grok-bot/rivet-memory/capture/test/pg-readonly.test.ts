@@ -83,5 +83,7 @@ describe('read-only rows source', () => {
     expect(groups).toHaveLength(2)
     expect(groups[0].conversation.conversation_id).not.toBe(groups[1].conversation.conversation_id)
     expect(FROM_ROWS_LIMITS).toMatch(/cannot restore tool results/)
+    expect(FROM_ROWS_LIMITS).toMatch(/<session>-vN-rows/)
+    expect(FROM_ROWS_LIMITS).not.toMatch(/\$\{SUFFIX\}/)
   })
 })

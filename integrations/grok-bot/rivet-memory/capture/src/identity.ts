@@ -1,6 +1,15 @@
-import { existsSync, readdirSync, readFileSync, statSync } from 'node:fs'
+import {
+  closeSync,
+  existsSync,
+  openSync,
+  readFileSync,
+  readdirSync,
+  readSync,
+  statSync,
+} from 'node:fs'
 import { homedir } from 'node:os'
-import { isAbsolute, join, resolve } from 'node:path'
+import { dirname, isAbsolute, join, resolve } from 'node:path'
+import { lastTimestampTagInText } from './timestamps.js'
 import {
   DEFAULT_NODE_ID,
   SESSION_SUFFIX_V3,
@@ -299,6 +308,96 @@ export function identityForSession(
     if (ident.session === session || ident.session === stripped) return ident
   }
   return undefined
+}
+
+const PARENT_ID_KEYS = [
+  'parentId',
+  'parent_id',
+  'parentSession',
+  'parent_session',
+  'parentSessionId',
+  'parent_session_id',
+]
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value)
+}
+
+/** Cheap parent UUID from a profile / first record (`parentId` and aliases). */
+export function parentSessionIdFromUnknown(raw: unknown): string | undefined {
+  if (!isRecord(raw)) return undefined
+  for (const key of PARENT_ID_KEYS) {
+    const v = raw[key]
+    if (typeof v !== 'string' || !v.trim()) continue
+    const m = UUID_RE.exec(v.trim())
+    if (m) return m[0]
+  }
+  return undefined
+}
+
+const PARENT_PEEK_BYTES = 32_768
+
+function peekLastTimestampInFile(file: string): string | undefined {
+  try {
+    const size = statSync(file).size
+    if (size <= 0) return undefined
+    const fd = openSync(file, 'r')
+    try {
+      const start = Math.max(0, size - PARENT_PEEK_BYTES)
+      const len = Math.min(PARENT_PEEK_BYTES, size - start)
+      const buf = Buffer.alloc(len)
+      readSync(fd, buf, 0, len, start)
+      const fromEnd = lastTimestampTagInText(buf.toString('utf8'))
+      if (fromEnd) return fromEnd
+      if (start === 0) return undefined
+      const head = Buffer.alloc(Math.min(PARENT_PEEK_BYTES, size))
+      readSync(fd, head, 0, head.length, 0)
+      return lastTimestampTagInText(head.toString('utf8'))
+    } finally {
+      closeSync(fd)
+    }
+  } catch {
+    return undefined
+  }
+}
+
+/**
+ * Inherit from a parent session when the child profile or first records
+ * carry a parent UUID and that parent's transcript has a cheap `<timestamp>`.
+ */
+export function peekParentLastKnownTime(opts: {
+  sourcePath?: string
+  records?: unknown[]
+  agentsDir?: string
+  transcriptsDir?: string
+}): string | undefined {
+  let parentId: string | undefined
+  for (const rec of opts.records ?? []) {
+    parentId = parentSessionIdFromUnknown(rec)
+    if (!parentId && isRecord(rec) && isRecord(rec.message)) {
+      parentId = parentSessionIdFromUnknown(rec.message)
+    }
+    if (parentId) break
+  }
+  const childId = opts.sourcePath ? agentIdFromTranscriptPath(opts.sourcePath) : undefined
+  if (!parentId && childId) {
+    const agentsDir = opts.agentsDir ?? defaultAgentsDir()
+    const profPath = join(agentsDir, childId, 'profile.json')
+    if (existsSync(profPath)) {
+      try {
+        parentId = parentSessionIdFromUnknown(JSON.parse(readFileSync(profPath, 'utf8')))
+      } catch {
+        /* ignore bad profile */
+      }
+    }
+  }
+  if (!parentId || parentId === childId) return undefined
+  const transcriptsDir =
+    opts.transcriptsDir ??
+    (opts.sourcePath ? dirname(dirname(opts.sourcePath)) : defaultTranscriptsDir())
+  const parentFile = join(transcriptsDir, parentId, `${parentId}.jsonl`)
+  if (!existsSync(parentFile)) return undefined
+  return peekLastTimestampInFile(parentFile)
 }
 
 export function applySessionSuffix(session: string, suffix?: string): string {

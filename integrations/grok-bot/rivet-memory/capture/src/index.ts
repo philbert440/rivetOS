@@ -22,6 +22,9 @@ export {
   extractToolResultTimestamp,
   recordExplicitTime,
   deriveCreatedAt,
+  sourceFileTimes,
+  usableBirthtimeMs,
+  lastTimestampTagInText,
 } from './timestamps.js'
 export {
   pointerMeta,
@@ -44,6 +47,8 @@ export {
   listInputFiles,
   applySessionSuffix,
   listUnmappedTranscripts,
+  peekParentLastKnownTime,
+  parentSessionIdFromUnknown,
 } from './identity.js'
 export {
   openStoreReadonly,

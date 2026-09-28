@@ -159,11 +159,43 @@ export function recordExplicitTime(
   return undefined
 }
 
-const EQUAL_SPAN_STEP_MS = 1
-
 export type DerivedTime = {
   time: string
   source: 'tag' | 'tool_epoch' | 'stored' | 'inherited' | 'interpolated' | 'lookahead' | 'mtime'
+}
+
+export function usableBirthtimeMs(stat: {
+  mtimeMs: number
+  birthtimeMs?: number
+}): number | undefined {
+  const birth = stat.birthtimeMs
+  if (typeof birth !== 'number' || !Number.isFinite(birth) || birth <= 0) return undefined
+  if (birth >= stat.mtimeMs) return undefined
+  return birth
+}
+
+/** File times for the mtime tier. Birth is kept only when it is earlier than mtime. */
+export function sourceFileTimes(stat: { mtimeMs: number; birthtimeMs?: number }): {
+  fileMtimeMs?: number
+  fileBirthtimeMs?: number
+} {
+  const mtime = Number.isFinite(stat.mtimeMs) && stat.mtimeMs > 0 ? stat.mtimeMs : undefined
+  return {
+    fileMtimeMs: mtime,
+    fileBirthtimeMs: mtime !== undefined ? usableBirthtimeMs(stat) : undefined,
+  }
+}
+
+/** Last `<timestamp>` in a text window (parent-transcript peek). */
+export function lastTimestampTagInText(text: string): string | undefined {
+  let last: string | undefined
+  const re = /<timestamp>\s*([^<]+?)\s*<\/timestamp>/gi
+  let m: RegExpExecArray | null
+  while ((m = re.exec(text))) {
+    const parsed = parseGrokTimestamp(m[1])
+    if (parsed) last = parsed
+  }
+  return last
 }
 
 /**
@@ -172,7 +204,8 @@ export type DerivedTime = {
  * 2. interpolate evenly between the previous and next real stamps
  * 3. after the last stamp, inherit at INHERIT_STEP_MS per position
  * 4. look ahead from the first later stamp − INHERIT_STEP_MS per position
- * 5. file mtime − (lastPosition − position) ms (Date.now() if mtime unknown)
+ * 5. mtime tier: INHERIT_STEP_MS back from mtime (last row = mtime), or
+ *    interpolate birthtime→mtime when birth is earlier. Date.now() if unknown.
  */
 export function deriveCreatedAt(args: {
   explicit?: { time: string; source: ExplicitTimeSource }
@@ -180,6 +213,8 @@ export function deriveCreatedAt(args: {
   earlier?: { time: string; position: number }
   later?: { time: string; position: number }
   fileMtimeMs?: number
+  fileBirthtimeMs?: number
+  minPosition?: number
   maxPosition: number
 }): DerivedTime {
   if (args.explicit) return { time: args.explicit.time, source: args.explicit.source }
@@ -194,7 +229,7 @@ export function deriveCreatedAt(args: {
     return {
       time: addMs(
         args.earlier.time,
-        EQUAL_SPAN_STEP_MS * Math.max(0, args.position - args.earlier.position),
+        INHERIT_STEP_MS * Math.max(0, args.position - args.earlier.position),
       ),
       source: 'inherited',
     }
@@ -218,6 +253,13 @@ export function deriveCreatedAt(args: {
     }
   }
   const end = args.fileMtimeMs ?? Date.now()
+  const minP = args.minPosition ?? 0
+  const span = Math.max(0, args.maxPosition - minP)
+  const birth = args.fileBirthtimeMs
+  if (typeof birth === 'number' && Number.isFinite(birth) && birth > 0 && birth < end && span > 0) {
+    const t = birth + ((end - birth) * (args.position - minP)) / span
+    return { time: new Date(t).toISOString(), source: 'mtime' }
+  }
   const back = Math.max(0, args.maxPosition - args.position)
-  return { time: new Date(end - back).toISOString(), source: 'mtime' }
+  return { time: new Date(end - INHERIT_STEP_MS * back).toISOString(), source: 'mtime' }
 }

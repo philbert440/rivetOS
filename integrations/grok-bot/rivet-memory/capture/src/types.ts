@@ -120,9 +120,12 @@ export interface NormalizeOptions {
   useStoredCreatedAt?: boolean
   /**
    * Source file mtime in ms. Used when a session has no inline stamps so
-   * every row still gets a monotonic createdAt (mtime − remaining positions).
+   * every row still gets a monotonic createdAt (last row = mtime, earlier
+   * rows step back by INHERIT_STEP_MS — or interpolate from birthtime).
    */
   fileMtimeMs?: number
+  /** Source file birthtime in ms when it is finite, > 0, and earlier than mtime. */
+  fileBirthtimeMs?: number
   /** Absolute source transcript / page path for memory_get_full pointers. */
   sourcePath?: string
   /** 0-based source file line per record. Falls back to position. */

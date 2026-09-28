@@ -12,6 +12,7 @@ import {
   identityForSession,
   listInputFiles,
   loadIdentityConfig,
+  peekParentLastKnownTime,
   resolveSourceAgentId,
   slug,
 } from '../src/identity.js'
@@ -35,8 +36,14 @@ import {
   v3Session,
 } from '../src/reclean.js'
 import { resolveIdent } from '../src/cli.js'
-import { addMs, parseEpochMs, parseGrokTimestamp, parseKnownTime } from '../src/timestamps.js'
-import { CONTENT_LIMIT, stripSessionSuffix } from '../src/types.js'
+import {
+  addMs,
+  deriveCreatedAt,
+  parseEpochMs,
+  parseGrokTimestamp,
+  parseKnownTime,
+} from '../src/timestamps.js'
+import { CONTENT_LIMIT, INHERIT_STEP_MS, stripSessionSuffix } from '../src/types.js'
 import { stubImagePayloads } from '../src/storage.js'
 import { countNoise, extractUserText, stripWrappers } from '../src/wrappers.js'
 import { STORAGE_LIMIT } from '../src/types.js'
@@ -215,7 +222,7 @@ describe('timestamps', () => {
     expect(users[1].content).toBe('yes')
     expect(users[0].metadata?.position).toBe(0)
     expect(users[1].metadata?.position).toBe(2)
-    expect(users[1].created_at).toBe(addMs(users[0].created_at ?? '', 2))
+    expect(users[1].created_at).toBe(addMs(users[0].created_at ?? '', INHERIT_STEP_MS + 1))
   })
 
   it('clamps created_at to max(stamp, lastEmitted+1ms)', () => {
@@ -238,8 +245,9 @@ describe('timestamps', () => {
     ]
     const { messages } = normalizeRecords(records, rivetOpts())
     expect(messages[0].created_at).toBe('2026-09-27T20:06:00.000Z')
-    expect(messages[1].created_at).toBe(addMs('2026-09-27T20:06:00.000Z', 1))
-    expect(messages[2].created_at).toBe(addMs('2026-09-27T20:06:00.000Z', 2))
+    expect(messages[1].created_at).toBe(addMs('2026-09-27T20:06:00.000Z', INHERIT_STEP_MS))
+    expect(messages[1].metadata?.time_source).toBe('inherited')
+    expect(messages[2].created_at).toBe(addMs('2026-09-27T20:06:00.000Z', INHERIT_STEP_MS + 1))
     const clock = { last: '2026-09-27T20:06:00.000Z' }
     expect(clampCreatedAt(clock, '2026-09-27T20:06:00.000Z')).toBe(
       addMs('2026-09-27T20:06:00.000Z', 1),
@@ -854,7 +862,7 @@ describe('unstamped on-disk transcript + createdAt', () => {
     expect(result.messages.map((m) => m.content).join('\n')).not.toMatch(/<timestamp>/)
   })
 
-  it('falls back to file mtime + position when a bot has no stamps at all', () => {
+  it('falls back to file mtime + 1s steps, last row at mtime', () => {
     const mtime = Date.parse('2026-08-11T15:00:00.000Z')
     const records = [
       {
@@ -875,7 +883,134 @@ describe('unstamped on-disk transcript + createdAt', () => {
     expect(messages.every((m) => Boolean(m.created_at))).toBe(true)
     const times = messages.map((m) => Date.parse(m.created_at ?? ''))
     expect(times.every((t, i) => i === 0 || t > times[i - 1])).toBe(true)
-    expect(times[times.length - 1]).toBeLessThanOrEqual(mtime)
+    expect(times[times.length - 1]).toBe(mtime)
+    expect(times[1] - times[0]).toBe(INHERIT_STEP_MS)
+    expect(times[2] - times[1]).toBe(INHERIT_STEP_MS)
+    expect(messages.every((m) => m.metadata?.time_source === 'mtime')).toBe(true)
+  })
+
+  it('interpolates mtime-tier rows from file birthtime to mtime', () => {
+    const mtime = Date.parse('2026-08-11T15:00:00.000Z')
+    const birth = mtime - 60_000
+    const records = [
+      { role: 'user', message: { content: [{ type: 'text', text: '[t0u]\none' }] } },
+      { role: 'assistant', message: { content: [{ type: 'text', text: 'two' }] } },
+      { role: 'user', message: { content: [{ type: 'text', text: '[t1u]\nthree' }] } },
+    ]
+    const { messages } = normalizeRecords(records, {
+      ...rivetOpts(),
+      fileMtimeMs: mtime,
+      fileBirthtimeMs: birth,
+    })
+    const times = messages.map((m) => Date.parse(m.created_at ?? ''))
+    expect(times[0]).toBe(birth)
+    expect(times[1]).toBe(birth + 30_000)
+    expect(times[2]).toBe(mtime)
+    expect(messages.every((m) => m.metadata?.time_source === 'mtime')).toBe(true)
+  })
+
+  it('inherits from a parent session stamp when lastKnownTime is set', () => {
+    const parent = '2026-08-11T14:00:00.000Z'
+    const mtime = Date.parse('2026-08-11T15:00:00.000Z')
+    const records = [
+      { role: 'user', message: { content: [{ type: 'text', text: '[t0u]\nsubagent start' }] } },
+      { role: 'assistant', message: { content: [{ type: 'text', text: 'ok' }] } },
+    ]
+    const { messages } = normalizeRecords(records, {
+      ...rivetOpts(),
+      fileMtimeMs: mtime,
+      lastKnownTime: parent,
+    })
+    expect(messages[0].created_at).toBe(addMs(parent, INHERIT_STEP_MS))
+    expect(messages[0].metadata?.time_source).toBe('inherited')
+    expect(messages[1].created_at).toBe(addMs(parent, 2 * INHERIT_STEP_MS))
+    expect(messages[1].metadata?.time_source).toBe('inherited')
+  })
+
+  it('peeks a parent transcript stamp from profile parentId', () => {
+    const parentId = 'aaaaaaaa-bbbb-4ccc-8ddd-111111111111'
+    const childId = 'bbbbbbbb-cccc-4ddd-8eee-222222222222'
+    const root = mkdtempSync(join(tmpdir(), 'gb-parent-peek-'))
+    mkdirSync(join(root, parentId), { recursive: true })
+    mkdirSync(join(root, 'agents', childId), { recursive: true })
+    writeFileSync(
+      join(root, parentId, `${parentId}.jsonl`),
+      `${JSON.stringify({
+        role: 'user',
+        message: {
+          content: [
+            {
+              type: 'text',
+              text: '<timestamp>Sunday, Sep 27, 2026, 4:06 PM (UTC-4)</timestamp>\n<user_query>\nparent\n</user_query>',
+            },
+          ],
+        },
+      })}\n`,
+    )
+    writeFileSync(join(root, 'agents', childId, 'profile.json'), JSON.stringify({ parentId }))
+    const childPath = join(root, childId, `${childId}.jsonl`)
+    mkdirSync(join(root, childId), { recursive: true })
+    writeFileSync(childPath, '{}\n')
+    expect(
+      peekParentLastKnownTime({
+        sourcePath: childPath,
+        agentsDir: join(root, 'agents'),
+        transcriptsDir: root,
+      }),
+    ).toBe('2026-09-27T20:06:00.000Z')
+  })
+
+  it('steps INHERIT_STEP_MS when the later stamp is earlier than the earlier stamp', () => {
+    const earlier = { time: '2026-09-27T20:07:00.000Z', position: 0 }
+    const later = { time: '2026-09-27T20:06:00.000Z', position: 2 }
+    const mid = deriveCreatedAt({
+      position: 1,
+      earlier,
+      later,
+      maxPosition: 2,
+    })
+    expect(mid.source).toBe('inherited')
+    expect(mid.time).toBe(addMs(earlier.time, INHERIT_STEP_MS))
+    const records = [
+      {
+        role: 'user',
+        message: {
+          content: [
+            {
+              type: 'text',
+              text: '<timestamp>Sunday, Sep 27, 2026, 4:07 PM (UTC-4)</timestamp>\n<user_query>\nfirst\n</user_query>',
+            },
+          ],
+        },
+      },
+      { role: 'assistant', message: { content: [{ type: 'text', text: 'mid' }] } },
+      {
+        role: 'user',
+        message: {
+          content: [
+            {
+              type: 'text',
+              text: '<timestamp>Sunday, Sep 27, 2026, 4:06 PM (UTC-4)</timestamp>\n<user_query>\nback\n</user_query>',
+            },
+          ],
+        },
+      },
+    ]
+    const { messages } = normalizeRecords(records, rivetOpts())
+    expect(messages[1].created_at).toBe(addMs('2026-09-27T20:07:00.000Z', INHERIT_STEP_MS))
+    expect(messages[1].metadata?.time_source).toBe('inherited')
+  })
+
+  it('resets clamp adjustment state when the next candidate is empty', () => {
+    const clock = { last: '2026-09-27T20:06:00.000Z' }
+    expect(clampCreatedAt(clock, '2026-09-27T19:00:00.000Z')).toBe(
+      addMs('2026-09-27T20:06:00.000Z', 1),
+    )
+    expect(clock.lastOriginal).toBe('2026-09-27T19:00:00.000Z')
+    expect(clock.lastAdjustmentMs).toBeGreaterThan(1_000)
+    expect(clampCreatedAt(clock, undefined)).toBeUndefined()
+    expect(clock.lastOriginal).toBeUndefined()
+    expect(clock.lastAdjustmentMs).toBe(0)
   })
 
   it('strips -v4 store/voice/rows suffixes the same way as -v3', () => {
