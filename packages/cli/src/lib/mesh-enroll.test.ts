@@ -389,7 +389,7 @@ c2STQfqZswSXHGtAdm3/1t5XnVuzU/RBnsbTVw3/+YkD
     expect(notAfter.toISOString().endsWith('Z')).toBe(true)
     const now = new Date('2026-04-22T12:54:20.000Z')
     expect(classifyCertExpiry(notAfter, now)).toBe('ok')
-    const warnNow = new Date('2036-08-01T00:00:00.000Z')
+    const warnNow = new Date('2036-09-10T00:00:00.000Z')
     expect(classifyCertExpiry(notAfter, warnNow)).toBe('warn')
   })
 })

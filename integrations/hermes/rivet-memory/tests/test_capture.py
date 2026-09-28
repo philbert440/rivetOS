@@ -324,7 +324,7 @@ def test_is_time_bounded_recognizes_common_cues():
         "yesterday's standup",
         "yesterdays standup",               # no apostrophe — bare plural-looking form
         "did we touch the router last week",
-        "the other day phil mentioned X",
+        "the other day the user mentioned X",
         "a couple days ago we tried Y",
         "3 hours ago I saw an error",
         "recently we discussed compaction",

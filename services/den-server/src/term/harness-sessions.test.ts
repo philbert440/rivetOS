@@ -1843,7 +1843,7 @@ describe('codex store: ~/.codex/sessions/YYYY/MM/DD/rollout-*.jsonl', () => {
       },
     ]
     writeFileSync(
-      join(day, `rollout-2026-09-07T12-00-00-${ID}.jsonl`),
+      join(day, `rollout-2020-01-01T00-00-00-${ID}.jsonl`),
       lines.map((l) => JSON.stringify(l)).join('\n') + '\n',
     )
     return home
@@ -1871,7 +1871,7 @@ describe('codex store: ~/.codex/sessions/YYYY/MM/DD/rollout-*.jsonl', () => {
       '2026',
       '09',
       '07',
-      `rollout-2026-09-07T12-00-00-${ID}.jsonl`,
+      `rollout-2020-01-01T00-00-00-${ID}.jsonl`,
     )
     utimesSync(newer, 2_000_000_000, 2_000_000_000)
     utimesSync(olderFile, 1_000_000_000, 1_000_000_000)
@@ -1922,7 +1922,7 @@ describe('codex store: ~/.codex/sessions/YYYY/MM/DD/rollout-*.jsonl', () => {
       '2026',
       '09',
       '07',
-      `rollout-2026-09-07T12-00-00-${ID}.jsonl`,
+      `rollout-2020-01-01T00-00-00-${ID}.jsonl`,
     )
     const discover = vi.spyOn(codexRoom, 'resolveCodexRoomRollout').mockResolvedValue(path)
     const expected = await readCodexTranscript(ID)

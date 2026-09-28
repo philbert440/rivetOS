@@ -329,7 +329,7 @@ describe.skipIf(!haveOpenssl() || !remoteIp)('tenancy route inventory (real TLS)
   let pki: TenancyPki
   let den: DenServer
   let stateDir: string
-  let loopback: string // certless loopback = the node owner (phil)
+  let loopback: string // certless loopback = the node owner
   let remote: string // LAN IP — cert identity is only resolved off-loopback
   let coco: Tls
   let stranger: Tls
@@ -409,7 +409,7 @@ describe.skipIf(!haveOpenssl() || !remoteIp)('tenancy route inventory (real TLS)
       session: 'coco-room',
     })
     expect(spawn3.status).toBe(201)
-    // inject ready-gate: phil's harness must emit before injects flush
+    // inject ready-gate: the owner's harness must emit before injects flush
     fakeProcs[0].emit('data', Buffer.from('welcome'))
     await new Promise((r) => setTimeout(r, 30))
   })

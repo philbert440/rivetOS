@@ -19,7 +19,7 @@ const coco: UserContext = {
 const owner: UserContext = {
   userId: 'owner',
   deviceId: null,
-  db: { pgUrl: 'postgres://owner@db/phil' },
+  db: { pgUrl: 'postgres://owner@db/rivet_memory' },
   isOwner: true,
 }
 
@@ -28,11 +28,11 @@ describe('session owners', () => {
     const dir = mkdtempSync(join(tmpdir(), 'owners-'))
     dirs.push(dir)
     const owners = createSessionOwners(join(dir, 'session-owners.json'))
-    expect(owners.visible('dead-owner-session', phil)).toBe(true)
+    expect(owners.visible('dead-owner-session', owner)).toBe(true)
     expect(owners.visible('dead-owner-session', coco)).toBe(false)
   })
 
-  it('persists coco ownership and hides the row from phil', () => {
+  it('persists coco ownership and hides the row from the owner', () => {
     const dir = mkdtempSync(join(tmpdir(), 'owners-'))
     dirs.push(dir)
     const file = join(dir, 'session-owners.json')
@@ -41,7 +41,7 @@ describe('session owners', () => {
     expect(JSON.parse(readFileSync(file, 'utf8'))).toEqual({ abc: 'coco' })
     const reloaded = createSessionOwners(file)
     expect(reloaded.visible('abc', coco)).toBe(true)
-    expect(reloaded.visible('abc', phil)).toBe(false)
+    expect(reloaded.visible('abc', owner)).toBe(false)
     expect(reloaded.filter([{ id: 'abc' }, { id: 'untagged' }], coco).map((s) => s.id)).toEqual([
       'abc',
     ])

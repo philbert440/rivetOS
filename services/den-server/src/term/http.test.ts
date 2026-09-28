@@ -630,7 +630,7 @@ describe('term endpoints', () => {
       JSON.stringify({
         ownerUserId: 'owner',
         unmappedIsOwner: false,
-        users: { owner: { devices: [], pgUrl: 'postgres://owner@db/phil' },
+        users: { owner: { devices: [], pgUrl: 'postgres://owner@db/rivet_memory' },
           alice: { devices: ['win-alice'], pgUrl: 'postgres://alice@db/alice' },
         },
       }),

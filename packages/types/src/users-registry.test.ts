@@ -271,7 +271,7 @@ describe('sessionVisibleTo', () => {
     db: cocoDb,
     isOwner: false,
   }
-  const phil = {
+  const ownerCtx = {
     userId: 'owner',
     deviceId: null,
     db: ownerDb,
@@ -279,11 +279,11 @@ describe('sessionVisibleTo', () => {
   }
   it('hides untagged sessions from a routed user', () => {
     expect(sessionVisibleTo(undefined, coco)).toBe(false)
-    expect(sessionVisibleTo(undefined, phil)).toBe(true)
+    expect(sessionVisibleTo(undefined, ownerCtx)).toBe(true)
   })
   it('shows a session only to its owner', () => {
     expect(sessionVisibleTo('coco', coco)).toBe(true)
-    expect(sessionVisibleTo('coco', phil)).toBe(false)
-    expect(sessionVisibleTo('owner', phil)).toBe(true)
+    expect(sessionVisibleTo('coco', ownerCtx)).toBe(false)
+    expect(sessionVisibleTo('owner', ownerCtx)).toBe(true)
   })
 })

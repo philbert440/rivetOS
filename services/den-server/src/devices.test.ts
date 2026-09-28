@@ -744,7 +744,7 @@ describe('devices routes', () => {
 describe('deviceRoleName', () => {
   it('derives a stable allowlisted role from a UUID', () => {
     expect(deviceRoleName('00000000-0000-4000-8000-000000000040')).toBe(
-      'rivet_dev_019e5f82_f0e5_7d41_a38c_4eefced7e570',
+      'rivet_dev_00000000_0000_4000_8000_000000000040',
     )
   })
 

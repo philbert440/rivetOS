@@ -334,7 +334,7 @@ describe('isCaptureTranscriptPath', () => {
     expect(isCaptureTranscriptPath('/tmp/session.jsonl.zst')).toBe(true)
     expect(
       isCaptureTranscriptPath(
-        '/home/rivet/.codex/sessions/2026/09/07/rollout-2026-09-07T12-00-00-00000000-0000-4000-8000-000000000020.jsonl',
+        '/home/rivet/.codex/sessions/2026/09/07/rollout-2020-01-01T00-00-00-00000000-0000-4000-8000-000000000020.jsonl',
       ),
     ).toBe(true)
     expect(isCaptureTranscriptPath('/tmp/notes.txt')).toBe(false)
@@ -453,7 +453,7 @@ describe('createGetFullTool end-to-end (stub pool + real temp JSONL)', () => {
   it('recovers a truncated Codex rollout line from disk', async () => {
     const big = 'z'.repeat(30_000)
     const dir = mkdtempSync(join(tmpdir(), 'getfull-codex-'))
-    const file = join(dir, 'rollout-2026-09-07T12-00-00-00000000-0000-4000-8000-000000000020.jsonl')
+    const file = join(dir, 'rollout-2020-01-01T00-00-00-00000000-0000-4000-8000-000000000020.jsonl')
     const lines = [
       JSON.stringify({
         type: 'session_meta',

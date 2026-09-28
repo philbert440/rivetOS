@@ -16,9 +16,9 @@ import type { SheetReaders } from './model-sheets.js'
 import { createHarnessRegistry, type HarnessRegistry } from './registry.js'
 import { FIVE_FLAGS, pick } from './test/driver-conformance.js'
 
-/** A real grok id: UUIDv7, as `grok --session-id` mints and requires. */
-const UUID = '00000000-0000-4000-8000-000000000040'
-const UUID2 = '00000000-0000-4000-8000-000000000041'
+/** Synthetic UUIDv7, as `grok --session-id` mints and requires. */
+const UUID = '11111111-1111-7111-8111-111111111111'
+const UUID2 = '22222222-2222-7222-8222-222222222222'
 const SID = `grok-build:${UUID}` as SessionId
 
 interface Fakes {

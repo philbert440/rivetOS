@@ -266,13 +266,13 @@ describe('den-server', () => {
     expect((await fetch(`${base}/layout`)).status).toBe(404)
     expect((await post(base, '/layout?viewer=default', { desk: { x: 1 } })).status).toBe(200)
     // unknown viewer falls back to the shared default
-    const fromOther = (await (await fetch(`${base}/layout?viewer=phil`)).json()) as Record<
+    const fromOther = (await (await fetch(`${base}/layout?viewer=owner`)).json()) as Record<
       string,
       unknown
     >
     expect(fromOther.desk).toEqual({ x: 1 })
-    await post(base, '/layout?viewer=phil', { desk: { x: 2 } })
-    const own = (await (await fetch(`${base}/layout?viewer=phil`)).json()) as Record<
+    await post(base, '/layout?viewer=owner', { desk: { x: 2 } })
+    const own = (await (await fetch(`${base}/layout?viewer=owner`)).json()) as Record<
       string,
       unknown
     >

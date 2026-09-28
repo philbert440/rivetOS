@@ -129,7 +129,7 @@ describe('memory-postgres manifest', () => {
       JSON.stringify({
         ownerUserId: 'owner',
         unmappedIsOwner: false,
-        users: { owner: { devices: [], pgUrl: 'postgres://owner@db/phil' },
+        users: { owner: { devices: [], pgUrl: 'postgres://owner@db/rivet_memory' },
           coco: { devices: ['win-coco'], pgUrl: 'postgres://coco@db/coco_memory' },
         },
       }),
