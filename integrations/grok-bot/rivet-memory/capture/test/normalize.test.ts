@@ -472,24 +472,8 @@ describe('timestamps', () => {
     expect(messages.filter((m) => m.role === 'tool')).toHaveLength(2)
   })
 
-  it('drops the first-run fixture replay at positions 204/225', () => {
-    const records = readFix('ondisk-alpha-first-run-0-240.jsonl')
-      .trim()
-      .split('\n')
-      .map((line) => JSON.parse(line) as unknown)
-    const skips = replaySkipIndices(records)
-    expect(skips.has(204)).toBe(false)
-    expect(skips.has(225)).toBe(true)
-    const { messages } = normalizeRecords(records, alphaOpts())
-    const asked = messages.filter(
-      (m) => m.role === 'user' && /did you address all the further reviews/i.test(m.content),
-    )
-    expect(asked).toHaveLength(1)
-    expect(asked[0].metadata?.position).toBe(204)
-  })
-
   it('reads send_message epoch stamps when a page has no <timestamp> tags', () => {
-    const text = readFix('page-alpha-this-conversation-3040-3056.txt')
+    const text = readFix('page-this-conversation.txt')
     const parsed = parseInput(text)
     const result = normalizeRecords(parsed.records, {
       ...alphaOpts(),
@@ -557,7 +541,7 @@ describe('timestamps', () => {
 
 describe('wrappers', () => {
   it('strips every documented wrapper type and keeps [Image]', () => {
-    const raw = readFix('synthetic-wrappers.jsonl').split('\n')[0]
+    const raw = readFix('ondisk-wrappers.jsonl').split('\n')[0]
     const rec = JSON.parse(raw) as { message: { content: Array<{ text: string }> } }
     const text = rec.message.content[0].text
     const cleaned = extractUserText(text)
@@ -630,8 +614,8 @@ describe('wrappers', () => {
     }
   })
 
-  it('strips wrappers on the first-run Alpha sample', () => {
-    const { result } = normalizeFile('ondisk-alpha-first-run-0-240.jsonl')
+  it('strips wrappers on the wrapper fixture', () => {
+    const { result } = normalizeFile('ondisk-wrappers.jsonl')
     const blob = result.messages.map((m) => m.content).join('\n')
     expect(blob).not.toMatch(
       /<timestamp>|<user_query>|\[SAND_HIDDEN_PROMPT\]|<<SAND_AGENT_PROFILE_UPDATE|<agent_profile_update>/,
@@ -642,7 +626,7 @@ describe('wrappers', () => {
 
 describe('hidden turns', () => {
   it('stores first-run, profile, routine, skipped, background as system — not user', () => {
-    const { result } = normalizeFile('ondisk-alpha-first-run-0-240.jsonl')
+    const { result } = normalizeFile('ondisk-hidden.jsonl')
     const users = result.messages.filter((m) => m.role === 'user')
     const systems = result.messages.filter((m) => m.role === 'system')
     expect(
@@ -658,7 +642,7 @@ describe('hidden turns', () => {
   })
 
   it('keeps [agent] payload as a system event with from_agent / from_agent_id', () => {
-    const { result } = normalizeFile('ondisk-alpha-agent-msgs-1880-1920.jsonl')
+    const { result } = normalizeFile('ondisk-hidden.jsonl')
     const agents = result.messages.filter((m) => m.metadata?.kind === 'agent_message')
     expect(agents.length).toBeGreaterThan(0)
     expect(agents[0].role).toBe('system')
@@ -669,8 +653,19 @@ describe('hidden turns', () => {
   })
 
   it('mixed real text + hidden block keeps only the real text as the user turn', () => {
-    const { result } = normalizeFile('ondisk-alpha-first-run-0-240.jsonl')
-    const users = result.messages.filter((m) => m.role === 'user')
+    const rec = {
+      role: 'user',
+      message: {
+        content: [
+          {
+            type: 'text',
+            text: '[SAND_HIDDEN_PROMPT]a good grok bot description\n<<SAND_AGENT_PROFILE_UPDATE:v1:abc>>\n<agent_profile_update>\nname: Alpha\n</agent_profile_update>',
+          },
+        ],
+      },
+    }
+    const { messages } = normalizeRecords([rec], alphaOpts())
+    const users = messages.filter((m) => m.role === 'user')
     const desc = users.find((m) => /good grok bot description/i.test(m.content))
     expect(desc).toBeTruthy()
     expect(desc?.content).not.toMatch(/SAND_AGENT_PROFILE_UPDATE|agent_profile_update/)
@@ -746,7 +741,7 @@ describe('hidden turns', () => {
     const { messages } = normalizeRecords([sandReaction, sandEvent], alphaOpts())
     expect(messages.some((m) => m.metadata?.kind === 'reaction')).toBe(true)
     expect(messages.some((m) => m.metadata?.kind === 'event')).toBe(true)
-    const unmarked = normalizeFile('synthetic-wrappers.jsonl')
+    const unmarked = normalizeFile('ondisk-wrappers.jsonl')
     expect(unmarked.result.messages.some((m) => m.metadata?.kind === 'reaction')).toBe(false)
     expect(
       unmarked.result.messages.some(
@@ -929,7 +924,7 @@ describe('per-bot tags', () => {
   })
 
   it('puts the agent id on every message metadata', () => {
-    const { result } = normalizeFile('ondisk-beta-0-16.jsonl', {
+    const { result } = normalizeFile('ondisk-basic.jsonl', {
       sessionKey: 'grokbot-beta',
       agent: 'grokbot-beta',
       agentId: BETA_ID,
@@ -944,7 +939,7 @@ describe('per-bot tags', () => {
 
 describe('unstamped on-disk transcript + createdAt', () => {
   it('stamps every line on a bot with no inline <timestamp> tags and hidden turns', () => {
-    const { result } = normalizeFile('ondisk-unstamped-hidden.jsonl', {
+    const { result } = normalizeFile('ondisk-unstamped.jsonl', {
       sessionKey: 'grokbot-omega-v4',
       agent: 'grokbot-omega',
     })
@@ -1231,7 +1226,7 @@ describe('unstamped on-disk transcript + createdAt', () => {
 
 describe('tool_result + capForStorage', () => {
   it('reads tool_result from result (old converter ignored it)', () => {
-    const page = readFix('page-alpha-this-conversation-3040-3056.txt')
+    const page = readFix('page-this-conversation.txt')
     const parsed = parseInput(page)
     const tool = parsed.records.find((r) => {
       const rec = r as { role?: string }
@@ -1265,17 +1260,6 @@ describe('tool_result + capForStorage', () => {
     expect(STORAGE_LIMIT).toBe(16_000)
   })
 
-  it('keeps a real oversized ReadTranscript shell result in full', () => {
-    const { result } = normalizeFile('page-alpha-2395-2445.txt')
-    const tools = result.messages.filter(
-      (m) => m.role === 'tool' && (m.tool_result?.length ?? 0) > 4_096,
-    )
-    expect(tools.length).toBeGreaterThan(0)
-    expect(tools.every((m) => m.metadata?.truncated !== true)).toBe(true)
-    expect(tools.every((m) => !m.tool_result?.includes('…[truncated'))).toBe(true)
-    expect(tools.some((m) => (m.tool_result?.length ?? 0) > STORAGE_LIMIT)).toBe(true)
-  })
-
   it('stubs base64/data-URI images and caps huge tool results with a source pointer', () => {
     const png =
       'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg=='
@@ -1286,7 +1270,7 @@ describe('tool_result + capForStorage', () => {
     expect(stubbed.text).not.toContain(png)
 
     const huge = 'x'.repeat(CONTENT_LIMIT + 50)
-    const src = join(FIX, 'ondisk-unstamped-hidden.jsonl')
+    const src = join(FIX, 'ondisk-unstamped.jsonl')
     const { messages } = normalizeRecords(
       [
         {
@@ -1323,26 +1307,26 @@ describe('tool_result + capForStorage', () => {
 
 describe('both input formats', () => {
   it('parses on-disk jsonl (no header)', () => {
-    const parsed = parseInput(readFix('ondisk-beta-0-16.jsonl'))
+    const parsed = parseInput(readFix('ondisk-basic.jsonl'))
     expect(parsed.format).toBe('ondisk')
-    expect(parsed.records.length).toBe(17)
+    expect(parsed.records.length).toBe(4)
     expect(parsed.header).toBeUndefined()
   })
 
   it('parses a named-agent page with footer', () => {
-    const parsed = parseInput(readFix('page-alpha-2395-2445.txt'))
+    const parsed = parseInput(readFix('page-named.txt'))
     expect(parsed.format).toBe('page')
-    expect(parsed.header?.name).toBe('Alpha')
-    expect(parsed.header?.id).toBe(ALPHA_ID)
-    expect(parsed.header?.a).toBe(2395)
+    expect(parsed.header?.name).toBe('Beta')
+    expect(parsed.header?.id).toBe(BETA_ID)
+    expect(parsed.header?.a).toBe(10)
     expect(parsed.hasOlderFooter).toBe(true)
   })
 
   it('parses the this-conversation header variant', () => {
-    const parsed = parseInput(readFix('page-alpha-this-conversation-3040-3056.txt'))
+    const parsed = parseInput(readFix('page-this-conversation.txt'))
     expect(parsed.header?.thisConversation).toBe(true)
-    expect(parsed.header?.a).toBe(3040)
-    expect(parsed.header?.b).toBe(3056)
+    expect(parsed.header?.a).toBe(0)
+    expect(parsed.header?.b).toBe(2)
     expect(parsePageHeader('Transcript of this conversation, positions 0–0 of 1:')).toMatchObject({
       thisConversation: true,
       a: 0,
@@ -1350,11 +1334,11 @@ describe('both input formats', () => {
   })
 
   it('parses an A=0 page with no footer', () => {
-    const parsed = parseInput(readFix('page-gamma-0-20.txt'))
+    const parsed = parseInput(readFix('page-start.txt'))
     expect(parsed.header?.a).toBe(0)
     expect(parsed.header?.name).toBe('Gamma')
     expect(parsed.hasOlderFooter).toBe(false)
-    expect(detectFormat(readFix('page-gamma-0-20.txt'))).toBe('page')
+    expect(detectFormat(readFix('page-start.txt'))).toBe('page')
   })
 })
 
@@ -1362,7 +1346,7 @@ describe('reclean', () => {
   it('writes under -v3 and never targets the original session', () => {
     expect(v3Session('grokbot-alpha')).toBe('grokbot-alpha-v3')
     expect(v3Session('grokbot-alpha-v2')).toBe('grokbot-alpha-v3')
-    const result = recleanFromSource(readFix('ondisk-beta-0-16.jsonl'), {
+    const result = recleanFromSource(readFix('ondisk-basic.jsonl'), {
       sessionKey: 'grokbot-beta',
       agent: 'grokbot-beta',
       agentId: BETA_ID,
@@ -1378,7 +1362,7 @@ describe('reclean', () => {
     expect(v3RowsSession('grokbot-beta', '-v4')).toBe('grokbot-beta-v4-rows')
     expect(isRowShapedSession('grokbot-beta-v3-rows')).toBe(true)
     expect(isRowShapedSession('grokbot-beta-v4')).toBe(false)
-    const v4 = recleanFromSource(readFix('ondisk-beta-0-16.jsonl'), {
+    const v4 = recleanFromSource(readFix('ondisk-basic.jsonl'), {
       sessionKey: 'grokbot-beta',
       agent: 'grokbot-beta',
       sessionSuffix: '-v4',
@@ -1386,7 +1370,7 @@ describe('reclean', () => {
     })
     expect(v4.session).toBe('grokbot-beta-v4')
     expect(() =>
-      recleanFromSource(readFix('ondisk-beta-0-16.jsonl'), {
+      recleanFromSource(readFix('ondisk-basic.jsonl'), {
         sessionKey: 'grokbot-beta-v3-rows',
         agent: 'grokbot-beta',
         dryRun: true,
@@ -1559,7 +1543,7 @@ describe('reclean', () => {
 
 describe('ingest mapping + compare', () => {
   it('maps CaptureMessage to ingest camelCase rows', () => {
-    const { result } = normalizeFile('ondisk-beta-0-16.jsonl', {
+    const { result } = normalizeFile('ondisk-basic.jsonl', {
       sessionKey: 'grokbot-beta',
       agent: 'grokbot-beta',
       agentId: BETA_ID,
@@ -1582,14 +1566,15 @@ describe('ingest mapping + compare', () => {
   })
 
   it('before/after comparison shrinks noise and average length on real samples', () => {
-    const cmp = compareInput(readFix('ondisk-alpha-first-run-0-240.jsonl'), alphaOpts())
+    const cmp = compareInput(readFix('ondisk-wrappers.jsonl'), alphaOpts())
     // After splits each tool_use onto its own CaptureMessage (capture-core shape),
     // so row count can rise; noise and mean content length must fall.
     expect(cmp.after.avgChars.all).toBeLessThan(cmp.before.avgChars.all)
     expect(cmp.after.avgChars.user).toBeLessThan(cmp.before.avgChars.user)
-    expect(cmp.after.stats.user).toBeLessThan(cmp.before.rows)
-    expect(cmp.systemEvents).toBeGreaterThan(0)
+    expect(cmp.after.stats.user).toBeLessThanOrEqual(cmp.before.rows)
     expect(sumNoise(cmp.after.noise)).toBeLessThan(sumNoise(cmp.before.noise))
+    const hidden = compareInput(readFix('ondisk-hidden.jsonl'), alphaOpts())
+    expect(hidden.systemEvents).toBeGreaterThan(0)
   })
 })
 

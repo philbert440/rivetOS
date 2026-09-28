@@ -41,6 +41,10 @@ integrations/cursor/rivet-memory/rules/memory-reflex.md
   7d4267bb935aa412538d5b624f368dc9bca4a92e
   81787004c2243aae1b9e338fa4efb06a186d2978
 
+integrations/grok/rivet-memory/capture/test/fixtures/sample-session/updates.jsonl
+  6ddda1797232ac5ea46f5b2b2f002cb81d08da0b
+  ce173ebb46e515c60cff5643630990ceed8895e3
+
 integrations/grok-bot/rivet-memory/GROKBOT.md
   15fe1604311f3dd9607c8cd3ac420faea0d66da5
   7700e0acd1fa572f8c7bd32f1a30880084487591
@@ -108,6 +112,10 @@ integrations/grok-bot/rivet-memory/capture/src/identity.ts
 
 integrations/grok-bot/rivet-memory/capture/src/ingest-rows.ts
   22cae250d5953a350012b323e4c04b9ec2fb3124
+  ea3eabc276f73b113196750beeab43a985f3a6ce
+
+integrations/grok-bot/rivet-memory/capture/src/types.ts
+  851d6483d861c85afd53fb381e8ddbe81bd7baf8
   ea3eabc276f73b113196750beeab43a985f3a6ce
 
 integrations/grok-bot/rivet-memory/capture/test/cli.test.ts
@@ -191,6 +199,7 @@ integrations/grok-bot/rivet-memory/capture/test/pg-readonly.test.ts
 
 integrations/grok-bot/rivet-memory/capture/test/scripts.test.ts
   22cae250d5953a350012b323e4c04b9ec2fb3124
+  31b76d37b7ee832ea69990f5c3881f46bbccdf57
   ea3eabc276f73b113196750beeab43a985f3a6ce
 
 integrations/grok-bot/rivet-memory/capture/test/store.test.ts
@@ -198,6 +207,7 @@ integrations/grok-bot/rivet-memory/capture/test/store.test.ts
   ea3eabc276f73b113196750beeab43a985f3a6ce
 
 integrations/grok-bot/rivet-memory/capture/test/voice.test.ts
+  31b76d37b7ee832ea69990f5c3881f46bbccdf57
   ea3eabc276f73b113196750beeab43a985f3a6ce
 
 integrations/grok-bot/rivet-memory/rules/memory-reflex.md
@@ -244,11 +254,13 @@ plugins/providers/grok-cli/src/spawn-turn.test.ts
   fe9e58fb824b640bb1519a3dbe09beb47ca2eed8
 
 scripts/privacy-scan.mjs
+  31b76d37b7ee832ea69990f5c3881f46bbccdf57
   76f67e279e20d14b8d57efe43fef91b5bedc6110
   851d6483d861c85afd53fb381e8ddbe81bd7baf8
   d42954ceef46df32154743a50c48be2172b44832
 
 scripts/privacy-scan.test.mjs
+  31b76d37b7ee832ea69990f5c3881f46bbccdf57
   76f67e279e20d14b8d57efe43fef91b5bedc6110
   851d6483d861c85afd53fb381e8ddbe81bd7baf8
 

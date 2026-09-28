@@ -105,14 +105,57 @@ export function isAcronymToken(token) {
   return token.length >= 2 && token.length <= 4 && /^[A-Z]+$/.test(token)
 }
 
+/** `--disable-pam` and similar flags are not persona tags. */
+export function isCliFlagContext(line, index) {
+  let i = index
+  while (i > 0 && /[A-Za-z0-9-]/.test(line[i - 1])) i--
+  return line.slice(i, i + 2) === '--'
+}
+
+function hyphenChainHasAgentPrefix(line, index) {
+  let i = index
+  while (i > 0 && /[A-Za-z0-9-]/.test(line[i - 1])) i--
+  let j = index
+  while (j < line.length && /[A-Za-z0-9-]/.test(line[j])) j++
+  return /(^|-)(rivet|grokbot)(-|$)/i.test(line.slice(i, j))
+}
+
 /**
- * Short tokens are checked only as Title-case words so PAM auth,
- * `--disable-pam`, `architecture`, and generic lowercase names in tests
- * do not trip. Longer tokens match any case.
+ * Identifier / tag context: `rivet-x`, `grokbot-x`, `-x-` slugs that
+ * include those prefixes, or quoted strings. Not a CLI flag
+ * (`--disable-x`) and not `Foo('x')`.
  */
-export function shouldCheckPersonaToken(token) {
+export function inTagOrIdContext(line, index, token) {
+  if (isCliFlagContext(line, index)) return false
+  const before = line.slice(0, index)
+  const after = line.slice(index + token.length)
+  if (/[A-Za-z0-9]-$/.test(before) || /^-[A-Za-z0-9]/.test(after)) {
+    return hyphenChainHasAgentPrefix(line, index)
+  }
+  const q = before.slice(-1)
+  if ((q === "'" || q === '"' || q === '`') && after.startsWith(q)) {
+    const pre = before.slice(0, -1)
+    // Foo('x'), ['x'], or `fn("x")` are call/list args, not tags.
+    if (/[A-Za-z0-9_]$/.test(pre) || /[[(,]$/.test(pre) || /,\s*$/.test(pre)) return false
+    return true
+  }
+  return false
+}
+
+/**
+ * Short tokens (≤4): Title-case words in prose (except `… Linux`), plus
+ * lowercase / ALL-CAPS only in identifier or tag contexts. Longer tokens
+ * match any case. PAM auth, `--disable-pam`, and `architecture` stay clean.
+ */
+export function shouldCheckPersonaToken(token, line = '', index = 0) {
+  if (token.length <= 4) {
+    if (/^[A-Z][a-z]+$/.test(token)) {
+      if (/^\s+Linux\b/.test(line.slice(index + token.length))) return false
+      return true
+    }
+    return inTagOrIdContext(line, index, token)
+  }
   if (isAcronymToken(token)) return false
-  if (token.length <= 4 && !/^[A-Z][a-z]+$/.test(token)) return false
   return true
 }
 
@@ -156,8 +199,12 @@ export function scanLine(line, { file = '', denyHashes = new Set() } = {}) {
     }
     for (const m of line.matchAll(HYPHEN_TOKEN_RE)) {
       if (/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(m[0])) continue
+      if (isCliFlagContext(line, m.index ?? 0)) continue
       const token = m[0].toLowerCase()
-      if (denyHashes.has(sha256(token))) {
+      const parts = token.split('-')
+      const agentTag = parts.includes('rivet') || parts.includes('grokbot')
+      const partHit = agentTag && parts.some((p) => p && denyHashes.has(sha256(p)))
+      if (denyHashes.has(sha256(token)) || partHit) {
         out.push({
           rule: 'denylist-tag',
           severity: 'block',
@@ -167,7 +214,7 @@ export function scanLine(line, { file = '', denyHashes = new Set() } = {}) {
       }
     }
     for (const m of line.matchAll(WORD_RE)) {
-      if (!shouldCheckPersonaToken(m[0])) continue
+      if (!shouldCheckPersonaToken(m[0], line, m.index ?? 0)) continue
       if (denyHashes.has(sha256(m[0].toLowerCase()))) {
         out.push({
           rule: 'denylist-persona',

@@ -51,7 +51,7 @@ describe('node capture scripts', () => {
   })
 
   it('pull-bridge parse_page calls the CLI parser and returns header + records', () => {
-    const page = join(HERE, 'fixtures', 'page-beta-4110-4148.txt')
+    const page = join(HERE, 'fixtures', 'page-named.txt')
     const viaEnv = execFileSync(
       'python3',
       [

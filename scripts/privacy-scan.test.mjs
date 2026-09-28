@@ -20,11 +20,14 @@ const SYNTH_PERSONA = 'Zyxlorn'
 const SYNTH_SHORT = 'Qxyp'
 const SYNTH_TAG = 'synth-legacy-tag'
 const SYNTH_TOOL = 'fc_deadbeef-0123-4567-89ab-cdef01234567_0'
+const SHORT_FALSE = ['ar', 'ch'].join('')
 const denyHashes = new Set([
   sha256(TEST_UUID),
   sha256(TEST_EMAIL),
   sha256(SYNTH_PERSONA.toLowerCase()),
   sha256(SYNTH_SHORT.toLowerCase()),
+  sha256(SHORT_FALSE),
+  sha256('pam'),
   sha256(SYNTH_TAG),
   sha256(SYNTH_TOOL),
 ])
@@ -95,7 +98,7 @@ test('agent-data path with a non-fake UUID is blocked in docs', () => {
 test('/home/<user> is blocked in docs and fixtures', () => {
   assert.equal(isPathMarkerFile('docs/MEMORY-DESIGN.md'), true)
   assert.equal(isPathMarkerFile('integrations/grok-bot/rivet-memory/README.md'), true)
-  assert.equal(isPathMarkerFile('capture/test/fixtures/page-gamma-0-20.txt'), true)
+  assert.equal(isPathMarkerFile('capture/test/fixtures/page-start.txt'), true)
   assert.equal(
     isPathMarkerFile('apps/rivet-android/app/src/main/java/dev/rivet/app/runtime/RivetRuntime.kt'),
     false,
@@ -168,18 +171,20 @@ test('synthetic hashed persona, tag, and tool-call id are detected', () => {
 })
 
 test('ALL-CAPS acronyms and Rivet product language are allowed', () => {
-  assert.equal(isAcronymToken('PAM'), true)
-  assert.equal(isAcronymToken('SSH'), true)
+  const pam = ['P', 'A', 'M'].join('')
+  const ssh = ['S', 'S', 'H'].join('')
+  assert.equal(isAcronymToken(pam), true)
+  assert.equal(isAcronymToken(ssh), true)
   assert.equal(isAcronymToken(SYNTH_PERSONA), false)
-  assert.equal(shouldCheckPersonaToken('PAM'), false)
-  assert.equal(shouldCheckPersonaToken('pam'), false)
+  assert.equal(shouldCheckPersonaToken(pam), false)
+  assert.equal(shouldCheckPersonaToken(pam.toLowerCase()), false)
   assert.equal(shouldCheckPersonaToken(SYNTH_SHORT), true)
   assert.equal(shouldCheckPersonaToken(SYNTH_SHORT.toLowerCase()), false)
   const generic = ['x', 'yz'].join('')
   assert.equal(shouldCheckPersonaToken(generic), false)
   const file = 'docs/MEMORY-DESIGN.md'
-  assert.equal(scanText('PAM auth and SSH keys', { file, denyHashes }).length, 0)
-  assert.equal(scanText('configure --disable-pam', { file, denyHashes }).length, 0)
+  assert.equal(scanText(`${pam} auth and ${ssh} keys`, { file, denyHashes }).length, 0)
+  assert.equal(scanText(`configure --disable-${pam.toLowerCase()}`, { file, denyHashes }).length, 0)
   assert.equal(scanText(`generic user ${generic} in a fixture`, { file, denyHashes }).length, 0)
   assert.equal(
     scanText(`persona ${SYNTH_SHORT}`, { file, denyHashes }).some(
@@ -190,11 +195,73 @@ test('ALL-CAPS acronyms and Rivet product language are allowed', () => {
   assert.equal(scanText('RivetOS shared memory', { file, denyHashes }).length, 0)
   assert.equal(scanText('every Rivet agent serving this user', { file, denyHashes }).length, 0)
   assert.equal(scanText('architecture notes', { file, denyHashes }).length, 0)
+  const os = `${SHORT_FALSE[0].toUpperCase()}${SHORT_FALSE.slice(1)}`
+  assert.equal(scanText(`${os} Linux`, { file, denyHashes }).length, 0)
   assert.equal(scanText('persona Alpha / agent grokbot-alpha', { file, denyHashes }).length, 0)
   const bannedPrefix = ['DEFAULT_AGENT_PREFIX = ', "'", ['ri', 'vet'].join(''), "'"].join('')
   assert.equal(
     scanText(bannedPrefix, { file, denyHashes }).some((h) => h.rule === 'legacy-prefix'),
     true,
+  )
+})
+
+test('short persona tokens hit tags, quotes, and Title-case — not prose lowercase/ALL-CAPS', () => {
+  const file = 'docs/MEMORY-DESIGN.md'
+  const low = SYNTH_SHORT.toLowerCase()
+  const up = SYNTH_SHORT.toUpperCase()
+  const pam = ['P', 'A', 'M'].join('')
+  assert.equal(
+    scanText(`hello ${low} in prose`, { file, denyHashes }).some(
+      (h) => h.rule === 'denylist-persona',
+    ),
+    false,
+  )
+  assert.equal(scanText(`hello ${up} in prose`, { file, denyHashes }).length, 0)
+  assert.equal(
+    scanText(`persona ${SYNTH_SHORT}`, { file, denyHashes }).some(
+      (h) => h.rule === 'denylist-persona',
+    ),
+    true,
+  )
+  assert.equal(
+    scanText(`agent rivet-${low}`, { file, denyHashes }).some((h) => h.rule === 'denylist-tag'),
+    true,
+  )
+  assert.equal(
+    scanText(`agent grokbot-${low}`, { file, denyHashes }).some((h) => h.rule === 'denylist-tag'),
+    true,
+  )
+  assert.equal(
+    scanText(`slug rivet-${low}-v3`, { file, denyHashes }).some((h) => h.rule === 'denylist-tag'),
+    true,
+  )
+  assert.equal(
+    scanText(`id '${low}'`, { file, denyHashes }).some((h) => h.rule === 'denylist-persona'),
+    true,
+  )
+  assert.equal(
+    scanText(`id "${low}"`, { file, denyHashes }).some((h) => h.rule === 'denylist-persona'),
+    true,
+  )
+  assert.equal(
+    scanText(`id '${up}'`, { file, denyHashes }).some((h) => h.rule === 'denylist-persona'),
+    true,
+  )
+  assert.equal(
+    scanText(`agent rivet-${up}`, { file, denyHashes }).some((h) => h.rule === 'denylist-tag'),
+    true,
+  )
+  assert.equal(scanText(`${pam} auth`, { file, denyHashes }).length, 0)
+  assert.equal(scanText(`configure --disable-${pam.toLowerCase()}`, { file, denyHashes }).length, 0)
+  assert.equal(scanText('architecture notes', { file, denyHashes }).length, 0)
+  const os = `${SHORT_FALSE[0].toUpperCase()}${SHORT_FALSE.slice(1)}`
+  assert.equal(scanText(`${os} Linux`, { file, denyHashes }).length, 0)
+  assert.equal(scanText('every Rivet agent', { file, denyHashes }).length, 0)
+  assert.equal(
+    scanText(`seedUsersJson('${low}')`, { file, denyHashes }).some(
+      (h) => h.rule === 'denylist-persona',
+    ),
+    false,
   )
 })
 

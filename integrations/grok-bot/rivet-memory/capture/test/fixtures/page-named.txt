@@ -1,0 +1,5 @@
+Transcript of agent "Beta" (00000000-0000-4000-8000-000000000002), positions 10–12 of 20:
+{"role":"user","message":{"content":[{"type":"text","text":"<timestamp>Sunday, Sep 27, 2026, 4:06 PM (UTC-4)</timestamp>\n<user_query>\nhello\n</user_query>"}]}}
+{"role":"assistant","message":{"content":[{"type":"text","text":"hi"}]}}
+{"role":"tool","message":{"content":[{"type":"tool_result","name":"shell","result":{"success":{"stdout":"ok"}}}]}}
+Older messages remain: call ReadTranscript again with the same target and before=10.
