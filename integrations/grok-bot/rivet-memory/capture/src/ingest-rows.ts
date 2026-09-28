@@ -8,9 +8,6 @@
  */
 import { createHash } from 'node:crypto'
 
-const MAX_CONTENT = 16_000
-const TRUNCATION_MARKER = '\n…[truncated]'
-
 export interface GrokbotIngestMessage {
   role: 'user' | 'assistant' | 'system' | 'tool'
   content: string
@@ -116,17 +113,6 @@ function fallbackEventId(parts: {
   return createHash('sha256').update(material, 'utf8').digest('hex')
 }
 
-function capText(text: string, metadata: Record<string, unknown>, fieldPrefix = ''): string {
-  if (text.length <= MAX_CONTENT || text.endsWith(TRUNCATION_MARKER)) return text
-  const key = fieldPrefix ? `full_${fieldPrefix}_length` : 'full_content_length'
-  metadata[key] = text.length
-  metadata.truncated = true
-  let cutAt = MAX_CONTENT
-  const code = text.charCodeAt(cutAt - 1)
-  if (code >= 0xd800 && code <= 0xdbff) cutAt -= 1
-  return text.slice(0, cutAt) + TRUNCATION_MARKER
-}
-
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value)
 }
@@ -225,8 +211,8 @@ export async function ingestGrokbotSession(
       if (persona) metadata.persona = persona
       if (toolCalls && toolCalls.length > 0) metadata.tool_calls = toolCalls
 
-      const content = capText(item.content, metadata)
-      const storedToolResult = toolResult ? capText(toolResult, metadata, 'tool_result') : undefined
+      const content = item.content
+      const storedToolResult = toolResult
       if (metadata.truncated === true) anyTruncated = true
       if (typeof metadata.full_content_length === 'number') {
         maxFullLength = Math.max(maxFullLength ?? 0, metadata.full_content_length)

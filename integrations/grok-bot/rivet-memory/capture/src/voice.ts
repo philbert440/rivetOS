@@ -188,10 +188,12 @@ export function voiceCallToRecords(call: VoiceCall): { records: unknown[]; posit
   return { records, positions }
 }
 
-export function v3VoiceSession(session: string, callStem?: string): string {
-  const base = session.includes(SESSION_SUFFIX_V3_VOICE)
-    ? session
-    : `${session}${SESSION_SUFFIX_V3_VOICE}`
+export function v3VoiceSession(
+  session: string,
+  callStem?: string,
+  suffix = SESSION_SUFFIX_V3_VOICE,
+): string {
+  const base = session.includes(suffix) ? session : `${session}${suffix}`
   if (!callStem) return base
   const stem = slugStem(callStem)
   return base.endsWith(`-${stem}`) ? base : `${base}-${stem}`

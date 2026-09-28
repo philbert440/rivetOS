@@ -3,7 +3,7 @@
  * Grok Bot capture CLI — convert, backfill, reclean, compare, discover.
  * Never prints secrets, hostnames, or connection strings.
  */
-import { mkdirSync, readFileSync, readdirSync, writeFileSync } from 'node:fs'
+import { mkdirSync, readFileSync, readdirSync, statSync, writeFileSync } from 'node:fs'
 import { dirname, join, resolve } from 'node:path'
 import { parseArgs } from 'node:util'
 import { coalesceDashArgs } from './argv.js'
@@ -15,6 +15,7 @@ import {
   identityFor,
   identityForSession,
   listInputFiles,
+  peekParentLastKnownTime,
   resolveSourceAgentId,
 } from './identity.js'
 import { normalizeRecords, toIngestRows } from './normalize.js'
@@ -25,6 +26,7 @@ import {
   FROM_ROWS_LIMITS,
   LIST_CONVERSATIONS_SQL,
   ROWS_BY_CONVERSATION_SQL,
+  isRowShapedSession,
   loadStoredRowsJson,
   printRecleanStats,
   recleanFromSource,
@@ -33,7 +35,8 @@ import {
   v3Session,
 } from './reclean.js'
 import { readStoreSince, v3StoreSession } from './store.js'
-import { SESSION_SUFFIX_V3, SESSION_SUFFIX_V3_STORE, SESSION_SUFFIX_V3_VOICE } from './types.js'
+import { sourceFileTimes } from './timestamps.js'
+import { SESSION_SUFFIX_V3, sessionStoreSuffix, sessionVoiceSuffix } from './types.js'
 import type { IngestRow, ParsedInput } from './types.js'
 import { parseVoiceCall, v3VoiceSession, voiceCallToRecords } from './voice.js'
 
@@ -43,7 +46,8 @@ const HELP = `Usage: grokbot-rivet-memory-capture <command> [opts]
           [--session-suffix=-v3]
       Normalize one on-disk jsonl or ReadTranscript page to ingest jsonl.
       Live capture defaults to session suffix -v3 (GROKBOT_SESSION_SUFFIX).
-      Use the = form: --session-suffix=-v3 (space form is rewritten).
+      Set GROKBOT_SESSION_SUFFIX=-v4 for a fresh sibling of -v3.
+      Use the = form: --session-suffix=-v4 (space form is rewritten).
 
   convert-store SRC.DB DST [--agent-id UUID] [--session KEY] [--after-seq=-1]
           [--session-suffix=-v3-store]
@@ -73,9 +77,9 @@ const HELP = `Usage: grokbot-rivet-memory-capture <command> [opts]
   reclean [--session KEY] [--agent NAME] [--agent-id UUID]
           [--from-transcript FILE] [--from-rows FILE] [--out DIR]
           [--dry-run|--write]
-      Re-clean source transcripts into <session>-v3. --from-rows and PG
-      reads write <session>-v3-rows (stored-row positions do not match
-      source-transcript positions).
+      Re-clean source transcripts into <session>-vN. --from-rows and PG
+      reads write <session>-vN-rows. Follows GROKBOT_SESSION_SUFFIX
+      / --session-suffix. Refuses already row-shaped sessions.
       --dry-run (default) performs zero writes and prints stats.
       Without --from-transcript/--from-rows, reads RIVETOS_PG_URL from the
       environment or ~/.rivetos/.env inside BEGIN TRANSACTION READ ONLY
@@ -149,6 +153,7 @@ function cmdConvert(argv: string[]): number {
     text,
     values.format === 'page' || values.format === 'ondisk' ? values.format : undefined,
   )
+  const srcPath = resolve(src)
   const result = normalizeRecords(parsed.records, {
     sessionKey: session,
     agent: ident.agent ?? 'rivet-grokbot',
@@ -156,6 +161,13 @@ function cmdConvert(argv: string[]): number {
     persona: ident.persona,
     format: parsed.format,
     startPosition: parsed.header?.a ?? 0,
+    ...sourceFileTimes(statSync(src)),
+    lastKnownTime: peekParentLastKnownTime({
+      sourcePath: srcPath,
+      records: parsed.records.slice(0, 8),
+    }),
+    sourcePath: srcPath,
+    sourceLines: parsed.sourceLines,
   })
   mkdirSync(dirname(resolve(dst)), { recursive: true })
   writeFileSync(
@@ -175,7 +187,7 @@ function cmdConvert(argv: string[]): number {
     }),
   )
   if (!result.stats.timeKnown) {
-    console.error('created_at: unset (no timestamp in source; DB default on ingest)')
+    console.error('created_at: derived from file mtime + position (no inline stamps)')
   }
   return 0
 }
@@ -204,12 +216,12 @@ function cmdConvertStore(argv: string[]): number {
     return 2
   }
   const ident = resolveIdent(values['agent-id'], values.session, values.agent)
-  const suffix = values['session-suffix'] ?? SESSION_SUFFIX_V3_STORE
+  const suffix = values['session-suffix'] ?? sessionStoreSuffix(sessionSuffixFromArgs())
   const session = values.session
     ? values.session.endsWith(suffix)
       ? values.session
       : `${values.session}${suffix}`
-    : v3StoreSession(ident.session)
+    : v3StoreSession(ident.session, suffix)
   const afterSeq = values['after-seq'] !== undefined ? Number(values['after-seq']) : -1
   const read = readStoreSince(src, { afterSeq })
   const result = normalizeRecords(read.records, {
@@ -260,12 +272,12 @@ function cmdConvertVoice(argv: string[]): number {
   }
   const ident = resolveIdent(values['agent-id'], values.session, values.agent)
   const call = parseVoiceCall(readFileSync(src, 'utf8'), src)
-  const suffix = values['session-suffix'] ?? SESSION_SUFFIX_V3_VOICE
+  const suffix = values['session-suffix'] ?? sessionVoiceSuffix(sessionSuffixFromArgs())
   const session = values.session
     ? values.session.includes(suffix)
       ? values.session
-      : v3VoiceSession(values.session, src)
-    : v3VoiceSession(ident.session, src)
+      : v3VoiceSession(values.session, src, suffix)
+    : v3VoiceSession(ident.session, src, suffix)
   const { records, positions } = voiceCallToRecords(call)
   const result = normalizeRecords(records, {
     sessionKey: session,
@@ -389,11 +401,17 @@ function cmdBackfill(argv: string[]): number {
   let n = 0
   let writeConflicts = false
   for (const bucket of buckets.values()) {
+    const times = sourceFileTimesFromPaths(bucket.files)
     const result = normalizePages(bucket.parsed, {
       sessionKey: bucket.session,
       agent: bucket.agent,
       agentId: bucket.id,
       persona: bucket.persona,
+      ...times,
+      lastKnownTime: peekParentLastKnownTime({
+        sourcePath: bucket.files[0],
+        records: bucket.parsed[0]?.records.slice(0, 8),
+      }),
     })
     const dest = join(outDir, `${bucket.session}.jsonl`)
     const conflicts = result.conflicts ?? []
@@ -437,13 +455,23 @@ async function cmdReclean(argv: string[]): Promise<number> {
       out: { type: 'string' },
       'dry-run': { type: 'boolean', default: true },
       write: { type: 'boolean', default: false },
+      'session-suffix': { type: 'string' },
     },
   })
   const dry = !values.write
   const ident = resolveIdent(values['agent-id'], values.session, values.agent)
   const sourceSession = values.session || ident.session
+  const suffix = sessionSuffixFromArgs(values['session-suffix'])
+  if (isRowShapedSession(sourceSession)) {
+    console.error(
+      `reclean: ${sourceSession} is already row-shaped; refuse to split tool calls again`,
+    )
+    return 2
+  }
   const fromSource = Boolean(values['from-transcript'])
-  const session = fromSource ? v3Session(sourceSession) : v3RowsSession(sourceSession)
+  const session = fromSource
+    ? v3Session(sourceSession, suffix)
+    : v3RowsSession(sourceSession, suffix)
 
   const writeOut = (ingest: IngestRow[], destSession: string) => {
     if (dry || !values.out) return
@@ -464,6 +492,12 @@ async function cmdReclean(argv: string[]): Promise<number> {
       agentId: ident.id,
       persona: ident.persona,
       dryRun: dry,
+      ...sourceFileTimes(statSync(values['from-transcript'])),
+      lastKnownTime: peekParentLastKnownTime({
+        sourcePath: resolve(values['from-transcript']),
+      }),
+      sourcePath: resolve(values['from-transcript']),
+      sessionSuffix: suffix,
     })
     console.log(printRecleanStats({ ...result, session, dryRun: dry }))
     writeOut(result.ingest, session)
@@ -472,17 +506,24 @@ async function cmdReclean(argv: string[]): Promise<number> {
 
   if (values['from-rows']) {
     const rows = loadStoredRowsJson(values['from-rows'])
-    const result = recleanStoredRows(rows, {
-      sessionKey: values.session || ident.session,
-      agent: ident.agent ?? 'unknown',
-      agentId: ident.id,
-      persona: ident.persona,
-      dryRun: dry,
-    })
-    console.log(printRecleanStats({ ...result, session, dryRun: dry }))
-    console.log(FROM_ROWS_LIMITS)
-    writeOut(result.ingest, session)
-    return 0
+    try {
+      const result = recleanStoredRows(rows, {
+        sessionKey: values.session || ident.session,
+        agent: ident.agent ?? 'unknown',
+        agentId: ident.id,
+        persona: ident.persona,
+        dryRun: dry,
+        sessionSuffix: suffix,
+      })
+      console.log(printRecleanStats({ ...result, session, dryRun: dry }))
+      console.log(FROM_ROWS_LIMITS)
+      writeOut(result.ingest, session)
+      return 0
+    } catch (err) {
+      const message = err instanceof Error ? err.message : 'reclean failed'
+      console.error(message)
+      return 2
+    }
   }
 
   if (!values.session && !ident.id) {
@@ -519,6 +560,7 @@ async function cmdReclean(argv: string[]): Promise<number> {
         agentId: ident.id,
         persona: ident.persona,
         dryRun: dry,
+        sessionSuffix: suffix,
       })
       console.log(
         `conversation_id=${conversation.conversation_id} agent=${conversation.agent} rows=${String(conversation.n)}`,
@@ -588,6 +630,11 @@ function cmdDiscover(argv: string[]): number {
   } else {
     for (const m of catalog.models) process.stdout.write(`${JSON.stringify(m)}\n`)
   }
+  if (catalog.unmappedTranscripts.length > 0) {
+    console.error(
+      `unmapped transcripts (not on roster/overrides): ${catalog.unmappedTranscripts.join(', ')}`,
+    )
+  }
   return 0
 }
 
@@ -619,6 +666,29 @@ function resolveIdent(agentId?: string, session?: string, agent?: string) {
 }
 
 export { resolveIdent }
+
+function sourceFileTimesFromPaths(files: string[]): {
+  fileMtimeMs?: number
+  fileBirthtimeMs?: number
+} {
+  let mtime = 0
+  let birth: number | undefined
+  for (const file of files) {
+    try {
+      const t = sourceFileTimes(statSync(file))
+      if (t.fileMtimeMs) mtime = Math.max(mtime, t.fileMtimeMs)
+      if (t.fileBirthtimeMs !== undefined) {
+        birth = birth === undefined ? t.fileBirthtimeMs : Math.min(birth, t.fileBirthtimeMs)
+      }
+    } catch {
+      /* skip unreadable */
+    }
+  }
+  return {
+    fileMtimeMs: mtime > 0 ? mtime : undefined,
+    fileBirthtimeMs: birth !== undefined && (mtime <= 0 || birth < mtime) ? birth : undefined,
+  }
+}
 
 function fileDir(): string {
   return resolve(new URL('..', import.meta.url).pathname)

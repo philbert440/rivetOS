@@ -1,4 +1,5 @@
-import { readFileSync } from 'node:fs'
+import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { capForStorage, eventIdFromContent } from '@rivetos/capture-core'
@@ -11,6 +12,7 @@ import {
   identityForSession,
   listInputFiles,
   loadIdentityConfig,
+  peekParentLastKnownTime,
   resolveSourceAgentId,
   slug,
 } from '../src/identity.js'
@@ -26,6 +28,7 @@ import {
 import { detectFormat, parseInput, parsePageHeader, toolResultBody } from '../src/parse.js'
 import {
   assignRecleanPositions,
+  isRowShapedSession,
   recleanFromSource,
   recleanStoredRows,
   storedRowPosition,
@@ -33,7 +36,15 @@ import {
   v3Session,
 } from '../src/reclean.js'
 import { resolveIdent } from '../src/cli.js'
-import { addMs, parseGrokTimestamp } from '../src/timestamps.js'
+import {
+  addMs,
+  deriveCreatedAt,
+  parseEpochMs,
+  parseGrokTimestamp,
+  parseKnownTime,
+} from '../src/timestamps.js'
+import { CONTENT_LIMIT, INHERIT_STEP_MS, stripSessionSuffix } from '../src/types.js'
+import { stubImagePayloads } from '../src/storage.js'
 import { countNoise, extractUserText, stripWrappers } from '../src/wrappers.js'
 import { STORAGE_LIMIT } from '../src/types.js'
 import { compareInput } from '../src/compare.js'
@@ -42,6 +53,7 @@ const FIX = join(dirname(fileURLToPath(import.meta.url)), 'fixtures')
 const RIVET_ID = '6a155e75-0dd5-4c8a-8391-994878ed683a'
 const EGG_ID = 'fe09510f-c3ce-49bc-9d93-8c5ab5705809'
 const BOB_ID = '00df02ea-4f5f-4d3e-945a-864e1c9c78dc'
+const GARY_ID = '71aebcf6-8b3b-4649-abe1-ad6d653e6156'
 
 function readFix(name: string): string {
   return readFileSync(join(FIX, name), 'utf8')
@@ -82,7 +94,7 @@ describe('timestamps', () => {
     )
   })
 
-  it('inherits last known time plus N ms only onto assistant/tool after a stamped user', () => {
+  it('spaces rows after the last stamp at 1s and records time_source', () => {
     const records = [
       {
         role: 'user',
@@ -105,10 +117,15 @@ describe('timestamps', () => {
     ]
     const { messages } = normalizeRecords(records, rivetOpts())
     expect(messages[0].created_at).toBe('2026-09-27T20:06:00.000Z')
-    expect(messages[1].created_at).toBe(addMs('2026-09-27T20:06:00.000Z', 1))
-    expect(messages[2].created_at).toBe(addMs('2026-09-27T20:06:00.000Z', 2))
-    expect(messages[3].created_at).toBeUndefined()
-    expect(messages[4].created_at).toBeUndefined()
+    expect(messages[0].metadata?.time_source).toBe('tag')
+    expect(messages[1].created_at).toBe(addMs('2026-09-27T20:06:00.000Z', 1_000))
+    expect(messages[1].metadata?.time_source).toBe('inherited')
+    expect(messages[2].created_at).toBe(addMs('2026-09-27T20:06:00.000Z', 2_000))
+    expect(messages[3].created_at).toBe(addMs('2026-09-27T20:06:00.000Z', 3_000))
+    expect(messages[4].created_at).toBe(addMs('2026-09-27T20:06:00.000Z', 4_000))
+    expect(messages.every((m) => Boolean(m.created_at))).toBe(true)
+    const times = messages.map((m) => Date.parse(m.created_at ?? ''))
+    expect(times.every((t, i) => i === 0 || t > times[i - 1])).toBe(true)
   })
 
   it('does not parse <timestamp> quoted inside assistant or tool text', () => {
@@ -138,8 +155,13 @@ describe('timestamps', () => {
       },
       { role: 'user', message: { content: [{ type: 'text', text: 'plain' }] } },
     ]
-    const { messages } = normalizeRecords(records, rivetOpts())
-    expect(messages.every((m) => !m.created_at)).toBe(true)
+    const { messages } = normalizeRecords(records, {
+      ...rivetOpts(),
+      fileMtimeMs: Date.parse('2026-09-01T12:00:00.000Z'),
+    })
+    expect(messages.every((m) => Boolean(m.created_at))).toBe(true)
+    expect(messages.some((m) => m.created_at === '2026-09-27T20:06:00.000Z')).toBe(false)
+    expect(messages.some((m) => m.created_at === '2026-01-05T04:00:00.000Z')).toBe(false)
   })
 
   it('assistant/tool inherit only from the immediately preceding stamped user', () => {
@@ -171,9 +193,11 @@ describe('timestamps', () => {
     ]
     const { messages } = normalizeRecords(records, rivetOpts())
     expect(messages[0].created_at).toBe('2026-09-27T20:06:00.000Z')
-    expect(messages[1].created_at).toBe(addMs('2026-09-27T20:06:00.000Z', 1))
+    expect(messages[1].created_at).toBe('2026-09-27T20:06:30.000Z')
+    expect(messages[1].metadata?.time_source).toBe('interpolated')
     expect(messages[2].created_at).toBe('2026-09-27T20:07:00.000Z')
-    expect(messages[3].created_at).toBe(addMs('2026-09-27T20:07:00.000Z', 1))
+    expect(messages[3].created_at).toBe(addMs('2026-09-27T20:07:00.000Z', 1_000))
+    expect(messages[3].metadata?.time_source).toBe('inherited')
   })
 
   it('keeps genuine same-minute user repeats at different positions', () => {
@@ -198,7 +222,7 @@ describe('timestamps', () => {
     expect(users[1].content).toBe('yes')
     expect(users[0].metadata?.position).toBe(0)
     expect(users[1].metadata?.position).toBe(2)
-    expect(users[1].created_at).toBe(addMs(users[0].created_at ?? '', 2))
+    expect(users[1].created_at).toBe(addMs(users[0].created_at ?? '', INHERIT_STEP_MS + 1))
   })
 
   it('clamps created_at to max(stamp, lastEmitted+1ms)', () => {
@@ -221,12 +245,74 @@ describe('timestamps', () => {
     ]
     const { messages } = normalizeRecords(records, rivetOpts())
     expect(messages[0].created_at).toBe('2026-09-27T20:06:00.000Z')
-    expect(messages[1].created_at).toBe(addMs('2026-09-27T20:06:00.000Z', 1))
-    expect(messages[2].created_at).toBe(addMs('2026-09-27T20:06:00.000Z', 2))
+    expect(messages[1].created_at).toBe(addMs('2026-09-27T20:06:00.000Z', INHERIT_STEP_MS))
+    expect(messages[1].metadata?.time_source).toBe('inherited')
+    expect(messages[2].created_at).toBe(addMs('2026-09-27T20:06:00.000Z', INHERIT_STEP_MS + 1))
     const clock = { last: '2026-09-27T20:06:00.000Z' }
     expect(clampCreatedAt(clock, '2026-09-27T20:06:00.000Z')).toBe(
       addMs('2026-09-27T20:06:00.000Z', 1),
     )
+  })
+
+  it('records original time when clamp moves a stamp by more than 1s', () => {
+    const records = [
+      {
+        role: 'user',
+        message: {
+          content: [
+            {
+              type: 'text',
+              text: '<timestamp>Sunday, Sep 27, 2026, 4:06 PM (UTC-4)</timestamp>\n<user_query>\nfirst\n</user_query>',
+            },
+          ],
+        },
+      },
+      {
+        role: 'user',
+        message: {
+          content: [
+            {
+              type: 'text',
+              text: '<timestamp>Sunday, Sep 27, 2026, 3:38 PM (UTC-4)</timestamp>\n<user_query>\nbackwards\n</user_query>',
+            },
+          ],
+        },
+      },
+    ]
+    const { messages } = normalizeRecords(records, rivetOpts())
+    expect(messages[0].created_at).toBe('2026-09-27T20:06:00.000Z')
+    expect(Date.parse(messages[1].created_at ?? '')).toBeGreaterThan(
+      Date.parse(messages[0].created_at ?? ''),
+    )
+    expect(messages[1].metadata?.created_at_original).toBe('2026-09-27T19:38:00.000Z')
+    expect(messages[1].metadata?.created_at_adjusted_ms).toBeGreaterThan(1_000)
+  })
+
+  it('ignores result.timestamp / part.timestamp and free-form date strings', () => {
+    const records = [
+      {
+        role: 'tool',
+        message: {
+          content: [
+            {
+              type: 'tool_result',
+              name: 'x',
+              result: { timestamp: 'Monday, Jan 5, 2026, 9:30 AM (UTC+5:30)', note: 'not a stamp' },
+              timestamp: '2020-01-01T00:00:00.000Z',
+            },
+          ],
+        },
+      },
+    ]
+    const { messages } = normalizeRecords(records, {
+      ...rivetOpts(),
+      fileMtimeMs: Date.parse('2026-09-01T12:00:00.000Z'),
+    })
+    expect(messages[0].created_at).not.toBe('2026-01-05T04:00:00.000Z')
+    expect(messages[0].created_at).not.toBe('2020-01-01T00:00:00.000Z')
+    expect(messages[0].metadata?.time_source).toBe('mtime')
+    expect(parseKnownTime('not a date at all')).toBeUndefined()
+    expect(parseKnownTime('2026-09-27T20:06:00.000Z')).toBe('2026-09-27T20:06:00.000Z')
   })
 
   it('drops a replayed block of two or more identical consecutive records', () => {
@@ -388,11 +474,20 @@ describe('timestamps', () => {
     expect(asked[0].metadata?.position).toBe(204)
   })
 
-  it('leaves created_at unset when no time is known', () => {
-    const { result } = normalizeFile('page-rivet-this-conversation-3040-3056.txt')
-    const stamped = result.messages.filter((m) => m.created_at)
-    expect(result.timeKnown).toBe(false)
-    expect(stamped).toEqual([])
+  it('reads send_message epoch stamps when a page has no <timestamp> tags', () => {
+    const text = readFix('page-rivet-this-conversation-3040-3056.txt')
+    const parsed = parseInput(text)
+    const result = normalizeRecords(parsed.records, {
+      ...rivetOpts(),
+      format: parsed.format,
+      startPosition: parsed.header?.a ?? 0,
+    })
+    expect(result.timeKnown).toBe(true)
+    expect(result.messages.length).toBeGreaterThan(0)
+    expect(result.messages.every((m) => Boolean(m.created_at))).toBe(true)
+    const times = result.messages.map((m) => Date.parse(m.created_at ?? ''))
+    expect(times.every((t, i) => i === 0 || t > times[i - 1])).toBe(true)
+    expect(result.messages.some((m) => m.created_at === parseEpochMs('1787358088946'))).toBe(true)
   })
 
   it('ties event_id to ordinal so a later 0-200 run does not drop 0-99 repeats', () => {
@@ -677,6 +772,22 @@ describe('per-bot tags', () => {
     expect(ids).not.toContain('aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee')
     expect(ids).not.toContain('11111111-2222-4333-8444-555555555555')
     expect(catalog.models.find((m) => m.id === RIVET_ID)?.session).toBe('grokbot-rivet-grokbot')
+    expect(ids).toContain(GARY_ID)
+    expect(catalog.models.find((m) => m.id === GARY_ID)?.agent).toBe('rivet-gary')
+  })
+
+  it('reports unmapped <uuid>/<uuid>.jsonl transcripts instead of dropping them', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'gb-unmapped-'))
+    const orphan = 'eb245c0c-0000-4000-8000-000000000001'
+    mkdirSync(join(dir, orphan), { recursive: true })
+    writeFileSync(join(dir, orphan, `${orphan}.jsonl`), '{}\n')
+    const catalog = discoverModels({
+      agentsDir: join(FIX, 'agents'),
+      modelsPath: join(dirname(FIX), '..', 'models.json'),
+      transcriptsDir: dir,
+    })
+    expect(catalog.unmappedTranscripts).toContain(orphan)
+    expect(catalog.models.map((m) => m.id)).not.toContain(orphan)
   })
 
   it('tags subagents as rivet-grokbot-run / grokbot-run-<id>', () => {
@@ -734,6 +845,295 @@ describe('per-bot tags', () => {
   })
 })
 
+describe('unstamped on-disk transcript + createdAt', () => {
+  it('stamps every line on a bot with no inline <timestamp> tags and hidden turns', () => {
+    const { result } = normalizeFile('ondisk-unstamped-hidden.jsonl', {
+      sessionKey: 'grokbot-ollie-v4',
+      agent: 'rivet-ollie',
+    })
+    expect(result.messages.length).toBeGreaterThan(0)
+    expect(result.messages.every((m) => Boolean(m.created_at))).toBe(true)
+    const times = result.messages.map((m) => Date.parse(m.created_at ?? ''))
+    expect(times.every((t) => Number.isFinite(t))).toBe(true)
+    expect(times.every((t, i) => i === 0 || t > times[i - 1])).toBe(true)
+    expect(result.messages.some((m) => m.metadata?.kind === 'first_run')).toBe(true)
+    expect(result.messages.some((m) => m.metadata?.kind === 'routine')).toBe(true)
+    expect(result.messages.some((m) => m.created_at === parseEpochMs('1787270751113'))).toBe(true)
+    expect(result.messages.map((m) => m.content).join('\n')).not.toMatch(/<timestamp>/)
+  })
+
+  it('falls back to file mtime + 1s steps, last row at mtime', () => {
+    const mtime = Date.parse('2026-08-11T15:00:00.000Z')
+    const records = [
+      {
+        role: 'user',
+        message: {
+          content: [
+            {
+              type: 'text',
+              text: '[SAND_HIDDEN_PROMPT][first run] This is your very first turn.',
+            },
+          ],
+        },
+      },
+      { role: 'assistant', message: { content: [{ type: 'text', text: 'hello' }] } },
+      { role: 'user', message: { content: [{ type: 'text', text: '[t0u]\nplain note' }] } },
+    ]
+    const { messages } = normalizeRecords(records, { ...rivetOpts(), fileMtimeMs: mtime })
+    expect(messages.every((m) => Boolean(m.created_at))).toBe(true)
+    const times = messages.map((m) => Date.parse(m.created_at ?? ''))
+    expect(times.every((t, i) => i === 0 || t > times[i - 1])).toBe(true)
+    expect(times[times.length - 1]).toBe(mtime)
+    expect(times[1] - times[0]).toBe(INHERIT_STEP_MS)
+    expect(times[2] - times[1]).toBe(INHERIT_STEP_MS)
+    expect(messages.every((m) => m.metadata?.time_source === 'mtime')).toBe(true)
+  })
+
+  it('interpolates mtime-tier rows from file birthtime to mtime', () => {
+    const mtime = Date.parse('2026-08-11T15:00:00.000Z')
+    const birth = mtime - 60_000
+    const records = [
+      { role: 'user', message: { content: [{ type: 'text', text: '[t0u]\none' }] } },
+      { role: 'assistant', message: { content: [{ type: 'text', text: 'two' }] } },
+      { role: 'user', message: { content: [{ type: 'text', text: '[t1u]\nthree' }] } },
+    ]
+    const { messages } = normalizeRecords(records, {
+      ...rivetOpts(),
+      fileMtimeMs: mtime,
+      fileBirthtimeMs: birth,
+    })
+    const times = messages.map((m) => Date.parse(m.created_at ?? ''))
+    expect(times[0]).toBe(birth)
+    expect(times[1]).toBe(birth + 30_000)
+    expect(times[2]).toBe(mtime)
+    expect(messages.every((m) => m.metadata?.time_source === 'mtime')).toBe(true)
+  })
+
+  it('uses 1s mtime steps when birth is only 4 ms earlier (copied sand-subagent)', () => {
+    const mtime = Date.parse('2026-08-11T15:00:00.000Z')
+    const records = [
+      { role: 'user', message: { content: [{ type: 'text', text: '[t0u]\none' }] } },
+      { role: 'assistant', message: { content: [{ type: 'text', text: 'two' }] } },
+      { role: 'user', message: { content: [{ type: 'text', text: '[t1u]\nthree' }] } },
+    ]
+    const { messages } = normalizeRecords(records, {
+      ...rivetOpts(),
+      fileMtimeMs: mtime,
+      fileBirthtimeMs: mtime - 4,
+    })
+    const times = messages.map((m) => Date.parse(m.created_at ?? ''))
+    expect(times[times.length - 1]).toBe(mtime)
+    expect(times[1] - times[0]).toBe(INHERIT_STEP_MS)
+    expect(times[2] - times[1]).toBe(INHERIT_STEP_MS)
+    expect(messages.every((m) => m.metadata?.time_source === 'mtime')).toBe(true)
+  })
+
+  it('inherits from a parent session stamp when lastKnownTime is set', () => {
+    const parent = '2026-08-11T14:00:00.000Z'
+    const mtime = Date.parse('2026-08-11T15:00:00.000Z')
+    const records = [
+      { role: 'user', message: { content: [{ type: 'text', text: '[t0u]\nsubagent start' }] } },
+      { role: 'assistant', message: { content: [{ type: 'text', text: 'ok' }] } },
+    ]
+    const { messages } = normalizeRecords(records, {
+      ...rivetOpts(),
+      fileMtimeMs: mtime,
+      lastKnownTime: parent,
+    })
+    expect(messages[0].created_at).toBe(addMs(parent, INHERIT_STEP_MS))
+    expect(messages[0].metadata?.time_source).toBe('inherited')
+    expect(messages[1].created_at).toBe(addMs(parent, 2 * INHERIT_STEP_MS))
+    expect(messages[1].metadata?.time_source).toBe('inherited')
+  })
+
+  it('skips parent seeding when only parentId is known (not the last stamp)', () => {
+    const parentId = 'aaaaaaaa-bbbb-4ccc-8ddd-111111111111'
+    const childId = 'bbbbbbbb-cccc-4ddd-8eee-222222222222'
+    const root = mkdtempSync(join(tmpdir(), 'gb-parent-skip-'))
+    mkdirSync(join(root, parentId), { recursive: true })
+    mkdirSync(join(root, 'agents', childId), { recursive: true })
+    writeFileSync(
+      join(root, parentId, `${parentId}.jsonl`),
+      `${JSON.stringify({
+        role: 'user',
+        message: {
+          content: [
+            {
+              type: 'text',
+              text: '<timestamp>Sunday, Sep 27, 2026, 4:06 PM (UTC-4)</timestamp>\n<user_query>\nparent\n</user_query>',
+            },
+          ],
+        },
+      })}\n`,
+    )
+    writeFileSync(join(root, 'agents', childId, 'profile.json'), JSON.stringify({ parentId }))
+    const childPath = join(root, childId, `${childId}.jsonl`)
+    mkdirSync(join(root, childId), { recursive: true })
+    writeFileSync(childPath, '{}\n')
+    expect(
+      peekParentLastKnownTime({
+        sourcePath: childPath,
+        agentsDir: join(root, 'agents'),
+        transcriptsDir: root,
+      }),
+    ).toBeUndefined()
+  })
+
+  it('peeks the parent stamp nearest the child spawn mention, not the last stamp', () => {
+    const parentId = 'aaaaaaaa-bbbb-4ccc-8ddd-111111111111'
+    const childId = 'bbbbbbbb-cccc-4ddd-8eee-222222222222'
+    const root = mkdtempSync(join(tmpdir(), 'gb-parent-near-'))
+    mkdirSync(join(root, parentId), { recursive: true })
+    mkdirSync(join(root, 'agents', childId), { recursive: true })
+    const early = {
+      role: 'user',
+      message: {
+        content: [
+          {
+            type: 'text',
+            text: `<timestamp>Sunday, Sep 27, 2026, 4:06 PM (UTC-4)</timestamp>\n<user_query>\nspawn ${childId}\n</user_query>`,
+          },
+        ],
+      },
+    }
+    const late = {
+      role: 'user',
+      message: {
+        content: [
+          {
+            type: 'text',
+            text: '<timestamp>Sunday, Sep 27, 2026, 5:06 PM (UTC-4)</timestamp>\n<user_query>\nlater parent turn\n</user_query>',
+          },
+        ],
+      },
+    }
+    writeFileSync(
+      join(root, parentId, `${parentId}.jsonl`),
+      `${JSON.stringify(early)}\n${JSON.stringify(late)}\n`,
+    )
+    writeFileSync(join(root, 'agents', childId, 'profile.json'), JSON.stringify({ parentId }))
+    const childPath = join(root, childId, `${childId}.jsonl`)
+    mkdirSync(join(root, childId), { recursive: true })
+    writeFileSync(childPath, '{}\n')
+    expect(
+      peekParentLastKnownTime({
+        sourcePath: childPath,
+        agentsDir: join(root, 'agents'),
+        transcriptsDir: root,
+      }),
+    ).toBe('2026-09-27T20:06:00.000Z')
+  })
+
+  it('uses profile createdAt to pick the nearest parent stamp', () => {
+    const parentId = 'aaaaaaaa-bbbb-4ccc-8ddd-333333333333'
+    const childId = 'bbbbbbbb-cccc-4ddd-8eee-444444444444'
+    const root = mkdtempSync(join(tmpdir(), 'gb-parent-created-'))
+    mkdirSync(join(root, parentId), { recursive: true })
+    mkdirSync(join(root, 'agents', childId), { recursive: true })
+    writeFileSync(
+      join(root, parentId, `${parentId}.jsonl`),
+      `${JSON.stringify({
+        role: 'user',
+        message: {
+          content: [
+            {
+              type: 'text',
+              text: '<timestamp>Sunday, Sep 27, 2026, 4:06 PM (UTC-4)</timestamp>\n<user_query>\nearly\n</user_query>',
+            },
+          ],
+        },
+      })}\n${JSON.stringify({
+        role: 'user',
+        message: {
+          content: [
+            {
+              type: 'text',
+              text: '<timestamp>Sunday, Sep 27, 2026, 5:06 PM (UTC-4)</timestamp>\n<user_query>\nlate\n</user_query>',
+            },
+          ],
+        },
+      })}\n`,
+    )
+    writeFileSync(
+      join(root, 'agents', childId, 'profile.json'),
+      JSON.stringify({ parentId, createdAt: '2026-09-27T20:06:20.000Z' }),
+    )
+    const childPath = join(root, childId, `${childId}.jsonl`)
+    mkdirSync(join(root, childId), { recursive: true })
+    writeFileSync(childPath, '{}\n')
+    expect(
+      peekParentLastKnownTime({
+        sourcePath: childPath,
+        agentsDir: join(root, 'agents'),
+        transcriptsDir: root,
+      }),
+    ).toBe('2026-09-27T20:06:00.000Z')
+  })
+
+  it('steps INHERIT_STEP_MS when the later stamp is earlier than the earlier stamp', () => {
+    const earlier = { time: '2026-09-27T20:07:00.000Z', position: 0 }
+    const later = { time: '2026-09-27T20:06:00.000Z', position: 2 }
+    const mid = deriveCreatedAt({
+      position: 1,
+      earlier,
+      later,
+      maxPosition: 2,
+    })
+    expect(mid.source).toBe('inherited')
+    expect(mid.time).toBe(addMs(earlier.time, INHERIT_STEP_MS))
+    const records = [
+      {
+        role: 'user',
+        message: {
+          content: [
+            {
+              type: 'text',
+              text: '<timestamp>Sunday, Sep 27, 2026, 4:07 PM (UTC-4)</timestamp>\n<user_query>\nfirst\n</user_query>',
+            },
+          ],
+        },
+      },
+      { role: 'assistant', message: { content: [{ type: 'text', text: 'mid' }] } },
+      {
+        role: 'user',
+        message: {
+          content: [
+            {
+              type: 'text',
+              text: '<timestamp>Sunday, Sep 27, 2026, 4:06 PM (UTC-4)</timestamp>\n<user_query>\nback\n</user_query>',
+            },
+          ],
+        },
+      },
+    ]
+    const { messages } = normalizeRecords(records, rivetOpts())
+    expect(messages[1].created_at).toBe(addMs('2026-09-27T20:07:00.000Z', INHERIT_STEP_MS))
+    expect(messages[1].metadata?.time_source).toBe('inherited')
+  })
+
+  it('resets clamp adjustment state when the next candidate is empty', () => {
+    const clock = { last: '2026-09-27T20:06:00.000Z' }
+    expect(clampCreatedAt(clock, '2026-09-27T19:00:00.000Z')).toBe(
+      addMs('2026-09-27T20:06:00.000Z', 1),
+    )
+    expect(clock.lastOriginal).toBe('2026-09-27T19:00:00.000Z')
+    expect(clock.lastAdjustmentMs).toBeGreaterThan(1_000)
+    expect(clampCreatedAt(clock, undefined)).toBeUndefined()
+    expect(clock.lastOriginal).toBeUndefined()
+    expect(clock.lastAdjustmentMs).toBe(0)
+  })
+
+  it('strips -v4 store/voice/rows suffixes the same way as -v3', () => {
+    expect(stripSessionSuffix('grokbot-ollie-v4')).toBe('grokbot-ollie')
+    expect(stripSessionSuffix('grokbot-ollie-v4-store')).toBe('grokbot-ollie')
+    expect(stripSessionSuffix('grokbot-ollie-v4-rows')).toBe('grokbot-ollie')
+    expect(stripSessionSuffix('grokbot-ollie-v4-voice-call')).toBe('grokbot-ollie')
+    expect(stripSessionSuffix('grokbot-rivet-grokbot-v3-voice-call-redacted')).toBe(
+      'grokbot-rivet-grokbot',
+    )
+  })
+})
+
 describe('tool_result + capForStorage', () => {
   it('reads tool_result from result (old converter ignored it)', () => {
     const page = readFix('page-rivet-this-conversation-3040-3056.txt')
@@ -754,29 +1154,73 @@ describe('tool_result + capForStorage', () => {
     expect(after.messages[0].tool_result).toMatch(/success|spawnError|timestamp/)
   })
 
-  it('caps tool_result at the capture-core 16_000 UTF-16 limit with no inline marker', () => {
+  it('keeps a 20_000-char tool_result without the legacy 4 KB chop or 16K recap', () => {
     const huge = 'x'.repeat(20_000)
     const rec = {
       role: 'tool',
       message: { content: [{ type: 'tool_result', name: 'shell', result: huge }] },
     }
     const { messages } = normalizeRecords([rec], rivetOpts())
-    const cap = capForStorage(huge)
-    expect(messages[0].tool_result).toBe(cap.text)
-    expect(messages[0].tool_result?.length).toBe(STORAGE_LIMIT)
+    expect(messages[0].tool_result).toBe(huge)
+    expect(messages[0].tool_result?.length).toBe(20_000)
     expect(messages[0].tool_result).not.toContain('…[truncated')
-    expect(messages[0].metadata?.truncated).toBe(true)
-    expect(messages[0].metadata?.full_tool_result_length).toBe(20_000)
+    expect(messages[0].metadata?.truncated).toBeUndefined()
     expect(LEGACY_TOOL_RESULT_MAX).toBe(4096)
+    expect(capForStorage(huge).truncated).toBe(true)
+    expect(STORAGE_LIMIT).toBe(16_000)
   })
 
-  it('caps a real oversized ReadTranscript shell result the same way', () => {
+  it('keeps a real oversized ReadTranscript shell result in full', () => {
     const { result } = normalizeFile('page-rivet-2395-2445.txt')
-    const tools = result.messages.filter((m) => m.role === 'tool' && m.metadata?.truncated)
+    const tools = result.messages.filter((m) => m.role === 'tool' && (m.tool_result?.length ?? 0) > 4_096)
     expect(tools.length).toBeGreaterThan(0)
-    expect(tools[0].tool_result?.length).toBeLessThanOrEqual(STORAGE_LIMIT)
-    expect(tools[0].tool_result).not.toContain('…[truncated')
-    expect(Number(tools[0].metadata?.full_tool_result_length)).toBeGreaterThan(STORAGE_LIMIT)
+    expect(tools.every((m) => m.metadata?.truncated !== true)).toBe(true)
+    expect(tools.every((m) => !m.tool_result?.includes('…[truncated'))).toBe(true)
+    expect(tools.some((m) => (m.tool_result?.length ?? 0) > STORAGE_LIMIT)).toBe(true)
+  })
+
+  it('stubs base64/data-URI images and caps huge tool results with a source pointer', () => {
+    const png =
+      'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg=='
+    const dataUri = `data:image/png;base64,${png}`
+    const stubbed = stubImagePayloads(JSON.stringify({ image: dataUri, b64_json: png }))
+    expect(stubbed.stubbed).toBe(true)
+    expect(stubbed.text).toMatch(/\[image mime=image\/png bytes=\d+ sha256=[0-9a-f]{16}\]/)
+    expect(stubbed.text).not.toContain(png)
+
+    const huge = 'x'.repeat(CONTENT_LIMIT + 50)
+    const src = join(FIX, 'ondisk-unstamped-hidden.jsonl')
+    const { messages } = normalizeRecords(
+      [
+        {
+          role: 'tool',
+          message: {
+            content: [{ type: 'tool_result', name: 'generate_image', result: dataUri }],
+          },
+        },
+        {
+          role: 'tool',
+          message: { content: [{ type: 'tool_result', name: 'shell', result: huge }] },
+        },
+      ],
+      { ...rivetOpts(), sourcePath: src, sourceLines: [0, 1] },
+    )
+    const img = messages[0]
+    expect(img.metadata?.truncated).toBe(true)
+    expect(img.metadata?.image_stubbed).toBe(true)
+    expect(img.tool_result).toMatch(/\[image mime=image\/png/)
+    expect(img.tool_result).not.toContain(png)
+    expect(img.metadata?.session_jsonl_path).toBe(src)
+    expect(img.metadata?.session_jsonl_line).toBe(0)
+    expect(typeof img.metadata?.full_tool_result_length).toBe('number')
+
+    const shell = messages[1]
+    expect(shell.tool_result?.length).toBe(CONTENT_LIMIT)
+    expect(shell.metadata?.truncated).toBe(true)
+    expect(shell.metadata?.full_tool_result_length).toBe(CONTENT_LIMIT + 50)
+    expect(shell.metadata?.session_jsonl_path).toBe(src)
+    expect(shell.metadata?.session_jsonl_line).toBe(1)
+    expect(CONTENT_LIMIT).toBe(262_144)
   })
 })
 
@@ -830,6 +1274,39 @@ describe('reclean', () => {
     expect(result.session).toBe('grokbot-bob-v3')
     expect(result.dryRun).toBe(true)
     expect(result.wrote).toBe(false)
+  })
+
+  it('follows GROKBOT_SESSION_SUFFIX and refuses already row-shaped sessions', () => {
+    expect(v3Session('grokbot-bob', '-v4')).toBe('grokbot-bob-v4')
+    expect(v3RowsSession('grokbot-bob', '-v4')).toBe('grokbot-bob-v4-rows')
+    expect(isRowShapedSession('grokbot-bob-v3-rows')).toBe(true)
+    expect(isRowShapedSession('grokbot-bob-v4')).toBe(false)
+    const v4 = recleanFromSource(readFix('ondisk-bob-0-16.jsonl'), {
+      sessionKey: 'grokbot-bob',
+      agent: 'rivet-bob',
+      sessionSuffix: '-v4',
+      dryRun: true,
+    })
+    expect(v4.session).toBe('grokbot-bob-v4')
+    expect(() =>
+      recleanFromSource(readFix('ondisk-bob-0-16.jsonl'), {
+        sessionKey: 'grokbot-bob-v3-rows',
+        agent: 'rivet-bob',
+        dryRun: true,
+      }),
+    ).toThrow(/row-shaped/)
+    expect(() =>
+      recleanStoredRows(
+        [
+          {
+            role: 'user',
+            content: 'already captured',
+            metadata: { capture_source: 'grokbot-transcript', position: 0 },
+          },
+        ],
+        { sessionKey: 'grokbot-bob-v3', agent: 'rivet-bob', dryRun: true },
+      ),
+    ).toThrow(/capture_source/)
   })
 
   it('dry-run reclean of stored rows does not write', () => {
@@ -903,6 +1380,8 @@ describe('reclean', () => {
     expect(identityForSession('grokbot-rivet-grokbot-v3-voice-call-redacted')?.agent).toBe(
       'rivet-grokbot',
     )
+    expect(identityForSession('grokbot-rivet-grokbot-v4')?.agent).toBe('rivet-grokbot')
+    expect(identityForSession('grokbot-rivet-grokbot-v4-store')?.agent).toBe('rivet-grokbot')
   })
 
   it('writes stored-row reclean under -v3-rows, not -v3', () => {
@@ -992,7 +1471,7 @@ describe('ingest mapping + compare', () => {
     })
     const rows = toIngestRows(result.messages)
     expect(rows.every((r) => r.role !== undefined)).toBe(true)
-    expect(rows.some((r) => r.createdAt)).toBe(true)
+    expect(rows.every((r) => Boolean(r.createdAt))).toBe(true)
     expect(rows.some((r) => r.toolCalls && r.toolCalls.length > 0)).toBe(true)
     expect(rows.every((r) => r.metadata?.agent_id === BOB_ID)).toBe(true)
     expect(rows.every((r) => typeof r.metadata?.position === 'number')).toBe(true)

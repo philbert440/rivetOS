@@ -16,13 +16,36 @@ existing rows.
   markers, address tags, profile blobs, injected catalog blocks).
   `SIMILAR_BLOCK_RE` is an allowlist of known injected tags; pasted XML is
   kept. Profile blobs may include `-` and `_`.
-- `<timestamp>` is parsed only from user or hidden turns — never from
-  assistant or tool text (those are quotes). Assistant and tool rows inherit
-  from the immediately preceding stamped user (+ N ms by source position).
-  A later user turn with no stamp stops inheriting (`created_at` unset, or
-  the stored time when re-cleaning rows).
-- `tool_result` is read from `result` (ReadTranscript) and capped at 16,000
-  UTF-16 units via `capForStorage` — no 4 KB chop, no inline marker.
+- Every output line has `createdAt`. Times never go backwards in a session
+  (`max(candidate, lastEmitted+1ms)`). `metadata.time_source` records the
+  tier. Source order:
+  1. `<timestamp>` wall-clock on user/hidden turns only — never from
+     assistant or tool quotes (`tag`).
+  2. Record-level `created_at` / `createdAt` / `timestampMs` (store.db / voice)
+     (`stored`).
+  3. Tool-result `result.success.timestamp` only (epoch ms). Loose
+     `result.timestamp` / `part.timestamp` / `new Date(any)` are ignored
+     (`tool_epoch`).
+  4. Interpolate evenly between the previous and next real stamps
+     (`interpolated`).
+  5. After the last stamp, inherit at 1s per position (`inherited`).
+  6. Before the first stamp, look ahead at −1s per position (`lookahead`).
+  7. If the file has no stamps (anne / reed / eggbot / …), use
+     `file mtime − (lastPosition − position)` ms so the last row ≈ mtime
+     (`mtime`).
+  Clamp still enforces order. When it moves a time by more than 1s,
+  `created_at_original` and `created_at_adjusted_ms` are stored.
+  Postgres `NOW()` is never the fallback.
+- `tool_result` is read from `result` (ReadTranscript). Content and
+  `toolResult` are bounded at **256 KiB** (`CONTENT_LIMIT = 262_144`) after
+  base64 / data-URI image payloads are replaced with
+  `[image mime=… bytes=… sha256=…]`. 256 KiB is 16× the old 16K recap —
+  enough for a long review — while keeping the trigram GIN index and the
+  embedding queue off the 3.5M-char generate_image/shell dumps. A 1M cap
+  would still have let the 104 mega-rows through. When a value is cut,
+  `truncated: true`, `full_*_length`, and
+  `session_jsonl_path` + `session_jsonl_line` (claude-code `pointerMeta`)
+  let `memory_get_full` re-read the source line.
 - Each bot is tagged from the roster (`agent-data/agents/*/profile.json`)
   **before** the subagent fallback. Historical overrides stay stable: Rivet →
   `grokbot-rivet-grokbot` / `rivet-grokbot`; eggbot → `grokbot-eggbot` /
@@ -52,13 +75,20 @@ existing rows.
   `grokbot-store` / `grokbot-voice`) because the grok-bot ingest writer stores
   the write tag in `metadata.source`.
 - Live capture writes to `<session>-v3` by default (`GROKBOT_SESSION_SUFFIX`).
-  Row-based re-clean (`--from-rows` / Postgres) writes `<session>-v3-rows`
-  so stored-row positions never mix with source-transcript ordinals.
-  `agents/<id>/store.db` `transcript_entries.seq` writes `<session>-v3-store`
-  (seq is not the on-disk line index). `voice-calls/*.json` writes
-  `<session>-v3-voice-<stem>` (turn index is not the line index).
-  Watcher state is keyed by agent id plus the target suffix, so a copied
-  unsuffixed `~/.rivetos/capture/state.json` cannot skip `-v3` ingest.
+  `GROKBOT_SESSION_SUFFIX=-v4` re-spools into a sibling of `-v3` (fresh
+  state/cursor files; `-v3` rows stay). Row-based re-clean (`--from-rows` /
+  Postgres) writes `<session>-v3-rows` so stored-row positions never mix
+  with source-transcript ordinals. `agents/<id>/store.db`
+  `transcript_entries.seq` writes `<session>${SUFFIX}-store` (seq is not the
+  on-disk line index). `voice-calls/*.json` writes
+  `<session>${SUFFIX}-voice-<stem>` (turn index is not the line index).
+  Watcher state is a per-suffix file
+  (`~/.rivetos/grokbot-capture-state${SUFFIX}.json`). `-v3` may inherit
+  unsuffixed `state.json`; `-v4` starts empty. Discovery merges
+  `models.json` overrides into the roster so override-only bots (Gary)
+  are included. Unmapped `<uuid>/<uuid>.jsonl` transcripts are reported
+  (stderr / `unmappedTranscripts`), not dropped silently. Reclean follows
+  `GROKBOT_SESSION_SUFFIX` and refuses already row-shaped sessions.
   Store cursors are `seq:N` under the same map. `run-once.sh` does not treat
   the watcher `state.json` as per-session stuck-policy. `RIVETOS_ROOT`
   defaults to `/opt/rivetos`.
@@ -91,10 +121,10 @@ Nothing in this tree names a host, address, port, or lab layout.
 
 | suffix             | source                                      | position                   |
 | ------------------ | ------------------------------------------- | -------------------------- |
-| `-v3`              | on-disk jsonl / ReadTranscript pages        | line index / page position |
+| `-v3` / `-v4`      | on-disk jsonl / ReadTranscript pages        | line index / page position |
 | `-v3-rows`         | Postgres / `--from-rows` reclean            | stored ordinal             |
-| `-v3-store`        | `agents/<id>/store.db` `transcript_entries` | `seq`                      |
-| `-v3-voice-<stem>` | `voice-calls/*.json`                        | turn index                 |
+| `-v3-store` / `-v4-store` | `agents/<id>/store.db` `transcript_entries` | `seq`               |
+| `-v3-voice-<stem>` / `-v4-voice-<stem>` | `voice-calls/*.json`       | turn index                 |
 
 `seq` and voice turn indices are **not** the on-disk line index. Ingesting
 them into `-v3` would hit `ordinal exists, event_id differs, skip`.
@@ -199,9 +229,37 @@ rows into the same `-v3` session.
 node integrations/grok-bot/rivet-memory/capture/dist/cli.js discover --json
 
 # one ingest per agent (example: Rivet). Repeat for each discover --json model.
+# Agent ids are rivet-<slug> (rivet-ollie, rivet-arch), not <name>-grokbot.
 node integrations/grok-bot/rivet-memory/bin/ingest-session.mjs \
   --session-id grokbot-rivet-grokbot-v3 --agent rivet-grokbot --persona Rivet \
   spool/grokbot-rivet-grokbot-v3.jsonl
+```
+
+### Re-spool as `-v4` (leaves `-v3` rows and state alone)
+
+On a deployed host (`/opt/rivetos`):
+
+```bash
+cd /opt/rivetos
+npx nx run-many -t build -p @rivetos/capture-core @rivetos/memory-postgres \
+  @rivetos/mcp-sidecar @rivetos/grok-bot-rivet-memory-capture
+
+GROKBOT_SESSION_SUFFIX=-v4 GROKBOT_TRANSCRIPT_ROOT="$GROKBOT_TRANSCRIPT_ROOT" \
+  RIVETOS_ROOT=/opt/rivetos \
+  bash integrations/grok-bot/rivet-memory/capture/run-once.sh
+```
+
+Or convert + ingest one file (suffix `-v4`; agent from `discover --json`):
+
+```bash
+python3 integrations/grok-bot/rivet-memory/capture/convert-transcript.py \
+  "$GROKBOT_TRANSCRIPT_ROOT/<id>/<id>.jsonl" \
+  integrations/grok-bot/rivet-memory/capture/spool/grokbot-<slug>-v4.jsonl \
+  --agent-id <id> --session grokbot-<slug>-v4 --session-suffix=-v4
+
+node integrations/grok-bot/rivet-memory/bin/ingest-session.mjs \
+  --session-id grokbot-rivet-grokbot-v4 --agent rivet-grokbot --persona Rivet \
+  integrations/grok-bot/rivet-memory/capture/spool/grokbot-rivet-grokbot-v4.jsonl
 ```
 
 ### Re-clean existing grokbot rows (`--dry-run` default)
@@ -213,7 +271,9 @@ SELECTs inside `BEGIN TRANSACTION READ ONLY` and `ROLLBACK`. Rows are grouped
 by `conversation_id` (prod has two conversation rows for
 `grokbot-rivet-grokbot` with the same agent).
 
-`--from-rows` and the Postgres path write `<session>-v3-rows`, not `-v3`.
+`--from-rows` and the Postgres path write `<session>${SUFFIX}-rows`.
+Already row-shaped sessions (`*-vN-rows` or rows with `capture_source`)
+are refused so tool calls are not split a second time.
 Stored-row positions are the old sequential ingest ordinals and do not
 match source-transcript positions; mixing them in one session would
 collide. `--from-rows` cannot restore tool results: the old converter
@@ -308,20 +368,20 @@ can be empty. The reader still opens the DB read-only and no-ops.
 ### Deploy notes (no deploy from this PR)
 
 - Rebuild `/opt/rivetos` (`memory-postgres` and
-  `@rivetos/grok-bot-rivet-memory-capture`) **before** any `-v3` ingest.
+  `@rivetos/grok-bot-rivet-memory-capture`) **before** any `-v4` ingest.
   The grok-bot writer stores caller `ordinal` / `event_id` / `toolResult` /
   `metadata`, and skips an `event_id` or ordinal already present in that
   session.
-- Enabling the new watcher ingests every on-disk transcript's **full
-  history** into `<session>-v3` (there have been no new on-disk files
-  since Sep 16). Stop the old watcher/converter first. Do not run both.
+- `-v4` is a new sibling of `-v3`. Do not delete or migrate `-v3` rows.
+  `GROKBOT_SESSION_SUFFIX=-v4` writes fresh spool/state/cursor files
+  (`<session>-v4`, `<session>-v4-store`, `<session>-v4-voice-<stem>`).
+  `-v3` state under `~/.rivetos/grokbot-capture-state/` is left alone.
 - Row-based re-clean (`-v3-rows`) is a separate session from source
-  backfill (`-v3`). store.db and voice-calls have their own suffixes.
+  backfill. store.db and voice-calls have their own suffixes.
   Pick one format per session; do not mix.
-- Cutover: retire the unsuffixed / `-v2` sessions after the `-v3`
-  sibling is the live writer (stop the old watcher first). This PR does
-  not DELETE or UPDATE those rows. Until they are retired, search and
-  recall show both the legacy session and the `-v3` copy.
+- Cutover: after `-v4` is the live writer, retire unsuffixed / `-v2` /
+  `-v3` at query time. This package does not DELETE or UPDATE those rows.
+  Until they are retired, search and recall show the older copies too.
 
 ## Tests
 

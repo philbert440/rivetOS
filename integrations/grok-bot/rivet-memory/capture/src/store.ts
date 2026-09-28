@@ -73,10 +73,8 @@ export function storeDbPath(agentsDir: string, agentId: string): string {
   return resolve(agentsDir, agentId, 'store.db')
 }
 
-export function v3StoreSession(session: string): string {
-  return session.endsWith(SESSION_SUFFIX_V3_STORE)
-    ? session
-    : `${session}${SESSION_SUFFIX_V3_STORE}`
+export function v3StoreSession(session: string, suffix = SESSION_SUFFIX_V3_STORE): string {
+  return session.endsWith(suffix) ? session : `${session}${suffix}`
 }
 
 export function listTranscriptEntries(dbPath: string, opts?: StoreReadOptions): TranscriptEntry[] {

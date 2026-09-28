@@ -7,6 +7,7 @@ import {
   createGetFullTool,
   extractCodexFromLine,
   extractFullFromLine,
+  extractGrokbotFromLine,
   extractPiFromLine,
   extractQwenFromLine,
   extractOpencodeFromPart,
@@ -778,5 +779,56 @@ describe('extractOpencodeFromPart', () => {
     })
     expect(out.toolArgs).toBe(JSON.stringify({ path: '/tmp/a.ts', patch: 'x' }))
     expect(out.toolResult).toBe('ok')
+  })
+})
+
+describe('extractGrokbotFromLine', () => {
+  it('re-reads a grok-bot on-disk tool_result line for memory_get_full', async () => {
+    const big = 'y'.repeat(80_000)
+    const line = JSON.stringify({
+      role: 'tool',
+      message: { content: [{ type: 'tool_result', name: 'shell', result: big }] },
+    })
+    const extracted = extractGrokbotFromLine(JSON.parse(line))
+    expect(extracted?.toolResult).toBe(big)
+
+    const multi = {
+      role: 'tool',
+      message: {
+        content: [
+          { type: 'tool_result', name: 'shell', tool_use_id: 'call-a', result: 'first-out' },
+          { type: 'tool_result', name: 'read_file', tool_use_id: 'call-b', result: 'second-out' },
+        ],
+      },
+    }
+    expect(extractGrokbotFromLine(multi)?.toolResult).toBe('second-out')
+    expect(extractGrokbotFromLine(multi, { tool_id: 'call-a' })?.toolResult).toBe('first-out')
+    expect(extractGrokbotFromLine(multi, { tool_id: 'call-b' })?.toolResult).toBe('second-out')
+    expect(extractGrokbotFromLine(multi, { ordinal: 1000 })?.toolResult).toBe('first-out')
+    expect(extractGrokbotFromLine(multi, { ordinal: 1001 })?.toolResult).toBe('second-out')
+    expect(extractGrokbotFromLine(multi, { tool_name: 'shell' })?.toolResult).toBe('first-out')
+
+    const dir = mkdtempSync(join(tmpdir(), 'gb-get-full-'))
+    const file = join(dir, 'agent.jsonl')
+    writeFileSync(file, `${line}\n`)
+    const row = {
+      id: 'gb-1',
+      content: '',
+      tool_name: 'shell',
+      tool_result: 'preview',
+      agent: 'rivet-gary',
+      metadata: {
+        truncated: true,
+        source: 'grokbot',
+        capture_source: 'grokbot-transcript',
+        session_jsonl_path: file,
+        session_jsonl_line: 0,
+        full_tool_result_length: big.length,
+      },
+    }
+    const pool = { query: async () => ({ rows: [row] }) } as unknown as pg.Pool
+    const out = await createGetFullTool(pool).execute({ id: 'gb-1' })
+    expect(out).toContain('## Full payload for gb-1')
+    expect(out).toContain(big.slice(0, 100))
   })
 })

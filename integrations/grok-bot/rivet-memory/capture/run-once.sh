@@ -260,6 +260,11 @@ if [[ -f "${DISCOVER_JS}" ]]; then
             exit 1
         fi
         models="$(printf '%s' "${roster_json}" | jq -c '.models[]')"
+        unmapped="$(printf '%s' "${roster_json}" | jq -r '.unmappedTranscripts[]? // empty' 2>/dev/null || true)"
+        if [[ -n "${unmapped}" ]]; then
+            echo "WARN: unmapped transcripts (not on roster/overrides):" >&2
+            printf '%s\n' "${unmapped}" >&2
+        fi
     elif [[ -f "${MODELS_JSON}" ]]; then
         models="$(overrides_as_models)"
     else
@@ -304,10 +309,14 @@ while IFS= read -r model_json; do
     any_model_processed=1
 
     state_file="${STATE_DIR}/${session_id}.json"
-    old_stuck="$(node "${SCRIPT_DIR}/live-state.mjs" old-stuck "${OLD_STATE_DIR}" "${session_id}" "${SESSION_SUFFIX}")"
-    if [[ ! -f "${state_file}" && -f "${old_stuck}" && "${old_stuck}" != "${OLD_WATCHER_STATE}" ]]; then
-        mkdir -p "${STATE_DIR}"
-        cp "${old_stuck}" "${state_file}"
+    # Only the original -v3 cutover copies unsuffixed stuck-policy. -v4+ must
+    # start with a fresh state file so -v3 cursors are left untouched.
+    if [[ "${SESSION_SUFFIX}" == "-v3" ]]; then
+        old_stuck="$(node "${SCRIPT_DIR}/live-state.mjs" old-stuck "${OLD_STATE_DIR}" "${session_id}" "${SESSION_SUFFIX}")"
+        if [[ ! -f "${state_file}" && -f "${old_stuck}" && "${old_stuck}" != "${OLD_WATCHER_STATE}" ]]; then
+            mkdir -p "${STATE_DIR}"
+            cp "${old_stuck}" "${state_file}"
+        fi
     fi
 
     # Convert
@@ -354,11 +363,12 @@ while IFS= read -r model_json; do
         echo "  SKIP: Ingest (fail closed, see warnings above)"
     fi
 
-    # store.db (seq cursor; suffix -v3-store — positions are not the jsonl index)
+    # store.db (seq cursor; suffix ${SESSION_SUFFIX}-store — positions are not the jsonl index)
     store_db="${GROKBOT_AGENTS}/${model_id}/store.db"
     if [[ -f "${store_db}" && -f "${CLI_JS}" && "${SKIP_INGEST}" -eq 0 ]]; then
-        store_session="${session_id%-v3}-v3-store"
-        if [[ "${session_id}" == *"-v3-store" ]]; then
+        store_base="${session_id%"${SESSION_SUFFIX}"}"
+        store_session="${store_base}${SESSION_SUFFIX}-store"
+        if [[ "${session_id}" == *"${SESSION_SUFFIX}-store" ]]; then
             store_session="${session_id}"
         fi
         store_spool="${SPOOL_DIR}/${store_session}.jsonl"
@@ -388,13 +398,14 @@ while IFS= read -r model_json; do
         fi
     fi
 
-    # voice-calls/*.json (suffix -v3-voice-<stem> — turn index ≠ jsonl index)
+    # voice-calls/*.json (suffix ${SESSION_SUFFIX}-voice-<stem> — turn index ≠ jsonl index)
     voice_dir="${GROKBOT_AGENTS}/${model_id}/voice-calls"
     if [[ -d "${voice_dir}" && -f "${CLI_JS}" && "${SKIP_INGEST}" -eq 0 ]]; then
         shopt -s nullglob
         for voice_file in "${voice_dir}"/*.json; do
             voice_stem="$(basename "${voice_file}" .json)"
-            voice_session="${session_id%-v3}-v3-voice-${voice_stem}"
+            voice_base="${session_id%"${SESSION_SUFFIX}"}"
+            voice_session="${voice_base}${SESSION_SUFFIX}-voice-${voice_stem}"
             voice_spool="${SPOOL_DIR}/${voice_session}.jsonl"
             echo "  Converting voice ${voice_stem} -> ${voice_spool}"
             if ! node "${CLI_JS}" convert-voice "${voice_file}" "${voice_spool}" --agent-id "${model_id}" --session "${voice_session}"; then

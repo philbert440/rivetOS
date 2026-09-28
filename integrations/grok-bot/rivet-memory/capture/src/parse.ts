@@ -38,24 +38,29 @@ export function parseInput(text: string, format?: InputFormat): ParsedInput {
 
 function parseOndisk(text: string): ParsedInput {
   const records: unknown[] = []
-  for (const raw of text.split(/\r?\n/)) {
-    const line = raw.trim()
+  const sourceLines: number[] = []
+  const lines = text.split(/\r?\n/)
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i].trim()
     if (!line) continue
     try {
       records.push(JSON.parse(line) as unknown)
     } catch {
       records.push({ role: 'assistant', message: { content: [] } })
     }
+    sourceLines.push(i)
   }
-  return { format: 'ondisk', records, hasOlderFooter: false }
+  return { format: 'ondisk', records, hasOlderFooter: false, sourceLines }
 }
 
 function parsePage(text: string): ParsedInput {
   let header: PageHeader | undefined
   const records: unknown[] = []
+  const sourceLines: number[] = []
   let hasOlderFooter = false
-  for (const raw of text.split(/\r?\n/)) {
-    const line = raw.trim()
+  const lines = text.split(/\r?\n/)
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i].trim()
     if (!line) continue
     const hdr = parsePageHeader(line)
     if (hdr && !header) {
@@ -68,6 +73,7 @@ function parsePage(text: string): ParsedInput {
     }
     if (line.startsWith('{')) {
       records.push(JSON.parse(line) as unknown)
+      sourceLines.push(i)
     }
   }
   if (!header) {
@@ -81,7 +87,7 @@ function parsePage(text: string): ParsedInput {
       `ReadTranscript header says ${String(expected)} records (${String(header.a)}–${String(header.b)}) but page has ${String(records.length)} JSON lines`,
     )
   }
-  return { format: 'page', header, records, hasOlderFooter }
+  return { format: 'page', header, records, hasOlderFooter, sourceLines }
 }
 
 export function recordRole(rec: unknown): string {

@@ -18,22 +18,44 @@ export const SESSION_SUFFIX_V3_STORE = '-v3-store'
  */
 export const SESSION_SUFFIX_V3_VOICE = '-v3-voice'
 export const STORAGE_LIMIT = 16_000
+/**
+ * Transcript content / toolResult bound (256 KiB). Image payloads are stubbed
+ * first; this cap then keeps shell dumps off the trigram GIN index and the
+ * embedding queue. Pointer + full_*_length recover the rest.
+ */
+export const CONTENT_LIMIT = 262_144
+/** After the last real stamp, space inherited rows by this many ms. */
+export const INHERIT_STEP_MS = 1_000
 /** Stable ingest ordinal = source position * stride + per-position sub-index. */
 export const ORDINAL_STRIDE = 1000
 
-/** Strip -v3-voice*, -v3-store, -v3-rows, -v3, or -v2 so identity helpers share one rule. */
+export type TimeSource =
+  'tag' | 'tool_epoch' | 'stored' | 'inherited' | 'interpolated' | 'lookahead' | 'mtime'
+
+/**
+ * Strip `-vN-voice*`, `-vN-store`, `-vN-rows`, `-vN`, or `-v2` so identity
+ * helpers share one rule across -v3 / -v4 / later suffixes.
+ */
 export function stripSessionSuffix(session: string): string {
-  const voiceAt = session.indexOf(SESSION_SUFFIX_V3_VOICE)
-  if (voiceAt >= 0) return session.slice(0, voiceAt)
-  if (session.endsWith(SESSION_SUFFIX_V3_STORE)) {
-    return session.slice(0, -SESSION_SUFFIX_V3_STORE.length)
-  }
-  if (session.endsWith(SESSION_SUFFIX_V3_ROWS)) {
-    return session.slice(0, -SESSION_SUFFIX_V3_ROWS.length)
-  }
-  if (session.endsWith(SESSION_SUFFIX_V3)) return session.slice(0, -SESSION_SUFFIX_V3.length)
-  if (session.endsWith('-v2')) return session.slice(0, -3)
-  return session
+  const voice = /-v\d+-voice(?:-|$)/.exec(session)
+  if (voice) return session.slice(0, voice.index)
+  return session.replace(/-v\d+(?:-store|-rows)?$/, '')
+}
+
+export function sessionStoreSuffix(sessionSuffix = SESSION_SUFFIX_V3): string {
+  return `${sessionSuffix}-store`
+}
+
+export function sessionVoiceSuffix(sessionSuffix = SESSION_SUFFIX_V3): string {
+  return `${sessionSuffix}-voice`
+}
+
+export function sessionRowsSuffix(sessionSuffix = SESSION_SUFFIX_V3): string {
+  return `${sessionSuffix}-rows`
+}
+
+export function isRowShapedSession(session: string): boolean {
+  return /-v\d+-rows(?:-|$)/.test(session)
 }
 
 export type HiddenKind =
@@ -63,6 +85,8 @@ export interface ParsedInput {
   header?: PageHeader
   records: unknown[]
   hasOlderFooter: boolean
+  /** 0-based file line of each record (blank / header lines skipped). */
+  sourceLines?: number[]
 }
 
 export interface BotIdentity {
@@ -94,6 +118,21 @@ export interface NormalizeOptions {
    * stored row's created_at instead of inheriting or leaving the field unset.
    */
   useStoredCreatedAt?: boolean
+  /**
+   * Source file mtime in ms. Used when a session has no inline stamps so
+   * every row still gets a monotonic createdAt (last row = mtime, earlier
+   * rows step back by INHERIT_STEP_MS). Birthtime→mtime interpolate only
+   * when mtime − birth covers (rows − 1) × INHERIT_STEP_MS.
+   */
+  fileMtimeMs?: number
+  /** Source file birthtime in ms when it is finite, > 0, and earlier than mtime. */
+  fileBirthtimeMs?: number
+  /** Absolute source transcript / page path for memory_get_full pointers. */
+  sourcePath?: string
+  /** 0-based source file line per record. Falls back to position. */
+  sourceLines?: number[]
+  /** Live session suffix (`-v3`, `-v4`) for reclean targets. */
+  sessionSuffix?: string
 }
 
 export interface NormalizeStats {
