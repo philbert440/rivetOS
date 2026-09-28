@@ -23,15 +23,15 @@ SRC="$APP/overlay-src"
 mkdir -p "$ASSETS"
 
 build_phone() {
-  "$SRC/rivet-phone/build-overlay.sh"
+  bash "$SRC/rivet-phone/build-overlay.sh"
 }
 
 build_shared() {
-  "$SRC/rivet-shared/build-overlay.sh"
+  bash "$SRC/rivet-shared/build-overlay.sh"
 }
 
 build_net_tools() {
-  "$SRC/net-tools/build-overlay.sh"
+  bash "$SRC/net-tools/build-overlay.sh"
 }
 
 build_memory() {
