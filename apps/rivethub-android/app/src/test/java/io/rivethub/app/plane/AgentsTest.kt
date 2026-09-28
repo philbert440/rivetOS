@@ -58,7 +58,7 @@ class AgentsTest {
         ).single()
         assertEquals(nodeF.denUrl, idRow.nodeDenUrl)
 
-        val byName = AgentPreset(id = "by-name", name = "By name", node = "node-f")
+        val byName = AgentPreset(id = "by-name", name = "By name", node = "NODE-F")
         val nameRow = buildAgents(
             listOf(nodeF.copy(meshNode = "")),
             listOf(nodeC.denUrl to Result.success(listOf(byName))),

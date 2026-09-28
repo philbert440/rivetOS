@@ -234,7 +234,7 @@ class NodeRosterDefaultsTest {
         )
         assertEquals(
             "https://node-c.mesh:5174",
-            NodeRosterDefaults.normalizeDenUrl("HTTPS://node-c.MESH:5174/"),
+            NodeRosterDefaults.normalizeDenUrl("HTTPS://NODE-C.MESH:5174/"),
         )
     }
 
