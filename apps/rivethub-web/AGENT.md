@@ -222,6 +222,10 @@ Redesign "A · Tiled" (mockups in `docs/mockups/rivethub-redesign/`).
   unlike the pin bind survives a re-pin. It lives in this client's storage,
   so sessions opened on another device or before the tag existed show only
   in the unfiltered list.
+- **Default view:** Settings → Conversations picks Terminal or Chat for new
+  conversations and for older ones never switched (`stores/conversation-view.ts`,
+  read in `lib/use-session-view.ts`). A thread's own switch (`lib/session-mode.ts`)
+  wins over it, and a TUI-only legacy session still opens on the terminal.
 - **Context details:** the chat header's `ContextBar` is a Popover trigger on
   desktop (`withDetails`) — context numbers, harness/model/node and the
   unread count. There is no permanent right-hand column.

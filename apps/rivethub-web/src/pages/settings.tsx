@@ -2,6 +2,7 @@ import { useEffect, useState, type JSX } from 'react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { isValidGatewayUrl, useConnection } from '../stores/connection.js'
 import { useTheme } from '../stores/theme.js'
+import { useConversationView } from '../stores/conversation-view.js'
 import type { ThemePreference } from '../lib/theme.js'
 import { gatewayFor } from '../lib/agent-gateway.js'
 import { isValidWikiBase } from '../lib/wiki-base.js'
@@ -307,7 +308,7 @@ export function SettingsPage(): JSX.Element {
         (liveOmarchy ? (
           <p className="mt-3 text-xs text-ink-dim">
             Following your Omarchy theme{omarchy?.name ? ` — ${omarchy.name}` : ''}. Switch themes
-            in Omarchy and RivetHub restyles when you come back to it.
+            in Omarchy and RivetHub restyles right away.
           </p>
         ) : (
           <div className="mt-3 flex items-center gap-3">
@@ -328,6 +329,8 @@ export function SettingsPage(): JSX.Element {
         desktop app, or a built-in Omarchy palette anywhere else. With no choice made, RivetHub
         follows Omarchy whenever it finds it.
       </p>
+
+      <ConversationsSection />
 
       <TerminalSection />
 
@@ -408,5 +411,48 @@ export function SettingsPage(): JSX.Element {
         RivetHub v{BUILD_INFO.version} · dist {BUILD_INFO.sha} · built {BUILD_INFO.builtAt}
       </div>
     </div>
+  )
+}
+
+/** Which view a conversation opens on — new ones and old ones never switched. */
+function ConversationsSection(): JSX.Element {
+  const defaultView = useConversationView((s) => s.defaultView)
+  const setDefaultView = useConversationView((s) => s.setDefaultView)
+  return (
+    <>
+      <h2 className="mt-10 mb-3 border-t border-line pt-6 font-mono text-sm font-semibold text-em">
+        Conversations
+      </h2>
+      <div className="flex items-center gap-3">
+        <span className="text-xs text-ink-dim">Default view</span>
+        <div className="flex gap-2" role="group" aria-label="Default view">
+          {(
+            [
+              ['terminal', 'Terminal'],
+              ['chat', 'Chat'],
+            ] as const
+          ).map(([value, label]) => (
+            <button
+              key={value}
+              type="button"
+              aria-pressed={defaultView === value}
+              onClick={() => setDefaultView(value)}
+              className={
+                defaultView === value
+                  ? 'rounded bg-em-dim px-4 py-2 text-sm font-medium text-bg'
+                  : 'rounded border border-line bg-panel-2 px-4 py-2 text-sm hover:border-em'
+              }
+            >
+              {label}
+            </button>
+          ))}
+        </div>
+      </div>
+      <p className="mt-2 text-xs text-ink-dim">
+        Where a conversation opens: new ones, and older ones you have not switched. Switching
+        between Terminal and Chat inside a conversation is remembered for that conversation.
+        Sessions that only run in a terminal always open there.
+      </p>
+    </>
   )
 }
