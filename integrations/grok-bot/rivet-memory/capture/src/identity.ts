@@ -25,9 +25,9 @@ const PLACEHOLDER_KINDS = new Set(['placeholder', 'unused'])
 const PROFILE_META_KEYS = new Set(['name', 'placeholder', 'unused', 'kind'])
 
 /**
- * Roster tags are derived at runtime from `agent-data/agents/*/profile.json`.
- * Committed `models.json` ships no overrides. Per-install pins, prefix, and
- * exclusions live in gitignored `models.local.json` or env.
+ * Roster tags are derived at runtime from each host profile.json under
+ * agent-data/agents. Committed models.json ships no overrides. Per-install
+ * pins, prefix, and exclusions live in gitignored models.local.json or env.
  */
 
 export interface IdentityConfig {
@@ -174,7 +174,7 @@ export function defaultTranscriptsDir(): string {
 export interface DiscoverResult {
   nodeId: string
   models: Array<BotIdentity & { transcript: string }>
-  /** Transcript `<uuid>/<uuid>.jsonl` ids not on the roster or overrides. */
+  /** On-disk transcript ids not on the roster or overrides. */
   unmappedTranscripts: string[]
 }
 
@@ -293,7 +293,7 @@ export function identityFor(
 const TRANSCRIPT_PATH_RE =
   /([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})[/\\]\1\.jsonl$/i
 
-/** On-disk agent-transcripts layout: `<uuid>/<uuid>.jsonl`. */
+/** On-disk agent-transcripts layout: uuid/uuid.jsonl. */
 export function agentIdFromTranscriptPath(file: string): string | undefined {
   const m = TRANSCRIPT_PATH_RE.exec(file.replace(/\\/g, '/'))
   return m?.[1]
