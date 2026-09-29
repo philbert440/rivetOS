@@ -1,6 +1,7 @@
 // Environment-driven configuration for the den server.
 
 import { homedir, hostname } from 'node:os'
+import { denStateDir } from '@rivetos/agent-registry'
 import { loadUsersRegistry, sharedDir, type UsersRegistry } from '@rivetos/types'
 import { join } from 'node:path'
 import { DEFAULT_UPLOAD_MAX_BYTES, DEFAULT_UPLOAD_TTL_MS } from './harness/uploads.js'
@@ -336,7 +337,7 @@ export function loadConfig(
     ...(env.RIVETOS_CODEX_APP_SERVER_URL
       ? { codexAppServerUrl: env.RIVETOS_CODEX_APP_SERVER_URL }
       : {}),
-    stateDir: env.RIVETOS_DEN_STATE_DIR ?? join(homedir(), '.rivetos', 'den'),
+    stateDir: denStateDir(env),
     nodeName: denNodeName(env),
     agentsDir: nonEmpty(env.RIVETOS_DEN_AGENTS_DIR) ?? join(homedir(), '.rivetos', 'agents'),
     staticDir: env.RIVETOS_DEN_STATIC_DIR ?? '',

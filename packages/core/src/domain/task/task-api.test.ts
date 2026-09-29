@@ -77,6 +77,7 @@ afterEach(async () => {
 async function startApi(opts?: {
   hang?: boolean
   criteriaPolicy?: import('./criteria.js').CriteriaPolicy
+  localQueueNode?: string
 }): Promise<{
   base: string
   store: InMemoryTaskStore
@@ -90,7 +91,12 @@ async function startApi(opts?: {
   })
   handler = createTaskHandler({ store, executors, nodeId: 'test-node' })
   const waiter = createTaskCompletionWaiter({ store, pollFallbackMs: 10 })
-  const route = createTaskApiRoute({ store, waiter, criteriaPolicy: opts?.criteriaPolicy })
+  const route = createTaskApiRoute({
+    store,
+    waiter,
+    criteriaPolicy: opts?.criteriaPolicy,
+    localQueueNode: opts?.localQueueNode,
+  })
 
   const server: Server = createServer((req, res) => {
     void route.handler(req, res)
@@ -383,6 +389,17 @@ describe('agent-aware dispatch (resolveAffinity)', () => {
     const res = await create(base, { goal: 'x', agentId: 'remote-agent', nodeAffinity: 'node-d' })
     const { task } = (await res.json()) as { task: { id: string } }
     expect((await store.get(task.id))?.nodeAffinity).toBe('node-d')
+  })
+
+  it('a local queue rejects another node before inserting', async () => {
+    const { base, store } = await startApi({ localQueueNode: 'test-node' })
+    const denied = await create(base, { goal: 'x', agentId: 'opus', nodeAffinity: 'other' })
+    expect(denied.status).toBe(400)
+    const body = (await denied.json()) as { error: string }
+    expect(body.error).toContain('no shared task queue')
+    expect(await store.list()).toHaveLength(0)
+    const ok = await create(base, { goal: 'x', agentId: 'opus', nodeAffinity: 'test-node' })
+    expect(ok.status).toBe(201)
   })
 
   it('unknown agents 400 instead of creating a doomed row', async () => {

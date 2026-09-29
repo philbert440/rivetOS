@@ -147,6 +147,7 @@ function engineFor(
     nodeName?: string
     executors?: TaskExecutorRegistry
     mesh?: MeshRegistry
+    localQueue?: boolean
   },
 ): PresetDelegationEngine {
   const waiter = createTaskCompletionWaiter({ store: opts.store, pollFallbackMs: 10 })
@@ -158,6 +159,7 @@ function engineFor(
     nodeName: opts.nodeName ?? 'node-f',
     executors: opts.executors,
     meshRegistry: opts.mesh,
+    localQueue: opts.localQueue,
   })
 }
 
@@ -465,6 +467,25 @@ describe('PresetDelegationEngine', () => {
     const row = (await localStore.list())[0]
     expect(row?.nodeAffinity).toBe('node-f')
     expect(seen).toBe(row?.id)
+  })
+
+  it('a local queue refuses a remote preset before inserting a row', async () => {
+    const store = new InMemoryTaskStore(() => undefined)
+    const remote = preset({ node: 'node-g' })
+    const engine = engineFor([remote], {
+      store,
+      nodeName: 'node-f',
+      localQueue: true,
+      mesh: mesh([node('node-g', 'online', ['claude-code'])]),
+    })
+    const result = await engine.delegate(
+      { fromAgent: 'local', toAgent: 'reviewer', task: 't' },
+      remote,
+      0,
+    )
+    expect(result.status).toBe('failed')
+    expect(result.response).toContain('no shared task queue')
+    expect(await store.list()).toEqual([])
   })
 
   it('remote node that advertises the harness runs as a mesh-origin row', async () => {
