@@ -43,8 +43,29 @@ export function createPollingTaskRunner(opts: PollingTaskRunnerOptions): Polling
   let pumping = false
   let pumpAgain = false
   let timer: ReturnType<typeof setInterval> | undefined
+  let backoffTimer: ReturnType<typeof setTimeout> | undefined
+  // A failed scan or handler must not immediately retry the same row.
+  let holdUntil = 0
+
+  function scheduleBackoff(): void {
+    if (backoffTimer) return
+    holdUntil = Date.now() + pollIntervalMs
+    backoffTimer = setTimeout(() => {
+      backoffTimer = undefined
+      holdUntil = 0
+      void pump()
+    }, pollIntervalMs)
+    backoffTimer.unref()
+  }
 
   async function nextId(): Promise<string | undefined> {
+    if (opts.store.listClaimable) {
+      const rows = await opts.store.listClaimable(opts.nodeId, inFlight.size + 1)
+      for (const row of rows) {
+        if (!inFlight.has(row.id)) return row.id
+      }
+      return undefined
+    }
     const queued = await opts.store.list({ status: 'queued', limit: 500 })
     const parked = await opts.store.list({ status: 'awaiting-input', limit: 500 })
     const rows = [...queued, ...parked].sort((a, b) => a.createdAt - b.createdAt)
@@ -58,6 +79,7 @@ export function createPollingTaskRunner(opts: PollingTaskRunnerOptions): Polling
   }
 
   async function pump(): Promise<void> {
+    if (Date.now() < holdUntil) return
     if (pumping) {
       pumpAgain = true
       return
@@ -80,17 +102,30 @@ export function createPollingTaskRunner(opts: PollingTaskRunnerOptions): Polling
             release = resolve
           })
           inFlight.set(id, tracked)
+          let failed = false
           void Promise.resolve()
             .then(() => opts.handler(id))
+            .catch((err: unknown) => {
+              failed = true
+              log.error(
+                `Task ${id} handler failed: ${err instanceof Error ? err.message : String(err)}`,
+              )
+            })
             .finally(() => {
               inFlight.delete(id)
               release()
-              if (running) void pump()
+              if (!running) return
+              if (failed) scheduleBackoff()
+              else void pump()
             })
         }
         // A wake that arrives during nextId() sets pumpAgain from the re-entrant call.
         // eslint-disable-next-line @typescript-eslint/no-unnecessary-condition -- pumpAgain is set re-entrantly
       } while (pumpAgain && running)
+    } catch (err: unknown) {
+      log.error(`Task poll failed: ${err instanceof Error ? err.message : String(err)}`)
+      pumpAgain = false
+      if (running) scheduleBackoff()
     } finally {
       pumping = false
       if (pumpAgain && running) void pump()
@@ -133,6 +168,11 @@ export function createPollingTaskRunner(opts: PollingTaskRunnerOptions): Polling
         clearInterval(timer)
         timer = undefined
       }
+      if (backoffTimer) {
+        clearTimeout(backoffTimer)
+        backoffTimer = undefined
+      }
+      holdUntil = 0
       await Promise.all([...inFlight.values()])
       log.info('Stopped')
     },

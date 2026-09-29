@@ -86,6 +86,11 @@ export interface TaskApiOptions {
    * Omit only in tests that assert row shape without coverage.
    */
   presetHost?: PresetHostContext
+  /**
+   * When set, a create aimed at another node is rejected. The sqlite file is
+   * not a shared queue; Postgres leaves this unset.
+   */
+  localQueueNode?: string
 }
 
 function json(res: ServerResponse, code: number, body: unknown): void {
@@ -305,6 +310,15 @@ export function createTaskApiRoute(opts: TaskApiOptions): GatewayRoute {
             if (typeof resolved === 'object' && resolved !== null)
               return json(res, 400, { error: resolved.error })
             input.nodeAffinity = resolved
+          }
+          if (
+            opts.localQueueNode &&
+            input.nodeAffinity &&
+            input.nodeAffinity !== opts.localQueueNode
+          ) {
+            return json(res, 400, {
+              error: `node "${input.nodeAffinity}" is not this node; sqlite has no shared task queue`,
+            })
           }
 
           const chain = await guardTaskChain({

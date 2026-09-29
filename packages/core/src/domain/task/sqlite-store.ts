@@ -354,6 +354,22 @@ export class SqliteTaskStore implements TaskStore {
     return rows.map(sqliteToPublic)
   }
 
+  async listClaimable(nodeId: string, limit: number): Promise<TaskRow[]> {
+    const rows = this.db
+      .prepare(
+        `SELECT * FROM ros_tasks
+          WHERE (node_affinity IS NULL OR node_affinity = ?)
+            AND (
+              status = 'queued'
+              OR (status = 'awaiting-input' AND pending_message IS NOT NULL)
+            )
+          ORDER BY created_at ASC
+          LIMIT ?`,
+      )
+      .all(nodeId, limit) as unknown as SqliteTaskRow[]
+    return rows.map(sqliteToPublic)
+  }
+
   async claim(id: string, node: string): Promise<TaskRow | undefined> {
     const now = iso(Date.now())
     const row = this.tx(() => {
@@ -553,9 +569,7 @@ export class SqliteTaskStore implements TaskStore {
   async sweep(node: string): Promise<number> {
     const nowMs = Date.now()
     const now = iso(nowMs)
-    // Age >= window is stale, matching InMemoryTaskStore (sweepStaleMs 0
-    // sweeps a heartbeat stamped in this same millisecond). Pg uses a strict
-    // `< now() - interval`, which would spare that equal instant.
+    // Age >= window, so sweepStaleMs 0 reaps a heartbeat stamped this millisecond.
     const staleBefore = iso(nowMs - this.sweepStaleMs)
     const touched = this.tx(() => {
       const requeued = this.db

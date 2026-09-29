@@ -344,6 +344,7 @@ export async function registerAgentTools(
       executors,
       meshRegistry,
       criteriaPolicy,
+      localQueue: sqliteTaskStore !== undefined,
     })
     const onNode = known.filter((p) => p.node === nodeName).length
     log.info(`Preset delegation: ${String(known.length)} presets (${String(onNode)} on this node)`)
@@ -505,8 +506,10 @@ export async function registerAgentTools(
       // Cutover step (g1): postgres mesh transport when the task engine is
       // live; config mesh.delegation_transport: 'http' forces the legacy
       // undici path (phone-android / nodes off the shared datahub PG).
-      taskStore: taskEngineStore,
-      waiter: taskWaiter,
+      // SQLite is this process's file — a remote row would never be claimed
+      // and no peer can see it — so that path stays on HTTP.
+      taskStore: pgUrl ? taskEngineStore : undefined,
+      waiter: pgUrl ? taskWaiter : undefined,
       transport: meshConfig.delegation_transport,
       presets,
     })
@@ -879,6 +882,7 @@ export async function registerAgentTools(
           : undefined,
         presetHost: presetEngine ? { nodeName, executors, meshRegistry: registry } : undefined,
         criteriaPolicy,
+        localQueueNode: sqliteTaskStore ? nodeName : undefined,
       }),
       createOutcomesApiRoute({ store: taskEngineStore }),
     )

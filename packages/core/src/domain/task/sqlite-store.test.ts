@@ -388,6 +388,43 @@ describe('SqliteTaskStore', () => {
     expect(dump(path)).toEqual(before)
   })
 
+  it('listClaimable returns the oldest runnable row, not the newest list page', async () => {
+    const { store, path } = open()
+    const resume = await store.create(input({ goal: 'resume me' }))
+    await store.claim(resume.id, 'n1')
+    await store.markAwaitingInput(resume.id)
+    await store.send(resume.id, 'go on')
+    const fillers: string[] = []
+    for (let i = 0; i < 500; i++) {
+      const row = await store.create(input({ goal: `parked ${String(i)}` }))
+      await store.claim(row.id, 'n1')
+      await store.markAwaitingInput(row.id)
+      fillers.push(row.id)
+    }
+    const db = new DatabaseSync(path)
+    try {
+      db.prepare(`UPDATE ros_tasks SET created_at = ? WHERE id = ?`).run(
+        '2000-01-01T00:00:00.000Z',
+        resume.id,
+      )
+      const later = db.prepare(`UPDATE ros_tasks SET created_at = ? WHERE id = ?`)
+      fillers.forEach((id, i) => later.run(`2020-01-01T00:00:${String(i % 60).padStart(2, '0')}.000Z`, id))
+    } finally {
+      db.close()
+    }
+    const page = await store.list({ status: 'awaiting-input', limit: 500 })
+    expect(page.some((row) => row.id === resume.id)).toBe(false)
+    const claimable = await store.listClaimable('n1', 5)
+    expect(claimable[0]?.id).toBe(resume.id)
+    expect(claimable.every((row) => row.pendingMessage !== undefined)).toBe(true)
+
+    const foreign = await store.create(input({ nodeAffinity: 'other' }))
+    const local = await store.create(input({ nodeAffinity: 'n1' }))
+    const ids = (await store.listClaimable('n1', 20)).map((row) => row.id)
+    expect(ids).toContain(local.id)
+    expect(ids).not.toContain(foreign.id)
+  })
+
   it('opens in WAL mode', () => {
     const { path } = open()
     const db = new DatabaseSync(path)

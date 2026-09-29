@@ -156,6 +156,7 @@ async function start(executor: HarnessExecutor): Promise<Running> {
     waiter,
     nodeName: NODE,
     executors,
+    localQueue: true,
   })
   const routes: GatewayRoute[] = [
     createTaskApiRoute({
@@ -168,6 +169,7 @@ async function start(executor: HarnessExecutor): Promise<Running> {
         return { error: `agent "${agentId}" not found locally` }
       },
       presetHost: { nodeName: NODE, executors },
+      localQueueNode: NODE,
     }),
     createCatalogApiRoute({
       nodeName: NODE,

@@ -171,4 +171,63 @@ describe('createPollingTaskRunner', () => {
     expect((await store.get(task.id))?.status).toBe('completed')
     await runner.stop()
   })
+
+  it('backs off after a handler rejection instead of spinning', async () => {
+    const unhandled: unknown[] = []
+    const onUnhandled = (err: unknown): void => {
+      unhandled.push(err)
+    }
+    process.on('unhandledRejection', onUnhandled)
+    const starts: number[] = []
+    let runner: PollingTaskRunner | undefined
+    const store = new InMemoryTaskStore((id) => runner?.wake())
+    runner = createPollingTaskRunner({
+      store,
+      nodeId: 'n1',
+      pollIntervalMs: 80,
+      handler: async () => {
+        starts.push(Date.now())
+        throw new Error('boom')
+      },
+    })
+    try {
+      await runner.start()
+      await store.create(input())
+      await waitFor(() => starts.length >= 2, 2_000)
+      expect(starts[1]! - starts[0]!).toBeGreaterThanOrEqual(50)
+      expect(unhandled).toEqual([])
+    } finally {
+      process.off('unhandledRejection', onUnhandled)
+      await runner.stop()
+    }
+  })
+
+  it('keeps polling after a list failure', async () => {
+    let runner: PollingTaskRunner | undefined
+    const store = new InMemoryTaskStore((id) => runner?.wake())
+    const list = store.list.bind(store)
+    let failList = true
+    store.list = (filter) => {
+      if (failList) return Promise.reject(new Error('list broke'))
+      return list(filter)
+    }
+    const seen: string[] = []
+    runner = createPollingTaskRunner({
+      store,
+      nodeId: 'n1',
+      pollIntervalMs: 30,
+      handler: async (id) => {
+        const row = await store.claim(id, 'n1')
+        if (!row) return
+        seen.push(id)
+        await store.finish(id, 'completed', done)
+      },
+    })
+    await runner.start()
+    failList = false
+    const task = await store.create(input())
+    await waitFor(() => seen.length === 1)
+    expect(seen).toEqual([task.id])
+    await runner.stop()
+  })
 })

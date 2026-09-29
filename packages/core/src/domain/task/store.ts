@@ -159,6 +159,14 @@ export interface TaskStore {
   list(filter?: TaskListFilter): Promise<TaskRow[]>
 
   /**
+   * Oldest rows this node may claim: queued, plus awaiting-input that already
+   * have a pending message. The limit applies only to that set — `list()` is
+   * a newest-500 page and must not be the scheduler cursor. Optional; the
+   * polling runner uses it when the store provides it.
+   */
+  listClaimable?(nodeId: string, limit: number): Promise<TaskRow[]>
+
+  /**
    * CAS claim (Appendix C): flip queued/awaiting-input → running, stamp
    * started_at/claimed_by, bump attempt. Returns undefined when the row was
    * already claimed, terminal, or removed — the loser of a race gets nothing.

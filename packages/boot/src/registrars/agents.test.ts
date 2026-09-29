@@ -117,12 +117,16 @@ const coreMocks = vi.hoisted(() => {
 })
 
 const meshCapture = vi.hoisted(() => {
+  const constructed: Array<{ taskStore?: unknown; waiter?: unknown }> = []
   class MeshDelegationEngine {
+    constructor(opts: { taskStore?: unknown; waiter?: unknown }) {
+      constructed.push(opts)
+    }
     createDelegationTool(): { name: string } {
       return { name: 'delegate_task' }
     }
   }
-  return { MeshDelegationEngine }
+  return { MeshDelegationEngine, constructed }
 })
 
 const pgMocks = vi.hoisted(() => {
@@ -192,6 +196,7 @@ afterEach(() => {
   pgMocks.Pool.instances.splice(0)
   coreMocks.started.splice(0)
   coreMocks.nodeNames.splice(0)
+  meshCapture.constructed.splice(0)
 })
 
 describe('resolveAdvertiseHost', () => {
@@ -520,6 +525,54 @@ describe('registerAgentTools shared pool wiring', () => {
     } finally {
       for (const hook of hooks) await hook()
       rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
+  it('does not hand the sqlite store to mesh delegation', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'boot-sqlite-mesh-'))
+    const dbPath = join(dir, 'tasks.db')
+    vi.stubEnv('HOSTNAME', 'laptop')
+    const { runtime, hooks } = stubRuntime({ pgUrl: undefined })
+    try {
+      await registerAgentTools(
+        runtime,
+        {
+          ...config(),
+          tasks: { sqlite_path: dbPath },
+          mesh: { enabled: true, tls: true, node_name: 'laptop' },
+        },
+        '/tmp',
+      )
+      expect(meshCapture.constructed).toHaveLength(1)
+      expect(meshCapture.constructed[0]?.taskStore).toBeUndefined()
+      expect(meshCapture.constructed[0]?.waiter).toBeUndefined()
+      expect(existsSync(dbPath)).toBe(true)
+    } finally {
+      for (const hook of hooks) await hook()
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
+  it('hands the postgres task store to mesh delegation', async () => {
+    const hostPool = {
+      end: vi.fn(async () => undefined),
+      query: vi.fn(async () => ({ rows: [] })),
+    }
+    const { runtime, hooks } = stubRuntime({ pgPool: hostPool })
+    try {
+      await registerAgentTools(
+        runtime,
+        {
+          ...config(),
+          mesh: { enabled: true, tls: true, node_name: 'node-f' },
+        },
+        '/tmp',
+      )
+      expect(meshCapture.constructed).toHaveLength(1)
+      expect(meshCapture.constructed[0]?.taskStore).toBeInstanceOf(coreMocks.PgTaskStore)
+      expect(meshCapture.constructed[0]?.waiter).toBeDefined()
+    } finally {
+      for (const hook of hooks) await hook()
     }
   })
 

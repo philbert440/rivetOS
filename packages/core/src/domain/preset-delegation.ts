@@ -99,6 +99,11 @@ export interface PresetDelegationConfig {
   /** Answers "implemented on the hosting node?" via node.metadata.harnessExecutors. */
   meshRegistry?: MeshRegistry
   criteriaPolicy?: CriteriaPolicy
+  /**
+   * The store is this process's file, not a shared queue. A preset hosted on
+   * another node fails before a row is inserted. Postgres leaves this unset.
+   */
+  localQueue?: boolean
   /** Default 3. */
   maxChainDepth?: number
   now?: () => number
@@ -432,6 +437,14 @@ export class PresetDelegationEngine {
       return {
         status: 'failed',
         response: `preset "${preset.name}" is not runnable`,
+        durationMs: 0,
+      }
+    }
+    // No shared queue: a remote row would stay queued until the wait deadline.
+    if (this.config.localQueue && node !== this.config.nodeName) {
+      return {
+        status: 'failed',
+        response: `preset "${preset.name}" lives on ${node}; this node has no shared task queue`,
         durationMs: 0,
       }
     }
