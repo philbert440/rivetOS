@@ -15,6 +15,7 @@ export {
 } from './store.js'
 
 export { FileAgentPresetStore, type FileAgentPresetStoreOptions } from './file-store.js'
+export { denStateDir } from './den-state-dir.js'
 export { PgAgentPresetStore, type PgAgentPresetStoreOptions } from './pg-store.js'
 export {
   createFallbackPresetStore,

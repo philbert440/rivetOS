@@ -67,6 +67,7 @@ export {
   taskJobKey,
   taskJobName,
 } from './domain/task/store.js'
+export { SqliteTaskStore } from './domain/task/sqlite-store.js'
 export type {
   TaskStore,
   TaskRow,
@@ -164,6 +165,8 @@ export {
   createTaskHandler,
   createTaskRunner,
 } from './domain/task/runner.js'
+export { createPollingTaskRunner } from './domain/task/polling-runner.js'
+export type { PollingTaskRunner, PollingTaskRunnerOptions } from './domain/task/polling-runner.js'
 export type {
   ExecutorRegistryOptions,
   TaskExecutorRegistry,

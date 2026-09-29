@@ -1,10 +1,11 @@
 /**
  * TaskStore — persistence for the durable task engine (`ros_tasks`).
  *
- * Two implementations, mirroring subagent-store:
+ * Three implementations:
  *   - PgTaskStore       — durable; INSERT + graphile-worker add_job in ONE
  *                         transaction (jobKey `task:<id>`, maxAttempts 1)
- *   - InMemoryTaskStore — process-local (tests + pgUrl-less dev)
+ *   - SqliteTaskStore   — same rows in one file; enqueue callback, no job table
+ *   - InMemoryTaskStore — process-local (tests + no configured engine)
  *
  * Status lifecycle (see 0002_ros_tasks.sql):
  *   queued → running → completed | failed | killed | timeout

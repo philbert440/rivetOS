@@ -958,6 +958,16 @@ export function validateTasks(tasks: Record<string, unknown>, issues: Validation
     })
   }
 
+  if (tasks.sqlite_path !== undefined) {
+    if (typeof tasks.sqlite_path !== 'string' || tasks.sqlite_path.trim() === '') {
+      issues.push({
+        severity: 'error',
+        path: `${path}.sqlite_path`,
+        message: '"tasks.sqlite_path" must be a non-empty file path',
+      })
+    }
+  }
+
   if (tasks.eval !== undefined) {
     if (typeof tasks.eval !== 'object' || tasks.eval === null || Array.isArray(tasks.eval)) {
       issues.push({

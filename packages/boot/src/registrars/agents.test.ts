@@ -1,5 +1,11 @@
+import { createServer } from 'node:http'
+import { mkdtempSync, rmSync, existsSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 import { describe, it, expect, afterEach, vi } from 'vitest'
 import pg from 'pg'
+import { FileAgentPresetStore } from '@rivetos/agent-registry'
+import type { GatewayRoute } from '@rivetos/types'
 import { PostgresMemory, RoutingMemory } from '@rivetos/memory-postgres'
 import type { Runtime } from '@rivetos/core'
 import type { RivetConfig } from '../config.js'
@@ -287,13 +293,18 @@ describe('registerAgentTools shared pool wiring', () => {
     } as RivetConfig
   }
 
-  function stubRuntime(opts: { pgPool?: { end: ReturnType<typeof vi.fn> } }): {
+  function stubRuntime(opts: {
+    pgPool?: { end: ReturnType<typeof vi.fn> }
+    pgUrl?: string
+  }): {
     runtime: Runtime
     hooks: Array<() => Promise<void>>
+    setHeartbeatTaskStore: ReturnType<typeof vi.fn>
   } {
     const hooks: Array<() => Promise<void>> = []
+    const setHeartbeatTaskStore = vi.fn()
     const runtime = {
-      getPgUrl: () => pgUrl,
+      getPgUrl: () => ('pgUrl' in opts ? opts.pgUrl : pgUrl),
       getPgPool: () => opts.pgPool,
       addShutdownHook: (hook: () => Promise<void>) => {
         hooks.push(hook)
@@ -305,9 +316,9 @@ describe('registerAgentTools shared pool wiring', () => {
       getMemory: () => undefined,
       registerTool: () => undefined,
       registerSkillCatalog: () => undefined,
-      setHeartbeatTaskStore: () => undefined,
+      setHeartbeatTaskStore,
     } as unknown as Runtime
-    return { runtime, hooks }
+    return { runtime, hooks, setHeartbeatTaskStore }
   }
 
   it('passes the host pool to PgTaskStore and createTaskRunner and does not end it', async () => {
@@ -448,7 +459,122 @@ describe('registerAgentTools shared pool wiring', () => {
     expect(hostPool.query).not.toHaveBeenCalled()
     for (const hook of hooks) await hook()
   })
+
+  it('mounts /api/tasks from sqlite_path and resolves a file preset', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'boot-sqlite-'))
+    const agentDir = mkdtempSync(join(tmpdir(), 'boot-agent-'))
+    vi.stubEnv('RIVETOS_DEN_STATE_DIR', dir)
+    vi.stubEnv('HOSTNAME', 'laptop')
+    const presets = new FileAgentPresetStore(join(dir, 'agents.json'))
+    await presets.create({
+      name: 'reviewer',
+      node: 'laptop',
+      harnessId: 'claude-code',
+      model: 'preset-model',
+      sharedLink: false,
+      directory: agentDir,
+    })
+    const dbPath = join(dir, 'tasks.db')
+    const { runtime, hooks, setHeartbeatTaskStore } = stubRuntime({ pgUrl: undefined })
+    try {
+      const result = await registerAgentTools(
+        runtime,
+        { ...config(), tasks: { sqlite_path: dbPath } },
+        '/tmp',
+      )
+      expect(result.gatewayRoutes.some((route) => route.prefix === '/api/tasks')).toBe(true)
+      expect(coreMocks.createTaskRunner).not.toHaveBeenCalled()
+      expect(setHeartbeatTaskStore).toHaveBeenCalled()
+      const waiterArg = coreMocks.createTaskCompletionWaiter.mock.calls.at(-1)?.[0] as {
+        pgUrl?: string
+      }
+      expect(waiterArg.pgUrl).toBeUndefined()
+      expect(existsSync(dbPath)).toBe(true)
+
+      const catalog = result.gatewayRoutes.find((route) => route.prefix === '/api/catalog')
+      expect(catalog).toBeDefined()
+      const body = await getJson(result.gatewayRoutes, '/api/catalog/agents')
+      expect(JSON.stringify(body)).toContain('reviewer')
+    } finally {
+      for (const hook of hooks) await hook()
+      rmSync(dir, { recursive: true, force: true })
+      rmSync(agentDir, { recursive: true, force: true })
+    }
+  })
+
+  it('keeps Postgres when pgUrl and sqlite_path are both set', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'boot-sqlite-skip-'))
+    const dbPath = join(dir, 'nested', 'tasks.db')
+    const hostPool = {
+      end: vi.fn(async () => undefined),
+      query: vi.fn(async () => ({ rows: [] })),
+    }
+    const { runtime, hooks } = stubRuntime({ pgPool: hostPool })
+    try {
+      await registerAgentTools(runtime, { ...config(), tasks: { sqlite_path: dbPath } }, '/tmp')
+      expect(existsSync(dbPath)).toBe(false)
+      expect(existsSync(join(dir, 'nested'))).toBe(false)
+      expect(coreMocks.createTaskRunner).toHaveBeenCalledWith(
+        expect.objectContaining({ pgPool: hostPool }),
+      )
+    } finally {
+      for (const hook of hooks) await hook()
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
+  it('does not open sqlite when tasks are disabled', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'boot-sqlite-off-'))
+    const dbPath = join(dir, 'tasks.db')
+    const { runtime, hooks } = stubRuntime({ pgUrl: undefined })
+    try {
+      const result = await registerAgentTools(
+        runtime,
+        { ...config(), tasks: { enabled: false, sqlite_path: dbPath } },
+        '/tmp',
+      )
+      expect(existsSync(dbPath)).toBe(false)
+      expect(coreMocks.createTaskRunner).not.toHaveBeenCalled()
+      expect(result.gatewayRoutes.some((route) => route.prefix === '/api/tasks')).toBe(false)
+    } finally {
+      for (const hook of hooks) await hook()
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
 })
+
+async function getJson(routes: GatewayRoute[], path: string): Promise<unknown> {
+  const server = createServer((req, res) => {
+    const url = new URL(req.url ?? '/', 'http://127.0.0.1')
+    const route = routes
+      .filter(
+        (candidate) =>
+          url.pathname === candidate.prefix || url.pathname.startsWith(`${candidate.prefix}/`),
+      )
+      .sort((a, b) => b.prefix.length - a.prefix.length)[0]
+    if (!route) {
+      res.writeHead(404)
+      res.end()
+      return
+    }
+    void Promise.resolve(route.handler(req, res)).catch((err: unknown) => {
+      if (!res.headersSent) {
+        res.writeHead(500)
+        res.end(err instanceof Error ? err.message : String(err))
+      }
+    })
+  })
+  await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', () => resolve()))
+  const address = server.address()
+  if (!address || typeof address === 'string') throw new Error('no port')
+  try {
+    const response = await fetch(`http://127.0.0.1:${address.port}${path}`)
+    expect(response.status).toBe(200)
+    return await response.json()
+  } finally {
+    await new Promise<void>((resolve) => server.close(() => resolve()))
+  }
+}
 
 describe('memory API pool-to-tools composition', () => {
   it.each(['postgres', 'routing', 'unset'] as const)(

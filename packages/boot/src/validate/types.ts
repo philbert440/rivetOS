@@ -40,7 +40,7 @@ export const KNOWN_TOP_LEVEL_KEYS = new Set([
   'plugins',
 ])
 
-export const KNOWN_TASKS_KEYS = new Set(['enabled', 'pricing', 'eval', 'harnesses'])
+export const KNOWN_TASKS_KEYS = new Set(['enabled', 'pricing', 'eval', 'harnesses', 'sqlite_path'])
 
 /** tasks.harnesses.<harness-id>.* keys (YAML snake_case). */
 export const KNOWN_TASKS_HARNESS_KEYS = new Set([

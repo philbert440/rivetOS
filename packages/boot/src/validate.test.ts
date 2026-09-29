@@ -1155,6 +1155,20 @@ describe('den', () => {
       )
     })
 
+    it('accepts tasks.sqlite_path and rejects a blank one', () => {
+      const ok = validConfig()
+      ok.tasks = { sqlite_path: 'tasks.db' }
+      assertValid(validateConfig(ok))
+
+      const blank = validConfig()
+      blank.tasks = { sqlite_path: '   ' }
+      assertError(validateConfig(blank), 'tasks.sqlite_path', 'must be a non-empty file path')
+
+      const wrong = validConfig()
+      wrong.tasks = { sqlite_path: 1 }
+      assertError(validateConfig(wrong), 'tasks.sqlite_path', 'must be a non-empty file path')
+    })
+
     it('rejects non-boolean flags and negative max_retries', () => {
       const cfg = validConfig()
       cfg.tasks = { eval: { enabled: 'yes', require_criteria: 1, max_retries: -1 } }

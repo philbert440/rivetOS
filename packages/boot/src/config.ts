@@ -167,6 +167,12 @@ export interface TasksSection {
    */
   enabled?: boolean
   /**
+   * SQLite task file used only when this node has no pgUrl. Postgres wins
+   * when both are set (the file is not opened). Relative paths are cwd-relative.
+   * Task rows stay out of any other app database — point this at its own file.
+   */
+  sqlite_path?: string
+  /**
    * Per-provider pricing in USD per million tokens, e.g.
    *   pricing: { xai: { input_per_mtok: 3, output_per_mtok: 15 } }
    * Lets budget.maxUsd fire for in-process (chat-loop) tasks. Providers

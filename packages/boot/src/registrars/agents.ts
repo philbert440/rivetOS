@@ -40,6 +40,7 @@ import {
   createCatalogApiRoute,
   createTaskHandler,
   InMemoryTaskStore,
+  SqliteTaskStore,
   type TaskStore,
   type TaskCompletionWaiter,
   type NotificationsChannelHandle,
@@ -49,6 +50,8 @@ import {
   createNotImplementedHarnessExecutor,
   harnessExecutorGap,
   createTaskRunner,
+  createPollingTaskRunner,
+  type PollingTaskRunner,
   PresetDelegationEngine,
   SkillManagerImpl,
   createSkillListTool,
@@ -60,7 +63,9 @@ import {
 import { WorkflowEngine, resolveCaseDirRoot, defaultWorkflowsDefsRoot } from '@rivetos/workflows'
 import {
   PgAgentPresetStore,
+  FileAgentPresetStore,
   createCachedPresetResolver,
+  denStateDir,
   type CachedPresetResolver,
 } from '@rivetos/agent-registry'
 import type { DelegationRunsRecorder, EscalationNotifier } from '@rivetos/core'
@@ -90,6 +95,14 @@ import { logger } from '@rivetos/core'
 import { denTlsConfigured } from './gateway.js'
 
 const log = logger('Boot:Agents')
+
+/** Blank or non-string is unset — validation already rejected those when it ran. */
+function tasksSqlitePath(config: RivetConfig): string | undefined {
+  const raw = config.tasks?.sqlite_path
+  if (typeof raw !== 'string') return undefined
+  const trimmed = raw.trim()
+  return trimmed.length > 0 ? trimmed : undefined
+}
 
 /** Compose the configured escalation notifier with the 4e gateway push. */
 function composeNotifiers(
@@ -135,7 +148,8 @@ export async function registerAgentTools(
     : undefined
 
   // ------------------------------------------------------------------
-  // Durability — Postgres-backed if pgUrl is configured, in-memory otherwise.
+  // Durability — Postgres when pgUrl is set. With no pgUrl, tasks.sqlite_path
+  // is the engine (file not opened when both are set). In-memory otherwise.
   //
   // Substrate is the task engine: ros_tasks + the graphile-worker run-task
   // queue + the completion waiter. Prefer the host-owned shared pool;
@@ -153,12 +167,21 @@ export async function registerAgentTools(
   const tasksEnabled = config.tasks?.enabled !== false
   // Phase 2b: one criteria policy for every task creator on this node.
   const criteriaPolicy = criteriaPolicyFromConfig(config.tasks?.eval)
-  let taskEngineStore: PgTaskStore | undefined
+  const sqlitePath = tasksSqlitePath(config)
+  let taskEngineStore: TaskStore | undefined
+  let sqliteTaskStore: SqliteTaskStore | undefined
+  let pollingRunner: PollingTaskRunner | undefined
   let taskWaiter: TaskCompletionWaiter | undefined
   let meshRegistryRef: MeshRegistry | undefined
   let presetResolver: CachedPresetResolver | undefined
   let delegationRecorder: DelegationRunsRecorder | undefined
   let userPools: Map<string, pg.Pool | null> | undefined
+
+  if (pgUrl && sqlitePath) {
+    log.warn(
+      'tasks.sqlite_path is set but pgUrl is configured — Postgres wins; sqlite file not opened',
+    )
+  }
 
   if (pgUrl) {
     const hostPool = runtime.getPgPool()
@@ -236,6 +259,32 @@ export async function registerAgentTools(
           }`,
         )
       }
+    }
+  } else if (tasksEnabled && sqlitePath) {
+    // No Postgres. The file is the engine; den's agents.json is the preset
+    // source so list_agents / delegate_task see the same file den writes.
+    log.info(`SQLite task engine at ${sqlitePath}`)
+    const store = new SqliteTaskStore(sqlitePath, () => {
+      pollingRunner?.wake()
+    })
+    sqliteTaskStore = store
+    taskEngineStore = store
+    delegationRecorder = createTaskDelegationRecorder(store)
+    taskWaiter = createTaskCompletionWaiter({ store })
+    runtime.addShutdownHook(async () => {
+      await taskWaiter?.stop()
+    })
+    try {
+      presetResolver = createCachedPresetResolver(
+        new FileAgentPresetStore(join(denStateDir(), 'agents.json')),
+        { log: (msg) => log.info(msg) },
+      )
+    } catch (err: unknown) {
+      log.warn(
+        `file preset store failed — preset delegation off: ${
+          err instanceof Error ? err.message : String(err)
+        }`,
+      )
     }
   } else {
     log.info('No pgUrl — subagent sessions are process-local; delegation audit disabled')
@@ -633,6 +682,74 @@ export async function registerAgentTools(
       runtime.setHeartbeatTaskStore(taskEngineStore, taskWaiter, nodeNameFor(config))
     }
     log.info('Task engine started — subagent tools, delegation audit + heartbeats are task-backed')
+  } else if (tasksEnabled && sqliteTaskStore && taskWaiter) {
+    const evalSection = config.tasks?.eval
+    const runTaskRef: { current?: (taskId: string) => Promise<void> } = {}
+    const evaluation = evalSection?.enabled
+      ? createEvaluationCoordinator({
+          store: sqliteTaskStore,
+          waiter: taskWaiter,
+          runTask: (taskId) => runTaskRef.current?.(taskId) ?? Promise.resolve(),
+          escalation: composeNotifiers(
+            notifications,
+            evalSection.escalation?.channel
+              ? createChannelEscalationNotifier(
+                  (channelId, text) => runtime.broadcastToChannel(channelId, text),
+                  {
+                    channelId: evalSection.escalation.channel,
+                    gatewayBase:
+                      config.den?.enabled !== false
+                        ? `http://${config.mesh?.node_name ?? 'localhost'}:${String(config.den?.port ?? 5174)}`
+                        : undefined,
+                  },
+                )
+              : createLogEscalationNotifier(),
+          ),
+          nodeId: nodeNameFor(config),
+          config: {
+            maxRetries: evalSection.max_retries,
+            agentId: evalSection.verifier?.agent_id,
+            executor: evalSection.verifier?.executor,
+            executorTarget: evalSection.verifier?.executor_target,
+            budget: evalSection.verifier?.budget
+              ? {
+                  maxUsd: evalSection.verifier.budget.max_usd,
+                  maxTurns:
+                    evalSection.verifier.budget.max_turns !== undefined
+                      ? Math.max(2, evalSection.verifier.budget.max_turns)
+                      : undefined,
+                }
+              : undefined,
+            skipOrigins: evalSection.skip_origins ?? ['heartbeat'],
+          },
+        })
+      : undefined
+    const runner = createPollingTaskRunner({
+      store: sqliteTaskStore,
+      handler: createTaskHandler({
+        store: sqliteTaskStore,
+        executors,
+        nodeId: nodeNameFor(config),
+        workspaceDir,
+        evaluation,
+        memory: runtime.getMemory(),
+        resolvePreset: resolvePresetForRunner,
+        invalidatePreset: invalidatePresetForRunner,
+        onTaskFinished: notifyTaskFinished,
+      }),
+      nodeId: nodeNameFor(config),
+    })
+    pollingRunner = runner
+    runTaskRef.current = runner.handler
+    await runner.start()
+    runtime.addShutdownHook(async () => {
+      await runner.stop()
+      sqliteTaskStore.close()
+    })
+    runtime.setHeartbeatTaskStore(sqliteTaskStore, taskWaiter, nodeNameFor(config))
+    log.info(
+      'Task engine started — sqlite; subagent tools, delegation audit + heartbeats are task-backed',
+    )
   } else if (tasksEnabled && pgUrl) {
     log.info('Task engine degraded — ros_tasks missing; subagent tools run in-memory')
   } else if (tasksEnabled) {

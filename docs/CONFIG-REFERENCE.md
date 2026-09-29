@@ -681,9 +681,15 @@ Postgres is configured and the `0002_ros_tasks` migration has been applied
 (`rivetos-memory-migrate`); on unmigrated nodes it logs a warning and stays
 inert instead of failing boot.
 
-| Key       | Type    | Default | Description                                                        |
-| --------- | ------- | ------- | ------------------------------------------------------------------ |
-| `enabled` | boolean | `true`  | Start the embedded task runner. Inert while nothing creates tasks. |
+With no `pgUrl`, `sqlite_path` is the engine instead: same `ros_tasks` rows
+in that file, polled by this process (no graphile-worker, no `LISTEN`). If
+both are set, Postgres wins and the sqlite file is not opened. Relative
+paths are cwd-relative. Keep this file separate from any other app database.
+
+| Key           | Type    | Default | Description                                                                 |
+| ------------- | ------- | ------- | --------------------------------------------------------------------------- |
+| `enabled`     | boolean | `true`  | Start the embedded task runner. Inert while nothing creates tasks.         |
+| `sqlite_path` | string  | —       | Task file when there is no pgUrl. Ignored (with a warning) when pgUrl is set. |
 
 Env knobs: `RIVETOS_TASKS_CONCURRENCY` (default 4), `RIVETOS_TASKS_POLL_MS` (default 2000).
 
