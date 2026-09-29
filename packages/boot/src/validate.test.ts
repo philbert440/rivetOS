@@ -485,6 +485,32 @@ describe('Config Validation', () => {
       const result = validateConfig(cfg)
       assertWarning(result, 'providers.anthropic.thinking_budget', 'Unknown key')
     })
+
+    it('accepts claude-cli allowed_api_key_sources without an unknown-key warning', () => {
+      const cfg = validConfig()
+      ;(cfg.providers as Record<string, unknown>)['claude-cli'] = {
+        allowed_api_key_sources: ['apiKeyHelper'],
+      }
+      const result = validateConfig(cfg)
+      assertValid(result)
+      const warnings = result.warnings.filter((w) => w.path.includes('allowed_api_key_sources'))
+      assert.equal(warnings.length, 0)
+    })
+
+    it('rejects a bad claude-cli allowed_api_key_sources shape', () => {
+      for (const bad of ['apiKeyHelper', [''], [1], ['apiKeyHelper', '']]) {
+        const cfg = validConfig()
+        ;(cfg.providers as Record<string, unknown>)['claude-cli'] = {
+          allowed_api_key_sources: bad,
+        }
+        const result = validateConfig(cfg)
+        assertError(
+          result,
+          'providers.claude-cli.allowed_api_key_sources',
+          'must be an array of non-empty strings',
+        )
+      }
+    })
   })
 
   // =========================================================================

@@ -379,13 +379,14 @@ providers:
     model: claude-opus-4-7 # optional — defaults to whatever the CLI picks
 ```
 
-| Key          | Type     | Default  | Description                      |
-| ------------ | -------- | -------- | -------------------------------- |
-| `binary`     | string   | `claude` | Path to the `claude` binary.     |
-| `model`      | string   | —        | Model alias to pass to the CLI.  |
-| `extra_args` | string[] | `[]`     | Additional CLI flags (advanced). |
+| Key                       | Type     | Default  | Description                                                                      |
+| ------------------------- | -------- | -------- | -------------------------------------------------------------------------------- |
+| `binary`                  | string   | `claude` | Path to the `claude` binary.                                                     |
+| `model`                   | string   | —        | Model alias to pass to the CLI.                                                  |
+| `extra_args`              | string[] | `[]`     | Additional CLI flags (advanced).                                                 |
+| `allowed_api_key_sources` | string[] | —        | Extra `apiKeySource` values besides `none`. Unset keeps the OAuth-only gate.    |
 
-**Auth:** `claude login` (via the CLI itself). RivetOS does not handle the OAuth flow; the CLI does.
+**Auth:** `claude login` (via the CLI itself). RivetOS does not handle the OAuth flow; the CLI does. On system init, a reported `apiKeySource` other than `none` kills the spawn unless it is listed in `allowed_api_key_sources`. Set that only for an Anthropic-compatible proxy the CLI reaches through its own `apiKeyHelper` (the value is the source string the CLI prints, matched exactly). The default stays unset: subscription OAuth is the sanctioned pattern, and API-key auth bills the console. Listing a source does not stop RivetOS from deleting `ANTHROPIC_API_KEY` and `ANTHROPIC_AUTH_TOKEN` on the child.
 
 ### opencode-cli
 

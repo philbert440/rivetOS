@@ -55,6 +55,7 @@ import {
 } from '@rivetos/types'
 import { embedMcpServerForTurn, type EmbeddedMcpHandle } from './mcp-bridge.js'
 import {
+  apiKeySourceAllowed,
   spawnClaudeTurn,
   type ClaudeCliEffort,
   type CliResult,
@@ -103,6 +104,9 @@ export interface ClaudeCliExecutorConfig {
    *  resumed spawn sees what already happened — parity with chat-loop
    *  (step (c)). */
   memory?: Pick<Memory, 'getSessionHistory' | 'getTaskHistory'>
+  /** Extra `apiKeySource` values to accept besides missing and `"none"`.
+   *  Unset rejects every other source. Does not disable the env scrub. */
+  allowedApiKeySources?: readonly string[]
 }
 
 /** Caps for the rendered resume transcript — keep the system append sane. */
@@ -572,11 +576,11 @@ export class ClaudeCliExecutor implements HarnessExecutor {
         if (event.type === 'system') {
           const init = event as CliSystemInit
           sessionId = init.session_id
-          if (init.apiKeySource && init.apiKeySource !== 'none') {
-            spawned.kill()
+          if (!apiKeySourceAllowed(init.apiKeySource, this.cfg.allowedApiKeySources)) {
             error =
               `claude-cli: unexpected apiKeySource="${init.apiKeySource}" — ` +
               `this executor requires OAuth/keychain auth`
+            spawned.kill()
           }
           continue
         }

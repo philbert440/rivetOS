@@ -96,6 +96,14 @@ function makeSlowClaude(): FakeClaude {
 
 const SESSION = 'fake-session-42'
 
+function linesWithSource(source: string | undefined, finalText = 'ok'): unknown[] {
+  const lines = successLines(finalText)
+  const init = lines[0] as { apiKeySource?: string }
+  if (source === undefined) delete init.apiKeySource
+  else init.apiKeySource = source
+  return lines
+}
+
 function successLines(finalText: string): unknown[] {
   return [
     {
@@ -459,6 +467,59 @@ describe('ClaudeCliExecutor', () => {
     }).result
     expect(result.verdict).toBe('failed')
     expect(result.error).toMatch(/Failed to spawn/)
+  })
+
+  it('kills a non-none apiKeySource when no allow-list is set', async () => {
+    const fake = makeFakeClaude(linesWithSource('apiKeyHelper'))
+    const result = await new ClaudeCliExecutor({ binary: fake.binary })
+      .start(makeConformanceSpec(), { signal: new AbortController().signal }).result
+    expect(result.verdict).toBe('failed')
+    expect(result.error).toBe(
+      'claude-cli: unexpected apiKeySource="apiKeyHelper" — this executor requires OAuth/keychain auth',
+    )
+  })
+
+  it('accepts an apiKeySource named in allowedApiKeySources', async () => {
+    const fake = makeFakeClaude(linesWithSource('apiKeyHelper', 'proxy ok'))
+    const result = await new ClaudeCliExecutor({
+      binary: fake.binary,
+      allowedApiKeySources: ['apiKeyHelper'],
+    }).start(makeConformanceSpec(), { signal: new AbortController().signal }).result
+    expect(result.verdict).toBe('completed')
+    expect(result.error).toBeUndefined()
+    expect(result.summary).toBe('proxy ok')
+  })
+
+  it('still rejects a source that is not on the allow-list', async () => {
+    const fake = makeFakeClaude(linesWithSource('other'))
+    const result = await new ClaudeCliExecutor({
+      binary: fake.binary,
+      allowedApiKeySources: ['apiKeyHelper'],
+    }).start(makeConformanceSpec(), { signal: new AbortController().signal }).result
+    expect(result.verdict).toBe('failed')
+    expect(result.error).toMatch(/unexpected apiKeySource="other"/)
+  })
+
+  it('still strips ANTHROPIC_API_KEY and ANTHROPIC_AUTH_TOKEN when a source is allowed', async () => {
+    const previousKey = process.env.ANTHROPIC_API_KEY
+    const previousToken = process.env.ANTHROPIC_AUTH_TOKEN
+    process.env.ANTHROPIC_API_KEY = 'not-a-real-key'
+    process.env.ANTHROPIC_AUTH_TOKEN = 'not-a-real-token'
+    try {
+      const fake = makeFakeClaude(linesWithSource('apiKeyHelper', 'proxy ok'))
+      const result = await new ClaudeCliExecutor({
+        binary: fake.binary,
+        allowedApiKeySources: ['apiKeyHelper'],
+      }).start(makeConformanceSpec(), { signal: new AbortController().signal }).result
+      expect(result.verdict).toBe('completed')
+      expect(fake.env().ANTHROPIC_API_KEY).toBeUndefined()
+      expect(fake.env().ANTHROPIC_AUTH_TOKEN).toBeUndefined()
+    } finally {
+      if (previousKey === undefined) delete process.env.ANTHROPIC_API_KEY
+      else process.env.ANTHROPIC_API_KEY = previousKey
+      if (previousToken === undefined) delete process.env.ANTHROPIC_AUTH_TOKEN
+      else process.env.ANTHROPIC_AUTH_TOKEN = previousToken
+    }
   })
 
   it('steer() queues a follow-up turn on the same handle', async () => {

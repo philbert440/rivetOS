@@ -58,6 +58,36 @@ export interface CliSystemInit {
   tools: string[]
 }
 
+/**
+ * Whether a CLI system-init `apiKeySource` may run.
+ * Missing and `"none"` are always allowed (subscription OAuth / keychain).
+ * Any other value is allowed only when it is named in `allowed`.
+ * Does not change the ANTHROPIC_API_KEY / ANTHROPIC_AUTH_TOKEN scrub.
+ */
+export function apiKeySourceAllowed(
+  source: string | undefined,
+  allowed: readonly string[] | undefined,
+): boolean {
+  if (!source || source === 'none') return true
+  return (allowed ?? []).includes(source)
+}
+
+/**
+ * `providers.claude-cli.allowed_api_key_sources` at the config boundary.
+ * Absent or null stays undefined. A wrong shape also returns undefined so
+ * the gate stays closed; validation rejects that shape before boot.
+ */
+export function parseAllowedApiKeySources(raw: unknown): readonly string[] | undefined {
+  if (raw == null) return undefined
+  if (!Array.isArray(raw)) return undefined
+  const sources: string[] = []
+  for (const item of raw) {
+    if (typeof item !== 'string' || item.length === 0) return undefined
+    sources.push(item)
+  }
+  return sources
+}
+
 export interface CliStreamEvent {
   type: 'stream_event'
   event: {
