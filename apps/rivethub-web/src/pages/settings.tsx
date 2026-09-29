@@ -2,6 +2,7 @@ import { useEffect, useState, type JSX } from 'react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { isValidGatewayUrl, useConnection } from '../stores/connection.js'
 import { useTheme } from '../stores/theme.js'
+import { useConversationView } from '../stores/conversation-view.js'
 import type { ThemePreference } from '../lib/theme.js'
 import { gatewayFor } from '../lib/agent-gateway.js'
 import { isValidWikiBase } from '../lib/wiki-base.js'
@@ -11,6 +12,8 @@ import { DevicesSection } from '../components/devices-section.js'
 import { UpdatesSection } from '../components/updates-section.js'
 import { TerminalSection } from '../components/terminal-section.js'
 import { Toggle } from '../components/ui/toggle.js'
+import { Select } from '../components/select.js'
+import { DEFAULT_OMARCHY_PRESET, OMARCHY_PRESETS } from '../lib/omarchy-presets.js'
 import { useExperimental } from '../stores/experimental.js'
 
 type ProbeState =
@@ -168,6 +171,10 @@ export function SettingsPage(): JSX.Element {
   const themePreference = useTheme((s) => s.preference)
   const setThemePreference = useTheme((s) => s.setPreference)
   const omarchy = useTheme((s) => s.omarchy)
+  const applyPreset = useTheme((s) => s.applyPreset)
+  const liveOmarchy = omarchy?.source === 'live'
+  const presetId =
+    OMARCHY_PRESETS.find((p) => p.name === omarchy?.name)?.id ?? DEFAULT_OMARCHY_PRESET
   const experimental = useExperimental((s) => s.experimental)
   const setFiles = useExperimental((s) => s.setFiles)
   const setTasks = useExperimental((s) => s.setTasks)
@@ -275,32 +282,55 @@ export function SettingsPage(): JSX.Element {
               ['system', 'System'],
               ['omarchy', 'Omarchy'],
             ] as [ThemePreference, string][]
-          ).map(([value, label]) => {
-            const disabled = value === 'omarchy' && omarchy === null
-            return (
-              <button
-                key={value}
-                type="button"
-                aria-pressed={themePreference === value}
-                disabled={disabled}
-                title={disabled ? 'No Omarchy theme found — desktop only' : undefined}
-                onClick={() => setThemePreference(value)}
-                className={
-                  themePreference === value
-                    ? 'rounded bg-em-dim px-4 py-2 text-sm font-medium text-bg disabled:cursor-not-allowed disabled:opacity-50'
-                    : 'rounded border border-line bg-panel-2 px-4 py-2 text-sm hover:border-em disabled:cursor-not-allowed disabled:opacity-50 disabled:hover:border-line'
-                }
-              >
-                {label}
-              </button>
-            )
-          })}
+          ).map(([value, label]) => (
+            <button
+              key={value}
+              type="button"
+              aria-pressed={themePreference === value}
+              onClick={() => {
+                // No palette yet (browser, Android, a desktop without
+                // Omarchy): Omarchy starts on the default preset.
+                if (value === 'omarchy' && omarchy === null) applyPreset(DEFAULT_OMARCHY_PRESET)
+                else setThemePreference(value)
+              }}
+              className={
+                themePreference === value
+                  ? 'rounded bg-em-dim px-4 py-2 text-sm font-medium text-bg'
+                  : 'rounded border border-line bg-panel-2 px-4 py-2 text-sm hover:border-em'
+              }
+            >
+              {label}
+            </button>
+          ))}
         </div>
-        {themePreference === 'omarchy' && omarchy?.name ? (
-          <span className="text-xs text-ink-dim">{omarchy.name}</span>
-        ) : null}
       </div>
-      <p className="mt-2 text-xs text-ink-dim">System follows the OS light/dark setting.</p>
+      {themePreference === 'omarchy' &&
+        (liveOmarchy ? (
+          <p className="mt-3 text-xs text-ink-dim">
+            Following your Omarchy theme{omarchy.name ? ` — ${omarchy.name}` : ''}. Switch themes in
+            Omarchy and RivetHub restyles right away.
+          </p>
+        ) : (
+          <div className="mt-3 flex items-center gap-3">
+            <label htmlFor="omarchy-preset" className="text-xs text-ink-dim">
+              Omarchy palette
+            </label>
+            <Select
+              id="omarchy-preset"
+              aria-label="Omarchy palette"
+              value={presetId}
+              options={OMARCHY_PRESETS.map((p) => ({ value: p.id, label: p.name }))}
+              onChange={(id) => applyPreset(id)}
+            />
+          </div>
+        ))}
+      <p className="mt-2 text-xs text-ink-dim">
+        System follows the OS light/dark setting. Omarchy follows your live Omarchy theme on the
+        desktop app, or a built-in Omarchy palette anywhere else. With no choice made, RivetHub
+        follows Omarchy whenever it finds it.
+      </p>
+
+      <ConversationsSection />
 
       <TerminalSection />
 
@@ -381,5 +411,48 @@ export function SettingsPage(): JSX.Element {
         RivetHub v{BUILD_INFO.version} · dist {BUILD_INFO.sha} · built {BUILD_INFO.builtAt}
       </div>
     </div>
+  )
+}
+
+/** Which view a conversation opens on — new ones and old ones never switched. */
+function ConversationsSection(): JSX.Element {
+  const defaultView = useConversationView((s) => s.defaultView)
+  const setDefaultView = useConversationView((s) => s.setDefaultView)
+  return (
+    <>
+      <h2 className="mt-10 mb-3 border-t border-line pt-6 font-mono text-sm font-semibold text-em">
+        Conversations
+      </h2>
+      <div className="flex items-center gap-3">
+        <span className="text-xs text-ink-dim">Default view</span>
+        <div className="flex gap-2" role="group" aria-label="Default view">
+          {(
+            [
+              ['terminal', 'Terminal'],
+              ['chat', 'Chat'],
+            ] as const
+          ).map(([value, label]) => (
+            <button
+              key={value}
+              type="button"
+              aria-pressed={defaultView === value}
+              onClick={() => setDefaultView(value)}
+              className={
+                defaultView === value
+                  ? 'rounded bg-em-dim px-4 py-2 text-sm font-medium text-bg'
+                  : 'rounded border border-line bg-panel-2 px-4 py-2 text-sm hover:border-em'
+              }
+            >
+              {label}
+            </button>
+          ))}
+        </div>
+      </div>
+      <p className="mt-2 text-xs text-ink-dim">
+        Where a conversation opens: new ones, and older ones you have not switched. Switching
+        between Terminal and Chat inside a conversation is remembered for that conversation.
+        Sessions that only run in a terminal always open there.
+      </p>
+    </>
   )
 }

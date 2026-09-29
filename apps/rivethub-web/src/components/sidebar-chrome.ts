@@ -18,7 +18,8 @@ export function hubPageTitle(pathname: string): string {
   return 'RivetHub'
 }
 
-/** The DenBot logo button IS the rail toggle; there is no collapse/expand icon. */
+/** The brand (wordmark expanded, R-H monogram collapsed) IS the rail toggle;
+ *  there is no separate collapse/expand icon. */
 export function railToggle(collapsed: boolean): {
   kind: 'collapse' | 'expand'
   label: string

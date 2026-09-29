@@ -16,12 +16,13 @@ import { useExperimental } from '../stores/experimental.js'
 import { useSidebarPrefs } from '../stores/sidebar-prefs.js'
 import { shouldCloseDrawerOnSelection } from '../lib/drawer-selection.js'
 import { focusInForeignDialog, matchHubKey } from '../lib/hub-keys.js'
+import { startNewConversation } from '../lib/new-conversation.js'
 import { visibleNav } from '../lib/visible-nav.js'
 import { useIsNarrow } from '../lib/use-narrow.js'
 import { cn } from '../lib/utils.js'
 import { hubPageTitle, railHeaderClass, railToggle } from './sidebar-chrome.js'
 import { NodeSwitcher } from './node-switcher.js'
-import { DenBot } from './den-bot.js'
+import { RhMark, Wordmark } from './brand.js'
 import { AgentsSection } from './agents-section.js'
 import { Button } from './ui/button.js'
 import { Tooltip } from './ui/tooltip.js'
@@ -129,7 +130,7 @@ function ConversationsNav(props: { collapsed: boolean }): JSX.Element {
   )
 }
 
-/** Narrow top bar — ☰ opens the rail drawer; DenBot stays as brand. */
+/** Narrow top bar — ☰ opens the rail drawer; the R-H monogram is the brand. */
 export function MobileTopBar(): JSX.Element {
   const unread = useNotifications((s) => s.unread)
   const markAllRead = useNotifications((s) => s.markAllRead)
@@ -152,7 +153,7 @@ export function MobileTopBar(): JSX.Element {
       >
         <Menu className="size-5 shrink-0" aria-hidden />
       </Button>
-      <DenBot className="size-7 shrink-0" decorative />
+      <RhMark className="text-lg" />
       <span className="min-w-0 truncate font-mono text-sm text-em">{hubPageTitle(pathname)}</span>
       {unread > 0 && (
         <span className="ml-auto">
@@ -195,26 +196,43 @@ export function Sidebar(): JSX.Element {
   const logoLabel = narrow ? (drawerOpen ? 'Close sidebar' : 'Open sidebar') : toggle.label
   const logoExpanded = narrow ? drawerOpen : toggle.ariaExpanded
 
-  // Ctrl+Shift+E mirrors the logo toggle. Read prefs fresh from the store so
-  // the listener never closes over a stale drawer/rail value.
+  // Ctrl+Shift+E collapses every side pane — the rail AND the conversations
+  // pane — for a full-width session, and a second press brings both back.
+  // Anything still open counts as "expanded", so the first press always
+  // finishes the collapse. Narrow keeps the drawer toggle. Ctrl+T starts a
+  // new conversation from any page. Prefs are read fresh from the store so
+  // the listener never closes over stale values.
   useEffect(() => {
     const onKey = (e: KeyboardEvent): void => {
-      if (matchHubKey(e) !== 'toggle-sidebar') return
+      const action = matchHubKey(e)
+      if (action !== 'toggle-sidebar' && action !== 'new-conversation') return
       if (e.repeat) {
         e.preventDefault()
         e.stopPropagation()
         return
       }
       if (focusInForeignDialog(document.activeElement)) return
-      const prefs = useSidebarPrefs.getState()
-      if (narrow) prefs.setDrawerOpen(!prefs.drawerOpen)
-      else prefs.setRailCollapsed(!prefs.railCollapsed)
       e.preventDefault()
       e.stopPropagation()
+      if (action === 'new-conversation') {
+        startNewConversation()
+        const prefs = useSidebarPrefs.getState()
+        if (narrow) prefs.setDrawerOpen(false)
+        void navigate({ to: '/' })
+        return
+      }
+      const prefs = useSidebarPrefs.getState()
+      if (narrow) {
+        prefs.setDrawerOpen(!prefs.drawerOpen)
+        return
+      }
+      const collapse = !(prefs.railCollapsed && prefs.conversationsCollapsed)
+      prefs.setRailCollapsed(collapse)
+      prefs.setConversationsCollapsed(collapse)
     }
     window.addEventListener('keydown', onKey, { capture: true })
     return () => window.removeEventListener('keydown', onKey, { capture: true })
-  }, [narrow])
+  }, [narrow, navigate])
 
   return (
     <aside
@@ -232,13 +250,13 @@ export function Sidebar(): JSX.Element {
               drawerOpen ? 'translate-x-0' : '-translate-x-full',
             )
           : cn(
-              'relative z-20 flex shrink-0 flex-col border-r border-line bg-panel/80 transition-[width] duration-150',
+              'relative z-20 flex shrink-0 flex-col border-2 border-line bg-panel transition-[width] duration-150',
               collapsed ? 'w-12' : 'w-56',
             )
       }
     >
       <div className={railHeaderClass(collapsed)}>
-        <Tooltip label={`${logoLabel} (Ctrl+Shift+E)`}>
+        <Tooltip label={`${logoLabel} · Ctrl+Shift+E hides all panes`}>
           <Button
             variant="ghost"
             size="icon"
@@ -249,14 +267,17 @@ export function Sidebar(): JSX.Element {
               if (narrow) setDrawerOpen(!drawerOpen)
               else setRailCollapsed(!railCollapsed)
             }}
-            className={cn('shrink-0 p-0', narrow ? 'size-11' : 'size-7')}
+            className={cn(
+              'shrink-0 p-0',
+              collapsed ? 'h-9 w-10' : 'h-9 w-auto justify-start px-1',
+              narrow && 'min-h-11',
+            )}
           >
-            <DenBot className="size-7 shrink-0" decorative />
+            {/* The wordmark expanded, the R-H monogram collapsed. Either
+                one IS the rail toggle. */}
+            {collapsed ? <RhMark className="text-xl" /> : <Wordmark className="text-xl" />}
           </Button>
         </Tooltip>
-        {!collapsed && (
-          <span className="font-mono text-sm font-semibold tracking-wide text-em">RivetHub</span>
-        )}
         {/* Unread escalations/outcomes — toasts are ephemeral, this isn't.
             Click = jump to Tasks (the durable record) and mark read. */}
         {unread > 0 && (

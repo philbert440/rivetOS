@@ -64,6 +64,7 @@ import {
   listAgentSessions,
   listAllAgentPins,
   rekeyAgentLastSessions,
+  rowOwnedByAgent,
   subscribeAgentSessions,
   getAgentSessionsVersion,
 } from '../lib/agent-session.js'
@@ -97,7 +98,7 @@ import { XtermAttach } from '../components/xterm-attach.js'
 import { SessionErrorBoundary } from '../components/session-error-boundary.js'
 import { HarnessApprovalCard } from '../components/harness-approval-card.js'
 import { isAskUserTool, questionsFromLiveTools } from '../lib/ask-user.js'
-import { accentFor } from '../lib/agent-accent.js'
+import { accentFor, sameLabel } from '../lib/agent-accent.js'
 import { attachHarnessSession } from '../lib/harness-attach.js'
 import { statusActivity } from '../lib/harness-fold.js'
 import { deriveReplyWait, nextWaitClock, type ReplyWaitClock } from '../lib/harness-turns.js'
@@ -119,7 +120,7 @@ import {
   type HarnessGate,
 } from '../lib/harness-chat.js'
 import { rowPillText } from '../lib/harness-options.js'
-import { DenBot } from '../components/den-bot.js'
+import { RhMark } from '../components/brand.js'
 import { ContextBar } from '../components/context-bar.js'
 import { SegmentedControl } from '../components/segmented-control.js'
 import {
@@ -128,11 +129,13 @@ import {
   DRAWER_WIDTH_MIN,
   SplitHandle,
 } from '../components/split-handle.js'
-import { Archive, ArchiveRestore, History, Menu, Pencil, Square, Trash2 } from 'lucide-react'
+import { Archive, ArchiveRestore, History, Menu, Pencil, Square, Trash2, X } from 'lucide-react'
 import { Button } from '../components/ui/button.js'
 import { useSessionNames } from '../stores/session-names.js'
 import { useArchived } from '../stores/archived.js'
 import { useSidebarPrefs } from '../stores/sidebar-prefs.js'
+import { useAgentFilter } from '../stores/agent-filter.js'
+import { startNewConversation } from '../lib/new-conversation.js'
 import { discardDraft } from '../lib/discard-session.js'
 import { shouldCloseHistoryOnSelect } from '../lib/drawer-selection.js'
 import { narrowLaunchTarget } from '../lib/launch-session.js'
@@ -765,7 +768,9 @@ function DrawerItem(props: {
           <span className="size-1.5 shrink-0 rounded-full bg-em/40" title="session alive" />
         )}
         {(() => {
-          const pill = rowPillText({ model: props.item.model }, undefined, props.item.harnessId)
+          const raw = rowPillText({ model: props.item.model }, undefined, props.item.harnessId)
+          // A pin row titled after its harness would read it twice.
+          const pill = sameLabel(customName ?? props.item.title, raw) ? '' : raw
           const native = shortNativeId(props.item.key)
           const tip = props.item.harnessId
             ? `${props.item.harnessId} ${native}`
@@ -836,7 +841,6 @@ function SessionDrawer(props: {
   fullWidth?: boolean
 }): JSX.Element {
   const setActive = useChat((s) => s.setActive)
-  const addDraft = useChat((s) => s.addDraft)
   const wsStatus = useChat((s) => s.wsStatus)
   const baseUrl = useConnection((s) => s.baseUrl)
   const names = useSessionNames((s) => s.byKey)
@@ -846,16 +850,22 @@ function SessionDrawer(props: {
   const [showArchived, setShowArchived] = useState(false)
   const [filter, setFilter] = useState('')
   const narrow = useIsNarrow()
+  // Picking an agent in the rail narrows the list to its sessions; `+ new`
+  // then starts one with that agent (see stores/agent-filter).
+  const agentFilter = useAgentFilter()
 
   const itemBase = (it: ChatItem): string => it.pinNodeBaseUrl ?? baseUrl
   const isArchived = (it: ChatItem): boolean =>
     archivedKeys.includes(storageKey(itemBase(it), it.key))
-  const archivedCount = props.items.reduce((n, it) => n + (isArchived(it) ? 1 : 0), 0)
 
   // Filter on what the user actually SEES: custom name first, then the
   // derived title, then the raw id (so pasting a session uuid works too).
   const q = filter.trim().toLowerCase()
-  const items = props.items.filter((it) => {
+  const agentId = agentFilter.agentId
+  const agentItems = agentId
+    ? props.items.filter((it) => rowOwnedByAgent(it.key, agentId, nativeIdOf))
+    : props.items
+  const items = agentItems.filter((it) => {
     // The active thread always stays listed — hiding the row under the
     // user's feet would strand the open conversation.
     if (!showArchived && isArchived(it) && it.key !== props.active) return false
@@ -873,6 +883,15 @@ function SessionDrawer(props: {
     setActive(key)
     // Narrow right history drawer: picking a row switches the session and
     // closes the drawer . No-op anywhere else.
+    if (shouldCloseHistoryOnSelect(narrow)) {
+      useSidebarPrefs.getState().setHistoryOpen(false)
+    }
+  }
+
+  const archivedCount = agentItems.reduce((n, it) => n + (isArchived(it) ? 1 : 0), 0)
+
+  const startNew = (): void => {
+    startNewConversation()
     if (shouldCloseHistoryOnSelect(narrow)) {
       useSidebarPrefs.getState().setHistoryOpen(false)
     }
@@ -906,23 +925,41 @@ function SessionDrawer(props: {
           <span className={wsStatus === 'open' ? 'text-em' : 'text-red'}>
             {wsStatus === 'open' ? '●' : '○'}
           </span>{' '}
-          ({props.items.length - archivedCount})
+          ({agentItems.length - archivedCount})
         </span>
         <button
-          onClick={() => {
-            const id = newSessionId()
-            addDraft(id)
-            setActive(id)
-            if (shouldCloseHistoryOnSelect(narrow)) {
-              useSidebarPrefs.getState().setHistoryOpen(false)
-            }
-          }}
+          onClick={startNew}
+          title={
+            agentFilter.name
+              ? `new session with ${agentFilter.name} (Ctrl+T)`
+              : 'new session (Ctrl+T)'
+          }
           className="rounded border border-line px-2 py-1 text-xs text-ink-dim hover:border-em hover:text-em"
         >
           + new
         </button>
       </div>
-      {(props.items.length >= DRAWER_FILTER_MIN || q) && (
+      {agentFilter.agentId && (
+        <div className="px-3 pb-2">
+          <span className="inline-flex max-w-full items-center gap-1.5 border border-line bg-panel px-2 py-0.5 font-mono text-[11px] text-ink">
+            <span
+              className="size-2 shrink-0"
+              style={{ background: agentFilter.accent }}
+              aria-hidden
+            />
+            <span className="min-w-0 truncate">{agentFilter.name}</span>
+            <button
+              onClick={() => agentFilter.clear()}
+              aria-label="show all conversations"
+              title="show all conversations"
+              className="shrink-0 text-ink-dim hover:text-em"
+            >
+              <X className="size-3" />
+            </button>
+          </span>
+        </div>
+      )}
+      {(agentItems.length >= DRAWER_FILTER_MIN || q) && (
         <div className="px-3 pb-2">
           <input
             value={filter}
@@ -943,8 +980,12 @@ function SessionDrawer(props: {
           {items.length === 0 && !q && archivedCount > 0 && (
             <div className="px-3 py-2 text-xs text-ink-dim">everything is archived</div>
           )}
-          {props.items.length === 0 && !props.error && (
-            <div className="px-3 py-2 text-xs text-ink-dim">no conversations yet</div>
+          {agentItems.length === 0 && !props.error && (
+            <div className="px-3 py-2 text-xs text-ink-dim">
+              {agentFilter.name
+                ? `no conversations with ${agentFilter.name} yet — + new starts one`
+                : 'no conversations yet'}
+            </div>
           )}
         </div>
         {archivedCount > 0 && (
@@ -1116,6 +1157,14 @@ function ActiveSession(props: {
 
   /** Canonical `<harness-id>:<native>` for a harness row (including legacy PTY rows). */
   const canonicalId = gate.bound ? item?.sessionId : undefined
+  // The header names the conversation the way the pane does — the user's
+  // rename, else the derived title — and keeps the raw id as a tooltip.
+  const nameBase = item?.pinNodeBaseUrl ?? baseUrl
+  const customName = useSessionNames((s) =>
+    persisted(s.byKey, nameBase, item?.key ?? props.sessionId),
+  )
+  const headerTitle = customName ?? item?.title ?? 'new conversation'
+  const headerId = canonicalId ?? props.sessionId
   const { mode, setMode } = useSessionView(
     storageKey(sessionBase, props.sessionId),
     isDraft ? { kind: 'draft' } : (item ?? props.item),
@@ -1971,6 +2020,9 @@ function ActiveSession(props: {
         contextWindow={transcriptCtx?.contextWindow}
         compactAt={transcriptCtx?.compactAt}
         hairline={narrow}
+        withDetails={!narrow}
+        harness={harnessCommand}
+        node={remoteNodeName ?? urlLabel(sessionBase)}
       />
       {/* Interrupt is the driver's capability, not a UI preference: shown
           only when the control plane owns this session AND reports one. */}
@@ -2025,11 +2077,11 @@ function ActiveSession(props: {
           >
             <Menu className="size-5 shrink-0" aria-hidden />
           </Button>
-          {/* Canonical `<harness-id>:<native>` once the control plane owns the
-              session; the bare den join key until then. flex-1 min-w-0: the
-              id absorbs the squeeze so the row never wraps. */}
-          <span className="min-w-0 flex-1 truncate font-mono text-xs text-ink-dim">
-            {canonicalId ?? props.sessionId}
+          {/* The conversation's name (rename or derived title); the session id
+              is the tooltip. flex-1 min-w-0: the name absorbs the squeeze so
+              the row never wraps. */}
+          <span title={headerId} className="min-w-0 flex-1 truncate font-mono text-xs text-ink">
+            {headerTitle}
           </span>
           {headerTail}
           <Button
@@ -2045,12 +2097,13 @@ function ActiveSession(props: {
           </Button>
         </div>
       ) : (
-        <div className="flex max-md:flex-wrap items-center justify-between gap-3 border-b border-line bg-panel/40 px-4 py-1.5">
-          {/* Canonical `<harness-id>:<native>` once the control plane owns the
-              session; the bare den join key until then. Session id truncates
-              first when the header wraps. */}
-          <span className="min-w-0 truncate font-mono text-xs text-ink-dim">
-            {canonicalId ?? props.sessionId}
+        <div className="flex max-md:flex-wrap items-center gap-3 border-b border-line bg-panel/40 px-4 py-1.5">
+          {/* The conversation's name (rename or derived title); the session id
+              is the tooltip. It takes the slack (flex-1) so the tail packs
+              right — context box directly left of Terminal|Chat — and
+              truncates first when the header wraps. */}
+          <span title={headerId} className="min-w-0 flex-1 truncate font-mono text-xs text-ink">
+            {headerTitle}
           </span>
           {headerTail}
         </div>
@@ -2166,7 +2219,7 @@ function ActiveSession(props: {
 function EmptyState(): JSX.Element {
   return (
     <div className="flex flex-1 flex-col items-center justify-center gap-2">
-      <DenBot className="size-16 opacity-90" />
+      <RhMark className="text-5xl opacity-90" />
       <div className="text-sm text-ink-dim">Pick a conversation or start a new one.</div>
     </div>
   )
@@ -2191,7 +2244,7 @@ function ChatLaunchLoading(): JSX.Element {
       role="status"
       aria-label="Loading most recent conversation"
     >
-      <DenBot className="size-16 opacity-90" />
+      <RhMark className="text-5xl opacity-90" />
       <div className="text-sm text-ink-dim">Loading most recent conversation…</div>
       <button
         type="button"

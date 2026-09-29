@@ -8,11 +8,13 @@ import { useNodeDiscovery } from '../lib/use-node-discovery.js'
 import { Tooltip } from './ui/tooltip.js'
 
 /**
- * Node switcher. Roster persists in localStorage; mesh overview of the
- * CURRENT node seeds discovery (peers advertise denUrl = hub face).
- * Always re-points the gateway via switchTo — the local/bundled UI stays put.
+ * Node switcher at the foot of the rail, and the rail's "which node am I on"
+ * readout. Roster persists in localStorage; mesh overview of the CURRENT node
+ * seeds discovery (peers advertise denUrl = hub face). Always re-points the
+ * gateway via switchTo — the local/bundled UI stays put. With nothing to
+ * switch to it is a plain label, but the current node is always shown.
  */
-export function NodeSwitcher(props: { compact?: boolean }): JSX.Element | null {
+export function NodeSwitcher(props: { compact?: boolean }): JSX.Element {
   const compact = props.compact ?? false
   const { baseUrl, roster, switchTo, addNode, removeNode } = useConnection()
   const queryClient = useQueryClient()
@@ -54,7 +56,29 @@ export function NodeSwitcher(props: { compact?: boolean }): JSX.Element | null {
   const current = roster.find((n) => n.baseUrl === baseUrl)
   const currentName = useNodeName(baseUrl) ?? current?.name ?? urlLabel(baseUrl)
 
-  if (hidden) return null
+  const readout = compact ? (
+    <Server className="size-4 text-em" aria-hidden />
+  ) : (
+    <span className="min-w-0 truncate font-mono text-[11px] text-em">● {currentName}</span>
+  )
+
+  if (hidden) {
+    return (
+      <div className="border-t border-line">
+        <Tooltip label={currentName} disabled={!compact} block>
+          <div
+            role="status"
+            aria-label={`Current node: ${currentName}`}
+            className={
+              compact ? 'flex w-full items-center justify-center py-3' : 'flex w-full px-4 py-3'
+            }
+          >
+            {readout}
+          </div>
+        </Tooltip>
+      </div>
+    )
+  }
 
   return (
     <div ref={rootRef} className="relative border-t border-line">
@@ -66,17 +90,13 @@ export function NodeSwitcher(props: { compact?: boolean }): JSX.Element | null {
           aria-expanded={open}
           className={
             compact
-              ? 'flex w-full items-center justify-center py-3 text-ink-dim hover:bg-panel-2 hover:text-ink'
-              : 'flex w-full items-center justify-between px-4 py-3 text-left hover:bg-panel-2'
+              ? 'flex w-full items-center justify-center py-3 hover:bg-panel-2'
+              : 'flex w-full items-center justify-between gap-2 px-4 py-3 text-left hover:bg-panel-2'
           }
         >
-          {compact ? (
-            <Server className="size-4" aria-hidden />
-          ) : (
-            <>
-              <span className="truncate font-mono text-[11px] text-ink-dim">{currentName}</span>
-              <span className="font-mono text-[10px] text-ink-dim">{open ? '▾' : '▴'}</span>
-            </>
+          {readout}
+          {!compact && (
+            <span className="font-mono text-[10px] text-ink-dim">{open ? '▾' : '▴'}</span>
           )}
         </button>
       </Tooltip>

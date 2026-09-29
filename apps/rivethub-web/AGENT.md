@@ -25,15 +25,23 @@ a focused xterm still sees neither the key nor a stray Tab:
   `handleOpen`'s async liveness probe means `currentAgentId` lags a key press.
   Auto-repeat is ignored (the terminal must not see a held Tab). The cursor
   advances on every press; `open()` is debounced 250 ms so only the final
-  target mounts. The sequence is taken at the keypress, so a newer click or ↺
+  target mounts. The sequence is taken at the keypress, so a newer click or `+ new`
   cancels a queued keyboard open and a keypress cancels older in-flight
   probes. Chrome and Firefox both reserve Ctrl+Tab / Ctrl+Shift+Tab
   in a plain browser tab and the page cannot claim them, so agent cycling is an
   Electron-shell feature.
-- **Ctrl+Shift+E** — toggle the left sidebar: wide (≥768px) collapses/expands
-  the icon rail, narrow opens/closes the drawer. Same branch as the logo
-  button (`sidebar.tsx`), state read fresh via `useSidebarPrefs.getState()`.
-  Works in Chromium tabs; Firefox reserves this chord. Auto-repeat is ignored.
+- **Ctrl+Shift+E** — collapse every side pane: wide (≥768px) collapses the
+  icon rail AND the conversations pane together (anything still open counts
+  as expanded, so the first press finishes the collapse; the next expands
+  both). Narrow opens/closes the drawer. The logo button still toggles the
+  rail alone. Handled in `sidebar.tsx`, state read fresh via
+  `useSidebarPrefs.getState()`. Works in Chromium tabs; Firefox reserves this
+  chord. Auto-repeat is ignored.
+- **Ctrl+T** — start a new conversation from any page, exactly the pane's
+  `+ new` (`lib/new-conversation.ts`): with an agent selected, a fresh
+  session with it; otherwise a bare draft. Claims readline's transpose-chars
+  in the terminal. Browsers keep Ctrl+T for a new tab, so it is a
+  desktop-shell chord like Ctrl+Tab.
 
 Rules: match only `ctrlKey` with no `altKey`/`metaKey`; **plain Ctrl+E is left
 untouched** (end-of-line in terminals). While focus is inside any
@@ -188,10 +196,51 @@ Residual: Hermes/claude-cli adapters may still omit tool args; chips degrade cle
   flows canvas via `canvasSceneColors(theme)` in `lib/workflow-runs/flow-overlay.ts`.
   Settings has the Light / Dark / System toggle.
 
+### Omarchy look + palettes
+
+- **Brand is type.** `components/brand.tsx`:
+  `Wordmark` (`rivet` accent + `hub` dim) heads the expanded rail;
+  `RhMark` (the wordmark's own `r` + `h`, same face, weight and colors) is
+  the collapsed rail, narrow top bar and empty states. Either one IS the rail
+  toggle. Size `RhMark` with a text size; `text-xl` matches the wordmark.
+  Transcript rows are mono `rivet ›` / `you ›` labels.
+- **Look:** JetBrains Mono for all UI (`--font-sans`), every `--radius*`
+  token 0 (only `rounded-full` stays round), flat background. Desktop is
+  tiled: the rail and page as bordered tiles, the page tile carrying the
+  accent border; no top bar. The rail header carries the unread pill and
+  the rail foot always names the current node (`NodeSwitcher`, a plain label
+  when there is nothing to switch to).
+  Fixed overlays position via `--hub-rail` / `--hub-top` / `--hub-inset`.
+- **Agents and the conversations pane:** clicking an agent (or Ctrl+Tab to
+  it) opens its pinned session AND narrows the pane to that agent's sessions
+  (`stores/agent-filter.ts`, chip with ✕ to clear, not persisted). With an
+  agent selected the pane's `+ new` starts a fresh session with it and
+  re-pins. Membership comes from the ownership tag
+  `rivethub.agent.of.<sessionId>` (`agentOwningSession`), which unlike the
+  pin bind survives a re-pin. It lives in this client's storage,
+  so sessions opened on another device or before the tag existed show only
+  in the unfiltered list.
+- **Default view:** Settings → Conversations picks Terminal or Chat for new
+  conversations and for older ones never switched (`stores/conversation-view.ts`,
+  read in `lib/use-session-view.ts`). A thread's own switch (`lib/session-mode.ts`)
+  wins over it, and a TUI-only legacy session still opens on the terminal.
+- **Context details:** the chat header's `ContextBar` is a Popover trigger on
+  desktop (`withDetails`) — context numbers, harness/model/node and the
+  unread count.
+- **Omarchy palettes:** `theme = omarchy` maps a colors.toml onto every
+  `--color-*` token (`lib/omarchy-theme.ts`). Desktop reads the live theme
+  (`lib/omarchy-sync.ts`, snapshot `source: 'live'`, re-read on focus);
+  everywhere else Settings offers the 14 built-in palettes in
+  `lib/omarchy-presets.ts` (verbatim `themes/<id>/colors.toml` from
+  basecamp/omarchy, `source: 'preset'`). Live always replaces a preset.
+  With no stored preference, an available Omarchy palette is followed
+  automatically (`effectivePreference`); the `index.html` boot script mirrors
+  that rule.
+
 ### Responsive
 
 Below 768px (`md`) the left rail is an off-canvas drawer (`w-64`, never the
-collapsed 48px strip). A 48px top bar (DenBot + page title + unread bell)
+collapsed 48px strip). A 48px top bar (☰ + `rh` mark + page title + unread bell)
 opens it. Chat shows either the conversation list or the session, full width
 — back in the session header clears selection (same path as the error
 boundary). Other pages only change container padding (`px-4 md:px-6`) and

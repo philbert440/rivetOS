@@ -171,7 +171,9 @@ export function Composer(props: {
     const ta = taRef.current
     if (!ta) return
     ta.focus()
-    autoFocusedFor.current = props.sessionId
+    // Latch only a focus that took: one that silently failed (the textarea
+    // was hidden or inert that frame) must get another try.
+    if (document.activeElement === ta) autoFocusedFor.current = props.sessionId
   }, [connected, props.sessionId])
 
   // Drop the mic on unmount (or a superseded start still resolving) — never

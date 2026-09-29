@@ -8,11 +8,15 @@
     <title>RivetHub</title>
     <script>
       // Pre-paint theme boot — mirrors src/lib/theme.ts (rivethub.theme =
-      // light | dark | system | omarchy, default system) so the first frame
-      // already has the right token set; stores/theme.ts re-applies and
-      // tracks changes. Omarchy tokens arrive a frame later from the store.
+      // light | dark | system | omarchy; unset follows a saved Omarchy
+      // palette when there is one, else system) so the first frame already
+      // has the right token set; stores/theme.ts re-applies and tracks
+      // changes. Omarchy tokens arrive a frame later from the store.
       ;(function () {
         var pref = localStorage.getItem('rivethub.theme')
+        if (pref !== 'light' && pref !== 'dark' && pref !== 'system' && pref !== 'omarchy') {
+          pref = localStorage.getItem('rivethub.omarchy-theme') ? 'omarchy' : 'system'
+        }
         var dark
         var themeColor
         if (pref === 'omarchy') {

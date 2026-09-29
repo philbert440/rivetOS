@@ -108,7 +108,7 @@ describe('MobileTopBar ☰ opener', () => {
     expect(src).toContain('aria-label="Open menu"')
     expect(src).toContain('id="hub-rail-toggle"')
     expect(src).toContain('<Menu className="size-5 shrink-0" aria-hidden />')
-    // The DenBot stays as brand — it is no longer the toggle button.
+    // The R-H monogram stays as brand — it is not the toggle button here.
     expect(src).not.toContain('aria-label="Open sidebar"')
   })
 

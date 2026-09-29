@@ -1,7 +1,9 @@
 @import 'tailwindcss';
 
-/* Rivet brand — emerald on dark, DM Sans / JetBrains Mono, blueprint grid.
-   Tokens mirror the wiki UI (packages/core wiki-html.ts). */
+/* Rivet brand — Omarchy-style: JetBrains Mono throughout, square corners,
+   flat surfaces, emerald accent on dark by default. Colors mirror the wiki
+   UI (packages/core wiki-html.ts); an Omarchy theme (live on desktop, or a
+   built-in preset — lib/omarchy-presets.ts) overrides every --color-* token. */
 @theme {
   --color-em: #34d399;
   --color-em-dim: #10b981;
@@ -17,8 +19,20 @@
   /* external-link blue + code-surface background (GitHub-dark pair) */
   --color-link: #79c0ff;
   --color-code-bg: #161b22;
-  --font-sans: 'DM Sans', system-ui, sans-serif;
+  /* One monospace face for the whole UI, as Omarchy does. */
+  --font-sans: 'JetBrains Mono', ui-monospace, monospace;
   --font-mono: 'JetBrains Mono', ui-monospace, monospace;
+  /* Square corners everywhere. rounded-full (status dots, pills) is not a
+     token, so it stays round. */
+  --radius: 0;
+  --radius-xs: 0;
+  --radius-sm: 0;
+  --radius-md: 0;
+  --radius-lg: 0;
+  --radius-xl: 0;
+  --radius-2xl: 0;
+  --radius-3xl: 0;
+  --radius-4xl: 0;
 }
 
 /* Light theme — applied when stores/theme.ts (or the index.html boot script)
@@ -39,7 +53,6 @@ html[data-theme='light'] {
   --color-warn: #b45309;
   --color-link: #0969da;
   --color-code-bg: #efede5;
-  /* blueprint grid stays, just a lighter emerald wash */
   --grid-line: rgba(5, 150, 105, 0.07);
   /* TenPAL memory-surface aliases (see :root below) */
   --assistant: #3c4756;
@@ -59,11 +72,7 @@ body {
   background-color: var(--color-bg);
   color: var(--color-ink);
   font-family: var(--font-sans);
-  /* blueprint grid */
-  background-image:
-    linear-gradient(var(--grid-line) 1px, transparent 1px),
-    linear-gradient(90deg, var(--grid-line) 1px, transparent 1px);
-  background-size: 32px 32px;
+  /* Flat canvas. --grid-line stays defined to mirror the Android palette. */
 }
 
 /* Scrollbars. color-scheme tells the UA this is a dark page, so every
@@ -181,7 +190,7 @@ html[data-theme='light'] {
   background: var(--color-bg);
   border: 1px solid var(--color-line);
   color: var(--color-ink);
-  border-radius: 6px;
+  border-radius: 0;
   padding: 7px 10px;
   outline: none;
 }
@@ -194,7 +203,7 @@ html[data-theme='light'] {
   border: 1px solid var(--color-line);
   color: var(--color-ink);
   padding: 7px 10px;
-  border-radius: 6px;
+  border-radius: 0;
   font-size: 13px;
 }
 .rivet-memory-surfaces .searchbar button[type='submit']:hover {
@@ -208,7 +217,7 @@ html[data-theme='light'] {
 }
 .rivet-memory-surfaces .hit {
   border: 1px solid var(--color-line);
-  border-radius: 8px;
+  border-radius: 0;
   padding: 10px 12px;
   margin-bottom: 8px;
   background: var(--color-panel);
@@ -251,7 +260,7 @@ html[data-theme='light'] {
 .rivet-memory-surfaces .banner {
   margin: 8px 0;
   padding: 8px 10px;
-  border-radius: 6px;
+  border-radius: 0;
   border: 1px solid var(--color-line);
   background: var(--color-panel-2);
   font-size: 12px;
@@ -338,7 +347,7 @@ html[data-theme='light'] {
   background: none;
   border: 1px solid var(--color-line);
   color: var(--color-ink-dim);
-  border-radius: 5px;
+  border-radius: 0;
   padding: 2px 8px;
   font-size: 12px;
 }
@@ -354,7 +363,7 @@ html[data-theme='light'] {
 }
 .rivet-memory-surfaces .stat-card {
   border: 1px solid var(--color-line);
-  border-radius: 8px;
+  border-radius: 0;
   padding: 12px;
   background: var(--color-panel);
 }

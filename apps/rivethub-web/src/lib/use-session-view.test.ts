@@ -5,6 +5,7 @@ import type { HarnessDescriptor } from '@rivetos/types'
 import { chatItems, type ChatItem, type HarnessRegistryStatus } from './harness-chat.js'
 import { getSessionMode, hasSessionMode, moveSessionMode, setSessionMode } from './session-mode.js'
 import { useSessionView } from './use-session-view.js'
+import { normalizeDefaultView, useConversationView } from '../stores/conversation-view.js'
 
 const DRIVER: HarnessDescriptor = {
   harnessId: 'claude-code',
@@ -16,6 +17,15 @@ const DRIVER: HarnessDescriptor = {
     approvals: false,
   },
 }
+
+// The server renderer reads a zustand store's INITIAL state; read the live
+// state instead so a test can set the default view (as node-switcher does).
+vi.mock('../stores/conversation-view.js', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../stores/conversation-view.js')>()
+  const live = <T>(select: (s: ReturnType<typeof actual.useConversationView.getState>) => T): T =>
+    select(actual.useConversationView.getState())
+  return { ...actual, useConversationView: Object.assign(live, actual.useConversationView) }
+})
 
 const STORE = 'rivethub.sessionModes'
 let values: Map<string, string>
@@ -29,6 +39,9 @@ beforeEach(() => {
     getItem: (key: string) => values.get(key) ?? null,
     setItem: writes,
   })
+  // Back to the chat default; the reset's own storage write is not a test's.
+  useConversationView.setState({ defaultView: 'chat' })
+  writes.mockClear()
 })
 afterEach(() => vi.unstubAllGlobals())
 
@@ -223,5 +236,40 @@ describe('chat page view hook regressions', () => {
       },
     })
     sequence([{ status: 'pending', mode: 'terminal', choose: 'terminal' }, { mode: 'terminal' }])
+  })
+})
+
+describe('default view setting', () => {
+  const rows = chatItems({
+    drafts: ['draft'],
+    harnessSessions: [],
+    legacySessions: [
+      { id: 'old', command: 'claude', title: 'old', updatedAt: 1 },
+      { id: 'tui', command: 'shell', title: 'shell', updatedAt: 1 },
+    ],
+  })
+  const row = (key: string) => rows.find((r) => r.key === key)
+
+  it('opens new and never-switched conversations on the chosen default', () => {
+    useConversationView.setState({ defaultView: 'terminal' })
+    expect(view(row('draft'))).toBe('<span>terminal</span>')
+    expect(view(row('old'), 'success', 'node::old')).toBe('<span>terminal</span>')
+  })
+
+  it("keeps a conversation's own switch over the default", () => {
+    useConversationView.setState({ defaultView: 'terminal' })
+    setSessionMode('node::old', 'chat')
+    expect(view(row('old'), 'success', 'node::old')).toBe('<span>chat</span>')
+  })
+
+  it('still opens a terminal-only session on the terminal with a chat default', () => {
+    expect(view(row('tui'), 'success', 'node::tui')).toBe('<span>terminal</span>')
+  })
+
+  it('treats anything but terminal as the chat default', () => {
+    expect(normalizeDefaultView('terminal')).toBe('terminal')
+    expect(normalizeDefaultView('chat')).toBe('chat')
+    expect(normalizeDefaultView('bogus')).toBe('chat')
+    expect(normalizeDefaultView(undefined)).toBe('chat')
   })
 })

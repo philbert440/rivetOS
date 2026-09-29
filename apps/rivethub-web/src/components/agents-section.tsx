@@ -2,7 +2,8 @@
  * Agents section — collapsible named agent presets roster for the sidebar.
  * Each agent carries model, effort, system prompt, color, and a target node.
  * Click opens that agent's sticky session on the resolved hosting den
- * without switchTo; ↺ replaces the pin. Hub connection, Memory, Files stay put.
+ * without switchTo, and narrows the conversations pane to that agent, whose
+ * `+ new` replaces the pin. Hub connection, Memory, Files stay put.
  *
  * All node calls go through gatewayFor (desktop mTLS pipe, #491) — a raw
  * RivetGateway on an https base cannot authenticate from the desktop shell.
@@ -11,7 +12,7 @@
 import { Fragment, useCallback, useEffect, useRef, useState, type JSX } from 'react'
 import { useMutation, useQueries, useQuery, useQueryClient } from '@tanstack/react-query'
 import { useNavigate } from '@tanstack/react-router'
-import { Bot, ChevronDown, ChevronRight, Pencil, Plus, RotateCcw, Trash2, X } from 'lucide-react'
+import { Bot, ChevronDown, ChevronRight, Pencil, Plus, Trash2, X } from 'lucide-react'
 import { migrateAgentPreset, type HarnessId } from '@rivetos/types'
 import { GatewayError } from '@rivetos/gateway-client'
 import { useConnection } from '../stores/connection.js'
@@ -45,6 +46,7 @@ import { rosterCommandFor } from '../lib/harness-chat.js'
 import { uuidv4 } from '../lib/uuid.js'
 import {
   agentForSession,
+  agentOwningSession,
   clearAgentLastSession,
   clearAgentSessionPointer,
   collapseAgentSlots,
@@ -82,7 +84,7 @@ import {
   matchHubKey,
 } from '../lib/hub-keys.js'
 import { nativeIdOf } from '../lib/harness-chat.js'
-import { accentFor } from '../lib/agent-accent.js'
+import { accentFor, agentInitials, inkOn, sameLabel } from '../lib/agent-accent.js'
 import {
   clearSessionNodeBinding,
   rekeySessionNodeBinding,
@@ -91,6 +93,7 @@ import {
 import { useChat } from '../stores/chat.js'
 import { useChatSettings } from '../stores/chat-settings.js'
 import { useSidebarPrefs } from '../stores/sidebar-prefs.js'
+import { useAgentFilter } from '../stores/agent-filter.js'
 import { Tooltip } from './ui/tooltip.js'
 import { cn } from '../lib/utils.js'
 
@@ -628,19 +631,33 @@ function agentAccent(agent: Pick<RosterAgent, 'color' | 'harnessId' | 'model'>):
   })
 }
 
-/** Agent colour dot; the current agent gets a ring in its own accent. */
-function AgentSwatch(props: {
+/**
+ * Agent letter tile, Waybar-workspace style: the agent's initials on its
+ * accent, so same-harness agents stay apart. The current agent gets a ring in
+ * its own accent. Without `initials` it is a plain square marker (the folded
+ * rail's badge over the Bot icon, too small for letters).
+ */
+function AgentTile(props: {
   accent: string
+  initials?: string
   compact?: boolean
   current?: boolean
-  /** Folded rail dot only: separate a dark accent from the Bot stroke. */
+  /** Folded rail badge only: separate a dark accent from the Bot stroke. */
   halo?: boolean
 }): JSX.Element {
   return (
     <span
-      className={cn('inline-block shrink-0 rounded-full', props.compact ? 'size-3' : 'size-2')}
+      className={cn(
+        'inline-flex shrink-0 items-center justify-center font-mono font-extrabold leading-none select-none',
+        props.initials === undefined
+          ? 'size-2'
+          : props.compact
+            ? 'size-5 text-[10px]'
+            : 'size-4 text-[9px]',
+      )}
       style={{
         background: props.accent,
+        color: inkOn(props.accent),
         ...(props.current
           ? { boxShadow: `0 0 0 2px var(--color-panel-2), 0 0 0 3.5px ${props.accent}` }
           : props.halo
@@ -648,7 +665,9 @@ function AgentSwatch(props: {
             : {}),
       }}
       aria-hidden
-    />
+    >
+      {props.initials}
+    </span>
   )
 }
 
@@ -659,7 +678,6 @@ interface AgentRowProps {
   /** The active chat session belongs to this agent. */
   current?: boolean
   onOpen: () => void
-  onStartOver: () => void
   onEdit: () => void
   onDelete: () => void
 }
@@ -670,7 +688,6 @@ function AgentRow({
   compact,
   current,
   onOpen,
-  onStartOver,
   onEdit,
   onDelete,
 }: AgentRowProps): JSX.Element {
@@ -758,11 +775,26 @@ function AgentRow({
       : `${agent.name} (node unknown)`
 
   const accent = agentAccent(agent)
-  const swatch = <AgentSwatch accent={accent} compact={compact} current={current} />
+  // Spelled out only when it adds something: an agent named after its
+  // harness ("Claude Code" on claude-code) would just say it twice.
+  const harness = sameLabel(agent.name, harnessLabel(agent.harnessId))
+    ? ''
+    : harnessLabel(agent.harnessId)
+  // The harness is spelled out beside the name (expanded) or in the tooltip
+  // (collapsed); the tile's initials tell same-harness agents apart.
+  const tile = (
+    <AgentTile
+      accent={accent}
+      initials={agentInitials(agent.name)}
+      compact={compact}
+      current={current}
+    />
+  )
 
   if (compact) {
+    const label = harness ? `${rowTitle} · ${harness}` : rowTitle
     return (
-      <Tooltip label={current ? `${rowTitle} (current)` : rowTitle} block>
+      <Tooltip label={current ? `${label} (current)` : label} block>
         <button
           type="button"
           onClick={onOpen}
@@ -774,7 +806,7 @@ function AgentRow({
             current && 'bg-panel-2',
           )}
         >
-          {swatch}
+          {tile}
         </button>
       </Tooltip>
     )
@@ -803,12 +835,13 @@ function AgentRow({
         className="flex min-w-0 flex-1 items-center gap-2 text-left disabled:opacity-50"
         title={current ? `${rowTitle} (current)` : rowTitle}
       >
-        {swatch}
+        {tile}
         <span
           className={cn('min-w-0 truncate text-xs', current ? 'font-medium text-em' : 'text-ink')}
         >
           {agent.name}
         </span>
+        {harness && <span className="shrink-0 font-mono text-[10px] text-ink-dim">{harness}</span>}
         {activityLabel && (
           <span
             className={`size-1.5 shrink-0 rounded-full ${
@@ -820,14 +853,6 @@ function AgentRow({
         )}
       </button>
       <div className="hidden shrink-0 gap-1 group-hover:flex">
-        <button
-          onClick={onStartOver}
-          className="text-ink-dim hover:text-em"
-          aria-label="start over"
-          title="start a fresh conversation"
-        >
-          <RotateCcw className="size-3" />
-        </button>
         <button
           onClick={onEdit}
           className="text-ink-dim hover:text-em"
@@ -1229,7 +1254,7 @@ export function AgentsSection(props: { compact?: boolean }): JSX.Element {
   // open runs — cycling to C cannot land on A's late probe.
   const openGen = useRef(new Map<string, number>())
   const openSeq = useRef(0)
-  // Mirrored from the press scheduler so a direct click / ↺ can clear the
+  // Mirrored from the press scheduler so a direct click / `+ new` can clear the
   // queued keyboard open without waiting for its callback.
   const openTimer = useRef<number | undefined>(undefined)
   const cycleScheduler = useRef<ReturnType<typeof createPressScheduler> | null>(null)
@@ -1265,8 +1290,20 @@ export function AgentsSection(props: { compact?: boolean }): JSX.Element {
     return gen
   }
 
+  // Picking an agent narrows the conversations pane to it; the pane's `+ new`
+  // then starts a fresh session with it, replacing the pin.
+  const selectAgentFilter = (agent: RosterAgent): void => {
+    useAgentFilter.getState().select({
+      agentId: agent.id,
+      name: agent.name,
+      accent: agentAccent(agent),
+      startNew: () => handleStartOver(agent),
+    })
+  }
+
   const handleOpen = (agent: RosterAgent, opts?: { seq?: number }): void => {
     if (!agent.sourceNodeBaseUrl) return
+    selectAgentFilter(agent)
     if (opts?.seq !== undefined) {
       if (!isCurrentSeq(opts.seq, openSeq.current)) return
     } else {
@@ -1299,7 +1336,7 @@ export function AgentsSection(props: { compact?: boolean }): JSX.Element {
 
   const handleStartOver = (agent: RosterAgent): void => {
     // Same fail-closed guard as handleOpen: never mint/pin off-roster. The
-    // spawn itself is already fail-closed at spawnPty; this keeps a ↺ click
+    // spawn itself is already fail-closed at spawnPty; this keeps a `+ new`
     // from minting a draft pinned to a node that cannot run it.
     if (!agent.sourceNodeBaseUrl) return
     cancelQueuedKeyboardOpen()
@@ -1308,8 +1345,20 @@ export function AgentsSection(props: { compact?: boolean }): JSX.Element {
     openFresh(agent, { replace: true })
   }
 
-  // The agent whose pinned session is the active chat (bound at open time).
-  const currentAgentId = activeSession ? agentForSession(activeSession) : undefined
+  // Keep the pane's filter pointed at the live agent: an edit renames or
+  // recolors it, a delete drops the filter. Only once the roster has loaded,
+  // so a refetch's empty first render never clears it.
+  const filteredAgentId = useAgentFilter((s) => s.agentId)
+  useEffect(() => {
+    if (!filteredAgentId || agents.length === 0) return
+    const agent = agents.find((a) => a.id === filteredAgentId)
+    if (agent) selectAgentFilter(agent)
+    else useAgentFilter.getState().clear()
+    // selectAgentFilter is rebuilt each render; `agents` is the real input.
+  }, [agents, filteredAgentId])
+
+  // The agent that opened the active chat — pinned or an older session of it.
+  const currentAgentId = activeSession ? agentOwningSession(activeSession) : undefined
   const currentAgent = agents.find((a) => a.id === currentAgentId)
   const currentAccent = currentAgent ? agentAccent(currentAgent) : undefined
 
@@ -1351,7 +1400,7 @@ export function AgentsSection(props: { compact?: boolean }): JSX.Element {
       e.stopPropagation()
       cycleCursor.current = id
       // Taken at the press, so older in-flight probes bail and a later click
-      // or ↺ (which bumps openSeq) turns this timer into a no-op.
+      // or `+ new` (which bumps openSeq) turns this timer into a no-op.
       const seq = ++openSeq.current
       // Pinned Terminal-mode and remote-fallback sessions mount chat and
       // spawn a PTY. No-pin agents only get a draft, so a burst must open
@@ -1404,11 +1453,11 @@ export function AgentsSection(props: { compact?: boolean }): JSX.Element {
               currentAccent &&
               (compact ? (
                 <span className="absolute left-1/2 top-1.5 ml-1" aria-hidden>
-                  <AgentSwatch accent={currentAccent} halo />
+                  <AgentTile accent={currentAccent} halo />
                 </span>
               ) : (
                 <span className="ml-auto flex min-w-0 items-center gap-1.5 pl-2 text-xs text-em">
-                  <AgentSwatch accent={currentAccent} />
+                  <AgentTile accent={currentAccent} initials={agentInitials(currentAgent.name)} />
                   <span className="min-w-0 truncate">{currentAgent.name}</span>
                 </span>
               ))}
@@ -1446,7 +1495,6 @@ export function AgentsSection(props: { compact?: boolean }): JSX.Element {
                 current={agent.id === currentAgentId}
                 nodeKnown={Boolean(agent.sourceNodeBaseUrl)}
                 onOpen={() => handleOpen(agent)}
-                onStartOver={() => handleStartOver(agent)}
                 onEdit={() => {
                   setCreating(false)
                   setDuplicating(null)

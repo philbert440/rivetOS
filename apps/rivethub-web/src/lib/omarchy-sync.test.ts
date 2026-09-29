@@ -115,7 +115,7 @@ describe('syncOmarchyTheme', () => {
 
   it('dedupes an unchanged snapshot', async () => {
     const colors = parseOmarchyColors(osakaJadeToml)!
-    const store = fakeStore({ name: 'osaka-jade', colors })
+    const store = fakeStore({ name: 'osaka-jade', colors, source: 'live' })
     const shell = fakeShell([
       {
         kind: 'omarchy',
@@ -128,6 +128,23 @@ describe('syncOmarchyTheme', () => {
     ])
     expect(await syncOmarchyTheme(shell as RivetShell, store)).toBe(true)
     expect(store.setOmarchy).not.toHaveBeenCalled()
+  })
+
+  it('replaces a preset snapshot with the live theme, even when the name matches', async () => {
+    const colors = parseOmarchyColors(osakaJadeToml)!
+    const store = fakeStore({ name: 'osaka-jade', colors, source: 'preset' })
+    const shell = fakeShell([
+      {
+        kind: 'omarchy',
+        path: '/theme/alacritty.toml',
+        text: '',
+        includes: {},
+        themeName: 'osaka-jade',
+        colorsToml: osakaJadeToml,
+      },
+    ])
+    expect(await syncOmarchyTheme(shell as RivetShell, store)).toBe(true)
+    expect(store.setOmarchy).toHaveBeenCalledWith({ name: 'osaka-jade', colors, source: 'live' })
   })
 
   it('throttles focus to ≥ 2s', async () => {
@@ -178,6 +195,44 @@ describe('syncOmarchyTheme', () => {
     vi.advanceTimersByTime(2000)
     listeners.forEach((fn) => fn())
     await Promise.resolve()
+    await Promise.resolve()
+    expect(read).toHaveBeenCalledTimes(3)
+  })
+
+  it('re-syncs on every pushed theme switch, unthrottled', async () => {
+    const read = vi.fn(async () => [
+      {
+        kind: 'omarchy' as const,
+        path: '/theme/colors.toml',
+        text: '',
+        includes: {},
+        themeName: 'osaka-jade',
+        colorsToml: osakaJadeToml,
+      },
+    ])
+    let pushed: (() => void) | undefined
+    const shell: RivetShell = {
+      kind: 'electron',
+      mtlsProxyPort: async () => 1,
+      openExternal: async () => undefined,
+      clipboardWriteText: async () => undefined,
+      clipboardReadText: async () => '',
+      sendNotification: async () => undefined,
+      setUnread: async () => undefined,
+      readTerminalConfigs: read,
+      onOmarchyThemeChanged: (cb) => {
+        pushed = cb
+        return () => undefined
+      },
+    }
+    ;(globalThis as { rivetShell?: RivetShell }).rivetShell = shell
+
+    installOmarchySync({ addEventListener: () => undefined })
+    await Promise.resolve()
+    expect(read).toHaveBeenCalledTimes(1)
+
+    pushed?.()
+    pushed?.()
     await Promise.resolve()
     expect(read).toHaveBeenCalledTimes(3)
   })

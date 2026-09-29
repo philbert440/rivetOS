@@ -59,7 +59,7 @@ export interface ConfigEnv {
   env: Record<string, string | undefined>
 }
 
-function defaultEnv(): ConfigEnv {
+export function defaultEnv(): ConfigEnv {
   return { home: os.homedir(), platform: process.platform, env: process.env }
 }
 

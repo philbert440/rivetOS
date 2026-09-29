@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import {
   agentForSession,
+  agentOwningSession,
   clearAgentLastSession,
   clearAgentSessionPointer,
   collapseAgentSlots,
@@ -9,6 +10,7 @@ import {
   getAgentSessionsVersion,
   listAgentSessions,
   rekeyAgentLastSessions,
+  rowOwnedByAgent,
   setAgentLastSession,
   subscribeAgentSessions,
 } from './agent-session.js'
@@ -280,5 +282,40 @@ describe('agent last-session pointer', () => {
     expect(localStorage.getItem('rivethub.agent.sess-old')).toBeNull()
     expect(localStorage.getItem('rivethub.agent.sess-new')).toBe('a1')
     expect(getAgentLastSession('a1', NODE_A)?.sessionId).toBe('sess-new')
+  })
+})
+
+describe('session ownership', () => {
+  beforeEach(() => store.clear())
+
+  const nativeOf = (key: string): string | undefined =>
+    key.includes(':') ? key.slice(key.indexOf(':') + 1) : undefined
+
+  it('keeps an older session owned after a re-pin drops its pin bind', () => {
+    setAgentLastSession('a1', 'sess-old', NODE_A)
+    setAgentLastSession('a1', 'sess-new', NODE_A, { replace: true })
+    expect(agentForSession('sess-old')).toBeUndefined()
+    expect(agentOwningSession('sess-old')).toBe('a1')
+    expect(agentOwningSession('sess-new')).toBe('a1')
+  })
+
+  it('falls back to the pin bind for sessions pinned before ownership tags', () => {
+    localStorage.setItem('rivethub.agent.sess-legacy', 'a2')
+    expect(agentOwningSession('sess-legacy')).toBe('a2')
+  })
+
+  it('follows a session through a rekey', () => {
+    setAgentLastSession('a1', 'draft-1', NODE_A)
+    rekeyAgentLastSessions('draft-1', 'claude-code:native-1')
+    expect(agentOwningSession('draft-1')).toBeUndefined()
+    expect(agentOwningSession('claude-code:native-1')).toBe('a1')
+  })
+
+  it('matches a canonical row key by its native half', () => {
+    setAgentLastSession('a1', 'uuid-1', NODE_A)
+    expect(rowOwnedByAgent('claude-code:uuid-1', 'a1', nativeOf)).toBe(true)
+    expect(rowOwnedByAgent('uuid-1', 'a1', nativeOf)).toBe(true)
+    expect(rowOwnedByAgent('claude-code:uuid-1', 'a2', nativeOf)).toBe(false)
+    expect(rowOwnedByAgent('grok-build:other', 'a1', nativeOf)).toBe(false)
   })
 })

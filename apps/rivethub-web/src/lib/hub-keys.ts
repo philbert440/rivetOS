@@ -3,17 +3,21 @@
  *
  *   Ctrl+Tab        open the NEXT agent in the sidebar roster
  *   Ctrl+Shift+Tab  open the PREVIOUS agent
- *   Ctrl+Shift+E    toggle the left sidebar (icon rail / narrow drawer)
+ *   Ctrl+Shift+E    collapse / expand every side pane (rail AND
+ *                   conversations); the narrow drawer on the phone
+ *   Ctrl+T          start a new conversation (with the selected agent)
  *
  * Registered on `window` in the CAPTURE phase so a focused xterm never sees
- * the chord first (same technique as shell-keys.ts) — both Tab and Ctrl+Shift+E
- * would otherwise be swallowed by the terminal's custom key handler. Plain
- * Ctrl+E is deliberately NOT bound: it is end-of-line in readline/emacs, so
- * only the Shift form is claimed. `matchHubKey` is a pure matcher over the
+ * the chord first (same technique as shell-keys.ts) — Tab, Ctrl+Shift+E and
+ * Ctrl+T would otherwise be swallowed by the terminal's custom key handler.
+ * Plain Ctrl+E is deliberately NOT bound: it is end-of-line in readline/emacs,
+ * so only the Shift form is claimed. Ctrl+T IS claimed, trading readline's
+ * transpose-chars for a new conversation (asked for explicitly); browsers
+ * keep Ctrl+T for a new tab, so like Ctrl+Tab it is a desktop-shell chord. `matchHubKey` is a pure matcher over the
  * fields it needs, so tests can pass plain objects instead of a DOM event.
  */
 
-export type HubKeyAction = 'agent-next' | 'agent-prev' | 'toggle-sidebar'
+export type HubKeyAction = 'agent-next' | 'agent-prev' | 'toggle-sidebar' | 'new-conversation'
 
 /** Pure matcher; takes the fields it needs so tests can pass plain objects. */
 export function matchHubKey(
@@ -22,6 +26,7 @@ export function matchHubKey(
   if (!e.ctrlKey || e.altKey || e.metaKey) return null
   if (e.key === 'Tab') return e.shiftKey ? 'agent-prev' : 'agent-next'
   if (e.shiftKey && e.code === 'KeyE') return 'toggle-sidebar'
+  if (!e.shiftKey && e.code === 'KeyT') return 'new-conversation'
   return null
 }
 

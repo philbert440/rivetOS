@@ -368,9 +368,18 @@ export function WorkflowTriggerPage(): JSX.Element {
           className={
             narrow
               ? 'fixed bottom-0 right-0 top-12 flex flex-col bg-bg'
-              : 'fixed inset-y-0 right-0 flex flex-col bg-bg'
+              : 'fixed flex flex-col bg-bg'
           }
-          style={{ left: 'var(--hub-rail, 14rem)' }}
+          style={
+            narrow
+              ? { left: 'var(--hub-rail, 14rem)' }
+              : {
+                  left: 'var(--hub-rail, 14rem)',
+                  top: 'var(--hub-top, 0px)',
+                  right: 'var(--hub-inset, 0px)',
+                  bottom: 'var(--hub-inset, 0px)',
+                }
+          }
         >
           <FlowsAuthor
             workflowId={workflowId}
