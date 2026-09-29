@@ -1138,7 +1138,8 @@ async function registerClaudeCodeTaskExecutor(
   }
 
   try {
-    const { ClaudeCliExecutor, CLAUDE_HARNESS_ID } = await import('@rivetos/provider-claude-cli')
+    const { ClaudeCliExecutor, CLAUDE_HARNESS_ID, parseAllowedApiKeySources } =
+      await import('@rivetos/provider-claude-cli')
     executors.register(
       'harness-session',
       new ClaudeCliExecutor({
@@ -1152,6 +1153,7 @@ async function registerClaudeCodeTaskExecutor(
         // Resume rehydration (step-(c) parity with chat-loop).
         memory: runtime.getMemory(),
         structuredResult,
+        allowedApiKeySources: parseAllowedApiKeySources(providerCfg.allowed_api_key_sources),
       }),
       CLAUDE_HARNESS_ID,
     )

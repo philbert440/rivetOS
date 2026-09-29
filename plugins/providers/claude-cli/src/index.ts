@@ -38,6 +38,7 @@ import type { Provider, PluginManifest } from '@rivetos/types'
 import type { ProviderAiSdkBridge, GetModelInput } from '@rivetos/aisdk'
 import { ClaudeCliModel, type ClaudeCliEffort } from './claude-cli-model.js'
 import { createLogger } from './log.js'
+import { parseAllowedApiKeySources } from './spawn-turn.js'
 
 // Real-time Claude Code session capture — hooks ingest interactive
 // transcripts into the memory DB. See transcript-capture.ts / hooks.ts.
@@ -62,6 +63,7 @@ export {
   buildTaskSystemAppend,
 } from './executor.js'
 export type { ClaudeCliExecutorConfig } from './executor.js'
+export { parseAllowedApiKeySources }
 
 export type {
   IngestOptions,
@@ -105,6 +107,9 @@ export interface ClaudeCliProviderConfig {
   /** Per-spawn timeout in ms. 0 (default) = no timeout. When > 0, SIGTERM
    *  the child then SIGKILL after KILL_GRACE_MS and reject with `timeout`. */
   timeoutMs?: number
+  /** Extra `apiKeySource` values to accept besides missing and `"none"`.
+   *  Unset rejects every other source. Does not disable the env scrub. */
+  allowedApiKeySources?: readonly string[]
   /** Override the provider id / display name (used when boot registers us). */
   id?: string
   name?: string
@@ -157,6 +162,7 @@ export class ClaudeCliProvider implements Provider {
   private contextWindow: number
   private outputTokenLimit: number
   private timeoutMs: number
+  private allowedApiKeySources: readonly string[] | undefined
   private availableProbe: Promise<boolean> | undefined
 
   constructor(config: ClaudeCliProviderConfig) {
@@ -173,6 +179,7 @@ export class ClaudeCliProvider implements Provider {
     this.contextWindow = config.contextWindow ?? 0
     this.outputTokenLimit = config.maxOutputTokens ?? 0
     this.timeoutMs = config.timeoutMs ?? 0
+    this.allowedApiKeySources = config.allowedApiKeySources
   }
 
   getModel(): string {
@@ -255,6 +262,7 @@ export class ClaudeCliProvider implements Provider {
           tools,
           agentId,
           timeoutMs: this.timeoutMs,
+          allowedApiKeySources: this.allowedApiKeySources,
         })
       },
 
@@ -295,6 +303,7 @@ export const manifest: PluginManifest = {
         contextWindow: cfg.context_window as number | undefined,
         maxOutputTokens: cfg.max_output_tokens as number | undefined,
         timeoutMs: parseTimeoutMs(cfg.timeout_ms),
+        allowedApiKeySources: parseAllowedApiKeySources(cfg.allowed_api_key_sources),
       }),
     )
   },
