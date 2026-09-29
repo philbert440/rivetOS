@@ -78,6 +78,7 @@ import {
   parseSessionId,
   type ApprovalDecision,
   type HarnessEvent,
+  type HarnessId,
   type HarnessTranscriptTurn,
   type SessionId,
   type UserTurn,
@@ -234,6 +235,9 @@ export function createHarnessRoutes(opts: {
    *  resume — without it, control-plane sessions have no owner row and fall
    *  to the node owner in every listing. */
   claimSession?: (req: IncomingMessage, sessionId: string) => boolean
+  /** Stamps `installed` on each `GET /api/harnesses` row (`installed.ts`).
+   *  Absent = the field is omitted and clients treat every row as installed. */
+  isInstalled?: (harnessId: HarnessId) => boolean
 }): HarnessRoutes {
   const { registry } = opts
   const log = opts.log ?? ((): void => undefined)
@@ -346,7 +350,11 @@ export function createHarnessRoutes(opts: {
       // Truth the flags before publishing them: a declared-only sheet is how a
       // node with a failed `node-pty` advertises an interrupt it will 501.
       await registry.verifyCapabilities()
-      return json(res, 200, { harnesses: registry.list() })
+      const { isInstalled } = opts
+      const harnesses = isInstalled
+        ? registry.list().map((d) => ({ ...d, installed: isInstalled(d.harnessId) }))
+        : registry.list()
+      return json(res, 200, { harnesses })
     }
     const parts: (string | undefined)[] = rest.split('/')
     const [harnessId = '', sub, ...extra] = parts

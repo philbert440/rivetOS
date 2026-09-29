@@ -56,6 +56,8 @@ import { asCapabilitySource, type HarnessCapabilityEvent } from './capabilities.
 export interface HarnessDescriptor {
   harnessId: HarnessId
   capabilities: HarnessCapabilities
+  /** Set by the list route (`installed.ts`); the registry never sets it. */
+  installed?: boolean
 }
 
 export interface ResolvedSession {

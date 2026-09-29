@@ -9,7 +9,7 @@
  * RivetGateway on an https base cannot authenticate from the desktop shell.
  */
 
-import { Fragment, useCallback, useEffect, useRef, useState, type JSX } from 'react'
+import { Fragment, useCallback, useEffect, useMemo, useRef, useState, type JSX } from 'react'
 import { useMutation, useQueries, useQuery, useQueryClient } from '@tanstack/react-query'
 import { useNavigate } from '@tanstack/react-router'
 import { Bot, ChevronDown, ChevronRight, Pencil, Plus, Trash2, X } from 'lucide-react'
@@ -40,6 +40,7 @@ import {
   defaultModel,
   effortOptionsFor,
   harnessLabel,
+  installedHarnesses,
   modelOptionsFor,
 } from '../lib/harness-options.js'
 import { rosterCommandFor } from '../lib/harness-chat.js'
@@ -247,7 +248,10 @@ function AgentEditor({
     staleTime: duplicate ? 0 : 60_000,
     enabled: Boolean(nodeBaseUrl),
   })
-  const harnesses = harnessesQuery.data?.harnesses ?? []
+  const registered = harnessesQuery.data?.harnesses
+  // Pickers and copies offer only what this node can launch; sheets for an
+  // existing preset's (possibly uninstalled) harness still come from `registered`.
+  const harnesses = useMemo(() => installedHarnesses(registered ?? []), [registered])
   const copy =
     duplicate && nodeBaseUrl && !excludedNodes.includes(nodeBaseUrl)
       ? agentCopySeed(
@@ -280,7 +284,7 @@ function AgentEditor({
     !duplicate ||
     Boolean(copy && harnessesQuery.isSuccess && !harnessesQuery.isFetching && harnessId)
   const offerCopy = canOfferAgentCopy(agent, nodeBaseUrl, harnessesQuery.isError)
-  const sheet = harnesses.find((h) => h.harnessId === harnessId)?.capabilities
+  const sheet = (registered ?? []).find((h) => h.harnessId === harnessId)?.capabilities
   const models = modelOptionsFor(sheet)
   if (!duplicate && model && !models.some((o) => o.value === model)) {
     models.unshift({ value: model, label: model })

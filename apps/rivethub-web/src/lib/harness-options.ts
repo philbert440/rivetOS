@@ -34,6 +34,15 @@ export const CODEX_SHEET: HarnessSheet = {
   ],
 }
 
+/**
+ * Harnesses a NEW session or preset can launch on. The den stamps `installed`
+ * (roster binary on its spawn PATH); an older den omits it, so absent counts
+ * as installed. Uninstalled rows stay in the registry for existing sessions.
+ */
+export function installedHarnesses<T extends { installed?: boolean }>(descriptors: T[]): T[] {
+  return descriptors.filter((d) => d.installed !== false)
+}
+
 export function harnessLabel(harnessId?: string): string {
   if (!harnessId) return ''
   return (HARNESS_LABEL as Record<string, string>)[harnessId] ?? harnessId

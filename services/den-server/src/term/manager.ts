@@ -51,7 +51,7 @@ import {
   writeFileSync,
 } from 'node:fs'
 import { canonicalPath, validateDirectory } from '@rivetos/agent-registry'
-import { homedir, hostname } from 'node:os'
+import { hostname } from 'node:os'
 import { randomBytes } from 'node:crypto'
 import { basename, join, resolve } from 'node:path'
 import type { DenConfig } from '../config.js'
@@ -69,6 +69,7 @@ import {
 } from './context-window.js'
 import type { PtyProc, PtySpawn } from './pty.js'
 import { builtinRosterArgv0, defaultSpawnCwd, type TermRoster } from './roster.js'
+import { withUserLocalBin } from '../harness/installed.js'
 import {
   classifyExistingTmuxSession,
   createRealTmuxCtl,
@@ -2220,10 +2221,8 @@ export function createTermManager(config: DenConfig, deps: TermManagerDeps): Ter
       }
       // Service managers do not source login profiles. Include user-installed
       // harnesses before spawning any PTY, including an existing mux server.
-      const localBin = join(homedir(), '.local', 'bin')
-      if (!(env.PATH ?? '').split(':').includes(localBin)) {
-        env.PATH = [env.PATH, localBin].filter(Boolean).join(':')
-      }
+      // `harness/installed.ts` resolves argv[0] on this same PATH.
+      env.PATH = withUserLocalBin(env.PATH)
       tmuxEnvKeys.add('PATH')
       Object.assign(env, roster.env, entry.env ?? {})
       for (const k of Object.keys(roster.env ?? {})) if (!ptyEnvDeny.test(k)) tmuxEnvKeys.add(k)

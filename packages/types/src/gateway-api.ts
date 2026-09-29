@@ -920,6 +920,13 @@ export interface HarnessTranscriptResponse {
 export interface HarnessDescriptor {
   harnessId: HarnessId
   capabilities: HarnessCapabilities
+  /**
+   * The node can launch this harness: its roster argv[0] resolves on the den's
+   * spawn PATH. Uninstalled drivers stay listed so their existing sessions
+   * keep resolving; pickers offering NEW sessions filter on this. Absent (an
+   * older den) = treat as installed.
+   */
+  installed?: boolean
 }
 
 export interface HarnessesResponse {
