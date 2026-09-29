@@ -604,9 +604,11 @@ describe('term manager', () => {
     expect(viaNative.spawns[0].argv).toEqual(['claude', '--resume', uuid])
     viaNative.manager.close()
 
-    // `resume` names a harness-native id. The cwd was stored under the join
-    // key, which for a room session IS the den session. The native probe
-    // misses; the session probe hits.
+    // `resume` names a harness-native session UUID, distinct from the join
+    // key. The cwd was stored under the join key, which for a room session
+    // IS the den session. The native probe misses; the session probe hits.
+    // A non-UUID resume is a subagent transcript and is refused earlier.
+    const native = '22222222-2222-4222-8222-222222222222'
     const viaSession = makeManager(
       {},
       {
@@ -614,9 +616,9 @@ describe('term manager', () => {
           command === 'claude' && id === 'join-key' ? joinDir : undefined,
       },
     )
-    viaSession.manager.spawn('claude', 80, 24, '', 'join-key', 'native-id')
+    viaSession.manager.spawn('claude', 80, 24, '', 'join-key', native)
     expect(viaSession.spawns[0].opts.cwd).toBe(joinDir)
-    expect(viaSession.spawns[0].argv).toContain('native-id')
+    expect(viaSession.spawns[0].argv).toContain(native)
     viaSession.manager.close()
   })
 
