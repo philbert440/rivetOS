@@ -62,6 +62,13 @@ export {
   buildTaskSystemAppend,
 } from './executor.js'
 export type { ClaudeCliExecutorConfig } from './executor.js'
+export {
+  parsePermissionPrompts,
+  permissionPromptToolId,
+  PERMISSION_PROMPT_TIMEOUT_MS,
+  PERMISSION_TOOL_NAME,
+} from './permission-prompt.js'
+export type { PermissionPrompter, PermissionPromptMode } from './permission-prompt.js'
 
 export type {
   IngestOptions,

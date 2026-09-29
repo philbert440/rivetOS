@@ -23,6 +23,7 @@ import type {
   ContextRef,
   TaskBudget,
   TaskExecutorKind,
+  TaskPermissionDecision,
   TaskResult,
   TaskStatus,
   TaskUsage,
@@ -43,6 +44,20 @@ export function taskJobName(nodeAffinity?: string | null): string {
 /** graphile-worker job key for a task — one live job per task row. */
 export function taskJobKey(taskId: string): string {
   return `task:${taskId}`
+}
+
+/**
+ * Audit key on `ros_tasks.spec`. Runtime-written; a caller who sends it on
+ * create is stripped so the row cannot be born with a forged decision log.
+ */
+export const PERMISSION_DECISIONS_KEY = 'permissionDecisions'
+
+export function callerSpec(spec: Record<string, unknown> | undefined): Record<string, unknown> {
+  if (!spec || !Object.prototype.hasOwnProperty.call(spec, PERMISSION_DECISIONS_KEY)) {
+    return spec ?? {}
+  }
+  const { [PERMISSION_DECISIONS_KEY]: _forged, ...rest } = spec
+  return rest
 }
 
 export interface NewTaskInput {
@@ -239,6 +254,12 @@ export interface TaskStore {
    */
   appendHarnessSessionId?(id: string, sessionId: string): Promise<void>
 
+  /**
+   * Append one settled permission prompt to `spec.permissionDecisions`.
+   * Missing rows are a no-op. The array append is atomic in the SQL stores.
+   */
+  appendPermissionDecision(id: string, decision: TaskPermissionDecision): Promise<void>
+
   /** Liveness stamp while a turn is in flight. */
   heartbeat(id: string): Promise<void>
 
@@ -303,7 +324,7 @@ export class InMemoryTaskStore implements TaskStore {
       goal: input.goal,
       contextRefs: input.contextRefs ?? [],
       acceptanceCriteria: input.acceptanceCriteria ?? [],
-      spec: input.spec ?? {},
+      spec: callerSpec(input.spec),
       executor: input.executor,
       executorTarget: input.executorTarget,
       agentId: input.agentId,
@@ -335,7 +356,7 @@ export class InMemoryTaskStore implements TaskStore {
       goal: input.goal,
       contextRefs: input.contextRefs ?? [],
       acceptanceCriteria: input.acceptanceCriteria ?? [],
-      spec: input.spec ?? {},
+      spec: callerSpec(input.spec),
       executor: input.executor,
       executorTarget: input.executorTarget,
       agentId: input.agentId,
@@ -524,6 +545,16 @@ export class InMemoryTaskStore implements TaskStore {
     return Promise.resolve()
   }
 
+  appendPermissionDecision(id: string, decision: TaskPermissionDecision): Promise<void> {
+    const row = this.rows.get(id)
+    if (!row) return Promise.resolve()
+    const prev = Array.isArray(row.spec[PERMISSION_DECISIONS_KEY])
+      ? (row.spec[PERMISSION_DECISIONS_KEY] as TaskPermissionDecision[])
+      : []
+    row.spec = { ...row.spec, [PERMISSION_DECISIONS_KEY]: [...prev, decision] }
+    return Promise.resolve()
+  }
+
   heartbeat(id: string): Promise<void> {
     const row = this.rows.get(id)
     if (row) row.lastHeartbeatAt = Date.now()
@@ -697,7 +728,7 @@ export class PgTaskStore implements TaskStore {
           input.goal,
           JSON.stringify(input.contextRefs ?? []),
           JSON.stringify(input.acceptanceCriteria ?? []),
-          JSON.stringify(input.spec ?? {}),
+          JSON.stringify(callerSpec(input.spec)),
           input.executor,
           input.executorTarget ?? null,
           input.agentId,
@@ -740,7 +771,7 @@ export class PgTaskStore implements TaskStore {
         input.goal,
         JSON.stringify(input.contextRefs ?? []),
         JSON.stringify(input.acceptanceCriteria ?? []),
-        JSON.stringify(input.spec ?? {}),
+        JSON.stringify(callerSpec(input.spec)),
         input.executor,
         input.executorTarget ?? null,
         input.agentId,
@@ -985,6 +1016,20 @@ export class PgTaskStore implements TaskStore {
          SET harness_session_ids = harness_session_ids || to_jsonb($2::text)
        WHERE id = $1 AND NOT (harness_session_ids @> to_jsonb($2::text))`,
       [id, sessionId],
+    )
+  }
+
+  async appendPermissionDecision(id: string, decision: TaskPermissionDecision): Promise<void> {
+    await this.pool.query(
+      `UPDATE ros_tasks
+         SET spec = jsonb_set(
+           spec,
+           '{permissionDecisions}',
+           COALESCE(spec->'permissionDecisions', '[]'::jsonb) || $2::jsonb,
+           true
+         )
+       WHERE id = $1`,
+      [id, JSON.stringify([decision])],
     )
   }
 

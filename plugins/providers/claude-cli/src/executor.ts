@@ -55,6 +55,11 @@ import {
 } from '@rivetos/types'
 import { embedMcpServerForTurn, type EmbeddedMcpHandle } from './mcp-bridge.js'
 import {
+  createPermissionPromptTool,
+  type PermissionPrompter,
+  type PermissionPromptMode,
+} from './permission-prompt.js'
+import {
   spawnClaudeTurn,
   type ClaudeCliEffort,
   type CliResult,
@@ -84,8 +89,15 @@ export interface ClaudeCliExecutorConfig {
   toolsArg?: string
   /** Default reasoning effort (spec.effort overrides). */
   effort?: ClaudeCliEffort
-  /** Permission mode passed via --permission-mode. */
+  /** Permission mode passed via --permission-mode. Default in the spawn is `default`. */
   permissionMode?: string
+  /**
+   * Headless permission prompts. Unset passes no `--permission-prompts` flag.
+   * `none` denies immediately. `ui` parks on `permissionPrompter`.
+   */
+  permissionPrompts?: PermissionPromptMode
+  /** Required for `ui`. Missing (or a bridge that failed to bind) degrades to `none`. */
+  permissionPrompter?: PermissionPrompter
   /** When true, append --exclude-dynamic-system-prompt-sections. */
   excludeDynamicSections?: boolean
   /** Default working directory (spec.workingDir overrides). */
@@ -489,15 +501,44 @@ export class ClaudeCliExecutor implements HarnessExecutor {
 
     // Per-spawn MCP bridge — soft-fail like the model wrapper: without it
     // claude keeps its native tools but won't see RivetOS tools this turn.
+    // `ui` adds the permission tool and, if the bridge cannot come up, falls
+    // back to `--permission-prompts none` so the spawn denies instead of
+    // sitting on the CLI's permission-decision timeout.
+    let permissionPrompts = this.cfg.permissionPrompts
+    const bridgeTools = [...tools]
+    const bridgeDisabled = process.env.RIVETOS_DISABLE_MCP_BRIDGE === '1'
+    if (permissionPrompts === 'ui') {
+      if (!this.cfg.permissionPrompter || bridgeDisabled) {
+        this.log.warn('permission.prompts.degraded', {
+          taskId: spec.taskId,
+          reason: !this.cfg.permissionPrompter ? 'no prompter' : 'bridge disabled',
+        })
+        permissionPrompts = 'none'
+      } else {
+        bridgeTools.push(
+          createPermissionPromptTool({
+            taskId: spec.taskId,
+            prompter: this.cfg.permissionPrompter,
+            emit: (event) => run.events.push(event),
+          }),
+        )
+      }
+    }
     let bridge: EmbeddedMcpHandle | undefined
-    if (tools.length > 0 && process.env.RIVETOS_DISABLE_MCP_BRIDGE !== '1') {
+    if (bridgeTools.length > 0 && !bridgeDisabled) {
       try {
-        bridge = await embedMcpServerForTurn({ tools, agentId: spec.agentId, log: this.log })
+        bridge = await embedMcpServerForTurn({
+          tools: bridgeTools,
+          agentId: spec.agentId,
+          log: this.log,
+        })
       } catch (err: unknown) {
         const msg = err instanceof Error ? err.message : String(err)
         this.log.warn('mcp.bridge.bringup.failed', { taskId: spec.taskId, error: msg })
+        if (permissionPrompts === 'ui') permissionPrompts = 'none'
       }
     }
+    if (permissionPrompts === 'ui' && !bridge) permissionPrompts = 'none'
 
     let spawned: SpawnedTurn
     try {
@@ -508,6 +549,7 @@ export class ClaudeCliExecutor implements HarnessExecutor {
           toolsArg: this.cfg.toolsArg ?? DEFAULT_TOOLS_ARG,
           effort: spec.effort ?? this.cfg.effort ?? 'medium',
           permissionMode: this.cfg.permissionMode ?? 'default',
+          permissionPrompts,
           excludeDynamicSections: this.cfg.excludeDynamicSections ?? true,
           systemText,
           mcpConfigPath: bridge?.configPath,

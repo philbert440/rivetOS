@@ -355,6 +355,22 @@ describe('Config Validation', () => {
       assertError(result, 'providers.anthropic.model', 'missing required field "model"')
     })
 
+    it('accepts claude-cli permission_prompts ui or none and rejects anything else', () => {
+      for (const mode of ['ui', 'none']) {
+        const cfg = validConfig()
+        ;(cfg.providers as Record<string, unknown>)['claude-cli'] = { permission_prompts: mode }
+        assertValid(validateConfig(cfg))
+      }
+      const cfg = validConfig()
+      ;(cfg.providers as Record<string, unknown>)['claude-cli'] = { permission_prompts: 'ask' }
+      const result = validateConfig(cfg)
+      assertError(
+        result,
+        'providers.claude-cli.permission_prompts',
+        'permission_prompts must be "ui" or "none"',
+      )
+    })
+
     it('allows CLI harness providers without model', () => {
       for (const name of [
         'grok-cli',

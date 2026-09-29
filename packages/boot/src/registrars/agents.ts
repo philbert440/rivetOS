@@ -28,6 +28,7 @@ import {
   createTaskDoneBroadcaster,
   createTaskApiRoute,
   createOutcomesApiRoute,
+  TaskPermissionBroker,
   createWikiApiRoute,
   createWikiHtmlRoute,
   createEvaluationCoordinator,
@@ -322,7 +323,10 @@ export async function registerAgentTools(
     'chat-loop',
     createChatLoopExecutor({ ...executorCfg, memory: runtime.getMemory(), pricing: taskPricing }),
   )
-  await registerHarnessTaskExecutors(runtime, config, executors, workspaceDir)
+  const permissionBroker = taskEngineStore
+    ? new TaskPermissionBroker({ store: taskEngineStore })
+    : undefined
+  await registerHarnessTaskExecutors(runtime, config, executors, workspaceDir, permissionBroker)
   const implementedHarnesses = executors
     .harnesses()
     .filter((row) => row.implemented)
@@ -883,6 +887,7 @@ export async function registerAgentTools(
         presetHost: presetEngine ? { nodeName, executors, meshRegistry: registry } : undefined,
         criteriaPolicy,
         localQueueNode: sqliteTaskStore ? nodeName : undefined,
+        permissionBroker,
       }),
       createOutcomesApiRoute({ store: taskEngineStore }),
     )
@@ -1046,12 +1051,20 @@ async function registerHarnessTaskExecutors(
   config: RivetConfig,
   executors: ReturnType<typeof createExecutorRegistry>,
   workspaceDir: string,
+  permissionBroker: TaskPermissionBroker | undefined,
 ): Promise<void> {
   // A harness that failed for a KNOWN reason here (an unresolvable binary, a
   // provider package that would not load) overrides the generic recorded gap:
   // the task row's error should name the actual cause, which only boot knows.
   const gapOverrides = new Map<HarnessId, string>()
-  await registerClaudeCodeTaskExecutor(runtime, config, executors, workspaceDir, gapOverrides)
+  await registerClaudeCodeTaskExecutor(
+    runtime,
+    config,
+    executors,
+    workspaceDir,
+    gapOverrides,
+    permissionBroker,
+  )
   await registerKimiCodeTaskExecutor(runtime, config, executors, workspaceDir, gapOverrides)
   await registerOpencodeTaskExecutor(runtime, config, executors, workspaceDir, gapOverrides)
   await registerPiTaskExecutor(runtime, config, executors, workspaceDir, gapOverrides)
@@ -1086,6 +1099,7 @@ async function registerClaudeCodeTaskExecutor(
   executors: ReturnType<typeof createExecutorRegistry>,
   workspaceDir: string,
   gapOverrides: Map<HarnessId, string>,
+  permissionBroker: TaskPermissionBroker | undefined,
 ): Promise<void> {
   const providerCfg = config.providers?.['claude-cli'] ?? {}
   const binary = (providerCfg.binary as string | undefined) ?? 'claude'
@@ -1138,7 +1152,8 @@ async function registerClaudeCodeTaskExecutor(
   }
 
   try {
-    const { ClaudeCliExecutor, CLAUDE_HARNESS_ID } = await import('@rivetos/provider-claude-cli')
+    const { ClaudeCliExecutor, CLAUDE_HARNESS_ID, parsePermissionPrompts } =
+      await import('@rivetos/provider-claude-cli')
     executors.register(
       'harness-session',
       new ClaudeCliExecutor({
@@ -1147,6 +1162,8 @@ async function registerClaudeCodeTaskExecutor(
         toolsArg: providerCfg.tools as string | undefined,
         effort: providerCfg.effort as 'low' | 'medium' | 'high' | 'xhigh' | 'max' | undefined,
         permissionMode: providerCfg.permission_mode as string | undefined,
+        permissionPrompts: parsePermissionPrompts(providerCfg.permission_prompts),
+        permissionPrompter: permissionBroker,
         cwd: (providerCfg.cwd as string | undefined) ?? workspaceDir,
         tools: () => runtime.getTools(),
         // Resume rehydration (step-(c) parity with chat-loop).

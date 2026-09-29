@@ -15,6 +15,16 @@ describe('RivetGateway.waitTask', () => {
     )
   })
 
+  it('onApproval=return is opt-in on the wait query', async () => {
+    const fetch = vi.fn(async () => new Response(JSON.stringify({ approval: { requestId: 'r' } })))
+    const client = new RivetGateway({ baseUrl: 'https://den.invalid', fetch })
+    await client.waitTask('task-1', { onApproval: true, timeoutMs: 1000 })
+    expect(fetch).toHaveBeenCalledWith(
+      'https://den.invalid/api/tasks/task-1/wait?timeoutMs=1000&onApproval=return',
+      expect.anything(),
+    )
+  })
+
   it('preserves deadline bodies and abort errors', async () => {
     const body = { error: 'wait deadline exceeded' }
     const fetch = vi.fn(async () => new Response(JSON.stringify(body), { status: 504 }))

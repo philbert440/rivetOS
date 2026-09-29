@@ -232,6 +232,46 @@ describe('ClaudeCliExecutor', () => {
     expect(args[args.indexOf('--effort') + 1]).toBe('high')
     expect(args).toContain('--no-session-persistence')
     expect(args).toContain('--permission-mode')
+    // Unset permission_prompts stays off the argv. A regression here changes
+    // every spawn, not just the ones that opted in.
+    expect(args).not.toContain('--permission-prompts')
+    expect(args).not.toContain('--permission-prompt-tool')
+  })
+
+  it('permission_prompts none is an immediate deny and does not mount a tool', async () => {
+    const fake = makeFakeClaude(successLines('ok'))
+    const executor = new ClaudeCliExecutor({ binary: fake.binary, permissionPrompts: 'none' })
+    await executor.start(makeConformanceSpec(), { signal: new AbortController().signal }).result
+    const args = fake.args()
+    expect(args[args.indexOf('--permission-prompts') + 1]).toBe('none')
+    expect(args).not.toContain('--permission-prompt-tool')
+  })
+
+  it('permission_prompts ui names the embedded tool', async () => {
+    const fake = makeFakeClaude(successLines('ok'))
+    const executor = new ClaudeCliExecutor({
+      binary: fake.binary,
+      permissionPrompts: 'ui',
+      permissionPrompter: {
+        ask: () => Promise.resolve({ behavior: 'deny', decision: 'deny', message: 'no' }),
+      },
+    })
+    await executor.start(makeConformanceSpec(), { signal: new AbortController().signal }).result
+    const args = fake.args()
+    expect(args[args.indexOf('--permission-prompts') + 1]).toBe('host')
+    expect(args[args.indexOf('--permission-prompt-tool') + 1]).toBe(
+      'mcp__rivetos__request_permission',
+    )
+    expect(args).toContain('--mcp-config')
+  })
+
+  it('permission_prompts ui without a prompter degrades to none', async () => {
+    const fake = makeFakeClaude(successLines('ok'))
+    const executor = new ClaudeCliExecutor({ binary: fake.binary, permissionPrompts: 'ui' })
+    await executor.start(makeConformanceSpec(), { signal: new AbortController().signal }).result
+    const args = fake.args()
+    expect(args[args.indexOf('--permission-prompts') + 1]).toBe('none')
+    expect(args).not.toContain('--permission-prompt-tool')
   })
 
   it('spawns with RIVETOS_TASK_ID=<id> and RIVETOS_DEN_HOOK_DISABLED=1', async () => {

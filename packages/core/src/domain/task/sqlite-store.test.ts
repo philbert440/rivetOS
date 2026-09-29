@@ -319,6 +319,34 @@ describe('SqliteTaskStore', () => {
     expect(await store.listOutcomes({ agentId: 'nobody' })).toHaveLength(0)
   })
 
+  it('appends permission decisions and drops a forged log on create', async () => {
+    const { store } = open()
+    const task = await store.create(
+      input({
+        spec: { permissionDecisions: [{ decision: 'allow' }], keep: 1 },
+      }),
+    )
+    expect(task.spec).toEqual({ keep: 1 })
+    await store.appendPermissionDecision(task.id, {
+      requestId: 'r1',
+      tool: 'Bash',
+      decision: 'deny',
+      at: 1,
+      message: 'no',
+    })
+    await store.appendPermissionDecision(task.id, {
+      requestId: 'r2',
+      tool: 'Edit',
+      decision: 'timeout',
+      at: 2,
+    })
+    expect((await store.get(task.id))?.spec.permissionDecisions).toEqual([
+      { requestId: 'r1', tool: 'Bash', decision: 'deny', at: 1, message: 'no' },
+      { requestId: 'r2', tool: 'Edit', decision: 'timeout', at: 2 },
+    ])
+    expect((await store.get(task.id))?.spec.keep).toBe(1)
+  })
+
   it('dedupes harness session ids', async () => {
     const { store } = open()
     const task = await store.create(input())

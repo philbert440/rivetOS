@@ -20,6 +20,7 @@ import type {
   EvalOutcome,
   TaskBudget,
   TaskExecutorKind,
+  TaskPermissionDecision,
   TaskResult,
   TaskStatus,
   TaskUsage,
@@ -27,6 +28,7 @@ import type {
 import {
   AWAITING_INPUT_TTL_MS_DEFAULT,
   SWEEP_STALE_MS_DEFAULT,
+  callerSpec,
   taskJobKey,
   type NewTaskInput,
   type OutcomeFilter,
@@ -263,7 +265,7 @@ export class SqliteTaskStore implements TaskStore {
           input.goal,
           jsonText(input.contextRefs ?? []),
           jsonText(input.acceptanceCriteria ?? []),
-          jsonText(input.spec ?? {}),
+          jsonText(callerSpec(input.spec)),
           input.executor,
           input.executorTarget ?? null,
           input.agentId,
@@ -305,7 +307,7 @@ export class SqliteTaskStore implements TaskStore {
           input.goal,
           jsonText(input.contextRefs ?? []),
           jsonText(input.acceptanceCriteria ?? []),
-          jsonText(input.spec ?? {}),
+          jsonText(callerSpec(input.spec)),
           input.executor,
           input.executorTarget ?? null,
           input.agentId,
@@ -558,6 +560,24 @@ export class SqliteTaskStore implements TaskStore {
            )`,
       )
       .run(sessionId, id, sessionId)
+  }
+
+  async appendPermissionDecision(id: string, decision: TaskPermissionDecision): Promise<void> {
+    this.db
+      .prepare(
+        `UPDATE ros_tasks
+           SET spec = json_set(
+             spec,
+             '$.permissionDecisions',
+             json_insert(
+               COALESCE(json_extract(spec, '$.permissionDecisions'), json('[]')),
+               '$[#]',
+               json(?)
+             )
+           )
+         WHERE id = ?`,
+      )
+      .run(JSON.stringify(decision), id)
   }
 
   async heartbeat(id: string): Promise<void> {

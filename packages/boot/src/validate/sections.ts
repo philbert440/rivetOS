@@ -394,6 +394,18 @@ export function validateProviders(
       })
     }
 
+    if (name === 'claude-cli' && provider.permission_prompts !== undefined) {
+      const mode = provider.permission_prompts
+      if (mode !== 'ui' && mode !== 'none') {
+        issues.push({
+          severity: 'error',
+          path: `${path}.permission_prompts`,
+          message:
+            'permission_prompts must be "ui" or "none" (omit the key to leave spawns unchanged)',
+        })
+      }
+    }
+
     if ((name === 'ollama' || name === 'vllm' || name === 'llama-server') && !provider.base_url) {
       issues.push({
         severity: 'error',

@@ -6,13 +6,14 @@
 import { useState, type JSX } from 'react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { useParams, useNavigate } from '@tanstack/react-router'
-import type { TaskStatus, TaskWire } from '@rivetos/types'
+import type { ApprovalDecision, SessionId, TaskStatus, TaskWire } from '@rivetos/types'
 import { GatewayError } from '@rivetos/gateway-client'
 import { useConnection } from '../stores/connection.js'
 import { NotConnected, useGatewayReady } from '../components/not-connected.js'
 import { Select } from '../components/select.js'
 import { useConfirmDialog } from '../components/confirm-dialog.js'
 import { criteriaFromLines, taskAgentOptions, toTaskSelectOptions } from '../lib/task-create.js'
+import { HarnessApprovalCard } from '../components/harness-approval-card.js'
 
 const STATUS_COLORS: Record<TaskStatus, string> = {
   queued: 'text-ink-dim',
@@ -279,10 +280,17 @@ export function TaskDetailPage(): JSX.Element {
     queryFn: ({ signal }) => useConnection.getState().gateway.getTask(taskId, signal),
     retry: (count, error) =>
       !(error instanceof GatewayError && [400, 404].includes(error.status)) && count < 3,
-    refetchInterval: (query) =>
-      query.state.error instanceof GatewayError && [400, 404].includes(query.state.error.status)
-        ? false
-        : 10_000,
+    refetchInterval: (query) => {
+      if (
+        query.state.error instanceof GatewayError &&
+        [400, 404].includes(query.state.error.status)
+      )
+        return false
+      const status = query.state.data?.task.status
+      // A parked permission prompt denies at 60s. Poll inside that window.
+      if (status && !['completed', 'failed', 'killed', 'timeout'].includes(status)) return 2_000
+      return 10_000
+    },
     enabled: connected,
   })
   if (!connected) return <NotConnected />
@@ -323,6 +331,27 @@ export function TaskDetailPage(): JSX.Element {
       {killDialog.element}
       <div className="mb-1 font-mono text-[11px] text-ink-dim">{t.id}</div>
       <h1 className="mb-4 text-lg">{t.goal}</h1>
+
+      {t.pendingApprovals && t.pendingApprovals.length > 0 && (
+        <HarnessApprovalCard
+          allowSession={false}
+          pending={t.pendingApprovals.map((approval) => ({
+            type: 'approval-request' as const,
+            sessionId: `claude-code:${t.id}` as SessionId,
+            requestId: approval.requestId,
+            name: approval.name,
+            input: approval.input,
+            toolCallId: approval.toolCallId,
+          }))}
+          disabled={acting}
+          onDecide={(requestId, decision: ApprovalDecision) => {
+            if (decision !== 'allow' && decision !== 'deny') return
+            void act(() =>
+              useConnection.getState().gateway.resolveTaskApproval(taskId, requestId, decision),
+            )
+          }}
+        />
+      )}
 
       <div className="mb-6 grid grid-cols-2 gap-x-8 gap-y-1 rounded border border-line bg-panel p-4 font-mono text-xs sm:grid-cols-3">
         <Cell k="status" v={t.status} className={STATUS_COLORS[t.status]} />

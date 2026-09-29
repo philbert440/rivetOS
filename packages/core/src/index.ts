@@ -82,6 +82,10 @@ export { TaskBackedSubagentManager } from './domain/task/subagent-task-manager.j
 export { createTaskCompletionWaiter } from './domain/task/completion-waiter.js'
 export { createTaskDoneBroadcaster } from './domain/task/task-done-broadcaster.js'
 export { createTaskApiRoute } from './domain/task/task-api.js'
+export {
+  TaskPermissionBroker,
+  TASK_PERMISSION_TIMEOUT_MS,
+} from './domain/task/permission-broker.js'
 export { guardTaskChain, readChainFields, MAX_CHAIN_DEPTH } from './domain/task/chain-guard.js'
 export type { ChainGuardResult, ChainStamp } from './domain/task/chain-guard.js'
 export {

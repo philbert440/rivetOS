@@ -375,11 +375,13 @@ providers:
     model: claude-opus-4-7 # optional — defaults to whatever the CLI picks
 ```
 
-| Key          | Type     | Default  | Description                      |
-| ------------ | -------- | -------- | -------------------------------- |
-| `binary`     | string   | `claude` | Path to the `claude` binary.     |
-| `model`      | string   | —        | Model alias to pass to the CLI.  |
-| `extra_args` | string[] | `[]`     | Additional CLI flags (advanced). |
+| Key                   | Type           | Default   | Description                                                                                                                                                                                                                                                                                  |
+| --------------------- | -------------- | --------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `binary`              | string         | `claude`  | Path to the `claude` binary.                                                                                                                                                                                                                                                                 |
+| `model`               | string         | —         | Model alias to pass to the CLI.                                                                                                                                                                                                                                                              |
+| `extra_args`          | string[]       | `[]`      | Additional CLI flags (advanced).                                                                                                                                                                                                                                                             |
+| `permission_mode`     | string         | `default` | `--permission-mode`. The provider code default is `default` (Claude Code's manual mode). `dontAsk` elsewhere in this document is the grok-cli default and matches that provider's code; it is not this provider's default.                                                                  |
+| `permission_prompts`  | `ui` \| `none` | unset     | Harness-session spawns only. Unset passes no `--permission-prompts` flag, so the CLI invocation is unchanged. `none` passes `--permission-prompts none` and the CLI denies a prompt immediately instead of waiting out its decision timeout. `ui` passes `--permission-prompts host` and `--permission-prompt-tool mcp__rivetos__request_permission`. The embedded bridge parks the call, emits an approval-request, and returns the decision. Answer from the task page or `POST /api/tasks/:id/approvals/:requestId` with `{"decision":"allow"\|"deny"}`. Unanswered prompts deny after 60s; the outcome is appended to the row at `spec.permissionDecisions`. `GET /api/tasks/:id/wait?onApproval=return` yields the parked prompt instead of blocking until the task ends. The default wait does not. |
 
 **Auth:** `claude login` (via the CLI itself). RivetOS does not handle the OAuth flow; the CLI does.
 

@@ -78,12 +78,46 @@ export interface TaskSpec {
   session: SessionContext // session_key = `task:${taskId}`
 }
 
+/**
+ * One settled permission prompt, appended to the task row
+ * (`spec.permissionDecisions`). `timeout` is a denial: nobody answered
+ * before the bounded window.
+ */
+export interface TaskPermissionDecision {
+  requestId: string
+  tool: string
+  decision: 'allow' | 'deny' | 'timeout'
+  /** Epoch ms. */
+  at: number
+  message?: string
+}
+
 export type TaskEvent = { ts: number } & (
   | { type: 'den'; event: AgentEventBody }
   | { type: 'turn.start'; turn: number }
   | { type: 'turn.end'; turn: number; usage: TaskUsage; harnessSessionId?: string }
   | { type: 'cost'; deltaUsd: number; totalUsd: number }
   | { type: 'log'; level: 'debug' | 'info' | 'warn' | 'error'; message: string }
+  | {
+      /**
+       * A headless CLI permission prompt is parked. Same fields as a harness
+       * `approval-request` (requestId, name, input, toolCallId) plus the task
+       * the prompt belongs to. Fail-closed: no answer before the window
+       * denies.
+       */
+      type: 'approval-request'
+      taskId: string
+      requestId: string
+      name: string
+      input: unknown
+      toolCallId?: string
+    }
+  | {
+      type: 'approval-resolved'
+      taskId: string
+      requestId: string
+      decision: TaskPermissionDecision['decision']
+    }
 )
 
 export type TaskVerdict = 'completed' | 'failed' | 'killed' | 'timeout' | 'budget-exceeded'

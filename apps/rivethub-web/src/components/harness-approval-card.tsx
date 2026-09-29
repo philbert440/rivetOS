@@ -17,6 +17,11 @@ import { humanToolTitle } from '../lib/tool-titles.js'
 export function HarnessApprovalCard(props: {
   pending: PendingApproval[]
   disabled?: boolean
+  /**
+   * Offer "Allow for session". Task prompts pass false: this card cannot
+   * mint a CLI session rule, and a no-op click would sit until the deny window.
+   */
+  allowSession?: boolean
   onDecide: (requestId: string, decision: ApprovalDecision) => void
 }): JSX.Element | null {
   if (props.pending.length === 0) return null
@@ -38,7 +43,7 @@ export function HarnessApprovalCard(props: {
 
   const choices: { label: string; decision: ApprovalDecision; accent: boolean }[] = [
     { label: 'Allow', decision: 'allow', accent: true },
-    ...(supportsSessionApproval(scrapedOptions)
+    ...(props.allowSession !== false && supportsSessionApproval(scrapedOptions)
       ? [{ label: 'Allow for session', decision: 'allow-session' as const, accent: false }]
       : []),
     { label: 'Deny', decision: 'deny', accent: false },

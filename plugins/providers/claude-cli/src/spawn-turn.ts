@@ -21,6 +21,8 @@
 
 import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process'
 
+import { permissionPromptToolId } from './permission-prompt.js'
+
 // ---------------------------------------------------------------------------
 // Config
 // ---------------------------------------------------------------------------
@@ -141,6 +143,13 @@ export interface SpawnTurnFlags {
   effort: ClaudeCliEffort
   /** Permission mode passed via --permission-mode. */
   permissionMode: string
+  /**
+   * Who answers a headless permission prompt.
+   * Unset: no flag (byte-identical to a spawn that predates this).
+   * `none`: `--permission-prompts none` — the CLI denies immediately.
+   * `ui`: `--permission-prompts host` plus the embedded prompt tool.
+   */
+  permissionPrompts?: 'ui' | 'none'
   /** When true, append --exclude-dynamic-system-prompt-sections. */
   excludeDynamicSections: boolean
   /** System text for --append-system-prompt ('' = omit the flag). */
@@ -171,6 +180,15 @@ export function buildArgs(flags: SpawnTurnFlags): string[] {
     '--tools',
     flags.toolsArg,
   ]
+
+  // Unset stays off this block. `none` is the fast deny; `ui` hands the
+  // prompt to the embedded MCP tool (the CLI's "host" target).
+  if (flags.permissionPrompts === 'none') {
+    args.push('--permission-prompts', 'none')
+  } else if (flags.permissionPrompts === 'ui') {
+    args.push('--permission-prompts', 'host')
+    args.push('--permission-prompt-tool', permissionPromptToolId())
+  }
 
   if (flags.modelId) {
     args.push('--model', flags.modelId)
