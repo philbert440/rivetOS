@@ -270,6 +270,7 @@ export const KNOWN_PROVIDERS: Partial<Record<string, Set<string>>> = {
     'name',
     'context_window',
     'max_output_tokens',
+    'allowed_api_key_sources',
   ]),
   xai: new Set([
     'model',

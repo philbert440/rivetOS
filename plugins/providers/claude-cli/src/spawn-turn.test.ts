@@ -16,8 +16,10 @@ import path from 'node:path'
 import { PassThrough } from 'node:stream'
 import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import {
+  apiKeySourceAllowed,
   ClaudeCliTimeoutError,
   KILL_GRACE_MS,
+  parseAllowedApiKeySources,
   spawnClaudeTurn,
 } from './spawn-turn.js'
 
@@ -217,5 +219,37 @@ describe('spawnClaudeTurn timeout_ms', () => {
     expect(sent).toEqual(['SIGTERM', 'SIGKILL'])
     simulateExit(child, null, 'SIGKILL')
     await rejected
+  })
+})
+
+describe('apiKeySourceAllowed', () => {
+  it('allows a missing source and "none" with no list', () => {
+    expect(apiKeySourceAllowed(undefined, undefined)).toBe(true)
+    expect(apiKeySourceAllowed('', undefined)).toBe(true)
+    expect(apiKeySourceAllowed('none', undefined)).toBe(true)
+    expect(apiKeySourceAllowed('apiKeyHelper', undefined)).toBe(false)
+    expect(apiKeySourceAllowed('apiKeyHelper', [])).toBe(false)
+  })
+
+  it('allows only an exact listed name', () => {
+    expect(apiKeySourceAllowed('apiKeyHelper', ['apiKeyHelper'])).toBe(true)
+    expect(apiKeySourceAllowed('other', ['apiKeyHelper'])).toBe(false)
+    expect(apiKeySourceAllowed('none', ['other'])).toBe(true)
+  })
+})
+
+describe('parseAllowedApiKeySources', () => {
+  it('returns the list when every entry is a non-empty string', () => {
+    expect(parseAllowedApiKeySources(undefined)).toBeUndefined()
+    expect(parseAllowedApiKeySources(null)).toBeUndefined()
+    expect(parseAllowedApiKeySources(['apiKeyHelper'])).toEqual(['apiKeyHelper'])
+    expect(parseAllowedApiKeySources([])).toEqual([])
+  })
+
+  it('returns undefined on a bad shape so the gate stays closed', () => {
+    expect(parseAllowedApiKeySources('apiKeyHelper')).toBeUndefined()
+    expect(parseAllowedApiKeySources([''])).toBeUndefined()
+    expect(parseAllowedApiKeySources([1])).toBeUndefined()
+    expect(parseAllowedApiKeySources(['apiKeyHelper', ''])).toBeUndefined()
   })
 })

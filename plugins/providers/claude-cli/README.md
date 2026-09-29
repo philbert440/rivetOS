@@ -32,7 +32,8 @@ claude -p \
 ```
 
 - `ANTHROPIC_API_KEY` is **explicitly scrubbed from the child env** so the CLI
-  falls back to its OAuth keychain (the whole point).
+  falls back to its OAuth keychain (the whole point). `ANTHROPIC_AUTH_TOKEN`
+  is scrubbed with it. `allowed_api_key_sources` does not turn that scrub off.
 - Messages are serialized as a single `{"type":"user","message":...}` line on
   stdin — the CLI handles the conversation from there.
 - `stream_event` JSON lines on stdout are translated into `LLMChunk`s.
@@ -86,4 +87,12 @@ providers:
     context_window: 200000
     max_output_tokens: 32000
     timeout_ms: 0 # optional; 0 = no timeout. When > 0, SIGTERM then SIGKILL after 3s
+    # allowed_api_key_sources: ["apiKeyHelper"]  # optional; unset = none only
 ```
+
+`allowed_api_key_sources` names extra CLI `apiKeySource` values to accept on
+system init. Leave it unset unless Claude Code authenticates through an
+Anthropic-compatible proxy via its own `apiKeyHelper`. The default kills any
+reported source other than `none`, because subscription OAuth is the
+sanctioned pattern and API-key auth bills the console. The list is an exact
+match against the string in the `unexpected apiKeySource` error.

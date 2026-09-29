@@ -40,6 +40,7 @@ import type { Tool } from '@rivetos/types'
 import { loadUsersRegistry, userDbsFromRegistry } from '@rivetos/types'
 import { embedMcpServerForTurn, type EmbeddedMcpHandle } from './mcp-bridge.js'
 import {
+  apiKeySourceAllowed,
   buildArgs,
   spawnClaudeTurn,
   type ClaudeCliEffort,
@@ -84,6 +85,9 @@ export interface ClaudeCliModelConfig {
   agentId: string | undefined
   /** Per-spawn timeout in ms. 0 (default) = no timeout. */
   timeoutMs?: number
+  /** Extra `apiKeySource` values to accept besides missing and `"none"`.
+   *  Unset rejects every other source. Does not disable the env scrub. */
+  allowedApiKeySources?: readonly string[]
 }
 
 // ---------------------------------------------------------------------------
@@ -539,6 +543,7 @@ export class ClaudeCliModel implements LanguageModelV3 {
     const log = this.log
     const providerId = this.provider
     const modelId = this.modelId
+    const allowedApiKeySources = this.config.allowedApiKeySources
     const startedAt = Date.now()
 
     // Build the stream. Each text-delta gets wrapped in text-start/text-end
@@ -567,7 +572,7 @@ export class ClaudeCliModel implements LanguageModelV3 {
             if (event.type === 'system') {
               lastApiKeySource = (event as CliSystemInit).apiKeySource
               log.debug('system.init', { apiKeySource: lastApiKeySource })
-              if (lastApiKeySource && lastApiKeySource !== 'none') {
+              if (!apiKeySourceAllowed(lastApiKeySource, allowedApiKeySources)) {
                 killProc()
                 throw new APICallError({
                   message:
