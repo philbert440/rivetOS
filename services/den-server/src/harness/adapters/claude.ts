@@ -120,6 +120,22 @@ function tokensLabel(n: number): string {
 }
 
 /**
+ * A dedicated subagent file has `isSidechain: true` on every user and
+ * assistant line. The parent transcript uses the same flag for lines that
+ * must NOT appear in the main conversation, so those stay skipped unless
+ * the file is sidechain all the way through.
+ */
+function claudeTranscriptIsSidechain(lines: Record<string, unknown>[]): boolean {
+  let saw = false
+  for (const obj of lines) {
+    if (obj.type !== 'user' && obj.type !== 'assistant') continue
+    saw = true
+    if (obj.isSidechain !== true) return false
+  }
+  return saw
+}
+
+/**
  * Fold Claude Code store lines into LOGICAL turns. One agent turn spans many
  * store lines — one 'assistant' line per committed content block, with
  * 'user'-role tool_result lines interleaved. Only a REAL user text message
@@ -129,6 +145,7 @@ function tokensLabel(n: number): string {
  * watched-live one look identical).
  */
 export function claudeTurnsFromLines(lines: Record<string, unknown>[]): HarnessTurn[] {
+  const includeSidechain = claudeTranscriptIsSidechain(lines)
   const turns: HarnessTurn[] = []
   // tool_use id → entry on the current turn; results arrive on later lines
   let toolsById = new Map<string, HarnessTranscriptTool>()
@@ -166,7 +183,12 @@ export function claudeTurnsFromLines(lines: Record<string, unknown>[]): HarnessT
   }
 
   for (const obj of lines) {
-    if (obj.isSidechain === true || obj.isMeta === true || obj.isCompactSummary === true) continue
+    if (
+      (obj.isSidechain === true && !includeSidechain) ||
+      obj.isMeta === true ||
+      obj.isCompactSummary === true
+    )
+      continue
     if (obj.type === 'system' && obj.subtype === 'compact_boundary') {
       // Context compaction. Between turns (manual /compact, or auto at the
       // start of a turn): close the finished turn and drop a complete marker

@@ -126,7 +126,8 @@ export class TermSpawnError extends Error {
       | 'tmux-unavailable'
       | 'herdr'
       | 'cwd-missing'
-      | 'cwd-live',
+      | 'cwd-live'
+      | 'not-resumable',
     message: string,
   ) {
     super(message)
@@ -1995,6 +1996,15 @@ export function createTermManager(config: DenConfig, deps: TermManagerDeps): Ter
       // lookup would return a directory.
       const resumeNative =
         resume || (session && deps.sessionExists?.(key, session) ? session : undefined)
+      // Claude `--resume` takes a session UUID. A subagent transcript's id is
+      // the agent id (hex, or a name-hash), and passing it here starts the
+      // wrong process. The transcript still opens through the store reader.
+      if (key === 'claude' && resumeNative && !UUID_RE.test(resumeNative)) {
+        throw new TermSpawnError(
+          'not-resumable',
+          `claude session ${resumeNative} is a subagent transcript and cannot be resumed`,
+        )
+      }
       const invalidRecorded = (id: string, raw: string): void => {
         const mark = `${key}:${id}\0${raw}`
         if (loggedInvalidCwd.has(mark)) return

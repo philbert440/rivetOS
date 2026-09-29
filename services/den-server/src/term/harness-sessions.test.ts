@@ -193,6 +193,156 @@ describe('listHarnessSessions', () => {
     expect(await describeClaudeSession('')).toBeUndefined()
   })
 
+  it('nests Claude subagent transcripts under the spawning session', async () => {
+    const base = mkdtempSync(join(tmpdir(), 'claude-sub-'))
+    dirs.push(base)
+    const slug = join(base, 'projects', '-home-work')
+    const parent = '11111111-1111-4111-8111-111111111111'
+    const other = '22222222-2222-4222-8222-222222222222'
+    const agent = 'a906621c1fcf0c74a'
+    const legacy = 'aside_question-38babac48c0a60a1'
+    const workflow = 'wfagent1'
+    mkdirSync(join(slug, parent, 'subagents', 'workflows', 'run-1'), { recursive: true })
+    mkdirSync(join(slug, other), { recursive: true })
+    const parentFile = join(slug, `${parent}.jsonl`)
+    const otherFile = join(slug, `${other}.jsonl`)
+    const agentFile = join(slug, parent, 'subagents', `agent-${agent}.jsonl`)
+    const legacyFile = join(slug, parent, `agent-${legacy}.jsonl`)
+    const wfFile = join(slug, parent, 'subagents', 'workflows', 'run-1', `agent-${workflow}.jsonl`)
+    writeFileSync(
+      parentFile,
+      JSON.stringify({ type: 'user', message: { content: 'parent task' } }) + '\n',
+    )
+    writeFileSync(
+      otherFile,
+      JSON.stringify({ type: 'user', message: { content: 'other task' } }) + '\n',
+    )
+    writeFileSync(
+      agentFile,
+      [
+        JSON.stringify({
+          type: 'user',
+          isSidechain: true,
+          agentId: agent,
+          sessionId: parent,
+          message: { role: 'user', content: 'look through the repo' },
+        }),
+        JSON.stringify({
+          type: 'assistant',
+          isSidechain: true,
+          agentId: agent,
+          message: {
+            role: 'assistant',
+            model: 'claude-sonnet-4-6',
+            content: [{ type: 'text', text: 'found it' }],
+          },
+        }),
+      ].join('\n') + '\n',
+    )
+    writeFileSync(
+      join(slug, parent, 'subagents', `agent-${agent}.meta.json`),
+      JSON.stringify({ agentType: 'general-purpose', model: 'claude-sonnet-4-6' }) + '\n',
+    )
+    // A jsonl that is not an agent transcript must not become its own row.
+    writeFileSync(join(slug, parent, 'subagents', 'not-an-agent.jsonl'), '{}\n')
+    writeFileSync(
+      legacyFile,
+      [
+        JSON.stringify({
+          type: 'user',
+          isSidechain: true,
+          agentType: 'Explore',
+          message: { role: 'user', content: 'explore the tree' },
+        }),
+        JSON.stringify({
+          type: 'assistant',
+          isSidechain: true,
+          message: {
+            role: 'assistant',
+            model: 'claude-haiku-4-5',
+            content: [{ type: 'text', text: 'explored' }],
+          },
+        }),
+      ].join('\n') + '\n',
+    )
+    writeFileSync(
+      wfFile,
+      [
+        JSON.stringify({
+          type: 'user',
+          isSidechain: true,
+          subagent_type: 'Plan',
+          message: { role: 'user', content: 'draft a plan' },
+        }),
+        JSON.stringify({
+          type: 'assistant',
+          isSidechain: true,
+          message: {
+            role: 'assistant',
+            model: 'claude-opus-4-6',
+            content: [{ type: 'text', text: 'planned' }],
+          },
+        }),
+      ].join('\n') + '\n',
+    )
+    utimesSync(parentFile, new Date(1_000), new Date(1_000))
+    utimesSync(otherFile, new Date(5_000), new Date(5_000))
+    utimesSync(wfFile, new Date(7_000), new Date(7_000))
+    utimesSync(legacyFile, new Date(8_000), new Date(8_000))
+    utimesSync(agentFile, new Date(9_000), new Date(9_000))
+    process.env.CLAUDE_CONFIG_DIR = base
+
+    const sessions = await listHarnessSessions(['claude'])
+    const byId = new Map(sessions.map((s) => [s.id, s]))
+    expect(byId.get(agent)).toMatchObject({
+      command: 'claude',
+      parentSessionId: parent,
+      agentName: 'general-purpose',
+      model: 'claude-sonnet-4-6',
+      title: 'look through the repo',
+    })
+    expect(byId.get(legacy)).toMatchObject({
+      parentSessionId: parent,
+      agentName: 'Explore',
+      model: 'claude-haiku-4-5',
+      title: 'explore the tree',
+    })
+    expect(byId.get(workflow)).toMatchObject({
+      parentSessionId: parent,
+      agentName: 'Plan',
+      model: 'claude-opus-4-6',
+      title: 'draft a plan',
+    })
+    expect(byId.get(parent)?.parentSessionId).toBeUndefined()
+    expect(byId.has('not-an-agent')).toBe(false)
+
+    const described = await describeClaudeSession(agent)
+    expect(described).toMatchObject({
+      parentSessionId: parent,
+      agentName: 'general-purpose',
+      model: 'claude-sonnet-4-6',
+      title: 'look through the repo',
+      createdAt: byId.get(agent)?.createdAt,
+      updatedAt: byId.get(agent)?.updatedAt,
+    })
+    expect(harnessSessionExists('claude', parent)).toBe(true)
+    expect(harnessSessionExists('claude', agent)).toBe(false)
+    expect(harnessSessionExists('claude', legacy)).toBe(false)
+    expect(harnessSessionExists('claude', workflow)).toBe(false)
+
+    const transcript = await readHarnessTranscript(`claude-code:${agent}`)
+    expect(transcript.command).toBe('claude')
+    expect(transcript.turns.map((t) => t.text)).toEqual(['look through the repo', 'found it'])
+
+    // Cap at 1: the newest row is the subagent. The parent is older than
+    // `other` and would otherwise be dropped, leaving the child un-nested.
+    const capped = await listHarnessSessions(['claude'], 1)
+    const cappedIds = capped.map((s) => s.id)
+    expect(cappedIds).toContain(agent)
+    expect(cappedIds).toContain(parent)
+    expect(cappedIds).not.toContain(other)
+  })
+
   it('lists grok sessions from summary.json, merged + sorted with claude', async () => {
     fakeClaudeStore() // one claude session at mtime 2000
     const grokBase = mkdtempSync(join(tmpdir(), 'grok-store-'))

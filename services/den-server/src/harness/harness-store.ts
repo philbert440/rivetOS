@@ -132,12 +132,12 @@ export function createHarnessStore<N extends HarnessStoreName>(name: N): StoreBy
       return { turns: t.turns }
     },
   }
-  if (name !== 'claude') {
-    // Session DIR (grok/kimi) or sqlite row (hermes), not the later
-    // summary/state file — a describable session is a strict subset of an
-    // existing one.
-    host.exists = (nativeId) => harnessSessionExists(roster, nativeId)
-  }
+  // `exists` is "the CLI can resume this id". For grok that is the session
+  // DIR, which predates summary.json, so a describable session is a subset.
+  // For claude it is the top-level `<uuid>.jsonl` only: a subagent transcript
+  // is describable and readable, but `claude --resume` does not take its
+  // agent id.
+  host.exists = (nativeId) => harnessSessionExists(roster, nativeId)
   if (name === 'opencode') {
     ;(host as OpencodeStoreHost).newestAfter = newestOpencodeSessionAfter
   }

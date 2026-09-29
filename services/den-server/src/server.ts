@@ -1809,7 +1809,10 @@ export function createDenServer(config: DenConfig, opts: DenServerOptions = {}):
             if (e instanceof TermSpawnError)
               return json(
                 res,
-                e.code === 'cap' || e.code === 'cwd-missing' || e.code === 'cwd-live'
+                e.code === 'cap' ||
+                  e.code === 'cwd-missing' ||
+                  e.code === 'cwd-live' ||
+                  e.code === 'not-resumable'
                   ? 409
                   : e.code === 'user-mismatch'
                     ? 403

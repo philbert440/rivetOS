@@ -449,6 +449,19 @@ describe('term manager', () => {
     reopen.manager.spawn('claude', 80, 24, '', uuid, uuid)
     expect(reopen.spawns[0].argv).toEqual(['claude', '--resume', uuid])
 
+    // A subagent transcript id is not a Claude session. `--resume` would
+    // start the wrong process; the store reader opens the transcript instead.
+    const agent = makeManager({})
+    const resumeAgent = (): void => {
+      agent.manager.spawn('claude', 80, 24, '', 'a906621c1fcf0c74a', 'a906621c1fcf0c74a')
+    }
+    expect(resumeAgent).toThrow(TermSpawnError)
+    try {
+      resumeAgent()
+    } catch (err) {
+      expect((err as TermSpawnError).code).toBe('not-resumable')
+    }
+
     // grok gets the same flags (it also has --session-id/--resume). The
     // session/resume flag appends AFTER the roster's base argv, which now
     // carries the auto-approve flags (--permission-mode bypassPermissions).

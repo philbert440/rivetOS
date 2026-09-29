@@ -250,6 +250,20 @@ describe('default view setting', () => {
   })
   const row = (key: string) => rows.find((r) => r.key === key)
 
+  it('opens a nested claude transcript in chat even when the default is terminal', () => {
+    useConversationView.setState({ defaultView: 'terminal' })
+    const nested: ChatItem = {
+      key: 'claude-code:a906621c1fcf0c74a',
+      kind: 'harness',
+      harnessId: 'claude-code',
+      command: 'claude',
+      title: 'look through the repo',
+      updatedAt: 1,
+      parentKey: 'claude-code:11111111-1111-4111-8111-111111111111',
+    }
+    expect(view(nested, 'success', 'node::nested')).toBe('<span>chat</span>')
+  })
+
   it('opens new and never-switched conversations on the chosen default', () => {
     useConversationView.setState({ defaultView: 'terminal' })
     expect(view(row('draft'))).toBe('<span>terminal</span>')

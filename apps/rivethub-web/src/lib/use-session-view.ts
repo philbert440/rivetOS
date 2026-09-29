@@ -14,14 +14,21 @@ import { useConversationView } from '../stores/conversation-view.js'
  * Precedence: this thread's explicit choice > terminal-only session > default. */
 export function useSessionView(
   key: string,
-  item: Pick<ChatItem, 'kind' | 'command' | 'harnessId'> | undefined,
+  item: Pick<ChatItem, 'kind' | 'command' | 'harnessId' | 'parentKey'> | undefined,
   descriptors: HarnessDescriptor[] | undefined,
   status: HarnessRegistryStatus,
 ): { mode: SessionViewMode; setMode: (mode: SessionViewMode) => void } {
   const [selection, setSelection] = useState<{ key: string; mode: SessionViewMode }>()
   const defaultView = useConversationView((s) => s.defaultView)
-  const fallback =
-    !item || sessionOpensOnTerminal(item, descriptors, status) ? 'terminal' : defaultView
+  // A Claude subagent row is a transcript, not a session `claude --resume`
+  // can open. Chat shows that transcript; terminal would spawn with the
+  // agent id. An explicit per-thread choice still wins.
+  const nestedClaude = item?.command === 'claude' && Boolean(item.parentKey)
+  const fallback = nestedClaude
+    ? 'chat'
+    : !item || sessionOpensOnTerminal(item, descriptors, status)
+      ? 'terminal'
+      : defaultView
   const mode =
     (selection?.key === key ? selection.mode : undefined) ?? getSessionMode(key, fallback)
 
