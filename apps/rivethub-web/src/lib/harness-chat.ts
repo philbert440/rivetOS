@@ -94,6 +94,11 @@ export interface ChatItem {
    * headless plan sessions, and orphans whose parent is not listed.
    */
   parentKey?: string
+  /**
+   * Subagent type (`general-purpose`, …). Nested drawer rows show this
+   * instead of the session title.
+   */
+  agentName?: string
 }
 
 /** Native half of a canonical id; undefined when it doesn't parse. */
@@ -282,7 +287,8 @@ export function chatItems(input: {
       sessionId: summary.sessionId,
       harnessId: summary.harnessId,
       command: legacy?.command ?? ROSTER_COMMAND[summary.harnessId],
-      model: summary.model,
+      model: summary.model ?? legacy?.model,
+      agentName: summary.agentName ?? legacy?.agentName,
       transport: summary.transport,
       effort: summary.effort,
       status: summary.status,
@@ -298,6 +304,8 @@ export function chatItems(input: {
       kind: 'legacy',
       title: row.title,
       command: row.command,
+      model: row.model,
+      agentName: row.agentName,
       updatedAt: row.updatedAt,
       parentKey: row.parentSessionId,
     })
@@ -331,6 +339,7 @@ export function chatItemFromSummary(summary: HarnessSessionSummary): ChatItem | 
     harnessId: summary.harnessId,
     command: ROSTER_COMMAND[summary.harnessId],
     model: summary.model,
+    agentName: summary.agentName,
     transport: summary.transport,
     effort: summary.effort,
     status: summary.status,

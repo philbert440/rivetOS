@@ -264,11 +264,13 @@ describe('identity + canonicalization', () => {
           title: 'review the store',
           updatedAt: 1_700_000_000_000,
           parentSessionId: UUID2,
+          agentName: 'general-purpose',
         },
       ],
     })
     const [summary] = await driver.listSessions()
     expect(summary?.parentSessionId).toBe(`grok-build:${UUID2}`)
+    expect(summary?.agentName).toBe('general-purpose')
   })
 
   it('lists store rows as canonical summaries', async () => {

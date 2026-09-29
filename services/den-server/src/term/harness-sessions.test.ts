@@ -285,6 +285,8 @@ describe('listHarnessSessions', () => {
       info: { id: child },
       session_summary: 'review the store',
       session_kind: 'subagent',
+      agent_name: 'general-purpose',
+      current_model_id: 'grok-4.7',
       updated_at: '2026-07-08T00:00:00.000Z',
     })
     write(fork, {
@@ -309,6 +311,8 @@ describe('listHarnessSessions', () => {
     const byId = new Map(listed.map((row) => [row.id, row]))
     expect(byId.get(headless)?.parentSessionId).toBeUndefined()
     expect(byId.get(child)?.parentSessionId).toBe(parent)
+    expect(byId.get(child)?.agentName).toBe('general-purpose')
+    expect(byId.get(child)?.model).toBe('grok-4.7')
     expect(byId.has(parent)).toBe(true)
     expect(byId.has(fork)).toBe(false)
     expect(await describeGrokSession(child)).toEqual(byId.get(child))

@@ -91,6 +91,8 @@ export interface HarnessSession {
    * drawer does not nest them.
    */
   parentSessionId?: string
+  /** Subagent type from the store (`general-purpose`, …). Nested rows label with this. */
+  agentName?: string
 }
 
 /** ~/.claude/projects (respects CLAUDE_CONFIG_DIR like the CLI does). */
@@ -393,6 +395,8 @@ async function readGrokSummary(
     info?: { id?: string }
     session_summary?: string
     session_kind?: string
+    agent_name?: string
+    current_model_id?: string
     created_at?: string
     updated_at?: string
   }
@@ -411,6 +415,10 @@ async function readGrokSummary(
     updatedAt: Number.isFinite(updated) ? updated : 0,
   }
   if (Number.isFinite(created)) row.createdAt = created
+  const agent = typeof s.agent_name === 'string' ? s.agent_name.trim().slice(0, 64) : ''
+  if (agent) row.agentName = agent
+  const model = typeof s.current_model_id === 'string' ? s.current_model_id.trim().slice(0, 80) : ''
+  if (model) row.model = model
   return { row, nested: isNestedGrokKind(s.session_kind) }
 }
 

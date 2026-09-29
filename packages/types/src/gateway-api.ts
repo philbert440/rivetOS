@@ -850,6 +850,10 @@ export interface HarnessSession {
    * SessionId (the control-plane summary carries that form).
    */
   parentSessionId?: string
+  /** Subagent type, when this row is a nested session. */
+  agentName?: string
+  /** Model id recorded on the store row, when there is one. */
+  model?: string
 }
 
 export interface HarnessSessionsResponse {

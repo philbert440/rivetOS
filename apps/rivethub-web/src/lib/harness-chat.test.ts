@@ -690,11 +690,15 @@ describe('chatItems parent key', () => {
     const items = chatItems({
       drafts: [],
       harnessSessions: [
-        summary(UUID_A, { parentSessionId: `claude-code:${UUID_B}` as SessionId }),
+        summary(UUID_A, {
+          parentSessionId: `claude-code:${UUID_B}` as SessionId,
+          agentName: 'general-purpose',
+        }),
       ],
       legacySessions: [],
     })
     expect(items[0]?.parentKey).toBe(`claude-code:${UUID_B}`)
+    expect(items[0]?.agentName).toBe('general-purpose')
   })
 
   it('canonicalizes a legacy native parent when the plane row omitted it', () => {

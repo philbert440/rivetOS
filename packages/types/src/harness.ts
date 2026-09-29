@@ -372,6 +372,11 @@ export type SessionSummary = {
    * nests a row under this id only when that session is listed too.
    */
   parentSessionId?: SessionId
+  /**
+   * Subagent type (`general-purpose`, `explore`, …). The conversation list
+   * uses it as the nested row's label. Absent on primary sessions.
+   */
+  agentName?: string
 }
 
 export type StartSessionOpts = {

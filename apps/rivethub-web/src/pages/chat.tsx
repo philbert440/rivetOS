@@ -687,6 +687,8 @@ function DrawerItem(props: {
   childCount?: number
   expanded?: boolean
   onToggleNest?: () => void
+  /** Child of another conversation. Label is the subagent type, with an elbow. */
+  nested?: boolean
 }): JSX.Element {
   const hubBase = useConnection((s) => s.baseUrl)
   const storeBase = props.item.pinNodeBaseUrl ?? hubBase
@@ -736,6 +738,11 @@ function DrawerItem(props: {
   }
 
   const kids = props.childCount ?? 0
+  const typeLabel = props.item.agentName?.trim()
+  // Nested rows read as the subagent type (`general-purpose`), not a second
+  // conversation title. A custom rename still wins.
+  const showTypePill = props.nested === true && !customName && !!typeLabel
+  const visibleLabel = showTypePill ? typeLabel : (customName ?? props.item.title)
   return (
     <div
       className={`group mb-1 flex items-center rounded ${
@@ -759,14 +766,27 @@ function DrawerItem(props: {
       <button
         onClick={props.onSelect}
         title={
-          props.item.sessionId ??
-          (props.item.command ? `${props.item.command} · ${props.item.key}` : props.item.key)
+          showTypePill
+            ? `${props.item.title} · ${props.item.sessionId ?? props.item.key}`
+            : (props.item.sessionId ??
+              (props.item.command ? `${props.item.command} · ${props.item.key}` : props.item.key))
         }
         className={`flex min-w-0 flex-1 items-center gap-2 px-3 py-2 text-left text-xs ${
           props.active ? 'text-em' : 'text-ink-dim group-hover:text-ink'
         }`}
       >
-        {/* same accent as the Agents rail dot (preset hex, else harness) */}
+        {props.nested && (
+          <span className="w-3 shrink-0 text-center font-mono text-[11px] text-ink-dim" aria-hidden>
+            └
+          </span>
+        )}
+        {showTypePill && (
+          <span className="shrink-0 rounded bg-panel-2 px-1.5 font-mono text-[10px] text-ink">
+            {typeLabel}
+          </span>
+        )}
+        {/* same accent as the Agents rail dot (preset hex, else harness).
+            On a nested row it sits after the type pill. */}
         <span
           className="size-1.5 shrink-0 rounded-full"
           style={{
@@ -778,7 +798,7 @@ function DrawerItem(props: {
           }}
           aria-hidden
         />
-        <span className="min-w-0 truncate">{customName ?? props.item.title}</span>
+        {!showTypePill && <span className="min-w-0 truncate">{visibleLabel}</span>}
         {kids > 0 && !props.expanded && (
           <span
             className="shrink-0 font-mono text-[10px] text-ink-dim"
@@ -800,8 +820,9 @@ function DrawerItem(props: {
         )}
         {(() => {
           const raw = rowPillText({ model: props.item.model }, undefined, props.item.harnessId)
-          // A pin row titled after its harness would read it twice.
-          const pill = sameLabel(customName ?? props.item.title, raw) ? '' : raw
+          // A pin row titled after its harness would read it twice. A nested
+          // type pill is not the model, so the model still shows beside it.
+          const pill = sameLabel(visibleLabel, raw) ? '' : raw
           const native = shortNativeId(props.item.key)
           const tip = props.item.harnessId
             ? `${props.item.harnessId} ${native}`
@@ -962,7 +983,7 @@ function SessionDrawer(props: {
     })
   }
 
-  const renderNodes = (nodes: ChatNode[]): JSX.Element[] =>
+  const renderNodes = (nodes: ChatNode[], depth = 0): JSX.Element[] =>
     nodes.map((node) => {
       const kids = node.children.length
       const expanded = kids > 0 && (searching || openGroups.has(node.item.key))
@@ -982,10 +1003,9 @@ function SessionDrawer(props: {
             childCount={kids}
             expanded={expanded}
             onToggleNest={kids > 0 ? () => toggleNest(it.key) : undefined}
+            nested={depth > 0}
           />
-          {expanded && (
-            <div className="ml-3 border-l border-line pl-1">{renderNodes(node.children)}</div>
-          )}
+          {expanded && <div className="pl-3">{renderNodes(node.children, depth + 1)}</div>}
         </div>
       )
     })
