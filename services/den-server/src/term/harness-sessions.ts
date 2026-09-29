@@ -85,6 +85,12 @@ export interface HarnessSession {
    *  Optional because hermes exposes nothing usable, and because an older grok
    *  store may predate the field. */
   createdAt?: number
+  /**
+   * Native id of the session that spawned this one. Grok subagent and
+   * subagent-fork rows only — headless plan sessions stay unparented so the
+   * drawer does not nest them.
+   */
+  parentSessionId?: string
 }
 
 /** ~/.claude/projects (respects CLAUDE_CONFIG_DIR like the CLI does). */
@@ -227,6 +233,143 @@ function grokSessionsDir(): string {
 }
 
 /**
+ * Grok kinds that are a conversation spawned by another session. Headless
+ * plan sessions (`session_kind: "headless"`) are not children — nesting them
+ * would hide hundreds of plan rows under whatever primary happened to share
+ * a cwd.
+ */
+function isNestedGrokKind(kind: unknown): boolean {
+  return kind === 'subagent' || kind === 'subagent_fork'
+}
+
+/**
+ * Parent links for grok subagents live only on the PARENT's `updates.jsonl`
+ * (`sessionUpdate: "subagent_spawned"`). The child summary has `session_kind`
+ * and no parent id. Those files sum to roughly a gigabyte on a busy node, so
+ * the scan is incremental: each file remembers the byte offset already
+ * parsed and only the appended tail is read the next time the drawer lists.
+ */
+interface GrokSpawnCursor {
+  size: number
+  mtimeMs: number
+  /** First unparsed byte. The incomplete trailing line still sits in the file. */
+  parsedUntil: number
+  /** Child ids whose parent pointer was read from this file. */
+  children: string[]
+}
+
+interface GrokParentIndex {
+  root: string
+  parents: Map<string, string>
+  files: Map<string, GrokSpawnCursor>
+}
+
+let grokParentIndex: GrokParentIndex | undefined
+
+/** Tests swap `GROK_HOME` per case. A stale cursor must not survive that. */
+export function resetGrokParentIndexForTest(): void {
+  grokParentIndex = undefined
+}
+
+function grokIndex(root: string): GrokParentIndex {
+  if (!grokParentIndex || grokParentIndex.root !== root) {
+    grokParentIndex = { root, parents: new Map(), files: new Map() }
+  }
+  return grokParentIndex
+}
+
+function takeGrokSpawn(line: string): { child: string; parent: string } | undefined {
+  if (!line.includes('subagent_spawned')) return undefined
+  let parsed: unknown
+  try {
+    parsed = JSON.parse(line)
+  } catch {
+    return undefined
+  }
+  const update = (parsed as { params?: { update?: Record<string, unknown> } }).params?.update
+  if (!update || update.sessionUpdate !== 'subagent_spawned') return undefined
+  const child = update.child_session_id ?? update.subagent_id
+  const parent = update.parent_session_id
+  if (typeof child !== 'string' || typeof parent !== 'string') return undefined
+  if (!child || !parent || child === parent) return undefined
+  if (child.includes('/') || child.includes('..')) return undefined
+  if (parent.includes('/') || parent.includes('..')) return undefined
+  return { child, parent }
+}
+
+async function readFileRange(file: string, start: number, end: number): Promise<Buffer> {
+  const len = end - start
+  if (len <= 0) return Buffer.alloc(0)
+  const fh = await open(file, 'r')
+  try {
+    const buf = Buffer.alloc(len)
+    let off = 0
+    while (off < len) {
+      const { bytesRead } = await fh.read(buf, off, len - off, start + off)
+      if (bytesRead === 0) break
+      off += bytesRead
+    }
+    return buf.subarray(0, off)
+  } finally {
+    await fh.close()
+  }
+}
+
+function dropSpawnFile(index: GrokParentIndex, file: string): void {
+  const prev = index.files.get(file)
+  if (!prev) return
+  for (const child of prev.children) index.parents.delete(child)
+  index.files.delete(file)
+}
+
+async function syncGrokSpawnFile(index: GrokParentIndex, file: string): Promise<void> {
+  let size: number
+  let mtimeMs: number
+  try {
+    const s = await stat(file)
+    size = s.size
+    mtimeMs = s.mtimeMs
+  } catch {
+    dropSpawnFile(index, file)
+    return
+  }
+  const prev = index.files.get(file)
+  if (prev && prev.size === size && prev.mtimeMs === mtimeMs) return
+
+  const cursor: GrokSpawnCursor = prev ?? { size: 0, mtimeMs: 0, parsedUntil: 0, children: [] }
+  if (!prev || size < prev.parsedUntil) {
+    for (const child of cursor.children) index.parents.delete(child)
+    cursor.children = []
+    cursor.parsedUntil = 0
+  }
+  const text = (await readFileRange(file, cursor.parsedUntil, size)).toString('utf8')
+  const lines = text.split('\n')
+  const incomplete = text.length > 0 && !text.endsWith('\n')
+  const remainder = incomplete ? (lines.pop() ?? '') : ''
+  for (const line of lines) {
+    const spawn = takeGrokSpawn(line)
+    if (!spawn) continue
+    index.parents.set(spawn.child, spawn.parent)
+    if (!cursor.children.includes(spawn.child)) cursor.children.push(spawn.child)
+  }
+  cursor.parsedUntil = size - Buffer.byteLength(remainder)
+  cursor.size = size
+  cursor.mtimeMs = mtimeMs
+  index.files.set(file, cursor)
+}
+
+/** Child native id → parent native id. `files` is every session's updates.jsonl. */
+async function syncGrokParents(root: string, files: string[]): Promise<Map<string, string>> {
+  const index = grokIndex(root)
+  const live = new Set(files)
+  for (const file of [...index.files.keys()]) {
+    if (!live.has(file)) dropSpawnFile(index, file)
+  }
+  for (const file of files) await syncGrokSpawnFile(index, file)
+  return index.parents
+}
+
+/**
  * Read one grok session dir's `summary.json` into a HarnessSession.
  *
  * summary.json carries the id, a real title, created_at and updated_at — much
@@ -238,14 +381,18 @@ function grokSessionsDir(): string {
  * Returns undefined when the dir has no readable summary — grok writes the
  * session DIR before its summary, so "no row" does NOT mean "id is free"; that
  * question is `harnessSessionExists('grok', id)`.
+ *
+ * `nested` is true for subagent / subagent-fork rows. The parent id is not in
+ * this file; the caller fills `parentSessionId` from the spawn index.
  */
 async function readGrokSummary(
   dir: string,
   fallbackId: string,
-): Promise<HarnessSession | undefined> {
+): Promise<{ row: HarnessSession; nested: boolean } | undefined> {
   let s: {
     info?: { id?: string }
     session_summary?: string
+    session_kind?: string
     created_at?: string
     updated_at?: string
   }
@@ -264,7 +411,22 @@ async function readGrokSummary(
     updatedAt: Number.isFinite(updated) ? updated : 0,
   }
   if (Number.isFinite(created)) row.createdAt = created
-  return row
+  return { row, nested: isNestedGrokKind(s.session_kind) }
+}
+
+function stampGrokParents(
+  rows: { row: HarnessSession; nested: boolean }[],
+  parents: Map<string, string>,
+): HarnessSession[] {
+  const out: HarnessSession[] = []
+  for (const { row, nested } of rows) {
+    if (nested) {
+      const parent = parents.get(row.id)
+      if (parent && parent !== row.id) row.parentSessionId = parent
+    }
+    out.push(row)
+  }
+  return out
 }
 
 async function listGrokSessions(limit: number): Promise<HarnessSession[]> {
@@ -275,7 +437,8 @@ async function listGrokSessions(limit: number): Promise<HarnessSession[]> {
   } catch {
     return [] // no grok store on this node
   }
-  const out: HarnessSession[] = []
+  const reads: { row: HarnessSession; nested: boolean }[] = []
+  const updates: string[] = []
   for (const cwd of cwdDirs) {
     let entries: import('node:fs').Dirent[]
     try {
@@ -285,11 +448,18 @@ async function listGrokSessions(limit: number): Promise<HarnessSession[]> {
     }
     for (const e of entries) {
       if (!e.isDirectory()) continue
-      const row = await readGrokSummary(join(dir, cwd, e.name), e.name)
-      if (row) out.push(row)
+      const sessionDir = join(dir, cwd, e.name)
+      updates.push(join(sessionDir, 'updates.jsonl'))
+      const read = await readGrokSummary(sessionDir, e.name)
+      if (read) reads.push(read)
     }
   }
-  return out.sort((a, b) => b.updatedAt - a.updatedAt).slice(0, limit)
+  const parents = await syncGrokParents(dir, updates)
+  const out = stampGrokParents(reads, parents)
+  return withAncestors(
+    out.sort((a, b) => b.updatedAt - a.updatedAt),
+    limit,
+  )
 }
 
 /**
@@ -310,12 +480,34 @@ export async function describeGrokSession(id: string): Promise<HarnessSession | 
   } catch {
     return undefined // no grok store on this node
   }
-  let best: HarnessSession | undefined
+  let best: { row: HarnessSession; nested: boolean } | undefined
   for (const cwd of cwdDirs) {
-    const row = await readGrokSummary(join(dir, cwd, id), id)
-    if (row && (!best || row.updatedAt > best.updatedAt)) best = row
+    const read = await readGrokSummary(join(dir, cwd, id), id)
+    if (read && (!best || read.row.updatedAt > best.row.updatedAt)) best = read
   }
-  return best
+  if (!best) return undefined
+  if (!best.nested) return best.row
+  // Same index the list uses, so a drawer row and getSession cannot disagree.
+  let updates: string[] = []
+  try {
+    const tops = await readdir(dir)
+    for (const cwd of tops) {
+      let entries: import('node:fs').Dirent[]
+      try {
+        entries = await readdir(join(dir, cwd), { withFileTypes: true })
+      } catch {
+        continue
+      }
+      for (const e of entries) {
+        if (e.isDirectory()) updates.push(join(dir, cwd, e.name, 'updates.jsonl'))
+      }
+    }
+  } catch {
+    updates = []
+  }
+  const parents = await syncGrokParents(dir, updates)
+  const [row] = stampGrokParents([best], parents)
+  return row
 }
 
 // ---- Hermes: sessions live in a sqlite DB, not files (~/.hermes/state.db) ----
@@ -1830,6 +2022,36 @@ export function harnessSessionExists(command: string, id: string): boolean {
 }
 
 /**
+ * Newest `limit` rows, plus any ancestor a kept nested row points at.
+ * A subagent is often newer than the session that spawned it; the cap would
+ * otherwise drop the parent and the drawer could not nest the child.
+ */
+function withAncestors(ranked: HarnessSession[], limit: number): HarnessSession[] {
+  const cap = limit > 0 ? limit : ranked.length
+  const kept = ranked.slice(0, cap)
+  if (kept.length === ranked.length) return kept
+  const pool = new Map(ranked.map((row) => [`${row.command}\0${row.id}`, row]))
+  const included = new Set(kept.map((row) => `${row.command}\0${row.id}`))
+  const extras: HarnessSession[] = []
+  for (const row of kept) {
+    let parentId = row.parentSessionId
+    const seen = new Set<string>()
+    while (parentId && !seen.has(parentId) && seen.size < 8) {
+      seen.add(parentId)
+      const key = `${row.command}\0${parentId}`
+      const parent = pool.get(key)
+      if (!parent) break
+      if (!included.has(key)) {
+        extras.push(parent)
+        included.add(key)
+      }
+      parentId = parent.parentSessionId
+    }
+  }
+  return extras.length ? [...kept, ...extras] : kept
+}
+
+/**
  * List the on-disk sessions for the given roster harnesses, newest first.
  * Only harnesses with a known store contribute; unknown ones are silently
  * skipped (the drawer degrades to empty, never errors).
@@ -1849,7 +2071,7 @@ export async function listHarnessSessions(
   if (commands.includes('qwen')) all.push(...(await listQwenSessions(limit)))
   if (commands.includes('cursor')) all.push(...(await listCursorSessions(limit)))
   all.sort((a, b) => b.updatedAt - a.updatedAt) // last-updated first
-  return all.slice(0, limit)
+  return withAncestors(all, limit)
 }
 
 // ---- Transcript read (resync chat UI from on-disk TUI store) ---------------

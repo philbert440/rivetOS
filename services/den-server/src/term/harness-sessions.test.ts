@@ -17,6 +17,7 @@ import {
   claudeTurnsFromLines,
   grokTurnsFromLines,
   listHarnessSessions,
+  resetGrokParentIndexForTest,
   harnessSessionExists,
   readGrokTranscript,
   readHarnessTranscript,
@@ -37,6 +38,7 @@ import {
 const dirs: string[] = []
 afterEach(() => {
   vi.restoreAllMocks()
+  resetGrokParentIndexForTest()
   setTranscriptMaxBytesForTest()
   dirs.splice(0).forEach((d) => rmSync(d, { recursive: true, force: true }))
   delete process.env.CLAUDE_CONFIG_DIR
@@ -242,6 +244,81 @@ describe('listHarnessSessions', () => {
     const described = await describeGrokSession(id)
     expect(listed.createdAt).toBe(Date.parse('2026-07-07T00:00:00.000Z'))
     expect(described).toEqual(listed)
+  })
+
+  it('nests grok subagents under the spawning session and leaves headless plans alone', async () => {
+    const grokBase = mkdtempSync(join(tmpdir(), 'grok-nest-'))
+    dirs.push(grokBase)
+    const bucket = join(grokBase, 'sessions', '%2Fhome%2Frivet')
+    const parent = '11111111-1111-7111-8111-111111111111'
+    const child = '22222222-2222-7222-8222-222222222222'
+    const fork = '33333333-3333-7333-8333-333333333333'
+    const headless = '44444444-4444-7444-8444-444444444444'
+    const write = (id: string, summary: Record<string, unknown>, updates?: string): void => {
+      const dir = join(bucket, id)
+      mkdirSync(dir, { recursive: true })
+      writeFileSync(join(dir, 'summary.json'), JSON.stringify(summary))
+      if (updates !== undefined) writeFileSync(join(dir, 'updates.jsonl'), updates)
+    }
+    const spawn = (childId: string): string =>
+      `${JSON.stringify({
+        method: '_x.ai/session/update',
+        params: {
+          update: {
+            sessionUpdate: 'subagent_spawned',
+            subagent_id: childId,
+            parent_session_id: parent,
+            child_session_id: childId,
+          },
+        },
+      })}\n`
+    write(
+      parent,
+      {
+        info: { id: parent },
+        session_summary: 'primary',
+        updated_at: '2026-07-01T00:00:00.000Z',
+      },
+      spawn(child),
+    )
+    write(child, {
+      info: { id: child },
+      session_summary: 'review the store',
+      session_kind: 'subagent',
+      updated_at: '2026-07-08T00:00:00.000Z',
+    })
+    write(fork, {
+      info: { id: fork },
+      session_summary: 'forked look',
+      session_kind: 'subagent_fork',
+      updated_at: '2026-07-07T00:00:00.000Z',
+    })
+    write(headless, {
+      info: { id: headless },
+      session_summary: 'plan mode',
+      session_kind: 'headless',
+      updated_at: '2026-07-09T00:00:00.000Z',
+    })
+    process.env.GROK_HOME = grokBase
+
+    // Cap at 1: the newest row is the headless plan. The subagent is newer
+    // than its parent, so the parent has to be kept on purpose or the child
+    // cannot nest. Ask for 2 so both the headless row and the subagent are
+    // inside the cap, and the older parent is the one the cap would drop.
+    const listed = await listHarnessSessions(['grok'], 2)
+    const byId = new Map(listed.map((row) => [row.id, row]))
+    expect(byId.get(headless)?.parentSessionId).toBeUndefined()
+    expect(byId.get(child)?.parentSessionId).toBe(parent)
+    expect(byId.has(parent)).toBe(true)
+    expect(byId.has(fork)).toBe(false)
+    expect(await describeGrokSession(child)).toEqual(byId.get(child))
+
+    // A spawn line appended later is picked up from the tail, not a reread.
+    writeFileSync(join(bucket, parent, 'updates.jsonl'), spawn(child) + spawn(fork), { flag: 'a' })
+    const again = await listHarnessSessions(['grok'], 3)
+    expect(again.find((row) => row.id === fork)?.parentSessionId).toBe(parent)
+    expect(again.find((row) => row.id === headless)?.parentSessionId).toBeUndefined()
+    delete process.env.GROK_HOME
   })
 
   it('describeGrokSession: no summary yet → undefined (existence is a separate question)', async () => {

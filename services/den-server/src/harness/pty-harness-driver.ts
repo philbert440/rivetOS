@@ -1263,6 +1263,15 @@ export abstract class PtyHarnessDriver<S extends HarnessStoreHost = HarnessStore
     const cwd = this.deps.sessionCwd?.(this.rosterCommand, row.id) ?? this.cwd()
     if (cwd) summary.cwd = cwd
     if (row.model) summary.model = row.model
+    // Same harness: grok subagents are grok sessions. A bad parent id must
+    // not fail the whole list.
+    if (
+      row.parentSessionId &&
+      !row.parentSessionId.includes('/') &&
+      !row.parentSessionId.includes('..')
+    ) {
+      summary.parentSessionId = this.sid(row.parentSessionId)
+    }
     if (this.live.get(row.id)?.blocked) summary.blocked = true
     return summary
   }

@@ -843,6 +843,13 @@ export interface HarnessSession {
   title: string
   /** epoch ms of last activity */
   updatedAt: number
+  /**
+   * Native id of the session that spawned this one. Set for grok subagent
+   * rows; absent for primary and headless plan sessions. The legacy drawer
+   * keys rows by native id, so this is the native id, not a canonical
+   * SessionId (the control-plane summary carries that form).
+   */
+  parentSessionId?: string
 }
 
 export interface HarnessSessionsResponse {

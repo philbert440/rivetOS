@@ -365,6 +365,13 @@ export type SessionSummary = {
    * model, then the harness label.
    */
   model?: string
+  /**
+   * Canonical id of the session that spawned this one (a grok subagent or
+   * subagent fork). Absent for primary sessions and for headless plan
+   * sessions — those stay top-level in the conversation list. The drawer
+   * nests a row under this id only when that session is listed too.
+   */
+  parentSessionId?: SessionId
 }
 
 export type StartSessionOpts = {

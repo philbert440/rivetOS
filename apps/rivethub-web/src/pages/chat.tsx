@@ -105,18 +105,22 @@ import { deriveReplyWait, nextWaitClock, type ReplyWaitClock } from '../lib/harn
 import { createPtyEnsurer } from '../lib/pty-ensure.js'
 import { outboundPumpFor } from '../lib/chat-outbound.js'
 import {
+  ancestorChatKeys,
   applyRegistryEventToPlaneSessions,
   chatItemFromSummary,
   chatItems,
   denRoomKey,
   fetchHarnessPlaneSessions,
+  filterChatForest,
   findChatItem,
   harnessGate,
   nativeIdOf,
+  nestChatItems,
   rosterCommandFor,
   shortNativeId,
   sortByRecency,
   type ChatItem,
+  type ChatNode,
   type HarnessGate,
 } from '../lib/harness-chat.js'
 import { rowPillText } from '../lib/harness-options.js'
@@ -679,6 +683,10 @@ function DrawerItem(props: {
   onUnarchive: () => void
   /** Drafts only — a draft is local, so discarding it is a real delete. */
   onDiscard?: () => void
+  /** Nested conversations under this row. 0 hides the disclosure. */
+  childCount?: number
+  expanded?: boolean
+  onToggleNest?: () => void
 }): JSX.Element {
   const hubBase = useConnection((s) => s.baseUrl)
   const storeBase = props.item.pinNodeBaseUrl ?? hubBase
@@ -727,12 +735,27 @@ function DrawerItem(props: {
     )
   }
 
+  const kids = props.childCount ?? 0
   return (
     <div
       className={`group mb-1 flex items-center rounded ${
         props.active ? 'bg-panel-2' : 'hover:bg-panel-2'
       }`}
     >
+      {props.onToggleNest && kids > 0 && (
+        <button
+          type="button"
+          onClick={props.onToggleNest}
+          aria-expanded={props.expanded === true}
+          aria-label={
+            props.expanded ? 'collapse nested conversations' : 'expand nested conversations'
+          }
+          title={props.expanded ? 'collapse nested conversations' : 'expand nested conversations'}
+          className="px-1 py-2 font-mono text-[11px] text-ink-dim hover:text-ink"
+        >
+          {props.expanded ? '▾' : '▸'}
+        </button>
+      )}
       <button
         onClick={props.onSelect}
         title={
@@ -756,6 +779,14 @@ function DrawerItem(props: {
           aria-hidden
         />
         <span className="min-w-0 truncate">{customName ?? props.item.title}</span>
+        {kids > 0 && !props.expanded && (
+          <span
+            className="shrink-0 font-mono text-[10px] text-ink-dim"
+            title="nested conversations"
+          >
+            {kids}
+          </span>
+        )}
         {/* live pip: a turn in flight pulses; an alive-but-quiet session is a
             steady dim dot. `status` only exists for control-plane rows. */}
         {props.item.status === 'active' && (
@@ -849,6 +880,10 @@ function SessionDrawer(props: {
   const unarchive = useArchived((s) => s.unarchive)
   const [showArchived, setShowArchived] = useState(false)
   const [filter, setFilter] = useState('')
+  // Parents the user has expanded. The open conversation's ancestors are
+  // added when it changes so a nested active row is visible; collapsing is
+  // still allowed afterwards.
+  const [openGroups, setOpenGroups] = useState<ReadonlySet<string>>(() => new Set())
   const narrow = useIsNarrow()
   // Picking an agent in the rail narrows the list to its sessions; `+ new`
   // then starts one with that agent (see stores/agent-filter).
@@ -865,10 +900,14 @@ function SessionDrawer(props: {
   const agentItems = agentId
     ? props.items.filter((it) => rowOwnedByAgent(it.key, agentId, nativeIdOf))
     : props.items
-  const items = agentItems.filter((it) => {
-    // The active thread always stays listed — hiding the row under the
-    // user's feet would strand the open conversation.
+  // Archive first, then nest, then the text filter. Filtering the flat list
+  // first would orphan a matching child whose parent title does not match.
+  const listed = agentItems.filter((it) => {
     if (!showArchived && isArchived(it) && it.key !== props.active) return false
+    return true
+  })
+  const forest = nestChatItems(listed)
+  const matchesQuery = (it: ChatItem): boolean => {
     if (!q) return true
     const custom = persisted(names, itemBase(it), it.key) ?? ''
     return (
@@ -877,7 +916,24 @@ function SessionDrawer(props: {
       it.key.toLowerCase().includes(q) ||
       (it.harnessId ?? '').includes(q)
     )
-  })
+  }
+  const shown = q ? filterChatForest(forest, matchesQuery, props.active) : forest
+  const searching = q.length > 0
+  const activePath = ancestorChatKeys(shown, props.active).join('\0')
+  useEffect(() => {
+    if (!activePath) return
+    setOpenGroups((prev) => {
+      const next = new Set(prev)
+      let changed = false
+      for (const key of activePath.split('\0')) {
+        if (!next.has(key)) {
+          next.add(key)
+          changed = true
+        }
+      }
+      return changed ? next : prev
+    })
+  }, [activePath])
 
   const openRow = (key: string): void => {
     setActive(key)
@@ -897,18 +953,42 @@ function SessionDrawer(props: {
     }
   }
 
-  const renderRow = (it: ChatItem): JSX.Element => (
-    <DrawerItem
-      key={it.key}
-      item={it}
-      active={it.key === props.active}
-      archived={isArchived(it)}
-      onSelect={() => openRow(it.key)}
-      onArchive={() => archive(storageKey(itemBase(it), it.key))}
-      onUnarchive={() => unarchive(storageKey(itemBase(it), it.key))}
-      onDiscard={it.kind === 'draft' && !it.pin ? () => discardDraft(baseUrl, it.key) : undefined}
-    />
-  )
+  const toggleNest = (key: string): void => {
+    setOpenGroups((prev) => {
+      const next = new Set(prev)
+      if (next.has(key)) next.delete(key)
+      else next.add(key)
+      return next
+    })
+  }
+
+  const renderNodes = (nodes: ChatNode[]): JSX.Element[] =>
+    nodes.map((node) => {
+      const kids = node.children.length
+      const expanded = kids > 0 && (searching || openGroups.has(node.item.key))
+      const it = node.item
+      return (
+        <div key={it.key}>
+          <DrawerItem
+            item={it}
+            active={it.key === props.active}
+            archived={isArchived(it)}
+            onSelect={() => openRow(it.key)}
+            onArchive={() => archive(storageKey(itemBase(it), it.key))}
+            onUnarchive={() => unarchive(storageKey(itemBase(it), it.key))}
+            onDiscard={
+              it.kind === 'draft' && !it.pin ? () => discardDraft(baseUrl, it.key) : undefined
+            }
+            childCount={kids}
+            expanded={expanded}
+            onToggleNest={kids > 0 ? () => toggleNest(it.key) : undefined}
+          />
+          {expanded && (
+            <div className="ml-3 border-l border-line pl-1">{renderNodes(node.children)}</div>
+          )}
+        </div>
+      )
+    })
 
   return (
     <div
@@ -973,11 +1053,11 @@ function SessionDrawer(props: {
       {props.error && <div className="px-3 py-2 font-mono text-xs text-red">{props.error}</div>}
       <div className="flex min-h-0 flex-1 flex-col">
         <div className="flex-1 overflow-y-auto px-2">
-          {items.map((it) => renderRow(it))}
-          {items.length === 0 && q && (
+          {renderNodes(shown)}
+          {shown.length === 0 && q && (
             <div className="px-3 py-2 text-xs text-ink-dim">no matches for “{filter.trim()}”</div>
           )}
-          {items.length === 0 && !q && archivedCount > 0 && (
+          {shown.length === 0 && !q && archivedCount > 0 && (
             <div className="px-3 py-2 text-xs text-ink-dim">everything is archived</div>
           )}
           {agentItems.length === 0 && !props.error && (

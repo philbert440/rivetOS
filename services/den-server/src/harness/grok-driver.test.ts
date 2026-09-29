@@ -255,6 +255,22 @@ describe('identity + canonicalization', () => {
     })
   })
 
+  it('canonicalizes a subagent parent id onto the summary', async () => {
+    const { driver } = makeDriver({
+      rows: [
+        {
+          id: UUID,
+          command: 'grok',
+          title: 'review the store',
+          updatedAt: 1_700_000_000_000,
+          parentSessionId: UUID2,
+        },
+      ],
+    })
+    const [summary] = await driver.listSessions()
+    expect(summary?.parentSessionId).toBe(`grok-build:${UUID2}`)
+  })
+
   it('lists store rows as canonical summaries', async () => {
     const { driver } = makeDriver({
       rows: [{ id: UUID, command: 'grok', title: 'a plan', updatedAt: 1_700_000_000_000 }],
