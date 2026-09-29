@@ -66,6 +66,7 @@ import {
   MeshParseError,
   rosterCommandFor,
   type HarnessDriver,
+  type HarnessId,
   type UserContext,
 } from '@rivetos/types'
 import type { DenConfig } from './config.js'
@@ -112,6 +113,7 @@ import { OpencodeDriver } from './harness/opencode-driver.js'
 import { PiDriver } from './harness/pi-driver.js'
 import { QwenCodeDriver } from './harness/qwen-code-driver.js'
 import { CursorDriver } from './harness/cursor-driver.js'
+import { createInstalledProbe } from './harness/installed.js'
 import { CodexDriver } from './harness/codex-driver.js'
 import { CodexProtocolDriver, codexThreadDefaults } from './harness/codex-protocol-driver.js'
 import { CodexRpcClient } from './harness/codex-rpc.js'
@@ -398,6 +400,11 @@ export interface DenServerOptions {
    * replaces one is replacing that wiring for all of them.
    */
   skipBuiltinHarnessDrivers?: boolean
+  /**
+   * Stamps `installed` on `GET /api/harnesses` rows. Default: a TTL-cached
+   * probe of each roster argv[0] on the den's spawn PATH (`harness/installed.ts`).
+   */
+  isHarnessInstalled?: (harnessId: HarnessId) => boolean
   /**
    * Preset-registry pool. Production builds one from `config.pgUrl`
    * ({@link createPresetPool}: error listeners, 5s connect, 10s query).
@@ -894,6 +901,13 @@ export function createDenServer(config: DenConfig, opts: DenServerOptions = {}):
   const harnessRoutes = createHarnessRoutes({
     registry: harnesses,
     log: console.error,
+    isInstalled:
+      opts.isHarnessInstalled ??
+      createInstalledProbe({
+        roster: () => rosterProvider.get(),
+        // The app-server driver talks to an endpoint, not a local binary.
+        alwaysInstalled: (id) => id === 'codex' && !!config.codexAppServerUrl,
+      }),
     filterSessions: (req, sessions) => {
       const ctx = boundRequestUser(req)
       if (!ctx) return sessions

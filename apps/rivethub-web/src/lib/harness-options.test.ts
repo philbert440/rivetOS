@@ -8,6 +8,7 @@ import {
   defaultModel,
   effortOptionsFor,
   harnessLabel,
+  installedHarnesses,
   modelOptionsFor,
   rowPillText,
   spawnModelEffort,
@@ -69,6 +70,17 @@ describe('rowPillText', () => {
     expect(rowPillText(undefined, undefined, 'opencode')).toBe('opencode')
     expect(rowPillText(undefined, undefined, 'qwen-code')).toBe('Qwen Code')
     expect(rowPillText(undefined, undefined, 'unknown-harness')).toBe('unknown-harness')
+  })
+})
+
+describe('installedHarnesses', () => {
+  it('drops installed:false rows and keeps rows from dens that omit the flag', () => {
+    const rows = [
+      { harnessId: 'claude-code', installed: true },
+      { harnessId: 'kimi-code', installed: false },
+      { harnessId: 'hermes' },
+    ]
+    expect(installedHarnesses(rows).map((r) => r.harnessId)).toEqual(['claude-code', 'hermes'])
   })
 })
 

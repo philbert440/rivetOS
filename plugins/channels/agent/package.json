@@ -15,10 +15,10 @@
   },
   "dependencies": {
     "@rivetos/types": "0.5.0",
-    "undici": "^8.10.0"
+    "undici": "^8.10.2"
   },
   "devDependencies": {
-    "vitest": "^4.1.10"
+    "vitest": "^5.0.2"
   },
   "rivetos": {
     "type": "channel",

@@ -468,15 +468,155 @@ export function parseKimiToml(text: string): HarnessModelOption[] {
   }))
 }
 
+/** `model:` block of `~/.hermes/config.yaml` — the only part the sheet needs. */
+export interface HermesModelConfig {
+  default?: string
+  provider?: string
+  baseUrl?: string
+  apiKey?: string
+}
+
+function yamlScalar(raw: string): string {
+  let v = raw.trim()
+  if (v.startsWith('"') || v.startsWith("'")) {
+    const q = v[0]
+    const end = v.indexOf(q, 1)
+    return end > 0 ? v.slice(1, end) : v.slice(1)
+  }
+  const hash = v.search(/\s#/)
+  if (hash >= 0) v = v.slice(0, hash)
+  return v.trim()
+}
+
 /**
- * Hermes owns its own model picker (v1: we do not advertise models).
- * Effort is `--reasoning` low/medium/high.
+ * Read the top-level `model:` mapping (or the legacy `model: <id>` scalar)
+ * from Hermes's config.yaml. Deliberately tiny — no YAML dependency: only
+ * the first-level keys under `model:` are read, the rest of the file is
+ * skipped. Nested `model:` keys elsewhere (auxiliary slots) are not top-level
+ * and never match.
  */
-export function hermesSheet(): ModelSheet {
+export function parseHermesModelConfig(text: string): HermesModelConfig {
+  const out: HermesModelConfig = {}
+  const lines = text.split(/\r?\n/)
+  const start = lines.findIndex((l) => /^model:/.test(l))
+  if (start < 0) return out
+  const inline = yamlScalar(lines[start].slice('model:'.length))
+  if (inline) {
+    out.default = inline
+    return out
+  }
+  let indent: number | undefined
+  for (const line of lines.slice(start + 1)) {
+    if (!line.trim() || line.trimStart().startsWith('#')) continue
+    const lead = line.length - line.trimStart().length
+    if (lead === 0) break
+    indent ??= lead
+    if (lead !== indent) continue
+    const m = /^\s*([A-Za-z_]+):(.*)$/.exec(line)
+    if (!m) continue
+    const value = yamlScalar(m[2])
+    if (!value) continue
+    if (m[1] === 'default') out.default = value
+    else if (m[1] === 'provider') out.provider = value
+    else if (m[1] === 'base_url') out.baseUrl = value
+    else if (m[1] === 'api_key') out.apiKey = value
+  }
+  return out
+}
+
+/** Fetches an OpenAI-compatible `GET <base>/models` → model ids. */
+export type FetchModelIds = (baseUrl: string, apiKey?: string) => Promise<string[]>
+
+const HERMES_ENDPOINT_TTL_MS = 60_000
+const HERMES_ENDPOINT_TIMEOUT_MS = 3_000
+
+export const fetchOpenAiModelIds: FetchModelIds = async (baseUrl, apiKey) => {
+  const res = await fetch(`${baseUrl.replace(/\/+$/, '')}/models`, {
+    headers: apiKey ? { authorization: `Bearer ${apiKey}` } : {},
+    signal: AbortSignal.timeout(HERMES_ENDPOINT_TIMEOUT_MS),
+  })
+  if (!res.ok) throw new Error(`HTTP ${res.status}`)
+  const body = await res.json()
+  const data = isRecord(body) && Array.isArray(body.data) ? body.data : []
+  return data.flatMap((row) => (isRecord(row) && typeof row.id === 'string' ? [row.id] : []))
+}
+
+interface EndpointCacheEntry {
+  ids: string[]
+  at: number
+  inflight?: Promise<void>
+}
+const hermesEndpointCache = new Map<string, EndpointCacheEntry>()
+
+export function __resetHermesEndpointCacheForTests(): void {
+  hermesEndpointCache.clear()
+}
+
+/**
+ * Last-known ids served at `baseUrl`, refreshing in the background when stale.
+ * Never blocks and never throws: the first read (and any read while the
+ * endpoint is down) returns what the cache has, possibly nothing. The driver
+ * re-reads its sheet on a TTL, so a completed fetch lands on the next read
+ * and is announced as a capability change.
+ */
+function hermesEndpointModels(
+  baseUrl: string,
+  apiKey: string | undefined,
+  fetchIds: FetchModelIds,
+  now: number,
+): string[] {
+  const entry = hermesEndpointCache.get(baseUrl) ?? { ids: [], at: Number.NEGATIVE_INFINITY }
+  hermesEndpointCache.set(baseUrl, entry)
+  if (!entry.inflight && now - entry.at >= HERMES_ENDPOINT_TTL_MS) {
+    entry.inflight = fetchIds(baseUrl, apiKey)
+      .then((ids) => {
+        entry.ids = ids.filter((id) => MODEL_TOKEN_RE.test(id))
+      })
+      .catch(() => {
+        /* endpoint down — keep the last-known list */
+      })
+      .finally(() => {
+        entry.at = Date.now()
+        entry.inflight = undefined
+      })
+  }
+  return entry.ids
+}
+
+/**
+ * Hermes is a client of whatever provider its config names, so the model list
+ * comes from there: the configured default from `~/.hermes/config.yaml`, plus
+ * — when the provider has a `base_url` (custom / local OpenAI-compatible
+ * servers such as vLLM) — the ids that endpoint serves at `GET /models`.
+ * Launch flag `-m`; effort is `--reasoning` low/medium/high.
+ */
+export function hermesSheet(
+  readText: ReadText = defaultReadText,
+  home: string = homedir(),
+  fetchIds: FetchModelIds = fetchOpenAiModelIds,
+  now: number = Date.now(),
+): ModelSheet {
+  let config: HermesModelConfig = {}
+  try {
+    config = parseHermesModelConfig(readText(join(home, '.hermes', 'config.yaml')))
+  } catch {
+    /* no config — no models, Hermes launches its own default */
+  }
+  const ids: string[] = []
+  const defaultId =
+    config.default && MODEL_TOKEN_RE.test(config.default) ? config.default : undefined
+  if (defaultId) ids.push(defaultId)
+  if (config.baseUrl && /^https?:\/\//.test(config.baseUrl)) {
+    for (const id of hermesEndpointModels(config.baseUrl, config.apiKey, fetchIds, now)) {
+      if (!ids.includes(id)) ids.push(id)
+    }
+  }
   return {
-    models: [],
+    models: ids.map((id) => ({ id, label: id, ...(id === defaultId ? { default: true } : {}) })),
     efforts: HERMES_EFFORTS,
+    modelFlag: '-m',
     effortFlag: '--reasoning',
+    launchModel: true,
   }
 }
 
@@ -784,7 +924,7 @@ export function sheetForHarness(harnessId: HarnessId, readers?: SheetReaders): M
     case 'kimi-code':
       return kimiSheet(readText, home)
     case 'hermes':
-      return hermesSheet()
+      return hermesSheet(readText, home)
     case 'codex':
       return codexSheet()
     case 'opencode':

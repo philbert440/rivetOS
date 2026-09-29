@@ -13,6 +13,8 @@ import {
   EFFORT_TOKEN_RE,
   grokSheet,
   hermesSheet,
+  parseHermesModelConfig,
+  __resetHermesEndpointCacheForTests,
   kimiSheet,
   opencodeSheet,
   parseOpencodeConfig,
@@ -96,7 +98,6 @@ describe('claudeSheet', () => {
     expect(claudeSheet().launchModel).toBe(true)
     // Sheets whose launch model is config-owned or flag-less stay silent:
     // a `models` + `modelFlag` sheet does NOT imply `launchModel`.
-    expect(hermesSheet().launchModel).toBeUndefined()
     expect(codexSheet().launchModel).toBeUndefined()
     expect(grokSheet(() => GROK_CACHE, '/tmp/fake-home').launchModel).toBeUndefined()
     expect(kimiSheet(() => '', '/tmp/fake-home').launchModel).toBeUndefined()
@@ -316,12 +317,74 @@ describe('MODEL_TOKEN_RE / EFFORT_TOKEN_RE', () => {
 })
 
 describe('hermesSheet', () => {
-  it('hermes advertises no models (own picker) and --reasoning efforts', () => {
-    const sheet = hermesSheet()
+  const HERMES_YAML = [
+    '# comment',
+    'model:',
+    '  default: qwen-27b',
+    '  provider: custom',
+    "  base_url: 'http://10.0.0.5:8003/v1' # local vLLM",
+    'auxiliary:',
+    '  vision:',
+    '    model: other',
+    '',
+  ].join('\n')
+
+  it('parses the top-level model block and ignores nested model keys', () => {
+    expect(parseHermesModelConfig(HERMES_YAML)).toEqual({
+      default: 'qwen-27b',
+      provider: 'custom',
+      baseUrl: 'http://10.0.0.5:8003/v1',
+    })
+    expect(parseHermesModelConfig('model: "anthropic/claude-x"\n')).toEqual({
+      default: 'anthropic/claude-x',
+    })
+    expect(parseHermesModelConfig('agent:\n  model: x\n')).toEqual({})
+  })
+
+  it('no config: no models, but -m and --reasoning flags', () => {
+    const sheet = hermesSheet(
+      () => {
+        throw new Error('ENOENT')
+      },
+      '/no-such-home',
+    )
     expect(sheet.models).toEqual([])
+    expect(sheet.modelFlag).toBe('-m')
     expect(sheet.effortFlag).toBe('--reasoning')
-    expect(sheet.modelFlag).toBeUndefined()
     expect(sheet.efforts?.find((e) => e.default)?.id).toBe('medium')
+  })
+
+  it('lists the config default, then endpoint ids once the background fetch lands', async () => {
+    __resetHermesEndpointCacheForTests()
+    const calls: string[] = []
+    const fetchIds = (base: string): Promise<string[]> => {
+      calls.push(base)
+      return Promise.resolve(['qwen-27b', 'aggressive', 'bad id!'])
+    }
+    const first = hermesSheet(() => HERMES_YAML, '/h', fetchIds, 0)
+    expect(first.models).toEqual([{ id: 'qwen-27b', label: 'qwen-27b', default: true }])
+    expect(first.launchModel).toBe(true)
+    await new Promise((r) => setTimeout(r, 0))
+    const second = hermesSheet(() => HERMES_YAML, '/h', fetchIds, 1)
+    expect(second.models?.map((m) => m.id)).toEqual(['qwen-27b', 'aggressive'])
+    expect(calls).toEqual(['http://10.0.0.5:8003/v1'])
+    expect(appendModelEffortArgv(['hermes'], second, 'aggressive', 'high')).toEqual([
+      'hermes',
+      '-m',
+      'aggressive',
+      '--reasoning',
+      'high',
+    ])
+  })
+
+  it('keeps the config default when the endpoint is down', async () => {
+    __resetHermesEndpointCacheForTests()
+    const fetchIds = (): Promise<string[]> => Promise.reject(new Error('ECONNREFUSED'))
+    hermesSheet(() => HERMES_YAML, '/h', fetchIds, 0)
+    await new Promise((r) => setTimeout(r, 0))
+    expect(hermesSheet(() => HERMES_YAML, '/h', fetchIds, 1).models?.map((m) => m.id)).toEqual([
+      'qwen-27b',
+    ])
   })
 
   it('deepseek is empty', () => {})

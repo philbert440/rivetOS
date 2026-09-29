@@ -186,13 +186,22 @@ function denConfig(stateDir: string): DenConfig {
 }
 
 async function start(...drivers: HarnessDriver[]): Promise<{ base: string; den: DenServer }> {
-  return startWith({ skipBuiltinHarnessDrivers: true, harnessDrivers: drivers })
+  return startWith({
+    skipBuiltinHarnessDrivers: true,
+    harnessDrivers: drivers,
+    // Deterministic: the default probe reads the host's PATH.
+    isHarnessInstalled: (id) => id !== 'hermes',
+  })
 }
 
 async function startWith(
   opts: Pick<
     DenServerOptions,
-    'skipBuiltinHarnessDrivers' | 'harnessDrivers' | 'ptySpawn' | 'aliasBreadcrumbs'
+    | 'skipBuiltinHarnessDrivers'
+    | 'harnessDrivers'
+    | 'ptySpawn'
+    | 'aliasBreadcrumbs'
+    | 'isHarnessInstalled'
   >,
   tweak: (config: DenConfig) => DenConfig = (c) => c,
 ): Promise<{ base: string; den: DenServer }> {
@@ -271,7 +280,7 @@ describe('GET /api/harnesses', () => {
     const res = await fetch(`${base}/api/harnesses`)
     expect(res.status).toBe(200)
     expect(await res.json()).toEqual({
-      harnesses: [{ harnessId: 'claude-code', capabilities: FULL_CAPS }],
+      harnesses: [{ harnessId: 'claude-code', capabilities: FULL_CAPS, installed: true }],
     })
   })
 
@@ -318,12 +327,13 @@ describe('more than one driver on a node', () => {
     const { base } = await start(claude, grok, hermes)
     expect(await (await fetch(`${base}/api/harnesses`)).json()).toEqual({
       harnesses: [
-        { harnessId: 'claude-code', capabilities: FULL_CAPS },
-        { harnessId: 'grok-build', capabilities: FULL_CAPS },
-        { harnessId: 'hermes', capabilities: HERMES_CAPS },
+        { harnessId: 'claude-code', capabilities: FULL_CAPS, installed: true },
+        { harnessId: 'grok-build', capabilities: FULL_CAPS, installed: true },
+        // Not installed: still listed (its sessions must keep resolving).
+        { harnessId: 'hermes', capabilities: HERMES_CAPS, installed: false },
       ],
     })
-    // …and each is individually addressable.
+    // …and each is individually addressable, installed or not.
     for (const id of ['claude-code', 'grok-build', 'hermes']) {
       expect((await fetch(`${base}/api/harnesses/${id}`)).status).toBe(200)
     }
