@@ -271,6 +271,7 @@ export const KNOWN_PROVIDERS: Partial<Record<string, Set<string>>> = {
     'context_window',
     'max_output_tokens',
     'permission_prompts',
+    'allowed_api_key_sources',
   ]),
   xai: new Set([
     'model',

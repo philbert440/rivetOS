@@ -414,6 +414,19 @@ export function validateProviders(
       })
     }
 
+    if (name === 'claude-cli' && provider.allowed_api_key_sources !== undefined) {
+      const raw = provider.allowed_api_key_sources
+      const ok =
+        Array.isArray(raw) && raw.every((item) => typeof item === 'string' && item.length > 0)
+      if (!ok) {
+        issues.push({
+          severity: 'error',
+          path: `${path}.allowed_api_key_sources`,
+          message: 'allowed_api_key_sources must be an array of non-empty strings',
+        })
+      }
+    }
+
     if (provider.api_key && typeof provider.api_key === 'string') {
       const key = provider.api_key
       if (!key.includes('${') && API_KEY_PATTERNS.some((p) => p.test(key))) {
