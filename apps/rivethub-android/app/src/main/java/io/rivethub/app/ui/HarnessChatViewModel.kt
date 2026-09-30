@@ -16,6 +16,8 @@ import io.rivethub.app.gateway.WsStatus
 import io.rivethub.app.gateway.WsSubscription
 import io.rivethub.app.gateway.sessionKeyEnc
 import io.rivethub.app.gateway.readCapped
+import io.rivethub.app.plane.parseDefaultView
+import io.rivethub.app.plane.resolveSessionMode
 import io.rivethub.app.plane.serverInFlightIsStale
 import io.rivethub.app.gateway.nativeIdOf
 import io.rivethub.app.gateway.isTurnInFlight
@@ -117,7 +119,6 @@ import io.rivethub.app.plane.restoreQueuedComposer
 import io.rivethub.app.plane.harnessGate
 import io.rivethub.app.plane.harnessLabel
 import io.rivethub.app.plane.nextInjectTry
-import io.rivethub.app.plane.parseSessionMode
 import io.rivethub.app.plane.persistSessionMode
 import io.rivethub.app.plane.ptySpawnIsFresh
 import io.rivethub.app.plane.rosterCommandFor
@@ -1112,7 +1113,14 @@ class HarnessChatViewModel(
 
     private suspend fun boot() {
         val prefs = c.settings.snapshot()
-        val mode = parseSessionMode(prefs.sessionModes[_state.value.sessionId])
+        // A session with no harness to chat through (a legacy on-disk row)
+        // only runs in the terminal; drafts always have a chat surface.
+        val terminalOnly = !_state.value.draft && resolvedHarnessId() == null
+        val mode = resolveSessionMode(
+            stored = prefs.sessionModes[_state.value.sessionId],
+            defaultView = parseDefaultView(prefs.defaultView),
+            terminalOnly = terminalOnly,
+        )
         _state.update { it.copy(mode = mode, termFontSp = prefs.terminalFontSp, codeLineNumbers = prefs.codeLineNumbers, codeWrap = prefs.codeWrap, termRemote = terminalNodeIsRemote(nodeDenUrl, prefs.entryUrl)) }
         if (c.identity.generation() != identityGen) return
         try {

@@ -18,13 +18,13 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import io.rivethub.app.R
-import io.rivethub.app.ui.components.DenBot
+import io.rivethub.app.ui.components.RhMark
 import io.rivethub.app.ui.components.TopBar
 import io.rivethub.app.ui.theme.Dimens
 import io.rivethub.app.ui.theme.Radius
@@ -35,7 +35,7 @@ import io.rivethub.app.ui.theme.RivetType
  * The launch surface while the initial session resolves (2026-09-04: the
  * home is a session, never the conversations list — web `ChatLaunchLoading`,
  * chat.tsx): the wordmark TopBar (it renders on every narrow non-session
- * screen) over the centered DenBot + "Loading most recent conversation…"
+ * screen) over the centered rh mark + "Loading most recent conversation…"
  * copy, with a New-conversation button that opens a fresh draft INSTANTLY —
  * bypassing the most-recent resolve so the user never has to wait. Never the
  * list, never a blank, no spinner (D2-8). Shown by HubScreen on the
@@ -50,8 +50,8 @@ fun ChatLaunchScreen(onOpenDrawer: () -> Unit, onNew: () -> Unit) {
             title = stringResource(R.string.brand_rivethub),
             onOpenDrawer = onOpenDrawer,
         )
-        // Web (chat.tsx ChatLaunchLoading): centered, DenBot size-16 (64dp)
-        // opacity-90, text-sm inkDim copy, and a raw bordered button
+        // Web (chat.tsx ChatLaunchLoading): centered, the rh mark,
+        // text-sm inkDim copy, and a raw bordered button
         // (`rounded border border-line px-3 py-1.5 text-xs text-ink-dim`,
         // hover → border-em/text-em mapped to pressed) with a 44dp hit box.
         Column(
@@ -59,7 +59,7 @@ fun ChatLaunchScreen(onOpenDrawer: () -> Unit, onNew: () -> Unit) {
             verticalArrangement = Arrangement.spacedBy(12.dp, Alignment.CenterVertically),
             horizontalAlignment = Alignment.CenterHorizontally,
         ) {
-            DenBot(size = 64.dp, decorative = true, modifier = Modifier.alpha(0.9f))
+            RhMark(size = Dimens.brandHeroSp.sp)
             Text(
                 stringResource(R.string.loading_recent_conversation),
                 color = colors.inkDim,

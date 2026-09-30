@@ -12,22 +12,43 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.ReadOnlyComposable
 import androidx.compose.runtime.compositionLocalOf
-import androidx.compose.ui.Modifier
-import androidx.compose.ui.draw.drawBehind
-import androidx.compose.ui.geometry.Offset
-import androidx.compose.ui.geometry.Size
+import androidx.compose.runtime.remember
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.Density
-import androidx.compose.ui.unit.Dp
-import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import io.rivethub.app.plane.DEFAULT_OMARCHY_PRESET
+import io.rivethub.app.plane.omarchyPresetTokens
 
 val LocalUiFontScale = compositionLocalOf { 1f }
 
-enum class ThemeMode { System, Light, Dark }
+/** Settings → Appearance. [Omarchy] paints a built-in Omarchy palette (its own light/dark). */
+enum class ThemeMode { System, Light, Dark, Omarchy }
+
+/** The prefs `themeMode` string → [ThemeMode] (unknown → System). */
+fun themeModeOf(pref: String?): ThemeMode = when (pref) {
+    "light" -> ThemeMode.Light
+    "dark" -> ThemeMode.Dark
+    "omarchy" -> ThemeMode.Omarchy
+    else -> ThemeMode.System
+}
+
+/** Colors and light/dark for a theme choice; [palette] is an Omarchy preset id. */
+fun resolveRivetColors(mode: ThemeMode, palette: String?, systemDark: Boolean): Pair<RivetColors, Boolean> {
+    if (mode == ThemeMode.Omarchy) {
+        val tokens = omarchyPresetTokens(palette ?: DEFAULT_OMARCHY_PRESET)
+            ?: omarchyPresetTokens(DEFAULT_OMARCHY_PRESET)
+        if (tokens != null) return rivetColorsFrom(tokens) to tokens.dark
+    }
+    val dark = when (mode) {
+        ThemeMode.Light -> false
+        ThemeMode.Dark -> true
+        ThemeMode.System, ThemeMode.Omarchy -> systemDark
+    }
+    return (if (dark) RivetDark else RivetLight) to dark
+}
 
 private val RivetMaterialTypography = Typography(
     bodyLarge = RivetType.sm,
@@ -114,13 +135,14 @@ private fun scheme(c: RivetColors, dark: Boolean) = if (dark) {
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun RivetTheme(mode: ThemeMode = ThemeMode.System, fontScale: Float = 1f, content: @Composable () -> Unit) {
-    val dark = when (mode) {
-        ThemeMode.System -> isSystemInDarkTheme()
-        ThemeMode.Light -> false
-        ThemeMode.Dark -> true
-    }
-    val colors = if (dark) RivetDark else RivetLight
+fun RivetTheme(
+    mode: ThemeMode = ThemeMode.System,
+    palette: String? = null,
+    fontScale: Float = 1f,
+    content: @Composable () -> Unit,
+) {
+    val systemDark = isSystemInDarkTheme()
+    val (colors, dark) = remember(mode, palette, systemDark) { resolveRivetColors(mode, palette, systemDark) }
     val current = LocalDensity.current
     // Keep the platform density (including non-linear font scaling) at M.
     val density = if (fontScale == 1f) current else Density(current.density, current.fontScale * fontScale)
@@ -148,29 +170,3 @@ object RivetTheme {
 
 /** Desktop `text-bg` on `em` fills. */
 val OnEm = Color(RivetPalette.OnEm)
-
-/**
- * Desktop body blueprint grid: two 1px line grids every 32dp (theme.css:63-67).
- * Apply on the app root over `bg`; surfaces above it use `panel`/`panel2` with alpha.
- * Lines are 1dp rects (1 CSS px == 1dp at any density): a 1px `drawLine` stroke is
- * centred on the coordinate and anti-aliases to half coverage, which halves the
- * already-faint line alpha against the desktop capture.
- */
-fun Modifier.blueprintGrid(
-    line: Color,
-    step: Dp = Grid.step,
-): Modifier = drawBehind {
-    val s = step.toPx()
-    if (s <= 0f) return@drawBehind
-    val w = 1.dp.toPx()
-    var x = 0f
-    while (x <= size.width) {
-        drawRect(line, Offset(x, 0f), Size(w, size.height))
-        x += s
-    }
-    var y = 0f
-    while (y <= size.height) {
-        drawRect(line, Offset(0f, y), Size(size.width, w))
-        y += s
-    }
-}

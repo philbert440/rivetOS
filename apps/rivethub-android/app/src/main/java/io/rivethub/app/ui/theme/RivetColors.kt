@@ -3,6 +3,8 @@ package io.rivethub.app.ui.theme
 import androidx.compose.runtime.Immutable
 import androidx.compose.runtime.staticCompositionLocalOf
 import androidx.compose.ui.graphics.Color
+import io.rivethub.app.plane.OmarchyTokens
+import io.rivethub.app.plane.hexToArgb
 
 /**
  * ARGB longs for the desktop RivetHub tokens. JVM tests assert these values
@@ -40,10 +42,6 @@ object RivetPalette {
 
     /** Default-button label on `em` fills — desktop `text-bg`. */
     const val OnEm = 0xFF0D1117L
-
-    /** `--grid-line`: rgba(52,211,153,0.045) dark / rgba(5,150,105,0.07) light. */
-    const val DarkGridLine = 0x0B34D399L
-    const val LightGridLine = 0x12059669L
 }
 
 @Immutable
@@ -61,7 +59,6 @@ data class RivetColors(
     val warn: Color,
     val link: Color,
     val assistant: Color,
-    val gridLine: Color,
 )
 
 private fun token(argb: Long): Color = Color(argb)
@@ -80,7 +77,6 @@ val RivetDark = RivetColors(
     warn = token(RivetPalette.DarkWarn),
     link = token(RivetPalette.DarkLink),
     assistant = token(RivetPalette.DarkAssistant),
-    gridLine = token(RivetPalette.DarkGridLine),
 )
 
 val RivetLight = RivetColors(
@@ -97,7 +93,23 @@ val RivetLight = RivetColors(
     warn = token(RivetPalette.LightWarn),
     link = token(RivetPalette.LightLink),
     assistant = token(RivetPalette.LightAssistant),
-    gridLine = token(RivetPalette.LightGridLine),
+)
+
+/** An Omarchy palette's tokens (`plane/OmarchyTheme.kt`) as app colors. */
+fun rivetColorsFrom(t: OmarchyTokens) = RivetColors(
+    bg = token(hexToArgb(t.bg)),
+    panel = token(hexToArgb(t.panel)),
+    panel2 = token(hexToArgb(t.panel2)),
+    line = token(hexToArgb(t.line)),
+    codeBg = token(hexToArgb(t.codeBg)),
+    ink = token(hexToArgb(t.ink)),
+    inkDim = token(hexToArgb(t.inkDim)),
+    em = token(hexToArgb(t.em)),
+    emDim = token(hexToArgb(t.emDim)),
+    red = token(hexToArgb(t.red)),
+    warn = token(hexToArgb(t.warn)),
+    link = token(hexToArgb(t.link)),
+    assistant = token(hexToArgb(t.assistant)),
 )
 
 val LocalRivetColors = staticCompositionLocalOf { RivetDark }

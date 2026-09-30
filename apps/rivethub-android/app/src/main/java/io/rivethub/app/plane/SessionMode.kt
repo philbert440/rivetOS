@@ -27,3 +27,24 @@ fun rekeySessionModes(
     if (modes[to] != null) return modes - from
     return modes - from + (to to moved)
 }
+
+/**
+ * Settings → Conversations → Default view: which view a conversation opens
+ * on when it has no explicit choice of its own. Anything but an explicit
+ * `chat` is Terminal, the phone's default.
+ */
+fun parseDefaultView(raw: String?): SessionMode =
+    if (raw?.trim()?.lowercase() == MODE_CHAT) SessionMode.Chat else SessionMode.Terminal
+
+/**
+ * Which view a conversation opens on (web `useSessionView`). Precedence:
+ * this conversation's explicit switch ([stored], written only by the user's
+ * own Terminal|Chat choice) > a session that only runs in a terminal (no
+ * harness to chat through) > the user's [defaultView]. New conversations and
+ * older ones never switched both land on the default.
+ */
+fun resolveSessionMode(stored: String?, defaultView: SessionMode, terminalOnly: Boolean): SessionMode = when {
+    !stored.isNullOrBlank() -> parseSessionMode(stored)
+    terminalOnly -> SessionMode.Terminal
+    else -> defaultView
+}

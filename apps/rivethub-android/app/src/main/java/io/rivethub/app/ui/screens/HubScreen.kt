@@ -1,8 +1,7 @@
 package io.rivethub.app.ui.screens
 
 import androidx.activity.compose.BackHandler
-import androidx.compose.foundation.gestures.awaitEachGesture
-import androidx.compose.foundation.gestures.awaitFirstDown
+import androidx.activity.compose.PredictiveBackHandler
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
@@ -21,11 +20,7 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.padding
-import androidx.compose.material3.DrawerState
-import androidx.compose.material3.DrawerValue
-import androidx.compose.material3.ModalNavigationDrawer
 import androidx.compose.material3.Text
-import androidx.compose.material3.rememberDrawerState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
@@ -42,9 +37,6 @@ import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.drawBehind
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.input.pointer.PointerEventPass
-import androidx.compose.ui.input.pointer.pointerInput
-import androidx.compose.ui.input.pointer.positionChanged
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.semantics.stateDescription
@@ -59,9 +51,6 @@ import io.rivethub.app.plane.AgentOpen
 import io.rivethub.app.plane.AgentRow
 import io.rivethub.app.plane.AgentSheetAction
 import io.rivethub.app.plane.DrawerDest
-import io.rivethub.app.plane.DrawerSwipeAction
-import io.rivethub.app.plane.EDGE_TRAVEL_DP
-import io.rivethub.app.plane.EDGE_ZONE_DP
 import io.rivethub.app.plane.HubTab
 import io.rivethub.app.plane.InboxEntry
 import io.rivethub.app.plane.InboxRoute
@@ -70,7 +59,6 @@ import io.rivethub.app.plane.LocatedChatItem
 import io.rivethub.app.plane.NodeSheetInput
 import io.rivethub.app.plane.buildNodeSheet
 import io.rivethub.app.plane.ExperimentalFlags
-import io.rivethub.app.plane.decideDrawerSwipe
 import io.rivethub.app.plane.drawerFooterDest
 import io.rivethub.app.plane.drawerOpensMemoryScreen
 import io.rivethub.app.plane.drawerTabRoute
@@ -79,12 +67,15 @@ import io.rivethub.app.plane.hubTabOnBack
 import io.rivethub.app.plane.entryAnsweredFor
 import io.rivethub.app.plane.launchableAgents
 import io.rivethub.app.plane.nodeDots
+import io.rivethub.app.plane.predictiveBackFraction
 import io.rivethub.app.plane.statusActiveNodeId
 import io.rivethub.app.plane.statusEntryNodeId
 import io.rivethub.app.ui.HubViewModel
 import io.rivethub.app.ui.components.AgentEditSheet
 import io.rivethub.app.ui.components.AgentsPickerSheet
 import io.rivethub.app.ui.components.RivetDrawerContent
+import io.rivethub.app.ui.components.RivetDrawerHost
+import io.rivethub.app.ui.components.RivetDrawerState
 import io.rivethub.app.ui.components.RivetModalSheet
 import io.rivethub.app.ui.components.RivetButton
 import io.rivethub.app.ui.components.RivetButtonSize
@@ -92,17 +83,18 @@ import io.rivethub.app.ui.components.RivetButtonVariant
 import io.rivethub.app.ui.components.TimeFmt
 import io.rivethub.app.ui.theme.RivetTheme
 import io.rivethub.app.ui.theme.RivetType
-import kotlinx.coroutines.CoroutineScope
+import kotlin.coroutines.cancellation.CancellationException
 import kotlinx.coroutines.launch
 
 /**
  * The ONE navigation drawer (drawer v2, UX-SPEC §2, slice U2b — there is no
  * right drawer). The hub, a chat session and the Memory screens all live
- * inside this same left ModalNavigationDrawer, reachable by ☰ (or the chat
- * header's history button) and by a left-edge swipe from every screen. The
- * drawer runs `gesturesEnabled = false`; [unifiedDrawerSwipe] (decision in
- * `plane/DrawerSwipe.kt`, web `lib/edge-swipe.ts` semantics) owns the
- * left-bezel open and the drag-back close.
+ * inside this same left drawer, reachable by ☰ (or the chat header's history
+ * button) and by a left-edge swipe from every screen. [RivetDrawerHost] owns
+ * the gestures: the sheet follows the finger out from the edge (gesture
+ * navigation included) and back via the scrim, and settles by fling or
+ * position (`plane/DrawerSwipe.kt`); Back closes it with a predictive-Back
+ * preview.
  *
  * The drawer body is the conversation list ([ConversationsPane]).
  * [currentSessionKey] is the open chat's key (null off a chat); the pane
@@ -133,14 +125,14 @@ fun HubDrawer(
     content: @Composable (openDrawer: () -> Unit) -> Unit,
 ) {
     val st by vm.state.collectAsState()
-    val drawerState = rememberDrawerState(DrawerValue.Closed)
+    val drawerState = remember { RivetDrawerState() }
     val scope = rememberCoroutineScope()
     var inboxOpen by remember { mutableStateOf(false) }
     var agentsPickerOpen by remember { mutableStateOf(false) }
     var editAgent by remember { mutableStateOf<AgentRow?>(null) }
     var openTick by remember { mutableIntStateOf(0) }
     LaunchedEffect(drawerState) {
-        snapshotFlow { drawerState.targetValue }.collect { if (it == DrawerValue.Open) openTick += 1 }
+        snapshotFlow { drawerState.targetOpen }.collect { if (it) openTick += 1 }
     }
     val tab = when (st.tab) {
         HubViewModel.Tab.Settings -> HubTab.Settings
@@ -196,15 +188,11 @@ fun HubDrawer(
         entryAnswered = entryAnsweredFor(st.entryAnswer, st.prefs.entryUrl, st.identityGen),
     )
 
-    BoxWithConstraints(
-        Modifier
-            .fillMaxSize()
-            .unifiedDrawerSwipe(drawerState, scope),
-    ) {
+    BoxWithConstraints(Modifier.fillMaxSize()) {
         val drawerWidth = drawerWidthDp(maxWidth.value).dp
-        ModalNavigationDrawer(
-            drawerState = drawerState,
-            gesturesEnabled = false,
+        RivetDrawerHost(
+            state = drawerState,
+            sheetWidth = drawerWidth,
             scrimColor = colors.bg.copy(alpha = 0.7f),
             drawerContent = {
                 RivetDrawerContent(
@@ -269,9 +257,17 @@ fun HubDrawer(
     // newer than any handler the content registered before this open, even
     // one that appeared after an earlier open. Sheets opened from the drawer are their own
     // windows and dismiss on Back first.
+    // Predictive Back: the sheet eases shut with the gesture, closes on
+    // commit and springs back open on cancel.
     key(openTick) {
-        BackHandler(enabled = drawerState.isOpen || drawerState.targetValue == DrawerValue.Open) {
-            closeDrawer()
+        PredictiveBackHandler(enabled = drawerState.isOpen) { progress ->
+            try {
+                progress.collect { e -> drawerState.peek(predictiveBackFraction(e.progress)) }
+                drawerState.close()
+            } catch (e: CancellationException) {
+                scope.launch { drawerState.open() }
+                throw e
+            }
         }
     }
 
@@ -477,58 +473,3 @@ fun HubScreen(
     }
 }
 
-/**
- * The edge-swipe layer for the one left drawer. Sits on [HubDrawer]'s root —
- * an ancestor of the ModalNavigationDrawer — and observes events on
- * `PointerEventPass.Initial`, so it sees every drag even with
- * `gesturesEnabled = false`. While the drawer is open only a drag that
- * starts on the scrim (right of the sheet) closes it (fix1); a drag on the
- * sheet is never consumed, so row swipe-to-archive keeps working. The down is recorded WITHOUT consuming it, so
- * taps, the ☰ button, scrim tap-to-close, and system Back keep working; each
- * move is evaluated by the pure `decideDrawerSwipe` ([state] read live), and
- * only once it fires does the layer consume the rest of the gesture (so the
- * drawer drag cannot start a text selection) and launch the open/close —
- * once per gesture.
- */
-private fun Modifier.unifiedDrawerSwipe(
-    state: DrawerState,
-    scope: CoroutineScope,
-): Modifier = pointerInput(state) {
-    val zone = EDGE_ZONE_DP.dp.toPx()
-    val travel = EDGE_TRAVEL_DP.dp.toPx()
-    awaitEachGesture {
-        val down = awaitFirstDown(requireUnconsumed = false)
-        // The open sheet's width, from this layer's own size (it spans the
-        // drawer host): a close drag must start right of it, on the scrim.
-        val sheet = drawerWidthDp(size.width.toDp().value).dp.toPx()
-        var decided = false
-        while (true) {
-            val event = awaitPointerEvent(PointerEventPass.Initial)
-            if (event.changes.none { it.pressed }) break
-            val change = event.changes.firstOrNull { it.id == down.id } ?: continue
-            if (decided) {
-                if (change.positionChanged()) change.consume()
-                continue
-            }
-            val action = decideDrawerSwipe(
-                startX = down.position.x,
-                dx = change.position.x - down.position.x,
-                dy = change.position.y - down.position.y,
-                leftOpen = state.isOpen,
-                sheetWidth = sheet,
-                zone = zone,
-                travel = travel,
-            )
-            if (action != null) {
-                decided = true
-                change.consume()
-                scope.launch {
-                    when (action) {
-                        is DrawerSwipeAction.Open -> state.open()
-                        is DrawerSwipeAction.Close -> state.close()
-                    }
-                }
-            }
-        }
-    }
-}

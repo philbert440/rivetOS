@@ -67,7 +67,7 @@ class TaskNotifier(context: Context) : SystemNotifier {
             PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT,
         )
         val n = NotificationCompat.Builder(app, CHANNEL_TASKS)
-            .setSmallIcon(R.mipmap.ic_launcher_mono)
+            .setSmallIcon(R.drawable.ic_notification)
             .setContentTitle(entry.title)
             .setContentText(entry.body)
             .setWhen(entry.atMs)

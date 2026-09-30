@@ -48,6 +48,7 @@ import io.rivethub.app.ui.theme.Radius
 import io.rivethub.app.ui.theme.RivetFonts
 import io.rivethub.app.ui.theme.RivetTheme
 import io.rivethub.app.ui.theme.RivetType
+import io.rivethub.app.ui.theme.Shape
 
 /**
  * Session row derived from the web chat.tsx narrow header and docs/UX-SPEC.md U1.
@@ -157,7 +158,7 @@ fun ChatSessionHeader(
                             contentAlignment = Alignment.Center,
                         ) {
                             Row(
-                                Modifier.border(1.dp, colors.line, RoundedCornerShape(Radius.full))
+                                Modifier.border(1.dp, colors.line, RoundedCornerShape(Shape.control))
                                     .padding(horizontal = 8.dp, vertical = 4.dp),
                                 verticalAlignment = Alignment.CenterVertically,
                                 horizontalArrangement = Arrangement.spacedBy(4.dp),

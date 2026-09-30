@@ -41,4 +41,26 @@ class SessionModeTest {
         assertSame(modes, rekeySessionModes(modes, "", "b"))
         assertSame(modes, rekeySessionModes(modes, "a", "a"))
     }
+
+    @Test fun `default view is Terminal unless chat was picked`() {
+        assertEquals(SessionMode.Terminal, parseDefaultView(null))
+        assertEquals(SessionMode.Terminal, parseDefaultView("terminal"))
+        assertEquals(SessionMode.Terminal, parseDefaultView("bogus"))
+        assertEquals(SessionMode.Chat, parseDefaultView("chat"))
+    }
+
+    @Test fun `a conversation never switched opens on the default view`() {
+        assertEquals(SessionMode.Terminal, resolveSessionMode(null, SessionMode.Terminal, terminalOnly = false))
+        assertEquals(SessionMode.Chat, resolveSessionMode("", SessionMode.Chat, terminalOnly = false))
+    }
+
+    @Test fun `this conversation's own switch wins over everything`() {
+        assertEquals(SessionMode.Chat, resolveSessionMode("chat", SessionMode.Terminal, terminalOnly = false))
+        assertEquals(SessionMode.Terminal, resolveSessionMode("terminal", SessionMode.Chat, terminalOnly = false))
+        assertEquals(SessionMode.Chat, resolveSessionMode("chat", SessionMode.Terminal, terminalOnly = true))
+    }
+
+    @Test fun `a terminal-only session opens on Terminal whatever the default`() {
+        assertEquals(SessionMode.Terminal, resolveSessionMode(null, SessionMode.Chat, terminalOnly = true))
+    }
 }

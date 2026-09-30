@@ -2,29 +2,27 @@ package io.rivethub.app.ui.theme
 
 import androidx.compose.ui.unit.dp
 
-/** Desktop Tailwind radius scale (`rounded` / `rounded-md` / `rounded-lg` / `rounded-xl` / `rounded-full`). */
+/**
+ * Desktop radius scale. The Omarchy-style redesign squares every corner
+ * (theme.css `--radius*: 0`); only [full] — status dots, toggles, round
+ * icon buttons — stays round, as `rounded-full` does on the web.
+ */
 object Radius {
-    val sm = 4.dp
-    val md = 6.dp
-    val lg = 8.dp
-    val xl = 12.dp
-    /** Message bubble corners (UX-SPEC §0.4 soft shapes). */
-    val xxl = 14.dp
+    val sm = 0.dp
+    val md = 0.dp
+    val lg = 0.dp
+    val xl = 0.dp
+    val xxl = 0.dp
     val full = 999.dp
 }
 
 // Semantic phone shapes, shared across components.
 object Shape {
-    val row = Radius.full
+    val row = Radius.sm
     val card = Radius.xl
     val bubble = Radius.xxl
     val control = Radius.md
     val tight = Radius.sm
-}
-
-/** Blueprint grid step — `background-size: 32px 32px` on desktop `body`. */
-object Grid {
-    val step = 32.dp
 }
 
 object Dimens {
@@ -59,6 +57,7 @@ object Dimens {
     /** Drawer v2 (UX-SPEC §2): the phone drawer sheet is about 300dp. */
     val drawerWidth = 300.dp
     val pageHeader = 48.dp
-    val denBotHeader = 28.dp
-    val denBotEnroll = 64.dp
+    /** Brand mark text sizes: header (top bar, drawer) and the enroll / launch hero. */
+    val brandHeaderSp = 20
+    val brandHeroSp = 40
 }
