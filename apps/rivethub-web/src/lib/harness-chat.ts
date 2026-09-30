@@ -143,22 +143,55 @@ export interface ChatNode {
   children: ChatNode[]
 }
 
+/**
+ * Longest ancestor chain the drawer will attach. An 8-link chain nests; the
+ * 9th link flattens that row. Matches `NEST_ANCESTOR_CAP` in den-server
+ * `withAncestors` — that helper must not emit an ancestor this refuses.
+ */
 const NEST_DEPTH_CAP = 8
 
-function parentInList(item: ChatItem, byKey: Map<string, ChatItem>): string | undefined {
-  const parent = item.parentKey
-  if (!parent || parent === item.key || !byKey.has(parent)) return undefined
+/**
+ * Parent links are not always stored in the same shape as row keys. A control
+ * plane child carries a canonical `parentKey` (`claude-code:<uuid>`) while a
+ * legacy-only parent is keyed by the bare native id, and the reverse happens
+ * too. Resolve to the key that is actually in the list.
+ */
+function parentResolver(
+  byKey: Map<string, ChatItem>,
+): (parent: string | undefined) => string | undefined {
+  const nativeToKey = new Map<string, string>()
+  for (const key of byKey.keys()) {
+    const native = nativeIdOf(key)
+    if (!native || byKey.has(native) || nativeToKey.has(native)) continue
+    nativeToKey.set(native, key)
+  }
+  return (parent) => {
+    if (!parent) return undefined
+    if (byKey.has(parent)) return parent
+    const native = nativeIdOf(parent) ?? parent
+    if (byKey.has(native)) return native
+    return nativeToKey.get(native)
+  }
+}
+
+function parentInList(
+  item: ChatItem,
+  byKey: Map<string, ChatItem>,
+  resolve: (parent: string | undefined) => string | undefined,
+): string | undefined {
+  const parent = resolve(item.parentKey)
+  if (!parent || parent === item.key) return undefined
   const seen = new Set<string>([item.key])
   let cur: string | undefined = parent
   let depth = 0
   while (cur && depth < NEST_DEPTH_CAP) {
     if (seen.has(cur)) return undefined
     seen.add(cur)
-    const next: ChatItem | undefined = byKey.get(cur)
-    cur = next?.parentKey
     depth++
+    cur = resolve(byKey.get(cur)?.parentKey)
   }
-  if (depth >= NEST_DEPTH_CAP) return undefined
+  // `cur` still set means another in-list ancestor sits past the cap.
+  if (cur) return undefined
   return parent
 }
 
@@ -183,10 +216,11 @@ function subtreeActivity(node: ChatNode): number {
  */
 export function nestChatItems(items: ChatItem[]): ChatNode[] {
   const byKey = new Map(items.map((it) => [it.key, it]))
+  const resolve = parentResolver(byKey)
   const childKeys = new Map<string, string[]>()
   const roots: ChatItem[] = []
   for (const it of items) {
-    const parent = parentInList(it, byKey)
+    const parent = parentInList(it, byKey, resolve)
     if (!parent) {
       roots.push(it)
       continue
@@ -241,6 +275,22 @@ export function filterChatForest(
     if (children.length > 0 || node.item.key === pin) out.push({ item: node.item, children })
   }
   return out
+}
+
+/**
+ * Drawer text filter. `q` is already trimmed and lowercased; empty matches
+ * everything. `agentName` is the label a nested row actually shows
+ * (`general-purpose`), which is not the title.
+ */
+export function chatRowMatchesQuery(item: ChatItem, q: string, customName = ''): boolean {
+  if (!q) return true
+  return (
+    customName.toLowerCase().includes(q) ||
+    item.title.toLowerCase().includes(q) ||
+    item.key.toLowerCase().includes(q) ||
+    (item.harnessId ?? '').includes(q) ||
+    (item.agentName ?? '').toLowerCase().includes(q)
+  )
 }
 
 /** Keys of the sessions a row is nested under, nearest parent last. */

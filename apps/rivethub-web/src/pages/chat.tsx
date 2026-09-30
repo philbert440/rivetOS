@@ -109,6 +109,7 @@ import {
   applyRegistryEventToPlaneSessions,
   chatItemFromSummary,
   chatItems,
+  chatRowMatchesQuery,
   denRoomKey,
   fetchHarnessPlaneSessions,
   filterChatForest,
@@ -915,7 +916,8 @@ function SessionDrawer(props: {
     archivedKeys.includes(storageKey(itemBase(it), it.key))
 
   // Filter on what the user actually SEES: custom name first, then the
-  // derived title, then the raw id (so pasting a session uuid works too).
+  // derived title, the subagent type pill, then the raw id (so pasting a
+  // session uuid works too).
   const q = filter.trim().toLowerCase()
   const agentId = agentFilter.agentId
   const agentItems = agentId
@@ -928,16 +930,8 @@ function SessionDrawer(props: {
     return true
   })
   const forest = nestChatItems(listed)
-  const matchesQuery = (it: ChatItem): boolean => {
-    if (!q) return true
-    const custom = persisted(names, itemBase(it), it.key) ?? ''
-    return (
-      custom.toLowerCase().includes(q) ||
-      it.title.toLowerCase().includes(q) ||
-      it.key.toLowerCase().includes(q) ||
-      (it.harnessId ?? '').includes(q)
-    )
-  }
+  const matchesQuery = (it: ChatItem): boolean =>
+    chatRowMatchesQuery(it, q, persisted(names, itemBase(it), it.key) ?? '')
   const shown = q ? filterChatForest(forest, matchesQuery, props.active) : forest
   const searching = q.length > 0
   const activePath = ancestorChatKeys(shown, props.active).join('\0')

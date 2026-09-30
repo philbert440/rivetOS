@@ -1,16 +1,16 @@
 /**
  * Default on-disk store host for a harness driver. Thin adapter:
  * `term/harness-sessions.ts` stays the one place that knows each store's
- * layout (`~/.claude/projects/…`, `~/.grok/sessions/…`, `~/.hermes/state.db`,
- * and tests swap this whole object for a fake rather than shimming the
- * filesystem or node:sqlite.
+ * layout (`~/.claude/projects/…`, `~/.grok/sessions/…`, `~/.hermes/state.db`).
+ * Tests swap this whole object for a fake rather than shimming the filesystem
+ * or node:sqlite.
  *
- * Five files used to say the same thing with a different name in each slot.
- * The one real difference is Claude: its store is one `<uuid>.jsonl`, so
- * "describable" and "exists" are the same question and the base derives
- * `exists` from `describe`. The other four write a session DIR or sqlite row
- * before a describable summary, so `exists` is a separate, broader probe
- * (`harnessSessionExists`) — ground truth for `--resume` / collision.
+ * `exists` is always `harnessSessionExists` — "the CLI can resume this id" —
+ * not "describe returned a row". Claude's resumable file is the top-level
+ * `<uuid>.jsonl`; a subagent `agent-<id>.jsonl` is describable and readable,
+ * but `exists` is false so resume does not pass the agent id to `--resume`.
+ * Grok and the other dir/sqlite stores write a session dir or row before a
+ * describable summary, so `exists` is the broader probe there too.
  */
 
 import {

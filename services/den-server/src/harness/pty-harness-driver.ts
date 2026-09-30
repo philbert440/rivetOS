@@ -799,11 +799,11 @@ export abstract class PtyHarnessDriver<S extends HarnessStoreHost = HarnessStore
     // — that is exactly the window right after a fresh spawn (grok's session
     // dir before its summary.json; a hermes row before its first message).
     //
-    // Deliberate on Claude, where `exists` is DERIVED from `describe` and this
-    // reads the store twice: the two are genuinely different questions, the
-    // second read only happens on the miss path (`row` undefined, `&&`
-    // short-circuits), and it re-asks a moment later, which is the direction
-    // that turns a just-lost race into a resume rather than a 400. Not an
+    // `exists` is not derived from `describe`. Claude's is the top-level
+    // `<uuid>.jsonl` only, so a subagent transcript is describable while
+    // `exists` stays false and is refused below. On a describe miss the exists
+    // probe is a second read on purpose: it re-asks a moment later, which
+    // turns a just-lost race into a resume rather than a 400. Not an
     // oversight — please do not "optimize" it into reusing `row`.
     if (!row && !(await this.storeExists(native)) && !this.live.has(native)) {
       throw new HarnessError(
@@ -1272,13 +1272,17 @@ export abstract class PtyHarnessDriver<S extends HarnessStoreHost = HarnessStore
     if (row.model) summary.model = row.model
     if (row.agentName) summary.agentName = row.agentName
     // Same harness: grok subagents are grok sessions. A bad parent id must
-    // not fail the whole list.
+    // not fail the whole list — drop the link and keep the row.
     if (
       row.parentSessionId &&
       !row.parentSessionId.includes('/') &&
       !row.parentSessionId.includes('..')
     ) {
-      summary.parentSessionId = this.sid(row.parentSessionId)
+      try {
+        summary.parentSessionId = this.sid(row.parentSessionId)
+      } catch {
+        /* malformed parent: the row stays, unparented */
+      }
     }
     if (this.live.get(row.id)?.blocked) summary.blocked = true
     return summary

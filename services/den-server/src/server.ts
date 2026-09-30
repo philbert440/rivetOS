@@ -488,23 +488,33 @@ export function createDenServer(config: DenConfig, opts: DenServerOptions = {}):
   // neither until we copy the parent's tag onto it.
   const taggedOwnerId = (id: string | undefined): string | undefined => {
     if (!id) return undefined
-    if (sessionOwners.get(id)) return id
-    const native = denJoinKey(id)
-    if (native !== id && sessionOwners.get(native)) return native
-    for (const harness of ['claude-code', 'grok-build'] as const) {
-      const canonical = formatSessionId(harness, native)
-      if (sessionOwners.get(canonical)) return canonical
+    // formatSessionId throws on a native id with trailing whitespace. A bad
+    // parent must drop the link, not 500 the list that asked.
+    try {
+      if (sessionOwners.get(id)) return id
+      const native = denJoinKey(id)
+      if (native !== id && sessionOwners.get(native)) return native
+      for (const harness of ['claude-code', 'grok-build'] as const) {
+        const canonical = formatSessionId(harness, native)
+        if (sessionOwners.get(canonical)) return canonical
+      }
+      return undefined
+    } catch {
+      return undefined
     }
-    return undefined
   }
   const stampNested = (childId: string, parentId: string | undefined, command?: string): void => {
     const parentKey = taggedOwnerId(parentId)
     if (!parentKey) return
-    const native = denJoinKey(childId)
-    sessionOwners.inherit(childId, parentKey)
-    if (native && native !== childId) sessionOwners.inherit(native, parentKey)
-    const harness = command ? ROSTER_TO_HARNESS[command] : undefined
-    if (harness && native) sessionOwners.inherit(formatSessionId(harness, native), parentKey)
+    try {
+      const native = denJoinKey(childId)
+      sessionOwners.inherit(childId, parentKey)
+      if (native && native !== childId) sessionOwners.inherit(native, parentKey)
+      const harness = command ? ROSTER_TO_HARNESS[command] : undefined
+      if (harness && native) sessionOwners.inherit(formatSessionId(harness, native), parentKey)
+    } catch {
+      // Canonical form is unusable. Tags already copied stay; the row stays listed.
+    }
   }
   // Claude session files are UUIDs. Subagent transcript ids are not.
   const sessionUuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
