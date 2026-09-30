@@ -2,11 +2,11 @@
  * Section validators — runtime, agents, providers, channels, memory.
  */
 
-import { HARNESS_IDS } from '@rivetos/types'
 import {
+  HARNESS_IDS,
   PERMISSION_PROMPT_TIMEOUT_MAX_MS,
   PERMISSION_PROMPT_TIMEOUT_MS,
-} from '@rivetos/provider-claude-cli'
+} from '@rivetos/types'
 import {
   KNOWN_RUNTIME_KEYS,
   KNOWN_AGENT_KEYS,

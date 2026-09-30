@@ -11,7 +11,11 @@
  * or no-op. Nothing here returns allow except an explicit `decide('allow')`.
  */
 
-import type { TaskApprovalRequest, TaskPermissionDecision } from '@rivetos/types'
+import {
+  PERMISSION_PROMPT_TIMEOUT_MS,
+  type TaskApprovalRequest,
+  type TaskPermissionDecision,
+} from '@rivetos/types'
 import { logger } from '../../logger.js'
 import type { TaskStore } from './store.js'
 
@@ -19,12 +23,11 @@ const log = logger('TaskPermissionBroker')
 
 /**
  * Default park when the caller omits `timeoutMs`. Boot passes
- * `parsePermissionTimeoutMs` instead (`PERMISSION_PROMPT_TIMEOUT_MS`, also
- * 60s) whenever the claude-cli package loads. This literal is only the
- * fallback for that import failing. Core does not depend on the provider
- * package, so the two 60s constants stay separate and must be kept equal.
+ * `parsePermissionTimeoutMs` whenever the claude-cli package loads; this
+ * is the fallback when that import fails. Same value as
+ * `PERMISSION_PROMPT_TIMEOUT_MS` (60s) — one constant, not a second literal.
  */
-export const TASK_PERMISSION_TIMEOUT_MS = 60_000
+export const TASK_PERMISSION_TIMEOUT_MS = PERMISSION_PROMPT_TIMEOUT_MS
 
 const MESSAGE_CAP = 500
 

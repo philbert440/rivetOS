@@ -79,6 +79,18 @@ export interface TaskSpec {
 }
 
 /**
+ * Default park for an unanswered headless `ui` permission prompt, in ms.
+ * Boot passes `providers.claude-cli.permission_timeout_ms` when that key
+ * is set; this is the fallback. Core's `TASK_PERMISSION_TIMEOUT_MS` aliases
+ * this value. Lives here, not in the claude-cli plugin: boot only loads
+ * that plugin dynamically, and a static import breaks boot's CommonJS build.
+ */
+export const PERMISSION_PROMPT_TIMEOUT_MS = 60_000
+
+/** A longer park is a stuck card, not a decision. Ten minutes. */
+export const PERMISSION_PROMPT_TIMEOUT_MAX_MS = 600_000
+
+/**
  * One settled permission prompt, appended to the task row
  * (`spec.permissionDecisions`). `timeout` is a denial: nobody answered
  * before the bounded window.

@@ -67,10 +67,12 @@ export {
   parsePermissionPrompts,
   parsePermissionTimeoutMs,
   permissionPromptToolId,
-  PERMISSION_PROMPT_TIMEOUT_MS,
-  PERMISSION_PROMPT_TIMEOUT_MAX_MS,
   PERMISSION_TOOL_NAME,
 } from './permission-prompt.js'
+export {
+  PERMISSION_PROMPT_TIMEOUT_MS,
+  PERMISSION_PROMPT_TIMEOUT_MAX_MS,
+} from '@rivetos/types'
 export type { PermissionPrompter, PermissionPromptMode } from './permission-prompt.js'
 export { parseAllowedApiKeySources }
 

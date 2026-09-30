@@ -129,6 +129,10 @@ export type {
   HarnessExecutorCapabilities,
   HarnessExecutor,
 } from './task.js'
+export {
+  PERMISSION_PROMPT_TIMEOUT_MS,
+  PERMISSION_PROMPT_TIMEOUT_MAX_MS,
+} from './task.js'
 export type { CriterionReport, VerifierResult, EvalOutcome } from './task.js'
 export {
   TASK_RESULT_FENCE,

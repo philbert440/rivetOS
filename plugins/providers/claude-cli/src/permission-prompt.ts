@@ -16,17 +16,14 @@
 
 import { randomUUID } from 'node:crypto'
 
-import type { TaskEvent, Tool } from '@rivetos/types'
+import {
+  PERMISSION_PROMPT_TIMEOUT_MAX_MS,
+  PERMISSION_PROMPT_TIMEOUT_MS,
+  type TaskEvent,
+  type Tool,
+} from '@rivetos/types'
 
-/**
- * Default park for an unanswered `ui` prompt. Boot passes
- * `permission_timeout_ms` when that key is set; this stays the fallback
- * and the value `TASK_PERMISSION_TIMEOUT_MS` must keep matching.
- */
-export const PERMISSION_PROMPT_TIMEOUT_MS = 60_000
-
-/** A longer park is a stuck card, not a decision. Ten minutes. */
-export const PERMISSION_PROMPT_TIMEOUT_MAX_MS = 600_000
+export { PERMISSION_PROMPT_TIMEOUT_MAX_MS, PERMISSION_PROMPT_TIMEOUT_MS }
 
 /**
  * `providers.claude-cli.permission_timeout_ms`. Absent, blank, or anything
