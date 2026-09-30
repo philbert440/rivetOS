@@ -156,6 +156,23 @@ describe('synthesizeToolCallContent', () => {
     expect(body.temperature).toBe(0.2)
   })
 
+  it('disables thinking via chat_template_kwargs for vLLM while keeping the top-level flag', async () => {
+    stub.enqueue(makeChatResponse('Checked gateway.'))
+    await synthesizeToolCallContent({
+      endpoint: stub.baseUrl,
+      model: 'qwen-test',
+      toolName: 'gateway',
+      toolArgs: { path: 'agents.list' },
+    })
+    expect(stub.calls).toHaveLength(1)
+    const body = stub.calls[0].body as {
+      enable_thinking: boolean
+      chat_template_kwargs: { enable_thinking: boolean }
+    }
+    expect(body.chat_template_kwargs.enable_thinking).toBe(false)
+    expect(body.enable_thinking).toBe(false)
+  })
+
   it('sends bearer auth header when apiKey provided', async () => {
     stub.enqueue(makeChatResponse('Searched logs.'))
     await synthesizeToolCallContent({

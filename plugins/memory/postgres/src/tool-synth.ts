@@ -135,6 +135,7 @@ export async function synthesizeToolCallContent(opts: ToolSynthOptions): Promise
           max_tokens: 200,
           temperature: TOOL_SYNTH_TEMPERATURE,
           enable_thinking: false,
+          chat_template_kwargs: { enable_thinking: false },
         }),
         dispatcher: httpDispatcher,
         signal: controller.signal,
