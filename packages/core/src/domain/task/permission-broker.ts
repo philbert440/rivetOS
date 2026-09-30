@@ -142,6 +142,21 @@ export class TaskPermissionBroker {
     })
   }
 
+  /**
+   * Deny every prompt still parked for `taskId`. A spawn kill has no CLI
+   * left to deliver an answer to. A later `decide('allow')` finds nothing.
+   * Returns how many prompts this call settled.
+   */
+  denyPending(taskId: string): number {
+    let settled = 0
+    for (const entry of [...this.pending.values()]) {
+      if (entry.request.taskId !== taskId) continue
+      entry.finish({ behavior: 'deny', decision: 'deny', message: 'spawn killed' })
+      settled += 1
+    }
+    return settled
+  }
+
   /** True when this call settled the prompt. False when it was unknown or already settled. */
   decide(taskId: string, requestId: string, decision: 'allow' | 'deny'): boolean {
     const entry = this.pending.get(pendingKey(taskId, requestId))

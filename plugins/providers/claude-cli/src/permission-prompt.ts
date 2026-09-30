@@ -63,6 +63,12 @@ export interface PermissionPrompter {
     toolUseId?: string
     signal?: AbortSignal
   }): Promise<PermissionAnswer>
+  /**
+   * Deny every prompt still parked for this task. A killed spawn never
+   * answers, and a late allow must not be recorded after the CLI is dead.
+   * Optional so a prompter that only answers in-process can omit it.
+   */
+  denyPending?(taskId: string): void
 }
 
 /** CLI text-block body. Allow omits `updatedInput` so the CLI keeps the

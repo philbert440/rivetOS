@@ -92,7 +92,17 @@ function tokenMatches(expected: string, header: string | undefined): boolean {
   return timingSafeEqual(got, want)
 }
 
-function extractExecuteContext(extra: unknown): ToolExecuteContext {
+function asAbortSignal(value: unknown): AbortSignal | undefined {
+  return value instanceof AbortSignal ? value : undefined
+}
+
+/**
+ * Pull MRTR responses and the caller's abort off the SDK handler context.
+ * SDK 2.0 delivers `notifications/cancelled` and transport close on
+ * `mcpReq.signal`, not on the context itself. A top-level signal, when a
+ * caller passed one, still wins.
+ */
+export function extractExecuteContext(extra: unknown): ToolExecuteContext {
   const ctx: ToolExecuteContext = {}
   if (extra && typeof extra === 'object') {
     const e = extra as Record<string, unknown>
@@ -103,7 +113,7 @@ function extractExecuteContext(extra: unknown): ToolExecuteContext {
     } else if (e.inputResponses && typeof e.inputResponses === 'object') {
       ctx.inputResponses = e.inputResponses as Record<string, unknown>
     }
-    if (e.signal instanceof AbortSignal) ctx.signal = e.signal
+    ctx.signal = asAbortSignal(e.signal) ?? (mcpReq ? asAbortSignal(mcpReq.signal) : undefined)
   }
   return ctx
 }

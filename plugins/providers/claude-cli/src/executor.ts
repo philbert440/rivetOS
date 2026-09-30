@@ -310,6 +310,9 @@ export class ClaudeCliExecutor implements HarnessExecutor {
       killed = true
       killReason ??= reason
       activeSpawn?.kill()
+      // The CLI is gone. Drop prompts it can no longer answer, or a click
+      // that lands during the 60s park records an allow the spawn never saw.
+      this.cfg.permissionPrompter?.denyPending?.(spec.taskId)
     }
 
     if (opts.signal.aborted) killNow(String(opts.signal.reason ?? 'aborted'))

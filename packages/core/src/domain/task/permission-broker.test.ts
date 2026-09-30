@@ -96,6 +96,51 @@ describe('TaskPermissionBroker', () => {
     await pending
   })
 
+  it('denyPending settles only the killed task, and a late allow does not record', async () => {
+    const { store, id } = await taskId()
+    const other = await store.create({
+      goal: 'park',
+      executor: 'harness-session',
+      agentId: 'claude',
+      origin: 'api',
+    })
+    const broker = new TaskPermissionBroker({ store, timeoutMs: 5_000 })
+    const killed = broker.ask({
+      taskId: id,
+      requestId: 'r6',
+      name: 'Bash',
+      input: { command: 'echo parked' },
+    })
+    const sibling = broker.ask({
+      taskId: id,
+      requestId: 'r7',
+      name: 'Edit',
+      input: { file_path: 'a.ts' },
+    })
+    const kept = broker.ask({
+      taskId: other.id,
+      requestId: 'r8',
+      name: 'Bash',
+      input: { command: 'pwd' },
+    })
+    expect(broker.denyPending(id)).toBe(2)
+    await expect(killed).resolves.toMatchObject({ behavior: 'deny', decision: 'deny' })
+    await expect(sibling).resolves.toMatchObject({
+      behavior: 'deny',
+      message: 'spawn killed',
+    })
+    expect(broker.decide(id, 'r6', 'allow')).toBe(false)
+    expect(broker.pendingFor(id)).toHaveLength(0)
+    expect(broker.pendingFor(other.id)).toHaveLength(1)
+    const row = await store.get(id)
+    expect(row?.spec.permissionDecisions).toEqual([
+      expect.objectContaining({ requestId: 'r6', decision: 'deny' }),
+      expect.objectContaining({ requestId: 'r7', decision: 'deny' }),
+    ])
+    expect(broker.decide(other.id, 'r8', 'deny')).toBe(true)
+    await kept
+  })
+
   it('next() resolves when the prompt parks after the wait has started', async () => {
     const { store, id } = await taskId()
     const broker = new TaskPermissionBroker({ store, timeoutMs: 5_000 })

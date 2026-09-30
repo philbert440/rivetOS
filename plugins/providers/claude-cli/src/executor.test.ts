@@ -50,7 +50,10 @@ interface FakeClaude {
  * Write a fake `claude` shell script that records argv + env, swallows
  * stdin, prints the given stream-json lines, and exits with `exitCode`.
  */
-function makeFakeClaude(lines: unknown[], opts?: { exitCode?: number; raw?: string[] }): FakeClaude {
+function makeFakeClaude(
+  lines: unknown[],
+  opts?: { exitCode?: number; raw?: string[] },
+): FakeClaude {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'fake-claude-'))
   tmpDirs.push(dir)
   const stdout = (opts?.raw ?? lines.map((l) => JSON.stringify(l))).join('\n')
@@ -263,6 +266,25 @@ describe('ClaudeCliExecutor', () => {
       'mcp__rivetos__request_permission',
     )
     expect(args).toContain('--mcp-config')
+  })
+
+  it('kill denies prompts still parked for that task', async () => {
+    const fake = makeFakeClaude(successLines('ok'))
+    const denied: string[] = []
+    const executor = new ClaudeCliExecutor({
+      binary: fake.binary,
+      permissionPrompter: {
+        ask: () => Promise.resolve({ behavior: 'deny', decision: 'deny' }),
+        denyPending: (taskId) => {
+          denied.push(taskId)
+        },
+      },
+    })
+    const spec = makeConformanceSpec()
+    const handle = executor.start(spec, { signal: new AbortController().signal })
+    await handle.kill('killed')
+    expect(denied).toEqual([spec.taskId])
+    await handle.result
   })
 
   it('permission_prompts ui without a prompter degrades to none', async () => {
