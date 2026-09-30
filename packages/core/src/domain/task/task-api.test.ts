@@ -25,6 +25,7 @@ import { createExecutorRegistry, createTaskHandler } from './runner.js'
 import { createNotImplementedHarnessExecutor } from './harness-executors.js'
 import { createTaskCompletionWaiter, type TaskCompletionWaiter } from './completion-waiter.js'
 import { createTaskApiRoute } from './task-api.js'
+import { TaskPermissionBroker } from './permission-broker.js'
 import type { PresetHostContext } from '../preset-delegation.js'
 
 const caps: HarnessExecutorCapabilities = {
@@ -78,10 +79,13 @@ async function startApi(opts?: {
   hang?: boolean
   criteriaPolicy?: import('./criteria.js').CriteriaPolicy
   localQueueNode?: string
+  /** When set, the route parks permission prompts on a broker over this store. */
+  brokerTimeoutMs?: number
 }): Promise<{
   base: string
   store: InMemoryTaskStore
   waiter: TaskCompletionWaiter
+  broker?: TaskPermissionBroker
 }> {
   const executors = createExecutorRegistry()
   executors.register('chat-loop', fakeExecutor(opts))
@@ -91,11 +95,16 @@ async function startApi(opts?: {
   })
   handler = createTaskHandler({ store, executors, nodeId: 'test-node' })
   const waiter = createTaskCompletionWaiter({ store, pollFallbackMs: 10 })
+  const broker =
+    opts?.brokerTimeoutMs !== undefined
+      ? new TaskPermissionBroker({ store, timeoutMs: opts.brokerTimeoutMs })
+      : undefined
   const route = createTaskApiRoute({
     store,
     waiter,
     criteriaPolicy: opts?.criteriaPolicy,
     localQueueNode: opts?.localQueueNode,
+    permissionBroker: broker,
   })
 
   const server: Server = createServer((req, res) => {
@@ -107,7 +116,7 @@ async function startApi(opts?: {
     await waiter.stop()
     await new Promise((r) => server.close(r))
   })
-  return { base: `http://127.0.0.1:${port}`, store, waiter }
+  return { base: `http://127.0.0.1:${port}`, store, waiter, broker }
 }
 
 const create = (base: string, body: unknown, query = '') =>
@@ -816,5 +825,175 @@ describe('agent-aware dispatch (resolveAffinity)', () => {
     expect(row?.spec.delegation).toBeUndefined()
     expect(row?.spec.meshFrom).toBeUndefined()
     expect(row?.spec.model).toBe('haiku')
+  })
+
+  it('answers a parked permission prompt and leaves the default wait terminal-only', async () => {
+    const { base, store, broker } = await startApi({ hang: true, brokerTimeoutMs: 5_000 })
+    if (!broker) throw new Error('broker missing')
+    const created = await create(base, { goal: 'hold', agentId: 'opus' })
+    const { task } = (await created.json()) as { task: { id: string } }
+
+    const pending = broker.ask({
+      taskId: task.id,
+      requestId: 'req-1',
+      name: 'Bash',
+      input: { command: 'ls' },
+    })
+
+    const viewed = await fetch(`${base}/api/tasks/${task.id}`)
+    const viewBody = (await viewed.json()) as {
+      task: { pendingApprovals?: Array<{ requestId: string; name: string }> }
+    }
+    expect(viewBody.task.pendingApprovals?.[0]).toMatchObject({ requestId: 'req-1', name: 'Bash' })
+
+    const blocked = await fetch(`${base}/api/tasks/${task.id}/wait?timeoutMs=80`)
+    expect(blocked.status).toBe(504)
+
+    const early = await fetch(`${base}/api/tasks/${task.id}/wait?onApproval=return&timeoutMs=2000`)
+    expect(early.status).toBe(200)
+    const earlyBody = (await early.json()) as { approval: { requestId: string; type: string } }
+    expect(earlyBody.approval).toMatchObject({ type: 'approval-request', requestId: 'req-1' })
+
+    const bad = await fetch(`${base}/api/tasks/${task.id}/approvals/req-1`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ decision: 'allow-session' }),
+    })
+    expect(bad.status).toBe(400)
+
+    const missing = await fetch(`${base}/api/tasks/${task.id}/approvals/nope`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ decision: 'allow' }),
+    })
+    expect(missing.status).toBe(404)
+
+    const ok = await fetch(`${base}/api/tasks/${task.id}/approvals/req-1`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ decision: 'allow' }),
+    })
+    expect(ok.status).toBe(202)
+    await expect(pending).resolves.toMatchObject({ behavior: 'allow', decision: 'allow' })
+
+    const row = await store.get(task.id)
+    expect(row?.spec.permissionDecisions).toEqual([
+      expect.objectContaining({ requestId: 'req-1', tool: 'Bash', decision: 'allow' }),
+    ])
+
+    const again = await fetch(`${base}/api/tasks/${task.id}/approvals/req-1`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ decision: 'deny' }),
+    })
+    expect(again.status).toBe(404)
+  })
+
+  it('POST /kill denies a parked prompt and a later allow is refused', async () => {
+    const { base, store, broker } = await startApi({ hang: true, brokerTimeoutMs: 5_000 })
+    if (!broker) throw new Error('broker missing')
+    const created = await create(base, { goal: 'hold', agentId: 'opus' })
+    const { task } = (await created.json()) as { task: { id: string } }
+    const other = await store.create({
+      goal: 'other',
+      executor: 'chat-loop',
+      agentId: 'opus',
+      origin: 'api',
+    })
+    const pending = broker.ask({
+      taskId: task.id,
+      requestId: 'req-kill',
+      name: 'Bash',
+      input: { command: 'ls' },
+    })
+    const sibling = broker.ask({
+      taskId: other.id,
+      requestId: 'req-keep',
+      name: 'Bash',
+      input: { command: 'pwd' },
+    })
+
+    const killed = await fetch(`${base}/api/tasks/${task.id}/kill`, { method: 'POST' })
+    expect(killed.status).toBe(200)
+    await expect(pending).resolves.toMatchObject({
+      behavior: 'deny',
+      decision: 'deny',
+      message: 'task is terminal',
+    })
+    expect(broker.decide(task.id, 'req-kill', 'allow')).toBe(false)
+    expect(broker.pendingFor(other.id)).toHaveLength(1)
+
+    const allow = await fetch(`${base}/api/tasks/${task.id}/approvals/req-kill`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ decision: 'allow' }),
+    })
+    expect(allow.status).toBe(409)
+    const row = await store.get(task.id)
+    expect(row?.status).toBe('killed')
+    expect(row?.spec.permissionDecisions).toEqual([
+      expect.objectContaining({
+        requestId: 'req-kill',
+        tool: 'Bash',
+        decision: 'deny',
+        message: 'task is terminal',
+      }),
+    ])
+    const viewed = await fetch(`${base}/api/tasks/${task.id}`)
+    const viewBody = (await viewed.json()) as { task: { pendingApprovals?: unknown[] } }
+    expect(viewBody.task.pendingApprovals).toBeUndefined()
+
+    expect(broker.decide(other.id, 'req-keep', 'deny')).toBe(true)
+    await sibling
+  })
+
+  it('store finish denies a parked prompt and a later allow is refused', async () => {
+    const { base, store, broker } = await startApi({ hang: true, brokerTimeoutMs: 5_000 })
+    if (!broker) throw new Error('broker missing')
+    const created = await create(base, { goal: 'hold', agentId: 'opus' })
+    const { task } = (await created.json()) as { task: { id: string } }
+    const pending = broker.ask({
+      taskId: task.id,
+      requestId: 'req-finish',
+      name: 'Edit',
+      input: { file_path: 'a.ts' },
+    })
+    await store.finish(task.id, 'failed', {
+      verdict: 'failed',
+      summary: 'nope',
+      artifacts: [],
+      usage: { inputTokens: 0, outputTokens: 0, totalTokens: 0, turns: 0, wallClockMs: 0 },
+      error: 'nope',
+    })
+    await expect(pending).resolves.toMatchObject({
+      behavior: 'deny',
+      decision: 'deny',
+      message: 'task is terminal',
+    })
+    const allow = await fetch(`${base}/api/tasks/${task.id}/approvals/req-finish`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ decision: 'allow' }),
+    })
+    expect(allow.status).toBe(409)
+    const row = await store.get(task.id)
+    expect(row?.spec.permissionDecisions).toEqual([
+      expect.objectContaining({ requestId: 'req-finish', decision: 'deny' }),
+    ])
+    expect(row?.spec.permissionDecisions).not.toEqual(
+      expect.arrayContaining([expect.objectContaining({ decision: 'allow' })]),
+    )
+  })
+
+  it('POST /approvals 404s when no broker is wired', async () => {
+    const { base } = await startApi({ hang: true })
+    const created = await create(base, { goal: 'hold', agentId: 'opus' })
+    const { task } = (await created.json()) as { task: { id: string } }
+    const res = await fetch(`${base}/api/tasks/${task.id}/approvals/req-1`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ decision: 'allow' }),
+    })
+    expect(res.status).toBe(404)
   })
 })

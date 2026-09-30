@@ -27,6 +27,8 @@ import {
   runExecutorConformance,
   makeConformanceSpec,
 } from '../../../../packages/core/src/domain/task/test/executor-conformance.js'
+import { InMemoryTaskStore } from '../../../../packages/core/src/domain/task/store.js'
+import { TaskPermissionBroker } from '../../../../packages/core/src/domain/task/permission-broker.js'
 
 // ---------------------------------------------------------------------------
 // Fake claude binary fixtures
@@ -264,6 +266,135 @@ describe('ClaudeCliExecutor', () => {
     expect(args[args.indexOf('--effort') + 1]).toBe('high')
     expect(args).toContain('--no-session-persistence')
     expect(args).toContain('--permission-mode')
+    // Unset permission_prompts stays off the argv. A regression here changes
+    // every spawn, not just the ones that opted in.
+    expect(args).not.toContain('--permission-prompts')
+    expect(args).not.toContain('--permission-prompt-tool')
+  })
+
+  it('permission_prompts none is an immediate deny and does not mount a tool', async () => {
+    const fake = makeFakeClaude(successLines('ok'))
+    const executor = new ClaudeCliExecutor({ binary: fake.binary, permissionPrompts: 'none' })
+    await executor.start(makeConformanceSpec(), { signal: new AbortController().signal }).result
+    const args = fake.args()
+    expect(args[args.indexOf('--permission-prompts') + 1]).toBe('none')
+    expect(args).not.toContain('--permission-prompt-tool')
+  })
+
+  it('permission_prompts ui names the embedded tool', async () => {
+    const fake = makeFakeClaude(successLines('ok'))
+    const executor = new ClaudeCliExecutor({
+      binary: fake.binary,
+      permissionPrompts: 'ui',
+      permissionPrompter: {
+        ask: () => Promise.resolve({ behavior: 'deny', decision: 'deny', message: 'no' }),
+      },
+    })
+    await executor.start(makeConformanceSpec(), { signal: new AbortController().signal }).result
+    const args = fake.args()
+    expect(args[args.indexOf('--permission-prompts') + 1]).toBe('host')
+    expect(args[args.indexOf('--permission-prompt-tool') + 1]).toBe(
+      'mcp__rivetos__request_permission',
+    )
+    expect(args).toContain('--mcp-config')
+  })
+
+  it('a spawn that exits denies a prompt still parked for that task', async () => {
+    const store = new InMemoryTaskStore()
+    const row = await store.create({
+      goal: 'park',
+      executor: 'harness-session',
+      agentId: 'claude',
+      origin: 'api',
+    })
+    const broker = new TaskPermissionBroker({ store, timeoutMs: 30_000 })
+    const pending = broker.ask({
+      taskId: row.id,
+      requestId: 'parked',
+      name: 'Bash',
+      input: { command: 'ls' },
+    })
+    const fake = makeFakeClaude(successLines('ok'))
+    const executor = new ClaudeCliExecutor({
+      binary: fake.binary,
+      permissionPrompter: broker,
+    })
+    const result = await executor.start(makeConformanceSpec({ taskId: row.id }), {
+      signal: new AbortController().signal,
+    }).result
+    expect(result.verdict).toBe('completed')
+    await expect(pending).resolves.toMatchObject({
+      behavior: 'deny',
+      decision: 'deny',
+      message: 'spawn ended',
+    })
+    expect(broker.decide(row.id, 'parked', 'allow')).toBe(false)
+    expect((await store.get(row.id))?.spec.permissionDecisions).toEqual([
+      expect.objectContaining({
+        requestId: 'parked',
+        decision: 'deny',
+        message: 'spawn ended',
+      }),
+    ])
+  })
+
+  it('a spawn that fails to start denies a prompt still parked for that task', async () => {
+    const store = new InMemoryTaskStore()
+    const row = await store.create({
+      goal: 'park',
+      executor: 'harness-session',
+      agentId: 'claude',
+      origin: 'api',
+    })
+    const broker = new TaskPermissionBroker({ store, timeoutMs: 30_000 })
+    const pending = broker.ask({
+      taskId: row.id,
+      requestId: 'parked-miss',
+      name: 'Bash',
+      input: { command: 'ls' },
+    })
+    const executor = new ClaudeCliExecutor({
+      binary: '/nonexistent/claude-nope',
+      permissionPrompter: broker,
+    })
+    const result = await executor.start(makeConformanceSpec({ taskId: row.id }), {
+      signal: new AbortController().signal,
+    }).result
+    expect(result.verdict).toBe('failed')
+    await expect(pending).resolves.toMatchObject({
+      behavior: 'deny',
+      decision: 'deny',
+      message: 'spawn ended',
+    })
+    expect(broker.decide(row.id, 'parked-miss', 'allow')).toBe(false)
+  })
+
+  it('kill denies prompts still parked for that task', async () => {
+    const fake = makeFakeClaude(successLines('ok'))
+    const denied: string[] = []
+    const executor = new ClaudeCliExecutor({
+      binary: fake.binary,
+      permissionPrompter: {
+        ask: () => Promise.resolve({ behavior: 'deny', decision: 'deny' }),
+        denyPending: (taskId) => {
+          denied.push(taskId)
+        },
+      },
+    })
+    const spec = makeConformanceSpec()
+    const handle = executor.start(spec, { signal: new AbortController().signal })
+    await handle.kill('killed')
+    expect(denied).toEqual([spec.taskId])
+    await handle.result
+  })
+
+  it('permission_prompts ui without a prompter degrades to none', async () => {
+    const fake = makeFakeClaude(successLines('ok'))
+    const executor = new ClaudeCliExecutor({ binary: fake.binary, permissionPrompts: 'ui' })
+    await executor.start(makeConformanceSpec(), { signal: new AbortController().signal }).result
+    const args = fake.args()
+    expect(args[args.indexOf('--permission-prompts') + 1]).toBe('none')
+    expect(args).not.toContain('--permission-prompt-tool')
   })
 
   it('spawns with RIVETOS_TASK_ID=<id> and RIVETOS_DEN_HOOK_DISABLED=1', async () => {

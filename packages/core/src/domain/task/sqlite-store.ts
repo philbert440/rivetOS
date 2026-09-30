@@ -20,6 +20,7 @@ import type {
   EvalOutcome,
   TaskBudget,
   TaskExecutorKind,
+  TaskPermissionDecision,
   TaskResult,
   TaskStatus,
   TaskUsage,
@@ -27,6 +28,9 @@ import type {
 import {
   AWAITING_INPUT_TTL_MS_DEFAULT,
   SWEEP_STALE_MS_DEFAULT,
+  TaskTerminalNotify,
+  callerSpec,
+  isTerminalTaskStatus,
   taskJobKey,
   type NewTaskInput,
   type OutcomeFilter,
@@ -35,6 +39,7 @@ import {
   type TaskRow,
   type TaskStore,
   type TaskStoreTuning,
+  type TaskTerminalListener,
   type TerminalOutcome,
 } from './store.js'
 
@@ -211,6 +216,7 @@ function sqliteToPublic(row: SqliteTaskRow): TaskRow {
 /* eslint-disable @typescript-eslint/require-await */
 export class SqliteTaskStore implements TaskStore {
   private readonly db: DatabaseSync
+  private readonly terminal = new TaskTerminalNotify()
   private readonly sweepStaleMs: number
   private readonly awaitingInputTtlMs: number
   private closed = false
@@ -228,6 +234,10 @@ export class SqliteTaskStore implements TaskStore {
     this.db.exec(SCHEMA)
     this.sweepStaleMs = tuning?.sweepStaleMs ?? SWEEP_STALE_MS_DEFAULT
     this.awaitingInputTtlMs = tuning?.awaitingInputTtlMs ?? AWAITING_INPUT_TTL_MS_DEFAULT
+  }
+
+  onTerminal(listener: TaskTerminalListener): () => void {
+    return this.terminal.subscribe(listener)
   }
 
   /** Release the file. Idempotent. */
@@ -263,7 +273,7 @@ export class SqliteTaskStore implements TaskStore {
           input.goal,
           jsonText(input.contextRefs ?? []),
           jsonText(input.acceptanceCriteria ?? []),
-          jsonText(input.spec ?? {}),
+          jsonText(callerSpec(input.spec)),
           input.executor,
           input.executorTarget ?? null,
           input.agentId,
@@ -305,7 +315,7 @@ export class SqliteTaskStore implements TaskStore {
           input.goal,
           jsonText(input.contextRefs ?? []),
           jsonText(input.acceptanceCriteria ?? []),
-          jsonText(input.spec ?? {}),
+          jsonText(callerSpec(input.spec)),
           input.executor,
           input.executorTarget ?? null,
           input.agentId,
@@ -393,7 +403,7 @@ export class SqliteTaskStore implements TaskStore {
 
   async finish(id: string, status: TaskStatus, result: TaskResult): Promise<void> {
     const now = iso(Date.now())
-    this.db
+    const info = this.db
       .prepare(
         `UPDATE ros_tasks
            SET status = ?,
@@ -406,6 +416,7 @@ export class SqliteTaskStore implements TaskStore {
          WHERE id = ?`,
       )
       .run(status, jsonText(result), jsonText(result.usage), result.error ?? null, now, now, id)
+    if (Number(info.changes) > 0 && isTerminalTaskStatus(status)) this.terminal.emit(id, status)
   }
 
   async recordEval(id: string, outcome: EvalOutcome): Promise<void> {
@@ -498,7 +509,7 @@ export class SqliteTaskStore implements TaskStore {
 
   async requestKill(id: string): Promise<TaskStatus | undefined> {
     const now = iso(Date.now())
-    return this.tx(() => {
+    const prior = this.tx(() => {
       const row = this.db
         .prepare(
           `SELECT status FROM ros_tasks
@@ -518,6 +529,8 @@ export class SqliteTaskStore implements TaskStore {
         .run(now, now, id)
       return row.status
     })
+    if (prior !== undefined) this.terminal.emit(id, 'killed')
+    return prior
   }
 
   async takePendingMessage(id: string): Promise<string | undefined> {
@@ -579,6 +592,24 @@ export class SqliteTaskStore implements TaskStore {
     this.db.prepare(`UPDATE ros_tasks SET spec = ? WHERE id = ?`).run(jsonText(spec), id)
   }
 
+  async appendPermissionDecision(id: string, decision: TaskPermissionDecision): Promise<void> {
+    this.db
+      .prepare(
+        `UPDATE ros_tasks
+           SET spec = json_set(
+             spec,
+             '$.permissionDecisions',
+             json_insert(
+               COALESCE(json_extract(spec, '$.permissionDecisions'), json('[]')),
+               '$[#]',
+               json(?)
+             )
+           )
+         WHERE id = ?`,
+      )
+      .run(JSON.stringify(decision), id)
+  }
+
   async heartbeat(id: string): Promise<void> {
     this.db
       .prepare(`UPDATE ros_tasks SET last_heartbeat_at = ? WHERE id = ?`)
@@ -608,9 +639,10 @@ export class SqliteTaskStore implements TaskStore {
                  completed_at = ?,
                  duration_ms = ${DURATION_SQL}
            WHERE status = 'running' AND claimed_by = ?
-             AND (last_heartbeat_at IS NULL OR last_heartbeat_at <= ?)`,
+             AND (last_heartbeat_at IS NULL OR last_heartbeat_at <= ?)
+           RETURNING id`,
         )
-        .run(now, now, node, staleBefore)
+        .all(now, now, node, staleBefore) as unknown as Array<{ id: string }>
       const reaped = this.db
         .prepare(
           `UPDATE ros_tasks
@@ -620,16 +652,22 @@ export class SqliteTaskStore implements TaskStore {
                  duration_ms = ${DURATION_SQL}
            WHERE status = 'awaiting-input' AND claimed_by = ?
              AND (julianday(?) - julianday(COALESCE(last_heartbeat_at, created_at))) * 86400000
-                 >= COALESCE(CAST(json_extract(budget, '$.maxWallClockMs') AS INTEGER), ?)`,
+                 >= COALESCE(CAST(json_extract(budget, '$.maxWallClockMs') AS INTEGER), ?)
+           RETURNING id`,
         )
-        .run(now, now, node, now, this.awaitingInputTtlMs)
+        .all(now, now, node, now, this.awaitingInputTtlMs) as unknown as Array<{ id: string }>
       return {
         ids: requeued.map((row) => row.id),
-        n: requeued.length + Number(failed.changes) + Number(reaped.changes),
+        failedIds: failed.map((row) => row.id),
+        timeoutIds: reaped.map((row) => row.id),
       }
     })
     for (const id of touched.ids) this.enqueue?.(id)
-    return touched.n
+    // After the transaction commits. A listener that writes the same row
+    // (permission audit) must not run inside it.
+    for (const id of touched.failedIds) this.terminal.emit(id, 'failed')
+    for (const id of touched.timeoutIds) this.terminal.emit(id, 'timeout')
+    return touched.ids.length + touched.failedIds.length + touched.timeoutIds.length
   }
 
   async reenqueue(id: string): Promise<void> {

@@ -11,6 +11,7 @@ import type { Tool, ToolContext } from '@rivetos/types'
 
 import { embedMcpServerForTurn, type EmbeddedMcpHandle } from './mcp-bridge.js'
 import { type BridgeLogger } from './log.js'
+import { PERMISSION_TOOL_NAME } from './permission-prompt.js'
 
 // ---------------------------------------------------------------------------
 // Test fixtures
@@ -199,6 +200,33 @@ describe('embedMcpServerForTurn (v2 / 2026-07-28 default)', () => {
       expect(names).toContain('echo_test')
       expect(names).toContain('bad')
       expect(logStub.warn).not.toHaveBeenCalled()
+    } finally {
+      await client.close()
+    }
+  })
+
+  it('hides request_permission from tools/list and still calls it by name', async () => {
+    const gate: Tool = {
+      name: PERMISSION_TOOL_NAME,
+      description: 'Internal gate. Not a tool for the model to call.',
+      parameters: {
+        type: 'object',
+        properties: {
+          tool_name: { type: 'string', description: 'tool' },
+        },
+        required: ['tool_name'],
+      },
+      execute: () => Promise.resolve('parked-deny'),
+    }
+    handle = await embedMcpServerForTurn({ tools: [makeEchoTool(), gate] })
+    const client = await buildV2Client(handle)
+    try {
+      const names = (await client.listTools()).map((tool) => tool.name)
+      expect(names).toContain('echo_test')
+      expect(names).not.toContain(PERMISSION_TOOL_NAME)
+      expect(await client.callTool(PERMISSION_TOOL_NAME, { tool_name: 'Bash' })).toContain(
+        'parked-deny',
+      )
     } finally {
       await client.close()
     }

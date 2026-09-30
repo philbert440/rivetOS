@@ -3,7 +3,7 @@ import { ShieldQuestion } from 'lucide-react'
 import type { ApprovalDecision } from '@rivetos/types'
 import type { PendingApproval } from '../stores/chat.js'
 import { supportsSessionApproval } from '../lib/approval-options.js'
-import { humanToolTitle } from '../lib/tool-titles.js'
+import { approvalActionText, pendingToolTitle } from '../lib/tool-titles.js'
 
 /**
  * Tool-approval prompt for a harness that surfaces its permission gate on the
@@ -17,6 +17,11 @@ import { humanToolTitle } from '../lib/tool-titles.js'
 export function HarnessApprovalCard(props: {
   pending: PendingApproval[]
   disabled?: boolean
+  /**
+   * Offer "Allow for session". Task prompts pass false: this card cannot
+   * mint a CLI session rule, and a no-op click would sit until the deny window.
+   */
+  allowSession?: boolean
   onDecide: (requestId: string, decision: ApprovalDecision) => void
 }): JSX.Element | null {
   if (props.pending.length === 0) return null
@@ -36,9 +41,10 @@ export function HarnessApprovalCard(props: {
     }
   }
 
+  const action = approvalActionText(request.name, request.input)
   const choices: { label: string; decision: ApprovalDecision; accent: boolean }[] = [
     { label: 'Allow', decision: 'allow', accent: true },
-    ...(supportsSessionApproval(scrapedOptions)
+    ...(props.allowSession !== false && supportsSessionApproval(scrapedOptions)
       ? [{ label: 'Allow for session', decision: 'allow-session' as const, accent: false }]
       : []),
     { label: 'Deny', decision: 'deny', accent: false },
@@ -52,7 +58,7 @@ export function HarnessApprovalCard(props: {
     >
       <div className="flex items-center gap-2 text-xs text-ink">
         <ShieldQuestion className="size-3.5 shrink-0 text-em" aria-hidden />
-        <span className="min-w-0 truncate">{humanToolTitle(request.name, args)}</span>
+        <span className="min-w-0 truncate">{pendingToolTitle(request.name, args)}</span>
         {props.pending.length > 1 && (
           <span className="shrink-0 font-mono text-[10px] text-ink-dim">
             +{props.pending.length - 1} waiting
@@ -60,6 +66,11 @@ export function HarnessApprovalCard(props: {
         )}
       </div>
       {request.reason && <div className="mt-1 text-[11px] text-ink-dim">{request.reason}</div>}
+      {action && (
+        <pre className="mt-1 max-h-48 overflow-auto whitespace-pre-wrap break-words font-mono text-[11px] text-ink">
+          {action}
+        </pre>
+      )}
       {scrapedOptions.length > 0 && (
         <ul className="mt-1 list-inside list-disc font-mono text-[10px] text-ink-dim">
           {scrapedOptions.map((o) => (

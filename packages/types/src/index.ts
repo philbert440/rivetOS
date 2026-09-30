@@ -122,12 +122,14 @@ export type {
   TaskUsage,
   TaskSpec,
   TaskEvent,
+  TaskPermissionDecision,
   TaskVerdict,
   TaskResult,
   TaskHandle,
   HarnessExecutorCapabilities,
   HarnessExecutor,
 } from './task.js'
+export { PERMISSION_PROMPT_TIMEOUT_MS, PERMISSION_PROMPT_TIMEOUT_MAX_MS } from './task.js'
 export type { CriterionReport, VerifierResult, EvalOutcome } from './task.js'
 export {
   TASK_RESULT_FENCE,
@@ -283,6 +285,9 @@ export type {
   TasksListResponse,
   TaskSteerAccepted,
   TaskKillResponse,
+  TaskApprovalRequest,
+  TaskApprovalAccepted,
+  TaskApprovalWaitResponse,
   TaskWaitTimeoutResponse,
   CatalogAgent,
   CatalogCommand,

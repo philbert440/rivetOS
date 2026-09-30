@@ -101,3 +101,62 @@ export function humanToolTitle(rawName: string, args?: ToolArgs): string {
 
   return name.replace(/_/g, ' ')
 }
+
+/**
+ * Label for a prompt that has not run yet. Same text as {@link humanToolTitle}
+ * except a shell call says "Run", not "Ran".
+ */
+export function pendingToolTitle(rawName: string, args?: ToolArgs): string {
+  const title = humanToolTitle(rawName, args)
+  if (title === 'Ran a command') return 'Run a command'
+  if (title.startsWith('Ran: ')) return `Run: ${title.slice('Ran: '.length)}`
+  return title
+}
+
+function isShellTool(name: string, lower: string): boolean {
+  return (
+    name === 'Bash' ||
+    lower === 'bash' ||
+    lower === 'shell' ||
+    lower === 'run_terminal_command' ||
+    lower === 'run_terminal_cmd'
+  )
+}
+
+function isFileMutation(name: string, lower: string): boolean {
+  return (
+    name === 'Edit' ||
+    name === 'NotebookEdit' ||
+    name === 'Write' ||
+    lower === 'search_replace' ||
+    lower === 'edit_file' ||
+    lower === 'apply_patch' ||
+    lower === 'write_file' ||
+    lower === 'create_file'
+  )
+}
+
+/**
+ * The action a pending approval would perform, shown in full before the
+ * buttons. A shell uses `command` and ignores the model-written description.
+ * A write or edit shows the path plus the payload. Undefined when there is
+ * nothing more than the label.
+ */
+export function approvalActionText(rawName: string, input: unknown): string | undefined {
+  if (!input || typeof input !== 'object' || Array.isArray(input)) return undefined
+  const args = input as Record<string, unknown>
+  const name = normalizeToolName(rawName)
+  const lower = name.toLowerCase()
+  if (isShellTool(name, lower)) return str(args, 'command')
+  if (!isFileMutation(name, lower)) return undefined
+  const path = str(args, 'file_path') ?? str(args, 'path') ?? str(args, 'notebook_path')
+  const skip = new Set(['file_path', 'path', 'notebook_path', 'description'])
+  const parts: string[] = []
+  for (const [key, value] of Object.entries(args)) {
+    if (skip.has(key) || value == null || value === '') continue
+    parts.push(`${key}:\n${typeof value === 'string' ? value : JSON.stringify(value)}`)
+  }
+  const payload = parts.length > 0 ? parts.join('\n\n') : undefined
+  if (!path && !payload) return undefined
+  return [path, payload].filter((part) => part !== undefined).join('\n')
+}

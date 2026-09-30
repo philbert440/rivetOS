@@ -69,6 +69,12 @@ export interface V2McpServerOptions {
   serverVersion?: string
   /** Optional human-readable Implementation.description. */
   serverDescription?: string
+  /**
+   * Tool names left out of `tools/list`. `tools/call` by name still works.
+   * Used for `request_permission`: the model and the CLI share one bearer,
+   * and disabling the tool would reject the CLI's permission-prompt call.
+   */
+  omitFromToolsList?: readonly string[]
 }
 
 export interface V2McpServer {
@@ -92,7 +98,75 @@ function tokenMatches(expected: string, header: string | undefined): boolean {
   return timingSafeEqual(got, want)
 }
 
-function extractExecuteContext(extra: unknown): ToolExecuteContext {
+function asAbortSignal(value: unknown): AbortSignal | undefined {
+  return value instanceof AbortSignal ? value : undefined
+}
+
+/**
+ * Pull MRTR responses and the caller's abort off the SDK handler context.
+ * SDK 2.0 delivers `notifications/cancelled` and transport close on
+ * `mcpReq.signal`, not on the context itself. A top-level signal, when a
+ * caller passed one, still wins.
+ */
+/**
+ * Drop named tools from a `tools/list` result. Anything that is not a
+ * `{ tools: [...] }` object is returned unchanged. Extra fields are kept.
+ */
+export function omitToolsFromList(result: unknown, omit: ReadonlySet<string>): unknown {
+  if (!result || typeof result !== 'object' || !('tools' in result)) return result
+  const tools = (result as { tools?: unknown }).tools
+  if (!Array.isArray(tools)) return result
+  return {
+    ...result,
+    tools: tools.filter((tool) => {
+      if (!tool || typeof tool !== 'object' || !('name' in tool)) return true
+      const name = (tool as { name?: unknown }).name
+      return typeof name !== 'string' || !omit.has(name)
+    }),
+  }
+}
+
+function isToolsListMethod(method: unknown): boolean {
+  if (method === 'tools/list') return true
+  if (method && typeof method === 'object' && 'method' in method) {
+    return (method as { method?: unknown }).method === 'tools/list'
+  }
+  return false
+}
+
+/**
+ * The SDK installs `tools/list` on the first `registerTool`. Replace that
+ * handler so the omitted names stay callable: `tool.disable()` would reject
+ * `tools/call` too, which breaks `--permission-prompt-tool`.
+ */
+function installToolsListOmit(server: McpServer, omit: readonly string[]): void {
+  if (omit.length === 0) return
+  const omitSet = new Set(omit)
+  const protocol = server.server as unknown as {
+    setRequestHandler: (...args: unknown[]) => unknown
+  }
+  const original = protocol.setRequestHandler.bind(protocol)
+  let wrapped = false
+  protocol.setRequestHandler = (...args: unknown[]): unknown => {
+    const handler = args[args.length - 1]
+    if (!wrapped && isToolsListMethod(args[0]) && typeof handler === 'function') {
+      wrapped = true
+      const filtered = async (request: unknown, extra: unknown): Promise<unknown> => {
+        const result: unknown = await (handler as (req: unknown, extra: unknown) => unknown)(
+          request,
+          extra,
+        )
+        return omitToolsFromList(result, omitSet)
+      }
+      const next = args.slice()
+      next[next.length - 1] = filtered
+      return original(...next)
+    }
+    return original(...args)
+  }
+}
+
+export function extractExecuteContext(extra: unknown): ToolExecuteContext {
   const ctx: ToolExecuteContext = {}
   if (extra && typeof extra === 'object') {
     const e = extra as Record<string, unknown>
@@ -103,7 +177,7 @@ function extractExecuteContext(extra: unknown): ToolExecuteContext {
     } else if (e.inputResponses && typeof e.inputResponses === 'object') {
       ctx.inputResponses = e.inputResponses as Record<string, unknown>
     }
-    if (e.signal instanceof AbortSignal) ctx.signal = e.signal
+    ctx.signal = asAbortSignal(e.signal) ?? (mcpReq ? asAbortSignal(mcpReq.signal) : undefined)
   }
   return ctx
 }
@@ -116,6 +190,7 @@ function buildServer(
     version: string
     description?: string
     toolsListCache?: CacheHint | null
+    omitFromToolsList?: readonly string[]
   },
 ): McpServer {
   const cacheHints =
@@ -133,6 +208,8 @@ function buildServer(
     },
     cacheHints ? { cacheHints } : undefined,
   )
+
+  installToolsListOmit(server, options.omitFromToolsList ?? [])
 
   for (const tool of tools) {
     const annotations = tool.annotations
@@ -222,6 +299,8 @@ export interface V2StdioMcpServerOptions {
   serverName?: string
   serverVersion?: string
   serverDescription?: string
+  /** See {@link V2McpServerOptions.omitFromToolsList}. */
+  omitFromToolsList?: readonly string[]
   /**
    * How a 2025-era opening (an `initialize` request) is handled. 'serve'
    * (default) pins a 2025-era instance from the same factory — Claude Code
@@ -265,6 +344,7 @@ export function createV2StdioMcpServer(options: V2StdioMcpServerOptions = {}): V
             version: serverVersion,
             description: options.serverDescription,
             toolsListCache: options.toolsListCache,
+            omitFromToolsList: options.omitFromToolsList,
           }),
         {
           legacy: options.legacy ?? 'serve',
@@ -292,6 +372,7 @@ export function createV2McpServer(options: V2McpServerOptions = {}): V2McpServer
       version: serverVersion,
       description: options.serverDescription,
       toolsListCache: options.toolsListCache,
+      omitFromToolsList: options.omitFromToolsList,
     }),
   )
   const nodeHandler = toNodeHandler(handler)

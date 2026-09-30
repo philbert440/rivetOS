@@ -80,7 +80,9 @@ providers:
     model: opus # or 'sonnet' — default: CLI default
     effort: medium # low|medium|high|xhigh|max — default: medium
     tools: default # or comma-separated list, or "" to disable
-    permission_mode: bypassPermissions
+    permission_mode: default # code default (manual). dontAsk is grok-cli, not this provider
+    # permission_prompts: ui # ui | none. Omit to leave the CLI flags unchanged. none denies immediately
+    # permission_timeout_ms: 60000 # headless ui park; positive integer, max 600000
     exclude_dynamic_sections: true
     append_system_prompt: true # fold system messages into --append-system-prompt
     cwd: ~/.rivetos/workspace # cwd for the spawned process

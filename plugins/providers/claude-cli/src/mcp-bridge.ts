@@ -35,6 +35,7 @@ import { adaptRivetToolDynamic, type ToolRegistration } from '@rivetos/mcp'
 import { createV2McpServer, type V2McpServer } from '@rivetos/mcp-v2'
 import type { Tool } from '@rivetos/types'
 import type { BridgeLogger } from './log.js'
+import { PERMISSION_TOOL_NAME } from './permission-prompt.js'
 
 // ---------------------------------------------------------------------------
 // Public types
@@ -102,6 +103,13 @@ export async function embedMcpServerForTurn(config: BridgeConfig): Promise<Embed
     tools: registrations,
     serverName: serverNameForClient,
     serverDescription: 'RivetOS embedded tools for Claude Code (MCP 2026-07-28)',
+    // The model and the CLI share this bearer, so tools/list cannot tell
+    // them apart. Hiding request_permission keeps the model from being
+    // offered it. A guessed tools/call still only parks a prompt a human
+    // must answer, and that park defaults to deny — it does not run the
+    // tool named inside the request. Filtering the list must not reject
+    // the call: Claude's permission-prompt-tool invokes it by name.
+    omitFromToolsList: [PERMISSION_TOOL_NAME],
   })
   await server.start()
   if (!server.port) {

@@ -29,9 +29,12 @@ const POLL_FALLBACK_MS = 2_000
 export interface TaskCompletionWaiter {
   /**
    * Resolve with the terminal row, or undefined on deadline/missing row.
-   * Never rejects.
+   * `signal` aborts the wait with undefined (the row is left alone). Never rejects.
    */
-  wait(taskId: string, opts: { deadlineMs: number }): Promise<TaskRow | undefined>
+  wait(
+    taskId: string,
+    opts: { deadlineMs: number; signal?: AbortSignal },
+  ): Promise<TaskRow | undefined>
   stop(): Promise<void>
 }
 
@@ -89,7 +92,8 @@ export function createTaskCompletionWaiter(
   }
 
   return {
-    async wait(taskId, { deadlineMs }): Promise<TaskRow | undefined> {
+    async wait(taskId, { deadlineMs, signal }): Promise<TaskRow | undefined> {
+      if (signal?.aborted) return undefined
       await ensureListener()
       const deadline = Date.now() + deadlineMs
 
@@ -98,7 +102,7 @@ export function createTaskCompletionWaiter(
 
       try {
         for (;;) {
-          if (stopped) return undefined
+          if (stopped || signal?.aborted) return undefined
           const row = await opts.store.get(taskId)
           if (!row) return undefined
           if (TERMINAL.includes(row.status)) return row
@@ -107,9 +111,15 @@ export function createTaskCompletionWaiter(
 
           const pollMs = listenHealthy ? pollListenMs : pollFallbackMs
           await new Promise<void>((resolve) => {
+            let finished = false
             const timer = setTimeout(done, Math.min(pollMs, remaining))
+            const onAbort = (): void => done()
+            signal?.addEventListener('abort', onAbort, { once: true })
             function done(): void {
+              if (finished) return
+              finished = true
               clearTimeout(timer)
+              signal?.removeEventListener('abort', onAbort)
               subs.delete(done)
               resolve()
             }

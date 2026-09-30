@@ -274,6 +274,26 @@ export interface TaskWire {
   lastHeartbeatAt?: number
   completedAt?: number
   durationMs?: number
+  /**
+   * Permission prompts parked on this node right now. Absent when none are
+   * waiting. Settled outcomes live on `spec.permissionDecisions`, not here.
+   */
+  pendingApprovals?: TaskApprovalRequest[]
+}
+
+/**
+ * A parked task permission prompt. Field names match a harness
+ * `approval-request` (requestId, name, input, toolCallId); `taskId` is the
+ * row the prompt belongs to. There is no harness session id — the spawn is
+ * headless.
+ */
+export interface TaskApprovalRequest {
+  type: 'approval-request'
+  taskId: string
+  requestId: string
+  name: string
+  input: unknown
+  toolCallId?: string
 }
 
 export interface TaskCreateRequest {
@@ -315,6 +335,20 @@ export interface TaskSteerAccepted {
 export interface TaskKillResponse {
   ok: true
   prior: TaskStatus | null
+}
+
+/** 202 from `POST /api/tasks/:id/approvals/:requestId`. */
+export interface TaskApprovalAccepted {
+  ok: true
+}
+
+/**
+ * 200 from `GET /api/tasks/:id/wait?onApproval=return` when a prompt is
+ * parked. The default wait (no flag) never returns this — it still blocks
+ * for the terminal row.
+ */
+export interface TaskApprovalWaitResponse {
+  approval: TaskApprovalRequest
 }
 
 /**
