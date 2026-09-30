@@ -172,10 +172,14 @@ function argValue(args: string[], flag: string): string | undefined {
 }
 
 export default async function pairCommand(args: string[]): Promise<void> {
-  const deviceId = args[0]
-  if (!deviceId || deviceId.startsWith('-') || args.includes('-h') || args.includes('--help')) {
+  if (args.includes('-h') || args.includes('--help')) {
     console.log(USAGE)
-    if (!deviceId || deviceId.startsWith('-')) process.exitCode = 1
+    return
+  }
+  const deviceId = args[0]
+  if (!deviceId || deviceId.startsWith('-')) {
+    console.error(USAGE)
+    process.exitCode = 1
     return
   }
   try {
