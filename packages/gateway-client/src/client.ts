@@ -17,6 +17,8 @@ import type {
   SessionPostRequest,
   SessionsListResponse,
   SessionWsFrame,
+  TaskApprovalAccepted,
+  TaskApprovalWaitResponse,
   TaskCreateRequest,
   TaskKillResponse,
   TaskResponse,
@@ -290,11 +292,36 @@ export class RivetGateway {
     return request(this.config, `/api/tasks/${encodeURIComponent(taskId)}`, { signal })
   }
 
-  waitTask(taskId: string, opts: Omit<WaitOptions, 'wait'> = {}): Promise<TaskResponse> {
+  waitTask(taskId: string, opts?: Omit<WaitOptions, 'wait'>): Promise<TaskResponse>
+  waitTask(
+    taskId: string,
+    opts: Omit<WaitOptions, 'wait'> & { onApproval: true },
+  ): Promise<TaskResponse | TaskApprovalWaitResponse>
+  waitTask(
+    taskId: string,
+    opts: Omit<WaitOptions, 'wait'> & { onApproval?: boolean } = {},
+  ): Promise<TaskResponse | TaskApprovalWaitResponse> {
     return request(this.config, `/api/tasks/${encodeURIComponent(taskId)}/wait`, {
-      query: { timeoutMs: opts.timeoutMs },
+      query: {
+        timeoutMs: opts.timeoutMs,
+        onApproval: opts.onApproval ? 'return' : undefined,
+      },
       signal: opts.signal,
     })
+  }
+
+  /** Answer a parked task permission prompt (202). 404 when the id is unknown. */
+  resolveTaskApproval(
+    taskId: string,
+    requestId: string,
+    decision: 'allow' | 'deny',
+    signal?: AbortSignal,
+  ): Promise<TaskApprovalAccepted> {
+    return request(
+      this.config,
+      `/api/tasks/${encodeURIComponent(taskId)}/approvals/${encodeURIComponent(requestId)}`,
+      { method: 'POST', body: { decision }, signal },
+    )
   }
 
   steerTask(taskId: string, message: string): Promise<TaskSteerAccepted> {

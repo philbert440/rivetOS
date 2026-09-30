@@ -234,6 +234,55 @@ describe('SqliteTaskStore', () => {
     expect((await store.get(task.id))?.status).toBe('timeout')
   })
 
+  it('onTerminal fires only when a row becomes terminal', async () => {
+    const seen: Array<{ id: string; status: string }> = []
+    const { store } = open(undefined, { sweepStaleMs: 0, awaitingInputTtlMs: 0 })
+    store.onTerminal((id, status) => seen.push({ id, status }))
+
+    const done = await store.create(input())
+    await store.claim(done.id, 'node-a')
+    await store.finish(done.id, 'completed', completedResult)
+
+    const failed = await store.create(input())
+    await store.claim(failed.id, 'node-a')
+    await store.finish(failed.id, 'failed', {
+      ...completedResult,
+      verdict: 'failed',
+      error: 'nope',
+    })
+
+    const killed = await store.create(input())
+    await store.claim(killed.id, 'node-a')
+    expect(await store.requestKill(killed.id)).toBe('running')
+    expect(await store.requestKill(killed.id)).toBeUndefined()
+
+    const requeued = await store.create(input({ maxAttempts: 2 }))
+    await store.claim(requeued.id, 'node-a')
+    const sweptFail = await store.create(input({ maxAttempts: 1 }))
+    await store.claim(sweptFail.id, 'node-a')
+    expect(await store.sweep('node-a')).toBe(2)
+
+    const parked = await store.create(input())
+    await store.claim(parked.id, 'node-a')
+    expect(await store.markAwaitingInput(parked.id)).toBe(true)
+    expect(seen.some((row) => row.id === parked.id)).toBe(false)
+    expect(await store.sweep('node-a')).toBe(1)
+
+    const audited = await store.recordTerminal(input({ goal: 'audited elsewhere' }), {
+      status: 'completed',
+      result: completedResult,
+    })
+
+    expect(seen).toEqual([
+      { id: done.id, status: 'completed' },
+      { id: failed.id, status: 'failed' },
+      { id: killed.id, status: 'killed' },
+      { id: sweptFail.id, status: 'failed' },
+      { id: parked.id, status: 'timeout' },
+    ])
+    expect(seen.some((row) => row.id === requeued.id || row.id === audited.id)).toBe(false)
+  })
+
   it('claim refuses a task pinned to another node and admits its own', async () => {
     const { store } = open()
     const pinned = await store.create(input({ nodeAffinity: 'node-b' }))
@@ -317,6 +366,34 @@ describe('SqliteTaskStore', () => {
     })
     expect(rows[0]?.day).toMatch(/^\d{4}-\d{2}-\d{2}$/)
     expect(await store.listOutcomes({ agentId: 'nobody' })).toHaveLength(0)
+  })
+
+  it('appends permission decisions and drops a forged log on create', async () => {
+    const { store } = open()
+    const task = await store.create(
+      input({
+        spec: { permissionDecisions: [{ decision: 'allow' }], keep: 1 },
+      }),
+    )
+    expect(task.spec).toEqual({ keep: 1 })
+    await store.appendPermissionDecision(task.id, {
+      requestId: 'r1',
+      tool: 'Bash',
+      decision: 'deny',
+      at: 1,
+      message: 'no',
+    })
+    await store.appendPermissionDecision(task.id, {
+      requestId: 'r2',
+      tool: 'Edit',
+      decision: 'timeout',
+      at: 2,
+    })
+    expect((await store.get(task.id))?.spec.permissionDecisions).toEqual([
+      { requestId: 'r1', tool: 'Bash', decision: 'deny', at: 1, message: 'no' },
+      { requestId: 'r2', tool: 'Edit', decision: 'timeout', at: 2 },
+    ])
+    expect((await store.get(task.id))?.spec.keep).toBe(1)
   })
 
   it('dedupes harness session ids', async () => {

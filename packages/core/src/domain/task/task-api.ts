@@ -13,14 +13,21 @@
  *   GET  /api/tasks                  list; ?status=&agentId=&limit=
  *   GET  /api/tasks/:id              one row
  *   GET  /api/tasks/:id/wait         block for terminal; ?timeoutMs=
+ *                                    ?onApproval=return yields a parked
+ *                                    permission prompt instead
  *   POST /api/tasks/:id/steer        {message} → send/resume
  *   POST /api/tasks/:id/kill         requestKill (idempotent)
+ *   POST /api/tasks/:id/approvals/:requestId
+ *                                    {decision: allow|deny} — fail closed
  */
 
 import type { IncomingMessage, ServerResponse } from 'node:http'
 import type {
   AgentPreset,
   GatewayRoute,
+  TaskApprovalAccepted,
+  TaskApprovalRequest,
+  TaskApprovalWaitResponse,
   TaskKillResponse,
   TaskResponse,
   TasksListResponse,
@@ -39,6 +46,7 @@ import {
   type CriteriaPolicy,
 } from './criteria.js'
 import type { TaskCompletionWaiter } from './completion-waiter.js'
+import type { TaskPermissionBroker } from './permission-broker.js'
 import { guardTaskChain, readChainFields } from './chain-guard.js'
 import { logger } from '../../logger.js'
 
@@ -91,7 +99,14 @@ export interface TaskApiOptions {
    * not a shared queue; Postgres leaves this unset.
    */
   localQueueNode?: string
+  /**
+   * In-process permission prompts for harness spawns on this node. Absent:
+   * `POST .../approvals` 404s (fail closed) and `?onApproval=return` is ignored.
+   */
+  permissionBroker?: TaskPermissionBroker
 }
+
+const TERMINAL_STATUS: readonly TaskStatus[] = ['completed', 'failed', 'killed', 'timeout']
 
 function json(res: ServerResponse, code: number, body: unknown): void {
   res.writeHead(code, { 'Content-Type': 'application/json' })
@@ -130,8 +145,13 @@ function clampWaitMs(raw: string | null): number {
  * return type is the compile-time lock against @rivetos/types gateway-api.ts:
  * drift between the store row and the published contract fails the build here.
  */
-function toWire(row: TaskRow): TaskWire {
-  return row
+function toWireWithApprovals(row: TaskRow, broker?: TaskPermissionBroker): TaskWire {
+  // A terminal row must not offer Allow. The store listener denies the
+  // parked prompt; the card only renders what this list contains.
+  if (TERMINAL_STATUS.includes(row.status)) return row
+  const pending = broker?.pendingFor(row.id) ?? []
+  if (pending.length === 0) return row
+  return { ...row, pendingApprovals: pending }
 }
 
 function parseCreate(body: Record<string, unknown>): NewTaskInput | string {
@@ -256,6 +276,14 @@ function applyCriteriaPolicy(input: NewTaskInput, policy: CriteriaPolicy): NewTa
 
 export function createTaskApiRoute(opts: TaskApiOptions): GatewayRoute {
   const { store, waiter } = opts
+  const broker = opts.permissionBroker
+  // requestKill does not abort the spawn. Deny at the row transition so a
+  // parked prompt cannot still be allowed after the task is terminal.
+  if (broker && store.onTerminal) {
+    store.onTerminal((taskId) => {
+      broker.denyPending(taskId, 'task is terminal')
+    })
+  }
 
   return {
     prefix: '/api/tasks',
@@ -263,7 +291,7 @@ export function createTaskApiRoute(opts: TaskApiOptions): GatewayRoute {
       try {
         const url = new URL(req.url ?? '/', 'http://localhost')
         const rest = url.pathname.slice('/api/tasks'.length).replace(/^\//, '')
-        const [id, action] = rest === '' ? [undefined, undefined] : rest.split('/')
+        const [id, action, requestId] = rest === '' ? [] : rest.split('/')
 
         // POST /api/tasks — create (+ optional wait)
         if (req.method === 'POST' && !id) {
@@ -338,7 +366,9 @@ export function createTaskApiRoute(opts: TaskApiOptions): GatewayRoute {
 
           const row = await store.create(input)
           if (url.searchParams.get('wait') !== '1' && url.searchParams.get('wait') !== 'true') {
-            return json(res, 201, { task: toWire(row) } satisfies TaskResponse)
+            return json(res, 201, {
+              task: toWireWithApprovals(row, opts.permissionBroker),
+            } satisfies TaskResponse)
           }
           const waitMs = clampWaitMs(url.searchParams.get('timeoutMs'))
           const terminal = await waiter.wait(row.id, { deadlineMs: waitMs })
@@ -351,14 +381,18 @@ export function createTaskApiRoute(opts: TaskApiOptions): GatewayRoute {
             await store.requestKill(row.id)
             const after = await store.get(row.id)
             if (after && after.status !== 'killed') {
-              return json(res, 200, { task: toWire(after) } satisfies TaskResponse)
+              return json(res, 200, {
+                task: toWireWithApprovals(after, opts.permissionBroker),
+              } satisfies TaskResponse)
             }
             return json(res, 504, {
               error: 'wait deadline exceeded — task killed',
-              task: after ? toWire(after) : undefined,
+              task: after ? toWireWithApprovals(after, opts.permissionBroker) : undefined,
             } satisfies TaskWaitTimeoutResponse)
           }
-          return json(res, 200, { task: toWire(terminal) } satisfies TaskResponse)
+          return json(res, 200, {
+            task: toWireWithApprovals(terminal, opts.permissionBroker),
+          } satisfies TaskResponse)
         }
 
         // GET /api/tasks — list
@@ -379,7 +413,9 @@ export function createTaskApiRoute(opts: TaskApiOptions): GatewayRoute {
             filter.limit = n
           }
           const rows = await store.list(filter)
-          return json(res, 200, { tasks: rows.map(toWire) } satisfies TasksListResponse)
+          return json(res, 200, {
+            tasks: rows.map((listed) => toWireWithApprovals(listed, opts.permissionBroker)),
+          } satisfies TasksListResponse)
         }
 
         if (!id) return json(res, 405, { error: 'method not allowed' })
@@ -394,7 +430,9 @@ export function createTaskApiRoute(opts: TaskApiOptions): GatewayRoute {
 
         // GET /api/tasks/:id
         if (req.method === 'GET' && !action)
-          return json(res, 200, { task: toWire(row) } satisfies TaskResponse)
+          return json(res, 200, {
+            task: toWireWithApprovals(row, opts.permissionBroker),
+          } satisfies TaskResponse)
 
         // GET /api/tasks/:id/wait — deliberately does NOT kill on deadline:
         // GET is a side-effect-free observation; only the creating POST owns
@@ -402,9 +440,47 @@ export function createTaskApiRoute(opts: TaskApiOptions): GatewayRoute {
         // else's run.
         if (req.method === 'GET' && action === 'wait') {
           const waitMs = clampWaitMs(url.searchParams.get('timeoutMs'))
+          const broker = opts.permissionBroker
+          if (url.searchParams.get('onApproval') === 'return' && broker) {
+            const parked = broker.pendingFor(id).at(0)
+            if (parked) {
+              return json(res, 200, { approval: parked } satisfies TaskApprovalWaitResponse)
+            }
+            const ac = new AbortController()
+            const timer = setTimeout(() => ac.abort(), waitMs)
+            try {
+              const winner = await Promise.race([
+                waiter.wait(id, { deadlineMs: waitMs, signal: ac.signal }).then((task) => ({
+                  task,
+                  approval: undefined as TaskApprovalRequest | undefined,
+                })),
+                broker.next(id, { signal: ac.signal }).then((approval) => ({
+                  task: undefined as TaskRow | undefined,
+                  approval,
+                })),
+              ])
+              if (winner.approval) {
+                return json(res, 200, {
+                  approval: winner.approval,
+                } satisfies TaskApprovalWaitResponse)
+              }
+              const settled = winner.task ?? (await store.get(id))
+              if (settled && TERMINAL_STATUS.includes(settled.status)) {
+                return json(res, 200, {
+                  task: toWireWithApprovals(settled, broker),
+                } satisfies TaskResponse)
+              }
+              return json(res, 504, { error: 'wait deadline exceeded' })
+            } finally {
+              clearTimeout(timer)
+              ac.abort()
+            }
+          }
           const terminal = await waiter.wait(id, { deadlineMs: waitMs })
           if (!terminal) return json(res, 504, { error: 'wait deadline exceeded' })
-          return json(res, 200, { task: toWire(terminal) } satisfies TaskResponse)
+          return json(res, 200, {
+            task: toWireWithApprovals(terminal, opts.permissionBroker),
+          } satisfies TaskResponse)
         }
 
         // POST /api/tasks/:id/steer
@@ -423,6 +499,31 @@ export function createTaskApiRoute(opts: TaskApiOptions): GatewayRoute {
         if (req.method === 'POST' && action === 'kill') {
           const prior = await store.requestKill(id)
           return json(res, 200, { ok: true, prior: prior ?? null } satisfies TaskKillResponse)
+        }
+
+        // POST /api/tasks/:id/approvals/:requestId — fail closed. An unknown
+        // id, a missing broker, or a decision other than allow|deny does not
+        // allow the tool. allow-session is rejected: this wire cannot mint a
+        // CLI session rule, and treating it as allow would over-claim.
+        if (req.method === 'POST' && action === 'approvals') {
+          if (!requestId) return json(res, 400, { error: 'requestId is required' })
+          const broker = opts.permissionBroker
+          if (!broker) return json(res, 404, { error: 'unknown approval' })
+          const body = await readJsonBody(req).catch(() => undefined)
+          const decision = body?.decision
+          if (decision !== 'allow' && decision !== 'deny') {
+            return json(res, 400, { error: 'decision must be "allow" or "deny"' })
+          }
+          // Checked after the body so a garbage decision stays 400. Never
+          // call decide('allow') on a terminal row — deny whatever is left.
+          if (TERMINAL_STATUS.includes(row.status)) {
+            broker.denyPending(id, 'task is terminal')
+            return json(res, 409, { error: `task is terminal (${row.status})` })
+          }
+          if (!broker.decide(id, requestId, decision)) {
+            return json(res, 404, { error: 'unknown approval' })
+          }
+          return json(res, 202, { ok: true } satisfies TaskApprovalAccepted)
         }
 
         return json(res, 405, { error: 'method not allowed' })

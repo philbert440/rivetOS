@@ -2,7 +2,11 @@
  * Section validators — runtime, agents, providers, channels, memory.
  */
 
-import { HARNESS_IDS } from '@rivetos/types'
+import {
+  HARNESS_IDS,
+  PERMISSION_PROMPT_TIMEOUT_MAX_MS,
+  PERMISSION_PROMPT_TIMEOUT_MS,
+} from '@rivetos/types'
 import {
   KNOWN_RUNTIME_KEYS,
   KNOWN_AGENT_KEYS,
@@ -392,6 +396,37 @@ export function validateProviders(
         path: `${path}.model`,
         message: `Provider "${name}" model must be a string`,
       })
+    }
+
+    if (name === 'claude-cli' && provider.permission_prompts !== undefined) {
+      const mode = provider.permission_prompts
+      if (mode !== 'ui' && mode !== 'none') {
+        issues.push({
+          severity: 'error',
+          path: `${path}.permission_prompts`,
+          message:
+            'permission_prompts must be "ui" or "none" (omit the key to leave spawns unchanged)',
+        })
+      }
+    }
+
+    if (name === 'claude-cli' && provider.permission_timeout_ms !== undefined) {
+      const raw = provider.permission_timeout_ms
+      const ok =
+        typeof raw === 'number' &&
+        Number.isInteger(raw) &&
+        raw >= 1 &&
+        raw <= PERMISSION_PROMPT_TIMEOUT_MAX_MS
+      if (!ok) {
+        issues.push({
+          severity: 'error',
+          path: `${path}.permission_timeout_ms`,
+          message:
+            `permission_timeout_ms must be a positive integer of at most ` +
+            `${String(PERMISSION_PROMPT_TIMEOUT_MAX_MS)} ` +
+            `(default ${String(PERMISSION_PROMPT_TIMEOUT_MS)})`,
+        })
+      }
     }
 
     if ((name === 'ollama' || name === 'vllm' || name === 'llama-server') && !provider.base_url) {

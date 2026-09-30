@@ -1,5 +1,10 @@
 import { describe, it, expect } from 'vitest'
-import { humanToolTitle, normalizeToolName } from './tool-titles.js'
+import {
+  approvalActionText,
+  humanToolTitle,
+  pendingToolTitle,
+  normalizeToolName,
+} from './tool-titles.js'
 
 describe('normalizeToolName', () => {
   it('strips emoji prefixes from stream content', () => {
@@ -27,6 +32,30 @@ describe('humanToolTitle', () => {
     expect(humanToolTitle('search_replace', { path: 'src/x.ts' })).toBe('Edited x.ts')
     expect(humanToolTitle('web_search', { query: 'rivetos' })).toBe('Searched web: rivetos')
     expect(humanToolTitle('ask_user_question')).toBe('Asked a question')
+  })
+
+  it('labels a pending shell as Run and shows the full command, not the description', () => {
+    const command = 'ls -la /tmp && echo done with a command longer than forty eight characters'
+    const input = { description: 'list files', command }
+    expect(pendingToolTitle('Bash', input)).toBe('Run: list files')
+    expect(pendingToolTitle('Bash')).toBe('Run a command')
+    expect(humanToolTitle('Bash', input)).toBe('Ran: list files')
+    expect(approvalActionText('Bash', input)).toBe(command)
+    expect(approvalActionText('Bash', { description: 'list files' })).toBeUndefined()
+  })
+
+  it('shows a write or edit path plus the payload', () => {
+    expect(
+      approvalActionText('Edit', {
+        file_path: '/x/y/bar.tsx',
+        old_string: 'a',
+        new_string: 'b',
+        description: 'rename',
+      }),
+    ).toBe('/x/y/bar.tsx\nold_string:\na\n\nnew_string:\nb')
+    expect(approvalActionText('Write', { file_path: 'z.md', content: '# hi' })).toBe(
+      'z.md\ncontent:\n# hi',
+    )
   })
 
   it('falls back sanely for unknown tools', () => {

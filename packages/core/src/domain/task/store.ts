@@ -23,11 +23,15 @@ import type {
   ContextRef,
   TaskBudget,
   TaskExecutorKind,
+  TaskPermissionDecision,
   TaskResult,
   TaskStatus,
   TaskUsage,
   EvalOutcome,
 } from '@rivetos/types'
+import { logger } from '../../logger.js'
+
+const log = logger('TaskStore')
 
 export const TASK_JOB_NAME = 'run-task'
 
@@ -43,6 +47,20 @@ export function taskJobName(nodeAffinity?: string | null): string {
 /** graphile-worker job key for a task — one live job per task row. */
 export function taskJobKey(taskId: string): string {
   return `task:${taskId}`
+}
+
+/**
+ * Audit key on `ros_tasks.spec`. Runtime-written; a caller who sends it on
+ * create is stripped so the row cannot be born with a forged decision log.
+ */
+export const PERMISSION_DECISIONS_KEY = 'permissionDecisions'
+
+export function callerSpec(spec: Record<string, unknown> | undefined): Record<string, unknown> {
+  if (!spec || !Object.prototype.hasOwnProperty.call(spec, PERMISSION_DECISIONS_KEY)) {
+    return spec ?? {}
+  }
+  const { [PERMISSION_DECISIONS_KEY]: _forged, ...rest } = spec
+  return rest
 }
 
 export interface NewTaskInput {
@@ -213,7 +231,8 @@ export interface TaskStore {
    * is missing or already terminal. Killing 'running' does NOT abort the
    * in-flight turn — the runner re-reads the row at turn end and discards the
    * outcome (same "let it finish, drop the result" semantics as the legacy
-   * subagent engine).
+   * subagent engine). A flip does notify `onTerminal`, so a parked permission
+   * prompt is denied even though the spawn keeps running.
    */
   requestKill(id: string): Promise<TaskStatus | undefined>
 
@@ -239,6 +258,12 @@ export interface TaskStore {
    */
   appendHarnessSessionId?(id: string, sessionId: string): Promise<void>
 
+  /**
+   * Append one settled permission prompt to `spec.permissionDecisions`.
+   * Missing rows are a no-op. The array append is atomic in the SQL stores.
+   */
+  appendPermissionDecision(id: string, decision: TaskPermissionDecision): Promise<void>
+
   /** Liveness stamp while a turn is in flight. */
   heartbeat(id: string): Promise<void>
 
@@ -260,6 +285,52 @@ export interface TaskStore {
   /** Re-enqueue a queued row under its correct (per-node) job name — the
    *  stranding interim for mixed-version mesh windows (Appendix E). */
   reenqueue?(id: string): Promise<void>
+
+  /**
+   * Fired after a row transitions to a terminal status: `finish` with a
+   * terminal status, a `requestKill` that flipped the row, and sweep rows
+   * that failed or timed out. Not fired for `recordTerminal` (the id is new,
+   * so nothing is parked) or awaiting-input. Listeners run after the write
+   * commits. Optional so test doubles can omit it.
+   */
+  onTerminal?(listener: TaskTerminalListener): () => void
+}
+
+/** completed | failed | killed | timeout. awaiting-input is not terminal. */
+export function isTerminalTaskStatus(status: TaskStatus): boolean {
+  return (
+    status === 'completed' || status === 'failed' || status === 'killed' || status === 'timeout'
+  )
+}
+
+export type TaskTerminalListener = (taskId: string, status: TaskStatus) => void
+
+/**
+ * Subscribers for a row that just became terminal. A listener error is
+ * logged and swallowed: the status write has already committed, and a
+ * broker failure must not roll it back.
+ */
+export class TaskTerminalNotify {
+  private readonly listeners = new Set<TaskTerminalListener>()
+
+  subscribe(listener: TaskTerminalListener): () => void {
+    this.listeners.add(listener)
+    return () => {
+      this.listeners.delete(listener)
+    }
+  }
+
+  emit(taskId: string, status: TaskStatus): void {
+    if (!isTerminalTaskStatus(status)) return
+    for (const listener of this.listeners) {
+      try {
+        listener(taskId, status)
+      } catch (err: unknown) {
+        const msg = err instanceof Error ? err.message : String(err)
+        log.warn(`onTerminal for ${taskId} failed: ${msg}`)
+      }
+    }
+  }
 }
 
 /** Running rows with a heartbeat newer than this are NOT crash-swept. */
@@ -285,6 +356,7 @@ function newTaskId(): string {
 
 export class InMemoryTaskStore implements TaskStore {
   private rows = new Map<string, TaskRow>()
+  private readonly terminal = new TaskTerminalNotify()
   private sweepStaleMs: number
   private awaitingInputTtlMs: number
 
@@ -296,6 +368,10 @@ export class InMemoryTaskStore implements TaskStore {
     this.awaitingInputTtlMs = tuning?.awaitingInputTtlMs ?? AWAITING_INPUT_TTL_MS_DEFAULT
   }
 
+  onTerminal(listener: TaskTerminalListener): () => void {
+    return this.terminal.subscribe(listener)
+  }
+
   create(input: NewTaskInput): Promise<TaskRow> {
     const id = newTaskId()
     const row: TaskRow = {
@@ -303,7 +379,7 @@ export class InMemoryTaskStore implements TaskStore {
       goal: input.goal,
       contextRefs: input.contextRefs ?? [],
       acceptanceCriteria: input.acceptanceCriteria ?? [],
-      spec: input.spec ?? {},
+      spec: callerSpec(input.spec),
       executor: input.executor,
       executorTarget: input.executorTarget,
       agentId: input.agentId,
@@ -335,7 +411,7 @@ export class InMemoryTaskStore implements TaskStore {
       goal: input.goal,
       contextRefs: input.contextRefs ?? [],
       acceptanceCriteria: input.acceptanceCriteria ?? [],
-      spec: input.spec ?? {},
+      spec: callerSpec(input.spec),
       executor: input.executor,
       executorTarget: input.executorTarget,
       agentId: input.agentId,
@@ -407,6 +483,7 @@ export class InMemoryTaskStore implements TaskStore {
     row.pendingMessage = undefined
     row.completedAt = Date.now()
     row.durationMs = row.startedAt ? row.completedAt - row.startedAt : 0
+    if (isTerminalTaskStatus(status)) this.terminal.emit(id, status)
     return Promise.resolve()
   }
 
@@ -489,6 +566,7 @@ export class InMemoryTaskStore implements TaskStore {
     row.completedAt = Date.now()
     row.error = row.error ?? 'Killed by parent'
     row.durationMs = row.startedAt ? row.completedAt - row.startedAt : 0
+    this.terminal.emit(id, 'killed')
     return Promise.resolve(prior)
   }
 
@@ -524,6 +602,16 @@ export class InMemoryTaskStore implements TaskStore {
     return Promise.resolve()
   }
 
+  appendPermissionDecision(id: string, decision: TaskPermissionDecision): Promise<void> {
+    const row = this.rows.get(id)
+    if (!row) return Promise.resolve()
+    const prev = Array.isArray(row.spec[PERMISSION_DECISIONS_KEY])
+      ? (row.spec[PERMISSION_DECISIONS_KEY] as TaskPermissionDecision[])
+      : []
+    row.spec = { ...row.spec, [PERMISSION_DECISIONS_KEY]: [...prev, decision] }
+    return Promise.resolve()
+  }
+
   heartbeat(id: string): Promise<void> {
     const row = this.rows.get(id)
     if (row) row.lastHeartbeatAt = Date.now()
@@ -550,6 +638,7 @@ export class InMemoryTaskStore implements TaskStore {
           row.error = 'worker_restarted'
           row.completedAt = now
           row.durationMs = row.startedAt ? now - row.startedAt : 0
+          this.terminal.emit(row.id, 'failed')
         }
         n++
       } else if (row.status === 'awaiting-input') {
@@ -561,6 +650,7 @@ export class InMemoryTaskStore implements TaskStore {
         row.error = 'awaiting-input expired'
         row.completedAt = now
         row.durationMs = row.startedAt ? now - row.startedAt : 0
+        this.terminal.emit(row.id, 'timeout')
         n++
       }
     }
@@ -650,6 +740,7 @@ export interface PgTaskStoreOptions extends TaskStoreTuning {
 }
 
 export class PgTaskStore implements TaskStore {
+  private readonly terminal = new TaskTerminalNotify()
   private graphileSchema: string
   private sweepStaleMs: number
   private awaitingInputTtlMs: number
@@ -664,6 +755,10 @@ export class PgTaskStore implements TaskStore {
     }
     this.sweepStaleMs = opts?.sweepStaleMs ?? SWEEP_STALE_MS_DEFAULT
     this.awaitingInputTtlMs = opts?.awaitingInputTtlMs ?? AWAITING_INPUT_TTL_MS_DEFAULT
+  }
+
+  onTerminal(listener: TaskTerminalListener): () => void {
+    return this.terminal.subscribe(listener)
   }
 
   /** False when the ros_tasks table is missing (0002 migration not applied).
@@ -697,7 +792,7 @@ export class PgTaskStore implements TaskStore {
           input.goal,
           JSON.stringify(input.contextRefs ?? []),
           JSON.stringify(input.acceptanceCriteria ?? []),
-          JSON.stringify(input.spec ?? {}),
+          JSON.stringify(callerSpec(input.spec)),
           input.executor,
           input.executorTarget ?? null,
           input.agentId,
@@ -740,7 +835,7 @@ export class PgTaskStore implements TaskStore {
         input.goal,
         JSON.stringify(input.contextRefs ?? []),
         JSON.stringify(input.acceptanceCriteria ?? []),
-        JSON.stringify(input.spec ?? {}),
+        JSON.stringify(callerSpec(input.spec)),
         input.executor,
         input.executorTarget ?? null,
         input.agentId,
@@ -809,7 +904,7 @@ export class PgTaskStore implements TaskStore {
   }
 
   async finish(id: string, status: TaskStatus, result: TaskResult): Promise<void> {
-    await this.pool.query(
+    const { rowCount } = await this.pool.query(
       `UPDATE ros_tasks
          SET status = $2,
              result = $3::jsonb,
@@ -822,6 +917,7 @@ export class PgTaskStore implements TaskStore {
        WHERE id = $1`,
       [id, status, JSON.stringify(result), JSON.stringify(result.usage), result.error ?? null],
     )
+    if ((rowCount ?? 0) > 0 && isTerminalTaskStatus(status)) this.terminal.emit(id, status)
   }
 
   async recordEval(id: string, outcome: EvalOutcome): Promise<void> {
@@ -935,7 +1031,9 @@ export class PgTaskStore implements TaskStore {
        RETURNING p.prior`,
       [id],
     )
-    return rows[0]?.prior
+    const prior = rows[0]?.prior
+    if (prior !== undefined) this.terminal.emit(id, 'killed')
+    return prior
   }
 
   async takePendingMessage(id: string): Promise<string | undefined> {
@@ -988,6 +1086,20 @@ export class PgTaskStore implements TaskStore {
     )
   }
 
+  async appendPermissionDecision(id: string, decision: TaskPermissionDecision): Promise<void> {
+    await this.pool.query(
+      `UPDATE ros_tasks
+         SET spec = jsonb_set(
+           spec,
+           '{permissionDecisions}',
+           COALESCE(spec->'permissionDecisions', '[]'::jsonb) || $2::jsonb,
+           true
+         )
+       WHERE id = $1`,
+      [id, JSON.stringify([decision])],
+    )
+  }
+
   async heartbeat(id: string): Promise<void> {
     await this.pool.query(`UPDATE ros_tasks SET last_heartbeat_at = now() WHERE id = $1`, [id])
   }
@@ -1012,7 +1124,7 @@ export class PgTaskStore implements TaskStore {
       for (const row of requeued.rows as Array<{ id: string; node_affinity: string | null }>) {
         await this.addJob(client, row.id, { replace: true, nodeAffinity: row.node_affinity })
       }
-      const failed = await client.query(
+      const failed = await client.query<{ id: string }>(
         `UPDATE ros_tasks
            SET status = 'failed',
                error = 'worker_restarted',
@@ -1020,12 +1132,13 @@ export class PgTaskStore implements TaskStore {
                duration_ms = CASE WHEN started_at IS NULL THEN 0
                                   ELSE (EXTRACT(EPOCH FROM (now() - started_at)) * 1000)::int END
          WHERE status = 'running' AND claimed_by = $1
-           AND ${stale}`,
+           AND ${stale}
+         RETURNING id`,
         [node, this.sweepStaleMs],
       )
       // Parked-task reaper: awaiting-input rows nobody resumed within their
       // budget.maxWallClockMs (fallback: the store TTL, default 24h) expire.
-      const reaped = await client.query(
+      const reaped = await client.query<{ id: string }>(
         `UPDATE ros_tasks
            SET status = 'timeout',
                error = 'awaiting-input expired',
@@ -1035,10 +1148,15 @@ export class PgTaskStore implements TaskStore {
          WHERE status = 'awaiting-input' AND claimed_by = $1
            AND COALESCE(last_heartbeat_at, created_at)
                < now() - (COALESCE((budget->>'maxWallClockMs')::bigint, $2::bigint)
-                          * interval '1 millisecond')`,
+                          * interval '1 millisecond')
+         RETURNING id`,
         [node, this.awaitingInputTtlMs],
       )
       await client.query('COMMIT')
+      // After commit: a listener that appends a decision takes its own
+      // row lock, which would deadlock inside this transaction.
+      for (const row of failed.rows) this.terminal.emit(row.id, 'failed')
+      for (const row of reaped.rows) this.terminal.emit(row.id, 'timeout')
       return (requeued.rowCount ?? 0) + (failed.rowCount ?? 0) + (reaped.rowCount ?? 0)
     } catch (err) {
       await client.query('ROLLBACK')
