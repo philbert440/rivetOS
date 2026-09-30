@@ -42,7 +42,9 @@ import androidx.compose.ui.unit.sp
 import androidx.core.content.ContextCompat
 import io.rivethub.app.AppContainer
 import io.rivethub.app.R
+import io.rivethub.app.data.LOCAL_NETWORK_PERMISSION
 import io.rivethub.app.data.PairingClient
+import io.rivethub.app.data.needsLocalNetworkPermission
 import io.rivethub.app.plane.EnrollErrorKind
 import io.rivethub.app.plane.EntryUrlError
 import io.rivethub.app.plane.PairingCodeError
@@ -104,6 +106,9 @@ fun EnrollScreen(c: AppContainer, onBack: (() -> Unit)?, onDone: () -> Unit) {
     val httpsRequired = stringResource(R.string.error_https_required)
     val pickCert = stringResource(R.string.error_pick_cert)
     val cameraDenied = stringResource(R.string.pair_camera_denied)
+    val localNetworkDenied = stringResource(R.string.pair_local_network_denied)
+    /** A scanned code waiting on the local-network permission prompt. */
+    var awaitingLocalNetwork by remember { mutableStateOf<String?>(null) }
 
     fun enrollMessage(e: Exception): String {
         val mapped = enrollError(e)
@@ -131,9 +136,25 @@ fun EnrollScreen(c: AppContainer, onBack: (() -> Unit)?, onDone: () -> Unit) {
         onDone()
     }
 
+    /** A scanned code to pair once the local-network permission was granted. */
+    var grantedPair by remember { mutableStateOf<String?>(null) }
+    val askLocalNetwork = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
+        val pending = awaitingLocalNetwork
+        awaitingLocalNetwork = null
+        if (!granted) error = localNetworkDenied else grantedPair = pending
+    }
+
     fun pairWith(text: String) {
         scanning = false
         error = null
+        // Android's local network protection silently drops connections to
+        // LAN addresses for an app without the permission, so the redeem would
+        // just time out as "could not reach". Ask first, then pair.
+        if (needsLocalNetworkPermission(ctx)) {
+            awaitingLocalNetwork = text
+            askLocalNetwork.launch(LOCAL_NETWORK_PERMISSION)
+            return
+        }
         val code = when (val parsed = parsePairingCode(text)) {
             is PairingParse.Ok -> parsed.code
             is PairingParse.Err -> {
@@ -175,6 +196,12 @@ fun EnrollScreen(c: AppContainer, onBack: (() -> Unit)?, onDone: () -> Unit) {
                 busy = false
             }
         }
+    }
+
+    LaunchedEffect(grantedPair) {
+        val text = grantedPair ?: return@LaunchedEffect
+        grantedPair = null
+        pairWith(text)
     }
 
     val askCamera = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->

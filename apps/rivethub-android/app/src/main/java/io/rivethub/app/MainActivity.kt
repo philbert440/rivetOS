@@ -1,5 +1,7 @@
 package io.rivethub.app
 
+import io.rivethub.app.data.LOCAL_NETWORK_PERMISSION
+import io.rivethub.app.data.needsLocalNetworkPermission
 import android.os.Bundle
 import android.view.View
 import androidx.activity.ComponentActivity
@@ -184,18 +186,11 @@ class MainActivity : ComponentActivity() {
         const val STATE_LAUNCH_TAP = "consumed_launch_open_task"
     }
 
-    /**
-     * Android 16+ Local Network Protection gates RFC1918 traffic behind
-     * ACCESS_LOCAL_NETWORK. Referenced by string so older platforms (and the
-     * emulator image) don't need the constant; no-op when already granted or
-     * the permission doesn't exist.
-     */
+    /** Ask for the local-network permission up front; no-op when granted or not on this platform. */
     private fun requestLocalNetworkAccess() {
-        val perm = "android.permission.ACCESS_LOCAL_NETWORK"
-        runCatching { packageManager.getPermissionInfo(perm, 0) }.getOrNull() ?: return
-        if (checkSelfPermission(perm) == android.content.pm.PackageManager.PERMISSION_GRANTED) return
+        if (!needsLocalNetworkPermission(this)) return
         registerForActivityResult(androidx.activity.result.contract.ActivityResultContracts.RequestPermission()) { }
-            .launch(perm)
+            .launch(LOCAL_NETWORK_PERMISSION)
     }
 }
 

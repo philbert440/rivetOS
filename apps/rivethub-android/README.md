@@ -6,16 +6,23 @@ Package `io.rivethub.app`. Talks to a RivetOS den (device mTLS only); nothing ru
 Plan and slice status: see `AGENT.md`. Build: `./gradlew :app:assembleDebug :app:testDebugUnitTest`
 (JDK 21, SDK 37).
 
-## First run — pairing QR (`rivetos local`)
+## First run — pairing QR
 
-1. On the computer: `rivetos local --device <your-device-id>`. It mints the phone's certificate, adds the
-   device to the users registry, and — once the node is up — shows a pairing QR in the terminal.
-2. On the phone (same network as the computer): RivetHub → Enroll → **Scan pairing QR**.
+1. On the computer, show a pairing QR. Any one of:
+   - RivetHub desktop or browser → **Settings → Pair a phone**: type a name, **Show pairing code**. The
+     page says "Paired" once the phone has redeemed it, and the new phone works at once.
+   - `rivetos pair <your-device-id>` on a node that is already set up (a mesh node, for example). Restart
+     den afterwards: it reads the users registry at startup.
+   - `rivetos local --device <your-device-id>` while setting up a single-machine install.
+
+   Each mints the phone's certificate, adds the device to the users registry and shows the QR.
+2. On the phone (same network as the computer): RivetHub → Enroll → **Scan pairing QR**. Android 16+ asks
+   for the Nearby devices (local network) permission first; without it the phone cannot reach the LAN.
 
 The QR carries the gateway URL, a one-time token (10 minutes, one use) and the SHA-256 of the
 gateway's TLS certificate; the app pins that certificate to redeem the token at `POST /api/devices/pair`
 for the PKCS#12 and its passphrase. The computer deletes its copy of the PKCS#12 on redemption. Expired
-or used? Run the command again for a fresh code.
+or used? Show a fresh code.
 
 ## First run — certificate file (mesh operators)
 
