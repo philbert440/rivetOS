@@ -96,7 +96,8 @@ export const delegateTaskDefinition = {
     'Delegate work to a RivetHub agent (preset name or id) or a runtime agent id. ' +
     'Call list_agents first. A preset name or id wins when it also matches a runtime agent id. ' +
     'Presets run as a harness session in the agent directory; ' +
-    'runtime agents run as a chat-loop on the newest online node that hosts them. ' +
+    'runtime agents run as a chat-loop on the newest online node that hosts them; ' +
+    'use agent@node to pick the node when several host the same agent id. ' +
     'Waits until the task finishes or the timeout elapses (default 20 minutes, max 30). ' +
     'Set the client tool-call timeout above that wait — Codex tool_timeout_sec ' +
     '(its default of 60s aborts the call) and Claude Code MCP timeout. ' +
@@ -105,7 +106,9 @@ export const delegateTaskDefinition = {
     to_agent: z
       .string()
       .min(1)
-      .describe('RivetHub agent name or id, or a runtime agent id — call list_agents first'),
+      .describe(
+        'RivetHub agent name or id, or a runtime agent id (agent@node pins the node) — call list_agents first',
+      ),
     task: z.string().min(1).describe('What the delegate should do'),
     context: z.array(z.string()).optional().describe('Extra context lines included with the task'),
     timeout_ms: z
@@ -324,8 +327,26 @@ function formatAgentListing(
   return (
     `${presetText}\n\n` +
     `Runtime agents (mesh):\n${runtimeText}\n\n` +
-    'to_agent accepts a preset name or id, or a runtime agent id.'
+    'to_agent accepts a preset name or id, or a runtime agent id (agent@node pins the node).'
   )
+}
+
+/**
+ * `agent@node` names a runtime agent on one mesh node. Several nodes can host
+ * the same agent id, and without a node the newest online host wins.
+ */
+export function parseRuntimeTarget(toAgent: string): { agentId: string; node?: string } {
+  const at = /^([^@\s]+)@([^@\s]+)$/.exec(toAgent)
+  return at ? { agentId: at[1], node: at[2] } : { agentId: toAgent }
+}
+
+/** The online node named `node` when it hosts `agentId`, else a reason it does not. */
+function pinnedHost(nodes: MeshNode[], agentId: string, node: string): MeshNode | string {
+  const named = nodes.find((n) => n.name === node)
+  if (!named) return `node "${node}" is not in the mesh`
+  if (named.status !== 'online') return `node "${node}" is ${named.status}`
+  if (!named.agents.includes(agentId)) return `node "${node}" does not host "${agentId}"`
+  return named
 }
 
 /** Online hosts of `agentId`, newest `lastSeen` first. A tie keeps the earlier node. */
@@ -733,6 +754,24 @@ export function createDelegateTools(deps: DelegateToolsDeps): DelegateToolsHandl
                 )
                 const node = preset.node && preset.node.length > 0 ? preset.node : deps.nodeName
                 return formatDelegationResult(annotateTimeout(settled, node))
+              }
+
+              const target = parseRuntimeTarget(call.toAgent)
+              if (target.node) {
+                const pinned = pinnedHost(nodes, target.agentId, target.node)
+                if (typeof pinned === 'string') {
+                  const listing = await renderAgents()
+                  return `[failed] Runtime agent "${call.toAgent}": ${pinned}.\n\n${listing}`
+                }
+                const settled = await delegateRuntime(
+                  { ...call, toAgent: target.agentId },
+                  pinned,
+                  parentDepth,
+                  (rowId) => {
+                    created.note(rowId)
+                  },
+                )
+                return formatDelegationResult(annotateTimeout(settled, pinned.name))
               }
 
               const host = pickOnlineHost(nodes, call.toAgent)

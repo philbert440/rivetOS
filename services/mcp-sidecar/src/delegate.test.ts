@@ -20,6 +20,7 @@ import {
   createDelegateToolsFromEnv,
   delegatePoolConfig,
   delegateToolsForTransport,
+  parseRuntimeTarget,
   resolveMeshDir,
   sidecarNodeName,
   type DelegateToolsHandle,
@@ -196,7 +197,7 @@ const LISTING = [
   `- local-grok (${NODE})`,
   '- grok (node-c)',
   '',
-  'to_agent accepts a preset name or id, or a runtime agent id.',
+  'to_agent accepts a preset name or id, or a runtime agent id (agent@node pins the node).',
 ].join('\n')
 
 describe('sidecar delegate_task', () => {
@@ -292,6 +293,73 @@ describe('sidecar delegate_task', () => {
     })
   })
 
+  it('agent@node pins the named node over a newer host of the same agent', async () => {
+    const older = meshNode({ name: 'ct-old', agents: ['grok'], lastSeen: 5 })
+    const newer = meshNode({ name: 'ct-new', agents: ['grok'], lastSeen: 40 })
+    const { store, handle, parent } = await setup({
+      nodes: [older, newer],
+      parentDepth: 0,
+      autoFinish: true,
+    })
+    const seeded = must(parent, 'parent')
+
+    const body = await text(handle, 'delegate_task', {
+      to_agent: 'grok@ct-old',
+      task: 'search',
+      model: 'custom:gpu-27b:qwen-27b',
+    })
+
+    expect(body.startsWith('looks good')).toBe(true)
+    const child = must(
+      (await store.list()).find((row) => row.id !== seeded.id),
+      'child row',
+    )
+    expect(child).toMatchObject({ executor: 'chat-loop', agentId: 'grok', nodeAffinity: 'ct-old' })
+    expect(child.spec).toMatchObject({ model: 'custom:gpu-27b:qwen-27b' })
+  })
+
+  it('agent@node reaches a runtime agent whose id a preset shadows', async () => {
+    const shadowing = preset({ name: 'grok' })
+    const { store, handle, parent } = await setup({
+      presets: [shadowing],
+      nodes: [REMOTE],
+      parentDepth: 0,
+      autoFinish: true,
+    })
+    const seeded = must(parent, 'parent')
+
+    await text(handle, 'delegate_task', { to_agent: 'grok@node-c', task: 'x' })
+
+    const child = must(
+      (await store.list()).find((row) => row.id !== seeded.id),
+      'child row',
+    )
+    expect(child).toMatchObject({ executor: 'chat-loop', agentId: 'grok', nodeAffinity: 'node-c' })
+  })
+
+  it('agent@node names why the node cannot take the task', async () => {
+    const { store, handle } = await setup({ nodes: [HOST, REMOTE, OFFLINE] })
+    const listed = await text(handle, 'list_agents', {})
+
+    expect(await text(handle, 'delegate_task', { to_agent: 'grok@nowhere', task: 'x' })).toBe(
+      `[failed] Runtime agent "grok@nowhere": node "nowhere" is not in the mesh.\n\n${listed}`,
+    )
+    expect(await text(handle, 'delegate_task', { to_agent: 'hidden@ct-down', task: 'x' })).toBe(
+      `[failed] Runtime agent "hidden@ct-down": node "ct-down" is offline.\n\n${listed}`,
+    )
+    expect(await text(handle, 'delegate_task', { to_agent: 'grok@' + NODE, task: 'x' })).toBe(
+      `[failed] Runtime agent "grok@${NODE}": node "${NODE}" does not host "grok".\n\n${listed}`,
+    )
+    expect(await store.list()).toHaveLength(0)
+  })
+
+  it('parseRuntimeTarget splits only a single agent@node', () => {
+    expect(parseRuntimeTarget('grok@node-x')).toEqual({ agentId: 'grok', node: 'node-x' })
+    expect(parseRuntimeTarget('grok')).toEqual({ agentId: 'grok' })
+    expect(parseRuntimeTarget('a@b@c')).toEqual({ agentId: 'a@b@c' })
+    expect(parseRuntimeTarget('@node-x')).toEqual({ agentId: '@node-x' })
+  })
+
   it('lists both rosters when the target is unknown', async () => {
     const { handle } = await setup({
       presets: [preset()],
@@ -352,7 +420,7 @@ describe('sidecar delegate_task', () => {
         'Runtime agents (mesh):',
         '(none)',
         '',
-        'to_agent accepts a preset name or id, or a runtime agent id.',
+        'to_agent accepts a preset name or id, or a runtime agent id (agent@node pins the node).',
       ].join('\n'),
     )
     expect(handle.tools.map((tool) => tool.name).sort()).toEqual(['delegate_task', 'list_agents'])
