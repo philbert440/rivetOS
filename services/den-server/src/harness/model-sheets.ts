@@ -37,6 +37,13 @@ export interface ModelSheet {
   models?: HarnessModelOption[]
   efforts?: EffortOption[]
   modelFlag?: string
+  /**
+   * Hermes only. A listed model `custom:<provider>:<model>` is spawned as
+   * `--provider <provider> -m <model>` (further colons stay in the model)
+   * instead of `[modelFlag, model]`. Other sheets, including qwen-code's
+   * `-m`, leave the token unchanged.
+   */
+  namedCustomProvider?: boolean
   effortFlag?: string
   /**
    * The CLI honors `modelFlag` at launch: a model picked before the
@@ -589,6 +596,8 @@ function hermesEndpointModels(
  * — when the provider has a `base_url` (custom / local OpenAI-compatible
  * servers such as vLLM) — the ids that endpoint serves at `GET /models`.
  * Launch flag `-m`; effort is `--reasoning` low/medium/high.
+ * `custom:<provider>:<model>` is `--provider <provider> -m <model>`
+ * (the model keeps further colons). Other sheets are not rewritten.
  */
 export function hermesSheet(
   readText: ReadText = defaultReadText,
@@ -617,6 +626,7 @@ export function hermesSheet(
     modelFlag: '-m',
     effortFlag: '--reasoning',
     launchModel: true,
+    namedCustomProvider: true,
   }
 }
 
@@ -964,9 +974,17 @@ function effortIdsFor(sheet: ModelSheet, modelId?: string): string[] {
 }
 
 /**
+ * Hermes `custom:<provider>:<model>` (named provider in ~/.hermes/config.yaml).
+ * Same shape as hermes-cli `NAMED_PROVIDER_RE`: the provider is one token with
+ * no colon, and the model keeps the rest. `MODEL_TOKEN_RE` already admits `:`.
+ */
+const HERMES_NAMED_PROVIDER_RE = /^custom:([^:\s]+):(.+)$/
+
+/**
  * Append `[modelFlag, model]` / `[effortFlag, effort]` when the sheet has
  * that flag AND the value is a listed id. Unknown values are omitted
- * (never crash a spawn).
+ * (never crash a spawn). Hermes (`namedCustomProvider`) rewrites
+ * `custom:<provider>:<model>` to `--provider <provider> -m <model>`.
  */
 export function appendModelEffortArgv(
   argv: string[],
@@ -983,7 +1001,10 @@ export function appendModelEffortArgv(
     !!sheet.modelFlag &&
     !!sheet.models?.some((m) => m.id === model)
   if (modelOk && sheet.modelFlag && model) {
-    out.push(sheet.modelFlag, model)
+    const named =
+      sheet.namedCustomProvider === true ? HERMES_NAMED_PROVIDER_RE.exec(model) : null
+    if (named) out.push('--provider', named[1], sheet.modelFlag, named[2])
+    else out.push(sheet.modelFlag, model)
   } else if (model && log) {
     log(`[den-server] spawn: omitting model ${JSON.stringify(model)} (unknown or no flag)`)
   }

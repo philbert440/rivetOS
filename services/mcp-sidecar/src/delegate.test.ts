@@ -337,6 +337,44 @@ describe('sidecar delegate_task', () => {
     expect(child).toMatchObject({ executor: 'chat-loop', agentId: 'grok', nodeAffinity: 'node-c' })
   })
 
+  it('a preset named grok@node-c wins over the runtime agent on that node', async () => {
+    const { store, handle } = await setup({
+      presets: [preset({ name: 'grok@node-c' })],
+      nodes: [HOST, REMOTE],
+      autoFinish: true,
+    })
+
+    const body = await text(handle, 'delegate_task', { to_agent: 'grok@node-c', task: 'x' })
+
+    expect(body.startsWith('looks good')).toBe(true)
+    expect(await store.list()).toHaveLength(1)
+    const child = must((await store.list())[0], 'preset row')
+    expect(child).toMatchObject({
+      executor: 'harness-session',
+      executorTarget: 'claude-code',
+      agentId: 'preset-1',
+      nodeAffinity: NODE,
+    })
+  })
+
+  it('agent@node on this node stamps origin tool', async () => {
+    const { store, handle } = await setup({ nodes: [HOST], autoFinish: true })
+
+    const body = await text(handle, 'delegate_task', {
+      to_agent: `local-grok@${NODE}`,
+      task: 'hi',
+    })
+
+    expect(body.startsWith('looks good')).toBe(true)
+    const row = must((await store.list())[0], 'runtime row')
+    expect(row).toMatchObject({
+      origin: 'tool',
+      nodeAffinity: NODE,
+      executor: 'chat-loop',
+      agentId: 'local-grok',
+    })
+  })
+
   it('agent@node names why the node cannot take the task', async () => {
     const { store, handle } = await setup({ nodes: [HOST, REMOTE, OFFLINE] })
     const listed = await text(handle, 'list_agents', {})
@@ -355,6 +393,7 @@ describe('sidecar delegate_task', () => {
 
   it('parseRuntimeTarget splits only a single agent@node', () => {
     expect(parseRuntimeTarget('grok@node-x')).toEqual({ agentId: 'grok', node: 'node-x' })
+    expect(parseRuntimeTarget(' grok@node-x ')).toEqual({ agentId: 'grok', node: 'node-x' })
     expect(parseRuntimeTarget('grok')).toEqual({ agentId: 'grok' })
     expect(parseRuntimeTarget('a@b@c')).toEqual({ agentId: 'a@b@c' })
     expect(parseRuntimeTarget('@node-x')).toEqual({ agentId: '@node-x' })

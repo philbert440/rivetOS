@@ -79,6 +79,28 @@ describe('helpers', () => {
     expect(modelArgs('custom/qwen-27b')).toEqual(['-m', 'custom/qwen-27b'])
     expect(modelArgs('anthropic/claude-sonnet-4')).toEqual(['-m', 'anthropic/claude-sonnet-4'])
     expect(modelArgs('custom:')).toEqual(['-m', 'custom:'])
+    // one colon is the model id, not provider + model
+    expect(modelArgs('custom:qwen-27b')).toEqual(['-m', 'custom:qwen-27b'])
+  })
+  it('buildArgs: named provider stays before --in and --resume', () => {
+    expect(
+      buildArgs({ binary: 'h', modelId: 'custom:p:m', cwd: '/w', sessionId: 's1' }, ''),
+    ).toEqual([
+      'chat',
+      '-q',
+      '(empty)',
+      '-Q',
+      '--yolo',
+      '--cli',
+      '--provider',
+      'p',
+      '-m',
+      'm',
+      '--in',
+      '/w',
+      '--resume',
+      's1',
+    ])
   })
   it('sessionIdFromStderr', () => {
     expect(sessionIdFromStderr('noise\nsession_id: abc-123\n')).toBe('abc-123')

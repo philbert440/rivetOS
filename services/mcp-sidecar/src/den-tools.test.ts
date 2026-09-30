@@ -14,7 +14,11 @@ import { memoryAppendInputSchema, memoryIngestSessionInputSchema } from './memor
 
 import { createMemoryTools } from './memory.js'
 import { createWikiTools } from './wiki.js'
-import { createDelegateTools, type DelegateToolsDeps } from './delegate.js'
+import {
+  createDelegateTools,
+  denDelegateTaskDefinition,
+  type DelegateToolsDeps,
+} from './delegate.js'
 
 afterEach(() => {
   vi.restoreAllMocks()
@@ -366,7 +370,7 @@ Hello
     expect(body.parentTaskId).toBeUndefined()
   })
 
-  it('shares all ten registration schemas and metadata with pg', async () => {
+  it('shares registration schemas and metadata with pg, except den delegate_task wording', async () => {
     const memory = createMemoryTools({ pgUrl: 'postgres://unused', enableWrite: true })
     const wiki = createWikiTools({ pgUrl: 'postgres://unused' })
     const delegate = createDelegateTools({
@@ -384,10 +388,19 @@ Hello
     expect(pg).toHaveLength(10)
     for (const registration of pg) {
       const proxy = tool(den, registration.name)
-      expect(Object.is(proxy.inputSchema, registration.inputSchema)).toBe(true)
       expect(proxy.name).toBe(registration.name)
-      expect(proxy.description).toBe(registration.description)
       expect(proxy.annotations).toEqual(registration.annotations)
+      if (registration.name === 'delegate_task') {
+        // Den does not implement agent@node, so description and to_agent text differ.
+        expect(proxy.description).toBe(denDelegateTaskDefinition.description)
+        expect(proxy.description).not.toContain('agent@node')
+        expect(registration.description).toContain('agent@node')
+        expect(Object.is(proxy.inputSchema, denDelegateTaskDefinition.inputSchema)).toBe(true)
+        expect(Object.is(proxy.inputSchema, registration.inputSchema)).toBe(false)
+        continue
+      }
+      expect(Object.is(proxy.inputSchema, registration.inputSchema)).toBe(true)
+      expect(proxy.description).toBe(registration.description)
     }
     await Promise.all([memory.close(), wiki.close(), delegate.close()])
   })
