@@ -178,7 +178,7 @@
     <string name="error_pick_cert">Pick the device certificate first.</string>
     <string name="error_cert_load">Certificate didn\'t load: %1$s</string>
     <string name="action_scan_pairing">Scan pairing QR</string>
-    <string name="pair_how">On the computer, run rivetos local --device &lt;name&gt; and scan the code it shows.</string>
+    <string name="pair_how">On the computer, run rivetos pair &lt;name&gt; and scan the code it shows.</string>
     <string name="pair_or_file">Or import a certificate file</string>
     <string name="pair_scan_hint">Point the camera at the QR code in the terminal</string>
     <string name="pair_camera_denied">RivetHub needs the camera to scan the pairing QR. You can still import a certificate file below.</string>

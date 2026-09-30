@@ -60,6 +60,16 @@ copy on the computer. `--no-lan` skips the QR — the phone could not reach
 the node. Off-loopback terminals
 require that TLS material; validation rejects a LAN bind without it.
 
+**Pairing a phone on a node that is not a local install.** `rivetos local`
+rewrites `config.yaml` for a single machine, so on a mesh node (for example one
+whose memory lives on a datahub) use `rivetos pair <name>` instead. It mints the
+p12 from the same CA, adds `<name>` to the owner's devices in `users.json`
+(`--user <id>` for another user), writes the pairing record and prints the QR,
+pinning the certificate `den.tls_cert` names. It never writes `config.yaml`. A
+name that already has a certificate is refused, so an enrolled device's key is
+never touched; re-running for a still-pending name re-shows its code. Den reads
+`users.json` at startup, so restart den after pairing a new name.
+
 **Lite vs full memory.** Default `--memory lite` is capture + FTS/trigram
 recall, no embed/compaction workers (`rivet.defer_embed_enqueue=on`). It
 clears a persisted `RIVETOS_EMBED_URL` so an inherited embed endpoint cannot
