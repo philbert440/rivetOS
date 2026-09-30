@@ -13,6 +13,7 @@ import { NotConnected, useGatewayReady } from '../components/not-connected.js'
 import { Select } from '../components/select.js'
 import { useConfirmDialog } from '../components/confirm-dialog.js'
 import { criteriaFromLines, taskAgentOptions, toTaskSelectOptions } from '../lib/task-create.js'
+import { taskDetailRefetchInterval } from '../lib/task-poll.js'
 import { HarnessApprovalCard } from '../components/harness-approval-card.js'
 
 const STATUS_COLORS: Record<TaskStatus, string> = {
@@ -280,17 +281,11 @@ export function TaskDetailPage(): JSX.Element {
     queryFn: ({ signal }) => useConnection.getState().gateway.getTask(taskId, signal),
     retry: (count, error) =>
       !(error instanceof GatewayError && [400, 404].includes(error.status)) && count < 3,
-    refetchInterval: (query) => {
-      if (
-        query.state.error instanceof GatewayError &&
-        [400, 404].includes(query.state.error.status)
-      )
-        return false
-      const status = query.state.data?.task.status
-      // A parked permission prompt denies at 60s. Poll inside that window.
-      if (status && !['completed', 'failed', 'killed', 'timeout'].includes(status)) return 2_000
-      return 10_000
-    },
+    refetchInterval: (query) =>
+      taskDetailRefetchInterval({
+        error: query.state.error,
+        task: query.state.data?.task,
+      }),
     enabled: connected,
   })
   if (!connected) return <NotConnected />

@@ -65,8 +65,10 @@ export {
 export type { ClaudeCliExecutorConfig } from './executor.js'
 export {
   parsePermissionPrompts,
+  parsePermissionTimeoutMs,
   permissionPromptToolId,
   PERMISSION_PROMPT_TIMEOUT_MS,
+  PERMISSION_PROMPT_TIMEOUT_MAX_MS,
   PERMISSION_TOOL_NAME,
 } from './permission-prompt.js'
 export type { PermissionPrompter, PermissionPromptMode } from './permission-prompt.js'

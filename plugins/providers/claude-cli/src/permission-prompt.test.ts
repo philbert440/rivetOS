@@ -4,6 +4,9 @@ import { buildArgs, type SpawnTurnFlags } from './spawn-turn.js'
 import {
   createPermissionPromptTool,
   parsePermissionPrompts,
+  parsePermissionTimeoutMs,
+  PERMISSION_PROMPT_TIMEOUT_MAX_MS,
+  PERMISSION_PROMPT_TIMEOUT_MS,
   permissionDecisionText,
   permissionPromptToolId,
   type PermissionPrompter,
@@ -50,6 +53,23 @@ describe('permission prompt flags', () => {
     expect(parsePermissionPrompts('ask')).toBeUndefined()
     expect(parsePermissionPrompts('ui')).toBe('ui')
     expect(parsePermissionPrompts('none')).toBe('none')
+  })
+
+  it('parsePermissionTimeoutMs keeps a positive integer up to ten minutes', () => {
+    expect(PERMISSION_PROMPT_TIMEOUT_MS).toBe(60_000)
+    expect(PERMISSION_PROMPT_TIMEOUT_MAX_MS).toBe(600_000)
+    expect(parsePermissionTimeoutMs(undefined)).toBe(PERMISSION_PROMPT_TIMEOUT_MS)
+    expect(parsePermissionTimeoutMs(null)).toBe(PERMISSION_PROMPT_TIMEOUT_MS)
+    expect(parsePermissionTimeoutMs('')).toBe(PERMISSION_PROMPT_TIMEOUT_MS)
+    expect(parsePermissionTimeoutMs('60000')).toBe(PERMISSION_PROMPT_TIMEOUT_MS)
+    expect(parsePermissionTimeoutMs(1.5)).toBe(PERMISSION_PROMPT_TIMEOUT_MS)
+    expect(parsePermissionTimeoutMs(0)).toBe(PERMISSION_PROMPT_TIMEOUT_MS)
+    expect(parsePermissionTimeoutMs(-1)).toBe(PERMISSION_PROMPT_TIMEOUT_MS)
+    expect(parsePermissionTimeoutMs(600_001)).toBe(PERMISSION_PROMPT_TIMEOUT_MS)
+    expect(parsePermissionTimeoutMs(Number.NaN)).toBe(PERMISSION_PROMPT_TIMEOUT_MS)
+    expect(parsePermissionTimeoutMs(1)).toBe(1)
+    expect(parsePermissionTimeoutMs(60_000)).toBe(60_000)
+    expect(parsePermissionTimeoutMs(600_000)).toBe(600_000)
   })
 })
 

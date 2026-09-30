@@ -315,7 +315,7 @@ export class ClaudeCliExecutor implements HarnessExecutor {
       killReason ??= reason
       activeSpawn?.kill()
       // The CLI is gone. Drop prompts it can no longer answer, or a click
-      // that lands during the 60s park records an allow the spawn never saw.
+      // that lands during the park records an allow the spawn never saw.
       this.cfg.permissionPrompter?.denyPending?.(spec.taskId)
     }
 
@@ -584,6 +584,8 @@ export class ClaudeCliExecutor implements HarnessExecutor {
       )
     } catch (err: unknown) {
       if (bridge) await bridge.close().catch(() => undefined)
+      // This return is outside the stream finally below.
+      this.cfg.permissionPrompter?.denyPending?.(spec.taskId, 'spawn ended')
       const msg = err instanceof Error ? err.message : String(err)
       return { text: '', error: `Failed to spawn ${this.cfg.binary}: ${msg}` }
     }
@@ -728,6 +730,10 @@ export class ClaudeCliExecutor implements HarnessExecutor {
       closeThinking()
       run.setActiveSpawn(undefined)
       spawned.kill() // no-op when already exited — reaps every path
+      // Normal exit and stream errors land here too. killNow already
+      // denied; a second call does not settle again. When this call is
+      // first, the audit says the spawn ended rather than that it was killed.
+      this.cfg.permissionPrompter?.denyPending?.(spec.taskId, 'spawn ended')
       if (bridge) {
         await bridge.close().catch(() => undefined)
       }

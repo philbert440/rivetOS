@@ -4,6 +4,10 @@
 
 import { HARNESS_IDS } from '@rivetos/types'
 import {
+  PERMISSION_PROMPT_TIMEOUT_MAX_MS,
+  PERMISSION_PROMPT_TIMEOUT_MS,
+} from '@rivetos/provider-claude-cli'
+import {
   KNOWN_RUNTIME_KEYS,
   KNOWN_AGENT_KEYS,
   REMOVED_RUNTIME_KEYS,
@@ -402,6 +406,25 @@ export function validateProviders(
           path: `${path}.permission_prompts`,
           message:
             'permission_prompts must be "ui" or "none" (omit the key to leave spawns unchanged)',
+        })
+      }
+    }
+
+    if (name === 'claude-cli' && provider.permission_timeout_ms !== undefined) {
+      const raw = provider.permission_timeout_ms
+      const ok =
+        typeof raw === 'number' &&
+        Number.isInteger(raw) &&
+        raw >= 1 &&
+        raw <= PERMISSION_PROMPT_TIMEOUT_MAX_MS
+      if (!ok) {
+        issues.push({
+          severity: 'error',
+          path: `${path}.permission_timeout_ms`,
+          message:
+            `permission_timeout_ms must be a positive integer of at most ` +
+            `${String(PERMISSION_PROMPT_TIMEOUT_MAX_MS)} ` +
+            `(default ${String(PERMISSION_PROMPT_TIMEOUT_MS)})`,
         })
       }
     }

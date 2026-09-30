@@ -227,6 +227,55 @@ describe('InMemoryTaskStore', () => {
     expect(await store.sweep('node-a')).toBe(1)
     expect((await store.get(task.id))?.status).toBe('timeout')
   })
+
+  it('onTerminal fires only when a row becomes terminal', async () => {
+    const seen: Array<{ id: string; status: string }> = []
+    const store = new InMemoryTaskStore(undefined, { sweepStaleMs: 0, awaitingInputTtlMs: 0 })
+    store.onTerminal((id, status) => seen.push({ id, status }))
+
+    const done = await store.create(input())
+    await store.claim(done.id, 'node-a')
+    await store.finish(done.id, 'completed', completedResult)
+
+    const failed = await store.create(input())
+    await store.claim(failed.id, 'node-a')
+    await store.finish(failed.id, 'failed', {
+      ...completedResult,
+      verdict: 'failed',
+      error: 'nope',
+    })
+
+    const killed = await store.create(input())
+    await store.claim(killed.id, 'node-a')
+    expect(await store.requestKill(killed.id)).toBe('running')
+    expect(await store.requestKill(killed.id)).toBeUndefined()
+
+    const requeued = await store.create(input({ maxAttempts: 2 }))
+    await store.claim(requeued.id, 'node-a')
+    const sweptFail = await store.create(input({ maxAttempts: 1 }))
+    await store.claim(sweptFail.id, 'node-a')
+    expect(await store.sweep('node-a')).toBe(2)
+
+    const parked = await store.create(input())
+    await store.claim(parked.id, 'node-a')
+    expect(await store.markAwaitingInput(parked.id)).toBe(true)
+    expect(seen.some((row) => row.id === parked.id)).toBe(false)
+    expect(await store.sweep('node-a')).toBe(1)
+
+    const audited = await store.recordTerminal(input({ goal: 'audited elsewhere' }), {
+      status: 'completed',
+      result: completedResult,
+    })
+
+    expect(seen).toEqual([
+      { id: done.id, status: 'completed' },
+      { id: failed.id, status: 'failed' },
+      { id: killed.id, status: 'killed' },
+      { id: sweptFail.id, status: 'failed' },
+      { id: parked.id, status: 'timeout' },
+    ])
+    expect(seen.some((row) => row.id === requeued.id || row.id === audited.id)).toBe(false)
+  })
 })
 
 // ---------------------------------------------------------------------------
@@ -497,6 +546,36 @@ describe.skipIf(!TEST_PG_URL)('PgTaskStore (scratch schema)', () => {
 
     expect(await store.requestKill(queued.id)).toBeUndefined()
     expect(await store.requestKill(crypto.randomUUID())).toBeUndefined()
+  })
+
+  it('onTerminal fires for finish and requestKill, not for recordTerminal', async () => {
+    const seen: Array<{ id: string; status: string }> = []
+    const stop = store.onTerminal((id, status) => {
+      seen.push({ id, status })
+    })
+    try {
+      const finished = await store.create(input())
+      await store.claim(finished.id, 'node-a')
+      await store.finish(finished.id, 'failed', {
+        ...completedResult,
+        verdict: 'failed',
+        error: 'nope',
+      })
+      const killed = await store.create(input())
+      await store.claim(killed.id, 'node-a')
+      expect(await store.requestKill(killed.id)).toBe('running')
+      const audited = await store.recordTerminal(input({ goal: 'audited elsewhere' }), {
+        status: 'completed',
+        result: completedResult,
+      })
+      expect(seen).toEqual([
+        { id: finished.id, status: 'failed' },
+        { id: killed.id, status: 'killed' },
+      ])
+      expect(seen.some((row) => row.id === audited.id)).toBe(false)
+    } finally {
+      stop()
+    }
   })
 
   it('nodeAffinity rows enqueue under the per-node job name (Appendix E)', async () => {

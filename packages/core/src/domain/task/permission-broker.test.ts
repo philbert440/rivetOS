@@ -141,6 +141,54 @@ describe('TaskPermissionBroker', () => {
     await kept
   })
 
+  it('a slow or failed audit write does not delay or change the answer', async () => {
+    const { store, id } = await taskId()
+    let release: () => void = () => undefined
+    const gate = new Promise<void>((resolve) => {
+      release = resolve
+    })
+    const orig = store.appendPermissionDecision.bind(store)
+    let calls = 0
+    store.appendPermissionDecision = (rowId, decision) => {
+      calls += 1
+      if (calls === 1) return gate.then(() => orig(rowId, decision))
+      return Promise.reject(new Error('audit disk full'))
+    }
+    const broker = new TaskPermissionBroker({ store, timeoutMs: 5_000 })
+    const slow = broker.ask({
+      taskId: id,
+      requestId: 'slow',
+      name: 'Bash',
+      input: { command: 'ls' },
+    })
+    expect(broker.decide(id, 'slow', 'allow')).toBe(true)
+    await expect(slow).resolves.toEqual({ behavior: 'allow', decision: 'allow' })
+    expect((await store.get(id))?.spec.permissionDecisions).toBeUndefined()
+    release()
+    await gate
+    expect((await store.get(id))?.spec.permissionDecisions).toEqual([
+      expect.objectContaining({
+        requestId: 'slow',
+        tool: 'Bash',
+        decision: 'allow',
+      }),
+    ])
+
+    const failed = broker.ask({
+      taskId: id,
+      requestId: 'boom',
+      name: 'Edit',
+      input: {},
+    })
+    expect(broker.decide(id, 'boom', 'allow')).toBe(true)
+    await expect(failed).resolves.toEqual({ behavior: 'allow', decision: 'allow' })
+    await new Promise((resolve) => setTimeout(resolve, 0))
+    const recorded = (await store.get(id))?.spec.permissionDecisions as
+      | Array<{ requestId: string }>
+      | undefined
+    expect(recorded?.map((row) => row.requestId)).toEqual(['slow'])
+  })
+
   it('next() resolves when the prompt parks after the wait has started', async () => {
     const { store, id } = await taskId()
     const broker = new TaskPermissionBroker({ store, timeoutMs: 5_000 })

@@ -146,6 +146,9 @@ function clampWaitMs(raw: string | null): number {
  * drift between the store row and the published contract fails the build here.
  */
 function toWireWithApprovals(row: TaskRow, broker?: TaskPermissionBroker): TaskWire {
+  // A terminal row must not offer Allow. The store listener denies the
+  // parked prompt; the card only renders what this list contains.
+  if (TERMINAL_STATUS.includes(row.status)) return row
   const pending = broker?.pendingFor(row.id) ?? []
   if (pending.length === 0) return row
   return { ...row, pendingApprovals: pending }
@@ -273,6 +276,14 @@ function applyCriteriaPolicy(input: NewTaskInput, policy: CriteriaPolicy): NewTa
 
 export function createTaskApiRoute(opts: TaskApiOptions): GatewayRoute {
   const { store, waiter } = opts
+  const broker = opts.permissionBroker
+  // requestKill does not abort the spawn. Deny at the row transition so a
+  // parked prompt cannot still be allowed after the task is terminal.
+  if (broker && store.onTerminal) {
+    store.onTerminal((taskId) => {
+      broker.denyPending(taskId, 'task is terminal')
+    })
+  }
 
   return {
     prefix: '/api/tasks',
@@ -502,6 +513,12 @@ export function createTaskApiRoute(opts: TaskApiOptions): GatewayRoute {
           const decision = body?.decision
           if (decision !== 'allow' && decision !== 'deny') {
             return json(res, 400, { error: 'decision must be "allow" or "deny"' })
+          }
+          // Checked after the body so a garbage decision stays 400. Never
+          // call decide('allow') on a terminal row — deny whatever is left.
+          if (TERMINAL_STATUS.includes(row.status)) {
+            broker.denyPending(id, 'task is terminal')
+            return json(res, 409, { error: `task is terminal (${row.status})` })
           }
           if (!broker.decide(id, requestId, decision)) {
             return json(res, 404, { error: 'unknown approval' })

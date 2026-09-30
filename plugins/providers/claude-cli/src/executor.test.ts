@@ -27,6 +27,8 @@ import {
   runExecutorConformance,
   makeConformanceSpec,
 } from '../../../../packages/core/src/domain/task/test/executor-conformance.js'
+import { InMemoryTaskStore } from '../../../../packages/core/src/domain/task/store.js'
+import { TaskPermissionBroker } from '../../../../packages/core/src/domain/task/permission-broker.js'
 
 // ---------------------------------------------------------------------------
 // Fake claude binary fixtures
@@ -274,6 +276,76 @@ describe('ClaudeCliExecutor', () => {
       'mcp__rivetos__request_permission',
     )
     expect(args).toContain('--mcp-config')
+  })
+
+  it('a spawn that exits denies a prompt still parked for that task', async () => {
+    const store = new InMemoryTaskStore()
+    const row = await store.create({
+      goal: 'park',
+      executor: 'harness-session',
+      agentId: 'claude',
+      origin: 'api',
+    })
+    const broker = new TaskPermissionBroker({ store, timeoutMs: 30_000 })
+    const pending = broker.ask({
+      taskId: row.id,
+      requestId: 'parked',
+      name: 'Bash',
+      input: { command: 'ls' },
+    })
+    const fake = makeFakeClaude(successLines('ok'))
+    const executor = new ClaudeCliExecutor({
+      binary: fake.binary,
+      permissionPrompter: broker,
+    })
+    const result = await executor.start(makeConformanceSpec({ taskId: row.id }), {
+      signal: new AbortController().signal,
+    }).result
+    expect(result.verdict).toBe('completed')
+    await expect(pending).resolves.toMatchObject({
+      behavior: 'deny',
+      decision: 'deny',
+      message: 'spawn ended',
+    })
+    expect(broker.decide(row.id, 'parked', 'allow')).toBe(false)
+    expect((await store.get(row.id))?.spec.permissionDecisions).toEqual([
+      expect.objectContaining({
+        requestId: 'parked',
+        decision: 'deny',
+        message: 'spawn ended',
+      }),
+    ])
+  })
+
+  it('a spawn that fails to start denies a prompt still parked for that task', async () => {
+    const store = new InMemoryTaskStore()
+    const row = await store.create({
+      goal: 'park',
+      executor: 'harness-session',
+      agentId: 'claude',
+      origin: 'api',
+    })
+    const broker = new TaskPermissionBroker({ store, timeoutMs: 30_000 })
+    const pending = broker.ask({
+      taskId: row.id,
+      requestId: 'parked-miss',
+      name: 'Bash',
+      input: { command: 'ls' },
+    })
+    const executor = new ClaudeCliExecutor({
+      binary: '/nonexistent/claude-nope',
+      permissionPrompter: broker,
+    })
+    const result = await executor.start(makeConformanceSpec({ taskId: row.id }), {
+      signal: new AbortController().signal,
+    }).result
+    expect(result.verdict).toBe('failed')
+    await expect(pending).resolves.toMatchObject({
+      behavior: 'deny',
+      decision: 'deny',
+      message: 'spawn ended',
+    })
+    expect(broker.decide(row.id, 'parked-miss', 'allow')).toBe(false)
   })
 
   it('kill denies prompts still parked for that task', async () => {

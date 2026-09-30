@@ -17,7 +17,13 @@ import type { TaskStore } from './store.js'
 
 const log = logger('TaskPermissionBroker')
 
-/** Default park. The executor's `ui` mode uses this. */
+/**
+ * Default park when the caller omits `timeoutMs`. Boot passes
+ * `parsePermissionTimeoutMs` instead (`PERMISSION_PROMPT_TIMEOUT_MS`, also
+ * 60s) whenever the claude-cli package loads. This literal is only the
+ * fallback for that import failing. Core does not depend on the provider
+ * package, so the two 60s constants stay separate and must be kept equal.
+ */
 export const TASK_PERMISSION_TIMEOUT_MS = 60_000
 
 const MESSAGE_CAP = 500
@@ -120,7 +126,10 @@ export class TaskPermissionBroker {
         clearTimeout(timer)
         args.signal?.removeEventListener('abort', onAbort)
         this.pending.delete(key)
-        void this.record(args, answer).finally(() => resolve(answer))
+        // The CLI is waiting on this promise. A slow or failed audit write
+        // must not delay the answer or flip it to deny.
+        resolve(answer)
+        void this.record(args, answer)
       }
       const onAbort = (): void => {
         finish({ behavior: 'deny', decision: 'deny', message: 'permission prompt aborted' })
@@ -145,13 +154,15 @@ export class TaskPermissionBroker {
   /**
    * Deny every prompt still parked for `taskId`. A spawn kill has no CLI
    * left to deliver an answer to. A later `decide('allow')` finds nothing.
-   * Returns how many prompts this call settled.
+   * Returns how many prompts this call settled. `message` is the audit
+   * reason; the default stays `spawn killed` so a one-arg kill matches
+   * the historical record.
    */
-  denyPending(taskId: string): number {
+  denyPending(taskId: string, message = 'spawn killed'): number {
     let settled = 0
     for (const entry of [...this.pending.values()]) {
       if (entry.request.taskId !== taskId) continue
-      entry.finish({ behavior: 'deny', decision: 'deny', message: 'spawn killed' })
+      entry.finish({ behavior: 'deny', decision: 'deny', message })
       settled += 1
     }
     return settled

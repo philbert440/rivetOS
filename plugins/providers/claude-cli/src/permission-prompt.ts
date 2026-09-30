@@ -9,15 +9,36 @@
  * always returns one of those two shapes.
  *
  * The tool name on the wire is `mcp__<server>__request_permission`. The
- * embedded bridge advertises the server as `rivetos`.
+ * embedded bridge advertises the server as `rivetos` and omits this tool
+ * from tools/list. A direct tools/call can still park a prompt; only an
+ * explicit allow answers it, and an unanswered park denies.
  */
 
 import { randomUUID } from 'node:crypto'
 
 import type { TaskEvent, Tool } from '@rivetos/types'
 
-/** Unanswered `ui` prompts deny after this long. */
+/**
+ * Default park for an unanswered `ui` prompt. Boot passes
+ * `permission_timeout_ms` when that key is set; this stays the fallback
+ * and the value `TASK_PERMISSION_TIMEOUT_MS` must keep matching.
+ */
 export const PERMISSION_PROMPT_TIMEOUT_MS = 60_000
+
+/** A longer park is a stuck card, not a decision. Ten minutes. */
+export const PERMISSION_PROMPT_TIMEOUT_MAX_MS = 600_000
+
+/**
+ * `providers.claude-cli.permission_timeout_ms`. Absent, blank, or anything
+ * other than a positive integer within the max returns the default. A
+ * skipped validator must not park for 0ms or forever.
+ */
+export function parsePermissionTimeoutMs(raw: unknown): number {
+  if (raw == null || raw === '') return PERMISSION_PROMPT_TIMEOUT_MS
+  if (typeof raw !== 'number' || !Number.isInteger(raw)) return PERMISSION_PROMPT_TIMEOUT_MS
+  if (raw < 1 || raw > PERMISSION_PROMPT_TIMEOUT_MAX_MS) return PERMISSION_PROMPT_TIMEOUT_MS
+  return raw
+}
 
 /** MCP server name the embedded bridge advertises. Matches mcp-bridge.ts. */
 export const PERMISSION_PROMPT_SERVER = 'rivetos'
@@ -67,8 +88,9 @@ export interface PermissionPrompter {
    * Deny every prompt still parked for this task. A killed spawn never
    * answers, and a late allow must not be recorded after the CLI is dead.
    * Optional so a prompter that only answers in-process can omit it.
+   * `message` is an audit reason; omit it on the kill path.
    */
-  denyPending?(taskId: string): void
+  denyPending?(taskId: string, message?: string): void
 }
 
 /** CLI text-block body. Allow omits `updatedInput` so the CLI keeps the

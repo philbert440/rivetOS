@@ -29,6 +29,7 @@ import {
   createTaskApiRoute,
   createOutcomesApiRoute,
   TaskPermissionBroker,
+  TASK_PERMISSION_TIMEOUT_MS,
   createWikiApiRoute,
   createWikiHtmlRoute,
   createEvaluationCoordinator,
@@ -323,9 +324,20 @@ export async function registerAgentTools(
     'chat-loop',
     createChatLoopExecutor({ ...executorCfg, memory: runtime.getMemory(), pricing: taskPricing }),
   )
+  const permissionTimeoutMs = await resolvePermissionTimeoutMs(
+    config.providers?.['claude-cli']?.permission_timeout_ms,
+  )
   const permissionBroker = taskEngineStore
-    ? new TaskPermissionBroker({ store: taskEngineStore })
+    ? new TaskPermissionBroker({ store: taskEngineStore, timeoutMs: permissionTimeoutMs })
     : undefined
+  // Finish, kill, and sweep flip the row without aborting the spawn. The
+  // route subscribes too; denyPending is idempotent, so the second call
+  // does not record a second decision or allow anything.
+  if (permissionBroker && taskEngineStore?.onTerminal) {
+    taskEngineStore.onTerminal((taskId) => {
+      permissionBroker.denyPending(taskId, 'task is terminal')
+    })
+  }
   await registerHarnessTaskExecutors(runtime, config, executors, workspaceDir, permissionBroker)
   const implementedHarnesses = executors
     .harnesses()
@@ -1080,6 +1092,24 @@ async function registerHarnessTaskExecutors(
       harnessId,
     )
     log.info(`Task executor for (harness-session, ${harnessId}): not implemented — ${reason}`)
+  }
+}
+
+/**
+ * Park length for headless `ui` prompts. The provider owns the parser so a
+ * missing package cannot crash boot; the broker's own default is the fallback.
+ */
+async function resolvePermissionTimeoutMs(raw: unknown): Promise<number> {
+  try {
+    const { parsePermissionTimeoutMs } = await import('@rivetos/provider-claude-cli')
+    return parsePermissionTimeoutMs(raw)
+  } catch (err: unknown) {
+    const message = err instanceof Error ? err.message : String(err)
+    log.warn(
+      'claude-cli permission timeout unavailable, using ' +
+        `${String(TASK_PERMISSION_TIMEOUT_MS)}ms: ${message}`,
+    )
+    return TASK_PERMISSION_TIMEOUT_MS
   }
 }
 
