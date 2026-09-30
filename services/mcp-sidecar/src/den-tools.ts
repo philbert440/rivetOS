@@ -1,7 +1,10 @@
 /**
  * Memory, wiki, and delegate tools backed by the local den over HTTPS.
  *
- * Tool names, descriptions, and input schemas match the Postgres factories.
+ * Tool names, descriptions, and input schemas match the Postgres factories,
+ * except `delegate_task`: den does not parse `agent@node`, so it uses
+ * `denDelegateTaskDefinition` (pre-pin description and `to_agent` text).
+ * The list footer below stays the pre-pin sentence.
  * `execute` returns the den's ToolResult string as-is. Content-part arrays
  * are wrapped the same way `adaptRivetTool` wraps them: a bare array has no
  * `.content`, and the v2 mount would drop it. Postgres pools are not opened.
@@ -31,7 +34,7 @@ import { memoryAppendInputSchema, memoryIngestSessionInputSchema } from './memor
 import { formatWikiRead, type WikiReadSection } from './wiki-read-format.js'
 
 import { wikiSearchDefinition, wikiReadDefinition } from './wiki.js'
-import { delegateTaskDefinition, listAgentsDefinition } from './delegate.js'
+import { denDelegateTaskDefinition, listAgentsDefinition } from './delegate.js'
 
 const READ_ONLY = { readOnlyHint: true, idempotentHint: true } as const
 const WRITE_ANNOTATIONS = { readOnlyHint: false, idempotentHint: true } as const
@@ -519,7 +522,7 @@ export function createDenTools(opts: DenToolsOptions): DenToolsHandle {
     tools.push(
       {
         name: 'delegate_task',
-        ...delegateTaskDefinition,
+        ...denDelegateTaskDefinition,
         async execute(args, ctx?: ToolExecuteContext): Promise<string> {
           const call = readDelegateCall(args)
           if (typeof call === 'string') return call
