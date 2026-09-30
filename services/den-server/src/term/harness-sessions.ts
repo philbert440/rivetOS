@@ -4,7 +4,8 @@
 // is how the RivetHub drawer lists conversations; opening one resumes the
 // harness's native session (claude --resume <id>).
 //
-// Supports Claude Code (~/.claude/projects/<slug>/<id>.jsonl), grok Build
+// Supports Claude Code (~/.claude/projects/<slug>/<id>.jsonl, plus subagent
+// transcripts under <slug>/<session>/subagents/agent-<id>.jsonl), grok Build
 // (~/.grok/sessions/<enc-cwd>/<uuid>/summary.json), Hermes (a sqlite DB at
 // ~/.hermes/state.db), Kimi Code
 // (~/.kimi-code/sessions/wd_<label>_<hash>/session_<uuid>/), Codex
@@ -19,7 +20,7 @@
 
 import { readdir, stat, open, readFile } from 'node:fs/promises'
 import { existsSync, readdirSync, readFileSync, statSync } from 'node:fs'
-import { basename, join, resolve } from 'node:path'
+import { basename, dirname, join, resolve } from 'node:path'
 import { homedir } from 'node:os'
 import { type HarnessTranscriptTurn } from '@rivetos/types'
 import { denJoinKey, denSessionRef, type StoreCommand } from '../harness/session-key.js'
@@ -85,6 +86,14 @@ export interface HarnessSession {
    *  Optional because hermes exposes nothing usable, and because an older grok
    *  store may predate the field. */
   createdAt?: number
+  /**
+   * Native id of the session that spawned this one. Grok subagent and
+   * subagent-fork rows, and Claude Code subagent transcripts. Headless plan
+   * sessions stay unparented so the drawer does not nest them.
+   */
+  parentSessionId?: string
+  /** Subagent type from the store (`general-purpose`, …). Nested rows label with this. */
+  agentName?: string
 }
 
 /** ~/.claude/projects (respects CLAUDE_CONFIG_DIR like the CLI does). */
@@ -137,6 +146,206 @@ async function sessionTitle(file: string): Promise<string> {
   return ''
 }
 
+/** `agent-<id>.jsonl` — Claude Code's subagent transcript filename. */
+const CLAUDE_AGENT_FILE = /^agent-(.+)\.jsonl$/
+
+/** A session or agent id that can be one path segment. Never a traversal. */
+function claudeIdSafe(id: string): boolean {
+  return Boolean(id) && !id.includes('/') && !id.includes('..') && id !== '.' && id !== '..'
+}
+
+/** Claude session files are UUIDs. Subagent transcript ids are not. */
+const CLAUDE_SESSION_UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
+
+function clipStoreLabel(value: unknown, max: number): string {
+  if (typeof value !== 'string') return ''
+  const trimmed = value.trim()
+  return trimmed ? trimmed.slice(0, max) : ''
+}
+
+interface ClaudeFile {
+  id: string
+  path: string
+  mtime: number
+  birth: number
+  /** Set only for a subagent transcript. The parent session directory name. */
+  parentSessionId?: string
+}
+
+/**
+ * List identity. A subagent transcript is keyed by (parent session, agent id):
+ * Claude can reuse an agent id under a second session, and keying by the agent
+ * id alone kept only the newest file. A top-level session file has no parent,
+ * so its key stays the session id.
+ */
+function claudeFileKey(id: string, parentSessionId?: string): string {
+  return parentSessionId ? `${parentSessionId}\0${id}` : id
+}
+
+/** Newer mtime wins within one key. A top-level session file is preferred over
+ *  an agent file with the same id in a post-pass, not here — they are different keys. */
+function rememberClaudeFile(byId: Map<string, ClaudeFile>, next: ClaudeFile): void {
+  if (!claudeIdSafe(next.id)) return
+  const key = claudeFileKey(next.id, next.parentSessionId)
+  const prev = byId.get(key)
+  if (!prev || next.mtime >= prev.mtime) byId.set(key, next)
+}
+
+async function pushAgentJsonl(
+  files: ClaudeFile[],
+  path: string,
+  parentSessionId: string,
+): Promise<void> {
+  const match = CLAUDE_AGENT_FILE.exec(basename(path))
+  if (!match) return
+  const id = match[1]
+  if (!claudeIdSafe(id) || !claudeIdSafe(parentSessionId) || id === parentSessionId) return
+  try {
+    const s = await stat(path)
+    if (!s.isFile()) return
+    files.push({
+      id,
+      path,
+      mtime: s.mtimeMs,
+      birth: s.birthtimeMs || s.ctimeMs || s.mtimeMs,
+      parentSessionId,
+    })
+  } catch {
+    /* miss */
+  }
+}
+
+/**
+ * Subagent transcripts for one session directory. Three layouts Claude Code
+ * has written:
+ *   `<session>/subagents/agent-<id>.jsonl`
+ *   `<session>/subagents/workflows/<run>/agent-<id>.jsonl`
+ *   `<session>/agent-<id>.jsonl` (older, no `subagents/` directory)
+ * The parent is always the session directory, not the workflow run.
+ */
+async function listClaudeAgentFiles(sessionDir: string, sessionId: string): Promise<ClaudeFile[]> {
+  if (!claudeIdSafe(sessionId)) return []
+  const out: ClaudeFile[] = []
+  const subagents = join(sessionDir, 'subagents')
+  let names: string[]
+  try {
+    names = await readdir(subagents)
+  } catch {
+    names = []
+  }
+  for (const name of names) {
+    if (CLAUDE_AGENT_FILE.test(name)) await pushAgentJsonl(out, join(subagents, name), sessionId)
+  }
+  let runs: string[]
+  try {
+    runs = await readdir(join(subagents, 'workflows'))
+  } catch {
+    runs = []
+  }
+  for (const run of runs) {
+    if (!claudeIdSafe(run)) continue
+    let agents: string[]
+    try {
+      agents = await readdir(join(subagents, 'workflows', run))
+    } catch {
+      continue
+    }
+    for (const name of agents) {
+      if (!CLAUDE_AGENT_FILE.test(name)) continue
+      await pushAgentJsonl(out, join(subagents, 'workflows', run, name), sessionId)
+    }
+  }
+  let direct: string[]
+  try {
+    direct = await readdir(sessionDir)
+  } catch {
+    return out
+  }
+  for (const name of direct) {
+    if (!CLAUDE_AGENT_FILE.test(name)) continue
+    await pushAgentJsonl(out, join(sessionDir, name), sessionId)
+  }
+  return out
+}
+
+/** Session id that owns an agent transcript, or undefined for a top-level file. */
+function claudeParentFromAgentPath(agentPath: string): string | undefined {
+  if (!CLAUDE_AGENT_FILE.test(basename(agentPath))) return undefined
+  let dir = dirname(agentPath)
+  // `<session>/subagents/workflows/<run>/agent-<id>.jsonl`
+  if (basename(dirname(dir)) === 'workflows' && basename(dirname(dirname(dir))) === 'subagents') {
+    dir = dirname(dirname(dirname(dir)))
+  } else if (basename(dir) === 'subagents') {
+    dir = dirname(dir)
+  }
+  const sessionId = basename(dir)
+  return claudeIdSafe(sessionId) ? sessionId : undefined
+}
+
+/**
+ * Agent type and model for a subagent row. The sidecar `.meta.json` is the
+ * documented source (`agentType`, `model`); a missing sidecar falls back to
+ * the same field names in the first 64KB of the transcript. `slug` is a
+ * random nickname, not the agent type, so it is ignored.
+ */
+async function claudeAgentLabels(file: string): Promise<{ agentName?: string; model?: string }> {
+  let agentName = ''
+  let model = ''
+  const metaPath = file.endsWith('.jsonl') ? file.slice(0, -'.jsonl'.length) + '.meta.json' : ''
+  if (metaPath) {
+    try {
+      const meta = JSON.parse(await readFile(metaPath, 'utf8')) as Record<string, unknown>
+      agentName = clipStoreLabel(meta.agentType ?? meta.subagent_type ?? meta.agent_type, 64)
+      model = clipStoreLabel(meta.model, 80)
+    } catch {
+      /* no sidecar */
+    }
+  }
+  if (!agentName || !model) {
+    const head = await claudeHeadLabels(file)
+    if (!agentName) agentName = head.agentName
+    if (!model) model = head.model
+  }
+  return {
+    ...(agentName ? { agentName } : {}),
+    ...(model ? { model } : {}),
+  }
+}
+
+async function claudeHeadLabels(file: string): Promise<{ agentName: string; model: string }> {
+  let agentName = ''
+  let model = ''
+  const fh = await open(file, 'r')
+  try {
+    const buf = Buffer.alloc(64 * 1024)
+    const { bytesRead } = await fh.read(buf, 0, buf.length, 0)
+    for (const line of buf.subarray(0, bytesRead).toString('utf8').split('\n')) {
+      if (!line.trim().startsWith('{')) continue
+      let parsed: unknown
+      try {
+        parsed = JSON.parse(line)
+      } catch {
+        continue
+      }
+      if (!parsed || typeof parsed !== 'object') continue
+      const o = parsed as Record<string, unknown>
+      if (!agentName) agentName = clipStoreLabel(o.agentType ?? o.subagent_type ?? o.agent_type, 64)
+      if (!model) {
+        const msg = o.message
+        const fromMessage =
+          msg && typeof msg === 'object'
+            ? clipStoreLabel((msg as { model?: unknown }).model, 80)
+            : ''
+        model = fromMessage || clipStoreLabel(o.model, 80)
+      }
+      if (agentName && model) break
+    }
+  } finally {
+    await fh.close()
+  }
+  return { agentName, model }
+}
+
 async function listClaudeSessions(limit: number): Promise<HarnessSession[]> {
   const dir = claudeProjectsDir()
   let slugs: string[]
@@ -145,47 +354,80 @@ async function listClaudeSessions(limit: number): Promise<HarnessSession[]> {
   } catch {
     return [] // no Claude store on this node
   }
-  const files: { id: string; path: string; mtime: number; birth: number }[] = []
+  const byId = new Map<string, ClaudeFile>()
   for (const slug of slugs) {
+    if (!claudeIdSafe(slug)) continue
+    const slugDir = join(dir, slug)
     let entries: string[]
     try {
-      entries = await readdir(join(dir, slug))
+      entries = await readdir(slugDir)
     } catch {
       continue
     }
-    for (const f of entries) {
-      if (!f.endsWith('.jsonl')) continue
-      const path = join(dir, slug, f)
+    for (const name of entries) {
+      if (!claudeIdSafe(name)) continue
+      const path = join(slugDir, name)
+      let s: Awaited<ReturnType<typeof stat>>
       try {
-        const s = await stat(path)
-        // birth: same fallback chain as describeClaudeSession, so a session's
-        // createdAt cannot disagree between the list and the single lookup.
-        if (s.isFile())
-          files.push({
-            id: f.slice(0, -6),
-            path,
-            mtime: s.mtimeMs,
-            birth: s.birthtimeMs || s.ctimeMs || s.mtimeMs,
-          })
+        s = await stat(path)
       } catch {
-        /* vanished between readdir and stat — skip */
+        continue // vanished between readdir and stat
       }
+      if (s.isFile()) {
+        if (!name.endsWith('.jsonl')) continue
+        rememberClaudeFile(byId, {
+          id: name.slice(0, -'.jsonl'.length),
+          path,
+          mtime: s.mtimeMs,
+          // birth: same fallback chain as describeClaudeSession, so a session's
+          // createdAt cannot disagree between the list and the single lookup.
+          birth: s.birthtimeMs || s.ctimeMs || s.mtimeMs,
+        })
+        continue
+      }
+      if (!s.isDirectory()) continue
+      for (const agent of await listClaudeAgentFiles(path, name)) rememberClaudeFile(byId, agent)
     }
   }
-  // Newest first, then only title-parse the top N (parsing is the costly part).
-  files.sort((a, b) => b.mtime - a.mtime)
-  const out: HarnessSession[] = []
-  for (const f of files.slice(0, limit)) {
-    const title = await sessionTitle(f.path).catch(() => '')
-    out.push({
-      id: f.id,
-      command: 'claude',
-      title: title || f.id,
-      updatedAt: Math.floor(f.mtime),
-      createdAt: Math.floor(f.birth),
-    })
+  // A real session file owns its id. An agent transcript that happens to reuse
+  // that id is not a second row — `--resume` and the drawer both mean the session.
+  const sessionIds = new Set<string>()
+  for (const f of byId.values()) {
+    if (!f.parentSessionId) sessionIds.add(f.id)
   }
-  return out
+  if (sessionIds.size > 0) {
+    for (const [key, f] of byId) {
+      if (f.parentSessionId && sessionIds.has(f.id)) byId.delete(key)
+    }
+  }
+  // Newest first. Title and label reads happen only for the kept set: a
+  // subagent is often newer than its parent, and withAncestors pulls that
+  // parent back in before the costly parse.
+  const ranked: HarnessSession[] = [...byId.values()]
+    .sort((a, b) => b.mtime - a.mtime)
+    .map((f) => {
+      const row: HarnessSession = {
+        id: f.id,
+        command: 'claude',
+        title: f.id,
+        updatedAt: Math.floor(f.mtime),
+        createdAt: Math.floor(f.birth),
+      }
+      if (f.parentSessionId) row.parentSessionId = f.parentSessionId
+      return row
+    })
+  const kept = withAncestors(ranked, limit)
+  for (const row of kept) {
+    const f = byId.get(claudeFileKey(row.id, row.parentSessionId))
+    if (!f) continue
+    const title = await sessionTitle(f.path).catch(() => '')
+    if (title) row.title = title
+    if (!f.parentSessionId) continue
+    const labels = await claudeAgentLabels(f.path)
+    if (labels.agentName) row.agentName = labels.agentName
+    if (labels.model) row.model = labels.model
+  }
+  return kept
 }
 
 /**
@@ -194,11 +436,19 @@ async function listClaudeSessions(limit: number): Promise<HarnessSession[]> {
  * `listClaudeSessions` is the drawer's bulk path; the harness control plane
  * needs a single-session lookup for `getSession` / `startSession` collision
  * checks, and paying a whole-store title parse for that would be silly.
- * Returns undefined when the id has no `.jsonl` under any project slug.
+ * A subagent id resolves to its `agent-<id>.jsonl` and carries the parent
+ * session id. Pass `parentSessionId` to pin that file to the session the row
+ * was listed under — the same agent id can exist under two parents, and an
+ * unscoped lookup then returns undefined rather than the newest file.
+ * Returns undefined when nothing on disk matches.
  */
-export async function describeClaudeSession(id: string): Promise<HarnessSession | undefined> {
-  if (!id || id.includes('/') || id.includes('..')) return undefined
-  const path = await findClaudeJsonl(id)
+export async function describeClaudeSession(
+  id: string,
+  parentSessionId?: string,
+): Promise<HarnessSession | undefined> {
+  if (!claudeIdSafe(id)) return undefined
+  if (parentSessionId !== undefined && !claudeIdSafe(parentSessionId)) return undefined
+  const path = await findClaudeJsonl(id, parentSessionId)
   if (!path) return undefined
   let mtime: number
   let birth: number
@@ -210,13 +460,21 @@ export async function describeClaudeSession(id: string): Promise<HarnessSession 
     return undefined
   }
   const title = await sessionTitle(path).catch(() => '')
-  return {
+  const row: HarnessSession = {
     id,
     command: 'claude',
     title: title || id,
     updatedAt: Math.floor(mtime),
     createdAt: Math.floor(birth),
   }
+  const parent = claudeParentFromAgentPath(path)
+  if (parent && parent !== id) {
+    row.parentSessionId = parent
+    const labels = await claudeAgentLabels(path)
+    if (labels.agentName) row.agentName = labels.agentName
+    if (labels.model) row.model = labels.model
+  }
+  return row
 }
 
 /** ~/.grok/sessions (respects GROK_HOME). grok stores one DIR per session:
@@ -224,6 +482,207 @@ export async function describeClaudeSession(id: string): Promise<HarnessSession 
 function grokSessionsDir(): string {
   const base = process.env.GROK_HOME?.trim() || join(homedir(), '.grok')
   return join(base, 'sessions')
+}
+
+/**
+ * Grok kinds that are a conversation spawned by another session. Headless
+ * plan sessions (`session_kind: "headless"`) are not children — nesting them
+ * would hide hundreds of plan rows under whatever primary happened to share
+ * a cwd.
+ */
+function isNestedGrokKind(kind: unknown): boolean {
+  return kind === 'subagent' || kind === 'subagent_fork'
+}
+
+/**
+ * Parent links for grok subagents live only on the PARENT's `updates.jsonl`
+ * (`sessionUpdate: "subagent_spawned"`). The child summary has `session_kind`
+ * and no parent id. Those files sum to roughly a gigabyte on a busy node, so
+ * the scan is incremental: each file remembers the byte offset already
+ * parsed and only the appended tail is read the next time the drawer lists.
+ */
+interface GrokSpawnCursor {
+  size: number
+  mtimeMs: number
+  /** First unparsed byte. The incomplete trailing line still sits in the file. */
+  parsedUntil: number
+  /** Child ids whose parent pointer was read from this file. */
+  children: string[]
+  /**
+   * Identity of the file the cursor was parsed from. A same-path replacement
+   * (rename over `updates.jsonl`) keeps the path and can be the same size or
+   * larger, so a shrink check never sees it. `dev`+`ino` changes when the
+   * directory entry points at a new file.
+   */
+  ino: number
+  dev: number
+}
+
+interface GrokLocated {
+  at: number
+  /** Session directory with a readable summary. Absent when a walk found no dir. */
+  dir?: string
+  absent?: boolean
+}
+
+interface GrokParentIndex {
+  root: string
+  parents: Map<string, string>
+  files: Map<string, GrokSpawnCursor>
+  /** id → where `describeGrokSession` last found it. Bounded; not a parent-link cache. */
+  locations: Map<string, GrokLocated>
+  /** `updates.jsonl` paths from the last directory walk. */
+  updateFiles?: { paths: string[]; at: number }
+}
+
+/** How long a positive locate hit skips the cwd walk. A dead path re-walks immediately. */
+const GROK_LOCATE_TTL_MS = 30_000
+/** A confirmed miss. Short so a session created just after a probe is not invisible for long. */
+const GROK_LOCATE_MISS_TTL_MS = 5_000
+const GROK_LOCATE_MAX = 256
+
+let grokParentIndex: GrokParentIndex | undefined
+
+/** Tests swap `GROK_HOME` per case. A stale cursor must not survive that. */
+export function resetGrokParentIndexForTest(): void {
+  grokParentIndex = undefined
+}
+
+function grokIndex(root: string): GrokParentIndex {
+  if (!grokParentIndex || grokParentIndex.root !== root) {
+    grokParentIndex = { root, parents: new Map(), files: new Map(), locations: new Map() }
+  }
+  return grokParentIndex
+}
+
+/**
+ * Grok session ids are UUIDs. Trim, then reject anything that is not one —
+ * a whitespace-padded or junk parent id must not become `parentSessionId`,
+ * because formatting it later throws out of the whole list.
+ */
+function grokSpawnId(value: unknown): string | undefined {
+  if (typeof value !== 'string') return undefined
+  const id = value.trim()
+  return CLAUDE_SESSION_UUID_RE.test(id) ? id : undefined
+}
+
+function takeGrokSpawn(line: string): { child: string; parent: string } | undefined {
+  if (!line.includes('subagent_spawned')) return undefined
+  let parsed: unknown
+  try {
+    parsed = JSON.parse(line)
+  } catch {
+    return undefined
+  }
+  const update = (parsed as { params?: { update?: Record<string, unknown> } }).params?.update
+  if (!update || update.sessionUpdate !== 'subagent_spawned') return undefined
+  const child = grokSpawnId(update.child_session_id ?? update.subagent_id)
+  const parent = grokSpawnId(update.parent_session_id)
+  if (!child || !parent || child === parent) return undefined
+  return { child, parent }
+}
+
+async function readFileRange(file: string, start: number, end: number): Promise<Buffer> {
+  const len = end - start
+  if (len <= 0) return Buffer.alloc(0)
+  const fh = await open(file, 'r')
+  try {
+    const buf = Buffer.alloc(len)
+    let off = 0
+    while (off < len) {
+      const { bytesRead } = await fh.read(buf, off, len - off, start + off)
+      if (bytesRead === 0) break
+      off += bytesRead
+    }
+    return buf.subarray(0, off)
+  } finally {
+    await fh.close()
+  }
+}
+
+function dropSpawnFile(index: GrokParentIndex, file: string): void {
+  const prev = index.files.get(file)
+  if (!prev) return
+  for (const child of prev.children) index.parents.delete(child)
+  index.files.delete(file)
+}
+
+async function syncGrokSpawnFile(index: GrokParentIndex, file: string): Promise<void> {
+  let size: number
+  let mtimeMs: number
+  let ino: number
+  let dev: number
+  try {
+    const s = await stat(file)
+    size = s.size
+    mtimeMs = s.mtimeMs
+    ino = s.ino
+    dev = s.dev
+  } catch {
+    dropSpawnFile(index, file)
+    return
+  }
+  const prev = index.files.get(file)
+  if (
+    prev &&
+    prev.size === size &&
+    prev.mtimeMs === mtimeMs &&
+    prev.ino === ino &&
+    prev.dev === dev
+  ) {
+    return
+  }
+
+  const cursor: GrokSpawnCursor = prev ?? {
+    size: 0,
+    mtimeMs: 0,
+    parsedUntil: 0,
+    children: [],
+    ino,
+    dev,
+  }
+  // A new inode (the path was replaced) or a shrink: bytes before `parsedUntil`
+  // are not the bytes already parsed.
+  const replaced = prev !== undefined && (prev.ino !== ino || prev.dev !== dev)
+  if (!prev || replaced || size < prev.parsedUntil) {
+    for (const child of cursor.children) index.parents.delete(child)
+    cursor.children = []
+    cursor.parsedUntil = 0
+  }
+  // Byte offset, not a decoded-string length. A trailing partial code
+  // point becomes U+FFFD (three bytes) under utf8, which would rewind
+  // `parsedUntil` into the previous line and then skip that line forever.
+  const buf = await readFileRange(file, cursor.parsedUntil, size)
+  const lastNl = buf.lastIndexOf(0x0a)
+  const complete = lastNl === -1 ? 0 : lastNl + 1
+  if (complete > 0) {
+    const text = buf.subarray(0, complete).toString('utf8')
+    for (const line of text.split('\n')) {
+      const spawn = takeGrokSpawn(line)
+      if (!spawn) continue
+      index.parents.set(spawn.child, spawn.parent)
+      if (!cursor.children.includes(spawn.child)) cursor.children.push(spawn.child)
+    }
+    cursor.parsedUntil += complete
+  }
+  // A same-size, same-mtime read must come back for a tail that is still
+  // unparsed. Recording the file size here would skip that tail.
+  cursor.size = cursor.parsedUntil
+  cursor.mtimeMs = mtimeMs
+  cursor.ino = ino
+  cursor.dev = dev
+  index.files.set(file, cursor)
+}
+
+/** Child native id → parent native id. `files` is every session's updates.jsonl. */
+async function syncGrokParents(root: string, files: string[]): Promise<Map<string, string>> {
+  const index = grokIndex(root)
+  const live = new Set(files)
+  for (const file of [...index.files.keys()]) {
+    if (!live.has(file)) dropSpawnFile(index, file)
+  }
+  for (const file of files) await syncGrokSpawnFile(index, file)
+  return index.parents
 }
 
 /**
@@ -238,14 +697,20 @@ function grokSessionsDir(): string {
  * Returns undefined when the dir has no readable summary — grok writes the
  * session DIR before its summary, so "no row" does NOT mean "id is free"; that
  * question is `harnessSessionExists('grok', id)`.
+ *
+ * `nested` is true for subagent / subagent-fork rows. The parent id is not in
+ * this file; the caller fills `parentSessionId` from the spawn index.
  */
 async function readGrokSummary(
   dir: string,
   fallbackId: string,
-): Promise<HarnessSession | undefined> {
+): Promise<{ row: HarnessSession; nested: boolean } | undefined> {
   let s: {
     info?: { id?: string }
     session_summary?: string
+    session_kind?: string
+    agent_name?: string
+    current_model_id?: string
     created_at?: string
     updated_at?: string
   }
@@ -264,7 +729,26 @@ async function readGrokSummary(
     updatedAt: Number.isFinite(updated) ? updated : 0,
   }
   if (Number.isFinite(created)) row.createdAt = created
-  return row
+  const agent = typeof s.agent_name === 'string' ? s.agent_name.trim().slice(0, 64) : ''
+  if (agent) row.agentName = agent
+  const model = typeof s.current_model_id === 'string' ? s.current_model_id.trim().slice(0, 80) : ''
+  if (model) row.model = model
+  return { row, nested: isNestedGrokKind(s.session_kind) }
+}
+
+function stampGrokParents(
+  rows: { row: HarnessSession; nested: boolean }[],
+  parents: Map<string, string>,
+): HarnessSession[] {
+  const out: HarnessSession[] = []
+  for (const { row, nested } of rows) {
+    if (nested) {
+      const parent = parents.get(row.id)
+      if (parent && parent !== row.id) row.parentSessionId = parent
+    }
+    out.push(row)
+  }
+  return out
 }
 
 async function listGrokSessions(limit: number): Promise<HarnessSession[]> {
@@ -275,7 +759,8 @@ async function listGrokSessions(limit: number): Promise<HarnessSession[]> {
   } catch {
     return [] // no grok store on this node
   }
-  const out: HarnessSession[] = []
+  const reads: { row: HarnessSession; nested: boolean }[] = []
+  const updates: string[] = []
   for (const cwd of cwdDirs) {
     let entries: import('node:fs').Dirent[]
     try {
@@ -285,11 +770,123 @@ async function listGrokSessions(limit: number): Promise<HarnessSession[]> {
     }
     for (const e of entries) {
       if (!e.isDirectory()) continue
-      const row = await readGrokSummary(join(dir, cwd, e.name), e.name)
-      if (row) out.push(row)
+      const sessionDir = join(dir, cwd, e.name)
+      updates.push(join(sessionDir, 'updates.jsonl'))
+      const read = await readGrokSummary(sessionDir, e.name)
+      if (read) reads.push(read)
     }
   }
-  return out.sort((a, b) => b.updatedAt - a.updatedAt).slice(0, limit)
+  // The list just walked. describeGrokSession reuses this instead of walking again.
+  grokIndex(dir).updateFiles = { paths: updates, at: Date.now() }
+  const parents = await syncGrokParents(dir, updates)
+  const out = stampGrokParents(reads, parents)
+  return withAncestors(
+    out.sort((a, b) => b.updatedAt - a.updatedAt),
+    limit,
+  )
+}
+
+function rememberGrokLocation(root: string, id: string, located: GrokLocated): void {
+  const locations = grokIndex(root).locations
+  locations.delete(id)
+  locations.set(id, located)
+  while (locations.size > GROK_LOCATE_MAX) {
+    const oldest = locations.keys().next().value
+    if (oldest === undefined) break
+    locations.delete(oldest)
+  }
+}
+
+function cachedGrokLocation(root: string, id: string): GrokLocated | undefined {
+  const locations = grokIndex(root).locations
+  const hit = locations.get(id)
+  if (!hit) return undefined
+  const ttl = hit.dir ? GROK_LOCATE_TTL_MS : GROK_LOCATE_MISS_TTL_MS
+  if (Date.now() - hit.at > ttl) {
+    locations.delete(id)
+    return undefined
+  }
+  return hit
+}
+
+/** Every session dir's `updates.jsonl`, cached so a nested describe does not readdir. */
+async function grokUpdateFiles(root: string): Promise<string[]> {
+  const index = grokIndex(root)
+  const cached = index.updateFiles
+  if (cached && Date.now() - cached.at < GROK_LOCATE_TTL_MS) return cached.paths
+  let tops: string[]
+  try {
+    tops = await readdir(root)
+  } catch {
+    return []
+  }
+  const paths: string[] = []
+  for (const cwd of tops) {
+    let entries: import('node:fs').Dirent[]
+    try {
+      entries = await readdir(join(root, cwd), { withFileTypes: true })
+    } catch {
+      continue
+    }
+    for (const e of entries) {
+      if (e.isDirectory()) paths.push(join(root, cwd, e.name, 'updates.jsonl'))
+    }
+  }
+  index.updateFiles = { paths, at: Date.now() }
+  return paths
+}
+
+async function finishDescribedGrok(
+  root: string,
+  found: { row: HarnessSession; nested: boolean },
+): Promise<HarnessSession> {
+  if (!found.nested) return found.row
+  // Same index the list uses, so a drawer row and getSession cannot disagree.
+  const parents = await syncGrokParents(root, await grokUpdateFiles(root))
+  const [row] = stampGrokParents([found], parents)
+  return row
+}
+
+type GrokLocateWalk =
+  | { kind: 'hit'; dir: string; found: { row: HarnessSession; nested: boolean } }
+  | { kind: 'pending' }
+  | { kind: 'absent' }
+  | { kind: 'no-store' }
+
+/** One full cwd walk. `pending` is a session dir whose summary is not written yet. */
+async function locateGrokSession(root: string, id: string): Promise<GrokLocateWalk> {
+  let cwdDirs: string[]
+  try {
+    cwdDirs = await readdir(root)
+  } catch {
+    return { kind: 'no-store' }
+  }
+  let best: { row: HarnessSession; nested: boolean } | undefined
+  let bestDir: string | undefined
+  let sawDir = false
+  for (const cwd of cwdDirs) {
+    const sessionDir = join(root, cwd, id)
+    const read = await readGrokSummary(sessionDir, id)
+    if (read) {
+      if (!best || read.row.updatedAt > best.row.updatedAt) {
+        best = read
+        bestDir = sessionDir
+      }
+      continue
+    }
+    if (sawDir) continue
+    try {
+      const s = await stat(sessionDir)
+      if (s.isDirectory()) sawDir = true
+    } catch {
+      /* no dir in this bucket */
+    }
+  }
+  if (best && bestDir) return { kind: 'hit', dir: bestDir, found: best }
+  // The dir is created before summary.json. Caching that as a miss would hide
+  // the session for the whole TTL, which is the spawn window describe exists for.
+  if (sawDir) return { kind: 'pending' }
+  return { kind: 'absent' }
 }
 
 /**
@@ -300,22 +897,29 @@ async function listGrokSessions(limit: number): Promise<HarnessSession[]> {
  * The id appears under exactly one cwd bucket in practice; if it somehow
  * appears under several, the most recently updated wins (same tie-break as
  * `findClaudeJsonl` / `findGrokChatHistory`).
+ *
+ * Repeated calls for the same id reuse a bounded locate cache. A cached path
+ * that no longer has a summary is dropped and the store is walked again, so a
+ * session that moved or was deleted is not served from the old bucket.
  */
 export async function describeGrokSession(id: string): Promise<HarnessSession | undefined> {
   if (!id || id.includes('/') || id.includes('..')) return undefined
-  const dir = grokSessionsDir()
-  let cwdDirs: string[]
-  try {
-    cwdDirs = await readdir(dir)
-  } catch {
-    return undefined // no grok store on this node
+  const root = grokSessionsDir()
+  const cached = cachedGrokLocation(root, id)
+  if (cached?.absent) return undefined
+  if (cached?.dir) {
+    const read = await readGrokSummary(cached.dir, id)
+    if (read) return finishDescribedGrok(root, read)
+    grokIndex(root).locations.delete(id)
   }
-  let best: HarnessSession | undefined
-  for (const cwd of cwdDirs) {
-    const row = await readGrokSummary(join(dir, cwd, id), id)
-    if (row && (!best || row.updatedAt > best.updatedAt)) best = row
+  const located = await locateGrokSession(root, id)
+  if (located.kind === 'no-store' || located.kind === 'pending') return undefined
+  if (located.kind === 'absent') {
+    rememberGrokLocation(root, id, { at: Date.now(), absent: true })
+    return undefined
   }
-  return best
+  rememberGrokLocation(root, id, { at: Date.now(), dir: located.dir })
+  return finishDescribedGrok(root, located.found)
 }
 
 // ---- Hermes: sessions live in a sqlite DB, not files (~/.hermes/state.db) ----
@@ -1809,6 +2413,9 @@ export function harnessSessionExists(command: string, id: string): boolean {
   let hit: (top: string) => string
   if (command === 'claude') {
     dir = claudeProjectsDir()
+    // Top-level `<uuid>.jsonl` only. A subagent transcript is not a session
+    // `claude --resume` can open; treating it as one would pass the agent id
+    // to that flag. The transcript reader still finds the agent file.
     hit = (slug) => join(dir, slug, `${id}.jsonl`)
   } else if (command === 'grok') {
     dir = grokSessionsDir()
@@ -1827,6 +2434,44 @@ export function harnessSessionExists(command: string, id: string): boolean {
     return false
   }
   return tops.some((t) => existsSync(hit(t)))
+}
+
+/**
+ * Ancestors pulled back in past the recency cap. The drawer attaches a chain
+ * of this many links and flattens a longer one (`NEST_DEPTH_CAP` in
+ * rivethub-web `harness-chat.ts`). Emitting one more would hand the client
+ * an ancestor it refuses to nest.
+ */
+const NEST_ANCESTOR_CAP = 8
+
+/**
+ * Newest `limit` rows, plus any ancestor a kept nested row points at.
+ * A subagent is often newer than the session that spawned it; the cap would
+ * otherwise drop the parent and the drawer could not nest the child.
+ */
+function withAncestors(ranked: HarnessSession[], limit: number): HarnessSession[] {
+  const cap = limit > 0 ? limit : ranked.length
+  const kept = ranked.slice(0, cap)
+  if (kept.length === ranked.length) return kept
+  const pool = new Map(ranked.map((row) => [`${row.command}\0${row.id}`, row]))
+  const included = new Set(kept.map((row) => `${row.command}\0${row.id}`))
+  const extras: HarnessSession[] = []
+  for (const row of kept) {
+    let parentId = row.parentSessionId
+    const seen = new Set<string>()
+    while (parentId && !seen.has(parentId) && seen.size < NEST_ANCESTOR_CAP) {
+      seen.add(parentId)
+      const key = `${row.command}\0${parentId}`
+      const parent = pool.get(key)
+      if (!parent) break
+      if (!included.has(key)) {
+        extras.push(parent)
+        included.add(key)
+      }
+      parentId = parent.parentSessionId
+    }
+  }
+  return extras.length ? [...kept, ...extras] : kept
 }
 
 /**
@@ -1849,7 +2494,7 @@ export async function listHarnessSessions(
   if (commands.includes('qwen')) all.push(...(await listQwenSessions(limit)))
   if (commands.includes('cursor')) all.push(...(await listCursorSessions(limit)))
   all.sort((a, b) => b.updatedAt - a.updatedAt) // last-updated first
-  return all.slice(0, limit)
+  return withAncestors(all, limit)
 }
 
 // ---- Transcript read (resync chat UI from on-disk TUI store) ---------------
@@ -1919,26 +2564,105 @@ function withTruncated<T extends { turns: HarnessTurn[] }>(
   return truncated ? { ...t, truncated: true } : t
 }
 
-async function findClaudeJsonl(id: string): Promise<string | undefined> {
-  const dir = claudeProjectsDir()
+async function considerClaudeFile(
+  best: { path: string; mtime: number } | undefined,
+  path: string,
+): Promise<{ path: string; mtime: number } | undefined> {
+  try {
+    const s = await stat(path)
+    if (s.isFile() && (!best || s.mtimeMs > best.mtime)) return { path, mtime: s.mtimeMs }
+  } catch {
+    /* miss */
+  }
+  return best
+}
+
+/**
+ * `agent-<id>.jsonl` for this agent id. With `parentSessionId`, only that
+ * session directory — the file the list row came from. Without it, a single
+ * parent still resolves (the common case); two parents do not, because picking
+ * the newest would describe the wrong session.
+ */
+async function findClaudeAgentJsonl(
+  root: string,
+  id: string,
+  parentSessionId?: string,
+): Promise<{ path: string; mtime: number } | undefined> {
+  const name = `agent-${id}.jsonl`
+  const matches: { path: string; mtime: number; parent: string }[] = []
   let slugs: string[]
   try {
-    slugs = await readdir(dir)
+    slugs = await readdir(root)
   } catch {
     return undefined
   }
-  // Prefer the most recently modified match if the id appears under multiple cwd slugs.
-  let best: { path: string; mtime: number } | undefined
   for (const slug of slugs) {
-    const path = join(dir, slug, `${id}.jsonl`)
+    if (!claudeIdSafe(slug)) continue
+    let entries: string[]
     try {
-      const s = await stat(path)
-      if (s.isFile() && (!best || s.mtimeMs > best.mtime)) best = { path, mtime: s.mtimeMs }
+      entries = await readdir(join(root, slug))
     } catch {
-      /* miss */
+      continue
+    }
+    for (const ent of entries) {
+      if (!claudeIdSafe(ent) || ent.includes('.')) continue
+      if (parentSessionId && ent !== parentSessionId) continue
+      const sessionDir = join(root, slug, ent)
+      const take = async (path: string): Promise<void> => {
+        const hit = await considerClaudeFile(undefined, path)
+        if (hit) matches.push({ path: hit.path, mtime: hit.mtime, parent: ent })
+      }
+      await take(join(sessionDir, 'subagents', name))
+      await take(join(sessionDir, name))
+      let runs: string[]
+      try {
+        runs = await readdir(join(sessionDir, 'subagents', 'workflows'))
+      } catch {
+        continue
+      }
+      for (const run of runs) {
+        if (!claudeIdSafe(run)) continue
+        await take(join(sessionDir, 'subagents', 'workflows', run, name))
+      }
     }
   }
-  return best?.path
+  if (!parentSessionId) {
+    const parents = new Set(matches.map((m) => m.parent))
+    if (parents.size !== 1) return undefined
+  }
+  let best: { path: string; mtime: number } | undefined
+  for (const m of matches) {
+    if (!best || m.mtime > best.mtime) best = m
+  }
+  return best
+}
+
+async function findClaudeJsonl(id: string, parentSessionId?: string): Promise<string | undefined> {
+  if (!claudeIdSafe(id)) return undefined
+  if (parentSessionId !== undefined && !claudeIdSafe(parentSessionId)) return undefined
+  const dir = claudeProjectsDir()
+  // A parent-scoped read is the agent file under that session. A top-level
+  // `<id>.jsonl` is a different session and must not answer it.
+  if (!parentSessionId) {
+    let slugs: string[]
+    try {
+      slugs = await readdir(dir)
+    } catch {
+      return undefined
+    }
+    // Prefer the most recently modified match if the id appears under multiple cwd slugs.
+    // A real session file wins over an agent transcript: `--resume` wants this id.
+    let best: { path: string; mtime: number } | undefined
+    for (const slug of slugs) {
+      if (!claudeIdSafe(slug)) continue
+      best = await considerClaudeFile(best, join(dir, slug, `${id}.jsonl`))
+    }
+    if (best) return best.path
+    // Agent ids are not session UUIDs. Walking every subagents/ dir for a UUID
+    // misses, and it is the whole store.
+    if (CLAUDE_SESSION_UUID_RE.test(id)) return undefined
+  }
+  return (await findClaudeAgentJsonl(dir, id, parentSessionId))?.path
 }
 
 async function findGrokChatHistory(id: string): Promise<string | undefined> {
@@ -1994,8 +2718,16 @@ export async function readHarnessTranscript(id: string): Promise<HarnessTranscri
     const claudePath = await findClaudeJsonl(native)
     if (claudePath) {
       const parsed = await parseJsonlObjects(claudePath)
-      const turns = claudeTurnsFromLines(parsed.objects)
-      if (turns.length > 0) return withTruncated({ id, command: 'claude', turns }, parsed.truncated)
+      const turns = claudeTurnsFromLines(parsed.objects, {
+        path: claudePath,
+        truncated: parsed.truncated,
+      })
+      // A truncated parent tail is often nothing but sidechain lines. Those
+      // turns are correctly empty — still return the file, or the flag is
+      // lost and a later store can answer the same id.
+      if (turns.length > 0 || parsed.truncated) {
+        return withTruncated({ id, command: 'claude', turns }, parsed.truncated)
+      }
     }
   }
 
@@ -2056,14 +2788,30 @@ export async function readHarnessTranscript(id: string): Promise<HarnessTranscri
  * Same store-scoping rule as `readGrokTranscript` below: a `claude-code`
  * id whose `.jsonl` has been deleted must read as an
  * empty transcript, not as whichever other store happens to hold that id.
+ *
+ * `parentSessionId` pins an agent transcript to the session that owns the
+ * row. The same agent id under two parents is not answered from the newer file.
  */
-export async function readClaudeTranscript(id: string): Promise<HarnessTranscript> {
+export async function readClaudeTranscript(
+  id: string,
+  parentSessionId?: string,
+): Promise<HarnessTranscript> {
   if (!id || id.includes('/') || id.includes('..')) return { id, command: '', turns: [] }
-  const path = await findClaudeJsonl(id)
+  if (
+    parentSessionId !== undefined &&
+    (!parentSessionId || parentSessionId.includes('/') || parentSessionId.includes('..'))
+  ) {
+    return { id, command: '', turns: [] }
+  }
+  const path = await findClaudeJsonl(id, parentSessionId)
   if (!path) return { id, command: '', turns: [] }
   const parsed = await parseJsonlObjects(path)
   return withTruncated(
-    { id, command: 'claude', turns: claudeTurnsFromLines(parsed.objects) },
+    {
+      id,
+      command: 'claude',
+      turns: claudeTurnsFromLines(parsed.objects, { path, truncated: parsed.truncated }),
+    },
     parsed.truncated,
   )
 }

@@ -61,9 +61,10 @@ export type { DenAgentEventLike }
 export type ClaudePtyHost = HarnessPtyHost
 
 /**
- * The slice of the on-disk Claude store this driver needs. No `exists` port:
- * Claude's store is one `<uuid>.jsonl`, so "describable" and "exists" are the
- * same question and the base derives one from the other.
+ * The slice of the on-disk Claude store this driver needs. Production sets
+ * `exists` to the top-level `<uuid>.jsonl` check. The type still omits it so
+ * a test double can leave it unset (the base then uses `describe`). A
+ * subagent transcript is describable, but it is not a resumable session.
  */
 export type ClaudeStoreHost = Omit<HarnessStoreHost, 'exists'>
 

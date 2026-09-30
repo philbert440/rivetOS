@@ -46,4 +46,24 @@ describe('session owners', () => {
       'abc',
     ])
   })
+
+  it('a nested row follows its parent instead of the node owner', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'owners-'))
+    dirs.push(dir)
+    const owners = createSessionOwners(join(dir, 'session-owners.json'))
+    owners.set('parent', 'coco')
+    expect(owners.visible('child', coco, 'parent')).toBe(true)
+    expect(owners.visible('child', owner, 'parent')).toBe(false)
+    expect(owners.visible('child', owner, 'untagged-parent')).toBe(true)
+    expect(owners.visible('child', coco, 'untagged-parent')).toBe(false)
+    expect(owners.inherit('child', 'parent')).toBe(true)
+    expect(owners.get('child')).toBe('coco')
+    expect(owners.inherit('child', 'someone-else')).toBe(false)
+    expect(owners.get('child')).toBe('coco')
+    const rows = [{ id: 'child', parentId: 'parent' }]
+    expect(
+      owners.filter(rows, coco, undefined, (row) => row.parentId).map((row) => row.id),
+    ).toEqual(['child'])
+    expect(owners.filter(rows, owner, undefined, (row) => row.parentId)).toEqual([])
+  })
 })

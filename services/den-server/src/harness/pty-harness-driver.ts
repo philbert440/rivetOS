@@ -32,7 +32,8 @@
  *     `AdoptingPtyHarnessDriver` (`adopting-harness-driver.ts`).
  *   - **`room`** — the inverse: which den room a native id is running in.
  *   - **`storeExists`** — grok's ground truth is a session DIR that predates
- *     its `summary.json`; claude's is simply "the store can describe it".
+ *     its `summary.json`; claude's is the top-level session file. A Claude
+ *     subagent transcript is describable but not resumable.
  *   - **`assertPinnable`** — claude and grok require a uuid because their
  *     `--session-id` does; a harness with no pinning flag refuses outright.
  *   - **`rotate`** — emitting `session-updated` with `previousSessionId`. Only
@@ -181,10 +182,11 @@ export interface HarnessStoreHost {
   describe(nativeId: string): Promise<HarnessSession | undefined>
   transcript(nativeId: string): Promise<{ turns: HarnessTranscriptTurn[] }>
   /**
-   * Does the harness store already hold this id? Ground truth for the
-   * collision check and for choosing `--resume`. Optional: when store
-   * existence is exactly describability (Claude's single `<uuid>.jsonl`), the
-   * base derives it from `describe` instead.
+   * Does the harness store already hold an id the CLI can resume? Ground
+   * truth for the collision check and for choosing `--resume`. Optional:
+   * when omitted, the base derives it from `describe`. Claude sets this to
+   * the top-level session file so a subagent transcript (describable, not
+   * resumable) does not become `--resume <agent-id>`.
    */
   exists?(nativeId: string): boolean | Promise<boolean>
 }
@@ -797,11 +799,11 @@ export abstract class PtyHarnessDriver<S extends HarnessStoreHost = HarnessStore
     // — that is exactly the window right after a fresh spawn (grok's session
     // dir before its summary.json; a hermes row before its first message).
     //
-    // Deliberate on Claude, where `exists` is DERIVED from `describe` and this
-    // reads the store twice: the two are genuinely different questions, the
-    // second read only happens on the miss path (`row` undefined, `&&`
-    // short-circuits), and it re-asks a moment later, which is the direction
-    // that turns a just-lost race into a resume rather than a 400. Not an
+    // `exists` is not derived from `describe`. Claude's is the top-level
+    // `<uuid>.jsonl` only, so a subagent transcript is describable while
+    // `exists` stays false and is refused below. On a describe miss the exists
+    // probe is a second read on purpose: it re-asks a moment later, which
+    // turns a just-lost race into a resume rather than a 400. Not an
     // oversight — please do not "optimize" it into reusing `row`.
     if (!row && !(await this.storeExists(native)) && !this.live.has(native)) {
       throw new HarnessError(
@@ -810,6 +812,10 @@ export abstract class PtyHarnessDriver<S extends HarnessStoreHost = HarnessStore
         { harnessId: this.harnessId, sessionId },
       )
     }
+    // A listed transcript is not always a session the CLI can reopen. Claude
+    // subagent files are describable and parented, and `exists` stays false
+    // for them so this does not become `--resume <agent-id>`.
+    await this.refuseNestedTranscript(native)
     // spawn-or-get: a live PTY for this session is returned as-is; otherwise
     // the term manager re-spawns with `--resume <native>` (store existence is
     // its ground truth, so passing `resume` is belt-and-braces).
@@ -908,6 +914,7 @@ export abstract class PtyHarnessDriver<S extends HarnessStoreHost = HarnessStore
         // once more. Re-check the pane first: a dialog may have painted
         // between the pre-send snapshot and this retry.
         createdOrRespawned = true
+        await this.refuseNestedTranscript(native)
         ptyId = await this.spawnFor(pty, native, true)
         const retry = await this.preSendBlock(native)
         const retryDialog = retry.dialog
@@ -1263,6 +1270,20 @@ export abstract class PtyHarnessDriver<S extends HarnessStoreHost = HarnessStore
     const cwd = this.deps.sessionCwd?.(this.rosterCommand, row.id) ?? this.cwd()
     if (cwd) summary.cwd = cwd
     if (row.model) summary.model = row.model
+    if (row.agentName) summary.agentName = row.agentName
+    // Same harness: grok subagents are grok sessions. A bad parent id must
+    // not fail the whole list — drop the link and keep the row.
+    if (
+      row.parentSessionId &&
+      !row.parentSessionId.includes('/') &&
+      !row.parentSessionId.includes('..')
+    ) {
+      try {
+        summary.parentSessionId = this.sid(row.parentSessionId)
+      } catch {
+        /* malformed parent: the row stays, unparented */
+      }
+    }
     if (this.live.get(row.id)?.blocked) summary.blocked = true
     return summary
   }
@@ -1360,7 +1381,27 @@ export abstract class PtyHarnessDriver<S extends HarnessStoreHost = HarnessStore
   protected async ensurePty(pty: HarnessPtyHost, native: string): Promise<string> {
     const existing = pty.ptyForSession(this.room(native))
     if (existing) return existing
-    return this.spawnFor(pty, native, await this.storeExists(native))
+    const resumable = await this.storeExists(native)
+    await this.refuseNestedTranscript(native)
+    return this.spawnFor(pty, native, resumable)
+  }
+
+  /**
+   * Refuse to spawn a harness for a transcript that is not a resumable
+   * session. `exists` is the CLI's resume id; a row that is only a nested
+   * transcript (Claude subagent file) must not be passed to `--resume`.
+   * Checked even when a live map entry exists: `sendUserTurn` creates that
+   * entry before it spawns.
+   */
+  protected async refuseNestedTranscript(native: string): Promise<void> {
+    if (await this.storeExists(native)) return
+    const row = await this.deps.store.describe(native)
+    if (!row?.parentSessionId) return
+    throw new HarnessError(
+      'invalid_session_id',
+      `${this.harnessId} session ${native} is a nested transcript and cannot be resumed`,
+      { harnessId: this.harnessId, sessionId: this.sid(native) },
+    )
   }
 
   /**

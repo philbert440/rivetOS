@@ -6,9 +6,13 @@ import type {
   SessionId,
 } from '@rivetos/types'
 import {
+  ancestorChatKeys,
   applyRegistryEventToPlaneSessions,
   chatItems,
+  chatRowMatchesQuery,
   denRoomKey,
+  filterChatForest,
+  nestChatItems,
   sortByRecency,
   fetchHarnessPlaneSessions,
   findChatItem,
@@ -24,6 +28,7 @@ import {
   shortNativeId,
   chatItemFromSummary,
   ROSTER_COMMAND,
+  type ChatItem,
 } from './harness-chat.js'
 
 const UUID_A = 'a1b2c3d4-1111-4222-8333-444455556666'
@@ -623,5 +628,168 @@ describe('chatItemFromSummary', () => {
     expect(
       chatItemFromSummary({ sessionId: '???', harnessId: 'claude-code' } as never),
     ).toBeUndefined()
+  })
+})
+
+describe('nestChatItems', () => {
+  const row = (
+    key: string,
+    updatedAt: number,
+    title: string,
+    parentKey?: string,
+  ): ChatItem => ({ key, kind: 'legacy', title, updatedAt, parentKey })
+
+  it('nests a child under its parent and lifts the group by the child activity', () => {
+    const nodes = nestChatItems([
+      row('child', 300, 'review', 'parent'),
+      row('other', 200, 'other'),
+      row('parent', 100, 'primary'),
+    ])
+    expect(nodes.map((n) => n.item.key)).toEqual(['parent', 'other'])
+    expect(nodes[0]?.children.map((n) => n.item.key)).toEqual(['child'])
+  })
+
+  it('leaves an orphan at the top level when its parent is not listed', () => {
+    const nodes = nestChatItems([row('child', 2, 'review', 'missing')])
+    expect(nodes.map((n) => n.item.key)).toEqual(['child'])
+    expect(nodes[0]?.children).toEqual([])
+  })
+
+  it('does not loop when two rows name each other as parent', () => {
+    const nodes = nestChatItems([
+      row('a', 2, 'a', 'b'),
+      row('b', 1, 'b', 'a'),
+    ])
+    expect(nodes.map((n) => n.item.key).sort()).toEqual(['a', 'b'])
+    expect(nodes.every((n) => n.children.length === 0)).toBe(true)
+  })
+
+  it('keeps a matching child under a parent the query does not name', () => {
+    const forest = nestChatItems([
+      row('parent', 1, 'primary'),
+      row('child', 2, 'review the store', 'parent'),
+      row('noise', 3, 'unrelated', 'parent'),
+    ])
+    const shown = filterChatForest(forest, (it) => it.title.includes('review'))
+    expect(shown.map((n) => n.item.key)).toEqual(['parent'])
+    expect(shown[0]?.children.map((n) => n.item.key)).toEqual(['child'])
+  })
+
+  it('pins the open conversation and reports the ancestor keys to expand', () => {
+    const forest = nestChatItems([
+      row('parent', 1, 'primary'),
+      row('child', 2, 'review', 'parent'),
+    ])
+    const shown = filterChatForest(forest, () => false, 'child')
+    expect(ancestorChatKeys(shown, 'child')).toEqual(['parent'])
+    expect(shown[0]?.children.map((n) => n.item.key)).toEqual(['child'])
+  })
+
+  it('attaches a chain of 8 ancestors and flattens the 9th link', () => {
+    const chain = (links: number) => {
+      const items = [row('p0', 1, 'root')]
+      for (let i = 1; i <= links; i++) items.push(row(`p${i}`, i + 1, `n${i}`, `p${i - 1}`))
+      return items
+    }
+    const hops = (nodes: ReturnType<typeof nestChatItems>): number => {
+      let depth = 0
+      let cur = nodes.find((n) => n.item.key === 'p0')
+      while (cur && cur.children.length > 0) {
+        depth++
+        cur = cur.children[0]
+      }
+      return depth
+    }
+    const eight = nestChatItems(chain(8))
+    expect(eight.map((n) => n.item.key)).toEqual(['p0'])
+    expect(hops(eight)).toBe(8)
+
+    const nine = nestChatItems(chain(9))
+    expect(nine.map((n) => n.item.key).sort()).toEqual(['p0', 'p9'])
+    expect(hops(nine)).toBe(8)
+  })
+
+  it('nests a canonical parentKey under a legacy parent keyed by native id', () => {
+    const items = chatItems({
+      drafts: [],
+      harnessSessions: [
+        summary(UUID_A, {
+          parentSessionId: `claude-code:${UUID_B}` as SessionId,
+          agentName: 'general-purpose',
+        }),
+      ],
+      legacySessions: [legacy(UUID_B, 'claude', 1, 'primary')],
+    })
+    const nodes = nestChatItems(items)
+    expect(nodes).toHaveLength(1)
+    expect(nodes[0]?.item.key).toBe(UUID_B)
+    expect(nodes[0]?.children.map((n) => n.item.key)).toEqual([`claude-code:${UUID_A}`])
+  })
+
+  it('nests a native parentKey under a plane parent keyed canonically', () => {
+    const nodes = nestChatItems([
+      {
+        key: `claude-code:${UUID_B}`,
+        kind: 'harness',
+        title: 'primary',
+        updatedAt: 1,
+        sessionId: `claude-code:${UUID_B}` as SessionId,
+        harnessId: 'claude-code',
+      },
+      {
+        key: UUID_A,
+        kind: 'legacy',
+        title: 'child',
+        updatedAt: 2,
+        command: 'claude',
+        parentKey: UUID_B,
+      },
+    ])
+    expect(nodes.map((n) => n.item.key)).toEqual([`claude-code:${UUID_B}`])
+    expect(nodes[0]?.children.map((n) => n.item.key)).toEqual([UUID_A])
+  })
+})
+
+describe('chatRowMatchesQuery', () => {
+  it('matches the subagent type the nested row shows', () => {
+    const item: ChatItem = {
+      key: 'child',
+      kind: 'legacy',
+      title: 'look through the repo',
+      updatedAt: 1,
+      agentName: 'general-purpose',
+    }
+    expect(chatRowMatchesQuery(item, 'general-purpose')).toBe(true)
+    expect(chatRowMatchesQuery(item, 'general')).toBe(true)
+    expect(chatRowMatchesQuery(item, 'look through')).toBe(true)
+    expect(chatRowMatchesQuery(item, 'missing')).toBe(false)
+    expect(chatRowMatchesQuery(item, '')).toBe(true)
+    expect(chatRowMatchesQuery(item, 'purpose', 'renamed')).toBe(true)
+  })
+})
+
+describe('chatItems parent key', () => {
+  it('copies a canonical parent from the control plane', () => {
+    const items = chatItems({
+      drafts: [],
+      harnessSessions: [
+        summary(UUID_A, {
+          parentSessionId: `claude-code:${UUID_B}` as SessionId,
+          agentName: 'general-purpose',
+        }),
+      ],
+      legacySessions: [],
+    })
+    expect(items[0]?.parentKey).toBe(`claude-code:${UUID_B}`)
+    expect(items[0]?.agentName).toBe('general-purpose')
+  })
+
+  it('canonicalizes a legacy native parent when the plane row omitted it', () => {
+    const items = chatItems({
+      drafts: [],
+      harnessSessions: [summary(UUID_A)],
+      legacySessions: [{ ...legacy(UUID_A, 'claude', 1), parentSessionId: UUID_B }],
+    })
+    expect(items[0]?.parentKey).toBe(`claude-code:${UUID_B}`)
   })
 })

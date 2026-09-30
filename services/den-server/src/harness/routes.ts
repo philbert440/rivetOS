@@ -229,12 +229,15 @@ export function createHarnessRoutes(opts: {
    *  through one dispatch, and every one of them reads or drives the
    *  session). Absent = tenancy off. `route` labels the audit line. */
   authorizeSession?: (req: IncomingMessage, sessionId: string, route?: string) => boolean
+  /** Resolve a nested row's owner before the synchronous gate. A child den
+   * never spawned has no tag until this copies the parent's. */
+  prepareSession?: (sessionId: string) => void | Promise<void>
   /** Claim-or-verify ownership (term's spawn semantics): an UNOWNED session
    *  is claimed for the bound user and allowed; one owned by the bound user
    *  is allowed; one owned by someone else returns false. Used on create and
    *  resume — without it, control-plane sessions have no owner row and fall
    *  to the node owner in every listing. */
-  claimSession?: (req: IncomingMessage, sessionId: string) => boolean
+  claimSession?: (req: IncomingMessage, sessionId: string) => boolean | Promise<boolean>
   /** Stamps `installed` on each `GET /api/harnesses` row (`installed.ts`).
    *  Absent = the field is omitted and clients treat every row as installed. */
   isInstalled?: (harnessId: HarnessId) => boolean
@@ -500,7 +503,7 @@ export function createHarnessRoutes(opts: {
           // `previousSessionId` rotation naming it is refused, not aliased.
           registry.noteMinted(minted.sessionId)
         }
-        if (opts.claimSession && !opts.claimSession(req, summary.sessionId)) {
+        if (opts.claimSession && !(await opts.claimSession(req, summary.sessionId))) {
           // a client-supplied nativeSessionId can resolve to an EXISTING
           // session owned by someone else — leaking its summary on 201 is
           // the same cross-user read this fence exists to stop
@@ -541,6 +544,7 @@ export function createHarnessRoutes(opts: {
     const resolved = await resolve(res, segment)
     if (!resolved) return true
     const { driver, sessionId, requestedId } = resolved
+    if (opts.prepareSession) await opts.prepareSession(sessionId)
     // ONE fence for every per-session action: transcript is a full read,
     // turns/interrupt/approvals drive the session, resume revives it — none
     // may serve a session the bound user does not own (#565 fenced the den
@@ -554,7 +558,7 @@ export function createHarnessRoutes(opts: {
     // could lose an unowned row to a routed user who has its id — accepted:
     // ids aren't guessable and the alternative strands routed users' history.
     if (action === 'resume') {
-      if (opts.claimSession && !opts.claimSession(req, sessionId)) {
+      if (opts.claimSession && !(await opts.claimSession(req, sessionId))) {
         return json(res, 403, { error: 'session is owned by another user' })
       }
     } else if (
@@ -857,7 +861,9 @@ export function createHarnessRoutes(opts: {
               return
             }
             // Tenancy: the resolved session must belong to the bound user —
-            // refuse before any event can flow.
+            // refuse before any event can flow. Nested ids pick up the
+            // parent's tag here, so the synchronous check below sees it.
+            if (opts.prepareSession) await opts.prepareSession(target.sessionId)
             if (opts.authorizeSession && !opts.authorizeSession(req, target.sessionId)) {
               ws.send(
                 JSON.stringify({

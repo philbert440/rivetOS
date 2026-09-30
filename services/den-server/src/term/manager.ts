@@ -126,7 +126,8 @@ export class TermSpawnError extends Error {
       | 'tmux-unavailable'
       | 'herdr'
       | 'cwd-missing'
-      | 'cwd-live',
+      | 'cwd-live'
+      | 'not-resumable',
     message: string,
   ) {
     super(message)
@@ -1950,6 +1951,18 @@ export function createTermManager(config: DenConfig, deps: TermManagerDeps): Ter
           'tmux-unavailable',
           `term.mux is 'tmux' but ${tmuxUnavailableReason}`,
         )
+      // Claude `--resume` takes a session UUID. A subagent transcript's id is
+      // the agent id, and passing it here starts the wrong process. Checked
+      // before the LRU eviction below: a spawn that throws must not kill a
+      // healthy pty. The transcript still opens through the store reader.
+      const resumeNative =
+        resume || (session && deps.sessionExists?.(key, session) ? session : undefined)
+      if (key === 'claude' && resumeNative && !UUID_RE.test(resumeNative)) {
+        throw new TermSpawnError(
+          'not-resumable',
+          `claude session ${resumeNative} is a subagent transcript and cannot be resumed`,
+        )
+      }
       const running = [...records.values()].filter((r) => r.state === 'running')
       if (running.length >= config.term.maxPtys) {
         // LRU pool (seamless 5g): at the cap, evict the least-recently-ACTIVE
@@ -1993,8 +2006,6 @@ export function createTermManager(config: DenConfig, deps: TermManagerDeps): Ter
       // the join key. A brand-new session has no resumeNative, so sessionCwd
       // is not consulted — a new qwen session stays at homedir even if a
       // lookup would return a directory.
-      const resumeNative =
-        resume || (session && deps.sessionExists?.(key, session) ? session : undefined)
       const invalidRecorded = (id: string, raw: string): void => {
         const mark = `${key}:${id}\0${raw}`
         if (loggedInvalidCwd.has(mark)) return
