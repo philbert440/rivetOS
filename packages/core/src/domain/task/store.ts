@@ -299,10 +299,7 @@ export interface TaskStore {
 /** completed | failed | killed | timeout. awaiting-input is not terminal. */
 export function isTerminalTaskStatus(status: TaskStatus): boolean {
   return (
-    status === 'completed' ||
-    status === 'failed' ||
-    status === 'killed' ||
-    status === 'timeout'
+    status === 'completed' || status === 'failed' || status === 'killed' || status === 'timeout'
   )
 }
 
