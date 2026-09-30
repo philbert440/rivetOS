@@ -1001,8 +1001,7 @@ export function appendModelEffortArgv(
     !!sheet.modelFlag &&
     !!sheet.models?.some((m) => m.id === model)
   if (modelOk && sheet.modelFlag && model) {
-    const named =
-      sheet.namedCustomProvider === true ? HERMES_NAMED_PROVIDER_RE.exec(model) : null
+    const named = sheet.namedCustomProvider === true ? HERMES_NAMED_PROVIDER_RE.exec(model) : null
     if (named) out.push('--provider', named[1], sheet.modelFlag, named[2])
     else out.push(sheet.modelFlag, model)
   } else if (model && log) {

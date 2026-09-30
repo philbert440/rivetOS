@@ -92,8 +92,7 @@ export const DELEGATE_TASK_HTTP_REASON =
   'delegate_task needs a per-harness stdio sidecar for the chain guard'
 
 /** Full-string preset match. Den keeps this sentence; it does not parse `agent@node`. */
-const PRESET_WINS_FULL_STRING =
-  'A preset name or id wins when it also matches a runtime agent id.'
+const PRESET_WINS_FULL_STRING = 'A preset name or id wins when it also matches a runtime agent id.'
 
 const DELEGATE_TASK_OPENING =
   'Delegate work to a RivetHub agent (preset name or id) or a runtime agent id. ' +
