@@ -78,9 +78,22 @@ export interface HermesSpawnFlags {
   sessionId?: string
 }
 
+/**
+ * `custom:<provider>:<model>` is Hermes's syntax for a model on a named custom
+ * provider (`providers:` in ~/.hermes/config.yaml). The CLI's `-m` sends its
+ * value to the default endpoint verbatim, so that form has to become
+ * `--provider <provider> -m <model>`. The model keeps any further colons.
+ */
+const NAMED_PROVIDER_RE = /^custom:([^:\s]+):(.+)$/
+
+export function modelArgs(modelId: string): string[] {
+  const named = NAMED_PROVIDER_RE.exec(modelId)
+  return named ? ['--provider', named[1], '-m', named[2]] : ['-m', modelId]
+}
+
 export function buildArgs(flags: HermesSpawnFlags, prompt: string): string[] {
   const args = ['chat', '-q', prompt || '(empty)', '-Q', '--yolo', '--cli']
-  if (flags.modelId) args.push('-m', flags.modelId)
+  if (flags.modelId) args.push(...modelArgs(flags.modelId))
   if (flags.cwd) args.push('--in', flags.cwd)
   if (flags.sessionId) args.push('--resume', flags.sessionId)
   return args

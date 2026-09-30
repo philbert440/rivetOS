@@ -698,4 +698,46 @@ describe('appendModelEffortArgv', () => {
       'grok-4.5',
     ])
   })
+
+  it('splits a hermes named provider and leaves another harness colon model unchanged', () => {
+    const hermes = applySheetOverride(
+      hermesSheet(() => {
+        throw new Error('ENOENT')
+      }, '/no-such-home'),
+      {
+        models: [
+          { id: 'custom:p:m', label: 'named' },
+          { id: 'qwen-27b', label: 'plain' },
+          { id: 'custom:local:qwen3.5:27b', label: 'colons' },
+        ],
+      },
+    )
+    expect(MODEL_TOKEN_RE.test('custom:p:m')).toBe(true)
+    expect(MODEL_TOKEN_RE.test('custom:local:qwen3.5:27b')).toBe(true)
+    expect(appendModelEffortArgv(['hermes'], hermes, 'custom:p:m')).toEqual([
+      'hermes',
+      '--provider',
+      'p',
+      '-m',
+      'm',
+    ])
+    expect(appendModelEffortArgv(['hermes'], hermes, 'custom:local:qwen3.5:27b')).toEqual([
+      'hermes',
+      '--provider',
+      'local',
+      '-m',
+      'qwen3.5:27b',
+    ])
+    expect(appendModelEffortArgv(['hermes'], hermes, 'qwen-27b')).toEqual(['hermes', '-m', 'qwen-27b'])
+
+    // qwen-code also uses `-m`; a colon model, including the named-provider shape, stays one flag.
+    const qwen = applySheetOverride(
+      qwenCodeSheet(() => {
+        throw new Error('ENOENT')
+      }, '/no-such-home'),
+      { models: [{ id: 'custom:p:m', label: 'colon' }] },
+    )
+    expect(qwen.namedCustomProvider).toBeUndefined()
+    expect(appendModelEffortArgv(['qwen'], qwen, 'custom:p:m')).toEqual(['qwen', '-m', 'custom:p:m'])
+  })
 })
