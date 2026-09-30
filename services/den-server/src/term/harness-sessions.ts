@@ -2637,10 +2637,7 @@ async function findClaudeAgentJsonl(
   return best
 }
 
-async function findClaudeJsonl(
-  id: string,
-  parentSessionId?: string,
-): Promise<string | undefined> {
+async function findClaudeJsonl(id: string, parentSessionId?: string): Promise<string | undefined> {
   if (!claudeIdSafe(id)) return undefined
   if (parentSessionId !== undefined && !claudeIdSafe(parentSessionId)) return undefined
   const dir = claudeProjectsDir()
