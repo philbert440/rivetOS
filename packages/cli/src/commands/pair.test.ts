@@ -21,7 +21,13 @@ uA==
 const CERT_SHA256 = '022ab72bf949c39a134d766ece5b288c60b51780c77540bf84f16b4944e37433'
 
 /** A mesh node's home: config.yaml pointing den at its own node leaf, a users.json. */
-function meshHome(): { home: string; config: string; users: string; issued: string; cleanup: () => void } {
+function meshHome(): {
+  home: string
+  config: string
+  users: string
+  issued: string
+  cleanup: () => void
+} {
   const home = mkdtempSync(join(tmpdir(), 'pair-cmd-'))
   const issued = join(home, '.rivetos', 'shared', 'rivet-ca', 'issued')
   mkdirSync(issued, { recursive: true })
@@ -49,7 +55,13 @@ function meshHome(): { home: string; config: string; users: string; issued: stri
       users: { owner: { devices: ['desktop-arctic', 'phone-alex'] } },
     }),
   )
-  return { home, config, users, issued, cleanup: () => rmSync(home, { recursive: true, force: true }) }
+  return {
+    home,
+    config,
+    users,
+    issued,
+    cleanup: () => rmSync(home, { recursive: true, force: true }),
+  }
 }
 
 /** rivet-ca.sh issue-client + openssl pkcs12, faked: writes the files each would. */
@@ -78,7 +90,9 @@ describe('readDenForPairing', () => {
   it('refuses a den the phone cannot reach or pin', () => {
     expect(() => readDenForPairing('memory: {}\n')).toThrow(/not enabled/)
     expect(() => readDenForPairing('den:\n  enabled: false\n')).toThrow(/not enabled/)
-    expect(() => readDenForPairing('den:\n  host: 127.0.0.1\n  tls_cert: /x\n')).toThrow(/127\.0\.0\.1/)
+    expect(() => readDenForPairing('den:\n  host: 127.0.0.1\n  tls_cert: /x\n')).toThrow(
+      /127\.0\.0\.1/,
+    )
     expect(() => readDenForPairing('den:\n  port: 5174\n')).toThrow(/tls_cert/)
   })
 })
@@ -115,8 +129,39 @@ describe('runPair', () => {
       expect(rec.token).toBe(qr.token)
       expect(existsSync(join(m.home, '.rivetos', 'devices', 'phone-alex-debug.p12'))).toBe(true)
       const users = JSON.parse(readFileSync(m.users, 'utf8'))
-      expect(users.users.owner.devices).toEqual(['desktop-arctic', 'phone-alex', 'phone-alex-debug'])
+      expect(users.users.owner.devices).toEqual([
+        'desktop-arctic',
+        'phone-alex',
+        'phone-alex-debug',
+      ])
       expect(lines.join('\n')).toMatch(/restart/)
+    } finally {
+      m.cleanup()
+    }
+  })
+
+  it('quiet mode returns the result with its expiry and prints nothing', async () => {
+    const m = meshHome()
+    try {
+      const lines: string[] = []
+      const res = await runPair(
+        'tablet',
+        {},
+        {
+          home: m.home,
+          configPath: m.config,
+          usersFile: m.users,
+          lanAddrs: ['10.0.0.2'],
+          exec: fakeCa(m.issued),
+          scriptPath: '/opt/rivetos/scripts/rivet-ca.sh',
+          now: 1_000,
+          quiet: true,
+          log: (l) => lines.push(l),
+        },
+      )
+      expect(lines).toEqual([])
+      expect(res.expiresAt).toBe(1_000 + 10 * 60 * 1000)
+      expect(JSON.parse(res.qrText).kind).toBe('rivethub-pair')
     } finally {
       m.cleanup()
     }
@@ -146,6 +191,30 @@ describe('runPair', () => {
     }
   })
 
+  it('leaves tenancy off: no users.json is created when there is none', async () => {
+    const m = meshHome()
+    try {
+      rmSync(m.users)
+      const res = await runPair(
+        'tablet',
+        {},
+        {
+          home: m.home,
+          configPath: m.config,
+          usersFile: m.users,
+          lanAddrs: ['10.0.0.2'],
+          exec: fakeCa(m.issued),
+          scriptPath: '/opt/rivetos/scripts/rivet-ca.sh',
+          log: () => {},
+        },
+      )
+      expect(res.addedToUsers).toBe(false)
+      expect(existsSync(m.users)).toBe(false)
+    } finally {
+      m.cleanup()
+    }
+  })
+
   it('never re-mints a device that already has a certificate', async () => {
     const m = meshHome()
     try {
@@ -156,7 +225,14 @@ describe('runPair', () => {
         runPair(
           'phone-alex',
           {},
-          { home: m.home, configPath: m.config, usersFile: m.users, lanAddrs: ['10.0.0.2'], exec, log: () => {} },
+          {
+            home: m.home,
+            configPath: m.config,
+            usersFile: m.users,
+            lanAddrs: ['10.0.0.2'],
+            exec,
+            log: () => {},
+          },
         ),
       ).rejects.toThrow(/already has a certificate/)
       expect(exec).not.toHaveBeenCalled()
@@ -170,7 +246,9 @@ describe('runPair', () => {
     const m = meshHome()
     try {
       const deps = { home: m.home, configPath: m.config, usersFile: m.users, log: () => {} }
-      await expect(runPair('my phone', {}, { ...deps, lanAddrs: ['10.0.0.2'] })).rejects.toThrow(/letters/)
+      await expect(runPair('my phone', {}, { ...deps, lanAddrs: ['10.0.0.2'] })).rejects.toThrow(
+        /letters/,
+      )
       await expect(runPair('tablet', {}, { ...deps, lanAddrs: [] })).rejects.toThrow(/--host/)
     } finally {
       m.cleanup()

@@ -54,6 +54,8 @@ export function baseTestDenConfig(
     filesOpen: partial.filesOpen ?? false,
     devices: partial.devices,
     pairingDir: partial.pairingDir,
+    pairCliPath: partial.pairCliPath,
+    pairCaRootDir: partial.pairCaRootDir,
     uploads: partial.uploads,
     pgUrl: partial.pgUrl,
   }

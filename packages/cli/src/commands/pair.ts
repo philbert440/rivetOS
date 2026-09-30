@@ -4,17 +4,24 @@
  * `rivetos local`, which rewrites config.yaml for a single-machine install.
  *
  *   rivetos pair <device> [--user <id>] [--host <ip|name>] [--config <path>]
- *                         [--users-file <path>]
+ *                         [--users-file <path>] [--json]
  *
  * It only writes what pairing needs, never config.yaml:
  *   1. mints the device certificate from the node's CA into
  *      ~/.rivetos/devices/<device>.p12 (lib/hub-identity.ts),
  *   2. adds the device to its user's `devices` in users.json (the owner by
- *      default) — den loads users.json at boot, so a newly added device needs
- *      a den restart before the phone can use the API,
+ *      default) when that file exists — den loads users.json at boot, so a
+ *      newly added device needs a den restart before the phone can use the
+ *      API. Without the file tenancy is off and every device the CA issues
+ *      is already allowed; creating one here would switch tenancy on and
+ *      lock out the node's other devices, so none is created,
  *   3. writes the one-time pairing record (lib/pairing.ts) and prints the QR:
  *      `https://<LAN address>:<den.port>`, the token, and the SHA-256 of the
  *      certificate den actually serves (`den.tls_cert`).
+ *
+ * `--json` prints the result (QR text included) as one JSON line instead of
+ * the terminal QR — how den's Settings → Pair a phone runs this command, so
+ * minting lives in one place. Errors print as `{"error": …}` and exit 1.
  *
  * Den redeems the QR at POST /api/devices/pair (services/den-server/src/pairing.ts).
  * A name that already has a certificate is refused, so pairing never touches
@@ -39,7 +46,7 @@ import {
 import { defaultFile, load, save } from './user.js'
 
 const USAGE =
-  'usage: rivetos pair <device> [--user <id>] [--host <ip|name>] [--config <path>] [--users-file <path>]'
+  'usage: rivetos pair <device> [--user <id>] [--host <ip|name>] [--config <path>] [--users-file <path>] [--json]'
 
 /** Same charset the CA accepts for a client leaf name. */
 const DEVICE_NAME = /^[A-Za-z0-9._-]+$/
@@ -80,6 +87,8 @@ export interface PairDeps {
   scriptPath?: string
   now?: number
   log?: (line: string) => void
+  /** Skip the terminal QR and notes (the `--json` path). */
+  quiet?: boolean
 }
 
 export interface PairResult {
@@ -89,6 +98,8 @@ export interface PairResult {
   addedToUsers: boolean
   /** True when a still-pending pairing was re-shown instead of minting. */
   reshown: boolean
+  /** Unix ms after which the QR no longer redeems. */
+  expiresAt: number
   qrText: string
 }
 
@@ -141,17 +152,23 @@ export async function runPair(
   }
 
   const usersFile = deps.usersFile ?? defaultFile()
-  const registry = load(usersFile)
-  const userId = opts.user ?? registry.ownerUserId
-  const user = registry.users[userId] ?? { id: userId, devices: [] }
-  const addedToUsers = !user.devices.includes(deviceId)
-  if (addedToUsers) {
-    user.devices.push(deviceId)
-    registry.users[userId] = user
-    save(usersFile, registry)
+  let addedToUsers = false
+  let userId = opts.user ?? ''
+  if (existsSync(usersFile)) {
+    const registry = load(usersFile)
+    userId = opts.user ?? registry.ownerUserId
+    const user = registry.users[userId] ?? { id: userId, devices: [] }
+    addedToUsers = !user.devices.includes(deviceId)
+    if (addedToUsers) {
+      user.devices.push(deviceId)
+      registry.users[userId] = user
+      save(usersFile, registry)
+    }
   }
 
   const qrText = pairingQrText({ gateway, token: rec.token, certSha256: pin })
+  const result = { deviceId, gateway, addedToUsers, reshown, expiresAt: rec.expiresAt, qrText }
+  if (deps.quiet) return result
   const minutes = String(Math.round(PAIRING_TTL_MS / 60_000))
   log('')
   log(`  Pair ${deviceId}: open RivetHub on the phone → Scan pairing QR`)
@@ -163,7 +180,7 @@ export async function runPair(
     log('  Den reads users.json at startup: restart it before the phone connects,')
     log('  e.g. systemctl --user restart rivetos.service')
   }
-  return { deviceId, gateway, addedToUsers, reshown, qrText }
+  return result
 }
 
 function argValue(args: string[], flag: string): string | undefined {
@@ -182,14 +199,22 @@ export default async function pairCommand(args: string[]): Promise<void> {
     process.exitCode = 1
     return
   }
+  const asJson = args.includes('--json')
   try {
-    await runPair(
+    const result = await runPair(
       deviceId,
       { user: argValue(args, '--user'), host: argValue(args, '--host') },
-      { configPath: argValue(args, '--config'), usersFile: argValue(args, '--users-file') },
+      {
+        configPath: argValue(args, '--config'),
+        usersFile: argValue(args, '--users-file'),
+        quiet: asJson,
+      },
     )
+    if (asJson) console.log(JSON.stringify(result))
   } catch (err) {
-    console.error(`[pair] ${(err as Error).message}`)
+    const message = (err as Error).message
+    if (asJson) console.log(JSON.stringify({ error: message }))
+    else console.error(`[pair] ${message}`)
     process.exitCode = 1
   }
 }

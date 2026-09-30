@@ -1471,6 +1471,36 @@ export interface DeviceOpenResponse {
 }
 
 // ---------------------------------------------------------------------------
+// /api/phone-pairing — Settings → Pair a phone (RivetHub Android, owner only)
+// ---------------------------------------------------------------------------
+
+/** GET /api/phone-pairing: whether this node can mint phone pairing codes. */
+export interface PhonePairingInfo {
+  available: boolean
+  /** Why not, when unavailable (no device CA on this node, CLI missing). */
+  reason?: string
+}
+
+/** POST /api/phone-pairing {name}: a one-time code for RivetHub Android to scan. */
+export interface PhonePairingCode {
+  deviceId: string
+  /** The address the phone will reach this node at. */
+  gateway: string
+  /** Unix ms after which the code no longer redeems. */
+  expiresAt: number
+  /** The QR body as-is (JSON the phone parses); render it, do not rebuild it. */
+  qrText: string
+  /** True when a still-pending code for this name was shown again. */
+  reshown: boolean
+  addedToUsers: boolean
+}
+
+/** GET /api/phone-pairing/<deviceId>. */
+export interface PhonePairingStatus {
+  state: 'pending' | 'paired' | 'expired'
+}
+
+// ---------------------------------------------------------------------------
 // /api/agents
 // ---------------------------------------------------------------------------
 

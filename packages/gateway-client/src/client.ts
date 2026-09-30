@@ -45,6 +45,9 @@ import type {
   MemoryHealthResponse,
   DevicesListResponse,
   DeviceOpenResponse,
+  PhonePairingCode,
+  PhonePairingInfo,
+  PhonePairingStatus,
   WorkflowsListResponse,
   WorkflowDefSummary,
   WorkflowRunsListResponse,
@@ -499,6 +502,24 @@ export class RivetGateway {
       method: 'DELETE',
       signal,
     })
+  }
+
+  // -- phone pairing (Settings → Pair a phone) --------------------------------
+
+  phonePairingInfo(signal?: AbortSignal): Promise<PhonePairingInfo> {
+    return request(this.config, '/api/phone-pairing', { signal })
+  }
+
+  phonePairingCreate(name: string, signal?: AbortSignal): Promise<PhonePairingCode> {
+    return request(this.config, '/api/phone-pairing', {
+      method: 'POST',
+      body: { name },
+      signal,
+    })
+  }
+
+  phonePairingStatus(deviceId: string, signal?: AbortSignal): Promise<PhonePairingStatus> {
+    return request(this.config, `/api/phone-pairing/${encodeURIComponent(deviceId)}`, { signal })
   }
 
   // -- agent presets ----------------------------------------------------------

@@ -363,7 +363,8 @@ describe.skipIf(!haveOpenssl() || !remoteIp)('tenancy route inventory (real TLS)
       JSON.stringify({
         ownerUserId: 'owner',
         unmappedIsOwner: false,
-        users: { owner: { devices: [], pgUrl: 'postgres://owner@db/rivet_memory' },
+        users: {
+          owner: { devices: [], pgUrl: 'postgres://owner@db/rivet_memory' },
           coco: { devices: ['win-coco'], pgUrl: 'postgres://coco@db/coco_memory' },
         },
       }),
@@ -426,6 +427,15 @@ describe.skipIf(!haveOpenssl() || !remoteIp)('tenancy route inventory (real TLS)
     expect(JSON.parse(res.body)).toMatchObject({ error: 'unroutable identity' })
   })
 
+  it('Settings phone pairing is owner only: a routed user cannot mint a device', async () => {
+    const res = await call('POST', `${remote}/api/phone-pairing`, coco, { name: 'cocos-phone' })
+    expect(res.status).toBe(403)
+    expect(JSON.parse(res.body)).toMatchObject({ error: 'only the owner can pair a phone' })
+    // The owner gets through the fence (pairing itself is off in this config).
+    const owner = await call('GET', `${loopback}/api/phone-pairing`, { ca: pki.ca })
+    expect(owner.status).toBe(503)
+  })
+
   it("GET /sessions hides the other user's sessions", async () => {
     const res = await call('GET', `${remote}/sessions`, coco)
     expect(res.status).toBe(200)
@@ -479,9 +489,9 @@ describe.skipIf(!haveOpenssl() || !remoteIp)('tenancy route inventory (real TLS)
     // still alive: the owner sees it, then kills his SECOND pty fine
     const list = await call('GET', `${loopback}/term/list`, { ca: pki.ca })
     expect(list.body).toContain(ownerPtyId)
-    expect((await call('DELETE', `${loopback}/term?id=${ownerPtyId2}`, { ca: pki.ca })).status).toBe(
-      200,
-    )
+    expect(
+      (await call('DELETE', `${loopback}/term?id=${ownerPtyId2}`, { ca: pki.ca })).status,
+    ).toBe(200)
   })
 
   it('GET /term/list shows a routed user only their own PTYs', async () => {
