@@ -85,7 +85,7 @@ whose Conversations tab is the launch surface until the pick/new resolution open
 
 | Screen | File | ViewModel | Notes |
 |---|---|---|---|
-| Enroll | `ui/screens/EnrollScreen.kt` | none (container) | TopBar (decorative rh mark, no ☰ — no drawer exists pre-onboarding) + p12 + entry URL; 401 → cert refused; `https://` only |
+| Enroll | `ui/screens/EnrollScreen.kt` | none (container) | TopBar (decorative rh mark, no ☰ — no drawer exists pre-onboarding) + **Scan pairing QR** (CAMERA asked on tap; `ui/components/PairingScanner.kt` = CameraX + ZXing core; parse `plane/PairingCode.kt`; redeem `data/Pairing.kt`, leaf pinned by the QR's `certSha256`, POST `/api/devices/pair` → p12 + passphrase → `importPkcs12`) + the p12-file + entry URL fallback; 401 → cert refused; `https://` only |
 | Hub | `ui/screens/HubScreen.kt` | `HubViewModel` (activity-scoped `key=hub`) | Content only; hosted by `HubDrawer` (same file) — the ONE left drawer (`RivetDrawerHost`) shared with Chat; Forget calls `shutdown()` on the same instance. Conversations tab = `ChatLaunchScreen` (launch/loading surface, NOT a list); Settings tab = Settings |
 | ~~Conversations~~ | `ui/screens/ConversationsScreen.kt` | — | DELETED 2026-09-04 (emptied file, delete list) — the list is not an app screen; `ConversationsPane` moved to `ui/screens/ConversationsPane.kt` and is hosted only by the left drawer (`HubDrawer`, U2b) |
 | Chat launch | `ui/screens/ChatLaunchScreen.kt` | HubViewModel | TopBar (☰ + wordmark) + centered rh mark with "Loading most recent conversation…" and a New-conversation button (web `ChatLaunchLoading`) while the launch resolution (instant resume / pick / new draft) lands — never the list, never a blank, no spinner |

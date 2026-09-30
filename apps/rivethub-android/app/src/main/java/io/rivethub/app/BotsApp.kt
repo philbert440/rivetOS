@@ -5,6 +5,7 @@ import io.rivethub.app.data.DeviceIdentityStore
 import io.rivethub.app.data.HttpFactory
 import io.rivethub.app.data.HttpGatewayClients
 import io.rivethub.app.data.LanNetwork
+import io.rivethub.app.data.PairingClient
 import io.rivethub.app.data.Settings
 import io.rivethub.app.gateway.HarnessGateway
 import io.rivethub.app.notify.AppVisibility
@@ -24,6 +25,7 @@ class AppContainer(app: Application) {
     val identity = DeviceIdentityStore(app)
     val lan = LanNetwork(app)
     val http = HttpFactory(identity, lan)
+    val pairing = PairingClient(lan)
     val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
     private val clients = HttpGatewayClients(http, { strictHostnames })
     private val harnessCache = HashMap<String, Pair<String, HarnessGateway>>()

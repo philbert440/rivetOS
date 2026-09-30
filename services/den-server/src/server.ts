@@ -113,6 +113,7 @@ import { createHarnessStore, type HarnessStoreName } from './harness/harness-sto
 import { overlaySessionContext, sessionContext } from './term/context-window.js'
 import { createFilesRoutes } from './files.js'
 import { createDevicesRoutes, lookupDeviceName } from './devices.js'
+import { createPairingRoutes, PAIR_PATH } from './pairing.js'
 import { createAgentsRoutes, importAndMaterializeLegacyAgents } from './agents.js'
 import { createPresetPool, endPresetPool } from './preset-pool.js'
 import { createHarnessRegistry, type HarnessRegistry } from './harness/registry.js'
@@ -1212,6 +1213,11 @@ export function createDenServer(config: DenConfig, opts: DenServerOptions = {}):
       })
     : null
 
+  // Phone pairing by QR: the one-time token is the auth, matched before the gate.
+  const pairingRoutes = config.pairingDir
+    ? createPairingRoutes({ dir: config.pairingDir, log: console.error })
+    : null
+
   // Agent presets (Settings → Agents). One registry: Postgres when this den
   // has a memory DB and `ros_agent_presets` is present, otherwise the per-node
   // agents.json. The pool is tiny (max 2, 5s connect, 10s query) and closed
@@ -1425,11 +1431,12 @@ export function createDenServer(config: DenConfig, opts: DenServerOptions = {}):
       // as the API: enrolled devices and loopback pass, an unenrolled remote
       // gets nothing — "if the admin did not enroll the device, Hub must not
       // work" includes the shell itself. Carve-outs above the gate: /healthz, the one-time WireGuard enroll
-      // redemption — a not-yet-enrolled device MUST reach it, and its
-      // pairing token is the auth (see auth.ts rule 4).
+      // redemption and the phone pairing redemption — a not-yet-enrolled device MUST reach
+      // them, and their pairing token is the auth (see auth.ts rule 4).
       const teamApi = url.pathname === '/api/team' || url.pathname.startsWith('/api/team/')
       if (
         !(devicesRoutes && url.pathname === '/api/devices/enroll') &&
+        !(pairingRoutes && url.pathname === PAIR_PATH) &&
         !teamApi &&
         !authorized(req, url)
       ) {
@@ -1483,6 +1490,10 @@ export function createDenServer(config: DenConfig, opts: DenServerOptions = {}):
       if (devicesRoutes && url.pathname === '/api/devices/enroll') {
         for (const [k, v] of Object.entries(CORS)) res.setHeader(k, v)
         if (await devicesRoutes.handleEnroll(req, res, url)) return
+      }
+      if (pairingRoutes && url.pathname === PAIR_PATH) {
+        for (const [k, v] of Object.entries(CORS)) res.setHeader(k, v)
+        if (await pairingRoutes.handle(req, res, url)) return
       }
       if (!authorized(req, url)) {
         unauthorized(req, res, url)

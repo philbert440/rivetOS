@@ -1,0 +1,171 @@
+import { describe, expect, it } from 'vitest'
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
+import {
+  armPairing,
+  certSha256,
+  createPairing,
+  PAIRING_TTL_MS,
+  pairingQrText,
+  pairingRecordPath,
+  renderTerminalQr,
+} from './pairing.js'
+import { formatPairingQrs } from '../commands/local.js'
+import { localCaPaths } from './local-ca.js'
+
+// Throwaway self-signed P-256 leaf (CN=test.mesh); fingerprint from
+// `openssl x509 -noout -fingerprint -sha256`.
+const CERT = `-----BEGIN CERTIFICATE-----
+MIIBfTCCASOgAwIBAgIUeftII8uGDz0GIq3GRfKuY4abqJMwCgYIKoZIzj0EAwIw
+FDESMBAGA1UEAwwJdGVzdC5tZXNoMB4XDTI2MDkzMDE1NDAyNVoXDTM2MDkyNzE1
+NDAyNVowFDESMBAGA1UEAwwJdGVzdC5tZXNoMFkwEwYHKoZIzj0CAQYIKoZIzj0D
+AQcDQgAE4mAjm4fe8MIe4cLK4mqVIHIBDt2IxgSjQxq4U2OnM6LFXK8lTyrHSw9S
+qeSaJIUl8o5cN+t5W2sAYgAJhal7ZqNTMFEwHQYDVR0OBBYEFNaeKB+z3W5npZdQ
+UmjiE8rzbgAAMB8GA1UdIwQYMBaAFNaeKB+z3W5npZdQUmjiE8rzbgAAMA8GA1Ud
+EwEB/wQFMAMBAf8wCgYIKoZIzj0EAwIDSAAwRQIhAN7sbx1m5LNfbIJqkDlw6T2G
+GpUBux6iHkHNwBl6aw0yAiBb1Y19AqndZYzJH7XGWkIaZTAiP9X4EqTLYxx1RORM
+uA==
+-----END CERTIFICATE-----
+`
+const CERT_SHA256 = '022ab72bf949c39a134d766ece5b288c60b51780c77540bf84f16b4944e37433'
+
+function withHome(fn: (home: string) => Promise<void> | void) {
+  return async () => {
+    const home = mkdtempSync(join(tmpdir(), 'pairing-cli-'))
+    try {
+      await fn(home)
+    } finally {
+      rmSync(home, { recursive: true, force: true })
+    }
+  }
+}
+
+describe('createPairing / armPairing', () => {
+  it(
+    'writes an owner-only record with a fresh 256-bit token and a TTL',
+    withHome((home) => {
+      const rec = createPairing({
+        home,
+        deviceId: 'pixel',
+        p12Path: '/x/pixel.p12',
+        passphrase: 'pw',
+        now: 1_000,
+      })
+      const path = pairingRecordPath(home, 'pixel')
+      expect(statSync(path).mode & 0o777).toBe(0o600)
+      expect(JSON.parse(readFileSync(path, 'utf8'))).toEqual(rec)
+      expect(rec.token).toMatch(/^[A-Za-z0-9_-]{43}$/)
+      expect(rec.expiresAt).toBe(1_000 + PAIRING_TTL_MS)
+
+      const again = createPairing({ home, deviceId: 'pixel', p12Path: '/x', passphrase: 'pw' })
+      expect(again.token).not.toBe(rec.token)
+    }),
+  )
+
+  it(
+    'arm restarts the TTL, and is null once the record is gone',
+    withHome((home) => {
+      createPairing({ home, deviceId: 'pixel', p12Path: '/x', passphrase: 'pw', now: 0 })
+      expect(armPairing(home, 'pixel', 50_000)?.expiresAt).toBe(50_000 + PAIRING_TTL_MS)
+      expect(armPairing(home, 'tablet', 50_000)).toBeNull()
+    }),
+  )
+})
+
+describe('QR payload', () => {
+  it('pins the leaf by lowercase hex SHA-256 of its DER', () => {
+    expect(certSha256(CERT)).toBe(CERT_SHA256)
+  })
+
+  it('is the v1 rivethub-pair JSON the phone parses', () => {
+    const text = pairingQrText({ gateway: 'https://10.0.0.5:5174', token: 't', certSha256: 'ab' })
+    expect(JSON.parse(text)).toEqual({
+      v: 1,
+      kind: 'rivethub-pair',
+      gateway: 'https://10.0.0.5:5174',
+      token: 't',
+      certSha256: 'ab',
+    })
+  })
+
+  it('renders to a terminal block', async () => {
+    const out = await renderTerminalQr('hello')
+    expect(out.split('\n').length).toBeGreaterThan(10)
+  })
+})
+
+describe('formatPairingQrs', () => {
+  const seed = (home: string) => {
+    const cert = localCaPaths(home, 'box').nodeCert
+    mkdirSync(join(cert, '..'), { recursive: true })
+    writeFileSync(cert, CERT)
+    return createPairing({ home, deviceId: 'pixel', p12Path: '/x', passphrase: 'pw' })
+  }
+
+  it(
+    'shows one QR per pending device, pointed at the first LAN address',
+    withHome(async (home) => {
+      seed(home)
+      const out = await formatPairingQrs({
+        home,
+        hostname: 'box',
+        devices: ['pixel', 'never-minted'],
+        port: 5174,
+        exposeLan: true,
+        lanAddrs: ['192.168.1.20', '10.0.0.2'],
+      })
+      expect(out).toContain('Pair pixel')
+      expect(out).toContain('https://192.168.1.20:5174')
+      expect(out).not.toContain('never-minted')
+    }),
+  )
+
+  it(
+    'is empty with nothing to pair',
+    withHome(async (home) => {
+      const out = await formatPairingQrs({
+        home,
+        hostname: 'box',
+        devices: ['pixel'],
+        port: 5174,
+        exposeLan: true,
+        lanAddrs: ['192.168.1.20'],
+      })
+      expect(out).toBe('')
+    }),
+  )
+
+  it(
+    'explains instead of throwing when the node certificate is missing',
+    withHome(async (home) => {
+      createPairing({ home, deviceId: 'pixel', p12Path: '/x', passphrase: 'pw' })
+      const out = await formatPairingQrs({
+        home,
+        hostname: 'box',
+        devices: ['pixel'],
+        port: 5174,
+        exposeLan: true,
+        lanAddrs: ['192.168.1.20'],
+      })
+      expect(out).toContain('cannot read the node certificate')
+    }),
+  )
+
+  it(
+    'explains instead of showing a QR on a loopback-only node',
+    withHome(async (home) => {
+      seed(home)
+      const out = await formatPairingQrs({
+        home,
+        hostname: 'box',
+        devices: ['pixel'],
+        port: 5174,
+        exposeLan: false,
+        lanAddrs: ['192.168.1.20'],
+      })
+      expect(out).toContain('--no-lan')
+      expect(out).not.toContain('https://')
+    }),
+  )
+})

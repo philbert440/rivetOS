@@ -57,6 +57,14 @@ import {
   mintDeviceP12,
 } from '../lib/hub-identity.js'
 import { envFileToRecord, installLaunchdAgent, stopLaunchdAgent } from '../lib/launchd.js'
+import {
+  armPairing,
+  certSha256,
+  createPairing,
+  PAIRING_TTL_MS,
+  pairingQrText,
+  renderTerminalQr,
+} from '../lib/pairing.js'
 
 export {
   buildConfigYaml,
@@ -100,7 +108,8 @@ Options:
   --pg-port 5433        Embedded Postgres loopback port
   --no-lan              Bind den to 127.0.0.1 (still HTTPS)
   --no-service          Print \`rivetos start\` instead of installing a user service
-  --device <name>       Extra PKCS#12 at ~/.rivetos/devices/<name>.p12 (repeatable)
+  --device <name>       Pair a phone: mints its certificate and shows a QR for
+                        RivetHub Android to scan (repeatable; re-run to re-pair)
   --memory lite|full    lite (default) = FTS/trigram; full requires RIVETOS_EMBED_URL
   --out <path>          backup destination
   -h, --help            Show this help
@@ -784,8 +793,13 @@ async function runInit(
       scriptPath: deps.scriptPath,
     })
     p12Paths.push(minted.p12Path)
-    console.log(`Device ${name} PKCS#12: ${minted.p12Path}`)
-    console.log(`Passphrase (shown once): ${minted.passphrase}`)
+    createPairing({
+      home,
+      deviceId: name,
+      p12Path: minted.p12Path,
+      passphrase: minted.passphrase,
+    })
+    console.log(`Device ${name}: certificate ready — scan the pairing QR shown once the node is up`)
   }
 
   console.log('starting memory engine…')
@@ -892,8 +906,18 @@ async function runUp(
     prepared: !flags.service,
   })
 
+  const pairing = await formatPairingQrs({
+    home,
+    hostname: fromInit?.hostname ?? sanitizeHostname(deps.hostname ?? osHostname()),
+    devices: flags.devices,
+    port,
+    exposeLan,
+    lanAddrs,
+  })
+
   if (!flags.service) {
     console.log(banner)
+    if (pairing) console.log(pairing)
     return
   }
 
@@ -911,6 +935,55 @@ async function runUp(
     )
   }
   console.log(banner)
+  if (pairing) console.log(pairing)
+}
+
+/**
+ * One QR per `--device` that still has an unredeemed pairing record. Showing
+ * a QR re-arms its TTL, so `rivetos local up --device <id>` re-shows a
+ * pending one. Empty string when there is nothing to pair.
+ */
+export async function formatPairingQrs(opts: {
+  home: string
+  hostname: string
+  devices: string[]
+  port: number
+  exposeLan: boolean
+  lanAddrs: string[]
+  now?: number
+}): Promise<string> {
+  const armed = opts.devices.flatMap((id) => {
+    const rec = armPairing(opts.home, id, opts.now)
+    return rec ? [rec] : []
+  })
+  if (armed.length === 0) return ''
+  const ip = opts.lanAddrs[0]
+  if (!opts.exposeLan || !ip) {
+    return [
+      '',
+      `  Pairing  ${armed.map((r) => r.deviceId).join(', ')} not shown: the phone needs a LAN address.`,
+      '           Re-run without --no-lan (and on a network) to pair.',
+      '',
+    ].join('\n')
+  }
+  const nodeCert = localCaPaths(opts.home, opts.hostname).nodeCert
+  let pin: string
+  try {
+    pin = certSha256(readFileSync(nodeCert, 'utf-8'))
+  } catch (err) {
+    return `\n  Pairing  not shown: cannot read the node certificate ${nodeCert} (${(err as Error).message}).\n`
+  }
+  const gateway = `https://${ip}:${String(opts.port)}`
+  const minutes = String(Math.round(PAIRING_TTL_MS / 60_000))
+  const out: string[] = []
+  for (const rec of armed) {
+    out.push('')
+    out.push(`  Pair ${rec.deviceId}: open RivetHub on the phone → Scan pairing QR`)
+    out.push(`  (${gateway}, one use, expires in ${minutes} min)`)
+    out.push('')
+    out.push(await renderTerminalQr(pairingQrText({ gateway, token: rec.token, certSha256: pin })))
+  }
+  return out.join('\n')
 }
 
 async function runStatus(deps: LocalDeps): Promise<void> {

@@ -6,7 +6,18 @@ Package `io.rivethub.app`. Talks to a RivetOS den (device mTLS only); nothing ru
 Plan and slice status: see `AGENT.md`. Build: `./gradlew :app:assembleDebug :app:testDebugUnitTest`
 (JDK 21, SDK 37).
 
-## First run (until QR enrollment exists)
+## First run — pairing QR (`rivetos local`)
+
+1. On the computer: `rivetos local --device <your-device-id>`. It mints the phone's certificate, adds the
+   device to the users registry, and — once the node is up — shows a pairing QR in the terminal.
+2. On the phone (same network as the computer): RivetHub → Enroll → **Scan pairing QR**.
+
+The QR carries the gateway URL, a one-time token (10 minutes, one use) and the SHA-256 of the
+gateway's TLS certificate; the app pins that certificate to redeem the token at `POST /api/devices/pair`
+for the PKCS#12 and its passphrase. The computer deletes its copy of the PKCS#12 on redemption. Expired
+or used? Run the command again for a fresh code.
+
+## First run — certificate file (mesh operators)
 
 1. On the CA host: `scripts/rivet-ca.sh issue-client <your-device-id>` (the script prefixes `device:` itself) and export a PKCS#12
    that includes the chain (`openssl pkcs12 -export -in <crt> -inkey <key> -certfile <chain> -out <id>.p12`).

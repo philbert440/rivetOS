@@ -10,6 +10,9 @@
     <!-- Task-completion notifications (Settings → Task notifications). Runtime
          permission on API 33+, requested only when the user turns the toggle on. -->
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+    <!-- Pairing QR scan on the Enroll screen; requested only when the user taps Scan. -->
+    <uses-permission android:name="android.permission.CAMERA" />
+    <uses-feature android:name="android.hardware.camera" android:required="false" />
 
     <!-- Temporary: household noVNC desktop is plain HTTP. Flip usesCleartextTraffic back to false when that VM sits behind TLS. -->
     <application

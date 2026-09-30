@@ -1,5 +1,7 @@
 package io.rivethub.app.ui.screens
 
+import android.Manifest
+import android.content.pm.PackageManager
 import android.net.Uri
 import android.provider.OpenableColumns
 import androidx.activity.compose.rememberLauncherForActivityResult
@@ -37,14 +39,22 @@ import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.core.content.ContextCompat
 import io.rivethub.app.AppContainer
 import io.rivethub.app.R
+import io.rivethub.app.data.PairingClient
 import io.rivethub.app.plane.EnrollErrorKind
 import io.rivethub.app.plane.EntryUrlError
+import io.rivethub.app.plane.PairingCodeError
+import io.rivethub.app.plane.PairingFailure
+import io.rivethub.app.plane.PairingParse
 import io.rivethub.app.plane.enrollError
+import io.rivethub.app.plane.looksLikePairingCode
+import io.rivethub.app.plane.parsePairingCode
 import io.rivethub.app.plane.validateEntryUrl
 import io.rivethub.app.ui.components.Lucide
 import io.rivethub.app.ui.components.RhMark
+import io.rivethub.app.ui.components.PairingScannerDialog
 import io.rivethub.app.ui.components.RivetButton
 import io.rivethub.app.ui.components.RivetButtonVariant
 import io.rivethub.app.ui.components.RivetField
@@ -59,7 +69,10 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
-/** Entry URL + device PKCS#12 → verify against /api/mesh → hub. */
+/**
+ * Pairing QR (gateway + one-time token → device PKCS#12), or entry URL + a picked
+ * PKCS#12 and its passphrase → verify against /api/mesh → hub.
+ */
 @Composable
 fun EnrollScreen(c: AppContainer, onBack: (() -> Unit)?, onDone: () -> Unit) {
     val ctx = LocalContext.current
@@ -72,6 +85,7 @@ fun EnrollScreen(c: AppContainer, onBack: (() -> Unit)?, onDone: () -> Unit) {
     var p12Name by remember { mutableStateOf<String?>(null) }
     var busy by remember { mutableStateOf(false) }
     var error by remember { mutableStateOf<String?>(null) }
+    var scanning by remember { mutableStateOf(false) }
     val existing = remember { c.identity.summary() }
 
     val pickP12 = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
@@ -89,6 +103,91 @@ fun EnrollScreen(c: AppContainer, onBack: (() -> Unit)?, onDone: () -> Unit) {
     val unreachable = stringResource(R.string.error_unreachable)
     val httpsRequired = stringResource(R.string.error_https_required)
     val pickCert = stringResource(R.string.error_pick_cert)
+    val cameraDenied = stringResource(R.string.pair_camera_denied)
+
+    fun enrollMessage(e: Exception): String {
+        val mapped = enrollError(e)
+        return when (mapped.kind) {
+            EnrollErrorKind.CertRefused -> certRefused
+            EnrollErrorKind.Timeout -> timeout
+            EnrollErrorKind.Unreachable -> unreachable
+            EnrollErrorKind.Cleartext -> httpsRequired
+            EnrollErrorKind.Other -> {
+                if (c.identity.hasIdentity() && c.identity.summary() == null) {
+                    ctx.getString(R.string.error_cert_load, c.identity.lastError ?: "")
+                } else mapped.detail ?: e.javaClass.simpleName
+            }
+        }
+    }
+
+    /** Identity is in place: point at [entry], verify, and leave Enroll. */
+    suspend fun connect(entry: String) {
+        if (!c.identity.hasIdentity()) throw IllegalStateException(pickCert)
+        c.settings.setEntryUrl(entry)
+        c.dropClients()
+        c.transport.retarget(entry, emptySet())
+        withContext(Dispatchers.IO) { c.transport.discover() }
+        c.settings.setOnboarded(true)
+        onDone()
+    }
+
+    fun pairWith(text: String) {
+        scanning = false
+        error = null
+        val code = when (val parsed = parsePairingCode(text)) {
+            is PairingParse.Ok -> parsed.code
+            is PairingParse.Err -> {
+                error = ctx.getString(
+                    when (parsed.error) {
+                        PairingCodeError.NotPairing -> R.string.pair_not_code
+                        PairingCodeError.Unsupported -> R.string.pair_unsupported
+                        PairingCodeError.Invalid -> R.string.pair_invalid
+                    },
+                )
+                return
+            }
+        }
+        scope.launch {
+            busy = true
+            try {
+                withContext(Dispatchers.IO) {
+                    val redeemed = c.pairing.redeem(code)
+                    c.identity.importPkcs12(redeemed.p12, redeemed.passphrase)
+                }
+                url = code.gateway
+                p12Uri = null
+                p12Name = null
+                pass = ""
+                connect(code.gateway)
+            } catch (e: PairingClient.PairingException) {
+                error = ctx.getString(
+                    when (e.failure) {
+                        PairingFailure.Expired -> R.string.pair_expired
+                        PairingFailure.Gone -> R.string.pair_gone
+                        PairingFailure.PinMismatch -> R.string.pair_pin_mismatch
+                        PairingFailure.Unreachable -> R.string.pair_unreachable
+                        PairingFailure.Other -> R.string.pair_unreachable
+                    },
+                )
+            } catch (e: Exception) {
+                error = enrollMessage(e)
+            } finally {
+                busy = false
+            }
+        }
+    }
+
+    val askCamera = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
+        if (granted) scanning = true else error = cameraDenied
+    }
+
+    if (scanning) {
+        PairingScannerDialog(
+            accept = ::looksLikePairingCode,
+            onCode = ::pairWith,
+            onDismiss = { scanning = false },
+        )
+    }
 
     Column(
         Modifier
@@ -137,6 +236,27 @@ fun EnrollScreen(c: AppContainer, onBack: (() -> Unit)?, onDone: () -> Unit) {
                 )
                 Spacer(Modifier.height(24.dp))
                 Column(Modifier.fillMaxWidth(), horizontalAlignment = Alignment.Start) {
+                    RivetButton(
+                        text = stringResource(R.string.action_scan_pairing),
+                        onClick = {
+                            if (busy) return@RivetButton
+                            error = null
+                            val granted = ContextCompat.checkSelfPermission(ctx, Manifest.permission.CAMERA) ==
+                                PackageManager.PERMISSION_GRANTED
+                            if (granted) scanning = true else askCamera.launch(Manifest.permission.CAMERA)
+                        },
+                        enabled = !busy,
+                        modifier = Modifier.fillMaxWidth(),
+                    )
+                    Spacer(Modifier.height(8.dp))
+                    Text(stringResource(R.string.pair_how), color = colors.inkDim, style = RivetType.xs)
+                    Spacer(Modifier.height(24.dp))
+                    Text(
+                        stringResource(R.string.pair_or_file),
+                        color = colors.inkDim,
+                        style = RivetType.sm,
+                        modifier = Modifier.padding(bottom = 12.dp),
+                    )
                     Text(
                         stringResource(R.string.label_entry_url),
                         color = colors.inkDim,
@@ -217,26 +337,9 @@ fun EnrollScreen(c: AppContainer, onBack: (() -> Unit)?, onDone: () -> Unit) {
                                     pass = ""
                                     p12Uri = null
                                     p12Name = null
-                                    if (!c.identity.hasIdentity()) throw IllegalStateException(pickCert)
-                                    c.settings.setEntryUrl(entry)
-                                    c.dropClients()
-                                    c.transport.retarget(entry, emptySet())
-                                    withContext(Dispatchers.IO) { c.transport.discover() }
-                                    c.settings.setOnboarded(true)
-                                    onDone()
+                                    connect(entry)
                                 } catch (e: Exception) {
-                                    val mapped = enrollError(e)
-                                    error = when (mapped.kind) {
-                                        EnrollErrorKind.CertRefused -> certRefused
-                                        EnrollErrorKind.Timeout -> timeout
-                                        EnrollErrorKind.Unreachable -> unreachable
-                                        EnrollErrorKind.Cleartext -> httpsRequired
-                                        EnrollErrorKind.Other -> {
-                                            if (c.identity.hasIdentity() && c.identity.summary() == null) {
-                                                ctx.getString(R.string.error_cert_load, c.identity.lastError ?: "")
-                                            } else mapped.detail ?: e.javaClass.simpleName
-                                        }
-                                    }
+                                    error = enrollMessage(e)
                                 } finally {
                                     busy = false
                                 }

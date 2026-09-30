@@ -53,6 +53,7 @@ export function baseTestDenConfig(
     filesRoot: partial.filesRoot ?? '',
     filesOpen: partial.filesOpen ?? false,
     devices: partial.devices,
+    pairingDir: partial.pairingDir,
     uploads: partial.uploads,
     pgUrl: partial.pgUrl,
   }

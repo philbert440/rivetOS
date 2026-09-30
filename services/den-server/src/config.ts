@@ -152,6 +152,12 @@ export interface DenConfig {
   tls: DenTlsFileConfig
   /** Dedicated owner-only Codex app-server, loopback WebSocket. */
   codexAppServerUrl?: string
+  /**
+   * Phone pairing records written by `rivetos local --device` (pairing.ts).
+   * Unset = POST /api/devices/pair is off. Env: RIVETOS_DEN_PAIRING_DIR,
+   * default `~/.rivetos/devices/pairing`.
+   */
+  pairingDir?: string
   /** Directory for persisted state (per-viewer layouts). */
   stateDir: string
   /**
@@ -348,6 +354,8 @@ export function loadConfig(
       ? { codexAppServerUrl: env.RIVETOS_CODEX_APP_SERVER_URL }
       : {}),
     stateDir: denStateDir(env),
+    pairingDir:
+      nonEmpty(env.RIVETOS_DEN_PAIRING_DIR) ?? join(homedir(), '.rivetos', 'devices', 'pairing'),
     nodeName: denNodeName(env),
     agentsDir: nonEmpty(env.RIVETOS_DEN_AGENTS_DIR) ?? join(homedir(), '.rivetos', 'agents'),
     staticDir: env.RIVETOS_DEN_STATIC_DIR ?? '',

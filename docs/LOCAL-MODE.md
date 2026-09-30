@@ -48,8 +48,16 @@ The node cert is re-issued on every `init` because DHCP addresses move.
 `--no-lan` binds `127.0.0.1` instead (still HTTPS) and sets `advertise_mdns:
 false`. The desktop app gets a pre-minted client
 leaf under the RivetHub userData `mtls/` directory. `--device <name>` mints a
-PKCS#12 at `~/.rivetos/devices/<name>.p12` and prints the passphrase once
-(the QR flow in a later change replaces hand-minting). Off-loopback terminals
+PKCS#12 at `~/.rivetos/devices/<name>.p12` and, once den is up, shows a
+pairing QR for RivetHub Android (gateway URL on the first LAN address, a
+one-time token, the SHA-256 of den's TLS leaf). The phone pins that leaf and
+redeems the token at `POST /api/devices/pair` for the p12 + passphrase; den
+deletes the p12 and the record (`~/.rivetos/devices/pairing/<name>.json`) on
+redemption. Codes expire after 10 minutes; re-run to get a new one
+(`rivetos local up --device <name>` re-shows a still-unredeemed code). The
+issued leaf key is removed once it is inside the p12, so the p12 is the only
+copy on the computer. `--no-lan` skips the QR — the phone could not reach
+the node. Off-loopback terminals
 require that TLS material; validation rejects a LAN bind without it.
 
 **Lite vs full memory.** Default `--memory lite` is capture + FTS/trigram
