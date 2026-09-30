@@ -237,7 +237,7 @@ export function createHarnessRoutes(opts: {
    *  is allowed; one owned by someone else returns false. Used on create and
    *  resume — without it, control-plane sessions have no owner row and fall
    *  to the node owner in every listing. */
-  claimSession?: (req: IncomingMessage, sessionId: string) => boolean
+  claimSession?: (req: IncomingMessage, sessionId: string) => boolean | Promise<boolean>
   /** Stamps `installed` on each `GET /api/harnesses` row (`installed.ts`).
    *  Absent = the field is omitted and clients treat every row as installed. */
   isInstalled?: (harnessId: HarnessId) => boolean
