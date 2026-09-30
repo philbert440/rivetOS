@@ -119,10 +119,12 @@ export async function callLlm(
         dispatcher: httpDispatcher,
       })
 
-      if (!response.ok && response.status < 500) {
+      const transient4xx = config.llmTransientStatuses.includes(response.status)
+      if (!response.ok && response.status < 500 && !transient4xx) {
         // 4xx — do not retry inside this call. 408/429 are transient at the
         // job layer; every other 4xx is permanent (bad prompt, auth, missing
-        // model) and must not be circuit-broken into an hourly hammer.
+        // model) and must not be circuit-broken into an hourly hammer, unless
+        // RIVETOS_COMPACTOR_TRANSIENT_STATUSES lists it (handled as a 5xx below).
         const retryable = response.status === 408 || response.status === 429
         throw new LlmCallError(
           `LLM HTTP ${response.status}: ${response.statusText || 'client error'} (not retrying)`,
@@ -133,7 +135,7 @@ export async function callLlm(
 
       if (!response.ok) {
         lastError = new Error(
-          `LLM HTTP ${response.status}: ${response.statusText || 'server error'}`,
+          `LLM HTTP ${response.status}: ${response.statusText || (transient4xx ? 'client error' : 'server error')}`,
         )
         if (attempt < LLM_RETRIES) {
           const delay = LLM_RETRY_BACKOFF_MS * Math.pow(2, attempt)

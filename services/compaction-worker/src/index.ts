@@ -21,6 +21,7 @@
  *   RIVETOS_COMPACTOR_URL       required (LLM endpoint)
  *   RIVETOS_COMPACTOR_MODEL     required (OpenAI-compatible chat model id)
  *   RIVETOS_COMPACTOR_API_KEY   optional
+ *   RIVETOS_COMPACTOR_TRANSIENT_STATUSES optional — comma list of 4xx codes to retry like a 5xx (e.g. 403,404)
  *   WORKER_ROLE                 default: all (all | compaction | wiki) — which task/cron set this process registers
  *   COMPACT_CONCURRENCY         default: 1 (compaction is CPU-heavy on the LLM, single-flight per worker)
  *   TOOL_SYNTH_CONCURRENCY      default: 2

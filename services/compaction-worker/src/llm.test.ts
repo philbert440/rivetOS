@@ -10,6 +10,7 @@ vi.mock('./config.js', () => ({
     llmUrl: 'http://llm.test:8003/v1',
     llmModel: 'test-model',
     llmApiKey: '',
+    llmTransientStatuses: [] as number[],
   },
 }))
 
@@ -30,6 +31,7 @@ vi.mock('undici', () => ({
 }))
 
 import { callLlm, LlmCallError } from './llm.js'
+import { config } from './config.js'
 
 function jsonResponse(body: unknown, status = 200, statusText = 'OK'): Response {
   return {
@@ -43,6 +45,7 @@ function jsonResponse(body: unknown, status = 200, statusText = 'OK'): Response 
 describe('callLlm', () => {
   beforeEach(() => {
     fetchMock.mockReset()
+    config.llmTransientStatuses = []
   })
 
   it('returns content on success', async () => {
@@ -90,6 +93,30 @@ describe('callLlm', () => {
       status: 429,
     })
     expect(fetchMock).toHaveBeenCalledTimes(1)
+  })
+
+  it('retries a 4xx listed in llmTransientStatuses like a 5xx and succeeds', async () => {
+    config.llmTransientStatuses = [403, 404]
+    fetchMock
+      .mockResolvedValueOnce(jsonResponse({}, 404, 'Not Found'))
+      .mockResolvedValueOnce(
+        jsonResponse({
+          choices: [{ finish_reason: 'stop', message: { content: 'recovered summary text' } }],
+        }),
+      )
+    await expect(callLlm('sys', 'user', 100)).resolves.toBe('recovered summary text')
+    expect(fetchMock).toHaveBeenCalledTimes(2)
+  })
+
+  it('fails a listed 4xx as retryable (not terminal) once retries run out', async () => {
+    config.llmTransientStatuses = [403]
+    fetchMock.mockResolvedValue(jsonResponse({}, 403, ''))
+    const err = await callLlm('sys', 'user', 100).catch((e: unknown) => e)
+    expect(err).toBeInstanceOf(LlmCallError)
+    expect((err as LlmCallError).retryable).toBe(true)
+    expect(String((err as Error).message)).toContain('LLM HTTP 403: client error')
+    // LLM_RETRIES=1 → 2 attempts
+    expect(fetchMock).toHaveBeenCalledTimes(2)
   })
 
   it('marks network failures as retryable', async () => {

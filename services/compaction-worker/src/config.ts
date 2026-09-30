@@ -20,6 +20,16 @@ function intEnv(name: string, fallback: number): number {
   return Number.isFinite(parsed) ? parsed : fallback
 }
 
+/** Comma-separated HTTP status codes, e.g. "403,404". Non-numeric entries are dropped. */
+function statusListEnv(name: string): number[] {
+  const raw = process.env[name]
+  if (!raw) return []
+  return raw
+    .split(',')
+    .map((part) => parseInt(part.trim(), 10))
+    .filter((code) => Number.isInteger(code) && code >= 400 && code < 500)
+}
+
 const llmUrl = requireEnv('RIVETOS_COMPACTOR_URL')
 const llmModel = requireEnv(
   'RIVETOS_COMPACTOR_MODEL',
@@ -31,6 +41,10 @@ export const config = {
   llmUrl,
   llmModel,
   llmApiKey: process.env.RIVETOS_COMPACTOR_API_KEY ?? '',
+  // Extra 4xx codes this endpoint returns while overloaded (free tiers answer
+  // 403/404 for a few seconds under load). Retried like a 5xx instead of being
+  // recorded as a terminal failure that stalls the level until restart.
+  llmTransientStatuses: statusListEnv('RIVETOS_COMPACTOR_TRANSIENT_STATUSES'),
 
   // Worker-local concurrency
   compactConcurrency: intEnv('COMPACT_CONCURRENCY', 1),
