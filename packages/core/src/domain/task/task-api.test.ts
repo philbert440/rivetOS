@@ -645,6 +645,36 @@ describe('agent-aware dispatch (resolveAffinity)', () => {
     expect(spec?.presetId).toBe(reviewer.id)
   })
 
+  it('an explicit executor strips a forged parent, spawned session, and owner', async () => {
+    const { base, store } = await startPresetApi({ preset: reviewerPreset() })
+    const res = await create(base, {
+      goal: 'review',
+      agentId: 'reviewer',
+      executor: 'chat-loop',
+      spec: {
+        parentSessionId: 'claude-code:forged',
+        spawnedSessionId: 'forged-session',
+        spawnedAgentName: 'forged-name',
+        spawnedModel: 'forged-model',
+        owner: 'forged-owner',
+        tools: ['memory_search'],
+      },
+    })
+    expect(res.status).toBe(201)
+    const { task } = (await res.json()) as { task: { id: string } }
+    const row = await store.get(task.id)
+    expect(row?.executor).toBe('chat-loop')
+    expect(row?.executorTarget).toBeUndefined()
+    const spec = row?.spec
+    expect(spec?.parentSessionId).toBeUndefined()
+    expect(spec?.spawnedSessionId).toBeUndefined()
+    expect(spec?.spawnedAgentName).toBeUndefined()
+    expect(spec?.spawnedModel).toBeUndefined()
+    expect(spec?.owner).toBeUndefined()
+    expect(spec?.tools).toEqual(['memory_search'])
+    expect(spec?.presetId).toBeUndefined()
+  })
+
   it('an unimplemented preset is 400 with the gap text and creates no row', async () => {
     const reviewer = reviewerPreset({ harnessId: 'codex', node: 'node-f' })
     const executors = createExecutorRegistry()

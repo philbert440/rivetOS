@@ -185,6 +185,22 @@ function claudeFileKey(id: string, parentSessionId?: string): string {
   return parentSessionId ? `${parentSessionId}\0${id}` : id
 }
 
+/**
+ * The file this row was indexed under. Delegated nesting sets
+ * `parentSessionId` after a top-level session file was stored by its bare
+ * id, so the parent-scoped key misses. A subagent file keeps the on-disk
+ * parent (nesting does not replace one), and that key hits.
+ */
+function claudeFileForRow(
+  byId: Map<string, ClaudeFile>,
+  row: HarnessSession,
+): ClaudeFile | undefined {
+  const scoped = byId.get(claudeFileKey(row.id, row.parentSessionId))
+  if (scoped) return scoped
+  if (!row.parentSessionId) return undefined
+  return byId.get(row.id)
+}
+
 /** Newer mtime wins within one key. A top-level session file is preferred over
  *  an agent file with the same id in a post-pass, not here — they are different keys. */
 function rememberClaudeFile(byId: Map<string, ClaudeFile>, next: ClaudeFile): void {
@@ -427,7 +443,7 @@ async function listClaudeSessions(
   const nested = applyDelegatedNesting(ranked, links)
   const kept = withAncestors(nested, limit)
   for (const row of kept) {
-    const f = byId.get(claudeFileKey(row.id, row.parentSessionId))
+    const f = claudeFileForRow(byId, row)
     if (!f) continue
     const title = await sessionTitle(f.path).catch(() => '')
     if (title) row.title = title

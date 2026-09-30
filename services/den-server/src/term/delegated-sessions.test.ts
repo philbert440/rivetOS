@@ -6,8 +6,11 @@ import type { DelegatedSessionLink } from '@rivetos/types'
 import { createSessionOwners } from '../session-owners.js'
 import {
   applyDelegatedNesting,
+  chainDepth,
   NEST_DEPTH_CAP,
   stampDelegatedOwners,
+  verifyDelegatedClaims,
+  type DelegatedClaimCheck,
 } from './delegated-sessions.js'
 
 const dirs: string[] = []
@@ -116,6 +119,30 @@ describe('applyDelegatedNesting', () => {
     expect(byId.get(`s${String(NEST_DEPTH_CAP + 1)}`)?.parentSessionId).toBeUndefined()
   })
 
+  it('a 2-cycle and a self-parent stay flat', () => {
+    const cycle: DelegatedSessionLink[] = [
+      { taskId: 'a', parentTaskId: 'b', spawnedSessionId: 'sess-a' },
+      { taskId: 'b', parentTaskId: 'a', spawnedSessionId: 'sess-b' },
+    ]
+    const byTask = new Map(cycle.map((link) => [link.taskId, link]))
+    // undefined, not a depth past the cap: the seen set stops the walk.
+    expect(chainDepth(cycle[0]!, byTask)).toBeUndefined()
+    expect(chainDepth(cycle[1]!, byTask)).toBeUndefined()
+    const cycled = applyDelegatedNesting([session('sess-a'), session('sess-b')], cycle)
+    expect(cycled.every((row) => row.parentSessionId === undefined)).toBe(true)
+
+    const self: DelegatedSessionLink = {
+      taskId: 'a',
+      parentTaskId: 'a',
+      spawnedSessionId: 'sess-a',
+      parentSessionId: 'claude-code:sess-a',
+    }
+    expect(chainDepth(self, new Map([[self.taskId, self]]))).toBeUndefined()
+    const [row] = applyDelegatedNesting([session('sess-a')], [self])
+    expect(row?.parentSessionId).toBeUndefined()
+    expect(row?.taskId).toBe('a')
+  })
+
   it('does not replace a subagent parent the store already recorded', () => {
     const [row] = applyDelegatedNesting(
       [session('child', 'real-parent')],
@@ -162,5 +189,171 @@ describe('stampDelegatedOwners', () => {
     expect(owners.visible('claude-code:child-sess', coco)).toBe(true)
     expect(owners.visible('child-sess', node)).toBe(false)
     expect(owners.visible('claude-code:child-sess', node)).toBe(false)
+  })
+})
+
+describe('verifyDelegatedClaims', () => {
+  const check = (tagged: Record<string, string>, tenancy = true): DelegatedClaimCheck => ({
+    tenancy,
+    nodeOwnerId: 'owner',
+    ownerOf: (id) => tagged[id],
+  })
+
+  it('does not nest or tag a spec that claims another owner parent', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'delegated-claim-'))
+    dirs.push(dir)
+    const owners = createSessionOwners(join(dir, 'session-owners.json'))
+    const links = verifyDelegatedClaims(
+      [
+        {
+          taskId: 'task-1',
+          spawnedSessionId: 'child',
+          parentSessionId: 'claude-code:parent',
+          owner: 'user-b',
+          agentName: 'reviewer',
+          harnessId: 'claude-code',
+        },
+      ],
+      check({ parent: 'alice' }),
+    )
+    expect(links[0]).toEqual({
+      taskId: 'task-1',
+      spawnedSessionId: 'child',
+      agentName: 'reviewer',
+      harnessId: 'claude-code',
+    })
+    const rows = applyDelegatedNesting([session('parent'), session('child')], links)
+    expect(rows.find((row) => row.id === 'child')?.parentSessionId).toBeUndefined()
+    stampDelegatedOwners(owners, links)
+    expect(owners.get('child')).toBeUndefined()
+    expect(owners.get('claude-code:child')).toBeUndefined()
+  })
+
+  it('nests and tags a claim the parent registry owner confirms', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'delegated-claim-ok-'))
+    dirs.push(dir)
+    const owners = createSessionOwners(join(dir, 'session-owners.json'))
+    const links = verifyDelegatedClaims(
+      [
+        {
+          taskId: 'task-1',
+          spawnedSessionId: 'child',
+          parentSessionId: 'claude-code:parent',
+          owner: 'coco',
+          agentName: 'reviewer',
+          model: 'opus',
+          harnessId: 'claude-code',
+        },
+      ],
+      // Tagged under the native id only. The canonical parent still resolves.
+      check({ parent: 'coco' }),
+    )
+    const rows = applyDelegatedNesting([session('parent'), session('child')], links)
+    expect(rows.find((row) => row.id === 'child')).toMatchObject({
+      parentSessionId: 'parent',
+      taskId: 'task-1',
+      agentName: 'reviewer',
+      model: 'opus',
+    })
+    stampDelegatedOwners(owners, links)
+    expect(owners.get('child')).toBe('coco')
+    expect(owners.get('claude-code:child')).toBe('coco')
+    expect(owners.get('child')).not.toBe('alice')
+  })
+
+  it('keeps a mismatched claim when tenancy is off', () => {
+    const links = verifyDelegatedClaims(
+      [
+        {
+          taskId: 'task-1',
+          spawnedSessionId: 'child',
+          parentSessionId: 'claude-code:parent',
+          owner: 'user-b',
+        },
+      ],
+      check({ parent: 'alice' }, false),
+    )
+    expect(links[0]?.parentSessionId).toBe('claude-code:parent')
+    expect(links[0]?.owner).toBe('user-b')
+    const rows = applyDelegatedNesting([session('parent'), session('child')], links)
+    expect(rows.find((row) => row.id === 'child')?.parentSessionId).toBe('parent')
+  })
+
+  it('treats an absent owner as the node owner, not as a tenant', () => {
+    const nodeOwned = verifyDelegatedClaims(
+      [
+        {
+          taskId: 'task-1',
+          spawnedSessionId: 'child',
+          parentSessionId: 'claude-code:human',
+        },
+      ],
+      check({ human: 'owner' }),
+    )
+    expect(nodeOwned[0]?.parentSessionId).toBe('claude-code:human')
+    expect(nodeOwned[0]?.owner).toBe('owner')
+
+    const tenantParent = verifyDelegatedClaims(
+      [
+        {
+          taskId: 'task-2',
+          spawnedSessionId: 'child',
+          parentSessionId: 'claude-code:human',
+        },
+      ],
+      check({ human: 'alice' }),
+    )
+    expect(tenantParent[0]?.parentSessionId).toBeUndefined()
+    expect(tenantParent[0]?.owner).toBeUndefined()
+  })
+
+  it('nests a confirmed chain and drops a sibling that claims someone else', () => {
+    const links = verifyDelegatedClaims(
+      [
+        {
+          taskId: 'a',
+          spawnedSessionId: 'sess-a',
+          parentSessionId: 'claude-code:human',
+          owner: 'coco',
+        },
+        {
+          taskId: 'b',
+          parentTaskId: 'a',
+          spawnedSessionId: 'sess-b',
+          owner: 'coco',
+        },
+        {
+          taskId: 'c',
+          parentTaskId: 'a',
+          spawnedSessionId: 'sess-c',
+          owner: 'mallory',
+        },
+      ],
+      check({ human: 'coco' }),
+    )
+    const rows = applyDelegatedNesting(
+      [session('human'), session('sess-a'), session('sess-b'), session('sess-c')],
+      links,
+    )
+    const byId = new Map(rows.map((row) => [row.id, row]))
+    expect(byId.get('sess-a')?.parentSessionId).toBe('human')
+    expect(byId.get('sess-b')?.parentSessionId).toBe('sess-a')
+    expect(byId.get('sess-c')?.parentSessionId).toBeUndefined()
+    const forged = links.find((link) => link.taskId === 'c')
+    expect(forged?.owner).toBeUndefined()
+    expect(forged?.parentTaskId).toBeUndefined()
+  })
+
+  it('a 2-cycle of claims stays flat', () => {
+    const links = verifyDelegatedClaims(
+      [
+        { taskId: 'a', parentTaskId: 'b', spawnedSessionId: 'sess-a', owner: 'coco' },
+        { taskId: 'b', parentTaskId: 'a', spawnedSessionId: 'sess-b', owner: 'coco' },
+      ],
+      check({}),
+    )
+    expect(
+      links.every((link) => link.parentTaskId === undefined && link.owner === undefined),
+    ).toBe(true)
   })
 })

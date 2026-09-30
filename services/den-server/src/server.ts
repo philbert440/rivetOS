@@ -103,7 +103,7 @@ import {
   qwenSessionCwd,
   readHarnessTranscript,
 } from './term/harness-sessions.js'
-import { stampDelegatedOwners } from './term/delegated-sessions.js'
+import { stampDelegatedOwners, verifyDelegatedClaims } from './term/delegated-sessions.js'
 import { createHarnessStore, type HarnessStoreName } from './harness/harness-store.js'
 import { overlaySessionContext, sessionContext } from './term/context-window.js'
 import { createFilesRoutes } from './files.js'
@@ -495,27 +495,6 @@ export function createDenServer(config: DenConfig, opts: DenServerOptions = {}):
   // refresh it before the call. A store miss leaves the previous set rather
   // than refusing a resume that was allowed a moment ago.
   const taskSessionIds = new Set<string>()
-  const loadDelegated = async (): Promise<DelegatedSessionLink[]> => {
-    let links: DelegatedSessionLink[]
-    try {
-      links = (await opts.delegatedSessions?.()) ?? []
-    } catch (err) {
-      const detail = err instanceof Error ? err.message : String(err)
-      console.error(`[den] delegated session links failed: ${detail}`)
-      return []
-    }
-    taskSessionIds.clear()
-    for (const link of links) {
-      const native = link.spawnedSessionId.trim()
-      if (native) taskSessionIds.add(native)
-    }
-    stampDelegatedOwners(sessionOwners, links)
-    return links
-  }
-  const harnessStore = <N extends HarnessStoreName>(
-    name: N,
-  ): ReturnType<typeof createHarnessStore<N>> =>
-    createHarnessStore(name, { delegatedSessions: loadDelegated })
   // Ownership is stored under whichever id the spawner claimed: the native
   // join key, or the canonical `<harness>:<native>` id. A nested row is
   // neither until we copy the parent's tag onto it.
@@ -536,6 +515,37 @@ export function createDenServer(config: DenConfig, opts: DenServerOptions = {}):
       return undefined
     }
   }
+  const loadDelegated = async (): Promise<DelegatedSessionLink[]> => {
+    let links: DelegatedSessionLink[]
+    try {
+      links = (await opts.delegatedSessions?.()) ?? []
+    } catch (err) {
+      const detail = err instanceof Error ? err.message : String(err)
+      console.error(`[den] delegated session links failed: ${detail}`)
+      return []
+    }
+    // Env-stamped parent/owner is not a credential. Drop a claim the
+    // registry does not confirm before it can nest or tag anything.
+    const verified = verifyDelegatedClaims(links, {
+      tenancy: Boolean(config.usersRegistry),
+      nodeOwnerId: config.usersRegistry?.ownerUserId,
+      ownerOf: (sessionId) => {
+        const key = taggedOwnerId(sessionId)
+        return key ? sessionOwners.get(key) : undefined
+      },
+    })
+    taskSessionIds.clear()
+    for (const link of verified) {
+      const native = link.spawnedSessionId.trim()
+      if (native) taskSessionIds.add(native)
+    }
+    stampDelegatedOwners(sessionOwners, verified)
+    return verified
+  }
+  const harnessStore = <N extends HarnessStoreName>(
+    name: N,
+  ): ReturnType<typeof createHarnessStore<N>> =>
+    createHarnessStore(name, { delegatedSessions: loadDelegated })
   const stampNested = (childId: string, parentId: string | undefined, command?: string): void => {
     const parentKey = taggedOwnerId(parentId)
     if (!parentKey) return
@@ -1794,6 +1804,11 @@ export function createDenServer(config: DenConfig, opts: DenServerOptions = {}):
             let sessionKey = p.session === undefined ? undefined : denJoinKey(p.session)
             const resumeKey = p.resume === undefined ? undefined : denJoinKey(p.resume)
             if (userCtx) {
+              // Task-row owner tags are not in the registry until this load.
+              // The resume gate has to see them, or a routed user 403s on
+              // their own delegated session on a fresh process. Same order
+              // as prepareSession before authorizeSession.
+              if (resumeKey) await ensureNestedOwner(resumeKey)
               if (resumeKey && denyIfForbidden('POST /term (resume)', resumeKey)) return
               // sessionKey keeps its claim semantics: an UNTAGGED key is a new
               // room the spawner may claim; a tagged one must be theirs.

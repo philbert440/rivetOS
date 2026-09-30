@@ -670,4 +670,81 @@ describe.skipIf(!haveOpenssl() || !remoteIp)('tenancy route inventory (real TLS)
     const outcome = await rawUpgrade(`${remote}/term?session=coco-room`, coco)
     expect(outcome).toContain('101')
   })
+
+  it('a routed user resumes her own delegated session on a fresh process', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'rivet-tenancy-delegated-'))
+    const parent = '11111111-1111-4111-8111-111111111111'
+    const child = '22222222-2222-4222-8222-222222222222'
+    writeFileSync(join(dir, 'session-owners.json'), JSON.stringify({ [parent]: 'coco' }) + '\n')
+    const config = baseTestDenConfig(dir, {
+      host: '0.0.0.0',
+      tls: {
+        certPath: pki.serverCert,
+        keyPath: pki.serverKey,
+        caPath: join(pki.dir, 'ca.crt'),
+        requireClientCert: true,
+      },
+      term: {
+        enabled: true,
+        open: true,
+        configFile: join(dir, 'den-term.json'),
+        maxPtys: 4,
+        scrollbackBytes: 262_144,
+        detachedTtlMs: 1_800_000,
+        idleTtlMs: 1_800_000,
+        exitLingerMs: 60_000,
+        injectReadyMs: 10,
+        mux: 'none',
+      },
+    })
+    config.usersRegistry = parseUsersRegistry(
+      JSON.stringify({
+        ownerUserId: 'owner',
+        unmappedIsOwner: false,
+        users: {
+          owner: { devices: [], pgUrl: 'postgres://owner@db/rivet_memory' },
+          coco: { devices: ['win-coco'], pgUrl: 'postgres://coco@db/coco_memory' },
+        },
+      }),
+    )
+    let pid = 9100
+    const fresh = createDenServer(config, {
+      ptySpawn: () => new FakeProc(++pid),
+      skipBuiltinHarnessDrivers: true,
+      delegatedSessions: async () => [
+        {
+          taskId: 'task-coco',
+          spawnedSessionId: child,
+          parentSessionId: `claude-code:${parent}`,
+          owner: 'coco',
+          harnessId: 'claude-code',
+        },
+      ],
+    })
+    try {
+      await new Promise<void>((resolve) => fresh.server.listen(0, '0.0.0.0', resolve))
+      const addr = fresh.server.address()
+      if (addr === null || typeof addr === 'string') throw new Error('no address')
+      const port = String(addr.port)
+      // No list and no prior resume has tagged `child`. The task row is the
+      // only owner record, and it has to be loaded before the gate.
+      const resumed = await call(
+        'POST',
+        `https://${remoteIp ?? ''}:${port}/term`,
+        coco,
+        { command: 'shell', resume: child },
+      )
+      expect(resumed.status).toBe(201)
+      const stolen = await call(
+        'POST',
+        `https://127.0.0.1:${port}/term`,
+        { ca: pki.ca },
+        { command: 'shell', resume: child },
+      )
+      expect(stolen.status).toBe(403)
+    } finally {
+      await fresh.close()
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
 })

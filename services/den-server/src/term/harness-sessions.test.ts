@@ -439,12 +439,16 @@ describe('listHarnessSessions', () => {
     expect(ids).toContain(child)
     expect(ids).toContain(parent)
     expect(ids).not.toContain(newer)
+    // The child file is top-level on disk. Nesting must not make the title
+    // lookup miss it and leave the raw id in the drawer.
     expect(capped.find((row) => row.id === child)).toMatchObject({
       parentSessionId: parent,
       taskId: 'task-1',
+      title: 'delegated',
       agentName: 'reviewer',
       model: 'opus',
     })
+    expect(capped.find((row) => row.id === parent)?.title).toBe('parent')
   })
 
   it('lists grok sessions from summary.json, merged + sorted with claude', async () => {
