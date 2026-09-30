@@ -516,6 +516,7 @@ async function runClaimedTask(task: TaskRow, opts: TaskHandlerOptions): Promise<
     systemPromptAppend?: string
     sharedLink?: boolean
     presetId?: string
+    presetName?: string
   }
 
   // Armed before preset lookup. A slow resolver must not look like a dead
@@ -582,6 +583,20 @@ async function runClaimedTask(task: TaskRow, opts: TaskHandlerOptions): Promise<
 
       let exceededReason: string | undefined
       for await (const event of handle.events) {
+        if (event.type === 'session.spawned') {
+          const native = event.nativeSessionId.trim()
+          if (native) {
+            const presetName = typeof spec.presetName === 'string' ? spec.presetName.trim() : ''
+            const fromSpec = typeof spec.model === 'string' ? spec.model.trim() : ''
+            const fromEvent = typeof event.model === 'string' ? event.model.trim() : ''
+            await opts.store.registerSpawnedSession?.(task.id, {
+              spawnedSessionId: native,
+              spawnedAgentName: presetName || task.agentId,
+              ...(fromSpec || fromEvent ? { spawnedModel: fromSpec || fromEvent } : {}),
+            })
+          }
+          continue
+        }
         if (event.type !== 'turn.end') continue
         // Harness executors surface the spawn's session id — append it to
         // the row so the task's CLI sessions stay traceable.

@@ -99,6 +99,8 @@ export interface ChatItem {
    * instead of the session title.
    */
   agentName?: string
+  /** Task row that registered this session, when the listing merge knew one. */
+  taskId?: string
 }
 
 /** Native half of a canonical id; undefined when it doesn't parse. */
@@ -158,7 +160,9 @@ function parentInList(item: ChatItem, byKey: Map<string, ChatItem>): string | un
     cur = next?.parentKey
     depth++
   }
-  if (depth >= NEST_DEPTH_CAP) return undefined
+  // A chain that ended on the 8th ancestor still nests. Only a parent
+  // beyond the cap flattens — `depth >= cap` alone also dropped depth 8.
+  if (cur && depth >= NEST_DEPTH_CAP) return undefined
   return parent
 }
 
@@ -289,6 +293,7 @@ export function chatItems(input: {
       command: legacy?.command ?? ROSTER_COMMAND[summary.harnessId],
       model: summary.model ?? legacy?.model,
       agentName: summary.agentName ?? legacy?.agentName,
+      taskId: summary.taskId ?? legacy?.taskId,
       transport: summary.transport,
       effort: summary.effort,
       status: summary.status,
@@ -306,6 +311,7 @@ export function chatItems(input: {
       command: row.command,
       model: row.model,
       agentName: row.agentName,
+      taskId: row.taskId,
       updatedAt: row.updatedAt,
       parentKey: row.parentSessionId,
     })
@@ -340,12 +346,26 @@ export function chatItemFromSummary(summary: HarnessSessionSummary): ChatItem | 
     command: ROSTER_COMMAND[summary.harnessId],
     model: summary.model,
     agentName: summary.agentName,
+    taskId: summary.taskId,
     transport: summary.transport,
     effort: summary.effort,
     status: summary.status,
     updatedAt: Date.parse(summary.updatedAt) || 0,
     parentKey: summary.parentSessionId,
   }
+}
+
+/** Text match for the drawer filter. Includes the nested row's agent name. */
+export function chatRowMatches(it: ChatItem, query: string, customName = ''): boolean {
+  const q = query.trim().toLowerCase()
+  if (!q) return true
+  return (
+    customName.toLowerCase().includes(q) ||
+    it.title.toLowerCase().includes(q) ||
+    it.key.toLowerCase().includes(q) ||
+    (it.harnessId ?? '').includes(q) ||
+    (it.agentName ?? '').toLowerCase().includes(q)
+  )
 }
 
 /** Legacy store rows carry a native parent id; plane rows are keyed canonically. */

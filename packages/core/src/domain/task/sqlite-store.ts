@@ -560,6 +560,25 @@ export class SqliteTaskStore implements TaskStore {
       .run(sessionId, id, sessionId)
   }
 
+  async registerSpawnedSession(
+    id: string,
+    fields: {
+      spawnedSessionId: string
+      spawnedAgentName?: string
+      spawnedModel?: string
+    },
+  ): Promise<void> {
+    const row = await this.get(id)
+    if (!row || !fields.spawnedSessionId) return
+    const spec: Record<string, unknown> = {
+      ...row.spec,
+      spawnedSessionId: fields.spawnedSessionId,
+    }
+    if (fields.spawnedAgentName !== undefined) spec.spawnedAgentName = fields.spawnedAgentName
+    if (fields.spawnedModel !== undefined) spec.spawnedModel = fields.spawnedModel
+    this.db.prepare(`UPDATE ros_tasks SET spec = ? WHERE id = ?`).run(jsonText(spec), id)
+  }
+
   async heartbeat(id: string): Promise<void> {
     this.db
       .prepare(`UPDATE ros_tasks SET last_heartbeat_at = ? WHERE id = ?`)

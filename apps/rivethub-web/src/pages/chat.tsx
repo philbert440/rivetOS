@@ -109,6 +109,7 @@ import {
   applyRegistryEventToPlaneSessions,
   chatItemFromSummary,
   chatItems,
+  chatRowMatches,
   denRoomKey,
   fetchHarnessPlaneSessions,
   filterChatForest,
@@ -928,16 +929,8 @@ function SessionDrawer(props: {
     return true
   })
   const forest = nestChatItems(listed)
-  const matchesQuery = (it: ChatItem): boolean => {
-    if (!q) return true
-    const custom = persisted(names, itemBase(it), it.key) ?? ''
-    return (
-      custom.toLowerCase().includes(q) ||
-      it.title.toLowerCase().includes(q) ||
-      it.key.toLowerCase().includes(q) ||
-      (it.harnessId ?? '').includes(q)
-    )
-  }
+  const matchesQuery = (it: ChatItem): boolean =>
+    chatRowMatches(it, q, persisted(names, itemBase(it), it.key) ?? '')
   const shown = q ? filterChatForest(forest, matchesQuery, props.active) : forest
   const searching = q.length > 0
   const activePath = ancestorChatKeys(shown, props.active).join('\0')

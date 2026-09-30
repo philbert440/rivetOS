@@ -22,7 +22,8 @@ import { readdir, stat, open, readFile } from 'node:fs/promises'
 import { existsSync, readdirSync, readFileSync, statSync } from 'node:fs'
 import { basename, dirname, join, resolve } from 'node:path'
 import { homedir } from 'node:os'
-import { type HarnessTranscriptTurn } from '@rivetos/types'
+import { type DelegatedSessionLink, type HarnessTranscriptTurn } from '@rivetos/types'
+import { applyDelegatedNesting, NEST_DEPTH_CAP } from './delegated-sessions.js'
 import { denJoinKey, denSessionRef, type StoreCommand } from '../harness/session-key.js'
 import {
   adapterForCommand,
@@ -94,6 +95,8 @@ export interface HarnessSession {
   parentSessionId?: string
   /** Subagent type from the store (`general-purpose`, …). Nested rows label with this. */
   agentName?: string
+  /** Task row that registered this session. Absent for ordinary store rows. */
+  taskId?: string
 }
 
 /** ~/.claude/projects (respects CLAUDE_CONFIG_DIR like the CLI does). */
@@ -343,7 +346,10 @@ async function claudeHeadLabels(file: string): Promise<{ agentName: string; mode
   return { agentName, model }
 }
 
-async function listClaudeSessions(limit: number): Promise<HarnessSession[]> {
+async function listClaudeSessions(
+  limit: number,
+  links: DelegatedSessionLink[] = [],
+): Promise<HarnessSession[]> {
   const dir = claudeProjectsDir()
   let slugs: string[]
   try {
@@ -402,7 +408,10 @@ async function listClaudeSessions(limit: number): Promise<HarnessSession[]> {
       if (f.parentSessionId) row.parentSessionId = f.parentSessionId
       return row
     })
-  const kept = withAncestors(ranked, limit)
+  // Task links before the cap, so a parent outside the window is still in
+  // the pool and withAncestors can pull it back in.
+  const nested = applyDelegatedNesting(ranked, links)
+  const kept = withAncestors(nested, limit)
   for (const row of kept) {
     const f = byId.get(row.id)
     if (!f) continue
@@ -2283,7 +2292,7 @@ function withAncestors(ranked: HarnessSession[], limit: number): HarnessSession[
   for (const row of kept) {
     let parentId = row.parentSessionId
     const seen = new Set<string>()
-    while (parentId && !seen.has(parentId) && seen.size < 8) {
+    while (parentId && !seen.has(parentId) && seen.size < NEST_DEPTH_CAP) {
       seen.add(parentId)
       const key = `${row.command}\0${parentId}`
       const parent = pool.get(key)
@@ -2306,9 +2315,10 @@ function withAncestors(ranked: HarnessSession[], limit: number): HarnessSession[
 export async function listHarnessSessions(
   commands: string[],
   limit = 100,
+  links: DelegatedSessionLink[] = [],
 ): Promise<HarnessSession[]> {
   const all: HarnessSession[] = []
-  if (commands.includes('claude')) all.push(...(await listClaudeSessions(limit)))
+  if (commands.includes('claude')) all.push(...(await listClaudeSessions(limit, links)))
   if (commands.includes('grok')) all.push(...(await listGrokSessions(limit)))
   if (commands.includes('hermes')) all.push(...listHermesSessions(limit))
   if (commands.includes('kimi')) all.push(...(await listKimiSessions(limit)))

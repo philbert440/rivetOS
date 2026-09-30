@@ -50,6 +50,8 @@ import {
 } from '@rivetos/core'
 import type { ToolExecuteContext, ToolRegistration } from '@rivetos/mcp'
 import {
+  formatSessionId,
+  harnessForRosterCommand,
   parseMeshFile,
   type DelegationRequest,
   type DelegationResult,
@@ -147,8 +149,51 @@ export interface DelegateToolsDeps {
    * only, no `parentTaskId` stamped onto the child).
    */
   parentTask?: { id?: string; chainDepth: number }
+  /**
+   * The PTY session that owns this stdio sidecar. Read at execute time —
+   * the gateway process env is a different session. Absent on HTTP, which
+   * does not register `delegate_task`.
+   */
+  invokingSession?: () => { sessionId?: string; owner?: string } | undefined
   now?: () => number
   log?: (msg: string) => void
+}
+
+/** Canonical parent plus owner, from the sidecar's env. Undefined when neither is set. */
+export function invokingSessionFromEnv(
+  env: NodeJS.ProcessEnv = process.env,
+): { sessionId?: string; owner?: string } | undefined {
+  const native = env.RIVETOS_SESSION_KEY?.trim() ?? ''
+  const denName = env.RIVET_DEN_NAME?.trim() ?? ''
+  const colon = denName.lastIndexOf(':')
+  const roster = colon >= 0 ? denName.slice(colon + 1) : ''
+  const harness = harnessForRosterCommand(roster)
+  let sessionId: string | undefined
+  if (native && harness && !native.includes('/') && !native.includes('..')) {
+    try {
+      sessionId = formatSessionId(harness, native)
+    } catch {
+      sessionId = undefined
+    }
+  }
+  const owner = env.RIVETOS_USER_ID?.trim() || undefined
+  if (!sessionId && !owner) return undefined
+  return {
+    ...(sessionId ? { sessionId } : {}),
+    ...(owner ? { owner } : {}),
+  }
+}
+
+function invokingTaskFields(invoking: { sessionId?: string; owner?: string } | undefined): {
+  parentSessionId?: string
+  owner?: string
+} {
+  const parentSessionId = invoking?.sessionId?.trim()
+  const owner = invoking?.owner?.trim()
+  return {
+    ...(parentSessionId ? { parentSessionId } : {}),
+    ...(owner ? { owner } : {}),
+  }
 }
 
 export interface DelegateToolsHandle {
@@ -661,6 +706,7 @@ export function createDelegateTools(deps: DelegateToolsDeps): DelegateToolsHandl
           meshFrom: deps.nodeName,
           excludeTools: ['delegate_task'],
           ...(call.model ? { model: call.model } : {}),
+          ...invokingTaskFields(deps.invokingSession?.()),
         },
       })
       onCreated?.(row.id)
@@ -714,6 +760,7 @@ export function createDelegateTools(deps: DelegateToolsDeps): DelegateToolsHandl
             ...(call.context ? { context: call.context } : {}),
             ...(call.model ? { model: call.model } : {}),
           }
+          const invoking = deps.invokingSession?.()
 
           const preset = await deps.presets.find(call.toAgent)
           if (signal?.aborted) return CLIENT_ABORT_TEXT
@@ -730,6 +777,7 @@ export function createDelegateTools(deps: DelegateToolsDeps): DelegateToolsHandl
                   (rowId) => {
                     created.note(rowId)
                   },
+                  invoking,
                 )
                 const node = preset.node && preset.node.length > 0 ? preset.node : deps.nodeName
                 return formatDelegationResult(annotateTimeout(settled, node))
@@ -821,6 +869,11 @@ export async function createDelegateToolsFromEnv(opts: {
   stat?: (path: string) => Promise<{ mtimeMs: number }>
   /** Test seam. Default {@link ROSTER_READ_BOUND_MS}. */
   meshBoundMs?: number
+  /**
+   * Overrides the env read (`RIVETOS_SESSION_KEY`, `RIVET_DEN_NAME`,
+   * `RIVETOS_USER_ID`). Omit to read the process env at execute time.
+   */
+  invokingSession?: () => { sessionId?: string; owner?: string } | undefined
 }): Promise<DelegateToolsHandle | undefined> {
   const log = opts.log ?? (() => undefined)
   const createPool = opts.createPool ?? ((config: pg.PoolConfig) => new pg.Pool(config))
@@ -917,6 +970,11 @@ export async function createDelegateToolsFromEnv(opts: {
       nodeName: opts.nodeName,
       requestedBy: opts.requestedBy,
       ...(parentTask ? { parentTask } : {}),
+      // HTTP never registers the tool, so it must not stamp a parent from
+      // whatever env the shared server happens to have.
+      ...(registerDelegateTask
+        ? { invokingSession: opts.invokingSession ?? (() => invokingSessionFromEnv()) }
+        : {}),
       log,
     })
     releasePool = false

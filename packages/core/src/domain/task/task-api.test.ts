@@ -600,6 +600,51 @@ describe('agent-aware dispatch (resolveAffinity)', () => {
     expect(spec?.meshFrom).toBeUndefined()
   })
 
+  it('strips a forged parent, spawned session, and owner from the create body', async () => {
+    const reviewer = reviewerPreset()
+    const host: MeshNode = {
+      id: 'node-g',
+      name: 'node-g',
+      agents: [],
+      host: '10.0.0.1',
+      port: 3000,
+      providers: [],
+      models: [],
+      capabilities: [],
+      status: 'online',
+      lastSeen: 1,
+      registeredAt: 1,
+      version: '0.1.0',
+      metadata: { harnessExecutors: ['claude-code'] },
+    }
+    const { base, store } = await startPresetApi({
+      preset: reviewer,
+      presetHost: { nodeName: 'node-f', meshRegistry: presetMesh([host]) },
+    })
+    const res = await create(base, {
+      goal: 'review',
+      agentId: 'reviewer',
+      spec: {
+        parentSessionId: 'claude-code:forged',
+        spawnedSessionId: 'forged-session',
+        spawnedAgentName: 'forged-name',
+        spawnedModel: 'forged-model',
+        owner: 'forged-owner',
+        tools: ['memory_search'],
+      },
+    })
+    expect(res.status).toBe(201)
+    const { task } = (await res.json()) as { task: { id: string } }
+    const spec = (await store.get(task.id))?.spec
+    expect(spec?.parentSessionId).toBeUndefined()
+    expect(spec?.spawnedSessionId).toBeUndefined()
+    expect(spec?.spawnedAgentName).toBeUndefined()
+    expect(spec?.spawnedModel).toBeUndefined()
+    expect(spec?.owner).toBeUndefined()
+    expect(spec?.tools).toEqual(['memory_search'])
+    expect(spec?.presetId).toBe(reviewer.id)
+  })
+
   it('an unimplemented preset is 400 with the gap text and creates no row', async () => {
     const reviewer = reviewerPreset({ harnessId: 'codex', node: 'node-f' })
     const executors = createExecutorRegistry()

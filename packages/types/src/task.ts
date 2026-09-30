@@ -82,6 +82,7 @@ export type TaskEvent = { ts: number } & (
   | { type: 'den'; event: AgentEventBody }
   | { type: 'turn.start'; turn: number }
   | { type: 'turn.end'; turn: number; usage: TaskUsage; harnessSessionId?: string }
+  | { type: 'session.spawned'; nativeSessionId: string; model?: string }
   | { type: 'cost'; deltaUsd: number; totalUsd: number }
   | { type: 'log'; level: 'debug' | 'info' | 'warn' | 'error'; message: string }
 )

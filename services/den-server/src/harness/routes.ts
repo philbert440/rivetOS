@@ -223,7 +223,9 @@ export function createHarnessRoutes(opts: {
   filterSessions?: (
     req: IncomingMessage,
     sessions: Awaited<ReturnType<HarnessRegistry['listSessions']>>,
-  ) => Awaited<ReturnType<HarnessRegistry['listSessions']>>
+  ) =>
+    | Awaited<ReturnType<HarnessRegistry['listSessions']>>
+    | Promise<Awaited<ReturnType<HarnessRegistry['listSessions']>>>
   /** Tenancy gate for live streams AND every per-session HTTP action
    *  (get/transcript/resume/turns/interrupt/approvals — they all resolve
    *  through one dispatch, and every one of them reads or drives the
@@ -237,7 +239,7 @@ export function createHarnessRoutes(opts: {
    *  is allowed; one owned by someone else returns false. Used on create and
    *  resume — without it, control-plane sessions have no owner row and fall
    *  to the node owner in every listing. */
-  claimSession?: (req: IncomingMessage, sessionId: string) => boolean
+  claimSession?: (req: IncomingMessage, sessionId: string) => boolean | Promise<boolean>
   /** Stamps `installed` on each `GET /api/harnesses` row (`installed.ts`).
    *  Absent = the field is omitted and clients treat every row as installed. */
   isInstalled?: (harnessId: HarnessId) => boolean
@@ -386,7 +388,7 @@ export function createHarnessRoutes(opts: {
         // Through the registry, not the driver: superseded ids must never
         // reach a client (§ Contract semantics, canonical-only listSessions).
         const listed = await registry.listSessions(harnessId)
-        const sessions = opts.filterSessions ? opts.filterSessions(req, listed) : listed
+        const sessions = opts.filterSessions ? await opts.filterSessions(req, listed) : listed
         return json(res, 200, { sessions })
       } catch (err) {
         return fail(res, err)

@@ -149,6 +149,12 @@ export interface TermManagerDeps {
   /** Does this harness already have an on-disk session with this id? Decides
    *  --resume vs --session-id on re-spawn (#318 review). Default: never. */
   sessionExists?: (command: string, id: string) => boolean
+  /**
+   * A delegated task registered this id. Claude `--resume` is allowed even
+   * when the id is not a UUID. Absent = every non-UUID claude resume is a
+   * subagent transcript.
+   */
+  isTaskSession?: (id: string) => boolean
   /** Recorded project cwd for a stored session. Resume looks up the
    *  harness-native id, then the conversation join key, then denSession
    *  (they coincide for a room session — the join key IS the den session).
@@ -1957,7 +1963,12 @@ export function createTermManager(config: DenConfig, deps: TermManagerDeps): Ter
       // healthy pty. The transcript still opens through the store reader.
       const resumeNative =
         resume || (session && deps.sessionExists?.(key, session) ? session : undefined)
-      if (key === 'claude' && resumeNative && !UUID_RE.test(resumeNative)) {
+      if (
+        key === 'claude' &&
+        resumeNative &&
+        !UUID_RE.test(resumeNative) &&
+        !deps.isTaskSession?.(resumeNative)
+      ) {
         throw new TermSpawnError(
           'not-resumable',
           `claude session ${resumeNative} is a subagent transcript and cannot be resumed`,
