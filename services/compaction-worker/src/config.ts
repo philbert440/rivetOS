@@ -30,6 +30,41 @@ function statusListEnv(name: string): number[] {
     .filter((code) => Number.isInteger(code) && code >= 400 && code < 500)
 }
 
+/** One OpenAI-compatible chat endpoint the compactor can call. */
+export interface LlmEndpoint {
+  url: string
+  model: string
+  apiKey: string
+}
+
+/**
+ * Ordered fallback endpoints: comma-separated `url|model|KEY_ENV` entries,
+ * where KEY_ENV names the env var holding that endpoint's API key (omit it
+ * for a keyless endpoint). Naming the variable keeps keys out of this list.
+ * A malformed entry or a named key that is unset exits, like requireEnv.
+ */
+function fallbackEndpointsEnv(name: string): LlmEndpoint[] {
+  const raw = process.env[name]
+  if (!raw) return []
+  return raw
+    .split(',')
+    .map((entry) => entry.trim())
+    .filter((entry) => entry.length > 0)
+    .map((entry) => {
+      const [url, model, keyEnv] = entry.split('|').map((part) => part.trim())
+      if (!url || !model) {
+        console.error(`[CompactWorker] ${name}: expected url|model|KEY_ENV, got "${entry}"`)
+        process.exit(1)
+      }
+      const apiKey = keyEnv ? process.env[keyEnv] : ''
+      if (apiKey === undefined || (keyEnv && !apiKey)) {
+        console.error(`[CompactWorker] ${name}: ${keyEnv} (key for ${model}) is not set`)
+        process.exit(1)
+      }
+      return { url: url.replace(/\/+$/, ''), model, apiKey }
+    })
+}
+
 const llmUrl = requireEnv('RIVETOS_COMPACTOR_URL')
 const llmModel = requireEnv(
   'RIVETOS_COMPACTOR_MODEL',
@@ -45,6 +80,12 @@ export const config = {
   // 403/404 for a few seconds under load). Retried like a 5xx instead of being
   // recorded as a terminal failure that stalls the level until restart.
   llmTransientStatuses: statusListEnv('RIVETOS_COMPACTOR_TRANSIENT_STATUSES'),
+  // Tried in order when the primary fails after its retries (or returns a
+  // response the caller rejects, e.g. unparseable wiki JSON). After a failover
+  // the worker stays on the endpoint that answered for the cooldown, then
+  // tries the primary again.
+  llmFallbacks: fallbackEndpointsEnv('RIVETOS_COMPACTOR_FALLBACKS'),
+  llmFallbackCooldownMs: intEnv('RIVETOS_COMPACTOR_FALLBACK_COOLDOWN_MINUTES', 15) * 60_000,
 
   // Worker-local concurrency
   compactConcurrency: intEnv('COMPACT_CONCURRENCY', 1),

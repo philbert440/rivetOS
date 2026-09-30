@@ -53,7 +53,7 @@ import {
   type SummaryRow,
 } from '@rivetos/memory-postgres'
 import { config } from '../config.js'
-import { callLlm, LlmCallError } from '../llm.js'
+import { callLlmDetailed, LlmCallError } from '../llm.js'
 import {
   shouldSkip,
   recordFailure,
@@ -298,6 +298,8 @@ interface SummaryInsert {
   messageCount: number
   earliestAt: unknown
   latestAt: unknown
+  /** Model that wrote the summary; a fallback endpoint can differ from the configured one. */
+  model: string
 }
 
 /**
@@ -370,7 +372,7 @@ export async function insertSummary(client: PgClient, s: SummaryInsert): Promise
       s.messageCount,
       s.earliestAt,
       s.latestAt,
-      config.llmModel,
+      s.model,
       PIPELINE_VERSION,
     ],
   )
@@ -407,13 +409,16 @@ async function compactLeaf(
   // prefix we send; leftover rows stay unsummarized for the next leaf round.
   let batch = messages.rows
   let summaryText: string
+  let summaryModel: string
   for (;;) {
     const formatted = formatLeafPrompt(convMeta, batch)
     console.log(
       `[CompactWorker] Leaf: ${String(batch.length)} messages for ${conversationId.slice(0, 8)}`,
     )
     try {
-      summaryText = await callLlm(LEAF_SYSTEM_PROMPT, formatted, LEAF_MAX_TOKENS)
+      const result = await callLlmDetailed(LEAF_SYSTEM_PROMPT, formatted, LEAF_MAX_TOKENS)
+      summaryText = result.content
+      summaryModel = result.model
       break
     } catch (err) {
       const next = shrinkLeafBatch(batch.length, minBatch)
@@ -465,6 +470,7 @@ async function compactLeaf(
         messageCount: batch.length,
         earliestAt: batch[0].created_at,
         latestAt: batch[batch.length - 1].created_at,
+        model: summaryModel,
       })
 
       // Lock order (file header §2): insert sources in message-id-ascending order.
@@ -551,13 +557,16 @@ async function compactParentLevel(
   // children stay parent_id IS NULL for the next round.
   let batch = children.rows
   let summaryText: string
+  let summaryModel: string
   for (;;) {
     const formatted = cfg.formatPrompt(convMeta, batch)
     console.log(
       `[CompactWorker] ${cfg.label}: ${batch.length} ${cfg.childKind}s for ${conversationId.slice(0, 8)}`,
     )
     try {
-      summaryText = await callLlm(cfg.systemPrompt, formatted, cfg.maxTokens)
+      const result = await callLlmDetailed(cfg.systemPrompt, formatted, cfg.maxTokens)
+      summaryText = result.content
+      summaryModel = result.model
       break
     } catch (err) {
       const next = shrinkLeafBatch(batch.length, cfg.minChildren)
@@ -624,6 +633,7 @@ async function compactParentLevel(
         messageCount: totalMessages,
         earliestAt,
         latestAt,
+        model: summaryModel,
       })
 
       await client.query(`UPDATE ros_summaries SET parent_id = $1 WHERE id = ANY($2::uuid[])`, [

@@ -11,6 +11,8 @@ vi.mock('./config.js', () => ({
     llmModel: 'test-model',
     llmApiKey: '',
     llmTransientStatuses: [] as number[],
+    llmFallbacks: [] as Array<{ url: string; model: string; apiKey: string }>,
+    llmFallbackCooldownMs: 60_000,
   },
 }))
 
@@ -30,7 +32,7 @@ vi.mock('undici', () => ({
   fetch: (...args: unknown[]) => fetchMock(...args),
 }))
 
-import { callLlm, LlmCallError } from './llm.js'
+import { callLlm, callLlmDetailed, LlmCallError, resetLlmFailover } from './llm.js'
 import { config } from './config.js'
 
 function jsonResponse(body: unknown, status = 200, statusText = 'OK'): Response {
@@ -46,6 +48,8 @@ describe('callLlm', () => {
   beforeEach(() => {
     fetchMock.mockReset()
     config.llmTransientStatuses = []
+    config.llmFallbacks = []
+    resetLlmFailover()
   })
 
   it('returns content on success', async () => {
@@ -97,13 +101,11 @@ describe('callLlm', () => {
 
   it('retries a 4xx listed in llmTransientStatuses like a 5xx and succeeds', async () => {
     config.llmTransientStatuses = [403, 404]
-    fetchMock
-      .mockResolvedValueOnce(jsonResponse({}, 404, 'Not Found'))
-      .mockResolvedValueOnce(
-        jsonResponse({
-          choices: [{ finish_reason: 'stop', message: { content: 'recovered summary text' } }],
-        }),
-      )
+    fetchMock.mockResolvedValueOnce(jsonResponse({}, 404, 'Not Found')).mockResolvedValueOnce(
+      jsonResponse({
+        choices: [{ finish_reason: 'stop', message: { content: 'recovered summary text' } }],
+      }),
+    )
     await expect(callLlm('sys', 'user', 100)).resolves.toBe('recovered summary text')
     expect(fetchMock).toHaveBeenCalledTimes(2)
   })
@@ -186,5 +188,121 @@ describe('callLlm', () => {
     expect(err).toBeInstanceOf(LlmCallError)
     expect(String((err as Error).message)).toMatch(/invalid JSON/)
     expect(String((err as Error).message)).not.toMatch(/unreachable/)
+  })
+
+  describe('fallback endpoints', () => {
+    const ok = (content: string) =>
+      jsonResponse({ choices: [{ finish_reason: 'stop', message: { content } }] })
+    const urlOf = (call: unknown[]) => String(call[0])
+    const bodyOf = (call: unknown[]) =>
+      JSON.parse(String((call[1] as { body: string }).body)) as { model: string }
+
+    beforeEach(() => {
+      config.llmFallbacks = [
+        { url: 'http://fb1.test/v1', model: 'fb1-model', apiKey: 'fb1-key' },
+        { url: 'http://fb2.test/v1', model: 'fb2-model', apiKey: '' },
+      ]
+    })
+
+    it('fails over to the next endpoint with its own model and key', async () => {
+      fetchMock
+        .mockResolvedValueOnce(jsonResponse({}, 503, 'Service Unavailable'))
+        .mockResolvedValueOnce(jsonResponse({}, 503, 'Service Unavailable'))
+        .mockResolvedValueOnce(ok('fallback summary text here'))
+
+      await expect(callLlmDetailed('sys', 'user', 100)).resolves.toEqual({
+        content: 'fallback summary text here',
+        model: 'fb1-model',
+      })
+      const third = fetchMock.mock.calls[2]
+      expect(urlOf(third)).toBe('http://fb1.test/v1/chat/completions')
+      expect(bodyOf(third).model).toBe('fb1-model')
+      expect((third[1] as { headers: Record<string, string> }).headers.Authorization).toBe(
+        'Bearer fb1-key',
+      )
+    })
+
+    it('fails over on a permanent 4xx such as a bad key', async () => {
+      fetchMock
+        .mockResolvedValueOnce(jsonResponse({}, 401, 'Unauthorized'))
+        .mockResolvedValueOnce(ok('fallback summary text here'))
+      await expect(callLlmDetailed('sys', 'user', 100)).resolves.toMatchObject({
+        model: 'fb1-model',
+      })
+    })
+
+    it('stays on the fallback for the cooldown, then tries the primary again', async () => {
+      vi.useFakeTimers({ toFake: ['Date'] })
+      try {
+        fetchMock
+          .mockResolvedValueOnce(jsonResponse({}, 401, 'Unauthorized'))
+          .mockResolvedValueOnce(ok('first fallback answer'))
+          .mockResolvedValueOnce(ok('second call answer text'))
+        await callLlmDetailed('sys', 'user', 100)
+        await expect(callLlmDetailed('sys', 'user', 100)).resolves.toMatchObject({
+          model: 'fb1-model',
+        })
+        expect(urlOf(fetchMock.mock.calls[2])).toContain('fb1.test')
+
+        vi.advanceTimersByTime(61_000)
+        fetchMock.mockResolvedValueOnce(ok('primary is back again'))
+        await expect(callLlmDetailed('sys', 'user', 100)).resolves.toMatchObject({
+          model: 'test-model',
+        })
+        expect(urlOf(fetchMock.mock.calls[3])).toContain('llm.test')
+      } finally {
+        vi.useRealTimers()
+      }
+    })
+
+    it('does not fail over on truncation: a smaller batch is the fix', async () => {
+      fetchMock.mockResolvedValueOnce(
+        jsonResponse({ choices: [{ finish_reason: 'length', message: { content: '' } }] }),
+      )
+      const err = await callLlmDetailed('sys', 'user', 100).catch((e: unknown) => e)
+      expect(err).toMatchObject({ name: 'LlmCallError', truncated: true })
+      expect(fetchMock).toHaveBeenCalledTimes(1)
+    })
+
+    it('tries the next endpoint when accept rejects the answer, without switching later calls', async () => {
+      const accept = (c: string) => (c.startsWith('[') ? null : 'unparseable JSON')
+      fetchMock
+        .mockResolvedValueOnce(ok('not json at all'))
+        .mockResolvedValueOnce(ok('[]'))
+        .mockResolvedValueOnce(ok('[]'))
+      await expect(callLlmDetailed('sys', 'user', 100, { minChars: 2, accept })).resolves.toEqual({
+        content: '[]',
+        model: 'fb1-model',
+      })
+      await callLlmDetailed('sys', 'user', 100, { minChars: 2, accept })
+      expect(urlOf(fetchMock.mock.calls[2])).toContain('llm.test')
+    })
+
+    it("returns the last endpoint's answer even if accept rejects it", async () => {
+      const accept = () => 'unparseable JSON'
+      fetchMock.mockResolvedValue(ok('still not json'))
+      await expect(callLlmDetailed('sys', 'user', 100, { minChars: 2, accept })).resolves.toEqual({
+        content: 'still not json',
+        model: 'fb2-model',
+      })
+      expect(fetchMock).toHaveBeenCalledTimes(3)
+    })
+
+    it("throws the last endpoint's error when all fail, and starts at the primary next time", async () => {
+      fetchMock.mockResolvedValue(jsonResponse({}, 403, 'Forbidden'))
+      await expect(callLlmDetailed('sys', 'user', 100)).rejects.toMatchObject({ status: 403 })
+      expect(urlOf(fetchMock.mock.calls[2])).toContain('fb2.test')
+
+      fetchMock.mockReset()
+      fetchMock.mockResolvedValueOnce(ok('primary answered this time'))
+      await expect(callLlmDetailed('sys', 'user', 100)).resolves.toMatchObject({
+        model: 'test-model',
+      })
+    })
+
+    it('callLlm returns only the content', async () => {
+      fetchMock.mockResolvedValueOnce(ok('plain content from primary'))
+      await expect(callLlm('sys', 'user', 100)).resolves.toBe('plain content from primary')
+    })
   })
 })

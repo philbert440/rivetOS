@@ -22,6 +22,8 @@
  *   RIVETOS_COMPACTOR_MODEL     required (OpenAI-compatible chat model id)
  *   RIVETOS_COMPACTOR_API_KEY   optional
  *   RIVETOS_COMPACTOR_TRANSIENT_STATUSES optional — comma list of 4xx codes to retry like a 5xx (e.g. 403,404)
+ *   RIVETOS_COMPACTOR_FALLBACKS optional — ordered url|model|KEY_ENV entries, comma-separated, tried when the primary fails
+ *   RIVETOS_COMPACTOR_FALLBACK_COOLDOWN_MINUTES default: 15 — how long to stay on a fallback before retrying the primary
  *   WORKER_ROLE                 default: all (all | compaction | wiki) — which task/cron set this process registers
  *   COMPACT_CONCURRENCY         default: 1 (compaction is CPU-heavy on the LLM, single-flight per worker)
  *   TOOL_SYNTH_CONCURRENCY      default: 2
@@ -105,6 +107,9 @@ const CRON_BY_IDENTIFIER: Record<
 async function main(): Promise<void> {
   console.log('[CompactWorker] Starting...')
   console.log(`[CompactWorker] LLM endpoint: ${config.llmUrl} (model: ${config.llmModel})`)
+  for (const [i, fb] of config.llmFallbacks.entries()) {
+    console.log(`[CompactWorker] LLM fallback ${String(i + 1)}: ${fb.url} (model: ${fb.model})`)
+  }
   console.log(
     `[CompactWorker] Idle threshold: ${config.idleMinutes} min, leaf window: ${config.leafBatchSize}, ` +
       `stale-partial: ${config.staleMinutes} min / >=${config.staleMinBatch} msgs`,

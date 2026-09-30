@@ -93,4 +93,29 @@ describe('compaction-worker config', () => {
     const { config } = await import('./config.js')
     expect(config.workerRoleEnv).toBe('embedder')
   })
+
+  it('parses RIVETOS_COMPACTOR_FALLBACKS with keys from the named env vars', async () => {
+    stubRequired()
+    vi.stubEnv('OPENROUTER_API_KEY', 'or-secret')
+    vi.stubEnv(
+      'RIVETOS_COMPACTOR_FALLBACKS',
+      'https://nv.test/v1|google/gemma-4-31b-it, https://or.test/api/v1/|openai/gpt-oss-120b|OPENROUTER_API_KEY',
+    )
+    vi.stubEnv('RIVETOS_COMPACTOR_FALLBACK_COOLDOWN_MINUTES', '5')
+    const { config } = await import('./config.js')
+    expect(config.llmFallbacks).toEqual([
+      { url: 'https://nv.test/v1', model: 'google/gemma-4-31b-it', apiKey: '' },
+      { url: 'https://or.test/api/v1', model: 'openai/gpt-oss-120b', apiKey: 'or-secret' },
+    ])
+    expect(config.llmFallbackCooldownMs).toBe(300_000)
+  })
+
+  it('exits when a fallback names a key variable that is unset', async () => {
+    stubRequired()
+    vi.stubEnv('RIVETOS_COMPACTOR_FALLBACKS', 'https://or.test/v1|some-model|MISSING_KEY')
+    delete process.env.MISSING_KEY
+    const { error } = trapExit()
+    await expect(import('./config.js')).rejects.toThrow(/process\.exit:1/)
+    expect(logged(error)).toContain('MISSING_KEY')
+  })
 })

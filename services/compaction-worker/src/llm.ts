@@ -18,7 +18,7 @@ import {
   LLM_RETRIES,
   LLM_RETRY_BACKOFF_MS,
 } from '@rivetos/memory-postgres'
-import { config } from './config.js'
+import { config, type LlmEndpoint } from './config.js'
 
 const httpDispatcher = new Agent({
   headersTimeout: 0,
@@ -39,37 +39,144 @@ export class LlmCallError extends Error {
   /** False for permanent 4xx (except 408/429). Callers must not circuit-break+retry forever. */
   readonly retryable: boolean
   readonly status: number | undefined
+  /** The prompt outgrew max_tokens — a smaller batch helps, another endpoint does not. */
+  readonly truncated: boolean
 
   constructor(
     message: string,
     attempts: number,
-    opts: { retryable?: boolean; status?: number } = {},
+    opts: { retryable?: boolean; status?: number; truncated?: boolean } = {},
   ) {
     super(message)
     this.name = 'LlmCallError'
     this.attempts = attempts
     this.retryable = opts.retryable ?? true
     this.status = opts.status
+    this.truncated = opts.truncated ?? false
   }
 }
 
-function formatAttemptError(err: unknown): string {
+function formatAttemptError(err: unknown, url: string): string {
   const msg = err instanceof Error ? err.message : String(err)
   // Our own AbortController — the endpoint may be fine, just slow.
   if (err instanceof Error && err.name === 'AbortError') {
-    return `LLM timed out after ${String(LLM_TIMEOUT_MS)}ms at ${config.llmUrl}`
+    return `LLM timed out after ${String(LLM_TIMEOUT_MS)}ms at ${url}`
   }
   // The endpoint answered but the body was not JSON — "unreachable" would
   // send ops chasing the wrong failure class.
   if (err instanceof SyntaxError) {
-    return `LLM returned invalid JSON at ${config.llmUrl} (${msg})`
+    return `LLM returned invalid JSON at ${url} (${msg})`
   }
   // undici uses "fetch failed" with the real cause on `error.cause`.
   const rawCause = err instanceof Error ? err.cause : undefined
   const cause =
     rawCause instanceof Error ? rawCause.message : typeof rawCause === 'string' ? rawCause : null
   const detail = cause && !msg.includes(cause) ? `${msg}: ${cause}` : msg
-  return `LLM unreachable at ${config.llmUrl} (${detail})`
+  return `LLM unreachable at ${url} (${detail})`
+}
+
+/** A response the caller can use, and the model that wrote it. */
+export interface LlmResult {
+  content: string
+  model: string
+}
+
+export interface CallLlmOptions {
+  minChars?: number
+  /**
+   * Checks a response before it is returned: null accepts it, a string is the
+   * reason to reject it. A rejected response goes to the next fallback
+   * endpoint; the last endpoint's response is returned regardless, so the
+   * caller's own parser still reports it.
+   */
+  accept?: (content: string) => string | null
+}
+
+function primaryEndpoint(): LlmEndpoint {
+  return { url: config.llmUrl, model: config.llmModel, apiKey: config.llmApiKey }
+}
+
+/** Which endpoint new calls start at; set on failover, cleared after the cooldown. */
+let failover: { index: number; until: number } | null = null
+
+/** Test hook: forget any failover so each case starts at the primary. */
+export function resetLlmFailover(): void {
+  failover = null
+}
+
+/**
+ * Calls the primary endpoint, then each RIVETOS_COMPACTOR_FALLBACKS endpoint
+ * in order until one answers. Truncation is thrown straight back (the caller
+ * shrinks the batch); every other failure moves to the next endpoint. If all
+ * fail, the last endpoint's error is thrown.
+ */
+export async function callLlmDetailed(
+  systemPrompt: string,
+  userContent: string,
+  maxTokens: number,
+  opts: CallLlmOptions = {},
+): Promise<LlmResult> {
+  const endpoints = [primaryEndpoint(), ...config.llmFallbacks]
+  if (endpoints.length === 1) {
+    const content = await callEndpoint(endpoints[0], systemPrompt, userContent, maxTokens, opts)
+    return { content, model: endpoints[0].model }
+  }
+
+  let start = 0
+  if (failover) {
+    if (Date.now() < failover.until) {
+      start = failover.index
+    } else {
+      console.log(`[CompactWorker] failover cooldown over, trying ${endpoints[0].model} again`)
+      failover = null
+    }
+  }
+
+  let lastError: unknown = null
+  for (let i = start; i < endpoints.length; i++) {
+    const endpoint = endpoints[i]
+    const isLast = i === endpoints.length - 1
+    let content: string
+    try {
+      content = await callEndpoint(endpoint, systemPrompt, userContent, maxTokens, opts)
+    } catch (err) {
+      if (err instanceof LlmCallError && err.truncated) throw err
+      lastError = err
+      if (!isLast) {
+        const reason = err instanceof Error ? err.message : String(err)
+        console.error(
+          `[CompactWorker] ${endpoint.model} failed (${reason}); failing over to ${endpoints[i + 1].model}`,
+        )
+        failover = { index: i + 1, until: Date.now() + config.llmFallbackCooldownMs }
+      }
+      continue
+    }
+
+    const rejection = opts.accept?.(content) ?? null
+    if (rejection && !isLast) {
+      // A bad answer is not an outage: try the next endpoint for this call
+      // only, without moving later calls off this one.
+      console.warn(
+        `[CompactWorker] ${endpoint.model} response rejected (${rejection}); trying ${endpoints[i + 1].model}`,
+      )
+      continue
+    }
+    return { content, model: endpoint.model }
+  }
+  // Everything failed: the next call should start at the primary, not stay
+  // parked on the last fallback for the whole cooldown.
+  failover = null
+  throw lastError
+}
+
+/** callLlmDetailed without the model name, for callers that do not record it. */
+export async function callLlm(
+  systemPrompt: string,
+  userContent: string,
+  maxTokens: number,
+  opts: CallLlmOptions = {},
+): Promise<string> {
+  return (await callLlmDetailed(systemPrompt, userContent, maxTokens, opts)).content
 }
 
 /**
@@ -81,20 +188,21 @@ function formatAttemptError(err: unknown): string {
  * response — retried 4x, then killed the job. That one constant accounted for
  * ~84% of 23k dead extract-wiki jobs. Structured callers pass minChars: 2.
  */
-export async function callLlm(
+async function callEndpoint(
+  endpoint: LlmEndpoint,
   systemPrompt: string,
   userContent: string,
   maxTokens: number,
-  opts: { minChars?: number } = {},
+  opts: CallLlmOptions,
 ): Promise<string> {
   const minChars = opts.minChars ?? 20
   const headers: Record<string, string> = { 'Content-Type': 'application/json' }
-  if (config.llmApiKey) {
-    headers['Authorization'] = `Bearer ${config.llmApiKey}`
+  if (endpoint.apiKey) {
+    headers['Authorization'] = `Bearer ${endpoint.apiKey}`
   }
 
   const body = JSON.stringify({
-    model: config.llmModel,
+    model: endpoint.model,
     messages: [
       { role: 'system', content: systemPrompt },
       { role: 'user', content: userContent },
@@ -111,7 +219,7 @@ export async function callLlm(
     const timeout = setTimeout(() => ctrl.abort(), LLM_TIMEOUT_MS)
 
     try {
-      const response = await undiciFetch(`${config.llmUrl}/chat/completions`, {
+      const response = await undiciFetch(`${endpoint.url}/chat/completions`, {
         method: 'POST',
         headers,
         body,
@@ -167,6 +275,7 @@ export async function callLlm(
         throw new LlmCallError(
           `LLM response truncated at max_tokens=${String(maxTokens)}`,
           attempt + 1,
+          { truncated: true },
         )
       }
       if (!content || content.trim().length < minChars) {
@@ -189,7 +298,7 @@ export async function callLlm(
       // LlmCallError from the 4xx path — rethrow as-is (no further retries).
       if (err instanceof LlmCallError) throw err
 
-      lastError = new Error(formatAttemptError(err))
+      lastError = new Error(formatAttemptError(err, endpoint.url))
       if (attempt < LLM_RETRIES) {
         const delay = LLM_RETRY_BACKOFF_MS * Math.pow(2, attempt)
         console.error(
