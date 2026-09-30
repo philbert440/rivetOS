@@ -13,6 +13,7 @@
  * describable summary, so `exists` is the broader probe there too.
  */
 
+import type { DelegatedSessionLink } from '@rivetos/types'
 import {
   describeClaudeSession,
   describeGrokSession,
@@ -119,10 +120,14 @@ const ADAPTERS: Record<HarnessStoreName, Adapter> = {
   },
 }
 
-export function createHarnessStore<N extends HarnessStoreName>(name: N): StoreByName[N] {
+export function createHarnessStore<N extends HarnessStoreName>(
+  name: N,
+  opts?: { delegatedSessions?: () => Promise<DelegatedSessionLink[]> },
+): StoreByName[N] {
   const { roster, describe, transcript } = ADAPTERS[name]
   const host: HarnessStoreHost = {
-    list: (limit) => listHarnessSessions([roster], limit),
+    list: async (limit) =>
+      listHarnessSessions([roster], limit, (await opts?.delegatedSessions?.()) ?? []),
     describe: (nativeId) => describe(nativeId),
     // Store-scoped, not the drawer's first-hit-wins probe: an id whose own
     // store file is gone must read as empty rather than be served another

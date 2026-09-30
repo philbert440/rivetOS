@@ -632,12 +632,13 @@ describe('chatItemFromSummary', () => {
 })
 
 describe('nestChatItems', () => {
-  const row = (
-    key: string,
-    updatedAt: number,
-    title: string,
-    parentKey?: string,
-  ): ChatItem => ({ key, kind: 'legacy', title, updatedAt, parentKey })
+  const row = (key: string, updatedAt: number, title: string, parentKey?: string): ChatItem => ({
+    key,
+    kind: 'legacy',
+    title,
+    updatedAt,
+    parentKey,
+  })
 
   it('nests a child under its parent and lifts the group by the child activity', () => {
     const nodes = nestChatItems([
@@ -656,10 +657,7 @@ describe('nestChatItems', () => {
   })
 
   it('does not loop when two rows name each other as parent', () => {
-    const nodes = nestChatItems([
-      row('a', 2, 'a', 'b'),
-      row('b', 1, 'b', 'a'),
-    ])
+    const nodes = nestChatItems([row('a', 2, 'a', 'b'), row('b', 1, 'b', 'a')])
     expect(nodes.map((n) => n.item.key).sort()).toEqual(['a', 'b'])
     expect(nodes.every((n) => n.children.length === 0)).toBe(true)
   })
@@ -676,10 +674,7 @@ describe('nestChatItems', () => {
   })
 
   it('pins the open conversation and reports the ancestor keys to expand', () => {
-    const forest = nestChatItems([
-      row('parent', 1, 'primary'),
-      row('child', 2, 'review', 'parent'),
-    ])
+    const forest = nestChatItems([row('parent', 1, 'primary'), row('child', 2, 'review', 'parent')])
     const shown = filterChatForest(forest, () => false, 'child')
     expect(ancestorChatKeys(shown, 'child')).toEqual(['parent'])
     expect(shown[0]?.children.map((n) => n.item.key)).toEqual(['child'])
@@ -782,6 +777,22 @@ describe('chatItems parent key', () => {
     })
     expect(items[0]?.parentKey).toBe(`claude-code:${UUID_B}`)
     expect(items[0]?.agentName).toBe('general-purpose')
+    expect(items[0]?.taskId).toBeUndefined()
+  })
+
+  it('copies taskId from the control plane, and from a legacy row the plane did not claim', () => {
+    const plane = chatItems({
+      drafts: [],
+      harnessSessions: [summary(UUID_A, { taskId: 'task-1' })],
+      legacySessions: [],
+    })
+    expect(plane[0]?.taskId).toBe('task-1')
+    const legacyOnly = chatItems({
+      drafts: [],
+      harnessSessions: [],
+      legacySessions: [{ ...legacy(UUID_A, 'claude', 1), taskId: 'task-2' }],
+    })
+    expect(legacyOnly[0]?.taskId).toBe('task-2')
   })
 
   it('canonicalizes a legacy native parent when the plane row omitted it', () => {

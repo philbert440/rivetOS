@@ -594,6 +594,7 @@ export class ClaudeCliExecutor implements HarnessExecutor {
     this.log.info('task.spawn', { taskId: spec.taskId, pid: spawned.proc.pid, hasMcp: !!bridge })
 
     let sessionId: string | undefined
+    let notedSpawn = false
     let spawnFailure: string | undefined
     // spawn() failures (ENOENT etc.) surface as async 'error' events — an
     // unhandled one would crash the process, and result must never reject.
@@ -623,6 +624,15 @@ export class ClaudeCliExecutor implements HarnessExecutor {
         if (event.type === 'system') {
           const init = event as CliSystemInit
           sessionId = init.session_id
+          if (!notedSpawn && init.session_id) {
+            notedSpawn = true
+            run.events.push({
+              ts: Date.now(),
+              type: 'session.spawned',
+              nativeSessionId: init.session_id,
+              ...(init.model ? { model: init.model } : {}),
+            })
+          }
           if (!apiKeySourceAllowed(init.apiKeySource, this.cfg.allowedApiKeySources)) {
             error =
               `claude-cli: unexpected apiKeySource="${init.apiKeySource}" — ` +

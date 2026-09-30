@@ -670,6 +670,51 @@ describe('term endpoints', () => {
     expect(ctl.kills).toEqual([])
   })
 
+  it('POST /term resume sees a delegated owner tag on a fresh process', async () => {
+    // Loopback is the node owner, so this cannot show the routed user
+    // succeeding. It shows the gate ran after the tag landed: alice's
+    // delegated session is not still untagged (which the owner could resume).
+    const stateDir = mkdtempSync(join(tmpdir(), 'den-term-http-delegated-'))
+    dirs.push(stateDir)
+    const parent = '11111111-1111-4111-8111-111111111111'
+    const child = '22222222-2222-4222-8222-222222222222'
+    writeFileSync(
+      join(stateDir, 'session-owners.json'),
+      JSON.stringify({ [parent]: 'alice' }) + '\n',
+    )
+    const usersRegistry = parseUsersRegistry(
+      JSON.stringify({
+        ownerUserId: 'owner',
+        unmappedIsOwner: false,
+        users: {
+          owner: { devices: [], pgUrl: 'postgres://owner@db/rivet_memory' },
+          alice: { devices: ['win-alice'], pgUrl: 'postgres://alice@db/alice' },
+        },
+      }),
+    )
+    expect(usersRegistry).toBeDefined()
+    const { base, spawns } = await start({ stateDir, usersRegistry }, { mux: 'none' }, {
+      delegatedSessions: async () => [
+        {
+          taskId: 'task-1',
+          spawnedSessionId: child,
+          parentSessionId: `claude-code:${parent}`,
+          owner: 'alice',
+          harnessId: 'claude-code',
+        },
+      ],
+    })
+    const res = await post(base, '/term', { command: 'shell', resume: child })
+    expect(res.status).toBe(403)
+    expect(spawns).toHaveLength(0)
+    const saved = JSON.parse(readFileSync(join(stateDir, 'session-owners.json'), 'utf8')) as Record<
+      string,
+      string
+    >
+    expect(saved[child]).toBe('alice')
+    expect(saved[parent]).toBe('alice')
+  })
+
   it('herdr agent end: POST /term/inject 409s and list drops the harness', async () => {
     const sessions = new Map<string, HerdrSessionInfo>()
     const kills: string[] = []

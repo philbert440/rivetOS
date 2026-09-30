@@ -377,6 +377,30 @@ export type SessionSummary = {
    * uses it as the nested row's label. Absent on primary sessions.
    */
   agentName?: string
+  /**
+   * Task row that spawned this session. Absent for sessions that were not
+   * registered by the task executor.
+   */
+  taskId?: string
+}
+
+/**
+ * One delegated task's link onto a harness session. The listing merge reads
+ * these off the task row; clients never write them.
+ */
+export interface DelegatedSessionLink {
+  taskId: string
+  parentTaskId?: string
+  /** Native session id from the spawn's init event. */
+  spawnedSessionId: string
+  /** Canonical id of the session that delegated this task. Depth-1 only. */
+  parentSessionId?: string
+  agentName?: string
+  model?: string
+  /** Routed user. Absent means the node owner. */
+  owner?: string
+  /** Harness id the spawn used (`claude-code`, …). */
+  harnessId?: string
 }
 
 export type StartSessionOpts = {

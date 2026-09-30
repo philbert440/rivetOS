@@ -140,6 +140,11 @@ export interface PresetTaskSpecOptions {
    * Default true.
    */
   delegation?: boolean
+  /**
+   * The session that called `delegate_task`, when the sidecar knows it.
+   * Stamped onto the row. API creates leave this unset.
+   */
+  invoking?: { sessionId?: string; owner?: string }
 }
 
 /** Resolve when `work` settles, or at `timeoutMs` — and drop the shared gate. */
@@ -229,10 +234,14 @@ export function presetTaskSpec(
   const model = trimmedModel !== '' ? trimmedModel : undefined
   const effort = taskEffort(preset.effort)
   const systemPromptAppend = preset.systemPrompt || undefined
+  const parentSessionId = opts?.invoking?.sessionId?.trim()
+  const owner = opts?.invoking?.owner?.trim()
   return {
     ...(delegation ? { delegation: true } : {}),
     presetId: preset.id,
     presetName: preset.name,
+    ...(parentSessionId ? { parentSessionId } : {}),
+    ...(owner ? { owner } : {}),
     ...(delegation && opts?.meshFrom ? { meshFrom: opts.meshFrom } : {}),
     workingDir: preset.directory,
     sharedLink: preset.sharedLink ?? true,
@@ -410,6 +419,7 @@ export class PresetDelegationEngine {
     chainDepth = 0,
     parentTaskId?: string,
     onCreated?: (rowId: string) => void,
+    invoking?: { sessionId?: string; owner?: string },
   ): Promise<DelegationResult> {
     const depth = chainDepth + 1
     if (depth > this.maxChainDepth) {
@@ -481,6 +491,7 @@ export class PresetDelegationEngine {
         spec: presetTaskSpec(preset, {
           ...(request.model !== undefined ? { model: request.model } : {}),
           meshFrom: this.config.nodeName,
+          ...(invoking ? { invoking } : {}),
         }),
       })
       onCreated?.(row.id)

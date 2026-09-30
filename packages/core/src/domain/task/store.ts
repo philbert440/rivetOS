@@ -259,6 +259,20 @@ export interface TaskStore {
   appendHarnessSessionId?(id: string, sessionId: string): Promise<void>
 
   /**
+   * Record the harness session a spawn's init event produced. Last write
+   * wins on the same keys; other spec fields stay. Optional so a store that
+   * only runs chat-loop tasks does not have to implement it.
+   */
+  registerSpawnedSession?(
+    id: string,
+    fields: {
+      spawnedSessionId: string
+      spawnedAgentName?: string
+      spawnedModel?: string
+    },
+  ): Promise<void>
+
+  /**
    * Append one settled permission prompt to `spec.permissionDecisions`.
    * Missing rows are a no-op. The array append is atomic in the SQL stores.
    */
@@ -599,6 +613,26 @@ export class InMemoryTaskStore implements TaskStore {
     if (row && !row.harnessSessionIds.includes(sessionId)) {
       row.harnessSessionIds.push(sessionId)
     }
+    return Promise.resolve()
+  }
+
+  registerSpawnedSession(
+    id: string,
+    fields: {
+      spawnedSessionId: string
+      spawnedAgentName?: string
+      spawnedModel?: string
+    },
+  ): Promise<void> {
+    const row = this.rows.get(id)
+    if (!row || !fields.spawnedSessionId) return Promise.resolve()
+    const spec: Record<string, unknown> = {
+      ...row.spec,
+      spawnedSessionId: fields.spawnedSessionId,
+    }
+    if (fields.spawnedAgentName !== undefined) spec.spawnedAgentName = fields.spawnedAgentName
+    if (fields.spawnedModel !== undefined) spec.spawnedModel = fields.spawnedModel
+    row.spec = spec
     return Promise.resolve()
   }
 
@@ -1083,6 +1117,23 @@ export class PgTaskStore implements TaskStore {
          SET harness_session_ids = harness_session_ids || to_jsonb($2::text)
        WHERE id = $1 AND NOT (harness_session_ids @> to_jsonb($2::text))`,
       [id, sessionId],
+    )
+  }
+
+  async registerSpawnedSession(
+    id: string,
+    fields: {
+      spawnedSessionId: string
+      spawnedAgentName?: string
+      spawnedModel?: string
+    },
+  ): Promise<void> {
+    const patch: Record<string, string> = { spawnedSessionId: fields.spawnedSessionId }
+    if (fields.spawnedAgentName !== undefined) patch.spawnedAgentName = fields.spawnedAgentName
+    if (fields.spawnedModel !== undefined) patch.spawnedModel = fields.spawnedModel
+    await this.pool.query(
+      `UPDATE ros_tasks SET spec = COALESCE(spec, '{}'::jsonb) || $2::jsonb WHERE id = $1`,
+      [id, JSON.stringify(patch)],
     )
   }
 

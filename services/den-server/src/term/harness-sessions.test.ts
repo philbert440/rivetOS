@@ -405,6 +405,52 @@ describe('listHarnessSessions', () => {
     expect(await readClaudeTranscript(agent)).toEqual({ id: agent, command: '', turns: [] })
   })
 
+  it('pulls a delegated parent that falls outside the recency cap', async () => {
+    const base = mkdtempSync(join(tmpdir(), 'claude-delegated-cap-'))
+    dirs.push(base)
+    const slug = join(base, 'projects', '-home-work')
+    mkdirSync(slug, { recursive: true })
+    const parent = '11111111-1111-4111-8111-111111111111'
+    const child = '22222222-2222-4222-8222-222222222222'
+    const newer = '33333333-3333-4333-8333-333333333333'
+    const parentFile = join(slug, `${parent}.jsonl`)
+    const childFile = join(slug, `${child}.jsonl`)
+    const newerFile = join(slug, `${newer}.jsonl`)
+    const line = (text: string): string =>
+      JSON.stringify({ type: 'user', message: { content: text } }) + '\n'
+    writeFileSync(parentFile, line('parent'))
+    writeFileSync(childFile, line('delegated'))
+    writeFileSync(newerFile, line('newer'))
+    utimesSync(parentFile, new Date(1_000), new Date(1_000))
+    utimesSync(newerFile, new Date(5_000), new Date(5_000))
+    utimesSync(childFile, new Date(9_000), new Date(9_000))
+    process.env.CLAUDE_CONFIG_DIR = base
+
+    const capped = await listHarnessSessions(['claude'], 1, [
+      {
+        taskId: 'task-1',
+        spawnedSessionId: child,
+        parentSessionId: `claude-code:${parent}`,
+        agentName: 'reviewer',
+        model: 'opus',
+      },
+    ])
+    const ids = capped.map((row) => row.id)
+    expect(ids).toContain(child)
+    expect(ids).toContain(parent)
+    expect(ids).not.toContain(newer)
+    // The child file is top-level on disk. Nesting must not make the title
+    // lookup miss it and leave the raw id in the drawer.
+    expect(capped.find((row) => row.id === child)).toMatchObject({
+      parentSessionId: parent,
+      taskId: 'task-1',
+      title: 'delegated',
+      agentName: 'reviewer',
+      model: 'opus',
+    })
+    expect(capped.find((row) => row.id === parent)?.title).toBe('parent')
+  })
+
   it('lists grok sessions from summary.json, merged + sorted with claude', async () => {
     fakeClaudeStore() // one claude session at mtime 2000
     const grokBase = mkdtempSync(join(tmpdir(), 'grok-store-'))

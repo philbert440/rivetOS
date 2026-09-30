@@ -53,6 +53,8 @@ interface FakeExecutorOptions {
   verdict?: TaskResult['verdict']
   /** Called at each start() — lets tests interleave store writes mid-run. */
   onStart?: (spec: TaskSpec, callIndex: number) => void | Promise<void>
+  /** Emit `session.spawned` before the first turn. Omit = init never arrived. */
+  spawned?: { nativeSessionId: string; model?: string }
 }
 
 /** Fake executor: emits `turns` turn.start/turn.end pairs, honoring abort
@@ -85,6 +87,14 @@ function makeFakeExecutor(opts?: FakeExecutorOptions): HarnessExecutor & {
 
       void (async () => {
         await opts?.onStart?.(spec, specs.length - 1)
+        if (opts?.spawned) {
+          push({
+            ts: Date.now(),
+            type: 'session.spawned',
+            nativeSessionId: opts.spawned.nativeSessionId,
+            ...(opts.spawned.model ? { model: opts.spawned.model } : {}),
+          })
+        }
         let ranTurns = 0
         for (let t = 1; t <= turns; t++) {
           if (signal.aborted) break
@@ -173,6 +183,28 @@ describe('createTaskHandler', () => {
     expect(row?.lastHeartbeatAt).toBeDefined()
     expect(fake.specs[0].goal).toBe('Do the thing')
     expect(fake.specs[0].session.agentId).toBe('opus')
+  })
+
+  it('registers the spawned session from init and leaves a row alone when init never arrives', async () => {
+    const quiet = makeFakeExecutor()
+    const { store, handler } = wire(quiet)
+    const plain = await store.create(taskInput({ spec: { tools: ['memory_search'] } }))
+    await handler(plain.id)
+    expect((await store.get(plain.id))?.spec.spawnedSessionId).toBeUndefined()
+
+    const spawned = makeFakeExecutor({ spawned: { nativeSessionId: 'sess-9', model: 'opus' } })
+    const again = wire(spawned, store)
+    const task = await store.create(
+      taskInput({ spec: { presetName: 'reviewer', model: 'haiku', tools: ['memory_search'] } }),
+    )
+    await again.handler(task.id)
+    expect((await store.get(task.id))?.spec).toMatchObject({
+      tools: ['memory_search'],
+      presetName: 'reviewer',
+      spawnedSessionId: 'sess-9',
+      spawnedAgentName: 'reviewer',
+      spawnedModel: 'haiku',
+    })
   })
 
   it('retries claim on 53300 then runs the task once', async () => {

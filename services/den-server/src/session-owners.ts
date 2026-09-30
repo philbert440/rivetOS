@@ -25,6 +25,8 @@ export interface SessionOwners {
   ): T[]
   /** Copy a tagged parent's owner onto an untagged child. Does not overwrite. */
   inherit(childId: string, parentId: string | undefined): boolean
+  /** Record `userId` when the id has no tag yet. Does not overwrite. */
+  tagIfAbsent(sessionId: string, userId: string): boolean
 }
 
 /**
@@ -88,6 +90,11 @@ export function createSessionOwners(file: string): SessionOwners {
       const owner = map[parentId]
       if (!owner) return false
       this.set(childId, owner)
+      return true
+    },
+    tagIfAbsent(sessionId, userId) {
+      if (!sessionId || !userId || map[sessionId]) return false
+      this.set(sessionId, userId)
       return true
     },
   }

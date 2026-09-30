@@ -12,6 +12,7 @@
 
 import { spawn } from 'node:child_process'
 import { join } from 'node:path'
+import { linksFromTaskRows } from '../delegated-session-links.js'
 import { nodeNameFor } from '../node-name.js'
 import type { Runtime } from '@rivetos/core'
 import { loadTlsConfig } from '@rivetos/core'
@@ -123,6 +124,11 @@ export interface AgentToolsResult {
   gatewayRoutes: GatewayRoute[]
   /** Extra WS upgrade handlers for the gateway (4e notifications). */
   gatewayUpgrades: NonNullable<NotificationsChannelHandle['upgrade']>[]
+  /**
+   * Task rows that registered a harness session. Present only when the task
+   * engine is live. The den listing reads this; it is not a process global.
+   */
+  delegatedSessions?: () => Promise<import('@rivetos/types').DelegatedSessionLink[]>
 }
 
 export async function registerAgentTools(
@@ -1035,7 +1041,13 @@ export async function registerAgentTools(
     )
   }
 
-  return { gatewayRoutes, gatewayUpgrades }
+  const linkStore = taskEngineStore
+  if (!linkStore) return { gatewayRoutes, gatewayUpgrades }
+  return {
+    gatewayRoutes,
+    gatewayUpgrades,
+    delegatedSessions: () => linkStore.list({ limit: 500 }).then(linksFromTaskRows),
+  }
 }
 
 // ---------------------------------------------------------------------------

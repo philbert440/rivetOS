@@ -108,6 +108,7 @@ function makeManager(
     roomOpen?: (s: string) => boolean
     spawn?: PtySpawn
     sessionExists?: (command: string, id: string) => boolean
+    isTaskSession?: (id: string) => boolean
     sessionCwd?: (command: string, id: string) => string | undefined
     recordSessionCwd?: (command: string, id: string, cwd: string) => void
     forgetSessionCwd?: (command: string, id: string) => void
@@ -176,6 +177,7 @@ function makeManager(
     ingest: (ev) => ingested.push(ev),
     roomOpen: extra.roomOpen,
     sessionExists: extra.sessionExists,
+    isTaskSession: extra.isTaskSession,
     sessionCwd: extra.sessionCwd,
     recordSessionCwd: extra.recordSessionCwd,
     forgetSessionCwd: extra.forgetSessionCwd,
@@ -1166,6 +1168,14 @@ describe('term manager', () => {
     expect(resumeAgent).toThrow(TermSpawnError)
     expect(procs[0].kills).toEqual([])
     expect(manager.list().filter((row) => row.state === 'running')).toHaveLength(1)
+  })
+
+  it('resumes a non-uuid claude session a task registered', () => {
+    const id = 'a906621c1fcf0c74a'
+    const { manager, spawns } = makeManager({}, { isTaskSession: (native) => native === id })
+    const pty = manager.spawn('claude', 80, 24, '', id, id)
+    expect(pty).toMatchObject({ state: 'running', command: 'claude' })
+    expect(spawns[0]?.argv).toEqual(expect.arrayContaining(['--resume', id]))
   })
 
   it('LRU pool (5g): at the cap, evicts the least-recently-ACTIVE idle pty', () => {

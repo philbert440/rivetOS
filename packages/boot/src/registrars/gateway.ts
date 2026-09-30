@@ -21,6 +21,7 @@ import { logger, createGatewayChannel, createOpenAICompatRoute, type Runtime } f
 import {
   sharedDir,
   sharedPath,
+  type DelegatedSessionLink,
   type GatewayRoute,
   type HarnessDriver,
   type SessionWsFrame,
@@ -277,6 +278,8 @@ export async function registerGateway(
    * its own plugs in here.
    */
   harnessDrivers: HarnessDriver[] = [],
+  /** Task-registered harness sessions. The den nests and tags them. */
+  delegatedSessions?: () => Promise<DelegatedSessionLink[]>,
 ): Promise<GatewayStart | undefined> {
   if (config.den?.enabled !== true) return undefined
 
@@ -351,6 +354,7 @@ export async function registerGateway(
     onAgentEvent: (ev) => gatewayChannel.bridgeAgentEvent(ev),
     harnessDrivers,
     transcriptWatcher,
+    ...(delegatedSessions ? { delegatedSessions } : {}),
   })
 
   const listening = await new Promise<boolean>((resolve) => {
