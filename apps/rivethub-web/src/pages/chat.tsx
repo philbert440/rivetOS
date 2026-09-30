@@ -975,6 +975,9 @@ function SessionDrawer(props: {
   }
 
   const toggleNest = (key: string): void => {
+    // A query force-opens every group. Recording that click would apply
+    // after the query is cleared and leave the chevron's state inverted.
+    if (searching) return
     setOpenGroups((prev) => {
       const next = new Set(prev)
       if (next.has(key)) next.delete(key)
@@ -1002,7 +1005,7 @@ function SessionDrawer(props: {
             }
             childCount={kids}
             expanded={expanded}
-            onToggleNest={kids > 0 ? () => toggleNest(it.key) : undefined}
+            onToggleNest={kids > 0 && !searching ? () => toggleNest(it.key) : undefined}
             nested={depth > 0}
           />
           {expanded && <div className="pl-3">{renderNodes(node.children, depth + 1)}</div>}

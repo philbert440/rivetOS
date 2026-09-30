@@ -1155,6 +1155,19 @@ describe('term manager', () => {
     vi.advanceTimersByTime(600)
   }
 
+  it('a refused claude subagent resume does not evict at the pty cap', () => {
+    vi.useFakeTimers()
+    const { manager, procs } = makeManager({ maxPtys: 1, injectReadyMs: 500 })
+    manager.spawn('shell', 80, 24, '')
+    makeReady(procs[0])
+    const resumeAgent = (): void => {
+      manager.spawn('claude', 80, 24, '', 'a906621c1fcf0c74a', 'a906621c1fcf0c74a')
+    }
+    expect(resumeAgent).toThrow(TermSpawnError)
+    expect(procs[0].kills).toEqual([])
+    expect(manager.list().filter((row) => row.state === 'running')).toHaveLength(1)
+  })
+
   it('LRU pool (5g): at the cap, evicts the least-recently-ACTIVE idle pty', () => {
     vi.useFakeTimers()
     const { manager, procs } = makeManager({ maxPtys: 2, injectReadyMs: 500 })

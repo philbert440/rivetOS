@@ -154,6 +154,9 @@ function claudeIdSafe(id: string): boolean {
   return Boolean(id) && !id.includes('/') && !id.includes('..') && id !== '.' && id !== '..'
 }
 
+/** Claude session files are UUIDs. Subagent transcript ids are not. */
+const CLAUDE_SESSION_UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
+
 function clipStoreLabel(value: unknown, max: number): string {
   if (typeof value !== 'string') return ''
   const trimmed = value.trim()
@@ -570,18 +573,25 @@ async function syncGrokSpawnFile(index: GrokParentIndex, file: string): Promise<
     cursor.children = []
     cursor.parsedUntil = 0
   }
-  const text = (await readFileRange(file, cursor.parsedUntil, size)).toString('utf8')
-  const lines = text.split('\n')
-  const incomplete = text.length > 0 && !text.endsWith('\n')
-  const remainder = incomplete ? (lines.pop() ?? '') : ''
-  for (const line of lines) {
-    const spawn = takeGrokSpawn(line)
-    if (!spawn) continue
-    index.parents.set(spawn.child, spawn.parent)
-    if (!cursor.children.includes(spawn.child)) cursor.children.push(spawn.child)
+  // Byte offset, not a decoded-string length. A trailing partial code
+  // point becomes U+FFFD (three bytes) under utf8, which would rewind
+  // `parsedUntil` into the previous line and then skip that line forever.
+  const buf = await readFileRange(file, cursor.parsedUntil, size)
+  const lastNl = buf.lastIndexOf(0x0a)
+  const complete = lastNl === -1 ? 0 : lastNl + 1
+  if (complete > 0) {
+    const text = buf.subarray(0, complete).toString('utf8')
+    for (const line of text.split('\n')) {
+      const spawn = takeGrokSpawn(line)
+      if (!spawn) continue
+      index.parents.set(spawn.child, spawn.parent)
+      if (!cursor.children.includes(spawn.child)) cursor.children.push(spawn.child)
+    }
+    cursor.parsedUntil += complete
   }
-  cursor.parsedUntil = size - Buffer.byteLength(remainder)
-  cursor.size = size
+  // A same-size, same-mtime read must come back for a tail that is still
+  // unparsed. Recording the file size here would skip that tail.
+  cursor.size = cursor.parsedUntil
   cursor.mtimeMs = mtimeMs
   index.files.set(file, cursor)
 }
@@ -2449,6 +2459,9 @@ async function findClaudeJsonl(id: string): Promise<string | undefined> {
     best = await considerClaudeFile(best, join(dir, slug, `${id}.jsonl`))
   }
   if (best) return best.path
+  // Agent ids are not session UUIDs. Walking every subagents/ dir for a UUID
+  // misses, and it is the whole store.
+  if (CLAUDE_SESSION_UUID_RE.test(id)) return undefined
   return (await findClaudeAgentJsonl(dir, id))?.path
 }
 
@@ -2505,8 +2518,16 @@ export async function readHarnessTranscript(id: string): Promise<HarnessTranscri
     const claudePath = await findClaudeJsonl(native)
     if (claudePath) {
       const parsed = await parseJsonlObjects(claudePath)
-      const turns = claudeTurnsFromLines(parsed.objects)
-      if (turns.length > 0) return withTruncated({ id, command: 'claude', turns }, parsed.truncated)
+      const turns = claudeTurnsFromLines(parsed.objects, {
+        path: claudePath,
+        truncated: parsed.truncated,
+      })
+      // A truncated parent tail is often nothing but sidechain lines. Those
+      // turns are correctly empty — still return the file, or the flag is
+      // lost and a later store can answer the same id.
+      if (turns.length > 0 || parsed.truncated) {
+        return withTruncated({ id, command: 'claude', turns }, parsed.truncated)
+      }
     }
   }
 
@@ -2574,7 +2595,11 @@ export async function readClaudeTranscript(id: string): Promise<HarnessTranscrip
   if (!path) return { id, command: '', turns: [] }
   const parsed = await parseJsonlObjects(path)
   return withTruncated(
-    { id, command: 'claude', turns: claudeTurnsFromLines(parsed.objects) },
+    {
+      id,
+      command: 'claude',
+      turns: claudeTurnsFromLines(parsed.objects, { path, truncated: parsed.truncated }),
+    },
     parsed.truncated,
   )
 }

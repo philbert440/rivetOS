@@ -475,6 +475,58 @@ describe('listHarnessSessions', () => {
     delete process.env.GROK_HOME
   })
 
+  it('keeps a grok parent link when a read ends on a partial code point', async () => {
+    const grokBase = mkdtempSync(join(tmpdir(), 'grok-partial-'))
+    dirs.push(grokBase)
+    const bucket = join(grokBase, 'sessions', '%2Fhome%2Frivet')
+    const parent = 'aaaaaaaa-aaaa-7aaa-8aaa-aaaaaaaaaaaa'
+    const child = 'bbbbbbbb-bbbb-7bbb-8bbb-bbbbbbbbbbbb'
+    const fork = 'cccccccc-cccc-7ccc-8ccc-cccccccccccc'
+    const dir = join(bucket, parent)
+    mkdirSync(dir, { recursive: true })
+    const line = (id: string): string =>
+      `${JSON.stringify({
+        method: '_x.ai/session/update',
+        params: {
+          update: {
+            sessionUpdate: 'subagent_spawned',
+            subagent_id: id,
+            parent_session_id: parent,
+            child_session_id: id,
+          },
+        },
+      })}\n`
+    const summary = (id: string, kind?: string): void => {
+      const sessionDir = join(bucket, id)
+      mkdirSync(sessionDir, { recursive: true })
+      writeFileSync(
+        join(sessionDir, 'summary.json'),
+        JSON.stringify({
+          info: { id },
+          session_summary: id,
+          ...(kind ? { session_kind: kind } : {}),
+          updated_at: '2026-07-08T00:00:00.000Z',
+        }),
+      )
+    }
+    summary(parent)
+    summary(child, 'subagent')
+    summary(fork, 'subagent_fork')
+    const updates = join(dir, 'updates.jsonl')
+    writeFileSync(updates, Buffer.concat([Buffer.from(line(child)), Buffer.from([0xe2, 0x9c])]))
+    process.env.GROK_HOME = grokBase
+    const first = await listHarnessSessions(['grok'])
+    expect(first.find((row) => row.id === child)?.parentSessionId).toBe(parent)
+
+    writeFileSync(updates, Buffer.concat([Buffer.from([0x93, 0x0a]), Buffer.from(line(fork))]), {
+      flag: 'a',
+    })
+    const second = await listHarnessSessions(['grok'])
+    expect(second.find((row) => row.id === child)?.parentSessionId).toBe(parent)
+    expect(second.find((row) => row.id === fork)?.parentSessionId).toBe(parent)
+    delete process.env.GROK_HOME
+  })
+
   it('describeGrokSession: no summary yet → undefined (existence is a separate question)', async () => {
     const grokBase = mkdtempSync(join(tmpdir(), 'grok-describe-'))
     dirs.push(grokBase)
@@ -1127,6 +1179,42 @@ describe('readHarnessTranscript', () => {
     expect(t.turns[0]?.text).not.toBe('turn-0-xxxxxxxxxxxxxxxxxxxx')
   })
 
+  it('does not leak a sidechain tail into a truncated parent transcript', async () => {
+    const base = mkdtempSync(join(tmpdir(), 'claude-side-tail-'))
+    dirs.push(base)
+    const id = 'dddddddd-dddd-dddd-dddd-dddddddddddd'
+    const dir = join(base, 'projects', '-home-rivet')
+    mkdirSync(dir, { recursive: true })
+    const parent = JSON.stringify({ type: 'user', message: { content: 'parent stays' } })
+    const side = JSON.stringify({
+      type: 'user',
+      isSidechain: true,
+      message: { content: 'sidechain leak' },
+    })
+    writeFileSync(join(dir, `${id}.jsonl`), `${parent}\n${side}\n`)
+    process.env.CLAUDE_CONFIG_DIR = base
+    // The window starts inside the parent line, so the sidechain line is
+    // whole and the parent line is the partial that gets dropped.
+    setTranscriptMaxBytesForTest(side.length + 2)
+    const parentRead = await readHarnessTranscript(id)
+    expect(parentRead.truncated).toBe(true)
+    expect(parentRead.turns.map((turn) => turn.text)).not.toContain('sidechain leak')
+
+    const agent = 'a906621c1fcf0c74a'
+    const agentLine = JSON.stringify({
+      type: 'user',
+      isSidechain: true,
+      message: { content: 'agent tail' },
+    })
+    const agentDir = join(dir, id, 'subagents')
+    mkdirSync(agentDir, { recursive: true })
+    writeFileSync(join(agentDir, `agent-${agent}.jsonl`), `${parent}\n${agentLine}\n`)
+    setTranscriptMaxBytesForTest(agentLine.length + 2)
+    const agentRead = await readHarnessTranscript(agent)
+    expect(agentRead.truncated).toBe(true)
+    expect(agentRead.turns.map((turn) => turn.text)).toContain('agent tail')
+  })
+
   it('reads Claude user/assistant turns and skips sidechains + wrappers', async () => {
     const base = mkdtempSync(join(tmpdir(), 'claude-tx-'))
     dirs.push(base)
@@ -1485,7 +1573,8 @@ describe('readHarnessTranscript', () => {
   it('strips Claude Code paste-wrapper from an injected user turn (den bracketed-paste)', () => {
     // The exact shape Claude Code writes to the session JSONL when the den
     // injects a chat turn as a bracketed paste (see the real bdfba03c session).
-    const wrapped = '\n\n<pasted_content id="08b5">\nthere we go, working?\n</pasted_content id="08b5">\n'
+    const wrapped =
+      '\n\n<pasted_content id="08b5">\nthere we go, working?\n</pasted_content id="08b5">\n'
     expect(stripPastedContentWrapper(wrapped)).toBe('there we go, working?')
     // Idempotent + inert on unwrapped text, so the optimistic-bubble text match holds.
     expect(stripPastedContentWrapper('there we go, working?')).toBe('there we go, working?')
@@ -1504,7 +1593,9 @@ describe('readHarnessTranscript', () => {
     expect(stripPastedContentWrapper('<pasted_content id="a1">\nhi\n</pasted_content>')).toBe('hi')
     // A typed prefix and the paste's internal indentation survive.
     expect(
-      stripPastedContentWrapper('note:\n<pasted_content id="x">\n  indented\n</pasted_content id="x">'),
+      stripPastedContentWrapper(
+        'note:\n<pasted_content id="x">\n  indented\n</pasted_content id="x">',
+      ),
     ).toBe('note:\n  indented')
     // Two pastes in one turn: both unwrapped, the between-newline kept.
     expect(

@@ -11,8 +11,20 @@ import { sessionVisibleTo, type UserContext } from '@rivetos/types'
 export interface SessionOwners {
   get(sessionId: string): string | undefined
   set(sessionId: string, userId: string): void
-  visible(sessionId: string, ctx: UserContext): boolean
-  filter<T>(items: T[], ctx: UserContext, idOf?: (item: T) => string): T[]
+  /**
+   * `parentId` is for a nested row den never spawned. An untagged child
+   * follows that parent. It does not fall through to the node owner unless
+   * the parent itself is untagged.
+   */
+  visible(sessionId: string, ctx: UserContext, parentId?: string): boolean
+  filter<T>(
+    items: T[],
+    ctx: UserContext,
+    idOf?: (item: T) => string,
+    parentOf?: (item: T) => string | undefined,
+  ): T[]
+  /** Copy a tagged parent's owner onto an untagged child. Does not overwrite. */
+  inherit(childId: string, parentId: string | undefined): boolean
 }
 
 /**
@@ -58,14 +70,25 @@ export function createSessionOwners(file: string): SessionOwners {
       map = { ...map, [sessionId]: userId }
       persist()
     },
-    visible(sessionId, ctx) {
-      return sessionVisibleTo(map[sessionId], ctx)
+    visible(sessionId, ctx, parentId) {
+      const own = map[sessionId]
+      if (own) return own === ctx.userId
+      if (parentId) return sessionVisibleTo(map[parentId], ctx)
+      return sessionVisibleTo(undefined, ctx)
     },
-    filter(items, ctx, idOf) {
+    filter(items, ctx, idOf, parentOf) {
       return items.filter((item) => {
         const key = idOf ? idOf(item) : (item as { id: string }).id
-        return sessionVisibleTo(map[key], ctx)
+        return this.visible(key, ctx, parentOf?.(item))
       })
+    },
+    inherit(childId, parentId) {
+      if (!childId || !parentId || childId === parentId) return false
+      if (map[childId]) return false
+      const owner = map[parentId]
+      if (!owner) return false
+      this.set(childId, owner)
+      return true
     },
   }
 }

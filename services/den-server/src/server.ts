@@ -64,6 +64,7 @@ import {
 } from '@rivetos/den-protocol'
 import {
   MeshParseError,
+  formatSessionId,
   rosterCommandFor,
   type HarnessDriver,
   type HarnessId,
@@ -94,6 +95,8 @@ import { MicBridge } from './audio/bridge.js'
 import { createAudioWs } from './audio/ws.js'
 import { handleAudioHttp } from './audio/http.js'
 import {
+  describeClaudeSession,
+  describeGrokSession,
   listHarnessSessions,
   harnessSessionExists,
   qwenSessionCwd,
@@ -480,6 +483,64 @@ export function createDenServer(config: DenConfig, opts: DenServerOptions = {}):
   // Persisted session ownership — hoisted above broadcast so the live event
   // fanout filters by it too, not just the listing routes. Untagged = owner.
   const sessionOwners = createSessionOwners(join(config.stateDir, 'session-owners.json'))
+  // Ownership is stored under whichever id the spawner claimed: the native
+  // join key, or the canonical `<harness>:<native>` id. A nested row is
+  // neither until we copy the parent's tag onto it.
+  const taggedOwnerId = (id: string | undefined): string | undefined => {
+    if (!id) return undefined
+    if (sessionOwners.get(id)) return id
+    const native = denJoinKey(id)
+    if (native !== id && sessionOwners.get(native)) return native
+    for (const harness of ['claude-code', 'grok-build'] as const) {
+      const canonical = formatSessionId(harness, native)
+      if (sessionOwners.get(canonical)) return canonical
+    }
+    return undefined
+  }
+  const stampNested = (childId: string, parentId: string | undefined, command?: string): void => {
+    const parentKey = taggedOwnerId(parentId)
+    if (!parentKey) return
+    const native = denJoinKey(childId)
+    sessionOwners.inherit(childId, parentKey)
+    if (native && native !== childId) sessionOwners.inherit(native, parentKey)
+    const harness = command ? ROSTER_TO_HARNESS[command] : undefined
+    if (harness && native) sessionOwners.inherit(formatSessionId(harness, native), parentKey)
+  }
+  // Claude session files are UUIDs. Subagent transcript ids are not.
+  const sessionUuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
+  const ensureNestedOwner = async (sessionId: string): Promise<void> => {
+    if (!sessionId || sessionOwners.get(sessionId)) return
+    const native = denJoinKey(sessionId)
+    if (!native || native.includes('/') || native.includes('..')) return
+    if (sessionOwners.get(native)) {
+      sessionOwners.inherit(sessionId, native)
+      return
+    }
+    // Only the stores that actually nest. A hermes (or any other) subscribe
+    // must not walk ~/.claude and ~/.grok before the socket can attach.
+    // Claude children are agent-transcript ids; a session UUID is the parent.
+    const colon = sessionId.indexOf(':')
+    const harness = colon > 0 ? sessionId.slice(0, colon) : undefined
+    const uuid = sessionUuid.test(native)
+    if (harness === 'claude-code') {
+      if (uuid) return
+      const claude = await describeClaudeSession(native).catch(() => undefined)
+      if (claude?.parentSessionId) stampNested(sessionId, claude.parentSessionId, 'claude')
+      return
+    }
+    if (harness !== undefined && harness !== 'grok-build') return
+    if (harness === undefined && !uuid) {
+      const claude = await describeClaudeSession(native).catch(() => undefined)
+      if (claude?.parentSessionId) {
+        stampNested(sessionId, claude.parentSessionId, 'claude')
+        return
+      }
+    }
+    if (harness === 'grok-build' || uuid) {
+      const grok = await describeGrokSession(native).catch(() => undefined)
+      if (grok?.parentSessionId) stampNested(sessionId, grok.parentSessionId, 'grok')
+    }
+  }
 
   mkdirSync(join(config.stateDir, 'layouts'), { recursive: true })
 
@@ -911,23 +972,39 @@ export function createDenServer(config: DenConfig, opts: DenServerOptions = {}):
     filterSessions: (req, sessions) => {
       const ctx = boundRequestUser(req)
       if (!ctx) return sessions
-      return sessionOwners.filter(sessions, ctx, (s) => s.sessionId)
+      for (const s of sessions) {
+        const command =
+          s.harnessId === 'claude-code'
+            ? 'claude'
+            : s.harnessId === 'grok-build'
+              ? 'grok'
+              : undefined
+        stampNested(s.sessionId, s.parentSessionId, command)
+      }
+      return sessionOwners.filter(
+        sessions,
+        ctx,
+        (s) => s.sessionId,
+        (s) => taggedOwnerId(s.parentSessionId),
+      )
     },
+    prepareSession: (sessionId) => ensureNestedOwner(sessionId),
     authorizeSession: (req, sessionId, route) => {
       const ctx = boundRequestUser(req)
       if (!sessionForbidden(sessionOwners, ctx, sessionId)) return true
       auditTenancyDeny(route ?? 'WS harness stream', sessionId, ctx as UserContext)
       return false
     },
-    claimSession: (req, sessionId) => {
+    claimSession: async (req, sessionId) => {
       const ctx = boundRequestUser(req)
       if (!ctx) return true // tenancy off — single-owner node
-      const owner = sessionOwners.get(sessionId)
+      await ensureNestedOwner(sessionId)
+      const owner = sessionOwners.get(sessionId) ?? sessionOwners.get(denJoinKey(sessionId))
       if (owner && owner !== ctx.userId) {
         auditTenancyDeny('harness claim', sessionId, ctx)
         return false
       }
-      sessionOwners.set(sessionId, ctx.userId)
+      if (!owner) sessionOwners.set(sessionId, ctx.userId)
       return true
     },
   })
@@ -1852,8 +1929,17 @@ export function createDenServer(config: DenConfig, opts: DenServerOptions = {}):
             (session) =>
               session.command !== 'codex' || !codexProtocol?.ownsNativeThread(session.id),
           )
+          if (userCtx) {
+            for (const session of sessions) {
+              stampNested(session.id, session.parentSessionId, session.command)
+            }
+          }
           return json(res, 200, {
-            sessions: userCtx ? sessionOwners.filter(sessions, userCtx) : sessions,
+            sessions: userCtx
+              ? sessionOwners.filter(sessions, userCtx, undefined, (session) =>
+                  taggedOwnerId(session.parentSessionId),
+                )
+              : sessions,
           })
         }
 
@@ -1865,7 +1951,9 @@ export function createDenServer(config: DenConfig, opts: DenServerOptions = {}):
           if (req.method === 'GET' && m) {
             const id = decodeURIComponent(m.at(1) ?? '')
             // the list is filtered; the resource must be too — a transcript
-            // is the whole conversation, not metadata
+            // is the whole conversation, not metadata. A nested id den never
+            // spawned follows its parent, not the node-owner default.
+            await ensureNestedOwner(id)
             if (denyIfForbidden('GET /term/harness-sessions/:id/transcript', id)) return
             const transcript = codexProtocol?.manages(id)
               ? {
