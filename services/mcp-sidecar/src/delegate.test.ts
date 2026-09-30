@@ -18,6 +18,7 @@ import {
   DELEGATE_TASK_HTTP_REASON,
   createDelegateTools,
   createDelegateToolsFromEnv,
+  invokingSessionFromEnv,
   delegatePoolConfig,
   delegateToolsForTransport,
   parseRuntimeTarget,
@@ -123,6 +124,7 @@ async function setup(opts: {
   parentDepth?: number
   autoFinish?: boolean
   pollFallbackMs?: number
+  invokingSession?: () => { sessionId?: string; owner?: string } | undefined
 }): Promise<{ store: InMemoryTaskStore; handle: DelegateToolsHandle; parent?: TaskRow }> {
   const nodes = opts.nodes ?? []
   const meshNodes = (): Promise<MeshNode[]> => Promise.resolve(nodes)
@@ -176,6 +178,7 @@ async function setup(opts: {
     nodeName: NODE,
     requestedBy: 'tester',
     ...(parent ? { parentTask: { id: parent.id, chainDepth: parent.chainDepth } } : {}),
+    ...(opts.invokingSession ? { invokingSession: opts.invokingSession } : {}),
   })
   closers.push(() => handle.close())
   return { store, handle, parent }
@@ -243,6 +246,61 @@ describe('sidecar delegate_task', () => {
       model: 'override-model',
       excludeTools: ['delegate_task'],
     })
+    expect(child.spec.parentSessionId).toBeUndefined()
+    expect(child.spec.owner).toBeUndefined()
+  })
+
+  it('stamps the invoking session on a preset row and on a runtime-agent row', async () => {
+    const invoking = {
+      sessionId: 'claude-code:11111111-1111-4111-8111-111111111111',
+      owner: 'coco',
+    }
+    const presetRun = await setup({
+      presets: [preset()],
+      nodes: [HOST],
+      autoFinish: true,
+      invokingSession: () => invoking,
+    })
+    await text(presetRun.handle, 'delegate_task', { to_agent: 'reviewer', task: 'review' })
+    const presetRow = (await presetRun.store.list())[0]
+    expect(presetRow?.spec).toMatchObject({
+      parentSessionId: invoking.sessionId,
+      owner: 'coco',
+    })
+
+    const runtime = await setup({
+      nodes: [HOST],
+      autoFinish: true,
+      invokingSession: () => invoking,
+    })
+    await text(runtime.handle, 'delegate_task', { to_agent: 'local-grok', task: 'hi' })
+    const runtimeRow = (await runtime.store.list())[0]
+    expect(runtimeRow?.executor).toBe('chat-loop')
+    expect(runtimeRow?.spec).toMatchObject({
+      parentSessionId: invoking.sessionId,
+      owner: 'coco',
+    })
+  })
+
+  it('reads the canonical session and owner from the sidecar env', () => {
+    expect(
+      invokingSessionFromEnv({
+        RIVETOS_SESSION_KEY: '11111111-1111-4111-8111-111111111111',
+        RIVET_DEN_NAME: 'box:claude',
+        RIVETOS_USER_ID: 'coco',
+      }),
+    ).toEqual({
+      sessionId: 'claude-code:11111111-1111-4111-8111-111111111111',
+      owner: 'coco',
+    })
+    expect(invokingSessionFromEnv({})).toBeUndefined()
+    expect(
+      invokingSessionFromEnv({
+        RIVETOS_SESSION_KEY: '11111111-1111-4111-8111-111111111111',
+        RIVET_DEN_NAME: 'box:not-a-harness',
+        RIVETOS_USER_ID: 'coco',
+      }),
+    ).toEqual({ owner: 'coco' })
   })
 
   it('pins a runtime agent to the newest online host', async () => {

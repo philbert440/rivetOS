@@ -259,7 +259,7 @@ async function bootWithConfig(
     await registerPlugins(runtime, config, registry, pipeline, workspaceDir)
 
     // 4. Agent tools (delegation, sub-agents, skills) — after plugins so they can reference them
-    const { gatewayRoutes, gatewayUpgrades } = await registerAgentTools(
+    const { gatewayRoutes, gatewayUpgrades, delegatedSessions } = await registerAgentTools(
       runtime,
       config,
       workspaceDir,
@@ -268,7 +268,15 @@ async function bootWithConfig(
 
     // 4.6. Gateway (G0/G1) — the den server embedded in this process, with the
     //      task-engine route families mounted behind its bearer gate.
-    const gateway = await registerGateway(runtime, config, rootDir, gatewayRoutes, gatewayUpgrades)
+    const gateway = await registerGateway(
+      runtime,
+      config,
+      rootDir,
+      gatewayRoutes,
+      gatewayUpgrades,
+      [],
+      delegatedSessions,
+    )
 
     // 4.7. LAN mDNS (_rivethub._tcp) — only after the gateway is actually listening.
     // One shutdown hook: unpublish (goodbye) first, then den.close(). Hooks run

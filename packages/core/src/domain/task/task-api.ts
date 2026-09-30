@@ -189,6 +189,15 @@ const CLIENT_PRESET_FIELDS = [
  * only when this route took the preset branch and `presetTaskSpec` re-adds
  * them. Explicit executors and unknown agent ids are not that branch.
  */
+/** Runner-authored. A client body must not be able to claim a parent or an owner. */
+function stripRunnerAuthored(spec: Record<string, unknown>): void {
+  delete spec.parentSessionId
+  delete spec.spawnedSessionId
+  delete spec.spawnedAgentName
+  delete spec.spawnedModel
+  delete spec.owner
+}
+
 function stripClientPresetFields(
   spec: Record<string, unknown> | undefined,
 ): Record<string, unknown> | undefined {
@@ -200,6 +209,7 @@ function stripClientPresetFields(
   delete next.sharedLink
   delete next.delegation
   delete next.meshFrom
+  stripRunnerAuthored(next)
   return next
 }
 
@@ -224,6 +234,11 @@ function specForApiPreset(
       key === 'effort' ||
       key === 'systemPromptAppend' ||
       key === 'workingDir' ||
+      key === 'parentSessionId' ||
+      key === 'spawnedSessionId' ||
+      key === 'spawnedAgentName' ||
+      key === 'spawnedModel' ||
+      key === 'owner' ||
       (CLIENT_PRESET_FIELDS as readonly string[]).includes(key)
     ) {
       continue

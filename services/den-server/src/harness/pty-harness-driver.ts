@@ -1271,6 +1271,7 @@ export abstract class PtyHarnessDriver<S extends HarnessStoreHost = HarnessStore
     if (cwd) summary.cwd = cwd
     if (row.model) summary.model = row.model
     if (row.agentName) summary.agentName = row.agentName
+    if (row.taskId) summary.taskId = row.taskId
     // Same harness: grok subagents are grok sessions. A bad parent id must
     // not fail the whole list — drop the link and keep the row.
     if (

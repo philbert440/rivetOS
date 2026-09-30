@@ -50,7 +50,10 @@ interface FakeClaude {
  * Write a fake `claude` shell script that records argv + env, swallows
  * stdin, prints the given stream-json lines, and exits with `exitCode`.
  */
-function makeFakeClaude(lines: unknown[], opts?: { exitCode?: number; raw?: string[] }): FakeClaude {
+function makeFakeClaude(
+  lines: unknown[],
+  opts?: { exitCode?: number; raw?: string[] },
+): FakeClaude {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'fake-claude-'))
   tmpDirs.push(dir)
   const stdout = (opts?.raw ?? lines.map((l) => JSON.stringify(l))).join('\n')
@@ -200,6 +203,9 @@ describe('ClaudeCliExecutor', () => {
     const cost = events.find((e) => e.type === 'cost')
     expect(cost).toMatchObject({ deltaUsd: 0.0123, totalUsd: 0.0123 })
 
+    const spawned = events.filter((e) => e.type === 'session.spawned')
+    expect(spawned).toEqual([expect.objectContaining({ nativeSessionId: SESSION, model: 'fake' })])
+
     const turnEnd = events.find((e) => e.type === 'turn.end')
     expect(turnEnd).toMatchObject({
       // Canonical SessionId, not the bare native uuid the CLI reported.
@@ -213,6 +219,24 @@ describe('ClaudeCliExecutor', () => {
     expect(den).toContainEqual({ type: 'tool.end', tool: 'Bash' })
 
     expect(result.usage.costUsd).toBeCloseTo(0.0123)
+  })
+
+  it('emits session.spawned once and stays quiet when init never arrives', async () => {
+    const twice = successLines('ok')
+    twice.unshift(twice[0])
+    const dup = makeExecutor(makeFakeClaude(twice).binary).start(makeConformanceSpec(), {
+      signal: new AbortController().signal,
+    })
+    const dupEvents = await drain(dup.events)
+    expect(dupEvents.filter((e) => e.type === 'session.spawned')).toHaveLength(1)
+
+    const dead = makeExecutor(makeFakeClaude([], { exitCode: 3 }).binary).start(
+      makeConformanceSpec(),
+      { signal: new AbortController().signal },
+    )
+    const deadEvents = await drain(dead.events)
+    await dead.result
+    expect(deadEvents.some((e) => e.type === 'session.spawned')).toBe(false)
   })
 
   it('registers under the harness id, not the provider name', () => {
@@ -471,8 +495,10 @@ describe('ClaudeCliExecutor', () => {
 
   it('kills a non-none apiKeySource when no allow-list is set', async () => {
     const fake = makeFakeClaude(linesWithSource('apiKeyHelper'))
-    const result = await new ClaudeCliExecutor({ binary: fake.binary })
-      .start(makeConformanceSpec(), { signal: new AbortController().signal }).result
+    const result = await new ClaudeCliExecutor({ binary: fake.binary }).start(
+      makeConformanceSpec(),
+      { signal: new AbortController().signal },
+    ).result
     expect(result.verdict).toBe('failed')
     expect(result.error).toBe(
       'claude-cli: unexpected apiKeySource="apiKeyHelper" — this executor requires OAuth/keychain auth',

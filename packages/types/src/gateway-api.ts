@@ -854,6 +854,8 @@ export interface HarnessSession {
   agentName?: string
   /** Model id recorded on the store row, when there is one. */
   model?: string
+  /** Task row that registered this session. Absent for ordinary store rows. */
+  taskId?: string
 }
 
 export interface HarnessSessionsResponse {

@@ -230,6 +230,38 @@ describe('PresetDelegationEngine', () => {
       systemPromptAppend: 'be strict',
       excludeTools: ['delegate_task'],
     })
+    expect(rows[0]?.spec.parentSessionId).toBeUndefined()
+    expect(rows[0]?.spec.owner).toBeUndefined()
+  })
+
+  it('stamps the invoking session on the row and omits it when absent', async () => {
+    const store = new InMemoryTaskStore((id) => {
+      void store.finish(id, 'completed', {
+        verdict: 'completed',
+        summary: 'ok',
+        artifacts: [],
+        usage: USAGE,
+      })
+    })
+    const rowPreset = preset()
+    const engine = engineFor([rowPreset], {
+      store,
+      executors: executors(['claude-code']),
+    })
+    await engine.delegate(
+      { fromAgent: 'local', toAgent: 'reviewer', task: 't' },
+      rowPreset,
+      0,
+      undefined,
+      undefined,
+      { sessionId: 'claude-code:11111111-1111-4111-8111-111111111111', owner: 'coco' },
+    )
+    const spec = (await store.list())[0]?.spec
+    expect(spec).toMatchObject({
+      parentSessionId: 'claude-code:11111111-1111-4111-8111-111111111111',
+      owner: 'coco',
+      presetName: 'reviewer',
+    })
   })
 
   it('model falls back to the preset, then is omitted when both are empty', async () => {

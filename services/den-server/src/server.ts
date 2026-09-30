@@ -66,6 +66,7 @@ import {
   MeshParseError,
   formatSessionId,
   rosterCommandFor,
+  type DelegatedSessionLink,
   type HarnessDriver,
   type HarnessId,
   type UserContext,
@@ -102,6 +103,8 @@ import {
   qwenSessionCwd,
   readHarnessTranscript,
 } from './term/harness-sessions.js'
+import { stampDelegatedOwners } from './term/delegated-sessions.js'
+import { createHarnessStore, type HarnessStoreName } from './harness/harness-store.js'
 import { overlaySessionContext, sessionContext } from './term/context-window.js'
 import { createFilesRoutes } from './files.js'
 import { createDevicesRoutes, lookupDeviceName } from './devices.js'
@@ -120,7 +123,6 @@ import { createInstalledProbe } from './harness/installed.js'
 import { CodexDriver } from './harness/codex-driver.js'
 import { CodexProtocolDriver, codexThreadDefaults } from './harness/codex-protocol-driver.js'
 import { CodexRpcClient } from './harness/codex-rpc.js'
-import { createHarnessStore } from './harness/harness-store.js'
 import { createHarnessRoutes, harnessErrorStatus } from './harness/routes.js'
 import { denJoinKey } from './harness/session-key.js'
 import { createUploadRoutes } from './harness/uploads.js'
@@ -431,6 +433,12 @@ export interface DenServerOptions {
    * part 2 subscribes per session.
    */
   transcriptWatcher?: Pick<TranscriptWatcher, 'subscribe' | 'sync'>
+  /**
+   * Task rows that registered a harness session. Listing nests those
+   * sessions under the conversation that delegated them, and tags the
+   * child with the owner captured at create. Absent = no delegated rows.
+   */
+  delegatedSessions?: () => Promise<DelegatedSessionLink[]>
 }
 
 const json = (res: ServerResponse, code: number, body: unknown): void => {
@@ -483,6 +491,31 @@ export function createDenServer(config: DenConfig, opts: DenServerOptions = {}):
   // Persisted session ownership — hoisted above broadcast so the live event
   // fanout filters by it too, not just the listing routes. Untagged = owner.
   const sessionOwners = createSessionOwners(join(config.stateDir, 'session-owners.json'))
+  // Native ids a task row registered. `spawn` reads this synchronously, so
+  // refresh it before the call. A store miss leaves the previous set rather
+  // than refusing a resume that was allowed a moment ago.
+  const taskSessionIds = new Set<string>()
+  const loadDelegated = async (): Promise<DelegatedSessionLink[]> => {
+    let links: DelegatedSessionLink[]
+    try {
+      links = (await opts.delegatedSessions?.()) ?? []
+    } catch (err) {
+      const detail = err instanceof Error ? err.message : String(err)
+      console.error(`[den] delegated session links failed: ${detail}`)
+      return []
+    }
+    taskSessionIds.clear()
+    for (const link of links) {
+      const native = link.spawnedSessionId.trim()
+      if (native) taskSessionIds.add(native)
+    }
+    stampDelegatedOwners(sessionOwners, links)
+    return links
+  }
+  const harnessStore = <N extends HarnessStoreName>(
+    name: N,
+  ): ReturnType<typeof createHarnessStore<N>> =>
+    createHarnessStore(name, { delegatedSessions: loadDelegated })
   // Ownership is stored under whichever id the spawner claimed: the native
   // join key, or the canonical `<harness>:<native>` id. A nested row is
   // neither until we copy the parent's tag onto it.
@@ -520,6 +553,8 @@ export function createDenServer(config: DenConfig, opts: DenServerOptions = {}):
   const sessionUuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
   const ensureNestedOwner = async (sessionId: string): Promise<void> => {
     if (!sessionId || sessionOwners.get(sessionId)) return
+    await loadDelegated()
+    if (sessionOwners.get(sessionId)) return
     const native = denJoinKey(sessionId)
     if (!native || native.includes('/') || native.includes('..')) return
     if (sessionOwners.get(native)) {
@@ -721,6 +756,7 @@ export function createDenServer(config: DenConfig, opts: DenServerOptions = {}):
           return !!room && !room.ended
         },
         sessionExists: harnessSessionExists,
+        isTaskSession: (id) => taskSessionIds.has(id),
         sessionCwd: (command, id) =>
           sessionCwdStore.get(command, id) ?? (command === 'qwen' ? qwenSessionCwd(id) : undefined),
         recordSessionCwd: writeSessionCwd,
@@ -833,7 +869,7 @@ export function createDenServer(config: DenConfig, opts: DenServerOptions = {}):
   if (!opts.skipBuiltinHarnessDrivers) {
     builtinDrivers.push(
       new ClaudeCodeDriver({
-        store: createHarnessStore('claude'),
+        store: harnessStore('claude'),
         pty: termEnabled ? () => ensureManager() : undefined,
         events: denEventTap,
         herdrStatus: () => termManager?.mux() === 'herdr',
@@ -846,7 +882,7 @@ export function createDenServer(config: DenConfig, opts: DenServerOptions = {}):
         screen: screenFor,
       }),
       new GrokBuildDriver({
-        store: createHarnessStore('grok'),
+        store: harnessStore('grok'),
         pty: termEnabled ? () => ensureManager() : undefined,
         events: denEventTap,
         herdrStatus: () => termManager?.mux() === 'herdr',
@@ -859,7 +895,7 @@ export function createDenServer(config: DenConfig, opts: DenServerOptions = {}):
         screen: screenFor,
       }),
       new HermesDriver({
-        store: createHarnessStore('hermes'),
+        store: harnessStore('hermes'),
         pty: termEnabled ? () => ensureManager() : undefined,
         events: denEventTap,
         herdrStatus: () => termManager?.mux() === 'herdr',
@@ -873,7 +909,7 @@ export function createDenServer(config: DenConfig, opts: DenServerOptions = {}):
         screen: screenFor,
       }),
       new KimiCodeDriver({
-        store: createHarnessStore('kimi'),
+        store: harnessStore('kimi'),
         pty: termEnabled ? () => ensureManager() : undefined,
         events: denEventTap,
         herdrStatus: () => termManager?.mux() === 'herdr',
@@ -887,7 +923,7 @@ export function createDenServer(config: DenConfig, opts: DenServerOptions = {}):
         screen: screenFor,
       }),
       new PiDriver({
-        store: createHarnessStore('pi'),
+        store: harnessStore('pi'),
         pty: termEnabled ? () => ensureManager() : undefined,
         events: denEventTap,
         herdrStatus: () => termManager?.mux() === 'herdr',
@@ -900,7 +936,7 @@ export function createDenServer(config: DenConfig, opts: DenServerOptions = {}):
         screen: screenFor,
       }),
       new QwenCodeDriver({
-        store: createHarnessStore('qwen-code'),
+        store: harnessStore('qwen-code'),
         pty: termEnabled ? () => ensureManager() : undefined,
         events: denEventTap,
         herdrStatus: () => termManager?.mux() === 'herdr',
@@ -913,7 +949,7 @@ export function createDenServer(config: DenConfig, opts: DenServerOptions = {}):
         screen: screenFor,
       }),
       new CursorDriver({
-        store: createHarnessStore('cursor'),
+        store: harnessStore('cursor'),
         pty: termEnabled ? () => ensureManager() : undefined,
         events: denEventTap,
         herdrStatus: () => termManager?.mux() === 'herdr',
@@ -927,7 +963,7 @@ export function createDenServer(config: DenConfig, opts: DenServerOptions = {}):
         screen: screenFor,
       }),
       new OpencodeDriver({
-        store: createHarnessStore('opencode'),
+        store: harnessStore('opencode'),
         pty: termEnabled ? () => ensureManager() : undefined,
         events: denEventTap,
         herdrStatus: () => termManager?.mux() === 'herdr',
@@ -952,7 +988,7 @@ export function createDenServer(config: DenConfig, opts: DenServerOptions = {}):
                 codexThreadDefaults(rosterProvider.get().commands.codex?.cmd ?? []),
             }))
           : new CodexDriver(deps))({
-        store: createHarnessStore('codex'),
+        store: harnessStore('codex'),
         pty: termEnabled ? () => ensureManager() : undefined,
         events: denEventTap,
         herdrStatus: () => termManager?.mux() === 'herdr',
@@ -979,9 +1015,10 @@ export function createDenServer(config: DenConfig, opts: DenServerOptions = {}):
         // The app-server driver talks to an endpoint, not a local binary.
         alwaysInstalled: (id) => id === 'codex' && !!config.codexAppServerUrl,
       }),
-    filterSessions: (req, sessions) => {
+    filterSessions: async (req, sessions) => {
       const ctx = boundRequestUser(req)
       if (!ctx) return sessions
+      await loadDelegated()
       for (const s of sessions) {
         const command =
           s.harnessId === 'claude-code'
@@ -1844,6 +1881,7 @@ export function createDenServer(config: DenConfig, opts: DenServerOptions = {}):
               }
             }
             const userEnv = captureEnvFor(userCtx)
+            await loadDelegated()
             const pty = await manager.spawn(
               command,
               clamp(p.cols, 20, 500, 80),
@@ -1935,7 +1973,10 @@ export function createDenServer(config: DenConfig, opts: DenServerOptions = {}):
           const limRaw = url.searchParams.get('limit')
           const limN = limRaw ? Number.parseInt(limRaw, 10) : NaN
           const limit = Number.isFinite(limN) && limN > 0 ? Math.min(limN, 500) : 100
-          const sessions = (await listHarnessSessions(Object.keys(roster.commands), limit)).filter(
+          const links = await loadDelegated()
+          const sessions = (
+            await listHarnessSessions(Object.keys(roster.commands), limit, links)
+          ).filter(
             (session) =>
               session.command !== 'codex' || !codexProtocol?.ownsNativeThread(session.id),
           )

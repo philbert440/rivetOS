@@ -99,6 +99,8 @@ export interface ChatItem {
    * instead of the session title.
    */
   agentName?: string
+  /** Task row that registered this session, when the listing merge knew one. */
+  taskId?: string
 }
 
 /** Native half of a canonical id; undefined when it doesn't parse. */
@@ -339,6 +341,7 @@ export function chatItems(input: {
       command: legacy?.command ?? ROSTER_COMMAND[summary.harnessId],
       model: summary.model ?? legacy?.model,
       agentName: summary.agentName ?? legacy?.agentName,
+      taskId: summary.taskId ?? legacy?.taskId,
       transport: summary.transport,
       effort: summary.effort,
       status: summary.status,
@@ -356,6 +359,7 @@ export function chatItems(input: {
       command: row.command,
       model: row.model,
       agentName: row.agentName,
+      taskId: row.taskId,
       updatedAt: row.updatedAt,
       parentKey: row.parentSessionId,
     })
@@ -390,6 +394,7 @@ export function chatItemFromSummary(summary: HarnessSessionSummary): ChatItem | 
     command: ROSTER_COMMAND[summary.harnessId],
     model: summary.model,
     agentName: summary.agentName,
+    taskId: summary.taskId,
     transport: summary.transport,
     effort: summary.effort,
     status: summary.status,

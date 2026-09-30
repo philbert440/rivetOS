@@ -42,7 +42,10 @@ describe('SqliteTaskStore', () => {
   const dirs: string[] = []
   const openStores: SqliteTaskStore[] = []
 
-  function open(enqueue?: (taskId: string) => void, tuning?: { sweepStaleMs?: number; awaitingInputTtlMs?: number }): {
+  function open(
+    enqueue?: (taskId: string) => void,
+    tuning?: { sweepStaleMs?: number; awaitingInputTtlMs?: number },
+  ): {
     store: SqliteTaskStore
     path: string
   } {
@@ -250,7 +253,10 @@ describe('SqliteTaskStore', () => {
     const a = new SqliteTaskStore(path)
     const b = new SqliteTaskStore(path)
     openStores.push(a, b)
-    const [left, right] = await Promise.all([a.claim(task.id, 'node-a'), b.claim(task.id, 'node-b')])
+    const [left, right] = await Promise.all([
+      a.claim(task.id, 'node-a'),
+      b.claim(task.id, 'node-b'),
+    ])
     const winners = [left, right].filter((row) => row !== undefined)
     expect(winners).toHaveLength(1)
     expect(winners[0]?.status).toBe('running')
@@ -290,7 +296,14 @@ describe('SqliteTaskStore', () => {
       verdict: 'completed',
       summary: 's',
       artifacts: [],
-      usage: { inputTokens: 0, outputTokens: 0, totalTokens: 0, turns: 1, wallClockMs: 1, costUsd: 0.02 },
+      usage: {
+        inputTokens: 0,
+        outputTokens: 0,
+        totalTokens: 0,
+        turns: 1,
+        wallClockMs: 1,
+        costUsd: 0.02,
+      },
     })
     await store.recordEval(row.id, {
       verdict: 'refuted',
@@ -328,6 +341,30 @@ describe('SqliteTaskStore', () => {
     expect((await store.get(task.id))?.harnessSessionIds).toEqual(['ses-1', 'ses-2'])
   })
 
+  it('registers one spawned session and lets the second write win', async () => {
+    const { store } = open()
+    const task = await store.create(input({ spec: { presetName: 'reviewer', tools: ['x'] } }))
+    await store.registerSpawnedSession(task.id, {
+      spawnedSessionId: 'ses-1',
+      spawnedAgentName: 'reviewer',
+      spawnedModel: 'opus',
+    })
+    await store.registerSpawnedSession(task.id, {
+      spawnedSessionId: 'ses-1',
+      spawnedAgentName: 'reviewer',
+      spawnedModel: 'haiku',
+    })
+    const row = await store.get(task.id)
+    expect(row?.spec).toMatchObject({
+      presetName: 'reviewer',
+      tools: ['x'],
+      spawnedSessionId: 'ses-1',
+      spawnedAgentName: 'reviewer',
+      spawnedModel: 'haiku',
+    })
+    expect(await store.list()).toHaveLength(1)
+  })
+
   it('reenqueue wakes only a queued row; send on a missing id does not', async () => {
     const enqueued: string[] = []
     const { store } = open((id) => enqueued.push(id))
@@ -351,8 +388,7 @@ describe('SqliteTaskStore', () => {
     const seen: string[] = []
     const store = new SqliteTaskStore(path, (id) => {
       const row = reader.prepare(`SELECT status FROM ros_tasks WHERE id = ?`).get(id) as
-        | { status: string }
-        | undefined
+        { status: string } | undefined
       expect(row?.status).toBe('queued')
       seen.push(id)
     })
@@ -371,9 +407,7 @@ describe('SqliteTaskStore', () => {
       const db = new DatabaseSync(file)
       try {
         return db
-          .prepare(
-            `SELECT type, name, sql FROM sqlite_master WHERE sql IS NOT NULL ORDER BY name`,
-          )
+          .prepare(`SELECT type, name, sql FROM sqlite_master WHERE sql IS NOT NULL ORDER BY name`)
           .all()
       } finally {
         db.close()
@@ -408,7 +442,9 @@ describe('SqliteTaskStore', () => {
         resume.id,
       )
       const later = db.prepare(`UPDATE ros_tasks SET created_at = ? WHERE id = ?`)
-      fillers.forEach((id, i) => later.run(`2020-01-01T00:00:${String(i % 60).padStart(2, '0')}.000Z`, id))
+      fillers.forEach((id, i) =>
+        later.run(`2020-01-01T00:00:${String(i % 60).padStart(2, '0')}.000Z`, id),
+      )
     } finally {
       db.close()
     }
