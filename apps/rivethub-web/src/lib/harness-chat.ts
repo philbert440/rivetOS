@@ -34,6 +34,7 @@
  */
 
 import {
+  formatSessionId,
   parseSessionId,
   ROSTER_COMMAND,
   harnessForRosterCommand,
@@ -87,6 +88,17 @@ export interface ChatItem {
   /** Agent-pin rows: hide discard; the pane's `+ new` with the agent
    *  selected is the replace. */
   pin?: boolean
+  /**
+   * Chat key of the session that spawned this one. The drawer nests the row
+   * under that session when it is also in the list. Absent for primary rows,
+   * headless plan sessions, and orphans whose parent is not listed.
+   */
+  parentKey?: string
+  /**
+   * Subagent type (`general-purpose`, …). Nested drawer rows show this
+   * instead of the session title.
+   */
+  agentName?: string
 }
 
 /** Native half of a canonical id; undefined when it doesn't parse. */
@@ -125,6 +137,176 @@ export function sortByRecency<T extends { updatedAt: number }>(items: T[]): T[] 
   return items.slice().sort((a, b) => b.updatedAt - a.updatedAt)
 }
 
+/** One drawer row plus the sessions it spawned. */
+export interface ChatNode {
+  item: ChatItem
+  children: ChatNode[]
+}
+
+/**
+ * Longest ancestor chain the drawer will attach. An 8-link chain nests; the
+ * 9th link flattens that row. Matches `NEST_ANCESTOR_CAP` in den-server
+ * `withAncestors` — that helper must not emit an ancestor this refuses.
+ */
+const NEST_DEPTH_CAP = 8
+
+/**
+ * Parent links are not always stored in the same shape as row keys. A control
+ * plane child carries a canonical `parentKey` (`claude-code:<uuid>`) while a
+ * legacy-only parent is keyed by the bare native id, and the reverse happens
+ * too. Resolve to the key that is actually in the list.
+ */
+function parentResolver(
+  byKey: Map<string, ChatItem>,
+): (parent: string | undefined) => string | undefined {
+  const nativeToKey = new Map<string, string>()
+  for (const key of byKey.keys()) {
+    const native = nativeIdOf(key)
+    if (!native || byKey.has(native) || nativeToKey.has(native)) continue
+    nativeToKey.set(native, key)
+  }
+  return (parent) => {
+    if (!parent) return undefined
+    if (byKey.has(parent)) return parent
+    const native = nativeIdOf(parent) ?? parent
+    if (byKey.has(native)) return native
+    return nativeToKey.get(native)
+  }
+}
+
+function parentInList(
+  item: ChatItem,
+  byKey: Map<string, ChatItem>,
+  resolve: (parent: string | undefined) => string | undefined,
+): string | undefined {
+  const parent = resolve(item.parentKey)
+  if (!parent || parent === item.key) return undefined
+  const seen = new Set<string>([item.key])
+  let cur: string | undefined = parent
+  let depth = 0
+  while (cur && depth < NEST_DEPTH_CAP) {
+    if (seen.has(cur)) return undefined
+    seen.add(cur)
+    depth++
+    cur = resolve(byKey.get(cur)?.parentKey)
+  }
+  // `cur` still set means another in-list ancestor sits past the cap.
+  if (cur) return undefined
+  return parent
+}
+
+function subtreeActivity(node: ChatNode): number {
+  let best = node.item.updatedAt
+  for (const child of node.children) {
+    const activity = subtreeActivity(child)
+    if (activity > best) best = activity
+  }
+  return best
+}
+
+/**
+ * Group spawned sessions under the session that spawned them.
+ *
+ * A parent that is not in `items` (archived, filtered, or outside the list
+ * cap) leaves the child at the top level — the row must not disappear.
+ * Cycles and chains deeper than {@link NEST_DEPTH_CAP} stay flat. Roots and
+ * children are ordered by the newest activity in their subtree, so a recent
+ * subagent lifts the primary it belongs to instead of hiding under an old
+ * timestamp.
+ */
+export function nestChatItems(items: ChatItem[]): ChatNode[] {
+  const byKey = new Map(items.map((it) => [it.key, it]))
+  const resolve = parentResolver(byKey)
+  const childKeys = new Map<string, string[]>()
+  const roots: ChatItem[] = []
+  for (const it of items) {
+    const parent = parentInList(it, byKey, resolve)
+    if (!parent) {
+      roots.push(it)
+      continue
+    }
+    const list = childKeys.get(parent) ?? []
+    list.push(it.key)
+    childKeys.set(parent, list)
+  }
+
+  const build = (it: ChatItem, stack: Set<string>): ChatNode => {
+    const children: ChatNode[] = []
+    for (const key of childKeys.get(it.key) ?? []) {
+      if (stack.has(key)) continue
+      const child = byKey.get(key)
+      if (!child) continue
+      stack.add(key)
+      children.push(build(child, stack))
+      stack.delete(key)
+    }
+    return { item: it, children }
+  }
+
+  const sortTree = (node: ChatNode): ChatNode => ({
+    item: node.item,
+    children: node.children.map(sortTree).sort((a, b) => subtreeActivity(b) - subtreeActivity(a)),
+  })
+  return roots
+    .map((it) => sortTree(build(it, new Set([it.key]))))
+    .sort((a, b) => subtreeActivity(b) - subtreeActivity(a))
+}
+
+/**
+ * Keep a node when it matches, and keep ancestors of a match so the accordion
+ * still has somewhere to put the hit. A matching parent keeps its whole
+ * subtree; a non-matching parent keeps only the matching branch.
+ *
+ * `pin` is the open conversation. It stays listed (with its ancestors) even
+ * when the text does not match, without dragging in its non-matching children.
+ */
+export function filterChatForest(
+  nodes: ChatNode[],
+  match: (item: ChatItem) => boolean,
+  pin?: string,
+): ChatNode[] {
+  const out: ChatNode[] = []
+  for (const node of nodes) {
+    if (match(node.item)) {
+      out.push(node)
+      continue
+    }
+    const children = filterChatForest(node.children, match, pin)
+    if (children.length > 0 || node.item.key === pin) out.push({ item: node.item, children })
+  }
+  return out
+}
+
+/**
+ * Drawer text filter. `q` is already trimmed and lowercased; empty matches
+ * everything. `agentName` is the label a nested row actually shows
+ * (`general-purpose`), which is not the title.
+ */
+export function chatRowMatchesQuery(item: ChatItem, q: string, customName = ''): boolean {
+  if (!q) return true
+  return (
+    customName.toLowerCase().includes(q) ||
+    item.title.toLowerCase().includes(q) ||
+    item.key.toLowerCase().includes(q) ||
+    (item.harnessId ?? '').includes(q) ||
+    (item.agentName ?? '').toLowerCase().includes(q)
+  )
+}
+
+/** Keys of the sessions a row is nested under, nearest parent last. */
+export function ancestorChatKeys(nodes: ChatNode[], active: string | undefined): string[] {
+  if (!active) return []
+  const walk = (list: ChatNode[], stack: string[]): string[] | undefined => {
+    for (const node of list) {
+      if (node.item.key === active) return stack
+      const found = walk(node.children, [...stack, node.item.key])
+      if (found) return found
+    }
+    return undefined
+  }
+  return walk(nodes, []) ?? []
+}
+
 /**
  * Merge drafts + control-plane sessions + legacy store rows into one drawer
  * list, newest-first. Drafts take `draftCreatedAt` when the caller has it;
@@ -155,11 +337,13 @@ export function chatItems(input: {
       sessionId: summary.sessionId,
       harnessId: summary.harnessId,
       command: legacy?.command ?? ROSTER_COMMAND[summary.harnessId],
-      model: summary.model,
+      model: summary.model ?? legacy?.model,
+      agentName: summary.agentName ?? legacy?.agentName,
       transport: summary.transport,
       effort: summary.effort,
       status: summary.status,
       updatedAt: Date.parse(summary.updatedAt) || legacy?.updatedAt || 0,
+      parentKey: summary.parentSessionId ?? legacyParentKey(summary.harnessId, legacy),
     })
   }
 
@@ -170,7 +354,10 @@ export function chatItems(input: {
       kind: 'legacy',
       title: row.title,
       command: row.command,
+      model: row.model,
+      agentName: row.agentName,
       updatedAt: row.updatedAt,
+      parentKey: row.parentSessionId,
     })
   }
 
@@ -202,10 +389,26 @@ export function chatItemFromSummary(summary: HarnessSessionSummary): ChatItem | 
     harnessId: summary.harnessId,
     command: ROSTER_COMMAND[summary.harnessId],
     model: summary.model,
+    agentName: summary.agentName,
     transport: summary.transport,
     effort: summary.effort,
     status: summary.status,
     updatedAt: Date.parse(summary.updatedAt) || 0,
+    parentKey: summary.parentSessionId,
+  }
+}
+
+/** Legacy store rows carry a native parent id; plane rows are keyed canonically. */
+function legacyParentKey(
+  harnessId: HarnessId,
+  legacy: HarnessSession | undefined,
+): string | undefined {
+  const native = legacy?.parentSessionId
+  if (!native) return undefined
+  try {
+    return formatSessionId(harnessId, native)
+  } catch {
+    return undefined
   }
 }
 

@@ -1,4 +1,4 @@
-import { mkdtempSync, mkdirSync, writeFileSync, rmSync, utimesSync } from 'node:fs'
+import { mkdtempSync, mkdirSync, writeFileSync, rmSync, utimesSync, renameSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, describe, expect, it, vi } from 'vitest'
@@ -17,7 +17,9 @@ import {
   claudeTurnsFromLines,
   grokTurnsFromLines,
   listHarnessSessions,
+  resetGrokParentIndexForTest,
   harnessSessionExists,
+  readClaudeTranscript,
   readGrokTranscript,
   readHarnessTranscript,
   readHermesTranscript,
@@ -37,6 +39,7 @@ import {
 const dirs: string[] = []
 afterEach(() => {
   vi.restoreAllMocks()
+  resetGrokParentIndexForTest()
   setTranscriptMaxBytesForTest()
   dirs.splice(0).forEach((d) => rmSync(d, { recursive: true, force: true }))
   delete process.env.CLAUDE_CONFIG_DIR
@@ -191,6 +194,217 @@ describe('listHarnessSessions', () => {
     expect(await describeClaudeSession('')).toBeUndefined()
   })
 
+  it('nests Claude subagent transcripts under the spawning session', async () => {
+    const base = mkdtempSync(join(tmpdir(), 'claude-sub-'))
+    dirs.push(base)
+    const slug = join(base, 'projects', '-home-work')
+    const parent = '11111111-1111-4111-8111-111111111111'
+    const other = '22222222-2222-4222-8222-222222222222'
+    const agent = 'a906621c1fcf0c74a'
+    const legacy = 'aside_question-38babac48c0a60a1'
+    const workflow = 'wfagent1'
+    mkdirSync(join(slug, parent, 'subagents', 'workflows', 'run-1'), { recursive: true })
+    mkdirSync(join(slug, other), { recursive: true })
+    const parentFile = join(slug, `${parent}.jsonl`)
+    const otherFile = join(slug, `${other}.jsonl`)
+    const agentFile = join(slug, parent, 'subagents', `agent-${agent}.jsonl`)
+    const legacyFile = join(slug, parent, `agent-${legacy}.jsonl`)
+    const wfFile = join(slug, parent, 'subagents', 'workflows', 'run-1', `agent-${workflow}.jsonl`)
+    writeFileSync(
+      parentFile,
+      JSON.stringify({ type: 'user', message: { content: 'parent task' } }) + '\n',
+    )
+    writeFileSync(
+      otherFile,
+      JSON.stringify({ type: 'user', message: { content: 'other task' } }) + '\n',
+    )
+    writeFileSync(
+      agentFile,
+      [
+        JSON.stringify({
+          type: 'user',
+          isSidechain: true,
+          agentId: agent,
+          sessionId: parent,
+          message: { role: 'user', content: 'look through the repo' },
+        }),
+        JSON.stringify({
+          type: 'assistant',
+          isSidechain: true,
+          agentId: agent,
+          message: {
+            role: 'assistant',
+            model: 'claude-sonnet-4-6',
+            content: [{ type: 'text', text: 'found it' }],
+          },
+        }),
+      ].join('\n') + '\n',
+    )
+    writeFileSync(
+      join(slug, parent, 'subagents', `agent-${agent}.meta.json`),
+      JSON.stringify({ agentType: 'general-purpose', model: 'claude-sonnet-4-6' }) + '\n',
+    )
+    // A jsonl that is not an agent transcript must not become its own row.
+    writeFileSync(join(slug, parent, 'subagents', 'not-an-agent.jsonl'), '{}\n')
+    writeFileSync(
+      legacyFile,
+      [
+        JSON.stringify({
+          type: 'user',
+          isSidechain: true,
+          agentType: 'Explore',
+          message: { role: 'user', content: 'explore the tree' },
+        }),
+        JSON.stringify({
+          type: 'assistant',
+          isSidechain: true,
+          message: {
+            role: 'assistant',
+            model: 'claude-haiku-4-5',
+            content: [{ type: 'text', text: 'explored' }],
+          },
+        }),
+      ].join('\n') + '\n',
+    )
+    writeFileSync(
+      wfFile,
+      [
+        JSON.stringify({
+          type: 'user',
+          isSidechain: true,
+          subagent_type: 'Plan',
+          message: { role: 'user', content: 'draft a plan' },
+        }),
+        JSON.stringify({
+          type: 'assistant',
+          isSidechain: true,
+          message: {
+            role: 'assistant',
+            model: 'claude-opus-4-6',
+            content: [{ type: 'text', text: 'planned' }],
+          },
+        }),
+      ].join('\n') + '\n',
+    )
+    utimesSync(parentFile, new Date(1_000), new Date(1_000))
+    utimesSync(otherFile, new Date(5_000), new Date(5_000))
+    utimesSync(wfFile, new Date(7_000), new Date(7_000))
+    utimesSync(legacyFile, new Date(8_000), new Date(8_000))
+    utimesSync(agentFile, new Date(9_000), new Date(9_000))
+    process.env.CLAUDE_CONFIG_DIR = base
+
+    const sessions = await listHarnessSessions(['claude'])
+    const byId = new Map(sessions.map((s) => [s.id, s]))
+    expect(byId.get(agent)).toMatchObject({
+      command: 'claude',
+      parentSessionId: parent,
+      agentName: 'general-purpose',
+      model: 'claude-sonnet-4-6',
+      title: 'look through the repo',
+    })
+    expect(byId.get(legacy)).toMatchObject({
+      parentSessionId: parent,
+      agentName: 'Explore',
+      model: 'claude-haiku-4-5',
+      title: 'explore the tree',
+    })
+    expect(byId.get(workflow)).toMatchObject({
+      parentSessionId: parent,
+      agentName: 'Plan',
+      model: 'claude-opus-4-6',
+      title: 'draft a plan',
+    })
+    expect(byId.get(parent)?.parentSessionId).toBeUndefined()
+    expect(byId.has('not-an-agent')).toBe(false)
+
+    const described = await describeClaudeSession(agent)
+    expect(described).toMatchObject({
+      parentSessionId: parent,
+      agentName: 'general-purpose',
+      model: 'claude-sonnet-4-6',
+      title: 'look through the repo',
+      createdAt: byId.get(agent)?.createdAt,
+      updatedAt: byId.get(agent)?.updatedAt,
+    })
+    expect(harnessSessionExists('claude', parent)).toBe(true)
+    expect(harnessSessionExists('claude', agent)).toBe(false)
+    expect(harnessSessionExists('claude', legacy)).toBe(false)
+    expect(harnessSessionExists('claude', workflow)).toBe(false)
+
+    const transcript = await readHarnessTranscript(`claude-code:${agent}`)
+    expect(transcript.command).toBe('claude')
+    expect(transcript.turns.map((t) => t.text)).toEqual(['look through the repo', 'found it'])
+
+    // Cap at 1: the newest row is the subagent. The parent is older than
+    // `other` and would otherwise be dropped, leaving the child un-nested.
+    const capped = await listHarnessSessions(['claude'], 1)
+    const cappedIds = capped.map((s) => s.id)
+    expect(cappedIds).toContain(agent)
+    expect(cappedIds).toContain(parent)
+    expect(cappedIds).not.toContain(other)
+  })
+
+  it('lists the same Claude agent id under two parents as two rows', async () => {
+    const base = mkdtempSync(join(tmpdir(), 'claude-agent-dedupe-'))
+    dirs.push(base)
+    const slug = join(base, 'projects', '-home-work')
+    const parentA = '11111111-1111-4111-8111-111111111111'
+    const parentB = '22222222-2222-4222-8222-222222222222'
+    const agent = 'a906621c1fcf0c74a'
+    const writeAgent = (parent: string, text: string, mtime: number): void => {
+      const dir = join(slug, parent, 'subagents')
+      mkdirSync(dir, { recursive: true })
+      const file = join(dir, `agent-${agent}.jsonl`)
+      writeFileSync(
+        file,
+        JSON.stringify({
+          type: 'user',
+          isSidechain: true,
+          agentId: agent,
+          sessionId: parent,
+          message: { role: 'user', content: text },
+        }) + '\n',
+      )
+      utimesSync(file, new Date(mtime), new Date(mtime))
+    }
+    mkdirSync(slug, { recursive: true })
+    writeFileSync(
+      join(slug, `${parentA}.jsonl`),
+      JSON.stringify({ type: 'user', message: { content: 'parent a' } }) + '\n',
+    )
+    writeFileSync(
+      join(slug, `${parentB}.jsonl`),
+      JSON.stringify({ type: 'user', message: { content: 'parent b' } }) + '\n',
+    )
+    // parentB's copy is newer. An id-only lookup must not answer with it for both rows.
+    writeAgent(parentA, 'from parent a', 1_000)
+    writeAgent(parentB, 'from parent b', 9_000)
+    process.env.CLAUDE_CONFIG_DIR = base
+
+    const sessions = await listHarnessSessions(['claude'])
+    const rows = sessions.filter((s) => s.id === agent)
+    expect(rows).toHaveLength(2)
+    const byParent = new Map(rows.map((r) => [r.parentSessionId, r]))
+    expect(byParent.get(parentA)?.title).toBe('from parent a')
+    expect(byParent.get(parentB)?.title).toBe('from parent b')
+
+    expect(await describeClaudeSession(agent, parentA)).toMatchObject({
+      parentSessionId: parentA,
+      title: 'from parent a',
+    })
+    expect(await describeClaudeSession(agent, parentB)).toMatchObject({
+      parentSessionId: parentB,
+      title: 'from parent b',
+    })
+    expect(await describeClaudeSession(agent)).toBeUndefined()
+
+    const textOf = async (parent: string): Promise<string[]> =>
+      (await readClaudeTranscript(agent, parent)).turns.map((t) => t.text)
+    expect(await textOf(parentA)).toEqual(['from parent a'])
+    expect(await textOf(parentB)).toEqual(['from parent b'])
+    expect(await readClaudeTranscript(agent)).toEqual({ id: agent, command: '', turns: [] })
+  })
+
   it('lists grok sessions from summary.json, merged + sorted with claude', async () => {
     fakeClaudeStore() // one claude session at mtime 2000
     const grokBase = mkdtempSync(join(tmpdir(), 'grok-store-'))
@@ -242,6 +456,274 @@ describe('listHarnessSessions', () => {
     const described = await describeGrokSession(id)
     expect(listed.createdAt).toBe(Date.parse('2026-07-07T00:00:00.000Z'))
     expect(described).toEqual(listed)
+  })
+
+  it('nests grok subagents under the spawning session and leaves headless plans alone', async () => {
+    const grokBase = mkdtempSync(join(tmpdir(), 'grok-nest-'))
+    dirs.push(grokBase)
+    const bucket = join(grokBase, 'sessions', '%2Fhome%2Frivet')
+    const parent = '11111111-1111-7111-8111-111111111111'
+    const child = '22222222-2222-7222-8222-222222222222'
+    const fork = '33333333-3333-7333-8333-333333333333'
+    const headless = '44444444-4444-7444-8444-444444444444'
+    const write = (id: string, summary: Record<string, unknown>, updates?: string): void => {
+      const dir = join(bucket, id)
+      mkdirSync(dir, { recursive: true })
+      writeFileSync(join(dir, 'summary.json'), JSON.stringify(summary))
+      if (updates !== undefined) writeFileSync(join(dir, 'updates.jsonl'), updates)
+    }
+    const spawn = (childId: string): string =>
+      `${JSON.stringify({
+        method: '_x.ai/session/update',
+        params: {
+          update: {
+            sessionUpdate: 'subagent_spawned',
+            subagent_id: childId,
+            parent_session_id: parent,
+            child_session_id: childId,
+          },
+        },
+      })}\n`
+    write(
+      parent,
+      {
+        info: { id: parent },
+        session_summary: 'primary',
+        updated_at: '2026-07-01T00:00:00.000Z',
+      },
+      spawn(child),
+    )
+    write(child, {
+      info: { id: child },
+      session_summary: 'review the store',
+      session_kind: 'subagent',
+      agent_name: 'general-purpose',
+      current_model_id: 'grok-4.7',
+      updated_at: '2026-07-08T00:00:00.000Z',
+    })
+    write(fork, {
+      info: { id: fork },
+      session_summary: 'forked look',
+      session_kind: 'subagent_fork',
+      updated_at: '2026-07-07T00:00:00.000Z',
+    })
+    write(headless, {
+      info: { id: headless },
+      session_summary: 'plan mode',
+      session_kind: 'headless',
+      updated_at: '2026-07-09T00:00:00.000Z',
+    })
+    process.env.GROK_HOME = grokBase
+
+    // Cap at 1: the newest row is the headless plan. The subagent is newer
+    // than its parent, so the parent has to be kept on purpose or the child
+    // cannot nest. Ask for 2 so both the headless row and the subagent are
+    // inside the cap, and the older parent is the one the cap would drop.
+    const listed = await listHarnessSessions(['grok'], 2)
+    const byId = new Map(listed.map((row) => [row.id, row]))
+    expect(byId.get(headless)?.parentSessionId).toBeUndefined()
+    expect(byId.get(child)?.parentSessionId).toBe(parent)
+    expect(byId.get(child)?.agentName).toBe('general-purpose')
+    expect(byId.get(child)?.model).toBe('grok-4.7')
+    expect(byId.has(parent)).toBe(true)
+    expect(byId.has(fork)).toBe(false)
+    expect(await describeGrokSession(child)).toEqual(byId.get(child))
+
+    // A spawn line appended later is picked up from the tail, not a reread.
+    writeFileSync(join(bucket, parent, 'updates.jsonl'), spawn(child) + spawn(fork), { flag: 'a' })
+    const again = await listHarnessSessions(['grok'], 3)
+    expect(again.find((row) => row.id === fork)?.parentSessionId).toBe(parent)
+    expect(again.find((row) => row.id === headless)?.parentSessionId).toBeUndefined()
+    delete process.env.GROK_HOME
+  })
+
+  it('keeps a grok parent link when a read ends on a partial code point', async () => {
+    const grokBase = mkdtempSync(join(tmpdir(), 'grok-partial-'))
+    dirs.push(grokBase)
+    const bucket = join(grokBase, 'sessions', '%2Fhome%2Frivet')
+    const parent = 'aaaaaaaa-aaaa-7aaa-8aaa-aaaaaaaaaaaa'
+    const child = 'bbbbbbbb-bbbb-7bbb-8bbb-bbbbbbbbbbbb'
+    const fork = 'cccccccc-cccc-7ccc-8ccc-cccccccccccc'
+    const dir = join(bucket, parent)
+    mkdirSync(dir, { recursive: true })
+    const line = (id: string): string =>
+      `${JSON.stringify({
+        method: '_x.ai/session/update',
+        params: {
+          update: {
+            sessionUpdate: 'subagent_spawned',
+            subagent_id: id,
+            parent_session_id: parent,
+            child_session_id: id,
+          },
+        },
+      })}\n`
+    const summary = (id: string, kind?: string): void => {
+      const sessionDir = join(bucket, id)
+      mkdirSync(sessionDir, { recursive: true })
+      writeFileSync(
+        join(sessionDir, 'summary.json'),
+        JSON.stringify({
+          info: { id },
+          session_summary: id,
+          ...(kind ? { session_kind: kind } : {}),
+          updated_at: '2026-07-08T00:00:00.000Z',
+        }),
+      )
+    }
+    summary(parent)
+    summary(child, 'subagent')
+    summary(fork, 'subagent_fork')
+    const updates = join(dir, 'updates.jsonl')
+    writeFileSync(updates, Buffer.concat([Buffer.from(line(child)), Buffer.from([0xe2, 0x9c])]))
+    process.env.GROK_HOME = grokBase
+    const first = await listHarnessSessions(['grok'])
+    expect(first.find((row) => row.id === child)?.parentSessionId).toBe(parent)
+
+    writeFileSync(updates, Buffer.concat([Buffer.from([0x93, 0x0a]), Buffer.from(line(fork))]), {
+      flag: 'a',
+    })
+    const second = await listHarnessSessions(['grok'])
+    expect(second.find((row) => row.id === child)?.parentSessionId).toBe(parent)
+    expect(second.find((row) => row.id === fork)?.parentSessionId).toBe(parent)
+    delete process.env.GROK_HOME
+  })
+
+  it('returns every grok row when one parent id is malformed', async () => {
+    const grokBase = mkdtempSync(join(tmpdir(), 'grok-bad-parent-'))
+    dirs.push(grokBase)
+    const bucket = join(grokBase, 'sessions', '%2Fhome%2Frivet')
+    const parent = '11111111-1111-7111-8111-111111111111'
+    const good = '22222222-2222-7222-8222-222222222222'
+    const bad = '33333333-3333-7333-8333-333333333333'
+    const padded = '44444444-4444-7444-8444-444444444444'
+    const line = (childId: string, parentId: string): string =>
+      `${JSON.stringify({
+        method: '_x.ai/session/update',
+        params: {
+          update: {
+            sessionUpdate: 'subagent_spawned',
+            subagent_id: childId,
+            parent_session_id: parentId,
+            child_session_id: childId,
+          },
+        },
+      })}\n`
+    const summary = (id: string, kind?: string): void => {
+      const sessionDir = join(bucket, id)
+      mkdirSync(sessionDir, { recursive: true })
+      writeFileSync(
+        join(sessionDir, 'summary.json'),
+        JSON.stringify({
+          info: { id },
+          session_summary: id,
+          ...(kind ? { session_kind: kind } : {}),
+          updated_at: '2026-07-08T00:00:00.000Z',
+        }),
+      )
+    }
+    summary(parent)
+    summary(good, 'subagent')
+    summary(bad, 'subagent')
+    summary(padded, 'subagent')
+    writeFileSync(
+      join(bucket, parent, 'updates.jsonl'),
+      line(good, parent) + line(bad, 'not-a-uuid') + line(padded, `  ${parent}  `),
+    )
+    process.env.GROK_HOME = grokBase
+
+    const listed = await listHarnessSessions(['grok'])
+    expect(listed.map((row) => row.id).sort()).toEqual([bad, good, padded, parent].sort())
+    expect(listed.find((row) => row.id === good)?.parentSessionId).toBe(parent)
+    // A padded UUID is the same id. A non-UUID parent is dropped, not fatal.
+    expect(listed.find((row) => row.id === padded)?.parentSessionId).toBe(parent)
+    expect(listed.find((row) => row.id === bad)?.parentSessionId).toBeUndefined()
+    expect(listed.find((row) => row.id === parent)?.parentSessionId).toBeUndefined()
+    delete process.env.GROK_HOME
+  })
+
+  it('rereads a replaced grok updates.jsonl from byte 0 when the file identity changes', async () => {
+    const grokBase = mkdtempSync(join(tmpdir(), 'grok-rotate-'))
+    dirs.push(grokBase)
+    const bucket = join(grokBase, 'sessions', '%2Fhome%2Frivet')
+    const parent = '11111111-1111-7111-8111-111111111111'
+    const childA = '22222222-2222-7222-8222-222222222222'
+    const childB = '33333333-3333-7333-8333-333333333333'
+    const line = (id: string): string =>
+      `${JSON.stringify({
+        method: '_x.ai/session/update',
+        params: {
+          update: {
+            sessionUpdate: 'subagent_spawned',
+            subagent_id: id,
+            parent_session_id: parent,
+            child_session_id: id,
+          },
+        },
+      })}\n`
+    const summary = (id: string, kind?: string): void => {
+      const sessionDir = join(bucket, id)
+      mkdirSync(sessionDir, { recursive: true })
+      writeFileSync(
+        join(sessionDir, 'summary.json'),
+        JSON.stringify({
+          info: { id },
+          session_summary: id,
+          ...(kind ? { session_kind: kind } : {}),
+          updated_at: '2026-07-08T00:00:00.000Z',
+        }),
+      )
+    }
+    summary(parent)
+    summary(childA, 'subagent')
+    summary(childB, 'subagent')
+    const updates = join(bucket, parent, 'updates.jsonl')
+    const firstLine = line(childA)
+    const replacement = line(childB)
+    // Same length: a shrink-only cursor reads nothing and keeps the old link.
+    expect(Buffer.byteLength(replacement)).toBeGreaterThanOrEqual(Buffer.byteLength(firstLine))
+    writeFileSync(updates, firstLine)
+    process.env.GROK_HOME = grokBase
+    const first = await listHarnessSessions(['grok'])
+    expect(first.find((row) => row.id === childA)?.parentSessionId).toBe(parent)
+
+    // Rename over the path so the directory entry points at a new inode.
+    const next = join(bucket, parent, 'updates.jsonl.next')
+    writeFileSync(next, replacement)
+    renameSync(next, updates)
+    const second = await listHarnessSessions(['grok'])
+    expect(second.map((row) => row.id).sort()).toEqual([childA, childB, parent].sort())
+    expect(second.find((row) => row.id === childB)?.parentSessionId).toBe(parent)
+    expect(second.find((row) => row.id === childA)?.parentSessionId).toBeUndefined()
+    delete process.env.GROK_HOME
+  })
+
+  it('describeGrokSession follows a session that moved and forgets one that died', async () => {
+    const grokBase = mkdtempSync(join(tmpdir(), 'grok-move-'))
+    dirs.push(grokBase)
+    const id = '55555555-5555-7555-8555-555555555555'
+    const from = join(grokBase, 'sessions', 'bucket-a', id)
+    const toDir = join(grokBase, 'sessions', 'bucket-b')
+    const to = join(toDir, id)
+    mkdirSync(from, { recursive: true })
+    const summary = (title: string, updated: string): string =>
+      JSON.stringify({
+        info: { id },
+        session_summary: title,
+        updated_at: updated,
+      })
+    writeFileSync(join(from, 'summary.json'), summary('before move', '2026-07-08T00:00:00.000Z'))
+    process.env.GROK_HOME = grokBase
+    expect((await describeGrokSession(id))?.title).toBe('before move')
+
+    mkdirSync(toDir, { recursive: true })
+    renameSync(from, to)
+    writeFileSync(join(to, 'summary.json'), summary('after move', '2026-07-08T01:00:00.000Z'))
+    expect((await describeGrokSession(id))?.title).toBe('after move')
+
+    rmSync(to, { recursive: true, force: true })
+    expect(await describeGrokSession(id)).toBeUndefined()
+    delete process.env.GROK_HOME
   })
 
   it('describeGrokSession: no summary yet → undefined (existence is a separate question)', async () => {
@@ -896,6 +1378,42 @@ describe('readHarnessTranscript', () => {
     expect(t.turns[0]?.text).not.toBe('turn-0-xxxxxxxxxxxxxxxxxxxx')
   })
 
+  it('does not leak a sidechain tail into a truncated parent transcript', async () => {
+    const base = mkdtempSync(join(tmpdir(), 'claude-side-tail-'))
+    dirs.push(base)
+    const id = 'dddddddd-dddd-dddd-dddd-dddddddddddd'
+    const dir = join(base, 'projects', '-home-rivet')
+    mkdirSync(dir, { recursive: true })
+    const parent = JSON.stringify({ type: 'user', message: { content: 'parent stays' } })
+    const side = JSON.stringify({
+      type: 'user',
+      isSidechain: true,
+      message: { content: 'sidechain leak' },
+    })
+    writeFileSync(join(dir, `${id}.jsonl`), `${parent}\n${side}\n`)
+    process.env.CLAUDE_CONFIG_DIR = base
+    // The window starts inside the parent line, so the sidechain line is
+    // whole and the parent line is the partial that gets dropped.
+    setTranscriptMaxBytesForTest(side.length + 2)
+    const parentRead = await readHarnessTranscript(id)
+    expect(parentRead.truncated).toBe(true)
+    expect(parentRead.turns.map((turn) => turn.text)).not.toContain('sidechain leak')
+
+    const agent = 'a906621c1fcf0c74a'
+    const agentLine = JSON.stringify({
+      type: 'user',
+      isSidechain: true,
+      message: { content: 'agent tail' },
+    })
+    const agentDir = join(dir, id, 'subagents')
+    mkdirSync(agentDir, { recursive: true })
+    writeFileSync(join(agentDir, `agent-${agent}.jsonl`), `${parent}\n${agentLine}\n`)
+    setTranscriptMaxBytesForTest(agentLine.length + 2)
+    const agentRead = await readHarnessTranscript(agent)
+    expect(agentRead.truncated).toBe(true)
+    expect(agentRead.turns.map((turn) => turn.text)).toContain('agent tail')
+  })
+
   it('reads Claude user/assistant turns and skips sidechains + wrappers', async () => {
     const base = mkdtempSync(join(tmpdir(), 'claude-tx-'))
     dirs.push(base)
@@ -1254,7 +1772,8 @@ describe('readHarnessTranscript', () => {
   it('strips Claude Code paste-wrapper from an injected user turn (den bracketed-paste)', () => {
     // The exact shape Claude Code writes to the session JSONL when the den
     // injects a chat turn as a bracketed paste (see the real bdfba03c session).
-    const wrapped = '\n\n<pasted_content id="08b5">\nthere we go, working?\n</pasted_content id="08b5">\n'
+    const wrapped =
+      '\n\n<pasted_content id="08b5">\nthere we go, working?\n</pasted_content id="08b5">\n'
     expect(stripPastedContentWrapper(wrapped)).toBe('there we go, working?')
     // Idempotent + inert on unwrapped text, so the optimistic-bubble text match holds.
     expect(stripPastedContentWrapper('there we go, working?')).toBe('there we go, working?')
@@ -1273,7 +1792,9 @@ describe('readHarnessTranscript', () => {
     expect(stripPastedContentWrapper('<pasted_content id="a1">\nhi\n</pasted_content>')).toBe('hi')
     // A typed prefix and the paste's internal indentation survive.
     expect(
-      stripPastedContentWrapper('note:\n<pasted_content id="x">\n  indented\n</pasted_content id="x">'),
+      stripPastedContentWrapper(
+        'note:\n<pasted_content id="x">\n  indented\n</pasted_content id="x">',
+      ),
     ).toBe('note:\n  indented')
     // Two pastes in one turn: both unwrapped, the between-newline kept.
     expect(

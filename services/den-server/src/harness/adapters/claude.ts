@@ -120,6 +120,39 @@ function tokensLabel(n: number): string {
 }
 
 /**
+ * A dedicated subagent file has `isSidechain: true` on every user and
+ * assistant line. The parent transcript uses the same flag for lines that
+ * must NOT appear in the main conversation, so those stay skipped unless
+ * the file is sidechain all the way through.
+ */
+function claudeTranscriptIsSidechain(lines: Record<string, unknown>[]): boolean {
+  let saw = false
+  for (const obj of lines) {
+    if (obj.type !== 'user' && obj.type !== 'assistant') continue
+    saw = true
+    if (obj.isSidechain !== true) return false
+  }
+  return saw
+}
+
+/**
+ * Whether sidechain lines belong in this transcript.
+ *
+ * A dedicated `agent-*.jsonl` is the subagent conversation. A parent file
+ * uses the same flag for lines that must stay out of the main thread. The
+ * tail window is not the whole parent file: once the read is truncated,
+ * "every line we saw is sidechain" is not "the file is a subagent transcript".
+ */
+export function claudeSidechainIncluded(
+  lines: Record<string, unknown>[],
+  source?: { path?: string; truncated?: boolean },
+): boolean {
+  if (source?.path && /(?:^|\/)agent-[^/]+\.jsonl$/.test(source.path)) return true
+  if (source?.truncated) return false
+  return claudeTranscriptIsSidechain(lines)
+}
+
+/**
  * Fold Claude Code store lines into LOGICAL turns. One agent turn spans many
  * store lines — one 'assistant' line per committed content block, with
  * 'user'-role tool_result lines interleaved. Only a REAL user text message
@@ -128,7 +161,11 @@ function tokensLabel(n: number): string {
  * (matching what the live bridge streams, so a resynced transcript and a
  * watched-live one look identical).
  */
-export function claudeTurnsFromLines(lines: Record<string, unknown>[]): HarnessTurn[] {
+export function claudeTurnsFromLines(
+  lines: Record<string, unknown>[],
+  source?: { path?: string; truncated?: boolean },
+): HarnessTurn[] {
+  const includeSidechain = claudeSidechainIncluded(lines, source)
   const turns: HarnessTurn[] = []
   // tool_use id → entry on the current turn; results arrive on later lines
   let toolsById = new Map<string, HarnessTranscriptTool>()
@@ -166,7 +203,12 @@ export function claudeTurnsFromLines(lines: Record<string, unknown>[]): HarnessT
   }
 
   for (const obj of lines) {
-    if (obj.isSidechain === true || obj.isMeta === true || obj.isCompactSummary === true) continue
+    if (
+      (obj.isSidechain === true && !includeSidechain) ||
+      obj.isMeta === true ||
+      obj.isCompactSummary === true
+    )
+      continue
     if (obj.type === 'system' && obj.subtype === 'compact_boundary') {
       // Context compaction. Between turns (manual /compact, or auto at the
       // start of a turn): close the finished turn and drop a complete marker

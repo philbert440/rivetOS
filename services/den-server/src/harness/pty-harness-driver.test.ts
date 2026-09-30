@@ -3131,3 +3131,37 @@ describe('session cwd on summaries', () => {
     expect((await live.startSession({ nativeSessionId: UUID })).cwd).toBe('/srv/live')
   })
 })
+
+describe('summarize parent link', () => {
+  it('keeps every row when one parent id cannot be formatted', async () => {
+    const good = '11111111-1111-4111-8111-111111111111'
+    const child = '33333333-3333-4333-8333-333333333333'
+    const other = '44444444-4444-4444-8444-444444444444'
+    const badParent = '22222222-2222-4222-8222-222222222222 '
+    const driver = new ClaudeCodeDriver({
+      store: fakeStore([
+        { id: good, command: 'claude', title: 'parent', updatedAt: 1 },
+        {
+          id: child,
+          command: 'claude',
+          title: 'child',
+          updatedAt: 2,
+          parentSessionId: badParent,
+        },
+        {
+          id: other,
+          command: 'claude',
+          title: 'other',
+          updatedAt: 3,
+          parentSessionId: good,
+        },
+      ]),
+    })
+    const listed = await driver.listSessions()
+    expect(listed).toHaveLength(3)
+    const childRow = listed.find((s) => s.sessionId === ClaudeCodeDriver.sessionId(child))
+    const otherRow = listed.find((s) => s.sessionId === ClaudeCodeDriver.sessionId(other))
+    expect(childRow?.parentSessionId).toBeUndefined()
+    expect(otherRow?.parentSessionId).toBe(ClaudeCodeDriver.sessionId(good))
+  })
+})

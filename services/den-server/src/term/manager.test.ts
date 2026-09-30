@@ -449,6 +449,19 @@ describe('term manager', () => {
     reopen.manager.spawn('claude', 80, 24, '', uuid, uuid)
     expect(reopen.spawns[0].argv).toEqual(['claude', '--resume', uuid])
 
+    // A subagent transcript id is not a Claude session. `--resume` would
+    // start the wrong process; the store reader opens the transcript instead.
+    const agent = makeManager({})
+    const resumeAgent = (): void => {
+      agent.manager.spawn('claude', 80, 24, '', 'a906621c1fcf0c74a', 'a906621c1fcf0c74a')
+    }
+    expect(resumeAgent).toThrow(TermSpawnError)
+    try {
+      resumeAgent()
+    } catch (err) {
+      expect((err as TermSpawnError).code).toBe('not-resumable')
+    }
+
     // grok gets the same flags (it also has --session-id/--resume). The
     // session/resume flag appends AFTER the roster's base argv, which now
     // carries the auto-approve flags (--permission-mode bypassPermissions).
@@ -591,9 +604,11 @@ describe('term manager', () => {
     expect(viaNative.spawns[0].argv).toEqual(['claude', '--resume', uuid])
     viaNative.manager.close()
 
-    // `resume` names a harness-native id. The cwd was stored under the join
-    // key, which for a room session IS the den session. The native probe
-    // misses; the session probe hits.
+    // `resume` names a harness-native session UUID, distinct from the join
+    // key. The cwd was stored under the join key, which for a room session
+    // IS the den session. The native probe misses; the session probe hits.
+    // A non-UUID resume is a subagent transcript and is refused earlier.
+    const native = '22222222-2222-4222-8222-222222222222'
     const viaSession = makeManager(
       {},
       {
@@ -601,9 +616,9 @@ describe('term manager', () => {
           command === 'claude' && id === 'join-key' ? joinDir : undefined,
       },
     )
-    viaSession.manager.spawn('claude', 80, 24, '', 'join-key', 'native-id')
+    viaSession.manager.spawn('claude', 80, 24, '', 'join-key', native)
     expect(viaSession.spawns[0].opts.cwd).toBe(joinDir)
-    expect(viaSession.spawns[0].argv).toContain('native-id')
+    expect(viaSession.spawns[0].argv).toContain(native)
     viaSession.manager.close()
   })
 
@@ -1139,6 +1154,19 @@ describe('term manager', () => {
     proc.emitData('booted')
     vi.advanceTimersByTime(600)
   }
+
+  it('a refused claude subagent resume does not evict at the pty cap', () => {
+    vi.useFakeTimers()
+    const { manager, procs } = makeManager({ maxPtys: 1, injectReadyMs: 500 })
+    manager.spawn('shell', 80, 24, '')
+    makeReady(procs[0])
+    const resumeAgent = (): void => {
+      manager.spawn('claude', 80, 24, '', 'a906621c1fcf0c74a', 'a906621c1fcf0c74a')
+    }
+    expect(resumeAgent).toThrow(TermSpawnError)
+    expect(procs[0].kills).toEqual([])
+    expect(manager.list().filter((row) => row.state === 'running')).toHaveLength(1)
+  })
 
   it('LRU pool (5g): at the cap, evicts the least-recently-ACTIVE idle pty', () => {
     vi.useFakeTimers()

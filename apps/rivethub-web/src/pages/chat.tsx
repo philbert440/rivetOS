@@ -105,18 +105,23 @@ import { deriveReplyWait, nextWaitClock, type ReplyWaitClock } from '../lib/harn
 import { createPtyEnsurer } from '../lib/pty-ensure.js'
 import { outboundPumpFor } from '../lib/chat-outbound.js'
 import {
+  ancestorChatKeys,
   applyRegistryEventToPlaneSessions,
   chatItemFromSummary,
   chatItems,
+  chatRowMatchesQuery,
   denRoomKey,
   fetchHarnessPlaneSessions,
+  filterChatForest,
   findChatItem,
   harnessGate,
   nativeIdOf,
+  nestChatItems,
   rosterCommandFor,
   shortNativeId,
   sortByRecency,
   type ChatItem,
+  type ChatNode,
   type HarnessGate,
 } from '../lib/harness-chat.js'
 import { rowPillText } from '../lib/harness-options.js'
@@ -679,6 +684,12 @@ function DrawerItem(props: {
   onUnarchive: () => void
   /** Drafts only — a draft is local, so discarding it is a real delete. */
   onDiscard?: () => void
+  /** Nested conversations under this row. 0 hides the disclosure. */
+  childCount?: number
+  expanded?: boolean
+  onToggleNest?: () => void
+  /** Child of another conversation. Label is the subagent type, with an elbow. */
+  nested?: boolean
 }): JSX.Element {
   const hubBase = useConnection((s) => s.baseUrl)
   const storeBase = props.item.pinNodeBaseUrl ?? hubBase
@@ -727,23 +738,56 @@ function DrawerItem(props: {
     )
   }
 
+  const kids = props.childCount ?? 0
+  const typeLabel = props.item.agentName?.trim()
+  // Nested rows read as the subagent type (`general-purpose`), not a second
+  // conversation title. A custom rename still wins.
+  const showTypePill = props.nested === true && !customName && !!typeLabel
+  const visibleLabel = showTypePill ? typeLabel : (customName ?? props.item.title)
   return (
     <div
       className={`group mb-1 flex items-center rounded ${
         props.active ? 'bg-panel-2' : 'hover:bg-panel-2'
       }`}
     >
+      {props.onToggleNest && kids > 0 && (
+        <button
+          type="button"
+          onClick={props.onToggleNest}
+          aria-expanded={props.expanded === true}
+          aria-label={
+            props.expanded ? 'collapse nested conversations' : 'expand nested conversations'
+          }
+          title={props.expanded ? 'collapse nested conversations' : 'expand nested conversations'}
+          className="px-1 py-2 font-mono text-[11px] text-ink-dim hover:text-ink"
+        >
+          {props.expanded ? '▾' : '▸'}
+        </button>
+      )}
       <button
         onClick={props.onSelect}
         title={
-          props.item.sessionId ??
-          (props.item.command ? `${props.item.command} · ${props.item.key}` : props.item.key)
+          showTypePill
+            ? `${props.item.title} · ${props.item.sessionId ?? props.item.key}`
+            : (props.item.sessionId ??
+              (props.item.command ? `${props.item.command} · ${props.item.key}` : props.item.key))
         }
         className={`flex min-w-0 flex-1 items-center gap-2 px-3 py-2 text-left text-xs ${
           props.active ? 'text-em' : 'text-ink-dim group-hover:text-ink'
         }`}
       >
-        {/* same accent as the Agents rail dot (preset hex, else harness) */}
+        {props.nested && (
+          <span className="w-3 shrink-0 text-center font-mono text-[11px] text-ink-dim" aria-hidden>
+            └
+          </span>
+        )}
+        {showTypePill && (
+          <span className="shrink-0 rounded bg-panel-2 px-1.5 font-mono text-[10px] text-ink">
+            {typeLabel}
+          </span>
+        )}
+        {/* same accent as the Agents rail dot (preset hex, else harness).
+            On a nested row it sits after the type pill. */}
         <span
           className="size-1.5 shrink-0 rounded-full"
           style={{
@@ -755,7 +799,15 @@ function DrawerItem(props: {
           }}
           aria-hidden
         />
-        <span className="min-w-0 truncate">{customName ?? props.item.title}</span>
+        {!showTypePill && <span className="min-w-0 truncate">{visibleLabel}</span>}
+        {kids > 0 && !props.expanded && (
+          <span
+            className="shrink-0 font-mono text-[10px] text-ink-dim"
+            title="nested conversations"
+          >
+            {kids}
+          </span>
+        )}
         {/* live pip: a turn in flight pulses; an alive-but-quiet session is a
             steady dim dot. `status` only exists for control-plane rows. */}
         {props.item.status === 'active' && (
@@ -769,8 +821,9 @@ function DrawerItem(props: {
         )}
         {(() => {
           const raw = rowPillText({ model: props.item.model }, undefined, props.item.harnessId)
-          // A pin row titled after its harness would read it twice.
-          const pill = sameLabel(customName ?? props.item.title, raw) ? '' : raw
+          // A pin row titled after its harness would read it twice. A nested
+          // type pill is not the model, so the model still shows beside it.
+          const pill = sameLabel(visibleLabel, raw) ? '' : raw
           const native = shortNativeId(props.item.key)
           const tip = props.item.harnessId
             ? `${props.item.harnessId} ${native}`
@@ -849,6 +902,10 @@ function SessionDrawer(props: {
   const unarchive = useArchived((s) => s.unarchive)
   const [showArchived, setShowArchived] = useState(false)
   const [filter, setFilter] = useState('')
+  // Parents the user has expanded. The open conversation's ancestors are
+  // added when it changes so a nested active row is visible; collapsing is
+  // still allowed afterwards.
+  const [openGroups, setOpenGroups] = useState<ReadonlySet<string>>(() => new Set())
   const narrow = useIsNarrow()
   // Picking an agent in the rail narrows the list to its sessions; `+ new`
   // then starts one with that agent (see stores/agent-filter).
@@ -859,25 +916,39 @@ function SessionDrawer(props: {
     archivedKeys.includes(storageKey(itemBase(it), it.key))
 
   // Filter on what the user actually SEES: custom name first, then the
-  // derived title, then the raw id (so pasting a session uuid works too).
+  // derived title, the subagent type pill, then the raw id (so pasting a
+  // session uuid works too).
   const q = filter.trim().toLowerCase()
   const agentId = agentFilter.agentId
   const agentItems = agentId
     ? props.items.filter((it) => rowOwnedByAgent(it.key, agentId, nativeIdOf))
     : props.items
-  const items = agentItems.filter((it) => {
-    // The active thread always stays listed — hiding the row under the
-    // user's feet would strand the open conversation.
+  // Archive first, then nest, then the text filter. Filtering the flat list
+  // first would orphan a matching child whose parent title does not match.
+  const listed = agentItems.filter((it) => {
     if (!showArchived && isArchived(it) && it.key !== props.active) return false
-    if (!q) return true
-    const custom = persisted(names, itemBase(it), it.key) ?? ''
-    return (
-      custom.toLowerCase().includes(q) ||
-      it.title.toLowerCase().includes(q) ||
-      it.key.toLowerCase().includes(q) ||
-      (it.harnessId ?? '').includes(q)
-    )
+    return true
   })
+  const forest = nestChatItems(listed)
+  const matchesQuery = (it: ChatItem): boolean =>
+    chatRowMatchesQuery(it, q, persisted(names, itemBase(it), it.key) ?? '')
+  const shown = q ? filterChatForest(forest, matchesQuery, props.active) : forest
+  const searching = q.length > 0
+  const activePath = ancestorChatKeys(shown, props.active).join('\0')
+  useEffect(() => {
+    if (!activePath) return
+    setOpenGroups((prev) => {
+      const next = new Set(prev)
+      let changed = false
+      for (const key of activePath.split('\0')) {
+        if (!next.has(key)) {
+          next.add(key)
+          changed = true
+        }
+      }
+      return changed ? next : prev
+    })
+  }, [activePath])
 
   const openRow = (key: string): void => {
     setActive(key)
@@ -897,18 +968,44 @@ function SessionDrawer(props: {
     }
   }
 
-  const renderRow = (it: ChatItem): JSX.Element => (
-    <DrawerItem
-      key={it.key}
-      item={it}
-      active={it.key === props.active}
-      archived={isArchived(it)}
-      onSelect={() => openRow(it.key)}
-      onArchive={() => archive(storageKey(itemBase(it), it.key))}
-      onUnarchive={() => unarchive(storageKey(itemBase(it), it.key))}
-      onDiscard={it.kind === 'draft' && !it.pin ? () => discardDraft(baseUrl, it.key) : undefined}
-    />
-  )
+  const toggleNest = (key: string): void => {
+    // A query force-opens every group. Recording that click would apply
+    // after the query is cleared and leave the chevron's state inverted.
+    if (searching) return
+    setOpenGroups((prev) => {
+      const next = new Set(prev)
+      if (next.has(key)) next.delete(key)
+      else next.add(key)
+      return next
+    })
+  }
+
+  const renderNodes = (nodes: ChatNode[], depth = 0): JSX.Element[] =>
+    nodes.map((node) => {
+      const kids = node.children.length
+      const expanded = kids > 0 && (searching || openGroups.has(node.item.key))
+      const it = node.item
+      return (
+        <div key={it.key}>
+          <DrawerItem
+            item={it}
+            active={it.key === props.active}
+            archived={isArchived(it)}
+            onSelect={() => openRow(it.key)}
+            onArchive={() => archive(storageKey(itemBase(it), it.key))}
+            onUnarchive={() => unarchive(storageKey(itemBase(it), it.key))}
+            onDiscard={
+              it.kind === 'draft' && !it.pin ? () => discardDraft(baseUrl, it.key) : undefined
+            }
+            childCount={kids}
+            expanded={expanded}
+            onToggleNest={kids > 0 && !searching ? () => toggleNest(it.key) : undefined}
+            nested={depth > 0}
+          />
+          {expanded && <div className="pl-3">{renderNodes(node.children, depth + 1)}</div>}
+        </div>
+      )
+    })
 
   return (
     <div
@@ -973,11 +1070,11 @@ function SessionDrawer(props: {
       {props.error && <div className="px-3 py-2 font-mono text-xs text-red">{props.error}</div>}
       <div className="flex min-h-0 flex-1 flex-col">
         <div className="flex-1 overflow-y-auto px-2">
-          {items.map((it) => renderRow(it))}
-          {items.length === 0 && q && (
+          {renderNodes(shown)}
+          {shown.length === 0 && q && (
             <div className="px-3 py-2 text-xs text-ink-dim">no matches for “{filter.trim()}”</div>
           )}
-          {items.length === 0 && !q && archivedCount > 0 && (
+          {shown.length === 0 && !q && archivedCount > 0 && (
             <div className="px-3 py-2 text-xs text-ink-dim">everything is archived</div>
           )}
           {agentItems.length === 0 && !props.error && (
