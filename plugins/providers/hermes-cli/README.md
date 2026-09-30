@@ -23,3 +23,9 @@ providers:
     context_window: 262144
     max_output_tokens: 81920
 ```
+
+`model` is passed to `hermes chat -m`. To use a model on a **named custom provider**
+(`providers:` in `~/.hermes/config.yaml`), use Hermes's own syntax
+`custom:<provider>:<model>` — e.g. `/model hermes-cli custom:gpu-27b:qwen-27b`. It is sent as
+`--provider <provider> -m <model>`, because `-m` alone sends the whole string to the default
+endpoint as a model name.

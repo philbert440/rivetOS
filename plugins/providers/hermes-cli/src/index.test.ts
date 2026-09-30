@@ -10,6 +10,7 @@ import {
   buildArgs,
   loadSessionMap,
   manifest,
+  modelArgs,
   promptFromV3,
   saveSessionMap,
   sessionIdFromStderr,
@@ -67,6 +68,17 @@ describe('helpers', () => {
     expect(buildArgs({ binary: 'h', modelId: 'm', cwd: '/w', sessionId: 's1' }, '')).toEqual([
       'chat', '-q', '(empty)', '-Q', '--yolo', '--cli', '-m', 'm', '--in', '/w', '--resume', 's1',
     ])
+  })
+  it('buildArgs: custom:<provider>:<model> selects a named Hermes provider', () => {
+    expect(buildArgs({ binary: 'h', modelId: 'custom:gpu-27b:qwen-27b' }, 'q')).toEqual([
+      'chat', '-q', 'q', '-Q', '--yolo', '--cli', '--provider', 'gpu-27b', '-m', 'qwen-27b',
+    ])
+    // the model keeps its own colons (e.g. ollama tags)
+    expect(modelArgs('custom:local:qwen3.5:27b')).toEqual(['--provider', 'local', '-m', 'qwen3.5:27b'])
+    // everything else is passed to -m unchanged
+    expect(modelArgs('custom/qwen-27b')).toEqual(['-m', 'custom/qwen-27b'])
+    expect(modelArgs('anthropic/claude-sonnet-4')).toEqual(['-m', 'anthropic/claude-sonnet-4'])
+    expect(modelArgs('custom:')).toEqual(['-m', 'custom:'])
   })
   it('sessionIdFromStderr', () => {
     expect(sessionIdFromStderr('noise\nsession_id: abc-123\n')).toBe('abc-123')
