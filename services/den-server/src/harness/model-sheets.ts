@@ -286,15 +286,23 @@ export function applySheetOverride(
       next.efforts = mergeRows(sheet.efforts ?? [], efforts)
     }
   }
-  return withLaunchModel(next)
+  return withLaunchModel(next, sheet)
 }
 
-/** `launchModelWhenListed` → `launchModel` once the sheet has rows. */
-function withLaunchModel(sheet: ModelSheet): ModelSheet {
-  if (sheet.launchModelWhenListed && (sheet.models?.length ?? 0) > 0) {
-    return { ...sheet, launchModel: true }
-  }
-  return sheet
+/**
+ * `launchModelWhenListed` → `launchModel` once the list is settled: a
+ * discovered list, or a config `replace` list (synchronous, complete). A
+ * `merge` over a still-empty discovery holds only the config rows, and
+ * declaring the sheet settled then would make a client clear a stored
+ * discovered-only model seconds before discovery lands.
+ */
+function withLaunchModel(sheet: ModelSheet, base: ModelSheet = sheet): ModelSheet {
+  if (!sheet.launchModelWhenListed || (sheet.models?.length ?? 0) === 0) return sheet
+  const settled =
+    sheet.modelsSource === 'config' ||
+    sheet.modelsSource === 'discovered' ||
+    (sheet.modelsSource === 'merged' && base.modelsSource === 'discovered')
+  return settled ? { ...sheet, launchModel: true } : sheet
 }
 
 /**
@@ -1046,7 +1054,13 @@ export function codexSheet(deps: CodexSheetDeps = {}): ModelSheet {
       runCommand(['codex', 'debug', 'models'], {
         timeoutMs: CODEX_CATALOG_TIMEOUT_MS,
         env: discoveryEnv(env, home),
-      }).then((out) => parseCodexCatalog(JSON.parse(out))),
+      }).then((out) => {
+        // An empty parse means the JSON shape drifted, not that Codex has no
+        // models: fail the run so the last-known listing is kept and logged.
+        const rows = parseCodexCatalog(JSON.parse(out))
+        if (rows.length === 0) throw new Error('codex debug models returned no listed models')
+        return rows
+      }),
     {
       ttlMs: CODEX_CATALOG_TTL_MS,
       now,
@@ -1054,7 +1068,7 @@ export function codexSheet(deps: CodexSheetDeps = {}): ModelSheet {
       log: deps.log,
     },
   )
-  if (listed && listed.length > 0) add(listed)
+  if (listed) add(listed)
   else add(fileRowsFor(readJson, join(root, 'models_cache.json'), parseCodexCatalog))
   let configured: string | undefined
   try {
@@ -1458,9 +1472,8 @@ export function isCodexDefaultModel(
   harness: string | undefined,
   model: string | undefined,
 ): boolean {
-  return (
-    (harness === 'codex' || harness === ROSTER_TO_HARNESS.codex) && model === CODEX_DEFAULT_MODEL
-  )
+  // the roster key and the HarnessId are both the literal 'codex'
+  return harness === 'codex' && model === CODEX_DEFAULT_MODEL
 }
 
 /**

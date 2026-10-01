@@ -355,16 +355,6 @@ it('labels the app-server catalog as discovered and applies a merge override to 
   expect(gwDefault.driver.capabilities.models?.filter((m) => m.default).map((m) => m.id)).toEqual([
     'gateway-x',
   ])
-  vi.mocked(gwDefault.rpc.request).mockImplementation(async (method) =>
-    method === 'model/list'
-      ? {
-          data: [
-            { model: 'test', isDefault: true, supportedReasoningEfforts: [] },
-            { model: 'other', isDefault: false, supportedReasoningEfforts: [] },
-          ],
-        }
-      : { turn: { id: 'turn1', status: 'inProgress' } },
-  )
   const otherDefault = setup({}, false, {
     sheetOverride: { models: [{ id: 'test' }, { id: 'other', default: true }] },
   })

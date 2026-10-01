@@ -759,6 +759,21 @@ describe('codexSheet', () => {
     expect(pinned.modelsSource).toBe('config')
     expect(applySheetOverride(codexSheet(NO_CODEX), { models: [] }).launchModel).toBeUndefined()
     expect(presetModelList('codex', { models: [{ id: 'gw/x' }] })).toMatchObject({ strict: true })
+    // merge over a still-empty discovery is not settled: no launchModel until rows land
+    const coldMerge = applySheetOverride(codexSheet(NO_CODEX), {
+      models_mode: 'merge',
+      models: [{ id: 'gw/x' }],
+    })
+    expect(coldMerge.modelsSource).toBe('merged')
+    expect(coldMerge.launchModel).toBeUndefined()
+    const warmMerge = applySheetOverride(
+      codexSheet({ ...NO_CODEX, readJson: () => CODEX_CATALOG }),
+      {
+        models_mode: 'merge',
+        models: [{ id: 'gw/x' }],
+      },
+    )
+    expect(warmMerge.launchModel).toBe(true)
   })
 
   it("once the installed binary's listing lands it is the list: stale cache rows are dropped", async () => {
@@ -777,6 +792,38 @@ describe('codexSheet', () => {
       ['gpt-6-astra', 'GPT-6-Astra'],
       ['gpt-5.5', 'GPT-5.5'],
     ])
+    // a later failure keeps the listing (not the cache) and logs the outage once;
+    // a listing that parses to nothing (shape drift) counts as a failure too
+    const logs: string[] = []
+    const log = (m: string): void => {
+      logs.push(m)
+    }
+    let out: Promise<string> = Promise.reject(new Error('spawn codex EAGAIN'))
+    const flaky: RunCommand = () => out
+    codexSheet({ ...NO_CODEX, readJson: () => stale, runCommand: flaky, log, now: 5 * 60_000 + 1 })
+    await new Promise((r) => setTimeout(r, 0))
+    const kept = codexSheet({
+      ...NO_CODEX,
+      readJson: () => stale,
+      runCommand: flaky,
+      log,
+      now: 5 * 60_000 + 2,
+    })
+    expect(kept.models?.map((m) => m.id)).toEqual(['gpt-6-astra', 'gpt-5.5'])
+    expect(logs).toHaveLength(1)
+    expect(logs[0]).toContain('last-known list')
+    out = Promise.resolve(JSON.stringify({ models: [{ wrong: 'shape' }] }))
+    codexSheet({ ...NO_CODEX, readJson: () => stale, runCommand: flaky, log, now: 10 * 60_000 + 3 })
+    await new Promise((r) => setTimeout(r, 0))
+    const stillKept = codexSheet({
+      ...NO_CODEX,
+      readJson: () => stale,
+      runCommand: flaky,
+      log,
+      now: 10 * 60_000 + 4,
+    })
+    expect(stillKept.models?.map((m) => m.id)).toEqual(['gpt-6-astra', 'gpt-5.5'])
+    expect(logs).toHaveLength(1) // same outage: not re-logged
   })
 
   it('a configured model the catalog does not know becomes the default row (custom gateway)', () => {

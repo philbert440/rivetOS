@@ -24,9 +24,10 @@ const HARNESS_LABEL: Record<HarnessId | 'pi', string> = {
 }
 
 /**
- * Client-side Codex sheet — the den `codexSheet()` static floor: no models
- * until the den discovers the CLI's catalog, `--model` / `-c` spawn flags,
- * and the #719 effort vocabulary.
+ * Client-side Codex sheet — the den `codexSheet()` static floor as the
+ * client sees it: no models until the den discovers the CLI's catalog, the
+ * `--model` / `-c` spawn flags, and the #719 effort vocabulary. (The den's
+ * `effortArgPrefix` is a spawn detail the client does not carry.)
  */
 export const CODEX_SHEET: HarnessSheet = {
   models: [],
