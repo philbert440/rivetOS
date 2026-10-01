@@ -3,7 +3,7 @@
  * unknown keys, type checks, and helpful error messages.
  */
 
-import { describe, it } from 'vitest'
+import { describe, expect, it } from 'vitest'
 import * as assert from 'node:assert/strict'
 import { validateConfig, formatValidationResult, type ValidationResult } from './validate/index.js'
 import { MODEL_DEFAULTS } from '@rivetos/types'
@@ -1264,6 +1264,26 @@ describe('den', () => {
       const result = validateConfig(cfg)
       assertWarning(result, 'tasks.harnesses.claude-code.models', 'empty and will be ignored')
       assertWarning(result, 'tasks.harnesses.claude-code.efforts', 'empty and will be ignored')
+    })
+
+    it('accepts models_mode discover | replace | merge and rejects anything else', () => {
+      for (const mode of ['discover', 'replace', 'merge']) {
+        const cfg = validConfig()
+        cfg.tasks = { harnesses: { codex: { models_mode: mode, models: [{ id: 'x' }] } } }
+        const result = validateConfig(cfg)
+        expect(
+          [...result.errors, ...result.warnings].filter((i) =>
+            i.path.startsWith('tasks.harnesses.codex'),
+          ),
+        ).toEqual([])
+      }
+      const bad = validConfig()
+      bad.tasks = { harnesses: { codex: { models_mode: 'append' } } }
+      assertError(
+        validateConfig(bad),
+        'tasks.harnesses.codex.models_mode',
+        "must be 'discover', 'replace' or 'merge'",
+      )
     })
   })
 

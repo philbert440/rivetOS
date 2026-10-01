@@ -2328,7 +2328,7 @@ export function createTermManager(config: DenConfig, deps: TermManagerDeps): Ter
             )
           }
         }
-        argv = appendModelEffortArgv(argv, sheet, model, effort, deps.log)
+        argv = appendModelEffortArgv(argv, sheet, model, effort, deps.log, key)
         if (session) argv = deps.harnessArgv?.(key, session, argv) ?? argv
       }
 

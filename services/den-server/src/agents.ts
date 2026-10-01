@@ -175,6 +175,14 @@ export function createAgentsRoutes(opts: {
   now?: () => number
   /** `level` defaults to `error` for a pre-existing `(msg) => void` logger. */
   log?: AgentRouteLog
+  /**
+   * The resolved model list for a harness — the one the spawn path appends
+   * `--model` from. A preset naming an id outside it is refused (400) when
+   * `strict` (the operator pinned the list with `models_mode: replace`) and
+   * warned about otherwise, instead of silently running the harness default
+   * at spawn. Absent, or an empty `ids` (no picker) → no check.
+   */
+  modelList?: (harnessId: HarnessId) => { ids: string[]; strict: boolean; source: string }
 }): AgentsRoutes {
   const store = opts.store
   const nodeName = opts.nodeName
@@ -195,6 +203,21 @@ export function createAgentsRoutes(opts: {
   }
   const warn = (msg: string): void => {
     log(msg, 'warn')
+  }
+
+  /** 400 text when `model` is off a strict list; a warning line otherwise. */
+  const vetModel = (
+    harnessId: HarnessId | undefined,
+    model: string,
+    presetName: string,
+  ): string | undefined => {
+    if (!harnessId || !model || !opts.modelList) return undefined
+    const list = opts.modelList(harnessId)
+    if (list.ids.length === 0 || list.ids.includes(model)) return undefined
+    const detail = `model "${model}" is not on the ${harnessId} model list (${list.source})`
+    if (list.strict) return detail
+    warn(`agent "${presetName}": ${detail} — the harness will run its own default`)
+    return undefined
   }
   const error = (msg: string): void => {
     log(msg, 'error')
@@ -379,6 +402,12 @@ export function createAgentsRoutes(opts: {
       return
     }
 
+    const modelIssue = vetModel(harnessId, model, name)
+    if (modelIssue) {
+      json(res, 400, { error: modelIssue })
+      return
+    }
+
     let agent: AgentPreset
     try {
       agent = await store.create({
@@ -546,6 +575,16 @@ export function createAgentsRoutes(opts: {
         patch.directory = fallback
       }
       materializeDirectory = true
+    }
+
+    if (raw.model !== undefined || raw.harnessId !== undefined) {
+      const nextHarness: HarnessId | undefined =
+        patch.harnessId === null ? undefined : (patch.harnessId ?? existing.harnessId ?? undefined)
+      const modelIssue = vetModel(nextHarness, patch.model ?? existing.model ?? '', name)
+      if (modelIssue) {
+        json(res, 400, { error: modelIssue })
+        return
+      }
     }
 
     let agent: AgentPreset | undefined

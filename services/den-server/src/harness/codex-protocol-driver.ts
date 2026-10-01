@@ -19,6 +19,7 @@ import {
 } from '@rivetos/types'
 import { CODEX_NATIVE_RE, CodexDriver, type CodexDriverDeps } from './codex-driver.js'
 import { record, type CodexFrame, type CodexRpc } from './codex-rpc.js'
+import { applySheetOverride } from './model-sheets.js'
 
 interface Binding {
   id: string
@@ -164,7 +165,15 @@ export class CodexProtocolDriver extends CodexDriver {
         if (cursor && seen.has(cursor)) throw new Error('Codex model catalog repeated a cursor')
         if (cursor) seen.add(cursor)
       } while (cursor)
-      this.capabilities.models = models
+      // The app-server catalog is a discovered list; `tasks.harnesses.codex`
+      // replaces or merges it the same way it does the TUI sheet.
+      const resolved = applySheetOverride(
+        { models, modelsSource: 'discovered' },
+        this.protocol.sheetOverride,
+        this.protocol.log,
+      )
+      this.capabilities.models = resolved.models
+      this.capabilities.modelsSource = resolved.modelsSource
       this.capabilities.efforts = []
       this.catalogAt = Date.now()
     })().finally(() => {

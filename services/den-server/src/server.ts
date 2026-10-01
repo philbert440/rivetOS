@@ -88,7 +88,14 @@ import { createRosterProvider, defaultSpawnCwd } from './term/roster.js'
 import { createSessionCwdStore } from './term/session-cwd.js'
 import { loadRealPtySpawn, type PtySpawn } from './term/pty.js'
 import { createTermManager, TermSpawnError, type TermManager } from './term/manager.js'
-import { EFFORT_TOKEN_RE, MODEL_TOKEN_RE, ROSTER_TO_HARNESS } from './harness/model-sheets.js'
+import {
+  EFFORT_TOKEN_RE,
+  MODEL_TOKEN_RE,
+  ROSTER_TO_HARNESS,
+  applySheetOverride,
+  resolveModelsMode,
+  sheetForHarness,
+} from './harness/model-sheets.js'
 import { TmuxUnavailableError, type TmuxCtl } from './term/tmux.js'
 import type { HerdrCtl } from './term/herdr.js'
 import { createTermWs } from './term/ws.js'
@@ -1247,6 +1254,18 @@ export function createDenServer(config: DenConfig, opts: DenServerOptions = {}):
     nodeName: config.nodeName,
     directoryRoot: config.agentsDir,
     ...(config.sharedRoot ? { sharedDir: config.sharedRoot } : {}),
+    // The same resolved sheet the spawn path appends `--model` from, so a
+    // preset naming an unlisted model is caught at save time (400 when the
+    // operator pinned the list with `replace`, a warning otherwise).
+    modelList: (harnessId) => {
+      const override = config.harnesses?.[harnessId]
+      const sheet = applySheetOverride(sheetForHarness(harnessId), override)
+      return {
+        ids: (sheet.models ?? []).map((m) => m.id),
+        strict: resolveModelsMode(override) === 'replace',
+        source: sheet.modelsSource ?? 'static',
+      }
+    },
   })
 
   const authorized = (req: IncomingMessage, _url: URL): boolean =>

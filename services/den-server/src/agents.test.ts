@@ -30,11 +30,14 @@ let server: Server | undefined
 let base: string
 let now = 1_700_000_000_000
 
+type ModelList = { ids: string[]; strict: boolean; source: string }
+
 async function start(opts?: {
   homeDir?: () => string
   directoryRoot?: (dir: string) => string
   store?: (dir: string) => AgentPresetStore
   log?: AgentRouteLog
+  modelList?: (harnessId: string) => ModelList
 }): Promise<void> {
   dir = mkdtempSync(join(tmpdir(), 'den-agents-'))
   mkdirSync(join(dir, 'shared'))
@@ -48,6 +51,7 @@ async function start(opts?: {
     now: () => now,
     ...(opts?.homeDir ? { homeDir: opts.homeDir } : {}),
     ...(opts?.log ? { log: opts.log } : {}),
+    ...(opts?.modelList ? { modelList: opts.modelList } : {}),
   })
   server = createServer((req, res) => {
     const url = new URL(req.url ?? '/', 'http://localhost')
@@ -171,6 +175,67 @@ describe('agents routes', () => {
     expect(await del.json()).toEqual({ ok: true })
     const empty = (await (await fetch(`${base}/api/agents`)).json()) as { agents: AgentPreset[] }
     expect(empty.agents).toHaveLength(0)
+  })
+
+  describe('model vetting against the harness list', () => {
+    const codexList = (strict: boolean) => (harnessId: string) =>
+      harnessId === 'codex'
+        ? { ids: ['gpt-6-astra', 'gpt-5.5'], strict, source: strict ? 'config' : 'discovered' }
+        : { ids: [], strict: false, source: 'static' }
+
+    it('POST with an unlisted model is 400 when the list is pinned (models_mode replace)', async () => {
+      await start({ modelList: codexList(true) })
+      const res = await createAgent({ name: 'A', harnessId: 'codex', model: 'gpt-4o' })
+      expect(res.status).toBe(400)
+      expect(res.json.error).toBe('model "gpt-4o" is not on the codex model list (config)')
+      const ok = await createAgent({ name: 'B', harnessId: 'codex', model: 'gpt-5.5' })
+      expect(ok.status).toBe(201)
+    })
+
+    it('POST with an unlisted model is stored with one warning when the list is discovered', async () => {
+      const logs: { msg: string; level?: string }[] = []
+      await start({
+        modelList: codexList(false),
+        log: (msg, level) => {
+          logs.push({ msg, level })
+        },
+      })
+      const res = await createAgent({ name: 'A', harnessId: 'codex', model: 'gpt-4o' })
+      expect(res.status).toBe(201)
+      expect(res.json.agent?.model).toBe('gpt-4o')
+      const warned = logs.filter((l) => l.level === 'warn' && l.msg.includes('gpt-4o'))
+      expect(warned).toHaveLength(1)
+      expect(warned[0].msg).toContain('not on the codex model list (discovered)')
+    })
+
+    it('a harness with no model list, or no harness, is not vetted', async () => {
+      await start({ modelList: codexList(true) })
+      expect(
+        (await createAgent({ name: 'A', harnessId: 'cursor', model: 'anything' })).status,
+      ).toBe(201)
+      expect((await createAgent({ name: 'B', model: 'anything' })).status).toBe(201)
+    })
+
+    it('PATCH vets the effective harness + model pair', async () => {
+      await start({ modelList: codexList(true) })
+      const created = await createAgent({ name: 'A', harnessId: 'codex', model: 'gpt-5.5' })
+      const id = created.json.agent!.id
+      const patch = async (body: Record<string, unknown>) => {
+        const res = await fetch(`${base}/api/agents/${id}`, {
+          method: 'PATCH',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(body),
+        })
+        return { status: res.status, json: (await res.json()) as { error?: string } }
+      }
+      expect((await patch({ model: 'gpt-4o' })).status).toBe(400)
+      expect((await patch({ model: 'gpt-6-astra' })).status).toBe(200)
+      // Moving a preset with an off-list model onto the pinned harness is refused too.
+      expect((await patch({ harnessId: 'cursor', model: 'whatever' })).status).toBe(200)
+      expect((await patch({ harnessId: 'codex' })).status).toBe(400)
+      // A patch that touches neither field is not re-vetted.
+      expect((await patch({ name: 'Renamed' })).status).toBe(200)
+    })
   })
 
   it('POST without nodeBaseUrl succeeds and stamps node', async () => {

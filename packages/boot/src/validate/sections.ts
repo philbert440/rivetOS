@@ -1099,6 +1099,16 @@ function validateTasksHarnesses(
         message: `"${path}.effort" must be 'low', 'medium' or 'high'`,
       })
     }
+    if (
+      section.models_mode !== undefined &&
+      !['discover', 'replace', 'merge'].includes(section.models_mode as string)
+    ) {
+      issues.push({
+        severity: 'error',
+        path: `${path}.models_mode`,
+        message: `"${path}.models_mode" must be 'discover', 'replace' or 'merge'`,
+      })
+    }
     if (section.models !== undefined && !Array.isArray(section.models)) {
       issues.push({
         severity: 'error',

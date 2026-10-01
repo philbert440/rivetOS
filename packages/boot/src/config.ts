@@ -204,10 +204,22 @@ export interface HarnessExecutorSection {
   cwd?: string
   /** CLI home override (e.g. KIMI_CODE_HOME) for task spawns. */
   home?: string
-  /** Replaces the driver's advertised model list when present. */
+  /**
+   * Model list override. How it combines with what the harness itself
+   * advertises is set by `models_mode`; with `models_mode` absent, a
+   * non-empty `models` REPLACES the discovered list (the historical meaning).
+   */
   models?: HarnessModelOption[]
-  /** Replaces the driver's advertised effort list when present. */
+  /** Effort list override; combined the same way as `models`. */
   efforts?: EffortOption[]
+  /**
+   * - `discover` (default): the harness's own catalog, falling back to the
+   *   built-in sheet. `models` / `efforts` are ignored.
+   * - `replace`: exactly `models` / `efforts`.
+   * - `merge`: discovered plus config entries, deduped by id; a config entry
+   *   wins on label / default / efforts.
+   */
+  models_mode?: 'discover' | 'replace' | 'merge'
 }
 
 /**

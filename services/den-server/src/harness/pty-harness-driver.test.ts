@@ -568,6 +568,24 @@ describe('model/effort sheet on capabilities', () => {
     expect(driver.capabilities.models).toEqual([{ id: 'only', label: 'Only' }])
     expect(driver.capabilities.efforts).toEqual([{ id: 'max', label: 'Max' }])
     expect(driver.capabilities.modelFlag).toBe('--model')
+    expect(driver.capabilities.modelsSource).toBe('config')
+  })
+
+  it('models_mode merge adds config rows to the discovered list and says merged', () => {
+    const driver = new ClaudeCodeDriver({
+      store: fakeStore([]),
+      sheetOverride: {
+        models_mode: 'merge',
+        models: [{ id: 'gateway-x', label: 'Gateway X', default: true }],
+      },
+    })
+    const ids = driver.capabilities.models?.map((m) => m.id) ?? []
+    expect(ids).toContain('fable')
+    expect(ids).toContain('gateway-x')
+    expect(driver.capabilities.models?.filter((m) => m.default).map((m) => m.id)).toEqual([
+      'gateway-x',
+    ])
+    expect(driver.capabilities.modelsSource).toBe('merged')
   })
 
   it('stamps launchModel from the sheet and drops it when the sheet does not carry it', () => {

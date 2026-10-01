@@ -1,17 +1,33 @@
 /**
  * Per-harness model/effort capability sheets.
  *
- * Pure: file readers are injected so grok's models_cache.json and kimi's
- * config.toml can be unit-tested without touching the real home directory.
- * Config overrides (`tasks.harnesses.<id>.models` / `.efforts`) REPLACE the
- * sheet's lists when present as a non-empty sanitized array; malformed
+ * Pure: file readers (and the one subprocess runner) are injected so grok's
+ * models_cache.json, kimi's config.toml, codex's catalog and the rest can be
+ * unit-tested without touching the real home directory or PATH.
+ *
+ * Each sheet says where its `models` came from (`modelsSource`): the
+ * harness's own catalog when discovery found rows (`discovered`), else the
+ * built-in floor (`static`). Async sources (an endpoint, a CLI listing) go
+ * through `backgroundDiscovery`: the sheet is always built synchronously from
+ * the last-known result and the refresh runs off the request path.
+ *
+ * Config overrides (`tasks.harnesses.<id>.models` / `.efforts`) combine with
+ * the sheet per `models_mode`: `replace` (the meaning when `models_mode` is
+ * absent and a list is set — older configs keep working), `merge` (deduped by
+ * id, config wins), or `discover` (the override is ignored). Malformed
  * entries are dropped, and an empty result keeps the sheet.
  */
 
+import { execFile } from 'node:child_process'
 import { homedir } from 'node:os'
 import { join } from 'node:path'
 import { readFileSync, statSync } from 'node:fs'
-import type { EffortOption, HarnessId, HarnessModelOption } from '@rivetos/types'
+import type {
+  EffortOption,
+  HarnessId,
+  HarnessModelOption,
+  HarnessModelsSource,
+} from '@rivetos/types'
 
 /**
  * Model id on POST /term and as a sheet id.
@@ -31,10 +47,14 @@ export interface SheetReaders {
   readJson?: ReadJson
   readText?: ReadText
   home?: string
+  /** Listing-subprocess runner (codex `debug models`); tests inject a fake. */
+  runCommand?: RunCommand
 }
 
 export interface ModelSheet {
   models?: HarnessModelOption[]
+  /** Provenance of `models`; surfaced on `/api/harnesses` as `capabilities.modelsSource`. */
+  modelsSource?: HarnessModelsSource
   efforts?: EffortOption[]
   modelFlag?: string
   /**
@@ -59,11 +79,35 @@ export interface ModelSheet {
    * (opencode medium → no `--variant`). Absent key → use the effort id.
    */
   effortArgValues?: Record<string, string>
+  /**
+   * Prepended to the (mapped) effort value, for CLIs whose effort is a
+   * `key=value` config override rather than a dedicated flag:
+   * codex `-c model_reasoning_effort=high`.
+   */
+  effortArgPrefix?: string
 }
 
 export interface SheetOverride {
   models?: unknown
   efforts?: unknown
+  /** `discover` | `replace` | `merge`; see `resolveModelsMode`. */
+  models_mode?: unknown
+}
+
+export type ModelsMode = 'discover' | 'replace' | 'merge'
+
+/**
+ * How a config override combines with the sheet. An explicit `models_mode`
+ * wins; without one, a `models` / `efforts` list means `replace` (what the
+ * key has always meant, so existing configs do not change) and no list means
+ * `discover`.
+ */
+export function resolveModelsMode(override?: SheetOverride): ModelsMode {
+  const raw = override?.models_mode
+  if (raw === 'discover' || raw === 'replace' || raw === 'merge') return raw
+  return Array.isArray(override?.models) || Array.isArray(override?.efforts)
+    ? 'replace'
+    : 'discover'
 }
 
 export const ROSTER_TO_HARNESS: Record<string, HarnessId> = {
@@ -99,13 +143,26 @@ const HERMES_EFFORTS: EffortOption[] = [
   { id: 'high', label: 'High' },
 ]
 
-/** Codex CLI reasoning efforts — same vocabulary as the #719 `codex-cli` provider. */
+/**
+ * Codex CLI reasoning efforts — same vocabulary as the #719 `codex-cli`
+ * provider. The static floor; a discovered catalog row carries its own
+ * `supported_reasoning_levels` (which can add `max` / `ultra`).
+ */
 const CODEX_EFFORTS: EffortOption[] = [
   { id: 'low', label: 'Low' },
   { id: 'medium', label: 'Medium', default: true },
   { id: 'high', label: 'High' },
   { id: 'xhigh', label: 'X-High' },
 ]
+
+const CODEX_EFFORT_LABELS: Record<string, string> = {
+  low: 'Low',
+  medium: 'Medium',
+  high: 'High',
+  xhigh: 'X-High',
+  max: 'Max',
+  ultra: 'Ultra',
+}
 
 /** RivetOS effort ids for OpenCode `--variant`. medium omits the flag. */
 const OPENCODE_EFFORTS: EffortOption[] = [
@@ -172,10 +229,15 @@ export function sanitizeModels(raw: unknown): HarnessModelOption[] {
 }
 
 /**
- * Config override replaces the sheet's models and/or efforts when the
- * override actually carries that key as an array. A non-array value is
- * ignored (keep the sheet). An array that sanitizes to empty is also
- * ignored (keep the sheet) and logged when a sink is provided.
+ * Combine a config override with the sheet per `resolveModelsMode`:
+ * - `discover`: the sheet as discovered; a stray list is ignored and logged.
+ * - `replace`: the override's models and/or efforts, when that key is an
+ *   array (`modelsSource: 'config'`).
+ * - `merge`: sheet rows plus override rows, deduped by id; an override row
+ *   wins on label / default / efforts, and an override `default` clears the
+ *   sheet's (`modelsSource: 'merged'`).
+ * A non-array value is ignored (keep the sheet). An array that sanitizes to
+ * empty is also ignored (keep the sheet) and logged when a sink is provided.
  */
 export function applySheetOverride(
   sheet: ModelSheet,
@@ -183,24 +245,59 @@ export function applySheetOverride(
   log?: (msg: string) => void,
 ): ModelSheet {
   if (!override) return sheet
+  const mode = resolveModelsMode(override)
   const next: ModelSheet = { ...sheet }
+  if (mode === 'discover') {
+    if (Array.isArray(override.models) || Array.isArray(override.efforts)) {
+      log?.(
+        '[den-server] harness sheet: models_mode is discover — ignoring the models/efforts override',
+      )
+    }
+    return next
+  }
   if (Array.isArray(override.models)) {
     const models = sanitizeModels(override.models)
     if (models.length === 0) {
       log?.('[den-server] harness sheet: ignoring empty models override (keeping sheet list)')
-    } else {
+    } else if (mode === 'replace') {
       next.models = models
+      next.modelsSource = 'config'
+    } else {
+      next.models = mergeRows(sheet.models ?? [], models)
+      next.modelsSource = 'merged'
     }
   }
   if (Array.isArray(override.efforts)) {
     const efforts = sanitizeEfforts(override.efforts)
     if (efforts.length === 0) {
       log?.('[den-server] harness sheet: ignoring empty efforts override (keeping sheet list)')
-    } else {
+    } else if (mode === 'replace') {
       next.efforts = efforts
+    } else {
+      next.efforts = mergeRows(sheet.efforts ?? [], efforts)
     }
   }
   return next
+}
+
+/**
+ * Discovered rows plus config rows, deduped by id. A config row overlays the
+ * discovered one (label / default / efforts win); a config row with
+ * `default: true` makes it the only default.
+ */
+function mergeRows<T extends { id: string; default?: boolean }>(discovered: T[], config: T[]): T[] {
+  const out: T[] = discovered.map((row) => ({ ...row }))
+  for (const row of config) {
+    const i = out.findIndex((m) => m.id === row.id)
+    if (i >= 0) out[i] = { ...out[i], ...row }
+    else out.push({ ...row })
+  }
+  if (config.some((row) => row.default === true)) {
+    for (const row of out) {
+      if (!config.some((c) => c.id === row.id && c.default === true)) delete row.default
+    }
+  }
+  return out
 }
 
 /**
@@ -243,11 +340,15 @@ export function claudeSheet(
     { id: 'opus[1m]', label: 'Opus 5 1M context' },
     { id: 'sonnet[1m]', label: 'Sonnet 5 1M context' },
   ]
+  let discovered = false
   for (const extra of claudeCacheModelsFor(readJson, home, env)) {
-    if (!models.some((m) => m.id === extra.id)) models.push(extra)
+    if (models.some((m) => m.id === extra.id)) continue
+    models.push(extra)
+    discovered = true
   }
   return {
     models,
+    modelsSource: discovered ? 'discovered' : 'static',
     efforts: CLAUDE_EFFORTS,
     modelFlag: '--model',
     effortFlag: '--effort',
@@ -330,9 +431,157 @@ interface ClaudeCacheMemo {
 /** One entry per resolved config path; a fresh file stat replaces it. */
 const claudeCacheMemo = new Map<string, ClaudeCacheMemo>()
 
-/** Drop the `~/.claude.json` cache-row memo (tests only). */
+/** Drop the `~/.claude.json` and per-file row memos (tests only). */
 export function __resetClaudeCacheMemoForTests(): void {
   claudeCacheMemo.clear()
+  fileRowsMemo.clear()
+}
+
+interface FileRowsMemo {
+  mtimeMs: number
+  size: number
+  rows: HarnessModelOption[]
+}
+
+/** One entry per catalog file; a fresh stat replaces it. */
+const fileRowsMemo = new Map<string, FileRowsMemo>()
+
+/**
+ * `parse(readJson(path))`, stat-memoized (`mtimeMs` + `size`) when the real
+ * file reader is in use — same idea as `claudeCacheModelsFor`, for any
+ * harness whose CLI keeps a catalog file (codex's `models_cache.json` is
+ * a few hundred KB). Unreadable / unparseable → no rows. An injected reader
+ * always runs so tests stay deterministic.
+ */
+function fileRowsFor(
+  readJson: ReadJson,
+  path: string,
+  parse: (raw: unknown) => HarnessModelOption[],
+): HarnessModelOption[] {
+  const parseSafe = (read: ReadJson): HarnessModelOption[] => {
+    try {
+      return parse(read(path))
+    } catch {
+      return []
+    }
+  }
+  if (readJson !== defaultReadJson) return parseSafe(readJson)
+  let mtimeMs: number
+  let size: number
+  try {
+    const stat = statSync(path)
+    mtimeMs = stat.mtimeMs
+    size = stat.size
+  } catch {
+    fileRowsMemo.delete(path)
+    return []
+  }
+  const memo = fileRowsMemo.get(path)
+  if (memo && memo.mtimeMs === mtimeMs && memo.size === size) return memo.rows
+  const rows = parseSafe(defaultReadJson)
+  fileRowsMemo.set(path, { mtimeMs, size, rows })
+  return rows
+}
+
+// ---------------------------------------------------------------------------
+// Background discovery — async catalog sources, read synchronously.
+// ---------------------------------------------------------------------------
+
+interface DiscoveryEntry<T> {
+  value: T | undefined
+  at: number
+  inflight?: Promise<void>
+  /** A failure was already logged for the current outage. */
+  failing: boolean
+}
+
+const discoveryCache = new Map<string, DiscoveryEntry<unknown>>()
+
+/** Forget every background-discovered catalog (tests only). */
+export function __resetDiscoveryCacheForTests(): void {
+  discoveryCache.clear()
+}
+
+/**
+ * Last-known result of an async catalog source (`run`), refreshing in the
+ * background once `ttlMs` has passed since the last attempt. Never blocks and
+ * never throws: the first read (and any read during an outage) returns what
+ * the cache has, possibly `undefined`, so the caller falls back to its static
+ * rows. A failure keeps the last-known value and logs ONE line per outage —
+ * the next success re-arms the log. Sheets are re-read on the driver's TTL,
+ * so a completed run lands on the next read and is announced as a capability
+ * change.
+ */
+export function backgroundDiscovery<T>(
+  key: string,
+  run: () => Promise<T>,
+  opts: { ttlMs: number; now: number; log?: (msg: string) => void },
+): T | undefined {
+  const entry = (discoveryCache.get(key) as DiscoveryEntry<T> | undefined) ?? {
+    value: undefined,
+    at: Number.NEGATIVE_INFINITY,
+    failing: false,
+  }
+  discoveryCache.set(key, entry)
+  if (!entry.inflight && opts.now - entry.at >= opts.ttlMs) {
+    entry.inflight = run()
+      .then((value) => {
+        entry.value = value
+        entry.failing = false
+      })
+      .catch((err: unknown) => {
+        if (!entry.failing) {
+          const msg = err instanceof Error ? err.message : String(err)
+          const kept = entry.value === undefined ? 'static sheet' : 'last-known list'
+          opts.log?.(`[den-server] model discovery ${key}: ${msg} — serving the ${kept}`)
+        }
+        entry.failing = true
+      })
+      .finally(() => {
+        entry.at = opts.now
+        entry.inflight = undefined
+      })
+  }
+  return entry.value
+}
+
+/** Runs a listing command; resolves with stdout. Injected so tests never spawn. */
+export type RunCommand = (
+  argv: string[],
+  opts: { timeoutMs: number; env: NodeJS.ProcessEnv },
+) => Promise<string>
+
+/** A catalog render can be large (codex: ~600 KB); well under this cap. */
+const RUN_COMMAND_MAX_BUFFER = 32 * 1024 * 1024
+
+export const defaultRunCommand: RunCommand = (argv, opts) =>
+  new Promise((resolve, reject) => {
+    execFile(
+      argv[0],
+      argv.slice(1),
+      {
+        timeout: opts.timeoutMs,
+        maxBuffer: RUN_COMMAND_MAX_BUFFER,
+        env: opts.env,
+        windowsHide: true,
+      },
+      (err, stdout) => {
+        if (err) reject(err instanceof Error ? err : new Error('listing failed'))
+        else resolve(stdout)
+      },
+    )
+  })
+
+/**
+ * PATH for a listing subprocess: the den's own PATH plus `~/.local/bin`, the
+ * same augmentation the spawn path applies (a user-installed CLI is found
+ * even when the service PATH lacks it).
+ */
+function discoveryEnv(env: NodeJS.ProcessEnv, home: string): NodeJS.ProcessEnv {
+  const localBin = join(home, '.local', 'bin')
+  const parts = (env.PATH ?? '').split(':').filter(Boolean)
+  if (!parts.includes(localBin)) parts.push(localBin)
+  return { ...env, PATH: parts.join(':') }
 }
 
 /**
@@ -345,6 +594,7 @@ export function grokSheet(
 ): ModelSheet {
   const fallback: ModelSheet = {
     models: [{ id: 'grok-4.6', label: 'grok-4.6', default: true, efforts: GROK_FALLBACK_EFFORTS }],
+    modelsSource: 'static',
     efforts: GROK_FALLBACK_EFFORTS,
     modelFlag: '--model',
     effortFlag: '--reasoning-effort',
@@ -375,6 +625,7 @@ export function grokSheet(
   models[0].default = true
   return {
     models,
+    modelsSource: 'discovered',
     efforts: models[0].efforts,
     modelFlag: '--model',
     effortFlag: '--reasoning-effort',
@@ -401,7 +652,7 @@ export function kimiSheet(
   readText: ReadText = defaultReadText,
   home: string = homedir(),
 ): ModelSheet {
-  const empty: ModelSheet = { models: [], modelFlag: '--model' }
+  const empty: ModelSheet = { models: [], modelsSource: 'static', modelFlag: '--model' }
   const paths = [
     join(home, '.kimi', 'config.toml'),
     join(home, '.config', 'kimi', 'config.toml'),
@@ -414,7 +665,12 @@ export function kimiSheet(
     } catch {
       continue
     }
-    return { models: parseKimiToml(text), modelFlag: '--model' }
+    const models = parseKimiToml(text)
+    return {
+      models,
+      modelsSource: models.length > 0 ? 'discovered' : 'static',
+      modelFlag: '--model',
+    }
   }
   return empty
 }
@@ -548,46 +804,25 @@ export const fetchOpenAiModelIds: FetchModelIds = async (baseUrl, apiKey) => {
   return data.flatMap((row) => (isRecord(row) && typeof row.id === 'string' ? [row.id] : []))
 }
 
-interface EndpointCacheEntry {
-  ids: string[]
-  at: number
-  inflight?: Promise<void>
-}
-const hermesEndpointCache = new Map<string, EndpointCacheEntry>()
-
 export function __resetHermesEndpointCacheForTests(): void {
-  hermesEndpointCache.clear()
+  __resetDiscoveryCacheForTests()
 }
 
-/**
- * Last-known ids served at `baseUrl`, refreshing in the background when stale.
- * Never blocks and never throws: the first read (and any read while the
- * endpoint is down) returns what the cache has, possibly nothing. The driver
- * re-reads its sheet on a TTL, so a completed fetch lands on the next read
- * and is announced as a capability change.
- */
+/** Last-known ids served at `baseUrl` (see `backgroundDiscovery`). */
 function hermesEndpointModels(
   baseUrl: string,
   apiKey: string | undefined,
   fetchIds: FetchModelIds,
   now: number,
+  log?: (msg: string) => void,
 ): string[] {
-  const entry = hermesEndpointCache.get(baseUrl) ?? { ids: [], at: Number.NEGATIVE_INFINITY }
-  hermesEndpointCache.set(baseUrl, entry)
-  if (!entry.inflight && now - entry.at >= HERMES_ENDPOINT_TTL_MS) {
-    entry.inflight = fetchIds(baseUrl, apiKey)
-      .then((ids) => {
-        entry.ids = ids.filter((id) => MODEL_TOKEN_RE.test(id))
-      })
-      .catch(() => {
-        /* endpoint down — keep the last-known list */
-      })
-      .finally(() => {
-        entry.at = Date.now()
-        entry.inflight = undefined
-      })
-  }
-  return entry.ids
+  return (
+    backgroundDiscovery(
+      `hermes:${baseUrl}`,
+      () => fetchIds(baseUrl, apiKey).then((ids) => ids.filter((id) => MODEL_TOKEN_RE.test(id))),
+      { ttlMs: HERMES_ENDPOINT_TTL_MS, now, log },
+    ) ?? []
+  )
 }
 
 /**
@@ -604,6 +839,7 @@ export function hermesSheet(
   home: string = homedir(),
   fetchIds: FetchModelIds = fetchOpenAiModelIds,
   now: number = Date.now(),
+  log?: (msg: string) => void,
 ): ModelSheet {
   let config: HermesModelConfig = {}
   try {
@@ -616,12 +852,13 @@ export function hermesSheet(
     config.default && MODEL_TOKEN_RE.test(config.default) ? config.default : undefined
   if (defaultId) ids.push(defaultId)
   if (config.baseUrl && /^https?:\/\//.test(config.baseUrl)) {
-    for (const id of hermesEndpointModels(config.baseUrl, config.apiKey, fetchIds, now)) {
+    for (const id of hermesEndpointModels(config.baseUrl, config.apiKey, fetchIds, now, log)) {
       if (!ids.includes(id)) ids.push(id)
     }
   }
   return {
     models: ids.map((id) => ({ id, label: id, ...(id === defaultId ? { default: true } : {}) })),
+    modelsSource: ids.length > 0 ? 'discovered' : 'static',
     efforts: HERMES_EFFORTS,
     modelFlag: '-m',
     effortFlag: '--reasoning',
@@ -630,18 +867,157 @@ export function hermesSheet(
   }
 }
 
+/** `$CODEX_HOME`, else `~/.codex` — where the CLI keeps `config.toml` and `models_cache.json`. */
+export function codexHome(home: string, env: NodeJS.ProcessEnv = process.env): string {
+  const dir = env.CODEX_HOME?.trim()
+  return dir ? dir : join(home, '.codex')
+}
+
 /**
- * Codex — static sheet. The CLI's model list is not queryable here; `default`
- * is the picker placeholder. Effort ids match #719 (`low|medium|high|xhigh`).
- * No spawn flags: Codex effort is `-c model_reasoning_effort=…`, which does
- * not fit the two-token `[flag, value]` append, and `--model default` would
- * be a lie. Lane A2 / spawn follow-up can add real flags.
+ * The Codex model catalog, as `codex debug models` renders it and as the CLI
+ * caches it in `models_cache.json`: `{ models: [{ slug, display_name,
+ * visibility, priority, default_reasoning_level, supported_reasoning_levels:
+ * [{ effort }], input_modalities }] }`. Rows whose `visibility` is not `list`
+ * (hidden / retired) are dropped; the rest are ordered by `priority`.
  */
-export function codexSheet(): ModelSheet {
-  return {
-    models: [{ id: 'default', label: 'Default', default: true }],
-    efforts: CODEX_EFFORTS,
+export function parseCodexCatalog(raw: unknown): HarnessModelOption[] {
+  if (!isRecord(raw) || !Array.isArray(raw.models)) return []
+  const rows: { opt: HarnessModelOption; priority: number }[] = []
+  const seen = new Set<string>()
+  for (const entry of raw.models) {
+    if (!isRecord(entry) || typeof entry.slug !== 'string') continue
+    const id = entry.slug.trim()
+    if (!MODEL_TOKEN_RE.test(id) || seen.has(id)) continue
+    if (entry.visibility !== undefined && entry.visibility !== 'list') continue
+    seen.add(id)
+    const label =
+      typeof entry.display_name === 'string' && entry.display_name.trim()
+        ? entry.display_name.trim()
+        : id
+    const opt: HarnessModelOption = { id, label }
+    const defaultEffort =
+      typeof entry.default_reasoning_level === 'string' ? entry.default_reasoning_level : ''
+    if (Array.isArray(entry.supported_reasoning_levels)) {
+      const efforts: EffortOption[] = []
+      for (const level of entry.supported_reasoning_levels) {
+        const effort =
+          isRecord(level) && typeof level.effort === 'string'
+            ? level.effort.trim()
+            : typeof level === 'string'
+              ? level.trim()
+              : ''
+        if (!EFFORT_TOKEN_RE.test(effort) || efforts.some((e) => e.id === effort)) continue
+        const row: EffortOption = { id: effort, label: CODEX_EFFORT_LABELS[effort] ?? effort }
+        if (effort === defaultEffort) row.default = true
+        efforts.push(row)
+      }
+      if (efforts.length > 0) opt.efforts = efforts
+    }
+    if (Array.isArray(entry.input_modalities)) {
+      const modalities = entry.input_modalities.filter((m): m is string => typeof m === 'string')
+      if (modalities.length > 0) opt.inputModalities = modalities
+    }
+    rows.push({
+      opt,
+      priority: typeof entry.priority === 'number' ? entry.priority : Number.POSITIVE_INFINITY,
+    })
   }
+  rows.sort((a, b) => a.priority - b.priority)
+  return rows.map((r) => r.opt)
+}
+
+/** Top-level `model = "…"` of `config.toml` (before the first `[table]`). */
+export function parseCodexConfigModel(text: string): string | undefined {
+  for (const line of text.split('\n')) {
+    const t = line.trim()
+    if (t.startsWith('[')) break
+    const m = /^model\s*=\s*["']([^"']+)["']/.exec(t)
+    if (m) return m[1].trim()
+  }
+  return undefined
+}
+
+export interface CodexSheetDeps {
+  readJson?: ReadJson
+  readText?: ReadText
+  home?: string
+  env?: NodeJS.ProcessEnv
+  runCommand?: RunCommand
+  now?: number
+  log?: (msg: string) => void
+}
+
+const CODEX_CATALOG_TTL_MS = 5 * 60_000
+const CODEX_CATALOG_TIMEOUT_MS = 5_000
+
+/**
+ * Codex — discovered from the CLI itself. Two sources, deduped by id:
+ * 1. `<codex home>/models_cache.json`, the catalog the CLI last fetched
+ *    (stat-memoized; present on any node where codex has run);
+ * 2. `codex debug models`, the same catalog rendered by the installed binary,
+ *    run in the background with a bounded timeout (covers a fresh install or
+ *    a relocated cache; ~150 ms, no network of its own).
+ * The default is `config.toml`'s top-level `model` when set — added as a row
+ * if the catalog does not know it, which is the custom-gateway case — else the
+ * catalog's top-priority row. Effort ids per row come from the catalog
+ * (`max` / `ultra` on the models that support them); the floor is the #719
+ * vocabulary. Spawn flags: `--model <id>` and `-c model_reasoning_effort=<e>`
+ * (`effortArgPrefix`), the CLI's own documented forms. Nothing discovered →
+ * no models (a picker with a fake `default` row would spawn `--model default`).
+ */
+export function codexSheet(deps: CodexSheetDeps = {}): ModelSheet {
+  const readJson = deps.readJson ?? defaultReadJson
+  const readText = deps.readText ?? defaultReadText
+  const home = deps.home ?? homedir()
+  const env = deps.env ?? process.env
+  const runCommand = deps.runCommand ?? defaultRunCommand
+  const now = deps.now ?? Date.now()
+  const root = codexHome(home, env)
+  const base: ModelSheet = {
+    models: [],
+    modelsSource: 'static',
+    efforts: CODEX_EFFORTS,
+    modelFlag: '--model',
+    effortFlag: '-c',
+    effortArgPrefix: 'model_reasoning_effort=',
+    launchModel: true,
+  }
+  const models: HarnessModelOption[] = []
+  const add = (rows: HarnessModelOption[]): void => {
+    for (const row of rows) {
+      if (models.some((m) => m.id === row.id)) continue
+      // copies: the memo / discovery cache keep the originals
+      models.push({
+        ...row,
+        ...(row.efforts ? { efforts: row.efforts.map((e) => ({ ...e })) } : {}),
+      })
+    }
+  }
+  add(fileRowsFor(readJson, join(root, 'models_cache.json'), parseCodexCatalog))
+  const listed = backgroundDiscovery(
+    `codex:debug-models:${root}`,
+    () =>
+      runCommand(['codex', 'debug', 'models'], {
+        timeoutMs: CODEX_CATALOG_TIMEOUT_MS,
+        env: discoveryEnv(env, home),
+      }).then((out) => parseCodexCatalog(JSON.parse(out))),
+    { ttlMs: CODEX_CATALOG_TTL_MS, now, log: deps.log },
+  )
+  if (listed) add(listed)
+  let configured: string | undefined
+  try {
+    configured = parseCodexConfigModel(readText(join(root, 'config.toml')))
+  } catch {
+    /* no config — the catalog's own order picks the default */
+  }
+  if (configured && MODEL_TOKEN_RE.test(configured) && !models.some((m) => m.id === configured)) {
+    models.push({ id: configured, label: configured })
+  }
+  if (models.length === 0) return base
+  for (const m of models) delete m.default
+  const marked = models.find((m) => m.id === configured) ?? models[0]
+  marked.default = true
+  return { ...base, models, modelsSource: 'discovered' }
 }
 
 /**
@@ -660,7 +1036,7 @@ export function opencodeSheet(
     efforts: OPENCODE_EFFORTS,
     effortArgValues: OPENCODE_EFFORT_ARGS,
   }
-  const empty: ModelSheet = { models: [], ...flags }
+  const empty: ModelSheet = { models: [], modelsSource: 'static', ...flags }
   const configRoot = process.env.XDG_CONFIG_HOME?.trim() || join(home, '.config')
   const paths = [
     join(configRoot, 'opencode', 'opencode.json'),
@@ -673,7 +1049,8 @@ export function opencodeSheet(
     } catch {
       continue
     }
-    return { models: parseOpencodeConfig(raw), ...flags }
+    const models = parseOpencodeConfig(raw)
+    return { models, modelsSource: models.length > 0 ? 'discovered' : 'static', ...flags }
   }
   return empty
 }
@@ -774,6 +1151,7 @@ export function piSheet(
   }
   return {
     models,
+    modelsSource: fromStore.length > 0 ? 'discovered' : 'static',
     efforts: PI_EFFORTS,
     modelFlag: '--model',
     effortFlag: '--thinking',
@@ -825,7 +1203,7 @@ export function qwenCodeSheet(
   readJson: ReadJson = defaultReadJson,
   home: string = homedir(),
 ): ModelSheet {
-  const empty: ModelSheet = { models: [], modelFlag: '-m' }
+  const empty: ModelSheet = { models: [], modelsSource: 'static', modelFlag: '-m' }
   let raw: unknown
   try {
     raw = readJson(join(home, '.qwen', 'settings.json'))
@@ -861,7 +1239,7 @@ export function qwenCodeSheet(
       marked.default = true
     }
   }
-  return { models, modelFlag: '-m' }
+  return { models, modelsSource: models.length > 0 ? 'discovered' : 'static', modelFlag: '-m' }
 }
 
 /** One models-store.json row: a model token or a loosely-shaped object. */
@@ -922,7 +1300,15 @@ function piModelsFromStore(readJson: ReadJson, path: string): HarnessModelOption
   return out
 }
 
-export function sheetForHarness(harnessId: HarnessId, readers?: SheetReaders): ModelSheet {
+/**
+ * The built-in sheet for a harness. `log` receives the one-line discovery
+ * failure notices (a listing that timed out, an endpoint that is down).
+ */
+export function sheetForHarness(
+  harnessId: HarnessId,
+  readers?: SheetReaders,
+  log?: (msg: string) => void,
+): ModelSheet {
   const home = readers?.home
   const readJson = readers?.readJson
   const readText = readers?.readText
@@ -934,9 +1320,9 @@ export function sheetForHarness(harnessId: HarnessId, readers?: SheetReaders): M
     case 'kimi-code':
       return kimiSheet(readText, home)
     case 'hermes':
-      return hermesSheet(readText, home)
+      return hermesSheet(readText, home, undefined, undefined, log)
     case 'codex':
-      return codexSheet()
+      return codexSheet({ readJson, readText, home, runCommand: readers?.runCommand, log })
     case 'opencode':
       return opencodeSheet(readJson, home)
     case 'pi':
@@ -954,7 +1340,7 @@ export function sheetForHarness(harnessId: HarnessId, readers?: SheetReaders): M
  * and `appendModelEffortArgv` will pass `--model` only for a listed id.
  */
 export function cursorSheet(): ModelSheet {
-  return { modelFlag: '--model', models: [] }
+  return { modelFlag: '--model', models: [], modelsSource: 'static' }
 }
 
 export function sheetForRosterCommand(
@@ -982,9 +1368,12 @@ const HERMES_NAMED_PROVIDER_RE = /^custom:([^:\s]+):(.+)$/
 
 /**
  * Append `[modelFlag, model]` / `[effortFlag, effort]` when the sheet has
- * that flag AND the value is a listed id. Unknown values are omitted
- * (never crash a spawn). Hermes (`namedCustomProvider`) rewrites
- * `custom:<provider>:<model>` to `--provider <provider> -m <model>`.
+ * that flag AND the value is a listed id. Unknown values are omitted (never
+ * crash a spawn) and logged with the harness and the list's provenance, so a
+ * preset that names a model the resolved list dropped fails visibly in the
+ * log rather than silently running the harness default. Hermes
+ * (`namedCustomProvider`) rewrites `custom:<provider>:<model>` to
+ * `--provider <provider> -m <model>`.
  */
 export function appendModelEffortArgv(
   argv: string[],
@@ -992,9 +1381,11 @@ export function appendModelEffortArgv(
   model?: string,
   effort?: string,
   log?: (msg: string) => void,
+  harness?: string,
 ): string[] {
   if (!sheet) return argv
   const out = [...argv]
+  const where = harness ? ` for ${harness}` : ''
   const modelOk =
     typeof model === 'string' &&
     MODEL_TOKEN_RE.test(model) &&
@@ -1005,7 +1396,10 @@ export function appendModelEffortArgv(
     if (named) out.push('--provider', named[1], sheet.modelFlag, named[2])
     else out.push(sheet.modelFlag, model)
   } else if (model && log) {
-    log(`[den-server] spawn: omitting model ${JSON.stringify(model)} (unknown or no flag)`)
+    const why = sheet.modelFlag
+      ? `not on the ${sheet.modelsSource ?? 'resolved'} model list — the harness will run its own default`
+      : 'the harness takes no model flag'
+    log(`[den-server] spawn: omitting model ${JSON.stringify(model)}${where} (${why})`)
   }
   const effortOk =
     typeof effort === 'string' &&
@@ -1017,9 +1411,11 @@ export function appendModelEffortArgv(
       sheet.effortArgValues && Object.prototype.hasOwnProperty.call(sheet.effortArgValues, effort)
         ? sheet.effortArgValues[effort]
         : effort
-    if (mapped) out.push(sheet.effortFlag, mapped)
+    if (mapped) out.push(sheet.effortFlag, `${sheet.effortArgPrefix ?? ''}${mapped}`)
   } else if (effort && log) {
-    log(`[den-server] spawn: omitting effort ${JSON.stringify(effort)} (unknown or no flag)`)
+    log(
+      `[den-server] spawn: omitting effort ${JSON.stringify(effort)}${where} (unknown or no flag)`,
+    )
   }
   return out
 }

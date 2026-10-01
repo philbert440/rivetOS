@@ -25,7 +25,11 @@ const cleanup: Array<() => void> = []
 afterEach(() => {
   for (const fn of cleanup.splice(0).reverse()) fn()
 })
-function setup(defaults: Record<string, unknown> = {}, linkUploads = false) {
+function setup(
+  defaults: Record<string, unknown> = {},
+  linkUploads = false,
+  extra: Partial<ConstructorParameters<typeof CodexProtocolDriver>[0]> = {},
+) {
   const dir = mkdtempSync(join(tmpdir(), 'codex-driver-'))
   cleanup.push(() => rmSync(dir, { recursive: true, force: true }))
   const uploadsDir = linkUploads ? join(dir, 'uploads-link') : dir
@@ -76,6 +80,7 @@ function setup(defaults: Record<string, unknown> = {}, linkUploads = false) {
         exists: () => false,
         transcript: async () => ({ turns: [] }),
       },
+      ...extra,
     })
     cleanup.push(() => driver.close())
     return driver
@@ -316,6 +321,20 @@ it('rejects nested files and file symlinks even inside a symlinked staging direc
   }
   expect(vi.mocked(rpc.request).mock.calls.some(([method]) => method === 'turn/start')).toBe(false)
 })
+it('labels the app-server catalog as discovered and applies a merge override to it', async () => {
+  const plain = setup()
+  await plain.driver.verifyCapabilities()
+  expect(plain.driver.capabilities.modelsSource).toBe('discovered')
+  expect(plain.driver.capabilities.models?.map((m) => m.id)).toEqual(['test'])
+  const merged = setup({}, false, {
+    sheetOverride: { models_mode: 'merge', models: [{ id: 'gateway-x', label: 'Gateway X' }] },
+  })
+  await merged.driver.verifyCapabilities()
+  expect(merged.driver.capabilities.modelsSource).toBe('merged')
+  expect(merged.driver.capabilities.models?.map((m) => m.id)).toEqual(['test', 'gateway-x'])
+  expect(merged.driver.capabilities.models?.find((m) => m.default)?.id).toBe('test')
+})
+
 it('uses a stale catalog after a refresh failure but fails without any catalog', async () => {
   const { driver, rpc } = setup()
   await driver.startSession({ nativeSessionId: id })
