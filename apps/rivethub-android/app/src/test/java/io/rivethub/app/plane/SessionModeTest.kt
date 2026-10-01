@@ -42,11 +42,15 @@ class SessionModeTest {
         assertSame(modes, rekeySessionModes(modes, "a", "a"))
     }
 
-    @Test fun `default view is Terminal unless chat was picked`() {
-        assertEquals(SessionMode.Terminal, parseDefaultView(null))
-        assertEquals(SessionMode.Terminal, parseDefaultView("terminal"))
-        assertEquals(SessionMode.Terminal, parseDefaultView("bogus"))
+    @Test fun `default view is Chat unless terminal was picked`() {
+        assertEquals(SessionMode.Chat, parseDefaultView(null))
         assertEquals(SessionMode.Chat, parseDefaultView("chat"))
+        assertEquals(SessionMode.Chat, parseDefaultView("bogus"))
+        assertEquals(SessionMode.Terminal, parseDefaultView("terminal"))
+    }
+
+    @Test fun `an upgrade with no default view saved keeps conversations on Chat`() {
+        assertEquals(SessionMode.Chat, resolveSessionMode(null, parseDefaultView(null), terminalOnly = false))
     }
 
     @Test fun `a conversation never switched opens on the default view`() {

@@ -12,7 +12,7 @@ import androidx.datastore.preferences.core.stringSetPreferencesKey
 import androidx.datastore.preferences.preferencesDataStore
 import io.rivethub.app.gateway.wireJson
 import io.rivethub.app.plane.DEFAULT_OMARCHY_PRESET
-import io.rivethub.app.plane.MODE_TERMINAL
+import io.rivethub.app.plane.MODE_CHAT
 import io.rivethub.app.plane.migrateLocalPrefs
 import io.rivethub.app.plane.nearestFontScale
 import io.rivethub.app.plane.toggleFavourite
@@ -40,8 +40,8 @@ data class Prefs(
     val omarchyPalette: String = DEFAULT_OMARCHY_PRESET,
     val fontScale: Float = 1.0f,
     val sessionModes: Map<String, String> = emptyMap(),
-    /** Settings → Conversations → Default view (`terminal` | `chat`); see plane/SessionMode.kt. */
-    val defaultView: String = MODE_TERMINAL,
+    /** Settings → Conversations → Default view (`chat` | `terminal`); see plane/SessionMode.kt. */
+    val defaultView: String = MODE_CHAT,
     val archived: Set<String> = emptySet(),
     val titleOverrides: Map<String, String> = emptyMap(),
     val agentPointers: Map<String, String> = emptyMap(),
@@ -88,7 +88,7 @@ class Settings(context: Context) {
             omarchyPalette = p[OMARCHY_PALETTE] ?: DEFAULT_OMARCHY_PRESET,
             fontScale = nearestFontScale(p[FONT_SCALE] ?: 1.0f),
             sessionModes = decodeMap(p[SESSION_MODES]),
-            defaultView = p[DEFAULT_VIEW] ?: MODE_TERMINAL,
+            defaultView = p[DEFAULT_VIEW] ?: MODE_CHAT,
             archived = p[ARCHIVED] ?: emptySet(),
             titleOverrides = decodeMap(p[TITLES]),
             agentPointers = decodeMap(p[POINTERS]),

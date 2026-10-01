@@ -281,7 +281,7 @@ the drag (rows keep swipe-to-archive), or a scrim tap. Back is a `PredictiveBack
 `HubDrawer` (sheet eases shut 35% with progress, closes on commit, reopens on cancel).
 
 **Default view (web Settings → Conversations, `lib/use-session-view.ts`).** Settings → Conversations
-→ Default view (`defaultView` pref, Terminal unless `chat`). `HarnessChatViewModel.boot` opens a
+→ Default view (`defaultView` pref, Chat unless `terminal`, as on the web, so upgrading moves no conversation). `HarnessChatViewModel.boot` opens a
 conversation on `plane/SessionMode.kt resolveSessionMode`: this conversation's explicit switch
 (`sessionModes`, written only by the user's Terminal|Chat choice) > terminal-only (not a draft and no
 resolvable harness, i.e. a legacy on-disk row) > the default. New conversations and older ones never

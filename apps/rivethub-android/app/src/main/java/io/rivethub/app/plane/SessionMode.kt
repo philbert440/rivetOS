@@ -31,10 +31,10 @@ fun rekeySessionModes(
 /**
  * Settings → Conversations → Default view: which view a conversation opens
  * on when it has no explicit choice of its own. Anything but an explicit
- * `chat` is Terminal, the phone's default.
+ * `terminal` is Chat, the historical default and the web's, so an upgrade
+ * leaves conversations where they were.
  */
-fun parseDefaultView(raw: String?): SessionMode =
-    if (raw?.trim()?.lowercase() == MODE_CHAT) SessionMode.Chat else SessionMode.Terminal
+fun parseDefaultView(raw: String?): SessionMode = parseSessionMode(raw)
 
 /**
  * Which view a conversation opens on (web `useSessionView`). Precedence:
