@@ -1477,8 +1477,14 @@ export interface DeviceOpenResponse {
 /** GET /api/phone-pairing: whether this node can mint phone pairing codes. */
 export interface PhonePairingInfo {
   available: boolean
-  /** Why not, when unavailable (no device CA on this node, CLI missing). */
+  /**
+   * Why not, when unavailable: no device CA on this node, CLI missing, or
+   * what `rivetos pair --check` reports (den on loopback, no `den.tls_cert`,
+   * no address for the QR).
+   */
   reason?: string
+  /** Where a code minted now points the phone (`https://<host>:<port>`). */
+  gateway?: string
 }
 
 /** POST /api/phone-pairing {name}: a one-time code for RivetHub Android to scan. */

@@ -17,6 +17,7 @@ import {
   PAIRING_TTL_MS,
   pairingQrText,
   pairingRecordPath,
+  releasePairing,
   renderTerminalQr,
 } from './pairing.js'
 import { formatPairingQrs } from '../commands/local.js'
@@ -101,14 +102,37 @@ describe('createPairing / armPairing', () => {
   )
 
   it(
-    'arm never revives an expired record: it and its p12 are deleted',
+    'arm never revives an expired record: it, its p12 and its unused cert are deleted',
     withHome((home) => {
       const p12 = join(home, 'pixel.p12')
+      const cert = join(home, 'device-pixel.crt')
       writeFileSync(p12, 'p12')
-      createPairing({ home, deviceId: 'pixel', p12Path: p12, passphrase: 'pw', now: 0 })
+      writeFileSync(cert, 'crt')
+      createPairing({
+        home,
+        deviceId: 'pixel',
+        p12Path: p12,
+        certPath: cert,
+        passphrase: 'pw',
+        now: 0,
+      })
       expect(armPairing(home, 'pixel', PAIRING_TTL_MS)).toBeNull()
       expect(existsSync(pairingRecordPath(home, 'pixel'))).toBe(false)
       expect(existsSync(p12)).toBe(false)
+      expect(existsSync(cert)).toBe(false)
+    }),
+  )
+
+  it(
+    'release drops a live record for a manual import and keeps the p12',
+    withHome((home) => {
+      const p12 = join(home, 'pixel.p12')
+      writeFileSync(p12, 'p12')
+      const rec = createPairing({ home, deviceId: 'pixel', p12Path: p12, passphrase: 'pw', now: 0 })
+      expect(releasePairing(home, 'pixel', 1_000)).toEqual(rec)
+      expect(existsSync(pairingRecordPath(home, 'pixel'))).toBe(false)
+      expect(existsSync(p12)).toBe(true)
+      expect(releasePairing(home, 'pixel', 1_000)).toBeNull()
     }),
   )
 })

@@ -5,6 +5,7 @@
  *
  *   rivetos pair <device> [--user <id>] [--host <ip|name>] [--config <path>]
  *                         [--users-file <path>] [--json]
+ *   rivetos pair --check [--host <ip|name>] [--config <path>] [--json]
  *
  * It only writes what pairing needs, never config.yaml:
  *   1. mints the device certificate from the node's CA into
@@ -16,12 +17,15 @@
  *      is already allowed; creating one here would switch tenancy on and
  *      lock out the node's other devices, so none is created,
  *   3. writes the one-time pairing record (lib/pairing.ts) and prints the QR:
- *      `https://<LAN address>:<den.port>`, the token, and the SHA-256 of the
- *      certificate den actually serves (`den.tls_cert`).
+ *      `https://<host>:<den.port>` (`--host`, else a concrete `den.host`, else
+ *      the first LAN address), the token, and the SHA-256 of the certificate
+ *      den actually serves (`den.tls_cert`).
  *
  * `--json` prints the result (QR text included) as one JSON line instead of
  * the terminal QR — how den's Settings → Pair a phone runs this command, so
  * minting lives in one place. Errors print as `{"error": …}` and exit 1.
+ * `--check` mints nothing: it runs the same checks and prints the gateway the
+ * QR would carry, which is how Settings knows whether to offer pairing.
  *
  * Den redeems the QR at POST /api/devices/pair (services/den-server/src/pairing.ts).
  * A name that already has a certificate is refused, so pairing never touches
@@ -34,7 +38,7 @@ import { join } from 'node:path'
 import { parse as parseYaml } from 'yaml'
 import type { execFileAsync } from '../lib/harness-detect.js'
 import { mintDeviceP12 } from '../lib/hub-identity.js'
-import { listBannerLanIpv4, localCaPaths } from '../lib/local-ca.js'
+import { deviceHasCertificateMessage, listBannerLanIpv4, localCaPaths } from '../lib/local-ca.js'
 import {
   armPairing,
   certSha256,
@@ -45,18 +49,45 @@ import {
 } from '../lib/pairing.js'
 import { defaultFile, load, save } from './user.js'
 
-const USAGE =
-  'usage: rivetos pair <device> [--user <id>] [--host <ip|name>] [--config <path>] [--users-file <path>] [--json]'
+const USAGE = `usage: rivetos pair <device> [options]
+       rivetos pair --check [--host <ip|name>] [--config <path>] [--json]
+
+Pair a phone with this node by QR: mints the device certificate and shows a
+one-time code to scan in RivetHub (Enroll → Scan pairing QR). Never changes
+config.yaml. The code works once and expires after ${String(PAIRING_TTL_MS / 60_000)} minutes; run the command
+again to show a fresh one.
+
+Options:
+  --user <id>          user the device belongs to in users.json (default: the owner)
+  --host <ip|name>     address the phone dials (default: den.host when it is a
+                       concrete address, else this machine's first LAN address)
+  --config <path>      config.yaml to read den from (default: $RIVETOS_CONFIG or
+                       ~/.rivetos/config.yaml)
+  --users-file <path>  users.json to add the device to (default: the registry den loads)
+  --json               print the result as one JSON line instead of the QR
+  --check              mint nothing; report whether this node can pair a phone
+
+When users.json exists the device is added to it. Den reads that file at
+startup: restart den before the phone connects (Settings → Pair a phone
+reloads it for you). A name that already has a certificate is refused; pick
+a new name, or revoke the old leaf first.`
+
+/** Flags that take a value; anything else starting with "-" is a switch. */
+const VALUE_FLAGS = new Set(['--user', '--host', '--config', '--users-file'])
 
 /** Same charset the CA accepts for a client leaf name. */
 const DEVICE_NAME = /^[A-Za-z0-9._-]+$/
 
 const LOOPBACK_HOSTS = new Set(['127.0.0.1', 'localhost', '::1'])
+/** Bind-everything addresses: the phone needs a concrete one instead. */
+const WILDCARD_HOSTS = new Set(['0.0.0.0', '::', '[::]'])
 const DEFAULT_DEN_PORT = 5174
 
 export interface DenPairingTarget {
   port: number
   tlsCert: string
+  /** `den.host` when den is bound to one concrete address. */
+  host?: string
 }
 
 /**
@@ -75,7 +106,38 @@ export function readDenForPairing(configYaml: string): DenPairingTarget {
   }
   const tlsCert = den.tls_cert?.trim()
   if (!tlsCert) throw new Error('den.tls_cert is not set; the phone pins den’s TLS certificate')
-  return { port: typeof den.port === 'number' ? den.port : DEFAULT_DEN_PORT, tlsCert }
+  const port = typeof den.port === 'number' ? den.port : DEFAULT_DEN_PORT
+  const host = den.host?.trim()
+  return host && !WILDCARD_HOSTS.has(host) ? { port, tlsCert, host } : { port, tlsCert }
+}
+
+/**
+ * Where the phone dials and which leaf it pins. Throws with the reason when
+ * this node cannot pair a phone; `rivetos pair --check` reports exactly this.
+ */
+export function resolvePairingTarget(
+  opts: { host?: string },
+  deps: Pick<PairDeps, 'home' | 'configPath' | 'lanAddrs'> = {},
+): { gateway: string; pin: string } {
+  const home = deps.home ?? homedir()
+  const configPath =
+    deps.configPath ?? process.env.RIVETOS_CONFIG ?? join(home, '.rivetos', 'config.yaml')
+  let configYaml: string
+  try {
+    configYaml = readFileSync(configPath, 'utf-8')
+  } catch {
+    throw new Error('cannot read config.yaml')
+  }
+  const den = readDenForPairing(configYaml)
+  let pin: string
+  try {
+    pin = certSha256(readFileSync(den.tlsCert, 'utf-8'))
+  } catch {
+    throw new Error('cannot read the certificate den.tls_cert names')
+  }
+  const host = opts.host ?? den.host ?? (deps.lanAddrs ?? listBannerLanIpv4())[0]
+  if (!host) throw new Error('no LAN address found; pass --host <ip> the phone can reach')
+  return { gateway: `https://${host}:${String(den.port)}`, pin }
 }
 
 export interface PairDeps {
@@ -114,13 +176,7 @@ export async function runPair(
     throw new Error(`device name "${deviceId}" may only use letters, digits, ".", "_" and "-"`)
   }
 
-  const configPath =
-    deps.configPath ?? process.env.RIVETOS_CONFIG ?? join(home, '.rivetos', 'config.yaml')
-  const den = readDenForPairing(readFileSync(configPath, 'utf-8'))
-  const pin = certSha256(readFileSync(den.tlsCert, 'utf-8'))
-  const host = opts.host ?? (deps.lanAddrs ?? listBannerLanIpv4())[0]
-  if (!host) throw new Error('no LAN address found; pass --host <ip> the phone can reach')
-  const gateway = `https://${host}:${String(den.port)}`
+  const { gateway, pin } = resolvePairingTarget(opts, { ...deps, home })
 
   // A pending pairing (minted, not yet redeemed) is re-shown with a fresh TTL.
   let rec = armPairing(home, deviceId, deps.now)
@@ -130,12 +186,7 @@ export async function runPair(
     const existing = [`device-${deviceId}.crt`, `device-${deviceId}.key`]
       .map((f) => join(issued, f))
       .filter((f) => existsSync(f))
-    if (existing.length > 0) {
-      throw new Error(
-        `"${deviceId}" already has a certificate (${existing.join(', ')}); ` +
-          'pick a new device name so its key is left alone',
-      )
-    }
+    if (existing.length > 0) throw new Error(deviceHasCertificateMessage(deviceId))
     const minted = await mintDeviceP12({
       home,
       name: deviceId,
@@ -147,6 +198,7 @@ export async function runPair(
       deviceId,
       p12Path: minted.p12Path,
       passphrase: minted.passphrase,
+      certPath: minted.certPath,
       now: deps.now,
     })
   }
@@ -188,33 +240,54 @@ function argValue(args: string[], flag: string): string | undefined {
   return i < 0 ? undefined : args[i + 1]
 }
 
+/** The first argument that is neither a flag nor a flag's value. */
+function positional(args: string[]): string | undefined {
+  for (let i = 0; i < args.length; i++) {
+    if (VALUE_FLAGS.has(args[i])) i++
+    else if (!args[i].startsWith('-')) return args[i]
+  }
+  return undefined
+}
+
 export default async function pairCommand(args: string[]): Promise<void> {
   if (args.includes('-h') || args.includes('--help')) {
     console.log(USAGE)
     return
   }
-  const deviceId = args[0]
-  if (!deviceId || deviceId.startsWith('-')) {
+  const asJson = args.includes('--json')
+  const report = (message: string): void => {
+    if (asJson) console.log(JSON.stringify({ error: message }))
+    else console.error(`[pair] ${message}`)
+    process.exitCode = 1
+  }
+  const host = argValue(args, '--host')
+  const configPath = argValue(args, '--config')
+
+  if (args.includes('--check')) {
+    try {
+      const { gateway } = resolvePairingTarget({ host }, { configPath })
+      if (asJson) console.log(JSON.stringify({ available: true, gateway }))
+      else console.log(`[pair] this node can pair a phone; the QR will point at ${gateway}`)
+    } catch (err) {
+      report((err as Error).message)
+    }
+    return
+  }
+
+  const deviceId = positional(args)
+  if (!deviceId) {
     console.error(USAGE)
     process.exitCode = 1
     return
   }
-  const asJson = args.includes('--json')
   try {
     const result = await runPair(
       deviceId,
-      { user: argValue(args, '--user'), host: argValue(args, '--host') },
-      {
-        configPath: argValue(args, '--config'),
-        usersFile: argValue(args, '--users-file'),
-        quiet: asJson,
-      },
+      { user: argValue(args, '--user'), host },
+      { configPath, usersFile: argValue(args, '--users-file'), quiet: asJson },
     )
     if (asJson) console.log(JSON.stringify(result))
   } catch (err) {
-    const message = (err as Error).message
-    if (asJson) console.log(JSON.stringify({ error: message }))
-    else console.error(`[pair] ${message}`)
-    process.exitCode = 1
+    report((err as Error).message)
   }
 }

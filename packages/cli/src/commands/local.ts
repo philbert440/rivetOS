@@ -63,6 +63,7 @@ import {
   createPairing,
   PAIRING_TTL_MS,
   pairingQrText,
+  releasePairing,
   renderTerminalQr,
 } from '../lib/pairing.js'
 
@@ -798,6 +799,7 @@ async function runInit(
       deviceId: name,
       p12Path: minted.p12Path,
       passphrase: minted.passphrase,
+      certPath: minted.certPath,
     })
     console.log(`Device ${name}: certificate ready — scan the pairing QR shown once the node is up`)
   }
@@ -941,7 +943,10 @@ async function runUp(
 /**
  * One QR per `--device` that still has an unredeemed pairing record. Showing
  * a QR re-arms its TTL, so `rivetos local up --device <id>` re-shows a
- * pending one. Empty string when there is nothing to pair.
+ * pending one. When no QR can be shown (`--no-lan`, no LAN address, an
+ * unreadable node certificate) it prints each p12 path and passphrase for a
+ * manual import instead, as before QR pairing. Empty string when there is
+ * nothing to pair.
  */
 export async function formatPairingQrs(opts: {
   home: string
@@ -952,27 +957,42 @@ export async function formatPairingQrs(opts: {
   lanAddrs: string[]
   now?: number
 }): Promise<string> {
+  const ip = opts.lanAddrs[0]
+  const nodeCert = localCaPaths(opts.home, opts.hostname).nodeCert
+  let pin: string | null = null
+  let noQr: string | null = null
+  if (!opts.exposeLan || !ip) {
+    noQr = 'the phone needs a LAN address (re-run without --no-lan, on a network, to pair by QR)'
+  } else {
+    try {
+      pin = certSha256(readFileSync(nodeCert, 'utf-8'))
+    } catch (err) {
+      noQr = `cannot read the node certificate ${nodeCert} (${(err as Error).message})`
+    }
+  }
+
+  if (pin === null) {
+    // No QR: hand the p12 over the old way. Releasing the record keeps den's
+    // expiry sweep away from the p12 while it is copied to the phone.
+    const released = opts.devices.flatMap((id) => {
+      const rec = releasePairing(opts.home, id, opts.now)
+      return rec ? [rec] : []
+    })
+    if (released.length === 0) return ''
+    const out = ['', `  Pairing  QR not shown: ${noQr ?? 'no pin'}.`]
+    out.push('           Copy the certificate to the phone and import it on the Enroll screen:')
+    for (const rec of released) {
+      out.push(`           ${rec.deviceId}: ${rec.p12Path}  passphrase: ${rec.passphrase}`)
+    }
+    out.push('           Delete the .p12 once the phone has it.', '')
+    return out.join('\n')
+  }
+
   const armed = opts.devices.flatMap((id) => {
     const rec = armPairing(opts.home, id, opts.now)
     return rec ? [rec] : []
   })
   if (armed.length === 0) return ''
-  const ip = opts.lanAddrs[0]
-  if (!opts.exposeLan || !ip) {
-    return [
-      '',
-      `  Pairing  ${armed.map((r) => r.deviceId).join(', ')} not shown: the phone needs a LAN address.`,
-      '           Re-run without --no-lan (and on a network) to pair.',
-      '',
-    ].join('\n')
-  }
-  const nodeCert = localCaPaths(opts.home, opts.hostname).nodeCert
-  let pin: string
-  try {
-    pin = certSha256(readFileSync(nodeCert, 'utf-8'))
-  } catch (err) {
-    return `\n  Pairing  not shown: cannot read the node certificate ${nodeCert} (${(err as Error).message}).\n`
-  }
   const gateway = `https://${ip}:${String(opts.port)}`
   const minutes = String(Math.round(PAIRING_TTL_MS / 60_000))
   const out: string[] = []

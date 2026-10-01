@@ -191,6 +191,25 @@ describe('writeBothChains + issueClientDevice skip', () => {
     }
   })
 
+  it('refuses a device whose certificate outlived its key (already paired)', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'local-ca-paired-'))
+    try {
+      const issued = join(dir, '.rivetos', 'shared', 'rivet-ca', 'issued')
+      mkdirSync(issued, { recursive: true })
+      writeFileSync(join(issued, 'device-phone.crt'), 'c')
+      await expect(
+        issueClientDevice({ home: dir, name: 'phone', scriptPath: script }),
+      ).rejects.toThrow(/already has a device certificate.*revoke device:phone/)
+      rmSync(join(issued, 'device-phone.crt'))
+      writeFileSync(join(issued, 'device-phone.key'), 'k')
+      await expect(
+        issueClientDevice({ home: dir, name: 'phone', scriptPath: script }),
+      ).rejects.toThrow(/incomplete client phone/)
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
   it('treats spawn error (code null) as a CA issuance failure', async () => {
     const dir = mkdtempSync(join(tmpdir(), 'local-ca-null-'))
     try {

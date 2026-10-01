@@ -112,14 +112,18 @@ export interface MintedDeviceP12 {
   id: string
   p12Path: string
   passphrase: string
+  /** The issued leaf, kept so `rivet-ca.sh revoke device:<name>` can find it. */
+  certPath: string
 }
 
 /**
  * `issue-client <name>` then `openssl pkcs12 -export` into
  * `~/.rivetos/devices/<name>.p12`. Passphrase is generated and returned
- * once. The issued leaf key + cert are deleted once they are inside the p12,
- * so the p12 is the only copy of the phone's key on this machine (den deletes
- * it when the phone redeems its pairing QR); re-minting issues a fresh leaf.
+ * once. The issued leaf key is deleted once it is inside the p12, so the p12
+ * is the only copy of the phone's key on this machine (den deletes it when
+ * the phone redeems its pairing QR). The certificate stays in `issued/`:
+ * `rivet-ca.sh revoke` finds leaves there, and issueClientDevice refuses to
+ * mint a second leaf for a name whose certificate is still there.
  */
 export async function mintDeviceP12(opts: MintDeviceP12Opts): Promise<MintedDeviceP12> {
   const home = opts.home ?? homedir()
@@ -162,8 +166,7 @@ export async function mintDeviceP12(opts: MintDeviceP12Opts): Promise<MintedDevi
   }
   chmod600(p12Path)
   rmSync(issued.key, { force: true })
-  rmSync(issued.cert, { force: true })
-  return { id: issued.id, p12Path, passphrase }
+  return { id: issued.id, p12Path, passphrase, certPath: issued.cert }
 }
 
 export function extraDeviceP12Path(home: string, name: string): string {

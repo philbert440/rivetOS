@@ -26,8 +26,15 @@ function PairingCard(props: { code: PhonePairingCode; onDone: () => void }): JSX
     queryKey: ['phone-pairing', code.deviceId, code.expiresAt],
     queryFn: ({ signal }) =>
       useConnection.getState().gateway.phonePairingStatus(code.deviceId, signal),
-    // Watch for the phone redeeming the code; stop once it has or the code lapsed.
-    refetchInterval: (q) => (q.state.data?.state === 'pending' || !q.state.data ? 2000 : false),
+    // Watch for the phone redeeming the code; stop once it has, the code
+    // lapsed, or the check failed (the Check again button retries).
+    refetchInterval: (q) =>
+      q.state.status === 'error' ||
+      Date.now() >= code.expiresAt ||
+      (q.state.data !== undefined && q.state.data.state !== 'pending')
+        ? false
+        : 2000,
+    retry: false,
   })
   const state = remaining <= 0 && status.data?.state !== 'paired' ? 'expired' : status.data?.state
 
@@ -56,6 +63,19 @@ function PairingCard(props: { code: PhonePairingCode; onDone: () => void }): JSX
         </p>
       ) : state === 'expired' ? (
         <p className="py-8 text-sm text-ink-dim">This code expired or was used. Show a new one.</p>
+      ) : status.isError ? (
+        <div className="py-8 text-sm text-ink-dim">
+          <p>
+            Could not check whether the phone used this code ({status.error.message}). It still
+            works until it expires.
+          </p>
+          <button
+            onClick={() => void status.refetch()}
+            className="mt-3 border border-line px-3 py-1 text-xs hover:border-em hover:text-em"
+          >
+            Check again
+          </button>
+        </div>
       ) : (
         <>
           <canvas ref={canvasRef} className="mx-auto bg-white p-1" aria-label="Pairing QR code" />
@@ -124,6 +144,12 @@ export function PhonePairingSection(): JSX.Element | null {
           <p className="mb-4 text-xs text-ink-dim">
             Connect RivetHub for Android to this computer by scanning a code. The phone gets its own
             certificate, and nothing is copied or typed.
+            {info.data.gateway && (
+              <>
+                {' '}
+                The phone will dial <span className="font-mono">{info.data.gateway}</span>.
+              </>
+            )}
           </p>
           <div className="flex items-center gap-2">
             <input

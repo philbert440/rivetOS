@@ -22,6 +22,12 @@ export interface PairingRecord {
   token: string
   passphrase: string
   p12Path: string
+  /**
+   * The device's issued leaf. Kept after redemption (revocation needs it);
+   * deleted with the p12 when the code expires unredeemed, since no device
+   * ever held its key.
+   */
+  certPath?: string
   expiresAt: number
 }
 
@@ -61,6 +67,7 @@ export function createPairing(opts: {
   deviceId: string
   p12Path: string
   passphrase: string
+  certPath?: string
   now?: number
 }): PairingRecord {
   mkdirSync(pairingDir(opts.home), { recursive: true, mode: 0o700 })
@@ -70,6 +77,7 @@ export function createPairing(opts: {
     token: newToken(),
     passphrase: opts.passphrase,
     p12Path: opts.p12Path,
+    ...(opts.certPath ? { certPath: opts.certPath } : {}),
     expiresAt: (opts.now ?? Date.now()) + PAIRING_TTL_MS,
   }
   writeRecord(pairingRecordPath(opts.home, opts.deviceId), rec)
@@ -88,8 +96,8 @@ function unlinkQuiet(path: string): void {
  * Restart the TTL when the QR is actually shown (after den is ready), so a
  * slow `init` does not eat the scan window. Every call rotates the token, so
  * a copy of an earlier QR (photo, screenshot, scrollback) never redeems. An
- * expired record is gone: it and its p12 are deleted and the caller mints
- * afresh. Null when the record is gone (redeemed, swept or expired).
+ * expired record is gone: it, its p12 and its never-delivered certificate
+ * are deleted and the caller mints afresh. Null when the record is gone (redeemed, swept or expired).
  */
 export function armPairing(home: string, deviceId: string, now = Date.now()): PairingRecord | null {
   const path = pairingRecordPath(home, deviceId)
@@ -102,11 +110,37 @@ export function armPairing(home: string, deviceId: string, now = Date.now()): Pa
   if (typeof rec.expiresAt !== 'number' || rec.expiresAt <= now) {
     unlinkQuiet(path)
     if (typeof rec.p12Path === 'string') unlinkQuiet(rec.p12Path)
+    if (typeof rec.certPath === 'string') unlinkQuiet(rec.certPath)
     return null
   }
   rec.token = newToken()
   rec.expiresAt = now + PAIRING_TTL_MS
   writeRecord(path, rec)
+  return rec
+}
+
+/**
+ * For when no QR can be shown (`--no-lan`, no LAN address): drop the pairing
+ * record so den's expiry sweep leaves the p12 alone, and return it so the
+ * caller can print the p12 path and passphrase for a manual import. Null
+ * when the record is gone; an expired one is cleaned up as in armPairing.
+ */
+export function releasePairing(
+  home: string,
+  deviceId: string,
+  now = Date.now(),
+): PairingRecord | null {
+  const path = pairingRecordPath(home, deviceId)
+  let rec: PairingRecord
+  try {
+    rec = JSON.parse(readFileSync(path, 'utf8')) as PairingRecord
+  } catch {
+    return null
+  }
+  if (typeof rec.expiresAt !== 'number' || rec.expiresAt <= now) {
+    return armPairing(home, deviceId, now)
+  }
+  unlinkQuiet(path)
   return rec
 }
 

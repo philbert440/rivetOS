@@ -2,7 +2,7 @@ import { describe, expect, it, vi } from 'vitest'
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { readDenForPairing, runPair } from './pair.js'
+import pairCommand, { readDenForPairing, resolvePairingTarget, runPair } from './pair.js'
 import { pairingRecordPath } from '../lib/pairing.js'
 
 // Throwaway self-signed P-256 leaf (same one lib/pairing.test.ts pins).
@@ -94,6 +94,89 @@ describe('readDenForPairing', () => {
       /127\.0\.0\.1/,
     )
     expect(() => readDenForPairing('den:\n  port: 5174\n')).toThrow(/tls_cert/)
+  })
+
+  it('keeps a concrete den.host and drops a bind-everything one', () => {
+    expect(readDenForPairing('den:\n  host: 192.0.2.7\n  tls_cert: /x\n').host).toBe('192.0.2.7')
+    expect(readDenForPairing('den:\n  host: 0.0.0.0\n  tls_cert: /x\n').host).toBeUndefined()
+    expect(readDenForPairing('den:\n  host: "::"\n  tls_cert: /x\n').host).toBeUndefined()
+  })
+})
+
+describe('resolvePairingTarget', () => {
+  it('dials --host, else a concrete den.host, else the first LAN address', () => {
+    const m = meshHome()
+    try {
+      const deps = { home: m.home, configPath: m.config, lanAddrs: ['192.168.0.183'] }
+      expect(resolvePairingTarget({}, deps).gateway).toBe('https://192.168.0.183:5174')
+      expect(resolvePairingTarget({ host: 'den.example.test' }, deps).gateway).toBe(
+        'https://den.example.test:5174',
+      )
+      writeFileSync(
+        m.config,
+        readFileSync(m.config, 'utf8').replace('host: 0.0.0.0', 'host: 192.0.2.7'),
+      )
+      expect(resolvePairingTarget({}, deps)).toEqual({
+        gateway: 'https://192.0.2.7:5174',
+        pin: CERT_SHA256,
+      })
+    } finally {
+      m.cleanup()
+    }
+  })
+
+  it('names the problem without server paths', () => {
+    const m = meshHome()
+    try {
+      rmSync(join(m.issued, 'arctic.crt'))
+      expect(() => resolvePairingTarget({}, { home: m.home, configPath: m.config })).toThrow(
+        /^cannot read the certificate den\.tls_cert names$/,
+      )
+      expect(() =>
+        resolvePairingTarget({}, { home: m.home, configPath: join(m.home, 'missing.yaml') }),
+      ).toThrow(/^cannot read config\.yaml$/)
+    } finally {
+      m.cleanup()
+    }
+  })
+})
+
+describe('pairCommand', () => {
+  it('--check --json reports the gateway without minting', async () => {
+    const m = meshHome()
+    const out = vi.spyOn(console, 'log').mockImplementation(() => {})
+    try {
+      await pairCommand(['--check', '--json', '--config', m.config, '--host', '10.0.0.9'])
+      expect(JSON.parse(String(out.mock.calls[0]?.[0]))).toEqual({
+        available: true,
+        gateway: 'https://10.0.0.9:5174',
+      })
+      expect(existsSync(join(m.home, '.rivetos', 'devices'))).toBe(false)
+    } finally {
+      out.mockRestore()
+      m.cleanup()
+    }
+  })
+
+  it('finds the device name after flags, and prints help with the options', async () => {
+    const out = vi.spyOn(console, 'log').mockImplementation(() => {})
+    const prevExit = process.exitCode
+    try {
+      await pairCommand(['--json', '--config', '/nonexistent/config.yaml', 'tablet'])
+      expect(JSON.parse(String(out.mock.calls[0]?.[0]))).toEqual({
+        error: 'cannot read config.yaml',
+      })
+      out.mockClear()
+      await pairCommand(['--help'])
+      const help = String(out.mock.calls[0]?.[0])
+      for (const flag of ['--user', '--host', '--config', '--users-file', '--json', '--check']) {
+        expect(help).toContain(flag)
+      }
+      expect(help).toMatch(/expires after 10 minutes/)
+    } finally {
+      out.mockRestore()
+      process.exitCode = prevExit
+    }
   })
 })
 
@@ -192,6 +275,33 @@ describe('runPair', () => {
     }
   })
 
+  it('keeps the certificate of a paired device, so the name is not minted twice', async () => {
+    const m = meshHome()
+    try {
+      const deps = {
+        home: m.home,
+        configPath: m.config,
+        usersFile: m.users,
+        lanAddrs: ['10.0.0.2'],
+        scriptPath: '/opt/rivetos/scripts/rivet-ca.sh',
+        log: () => {},
+      }
+      await runPair('tablet', {}, { ...deps, exec: fakeCa(m.issued) })
+      expect(existsSync(join(m.issued, 'device-tablet.crt'))).toBe(true)
+      expect(existsSync(join(m.issued, 'device-tablet.key'))).toBe(false)
+      // The phone redeemed it: den removed the record and the p12.
+      rmSync(pairingRecordPath(m.home, 'tablet'))
+      rmSync(join(m.home, '.rivetos', 'devices', 'tablet.p12'))
+      const exec = fakeCa(m.issued)
+      await expect(runPair('tablet', {}, { ...deps, exec })).rejects.toThrow(
+        /already has a device certificate/,
+      )
+      expect(exec).not.toHaveBeenCalled()
+    } finally {
+      m.cleanup()
+    }
+  })
+
   it('mints afresh once a shown pairing has expired, never reviving its token', async () => {
     const m = meshHome()
     try {
@@ -259,7 +369,7 @@ describe('runPair', () => {
             log: () => {},
           },
         ),
-      ).rejects.toThrow(/already has a certificate/)
+      ).rejects.toThrow(/already has a device certificate.*revoke device:phone-alex/)
       expect(exec).not.toHaveBeenCalled()
       expect(readFileSync(join(m.issued, 'device-phone-alex.key'), 'utf8')).toBe('live key')
     } finally {

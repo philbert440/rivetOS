@@ -124,10 +124,11 @@ describe('mintDeviceP12', () => {
       })
       expect(minted.p12Path).toBe(join(home, '.rivetos', 'devices', 'phone.p12'))
       expect(statSync(minted.p12Path).mode & 0o777).toBe(0o600)
-      // The p12 is the only copy of the phone key left behind.
+      // The p12 is the only copy of the phone key left behind; the cert
+      // stays so `rivet-ca.sh revoke` can find the leaf.
       expect(existsSync(join(issued, 'device-phone.key'))).toBe(false)
-      expect(existsSync(join(issued, 'device-phone.crt'))).toBe(false)
-      writeFileSync(join(issued, 'device-phone.crt'), 'c')
+      expect(minted.certPath).toBe(join(issued, 'device-phone.crt'))
+      expect(existsSync(minted.certPath)).toBe(true)
       writeFileSync(join(issued, 'device-phone.key'), 'k')
 
       const fail = vi.fn(async () => ({
