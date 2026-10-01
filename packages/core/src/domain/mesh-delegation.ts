@@ -84,7 +84,9 @@ export interface MeshDelegationConfig {
 
   /**
    * RivetHub presets, tried after a local config agent and before the mesh
-   * registry. A config agent id wins over a preset with the same name.
+   * registry. A config agent id wins over a preset with the same name; a
+   * preset wins over a runtime agent of the same name only when it has a
+   * harness (a harness-less preset cannot run, so it does not shadow).
    */
   presets?: PresetDelegationEngine
 
@@ -238,13 +240,28 @@ export class MeshDelegationEngine {
       return this.config.localEngine.delegate(request, chainDepth)
     }
 
+    // A preset wins over a runtime agent of the same name — but only a
+    // runnable one. A preset with no harness configured cannot run anything,
+    // and every runtime agent tends to have a same-named preset ("Deepseek"
+    // next to runtime `deepseek`), so letting it shadow the runtime agent
+    // made those agents unreachable. With no runtime agent of that name the
+    // preset still runs, so the caller gets its own "no harness" refusal.
     const preset = await this.config.presets?.find(request.toAgent)
-    if (preset && this.config.presets) {
+    if (preset && this.config.presets && preset.harnessId) {
       log.info(`Delegating to preset "${preset.name}" (${preset.id})`)
       return this.config.presets.delegate(request, preset, chainDepth)
     }
 
     const route = await this.resolveRoute(request.toAgent)
+
+    if (preset && this.config.presets && !route) {
+      return this.config.presets.delegate(request, preset, chainDepth)
+    }
+    if (preset && route) {
+      log.info(
+        `Preset "${preset.name}" has no harness configured; "${request.toAgent}" resolves to the runtime agent`,
+      )
+    }
 
     if (!route) {
       const reachable = (await this.listReachableAgents()).map((e) => e.agentId)

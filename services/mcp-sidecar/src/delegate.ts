@@ -94,7 +94,8 @@ export const DELEGATE_TASK_HTTP_REASON =
   'delegate_task needs a per-harness stdio sidecar for the chain guard'
 
 /** Full-string preset match. Den keeps this sentence; it does not parse `agent@node`. */
-const PRESET_WINS_FULL_STRING = 'A preset name or id wins when it also matches a runtime agent id.'
+const PRESET_WINS_FULL_STRING =
+  'A preset name or id wins when it also matches a runtime agent id, unless that preset has no harness configured — then the runtime agent runs.'
 
 const DELEGATE_TASK_OPENING =
   'Delegate work to a RivetHub agent (preset name or id) or a runtime agent id. ' +
@@ -133,7 +134,8 @@ function delegateTaskInputSchema(toAgent: string) {
 export const delegateTaskDefinition = {
   description:
     DELEGATE_TASK_OPENING +
-    'When no node is given, a preset name or id wins when it also matches a runtime agent id. ' +
+    'When no node is given, a preset name or id wins when it also matches a runtime agent id, ' +
+    'unless that preset has no harness configured — then the runtime agent runs. ' +
     'agent@node is resolved as a preset only if a preset has that exact name. ' +
     DELEGATE_TASK_HOW +
     '; use agent@node to pick the node when several host the same agent id. ' +
@@ -824,8 +826,19 @@ export function createDelegateTools(deps: DelegateToolsDeps): DelegateToolsHandl
           }
           const invoking = deps.invokingSession?.()
 
-          const preset = await deps.presets.find(call.toAgent)
+          const found = await deps.presets.find(call.toAgent)
           if (signal?.aborted) return CLIENT_ABORT_TEXT
+          // A preset wins over a runtime agent of the same name only when it
+          // can run (has a harness). Every runtime agent tends to have a
+          // same-named preset ("Deepseek" next to runtime `deepseek`); a
+          // harness-less one must not make the runtime agent unreachable.
+          // With no runtime agent of that name it still runs, so the caller
+          // sees the preset's own "no harness configured" refusal.
+          const preset =
+            found &&
+            (found.harnessId || !pickOnlineHost(nodes, parseRuntimeTarget(call.toAgent).agentId))
+              ? found
+              : undefined
 
           const created = trackCreatedRow()
           const work = (async (): Promise<string> => {
