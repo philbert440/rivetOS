@@ -43,8 +43,12 @@ fun parsePairingCode(text: String): PairingParse {
     return PairingParse.Ok(PairingCode(gateway, token, pin))
 }
 
-/** Why a pairing redeem failed, for the Enroll screen. */
-enum class PairingFailure { Expired, Gone, PinMismatch, Unreachable, Other }
+/**
+ * Why a pairing redeem failed, for the Enroll screen. [Spent]: a retry after a
+ * timeout was refused, so the first attempt most likely redeemed the code and
+ * only its answer was lost.
+ */
+enum class PairingFailure { Expired, Spent, Gone, PinMismatch, Unreachable, Other }
 
 /** Maps the gateway's redeem status (services/den-server/src/pairing.ts) to a failure. */
 fun pairingFailureForStatus(status: Int): PairingFailure = when (status) {

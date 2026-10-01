@@ -20,8 +20,10 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberUpdatedState
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
@@ -48,21 +50,31 @@ import java.util.concurrent.atomic.AtomicBoolean
 /**
  * Full-screen camera view that reads QR codes (CameraX preview + ZXing on the
  * luminance plane). The first code passing [accept] is handed to [onCode] once;
- * anything else is ignored and scanning continues. Needs CAMERA already granted.
+ * any other QR code swaps the hint for "not a pairing code" and scanning
+ * continues. [onCameraError] gets the reason when no camera can be bound.
+ * Needs CAMERA already granted.
  */
 @Composable
 fun PairingScannerDialog(
     accept: (String) -> Boolean,
     onCode: (String) -> Unit,
+    onCameraError: (String) -> Unit,
     onDismiss: () -> Unit,
 ) {
     val colors = RivetTheme.colors
+    var sawOtherCode by remember { mutableStateOf(false) }
     Dialog(
         onDismissRequest = onDismiss,
         properties = DialogProperties(usePlatformDefaultWidth = false),
     ) {
         Box(Modifier.fillMaxSize().background(colors.bg)) {
-            QrCameraView(accept = accept, onCode = onCode, modifier = Modifier.fillMaxSize())
+            QrCameraView(
+                accept = accept,
+                onCode = onCode,
+                onOtherCode = { sawOtherCode = true },
+                onCameraError = onCameraError,
+                modifier = Modifier.fillMaxSize(),
+            )
             Box(
                 Modifier
                     .align(Alignment.Center)
@@ -70,7 +82,7 @@ fun PairingScannerDialog(
                     .border(2.dp, colors.em, RoundedCornerShape(12.dp)),
             )
             Text(
-                stringResource(R.string.pair_scan_hint),
+                stringResource(if (sawOtherCode) R.string.pair_not_code else R.string.pair_scan_hint),
                 color = colors.ink,
                 style = RivetType.sm,
                 textAlign = TextAlign.Center,
@@ -95,16 +107,27 @@ fun PairingScannerDialog(
 }
 
 @Composable
-private fun QrCameraView(accept: (String) -> Boolean, onCode: (String) -> Unit, modifier: Modifier) {
+private fun QrCameraView(
+    accept: (String) -> Boolean,
+    onCode: (String) -> Unit,
+    onOtherCode: () -> Unit,
+    onCameraError: (String) -> Unit,
+    modifier: Modifier,
+) {
     val context = LocalContext.current
     val lifecycleOwner = LocalLifecycleOwner.current
     val acceptNow by rememberUpdatedState(accept)
     val onCodeNow by rememberUpdatedState(onCode)
+    val onOtherCodeNow by rememberUpdatedState(onOtherCode)
+    val onCameraErrorNow by rememberUpdatedState(onCameraError)
     val previewView = remember { PreviewView(context) }
 
     DisposableEffect(lifecycleOwner) {
         val executor = Executors.newSingleThreadExecutor()
         val done = AtomicBoolean(false)
+        // Set on dispose: a provider that resolves after Cancel must not bind.
+        val disposed = AtomicBoolean(false)
+        val sawOther = AtomicBoolean(false)
         val reader = QRCodeReader()
         val hints = mapOf(DecodeHintType.TRY_HARDER to true)
         val main = ContextCompat.getMainExecutor(context)
@@ -118,21 +141,30 @@ private fun QrCameraView(accept: (String) -> Boolean, onCode: (String) -> Unit, 
             image.use {
                 if (done.get()) return@use
                 val text = decodeQr(reader, hints, it) ?: return@use
-                if (acceptNow(text) && done.compareAndSet(false, true)) {
+                if (!acceptNow(text)) {
+                    if (sawOther.compareAndSet(false, true)) main.execute { onOtherCodeNow() }
+                } else if (done.compareAndSet(false, true)) {
                     main.execute { onCodeNow(text) }
                 }
             }
         }
 
         providerFuture.addListener({
-            val p = providerFuture.get()
-            provider = p
-            val preview = Preview.Builder().build().also { it.surfaceProvider = previewView.surfaceProvider }
-            p.unbindAll()
-            p.bindToLifecycle(lifecycleOwner, CameraSelector.DEFAULT_BACK_CAMERA, preview, analysis)
+            if (disposed.get()) return@addListener
+            try {
+                val p = providerFuture.get()
+                val preview = Preview.Builder().build().also { it.surfaceProvider = previewView.surfaceProvider }
+                p.unbindAll()
+                // Throws on a device with no back camera (the manifest does not require one).
+                p.bindToLifecycle(lifecycleOwner, CameraSelector.DEFAULT_BACK_CAMERA, preview, analysis)
+                provider = p
+            } catch (e: Exception) {
+                if (!disposed.get()) onCameraErrorNow(e.message ?: e.javaClass.simpleName)
+            }
         }, main)
 
         onDispose {
+            disposed.set(true)
             done.set(true)
             provider?.unbindAll()
             executor.shutdown()

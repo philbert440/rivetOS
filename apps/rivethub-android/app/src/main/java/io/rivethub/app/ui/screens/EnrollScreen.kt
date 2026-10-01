@@ -147,14 +147,6 @@ fun EnrollScreen(c: AppContainer, onBack: (() -> Unit)?, onDone: () -> Unit) {
     fun pairWith(text: String) {
         scanning = false
         error = null
-        // Android's local network protection silently drops connections to
-        // LAN addresses for an app without the permission, so the redeem would
-        // just time out as "could not reach". Ask first, then pair.
-        if (needsLocalNetworkPermission(ctx)) {
-            awaitingLocalNetwork = text
-            askLocalNetwork.launch(LOCAL_NETWORK_PERMISSION)
-            return
-        }
         val code = when (val parsed = parsePairingCode(text)) {
             is PairingParse.Ok -> parsed.code
             is PairingParse.Err -> {
@@ -168,30 +160,41 @@ fun EnrollScreen(c: AppContainer, onBack: (() -> Unit)?, onDone: () -> Unit) {
                 return
             }
         }
+        // Android's local network protection silently drops connections to
+        // LAN addresses for an app without the permission, so the redeem would
+        // just time out as "could not reach". Ask first (for a real code), then pair.
+        if (needsLocalNetworkPermission(ctx)) {
+            awaitingLocalNetwork = text
+            askLocalNetwork.launch(LOCAL_NETWORK_PERMISSION)
+            return
+        }
         scope.launch {
             busy = true
+            // Set once the code is spent and the identity saved: a later
+            // failure is the connection, and Connect retries it.
+            var paired = false
             try {
                 withContext(Dispatchers.IO) {
                     val redeemed = c.pairing.redeem(code)
                     c.identity.importPkcs12(redeemed.p12, redeemed.passphrase)
                 }
+                paired = true
                 url = code.gateway
                 p12Uri = null
                 p12Name = null
                 pass = ""
                 connect(code.gateway)
             } catch (e: PairingClient.PairingException) {
-                error = ctx.getString(
-                    when (e.failure) {
-                        PairingFailure.Expired -> R.string.pair_expired
-                        PairingFailure.Gone -> R.string.pair_gone
-                        PairingFailure.PinMismatch -> R.string.pair_pin_mismatch
-                        PairingFailure.Unreachable -> R.string.pair_unreachable
-                        PairingFailure.Other -> R.string.pair_unreachable
-                    },
-                )
+                error = when (e.failure) {
+                    PairingFailure.Expired -> ctx.getString(R.string.pair_expired)
+                    PairingFailure.Spent -> ctx.getString(R.string.pair_spent)
+                    PairingFailure.Gone -> ctx.getString(R.string.pair_gone)
+                    PairingFailure.PinMismatch -> ctx.getString(R.string.pair_pin_mismatch)
+                    PairingFailure.Unreachable -> ctx.getString(R.string.pair_unreachable)
+                    PairingFailure.Other -> ctx.getString(R.string.pair_failed, e.message ?: e.failure.name)
+                }
             } catch (e: Exception) {
-                error = enrollMessage(e)
+                error = if (paired) ctx.getString(R.string.pair_connect_failed, enrollMessage(e)) else enrollMessage(e)
             } finally {
                 busy = false
             }
@@ -212,6 +215,10 @@ fun EnrollScreen(c: AppContainer, onBack: (() -> Unit)?, onDone: () -> Unit) {
         PairingScannerDialog(
             accept = ::looksLikePairingCode,
             onCode = ::pairWith,
+            onCameraError = { reason ->
+                scanning = false
+                error = ctx.getString(R.string.pair_camera_unavailable, reason)
+            },
             onDismiss = { scanning = false },
         )
     }

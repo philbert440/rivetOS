@@ -50,6 +50,11 @@ class PairingClient(private val lan: LanNetwork?) {
             call(code, bindLan = true)
         } catch (e2: SocketTimeoutException) {
             throw PairingException(PairingFailure.Unreachable, e2.message)
+        } catch (e2: PairingException) {
+            // The redeem is one-time: if the first attempt timed out after the
+            // computer took the code, this retry is refused. Say so, rather
+            // than "expired" for a code the user just scanned.
+            throw if (e2.failure == PairingFailure.Expired) PairingException(PairingFailure.Spent, e2.message) else e2
         }
     }
 
@@ -85,18 +90,23 @@ class PairingClient(private val lan: LanNetwork?) {
 }
 
 /** Trusts only a server leaf whose DER SHA-256 is [pinHex]. */
-private class PinnedLeafTrustManager(private val pinHex: String) : X509TrustManager {
+internal class PinnedLeafTrustManager(private val pinHex: String) : X509TrustManager {
     @Volatile var mismatch = false
         private set
 
     override fun checkServerTrusted(chain: Array<out X509Certificate>?, authType: String?) {
         val leaf = chain?.firstOrNull() ?: throw CertificateException("no server certificate")
-        val digest = MessageDigest.getInstance("SHA-256").digest(leaf.encoded)
-        val hex = digest.joinToString("") { "%02x".format(it) }
-        if (!MessageDigest.isEqual(hex.toByteArray(), pinHex.toByteArray())) {
+        if (!matchesPin(leaf.encoded)) {
             mismatch = true
             throw CertificateException("gateway certificate does not match the pairing code")
         }
+    }
+
+    /** Whether [der] (a certificate's DER bytes) hashes to the pinned SHA-256. */
+    fun matchesPin(der: ByteArray): Boolean {
+        val digest = MessageDigest.getInstance("SHA-256").digest(der)
+        val hex = digest.joinToString("") { "%02x".format(it) }
+        return MessageDigest.isEqual(hex.toByteArray(), pinHex.toByteArray())
     }
 
     override fun checkClientTrusted(chain: Array<out X509Certificate>?, authType: String?) =
