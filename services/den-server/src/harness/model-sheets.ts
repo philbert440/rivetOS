@@ -1477,6 +1477,13 @@ export function isCodexDefaultModel(
 }
 
 /**
+ * Hermes `custom:<provider>:<model>` (named provider in ~/.hermes/config.yaml).
+ * Same shape as hermes-cli `NAMED_PROVIDER_RE`: the provider is one token with
+ * no colon, and the model keeps the rest. `MODEL_TOKEN_RE` already admits `:`.
+ */
+const HERMES_NAMED_PROVIDER_RE = /^custom:([^:\s]+):(.+)$/
+
+/**
  * Append `[modelFlag, model]` / `[effortFlag, effort]` when the sheet has
  * that flag AND the value is a listed id. Unknown values are omitted (never
  * crash a spawn) and logged with the harness and the list's provenance, so a
