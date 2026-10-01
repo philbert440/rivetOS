@@ -554,6 +554,15 @@ async function runClaimedTask(task: TaskRow, opts: TaskHandlerOptions): Promise<
     // next run's resumeMessage.
     for (;;) {
       const abort = new AbortController()
+      // A kill flips the row and notifies `onTerminal`. Abort the in-flight
+      // turn so the executor stops its process: letting a killed task run to
+      // completion kept spending tokens and running tools after the row said
+      // `killed` (#1053). The result is still recorded as killed below.
+      const stopOnKill = opts.store.onTerminal?.((taskId, status) => {
+        if (taskId !== task.id || status !== 'killed' || abort.signal.aborted) return
+        log.info(`Task ${task.id} killed — aborting the in-flight turn`)
+        abort.abort('killed')
+      })
       const handle = executor.start(
         {
           taskId: task.id,
@@ -605,6 +614,12 @@ async function runClaimedTask(task: TaskRow, opts: TaskHandlerOptions): Promise<
         }
         const runningTotal = addUsage(totalUsage, event.usage)
         await opts.store.updateUsage(task.id, runningTotal)
+        // `onTerminal` fires only on the store instance that wrote the kill.
+        // A kill issued from another node is caught here, at the turn boundary.
+        if (!abort.signal.aborted && (await opts.store.get(task.id))?.status === 'killed') {
+          log.info(`Task ${task.id} killed elsewhere — aborting before the next turn`)
+          abort.abort('killed')
+        }
         // Budget is enforced BETWEEN turns — hard exceed aborts the executor.
         if (!exceededReason) {
           exceededReason = budgetExceeded(task.budget, runningTotal)
@@ -616,6 +631,7 @@ async function runClaimedTask(task: TaskRow, opts: TaskHandlerOptions): Promise<
       }
 
       const result = await handle.result
+      stopOnKill?.()
       totalUsage = addUsage(totalUsage, result.usage)
       const totalResult: TaskResult = { ...result, usage: totalUsage }
 
@@ -628,10 +644,9 @@ async function runClaimedTask(task: TaskRow, opts: TaskHandlerOptions): Promise<
         return
       }
 
-      // Kill requested while the turn was in flight (requestKill flips the
-      // row without aborting the executor): record the outcome as killed and
-      // discard the result — legacy subagent "let it finish, drop the
-      // result" semantics.
+      // Kill requested while the turn was in flight: the abort above stopped
+      // the executor (or, for a kill this instance never heard about, the turn
+      // simply ended). Record the outcome as killed and discard the result.
       const rowAfterTurn = await opts.store.get(task.id)
       if (rowAfterTurn?.status === 'killed') {
         await finishTerminal(opts, task.id, 'killed', {

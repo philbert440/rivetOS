@@ -202,6 +202,55 @@ describe('spawnClaudeTurn timeout_ms', () => {
     await rejected
   })
 
+  it('signals the whole process group when it leads one, and sweeps it on exit (#1053)', () => {
+    const { child, sent } = makeFakeChild()
+    const group: Array<[number, NodeJS.Signals]> = []
+    let spawnOpts: { detached?: boolean } | undefined
+    const turn = spawnClaudeTurn(FLAGS, 'hi', {
+      spawn: ((_bin: string, _args: string[], o: { detached?: boolean }) => {
+        spawnOpts = o
+        return child
+      }) as unknown as SpawnFn,
+      killGroup: (pid, signal) => {
+        group.push([pid, signal])
+      },
+    })
+    live.push(turn)
+    // its own group, so MCP servers and tool shells die with it
+    expect(spawnOpts?.detached).toBe(process.platform !== 'win32')
+    turn.kill()
+    expect(group).toEqual([[4242, 'SIGTERM']])
+    expect(sent).toEqual([]) // not a pid-only kill
+    // The CLI exits on SIGTERM; a child of its that ignored it is swept right away.
+    simulateExit(child, null, 'SIGTERM')
+    expect(group).toEqual([
+      [4242, 'SIGTERM'],
+      [4242, 'SIGKILL'],
+    ])
+  })
+
+  it('falls back to the pid when the group cannot be signalled', () => {
+    const { child, sent } = makeFakeChild()
+    const turn = spawnClaudeTurn(FLAGS, 'hi', {
+      spawn: (() => child) as unknown as SpawnFn,
+      killGroup: () => {
+        throw new Error('ESRCH')
+      },
+    })
+    live.push(turn)
+    turn.kill()
+    expect(sent).toEqual(['SIGTERM'])
+    simulateExit(child, null, 'SIGTERM')
+  })
+
+  it('never group-signals a fake child when only spawn is injected', () => {
+    const { turn, child, sent } = spawnFakeChild()
+    live.push(turn)
+    turn.kill()
+    expect(sent).toEqual(['SIGTERM'])
+    simulateExit(child, null, 'SIGTERM')
+  })
+
   it('SIGKILLs after KILL_GRACE_MS when SIGTERM is ignored', async () => {
     const timeoutMs = 500
     const { turn, child, sent } = spawnFakeChild({ timeoutMs })
@@ -252,4 +301,40 @@ describe('parseAllowedApiKeySources', () => {
     expect(parseAllowedApiKeySources([1])).toBeUndefined()
     expect(parseAllowedApiKeySources(['apiKeyHelper', ''])).toBeUndefined()
   })
+})
+
+describe('spawnClaudeTurn process group (real process)', () => {
+  it.skipIf(process.platform === 'win32')(
+    "a kill takes the CLI's own children with it (#1053)",
+    async () => {
+      const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'claude-group-'))
+      dirs.push(dir)
+      const pidFile = path.join(dir, 'child.pid')
+      // Stands in for the CLI: starts a long-lived child (an MCP server, a
+      // tool shell), then waits on it.
+      const turn = spawnFake(
+        `#!/usr/bin/env bash\nsleep 300 &\necho $! > ${pidFile}\ncat > /dev/null\nwait\n`,
+      )
+      const until = async (cond: () => boolean): Promise<void> => {
+        const end = Date.now() + 5_000
+        while (!cond()) {
+          if (Date.now() > end) throw new Error('condition not met within 5s')
+          await new Promise((r) => setTimeout(r, 20))
+        }
+      }
+      await until(() => fs.existsSync(pidFile) && fs.readFileSync(pidFile, 'utf8').trim() !== '')
+      const grandchild = Number(fs.readFileSync(pidFile, 'utf8').trim())
+      const alive = (): boolean => {
+        try {
+          process.kill(grandchild, 0)
+          return true
+        } catch {
+          return false
+        }
+      }
+      expect(alive()).toBe(true)
+      turn.kill()
+      await until(() => !alive())
+    },
+  )
 })

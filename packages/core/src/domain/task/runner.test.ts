@@ -265,6 +265,59 @@ describe('createTaskHandler', () => {
     expect(row?.usage?.turns).toBeLessThan(5)
   })
 
+  it('a kill during the turn aborts the executor instead of letting it finish (#1053)', async () => {
+    const store = new InMemoryTaskStore()
+    let taskId = ''
+    const fake = makeFakeExecutor({
+      turns: 50,
+      onStart: async () => {
+        setTimeout(() => void store.requestKill(taskId), 20)
+      },
+    })
+    const { handler } = wire(fake, store)
+    const task = await store.create(taskInput())
+    taskId = task.id
+
+    await handler(task.id)
+
+    const row = await store.get(task.id)
+    expect(row?.status).toBe('killed')
+    expect(row?.result?.verdict).toBe('killed')
+    // Under the old "let it finish, drop the result" behaviour all 50 turns ran.
+    expect(row?.usage?.turns ?? 0).toBeLessThan(50)
+  })
+
+  it('a kill this instance never hears about is caught at the next turn boundary', async () => {
+    const store = new InMemoryTaskStore()
+    // Another node wrote the kill: the row flips, but this runner's store
+    // instance gets no onTerminal notification.
+    const deaf = new Proxy(store, {
+      get(target, prop) {
+        if (prop === 'onTerminal') return undefined
+        const value = Reflect.get(target, prop) as unknown
+        return typeof value === 'function'
+          ? (value as (...a: unknown[]) => unknown).bind(target)
+          : value
+      },
+    })
+    let taskId = ''
+    const fake = makeFakeExecutor({
+      turns: 50,
+      onStart: async () => {
+        setTimeout(() => void store.requestKill(taskId), 20)
+      },
+    })
+    const { handler } = wire(fake, deaf)
+    const task = await store.create(taskInput())
+    taskId = task.id
+
+    await handler(task.id)
+
+    const row = await store.get(task.id)
+    expect(row?.status).toBe('killed')
+    expect(row?.usage?.turns ?? 0).toBeLessThan(50)
+  })
+
   it('interactive task flips to awaiting-input; send resumes with resumeMessage, not goal', async () => {
     const fake = makeFakeExecutor()
     const { store, handler } = wire(fake)

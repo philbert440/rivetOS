@@ -308,17 +308,48 @@ export function spawnClaudeTurn(
     timeoutMs?: number
     /** Injectable spawner; defaults to `node:child_process.spawn`. */
     spawn?: typeof spawn
+    /**
+     * Signals the child's whole process group. Defaults to
+     * `process.kill(-pid, signal)` for the real spawner on POSIX; with an
+     * injected `spawn` (tests) nothing is group-signalled unless this is
+     * passed too, so a fake pid can never reach a real process group.
+     */
+    killGroup?: (pid: number, signal: NodeJS.Signals) => void
   },
 ): SpawnedTurn {
   const args = buildArgs(flags)
   const timeoutMs = opts?.timeoutMs ?? 0
   const spawnFn = opts?.spawn ?? spawn
 
+  const posix = process.platform !== 'win32'
   const proc = spawnFn(flags.binary, args, {
     env: buildChildEnv(opts?.env),
     cwd: flags.cwd,
     stdio: ['pipe', 'pipe', 'pipe'],
+    // Own process group, so a kill reaches what the CLI spawned (stdio MCP
+    // servers, Bash tool shells, hook workers) and not just the CLI's pid —
+    // those otherwise outlive a killed task (#1053).
+    detached: posix,
   })
+  const killGroup =
+    opts?.killGroup ??
+    (opts?.spawn || !posix
+      ? undefined
+      : (pid: number, signal: NodeJS.Signals): void => {
+          process.kill(-pid, signal)
+        })
+  /** Signal the group when we lead one; fall back to the pid. */
+  const signalTree = (signal: NodeJS.Signals): void => {
+    if (killGroup && proc.pid) {
+      try {
+        killGroup(proc.pid, signal)
+        return
+      } catch {
+        /* group already gone, or the child is not a group leader */
+      }
+    }
+    proc.kill(signal)
+  }
 
   // Wire stdin: one user turn as stream-json input, then close.
   const inputLine =
@@ -333,17 +364,19 @@ export function spawnClaudeTurn(
   let timeoutTimer: ReturnType<typeof setTimeout> | undefined
   let timeoutError: ClaudeCliTimeoutError | undefined
   const exited = (): boolean => proc.exitCode !== null || proc.signalCode !== null
+  let killRequested = false
   const armSigkillFallback = (): void => {
     if (killTimer) return
     killTimer = setTimeout(() => {
-      if (!exited()) proc.kill('SIGKILL')
+      if (!exited()) signalTree('SIGKILL')
     }, KILL_GRACE_MS)
     killTimer.unref()
   }
   const kill = (): void => {
     if (exited()) return // already exited (or signalled) — nothing to do
+    killRequested = true
     try {
-      proc.kill('SIGTERM')
+      signalTree('SIGTERM')
     } catch {
       /* already gone */
     }
@@ -384,6 +417,15 @@ export function spawnClaudeTurn(
     exitCode = code
     if (killTimer) clearTimeout(killTimer)
     if (timeoutTimer) clearTimeout(timeoutTimer)
+    // The CLI honored our SIGTERM, but a child of its that ignored it would
+    // linger: sweep the group once, right now (no pid-reuse window).
+    if (killRequested && killGroup && proc.pid) {
+      try {
+        killGroup(proc.pid, 'SIGKILL')
+      } catch {
+        /* nothing left in the group */
+      }
+    }
     for (const waiter of exitWaiters.splice(0)) waiter(code)
     wakeIterator()
   })
