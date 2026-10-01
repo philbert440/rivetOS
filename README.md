@@ -235,6 +235,9 @@ Containers & Service:
   rivetos build                   Build container images from source
   rivetos service init|start|stop|status|logs   Manage the systemd unit
 
+Devices:
+  rivetos pair <name>             Pair a phone by QR (--check: can this node pair?)
+
 Mesh:
   rivetos mesh list|ping|status   Mesh management
   rivetos mesh enroll <user@host> --name <node>   Join a RivetHub mesh

@@ -621,6 +621,14 @@ den:
 
 **Harness allow-list.** When `den.allowed_harnesses` is set, the den stamps each `GET /api/harnesses` row with `allowed: true|false` (alongside `installed`). RivetHub web and Android **new-conversation / Agents** pickers keep only rows where `installed !== false` and `allowed !== false` (absent fields count as true, so older dens and unset allow-lists behave as today). Existing-session drawers still list off-list harnesses so previously started sessions remain visible and resumable. A fresh spawn, preset save, or harness-session task that names an off-list harness is refused with `harness_not_allowed` (HTTP 403). Resumes of existing sessions still work when the resume target exists. The task runner enforces the list on the node that claims the row.
 
+**Phone pairing.** Den redeems pairing codes at `POST /api/devices/pair` from
+the records in `RIVETOS_DEN_PAIRING_DIR` (default `~/.rivetos/devices/pairing`).
+Settings → Pair a phone runs the CLI named by `RIVETOS_DEN_PAIR_CLI` (default
+`$RIVETOS_ROOT/packages/cli/dist/index.js`; the in-process gateway passes the
+install's own CLI) as `rivetos pair <name> --json`, and `rivetos pair --check
+--json` to decide whether to offer pairing at all. The QR points at `den.host`
+when that is a concrete address, else the node's first LAN address.
+
 **Browser origin policy.** The gateway answers a browser only when the request's `Origin` is one of:
 
 - the gateway itself (same host and port — the RivetHub web app it serves);
