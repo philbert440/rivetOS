@@ -53,7 +53,7 @@ in_use() { # any process with cwd under $1
   return 1
 }
 dirty() { # porcelain lines other than ignored build output
-  git -C "$1" status --porcelain 2>/dev/null | grep -vE '^(\?\?|!!) (.*/)?(dist|node_modules)/' | grep -q .
+  git -C "$1" status --porcelain 2>/dev/null | grep -vE '^(\?\?|!!) (.*/)?(dist|node_modules)(/|$)' | grep -q .
 }
 pr_number_from_name() { # wt-pr-1234 / w-pr-1234 -> 1234
   basename "$1" | sed -nE 's/^(wt|w)-pr-?([0-9]+)$/\2/p'
