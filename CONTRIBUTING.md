@@ -310,6 +310,17 @@ npx nx g @rivetos/nx:pr --type=feat --description="Add Slack channel" --issue=34
 npx nx g @rivetos/nx:pr --dryRun    # preview without creating anything
 ```
 
+### After the PR merges
+
+Remove the worktree and branch you worked in. From the main checkout:
+
+```bash
+scripts/worktree-reap.sh          # dry run: lists every reapable worktree
+scripts/worktree-reap.sh --apply  # removes them, deletes their branches, prunes remote refs
+```
+
+A worktree is reaped only when its tree is clean (ignored build output aside), its branch's PR is merged or closed (or its detached HEAD is already on `origin/main`), and no running process is inside it. Everything else is skipped and listed. Review checkouts (`wt-pr-NNNN`) are reaped the same way. Nothing else in the workflow removes worktrees, and they add up fast.
+
 ### Manual PR checklist
 
 If you're not using the PR generator, verify before submitting:
