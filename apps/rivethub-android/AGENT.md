@@ -274,11 +274,16 @@ output). The palette brings its own light/dark (`resolveRivetColors`).
 
 **Drawer gestures (`ui/components/RivetDrawerHost.kt`, pure rules `plane/DrawerSwipe.kt`).** The
 sheet follows the finger from the left edge and settles by fling (≥ 400dp/s) or halfway. The edge
-zone is max(24dp, system Back-gesture inset + 24dp), and while closed a 200dp band mid-bezel is
-excluded from the system Back gesture, so edge swipes work under gesture navigation. An open sheet
-closes on a leftward drag from the scrim, or from any part of the sheet whose content did not take
-the drag (rows keep swipe-to-archive), or a scrim tap. Back is a `PredictiveBackHandler` in
-`HubDrawer` (sheet eases shut 35% with progress, closes on commit, reopens on cancel).
+zone is max(24dp, system Back-gesture inset + 24dp), so under gesture navigation a swipe starting
+just inside the screen opens it. On the hub home only (`HubDrawer(excludeBackGesture = true)`), a
+200dp band mid-bezel is also excluded from the system Back gesture while the drawer is closed, so a
+swipe from the very edge opens it there; in a chat or its terminal the bezel stays Back. A drag the
+gesture layer loses (pointer gone, layer restarted by rotation or an inset change) still settles by
+position. An open sheet closes on a leftward drag from the scrim, or from any part of the sheet whose
+content did not take the drag (rows keep swipe-to-archive), or a scrim tap. Back is a
+`PredictiveBackHandler` in `HubDrawer` (sheet eases shut 35% of where it was when the gesture
+started, closes on commit, reopens on cancel). `RivetDrawerStateTest` covers the state; the pointer
+loop itself is covered only by manual emulator runs.
 
 **Default view (web Settings → Conversations, `lib/use-session-view.ts`).** Settings → Conversations
 → Default view (`defaultView` pref, Chat unless `terminal`, as on the web, so upgrading moves no conversation). `HarnessChatViewModel.boot` opens a
@@ -306,17 +311,17 @@ Do not invent Material chrome.
 
 Tailwind → Compose: `text-lg` 18sp semibold · `text-sm` 14sp · `text-xs` 13sp · mono
 `text-[11px]`/`[10px]`/`[9px]` 11/10/9sp. Sans = `RivetFonts.Sans` (JetBrains Mono, like mono), mono =
-`RivetFonts.Mono` (JetBrains Mono). Spacing: 1 Tailwind unit = 4dp. Radius: `rounded` 4 /
-`rounded-md` 6 / `rounded-lg` 8 / `rounded-xl` 12 / `rounded-full` 999. Icons: `size-4` 16dp
+`RivetFonts.Mono` (JetBrains Mono). Spacing: 1 Tailwind unit = 4dp. Radius: square, as the
+desktop's Omarchy look: every `rounded*` maps to 0dp except `rounded-full` (999). Icons: `size-4` 16dp
 · `size-3` 12dp · `size-7` 28dp. Lucide drawables only (`R.drawable.lucide_*`) in D1a/D1b
 surfaces — no `Icons.*`. App root is flat `bg` (no blueprint grid). Touch targets: keep desktop paddings for the look, add 44dp hit areas.
 
-Phone shape tokens (`ui/theme/Dimens.kt`; every radius is 0 except `Radius.full`): `Shape.row` for Pill,
-HarnessChip, toggle tracks, both segmented-control layers and selected NavRow (40dp);
-`Shape.card = Radius.xl` (12dp) for sheets, composer cards and cards;
-`Shape.bubble = Radius.xxl` (14dp) for message bubbles (U3b adopts it in Transcript);
-`Shape.control = Radius.md` (6dp) for buttons, fields and select triggers;
-`Shape.tight = Radius.sm` (4dp) for code, tool rows and tags. Buttons retain their
+Phone shape tokens (`ui/theme/Dimens.kt`): every `Radius` is 0dp except `Radius.full`, so every
+`Shape` token is square. `Shape.row` for Pill, HarnessChip, both segmented-control layers and selected
+NavRow (40dp); `Shape.card` for sheets, composer cards and cards; `Shape.bubble` for message bubbles;
+`Shape.control` for buttons, fields and select triggers; `Shape.tight` for code, tool rows and tags.
+Round on purpose (`Radius.full` / `CircleShape`): toggle tracks and knobs, status dots, round icon
+buttons. Buttons retain their
 variants and `Dimens.touchTarget` (44dp) minimum outer height. Fields use panel fill
 and a 1dp border (em while focused, line otherwise). NavRow has a growing 40dp visual
 row inside a minimum 44dp hit area. Modal sheets have card top corners, a centred 32×4dp line
@@ -543,7 +548,7 @@ Terminal attach errors (`TermAttachController` publish) set `UiState.termError` 
 a dismissed card does not come back.
 
 **Messages: bubbles, actions, jumper (UX slice U3b, UX-SPEC §1.2/§1.3).** User turn = avatar
-row, then a right-aligned bubble (`Radius.xxl` 14dp, `em` 12% fill, 1dp `em` 35% border, max
+row, then a right-aligned bubble (`Shape.bubble`, square, `em` 12% fill, 1dp `em` 35% border, max
 85% width) holding the body with the trailing `[attached: uri]` lines stripped
 (`plane/AttachedLines.kt splitAttachedLines`; only the trailing run of well-formed lines, a
 malformed/mid-text line stays text), then `AttachmentChips` (image types = 72dp thumbnails, tap →

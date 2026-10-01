@@ -48,3 +48,18 @@ fun resolveSessionMode(stored: String?, defaultView: SessionMode, terminalOnly: 
     terminalOnly -> SessionMode.Terminal
     else -> defaultView
 }
+
+/** The harness a `<harness>:<id>` session id names, when [known] lists it. */
+fun harnessFromSessionId(sessionId: String, known: Collection<String>): String? {
+    val i = sessionId.indexOf(':')
+    if (i <= 0) return null
+    return sessionId.substring(0, i).takeIf { it in known }
+}
+
+/**
+ * A conversation with no harness to chat through (a legacy on-disk row whose
+ * id names none) only runs in a terminal. A draft is never terminal-only: it
+ * has not picked its harness yet. Unlike the web's `sessionOpensOnTerminal`
+ * this does not consult the registry; it fails toward a usable view.
+ */
+fun opensTerminalOnly(draft: Boolean, harnessId: String?): Boolean = !draft && harnessId == null

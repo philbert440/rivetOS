@@ -9,6 +9,9 @@ package io.rivethub.app.plane
  */
 
 private val HEX = Regex("^#(?:[0-9a-fA-F]{3}|[0-9a-fA-F]{6})$")
+private val NON_ALNUM = Regex("[^a-z0-9]+")
+private val WORD_BREAK = Regex("[\\s\\-_.]+")
+private val LABEL_NOISE = Regex("[\\s\\-_]+")
 
 const val ACCENT_CLAUDE = "#CC785C"
 const val ACCENT_GROK = "#9ca3af"
@@ -44,7 +47,7 @@ fun harnessAccentHex(harnessId: String?, command: String? = null): String {
     HARNESS_ACCENTS[c]?.let { return it }
     // Bounded match (mirrors web harness-colors.ts): a key may be one of at
     // most two delimited tokens; never a substring, never inside a longer name.
-    val tokens = c.split(Regex("[^a-z0-9]+")).filter { it.isNotEmpty() }
+    val tokens = c.split(NON_ALNUM).filter { it.isNotEmpty() }
     if (tokens.size > 2) return ACCENT_LOCAL
     val match = HARNESS_ACCENTS.keys.sortedByDescending { it.length }.firstOrNull { it in tokens }
     return if (match != null) HARNESS_ACCENTS.getValue(match) else ACCENT_LOCAL
@@ -84,7 +87,7 @@ fun parseAccentArgb(hex: String): Long? {
  * Port of web `agentInitials` (lib/agent-accent.ts).
  */
 fun agentInitials(name: String): String {
-    val words = name.split(Regex("[\\s\\-_.]+")).filter { w -> w.any { it.isLetterOrDigit() } }
+    val words = name.split(WORD_BREAK).filter { w -> w.any { it.isLetterOrDigit() } }
     fun firstOf(w: String) = w.first { it.isLetterOrDigit() }.uppercase()
     return when (words.size) {
         0 -> "?"
@@ -111,6 +114,6 @@ fun tileInkOn(fill: Long): Long {
 
 /** True when two labels read the same, ignoring case, whitespace, `-` and `_`. */
 fun sameLabel(a: String, b: String): Boolean {
-    fun norm(v: String) = v.lowercase().replace(Regex("[\\s\\-_]+"), "")
+    fun norm(v: String) = v.lowercase().replace(LABEL_NOISE, "")
     return norm(a) == norm(b)
 }

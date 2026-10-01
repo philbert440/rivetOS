@@ -555,6 +555,7 @@ fun App(
         Screen.Hub -> HubDrawer(
             vm = hubVm,
             currentSessionKey = null,
+            excludeBackGesture = true,
             onOpenChat = { openChatScreen(it) },
             onOpenRow = { openRowScreen(it) },
             onNavTab = { onNavTab(it) },

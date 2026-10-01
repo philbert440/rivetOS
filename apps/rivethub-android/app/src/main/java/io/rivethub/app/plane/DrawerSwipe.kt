@@ -77,11 +77,23 @@ fun settlesOpen(fraction: Float, velocity: Float, flingThreshold: Float): Boolea
     if (abs(velocity) >= flingThreshold) velocity > 0f else fraction >= 0.5f
 
 /**
- * How open the sheet stays while a predictive Back gesture is in flight:
- * it eases shut by up to [PREDICTIVE_BACK_TRAVEL] of its width with the
- * gesture's [progress] (0…1), then closes on commit or springs back on cancel.
+ * Where a claimed drag puts the sheet: [startFraction] plus the finger's
+ * travel since the claim. [dx] is measured from the down position, and the
+ * claim happens [slop] past it, so the slop is taken off (toward the drag's
+ * direction) to keep the sheet from jumping by that distance.
  */
-fun predictiveBackFraction(progress: Float): Float =
-    1f - PREDICTIVE_BACK_TRAVEL * progress.coerceIn(0f, 1f)
+fun drawerDragFraction(startFraction: Float, dx: Float, slop: Float, startOpen: Boolean, sheetWidth: Float): Float {
+    val travel = if (startOpen) dx + slop else dx - slop
+    return (startFraction + travel / sheetWidth).coerceIn(0f, 1f)
+}
+
+/**
+ * How open the sheet stays while a predictive Back gesture is in flight:
+ * it eases shut by up to [PREDICTIVE_BACK_TRAVEL] of [from] (how open it was
+ * when the gesture started) with the gesture's [progress] (0…1), then closes
+ * on commit or springs back on cancel.
+ */
+fun predictiveBackFraction(progress: Float, from: Float = 1f): Float =
+    from * (1f - PREDICTIVE_BACK_TRAVEL * progress.coerceIn(0f, 1f))
 
 const val PREDICTIVE_BACK_TRAVEL = 0.35f

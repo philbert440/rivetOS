@@ -239,8 +239,11 @@ fun AvatarRow(
             horizontalArrangement = Arrangement.spacedBy(8.dp, Alignment.End),
             verticalAlignment = Alignment.CenterVertically,
         ) {
+            val author = stringResource(R.string.cd_author_you)
             Text(
                 stringResource(R.string.label_you),
+                // Read as a word, not the "›" glyph.
+                modifier = Modifier.semantics { contentDescription = author },
                 color = colors.em,
                 style = RivetType.sm.copy(fontWeight = FontWeight.Bold),
             )
@@ -254,8 +257,11 @@ fun AvatarRow(
             horizontalArrangement = Arrangement.spacedBy(8.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
+            val author = stringResource(R.string.cd_author_rivet)
             Text(
                 stringResource(R.string.label_rivet),
+                // Read as a word, not the "›" glyph.
+                modifier = Modifier.semantics { contentDescription = author },
                 color = accent,
                 style = RivetType.sm.copy(fontWeight = FontWeight.Bold),
             )

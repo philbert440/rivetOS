@@ -2,6 +2,7 @@ package io.rivethub.app.plane
 
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertSame
+import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class SessionModeTest {
@@ -62,6 +63,19 @@ class SessionModeTest {
         assertEquals(SessionMode.Chat, resolveSessionMode("chat", SessionMode.Terminal, terminalOnly = false))
         assertEquals(SessionMode.Terminal, resolveSessionMode("terminal", SessionMode.Chat, terminalOnly = false))
         assertEquals(SessionMode.Chat, resolveSessionMode("chat", SessionMode.Terminal, terminalOnly = true))
+    }
+
+    @Test fun `a session id naming no known harness is terminal-only, and opens there even on Chat`() {
+        val known = setOf("claude-code", "codex")
+        assertEquals("claude-code", harnessFromSessionId("claude-code:abc", known))
+        assertEquals(null, harnessFromSessionId("legacy-thing:abc", known))
+        assertEquals(null, harnessFromSessionId(":abc", known))
+        assertEquals(null, harnessFromSessionId("no-prefix", known))
+        val legacy = opensTerminalOnly(draft = false, harnessId = harnessFromSessionId("legacy-thing:abc", known))
+        assertTrue(legacy)
+        assertEquals(SessionMode.Terminal, resolveSessionMode(null, SessionMode.Chat, terminalOnly = legacy))
+        // A draft has not picked its harness yet: never terminal-only.
+        assertEquals(false, opensTerminalOnly(draft = true, harnessId = null))
     }
 
     @Test fun `a terminal-only session opens on Terminal whatever the default`() {

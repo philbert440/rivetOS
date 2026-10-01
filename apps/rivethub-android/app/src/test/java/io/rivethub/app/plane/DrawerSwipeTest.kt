@@ -69,4 +69,21 @@ class DrawerSwipeTest {
         assertEquals(1f - PREDICTIVE_BACK_TRAVEL, predictiveBackFraction(1f), 1e-6f)
         assertEquals(1f - PREDICTIVE_BACK_TRAVEL, predictiveBackFraction(3f), 1e-6f)
     }
+
+    @Test fun `predictive back starts from a partly open sheet, not from fully open`() {
+        assertEquals(0.4f, predictiveBackFraction(0f, from = 0.4f), 1e-6f)
+        assertEquals(0.4f * (1f - PREDICTIVE_BACK_TRAVEL), predictiveBackFraction(1f, from = 0.4f), 1e-6f)
+    }
+
+    @Test fun `a claimed drag moves the sheet from the claim, not the down`() {
+        // Closed, claimed 20px (the slop) right of the down: still closed.
+        assertEquals(0f, drawerDragFraction(0f, dx = slop, slop = slop, startOpen = false, sheetWidth = sheet), 0f)
+        assertEquals(0.5f, drawerDragFraction(0f, dx = slop + sheet / 2, slop = slop, startOpen = false, sheetWidth = sheet), 1e-6f)
+        // Open, dragged left from the scrim.
+        assertEquals(1f, drawerDragFraction(1f, dx = -slop, slop = slop, startOpen = true, sheetWidth = sheet), 0f)
+        assertEquals(0.5f, drawerDragFraction(1f, dx = -slop - sheet / 2, slop = slop, startOpen = true, sheetWidth = sheet), 1e-6f)
+        // Clamped at both ends.
+        assertEquals(1f, drawerDragFraction(0.9f, dx = 5 * sheet, slop = slop, startOpen = false, sheetWidth = sheet), 0f)
+        assertEquals(0f, drawerDragFraction(0.1f, dx = -5 * sheet, slop = slop, startOpen = true, sheetWidth = sheet), 0f)
+    }
 }

@@ -50,6 +50,7 @@ import io.rivethub.app.plane.EDGE_EXCLUSION_HEIGHT_DP
 import io.rivethub.app.plane.EDGE_ZONE_DP
 import io.rivethub.app.plane.EDGE_ZONE_PAST_INSET_DP
 import io.rivethub.app.plane.claimsDrawerDrag
+import io.rivethub.app.plane.drawerDragFraction
 import io.rivethub.app.plane.drawerEdgeZone
 import io.rivethub.app.plane.settlesOpen
 import kotlin.math.abs
@@ -116,9 +117,15 @@ class RivetDrawerState {
  *  - A swipe from the left edge pulls the sheet out under the finger and
  *    lands open or closed by fling speed, else by how far it got
  *    (`plane/DrawerSwipe.kt`). The edge zone reaches past the system Back
- *    gesture's inset, and while the drawer is closed a
- *    [EDGE_EXCLUSION_HEIGHT_DP]-tall band of the bezel is excluded from the
- *    Back gesture, so an edge swipe works under gesture navigation too.
+ *    gesture's inset, so under gesture navigation a swipe that starts just
+ *    inside the screen opens it. With [excludeBackGesture] (the hub home,
+ *    where Back has nothing in the app to return to) a
+ *    [EDGE_EXCLUSION_HEIGHT_DP]-tall band of the bezel is also excluded from
+ *    the Back gesture while the drawer is closed, so a swipe from the very
+ *    edge opens it there. Elsewhere (a chat, its terminal) the bezel stays Back.
+ *  - A drag that is interrupted (pointer lost, the gesture layer restarted on
+ *    a rotation or inset change) still settles, so the sheet never stays
+ *    half-open.
  *  - An open sheet follows a leftward drag started on the scrim, or on any
  *    part of the sheet whose content did not take the drag (rows keep
  *    swipe-to-archive), and a scrim tap closes it.
@@ -132,6 +139,7 @@ fun RivetDrawerHost(
     state: RivetDrawerState,
     sheetWidth: Dp,
     scrimColor: Color,
+    excludeBackGesture: Boolean,
     drawerContent: @Composable () -> Unit,
     content: @Composable () -> Unit,
 ) {
@@ -158,7 +166,7 @@ fun RivetDrawerHost(
             // Back). Added and removed with the state: the rect is only
             // recomputed on layout, so an always-on modifier would go stale.
             .then(
-                if (state.isOpen) {
+                if (state.isOpen || !excludeBackGesture) {
                     Modifier
                 } else {
                     Modifier.systemGestureExclusion { coords ->
@@ -174,44 +182,52 @@ fun RivetDrawerHost(
                     val startOpen = state.isOpen
                     val startFraction = state.fraction
                     var claimed = false
+                    var settled = false
                     val tracker = VelocityTracker()
-                    while (true) {
-                        val event = awaitPointerEvent(PointerEventPass.Initial)
-                        val change = event.changes.firstOrNull { it.id == down.id } ?: break
-                        val dx = change.position.x - down.position.x
-                        if (!change.pressed) {
-                            if (claimed) {
-                                val v = tracker.calculateVelocity().x
-                                scope.launch {
-                                    state.settle(settlesOpen(state.fraction, v, fling), v / sheetPx)
+                    try {
+                        while (true) {
+                            val event = awaitPointerEvent(PointerEventPass.Initial)
+                            val change = event.changes.firstOrNull { it.id == down.id } ?: break
+                            val dx = change.position.x - down.position.x
+                            if (!change.pressed) {
+                                if (claimed) {
+                                    val v = tracker.calculateVelocity().x
+                                    settled = true
+                                    scope.launch {
+                                        state.settle(settlesOpen(state.fraction, v, fling), v / sheetPx)
+                                    }
+                                }
+                                break
+                            }
+                            if (!claimed) {
+                                claimed = claimsDrawerDrag(
+                                    startX = down.position.x,
+                                    dx = dx,
+                                    dy = change.position.y - down.position.y,
+                                    open = startOpen,
+                                    sheetWidth = sheetPx,
+                                    zone = zone,
+                                    slop = slop,
+                                )
+                                if (!claimed) {
+                                    // Past the slop without claiming: a scroll or
+                                    // a row's own swipe, not ours.
+                                    val dy = change.position.y - down.position.y
+                                    if (abs(dx) >= slop || abs(dy) >= slop) break
+                                    continue
                                 }
                             }
-                            break
+                            tracker.addPosition(change.uptimeMillis, change.position)
+                            change.consume()
+                            val to = drawerDragFraction(startFraction, dx, slop, startOpen, sheetPx)
+                            scope.launch { state.dragTo(to) }
                         }
-                        if (!claimed) {
-                            claimed = claimsDrawerDrag(
-                                startX = down.position.x,
-                                dx = dx,
-                                dy = change.position.y - down.position.y,
-                                open = startOpen,
-                                sheetWidth = sheetPx,
-                                zone = zone,
-                                slop = slop,
-                            )
-                            if (!claimed) {
-                                // Past the slop without claiming: a scroll or
-                                // a row's own swipe, not ours.
-                                val dy = change.position.y - down.position.y
-                                if (abs(dx) >= slop || abs(dy) >= slop) break
-                                continue
-                            }
+                    } finally {
+                        // The pointer vanished or this gesture layer was
+                        // restarted mid-drag: land by position.
+                        if (claimed && !settled) {
+                            scope.launch { state.settle(settlesOpen(state.fraction, 0f, fling)) }
                         }
-                        tracker.addPosition(change.uptimeMillis, change.position)
-                        change.consume()
-                        // Measure from the claim, not the down, so the sheet
-                        // does not jump by the slop distance.
-                        val travel = if (startOpen) dx + slop else dx - slop
-                        scope.launch { state.dragTo(startFraction + travel / sheetPx) }
                     }
                 }
             },

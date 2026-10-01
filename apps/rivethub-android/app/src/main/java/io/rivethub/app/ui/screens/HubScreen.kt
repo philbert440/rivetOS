@@ -122,6 +122,8 @@ fun HubDrawer(
     onOpenTask: ((taskId: String) -> Unit)? = null,
     chatWs: WsStatus? = null,
     chatNodeDenUrl: String? = null,
+    /** The hub home only: keep the bezel's middle band from the Back gesture (RivetDrawerHost). */
+    excludeBackGesture: Boolean = false,
     content: @Composable (openDrawer: () -> Unit) -> Unit,
 ) {
     val st by vm.state.collectAsState()
@@ -194,6 +196,7 @@ fun HubDrawer(
             state = drawerState,
             sheetWidth = drawerWidth,
             scrimColor = colors.bg.copy(alpha = 0.7f),
+            excludeBackGesture = excludeBackGesture,
             drawerContent = {
                 RivetDrawerContent(
                     width = drawerWidth,
@@ -261,8 +264,10 @@ fun HubDrawer(
     // commit and springs back open on cancel.
     key(openTick) {
         PredictiveBackHandler(enabled = drawerState.isOpen) { progress ->
+            // Ease shut from wherever the sheet is (it may be mid-drag or mid-settle).
+            val from = drawerState.fraction
             try {
-                progress.collect { e -> drawerState.peek(predictiveBackFraction(e.progress)) }
+                progress.collect { e -> drawerState.peek(predictiveBackFraction(e.progress, from)) }
                 drawerState.close()
             } catch (e: CancellationException) {
                 scope.launch { drawerState.open() }

@@ -150,6 +150,8 @@
     <string name="thinking_chip">thinking</string>
     <string name="label_you">you ›</string>
     <string name="label_rivet">rivet ›</string>
+    <string name="cd_author_you">You said</string>
+    <string name="cd_author_rivet">Rivet said</string>
     <string name="tap_terminal_retry">tap Terminal to retry</string>
     <string name="ws_reconnecting_ellipsis">reconnecting…</string>
     <string name="cd_copy_message">copy message</string>
@@ -183,7 +185,7 @@
     <string name="default_view">Default view</string>
     <string name="default_view_terminal">Terminal</string>
     <string name="default_view_chat">Chat</string>
-    <string name="default_view_helper">Where a conversation opens: new ones, and older ones you have not switched. Switching between Terminal and Chat inside a conversation is remembered for that conversation. Sessions that only run in a terminal always open there.</string>
+    <string name="default_view_helper">Where a conversation opens: new ones, and older ones you have not switched. Switching between Terminal and Chat inside a conversation is remembered for that conversation. Sessions that only run in a terminal open there unless you switched them to Chat.</string>
     <string name="section_experimental">Experimental features</string>
     <string name="experimental_helper">These are unfinished — turn them on to try them.</string>
     <string name="section_notifications">Notifications</string>

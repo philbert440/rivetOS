@@ -16,6 +16,8 @@ import io.rivethub.app.gateway.WsStatus
 import io.rivethub.app.gateway.WsSubscription
 import io.rivethub.app.gateway.sessionKeyEnc
 import io.rivethub.app.gateway.readCapped
+import io.rivethub.app.plane.harnessFromSessionId
+import io.rivethub.app.plane.opensTerminalOnly
 import io.rivethub.app.plane.parseDefaultView
 import io.rivethub.app.plane.resolveSessionMode
 import io.rivethub.app.plane.serverInFlightIsStale
@@ -1115,7 +1117,7 @@ class HarnessChatViewModel(
         val prefs = c.settings.snapshot()
         // A session with no harness to chat through (a legacy on-disk row)
         // only runs in the terminal; drafts always have a chat surface.
-        val terminalOnly = !_state.value.draft && resolvedHarnessId() == null
+        val terminalOnly = opensTerminalOnly(_state.value.draft, resolvedHarnessId())
         val mode = resolveSessionMode(
             stored = prefs.sessionModes[_state.value.sessionId],
             defaultView = parseDefaultView(prefs.defaultView),
@@ -1802,11 +1804,7 @@ class HarnessChatViewModel(
 
     private fun resolvedHarnessId(): String? {
         if (!harnessId.isNullOrBlank()) return harnessId
-        val sid = _state.value.sessionId
-        val i = sid.indexOf(':')
-        if (i <= 0) return null
-        val hid = sid.substring(0, i)
-        return hid.takeIf { it in HARNESS_IDS }
+        return harnessFromSessionId(_state.value.sessionId, HARNESS_IDS)
     }
 
     private fun applySummaryControls(transport: String?, model: String?, effort: String?) {
