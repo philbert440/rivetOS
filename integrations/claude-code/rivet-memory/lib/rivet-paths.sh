@@ -926,6 +926,15 @@ rivetos_resolve_den() {
     export RIVET_DEN_CA="$ca"
   fi
 
+  # Plain http needs no CA. Do not drop the URL because the CA file is absent
+  # (a den without TLS on a node with no shared CA), and do not point Node at
+  # a CA it will not use. An http loopback URL only reaches this point when
+  # the den really serves http: rivetos_guard_den_url already rewrote it to
+  # https when TLS is configured (#1053).
+  case "$RIVET_DEN_URL" in
+    http://*) return 0 ;;
+  esac
+
   if [ ! -f "$ca" ]; then
     # Silent: the launcher tests count stderr lines, and the "no den URL and
     # no DataHub/PG URL" line already covers the real no-backend case.

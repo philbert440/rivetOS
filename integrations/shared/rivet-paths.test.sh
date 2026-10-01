@@ -598,6 +598,40 @@ if [ "${NODE_EXTRA_CA_CERTS:-}" != "/already.pem" ]; then
 else
   pass "missing CA does not export NODE_EXTRA_CA_CERTS"
 fi
+resolve_den_reset
+
+# A plain-http den needs no CA: the URL survives a missing CA file (#1053).
+DEN_DIR="$(mktemp -d "${TMPDIR:-/tmp}/rivetos-den.XXXXXX")"
+export HOME="$DEN_DIR/home"
+mkdir -p "$HOME/.rivetos"
+printf '%s\n' 'den:' '  port: 5174' "  tls_ca: $DEN_DIR/missing.pem" >"$HOME/.rivetos/config.yaml"
+unset RIVET_DEN_CA RIVETOS_DEN_TLS_CA RIVETOS_DEN_TLS_CERT RIVETOS_DEN_TLS_KEY NODE_EXTRA_CA_CERTS
+export RIVETOS_SHARED_DIR="$DEN_DIR/no-shared"
+export RIVET_DEN_URL='http://127.0.0.1:5174'
+rivetos_resolve_den 2>"$DEN_DIR/error"
+err="$(cat "$DEN_DIR/error")"
+if [ "${RIVET_DEN_URL:-}" = 'http://127.0.0.1:5174' ] && [ -z "$err" ]; then
+  pass "plain-http den URL is kept when the CA file is missing"
+else
+  fail "plain-http den URL should survive a missing CA (got '${RIVET_DEN_URL:-<unset>}', stderr '$err')"
+fi
+if [ -z "${NODE_EXTRA_CA_CERTS:-}" ]; then
+  pass "plain-http den does not export NODE_EXTRA_CA_CERTS"
+else
+  fail "plain-http den must not export NODE_EXTRA_CA_CERTS"
+fi
+# …and a remote plain-http den likewise (no CA involved either way).
+export RIVET_DEN_URL='http://den.example:5174'
+rivetos_resolve_den 2>/dev/null
+if [ "${RIVET_DEN_URL:-}" = 'http://den.example:5174' ]; then
+  pass "remote plain-http den URL is kept when the CA file is missing"
+else
+  fail "remote plain-http den URL should be kept"
+fi
+unset RIVETOS_SHARED_DIR
+# The next case reuses this block's HOME and a present CA file.
+ca_file="$DEN_DIR/ca.pem"
+printf '%s\n' 'ca' >"$ca_file"
 
 printf '%s\n' 'den:' '  nested:' '    port: 1234' '    tls_ca: /missing.pem' '  port: 5999 # local' "  tls_ca: $ca_file # trust" >"$HOME/.rivetos/config.yaml"
 unset RIVET_DEN_URL RIVET_DEN_CA NODE_EXTRA_CA_CERTS
