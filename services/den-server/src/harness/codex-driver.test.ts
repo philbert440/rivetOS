@@ -157,7 +157,8 @@ describe('capability flags are honest', () => {
     const caps = makeDriver().driver.capabilities
     expect(caps.modelFlag).toBe('--model')
     expect(caps.effortFlag).toBe('-c')
-    expect(caps.launchModel).toBe(true)
+    // launchModel is declared only once discovery has rows
+    expect(caps.launchModel).toBeUndefined()
     expect(caps.models).toEqual([])
     expect(caps.modelsSource).toBe('static')
     expect(caps.efforts?.map((e) => e.id)).toEqual(['low', 'medium', 'high', 'xhigh'])

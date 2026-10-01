@@ -188,6 +188,12 @@ describe('agents routes', () => {
       const res = await createAgent({ name: 'A', harnessId: 'codex', model: 'gpt-4o' })
       expect(res.status).toBe(400)
       expect(res.json.error).toBe('model "gpt-4o" is not on the codex model list (config)')
+      // refused before anything touched disk
+      expect(existsSync(join(dir!, 'agents', 'A'))).toBe(false)
+      // the legacy placeholder id means "the harness default" and is never vetted
+      expect((await createAgent({ name: 'D', harnessId: 'codex', model: 'default' })).status).toBe(
+        201,
+      )
       const ok = await createAgent({ name: 'B', harnessId: 'codex', model: 'gpt-5.5' })
       expect(ok.status).toBe(201)
     })
@@ -235,6 +241,35 @@ describe('agents routes', () => {
       expect((await patch({ harnessId: 'codex' })).status).toBe(400)
       // A patch that touches neither field is not re-vetted.
       expect((await patch({ name: 'Renamed' })).status).toBe(200)
+    })
+
+    it('PATCH re-vets only a changed harness/model pair (a round-tripped form is not refused)', async () => {
+      const logs: string[] = []
+      await start({
+        modelList: codexList(true),
+        log: (msg, level) => {
+          if (level === 'warn') logs.push(msg)
+        },
+      })
+      // A row with an off-list model can exist (no harness at save time, or saved before the pin).
+      const created = await createAgent({ name: 'Legacy', model: 'gpt-4o' })
+      const id = created.json.agent!.id
+      const patch = async (body: Record<string, unknown>) => {
+        const res = await fetch(`${base}/api/agents/${id}`, {
+          method: 'PATCH',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(body),
+        })
+        return res.status
+      }
+      // The web form sends every field back: same pair → not re-vetted.
+      expect(await patch({ name: 'Legacy 2', model: 'gpt-4o', color: '#112233' })).toBe(200)
+      // Moving the same off-list model onto the pinned harness is a changed pair → refused.
+      expect(await patch({ harnessId: 'codex', model: 'gpt-4o' })).toBe(400)
+      expect(await patch({ harnessId: 'codex', model: 'gpt-5.5' })).toBe(200)
+      // Round-trip again on the pinned harness: unchanged pair, no 400, no new warning.
+      expect(await patch({ name: 'Legacy 3', harnessId: 'codex', model: 'gpt-5.5' })).toBe(200)
+      expect(logs).toEqual([])
     })
   })
 

@@ -1109,6 +1109,27 @@ function validateTasksHarnesses(
         message: `"${path}.models_mode" must be 'discover', 'replace' or 'merge'`,
       })
     }
+    if (
+      section.models_mode === 'discover' &&
+      (section.models !== undefined || section.efforts !== undefined)
+    ) {
+      issues.push({
+        severity: 'warning',
+        path: `${path}.models_mode`,
+        message: `"${path}.models_mode" is 'discover', so "models" / "efforts" are ignored`,
+      })
+    }
+    if (
+      (section.models_mode === 'replace' || section.models_mode === 'merge') &&
+      section.models === undefined &&
+      section.efforts === undefined
+    ) {
+      issues.push({
+        severity: 'warning',
+        path: `${path}.models_mode`,
+        message: `"${path}.models_mode" is '${section.models_mode}' but no "models" or "efforts" list is set — the discovered list is kept`,
+      })
+    }
     if (section.models !== undefined && !Array.isArray(section.models)) {
       issues.push({
         severity: 'error',

@@ -9,6 +9,8 @@ import {
   appendModelEffortArgv,
   applySheetOverride,
   backgroundDiscovery,
+  defaultRunCommand,
+  presetModelList,
   claudeGlobalConfigPath,
   claudeSheet,
   codexHome,
@@ -104,7 +106,10 @@ describe('claudeSheet', () => {
     expect(claudeSheet().launchModel).toBe(true)
     // Sheets whose launch model is config-owned or flag-less stay silent:
     // a `models` + `modelFlag` sheet does NOT imply `launchModel`.
-    expect(codexSheet(NO_CODEX).launchModel).toBe(true)
+    // codex declares it only once it has rows (a settled launchModel sheet with
+    // no matching id makes the web clear a conversation's stored model).
+    expect(codexSheet(NO_CODEX).launchModel).toBeUndefined()
+    expect(codexSheet({ ...NO_CODEX, readJson: () => CODEX_CATALOG }).launchModel).toBe(true)
     expect(grokSheet(() => GROK_CACHE, '/tmp/fake-home').launchModel).toBeUndefined()
     expect(kimiSheet(() => '', '/tmp/fake-home').launchModel).toBeUndefined()
   })
@@ -682,7 +687,7 @@ describe('codexSheet', () => {
     expect(sheet.modelFlag).toBe('--model')
     expect(sheet.effortFlag).toBe('-c')
     expect(sheet.effortArgPrefix).toBe('model_reasoning_effort=')
-    expect(sheet.launchModel).toBe(true)
+    expect(sheet.launchModel).toBeUndefined()
     expect(sheet.efforts?.map((e) => e.id)).toEqual(['low', 'medium', 'high', 'xhigh'])
     expect(sheet.efforts?.find((e) => e.default)?.id).toBe('medium')
     expect(sheetForHarness('codex', { ...NO_CODEX })).toEqual(sheet)
@@ -727,6 +732,38 @@ describe('codexSheet', () => {
       '--model',
       'gpt-5.5',
     ])
+    // No model named → effort is checked against the default row (gpt-5.5 here, no `max`),
+    // and the legacy placeholder id `default` means the same thing: no flag, no warning.
+    expect(appendModelEffortArgv(['codex'], sheet, undefined, 'xhigh')).toEqual([
+      'codex',
+      '-c',
+      'model_reasoning_effort=xhigh',
+    ])
+    expect(appendModelEffortArgv(['codex'], sheet, undefined, 'max')).toEqual(['codex'])
+    const logs: string[] = []
+    expect(appendModelEffortArgv(['codex'], sheet, 'default', 'high', (m) => logs.push(m))).toEqual(
+      ['codex', '-c', 'model_reasoning_effort=high'],
+    )
+    expect(logs).toEqual([])
+  })
+
+  it("the installed binary's listing outranks stale cache-file rows", async () => {
+    __resetDiscoveryCacheForTests()
+    const stale = {
+      models: [
+        { slug: 'gpt-5.5', display_name: 'OLD LABEL', visibility: 'list', priority: 12 },
+        { slug: 'gpt-retired', display_name: 'Retired', visibility: 'list', priority: 50 },
+      ],
+    }
+    const runCommand: RunCommand = () => Promise.resolve(JSON.stringify(CODEX_CATALOG))
+    codexSheet({ ...NO_CODEX, readJson: () => stale, runCommand, now: 0 })
+    await new Promise((r) => setTimeout(r, 0))
+    const sheet = codexSheet({ ...NO_CODEX, readJson: () => stale, runCommand, now: 1 })
+    expect(sheet.models?.map((m) => [m.id, m.label])).toEqual([
+      ['gpt-6-astra', 'GPT-6-Astra'],
+      ['gpt-5.5', 'GPT-5.5'],
+      ['gpt-retired', 'Retired'],
+    ])
   })
 
   it('a configured model the catalog does not know becomes the default row (custom gateway)', () => {
@@ -751,8 +788,8 @@ describe('codexSheet', () => {
     const first = codexSheet({ ...NO_CODEX, runCommand, env: { PATH: '/usr/bin' }, now: 0 })
     expect(first.models).toEqual([])
     expect(first.modelsSource).toBe('static')
-    expect(calls).toEqual([{ argv: ['codex', 'debug', 'models'], path: '/usr/bin:/h/.local/bin' }])
     await new Promise((r) => setTimeout(r, 0))
+    expect(calls).toEqual([{ argv: ['codex', 'debug', 'models'], path: '/usr/bin:/h/.local/bin' }])
     const second = codexSheet({ ...NO_CODEX, runCommand, env: { PATH: '/usr/bin' }, now: 1 })
     expect(second.modelsSource).toBe('discovered')
     expect(second.models?.map((m) => m.id)).toEqual(['gpt-6-astra', 'gpt-5.5'])
@@ -796,6 +833,44 @@ describe('codexSheet', () => {
 })
 
 describe('backgroundDiscovery', () => {
+  it('a sink-less caller does not claim the outage line, so the next caller with a sink still logs', async () => {
+    __resetDiscoveryCacheForTests()
+    const run = (): Promise<number> => Promise.reject(new Error('down'))
+    backgroundDiscovery('s', run, { ttlMs: 10, now: 0 })
+    await new Promise((r) => setTimeout(r, 0))
+    const logs: string[] = []
+    backgroundDiscovery('s', run, { ttlMs: 10, now: 20, log: (m) => logs.push(m) })
+    await new Promise((r) => setTimeout(r, 0))
+    expect(logs).toHaveLength(1)
+  })
+
+  it('its own deadline settles a runner that never does, so the source is retried and logged', async () => {
+    __resetDiscoveryCacheForTests()
+    let calls = 0
+    const never = (): Promise<number> => {
+      calls += 1
+      return new Promise<number>(() => undefined)
+    }
+    const logs: string[] = []
+    const log = (m: string): void => {
+      logs.push(m)
+    }
+    backgroundDiscovery('d', never, { ttlMs: 10, now: 0, timeoutMs: 5, log })
+    await new Promise((r) => setTimeout(r, 20))
+    expect(logs).toHaveLength(1)
+    expect(logs[0]).toContain('timed out after 5 ms')
+    backgroundDiscovery('d', never, { ttlMs: 10, now: 100, timeoutMs: 5, log })
+    await new Promise((r) => setTimeout(r, 0))
+    expect(calls).toBe(2)
+    // a runner that throws synchronously is a failure, not an escape
+    const thrower = (): Promise<number> => {
+      throw new Error('sync boom')
+    }
+    expect(() => backgroundDiscovery('t2', thrower, { ttlMs: 10, now: 0, log })).not.toThrow()
+    await new Promise((r) => setTimeout(r, 0))
+    expect(logs.at(-1)).toContain('sync boom')
+  })
+
   it('re-arms the outage log after a success', async () => {
     __resetDiscoveryCacheForTests()
     const logs: string[] = []
@@ -817,6 +892,42 @@ describe('backgroundDiscovery', () => {
     expect(backgroundDiscovery('t', run, { ttlMs: 10, now: 41, log })).toBe(1)
     expect(logs).toHaveLength(2)
     expect(logs[1]).toContain('last-known list')
+  })
+})
+
+describe('defaultRunCommand', () => {
+  it('kills a child that ignores SIGTERM at the timeout and rejects', async () => {
+    const started = Date.now()
+    await expect(
+      defaultRunCommand(['sh', '-c', 'trap "" TERM; sleep 5'], {
+        timeoutMs: 200,
+        env: process.env,
+      }),
+    ).rejects.toThrow()
+    expect(Date.now() - started).toBeLessThan(3_000)
+    await expect(
+      defaultRunCommand(['sh', '-c', 'echo ok'], { timeoutMs: 1_000, env: process.env }),
+    ).resolves.toBe('ok\n')
+  })
+})
+
+describe('presetModelList', () => {
+  it('is strict only when config actually replaced the list', () => {
+    __resetDiscoveryCacheForTests()
+    const pinned = presetModelList('claude-code', { models: [{ id: 'only' }] })
+    expect(pinned).toEqual({ ids: ['only'], strict: true, source: 'config' })
+    // replace requested but nothing usable to replace with → discovered rows, not strict
+    expect(presetModelList('claude-code', { models_mode: 'replace', models: [] }).strict).toBe(
+      false,
+    )
+    expect(presetModelList('claude-code', { efforts: [{ id: 'max' }] }).strict).toBe(false)
+    expect(
+      presetModelList('claude-code', { models_mode: 'merge', models: [{ id: 'x' }] }),
+    ).toMatchObject({
+      strict: false,
+      source: 'merged',
+    })
+    expect(presetModelList('cursor').ids).toEqual([])
   })
 })
 

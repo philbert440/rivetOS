@@ -2315,13 +2315,15 @@ export function createTermManager(config: DenConfig, deps: TermManagerDeps): Ter
         // a separate design — do not change those call sites from here.
         let sheet: ModelSheet | undefined
         if (deps.modelSheetFor) {
-          sheet = deps.modelSheetFor(key) ?? sheetForRosterCommand(key, config.harnesses)
+          sheet =
+            deps.modelSheetFor(key) ??
+            sheetForRosterCommand(key, config.harnesses, undefined, deps.log)
         } else {
           const builtinArgv0 = builtinRosterArgv0(key)
           const sameProgram =
             builtinArgv0 !== undefined && basename(entry.cmd[0]) === basename(builtinArgv0)
           if (sameProgram) {
-            sheet = sheetForRosterCommand(key, config.harnesses)
+            sheet = sheetForRosterCommand(key, config.harnesses, undefined, deps.log)
           } else if (builtinArgv0 !== undefined) {
             deps.log(
               `[den-server] term: roster key ${key}: model/effort flags were skipped because the entry's command is not the built-in one`,

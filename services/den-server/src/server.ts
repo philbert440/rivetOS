@@ -92,9 +92,7 @@ import {
   EFFORT_TOKEN_RE,
   MODEL_TOKEN_RE,
   ROSTER_TO_HARNESS,
-  applySheetOverride,
-  resolveModelsMode,
-  sheetForHarness,
+  presetModelList,
 } from './harness/model-sheets.js'
 import { TmuxUnavailableError, type TmuxCtl } from './term/tmux.js'
 import type { HerdrCtl } from './term/herdr.js'
@@ -1257,15 +1255,8 @@ export function createDenServer(config: DenConfig, opts: DenServerOptions = {}):
     // The same resolved sheet the spawn path appends `--model` from, so a
     // preset naming an unlisted model is caught at save time (400 when the
     // operator pinned the list with `replace`, a warning otherwise).
-    modelList: (harnessId) => {
-      const override = config.harnesses?.[harnessId]
-      const sheet = applySheetOverride(sheetForHarness(harnessId), override)
-      return {
-        ids: (sheet.models ?? []).map((m) => m.id),
-        strict: resolveModelsMode(override) === 'replace',
-        source: sheet.modelsSource ?? 'static',
-      }
-    },
+    modelList: (harnessId) =>
+      presetModelList(harnessId, config.harnesses?.[harnessId], console.error),
   })
 
   const authorized = (req: IncomingMessage, _url: URL): boolean =>

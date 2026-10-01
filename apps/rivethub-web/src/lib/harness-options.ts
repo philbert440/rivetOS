@@ -23,9 +23,15 @@ const HARNESS_LABEL: Record<HarnessId | 'pi', string> = {
   cursor: 'Cursor',
 }
 
-/** Client-side Codex sheet — same lists as den `codexSheet()` (no spawn flags). */
+/**
+ * Client-side Codex sheet — the den `codexSheet()` static floor: no models
+ * until the den discovers the CLI's catalog, `--model` / `-c` spawn flags,
+ * and the #719 effort vocabulary.
+ */
 export const CODEX_SHEET: HarnessSheet = {
-  models: [{ id: 'default', label: 'Default', default: true }],
+  models: [],
+  modelFlag: '--model',
+  effortFlag: '-c',
   efforts: [
     { id: 'low', label: 'Low' },
     { id: 'medium', label: 'Medium', default: true },

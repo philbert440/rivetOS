@@ -32,6 +32,7 @@ import {
   type AgentPreset,
   type HarnessId,
 } from '@rivetos/types'
+import { HARNESS_DEFAULT_MODEL } from './harness/model-sheets.js'
 import {
   PresetConflictError,
   PresetMigrationRequiredError,
@@ -211,7 +212,7 @@ export function createAgentsRoutes(opts: {
     model: string,
     presetName: string,
   ): string | undefined => {
-    if (!harnessId || !model || !opts.modelList) return undefined
+    if (!harnessId || !model || model === HARNESS_DEFAULT_MODEL || !opts.modelList) return undefined
     const list = opts.modelList(harnessId)
     if (list.ids.length === 0 || list.ids.includes(model)) return undefined
     const detail = `model "${model}" is not on the ${harnessId} model list (${list.source})`
@@ -386,6 +387,14 @@ export function createAgentsRoutes(opts: {
     // concurrent PATCH just enabled. `sharedLink: false` never creates one.
     // A directory this call created is removed only when the store rejects
     // the row, the directory is still empty, and no stored row owns it.
+    // Vet before anything touches disk: a refused model must not leave a
+    // directory behind.
+    const modelIssue = vetModel(harnessId, model, name)
+    if (modelIssue) {
+      json(res, 400, { error: modelIssue })
+      return
+    }
+
     const dirExisted = existsSync(directory)
     let createdDir: boolean
     try {
@@ -399,12 +408,6 @@ export function createAgentsRoutes(opts: {
     } catch (err) {
       await undoCreated(directory, !dirExisted && existsSync(directory))
       json(res, 500, { error: `could not create agent directory: ${errorMessage(err)}` })
-      return
-    }
-
-    const modelIssue = vetModel(harnessId, model, name)
-    if (modelIssue) {
-      json(res, 400, { error: modelIssue })
       return
     }
 
@@ -577,10 +580,15 @@ export function createAgentsRoutes(opts: {
       materializeDirectory = true
     }
 
-    if (raw.model !== undefined || raw.harnessId !== undefined) {
-      const nextHarness: HarnessId | undefined =
-        patch.harnessId === null ? undefined : (patch.harnessId ?? existing.harnessId ?? undefined)
-      const modelIssue = vetModel(nextHarness, patch.model ?? existing.model ?? '', name)
+    // Re-vet only a changed (harness, model) pair. A form that round-trips
+    // every field must not 400 a rename, and must not re-log the warning.
+    const nextHarness: HarnessId | undefined =
+      patch.harnessId === null ? undefined : (patch.harnessId ?? existing.harnessId ?? undefined)
+    const nextModel = patch.model ?? existing.model ?? ''
+    const pairChanged =
+      nextHarness !== (existing.harnessId ?? undefined) || nextModel !== (existing.model ?? '')
+    if (pairChanged) {
+      const modelIssue = vetModel(nextHarness, nextModel, name)
       if (modelIssue) {
         json(res, 400, { error: modelIssue })
         return

@@ -47,6 +47,8 @@ export interface SheetReaders {
   readJson?: ReadJson
   readText?: ReadText
   home?: string
+  /** Environment for `$CODEX_HOME`-style lookups and the listing subprocess; tests pin it. */
+  env?: NodeJS.ProcessEnv
   /** Listing-subprocess runner (codex `debug models`); tests inject a fake. */
   runCommand?: RunCommand
 }
@@ -515,7 +517,7 @@ export function __resetDiscoveryCacheForTests(): void {
 export function backgroundDiscovery<T>(
   key: string,
   run: () => Promise<T>,
-  opts: { ttlMs: number; now: number; log?: (msg: string) => void },
+  opts: { ttlMs: number; now: number; timeoutMs?: number; log?: (msg: string) => void },
 ): T | undefined {
   const entry = (discoveryCache.get(key) as DiscoveryEntry<T> | undefined) ?? {
     value: undefined,
@@ -524,20 +526,41 @@ export function backgroundDiscovery<T>(
   }
   discoveryCache.set(key, entry)
   if (!entry.inflight && opts.now - entry.at >= opts.ttlMs) {
-    entry.inflight = run()
+    // Our own deadline, independent of `run`: a runner that never settles
+    // (a child that ignores SIGTERM, a grandchild holding the pipe) must not
+    // pin `inflight` forever, or the source would never be retried or logged.
+    let timer: NodeJS.Timeout | undefined
+    const deadline =
+      opts.timeoutMs === undefined
+        ? undefined
+        : new Promise<never>((_, reject) => {
+            timer = setTimeout(
+              () => reject(new Error(`timed out after ${String(opts.timeoutMs)} ms`)),
+              opts.timeoutMs,
+            )
+            timer.unref?.()
+          })
+    const attempt = Promise.resolve().then(run)
+    entry.inflight = (deadline ? Promise.race([attempt, deadline]) : attempt)
       .then((value) => {
         entry.value = value
         entry.failing = false
       })
       .catch((err: unknown) => {
-        if (!entry.failing) {
-          const msg = err instanceof Error ? err.message : String(err)
-          const kept = entry.value === undefined ? 'static sheet' : 'last-known list'
-          opts.log?.(`[den-server] model discovery ${key}: ${msg} — serving the ${kept}`)
+        // One line per outage — but only a caller with a sink can claim it.
+        // A sink-less caller (term spawn, preset save) must not latch
+        // `failing` or the driver's own refresh would stay silent.
+        if (opts.log) {
+          if (!entry.failing) {
+            const msg = err instanceof Error ? err.message : String(err)
+            const kept = entry.value === undefined ? 'static sheet' : 'last-known list'
+            opts.log(`[den-server] model discovery ${key}: ${msg} — serving the ${kept}`)
+          }
+          entry.failing = true
         }
-        entry.failing = true
       })
       .finally(() => {
+        if (timer) clearTimeout(timer)
         entry.at = opts.now
         entry.inflight = undefined
       })
@@ -561,6 +584,9 @@ export const defaultRunCommand: RunCommand = (argv, opts) =>
       argv.slice(1),
       {
         timeout: opts.timeoutMs,
+        // execFile waits for `close` after its signal; a CLI that ignores
+        // SIGTERM would otherwise hold the callback past the timeout.
+        killSignal: 'SIGKILL',
         maxBuffer: RUN_COMMAND_MAX_BUFFER,
         env: opts.env,
         windowsHide: true,
@@ -896,7 +922,7 @@ export function parseCodexCatalog(raw: unknown): HarnessModelOption[] {
         : id
     const opt: HarnessModelOption = { id, label }
     const defaultEffort =
-      typeof entry.default_reasoning_level === 'string' ? entry.default_reasoning_level : ''
+      typeof entry.default_reasoning_level === 'string' ? entry.default_reasoning_level.trim() : ''
     if (Array.isArray(entry.supported_reasoning_levels)) {
       const efforts: EffortOption[] = []
       for (const level of entry.supported_reasoning_levels) {
@@ -973,6 +999,8 @@ export function codexSheet(deps: CodexSheetDeps = {}): ModelSheet {
   const runCommand = deps.runCommand ?? defaultRunCommand
   const now = deps.now ?? Date.now()
   const root = codexHome(home, env)
+  // `launchModel` only with rows: the web treats a settled launchModel sheet
+  // with no matching id as stale and clears the conversation's stored model.
   const base: ModelSheet = {
     models: [],
     modelsSource: 'static',
@@ -980,7 +1008,6 @@ export function codexSheet(deps: CodexSheetDeps = {}): ModelSheet {
     modelFlag: '--model',
     effortFlag: '-c',
     effortArgPrefix: 'model_reasoning_effort=',
-    launchModel: true,
   }
   const models: HarnessModelOption[] = []
   const add = (rows: HarnessModelOption[]): void => {
@@ -993,7 +1020,8 @@ export function codexSheet(deps: CodexSheetDeps = {}): ModelSheet {
       })
     }
   }
-  add(fileRowsFor(readJson, join(root, 'models_cache.json'), parseCodexCatalog))
+  // The installed binary's listing is the fresher source (labels, efforts,
+  // retired ids); the cache file is the synchronous floor until it lands.
   const listed = backgroundDiscovery(
     `codex:debug-models:${root}`,
     () =>
@@ -1001,9 +1029,15 @@ export function codexSheet(deps: CodexSheetDeps = {}): ModelSheet {
         timeoutMs: CODEX_CATALOG_TIMEOUT_MS,
         env: discoveryEnv(env, home),
       }).then((out) => parseCodexCatalog(JSON.parse(out))),
-    { ttlMs: CODEX_CATALOG_TTL_MS, now, log: deps.log },
+    {
+      ttlMs: CODEX_CATALOG_TTL_MS,
+      now,
+      timeoutMs: CODEX_CATALOG_TIMEOUT_MS + 1_000,
+      log: deps.log,
+    },
   )
   if (listed) add(listed)
+  add(fileRowsFor(readJson, join(root, 'models_cache.json'), parseCodexCatalog))
   let configured: string | undefined
   try {
     configured = parseCodexConfigModel(readText(join(root, 'config.toml')))
@@ -1017,7 +1051,7 @@ export function codexSheet(deps: CodexSheetDeps = {}): ModelSheet {
   for (const m of models) delete m.default
   const marked = models.find((m) => m.id === configured) ?? models[0]
   marked.default = true
-  return { ...base, models, modelsSource: 'discovered' }
+  return { ...base, models, modelsSource: 'discovered', launchModel: true }
 }
 
 /**
@@ -1322,7 +1356,14 @@ export function sheetForHarness(
     case 'hermes':
       return hermesSheet(readText, home, undefined, undefined, log)
     case 'codex':
-      return codexSheet({ readJson, readText, home, runCommand: readers?.runCommand, log })
+      return codexSheet({
+        readJson,
+        readText,
+        home,
+        env: readers?.env,
+        runCommand: readers?.runCommand,
+        log,
+      })
     case 'opencode':
       return opencodeSheet(readJson, home)
     case 'pi':
@@ -1347,24 +1388,51 @@ export function sheetForRosterCommand(
   command: string,
   overrides?: Record<string, SheetOverride | undefined>,
   readers?: SheetReaders,
+  log?: (msg: string) => void,
 ): ModelSheet | undefined {
   const harnessId = ROSTER_TO_HARNESS[command]
   if (!harnessId) return undefined
-  return applySheetOverride(sheetForHarness(harnessId, readers), overrides?.[harnessId])
+  return applySheetOverride(sheetForHarness(harnessId, readers, log), overrides?.[harnessId], log)
 }
 
+/**
+ * The model list a preset is vetted against: the same resolved sheet the
+ * spawn path appends `--model` from. `strict` is true only when config
+ * actually replaced the list (`modelsSource: 'config'`) — a `replace` mode
+ * whose list was empty or malformed keeps the discovered rows and must not
+ * turn an operator's non-pin into a 400.
+ */
+export function presetModelList(
+  harnessId: HarnessId,
+  override?: SheetOverride,
+  log?: (msg: string) => void,
+): { ids: string[]; strict: boolean; source: HarnessModelsSource } {
+  const sheet = applySheetOverride(sheetForHarness(harnessId, undefined, log), override, log)
+  return {
+    ids: (sheet.models ?? []).map((m) => m.id),
+    strict: sheet.modelsSource === 'config',
+    source: sheet.modelsSource ?? 'static',
+  }
+}
+
+/**
+ * Effort ids for a spawn: the named model's own list, else (no model named,
+ * the harness runs its default) the default row's list, else the sheet's.
+ */
 function effortIdsFor(sheet: ModelSheet, modelId?: string): string[] {
-  const model = modelId ? sheet.models?.find((m) => m.id === modelId) : undefined
+  const model = modelId
+    ? sheet.models?.find((m) => m.id === modelId)
+    : sheet.models?.find((m) => m.default)
   const efforts = model?.efforts ?? sheet.efforts
   return efforts?.map((e) => e.id) ?? []
 }
 
 /**
- * Hermes `custom:<provider>:<model>` (named provider in ~/.hermes/config.yaml).
- * Same shape as hermes-cli `NAMED_PROVIDER_RE`: the provider is one token with
- * no colon, and the model keeps the rest. `MODEL_TOKEN_RE` already admits `:`.
+ * The pre-discovery Codex sheet's only row was the placeholder `default`, and
+ * the clients' `defaultModel()` stored it on presets. It means "the harness's
+ * own default": no flag, no warning.
  */
-const HERMES_NAMED_PROVIDER_RE = /^custom:([^:\s]+):(.+)$/
+export const HARNESS_DEFAULT_MODEL = 'default'
 
 /**
  * Append `[modelFlag, model]` / `[effortFlag, effort]` when the sheet has
@@ -1386,6 +1454,7 @@ export function appendModelEffortArgv(
   if (!sheet) return argv
   const out = [...argv]
   const where = harness ? ` for ${harness}` : ''
+  if (model === HARNESS_DEFAULT_MODEL) model = undefined
   const modelOk =
     typeof model === 'string' &&
     MODEL_TOKEN_RE.test(model) &&

@@ -69,6 +69,19 @@ function setup(
   const make = () => {
     const driver = new CodexProtocolDriver({
       rpc,
+      // The TUI sheet under the protocol driver must not read the real
+      // ~/.codex or spawn the real CLI from a test.
+      sheetReaders: {
+        readJson: () => {
+          throw new Error('ENOENT')
+        },
+        readText: () => {
+          throw new Error('ENOENT')
+        },
+        home: '/no-such-home',
+        env: {},
+        runCommand: () => Promise.reject(new Error('codex: not installed')),
+      },
       endpoint: 'ws://127.0.0.1:5175',
       bindingsFile: join(dir, 'bindings.json'),
       uploadsDir,
@@ -333,6 +346,22 @@ it('labels the app-server catalog as discovered and applies a merge override to 
   expect(merged.driver.capabilities.modelsSource).toBe('merged')
   expect(merged.driver.capabilities.models?.map((m) => m.id)).toEqual(['test', 'gateway-x'])
   expect(merged.driver.capabilities.models?.find((m) => m.default)?.id).toBe('test')
+  // replace keeps the catalog row's efforts / modalities / default for a known id
+  const replaced = setup({}, false, {
+    sheetOverride: { models: [{ id: 'test', label: 'Test (pinned)' }, { id: 'gateway-x' }] },
+  })
+  await replaced.driver.verifyCapabilities()
+  expect(replaced.driver.capabilities.modelsSource).toBe('config')
+  expect(replaced.driver.capabilities.models).toEqual([
+    {
+      id: 'test',
+      label: 'Test (pinned)',
+      default: true,
+      inputModalities: ['text', 'image'],
+      efforts: [{ id: 'high', label: 'high', default: true }],
+    },
+    { id: 'gateway-x', label: 'gateway-x' },
+  ])
 })
 
 it('uses a stale catalog after a refresh failure but fails without any catalog', async () => {
