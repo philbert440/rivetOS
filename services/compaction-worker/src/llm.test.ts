@@ -288,9 +288,15 @@ describe('callLlm', () => {
       expect(fetchMock).toHaveBeenCalledTimes(3)
     })
 
-    it("throws the last endpoint's error when all fail, and starts at the primary next time", async () => {
+    it('throws one error naming every endpoint when all fail, and starts at the primary next time', async () => {
       fetchMock.mockResolvedValue(jsonResponse({}, 403, 'Forbidden'))
-      await expect(callLlmDetailed('sys', 'user', 100)).rejects.toMatchObject({ status: 403 })
+      const err = await callLlmDetailed('sys', 'user', 100).catch((e: unknown) => e)
+      expect(err).toMatchObject({ name: 'LlmCallError', status: 403, retryable: false })
+      const message = String((err as Error).message)
+      expect(message).toContain('all 3 LLM endpoints failed')
+      for (const model of ['test-model', 'fb1-model', 'fb2-model']) {
+        expect(message).toContain(`${model}: LLM HTTP 403`)
+      }
       expect(urlOf(fetchMock.mock.calls[2])).toContain('fb2.test')
 
       fetchMock.mockReset()
@@ -298,6 +304,22 @@ describe('callLlm', () => {
       await expect(callLlmDetailed('sys', 'user', 100)).resolves.toMatchObject({
         model: 'test-model',
       })
+    })
+
+    it('stays retryable when the primary is down and only the last fallback fails permanently', async () => {
+      fetchMock
+        .mockResolvedValueOnce(jsonResponse({}, 503, 'Service Unavailable'))
+        .mockResolvedValueOnce(jsonResponse({}, 503, 'Service Unavailable'))
+        .mockResolvedValueOnce(jsonResponse({}, 503, 'Service Unavailable'))
+        .mockResolvedValueOnce(jsonResponse({}, 503, 'Service Unavailable'))
+        .mockResolvedValueOnce(jsonResponse({}, 401, 'Unauthorized'))
+      const err = await callLlmDetailed('sys', 'user', 100).catch((e: unknown) => e)
+      expect(err).toBeInstanceOf(LlmCallError)
+      expect((err as LlmCallError).retryable).toBe(true)
+      expect((err as LlmCallError).status).toBeUndefined()
+      const message = String((err as Error).message)
+      expect(message).toContain('test-model: LLM HTTP 503')
+      expect(message).toContain('fb2-model: LLM HTTP 401')
     })
 
     it('callLlm returns only the content', async () => {

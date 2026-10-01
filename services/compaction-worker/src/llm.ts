@@ -108,7 +108,7 @@ export function resetLlmFailover(): void {
  * Calls the primary endpoint, then each RIVETOS_COMPACTOR_FALLBACKS endpoint
  * in order until one answers. Truncation is thrown straight back (the caller
  * shrinks the batch); every other failure moves to the next endpoint. If all
- * fail, the last endpoint's error is thrown.
+ * fail, the error covers the whole cascade (see cascadeError).
  */
 export async function callLlmDetailed(
   systemPrompt: string,
@@ -132,7 +132,7 @@ export async function callLlmDetailed(
     }
   }
 
-  let lastError: unknown = null
+  const failures: Array<{ model: string; err: unknown }> = []
   for (let i = start; i < endpoints.length; i++) {
     const endpoint = endpoints[i]
     const isLast = i === endpoints.length - 1
@@ -141,7 +141,7 @@ export async function callLlmDetailed(
       content = await callEndpoint(endpoint, systemPrompt, userContent, maxTokens, opts)
     } catch (err) {
       if (err instanceof LlmCallError && err.truncated) throw err
-      lastError = err
+      failures.push({ model: endpoint.model, err })
       if (!isLast) {
         const reason = err instanceof Error ? err.message : String(err)
         console.error(
@@ -166,7 +166,31 @@ export async function callLlmDetailed(
   // Everything failed: the next call should start at the primary, not stay
   // parked on the last fallback for the whole cooldown.
   failover = null
-  throw lastError
+  throw cascadeError(failures)
+}
+
+/**
+ * One error for a cascade where every endpoint failed. It is retryable if any
+ * endpoint's failure was: a primary outage followed by a revoked key on the
+ * last fallback is still an outage, and must not mark the level terminal.
+ * The message names each endpoint's failure so `last_error` shows all of
+ * them. A single failure is thrown as it was.
+ */
+function cascadeError(failures: Array<{ model: string; err: unknown }>): unknown {
+  if (failures.length === 1) return failures[0].err
+  const reasons = failures.map(({ model, err }) => {
+    const reason = err instanceof Error ? err.message : String(err)
+    return `${model}: ${reason}`
+  })
+  const asLlm = failures.map(({ err }) => (err instanceof LlmCallError ? err : null))
+  const retryable = asLlm.some((e) => e === null || e.retryable)
+  const statuses = new Set(asLlm.map((e) => e?.status))
+  const attempts = asLlm.reduce((n, e) => n + (e?.attempts ?? 1), 0)
+  return new LlmCallError(
+    `all ${String(failures.length)} LLM endpoints failed — ${reasons.join('; ')}`,
+    attempts,
+    { retryable, status: statuses.size === 1 ? [...statuses][0] : undefined },
+  )
 }
 
 /** callLlmDetailed without the model name, for callers that do not record it. */
