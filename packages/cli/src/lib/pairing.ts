@@ -9,7 +9,7 @@
  */
 
 import { randomBytes, X509Certificate } from 'node:crypto'
-import { chmodSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
+import { chmodSync, mkdirSync, readFileSync, unlinkSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import QRCode from 'qrcode'
 
@@ -42,6 +42,10 @@ export function pairingRecordPath(home: string, deviceId: string): string {
   return join(pairingDir(home), `${deviceId}.json`)
 }
 
+function newToken(): string {
+  return randomBytes(32).toString('base64url')
+}
+
 function writeRecord(path: string, rec: PairingRecord): void {
   writeFileSync(path, JSON.stringify(rec), { mode: 0o600 })
   try {
@@ -63,7 +67,7 @@ export function createPairing(opts: {
   const rec: PairingRecord = {
     v: 1,
     deviceId: opts.deviceId,
-    token: randomBytes(32).toString('base64url'),
+    token: newToken(),
     passphrase: opts.passphrase,
     p12Path: opts.p12Path,
     expiresAt: (opts.now ?? Date.now()) + PAIRING_TTL_MS,
@@ -72,10 +76,20 @@ export function createPairing(opts: {
   return rec
 }
 
+function unlinkQuiet(path: string): void {
+  try {
+    unlinkSync(path)
+  } catch {
+    // already gone
+  }
+}
+
 /**
  * Restart the TTL when the QR is actually shown (after den is ready), so a
- * slow `init` does not eat the scan window. Null when the record is gone
- * (already redeemed or swept).
+ * slow `init` does not eat the scan window. Every call rotates the token, so
+ * a copy of an earlier QR (photo, screenshot, scrollback) never redeems. An
+ * expired record is gone: it and its p12 are deleted and the caller mints
+ * afresh. Null when the record is gone (redeemed, swept or expired).
  */
 export function armPairing(home: string, deviceId: string, now = Date.now()): PairingRecord | null {
   const path = pairingRecordPath(home, deviceId)
@@ -85,6 +99,12 @@ export function armPairing(home: string, deviceId: string, now = Date.now()): Pa
   } catch {
     return null
   }
+  if (typeof rec.expiresAt !== 'number' || rec.expiresAt <= now) {
+    unlinkQuiet(path)
+    if (typeof rec.p12Path === 'string') unlinkQuiet(rec.p12Path)
+    return null
+  }
+  rec.token = newToken()
   rec.expiresAt = now + PAIRING_TTL_MS
   writeRecord(path, rec)
   return rec

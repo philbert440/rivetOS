@@ -1,5 +1,13 @@
 import { describe, expect, it } from 'vitest'
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs'
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  statSync,
+  writeFileSync,
+} from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import {
@@ -69,6 +77,38 @@ describe('createPairing / armPairing', () => {
       createPairing({ home, deviceId: 'pixel', p12Path: '/x', passphrase: 'pw', now: 0 })
       expect(armPairing(home, 'pixel', 50_000)?.expiresAt).toBe(50_000 + PAIRING_TTL_MS)
       expect(armPairing(home, 'tablet', 50_000)).toBeNull()
+    }),
+  )
+
+  it(
+    'arm rotates the token, so an earlier QR stops redeeming',
+    withHome((home) => {
+      const first = createPairing({
+        home,
+        deviceId: 'pixel',
+        p12Path: '/x',
+        passphrase: 'pw',
+        now: 0,
+      })
+      const shown = armPairing(home, 'pixel', 1_000)
+      expect(shown?.token).not.toBe(first.token)
+      const reshown = armPairing(home, 'pixel', 2_000)
+      expect(reshown?.token).not.toBe(shown?.token)
+      expect(JSON.parse(readFileSync(pairingRecordPath(home, 'pixel'), 'utf8')).token).toBe(
+        reshown?.token,
+      )
+    }),
+  )
+
+  it(
+    'arm never revives an expired record: it and its p12 are deleted',
+    withHome((home) => {
+      const p12 = join(home, 'pixel.p12')
+      writeFileSync(p12, 'p12')
+      createPairing({ home, deviceId: 'pixel', p12Path: p12, passphrase: 'pw', now: 0 })
+      expect(armPairing(home, 'pixel', PAIRING_TTL_MS)).toBeNull()
+      expect(existsSync(pairingRecordPath(home, 'pixel'))).toBe(false)
+      expect(existsSync(p12)).toBe(false)
     }),
   )
 })

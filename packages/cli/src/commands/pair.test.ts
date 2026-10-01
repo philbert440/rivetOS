@@ -184,8 +184,33 @@ describe('runPair', () => {
       const again = await runPair('tablet', {}, { ...deps, exec })
       expect(again.reshown).toBe(true)
       expect(again.addedToUsers).toBe(false)
-      expect(JSON.parse(again.qrText).token).toBe(JSON.parse(first.qrText).token)
+      // Same pending p12, new token: a copy of the first QR no longer redeems.
+      expect(JSON.parse(again.qrText).token).not.toBe(JSON.parse(first.qrText).token)
       expect(exec).not.toHaveBeenCalled()
+    } finally {
+      m.cleanup()
+    }
+  })
+
+  it('mints afresh once a shown pairing has expired, never reviving its token', async () => {
+    const m = meshHome()
+    try {
+      const deps = {
+        home: m.home,
+        configPath: m.config,
+        usersFile: m.users,
+        lanAddrs: ['10.0.0.2'],
+        scriptPath: '/opt/rivetos/scripts/rivet-ca.sh',
+        log: () => {},
+      }
+      const first = await runPair('tablet', {}, { ...deps, exec: fakeCa(m.issued), now: 0 })
+      const exec = fakeCa(m.issued)
+      const later = 10 * 60 * 1000 + 1
+      const again = await runPair('tablet', {}, { ...deps, exec, now: later })
+      expect(again.reshown).toBe(false)
+      expect(exec).toHaveBeenCalled()
+      expect(again.expiresAt).toBe(later + 10 * 60 * 1000)
+      expect(JSON.parse(again.qrText).token).not.toBe(JSON.parse(first.qrText).token)
     } finally {
       m.cleanup()
     }
