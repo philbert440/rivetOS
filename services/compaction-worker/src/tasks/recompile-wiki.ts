@@ -19,6 +19,7 @@ import {
 } from '@rivetos/memory-postgres'
 import { config } from '../config.js'
 import { callLlm } from '../llm.js'
+import { rejectUnparseable } from '../wiki-accept.js'
 import { WikiWriter } from '../wiki-writer.js'
 
 export interface RecompileWikiPayload {
@@ -128,7 +129,12 @@ export const recompileWikiTask: Task = async (payload, helpers) => {
           today,
         }),
         Math.max(WIKI_EXTRACT_MAX_TOKENS, 8000),
-        { minChars: 2 },
+        {
+          minChars: 2,
+          // Unparseable JSON loses the recompile; let a fallback model try it.
+          accept: (content) =>
+            rejectUnparseable(parseRecompileResult(content, slug, verifiedAt).rejected),
+        },
       )
 
       const { patch, rejected } = parseRecompileResult(raw, slug, verifiedAt)

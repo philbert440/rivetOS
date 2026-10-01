@@ -467,7 +467,7 @@ The canonical stack lives at `infra/docker/rivetos/docker-compose.yml` and defin
 
 Named volume: `rivetos-pgdata`. Dependency ordering: only `migrate` waits on `datahub` being healthy; the workers and `agent` each wait solely on `migrate` completing successfully (`service_completed_successfully`), so they inherit the database gate transitively rather than declaring it.
 
-Both workers sit behind the `workers` profile, so a bare `docker compose up` brings up only `datahub`, `migrate`, and `agent`. Each needs an inference endpoint the compose file cannot guess (`RIVETOS_EMBED_URL` / `RIVETOS_COMPACTOR_URL`) and exits 1 on boot without one; supply those, then `docker compose --profile workers up`.
+Both workers sit behind the `workers` profile, so a bare `docker compose up` brings up only `datahub`, `migrate`, and `agent`. Each needs an inference endpoint the compose file cannot guess (`RIVETOS_EMBED_URL` / `RIVETOS_COMPACTOR_URL`) and exits 1 on boot without one; supply those, then `docker compose --profile workers up`. The compaction worker also forwards its optional failover variables (`RIVETOS_COMPACTOR_TRANSIENT_STATUSES`, `RIVETOS_COMPACTOR_FALLBACKS`, the cooldown and attempt timeout) and `OPENROUTER_API_KEY`; a fallback whose `KEY_ENV` is some other variable needs a line of its own in that service's `environment` (docs/CONFIG-REFERENCE.md → Compaction worker).
 
 ### Memory workers (graphile-worker daemons)
 

@@ -31,6 +31,7 @@ import {
 } from '@rivetos/memory-postgres'
 import { config } from '../config.js'
 import { callLlm } from '../llm.js'
+import { rejectUnparseable } from '../wiki-accept.js'
 import { WikiWriter } from '../wiki-writer.js'
 
 export interface ExtractWikiPayload {
@@ -132,12 +133,7 @@ export const extractWikiTask: Task = async (payload, helpers) => {
       {
         minChars: 2,
         // Unparseable JSON loses the whole leaf; let a fallback model try it.
-        accept: (content) => {
-          const unparseable = parseWikiPatches(content, verifiedAt).rejected.find((r) =>
-            r.startsWith('unparseable JSON'),
-          )
-          return unparseable ? 'unparseable JSON' : null
-        },
+        accept: (content) => rejectUnparseable(parseWikiPatches(content, verifiedAt).rejected),
       },
     )
 

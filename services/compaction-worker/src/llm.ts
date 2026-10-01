@@ -1,6 +1,7 @@
 /**
  * Hardened LLM call — undici dispatcher with explicit timeouts, retries on
- * 5xx + transient errors, no retries on 4xx.
+ * 5xx + transient errors (plus each endpoint's listed transient 4xx), no
+ * retries on other 4xx, and ordered failover to RIVETOS_COMPACTOR_FALLBACKS.
  *
  * On success returns the response content. On terminal failure throws
  * `LlmCallError` with the *real* last failure reason (network, HTTP status,
@@ -33,10 +34,20 @@ function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms))
 }
 
+/** Exponential backoff with ±20% jitter, so concurrent calls do not retry in step. */
+function backoffMs(attempt: number): number {
+  const base = LLM_RETRY_BACKOFF_MS * Math.pow(2, attempt)
+  return Math.round(base * (0.8 + Math.random() * 0.4))
+}
+
 /** Terminal LLM failure after retries — message is safe for graphile last_error. */
 export class LlmCallError extends Error {
   readonly attempts: number
-  /** False for permanent 4xx (except 408/429). Callers must not circuit-break+retry forever. */
+  /**
+   * False for a permanent 4xx (not 408/429 or a listed transient code). After
+   * a failover cascade, true if any endpoint's failure was. Callers must not
+   * circuit-break+retry forever.
+   */
   readonly retryable: boolean
   readonly status: number | undefined
   /** The prompt outgrew max_tokens — a smaller batch helps, another endpoint does not. */
@@ -56,11 +67,11 @@ export class LlmCallError extends Error {
   }
 }
 
-function formatAttemptError(err: unknown, url: string): string {
+function formatAttemptError(err: unknown, url: string, timeoutMs: number): string {
   const msg = err instanceof Error ? err.message : String(err)
   // Our own AbortController — the endpoint may be fine, just slow.
   if (err instanceof Error && err.name === 'AbortError') {
-    return `LLM timed out after ${String(LLM_TIMEOUT_MS)}ms at ${url}`
+    return `LLM timed out after ${String(timeoutMs)}ms at ${url}`
   }
   // The endpoint answered but the body was not JSON — "unreachable" would
   // send ops chasing the wrong failure class.
@@ -93,10 +104,36 @@ export interface CallLlmOptions {
 }
 
 function primaryEndpoint(): LlmEndpoint {
-  return { url: config.llmUrl, model: config.llmModel, apiKey: config.llmApiKey }
+  return {
+    url: config.llmUrl,
+    model: config.llmModel,
+    apiKey: config.llmApiKey,
+    transientStatuses: config.llmTransientStatuses,
+  }
 }
 
-/** Which endpoint new calls start at; set on failover, cleared after the cooldown. */
+/**
+ * Statuses that are about this request, not the endpoint: a prompt too long
+ * for the model's context, a body the server refuses to process. The next
+ * endpoint may take it, but later calls should not leave a healthy endpoint.
+ */
+const REQUEST_SCOPED_STATUSES = new Set([400, 413, 422])
+
+/**
+ * Whether a failure says the endpoint itself is unusable right now (network,
+ * timeout, 5xx, empty answers, rate limit, auth/billing, missing model) as
+ * opposed to this one request being unacceptable to it.
+ */
+function isEndpointFailure(err: unknown): boolean {
+  if (!(err instanceof LlmCallError) || err.status === undefined) return true
+  return !REQUEST_SCOPED_STATUSES.has(err.status)
+}
+
+/**
+ * Which endpoint new calls start at; set on an outage failover, cleared after
+ * the cooldown. Shared by concurrent calls (compaction, tool-synth, wiki), so
+ * a call only moves it forward and only clears the value it saw itself.
+ */
 let failover: { index: number; until: number } | null = null
 
 /** Test hook: forget any failover so each case starts at the primary. */
@@ -107,8 +144,11 @@ export function resetLlmFailover(): void {
 /**
  * Calls the primary endpoint, then each RIVETOS_COMPACTOR_FALLBACKS endpoint
  * in order until one answers. Truncation is thrown straight back (the caller
- * shrinks the batch); every other failure moves to the next endpoint. If all
- * fail, the error covers the whole cascade (see cascadeError).
+ * shrinks the batch); every other failure moves to the next endpoint. Later
+ * calls start past the primary only when every endpoint tried so far failed
+ * as an endpoint (isEndpointFailure): a request-scoped 4xx or a rejected
+ * answer moves this call on, not the worker. If all fail, the error covers
+ * the whole cascade (see cascadeError).
  */
 export async function callLlmDetailed(
   systemPrompt: string,
@@ -123,31 +163,43 @@ export async function callLlmDetailed(
   }
 
   let start = 0
-  if (failover) {
-    if (Date.now() < failover.until) {
-      start = failover.index
+  // The failover value this call read or wrote; it only clears that one.
+  let seen = failover
+  if (seen) {
+    if (Date.now() < seen.until) {
+      start = Math.min(seen.index, endpoints.length - 1)
     } else {
       console.log(`[CompactWorker] failover cooldown over, trying ${endpoints[0].model} again`)
-      failover = null
+      if (failover === seen) failover = null
+      seen = null
     }
   }
 
   const failures: Array<{ model: string; err: unknown }> = []
+  // True while every endpoint tried in this call failed as an endpoint.
+  let outage = true
   for (let i = start; i < endpoints.length; i++) {
     const endpoint = endpoints[i]
     const isLast = i === endpoints.length - 1
     let content: string
     try {
-      content = await callEndpoint(endpoint, systemPrompt, userContent, maxTokens, opts)
+      content = await callEndpoint(endpoint, systemPrompt, userContent, maxTokens, opts, isLast)
     } catch (err) {
       if (err instanceof LlmCallError && err.truncated) throw err
       failures.push({ model: endpoint.model, err })
+      outage &&= isEndpointFailure(err)
       if (!isLast) {
         const reason = err instanceof Error ? err.message : String(err)
         console.error(
-          `[CompactWorker] ${endpoint.model} failed (${reason}); failing over to ${endpoints[i + 1].model}`,
+          `[CompactWorker] ${endpoint.model} failed (${reason}); ` +
+            `${outage ? 'failing over' : 'trying this request'} on ${endpoints[i + 1].model}`,
         )
-        failover = { index: i + 1, until: Date.now() + config.llmFallbackCooldownMs }
+        const current = failover
+        const live = current !== null && Date.now() < current.until
+        if (outage && (!live || current.index < i + 1)) {
+          failover = { index: i + 1, until: Date.now() + config.llmFallbackCooldownMs }
+          seen = failover
+        }
       }
       continue
     }
@@ -156,6 +208,8 @@ export async function callLlmDetailed(
     if (rejection && !isLast) {
       // A bad answer is not an outage: try the next endpoint for this call
       // only, without moving later calls off this one.
+      outage = false
+      failures.push({ model: endpoint.model, err: new Error(`response rejected: ${rejection}`) })
       console.warn(
         `[CompactWorker] ${endpoint.model} response rejected (${rejection}); trying ${endpoints[i + 1].model}`,
       )
@@ -164,8 +218,9 @@ export async function callLlmDetailed(
     return { content, model: endpoint.model }
   }
   // Everything failed: the next call should start at the primary, not stay
-  // parked on the last fallback for the whole cooldown.
-  failover = null
+  // parked on the last fallback for the whole cooldown. Another call may
+  // have moved the failover meanwhile; leave its value alone.
+  if (failover === seen) failover = null
   throw cascadeError(failures)
 }
 
@@ -218,8 +273,13 @@ async function callEndpoint(
   userContent: string,
   maxTokens: number,
   opts: CallLlmOptions,
+  isLast = true,
 ): Promise<string> {
   const minChars = opts.minChars ?? 20
+  // An endpoint with a fallback after it hands over sooner when it hangs.
+  const timeoutMs = isLast
+    ? LLM_TIMEOUT_MS
+    : Math.min(LLM_TIMEOUT_MS, config.llmFallbackAttemptTimeoutMs)
   const headers: Record<string, string> = { 'Content-Type': 'application/json' }
   if (endpoint.apiKey) {
     headers['Authorization'] = `Bearer ${endpoint.apiKey}`
@@ -240,7 +300,7 @@ async function callEndpoint(
 
   for (let attempt = 0; attempt <= LLM_RETRIES; attempt++) {
     const ctrl = new AbortController()
-    const timeout = setTimeout(() => ctrl.abort(), LLM_TIMEOUT_MS)
+    const timeout = setTimeout(() => ctrl.abort(), timeoutMs)
 
     try {
       const response = await undiciFetch(`${endpoint.url}/chat/completions`, {
@@ -251,12 +311,12 @@ async function callEndpoint(
         dispatcher: httpDispatcher,
       })
 
-      const transient4xx = config.llmTransientStatuses.includes(response.status)
+      const transient4xx = endpoint.transientStatuses.includes(response.status)
       if (!response.ok && response.status < 500 && !transient4xx) {
         // 4xx — do not retry inside this call. 408/429 are transient at the
         // job layer; every other 4xx is permanent (bad prompt, auth, missing
         // model) and must not be circuit-broken into an hourly hammer, unless
-        // RIVETOS_COMPACTOR_TRANSIENT_STATUSES lists it (handled as a 5xx below).
+        // the endpoint lists it as transient (handled as a 5xx below).
         const retryable = response.status === 408 || response.status === 429
         throw new LlmCallError(
           `LLM HTTP ${response.status}: ${response.statusText || 'client error'} (not retrying)`,
@@ -270,7 +330,7 @@ async function callEndpoint(
           `LLM HTTP ${response.status}: ${response.statusText || (transient4xx ? 'client error' : 'server error')}`,
         )
         if (attempt < LLM_RETRIES) {
-          const delay = LLM_RETRY_BACKOFF_MS * Math.pow(2, attempt)
+          const delay = backoffMs(attempt)
           console.error(
             `[CompactWorker] ${lastError.message}, retry ${attempt + 1}/${LLM_RETRIES} in ${delay / 1000}s`,
           )
@@ -307,7 +367,7 @@ async function callEndpoint(
           `Empty or too-short LLM response (minChars=${String(minChars)}, got ${content ? content.trim().length : 0})`,
         )
         if (attempt < LLM_RETRIES) {
-          const delay = LLM_RETRY_BACKOFF_MS * Math.pow(2, attempt)
+          const delay = backoffMs(attempt)
           console.error(
             `[CompactWorker] LLM empty/short, retry ${attempt + 1}/${LLM_RETRIES} in ${delay / 1000}s`,
           )
@@ -322,9 +382,9 @@ async function callEndpoint(
       // LlmCallError from the 4xx path — rethrow as-is (no further retries).
       if (err instanceof LlmCallError) throw err
 
-      lastError = new Error(formatAttemptError(err, endpoint.url))
+      lastError = new Error(formatAttemptError(err, endpoint.url, timeoutMs))
       if (attempt < LLM_RETRIES) {
-        const delay = LLM_RETRY_BACKOFF_MS * Math.pow(2, attempt)
+        const delay = backoffMs(attempt)
         console.error(
           `[CompactWorker] LLM error: ${lastError.message}, retry ${attempt + 1}/${LLM_RETRIES} in ${delay / 1000}s`,
         )

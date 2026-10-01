@@ -11,8 +11,14 @@ vi.mock('./config.js', () => ({
     llmModel: 'test-model',
     llmApiKey: '',
     llmTransientStatuses: [] as number[],
-    llmFallbacks: [] as Array<{ url: string; model: string; apiKey: string }>,
+    llmFallbacks: [] as Array<{
+      url: string
+      model: string
+      apiKey: string
+      transientStatuses: number[]
+    }>,
     llmFallbackCooldownMs: 60_000,
+    llmFallbackAttemptTimeoutMs: 2_000,
   },
 }))
 
@@ -199,8 +205,8 @@ describe('callLlm', () => {
 
     beforeEach(() => {
       config.llmFallbacks = [
-        { url: 'http://fb1.test/v1', model: 'fb1-model', apiKey: 'fb1-key' },
-        { url: 'http://fb2.test/v1', model: 'fb2-model', apiKey: '' },
+        { url: 'http://fb1.test/v1', model: 'fb1-model', apiKey: 'fb1-key', transientStatuses: [] },
+        { url: 'http://fb2.test/v1', model: 'fb2-model', apiKey: '', transientStatuses: [] },
       ]
     })
 
@@ -320,6 +326,146 @@ describe('callLlm', () => {
       const message = String((err as Error).message)
       expect(message).toContain('test-model: LLM HTTP 503')
       expect(message).toContain('fb2-model: LLM HTTP 401')
+    })
+
+    it('tries the next endpoint on a request-scoped 4xx without moving later calls', async () => {
+      fetchMock
+        .mockResolvedValueOnce(jsonResponse({}, 400, 'Bad Request'))
+        .mockResolvedValueOnce(ok('fallback took the long prompt'))
+        .mockResolvedValueOnce(ok('primary still serves the rest'))
+      await expect(callLlmDetailed('sys', 'user', 100)).resolves.toMatchObject({
+        model: 'fb1-model',
+      })
+      await expect(callLlmDetailed('sys', 'user', 100)).resolves.toMatchObject({
+        model: 'test-model',
+      })
+    })
+
+    it('a rejected answer then a failure does not move later calls off the primary', async () => {
+      const accept = (c: string) => (c.startsWith('[') ? null : 'unparseable JSON')
+      fetchMock
+        .mockResolvedValueOnce(ok('not json at all'))
+        .mockResolvedValueOnce(jsonResponse({}, 503, 'Service Unavailable'))
+        .mockResolvedValueOnce(jsonResponse({}, 503, 'Service Unavailable'))
+        .mockResolvedValueOnce(ok('[]'))
+        .mockResolvedValueOnce(ok('[]'))
+      await expect(callLlmDetailed('sys', 'user', 100, { minChars: 2, accept })).resolves.toEqual({
+        content: '[]',
+        model: 'fb2-model',
+      })
+      await callLlmDetailed('sys', 'user', 100, { minChars: 2, accept })
+      expect(urlOf(fetchMock.mock.calls[4])).toContain('llm.test')
+    })
+
+    it('moves forward from a sticky fallback that fails, and stays there', async () => {
+      vi.useFakeTimers({ toFake: ['Date'] })
+      try {
+        fetchMock
+          .mockResolvedValueOnce(jsonResponse({}, 401, 'Unauthorized'))
+          .mockResolvedValueOnce(ok('fb1 answered the first call'))
+        await callLlmDetailed('sys', 'user', 100)
+
+        vi.advanceTimersByTime(30_000)
+        fetchMock
+          .mockResolvedValueOnce(jsonResponse({}, 402, 'Payment Required'))
+          .mockResolvedValueOnce(ok('fb2 answered the second call'))
+          .mockResolvedValueOnce(ok('fb2 answered the third call'))
+        await expect(callLlmDetailed('sys', 'user', 100)).resolves.toMatchObject({
+          model: 'fb2-model',
+        })
+        expect(urlOf(fetchMock.mock.calls[2])).toContain('fb1.test')
+        await expect(callLlmDetailed('sys', 'user', 100)).resolves.toMatchObject({
+          model: 'fb2-model',
+        })
+        expect(urlOf(fetchMock.mock.calls[4])).toContain('fb2.test')
+
+        // The move re-armed the cooldown: 45s after it, still on fb2.
+        vi.advanceTimersByTime(45_000)
+        fetchMock.mockResolvedValueOnce(ok('fb2 answered the fourth call'))
+        await expect(callLlmDetailed('sys', 'user', 100)).resolves.toMatchObject({
+          model: 'fb2-model',
+        })
+      } finally {
+        vi.useRealTimers()
+      }
+    })
+
+    it('an all-fail from a sticky fallback sends the next call to the primary', async () => {
+      fetchMock
+        .mockResolvedValueOnce(jsonResponse({}, 401, 'Unauthorized'))
+        .mockResolvedValueOnce(ok('fb1 answered the first call'))
+      await callLlmDetailed('sys', 'user', 100)
+
+      fetchMock.mockResolvedValueOnce(jsonResponse({}, 401, 'Unauthorized'))
+      fetchMock.mockResolvedValueOnce(jsonResponse({}, 401, 'Unauthorized'))
+      await expect(callLlmDetailed('sys', 'user', 100)).rejects.toBeInstanceOf(LlmCallError)
+      expect(urlOf(fetchMock.mock.calls[2])).toContain('fb1.test')
+
+      fetchMock.mockResolvedValueOnce(ok('primary answered this time'))
+      await expect(callLlmDetailed('sys', 'user', 100)).resolves.toMatchObject({
+        model: 'test-model',
+      })
+    })
+
+    it("a call's all-fail does not clear a failover another call set meanwhile", async () => {
+      let release: () => void = () => {}
+      const gate = new Promise<void>((resolve) => (release = resolve))
+      fetchMock.mockImplementation(async (url: string, init: { body: string }) => {
+        const slow = String(init.body).includes('"slow"')
+        if (slow && url.includes('llm.test')) {
+          await gate
+          return jsonResponse({}, 503, 'Service Unavailable')
+        }
+        if (slow) return jsonResponse({}, 400, 'Bad Request')
+        if (url.includes('llm.test')) return jsonResponse({}, 401, 'Unauthorized')
+        return ok('fast call answered on fb1')
+      })
+      const slow = callLlmDetailed('sys', 'slow', 100).catch((e: unknown) => e)
+      await expect(callLlmDetailed('sys', 'fast', 100)).resolves.toMatchObject({
+        model: 'fb1-model',
+      })
+      release()
+      expect(await slow).toBeInstanceOf(LlmCallError)
+
+      fetchMock.mockReset()
+      fetchMock.mockResolvedValueOnce(ok('next call stays on fb1'))
+      await expect(callLlmDetailed('sys', 'next', 100)).resolves.toMatchObject({
+        model: 'fb1-model',
+      })
+    })
+
+    it("uses each endpoint's own transient codes", async () => {
+      config.llmTransientStatuses = [403]
+      config.llmFallbacks[0].transientStatuses = [404]
+      fetchMock
+        .mockResolvedValueOnce(jsonResponse({}, 403, 'Forbidden'))
+        .mockResolvedValueOnce(jsonResponse({}, 403, 'Forbidden'))
+        .mockResolvedValueOnce(jsonResponse({}, 404, 'Not Found'))
+        .mockResolvedValueOnce(ok('fb1 recovered after a 404'))
+      await expect(callLlmDetailed('sys', 'user', 100)).resolves.toMatchObject({
+        model: 'fb1-model',
+      })
+      expect(fetchMock).toHaveBeenCalledTimes(4)
+
+      // fb2 lists nothing, so a 403 there is permanent: one fetch, no retry.
+      resetLlmFailover()
+      fetchMock.mockReset()
+      config.llmTransientStatuses = []
+      fetchMock
+        .mockResolvedValueOnce(jsonResponse({}, 401, 'Unauthorized'))
+        .mockResolvedValueOnce(jsonResponse({}, 401, 'Unauthorized'))
+        .mockResolvedValueOnce(jsonResponse({}, 403, 'Forbidden'))
+      const err = await callLlmDetailed('sys', 'user', 100).catch((e: unknown) => e)
+      expect(err).toMatchObject({ retryable: false })
+      expect(fetchMock).toHaveBeenCalledTimes(3)
+    })
+
+    it('gives an endpoint with a fallback after it the shorter attempt timeout', async () => {
+      fetchMock.mockRejectedValue(new DOMException('This operation was aborted', 'AbortError'))
+      const err = await callLlmDetailed('sys', 'user', 100).catch((e: unknown) => e)
+      const message = String((err as Error).message)
+      expect(message).toContain('test-model: LLM timed out after 2000ms')
+      expect(message).toContain('fb2-model: LLM timed out after 5000ms')
     })
 
     it('callLlm returns only the content', async () => {
