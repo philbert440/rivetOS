@@ -176,11 +176,15 @@ export class CodexProtocolDriver extends CodexDriver {
       // A config row names an id and maybe a label; the catalog row for that
       // id keeps its efforts, modalities and default so `turnParams` still
       // accepts an effort and an image on a replaced list.
+      // `default` is not inherited from the catalog row: the override already
+      // decided which row is default (or none), and a resurrected catalog
+      // default would leave two.
       const hydrated = (resolved.models ?? []).map((row) => {
         const catalog = models.find((m) => m.id === row.id)
         if (!catalog) return row
+        const { default: _catalogDefault, ...fields } = catalog
         return {
-          ...catalog,
+          ...fields,
           ...row,
           ...(row.efforts ? {} : { efforts: catalog.efforts }),
           ...(row.inputModalities ? {} : { inputModalities: catalog.inputModalities }),

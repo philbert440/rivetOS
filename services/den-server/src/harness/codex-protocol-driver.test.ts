@@ -346,6 +346,43 @@ it('labels the app-server catalog as discovered and applies a merge override to 
   expect(merged.driver.capabilities.modelsSource).toBe('merged')
   expect(merged.driver.capabilities.models?.map((m) => m.id)).toEqual(['test', 'gateway-x'])
   expect(merged.driver.capabilities.models?.find((m) => m.default)?.id).toBe('test')
+  // a config default on a non-catalog row (merge) or a non-default catalog row (replace)
+  // is the only default — the catalog's own default is not resurrected
+  const gwDefault = setup({}, false, {
+    sheetOverride: { models_mode: 'merge', models: [{ id: 'gateway-x', default: true }] },
+  })
+  await gwDefault.driver.verifyCapabilities()
+  expect(gwDefault.driver.capabilities.models?.filter((m) => m.default).map((m) => m.id)).toEqual([
+    'gateway-x',
+  ])
+  vi.mocked(gwDefault.rpc.request).mockImplementation(async (method) =>
+    method === 'model/list'
+      ? {
+          data: [
+            { model: 'test', isDefault: true, supportedReasoningEfforts: [] },
+            { model: 'other', isDefault: false, supportedReasoningEfforts: [] },
+          ],
+        }
+      : { turn: { id: 'turn1', status: 'inProgress' } },
+  )
+  const otherDefault = setup({}, false, {
+    sheetOverride: { models: [{ id: 'test' }, { id: 'other', default: true }] },
+  })
+  vi.mocked(otherDefault.rpc.request).mockImplementation(async (method) =>
+    method === 'model/list'
+      ? {
+          data: [
+            { model: 'test', isDefault: true, supportedReasoningEfforts: [] },
+            { model: 'other', isDefault: false, supportedReasoningEfforts: [] },
+          ],
+        }
+      : { turn: { id: 'turn1', status: 'inProgress' } },
+  )
+  await otherDefault.driver.verifyCapabilities()
+  expect(otherDefault.driver.capabilities.models?.map((m) => [m.id, !!m.default])).toEqual([
+    ['test', false],
+    ['other', true],
+  ])
   // replace keeps the catalog row's efforts / modalities / default for a known id
   const replaced = setup({}, false, {
     sheetOverride: { models: [{ id: 'test', label: 'Test (pinned)' }, { id: 'gateway-x' }] },

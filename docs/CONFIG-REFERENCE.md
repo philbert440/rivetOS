@@ -697,7 +697,7 @@ paths are cwd-relative. Keep this file separate from any other app database.
 
 Env knobs: `RIVETOS_TASKS_CONCURRENCY` (default 4), `RIVETOS_TASKS_POLL_MS` (default 2000).
 
-Headless harness executors can also be keyed under `tasks.harnesses` (`pi`, `qwen-code`, …) with `binary` / `model` / `cwd` / `home` — see the site architecture sample.
+Headless harness executors can also be keyed under `tasks.harnesses` (`pi`, `qwen-code`, …) with `binary` / `model` / `cwd` / `home` — see the site architecture sample. For qwen-code, `providers.qwen-code.home` is accepted for parity with the other CLI providers and currently unused; `tasks.harnesses.qwen-code.home` is where the task executor looks for qwen's `projects/` sessions (default `~/.qwen`). Neither key relocates qwen's own writes.
 
 #### Model lists: `tasks.harnesses.<id>.models` / `efforts` / `models_mode`
 
@@ -716,10 +716,10 @@ tasks:
 ```
 
 - `discover` — the discovered list, falling back to the static one. A `models` / `efforts` list is ignored (the validator warns).
-- `replace` — exactly `models` / `efforts`. **A `models` list with no `models_mode` means `replace`** (the historical meaning, so older configs do not change). Under a pinned list, an agent preset that names a model outside it is refused with a 400 on save; under the other modes it is saved with one warning in the den log.
+- `replace` — the key you set (`models`, `efforts`, or both) replaces that list; a key you leave out keeps the discovered or static one. **A `models` or `efforts` list with no `models_mode` means `replace`** (the historical meaning, so older configs do not change). Under a pinned, non-empty `models` list (`modelsSource: config`), an agent preset that names a model outside it is refused with a 400 on save; under the other modes it is saved with one warning in the den log.
 - `merge` — the discovered list plus the config entries, deduped by id; a config entry wins on `label`, `default`, and `efforts`, and a config `default: true` becomes the only default. Use this for a custom gateway that serves ids the harness's own catalog does not know.
 
-Entries are `{ id, label?, default?, efforts? }`; malformed rows are dropped and an empty list keeps the discovered one. Model ids pass the same token rule as the spawn path (`[A-Za-z0-9._[]:/-]`, `~` allowed after the first character, no `..`). The literal id `default` means "the harness's own default": no model flag is passed and it is never vetted. For qwen-code, `providers.qwen-code.home` is accepted for parity with the other CLI providers and currently unused; `tasks.harnesses.qwen-code.home` is where the task executor looks for qwen's `projects/` sessions (default `~/.qwen`). Neither key relocates qwen's own writes.
+Entries are `{ id, label?, default?, efforts? }`; malformed rows are dropped and an empty list keeps the discovered one. Model ids pass the same token rule as the spawn path: 1–64 characters from `A-Z a-z 0-9 . _ [ ] : / -`, `~` allowed after the first character, no `..`. For Codex, the literal id `default` (what pre-discovery clients stored) means "the CLI's own default": no model flag is passed and it is never vetted.
 
 ---
 

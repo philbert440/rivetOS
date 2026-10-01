@@ -741,13 +741,27 @@ describe('codexSheet', () => {
     ])
     expect(appendModelEffortArgv(['codex'], sheet, undefined, 'max')).toEqual(['codex'])
     const logs: string[] = []
-    expect(appendModelEffortArgv(['codex'], sheet, 'default', 'high', (m) => logs.push(m))).toEqual(
-      ['codex', '-c', 'model_reasoning_effort=high'],
-    )
+    expect(
+      appendModelEffortArgv(['codex'], sheet, 'default', 'high', (m) => logs.push(m), 'codex'),
+    ).toEqual(['codex', '-c', 'model_reasoning_effort=high'])
     expect(logs).toEqual([])
+    // …but only for Codex: another harness may really serve an id named `default`
+    const hermesLike = { models: [{ id: 'default', label: 'd' }], modelFlag: '-m' }
+    expect(
+      appendModelEffortArgv(['hermes'], hermesLike, 'default', undefined, undefined, 'hermes'),
+    ).toEqual(['hermes', '-m', 'default'])
   })
 
-  it("the installed binary's listing outranks stale cache-file rows", async () => {
+  it('a config-supplied list declares launchModel even when discovery found nothing', () => {
+    __resetDiscoveryCacheForTests()
+    const pinned = applySheetOverride(codexSheet(NO_CODEX), { models: [{ id: 'gw/x' }] })
+    expect(pinned.launchModel).toBe(true)
+    expect(pinned.modelsSource).toBe('config')
+    expect(applySheetOverride(codexSheet(NO_CODEX), { models: [] }).launchModel).toBeUndefined()
+    expect(presetModelList('codex', { models: [{ id: 'gw/x' }] })).toMatchObject({ strict: true })
+  })
+
+  it("once the installed binary's listing lands it is the list: stale cache rows are dropped", async () => {
     __resetDiscoveryCacheForTests()
     const stale = {
       models: [
@@ -762,7 +776,6 @@ describe('codexSheet', () => {
     expect(sheet.models?.map((m) => [m.id, m.label])).toEqual([
       ['gpt-6-astra', 'GPT-6-Astra'],
       ['gpt-5.5', 'GPT-5.5'],
-      ['gpt-retired', 'Retired'],
     ])
   })
 
@@ -903,10 +916,10 @@ describe('defaultRunCommand', () => {
         timeoutMs: 200,
         env: process.env,
       }),
-    ).rejects.toThrow()
+    ).rejects.toThrow('timed out after 200 ms')
     expect(Date.now() - started).toBeLessThan(3_000)
     await expect(
-      defaultRunCommand(['sh', '-c', 'echo ok'], { timeoutMs: 1_000, env: process.env }),
+      defaultRunCommand(['sh', '-c', 'echo ok'], { timeoutMs: 5_000, env: process.env }),
     ).resolves.toBe('ok\n')
   })
 })

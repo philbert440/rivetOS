@@ -77,6 +77,13 @@ export interface ModelSheet {
    */
   launchModel?: boolean
   /**
+   * The CLI honors `modelFlag` at launch, but the sheet has no rows of its
+   * own yet (discovery pending or unavailable): declare `launchModel` as soon
+   * as the resolved sheet — after a config override — has rows. A settled
+   * `launchModel` sheet with no rows would make clients clear a stored model.
+   */
+  launchModelWhenListed?: boolean
+  /**
    * Effort id → CLI flag value. Present + empty string omits the flag
    * (opencode medium → no `--variant`). Absent key → use the effort id.
    */
@@ -246,7 +253,7 @@ export function applySheetOverride(
   override?: SheetOverride,
   log?: (msg: string) => void,
 ): ModelSheet {
-  if (!override) return sheet
+  if (!override) return withLaunchModel(sheet)
   const mode = resolveModelsMode(override)
   const next: ModelSheet = { ...sheet }
   if (mode === 'discover') {
@@ -255,7 +262,7 @@ export function applySheetOverride(
         '[den-server] harness sheet: models_mode is discover — ignoring the models/efforts override',
       )
     }
-    return next
+    return withLaunchModel(next)
   }
   if (Array.isArray(override.models)) {
     const models = sanitizeModels(override.models)
@@ -279,7 +286,15 @@ export function applySheetOverride(
       next.efforts = mergeRows(sheet.efforts ?? [], efforts)
     }
   }
-  return next
+  return withLaunchModel(next)
+}
+
+/** `launchModelWhenListed` → `launchModel` once the sheet has rows. */
+function withLaunchModel(sheet: ModelSheet): ModelSheet {
+  if (sheet.launchModelWhenListed && (sheet.models?.length ?? 0) > 0) {
+    return { ...sheet, launchModel: true }
+  }
+  return sheet
 }
 
 /**
@@ -592,7 +607,9 @@ export const defaultRunCommand: RunCommand = (argv, opts) =>
         windowsHide: true,
       },
       (err, stdout) => {
-        if (err) reject(err instanceof Error ? err : new Error('listing failed'))
+        if (err?.killed)
+          reject(new Error(`${argv.join(' ')}: timed out after ${String(opts.timeoutMs)} ms`))
+        else if (err) reject(err instanceof Error ? err : new Error('listing failed'))
         else resolve(stdout)
       },
     )
@@ -977,12 +994,14 @@ const CODEX_CATALOG_TTL_MS = 5 * 60_000
 const CODEX_CATALOG_TIMEOUT_MS = 5_000
 
 /**
- * Codex — discovered from the CLI itself. Two sources, deduped by id:
- * 1. `<codex home>/models_cache.json`, the catalog the CLI last fetched
- *    (stat-memoized; present on any node where codex has run);
- * 2. `codex debug models`, the same catalog rendered by the installed binary,
- *    run in the background with a bounded timeout (covers a fresh install or
- *    a relocated cache; ~150 ms, no network of its own).
+ * Codex — discovered from the CLI itself. Two sources:
+ * 1. `codex debug models`, the catalog rendered by the installed binary, run
+ *    in the background with a bounded timeout (~150 ms, no network of its
+ *    own). Once it has landed it is the list: labels, efforts and retirements
+ *    come from it.
+ * 2. `<codex home>/models_cache.json`, the catalog the CLI last fetched
+ *    (stat-memoized) — the synchronous floor until the listing lands, and the
+ *    only source on a node where the binary cannot be run.
  * The default is `config.toml`'s top-level `model` when set — added as a row
  * if the catalog does not know it, which is the custom-gateway case — else the
  * catalog's top-priority row. Effort ids per row come from the catalog
@@ -1008,6 +1027,7 @@ export function codexSheet(deps: CodexSheetDeps = {}): ModelSheet {
     modelFlag: '--model',
     effortFlag: '-c',
     effortArgPrefix: 'model_reasoning_effort=',
+    launchModelWhenListed: true,
   }
   const models: HarnessModelOption[] = []
   const add = (rows: HarnessModelOption[]): void => {
@@ -1020,8 +1040,6 @@ export function codexSheet(deps: CodexSheetDeps = {}): ModelSheet {
       })
     }
   }
-  // The installed binary's listing is the fresher source (labels, efforts,
-  // retired ids); the cache file is the synchronous floor until it lands.
   const listed = backgroundDiscovery(
     `codex:debug-models:${root}`,
     () =>
@@ -1036,8 +1054,8 @@ export function codexSheet(deps: CodexSheetDeps = {}): ModelSheet {
       log: deps.log,
     },
   )
-  if (listed) add(listed)
-  add(fileRowsFor(readJson, join(root, 'models_cache.json'), parseCodexCatalog))
+  if (listed && listed.length > 0) add(listed)
+  else add(fileRowsFor(readJson, join(root, 'models_cache.json'), parseCodexCatalog))
   let configured: string | undefined
   try {
     configured = parseCodexConfigModel(readText(join(root, 'config.toml')))
@@ -1392,7 +1410,8 @@ export function sheetForRosterCommand(
 ): ModelSheet | undefined {
   const harnessId = ROSTER_TO_HARNESS[command]
   if (!harnessId) return undefined
-  return applySheetOverride(sheetForHarness(harnessId, readers, log), overrides?.[harnessId], log)
+  // The override log lines belong to the driver's TTL refresh, not to every spawn.
+  return applySheetOverride(sheetForHarness(harnessId, readers, log), overrides?.[harnessId])
 }
 
 /**
@@ -1407,7 +1426,7 @@ export function presetModelList(
   override?: SheetOverride,
   log?: (msg: string) => void,
 ): { ids: string[]; strict: boolean; source: HarnessModelsSource } {
-  const sheet = applySheetOverride(sheetForHarness(harnessId, undefined, log), override, log)
+  const sheet = applySheetOverride(sheetForHarness(harnessId, undefined, log), override)
   return {
     ids: (sheet.models ?? []).map((m) => m.id),
     strict: sheet.modelsSource === 'config',
@@ -1429,10 +1448,20 @@ function effortIdsFor(sheet: ModelSheet, modelId?: string): string[] {
 
 /**
  * The pre-discovery Codex sheet's only row was the placeholder `default`, and
- * the clients' `defaultModel()` stored it on presets. It means "the harness's
- * own default": no flag, no warning.
+ * the clients' `defaultModel()` stored it on Codex presets. For Codex it means
+ * "the CLI's own default": no flag, no warning. Other harnesses may really
+ * serve an id named `default`, so the exemption is Codex-only.
  */
-export const HARNESS_DEFAULT_MODEL = 'default'
+export const CODEX_DEFAULT_MODEL = 'default'
+
+export function isCodexDefaultModel(
+  harness: string | undefined,
+  model: string | undefined,
+): boolean {
+  return (
+    (harness === 'codex' || harness === ROSTER_TO_HARNESS.codex) && model === CODEX_DEFAULT_MODEL
+  )
+}
 
 /**
  * Append `[modelFlag, model]` / `[effortFlag, effort]` when the sheet has
@@ -1454,7 +1483,7 @@ export function appendModelEffortArgv(
   if (!sheet) return argv
   const out = [...argv]
   const where = harness ? ` for ${harness}` : ''
-  if (model === HARNESS_DEFAULT_MODEL) model = undefined
+  if (isCodexDefaultModel(harness, model)) model = undefined
   const modelOk =
     typeof model === 'string' &&
     MODEL_TOKEN_RE.test(model) &&

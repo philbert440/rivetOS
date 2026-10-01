@@ -32,7 +32,7 @@ import {
   type AgentPreset,
   type HarnessId,
 } from '@rivetos/types'
-import { HARNESS_DEFAULT_MODEL } from './harness/model-sheets.js'
+import { isCodexDefaultModel } from './harness/model-sheets.js'
 import {
   PresetConflictError,
   PresetMigrationRequiredError,
@@ -212,7 +212,8 @@ export function createAgentsRoutes(opts: {
     model: string,
     presetName: string,
   ): string | undefined => {
-    if (!harnessId || !model || model === HARNESS_DEFAULT_MODEL || !opts.modelList) return undefined
+    if (!harnessId || !model || isCodexDefaultModel(harnessId, model) || !opts.modelList)
+      return undefined
     const list = opts.modelList(harnessId)
     if (list.ids.length === 0 || list.ids.includes(model)) return undefined
     const detail = `model "${model}" is not on the ${harnessId} model list (${list.source})`
