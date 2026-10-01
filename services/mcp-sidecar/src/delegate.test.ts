@@ -457,6 +457,34 @@ describe('sidecar delegate_task', () => {
     expect(parseRuntimeTarget('@node-x')).toEqual({ agentId: '@node-x' })
   })
 
+  it('a preset with no harness does not shadow a runtime agent of the same name', async () => {
+    // Every runtime agent tends to have a same-named preset. One with no
+    // harness cannot run anything, so the runtime agent must still be reachable.
+    const { store, handle, parent } = await setup({
+      presets: [preset({ id: 'preset-grok', name: 'grok', harnessId: undefined })],
+      nodes: [HOST, REMOTE, OFFLINE],
+      parentDepth: 0,
+      autoFinish: true,
+    })
+    const seeded = must(parent, 'parent')
+    const body = await text(handle, 'delegate_task', { to_agent: 'grok', task: 'search' })
+    expect(body.startsWith('looks good')).toBe(true)
+    const child = must(
+      (await store.list()).find((row) => row.id !== seeded.id),
+      'child row',
+    )
+    expect(child).toMatchObject({ executor: 'chat-loop', agentId: 'grok', nodeAffinity: 'node-c' })
+  })
+
+  it('a preset with no harness and no runtime agent of that name still answers with its own refusal', async () => {
+    const { handle } = await setup({
+      presets: [preset({ harnessId: undefined })],
+      nodes: [HOST, REMOTE, OFFLINE],
+    })
+    const body = await text(handle, 'delegate_task', { to_agent: 'reviewer', task: 'review' })
+    expect(body).toContain('no harness configured')
+  })
+
   it('lists both rosters when the target is unknown', async () => {
     const { handle } = await setup({
       presets: [preset()],
