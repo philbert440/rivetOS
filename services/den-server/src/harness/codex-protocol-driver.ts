@@ -19,6 +19,7 @@ import {
 } from '@rivetos/types'
 import { CODEX_NATIVE_RE, CodexDriver, type CodexDriverDeps } from './codex-driver.js'
 import { record, type CodexFrame, type CodexRpc } from './codex-rpc.js'
+import { applySheetOverride } from './model-sheets.js'
 
 interface Binding {
   id: string
@@ -114,6 +115,7 @@ export class CodexProtocolDriver extends CodexDriver {
       approvals: true,
       turnOptions: true,
       models: [],
+      modelsSource: 'static',
       efforts: [],
       imageAttachments: Boolean(protocol.uploadsDir),
     }
@@ -164,7 +166,37 @@ export class CodexProtocolDriver extends CodexDriver {
         if (cursor && seen.has(cursor)) throw new Error('Codex model catalog repeated a cursor')
         if (cursor) seen.add(cursor)
       } while (cursor)
-      this.capabilities.models = models
+      // The app-server catalog is a discovered list; `tasks.harnesses.codex`
+      // replaces or merges it the same way it does the TUI sheet.
+      const resolved = applySheetOverride(
+        { models, modelsSource: 'discovered' },
+        this.protocol.sheetOverride,
+        this.protocol.log,
+      )
+      // A config row names an id and maybe a label; the catalog row for that
+      // id keeps its efforts, modalities and default so `turnParams` still
+      // accepts an effort and an image on a replaced list.
+      // `default` is not inherited from the catalog row: the override already
+      // decided which row is default (or none), and a resurrected catalog
+      // default would leave two.
+      const hydrated = (resolved.models ?? []).map((row) => {
+        const catalog = models.find((m) => m.id === row.id)
+        if (!catalog) return row
+        const { default: _catalogDefault, ...fields } = catalog
+        return {
+          ...fields,
+          ...row,
+          ...(row.efforts ? {} : { efforts: catalog.efforts }),
+          ...(row.inputModalities ? {} : { inputModalities: catalog.inputModalities }),
+        }
+      })
+      if (hydrated.length > 0 && !hydrated.some((m) => m.default)) {
+        const marked =
+          hydrated.find((m) => models.find((c) => c.id === m.id)?.default) ?? hydrated[0]
+        marked.default = true
+      }
+      this.capabilities.models = hydrated
+      this.capabilities.modelsSource = resolved.modelsSource
       this.capabilities.efforts = []
       this.catalogAt = Date.now()
     })().finally(() => {

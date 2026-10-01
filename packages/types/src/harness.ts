@@ -85,6 +85,15 @@ export interface EffortOption {
   default?: boolean
 }
 
+/**
+ * Where a harness's advertised `models` came from.
+ * - `discovered`: the harness's own catalog (CLI listing, cache or config file).
+ * - `config`: `tasks.harnesses.<id>.models` replaced the list.
+ * - `merged`: discovered plus config entries, deduped by id.
+ * - `static`: the built-in floor; discovery found nothing (or is not wired).
+ */
+export type HarnessModelsSource = 'discovered' | 'config' | 'merged' | 'static'
+
 /** One selectable model advertised on a harness capability sheet. */
 export interface HarnessModelOption {
   inputModalities?: string[]
@@ -125,6 +134,8 @@ export type HarnessCapabilities = {
    * Empty/absent = no picker.
    */
   models?: HarnessModelOption[]
+  /** Provenance of `models`, so a UI can label the list and an operator can debug a missing id. */
+  modelsSource?: HarnessModelsSource
   /** Harness-wide effort levels (a model's own `efforts` wins). Absent = no effort picker. */
   efforts?: EffortOption[]
   /** CLI flags the spawn appends, e.g. `--model` / `--effort`. Absent = the harness takes no such flag. */

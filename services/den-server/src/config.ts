@@ -228,11 +228,13 @@ export interface DenConfig {
   usersRegistry?: UsersRegistry
   /**
    * Optional per-harness model/effort list overrides, keyed by harness id.
-   * When present they REPLACE the driver's sheet lists (malformed entries
-   * dropped at apply time). Boot copies `tasks.harnesses.<id>.models/efforts`
-   * onto this field when embedding den.
+   * `models_mode` (`discover` | `replace` | `merge`) says how they combine
+   * with the list the harness itself advertises; absent + `models` set means
+   * replace (malformed entries dropped at apply time). Boot copies
+   * `tasks.harnesses.<id>.{models,efforts,models_mode}` onto this field when
+   * embedding den.
    */
-  harnesses?: Record<string, { models?: unknown; efforts?: unknown }>
+  harnesses?: Record<string, { models?: unknown; efforts?: unknown; models_mode?: unknown }>
 }
 
 /** Voice proxy upstreams (see voice-proxy.ts). Empty URL = that half 501s. */

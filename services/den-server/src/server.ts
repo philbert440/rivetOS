@@ -88,7 +88,12 @@ import { createRosterProvider, defaultSpawnCwd } from './term/roster.js'
 import { createSessionCwdStore } from './term/session-cwd.js'
 import { loadRealPtySpawn, type PtySpawn } from './term/pty.js'
 import { createTermManager, TermSpawnError, type TermManager } from './term/manager.js'
-import { EFFORT_TOKEN_RE, MODEL_TOKEN_RE, ROSTER_TO_HARNESS } from './harness/model-sheets.js'
+import {
+  EFFORT_TOKEN_RE,
+  MODEL_TOKEN_RE,
+  ROSTER_TO_HARNESS,
+  presetModelList,
+} from './harness/model-sheets.js'
 import { TmuxUnavailableError, type TmuxCtl } from './term/tmux.js'
 import type { HerdrCtl } from './term/herdr.js'
 import { createTermWs } from './term/ws.js'
@@ -1247,6 +1252,11 @@ export function createDenServer(config: DenConfig, opts: DenServerOptions = {}):
     nodeName: config.nodeName,
     directoryRoot: config.agentsDir,
     ...(config.sharedRoot ? { sharedDir: config.sharedRoot } : {}),
+    // The same resolved sheet the spawn path appends `--model` from, so a
+    // preset naming an unlisted model is caught at save time (400 when the
+    // operator pinned the list with `replace`, a warning otherwise).
+    modelList: (harnessId) =>
+      presetModelList(harnessId, config.harnesses?.[harnessId], console.error),
   })
 
   const authorized = (req: IncomingMessage, _url: URL): boolean =>

@@ -51,6 +51,7 @@ export const KNOWN_TASKS_HARNESS_KEYS = new Set([
   'home',
   'models',
   'efforts',
+  'models_mode',
 ])
 
 /** workflows.* keys (YAML snake_case). */

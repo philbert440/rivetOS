@@ -3,7 +3,7 @@
  * unknown keys, type checks, and helpful error messages.
  */
 
-import { describe, it } from 'vitest'
+import { describe, expect, it } from 'vitest'
 import * as assert from 'node:assert/strict'
 import { validateConfig, formatValidationResult, type ValidationResult } from './validate/index.js'
 import { MODEL_DEFAULTS } from '@rivetos/types'
@@ -1264,6 +1264,40 @@ describe('den', () => {
       const result = validateConfig(cfg)
       assertWarning(result, 'tasks.harnesses.claude-code.models', 'empty and will be ignored')
       assertWarning(result, 'tasks.harnesses.claude-code.efforts', 'empty and will be ignored')
+    })
+
+    it('accepts models_mode discover | replace | merge and rejects anything else', () => {
+      for (const mode of ['discover', 'replace', 'merge']) {
+        const cfg = validConfig()
+        // discover with a list is a (warned) no-op; the clean shape is mode-only for
+        // discover and mode + list for the other two
+        const section =
+          mode === 'discover' ? { models_mode: mode } : { models_mode: mode, models: [{ id: 'x' }] }
+        cfg.tasks = { harnesses: { codex: section } }
+        const result = validateConfig(cfg)
+        expect(
+          [...result.errors, ...result.warnings].filter((i) =>
+            i.path.startsWith('tasks.harnesses.codex'),
+          ),
+        ).toEqual([])
+      }
+      const noop = validConfig()
+      noop.tasks = {
+        harnesses: {
+          codex: { models_mode: 'discover', models: [{ id: 'x' }] },
+          'claude-code': { models_mode: 'replace' },
+        },
+      }
+      const warned = validateConfig(noop)
+      assertWarning(warned, 'tasks.harnesses.codex.models_mode', 'ignored')
+      assertWarning(warned, 'tasks.harnesses.claude-code.models_mode', 'discovered list is kept')
+      const bad = validConfig()
+      bad.tasks = { harnesses: { codex: { models_mode: 'append' } } }
+      assertError(
+        validateConfig(bad),
+        'tasks.harnesses.codex.models_mode',
+        "must be 'discover', 'replace' or 'merge'",
+      )
     })
   })
 

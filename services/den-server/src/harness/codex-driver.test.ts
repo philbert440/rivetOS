@@ -77,6 +77,18 @@ function fakePty() {
   }
 }
 
+/** No catalog file, no config.toml, and a CLI that is not installed — the static floor. */
+const NO_CODEX_READERS = {
+  readJson: (): unknown => {
+    throw new Error('ENOENT')
+  },
+  readText: (): string => {
+    throw new Error('ENOENT')
+  },
+  home: '/no-such-home',
+  runCommand: (): Promise<string> => Promise.reject(new Error('codex: not installed')),
+}
+
 function makeDriver(
   opts: {
     rows?: HarnessSession[]
@@ -93,6 +105,7 @@ function makeDriver(
   let emit: (ev: DenAgentEventLike) => void = () => undefined
   const driver = new CodexDriver({
     store: store.host(),
+    sheetReaders: NO_CODEX_READERS,
     pty: withPty ? () => Promise.resolve(pty.host) : undefined,
     events: withEvents
       ? (sink) => {
@@ -140,11 +153,14 @@ describe('capability flags are honest', () => {
     })
   })
 
-  it('advertises the static default model and #719 efforts, with no spawn flags', () => {
+  it('advertises --model / -c spawn flags, the #719 effort floor, and no fake default model', () => {
     const caps = makeDriver().driver.capabilities
-    expect(caps.modelFlag).toBeUndefined()
-    expect(caps.effortFlag).toBeUndefined()
-    expect(caps.models?.map((m) => m.id)).toEqual(['default'])
+    expect(caps.modelFlag).toBe('--model')
+    expect(caps.effortFlag).toBe('-c')
+    // launchModel is declared only once discovery has rows
+    expect(caps.launchModel).toBeUndefined()
+    expect(caps.models).toEqual([])
+    expect(caps.modelsSource).toBe('static')
     expect(caps.efforts?.map((e) => e.id)).toEqual(['low', 'medium', 'high', 'xhigh'])
     expect(caps.efforts?.find((e) => e.default)?.id).toBe('medium')
   })

@@ -96,16 +96,17 @@ describe('harnessLabel', () => {
 })
 
 describe('CODEX_SHEET', () => {
-  it('mirrors the den default model and low/medium/high/xhigh efforts', () => {
-    expect(defaultModel(CODEX_SHEET)).toBe('default')
-    expect(modelOptionsFor(CODEX_SHEET).map((o) => o.value)).toEqual(['default'])
-    expect(effortOptionsFor(CODEX_SHEET, 'default').map((o) => o.value)).toEqual([
+  it('mirrors the den static floor: no models until discovery, low/medium/high/xhigh efforts', () => {
+    expect(defaultModel(CODEX_SHEET)).toBe('')
+    expect(modelOptionsFor(CODEX_SHEET)).toEqual([])
+    expect(CODEX_SHEET.modelFlag).toBe('--model')
+    expect(effortOptionsFor(CODEX_SHEET, '').map((o) => o.value)).toEqual([
       'low',
       'medium',
       'high',
       'xhigh',
     ])
-    expect(defaultEffort(CODEX_SHEET, 'default')).toBe('medium')
+    expect(defaultEffort(CODEX_SHEET, '')).toBe('medium')
   })
 })
 

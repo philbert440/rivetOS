@@ -25,7 +25,11 @@ const cleanup: Array<() => void> = []
 afterEach(() => {
   for (const fn of cleanup.splice(0).reverse()) fn()
 })
-function setup(defaults: Record<string, unknown> = {}, linkUploads = false) {
+function setup(
+  defaults: Record<string, unknown> = {},
+  linkUploads = false,
+  extra: Partial<ConstructorParameters<typeof CodexProtocolDriver>[0]> = {},
+) {
   const dir = mkdtempSync(join(tmpdir(), 'codex-driver-'))
   cleanup.push(() => rmSync(dir, { recursive: true, force: true }))
   const uploadsDir = linkUploads ? join(dir, 'uploads-link') : dir
@@ -65,6 +69,19 @@ function setup(defaults: Record<string, unknown> = {}, linkUploads = false) {
   const make = () => {
     const driver = new CodexProtocolDriver({
       rpc,
+      // The TUI sheet under the protocol driver must not read the real
+      // ~/.codex or spawn the real CLI from a test.
+      sheetReaders: {
+        readJson: () => {
+          throw new Error('ENOENT')
+        },
+        readText: () => {
+          throw new Error('ENOENT')
+        },
+        home: '/no-such-home',
+        env: {},
+        runCommand: () => Promise.reject(new Error('codex: not installed')),
+      },
       endpoint: 'ws://127.0.0.1:5175',
       bindingsFile: join(dir, 'bindings.json'),
       uploadsDir,
@@ -76,6 +93,7 @@ function setup(defaults: Record<string, unknown> = {}, linkUploads = false) {
         exists: () => false,
         transcript: async () => ({ turns: [] }),
       },
+      ...extra,
     })
     cleanup.push(() => driver.close())
     return driver
@@ -316,6 +334,63 @@ it('rejects nested files and file symlinks even inside a symlinked staging direc
   }
   expect(vi.mocked(rpc.request).mock.calls.some(([method]) => method === 'turn/start')).toBe(false)
 })
+it('labels the app-server catalog as discovered and applies a merge override to it', async () => {
+  const plain = setup()
+  await plain.driver.verifyCapabilities()
+  expect(plain.driver.capabilities.modelsSource).toBe('discovered')
+  expect(plain.driver.capabilities.models?.map((m) => m.id)).toEqual(['test'])
+  const merged = setup({}, false, {
+    sheetOverride: { models_mode: 'merge', models: [{ id: 'gateway-x', label: 'Gateway X' }] },
+  })
+  await merged.driver.verifyCapabilities()
+  expect(merged.driver.capabilities.modelsSource).toBe('merged')
+  expect(merged.driver.capabilities.models?.map((m) => m.id)).toEqual(['test', 'gateway-x'])
+  expect(merged.driver.capabilities.models?.find((m) => m.default)?.id).toBe('test')
+  // a config default on a non-catalog row (merge) or a non-default catalog row (replace)
+  // is the only default — the catalog's own default is not resurrected
+  const gwDefault = setup({}, false, {
+    sheetOverride: { models_mode: 'merge', models: [{ id: 'gateway-x', default: true }] },
+  })
+  await gwDefault.driver.verifyCapabilities()
+  expect(gwDefault.driver.capabilities.models?.filter((m) => m.default).map((m) => m.id)).toEqual([
+    'gateway-x',
+  ])
+  const otherDefault = setup({}, false, {
+    sheetOverride: { models: [{ id: 'test' }, { id: 'other', default: true }] },
+  })
+  vi.mocked(otherDefault.rpc.request).mockImplementation(async (method) =>
+    method === 'model/list'
+      ? {
+          data: [
+            { model: 'test', isDefault: true, supportedReasoningEfforts: [] },
+            { model: 'other', isDefault: false, supportedReasoningEfforts: [] },
+          ],
+        }
+      : { turn: { id: 'turn1', status: 'inProgress' } },
+  )
+  await otherDefault.driver.verifyCapabilities()
+  expect(otherDefault.driver.capabilities.models?.map((m) => [m.id, !!m.default])).toEqual([
+    ['test', false],
+    ['other', true],
+  ])
+  // replace keeps the catalog row's efforts / modalities / default for a known id
+  const replaced = setup({}, false, {
+    sheetOverride: { models: [{ id: 'test', label: 'Test (pinned)' }, { id: 'gateway-x' }] },
+  })
+  await replaced.driver.verifyCapabilities()
+  expect(replaced.driver.capabilities.modelsSource).toBe('config')
+  expect(replaced.driver.capabilities.models).toEqual([
+    {
+      id: 'test',
+      label: 'Test (pinned)',
+      default: true,
+      inputModalities: ['text', 'image'],
+      efforts: [{ id: 'high', label: 'high', default: true }],
+    },
+    { id: 'gateway-x', label: 'gateway-x' },
+  ])
+})
+
 it('uses a stale catalog after a refresh failure but fails without any catalog', async () => {
   const { driver, rpc } = setup()
   await driver.startSession({ nativeSessionId: id })
