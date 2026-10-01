@@ -72,6 +72,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `opencode` harness (id `opencode`, provider `opencode-cli`, roster `opencode`) surfaced in RivetHub web, Android, and docs. Default `model` is `zai/glm-5.3-flash`. The installed OpenCode CLI owns backend, endpoint, and credentials.
 - `pi` memory capture (`integrations/pi/rivet-memory`): v3 session jsonl watcher under `agent=rivet-deepseek` / `channel=pi`, systemd user unit `pi-memory-capture.service` / launchd `dev.rivetos.pi-capture`, wired into `rivetos plugins install` and doctor.
 
+### Tooling
+
+- `scripts/worktree-reap.sh`: the post-merge cleanup step. Lists (and with `--apply` removes) worktrees whose branch's PR is merged or closed, or whose detached HEAD is on `origin/main` or belongs to a merged `wt-pr-NNNN` review checkout, when the tree is clean and no process is inside; then deletes those branches and prunes remote refs. Dirty trees and open PRs are skipped and listed. Added after an audit found ~200 abandoned worktrees (~25 GB) across two checkouts.
+
 ### Harness
 
 - `cursor` harness (id `cursor`, roster command `cursor`) in RivetHub web and Android. The den spawns `agent --force --trust` and resumes with `agent --resume <chatId>`. Transcripts are read from `~/.cursor/projects/<slug>/agent-transcripts/`. No pin flag and no headless task executor.
