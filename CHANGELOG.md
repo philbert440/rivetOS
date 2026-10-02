@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Providers and embeddings — `token_command`, wire-shape, model catalog
+
+- New leaf package `@rivetos/token-command`: argv-only bearer mint with TTL cache and invalidate-on-401 (`createTokenSource`, `createAuthorizedFetch`), embeddings wire-shape helpers (`openai` / `native`), and a model catalog with a static floor plus background endpoint refresh.
+- Providers `anthropic`, `xai`, `vllm`, and `llama-server` accept optional `token_command` / `token_ttl_ms` / `token_command_timeout_ms`. Unset keeps today's static `api_key` path. When set, the mint wins over `api_key`, is never logged, and AI SDK / availability probes remint once on HTTP 401.
+- `vllm` and `llama-server` accept optional `models` (static floor) and `models_ttl_ms`; `listModels()` returns floor + discovered ids from the models endpoint (last-known on outage).
+- Embedding worker and `memory.postgres` query-time embed support `embed_api_key` / `embed_token_command`, `embed_wire_shape` (`openai` default, or `native` passthrough), and optional `embed_expected_dims`. Worker env: `RIVETOS_EMBED_API_KEY` (also `OPENAI_API_KEY`), `RIVETOS_EMBED_TOKEN_COMMAND` (JSON argv), `RIVETOS_EMBED_WIRE_SHAPE`, `RIVETOS_EMBED_EXPECTED_DIMS`.
+- Config validation and `docs/CONFIG-REFERENCE.md` cover the new keys. Opt-in: with these keys unset, behaviour is unchanged.
+
 ### Den URL guards
 
 - A pre-set `RIVET_DEN_URL` is checked before the memory sidecar and the capture hooks dial it. A comma list (the old den-hook fallback form) is not one origin: the first entry is used. A plain-http loopback URL against a den that serves https is rewritten to https. Each guard prints one line to stderr naming the value to put in `~/.rivetos/.env`, or says to remove the line. Shared between the shell launcher (`rivetos_guard_den_url` in `integrations/shared/rivet-paths.sh`) and `@rivetos/capture-core` (`guardDenUrl`; `resolveCaptureTransport` returns the warnings and the claude-cli hook logs them). "Serves https" mirrors boot's `resolveDenTls`: `den.tls_cert`/`tls_key`, then `RIVETOS_DEN_TLS_CERT`/`KEY`, then the mesh issue-node files for `mesh.node_name`. A non-loopback http URL is left alone. Background: `~/.rivetos/.env` on three nodes kept `RIVET_DEN_URL=http://127.0.0.1:5174` from before gateway TLS; nothing dialed it until #1012 and #1013/#1014 moved the sidecar and every hook onto den transport, and the launcher loads that file after the den-injected env, so the stale line overrode the correct https the den hands its own sessions. Reads failed on every call and captures spooled for four hours with nothing else showing red.

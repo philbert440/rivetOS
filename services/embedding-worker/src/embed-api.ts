@@ -1,10 +1,13 @@
 /**
- * Hardened embedding API client — calls Nemotron's OpenAI-compatible
- * /v1/embeddings endpoint with retry on transient failures, and falls back
- * to per-row isolation when a batch fails so one bad row can't poison the
- * whole batch.
+ * Hardened embedding API client — calls the configured embed endpoint with
+ * retry on transient failures, and falls back to per-row isolation when a
+ * batch fails so one bad row can't poison the whole batch.
+ *
+ * Auth: optional static api key or token_command (TTL cache, remint on 401).
+ * Wire shape: openai `/v1/embeddings` (default) or native passthrough.
  */
 
+import { buildEmbedRequest, normalizeEmbedVector, parseEmbedResponse } from '@rivetos/token-command'
 import { config } from './config.js'
 
 function isTransientError(err: unknown): boolean {
@@ -44,7 +47,7 @@ const RETRY_AFTER_MAX_MS = 60_000
  */
 export function delayForRetry(attempt: number, response?: Response): number {
   if (response && response.status === 429) {
-    const header = response.headers?.get('Retry-After')
+    const header = response.headers.get('Retry-After')
     if (header) {
       const seconds = Number(header)
       if (Number.isFinite(seconds) && seconds >= 0) {
@@ -59,21 +62,58 @@ export function delayForRetry(attempt: number, response?: Response): number {
   return Math.pow(2, attempt) * 1000
 }
 
-interface EmbeddingResponse {
-  data?: Array<{ index?: number; embedding?: number[] }>
+async function authHeaders(): Promise<Record<string, string>> {
+  const headers: Record<string, string> = { 'Content-Type': 'application/json' }
+  if (config.tokenSource) {
+    const token = await config.tokenSource.getToken()
+    headers.Authorization = `Bearer ${token}`
+    return headers
+  }
+  if (config.apiKey) {
+    headers.Authorization = `Bearer ${config.apiKey}`
+  }
+  return headers
+}
+
+function normalizeBatch(vectors: Array<number[] | null>): Array<number[] | null> {
+  return vectors.map((v) =>
+    normalizeEmbedVector(v, {
+      expectedDims: config.expectedDims,
+      truncateDims: config.truncateDims,
+    }),
+  )
 }
 
 async function embedOnce(texts: string[]): Promise<Array<number[] | null> | 'transient'> {
   let lastError: Error | null = null
+  const { url, body } = buildEmbedRequest({
+    endpoint: config.embedUrl,
+    wireShape: config.wireShape,
+    model: config.embedModel,
+    input: texts,
+  })
 
   for (let attempt = 0; attempt <= config.maxRetries; attempt++) {
     try {
-      const response = await fetch(`${config.embedUrl}/v1/embeddings`, {
+      const headers = await authHeaders()
+      let response = await fetch(url, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ input: texts, model: config.embedModel }),
+        headers,
+        body: JSON.stringify(body),
         signal: AbortSignal.timeout(config.apiTimeoutMs),
       })
+
+      // Remint once on 401 when using token_command.
+      if (response.status === 401 && config.tokenSource) {
+        config.tokenSource.invalidate()
+        const retryHeaders = await authHeaders()
+        response = await fetch(url, {
+          method: 'POST',
+          headers: retryHeaders,
+          body: JSON.stringify(body),
+          signal: AbortSignal.timeout(config.apiTimeoutMs),
+        })
+      }
 
       if (!response.ok) {
         lastError = new Error(`HTTP ${response.status}: ${response.statusText}`)
@@ -94,17 +134,9 @@ async function embedOnce(texts: string[]): Promise<Array<number[] | null> | 'tra
         break
       }
 
-      const data = (await response.json()) as EmbeddingResponse
-      if (!data.data) return texts.map(() => null)
-
-      const results: Array<number[] | null> = texts.map(() => null)
-      for (const item of data.data) {
-        const idx = item.index ?? 0
-        if (idx >= 0 && idx < results.length && item.embedding) {
-          results[idx] = item.embedding
-        }
-      }
-      return results
+      const data: unknown = await response.json()
+      const { vectors } = parseEmbedResponse(data, texts.length)
+      return normalizeBatch(vectors)
     } catch (err) {
       lastError = err as Error
       if (isTransientError(err) && attempt < config.maxRetries) {

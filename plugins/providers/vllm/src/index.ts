@@ -34,6 +34,14 @@ import type { ProviderAiSdkBridge } from '@rivetos/aisdk'
 import type { JSONObject } from '@ai-sdk/provider'
 import type { LanguageModel } from 'ai'
 import { createOpenAICompatible } from '@ai-sdk/openai-compatible'
+import {
+  createAuthorizedFetch,
+  createModelCatalog,
+  createTokenSource,
+  parseTokenCommandArgv,
+  type ModelCatalog,
+  type TokenSource,
+} from '@rivetos/token-command'
 
 import { splitAndFoldSystem, type VllmAiSdkContext, type ToolChoice } from './chat-stream-aisdk.js'
 import { modelsProbeUrl, normalizeApiPrefix, openaiCompatBaseURL } from './urls.js'
@@ -132,6 +140,12 @@ export interface VllmProviderConfig {
    * knobs). Existing body fields are NOT overwritten.
    */
   extraBody?: Record<string, unknown>
+  /** Optional TTL-cached token mint; preferred over static apiKey when set. */
+  tokenSource?: TokenSource
+  /** Static model catalog floor (always present in listModels). */
+  models?: string[]
+  /** Background refresh interval for endpoint model catalog. */
+  modelsTtlMs?: number
 }
 
 interface OAIModel {
@@ -262,6 +276,10 @@ export class VllmProvider implements Provider {
   private contextPinned: boolean
   /** Discovery runs once; cached so repeated isAvailable() calls don't re-probe. */
   private discovered = false
+  private tokenSource: TokenSource | undefined
+  private catalog: ModelCatalog
+  /** Ids just observed by isAvailable — consumed once by catalog.fetchIds. */
+  private pendingCatalogIds: string[] | undefined
   /**
    * Per-turn flag: when the loop's thinking level is 'off', send
    * `chat_template_kwargs.enable_thinking=false` so Qwen3/vLLM models skip
@@ -308,6 +326,16 @@ export class VllmProvider implements Provider {
     this.contextPinned = (config.contextWindow ?? 0) > 0
     this.outputTokenLimit = config.maxOutputTokens ?? 0
     this.verifyModelOnInit = config.verifyModelOnInit ?? false
+    this.tokenSource = config.tokenSource
+
+    const floor = config.models ?? (this.modelPinned ? [this.model] : [])
+    this.catalog = createModelCatalog({
+      floor,
+      ttlMs: config.modelsTtlMs,
+      label: this.id,
+      fetchIds: () => this.fetchCatalogIds(),
+      log: (msg) => console.warn(msg),
+    })
 
     if (!this.probeModels && !this.modelPinned) {
       console.warn(
@@ -333,10 +361,15 @@ export class VllmProvider implements Provider {
     return this.outputTokenLimit
   }
 
-  private authHeaders(): Record<string, string> {
+  private async authHeaders(): Promise<Record<string, string>> {
+    if (this.tokenSource) return this.tokenSource.authHeaders()
     const headers: Record<string, string> = {}
     if (this.apiKey) headers.Authorization = `Bearer ${this.apiKey}`
     return headers
+  }
+
+  private resolveApiKey(): string {
+    return this.tokenSource?.getCachedToken() ?? this.apiKey
   }
 
   private openaiBaseURL(): string {
@@ -347,11 +380,35 @@ export class VllmProvider implements Provider {
     return modelsProbeUrl(this.baseUrl, this.apiPrefix, this.modelsUrlOverride)
   }
 
+  /** Floor + discovered model ids (kicks a background refresh when TTL expired). */
+  listModels(): string[] {
+    return this.catalog.refresh()
+  }
+
+  private async fetchCatalogIds(): Promise<string[]> {
+    if (this.pendingCatalogIds) {
+      const ids = this.pendingCatalogIds
+      this.pendingCatalogIds = undefined
+      return ids
+    }
+    const modelsUrl = this.modelsEndpoint()
+    let res = await fetch(modelsUrl, { headers: await this.authHeaders() })
+    if (res.status === 401 && this.tokenSource) {
+      this.tokenSource.invalidate()
+      res = await fetch(modelsUrl, { headers: await this.authHeaders() })
+    }
+    if (!res.ok) {
+      throw new Error(`HTTP ${String(res.status)}`)
+    }
+    const body = (await res.json().catch(() => ({}))) as OAIModelsResponse
+    return (body.data ?? []).map((m) => m.id).filter((id): id is string => !!id)
+  }
+
   private buildAiSdkContext(): VllmAiSdkContext {
     return {
       baseUrl: this.baseUrl,
       apiPrefix: this.apiPrefix,
-      apiKey: this.apiKey,
+      apiKey: this.resolveApiKey(),
       defaultModel: this.model,
       providerName: this.name,
       providerId: this.id,
@@ -437,14 +494,18 @@ export class VllmProvider implements Provider {
   aiSdkBridge(): ProviderAiSdkBridge {
     return {
       getModel: ({ modelOverride }): LanguageModel => {
+        const apiKey = this.resolveApiKey()
         const provider = createOpenAICompatible({
           baseURL: this.openaiBaseURL(),
           name: this.name,
-          apiKey: this.apiKey || undefined,
+          apiKey: apiKey || undefined,
           includeUsage: true,
           // Single live-path body hook: the AI SDK loop sends only model +
           // messages + tools, so every sampling/vLLM knob is applied here.
           transformRequestBody: (body) => this.applyVllmRequestExtensions(body),
+          ...(this.tokenSource
+            ? { fetch: createAuthorizedFetch({ tokenSource: this.tokenSource }) }
+            : {}),
         })
         return provider.chatModel(modelOverride ?? this.model)
       },
@@ -480,7 +541,11 @@ export class VllmProvider implements Provider {
     const modelsUrl = this.modelsEndpoint()
     let res: Response
     try {
-      res = await fetch(modelsUrl, { headers: this.authHeaders() })
+      res = await fetch(modelsUrl, { headers: await this.authHeaders() })
+      if (res.status === 401 && this.tokenSource) {
+        this.tokenSource.invalidate()
+        res = await fetch(modelsUrl, { headers: await this.authHeaders() })
+      }
     } catch (err: unknown) {
       // Connection-level failure — almost always "server not running" locally.
       const msg = err instanceof Error ? err.message : String(err)
@@ -504,10 +569,13 @@ export class VllmProvider implements Provider {
     const models = body.data ?? []
     this.applyDiscovery(models)
 
+    const ids = models.map((m) => m.id).filter((id): id is string => !!id)
+    this.pendingCatalogIds = ids
+    this.catalog.refresh()
+
     // Only fail availability on a model mismatch when the caller pinned a model
     // AND asked us to verify it. Auto-discovered models are already valid.
     if (this.verifyModelOnInit && this.modelPinned) {
-      const ids = models.map((m) => m.id).filter((id): id is string => !!id)
       if (!ids.includes(this.model)) {
         console.warn(
           `[${this.id}] configured model "${this.model}" not in ${modelsUrl} ` +
@@ -571,10 +639,28 @@ export const manifest: PluginManifest = {
   name: 'vllm',
   register(ctx) {
     const cfg = ctx.pluginConfig ?? {}
+    const apiKey = (cfg.api_key as string | undefined) ?? ctx.env.VLLM_API_KEY ?? ''
+
+    let tokenSource: TokenSource | undefined
+    const parsed = parseTokenCommandArgv(cfg.token_command)
+    if (typeof parsed === 'string') {
+      ctx.logger.warn(parsed)
+    } else if (parsed) {
+      tokenSource = createTokenSource({
+        argv: parsed,
+        ttlMs: cfg.token_ttl_ms as number | undefined,
+        timeoutMs: cfg.token_command_timeout_ms as number | undefined,
+      })
+      void tokenSource.getToken().catch((err: unknown) => {
+        const msg = err instanceof Error ? err.message : String(err)
+        ctx.logger.warn(`token_command warm failed: ${msg}`)
+      })
+    }
+
     ctx.registerProvider(
       new VllmProvider({
         baseUrl: cfg.base_url as string,
-        apiKey: (cfg.api_key as string | undefined) ?? ctx.env.VLLM_API_KEY ?? '',
+        apiKey,
         model: cfg.model as string | undefined,
         maxTokens: cfg.max_tokens as number | undefined,
         temperature: cfg.temperature as number | undefined,
@@ -599,6 +685,9 @@ export const manifest: PluginManifest = {
         name: (cfg.name as string | undefined) ?? 'vllm',
         contextWindow: cfg.context_window as number | undefined,
         maxOutputTokens: cfg.max_output_tokens as number | undefined,
+        tokenSource,
+        models: cfg.models as string[] | undefined,
+        modelsTtlMs: cfg.models_ttl_ms as number | undefined,
       }),
     )
   },

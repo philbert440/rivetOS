@@ -23,6 +23,14 @@ import type { ProviderAiSdkBridge } from '@rivetos/aisdk'
 import type { JSONObject } from '@ai-sdk/provider'
 import type { LanguageModel } from 'ai'
 import { createOpenAICompatible } from '@ai-sdk/openai-compatible'
+import {
+  createAuthorizedFetch,
+  createModelCatalog,
+  createTokenSource,
+  parseTokenCommandArgv,
+  type ModelCatalog,
+  type TokenSource,
+} from '@rivetos/token-command'
 
 import {
   splitAndFoldSystem,
@@ -82,6 +90,12 @@ export interface LlamaServerProviderConfig {
    * are NOT overwritten.
    */
   extraBody?: Record<string, unknown>
+  /** Optional TTL-cached token mint; preferred over static apiKey when set. */
+  tokenSource?: TokenSource
+  /** Static model catalog floor (always present in listModels). */
+  models?: string[]
+  /** Background refresh interval for endpoint model catalog. */
+  modelsTtlMs?: number
 }
 
 interface OAIModel {
@@ -124,6 +138,10 @@ export class LlamaServerProvider implements Provider {
   private contextPinned: boolean
   /** Discovery runs once; cached so repeated isAvailable() calls don't re-probe. */
   private discovered = false
+  private tokenSource: TokenSource | undefined
+  private catalog: ModelCatalog
+  /** Ids just observed by isAvailable — consumed once by catalog.fetchIds. */
+  private pendingCatalogIds: string[] | undefined
 
   constructor(config: LlamaServerProviderConfig) {
     this.id = config.id ?? 'llama-server'
@@ -154,6 +172,16 @@ export class LlamaServerProvider implements Provider {
     this.contextPinned = (config.contextWindow ?? 0) > 0
     this.outputTokenLimit = config.maxOutputTokens ?? 0
     this.verifyModelOnInit = config.verifyModelOnInit ?? false
+    this.tokenSource = config.tokenSource
+
+    const floor = config.models ?? (this.modelPinned ? [this.model] : [])
+    this.catalog = createModelCatalog({
+      floor,
+      ttlMs: config.modelsTtlMs,
+      label: this.id,
+      fetchIds: () => this.fetchCatalogIds(),
+      log: (msg) => console.warn(msg),
+    })
   }
 
   getModel(): string {
@@ -172,16 +200,45 @@ export class LlamaServerProvider implements Provider {
     return this.outputTokenLimit
   }
 
-  private authHeaders(): Record<string, string> {
+  private async authHeaders(): Promise<Record<string, string>> {
+    if (this.tokenSource) return this.tokenSource.authHeaders()
     const headers: Record<string, string> = {}
     if (this.apiKey) headers.Authorization = `Bearer ${this.apiKey}`
     return headers
   }
 
+  private resolveApiKey(): string {
+    return this.tokenSource?.getCachedToken() ?? this.apiKey
+  }
+
+  /** Floor + discovered model ids (kicks a background refresh when TTL expired). */
+  listModels(): string[] {
+    return this.catalog.refresh()
+  }
+
+  private async fetchCatalogIds(): Promise<string[]> {
+    if (this.pendingCatalogIds) {
+      const ids = this.pendingCatalogIds
+      this.pendingCatalogIds = undefined
+      return ids
+    }
+    const url = `${this.baseUrl}/v1/models`
+    let res = await fetch(url, { headers: await this.authHeaders() })
+    if (res.status === 401 && this.tokenSource) {
+      this.tokenSource.invalidate()
+      res = await fetch(url, { headers: await this.authHeaders() })
+    }
+    if (!res.ok) {
+      throw new Error(`HTTP ${String(res.status)}`)
+    }
+    const body = (await res.json().catch(() => ({}))) as OAIModelsResponse
+    return (body.data ?? []).map((m) => m.id).filter((id): id is string => !!id)
+  }
+
   private buildAiSdkContext(): LlamaServerAiSdkContext {
     return {
       baseUrl: this.baseUrl,
-      apiKey: this.apiKey,
+      apiKey: this.resolveApiKey(),
       defaultModel: this.model,
       providerName: this.name,
       providerId: this.id,
@@ -248,14 +305,18 @@ export class LlamaServerProvider implements Provider {
   aiSdkBridge(): ProviderAiSdkBridge {
     return {
       getModel: ({ modelOverride }): LanguageModel => {
+        const apiKey = this.resolveApiKey()
         const provider = createOpenAICompatible({
           baseURL: `${this.baseUrl}/v1`,
           name: this.name,
-          apiKey: this.apiKey || undefined,
+          apiKey: apiKey || undefined,
           includeUsage: true,
           // Single live-path body hook: the AI SDK loop sends only model +
           // messages + tools, so every sampling/llama.cpp knob is applied here.
           transformRequestBody: (body) => this.applyRequestExtensions(body),
+          ...(this.tokenSource
+            ? { fetch: createAuthorizedFetch({ tokenSource: this.tokenSource }) }
+            : {}),
         })
         return provider.chatModel(modelOverride ?? this.model)
       },
@@ -281,7 +342,11 @@ export class LlamaServerProvider implements Provider {
   async isAvailable(): Promise<boolean> {
     let res: Response
     try {
-      res = await fetch(`${this.baseUrl}/v1/models`, { headers: this.authHeaders() })
+      res = await fetch(`${this.baseUrl}/v1/models`, { headers: await this.authHeaders() })
+      if (res.status === 401 && this.tokenSource) {
+        this.tokenSource.invalidate()
+        res = await fetch(`${this.baseUrl}/v1/models`, { headers: await this.authHeaders() })
+      }
     } catch (err: unknown) {
       // Connection-level failure — almost always "server not running" locally.
       const msg = err instanceof Error ? err.message : String(err)
@@ -307,10 +372,13 @@ export class LlamaServerProvider implements Provider {
     const models = body.data ?? []
     this.applyDiscovery(models)
 
+    const ids = models.map((m) => m.id).filter((id): id is string => !!id)
+    this.pendingCatalogIds = ids
+    this.catalog.refresh()
+
     // Only fail availability on a model mismatch when the caller pinned a model
     // AND asked us to verify it. Auto-discovered models are already valid.
     if (this.verifyModelOnInit && this.modelPinned) {
-      const ids = models.map((m) => m.id).filter((id): id is string => !!id)
       if (!ids.includes(this.model)) {
         console.warn(
           `[${this.id}] configured model "${this.model}" not in /v1/models ` +
@@ -359,10 +427,28 @@ export const manifest: PluginManifest = {
   name: 'llama-server',
   register(ctx) {
     const cfg = ctx.pluginConfig ?? {}
+    const apiKey = (cfg.api_key as string | undefined) ?? ctx.env.LLAMA_SERVER_API_KEY ?? ''
+
+    let tokenSource: TokenSource | undefined
+    const parsed = parseTokenCommandArgv(cfg.token_command)
+    if (typeof parsed === 'string') {
+      ctx.logger.warn(parsed)
+    } else if (parsed) {
+      tokenSource = createTokenSource({
+        argv: parsed,
+        ttlMs: cfg.token_ttl_ms as number | undefined,
+        timeoutMs: cfg.token_command_timeout_ms as number | undefined,
+      })
+      void tokenSource.getToken().catch((err: unknown) => {
+        const msg = err instanceof Error ? err.message : String(err)
+        ctx.logger.warn(`token_command warm failed: ${msg}`)
+      })
+    }
+
     ctx.registerProvider(
       new LlamaServerProvider({
         baseUrl: cfg.base_url as string,
-        apiKey: (cfg.api_key as string | undefined) ?? ctx.env.LLAMA_SERVER_API_KEY ?? '',
+        apiKey,
         model: cfg.model as string | undefined,
         maxTokens: cfg.max_tokens as number | undefined,
         temperature: cfg.temperature as number | undefined,
@@ -380,6 +466,9 @@ export const manifest: PluginManifest = {
         name: (cfg.name as string | undefined) ?? 'llama-server',
         contextWindow: cfg.context_window as number | undefined,
         maxOutputTokens: cfg.max_output_tokens as number | undefined,
+        tokenSource,
+        models: cfg.models as string[] | undefined,
+        modelsTtlMs: cfg.models_ttl_ms as number | undefined,
       }),
     )
   },

@@ -14,8 +14,13 @@
  *
  * Environment:
  *   RIVETOS_PG_URL              required
- *   RIVETOS_EMBED_URL           required (OpenAI-compatible embedding endpoint)
- *   RIVETOS_EMBED_MODEL         required (OpenAI-compatible embedding model id)
+ *   RIVETOS_EMBED_URL           required (embedding endpoint base)
+ *   RIVETOS_EMBED_MODEL         required (embedding model id)
+ *   RIVETOS_EMBED_API_KEY       optional static bearer (also honors OPENAI_API_KEY)
+ *   RIVETOS_EMBED_TOKEN_COMMAND optional JSON argv array that prints a bearer token
+ *   RIVETOS_EMBED_TOKEN_TTL_MS  optional mint cache TTL (default 300000)
+ *   RIVETOS_EMBED_WIRE_SHAPE    openai (default) | native
+ *   RIVETOS_EMBED_EXPECTED_DIMS optional; reject/truncate to this width
  *   EMBED_CONCURRENCY           default: 4
  *   EMBED_TRUNCATE_DIMS         default: 1024
  *   EMBED_CHARS_PER_CHUNK       default: 6000   (must be <= endpoint per-request capacity)

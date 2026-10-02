@@ -156,6 +156,45 @@ export const manifest: PluginManifest = {
     const hnswEfSearch =
       (cfg.hnsw_ef_search as number | string | undefined) ?? ctx.env.RIVETOS_HNSW_EF_SEARCH
 
+    const { createTokenSource, parseTokenCommandArgv, parseEmbedWireShape } =
+      await import('@rivetos/token-command')
+    const embedTokenArgv = parseTokenCommandArgv(cfg.embed_token_command)
+    let embedTokenSource: import('@rivetos/token-command').TokenSource | undefined
+    if (typeof embedTokenArgv === 'string') {
+      ctx.logger.warn(`memory.postgres.embed_token_command: ${embedTokenArgv}`)
+    } else if (embedTokenArgv) {
+      embedTokenSource = createTokenSource({
+        argv: embedTokenArgv,
+        ttlMs: typeof cfg.embed_token_ttl_ms === 'number' ? cfg.embed_token_ttl_ms : undefined,
+        timeoutMs:
+          typeof cfg.embed_token_command_timeout_ms === 'number'
+            ? cfg.embed_token_command_timeout_ms
+            : undefined,
+      })
+      void embedTokenSource.getToken().catch((err: unknown) => {
+        const msg = err instanceof Error ? err.message : String(err)
+        ctx.logger.warn(`memory.postgres embed_token_command mint failed: ${msg}`)
+      })
+    }
+    const wireParsed = parseEmbedWireShape(
+      typeof cfg.embed_wire_shape === 'string'
+        ? cfg.embed_wire_shape
+        : ctx.env.RIVETOS_EMBED_WIRE_SHAPE,
+    )
+    let embedWireShape: import('@rivetos/token-command').EmbedWireShape = 'openai'
+    if (typeof wireParsed === 'object') {
+      ctx.logger.warn(`memory.postgres.embed_wire_shape: ${wireParsed.error}`)
+    } else {
+      embedWireShape = wireParsed
+    }
+    const embedApiKey =
+      (cfg.embed_api_key as string | undefined) ??
+      ctx.env.RIVETOS_EMBED_API_KEY ??
+      ctx.env.OPENAI_API_KEY ??
+      ''
+    const embedExpectedDims =
+      typeof cfg.embed_expected_dims === 'number' ? cfg.embed_expected_dims : undefined
+
     const shared = ctx.sharedPg
     const adopted =
       shared && shared.connectionString === connectionString && isPgPool(shared.pool)
@@ -170,6 +209,10 @@ export const manifest: PluginManifest = {
       embedQueryInstruction,
       embedTimeoutMs,
       hnswEfSearch,
+      embedApiKey: embedApiKey || undefined,
+      embedTokenSource,
+      embedWireShape,
+      embedExpectedDims,
     })
 
     // Per-user routing (users.json registry): additional humans on this node
@@ -191,6 +234,10 @@ export const manifest: PluginManifest = {
           embedQueryInstruction,
           embedTimeoutMs,
           hnswEfSearch,
+          embedApiKey: embedApiKey || undefined,
+          embedTokenSource,
+          embedWireShape,
+          embedExpectedDims,
         })
         userStores.set(userId, store)
         userEngines.set(userId, store)

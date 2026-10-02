@@ -1,29 +1,22 @@
 {
-  "name": "@rivetos/provider-anthropic",
+  "name": "@rivetos/token-command",
   "version": "0.5.0",
-  "description": "Anthropic Claude provider \u2014 streaming, tool calling, thinking",
-  "license": "MIT",
+  "description": "Argv-based bearer token minting with TTL cache, plus shared embed wire-shape helpers",
+  "license": "Apache-2.0",
+  "type": "module",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
   "scripts": {
     "build": "tsc -p tsconfig.json",
     "typecheck": "tsc --noEmit -p tsconfig.json",
     "lint": "eslint src/ package.json",
-    "test": "vitest run --passWithNoTests",
+    "test": "vitest run",
     "clean": "rm -rf dist",
     "prepublishOnly": "npm run build"
   },
-  "dependencies": {
-    "@ai-sdk/anthropic": "^3.0.76",
-    "@rivetos/aisdk": "0.5.0",
-    "@rivetos/token-command": "0.5.0",
-    "@rivetos/types": "0.5.0",
-    "ai": "^6.0.177",
-    "@ai-sdk/provider": "3.0.10"
-  },
-  "rivetos": {
-    "type": "provider",
-    "name": "anthropic"
+  "devDependencies": {
+    "@types/node": "^26.1.2",
+    "vitest": "^5.0.2"
   },
   "exports": {
     ".": {
@@ -40,7 +33,7 @@
   "repository": {
     "type": "git",
     "url": "git+https://github.com/philbert440/rivetOS.git",
-    "directory": "plugins/providers/anthropic"
+    "directory": "packages/token-command"
   },
   "publishConfig": {
     "access": "public"
@@ -50,9 +43,9 @@
   },
   "nx": {
     "tags": [
-      "scope:adapter",
-      "type:plugin",
-      "domain:runtime"
+      "scope:contract",
+      "type:lib",
+      "domain:shared"
     ]
   }
 }

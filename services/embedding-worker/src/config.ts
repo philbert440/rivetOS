@@ -2,6 +2,14 @@
  * Environment-driven configuration for the embedding worker.
  */
 
+import {
+  createTokenSource,
+  parseTokenCommandArgv,
+  parseEmbedWireShape,
+  type EmbedWireShape,
+  type TokenSource,
+} from '@rivetos/token-command'
+
 function requireEnv(name: string, detail?: string): string {
   const value = process.env[name]
   if (!value) {
@@ -25,6 +33,57 @@ function boolEnv(name: string, fallback: boolean): boolean {
   if (['1', 'true', 'yes', 'on'].includes(n)) return true
   if (['0', 'false', 'no', 'off'].includes(n)) return false
   return fallback
+}
+
+function optionalPositiveInt(name: string): number | undefined {
+  const raw = process.env[name]
+  if (raw === undefined || raw === '') return undefined
+  const parsed = parseInt(raw, 10)
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : undefined
+}
+
+/**
+ * Resolve embed token_command from env. Accepts a JSON argv array string.
+ * A bare non-JSON string is rejected (no shell).
+ */
+export function resolveEmbedTokenSourceFromEnv(
+  env: NodeJS.ProcessEnv = process.env,
+): TokenSource | undefined {
+  const raw = env.RIVETOS_EMBED_TOKEN_COMMAND
+  if (!raw) return undefined
+  let parsed: unknown
+  try {
+    parsed = JSON.parse(raw)
+  } catch {
+    console.error(
+      '[EmbedWorker] RIVETOS_EMBED_TOKEN_COMMAND must be a JSON argv array (no shell string)',
+    )
+    process.exit(1)
+  }
+  const argv = parseTokenCommandArgv(parsed)
+  if (argv === null) return undefined
+  if (typeof argv === 'string') {
+    console.error(`[EmbedWorker] ${argv}`)
+    process.exit(1)
+  }
+  const ttlRaw = env.RIVETOS_EMBED_TOKEN_TTL_MS
+  const timeoutRaw = env.RIVETOS_EMBED_TOKEN_COMMAND_TIMEOUT_MS
+  const ttlMs = ttlRaw ? parseInt(ttlRaw, 10) : undefined
+  const timeoutMs = timeoutRaw ? parseInt(timeoutRaw, 10) : undefined
+  return createTokenSource({
+    argv,
+    ttlMs: Number.isFinite(ttlMs) && (ttlMs as number) > 0 ? ttlMs : undefined,
+    timeoutMs: Number.isFinite(timeoutMs) && (timeoutMs as number) > 0 ? timeoutMs : undefined,
+  })
+}
+
+function resolveWireShape(): EmbedWireShape {
+  const parsed = parseEmbedWireShape(process.env.RIVETOS_EMBED_WIRE_SHAPE)
+  if (typeof parsed === 'object') {
+    console.error(`[EmbedWorker] ${parsed.error}`)
+    process.exit(1)
+  }
+  return parsed
 }
 
 export const config = {
@@ -62,4 +121,9 @@ export const config = {
   // parent mean-pooled vector is still written. Backfill sweep is bounded.
   embedChunksEnabled: boolEnv('EMBED_CHUNKS_ENABLED', true),
   chunkBackfillLimit: intEnv('CHUNK_BACKFILL_LIMIT', 200),
+
+  wireShape: resolveWireShape(),
+  expectedDims: optionalPositiveInt('RIVETOS_EMBED_EXPECTED_DIMS'),
+  apiKey: process.env.RIVETOS_EMBED_API_KEY || process.env.OPENAI_API_KEY || '',
+  tokenSource: resolveEmbedTokenSourceFromEnv(),
 } as const

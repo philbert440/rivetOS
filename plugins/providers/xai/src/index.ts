@@ -37,6 +37,12 @@ import type { JSONObject } from '@ai-sdk/provider'
 import type { LanguageModel, ToolSet } from 'ai'
 import { createXai, xaiTools } from '@ai-sdk/xai'
 import { randomUUID } from 'node:crypto'
+import {
+  createAuthorizedFetch,
+  createTokenSource,
+  parseTokenCommandArgv,
+  type TokenSource,
+} from '@rivetos/token-command'
 
 import type { XAIAiSdkContext } from './chat-stream-aisdk.js'
 
@@ -111,6 +117,8 @@ export interface XAIProviderConfig {
   truncation?: 'auto' | 'disabled'
   /** Developer instructions (separate from system prompt, persisted server-side) */
   instructions?: string
+  /** Optional TTL-cached token mint; preferred over static apiKey when set. */
+  tokenSource?: TokenSource
 }
 
 // ---------------------------------------------------------------------------
@@ -143,6 +151,7 @@ export class XAIProvider implements Provider {
   private timeoutMs: number
   private contextWindowSize: number
   private outputTokenLimit: number
+  private tokenSource: TokenSource | undefined
 
   // Server-side tools config
   private webSearch: boolean | WebSearchConfig
@@ -181,6 +190,7 @@ export class XAIProvider implements Provider {
     this.timeoutMs = config.timeoutMs ?? 3_600_000
     this.contextWindowSize = config.contextWindow ?? 0
     this.outputTokenLimit = config.maxOutputTokens ?? 0
+    this.tokenSource = config.tokenSource
 
     this.webSearch = config.webSearch ?? false
     this.xSearch = config.xSearch ?? false
@@ -275,9 +285,13 @@ export class XAIProvider implements Provider {
   // chatStream — delegates to AI SDK implementation
   // -----------------------------------------------------------------------
 
+  private resolveApiKey(): string {
+    return this.tokenSource?.getCachedToken() ?? this.apiKey
+  }
+
   private buildAiSdkContext(): XAIAiSdkContext {
     return {
-      apiKey: this.apiKey,
+      apiKey: this.resolveApiKey(),
       baseUrl: this.baseUrl,
       defaultModel: this.model,
       store: this.store,
@@ -313,9 +327,12 @@ export class XAIProvider implements Provider {
       getModel: ({ modelOverride, conversationId }): LanguageModel => {
         const cacheKey = this.getPromptCacheKey(conversationId)
         const provider = createXai({
-          apiKey: this.apiKey,
+          apiKey: this.resolveApiKey(),
           baseURL: this.baseUrl,
           headers: { 'x-grok-conv-id': cacheKey },
+          ...(this.tokenSource
+            ? { fetch: createAuthorizedFetch({ tokenSource: this.tokenSource }) }
+            : {}),
         })
         return provider.responses(modelOverride ?? this.model)
       },
@@ -415,11 +432,22 @@ export class XAIProvider implements Provider {
   // isAvailable
   // -----------------------------------------------------------------------
 
+  private async authHeaders(): Promise<Record<string, string>> {
+    if (this.tokenSource) return this.tokenSource.authHeaders()
+    return { Authorization: `Bearer ${this.apiKey}` }
+  }
+
   async isAvailable(): Promise<boolean> {
     try {
-      const res = await fetch(`${this.baseUrl}/models`, {
-        headers: { Authorization: `Bearer ${this.apiKey}` },
+      let res = await fetch(`${this.baseUrl}/models`, {
+        headers: await this.authHeaders(),
       })
+      if (res.status === 401 && this.tokenSource) {
+        this.tokenSource.invalidate()
+        res = await fetch(`${this.baseUrl}/models`, {
+          headers: await this.authHeaders(),
+        })
+      }
       return res.ok
     } catch {
       return false
@@ -436,13 +464,32 @@ export const manifest: PluginManifest = {
   name: 'xai',
   register(ctx) {
     const cfg = ctx.pluginConfig ?? {}
+    const apiKey = (cfg.api_key as string | undefined) ?? ctx.env.XAI_API_KEY ?? ''
+
+    let tokenSource: TokenSource | undefined
+    const parsed = parseTokenCommandArgv(cfg.token_command)
+    if (typeof parsed === 'string') {
+      ctx.logger.warn(parsed)
+    } else if (parsed) {
+      tokenSource = createTokenSource({
+        argv: parsed,
+        ttlMs: cfg.token_ttl_ms as number | undefined,
+        timeoutMs: cfg.token_command_timeout_ms as number | undefined,
+      })
+      void tokenSource.getToken().catch((err: unknown) => {
+        const msg = err instanceof Error ? err.message : String(err)
+        ctx.logger.warn(`token_command warm failed: ${msg}`)
+      })
+    }
+
     ctx.registerProvider(
       new XAIProvider({
-        apiKey: (cfg.api_key as string | undefined) ?? ctx.env.XAI_API_KEY ?? '',
+        apiKey,
         model: cfg.model as string | undefined,
         temperature: cfg.temperature as number | undefined,
         contextWindow: cfg.context_window as number | undefined,
         maxOutputTokens: cfg.max_output_tokens as number | undefined,
+        tokenSource,
       }),
     )
   },

@@ -3,9 +3,10 @@
  * extension surface (standard sampling + top_k/min_p + extra_body), and the
  * guarantee that vLLM-only fields are NOT emitted.
  */
-import { describe, it, expect } from 'vitest'
+import { describe, it, expect, vi, afterEach } from 'vitest'
 import { LlamaServerProvider, manifest } from './index.js'
 import type { LlamaServerProviderConfig } from './index.js'
+import { createTokenSource } from '@rivetos/token-command'
 
 describe('LlamaServerProvider', () => {
   describe('construction & defaults', () => {
@@ -122,6 +123,88 @@ describe('LlamaServerProvider', () => {
     it('registers as the llama-server provider', () => {
       expect(manifest.type).toBe('provider')
       expect(manifest.name).toBe('llama-server')
+    })
+  })
+
+  describe('token_command and model catalog', () => {
+    afterEach(() => {
+      vi.restoreAllMocks()
+      vi.unstubAllGlobals()
+    })
+
+    it('without tokenSource, isAvailable uses the static apiKey', async () => {
+      const fetchMock = vi.fn().mockResolvedValue({
+        ok: true,
+        status: 200,
+        json: async () => ({ data: [{ id: 'm1' }] }),
+      })
+      vi.stubGlobal('fetch', fetchMock)
+      const p = new LlamaServerProvider({
+        baseUrl: 'http://127.0.0.1:8080',
+        apiKey: 'static-key',
+      })
+      expect(await p.isAvailable()).toBe(true)
+      expect(fetchMock.mock.calls[0][1]).toEqual({
+        headers: { Authorization: 'Bearer static-key' },
+      })
+    })
+
+    it('with tokenSource, isAvailable remints once on 401', async () => {
+      let n = 0
+      const tokenSource = createTokenSource({
+        argv: ['helper'],
+        runCommand: async () => `tok-${++n}`,
+      })
+      const fetchMock = vi.fn(async (_url: string, init?: RequestInit) => {
+        const auth = new Headers(init?.headers).get('Authorization')
+        if (auth === 'Bearer tok-1') return { ok: false, status: 401 } as Response
+        return {
+          ok: true,
+          status: 200,
+          json: async () => ({ data: [{ id: 'served' }] }),
+        } as unknown as Response
+      })
+      vi.stubGlobal('fetch', fetchMock)
+
+      const p = new LlamaServerProvider({
+        baseUrl: 'http://127.0.0.1:8080',
+        apiKey: 'ignored',
+        tokenSource,
+      })
+      expect(await p.isAvailable()).toBe(true)
+      expect(n).toBe(2)
+      expect(fetchMock).toHaveBeenCalledTimes(2)
+    })
+
+    it('listModels includes floor and feeds probe ids after isAvailable', async () => {
+      vi.stubGlobal(
+        'fetch',
+        vi.fn().mockResolvedValue({
+          ok: true,
+          status: 200,
+          json: async () => ({ data: [{ id: 'served-a' }, { id: 'served-b' }] }),
+        }),
+      )
+      const p = new LlamaServerProvider({
+        baseUrl: 'http://127.0.0.1:8080',
+        model: 'pinned-model',
+        models: ['floor-model'],
+      })
+      expect(p.listModels()).toEqual(['floor-model'])
+      expect(await p.isAvailable()).toBe(true)
+      await vi.waitFor(() => {
+        expect(p.listModels()).toEqual(['floor-model', 'served-a', 'served-b'])
+      })
+    })
+
+    it('defaults catalog floor to the pinned model when models unset', () => {
+      vi.stubGlobal('fetch', vi.fn().mockRejectedValue(new Error('offline')))
+      vi.spyOn(console, 'warn').mockImplementation(() => undefined)
+      const p = new LlamaServerProvider({
+        baseUrl: 'http://127.0.0.1:8080',
+        model: 'my-pinned',
+      })
+      expect(p.listModels()).toEqual(['my-pinned'])
     })
   })
 })
