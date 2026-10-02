@@ -625,11 +625,14 @@ Off by default. When enabled, `@rivetos/capture-core` redacts common secret
 shapes (and optional operator regexes) in message `content`, `tool_result`, and
 `tool_args` **before** the batch is posted or spooled. Logs report a span count
 only — never the matched text. Placeholders are deterministic
-(`[REDACTED:bearer]`, `[REDACTED:pattern:0]`, …). Regex scanning is limited to
-the first 16,000 UTF-16 units per string (the same budget the den keeps after
-the content cap), so operator patterns cannot hang the hook on multi-megabyte
-tool dumps. Split secrets (half in `content`, half in `tool_result`) are not
-reassembled — each field is redacted independently.
+(`[REDACTED:bearer]`, `[REDACTED:pattern:0]`, …). Regex scanning of `content`
+and `tool_result` is limited to the first 16,000 UTF-16 units (the same budget
+the writer keeps after the field cap). `tool_args` string leaves are not
+field-capped, so they are scanned in full. Built-in assignment / secret-key
+detectors match exact stems and underscore/hyphen compounds (`SECRET_KEY`,
+`db_password`) — bare `key`/`auth` only behind a separator, so ordinary fields
+like `author` / `token_count` are kept. Split secrets (half in `content`, half
+in `tool_result`) are not reassembled — each field is redacted independently.
 
 ```yaml
 memory:
@@ -638,14 +641,14 @@ memory:
       enabled: false
       builtins: true
       # patterns:
-      #   - '\\b(?i:myprefix)-[a-z0-9]{20,}\\b'
+      #   - '\\b[Mm][Yy][Pp]refix-[a-z0-9]{20,}\\b'
 ```
 
 | Key        | Type     | Default | Description                                                                                                            |
 | ---------- | -------- | ------- | ---------------------------------------------------------------------------------------------------------------------- |
 | `enabled`  | boolean  | `false` | Run the write-path redactor.                                                                                           |
 | `builtins` | boolean  | `true`  | Built-in detectors (Bearer/Basic auth, credential assignments, PEM private keys, common token shapes, JWTs). Ignored when `enabled` is false. |
-| `patterns` | string[] | —       | Extra JS regex **source** strings. Only the `g` flag is applied — do not wrap in `/…/flags`, and do not use Python-style `(?i)` at the start of the pattern (it does not compile in JS). For case-insensitivity use a group modifier such as `(?i:myprefix)`, or spell out character classes. Invalid sources are a config error. Nested-quantifier shapes such as `(a+)+` are rejected (ReDoS). |
+| `patterns` | string[] | —       | Extra JS regex **source** strings. Only the `g` flag is applied — do not wrap in `/…/flags`, and do not use Python-style `(?i)` at the start of the pattern (it does not compile in JS). For case-insensitivity spell out character classes (e.g. `[Mm][Yy][Pp]refix`); RegExp modifier groups like `(?i:…)` need a newer V8 than the repo's Node 22 floor. Invalid sources are a config error. Nested-quantifier shapes such as `(a+)+` are rejected (ReDoS). |
 
 Hooks that do not load YAML yet can enable the same built-ins with
 `RIVETOS_CAPTURE_REDACTION=1` (or `true` / `yes` / `on`). An explicit

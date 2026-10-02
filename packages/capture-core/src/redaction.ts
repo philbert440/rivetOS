@@ -1,21 +1,24 @@
 import type { CaptureMessage, CaptureRedactionOptions } from './types.js'
 
 /**
- * Exact credential key names for tool_args. Substring forms like "author" /
- * "token_count" must not match — fidelity of ordinary fields wins over greedy
- * secret hunting.
+ * Credential key names for tool_args. Exact stems (`password`, `api_key`, …)
+ * plus underscore/hyphen compounds (`SECRET_KEY`, `db_password`). Bare
+ * `key`/`auth` only behind a separator so `author` / `token_count` survive.
  */
-const SECRET_KEY_RE =
-  /^(?:api[_-]?key|access[_-]?token|token|secret|password|passwd|credential|authorization|private[_-]?key|auth_token|client_secret)$/i
+const SECRET_STEM =
+  'api[_-]?key|access[_-]?token|token|secret|password|passwd|credential|authorization|private[_-]?key'
+const SECRET_KEY_RE = new RegExp(
+  `^(?:[\\w-]*[_-](?:${SECRET_STEM}|key|auth)|(?:${SECRET_STEM}|auth_token|client_secret))$`,
+  'i',
+)
 
-/** Credential keywords for assignment forms (word-anchored, not substrings). */
-const ASSIGNMENT_KEY =
-  '(?:api[_-]?key|access[_-]?token|token|secret|password|passwd|credential|authorization|private[_-]?key)'
+/** Assignment stems: same compounds; bare `key`/`auth` only with a prefix. */
+const ASSIGNMENT_KEY = `(?:[\\w-]*[_-](?:${SECRET_STEM}|key|auth)|(?:${SECRET_STEM}))`
 
 /**
- * Operator / builtin regexes only see this many UTF-16 units per string.
- * Matches the den content cap: bytes beyond this are truncated before storage,
- * so scanning further only burns CPU.
+ * Operator / builtin regexes only see this many UTF-16 units on fields the
+ * writer also caps (`content` / `tool_result`). `tool_args` string leaves are
+ * not field-capped, so they are scanned in full (see {@link redactValue}).
  */
 export const REDACT_SCAN_LIMIT = 16_000
 
@@ -199,9 +202,10 @@ function redactTextBody(text: string, resolved: ResolvedCaptureRedaction): Redac
 
 /**
  * Redact a single string; returns the text and how many spans were replaced.
- * Only the first {@link REDACT_SCAN_LIMIT} units are scanned — the same budget
- * the writer keeps after `capMessage` — so operator patterns cannot ReDoS on
- * multi-megabyte tool dumps.
+ * Only the first {@link REDACT_SCAN_LIMIT} units are scanned — matching the
+ * writer's `content` / `tool_result` cap — so operator patterns cannot ReDoS
+ * on multi-megabyte dumps of those fields. For uncapped `tool_args` leaves,
+ * use {@link redactValue} (full scan).
  */
 export function redactText(text: string, resolved: ResolvedCaptureRedaction): RedactionApplyResult {
   if (text.length <= REDACT_SCAN_LIMIT) {
@@ -221,7 +225,9 @@ function redactValue(
   count: number
 } {
   if (typeof value === 'string') {
-    const result = redactText(value, resolved)
+    // tool_args is not field-capped by capMessage; scan the whole string so a
+    // secret past REDACT_SCAN_LIMIT cannot ship or spool in the clear.
+    const result = redactTextBody(value, resolved)
     return { value: result.text, count: result.count }
   }
   if (Array.isArray(value)) {
@@ -239,7 +245,7 @@ function redactValue(
     for (const [key, child] of Object.entries(value as Record<string, unknown>)) {
       // Only string secret values are replaced wholesale. Numbers / nested
       // objects under a secret-shaped key keep structure; nested walk still
-      // redacts string leaves. Exact key match (not substring).
+      // redacts string leaves. Stem or compound key (not bare substrings).
       if (SECRET_KEY_RE.test(key) && typeof child === 'string') {
         out[key] = '[REDACTED:secret_key]'
         count += 1

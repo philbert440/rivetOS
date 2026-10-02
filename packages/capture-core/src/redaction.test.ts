@@ -100,6 +100,25 @@ describe('redactText builtins', () => {
     expect(text).toBe(prose)
   })
 
+  it('redacts underscore-compound assignment names', () => {
+    const sample = [
+      'SECRET_KEY=abc123def456',
+      'db_password: hunter2',
+      'secret_key: s3cr3tvalue',
+      'api_secret: xyzzy12345',
+      'auth_key: zz-top-secret',
+    ].join('\n')
+    const { text, count } = redactText(sample, enabled)
+    expect(count).toBe(5)
+    expect(text).toContain('SECRET_KEY=[REDACTED:assignment]')
+    expect(text).toContain('db_password: [REDACTED:assignment]')
+    expect(text).toContain('secret_key: [REDACTED:assignment]')
+    expect(text).toContain('api_secret: [REDACTED:assignment]')
+    expect(text).toContain('auth_key: [REDACTED:assignment]')
+    expect(text).not.toContain('abc123def456')
+    expect(text).not.toContain('hunter2')
+  })
+
   it('redacts HTTP Basic credentials but not the English word basic', () => {
     const basicAuth = `Basic ${Buffer.from('user:pass-secret-value').toString('base64')}`
     const { text: authText, count: authCount } = redactText(basicAuth, enabled)
@@ -178,12 +197,13 @@ after`
     const textInHead = `${'x'.repeat(100)} ${secret} ${'y'.repeat(100)}`
     const textInTail = `${'x'.repeat(REDACT_SCAN_LIMIT + 10)} ${secret}`
     expect(redactText(textInHead, resolved).text).toContain('[REDACTED:pattern:0]')
-    // Tail past the scan limit is not scanned (matches the den content cap).
+    // Tail past the scan limit is not scanned (matches the content/tool_result cap).
     expect(redactText(textInTail, resolved).text).toContain(secret)
   })
 
   it('compiles the documented case-insensitive pattern example', () => {
-    const source = '\\b(?i:myprefix)-[a-z0-9]{20,}\\b'
+    // Character-class form — works on engines.node >= 22 (no RegExp modifiers).
+    const source = '\\b[Mm][Yy][Pp]refix-[a-z0-9]{20,}\\b'
     expect(() => new RegExp(source, 'g')).not.toThrow()
     const resolved = resolveCaptureRedaction({
       enabled: true,
@@ -245,6 +265,46 @@ describe('redactMessage', () => {
     expect(args.authority).toEqual({ level: 1 })
     expect(args.api_key).toBe('[REDACTED:secret_key]')
     expect(count).toBe(1)
+  })
+
+  it('redacts compound secret key names in tool_args', () => {
+    const message: CaptureMessage = {
+      event_id: 'e4',
+      role: 'tool',
+      content: 'ok',
+      tool_args: {
+        SECRET_KEY: 'django-secret-abc',
+        db_password: 'hunter2',
+        author: 'Jane',
+      },
+    }
+    const { message: next, count } = redactMessage(message, enabled)
+    const args = next.tool_args as Record<string, unknown>
+    expect(args.SECRET_KEY).toBe('[REDACTED:secret_key]')
+    expect(args.db_password).toBe('[REDACTED:secret_key]')
+    expect(args.author).toBe('Jane')
+    expect(count).toBe(2)
+    expect(JSON.stringify(next)).not.toContain('django-secret-abc')
+    expect(JSON.stringify(next)).not.toContain('hunter2')
+  })
+
+  it('scans tool_args string leaves past REDACT_SCAN_LIMIT', () => {
+    const secret = 'AKIAIOSFODNN7EXAMPLE'
+    // Space before the key so \\b can fire; offset past the content scan cap.
+    const body = `${'x'.repeat(REDACT_SCAN_LIMIT + 100)} ${secret}`
+    // content / redactText leave the unscanned tail alone.
+    expect(redactText(body, enabled).text).toContain(secret)
+    const message: CaptureMessage = {
+      event_id: 'e5',
+      role: 'tool',
+      content: 'ok',
+      tool_args: { dump: body },
+    }
+    const { message: next, count } = redactMessage(message, enabled)
+    expect(count).toBeGreaterThan(0)
+    const dump = String((next.tool_args as Record<string, unknown>).dump)
+    expect(dump).toContain('[REDACTED:aws_access_key]')
+    expect(dump).not.toContain(secret)
   })
 
   it('returns the same object reference when nothing matched', () => {
