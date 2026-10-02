@@ -2,9 +2,8 @@
  * Memory, wiki, and delegate tools backed by the local den over HTTPS.
  *
  * Tool names, descriptions, and input schemas match the Postgres factories,
- * except `delegate_task`: den does not parse `agent@node`, so it uses
- * `denDelegateTaskDefinition` (pre-pin description and `to_agent` text).
- * The list footer below stays the pre-pin sentence.
+ * including `delegate_task`: the den's task route resolves `to_agent` with
+ * the same rules (`agent@node` included), so the definition is shared.
  * `execute` returns the den's ToolResult string as-is. Content-part arrays
  * are wrapped the same way `adaptRivetTool` wraps them: a bare array has no
  * `.content`, and the v2 mount would drop it. Postgres pools are not opened.
@@ -215,7 +214,7 @@ function formatCatalogAgents(agents: CatalogAgent[]): string {
   return (
     `${presetText}\n\n` +
     `Runtime agents (mesh):\n${runtimeText}\n\n` +
-    'to_agent accepts a preset name or id, or a runtime agent id.'
+    'to_agent accepts a preset name or id, or a runtime agent id (agent@node pins the node).'
   )
 }
 
