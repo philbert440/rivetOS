@@ -292,8 +292,9 @@ function applyCriteriaPolicy(input: NewTaskInput, policy: CriteriaPolicy): NewTa
 export function createTaskApiRoute(opts: TaskApiOptions): GatewayRoute {
   const { store, waiter } = opts
   const broker = opts.permissionBroker
-  // requestKill does not abort the spawn. Deny at the row transition so a
-  // parked prompt cannot still be allowed after the task is terminal.
+  // Deny at the row transition so a parked prompt cannot still be allowed
+  // after the task is terminal. (The runner aborts the spawn on a kill, but a
+  // finish or a sweep flips the row with the spawn possibly still parked.)
   if (broker && store.onTerminal) {
     store.onTerminal((taskId) => {
       broker.denyPending(taskId, 'task is terminal')

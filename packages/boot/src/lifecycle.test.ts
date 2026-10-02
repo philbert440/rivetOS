@@ -39,7 +39,7 @@ describe('registerShutdownHandlers', () => {
       event: string | symbol,
       listener: (...args: unknown[]) => void,
     ) => {
-      if (event === 'SIGINT' || event === 'SIGTERM') {
+      if (event === 'SIGINT' || event === 'SIGTERM' || event === 'SIGHUP') {
         const list = captured.get(event) ?? []
         list.push(listener as SignalHandler)
         captured.set(event, list)
@@ -54,16 +54,13 @@ describe('registerShutdownHandlers', () => {
     }) as typeof process.exit)
   }
 
-  function fire(signal: 'SIGINT' | 'SIGTERM'): void {
+  function fire(signal: 'SIGINT' | 'SIGTERM' | 'SIGHUP'): void {
     for (const handler of captured.get(signal) ?? []) {
       handler()
     }
   }
 
-  function tracedStop(
-    trace: string[],
-    impl: () => Promise<void>,
-  ): ReturnType<typeof vi.fn> {
+  function tracedStop(trace: string[], impl: () => Promise<void>): ReturnType<typeof vi.fn> {
     return vi.fn(async () => {
       trace.push('stop')
       await impl()
@@ -80,6 +77,25 @@ describe('registerShutdownHandlers', () => {
       await impl()
     })
   }
+
+  it('SIGHUP (a closed terminal) is a shutdown too: it ends in process.exit so exit hooks run', async () => {
+    // Node's default handling of SIGHUP ends the process without emitting
+    // `exit`; detached CLI spawns are killed from an exit hook, so the
+    // lifecycle must turn the signal into a real shutdown.
+    const { pidDir, pidPath } = await makePidDir()
+    const trace: string[] = []
+    stubProcess(trace, pidPath)
+    const runtime = { stop: tracedStop(trace, async () => undefined) }
+    registerShutdownHandlers(runtime as unknown as Runtime, pidDir)
+
+    fire('SIGHUP')
+
+    await vi.waitFor(() => {
+      expect(exitSpy).toHaveBeenCalledTimes(1)
+    })
+    expect(runtime.stop).toHaveBeenCalledTimes(1)
+    expect(exitSpy).toHaveBeenCalledWith(0)
+  })
 
   it('two signals in quick succession run stop, afterStop, pid removal, and exit once', async () => {
     const { pidDir, pidPath } = await makePidDir()

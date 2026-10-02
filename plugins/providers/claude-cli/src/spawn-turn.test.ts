@@ -19,6 +19,7 @@ import {
   apiKeySourceAllowed,
   ClaudeCliTimeoutError,
   KILL_GRACE_MS,
+  killLiveGroups,
   parseAllowedApiKeySources,
   spawnClaudeTurn,
 } from './spawn-turn.js'
@@ -202,6 +203,111 @@ describe('spawnClaudeTurn timeout_ms', () => {
     await rejected
   })
 
+  it('signals the whole process group when it leads one, and sweeps it on exit (#1053)', () => {
+    const { child, sent } = makeFakeChild()
+    const group: Array<[number, NodeJS.Signals]> = []
+    let spawnOpts: { detached?: boolean } | undefined
+    const turn = spawnClaudeTurn(FLAGS, 'hi', {
+      spawn: ((_bin: string, _args: string[], o: { detached?: boolean }) => {
+        spawnOpts = o
+        return child
+      }) as unknown as SpawnFn,
+      killGroup: (pid, signal) => {
+        group.push([pid, signal])
+      },
+    })
+    live.push(turn)
+    // its own group, so MCP servers and tool shells die with it
+    expect(spawnOpts?.detached).toBe(process.platform !== 'win32')
+    turn.kill()
+    expect(group).toEqual([[4242, 'SIGTERM']])
+    expect(sent).toEqual([]) // not a pid-only kill
+    // The CLI exits on SIGTERM; a child of its that ignored it is swept right away.
+    simulateExit(child, null, 'SIGTERM')
+    expect(group).toEqual([
+      [4242, 'SIGTERM'],
+      [4242, 'SIGKILL'],
+    ])
+  })
+
+  it('sweeps the group on exit even when a descendant keeps the pipes open (no close)', () => {
+    const { child } = makeFakeChild()
+    const group: Array<[number, NodeJS.Signals]> = []
+    const turn = spawnClaudeTurn(FLAGS, 'hi', {
+      spawn: (() => child) as unknown as SpawnFn,
+      killGroup: (pid, signal) => {
+        group.push([pid, signal])
+      },
+    })
+    live.push(turn)
+    turn.kill()
+    // The CLI exits, but `close` never comes: something it spawned still holds stdout.
+    child.exitCode = null
+    child.signalCode = 'SIGTERM'
+    child.emit('exit', null, 'SIGTERM')
+    expect(group).toEqual([
+      [4242, 'SIGTERM'],
+      [4242, 'SIGKILL'],
+    ])
+    // let the suite's cleanup see a closed child
+    simulateExit(child, null, 'SIGTERM')
+  })
+
+  it('kills still-live groups when the runtime process exits, and forgets closed ones', () => {
+    const group: Array<[number, NodeJS.Signals]> = []
+    const killGroup = (pid: number, signal: NodeJS.Signals): void => {
+      group.push([pid, signal])
+    }
+    const a = makeFakeChild()
+    a.child.pid = 5001
+    const b = makeFakeChild()
+    b.child.pid = 5002
+    live.push(
+      spawnClaudeTurn(FLAGS, 'hi', { spawn: (() => a.child) as unknown as SpawnFn, killGroup }),
+      spawnClaudeTurn(FLAGS, 'hi', { spawn: (() => b.child) as unknown as SpawnFn, killGroup }),
+    )
+    simulateExit(a.child, 0, null) // finished by itself: no longer tracked
+    killLiveGroups()
+    expect(group).toEqual([[5002, 'SIGKILL']])
+    simulateExit(b.child, null, 'SIGKILL')
+  })
+
+  it('does not sweep a child that exits by itself', () => {
+    const { child } = makeFakeChild()
+    const group: Array<[number, NodeJS.Signals]> = []
+    const turn = spawnClaudeTurn(FLAGS, 'hi', {
+      spawn: (() => child) as unknown as SpawnFn,
+      killGroup: (pid, signal) => {
+        group.push([pid, signal])
+      },
+    })
+    live.push(turn)
+    simulateExit(child, 0, null)
+    expect(group).toEqual([])
+  })
+
+  it('falls back to the pid when the group cannot be signalled', () => {
+    const { child, sent } = makeFakeChild()
+    const turn = spawnClaudeTurn(FLAGS, 'hi', {
+      spawn: (() => child) as unknown as SpawnFn,
+      killGroup: () => {
+        throw new Error('ESRCH')
+      },
+    })
+    live.push(turn)
+    turn.kill()
+    expect(sent).toEqual(['SIGTERM'])
+    simulateExit(child, null, 'SIGTERM')
+  })
+
+  it('never group-signals a fake child when only spawn is injected', () => {
+    const { turn, child, sent } = spawnFakeChild()
+    live.push(turn)
+    turn.kill()
+    expect(sent).toEqual(['SIGTERM'])
+    simulateExit(child, null, 'SIGTERM')
+  })
+
   it('SIGKILLs after KILL_GRACE_MS when SIGTERM is ignored', async () => {
     const timeoutMs = 500
     const { turn, child, sent } = spawnFakeChild({ timeoutMs })
@@ -252,4 +358,48 @@ describe('parseAllowedApiKeySources', () => {
     expect(parseAllowedApiKeySources([1])).toBeUndefined()
     expect(parseAllowedApiKeySources(['apiKeyHelper', ''])).toBeUndefined()
   })
+})
+
+describe('spawnClaudeTurn process group (real process)', () => {
+  it.skipIf(process.platform === 'win32')(
+    "a kill takes the CLI's own children with it (#1053)",
+    async () => {
+      const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'claude-group-'))
+      dirs.push(dir)
+      const pidFile = path.join(dir, 'child.pid')
+      // Stands in for the CLI: starts a long-lived child (an MCP server, a
+      // tool shell), then waits on it.
+      const turn = spawnFake(
+        `#!/usr/bin/env bash\nsleep 60 &\necho $! > "${pidFile}"\ncat > /dev/null\nwait\n`,
+      )
+      const until = async (cond: () => boolean): Promise<void> => {
+        const end = Date.now() + 5_000
+        while (!cond()) {
+          if (Date.now() > end) throw new Error('condition not met within 5s')
+          await new Promise((r) => setTimeout(r, 20))
+        }
+      }
+      await until(() => fs.existsSync(pidFile) && fs.readFileSync(pidFile, 'utf8').trim() !== '')
+      const grandchild = Number(fs.readFileSync(pidFile, 'utf8').trim())
+      // A signalled process whose parent died stays a zombie until PID 1
+      // reaps it, and `kill(pid, 0)` still succeeds on a zombie. On a
+      // container whose init does not reap, that would read as "alive".
+      const alive = (): boolean => {
+        try {
+          process.kill(grandchild, 0)
+        } catch {
+          return false
+        }
+        try {
+          const stat = fs.readFileSync(`/proc/${String(grandchild)}/stat`, 'utf8')
+          return stat.slice(stat.lastIndexOf(')') + 2).charAt(0) !== 'Z'
+        } catch {
+          return true // no procfs (macOS): kill(0) is the only signal we have
+        }
+      }
+      expect(alive()).toBe(true)
+      turn.kill()
+      await until(() => !alive())
+    },
+  )
 })
