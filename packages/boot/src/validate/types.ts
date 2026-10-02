@@ -89,6 +89,7 @@ export const KNOWN_DEN_KEYS = new Set([
   'advertise_mdns',
   'allowed_origins',
   'allowed_hosts',
+  'allowed_harnesses',
 ])
 
 export const KNOWN_DEN_DEVICES_KEYS = new Set([
@@ -390,6 +391,9 @@ export const KNOWN_HEARTBEAT_KEYS = new Set([
   'quiet_hours',
 ])
 
+/** Top-level keys under `memory` (backends + capture options). */
+export const KNOWN_MEMORY_KEYS = new Set(['postgres', 'capture'])
+
 export const KNOWN_MEMORY_POSTGRES_KEYS = new Set([
   'connection_string',
   'embed_endpoint',
@@ -404,6 +408,10 @@ export const KNOWN_MEMORY_EMBEDDED_KEYS = new Set([
   'auto_migrate',
   'max_connections',
 ])
+
+export const KNOWN_MEMORY_CAPTURE_KEYS = new Set(['redaction'])
+
+export const KNOWN_MEMORY_CAPTURE_REDACTION_KEYS = new Set(['enabled', 'builtins', 'patterns'])
 
 /**
  * Keys removed in the phase-0 deletion pass — hard error so stale config

@@ -35,8 +35,9 @@ if [ -f "$RIVETOS_ENV" ]; then
 fi
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
-# Den URL + CA, same discovery as bin/rivet-memory-mcp.sh. A missing CA
-# unsets RIVET_DEN_URL so capture can fall back to Postgres.
+# Den URL + CA, same discovery as bin/rivet-memory-mcp.sh. For an https den
+# URL a missing CA unsets RIVET_DEN_URL so capture can fall back to
+# Postgres; a plain-http URL needs no CA and is kept.
 # shellcheck disable=SC1090
 _rivet_paths=""
 for _rivet_candidate in \

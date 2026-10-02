@@ -40,7 +40,7 @@ import {
   defaultModel,
   effortOptionsFor,
   harnessLabel,
-  installedHarnesses,
+  launchableHarnesses,
   modelOptionsFor,
 } from '../lib/harness-options.js'
 import { rosterCommandFor } from '../lib/harness-chat.js'
@@ -250,8 +250,9 @@ function AgentEditor({
   })
   const registered = harnessesQuery.data?.harnesses
   // Pickers and copies offer only what this node can launch; sheets for an
-  // existing preset's (possibly uninstalled) harness still come from `registered`.
-  const harnesses = useMemo(() => installedHarnesses(registered ?? []), [registered])
+  // existing preset's (possibly uninstalled / disallowed) harness still come
+  // from `registered`.
+  const harnesses = useMemo(() => launchableHarnesses(registered ?? []), [registered])
   const copy =
     duplicate && nodeBaseUrl && !excludedNodes.includes(nodeBaseUrl)
       ? agentCopySeed(

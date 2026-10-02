@@ -75,6 +75,7 @@ import {
   HarnessError,
   SYSTEM_PROMPT_MAX_CHARS,
   decodeSessionIdSegment,
+  formatSessionId,
   parseSessionId,
   type ApprovalDecision,
   type HarnessEvent,
@@ -84,6 +85,7 @@ import {
   type UserTurn,
 } from '@rivetos/types'
 import { isBareNativeUuid } from './alias.js'
+import { harnessNotAllowedMessage } from './allowed.js'
 import type { HarnessCapabilityEvent } from './capabilities.js'
 import { isHarnessId, type HarnessRegistry, type ResolvedSession } from './registry.js'
 import { overlaySessionContext } from '../term/context-window.js'
@@ -243,6 +245,23 @@ export function createHarnessRoutes(opts: {
   /** Stamps `installed` on each `GET /api/harnesses` row (`installed.ts`).
    *  Absent = the field is omitted and clients treat every row as installed. */
   isInstalled?: (harnessId: HarnessId) => boolean
+  /**
+   * Stamps `allowed` on each `GET /api/harnesses` row and refuses fresh
+   * `POST .../sessions` for ids outside the operator allow-list
+   * (`den.allowed_harnesses`). Pass only when a list is configured — presence
+   * alone stamps and gates. Absent = omit the field and allow every
+   * registered harness (opt-in off). A resume body skips the gate only when
+   * `sessionExists` (or the live driver) confirms the named native id — a
+   * never-seen key must not mint an off-list spawn.
+   */
+  isAllowed?: (harnessId: HarnessId) => boolean
+  /**
+   * On-disk / store existence for a native session id of `harnessId`. Used
+   * with the allow-list gate so a fabricated `sessionId`/`nativeSessionId`
+   * cannot skip it. Production wires `harnessSessionExists` via the roster
+   * command; tests inject a stub.
+   */
+  sessionExists?: (harnessId: HarnessId, nativeSessionId: string) => boolean
 }): HarnessRoutes {
   const { registry } = opts
   const log = opts.log ?? ((): void => undefined)
@@ -355,10 +374,13 @@ export function createHarnessRoutes(opts: {
       // Truth the flags before publishing them: a declared-only sheet is how a
       // node with a failed `node-pty` advertises an interrupt it will 501.
       await registry.verifyCapabilities()
-      const { isInstalled } = opts
-      const harnesses = isInstalled
-        ? registry.list().map((d) => ({ ...d, installed: isInstalled(d.harnessId) }))
-        : registry.list()
+      const { isInstalled, isAllowed } = opts
+      const harnesses = registry.list().map((d) => {
+        const row = { ...d } as typeof d & { installed?: boolean; allowed?: boolean }
+        if (isInstalled) row.installed = isInstalled(d.harnessId)
+        if (isAllowed) row.allowed = isAllowed(d.harnessId)
+        return row
+      })
       return json(res, 200, { harnesses })
     }
     const parts: (string | undefined)[] = rest.split('/')
@@ -371,6 +393,8 @@ export function createHarnessRoutes(opts: {
     if (sub === undefined) {
       if (req.method !== 'GET') return json(res, 405, { error: 'method not allowed' })
       await registry.verifyCapabilities(harnessId)
+      // Capabilities only — `installed` / `allowed` live on the list sheet.
+      // Clients must not treat this row as a launchability verdict.
       return json(res, 200, { harnessId, capabilities: driver.capabilities })
     }
     if (sub !== 'sessions') return json(res, 404, { error: 'not found' })
@@ -413,6 +437,41 @@ export function createHarnessRoutes(opts: {
           Object.values(metadata).some((v) => typeof v !== 'string'))
       ) {
         return json(res, 400, { error: 'metadata must be a string map' })
+      }
+      // Fresh creates only. A body that names a real existing session (resume /
+      // reattach) must keep working after the harness leaves the allow-list —
+      // same existence-checked exemption /term uses for `resume`. A
+      // never-seen key must NOT skip the gate and mint an off-list spawn.
+      let resumeNative: string | undefined
+      if (typeof sessionId === 'string' && sessionId.length > 0) {
+        try {
+          const parsed = parseSessionId(sessionId)
+          if (parsed.harnessId === harnessId) resumeNative = parsed.nativeSessionId
+        } catch {
+          // Malformed sessionId — not a resume; gate + later parse both apply.
+        }
+      } else if (typeof nativeSessionId === 'string' && nativeSessionId.length > 0) {
+        resumeNative = nativeSessionId
+      }
+      let resumeExists = false
+      if (resumeNative !== undefined) {
+        if (opts.sessionExists?.(harnessId, resumeNative)) {
+          resumeExists = true
+        } else {
+          try {
+            const pinned = formatSessionId(harnessId, resumeNative)
+            resumeExists = (await driver.getSession(pinned).catch(() => null)) !== null
+          } catch {
+            resumeExists = false
+          }
+        }
+      }
+      if (opts.isAllowed && !resumeExists && !opts.isAllowed(harnessId)) {
+        return json(res, 403, {
+          error: harnessNotAllowedMessage(harnessId),
+          code: 'harness_not_allowed',
+          harnessId,
+        })
       }
       // Client-minted canonical id (immutable session ids, plan W1 stage 1):
       // the control plane ACCEPTS it verbatim — no adoption event, no alias

@@ -179,6 +179,14 @@ export interface TaskHandlerOptions {
    * logged and swallowed: the row is already terminal.
    */
   onTaskFinished?: (taskId: string) => void | Promise<void>
+  /**
+   * Operator allow-list (`den.allowed_harnesses`) on the node that runs the
+   * task. When set, a harness-session claim whose executorTarget is off the
+   * list fails before spawn — covers rows that predate the list, internal
+   * store.create callers, and tasks handed here via nodeAffinity. Absent =
+   * every harness id is allowed (opt-in off).
+   */
+  isHarnessAllowed?: (harnessId: string) => boolean
 }
 
 const HEARTBEAT_INTERVAL_MS_DEFAULT = 30_000
@@ -492,6 +500,26 @@ async function pinPresetDirectory(
 }
 
 async function runClaimedTask(task: TaskRow, opts: TaskHandlerOptions): Promise<void> {
+  // Gate on the RUNNING node: create-time checks on a peer (or rows that
+  // predate the list / internal store.create) never consulted this node's
+  // allow-list. Canonicalize retired targets (`claude-cli` → `claude-code`)
+  // before the probe so pre-list rows match the allow-list vocabulary.
+  // Resume/reattach of interactive sessions is a different path.
+  if (task.executor === 'harness-session' && task.executorTarget && opts.isHarnessAllowed) {
+    const { target: allowedTarget } = canonicalizeExecutorTarget(task.executorTarget)
+    if (allowedTarget && !opts.isHarnessAllowed(allowedTarget)) {
+      const msg = `harness "${allowedTarget}" is not allowed on this node (den.allowed_harnesses)`
+      await finishTerminal(opts, task.id, 'failed', {
+        verdict: 'failed',
+        summary: msg,
+        artifacts: [],
+        usage: ZERO_USAGE,
+        error: `harness_not_allowed: ${msg}`,
+      })
+      return
+    }
+  }
+
   const executor = opts.executors.resolve(task.executor, task.executorTarget)
   if (!executor) {
     await finishTerminal(opts, task.id, 'failed', {
@@ -528,6 +556,9 @@ async function runClaimedTask(task: TaskRow, opts: TaskHandlerOptions): Promise<
     })
   }, opts.heartbeatIntervalMs ?? HEARTBEAT_INTERVAL_MS_DEFAULT)
   heartbeatTimer.unref()
+  // The per-turn kill subscription (see the turn loop). Declared here so the
+  // `finally` below drops it on every exit path, exceptions included.
+  let stopOnKill: (() => void) | undefined
 
   try {
     // Preset rows pin a directory, but the spec is not the source of truth:
@@ -555,6 +586,31 @@ async function runClaimedTask(task: TaskRow, opts: TaskHandlerOptions): Promise<
     // next run's resumeMessage.
     for (;;) {
       const abort = new AbortController()
+      // A kill flips the row and notifies `onTerminal`. Abort the in-flight
+      // turn so the executor stops its process: letting a killed task run to
+      // completion kept spending tokens and running tools after the row said
+      // `killed` (#1053). The result is still recorded as killed below.
+      stopOnKill?.()
+      stopOnKill = opts.store.onTerminal?.((taskId, status) => {
+        if (taskId !== task.id || status !== 'killed' || abort.signal.aborted) return
+        log.info(`Task ${task.id} killed — aborting the in-flight turn`)
+        abort.abort('killed')
+      })
+      // A kill that landed before the subscription (during context resolution
+      // or the preset lookup above) already fired `onTerminal` with nobody
+      // listening. Read the row once now: starting the executor for a task
+      // that is already killed would run a whole spawn for nothing.
+      if ((await opts.store.get(task.id))?.status === 'killed') {
+        log.info(`Task ${task.id} was killed before its turn started — not starting it`)
+        await finishTerminal(opts, task.id, 'killed', {
+          verdict: 'killed',
+          summary: 'killed before the turn started',
+          artifacts: [],
+          usage: totalUsage,
+          error: 'killed',
+        })
+        return
+      }
       const handle = executor.start(
         {
           taskId: task.id,
@@ -607,6 +663,12 @@ async function runClaimedTask(task: TaskRow, opts: TaskHandlerOptions): Promise<
         }
         const runningTotal = addUsage(totalUsage, event.usage)
         await opts.store.updateUsage(task.id, runningTotal)
+        // `onTerminal` fires only on the store instance that wrote the kill.
+        // A kill issued from another node is caught here, at the turn boundary.
+        if (!abort.signal.aborted && (await opts.store.get(task.id))?.status === 'killed') {
+          log.info(`Task ${task.id} killed elsewhere — aborting before the next turn`)
+          abort.abort('killed')
+        }
         // Budget is enforced BETWEEN turns — hard exceed aborts the executor.
         if (!exceededReason) {
           exceededReason = budgetExceeded(task.budget, runningTotal)
@@ -618,28 +680,31 @@ async function runClaimedTask(task: TaskRow, opts: TaskHandlerOptions): Promise<
       }
 
       const result = await handle.result
+      stopOnKill?.()
+      stopOnKill = undefined
       totalUsage = addUsage(totalUsage, result.usage)
       const totalResult: TaskResult = { ...result, usage: totalUsage }
 
-      if (exceededReason) {
-        await finishTerminal(opts, task.id, 'killed', {
-          ...totalResult,
-          verdict: 'budget-exceeded',
-          error: result.error ?? `budget-exceeded: ${exceededReason}`,
-        })
-        return
-      }
-
-      // Kill requested while the turn was in flight (requestKill flips the
-      // row without aborting the executor): record the outcome as killed and
-      // discard the result — legacy subagent "let it finish, drop the
-      // result" semantics.
+      // Kill requested while the turn was in flight: the abort above stopped
+      // the executor (or, for a kill this instance never heard about, the turn
+      // simply ended). Record the outcome as killed and discard the result.
+      // Checked before the budget branch: when a user kill and a budget trip
+      // land in the same turn, the user's kill is the truer verdict.
       const rowAfterTurn = await opts.store.get(task.id)
       if (rowAfterTurn?.status === 'killed') {
         await finishTerminal(opts, task.id, 'killed', {
           ...totalResult,
           verdict: 'killed',
           error: totalResult.error ?? 'killed',
+        })
+        return
+      }
+
+      if (exceededReason) {
+        await finishTerminal(opts, task.id, 'killed', {
+          ...totalResult,
+          verdict: 'budget-exceeded',
+          error: result.error ?? `budget-exceeded: ${exceededReason}`,
         })
         return
       }
@@ -703,11 +768,22 @@ async function runClaimedTask(task: TaskRow, opts: TaskHandlerOptions): Promise<
           continue
         }
       }
+      // A kill that landed after the post-turn read (during a failed park or
+      // the eval block) must not be overwritten by this turn's own verdict.
+      if ((await opts.store.get(task.id))?.status === 'killed') {
+        await finishTerminal(opts, task.id, 'killed', {
+          ...totalResult,
+          verdict: 'killed',
+          error: totalResult.error ?? 'killed',
+        })
+        return
+      }
       await finishTerminal(opts, task.id, verdictToStatus(totalResult), totalResult)
       return
     }
   } finally {
     clearInterval(heartbeatTimer)
+    stopOnKill?.()
   }
 }
 

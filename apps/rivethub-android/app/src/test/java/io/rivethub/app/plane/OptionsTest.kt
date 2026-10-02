@@ -1,6 +1,8 @@
 package io.rivethub.app.plane
 
 import io.rivethub.app.gateway.EffortOption
+import io.rivethub.app.gateway.HarnessCapabilities
+import io.rivethub.app.gateway.HarnessDescriptor
 import io.rivethub.app.gateway.ModelOption
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -49,6 +51,51 @@ class OptionsTest {
         modelFlag = null,
         effortFlag = "--reasoning",
     )
+
+    @Test fun `launchableHarnesses drops installed false and allowed false`() {
+        val rows = listOf(
+            HarnessDescriptor("claude-code", HarnessCapabilities(), installed = true, allowed = true),
+            HarnessDescriptor("hermes", HarnessCapabilities(), installed = true, allowed = false),
+            HarnessDescriptor("codex", HarnessCapabilities(), installed = false, allowed = true),
+            HarnessDescriptor("pi", HarnessCapabilities()),
+        )
+        assertEquals(
+            listOf("claude-code", "pi"),
+            launchableHarnesses(rows).map { it.harnessId },
+        )
+    }
+
+    @Test fun `launchableAgents drops agents whose harness is off the den allow-list`() {
+        val den = "https://den.example:5174"
+        val agents = listOf(
+            AgentRow("a", "Claude", "claude-code", "n1", "node-a", den, null),
+            AgentRow("b", "Hermes", "hermes", "n1", "node-a", den, null),
+            AgentRow("c", "Loop", null, "n1", "node-a", den, null),
+        )
+        val desc = mapOf(
+            den to listOf(
+                HarnessDescriptor("claude-code", HarnessCapabilities(), allowed = true),
+                HarnessDescriptor("hermes", HarnessCapabilities(), allowed = false),
+            ),
+        )
+        assertEquals(
+            listOf("a", "c"),
+            launchableAgents(agents, desc).map { it.agentId },
+        )
+        // No sheet yet → keep every row (older dens / still loading).
+        assertEquals(listOf("a", "b", "c"), launchableAgents(agents, emptyMap()).map { it.agentId })
+        // Key mismatch (trailing slash / host form) → fail-open, same as missing sheet.
+        val mismatched = mapOf(
+            "https://den.example:5174/" to listOf(
+                HarnessDescriptor("claude-code", HarnessCapabilities(), allowed = true),
+                HarnessDescriptor("hermes", HarnessCapabilities(), allowed = false),
+            ),
+        )
+        assertEquals(
+            listOf("a", "b", "c"),
+            launchableAgents(agents, mismatched).map { it.agentId },
+        )
+    }
 
     @Test fun `pill prefers summary model`() {
         assertEquals("fable", rowPillText("fable", "opus", "claude-code"))

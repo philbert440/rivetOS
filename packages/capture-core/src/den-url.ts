@@ -152,7 +152,8 @@ export function resolveDenUrl(
   }
   return {
     denUrl,
-    // The launcher checks CA existence and disables den transport when it is missing.
+    // The launcher checks CA existence for an https URL and disables den
+    // transport when it is missing; a plain-http den needs no CA and is kept.
     caPath:
       env.RIVET_DEN_CA?.trim() ||
       config.tls_ca ||

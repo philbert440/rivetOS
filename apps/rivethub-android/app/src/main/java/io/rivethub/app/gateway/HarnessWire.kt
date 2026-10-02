@@ -67,6 +67,16 @@ data class HarnessCapabilities(
 data class HarnessDescriptor(
     val harnessId: String,
     val capabilities: HarnessCapabilities = HarnessCapabilities(),
+    /**
+     * Roster binary on the den's spawn PATH. Absent (older den) = treat as
+     * installed. Pickers for NEW sessions filter on this with [allowed].
+     */
+    val installed: Boolean? = null,
+    /**
+     * Operator allow-list (`den.allowed_harnesses`). Absent = treat as
+     * allowed. Pickers for NEW sessions filter on this with [installed].
+     */
+    val allowed: Boolean? = null,
 )
 
 @Serializable

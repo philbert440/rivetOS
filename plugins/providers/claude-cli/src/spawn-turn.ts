@@ -31,6 +31,34 @@ import { permissionPromptToolId } from './permission-prompt.js'
  *  Matches `@rivetos/provider-codex-cli`. */
 export const KILL_GRACE_MS = 3_000
 
+/** Process groups of live detached CLI spawns → how to signal each. */
+const liveGroups = new Map<number, (pid: number, signal: NodeJS.Signals) => void>()
+let exitHookInstalled = false
+
+/** SIGKILL every live CLI group. Runs from the process `exit` hook; exported for tests. */
+export function killLiveGroups(): void {
+  for (const [pid, kill] of liveGroups) {
+    try {
+      kill(pid, 'SIGKILL')
+    } catch {
+      /* already gone */
+    }
+  }
+  liveGroups.clear()
+}
+
+function trackLiveGroup(pid: number, kill: (pid: number, signal: NodeJS.Signals) => void): void {
+  liveGroups.set(pid, kill)
+  if (exitHookInstalled) return
+  exitHookInstalled = true
+  // `exit` is emitted only for `process.exit()` or a drained event loop — NOT
+  // for Node's default handling of a signal. The runtime's lifecycle handles
+  // SIGINT, SIGTERM and SIGHUP and ends in `process.exit()`, which is what
+  // makes this hook run on a shutdown. An uncatchable SIGKILL of this process
+  // runs nothing in-process.
+  process.once('exit', killLiveGroups)
+}
+
 /** Thrown from `events()` when `timeoutMs` fires before the child exits. */
 export class ClaudeCliTimeoutError extends Error {
   readonly code = 'timeout' as const
@@ -332,17 +360,52 @@ export function spawnClaudeTurn(
     timeoutMs?: number
     /** Injectable spawner; defaults to `node:child_process.spawn`. */
     spawn?: typeof spawn
+    /**
+     * Signals the child's whole process group. Defaults to
+     * `process.kill(-pid, signal)` for the real spawner on POSIX; with an
+     * injected `spawn` (tests) nothing is group-signalled unless this is
+     * passed too, so a fake pid can never reach a real process group.
+     */
+    killGroup?: (pid: number, signal: NodeJS.Signals) => void
   },
 ): SpawnedTurn {
   const args = buildArgs(flags)
   const timeoutMs = opts?.timeoutMs ?? 0
   const spawnFn = opts?.spawn ?? spawn
 
+  const posix = process.platform !== 'win32'
   const proc = spawnFn(flags.binary, args, {
     env: buildChildEnv(opts?.env),
     cwd: flags.cwd,
     stdio: ['pipe', 'pipe', 'pipe'],
+    // Own process group, so a kill reaches what the CLI spawned (stdio MCP
+    // servers, Bash tool shells, hook workers) and not just the CLI's pid —
+    // those otherwise outlive a killed task (#1053).
+    detached: posix,
   })
+  const killGroup =
+    opts?.killGroup ??
+    (opts?.spawn || !posix
+      ? undefined
+      : (pid: number, signal: NodeJS.Signals): void => {
+          process.kill(-pid, signal)
+        })
+  // Detached means a signal aimed at the runtime's own process group (Ctrl-C
+  // in a terminal, a closed tmux pane) no longer reaches the CLI. Track live
+  // groups and kill them when this process exits, so they do not outlive it.
+  if (killGroup && proc.pid) trackLiveGroup(proc.pid, killGroup)
+  /** Signal the group when we lead one; fall back to the pid. */
+  const signalTree = (signal: NodeJS.Signals): void => {
+    if (killGroup && proc.pid) {
+      try {
+        killGroup(proc.pid, signal)
+        return
+      } catch {
+        /* group already gone, or the child is not a group leader */
+      }
+    }
+    proc.kill(signal)
+  }
 
   // Wire stdin: one user turn as stream-json input, then close.
   const inputLine =
@@ -357,17 +420,19 @@ export function spawnClaudeTurn(
   let timeoutTimer: ReturnType<typeof setTimeout> | undefined
   let timeoutError: ClaudeCliTimeoutError | undefined
   const exited = (): boolean => proc.exitCode !== null || proc.signalCode !== null
+  let killRequested = false
   const armSigkillFallback = (): void => {
     if (killTimer) return
     killTimer = setTimeout(() => {
-      if (!exited()) proc.kill('SIGKILL')
+      if (!exited()) signalTree('SIGKILL')
     }, KILL_GRACE_MS)
     killTimer.unref()
   }
   const kill = (): void => {
     if (exited()) return // already exited (or signalled) — nothing to do
+    killRequested = true
     try {
-      proc.kill('SIGTERM')
+      signalTree('SIGTERM')
     } catch {
       /* already gone */
     }
@@ -404,7 +469,22 @@ export function spawnClaudeTurn(
   // and the executor's `result` must resolve on every terminal path.
   let exitCode: number | null | undefined
   const exitWaiters: Array<(code: number | null) => void> = []
+  // The CLI honored our SIGTERM, but a child of its that ignored it would
+  // linger. Sweep the group when the CLI EXITS, not when its pipes close: a
+  // descendant that inherited stdout keeps `close` from ever firing, so a
+  // sweep there could not run in exactly the case it exists for, and the turn
+  // would hang with the pipe held open. Killing the group here releases the
+  // pipe, and `close` then follows.
+  proc.once('exit', () => {
+    if (!killRequested || !killGroup || !proc.pid) return
+    try {
+      killGroup(proc.pid, 'SIGKILL')
+    } catch {
+      /* nothing left in the group */
+    }
+  })
   proc.once('close', (code) => {
+    if (proc.pid) liveGroups.delete(proc.pid)
     exitCode = code
     if (killTimer) clearTimeout(killTimer)
     if (timeoutTimer) clearTimeout(timeoutTimer)

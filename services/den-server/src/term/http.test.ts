@@ -176,6 +176,40 @@ describe('term endpoints', () => {
     expect(JSON.parse(audit)).toMatchObject({ action: 'spawn', id: pty.id })
   })
 
+  it('POST /term refuses an off-list harness; unset list still spawns; bogus resume does not bypass', async () => {
+    const open = await start()
+    expect((await post(open.base, '/term', { command: 'hermes' })).status).toBe(201)
+
+    const gated = await start({ allowedHarnesses: ['claude-code'] })
+    const refused = await post(gated.base, '/term', { command: 'hermes' })
+    expect(refused.status).toBe(403)
+    expect(((await refused.json()) as { code?: string }).code).toBe('harness_not_allowed')
+    const claudeSpawn = await post(gated.base, '/term', { command: 'claude' })
+    expect(claudeSpawn.status).toBe(201)
+    const claudePty = (await claudeSpawn.json()) as { denSession?: string }
+    // A never-seen resume key must not mint a fresh off-list spawn.
+    const bogus = await post(gated.base, '/term', {
+      command: 'hermes',
+      resume: '00000000-0000-4000-8000-00000000dead',
+    })
+    expect(bogus.status).toBe(403)
+    expect(((await bogus.json()) as { code?: string }).code).toBe('harness_not_allowed')
+    // A live pty from a *different* harness must not exempt an off-list spawn.
+    const cross = await post(gated.base, '/term', {
+      command: 'hermes',
+      resume: claudePty.denSession,
+    })
+    expect(cross.status).toBe(403)
+    expect(((await cross.json()) as { code?: string }).code).toBe('harness_not_allowed')
+    expect(gated.spawns.filter((s) => s.argv[0] === 'hermes')).toHaveLength(0)
+
+    const cfg = (await (await fetch(`${gated.base}/term/config`)).json()) as {
+      commands: { id: string }[]
+    }
+    expect(cfg.commands.map((c) => c.id)).toContain('claude')
+    expect(cfg.commands.map((c) => c.id)).not.toContain('hermes')
+  })
+
   it('clamps cols/rows into sane terminal bounds', async () => {
     const { base, spawns } = await start()
     await post(base, '/term', { command: 'shell', cols: 10_000, rows: 1 })
@@ -630,7 +664,8 @@ describe('term endpoints', () => {
       JSON.stringify({
         ownerUserId: 'owner',
         unmappedIsOwner: false,
-        users: { owner: { devices: [], pgUrl: 'postgres://owner@db/rivet_memory' },
+        users: {
+          owner: { devices: [], pgUrl: 'postgres://owner@db/rivet_memory' },
           alice: { devices: ['win-alice'], pgUrl: 'postgres://alice@db/alice' },
         },
       }),
@@ -693,17 +728,21 @@ describe('term endpoints', () => {
       }),
     )
     expect(usersRegistry).toBeDefined()
-    const { base, spawns } = await start({ stateDir, usersRegistry }, { mux: 'none' }, {
-      delegatedSessions: async () => [
-        {
-          taskId: 'task-1',
-          spawnedSessionId: child,
-          parentSessionId: `claude-code:${parent}`,
-          owner: 'alice',
-          harnessId: 'claude-code',
-        },
-      ],
-    })
+    const { base, spawns } = await start(
+      { stateDir, usersRegistry },
+      { mux: 'none' },
+      {
+        delegatedSessions: async () => [
+          {
+            taskId: 'task-1',
+            spawnedSessionId: child,
+            parentSessionId: `claude-code:${parent}`,
+            owner: 'alice',
+            harnessId: 'claude-code',
+          },
+        ],
+      },
+    )
     const res = await post(base, '/term', { command: 'shell', resume: child })
     expect(res.status).toBe(403)
     expect(spawns).toHaveLength(0)
