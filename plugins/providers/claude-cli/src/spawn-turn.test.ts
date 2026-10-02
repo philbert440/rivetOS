@@ -19,6 +19,7 @@ import {
   apiKeySourceAllowed,
   ClaudeCliTimeoutError,
   KILL_GRACE_MS,
+  killLiveGroups,
   parseAllowedApiKeySources,
   spawnClaudeTurn,
 } from './spawn-turn.js'
@@ -250,6 +251,25 @@ describe('spawnClaudeTurn timeout_ms', () => {
     ])
     // let the suite's cleanup see a closed child
     simulateExit(child, null, 'SIGTERM')
+  })
+
+  it('kills still-live groups when the runtime process exits, and forgets closed ones', () => {
+    const group: Array<[number, NodeJS.Signals]> = []
+    const killGroup = (pid: number, signal: NodeJS.Signals): void => {
+      group.push([pid, signal])
+    }
+    const a = makeFakeChild()
+    a.child.pid = 5001
+    const b = makeFakeChild()
+    b.child.pid = 5002
+    live.push(
+      spawnClaudeTurn(FLAGS, 'hi', { spawn: (() => a.child) as unknown as SpawnFn, killGroup }),
+      spawnClaudeTurn(FLAGS, 'hi', { spawn: (() => b.child) as unknown as SpawnFn, killGroup }),
+    )
+    simulateExit(a.child, 0, null) // finished by itself: no longer tracked
+    killLiveGroups()
+    expect(group).toEqual([[5002, 'SIGKILL']])
+    simulateExit(b.child, null, 'SIGKILL')
   })
 
   it('does not sweep a child that exits by itself', () => {

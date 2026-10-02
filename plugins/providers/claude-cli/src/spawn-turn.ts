@@ -31,6 +31,32 @@ import { permissionPromptToolId } from './permission-prompt.js'
  *  Matches `@rivetos/provider-codex-cli`. */
 export const KILL_GRACE_MS = 3_000
 
+/** Process groups of live detached CLI spawns → how to signal each. */
+const liveGroups = new Map<number, (pid: number, signal: NodeJS.Signals) => void>()
+let exitHookInstalled = false
+
+/** SIGKILL every live CLI group. Runs from the process `exit` hook; exported for tests. */
+export function killLiveGroups(): void {
+  for (const [pid, kill] of liveGroups) {
+    try {
+      kill(pid, 'SIGKILL')
+    } catch {
+      /* already gone */
+    }
+  }
+  liveGroups.clear()
+}
+
+function trackLiveGroup(pid: number, kill: (pid: number, signal: NodeJS.Signals) => void): void {
+  liveGroups.set(pid, kill)
+  if (exitHookInstalled) return
+  exitHookInstalled = true
+  // `exit` runs for a normal exit and for the default handling of SIGINT /
+  // SIGTERM / SIGHUP once Node turns them into an exit; it cannot run for an
+  // uncatchable SIGKILL of this process (nothing in-process can).
+  process.once('exit', killLiveGroups)
+}
+
 /** Thrown from `events()` when `timeoutMs` fires before the child exits. */
 export class ClaudeCliTimeoutError extends Error {
   readonly code = 'timeout' as const
@@ -338,6 +364,10 @@ export function spawnClaudeTurn(
       : (pid: number, signal: NodeJS.Signals): void => {
           process.kill(-pid, signal)
         })
+  // Detached means a signal aimed at the runtime's own process group (Ctrl-C
+  // in a terminal, a closed tmux pane) no longer reaches the CLI. Track live
+  // groups and kill them when this process exits, so they do not outlive it.
+  if (killGroup && proc.pid) trackLiveGroup(proc.pid, killGroup)
   /** Signal the group when we lead one; fall back to the pid. */
   const signalTree = (signal: NodeJS.Signals): void => {
     if (killGroup && proc.pid) {
@@ -428,6 +458,7 @@ export function spawnClaudeTurn(
     }
   })
   proc.once('close', (code) => {
+    if (proc.pid) liveGroups.delete(proc.pid)
     exitCode = code
     if (killTimer) clearTimeout(killTimer)
     if (timeoutTimer) clearTimeout(timeoutTimer)

@@ -655,24 +655,26 @@ async function runClaimedTask(task: TaskRow, opts: TaskHandlerOptions): Promise<
       totalUsage = addUsage(totalUsage, result.usage)
       const totalResult: TaskResult = { ...result, usage: totalUsage }
 
-      if (exceededReason) {
-        await finishTerminal(opts, task.id, 'killed', {
-          ...totalResult,
-          verdict: 'budget-exceeded',
-          error: result.error ?? `budget-exceeded: ${exceededReason}`,
-        })
-        return
-      }
-
       // Kill requested while the turn was in flight: the abort above stopped
       // the executor (or, for a kill this instance never heard about, the turn
       // simply ended). Record the outcome as killed and discard the result.
+      // Checked before the budget branch: when a user kill and a budget trip
+      // land in the same turn, the user's kill is the truer verdict.
       const rowAfterTurn = await opts.store.get(task.id)
       if (rowAfterTurn?.status === 'killed') {
         await finishTerminal(opts, task.id, 'killed', {
           ...totalResult,
           verdict: 'killed',
           error: totalResult.error ?? 'killed',
+        })
+        return
+      }
+
+      if (exceededReason) {
+        await finishTerminal(opts, task.id, 'killed', {
+          ...totalResult,
+          verdict: 'budget-exceeded',
+          error: result.error ?? `budget-exceeded: ${exceededReason}`,
         })
         return
       }
@@ -735,6 +737,16 @@ async function runClaimedTask(task: TaskRow, opts: TaskHandlerOptions): Promise<
           await opts.store.stashEvalRetry(task.id, evalAttempts, resumeMessage)
           continue
         }
+      }
+      // A kill that landed after the post-turn read (during a failed park or
+      // the eval block) must not be overwritten by this turn's own verdict.
+      if ((await opts.store.get(task.id))?.status === 'killed') {
+        await finishTerminal(opts, task.id, 'killed', {
+          ...totalResult,
+          verdict: 'killed',
+          error: totalResult.error ?? 'killed',
+        })
+        return
       }
       await finishTerminal(opts, task.id, verdictToStatus(totalResult), totalResult)
       return
