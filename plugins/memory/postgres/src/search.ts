@@ -20,6 +20,13 @@
 
 import pg from 'pg'
 import {
+  buildEmbedRequest,
+  normalizeEmbedVector,
+  parseEmbedResponse,
+  type EmbedWireShape,
+  type TokenSource,
+} from '@rivetos/token-command'
+import {
   W_FTS,
   W_SEMANTIC,
   W_TEMPORAL,
@@ -187,6 +194,14 @@ export interface SearchEngineConfig {
   embedTimeoutMs?: number | string
   /** Per-query hnsw.ef_search (default 100, clamp 10..1000). */
   hnswEfSearch?: number | string
+  /** Static bearer for the embed endpoint (when no tokenSource). */
+  embedApiKey?: string
+  /** TTL-cached mint source; wins over embedApiKey when set. */
+  embedTokenSource?: TokenSource
+  /** openai (default) or native passthrough. */
+  embedWireShape?: EmbedWireShape
+  /** When set, reject vectors shorter than this; slice longer ones. */
+  embedExpectedDims?: number
 }
 
 // ---------------------------------------------------------------------------
@@ -246,15 +261,6 @@ interface ChunkCandidateRow extends CandidateRow {
   chunk_char_end: number
   chunk_idx: number
   chunk_count?: string | number | null
-}
-
-interface EmbedResponseItem {
-  embedding?: number[]
-  index?: number
-}
-
-interface EmbedResponse {
-  data?: EmbedResponseItem[]
 }
 
 // ---------------------------------------------------------------------------
@@ -563,6 +569,10 @@ export class SearchEngine {
   private embedQueryInstruction: string
   private embedTimeoutMs: number
   private hnswEfSearch: number
+  private embedApiKey: string
+  private embedTokenSource: TokenSource | undefined
+  private embedWireShape: EmbedWireShape
+  private embedExpectedDims: number | undefined
   private queryEmbedCache = new QueryEmbedCache()
   private vectorArmDroppedTotal = 0
   /** 60 one-minute buckets; index = epochMinute % 60. Bounded last-hour count. */
@@ -595,6 +605,10 @@ export class SearchEngine {
         : config.embedQueryInstruction
     this.embedTimeoutMs = clampEmbedTimeoutMs(config?.embedTimeoutMs)
     this.hnswEfSearch = clampHnswEfSearch(config?.hnswEfSearch)
+    this.embedApiKey = config?.embedApiKey ?? ''
+    this.embedTokenSource = config?.embedTokenSource
+    this.embedWireShape = config?.embedWireShape ?? 'openai'
+    this.embedExpectedDims = config?.embedExpectedDims
   }
 
   getRuntimeStats(): SearchRuntimeStats {
@@ -1330,42 +1344,62 @@ export class SearchEngine {
       healthProbe ? Math.min(this.embedTimeoutMs, 5000) : this.embedTimeoutMs,
     )
     try {
-      const response = await fetch(`${this.embedEndpoint}/v1/embeddings`, {
+      const { url, body } = buildEmbedRequest({
+        endpoint: this.embedEndpoint,
+        wireShape: this.embedWireShape,
+        model: this.embedModel,
+        input: [applyEmbedQueryInstruction(this.embedQueryInstruction, normalized)],
+      })
+      const headers: Record<string, string> = { 'Content-Type': 'application/json' }
+      let sentToken: string | undefined
+      if (this.embedTokenSource) {
+        sentToken = await this.embedTokenSource.getToken()
+        headers.Authorization = `Bearer ${sentToken}`
+      } else if (this.embedApiKey) {
+        headers.Authorization = `Bearer ${this.embedApiKey}`
+      }
+
+      let response = await fetch(url, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          input: [applyEmbedQueryInstruction(this.embedQueryInstruction, normalized)],
-          model: this.embedModel,
-        }),
+        headers,
+        body: JSON.stringify(body),
         signal: controller.signal,
       })
+
+      if (response.status === 401 && this.embedTokenSource && sentToken !== undefined) {
+        // Pass the token actually sent — getCachedToken() can already be a newer mint.
+        this.embedTokenSource.invalidate(sentToken)
+        sentToken = await this.embedTokenSource.getToken()
+        headers.Authorization = `Bearer ${sentToken}`
+        response = await fetch(url, {
+          method: 'POST',
+          headers,
+          body: JSON.stringify(body),
+          signal: controller.signal,
+        })
+      }
 
       const elapsedMs = Date.now() - started
       if (!response.ok) {
         return { vec: null, reason: `http ${String(response.status)}`, elapsedMs }
       }
 
-      let data: EmbedResponse
+      let data: unknown
       try {
-        data = (await response.json()) as EmbedResponse
+        data = await response.json()
       } catch {
         return { vec: null, reason: 'bad response', elapsedMs }
       }
-      const vec = data.data?.[0]?.embedding
-      if (
-        !vec ||
-        !Array.isArray(vec) ||
-        vec.length === 0 ||
-        !vec.every((n) => typeof n === 'number' && Number.isFinite(n))
-      ) {
+      const { vectors } = parseEmbedResponse(data, 1)
+      // Truncate to pgvector halfvec max (4000 dims) unless expectedDims set.
+      const EMBED_DIMS = 4000
+      const clipped = normalizeEmbedVector(vectors[0], {
+        expectedDims: this.embedExpectedDims,
+        truncateDims: EMBED_DIMS,
+      })
+      if (!clipped) {
         return { vec: null, reason: 'empty vector', elapsedMs }
       }
-
-      // Truncate to pgvector halfvec max (4000 dims). Nemotron returns 4096
-      // natively; stored rows are sliced to 4000 by the embedding worker.
-      // Must match to avoid "different halfvec dimensions" errors on <=>.
-      const EMBED_DIMS = 4000
-      const clipped = vec.length > EMBED_DIMS ? vec.slice(0, EMBED_DIMS) : vec
       if (!healthProbe) this.queryEmbedCache.set(cacheKey, clipped, Date.now())
       return { vec: clipped, elapsedMs }
     } catch (err: unknown) {

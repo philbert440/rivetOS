@@ -3,9 +3,10 @@
  * prompt caching, reasoning effort mapping, and aiSdkBridge tool building.
  */
 
-import { describe, it, expect, vi, beforeEach } from 'vitest'
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import type { Message, ChatOptions, ThinkingLevel } from '@rivetos/types'
 import { XAIProvider } from './index.js'
+import { createTokenSource } from '@rivetos/token-command'
 
 describe('XAIProvider', () => {
   let provider: XAIProvider
@@ -383,6 +384,48 @@ describe('XAIProvider', () => {
 
       const available = await provider.isAvailable()
       expect(available).toBe(false)
+    })
+  })
+
+  describe('token_command', () => {
+    afterEach(() => {
+      vi.restoreAllMocks()
+      vi.unstubAllGlobals()
+    })
+
+    it('without tokenSource, isAvailable uses the static apiKey', async () => {
+      const fetchMock = vi.fn().mockResolvedValue(new Response('ok', { status: 200 }))
+      vi.stubGlobal('fetch', fetchMock)
+      const p = new XAIProvider({
+        apiKey: 'static-key',
+        baseUrl: 'https://example.test/v1',
+      })
+      expect(await p.isAvailable()).toBe(true)
+      const init = fetchMock.mock.calls[0][1] as RequestInit
+      expect(new Headers(init.headers).get('Authorization')).toBe('Bearer static-key')
+    })
+
+    it('with tokenSource, isAvailable remints once on 401', async () => {
+      let n = 0
+      const tokenSource = createTokenSource({
+        argv: ['helper'],
+        runCommand: async () => `tok-${++n}`,
+      })
+      const fetchMock = vi.fn(async (_url: string, init?: RequestInit) => {
+        const auth = new Headers(init?.headers).get('Authorization')
+        if (auth === 'Bearer tok-1') return new Response('nope', { status: 401 })
+        return new Response('ok', { status: 200 })
+      })
+      vi.stubGlobal('fetch', fetchMock)
+
+      const p = new XAIProvider({
+        apiKey: 'ignored',
+        baseUrl: 'https://example.test/v1',
+        tokenSource,
+      })
+      expect(await p.isAvailable()).toBe(true)
+      expect(fetchMock).toHaveBeenCalledTimes(2)
+      expect(n).toBe(2)
     })
   })
 })

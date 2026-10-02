@@ -28,6 +28,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   (chat append works); HTTP `/api/capture` and memory MCP/HTTP tool parity remain Postgres-gated
   and are deferred with vectors, compaction, wiki, multi-user routing, and Postgres import/export.
 
+### Providers and embeddings — `token_command`, wire-shape, model catalog
+
+- New leaf package `@rivetos/token-command`: argv-only bearer mint with TTL cache and invalidate-on-401 (`createTokenSource`, `createAuthorizedFetch`), embeddings wire-shape helpers (`openai` / `native`), and a model catalog with a static floor plus background endpoint refresh. Dual-consume leaf (no `"type": "module"`, same shape as `@rivetos/types`) so CJS-compiled plugins can import it.
+- Providers `anthropic`, `xai`, `vllm`, and `llama-server` accept optional `token_command` / `token_ttl_ms` / `token_command_timeout_ms`. Unset keeps today's static `api_key` path. When set, the mint wins over `api_key`, is never logged, and AI SDK / availability probes remint once on HTTP 401.
+- `vllm` and `llama-server` accept optional `models` (static floor) and `models_ttl_ms`; `listModels()` returns floor + discovered ids from the models endpoint (last-known on outage). Building block: no den-server / web roster consumer reads the merge yet.
+- Embedding worker and `memory.postgres` query-time embed support `embed_api_key` / `embed_token_command`, `embed_wire_shape` (`openai` default, or `native` passthrough), and optional `embed_expected_dims` (must equal the `halfvec(1024)` column width when set; longer vectors null out rather than silent-slice). Worker env: `RIVETOS_EMBED_API_KEY`, `RIVETOS_EMBED_TOKEN_COMMAND` (JSON argv), `RIVETOS_EMBED_WIRE_SHAPE`, `RIVETOS_EMBED_EXPECTED_DIMS`. No `OPENAI_API_KEY` fallback (opt-in only).
+- Config validation and `docs/CONFIG-REFERENCE.md` cover the new keys. Opt-in: with these keys unset, behaviour is unchanged.
+
 ### Den URL guards
 
 - A plain-http den URL is no longer dropped when the CA file is missing. `rivetos_resolve_den` unset `RIVET_DEN_URL` whenever the CA path did not exist, including for `http://` URLs that never use a CA, so on a den without TLS and a node with no shared CA the hooks and sidecars lost the den and fell back or spooled. The CA check (and the `NODE_EXTRA_CA_CERTS` export) now apply only to URLs that are not `http://`. One trade to know: a stale `http://` line left in `~/.rivetos/.env` on a node with no den at all used to be dropped by that same check and is now kept, so captures would target the dead port instead of falling back; `rivetos doctor` reports a preset `RIVET_DEN_URL`. An http loopback URL only reaches that point when the den really serves http: the https rewrite for a TLS den runs first (#1053).

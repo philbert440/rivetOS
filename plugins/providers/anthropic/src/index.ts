@@ -13,6 +13,12 @@ import type { ProviderAiSdkBridge } from '@rivetos/aisdk'
 import type { JSONObject } from '@ai-sdk/provider'
 import type { LanguageModel } from 'ai'
 import { createAnthropic } from '@ai-sdk/anthropic'
+import {
+  createAuthorizedFetch,
+  createTokenSource,
+  parseTokenCommandArgv,
+  type TokenSource,
+} from '@rivetos/token-command'
 
 import type { AnthropicAiSdkContext } from './chat-stream-aisdk.js'
 
@@ -45,6 +51,8 @@ export interface AnthropicProviderConfig {
   contextWindow?: number
   /** Max output tokens (0 = unknown) */
   maxOutputTokens?: number
+  /** Optional TTL-cached token mint; preferred over static apiKey when set. */
+  tokenSource?: TokenSource
 }
 
 // ---------------------------------------------------------------------------
@@ -60,6 +68,7 @@ export class AnthropicProvider implements Provider {
   private baseUrl: string
   private contextWindow: number
   private outputTokenLimit: number
+  private tokenSource: TokenSource | undefined
 
   constructor(config: AnthropicProviderConfig) {
     if (!config.model) {
@@ -77,6 +86,7 @@ export class AnthropicProvider implements Provider {
     this.baseUrl = config.baseUrl ?? 'https://api.anthropic.com'
     this.contextWindow = config.contextWindow ?? 0
     this.outputTokenLimit = config.maxOutputTokens ?? 0
+    this.tokenSource = config.tokenSource
   }
 
   getModel(): string {
@@ -97,11 +107,15 @@ export class AnthropicProvider implements Provider {
 
   private buildAiSdkContext(): AnthropicAiSdkContext {
     return {
-      apiKey: this.apiKey,
+      apiKey: this.tokenSource?.getCachedToken() ?? this.apiKey,
       baseUrl: this.baseUrl,
       defaultModel: this.model,
       maxTokens: this.maxTokens,
     }
+  }
+
+  private resolveApiKey(): string {
+    return this.tokenSource?.getCachedToken() ?? this.apiKey
   }
 
   // -----------------------------------------------------------------------
@@ -112,8 +126,16 @@ export class AnthropicProvider implements Provider {
     return {
       getModel: ({ modelOverride }): LanguageModel => {
         const provider = createAnthropic({
-          apiKey: this.apiKey,
+          apiKey: this.resolveApiKey(),
           baseURL: `${this.baseUrl}/v1`,
+          ...(this.tokenSource
+            ? {
+                fetch: createAuthorizedFetch({
+                  tokenSource: this.tokenSource,
+                  headerName: 'x-api-key',
+                }),
+              }
+            : {}),
         })
         return provider(modelOverride ?? this.model)
       },
@@ -145,22 +167,45 @@ export class AnthropicProvider implements Provider {
     }
   }
 
+  private async authHeaders(token?: string): Promise<Record<string, string>> {
+    if (this.tokenSource) {
+      const resolved = token ?? (await this.tokenSource.getToken())
+      return {
+        'Content-Type': 'application/json',
+        'x-api-key': resolved,
+        'anthropic-version': '2023-06-01',
+      }
+    }
+    return {
+      'Content-Type': 'application/json',
+      'x-api-key': this.apiKey,
+      'anthropic-version': '2023-06-01',
+    }
+  }
+
   async isAvailable(): Promise<boolean> {
     try {
-      const res = await fetch(`${this.baseUrl}/v1/messages`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'x-api-key': this.apiKey,
-          'anthropic-version': '2023-06-01',
-        },
-        body: JSON.stringify({
-          model: this.model,
-          max_tokens: 16,
-          messages: [{ role: 'user', content: 'ping' }],
-          stream: false,
-        }),
+      const body = JSON.stringify({
+        model: this.model,
+        max_tokens: 16,
+        messages: [{ role: 'user', content: 'ping' }],
+        stream: false,
       })
+      // Capture the token actually sent so a staggered 401 cannot wipe a newer mint.
+      const sentToken = this.tokenSource ? await this.tokenSource.getToken() : undefined
+      let res = await fetch(`${this.baseUrl}/v1/messages`, {
+        method: 'POST',
+        headers: await this.authHeaders(sentToken),
+        body,
+      })
+      if (res.status === 401 && this.tokenSource && sentToken !== undefined) {
+        this.tokenSource.invalidate(sentToken)
+        res = await fetch(`${this.baseUrl}/v1/messages`, {
+          method: 'POST',
+          headers: await this.authHeaders(),
+          body,
+        })
+      }
       return res.ok || res.status === 429
     } catch {
       return false
@@ -178,7 +223,24 @@ export const manifest: PluginManifest = {
   register(ctx) {
     const cfg = ctx.pluginConfig ?? {}
     const apiKey = (cfg.api_key as string | undefined) ?? ctx.env.ANTHROPIC_API_KEY ?? ''
-    if (!apiKey) {
+
+    let tokenSource: TokenSource | undefined
+    const parsed = parseTokenCommandArgv(cfg.token_command)
+    if (typeof parsed === 'string') {
+      ctx.logger.warn(parsed)
+    } else if (parsed) {
+      tokenSource = createTokenSource({
+        argv: parsed,
+        ttlMs: cfg.token_ttl_ms as number | undefined,
+        timeoutMs: cfg.token_command_timeout_ms as number | undefined,
+      })
+      void tokenSource.getToken().catch((err: unknown) => {
+        const msg = err instanceof Error ? err.message : String(err)
+        ctx.logger.warn(`token_command warm failed: ${msg}`)
+      })
+    }
+
+    if (!apiKey && !tokenSource) {
       ctx.logger.warn(
         'No Anthropic API key found. Set ANTHROPIC_API_KEY or providers.anthropic.api_key',
       )
@@ -190,6 +252,7 @@ export const manifest: PluginManifest = {
         maxTokens: cfg.max_tokens as number | undefined,
         contextWindow: cfg.context_window as number | undefined,
         maxOutputTokens: cfg.max_output_tokens as number | undefined,
+        tokenSource,
       }),
     )
   },

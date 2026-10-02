@@ -547,6 +547,45 @@ describe('Config Validation', () => {
         )
       }
     })
+
+    it('accepts token_command argv and rejects a shell string', () => {
+      const cfg = validConfig()
+      ;(cfg.providers as Record<string, Record<string, unknown>>).anthropic.token_command = [
+        '/usr/local/bin/mint-token',
+      ]
+      assertValid(validateConfig(cfg))
+
+      ;(cfg.providers as Record<string, Record<string, unknown>>).anthropic.token_command =
+        'mint-token --out'
+      const result = validateConfig(cfg)
+      assertError(result, 'providers.anthropic.token_command', 'argv array')
+    })
+
+    it('warns when both api_key and token_command are set', () => {
+      const cfg = validConfig()
+      ;(cfg.providers as Record<string, Record<string, unknown>>).anthropic.api_key =
+        '${ANTHROPIC_API_KEY}'
+      ;(cfg.providers as Record<string, Record<string, unknown>>).anthropic.token_command = [
+        '/usr/local/bin/mint-token',
+      ]
+      const result = validateConfig(cfg)
+      assertWarning(result, 'providers.anthropic.token_command', 'token_command wins')
+    })
+
+    it('accepts vllm models floor without unknown-key warning', () => {
+      const cfg = validConfig()
+      ;(cfg.providers as Record<string, unknown>).vllm = {
+        base_url: 'http://127.0.0.1:8000',
+        model: 'default',
+        models: ['served-a'],
+        models_ttl_ms: 30_000,
+        token_command: ['/usr/local/bin/mint-token'],
+      }
+      const result = validateConfig(cfg)
+      assertValid(result)
+      const unknown = result.warnings.filter((w) => w.message.includes('Unknown key'))
+      assert.equal(unknown.length, 0)
+    })
   })
 
   // =========================================================================
@@ -753,6 +792,70 @@ describe('Config Validation', () => {
       const cfg = validConfig()
       cfg.memory = { postgres: { embed_model: 'nemotron' } }
       assertValid(validateConfig(cfg))
+    })
+
+    it('accepts embed_token_command and embed_wire_shape', () => {
+      const cfg = validConfig()
+      cfg.memory = {
+        postgres: {
+          embed_endpoint: 'http://127.0.0.1:9401',
+          embed_model: 'text-embedding-3-small',
+          embed_token_command: ['/usr/local/bin/mint-embed-token'],
+          embed_wire_shape: 'native',
+          embed_expected_dims: 1024,
+        },
+      }
+      assertValid(validateConfig(cfg))
+    })
+
+    it('warns when both embed_api_key and embed_token_command are set', () => {
+      const cfg = validConfig()
+      cfg.memory = {
+        postgres: {
+          embed_api_key: '${RIVETOS_EMBED_API_KEY}',
+          embed_token_command: ['/usr/local/bin/mint-embed-token'],
+        },
+      }
+      const result = validateConfig(cfg)
+      assertWarning(result, 'memory.postgres.embed_token_command', 'embed_token_command wins')
+    })
+
+    it('rejects embed_expected_dims that do not match the halfvec column width', () => {
+      const cfg = validConfig()
+      cfg.memory = {
+        postgres: {
+          embed_expected_dims: 4096,
+        },
+      }
+      const result = validateConfig(cfg)
+      assertError(result, 'memory.postgres.embed_expected_dims', 'column width')
+    })
+
+    it('does not validate token_command on providers that ignore it', () => {
+      const cfg = validConfig()
+      ;(cfg.providers as Record<string, unknown>).google = {
+        model: 'gemini-2.0-flash',
+        api_key: '${GOOGLE_API_KEY}',
+        token_command: ['/usr/local/bin/mint-token'],
+      }
+      const result = validateConfig(cfg)
+      // Unknown-key warning is fine; must not claim "token_command wins".
+      const wins = result.warnings.filter((w) => w.message.includes('token_command wins'))
+      assert.equal(wins.length, 0)
+      assert.equal(result.errors.length, 0)
+    })
+
+    it('rejects bad embed_wire_shape and shell-string embed_token_command', () => {
+      const cfg = validConfig()
+      cfg.memory = {
+        postgres: {
+          embed_wire_shape: 'grpc',
+          embed_token_command: 'mint --token',
+        },
+      }
+      const result = validateConfig(cfg)
+      assertError(result, 'memory.postgres.embed_wire_shape', 'openai')
+      assertError(result, 'memory.postgres.embed_token_command', 'argv array')
     })
 
     it('accepts embedded with defaults', () => {

@@ -13,6 +13,7 @@
     "clean": "rm -rf dist"
   },
   "dependencies": {
+    "@rivetos/token-command": "0.5.0",
     "graphile-worker": "^0.17.3"
   },
   "devDependencies": {

@@ -206,15 +206,18 @@ providers:
     max_tokens: 8192
 ```
 
-| Key                 | Type   | Default                | Description                                                         |
-| ------------------- | ------ | ---------------------- | ------------------------------------------------------------------- |
-| `model`             | string | `claude-opus-4-7`      | Model identifier.                                                   |
-| `max_tokens`        | number | `8192`                 | Maximum output tokens.                                              |
-| `api_key`           | string | `${ANTHROPIC_API_KEY}` | API key. Prefer env var.                                            |
-| `context_window`    | number | —                      | Override the model's context-window size (advanced; for budgeting). |
-| `max_output_tokens` | number | —                      | Hard cap on output tokens, independent of `max_tokens`.             |
+| Key                        | Type     | Default                | Description                                                                |
+| -------------------------- | -------- | ---------------------- | -------------------------------------------------------------------------- |
+| `model`                    | string   | `claude-opus-4-7`      | Model identifier.                                                          |
+| `max_tokens`               | number   | `8192`                 | Maximum output tokens.                                                     |
+| `api_key`                  | string   | `${ANTHROPIC_API_KEY}` | API key. Prefer env var.                                                   |
+| `token_command`            | string[] | —                      | Argv that prints a bearer token on stdout (no shell). Wins over `api_key`. |
+| `token_ttl_ms`             | number   | `300000`               | Cache lifetime for a minted token.                                         |
+| `token_command_timeout_ms` | number   | `5000`                 | Mint timeout; the helper is SIGKILL'd on expiry.                           |
+| `context_window`           | number   | —                      | Override the model's context-window size (advanced; for budgeting).        |
+| `max_output_tokens`        | number   | —                      | Hard cap on output tokens, independent of `max_tokens`.                    |
 
-**Auth:** Set `ANTHROPIC_API_KEY` in `.env`. For subscription/OAuth auth instead of an API key, use the `claude-cli` provider (below), which delegates auth to the `claude` binary.
+**Auth:** Set `ANTHROPIC_API_KEY` in `.env`, or set `token_command` to an argv helper that mints a short-lived token (cached, reminted on expiry or HTTP 401). For subscription/OAuth auth instead of an API key, use the `claude-cli` provider (below), which delegates auth to the `claude` binary.
 
 ### xAI (Grok)
 
@@ -224,14 +227,17 @@ providers:
     model: grok-4.20-reasoning
 ```
 
-| Key                 | Type   | Default               | Description                                                                          |
-| ------------------- | ------ | --------------------- | ------------------------------------------------------------------------------------ |
-| `model`             | string | `grok-4.20-reasoning` | Model identifier. (`grok-4-1-fast-reasoning` is a cheaper tier good for compaction.) |
-| `api_key`           | string | `${XAI_API_KEY}`      | API key.                                                                             |
-| `max_tokens`        | number | `4096`                | Maximum output tokens.                                                               |
-| `temperature`       | number | —                     | Sampling temperature.                                                                |
-| `context_window`    | number | —                     | Override the model's context-window size (advanced).                                 |
-| `max_output_tokens` | number | —                     | Hard cap on output tokens.                                                           |
+| Key                        | Type     | Default               | Description                                                                          |
+| -------------------------- | -------- | --------------------- | ------------------------------------------------------------------------------------ |
+| `model`                    | string   | `grok-4.20-reasoning` | Model identifier. (`grok-4-1-fast-reasoning` is a cheaper tier good for compaction.) |
+| `api_key`                  | string   | `${XAI_API_KEY}`      | API key.                                                                             |
+| `token_command`            | string[] | —                     | Argv that prints a bearer token on stdout (no shell). Wins over `api_key`.           |
+| `token_ttl_ms`             | number   | `300000`              | Cache lifetime for a minted token.                                                   |
+| `token_command_timeout_ms` | number   | `5000`                | Mint timeout; the helper is SIGKILL'd on expiry.                                     |
+| `max_tokens`               | number   | `4096`                | Maximum output tokens.                                                               |
+| `temperature`              | number   | —                     | Sampling temperature.                                                                |
+| `context_window`           | number   | —                     | Override the model's context-window size (advanced).                                 |
+| `max_output_tokens`        | number   | —                     | Hard cap on output tokens.                                                           |
 
 ### Google (Gemini)
 
@@ -300,33 +306,38 @@ providers:
 
 Use `models_url` only if the models listing lives somewhere other than `<base><api_prefix>/models`.
 
-| Key                    | Type     | Default           | Description                                                                                                |
-| ---------------------- | -------- | ----------------- | ---------------------------------------------------------------------------------------------------------- |
-| `base_url`             | string   | **required**      | vLLM server URL (`/v1` optional; stripped and re-appended via `api_prefix`).                               |
-| `api_prefix`           | string   | `"/v1"`           | OpenAI-compat path prefix. `""` means none (chat at `<base>/chat/completions`).                            |
-| `models_url`           | string   | —                 | Optional absolute URL when the models listing is hosted elsewhere (overrides `<base><api_prefix>/models`). |
-| `probe_models`         | boolean  | `true`            | When `false`, skip the models probe/discovery and treat the provider as available.                         |
-| `model`                | string   | `default`         | Served model id; `default` auto-discovers.                                                                 |
-| `api_key`              | string   | `${VLLM_API_KEY}` | Bearer token (only if `--api-key` set).                                                                    |
-| `max_tokens`           | number   | `4096`            | Maximum output tokens.                                                                                     |
-| `temperature`          | number   | `0.7`             | Sampling temperature.                                                                                      |
-| `top_p`                | number   | `0.95`            | Nucleus sampling.                                                                                          |
-| `top_k`                | number   | —                 | vLLM sampling extension.                                                                                   |
-| `min_p`                | number   | —                 | vLLM sampling extension.                                                                                   |
-| `presence_penalty`     | number   | —                 | Standard OpenAI penalty.                                                                                   |
-| `frequency_penalty`    | number   | —                 | Standard OpenAI penalty.                                                                                   |
-| `repetition_penalty`   | number   | —                 | vLLM extension.                                                                                            |
-| `min_tokens`           | number   | —                 | vLLM extension; minimum output tokens.                                                                     |
-| `stop`                 | string[] | —                 | Stop sequences.                                                                                            |
-| `seed`                 | number   | —                 | Reproducible sampling seed.                                                                                |
-| `context_window`       | number   | —                 | Context-window size reported to the runtime.                                                               |
-| `max_output_tokens`    | number   | —                 | Hard cap on output tokens.                                                                                 |
-| `default_tool_choice`  | string   | `auto`            | `auto`, `none`, or `required`.                                                                             |
-| `verify_model_on_init` | boolean  | `false`           | Reject availability when the pinned model is missing from the models listing.                              |
-| `name`                 | string   | —                 | Display name for the provider.                                                                             |
-| `mm_processor_kwargs`  | object   | —                 | vLLM multimodal processor kwargs (passthrough).                                                            |
-| `chat_template_kwargs` | object   | —                 | vLLM chat-template kwargs (passthrough).                                                                   |
-| `extra_body`           | object   | —                 | Arbitrary JSON merged into the request body (vLLM passthrough).                                            |
+| Key                        | Type     | Default           | Description                                                                                                |
+| -------------------------- | -------- | ----------------- | ---------------------------------------------------------------------------------------------------------- |
+| `base_url`                 | string   | **required**      | vLLM server URL (`/v1` optional; stripped and re-appended via `api_prefix`).                               |
+| `api_prefix`               | string   | `"/v1"`           | OpenAI-compat path prefix. `""` means none (chat at `<base>/chat/completions`).                            |
+| `models_url`               | string   | —                 | Optional absolute URL when the models listing is hosted elsewhere (overrides `<base><api_prefix>/models`). |
+| `probe_models`             | boolean  | `true`            | When `false`, skip the models probe/discovery and treat the provider as available.                         |
+| `model`                    | string   | `default`         | Served model id; `default` auto-discovers.                                                                 |
+| `api_key`                  | string   | `${VLLM_API_KEY}` | Bearer token (only if `--api-key` set).                                                                    |
+| `token_command`            | string[] | —                 | Argv that prints a bearer token on stdout (no shell). Wins over `api_key`.                                 |
+| `token_ttl_ms`             | number   | `300000`          | Cache lifetime for a minted token.                                                                         |
+| `token_command_timeout_ms` | number   | `5000`            | Mint timeout; the helper is SIGKILL'd on expiry.                                                           |
+| `models`                   | string[] | —                 | Static model catalog floor for `listModels()` (building block — no UI/harness reader yet; floor first).    |
+| `models_ttl_ms`            | number   | `60000`           | Background refresh interval for the endpoint model catalog (`listModels()` building block).                |
+| `max_tokens`               | number   | `4096`            | Maximum output tokens.                                                                                     |
+| `temperature`              | number   | `0.7`             | Sampling temperature.                                                                                      |
+| `top_p`                    | number   | `0.95`            | Nucleus sampling.                                                                                          |
+| `top_k`                    | number   | —                 | vLLM sampling extension.                                                                                   |
+| `min_p`                    | number   | —                 | vLLM sampling extension.                                                                                   |
+| `presence_penalty`         | number   | —                 | Standard OpenAI penalty.                                                                                   |
+| `frequency_penalty`        | number   | —                 | Standard OpenAI penalty.                                                                                   |
+| `repetition_penalty`       | number   | —                 | vLLM extension.                                                                                            |
+| `min_tokens`               | number   | —                 | vLLM extension; minimum output tokens.                                                                     |
+| `stop`                     | string[] | —                 | Stop sequences.                                                                                            |
+| `seed`                     | number   | —                 | Reproducible sampling seed.                                                                                |
+| `context_window`           | number   | —                 | Context-window size reported to the runtime.                                                               |
+| `max_output_tokens`        | number   | —                 | Hard cap on output tokens.                                                                                 |
+| `default_tool_choice`      | string   | `auto`            | `auto`, `none`, or `required`.                                                                             |
+| `verify_model_on_init`     | boolean  | `false`           | Reject availability when the pinned model is missing from the models listing.                              |
+| `name`                     | string   | —                 | Display name for the provider.                                                                             |
+| `mm_processor_kwargs`      | object   | —                 | vLLM multimodal processor kwargs (passthrough).                                                            |
+| `chat_template_kwargs`     | object   | —                 | vLLM chat-template kwargs (passthrough).                                                                   |
+| `extra_body`               | object   | —                 | Arbitrary JSON merged into the request body (vLLM passthrough).                                            |
 
 ### llama-server
 
@@ -343,26 +354,31 @@ providers:
     min_p: 0.05
 ```
 
-| Key                    | Type     | Default                   | Description                                                              |
-| ---------------------- | -------- | ------------------------- | ------------------------------------------------------------------------ |
-| `base_url`             | string   | **required**              | llama-server URL (`/v1` optional).                                       |
-| `model`                | string   | `default`                 | Served model id; `default` auto-discovers.                               |
-| `api_key`              | string   | `${LLAMA_SERVER_API_KEY}` | Bearer token (only if `--api-key` set).                                  |
-| `max_tokens`           | number   | `4096`                    | Maximum output tokens.                                                   |
-| `temperature`          | number   | `0.7`                     | Sampling temperature.                                                    |
-| `top_p`                | number   | `0.95`                    | Nucleus sampling.                                                        |
-| `top_k`                | number   | —                         | llama.cpp sampling extension.                                            |
-| `min_p`                | number   | —                         | llama.cpp sampling extension.                                            |
-| `presence_penalty`     | number   | —                         | Standard OpenAI penalty.                                                 |
-| `frequency_penalty`    | number   | —                         | Standard OpenAI penalty.                                                 |
-| `stop`                 | string[] | —                         | Stop sequences.                                                          |
-| `seed`                 | number   | —                         | Reproducible sampling seed.                                              |
-| `context_window`       | number   | —                         | Context-window size reported to the runtime.                             |
-| `max_output_tokens`    | number   | —                         | Hard cap on output tokens.                                               |
-| `default_tool_choice`  | string   | `auto`                    | `auto`, `none`, or `required`.                                           |
-| `verify_model_on_init` | boolean  | `false`                   | Probe `/v1/models` at boot to confirm the model is served.               |
-| `name`                 | string   | —                         | Display name for the provider.                                           |
-| `extra_body`           | object   | —                         | Arbitrary JSON merged into the request body (e.g. `grammar`, `n_probs`). |
+| Key                        | Type     | Default                   | Description                                                                |
+| -------------------------- | -------- | ------------------------- | -------------------------------------------------------------------------- |
+| `base_url`                 | string   | **required**              | llama-server URL (`/v1` optional).                                         |
+| `model`                    | string   | `default`                 | Served model id; `default` auto-discovers.                                 |
+| `api_key`                  | string   | `${LLAMA_SERVER_API_KEY}` | Bearer token (only if `--api-key` set).                                    |
+| `token_command`            | string[] | —                         | Argv that prints a bearer token on stdout (no shell). Wins over `api_key`. |
+| `token_ttl_ms`             | number   | `300000`                  | Cache lifetime for a minted token.                                         |
+| `token_command_timeout_ms` | number   | `5000`                    | Mint timeout; the helper is SIGKILL'd on expiry.                           |
+| `models`                   | string[] | —                         | Static model catalog floor for `listModels()` (building block — no UI/harness reader yet). |
+| `models_ttl_ms`            | number   | `60000`                   | Background refresh interval for the endpoint model catalog (`listModels()` building block). |
+| `max_tokens`               | number   | `4096`                    | Maximum output tokens.                                                     |
+| `temperature`              | number   | `0.7`                     | Sampling temperature.                                                      |
+| `top_p`                    | number   | `0.95`                    | Nucleus sampling.                                                          |
+| `top_k`                    | number   | —                         | llama.cpp sampling extension.                                              |
+| `min_p`                    | number   | —                         | llama.cpp sampling extension.                                              |
+| `presence_penalty`         | number   | —                         | Standard OpenAI penalty.                                                   |
+| `frequency_penalty`        | number   | —                         | Standard OpenAI penalty.                                                   |
+| `stop`                     | string[] | —                         | Stop sequences.                                                            |
+| `seed`                     | number   | —                         | Reproducible sampling seed.                                                |
+| `context_window`           | number   | —                         | Context-window size reported to the runtime.                               |
+| `max_output_tokens`        | number   | —                         | Hard cap on output tokens.                                                 |
+| `default_tool_choice`      | string   | `auto`                    | `auto`, `none`, or `required`.                                             |
+| `verify_model_on_init`     | boolean  | `false`                   | Probe `/v1/models` at boot to confirm the model is served.                 |
+| `name`                     | string   | —                         | Display name for the provider.                                             |
+| `extra_body`               | object   | —                         | Arbitrary JSON merged into the request body (e.g. `grammar`, `n_probs`).   |
 
 ### claude-cli
 
@@ -673,12 +689,19 @@ memory:
     # delegation_tracking: true
 ```
 
-| Key                   | Type    | Default             | Description                                                                                             |
-| --------------------- | ------- | ------------------- | ------------------------------------------------------------------------------------------------------- |
-| `connection_string`   | string  | `${RIVETOS_PG_URL}` | PostgreSQL connection URL.                                                                              |
-| `embed_endpoint`      | string  | —                   | OpenAI-compatible embeddings endpoint used by the embedding worker. Overrides the built-in default.     |
-| `delegation_tracking` | boolean | `false`             | Persist delegation events into memory (`ros_messages`, channel `delegation`) for auditing.              |
-| `embedded`            | object  | —                   | In-process PGlite transport for the same postgres backend. Mutually exclusive with `connection_string`. |
+| Key                              | Type     | Default             | Description                                                                                             |
+| -------------------------------- | -------- | ------------------- | ------------------------------------------------------------------------------------------------------- |
+| `connection_string`              | string   | `${RIVETOS_PG_URL}` | PostgreSQL connection URL.                                                                              |
+| `embed_endpoint`                 | string   | —                   | Embeddings endpoint base used by the embedding worker and query-time search.                            |
+| `embed_model`                    | string   | —                   | Embedding model id (required when an embed URL is set).                                                 |
+| `embed_api_key`                  | string   | —                   | Static bearer for the embed endpoint (also honors `RIVETOS_EMBED_API_KEY`). Does **not** fall back to `OPENAI_API_KEY` — that would send a global OpenAI credential to whatever `embed_endpoint` is configured. |
+| `embed_token_command`            | string[] | —                   | Argv that prints a bearer token on stdout (no shell). Wins over `embed_api_key`.                        |
+| `embed_token_ttl_ms`             | number   | `300000`            | Cache lifetime for a minted embed token.                                                                |
+| `embed_token_command_timeout_ms` | number   | `5000`              | Mint timeout for `embed_token_command`.                                                                 |
+| `embed_wire_shape`               | string   | `openai`            | `openai` → `POST <base>/v1/embeddings`; `native` → `POST <base>` with `{texts,input}`.                  |
+| `embed_expected_dims`            | number   | —                   | When set, must equal the embedding column width (`halfvec(1024)`). Rejects any vector whose length differs (longer vectors null out — truncation is `EMBED_TRUNCATE_DIMS` only). Any other configured value bricks inserts and vector search. Worker env: `RIVETOS_EMBED_EXPECTED_DIMS`. |
+| `delegation_tracking`            | boolean  | `false`             | Persist delegation events into memory (`ros_messages`, channel `delegation`) for auditing.              |
+| `embedded`                       | object   | —                   | In-process PGlite transport for the same postgres backend. Mutually exclusive with `connection_string`. |
 
 **Required extensions:** `pgvector` (for embedding storage and similarity search).
 
@@ -922,7 +945,7 @@ harness gets them from `rivetos_resolve_den` (`den.port`, default 5174, and
 | `RIVETOS_LOG_FORMAT`    | core                                    | Log format: `pretty` (default) or `json`                                                                                                                                                                                                                                                                                                                                    |
 | `GOOGLE_CSE_ID`         | tool-web-search                         | Google Custom Search Engine ID                                                                                                                                                                                                                                                                                                                                              |
 | `GOOGLE_CSE_KEY`        | tool-web-search                         | Google CSE API key                                                                                                                                                                                                                                                                                                                                                          |
-| `OPENAI_API_KEY`        | memory-postgres (embeddings)            | OpenAI API key for embeddings                                                                                                                                                                                                                                                                                                                                               |
+| `RIVETOS_EMBED_API_KEY` | memory-postgres / embedding-worker      | Optional static bearer for the configured embed endpoint. Opt-in — `OPENAI_API_KEY` is not used as a fallback.                                                                                                                                                                                                                                                              |
 | `QWEN_BINARY`           | provider-qwen-code, setup script        | Override path/name of the `qwen` binary (default `qwen` on PATH). Honoured by the provider and the rivet-memory setup script.                                                                                                                                                                                                                                               |
 | `QWEN_HOME`             | plugins install, doctor, setup script   | Override where RivetOS looks for qwen's `settings.json` / `projects/` (default `~/.qwen`). Does not relocate where qwen itself writes — qwen-code 0.23.4 has no env/flag to move `~/.qwen`.                                                                                                                                                                                 |
 

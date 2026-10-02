@@ -15,6 +15,7 @@ import {
 } from './index.js'
 import type { VllmProviderConfig } from './index.js'
 import type { Message } from '@rivetos/types'
+import { createTokenSource } from '@rivetos/token-command'
 
 describe('VllmProvider', () => {
   describe('constructor and defaults', () => {
@@ -500,10 +501,7 @@ describe('VllmProvider', () => {
 
     it('HTTP error text includes the actual models URL', async () => {
       const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined)
-      vi.stubGlobal(
-        'fetch',
-        vi.fn().mockResolvedValueOnce({ ok: false, status: 404 }),
-      )
+      vi.stubGlobal('fetch', vi.fn().mockResolvedValueOnce({ ok: false, status: 404 }))
       const modelsUrl = 'https://api.z.ai/api/paas/v4/models'
       const provider = new VllmProvider({
         baseUrl: 'https://api.z.ai/api/coding/paas/v4',
@@ -706,5 +704,94 @@ describe('VllmProvider', () => {
       const body = { model: 'm', messages: [{ role: 'user', content: 'plain text' }] }
       expect(spliceVideoUrls(body)).toBe(body)
     })
+  })
+})
+
+describe('vllm token_command and model catalog', () => {
+  afterEach(() => {
+    vi.restoreAllMocks()
+    vi.unstubAllGlobals()
+  })
+
+  it('without tokenSource, isAvailable uses the static apiKey', async () => {
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      status: 200,
+      json: async () => ({ data: [{ id: 'm1' }] }),
+    })
+    vi.stubGlobal('fetch', fetchMock)
+    const p = new VllmProvider({
+      baseUrl: 'http://127.0.0.1:8000',
+      apiKey: 'static-key',
+    })
+    expect(await p.isAvailable()).toBe(true)
+    expect(fetchMock.mock.calls[0][1]).toEqual({
+      headers: { Authorization: 'Bearer static-key' },
+    })
+  })
+
+  it('with tokenSource, isAvailable remints once on 401', async () => {
+    let n = 0
+    const tokenSource = createTokenSource({
+      argv: ['helper'],
+      runCommand: async () => `tok-${++n}`,
+    })
+    const fetchMock = vi.fn(async (_url: string, init?: RequestInit) => {
+      const auth = new Headers(init?.headers).get('Authorization')
+      if (auth === 'Bearer tok-1') return { ok: false, status: 401 } as Response
+      return {
+        ok: true,
+        status: 200,
+        json: async () => ({ data: [{ id: 'served' }] }),
+      } as unknown as Response
+    })
+    vi.stubGlobal('fetch', fetchMock)
+
+    const p = new VllmProvider({
+      baseUrl: 'http://127.0.0.1:8000',
+      apiKey: 'ignored',
+      tokenSource,
+    })
+    expect(await p.isAvailable()).toBe(true)
+    expect(n).toBe(2)
+    expect(fetchMock).toHaveBeenCalledTimes(2)
+  })
+
+  it('listModels includes floor and feeds probe ids after isAvailable', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn().mockResolvedValue({
+        ok: true,
+        status: 200,
+        json: async () => ({ data: [{ id: 'served-a' }, { id: 'served-b' }] }),
+      }),
+    )
+    const p = new VllmProvider({
+      baseUrl: 'http://127.0.0.1:8000',
+      model: 'pinned-model',
+      models: ['floor-model'],
+    })
+    expect(p.listModels()).toEqual(['floor-model'])
+    expect(await p.isAvailable()).toBe(true)
+    await vi.waitFor(() => {
+      expect(p.listModels()).toEqual(['floor-model', 'served-a', 'served-b'])
+    })
+  })
+
+  it('defaults catalog floor to the pinned model when models unset', () => {
+    vi.stubGlobal('fetch', vi.fn().mockRejectedValue(new Error('offline')))
+    vi.spyOn(console, 'warn').mockImplementation(() => undefined)
+    const p = new VllmProvider({
+      baseUrl: 'http://127.0.0.1:8000',
+      model: 'my-pinned',
+    })
+    expect(p.listModels()).toEqual(['my-pinned'])
+  })
+
+  it('defaults catalog floor to empty when model is the default placeholder', () => {
+    vi.stubGlobal('fetch', vi.fn().mockRejectedValue(new Error('offline')))
+    vi.spyOn(console, 'warn').mockImplementation(() => undefined)
+    const p = new VllmProvider({ baseUrl: 'http://127.0.0.1:8000' })
+    expect(p.listModels()).toEqual([])
   })
 })

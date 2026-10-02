@@ -25,6 +25,15 @@ function fakeScript(body: string): string {
   return file
 }
 
+/** `exit` can fire while stdout is still buffered; drain events() (stdout close). */
+async function waitClosed(turn: ReturnType<typeof spawnGrokTurn>): Promise<number | null> {
+  const code = await turn.waitExit()
+  for await (const _ of turn.events()) {
+    /* drain */
+  }
+  return code
+}
+
 describe('buildArgs', () => {
   it('emits the headless streaming-messages-json invocation with the prompt as an argument', () => {
     expect(buildArgs(base, 'hello')).toEqual([
@@ -137,7 +146,7 @@ describe('spawnGrokTurn', () => {
       { ...base, binary: fakeScript('#!/usr/bin/env bash\nprintf \'{"text":"hi","stopReason":"end_turn"}\'\nexit 0\n') },
       'q',
     )
-    expect(await turn.waitExit()).toBe(0)
+    expect(await waitClosed(turn)).toBe(0)
     expect(parseGrokJson(turn.stdoutText())?.text).toBe('hi')
   })
 
@@ -168,7 +177,7 @@ describe('spawnGrokTurn', () => {
       { ...base, binary: fakeScript('#!/usr/bin/env bash\nprintf \'{"text":"%s"}\' "$2"\n') },
       'the prompt',
     )
-    await turn.waitExit()
+    await waitClosed(turn)
     expect(parseGrokJson(turn.stdoutText())?.text).toBe('the prompt')
   })
 

@@ -10,6 +10,11 @@ vi.mock('./config.js', () => ({
     embedModel: 'nemotron',
     apiTimeoutMs: 5000,
     maxRetries: 2,
+    truncateDims: 1024,
+    wireShape: 'openai',
+    expectedDims: undefined,
+    apiKey: '',
+    tokenSource: undefined,
   },
 }))
 

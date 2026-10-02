@@ -61,6 +61,32 @@ describe('embedding-worker config', () => {
     expect(config.truncateDims).toBe(1024)
   })
 
+  it('accepts RIVETOS_EMBED_EXPECTED_DIMS=1024 (column width)', async () => {
+    stubRequired({ RIVETOS_EMBED_EXPECTED_DIMS: '1024' })
+    const { config } = await import('./config.js')
+    expect(config.expectedDims).toBe(1024)
+  })
+
+  it('exits when RIVETOS_EMBED_EXPECTED_DIMS is not the column width', async () => {
+    stubRequired({ RIVETOS_EMBED_EXPECTED_DIMS: '4096' })
+    const { exit, error } = trapExit()
+    await expect(import('./config.js')).rejects.toThrow(/process\.exit:1/)
+    expect(exit).toHaveBeenCalledWith(1)
+    expect(logged(error)).toMatch(/RIVETOS_EMBED_EXPECTED_DIMS.*1024/)
+  })
+
+  it('does not fall back to OPENAI_API_KEY when RIVETOS_EMBED_API_KEY is unset', async () => {
+    stubRequired({ RIVETOS_EMBED_API_KEY: undefined, OPENAI_API_KEY: 'sk-should-not-leak' })
+    const { config } = await import('./config.js')
+    expect(config.apiKey).toBe('')
+  })
+
+  it('uses RIVETOS_EMBED_API_KEY when set', async () => {
+    stubRequired({ RIVETOS_EMBED_API_KEY: 'embed-only-key', OPENAI_API_KEY: 'sk-other' })
+    const { config } = await import('./config.js')
+    expect(config.apiKey).toBe('embed-only-key')
+  })
+
   it('honours EMBED_CHUNKS_ENABLED=false and CHUNK_BACKFILL_LIMIT', async () => {
     stubRequired({ EMBED_CHUNKS_ENABLED: 'false', CHUNK_BACKFILL_LIMIT: '50' })
     const { config } = await import('./config.js')

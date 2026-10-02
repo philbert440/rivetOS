@@ -95,6 +95,33 @@ describe('memory-postgres manifest', () => {
     expect(ctx.registerMemory).toHaveBeenCalled()
   })
 
+  it('does not adopt OPENAI_API_KEY as embed bearer when embed_api_key unset', async () => {
+    const ctx = fakeCtx(
+      {
+        embed_endpoint: 'http://127.0.0.1:9401',
+        embed_model: 'text-embedding-3-small',
+      },
+      { OPENAI_API_KEY: 'sk-should-not-leak' },
+    )
+    await manifest.register(ctx as never)
+    const cfg = (PostgresMemory as CtorMemory).configs[0] as { embedApiKey?: string }
+    expect(cfg.embedApiKey ?? '').toBe('')
+  })
+
+  it('uses embed_api_key / RIVETOS_EMBED_API_KEY when set', async () => {
+    const ctx = fakeCtx(
+      {
+        embed_endpoint: 'http://127.0.0.1:9401',
+        embed_model: 'text-embedding-3-small',
+        embed_api_key: 'from-config',
+      },
+      { OPENAI_API_KEY: 'sk-other', RIVETOS_EMBED_API_KEY: 'from-env' },
+    )
+    await manifest.register(ctx as never)
+    const cfg = (PostgresMemory as CtorMemory).configs[0] as { embedApiKey?: string }
+    expect(cfg.embedApiKey).toBe('from-config')
+  })
+
   it('accepts RIVETOS_EMBED_MODEL when embed URL comes from env', async () => {
     const ctx = fakeCtx(
       {},
@@ -129,7 +156,8 @@ describe('memory-postgres manifest', () => {
       JSON.stringify({
         ownerUserId: 'owner',
         unmappedIsOwner: false,
-        users: { owner: { devices: [], pgUrl: 'postgres://owner@db/rivet_memory' },
+        users: {
+          owner: { devices: [], pgUrl: 'postgres://owner@db/rivet_memory' },
           coco: { devices: ['win-coco'], pgUrl: 'postgres://coco@db/coco_memory' },
         },
       }),
@@ -260,4 +288,3 @@ describe('SearchEngine embed config', () => {
     expect(eng.getRuntimeStats().queryEmbedCacheMisses).toBe(0)
   })
 })
-
