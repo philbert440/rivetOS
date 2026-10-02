@@ -93,7 +93,7 @@ const READ_ONLY = { readOnlyHint: true, idempotentHint: true } as const
 export const DELEGATE_TASK_HTTP_REASON =
   'delegate_task needs a per-harness stdio sidecar for the chain guard'
 
-/** Full-string preset match. Den keeps this sentence; it does not parse `agent@node`. */
+/** Full-string preset match. The den route resolves the same rule server-side, `agent@node` included. */
 const PRESET_WINS_FULL_STRING =
   'A preset name or id wins when it also matches a runtime agent id, unless that preset has no harness configured — then the runtime agent runs.'
 
@@ -160,7 +160,7 @@ export const denDelegateTaskDefinition = {
     '. ' +
     DELEGATE_TASK_WAIT,
   inputSchema: delegateTaskInputSchema(
-    'RivetHub agent name or id, or a runtime agent id — call list_agents first',
+    'RivetHub agent name or id, or a runtime agent id (agent@node pins the node) — call list_agents first',
   ),
 }
 

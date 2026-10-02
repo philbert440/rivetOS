@@ -89,6 +89,14 @@ export interface TaskApiOptions {
    */
   resolvePreset?: (agentId: string) => Promise<AgentPreset | undefined>
   /**
+   * The node that hosts a RUNTIME agent with this id — a local config agent
+   * (this node) or an online mesh host — or undefined when there is none.
+   * With `node`, only that node counts. Two uses: a preset that cannot run
+   * (no harness configured) must not shadow a runtime agent of the same name,
+   * and `agent@node` pins a runtime agent to a named node.
+   */
+  resolveRuntimeAgent?: (agentId: string, node?: string) => Promise<string | undefined>
+  /**
    * Coverage context for that preset row. Same pre-flight as delegate_task:
    * no harness / unimplemented → 400, hosting node offline or unknown → 409.
    * Omit only in tests that assert row shape without coverage.
@@ -329,7 +337,20 @@ export function createTaskApiRoute(opts: TaskApiOptions): GatewayRoute {
           const executorExplicit = typeof body.executor === 'string'
           let tookPresetBranch = false
           if (!executorExplicit && opts.resolvePreset) {
-            const preset = await opts.resolvePreset(input.agentId)
+            let preset = await opts.resolvePreset(input.agentId)
+            // A preset with no harness cannot run anything. Every runtime agent
+            // tends to have a same-named preset ("Grok" next to runtime `grok`),
+            // and refusing here made the runtime agent unreachable through this
+            // route — the path `delegate_task` takes from a den-transport
+            // sidecar. With no runtime agent of that name the preset still
+            // answers with its own "no harness configured" refusal.
+            if (preset && !preset.harnessId && opts.resolveRuntimeAgent) {
+              const host = await opts.resolveRuntimeAgent(input.agentId)
+              if (host) {
+                preset = undefined
+                input.nodeAffinity ??= host
+              }
+            }
             if (preset) {
               tookPresetBranch = true
               if (opts.presetHost) {
@@ -348,6 +369,22 @@ export function createTaskApiRoute(opts: TaskApiOptions): GatewayRoute {
           // Defence in depth for the runner: a forged presetId must not be
           // stored on a row this route did not build from a resolved preset.
           if (!tookPresetBranch) input.spec = stripClientPresetFields(input.spec)
+          // `agent@node` pins a runtime agent to a named node. Only when no
+          // preset matched the full string (a preset name wins), and only for
+          // a node that is online and hosts that agent.
+          if (!tookPresetBranch && opts.resolveRuntimeAgent) {
+            const pinned = /^([^@\s]+)@([^@\s]+)$/.exec(input.agentId.trim())
+            if (pinned) {
+              const host = await opts.resolveRuntimeAgent(pinned[1], pinned[2])
+              if (!host) {
+                return json(res, 400, {
+                  error: `runtime agent "${pinned[1]}" is not hosted on an online node "${pinned[2]}"`,
+                })
+              }
+              input.agentId = pinned[1]
+              input.nodeAffinity = host
+            }
+          }
           if (!input.nodeAffinity && opts.resolveAffinity) {
             const resolved = await opts.resolveAffinity(input.agentId)
             if (typeof resolved === 'object' && resolved !== null)

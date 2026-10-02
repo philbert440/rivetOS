@@ -455,6 +455,8 @@ describe('agent-aware dispatch (resolveAffinity)', () => {
     preset: AgentPreset
     presetHost?: PresetHostContext
     resolveAffinity?: boolean
+    /** runtime agent id → online nodes hosting it (newest first) */
+    runtimeAgents?: Record<string, string[]>
   }): Promise<{ base: string; store: InMemoryTaskStore }> {
     const store = new InMemoryTaskStore()
     const waiter = createTaskCompletionWaiter({ store, pollFallbackMs: 10 })
@@ -464,6 +466,12 @@ describe('agent-aware dispatch (resolveAffinity)', () => {
       resolvePreset: async (agentId) =>
         agentId === opts.preset.name || agentId === opts.preset.id ? opts.preset : undefined,
       presetHost: opts.presetHost,
+      resolveRuntimeAgent: opts.runtimeAgents
+        ? async (agentId, node) => {
+            const hosts = opts.runtimeAgents?.[agentId] ?? []
+            return node ? hosts.find((h) => h === node) : hosts.at(0)
+          }
+        : undefined,
       resolveAffinity: opts.resolveAffinity
         ? async (agentId) =>
             agentId === 'local-agent'
@@ -482,6 +490,56 @@ describe('agent-aware dispatch (resolveAffinity)', () => {
     })
     return { base: `http://127.0.0.1:${port}`, store }
   }
+
+  it('a preset with no harness does not shadow a runtime agent of the same name', async () => {
+    // "Grok" (no harness) next to runtime `grok`: the request means the runtime agent.
+    const { base, store } = await startPresetApi({
+      preset: reviewerPreset({ id: 'preset-grok', name: 'grok', harnessId: undefined }),
+      presetHost: { nodeName: 'node-f', meshRegistry: presetMesh([]) },
+      runtimeAgents: { grok: ['node-c'] },
+    })
+    const res = await create(base, { goal: 'search', agentId: 'grok' })
+    expect(res.status).toBe(201)
+    const { task } = (await res.json()) as { task: { id: string } }
+    const row = await store.get(task.id)
+    expect(row).toMatchObject({ executor: 'chat-loop', agentId: 'grok', nodeAffinity: 'node-c' })
+    expect(row?.executorTarget).toBeUndefined()
+    expect((row?.spec as { presetId?: string } | undefined)?.presetId).toBeUndefined()
+  })
+
+  it('a preset with no harness and no runtime agent of that name still refuses as itself', async () => {
+    const { base } = await startPresetApi({
+      preset: reviewerPreset({ harnessId: undefined }),
+      presetHost: { nodeName: 'node-f', meshRegistry: presetMesh([]) },
+      runtimeAgents: {},
+    })
+    const res = await create(base, { goal: 'review', agentId: 'reviewer' })
+    expect(res.status).toBe(400)
+    expect(((await res.json()) as { error: string }).error).toContain('no harness configured')
+  })
+
+  it('agent@node pins a runtime agent to a node that hosts it, and refuses one that does not', async () => {
+    const { base, store } = await startPresetApi({
+      preset: reviewerPreset(),
+      runtimeAgents: { grok: ['node-new', 'node-c'] },
+    })
+    const res = await create(base, { goal: 'search', agentId: 'grok@node-c' })
+    expect(res.status).toBe(201)
+    const { task } = (await res.json()) as { task: { id: string } }
+    expect(await store.get(task.id)).toMatchObject({
+      executor: 'chat-loop',
+      agentId: 'grok',
+      nodeAffinity: 'node-c',
+    })
+    const bad = await create(base, { goal: 'search', agentId: 'grok@node-zzz' })
+    expect(bad.status).toBe(400)
+    expect(((await bad.json()) as { error: string }).error).toBe(
+      'runtime agent "grok" is not hosted on an online node "node-zzz"',
+    )
+    // a preset name wins over the pin syntax: the full string is tried as a preset first
+    const preset = await create(base, { goal: 'review', agentId: 'reviewer' })
+    expect(preset.status).toBe(201)
+  })
 
   it('a preset create builds the harness-session row, not a chat-loop row', async () => {
     const reviewer = reviewerPreset()
