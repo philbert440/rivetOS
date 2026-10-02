@@ -699,6 +699,33 @@ Env knobs: `RIVETOS_TASKS_CONCURRENCY` (default 4), `RIVETOS_TASKS_POLL_MS` (def
 
 Headless harness executors can also be keyed under `tasks.harnesses` (`pi`, `qwen-code`, …) with `binary` / `model` / `cwd` / `home` — see the site architecture sample. For qwen-code, `providers.qwen-code.home` is accepted for parity with the other CLI providers and currently unused; `tasks.harnesses.qwen-code.home` is where the task executor looks for qwen's `projects/` sessions (default `~/.qwen`). Neither key relocates qwen's own writes.
 
+#### Task isolation (claude-code): `isolation` / `allowed_tools`
+
+A delegated `claude-code` task runs as the service user, so by default it loads that user's personal Claude Code setup: `~/.claude/settings.json` (permission rules and default mode, hooks, enabled plugins), the plugins' MCP servers, and the user-level `CLAUDE.md`. `tasks.harnesses.claude-code.isolation` chooses how much of that a task inherits:
+
+```yaml
+tasks:
+  harnesses:
+    claude-code:
+      isolation: tools # inherit (default) | tools | isolated
+      allowed_tools:
+        - mcp__plugin_rivet-memory_rivetos # every tool of that server
+        - 'Bash(git status:*)'
+```
+
+| level | operator's plugins and their tools | personal settings, permission rules, hooks, user `CLAUDE.md` | MCP servers |
+| --- | --- | --- | --- |
+| `inherit` (default) | loaded | loaded | all |
+| `tools` | loaded | not loaded | the plugins' (and user-scope) servers plus the RivetOS bridge |
+| `isolated` | not loaded | not loaded | the RivetOS bridge only |
+
+- `inherit` passes no extra flags; nothing changes for a node that does not set the key.
+- `tools` spawns with `--setting-sources project` and a generated `--settings` object that re-enables the operator's plugins. Capture hooks that RivetOS itself installed in the user settings are carried over, so task transcripts keep working; no other personal hook is.
+- `isolated` adds `--strict-mcp-config` and supplies the RivetOS capture hooks itself. With `providers.claude-cli.permission_prompts` unset it also passes `--permission-prompts none`, so every prompt — built-in or MCP — is denied rather than left to the CLI's default.
+- Project settings (`.claude/settings.json` in the task's working directory) load at every level: they belong to the repository, not the operator.
+- `allowed_tools` is passed as `--allowedTools` at every level. Under `tools` and `isolated` the operator's own allow rules are gone, so an inherited plugin tool is denied in a headless run unless it is listed here.
+- A task can override the node default with `spec.isolation` (same three values) on `POST /api/tasks`; an unknown value is ignored.
+
 #### Model lists: `tasks.harnesses.<id>.models` / `efforts` / `models_mode`
 
 The den discovers each harness's model list from the harness itself where it can (Claude's global config cache, Grok's and Codex's catalog caches, Codex's `codex debug models`, Kimi's and OpenCode's config, Hermes's configured endpoint) and falls back to a built-in static list. `GET /api/harnesses` reports where the list came from as `capabilities.modelsSource`: `discovered`, `config`, `merged`, or `static`.

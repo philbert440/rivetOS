@@ -192,6 +192,14 @@ export interface SpawnTurnFlags {
   jsonSchema?: string
   /** Working directory for the spawned process. */
   cwd?: string
+  /** `--setting-sources <value>` (task isolation; unset = the CLI default, all sources). */
+  settingSources?: string
+  /** `--settings <json>` — an inline settings object (task isolation). */
+  settingsJson?: string
+  /** `--strict-mcp-config`: only the `--mcp-config` servers load (task isolation). */
+  strictMcpConfig?: boolean
+  /** `--allowedTools <rule>…` — tools a headless run may call without a prompt. */
+  allowedTools?: string[]
 }
 
 export function buildArgs(flags: SpawnTurnFlags): string[] {
@@ -218,6 +226,22 @@ export function buildArgs(flags: SpawnTurnFlags): string[] {
   } else if (flags.permissionPrompts === 'ui') {
     args.push('--permission-prompts', 'host')
     args.push('--permission-prompt-tool', permissionPromptToolId())
+  }
+
+  // Task isolation. All unset for `inherit`, so a spawn that did not opt in
+  // keeps the argv it always had.
+  if (flags.settingSources) {
+    args.push('--setting-sources', flags.settingSources)
+  }
+  if (flags.settingsJson) {
+    args.push('--settings', flags.settingsJson)
+  }
+  if (flags.strictMcpConfig) {
+    args.push('--strict-mcp-config')
+  }
+  if (flags.allowedTools && flags.allowedTools.length > 0) {
+    // Variadic: the next `--flag` ends the list.
+    args.push('--allowedTools', ...flags.allowedTools)
   }
 
   if (flags.modelId) {

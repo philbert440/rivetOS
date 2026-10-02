@@ -1199,7 +1199,11 @@ async function registerClaudeCodeTaskExecutor(
       CLAUDE_HARNESS_ID,
       parsePermissionPrompts,
       parseAllowedApiKeySources,
+      parseTaskIsolation,
+      parseAllowedTools,
     } = await import('@rivetos/provider-claude-cli')
+    // Task-spawn isolation lives with the other harness executor settings.
+    const harnessCfg = config.tasks?.harnesses?.['claude-code'] ?? {}
     executors.register(
       'harness-session',
       new ClaudeCliExecutor({
@@ -1216,6 +1220,8 @@ async function registerClaudeCodeTaskExecutor(
         memory: runtime.getMemory(),
         structuredResult,
         allowedApiKeySources: parseAllowedApiKeySources(providerCfg.allowed_api_key_sources),
+        isolation: parseTaskIsolation(harnessCfg.isolation),
+        allowedTools: parseAllowedTools(harnessCfg.allowed_tools),
       }),
       CLAUDE_HARNESS_ID,
     )

@@ -514,6 +514,7 @@ async function runClaimedTask(task: TaskRow, opts: TaskHandlerOptions): Promise<
     workingDir?: string
     effort?: TaskSpec['effort']
     systemPromptAppend?: string
+    isolation?: TaskSpec['isolation']
     sharedLink?: boolean
     presetId?: string
     presetName?: string
@@ -569,6 +570,7 @@ async function runClaimedTask(task: TaskRow, opts: TaskHandlerOptions): Promise<
           workingDir,
           effort: spec.effort,
           systemPromptAppend: spec.systemPromptAppend,
+          ...(spec.isolation ? { isolation: spec.isolation } : {}),
           resumeMessage,
           session: buildLocalSessionContext({
             agentId: task.agentId,

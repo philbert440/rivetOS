@@ -54,6 +54,7 @@ import {
   TASK_RESULT_JSON_SCHEMA,
 } from '@rivetos/types'
 import { embedMcpServerForTurn, type EmbeddedMcpHandle } from './mcp-bridge.js'
+import { isolationFlags, parseTaskIsolation, type TaskIsolation } from './isolation.js'
 import {
   createPermissionPromptTool,
   type PermissionPrompter,
@@ -119,6 +120,16 @@ export interface ClaudeCliExecutorConfig {
   /** Extra `apiKeySource` values to accept besides missing and `"none"`.
    *  Unset rejects every other source. Does not disable the env scrub. */
   allowedApiKeySources?: readonly string[]
+  /**
+   * How much of the operator's personal Claude Code setup a task spawn
+   * inherits (see `isolation.ts`). Default `inherit` — no change. A task's
+   * `spec.isolation` overrides this per run.
+   */
+  isolation?: TaskIsolation
+  /** Tools a headless run may call without a prompt (`--allowedTools`). */
+  allowedTools?: readonly string[]
+  /** Test seam for the operator's user settings (used by `tools` isolation). */
+  readUserSettings?: () => unknown
 }
 
 /** Caps for the rendered resume transcript — keep the system append sane. */
@@ -511,7 +522,19 @@ export class ClaudeCliExecutor implements HarnessExecutor {
     // `ui` adds the permission tool and, if the bridge cannot come up, falls
     // back to `--permission-prompts none` so the spawn denies instead of
     // sitting on the CLI's permission-decision timeout.
-    let permissionPrompts = this.cfg.permissionPrompts
+    // Isolation: per-task override, else the node default, else today's
+    // behaviour. `isolated` with no configured prompt mode denies explicitly —
+    // a headless run has nobody to answer, and relying on the CLI's own
+    // default left MCP tool prompts outside the auto-deny (#1053).
+    const isolation: TaskIsolation =
+      parseTaskIsolation((spec as { isolation?: unknown }).isolation) ??
+      this.cfg.isolation ??
+      'inherit'
+    const isolationArgs = isolationFlags(isolation, {
+      readUserSettings: this.cfg.readUserSettings,
+    })
+    let permissionPrompts =
+      this.cfg.permissionPrompts ?? (isolation === 'isolated' ? 'none' : undefined)
     const bridgeTools = [...tools]
     const bridgeDisabled = process.env.RIVETOS_DISABLE_MCP_BRIDGE === '1'
     if (permissionPrompts === 'ui') {
@@ -562,6 +585,10 @@ export class ClaudeCliExecutor implements HarnessExecutor {
           mcpConfigPath: bridge?.configPath,
           jsonSchema: (this.cfg.structuredResult ?? true) ? TASK_RESULT_JSON_SCHEMA : undefined,
           cwd: spec.workingDir ?? this.cfg.cwd,
+          ...isolationArgs,
+          ...(this.cfg.allowedTools && this.cfg.allowedTools.length > 0
+            ? { allowedTools: [...this.cfg.allowedTools] }
+            : {}),
         },
         message,
         {
@@ -591,7 +618,12 @@ export class ClaudeCliExecutor implements HarnessExecutor {
     }
 
     run.setActiveSpawn(spawned)
-    this.log.info('task.spawn', { taskId: spec.taskId, pid: spawned.proc.pid, hasMcp: !!bridge })
+    this.log.info('task.spawn', {
+      taskId: spec.taskId,
+      pid: spawned.proc.pid,
+      hasMcp: !!bridge,
+      isolation,
+    })
 
     let sessionId: string | undefined
     let notedSpawn = false

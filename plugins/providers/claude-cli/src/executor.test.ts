@@ -272,6 +272,100 @@ describe('ClaudeCliExecutor', () => {
     expect(args).not.toContain('--permission-prompt-tool')
   })
 
+  it('isolation: inherit (the default) adds no flags', async () => {
+    const fake = makeFakeClaude(successLines('ok'))
+    await makeExecutor(fake.binary).start(makeConformanceSpec(), {
+      signal: new AbortController().signal,
+    }).result
+    const args = fake.args()
+    for (const flag of [
+      '--setting-sources',
+      '--settings',
+      '--strict-mcp-config',
+      '--allowedTools',
+    ]) {
+      expect(args).not.toContain(flag)
+    }
+  })
+
+  it('isolation: tools keeps the operator plugins and drops personal settings', async () => {
+    const fake = makeFakeClaude(successLines('ok'))
+    const executor = new ClaudeCliExecutor({
+      binary: fake.binary,
+      isolation: 'tools',
+      allowedTools: ['mcp__plugin_rivet-memory_rivetos', 'Bash(git status:*)'],
+      readUserSettings: () => ({
+        permissions: { defaultMode: 'bypassPermissions' },
+        enabledPlugins: { 'rivet-memory@rivetos': true },
+      }),
+    })
+    await executor.start(makeConformanceSpec(), { signal: new AbortController().signal }).result
+    const args = fake.args()
+    expect(args[args.indexOf('--setting-sources') + 1]).toBe('project')
+    expect(JSON.parse(args[args.indexOf('--settings') + 1])).toEqual({
+      enabledPlugins: { 'rivet-memory@rivetos': true },
+    })
+    expect(args).not.toContain('--strict-mcp-config')
+    // tools does not change who answers prompts
+    expect(args).not.toContain('--permission-prompts')
+    const at = args.indexOf('--allowedTools')
+    expect(args.slice(at + 1, at + 3)).toEqual([
+      'mcp__plugin_rivet-memory_rivetos',
+      'Bash(git status:*)',
+    ])
+    // the variadic list is closed by the next flag
+    expect(args[at + 3].startsWith('--')).toBe(true)
+  })
+
+  it('isolation: isolated is strict MCP, capture hooks only, and an explicit deny', async () => {
+    const fake = makeFakeClaude(successLines('ok'))
+    const executor = new ClaudeCliExecutor({ binary: fake.binary, isolation: 'isolated' })
+    await executor.start(makeConformanceSpec(), { signal: new AbortController().signal }).result
+    const args = fake.args()
+    expect(args[args.indexOf('--setting-sources') + 1]).toBe('project')
+    expect(args).toContain('--strict-mcp-config')
+    expect(args[args.indexOf('--permission-prompts') + 1]).toBe('none')
+    const settings = JSON.parse(args[args.indexOf('--settings') + 1]) as {
+      hooks: Record<string, unknown>
+      enabledPlugins?: unknown
+    }
+    expect(Object.keys(settings.hooks).sort()).toEqual([
+      'PostToolUse',
+      'SessionEnd',
+      'Stop',
+      'SubagentStop',
+      'UserPromptSubmit',
+    ])
+    expect(settings.enabledPlugins).toBeUndefined()
+  })
+
+  it('a task spec overrides the node isolation default, in both directions', async () => {
+    const up = makeFakeClaude(successLines('ok'))
+    await new ClaudeCliExecutor({ binary: up.binary }).start(
+      { ...makeConformanceSpec(), isolation: 'isolated' } as ReturnType<typeof makeConformanceSpec>,
+      { signal: new AbortController().signal },
+    ).result
+    expect(up.args()).toContain('--strict-mcp-config')
+
+    const down = makeFakeClaude(successLines('ok'))
+    await new ClaudeCliExecutor({ binary: down.binary, isolation: 'isolated' }).start(
+      { ...makeConformanceSpec(), isolation: 'inherit' } as ReturnType<typeof makeConformanceSpec>,
+      { signal: new AbortController().signal },
+    ).result
+    expect(down.args()).not.toContain('--setting-sources')
+    expect(down.args()).not.toContain('--permission-prompts')
+
+    // a bad value is ignored, not trusted
+    const bad = makeFakeClaude(successLines('ok'))
+    await new ClaudeCliExecutor({ binary: bad.binary, isolation: 'tools' }).start(
+      { ...makeConformanceSpec(), isolation: 'nope' } as unknown as ReturnType<
+        typeof makeConformanceSpec
+      >,
+      { signal: new AbortController().signal },
+    ).result
+    expect(bad.args()[bad.args().indexOf('--setting-sources') + 1]).toBe('project')
+  })
+
   it('permission_prompts none is an immediate deny and does not mount a tool', async () => {
     const fake = makeFakeClaude(successLines('ok'))
     const executor = new ClaudeCliExecutor({ binary: fake.binary, permissionPrompts: 'none' })

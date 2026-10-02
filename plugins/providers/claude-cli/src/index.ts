@@ -64,6 +64,13 @@ export {
 } from './executor.js'
 export type { ClaudeCliExecutorConfig } from './executor.js'
 export {
+  parseTaskIsolation,
+  parseAllowedTools,
+  isolationFlags,
+  TASK_ISOLATION_LEVELS,
+} from './isolation.js'
+export type { TaskIsolation, IsolationFlags } from './isolation.js'
+export {
   parsePermissionPrompts,
   parsePermissionTimeoutMs,
   permissionPromptToolId,

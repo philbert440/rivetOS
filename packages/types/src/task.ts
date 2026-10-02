@@ -57,6 +57,15 @@ export interface TaskSpec {
   effort?: 'low' | 'medium' | 'high'
   systemPromptAppend?: string
   /**
+   * Per-task override of how much of the operator's personal CLI setup a
+   * harness-session spawn inherits (`tasks.harnesses.<id>.isolation` is the
+   * node default). Only executors that implement it read it — today the
+   * `claude-code` one: `inherit` loads everything, `tools` keeps the
+   * operator's plugins and their tools but not personal settings, `isolated`
+   * loads only the RivetOS bridge.
+   */
+  isolation?: 'inherit' | 'tools' | 'isolated'
+  /**
    * System-prompt flavor. 'heartbeat' selects the workspace heartbeat prompt
    * with no task scaffold — prompt parity for cutover heartbeat tasks;
    * default 'task' is the chat system prompt + delegated-task scaffold.

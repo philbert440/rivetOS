@@ -1100,6 +1100,39 @@ function validateTasksHarnesses(
       })
     }
     if (
+      section.isolation !== undefined &&
+      !['inherit', 'tools', 'isolated'].includes(section.isolation as string)
+    ) {
+      issues.push({
+        severity: 'error',
+        path: `${path}.isolation`,
+        message: `"${path}.isolation" must be 'inherit', 'tools' or 'isolated'`,
+      })
+    }
+    if (
+      section.allowed_tools !== undefined &&
+      !(
+        Array.isArray(section.allowed_tools) &&
+        section.allowed_tools.every((rule) => typeof rule === 'string' && rule.trim() !== '')
+      )
+    ) {
+      issues.push({
+        severity: 'error',
+        path: `${path}.allowed_tools`,
+        message: `"${path}.allowed_tools" must be an array of non-empty strings`,
+      })
+    }
+    if (
+      (section.isolation !== undefined || section.allowed_tools !== undefined) &&
+      harnessId !== 'claude-code'
+    ) {
+      issues.push({
+        severity: 'warning',
+        path,
+        message: `"isolation" / "allowed_tools" are read by the claude-code executor only; ignored for "${harnessId}"`,
+      })
+    }
+    if (
       section.models_mode !== undefined &&
       !['discover', 'replace', 'merge'].includes(section.models_mode as string)
     ) {
