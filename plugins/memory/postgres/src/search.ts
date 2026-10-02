@@ -1351,8 +1351,10 @@ export class SearchEngine {
         input: [applyEmbedQueryInstruction(this.embedQueryInstruction, normalized)],
       })
       const headers: Record<string, string> = { 'Content-Type': 'application/json' }
+      let sentToken: string | undefined
       if (this.embedTokenSource) {
-        headers.Authorization = `Bearer ${await this.embedTokenSource.getToken()}`
+        sentToken = await this.embedTokenSource.getToken()
+        headers.Authorization = `Bearer ${sentToken}`
       } else if (this.embedApiKey) {
         headers.Authorization = `Bearer ${this.embedApiKey}`
       }
@@ -1364,9 +1366,11 @@ export class SearchEngine {
         signal: controller.signal,
       })
 
-      if (response.status === 401 && this.embedTokenSource) {
-        this.embedTokenSource.invalidate(this.embedTokenSource.getCachedToken())
-        headers.Authorization = `Bearer ${await this.embedTokenSource.getToken()}`
+      if (response.status === 401 && this.embedTokenSource && sentToken !== undefined) {
+        // Pass the token actually sent — getCachedToken() can already be a newer mint.
+        this.embedTokenSource.invalidate(sentToken)
+        sentToken = await this.embedTokenSource.getToken()
+        headers.Authorization = `Bearer ${sentToken}`
         response = await fetch(url, {
           method: 'POST',
           headers,

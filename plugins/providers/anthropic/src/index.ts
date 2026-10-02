@@ -167,12 +167,12 @@ export class AnthropicProvider implements Provider {
     }
   }
 
-  private async authHeaders(): Promise<Record<string, string>> {
+  private async authHeaders(token?: string): Promise<Record<string, string>> {
     if (this.tokenSource) {
-      const token = await this.tokenSource.getToken()
+      const resolved = token ?? (await this.tokenSource.getToken())
       return {
         'Content-Type': 'application/json',
-        'x-api-key': token,
+        'x-api-key': resolved,
         'anthropic-version': '2023-06-01',
       }
     }
@@ -191,13 +191,15 @@ export class AnthropicProvider implements Provider {
         messages: [{ role: 'user', content: 'ping' }],
         stream: false,
       })
+      // Capture the token actually sent so a staggered 401 cannot wipe a newer mint.
+      const sentToken = this.tokenSource ? await this.tokenSource.getToken() : undefined
       let res = await fetch(`${this.baseUrl}/v1/messages`, {
         method: 'POST',
-        headers: await this.authHeaders(),
+        headers: await this.authHeaders(sentToken),
         body,
       })
-      if (res.status === 401 && this.tokenSource) {
-        this.tokenSource.invalidate(this.tokenSource.getCachedToken())
+      if (res.status === 401 && this.tokenSource && sentToken !== undefined) {
+        this.tokenSource.invalidate(sentToken)
         res = await fetch(`${this.baseUrl}/v1/messages`, {
           method: 'POST',
           headers: await this.authHeaders(),

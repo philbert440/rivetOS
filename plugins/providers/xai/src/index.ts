@@ -432,18 +432,23 @@ export class XAIProvider implements Provider {
   // isAvailable
   // -----------------------------------------------------------------------
 
-  private async authHeaders(): Promise<Record<string, string>> {
-    if (this.tokenSource) return this.tokenSource.authHeaders()
+  private async authHeaders(token?: string): Promise<Record<string, string>> {
+    if (this.tokenSource) {
+      const resolved = token ?? (await this.tokenSource.getToken())
+      return { Authorization: `Bearer ${resolved}` }
+    }
     return { Authorization: `Bearer ${this.apiKey}` }
   }
 
   async isAvailable(): Promise<boolean> {
     try {
+      // Capture the token actually sent so a staggered 401 cannot wipe a newer mint.
+      const sentToken = this.tokenSource ? await this.tokenSource.getToken() : undefined
       let res = await fetch(`${this.baseUrl}/models`, {
-        headers: await this.authHeaders(),
+        headers: await this.authHeaders(sentToken),
       })
-      if (res.status === 401 && this.tokenSource) {
-        this.tokenSource.invalidate(this.tokenSource.getCachedToken())
+      if (res.status === 401 && this.tokenSource && sentToken !== undefined) {
+        this.tokenSource.invalidate(sentToken)
         res = await fetch(`${this.baseUrl}/models`, {
           headers: await this.authHeaders(),
         })

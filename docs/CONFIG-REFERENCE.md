@@ -654,7 +654,7 @@ memory:
 | `embed_token_ttl_ms`             | number   | `300000`            | Cache lifetime for a minted embed token.                                                                |
 | `embed_token_command_timeout_ms` | number   | `5000`              | Mint timeout for `embed_token_command`.                                                                 |
 | `embed_wire_shape`               | string   | `openai`            | `openai` → `POST <base>/v1/embeddings`; `native` → `POST <base>` with `{texts,input}`.                  |
-| `embed_expected_dims`            | number   | —                   | When set, must equal the embedding column width (`halfvec(1024)`). Rejects shorter vectors and slices longer ones. Any other value bricks inserts and vector search. Worker env: `RIVETOS_EMBED_EXPECTED_DIMS`. |
+| `embed_expected_dims`            | number   | —                   | When set, must equal the embedding column width (`halfvec(1024)`). Rejects any vector whose length differs (longer vectors null out — truncation is `EMBED_TRUNCATE_DIMS` only). Any other configured value bricks inserts and vector search. Worker env: `RIVETOS_EMBED_EXPECTED_DIMS`. |
 | `delegation_tracking`            | boolean  | `false`             | Persist delegation events into memory (`ros_messages`, channel `delegation`) for auditing.              |
 | `embedded`                       | object   | —                   | In-process PGlite transport for the same postgres backend. Mutually exclusive with `connection_string`. |
 

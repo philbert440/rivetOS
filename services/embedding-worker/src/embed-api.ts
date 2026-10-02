@@ -62,17 +62,17 @@ export function delayForRetry(attempt: number, response?: Response): number {
   return Math.pow(2, attempt) * 1000
 }
 
-async function authHeaders(): Promise<Record<string, string>> {
+async function authHeaders(): Promise<{ headers: Record<string, string>; sentToken?: string }> {
   const headers: Record<string, string> = { 'Content-Type': 'application/json' }
   if (config.tokenSource) {
     const token = await config.tokenSource.getToken()
     headers.Authorization = `Bearer ${token}`
-    return headers
+    return { headers, sentToken: token }
   }
   if (config.apiKey) {
     headers.Authorization = `Bearer ${config.apiKey}`
   }
-  return headers
+  return { headers }
 }
 
 function normalizeBatch(vectors: Array<number[] | null>): Array<number[] | null> {
@@ -95,7 +95,7 @@ async function embedOnce(texts: string[]): Promise<Array<number[] | null> | 'tra
 
   for (let attempt = 0; attempt <= config.maxRetries; attempt++) {
     try {
-      const headers = await authHeaders()
+      const { headers, sentToken } = await authHeaders()
       let response = await fetch(url, {
         method: 'POST',
         headers,
@@ -103,13 +103,14 @@ async function embedOnce(texts: string[]): Promise<Array<number[] | null> | 'tra
         signal: AbortSignal.timeout(config.apiTimeoutMs),
       })
 
-      // Remint once on 401 when using token_command.
-      if (response.status === 401 && config.tokenSource) {
-        config.tokenSource.invalidate(config.tokenSource.getCachedToken())
-        const retryHeaders = await authHeaders()
+      // Remint once on 401 when using token_command. Pass the token actually
+      // sent — getCachedToken() can already be a newer mint from another caller.
+      if (response.status === 401 && config.tokenSource && sentToken !== undefined) {
+        config.tokenSource.invalidate(sentToken)
+        const retry = await authHeaders()
         response = await fetch(url, {
           method: 'POST',
-          headers: retryHeaders,
+          headers: retry.headers,
           body: JSON.stringify(body),
           signal: AbortSignal.timeout(config.apiTimeoutMs),
         })

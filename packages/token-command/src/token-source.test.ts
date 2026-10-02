@@ -79,6 +79,23 @@ describe('createTokenSource', () => {
     expect(await src.getToken()).toBe('t-2')
   })
 
+  it('invalidate(getCachedToken()) after a remint wipes the fresh token (call-site anti-pattern)', async () => {
+    // Production sites must pass the token that was actually sent, not
+    // getCachedToken() at invalidate time — that returns the post-remint value
+    // and makes the guard a no-op (cache.token === rejectedToken always).
+    let n = 0
+    const src = createTokenSource({
+      argv: ['helper'],
+      runCommand: async () => `t-${++n}`,
+    })
+    expect(await src.getToken()).toBe('t-1')
+    src.invalidate('t-1')
+    expect(await src.getToken()).toBe('t-2')
+    src.invalidate(src.getCachedToken())
+    expect(src.getCachedToken()).toBeUndefined()
+    expect(await src.getToken()).toBe('t-3')
+  })
+
   it('coalesces concurrent mint calls', async () => {
     let resolveMint!: (v: string) => void
     const runCommand = vi.fn(
@@ -170,5 +187,30 @@ describe('createAuthorizedFetch', () => {
       baseFetch,
     })
     await f('https://example.test/v1/messages', { method: 'POST' })
+  })
+
+  it('staggered 401 remint does not wipe a concurrent newer mint', async () => {
+    let n = 0
+    const src = createTokenSource({
+      argv: ['helper'],
+      runCommand: async () => `tok-${++n}`,
+    })
+    const baseFetch = vi.fn(async (_url: Parameters<typeof fetch>[0], init?: RequestInit) => {
+      const auth = new Headers(init?.headers).get('Authorization')
+      if (auth === 'Bearer tok-1') {
+        // Peer request already reminted before our 401 handler runs.
+        src.invalidate('tok-1')
+        await src.getToken() // tok-2
+        return new Response('nope', { status: 401 })
+      }
+      return new Response('ok', { status: 200 })
+    }) as unknown as typeof fetch
+
+    const f = createAuthorizedFetch({ tokenSource: src, baseFetch })
+    const res = await f('https://example.test/v1/models')
+    expect(res.status).toBe(200)
+    // createAuthorizedFetch passes the sent token; tok-2 must survive.
+    expect(src.getCachedToken()).toBe('tok-2')
+    expect(n).toBe(2)
   })
 })

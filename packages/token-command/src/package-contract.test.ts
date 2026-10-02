@@ -60,4 +60,31 @@ describe('@rivetos/token-command package contract', () => {
     expect(typeof loaded.createTokenSource).toBe('function')
     expect(typeof loaded.normalizeEmbedVector).toBe('function')
   })
+
+  it('401 remint call sites pass the sent token, not getCachedToken() at invalidate time', () => {
+    // invalidate(getCachedToken()) makes the newer-mint guard a no-op: after a
+    // peer remint, cached === "rejected" and the fresh token is wiped.
+    const repoRoot = join(pkgRoot, '../..')
+    const sites = [
+      'plugins/memory/postgres/src/search.ts',
+      'plugins/providers/anthropic/src/index.ts',
+      'plugins/providers/xai/src/index.ts',
+      'plugins/providers/vllm/src/index.ts',
+      'plugins/providers/llama-server/src/index.ts',
+      'services/embedding-worker/src/embed-api.ts',
+    ]
+    const anti = /invalidate\(\s*[^)]*getCachedToken\s*\(/
+    for (const rel of sites) {
+      const src = readFileSync(join(repoRoot, rel), 'utf8')
+      expect(src, rel).not.toMatch(anti)
+    }
+  })
+
+  it('CONFIG-REFERENCE embed_expected_dims does not claim silent slice', () => {
+    const doc = readFileSync(join(pkgRoot, '../../docs/CONFIG-REFERENCE.md'), 'utf8')
+    const row = doc.split('\n').find((line) => line.includes('`embed_expected_dims`'))
+    expect(row).toBeDefined()
+    expect(row).not.toMatch(/slices longer/i)
+    expect(row).toMatch(/null out|length differs|exact/i)
+  })
 })

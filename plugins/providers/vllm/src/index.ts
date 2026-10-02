@@ -361,8 +361,11 @@ export class VllmProvider implements Provider {
     return this.outputTokenLimit
   }
 
-  private async authHeaders(): Promise<Record<string, string>> {
-    if (this.tokenSource) return this.tokenSource.authHeaders()
+  private async authHeaders(token?: string): Promise<Record<string, string>> {
+    if (this.tokenSource) {
+      const resolved = token ?? (await this.tokenSource.getToken())
+      return { Authorization: `Bearer ${resolved}` }
+    }
     const headers: Record<string, string> = {}
     if (this.apiKey) headers.Authorization = `Bearer ${this.apiKey}`
     return headers
@@ -397,9 +400,11 @@ export class VllmProvider implements Provider {
       return ids
     }
     const modelsUrl = this.modelsEndpoint()
-    let res = await fetch(modelsUrl, { headers: await this.authHeaders() })
-    if (res.status === 401 && this.tokenSource) {
-      this.tokenSource.invalidate(this.tokenSource.getCachedToken())
+    // Capture the token actually sent so a staggered 401 cannot wipe a newer mint.
+    const sentToken = this.tokenSource ? await this.tokenSource.getToken() : undefined
+    let res = await fetch(modelsUrl, { headers: await this.authHeaders(sentToken) })
+    if (res.status === 401 && this.tokenSource && sentToken !== undefined) {
+      this.tokenSource.invalidate(sentToken)
       res = await fetch(modelsUrl, { headers: await this.authHeaders() })
     }
     if (!res.ok) {
@@ -546,9 +551,11 @@ export class VllmProvider implements Provider {
     const modelsUrl = this.modelsEndpoint()
     let res: Response
     try {
-      res = await fetch(modelsUrl, { headers: await this.authHeaders() })
-      if (res.status === 401 && this.tokenSource) {
-        this.tokenSource.invalidate(this.tokenSource.getCachedToken())
+      // Capture the token actually sent so a staggered 401 cannot wipe a newer mint.
+      const sentToken = this.tokenSource ? await this.tokenSource.getToken() : undefined
+      res = await fetch(modelsUrl, { headers: await this.authHeaders(sentToken) })
+      if (res.status === 401 && this.tokenSource && sentToken !== undefined) {
+        this.tokenSource.invalidate(sentToken)
         res = await fetch(modelsUrl, { headers: await this.authHeaders() })
       }
     } catch (err: unknown) {

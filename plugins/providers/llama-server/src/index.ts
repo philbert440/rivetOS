@@ -200,8 +200,11 @@ export class LlamaServerProvider implements Provider {
     return this.outputTokenLimit
   }
 
-  private async authHeaders(): Promise<Record<string, string>> {
-    if (this.tokenSource) return this.tokenSource.authHeaders()
+  private async authHeaders(token?: string): Promise<Record<string, string>> {
+    if (this.tokenSource) {
+      const resolved = token ?? (await this.tokenSource.getToken())
+      return { Authorization: `Bearer ${resolved}` }
+    }
     const headers: Record<string, string> = {}
     if (this.apiKey) headers.Authorization = `Bearer ${this.apiKey}`
     return headers
@@ -228,9 +231,11 @@ export class LlamaServerProvider implements Provider {
       return ids
     }
     const url = `${this.baseUrl}/v1/models`
-    let res = await fetch(url, { headers: await this.authHeaders() })
-    if (res.status === 401 && this.tokenSource) {
-      this.tokenSource.invalidate(this.tokenSource.getCachedToken())
+    // Capture the token actually sent so a staggered 401 cannot wipe a newer mint.
+    const sentToken = this.tokenSource ? await this.tokenSource.getToken() : undefined
+    let res = await fetch(url, { headers: await this.authHeaders(sentToken) })
+    if (res.status === 401 && this.tokenSource && sentToken !== undefined) {
+      this.tokenSource.invalidate(sentToken)
       res = await fetch(url, { headers: await this.authHeaders() })
     }
     if (!res.ok) {
@@ -347,9 +352,11 @@ export class LlamaServerProvider implements Provider {
   async isAvailable(): Promise<boolean> {
     let res: Response
     try {
-      res = await fetch(`${this.baseUrl}/v1/models`, { headers: await this.authHeaders() })
-      if (res.status === 401 && this.tokenSource) {
-        this.tokenSource.invalidate(this.tokenSource.getCachedToken())
+      // Capture the token actually sent so a staggered 401 cannot wipe a newer mint.
+      const sentToken = this.tokenSource ? await this.tokenSource.getToken() : undefined
+      res = await fetch(`${this.baseUrl}/v1/models`, { headers: await this.authHeaders(sentToken) })
+      if (res.status === 401 && this.tokenSource && sentToken !== undefined) {
+        this.tokenSource.invalidate(sentToken)
         res = await fetch(`${this.baseUrl}/v1/models`, { headers: await this.authHeaders() })
       }
     } catch (err: unknown) {
