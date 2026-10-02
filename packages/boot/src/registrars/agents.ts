@@ -898,6 +898,25 @@ export async function registerAgentTools(
     return { error: `agent "${agentId}" not found locally${registry ? ' or on the mesh' : ''}` }
   }
 
+  // The node hosting a runtime agent (not a preset): this node for a config
+  // agent, else the newest online mesh host. `node` restricts it to that node.
+  const resolveRuntimeAgent = async (
+    agentId: string,
+    node?: string,
+  ): Promise<string | undefined> => {
+    const local = runtime
+      .getRouter()
+      .getAgents()
+      .some((a) => a.id === agentId)
+    if (local && (!node || node === nodeName)) return nodeName
+    if (!registry) return undefined
+    const nodes = await registry.findByAgent(agentId)
+    const online = nodes.filter(
+      (n) => n.status === 'online' && n.name !== nodeName && (!node || n.name === node),
+    )
+    return online.sort((a, b) => b.lastSeen - a.lastSeen).at(0)?.name
+  }
+
   const gatewayRoutes: GatewayRoute[] = []
   if (taskEngineStore && taskWaiter) {
     // Config agent ids win over a preset of the same name. The route builds
@@ -909,6 +928,7 @@ export async function registerAgentTools(
         store: taskEngineStore,
         waiter: taskWaiter,
         resolveAffinity,
+        resolveRuntimeAgent,
         resolvePreset: presetEngine
           ? async (agentId) => {
               if (
