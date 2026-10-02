@@ -345,10 +345,27 @@ export function createTaskApiRoute(opts: TaskApiOptions): GatewayRoute {
             // sidecar. With no runtime agent of that name the preset still
             // answers with its own "no harness configured" refusal.
             if (preset && !preset.harnessId && opts.resolveRuntimeAgent) {
-              const host = await opts.resolveRuntimeAgent(input.agentId)
-              if (host) {
-                preset = undefined
-                input.nodeAffinity ??= host
+              // The preset store matches names case-insensitively ("Grok"),
+              // runtime ids are exact (`grok`): try the id as given, then its
+              // lowercase form, and store the runtime spelling on the row.
+              const ids = [...new Set([input.agentId.trim(), input.agentId.trim().toLowerCase()])]
+              let anywhere = false
+              for (const id of ids) {
+                // A client-supplied nodeAffinity is validated, not trusted: the
+                // row must land on a node that actually hosts the agent.
+                const host = await opts.resolveRuntimeAgent(id, input.nodeAffinity)
+                if (host) {
+                  preset = undefined
+                  input.agentId = id
+                  input.nodeAffinity = host
+                  break
+                }
+                if (input.nodeAffinity && (await opts.resolveRuntimeAgent(id))) anywhere = true
+              }
+              if (preset && anywhere) {
+                return json(res, 400, {
+                  error: `runtime agent "${ids.at(-1) ?? input.agentId}" is not hosted on an online node "${input.nodeAffinity ?? ''}"`,
+                })
               }
             }
             if (preset) {
@@ -375,6 +392,11 @@ export function createTaskApiRoute(opts: TaskApiOptions): GatewayRoute {
           if (!tookPresetBranch && opts.resolveRuntimeAgent) {
             const pinned = /^([^@\s]+)@([^@\s]+)$/.exec(input.agentId.trim())
             if (pinned) {
+              if (input.nodeAffinity && input.nodeAffinity !== pinned[2]) {
+                return json(res, 400, {
+                  error: `agent "${input.agentId.trim()}" pins node "${pinned[2]}" but nodeAffinity is "${input.nodeAffinity}"`,
+                })
+              }
               const host = await opts.resolveRuntimeAgent(pinned[1], pinned[2])
               if (!host) {
                 return json(res, 400, {

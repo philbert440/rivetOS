@@ -507,6 +507,50 @@ describe('agent-aware dispatch (resolveAffinity)', () => {
     expect((row?.spec as { presetId?: string } | undefined)?.presetId).toBeUndefined()
   })
 
+  it('the shadow fix also fires for the capitalised preset spelling, and stores the runtime id', async () => {
+    // The preset store matches case-insensitively, so "Grok" resolves the preset;
+    // the runtime agent id is `grok`.
+    const store = new InMemoryTaskStore()
+    const waiter = createTaskCompletionWaiter({ store, pollFallbackMs: 10 })
+    const grok = reviewerPreset({ id: 'preset-grok', name: 'Grok', harnessId: undefined })
+    const route = createTaskApiRoute({
+      store,
+      waiter,
+      resolvePreset: async (agentId) => (agentId.toLowerCase() === 'grok' ? grok : undefined),
+      presetHost: { nodeName: 'node-f', meshRegistry: presetMesh([]) },
+      resolveRuntimeAgent: async (agentId, node) =>
+        agentId === 'grok' && (!node || node === 'node-c') ? 'node-c' : undefined,
+    })
+    const server: Server = createServer((req, res) => {
+      void route.handler(req, res)
+    })
+    await new Promise<void>((r) => server.listen(0, '127.0.0.1', r))
+    cleanups.push(async () => {
+      await waiter.stop()
+      await new Promise((r) => server.close(r))
+    })
+    const base = `http://127.0.0.1:${(server.address() as AddressInfo).port}`
+
+    const res = await create(base, { goal: 'search', agentId: 'Grok' })
+    expect(res.status).toBe(201)
+    const { task } = (await res.json()) as { task: { id: string } }
+    expect(await store.get(task.id)).toMatchObject({
+      executor: 'chat-loop',
+      agentId: 'grok',
+      nodeAffinity: 'node-c',
+    })
+
+    // a client nodeAffinity is validated: the agent is not hosted there → 400, no row
+    const wrong = await create(base, { goal: 'search', agentId: 'grok', nodeAffinity: 'node-x' })
+    expect(wrong.status).toBe(400)
+    expect(((await wrong.json()) as { error: string }).error).toBe(
+      'runtime agent "grok" is not hosted on an online node "node-x"',
+    )
+    // …and one that does host it is accepted
+    const right = await create(base, { goal: 'search', agentId: 'grok', nodeAffinity: 'node-c' })
+    expect(right.status).toBe(201)
+  })
+
   it('a preset with no harness and no runtime agent of that name still refuses as itself', async () => {
     const { base } = await startPresetApi({
       preset: reviewerPreset({ harnessId: undefined }),
@@ -536,6 +580,14 @@ describe('agent-aware dispatch (resolveAffinity)', () => {
     expect(((await bad.json()) as { error: string }).error).toBe(
       'runtime agent "grok" is not hosted on an online node "node-zzz"',
     )
+    // a pin that contradicts an explicit nodeAffinity is refused rather than silently resolved
+    const clash = await create(base, {
+      goal: 'search',
+      agentId: 'grok@node-c',
+      nodeAffinity: 'node-new',
+    })
+    expect(clash.status).toBe(400)
+    expect(((await clash.json()) as { error: string }).error).toContain('pins node "node-c"')
     // a preset name wins over the pin syntax: the full string is tried as a preset first
     const preset = await create(base, { goal: 'review', agentId: 'reviewer' })
     expect(preset.status).toBe(201)

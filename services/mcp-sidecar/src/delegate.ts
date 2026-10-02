@@ -146,23 +146,11 @@ export const delegateTaskDefinition = {
 }
 
 /**
- * Den HTTPS `delegate_task` does not parse `agent@node` — the gateway is given
- * `to_agent` verbatim. Same fields as {@link delegateTaskDefinition}; the
- * description and `to_agent` text stay the pre-pin wording so the tool does
- * not advertise a syntax this transport cannot honor.
+ * Den HTTPS `delegate_task`. The den's task route resolves `to_agent` with the
+ * same rules as this file (a harness-less preset yields to a runtime agent,
+ * `agent@node` pins a node), so the den transport advertises the same tool.
  */
-export const denDelegateTaskDefinition = {
-  description:
-    DELEGATE_TASK_OPENING +
-    PRESET_WINS_FULL_STRING +
-    ' ' +
-    DELEGATE_TASK_HOW +
-    '. ' +
-    DELEGATE_TASK_WAIT,
-  inputSchema: delegateTaskInputSchema(
-    'RivetHub agent name or id, or a runtime agent id (agent@node pins the node) — call list_agents first',
-  ),
-}
+export const denDelegateTaskDefinition = delegateTaskDefinition
 
 export const listAgentsDefinition = {
   description:
