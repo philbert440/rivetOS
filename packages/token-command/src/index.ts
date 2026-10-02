@@ -15,6 +15,7 @@ export {
   parseEmbedResponse,
   normalizeEmbedVector,
   parseEmbedWireShape,
+  EMBEDDING_COLUMN_DIMS,
   type EmbedWireShape,
   type EmbedRequestParts,
   type BuildEmbedRequestOptions,

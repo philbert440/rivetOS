@@ -705,6 +705,31 @@ describe('Config Validation', () => {
       assertValid(validateConfig(cfg))
     })
 
+    it('rejects embed_expected_dims that do not match the halfvec column width', () => {
+      const cfg = validConfig()
+      cfg.memory = {
+        postgres: {
+          embed_expected_dims: 4096,
+        },
+      }
+      const result = validateConfig(cfg)
+      assertError(result, 'memory.postgres.embed_expected_dims', 'column width')
+    })
+
+    it('does not validate token_command on providers that ignore it', () => {
+      const cfg = validConfig()
+      ;(cfg.providers as Record<string, unknown>).google = {
+        model: 'gemini-2.0-flash',
+        api_key: '${GOOGLE_API_KEY}',
+        token_command: ['/usr/local/bin/mint-token'],
+      }
+      const result = validateConfig(cfg)
+      // Unknown-key warning is fine; must not claim "token_command wins".
+      const wins = result.warnings.filter((w) => w.message.includes('token_command wins'))
+      assert.equal(wins.length, 0)
+      assert.equal(result.errors.length, 0)
+    })
+
     it('rejects bad embed_wire_shape and shell-string embed_token_command', () => {
       const cfg = validConfig()
       cfg.memory = {

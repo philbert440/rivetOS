@@ -211,7 +211,12 @@ export class LlamaServerProvider implements Provider {
     return this.tokenSource?.getCachedToken() ?? this.apiKey
   }
 
-  /** Floor + discovered model ids (kicks a background refresh when TTL expired). */
+  /**
+   * Floor + discovered model ids (kicks a background refresh when TTL expired).
+   * Building block: no runtime UI/harness consumer reads this yet — den-server
+   * model-sheets still use their own discovery. Callers that want the merge
+   * must invoke this (or `createModelCatalog`) explicitly.
+   */
   listModels(): string[] {
     return this.catalog.refresh()
   }

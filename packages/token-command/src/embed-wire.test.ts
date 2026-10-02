@@ -4,6 +4,7 @@ import {
   parseEmbedResponse,
   normalizeEmbedVector,
   parseEmbedWireShape,
+  EMBEDDING_COLUMN_DIMS,
 } from './embed-wire.js'
 
 describe('buildEmbedRequest', () => {
@@ -81,6 +82,12 @@ describe('normalizeEmbedVector', () => {
 
   it('truncateDims slices without expectedDims', () => {
     expect(normalizeEmbedVector([1, 2, 3], { truncateDims: 2 })).toEqual([1, 2])
+  })
+
+  it('pins EMBEDDING_COLUMN_DIMS to the halfvec(1024) schema width', () => {
+    expect(EMBEDDING_COLUMN_DIMS).toBe(1024)
+    const wide = Array.from({ length: 1500 }, (_, i) => i)
+    expect(normalizeEmbedVector(wide, { expectedDims: EMBEDDING_COLUMN_DIMS })).toHaveLength(1024)
   })
 })
 

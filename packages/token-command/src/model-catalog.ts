@@ -4,6 +4,11 @@
  * Sync readers always see the floor (and last-known discovery). Refresh runs
  * in the background with its own deadline — same shape as den-server's
  * backgroundDiscovery, kept here so provider plugins need no den dependency.
+ *
+ * Building block: vllm / llama-server expose `listModels()` and feed this
+ * catalog from `isAvailable()` probes, but no runtime UI/harness consumer
+ * reads the merged list yet (den-server `model-sheets` left alone). Wire a
+ * reader before treating endpoint discovery as user-visible.
  */
 
 export interface ModelCatalogOptions {

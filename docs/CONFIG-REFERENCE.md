@@ -317,8 +317,8 @@ Use `models_url` only if the models listing lives somewhere other than `<base><a
 | `token_command`            | string[] | —                 | Argv that prints a bearer token on stdout (no shell). Wins over `api_key`.                                 |
 | `token_ttl_ms`             | number   | `300000`          | Cache lifetime for a minted token.                                                                         |
 | `token_command_timeout_ms` | number   | `5000`            | Mint timeout; the helper is SIGKILL'd on expiry.                                                           |
-| `models`                   | string[] | —                 | Static model catalog floor; endpoint listing is merged on top (floor first).                               |
-| `models_ttl_ms`            | number   | `60000`           | Background refresh interval for the endpoint model catalog.                                                |
+| `models`                   | string[] | —                 | Static model catalog floor for `listModels()` (building block — no UI/harness reader yet; floor first).    |
+| `models_ttl_ms`            | number   | `60000`           | Background refresh interval for the endpoint model catalog (`listModels()` building block).                |
 | `max_tokens`               | number   | `4096`            | Maximum output tokens.                                                                                     |
 | `temperature`              | number   | `0.7`             | Sampling temperature.                                                                                      |
 | `top_p`                    | number   | `0.95`            | Nucleus sampling.                                                                                          |
@@ -362,8 +362,8 @@ providers:
 | `token_command`            | string[] | —                         | Argv that prints a bearer token on stdout (no shell). Wins over `api_key`. |
 | `token_ttl_ms`             | number   | `300000`                  | Cache lifetime for a minted token.                                         |
 | `token_command_timeout_ms` | number   | `5000`                    | Mint timeout; the helper is SIGKILL'd on expiry.                           |
-| `models`                   | string[] | —                         | Static model catalog floor; endpoint listing is merged on top.             |
-| `models_ttl_ms`            | number   | `60000`                   | Background refresh interval for the endpoint model catalog.                |
+| `models`                   | string[] | —                         | Static model catalog floor for `listModels()` (building block — no UI/harness reader yet). |
+| `models_ttl_ms`            | number   | `60000`                   | Background refresh interval for the endpoint model catalog (`listModels()` building block). |
 | `max_tokens`               | number   | `4096`                    | Maximum output tokens.                                                     |
 | `temperature`              | number   | `0.7`                     | Sampling temperature.                                                      |
 | `top_p`                    | number   | `0.95`                    | Nucleus sampling.                                                          |
@@ -649,12 +649,12 @@ memory:
 | `connection_string`              | string   | `${RIVETOS_PG_URL}` | PostgreSQL connection URL.                                                                              |
 | `embed_endpoint`                 | string   | —                   | Embeddings endpoint base used by the embedding worker and query-time search.                            |
 | `embed_model`                    | string   | —                   | Embedding model id (required when an embed URL is set).                                                 |
-| `embed_api_key`                  | string   | —                   | Static bearer for the embed endpoint (also honors `RIVETOS_EMBED_API_KEY` / `OPENAI_API_KEY`).          |
+| `embed_api_key`                  | string   | —                   | Static bearer for the embed endpoint (also honors `RIVETOS_EMBED_API_KEY`; falls back to `OPENAI_API_KEY` — that key is sent as Bearer to whatever `embed_endpoint` is configured). |
 | `embed_token_command`            | string[] | —                   | Argv that prints a bearer token on stdout (no shell). Wins over `embed_api_key`.                        |
 | `embed_token_ttl_ms`             | number   | `300000`            | Cache lifetime for a minted embed token.                                                                |
 | `embed_token_command_timeout_ms` | number   | `5000`              | Mint timeout for `embed_token_command`.                                                                 |
 | `embed_wire_shape`               | string   | `openai`            | `openai` → `POST <base>/v1/embeddings`; `native` → `POST <base>` with `{texts,input}`.                  |
-| `embed_expected_dims`            | number   | —                   | When set, reject shorter vectors and slice longer ones to this width.                                   |
+| `embed_expected_dims`            | number   | —                   | When set, must equal the embedding column width (`halfvec(1024)`). Rejects shorter vectors and slices longer ones. Any other value bricks inserts and vector search. Worker env: `RIVETOS_EMBED_EXPECTED_DIMS`. |
 | `delegation_tracking`            | boolean  | `false`             | Persist delegation events into memory (`ros_messages`, channel `delegation`) for auditing.              |
 | `embedded`                       | object   | —                   | In-process PGlite transport for the same postgres backend. Mutually exclusive with `connection_string`. |
 

@@ -394,6 +394,19 @@ export function validateTokenCommandFields(
   }
 }
 
+/** Providers that actually honor `token_command` (Bearer mint path). */
+const TOKEN_COMMAND_PROVIDERS = new Set(['anthropic', 'xai', 'vllm', 'llama-server'])
+
+/** Providers that expose the static `models` floor + `models_ttl_ms` catalog. */
+const MODEL_CATALOG_PROVIDERS = new Set(['vllm', 'llama-server'])
+
+/**
+ * Memory postgres embedding column width (`halfvec(1024)` after migration 0015).
+ * Kept here (boot does not depend on `@rivetos/token-command`) — must stay in
+ * lockstep with `EMBEDDING_COLUMN_DIMS` in that package and worker truncateDims.
+ */
+export const EMBEDDING_COLUMN_DIMS = 1024
+
 function validateTokenCommand(
   provider: Record<string, unknown>,
   path: string,
@@ -534,28 +547,33 @@ export function validateProviders(
       }
     }
 
-    validateTokenCommand(provider, path, name, issues)
-
-    if (
-      (name === 'vllm' || name === 'llama-server') &&
-      provider.models !== undefined &&
-      (!Array.isArray(provider.models) ||
-        !provider.models.every((item) => typeof item === 'string' && item.length > 0))
-    ) {
-      issues.push({
-        severity: 'error',
-        path: `${path}.models`,
-        message: `Provider "${name}" models must be an array of non-empty strings (static catalog floor)`,
-      })
+    // Only providers that implement the Bearer mint path — avoid misleading
+    // "token_command wins over api_key" warnings on google / CLI harnesses.
+    if (TOKEN_COMMAND_PROVIDERS.has(name)) {
+      validateTokenCommand(provider, path, name, issues)
     }
 
-    if (provider.models_ttl_ms !== undefined) {
-      if (typeof provider.models_ttl_ms !== 'number' || provider.models_ttl_ms < 1) {
+    if (MODEL_CATALOG_PROVIDERS.has(name)) {
+      if (
+        provider.models !== undefined &&
+        (!Array.isArray(provider.models) ||
+          !provider.models.every((item) => typeof item === 'string' && item.length > 0))
+      ) {
         issues.push({
           severity: 'error',
-          path: `${path}.models_ttl_ms`,
-          message: `Provider "${name}" models_ttl_ms must be a positive number`,
+          path: `${path}.models`,
+          message: `Provider "${name}" models must be an array of non-empty strings (static catalog floor)`,
         })
+      }
+
+      if (provider.models_ttl_ms !== undefined) {
+        if (typeof provider.models_ttl_ms !== 'number' || provider.models_ttl_ms < 1) {
+          issues.push({
+            severity: 'error',
+            path: `${path}.models_ttl_ms`,
+            message: `Provider "${name}" models_ttl_ms must be a positive number`,
+          })
+        }
       }
     }
 
@@ -700,11 +718,17 @@ export function validateMemory(memory: Record<string, unknown>, issues: Validati
       }
 
       if (pg.embed_expected_dims !== undefined) {
-        if (typeof pg.embed_expected_dims !== 'number' || pg.embed_expected_dims < 1) {
+        if (
+          typeof pg.embed_expected_dims !== 'number' ||
+          pg.embed_expected_dims !== EMBEDDING_COLUMN_DIMS
+        ) {
           issues.push({
             severity: 'error',
             path: 'memory.postgres.embed_expected_dims',
-            message: '"embed_expected_dims" must be a positive number',
+            message:
+              `"embed_expected_dims" must equal the embedding column width ` +
+              `(${String(EMBEDDING_COLUMN_DIMS)}); any other value bricks ` +
+              `halfvec inserts and vector search`,
           })
         }
       }

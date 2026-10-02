@@ -3,7 +3,6 @@
   "version": "0.5.0",
   "description": "Argv-based bearer token minting with TTL cache, plus shared embed wire-shape helpers",
   "license": "Apache-2.0",
-  "type": "module",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
   "scripts": {

@@ -61,6 +61,20 @@ describe('embedding-worker config', () => {
     expect(config.truncateDims).toBe(1024)
   })
 
+  it('accepts RIVETOS_EMBED_EXPECTED_DIMS=1024 (column width)', async () => {
+    stubRequired({ RIVETOS_EMBED_EXPECTED_DIMS: '1024' })
+    const { config } = await import('./config.js')
+    expect(config.expectedDims).toBe(1024)
+  })
+
+  it('exits when RIVETOS_EMBED_EXPECTED_DIMS is not the column width', async () => {
+    stubRequired({ RIVETOS_EMBED_EXPECTED_DIMS: '4096' })
+    const { exit, error } = trapExit()
+    await expect(import('./config.js')).rejects.toThrow(/process\.exit:1/)
+    expect(exit).toHaveBeenCalledWith(1)
+    expect(logged(error)).toMatch(/RIVETOS_EMBED_EXPECTED_DIMS.*1024/)
+  })
+
   it('honours EMBED_CHUNKS_ENABLED=false and CHUNK_BACKFILL_LIMIT', async () => {
     stubRequired({ EMBED_CHUNKS_ENABLED: 'false', CHUNK_BACKFILL_LIMIT: '50' })
     const { config } = await import('./config.js')

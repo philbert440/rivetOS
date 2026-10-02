@@ -5,6 +5,13 @@
 
 export type EmbedWireShape = 'openai' | 'native'
 
+/**
+ * Width of the memory postgres embedding column (`halfvec(1024)` after
+ * migration 0015). `embed_expected_dims` / `RIVETOS_EMBED_EXPECTED_DIMS` must
+ * equal this when set — any other value bricks inserts and `<=>` search.
+ */
+export const EMBEDDING_COLUMN_DIMS = 1024 as const
+
 export interface EmbedRequestParts {
   url: string
   body: Record<string, unknown>
@@ -88,10 +95,12 @@ function isFiniteNumberArray(v: unknown): v is number[] {
 }
 
 /**
- * Truncate or reject by expected dimension. When `expectedDims` is set and the
- * vector length differs (and is not longer-than-expected for truncate), return
- * null. When longer than expectedDims, slice. When expectedDims unset, optional
- * `truncateDims` still slices long vectors.
+ * Truncate or reject by expected dimension. When `expectedDims` is set it wins
+ * over `truncateDims`: length must match (longer vectors are sliced; shorter
+ * return null). Callers that write into `halfvec(1024)` must pass
+ * `expectedDims: EMBEDDING_COLUMN_DIMS` (or leave it unset and rely on
+ * `truncateDims: 1024`) — a mismatched expectedDims bricks every embed write
+ * and vector search.
  */
 export function normalizeEmbedVector(
   vec: number[] | null,

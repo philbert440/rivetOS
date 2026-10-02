@@ -6,6 +6,7 @@ import {
   createTokenSource,
   parseTokenCommandArgv,
   parseEmbedWireShape,
+  EMBEDDING_COLUMN_DIMS,
   type EmbedWireShape,
   type TokenSource,
 } from '@rivetos/token-command'
@@ -35,11 +36,21 @@ function boolEnv(name: string, fallback: boolean): boolean {
   return fallback
 }
 
-function optionalPositiveInt(name: string): number | undefined {
-  const raw = process.env[name]
+/**
+ * Optional expected embedding width. When set must equal the halfvec column
+ * width (`EMBEDDING_COLUMN_DIMS`); any other value bricks inserts and search.
+ */
+export function resolveExpectedDims(env: NodeJS.ProcessEnv = process.env): number | undefined {
+  const raw = env.RIVETOS_EMBED_EXPECTED_DIMS
   if (raw === undefined || raw === '') return undefined
   const parsed = parseInt(raw, 10)
-  return Number.isFinite(parsed) && parsed > 0 ? parsed : undefined
+  if (!Number.isFinite(parsed) || parsed !== EMBEDDING_COLUMN_DIMS) {
+    console.error(
+      `[EmbedWorker] RIVETOS_EMBED_EXPECTED_DIMS must equal the embedding column width (${String(EMBEDDING_COLUMN_DIMS)}); got ${raw}`,
+    )
+    process.exit(1)
+  }
+  return parsed
 }
 
 /**
@@ -97,7 +108,8 @@ export const config = {
   concurrency: intEnv('EMBED_CONCURRENCY', 4),
 
   // Schema is hard halfvec(1024); doctor checkEmbeddingWidth expects 1024.
-  truncateDims: intEnv('EMBED_TRUNCATE_DIMS', 1024),
+  // Keep in lockstep with EMBEDDING_COLUMN_DIMS / embed_expected_dims.
+  truncateDims: intEnv('EMBED_TRUNCATE_DIMS', EMBEDDING_COLUMN_DIMS),
   // Single-shot content (<= this) is embedded in one call; larger content is
   // split into <=charsPerChunk pieces and mean-pooled. This MUST stay at or
   // below the embed endpoint's per-request capacity — if it exceeds it, an
@@ -123,7 +135,9 @@ export const config = {
   chunkBackfillLimit: intEnv('CHUNK_BACKFILL_LIMIT', 200),
 
   wireShape: resolveWireShape(),
-  expectedDims: optionalPositiveInt('RIVETOS_EMBED_EXPECTED_DIMS'),
+  expectedDims: resolveExpectedDims(),
+  // Prefer RIVETOS_EMBED_API_KEY. OPENAI_API_KEY is a documented fallback — it
+  // is sent as Bearer to whatever embed_endpoint is configured (may not be OpenAI).
   apiKey: process.env.RIVETOS_EMBED_API_KEY || process.env.OPENAI_API_KEY || '',
   tokenSource: resolveEmbedTokenSourceFromEnv(),
 } as const
