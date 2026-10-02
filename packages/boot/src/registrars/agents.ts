@@ -175,6 +175,21 @@ export async function registerAgentTools(
   const tasksEnabled = config.tasks?.enabled !== false
   // Phase 2b: one criteria policy for every task creator on this node.
   const criteriaPolicy = criteriaPolicyFromConfig(config.tasks?.eval)
+  // den.allowed_harnesses — unset means every harness is allowed (opt-in).
+  // Non-array values that slip past validate are treated as unset (same as
+  // normalizeAllowedHarnesses), so boot never throws on a bad shape.
+  const allowedRaw = config.den?.allowed_harnesses
+  const allowedHarnessSet: Set<string> | undefined = Array.isArray(allowedRaw)
+    ? new Set(
+        allowedRaw
+          .filter((s): s is string => typeof s === 'string')
+          .map((s) => s.trim())
+          .filter((s) => s.length > 0),
+      )
+    : undefined
+  const isHarnessAllowed = allowedHarnessSet
+    ? (id: string): boolean => allowedHarnessSet.has(id)
+    : undefined
   const sqlitePath = tasksSqlitePath(config)
   let taskEngineStore: TaskStore | undefined
   let sqliteTaskStore: SqliteTaskStore | undefined
@@ -597,6 +612,7 @@ export async function registerAgentTools(
       memory: runtime.getMemory(),
       resolvePreset: resolvePresetForRunner,
       invalidatePreset: invalidatePresetForRunner,
+      isHarnessAllowed,
     })
     subagentTaskStore = inMemoryStore
   }
@@ -692,6 +708,7 @@ export async function registerAgentTools(
       resolvePreset: resolvePresetForRunner,
       invalidatePreset: invalidatePresetForRunner,
       onTaskFinished: notifyTaskFinished,
+      isHarnessAllowed,
     })
     runTaskRef.current = taskRunner.handler
     await taskRunner.start()
@@ -761,6 +778,7 @@ export async function registerAgentTools(
         resolvePreset: resolvePresetForRunner,
         invalidatePreset: invalidatePresetForRunner,
         onTaskFinished: notifyTaskFinished,
+        isHarnessAllowed,
       }),
       nodeId: nodeNameFor(config),
     })
@@ -885,17 +903,6 @@ export async function registerAgentTools(
     // the harness-session row; resolveAffinity alone would pin the node and
     // leave executor chat-loop, which the runner then fails as unregistered.
     const presetEngine = presets
-    // den.allowed_harnesses — unset means every harness is allowed (opt-in).
-    const allowedRaw = config.den?.allowed_harnesses
-    const allowedHarnessSet: Set<string> | undefined =
-      allowedRaw === undefined
-        ? undefined
-        : new Set(
-            allowedRaw
-              .filter((s): s is string => typeof s === 'string')
-              .map((s) => s.trim())
-              .filter((s) => s.length > 0),
-          )
     gatewayRoutes.push(
       createTaskApiRoute({
         store: taskEngineStore,
@@ -917,9 +924,7 @@ export async function registerAgentTools(
         criteriaPolicy,
         localQueueNode: sqliteTaskStore ? nodeName : undefined,
         permissionBroker,
-        isHarnessAllowed: allowedHarnessSet
-          ? (id: string): boolean => allowedHarnessSet.has(id)
-          : undefined,
+        isHarnessAllowed,
       }),
       createOutcomesApiRoute({ store: taskEngineStore }),
     )
@@ -974,6 +979,7 @@ export async function registerAgentTools(
       skills: () => skillManager.list(),
       meshRegistry: registry,
       presets,
+      isHarnessAllowed,
     }),
   )
 

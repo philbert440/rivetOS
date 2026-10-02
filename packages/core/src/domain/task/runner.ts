@@ -179,6 +179,14 @@ export interface TaskHandlerOptions {
    * logged and swallowed: the row is already terminal.
    */
   onTaskFinished?: (taskId: string) => void | Promise<void>
+  /**
+   * Operator allow-list (`den.allowed_harnesses`) on the node that runs the
+   * task. When set, a harness-session claim whose executorTarget is off the
+   * list fails before spawn — covers rows that predate the list, internal
+   * store.create callers, and tasks handed here via nodeAffinity. Absent =
+   * every harness id is allowed (opt-in off).
+   */
+  isHarnessAllowed?: (harnessId: string) => boolean
 }
 
 const HEARTBEAT_INTERVAL_MS_DEFAULT = 30_000
@@ -492,6 +500,26 @@ async function pinPresetDirectory(
 }
 
 async function runClaimedTask(task: TaskRow, opts: TaskHandlerOptions): Promise<void> {
+  // Gate on the RUNNING node: create-time checks on a peer (or rows that
+  // predate the list / internal store.create) never consulted this node's
+  // allow-list. Resume/reattach of interactive sessions is a different path.
+  if (
+    task.executor === 'harness-session' &&
+    task.executorTarget &&
+    opts.isHarnessAllowed &&
+    !opts.isHarnessAllowed(task.executorTarget)
+  ) {
+    const msg = `harness "${task.executorTarget}" is not allowed on this node (den.allowed_harnesses)`
+    await finishTerminal(opts, task.id, 'failed', {
+      verdict: 'failed',
+      summary: msg,
+      artifacts: [],
+      usage: ZERO_USAGE,
+      error: `harness_not_allowed: ${msg}`,
+    })
+    return
+  }
+
   const executor = opts.executors.resolve(task.executor, task.executorTarget)
   if (!executor) {
     await finishTerminal(opts, task.id, 'failed', {

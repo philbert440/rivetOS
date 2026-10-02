@@ -286,6 +286,112 @@ describe('task handler with a not-implemented harness executor', () => {
     expect(row?.error).not.toBe('executor_not_registered')
   })
 
+  it('fails a harness-session claim when the running node disallows the target', async () => {
+    // Create-time gates on a peer (or rows that predate the list) never
+    // consulted this node's allow-list — the runner must refuse before spawn.
+    const store = new InMemoryTaskStore()
+    const executors = createExecutorRegistry()
+    const started: string[] = []
+    executors.register(
+      'harness-session',
+      {
+        ...fakeExecutor('hermes'),
+        start: () => {
+          started.push('hermes')
+          return {
+            events: (async function* () {
+              await Promise.resolve()
+            })(),
+            steer: () => Promise.resolve(),
+            kill: () => Promise.resolve(),
+            result: Promise.resolve({
+              verdict: 'completed' as const,
+              summary: 'done',
+              artifacts: [],
+              usage: {
+                inputTokens: 1,
+                outputTokens: 1,
+                totalTokens: 2,
+                turns: 1,
+                wallClockMs: 1,
+              },
+            }),
+          }
+        },
+      },
+      'hermes',
+    )
+    const handler = createTaskHandler({
+      store,
+      executors,
+      nodeId: 'test-node',
+      isHarnessAllowed: (id) => id === 'claude-code',
+    })
+    const task = await store.create({
+      goal: 'Do the thing',
+      executor: 'harness-session',
+      executorTarget: 'hermes',
+      agentId: 'hermes',
+      origin: 'tool',
+    })
+
+    await handler(task.id)
+
+    const row = await store.get(task.id)
+    expect(row?.status).toBe('failed')
+    expect(row?.error).toMatch(/^harness_not_allowed:/)
+    expect(row?.result?.summary).toContain('den.allowed_harnesses')
+    expect(started).toEqual([])
+  })
+
+  it('runs a harness-session claim when the allow-list is unset', async () => {
+    const store = new InMemoryTaskStore()
+    const executors = createExecutorRegistry()
+    const started: string[] = []
+    executors.register(
+      'harness-session',
+      {
+        ...fakeExecutor('hermes'),
+        start: () => {
+          started.push('hermes')
+          return {
+            events: (async function* () {
+              await Promise.resolve()
+            })(),
+            steer: () => Promise.resolve(),
+            kill: () => Promise.resolve(),
+            result: Promise.resolve({
+              verdict: 'completed' as const,
+              summary: 'done',
+              artifacts: [],
+              usage: {
+                inputTokens: 1,
+                outputTokens: 1,
+                totalTokens: 2,
+                turns: 1,
+                wallClockMs: 1,
+              },
+            }),
+          }
+        },
+      },
+      'hermes',
+    )
+    const handler = createTaskHandler({ store, executors, nodeId: 'test-node' })
+    const task = await store.create({
+      goal: 'Do the thing',
+      executor: 'harness-session',
+      executorTarget: 'hermes',
+      agentId: 'hermes',
+      origin: 'tool',
+    })
+
+    await handler(task.id)
+
+    expect(started).toEqual(['hermes'])
+    expect((await store.get(task.id))?.status).toBe('completed')
+  })
+
   it('a legacy claude-cli row still reaches the claude-code executor', async () => {
     const store = new InMemoryTaskStore()
     const onDeprecatedTarget = vi.fn()

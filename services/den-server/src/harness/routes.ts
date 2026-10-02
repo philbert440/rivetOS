@@ -84,6 +84,7 @@ import {
   type UserTurn,
 } from '@rivetos/types'
 import { isBareNativeUuid } from './alias.js'
+import { harnessNotAllowedMessage } from './allowed.js'
 import type { HarnessCapabilityEvent } from './capabilities.js'
 import { isHarnessId, type HarnessRegistry, type ResolvedSession } from './registry.js'
 import { overlaySessionContext } from '../term/context-window.js'
@@ -244,14 +245,15 @@ export function createHarnessRoutes(opts: {
    *  Absent = the field is omitted and clients treat every row as installed. */
   isInstalled?: (harnessId: HarnessId) => boolean
   /**
-   * Stamps `allowed` on each `GET /api/harnesses` row and refuses
+   * Stamps `allowed` on each `GET /api/harnesses` row and refuses fresh
    * `POST .../sessions` for ids outside the operator allow-list
-   * (`den.allowed_harnesses`). Absent = omit the field and allow every
-   * registered harness (opt-in off).
+   * (`den.allowed_harnesses`). Pass only when a list is configured — presence
+   * alone stamps and gates. Absent = omit the field and allow every
+   * registered harness (opt-in off). Resumes (`sessionId` /
+   * `nativeSessionId` in the body) skip the gate so an existing session of a
+   * now-disallowed harness still reopens.
    */
   isAllowed?: (harnessId: HarnessId) => boolean
-  /** True when an allow-list is configured (so the list stamps `allowed`). */
-  allowListConfigured?: boolean
 }): HarnessRoutes {
   const { registry } = opts
   const log = opts.log ?? ((): void => undefined)
@@ -364,11 +366,11 @@ export function createHarnessRoutes(opts: {
       // Truth the flags before publishing them: a declared-only sheet is how a
       // node with a failed `node-pty` advertises an interrupt it will 501.
       await registry.verifyCapabilities()
-      const { isInstalled, isAllowed, allowListConfigured } = opts
+      const { isInstalled, isAllowed } = opts
       const harnesses = registry.list().map((d) => {
         const row = { ...d } as typeof d & { installed?: boolean; allowed?: boolean }
         if (isInstalled) row.installed = isInstalled(d.harnessId)
-        if (allowListConfigured && isAllowed) row.allowed = isAllowed(d.harnessId)
+        if (isAllowed) row.allowed = isAllowed(d.harnessId)
         return row
       })
       return json(res, 200, { harnesses })
@@ -383,6 +385,8 @@ export function createHarnessRoutes(opts: {
     if (sub === undefined) {
       if (req.method !== 'GET') return json(res, 405, { error: 'method not allowed' })
       await registry.verifyCapabilities(harnessId)
+      // Capabilities only — `installed` / `allowed` live on the list sheet.
+      // Clients must not treat this row as a launchability verdict.
       return json(res, 200, { harnessId, capabilities: driver.capabilities })
     }
     if (sub !== 'sessions') return json(res, 404, { error: 'not found' })
@@ -407,13 +411,6 @@ export function createHarnessRoutes(opts: {
       }
     }
     if (req.method === 'POST') {
-      if (opts.allowListConfigured && opts.isAllowed && !opts.isAllowed(harnessId)) {
-        return json(res, 403, {
-          error: `harness "${harnessId}" is not allowed on this node (den.allowed_harnesses)`,
-          code: 'harness_not_allowed',
-          harnessId,
-        })
-      }
       const body = await parseJsonBody(req, res)
       if (!body) return true
       const { cwd, model, nativeSessionId, sessionId, metadata } = body
@@ -432,6 +429,19 @@ export function createHarnessRoutes(opts: {
           Object.values(metadata).some((v) => typeof v !== 'string'))
       ) {
         return json(res, 400, { error: 'metadata must be a string map' })
+      }
+      // Fresh creates only. A body that names an existing session (resume /
+      // reattach) must keep working after the harness leaves the allow-list —
+      // same exemption /term uses for `resume`.
+      const isResume =
+        (typeof sessionId === 'string' && sessionId.length > 0) ||
+        (typeof nativeSessionId === 'string' && nativeSessionId.length > 0)
+      if (opts.isAllowed && !isResume && !opts.isAllowed(harnessId)) {
+        return json(res, 403, {
+          error: harnessNotAllowedMessage(harnessId),
+          code: 'harness_not_allowed',
+          harnessId,
+        })
       }
       // Client-minted canonical id (immutable session ids, plan W1 stage 1):
       // the control plane ACCEPTS it verbatim — no adoption event, no alias

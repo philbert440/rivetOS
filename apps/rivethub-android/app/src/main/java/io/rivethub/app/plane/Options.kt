@@ -78,7 +78,7 @@ fun harnessLabel(harnessId: String?): String {
 
 /**
  * Harnesses a NEW session or preset can launch on. Mirrors web
- * `installedHarnesses`: absent `installed` / `allowed` count as true
+ * `launchableHarnesses`: absent `installed` / `allowed` count as true
  * (older dens / allow-list unset).
  */
 fun launchableHarnesses(descriptors: List<HarnessDescriptor>?): List<HarnessDescriptor> =
@@ -87,6 +87,23 @@ fun launchableHarnesses(descriptors: List<HarnessDescriptor>?): List<HarnessDesc
 /** @see launchableHarnesses */
 fun installedHarnesses(descriptors: List<HarnessDescriptor>?): List<HarnessDescriptor> =
     launchableHarnesses(descriptors)
+
+/**
+ * Agents a NEW-conversation picker may offer. Drops rows whose harness is
+ * uninstalled or off that den's allow-list. No descriptor sheet yet → keep
+ * the row (same as an older den that omits the flags). Agents with no
+ * harnessId stay (chat-loop / catalog-only).
+ */
+fun launchableAgents(
+    agents: List<AgentRow>,
+    descriptorsByDenUrl: Map<String, List<HarnessDescriptor>>,
+): List<AgentRow> =
+    agents.filter { row ->
+        val hid = row.harnessId?.takeIf { it.isNotBlank() } ?: return@filter true
+        val key = row.nodeDenUrl.trim().trimEnd('/')
+        val desc = descriptorsByDenUrl[key] ?: return@filter true
+        launchableHarnesses(desc).any { it.harnessId == hid }
+    }
 
 /**
  * Conversation-row pill: session summary model, else the preset's model,

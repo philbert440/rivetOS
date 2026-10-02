@@ -125,11 +125,7 @@ import { PiDriver } from './harness/pi-driver.js'
 import { QwenCodeDriver } from './harness/qwen-code-driver.js'
 import { CursorDriver } from './harness/cursor-driver.js'
 import { createInstalledProbe } from './harness/installed.js'
-import {
-  createAllowedProbe,
-  harnessNotAllowedMessage,
-  normalizeAllowedHarnesses,
-} from './harness/allowed.js'
+import { createAllowedProbe, harnessNotAllowedMessage } from './harness/allowed.js'
 import { CodexDriver } from './harness/codex-driver.js'
 import { CodexProtocolDriver, codexThreadDefaults } from './harness/codex-protocol-driver.js'
 import { CodexRpcClient } from './harness/codex-rpc.js'
@@ -1030,7 +1026,7 @@ export function createDenServer(config: DenConfig, opts: DenServerOptions = {}):
     for (const driver of builtinDrivers) harnesses.register(driver)
   }
   for (const driver of opts.harnessDrivers ?? []) harnesses.register(driver)
-  const allowListConfigured = normalizeAllowedHarnesses(config.allowedHarnesses) !== undefined
+  // Undefined when the allow-list is unset — presence alone stamps + gates.
   const isHarnessAllowed = opts.isHarnessAllowed ?? createAllowedProbe(config.allowedHarnesses)
   const harnessRoutes = createHarnessRoutes({
     registry: harnesses,
@@ -1043,7 +1039,6 @@ export function createDenServer(config: DenConfig, opts: DenServerOptions = {}):
         alwaysInstalled: (id) => id === 'codex' && !!config.codexAppServerUrl,
       }),
     isAllowed: isHarnessAllowed,
-    allowListConfigured,
     filterSessions: async (req, sessions) => {
       const ctx = boundRequestUser(req)
       if (!ctx) return sessions
@@ -1271,7 +1266,7 @@ export function createDenServer(config: DenConfig, opts: DenServerOptions = {}):
     // operator pinned the list with `replace`, a warning otherwise).
     modelList: (harnessId) =>
       presetModelList(harnessId, config.harnesses?.[harnessId], console.error),
-    isHarnessAllowed: allowListConfigured ? isHarnessAllowed : undefined,
+    isHarnessAllowed,
   })
 
   const authorized = (req: IncomingMessage, _url: URL): boolean =>
@@ -1683,17 +1678,28 @@ export function createDenServer(config: DenConfig, opts: DenServerOptions = {}):
 
         if (req.method === 'GET' && url.pathname === '/term/config') {
           const roster = rosterProvider.get()
-          return json(res, 200, {
-            enabled: termEnabled,
-            default: roster.default,
-            maxPtys: config.term.maxPtys,
-            active: termManager?.active() ?? 0,
-            // keys + labels only — argv/cwd/env are operator-private
-            commands: Object.entries(roster.commands).map(([cmdId, c]) => ({
+          // Drop roster keys whose harness is off the allow-list so terminal
+          // pickers never offer a command POST /term would 403. Non-harness
+          // (shell) entries stay. Existing live PTYs are unaffected.
+          const commands = Object.entries(roster.commands)
+            .filter(([cmdId]) => {
+              if (!isHarnessAllowed) return true
+              const hid = ROSTER_TO_HARNESS[cmdId]
+              return !hid || isHarnessAllowed(hid)
+            })
+            .map(([cmdId, c]) => ({
               id: cmdId,
               label: c.label,
               room: c.room,
-            })),
+            }))
+          const defaultOk = commands.some((c) => c.id === roster.default)
+          return json(res, 200, {
+            enabled: termEnabled,
+            default: defaultOk ? roster.default : (commands[0]?.id ?? roster.default),
+            maxPtys: config.term.maxPtys,
+            active: termManager?.active() ?? 0,
+            // keys + labels only — argv/cwd/env are operator-private
+            commands,
           })
         }
 
@@ -1849,14 +1855,21 @@ export function createDenServer(config: DenConfig, opts: DenServerOptions = {}):
             // recorded. A different directory is a conflict (another preset,
             // or this preset was moved) unless the client passes force.
             const spawnCommand = command ?? rosterProvider.get().default
-            // Allow-list gate for new term launches only. A resume keeps
-            // working for a harness that was since removed from the list.
+            // Allow-list gate for new term launches only. A resume of a real
+            // existing session keeps working after the harness leaves the
+            // list — but a never-seen resume key must NOT mint a fresh
+            // off-list spawn (bogus resume must not defeat the gate).
             const spawnHarnessId = ROSTER_TO_HARNESS[spawnCommand]
+            const resumeExists =
+              !!resumeKey &&
+              (!!manager.ptyForSession(resumeKey) ||
+                !!codexProtocol?.manages(resumeKey) ||
+                harnessSessionExists(spawnCommand, resumeKey))
             if (
-              allowListConfigured &&
-              !resumeKey &&
+              isHarnessAllowed &&
               spawnHarnessId &&
-              !isHarnessAllowed(spawnHarnessId)
+              !isHarnessAllowed(spawnHarnessId) &&
+              !resumeExists
             ) {
               return json(res, 403, {
                 error: harnessNotAllowedMessage(spawnHarnessId),

@@ -60,7 +60,10 @@ async function start(): Promise<string> {
   ])
 }
 
-async function startWith(nodes: MeshNode[]): Promise<string> {
+async function startWith(
+  nodes: MeshNode[],
+  opts?: { isHarnessAllowed?: (id: string) => boolean },
+): Promise<string> {
   const executors = createExecutorRegistry()
   executors.register('chat-loop', {
     name: 'chat-loop',
@@ -106,6 +109,7 @@ async function startWith(nodes: MeshNode[]): Promise<string> {
     executors,
     skills: () => [{ name: 'deep-research', description: 'research harness' } as never],
     meshRegistry,
+    isHarnessAllowed: opts?.isHarnessAllowed,
   })
   const server: Server = createServer((req, res) => {
     void route.handler(req, res)
@@ -172,6 +176,24 @@ describe('/api/catalog', () => {
     const grok = body.agents.find((a) => a.id === 'grok')
     expect(grok).toEqual({ id: 'grok', node: 'node-c', local: false })
     expect(grok?.provider).toBeUndefined()
+  })
+
+  it('omits harness-session executors outside the allow-list', async () => {
+    const base = await startWith(
+      [
+        node('node-f', ['claude']),
+        node('node-c', ['grok'], 'online', { grok: { provider: 'xai', model: 'grok-4-1' } }),
+      ],
+      { isHarnessAllowed: (id) => id === 'claude-code' },
+    )
+    const body = (await (await fetch(`${base}/api/catalog`)).json()) as {
+      executors: Array<{ key: string }>
+    }
+    expect(body.executors.map((e) => e.key).sort()).toEqual([
+      'chat-loop',
+      'harness-session:claude-code',
+    ])
+    expect(body.executors.find((e) => e.key === 'harness-session:kimi-code')).toBeUndefined()
   })
 
   it('GET /api/catalog/agents serves the agents slice; 404 elsewhere; 405 non-GET', async () => {

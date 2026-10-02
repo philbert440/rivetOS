@@ -28,14 +28,15 @@ export function normalizeAllowedHarnesses(
 }
 
 /**
- * Probe: is `harnessId` allowed on this node?
- * `undefined` allow-set → always true. Empty set → always false.
+ * Probe for a configured allow-list, or `undefined` when the list is unset
+ * (opt-in off). Callers pass the probe only when it is defined — that single
+ * value both stamps `allowed` and gates new launches. Empty set → always false.
  */
 export function createAllowedProbe(
   list: readonly string[] | undefined | null,
-): (harnessId: HarnessId) => boolean {
+): ((harnessId: HarnessId) => boolean) | undefined {
   const set = normalizeAllowedHarnesses(list)
-  if (set === undefined) return () => true
+  if (set === undefined) return undefined
   return (harnessId) => set.has(harnessId)
 }
 

@@ -106,8 +106,9 @@ export interface TaskApiOptions {
   permissionBroker?: TaskPermissionBroker
   /**
    * Operator allow-list (`den.allowed_harnesses`). When set, a harness-session
-   * create whose executorTarget is off the list is refused with 400. Absent =
-   * every harness id is allowed (opt-in off).
+   * create whose executorTarget is off the list is refused with 403. Absent =
+   * every harness id is allowed (opt-in off). The runner also re-checks on the
+   * node that claims the row (peer affinity / pre-list rows).
    */
   isHarnessAllowed?: (harnessId: string) => boolean
 }
@@ -360,7 +361,7 @@ export function createTaskApiRoute(opts: TaskApiOptions): GatewayRoute {
             opts.isHarnessAllowed &&
             !opts.isHarnessAllowed(input.executorTarget)
           ) {
-            return json(res, 400, {
+            return json(res, 403, {
               error: `harness "${input.executorTarget}" is not allowed on this node (den.allowed_harnesses)`,
               code: 'harness_not_allowed',
               harnessId: input.executorTarget,

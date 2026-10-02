@@ -32,6 +32,7 @@ import {
   type AgentPreset,
   type HarnessId,
 } from '@rivetos/types'
+import { harnessNotAllowedMessage } from './harness/allowed.js'
 import { isCodexDefaultModel } from './harness/model-sheets.js'
 import {
   PresetConflictError,
@@ -369,8 +370,8 @@ export function createAgentsRoutes(opts: {
     }
     const harnessId: HarnessId | undefined = hid
     if (harnessId && opts.isHarnessAllowed && !opts.isHarnessAllowed(harnessId)) {
-      json(res, 400, {
-        error: `harness "${harnessId}" is not allowed on this node (den.allowed_harnesses)`,
+      json(res, 403, {
+        error: harnessNotAllowedMessage(harnessId),
         code: 'harness_not_allowed',
         harnessId,
       })
@@ -526,8 +527,8 @@ export function createAgentsRoutes(opts: {
         return
       }
       if (hid && opts.isHarnessAllowed && !opts.isHarnessAllowed(hid)) {
-        json(res, 400, {
-          error: `harness "${hid}" is not allowed on this node (den.allowed_harnesses)`,
+        json(res, 403, {
+          error: harnessNotAllowedMessage(hid),
           code: 'harness_not_allowed',
           harnessId: hid,
         })

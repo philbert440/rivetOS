@@ -21,15 +21,14 @@ describe('normalizeAllowedHarnesses', () => {
 })
 
 describe('createAllowedProbe', () => {
-  it('allows every id when the list is unset', () => {
-    const probe = createAllowedProbe(undefined)
-    expect(probe('claude-code')).toBe(true)
-    expect(probe('hermes')).toBe(true)
+  it('returns undefined when the list is unset (caller skips the gate)', () => {
+    expect(createAllowedProbe(undefined)).toBeUndefined()
+    expect(createAllowedProbe(null)).toBeUndefined()
   })
 
   it('membership-checks a configured list (empty = none)', () => {
-    expect(createAllowedProbe([])('claude-code')).toBe(false)
-    const probe = createAllowedProbe(['claude-code', 'codex'])
+    expect(createAllowedProbe([])!('claude-code')).toBe(false)
+    const probe = createAllowedProbe(['claude-code', 'codex'])!
     expect(probe('claude-code')).toBe(true)
     expect(probe('codex')).toBe(true)
     expect(probe('hermes')).toBe(false)

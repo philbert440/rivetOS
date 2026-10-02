@@ -378,6 +378,51 @@ describe('more than one driver on a node', () => {
     expect(claude.calls.started).toHaveLength(1)
   })
 
+  it('allows resume of an existing off-list harness session (sessionId / nativeSessionId)', async () => {
+    // Mirrors /term's resume exemption: narrowing the list must not lock out
+    // clients that re-open a session they already have. The body keys alone
+    // skip the allow-list gate (same contract as /term's !resumeKey).
+    const { claude, grok, hermes } = trio()
+    const { base } = await startWith(
+      {
+        skipBuiltinHarnessDrivers: true,
+        harnessDrivers: [claude, grok, hermes],
+        isHarnessInstalled: () => true,
+      },
+      (c) => ({ ...c, allowedHarnesses: ['claude-code'] }),
+    )
+    const bySession = await post(base, '/api/harnesses/hermes/sessions', {
+      sessionId: HERMES_SID,
+    })
+    expect(bySession.status).toBe(201)
+    expect(((await bySession.json()) as { code?: string }).code).not.toBe('harness_not_allowed')
+    expect(hermes.calls.started.length).toBeGreaterThanOrEqual(1)
+    const byNative = await post(base, '/api/harnesses/hermes/sessions', {
+      nativeSessionId: '20260802_225647_reattach',
+    })
+    expect(byNative.status).toBe(201)
+    expect(((await byNative.json()) as { code?: string }).code).not.toBe('harness_not_allowed')
+    // Fresh create (no resume key) still refused.
+    const fresh = await post(base, '/api/harnesses/hermes/sessions', {})
+    expect(fresh.status).toBe(403)
+    expect(((await fresh.json()) as { code?: string }).code).toBe('harness_not_allowed')
+  })
+
+  it('session create succeeds when the allow-list is unset', async () => {
+    const { claude, hermes } = trio()
+    const { base } = await startWith({
+      skipBuiltinHarnessDrivers: true,
+      harnessDrivers: [claude, hermes],
+      isHarnessInstalled: () => true,
+    })
+    const body = (await (await fetch(`${base}/api/harnesses`)).json()) as {
+      harnesses: { allowed?: boolean }[]
+    }
+    expect(body.harnesses.every((h) => h.allowed === undefined)).toBe(true)
+    expect((await post(base, '/api/harnesses/hermes/sessions', {})).status).toBe(201)
+    expect(hermes.calls.started).toHaveLength(1)
+  })
+
   it('routes a non-uuid hermes id to the hermes driver alone', async () => {
     // The other two key sessions on uuids; hermes does not, so an id shape that
     // no probe could ever claim still has to dispatch on its harness prefix.

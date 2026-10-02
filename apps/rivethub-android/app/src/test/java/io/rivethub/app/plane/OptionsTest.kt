@@ -65,6 +65,27 @@ class OptionsTest {
         )
     }
 
+    @Test fun `launchableAgents drops agents whose harness is off the den allow-list`() {
+        val den = "https://den.example:5174"
+        val agents = listOf(
+            AgentRow("a", "Claude", "claude-code", "n1", "node-a", den, null),
+            AgentRow("b", "Hermes", "hermes", "n1", "node-a", den, null),
+            AgentRow("c", "Loop", null, "n1", "node-a", den, null),
+        )
+        val desc = mapOf(
+            den to listOf(
+                HarnessDescriptor("claude-code", HarnessCapabilities(), allowed = true),
+                HarnessDescriptor("hermes", HarnessCapabilities(), allowed = false),
+            ),
+        )
+        assertEquals(
+            listOf("a", "c"),
+            launchableAgents(agents, desc).map { it.agentId },
+        )
+        // No sheet yet → keep every row (older dens / still loading).
+        assertEquals(listOf("a", "b", "c"), launchableAgents(agents, emptyMap()).map { it.agentId })
+    }
+
     @Test fun `pill prefers summary model`() {
         assertEquals("fable", rowPillText("fable", "opus", "claude-code"))
     }
