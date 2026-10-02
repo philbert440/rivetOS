@@ -22,6 +22,27 @@ describe('@rivetos/token-command package contract', () => {
     expect(pkg.exports?.['.']?.import).toBe('./dist/index.js')
   })
 
+  it('is listed in pipeline PACKAGES before its published dependents', () => {
+    // check-publish-closure.mjs fails CI when a PACKAGES entry depends on a
+    // leaf that is missing from the publish list.
+    const yml = readFileSync(join(pkgRoot, '../../.github/workflows/pipeline.yml'), 'utf8')
+    const start = yml.indexOf('PACKAGES=(')
+    const end = yml.indexOf('\n          )', start)
+    expect(start).toBeGreaterThan(-1)
+    const block = yml.slice(start, end)
+    expect(block).toContain('packages/token-command')
+    const leaf = block.indexOf('packages/token-command')
+    for (const dep of [
+      'plugins/memory/postgres',
+      'plugins/providers/anthropic',
+      'plugins/providers/llama-server',
+      'plugins/providers/vllm',
+      'plugins/providers/xai',
+    ]) {
+      expect(block.indexOf(dep)).toBeGreaterThan(leaf)
+    }
+  })
+
   it('loads via require() when dist is built (CJS dual-consume smoke)', () => {
     const require = createRequire(join(pkgRoot, 'package.json'))
     let loaded: { createTokenSource?: unknown; normalizeEmbedVector?: unknown }
