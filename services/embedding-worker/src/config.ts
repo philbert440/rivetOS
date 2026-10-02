@@ -136,8 +136,8 @@ export const config = {
 
   wireShape: resolveWireShape(),
   expectedDims: resolveExpectedDims(),
-  // Prefer RIVETOS_EMBED_API_KEY. OPENAI_API_KEY is a documented fallback — it
-  // is sent as Bearer to whatever embed_endpoint is configured (may not be OpenAI).
-  apiKey: process.env.RIVETOS_EMBED_API_KEY || process.env.OPENAI_API_KEY || '',
+  // Opt-in only. Do not fall back to OPENAI_API_KEY — a globally exported OpenAI
+  // key must not be sent as Bearer to whatever embed_endpoint is configured.
+  apiKey: process.env.RIVETOS_EMBED_API_KEY || '',
   tokenSource: resolveEmbedTokenSourceFromEnv(),
 } as const

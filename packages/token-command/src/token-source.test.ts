@@ -64,6 +64,21 @@ describe('createTokenSource', () => {
     expect(await src.getToken()).toBe('t-2')
   })
 
+  it('invalidate(rejectedToken) does not wipe a newer cached mint', async () => {
+    let n = 0
+    const src = createTokenSource({
+      argv: ['helper'],
+      runCommand: async () => `t-${++n}`,
+    })
+    expect(await src.getToken()).toBe('t-1')
+    src.invalidate('t-1')
+    expect(await src.getToken()).toBe('t-2')
+    // Staggered 401 that still holds the old rejected token must not clear t-2.
+    src.invalidate('t-1')
+    expect(src.getCachedToken()).toBe('t-2')
+    expect(await src.getToken()).toBe('t-2')
+  })
+
   it('coalesces concurrent mint calls', async () => {
     let resolveMint!: (v: string) => void
     const runCommand = vi.fn(

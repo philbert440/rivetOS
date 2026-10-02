@@ -443,7 +443,7 @@ export class XAIProvider implements Provider {
         headers: await this.authHeaders(),
       })
       if (res.status === 401 && this.tokenSource) {
-        this.tokenSource.invalidate()
+        this.tokenSource.invalidate(this.tokenSource.getCachedToken())
         res = await fetch(`${this.baseUrl}/models`, {
           headers: await this.authHeaders(),
         })

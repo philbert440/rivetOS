@@ -31,8 +31,12 @@ export interface TokenSource {
   getToken(): Promise<string>
   /** Last successful mint, if any and not past TTL. */
   getCachedToken(): string | undefined
-  /** Drop the cache so the next getToken() remints. */
-  invalidate(): void
+  /**
+   * Drop the cache so the next getToken() remints. When `rejectedToken` is
+   * passed, skip the clear if the cache already holds a different (newer)
+   * token — staggered 401s must not wipe a remint that another caller just did.
+   */
+  invalidate(rejectedToken?: string): void
   /** Authorization header map when a token is available (async mint). */
   authHeaders(extra?: Record<string, string>): Promise<Record<string, string>>
 }
@@ -111,7 +115,15 @@ export function createTokenSource(opts: TokenSourceOptions): TokenSource {
     return cache.token
   }
 
-  function invalidate(): void {
+  function invalidate(rejectedToken?: string): void {
+    if (
+      rejectedToken !== undefined &&
+      cache !== null &&
+      cache.token !== rejectedToken &&
+      now() < cache.expiresAt
+    ) {
+      return
+    }
     cache = null
   }
 
@@ -151,7 +163,7 @@ export function createAuthorizedFetch(opts: {
     const token = await tokenSource.getToken()
     let res = await apply(token)
     if (res.status === 401) {
-      tokenSource.invalidate()
+      tokenSource.invalidate(token)
       const next = await tokenSource.getToken()
       res = await apply(next)
     }

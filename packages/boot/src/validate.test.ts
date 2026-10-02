@@ -705,6 +705,18 @@ describe('Config Validation', () => {
       assertValid(validateConfig(cfg))
     })
 
+    it('warns when both embed_api_key and embed_token_command are set', () => {
+      const cfg = validConfig()
+      cfg.memory = {
+        postgres: {
+          embed_api_key: '${RIVETOS_EMBED_API_KEY}',
+          embed_token_command: ['/usr/local/bin/mint-embed-token'],
+        },
+      }
+      const result = validateConfig(cfg)
+      assertWarning(result, 'memory.postgres.embed_token_command', 'embed_token_command wins')
+    })
+
     it('rejects embed_expected_dims that do not match the halfvec column width', () => {
       const cfg = validConfig()
       cfg.memory = {

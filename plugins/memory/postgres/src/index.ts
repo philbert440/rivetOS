@@ -187,11 +187,10 @@ export const manifest: PluginManifest = {
     } else {
       embedWireShape = wireParsed
     }
+    // Opt-in only — do not fall back to OPENAI_API_KEY (would send a global
+    // OpenAI credential as Bearer to whatever embed_endpoint is configured).
     const embedApiKey =
-      (cfg.embed_api_key as string | undefined) ??
-      ctx.env.RIVETOS_EMBED_API_KEY ??
-      ctx.env.OPENAI_API_KEY ??
-      ''
+      (cfg.embed_api_key as string | undefined) ?? ctx.env.RIVETOS_EMBED_API_KEY ?? ''
     const embedExpectedDims =
       typeof cfg.embed_expected_dims === 'number' ? cfg.embed_expected_dims : undefined
 

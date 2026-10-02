@@ -385,11 +385,22 @@ export function validateTokenCommandFields(
     }
   }
 
-  if (raw !== undefined && obj.api_key !== undefined && keys.command === 'token_command') {
+  if (raw !== undefined && keys.command === 'token_command' && obj.api_key !== undefined) {
     issues.push({
       severity: 'warning',
       path: `${path}.${keys.command}`,
       message: `${label} has both api_key and token_command — token_command wins`,
+    })
+  }
+  if (
+    raw !== undefined &&
+    keys.command === 'embed_token_command' &&
+    obj.embed_api_key !== undefined
+  ) {
+    issues.push({
+      severity: 'warning',
+      path: `${path}.${keys.command}`,
+      message: `${label} has both embed_api_key and embed_token_command — embed_token_command wins`,
     })
   }
 }

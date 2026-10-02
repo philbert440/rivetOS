@@ -399,7 +399,7 @@ export class VllmProvider implements Provider {
     const modelsUrl = this.modelsEndpoint()
     let res = await fetch(modelsUrl, { headers: await this.authHeaders() })
     if (res.status === 401 && this.tokenSource) {
-      this.tokenSource.invalidate()
+      this.tokenSource.invalidate(this.tokenSource.getCachedToken())
       res = await fetch(modelsUrl, { headers: await this.authHeaders() })
     }
     if (!res.ok) {
@@ -548,7 +548,7 @@ export class VllmProvider implements Provider {
     try {
       res = await fetch(modelsUrl, { headers: await this.authHeaders() })
       if (res.status === 401 && this.tokenSource) {
-        this.tokenSource.invalidate()
+        this.tokenSource.invalidate(this.tokenSource.getCachedToken())
         res = await fetch(modelsUrl, { headers: await this.authHeaders() })
       }
     } catch (err: unknown) {

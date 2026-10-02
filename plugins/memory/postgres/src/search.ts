@@ -1365,7 +1365,7 @@ export class SearchEngine {
       })
 
       if (response.status === 401 && this.embedTokenSource) {
-        this.embedTokenSource.invalidate()
+        this.embedTokenSource.invalidate(this.embedTokenSource.getCachedToken())
         headers.Authorization = `Bearer ${await this.embedTokenSource.getToken()}`
         response = await fetch(url, {
           method: 'POST',

@@ -230,7 +230,7 @@ export class LlamaServerProvider implements Provider {
     const url = `${this.baseUrl}/v1/models`
     let res = await fetch(url, { headers: await this.authHeaders() })
     if (res.status === 401 && this.tokenSource) {
-      this.tokenSource.invalidate()
+      this.tokenSource.invalidate(this.tokenSource.getCachedToken())
       res = await fetch(url, { headers: await this.authHeaders() })
     }
     if (!res.ok) {
@@ -349,7 +349,7 @@ export class LlamaServerProvider implements Provider {
     try {
       res = await fetch(`${this.baseUrl}/v1/models`, { headers: await this.authHeaders() })
       if (res.status === 401 && this.tokenSource) {
-        this.tokenSource.invalidate()
+        this.tokenSource.invalidate(this.tokenSource.getCachedToken())
         res = await fetch(`${this.baseUrl}/v1/models`, { headers: await this.authHeaders() })
       }
     } catch (err: unknown) {

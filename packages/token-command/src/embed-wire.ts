@@ -96,8 +96,9 @@ function isFiniteNumberArray(v: unknown): v is number[] {
 
 /**
  * Truncate or reject by expected dimension. When `expectedDims` is set it wins
- * over `truncateDims`: length must match (longer vectors are sliced; shorter
- * return null). Callers that write into `halfvec(1024)` must pass
+ * over `truncateDims` and requires an exact length match (longer or shorter →
+ * null). Explicit truncation belongs on `truncateDims` only (worker
+ * `EMBED_TRUNCATE_DIMS`). Callers that write into `halfvec(1024)` must pass
  * `expectedDims: EMBEDDING_COLUMN_DIMS` (or leave it unset and rely on
  * `truncateDims: 1024`) — a mismatched expectedDims bricks every embed write
  * and vector search.
@@ -109,9 +110,7 @@ export function normalizeEmbedVector(
   if (!vec) return null
   const { expectedDims, truncateDims } = opts
   if (expectedDims !== undefined) {
-    if (vec.length === expectedDims) return vec
-    if (vec.length > expectedDims) return vec.slice(0, expectedDims)
-    return null
+    return vec.length === expectedDims ? vec : null
   }
   if (truncateDims !== undefined && vec.length > truncateDims) {
     return vec.slice(0, truncateDims)

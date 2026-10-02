@@ -75,6 +75,18 @@ describe('embedding-worker config', () => {
     expect(logged(error)).toMatch(/RIVETOS_EMBED_EXPECTED_DIMS.*1024/)
   })
 
+  it('does not fall back to OPENAI_API_KEY when RIVETOS_EMBED_API_KEY is unset', async () => {
+    stubRequired({ RIVETOS_EMBED_API_KEY: undefined, OPENAI_API_KEY: 'sk-should-not-leak' })
+    const { config } = await import('./config.js')
+    expect(config.apiKey).toBe('')
+  })
+
+  it('uses RIVETOS_EMBED_API_KEY when set', async () => {
+    stubRequired({ RIVETOS_EMBED_API_KEY: 'embed-only-key', OPENAI_API_KEY: 'sk-other' })
+    const { config } = await import('./config.js')
+    expect(config.apiKey).toBe('embed-only-key')
+  })
+
   it('honours EMBED_CHUNKS_ENABLED=false and CHUNK_BACKFILL_LIMIT', async () => {
     stubRequired({ EMBED_CHUNKS_ENABLED: 'false', CHUNK_BACKFILL_LIMIT: '50' })
     const { config } = await import('./config.js')

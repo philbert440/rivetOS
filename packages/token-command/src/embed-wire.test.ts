@@ -72,8 +72,8 @@ describe('parseEmbedResponse', () => {
 })
 
 describe('normalizeEmbedVector', () => {
-  it('slices when longer than expectedDims', () => {
-    expect(normalizeEmbedVector([1, 2, 3, 4], { expectedDims: 2 })).toEqual([1, 2])
+  it('rejects when longer than expectedDims (no silent slice)', () => {
+    expect(normalizeEmbedVector([1, 2, 3, 4], { expectedDims: 2 })).toBeNull()
   })
 
   it('rejects when shorter than expectedDims', () => {
@@ -86,8 +86,9 @@ describe('normalizeEmbedVector', () => {
 
   it('pins EMBEDDING_COLUMN_DIMS to the halfvec(1024) schema width', () => {
     expect(EMBEDDING_COLUMN_DIMS).toBe(1024)
-    const wide = Array.from({ length: 1500 }, (_, i) => i)
-    expect(normalizeEmbedVector(wide, { expectedDims: EMBEDDING_COLUMN_DIMS })).toHaveLength(1024)
+    const exact = Array.from({ length: 1024 }, (_, i) => i)
+    expect(normalizeEmbedVector(exact, { expectedDims: EMBEDDING_COLUMN_DIMS })).toEqual(exact)
+    expect(normalizeEmbedVector([...exact, 99], { expectedDims: EMBEDDING_COLUMN_DIMS })).toBeNull()
   })
 })
 

@@ -105,7 +105,7 @@ async function embedOnce(texts: string[]): Promise<Array<number[] | null> | 'tra
 
       // Remint once on 401 when using token_command.
       if (response.status === 401 && config.tokenSource) {
-        config.tokenSource.invalidate()
+        config.tokenSource.invalidate(config.tokenSource.getCachedToken())
         const retryHeaders = await authHeaders()
         response = await fetch(url, {
           method: 'POST',

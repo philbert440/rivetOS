@@ -16,7 +16,7 @@
  *   RIVETOS_PG_URL              required
  *   RIVETOS_EMBED_URL           required (embedding endpoint base)
  *   RIVETOS_EMBED_MODEL         required (embedding model id)
- *   RIVETOS_EMBED_API_KEY       optional static bearer (also honors OPENAI_API_KEY)
+ *   RIVETOS_EMBED_API_KEY       optional static bearer (no OPENAI_API_KEY fallback)
  *   RIVETOS_EMBED_TOKEN_COMMAND optional JSON argv array that prints a bearer token
  *   RIVETOS_EMBED_TOKEN_TTL_MS  optional mint cache TTL (default 300000)
  *   RIVETOS_EMBED_WIRE_SHAPE    openai (default) | native

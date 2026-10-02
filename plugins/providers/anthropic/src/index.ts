@@ -197,7 +197,7 @@ export class AnthropicProvider implements Provider {
         body,
       })
       if (res.status === 401 && this.tokenSource) {
-        this.tokenSource.invalidate()
+        this.tokenSource.invalidate(this.tokenSource.getCachedToken())
         res = await fetch(`${this.baseUrl}/v1/messages`, {
           method: 'POST',
           headers: await this.authHeaders(),
