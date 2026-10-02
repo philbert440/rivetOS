@@ -78,8 +78,15 @@ function encodedBytes(batch: CaptureBatch): number {
   return Buffer.byteLength(JSON.stringify(batch), 'utf8')
 }
 
+/**
+ * Only an explicit `enabled` key on options overrides the env. `redaction: {}`
+ * or `{ builtins: false }` without `enabled` must not silently disable an
+ * env opt-in — docs say only `{ enabled: false }` wins over the env.
+ */
 function resolveWriterRedaction(opts: CaptureWriterOptions): ResolvedCaptureRedaction | null {
-  if (opts.redaction !== undefined) return resolveCaptureRedaction(opts.redaction)
+  if (opts.redaction !== undefined && opts.redaction.enabled !== undefined) {
+    return resolveCaptureRedaction(opts.redaction)
+  }
   return resolveCaptureRedaction(captureRedactionFromEnv())
 }
 

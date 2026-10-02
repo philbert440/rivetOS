@@ -43,9 +43,10 @@ export interface CaptureWriterOptions {
   /** UTF-8 byte budget of one posted JSON body. Default 768 KiB. */
   maxChunkBytes?: number
   /**
-   * Optional redaction at the write point. When omitted, `RIVETOS_CAPTURE_REDACTION`
-   * may enable built-ins via `captureRedactionFromEnv`. Explicit `enabled: false`
-   * disables even if the env is set.
+   * Optional redaction at the write point. When omitted (or set without an
+   * `enabled` key), `RIVETOS_CAPTURE_REDACTION` may enable built-ins via
+   * `captureRedactionFromEnv`. Explicit `enabled: false` disables even if the
+   * env is set; explicit `enabled: true` uses these options.
    */
   redaction?: CaptureRedactionOptions
 }

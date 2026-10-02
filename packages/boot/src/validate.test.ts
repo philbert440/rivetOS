@@ -620,7 +620,7 @@ describe('Config Validation', () => {
         postgres: { connection_string: '${RIVETOS_PG_URL}' },
         capture: {
           redaction: {
-            enabled: true,
+            enabled: false,
             builtins: true,
             patterns: ['\\bCUSTOM-[A-Z0-9]{8}\\b'],
           },
@@ -629,13 +629,34 @@ describe('Config Validation', () => {
       assertValid(validateConfig(cfg))
     })
 
+    it('warns when capture redaction is enabled but not yet injected', () => {
+      const cfg = validConfig()
+      cfg.memory = {
+        postgres: { connection_string: '${RIVETOS_PG_URL}' },
+        capture: {
+          redaction: {
+            enabled: true,
+            builtins: true,
+            patterns: ['\\b(?i:myprefix)-[a-z0-9]{20,}\\b'],
+          },
+        },
+      }
+      const result = validateConfig(cfg)
+      assertValid(result)
+      assertWarning(
+        result,
+        'memory.capture.redaction.enabled',
+        'not yet injected into harness hook processes',
+      )
+    })
+
     it('errors on invalid capture redaction shapes', () => {
       const cfg = validConfig()
       cfg.memory = {
         capture: {
           redaction: {
             enabled: 'yes',
-            patterns: ['(unclosed', 12],
+            patterns: ['(unclosed', 12, '(?i)\\bfoo', '(a+)+b'],
           },
         },
       }
@@ -643,6 +664,8 @@ describe('Config Validation', () => {
       assertError(result, 'memory.capture.redaction.enabled', 'must be a boolean')
       assertError(result, 'memory.capture.redaction.patterns[0]', 'Invalid regex')
       assertError(result, 'memory.capture.redaction.patterns[1]', 'non-empty string')
+      assertError(result, 'memory.capture.redaction.patterns[2]', 'Invalid regex')
+      assertError(result, 'memory.capture.redaction.patterns[3]', 'ReDoS-prone')
     })
 
     it('warns on unknown postgres keys', () => {

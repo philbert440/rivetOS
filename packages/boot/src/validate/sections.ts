@@ -648,6 +648,16 @@ function validateMemoryCaptureRedaction(redaction: unknown, issues: ValidationIs
       message: '"enabled" must be a boolean',
     })
   }
+  // Boot validates this block but does not inject it into harness hook envs yet.
+  // Without this warning, enabled:true looks like a working security control.
+  if (red.enabled === true) {
+    issues.push({
+      severity: 'warning',
+      path: 'memory.capture.redaction.enabled',
+      message:
+        'memory.capture.redaction is validated but not yet injected into harness hook processes; set RIVETOS_CAPTURE_REDACTION or pass CaptureWriterOptions.redaction to enable at runtime',
+    })
+  }
   if (red.builtins !== undefined && typeof red.builtins !== 'boolean') {
     issues.push({
       severity: 'error',
@@ -670,6 +680,17 @@ function validateMemoryCaptureRedaction(redaction: unknown, issues: ValidationIs
             severity: 'error',
             path: `memory.capture.redaction.patterns[${i}]`,
             message: 'Each pattern must be a non-empty string (JS regex source)',
+          })
+          continue
+        }
+        // Nested quantifiers (e.g. (a+)+) can hang String.replace on large
+        // capture payloads; JS has no regex timeout. Reject at validate.
+        if (/\((?:[^\\)]|\\.)*[+*](?:[^\\)]|\\.)*\)(?:[+*?]|\{\d+,?\d*\})/.test(source)) {
+          issues.push({
+            severity: 'error',
+            path: `memory.capture.redaction.patterns[${i}]`,
+            message:
+              'Pattern looks ReDoS-prone (nested quantifiers); rewrite without nested +/* groups',
           })
           continue
         }

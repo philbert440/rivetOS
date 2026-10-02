@@ -1,11 +1,42 @@
 import type { CaptureMessage, CaptureRedactionOptions } from './types.js'
 
-/** Secret-shaped object keys — whole value replaced when walking tool_args. */
+/**
+ * Exact credential key names for tool_args. Substring forms like "author" /
+ * "token_count" must not match — fidelity of ordinary fields wins over greedy
+ * secret hunting.
+ */
 const SECRET_KEY_RE =
-  /^(?:.*(?:password|passwd|secret|token|api[_-]?key|authorization|auth|credential|private[_-]?key).*)$/i
+  /^(?:api[_-]?key|access[_-]?token|token|secret|password|passwd|credential|authorization|private[_-]?key|auth_token|client_secret)$/i
+
+/** Credential keywords for assignment forms (word-anchored, not substrings). */
+const ASSIGNMENT_KEY =
+  '(?:api[_-]?key|access[_-]?token|token|secret|password|passwd|credential|authorization|private[_-]?key)'
+
+/**
+ * Operator / builtin regexes only see this many UTF-16 units per string.
+ * Matches the den content cap: bytes beyond this are truncated before storage,
+ * so scanning further only burns CPU.
+ */
+export const REDACT_SCAN_LIMIT = 16_000
+
+/**
+ * Heuristic for nested-quantifier ReDoS shapes such as `(a+)+b`. JS has no
+ * regex timeout; validate rejects these and resolve skips them at runtime.
+ */
+export function isUnsafeRegexSource(source: string): boolean {
+  // (…+)+  (…*)*  (…+)*  (…*)+  and the same with ?/{n,} on the outer group.
+  return /\((?:[^\\)]|\\.)*[+*](?:[^\\)]|\\.)*\)(?:[+*?]|\{\d+,?\d*\})/.test(source)
+}
 
 export type BuiltinDetectorId =
-  'bearer' | 'assignment' | 'aws_access_key' | 'github_token' | 'slack_token' | 'sk_token' | 'jwt'
+  | 'bearer'
+  | 'assignment'
+  | 'aws_access_key'
+  | 'github_token'
+  | 'slack_token'
+  | 'sk_token'
+  | 'jwt'
+  | 'pem_private_key'
 
 interface BuiltinDetector {
   id: BuiltinDetectorId
@@ -15,31 +46,33 @@ interface BuiltinDetector {
 }
 
 /**
- * Built-in secret shapes. Order matters: bearer/basic before the assignment
- * rule so "Bearer <token>" is not partially eaten by the key= form.
+ * Built-in secret shapes. Order matters: specific token shapes and bearer/PEM
+ * run before the assignment rule so a multi-word `password: …` value cannot
+ * swallow an AKIA / ghp_ / sk- later on the same line.
  */
 const BUILTIN_DETECTORS: BuiltinDetector[] = [
   {
     id: 'bearer',
-    pattern: /\b(bearer|basic)\s+[\w+./=-]{8,}/gi,
+    // Bare English "basic"/"Bearer credentials…" are not credentials. Bearer
+    // requires a digit or symbol in the token; Basic requires base64-ish.
+    // Trailing `.` / `,` stay outside the match.
+    pattern:
+      /\b(?:Bearer\s+(?=[A-Za-z0-9_\-+/=]*[0-9_\-+/=])[A-Za-z0-9_\-+/=]{8,}|Basic\s+[A-Za-z0-9+/]{16,}={0,2})(?![A-Za-z0-9+/=])/gi,
     placeholder: '[REDACTED:bearer]',
   },
   {
-    id: 'assignment',
-    // Negative lookahead so a prior detector's placeholder is not re-eaten
-    // (e.g. "Authorization: [REDACTED:bearer]").
-    pattern:
-      /\b([\w-]*(?:key|token|secret|passw(?:or)?d|credential|auth)[\w-]*\s*[=:]\s*)(?!\[REDACTED)\S+/gi,
-    placeholder: '$1[REDACTED:assignment]',
+    id: 'pem_private_key',
+    pattern: /-----BEGIN [A-Z0-9 ]*PRIVATE KEY-----[\s\S]*?-----END [A-Z0-9 ]*PRIVATE KEY-----/g,
+    placeholder: '[REDACTED:pem_private_key]',
   },
   {
     id: 'aws_access_key',
-    pattern: /\bAKIA[0-9A-Z]{16}\b/g,
+    pattern: /\b(?:AKIA|ASIA)[0-9A-Z]{16}\b/g,
     placeholder: '[REDACTED:aws_access_key]',
   },
   {
     id: 'github_token',
-    pattern: /\bgh[pousr]_[A-Za-z0-9]{20,}\b/g,
+    pattern: /\b(?:gh[pousr]_|github_pat_)[A-Za-z0-9_]{20,}\b/g,
     placeholder: '[REDACTED:github_token]',
   },
   {
@@ -56,6 +89,18 @@ const BUILTIN_DETECTORS: BuiltinDetector[] = [
     id: 'jwt',
     pattern: /\beyJ[\w-]{8,}\.[\w-]+\.[\w-]+\b/g,
     placeholder: '[REDACTED:jwt]',
+  },
+  {
+    id: 'assignment',
+    // Negative lookahead so a prior detector's placeholder is not re-eaten
+    // (e.g. "Authorization: [REDACTED:bearer]"). Value may be multi-word on
+    // one line; `[` stops the value so earlier placeholders on the same line
+    // are preserved. Trailing , ; stay outside the match.
+    pattern: new RegExp(
+      `\\b(${ASSIGNMENT_KEY}\\s*[=:]\\s*)(?!\\[REDACTED)[^\\s\\n\\r,;[\\]]+(?:[ \\t]+[^\\s\\n\\r,;[\\]]+)*`,
+      'gi',
+    ),
+    placeholder: '$1[REDACTED:assignment]',
   },
 ]
 
@@ -80,6 +125,9 @@ function truthyEnv(value: string | undefined): boolean {
 /**
  * Normalise writer options or a YAML `memory.capture.redaction` slice.
  * Returns null when redaction should not run.
+ *
+ * Note: boot validates the YAML block but does not yet inject it into harness
+ * hook processes — callers pass options explicitly or use the env helper.
  */
 export function resolveCaptureRedaction(
   input: CaptureRedactionOptions | null | undefined,
@@ -92,6 +140,7 @@ export function resolveCaptureRedaction(
     for (let index = 0; index < input.patterns.length; index += 1) {
       const source = input.patterns[index]
       if (typeof source !== 'string' || source.length === 0) continue
+      if (isUnsafeRegexSource(source)) continue
       try {
         patterns.push({ source, regex: new RegExp(source, 'g'), index })
       } catch {
@@ -118,19 +167,19 @@ function applyRegex(text: string, regex: RegExp, replacement: string): Redaction
   // Reset lastIndex for global patterns reused across calls.
   regex.lastIndex = 0
   let count = 0
-  const next = text.replace(regex, (match, group1: unknown) => {
+  const next = text.replace(regex, (_match, group1: unknown) => {
     count += 1
     if (replacement.includes('$1')) {
+      // Never fall back to the full match — that would re-emit the secret.
       const g1 = typeof group1 === 'string' ? group1 : ''
-      return replacement.replace(/\$1/g, g1 || match)
+      return replacement.replace(/\$1/g, g1)
     }
     return replacement
   })
   return { text: next, count }
 }
 
-/** Redact a single string; returns the text and how many spans were replaced. */
-export function redactText(text: string, resolved: ResolvedCaptureRedaction): RedactionApplyResult {
+function redactTextBody(text: string, resolved: ResolvedCaptureRedaction): RedactionApplyResult {
   let current = text
   let count = 0
   if (resolved.builtins) {
@@ -146,6 +195,22 @@ export function redactText(text: string, resolved: ResolvedCaptureRedaction): Re
     count += result.count
   }
   return { text: current, count }
+}
+
+/**
+ * Redact a single string; returns the text and how many spans were replaced.
+ * Only the first {@link REDACT_SCAN_LIMIT} units are scanned — the same budget
+ * the writer keeps after `capMessage` — so operator patterns cannot ReDoS on
+ * multi-megabyte tool dumps.
+ */
+export function redactText(text: string, resolved: ResolvedCaptureRedaction): RedactionApplyResult {
+  if (text.length <= REDACT_SCAN_LIMIT) {
+    return redactTextBody(text, resolved)
+  }
+  const head = text.slice(0, REDACT_SCAN_LIMIT)
+  const tail = text.slice(REDACT_SCAN_LIMIT)
+  const result = redactTextBody(head, resolved)
+  return { text: result.text + tail, count: result.count }
 }
 
 function redactValue(
@@ -172,7 +237,10 @@ function redactValue(
     let count = 0
     const out: Record<string, unknown> = {}
     for (const [key, child] of Object.entries(value as Record<string, unknown>)) {
-      if (SECRET_KEY_RE.test(key) && child !== undefined) {
+      // Only string secret values are replaced wholesale. Numbers / nested
+      // objects under a secret-shaped key keep structure; nested walk still
+      // redacts string leaves. Exact key match (not substring).
+      if (SECRET_KEY_RE.test(key) && typeof child === 'string') {
         out[key] = '[REDACTED:secret_key]'
         count += 1
         continue

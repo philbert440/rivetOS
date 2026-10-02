@@ -537,9 +537,11 @@ describe('capture writer', () => {
       ],
     }
     const fetch = vi.fn<typeof globalThis.fetch>().mockResolvedValue(Response.json(result))
-    const { writer } = await setup(fetch)
+    const { writer, spoolDir } = await setup(fetch)
     await writer.write(secretBatch)
     expect(fetch.mock.calls[0]?.[1]?.body).toBe(JSON.stringify(secretBatch))
+    // Opt-in pin: no spool when delivery succeeds; empty spool dir stays empty.
+    expect(await readdir(spoolDir)).toEqual([])
   })
 
   it('redacts before post when enabled and logs a count only', async () => {
@@ -563,6 +565,89 @@ describe('capture writer', () => {
     expect(body.messages[0]?.content).not.toContain('sk-abcdefghijklmnopqrstuvwxyz')
     expect(log).toHaveBeenCalledWith(expect.stringMatching(/^redacted \d+ spans$/))
     expect(log.mock.calls.flat().join('\n')).not.toContain('sk-abcdefghijklmnopqrstuvwxyz')
+  })
+
+  it('env enable redacts when options omit redaction', async () => {
+    process.env[REDACTION_ENV] = '1'
+    const secretBatch: CaptureBatch = {
+      session_key: 's',
+      agent: 'a',
+      messages: [
+        {
+          event_id: 'e',
+          role: 'user',
+          content: 'token sk-abcdefghijklmnopqrstuvwxyz',
+        },
+      ],
+    }
+    const fetch = vi.fn<typeof globalThis.fetch>().mockResolvedValue(Response.json(result))
+    const { writer } = await setup(fetch)
+    await writer.write(secretBatch)
+    const body = JSON.parse(String(fetch.mock.calls[0]?.[1]?.body)) as CaptureBatch
+    expect(body.messages[0]?.content).toContain('[REDACTED:sk_token]')
+    expect(body.messages[0]?.content).not.toContain('sk-abcdefghijklmnopqrstuvwxyz')
+  })
+
+  it.each(['0', 'false', 'no', 'off'])('falsey env %s leaves bytes unchanged', async (value) => {
+    process.env[REDACTION_ENV] = value
+    const secretBatch: CaptureBatch = {
+      session_key: 's',
+      agent: 'a',
+      messages: [
+        {
+          event_id: 'e',
+          role: 'user',
+          content: 'token sk-abcdefghijklmnopqrstuvwxyz stays',
+        },
+      ],
+    }
+    const fetch = vi.fn<typeof globalThis.fetch>().mockResolvedValue(Response.json(result))
+    const { writer } = await setup(fetch)
+    await writer.write(secretBatch)
+    expect(fetch.mock.calls[0]?.[1]?.body).toBe(JSON.stringify(secretBatch))
+  })
+
+  it('redaction: {} without enabled does not override env opt-in', async () => {
+    process.env[REDACTION_ENV] = '1'
+    const secretBatch: CaptureBatch = {
+      session_key: 's',
+      agent: 'a',
+      messages: [
+        {
+          event_id: 'e',
+          role: 'user',
+          content: 'token sk-abcdefghijklmnopqrstuvwxyz',
+        },
+      ],
+    }
+    const fetch = vi.fn<typeof globalThis.fetch>().mockResolvedValue(Response.json(result))
+    const { writer } = await setup(fetch, { redaction: {} })
+    await writer.write(secretBatch)
+    const body = JSON.parse(String(fetch.mock.calls[0]?.[1]?.body)) as CaptureBatch
+    expect(body.messages[0]?.content).toContain('[REDACTED:sk_token]')
+  })
+
+  it('spools redacted bytes when delivery fails', async () => {
+    const secretBatch: CaptureBatch = {
+      session_key: 's',
+      agent: 'a',
+      messages: [
+        {
+          event_id: 'e',
+          role: 'user',
+          content: 'token sk-abcdefghijklmnopqrstuvwxyz',
+        },
+      ],
+    }
+    const fetch = vi.fn<typeof globalThis.fetch>().mockRejectedValue(new TypeError('network'))
+    const { writer, spoolDir } = await setup(fetch, { redaction: { enabled: true } })
+    const saved = await writer.write(secretBatch)
+    expect(saved).toMatchObject({ spooled: true })
+    const names = (await readdir(spoolDir)).filter((name) => name.endsWith('.json'))
+    expect(names).toHaveLength(1)
+    const spooled = JSON.parse(await readFile(join(spoolDir, names[0]!), 'utf8')) as CaptureBatch
+    expect(spooled.messages[0]?.content).toContain('[REDACTED:sk_token]')
+    expect(JSON.stringify(spooled)).not.toContain('sk-abcdefghijklmnopqrstuvwxyz')
   })
 
   it('explicit enabled:false wins over the env enable', async () => {

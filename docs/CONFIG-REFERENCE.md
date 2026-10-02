@@ -625,7 +625,11 @@ Off by default. When enabled, `@rivetos/capture-core` redacts common secret
 shapes (and optional operator regexes) in message `content`, `tool_result`, and
 `tool_args` **before** the batch is posted or spooled. Logs report a span count
 only — never the matched text. Placeholders are deterministic
-(`[REDACTED:bearer]`, `[REDACTED:pattern:0]`, …).
+(`[REDACTED:bearer]`, `[REDACTED:pattern:0]`, …). Regex scanning is limited to
+the first 16,000 UTF-16 units per string (the same budget the den keeps after
+the content cap), so operator patterns cannot hang the hook on multi-megabyte
+tool dumps. Split secrets (half in `content`, half in `tool_result`) are not
+reassembled — each field is redacted independently.
 
 ```yaml
 memory:
@@ -634,21 +638,22 @@ memory:
       enabled: false
       builtins: true
       # patterns:
-      #   - '(?i)\\bmyprefix-[a-z0-9]{20,}\\b'
+      #   - '\\b(?i:myprefix)-[a-z0-9]{20,}\\b'
 ```
 
 | Key        | Type     | Default | Description                                                                                                            |
 | ---------- | -------- | ------- | ---------------------------------------------------------------------------------------------------------------------- |
 | `enabled`  | boolean  | `false` | Run the write-path redactor.                                                                                           |
-| `builtins` | boolean  | `true`  | Built-in detectors (bearer/basic, credential assignments, common token shapes, JWTs). Ignored when `enabled` is false. |
-| `patterns` | string[] | —       | Extra JS regex **source** strings (the `g` flag is applied). Invalid sources are a config error.                       |
+| `builtins` | boolean  | `true`  | Built-in detectors (Bearer/Basic auth, credential assignments, PEM private keys, common token shapes, JWTs). Ignored when `enabled` is false. |
+| `patterns` | string[] | —       | Extra JS regex **source** strings. Only the `g` flag is applied — do not wrap in `/…/flags`, and do not use Python-style `(?i)` at the start of the pattern (it does not compile in JS). For case-insensitivity use a group modifier such as `(?i:myprefix)`, or spell out character classes. Invalid sources are a config error. Nested-quantifier shapes such as `(a+)+` are rejected (ReDoS). |
 
 Hooks that do not load YAML yet can enable the same built-ins with
 `RIVETOS_CAPTURE_REDACTION=1` (or `true` / `yes` / `on`). An explicit
 `redaction: { enabled: false }` on `createCaptureWriter` wins over the env.
 Wiring YAML → every hook process is separate from validation; until boot
 injects this block, set the env (or pass `CaptureWriterOptions.redaction`) to
-turn it on.
+turn it on. Config validation warns when `enabled: true` because nothing
+consumes the YAML block yet.
 
 ### PostgreSQL
 
