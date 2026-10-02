@@ -1393,6 +1393,46 @@ describe('den', () => {
       assertWarning(result, 'tasks.harnesses.claude-code.efforts', 'empty and will be ignored')
     })
 
+    it('validates claude-code isolation and allowed_tools', () => {
+      const ok = validConfig()
+      ok.tasks = {
+        harnesses: {
+          'claude-code': {
+            isolation: 'isolated',
+            allowed_tools: ['mcp__rivetos'],
+          },
+        },
+      }
+      const clean = validateConfig(ok)
+      expect(
+        [...clean.errors, ...clean.warnings].filter((i) =>
+          i.path.startsWith('tasks.harnesses.claude-code'),
+        ),
+      ).toEqual([])
+
+      const bad = validConfig()
+      bad.tasks = {
+        harnesses: { 'claude-code': { isolation: 'tools', allowed_tools: ['ok', ''] } },
+      }
+      const result = validateConfig(bad)
+      assertError(
+        result,
+        'tasks.harnesses.claude-code.isolation',
+        "must be 'inherit' or 'isolated'",
+      )
+      assertError(result, 'tasks.harnesses.claude-code.allowed_tools', 'permission rules')
+      // a rule the runtime parser would silently drop is an error at boot
+      const flag = validConfig()
+      flag.tasks = {
+        harnesses: { 'claude-code': { allowed_tools: ['--dangerously-skip-permissions'] } },
+      }
+      assertError(validateConfig(flag), 'tasks.harnesses.claude-code.allowed_tools', 'not starting')
+
+      const other = validConfig()
+      other.tasks = { harnesses: { 'kimi-code': { isolation: 'isolated' } } }
+      assertWarning(validateConfig(other), 'tasks.harnesses.kimi-code', 'claude-code executor only')
+    })
+
     it('accepts models_mode discover | replace | merge and rejects anything else', () => {
       for (const mode of ['discover', 'replace', 'merge']) {
         const cfg = validConfig()

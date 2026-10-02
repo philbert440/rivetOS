@@ -57,6 +57,14 @@ export interface TaskSpec {
   effort?: 'low' | 'medium' | 'high'
   systemPromptAppend?: string
   /**
+   * Per-task request for whether a harness-session spawn inherits the
+   * operator's personal CLI setup. The node setting
+   * (`tasks.harnesses.<id>.isolation`) is a floor: a task may ask for
+   * `isolated` on an `inherit` node, but cannot loosen an `isolated` node.
+   * Only executors that implement it read it — today the `claude-code` one.
+   */
+  isolation?: 'inherit' | 'isolated'
+  /**
    * System-prompt flavor. 'heartbeat' selects the workspace heartbeat prompt
    * with no task scaffold — prompt parity for cutover heartbeat tasks;
    * default 'task' is the chat system prompt + delegated-task scaffold.

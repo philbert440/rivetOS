@@ -1292,6 +1292,48 @@ function validateTasksHarnesses(
       })
     }
     if (
+      section.isolation !== undefined &&
+      !['inherit', 'isolated'].includes(section.isolation as string)
+    ) {
+      issues.push({
+        severity: 'error',
+        path: `${path}.isolation`,
+        message: `"${path}.isolation" must be 'inherit' or 'isolated'`,
+      })
+    }
+    if (
+      section.allowed_tools !== undefined &&
+      !(
+        Array.isArray(section.allowed_tools) &&
+        section.allowed_tools.every(
+          (rule) =>
+            typeof rule === 'string' &&
+            rule.trim() !== '' &&
+            rule.trim().length <= 200 &&
+            !rule.trim().startsWith('-') &&
+            // eslint-disable-next-line no-control-regex
+            !/[\u0000-\u001f]/.test(rule.trim()),
+        )
+      )
+    ) {
+      // Mirrors the runtime parser, which would otherwise drop these silently.
+      issues.push({
+        severity: 'error',
+        path: `${path}.allowed_tools`,
+        message: `"${path}.allowed_tools" must be an array of permission rules: non-empty strings of at most 200 characters, not starting with "-", with no control characters`,
+      })
+    }
+    if (
+      (section.isolation !== undefined || section.allowed_tools !== undefined) &&
+      harnessId !== 'claude-code'
+    ) {
+      issues.push({
+        severity: 'warning',
+        path,
+        message: `"isolation" / "allowed_tools" are read by the claude-code executor only; ignored for "${harnessId}"`,
+      })
+    }
+    if (
       section.models_mode !== undefined &&
       !['discover', 'replace', 'merge'].includes(section.models_mode as string)
     ) {
