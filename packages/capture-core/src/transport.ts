@@ -10,9 +10,11 @@ import { resolveDenUrl } from './den-url.js'
  * would write the wrong pool. That holds even when transport is forced
  * to `den`.
  *
- * `rivetos_resolve_den` unsets `RIVET_DEN_URL` when the CA file is missing
- * but still exports `RIVET_DEN_CA`. That pair means the launcher disabled
- * den; do not let `resolveDenUrl`'s default port override it.
+ * For an https den, `rivetos_resolve_den` unsets `RIVET_DEN_URL` when the CA
+ * file is missing but still exports `RIVET_DEN_CA`. That pair means the
+ * launcher disabled den; do not let `resolveDenUrl`'s default port override
+ * it. A plain-http den needs no CA, so its URL is kept (with `RIVET_DEN_CA`
+ * still exported) and this pair never forms.
  */
 
 export type CaptureTransport =

@@ -51,7 +51,9 @@
 #                              5174) as https://127.0.0.1:<port>. Resolve
 #                              RIVET_DEN_CA from den.tls_ca, else
 #                              RIVETOS_DEN_TLS_CA, else the fleet chain.
-#                              A missing CA file unsets RIVET_DEN_URL.
+#                              For an https den URL, a missing CA file
+#                              unsets RIVET_DEN_URL; a plain-http URL
+#                              needs no CA and is kept.
 #                              Exports NODE_EXTRA_CA_CERTS from that CA
 #                              when it is unset.
 #   rivetos_find_root          Echo the install root:
@@ -837,8 +839,9 @@ rivetos_yaml_section_value() {
 # Den origin + CA for the MCP sidecar. Keep RIVET_DEN_URL / RIVET_DEN_CA
 # when a den-spawned harness already set them. Otherwise read den.port
 # (default 5174) and den.tls_ca. CA falls back to RIVETOS_DEN_TLS_CA, then
-# the fleet intermediate chain. A missing CA file unsets RIVET_DEN_URL so
-# the sidecar does not select den transport. Node's global fetch trusts
+# the fleet intermediate chain. For an https den URL, a missing CA file
+# unsets RIVET_DEN_URL so the sidecar does not select den transport; a
+# plain-http URL needs no CA and is kept. Node's global fetch trusts
 # NODE_EXTRA_CA_CERTS only if it is set before the process starts.
 # True when this node's embedded den serves HTTPS. Mirrors boot's
 # resolveDenTls / den-server tlsReady: den.tls_cert + den.tls_key, else
@@ -925,6 +928,20 @@ rivetos_resolve_den() {
     fi
     export RIVET_DEN_CA="$ca"
   fi
+
+  # Plain http needs no CA. Do not drop the URL because the CA file is absent
+  # (a den without TLS on a node with no shared CA). An http LOOPBACK URL only
+  # reaches this point when the den really serves http: rivetos_guard_den_url
+  # already rewrote it to https when TLS is configured (#1053). A remote http
+  # URL is taken at its word. The trade: a stale http URL left in .env on a
+  # node with no den at all is now kept too (it used to be dropped as a side
+  # effect of the CA check); `rivetos doctor` reports a preset RIVET_DEN_URL.
+  # NODE_EXTRA_CA_CERTS is not exported here: the den dial does not use it,
+  # though note the variable is process-wide.
+  local den_url_trimmed="${RIVET_DEN_URL#"${RIVET_DEN_URL%%[![:space:]]*}"}"
+  case "$den_url_trimmed" in
+    http://*) return 0 ;;
+  esac
 
   if [ ! -f "$ca" ]; then
     # Silent: the launcher tests count stderr lines, and the "no den URL and
