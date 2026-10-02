@@ -57,11 +57,11 @@ export interface TaskSpec {
   effort?: 'low' | 'medium' | 'high'
   systemPromptAppend?: string
   /**
-   * Per-task override of whether a harness-session spawn inherits the
-   * operator's personal CLI setup (`tasks.harnesses.<id>.isolation` is the
-   * node default). Only executors that implement it read it — today the
-   * `claude-code` one: `inherit` loads everything, `isolated` loads only the
-   * RivetOS bridge and capture hooks.
+   * Per-task request for whether a harness-session spawn inherits the
+   * operator's personal CLI setup. The node setting
+   * (`tasks.harnesses.<id>.isolation`) is a floor: a task may ask for
+   * `isolated` on an `inherit` node, but cannot loosen an `isolated` node.
+   * Only executors that implement it read it — today the `claude-code` one.
    */
   isolation?: 'inherit' | 'isolated'
   /**

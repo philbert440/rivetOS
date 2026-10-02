@@ -208,8 +208,8 @@ export interface HarnessExecutorSection {
    * `claude-code` only. Whether a delegated run inherits the operator's
    * personal Claude Code setup: `inherit` (default — everything, as before)
    * or `isolated` (no personal settings, permission rules, hooks, plugins or
-   * CLAUDE.md; only the RivetOS bridge and capture hooks). A task's
-   * `spec.isolation` overrides it.
+   * CLAUDE.md; only the RivetOS bridge and capture hooks). A floor: a task's
+   * `spec.isolation` can tighten it, never loosen it.
    */
   isolation?: 'inherit' | 'isolated'
   /**

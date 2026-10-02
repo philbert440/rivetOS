@@ -1113,13 +1113,22 @@ function validateTasksHarnesses(
       section.allowed_tools !== undefined &&
       !(
         Array.isArray(section.allowed_tools) &&
-        section.allowed_tools.every((rule) => typeof rule === 'string' && rule.trim() !== '')
+        section.allowed_tools.every(
+          (rule) =>
+            typeof rule === 'string' &&
+            rule.trim() !== '' &&
+            rule.trim().length <= 200 &&
+            !rule.trim().startsWith('-') &&
+            // eslint-disable-next-line no-control-regex
+            !/[\u0000-\u001f]/.test(rule),
+        )
       )
     ) {
+      // Mirrors the runtime parser, which would otherwise drop these silently.
       issues.push({
         severity: 'error',
         path: `${path}.allowed_tools`,
-        message: `"${path}.allowed_tools" must be an array of non-empty strings`,
+        message: `"${path}.allowed_tools" must be an array of permission rules: non-empty strings of at most 200 characters, not starting with "-", with no control characters`,
       })
     }
     if (

@@ -1293,7 +1293,13 @@ describe('den', () => {
         'tasks.harnesses.claude-code.isolation',
         "must be 'inherit' or 'isolated'",
       )
-      assertError(result, 'tasks.harnesses.claude-code.allowed_tools', 'non-empty strings')
+      assertError(result, 'tasks.harnesses.claude-code.allowed_tools', 'permission rules')
+      // a rule the runtime parser would silently drop is an error at boot
+      const flag = validConfig()
+      flag.tasks = {
+        harnesses: { 'claude-code': { allowed_tools: ['--dangerously-skip-permissions'] } },
+      }
+      assertError(validateConfig(flag), 'tasks.harnesses.claude-code.allowed_tools', 'not starting')
 
       const other = validConfig()
       other.tasks = { harnesses: { 'kimi-code': { isolation: 'isolated' } } }

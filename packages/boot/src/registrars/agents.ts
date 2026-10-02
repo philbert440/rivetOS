@@ -1204,6 +1204,19 @@ async function registerClaudeCodeTaskExecutor(
     } = await import('@rivetos/provider-claude-cli')
     // Task-spawn isolation lives with the other harness executor settings.
     const harnessCfg = config.tasks?.harnesses?.['claude-code'] ?? {}
+    // Under `isolated` the operator's allow rules are gone and (with
+    // permission_prompts unset) every prompt is denied. Unless the permission
+    // mode skips prompts, the embedded bridge's own tools are then denied too.
+    if (
+      parseTaskIsolation(harnessCfg.isolation) === 'isolated' &&
+      providerCfg.permission_mode !== 'bypassPermissions' &&
+      !(parseAllowedTools(harnessCfg.allowed_tools) ?? []).some((rule) => rule.startsWith('mcp__'))
+    ) {
+      log.warn(
+        'tasks.harnesses.claude-code.isolation is "isolated" with no mcp__ rule in allowed_tools: ' +
+          'the RivetOS bridge tools (mcp__rivetos__*) will be denied in task runs — add "mcp__rivetos" to allowed_tools',
+      )
+    }
     executors.register(
       'harness-session',
       new ClaudeCliExecutor({

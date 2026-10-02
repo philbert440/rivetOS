@@ -324,7 +324,8 @@ describe('ClaudeCliExecutor', () => {
     expect(args[at + 3].startsWith('--')).toBe(true)
   })
 
-  it('a task spec overrides the node isolation default, in both directions', async () => {
+  it('a task spec can tighten isolation but never loosen an isolated node', async () => {
+    // tighten: node inherits, the task asks for isolated
     const up = makeFakeClaude(successLines('ok'))
     await new ClaudeCliExecutor({ binary: up.binary }).start(
       { ...makeConformanceSpec(), isolation: 'isolated' } as ReturnType<typeof makeConformanceSpec>,
@@ -332,23 +333,24 @@ describe('ClaudeCliExecutor', () => {
     ).result
     expect(up.args()).toContain('--strict-mcp-config')
 
+    // loosen: the spec is caller-controlled, so the node setting is a floor
     const down = makeFakeClaude(successLines('ok'))
     await new ClaudeCliExecutor({ binary: down.binary, isolation: 'isolated' }).start(
       { ...makeConformanceSpec(), isolation: 'inherit' } as ReturnType<typeof makeConformanceSpec>,
       { signal: new AbortController().signal },
     ).result
-    expect(down.args()).not.toContain('--setting-sources')
-    expect(down.args()).not.toContain('--permission-prompts')
+    expect(down.args()).toContain('--strict-mcp-config')
+    expect(down.args()[down.args().indexOf('--setting-sources') + 1]).toBe('project')
 
     // a bad value is ignored, not trusted
     const bad = makeFakeClaude(successLines('ok'))
-    await new ClaudeCliExecutor({ binary: bad.binary, isolation: 'isolated' }).start(
+    await new ClaudeCliExecutor({ binary: bad.binary }).start(
       { ...makeConformanceSpec(), isolation: 'nope' } as unknown as ReturnType<
         typeof makeConformanceSpec
       >,
       { signal: new AbortController().signal },
     ).result
-    expect(bad.args()[bad.args().indexOf('--setting-sources') + 1]).toBe('project')
+    expect(bad.args()).not.toContain('--setting-sources')
   })
 
   it('permission_prompts none is an immediate deny and does not mount a tool', async () => {

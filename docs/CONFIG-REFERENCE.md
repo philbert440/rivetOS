@@ -717,7 +717,9 @@ tasks:
 - `isolated` spawns with `--setting-sources project` and `--strict-mcp-config`: no personal settings, permission rules, hooks, plugins or user `CLAUDE.md`, and the embedded RivetOS bridge is the only MCP server. The RivetOS capture hooks are supplied by the runtime through an inline `--settings` object, so task transcripts keep working. With `providers.claude-cli.permission_prompts` unset it also passes `--permission-prompts none`, so every prompt — built-in or MCP — is denied rather than left to the CLI's default.
 - Project settings (`.claude/settings.json` in the task's working directory) load at both levels: they belong to the repository, not the operator.
 - `allowed_tools` is passed as `--allowedTools` at both levels. Under `isolated` the operator's own allow rules are gone, so list what a headless run may call without a prompt (or set `providers.claude-cli.permission_mode`).
-- A task can override the node default with `spec.isolation` (`inherit` or `isolated`) on `POST /api/tasks`; an unknown value is ignored.
+- The node setting is a floor. A task can tighten it with `spec.isolation: isolated` on `POST /api/tasks`; a spec cannot loosen an `isolated` node (the spec is caller-controlled, and a task can create child tasks), and an unknown value is ignored.
+- `isolated` removes the operator's personal setup. It does not sandbox the working tree: a repository's own `.claude/settings.json` hooks and allow rules still apply, so point isolated tasks at trees you trust.
+- Under `isolated`, unless `permission_mode` is `bypassPermissions`, list `mcp__rivetos` in `allowed_tools` or the bridge's own tools are denied; boot warns when it is missing.
 
 #### Model lists: `tasks.harnesses.<id>.models` / `efforts` / `models_mode`
 

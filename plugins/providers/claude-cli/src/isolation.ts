@@ -17,6 +17,9 @@
  *
  * Project settings (`.claude/settings.json` in the task's working directory)
  * stay on at both levels: they belong to the repository, not the operator.
+ * That is a trust assumption — `isolated` removes the operator's PERSONAL
+ * setup, it does not sandbox an untrusted working tree, whose own hooks and
+ * allow rules still apply.
  */
 
 import { fileURLToPath } from 'node:url'
@@ -59,10 +62,15 @@ export const CAPTURE_HOOK_EVENTS = [
   'PostToolUse',
 ] as const
 
+/** POSIX single-quote a word: Claude Code runs a hook command through `sh -c`. */
+function shellQuote(word: string): string {
+  return `'${word.replace(/'/g, `'\\''`)}'`
+}
+
 /** The capture-hook command for this package's own handler. */
 export function captureHookCommand(): string {
   const script = fileURLToPath(new URL('./hooks.js', import.meta.url))
-  return `${JSON.stringify(process.execPath)} ${JSON.stringify(script)}`
+  return `${shellQuote(process.execPath)} ${shellQuote(script)}`
 }
 
 export interface IsolationFlags {

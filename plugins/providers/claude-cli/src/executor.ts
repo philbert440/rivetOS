@@ -122,8 +122,8 @@ export interface ClaudeCliExecutorConfig {
   allowedApiKeySources?: readonly string[]
   /**
    * Whether a task spawn inherits the operator's personal Claude Code setup
-   * (see `isolation.ts`). Default `inherit` — no change. A task's
-   * `spec.isolation` overrides this per run.
+   * (see `isolation.ts`). Default `inherit` — no change. This is a floor: a
+   * task's `spec.isolation` can tighten it to `isolated`, never loosen it.
    */
   isolation?: TaskIsolation
   /** Tools a headless run may call without a prompt (`--allowedTools`). */
@@ -520,14 +520,18 @@ export class ClaudeCliExecutor implements HarnessExecutor {
     // `ui` adds the permission tool and, if the bridge cannot come up, falls
     // back to `--permission-prompts none` so the spawn denies instead of
     // sitting on the CLI's permission-decision timeout.
-    // Isolation: per-task override, else the node default, else today's
-    // behaviour. `isolated` with no configured prompt mode denies explicitly —
-    // a headless run has nobody to answer, and relying on the CLI's own
-    // default left MCP tool prompts outside the auto-deny (#1053).
+    // Isolation. The node setting is a floor: a task spec may tighten
+    // (`inherit` → `isolated`) but never loosen. The spec is caller-controlled
+    // (POST /api/tasks copies it onto the row, and a task can post a child
+    // task over loopback), so letting it win in both directions would let the
+    // constrained party switch the constraint off.
+    const requestedIsolation = parseTaskIsolation((spec as { isolation?: unknown }).isolation)
+    const nodeIsolation: TaskIsolation = this.cfg.isolation ?? 'inherit'
     const isolation: TaskIsolation =
-      parseTaskIsolation((spec as { isolation?: unknown }).isolation) ??
-      this.cfg.isolation ??
-      'inherit'
+      nodeIsolation === 'isolated' ? 'isolated' : (requestedIsolation ?? nodeIsolation)
+    if (requestedIsolation === 'inherit' && nodeIsolation === 'isolated') {
+      this.log.warn('task.isolation.loosen.ignored', { taskId: spec.taskId })
+    }
     const isolationArgs = isolationFlags(isolation)
     let permissionPrompts =
       this.cfg.permissionPrompts ?? (isolation === 'isolated' ? 'none' : undefined)

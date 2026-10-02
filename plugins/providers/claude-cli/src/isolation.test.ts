@@ -59,6 +59,8 @@ describe('isolationFlags', () => {
     const settings = JSON.parse(isolationFlags('isolated').settingsJson ?? '{}') as {
       hooks: Record<string, { hooks: { command: string }[] }[]>
     }
-    expect(settings.hooks.Stop[0].hooks[0].command).toMatch(/hooks\.js"$/)
+    const command = settings.hooks.Stop[0].hooks[0].command
+    // both words single-quoted for `sh -c`: no `$`, backtick or `!` expansion
+    expect(command).toMatch(/^'[^']+' '[^']*hooks\.js'$/)
   })
 })
