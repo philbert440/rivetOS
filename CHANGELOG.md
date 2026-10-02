@@ -19,6 +19,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   boot and documented in CONFIG-REFERENCE. YAML→hook injection is not wired yet;
   use the env flag or pass `redaction` explicitly.
 
+### Memory
+
+- Opt-in SQLite memory backend (`plugins/memory/sqlite`, `@rivetos/memory-sqlite`) behind the
+  `Memory` contract: WAL file store, append, session/task history, settings, and FTS5 search.
+  Config: `memory.sqlite.path`. Mutually exclusive with `memory.postgres`. With the block
+  unset, behaviour is unchanged. Phase 1 implements the in-process `Memory` write/search path
+  (chat append works); HTTP `/api/capture` and memory MCP/HTTP tool parity remain Postgres-gated
+  and are deferred with vectors, compaction, wiki, multi-user routing, and Postgres import/export.
+
 ### Den URL guards
 
 - A plain-http den URL is no longer dropped when the CA file is missing. `rivetos_resolve_den` unset `RIVET_DEN_URL` whenever the CA path did not exist, including for `http://` URLs that never use a CA, so on a den without TLS and a node with no shared CA the hooks and sidecars lost the den and fell back or spooled. The CA check (and the `NODE_EXTRA_CA_CERTS` export) now apply only to URLs that are not `http://`. One trade to know: a stale `http://` line left in `~/.rivetos/.env` on a node with no den at all used to be dropped by that same check and is now kept, so captures would target the dead port instead of falling back; `rivetos doctor` reports a preset `RIVET_DEN_URL`. An http loopback URL only reaches that point when the den really serves http: the https rewrite for a TLS den runs first (#1053).

@@ -375,15 +375,15 @@ providers:
     model: claude-opus-4-7 # optional — defaults to whatever the CLI picks
 ```
 
-| Key                       | Type           | Default   | Description                                                                                                                                                                                                                                                                                  |
-| ------------------------- | -------------- | --------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `binary`                  | string         | `claude`  | Path to the `claude` binary.                                                                                                                                                                                                                                                                 |
-| `model`                   | string         | —         | Model alias to pass to the CLI.                                                                                                                                                                                                                                                              |
-| `extra_args`              | string[]       | `[]`      | Additional CLI flags (advanced).                                                                                                                                                                                                                                                             |
-| `allowed_api_key_sources` | string[]       | —         | Extra `apiKeySource` values besides `none`. Unset keeps the OAuth-only gate.                                                                                                                                                                                                                 |
-| `permission_mode`         | string         | `default` | `--permission-mode`. The provider code default is `default` (Claude Code's manual mode). `dontAsk` elsewhere in this document is the grok-cli default and matches that provider's code; it is not this provider's default.                                                                  |
+| Key                       | Type           | Default   | Description                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                             |
+| ------------------------- | -------------- | --------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `binary`                  | string         | `claude`  | Path to the `claude` binary.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                            |
+| `model`                   | string         | —         | Model alias to pass to the CLI.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                         |
+| `extra_args`              | string[]       | `[]`      | Additional CLI flags (advanced).                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        |
+| `allowed_api_key_sources` | string[]       | —         | Extra `apiKeySource` values besides `none`. Unset keeps the OAuth-only gate.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                            |
+| `permission_mode`         | string         | `default` | `--permission-mode`. The provider code default is `default` (Claude Code's manual mode). `dontAsk` elsewhere in this document is the grok-cli default and matches that provider's code; it is not this provider's default.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                              |
 | `permission_prompts`      | `ui` \| `none` | unset     | Headless claude-code task executor only (not the interactive chat path). Unset passes no `--permission-prompts` flag, so the CLI invocation is unchanged. `none` passes `--permission-prompts none` and the CLI denies a prompt immediately instead of waiting out its decision timeout. `ui` passes `--permission-prompts host` and `--permission-prompt-tool mcp__rivetos__request_permission`. The embedded bridge parks the call, emits an approval-request, and returns the decision. Answer from the task page or `POST /api/tasks/:id/approvals/:requestId` with `{"decision":"allow"\|"deny"}`. Unanswered prompts deny after `permission_timeout_ms` (default 60s); the outcome is appended to the row at `spec.permissionDecisions`. `GET /api/tasks/:id/wait?onApproval=return` yields the parked prompt instead of blocking until the task ends. The default wait does not. |
-| `permission_timeout_ms`   | number         | `60000`   | How long a headless `ui` prompt stays parked before it denies. Positive integer, at most 600000. Unset uses 60000. The interactive chat path does not read this key. |
+| `permission_timeout_ms`   | number         | `60000`   | How long a headless `ui` prompt stays parked before it denies. Positive integer, at most 600000. Unset uses 60000. The interactive chat path does not read this key.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                    |
 
 **Auth:** `claude login` (via the CLI itself). RivetOS does not handle the OAuth flow; the CLI does. On system init, a reported `apiKeySource` other than `none` kills the spawn unless it is listed in `allowed_api_key_sources`. Set that only for an Anthropic-compatible proxy the CLI reaches through its own `apiKeyHelper` (the value is the source string the CLI prints, matched exactly). The default stays unset: subscription OAuth is the sanctioned pattern, and API-key auth bills the console. Listing a source does not stop RivetOS from deleting `ANTHROPIC_API_KEY` and `ANTHROPIC_AUTH_TOKEN` on the child.
 
@@ -485,7 +485,7 @@ providers:
 | `model`            | CLI default (optional)          | Passed as `-m` when set. Omit to use the CLI's configured model.                                                                                                                               |
 | `permission_mode`  | `dontAsk`                       | `--permission-mode`. `dontAsk` auto-denies tools not covered by `allow`.                                                                                                                       |
 | `reasoning_effort` | CLI default                     | `--reasoning-effort`. Per-turn `thinking` (`low`/`medium`/`high`+) overrides.                                                                                                                  |
-| `max_turns` | unset | `--max-turns`, only passed when set. Unset lets grok run its tool loop to completion; `1` = answer only, and any tool call then ends the turn as `error_max_turns`. |
+| `max_turns`        | unset                           | `--max-turns`, only passed when set. Unset lets grok run its tool loop to completion; `1` = answer only, and any tool call then ends the turn as `error_max_turns`.                            |
 | `no_plan`          | `true`                          | `--no-plan` — plan mode would swallow a headless run.                                                                                                                                          |
 | `system_prompt`    | `prepend`                       | `prepend` = RivetOS system prompt at the top of the prompt, grok keeps its own; `override` = `--system-prompt-override`; `off` = dropped. Applies on first turn and on later `--resume` turns. |
 | `session`          | `resume`                        | `resume` = one grok session per RivetOS conversation (`~/.rivetos/grok-cli-sessions.json`). `replay` = full transcript every turn, no session flags.                                           |
@@ -550,22 +550,22 @@ mesh:
     seed_port: 3000
 ```
 
-| Key                          | Type           | Default                                            | Description                                                                                                              |
-| ---------------------------- | -------------- | -------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------ |
-| `mesh.enabled`               | bool           | `false`                                            | Enable mesh networking.                                                                                                  |
-| `mesh.node_name`             | string         | hostname                                           | Node name — **must match cert CN**.                                                                                      |
-| `mesh.tls`                   | bool \| object | —                                                  | mTLS config. **Required** when `mesh.enabled: true`.                                                                     |
-| `mesh.tls.ca_path`           | string         | `$RIVETOS_SHARED_DIR/rivet-ca/intermediate/ca-chain.pem` | CA chain PEM. Unset `RIVETOS_SHARED_DIR` → product default.                                                          |
-| `mesh.tls.cert_path`         | string         | `$RIVETOS_SHARED_DIR/rivet-ca/issued/<node_name>.crt`    | Node cert PEM.                                                                                                       |
-| `mesh.tls.key_path`          | string         | `$RIVETOS_SHARED_DIR/rivet-ca/issued/<node_name>.key`    | Node private key PEM.                                                                                                |
-| `mesh.agent_channel_port`    | number         | `3000`                                             | HTTPS port for the agent channel.                                                                                        |
-| `mesh.storage_dir`           | string         | `$RIVETOS_SHARED_DIR` (unset → product default)    | Directory containing `mesh.json`.                                                                                        |
-| `mesh.heartbeat_interval_ms` | number         | `30000`                                            | Heartbeat write interval.                                                                                                |
-| `mesh.stale_threshold_ms`    | number         | `90000`                                            | Age before a node is marked stale.                                                                                       |
-| `mesh.discovery.mode`        | string         | —                                                  | `seed` \| `static` \| `mdns`.                                                                                            |
-| `mesh.discovery.seed_host`   | string         | —                                                  | Seed node hostname (use `<nodeName>.mesh`).                                                                              |
-| `mesh.discovery.seed_port`   | number         | `3100`                                             | Seed node port.                                                                                                          |
-| `mesh.secret`                | string         | —                                                  | **Ignored** — mesh agent-channel auth is mTLS only. Accepted with a warning for back-compat; remove it from your config. |
+| Key                          | Type           | Default                                                  | Description                                                                                                              |
+| ---------------------------- | -------------- | -------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------ |
+| `mesh.enabled`               | bool           | `false`                                                  | Enable mesh networking.                                                                                                  |
+| `mesh.node_name`             | string         | hostname                                                 | Node name — **must match cert CN**.                                                                                      |
+| `mesh.tls`                   | bool \| object | —                                                        | mTLS config. **Required** when `mesh.enabled: true`.                                                                     |
+| `mesh.tls.ca_path`           | string         | `$RIVETOS_SHARED_DIR/rivet-ca/intermediate/ca-chain.pem` | CA chain PEM. Unset `RIVETOS_SHARED_DIR` → product default.                                                              |
+| `mesh.tls.cert_path`         | string         | `$RIVETOS_SHARED_DIR/rivet-ca/issued/<node_name>.crt`    | Node cert PEM.                                                                                                           |
+| `mesh.tls.key_path`          | string         | `$RIVETOS_SHARED_DIR/rivet-ca/issued/<node_name>.key`    | Node private key PEM.                                                                                                    |
+| `mesh.agent_channel_port`    | number         | `3000`                                                   | HTTPS port for the agent channel.                                                                                        |
+| `mesh.storage_dir`           | string         | `$RIVETOS_SHARED_DIR` (unset → product default)          | Directory containing `mesh.json`.                                                                                        |
+| `mesh.heartbeat_interval_ms` | number         | `30000`                                                  | Heartbeat write interval.                                                                                                |
+| `mesh.stale_threshold_ms`    | number         | `90000`                                                  | Age before a node is marked stale.                                                                                       |
+| `mesh.discovery.mode`        | string         | —                                                        | `seed` \| `static` \| `mdns`.                                                                                            |
+| `mesh.discovery.seed_host`   | string         | —                                                        | Seed node hostname (use `<nodeName>.mesh`).                                                                              |
+| `mesh.discovery.seed_port`   | number         | `3100`                                                   | Seed node port.                                                                                                          |
+| `mesh.secret`                | string         | —                                                        | **Ignored** — mesh agent-channel auth is mTLS only. Accepted with a warning for back-compat; remove it from your config. |
 
 ---
 
@@ -618,9 +618,10 @@ Requests without an `Origin` (the Android app, hooks, CLI tools, mesh peers) are
 
 ## `memory`
 
-Memory backend configuration. Currently supports PostgreSQL. Optional
-`memory.capture` controls write-path behaviour for harness capture hooks that
-post through `@rivetos/capture-core`.
+Memory backend configuration. Supported backends: `postgres` (default path today) and
+`sqlite` (opt-in file store for the in-process `Memory` contract). Set exactly one — both
+together is a validation error. Optional `memory.capture` controls write-path behaviour
+for harness capture hooks that post through `@rivetos/capture-core`.
 
 ### Capture redaction
 
@@ -720,6 +721,33 @@ Day-2 commands (no extra daemon):
 - `rivetos db migrate` / `rivetos db status` — same acquire-or-attach wrap. `--config <path>` selects the YAML (not forwarded to the migrator). `db migrate --url` bypasses the embedded engine and talks to that Postgres URL. `db status` on embedded prints data dir, size on disk, owner, socket port, and `_rivetos_migrations` count. If no node is running, `db status` boots the engine for the duration of the command and labels the owner `this command (no node running)`.
 - `rivetos doctor` — does not warn that `RIVETOS_PG_URL` is missing when `memory.postgres.embedded` is set; if the socket refuses, it says to start the node.
 
+### SQLite (opt-in)
+
+Presence of `memory.sqlite` registers the `@rivetos/memory-sqlite` plugin. No Postgres or
+PGlite process is required for the in-process `Memory` path (chat append, session/task
+history, settings, FTS5 search). HTTP `/api/capture` and memory HTTP/MCP routes still need
+a Postgres pool in phase 1 — the memory MCP sidecar has no sqlite path yet. Vectors,
+compaction, wiki, and multi-user routing come later. Phase 1 is single-user: one file holds
+all transcripts; routed users in the tenancy registry are not isolated. If `memory.sqlite`
+is set, remove or ignore a stale `RIVETOS_PG_URL` in `~/.rivetos/.env` so the MCP sidecar
+does not keep reading an old Postgres store while chat appends write sqlite. The parent
+directory is created mode `0700` and the DB file (plus `-wal`/`-shm`) is `0600`. With this
+block unset, behaviour is unchanged.
+
+```yaml
+memory:
+  sqlite:
+    path: ~/.rivetos/memory.sqlite
+```
+
+| Key    | Type   | Default | Description                                                                        |
+| ------ | ------ | ------- | ---------------------------------------------------------------------------------- |
+| `path` | string | —       | Required. File path (`~` expanded) or `:memory:`. Relative paths are cwd-relative. |
+
+The file is opened with WAL, a 5s busy timeout, and foreign keys on. Search is FTS5 only
+until an embedding drain lands; append still enqueues `ros_embed_queue` rows for that
+later worker.
+
 ---
 
 ## `tasks`
@@ -734,9 +762,9 @@ in that file, polled by this process (no graphile-worker, no `LISTEN`). If
 both are set, Postgres wins and the sqlite file is not opened. Relative
 paths are cwd-relative. Keep this file separate from any other app database.
 
-| Key           | Type    | Default | Description                                                                 |
-| ------------- | ------- | ------- | --------------------------------------------------------------------------- |
-| `enabled`     | boolean | `true`  | Start the embedded task runner. Inert while nothing creates tasks.         |
+| Key           | Type    | Default | Description                                                                   |
+| ------------- | ------- | ------- | ----------------------------------------------------------------------------- |
+| `enabled`     | boolean | `true`  | Start the embedded task runner. Inert while nothing creates tasks.            |
 | `sqlite_path` | string  | —       | Task file when there is no pgUrl. Ignored (with a warning) when pgUrl is set. |
 
 Env knobs: `RIVETOS_TASKS_CONCURRENCY` (default 4), `RIVETOS_TASKS_POLL_MS` (default 2000).
@@ -775,7 +803,7 @@ tasks:
     codex:
       models_mode: merge # discover (default) | replace | merge
       models:
-        - { id: my-gateway/gpt-x, label: "GPT-X via gateway", default: true }
+        - { id: my-gateway/gpt-x, label: 'GPT-X via gateway', default: true }
         - { id: gpt-5.5, efforts: [{ id: low }, { id: high, default: true }] }
       efforts: # same treatment as models
         - { id: ultra, label: Ultra }
@@ -888,7 +916,7 @@ harness gets them from `rivetos_resolve_den` (`den.port`, default 5174, and
 | `RIVET_DEN_CA`          | mcp-sidecar                             | PEM path for the den's CA. The launcher exports it as `NODE_EXTRA_CA_CERTS` when that is unset, from `den.tls_ca`, else `RIVETOS_DEN_TLS_CA`, else `/rivet-shared/rivet-ca/intermediate/chain.pem`. For an https den URL a missing file unsets `RIVET_DEN_URL`; a plain-http URL needs no CA and is kept.                                                                                                                                 |
 | `RIVETOS_PG_POOL_MAX`   | boot                                    | Max connections for the one host-owned Postgres pool per runtime process (shared by the task engine, heartbeats, memory and the API). Default 8, min 4.                                                                                                                                                                                                                     |
 | `RIVETOS_USERS_FILE`    | den, memory-postgres, claude-cli        | Optional explicit path to the tenancy registry (`users.json`). When unset, RivetOS loads `$RIVETOS_SHARED_DIR/rivetos/users.json`, then `~/.rivetos/users.json`. Per-user memory routing comes only from this file — a user is routable iff their record has a usable `pgUrl`. A present-but-invalid shared-dir file fails closed (does not fall through to the home file). |
-| `RIVETOS_OWNER_USER_ID` | den, users-registry, `rivetos user add` | Node-owner user id used by the fail-closed seed and the CLI missing-file seed. Default `owner` (fleet compatibility); deployments override this env var. Forwarded to the embedded den.                                                                                                                                                                                      |
+| `RIVETOS_OWNER_USER_ID` | den, users-registry, `rivetos user add` | Node-owner user id used by the fail-closed seed and the CLI missing-file seed. Default `owner` (fleet compatibility); deployments override this env var. Forwarded to the embedded den.                                                                                                                                                                                     |
 | `RIVETOS_AGENT_SECRET`  | channel-agent                           | **Deprecated** — was the bearer secret for agent mesh. No longer used for agent-channel auth (replaced by mTLS).                                                                                                                                                                                                                                                            |
 | `RIVETOS_LOG_LEVEL`     | core                                    | Log level: `error`, `warn`, `info`, `debug`                                                                                                                                                                                                                                                                                                                                 |
 | `RIVETOS_LOG_FORMAT`    | core                                    | Log format: `pretty` (default) or `json`                                                                                                                                                                                                                                                                                                                                    |
