@@ -2,10 +2,17 @@
  * Phase-1 SQLite schema for the memory backend.
  *
  * Mirrors the postgres ros_conversations / ros_messages shape with TEXT
- * stand-ins for UUID/JSONB/timestamptz. FTS5 indexes content + tool_result.
+ * stand-ins for UUID/JSONB/timestamptz. FTS5 indexes content + tool_result
+ * and stays in sync via AFTER INSERT/UPDATE/DELETE triggers on ros_messages.
  * ros_embed_queue is written on append for a later drain worker; phase 1
  * never reads it.
+ *
+ * SCHEMA_VERSION is stamped with PRAGMA user_version after apply. Bump it
+ * when adding columns/tables and extend migrateSchema()'s switch.
  */
+
+/** Current on-disk schema version. Bump when the DDL changes. */
+export const SCHEMA_VERSION = 1
 
 export const SCHEMA = `
 CREATE TABLE IF NOT EXISTS ros_conversations (
@@ -60,6 +67,19 @@ CREATE VIRTUAL TABLE IF NOT EXISTS ros_messages_fts USING fts5(
     tool_result,
     tokenize = 'porter unicode61'
 );
+
+CREATE TRIGGER IF NOT EXISTS ros_messages_ai AFTER INSERT ON ros_messages BEGIN
+  INSERT INTO ros_messages_fts(id, content, tool_result)
+  VALUES (new.id, new.content, coalesce(new.tool_result, ''));
+END;
+CREATE TRIGGER IF NOT EXISTS ros_messages_ad AFTER DELETE ON ros_messages BEGIN
+  DELETE FROM ros_messages_fts WHERE id = old.id;
+END;
+CREATE TRIGGER IF NOT EXISTS ros_messages_au AFTER UPDATE OF content, tool_result, id ON ros_messages BEGIN
+  DELETE FROM ros_messages_fts WHERE id = old.id;
+  INSERT INTO ros_messages_fts(id, content, tool_result)
+  VALUES (new.id, new.content, coalesce(new.tool_result, ''));
+END;
 
 CREATE TABLE IF NOT EXISTS ros_embed_queue (
     id          TEXT PRIMARY KEY,

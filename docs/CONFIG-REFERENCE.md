@@ -616,8 +616,8 @@ Requests without an `Origin` (the Android app, hooks, CLI tools, mesh peers) are
 ## `memory`
 
 Memory backend configuration. Supported backends: `postgres` (default path today) and
-`sqlite` (opt-in file store for zero-start capture). Set exactly one — both together is a
-validation error.
+`sqlite` (opt-in file store for the in-process `Memory` contract). Set exactly one — both
+together is a validation error.
 
 ### PostgreSQL
 
@@ -681,9 +681,15 @@ Day-2 commands (no extra daemon):
 ### SQLite (opt-in)
 
 Presence of `memory.sqlite` registers the `@rivetos/memory-sqlite` plugin. No Postgres or
-PGlite process is required. Phase 1 covers the write path, session/task history, settings,
-and FTS5 search behind the `Memory` contract. Vectors, compaction, wiki, and multi-user
-routing come later. With this block unset, behaviour is unchanged.
+PGlite process is required for the in-process `Memory` path (chat append, session/task
+history, settings, FTS5 search). HTTP `/api/capture` and memory HTTP/MCP routes still need
+a Postgres pool in phase 1 — the memory MCP sidecar has no sqlite path yet. Vectors,
+compaction, wiki, and multi-user routing come later. Phase 1 is single-user: one file holds
+all transcripts; routed users in the tenancy registry are not isolated. If `memory.sqlite`
+is set, remove or ignore a stale `RIVETOS_PG_URL` in `~/.rivetos/.env` so the MCP sidecar
+does not keep reading an old Postgres store while chat appends write sqlite. The parent
+directory is created mode `0700` and the DB file (plus `-wal`/`-shm`) is `0600`. With this
+block unset, behaviour is unchanged.
 
 ```yaml
 memory:

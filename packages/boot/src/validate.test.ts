@@ -621,7 +621,14 @@ describe('Config Validation', () => {
 
       const postgresOnly = validConfig()
       postgresOnly.memory = { postgres: { connection_string: '${RIVETOS_PG_URL}' } }
-      assertValid(validateConfig(postgresOnly))
+      const postgresResult = validateConfig(postgresOnly)
+      assertValid(postgresResult)
+      // Opt-in pin: postgres-only validate output has no sqlite-related issues.
+      expect(
+        [...postgresResult.errors, ...postgresResult.warnings].filter((i) =>
+          i.path.includes('sqlite'),
+        ),
+      ).toEqual([])
 
       // Opt-in pin: no memory section → unchanged / valid.
       const none = validConfig()

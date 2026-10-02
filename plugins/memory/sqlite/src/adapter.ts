@@ -7,13 +7,13 @@
  */
 
 import { randomUUID } from 'node:crypto'
-import { mkdirSync } from 'node:fs'
+import { chmodSync, existsSync, mkdirSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { dirname, isAbsolute, resolve } from 'node:path'
 import { DatabaseSync, type SQLInputValue } from 'node:sqlite'
 import type { Memory, MemoryEntry, MemorySearchResult, Message } from '@rivetos/types'
 import { MemoryError } from '@rivetos/types'
-import { SCHEMA } from './schema.js'
+import { SCHEMA, SCHEMA_VERSION } from './schema.js'
 
 const HEARTBEAT_SESSION_PREFIX = 'heartbeat:'
 
@@ -54,6 +54,38 @@ export function buildFtsMatchQuery(raw: string): string | null {
     .filter((t) => t.length > 0)
   if (tokens.length === 0) return null
   return tokens.map((t) => `"${t}"`).join(' AND ')
+}
+
+/**
+ * FTS5 bm25() returns negative scores for matches (more negative = better).
+ * Map into a (0,1]-ish relevance where higher is better.
+ */
+export function relevanceFromBm25(rank: number): number {
+  return 1 / (1 + Math.abs(rank))
+}
+
+/** Extract a UUID task id from `task:<uuid>` session keys or metadata.taskId. */
+export function resolveTaskId(
+  sessionId: string,
+  metadata?: Record<string, unknown>,
+): string | null {
+  if (sessionId.startsWith('task:')) {
+    const fromSession = sessionId.slice('task:'.length)
+    if (isTaskUuid(fromSession)) return fromSession
+  }
+  const raw = metadata?.taskId
+  if (typeof raw === 'string' && isTaskUuid(raw)) return raw
+  return null
+}
+
+/** Restrict a file (and its -wal/-shm siblings) to owner read/write only. */
+export function restrictSqliteFileModes(path: string): void {
+  if (path === ':memory:') return
+  chmodSync(path, 0o600)
+  for (const suffix of ['-wal', '-shm'] as const) {
+    const sibling = `${path}${suffix}`
+    if (existsSync(sibling)) chmodSync(sibling, 0o600)
+  }
 }
 
 export interface SqliteMemoryConfig {
@@ -99,13 +131,44 @@ export class SqliteMemory implements Memory {
     const path = resolveSqlitePath(config.path)
     this.filePath = path
     if (path !== ':memory:') {
-      mkdirSync(dirname(path), { recursive: true })
+      const dir = dirname(path)
+      mkdirSync(dir, { recursive: true, mode: 0o700 })
+      // recursive mkdir may leave an existing parent at its prior mode; force 0700.
+      chmodSync(dir, 0o700)
     }
     this.db = new DatabaseSync(path)
-    this.db.exec('PRAGMA journal_mode = WAL')
+    // busy_timeout before WAL so a cold-open race waits instead of throwing SQLITE_BUSY.
     this.db.exec('PRAGMA busy_timeout = 5000')
+    this.db.exec('PRAGMA journal_mode = WAL')
     this.db.exec('PRAGMA foreign_keys = ON')
     this.db.exec(SCHEMA)
+    this.migrateSchema()
+    if (path !== ':memory:') {
+      // WAL/SHM appear after journal_mode=WAL; tighten DB + siblings.
+      restrictSqliteFileModes(path)
+    }
+  }
+
+  /** Apply incremental upgrades and stamp PRAGMA user_version. */
+  private migrateSchema(): void {
+    const row = this.db.prepare('PRAGMA user_version').get() as { user_version: number } | undefined
+    let version = row?.user_version ?? 0
+    // Fresh file or pre-stamp phase-1 DB: SCHEMA already applied via CREATE IF NOT EXISTS.
+    // Switch arms land here as SCHEMA_VERSION grows (phase 2+).
+    while (version < SCHEMA_VERSION) {
+      switch (version) {
+        case 0:
+          // No-op: baseline DDL is in SCHEMA. Stamp to 1.
+          break
+        default:
+          throw new MemoryError(
+            'MEMORY_CONNECTION_FAILED',
+            `SqliteMemory has no migration from schema version ${version}`,
+          )
+      }
+      version += 1
+      this.db.exec(`PRAGMA user_version = ${version}`)
+    }
   }
 
   /** Absolute path (or `:memory:`) this store opened. */
@@ -128,13 +191,15 @@ export class SqliteMemory implements Memory {
     this.assertOpen()
     try {
       return this.tx(() => {
-        const convId = this.ensureConversation(entry.sessionId, entry.agent, entry.channel)
+        const taskId = resolveTaskId(entry.sessionId, entry.metadata)
+        const convId = this.ensureConversation(entry.sessionId, entry.agent, entry.channel, taskId)
         const id = randomUUID()
         const createdAt = entry.createdAt ? entry.createdAt.toISOString() : iso()
         const toolArgs = entry.toolArgs ? JSON.stringify(entry.toolArgs) : null
         const metadata = entry.metadata ? JSON.stringify(entry.metadata) : '{}'
         const toolResult = entry.toolResult ?? null
 
+        // FTS row is written by the ros_messages_ai trigger.
         this.db
           .prepare(
             `INSERT INTO ros_messages
@@ -155,10 +220,6 @@ export class SqliteMemory implements Memory {
             metadata,
             createdAt,
           )
-
-        this.db
-          .prepare(`INSERT INTO ros_messages_fts (id, content, tool_result) VALUES (?, ?, ?)`)
-          .run(id, entry.content, toolResult ?? '')
 
         this.db
           .prepare(`UPDATE ros_conversations SET updated_at = ?, active = 1 WHERE id = ?`)
@@ -201,6 +262,7 @@ export class SqliteMemory implements Memory {
   ): Promise<MemorySearchResult[]> {
     this.assertOpen()
     void options?.userId
+    // Phase 1: summaries are empty, so scope 'both' returns messages only.
     const scope = options?.scope ?? 'both'
     if (scope === 'summaries') return []
 
@@ -241,8 +303,8 @@ export class SqliteMemory implements Memory {
         content: r.content,
         role: r.role,
         agent: r.agent,
-        // bm25 is lower-is-better; invert into a [0,1]-ish relevance for the contract.
-        relevanceScore: 1 / (1 + Math.max(0, r.rank)),
+        // bm25() is negative for matches; abs so relevance varies and higher = better.
+        relevanceScore: relevanceFromBm25(r.rank),
         createdAt: new Date(r.created_at),
       }))
     } catch (err: unknown) {
@@ -395,8 +457,10 @@ export class SqliteMemory implements Memory {
   }
 
   /**
-   * Stamp `task_id` on the active conversation for a session (phase-1 helper
-   * for tests / future capture wiring). No-op when no active conversation.
+   * Stamp `task_id` on the active conversation for a session (harness-spawn
+   * association). Prefer passing `metadata.taskId` on append when available;
+   * this remains for callers that learn the task id after the first write.
+   * No-op when no active conversation.
    */
   associateTask(sessionId: string, agent: string, taskId: string): void {
     this.assertOpen()
@@ -406,6 +470,24 @@ export class SqliteMemory implements Memory {
          WHERE session_key = ? AND agent = ? AND active = 1`,
       )
       .run(taskId, iso(), sessionId, agent)
+  }
+
+  /** Test helper — current PRAGMA user_version. */
+  schemaVersionForTest(): number {
+    const row = this.db.prepare('PRAGMA user_version').get() as { user_version: number } | undefined
+    return row?.user_version ?? 0
+  }
+
+  /** Test helper — conversation task_id for a session/agent, if any. */
+  conversationTaskIdForTest(sessionId: string, agent: string): string | null {
+    const row = this.db
+      .prepare(
+        `SELECT task_id FROM ros_conversations
+          WHERE session_key = ? AND agent = ? AND active = 1
+          ORDER BY updated_at DESC LIMIT 1`,
+      )
+      .get(sessionId, agent) as { task_id: string | null } | undefined
+    return row?.task_id ?? null
   }
 
   close(): void {
@@ -436,22 +518,33 @@ export class SqliteMemory implements Memory {
     }
   }
 
-  private ensureConversation(sessionId: string, agent: string, channel?: string): string {
+  private ensureConversation(
+    sessionId: string,
+    agent: string,
+    channel?: string,
+    taskId?: string | null,
+  ): string {
     const now = iso()
     const channelValue = channel ?? 'unknown'
     const title = isHeartbeatSessionKey(sessionId) ? `Heartbeat ${agent}` : `Session ${sessionId}`
+    const taskValue = taskId ?? null
 
+    // Sticky task_id: set when the caller supplies one; never clear an existing stamp.
     const upserted = this.db
       .prepare(
         `INSERT INTO ros_conversations
-           (id, session_key, agent, channel, title, created_at, updated_at, active)
-         VALUES (?, ?, ?, ?, ?, ?, ?, 1)
+           (id, session_key, agent, channel, title, task_id, created_at, updated_at, active)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1)
          ON CONFLICT (session_key, agent) DO UPDATE SET
            updated_at = excluded.updated_at,
-           active = 1
+           active = 1,
+           task_id = CASE
+             WHEN excluded.task_id IS NOT NULL THEN excluded.task_id
+             ELSE ros_conversations.task_id
+           END
          RETURNING id`,
       )
-      .get(randomUUID(), sessionId, agent, channelValue, title, now, now) as
+      .get(randomUUID(), sessionId, agent, channelValue, title, taskValue, now, now) as
       ConversationRow | undefined
 
     if (!upserted?.id) {
@@ -471,6 +564,14 @@ export class SqliteMemory implements Memory {
       .prepare(`SELECT 1 AS ok FROM ros_embed_queue WHERE message_id = ?`)
       .get(messageId) as { ok: number } | undefined
     return row?.ok === 1
+  }
+
+  /** Test helper — count FTS rows for a message id (detects orphans). */
+  ftsRowCountForTest(messageId: string): number {
+    const row = this.db
+      .prepare(`SELECT count(*) AS n FROM ros_messages_fts WHERE id = ?`)
+      .get(messageId) as { n: number } | undefined
+    return row?.n ?? 0
   }
 }
 /* eslint-enable @typescript-eslint/require-await */

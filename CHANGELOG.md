@@ -10,10 +10,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Memory
 
 - Opt-in SQLite memory backend (`plugins/memory/sqlite`, `@rivetos/memory-sqlite`) behind the
-  `Memory` contract for zero-start capture: WAL file store, append, session/task history,
-  settings, and FTS5 search. Config: `memory.sqlite.path`. Mutually exclusive with
-  `memory.postgres`. With the block unset, behaviour is unchanged. Phase 1 only — vectors,
-  compaction, wiki, multi-user routing, and Postgres import/export are deferred.
+  `Memory` contract: WAL file store, append, session/task history, settings, and FTS5 search.
+  Config: `memory.sqlite.path`. Mutually exclusive with `memory.postgres`. With the block
+  unset, behaviour is unchanged. Phase 1 implements the in-process `Memory` write/search path
+  (chat append works); HTTP `/api/capture` and memory MCP/HTTP tool parity remain Postgres-gated
+  and are deferred with vectors, compaction, wiki, multi-user routing, and Postgres import/export.
 
 ### Den URL guards
 

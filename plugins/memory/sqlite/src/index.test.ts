@@ -21,7 +21,10 @@ describe('memory-sqlite manifest', () => {
     dirs.length = 0
   })
 
-  function makeCtx(pluginConfig: Record<string, unknown> | undefined): {
+  function makeCtx(
+    pluginConfig: Record<string, unknown> | undefined,
+    env: NodeJS.ProcessEnv = process.env,
+  ): {
     ctx: RegistrationContext
     getRegistered: () => Memory | undefined
     getShutdowns: () => Array<() => Promise<void> | void>
@@ -31,7 +34,7 @@ describe('memory-sqlite manifest', () => {
     const ctx: RegistrationContext = {
       config: { runtime: { workspace: '/tmp' }, agents: {} },
       pluginConfig,
-      env: process.env,
+      env,
       workspaceDir: '/tmp',
       logger: {
         info: vi.fn(),
@@ -86,5 +89,29 @@ describe('memory-sqlite manifest', () => {
       content: 'from plugin',
     })
     expect(id).toBeTruthy()
+  })
+
+  it('warns when a users registry defines routed users (single-user phase 1)', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'ros-mem-plugin-'))
+    dirs.push(dir)
+    const usersFile = join(dir, 'users.json')
+    const { writeFileSync } = await import('node:fs')
+    writeFileSync(
+      usersFile,
+      JSON.stringify({
+        ownerUserId: 'owner',
+        unmappedIsOwner: false,
+        users: {
+          owner: { id: 'owner', devices: [] },
+          guest: { id: 'guest', devices: ['dev1'] },
+        },
+      }),
+    )
+    const { ctx } = makeCtx(
+      { path: join(dir, 'm.sqlite') },
+      { ...process.env, RIVETOS_USERS_FILE: usersFile },
+    )
+    await (manifest as PluginManifest).register(ctx)
+    expect(ctx.logger.warn).toHaveBeenCalledWith(expect.stringContaining('single-user in phase 1'))
   })
 })

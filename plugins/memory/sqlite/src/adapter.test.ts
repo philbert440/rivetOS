@@ -1,16 +1,23 @@
 /**
- * SqliteMemory contract tests — every Memory method phase 1 implements,
- * plus FTS and opt-in path helpers. Uses an on-disk temp file (WAL) and
- * an in-memory store where a file is unnecessary.
+ * Per-plugin SqliteMemory tests — every Memory method phase 1 implements,
+ * plus FTS, permissions, schema version, and path helpers. Uses an on-disk
+ * temp file (WAL) and an in-memory store where a file is unnecessary.
  */
 
-import { mkdtempSync, rmSync } from 'node:fs'
+import { mkdtempSync, rmSync, statSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
-import { SqliteMemory, buildFtsMatchQuery, resolveSqlitePath } from './adapter.ts'
+import {
+  SqliteMemory,
+  buildFtsMatchQuery,
+  relevanceFromBm25,
+  resolveSqlitePath,
+  resolveTaskId,
+} from './adapter.ts'
+import { SCHEMA_VERSION } from './schema.ts'
 
-describe('resolveSqlitePath / buildFtsMatchQuery', () => {
+describe('resolveSqlitePath / buildFtsMatchQuery / relevanceFromBm25', () => {
   it('keeps :memory: and expands a leading ~', () => {
     expect(resolveSqlitePath(':memory:')).toBe(':memory:')
     const home = resolveSqlitePath('~/memory.sqlite')
@@ -22,6 +29,22 @@ describe('resolveSqlitePath / buildFtsMatchQuery', () => {
     expect(buildFtsMatchQuery('hello world')).toBe('"hello" AND "world"')
     expect(buildFtsMatchQuery('  ')).toBeNull()
     expect(buildFtsMatchQuery('a^b (c)')).toBe('"ab" AND "c"')
+  })
+
+  it('maps negative bm25 ranks to varying relevance scores', () => {
+    // Regression: Math.max(0, negative) collapsed every hit to 1.0.
+    expect(relevanceFromBm25(0)).toBe(1)
+    expect(relevanceFromBm25(-0.000001)).toBeLessThan(1)
+    expect(relevanceFromBm25(-2)).toBeLessThan(relevanceFromBm25(-0.5))
+    expect(relevanceFromBm25(-2)).toBe(relevanceFromBm25(2))
+  })
+
+  it('resolveTaskId reads task:<uuid> sessions and metadata.taskId', () => {
+    const id = 'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee'
+    expect(resolveTaskId(`task:${id}`)).toBe(id)
+    expect(resolveTaskId('harness-spawn-1', { taskId: id })).toBe(id)
+    expect(resolveTaskId('plain-session')).toBeNull()
+    expect(resolveTaskId('task:not-a-uuid')).toBeNull()
   })
 })
 
@@ -101,12 +124,95 @@ describe('SqliteMemory Memory contract', () => {
     const hits = await memory.search('flurbnozzle protocol', { limit: 5 })
     expect(hits.length).toBeGreaterThanOrEqual(1)
     expect(hits[0].content).toContain('flurbnozzle')
+    // bm25 ranks are negative; scores must vary and stay in (0,1].
+    expect(hits[0].relevanceScore).toBeGreaterThan(0)
+    expect(hits[0].relevanceScore).toBeLessThanOrEqual(1)
+    expect(hits[0].relevanceScore).not.toBe(1)
 
     const grokOnly = await memory.search('flurbnozzle', { agent: 'grok' })
     expect(grokOnly.every((h) => h.agent === 'grok')).toBe(true)
 
     const summaries = await memory.search('flurbnozzle', { scope: 'summaries' })
     expect(summaries).toEqual([])
+
+    // Phase 1: scope 'both' is messages-only (no summary arm yet).
+    const both = await memory.search('flurbnozzle', { scope: 'both' })
+    expect(both.length).toBeGreaterThanOrEqual(1)
+  })
+
+  it('creates the DB directory 0700 and the file (+wal/+shm) 0600', () => {
+    const parent = mkdtempSync(join(tmpdir(), 'ros-mem-mode-'))
+    dirs.push(parent)
+    const dir = join(parent, 'private')
+    const path = join(dir, 'memory.sqlite')
+    const memory = new SqliteMemory({ path })
+    open.push(memory)
+    // Force a write so WAL/SHM siblings exist under journal_mode=WAL.
+    memory.execForTest(`SELECT 1`)
+
+    expect(statSync(dir).mode & 0o777).toBe(0o700)
+    expect(statSync(path).mode & 0o777).toBe(0o600)
+    for (const suffix of ['-wal', '-shm'] as const) {
+      const sibling = `${path}${suffix}`
+      try {
+        expect(statSync(sibling).mode & 0o777).toBe(0o600)
+      } catch (err) {
+        // Some node:sqlite builds defer -shm until a second connection; WAL is enough.
+        if (suffix === '-shm' && (err as NodeJS.ErrnoException).code === 'ENOENT') continue
+        throw err
+      }
+    }
+  })
+
+  it('stamps SCHEMA_VERSION via PRAGMA user_version', () => {
+    const memory = memStore()
+    expect(memory.schemaVersionForTest()).toBe(SCHEMA_VERSION)
+    expect(SCHEMA_VERSION).toBeGreaterThanOrEqual(1)
+  })
+
+  it('keeps FTS in sync on delete via triggers (no orphaned FTS rows)', async () => {
+    const memory = memStore()
+    const id = await memory.append({
+      sessionId: 'fts-del',
+      agent: 'grok',
+      channel: 'test',
+      role: 'user',
+      content: 'orphan-check flurbnozzle unique-token',
+    })
+    expect(memory.ftsRowCountForTest(id)).toBe(1)
+
+    // CASCADE-delete the conversation; AFTER DELETE trigger must drop the FTS row
+    // (search JOIN would hide orphans — count the FTS table directly).
+    memory.execForTest(`DELETE FROM ros_conversations WHERE session_key = ?`, 'fts-del')
+    expect(memory.ftsRowCountForTest(id)).toBe(0)
+
+    const id2 = await memory.append({
+      sessionId: 'fts-del-2',
+      agent: 'grok',
+      channel: 'test',
+      role: 'user',
+      content: 'second unique-token-two',
+    })
+    expect(memory.ftsRowCountForTest(id2)).toBe(1)
+    memory.execForTest(`DELETE FROM ros_messages WHERE id = ?`, id2)
+    expect(memory.ftsRowCountForTest(id2)).toBe(0)
+
+    // UPDATE content must refresh the FTS row (not leave stale text).
+    const id3 = await memory.append({
+      sessionId: 'fts-upd',
+      agent: 'grok',
+      channel: 'test',
+      role: 'user',
+      content: 'before-update-token',
+    })
+    memory.execForTest(
+      `UPDATE ros_messages SET content = ? WHERE id = ?`,
+      'after-update-token',
+      id3,
+    )
+    expect((await memory.search('before-update-token')).length).toBe(0)
+    expect((await memory.search('after-update-token')).length).toBe(1)
+    expect(memory.ftsRowCountForTest(id3)).toBe(1)
   })
 
   it('getContextForTurn excludes heartbeat sessions from Recent', async () => {
@@ -164,6 +270,8 @@ describe('SqliteMemory Memory contract', () => {
       content: 'legacy leg',
       createdAt: new Date('2026-01-01T00:00:00.000Z'),
     })
+    // Append under task:<uuid> must populate task_id (not only session_key).
+    expect(memory.conversationTaskIdForTest(`task:${taskId}`, 'grok')).toBe(taskId)
 
     await memory.append({
       sessionId: 'harness-spawn-1',
@@ -172,11 +280,29 @@ describe('SqliteMemory Memory contract', () => {
       role: 'assistant',
       content: 'spawn leg',
       createdAt: new Date('2026-01-01T00:00:01.000Z'),
+      metadata: { taskId },
     })
-    memory.associateTask('harness-spawn-1', 'grok', taskId)
+    expect(memory.conversationTaskIdForTest('harness-spawn-1', 'grok')).toBe(taskId)
 
     const history = await memory.getTaskHistory(taskId)
     expect(history.map((m) => m.content)).toEqual(['legacy leg', 'spawn leg'])
+  })
+
+  it('associateTask still stamps task_id after the first append', async () => {
+    const memory = memStore()
+    const taskId = 'bbbbbbbb-bbbb-cccc-dddd-eeeeeeeeeeee'
+    await memory.append({
+      sessionId: 'late-assoc',
+      agent: 'grok',
+      channel: 'harness',
+      role: 'user',
+      content: 'before assoc',
+    })
+    expect(memory.conversationTaskIdForTest('late-assoc', 'grok')).toBeNull()
+    memory.associateTask('late-assoc', 'grok', taskId)
+    expect(memory.conversationTaskIdForTest('late-assoc', 'grok')).toBe(taskId)
+    const history = await memory.getTaskHistory(taskId)
+    expect(history.map((m) => m.content)).toEqual(['before assoc'])
   })
 
   it('reopens a WAL file and still finds prior rows', async () => {
