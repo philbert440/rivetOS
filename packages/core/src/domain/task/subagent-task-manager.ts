@@ -14,9 +14,9 @@
  *   awaiting-input | completed → 'completed'
  *   failed | timeout | killed  → 'failed'
  *
- * Kill uses TaskStore.requestKill: pre-terminal rows flip to killed; an
- * in-flight turn is not aborted — the runner discards its outcome at turn
- * end (legacy subagent semantics). History/messageCount are read from the
+ * Kill uses TaskStore.requestKill: pre-terminal rows flip to killed; the
+ * runner aborts an in-flight turn on that flip and records the outcome as
+ * killed. History/messageCount are read from the
  * task's memory conversation (session_key = task:<id>, step (c)); without
  * memory they degrade to empty/0.
  */
