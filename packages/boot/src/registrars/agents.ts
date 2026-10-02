@@ -175,6 +175,21 @@ export async function registerAgentTools(
   const tasksEnabled = config.tasks?.enabled !== false
   // Phase 2b: one criteria policy for every task creator on this node.
   const criteriaPolicy = criteriaPolicyFromConfig(config.tasks?.eval)
+  // den.allowed_harnesses — unset means every harness is allowed (opt-in).
+  // Non-array values that slip past validate are treated as unset (same as
+  // normalizeAllowedHarnesses), so boot never throws on a bad shape.
+  const allowedRaw = config.den?.allowed_harnesses
+  const allowedHarnessSet: Set<string> | undefined = Array.isArray(allowedRaw)
+    ? new Set(
+        allowedRaw
+          .filter((s): s is string => typeof s === 'string')
+          .map((s) => s.trim())
+          .filter((s) => s.length > 0),
+      )
+    : undefined
+  const isHarnessAllowed = allowedHarnessSet
+    ? (id: string): boolean => allowedHarnessSet.has(id)
+    : undefined
   const sqlitePath = tasksSqlitePath(config)
   let taskEngineStore: TaskStore | undefined
   let sqliteTaskStore: SqliteTaskStore | undefined
@@ -336,7 +351,8 @@ export async function registerAgentTools(
   const permissionBroker = taskEngineStore
     ? new TaskPermissionBroker({ store: taskEngineStore, timeoutMs: permissionTimeoutMs })
     : undefined
-  // Finish, kill, and sweep flip the row without aborting the spawn. The
+  // Finish and sweep flip the row without aborting the spawn (a kill is
+  // aborted by the runner, which may be on another node). The
   // route subscribes too; denyPending is idempotent, so the second call
   // does not record a second decision or allow anything.
   if (permissionBroker && taskEngineStore?.onTerminal) {
@@ -597,6 +613,7 @@ export async function registerAgentTools(
       memory: runtime.getMemory(),
       resolvePreset: resolvePresetForRunner,
       invalidatePreset: invalidatePresetForRunner,
+      isHarnessAllowed,
     })
     subagentTaskStore = inMemoryStore
   }
@@ -692,6 +709,7 @@ export async function registerAgentTools(
       resolvePreset: resolvePresetForRunner,
       invalidatePreset: invalidatePresetForRunner,
       onTaskFinished: notifyTaskFinished,
+      isHarnessAllowed,
     })
     runTaskRef.current = taskRunner.handler
     await taskRunner.start()
@@ -761,6 +779,7 @@ export async function registerAgentTools(
         resolvePreset: resolvePresetForRunner,
         invalidatePreset: invalidatePresetForRunner,
         onTaskFinished: notifyTaskFinished,
+        isHarnessAllowed,
       }),
       nodeId: nodeNameFor(config),
     })
@@ -926,6 +945,7 @@ export async function registerAgentTools(
         criteriaPolicy,
         localQueueNode: sqliteTaskStore ? nodeName : undefined,
         permissionBroker,
+        isHarnessAllowed,
       }),
       createOutcomesApiRoute({ store: taskEngineStore }),
     )
@@ -980,6 +1000,7 @@ export async function registerAgentTools(
       skills: () => skillManager.list(),
       meshRegistry: registry,
       presets,
+      isHarnessAllowed,
     }),
   )
 

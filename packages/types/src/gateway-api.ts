@@ -974,6 +974,13 @@ export interface HarnessDescriptor {
    * older den) = treat as installed.
    */
   installed?: boolean
+  /**
+   * The operator allow-list (`den.allowed_harnesses`) includes this harness.
+   * Disallowed drivers stay listed so their existing sessions keep resolving;
+   * pickers offering NEW sessions filter on this together with `installed`.
+   * Absent (allow-list unset, or an older den) = treat as allowed.
+   */
+  allowed?: boolean
 }
 
 export interface HarnessesResponse {

@@ -8,7 +8,7 @@ import {
   defaultModel,
   effortOptionsFor,
   harnessLabel,
-  installedHarnesses,
+  launchableHarnesses,
   modelOptionsFor,
   rowPillText,
   spawnModelEffort,
@@ -73,14 +73,24 @@ describe('rowPillText', () => {
   })
 })
 
-describe('installedHarnesses', () => {
+describe('launchableHarnesses', () => {
   it('drops installed:false rows and keeps rows from dens that omit the flag', () => {
     const rows = [
       { harnessId: 'claude-code', installed: true },
       { harnessId: 'kimi-code', installed: false },
       { harnessId: 'hermes' },
     ]
-    expect(installedHarnesses(rows).map((r) => r.harnessId)).toEqual(['claude-code', 'hermes'])
+    expect(launchableHarnesses(rows).map((r) => r.harnessId)).toEqual(['claude-code', 'hermes'])
+  })
+
+  it('drops allowed:false rows and keeps rows that omit the allow flag', () => {
+    const rows = [
+      { harnessId: 'claude-code', installed: true, allowed: true },
+      { harnessId: 'hermes', installed: true, allowed: false },
+      { harnessId: 'codex', installed: true },
+      { harnessId: 'kimi-code', installed: false, allowed: true },
+    ]
+    expect(launchableHarnesses(rows).map((r) => r.harnessId)).toEqual(['claude-code', 'codex'])
   })
 })
 

@@ -384,6 +384,9 @@ class HubViewModel(private val c: AppContainer, inboxLabels: InboxLabels) : View
         return desc.find { it.harnessId == harnessId }?.capabilities?.toSheet()
     }
 
+    /** Per-den harness sheets for NEW-conversation pickers (`launchableAgents`). */
+    fun descriptorsByDenUrl(): Map<String, List<HarnessDescriptor>> = HashMap(descriptors)
+
     /**
      * Long-press → Edit → Save: the SAME den PATCH the web editor sends
      * (`PATCH /api/agents/{id}`), issued against the node the agent LIVES on

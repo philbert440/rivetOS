@@ -3,10 +3,20 @@ export type {
   CaptureMessage,
   CaptureBatch,
   CaptureResult,
+  CaptureRedactionOptions,
   CaptureWriterOptions,
   CaptureWriter,
 } from './types.js'
 export { createCaptureWriter } from './writer.js'
+export {
+  resolveCaptureRedaction,
+  captureRedactionFromEnv,
+  redactText,
+  redactMessage,
+  type ResolvedCaptureRedaction,
+  type RedactionApplyResult,
+  type BuiltinDetectorId,
+} from './redaction.js'
 export {
   resolveDenUrl,
   guardDenUrl,

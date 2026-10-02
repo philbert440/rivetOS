@@ -81,6 +81,7 @@ async function startApi(opts?: {
   localQueueNode?: string
   /** When set, the route parks permission prompts on a broker over this store. */
   brokerTimeoutMs?: number
+  isHarnessAllowed?: (harnessId: string) => boolean
 }): Promise<{
   base: string
   store: InMemoryTaskStore
@@ -89,11 +90,18 @@ async function startApi(opts?: {
 }> {
   const executors = createExecutorRegistry()
   executors.register('chat-loop', fakeExecutor(opts))
+  executors.register('harness-session', fakeExecutor(opts), 'claude-code')
+  executors.register('harness-session', fakeExecutor(opts), 'hermes')
   let handler: (taskId: string) => Promise<void>
   const store = new InMemoryTaskStore((taskId) => {
     void handler(taskId)
   })
-  handler = createTaskHandler({ store, executors, nodeId: 'test-node' })
+  handler = createTaskHandler({
+    store,
+    executors,
+    nodeId: 'test-node',
+    isHarnessAllowed: opts?.isHarnessAllowed,
+  })
   const waiter = createTaskCompletionWaiter({ store, pollFallbackMs: 10 })
   const broker =
     opts?.brokerTimeoutMs !== undefined
@@ -105,6 +113,7 @@ async function startApi(opts?: {
     criteriaPolicy: opts?.criteriaPolicy,
     localQueueNode: opts?.localQueueNode,
     permissionBroker: broker,
+    isHarnessAllowed: opts?.isHarnessAllowed,
   })
 
   const server: Server = createServer((req, res) => {
@@ -136,6 +145,35 @@ describe('/api/tasks', () => {
 
     const read = await fetch(`${base}/api/tasks/${task.id}`)
     expect(read.status).toBe(200)
+  })
+
+  it('refuses harness-session create for an off-list target; allows when unset', async () => {
+    const gated = await startApi({ isHarnessAllowed: (id) => id === 'claude-code' })
+    const refused = await create(gated.base, {
+      goal: 'run hermes',
+      agentId: 'hermes',
+      executor: 'harness-session',
+      executorTarget: 'hermes',
+    })
+    expect(refused.status).toBe(403)
+    expect(((await refused.json()) as { code?: string }).code).toBe('harness_not_allowed')
+
+    const ok = await create(gated.base, {
+      goal: 'run claude',
+      agentId: 'claude',
+      executor: 'harness-session',
+      executorTarget: 'claude-code',
+    })
+    expect(ok.status).toBe(201)
+
+    const open = await startApi()
+    const unset = await create(open.base, {
+      goal: 'run hermes',
+      agentId: 'hermes',
+      executor: 'harness-session',
+      executorTarget: 'hermes',
+    })
+    expect(unset.status).toBe(201)
   })
 
   it('POST ?wait=1 returns the terminal row', async () => {
