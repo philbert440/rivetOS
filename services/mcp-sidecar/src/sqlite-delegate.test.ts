@@ -244,7 +244,11 @@ function tools(base: string, parentTaskId?: string): DenToolsHandle {
   })
 }
 
-async function text(handle: DenToolsHandle, name: string, args: Record<string, unknown>): Promise<string> {
+async function text(
+  handle: DenToolsHandle,
+  name: string,
+  args: Record<string, unknown>,
+): Promise<string> {
   const found = handle.tools.find((tool) => tool.name === name)
   if (!found) throw new Error(`missing tool ${name}`)
   const result = await found.execute(args)
@@ -290,11 +294,10 @@ describe('sqlite task engine over den delegate_task', () => {
       origin: 'tool',
       chainDepth: 3,
     })
-    const deep = await text(
-      tools(live.base, parent.id),
-      'delegate_task',
-      { to_agent: 'reviewer', task: 'too deep' },
-    )
+    const deep = await text(tools(live.base, parent.id), 'delegate_task', {
+      to_agent: 'reviewer',
+      task: 'too deep',
+    })
     expect(deep.startsWith('[failed]')).toBe(true)
     expect(deep).toContain('delegation chain too deep')
 
@@ -325,7 +328,8 @@ describe('sqlite task engine over den delegate_task', () => {
       expect(delegated).toContain('wait deadline exceeded')
       expect(delegated).toContain('killed')
     } finally {
-      // requestKill does not abort the in-flight turn. Unblock it so stop() can drain.
+      // This test's executor does not watch the abort signal a kill now raises.
+      // Unblock it so stop() can drain.
       release.current()
     }
   })

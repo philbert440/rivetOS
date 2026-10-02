@@ -618,7 +618,48 @@ Requests without an `Origin` (the Android app, hooks, CLI tools, mesh peers) are
 
 ## `memory`
 
-Memory backend configuration. Currently supports PostgreSQL.
+Memory backend configuration. Currently supports PostgreSQL. Optional
+`memory.capture` controls write-path behaviour for harness capture hooks that
+post through `@rivetos/capture-core`.
+
+### Capture redaction
+
+Off by default. When enabled, `@rivetos/capture-core` redacts common secret
+shapes (and optional operator regexes) in message `content`, `tool_result`, and
+`tool_args` **before** the batch is posted or spooled. Logs report a span count
+only — never the matched text. Placeholders are deterministic
+(`[REDACTED:bearer]`, `[REDACTED:pattern:0]`, …). Regex scanning of `content`
+and `tool_result` is limited to the first 16,000 UTF-16 units (the same budget
+the writer keeps after the field cap). `tool_args` string leaves are not
+field-capped, so they are scanned in full. Built-in assignment / secret-key
+detectors match exact stems and underscore/hyphen compounds (`SECRET_KEY`,
+`db_password`) — bare `key`/`auth` only behind a separator, so ordinary fields
+like `author` / `token_count` are kept. Split secrets (half in `content`, half
+in `tool_result`) are not reassembled — each field is redacted independently.
+
+```yaml
+memory:
+  capture:
+    redaction:
+      enabled: false
+      builtins: true
+      # patterns:
+      #   - '\\b[Mm][Yy][Pp]refix-[a-z0-9]{20,}\\b'
+```
+
+| Key        | Type     | Default | Description                                                                                                            |
+| ---------- | -------- | ------- | ---------------------------------------------------------------------------------------------------------------------- |
+| `enabled`  | boolean  | `false` | Run the write-path redactor.                                                                                           |
+| `builtins` | boolean  | `true`  | Built-in detectors (Bearer/Basic auth, credential assignments, PEM private keys, common token shapes, JWTs). Ignored when `enabled` is false. |
+| `patterns` | string[] | —       | Extra JS regex **source** strings. Only the `g` flag is applied — do not wrap in `/…/flags`, and do not use Python-style `(?i)` at the start of the pattern (it does not compile in JS). For case-insensitivity spell out character classes (e.g. `[Mm][Yy][Pp]refix`); RegExp modifier groups like `(?i:…)` need a newer V8 than the repo's Node 22 floor. Invalid sources are a config error. Nested-quantifier shapes such as `(a+)+` are rejected (ReDoS). |
+
+Hooks that do not load YAML yet can enable the same built-ins with
+`RIVETOS_CAPTURE_REDACTION=1` (or `true` / `yes` / `on`). An explicit
+`redaction: { enabled: false }` on `createCaptureWriter` wins over the env.
+Wiring YAML → every hook process is separate from validation; until boot
+injects this block, set the env (or pass `CaptureWriterOptions.redaction`) to
+turn it on. Config validation warns when `enabled: true` because nothing
+consumes the YAML block yet.
 
 ### PostgreSQL
 
@@ -822,7 +863,7 @@ harness gets them from `rivetos_resolve_den` (`den.port`, default 5174, and
 | `RIVETOS_PG_URL`        | memory-postgres, mcp-sidecar            | PostgreSQL connection string (node owner database). The sidecar uses it only for transport `pg`.                                                                                                                                                                                                                                                                             |
 | `RIVETOS_MCP_TRANSPORT` | mcp-sidecar                             | `den` or `pg`. Default `den` when `RIVET_DEN_URL` is set and `RIVETOS_USER_ID` is empty; otherwise `pg` when `RIVETOS_PG_URL` is set. `den` is HTTPS to the local den with no sidecar Postgres pool. A routed user id keeps `pg`.                                                                                                                                              |
 | `RIVET_DEN_URL`         | mcp-sidecar                             | Den origin for the sidecar (`https://127.0.0.1:<den.port>`, default port 5174). Den-spawned sessions already have it. The memory launcher fills it from `~/.rivetos/config.yaml` when unset.                                                                                                                                                                                 |
-| `RIVET_DEN_CA`          | mcp-sidecar                             | PEM path for the den's CA. The launcher exports it as `NODE_EXTRA_CA_CERTS` when that is unset, from `den.tls_ca`, else `RIVETOS_DEN_TLS_CA`, else `/rivet-shared/rivet-ca/intermediate/chain.pem`. A missing file unsets `RIVET_DEN_URL`.                                                                                                                                 |
+| `RIVET_DEN_CA`          | mcp-sidecar                             | PEM path for the den's CA. The launcher exports it as `NODE_EXTRA_CA_CERTS` when that is unset, from `den.tls_ca`, else `RIVETOS_DEN_TLS_CA`, else `/rivet-shared/rivet-ca/intermediate/chain.pem`. For an https den URL a missing file unsets `RIVET_DEN_URL`; a plain-http URL needs no CA and is kept.                                                                                                                                 |
 | `RIVETOS_PG_POOL_MAX`   | boot                                    | Max connections for the one host-owned Postgres pool per runtime process (shared by the task engine, heartbeats, memory and the API). Default 8, min 4.                                                                                                                                                                                                                     |
 | `RIVETOS_USERS_FILE`    | den, memory-postgres, claude-cli        | Optional explicit path to the tenancy registry (`users.json`). When unset, RivetOS loads `$RIVETOS_SHARED_DIR/rivetos/users.json`, then `~/.rivetos/users.json`. Per-user memory routing comes only from this file — a user is routable iff their record has a usable `pgUrl`. A present-but-invalid shared-dir file fails closed (does not fall through to the home file). |
 | `RIVETOS_OWNER_USER_ID` | den, users-registry, `rivetos user add` | Node-owner user id used by the fail-closed seed and the CLI missing-file seed. Default `owner` (fleet compatibility); deployments override this env var. Forwarded to the embedded den.                                                                                                                                                                                      |

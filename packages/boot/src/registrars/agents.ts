@@ -351,7 +351,8 @@ export async function registerAgentTools(
   const permissionBroker = taskEngineStore
     ? new TaskPermissionBroker({ store: taskEngineStore, timeoutMs: permissionTimeoutMs })
     : undefined
-  // Finish, kill, and sweep flip the row without aborting the spawn. The
+  // Finish and sweep flip the row without aborting the spawn (a kill is
+  // aborted by the runner, which may be on another node). The
   // route subscribes too; denyPending is idempotent, so the second call
   // does not record a second decision or allow anything.
   if (permissionBroker && taskEngineStore?.onTerminal) {

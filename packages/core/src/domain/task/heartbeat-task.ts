@@ -77,7 +77,7 @@ export async function runHeartbeatViaTasks(
   if (!terminal) {
     // Deadline or row vanished. Kill before the crontab slot is released —
     // the next tick must never overlap a still-running run; the runner
-    // discards the killed row's outcome at turn end (step-(d) semantics).
+    // aborts the in-flight turn on the kill and records the row as killed.
     await store.requestKill(row.id)
     log.warn(`Heartbeat task ${row.id} exceeded its deadline — killed, no delivery`)
     return
