@@ -11,6 +11,7 @@ export {
   buildFtsMatchQuery,
   relevanceFromBm25,
   resolveTaskId,
+  ensureSqliteParentDir,
   restrictSqliteFileModes,
 } from './adapter.js'
 export type { SqliteMemoryConfig } from './adapter.js'

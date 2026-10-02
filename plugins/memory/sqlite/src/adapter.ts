@@ -15,6 +15,15 @@ import type { Memory, MemoryEntry, MemorySearchResult, Message } from '@rivetos/
 import { MemoryError } from '@rivetos/types'
 import { SCHEMA, SCHEMA_VERSION } from './schema.js'
 
+function warnMode(target: string, mode: string, err: unknown): void {
+  let code = 'error'
+  if (err && typeof err === 'object' && 'code' in err) {
+    const raw = err.code
+    if (typeof raw === 'string' || typeof raw === 'number') code = String(raw)
+  }
+  console.warn(`memory.sqlite: could not chmod ${target} to ${mode} (${code}); continuing`)
+}
+
 const HEARTBEAT_SESSION_PREFIX = 'heartbeat:'
 
 const TASK_UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
@@ -78,13 +87,39 @@ export function resolveTaskId(
   return null
 }
 
-/** Restrict a file (and its -wal/-shm siblings) to owner read/write only. */
+/**
+ * Ensure the DB parent directory exists. chmod 0700 only when we created it —
+ * never repermission a pre-existing parent (e.g. `/tmp`, `$HOME`, a shared
+ * installer-owned tree). Mode tightening is best-effort: EPERM must not disable
+ * the backend.
+ */
+export function ensureSqliteParentDir(dir: string): void {
+  const existed = existsSync(dir)
+  mkdirSync(dir, { recursive: true, mode: 0o700 })
+  if (existed) return
+  try {
+    chmodSync(dir, 0o700)
+  } catch (err) {
+    warnMode(dir, '0700', err)
+  }
+}
+
+/** Restrict a file (and its -wal/-shm siblings) to owner read/write only. Best-effort. */
 export function restrictSqliteFileModes(path: string): void {
   if (path === ':memory:') return
-  chmodSync(path, 0o600)
+  try {
+    chmodSync(path, 0o600)
+  } catch (err) {
+    warnMode(path, '0600', err)
+  }
   for (const suffix of ['-wal', '-shm'] as const) {
     const sibling = `${path}${suffix}`
-    if (existsSync(sibling)) chmodSync(sibling, 0o600)
+    if (!existsSync(sibling)) continue
+    try {
+      chmodSync(sibling, 0o600)
+    } catch (err) {
+      warnMode(sibling, '0600', err)
+    }
   }
 }
 
@@ -131,10 +166,7 @@ export class SqliteMemory implements Memory {
     const path = resolveSqlitePath(config.path)
     this.filePath = path
     if (path !== ':memory:') {
-      const dir = dirname(path)
-      mkdirSync(dir, { recursive: true, mode: 0o700 })
-      // recursive mkdir may leave an existing parent at its prior mode; force 0700.
-      chmodSync(dir, 0o700)
+      ensureSqliteParentDir(dirname(path))
     }
     this.db = new DatabaseSync(path)
     // busy_timeout before WAL so a cold-open race waits instead of throwing SQLITE_BUSY.

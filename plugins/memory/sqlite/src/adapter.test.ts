@@ -4,16 +4,18 @@
  * temp file (WAL) and an in-memory store where a file is unnecessary.
  */
 
-import { mkdtempSync, rmSync, statSync } from 'node:fs'
+import { chmodSync, mkdtempSync, rmSync, statSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { afterEach, describe, expect, it } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 import {
   SqliteMemory,
   buildFtsMatchQuery,
+  ensureSqliteParentDir,
   relevanceFromBm25,
   resolveSqlitePath,
   resolveTaskId,
+  restrictSqliteFileModes,
 } from './adapter.ts'
 import { SCHEMA_VERSION } from './schema.ts'
 
@@ -141,27 +143,69 @@ describe('SqliteMemory Memory contract', () => {
   })
 
   it('creates the DB directory 0700 and the file (+wal/+shm) 0600', () => {
-    const parent = mkdtempSync(join(tmpdir(), 'ros-mem-mode-'))
-    dirs.push(parent)
-    const dir = join(parent, 'private')
-    const path = join(dir, 'memory.sqlite')
-    const memory = new SqliteMemory({ path })
-    open.push(memory)
-    // Force a write so WAL/SHM siblings exist under journal_mode=WAL.
-    memory.execForTest(`SELECT 1`)
+    // Permissive umask: without explicit chmod, node:sqlite would leave the DB at 0644.
+    const prevUmask = process.umask(0o022)
+    try {
+      const parent = mkdtempSync(join(tmpdir(), 'ros-mem-mode-'))
+      dirs.push(parent)
+      const dir = join(parent, 'private')
+      const path = join(dir, 'memory.sqlite')
+      const memory = new SqliteMemory({ path })
+      open.push(memory)
+      // Force a write so WAL/SHM siblings exist under journal_mode=WAL.
+      memory.execForTest(`SELECT 1`)
 
-    expect(statSync(dir).mode & 0o777).toBe(0o700)
-    expect(statSync(path).mode & 0o777).toBe(0o600)
-    for (const suffix of ['-wal', '-shm'] as const) {
-      const sibling = `${path}${suffix}`
-      try {
-        expect(statSync(sibling).mode & 0o777).toBe(0o600)
-      } catch (err) {
-        // Some node:sqlite builds defer -shm until a second connection; WAL is enough.
-        if (suffix === '-shm' && (err as NodeJS.ErrnoException).code === 'ENOENT') continue
-        throw err
+      expect(statSync(dir).mode & 0o777).toBe(0o700)
+      expect(statSync(path).mode & 0o777).toBe(0o600)
+      for (const suffix of ['-wal', '-shm'] as const) {
+        const sibling = `${path}${suffix}`
+        try {
+          expect(statSync(sibling).mode & 0o777).toBe(0o600)
+        } catch (err) {
+          // Some node:sqlite builds defer -shm until a second connection; WAL is enough.
+          if (suffix === '-shm' && (err as NodeJS.ErrnoException).code === 'ENOENT') continue
+          throw err
+        }
       }
+    } finally {
+      process.umask(prevUmask)
     }
+  })
+
+  it('does not chmod a pre-existing parent directory', () => {
+    // Regression: unconditional chmodSync(dirname) would repermission /tmp or $HOME.
+    const parent = mkdtempSync(join(tmpdir(), 'ros-mem-preexist-'))
+    dirs.push(parent)
+    chmodSync(parent, 0o755)
+    expect(statSync(parent).mode & 0o777).toBe(0o755)
+
+    const memory = new SqliteMemory({ path: join(parent, 'memory.sqlite') })
+    open.push(memory)
+
+    expect(statSync(parent).mode & 0o777).toBe(0o755)
+  })
+
+  it('ensureSqliteParentDir chmods only a directory it created', () => {
+    const parent = mkdtempSync(join(tmpdir(), 'ros-mem-ensure-'))
+    dirs.push(parent)
+    chmodSync(parent, 0o755)
+    ensureSqliteParentDir(parent)
+    expect(statSync(parent).mode & 0o777).toBe(0o755)
+
+    const created = join(parent, 'new-leaf')
+    ensureSqliteParentDir(created)
+    expect(statSync(created).mode & 0o777).toBe(0o700)
+  })
+
+  it('restrictSqliteFileModes does not throw when chmod fails', () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    // Missing path → chmod ENOENT; without the try/catch this throws and the
+    // fail-soft registrar would drop the memory backend entirely.
+    expect(() =>
+      restrictSqliteFileModes(join(tmpdir(), 'ros-mem-no-such-dir', 'missing.sqlite')),
+    ).not.toThrow()
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('could not chmod'))
+    warn.mockRestore()
   })
 
   it('stamps SCHEMA_VERSION via PRAGMA user_version', () => {
