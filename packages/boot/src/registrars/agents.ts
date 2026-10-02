@@ -1210,6 +1210,8 @@ async function registerClaudeCodeTaskExecutor(
     if (
       parseTaskIsolation(harnessCfg.isolation) === 'isolated' &&
       providerCfg.permission_mode !== 'bypassPermissions' &&
+      // `ui` hands prompts to the broker: nothing is auto-denied then.
+      parsePermissionPrompts(providerCfg.permission_prompts) !== 'ui' &&
       !(parseAllowedTools(harnessCfg.allowed_tools) ?? []).some((rule) => rule.startsWith('mcp__'))
     ) {
       log.warn(

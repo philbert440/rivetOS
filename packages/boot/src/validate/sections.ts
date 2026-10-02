@@ -1120,7 +1120,7 @@ function validateTasksHarnesses(
             rule.trim().length <= 200 &&
             !rule.trim().startsWith('-') &&
             // eslint-disable-next-line no-control-regex
-            !/[\u0000-\u001f]/.test(rule),
+            !/[\u0000-\u001f]/.test(rule.trim()),
         )
       )
     ) {
