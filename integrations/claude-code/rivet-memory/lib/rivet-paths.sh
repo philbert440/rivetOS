@@ -927,11 +927,16 @@ rivetos_resolve_den() {
   fi
 
   # Plain http needs no CA. Do not drop the URL because the CA file is absent
-  # (a den without TLS on a node with no shared CA), and do not point Node at
-  # a CA it will not use. An http loopback URL only reaches this point when
-  # the den really serves http: rivetos_guard_den_url already rewrote it to
-  # https when TLS is configured (#1053).
-  case "$RIVET_DEN_URL" in
+  # (a den without TLS on a node with no shared CA). An http LOOPBACK URL only
+  # reaches this point when the den really serves http: rivetos_guard_den_url
+  # already rewrote it to https when TLS is configured (#1053). A remote http
+  # URL is taken at its word. The trade: a stale http URL left in .env on a
+  # node with no den at all is now kept too (it used to be dropped as a side
+  # effect of the CA check); `rivetos doctor` reports a preset RIVET_DEN_URL.
+  # NODE_EXTRA_CA_CERTS is not exported here: the den dial does not use it,
+  # though note the variable is process-wide.
+  local den_url_trimmed="${RIVET_DEN_URL#"${RIVET_DEN_URL%%[![:space:]]*}"}"
+  case "$den_url_trimmed" in
     http://*) return 0 ;;
   esac
 

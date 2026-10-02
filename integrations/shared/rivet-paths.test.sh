@@ -620,16 +620,39 @@ if [ -z "${NODE_EXTRA_CA_CERTS:-}" ]; then
 else
   fail "plain-http den must not export NODE_EXTRA_CA_CERTS"
 fi
-# …and a remote plain-http den likewise (no CA involved either way).
-export RIVET_DEN_URL='http://den.example:5174'
-rivetos_resolve_den 2>/dev/null
-if [ "${RIVET_DEN_URL:-}" = 'http://den.example:5174' ]; then
-  pass "remote plain-http den URL is kept when the CA file is missing"
+# The launcher contract keeps RIVET_DEN_CA exported either way (the TS side
+# keys on the URL-empty + CA-set pair, which must not form for an http den).
+if [ -n "${RIVET_DEN_CA:-}" ]; then
+  pass "plain-http den still exports RIVET_DEN_CA"
 else
-  fail "remote plain-http den URL should be kept"
+  fail "plain-http den should still export RIVET_DEN_CA"
+fi
+# …and a remote plain-http den likewise (no CA involved either way).
+unset RIVET_DEN_CA NODE_EXTRA_CA_CERTS
+export RIVET_DEN_URL='http://den.example:5174'
+rivetos_resolve_den 2>"$DEN_DIR/error"
+err="$(cat "$DEN_DIR/error")"
+if [ "${RIVET_DEN_URL:-}" = 'http://den.example:5174' ] && [ -z "$err" ] && [ -z "${NODE_EXTRA_CA_CERTS:-}" ]; then
+  pass "remote plain-http den URL is kept silently when the CA file is missing"
+else
+  fail "remote plain-http den URL should be kept silently (stderr '$err')"
+fi
+# Leading whitespace from a hand-edited .env does not defeat the scheme match.
+unset RIVET_DEN_CA
+export RIVET_DEN_URL=' http://127.0.0.1:5174'
+rivetos_resolve_den 2>/dev/null
+if [ -n "${RIVET_DEN_URL:-}" ]; then
+  pass "whitespace-padded plain-http den URL is kept"
+else
+  fail "whitespace-padded plain-http den URL should be kept"
 fi
 unset RIVETOS_SHARED_DIR
-# The next case reuses this block's HOME and a present CA file.
+resolve_den_reset
+
+# Fresh state for the nested-keys case below (it needs a HOME and a present CA).
+DEN_DIR="$(mktemp -d "${TMPDIR:-/tmp}/rivetos-den.XXXXXX")"
+export HOME="$DEN_DIR/home"
+mkdir -p "$HOME/.rivetos"
 ca_file="$DEN_DIR/ca.pem"
 printf '%s\n' 'ca' >"$ca_file"
 
