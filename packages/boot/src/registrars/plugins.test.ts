@@ -89,3 +89,79 @@ describe('registerPlugins sharedPg wiring', () => {
     expect(captured[0]?.sharedPg).toBeUndefined()
   })
 })
+
+describe('registerPlugins memory opt-in', () => {
+  function memoryRegistry(): PluginRegistry {
+    return {
+      plugins: [
+        {
+          packageName: '@rivetos/memory-sqlite',
+          descriptor: { type: 'memory', name: 'sqlite' },
+          path: '/tmp',
+        },
+        {
+          packageName: '@rivetos/memory-postgres',
+          descriptor: { type: 'memory', name: 'postgres' },
+          path: '/tmp',
+        },
+      ],
+      get: () => undefined,
+      getByType: () => [],
+      has: () => false,
+    }
+  }
+
+  it('does not import sqlite when memory.sqlite is unset; imports postgres when configured', async () => {
+    const imported: string[] = []
+    const postgresCfg = {
+      ...config,
+      memory: { postgres: { connection_string: '${RIVETOS_PG_URL}' } },
+    } as RivetConfig
+    await registerPlugins(
+      stubRuntime({}),
+      postgresCfg,
+      memoryRegistry(),
+      hooks,
+      '/tmp',
+      async (specifier) => {
+        imported.push(specifier)
+        return {
+          manifest: {
+            type: specifier.includes('postgres') ? 'memory' : 'memory',
+            name: specifier.includes('postgres') ? 'postgres' : 'sqlite',
+            register: () => undefined,
+          },
+        }
+      },
+    )
+    expect(imported).toContain('@rivetos/memory-postgres')
+    expect(imported).not.toContain('@rivetos/memory-sqlite')
+  })
+
+  it('imports sqlite only when memory.sqlite is set', async () => {
+    const imported: string[] = []
+    const sqliteCfg = {
+      ...config,
+      memory: { sqlite: { path: ':memory:' } },
+    } as RivetConfig
+    await registerPlugins(
+      stubRuntime({}),
+      sqliteCfg,
+      memoryRegistry(),
+      hooks,
+      '/tmp',
+      async (specifier) => {
+        imported.push(specifier)
+        return {
+          manifest: {
+            type: 'memory',
+            name: 'sqlite',
+            register: () => undefined,
+          },
+        }
+      },
+    )
+    expect(imported).toContain('@rivetos/memory-sqlite')
+    expect(imported).not.toContain('@rivetos/memory-postgres')
+  })
+})

@@ -634,9 +634,10 @@ Requests without an `Origin` (the Android app, hooks, CLI tools, mesh peers) are
 
 ## `memory`
 
-Memory backend configuration. Currently supports PostgreSQL. Optional
-`memory.capture` controls write-path behaviour for harness capture hooks that
-post through `@rivetos/capture-core`.
+Memory backend configuration. Supported backends: `postgres` (default path today) and
+`sqlite` (opt-in file store for the in-process `Memory` contract). Set exactly one — both
+together is a validation error. Optional `memory.capture` controls write-path behaviour
+for harness capture hooks that post through `@rivetos/capture-core`.
 
 ### Capture redaction
 
@@ -743,6 +744,33 @@ Day-2 commands (no extra daemon):
 - `rivetos db migrate` / `rivetos db status` — same acquire-or-attach wrap. `--config <path>` selects the YAML (not forwarded to the migrator). `db migrate --url` bypasses the embedded engine and talks to that Postgres URL. `db status` on embedded prints data dir, size on disk, owner, socket port, and `_rivetos_migrations` count. If no node is running, `db status` boots the engine for the duration of the command and labels the owner `this command (no node running)`.
 - `rivetos doctor` — does not warn that `RIVETOS_PG_URL` is missing when `memory.postgres.embedded` is set; if the socket refuses, it says to start the node.
 
+### SQLite (opt-in)
+
+Presence of `memory.sqlite` registers the `@rivetos/memory-sqlite` plugin. No Postgres or
+PGlite process is required for the in-process `Memory` path (chat append, session/task
+history, settings, FTS5 search). HTTP `/api/capture` and memory HTTP/MCP routes still need
+a Postgres pool in phase 1 — the memory MCP sidecar has no sqlite path yet. Vectors,
+compaction, wiki, and multi-user routing come later. Phase 1 is single-user: one file holds
+all transcripts; routed users in the tenancy registry are not isolated. If `memory.sqlite`
+is set, remove or ignore a stale `RIVETOS_PG_URL` in `~/.rivetos/.env` so the MCP sidecar
+does not keep reading an old Postgres store while chat appends write sqlite. The parent
+directory is created mode `0700` and the DB file (plus `-wal`/`-shm`) is `0600`. With this
+block unset, behaviour is unchanged.
+
+```yaml
+memory:
+  sqlite:
+    path: ~/.rivetos/memory.sqlite
+```
+
+| Key    | Type   | Default | Description                                                                        |
+| ------ | ------ | ------- | ---------------------------------------------------------------------------------- |
+| `path` | string | —       | Required. File path (`~` expanded) or `:memory:`. Relative paths are cwd-relative. |
+
+The file is opened with WAL, a 5s busy timeout, and foreign keys on. Search is FTS5 only
+until an embedding drain lands; append still enqueues `ros_embed_queue` rows for that
+later worker.
+
 ---
 
 ## `tasks`
@@ -765,6 +793,28 @@ paths are cwd-relative. Keep this file separate from any other app database.
 Env knobs: `RIVETOS_TASKS_CONCURRENCY` (default 4), `RIVETOS_TASKS_POLL_MS` (default 2000).
 
 Headless harness executors can also be keyed under `tasks.harnesses` (`pi`, `qwen-code`, …) with `binary` / `model` / `cwd` / `home` — see the site architecture sample. For qwen-code, `providers.qwen-code.home` is accepted for parity with the other CLI providers and currently unused; `tasks.harnesses.qwen-code.home` is where the task executor looks for qwen's `projects/` sessions (default `~/.qwen`). Neither key relocates qwen's own writes.
+
+#### Task isolation (claude-code): `isolation` / `allowed_tools`
+
+A delegated `claude-code` task runs as the service user, so by default it loads that user's personal Claude Code setup: `~/.claude/settings.json` (permission rules and default mode, hooks, enabled plugins), the plugins' MCP servers, and the user-level `CLAUDE.md`. `tasks.harnesses.claude-code.isolation` chooses whether a task inherits that:
+
+```yaml
+tasks:
+  harnesses:
+    claude-code:
+      isolation: isolated # inherit (default) | isolated
+      allowed_tools:
+        - mcp__rivetos # the embedded RivetOS bridge's tools
+        - 'Bash(git status:*)'
+```
+
+- `inherit` (default) passes no extra flags; nothing changes for a node that does not set the key.
+- `isolated` spawns with `--setting-sources project` and `--strict-mcp-config`: no personal settings, permission rules, hooks, plugins or user `CLAUDE.md`, and the embedded RivetOS bridge is the only MCP server. The per-checkout `.claude/settings.local.json` is personal too and is not loaded either. The RivetOS capture hooks are supplied by the runtime through an inline `--settings` object, so task transcripts keep working. With `providers.claude-cli.permission_prompts` unset it also passes `--permission-prompts none`, so every prompt — built-in or MCP — is denied rather than left to the CLI's default.
+- Project settings (`.claude/settings.json` in the task's working directory) load at both levels: they belong to the repository, not the operator.
+- `allowed_tools` is passed as `--allowedTools` at both levels. Under `isolated` the operator's own allow rules are gone, so list what a headless run may call without a prompt (or set `providers.claude-cli.permission_mode`).
+- The node setting is a floor. A task can tighten it with `spec.isolation: isolated` on `POST /api/tasks`; a spec cannot loosen an `isolated` node (the spec is caller-controlled, and a task can create child tasks), and an unknown value is ignored.
+- `isolated` removes the operator's personal setup. It does not sandbox the working tree: a repository's own `.claude/settings.json` hooks and allow rules still apply, so point isolated tasks at trees you trust.
+- Under `isolated`, unless `permission_mode` is `bypassPermissions` or `permission_prompts` is `ui` (the broker answers prompts), list `mcp__rivetos` in `allowed_tools` or the bridge's own tools are denied; boot warns when it is missing.
 
 #### Model lists: `tasks.harnesses.<id>.models` / `efforts` / `models_mode`
 

@@ -205,6 +205,19 @@ export interface HarnessExecutorSection {
   /** CLI home override (e.g. KIMI_CODE_HOME) for task spawns. */
   home?: string
   /**
+   * `claude-code` only. Whether a delegated run inherits the operator's
+   * personal Claude Code setup: `inherit` (default — everything, as before)
+   * or `isolated` (no personal settings, permission rules, hooks, plugins or
+   * CLAUDE.md; only the RivetOS bridge and capture hooks). A floor: a task's
+   * `spec.isolation` can tighten it, never loosen it.
+   */
+  isolation?: 'inherit' | 'isolated'
+  /**
+   * `claude-code` only. Permission rules a headless run may use without a
+   * prompt, passed as `--allowedTools` (e.g. `mcp__rivetos`, `Bash(git status:*)`).
+   */
+  allowed_tools?: string[]
+  /**
    * Model list override. How it combines with what the harness itself
    * advertises is set by `models_mode`; with `models_mode` absent, a
    * non-empty `models` REPLACES the discovered list (the historical meaning).

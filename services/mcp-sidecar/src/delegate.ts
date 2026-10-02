@@ -93,7 +93,7 @@ const READ_ONLY = { readOnlyHint: true, idempotentHint: true } as const
 export const DELEGATE_TASK_HTTP_REASON =
   'delegate_task needs a per-harness stdio sidecar for the chain guard'
 
-/** Full-string preset match. Den keeps this sentence; it does not parse `agent@node`. */
+/** Full-string preset match. The den route resolves the same rule server-side, `agent@node` included. */
 const PRESET_WINS_FULL_STRING =
   'A preset name or id wins when it also matches a runtime agent id, unless that preset has no harness configured — then the runtime agent runs.'
 
@@ -146,23 +146,11 @@ export const delegateTaskDefinition = {
 }
 
 /**
- * Den HTTPS `delegate_task` does not parse `agent@node` — the gateway is given
- * `to_agent` verbatim. Same fields as {@link delegateTaskDefinition}; the
- * description and `to_agent` text stay the pre-pin wording so the tool does
- * not advertise a syntax this transport cannot honor.
+ * Den HTTPS `delegate_task`. The den's task route resolves `to_agent` with the
+ * same rules as this file (a harness-less preset yields to a runtime agent,
+ * `agent@node` pins a node), so the den transport advertises the same tool.
  */
-export const denDelegateTaskDefinition = {
-  description:
-    DELEGATE_TASK_OPENING +
-    PRESET_WINS_FULL_STRING +
-    ' ' +
-    DELEGATE_TASK_HOW +
-    '. ' +
-    DELEGATE_TASK_WAIT,
-  inputSchema: delegateTaskInputSchema(
-    'RivetHub agent name or id, or a runtime agent id — call list_agents first',
-  ),
-}
+export const denDelegateTaskDefinition = delegateTaskDefinition
 
 export const listAgentsDefinition = {
   description:

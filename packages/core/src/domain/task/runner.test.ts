@@ -265,6 +265,18 @@ describe('createTaskHandler', () => {
     expect(row?.usage?.turns).toBeLessThan(5)
   })
 
+  it('passes a per-task isolation override through to the executor', async () => {
+    const fake = makeFakeExecutor()
+    const { store, handler } = wire(fake)
+    const task = await store.create(taskInput({ spec: { isolation: 'isolated' } }))
+    await handler(task.id)
+    expect((fake.specs[0] as { isolation?: string }).isolation).toBe('isolated')
+
+    const plain = await store.create(taskInput())
+    await handler(plain.id)
+    expect('isolation' in fake.specs[1]).toBe(false)
+  })
+
   it('a kill during the turn aborts the executor mid-turn (#1053)', async () => {
     // The executor blocks INSIDE a turn until its signal aborts (as a real
     // `claude -p` spawn does: one turn.end, after the process returns). Only

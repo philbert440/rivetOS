@@ -707,6 +707,55 @@ describe('Config Validation', () => {
       assertError(result, 'memory.capture.redaction.patterns[3]', 'ReDoS-prone')
     })
 
+    it('accepts memory.sqlite with a path and leaves postgres-only configs valid', () => {
+      const sqliteOnly = validConfig()
+      sqliteOnly.memory = { sqlite: { path: '~/.rivetos/memory.sqlite' } }
+      assertValid(validateConfig(sqliteOnly))
+
+      const postgresOnly = validConfig()
+      postgresOnly.memory = { postgres: { connection_string: '${RIVETOS_PG_URL}' } }
+      const postgresResult = validateConfig(postgresOnly)
+      assertValid(postgresResult)
+      // Opt-in pin: postgres-only validate output has no sqlite-related issues.
+      expect(
+        [...postgresResult.errors, ...postgresResult.warnings].filter((i) =>
+          i.path.includes('sqlite'),
+        ),
+      ).toEqual([])
+
+      // Opt-in pin: no memory section → unchanged / valid.
+      const none = validConfig()
+      delete none.memory
+      assertValid(validateConfig(none))
+    })
+
+    it('errors when postgres and sqlite are both set', () => {
+      const cfg = validConfig()
+      cfg.memory = {
+        postgres: { connection_string: '${RIVETOS_PG_URL}' },
+        sqlite: { path: 'memory.sqlite' },
+      }
+      const result = validateConfig(cfg)
+      assertError(result, 'memory', 'cannot both be set')
+    })
+
+    it('errors when memory.sqlite.path is missing or blank', () => {
+      const missing = validConfig()
+      missing.memory = { sqlite: {} }
+      assertError(validateConfig(missing), 'memory.sqlite.path', 'is required')
+
+      const blank = validConfig()
+      blank.memory = { sqlite: { path: '   ' } }
+      assertError(validateConfig(blank), 'memory.sqlite.path', 'must be a non-empty file path')
+    })
+
+    it('warns on unknown memory.sqlite keys', () => {
+      const cfg = validConfig()
+      cfg.memory = { sqlite: { path: 'm.sqlite', wal: false } }
+      const result = validateConfig(cfg)
+      assertWarning(result, 'memory.sqlite.wal', 'Unknown memory.sqlite key')
+    })
+
     it('warns on unknown postgres keys', () => {
       const cfg = validConfig()
       cfg.memory = { postgres: { pool_size: 10 } }
@@ -1445,6 +1494,46 @@ describe('den', () => {
       const result = validateConfig(cfg)
       assertWarning(result, 'tasks.harnesses.claude-code.models', 'empty and will be ignored')
       assertWarning(result, 'tasks.harnesses.claude-code.efforts', 'empty and will be ignored')
+    })
+
+    it('validates claude-code isolation and allowed_tools', () => {
+      const ok = validConfig()
+      ok.tasks = {
+        harnesses: {
+          'claude-code': {
+            isolation: 'isolated',
+            allowed_tools: ['mcp__rivetos'],
+          },
+        },
+      }
+      const clean = validateConfig(ok)
+      expect(
+        [...clean.errors, ...clean.warnings].filter((i) =>
+          i.path.startsWith('tasks.harnesses.claude-code'),
+        ),
+      ).toEqual([])
+
+      const bad = validConfig()
+      bad.tasks = {
+        harnesses: { 'claude-code': { isolation: 'tools', allowed_tools: ['ok', ''] } },
+      }
+      const result = validateConfig(bad)
+      assertError(
+        result,
+        'tasks.harnesses.claude-code.isolation',
+        "must be 'inherit' or 'isolated'",
+      )
+      assertError(result, 'tasks.harnesses.claude-code.allowed_tools', 'permission rules')
+      // a rule the runtime parser would silently drop is an error at boot
+      const flag = validConfig()
+      flag.tasks = {
+        harnesses: { 'claude-code': { allowed_tools: ['--dangerously-skip-permissions'] } },
+      }
+      assertError(validateConfig(flag), 'tasks.harnesses.claude-code.allowed_tools', 'not starting')
+
+      const other = validConfig()
+      other.tasks = { harnesses: { 'kimi-code': { isolation: 'isolated' } } }
+      assertWarning(validateConfig(other), 'tasks.harnesses.kimi-code', 'claude-code executor only')
     })
 
     it('accepts models_mode discover | replace | merge and rejects anything else', () => {

@@ -898,6 +898,25 @@ export async function registerAgentTools(
     return { error: `agent "${agentId}" not found locally${registry ? ' or on the mesh' : ''}` }
   }
 
+  // The node hosting a runtime agent (not a preset): this node for a config
+  // agent, else the newest online mesh host. `node` restricts it to that node.
+  const resolveRuntimeAgent = async (
+    agentId: string,
+    node?: string,
+  ): Promise<string | undefined> => {
+    const local = runtime
+      .getRouter()
+      .getAgents()
+      .some((a) => a.id === agentId)
+    if (local && (!node || node === nodeName)) return nodeName
+    if (!registry) return undefined
+    const nodes = await registry.findByAgent(agentId)
+    const online = nodes.filter(
+      (n) => n.status === 'online' && n.name !== nodeName && (!node || n.name === node),
+    )
+    return online.sort((a, b) => b.lastSeen - a.lastSeen).at(0)?.name
+  }
+
   const gatewayRoutes: GatewayRoute[] = []
   if (taskEngineStore && taskWaiter) {
     // Config agent ids win over a preset of the same name. The route builds
@@ -909,6 +928,7 @@ export async function registerAgentTools(
         store: taskEngineStore,
         waiter: taskWaiter,
         resolveAffinity,
+        resolveRuntimeAgent,
         resolvePreset: presetEngine
           ? async (agentId) => {
               if (
@@ -1220,7 +1240,26 @@ async function registerClaudeCodeTaskExecutor(
       CLAUDE_HARNESS_ID,
       parsePermissionPrompts,
       parseAllowedApiKeySources,
+      parseTaskIsolation,
+      parseAllowedTools,
     } = await import('@rivetos/provider-claude-cli')
+    // Task-spawn isolation lives with the other harness executor settings.
+    const harnessCfg = config.tasks?.harnesses?.['claude-code'] ?? {}
+    // Under `isolated` the operator's allow rules are gone and (with
+    // permission_prompts unset) every prompt is denied. Unless the permission
+    // mode skips prompts, the embedded bridge's own tools are then denied too.
+    if (
+      parseTaskIsolation(harnessCfg.isolation) === 'isolated' &&
+      providerCfg.permission_mode !== 'bypassPermissions' &&
+      // `ui` hands prompts to the broker: nothing is auto-denied then.
+      parsePermissionPrompts(providerCfg.permission_prompts) !== 'ui' &&
+      !(parseAllowedTools(harnessCfg.allowed_tools) ?? []).some((rule) => rule.startsWith('mcp__'))
+    ) {
+      log.warn(
+        'tasks.harnesses.claude-code.isolation is "isolated" with no mcp__ rule in allowed_tools: ' +
+          'the RivetOS bridge tools (mcp__rivetos__*) will be denied in task runs — add "mcp__rivetos" to allowed_tools',
+      )
+    }
     executors.register(
       'harness-session',
       new ClaudeCliExecutor({
@@ -1237,6 +1276,8 @@ async function registerClaudeCodeTaskExecutor(
         memory: runtime.getMemory(),
         structuredResult,
         allowedApiKeySources: parseAllowedApiKeySources(providerCfg.allowed_api_key_sources),
+        isolation: parseTaskIsolation(harnessCfg.isolation),
+        allowedTools: parseAllowedTools(harnessCfg.allowed_tools),
       }),
       CLAUDE_HARNESS_ID,
     )

@@ -52,6 +52,8 @@ export const KNOWN_TASKS_HARNESS_KEYS = new Set([
   'models',
   'efforts',
   'models_mode',
+  'isolation',
+  'allowed_tools',
 ])
 
 /** workflows.* keys (YAML snake_case). */
@@ -412,7 +414,7 @@ export const KNOWN_HEARTBEAT_KEYS = new Set([
 ])
 
 /** Top-level keys under `memory` (backends + capture options). */
-export const KNOWN_MEMORY_KEYS = new Set(['postgres', 'capture'])
+export const KNOWN_MEMORY_KEYS = new Set(['postgres', 'sqlite', 'capture'])
 
 export const KNOWN_MEMORY_POSTGRES_KEYS = new Set([
   'connection_string',
@@ -437,6 +439,12 @@ export const KNOWN_MEMORY_EMBEDDED_KEYS = new Set([
   'auto_migrate',
   'max_connections',
 ])
+
+/** `memory.sqlite` — file-backed Memory backend (phase 1: WAL + FTS5). */
+export const KNOWN_MEMORY_SQLITE_KEYS = new Set(['path'])
+
+/** Backends with a known plugin under `plugins/memory/<name>`. */
+export const KNOWN_MEMORY_BACKENDS = new Set(['postgres', 'sqlite'])
 
 export const KNOWN_MEMORY_CAPTURE_KEYS = new Set(['redaction'])
 

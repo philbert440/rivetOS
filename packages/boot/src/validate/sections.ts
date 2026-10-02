@@ -21,6 +21,7 @@ import {
   KNOWN_MEMORY_KEYS,
   KNOWN_MEMORY_POSTGRES_KEYS,
   KNOWN_MEMORY_EMBEDDED_KEYS,
+  KNOWN_MEMORY_SQLITE_KEYS,
   KNOWN_MEMORY_CAPTURE_KEYS,
   KNOWN_MEMORY_CAPTURE_REDACTION_KEYS,
   REMOVED_MEMORY_POSTGRES_KEYS,
@@ -677,9 +678,17 @@ export function validateMemory(memory: Record<string, unknown>, issues: Validati
       issues.push({
         severity: 'warning',
         path: `memory.${key}`,
-        message: `Unknown memory key "${key}" — supported: "postgres" (backend), "capture" (write-path options)`,
+        message: `Unknown memory key "${key}" — supported: "postgres" / "sqlite" (backend), "capture" (write-path options)`,
       })
     }
+  }
+
+  if (memory.postgres && memory.sqlite) {
+    issues.push({
+      severity: 'error',
+      path: 'memory',
+      message: '"postgres" and "sqlite" cannot both be set — pick one memory backend',
+    })
   }
 
   if (memory.postgres) {
@@ -765,8 +774,48 @@ export function validateMemory(memory: Record<string, unknown>, issues: Validati
     }
   }
 
+  if (memory.sqlite) {
+    validateMemorySqlite(memory.sqlite, issues)
+  }
+
   if (memory.capture !== undefined) {
     validateMemoryCapture(memory.capture, issues)
+  }
+}
+
+function validateMemorySqlite(raw: unknown, issues: ValidationIssue[]): void {
+  if (typeof raw !== 'object' || raw === null || Array.isArray(raw)) {
+    issues.push({
+      severity: 'error',
+      path: 'memory.sqlite',
+      message: '"memory.sqlite" must be an object',
+    })
+    return
+  }
+
+  const sqlite = raw as Record<string, unknown>
+  for (const key of Object.keys(sqlite)) {
+    if (!KNOWN_MEMORY_SQLITE_KEYS.has(key)) {
+      issues.push({
+        severity: 'warning',
+        path: `memory.sqlite.${key}`,
+        message: `Unknown memory.sqlite key "${key}"`,
+      })
+    }
+  }
+
+  if (sqlite.path === undefined) {
+    issues.push({
+      severity: 'error',
+      path: 'memory.sqlite.path',
+      message: '"memory.sqlite.path" is required (file path or ":memory:")',
+    })
+  } else if (typeof sqlite.path !== 'string' || sqlite.path.trim() === '') {
+    issues.push({
+      severity: 'error',
+      path: 'memory.sqlite.path',
+      message: '"memory.sqlite.path" must be a non-empty file path',
+    })
   }
 }
 
@@ -1412,6 +1461,48 @@ function validateTasksHarnesses(
         severity: 'error',
         path: `${path}.effort`,
         message: `"${path}.effort" must be 'low', 'medium' or 'high'`,
+      })
+    }
+    if (
+      section.isolation !== undefined &&
+      !['inherit', 'isolated'].includes(section.isolation as string)
+    ) {
+      issues.push({
+        severity: 'error',
+        path: `${path}.isolation`,
+        message: `"${path}.isolation" must be 'inherit' or 'isolated'`,
+      })
+    }
+    if (
+      section.allowed_tools !== undefined &&
+      !(
+        Array.isArray(section.allowed_tools) &&
+        section.allowed_tools.every(
+          (rule) =>
+            typeof rule === 'string' &&
+            rule.trim() !== '' &&
+            rule.trim().length <= 200 &&
+            !rule.trim().startsWith('-') &&
+            // eslint-disable-next-line no-control-regex
+            !/[\u0000-\u001f]/.test(rule.trim()),
+        )
+      )
+    ) {
+      // Mirrors the runtime parser, which would otherwise drop these silently.
+      issues.push({
+        severity: 'error',
+        path: `${path}.allowed_tools`,
+        message: `"${path}.allowed_tools" must be an array of permission rules: non-empty strings of at most 200 characters, not starting with "-", with no control characters`,
+      })
+    }
+    if (
+      (section.isolation !== undefined || section.allowed_tools !== undefined) &&
+      harnessId !== 'claude-code'
+    ) {
+      issues.push({
+        severity: 'warning',
+        path,
+        message: `"isolation" / "allowed_tools" are read by the claude-code executor only; ignored for "${harnessId}"`,
       })
     }
     if (
