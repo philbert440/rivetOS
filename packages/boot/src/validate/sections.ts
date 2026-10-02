@@ -20,6 +20,8 @@ import {
   KNOWN_HEARTBEAT_KEYS,
   KNOWN_MEMORY_POSTGRES_KEYS,
   KNOWN_MEMORY_EMBEDDED_KEYS,
+  KNOWN_MEMORY_SQLITE_KEYS,
+  KNOWN_MEMORY_BACKENDS,
   REMOVED_MEMORY_POSTGRES_KEYS,
   KNOWN_DEN_KEYS,
   KNOWN_DEN_TERMINAL_KEYS,
@@ -543,13 +545,21 @@ export function validateChannels(
 
 export function validateMemory(memory: Record<string, unknown>, issues: ValidationIssue[]): void {
   for (const key of Object.keys(memory)) {
-    if (key !== 'postgres') {
+    if (!KNOWN_MEMORY_BACKENDS.has(key)) {
       issues.push({
         severity: 'warning',
         path: `memory.${key}`,
-        message: `Unknown memory backend "${key}" — only "postgres" is currently supported`,
+        message: `Unknown memory backend "${key}" — supported: ${[...KNOWN_MEMORY_BACKENDS].join(', ')}`,
       })
     }
+  }
+
+  if (memory.postgres && memory.sqlite) {
+    issues.push({
+      severity: 'error',
+      path: 'memory',
+      message: '"postgres" and "sqlite" cannot both be set — pick one memory backend',
+    })
   }
 
   if (memory.postgres) {
@@ -588,6 +598,46 @@ export function validateMemory(memory: Record<string, unknown>, issues: Validati
         validateMemoryEmbedded(pg, issues)
       }
     }
+  }
+
+  if (memory.sqlite) {
+    validateMemorySqlite(memory.sqlite, issues)
+  }
+}
+
+function validateMemorySqlite(raw: unknown, issues: ValidationIssue[]): void {
+  if (typeof raw !== 'object' || raw === null || Array.isArray(raw)) {
+    issues.push({
+      severity: 'error',
+      path: 'memory.sqlite',
+      message: '"memory.sqlite" must be an object',
+    })
+    return
+  }
+
+  const sqlite = raw as Record<string, unknown>
+  for (const key of Object.keys(sqlite)) {
+    if (!KNOWN_MEMORY_SQLITE_KEYS.has(key)) {
+      issues.push({
+        severity: 'warning',
+        path: `memory.sqlite.${key}`,
+        message: `Unknown memory.sqlite key "${key}"`,
+      })
+    }
+  }
+
+  if (sqlite.path === undefined) {
+    issues.push({
+      severity: 'error',
+      path: 'memory.sqlite.path',
+      message: '"memory.sqlite.path" is required (file path or ":memory:")',
+    })
+  } else if (typeof sqlite.path !== 'string' || sqlite.path.trim() === '') {
+    issues.push({
+      severity: 'error',
+      path: 'memory.sqlite.path',
+      message: '"memory.sqlite.path" must be a non-empty file path',
+    })
   }
 }
 

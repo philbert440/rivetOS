@@ -403,6 +403,12 @@ export const KNOWN_MEMORY_EMBEDDED_KEYS = new Set([
   'max_connections',
 ])
 
+/** `memory.sqlite` — file-backed Memory backend (phase 1: WAL + FTS5). */
+export const KNOWN_MEMORY_SQLITE_KEYS = new Set(['path'])
+
+/** Backends with a known plugin under `plugins/memory/<name>`. */
+export const KNOWN_MEMORY_BACKENDS = new Set(['postgres', 'sqlite'])
+
 /**
  * Keys removed in the phase-0 deletion pass — hard error so stale config
  * fails loudly instead of silently booting without the feature.

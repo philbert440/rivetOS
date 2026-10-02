@@ -614,6 +614,48 @@ describe('Config Validation', () => {
       assertWarning(result, 'memory.redis', 'Unknown memory backend')
     })
 
+    it('accepts memory.sqlite with a path and leaves postgres-only configs valid', () => {
+      const sqliteOnly = validConfig()
+      sqliteOnly.memory = { sqlite: { path: '~/.rivetos/memory.sqlite' } }
+      assertValid(validateConfig(sqliteOnly))
+
+      const postgresOnly = validConfig()
+      postgresOnly.memory = { postgres: { connection_string: '${RIVETOS_PG_URL}' } }
+      assertValid(validateConfig(postgresOnly))
+
+      // Opt-in pin: no memory section → unchanged / valid.
+      const none = validConfig()
+      delete none.memory
+      assertValid(validateConfig(none))
+    })
+
+    it('errors when postgres and sqlite are both set', () => {
+      const cfg = validConfig()
+      cfg.memory = {
+        postgres: { connection_string: '${RIVETOS_PG_URL}' },
+        sqlite: { path: 'memory.sqlite' },
+      }
+      const result = validateConfig(cfg)
+      assertError(result, 'memory', 'cannot both be set')
+    })
+
+    it('errors when memory.sqlite.path is missing or blank', () => {
+      const missing = validConfig()
+      missing.memory = { sqlite: {} }
+      assertError(validateConfig(missing), 'memory.sqlite.path', 'is required')
+
+      const blank = validConfig()
+      blank.memory = { sqlite: { path: '   ' } }
+      assertError(validateConfig(blank), 'memory.sqlite.path', 'must be a non-empty file path')
+    })
+
+    it('warns on unknown memory.sqlite keys', () => {
+      const cfg = validConfig()
+      cfg.memory = { sqlite: { path: 'm.sqlite', wal: false } }
+      const result = validateConfig(cfg)
+      assertWarning(result, 'memory.sqlite.wal', 'Unknown memory.sqlite key')
+    })
+
     it('warns on unknown postgres keys', () => {
       const cfg = validConfig()
       cfg.memory = { postgres: { pool_size: 10 } }
