@@ -89,6 +89,10 @@ export function FilesPage(): JSX.Element {
   const [sort, setSort] = useState<SortKey>('name')
   const [selected, setSelected] = useState<Set<string>>(() => new Set())
   const [previewPath, setPreviewPath] = useState<string | undefined>()
+  const [editorDirty, setEditorDirty] = useState(false)
+  const editorDirtyRef = useRef(false)
+  const discardDialog = useConfirmDialog()
+  const discardConfirm = discardDialog.confirm
   const [dragging, setDragging] = useState(false)
   const [notice, setNotice] = useState<Notice | undefined>()
   const [busy, setBusy] = useState(false)
@@ -104,8 +108,77 @@ export function FilesPage(): JSX.Element {
   // Clear selection when navigating
   useEffect(() => {
     setSelected(new Set())
-    setPreviewPath(undefined)
-  }, [path])
+    if (editorDirtyRef.current) {
+      void discardConfirm('Discard unsaved changes?').then((ok) => {
+        if (ok) setPreviewPath(undefined)
+      })
+    } else {
+      setPreviewPath(undefined)
+    }
+  }, [path, discardConfirm, setPreviewPath])
+
+  const setEditorDirtyTracked = useCallback((dirty: boolean) => {
+    editorDirtyRef.current = dirty
+    setEditorDirty(dirty)
+  }, [])
+
+  useEffect(() => {
+    setEditorDirtyTracked(false)
+  }, [previewPath, setEditorDirtyTracked])
+
+  // Warn before losing edits to a tab close / reload while dirty (#964).
+  useEffect(() => {
+    if (!editorDirty) return
+    const onUnload = (e: BeforeUnloadEvent): void => {
+      e.preventDefault()
+    }
+    window.addEventListener('beforeunload', onUnload)
+    return () => window.removeEventListener('beforeunload', onUnload)
+  }, [editorDirty])
+
+  // Open a file (or a directory) from the list, guarding unsaved edits (#964).
+  const openEntry = useCallback(
+    async (child: string, isDir: boolean): Promise<void> => {
+      if (editorDirtyRef.current) {
+        const ok = await discardConfirm('Discard unsaved changes?')
+        if (!ok) return
+      }
+      if (isDir) {
+        setPath(child)
+      } else {
+        setPreviewPath(child)
+      }
+    },
+    [discardConfirm],
+  )
+
+  const openRaw = useCallback(
+    (entry: FileEntry, child: string): void => {
+      if (entry.type !== 'file') return
+      if (editorDirtyRef.current) {
+        showNotice({
+          kind: 'err',
+          text: `unsaved edits in ${baseName(previewPath ?? '')} — save or discard first`,
+        })
+        return
+      }
+      const url = gateway.fileDownloadUrl(child)
+      if (rivetShell()) {
+        if (previewKind(entry.name, entry.size) !== 'none') void openEntry(child, false)
+        else
+          void saveViaGateway(url, entry.name, entry.size)
+            .then(() => {
+              showNotice({ kind: 'ok', text: `download started: ${entry.name}` })
+            })
+            .catch((err: unknown) => {
+              showNotice({ kind: 'err', text: (err as Error).message })
+            })
+      } else {
+        window.open(url, '_blank', 'noopener,noreferrer')
+      }
+    },
+    [editorDirtyRef, gateway, openEntry, previewPath],
+  )
 
   const refresh = useCallback(async (): Promise<void> => {
     await queryClient.invalidateQueries({ queryKey: ['files', baseUrl, path] })
@@ -329,6 +402,7 @@ export function FilesPage(): JSX.Element {
       onDrop={onDropFiles}
     >
       {dialog.element}
+      {discardDialog.element}
       {/* Breadcrumbs */}
       <div className="flex flex-wrap items-center gap-1 border-b border-line bg-panel/40 px-4 py-2 font-mono text-xs">
         <button
@@ -500,6 +574,14 @@ export function FilesPage(): JSX.Element {
                         className={`border-b border-line/40 hover:bg-panel-2/50 ${
                           isSel ? 'bg-panel-2/40' : ''
                         }`}
+                        onClick={(ev) => {
+                          if ((ev.target as HTMLElement).closest('input, label')) return
+                          void openEntry(child, e.type === 'dir')
+                        }}
+                        onDoubleClick={(ev) => {
+                          if ((ev.target as HTMLElement).closest('input, label')) return
+                          openRaw(e, child)
+                        }}
                         draggable
                         onDragStart={(ev) => {
                           ev.dataTransfer.setData('application/x-rivet-file', e.name)
@@ -563,38 +645,7 @@ export function FilesPage(): JSX.Element {
                           />
                         </td>
                         <td className="py-1.5 pr-4">
-                          <button
-                            type="button"
-                            onClick={() => {
-                              if (e.type === 'dir') setPath(child)
-                              else setPreviewPath(child)
-                            }}
-                            onDoubleClick={() => {
-                              if (e.type !== 'file') return
-                              const url = gateway.fileDownloadUrl(child)
-                              if (rivetShell()) {
-                                // The OS browser sits OUTSIDE the shell's mTLS
-                                // pipe — handing it a same-gateway URL fails
-                                // auth. Previewable kinds open in-app; the rest
-                                // download over the authenticated transport.
-                                if (previewKind(e.name, e.size) !== 'none') setPreviewPath(child)
-                                else
-                                  void saveViaGateway(url, e.name, e.size)
-                                    .then(() => {
-                                      showNotice({
-                                        kind: 'ok',
-                                        text: `download started: ${e.name}`,
-                                      })
-                                    })
-                                    .catch((err: unknown) => {
-                                      showNotice({ kind: 'err', text: (err as Error).message })
-                                    })
-                              } else {
-                                window.open(url, '_blank', 'noopener,noreferrer')
-                              }
-                            }}
-                            className="flex items-center gap-2 text-left"
-                          >
+                          <button type="button" className="flex items-center gap-2 text-left">
                             <span className="w-4 text-center font-mono text-ink-dim">
                               {e.type === 'dir' ? '▸' : '·'}
                             </span>
@@ -623,8 +674,16 @@ export function FilesPage(): JSX.Element {
         {previewPath && (
           <PreviewPane
             path={previewPath}
-            onClose={() => setPreviewPath(undefined)}
+            onClose={() => {
+              void (async () => {
+                if (editorDirtyRef.current && !(await discardConfirm('Discard unsaved changes?'))) {
+                  return
+                }
+                setPreviewPath(undefined)
+              })()
+            }}
             onNotice={showNotice}
+            onDirtyChange={setEditorDirtyTracked}
             downloadUrl={gateway.fileDownloadUrl(previewPath)}
             size={
               (listing.data?.entries ?? []).find((e) => joinRel(path, e.name) === previewPath)?.size
@@ -651,6 +710,8 @@ function PreviewPane(props: {
   onNotice: (n: Notice) => void
   /** Optional size from the listing — drives previewKind / edit eligibility. */
   size?: number
+  /** Dirty report from the embedded editor (#964). */
+  onDirtyChange: (dirty: boolean) => void
 }): JSX.Element {
   const name = baseName(props.path)
   // Prefer known size; when unknown assume under text cap for extension classification.
@@ -706,6 +767,7 @@ function PreviewPane(props: {
           size={props.size}
           className="min-h-0 flex-1"
           minHeight="12rem"
+          onDirtyChange={props.onDirtyChange}
         />
       ) : (
         <div className="p-3 font-mono text-xs text-ink-dim">
