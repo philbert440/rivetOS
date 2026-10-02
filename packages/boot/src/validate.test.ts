@@ -1271,8 +1271,8 @@ describe('den', () => {
       ok.tasks = {
         harnesses: {
           'claude-code': {
-            isolation: 'tools',
-            allowed_tools: ['mcp__plugin_rivet-memory_rivetos'],
+            isolation: 'isolated',
+            allowed_tools: ['mcp__rivetos'],
           },
         },
       }
@@ -1285,13 +1285,13 @@ describe('den', () => {
 
       const bad = validConfig()
       bad.tasks = {
-        harnesses: { 'claude-code': { isolation: 'sandbox', allowed_tools: ['ok', ''] } },
+        harnesses: { 'claude-code': { isolation: 'tools', allowed_tools: ['ok', ''] } },
       }
       const result = validateConfig(bad)
       assertError(
         result,
         'tasks.harnesses.claude-code.isolation',
-        "must be 'inherit', 'tools' or 'isolated'",
+        "must be 'inherit' or 'isolated'",
       )
       assertError(result, 'tasks.harnesses.claude-code.allowed_tools', 'non-empty strings')
 

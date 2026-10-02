@@ -701,30 +701,23 @@ Headless harness executors can also be keyed under `tasks.harnesses` (`pi`, `qwe
 
 #### Task isolation (claude-code): `isolation` / `allowed_tools`
 
-A delegated `claude-code` task runs as the service user, so by default it loads that user's personal Claude Code setup: `~/.claude/settings.json` (permission rules and default mode, hooks, enabled plugins), the plugins' MCP servers, and the user-level `CLAUDE.md`. `tasks.harnesses.claude-code.isolation` chooses how much of that a task inherits:
+A delegated `claude-code` task runs as the service user, so by default it loads that user's personal Claude Code setup: `~/.claude/settings.json` (permission rules and default mode, hooks, enabled plugins), the plugins' MCP servers, and the user-level `CLAUDE.md`. `tasks.harnesses.claude-code.isolation` chooses whether a task inherits that:
 
 ```yaml
 tasks:
   harnesses:
     claude-code:
-      isolation: tools # inherit (default) | tools | isolated
+      isolation: isolated # inherit (default) | isolated
       allowed_tools:
-        - mcp__plugin_rivet-memory_rivetos # every tool of that server
+        - mcp__rivetos # the embedded RivetOS bridge's tools
         - 'Bash(git status:*)'
 ```
 
-| level | operator's plugins and their tools | personal settings, permission rules, hooks, user `CLAUDE.md` | MCP servers |
-| --- | --- | --- | --- |
-| `inherit` (default) | loaded | loaded | all |
-| `tools` | loaded | not loaded | the plugins' (and user-scope) servers plus the RivetOS bridge |
-| `isolated` | not loaded | not loaded | the RivetOS bridge only |
-
-- `inherit` passes no extra flags; nothing changes for a node that does not set the key.
-- `tools` spawns with `--setting-sources project` and a generated `--settings` object that re-enables the operator's plugins. Capture hooks that RivetOS itself installed in the user settings are carried over, so task transcripts keep working; no other personal hook is.
-- `isolated` adds `--strict-mcp-config` and supplies the RivetOS capture hooks itself. With `providers.claude-cli.permission_prompts` unset it also passes `--permission-prompts none`, so every prompt — built-in or MCP — is denied rather than left to the CLI's default.
-- Project settings (`.claude/settings.json` in the task's working directory) load at every level: they belong to the repository, not the operator.
-- `allowed_tools` is passed as `--allowedTools` at every level. Under `tools` and `isolated` the operator's own allow rules are gone, so an inherited plugin tool is denied in a headless run unless it is listed here.
-- A task can override the node default with `spec.isolation` (same three values) on `POST /api/tasks`; an unknown value is ignored.
+- `inherit` (default) passes no extra flags; nothing changes for a node that does not set the key.
+- `isolated` spawns with `--setting-sources project` and `--strict-mcp-config`: no personal settings, permission rules, hooks, plugins or user `CLAUDE.md`, and the embedded RivetOS bridge is the only MCP server. The RivetOS capture hooks are supplied by the runtime through an inline `--settings` object, so task transcripts keep working. With `providers.claude-cli.permission_prompts` unset it also passes `--permission-prompts none`, so every prompt — built-in or MCP — is denied rather than left to the CLI's default.
+- Project settings (`.claude/settings.json` in the task's working directory) load at both levels: they belong to the repository, not the operator.
+- `allowed_tools` is passed as `--allowedTools` at both levels. Under `isolated` the operator's own allow rules are gone, so list what a headless run may call without a prompt (or set `providers.claude-cli.permission_mode`).
+- A task can override the node default with `spec.isolation` (`inherit` or `isolated`) on `POST /api/tasks`; an unknown value is ignored.
 
 #### Model lists: `tasks.harnesses.<id>.models` / `efforts` / `models_mode`
 

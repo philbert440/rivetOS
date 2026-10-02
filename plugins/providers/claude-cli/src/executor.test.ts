@@ -288,35 +288,6 @@ describe('ClaudeCliExecutor', () => {
     }
   })
 
-  it('isolation: tools keeps the operator plugins and drops personal settings', async () => {
-    const fake = makeFakeClaude(successLines('ok'))
-    const executor = new ClaudeCliExecutor({
-      binary: fake.binary,
-      isolation: 'tools',
-      allowedTools: ['mcp__plugin_rivet-memory_rivetos', 'Bash(git status:*)'],
-      readUserSettings: () => ({
-        permissions: { defaultMode: 'bypassPermissions' },
-        enabledPlugins: { 'rivet-memory@rivetos': true },
-      }),
-    })
-    await executor.start(makeConformanceSpec(), { signal: new AbortController().signal }).result
-    const args = fake.args()
-    expect(args[args.indexOf('--setting-sources') + 1]).toBe('project')
-    expect(JSON.parse(args[args.indexOf('--settings') + 1])).toEqual({
-      enabledPlugins: { 'rivet-memory@rivetos': true },
-    })
-    expect(args).not.toContain('--strict-mcp-config')
-    // tools does not change who answers prompts
-    expect(args).not.toContain('--permission-prompts')
-    const at = args.indexOf('--allowedTools')
-    expect(args.slice(at + 1, at + 3)).toEqual([
-      'mcp__plugin_rivet-memory_rivetos',
-      'Bash(git status:*)',
-    ])
-    // the variadic list is closed by the next flag
-    expect(args[at + 3].startsWith('--')).toBe(true)
-  })
-
   it('isolation: isolated is strict MCP, capture hooks only, and an explicit deny', async () => {
     const fake = makeFakeClaude(successLines('ok'))
     const executor = new ClaudeCliExecutor({ binary: fake.binary, isolation: 'isolated' })
@@ -339,6 +310,20 @@ describe('ClaudeCliExecutor', () => {
     expect(settings.enabledPlugins).toBeUndefined()
   })
 
+  it('allowed_tools is passed as --allowedTools and closed by the next flag', async () => {
+    const fake = makeFakeClaude(successLines('ok'))
+    const executor = new ClaudeCliExecutor({
+      binary: fake.binary,
+      isolation: 'isolated',
+      allowedTools: ['mcp__rivetos', 'Bash(git status:*)'],
+    })
+    await executor.start(makeConformanceSpec(), { signal: new AbortController().signal }).result
+    const args = fake.args()
+    const at = args.indexOf('--allowedTools')
+    expect(args.slice(at + 1, at + 3)).toEqual(['mcp__rivetos', 'Bash(git status:*)'])
+    expect(args[at + 3].startsWith('--')).toBe(true)
+  })
+
   it('a task spec overrides the node isolation default, in both directions', async () => {
     const up = makeFakeClaude(successLines('ok'))
     await new ClaudeCliExecutor({ binary: up.binary }).start(
@@ -357,7 +342,7 @@ describe('ClaudeCliExecutor', () => {
 
     // a bad value is ignored, not trusted
     const bad = makeFakeClaude(successLines('ok'))
-    await new ClaudeCliExecutor({ binary: bad.binary, isolation: 'tools' }).start(
+    await new ClaudeCliExecutor({ binary: bad.binary, isolation: 'isolated' }).start(
       { ...makeConformanceSpec(), isolation: 'nope' } as unknown as ReturnType<
         typeof makeConformanceSpec
       >,

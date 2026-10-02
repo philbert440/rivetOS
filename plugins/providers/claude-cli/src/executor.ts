@@ -121,15 +121,13 @@ export interface ClaudeCliExecutorConfig {
    *  Unset rejects every other source. Does not disable the env scrub. */
   allowedApiKeySources?: readonly string[]
   /**
-   * How much of the operator's personal Claude Code setup a task spawn
-   * inherits (see `isolation.ts`). Default `inherit` — no change. A task's
+   * Whether a task spawn inherits the operator's personal Claude Code setup
+   * (see `isolation.ts`). Default `inherit` — no change. A task's
    * `spec.isolation` overrides this per run.
    */
   isolation?: TaskIsolation
   /** Tools a headless run may call without a prompt (`--allowedTools`). */
   allowedTools?: readonly string[]
-  /** Test seam for the operator's user settings (used by `tools` isolation). */
-  readUserSettings?: () => unknown
 }
 
 /** Caps for the rendered resume transcript — keep the system append sane. */
@@ -530,9 +528,7 @@ export class ClaudeCliExecutor implements HarnessExecutor {
       parseTaskIsolation((spec as { isolation?: unknown }).isolation) ??
       this.cfg.isolation ??
       'inherit'
-    const isolationArgs = isolationFlags(isolation, {
-      readUserSettings: this.cfg.readUserSettings,
-    })
+    const isolationArgs = isolationFlags(isolation)
     let permissionPrompts =
       this.cfg.permissionPrompts ?? (isolation === 'isolated' ? 'none' : undefined)
     const bridgeTools = [...tools]

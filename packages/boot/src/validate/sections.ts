@@ -1101,12 +1101,12 @@ function validateTasksHarnesses(
     }
     if (
       section.isolation !== undefined &&
-      !['inherit', 'tools', 'isolated'].includes(section.isolation as string)
+      !['inherit', 'isolated'].includes(section.isolation as string)
     ) {
       issues.push({
         severity: 'error',
         path: `${path}.isolation`,
-        message: `"${path}.isolation" must be 'inherit', 'tools' or 'isolated'`,
+        message: `"${path}.isolation" must be 'inherit' or 'isolated'`,
       })
     }
     if (
