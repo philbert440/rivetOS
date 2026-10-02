@@ -646,11 +646,65 @@ describe('Config Validation', () => {
       assertValid(result)
     })
 
-    it('warns on unknown memory backend', () => {
+    it('warns on unknown memory key', () => {
       const cfg = validConfig()
       cfg.memory = { redis: { url: 'redis://localhost' } }
       const result = validateConfig(cfg)
-      assertWarning(result, 'memory.redis', 'Unknown memory backend')
+      assertWarning(result, 'memory.redis', 'Unknown memory key')
+    })
+
+    it('accepts memory.capture.redaction when well-formed', () => {
+      const cfg = validConfig()
+      cfg.memory = {
+        postgres: { connection_string: '${RIVETOS_PG_URL}' },
+        capture: {
+          redaction: {
+            enabled: false,
+            builtins: true,
+            patterns: ['\\bCUSTOM-[A-Z0-9]{8}\\b'],
+          },
+        },
+      }
+      assertValid(validateConfig(cfg))
+    })
+
+    it('warns when capture redaction is enabled but not yet injected', () => {
+      const cfg = validConfig()
+      cfg.memory = {
+        postgres: { connection_string: '${RIVETOS_PG_URL}' },
+        capture: {
+          redaction: {
+            enabled: true,
+            builtins: true,
+            patterns: ['\\b(?i:myprefix)-[a-z0-9]{20,}\\b'],
+          },
+        },
+      }
+      const result = validateConfig(cfg)
+      assertValid(result)
+      assertWarning(
+        result,
+        'memory.capture.redaction.enabled',
+        'not yet injected into harness hook processes',
+      )
+    })
+
+    it('errors on invalid capture redaction shapes', () => {
+      const cfg = validConfig()
+      cfg.memory = {
+        capture: {
+          redaction: {
+            enabled: 'yes',
+            patterns: ['(unclosed', 12, '(?i)\\bfoo', '(a+)+b'],
+          },
+        },
+      }
+      const result = validateConfig(cfg)
+      assertError(result, 'memory.capture.redaction.enabled', 'must be a boolean')
+      assertError(result, 'memory.capture.redaction.patterns[0]', 'Invalid regex')
+      assertError(result, 'memory.capture.redaction.patterns[1]', 'non-empty string')
+      assertError(result, 'memory.capture.redaction.patterns[2]', 'Invalid regex')
+      assertError(result, 'memory.capture.redaction.patterns[3]', 'ReDoS-prone')
     })
 
     it('warns on unknown postgres keys', () => {
@@ -1180,6 +1234,30 @@ describe('den', () => {
     const cfg = validConfig()
     cfg.den = { enabled: true, prot: 5174 }
     assertWarning(validateConfig(cfg), 'den.prot', 'Unknown den key')
+  })
+
+  it('accepts den.allowed_harnesses as a list of known ids', () => {
+    const cfg = validConfig()
+    cfg.den = { enabled: true, allowed_harnesses: ['claude-code', 'codex'] }
+    assertValid(validateConfig(cfg))
+  })
+
+  it('accepts an empty den.allowed_harnesses (none allowed)', () => {
+    const cfg = validConfig()
+    cfg.den = { enabled: true, allowed_harnesses: [] }
+    assertValid(validateConfig(cfg))
+  })
+
+  it('rejects a non-list den.allowed_harnesses', () => {
+    const cfg = validConfig()
+    cfg.den = { enabled: true, allowed_harnesses: 'claude-code' }
+    assertError(validateConfig(cfg), 'den.allowed_harnesses', 'must be a list')
+  })
+
+  it('warns on unknown ids in den.allowed_harnesses', () => {
+    const cfg = validConfig()
+    cfg.den = { enabled: true, allowed_harnesses: ['claude-code', 'not-a-harness'] }
+    assertWarning(validateConfig(cfg), 'den.allowed_harnesses[1]', 'Unknown harness id')
   })
 
   it('accepts den.advertise_mdns (local-mode / PR 7 advertiser)', () => {

@@ -43,12 +43,19 @@ export const CODEX_SHEET: HarnessSheet = {
 
 /**
  * Harnesses a NEW session or preset can launch on. The den stamps `installed`
- * (roster binary on its spawn PATH); an older den omits it, so absent counts
- * as installed. Uninstalled rows stay in the registry for existing sessions.
+ * (roster binary on its spawn PATH) and, when configured, `allowed`
+ * (`den.allowed_harnesses`). An older den / unset allow-list omits the
+ * fields, so absent counts as true. Uninstalled or disallowed rows stay in
+ * the registry for existing sessions — use the raw sheet for those.
  */
-export function installedHarnesses<T extends { installed?: boolean }>(descriptors: T[]): T[] {
-  return descriptors.filter((d) => d.installed !== false)
+export function launchableHarnesses<T extends { installed?: boolean; allowed?: boolean }>(
+  descriptors: T[],
+): T[] {
+  return descriptors.filter((d) => d.installed !== false && d.allowed !== false)
 }
+
+/** @deprecated Prefer {@link launchableHarnesses} — same filter. */
+export const installedHarnesses = launchableHarnesses
 
 export function harnessLabel(harnessId?: string): string {
   if (!harnessId) return ''

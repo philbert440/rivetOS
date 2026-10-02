@@ -2,6 +2,7 @@ package io.rivethub.app.plane
 
 import io.rivethub.app.gateway.EffortOption
 import io.rivethub.app.gateway.HarnessCapabilities
+import io.rivethub.app.gateway.HarnessDescriptor
 import io.rivethub.app.gateway.ModelOption
 
 /** Slice of a capability sheet the pickers and spawn flags need. */
@@ -74,6 +75,35 @@ fun harnessLabel(harnessId: String?): String {
     if (harnessId.isNullOrBlank()) return ""
     return HARNESS_LABEL[harnessId] ?: harnessId
 }
+
+/**
+ * Harnesses a NEW session or preset can launch on. Mirrors web
+ * `launchableHarnesses`: absent `installed` / `allowed` count as true
+ * (older dens / allow-list unset).
+ */
+fun launchableHarnesses(descriptors: List<HarnessDescriptor>?): List<HarnessDescriptor> =
+    (descriptors ?: emptyList()).filter { it.installed != false && it.allowed != false }
+
+/** @see launchableHarnesses */
+fun installedHarnesses(descriptors: List<HarnessDescriptor>?): List<HarnessDescriptor> =
+    launchableHarnesses(descriptors)
+
+/**
+ * Agents a NEW-conversation picker may offer. Drops rows whose harness is
+ * uninstalled or off that den's allow-list. No descriptor sheet yet → keep
+ * the row (same as an older den that omits the flags). Agents with no
+ * harnessId stay (chat-loop / catalog-only).
+ */
+fun launchableAgents(
+    agents: List<AgentRow>,
+    descriptorsByDenUrl: Map<String, List<HarnessDescriptor>>,
+): List<AgentRow> =
+    agents.filter { row ->
+        val hid = row.harnessId?.takeIf { it.isNotBlank() } ?: return@filter true
+        val key = row.nodeDenUrl.trim().trimEnd('/')
+        val desc = descriptorsByDenUrl[key] ?: return@filter true
+        launchableHarnesses(desc).any { it.harnessId == hid }
+    }
 
 /**
  * Conversation-row pill: session summary model, else the preset's model,

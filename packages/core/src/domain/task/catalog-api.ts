@@ -51,6 +51,13 @@ export interface CatalogApiOptions {
    * Tests shorten it. A hung store falls back to `rosterEntries()` (last-known).
    */
   rosterFreshTimeoutMs?: number
+  /**
+   * Operator allow-list (`den.allowed_harnesses`). When set, harness-session
+   * executor entries off the list are omitted so task pickers never offer a
+   * target POST /api/tasks would refuse. Absent = advertise every registered
+   * executor (opt-in off).
+   */
+  isHarnessAllowed?: (harnessId: string) => boolean
 }
 
 const lastMeshNodes = new WeakMap<MeshRegistry, MeshNode[]>()
@@ -193,26 +200,38 @@ export function createCatalogApiRoute(opts: CatalogApiOptions): GatewayRoute {
             ),
           ])
         }
-        const executors = await Promise.all(
-          opts.executors.entries().map(async ({ key, executor }): Promise<CatalogExecutorEntry> => {
-            const entry: CatalogExecutorEntry = {
-              key,
-              capabilities: executor.capabilities(),
-              commands: await commandsFor(executor),
-            }
-            // harness-session entries carry their harness id and whether the
-            // registration is a real harness or a registered rejection, so a
-            // client can tell "we have kimi" from "we know about kimi".
-            const target = key.startsWith(HARNESS_KEY_PREFIX)
-              ? key.slice(HARNESS_KEY_PREFIX.length)
-              : undefined
-            if (target !== undefined && isHarnessExecutorTarget(target)) {
-              entry.harnessId = target
-              entry.implemented = !isNotImplementedHarnessExecutor(executor)
-            }
-            return entry
-          }),
-        )
+        const executors = (
+          await Promise.all(
+            opts.executors
+              .entries()
+              .map(async ({ key, executor }): Promise<CatalogExecutorEntry | undefined> => {
+                // harness-session entries carry their harness id and whether the
+                // registration is a real harness or a registered rejection, so a
+                // client can tell "we have kimi" from "we know about kimi".
+                const target = key.startsWith(HARNESS_KEY_PREFIX)
+                  ? key.slice(HARNESS_KEY_PREFIX.length)
+                  : undefined
+                // Hide off-list harness-session targets from the picker sheet.
+                if (
+                  target !== undefined &&
+                  opts.isHarnessAllowed &&
+                  !opts.isHarnessAllowed(target)
+                ) {
+                  return undefined
+                }
+                const entry: CatalogExecutorEntry = {
+                  key,
+                  capabilities: executor.capabilities(),
+                  commands: await commandsFor(executor),
+                }
+                if (target !== undefined && isHarnessExecutorTarget(target)) {
+                  entry.harnessId = target
+                  entry.implemented = !isNotImplementedHarnessExecutor(executor)
+                }
+                return entry
+              }),
+          )
+        ).filter((e): e is CatalogExecutorEntry => e !== undefined)
 
         return json(res, 200, {
           node: opts.nodeName,

@@ -235,6 +235,14 @@ export interface DenConfig {
    * embedding den.
    */
   harnesses?: Record<string, { models?: unknown; efforts?: unknown; models_mode?: unknown }>
+  /**
+   * Operator allow-list of harness ids this node offers for new launches.
+   * Unset = all registered. Empty = none. Boot copies `den.allowed_harnesses`
+   * when embedding den; standalone dens can set
+   * `RIVETOS_DEN_ALLOWED_HARNESSES` (comma/space list). Stamped as `allowed`
+   * on `GET /api/harnesses`.
+   */
+  allowedHarnesses?: string[]
 }
 
 /** Voice proxy upstreams (see voice-proxy.ts). Empty URL = that half 501s. */
@@ -350,6 +358,10 @@ export function loadConfig(
     meshCacheMs: intEnv(env, 'RIVETOS_DEN_MESH_CACHE_MS', 10_000),
     allowedOrigins: parseList(env.RIVETOS_DEN_ALLOWED_ORIGINS),
     allowedHosts: parseList(env.RIVETOS_DEN_ALLOWED_HOSTS),
+    // Key present (even empty) enables the allow-list; absent = opt-in off.
+    ...(env.RIVETOS_DEN_ALLOWED_HARNESSES !== undefined
+      ? { allowedHarnesses: parseList(env.RIVETOS_DEN_ALLOWED_HARNESSES) }
+      : {}),
     term: {
       enabled: truthyEnv(env.RIVETOS_DEN_TERM),
       open: truthyEnv(env.RIVETOS_DEN_TERM_OPEN),
