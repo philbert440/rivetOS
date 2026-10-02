@@ -344,6 +344,11 @@ export async function registerGateway(
       ]),
     )
   }
+  // Operator harness allow-list (den.allowed_harnesses). Structured field —
+  // not env — same path as model-sheet overrides above.
+  if (config.den?.allowed_harnesses !== undefined) {
+    denConfig.allowedHarnesses = [...config.den.allowed_harnesses]
+  }
 
   const den = createDenServer(denConfig, {
     extraRoutes: [...extraRoutes, ...gatewayChannel.routes, openaiRoute],

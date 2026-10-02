@@ -1037,6 +1037,31 @@ export function validateDen(den: Record<string, unknown>, issues: ValidationIssu
     }
   }
 
+  // allowed_harnesses: which harnesses this node offers for new launches.
+  // Unset = all registered. Unknown ids warn (same as tasks.harnesses).
+  if (den.allowed_harnesses !== undefined) {
+    const v = den.allowed_harnesses
+    if (!Array.isArray(v) || v.some((e) => typeof e !== 'string' || e.trim() === '')) {
+      issues.push({
+        severity: 'error',
+        path: `${path}.allowed_harnesses`,
+        message:
+          '"den.allowed_harnesses" must be a list of non-empty harness ids (omit the key to allow all)',
+      })
+    } else {
+      for (let i = 0; i < v.length; i++) {
+        const id = (v[i] as string).trim()
+        if (!(HARNESS_IDS as readonly string[]).includes(id)) {
+          issues.push({
+            severity: 'warning',
+            path: `${path}.allowed_harnesses[${i}]`,
+            message: `Unknown harness id "${id}" — expected one of: ${HARNESS_IDS.join(', ')}`,
+          })
+        }
+      }
+    }
+  }
+
   for (const key of ['static_dir'] as const) {
     if (den[key] !== undefined && (typeof den[key] !== 'string' || den[key].trim() === '')) {
       issues.push({

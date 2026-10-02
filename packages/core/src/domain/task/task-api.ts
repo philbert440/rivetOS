@@ -104,6 +104,13 @@ export interface TaskApiOptions {
    * `POST .../approvals` 404s (fail closed) and `?onApproval=return` is ignored.
    */
   permissionBroker?: TaskPermissionBroker
+  /**
+   * Operator allow-list (`den.allowed_harnesses`). When set, a harness-session
+   * create whose executorTarget is off the list is refused with 403. Absent =
+   * every harness id is allowed (opt-in off). The runner also re-checks on the
+   * node that claims the row (peer affinity / pre-list rows).
+   */
+  isHarnessAllowed?: (harnessId: string) => boolean
 }
 
 const TERMINAL_STATUS: readonly TaskStatus[] = ['completed', 'failed', 'killed', 'timeout']
@@ -349,6 +356,18 @@ export function createTaskApiRoute(opts: TaskApiOptions): GatewayRoute {
           // Defence in depth for the runner: a forged presetId must not be
           // stored on a row this route did not build from a resolved preset.
           if (!tookPresetBranch) input.spec = stripClientPresetFields(input.spec)
+          if (
+            input.executor === 'harness-session' &&
+            input.executorTarget &&
+            opts.isHarnessAllowed &&
+            !opts.isHarnessAllowed(input.executorTarget)
+          ) {
+            return json(res, 403, {
+              error: `harness "${input.executorTarget}" is not allowed on this node (den.allowed_harnesses)`,
+              code: 'harness_not_allowed',
+              harnessId: input.executorTarget,
+            })
+          }
           if (!input.nodeAffinity && opts.resolveAffinity) {
             const resolved = await opts.resolveAffinity(input.agentId)
             if (typeof resolved === 'object' && resolved !== null)

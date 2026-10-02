@@ -1133,6 +1133,30 @@ describe('den', () => {
     assertWarning(validateConfig(cfg), 'den.prot', 'Unknown den key')
   })
 
+  it('accepts den.allowed_harnesses as a list of known ids', () => {
+    const cfg = validConfig()
+    cfg.den = { enabled: true, allowed_harnesses: ['claude-code', 'codex'] }
+    assertValid(validateConfig(cfg))
+  })
+
+  it('accepts an empty den.allowed_harnesses (none allowed)', () => {
+    const cfg = validConfig()
+    cfg.den = { enabled: true, allowed_harnesses: [] }
+    assertValid(validateConfig(cfg))
+  })
+
+  it('rejects a non-list den.allowed_harnesses', () => {
+    const cfg = validConfig()
+    cfg.den = { enabled: true, allowed_harnesses: 'claude-code' }
+    assertError(validateConfig(cfg), 'den.allowed_harnesses', 'must be a list')
+  })
+
+  it('warns on unknown ids in den.allowed_harnesses', () => {
+    const cfg = validConfig()
+    cfg.den = { enabled: true, allowed_harnesses: ['claude-code', 'not-a-harness'] }
+    assertWarning(validateConfig(cfg), 'den.allowed_harnesses[1]', 'Unknown harness id')
+  })
+
   it('accepts den.advertise_mdns (local-mode / PR 7 advertiser)', () => {
     const cfg = validConfig()
     cfg.den = { enabled: true, advertise_mdns: true }
