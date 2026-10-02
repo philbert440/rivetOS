@@ -122,6 +122,21 @@ export function FilesPage(): JSX.Element {
     setEditorDirty(dirty)
   }, [])
 
+  const confirmDiscard = useCallback(async (): Promise<boolean> => {
+    if (!editorDirtyRef.current) return true
+    const ok = await discardConfirm('Discard unsaved changes?')
+    if (ok) setEditorDirtyTracked(false)
+    return ok
+  }, [discardConfirm, setEditorDirtyTracked])
+
+  const navigateGuarded = useCallback(
+    async (next: string): Promise<void> => {
+      if (!(await confirmDiscard())) return
+      setPath(next)
+    },
+    [confirmDiscard, setPath],
+  )
+
   useEffect(() => {
     setEditorDirtyTracked(false)
   }, [previewPath, setEditorDirtyTracked])
@@ -138,17 +153,14 @@ export function FilesPage(): JSX.Element {
   const openEntry = useCallback(
     async (child: string, isDir: boolean): Promise<void> => {
       if (!isDir && child === previewPath) return
-      if (editorDirtyRef.current) {
-        const ok = await discardConfirm('Discard unsaved changes?')
-        if (!ok) return
-      }
+      if (!(await confirmDiscard())) return
       if (isDir) {
         setPath(child)
       } else {
         setPreviewPath(child)
       }
     },
-    [discardConfirm, previewPath],
+    [confirmDiscard, previewPath, setPath],
   )
 
   const openRaw = useCallback(
@@ -406,7 +418,7 @@ export function FilesPage(): JSX.Element {
       <div className="flex flex-wrap items-center gap-1 border-b border-line bg-panel/40 px-4 py-2 font-mono text-xs">
         <button
           type="button"
-          onClick={() => setPath('')}
+          onClick={() => void navigateGuarded('')}
           className={crumbs.length === 0 ? 'text-em' : 'text-ink-dim hover:text-ink'}
         >
           {rootLabel}
@@ -416,7 +428,7 @@ export function FilesPage(): JSX.Element {
             <span className="text-ink-dim">/</span>
             <button
               type="button"
-              onClick={() => setPath(crumbs.slice(0, i + 1).join('/'))}
+              onClick={() => void navigateGuarded(crumbs.slice(0, i + 1).join('/'))}
               className={i === crumbs.length - 1 ? 'text-em' : 'text-ink-dim hover:text-ink'}
             >
               {seg}
@@ -556,7 +568,7 @@ export function FilesPage(): JSX.Element {
                       <td colSpan={3} className="py-1">
                         <button
                           type="button"
-                          onClick={() => setPath(parentRel(path))}
+                          onClick={() => void navigateGuarded(parentRel(path))}
                           className="font-mono text-ink-dim hover:text-ink"
                         >
                           ../

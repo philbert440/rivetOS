@@ -33,6 +33,15 @@ describe('files page unsaved-edit guard', () => {
     expect(files).toContain('if (!isDir && child === previewPath) return')
   })
 
+  it('breadcrumb and parent-row navigation run through the dirty guard', () => {
+    expect(files).toMatch(/onClick=\{\(\) => void navigateGuarded\(''\)\}/)
+    expect(files).toContain('void navigateGuarded(crumbs.slice(0, i + 1)')
+    expect(files).toContain('void navigateGuarded(parentRel(path))')
+    // A confirmed discard clears dirty before the nav, so the path effect
+    // does not raise a second prompt for the same answer.
+    expect(files).toMatch(/const ok = await discardConfirm\('Discard unsaved changes\?'\)\s*\n\s*if \(ok\) setEditorDirtyTracked\(false\)/)
+  })
+
   it('a dirty editor warns on tab close / reload', () => {
     expect(files).toMatch(/if \(!editorDirty\) return/)
     expect(files).toContain("window.addEventListener('beforeunload', onUnload)")
