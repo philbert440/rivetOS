@@ -37,7 +37,7 @@ export async function removePidFile(pidDir: string = DEFAULT_PID_DIR): Promise<v
 }
 
 /**
- * Register SIGINT/SIGTERM handlers for graceful shutdown.
+ * Register SIGINT/SIGTERM/SIGHUP handlers for graceful shutdown.
  * Stops the runtime, then optional afterStop (embedded PG — Runtime.stop
  * runs shutdown hooks FIFO, not LIFO, so the socket must close after
  * den/plugins), removes PID file, then exits.
