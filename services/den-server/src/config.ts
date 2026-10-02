@@ -235,6 +235,12 @@ export interface DenConfig {
    * embedding den.
    */
   harnesses?: Record<string, { models?: unknown; efforts?: unknown; models_mode?: unknown }>
+  /**
+   * Operator allow-list of harness ids this node offers for new launches.
+   * Unset = all registered. Empty = none. Boot copies `den.allowed_harnesses`
+   * when embedding den. Stamped as `allowed` on `GET /api/harnesses`.
+   */
+  allowedHarnesses?: string[]
 }
 
 /** Voice proxy upstreams (see voice-proxy.ts). Empty URL = that half 501s. */

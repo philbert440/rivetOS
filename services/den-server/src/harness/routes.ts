@@ -243,6 +243,15 @@ export function createHarnessRoutes(opts: {
   /** Stamps `installed` on each `GET /api/harnesses` row (`installed.ts`).
    *  Absent = the field is omitted and clients treat every row as installed. */
   isInstalled?: (harnessId: HarnessId) => boolean
+  /**
+   * Stamps `allowed` on each `GET /api/harnesses` row and refuses
+   * `POST .../sessions` for ids outside the operator allow-list
+   * (`den.allowed_harnesses`). Absent = omit the field and allow every
+   * registered harness (opt-in off).
+   */
+  isAllowed?: (harnessId: HarnessId) => boolean
+  /** True when an allow-list is configured (so the list stamps `allowed`). */
+  allowListConfigured?: boolean
 }): HarnessRoutes {
   const { registry } = opts
   const log = opts.log ?? ((): void => undefined)
@@ -355,10 +364,13 @@ export function createHarnessRoutes(opts: {
       // Truth the flags before publishing them: a declared-only sheet is how a
       // node with a failed `node-pty` advertises an interrupt it will 501.
       await registry.verifyCapabilities()
-      const { isInstalled } = opts
-      const harnesses = isInstalled
-        ? registry.list().map((d) => ({ ...d, installed: isInstalled(d.harnessId) }))
-        : registry.list()
+      const { isInstalled, isAllowed, allowListConfigured } = opts
+      const harnesses = registry.list().map((d) => {
+        const row = { ...d } as typeof d & { installed?: boolean; allowed?: boolean }
+        if (isInstalled) row.installed = isInstalled(d.harnessId)
+        if (allowListConfigured && isAllowed) row.allowed = isAllowed(d.harnessId)
+        return row
+      })
       return json(res, 200, { harnesses })
     }
     const parts: (string | undefined)[] = rest.split('/')
@@ -395,6 +407,13 @@ export function createHarnessRoutes(opts: {
       }
     }
     if (req.method === 'POST') {
+      if (opts.allowListConfigured && opts.isAllowed && !opts.isAllowed(harnessId)) {
+        return json(res, 403, {
+          error: `harness "${harnessId}" is not allowed on this node (den.allowed_harnesses)`,
+          code: 'harness_not_allowed',
+          harnessId,
+        })
+      }
       const body = await parseJsonBody(req, res)
       if (!body) return true
       const { cwd, model, nativeSessionId, sessionId, metadata } = body

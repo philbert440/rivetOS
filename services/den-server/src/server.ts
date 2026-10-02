@@ -125,6 +125,11 @@ import { PiDriver } from './harness/pi-driver.js'
 import { QwenCodeDriver } from './harness/qwen-code-driver.js'
 import { CursorDriver } from './harness/cursor-driver.js'
 import { createInstalledProbe } from './harness/installed.js'
+import {
+  createAllowedProbe,
+  harnessNotAllowedMessage,
+  normalizeAllowedHarnesses,
+} from './harness/allowed.js'
 import { CodexDriver } from './harness/codex-driver.js'
 import { CodexProtocolDriver, codexThreadDefaults } from './harness/codex-protocol-driver.js'
 import { CodexRpcClient } from './harness/codex-rpc.js'
@@ -415,6 +420,11 @@ export interface DenServerOptions {
    * probe of each roster argv[0] on the den's spawn PATH (`harness/installed.ts`).
    */
   isHarnessInstalled?: (harnessId: HarnessId) => boolean
+  /**
+   * Stamps `allowed` / refuses new launches. Default: `config.allowedHarnesses`
+   * via `createAllowedProbe` (`harness/allowed.ts`). Unset config = all allowed.
+   */
+  isHarnessAllowed?: (harnessId: HarnessId) => boolean
   /**
    * Preset-registry pool. Production builds one from `config.pgUrl`
    * ({@link createPresetPool}: error listeners, 5s connect, 10s query).
@@ -1020,6 +1030,8 @@ export function createDenServer(config: DenConfig, opts: DenServerOptions = {}):
     for (const driver of builtinDrivers) harnesses.register(driver)
   }
   for (const driver of opts.harnessDrivers ?? []) harnesses.register(driver)
+  const allowListConfigured = normalizeAllowedHarnesses(config.allowedHarnesses) !== undefined
+  const isHarnessAllowed = opts.isHarnessAllowed ?? createAllowedProbe(config.allowedHarnesses)
   const harnessRoutes = createHarnessRoutes({
     registry: harnesses,
     log: console.error,
@@ -1030,6 +1042,8 @@ export function createDenServer(config: DenConfig, opts: DenServerOptions = {}):
         // The app-server driver talks to an endpoint, not a local binary.
         alwaysInstalled: (id) => id === 'codex' && !!config.codexAppServerUrl,
       }),
+    isAllowed: isHarnessAllowed,
+    allowListConfigured,
     filterSessions: async (req, sessions) => {
       const ctx = boundRequestUser(req)
       if (!ctx) return sessions
@@ -1257,6 +1271,7 @@ export function createDenServer(config: DenConfig, opts: DenServerOptions = {}):
     // operator pinned the list with `replace`, a warning otherwise).
     modelList: (harnessId) =>
       presetModelList(harnessId, config.harnesses?.[harnessId], console.error),
+    isHarnessAllowed: allowListConfigured ? isHarnessAllowed : undefined,
   })
 
   const authorized = (req: IncomingMessage, _url: URL): boolean =>
@@ -1834,6 +1849,21 @@ export function createDenServer(config: DenConfig, opts: DenServerOptions = {}):
             // recorded. A different directory is a conflict (another preset,
             // or this preset was moved) unless the client passes force.
             const spawnCommand = command ?? rosterProvider.get().default
+            // Allow-list gate for new term launches only. A resume keeps
+            // working for a harness that was since removed from the list.
+            const spawnHarnessId = ROSTER_TO_HARNESS[spawnCommand]
+            if (
+              allowListConfigured &&
+              !resumeKey &&
+              spawnHarnessId &&
+              !isHarnessAllowed(spawnHarnessId)
+            ) {
+              return json(res, 403, {
+                error: harnessNotAllowedMessage(spawnHarnessId),
+                code: 'harness_not_allowed',
+                harnessId: spawnHarnessId,
+              })
+            }
             const recorded = cwdOverride
               ? recordedCwdFor(spawnCommand, [resumeKey, sessionKey])
               : undefined

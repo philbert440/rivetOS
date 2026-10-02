@@ -302,6 +302,12 @@ export interface DenSection {
   /** Extra Host names a plain-HTTP den accepts from loopback callers (e.g. a
    *  local reverse proxy's name). Maps to RIVETOS_DEN_ALLOWED_HOSTS. */
   allowed_hosts?: string[]
+  /**
+   * Harness ids this node offers for new launches (Agents picker, term spawn,
+   * harness-session tasks, control-plane session create). Unset = all
+   * registered harnesses. Empty = none. Unknown ids warn at validate time.
+   */
+  allowed_harnesses?: string[]
   /** Mesh device enrollment (Settings → Devices). Off unless `enabled`.
    *  With a shared roster (default when a shared export mount is present),
    *  any mesh node can add/revoke; each node still needs relay_ssh to mutate

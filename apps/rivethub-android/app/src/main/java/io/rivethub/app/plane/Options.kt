@@ -2,6 +2,7 @@ package io.rivethub.app.plane
 
 import io.rivethub.app.gateway.EffortOption
 import io.rivethub.app.gateway.HarnessCapabilities
+import io.rivethub.app.gateway.HarnessDescriptor
 import io.rivethub.app.gateway.ModelOption
 
 /** Slice of a capability sheet the pickers and spawn flags need. */
@@ -74,6 +75,18 @@ fun harnessLabel(harnessId: String?): String {
     if (harnessId.isNullOrBlank()) return ""
     return HARNESS_LABEL[harnessId] ?: harnessId
 }
+
+/**
+ * Harnesses a NEW session or preset can launch on. Mirrors web
+ * `installedHarnesses`: absent `installed` / `allowed` count as true
+ * (older dens / allow-list unset).
+ */
+fun launchableHarnesses(descriptors: List<HarnessDescriptor>?): List<HarnessDescriptor> =
+    (descriptors ?: emptyList()).filter { it.installed != false && it.allowed != false }
+
+/** @see launchableHarnesses */
+fun installedHarnesses(descriptors: List<HarnessDescriptor>?): List<HarnessDescriptor> =
+    launchableHarnesses(descriptors)
 
 /**
  * Conversation-row pill: session summary model, else the preset's model,

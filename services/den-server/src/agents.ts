@@ -184,6 +184,12 @@ export function createAgentsRoutes(opts: {
    * at spawn. Absent, or an empty `ids` (no picker) → no check.
    */
   modelList?: (harnessId: HarnessId) => { ids: string[]; strict: boolean; source: string }
+  /**
+   * Operator allow-list gate (`den.allowed_harnesses`). Absent = every
+   * known harness is allowed. When set, create/PATCH with a disallowed
+   * harnessId is refused with 400.
+   */
+  isHarnessAllowed?: (harnessId: HarnessId) => boolean
 }): AgentsRoutes {
   const store = opts.store
   const nodeName = opts.nodeName
@@ -362,6 +368,14 @@ export function createAgentsRoutes(opts: {
       return
     }
     const harnessId: HarnessId | undefined = hid
+    if (harnessId && opts.isHarnessAllowed && !opts.isHarnessAllowed(harnessId)) {
+      json(res, 400, {
+        error: `harness "${harnessId}" is not allowed on this node (den.allowed_harnesses)`,
+        code: 'harness_not_allowed',
+        harnessId,
+      })
+      return
+    }
     const systemPrompt =
       typeof raw.systemPrompt === 'string'
         ? raw.systemPrompt.trim().slice(0, SYSTEM_PROMPT_MAX_CHARS)
@@ -509,6 +523,14 @@ export function createAgentsRoutes(opts: {
       const hid = parseHarnessId(raw.harnessId)
       if (hid === 'bad') {
         json(res, 400, { error: 'harnessId must be a known harness' })
+        return
+      }
+      if (hid && opts.isHarnessAllowed && !opts.isHarnessAllowed(hid)) {
+        json(res, 400, {
+          error: `harness "${hid}" is not allowed on this node (den.allowed_harnesses)`,
+          code: 'harness_not_allowed',
+          harnessId: hid,
+        })
         return
       }
       patch.harnessId = hid ?? null

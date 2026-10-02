@@ -202,6 +202,7 @@ async function startWith(
     | 'ptySpawn'
     | 'aliasBreadcrumbs'
     | 'isHarnessInstalled'
+    | 'isHarnessAllowed'
   >,
   tweak: (config: DenConfig) => DenConfig = (c) => c,
 ): Promise<{ base: string; den: DenServer }> {
@@ -338,6 +339,43 @@ describe('more than one driver on a node', () => {
       expect((await fetch(`${base}/api/harnesses/${id}`)).status).toBe(200)
     }
     expect((await fetch(`${base}/api/harnesses/kimi-code`)).status).toBe(404)
+  })
+
+  it('omits allowed when the allow-list is unset (opt-in)', async () => {
+    const { base } = await start(new FakeDriver())
+    const body = (await (await fetch(`${base}/api/harnesses`)).json()) as {
+      harnesses: { harnessId: string; allowed?: boolean }[]
+    }
+    expect(body.harnesses[0].allowed).toBeUndefined()
+  })
+
+  it('stamps allowed and refuses session create for an off-list harness', async () => {
+    const { claude, grok, hermes } = trio()
+    const { base } = await startWith(
+      {
+        skipBuiltinHarnessDrivers: true,
+        harnessDrivers: [claude, grok, hermes],
+        isHarnessInstalled: () => true,
+      },
+      (c) => ({ ...c, allowedHarnesses: ['claude-code', 'grok-build'] }),
+    )
+    const body = (await (await fetch(`${base}/api/harnesses`)).json()) as {
+      harnesses: { harnessId: string; allowed?: boolean }[]
+    }
+    expect(body.harnesses).toEqual([
+      expect.objectContaining({ harnessId: 'claude-code', allowed: true }),
+      expect.objectContaining({ harnessId: 'grok-build', allowed: true }),
+      expect.objectContaining({ harnessId: 'hermes', allowed: false }),
+    ])
+    const refused = await post(base, '/api/harnesses/hermes/sessions', {})
+    expect(refused.status).toBe(403)
+    const err = (await refused.json()) as { code?: string; harnessId?: string }
+    expect(err.code).toBe('harness_not_allowed')
+    expect(err.harnessId).toBe('hermes')
+    expect(hermes.calls.started).toHaveLength(0)
+    const ok = await post(base, '/api/harnesses/claude-code/sessions', {})
+    expect(ok.status).toBe(201)
+    expect(claude.calls.started).toHaveLength(1)
   })
 
   it('routes a non-uuid hermes id to the hermes driver alone', async () => {

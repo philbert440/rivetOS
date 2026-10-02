@@ -1,6 +1,8 @@
 package io.rivethub.app.plane
 
 import io.rivethub.app.gateway.EffortOption
+import io.rivethub.app.gateway.HarnessCapabilities
+import io.rivethub.app.gateway.HarnessDescriptor
 import io.rivethub.app.gateway.ModelOption
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -49,6 +51,19 @@ class OptionsTest {
         modelFlag = null,
         effortFlag = "--reasoning",
     )
+
+    @Test fun `launchableHarnesses drops installed false and allowed false`() {
+        val rows = listOf(
+            HarnessDescriptor("claude-code", HarnessCapabilities(), installed = true, allowed = true),
+            HarnessDescriptor("hermes", HarnessCapabilities(), installed = true, allowed = false),
+            HarnessDescriptor("codex", HarnessCapabilities(), installed = false, allowed = true),
+            HarnessDescriptor("pi", HarnessCapabilities()),
+        )
+        assertEquals(
+            listOf("claude-code", "pi"),
+            launchableHarnesses(rows).map { it.harnessId },
+        )
+    }
 
     @Test fun `pill prefers summary model`() {
         assertEquals("fable", rowPillText("fable", "opus", "claude-code"))

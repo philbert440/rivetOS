@@ -601,6 +601,9 @@ den:
 | `advertise_mdns`  | boolean  | `false`                                         | Publish `_rivethub._tcp` via mDNS so LAN apps can find this node. No-op unless the gateway actually started.                                         |
 | `allowed_origins` | string[] | —                                               | Extra browser origins (`scheme://host[:port]`) allowed to call the gateway. See **Browser origin policy** below. Env: `RIVETOS_DEN_ALLOWED_ORIGINS`. |
 | `allowed_hosts`   | string[] | —                                               | Extra `Host` names a plain-HTTP (no TLS) gateway accepts from loopback callers, e.g. a local reverse proxy's name. Env: `RIVETOS_DEN_ALLOWED_HOSTS`. |
+| `allowed_harnesses` | string[] | —                                             | Harness ids this node offers for **new** launches (Agents picker, `POST /term`, control-plane session create, harness-session tasks). Unset = every registered harness. Empty = none. Unknown ids warn at validate time. `GET /api/harnesses` stamps `allowed` when set; off-list create/spawn/preset/task is refused. Existing sessions of a now-disallowed harness still resolve. |
+
+**Harness allow-list.** When `den.allowed_harnesses` is set, the den stamps each `GET /api/harnesses` row with `allowed: true|false` (alongside `installed`). RivetHub web and Android pickers for new sessions/presets keep only rows where `installed !== false` and `allowed !== false` (absent fields count as true, so older dens and unset allow-lists behave as today). A spawn, preset save, or harness-session task that names an off-list harness is refused with a clear error naming `den.allowed_harnesses`.
 
 **Browser origin policy.** The gateway answers a browser only when the request's `Origin` is one of:
 
