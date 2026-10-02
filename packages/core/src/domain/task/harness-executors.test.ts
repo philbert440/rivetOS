@@ -441,4 +441,84 @@ describe('task handler with a not-implemented harness executor', () => {
     expect((await store.get(task.id))?.status).toBe('completed')
     expect(onDeprecatedTarget).toHaveBeenCalledWith('claude-cli', 'claude-code')
   })
+
+  it('allow-list gate canonicalizes legacy claude-cli before the probe', async () => {
+    // Without canonicalize, isHarnessAllowed('claude-cli') fails closed even
+    // when the list includes claude-code — and the inverse would miss a
+    // disallow of claude-code for a pre-list claude-cli row.
+    const store = new InMemoryTaskStore()
+    const executors = createExecutorRegistry()
+    const started: string[] = []
+    executors.register(
+      'harness-session',
+      {
+        ...fakeExecutor('claude-code'),
+        start: () => {
+          started.push('claude-code')
+          return {
+            events: (async function* () {
+              await Promise.resolve()
+            })(),
+            steer: () => Promise.resolve(),
+            kill: () => Promise.resolve(),
+            result: Promise.resolve({
+              verdict: 'completed' as const,
+              summary: 'done',
+              artifacts: [],
+              usage: {
+                inputTokens: 1,
+                outputTokens: 1,
+                totalTokens: 2,
+                turns: 1,
+                wallClockMs: 1,
+              },
+            }),
+          }
+        },
+      },
+      'claude-code',
+    )
+    const allowed = await (async () => {
+      const handler = createTaskHandler({
+        store,
+        executors,
+        nodeId: 'test-node',
+        isHarnessAllowed: (id) => id === 'claude-code',
+      })
+      const task = await store.create({
+        goal: 'legacy ok',
+        executor: 'harness-session',
+        executorTarget: 'claude-cli',
+        agentId: 'claude',
+        origin: 'tool',
+      })
+      await handler(task.id)
+      return store.get(task.id)
+    })()
+    expect(allowed?.status).toBe('completed')
+    expect(started).toEqual(['claude-code'])
+
+    started.length = 0
+    const blocked = await (async () => {
+      const handler = createTaskHandler({
+        store,
+        executors,
+        nodeId: 'test-node',
+        isHarnessAllowed: (id) => id === 'hermes',
+      })
+      const task = await store.create({
+        goal: 'legacy blocked',
+        executor: 'harness-session',
+        executorTarget: 'claude-cli',
+        agentId: 'claude',
+        origin: 'tool',
+      })
+      await handler(task.id)
+      return store.get(task.id)
+    })()
+    expect(blocked?.status).toBe('failed')
+    expect(blocked?.error).toMatch(/^harness_not_allowed:/)
+    expect(blocked?.result?.summary).toContain('claude-code')
+    expect(started).toEqual([])
+  })
 })

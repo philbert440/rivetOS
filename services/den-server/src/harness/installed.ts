@@ -65,7 +65,8 @@ export function rosterEntrySpawnable(
   return findOnPath(argv0, harnessSpawnPath(roster, entry, basePath, home)) !== null
 }
 
-const HARNESS_TO_ROSTER = new Map<HarnessId, string>(
+/** Roster command for a harness id (`claude-code` → `claude`). */
+export const HARNESS_TO_ROSTER = new Map<HarnessId, string>(
   Object.entries(ROSTER_TO_HARNESS).map(([key, id]) => [id, key]),
 )
 

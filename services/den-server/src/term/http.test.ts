@@ -184,7 +184,9 @@ describe('term endpoints', () => {
     const refused = await post(gated.base, '/term', { command: 'hermes' })
     expect(refused.status).toBe(403)
     expect(((await refused.json()) as { code?: string }).code).toBe('harness_not_allowed')
-    expect((await post(gated.base, '/term', { command: 'claude' })).status).toBe(201)
+    const claudeSpawn = await post(gated.base, '/term', { command: 'claude' })
+    expect(claudeSpawn.status).toBe(201)
+    const claudePty = (await claudeSpawn.json()) as { denSession?: string }
     // A never-seen resume key must not mint a fresh off-list spawn.
     const bogus = await post(gated.base, '/term', {
       command: 'hermes',
@@ -192,6 +194,14 @@ describe('term endpoints', () => {
     })
     expect(bogus.status).toBe(403)
     expect(((await bogus.json()) as { code?: string }).code).toBe('harness_not_allowed')
+    // A live pty from a *different* harness must not exempt an off-list spawn.
+    const cross = await post(gated.base, '/term', {
+      command: 'hermes',
+      resume: claudePty.denSession,
+    })
+    expect(cross.status).toBe(403)
+    expect(((await cross.json()) as { code?: string }).code).toBe('harness_not_allowed')
+    expect(gated.spawns.filter((s) => s.argv[0] === 'hermes')).toHaveLength(0)
 
     const cfg = (await (await fetch(`${gated.base}/term/config`)).json()) as {
       commands: { id: string }[]

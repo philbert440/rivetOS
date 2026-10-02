@@ -124,7 +124,7 @@ import { OpencodeDriver } from './harness/opencode-driver.js'
 import { PiDriver } from './harness/pi-driver.js'
 import { QwenCodeDriver } from './harness/qwen-code-driver.js'
 import { CursorDriver } from './harness/cursor-driver.js'
-import { createInstalledProbe } from './harness/installed.js'
+import { createInstalledProbe, HARNESS_TO_ROSTER } from './harness/installed.js'
 import { createAllowedProbe, harnessNotAllowedMessage } from './harness/allowed.js'
 import { CodexDriver } from './harness/codex-driver.js'
 import { CodexProtocolDriver, codexThreadDefaults } from './harness/codex-protocol-driver.js'
@@ -421,6 +421,12 @@ export interface DenServerOptions {
    * via `createAllowedProbe` (`harness/allowed.ts`). Unset config = all allowed.
    */
   isHarnessAllowed?: (harnessId: HarnessId) => boolean
+  /**
+   * Test seam for control-plane session-create resume existence. Production
+   * uses `harnessSessionExists` via the roster command. When set, overrides
+   * that probe for `POST /api/harnesses/:id/sessions` allow-list exemption.
+   */
+  harnessSessionExistsForAllow?: (harnessId: HarnessId, nativeSessionId: string) => boolean
   /**
    * Preset-registry pool. Production builds one from `config.pgUrl`
    * ({@link createPresetPool}: error listeners, 5s connect, 10s query).
@@ -1039,6 +1045,12 @@ export function createDenServer(config: DenConfig, opts: DenServerOptions = {}):
         alwaysInstalled: (id) => id === 'codex' && !!config.codexAppServerUrl,
       }),
     isAllowed: isHarnessAllowed,
+    sessionExists:
+      opts.harnessSessionExistsForAllow ??
+      ((hid, native) => {
+        const cmd = HARNESS_TO_ROSTER.get(hid)
+        return !!cmd && harnessSessionExists(cmd, native)
+      }),
     filterSessions: async (req, sessions) => {
       const ctx = boundRequestUser(req)
       if (!ctx) return sessions
@@ -1856,14 +1868,16 @@ export function createDenServer(config: DenConfig, opts: DenServerOptions = {}):
             // or this preset was moved) unless the client passes force.
             const spawnCommand = command ?? rosterProvider.get().default
             // Allow-list gate for new term launches only. A resume of a real
-            // existing session keeps working after the harness leaves the
-            // list — but a never-seen resume key must NOT mint a fresh
-            // off-list spawn (bogus resume must not defeat the gate).
+            // existing session of THIS harness keeps working after it leaves
+            // the list — but a never-seen key, or a live pty/codex id from a
+            // different harness, must NOT mint a fresh off-list spawn.
             const spawnHarnessId = ROSTER_TO_HARNESS[spawnCommand]
+            const resumePtyId = resumeKey ? manager.ptyForSession(resumeKey) : undefined
+            const resumePty = resumePtyId ? manager.get(resumePtyId) : undefined
             const resumeExists =
               !!resumeKey &&
-              (!!manager.ptyForSession(resumeKey) ||
-                !!codexProtocol?.manages(resumeKey) ||
+              ((!!resumePty && resumePty.command === spawnCommand) ||
+                (spawnCommand === 'codex' && !!codexProtocol?.manages(resumeKey)) ||
                 harnessSessionExists(spawnCommand, resumeKey))
             if (
               isHarnessAllowed &&

@@ -75,6 +75,7 @@ import {
   HarnessError,
   SYSTEM_PROMPT_MAX_CHARS,
   decodeSessionIdSegment,
+  formatSessionId,
   parseSessionId,
   type ApprovalDecision,
   type HarnessEvent,
@@ -249,11 +250,18 @@ export function createHarnessRoutes(opts: {
    * `POST .../sessions` for ids outside the operator allow-list
    * (`den.allowed_harnesses`). Pass only when a list is configured — presence
    * alone stamps and gates. Absent = omit the field and allow every
-   * registered harness (opt-in off). Resumes (`sessionId` /
-   * `nativeSessionId` in the body) skip the gate so an existing session of a
-   * now-disallowed harness still reopens.
+   * registered harness (opt-in off). A resume body skips the gate only when
+   * `sessionExists` (or the live driver) confirms the named native id — a
+   * never-seen key must not mint an off-list spawn.
    */
   isAllowed?: (harnessId: HarnessId) => boolean
+  /**
+   * On-disk / store existence for a native session id of `harnessId`. Used
+   * with the allow-list gate so a fabricated `sessionId`/`nativeSessionId`
+   * cannot skip it. Production wires `harnessSessionExists` via the roster
+   * command; tests inject a stub.
+   */
+  sessionExists?: (harnessId: HarnessId, nativeSessionId: string) => boolean
 }): HarnessRoutes {
   const { registry } = opts
   const log = opts.log ?? ((): void => undefined)
@@ -430,13 +438,35 @@ export function createHarnessRoutes(opts: {
       ) {
         return json(res, 400, { error: 'metadata must be a string map' })
       }
-      // Fresh creates only. A body that names an existing session (resume /
+      // Fresh creates only. A body that names a real existing session (resume /
       // reattach) must keep working after the harness leaves the allow-list —
-      // same exemption /term uses for `resume`.
-      const isResume =
-        (typeof sessionId === 'string' && sessionId.length > 0) ||
-        (typeof nativeSessionId === 'string' && nativeSessionId.length > 0)
-      if (opts.isAllowed && !isResume && !opts.isAllowed(harnessId)) {
+      // same existence-checked exemption /term uses for `resume`. A
+      // never-seen key must NOT skip the gate and mint an off-list spawn.
+      let resumeNative: string | undefined
+      if (typeof sessionId === 'string' && sessionId.length > 0) {
+        try {
+          const parsed = parseSessionId(sessionId)
+          if (parsed.harnessId === harnessId) resumeNative = parsed.nativeSessionId
+        } catch {
+          // Malformed sessionId — not a resume; gate + later parse both apply.
+        }
+      } else if (typeof nativeSessionId === 'string' && nativeSessionId.length > 0) {
+        resumeNative = nativeSessionId
+      }
+      let resumeExists = false
+      if (resumeNative !== undefined) {
+        if (opts.sessionExists?.(harnessId, resumeNative)) {
+          resumeExists = true
+        } else {
+          try {
+            const pinned = formatSessionId(harnessId, resumeNative)
+            resumeExists = (await driver.getSession(pinned).catch(() => null)) !== null
+          } catch {
+            resumeExists = false
+          }
+        }
+      }
+      if (opts.isAllowed && !resumeExists && !opts.isAllowed(harnessId)) {
         return json(res, 403, {
           error: harnessNotAllowedMessage(harnessId),
           code: 'harness_not_allowed',

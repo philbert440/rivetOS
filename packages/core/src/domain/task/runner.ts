@@ -502,22 +502,22 @@ async function pinPresetDirectory(
 async function runClaimedTask(task: TaskRow, opts: TaskHandlerOptions): Promise<void> {
   // Gate on the RUNNING node: create-time checks on a peer (or rows that
   // predate the list / internal store.create) never consulted this node's
-  // allow-list. Resume/reattach of interactive sessions is a different path.
-  if (
-    task.executor === 'harness-session' &&
-    task.executorTarget &&
-    opts.isHarnessAllowed &&
-    !opts.isHarnessAllowed(task.executorTarget)
-  ) {
-    const msg = `harness "${task.executorTarget}" is not allowed on this node (den.allowed_harnesses)`
-    await finishTerminal(opts, task.id, 'failed', {
-      verdict: 'failed',
-      summary: msg,
-      artifacts: [],
-      usage: ZERO_USAGE,
-      error: `harness_not_allowed: ${msg}`,
-    })
-    return
+  // allow-list. Canonicalize retired targets (`claude-cli` → `claude-code`)
+  // before the probe so pre-list rows match the allow-list vocabulary.
+  // Resume/reattach of interactive sessions is a different path.
+  if (task.executor === 'harness-session' && task.executorTarget && opts.isHarnessAllowed) {
+    const { target: allowedTarget } = canonicalizeExecutorTarget(task.executorTarget)
+    if (allowedTarget && !opts.isHarnessAllowed(allowedTarget)) {
+      const msg = `harness "${allowedTarget}" is not allowed on this node (den.allowed_harnesses)`
+      await finishTerminal(opts, task.id, 'failed', {
+        verdict: 'failed',
+        summary: msg,
+        artifacts: [],
+        usage: ZERO_USAGE,
+        error: `harness_not_allowed: ${msg}`,
+      })
+      return
+    }
   }
 
   const executor = opts.executors.resolve(task.executor, task.executorTarget)

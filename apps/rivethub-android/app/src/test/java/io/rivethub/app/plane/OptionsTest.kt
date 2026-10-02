@@ -84,6 +84,17 @@ class OptionsTest {
         )
         // No sheet yet → keep every row (older dens / still loading).
         assertEquals(listOf("a", "b", "c"), launchableAgents(agents, emptyMap()).map { it.agentId })
+        // Key mismatch (trailing slash / host form) → fail-open, same as missing sheet.
+        val mismatched = mapOf(
+            "https://den.example:5174/" to listOf(
+                HarnessDescriptor("claude-code", HarnessCapabilities(), allowed = true),
+                HarnessDescriptor("hermes", HarnessCapabilities(), allowed = false),
+            ),
+        )
+        assertEquals(
+            listOf("a", "b", "c"),
+            launchableAgents(agents, mismatched).map { it.agentId },
+        )
     }
 
     @Test fun `pill prefers summary model`() {

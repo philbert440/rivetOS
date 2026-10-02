@@ -378,16 +378,17 @@ describe('more than one driver on a node', () => {
     expect(claude.calls.started).toHaveLength(1)
   })
 
-  it('allows resume of an existing off-list harness session (sessionId / nativeSessionId)', async () => {
-    // Mirrors /term's resume exemption: narrowing the list must not lock out
-    // clients that re-open a session they already have. The body keys alone
-    // skip the allow-list gate (same contract as /term's !resumeKey).
+  it('allows resume of an existing off-list harness session; bogus keys still 403', async () => {
+    // Mirrors /term: exemption only when the resume target exists. A fabricated
+    // sessionId/nativeSessionId must not mint an off-list spawn.
     const { claude, grok, hermes } = trio()
+    const known = new Set([HERMES_NATIVE, '20260802_225647_reattach'])
     const { base } = await startWith(
       {
         skipBuiltinHarnessDrivers: true,
         harnessDrivers: [claude, grok, hermes],
         isHarnessInstalled: () => true,
+        harnessSessionExistsForAllow: (_hid, native) => known.has(native),
       },
       (c) => ({ ...c, allowedHarnesses: ['claude-code'] }),
     )
@@ -397,11 +398,27 @@ describe('more than one driver on a node', () => {
     expect(bySession.status).toBe(201)
     expect(((await bySession.json()) as { code?: string }).code).not.toBe('harness_not_allowed')
     expect(hermes.calls.started.length).toBeGreaterThanOrEqual(1)
+    hermes.calls.started.length = 0
     const byNative = await post(base, '/api/harnesses/hermes/sessions', {
       nativeSessionId: '20260802_225647_reattach',
     })
     expect(byNative.status).toBe(201)
     expect(((await byNative.json()) as { code?: string }).code).not.toBe('harness_not_allowed')
+    expect(hermes.calls.started.length).toBeGreaterThanOrEqual(1)
+    hermes.calls.started.length = 0
+    // Never-seen keys — same shape as a real resume body — must still 403.
+    const bogusSession = await post(base, '/api/harnesses/hermes/sessions', {
+      sessionId: 'hermes:20260802_000000_bogus' as SessionId,
+    })
+    expect(bogusSession.status).toBe(403)
+    expect(((await bogusSession.json()) as { code?: string }).code).toBe('harness_not_allowed')
+    expect(hermes.calls.started).toEqual([])
+    const bogusNative = await post(base, '/api/harnesses/hermes/sessions', {
+      nativeSessionId: 'never-seen',
+    })
+    expect(bogusNative.status).toBe(403)
+    expect(((await bogusNative.json()) as { code?: string }).code).toBe('harness_not_allowed')
+    expect(hermes.calls.started).toEqual([])
     // Fresh create (no resume key) still refused.
     const fresh = await post(base, '/api/harnesses/hermes/sessions', {})
     expect(fresh.status).toBe(403)
