@@ -54,6 +54,7 @@ import {
   TASK_RESULT_JSON_SCHEMA,
 } from '@rivetos/types'
 import { embedMcpServerForTurn, type EmbeddedMcpHandle } from './mcp-bridge.js'
+import { isolationFlags, parseTaskIsolation, type TaskIsolation } from './isolation.js'
 import {
   createPermissionPromptTool,
   type PermissionPrompter,
@@ -119,6 +120,14 @@ export interface ClaudeCliExecutorConfig {
   /** Extra `apiKeySource` values to accept besides missing and `"none"`.
    *  Unset rejects every other source. Does not disable the env scrub. */
   allowedApiKeySources?: readonly string[]
+  /**
+   * Whether a task spawn inherits the operator's personal Claude Code setup
+   * (see `isolation.ts`). Default `inherit` — no change. This is a floor: a
+   * task's `spec.isolation` can tighten it to `isolated`, never loosen it.
+   */
+  isolation?: TaskIsolation
+  /** Tools a headless run may call without a prompt (`--allowedTools`). */
+  allowedTools?: readonly string[]
 }
 
 /** Caps for the rendered resume transcript — keep the system append sane. */
@@ -511,7 +520,21 @@ export class ClaudeCliExecutor implements HarnessExecutor {
     // `ui` adds the permission tool and, if the bridge cannot come up, falls
     // back to `--permission-prompts none` so the spawn denies instead of
     // sitting on the CLI's permission-decision timeout.
-    let permissionPrompts = this.cfg.permissionPrompts
+    // Isolation. The node setting is a floor: a task spec may tighten
+    // (`inherit` → `isolated`) but never loosen. The spec is caller-controlled
+    // (POST /api/tasks copies it onto the row, and a task can post a child
+    // task over loopback), so letting it win in both directions would let the
+    // constrained party switch the constraint off.
+    const requestedIsolation = parseTaskIsolation((spec as { isolation?: unknown }).isolation)
+    const nodeIsolation: TaskIsolation = this.cfg.isolation ?? 'inherit'
+    const isolation: TaskIsolation =
+      nodeIsolation === 'isolated' ? 'isolated' : (requestedIsolation ?? nodeIsolation)
+    if (requestedIsolation === 'inherit' && nodeIsolation === 'isolated') {
+      this.log.warn('task.isolation.loosen.ignored', { taskId: spec.taskId })
+    }
+    const isolationArgs = isolationFlags(isolation)
+    let permissionPrompts =
+      this.cfg.permissionPrompts ?? (isolation === 'isolated' ? 'none' : undefined)
     const bridgeTools = [...tools]
     const bridgeDisabled = process.env.RIVETOS_DISABLE_MCP_BRIDGE === '1'
     if (permissionPrompts === 'ui') {
@@ -562,6 +585,10 @@ export class ClaudeCliExecutor implements HarnessExecutor {
           mcpConfigPath: bridge?.configPath,
           jsonSchema: (this.cfg.structuredResult ?? true) ? TASK_RESULT_JSON_SCHEMA : undefined,
           cwd: spec.workingDir ?? this.cfg.cwd,
+          ...isolationArgs,
+          ...(this.cfg.allowedTools && this.cfg.allowedTools.length > 0
+            ? { allowedTools: [...this.cfg.allowedTools] }
+            : {}),
         },
         message,
         {
@@ -591,7 +618,13 @@ export class ClaudeCliExecutor implements HarnessExecutor {
     }
 
     run.setActiveSpawn(spawned)
-    this.log.info('task.spawn', { taskId: spec.taskId, pid: spawned.proc.pid, hasMcp: !!bridge })
+    this.log.info('task.spawn', {
+      taskId: spec.taskId,
+      pid: spawned.proc.pid,
+      hasMcp: !!bridge,
+      isolation,
+      permissionPrompts: permissionPrompts ?? 'unset',
+    })
 
     let sessionId: string | undefined
     let notedSpawn = false

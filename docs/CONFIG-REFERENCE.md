@@ -743,6 +743,28 @@ Env knobs: `RIVETOS_TASKS_CONCURRENCY` (default 4), `RIVETOS_TASKS_POLL_MS` (def
 
 Headless harness executors can also be keyed under `tasks.harnesses` (`pi`, `qwen-code`, …) with `binary` / `model` / `cwd` / `home` — see the site architecture sample. For qwen-code, `providers.qwen-code.home` is accepted for parity with the other CLI providers and currently unused; `tasks.harnesses.qwen-code.home` is where the task executor looks for qwen's `projects/` sessions (default `~/.qwen`). Neither key relocates qwen's own writes.
 
+#### Task isolation (claude-code): `isolation` / `allowed_tools`
+
+A delegated `claude-code` task runs as the service user, so by default it loads that user's personal Claude Code setup: `~/.claude/settings.json` (permission rules and default mode, hooks, enabled plugins), the plugins' MCP servers, and the user-level `CLAUDE.md`. `tasks.harnesses.claude-code.isolation` chooses whether a task inherits that:
+
+```yaml
+tasks:
+  harnesses:
+    claude-code:
+      isolation: isolated # inherit (default) | isolated
+      allowed_tools:
+        - mcp__rivetos # the embedded RivetOS bridge's tools
+        - 'Bash(git status:*)'
+```
+
+- `inherit` (default) passes no extra flags; nothing changes for a node that does not set the key.
+- `isolated` spawns with `--setting-sources project` and `--strict-mcp-config`: no personal settings, permission rules, hooks, plugins or user `CLAUDE.md`, and the embedded RivetOS bridge is the only MCP server. The per-checkout `.claude/settings.local.json` is personal too and is not loaded either. The RivetOS capture hooks are supplied by the runtime through an inline `--settings` object, so task transcripts keep working. With `providers.claude-cli.permission_prompts` unset it also passes `--permission-prompts none`, so every prompt — built-in or MCP — is denied rather than left to the CLI's default.
+- Project settings (`.claude/settings.json` in the task's working directory) load at both levels: they belong to the repository, not the operator.
+- `allowed_tools` is passed as `--allowedTools` at both levels. Under `isolated` the operator's own allow rules are gone, so list what a headless run may call without a prompt (or set `providers.claude-cli.permission_mode`).
+- The node setting is a floor. A task can tighten it with `spec.isolation: isolated` on `POST /api/tasks`; a spec cannot loosen an `isolated` node (the spec is caller-controlled, and a task can create child tasks), and an unknown value is ignored.
+- `isolated` removes the operator's personal setup. It does not sandbox the working tree: a repository's own `.claude/settings.json` hooks and allow rules still apply, so point isolated tasks at trees you trust.
+- Under `isolated`, unless `permission_mode` is `bypassPermissions` or `permission_prompts` is `ui` (the broker answers prompts), list `mcp__rivetos` in `allowed_tools` or the bridge's own tools are denied; boot warns when it is missing.
+
 #### Model lists: `tasks.harnesses.<id>.models` / `efforts` / `models_mode`
 
 The den discovers each harness's model list from the harness itself where it can (Claude's global config cache, Grok's and Codex's catalog caches, Codex's `codex debug models`, Kimi's and OpenCode's config, Hermes's configured endpoint) and falls back to a built-in static list. `GET /api/harnesses` reports where the list came from as `capabilities.modelsSource`: `discovered`, `config`, `merged`, or `static`.
