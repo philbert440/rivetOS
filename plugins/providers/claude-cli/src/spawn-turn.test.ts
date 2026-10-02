@@ -229,6 +229,43 @@ describe('spawnClaudeTurn timeout_ms', () => {
     ])
   })
 
+  it('sweeps the group on exit even when a descendant keeps the pipes open (no close)', () => {
+    const { child } = makeFakeChild()
+    const group: Array<[number, NodeJS.Signals]> = []
+    const turn = spawnClaudeTurn(FLAGS, 'hi', {
+      spawn: (() => child) as unknown as SpawnFn,
+      killGroup: (pid, signal) => {
+        group.push([pid, signal])
+      },
+    })
+    live.push(turn)
+    turn.kill()
+    // The CLI exits, but `close` never comes: something it spawned still holds stdout.
+    child.exitCode = null
+    child.signalCode = 'SIGTERM'
+    child.emit('exit', null, 'SIGTERM')
+    expect(group).toEqual([
+      [4242, 'SIGTERM'],
+      [4242, 'SIGKILL'],
+    ])
+    // let the suite's cleanup see a closed child
+    simulateExit(child, null, 'SIGTERM')
+  })
+
+  it('does not sweep a child that exits by itself', () => {
+    const { child } = makeFakeChild()
+    const group: Array<[number, NodeJS.Signals]> = []
+    const turn = spawnClaudeTurn(FLAGS, 'hi', {
+      spawn: (() => child) as unknown as SpawnFn,
+      killGroup: (pid, signal) => {
+        group.push([pid, signal])
+      },
+    })
+    live.push(turn)
+    simulateExit(child, 0, null)
+    expect(group).toEqual([])
+  })
+
   it('falls back to the pid when the group cannot be signalled', () => {
     const { child, sent } = makeFakeChild()
     const turn = spawnClaudeTurn(FLAGS, 'hi', {
@@ -313,7 +350,7 @@ describe('spawnClaudeTurn process group (real process)', () => {
       // Stands in for the CLI: starts a long-lived child (an MCP server, a
       // tool shell), then waits on it.
       const turn = spawnFake(
-        `#!/usr/bin/env bash\nsleep 300 &\necho $! > ${pidFile}\ncat > /dev/null\nwait\n`,
+        `#!/usr/bin/env bash\nsleep 60 &\necho $! > "${pidFile}"\ncat > /dev/null\nwait\n`,
       )
       const until = async (cond: () => boolean): Promise<void> => {
         const end = Date.now() + 5_000

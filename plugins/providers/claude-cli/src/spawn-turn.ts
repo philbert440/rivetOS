@@ -413,19 +413,24 @@ export function spawnClaudeTurn(
   // and the executor's `result` must resolve on every terminal path.
   let exitCode: number | null | undefined
   const exitWaiters: Array<(code: number | null) => void> = []
+  // The CLI honored our SIGTERM, but a child of its that ignored it would
+  // linger. Sweep the group when the CLI EXITS, not when its pipes close: a
+  // descendant that inherited stdout keeps `close` from ever firing, so a
+  // sweep there could not run in exactly the case it exists for, and the turn
+  // would hang with the pipe held open. Killing the group here releases the
+  // pipe, and `close` then follows.
+  proc.once('exit', () => {
+    if (!killRequested || !killGroup || !proc.pid) return
+    try {
+      killGroup(proc.pid, 'SIGKILL')
+    } catch {
+      /* nothing left in the group */
+    }
+  })
   proc.once('close', (code) => {
     exitCode = code
     if (killTimer) clearTimeout(killTimer)
     if (timeoutTimer) clearTimeout(timeoutTimer)
-    // The CLI honored our SIGTERM, but a child of its that ignored it would
-    // linger: sweep the group once, right now (no pid-reuse window).
-    if (killRequested && killGroup && proc.pid) {
-      try {
-        killGroup(proc.pid, 'SIGKILL')
-      } catch {
-        /* nothing left in the group */
-      }
-    }
     for (const waiter of exitWaiters.splice(0)) waiter(code)
     wakeIterator()
   })

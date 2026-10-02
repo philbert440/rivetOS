@@ -265,26 +265,131 @@ describe('createTaskHandler', () => {
     expect(row?.usage?.turns).toBeLessThan(5)
   })
 
-  it('a kill during the turn aborts the executor instead of letting it finish (#1053)', async () => {
+  it('a kill during the turn aborts the executor mid-turn (#1053)', async () => {
+    // The executor blocks INSIDE a turn until its signal aborts (as a real
+    // `claude -p` spawn does: one turn.end, after the process returns). Only
+    // the kill subscription can stop it; the turn-boundary re-read cannot.
+    const store = new InMemoryTaskStore()
+    let abortedMidTurn = false
+    let taskId = ''
+    const blocking: HarnessExecutor = {
+      name: 'blocking',
+      capabilities: () => caps,
+      start(_spec, { signal }) {
+        let finish!: (r: TaskResult) => void
+        const result = new Promise<TaskResult>((res) => (finish = res))
+        const done = new Promise<void>((res) => {
+          const giveUp = setTimeout(res, 4_000)
+          signal.addEventListener('abort', () => {
+            abortedMidTurn = true
+            clearTimeout(giveUp)
+            res()
+          })
+        })
+        setTimeout(() => void store.requestKill(taskId), 20)
+        void done.then(() =>
+          finish({
+            verdict: signal.aborted ? 'killed' : 'completed',
+            summary: signal.aborted ? 'aborted' : 'ran to completion',
+            artifacts: [],
+            usage: usageFor(1),
+          }),
+        )
+        return {
+          events: (async function* () {
+            yield { ts: Date.now(), type: 'turn.start', turn: 1 } as TaskEvent
+            await done
+          })(),
+          result,
+          steer: async () => undefined,
+          kill: async () => undefined,
+        } as unknown as ReturnType<HarnessExecutor['start']>
+      },
+    }
+    const { handler } = wire(blocking as unknown as ReturnType<typeof makeFakeExecutor>, store)
+    const task = await store.create(taskInput())
+    taskId = task.id
+    const started = Date.now()
+
+    await handler(task.id)
+
+    expect(abortedMidTurn).toBe(true)
+    expect(Date.now() - started).toBeLessThan(2_000)
+    const row = await store.get(task.id)
+    expect(row?.status).toBe('killed')
+    expect(row?.result?.verdict).toBe('killed')
+  })
+
+  it('a kill that lands before the turn subscribes does not start the executor', async () => {
     const store = new InMemoryTaskStore()
     let taskId = ''
-    const fake = makeFakeExecutor({
-      turns: 50,
-      onStart: async () => {
-        setTimeout(() => void store.requestKill(taskId), 20)
+    let killedOnce = false
+    // The kill is written just before the runner's subscription is registered:
+    // its onTerminal notification fires with nobody listening.
+    const early = new Proxy(store, {
+      get(target, prop) {
+        if (prop === 'onTerminal') {
+          return (listener: Parameters<InMemoryTaskStore['onTerminal']>[0]) => {
+            if (!killedOnce) {
+              killedOnce = true
+              void target.requestKill(taskId)
+            }
+            return target.onTerminal(listener)
+          }
+        }
+        const value = Reflect.get(target, prop) as unknown
+        return typeof value === 'function'
+          ? (value as (...a: unknown[]) => unknown).bind(target)
+          : value
       },
     })
-    const { handler } = wire(fake, store)
+    const fake = makeFakeExecutor({ turns: 3 })
+    const { handler } = wire(fake, early)
     const task = await store.create(taskInput())
     taskId = task.id
 
     await handler(task.id)
 
+    expect(fake.specs).toHaveLength(0)
     const row = await store.get(task.id)
     expect(row?.status).toBe('killed')
     expect(row?.result?.verdict).toBe('killed')
-    // Under the old "let it finish, drop the result" behaviour all 50 turns ran.
-    expect(row?.usage?.turns ?? 0).toBeLessThan(50)
+  })
+
+  it('drops the kill subscription even when the executor throws', async () => {
+    const store = new InMemoryTaskStore()
+    let subscribed = 0
+    let unsubscribed = 0
+    const counting = new Proxy(store, {
+      get(target, prop) {
+        if (prop === 'onTerminal') {
+          return (listener: Parameters<InMemoryTaskStore['onTerminal']>[0]) => {
+            subscribed += 1
+            const off = target.onTerminal(listener)
+            return () => {
+              unsubscribed += 1
+              off()
+            }
+          }
+        }
+        const value = Reflect.get(target, prop) as unknown
+        return typeof value === 'function'
+          ? (value as (...a: unknown[]) => unknown).bind(target)
+          : value
+      },
+    })
+    const throwing = {
+      name: 'throwing',
+      capabilities: () => caps,
+      start() {
+        throw new Error('spawn exploded')
+      },
+    } as unknown as ReturnType<typeof makeFakeExecutor>
+    const { handler } = wire(throwing, counting)
+    const task = await store.create(taskInput())
+    await handler(task.id).catch(() => undefined)
+    expect(subscribed).toBe(1)
+    expect(unsubscribed).toBeGreaterThanOrEqual(1)
   })
 
   it('a kill this instance never hears about is caught at the next turn boundary', async () => {

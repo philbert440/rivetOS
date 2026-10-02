@@ -527,6 +527,9 @@ async function runClaimedTask(task: TaskRow, opts: TaskHandlerOptions): Promise<
     })
   }, opts.heartbeatIntervalMs ?? HEARTBEAT_INTERVAL_MS_DEFAULT)
   heartbeatTimer.unref()
+  // The per-turn kill subscription (see the turn loop). Declared here so the
+  // `finally` below drops it on every exit path, exceptions included.
+  let stopOnKill: (() => void) | undefined
 
   try {
     // Preset rows pin a directory, but the spec is not the source of truth:
@@ -558,11 +561,27 @@ async function runClaimedTask(task: TaskRow, opts: TaskHandlerOptions): Promise<
       // turn so the executor stops its process: letting a killed task run to
       // completion kept spending tokens and running tools after the row said
       // `killed` (#1053). The result is still recorded as killed below.
-      const stopOnKill = opts.store.onTerminal?.((taskId, status) => {
+      stopOnKill?.()
+      stopOnKill = opts.store.onTerminal?.((taskId, status) => {
         if (taskId !== task.id || status !== 'killed' || abort.signal.aborted) return
         log.info(`Task ${task.id} killed — aborting the in-flight turn`)
         abort.abort('killed')
       })
+      // A kill that landed before the subscription (during context resolution
+      // or the preset lookup above) already fired `onTerminal` with nobody
+      // listening. Read the row once now: starting the executor for a task
+      // that is already killed would run a whole spawn for nothing.
+      if ((await opts.store.get(task.id))?.status === 'killed') {
+        log.info(`Task ${task.id} was killed before its turn started — not starting it`)
+        await finishTerminal(opts, task.id, 'killed', {
+          verdict: 'killed',
+          summary: 'killed before the turn started',
+          artifacts: [],
+          usage: totalUsage,
+          error: 'killed',
+        })
+        return
+      }
       const handle = executor.start(
         {
           taskId: task.id,
@@ -632,6 +651,7 @@ async function runClaimedTask(task: TaskRow, opts: TaskHandlerOptions): Promise<
 
       const result = await handle.result
       stopOnKill?.()
+      stopOnKill = undefined
       totalUsage = addUsage(totalUsage, result.usage)
       const totalResult: TaskResult = { ...result, usage: totalUsage }
 
@@ -721,6 +741,7 @@ async function runClaimedTask(task: TaskRow, opts: TaskHandlerOptions): Promise<
     }
   } finally {
     clearInterval(heartbeatTimer)
+    stopOnKill?.()
   }
 }
 
