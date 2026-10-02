@@ -202,6 +202,7 @@ async function startWith(
     | 'ptySpawn'
     | 'aliasBreadcrumbs'
     | 'isHarnessInstalled'
+    | 'isHarnessAllowed'
   >,
   tweak: (config: DenConfig) => DenConfig = (c) => c,
 ): Promise<{ base: string; den: DenServer }> {
@@ -338,6 +339,105 @@ describe('more than one driver on a node', () => {
       expect((await fetch(`${base}/api/harnesses/${id}`)).status).toBe(200)
     }
     expect((await fetch(`${base}/api/harnesses/kimi-code`)).status).toBe(404)
+  })
+
+  it('omits allowed when the allow-list is unset (opt-in)', async () => {
+    const { base } = await start(new FakeDriver())
+    const body = (await (await fetch(`${base}/api/harnesses`)).json()) as {
+      harnesses: { harnessId: string; allowed?: boolean }[]
+    }
+    expect(body.harnesses[0].allowed).toBeUndefined()
+  })
+
+  it('stamps allowed and refuses session create for an off-list harness', async () => {
+    const { claude, grok, hermes } = trio()
+    const { base } = await startWith(
+      {
+        skipBuiltinHarnessDrivers: true,
+        harnessDrivers: [claude, grok, hermes],
+        isHarnessInstalled: () => true,
+      },
+      (c) => ({ ...c, allowedHarnesses: ['claude-code', 'grok-build'] }),
+    )
+    const body = (await (await fetch(`${base}/api/harnesses`)).json()) as {
+      harnesses: { harnessId: string; allowed?: boolean }[]
+    }
+    expect(body.harnesses).toEqual([
+      expect.objectContaining({ harnessId: 'claude-code', allowed: true }),
+      expect.objectContaining({ harnessId: 'grok-build', allowed: true }),
+      expect.objectContaining({ harnessId: 'hermes', allowed: false }),
+    ])
+    const refused = await post(base, '/api/harnesses/hermes/sessions', {})
+    expect(refused.status).toBe(403)
+    const err = (await refused.json()) as { code?: string; harnessId?: string }
+    expect(err.code).toBe('harness_not_allowed')
+    expect(err.harnessId).toBe('hermes')
+    expect(hermes.calls.started).toHaveLength(0)
+    const ok = await post(base, '/api/harnesses/claude-code/sessions', {})
+    expect(ok.status).toBe(201)
+    expect(claude.calls.started).toHaveLength(1)
+  })
+
+  it('allows resume of an existing off-list harness session; bogus keys still 403', async () => {
+    // Mirrors /term: exemption only when the resume target exists. A fabricated
+    // sessionId/nativeSessionId must not mint an off-list spawn.
+    const { claude, grok, hermes } = trio()
+    const known = new Set([HERMES_NATIVE, '20260802_225647_reattach'])
+    const { base } = await startWith(
+      {
+        skipBuiltinHarnessDrivers: true,
+        harnessDrivers: [claude, grok, hermes],
+        isHarnessInstalled: () => true,
+        harnessSessionExistsForAllow: (_hid, native) => known.has(native),
+      },
+      (c) => ({ ...c, allowedHarnesses: ['claude-code'] }),
+    )
+    const bySession = await post(base, '/api/harnesses/hermes/sessions', {
+      sessionId: HERMES_SID,
+    })
+    expect(bySession.status).toBe(201)
+    expect(((await bySession.json()) as { code?: string }).code).not.toBe('harness_not_allowed')
+    expect(hermes.calls.started.length).toBeGreaterThanOrEqual(1)
+    hermes.calls.started.length = 0
+    const byNative = await post(base, '/api/harnesses/hermes/sessions', {
+      nativeSessionId: '20260802_225647_reattach',
+    })
+    expect(byNative.status).toBe(201)
+    expect(((await byNative.json()) as { code?: string }).code).not.toBe('harness_not_allowed')
+    expect(hermes.calls.started.length).toBeGreaterThanOrEqual(1)
+    hermes.calls.started.length = 0
+    // Never-seen keys — same shape as a real resume body — must still 403.
+    const bogusSession = await post(base, '/api/harnesses/hermes/sessions', {
+      sessionId: 'hermes:20260802_000000_bogus' as SessionId,
+    })
+    expect(bogusSession.status).toBe(403)
+    expect(((await bogusSession.json()) as { code?: string }).code).toBe('harness_not_allowed')
+    expect(hermes.calls.started).toEqual([])
+    const bogusNative = await post(base, '/api/harnesses/hermes/sessions', {
+      nativeSessionId: 'never-seen',
+    })
+    expect(bogusNative.status).toBe(403)
+    expect(((await bogusNative.json()) as { code?: string }).code).toBe('harness_not_allowed')
+    expect(hermes.calls.started).toEqual([])
+    // Fresh create (no resume key) still refused.
+    const fresh = await post(base, '/api/harnesses/hermes/sessions', {})
+    expect(fresh.status).toBe(403)
+    expect(((await fresh.json()) as { code?: string }).code).toBe('harness_not_allowed')
+  })
+
+  it('session create succeeds when the allow-list is unset', async () => {
+    const { claude, hermes } = trio()
+    const { base } = await startWith({
+      skipBuiltinHarnessDrivers: true,
+      harnessDrivers: [claude, hermes],
+      isHarnessInstalled: () => true,
+    })
+    const body = (await (await fetch(`${base}/api/harnesses`)).json()) as {
+      harnesses: { allowed?: boolean }[]
+    }
+    expect(body.harnesses.every((h) => h.allowed === undefined)).toBe(true)
+    expect((await post(base, '/api/harnesses/hermes/sessions', {})).status).toBe(201)
+    expect(hermes.calls.started).toHaveLength(1)
   })
 
   it('routes a non-uuid hermes id to the hermes driver alone', async () => {

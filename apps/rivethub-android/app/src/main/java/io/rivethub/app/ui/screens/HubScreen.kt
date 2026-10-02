@@ -77,6 +77,7 @@ import io.rivethub.app.plane.drawerTabRoute
 import io.rivethub.app.plane.drawerWidthDp
 import io.rivethub.app.plane.hubTabOnBack
 import io.rivethub.app.plane.entryAnsweredFor
+import io.rivethub.app.plane.launchableAgents
 import io.rivethub.app.plane.nodeDots
 import io.rivethub.app.plane.statusActiveNodeId
 import io.rivethub.app.plane.statusEntryNodeId
@@ -276,7 +277,9 @@ fun HubDrawer(
 
     if (agentsPickerOpen) {
         AgentsPickerSheet(
-            agents = st.agents,
+            // NEW conversations only — drop agents whose harness is off this
+            // den's allow-list / not installed (existing sessions stay listed).
+            agents = launchableAgents(st.agents, vm.descriptorsByDenUrl()),
             onDismiss = { agentsPickerOpen = false },
             onPick = { row ->
                 agentsPickerOpen = false

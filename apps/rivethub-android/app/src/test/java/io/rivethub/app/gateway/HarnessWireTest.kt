@@ -16,8 +16,17 @@ class HarnessWireTest {
         assertTrue(d.capabilities.interrupt)
         assertEquals("fable", d.capabilities.models!!.single().id)
         assertEquals("--model", d.capabilities.modelFlag)
+        assertNull(d.installed)
+        assertNull(d.allowed)
         val back = wireJson.decodeFromString(HarnessDescriptor.serializer(), wireJson.encodeToString(HarnessDescriptor.serializer(), d))
         assertEquals(d, back)
+    }
+
+    @Test fun `descriptor reads installed and allowed flags`() {
+        val json = """{"harnessId":"hermes","capabilities":{},"installed":false,"allowed":true}"""
+        val d = wireJson.decodeFromString(HarnessDescriptor.serializer(), json)
+        assertEquals(false, d.installed)
+        assertEquals(true, d.allowed)
     }
 
     @Test fun `session summary round-trips ISO stamps and optional fields`() {
