@@ -1,10 +1,21 @@
 import { mkdtemp, readFile, readdir, rm, stat, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { afterEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { createCaptureWriter } from './writer.js'
 import { spoolBatch } from './spool.js'
 import type { CaptureBatch, CaptureMessage, CaptureWriterOptions } from './types.js'
+
+const REDACTION_ENV = 'RIVETOS_CAPTURE_REDACTION'
+let previousRedactionEnv: string | undefined
+beforeEach(() => {
+  previousRedactionEnv = process.env[REDACTION_ENV]
+  delete process.env[REDACTION_ENV]
+})
+afterEach(() => {
+  if (previousRedactionEnv === undefined) delete process.env[REDACTION_ENV]
+  else process.env[REDACTION_ENV] = previousRedactionEnv
+})
 
 const batch: CaptureBatch = {
   session_key: 'codex:s',
@@ -22,8 +33,7 @@ async function setup(fetch: typeof globalThis.fetch, extra?: Partial<CaptureWrit
   const spoolDir = await mkdtemp(join(tmpdir(), 'capture-'))
   dirs.push(spoolDir)
   const requested = extra?.maxChunkBytes ?? DEFAULT_LIMIT
-  const limit =
-    Number.isFinite(requested) && requested > 0 ? Math.floor(requested) : DEFAULT_LIMIT
+  const limit = Number.isFinite(requested) && requested > 0 ? Math.floor(requested) : DEFAULT_LIMIT
   spoolLimit.set(spoolDir, limit)
   return {
     spoolDir,
@@ -270,7 +280,9 @@ describe('capture writer', () => {
     const names = (await readdir(spoolDir)).filter((name) => name.endsWith('.json')).sort()
     expect(names).toHaveLength(2)
     const ordered = await Promise.all(
-      names.map(async (name) => JSON.parse(await readFile(join(spoolDir, name), 'utf8')) as CaptureBatch),
+      names.map(
+        async (name) => JSON.parse(await readFile(join(spoolDir, name), 'utf8')) as CaptureBatch,
+      ),
     )
     expect(ordered.map((chunk) => chunk.messages[0]?.event_id)).toEqual(['e1', 'e2'])
     expect(log).toHaveBeenCalledWith('Error: offline')
@@ -394,7 +406,9 @@ describe('capture writer', () => {
   })
 
   it('dead-letters a pre-existing oversized spool file once', async () => {
-    const fetch = vi.fn<typeof globalThis.fetch>().mockResolvedValue(new Response('', { status: 413 }))
+    const fetch = vi
+      .fn<typeof globalThis.fetch>()
+      .mockResolvedValue(new Response('', { status: 413 }))
     const log = vi.fn()
     const { writer, spoolDir } = await setup(fetch, { log })
     const name = '1-oversized.json'
@@ -508,5 +522,65 @@ describe('capture writer', () => {
     expect(fetch).not.toHaveBeenCalled()
     expect(log).toHaveBeenCalledWith('chunk exceeds maxChunkBytes after elision')
     expect(await readdir(spoolDir)).toEqual([])
+  })
+
+  it('leaves bytes unchanged when redaction is unset (opt-in pin)', async () => {
+    const secretBatch: CaptureBatch = {
+      session_key: 's',
+      agent: 'a',
+      messages: [
+        {
+          event_id: 'e',
+          role: 'user',
+          content: 'token sk-abcdefghijklmnopqrstuvwxyz stays',
+        },
+      ],
+    }
+    const fetch = vi.fn<typeof globalThis.fetch>().mockResolvedValue(Response.json(result))
+    const { writer } = await setup(fetch)
+    await writer.write(secretBatch)
+    expect(fetch.mock.calls[0]?.[1]?.body).toBe(JSON.stringify(secretBatch))
+  })
+
+  it('redacts before post when enabled and logs a count only', async () => {
+    const secretBatch: CaptureBatch = {
+      session_key: 's',
+      agent: 'a',
+      messages: [
+        {
+          event_id: 'e',
+          role: 'user',
+          content: 'token sk-abcdefghijklmnopqrstuvwxyz',
+        },
+      ],
+    }
+    const fetch = vi.fn<typeof globalThis.fetch>().mockResolvedValue(Response.json(result))
+    const log = vi.fn()
+    const { writer } = await setup(fetch, { log, redaction: { enabled: true } })
+    await writer.write(secretBatch)
+    const body = JSON.parse(String(fetch.mock.calls[0]?.[1]?.body)) as CaptureBatch
+    expect(body.messages[0]?.content).toContain('[REDACTED:sk_token]')
+    expect(body.messages[0]?.content).not.toContain('sk-abcdefghijklmnopqrstuvwxyz')
+    expect(log).toHaveBeenCalledWith(expect.stringMatching(/^redacted \d+ spans$/))
+    expect(log.mock.calls.flat().join('\n')).not.toContain('sk-abcdefghijklmnopqrstuvwxyz')
+  })
+
+  it('explicit enabled:false wins over the env enable', async () => {
+    process.env[REDACTION_ENV] = '1'
+    const secretBatch: CaptureBatch = {
+      session_key: 's',
+      agent: 'a',
+      messages: [
+        {
+          event_id: 'e',
+          role: 'user',
+          content: 'token sk-abcdefghijklmnopqrstuvwxyz stays',
+        },
+      ],
+    }
+    const fetch = vi.fn<typeof globalThis.fetch>().mockResolvedValue(Response.json(result))
+    const { writer } = await setup(fetch, { redaction: { enabled: false } })
+    await writer.write(secretBatch)
+    expect(fetch.mock.calls[0]?.[1]?.body).toBe(JSON.stringify(secretBatch))
   })
 })

@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Capture redaction
+
+- Optional write-path redaction in `@rivetos/capture-core` (`createCaptureWriter`).
+  Off by default: with `redaction` unset and `RIVETOS_CAPTURE_REDACTION` unset,
+  posted/spooled bytes are unchanged. When enabled (options or
+  `RIVETOS_CAPTURE_REDACTION=1`), built-in detectors plus optional operator
+  regexes run on message `content`, `tool_result`, and `tool_args` before the
+  16k cap; logs report a span count only. Config surface:
+  `memory.capture.redaction` (`enabled`, `builtins`, `patterns`) — validated in
+  boot and documented in CONFIG-REFERENCE. YAML→hook injection is not wired yet;
+  use the env flag or pass `redaction` explicitly.
+
 ### Den URL guards
 
 - A pre-set `RIVET_DEN_URL` is checked before the memory sidecar and the capture hooks dial it. A comma list (the old den-hook fallback form) is not one origin: the first entry is used. A plain-http loopback URL against a den that serves https is rewritten to https. Each guard prints one line to stderr naming the value to put in `~/.rivetos/.env`, or says to remove the line. Shared between the shell launcher (`rivetos_guard_den_url` in `integrations/shared/rivet-paths.sh`) and `@rivetos/capture-core` (`guardDenUrl`; `resolveCaptureTransport` returns the warnings and the claude-cli hook logs them). "Serves https" mirrors boot's `resolveDenTls`: `den.tls_cert`/`tls_key`, then `RIVETOS_DEN_TLS_CERT`/`KEY`, then the mesh issue-node files for `mesh.node_name`. A non-loopback http URL is left alone. Background: `~/.rivetos/.env` on three nodes kept `RIVET_DEN_URL=http://127.0.0.1:5174` from before gateway TLS; nothing dialed it until #1012 and #1013/#1014 moved the sidecar and every hook onto den transport, and the launcher loads that file after the den-injected env, so the stale line overrode the correct https the den hands its own sessions. Reads failed on every call and captures spooled for four hours with nothing else showing red.

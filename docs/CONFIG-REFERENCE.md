@@ -615,7 +615,40 @@ Requests without an `Origin` (the Android app, hooks, CLI tools, mesh peers) are
 
 ## `memory`
 
-Memory backend configuration. Currently supports PostgreSQL.
+Memory backend configuration. Currently supports PostgreSQL. Optional
+`memory.capture` controls write-path behaviour for harness capture hooks that
+post through `@rivetos/capture-core`.
+
+### Capture redaction
+
+Off by default. When enabled, `@rivetos/capture-core` redacts common secret
+shapes (and optional operator regexes) in message `content`, `tool_result`, and
+`tool_args` **before** the batch is posted or spooled. Logs report a span count
+only — never the matched text. Placeholders are deterministic
+(`[REDACTED:bearer]`, `[REDACTED:pattern:0]`, …).
+
+```yaml
+memory:
+  capture:
+    redaction:
+      enabled: false
+      builtins: true
+      # patterns:
+      #   - '(?i)\\bmyprefix-[a-z0-9]{20,}\\b'
+```
+
+| Key        | Type     | Default | Description                                                                                                            |
+| ---------- | -------- | ------- | ---------------------------------------------------------------------------------------------------------------------- |
+| `enabled`  | boolean  | `false` | Run the write-path redactor.                                                                                           |
+| `builtins` | boolean  | `true`  | Built-in detectors (bearer/basic, credential assignments, common token shapes, JWTs). Ignored when `enabled` is false. |
+| `patterns` | string[] | —       | Extra JS regex **source** strings (the `g` flag is applied). Invalid sources are a config error.                       |
+
+Hooks that do not load YAML yet can enable the same built-ins with
+`RIVETOS_CAPTURE_REDACTION=1` (or `true` / `yes` / `on`). An explicit
+`redaction: { enabled: false }` on `createCaptureWriter` wins over the env.
+Wiring YAML → every hook process is separate from validation; until boot
+injects this block, set the env (or pass `CaptureWriterOptions.redaction`) to
+turn it on.
 
 ### PostgreSQL
 

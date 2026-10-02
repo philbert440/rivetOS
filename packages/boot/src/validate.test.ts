@@ -607,11 +607,42 @@ describe('Config Validation', () => {
       assertValid(result)
     })
 
-    it('warns on unknown memory backend', () => {
+    it('warns on unknown memory key', () => {
       const cfg = validConfig()
       cfg.memory = { redis: { url: 'redis://localhost' } }
       const result = validateConfig(cfg)
-      assertWarning(result, 'memory.redis', 'Unknown memory backend')
+      assertWarning(result, 'memory.redis', 'Unknown memory key')
+    })
+
+    it('accepts memory.capture.redaction when well-formed', () => {
+      const cfg = validConfig()
+      cfg.memory = {
+        postgres: { connection_string: '${RIVETOS_PG_URL}' },
+        capture: {
+          redaction: {
+            enabled: true,
+            builtins: true,
+            patterns: ['\\bCUSTOM-[A-Z0-9]{8}\\b'],
+          },
+        },
+      }
+      assertValid(validateConfig(cfg))
+    })
+
+    it('errors on invalid capture redaction shapes', () => {
+      const cfg = validConfig()
+      cfg.memory = {
+        capture: {
+          redaction: {
+            enabled: 'yes',
+            patterns: ['(unclosed', 12],
+          },
+        },
+      }
+      const result = validateConfig(cfg)
+      assertError(result, 'memory.capture.redaction.enabled', 'must be a boolean')
+      assertError(result, 'memory.capture.redaction.patterns[0]', 'Invalid regex')
+      assertError(result, 'memory.capture.redaction.patterns[1]', 'non-empty string')
     })
 
     it('warns on unknown postgres keys', () => {

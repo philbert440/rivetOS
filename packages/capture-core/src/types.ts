@@ -25,6 +25,15 @@ export interface CaptureResult {
   inserted: number
   skipped: number
 }
+/** Opt-in capture redaction. Absent or `enabled: false` leaves bytes unchanged. */
+export interface CaptureRedactionOptions {
+  enabled?: boolean
+  /** Built-in secret shapes. Default true when enabled. */
+  builtins?: boolean
+  /** Extra JS regex source strings (global flag applied). */
+  patterns?: string[]
+}
+
 export interface CaptureWriterOptions {
   denUrl: string
   fetch?: typeof globalThis.fetch
@@ -33,6 +42,12 @@ export interface CaptureWriterOptions {
   now?: () => Date
   /** UTF-8 byte budget of one posted JSON body. Default 768 KiB. */
   maxChunkBytes?: number
+  /**
+   * Optional redaction at the write point. When omitted, `RIVETOS_CAPTURE_REDACTION`
+   * may enable built-ins via `captureRedactionFromEnv`. Explicit `enabled: false`
+   * disables even if the env is set.
+   */
+  redaction?: CaptureRedactionOptions
 }
 export interface CaptureWriter {
   write(
