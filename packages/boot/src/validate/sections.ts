@@ -18,8 +18,11 @@ import {
   CLI_HARNESS_PROVIDERS,
   KNOWN_CHANNELS,
   KNOWN_HEARTBEAT_KEYS,
+  KNOWN_MEMORY_KEYS,
   KNOWN_MEMORY_POSTGRES_KEYS,
   KNOWN_MEMORY_EMBEDDED_KEYS,
+  KNOWN_MEMORY_CAPTURE_KEYS,
+  KNOWN_MEMORY_CAPTURE_REDACTION_KEYS,
   REMOVED_MEMORY_POSTGRES_KEYS,
   KNOWN_DEN_KEYS,
   KNOWN_DEN_TERMINAL_KEYS,
@@ -543,11 +546,11 @@ export function validateChannels(
 
 export function validateMemory(memory: Record<string, unknown>, issues: ValidationIssue[]): void {
   for (const key of Object.keys(memory)) {
-    if (key !== 'postgres') {
+    if (!KNOWN_MEMORY_KEYS.has(key)) {
       issues.push({
         severity: 'warning',
         path: `memory.${key}`,
-        message: `Unknown memory backend "${key}" — only "postgres" is currently supported`,
+        message: `Unknown memory key "${key}" — supported: "postgres" (backend), "capture" (write-path options)`,
       })
     }
   }
@@ -586,6 +589,121 @@ export function validateMemory(memory: Record<string, unknown>, issues: Validati
       }
       if (pg.embedded !== undefined) {
         validateMemoryEmbedded(pg, issues)
+      }
+    }
+  }
+
+  if (memory.capture !== undefined) {
+    validateMemoryCapture(memory.capture, issues)
+  }
+}
+
+function validateMemoryCapture(capture: unknown, issues: ValidationIssue[]): void {
+  if (typeof capture !== 'object' || capture === null || Array.isArray(capture)) {
+    issues.push({
+      severity: 'error',
+      path: 'memory.capture',
+      message: '"memory.capture" must be an object',
+    })
+    return
+  }
+  const cap = capture as Record<string, unknown>
+  for (const key of Object.keys(cap)) {
+    if (!KNOWN_MEMORY_CAPTURE_KEYS.has(key)) {
+      issues.push({
+        severity: 'warning',
+        path: `memory.capture.${key}`,
+        message: `Unknown memory.capture key "${key}"`,
+      })
+    }
+  }
+  if (cap.redaction !== undefined) {
+    validateMemoryCaptureRedaction(cap.redaction, issues)
+  }
+}
+
+function validateMemoryCaptureRedaction(redaction: unknown, issues: ValidationIssue[]): void {
+  if (typeof redaction !== 'object' || redaction === null || Array.isArray(redaction)) {
+    issues.push({
+      severity: 'error',
+      path: 'memory.capture.redaction',
+      message: '"memory.capture.redaction" must be an object',
+    })
+    return
+  }
+  const red = redaction as Record<string, unknown>
+  for (const key of Object.keys(red)) {
+    if (!KNOWN_MEMORY_CAPTURE_REDACTION_KEYS.has(key)) {
+      issues.push({
+        severity: 'warning',
+        path: `memory.capture.redaction.${key}`,
+        message: `Unknown memory.capture.redaction key "${key}"`,
+      })
+    }
+  }
+  if (red.enabled !== undefined && typeof red.enabled !== 'boolean') {
+    issues.push({
+      severity: 'error',
+      path: 'memory.capture.redaction.enabled',
+      message: '"enabled" must be a boolean',
+    })
+  }
+  // Boot validates this block but does not inject it into harness hook envs yet.
+  // Without this warning, enabled:true looks like a working security control.
+  if (red.enabled === true) {
+    issues.push({
+      severity: 'warning',
+      path: 'memory.capture.redaction.enabled',
+      message:
+        'memory.capture.redaction is validated but not yet injected into harness hook processes; set RIVETOS_CAPTURE_REDACTION or pass CaptureWriterOptions.redaction to enable at runtime',
+    })
+  }
+  if (red.builtins !== undefined && typeof red.builtins !== 'boolean') {
+    issues.push({
+      severity: 'error',
+      path: 'memory.capture.redaction.builtins',
+      message: '"builtins" must be a boolean',
+    })
+  }
+  if (red.patterns !== undefined) {
+    if (!Array.isArray(red.patterns)) {
+      issues.push({
+        severity: 'error',
+        path: 'memory.capture.redaction.patterns',
+        message: '"patterns" must be an array of regex source strings',
+      })
+    } else {
+      for (let i = 0; i < red.patterns.length; i++) {
+        const source: unknown = red.patterns[i]
+        if (typeof source !== 'string' || source.length === 0) {
+          issues.push({
+            severity: 'error',
+            path: `memory.capture.redaction.patterns[${i}]`,
+            message: 'Each pattern must be a non-empty string (JS regex source)',
+          })
+          continue
+        }
+        // Nested quantifiers (e.g. (a+)+) can hang String.replace on large
+        // capture payloads; JS has no regex timeout. Reject at validate.
+        if (/\((?:[^\\)]|\\.)*[+*](?:[^\\)]|\\.)*\)(?:[+*?]|\{\d+,?\d*\})/.test(source)) {
+          issues.push({
+            severity: 'error',
+            path: `memory.capture.redaction.patterns[${i}]`,
+            message:
+              'Pattern looks ReDoS-prone (nested quantifiers); rewrite without nested +/* groups',
+          })
+          continue
+        }
+        try {
+          const compiled = new RegExp(source, 'g')
+          void compiled
+        } catch (error) {
+          issues.push({
+            severity: 'error',
+            path: `memory.capture.redaction.patterns[${i}]`,
+            message: `Invalid regex: ${error instanceof Error ? error.message : String(error)}`,
+          })
+        }
       }
     }
   }

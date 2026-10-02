@@ -1,6 +1,12 @@
 import { readFile, unlink } from 'node:fs/promises'
 import { homedir } from 'node:os'
 import { join } from 'node:path'
+import {
+  captureRedactionFromEnv,
+  redactMessage,
+  resolveCaptureRedaction,
+  type ResolvedCaptureRedaction,
+} from './redaction.js'
 import { deadLetter, spoolBatch, spoolFiles } from './spool.js'
 import type {
   CaptureBatch,
@@ -72,12 +78,25 @@ function encodedBytes(batch: CaptureBatch): number {
   return Buffer.byteLength(JSON.stringify(batch), 'utf8')
 }
 
+/**
+ * Only an explicit `enabled` key on options overrides the env. `redaction: {}`
+ * or `{ builtins: false }` without `enabled` must not silently disable an
+ * env opt-in — docs say only `{ enabled: false }` wins over the env.
+ */
+function resolveWriterRedaction(opts: CaptureWriterOptions): ResolvedCaptureRedaction | null {
+  if (opts.redaction !== undefined && opts.redaction.enabled !== undefined) {
+    return resolveCaptureRedaction(opts.redaction)
+  }
+  return resolveCaptureRedaction(captureRedactionFromEnv())
+}
+
 export function createCaptureWriter(opts: CaptureWriterOptions): CaptureWriter {
   const dir = opts.spoolDir ?? join(homedir(), '.rivetos', 'capture-spool')
   const fetch = opts.fetch ?? globalThis.fetch
   const requested = opts.maxChunkBytes ?? DEFAULT_CHUNK_BYTES
   const maxChunkBytes =
     Number.isFinite(requested) && requested > 0 ? Math.floor(requested) : DEFAULT_CHUNK_BYTES
+  const redaction = resolveWriterRedaction(opts)
   const log = (error: unknown): void => {
     try {
       opts.log?.(String(error))
@@ -241,7 +260,19 @@ export function createCaptureWriter(opts: CaptureWriterOptions): CaptureWriter {
     replay,
     async write(batch) {
       await replay({ max: 50 })
-      const prepared: CaptureBatch = { ...batch, messages: batch.messages.map(capMessage) }
+      let messages = batch.messages
+      if (redaction) {
+        let redactedSpans = 0
+        messages = messages.map((message) => {
+          const result = redactMessage(message, redaction)
+          redactedSpans += result.count
+          return result.message
+        })
+        if (redactedSpans > 0) {
+          log(`redacted ${String(redactedSpans)} spans`)
+        }
+      }
+      const prepared: CaptureBatch = { ...batch, messages: messages.map(capMessage) }
       const chunks = splitChunks(prepared)
       const base = (opts.now ?? (() => new Date()))()
       let inserted = 0

@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Capture redaction
+
+- Optional write-path redaction in `@rivetos/capture-core` (`createCaptureWriter`).
+  Off by default: with `redaction` unset and `RIVETOS_CAPTURE_REDACTION` unset,
+  posted/spooled bytes are unchanged. When enabled (options or
+  `RIVETOS_CAPTURE_REDACTION=1`), built-in detectors plus optional operator
+  regexes run on message `content`, `tool_result`, and `tool_args` before the
+  16k cap; logs report a span count only. Config surface:
+  `memory.capture.redaction` (`enabled`, `builtins`, `patterns`) — validated in
+  boot and documented in CONFIG-REFERENCE. YAML→hook injection is not wired yet;
+  use the env flag or pass `redaction` explicitly.
+
 ### Den URL guards
 
 - A plain-http den URL is no longer dropped when the CA file is missing. `rivetos_resolve_den` unset `RIVET_DEN_URL` whenever the CA path did not exist, including for `http://` URLs that never use a CA, so on a den without TLS and a node with no shared CA the hooks and sidecars lost the den and fell back or spooled. The CA check (and the `NODE_EXTRA_CA_CERTS` export) now apply only to URLs that are not `http://`. One trade to know: a stale `http://` line left in `~/.rivetos/.env` on a node with no den at all used to be dropped by that same check and is now kept, so captures would target the dead port instead of falling back; `rivetos doctor` reports a preset `RIVET_DEN_URL`. An http loopback URL only reaches that point when the den really serves http: the https rewrite for a TLS den runs first (#1053).
