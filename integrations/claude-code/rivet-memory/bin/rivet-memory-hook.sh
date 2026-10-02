@@ -24,7 +24,8 @@ if [ -f "$RIVETOS_ENV" ]; then
 fi
 
 # Den URL + CA before node, same discovery as bin/rivet-memory-mcp.sh
-# (plugin lib/ first). A missing CA unsets RIVET_DEN_URL.
+# (plugin lib/ first). For an https den URL a missing CA unsets
+# RIVET_DEN_URL; a plain-http URL needs no CA and is kept.
 # Builtins only: the standalone test runs this hook with an empty PATH.
 _src="${BASH_SOURCE[0]}"; SCRIPT_DIR="$(cd "${_src%/*}" 2>/dev/null && pwd -P)"; unset _src
 _rivet_paths=""
