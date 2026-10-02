@@ -623,6 +623,7 @@ export class ClaudeCliExecutor implements HarnessExecutor {
       pid: spawned.proc.pid,
       hasMcp: !!bridge,
       isolation,
+      permissionPrompts: permissionPrompts ?? 'unset',
     })
 
     let sessionId: string | undefined

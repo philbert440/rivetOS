@@ -5,6 +5,7 @@ import {
   parseAllowedTools,
   parseTaskIsolation,
 } from './isolation.js'
+import { CAPTURE_EVENTS } from './hooks.js'
 
 describe('parseTaskIsolation / parseAllowedTools', () => {
   it('accepts the two levels and nothing else', () => {
@@ -30,6 +31,14 @@ describe('parseTaskIsolation / parseAllowedTools', () => {
     ).toEqual(['mcp__rivetos', 'Bash(git status:*)'])
     expect(parseAllowedTools([])).toBeUndefined()
     expect(parseAllowedTools('mcp__x')).toBeUndefined()
+  })
+})
+
+describe('capture hook events', () => {
+  it('isolated supplies exactly the events the installed capture hook handles', () => {
+    // hooks.ts is the source of truth; if it gains an event, `isolated` spawns
+    // must capture it too or coverage would differ by isolation level.
+    expect([...CAPTURE_HOOK_EVENTS].sort()).toEqual([...CAPTURE_EVENTS].sort())
   })
 })
 

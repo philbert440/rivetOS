@@ -161,7 +161,7 @@ export function writeSpoolPayload(payload: unknown, spoolDir: string): string {
  */
 const TRANSCRIPT_EVENTS = ['Stop', 'SubagentStop', 'SessionEnd'] as const
 const PAYLOAD_EVENTS = ['UserPromptSubmit', 'PostToolUse'] as const
-const CAPTURE_EVENTS = [...TRANSCRIPT_EVENTS, ...PAYLOAD_EVENTS] as const
+export const CAPTURE_EVENTS = [...TRANSCRIPT_EVENTS, ...PAYLOAD_EVENTS] as const
 
 // ---------------------------------------------------------------------------
 // Logging
