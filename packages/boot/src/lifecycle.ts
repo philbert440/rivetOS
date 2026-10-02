@@ -80,4 +80,13 @@ export function registerShutdownHandlers(
       /* noop */
     })
   })
+  // A closed terminal or tmux pane. Node's default handling of SIGHUP ends
+  // the process without emitting `exit`, so nothing registered there would
+  // run — including the hook that kills detached CLI spawns, which no longer
+  // share this process group and would otherwise outlive the runtime.
+  process.on('SIGHUP', () => {
+    shutdown().catch(() => {
+      /* noop */
+    })
+  })
 }

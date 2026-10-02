@@ -51,9 +51,11 @@ function trackLiveGroup(pid: number, kill: (pid: number, signal: NodeJS.Signals)
   liveGroups.set(pid, kill)
   if (exitHookInstalled) return
   exitHookInstalled = true
-  // `exit` runs for a normal exit and for the default handling of SIGINT /
-  // SIGTERM / SIGHUP once Node turns them into an exit; it cannot run for an
-  // uncatchable SIGKILL of this process (nothing in-process can).
+  // `exit` is emitted only for `process.exit()` or a drained event loop — NOT
+  // for Node's default handling of a signal. The runtime's lifecycle handles
+  // SIGINT, SIGTERM and SIGHUP and ends in `process.exit()`, which is what
+  // makes this hook run on a shutdown. An uncatchable SIGKILL of this process
+  // runs nothing in-process.
   process.once('exit', killLiveGroups)
 }
 

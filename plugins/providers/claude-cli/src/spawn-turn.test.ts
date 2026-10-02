@@ -381,12 +381,20 @@ describe('spawnClaudeTurn process group (real process)', () => {
       }
       await until(() => fs.existsSync(pidFile) && fs.readFileSync(pidFile, 'utf8').trim() !== '')
       const grandchild = Number(fs.readFileSync(pidFile, 'utf8').trim())
+      // A signalled process whose parent died stays a zombie until PID 1
+      // reaps it, and `kill(pid, 0)` still succeeds on a zombie. On a
+      // container whose init does not reap, that would read as "alive".
       const alive = (): boolean => {
         try {
           process.kill(grandchild, 0)
-          return true
         } catch {
           return false
+        }
+        try {
+          const stat = fs.readFileSync(`/proc/${String(grandchild)}/stat`, 'utf8')
+          return stat.slice(stat.lastIndexOf(')') + 2).charAt(0) !== 'Z'
+        } catch {
+          return true // no procfs (macOS): kill(0) is the only signal we have
         }
       }
       expect(alive()).toBe(true)
