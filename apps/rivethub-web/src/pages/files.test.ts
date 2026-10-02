@@ -1,27 +1,18 @@
-// The Files page editor must not silently discard unsaved edits (#964):
-// closing the preview pane, switching files, and closing the browser tab are
-// all guarded. The page mounts through routers/gateway hooks that pull in the
-// whole connection store, so — matching the repo's render-contract idiom
-// (chat.test.ts) — these scans pin the wiring in pages/files.tsx itself. Each
-// assertion fails if the dirty guard is unwired or removed.
-
 import { readFileSync } from 'node:fs'
 import { describe, expect, it } from 'vitest'
 
 const files = readFileSync(new URL('./files.tsx', import.meta.url), 'utf8')
 
-describe('files page unsaved-edit guard (#964)', () => {
+describe('files page unsaved-edit guard', () => {
   it('the preview editor reports dirty state upward', () => {
-    // PreviewPane declares the prop and forwards it into the CodeMirror host.
     expect(files).toContain('onDirtyChange: (dirty: boolean) => void')
     expect(files).toContain('onDirtyChange={props.onDirtyChange}')
-    // The page hands the editor a tracked setter, not a bare reset.
     expect(files).toContain('onDirtyChange={setEditorDirtyTracked}')
   })
 
   it('closing the pane confirms before discarding', () => {
     expect(files).toContain("discardConfirm('Discard unsaved changes?')")
-    // The guard reads the ref (live value), not render-lagged state.
+    // Guards read the ref: state settles after the click that checks it.
     expect(files).toContain('editorDirtyRef.current')
   })
 
@@ -35,6 +26,11 @@ describe('files page unsaved-edit guard (#964)', () => {
     const row = files.slice(files.indexOf('entries.map'), files.indexOf('</table>'))
     expect(row).toMatch(/<tr[\s\S]*?onClick=\{\(ev\) => \{/)
     expect(row).toContain("closest('input, label')")
+  })
+
+  it('clicking the already-open file is a no-op', () => {
+    // React bails on a same-value setState, so the buffer would not reload.
+    expect(files).toContain('if (!isDir && child === previewPath) return')
   })
 
   it('a dirty editor warns on tab close / reload', () => {

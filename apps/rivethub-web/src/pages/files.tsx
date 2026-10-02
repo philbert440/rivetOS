@@ -126,7 +126,6 @@ export function FilesPage(): JSX.Element {
     setEditorDirtyTracked(false)
   }, [previewPath, setEditorDirtyTracked])
 
-  // Warn before losing edits to a tab close / reload while dirty (#964).
   useEffect(() => {
     if (!editorDirty) return
     const onUnload = (e: BeforeUnloadEvent): void => {
@@ -136,9 +135,9 @@ export function FilesPage(): JSX.Element {
     return () => window.removeEventListener('beforeunload', onUnload)
   }, [editorDirty])
 
-  // Open a file (or a directory) from the list, guarding unsaved edits (#964).
   const openEntry = useCallback(
     async (child: string, isDir: boolean): Promise<void> => {
+      if (!isDir && child === previewPath) return
       if (editorDirtyRef.current) {
         const ok = await discardConfirm('Discard unsaved changes?')
         if (!ok) return
@@ -149,7 +148,7 @@ export function FilesPage(): JSX.Element {
         setPreviewPath(child)
       }
     },
-    [discardConfirm],
+    [discardConfirm, previewPath],
   )
 
   const openRaw = useCallback(
@@ -710,7 +709,7 @@ function PreviewPane(props: {
   onNotice: (n: Notice) => void
   /** Optional size from the listing — drives previewKind / edit eligibility. */
   size?: number
-  /** Dirty report from the embedded editor (#964). */
+  /** Dirty report from the embedded editor. */
   onDirtyChange: (dirty: boolean) => void
 }): JSX.Element {
   const name = baseName(props.path)
