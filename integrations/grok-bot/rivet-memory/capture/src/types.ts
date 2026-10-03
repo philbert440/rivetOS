@@ -36,13 +36,13 @@ export type TimeSource =
   'tag' | 'tool_epoch' | 'stored' | 'inherited' | 'interpolated' | 'lookahead' | 'mtime'
 
 /**
- * Strip `-vN-voice*`, `-vN-store`, `-vN-rows`, `-vN`, or `-v2` so identity
- * helpers share one rule across -v3 / -v4 / later suffixes.
+ * Strip `-vN-voice*`, `-vN-store`, `-vN-rows`, `-vN-backfill`, `-vN`, or `-v2`
+ * so identity helpers share one rule across -v3 / -v4 / later suffixes.
  */
 export function stripSessionSuffix(session: string): string {
   const voice = /-v\d+-voice(?:-|$)/.exec(session)
   if (voice) return session.slice(0, voice.index)
-  return session.replace(/-v\d+(?:-store|-rows)?$/, '')
+  return session.replace(/-v\d+(?:-store|-rows|-backfill)?$/, '')
 }
 
 export function sessionStoreSuffix(sessionSuffix = SESSION_SUFFIX_V3): string {
@@ -55,6 +55,15 @@ export function sessionVoiceSuffix(sessionSuffix = SESSION_SUFFIX_V3): string {
 
 export function sessionRowsSuffix(sessionSuffix = SESSION_SUFFIX_V3): string {
   return `${sessionSuffix}-rows`
+}
+
+/** ReadTranscript page backfill. Never folds into plain `-v4`. */
+export const SESSION_SUFFIX_V4_BACKFILL = '-v4-backfill'
+export const SESSION_SUFFIX_V4 = '-v4'
+export const DEFAULT_BACKFILL_OVERLAP_HOURS = 48
+
+export function sessionBackfillSuffix(liveSuffix = SESSION_SUFFIX_V4): string {
+  return `${liveSuffix}-backfill`
 }
 
 export function isRowShapedSession(session: string): boolean {
@@ -81,6 +90,8 @@ export interface PageHeader {
   b: number
   total: number
   thisConversation: boolean
+  /** Raw header target (`agent "Name" (id)`, `this conversation`, or a slug). */
+  target?: string
 }
 
 export interface ParsedInput {

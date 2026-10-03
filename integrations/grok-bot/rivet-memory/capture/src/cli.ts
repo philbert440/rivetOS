@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * Grok Bot capture CLI — convert, backfill, reclean, compare, discover.
+ * Grok Bot capture CLI — convert, backfill, ingest-pages, reclean, compare, discover.
  * Never prints secrets, hostnames, or connection strings.
  */
 import { mkdirSync, readFileSync, readdirSync, statSync, writeFileSync } from 'node:fs'
@@ -18,10 +18,17 @@ import {
   peekParentLastKnownTime,
   resolveSourceAgentId,
 } from './identity.js'
+import {
+  createPgOverlapStore,
+  formatIngestPagesCounts,
+  ingestPages,
+  type IngestPagesDeps,
+} from './ingest-pages.js'
+import { ingestGrokbotSession, type GrokbotIngestMemory } from './ingest-rows.js'
 import { normalizeRecords, toIngestRows } from './normalize.js'
 import { formatMergeConflicts, normalizePages } from './pages.js'
 import { parseInput } from './parse.js'
-import { connectAndFetchGrokbotRows } from './pg-readonly.js'
+import { connectAndFetchGrokbotRows, loadRivetosPgUrlFromEnv } from './pg-readonly.js'
 import {
   FROM_ROWS_LIMITS,
   LIST_CONVERSATIONS_SQL,
@@ -95,6 +102,13 @@ const HELP = `Usage: grokbot-rivet-memory-capture <command> [opts]
       Before (legacy convert-transcript + pull-bridge) vs after (normalizer).
 
   discover [--agents-dir DIR] [--json]
+
+  ingest-pages --input DIR [--commit] [--overlap-hours 48] [--agents-dir DIR]
+      ReadTranscript page backfill. Files are <bot-slug>-<before>.txt.
+      Dry-run (default) prints per-bot counts and writes nothing.
+      --commit INSERTs into grokbot-<slug>-v4-backfill only. Never UPDATE
+      or DELETE. Never folds into plain -v4. Timestamps are approximate
+      (ts_approx=true); rows before the first <timestamp> tag are skipped.
 `
 
 async function main(argv: string[]): Promise<number> {
@@ -111,6 +125,7 @@ async function main(argv: string[]): Promise<number> {
   if (cmd === 'reclean') return cmdReclean(argv.slice(1))
   if (cmd === 'compare') return cmdCompare(argv.slice(1))
   if (cmd === 'discover') return cmdDiscover(argv.slice(1))
+  if (cmd === 'ingest-pages') return cmdIngestPages(argv.slice(1))
   console.error(`unknown command: ${cmd}`)
   console.log(HELP)
   return 2
@@ -633,6 +648,99 @@ function cmdDiscover(argv: string[]): number {
     )
   }
   return 0
+}
+
+async function cmdIngestPages(argv: string[]): Promise<number> {
+  const { values, positionals } = parseArgs({
+    args: coalesceDashArgs(argv),
+    allowPositionals: true,
+    options: {
+      input: { type: 'string' },
+      commit: { type: 'boolean', default: false },
+      'dry-run': { type: 'boolean', default: false },
+      'overlap-hours': { type: 'string' },
+      'agents-dir': { type: 'string' },
+    },
+  })
+  const input = values.input || positionals[0] || process.env.GROKBOT_PAGES_DIR
+  if (!input) {
+    console.error('ingest-pages needs --input DIR (or GROKBOT_PAGES_DIR)')
+    return 2
+  }
+  const commit = Boolean(values.commit)
+  const overlapHours = Number(
+    values['overlap-hours'] ?? process.env.GROKBOT_BACKFILL_OVERLAP_HOURS ?? 48,
+  )
+  if (!Number.isFinite(overlapHours) || overlapHours < 0) {
+    console.error('ingest-pages: --overlap-hours must be a non-negative number')
+    return 2
+  }
+  const deps = await loadIngestPagesDeps(commit)
+  if (commit && !deps.commit) {
+    console.error(
+      'ingest-pages --commit needs RIVETOS_PG_URL (environment or ~/.rivetos/.env). Dry-run needs no write.',
+    )
+    return 2
+  }
+  try {
+    const result = await ingestPages(input, {
+      commit,
+      agentsDir: values['agents-dir'],
+      overlapHours,
+      deps,
+    })
+    console.log(formatIngestPagesCounts(result))
+    if (commit && result.bots.some((b) => b.conflicts.length > 0)) return 3
+    return 0
+  } catch (err) {
+    const message = err instanceof Error ? err.message : 'ingest-pages failed'
+    console.error(message)
+    return 2
+  }
+}
+
+async function loadIngestPagesDeps(commit: boolean): Promise<IngestPagesDeps> {
+  const deps: IngestPagesDeps = {}
+  const url = loadRivetosPgUrlFromEnv()
+  if (!url) return deps
+  deps.overlap = createPgOverlapStore(url)
+  if (!commit) return deps
+  try {
+    deps.commit = await createPgCommit(url)
+  } catch {
+    deps.commit = undefined
+  }
+  return deps
+}
+
+async function createPgCommit(url: string): Promise<IngestPagesDeps['commit']> {
+  const { existsSync } = await import('node:fs')
+  const { resolve } = await import('node:path')
+  const { pathToFileURL } = await import('node:url')
+  const root = process.env.RIVETOS_ROOT || '/opt/rivetos'
+  const memoryEntry = resolve(root, 'node_modules/@rivetos/memory-postgres/dist/index.js')
+  const localMemory = resolve(
+    fileDir(),
+    '../../../..',
+    'node_modules/@rivetos/memory-postgres/dist/index.js',
+  )
+  const entry = existsSync(memoryEntry) ? memoryEntry : localMemory
+  if (!existsSync(entry)) {
+    throw new Error('memory-postgres is not built')
+  }
+  const memoryMod = (await import(pathToFileURL(entry).href)) as {
+    PostgresMemory: new (opts: { connectionString: string }) => GrokbotIngestMemory & {
+      close?: () => Promise<void>
+    }
+  }
+  return async (input) => {
+    const memory = new memoryMod.PostgresMemory({ connectionString: url })
+    try {
+      return await ingestGrokbotSession(memory, input)
+    } finally {
+      await memory.close?.()
+    }
+  }
 }
 
 function resolveIdent(agentId?: string, session?: string, agent?: string) {

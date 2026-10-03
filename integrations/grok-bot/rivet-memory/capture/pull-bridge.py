@@ -9,6 +9,8 @@ Commands:
   add <agentId> FILE|-      store one page by position
   next <agentId>            LATEST or NEED_OLDER before=N
   ingest [agentId...] [--dry-run] [--suffix -v3]
+  ingest-pages --input DIR [--commit] [--overlap-hours 48]
+                            ReadTranscript dump backfill (dry-run default)
   status
 
 Ingest runs the capture-core normalizer (16_000 UTF-16 capForStorage, no 4 KB
@@ -270,6 +272,13 @@ def cmd_ingest(ids: list[str], dry: bool, suffix: str) -> int:
     return rc
 
 
+def cmd_ingest_pages(argv: list[str]) -> int:
+    """Delegate page-dump backfill to the TypeScript normalizer (dry-run default)."""
+    require_dist()
+    r = subprocess.run([NODE, str(CLI_JS), "ingest-pages", *argv])
+    return int(r.returncode or 0)
+
+
 def cmd_status() -> None:
     st = load_state()
     for aid, s in sorted(st.items(), key=lambda kv: kv[1].get("name", kv[0])):
@@ -301,6 +310,8 @@ if __name__ == "__main__":
                 rest.append(a[i])
             i += 1
         sys.exit(cmd_ingest(rest, "--dry-run" in a, suffix))
+    elif a[0] == "ingest-pages":
+        sys.exit(cmd_ingest_pages(a[1:]))
     elif a[0] == "status":
         cmd_status()
     else:

@@ -270,6 +270,28 @@ export function listInputFiles(path: string): string[] {
   return out
 }
 
+/** Slug used in `grokbot-<slug>` session / agent tags (collision suffix included). */
+export function personaSlugFromIdentity(ident: BotIdentity, cfg?: IdentityConfig): string {
+  const resolved = cfg ?? loadIdentityConfig()
+  if (ident.session.startsWith(`${resolved.nodeId}-`)) {
+    return ident.session.slice(resolved.nodeId.length + 1)
+  }
+  if (ident.agent.startsWith(`${resolved.agentPrefix}-`)) {
+    return ident.agent.slice(resolved.agentPrefix.length + 1)
+  }
+  return slug(ident.persona)
+}
+
+/** Roster lookup by the same slug discovery already derived from profile.json. */
+export function identityForSlug(
+  want: string,
+  opts?: { agentsDir?: string; config?: IdentityConfig },
+): BotIdentity | undefined {
+  const lookup = makeIdentityLookup({ agentsDir: opts?.agentsDir })
+  const cfg = opts?.config ?? loadIdentityConfig()
+  return lookup.catalog.models.find((m) => personaSlugFromIdentity(m, cfg) === want)
+}
+
 /** Look up a discovered identity from a session key (with or without -v2/-v3/-v3-rows). */
 export function identityForSession(
   session: string,

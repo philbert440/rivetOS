@@ -23,6 +23,7 @@ import {
   STORE_WATCH_RE,
   writeStoreCursor,
 } from './live-state.mjs'
+import { loadPublishLagConfig, runPublishLagPass } from './publish-lag.mjs'
 
 const HERE = dirname(fileURLToPath(import.meta.url))
 const HOME = process.env.HOME || homedir()
@@ -62,6 +63,12 @@ function resolveStateFile() {
   return NEW_STATE
 }
 const STATE_FILE = resolveStateFile()
+const AGENT_DATA = process.env.GROKBOT_AGENT_DATA || dirname(AGENTS)
+const PUBLISH_DIR = process.env.GROKBOT_PUBLISH_DIR || join(AGENT_DATA, 'transcript-publish')
+const PUBLISH_LAG_STATE =
+  process.env.GROKBOT_PUBLISH_LAG_STATE ||
+  join(dirname(STATE_FILE), `grokbot-publish-lag${SESSION_SUFFIX}.json`)
+const PUBLISH_LAG_INTERVAL_MS = Number(process.env.GROKBOT_PUBLISH_LAG_INTERVAL_MS ?? 60_000)
 const DEBOUNCE_MS = 20_000
 const PYTHON = process.env.PYTHON || 'python3'
 const log = (...a) => console.log(new Date().toISOString(), ...a)
@@ -263,10 +270,30 @@ async function process1(job) {
   }
   return processTranscript(job)
 }
+function checkPublishLag() {
+  try {
+    runPublishLagPass({
+      publishDir: PUBLISH_DIR,
+      statusPath: PUBLISH_LAG_STATE,
+      config: loadPublishLagConfig(process.env),
+      log,
+    })
+  } catch (e) {
+    log(`publish-lag: ${e instanceof Error ? e.message : e}`)
+  }
+}
+
+let publishLagTimer
+function enqueuePublishLag() {
+  clearTimeout(publishLagTimer)
+  publishLagTimer = setTimeout(checkPublishLag, 1_000)
+}
+
 async function drain() {
   if (busy) return
   busy = true
   try {
+    checkPublishLag()
     while (queue.length) {
       const id = queue.shift()
       try {
@@ -354,6 +381,16 @@ if (existsSync(AGENTS)) {
   aw.on('error', (e) => {
     console.error('agents watch error, exiting for restart:', e.message)
     process.exit(1)
+  })
+}
+checkPublishLag()
+if (Number.isFinite(PUBLISH_LAG_INTERVAL_MS) && PUBLISH_LAG_INTERVAL_MS > 0) {
+  setInterval(checkPublishLag, PUBLISH_LAG_INTERVAL_MS).unref?.()
+}
+if (existsSync(PUBLISH_DIR)) {
+  const pw = watch(PUBLISH_DIR, { recursive: true }, () => enqueuePublishLag())
+  pw.on('error', (e) => {
+    log(`publish-lag watch: ${e.message}`)
   })
 }
 process.on('SIGTERM', () => {

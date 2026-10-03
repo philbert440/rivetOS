@@ -123,6 +123,7 @@ Nothing in this tree names a host, address, port, or lab layout.
 | suffix             | source                                      | position                   |
 | ------------------ | ------------------------------------------- | -------------------------- |
 | `-v3` / `-v4`      | on-disk jsonl / ReadTranscript pages        | line index / page position |
+| `-v4-backfill`     | ReadTranscript page dumps (`ingest-pages`)  | page position              |
 | `-v3-rows`         | Postgres / `--from-rows` reclean            | stored ordinal             |
 | `-v3-store` / `-v4-store` | `agents/<id>/store.db` `transcript_entries` | `seq`               |
 | `-v3-voice-<stem>` / `-v4-voice-<stem>` | `voice-calls/*.json`       | turn index                 |
@@ -219,6 +220,59 @@ python3 integrations/grok-bot/rivet-memory/capture/pull-bridge.py add <agentId> 
 python3 integrations/grok-bot/rivet-memory/capture/pull-bridge.py ingest --dry-run --suffix -v3
 python3 integrations/grok-bot/rivet-memory/capture/pull-bridge.py ingest --suffix -v3
 ```
+
+### Backfill from ReadTranscript page dumps (`ingest-pages`)
+
+When the host publisher stalls, a parent agent can dump raw `ReadTranscript`
+pages into a spool directory — one file per page, named `<bot-slug>-<before>.txt`
+(slug from `profile.json`, same rule as `discover --json`). Page positions are
+conversation indices and do **not** match `store.db` seq. Lines have no
+timestamps except the `<timestamp>` tags inside user turns.
+
+Dry-run is the default. It prints per-bot counts (`pages`, `entries_parsed`,
+`dropped_system`, `skipped_no_timestamp`, `skipped_overlap`, `new`) and writes
+nothing. A real write requires `--commit` (INSERT only; never UPDATE/DELETE;
+never folds into plain `-v4`).
+
+```bash
+# 1. Parent agent dumps pages (example names only):
+#    pages/alpha-921.txt
+#    pages/alpha-919.txt
+
+# 2. Dry-run (default) — review counts
+python3 integrations/grok-bot/rivet-memory/capture/pull-bridge.py ingest-pages \
+  --input path/to/pages
+
+# same via the capture CLI
+node integrations/grok-bot/rivet-memory/capture/dist/cli.js ingest-pages \
+  --input path/to/pages
+
+# 3. After review, commit INSERTs into grokbot-<slug>-v4-backfill
+python3 integrations/grok-bot/rivet-memory/capture/pull-bridge.py ingest-pages \
+  --input path/to/pages --commit
+```
+
+Fidelity caveats: every backfill row is `metadata.ts_approx=true` because
+timestamps are carried forward from the last user `<timestamp>` tag (any UTC
+offset) until the next tag. Rows before the first parsable tag are skipped
+and counted. Source id is `readtranscript:<bot-slug>:<position>`. The session
+tag is `grokbot-<bot-slug>-v4-backfill` — a sibling of `-v4`, never merged
+into it. Hidden system / agent wakes and system reminders follow the existing
+v4 normalizer (wrapper strip + hidden classification); system rows are not
+ingested on this tag. Content is bounded by the existing 256 KiB cap / pointer.
+Re-runs are idempotent: a row is skipped when the same content hash already
+exists for that bot under `-v4-backfill`, or under `-v4` at or after a cutoff
+(default = that bot's newest `-v4` row minus 48h).
+
+Env / config knobs:
+
+| knob | default | what it does |
+| --- | --- | --- |
+| `GROKBOT_PAGES_DIR` | (required unless `--input`) | page dump directory |
+| `GROKBOT_BACKFILL_OVERLAP_HOURS` / `--overlap-hours` | `48` | `-v4` content-hash window |
+| `GROKBOT_AGENTS` / `--agents-dir` | `~/agent-data/agents` | roster (`profile.json` slugs) |
+| `RIVETOS_PG_URL` | (env or `~/.rivetos/.env`) | overlap SELECT; required for `--commit` |
+
 
 Backfill writes **one spool per agent**. Ingest each spool with its own
 `ingest-session.mjs` command. Session / agent / persona come from
@@ -379,6 +433,30 @@ copy the watcher's single `state.json`. `RIVETOS_ROOT` defaults to
 
 Current Grok Bot chats may be server-side, so local `transcript_entries`
 can be empty. The reader still opens the DB read-only and no-ops.
+
+### Publish-lag detection
+
+The host publisher writes `<agentDataDir>/transcript-publish/<agentId>.json`
+(`writerSeq`, `publishedThroughSeq`, …). Each watcher pass reads every file
+in that directory, computes `lag = writerSeq - publishedThroughSeq`, and
+tracks how long `publishedThroughSeq` has stayed still while `lag > 0`.
+State lives next to the watcher capture-state file
+(`grokbot-publish-lag${GROKBOT_SESSION_SUFFIX}.json`) so other tools can
+read it. A clear `WARN publish lag …` line is emitted **once** per agent
+when `lag` exceeds the entry threshold or the stall exceeds the time
+budget. The warning (and the status row) clear when that agent catches up
+(`lag <= 0`). Missing or malformed files are skipped.
+
+| knob | default | what it does |
+| --- | --- | --- |
+| `GROKBOT_PUBLISH_DIR` | `<agentDataDir>/transcript-publish` | publish-state directory |
+| `GROKBOT_AGENT_DATA` | parent of `GROKBOT_AGENTS` | used to derive the default publish dir |
+| `GROKBOT_PUBLISH_LAG_STATE` | `~/.rivetos/grokbot-publish-lag${SUFFIX}.json` | status file |
+| `GROKBOT_PUBLISH_LAG_ENTRIES` | `50` | warn when `lag` exceeds this |
+| `GROKBOT_PUBLISH_STALL_HOURS` | `24` | warn when a positive lag has not advanced this long |
+| `GROKBOT_PUBLISH_STALL_MS` | hours × 3600000 | same threshold in milliseconds |
+| `GROKBOT_PUBLISH_LAG_INTERVAL_MS` | `60000` | idle recheck while the watcher runs |
+| `GROKBOT_CAPTURE_CONFIG` | unset | optional JSON `{ "publishLagEntries", "publishStallHours", "publishStallMs" }` |
 
 ### Deploy notes (no deploy from this PR)
 

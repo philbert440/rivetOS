@@ -1221,6 +1221,7 @@ describe('unstamped on-disk transcript + createdAt', () => {
     expect(stripSessionSuffix('grokbot-omega-v4-rows')).toBe('grokbot-omega')
     expect(stripSessionSuffix('grokbot-omega-v4-voice-call')).toBe('grokbot-omega')
     expect(stripSessionSuffix('grokbot-alpha-v3-voice-call-redacted')).toBe('grokbot-alpha')
+    expect(stripSessionSuffix('grokbot-alpha-v4-backfill')).toBe('grokbot-alpha')
   })
 })
 
@@ -1330,6 +1331,13 @@ describe('both input formats', () => {
     expect(parsePageHeader('Transcript of this conversation, positions 0–0 of 1:')).toMatchObject({
       thisConversation: true,
       a: 0,
+    })
+    expect(parsePageHeader('Transcript of alpha, positions 919–920 of 921:')).toMatchObject({
+      target: 'alpha',
+      a: 919,
+      b: 920,
+      total: 921,
+      thisConversation: false,
     })
   })
 

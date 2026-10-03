@@ -20,6 +20,7 @@ const DASH_VALUE_FLAGS = new Set([
   '--input',
   '--agents-dir',
   '--fixtures',
+  '--overlap-hours',
 ])
 
 export function coalesceDashArgs(argv: string[]): string[] {
