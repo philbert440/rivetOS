@@ -10,11 +10,15 @@
  * v4 normalizer, then system rows are dropped from this tag. Nothing is
  * folded into plain -v4.
  *
- * Overlap suppression is time-relative to the candidate rows. A hash+time
- * match is dropped only when an adjacent candidate is also a tentative
- * match (a run). A lone match is inserted: a duplicate is tolerable, a
- * missed row is not. `--overlap-hours 0` disables -v4 hash suppression.
- * source_id idempotence stays on for the exact `:<position>:<sub>` id.
+ * Hash suppression against live `-v4` is off unless overlap hours are a
+ * positive number. The default, 0, does not read `-v4`: every parsed row
+ * that is not already in `-vN-backfill` by exact source_id is written, so
+ * a row live capture also has is stored in both sessions. A positive
+ * window drops a hash+time match only when an adjacent candidate is also
+ * a tentative match (a run). A lone match is still inserted. A run can
+ * drop a missed row when two or more consecutive missed rows coincide
+ * with live rows within 60 minutes. source_id idempotence stays on for
+ * the exact `:<position>:<sub>` id.
  */
 import { createHash } from 'node:crypto'
 import { readdirSync, readFileSync, statSync } from 'node:fs'
@@ -50,9 +54,9 @@ export const BACKFILL_SOURCE = 'grokbot-readtranscript-backfill'
  * tag, carried forward across the turn (then bumped 1ms so they stay ordered).
  * 60 minutes covers one long tool-using turn — a live row can land well after
  * its tag — without treating the same short text from a previous day as the
- * same occurrence. `--overlap-hours 0` turns hash suppression off entirely.
- * An isolated match inside that window is still inserted; only a run of
- * adjacent tentative matches is suppressed.
+ * same occurrence. Used only when overlap hours are positive. An isolated
+ * match inside that window is still inserted; a run of adjacent tentative
+ * matches is suppressed and can drop a coincident missed tail.
  */
 export const OVERLAP_TIME_TOLERANCE_MS = 60 * 60 * 1000
 
@@ -98,11 +102,13 @@ export interface V4OverlapHit {
 
 export interface OverlapIndex {
   /**
-   * Exact `readtranscript:<slug>:<position>:<sub>` ids. The value is the
-   * stored content digest, or `undefined` when that row has none (treat as
-   * the same content). Legacy ids without `:<sub>` are not keys that match.
+   * Exact `readtranscript:<slug>:<position>:<sub>` ids. The value is one
+   * stored content digest, every stored digest when an id has several
+   * (a candidate matching any of them is the same content), or `undefined`
+   * when every stored row lacked a digest (treat as the same content).
+   * Legacy ids without `:<sub>` are not keys that match.
    */
-  sourceIds: Map<string, string | undefined>
+  sourceIds: Map<string, string | readonly string[] | undefined>
   /** -v4 rows inside the candidate-relative overlap window. */
   v4Hits: V4OverlapHit[]
 }
@@ -430,12 +436,14 @@ export async function loadOverlapIndex(
   const liveSuffix = opts?.liveSuffix ?? SESSION_SUFFIX_V4
   const liveSession = liveV4Session(ident.session, liveSuffix)
   const backfill = backfillSession(ident.session, liveSuffix)
-  const sourceIds = new Map<string, string | undefined>()
+  const sourceIds = new Map<string, string | readonly string[] | undefined>()
   const v4Hits: V4OverlapHit[] = []
-  // overlap-hours 0 disables -v4 suppression. Otherwise the read is bounded
-  // by the candidate span: nothing before the earliest tag minus the overlap
-  // window, and nothing after the latest candidate plus the hash tolerance.
-  // A stalled -v4 newest is not the anchor.
+  // overlap-hours 0 (the default) does not read -v4. A positive window is
+  // bounded by the candidate span: nothing before the earliest tag minus
+  // the overlap window, and nothing after the latest candidate plus the
+  // hash tolerance. A stalled -v4 newest is not the anchor. That window
+  // can drop a missed row when consecutive candidates coincide with live
+  // rows within the tolerance.
   if (hours > 0) {
     const times: number[] = []
     for (const raw of opts?.candidateCreatedAt ?? []) {
@@ -444,8 +452,14 @@ export async function loadOverlapIndex(
       if (Number.isFinite(ms)) times.push(ms)
     }
     if (times.length > 0) {
-      const since = new Date(Math.min(...times) - hours * 3_600_000)
-      const until = new Date(Math.max(...times) + OVERLAP_TIME_TOLERANCE_MS)
+      let earliest = Number.POSITIVE_INFINITY
+      let latest = Number.NEGATIVE_INFINITY
+      for (const ms of times) {
+        if (ms < earliest) earliest = ms
+        if (ms > latest) latest = ms
+      }
+      const since = new Date(earliest - hours * 3_600_000)
+      const until = new Date(latest + OVERLAP_TIME_TOLERANCE_MS)
       for (const row of await store.rowsSince(liveSession, ident.agent, since, until)) {
         const ms = rowCreatedAtMs(row.created_at)
         if (ms === undefined) continue
@@ -466,7 +480,7 @@ export async function loadOverlapIndex(
 }
 
 function rememberSourceId(
-  sourceIds: Map<string, string | undefined>,
+  sourceIds: Map<string, string | readonly string[] | undefined>,
   sourceId: unknown,
   contentHash: unknown,
 ): void {
@@ -476,23 +490,37 @@ function rememberSourceId(
     sourceIds.set(sourceId, digest)
     return
   }
-  // A later row that actually stored a digest wins over a missing one.
-  if (sourceIds.get(sourceId) === undefined && digest) sourceIds.set(sourceId, digest)
+  // A missing digest does not erase concrete ones. Every concrete digest
+  // is kept, independent of row order, so a later candidate can match any.
+  if (!digest) return
+  const current = sourceIds.get(sourceId)
+  if (current === undefined) {
+    sourceIds.set(sourceId, digest)
+    return
+  }
+  const list = typeof current === 'string' ? [current] : [...current]
+  if (list.includes(digest)) return
+  list.push(digest)
+  list.sort()
+  sourceIds.set(sourceId, list)
 }
 
 /**
- * Exact source id only. No stored digest matches any content. A different
- * digest is a visible change, not a quiet skip and not a hash suppression.
+ * Exact source id only. No stored digest matches any content. A candidate
+ * that equals any stored digest is a quiet skip. A candidate that equals
+ * none of them is a visible change, not a hash suppression.
  */
 function sourceIdDisposition(
   message: CaptureMessage,
-  sourceIds: Map<string, string | undefined>,
+  sourceIds: Map<string, string | readonly string[] | undefined>,
 ): 'none' | 'same' | 'changed' {
   const sourceId = message.metadata?.source_id
   if (typeof sourceId !== 'string' || !sourceId || !sourceIds.has(sourceId)) return 'none'
   const stored = sourceIds.get(sourceId)
   if (!stored) return 'same'
-  return stored === messageHash(message) ? 'same' : 'changed'
+  const hash = messageHash(message)
+  if (typeof stored === 'string') return stored === hash ? 'same' : 'changed'
+  return stored.includes(hash) ? 'same' : 'changed'
 }
 
 function messagePosition(message: CaptureMessage): number | undefined {

@@ -68,7 +68,12 @@ export function sessionRowsSuffix(sessionSuffix = SESSION_SUFFIX_V3): string {
 /** ReadTranscript page backfill. Never folds into plain `-v4`. */
 export const SESSION_SUFFIX_V4_BACKFILL = '-v4-backfill'
 export const SESSION_SUFFIX_V4 = '-v4'
-export const DEFAULT_BACKFILL_OVERLAP_HOURS = 48
+/**
+ * Default overlap window for ingest-pages. 0 does not read live `-v4` and
+ * does not suppress by content hash. A positive `--overlap-hours` or
+ * `GROKBOT_BACKFILL_OVERLAP_HOURS` opts into that suppression.
+ */
+export const DEFAULT_BACKFILL_OVERLAP_HOURS = 0
 
 export function sessionBackfillSuffix(liveSuffix = SESSION_SUFFIX_V4): string {
   return `${liveSuffix}-backfill`

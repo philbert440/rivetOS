@@ -9,8 +9,11 @@ Commands:
   add <agentId> FILE|-      store one page by position
   next <agentId>            LATEST or NEED_OLDER before=N
   ingest [agentId...] [--dry-run] [--suffix -v3]
-  ingest-pages --input DIR [--commit] [--overlap-hours 48]
-                            ReadTranscript dump backfill (dry-run default)
+  ingest-pages --input DIR [--commit] [--overlap-hours N]
+                            ReadTranscript dump backfill (dry-run default).
+                            -v4 hash suppression is off unless --overlap-hours
+                            is positive; that opt-in can drop a coincident
+                            missed run.
   status
 
 Ingest runs the capture-core normalizer (16_000 UTF-16 capForStorage, no 4 KB

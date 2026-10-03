@@ -3,7 +3,7 @@ import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
 import { describe, expect, it } from 'vitest'
 import { contentTupleHash } from '@rivetos/capture-core'
-import { cmdIngestPages, main, resolveMemoryPostgresEntry } from '../src/cli.js'
+import { cmdIngestPages, main, redactConnectionDetails, resolveMemoryPostgresEntry } from '../src/cli.js'
 import { discoverModels, identityForSlug } from '../src/identity.js'
 import type { GrokbotIngestInput } from '../src/ingest-rows.js'
 import {
@@ -34,7 +34,7 @@ import { normalizeRecords } from '../src/normalize.js'
 import { mergeParsedInputs } from '../src/pages.js'
 import { parseInput, parsePageHeader } from '../src/parse.js'
 import { assertReadOnlySql } from '../src/pg-readonly.js'
-import { CONTENT_LIMIT, stripSessionSuffix } from '../src/types.js'
+import { CONTENT_LIMIT, DEFAULT_BACKFILL_OVERLAP_HOURS, stripSessionSuffix } from '../src/types.js'
 import { ALPHA_ID } from './ids.js'
 
 function userTurn(text: string) {
@@ -597,6 +597,35 @@ async function captureMain(argv: string[]): Promise<{ code: number; out: string;
 const STAMP_4AM =
   '<timestamp>Saturday, Oct 3, 2026, 4:00 AM (UTC+0)</timestamp>\n<user_query>\nok\n</user_query>'
 
+/** User `ok` at 04:00Z and assistant `Done.` one millisecond later. */
+function writeCoincidentTail(dir: string) {
+  pageFile(dir, 'alpha', 8, 40, [userTurn(STAMP_4AM), assistantTurn('Done.')])
+}
+
+/**
+ * Live `-v4` has the same pair minutes earlier (user 03:55Z, assistant 03:50Z).
+ * `sessions` records every read so a default run can prove `-v4` was not opened.
+ */
+function coincidentLiveStore(): { store: OverlapStore; sessions: string[] } {
+  const sessions: string[] = []
+  const store: OverlapStore = {
+    newestCreatedAt: async () => undefined,
+    rowsSince: async (sessionKey) => {
+      sessions.push(`rows:${sessionKey}`)
+      if (sessionKey !== 'grokbot-alpha-v4') return []
+      return [
+        { role: 'user', content: 'ok', created_at: '2026-10-03T03:55:00.000Z' },
+        { role: 'assistant', content: 'Done.', created_at: '2026-10-03T03:50:00.000Z' },
+      ]
+    },
+    sourceIds: async (sessionKey) => {
+      sessions.push(`ids:${sessionKey}`)
+      return []
+    },
+  }
+  return { store, sessions }
+}
+
 describe('ingest-pages review regressions', () => {
   it('orders pages by numeric before, then header position, not the filename', () => {
     expect(
@@ -1121,20 +1150,40 @@ describe('ingest-pages review regressions', () => {
     expect(dryErrs.join('\n')).toContain('CHANGED slug=alpha positions 3')
   })
 
-  it('treats an empty overlap-hours flag or env as 48, not 0', async () => {
+  it('treats a missing or empty overlap-hours flag or env as 0, not 48', async () => {
+    expect(DEFAULT_BACKFILL_OVERLAP_HOURS).toBe(0)
     const dir = mkdtempSync(join(tmpdir(), 'gb-pages-empty-hours-'))
     pageFile(dir, 'alpha', 3, 1, [userTurn(STAMP_4AM)])
     const prev = process.env.GROKBOT_BACKFILL_OVERLAP_HOURS
     const candidateMs = Date.parse('2026-10-03T04:00:00.000Z')
     try {
-      for (const argv of [
-        ['--input', dir, '--overlap-hours='],
-        ['--input', dir],
-      ] as const) {
-        let since: Date | undefined
-        let v4Reads = 0
-        process.env.GROKBOT_BACKFILL_OVERLAP_HOURS = ''
-        const code = await cmdIngestPages([...argv], {
+      for (const argv of [['--input', dir, '--overlap-hours='], ['--input', dir]] as const) {
+        for (const env of ['', '   ']) {
+          let v4Reads = 0
+          process.env.GROKBOT_BACKFILL_OVERLAP_HOURS = env
+          const code = await cmdIngestPages([...argv], {
+            loadDeps: async () => ({
+              overlap: {
+                newestCreatedAt: async () => undefined,
+                rowsSince: async (sessionKey) => {
+                  if (sessionKey === 'grokbot-alpha-v4') v4Reads += 1
+                  return [{ role: 'user', content: 'ok', created_at: '2026-10-03T03:55:00.000Z' }]
+                },
+                sourceIds: async () => [],
+              },
+            }),
+          })
+          expect(code).toBe(0)
+          expect(v4Reads).toBe(0)
+        }
+      }
+
+      let since: Date | undefined
+      let v4Reads = 0
+      const readV4 = async (argv: string[]) => {
+        since = undefined
+        v4Reads = 0
+        return cmdIngestPages(argv, {
           loadDeps: async () => ({
             overlap: {
               newestCreatedAt: async () => undefined,
@@ -1149,13 +1198,216 @@ describe('ingest-pages review regressions', () => {
             },
           }),
         })
-        expect(code).toBe(0)
-        expect(v4Reads).toBe(1)
-        expect(since?.toISOString()).toBe(new Date(candidateMs - 48 * 3_600_000).toISOString())
       }
+      process.env.GROKBOT_BACKFILL_OVERLAP_HOURS = '48'
+      expect(await readV4(['--input', dir])).toBe(0)
+      expect(v4Reads).toBe(1)
+      expect(since?.toISOString()).toBe(new Date(candidateMs - 48 * 3_600_000).toISOString())
+
+      process.env.GROKBOT_BACKFILL_OVERLAP_HOURS = ''
+      expect(await readV4(['--input', dir, '--overlap-hours=48'])).toBe(0)
+      expect(v4Reads).toBe(1)
+      expect(since?.toISOString()).toBe(new Date(candidateMs - 48 * 3_600_000).toISOString())
+
+      // An explicit 0 wins over a positive env and does not read -v4.
+      process.env.GROKBOT_BACKFILL_OVERLAP_HOURS = '48'
+      expect(await readV4(['--input', dir, '--overlap-hours=0'])).toBe(0)
+      expect(v4Reads).toBe(0)
     } finally {
       restoreEnv('GROKBOT_BACKFILL_OVERLAP_HOURS', prev)
     }
+    const help = await captureMain(['help'])
+    const helpText = help.out.replace(/\s+/g, ' ')
+    expect(helpText).toContain('appear in both -vN and -vN-backfill')
+    expect(helpText).toContain(
+      'trades that for a risk of dropping a missed row when two or more consecutive missed rows coincide with rows -vN has within 60 minutes',
+    )
+    expect(helpText).toContain('default 0')
+    expect(helpText).not.toContain('is 48')
+  })
+
+  it('does not read -v4 by default when a coincident ok/Done tail is already live', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'gb-pages-coincident-off-'))
+    writeCoincidentTail(dir)
+    const { store, sessions } = coincidentLiveStore()
+    const result = await ingestPages(dir, { deps: { overlap: store } })
+    expect(sessions.some((call) => call.includes('grokbot-alpha-v4') && !call.includes('backfill'))).toBe(
+      false,
+    )
+    expect(result.bots[0]?.skippedOverlap).toBe(0)
+    expect(result.bots[0]?.new).toBe(2)
+  })
+
+  it('still suppresses a coincident ok/Done run when --overlap-hours 48 is set', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'gb-pages-coincident-on-'))
+    writeCoincidentTail(dir)
+    const { store, sessions } = coincidentLiveStore()
+    const result = await ingestPages(dir, { overlapHours: 48, deps: { overlap: store } })
+    expect(sessions).toContain('rows:grokbot-alpha-v4')
+    expect(result.bots[0]?.skippedOverlap).toBe(2)
+    expect(result.bots[0]?.new).toBe(0)
+  })
+
+  it('quiet-skips a source_id when any stored digest matches', async () => {
+    const stored = hashOf('assistant', 'stored')
+    const other = hashOf('assistant', 'other')
+    const ident = {
+      id: ALPHA_ID,
+      session: 'grokbot-alpha',
+      agent: 'grokbot-alpha',
+      persona: 'Alpha',
+    }
+    const rowsFor = (first: string, second: string) =>
+      [
+        { sourceId: 'readtranscript:alpha:5:0', contentHash: first },
+        { sourceId: 'readtranscript:alpha:5:0', contentHash: second },
+      ] as const
+    const load = (first: string, second: string) =>
+      loadOverlapIndex(
+        {
+          newestCreatedAt: async () => undefined,
+          rowsSince: async () => [],
+          sourceIds: async () => rowsFor(first, second).map((row) => ({ ...row })),
+        },
+        ident,
+        { overlapHours: 0 },
+      )
+    const forward = await load(other, stored)
+    const reverse = await load(stored, other)
+    const expected = [other, stored].sort()
+    expect(forward.sourceIds.get('readtranscript:alpha:5:0')).toEqual(expected)
+    expect(reverse.sourceIds.get('readtranscript:alpha:5:0')).toEqual(expected)
+
+    const matchLater = filterOverlap(
+      [msg('assistant', 'stored', 'readtranscript:alpha:5:0', { position: 5, created_at: WHEN })],
+      forward,
+    )
+    expect(matchLater.skippedChanged).toBe(0)
+    expect(matchLater.skippedOverlap).toBe(1)
+    expect(matchLater.kept).toHaveLength(0)
+
+    const matchFirst = filterOverlap(
+      [msg('assistant', 'other', 'readtranscript:alpha:5:0', { position: 5, created_at: WHEN })],
+      forward,
+    )
+    expect(matchFirst.skippedChanged).toBe(0)
+    expect(matchFirst.kept).toHaveLength(0)
+
+    const matchNone = filterOverlap(
+      [msg('assistant', 'rewritten', 'readtranscript:alpha:5:0', { position: 5, created_at: WHEN })],
+      forward,
+    )
+    expect(matchNone.skippedChanged).toBe(1)
+    expect(matchNone.changedPositions).toEqual([5])
+    expect(matchNone.kept).toHaveLength(0)
+
+    // A missing digest does not wildcard-match once any concrete digest exists.
+    const mixed = await loadOverlapIndex(
+      {
+        newestCreatedAt: async () => undefined,
+        rowsSince: async () => [],
+        sourceIds: async () => [
+          { sourceId: 'readtranscript:alpha:7:0' },
+          { sourceId: 'readtranscript:alpha:7:0', contentHash: stored },
+        ],
+      },
+      ident,
+      { overlapHours: 0 },
+    )
+    expect(mixed.sourceIds.get('readtranscript:alpha:7:0')).toBe(stored)
+    const mixedMiss = filterOverlap(
+      [msg('assistant', 'rewritten', 'readtranscript:alpha:7:0', { position: 7, created_at: WHEN })],
+      mixed,
+    )
+    expect(mixedMiss.skippedChanged).toBe(1)
+    expect(mixedMiss.kept).toHaveLength(0)
+  })
+
+  it('exits 2 when a parse or roster failure shares a run with drift or conflicts', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'gb-pages-exit-prec-'))
+    pageFile(dir, 'alpha', 4, 3, [
+      userTurn(
+        '<timestamp>Saturday, Oct 3, 2026, 3:00 AM (UTC+0)</timestamp>\n<user_query>\nwrite me\n</user_query>',
+      ),
+      assistantTurn('written'),
+    ])
+    writeFileSync(join(dir, 'alpha-9.txt'), 'not a transcript page\n')
+    pageFile(dir, 'beta', 1, 10, [
+      userTurn(
+        '<timestamp>Saturday, Oct 3, 2026, 4:00 AM (UTC+0)</timestamp>\n<user_query>\nfrom-a1\n</user_query>',
+      ),
+    ])
+    pageFile(dir, 'beta', 2, 10, [
+      userTurn(
+        '<timestamp>Saturday, Oct 3, 2026, 4:00 AM (UTC+0)</timestamp>\n<user_query>\nfrom-a2\n</user_query>',
+      ),
+    ])
+    pageFile(dir, 'no-such-bot', 1, 0, [userTurn('orphan')])
+    const errs: string[] = []
+    const err = console.error
+    console.error = (...a: unknown[]) => {
+      errs.push(a.map(String).join(' '))
+    }
+    try {
+      const code = await cmdIngestPages(['--input', dir, '--dry-run'], {
+        loadDeps: async () => ({
+          overlap: {
+            newestCreatedAt: async () => undefined,
+            rowsSince: async () => [],
+            sourceIds: async () => [
+              { sourceId: 'readtranscript:alpha:3:0', contentHash: 'not-the-stored-digest' },
+            ],
+          },
+        }),
+      })
+      expect(code).toBe(2)
+    } finally {
+      console.error = err
+    }
+    const text = errs.join('\n')
+    expect(text).toContain('SKIP malformed page alpha-9.txt')
+    expect(text).toContain('CHANGED slug=alpha positions 3')
+    expect(text).toContain('CONFLICT slug=beta')
+    expect(text).toContain('SKIP unknown slug: no-such-bot')
+  })
+
+  it('redacts DNS hosts, unbracketed IPv6, and any scheme URL', () => {
+    const dns = redactConnectionDetails('getaddrinfo ENOTFOUND db.example')
+    expect(dns).toMatch(/ENOTFOUND/)
+    expect(dns).not.toContain('db.example')
+
+    const again = redactConnectionDetails('getaddrinfo EAI_AGAIN cache.example')
+    expect(again).toMatch(/EAI_AGAIN/)
+    expect(again).not.toContain('cache.example')
+
+    const bare = redactConnectionDetails('lookup failed ENOTFOUND localhost')
+    expect(bare).toMatch(/ENOTFOUND/)
+    expect(bare).not.toContain('localhost')
+
+    const v6 = redactConnectionDetails('connect ECONNREFUSED ::1:5432')
+    expect(v6).toMatch(/ECONNREFUSED/)
+    expect(v6).not.toContain('::1')
+    expect(v6).not.toContain('5432')
+
+    const v6long = redactConnectionDetails('connect ECONNREFUSED 2001:db8::1:5432')
+    expect(v6long).toMatch(/ECONNREFUSED/)
+    expect(v6long).not.toContain('2001:db8')
+    expect(v6long).not.toContain('5432')
+
+    const url = redactConnectionDetails(
+      'refused https://user:secret@files.example/db and redis://:pw@cache.example:6379/0',
+    )
+    expect(url).not.toContain('https://')
+    expect(url).not.toContain('redis://')
+    expect(url).not.toContain('files.example')
+    expect(url).not.toContain('cache.example')
+    expect(url).not.toContain('secret')
+    expect(url).not.toContain('6379')
+
+    expect(redactConnectionDetails('Error at src/cli.ts:790')).toContain('src/cli.ts:790')
+    expect(redactConnectionDetails('skipped at 2026-10-03T04:00:00.000Z')).toContain(
+      '2026-10-03T04:00:00.000Z',
+    )
   })
 
   it('exits 3 for page conflicts on a dry-run, and the help says so', async () => {

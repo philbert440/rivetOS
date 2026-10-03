@@ -110,7 +110,7 @@ const HELP = `Usage: grokbot-rivet-memory-capture <command> [opts]
 
   discover [--agents-dir DIR] [--json]
 
-  ingest-pages --input DIR [--commit] [--dry-run] [--overlap-hours 48]
+  ingest-pages --input DIR [--commit] [--dry-run] [--overlap-hours N]
                [--agents-dir DIR]
       ReadTranscript page backfill. Files are <bot-slug>-<before>.txt,
       ordered by numeric <before> then header position.
@@ -120,15 +120,25 @@ const HELP = `Usage: grokbot-rivet-memory-capture <command> [opts]
       pages conflict writes nothing; other bots still proceed.
       Page conflicts exit 3 on a dry-run and on --commit.
       A stored source_id whose content digest differs is not rewritten
-      (skipped_changed) and also exits 3.
+      (skipped_changed) and also exits 3. Several stored digests for one
+      source_id: a row matching any of them is a quiet skip; only a row
+      matching none is skipped_changed.
+      Unknown slugs and malformed pages are counted and exit 2. When a
+      run has both that failure and page conflicts or skipped_changed,
+      exit 2 wins and both reasons are printed.
       PostgresMemory.append still upserts that session's ros_conversations
       row (updated_at, active) and may queue tool-synthesis jobs. Never
       folds into plain -v4. Timestamps are approximate (ts_approx=true);
       rows before the first <timestamp> tag are skipped.
-      --overlap-hours 0 disables -v4 content-hash suppression.
-      An empty --overlap-hours or GROKBOT_BACKFILL_OVERLAP_HOURS is 48, not 0.
-      Unknown slugs and malformed pages are counted and exit 2.
-      --input must be a readable directory.
+      The default writes every page row, so rows that live capture also
+      has appear in both -vN and -vN-backfill. -v4 is not read and
+      nothing is suppressed by hash. --overlap-hours N (N > 0, or
+      GROKBOT_BACKFILL_OVERLAP_HOURS) trades that for a risk of dropping
+      a missed row when two or more consecutive missed rows coincide
+      with rows -vN has within 60 minutes (repeated short replies,
+      repeated identical tool calls). An empty --overlap-hours or
+      GROKBOT_BACKFILL_OVERLAP_HOURS is the default 0, not a positive
+      window. --input must be a readable directory.
 `
 
 async function main(argv: string[]): Promise<number> {
@@ -742,8 +752,10 @@ export async function cmdIngestPages(
     const conflicts = result.bots.some((b) => b.conflicts.length > 0)
     const changed = result.bots.some((b) => b.skippedChanged > 0)
     const failed = result.bots.some((b) => b.pagesFailed > 0 || b.unknownSlugs > 0)
-    if (conflicts || changed) return 3
+    // Parse/roster failure (exit 2) beats conflict and digest drift (exit 3).
+    // ingestPages already printed both reasons.
     if (failed) return 2
+    if (conflicts || changed) return 3
     return 0
   } catch (err) {
     console.error(redactConnectionDetails(commitFailureDetail(err)))
@@ -777,8 +789,10 @@ async function loadIngestPagesDeps(commit: boolean): Promise<IngestPagesDeps> {
 }
 
 /**
- * Empty flag or env is unset (the default), not zero. `Number('') === 0`,
- * which would silently disable -v4 suppression.
+ * Empty flag or env is unset, which is the default (0): do not parse `''`.
+ * `Number('') === 0`, and a whitespace-only value must not become NaN.
+ * The first non-empty of flag, then env, wins. A positive value opts into
+ * -v4 hash suppression; 0 does not read `-v4`.
  */
 export function resolveOverlapHours(flag: string | undefined, fromEnv: string | undefined): number {
   const raw = [flag, fromEnv].find((value) => value !== undefined && value.trim() !== '')
@@ -786,11 +800,16 @@ export function resolveOverlapHours(flag: string | undefined, fromEnv: string | 
   return Number(raw)
 }
 
-/** Drop postgres URLs and host:port so a commit failure cannot print them. */
+/** Drop URLs, hostnames, and host:port so a commit failure cannot print them. */
 export function redactConnectionDetails(text: string): string {
   return text
-    .replace(/\bpostgres(?:ql)?:\/\/\S+/gi, '[redacted]')
+    .replace(/\b[a-z][a-z0-9+.-]*:\/\/\S+/gi, '[redacted]')
+    .replace(/\b((?:getaddrinfo\s+)?(?:ENOTFOUND|EAI_AGAIN))\s+\S+/gi, '$1 [redacted]')
     .replace(/\[[0-9a-fA-F:.]+\]:\d+/g, '[redacted]')
+    .replace(
+      /(^|[^0-9A-Fa-f:.])(?:(?:[0-9A-Fa-f]{0,4}:){2,}[0-9A-Fa-f]{0,4}):\d{2,5}\b/g,
+      '$1[redacted]',
+    )
     .replace(/\b(?:\d{1,3}\.){3}\d{1,3}:\d+\b/g, '[redacted]')
     .replace(/\b(?:localhost|(?:[a-zA-Z0-9-]+\.)+[a-zA-Z0-9-]+):\d{2,5}\b/gi, (match) => {
       const host = match.slice(0, match.lastIndexOf(':'))

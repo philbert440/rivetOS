@@ -261,7 +261,9 @@ deletes them; it still goes through `PostgresMemory.append`, which upserts
 that session's `ros_conversations` row (`updated_at`, `active`) and may
 queue tool-synthesis jobs. A bot whose pages disagree at a position writes
 nothing for that bot. Page conflicts exit 3 on a dry-run and on `--commit`.
-Other bots in the same run still proceed.
+If the same run also has a malformed page or an unknown slug, exit 2 wins
+and both the failure line and the conflict or `skipped_changed` line are
+printed. Other bots in the same run still proceed.
 Nothing folds into plain `-v4`. `reclean` refuses a `-backfill` session so
 it cannot be rewritten onto a live `-vN` suffix.
 
@@ -295,10 +297,13 @@ valid. A missing position is skipped and is not stored as `:0`. Idempotence
 is that exact id only — an older id without `:<sub>` does not match, because
 no row was ever written in that form. Each written row stores
 `metadata.content_hash` (the same hash used for overlap). A re-run that
-finds the same id with the same digest, or with no stored digest, skips
-quietly. A different digest is not written (`skipped_changed`); one stderr
+finds the same id with the same digest, with any of several stored
+digests, or with no stored digest, skips quietly. A digest that matches
+none of the stored ones is not written (`skipped_changed`); one stderr
 line names the bot and the positions, and the process exits 3 (dry-run or
-`--commit`). Other rows for that bot are still eligible to be written.
+`--commit`) unless the run also has a malformed page or an unknown slug,
+in which case exit 2 wins and both reasons are printed. Other rows for
+that bot are still eligible to be written.
 The session tag is `grokbot-<bot-slug>-v4-backfill` — a
 sibling of `-v4`, never merged into it. Hidden system / agent wakes and
 system reminders follow the existing v4 normalizer (wrapper strip + hidden
@@ -306,19 +311,25 @@ classification); system rows are not ingested on this tag. Content is
 bounded by the existing 256 KiB cap. A truncated row's
 `session_jsonl_path` / `session_jsonl_line` point at the spool page that
 won that position. Re-runs are idempotent per exact source id under
-`-v4-backfill`. Against live `-v4`, rows are read from
-`min(candidate created_at) − overlap hours` (default 48) through
+`-v4-backfill`. The default writes every page row that is not already in
+`-vN-backfill` by that exact id, and does not read `-v4`, so rows that
+live capture also has appear in both `-vN` and `-vN-backfill`.
+`--overlap-hours N` (or `GROKBOT_BACKFILL_OVERLAP_HOURS`, when N is
+positive) trades that for a risk of dropping a missed row when two or
+more consecutive missed rows coincide with rows `-vN` has within 60
+minutes (repeated short replies, repeated identical tool calls). While
+that opt-in is on, live `-v4` rows are read from
+`min(candidate created_at) − N hours` through
 `max(candidate created_at) + 60 minutes`. A content-hash match inside that
 60-minute tolerance suppresses a candidate only when an adjacent candidate
 (the previous or next row, in spool order) is also a tentative hash+time
-match — a run of consecutive messages live capture already has. A lone
-match, including a spool of one row, is inserted. A duplicate is tolerable;
-a missed row that live capture did not keep is not. Multiplicity still caps
-a confirmed run (`k` live copies suppress at most `k` backfill rows), and a
-match that is not confirmed does not consume a copy. `--overlap-hours 0`
-disables this suppression (source-id idempotence stays on). An empty
-`--overlap-hours` or `GROKBOT_BACKFILL_OVERLAP_HOURS` is the default 48,
-not 0. Assistant tool rows hash
+match — a run of consecutive messages. A lone match, including a spool of
+one row, is inserted. Multiplicity still caps a confirmed run (`k` live
+copies suppress at most `k` backfill rows), and a match that is not
+confirmed does not consume a copy. An empty `--overlap-hours` or
+`GROKBOT_BACKFILL_OVERLAP_HOURS` is the default 0, which does not read
+`-v4` and suppresses nothing by hash. `--overlap-hours 0` is the same.
+Assistant tool rows hash
 `role + tool_name + canonical tool_args` so a later tool-synthesis rewrite
 of `content`, or JSONB key reordering, still matches. Message rows stay
 insert-only; `--commit` still goes through `PostgresMemory.append`, which
@@ -331,7 +342,7 @@ Env / config knobs:
 | knob | default | what it does |
 | --- | --- | --- |
 | `GROKBOT_PAGES_DIR` | (required unless `--input`) | page dump directory |
-| `GROKBOT_BACKFILL_OVERLAP_HOURS` / `--overlap-hours` | `48` | hours before the earliest candidate; `0` disables `-v4` hash suppression; empty is 48 |
+| `GROKBOT_BACKFILL_OVERLAP_HOURS` / `--overlap-hours` | `0` | positive N reads `-v4` from the earliest candidate minus N hours and can drop a coincident missed run; `0` or empty does not read `-v4` |
 | `GROKBOT_AGENTS` / `--agents-dir` | `~/agent-data/agents` | roster (`profile.json` slugs) |
 | `RIVETOS_PG_URL` | (env or `~/.rivetos/.env`) | overlap SELECT; required for `--commit` |
 
