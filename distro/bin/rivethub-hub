@@ -1,0 +1,834 @@
+#!/usr/bin/env bash
+# rivethub-hub — datahub-side helper for RivetHub.
+#
+# Layout (HUB_ROOT=${RIVETHUB_ROOT:-/var/lib/rivethub}):
+#   $HUB_ROOT/shared/                 mesh.json, wiki, rivet-ca/
+#   $HUB_ROOT/shared/rivetos/         users.json (tenancy registry; same path
+#                                     install/datahub.sh writes)
+#   $HUB_ROOT/shared/rivet-ca/        intermediate + issued leaves (exportable)
+#   $HUB_ROOT/ca-root/                root CA key, 0700, never exported
+#
+# Subcommands: ca-init, enroll, renew, mesh-export, status.
+# Diagnostics on stderr. enroll/renew write a base64 tarball on stdout only —
+# never a partial blob (tar is built to a temp file, then base64'd).
+#
+# Linux datahub assumptions: GNU coreutils `base64 -w0` and util-linux `flock`.
+#
+# rivet-ca.sh interface (pinned copy: lib/rivet-ca.sh; tests use a noisy stub):
+#   env RIVET_CA_ROOT_DIR, RIVET_CA_SHARED_DIR
+#   init                 → $ROOT/ca.key, ca.crt
+#   issue-intermediate   → $SHARED/intermediate/{int.crt,int.key,chain.pem}
+#   issue-node <id> [DNS:…|IP:…]  → $SHARED/issued/<id>.{crt,key}
+#   issue-node itself also adds DNS:<id>.mesh, DNS:<id>-mcp.mesh,
+#   DNS:<id>-runtime-rpc.mesh. Diagnostics belong on stderr; we still
+#   redirect the whole CA process stdout to stderr so openssl chatter
+#   cannot precede the tarball.
+#
+# v1.1 note: HTTP enroll should call enroll_core (holds flock around
+# issue + mesh merge + staging into dest/). emit_bundle_tarball_b64 is
+# the SSH/stdout transport adapter — do not call it from HTTP.
+
+set -euo pipefail
+
+VERSION="0.1.0"
+
+# Distro default for a node's local RIVETOS_SHARED_DIR. Runtime rivetOS still
+# defaults to /rivet-shared; the distro layout is this path.
+NODE_SHARED_PLACEHOLDER="/var/lib/rivethub/shared"
+
+# Agent-channel listen port written into mesh.json and the config snippet.
+# Matches AgentChannelServer / boot (3000), not the standalone plugin (3100).
+MESH_PORT=3000
+MESH_FORMAT_VERSION=1
+
+# ---------------------------------------------------------------------------
+# logging
+# ---------------------------------------------------------------------------
+
+log() { printf 'rivethub-hub: %s\n' "$*" >&2; }
+err() { printf 'rivethub-hub: %s\n' "$*" >&2; exit 1; }
+
+# ---------------------------------------------------------------------------
+# usage
+# ---------------------------------------------------------------------------
+
+usage_root() {
+  cat <<EOF
+Usage: rivethub-hub <command> [args]
+
+Datahub-side helper for RivetHub ${VERSION}. Manages the mesh CA under
+\$RIVETHUB_ROOT (default /var/lib/rivethub) and enrolls nodes via the
+tarball-on-stdout contract. The CA root key never leaves this host.
+
+Commands:
+  ca-init [--force]              Initialize root + intermediate CA
+  enroll <node-name> <host>      Issue a node leaf, update mesh.json, emit tarball
+  renew <node-name>              Re-issue an enrolled node's leaf, emit tarball
+  mesh-export                    Print current mesh.json
+  status                         Human-readable hub status
+
+Global:
+  -h, --help                     Show this help
+
+Environment:
+  RIVETHUB_ROOT              Hub root directory
+  RIVETHUB_CA_SCRIPT         Path to rivet-ca.sh
+  RIVETHUB_ADVERTISE_HOST    This datahub's advertise host (seed in snippets)
+  RIVETHUB_NODE_NAME         This datahub's mesh node name (default datahub)
+
+Requires GNU coreutils (base64 -w0) and util-linux (flock). Linux datahub.
+EOF
+}
+
+usage_ca_init() {
+  cat <<EOF
+Usage: rivethub-hub ca-init [--force]
+
+Initialize the mesh CA (root under \$HUB_ROOT/ca-root, intermediate under
+\$HUB_ROOT/shared/rivet-ca). Idempotent: if a complete CA already exists,
+exit 0 without changing it. Pass --force to wipe and recreate the CA
+(also clears issued leaves; re-enroll nodes).
+EOF
+}
+
+usage_enroll() {
+  cat <<EOF
+Usage: rivethub-hub enroll <node-name> <advertise-host>
+
+Validate node-name, issue a node leaf via rivet-ca.sh, merge the node into
+mesh.json, and write a base64 tarball to stdout. Diagnostics go to stderr.
+
+node-name must match [a-z0-9]([a-z0-9-]*[a-z0-9])? (max 63, no trailing
+hyphen). advertise-host is a DNS name or IP (examples use RFC 5737
+192.0.2.0/24). IPv4 octets must be 0-255.
+
+Tarball contents:
+  <node-name>.crt
+  <node-name>.key
+  ca-chain.pem
+  mesh.json
+  node-config-snippet.yaml
+EOF
+}
+
+usage_renew() {
+  cat <<EOF
+Usage: rivethub-hub renew <node-name>
+
+Re-issue the leaf for an already-enrolled node. SANs:
+
+  rivet-ca.sh always adds DNS:<node>.mesh, DNS:<node>-mcp.mesh,
+  DNS:<node>-runtime-rpc.mesh.
+
+  This helper also passes DNS:<node>.mesh, the mesh.json host (IP: or DNS:),
+  and IP:127.0.0.1.
+
+Renew does not change the node's advertise address — re-enroll with the
+new host for that. Emits the same stdout tarball as enroll.
+EOF
+}
+
+usage_mesh_export() {
+  cat <<EOF
+Usage: rivethub-hub mesh-export
+
+Print the current mesh.json to stdout. Fails if the file is missing.
+EOF
+}
+
+usage_status() {
+  cat <<EOF
+Usage: rivethub-hub status
+
+Print a human-readable report: CA present, intermediate expiry, mesh.json
+($HUB_ROOT/shared/mesh.json — same file enroll writes), postgres
+reachability (pg_isready, skipped if absent), and users.json
+($HUB_ROOT/shared/rivetos/users.json — same file datahub.sh seeds).
+EOF
+}
+
+want_help() {
+  [[ "${1:-}" == "-h" || "${1:-}" == "--help" ]]
+}
+
+# ---------------------------------------------------------------------------
+# paths / layout
+# ---------------------------------------------------------------------------
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+HUB_ROOT=""
+HUB_SHARED=""
+HUB_CA_ROOT=""
+HUB_CA_SHARED=""
+HUB_MESH=""
+HUB_MESH_LOCK=""
+HUB_USERS=""
+HUB_INT=""
+HUB_ISSUED=""
+
+init_paths() {
+  HUB_ROOT="${RIVETHUB_ROOT:-/var/lib/rivethub}"
+  HUB_SHARED="${HUB_ROOT}/shared"
+  HUB_CA_ROOT="${HUB_ROOT}/ca-root"
+  HUB_CA_SHARED="${HUB_SHARED}/rivet-ca"
+  HUB_MESH="${HUB_SHARED}/mesh.json"
+  HUB_MESH_LOCK="${HUB_SHARED}/mesh.json.lock"
+  HUB_USERS="${HUB_SHARED}/rivetos/users.json"
+  HUB_INT="${HUB_CA_SHARED}/intermediate"
+  HUB_ISSUED="${HUB_CA_SHARED}/issued"
+}
+
+ensure_layout() {
+  init_paths
+  mkdir -p "${HUB_SHARED}" "${HUB_SHARED}/rivetos" "${HUB_CA_SHARED}" "${HUB_INT}" "${HUB_ISSUED}" "${HUB_CA_ROOT}"
+  chmod 0700 "${HUB_CA_ROOT}"
+  chmod 0700 "${HUB_ISSUED}"
+}
+
+find_ca_script() {
+  local candidate
+  if [[ -n "${RIVETHUB_CA_SCRIPT:-}" ]]; then
+    [[ -f "${RIVETHUB_CA_SCRIPT}" ]] || err "RIVETHUB_CA_SCRIPT not a file: ${RIVETHUB_CA_SCRIPT}"
+    printf '%s\n' "${RIVETHUB_CA_SCRIPT}"
+    return 0
+  fi
+  for candidate in \
+    "${SCRIPT_DIR}/rivet-ca.sh" \
+    "${SCRIPT_DIR}/../lib/rivet-ca.sh" \
+    /usr/local/lib/rivethub/rivet-ca.sh \
+    /usr/lib/rivethub/rivet-ca.sh \
+    /opt/rivetos/scripts/rivet-ca.sh
+  do
+    if [[ -f "${candidate}" ]]; then
+      printf '%s\n' "${candidate}"
+      return 0
+    fi
+  done
+  err "rivet-ca.sh not found (set RIVETHUB_CA_SCRIPT)"
+}
+
+run_ca() {
+  local ca
+  ca="$(find_ca_script)"
+  # issue-node communicates via files. Any CA/openssl byte on stdout would
+  # precede the enroll tarball and corrupt the SSH decode. Send the whole
+  # child stdout to stderr (log/err in rivet-ca.sh already use stderr).
+  env \
+    RIVET_CA_ROOT_DIR="${HUB_CA_ROOT}" \
+    RIVET_CA_SHARED_DIR="${HUB_CA_SHARED}" \
+    bash "${ca}" "$@" >&2
+}
+
+sync_chain_names() {
+  # rivet-ca.sh writes intermediate/chain.pem; mesh runtime also looks for
+  # ca-chain.pem. Keep both names in the exportable tree.
+  if [[ -f "${HUB_INT}/chain.pem" ]]; then
+    cp -f "${HUB_INT}/chain.pem" "${HUB_INT}/ca-chain.pem"
+  elif [[ -f "${HUB_INT}/ca-chain.pem" ]]; then
+    cp -f "${HUB_INT}/ca-chain.pem" "${HUB_INT}/chain.pem"
+  fi
+}
+
+ca_complete() {
+  [[ -f "${HUB_CA_ROOT}/ca.key" && -f "${HUB_INT}/int.crt" && -f "${HUB_INT}/int.key" ]]
+}
+
+require_python3() {
+  command -v python3 >/dev/null 2>&1 || err "python3 is required to read/write mesh.json"
+}
+
+# ---------------------------------------------------------------------------
+# validation
+# ---------------------------------------------------------------------------
+
+# Allowed charset is [a-z0-9-]. Must start and end with alnum so -h / --force
+# cannot be a name and so the name is a valid DNS label. Max 63.
+validate_node_name() {
+  local name="${1:-}"
+  if [[ -z "${name}" ]]; then
+    return 1
+  fi
+  if [[ "${#name}" -gt 63 ]]; then
+    return 1
+  fi
+  [[ "${name}" =~ ^[a-z0-9]([a-z0-9-]*[a-z0-9])?$ ]]
+}
+
+is_ipv4() {
+  local h="${1:-}"
+  [[ "${h}" =~ ^([0-9]{1,3})\.([0-9]{1,3})\.([0-9]{1,3})\.([0-9]{1,3})$ ]] || return 1
+  local a="${BASH_REMATCH[1]}" b="${BASH_REMATCH[2]}" c="${BASH_REMATCH[3]}" d="${BASH_REMATCH[4]}"
+  # `if (( ))` so a false comparison is not a set -e abort.
+  if ((10#${a} <= 255 && 10#${b} <= 255 && 10#${c} <= 255 && 10#${d} <= 255)); then
+    return 0
+  fi
+  return 1
+}
+
+is_ip_addr() {
+  local h="${1:-}"
+  is_ipv4 "${h}" && return 0
+  # IPv6: at least one colon. Hostnames used here do not contain ':'.
+  [[ "${h}" == *:* ]] && return 0
+  return 1
+}
+
+# Extra SANs passed to rivet-ca.sh issue-node. rivet-ca.sh already adds
+# DNS:<id>.mesh (plus mcp/runtime-rpc); we still pass the task's set
+# explicitly. Prefixed DNS:/IP: as rivet-ca.sh requires.
+build_node_sans() {
+  local name="$1"
+  local host="$2"
+  local extra
+  SANS=("DNS:${name}.mesh")
+  if is_ip_addr "${host}"; then
+    extra="IP:${host}"
+  else
+    extra="DNS:${host}"
+  fi
+  SANS+=("${extra}")
+  SANS+=("IP:127.0.0.1")
+}
+
+seed_host_for_snippet() {
+  # Real path is RIVETHUB_ADVERTISE_HOST. Enroll always writes role=agent, so
+  # the role==datahub scan below only hits a hand-edited mesh.json.
+  local seed="${RIVETHUB_ADVERTISE_HOST:-}"
+  local hub_name="${RIVETHUB_NODE_NAME:-datahub}"
+  if [[ -n "${seed}" ]]; then
+    printf '%s\n' "${seed}"
+    return 0
+  fi
+  if [[ -f "${HUB_MESH}" ]]; then
+    seed="$(python3 - "${HUB_MESH}" <<'PY' || true
+import json, sys
+path = sys.argv[1]
+try:
+    data = json.load(open(path, encoding="utf-8"))
+except Exception:
+    sys.exit(0)
+nodes = data.get("nodes") or {}
+if not isinstance(nodes, dict):
+    sys.exit(0)
+for node in nodes.values():
+    if isinstance(node, dict) and node.get("role") == "datahub" and node.get("host"):
+        print(node["host"])
+        break
+PY
+)"
+    if [[ -n "${seed}" ]]; then
+      printf '%s\n' "${seed}"
+      return 0
+    fi
+  fi
+  printf '%s.mesh\n' "${hub_name}"
+}
+
+# ---------------------------------------------------------------------------
+# mesh.json  (record shape from packages/cli/src/lib/mesh-file.ts)
+#   { version: number, nodes: { [id]: MeshNode }, updatedAt: number }
+#   MeshNode required: id, name, host, port, status
+# ---------------------------------------------------------------------------
+
+mesh_upsert_node() {
+  local mesh_file="$1"
+  local node_id="$2"
+  local host="$3"
+  local port="$4"
+  require_python3
+  python3 - "${mesh_file}" "${node_id}" "${host}" "${port}" "${MESH_FORMAT_VERSION}" <<'PY'
+import json, os, sys, time
+
+path, node_id, host, port_s, fmt_s = sys.argv[1:6]
+port = int(port_s)
+fmt = int(fmt_s)
+now = int(time.time() * 1000)
+
+if os.path.exists(path):
+    with open(path, encoding="utf-8") as f:
+        data = json.load(f)
+    if not isinstance(data, dict):
+        sys.stderr.write("rivethub-hub: mesh.json is not an object\n")
+        sys.exit(1)
+    if isinstance(data.get("nodes"), list):
+        sys.stderr.write(
+            "rivethub-hub: mesh.json uses the pre-capabilities flat-array "
+            "format, which is no longer supported\n"
+        )
+        sys.exit(1)
+else:
+    data = {"version": fmt, "nodes": {}, "updatedAt": now}
+
+nodes = data.get("nodes")
+if nodes is None:
+    nodes = {}
+if not isinstance(nodes, dict):
+    sys.stderr.write("rivethub-hub: mesh.json nodes is not an object\n")
+    sys.exit(1)
+
+existing = nodes.get(node_id)
+if existing is None:
+    existing = {}
+elif not isinstance(existing, dict):
+    existing = {}
+
+node = dict(existing)
+node["id"] = node_id
+if not node.get("name"):
+    node["name"] = node_id
+node["host"] = host
+if "port" not in node or not isinstance(node.get("port"), int):
+    node["port"] = port
+node.setdefault("role", "agent")
+node.setdefault("status", "offline")
+node.setdefault("agents", [])
+node.setdefault("providers", [])
+node.setdefault("models", [])
+node.setdefault("capabilities", [])
+node.setdefault("platform", "linux")
+node.setdefault("registeredAt", now)
+node.setdefault("lastSeen", 0)
+node.setdefault("version", "")
+
+nodes[node_id] = node
+data["version"] = data["version"] if isinstance(data.get("version"), int) else fmt
+data["nodes"] = nodes
+data["updatedAt"] = now
+
+tmp = path + ".tmp"
+with open(tmp, "w", encoding="utf-8") as f:
+    json.dump(data, f, indent=2)
+    f.write("\n")
+os.replace(tmp, path)
+PY
+}
+
+mesh_touch_updated_at() {
+  local mesh_file="$1"
+  require_python3
+  python3 - "${mesh_file}" <<'PY'
+import json, os, sys, time
+path = sys.argv[1]
+with open(path, encoding="utf-8") as f:
+    data = json.load(f)
+data["updatedAt"] = int(time.time() * 1000)
+tmp = path + ".tmp"
+with open(tmp, "w", encoding="utf-8") as f:
+    json.dump(data, f, indent=2)
+    f.write("\n")
+os.replace(tmp, path)
+PY
+}
+
+mesh_node_host() {
+  local mesh_file="$1"
+  local node_id="$2"
+  require_python3
+  python3 - "${mesh_file}" "${node_id}" <<'PY'
+import json, sys
+path, node_id = sys.argv[1], sys.argv[2]
+try:
+    data = json.load(open(path, encoding="utf-8"))
+except Exception:
+    sys.exit(0)
+nodes = data.get("nodes") or {}
+node = nodes.get(node_id) if isinstance(nodes, dict) else None
+if isinstance(node, dict) and node.get("host"):
+    print(node["host"])
+PY
+}
+
+mesh_node_count() {
+  local mesh_file="$1"
+  python3 - "${mesh_file}" <<'PY'
+import json, sys
+path = sys.argv[1]
+data = json.load(open(path, encoding="utf-8"))
+nodes = data.get("nodes")
+if isinstance(nodes, list):
+    print("unsupported-array-format")
+    sys.exit(0)
+if not isinstance(nodes, dict):
+    print("0")
+    sys.exit(0)
+print(len(nodes))
+PY
+}
+
+with_mesh_lock() {
+  mkdir -p "${HUB_SHARED}"
+  (
+    flock 9
+    "$@"
+  ) 9>"${HUB_MESH_LOCK}"
+}
+
+# ---------------------------------------------------------------------------
+# enroll core (transport-agnostic) vs stdout adapter
+# ---------------------------------------------------------------------------
+
+lock_down_issued_keys() {
+  local f
+  chmod 0700 "${HUB_ISSUED}" 2>/dev/null || true
+  shopt -s nullglob
+  for f in "${HUB_ISSUED}"/*.key; do
+    chmod 0600 "${f}"
+  done
+  shopt -u nullglob
+}
+
+# Issue the node leaf. Call under flock (see enroll_core). HTTP enroll can
+# call this only if it already holds the mesh lock — openssl CA db is shared.
+enroll_issue_cert() {
+  local name="$1"
+  local host="$2"
+  [[ -f "${HUB_INT}/int.crt" ]] || err "CA not initialized; run rivethub-hub ca-init"
+  build_node_sans "${name}" "${host}"
+  log "issuing node cert for ${name} (SANs: ${SANS[*]})"
+  run_ca issue-node "${name}" "${SANS[@]}"
+  [[ -f "${HUB_ISSUED}/${name}.crt" ]] || err "rivet-ca.sh issue-node did not write ${HUB_ISSUED}/${name}.crt (interface mismatch)"
+  [[ -f "${HUB_ISSUED}/${name}.key" ]] || err "rivet-ca.sh issue-node did not write ${HUB_ISSUED}/${name}.key (interface mismatch)"
+  lock_down_issued_keys
+}
+
+write_node_config_snippet() {
+  local dest="$1"
+  local name="$2"
+  local seed
+  seed="$(seed_host_for_snippet)"
+  cat >"${dest}" <<EOF
+# Generated by rivethub-hub enroll. Merge into the node's rivet.config.yaml.
+# storage_dir is this node's local RIVETOS_SHARED_DIR (distro default shown).
+mesh:
+  enabled: true
+  node_name: "${name}"
+  tls: true
+  agent_channel_port: ${MESH_PORT}
+  storage_dir: "${NODE_SHARED_PLACEHOLDER}"
+  discovery:
+    mode: seed
+    seed_host: "${seed}"
+    seed_port: ${MESH_PORT}
+EOF
+}
+
+# Stage the five enroll artifacts into dest/. HTTP enroll (v1.1) should call
+# enroll_core (lock + issue + merge + this) and then wrap dest however the
+# HTTP API wants (zip, multipart, etc.).
+assemble_enroll_bundle() {
+  local dest="$1"
+  local name="$2"
+  local chain=""
+  mkdir -p "${dest}"
+  [[ -f "${HUB_ISSUED}/${name}.crt" ]] || err "missing issued cert: ${HUB_ISSUED}/${name}.crt"
+  [[ -f "${HUB_ISSUED}/${name}.key" ]] || err "missing issued key: ${HUB_ISSUED}/${name}.key"
+  [[ -f "${HUB_MESH}" ]] || err "missing mesh.json"
+  if [[ -f "${HUB_INT}/ca-chain.pem" ]]; then
+    chain="${HUB_INT}/ca-chain.pem"
+  elif [[ -f "${HUB_INT}/chain.pem" ]]; then
+    chain="${HUB_INT}/chain.pem"
+  else
+    err "missing intermediate chain (ca-chain.pem / chain.pem); run ca-init"
+  fi
+  cp -f "${HUB_ISSUED}/${name}.crt" "${dest}/${name}.crt"
+  cp -f "${HUB_ISSUED}/${name}.key" "${dest}/${name}.key"
+  chmod 0600 "${dest}/${name}.key"
+  cp -f "${chain}" "${dest}/ca-chain.pem"
+  cp -f "${HUB_MESH}" "${dest}/mesh.json"
+  write_node_config_snippet "${dest}/node-config-snippet.yaml" "${name}"
+}
+
+# SSH/stdout transport adapter. Do not put diagnostics on stdout.
+# Tar to a temp file first so a mid-stream tar failure cannot emit a
+# partial-but-decodable blob before exiting non-zero.
+emit_bundle_tarball_b64() {
+  local dest="$1"
+  local name="$2"
+  local tarfile
+  tarfile="$(mktemp "${TMPDIR:-/tmp}/rivethub-hub.XXXXXX.tgz")"
+  if ! tar -C "${dest}" -czf "${tarfile}" \
+    "${name}.crt" \
+    "${name}.key" \
+    ca-chain.pem \
+    mesh.json \
+    node-config-snippet.yaml
+  then
+    rm -f "${tarfile}"
+    err "failed to build enroll tarball"
+  fi
+  if ! base64 -w0 <"${tarfile}"; then
+    rm -f "${tarfile}"
+    err "failed to base64-encode enroll tarball"
+  fi
+  rm -f "${tarfile}"
+}
+
+# Issue + merge + stage, already under flock. dest is a directory.
+enroll_issue_merge_assemble() {
+  local name="$1"
+  local host="$2"
+  local dest="$3"
+  enroll_issue_cert "${name}" "${host}"
+  mesh_upsert_node "${HUB_MESH}" "${name}" "${host}" "${MESH_PORT}"
+  assemble_enroll_bundle "${dest}" "${name}"
+}
+
+# v1.1 HTTP core: holds flock around issue + mesh merge + staging.
+# Caller wraps dest (zip, multipart, …). Not the stdout adapter.
+enroll_core() {
+  local name="$1"
+  local host="$2"
+  local dest="$3"
+  with_mesh_lock enroll_issue_merge_assemble "${name}" "${host}" "${dest}"
+}
+
+enroll_emit() {
+  local name="$1"
+  local host="$2"
+  local dest
+  dest="$(mktemp -d)"
+  # dest is an mktemp path; expand now. EXIT covers err()/exit as well as return.
+  # shellcheck disable=SC2064
+  trap "rm -rf '${dest}'" EXIT
+  enroll_core "${name}" "${host}" "${dest}"
+  log "enrolled ${name} host=${host}; emitting tarball"
+  emit_bundle_tarball_b64 "${dest}" "${name}"
+  rm -rf "${dest}"
+  trap - EXIT
+}
+
+# ---------------------------------------------------------------------------
+# subcommands
+# ---------------------------------------------------------------------------
+
+cmd_ca_init() {
+  local force=0
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      -h|--help)
+        usage_ca_init
+        return 0
+        ;;
+      --force)
+        force=1
+        shift
+        ;;
+      *)
+        err "ca-init: unexpected argument: $1 (try -h)"
+        ;;
+    esac
+  done
+
+  ensure_layout
+  find_ca_script >/dev/null
+  with_mesh_lock ca_init_apply "${force}"
+}
+
+ca_init_apply() {
+  local force="$1"
+
+  if [[ "${force}" -eq 1 ]]; then
+    log "--force: wiping CA root, intermediate, and issued leaves"
+    rm -rf "${HUB_CA_ROOT}"
+    rm -rf "${HUB_INT}"
+    rm -rf "${HUB_ISSUED}"
+    mkdir -p "${HUB_CA_ROOT}" "${HUB_INT}" "${HUB_ISSUED}"
+    chmod 0700 "${HUB_CA_ROOT}"
+    chmod 0700 "${HUB_ISSUED}"
+  elif ca_complete; then
+    log "CA already initialized at ${HUB_CA_ROOT}; refusing to overwrite (pass --force)"
+    return 0
+  fi
+
+  if [[ ! -f "${HUB_CA_ROOT}/ca.key" ]]; then
+    log "initializing root CA in ${HUB_CA_ROOT}"
+    run_ca init
+  else
+    log "root CA already present; leaving it in place"
+  fi
+  chmod 0700 "${HUB_CA_ROOT}"
+  if [[ -f "${HUB_CA_ROOT}/ca.key" ]]; then
+    chmod 0600 "${HUB_CA_ROOT}/ca.key"
+  fi
+
+  if [[ ! -f "${HUB_INT}/int.key" ]]; then
+    log "issuing intermediate CA in ${HUB_INT}"
+    run_ca issue-intermediate
+  else
+    log "intermediate already present; leaving it in place"
+  fi
+  sync_chain_names
+  chmod 0700 "${HUB_ISSUED}"
+  log "CA ready (root stays on this host; intermediate is under ${HUB_CA_SHARED})"
+}
+
+cmd_enroll() {
+  if want_help "${1:-}"; then
+    usage_enroll
+    return 0
+  fi
+  if [[ $# -ne 2 ]]; then
+    usage_enroll >&2
+    err "enroll: expected <node-name> <advertise-host>"
+  fi
+  local name="$1"
+  local host="$2"
+  validate_node_name "${name}" || err "enroll: invalid node-name '${name}' (expected [a-z0-9]([a-z0-9-]*[a-z0-9])?, max 63)"
+  [[ -n "${host}" ]] || err "enroll: advertise-host is empty"
+  if [[ "${host}" =~ ^[0-9.]+$ ]]; then
+    is_ipv4 "${host}" || err "enroll: advertise-host '${host}' is not a valid IPv4 address"
+  fi
+
+  ensure_layout
+  enroll_emit "${name}" "${host}"
+}
+
+cmd_renew() {
+  if want_help "${1:-}"; then
+    usage_renew
+    return 0
+  fi
+  if [[ $# -ne 1 ]]; then
+    usage_renew >&2
+    err "renew: expected <node-name>"
+  fi
+  local name="$1"
+  local dest=""
+  validate_node_name "${name}" || err "renew: invalid node-name '${name}'"
+
+  ensure_layout
+  [[ -f "${HUB_MESH}" ]] || err "renew: ${name} is not enrolled (no mesh.json)"
+
+  dest="$(mktemp -d)"
+  # shellcheck disable=SC2064
+  trap "rm -rf '${dest}'" EXIT
+  with_mesh_lock renew_locked "${name}" "${dest}"
+  log "renewed ${name}; emitting tarball"
+  emit_bundle_tarball_b64 "${dest}" "${name}"
+  rm -rf "${dest}"
+  trap - EXIT
+}
+
+renew_locked() {
+  local name="$1"
+  local dest="$2"
+  local host=""
+  host="$(mesh_node_host "${HUB_MESH}" "${name}")"
+  [[ -n "${host}" ]] || err "renew: ${name} is not enrolled"
+  enroll_issue_cert "${name}" "${host}"
+  mesh_touch_updated_at "${HUB_MESH}"
+  assemble_enroll_bundle "${dest}" "${name}"
+}
+
+cmd_mesh_export() {
+  if want_help "${1:-}"; then
+    usage_mesh_export
+    return 0
+  fi
+  if [[ $# -ne 0 ]]; then
+    usage_mesh_export >&2
+    err "mesh-export: unexpected argument: $1"
+  fi
+  init_paths
+  [[ -f "${HUB_MESH}" ]] || err "mesh-export: ${HUB_MESH} not found"
+  cat "${HUB_MESH}"
+}
+
+json_valid() {
+  local file="$1"
+  python3 - "${file}" <<'PY' >/dev/null 2>&1
+import json, sys
+json.load(open(sys.argv[1], encoding="utf-8"))
+PY
+}
+
+cmd_status() {
+  if want_help "${1:-}"; then
+    usage_status
+    return 0
+  fi
+  if [[ $# -ne 0 ]]; then
+    usage_status >&2
+    err "status: unexpected argument: $1"
+  fi
+  init_paths
+
+  printf 'hub root:      %s\n' "${HUB_ROOT}"
+
+  if [[ -f "${HUB_CA_ROOT}/ca.key" ]]; then
+    printf 'ca root:       present\n'
+  else
+    printf 'ca root:       absent\n'
+  fi
+
+  if [[ -f "${HUB_INT}/int.crt" ]]; then
+    local enddate=""
+    if command -v openssl >/dev/null 2>&1; then
+      enddate="$(openssl x509 -in "${HUB_INT}/int.crt" -noout -enddate 2>/dev/null | sed 's/^notAfter=//' || true)"
+    fi
+    if [[ -n "${enddate}" ]]; then
+      printf 'intermediate:  present  notAfter=%s\n' "${enddate}"
+    else
+      printf 'intermediate:  present  notAfter=unreadable\n'
+    fi
+  else
+    printf 'intermediate:  absent\n'
+  fi
+
+  if [[ -f "${HUB_MESH}" ]]; then
+    local ncount="?"
+    if command -v python3 >/dev/null 2>&1; then
+      ncount="$(mesh_node_count "${HUB_MESH}" || true)"
+    fi
+    printf 'mesh.json:     present  nodes=%s  %s\n' "${ncount}" "${HUB_MESH}"
+  else
+    printf 'mesh.json:     absent  %s\n' "${HUB_MESH}"
+  fi
+
+  if [[ -f "${HUB_USERS}" ]]; then
+    if command -v python3 >/dev/null 2>&1 && json_valid "${HUB_USERS}"; then
+      printf 'users.json:    present  valid  %s\n' "${HUB_USERS}"
+    elif command -v python3 >/dev/null 2>&1; then
+      printf 'users.json:    present  invalid JSON  %s\n' "${HUB_USERS}"
+    else
+      printf 'users.json:    present  (not validated, python3 missing)  %s\n' "${HUB_USERS}"
+    fi
+  else
+    printf 'users.json:    absent  %s\n' "${HUB_USERS}"
+  fi
+
+  if command -v pg_isready >/dev/null 2>&1; then
+    if pg_isready >/dev/null 2>&1; then
+      printf 'postgres:      reachable\n'
+    else
+      printf 'postgres:      not reachable\n'
+    fi
+  else
+    printf 'postgres:      skipped (pg_isready not found)\n'
+  fi
+}
+
+rivethub_hub_main() {
+  local cmd="${1:-}"
+  if [[ $# -gt 0 ]]; then
+    shift
+  fi
+  case "${cmd}" in
+    ca-init)      cmd_ca_init "$@" ;;
+    enroll)       cmd_enroll "$@" ;;
+    renew)        cmd_renew "$@" ;;
+    mesh-export)  cmd_mesh_export "$@" ;;
+    status)       cmd_status "$@" ;;
+    -h|--help|help|"")
+      usage_root
+      ;;
+    *)
+      err "unknown command: ${cmd} (try --help)"
+      ;;
+  esac
+}
+
+if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
+  rivethub_hub_main "$@"
+fi

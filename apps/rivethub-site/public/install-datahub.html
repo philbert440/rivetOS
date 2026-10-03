@@ -68,22 +68,23 @@
 
   <section class="block">
     <p class="kicker">the command</p>
-    <h2>Run it from a checkout</h2>
-    <p>From a checkout of the rivethub-distro repository, on the host that
-    will be your hub:</p>
+    <h2>One command, as root</h2>
+    <p>On the host that will be your hub:</p>
     <div class="term">
       <div class="term__bar"><i></i><i></i><i></i><span class="term__title">datahub installer</span></div>
-      <pre tabindex="0" data-copy="sudo bash install/datahub.sh"><code><span class="ps">$ </span>sudo bash install/datahub.sh</code></pre>
+      <pre tabindex="0" data-copy="curl -fsSL https://get.rivethub.io/datahub.sh | sudo bash"><code><span class="ps">$ </span>curl -fsSL https://get.rivethub.io/datahub.sh | sudo bash</code></pre>
     </div>
-    <div class="warn">
-      <strong>No curl-pipe yet.</strong>
-      <code>curl -fsSL https://get.rivethub.io/datahub.sh | bash</code> is
-      <strong>refused in preflight, before any write</strong>: piped in,
-      the script has no sibling <code>bin/rivethub-hub</code> to work with.
-      A checkout is the only path that works until the
-      helpers are published. If you must invoke the script from elsewhere,
-      set <code>RIVETHUB_DISTRO_DIR</code> /
-      <code>RIVETHUB_MIGRATIONS_DIR</code>.
+    <p>Piped in, the script has no helper files beside it, so preflight
+    fetches <code>bin/rivethub-hub</code>, <code>lib/rivet-ca.sh</code> and
+    the two worker units from <code>get.rivethub.io</code> and checks each
+    against its SHA256 in <code>pins/stable.json</code>. A missing pin or a
+    mismatch is <strong>refused before the installer writes anything</strong>.
+    The pins come from the same server as the files, so this catches a broken
+    or half-published release, not a compromised server. To read it first,
+    download it and run the file:</p>
+    <div class="term">
+      <div class="term__bar"><i></i><i></i><i></i><span class="term__title">read, then run</span></div>
+      <pre tabindex="0" data-copy="curl -fsSLO https://get.rivethub.io/datahub.sh &amp;&amp; less datahub.sh &amp;&amp; sudo bash datahub.sh"><code><span class="ps">$ </span>curl -fsSLO https://get.rivethub.io/datahub.sh &amp;&amp; less datahub.sh &amp;&amp; sudo bash datahub.sh</code></pre>
     </div>
   </section>
 
@@ -93,12 +94,14 @@
     <p>On a terminal, unset fields are prompted (defaults shown), then a
     SUMMARY, then an explicit <code>yes</code> before anything is written.
     Flags and <code>RIVETHUB_*</code> env vars skip their own prompt;
-    <code>--yes</code> skips the final confirm. On non-TTY (plain ssh, no
-    controlling terminal) <code>--yes</code> also accepts each prompt's
-    documented default. Fields with no default are listed together in one
+    <code>--yes</code> skips the final confirm. With no terminal to ask
+    on (plain ssh without <code>-t</code>, cron) nothing is prompted and
+    there is no confirm, with or without <code>--yes</code>: flags, env vars
+    and each prompt's documented default apply, and the install proceeds.
+    Fields with no default are listed together in one
     error with their env names
-    (<code>RIVETOS_EMBED_URL</code> / <code>RIVETOS_COMPACTOR_URL</code>
-    for <code>--memory full</code>).</p>
+    (<code>RIVETOS_EMBED_URL</code> / <code>RIVETOS_COMPACTOR_URL</code> /
+    <code>RIVETOS_COMPACTOR_MODEL</code> for <code>--memory full</code>).</p>
     <ul class="facts">
       <li><strong>Owner user id</strong> — seeds <code>users.json</code>
       (default <code>owner</code>; honored on first run only).</li>
@@ -109,7 +112,7 @@
       <code>rivet-compactor.service</code> (not started until a RivetOS
       runtime is present).</li>
       <li><strong>Install mode</strong> — bare-metal Postgres from PGDG
-      packages (the default) or <code>--docker</code> for the pinned pgvector
+      packages (the default) or <code>--docker</code> for the pgvector
       image under systemd.</li>
       <li><strong>Re-run</strong> — an existing install is detected and the
       wizard offers resume / reconfigure-safe-bits / abort. CA re-init and

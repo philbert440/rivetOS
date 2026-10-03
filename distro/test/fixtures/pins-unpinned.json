@@ -1,0 +1,9 @@
+{
+  "rivetos_tag": "UNPINNED",
+  "local_ref": "UNPINNED",
+  "image": "ghcr.io/philbert440/rivetos:UNPINNED",
+  "rivet_ca_sha256": "UNPINNED",
+  "hub_helper_version": "0.1.0",
+  "pgvector_image": "UNPINNED",
+  "local_sh_sha256": "UNPINNED"
+}

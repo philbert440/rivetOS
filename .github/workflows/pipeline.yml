@@ -189,6 +189,11 @@ jobs:
       - name: Integration helper tests
         run: npm run test:integration-helpers
 
+      # The get.rivethub.io installers are not an nx workspace member either.
+      # Stdin is closed: one fake in the datahub suite reads it and would hang.
+      - name: Installer tests
+        run: npx --yes bats@1.13.0 distro/test </dev/null
+
       - name: Build
         env:
           PUBLIC_POSTHOG_KEY: ${{ secrets.PUBLIC_POSTHOG_KEY }}
