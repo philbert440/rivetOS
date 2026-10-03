@@ -34,13 +34,18 @@ async function inTransaction<T>(
   fn: (q: Queryable) => Promise<T>,
   /**
    * Serialize with every other transaction holding the same lock name (a
-   * transaction-scoped advisory lock, released at COMMIT/ROLLBACK). Taken
-   * only when this call opens the transaction.
+   * transaction-scoped advisory lock, released at COMMIT/ROLLBACK). With a
+   * client it is taken in the caller's transaction.
    */
   lockName?: string,
 ): Promise<T> {
   const maybePool = db as Partial<pg.Pool>
   if (typeof maybePool.connect !== 'function' || typeof maybePool.totalCount !== 'number') {
+    // A client: the caller owns the transaction, and the lock joins it.
+    // (`release` tells a real client from a bare query stub in unit tests.)
+    if (lockName !== undefined && typeof (db as Partial<pg.PoolClient>).release === 'function') {
+      await db.query('SELECT pg_advisory_xact_lock(hashtextextended($1, 0))', [lockName])
+    }
     return fn(db)
   }
   const client = await (db as pg.Pool).connect()

@@ -193,6 +193,17 @@ describe('lookup rules', () => {
   })
 })
 
+describe('isTagLiteral', () => {
+  it('accepts what the server accepts, including a full-width colon', async () => {
+    const { isTagLiteral } = await import('./session-tags.js')
+    expect(isTagLiteral('project:TenPAL')).toBe(true)
+    expect(isTagLiteral('project\uFF1Atenpal')).toBe(true)
+    for (const bad of ['project', ':x', 'project:', 'project:   ', '']) {
+      expect(isTagLiteral(bad)).toBe(false)
+    }
+  })
+})
+
 describe('pending review helpers', () => {
   it('says "first N" when the page is full', async () => {
     const { pendingCountLabel } = await import('./session-tags.js')

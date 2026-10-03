@@ -4,7 +4,7 @@
  * memory views all read tags the same way. No React, no fetch.
  */
 
-import type { PendingTagWire, Tag, TagWire } from '@rivetos/types'
+import { parseTagLiteral, type PendingTagWire, type Tag, type TagWire } from '@rivetos/types'
 import type { SessionListRow } from './session-list.js'
 
 /** Either wire or domain tag — the hub only reads these fields. */
@@ -152,6 +152,14 @@ export function groupPendingBySession(tags: readonly PendingTagWire[]): PendingS
     groups.set(id, g)
   }
   return [...groups.values()]
+}
+
+/**
+ * Whether typed text is a `key:value` literal the server will accept: both
+ * sides present after normalization, split at `:` or a full-width colon.
+ */
+export function isTagLiteral(text: string): boolean {
+  return parseTagLiteral(text) !== null
 }
 
 /** Only an accepted tag is a filter: filters match accepted tags. */

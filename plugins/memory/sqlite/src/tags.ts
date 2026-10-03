@@ -446,6 +446,9 @@ export class SqliteTagStore {
 /**
  * `col IN (…) OR col LIKE ? ESCAPE '\' …` for `exact` then `like` bound in
  * that order. The exact list is never empty (a key aliases at least to itself).
+ * SQLite's LIKE ignores ASCII case where Postgres' does not; the patterns pin
+ * a harness prefix and a uuid tail, so only a case variant of the same
+ * session could match.
  */
 function sessionKeyPredicate(col: string, exact: number, like: number): string {
   const parts = [`${col} IN (${marks(exact)})`]
