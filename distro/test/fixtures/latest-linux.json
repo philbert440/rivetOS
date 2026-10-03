@@ -1,0 +1,17 @@
+{
+  "rivetos": "v0.5.0",
+  "apps": {
+    "linux": {
+      "version": "0.5.21",
+      "file": "RivetHub-0.5.21.AppImage",
+      "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "sizeMB": 123.2,
+      "channel": "stable"
+    },
+    "win32": {
+      "version": "0.5.21",
+      "file": "RivetHub-Setup-0.5.21.exe",
+      "sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+    }
+  }
+}

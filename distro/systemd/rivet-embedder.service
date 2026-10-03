@@ -1,0 +1,44 @@
+# RivetHub embedding worker (graphile-worker).
+#
+# Installed by install/datahub.sh --memory full. Env comes from
+# /var/lib/rivethub/datahub.env (RIVETOS_PG_URL, RIVETOS_EMBED_URL,
+# RIVETOS_EMBED_MODEL). v1 does not vendor a Node runtime: this unit is
+# left disabled until /opt/rivetos/services/embedding-worker/dist/index.js
+# exists (pinned rivetOS checkout or image unpack). See install/datahub.sh
+# banner TODO.
+#
+# Required env (services/embedding-worker/src/config.ts):
+#   RIVETOS_PG_URL, RIVETOS_EMBED_URL
+# Optional: RIVETOS_EMBED_MODEL (default nemotron)
+
+[Unit]
+Description=RivetHub embedding worker
+# After=postgresql.service is a no-op on docker-only hosts (that unit does
+# not exist); rivethub-postgres.service covers --docker.
+After=network-online.target postgresql.service rivethub-postgres.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=rivet
+Group=rivet
+WorkingDirectory=/opt/rivetos/services/embedding-worker
+ExecStart=/usr/bin/node /opt/rivetos/services/embedding-worker/dist/index.js
+Restart=always
+RestartSec=5
+EnvironmentFile=-/var/lib/rivethub/datahub.env
+Environment=HOME=/home/rivet
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=rivet-embedder
+MemoryMax=512M
+ProtectSystem=strict
+ProtectHome=false
+# /opt/rivetos is the runtime tree (root-owned, read-only). Workers log to
+# the journal and use HOME=/home/rivet for caches; do not grant write on
+# the runtime or a 0755 root tree will EACCES under User=rivet.
+ReadWritePaths=/home/rivet /var/lib/rivethub
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target

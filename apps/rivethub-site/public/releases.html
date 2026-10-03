@@ -51,7 +51,7 @@
     <p class="kicker">the pin file</p>
     <h2>What "stable" means here</h2>
     <p>Every fetch the installers make from RivetOS goes through one pin
-    file, <code>pins/stable.json</code> in the distro repository:</p>
+    file, <code>distro/pins/stable.json</code> in the RivetOS repository:</p>
     <dl class="what">
       <div>
         <dt><code>rivetos_tag</code></dt>
@@ -88,7 +88,7 @@
     <p>The machine-readable channel file is served at
     <a href="releases/latest.json"><code>releases/latest.json</code></a>.
     It includes the runtime channel, installer checksums, and an <code>apps</code> object for Linux, Windows and Android. Each app entry has <code>version</code>, <code>file</code>, <code>sha256</code> and <code>sizeMB</code> (rounded decimal MB). Downloads use <code>https://rivethub.io/releases/&lt;file&gt;</code>; the local guide and <a href="apps.html">Apps page</a> read this feed.</p>
-    <dl class="what"><div><dt><code>local.sh</code></dt><dd>The full laptop setup: hub, agent runtime, and local UI. Published at <code>https://get.rivethub.io/local.sh</code>; SHA256 in <code>local_sh_sha256</code>.</dd></div><div><dt><code>datahub.sh</code></dt><dd>Dedicated datahub. Published for reading and checksum verification (<code>datahub_sh_sha256</code>) — running it requires a distro checkout, as the <a href="install-datahub.html">datahub guide</a> explains.</dd></div><div><dt><code>node.sh</code></dt><dd>Enroll an agent node. Checksum in <code>node_sh_sha256</code>.</dd></div></dl>
+    <dl class="what"><div><dt><code>local.sh</code></dt><dd>The full laptop setup: hub, agent runtime, and local UI. Published at <code>https://get.rivethub.io/local.sh</code>; SHA256 in <code>local_sh_sha256</code>.</dd></div><div><dt><code>datahub.sh</code></dt><dd>Dedicated datahub. Published at <code>https://get.rivethub.io/datahub.sh</code>; SHA256 in <code>datahub_sh_sha256</code>. The helpers it fetches are pinned by their own <code>*_sha256</code> fields in <code>pins/stable.json</code>, as the <a href="install-datahub.html">datahub guide</a> explains.</dd></div><div><dt><code>node.sh</code></dt><dd>Enroll an agent node. Checksum in <code>node_sh_sha256</code>.</dd></div></dl>
   </section>
 
   <section class="block">
