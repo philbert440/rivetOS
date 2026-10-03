@@ -14,6 +14,14 @@ fun persistSessionMode(mode: SessionMode): String = when (mode) {
 }
 
 /**
+ * Whether a view change should write [sessionModes]. Only the user's own
+ * Terminal|Chat control is explicit; system Back and the terminal chrome
+ * back arrow are view-only and must not overwrite an explicit choice or
+ * invent a `chat` entry over a terminal-only row.
+ */
+fun shouldPersistSessionMode(explicit: Boolean): Boolean = explicit
+
+/**
  * After adopt/rekey, copy the mode from the retired id onto the canonical
  * one. The canonical entry wins if both exist.
  */

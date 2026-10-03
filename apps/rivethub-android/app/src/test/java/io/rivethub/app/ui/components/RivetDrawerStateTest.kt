@@ -79,4 +79,28 @@ class RivetDrawerStateTest {
         s.dragBy(-5f)
         assertEquals(0f, s.fraction, 0f)
     }
+
+    @Test fun `while closing, targetOpen is false so an edge swipe is not a scrim drag`() = drawerTest { s ->
+        s.open()
+        val closing = launch { s.close() }
+        yield()
+        yield()
+        assertTrue(s.fraction > 0f)
+        assertTrue(s.isOpen)
+        assertFalse(s.targetOpen)
+        // Host uses targetOpen for claim rules (RivetDrawerHost), not isOpen.
+        closing.cancel()
+    }
+
+    @Test fun `Saver restores an open drawer from targetOpen`() {
+        val open = RivetDrawerState(initiallyOpen = true)
+        assertEquals(1f, open.fraction, 0f)
+        assertTrue(open.targetOpen)
+        val restored = RivetDrawerState.Saver.restore(true)!!
+        assertEquals(1f, restored.fraction, 0f)
+        assertTrue(restored.targetOpen)
+        val closed = RivetDrawerState.Saver.restore(false)!!
+        assertEquals(0f, closed.fraction, 0f)
+        assertFalse(closed.targetOpen)
+    }
 }

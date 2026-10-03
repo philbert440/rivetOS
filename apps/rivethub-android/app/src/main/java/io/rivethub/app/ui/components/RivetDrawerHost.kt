@@ -25,6 +25,7 @@ import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.saveable.Saver
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.Rect
@@ -64,10 +65,10 @@ import kotlinx.coroutines.launch
  * sheet is still sliding in.
  */
 @Stable
-class RivetDrawerState {
-    var fraction by mutableFloatStateOf(0f)
+class RivetDrawerState(initiallyOpen: Boolean = false) {
+    var fraction by mutableFloatStateOf(if (initiallyOpen) 1f else 0f)
         private set
-    var targetOpen by mutableStateOf(false)
+    var targetOpen by mutableStateOf(initiallyOpen)
         private set
 
     /**
@@ -109,6 +110,14 @@ class RivetDrawerState {
     suspend fun peek(value: Float) = mutex.mutate {
         fraction = value.coerceIn(0f, 1f)
     }
+
+    companion object {
+        /** Survives process death / locale-density config changes via [targetOpen]. */
+        val Saver: Saver<RivetDrawerState, Boolean> = Saver(
+            save = { it.targetOpen },
+            restore = { RivetDrawerState(initiallyOpen = it) },
+        )
+    }
 }
 
 /**
@@ -116,19 +125,22 @@ class RivetDrawerState {
  *
  *  - A swipe from the left edge pulls the sheet out under the finger and
  *    lands open or closed by fling speed, else by how far it got
- *    (`plane/DrawerSwipe.kt`). The edge zone reaches past the system Back
- *    gesture's inset, so under gesture navigation a swipe that starts just
- *    inside the screen opens it. With [excludeBackGesture] (the hub home,
- *    where Back has nothing in the app to return to) a
- *    [EDGE_EXCLUSION_HEIGHT_DP]-tall band of the bezel is also excluded from
- *    the Back gesture while the drawer is closed, so a swipe from the very
- *    edge opens it there. Elsewhere (a chat, its terminal) the bezel stays Back.
+ *    (`plane/DrawerSwipe.kt`). With [excludeBackGesture] (the hub home,
+ *    where Back has nothing in the app to return to) the edge zone reaches
+ *    past the system Back inset and a [EDGE_EXCLUSION_HEIGHT_DP]-tall band of
+ *    the bezel is also excluded from Back while the drawer is closed, so a
+ *    swipe from the very edge opens it there. Elsewhere (a chat, its
+ *    terminal) the zone is `max(24dp, inset)` and the bezel stays Back; the
+ *    claim also waits for [PointerEventPass.Final] so a horizontal-scroll
+ *    child under the down (code block, key toolbar) keeps its drag.
  *  - A drag that is interrupted (pointer lost, the gesture layer restarted on
  *    a rotation or inset change) still settles, so the sheet never stays
  *    half-open.
  *  - An open sheet follows a leftward drag started on the scrim, or on any
  *    part of the sheet whose content did not take the drag (rows keep
- *    swipe-to-archive), and a scrim tap closes it.
+ *    swipe-to-archive), and a scrim tap closes it. [targetOpen] (not
+ *    [RivetDrawerState.isOpen]) decides open vs closed claim rules, so an
+ *    edge swipe during the closing spring is not judged a scrim drag.
  *  - Predictive Back is the host's job (`HubDrawer`), through [RivetDrawerState.peek].
  *
  * The drawer body stays composed while closed (list scroll and state
@@ -150,7 +162,12 @@ fun RivetDrawerHost(
     val gestureInset = WindowInsets.systemGestures.getLeft(density, layoutDirection).toFloat()
     val sheetPx = with(density) { sheetWidth.toPx() }
     val zone = with(density) {
-        drawerEdgeZone(gestureInset, EDGE_ZONE_DP.dp.toPx(), EDGE_ZONE_PAST_INSET_DP.dp.toPx())
+        drawerEdgeZone(
+            gestureInset,
+            EDGE_ZONE_DP.dp.toPx(),
+            EDGE_ZONE_PAST_INSET_DP.dp.toPx(),
+            reachPastInset = excludeBackGesture,
+        )
     }
     val fling = with(density) { DRAWER_FLING_DP_PER_S.dp.toPx() }
     val exclusionHeight = with(density) { EDGE_EXCLUSION_HEIGHT_DP.dp.toPx() }
@@ -179,14 +196,20 @@ fun RivetDrawerHost(
             .pointerInput(state, sheetPx, zone, slop) {
                 awaitEachGesture {
                     val down = awaitFirstDown(requireUnconsumed = false)
-                    val startOpen = state.isOpen
+                    // targetOpen, not isOpen: during the closing spring
+                    // fraction > 0 but an edge swipe must use closed rules.
+                    val startOpen = state.targetOpen
                     val startFraction = state.fraction
                     var claimed = false
                     var settled = false
                     val tracker = VelocityTracker()
                     try {
                         while (true) {
-                            val event = awaitPointerEvent(PointerEventPass.Initial)
+                            // Final until claimed so a horizontal-scroll child
+                            // under the down gets Main first; Initial once we
+                            // own the gesture so children cannot steal it back.
+                            val pass = if (claimed) PointerEventPass.Initial else PointerEventPass.Final
+                            val event = awaitPointerEvent(pass)
                             val change = event.changes.firstOrNull { it.id == down.id } ?: break
                             val dx = change.position.x - down.position.x
                             if (!change.pressed) {
@@ -208,6 +231,7 @@ fun RivetDrawerHost(
                                     sheetWidth = sheetPx,
                                     zone = zone,
                                     slop = slop,
+                                    childConsumed = change.isConsumed,
                                 )
                                 if (!claimed) {
                                     // Past the slop without claiming: a scroll or

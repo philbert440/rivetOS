@@ -6,12 +6,19 @@ import androidx.compose.ui.unit.dp
  * Desktop radius scale. The Omarchy-style redesign squares every corner
  * (theme.css `--radius*: 0`); only [full] — status dots, toggles, round
  * icon buttons — stays round, as `rounded-full` does on the web.
+ *
+ * [md]/[lg]/[xl]/[xxl] are kept as named 0.dp aliases so call sites that
+ * still say `Radius.xl` (bubbles, cards) compile; they are not distinct sizes.
  */
 object Radius {
     val sm = 0.dp
+    /** Alias of [sm] — every non-[full] radius is 0.dp. */
     val md = 0.dp
+    /** Alias of [sm] — every non-[full] radius is 0.dp. */
     val lg = 0.dp
+    /** Alias of [sm] — every non-[full] radius is 0.dp. */
     val xl = 0.dp
+    /** Alias of [sm] — every non-[full] radius is 0.dp. */
     val xxl = 0.dp
     val full = 999.dp
 }

@@ -167,6 +167,3 @@ object RivetTheme {
         @ReadOnlyComposable
         get() = LocalRivetColors.current
 }
-
-/** Desktop `text-bg` on `em` fills. */
-val OnEm = Color(RivetPalette.OnEm)

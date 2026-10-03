@@ -114,7 +114,9 @@ class MainActivity : ComponentActivity() {
             // just the OS mode (light icons on the dark theme and vice versa);
             // an Omarchy palette brings its own light/dark.
             val systemDark = isSystemInDarkTheme()
-            val dark = resolveRivetColors(mode, palette, systemDark).second
+            val (_, dark) = remember(mode, palette, systemDark) {
+                resolveRivetColors(mode, palette, systemDark)
+            }
             SideEffect {
                 WindowInsetsControllerCompat(window, window.decorView).run {
                     isAppearanceLightStatusBars = !dark

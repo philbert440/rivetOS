@@ -10,8 +10,13 @@ class DrawerSwipeTest {
     private val slop = 20f
     private val sheet = 810f
 
-    private fun claims(startX: Float, dx: Float, dy: Float = 0f, open: Boolean = false) =
-        claimsDrawerDrag(startX, dx, dy, open, sheet, zone, slop)
+    private fun claims(
+        startX: Float,
+        dx: Float,
+        dy: Float = 0f,
+        open: Boolean = false,
+        childConsumed: Boolean = false,
+    ) = claimsDrawerDrag(startX, dx, dy, open, sheet, zone, slop, childConsumed = childConsumed)
 
     @Test fun `left edge drag rightward takes the closed drawer`() {
         assertTrue(claims(startX = 10f, dx = 30f))
@@ -51,6 +56,19 @@ class DrawerSwipeTest {
         assertEquals(54f, drawerEdgeZone(systemGestureInset = 30f), 0f)
         // A tiny inset never shrinks the zone below the floor.
         assertEquals(24f, drawerEdgeZone(systemGestureInset = 1f, pastInset = 0f), 0f)
+    }
+
+    @Test fun `outside the hub exclusion band the zone stays max of floor and inset`() {
+        assertEquals(30f, drawerEdgeZone(systemGestureInset = 30f, reachPastInset = false), 0f)
+        assertEquals(24f, drawerEdgeZone(systemGestureInset = 10f, reachPastInset = false), 0f)
+        assertEquals(24f, drawerEdgeZone(systemGestureInset = 0f, reachPastInset = false), 0f)
+    }
+
+    @Test fun `a horizontal child that already took the move keeps the drawer out`() {
+        assertTrue(claims(startX = 10f, dx = 30f))
+        assertFalse(claims(startX = 10f, dx = 30f, childConsumed = true))
+        // Open scrim drag likewise yields when a child consumed.
+        assertFalse(claims(startX = 900f, dx = -40f, open = true, childConsumed = true))
     }
 
     @Test fun `a fast fling goes its own way whatever the position`() {

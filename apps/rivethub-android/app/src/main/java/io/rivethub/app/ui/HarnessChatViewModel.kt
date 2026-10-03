@@ -20,6 +20,7 @@ import io.rivethub.app.plane.harnessFromSessionId
 import io.rivethub.app.plane.opensTerminalOnly
 import io.rivethub.app.plane.parseDefaultView
 import io.rivethub.app.plane.resolveSessionMode
+import io.rivethub.app.plane.shouldPersistSessionMode
 import io.rivethub.app.plane.serverInFlightIsStale
 import io.rivethub.app.gateway.nativeIdOf
 import io.rivethub.app.gateway.isTurnInFlight
@@ -490,10 +491,18 @@ class HarnessChatViewModel(
     }
     fun setMoreOpen(v: Boolean) = _state.update { it.copy(moreOpen = v) }
 
-    fun setMode(mode: SessionMode) {
+    /**
+     * Switch Chat ↔ Terminal. [explicit] true (default) is the segmented
+     * control and writes [sessionModes]; false is system Back / terminal
+     * chrome back — view only, so an explicit Terminal choice and
+     * terminal-only rows keep their stored mode.
+     */
+    fun setMode(mode: SessionMode, explicit: Boolean = true) {
         val resync = _state.value.mode == SessionMode.Terminal && mode == SessionMode.Chat
         _state.update { it.copy(mode = mode) }
-        viewModelScope.launch { c.settings.setSessionMode(_state.value.sessionId, persistSessionMode(mode)) }
+        if (shouldPersistSessionMode(explicit)) {
+            viewModelScope.launch { c.settings.setSessionMode(_state.value.sessionId, persistSessionMode(mode)) }
+        }
         if (resync) syncNow()
     }
 

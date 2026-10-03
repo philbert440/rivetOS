@@ -30,6 +30,7 @@ import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Modifier
@@ -127,7 +128,7 @@ fun HubDrawer(
     content: @Composable (openDrawer: () -> Unit) -> Unit,
 ) {
     val st by vm.state.collectAsState()
-    val drawerState = remember { RivetDrawerState() }
+    val drawerState = rememberSaveable(saver = RivetDrawerState.Saver) { RivetDrawerState() }
     val scope = rememberCoroutineScope()
     var inboxOpen by remember { mutableStateOf(false) }
     var agentsPickerOpen by remember { mutableStateOf(false) }

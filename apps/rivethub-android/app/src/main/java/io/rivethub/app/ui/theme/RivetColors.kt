@@ -39,9 +39,6 @@ object RivetPalette {
     const val LightWarn = 0xFFB45309L
     const val LightLink = 0xFF0969DAL
     const val LightAssistant = 0xFF3C4756L
-
-    /** Default-button label on `em` fills — desktop `text-bg`. */
-    const val OnEm = 0xFF0D1117L
 }
 
 @Immutable

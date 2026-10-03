@@ -204,8 +204,8 @@ year. A row files under `updatedAt`, else `createdAt` (`ChatItem.createdAt`, fro
 summary), else today; a future stamp also counts as today. The pane samples clock and zone in
 composition and keys its cached sections on `DayKey` (local date + zone); the drawer opening and
 ON_RESUME recompose it, so sections roll over midnight or a zone change with no timer. Headers are `SectionHeader` (mono 11sp
-caps, inkDim). Rows are pills (`ConversationRowChrome(pill = true)`: `Shape.row` (square), 36dp, 14dp
-side padding, one ellipsised line; swipe-to-archive unchanged), the in-flight status dot pulses,
+caps, inkDim). Rows are square chips (`ConversationRowChrome(pill = true)`: `Shape.row` (square), 36dp, 14dp
+side padding, one ellipsised line; swipe-to-archive unchanged — `pill` only picks the compact size), the in-flight status dot pulses,
 pinned rows carry a trailing `lucide_pin` (archived rows too). Host contract:
 `ConversationsPane(currentSessionKey, openTick)` — `HubDrawer` passes the open
 `Screen.Chat.sessionKey` (MainActivity) and bumps `openTick` whenever the drawer state targets
@@ -241,7 +241,7 @@ entry, else pushes; Back returns to whatever is below).
 
 Prefs keys (DataStore `rivethub`): `entryUrl`, `strictHostnames`, `onboarded`, `themeMode`
 (`system`\|`light`\|`dark`\|`omarchy`), `omarchyPalette` (preset id, default `tokyo-night`), `defaultView`
-(`terminal`\|`chat`, default `terminal`), `sessionModes` (sessionId → `chat`\|`terminal`), `archived`,
+(`terminal`\|`chat`, default `chat`), `sessionModes` (sessionId → `chat`\|`terminal`), `archived`,
 `titleOverrides`, `agentPointers` (`sessionId\tnodeBaseUrl`), `terminalFontSp`, `viewNodeId`,
 `currentAgentId`, `agentsCollapsed`, `lastSessionKey` + `lastSessionNode` (instant-resume
 pointer, written on every chat open; drafts never written), `expFiles` / `expTasks` /
@@ -273,24 +273,27 @@ Agent rows show a letter tile (`AgentTile`: `plane/AgentAccent.kt agentInitials`
 output). The palette brings its own light/dark (`resolveRivetColors`).
 
 **Drawer gestures (`ui/components/RivetDrawerHost.kt`, pure rules `plane/DrawerSwipe.kt`).** The
-sheet follows the finger from the left edge and settles by fling (≥ 400dp/s) or halfway. The edge
-zone is max(24dp, system Back-gesture inset + 24dp), so under gesture navigation a swipe starting
-just inside the screen opens it. On the hub home only (`HubDrawer(excludeBackGesture = true)`), a
-200dp band mid-bezel is also excluded from the system Back gesture while the drawer is closed, so a
-swipe from the very edge opens it there; in a chat or its terminal the bezel stays Back. A drag the
+sheet follows the finger from the left edge and settles by fling (≥ 400dp/s) or halfway. On the hub
+home only (`HubDrawer(excludeBackGesture = true)`), the edge zone is max(24dp, system Back-gesture
+inset + 24dp) and a 200dp band mid-bezel is also excluded from the system Back gesture while the
+drawer is closed, so a swipe from the very edge opens it there. In a chat or its terminal the zone
+is max(24dp, inset), the bezel stays Back, and the claim waits for `PointerEventPass.Final` so a
+horizontal-scroll child under the down (unwrapped code, key toolbar) keeps its drag. A drag the
 gesture layer loses (pointer gone, layer restarted by rotation or an inset change) still settles by
 position. An open sheet closes on a leftward drag from the scrim, or from any part of the sheet whose
-content did not take the drag (rows keep swipe-to-archive), or a scrim tap. Back is a
-`PredictiveBackHandler` in `HubDrawer` (sheet eases shut 35% of where it was when the gesture
-started, closes on commit, reopens on cancel). `RivetDrawerStateTest` covers the state; the pointer
-loop itself is covered only by manual emulator runs.
+content did not take the drag (rows keep swipe-to-archive), or a scrim tap; claim rules use
+`targetOpen` (not `isOpen`), so an edge swipe during the closing spring is not judged a scrim drag.
+Back is a `PredictiveBackHandler` in `HubDrawer` (sheet eases shut 35% of where it was when the
+gesture started, closes on commit, reopens on cancel). `RivetDrawerState` is `rememberSaveable`.
+`RivetDrawerStateTest` covers the state; the pointer loop itself is covered only by manual emulator runs.
 
 **Default view (web Settings → Conversations, `lib/use-session-view.ts`).** Settings → Conversations
 → Default view (`defaultView` pref, Chat unless `terminal`, as on the web, so upgrading moves no conversation). `HarnessChatViewModel.boot` opens a
 conversation on `plane/SessionMode.kt resolveSessionMode`: this conversation's explicit switch
-(`sessionModes`, written only by the user's Terminal|Chat choice) > terminal-only (not a draft and no
-resolvable harness, i.e. a legacy on-disk row) > the default. New conversations and older ones never
-switched both open on the default.
+(`sessionModes`, written only by the user's Terminal|Chat choice — system Back and the terminal
+chrome back arrow call `setMode(..., explicit = false)` and do not write) > terminal-only (not a
+draft and no resolvable harness, i.e. a legacy on-disk row) > the default. New conversations and
+older ones never switched both open on the default.
 
 U4 fenced code (built from `docs/UX-SPEC.md` only): `Radius.sm` block with a `panel`
 header (mono 11sp language, Copy, Lucide download/Save; 1dp `line` bottom), then

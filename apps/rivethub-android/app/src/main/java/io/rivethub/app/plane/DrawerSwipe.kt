@@ -34,17 +34,30 @@ const val EDGE_EXCLUSION_HEIGHT_DP = 200
 /** Lift speed (dp/s) above which the fling direction wins over position. */
 const val DRAWER_FLING_DP_PER_S = 400
 
-/** The left edge zone: at least [EDGE_ZONE_DP], and [pastInset] beyond the Back-gesture inset. */
+/**
+ * The left edge zone: at least [EDGE_ZONE_DP]. With [reachPastInset] (hub home,
+ * where a mid-bezel band is also excluded from Back) it reaches [pastInset]
+ * beyond the Back-gesture inset. Elsewhere (chat / terminal) it stays
+ * `max(minZone, inset)` so a rightward drag on a scrollable child near the
+ * bezel is less likely to open the drawer.
+ */
 fun drawerEdgeZone(
     systemGestureInset: Float,
     minZone: Float = EDGE_ZONE_DP.toFloat(),
     pastInset: Float = EDGE_ZONE_PAST_INSET_DP.toFloat(),
-): Float = if (systemGestureInset > 0f) maxOf(minZone, systemGestureInset + pastInset) else minZone
+    reachPastInset: Boolean = true,
+): Float = when {
+    systemGestureInset <= 0f -> minZone
+    reachPastInset -> maxOf(minZone, systemGestureInset + pastInset)
+    else -> maxOf(minZone, systemGestureInset)
+}
 
 /**
  * Whether a gesture-so-far takes the drawer.
  *
  * Rules:
+ *  - [childConsumed]: a scrollable under the down already took this move → no
+ *    (code blocks / key toolbar near the bezel keep their horizontal drag).
  *  - Not past [slop], or not horizontal-dominant (`|dx| <= |dy|`) → no (a
  *    vertical scroll starting at the bezel must not yank the drawer).
  *  - Closed: the drag starts within [zone] of the LEFT bezel and heads right.
@@ -62,7 +75,9 @@ fun claimsDrawerDrag(
     sheetWidth: Float,
     zone: Float,
     slop: Float,
+    childConsumed: Boolean = false,
 ): Boolean {
+    if (childConsumed) return false
     if (abs(dx) < slop || abs(dx) <= abs(dy)) return false
     return if (open) startX > sheetWidth && dx < 0f else startX <= zone && dx > 0f
 }

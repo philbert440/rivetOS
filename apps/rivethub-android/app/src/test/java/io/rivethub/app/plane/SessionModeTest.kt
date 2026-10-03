@@ -81,4 +81,26 @@ class SessionModeTest {
     @Test fun `a terminal-only session opens on Terminal whatever the default`() {
         assertEquals(SessionMode.Terminal, resolveSessionMode(null, SessionMode.Chat, terminalOnly = true))
     }
+
+    @Test fun `only an explicit Terminal or Chat choice writes sessionModes`() {
+        assertTrue(shouldPersistSessionMode(explicit = true))
+        assertEquals(false, shouldPersistSessionMode(explicit = false))
+    }
+
+    @Test fun `Back must not invent a chat entry over an explicit Terminal or terminal-only row`() {
+        // Explicit Terminal stays Terminal when Back leaves without writing.
+        assertEquals(
+            SessionMode.Terminal,
+            resolveSessionMode("terminal", SessionMode.Chat, terminalOnly = false),
+        )
+        // A wrongly persisted "chat" would beat terminal-only on the next open.
+        assertEquals(
+            SessionMode.Chat,
+            resolveSessionMode("chat", SessionMode.Chat, terminalOnly = true),
+        )
+        assertEquals(
+            SessionMode.Terminal,
+            resolveSessionMode(null, SessionMode.Chat, terminalOnly = true),
+        )
+    }
 }
