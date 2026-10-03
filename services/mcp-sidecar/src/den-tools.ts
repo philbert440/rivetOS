@@ -24,10 +24,14 @@ import type {
 } from '@rivetos/types'
 
 import {
+  TAGS_WRITE_ACTIONS,
   memoryBrowseInputSchema,
   memoryGetFullInputSchema,
+  memoryTagsDescription,
+  memoryTagsInputSchema,
   memorySearchInputSchema,
   memoryStatsInputSchema,
+  tagsReadOnlyRefusal,
 } from './memory.js'
 import { memoryAppendInputSchema, memoryIngestSessionInputSchema } from './memory-write.js'
 import { formatWikiRead, type WikiReadSection } from './wiki-read-format.js'
@@ -437,6 +441,28 @@ export function createDenTools(opts: DenToolsOptions): DenToolsHandle {
           wireArgs('memory_get_full', args),
           ctx?.signal,
           false,
+        )
+      },
+    },
+    {
+      name: 'memory_tags',
+      description: memoryTagsDescription(opts.enableWrite),
+      annotations: opts.enableWrite ? WRITE_ANNOTATIONS : READ_ONLY,
+      inputSchema: memoryTagsInputSchema,
+      execute(args, ctx) {
+        // The den's tool route can decide and edit. This sidecar only passes
+        // those through when its write surface is on, like the pg transport.
+        const action = typeof args.action === 'string' ? args.action : 'pending'
+        if (!opts.enableWrite && TAGS_WRITE_ACTIONS.has(action)) {
+          return Promise.resolve(tagsReadOnlyRefusal(action))
+        }
+        return runMemory(
+          gateway,
+          denUrl,
+          'memory_tags',
+          wireArgs('memory_tags', args),
+          ctx?.signal,
+          opts.enableWrite && TAGS_WRITE_ACTIONS.has(action),
         )
       },
     },

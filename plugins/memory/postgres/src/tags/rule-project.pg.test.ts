@@ -11,6 +11,7 @@ import pg from 'pg'
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 import type { ProjectRuleResult } from '@rivetos/types'
 import { applyProjectRuleTag } from './rule-project.js'
+import { addTag, mergeTaxonomyValue } from './store.js'
 
 const PG_URL = process.env.RIVETOS_PG_URL ?? ''
 const SCHEMA = `tags_rule_${String(process.pid)}`
@@ -76,6 +77,29 @@ describe.skipIf(PG_URL === '')('applyProjectRuleTag (real Postgres)', () => {
     expect(await tagsOf(id)).toEqual([
       { value: 'rivetos', state: 'rejected', source: 'rule', decided_by: 'cwd-git-root' },
     ])
+  })
+
+  it('still counts its tag after a person re-added it (source promoted to user): no second project', async () => {
+    const id = await conv()
+    await apply(id)
+    // A person re-adds the rule tag: addTag's conflict path promotes its source.
+    await addTag(client, { entityType: 'conversation', entityId: id, tag: 'project:rivetos' }, 'phil')
+    expect(await apply(id, { ...HIT, value: 'other-repo', display: 'other-repo' })).toBe(false)
+    expect(await tagsOf(id)).toEqual([
+      { value: 'rivetos', state: 'accepted', source: 'user', decided_by: 'phil' },
+    ])
+  })
+
+  it('does not resurrect its value after a merge deleted its row (the survivor alias answers)', async () => {
+    const id = await conv()
+    await apply(id)
+    // The session also carries the survivor, so the merge deletes the rule's row.
+    await addTag(client, { entityType: 'conversation', entityId: id, tag: 'project:tenpal' }, 'phil')
+    await mergeTaxonomyValue(client, 'project', 'rivetos', 'tenpal')
+    expect((await tagsOf(id)).map((t) => t.value)).toEqual(['tenpal'])
+    // A later batch from the same checkout resolves to the survivor: nothing new.
+    await apply(id)
+    expect((await tagsOf(id)).map((t) => t.value)).toEqual(['tenpal'])
   })
 
   it('follows a vocabulary merge to the survivor and skips a rejected vocabulary value', async () => {

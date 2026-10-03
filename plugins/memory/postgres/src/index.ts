@@ -440,8 +440,14 @@ export type {
 
 export { createCaptureApiRoute } from './http/capture-api.js'
 export { handleTags } from './http/tags-api.js'
-export { createTagsTool } from './tools/tags-tool.js'
 export {
+  createTagsTool,
+  TAGS_ACTIONS,
+  TAGS_WRITE_ACTIONS,
+  tagsReadOnlyRefusal,
+} from './tools/tags-tool.js'
+export {
+  REVIEWED_TAG_SOURCES,
   addTag,
   conversationIdsWithTag,
   decideTags,

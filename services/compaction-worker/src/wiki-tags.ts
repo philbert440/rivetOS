@@ -25,14 +25,16 @@
 
 import type pg from 'pg'
 import type { Tag } from '@rivetos/types'
-import { listTags, tagsForConversations } from '@rivetos/memory-postgres'
+import { REVIEWED_TAG_SOURCES, listTags, tagsForConversations } from '@rivetos/memory-postgres'
 
 /** Sources whose accepted tags a person stands behind. */
-const REVIEWED_SOURCES: ReadonlySet<string> = new Set(['user', 'model', 'import'])
+const REVIEWED_SOURCES: ReadonlySet<string> = new Set(REVIEWED_TAG_SOURCES)
 
 /** Tags offered to one extraction, at most. */
 export const WIKI_TAGS_MAX = 20
 const LITERAL_MAX = 80
+/** Rows read per source before dedupe, sort and cap. */
+const WIKI_TAGS_LOOKUP_MAX = 100
 
 export interface WikiTag {
   /** Normalized `key:value` (the canonical entity form), single line, bounded. */
@@ -70,9 +72,17 @@ export async function acceptedTagsForSummary(
   let inherited: Tag[]
   try {
     ;[own, inherited] = await Promise.all([
-      listTags(pool, { entityType: 'summary', entityId: summaryId, states: ['accepted'] }),
+      listTags(pool, {
+        entityType: 'summary',
+        entityId: summaryId,
+        states: ['accepted'],
+        // Dedupe and the reviewed-first sort need more than the cap, not everything.
+        limit: WIKI_TAGS_LOOKUP_MAX,
+      }),
       conversationId
-        ? tagsForConversations(pool, [conversationId]).then((m) => m.get(conversationId) ?? [])
+        ? tagsForConversations(pool, [conversationId], ['accepted'], {
+            limit: WIKI_TAGS_LOOKUP_MAX,
+          }).then((m) => m.get(conversationId) ?? [])
         : Promise.resolve([] as Tag[]),
     ])
   } catch (err) {
@@ -92,7 +102,9 @@ export async function acceptedTagsForSummary(
     const id = `${t.key}:${t.value}`
     // Reviewed = a person was involved: they added it, accepted a model
     // suggestion, or imported it. Any other source (the cwd rule, or a tagger
-    // added later) is treated as unreviewed until it is listed here.
+    // added later) is unreviewed until it is listed above. Re-adding the rule
+    // tag promotes its source to `user` in the store, so the source alone
+    // decides — `decided_by` is caller-supplied and proves nothing.
     const reviewed = REVIEWED_SOURCES.has(t.source)
     const prior = byId.get(id)
     // The same tag from the rule and from a person is a reviewed tag.
@@ -106,7 +118,7 @@ export async function acceptedTagsForSummary(
   return out.slice(0, WIKI_TAGS_MAX)
 }
 
-/** Test hook. */
+/** Test-only: reset the warn-once latch. */
 export function resetWikiTagsWarnings(): void {
   warnedMissingSchema = false
 }
@@ -117,8 +129,10 @@ export function resetWikiTagsWarnings(): void {
  */
 export function mentionedIn(summary: string, value: string): boolean {
   const hay = summary.toLowerCase()
+  // Tag values are stored lowercase; lowercase here too so this does not depend on it.
+  const needle = value.toLowerCase()
   const esc = (v: string): string => v.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
-  return [value, value.replace(/-/g, ' ')].some(
+  return [needle, needle.replace(/-/g, ' ')].some(
     (v) => v !== '' && new RegExp(`(^|[^a-z0-9])${esc(v)}([^a-z0-9]|$)`).test(hay),
   )
 }

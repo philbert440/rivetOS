@@ -134,6 +134,135 @@ describe.skipIf(PG_URL === '')('tag store (real Postgres)', () => {
     expect(narrowed.entityId).toBe(pathConv)
   })
 
+  it('re-adding the cwd rule tag makes it a user tag; other sources keep theirs', async () => {
+    const conv = await conversation('codex:promote')
+    await c.query(
+      `INSERT INTO ros_tags (entity_type, entity_id, key, value, source, state, proposed_by, decided_by)
+       VALUES ('conversation', $1, 'project', 'rivetos', 'rule', 'accepted', 'cwd-git-root', 'cwd-git-root')`,
+      [conv],
+    )
+    await raw('conversation', conv, 'topic', 'wiki', 'suggested', 'model')
+    const promoted = await store.addTag(c, { entityType: 'conversation', entityId: conv, tag: 'project:rivetos' }, 'phil')
+    // proposed_by survives: the rule's guard recognizes its tag by it.
+    expect(promoted).toMatchObject({
+      source: 'user',
+      state: 'accepted',
+      decidedBy: 'phil',
+      proposedBy: 'cwd-git-root',
+    })
+    const kept = await store.addTag(c, { entityType: 'conversation', entityId: conv, tag: 'topic:wiki' }, 'phil')
+    expect(kept).toMatchObject({ source: 'model', state: 'accepted' })
+  })
+
+  it('re-accepting a rejected rule tag promotes it; rejecting does not', async () => {
+    const conv = await conversation('codex:reaccept')
+    await raw('conversation', conv, 'project', 'rivetos', 'accepted', 'rule')
+    const [{ id }] = (await c.query<{ id: string }>(`SELECT id FROM ros_tags WHERE entity_id = $1`, [conv])).rows
+    await store.decideTags(c, [id], 'rejected', 'phil')
+    expect((await c.query(`SELECT source FROM ros_tags WHERE id = $1`, [id])).rows[0]).toEqual({ source: 'rule' })
+    await store.decideTags(c, [id], 'accepted', 'phil')
+    expect((await c.query(`SELECT source FROM ros_tags WHERE id = $1`, [id])).rows[0]).toEqual({ source: 'user' })
+  })
+
+  it('a merge onto a rule survivor keeps the folded tag reviewed', async () => {
+    const conv = await conversation('codex:merge-source')
+    await raw('conversation', conv, 'project', 'a', 'accepted', 'rule')
+    await store.addTag(c, { entityType: 'conversation', entityId: conv, tag: 'project:b' }, 'phil')
+    await store.mergeTaxonomyValue(c, 'project', 'b', 'a')
+    const rows = (
+      await c.query(`SELECT value, source, state FROM ros_tags WHERE entity_id = $1 ORDER BY value`, [conv])
+    ).rows
+    expect(rows).toEqual([{ value: 'a', source: 'user', state: 'accepted' }])
+  })
+
+  it('a merge onto a rule survivor keeps the folded tag reviewed even when the person tagged first', async () => {
+    const conv = await conversation('codex:merge-older')
+    await store.addTag(c, { entityType: 'conversation', entityId: conv, tag: 'project:b' }, 'phil')
+    // The rule's row is decided later than the person's.
+    await c.query(
+      `INSERT INTO ros_tags (entity_type, entity_id, key, value, source, state, proposed_by, decided_by, decided_at)
+       VALUES ('conversation', $1, 'project', 'a', 'rule', 'accepted', 'cwd-git-root', 'cwd-git-root', now() + interval '1 hour')`,
+      [conv],
+    )
+    await store.mergeTaxonomyValue(c, 'project', 'b', 'a')
+    const rows = (
+      await c.query(
+        `SELECT value, source, proposed_by, decided_by, state FROM ros_tags WHERE entity_id = $1`,
+        [conv],
+      )
+    ).rows
+    // The rule's later decision stands; only the source is carried.
+    expect(rows).toEqual([
+      { value: 'a', source: 'user', proposed_by: 'cwd-git-root', decided_by: 'cwd-git-root', state: 'accepted' },
+    ])
+  })
+
+  it('a merely suggested (or rejected) tag folded into a rule survivor promotes nothing', async () => {
+    const conv = await conversation('codex:merge-suggested')
+    await raw('conversation', conv, 'project', 'a', 'accepted', 'rule')
+    await raw('conversation', conv, 'project', 'b', 'suggested', 'model')
+    await raw('conversation', conv, 'project', 'c', 'rejected', 'user')
+    await store.mergeTaxonomyValue(c, 'project', 'b', 'a')
+    await store.mergeTaxonomyValue(c, 'project', 'c', 'a')
+    const rows = (await c.query(`SELECT value, source FROM ros_tags WHERE entity_id = $1`, [conv])).rows
+    expect(rows).toEqual([{ value: 'a', source: 'rule' }])
+  })
+
+  it('tagsForConversations honours a row limit', async () => {
+    const conv = await conversation('codex:limit')
+    for (const v of ['a', 'b', 'c']) await raw('conversation', conv, 'topic', v, 'accepted')
+    expect((await store.tagsForConversations(c, [conv])).get(conv)).toHaveLength(3)
+    expect((await store.tagsForConversations(c, [conv], ['accepted'], { limit: 2 })).get(conv)).toHaveLength(2)
+    expect((await store.tagsForConversations(c, [conv], ['accepted'], { limit: Number.NaN })).get(conv)).toHaveLength(3)
+    expect(
+      (await store.tagsForConversations(c, [conv], ['accepted'], { includeSummaryTags: true, limit: 1 })).get(conv),
+    ).toHaveLength(1)
+  })
+
+  it('a pending summary suggestion carries its session key, title and agent', async () => {
+    const conv = await conversation('codex:pending-sum')
+    const sum = await summaryOf(conv)
+    await raw('summary', sum, 'topic', 'wiki', 'suggested')
+    const [p] = await store.pendingTags(c)
+    expect(p).toMatchObject({
+      entityType: 'summary',
+      entityId: sum,
+      conversationId: conv,
+      sessionKey: 'codex:pending-sum',
+      title: 'T',
+      agent: 'rivet',
+      excerpt: 'summary',
+    })
+  })
+
+  it('tagCounts counts a conversation once whether the tag is on the session, a summary, or both', async () => {
+    const a = await conversation('codex:count-a')
+    const b = await conversation('codex:count-b')
+    await raw('conversation', a, 'topic', 'wiki', 'accepted')
+    await raw('summary', await summaryOf(a), 'topic', 'wiki', 'accepted')
+    await raw('summary', await summaryOf(b), 'topic', 'wiki', 'accepted')
+    await raw('summary', await summaryOf(b), 'topic', 'draft', 'suggested')
+    // A tag whose entity is gone is not a tagged conversation.
+    await raw('summary', '00000000-0000-4000-8000-000000000000', 'topic', 'wiki', 'accepted')
+    expect(await store.tagCounts(c, 'topic')).toEqual([
+      { key: 'topic', value: 'wiki', display: 'wiki', conversations: 2 },
+    ])
+    expect((await store.conversationIdsWithTag(c, 'topic', 'wiki')).sort()).toEqual([a, b].sort())
+  })
+
+  it('refuses an ambiguous session key however many conversations match', async () => {
+    const uuid = 'd4e5f6a7-4444-4555-8666-777788889999'
+    // 25 path-form conversations for one agent, then one more under another.
+    for (let n = 0; n < 25; n += 1) await conversation(`claude-code:-proj-${String(n)}/${uuid}`)
+    await c.query(
+      `INSERT INTO ros_conversations (session_key, title, agent, updated_at) VALUES ($1, 'T', 'grok', now() - interval '1 day')`,
+      [`claude-code:-old/${uuid}`],
+    )
+    await expect(
+      store.addTag(c, { entityType: 'conversation', sessionKey: `claude-code:${uuid}`, tag: 'topic:x' }, 'phil'),
+    ).rejects.toThrow(/several agents/)
+  })
+
   it('"tagged" means the session or any of its summaries, for the id list, the shared predicate, and enrichment', async () => {
     const conv = await conversation('codex:xyz')
     const sum = await summaryOf(conv)

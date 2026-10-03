@@ -64,7 +64,7 @@ export function SearchView(props: {
           aria-label="tag filter"
           title="Only hits whose session carries this accepted tag"
           onChange={(e) => setTagInput(e.target.value)}
-          style={{ flex: '0 1 11rem', minWidth: '9rem' }}
+          className="min-w-36 flex-[0_1_11rem]"
         />
         <label className="small check">
           <input type="checkbox" checked={verbose} onChange={(e) => setVerbose(e.target.checked)} />
@@ -74,6 +74,20 @@ export function SearchView(props: {
           Search
         </Button>
       </form>
+
+      {/* The results are for the tag that was submitted, not the text in the box. */}
+      {query && (tag !== '' || tagInput.trim() !== '') && (
+        <div className="muted small" role="status">
+          {tag !== '' ? (
+            <>
+              filtered by tag <span className="mono">{tag}</span>
+            </>
+          ) : (
+            'no tag filter applied'
+          )}
+          {tagInput.trim() !== tag && ' — press Search to apply the edited tag'}
+        </div>
+      )}
 
       {!query && (
         <div className="empty">
