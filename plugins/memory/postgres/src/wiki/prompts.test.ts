@@ -1,5 +1,11 @@
 import { describe, it, expect } from 'vitest'
-import { formatExtractionPrompt, parseWikiPatches } from './prompts.js'
+import {
+  REVIEWED_TAGS_HEADER,
+  RULE_TAGS_HEADER,
+  WIKI_EXTRACT_SYSTEM_PROMPT,
+  formatExtractionPrompt,
+  parseWikiPatches,
+} from './prompts.js'
 
 const AT = '2026-07-07T00:00:00Z'
 
@@ -76,6 +82,49 @@ describe('formatExtractionPrompt', () => {
     expect(withC).toContain('aliases: aa')
     const without = formatExtractionPrompt({ summary: 's', summaryDate: '2026-07-07', candidates: [] })
     expect(without).toContain('no matching durable topics yet')
+  })
+
+  it('renders reviewed and working-directory tags as separate sections, between the summary and the candidates', () => {
+    const prompt = formatExtractionPrompt({
+      summary: 'THE-SUMMARY',
+      summaryDate: '2026-10-02',
+      candidates: [
+        { slug: 'a', title: 'A', aliases: [], currentState: 's' },
+        { slug: 'b', title: 'B', aliases: [], currentState: 's', fromTag: true },
+      ],
+      reviewedTags: ['project:TenPAL', 'topic:wiki', ''],
+      ruleTags: ['project:rivet\nOS'],
+    })
+    const lines = prompt.split('\n')
+    expect(lines).toContain(REVIEWED_TAGS_HEADER)
+    expect(lines).toContain('project:TenPAL, topic:wiki')
+    expect(lines).toContain(RULE_TAGS_HEADER)
+    expect(lines).toContain('project:rivet OS')
+    const at = (needle: string): number => lines.findIndex((l) => l === needle)
+    expect(at('THE-SUMMARY')).toBeLessThan(at(REVIEWED_TAGS_HEADER))
+    expect(at(REVIEWED_TAGS_HEADER)).toBeLessThan(at(RULE_TAGS_HEADER))
+    expect(at(RULE_TAGS_HEADER)).toBeLessThan(
+      lines.findIndex((l) => l.startsWith('## Existing durable topic candidates')),
+    )
+    expect(prompt).toContain('### b — B (tag hint)')
+    expect(prompt).toContain('### a — A\n')
+  })
+
+  it('omits both tag sections when there are no tags', () => {
+    const plain = formatExtractionPrompt({
+      summary: 's',
+      summaryDate: '2026-10-02',
+      candidates: [],
+      reviewedTags: [],
+      ruleTags: [],
+    })
+    expect(plain).not.toContain(REVIEWED_TAGS_HEADER)
+    expect(plain).not.toContain(RULE_TAGS_HEADER)
+  })
+
+  it('the system prompt keeps the unreviewed directory tag out of entities', () => {
+    expect(WIKI_EXTRACT_SYSTEM_PROMPT).toMatch(/working-directory tag[^\n]*automatic and unreviewed/i)
+    expect(WIKI_EXTRACT_SYSTEM_PROMPT).toMatch(/Never add it as an entity/)
   })
 })
 
