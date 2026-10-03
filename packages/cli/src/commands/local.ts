@@ -64,6 +64,7 @@ import {
   createPairing,
   PAIRING_TTL_MS,
   pairingQrText,
+  pairingRecordPath,
   readLivePairing,
   releasePairing,
   renderTerminalQr,
@@ -1039,8 +1040,13 @@ export async function formatPairingQrs(opts: {
   const armed: Array<{ rec: PairingRecord; reminted: boolean }> = []
   const notes: string[] = []
   for (const id of opts.devices) {
+    // A device with no record at all has nothing to pair (already redeemed,
+    // or never minted here): stay quiet, as before. Only a record that just
+    // expired is reminted.
+    const hadRecord = existsSync(pairingRecordPath(opts.home, id))
     let rec = armPairing(opts.home, id, opts.now)
     let reminted = false
+    if (!rec && !hadRecord) continue
     if (!rec) {
       const issued = join(localCaPaths(opts.home).sharedDir, 'issued')
       const existing = [`device-${id}.crt`, `device-${id}.key`]
@@ -1070,8 +1076,14 @@ export async function formatPairingQrs(opts: {
           now: opts.now,
         })
         reminted = true
-      } catch {
-        // No CA / cannot mint here (unit tests without a fake mint): skip.
+      } catch (err) {
+        // Cannot mint here (no CA yet, rivet-ca.sh failed): say so instead of
+        // leaving the silent dead end this remint exists to remove.
+        const reason = err instanceof Error ? err.message : String(err)
+        notes.push(
+          `  ${id}: the pairing code expired and a fresh one could not be minted (${reason}). ` +
+            `Run \`rivetos pair ${id}\` once the node is up.`,
+        )
         continue
       }
     }

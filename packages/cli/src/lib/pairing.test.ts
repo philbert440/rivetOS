@@ -345,4 +345,31 @@ describe('formatPairingQrs', () => {
       expect(existsSync(p12)).toBe(true)
     }),
   )
+
+  it(
+    'says so when an expired pairing cannot be reminted, instead of printing nothing',
+    withHome(async (home) => {
+      const cert = localCaPaths(home, 'box').nodeCert
+      mkdirSync(dirname(cert), { recursive: true })
+      writeFileSync(cert, CERT)
+      createPairing({ home, deviceId: 'pixel', p12Path: '/x', passphrase: 'old-pw', now: 0 })
+      const mint = async () => {
+        throw new Error('rivet-ca.sh: no CA')
+      }
+      const out = await formatPairingQrs({
+        home,
+        hostname: 'box',
+        devices: ['pixel', 'never-minted'],
+        port: 5174,
+        exposeLan: true,
+        lanAddrs: ['192.168.1.20'],
+        mint,
+      })
+      expect(out).toContain('pixel: the pairing code expired and a fresh one could not be minted')
+      expect(out).toContain('rivet-ca.sh: no CA')
+      expect(out).toContain('rivetos pair pixel')
+      expect(out).not.toContain('never-minted')
+      expect(out).not.toContain('https://')
+    }),
+  )
 })
