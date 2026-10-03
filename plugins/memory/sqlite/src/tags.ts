@@ -207,7 +207,7 @@ export class SqliteTagStore {
   /**
    * User-created tag: born accepted. If the same (entity, key, value) exists
    * in any state it is flipped to accepted (re-adding a rejected tag means
-   * the user changed their mind).
+   * the user changed their mind), and a rule tag becomes a user tag.
    */
   add(input: SqliteAddTagInput, decidedBy: string): Tag {
     let key = input.key ? normalizeTagKey(input.key) : ''
@@ -236,6 +236,7 @@ export class SqliteTagStore {
          ON CONFLICT (entity_type, entity_id, key, value) DO UPDATE
            SET state = 'accepted', decided_by = excluded.decided_by,
                decided_at = excluded.decided_at, updated_at = excluded.updated_at,
+               source = CASE WHEN ros_tags.source = 'rule' THEN 'user' ELSE ros_tags.source END,
                display = CASE WHEN ros_tags.display = '' THEN excluded.display ELSE ros_tags.display END
          RETURNING ${COLUMNS}`,
       )
@@ -319,8 +320,10 @@ export class SqliteTagStore {
   ): Map<string, Tag[]> {
     const out = new Map<string, Tag[]>()
     const keys = [...new Set(sessionKeys.filter(Boolean))]
+    // An empty state list means the default, like list().
+    const wanted: readonly TagState[] = states.length > 0 ? states : ['suggested', 'accepted']
     for (let i = 0; i < keys.length; i += 100) {
-      this.lookupChunk(keys.slice(i, i + 100), states, out)
+      this.lookupChunk(keys.slice(i, i + 100), wanted, out)
     }
     return out
   }

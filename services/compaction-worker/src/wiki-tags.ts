@@ -80,9 +80,9 @@ export async function acceptedTagsForSummary(
         limit: WIKI_TAGS_LOOKUP_MAX,
       }),
       conversationId
-        ? tagsForConversations(pool, [conversationId]).then((m) =>
-            (m.get(conversationId) ?? []).slice(0, WIKI_TAGS_LOOKUP_MAX),
-          )
+        ? tagsForConversations(pool, [conversationId], ['accepted'], {
+            limit: WIKI_TAGS_LOOKUP_MAX,
+          }).then((m) => m.get(conversationId) ?? [])
         : Promise.resolve([] as Tag[]),
     ])
   } catch (err) {
@@ -102,11 +102,10 @@ export async function acceptedTagsForSummary(
     const id = `${t.key}:${t.value}`
     // Reviewed = a person was involved: they added it, accepted a model
     // suggestion, or imported it. Any other source (the cwd rule, or a tagger
-    // added later) is unreviewed until it is listed above — unless someone
-    // other than its proposer decided it: a person re-adding or re-accepting
-    // the rule tag leaves `source = rule` but stamps themselves as decider.
-    const reviewed =
-      REVIEWED_SOURCES.has(t.source) || (t.decidedBy !== undefined && t.decidedBy !== t.proposedBy)
+    // added later) is unreviewed until it is listed above. Re-adding the rule
+    // tag promotes its source to `user` in the store, so the source alone
+    // decides — `decided_by` is caller-supplied and proves nothing.
+    const reviewed = REVIEWED_SOURCES.has(t.source)
     const prior = byId.get(id)
     // The same tag from the rule and from a person is a reviewed tag.
     if (prior) prior.reviewed ||= reviewed

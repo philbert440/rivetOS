@@ -114,6 +114,8 @@ export function filterRowsByTag(
 
 /** Pending queue grouped by session for the review view: newest session first. */
 export interface PendingSessionGroup {
+  /** Unique per group (the conversation id when known): use as the list key. */
+  id: string
   /** Capture session key, or a conversation/entity id when the session is unknown. */
   sessionKey: string
   /** True when `sessionKey` is a real session key the hub can open. */
@@ -132,6 +134,7 @@ export function groupPendingBySession(tags: readonly PendingTagWire[]): PendingS
     const id = t.conversationId ?? t.sessionKey ?? t.entityId
     const hasKey = typeof t.sessionKey === 'string' && t.sessionKey !== ''
     const g = groups.get(id) ?? {
+      id,
       sessionKey: id,
       openable: false,
       title: null,

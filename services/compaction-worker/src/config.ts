@@ -57,13 +57,17 @@ function parseStatusList(raw: string, separator: string, where: string): number[
     })
 }
 
-function statusListEnv(name: string): number[] {
-  const raw = process.env[name]
+function statusListEnv(name: string, env: NodeJS.ProcessEnv = process.env): number[] {
+  const raw = env[name]
   return raw ? parseStatusList(raw, ',', name) : []
 }
 
-function positiveIntEnv(name: string, fallback: number): number {
-  const raw = process.env[name]
+function positiveIntEnv(
+  name: string,
+  fallback: number,
+  env: NodeJS.ProcessEnv = process.env,
+): number {
+  const raw = env[name]
   if (!raw) return fallback
   const parsed = Number(raw)
   if (!Number.isInteger(parsed) || parsed <= 0)
@@ -230,12 +234,12 @@ export const config = {
   // Per-attempt timeout for a tagger call. Deliberately short: tagging is
   // best-effort and shares the worker's slots with compaction, so a stalled
   // tagger must hand the slot back in a minute, not after LLM_TIMEOUT_MS.
-  taggerTimeoutMs: positiveIntEnv('RIVETOS_TAGGER_TIMEOUT_SECONDS', 60) * 1000,
+  taggerTimeoutMs: positiveIntEnv('RIVETOS_TAGGER_TIMEOUT_SECONDS', 60, taggerEnv) * 1000,
   tagger: {
     url: taggerUrl,
     model: taggerModel,
     apiKey: taggerApiKey,
-    transientStatuses: statusListEnv('RIVETOS_TAGGER_TRANSIENT_STATUSES'),
+    transientStatuses: statusListEnv('RIVETOS_TAGGER_TRANSIENT_STATUSES', taggerEnv),
     ...(taggerTokenSource ? { tokenSource: taggerTokenSource } : {}),
   } satisfies LlmEndpoint,
   taggerWireShape,

@@ -244,7 +244,8 @@ export interface AddTagInput {
 /**
  * User-created tag: born accepted. If the same (entity, key, value) exists
  * in any state it is flipped to accepted (a user re-adding a rejected tag
- * means they changed their mind). Returns the row.
+ * means they changed their mind), and a rule tag becomes a user tag. Returns
+ * the row.
  */
 export async function addTag(db: Queryable, input: AddTagInput, decidedBy: string): Promise<Tag> {
   let key = input.key ? normalizeTagKey(input.key) : ''
@@ -293,6 +294,9 @@ export async function addTag(db: Queryable, input: AddTagInput, decidedBy: strin
      ON CONFLICT (entity_type, entity_id, key, value) DO UPDATE
        SET state = 'accepted', decided_by = EXCLUDED.decided_by, decided_at = now(),
            updated_at = now(),
+           -- Adding a tag the cwd rule minted makes it the adder's statement:
+           -- it stops being "where the work ran" and becomes a reviewed tag.
+           source = CASE WHEN ros_tags.source = 'rule' THEN 'user' ELSE ros_tags.source END,
            display = CASE WHEN ros_tags.display = '' THEN EXCLUDED.display ELSE ros_tags.display END
      RETURNING ${TAG_COLUMNS}`,
     [input.entityType, entityId, key, value, display, decidedBy, input.reason ?? ''],
@@ -316,6 +320,8 @@ export async function tagsForConversations(
      * callers asking "what is tagged on the session itself" do not.
      */
     includeSummaryTags?: boolean
+    /** Cap on rows read, across all the conversations asked for. Default: none. */
+    limit?: number
   } = {},
 ): Promise<Map<string, Tag[]>> {
   const out = new Map<string, Tag[]>()
@@ -324,6 +330,9 @@ export async function tagsForConversations(
   const cols = TAG_COLUMNS.split(', ')
     .map((c) => `t.${c}`)
     .join(', ')
+  const limit =
+    typeof opts.limit === 'number' ? Math.min(Math.max(Math.trunc(opts.limit), 1), 5000) : null
+  const limitSql = limit === null ? '' : ' LIMIT $3'
   const { rows } = await db.query<TagRow & { conversation_id: string }>(
     opts.includeSummaryTags
       ? `SELECT ${cols}, COALESCE(c.id, s.conversation_id) AS conversation_id
@@ -331,12 +340,12 @@ export async function tagsForConversations(
            LEFT JOIN ros_conversations c ON t.entity_type = 'conversation' AND c.id = t.entity_id
            LEFT JOIN ros_summaries s ON t.entity_type = 'summary' AND s.id = t.entity_id
           WHERE COALESCE(c.id, s.conversation_id) = ANY($1::uuid[]) AND t.state = ANY($2::text[])
-          ORDER BY (t.entity_type = 'conversation') DESC, t.key, t.value`
+          ORDER BY (t.entity_type = 'conversation') DESC, t.key, t.value${limitSql}`
       : `SELECT ${cols}, t.entity_id AS conversation_id FROM ros_tags t
           WHERE t.entity_type = 'conversation' AND t.entity_id = ANY($1::uuid[])
             AND t.state = ANY($2::text[])
-          ORDER BY t.key, t.value`,
-    [ids, states],
+          ORDER BY t.key, t.value${limitSql}`,
+    limit === null ? [ids, states] : [ids, states, limit],
   )
   for (const r of rows) {
     const list = out.get(r.conversation_id) ?? []

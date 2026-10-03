@@ -88,6 +88,17 @@ describe('groupPendingBySession', () => {
     ])
   })
 
+  it('two conversations sharing a session key (two agents) are two groups with distinct ids', () => {
+    const groups = groupPendingBySession([
+      pending({ id: '1', entityId: 'c1', conversationId: 'c1', sessionKey: 'codex:shared', agent: 'rivet' }),
+      pending({ id: '2', entityId: 'c2', conversationId: 'c2', sessionKey: 'codex:shared', agent: 'grok' }),
+    ])
+    expect(groups.map((g) => [g.id, g.sessionKey, g.agent])).toEqual([
+      ['c1', 'codex:shared', 'rivet'],
+      ['c2', 'codex:shared', 'grok'],
+    ])
+  })
+
   it('puts a session and its summaries in one group, openable when any tag knows the session key', () => {
     const groups = groupPendingBySession([
       // Summary suggestion first: it knows only the conversation.
@@ -96,7 +107,7 @@ describe('groupPendingBySession', () => {
       pending({ id: '3', entityType: 'summary', entityId: 's2', sessionKey: null, conversationId: 'c1' }),
     ])
     expect(groups).toHaveLength(1)
-    expect(groups[0]).toMatchObject({ sessionKey: 'claude:a', openable: true, title: 'A', agent: 'rivet' })
+    expect(groups[0]).toMatchObject({ id: 'c1', sessionKey: 'claude:a', openable: true, title: 'A', agent: 'rivet' })
     expect(groups[0].tags.map((t) => t.id)).toEqual(['1', '2', '3'])
   })
 })

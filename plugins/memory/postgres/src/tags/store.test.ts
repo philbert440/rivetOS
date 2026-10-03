@@ -147,7 +147,7 @@ describe('addTag', () => {
   it('resolves a conversation from session_key, and fails clearly when none was captured', async () => {
     const found = db([{ id: 'c-found' }])
     found.query
-      .mockResolvedValueOnce({ rows: [{ id: 'c-found' }], rowCount: 1 })
+      .mockResolvedValueOnce({ rows: [{ id: 'c-found', agents: '1' }], rowCount: 1 })
       .mockResolvedValueOnce({ rows: [row({ entity_id: 'c-found', source: 'user', state: 'accepted' })], rowCount: 1 })
     const tag = await addTag(found, { entityType: 'conversation', sessionKey: 'claude:abc', tag: 'topic:x' }, 'phil')
     expect(tag.entityId).toBe('c-found')

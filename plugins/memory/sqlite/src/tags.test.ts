@@ -131,11 +131,27 @@ describe('SqliteTagStore', () => {
     expect(tags.forSessionKeys(['codex:unknown', '']).size).toBe(0)
   })
 
-  it('a LIKE metacharacter in a session key matches literally', async () => {
-    await conversation('codex:a_b')
-    const other = await conversation('codex:axb')
-    tags.add({ entityType: 'conversation', entityId: other, tag: 'topic:x' }, 'p')
-    expect(tags.forSessionKeys(['codex:a_b']).size).toBe(0)
+  it('a LIKE metacharacter in the harness id matches literally (the ESCAPE clause is live)', async () => {
+    // Asking with `a_b:<uuid>` emits the pattern `a\_b:%/<uuid>`. Unescaped,
+    // `_` would match the `x` in `axb` and the tag would land on the decoy.
+    await conversation(`axb:slug/${UUID}`)
+    expect(() =>
+      tags.add({ entityType: 'conversation', sessionKey: `a_b:${UUID}`, tag: 'topic:x' }, 'p'),
+    ).toThrow(/no conversation captured/)
+    const real = await conversation(`a_b:slug/${UUID}`)
+    expect(tags.add({ entityType: 'conversation', sessionKey: `a_b:${UUID}`, tag: 'topic:x' }, 'p').entityId).toBe(real)
+    // An empty state list means the default, not invalid SQL.
+    expect(tags.forSessionKeys(['codex:nothing'], []).size).toBe(0)
+  })
+
+  it('re-adding the cwd rule tag makes it a user tag', async () => {
+    const conv = await conversation('codex:promote')
+    tags.propose('conversation', conv, [{ key: 'project', value: 'rivetos' }], { source: 'rule', proposedBy: 'cwd-git-root' })
+    expect(tags.add({ entityType: 'conversation', entityId: conv, tag: 'project:rivetos' }, 'phil')).toMatchObject({
+      source: 'user',
+      proposedBy: 'cwd-git-root',
+      decidedBy: 'phil',
+    })
   })
 
   it('refuses a session key that exists under two agents unless one is named', async () => {

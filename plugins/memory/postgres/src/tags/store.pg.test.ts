@@ -134,6 +134,26 @@ describe.skipIf(PG_URL === '')('tag store (real Postgres)', () => {
     expect(narrowed.entityId).toBe(pathConv)
   })
 
+  it('re-adding the cwd rule tag makes it a user tag; other sources keep theirs', async () => {
+    const conv = await conversation('codex:promote')
+    await raw('conversation', conv, 'project', 'rivetos', 'accepted', 'rule')
+    await raw('conversation', conv, 'topic', 'wiki', 'suggested', 'model')
+    const promoted = await store.addTag(c, { entityType: 'conversation', entityId: conv, tag: 'project:rivetos' }, 'phil')
+    expect(promoted).toMatchObject({ source: 'user', state: 'accepted', decidedBy: 'phil' })
+    const kept = await store.addTag(c, { entityType: 'conversation', entityId: conv, tag: 'topic:wiki' }, 'phil')
+    expect(kept).toMatchObject({ source: 'model', state: 'accepted' })
+  })
+
+  it('tagsForConversations honours a row limit', async () => {
+    const conv = await conversation('codex:limit')
+    for (const v of ['a', 'b', 'c']) await raw('conversation', conv, 'topic', v, 'accepted')
+    expect((await store.tagsForConversations(c, [conv])).get(conv)).toHaveLength(3)
+    expect((await store.tagsForConversations(c, [conv], ['accepted'], { limit: 2 })).get(conv)).toHaveLength(2)
+    expect(
+      (await store.tagsForConversations(c, [conv], ['accepted'], { includeSummaryTags: true, limit: 1 })).get(conv),
+    ).toHaveLength(1)
+  })
+
   it('a pending summary suggestion carries its session key, title and agent', async () => {
     const conv = await conversation('codex:pending-sum')
     const sum = await summaryOf(conv)

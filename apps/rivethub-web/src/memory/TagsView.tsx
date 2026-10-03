@@ -103,7 +103,7 @@ export function TagsView(props: {
           {groups.map((g) => {
             const ids = g.tags.map((t) => t.id)
             return (
-              <li key={g.sessionKey} className="rounded border border-line bg-panel p-3">
+              <li key={g.id} className="rounded border border-line bg-panel p-3">
                 <div className="mb-2 flex flex-wrap items-center gap-2">
                   <button
                     type="button"
