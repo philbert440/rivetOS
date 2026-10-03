@@ -3,7 +3,8 @@
  */
 
 import pg from 'pg'
-import type { Tool } from '@rivetos/types'
+import { formatTag, parseTagLiteral, type Tool } from '@rivetos/types'
+import { taggedConversationsSql, tagsForConversations } from '../tags/store.js'
 import {
   applyWindowArgs,
   fmtLocalTs,
@@ -59,6 +60,11 @@ export function createBrowseTool(pool: pg.Pool): Tool {
           type: 'string',
           description: 'Filter by agent (opus, grok, etc.)',
         },
+        tag: {
+          type: 'string',
+          description:
+            'Only conversations carrying this accepted key:value tag (e.g. project:tenpal). See memory_tags.',
+        },
         include_tools: {
           type: 'boolean',
           description:
@@ -93,6 +99,14 @@ export function createBrowseTool(pool: pg.Pool): Tool {
         conditions.push(`m.agent = $${String(pi)}`)
         params.push(args.agent)
         pi++
+      }
+
+      if (typeof args.tag === 'string' && args.tag.trim() !== '') {
+        const parsed = parseTagLiteral(args.tag)
+        if (!parsed) return `Browse failed: tag must be key:value (got "${args.tag}")`
+        conditions.push(`m.conversation_id IN ${taggedConversationsSql(pi, pi + 1)}`)
+        params.push(parsed.key, parsed.value)
+        pi += 2
       }
 
       // Default: exclude tool rows so chronological catch-up is readable.
@@ -166,6 +180,21 @@ export function createBrowseTool(pool: pg.Pool): Tool {
           )
         }
 
+        // Accepted conversation tags per row; silent on a pre-0019 schema.
+        const tagsByConversation = new Map<string, string[]>()
+        try {
+          const map = await tagsForConversations(
+            pool,
+            result.rows.map((r) => r.conversation_id),
+            ['accepted'],
+            { includeSummaryTags: true },
+          )
+          for (const [id, tags] of map) tagsByConversation.set(id, tags.map(formatTag))
+        } catch (err) {
+          const msg = err instanceof Error ? err.message : String(err)
+          if (!/does not exist|relation/i.test(msg)) throw err
+        }
+
         const hitLimit = result.rows.length >= limit
         const lines = result.rows.map((r) => {
           // Local-TZ + short zone label (Hermes parity) — never bare UTC
@@ -175,7 +204,9 @@ export function createBrowseTool(pool: pg.Pool): Tool {
           // Include tool_result previews — content alone is often just
           // `[tool] name` and hid the real payload from chronological recall.
           const body = formatBrowseMessageBody(r)
-          return `[${ts}] ${r.agent}/${r.role}${tool}\n${body}`
+          const tags = tagsByConversation.get(r.conversation_id)
+          const tagNote = tags && tags.length > 0 ? ` tags: ${tags.join(', ')}` : ''
+          return `[${ts}] ${r.agent}/${r.role}${tool}${tagNote}\n${body}`
         })
 
         let header = `## Messages (${String(result.rows.length)} returned, ${order === 'DESC' ? 'newest' : 'oldest'} first)`

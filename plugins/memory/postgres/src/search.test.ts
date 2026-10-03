@@ -774,3 +774,66 @@ it('does not seed search vectors from a health probe or await probes during sear
   expect(probe).not.toHaveBeenCalled()
   expect(eng.getRuntimeStats().queryEmbedCacheHits).toBe(0)
 })
+
+describe('tag filter', () => {
+  it('resolves the tag to conversations and restricts the search to them (no over-fetch)', async () => {
+    const query = vi.fn(async (sql: string) =>
+      /FROM ros_tags t/.test(sql) ? { rows: [{ id: 'c-yes' }] } : { rows: [] },
+    )
+    const engine = new SearchEngine({ query } as unknown as pg.Pool)
+    const hits = Object.assign([{ id: '2', conversationId: 'c-yes', score: 0.8 }], {
+      fallback: 'trigram' as const,
+    })
+    const unfiltered = vi
+      .spyOn(engine as unknown as { searchUnfiltered: () => Promise<unknown> }, 'searchUnfiltered')
+      .mockResolvedValue(hits)
+    const out = await engine.search('q', { tag: 'Project:TenPAL', limit: 7 })
+    expect(out).toBe(hits)
+    expect(unfiltered).toHaveBeenCalledWith(
+      'q',
+      expect.objectContaining({ limit: 7, tag: undefined, conversationIds: ['c-yes'] }),
+    )
+    const [, params] = query.mock.calls[0] as unknown as [string, unknown[]]
+    expect(params).toEqual(['project', 'tenpal'])
+  })
+
+  it('pushes the conversation predicate into the message and summary queries', async () => {
+    const sqls: Array<[string, unknown[] | undefined]> = []
+    const query = vi.fn(async (sql: string, params?: unknown[]) => {
+      sqls.push([sql.replace(/\s+/g, ' '), params])
+      return /FROM ros_tags t/.test(sql) ? { rows: [{ id: 'c-yes' }] } : { rows: [] }
+    })
+    const engine = new SearchEngine({ query } as unknown as pg.Pool)
+    expect(await engine.search('needle', { mode: 'fts', tag: 'topic:sparse', limit: 3 })).toEqual([])
+    const messages = sqls.find(([sql]) => sql.includes('FROM ros_messages m'))
+    const summaries = sqls.find(([sql]) => sql.includes('FROM ros_summaries s'))
+    expect(messages?.[0]).toMatch(/m\.conversation_id = ANY\(\$\d+::uuid\[\]\)/)
+    expect(summaries?.[0]).toMatch(/s\.conversation_id = ANY\(\$\d+::uuid\[\]\)/)
+    expect(messages?.[1]).toContainEqual(['c-yes'])
+    expect(summaries?.[1]).toContainEqual(['c-yes'])
+  })
+
+  it('returns no hits without searching when no conversation carries the tag', async () => {
+    const query = vi.fn(async () => ({ rows: [] }))
+    const engine = new SearchEngine({ query } as unknown as pg.Pool)
+    const unfiltered = vi.spyOn(
+      engine as unknown as { searchUnfiltered: () => Promise<unknown> },
+      'searchUnfiltered',
+    )
+    expect(await engine.search('q', { tag: 'topic:none' })).toEqual([])
+    expect(unfiltered).not.toHaveBeenCalled()
+  })
+
+  it('treats a database without the tag tables as "no tagged conversations"', async () => {
+    const query = vi.fn(async () => {
+      throw new Error('relation "ros_tags" does not exist')
+    })
+    const engine = new SearchEngine({ query } as unknown as pg.Pool)
+    expect(await engine.search('q', { tag: 'topic:x' })).toEqual([])
+  })
+
+  it('rejects a malformed tag literal', async () => {
+    const engine = new SearchEngine({ query: vi.fn() } as unknown as pg.Pool)
+    await expect(engine.search('q', { tag: 'nocolon' })).rejects.toThrow(/tag must be key:value/)
+  })
+})

@@ -2,6 +2,9 @@
  * memory_search — unified search + auto-expand tool.
  */
 
+import type pg from 'pg'
+import { formatTag, parseTagLiteral } from '@rivetos/types'
+import { tagsForConversations } from '../tags/store.js'
 import type { Tool } from '@rivetos/types'
 import type { SearchEngine, SearchHit, SearchResults } from '../search.js'
 import type { Expander } from '../expand.js'
@@ -52,6 +55,11 @@ export function createSearchTool(
         },
         limit: { type: 'number', description: 'Max top-level results (default: 10)' },
         agent: { type: 'string', description: 'Filter by agent (opus, grok, etc.)' },
+        tag: {
+          type: 'string',
+          description:
+            'Only hits whose conversation carries this accepted key:value tag (e.g. project:tenpal). See memory_tags.',
+        },
         since: {
           type: 'string',
           description:
@@ -88,6 +96,10 @@ export function createSearchTool(
       const scope = (args.scope as string | undefined) ?? 'both'
       const limit = Math.min(Math.max((args.limit as number | undefined) ?? 10, 1), 50)
       const agent = args.agent as string | undefined
+      const tag = typeof args.tag === 'string' && args.tag.trim() !== '' ? args.tag : undefined
+      if (tag !== undefined && !parseTagLiteral(tag)) {
+        return `Search failed: tag must be key:value (got "${tag}")`
+      }
       let since: string | undefined
       let before: string | undefined
       try {
@@ -107,7 +119,9 @@ export function createSearchTool(
         agent,
         since,
         before,
+        ...(tag ? { tag } : {}),
       })
+      await attachTags(results, config?.pool)
 
       const bannerLines: string[] = []
       if (results.degraded && mode !== 'trigram' && mode !== 'regex') {
@@ -220,7 +234,7 @@ function formatExpandedSummaries(
         : fmtLocalDate(hit.createdAt)
 
     sections.push(
-      `**[${hit.kind ?? 'summary'}]** (${when}, score: ${hit.score.toFixed(3)}, period: ${period})`,
+      `**[${hit.kind ?? 'summary'}]** (${when}, score: ${hit.score.toFixed(3)}, period: ${period})${tagSuffix(hit)}`,
     )
     sections.push(hit.content)
 
@@ -276,10 +290,34 @@ function formatUnexpandedSummaries(sections: string[], summaryHits: SearchHit[])
     const when = fmtHitWhen(hit.createdAt)
     const preview = hit.content.length > 300 ? hit.content.slice(0, 300) + '…' : hit.content
     sections.push(
-      `- [${hit.kind ?? 'summary'}/${hit.id}] (${when}, score: ${hit.score.toFixed(3)}) ${preview}`,
+      `- [${hit.kind ?? 'summary'}/${hit.id}] (${when}, score: ${hit.score.toFixed(3)})${tagSuffix(hit)} ${preview}`,
     )
   }
   sections.push('')
+}
+
+/** Accepted conversation tags onto each hit. Silent when the tag schema is absent. */
+async function attachTags(hits: SearchHit[], pool: pg.Pool | undefined): Promise<void> {
+  if (!pool || hits.length === 0) return
+  try {
+    const map = await tagsForConversations(
+      pool,
+      hits.map((h) => h.conversationId),
+      ['accepted'],
+      { includeSummaryTags: true },
+    )
+    for (const hit of hits) {
+      const tags = map.get(hit.conversationId)
+      if (tags && tags.length > 0) hit.tags = tags.map(formatTag)
+    }
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err)
+    if (!/does not exist|relation/i.test(msg)) throw err
+  }
+}
+
+function tagSuffix(hit: SearchHit): string {
+  return hit.tags && hit.tags.length > 0 ? ` tags: ${hit.tags.join(', ')}` : ''
 }
 
 function formatMessages(sections: string[], messageHits: SearchHit[]): void {
@@ -291,7 +329,7 @@ function formatMessages(sections: string[], messageHits: SearchHit[]): void {
     // Capture-truncation hints are embedded by formatSearchMessageBody.
     const body = formatSearchMessageBody(hit)
     sections.push(
-      `- [${hit.agent}/${hit.role}]${tool} (${when}, score: ${hit.score.toFixed(3)})\n${body}`,
+      `- [${hit.agent}/${hit.role}]${tool} (${when}, score: ${hit.score.toFixed(3)})${tagSuffix(hit)}\n${body}`,
     )
   }
 }

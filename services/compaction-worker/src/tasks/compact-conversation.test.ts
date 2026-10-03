@@ -10,6 +10,7 @@ vi.mock('../config.js', () => ({
     llmUrl: 'http://localhost:8000',
     llmModel: 'test-model',
     llmApiKey: 'test-key',
+    taggingEnabled: true,
     pgUrl: 'postgresql://localhost/test',
     compactConcurrency: 1,
     leafBatchSize: 10,
@@ -54,6 +55,7 @@ import {
   PG_DEADLOCK_CODE,
   isLlmTruncationError,
   shrinkLeafBatch,
+  enqueueSuggestTags,
 } from './compact-conversation.js'
 import { MIN_BATCH_SIZE, BRANCH_SYSTEM_PROMPT } from '@rivetos/memory-postgres'
 import { shouldSkip, breakerThreshold, resetBreaker, recordSuccess } from '../circuit-breaker.js'
@@ -390,6 +392,29 @@ describe('compact-conversation', () => {
         }),
       }
       await expect(enqueueExtractWiki(mockClient, 'sum-1', 'conv-1')).resolves.toBeUndefined()
+    })
+  })
+
+  describe('enqueueSuggestTags', () => {
+    it('adds suggest-tags after the caller has committed, keyed on the summary', async () => {
+      const mockClient = {
+        query: vi.fn(async () => ({ rows: [], rowCount: null })),
+      }
+      await enqueueSuggestTags(mockClient, 'sum-1', 'conv-1')
+      expect(mockClient.query).toHaveBeenCalledOnce()
+      const [sql, params] = mockClient.query.mock.calls[0] as [string, unknown[]]
+      expect(sql).toMatch(/graphile_worker\.add_job\('suggest-tags'/)
+      expect(params[0]).toBe(JSON.stringify({ summaryId: 'sum-1', conversationId: 'conv-1' }))
+      expect(params[1]).toBe('tags-sum-1')
+    })
+
+    it('swallows add_job failures so a committed leaf is not rolled back', async () => {
+      const mockClient = {
+        query: vi.fn(async () => {
+          throw deadlockError()
+        }),
+      }
+      await expect(enqueueSuggestTags(mockClient, 'sum-1', 'conv-1')).resolves.toBeUndefined()
     })
   })
 

@@ -66,6 +66,44 @@ export function isSessionId(id: string): id is SessionId {
   }
 }
 
+const NATIVE_UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
+
+/**
+ * Every capture key a session may be stored under, for a key a client asks
+ * with. Historical rows are never rewritten (harness-control-plane.md
+ * § Legacy keys), so a read that joins on `ros_conversations.session_key`
+ * must try them all:
+ *
+ *   - the key as given;
+ *   - for a canonical `<harness-id>:<native>` id, the bare native half — a
+ *     den-spawned harness captures under the bare den join key it inherited
+ *     via RIVETOS_SESSION_KEY;
+ *   - for Claude's path-fallback form `<harness-id>:<project-slug>/<uuid>`,
+ *     the collapsed `<harness-id>:<uuid>` and the bare `<uuid>`.
+ *
+ * Same rule as `bareAliasOf` (@rivetos/core) and `collapsePathFallback`
+ * (den-server), which stay replicas only because those packages cannot
+ * import each other; this is the copy both — and the memory plugin — can
+ * share. A key that is not a SessionId (`task:<id>`, an already-bare id)
+ * aliases to itself only. The requested key is always first.
+ */
+export function sessionKeyAliases(key: string): string[] {
+  const out = [key]
+  const i = key.indexOf(':')
+  if (i <= 0 || i === key.length - 1) return out
+  const harnessId = key.slice(0, i)
+  if (!isHarnessId(harnessId)) return out
+  const native = key.slice(i + 1)
+  const slash = native.lastIndexOf('/')
+  const tail = slash < 0 ? '' : native.slice(slash + 1)
+  if (tail !== '' && NATIVE_UUID_RE.test(tail)) {
+    out.push(`${harnessId}:${tail}`, tail)
+  } else {
+    out.push(native)
+  }
+  return [...new Set(out)]
+}
+
 // ---------------------------------------------------------------------------
 // Single-segment codec: enc(SessionId) = unpadded base64url of the UTF-8 id
 // ---------------------------------------------------------------------------

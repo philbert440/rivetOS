@@ -55,6 +55,7 @@ const args = {
     source: 'codex',
     channel: 'cli',
   },
+  memory_tags: { action: 'pending', limit: 5 },
 } satisfies MemoryToolArgsByName
 
 const wrappers = {

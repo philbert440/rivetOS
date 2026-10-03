@@ -1,5 +1,5 @@
 /**
- * Memory hub — Search / Wiki / Browse / Stats.
+ * Memory hub — Search / Wiki / Browse / Tags / Stats.
  * Wiki is the existing encyclopedia. Search/Browse/Stats hit datahub
  * GET /api/memory/* (same origin resolution as /api/wiki).
  */
@@ -13,6 +13,7 @@ import { BrowseView } from './BrowseView.js'
 import { MemoryHubNav, type MemoryTab } from './MemoryHubNav.js'
 import { SearchView } from './SearchView.js'
 import { StatsView } from './StatsView.js'
+import { TagsView } from './TagsView.js'
 
 export type { MemoryTab } from './MemoryHubNav.js'
 
@@ -35,8 +36,9 @@ export function MemoryHubPage(): JSX.Element {
       <div className="flex h-full flex-col items-center justify-center gap-3 px-6 text-center">
         <div className="text-sm font-semibold text-em">Memory</div>
         <p className="max-w-md text-sm text-ink-dim">
-          Point RivetHub at datahub so Search, Wiki, Browse, and Stats can read the memory store.
-          Set the datahub gateway URL in Settings, or connect a node that lists datahub on the mesh.
+          Point RivetHub at datahub so Search, Wiki, Browse, Tags, and Stats can read the memory
+          store. Set the datahub gateway URL in Settings, or connect a node that lists datahub on
+          the mesh.
         </p>
         <Link
           to="/settings"
@@ -69,6 +71,13 @@ export function MemoryHubPage(): JSX.Element {
             )}
             {tab === 'browse' && (
               <BrowseView
+                gateway={endpoint.gateway}
+                baseUrl={endpoint.baseUrl}
+                onOpenSession={openSession}
+              />
+            )}
+            {tab === 'tags' && (
+              <TagsView
                 gateway={endpoint.gateway}
                 baseUrl={endpoint.baseUrl}
                 onOpenSession={openSession}

@@ -1,12 +1,24 @@
 import type { ServerResponse } from 'node:http'
 import { routedUserResult, type GatewayRoute } from '@rivetos/types'
 import type pg from 'pg'
-import { captureBatch, captureBatchSchema, type CaptureWriteFn } from '../tools/write-tools.js'
+import {
+  captureBatch,
+  captureBatchSchema,
+  type CaptureBatchOptions,
+  type CaptureWriteFn,
+} from '../tools/write-tools.js'
 
 export interface CaptureApiOptions {
   pool: pg.Pool
   userPools?: ReadonlyMap<string, pg.Pool | null>
-  writer?: (pool: pg.Pool) => CaptureWriteFn
+  /**
+   * Replace the writer (tests, alternative transports). It receives the
+   * per-request capture options and must honour them: `allowFilesystem` is
+   * false for a routed user, whose `settings.cwd` must never be resolved here.
+   */
+  writer?: (pool: pg.Pool, options: CaptureBatchOptions) => CaptureWriteFn
+  /** Forwarded to `captureBatch` when no `writer` override is given. */
+  capture?: CaptureBatchOptions
 }
 
 function json(res: ServerResponse, status: number, body: unknown): void {
@@ -60,7 +72,15 @@ export function createCaptureApiRoute(opts: CaptureApiOptions): GatewayRoute {
         }
         const parsed = captureBatchSchema.safeParse(body)
         if (!parsed.success) return json(res, 400, { error: parsed.error.message })
-        const writer = opts.writer?.(pool) ?? ((batch) => captureBatch(pool, batch))
+        // A routed user's batch comes from another tenant (and usually another
+        // machine): its settings.cwd must never be resolved against this host.
+        const captureOptions: CaptureBatchOptions = {
+          ...opts.capture,
+          allowFilesystem: routed.kind === 'owner' && opts.capture?.allowFilesystem !== false,
+        }
+        const writer =
+          opts.writer?.(pool, captureOptions) ??
+          ((batch) => captureBatch(pool, batch, captureOptions))
         return json(res, 200, await writer(parsed.data))
       } catch (error) {
         return json(res, 500, { error: error instanceof Error ? error.message : String(error) })

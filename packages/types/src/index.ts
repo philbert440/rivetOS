@@ -83,6 +83,19 @@ export {
   normalizeTagValue,
   parseTagLiteral,
 } from './tags.js'
+export type { ProjectRuleFs, ProjectRuleResult } from './project-rule.js'
+export {
+  NO_FS,
+  PROJECT_RULE_MAX_WALK,
+  PROJECT_RULE_NAME,
+  findGitRoot,
+  isRootLike,
+  isSafeAbsolutePath,
+  originUrlFromConfig,
+  repoNameFromRemote,
+  resolveProjectFromCwd,
+  sanitizeRemote,
+} from './project-rule.js'
 export { isUsableUserDb } from './user-dbs.js'
 export type { UserDbEntry } from './user-dbs.js'
 export { TRUSTED_USER_HEADER, routedUserFromHeaders, routedUserResult } from './trusted-user.js'
@@ -205,6 +218,7 @@ export {
   isSessionId,
   encodeSessionIdSegment,
   decodeSessionIdSegment,
+  sessionKeyAliases,
 } from './harness-session-id.js'
 export type {
   WikiSourceRef,
@@ -399,4 +413,22 @@ export type {
   WorkflowResumeResponse,
   WorkflowKillResponse,
   WorkflowContractErrorResponse,
+  MemoryTagsToolArgs,
+  TagWire,
+  PendingTagWire,
+  MemoryTagsListResponse,
+  MemoryTagsPendingResponse,
+  MemoryTagCountWire,
+  MemoryTagCountsResponse,
+  MemoryTagsDecideRequest,
+  MemoryTagsDecideResponse,
+  MemoryTagsAddRequest,
+  MemoryTagsAddResponse,
+  MemoryTagsLookupRequest,
+  MemoryTagsLookupResponse,
+  TagTaxonomyWire,
+  MemoryTaxonomyResponse,
+  MemoryTaxonomyUpsertRequest,
+  MemoryTaxonomyMergeRequest,
+  MemoryTaxonomyMergeResponse,
 } from './gateway-api.js'

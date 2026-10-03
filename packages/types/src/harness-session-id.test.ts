@@ -7,6 +7,7 @@ import {
   formatSessionId,
   isSessionId,
   parseSessionId,
+  sessionKeyAliases,
 } from './harness-session-id.js'
 
 /** Every rejection must be a typed `invalid_session_id`, not a bare Error —
@@ -176,3 +177,27 @@ function encodeToSegment(raw: string): string {
   for (const byte of bytes) binary += String.fromCharCode(byte)
   return btoa(binary).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '')
 }
+
+describe('sessionKeyAliases', () => {
+  const UUID = 'a1b2c3d4-1111-4222-8333-444455556666'
+  it('a canonical id also matches the bare native half (den-spawned capture key)', () => {
+    expect(sessionKeyAliases(`claude-code:${UUID}`)).toEqual([`claude-code:${UUID}`, UUID])
+    expect(sessionKeyAliases('codex:chat-20260707-abcd')).toEqual([
+      'codex:chat-20260707-abcd',
+      'chat-20260707-abcd',
+    ])
+  })
+  it("collapses Claude's path-fallback form to the uuid, never to slug/uuid", () => {
+    expect(sessionKeyAliases(`claude-code:-home-rivet-proj/${UUID}`)).toEqual([
+      `claude-code:-home-rivet-proj/${UUID}`,
+      `claude-code:${UUID}`,
+      UUID,
+    ])
+  })
+  it('leaves non-SessionId keys alone', () => {
+    expect(sessionKeyAliases(UUID)).toEqual([UUID])
+    expect(sessionKeyAliases('task:1234')).toEqual(['task:1234'])
+    expect(sessionKeyAliases('unknown-harness:x')).toEqual(['unknown-harness:x'])
+    expect(sessionKeyAliases('claude-code:')).toEqual(['claude-code:'])
+  })
+})

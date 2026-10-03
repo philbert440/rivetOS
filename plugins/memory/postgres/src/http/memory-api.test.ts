@@ -815,3 +815,255 @@ describe('/api/memory', () => {
     })
   })
 })
+
+describe('/api/memory/tags + tag filters', () => {
+  const PENDING_ROW = {
+    id: '11111111-1111-4111-8111-111111111111',
+    entity_type: 'conversation',
+    entity_id: CONV,
+    key: 'topic',
+    value: 'memory-compaction',
+    display: 'Memory Compaction',
+    source: 'model',
+    state: 'suggested',
+    confidence: 0.9,
+    proposed_by: 'm',
+    reason: 'r',
+    decided_by: null,
+    decided_at: null,
+    created_at: new Date('2026-10-02T12:00:00.000Z'),
+    updated_at: new Date('2026-10-02T12:00:00.000Z'),
+    session_key: 'claude-code:native-1',
+    title: 'T',
+    agent: 'grok',
+    conversation_id: CONV,
+    excerpt: null,
+  }
+
+  function tagPool(): pg.Pool & { calls: Array<[string, unknown[] | undefined]> } {
+    const calls: Array<[string, unknown[] | undefined]> = []
+    const pool = {
+      calls,
+      query: async (sql: string, params?: unknown[]) => {
+        calls.push([sql, params])
+        const text = sql.replace(/\s+/g, ' ')
+        if (text.includes("t.state = 'suggested'")) return { rows: [PENDING_ROW] }
+        if (text.includes('UNION ALL')) return { rows: [{ '?column?': 1 }] }
+        if (text.includes('UPDATE ros_tags')) return { rows: [{ id: PENDING_ROW.id }] }
+        if (text.includes('c.session_key = ANY')) return { rows: [{ ...PENDING_ROW, state: 'accepted' }] }
+        if (text.includes('COALESCE(c.id, s.conversation_id) = ANY'))
+          return { rows: [{ ...PENDING_ROW, state: 'accepted', key: 'project', value: 'tenpal', display: 'TenPAL' }] }
+        if (text.includes('SELECT id, session_key FROM ros_conversations'))
+          return { rows: [{ id: CONV, session_key: 'claude-code:native-1' }] }
+        if (text.includes('FROM ros_messages m')) {
+          return {
+            rows: [
+              {
+                id: 'm1', role: 'user', agent: 'grok', content: 'hi',
+                created_at: new Date('2026-10-02T12:00:00.000Z'),
+                conversation_id: CONV, session_key: 'claude-code:native-1', tool_name: null,
+              },
+            ],
+          }
+        }
+        return { rows: [] }
+      },
+    }
+    return pool as unknown as pg.Pool & { calls: typeof calls }
+  }
+
+  it('GET pending lists suggestions with context', async () => {
+    const base = await serve({ pool: tagPool() })
+    const body = (await (await fetch(`${base}/api/memory/tags/pending?limit=5`)).json()) as {
+      tags: Array<{ id: string; key: string; value: string; sessionKey: string; title: string }>
+    }
+    expect(body.tags).toHaveLength(1)
+    expect(body.tags[0]).toMatchObject({ id: PENDING_ROW.id, key: 'topic', value: 'memory-compaction', sessionKey: 'claude-code:native-1', title: 'T' })
+  })
+
+  it('POST decide validates and returns changed ids; DELETE is 405', async () => {
+    const pool = tagPool()
+    const base = await serve({ pool })
+    const post = (path: string, body: unknown) =>
+      fetch(`${base}/api/memory/tags/${path}`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) })
+    expect((await post('decide', { ids: [], state: 'accepted' })).status).toBe(400)
+    expect((await post('decide', { ids: ['a'], state: 'maybe' })).status).toBe(400)
+    expect((await post('decide', { ids: ['not-a-uuid'], state: 'accepted' })).status).toBe(400)
+    expect((await fetch(`${base}/api/memory/tags?entity_id=nope`)).status).toBe(400)
+    const ok = await post('decide', { ids: [PENDING_ROW.id], state: 'rejected', decided_by: 'phil' })
+    expect(ok.status).toBe(200)
+    expect(await ok.json()).toEqual({ changed: [PENDING_ROW.id] })
+    const update = pool.calls.find(([sql]) => sql.includes('UPDATE ros_tags'))
+    expect(update?.[1]).toEqual([[PENDING_ROW.id], 'rejected', 'phil'])
+    expect((await fetch(`${base}/api/memory/tags/decide`, { method: 'DELETE' })).status).toBe(405)
+    expect((await post('nope', {})).status).toBe(404)
+    expect((await fetch(`${base}/api/memory/tags/decide`, { method: 'POST', body: 'not json' })).status).toBe(400)
+  })
+
+  it('POST lookup maps session keys to tags', async () => {
+    const base = await serve({ pool: tagPool() })
+    const res = await fetch(`${base}/api/memory/tags/lookup`, {
+      method: 'POST', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ session_keys: ['claude-code:native-1'] }),
+    })
+    expect(res.status).toBe(200)
+    const body = (await res.json()) as { sessions: Record<string, Array<{ key: string; state: string }>> }
+    expect(body.sessions['claude-code:native-1'][0]).toMatchObject({ key: 'topic', state: 'accepted' })
+  })
+
+  it('search forwards tag= to the engine, rejects a bad literal, and returns hit tags', async () => {
+    const search = vi.fn(async () => [HIT])
+    const base = await serve({ pool: tagPool(), search })
+    expect((await fetch(`${base}/api/memory/search?q=x&tag=nocolon`)).status).toBe(400)
+    const body = (await (await fetch(`${base}/api/memory/search?q=x&tag=project:tenpal`)).json()) as {
+      results: Array<{ tags?: string[] }>
+    }
+    expect(search).toHaveBeenLastCalledWith(expect.anything(), 'x', expect.objectContaining({ tag: 'project:tenpal' }))
+    expect(body.results[0].tags).toEqual(['project:TenPAL'])
+  })
+
+  it('browse adds the accepted-tag subquery and returns message tags', async () => {
+    const pool = tagPool()
+    const base = await serve({ pool })
+    expect((await fetch(`${base}/api/memory/browse?tag=bad`)).status).toBe(400)
+    const body = (await (await fetch(`${base}/api/memory/browse?tag=Project:TenPAL`)).json()) as {
+      messages: Array<{ tags?: string[] }>
+    }
+    const browse = pool.calls.find(([sql]) => sql.includes('FROM ros_messages m'))
+    expect(browse?.[0]).toMatch(/m\.conversation_id IN \(SELECT COALESCE\(tc\.id, ts\.conversation_id\)/)
+    expect(browse?.[1]?.slice(0, 2)).toEqual(['project', 'tenpal'])
+    expect(body.messages[0].tags).toEqual(['project:TenPAL'])
+  })
+
+  it('on a database without the tag tables: reads are empty, writes are 503 (never a fake success)', async () => {
+    const pool = {
+      query: async () => {
+        throw new Error('relation "ros_tags" does not exist')
+      },
+    } as unknown as pg.Pool
+    const base = await serve({ pool })
+    const get = async (path: string) => {
+      const res = await fetch(`${base}/api/memory/tags${path}`)
+      return { status: res.status, body: await res.json() }
+    }
+    expect(await get('/pending')).toEqual({ status: 200, body: { tags: [] } })
+    expect(await get('')).toEqual({ status: 200, body: { tags: [] } })
+    expect(await get('/counts')).toEqual({ status: 200, body: { counts: [] } })
+    const taxonomyPool = {
+      query: async () => {
+        throw new Error('relation "ros_tag_taxonomy" does not exist')
+      },
+    } as unknown as pg.Pool
+    const base2 = await serve({ pool: taxonomyPool })
+    expect(await (await fetch(`${base2}/api/memory/tags/taxonomy`)).json()).toEqual({ entries: [] })
+    const write = await fetch(`${base}/api/memory/tags/decide`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ ids: [PENDING_ROW.id], state: 'accepted' }),
+    })
+    expect(write.status).toBe(503)
+    expect(((await write.json()) as { error: string }).error).toMatch(/migration 0019/)
+  })
+
+  it('routes tag reads and writes to the stamped user pool, never the owner pool', async () => {
+    const owner = tagPool()
+    const alice = tagPool()
+    const base = await serve({ pool: owner, userPools: new Map([['alice', alice]]) })
+    const headers = { 'x-rivetos-user': 'alice', 'content-type': 'application/json' }
+    expect((await fetch(`${base}/api/memory/tags/pending`, { headers })).status).toBe(200)
+    const res = await fetch(`${base}/api/memory/tags/decide`, {
+      method: 'POST',
+      headers,
+      body: JSON.stringify({ ids: [PENDING_ROW.id], state: 'accepted', decided_by: 'someone-else' }),
+    })
+    expect(res.status).toBe(200)
+    expect(owner.calls).toHaveLength(0)
+    const update = alice.calls.find(([sql]) => sql.includes('UPDATE ros_tags'))
+    // A routed user is always recorded as themselves; decided_by is an owner-surface override.
+    expect(update?.[1]).toEqual([[PENDING_ROW.id], 'accepted', 'alice'])
+    const unknown = await fetch(`${base}/api/memory/tags/pending`, {
+      headers: { 'x-rivetos-user': 'mallory' },
+    })
+    expect(unknown.status).toBe(503)
+  })
+
+  it('validates list filters and serves counts, taxonomy, add and merge', async () => {
+    const pool = tagPool()
+    const base = await serve({ pool })
+    const post = (path: string, body: unknown) =>
+      fetch(`${base}/api/memory/tags/${path}`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify(body),
+      })
+    expect((await fetch(`${base}/api/memory/tags?state=bogus`)).status).toBe(400)
+    expect((await fetch(`${base}/api/memory/tags?entity_type=nope`)).status).toBe(400)
+    expect((await fetch(`${base}/api/memory/tags/counts?key=project`)).status).toBe(200)
+    expect((await fetch(`${base}/api/memory/tags/taxonomy?state=accepted`)).status).toBe(200)
+    expect((await post('add', { entity_type: 'conversation', tag: 'topic:x' })).status).toBe(400)
+    expect((await post('add', { entity_type: 'conversation', entity_id: 'nope', tag: 'topic:x' })).status).toBe(400)
+    expect((await post('taxonomy', { key: 'topic' })).status).toBe(400)
+    expect((await post('taxonomy/decide', { entries: [], state: 'accepted' })).status).toBe(400)
+    expect((await post('taxonomy/merge', { key: 'topic', from: 'a' })).status).toBe(400)
+    expect((await post('taxonomy/merge', { key: 'topic', from: 'a', into: 'A' })).status).toBe(400)
+    const merged = await post('taxonomy/merge', { key: 'topic', from: 'old', into: 'new' })
+    expect(merged.status).toBe(200)
+    expect(await merged.json()).toMatchObject({ into: 'new' })
+  })
+
+  it('lookup on a database without the tag tables is an empty read, and a non-schema error is a 500 (never the health body)', async () => {
+    const missing = {
+      query: async () => {
+        throw new Error('relation "ros_tags" does not exist')
+      },
+    } as unknown as pg.Pool
+    const base = await serve({ pool: missing })
+    const res = await fetch(`${base}/api/memory/tags/lookup`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ session_keys: ['claude-code:x'] }),
+    })
+    expect(res.status).toBe(200)
+    expect(await res.json()).toEqual({ sessions: {} })
+    const denied = {
+      query: async () => {
+        throw new Error('permission denied for relation ros_tags')
+      },
+    } as unknown as pg.Pool
+    const base2 = await serve({ pool: denied })
+    const pending = await fetch(`${base2}/api/memory/tags/pending`)
+    expect(pending.status).toBe(500)
+    expect(await pending.json()).toEqual({ error: 'permission denied for relation ros_tags' })
+    const bad = await fetch(`${base}/api/memory/tags/lookup`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ session_keys: ['k'], states: ['bogus'] }),
+    })
+    expect(bad.status).toBe(400)
+  })
+
+  it('answers 413 for an oversized body', async () => {
+    const base = await serve({ pool: tagPool() })
+    const res = await fetch(`${base}/api/memory/tags/decide`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ ids: [], pad: 'x'.repeat(300 * 1024) }),
+    }).catch((err: unknown) => err)
+    // The server closes the socket after flushing the 413; either outcome is the refusal.
+    if (res instanceof Response) expect(res.status).toBe(413)
+    else expect(String(res)).toMatch(/fetch failed|socket|ECONNRESET/i)
+  })
+
+  it('search and browse still work when the tag schema is missing', async () => {
+    const pool = {
+      query: async (sql: string) => {
+        if (/ros_tags/.test(sql)) throw new Error('relation "ros_tags" does not exist')
+        if (sql.includes('SELECT id, session_key')) return { rows: [{ id: CONV, session_key: 'k' }] }
+        return { rows: [] }
+      },
+    } as unknown as pg.Pool
+    const base = await serve({ pool, search: async () => [HIT] })
+    const body = (await (await fetch(`${base}/api/memory/search?q=x`)).json()) as { results: Array<{ tags?: string[] }> }
+    expect(body.results[0].tags).toBeUndefined()
+  })
+})

@@ -13,6 +13,7 @@
  */
 
 import type { ToolResult } from './tool.js'
+import type { Tag, TagEntityType, TagState, TagTaxonomyEntry } from './tags.js'
 import type { StreamEvent } from './events.js'
 import type {
   HarnessCapabilities,
@@ -477,6 +478,7 @@ export type MemoryToolName =
   | 'memory_get_full'
   | 'memory_append'
   | 'memory_ingest_session'
+  | 'memory_tags'
 
 /** Search shared memory using the MCP tool's argument names. */
 export interface MemorySearchToolArgs {
@@ -496,6 +498,8 @@ export interface MemorySearchToolArgs {
   before?: string
   /** Relative time window. */
   window?: string
+  /** Only hits whose conversation carries this accepted `key:value` tag. */
+  tag?: string
   /** Expand summary hits into source messages. */
   expand?: boolean
   /** Synthesize an answer from the results. */
@@ -514,6 +518,8 @@ export interface MemoryBrowseToolArgs {
   window?: string
   /** Filter by agent. */
   agent?: string
+  /** Only messages whose conversation carries this accepted `key:value` tag. */
+  tag?: string
   /** Include tool calls and results. */
   include_tools?: boolean
   /** Maximum messages, 1–200. */
@@ -588,6 +594,41 @@ export interface MemoryIngestSessionToolArgs {
   channel?: string
 }
 
+/** Read and decide session/summary tags (session tagging). */
+export interface MemoryTagsToolArgs {
+  action?:
+    | 'list'
+    | 'pending'
+    | 'counts'
+    | 'decide'
+    | 'add'
+    | 'lookup'
+    | 'taxonomy'
+    | 'taxonomy_upsert'
+    | 'taxonomy_decide'
+    | 'taxonomy_merge'
+  entity_type?: TagEntityType
+  entity_id?: string
+  /** add: the conversation captured under this session key. */
+  session_key?: string
+  key?: string
+  value?: string
+  /** `key:value` literal (add). */
+  tag?: string
+  display?: string
+  state?: TagState
+  ids?: string[]
+  session_keys?: string[]
+  entries?: Array<{ key: string; value: string }>
+  parent_value?: string | null
+  aliases?: string[]
+  from?: string
+  into?: string
+  reason?: string
+  decided_by?: string
+  limit?: number
+}
+
 /** Argument type selected by memory tool name. */
 export type MemoryToolArgsByName = {
   [N in MemoryToolName]: {
@@ -597,6 +638,7 @@ export type MemoryToolArgsByName = {
     memory_get_full: MemoryGetFullToolArgs
     memory_append: MemoryAppendToolArgs
     memory_ingest_session: MemoryIngestSessionToolArgs
+    memory_tags: MemoryTagsToolArgs
   }[N]
 }
 
@@ -630,6 +672,8 @@ export interface MemorySearchHit {
   sessionId?: string | null
   /** Present when this hit was recovered by the empty-FTS trigram fallback. */
   fallback?: 'trigram'
+  /** Accepted `key:value` tags on the hit's conversation. */
+  tags?: string[]
 }
 
 export interface MemorySearchResponse {
@@ -650,6 +694,8 @@ export interface MemoryBrowseMessage {
   conversationId: string
   sessionId?: string | null
   toolName?: string | null
+  /** Accepted `key:value` tags on the message's conversation. */
+  tags?: string[]
 }
 
 export interface MemoryBrowseResponse {
@@ -694,6 +740,122 @@ export interface MemoryHealthResponse {
   status: 'ok' | 'degraded' | 'error'
   embeddings: { status: 'ok' | 'unavailable'; error?: string; impact?: string; checkedAt?: string }
   embedQueueDepth: number
+}
+
+// ---------------------------------------------------------------------------
+// /api/memory/tags — session tagging (review loop + vocabulary)
+// ---------------------------------------------------------------------------
+
+/** Tag row on the wire: `Tag` with ISO timestamps. */
+export type TagWire = Omit<Tag, 'decidedAt' | 'createdAt' | 'updatedAt'> & {
+  decidedAt?: string
+  createdAt: string
+  updatedAt: string
+}
+
+/** Pending suggestion with the context the hub shows while deciding. */
+export interface PendingTagWire extends TagWire {
+  sessionKey?: string | null
+  title?: string | null
+  agent?: string | null
+  conversationId?: string | null
+  excerpt?: string | null
+}
+
+export interface MemoryTagsListResponse {
+  tags: TagWire[]
+}
+
+export interface MemoryTagsPendingResponse {
+  tags: PendingTagWire[]
+}
+
+export interface MemoryTagCountWire {
+  key: string
+  value: string
+  display: string
+  conversations: number
+}
+
+export interface MemoryTagCountsResponse {
+  counts: MemoryTagCountWire[]
+}
+
+/** POST /api/memory/tags/decide */
+export interface MemoryTagsDecideRequest {
+  ids: string[]
+  state: 'accepted' | 'rejected'
+  decided_by?: string
+}
+
+export interface MemoryTagsDecideResponse {
+  /** Ids whose state changed. */
+  changed: string[]
+}
+
+/** POST /api/memory/tags/add — user tag, born accepted. */
+export interface MemoryTagsAddRequest {
+  entity_type: TagEntityType
+  /** Conversation or summary id; a conversation may be named by `session_key` instead. */
+  entity_id?: string
+  session_key?: string
+  /** With `session_key`: narrow to one agent (the same key can exist under two). */
+  agent?: string
+  /** `key:value`, or key + value. */
+  tag?: string
+  key?: string
+  value?: string
+  display?: string
+  reason?: string
+  decided_by?: string
+}
+
+export interface MemoryTagsAddResponse {
+  tag: TagWire
+}
+
+/** POST /api/memory/tags/lookup — tags per session key (drawer). */
+export interface MemoryTagsLookupRequest {
+  session_keys: string[]
+  states?: TagState[]
+}
+
+export interface MemoryTagsLookupResponse {
+  sessions: Record<string, TagWire[]>
+}
+
+export type TagTaxonomyWire = Omit<TagTaxonomyEntry, 'decidedAt' | 'createdAt' | 'updatedAt'> & {
+  decidedAt?: string
+  createdAt: string
+  updatedAt: string
+}
+
+export interface MemoryTaxonomyResponse {
+  entries: TagTaxonomyWire[]
+}
+
+/** POST /api/memory/tags/taxonomy */
+export interface MemoryTaxonomyUpsertRequest {
+  key: string
+  value: string
+  display?: string
+  parent_value?: string | null
+  aliases?: string[]
+  state?: TagState
+  reason?: string
+}
+
+export interface MemoryTaxonomyMergeRequest {
+  key: string
+  from: string
+  into: string
+}
+
+export interface MemoryTaxonomyMergeResponse {
+  moved: number
+  dropped: number
+  /** The value tags ended up on (the target, followed through its own merges). */
+  into: string
 }
 
 // ---------------------------------------------------------------------------

@@ -33,6 +33,12 @@ import { config } from '../config.js'
 import { callLlm } from '../llm.js'
 import { rejectUnparseable } from '../wiki-accept.js'
 import { WikiWriter } from '../wiki-writer.js'
+import {
+  acceptedTagsForSummary,
+  mergeTagCandidates,
+  tagCandidateQuery,
+  withoutRuleEntities,
+} from '../wiki-tags.js'
 
 export interface ExtractWikiPayload {
   summaryId: string
@@ -102,8 +108,18 @@ export const extractWikiTask: Task = async (payload, helpers) => {
   if (summary.session_key?.startsWith('heartbeat:')) return skip('heartbeat conversation')
 
   try {
+    // Tags already accepted when this leaf is mined (see wiki-tags.ts): the
+    // reviewed ones are identity hints, the automatic cwd rule tag is only a
+    // hint about where the session ran. Optional enrichment — never fatal.
+    const tags = await acceptedTagsForSummary(pool, summaryId, summary.conversation_id)
     // Candidate durable topics for the prompt (search + will re-resolve per patch).
-    const hits = await index.searchTopics(summary.content.slice(0, 500), { limit: 5 })
+    const contentHits = await index.searchTopics(summary.content.slice(0, 500), { limit: 5 })
+    const tagQuery = tagCandidateQuery(tags, summary.content)
+    const hits = mergeTagCandidates(
+      contentHits,
+      tagQuery ? await index.searchTopics(tagQuery, { limit: 3 }) : [],
+      3,
+    )
     const candidates: ExtractionCandidate[] = hits.map((h) => ({
       slug: h.slug,
       title: h.title,
@@ -111,6 +127,7 @@ export const extractWikiTask: Task = async (payload, helpers) => {
       entities: h.entities,
       currentState: h.currentState,
       article: h.article,
+      ...(h.fromTag ? { fromTag: true as const } : {}),
     }))
 
     const summaryDate = (summary.latest_at ?? summary.created_at).toISOString().slice(0, 10)
@@ -125,6 +142,8 @@ export const extractWikiTask: Task = async (payload, helpers) => {
         summaryDate,
         agent: summary.agent ?? undefined,
         candidates,
+        reviewedTags: tags.filter((t) => t.reviewed).map((t) => t.literal),
+        ruleTags: tags.filter((t) => !t.reviewed).map((t) => t.literal),
       }),
       WIKI_EXTRACT_MAX_TOKENS,
       // `[]` — "this summary holds no durable facts" — is the single most common
@@ -153,7 +172,13 @@ export const extractWikiTask: Task = async (payload, helpers) => {
     await writer.ensureRepo()
     const touched: string[] = []
     let lastSha: string | undefined
-    for (const patch of patches) {
+    for (const parsedPatch of patches) {
+      // The automatic cwd tag must never act as an identity: strip it from
+      // the entities before the gate (and before it is written to the page).
+      const patch = {
+        ...parsedPatch,
+        addEntities: withoutRuleEntities(parsedPatch.addEntities, tags),
+      }
       // Hard identity gate: fold session-shaped creates into canonical topics.
       const gated = await index.gateTopicWrite(patch.slug, patch.action, {
         entities: patch.addEntities,
