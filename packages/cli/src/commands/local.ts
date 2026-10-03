@@ -44,6 +44,7 @@ import {
   type ExecResult,
 } from '../lib/harness-detect.js'
 import {
+  deviceHasCertificateMessage,
   ensureLocalCa,
   listBannerLanIpv4,
   listLanIpv4,
@@ -63,8 +64,10 @@ import {
   createPairing,
   PAIRING_TTL_MS,
   pairingQrText,
+  readLivePairing,
   releasePairing,
   renderTerminalQr,
+  type PairingRecord,
 } from '../lib/pairing.js'
 
 export {
@@ -698,6 +701,29 @@ async function runInit(
   const detectEnv = deps.detectEnv ?? detectEnvironment
   await detectEnv({ quiet: true, minNodeMajor: 22 })
 
+  // Device names and re-mint guards before config.yaml is rewritten, so a
+  // taken name (or a still-pending pairing) cannot abort after the wizard
+  // has already replaced the operator's config.
+  const pendingDevices = new Set<string>()
+  for (const name of flags.devices) {
+    if (!deviceIdOk(name)) {
+      throw new Error(`--device ${name} must be alphanumeric / . _ - (rivet-ca issue-client)`)
+    }
+    const live = readLivePairing(home, name)
+    if (live) {
+      pendingDevices.add(name)
+      continue
+    }
+    // Drop an expired record (and its unredeemed p12/cert) so the re-mint
+    // check below sees a clean slate, matching `rivetos pair`.
+    armPairing(home, name)
+    const issued = join(localCaPaths(home).sharedDir, 'issued')
+    const existing = [`device-${name}.crt`, `device-${name}.key`]
+      .map((f) => join(issued, f))
+      .filter((f) => existsSync(f))
+    if (existing.length > 0) throw new Error(deviceHasCertificateMessage(name))
+  }
+
   const harnesses = await (deps.detectHarnesses ?? detectHarnesses)({
     home,
     skipVersion: true,
@@ -783,8 +809,13 @@ async function runInit(
 
   const p12Paths: string[] = []
   for (const name of flags.devices) {
-    if (!deviceIdOk(name)) {
-      throw new Error(`--device ${name} must be alphanumeric / . _ - (rivet-ca issue-client)`)
+    if (pendingDevices.has(name)) {
+      const live = readLivePairing(home, name)
+      if (live) p12Paths.push(live.p12Path)
+      console.log(
+        `Device ${name}: pairing still pending — scan the pairing QR shown once the node is up`,
+      )
+      continue
     }
     const minted = await mintDeviceP12({
       home,
@@ -897,24 +928,30 @@ async function runUp(
   const caPath = existsSync(paths.caChainPem) ? paths.caChainPem : paths.chainPem
   const caPem = fromInit?.caPem ?? (existsSync(caPath) ? readFileSync(caPath, 'utf-8') : undefined)
   const lanAddrs = fromInit?.lanAddrs ?? listBannerLanIpv4()
-  const p12Paths =
-    fromInit?.p12Paths ??
-    flags.devices.map((n) => extraDeviceP12Path(home, n)).filter((p) => existsSync(p))
+  const hostname = fromInit?.hostname ?? sanitizeHostname(deps.hostname ?? osHostname())
+
+  // Pairing first: may remint after an expired code, so the banner only
+  // names p12s that still (or again) exist on disk.
+  const pairing = await formatPairingQrs({
+    home,
+    hostname,
+    devices: flags.devices,
+    port,
+    exposeLan,
+    lanAddrs,
+    exec,
+    root: workingDir,
+    scriptPath: deps.scriptPath,
+  })
+  const p12Paths = flags.devices
+    .map((n) => extraDeviceP12Path(home, n))
+    .filter((p) => existsSync(p))
   const banner = formatBanner({
     port,
     exposeLan,
     lanAddrs,
     p12Paths,
     prepared: !flags.service,
-  })
-
-  const pairing = await formatPairingQrs({
-    home,
-    hostname: fromInit?.hostname ?? sanitizeHostname(deps.hostname ?? osHostname()),
-    devices: flags.devices,
-    port,
-    exposeLan,
-    lanAddrs,
   })
 
   if (!flags.service) {
@@ -943,10 +980,11 @@ async function runUp(
 /**
  * One QR per `--device` that still has an unredeemed pairing record. Showing
  * a QR re-arms its TTL, so `rivetos local up --device <id>` re-shows a
- * pending one. When no QR can be shown (`--no-lan`, no LAN address, an
- * unreadable node certificate) it prints each p12 path and passphrase for a
- * manual import instead, as before QR pairing. Empty string when there is
- * nothing to pair.
+ * pending one. An expired record is reminted (same as `rivetos pair`) so a
+ * slow first start or a late re-show still prints a fresh QR. When no QR can
+ * be shown (`--no-lan`, no LAN address, an unreadable node certificate) it
+ * prints each p12 path and passphrase for a manual import instead, as before
+ * QR pairing. Empty string when there is nothing to pair.
  */
 export async function formatPairingQrs(opts: {
   home: string
@@ -956,13 +994,20 @@ export async function formatPairingQrs(opts: {
   exposeLan: boolean
   lanAddrs: string[]
   now?: number
+  exec?: typeof execFileAsync
+  root?: string | null
+  scriptPath?: string
+  /** Injected in tests; production uses mintDeviceP12. */
+  mint?: typeof mintDeviceP12
 }): Promise<string> {
   const ip = opts.lanAddrs[0]
   const nodeCert = localCaPaths(opts.home, opts.hostname).nodeCert
   let pin: string | null = null
   let noQr: string | null = null
   if (!opts.exposeLan || !ip) {
-    noQr = 'the phone needs a LAN address (re-run without --no-lan, on a network, to pair by QR)'
+    noQr = opts.exposeLan
+      ? 'no LAN address found (join a network, then re-run to pair by QR)'
+      : 'the phone needs a LAN address (re-run without --no-lan, on a network, to pair by QR)'
   } else {
     try {
       pin = certSha256(readFileSync(nodeCert, 'utf-8'))
@@ -973,7 +1018,9 @@ export async function formatPairingQrs(opts: {
 
   if (pin === null) {
     // No QR: hand the p12 over the old way. Releasing the record keeps den's
-    // expiry sweep away from the p12 while it is copied to the phone.
+    // expiry sweep away from the p12 while it is copied to the phone — even
+    // when the record has already expired (nothing to scan means nothing to
+    // expire; the passphrase must stay recoverable).
     const released = opts.devices.flatMap((id) => {
       const rec = releasePairing(opts.home, id, opts.now)
       return rec ? [rec] : []
@@ -988,21 +1035,65 @@ export async function formatPairingQrs(opts: {
     return out.join('\n')
   }
 
-  const armed = opts.devices.flatMap((id) => {
-    const rec = armPairing(opts.home, id, opts.now)
-    return rec ? [rec] : []
-  })
-  if (armed.length === 0) return ''
+  const mint = opts.mint ?? mintDeviceP12
+  const armed: Array<{ rec: PairingRecord; reminted: boolean }> = []
+  const notes: string[] = []
+  for (const id of opts.devices) {
+    let rec = armPairing(opts.home, id, opts.now)
+    let reminted = false
+    if (!rec) {
+      const issued = join(localCaPaths(opts.home).sharedDir, 'issued')
+      const existing = [`device-${id}.crt`, `device-${id}.key`]
+        .map((f) => join(issued, f))
+        .filter((f) => existsSync(f))
+      if (existing.length > 0) {
+        notes.push(
+          `  ${id}: already paired (or still has a certificate). ` +
+            `To re-pair, revoke and delete issued/device-${id}.crt, then re-run.`,
+        )
+        continue
+      }
+      try {
+        const minted = await mint({
+          home: opts.home,
+          name: id,
+          exec: opts.exec,
+          root: opts.root,
+          scriptPath: opts.scriptPath,
+        })
+        rec = createPairing({
+          home: opts.home,
+          deviceId: id,
+          p12Path: minted.p12Path,
+          passphrase: minted.passphrase,
+          certPath: minted.certPath,
+          now: opts.now,
+        })
+        reminted = true
+      } catch {
+        // No CA / cannot mint here (unit tests without a fake mint): skip.
+        continue
+      }
+    }
+    armed.push({ rec, reminted })
+  }
+  if (armed.length === 0) {
+    return notes.length > 0 ? ['', ...notes, ''].join('\n') : ''
+  }
   const gateway = `https://${ip}:${String(opts.port)}`
   const minutes = String(Math.round(PAIRING_TTL_MS / 60_000))
   const out: string[] = []
-  for (const rec of armed) {
+  for (const { rec, reminted } of armed) {
     out.push('')
+    if (reminted) {
+      out.push(`  Previous pairing code for ${rec.deviceId} expired — minted a fresh one.`)
+    }
     out.push(`  Pair ${rec.deviceId}: open RivetHub on the phone → Scan pairing QR`)
     out.push(`  (${gateway}, one use, expires in ${minutes} min)`)
     out.push('')
     out.push(await renderTerminalQr(pairingQrText({ gateway, token: rec.token, certSha256: pin })))
   }
+  if (notes.length > 0) out.push('', ...notes)
   return out.join('\n')
 }
 

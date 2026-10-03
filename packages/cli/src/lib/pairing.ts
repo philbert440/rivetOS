@@ -10,7 +10,7 @@
 
 import { randomBytes, X509Certificate } from 'node:crypto'
 import { chmodSync, mkdirSync, readFileSync, unlinkSync, writeFileSync } from 'node:fs'
-import { join } from 'node:path'
+import { basename, dirname, join, resolve, sep } from 'node:path'
 import QRCode from 'qrcode'
 
 /** How long a shown QR stays redeemable. */
@@ -40,8 +40,19 @@ export interface PairingQr {
   certSha256: string
 }
 
+/**
+ * Where pairing records live. Honours `RIVETOS_DEN_PAIRING_DIR` (same knob
+ * den reads) so CLI and den always look at one directory.
+ */
 export function pairingDir(home: string): string {
+  const fromEnv = process.env.RIVETOS_DEN_PAIRING_DIR?.trim()
+  if (fromEnv) return fromEnv
   return join(home, '.rivetos', 'devices', 'pairing')
+}
+
+/** Where the CLI writes device p12s — independent of a custom pairing dir. */
+export function devicesDir(home: string): string {
+  return join(home, '.rivetos', 'devices')
 }
 
 export function pairingRecordPath(home: string, deviceId: string): string {
@@ -93,6 +104,47 @@ function unlinkQuiet(path: string): void {
 }
 
 /**
+ * Only unlink paths the CLI itself writes under `~/.rivetos/` (p12s under
+ * `devices/`, unused leaves under `…/issued/device-*.crt`) — same
+ * defence-in-depth den applies. A corrupt record must not delete arbitrary
+ * files.
+ */
+function unlinkDeviceArtifact(home: string, path: string | undefined, kind: 'p12' | 'cert'): void {
+  if (!path) return
+  const p = resolve(path)
+  const rivetos = resolve(join(home, '.rivetos')) + sep
+  if (!p.startsWith(rivetos)) return
+  if (kind === 'p12') {
+    const devices = resolve(devicesDir(home)) + sep
+    if (p.startsWith(devices) && p.endsWith('.p12')) unlinkQuiet(p)
+    return
+  }
+  // kind === 'cert'
+  if (
+    basename(dirname(p)) === 'issued' &&
+    basename(p).startsWith('device-') &&
+    basename(p).endsWith('.crt')
+  ) {
+    unlinkQuiet(p)
+  }
+}
+
+/** A still-live (not yet expired) pairing record, or null. Does not mutate. */
+export function readLivePairing(
+  home: string,
+  deviceId: string,
+  now = Date.now(),
+): PairingRecord | null {
+  try {
+    const rec = JSON.parse(readFileSync(pairingRecordPath(home, deviceId), 'utf8')) as PairingRecord
+    if (typeof rec.expiresAt !== 'number' || rec.expiresAt <= now) return null
+    return rec
+  } catch {
+    return null
+  }
+}
+
+/**
  * Restart the TTL when the QR is actually shown (after den is ready), so a
  * slow `init` does not eat the scan window. Every call rotates the token, so
  * a copy of an earlier QR (photo, screenshot, scrollback) never redeems. An
@@ -109,8 +161,8 @@ export function armPairing(home: string, deviceId: string, now = Date.now()): Pa
   }
   if (typeof rec.expiresAt !== 'number' || rec.expiresAt <= now) {
     unlinkQuiet(path)
-    if (typeof rec.p12Path === 'string') unlinkQuiet(rec.p12Path)
-    if (typeof rec.certPath === 'string') unlinkQuiet(rec.certPath)
+    unlinkDeviceArtifact(home, rec.p12Path, 'p12')
+    unlinkDeviceArtifact(home, rec.certPath, 'cert')
     return null
   }
   rec.token = newToken()
@@ -122,13 +174,14 @@ export function armPairing(home: string, deviceId: string, now = Date.now()): Pa
 /**
  * For when no QR can be shown (`--no-lan`, no LAN address): drop the pairing
  * record so den's expiry sweep leaves the p12 alone, and return it so the
- * caller can print the p12 path and passphrase for a manual import. Null
- * when the record is gone; an expired one is cleaned up as in armPairing.
+ * caller can print the p12 path and passphrase for a manual import. With no
+ * QR there is nothing to expire — an expired record is handed over the same
+ * way (p12 and passphrase kept). Null only when the record is already gone.
  */
 export function releasePairing(
   home: string,
   deviceId: string,
-  now = Date.now(),
+  _now = Date.now(),
 ): PairingRecord | null {
   const path = pairingRecordPath(home, deviceId)
   let rec: PairingRecord
@@ -136,9 +189,6 @@ export function releasePairing(
     rec = JSON.parse(readFileSync(path, 'utf8')) as PairingRecord
   } catch {
     return null
-  }
-  if (typeof rec.expiresAt !== 'number' || rec.expiresAt <= now) {
-    return armPairing(home, deviceId, now)
   }
   unlinkQuiet(path)
   return rec

@@ -9,7 +9,7 @@ import {
   writeFileSync,
 } from 'node:fs'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { dirname, join } from 'node:path'
 import {
   armPairing,
   certSha256,
@@ -104,8 +104,10 @@ describe('createPairing / armPairing', () => {
   it(
     'arm never revives an expired record: it, its p12 and its unused cert are deleted',
     withHome((home) => {
-      const p12 = join(home, 'pixel.p12')
-      const cert = join(home, 'device-pixel.crt')
+      const p12 = join(home, '.rivetos', 'devices', 'pixel.p12')
+      const cert = join(home, '.rivetos', 'shared', 'rivet-ca', 'issued', 'device-pixel.crt')
+      mkdirSync(dirname(p12), { recursive: true })
+      mkdirSync(dirname(cert), { recursive: true })
       writeFileSync(p12, 'p12')
       writeFileSync(cert, 'crt')
       createPairing({
@@ -124,15 +126,82 @@ describe('createPairing / armPairing', () => {
   )
 
   it(
+    'arm never unlinks p12/cert paths outside ~/.rivetos/',
+    withHome((home) => {
+      const elsewhere = mkdtempSync(join(tmpdir(), 'outside-'))
+      const p12 = join(elsewhere, 'pixel.p12')
+      const cert = join(elsewhere, 'issued', 'device-pixel.crt')
+      mkdirSync(join(elsewhere, 'issued'))
+      writeFileSync(p12, 'keep')
+      writeFileSync(cert, 'keep')
+      createPairing({
+        home,
+        deviceId: 'pixel',
+        p12Path: p12,
+        certPath: cert,
+        passphrase: 'pw',
+        now: 0,
+      })
+      expect(armPairing(home, 'pixel', PAIRING_TTL_MS)).toBeNull()
+      expect(existsSync(p12)).toBe(true)
+      expect(existsSync(cert)).toBe(true)
+      rmSync(elsewhere, { recursive: true, force: true })
+    }),
+  )
+
+  it(
     'release drops a live record for a manual import and keeps the p12',
     withHome((home) => {
-      const p12 = join(home, 'pixel.p12')
+      const p12 = join(home, '.rivetos', 'devices', 'pixel.p12')
+      mkdirSync(dirname(p12), { recursive: true })
       writeFileSync(p12, 'p12')
       const rec = createPairing({ home, deviceId: 'pixel', p12Path: p12, passphrase: 'pw', now: 0 })
       expect(releasePairing(home, 'pixel', 1_000)).toEqual(rec)
       expect(existsSync(pairingRecordPath(home, 'pixel'))).toBe(false)
       expect(existsSync(p12)).toBe(true)
       expect(releasePairing(home, 'pixel', 1_000)).toBeNull()
+    }),
+  )
+
+  it(
+    'release hands over an expired record too (no QR means nothing to expire)',
+    withHome((home) => {
+      const p12 = join(home, '.rivetos', 'devices', 'pixel.p12')
+      mkdirSync(dirname(p12), { recursive: true })
+      writeFileSync(p12, 'p12')
+      const rec = createPairing({
+        home,
+        deviceId: 'pixel',
+        p12Path: p12,
+        passphrase: 'secret',
+        now: 0,
+      })
+      const handed = releasePairing(home, 'pixel', PAIRING_TTL_MS)
+      expect(handed).toEqual(rec)
+      expect(existsSync(pairingRecordPath(home, 'pixel'))).toBe(false)
+      expect(existsSync(p12)).toBe(true)
+    }),
+  )
+
+  it(
+    'honours RIVETOS_DEN_PAIRING_DIR for where records are written',
+    withHome((home) => {
+      const custom = join(home, 'custom-pairing')
+      const prev = process.env.RIVETOS_DEN_PAIRING_DIR
+      process.env.RIVETOS_DEN_PAIRING_DIR = custom
+      try {
+        createPairing({
+          home,
+          deviceId: 'pixel',
+          p12Path: '/x',
+          passphrase: 'pw',
+        })
+        expect(existsSync(join(custom, 'pixel.json'))).toBe(true)
+        expect(existsSync(join(home, '.rivetos', 'devices', 'pairing', 'pixel.json'))).toBe(false)
+      } finally {
+        if (prev === undefined) delete process.env.RIVETOS_DEN_PAIRING_DIR
+        else process.env.RIVETOS_DEN_PAIRING_DIR = prev
+      }
     }),
   )
 })
@@ -230,6 +299,50 @@ describe('formatPairingQrs', () => {
       })
       expect(out).toContain('--no-lan')
       expect(out).not.toContain('https://')
+    }),
+  )
+
+  it(
+    'remints a fresh QR when the previous pairing has expired',
+    withHome(async (home) => {
+      const cert = localCaPaths(home, 'box').nodeCert
+      mkdirSync(dirname(cert), { recursive: true })
+      writeFileSync(cert, CERT)
+      const p12 = join(home, '.rivetos', 'devices', 'pixel.p12')
+      mkdirSync(dirname(p12), { recursive: true })
+      writeFileSync(p12, 'old')
+      createPairing({
+        home,
+        deviceId: 'pixel',
+        p12Path: p12,
+        passphrase: 'old-pw',
+        now: 0,
+      })
+      const mint = async () => {
+        const fresh = join(home, '.rivetos', 'devices', 'pixel.p12')
+        writeFileSync(fresh, 'new')
+        return {
+          id: 'pixel',
+          p12Path: fresh,
+          passphrase: 'new-pw',
+          certPath: join(home, '.rivetos', 'shared', 'rivet-ca', 'issued', 'device-pixel.crt'),
+        }
+      }
+      const out = await formatPairingQrs({
+        home,
+        hostname: 'box',
+        devices: ['pixel'],
+        port: 5174,
+        exposeLan: true,
+        lanAddrs: ['192.168.1.20'],
+        now: PAIRING_TTL_MS,
+        mint: mint as never,
+      })
+      expect(out).toContain('Previous pairing code for pixel expired')
+      expect(out).toContain('Pair pixel')
+      expect(out).toContain('https://192.168.1.20:5174')
+      expect(existsSync(pairingRecordPath(home, 'pixel'))).toBe(true)
+      expect(existsSync(p12)).toBe(true)
     }),
   )
 })

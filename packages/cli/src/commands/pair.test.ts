@@ -158,6 +158,28 @@ describe('pairCommand', () => {
     }
   })
 
+  it('--host does not swallow the next flag as its value', async () => {
+    const m = meshHome()
+    const out = vi.spyOn(console, 'log').mockImplementation(() => {})
+    try {
+      // `--host --json` must not mint a code whose gateway is `https://--json:…`.
+      await pairCommand(['--check', '--json', '--config', m.config, '--host', '--json'])
+      const body = JSON.parse(String(out.mock.calls[0]?.[0])) as {
+        available?: boolean
+        gateway?: string
+        error?: string
+      }
+      if (body.available) {
+        expect(body.gateway).not.toMatch(/--json/)
+      } else {
+        expect(body.error).toBeTruthy()
+      }
+    } finally {
+      out.mockRestore()
+      m.cleanup()
+    }
+  })
+
   it('finds the device name after flags, and prints help with the options', async () => {
     const out = vi.spyOn(console, 'log').mockImplementation(() => {})
     const prevExit = process.exitCode

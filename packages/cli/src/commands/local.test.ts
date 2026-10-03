@@ -957,4 +957,35 @@ describe('formatPairingQrs without a LAN address', () => {
       rmSync(home, { recursive: true, force: true })
     }
   })
+
+  it('still hands over the p12 after the TTL (--no-lan must not lose the passphrase)', async () => {
+    const home = mkdtempSync(join(tmpdir(), 'local-pair-nolan-exp-'))
+    try {
+      const p12 = join(home, '.rivetos', 'devices', 'pixel.p12')
+      mkdirSync(join(home, '.rivetos', 'devices'), { recursive: true })
+      writeFileSync(p12, 'p12')
+      createPairing({
+        home,
+        deviceId: 'pixel',
+        p12Path: p12,
+        passphrase: 'keep-me',
+        now: 0,
+      })
+      const { PAIRING_TTL_MS } = await import('../lib/pairing.js')
+      const out = await formatPairingQrs({
+        home,
+        hostname: 'box',
+        devices: ['pixel'],
+        port: 5174,
+        exposeLan: false,
+        lanAddrs: ['192.168.0.9'],
+        now: PAIRING_TTL_MS,
+      })
+      expect(out).toContain(`pixel: ${p12}  passphrase: keep-me`)
+      expect(existsSync(pairingRecordPath(home, 'pixel'))).toBe(false)
+      expect(existsSync(p12)).toBe(true)
+    } finally {
+      rmSync(home, { recursive: true, force: true })
+    }
+  })
 })

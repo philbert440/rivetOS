@@ -237,7 +237,11 @@ export async function runPair(
 
 function argValue(args: string[], flag: string): string | undefined {
   const i = args.indexOf(flag)
-  return i < 0 ? undefined : args[i + 1]
+  if (i < 0) return undefined
+  const v = args[i + 1]
+  // A bare `--host --json` must not treat the next flag as the host value.
+  if (typeof v !== 'string' || v.startsWith('-')) return undefined
+  return v
 }
 
 /** The first argument that is neither a flag nor a flag's value. */
