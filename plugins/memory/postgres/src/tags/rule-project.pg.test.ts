@@ -11,6 +11,7 @@ import pg from 'pg'
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 import type { ProjectRuleResult } from '@rivetos/types'
 import { applyProjectRuleTag } from './rule-project.js'
+import { addTag } from './store.js'
 
 const PG_URL = process.env.RIVETOS_PG_URL ?? ''
 const SCHEMA = `tags_rule_${String(process.pid)}`
@@ -81,11 +82,8 @@ describe.skipIf(PG_URL === '')('applyProjectRuleTag (real Postgres)', () => {
   it('still counts its tag after a person re-added it (source promoted to user): no second project', async () => {
     const id = await conv()
     await apply(id)
-    // What addTag's conflict path does when a person re-adds the rule tag.
-    await client.query(
-      `UPDATE ros_tags SET source = 'user', decided_by = 'phil' WHERE entity_id = $1`,
-      [id],
-    )
+    // A person re-adds the rule tag: addTag's conflict path promotes its source.
+    await addTag(client, { entityType: 'conversation', entityId: id, tag: 'project:rivetos' }, 'phil')
     expect(await apply(id, { ...HIT, value: 'other-repo', display: 'other-repo' })).toBe(false)
     expect(await tagsOf(id)).toEqual([
       { value: 'rivetos', state: 'accepted', source: 'user', decided_by: 'phil' },

@@ -67,6 +67,12 @@ async function inTransaction<T>(
   }
 }
 
+/**
+ * Sources whose accepted tags a person stands behind (added, accepted or
+ * imported). The wiki's "reviewed" test and the merge's source carry share it.
+ */
+export const REVIEWED_TAG_SOURCES: readonly string[] = ['user', 'model', 'import']
+
 /** Ancestor walk bound for the taxonomy tree. */
 const TAXONOMY_MAX_DEPTH = 32
 
@@ -776,9 +782,6 @@ export async function mergeTaxonomyValue(
       await q.query(
         `UPDATE ros_tags o
           SET state = t.state, decided_by = t.decided_by, decided_at = t.decided_at,
-              -- The decision that wins brings its reviewed source with it:
-              -- a rule survivor must not hide a person's tag folded into it.
-              source = CASE WHEN o.source = 'rule' AND t.source <> 'rule' THEN t.source ELSE o.source END,
               updated_at = now()
          FROM ros_tags t
         WHERE t.key = $1 AND t.value = $2
@@ -788,6 +791,19 @@ export async function mergeTaxonomyValue(
           AND (o.state = 'suggested'
                OR COALESCE(t.decided_at, t.updated_at) > COALESCE(o.decided_at, o.updated_at))`,
         [k, f, i],
+      )
+      // Independently of which decision wins: a rule survivor must not hide a
+      // reviewed tag folded into it. (The rule's guard keys on proposed_by, so
+      // the promoted row still counts as the conversation's rule tag.)
+      await q.query(
+        `UPDATE ros_tags o
+          SET source = t.source, updated_at = now()
+         FROM ros_tags t
+        WHERE t.key = $1 AND t.value = $2
+          AND o.key = $1 AND o.value = $3
+          AND o.entity_type = t.entity_type AND o.entity_id = t.entity_id
+          AND o.source = 'rule' AND t.source = ANY($4::text[])`,
+        [k, f, i, REVIEWED_TAG_SOURCES],
       )
       const dropped = await q.query(`DELETE FROM ros_tags WHERE key = $1 AND value = $2`, [k, f])
       // Vocabulary bookkeeping: retire `from`, hand its children to the

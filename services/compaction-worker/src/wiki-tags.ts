@@ -25,10 +25,10 @@
 
 import type pg from 'pg'
 import type { Tag } from '@rivetos/types'
-import { listTags, tagsForConversations } from '@rivetos/memory-postgres'
+import { REVIEWED_TAG_SOURCES, listTags, tagsForConversations } from '@rivetos/memory-postgres'
 
 /** Sources whose accepted tags a person stands behind. */
-const REVIEWED_SOURCES: ReadonlySet<string> = new Set(['user', 'model', 'import'])
+const REVIEWED_SOURCES: ReadonlySet<string> = new Set(REVIEWED_TAG_SOURCES)
 
 /** Tags offered to one extraction, at most. */
 export const WIKI_TAGS_MAX = 20

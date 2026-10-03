@@ -136,10 +136,20 @@ describe.skipIf(PG_URL === '')('tag store (real Postgres)', () => {
 
   it('re-adding the cwd rule tag makes it a user tag; other sources keep theirs', async () => {
     const conv = await conversation('codex:promote')
-    await raw('conversation', conv, 'project', 'rivetos', 'accepted', 'rule')
+    await c.query(
+      `INSERT INTO ros_tags (entity_type, entity_id, key, value, source, state, proposed_by, decided_by)
+       VALUES ('conversation', $1, 'project', 'rivetos', 'rule', 'accepted', 'cwd-git-root', 'cwd-git-root')`,
+      [conv],
+    )
     await raw('conversation', conv, 'topic', 'wiki', 'suggested', 'model')
     const promoted = await store.addTag(c, { entityType: 'conversation', entityId: conv, tag: 'project:rivetos' }, 'phil')
-    expect(promoted).toMatchObject({ source: 'user', state: 'accepted', decidedBy: 'phil' })
+    // proposed_by survives: the rule's guard recognizes its tag by it.
+    expect(promoted).toMatchObject({
+      source: 'user',
+      state: 'accepted',
+      decidedBy: 'phil',
+      proposedBy: 'cwd-git-root',
+    })
     const kept = await store.addTag(c, { entityType: 'conversation', entityId: conv, tag: 'topic:wiki' }, 'phil')
     expect(kept).toMatchObject({ source: 'model', state: 'accepted' })
   })
@@ -163,6 +173,22 @@ describe.skipIf(PG_URL === '')('tag store (real Postgres)', () => {
       await c.query(`SELECT value, source, state FROM ros_tags WHERE entity_id = $1 ORDER BY value`, [conv])
     ).rows
     expect(rows).toEqual([{ value: 'a', source: 'user', state: 'accepted' }])
+  })
+
+  it('a merge onto a rule survivor keeps the folded tag reviewed even when the person tagged first', async () => {
+    const conv = await conversation('codex:merge-older')
+    await store.addTag(c, { entityType: 'conversation', entityId: conv, tag: 'project:b' }, 'phil')
+    // The rule's row is decided later than the person's.
+    await c.query(
+      `INSERT INTO ros_tags (entity_type, entity_id, key, value, source, state, proposed_by, decided_by, decided_at)
+       VALUES ('conversation', $1, 'project', 'a', 'rule', 'accepted', 'cwd-git-root', 'cwd-git-root', now() + interval '1 hour')`,
+      [conv],
+    )
+    await store.mergeTaxonomyValue(c, 'project', 'b', 'a')
+    const rows = (
+      await c.query(`SELECT value, source, proposed_by FROM ros_tags WHERE entity_id = $1`, [conv])
+    ).rows
+    expect(rows).toEqual([{ value: 'a', source: 'user', proposed_by: 'cwd-git-root' }])
   })
 
   it('tagsForConversations honours a row limit', async () => {

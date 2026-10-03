@@ -447,6 +447,7 @@ export {
   tagsReadOnlyRefusal,
 } from './tools/tags-tool.js'
 export {
+  REVIEWED_TAG_SOURCES,
   addTag,
   conversationIdsWithTag,
   decideTags,
