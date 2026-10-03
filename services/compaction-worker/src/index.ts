@@ -21,6 +21,11 @@
  *   RIVETOS_COMPACTOR_URL       required (LLM endpoint)
  *   RIVETOS_COMPACTOR_MODEL     required (OpenAI-compatible chat model id)
  *   RIVETOS_COMPACTOR_API_KEY   optional
+ *   RIVETOS_COMPACTOR_TRANSIENT_STATUSES optional — comma list of 4xx codes the primary returns while overloaded, retried like a 5xx (e.g. 403,404)
+ *   RIVETOS_COMPACTOR_FALLBACKS optional — ordered url|model|KEY_ENV|STATUSES entries, comma-separated, tried when the primary fails;
+ *                               STATUSES is that endpoint's own ;-separated transient 4xx list (e.g. 403;404)
+ *   RIVETOS_COMPACTOR_FALLBACK_COOLDOWN_MINUTES default: 15 — after an outage failover, how long to stay on the fallback before retrying the primary
+ *   RIVETOS_COMPACTOR_FALLBACK_ATTEMPT_TIMEOUT_SECONDS default: 300 — per-attempt timeout on an endpoint that has a fallback after it
  *   WORKER_ROLE                 default: all (all | compaction | wiki) — which task/cron set this process registers
  *   COMPACT_CONCURRENCY         default: 1 (compaction is CPU-heavy on the LLM, single-flight per worker)
  *   TOOL_SYNTH_CONCURRENCY      default: 2
@@ -103,7 +108,22 @@ const CRON_BY_IDENTIFIER: Record<
 
 async function main(): Promise<void> {
   console.log('[CompactWorker] Starting...')
-  console.log(`[CompactWorker] LLM endpoint: ${config.llmUrl} (model: ${config.llmModel})`)
+  const transient = (codes: number[]): string =>
+    codes.length > 0 ? `, transient 4xx: ${codes.join(',')}` : ''
+  console.log(
+    `[CompactWorker] LLM endpoint: ${config.llmUrl} (model: ${config.llmModel}${transient(config.llmTransientStatuses)})`,
+  )
+  for (const [i, fb] of config.llmFallbacks.entries()) {
+    console.log(
+      `[CompactWorker] LLM fallback ${String(i + 1)}: ${fb.url} (model: ${fb.model}${transient(fb.transientStatuses)})`,
+    )
+  }
+  if (config.llmFallbacks.length > 0) {
+    console.log(
+      `[CompactWorker] LLM failover cooldown: ${String(config.llmFallbackCooldownMs / 60_000)} min, ` +
+        `attempt timeout before a fallback: ${String(config.llmFallbackAttemptTimeoutMs / 1000)}s`,
+    )
+  }
   console.log(
     `[CompactWorker] Idle threshold: ${config.idleMinutes} min, leaf window: ${config.leafBatchSize}, ` +
       `stale-partial: ${config.staleMinutes} min / >=${config.staleMinBatch} msgs`,
