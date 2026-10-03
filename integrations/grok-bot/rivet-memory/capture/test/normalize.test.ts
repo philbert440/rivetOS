@@ -41,7 +41,7 @@ import {
   v3RowsSession,
   v3Session,
 } from '../src/reclean.js'
-import { resolveIdent } from '../src/cli.js'
+import { main, resolveIdent } from '../src/cli.js'
 import {
   addMs,
   deriveCreatedAt,
@@ -1221,6 +1221,7 @@ describe('unstamped on-disk transcript + createdAt', () => {
     expect(stripSessionSuffix('grokbot-omega-v4-rows')).toBe('grokbot-omega')
     expect(stripSessionSuffix('grokbot-omega-v4-voice-call')).toBe('grokbot-omega')
     expect(stripSessionSuffix('grokbot-alpha-v3-voice-call-redacted')).toBe('grokbot-alpha')
+    expect(stripSessionSuffix('grokbot-alpha-v4-backfill')).toBe('grokbot-alpha-v4-backfill')
   })
 })
 
@@ -1331,6 +1332,13 @@ describe('both input formats', () => {
       thisConversation: true,
       a: 0,
     })
+    expect(parsePageHeader('Transcript of alpha, positions 919–920 of 921:')).toMatchObject({
+      target: 'alpha',
+      a: 919,
+      b: 920,
+      total: 921,
+      thisConversation: false,
+    })
   })
 
   it('parses an A=0 page with no footer', () => {
@@ -1357,7 +1365,7 @@ describe('reclean', () => {
     expect(result.wrote).toBe(false)
   })
 
-  it('follows GROKBOT_SESSION_SUFFIX and refuses already row-shaped sessions', () => {
+  it('follows GROKBOT_SESSION_SUFFIX and refuses already row-shaped sessions', async () => {
     expect(v3Session('grokbot-beta', '-v4')).toBe('grokbot-beta-v4')
     expect(v3RowsSession('grokbot-beta', '-v4')).toBe('grokbot-beta-v4-rows')
     expect(isRowShapedSession('grokbot-beta-v3-rows')).toBe(true)
@@ -1369,6 +1377,34 @@ describe('reclean', () => {
       dryRun: true,
     })
     expect(v4.session).toBe('grokbot-beta-v4')
+    expect(() => v3Session('grokbot-alpha-v4-backfill', '-v4')).toThrow(/-backfill/)
+    expect(() => v3RowsSession('grokbot-alpha-v4-backfill', '-v4')).toThrow(/-backfill/)
+    expect(identityForSession('grokbot-alpha-v4-backfill')).toMatchObject({
+      agent: 'grokbot-alpha',
+      session: 'grokbot-alpha',
+    })
+    const errs: string[] = []
+    const err = console.error
+    console.error = (...a: unknown[]) => {
+      errs.push(a.map(String).join(' '))
+    }
+    try {
+      const code = await main([
+        'reclean',
+        '--session',
+        'grokbot-alpha-v4-backfill',
+        '--session-suffix',
+        '-v4',
+        '--from-transcript',
+        join(FIX, 'ondisk-basic.jsonl'),
+        '--write',
+      ])
+      expect(code).toBe(2)
+    } finally {
+      console.error = err
+    }
+    expect(errs.join('\n')).toMatch(/refusing to fold/)
+    expect(errs.join('\n')).not.toMatch(/grokbot-alpha-v4\.jsonl/)
     expect(() =>
       recleanFromSource(readFix('ondisk-basic.jsonl'), {
         sessionKey: 'grokbot-beta-v3-rows',

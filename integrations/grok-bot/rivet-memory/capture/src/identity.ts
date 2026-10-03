@@ -14,6 +14,7 @@ import {
   DEFAULT_AGENT_PREFIX,
   DEFAULT_NODE_ID,
   SESSION_SUFFIX_V3,
+  isBackfillSession,
   stripSessionSuffix,
   type BotIdentity,
 } from './types.js'
@@ -270,12 +271,45 @@ export function listInputFiles(path: string): string[] {
   return out
 }
 
+/** Slug used in `grokbot-<slug>` session / agent tags (collision suffix included). */
+export function personaSlugFromIdentity(ident: BotIdentity, cfg?: IdentityConfig): string {
+  const resolved = cfg ?? loadIdentityConfig()
+  if (ident.session.startsWith(`${resolved.nodeId}-`)) {
+    return ident.session.slice(resolved.nodeId.length + 1)
+  }
+  if (ident.agent.startsWith(`${resolved.agentPrefix}-`)) {
+    return ident.agent.slice(resolved.agentPrefix.length + 1)
+  }
+  return slug(ident.persona)
+}
+
+/**
+ * Roster base for a backfill session key. Lookup only — never a write target.
+ * `grokbot-alpha-v4-backfill` → `grokbot-alpha`.
+ */
+export function backfillIdentityBase(session: string): string | undefined {
+  if (!isBackfillSession(session)) return undefined
+  const stripped = session.replace(/-v\d+-backfill$/, '')
+  return stripped === session ? undefined : stripped
+}
+
+/** Roster lookup by the same slug discovery already derived from profile.json. */
+export function identityForSlug(
+  want: string,
+  opts?: { agentsDir?: string; config?: IdentityConfig; catalog?: DiscoverResult },
+): BotIdentity | undefined {
+  const cfg = opts?.config ?? loadIdentityConfig()
+  const models =
+    opts?.catalog?.models ?? makeIdentityLookup({ agentsDir: opts?.agentsDir }).catalog.models
+  return models.find((m) => personaSlugFromIdentity(m, cfg) === want)
+}
+
 /** Look up a discovered identity from a session key (with or without -v2/-v3/-v3-rows). */
 export function identityForSession(
   session: string,
   opts?: { agentsDir?: string },
 ): BotIdentity | undefined {
-  const stripped = stripSessionSuffix(session)
+  const stripped = backfillIdentityBase(session) ?? stripSessionSuffix(session)
   const lookup = makeIdentityLookup({
     agentsDir: opts?.agentsDir,
   })

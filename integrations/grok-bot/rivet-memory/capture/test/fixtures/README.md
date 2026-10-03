@@ -21,8 +21,11 @@ committed.
 ## Format (b): ReadTranscript page text
 
 Header: `Transcript of agent "NAME" (UUID), positions A–B of N:` (en dash),
-or `Transcript of this conversation, positions A–B of N:`. Footer
-(`Older messages remain…`) is absent when A=0. Tool results use `result`.
+`Transcript of this conversation, positions A–B of N:`, or the generic
+`Transcript of <target>, positions A–B of N:` used by page-dump backfill.
+Footer (`Older messages remain…`) is absent when A=0. Tool results use `result`.
+Page-dump files are named `<bot-slug>-<before>.txt` (tests generate these
+under `/tmp`; slugs come from fixture `profile.json` names).
 
 - `page-named.txt` — named agent + footer
 - `page-this-conversation.txt` — header variant + send_message epoch

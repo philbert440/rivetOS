@@ -52,6 +52,8 @@ export {
   agentIdFromTranscriptPath,
   resolveSourceAgentId,
   identityForSession,
+  identityForSlug,
+  personaSlugFromIdentity,
   listInputFiles,
   applySessionSuffix,
   listUnmappedTranscripts,
@@ -75,6 +77,27 @@ export {
   v3VoiceSession,
 } from './voice.js'
 export { mergeParsedInputs, normalizePages, formatMergeConflicts } from './pages.js'
+export {
+  ingestPages,
+  listPageSpoolFiles,
+  parsePageFileName,
+  applyBackfillTimestamps,
+  attachBackfillMeta,
+  dropSystemMessages,
+  filterOverlap,
+  loadOverlapIndex,
+  contentHashForRow,
+  backfillSourceId,
+  backfillSession,
+  liveV4Session,
+  formatIngestPagesCounts,
+  createPgOverlapStore,
+  NEWEST_CREATED_SQL,
+  ROWS_SINCE_SQL,
+  BACKFILL_SOURCE_IDS_SQL,
+  OVERLAP_TIME_TOLERANCE_MS,
+  BACKFILL_SOURCE,
+} from './ingest-pages.js'
 export {
   assertReadOnlySql,
   loadRivetosPgUrlFromEnv,
@@ -110,10 +133,15 @@ export {
   DEFAULT_AGENT_PREFIX,
   ORDINAL_STRIDE,
   stripSessionSuffix,
+  isBackfillSession,
   sessionStoreSuffix,
   sessionVoiceSuffix,
   sessionRowsSuffix,
+  sessionBackfillSuffix,
   isRowShapedSession,
+  SESSION_SUFFIX_V4,
+  SESSION_SUFFIX_V4_BACKFILL,
+  DEFAULT_BACKFILL_OVERLAP_HOURS,
 } from './types.js'
 export type {
   BotIdentity,
