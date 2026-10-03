@@ -804,7 +804,9 @@ describe('tag filter', () => {
       return /FROM ros_tags t/.test(sql) ? { rows: [{ id: 'c-yes' }] } : { rows: [] }
     })
     const engine = new SearchEngine({ query } as unknown as pg.Pool)
-    expect(await engine.search('needle', { mode: 'fts', tag: 'topic:sparse', limit: 3 })).toEqual([])
+    expect(await engine.search('needle', { mode: 'fts', tag: 'topic:sparse', limit: 3 })).toEqual(
+      [],
+    )
     const messages = sqls.find(([sql]) => sql.includes('FROM ros_messages m'))
     const summaries = sqls.find(([sql]) => sql.includes('FROM ros_summaries s'))
     expect(messages?.[0]).toMatch(/m\.conversation_id = ANY\(\$\d+::uuid\[\]\)/)
@@ -835,5 +837,26 @@ describe('tag filter', () => {
   it('rejects a malformed tag literal', async () => {
     const engine = new SearchEngine({ query: vi.fn() } as unknown as pg.Pool)
     await expect(engine.search('q', { tag: 'nocolon' })).rejects.toThrow(/tag must be key:value/)
+  })
+})
+
+describe('access bump', () => {
+  it('a failing access-count update resolves, and is logged once per interval', async () => {
+    const query = vi.fn(async () => {
+      throw new Error('timeout exceeded when trying to connect')
+    })
+    const engine = new SearchEngine({ query } as unknown as pg.Pool)
+    const bump = (engine as unknown as { bumpAccess: (hits: unknown[]) => Promise<void> })
+      .bumpAccess
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined)
+    try {
+      await expect(bump.call(engine, [{ type: 'message', id: 'm1' }])).resolves.toBeUndefined()
+      await expect(bump.call(engine, [{ type: 'summary', id: 's1' }])).resolves.toBeUndefined()
+      expect(query).toHaveBeenCalledTimes(2)
+      const lines = warn.mock.calls.filter(([line]) => String(line).includes('access bump skipped'))
+      expect(lines).toHaveLength(1)
+    } finally {
+      warn.mockRestore()
+    }
   })
 })
