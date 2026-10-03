@@ -11,7 +11,7 @@
 # This script needs bin/rivethub-hub, lib/rivet-ca.sh and systemd/ beside it.
 # From a checkout (or RIVETHUB_DISTRO_DIR) they are used in place. Curl-pipe
 # has no siblings: preflight fetches them from get.rivethub.io and checks
-# each against its sha256 in pins/stable.json before any system write.
+# each against its sha256 in pins/stable.json before any hub write.
 #
 # Installs a DATAHUB host: Postgres 16 + pgvector, memory schema, the mesh CA,
 # users.json, and rivethub-hub. No agent runs here. Debian 12 / Ubuntu LTS.
@@ -351,6 +351,8 @@ trusted_uid() {
 # member. That is the rule pam_umask uses to hand out umask 002, so ordinary
 # checkouts pass and a shared group (staff, "domain users") does not. Nothing
 # is enumerated, so a directory service that hides accounts cannot widen it.
+# Not seen: an account an administrator gave the owner's group as its primary
+# group, and write access granted through a POSIX ACL.
 trusted_group() {
   local gid="$1" owner="$2" owner_name line members m
   owner_name="$(id -un "${owner}" 2>/dev/null)" || return 1
@@ -2149,9 +2151,10 @@ EOF
   fi
   if [[ "${FLAG_FORCE}" -eq 1 ]]; then
     cat <<EOF
-  --force: CA will be re-inited and the postgres password rotated. An existing
-  cluster that still has the old password will fail to authenticate until you
-  ALTER ROLE or wipe the docker volume / bare-metal cluster.
+  --force: CA will be re-inited and the postgres password rotated (the
+  database role and datahub.env together). With --docker, if the running
+  database cannot be reached with the current password, the run stops before
+  changing anything.
 
 EOF
   fi

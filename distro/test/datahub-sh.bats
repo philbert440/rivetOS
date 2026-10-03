@@ -1012,6 +1012,8 @@ EOF
     valid_pin_tag "v1.2.3" || exit 1
     valid_pin_tag "abc_def-0.1" || exit 1
     valid_pin_tag "../etc" && exit 1
+    valid_pin_tag ".hidden" && exit 1
+    valid_pin_tag ".." && exit 1
     valid_pin_tag "foo?ref=x" && exit 1
     valid_pin_tag "foo/bar" && exit 1
     exit 0
