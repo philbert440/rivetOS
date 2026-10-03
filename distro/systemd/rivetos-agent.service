@@ -1,0 +1,44 @@
+# RivetOS agent runtime (bare-metal).
+#
+# Installed by install/node.sh. Secrets come from
+# /home/rivet/.rivetos/.env (EnvironmentFile, mode 0600). Config is
+# /home/rivet/.rivetos/config.yaml. Mesh certs and mesh.json live under
+# the node's local RIVETOS_SHARED_DIR (distro default
+# /var/lib/rivethub/shared); /rivet-shared is a symlink to that dir so
+# rivetOS hardcoded TLS paths resolve without new runtime code.
+#
+# ExecStart is rewritten at install time if `node` is not /usr/bin/node
+# (NodeSource vs nvm). --docker writes a different ExecStart (host
+# network, GHCR image) over this unit name.
+
+[Unit]
+Description=RivetOS Agent Runtime
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=rivet
+Group=rivet
+WorkingDirectory=/opt/rivetos
+ExecStart=/usr/bin/node /opt/rivetos/packages/cli/dist/index.js start --config /home/rivet/.rivetos/config.yaml
+Restart=on-failure
+RestartSec=5
+EnvironmentFile=-/home/rivet/.rivetos/.env
+Environment=HOME=/home/rivet
+Environment=RIVETOS_LOG_LEVEL=info
+Environment=RIVETOS_SHARED_DIR=/var/lib/rivethub/shared
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=rivetos-agent
+ProtectSystem=strict
+ProtectHome=false
+# Workspace + secrets under HOME; mesh material under the shared dir.
+# /opt/rivetos is granted because the CLI still writes some caches next
+# to the checkout (matches provision-ct.sh). /rivet-shared is the
+# hardcoded rivetOS TLS/mesh.json path (symlink to the distro shared dir).
+ReadWritePaths=/home/rivet /var/lib/rivethub /opt/rivetos /rivet-shared
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target
