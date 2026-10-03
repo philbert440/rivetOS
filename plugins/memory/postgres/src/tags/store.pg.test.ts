@@ -186,9 +186,26 @@ describe.skipIf(PG_URL === '')('tag store (real Postgres)', () => {
     )
     await store.mergeTaxonomyValue(c, 'project', 'b', 'a')
     const rows = (
-      await c.query(`SELECT value, source, proposed_by FROM ros_tags WHERE entity_id = $1`, [conv])
+      await c.query(
+        `SELECT value, source, proposed_by, decided_by, state FROM ros_tags WHERE entity_id = $1`,
+        [conv],
+      )
     ).rows
-    expect(rows).toEqual([{ value: 'a', source: 'user', proposed_by: 'cwd-git-root' }])
+    // The rule's later decision stands; only the source is carried.
+    expect(rows).toEqual([
+      { value: 'a', source: 'user', proposed_by: 'cwd-git-root', decided_by: 'cwd-git-root', state: 'accepted' },
+    ])
+  })
+
+  it('a merely suggested (or rejected) tag folded into a rule survivor promotes nothing', async () => {
+    const conv = await conversation('codex:merge-suggested')
+    await raw('conversation', conv, 'project', 'a', 'accepted', 'rule')
+    await raw('conversation', conv, 'project', 'b', 'suggested', 'model')
+    await raw('conversation', conv, 'project', 'c', 'rejected', 'user')
+    await store.mergeTaxonomyValue(c, 'project', 'b', 'a')
+    await store.mergeTaxonomyValue(c, 'project', 'c', 'a')
+    const rows = (await c.query(`SELECT value, source FROM ros_tags WHERE entity_id = $1`, [conv])).rows
+    expect(rows).toEqual([{ value: 'a', source: 'rule' }])
   })
 
   it('tagsForConversations honours a row limit', async () => {
