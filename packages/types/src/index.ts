@@ -220,6 +220,7 @@ export {
   encodeSessionIdSegment,
   decodeSessionIdSegment,
   sessionKeyAliases,
+  sessionKeyMatchers,
 } from './harness-session-id.js'
 export type {
   WikiSourceRef,
