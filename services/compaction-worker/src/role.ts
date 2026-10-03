@@ -21,6 +21,7 @@ export interface WorkerPlan {
 export const ALL_TASK_NAMES = [
   'compact-conversation',
   'synthesize-tool-call',
+  'suggest-tags',
   'enqueue-idle',
   'extract-wiki',
   'enqueue-wiki-backfill',
@@ -34,6 +35,7 @@ export const ALL_TASK_NAMES = [
 const COMPACTION_TASK_NAMES = [
   'compact-conversation',
   'synthesize-tool-call',
+  'suggest-tags',
   'enqueue-idle',
   'enqueue-stale-compaction',
   'reap-dead-jobs',

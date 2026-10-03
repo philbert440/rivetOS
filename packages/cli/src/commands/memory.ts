@@ -640,6 +640,7 @@ export const REQUEUE_ALLOWED_TASKS = [
   'compact-conversation',
   'embed-target',
   'synthesize-tool-call',
+  'suggest-tags',
 ] as const
 
 const REQUEUE_ALLOWED_SET: ReadonlySet<string> = new Set(REQUEUE_ALLOWED_TASKS)

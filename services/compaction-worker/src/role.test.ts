@@ -50,6 +50,7 @@ describe('buildWorkerPlan', () => {
       expect(plan.taskNames).toEqual([
         'compact-conversation',
         'synthesize-tool-call',
+        'suggest-tags',
         'enqueue-idle',
         'enqueue-stale-compaction',
         'reap-dead-jobs',
