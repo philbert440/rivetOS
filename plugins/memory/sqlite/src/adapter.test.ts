@@ -17,7 +17,8 @@ import {
   resolveTaskId,
   restrictSqliteFileModes,
 } from './adapter.ts'
-import { SCHEMA_VERSION } from './schema.ts'
+import { DatabaseSync } from 'node:sqlite'
+import { SCHEMA, SCHEMA_VERSION } from './schema.ts'
 
 describe('resolveSqlitePath / buildFtsMatchQuery / relevanceFromBm25', () => {
   it('keeps :memory: and expands a leading ~', () => {
@@ -384,5 +385,44 @@ describe('SqliteMemory Memory contract', () => {
       content: 'queue me',
     })
     expect(memory.hasEmbedQueueEntryForTest(id)).toBe(true)
+  })
+})
+
+describe('schema upgrade v1 → v2 (tag tables)', () => {
+  it('adds ros_tags + ros_tag_taxonomy to an existing v1 file, stamps v2, keeps rows', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'ros-mem-v1-'))
+    const file = join(dir, 'memory.sqlite')
+    try {
+      // A v1 database: today's DDL minus the v2 tables, stamped user_version = 1.
+      const v1 = new DatabaseSync(file)
+      v1.exec(SCHEMA)
+      v1.exec('DROP TABLE ros_tags; DROP TABLE ros_tag_taxonomy;')
+      v1.exec('PRAGMA user_version = 1')
+      v1.prepare(
+        `INSERT INTO ros_conversations (id, session_key, agent, created_at, updated_at)
+         VALUES ('c-v1', 'claude-code:v1', 'rivet', '2026-09-01T00:00:00Z', '2026-09-01T00:00:00Z')`,
+      ).run()
+      v1.close()
+
+      const memory = new SqliteMemory({ path: file })
+      expect(memory.schemaVersionForTest()).toBe(SCHEMA_VERSION)
+      expect(SCHEMA_VERSION).toBeGreaterThanOrEqual(2)
+      await memory.close()
+
+      const after = new DatabaseSync(file)
+      const tables = (
+        after
+          .prepare(`SELECT name FROM sqlite_master WHERE type = 'table' AND name LIKE 'ros_tag%'`)
+          .all() as Array<{ name: string }>
+      ).map((r) => r.name)
+      expect(tables.sort()).toEqual(['ros_tag_taxonomy', 'ros_tags'])
+      const kept = after.prepare(`SELECT session_key FROM ros_conversations WHERE id = 'c-v1'`).get() as
+        | { session_key: string }
+        | undefined
+      expect(kept?.session_key).toBe('claude-code:v1')
+      after.close()
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
   })
 })
