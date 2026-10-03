@@ -341,20 +341,22 @@ describe('callLlm', () => {
       })
     })
 
-    it('a rejected answer then a failure does not move later calls off the primary', async () => {
+    it('a rejected answer alone does not sticky-failover; a later endpoint outage does', async () => {
       const accept = (c: string) => (c.startsWith('[') ? null : 'unparseable JSON')
+      // Primary reject (not an outage) then fb1 503 (outage) → advance sticky to fb2.
       fetchMock
         .mockResolvedValueOnce(ok('not json at all'))
         .mockResolvedValueOnce(jsonResponse({}, 503, 'Service Unavailable'))
         .mockResolvedValueOnce(jsonResponse({}, 503, 'Service Unavailable'))
         .mockResolvedValueOnce(ok('[]'))
-        .mockResolvedValueOnce(ok('[]'))
       await expect(callLlmDetailed('sys', 'user', 100, { minChars: 2, accept })).resolves.toEqual({
         content: '[]',
         model: 'fb2-model',
       })
+      // Next call starts at fb2 because fb1 was an endpoint outage.
+      fetchMock.mockResolvedValueOnce(ok('[]'))
       await callLlmDetailed('sys', 'user', 100, { minChars: 2, accept })
-      expect(urlOf(fetchMock.mock.calls[4])).toContain('llm.test')
+      expect(urlOf(fetchMock.mock.calls[4])).toContain('fb2.test')
     })
 
     it('moves forward from a sticky fallback that fails, and stays there', async () => {
@@ -390,21 +392,123 @@ describe('callLlm', () => {
       }
     })
 
-    it('an all-fail from a sticky fallback sends the next call to the primary', async () => {
+    it('an all-fail from a sticky fallback tries the primary before concluding', async () => {
       fetchMock
         .mockResolvedValueOnce(jsonResponse({}, 401, 'Unauthorized'))
         .mockResolvedValueOnce(ok('fb1 answered the first call'))
       await callLlmDetailed('sys', 'user', 100)
 
-      fetchMock.mockResolvedValueOnce(jsonResponse({}, 401, 'Unauthorized'))
-      fetchMock.mockResolvedValueOnce(jsonResponse({}, 401, 'Unauthorized'))
-      await expect(callLlmDetailed('sys', 'user', 100)).rejects.toBeInstanceOf(LlmCallError)
+      // Sticky at fb1: fb1 and fb2 fail permanently, then the wrap retries the
+      // primary (also permanent) so the cascade includes it before throwing.
+      fetchMock
+        .mockResolvedValueOnce(jsonResponse({}, 401, 'Unauthorized'))
+        .mockResolvedValueOnce(jsonResponse({}, 401, 'Unauthorized'))
+        .mockResolvedValueOnce(jsonResponse({}, 401, 'Unauthorized'))
+      const err = await callLlmDetailed('sys', 'user', 100).catch((e: unknown) => e)
+      expect(err).toBeInstanceOf(LlmCallError)
       expect(urlOf(fetchMock.mock.calls[2])).toContain('fb1.test')
+      expect(urlOf(fetchMock.mock.calls[4])).toContain('llm.test')
+      expect(String((err as Error).message)).toContain('test-model: LLM HTTP 401')
 
       fetchMock.mockResolvedValueOnce(ok('primary answered this time'))
       await expect(callLlmDetailed('sys', 'user', 100)).resolves.toMatchObject({
         model: 'test-model',
       })
+    })
+
+    it('sticky on the last endpoint with a permanent 4xx still tries the primary', async () => {
+      // Fail over to fb2 and stick there.
+      fetchMock
+        .mockResolvedValueOnce(jsonResponse({}, 401, 'Unauthorized'))
+        .mockResolvedValueOnce(jsonResponse({}, 401, 'Unauthorized'))
+        .mockResolvedValueOnce(ok('fb2 answered the first call'))
+      await callLlmDetailed('sys', 'user', 100)
+
+      // Credits exhausted on fb2: wrap to the primary instead of going terminal
+      // with the primary never tried.
+      fetchMock
+        .mockResolvedValueOnce(jsonResponse({}, 402, 'Payment Required'))
+        .mockResolvedValueOnce(ok('primary recovered during cooldown'))
+      await expect(callLlmDetailed('sys', 'user', 100)).resolves.toMatchObject({
+        model: 'test-model',
+      })
+      expect(urlOf(fetchMock.mock.calls[3])).toContain('fb2.test')
+      expect(urlOf(fetchMock.mock.calls[4])).toContain('llm.test')
+
+      // Sticky was cleared when the primary answered: next call starts there.
+      fetchMock.mockResolvedValueOnce(ok('primary still serves'))
+      await expect(callLlmDetailed('sys', 'user', 100)).resolves.toMatchObject({
+        model: 'test-model',
+      })
+      expect(urlOf(fetchMock.mock.calls[5])).toContain('llm.test')
+    })
+
+    it('sticky last-endpoint permanent failure stays retryable when the primary is also down', async () => {
+      fetchMock
+        .mockResolvedValueOnce(jsonResponse({}, 401, 'Unauthorized'))
+        .mockResolvedValueOnce(jsonResponse({}, 401, 'Unauthorized'))
+        .mockResolvedValueOnce(ok('fb2 answered the setup call'))
+      await callLlmDetailed('sys', 'user', 100)
+
+      // fb2 permanent, then wrap tries the whole skipped prefix (primary + fb1).
+      // Primary 503 (retryable) keeps the cascade retryable even though fb2 was not.
+      fetchMock
+        .mockResolvedValueOnce(jsonResponse({}, 402, 'Payment Required'))
+        .mockResolvedValueOnce(jsonResponse({}, 503, 'Service Unavailable'))
+        .mockResolvedValueOnce(jsonResponse({}, 503, 'Service Unavailable'))
+        .mockResolvedValueOnce(jsonResponse({}, 401, 'Unauthorized'))
+      const err = await callLlmDetailed('sys', 'user', 100).catch((e: unknown) => e)
+      expect(err).toBeInstanceOf(LlmCallError)
+      expect((err as LlmCallError).retryable).toBe(true)
+      expect(String((err as Error).message)).toContain('all 3 LLM endpoints failed')
+      expect(String((err as Error).message)).toContain('fb2-model: LLM HTTP 402')
+      expect(String((err as Error).message)).toContain('test-model: LLM HTTP 503')
+    })
+
+    it('a request-scoped failure on the last endpoint does not clear sticky failover', async () => {
+      fetchMock
+        .mockResolvedValueOnce(jsonResponse({}, 401, 'Unauthorized'))
+        .mockResolvedValueOnce(ok('fb1 answered the first call'))
+      await callLlmDetailed('sys', 'user', 100)
+
+      // Oversized prompt on the sticky fallback: 413 moves only this call.
+      fetchMock
+        .mockResolvedValueOnce(jsonResponse({}, 413, 'Payload Too Large'))
+        .mockResolvedValueOnce(jsonResponse({}, 413, 'Payload Too Large'))
+        // Wrap tries the primary; it also rejects the oversized body.
+        .mockResolvedValueOnce(jsonResponse({}, 413, 'Payload Too Large'))
+      await expect(callLlmDetailed('sys', 'user', 100)).rejects.toMatchObject({
+        name: 'LlmCallError',
+      })
+
+      // Sticky must still be on fb1 — a request-scoped miss must not send the
+      // next normal call back to a wedged primary.
+      fetchMock.mockResolvedValueOnce(ok('fb1 still sticky after 413'))
+      await expect(callLlmDetailed('sys', 'user', 100)).resolves.toMatchObject({
+        model: 'fb1-model',
+      })
+      expect(urlOf(fetchMock.mock.calls[5])).toContain('fb1.test')
+    })
+
+    it('advances sticky past a later down endpoint after a request-scoped primary failure', async () => {
+      fetchMock
+        .mockResolvedValueOnce(jsonResponse({}, 400, 'Bad Request'))
+        .mockResolvedValueOnce(jsonResponse({}, 503, 'Service Unavailable'))
+        .mockResolvedValueOnce(jsonResponse({}, 503, 'Service Unavailable'))
+        .mockResolvedValueOnce(ok('fb2 took over after fb1 outage'))
+      await expect(callLlmDetailed('sys', 'user', 100)).resolves.toMatchObject({
+        model: 'fb2-model',
+      })
+      expect(fetchMock).toHaveBeenCalledTimes(4)
+
+      // Primary was request-scoped (no sticky from it) but fb1 was an endpoint
+      // outage, so later calls start at fb2.
+      fetchMock.mockReset()
+      fetchMock.mockResolvedValueOnce(ok('still sticky on fb2 after mixed cascade'))
+      await expect(callLlmDetailed('sys', 'user', 100)).resolves.toMatchObject({
+        model: 'fb2-model',
+      })
+      expect(urlOf(fetchMock.mock.calls[0])).toContain('fb2.test')
     })
 
     it("a call's all-fail does not clear a failover another call set meanwhile", async () => {
@@ -460,11 +564,15 @@ describe('callLlm', () => {
       expect(fetchMock).toHaveBeenCalledTimes(3)
     })
 
-    it('gives an endpoint with a fallback after it the shorter attempt timeout', async () => {
+    it('keeps the full timeout on the primary and last endpoint; middle fallbacks get the short one', async () => {
       fetchMock.mockRejectedValue(new DOMException('This operation was aborted', 'AbortError'))
       const err = await callLlmDetailed('sys', 'user', 100).catch((e: unknown) => e)
       const message = String((err as Error).message)
-      expect(message).toContain('test-model: LLM timed out after 2000ms')
+      // Primary keeps LLM_TIMEOUT_MS (5000 in this mock) even when fallbacks exist.
+      expect(message).toContain('test-model: LLM timed out after 5000ms')
+      // Middle fallback uses llmFallbackAttemptTimeoutMs (2000).
+      expect(message).toContain('fb1-model: LLM timed out after 2000ms')
+      // Last endpoint keeps the full timeout.
       expect(message).toContain('fb2-model: LLM timed out after 5000ms')
     })
 

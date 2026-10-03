@@ -102,6 +102,7 @@ describe('compaction-worker config', () => {
       'https://nv.test/v1|google/gemma-4-31b-it, https://or.test/api/v1/|openai/gpt-oss-120b|OPENROUTER_API_KEY',
     )
     vi.stubEnv('RIVETOS_COMPACTOR_FALLBACK_COOLDOWN_MINUTES', '5')
+    vi.stubEnv('RIVETOS_COMPACTOR_FALLBACK_ATTEMPT_TIMEOUT_SECONDS', '120')
     const { config } = await import('./config.js')
     expect(config.llmFallbacks).toEqual([
       {
@@ -118,6 +119,28 @@ describe('compaction-worker config', () => {
       },
     ])
     expect(config.llmFallbackCooldownMs).toBe(300_000)
+    expect(config.llmFallbackAttemptTimeoutMs).toBe(120_000)
+  })
+
+  it('defaults cooldown to 15 minutes and attempt timeout to 300 seconds', async () => {
+    stubRequired()
+    const { config } = await import('./config.js')
+    expect(config.llmFallbackCooldownMs).toBe(15 * 60_000)
+    expect(config.llmFallbackAttemptTimeoutMs).toBe(300_000)
+  })
+
+  it('warns when transient statuses include request-scoped or auth codes', async () => {
+    stubRequired()
+    vi.stubEnv('RIVETOS_COMPACTOR_TRANSIENT_STATUSES', '400,403')
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    const { config } = await import('./config.js')
+    expect(config.llmTransientStatuses).toEqual([400, 403])
+    expect(
+      warn.mock.calls.some(
+        (c) => String(c[0]).includes('400') && String(c[0]).includes('transient'),
+      ),
+    ).toBe(true)
+    warn.mockRestore()
   })
 
   it('exits when a fallback names a key variable that is unset', async () => {

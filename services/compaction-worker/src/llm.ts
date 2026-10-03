@@ -121,8 +121,9 @@ const REQUEST_SCOPED_STATUSES = new Set([400, 413, 422])
 
 /**
  * Whether a failure says the endpoint itself is unusable right now (network,
- * timeout, 5xx, empty answers, rate limit, auth/billing, missing model) as
- * opposed to this one request being unacceptable to it.
+ * timeout, 5xx, empty answers, rate limit, auth/billing, missing model, and
+ * other non-request-scoped 4xx such as 405/409/415/426) as opposed to this one
+ * request being unacceptable to it (400/413/422 only).
  */
 function isEndpointFailure(err: unknown): boolean {
   if (!(err instanceof LlmCallError) || err.status === undefined) return true
@@ -145,10 +146,11 @@ export function resetLlmFailover(): void {
  * Calls the primary endpoint, then each RIVETOS_COMPACTOR_FALLBACKS endpoint
  * in order until one answers. Truncation is thrown straight back (the caller
  * shrinks the batch); every other failure moves to the next endpoint. Later
- * calls start past the primary only when every endpoint tried so far failed
- * as an endpoint (isEndpointFailure): a request-scoped 4xx or a rejected
- * answer moves this call on, not the worker. If all fail, the error covers
- * the whole cascade (see cascadeError).
+ * calls start past the primary only when an endpoint failed as an endpoint
+ * (isEndpointFailure): a request-scoped 4xx or a rejected answer moves this
+ * call on, not the worker. If a sticky start fails through the rest of the
+ * chain, the skipped prefix (including the primary) is tried before giving
+ * up. If all fail, the error covers the whole cascade (see cascadeError).
  */
 export async function callLlmDetailed(
   systemPrompt: string,
@@ -178,66 +180,114 @@ export async function callLlmDetailed(
   const failures: Array<{ model: string; err: unknown }> = []
   // True while every endpoint tried in this call failed as an endpoint.
   let outage = true
-  for (let i = start; i < endpoints.length; i++) {
-    const endpoint = endpoints[i]
-    const isLast = i === endpoints.length - 1
-    let content: string
-    try {
-      content = await callEndpoint(endpoint, systemPrompt, userContent, maxTokens, opts, isLast)
-    } catch (err) {
-      if (err instanceof LlmCallError && err.truncated) throw err
-      failures.push({ model: endpoint.model, err })
-      outage &&= isEndpointFailure(err)
-      if (!isLast) {
-        const reason = err instanceof Error ? err.message : String(err)
-        console.error(
-          `[CompactWorker] ${endpoint.model} failed (${reason}); ` +
-            `${outage ? 'failing over' : 'trying this request'} on ${endpoints[i + 1].model}`,
-        )
-        const current = failover
-        const live = current !== null && Date.now() < current.until
-        if (outage && (!live || current.index < i + 1)) {
-          failover = { index: i + 1, until: Date.now() + config.llmFallbackCooldownMs }
-          seen = failover
-        }
-      }
-      continue
-    }
 
-    const rejection = opts.accept?.(content) ?? null
-    if (rejection && !isLast) {
-      // A bad answer is not an outage: try the next endpoint for this call
-      // only, without moving later calls off this one.
-      outage = false
-      failures.push({ model: endpoint.model, err: new Error(`response rejected: ${rejection}`) })
-      console.warn(
-        `[CompactWorker] ${endpoint.model} response rejected (${rejection}); trying ${endpoints[i + 1].model}`,
-      )
-      continue
+  const tryRange = async (
+    from: number,
+    toExclusive: number,
+    /** When false (skipped-prefix wrap), do not move the sticky index. */
+    advanceSticky: boolean,
+  ): Promise<LlmResult | null> => {
+    for (let i = from; i < toExclusive; i++) {
+      const endpoint = endpoints[i]
+      // Last in the full chain keeps the long timeout; so does the primary.
+      // Middle fallbacks use the shorter attempt timeout so a hang hands over.
+      const isChainLast = i === endpoints.length - 1
+      const isPrimary = i === 0
+      const hasNextInRange = i + 1 < toExclusive
+      let content: string
+      try {
+        content = await callEndpoint(
+          endpoint,
+          systemPrompt,
+          userContent,
+          maxTokens,
+          opts,
+          isPrimary || isChainLast,
+        )
+      } catch (err) {
+        if (err instanceof LlmCallError && err.truncated) throw err
+        failures.push({ model: endpoint.model, err })
+        const endpointDown = isEndpointFailure(err)
+        outage &&= endpointDown
+        if (hasNextInRange) {
+          const reason = err instanceof Error ? err.message : String(err)
+          console.error(
+            `[CompactWorker] ${endpoint.model} failed (${reason}); ` +
+              `${endpointDown ? 'failing over' : 'trying this request'} on ${endpoints[i + 1].model}`,
+          )
+          // Advance sticky index on any endpoint-class failure, even when an
+          // earlier request-scoped failure already cleared `outage`. A
+          // request-scoped failure on this endpoint itself does not advance.
+          const current = failover
+          const live = current !== null && Date.now() < current.until
+          if (advanceSticky && endpointDown && (!live || current.index < i + 1)) {
+            failover = { index: i + 1, until: Date.now() + config.llmFallbackCooldownMs }
+            seen = failover
+          }
+        }
+        continue
+      }
+
+      const rejection = opts.accept?.(content) ?? null
+      if (rejection && hasNextInRange) {
+        // A bad answer is not an outage: try the next endpoint for this call
+        // only, without moving later calls off this one.
+        outage = false
+        failures.push({ model: endpoint.model, err: new Error(`response rejected: ${rejection}`) })
+        console.warn(
+          `[CompactWorker] ${endpoint.model} response rejected (${rejection}); trying ${endpoints[i + 1].model}`,
+        )
+        continue
+      }
+      return { content, model: endpoint.model }
     }
-    return { content, model: endpoint.model }
+    return null
   }
-  // Everything failed: the next call should start at the primary, not stay
-  // parked on the last fallback for the whole cooldown. Another call may
-  // have moved the failover meanwhile; leave its value alone.
-  if (failover === seen) failover = null
+
+  const fromSticky = await tryRange(start, endpoints.length, true)
+  if (fromSticky) return fromSticky
+
+  // Sticky start skipped the primary (and any earlier fallbacks). Try them
+  // before concluding so a rotated key / exhausted credits on the sticky
+  // endpoint cannot mark the level terminal while the primary may be up.
+  if (start > 0) {
+    console.error(
+      `[CompactWorker] sticky endpoints failed; trying skipped prefix starting at ${endpoints[0].model}`,
+    )
+    const fromPrefix = await tryRange(0, start, false)
+    if (fromPrefix) {
+      // An earlier endpoint answered: drop the sticky so the next call starts there.
+      if (failover === seen) failover = null
+      return fromPrefix
+    }
+  }
+
+  // Everything failed as an endpoint outage: the next call should start at
+  // the primary. A request-scoped failure on the last endpoint must not clear
+  // an active failover — that would send the next call back to a wedged
+  // primary. Another call may have moved the failover meanwhile; leave its
+  // value alone.
+  if (outage && failover === seen) failover = null
   throw cascadeError(failures)
 }
 
 /**
- * One error for a cascade where every endpoint failed. It is retryable if any
- * endpoint's failure was: a primary outage followed by a revoked key on the
- * last fallback is still an outage, and must not mark the level terminal.
- * The message names each endpoint's failure so `last_error` shows all of
- * them. A single failure is thrown as it was.
+ * One error for a cascade where every endpoint failed. Always aggregates —
+ * even a single failure — so a lone sticky-fallback permanent 4xx cannot
+ * escape as a raw error that marks the level terminal. Retryable if any
+ * endpoint's failure was (including a rejected `accept` answer, which is a
+ * plain Error and counts as retryable evidence: the endpoint was up and a
+ * retry may parse). The message names each endpoint's failure so
+ * `last_error` shows all of them.
  */
 function cascadeError(failures: Array<{ model: string; err: unknown }>): unknown {
-  if (failures.length === 1) return failures[0].err
   const reasons = failures.map(({ model, err }) => {
     const reason = err instanceof Error ? err.message : String(err)
     return `${model}: ${reason}`
   })
   const asLlm = failures.map(({ err }) => (err instanceof LlmCallError ? err : null))
+  // Plain Error (e.g. accept rejection) is not an LlmCallError → null →
+  // counts as retryable evidence; the serving endpoint was reachable.
   const retryable = asLlm.some((e) => e === null || e.retryable)
   const statuses = new Set(asLlm.map((e) => e?.status))
   const attempts = asLlm.reduce((n, e) => n + (e?.attempts ?? 1), 0)
@@ -273,11 +323,14 @@ async function callEndpoint(
   userContent: string,
   maxTokens: number,
   opts: CallLlmOptions,
-  isLast = true,
+  /** True for the primary and for the last endpoint in the chain — both keep LLM_TIMEOUT_MS. */
+  fullTimeout = true,
 ): Promise<string> {
   const minChars = opts.minChars ?? 20
-  // An endpoint with a fallback after it hands over sooner when it hangs.
-  const timeoutMs = isLast
+  // Middle fallbacks hand over sooner when they hang. The primary always keeps
+  // LLM_TIMEOUT_MS so a slow local model on a large batch is not cut to the
+  // fallback attempt timeout just because fallbacks are configured.
+  const timeoutMs = fullTimeout
     ? LLM_TIMEOUT_MS
     : Math.min(LLM_TIMEOUT_MS, config.llmFallbackAttemptTimeoutMs)
   const headers: Record<string, string> = { 'Content-Type': 'application/json' }

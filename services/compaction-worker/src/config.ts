@@ -23,6 +23,15 @@ function intEnv(name: string, fallback: number): number {
 }
 
 /**
+ * Statuses that are request-scoped or otherwise permanent for failover
+ * purposes. Listing them as "transient" retries them like a 5xx and, once
+ * exhausted, treats the undefined-status failure as an endpoint outage that
+ * can park the worker on a fallback — the opposite of the request-scoped
+ * contract. Warn so operators notice.
+ */
+const TRANSIENT_WARN_STATUSES = new Set([400, 401, 413, 422])
+
+/**
  * A list of 4xx status codes, e.g. "403,404". Anything that is not a 4xx is
  * an error rather than silently dropped: 5xx already retry, and a typo here
  * would otherwise leave the overload codes terminal without a word.
@@ -36,6 +45,12 @@ function parseStatusList(raw: string, separator: string, where: string): number[
       const code = Number(part)
       if (!Number.isInteger(code) || code < 400 || code > 499) {
         fail(`${where}: "${part}" is not a 4xx status code`)
+      }
+      if (TRANSIENT_WARN_STATUSES.has(code)) {
+        console.warn(
+          `[CompactWorker] ${where}: ${String(code)} is request-scoped or auth/billing; ` +
+            `listing it as transient retries it like a 5xx and can sticky-failover after exhaustion`,
+        )
       }
       return code
     })
@@ -134,9 +149,10 @@ export const config = {
   // then tries the primary again.
   llmFallbacks: fallbackEndpointsEnv('RIVETOS_COMPACTOR_FALLBACKS'),
   llmFallbackCooldownMs: positiveIntEnv('RIVETOS_COMPACTOR_FALLBACK_COOLDOWN_MINUTES', 15) * 60_000,
-  // Per-attempt timeout on an endpoint that has a fallback after it, so a
-  // hung endpoint hands over in minutes instead of LLM_TIMEOUT_MS × retries.
-  // The last endpoint keeps the full LLM_TIMEOUT_MS.
+  // Per-attempt timeout on a *middle* fallback (not the primary, not the last
+  // endpoint), so a hung paid fallback hands over in minutes instead of
+  // LLM_TIMEOUT_MS × retries. The primary and the last endpoint keep the full
+  // LLM_TIMEOUT_MS — configuring fallbacks must not cut a slow local primary.
   llmFallbackAttemptTimeoutMs:
     positiveIntEnv('RIVETOS_COMPACTOR_FALLBACK_ATTEMPT_TIMEOUT_SECONDS', 300) * 1000,
 
