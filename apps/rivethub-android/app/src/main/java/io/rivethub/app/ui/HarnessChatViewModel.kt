@@ -16,6 +16,11 @@ import io.rivethub.app.gateway.WsStatus
 import io.rivethub.app.gateway.WsSubscription
 import io.rivethub.app.gateway.sessionKeyEnc
 import io.rivethub.app.gateway.readCapped
+import io.rivethub.app.plane.harnessFromSessionId
+import io.rivethub.app.plane.opensTerminalOnly
+import io.rivethub.app.plane.parseDefaultView
+import io.rivethub.app.plane.resolveSessionMode
+import io.rivethub.app.plane.shouldPersistSessionMode
 import io.rivethub.app.plane.serverInFlightIsStale
 import io.rivethub.app.gateway.nativeIdOf
 import io.rivethub.app.gateway.isTurnInFlight
@@ -117,7 +122,6 @@ import io.rivethub.app.plane.restoreQueuedComposer
 import io.rivethub.app.plane.harnessGate
 import io.rivethub.app.plane.harnessLabel
 import io.rivethub.app.plane.nextInjectTry
-import io.rivethub.app.plane.parseSessionMode
 import io.rivethub.app.plane.persistSessionMode
 import io.rivethub.app.plane.ptySpawnIsFresh
 import io.rivethub.app.plane.rosterCommandFor
@@ -487,10 +491,18 @@ class HarnessChatViewModel(
     }
     fun setMoreOpen(v: Boolean) = _state.update { it.copy(moreOpen = v) }
 
-    fun setMode(mode: SessionMode) {
+    /**
+     * Switch Chat ↔ Terminal. [explicit] true (default) is the segmented
+     * control and writes [sessionModes]; false is system Back / terminal
+     * chrome back — view only, so an explicit Terminal choice and
+     * terminal-only rows keep their stored mode.
+     */
+    fun setMode(mode: SessionMode, explicit: Boolean = true) {
         val resync = _state.value.mode == SessionMode.Terminal && mode == SessionMode.Chat
         _state.update { it.copy(mode = mode) }
-        viewModelScope.launch { c.settings.setSessionMode(_state.value.sessionId, persistSessionMode(mode)) }
+        if (shouldPersistSessionMode(explicit)) {
+            viewModelScope.launch { c.settings.setSessionMode(_state.value.sessionId, persistSessionMode(mode)) }
+        }
         if (resync) syncNow()
     }
 
@@ -1112,7 +1124,14 @@ class HarnessChatViewModel(
 
     private suspend fun boot() {
         val prefs = c.settings.snapshot()
-        val mode = parseSessionMode(prefs.sessionModes[_state.value.sessionId])
+        // A session with no harness to chat through (a legacy on-disk row)
+        // only runs in the terminal; drafts always have a chat surface.
+        val terminalOnly = opensTerminalOnly(_state.value.draft, resolvedHarnessId())
+        val mode = resolveSessionMode(
+            stored = prefs.sessionModes[_state.value.sessionId],
+            defaultView = parseDefaultView(prefs.defaultView),
+            terminalOnly = terminalOnly,
+        )
         _state.update { it.copy(mode = mode, termFontSp = prefs.terminalFontSp, codeLineNumbers = prefs.codeLineNumbers, codeWrap = prefs.codeWrap, termRemote = terminalNodeIsRemote(nodeDenUrl, prefs.entryUrl)) }
         if (c.identity.generation() != identityGen) return
         try {
@@ -1794,11 +1813,7 @@ class HarnessChatViewModel(
 
     private fun resolvedHarnessId(): String? {
         if (!harnessId.isNullOrBlank()) return harnessId
-        val sid = _state.value.sessionId
-        val i = sid.indexOf(':')
-        if (i <= 0) return null
-        val hid = sid.substring(0, i)
-        return hid.takeIf { it in HARNESS_IDS }
+        return harnessFromSessionId(_state.value.sessionId, HARNESS_IDS)
     }
 
     private fun applySummaryControls(transport: String?, model: String?, effort: String?) {

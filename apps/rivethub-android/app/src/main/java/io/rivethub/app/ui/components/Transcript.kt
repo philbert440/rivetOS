@@ -239,10 +239,13 @@ fun AvatarRow(
             horizontalArrangement = Arrangement.spacedBy(8.dp, Alignment.End),
             verticalAlignment = Alignment.CenterVertically,
         ) {
+            val author = stringResource(R.string.cd_author_you)
             Text(
                 stringResource(R.string.label_you),
-                color = colors.ink.copy(alpha = 0.9f),
-                style = RivetType.sm.copy(fontWeight = FontWeight.Medium),
+                // Read as a word, not the "›" glyph.
+                modifier = Modifier.semantics { contentDescription = author },
+                color = colors.em,
+                style = RivetType.sm.copy(fontWeight = FontWeight.Bold),
             )
             if (time != null) {
                 Text(time, color = colors.inkDim, style = RivetType.mono10)
@@ -254,21 +257,13 @@ fun AvatarRow(
             horizontalArrangement = Arrangement.spacedBy(8.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
-            Box(
-                Modifier
-                    .size(28.dp)
-                    .clip(RoundedCornerShape(Radius.md))
-                    .background(colors.panel2)
-                    .border(1.dp, accent, RoundedCornerShape(Radius.md))
-                    .padding(2.dp),
-                contentAlignment = Alignment.Center,
-            ) {
-                DenBot(size = 24.dp, decorative = true)
-            }
+            val author = stringResource(R.string.cd_author_rivet)
             Text(
                 stringResource(R.string.label_rivet),
+                // Read as a word, not the "›" glyph.
+                modifier = Modifier.semantics { contentDescription = author },
                 color = accent,
-                style = RivetType.sm.copy(fontWeight = FontWeight.Medium),
+                style = RivetType.sm.copy(fontWeight = FontWeight.Bold),
             )
             if (!model.isNullOrBlank()) {
                 Text(

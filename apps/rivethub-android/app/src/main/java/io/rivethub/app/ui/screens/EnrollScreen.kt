@@ -31,26 +31,27 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import io.rivethub.app.AppContainer
 import io.rivethub.app.R
 import io.rivethub.app.plane.EnrollErrorKind
 import io.rivethub.app.plane.EntryUrlError
 import io.rivethub.app.plane.enrollError
 import io.rivethub.app.plane.validateEntryUrl
-import io.rivethub.app.ui.components.DenBot
 import io.rivethub.app.ui.components.Lucide
+import io.rivethub.app.ui.components.RhMark
 import io.rivethub.app.ui.components.RivetButton
 import io.rivethub.app.ui.components.RivetButtonVariant
 import io.rivethub.app.ui.components.RivetField
 import io.rivethub.app.ui.components.RivetFieldSize
 import io.rivethub.app.ui.components.TimeFmt
 import io.rivethub.app.ui.components.TopBar
+import io.rivethub.app.ui.components.Wordmark
 import io.rivethub.app.ui.theme.Dimens
 import io.rivethub.app.ui.theme.RivetTheme
 import io.rivethub.app.ui.theme.RivetType
@@ -125,13 +126,9 @@ fun EnrollScreen(c: AppContainer, onBack: (() -> Unit)?, onDone: () -> Unit) {
                 horizontalAlignment = Alignment.CenterHorizontally,
                 verticalArrangement = Arrangement.Top,
             ) {
-                DenBot(size = Dimens.denBotEnroll, modifier = Modifier.alpha(0.9f))
+                RhMark(size = Dimens.brandHeroSp.sp)
                 Spacer(Modifier.height(16.dp))
-                Text(
-                    stringResource(R.string.brand_rivethub),
-                    color = colors.em,
-                    style = RivetType.lg.copy(fontFamily = RivetType.brand.fontFamily),
-                )
+                Wordmark(size = 22.sp)
                 Spacer(Modifier.height(8.dp))
                 Text(
                     stringResource(R.string.enroll_blurb),

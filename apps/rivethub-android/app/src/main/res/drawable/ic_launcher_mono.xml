@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Themed-icon layer: the same rh outlines as ic_launcher_fg; the launcher tints it. -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp" android:height="108dp"
+    android:viewportWidth="108" android:viewportHeight="108">
+    <path android:fillColor="#FFFFFFFF" android:pathData="M28 72.45V44.65H35.07V49.96H37L34.82 53.19Q34.82 48.69 36.89 46.42Q38.97 44.15 42.96 44.15Q47.56 44.15 50.11 46.93Q52.66 49.7 52.66 54.76V57.03H44.58V55.26Q44.58 52.99 43.34 51.73Q42.1 50.46 40.03 50.46Q37.85 50.46 36.72 51.73Q35.58 52.99 35.58 55.26V72.45Z" />
+    <path android:fillColor="#FFFFFFFF" android:pathData="M56.25 72.45V35.55H63.83V44.65L63.58 49.96H65.8L63.58 51.73Q63.58 48.19 65.6 46.17Q67.62 44.15 71.06 44.15Q75.1 44.15 77.55 46.98Q80 49.81 80 54.51V72.45H72.42V55.26Q72.42 53.09 71.28 51.9Q70.15 50.72 68.07 50.72Q66.05 50.72 64.94 51.9Q63.83 53.09 63.83 55.26V72.45Z" />
+</vector>

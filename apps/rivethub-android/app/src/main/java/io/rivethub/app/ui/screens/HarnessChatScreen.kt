@@ -213,7 +213,7 @@ fun HarnessChatScreen(
     LifecycleEventEffect(Lifecycle.Event.ON_STOP) { vm.onAppBackground() }
     LifecycleEventEffect(Lifecycle.Event.ON_START) { vm.onAppForeground() }
     BackHandler(enabled = st.mode == SessionMode.Terminal) {
-        vm.setMode(SessionMode.Chat)
+        vm.setMode(SessionMode.Chat, explicit = false)
     }
     LaunchedEffect(st.mode) {
         if (st.mode == SessionMode.Terminal) vm.ensureTerminal()
@@ -352,7 +352,7 @@ fun HarnessChatScreen(
                     remote = st.termRemote,
                     untitled = stringResource(R.string.term_untitled),
                 ),
-                onBack = { vm.setMode(SessionMode.Chat) },
+                onBack = { vm.setMode(SessionMode.Chat, explicit = false) },
                 onStop = if (showStop) vm::stop else null,
             )
         } else {
@@ -365,7 +365,7 @@ fun HarnessChatScreen(
             onRenameTap = {
                 if (renameAllowed(st.draft, st.turns.size)) renameOpen = true else renameNotice++
             },
-            onMode = vm::setMode,
+            onMode = { vm.setMode(it) },
             onSearch = {
                 query = ""
                 searchActive = !searchActive
@@ -428,7 +428,7 @@ fun HarnessChatScreen(
                     error = st.termError,
                     remote = st.termRemote,
                     onRestart = vm::restartTerminal,
-                    onBackToChat = { vm.setMode(SessionMode.Chat) },
+                    onBackToChat = { vm.setMode(SessionMode.Chat, explicit = false) },
                     modifier = Modifier.fillMaxSize(),
                 )
             } else {
@@ -448,7 +448,7 @@ fun HarnessChatScreen(
             when {
                 st.termStatus == TermStatus.Exited -> TermEndedBar(
                     onRestart = vm::restartTerminal,
-                    onBackToChat = { vm.setMode(SessionMode.Chat) },
+                    onBackToChat = { vm.setMode(SessionMode.Chat, explicit = false) },
                 )
                 termRemoteError -> Unit
                 else -> TerminalKeyBar(

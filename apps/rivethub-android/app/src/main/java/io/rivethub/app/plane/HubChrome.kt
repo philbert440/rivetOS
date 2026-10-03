@@ -5,7 +5,7 @@ package io.rivethub.app.plane
  * pin them; the composables stay dumb.
  */
 
-/** What the mobile top bar shows after the ☰ + DenBot (web `hubPageTitle`, sidebar-chrome.ts). */
+/** What the mobile top bar shows after the ☰ + rh mark (web `hubPageTitle`, sidebar-chrome.ts). */
 enum class TopBarTitle { Wordmark, Settings }
 
 /**

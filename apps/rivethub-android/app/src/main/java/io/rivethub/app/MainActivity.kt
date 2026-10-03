@@ -19,6 +19,8 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
+import io.rivethub.app.ui.theme.resolveRivetColors
+import io.rivethub.app.ui.theme.themeModeOf
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.launch
@@ -67,8 +69,6 @@ import io.rivethub.app.ui.screens.HubScreen
 import io.rivethub.app.ui.screens.MemoryScreen
 import io.rivethub.app.ui.screens.MemoryTopicScreen
 import io.rivethub.app.ui.theme.RivetTheme
-import io.rivethub.app.ui.theme.ThemeMode
-import io.rivethub.app.ui.theme.blueprintGrid
 import io.rivethub.app.notify.TaskNotifier
 
 class MainActivity : ComponentActivity() {
@@ -108,18 +108,14 @@ class MainActivity : ComponentActivity() {
         container.taskNotifier.ensureChannel()
         setContent {
             val prefs by container.settings.prefs.collectAsState(initial = null)
-            val mode = when (prefs?.themeMode) {
-                "light" -> ThemeMode.Light
-                "dark" -> ThemeMode.Dark
-                else -> ThemeMode.System
-            }
+            val mode = themeModeOf(prefs?.themeMode)
+            val palette = prefs?.omarchyPalette
             // D2-1: status/nav bar icon colour follows the in-app theme, not
-            // just the OS mode (light icons on the dark theme and vice versa).
+            // just the OS mode (light icons on the dark theme and vice versa);
+            // an Omarchy palette brings its own light/dark.
             val systemDark = isSystemInDarkTheme()
-            val dark = when (mode) {
-                ThemeMode.Light -> false
-                ThemeMode.Dark -> true
-                ThemeMode.System -> systemDark
+            val (_, dark) = remember(mode, palette, systemDark) {
+                resolveRivetColors(mode, palette, systemDark)
             }
             SideEffect {
                 WindowInsetsControllerCompat(window, window.decorView).run {
@@ -127,7 +123,7 @@ class MainActivity : ComponentActivity() {
                     isAppearanceLightNavigationBars = !dark
                 }
             }
-            RivetTheme(mode, fontScale = prefs?.fontScale ?: 1f) {
+            RivetTheme(mode, palette = palette, fontScale = prefs?.fontScale ?: 1f) {
                 App(
                     container,
                     openStream = { uri -> contentResolver.openInputStream(uri) },
@@ -262,7 +258,7 @@ fun App(
     val p = prefs
     val colors = RivetTheme.colors
     if (p == null) {
-        Box(Modifier.fillMaxSize().background(colors.bg).blueprintGrid(colors.gridLine))
+        Box(Modifier.fillMaxSize().background(colors.bg))
         return
     }
     // Home IS the chat surface (2026-09-04: the conversations list is
@@ -548,7 +544,7 @@ fun App(
         }
     }
 
-    Box(Modifier.fillMaxSize().background(colors.bg).blueprintGrid(colors.gridLine)) {
+    Box(Modifier.fillMaxSize().background(colors.bg)) {
     when (val s = nav.current) {
         Screen.Enroll -> EnrollScreen(
             c,
@@ -561,6 +557,7 @@ fun App(
         Screen.Hub -> HubDrawer(
             vm = hubVm,
             currentSessionKey = null,
+            excludeBackGesture = true,
             onOpenChat = { openChatScreen(it) },
             onOpenRow = { openRowScreen(it) },
             onNavTab = { onNavTab(it) },

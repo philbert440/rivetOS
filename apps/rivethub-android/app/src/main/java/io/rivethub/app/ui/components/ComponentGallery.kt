@@ -22,6 +22,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.res.stringResource
@@ -55,7 +56,6 @@ import io.rivethub.app.ui.theme.RivetTheme
 import io.rivethub.app.ui.theme.RivetType
 import io.rivethub.app.ui.theme.Shape
 import io.rivethub.app.ui.theme.ThemeMode
-import io.rivethub.app.ui.theme.blueprintGrid
 
 @Composable
 fun ComponentGallery(modifier: Modifier = Modifier) {
@@ -81,7 +81,6 @@ private fun GalleryThemeBlock(label: String, mode: ThemeMode) {
             Modifier
                 .fillMaxWidth()
                 .background(colors.bg)
-                .blueprintGrid(colors.gridLine)
                 .padding(bottom = Dimens.grid2),
         ) {
             ShapeGallery(mode)
@@ -252,8 +251,13 @@ private fun GalleryThemeBlock(label: String, mode: ThemeMode) {
                     )
                 }
                 Spacer(Modifier.height(12.dp))
-                GalleryH("DenBot")
-                DenBot(size = 28.dp)
+                GalleryH("Brand")
+                Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                    RhMark()
+                    Wordmark()
+                    AgentTile(hex = "#CC785C", initials = "CC")
+                    AgentTile(hex = "#5b8def", initials = "GS")
+                }
                 Spacer(Modifier.height(8.dp))
                 SegmentedControl(listOf("Chat", "Terminal"), "Chat", onSelect = {})
                 Spacer(Modifier.height(12.dp))

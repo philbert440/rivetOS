@@ -39,11 +39,15 @@ import androidx.compose.ui.unit.dp
 import io.rivethub.app.AppContainer
 import io.rivethub.app.R
 import io.rivethub.app.plane.FONT_SCALE_STEPS
+import io.rivethub.app.plane.OMARCHY_PRESETS
+import io.rivethub.app.plane.SessionMode
 import io.rivethub.app.plane.fontScaleLabel
 import io.rivethub.app.plane.fontScaleFromLabel
 import io.rivethub.app.plane.EntryUrlError
 import io.rivethub.app.plane.HubTab
 import io.rivethub.app.plane.TopBarTitle
+import io.rivethub.app.plane.parseDefaultView
+import io.rivethub.app.plane.persistSessionMode
 import io.rivethub.app.plane.topBarTitle
 import io.rivethub.app.plane.validateEntryUrl
 import io.rivethub.app.ui.HubViewModel
@@ -53,8 +57,10 @@ import io.rivethub.app.ui.components.RivetButtonVariant
 import io.rivethub.app.ui.components.RivetConfirmDialog
 import io.rivethub.app.ui.components.RivetField
 import io.rivethub.app.ui.components.RivetFieldSize
+import io.rivethub.app.ui.components.RivetSelect
 import io.rivethub.app.ui.components.RivetToggle
 import io.rivethub.app.ui.components.SegmentedControl
+import io.rivethub.app.ui.components.SelectOption
 import io.rivethub.app.ui.components.SettingsH2
 import io.rivethub.app.ui.components.ThemeGroup
 import io.rivethub.app.ui.components.UpdatesSection
@@ -116,12 +122,14 @@ fun SettingsScreen(
     val appearSystem = stringResource(R.string.appearance_system)
     val appearLight = stringResource(R.string.appearance_light)
     val appearDark = stringResource(R.string.appearance_dark)
+    val appearOmarchy = stringResource(R.string.appearance_omarchy)
     val fontSmall = stringResource(R.string.font_small)
     val fontMedium = stringResource(R.string.font_medium)
     val fontLarge = stringResource(R.string.font_large)
     val appearSelected = when (prefs.themeMode) {
         "light" -> appearLight
         "dark" -> appearDark
+        "omarchy" -> appearOmarchy
         else -> appearSystem
     }
     val fontSelected = when {
@@ -309,17 +317,29 @@ fun SettingsScreen(
 
                 SettingsH2(stringResource(R.string.section_appearance))
                 ThemeGroup(
-                    options = listOf(appearLight, appearDark, appearSystem),
+                    options = listOf(appearLight, appearDark, appearSystem, appearOmarchy),
                     selected = appearSelected,
                     onSelect = { sel ->
                         val mode = when (sel) {
                             appearLight -> "light"
                             appearDark -> "dark"
+                            appearOmarchy -> "omarchy"
                             else -> "system"
                         }
                         scope.launch { c.settings.setThemeMode(mode) }
                     },
                 )
+                if (prefs.themeMode == "omarchy") {
+                    Spacer(Modifier.height(12.dp))
+                    FieldLabel(stringResource(R.string.omarchy_palette))
+                    RivetSelect(
+                        value = prefs.omarchyPalette,
+                        options = OMARCHY_PRESETS.map { SelectOption(it.id, it.name) },
+                        onChange = { id -> scope.launch { c.settings.setOmarchyPalette(id) } },
+                        title = stringResource(R.string.omarchy_palette),
+                        modifier = Modifier.fillMaxWidth(),
+                    )
+                }
                 Text(
                     stringResource(R.string.appearance_helper),
                     color = colors.inkDim,
@@ -333,6 +353,25 @@ fun SettingsScreen(
                     options = FONT_SCALE_STEPS.map(::fontScaleLabel),
                     selected = fontScaleLabel(prefs.fontScale),
                     onSelect = { scope.launch { c.settings.setFontScale(fontScaleFromLabel(it)) } },
+                )
+
+                SettingsH2(stringResource(R.string.section_conversations))
+                FieldLabel(stringResource(R.string.default_view))
+                val viewTerminal = stringResource(R.string.default_view_terminal)
+                val viewChat = stringResource(R.string.default_view_chat)
+                ThemeGroup(
+                    options = listOf(viewTerminal, viewChat),
+                    selected = if (parseDefaultView(prefs.defaultView) == SessionMode.Chat) viewChat else viewTerminal,
+                    onSelect = { sel ->
+                        val mode = if (sel == viewChat) SessionMode.Chat else SessionMode.Terminal
+                        scope.launch { c.settings.setDefaultView(persistSessionMode(mode)) }
+                    },
+                )
+                Text(
+                    stringResource(R.string.default_view_helper),
+                    color = colors.inkDim,
+                    style = RivetType.xs,
+                    modifier = Modifier.padding(top = 8.dp),
                 )
 
                 SettingsH2(stringResource(R.string.section_code))

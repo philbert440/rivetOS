@@ -12,28 +12,22 @@ import androidx.compose.ui.unit.sp
 import io.rivethub.app.R
 
 /**
- * Desktop fonts are DM Sans + JetBrains Mono, shipped as variable TTFs
- * in `res/font/`. Compose only moves `wght`/`opsz` when each weight is
- * registered with [FontVariation.Settings]; a bare `Font(resId)` would
- * pin the default named instance (DM Sans opsz 9 / wght 400) and
- * faux-bold every SemiBold request.
+ * One monospace face for the whole UI, as Omarchy (and the desktop
+ * redesign, theme.css `--font-sans: 'JetBrains Mono'`) does: [RivetFonts.Sans]
+ * is JetBrains Mono too, kept as a name so call sites read as before.
+ * The variable TTF lives in `res/font/`. Compose only moves `wght` when each
+ * weight is registered with [FontVariation.Settings]; a bare `Font(resId)`
+ * would pin the default named instance (wght 400) and faux-bold every
+ * SemiBold request.
  *
  * Scale matches the D1a translation table (`text-lg` 18 / `text-sm` 14 /
- * `text-xs` 13). 700 is registered on both faces for M4 ANSI bold.
+ * `text-xs` 13). 700 is registered for M4 ANSI bold, 800 for the
+ * `rivethub` wordmark and `rh` mark (`font-extrabold`).
  */
 object RivetFonts {
-    val Sans: FontFamily = FontFamily(sans(400, 14f), sans(500, 14f), sans(600, 14f), sans(700, 14f))
-    val Mono: FontFamily = FontFamily(mono(400), mono(500), mono(600), mono(700))
+    val Mono: FontFamily = FontFamily(mono(400), mono(500), mono(600), mono(700), mono(800))
+    val Sans: FontFamily = Mono
 }
-
-private fun sans(w: Int, opsz: Float) = Font(
-    R.font.dm_sans_variable,
-    weight = FontWeight(w),
-    variationSettings = FontVariation.Settings(
-        FontVariation.weight(w),
-        FontVariation.Setting("opsz", opsz),
-    ),
-)
 
 private fun mono(w: Int) = Font(
     R.font.jetbrains_mono_variable,

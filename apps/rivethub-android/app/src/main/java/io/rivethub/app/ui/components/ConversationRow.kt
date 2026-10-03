@@ -26,9 +26,9 @@ import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import io.rivethub.app.R
-import io.rivethub.app.ui.theme.Radius
 import io.rivethub.app.ui.theme.RivetTheme
 import io.rivethub.app.ui.theme.RivetType
+import io.rivethub.app.ui.theme.Shape
 
 enum class ConversationRowStatus { None, InFlight, Alive }
 
@@ -108,7 +108,7 @@ fun ConversationRowChrome(
     val wrap = modifier
         .fillMaxWidth()
         .padding(bottom = 4.dp)
-        .clip(RoundedCornerShape(if (pill) Radius.full else Radius.sm))
+        .clip(RoundedCornerShape(Shape.row))
         .background(if (active) colors.panel2 else Color.Transparent)
     if (!swipeEnabled) {
         Box(wrap) { row() }

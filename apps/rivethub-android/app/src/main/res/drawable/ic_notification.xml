@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Status-bar icon: the rh mark (same outlines as ic_launcher_fg) fitted to 24dp.
+     White on transparent; the system tints it. -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="24dp" android:height="24dp"
+    android:viewportWidth="24" android:viewportHeight="24">
+    <path android:fillColor="#FFFFFFFF" android:pathData="M1.5 19.45V8.22H4.36V10.37H5.13L4.26 11.67Q4.26 9.86 5.09 8.94Q5.93 8.02 7.54 8.02Q9.4 8.02 10.43 9.14Q11.46 10.27 11.46 12.31V13.22H8.19V12.51Q8.19 11.59 7.69 11.08Q7.19 10.57 6.36 10.57Q5.48 10.57 5.02 11.08Q4.56 11.59 4.56 12.51V19.45Z" />
+    <path android:fillColor="#FFFFFFFF" android:pathData="M12.91 19.45V4.55H15.97V8.22L15.87 10.37H16.77L15.87 11.08Q15.87 9.65 16.68 8.84Q17.5 8.02 18.89 8.02Q20.52 8.02 21.51 9.16Q22.5 10.31 22.5 12.2V19.45H19.44V12.51Q19.44 11.63 18.98 11.15Q18.52 10.67 17.68 10.67Q16.87 10.67 16.42 11.15Q15.97 11.63 15.97 12.51V19.45Z" />
+</vector>
