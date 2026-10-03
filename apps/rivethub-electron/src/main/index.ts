@@ -16,6 +16,7 @@ import {
   app,
   BrowserWindow,
   clipboard,
+  dialog,
   globalShortcut,
   Menu,
   nativeImage,
@@ -47,6 +48,7 @@ import { appMenuTemplate, type AppMenuItem } from './app-menu.js'
 import { contextMenuTemplate } from './context-menu.js'
 import { RendererReloadPolicy } from './reload-policy.js'
 import { totalUnread } from './unread.js'
+import { shouldAllowUnload, UNLOAD_DIALOG } from './will-prevent-unload.js'
 import { cascadePoint, loadWindowState, saveWindowState, type WindowState } from './window-state.js'
 
 // Unpackaged dev runs otherwise derive userData from the scoped package name
@@ -342,6 +344,13 @@ function createWindow(isMain: boolean): BrowserWindow {
       e.preventDefault()
       if (isWebUrl(url)) void shell.openExternal(url)
     }
+  })
+  // Renderer beforeunload + preventDefault cancels close/Quit/Reload with no
+  // UI in Electron. Offer Stay / Discard; preventDefault here ALLOWS unload.
+  win.webContents.on('will-prevent-unload', (event) => {
+    if (win.isDestroyed()) return
+    const choice = dialog.showMessageBoxSync(win, UNLOAD_DIALOG)
+    if (shouldAllowUnload(choice)) event.preventDefault()
   })
   if (isMain) {
     // close-to-tray for the MAIN window only (Quit is a deliberate act via
