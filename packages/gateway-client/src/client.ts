@@ -37,6 +37,20 @@ import type {
   MemoryIngestSessionToolArgs,
   MemoryToolArgsByName,
   MemoryToolResponse,
+  MemoryTagsListResponse,
+  MemoryTagsPendingResponse,
+  MemoryTagCountsResponse,
+  MemoryTagsDecideRequest,
+  MemoryTagsDecideResponse,
+  MemoryTagsAddRequest,
+  MemoryTagsAddResponse,
+  MemoryTagsLookupRequest,
+  MemoryTagsLookupResponse,
+  MemoryTaxonomyResponse,
+  MemoryTaxonomyUpsertRequest,
+  MemoryTaxonomyMergeRequest,
+  MemoryTaxonomyMergeResponse,
+  TagTaxonomyWire,
   WikiMissBody,
   ToolResult,
   MemorySearchResponse,
@@ -409,6 +423,8 @@ export class RivetGateway {
       q: string
       scope?: 'messages' | 'summaries' | 'both'
       limit?: number
+      /** Only hits whose session carries this accepted `key:value` tag. */
+      tag?: string
     },
     signal?: AbortSignal,
   ): Promise<MemorySearchResponse> {
@@ -425,6 +441,8 @@ export class RivetGateway {
       tool_name?: string
       window?: string
       limit?: number
+      /** Only messages whose session carries this accepted `key:value` tag. */
+      tag?: string
     } = {},
     signal?: AbortSignal,
   ): Promise<MemoryBrowseResponse> {
@@ -440,6 +458,91 @@ export class RivetGateway {
 
   memoryHealth(signal?: AbortSignal): Promise<MemoryHealthResponse> {
     return request(this.config, '/api/memory/health', { signal })
+  }
+
+  // -- memory tags (session tagging) ------------------------------------------
+
+  memoryTags(
+    query: {
+      entity_type?: 'conversation' | 'summary'
+      entity_id?: string
+      key?: string
+      value?: string
+      /** Comma-separated states; default suggested,accepted. */
+      state?: string
+      limit?: number
+    } = {},
+    signal?: AbortSignal,
+  ): Promise<MemoryTagsListResponse> {
+    return request(this.config, '/api/memory/tags', { query, signal })
+  }
+
+  memoryTagsPending(limit?: number, signal?: AbortSignal): Promise<MemoryTagsPendingResponse> {
+    return request(this.config, '/api/memory/tags/pending', {
+      query: limit === undefined ? {} : { limit },
+      signal,
+    })
+  }
+
+  memoryTagCounts(
+    query: { key?: string; limit?: number } = {},
+    signal?: AbortSignal,
+  ): Promise<MemoryTagCountsResponse> {
+    return request(this.config, '/api/memory/tags/counts', { query, signal })
+  }
+
+  memoryTagsDecide(
+    body: MemoryTagsDecideRequest,
+    signal?: AbortSignal,
+  ): Promise<MemoryTagsDecideResponse> {
+    return request(this.config, '/api/memory/tags/decide', { method: 'POST', body, signal })
+  }
+
+  memoryTagsAdd(body: MemoryTagsAddRequest, signal?: AbortSignal): Promise<MemoryTagsAddResponse> {
+    return request(this.config, '/api/memory/tags/add', { method: 'POST', body, signal })
+  }
+
+  memoryTagsLookup(
+    body: MemoryTagsLookupRequest,
+    signal?: AbortSignal,
+  ): Promise<MemoryTagsLookupResponse> {
+    return request(this.config, '/api/memory/tags/lookup', { method: 'POST', body, signal })
+  }
+
+  memoryTaxonomy(
+    query: { key?: string; state?: string; limit?: number } = {},
+    signal?: AbortSignal,
+  ): Promise<MemoryTaxonomyResponse> {
+    return request(this.config, '/api/memory/tags/taxonomy', { query, signal })
+  }
+
+  memoryTaxonomyUpsert(
+    body: MemoryTaxonomyUpsertRequest,
+    signal?: AbortSignal,
+  ): Promise<{ entry: TagTaxonomyWire }> {
+    return request(this.config, '/api/memory/tags/taxonomy', { method: 'POST', body, signal })
+  }
+
+  memoryTaxonomyDecide(
+    body: { entries: Array<{ key: string; value: string }>; state: 'accepted' | 'rejected' },
+    signal?: AbortSignal,
+  ): Promise<{ changed: number }> {
+    return request(this.config, '/api/memory/tags/taxonomy/decide', {
+      method: 'POST',
+      body,
+      signal,
+    })
+  }
+
+  memoryTaxonomyMerge(
+    body: MemoryTaxonomyMergeRequest,
+    signal?: AbortSignal,
+  ): Promise<MemoryTaxonomyMergeResponse> {
+    return request(this.config, '/api/memory/tags/taxonomy/merge', {
+      method: 'POST',
+      body,
+      signal,
+    })
   }
 
   /** Invoke a den-hosted MCP memory tool and unwrap its result. */

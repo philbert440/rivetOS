@@ -632,7 +632,7 @@ async function getJson(routes: GatewayRoute[], path: string): Promise<unknown> {
 describe('memory API pool-to-tools composition', () => {
   it.each(['postgres', 'routing', 'unset'] as const)(
     'reuses or caches adapters with %s registered and never constructs a pool',
-    (kind) => {
+    async (kind) => {
       const ownerPool = { query: vi.fn() } as unknown as pg.Pool
       const userPool = { query: vi.fn() } as unknown as pg.Pool
       pgMocks.constructed.mockClear()
@@ -669,9 +669,14 @@ describe('memory API pool-to-tools composition', () => {
               'memory_get_full',
               'memory_append',
               'memory_ingest_session',
+              'memory_tags',
             ].sort(),
           )
-          expect(new Set(names).size).toBe(6)
+          expect(new Set(names).size).toBe(7)
+          // The den tool route carries the write surface: memory_tags here is
+          // the writable variant (in-process agents get the read-only one).
+          const tags = memoryHttpTools(memory, pool).find((tool) => tool.name === 'memory_tags')
+          expect(await tags?.execute({ action: 'decide', ids: [] })).toBe('ids required')
         }
         expect(poolConstructor).not.toHaveBeenCalled()
         expect(pgMocks.constructed).not.toHaveBeenCalled()

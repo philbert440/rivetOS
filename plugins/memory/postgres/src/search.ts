@@ -18,6 +18,8 @@
  * database-side evaluation. Access counts are bumped for returned results.
  */
 
+import { parseTagLiteral } from '@rivetos/types'
+import { conversationIdsWithTag } from './tags/store.js'
 import pg from 'pg'
 import {
   buildEmbedRequest,
@@ -48,6 +50,15 @@ export interface SearchOptions {
   agent?: string
   since?: string // ISO timestamp
   before?: string // ISO timestamp
+  /**
+   * Only hits whose conversation carries this accepted `key:value` tag (on the
+   * session or any of its summaries). Resolved once to conversation ids and
+   * pushed into every arm's WHERE clause, so ranking and LIMIT apply to the
+   * tagged set and a sparse tag is not crowded out.
+   */
+  tag?: string
+  /** Internal: the conversations `tag` resolved to. Callers pass `tag`. */
+  conversationIds?: string[]
 }
 
 export interface SearchDegraded {
@@ -97,6 +108,8 @@ export interface SearchHit {
    *  (metadata.truncated) — memory_get_full can fetch the rest. */
   truncated?: boolean
   fullLength?: number
+  /** Accepted `key:value` tags on the hit's conversation (consumer-enriched). */
+  tags?: string[]
   /** Tool call name when the hit is a tool row (or has tool metadata). */
   toolName?: string | null
   /** Tool payload — often the only substantive text on role=tool rows. */
@@ -640,6 +653,32 @@ export class SearchEngine {
    * Access counts are incremented for returned results.
    */
   async search(query: string, options?: SearchOptions): Promise<SearchResults> {
+    if (options?.tag) return this.searchWithTag(query, options)
+    return this.searchUnfiltered(query, options)
+  }
+
+  /**
+   * `tag` filter: resolve the conversations carrying the accepted tag and
+   * run the normal search restricted to them. An unknown tag — or a database
+   * that has not run migration 0019 — yields no hits; a malformed literal
+   * throws.
+   */
+  private async searchWithTag(query: string, options: SearchOptions): Promise<SearchResults> {
+    const parsed = parseTagLiteral(options.tag ?? '')
+    if (!parsed) throw new Error(`tag must be key:value (got "${String(options.tag)}")`)
+    let ids: string[]
+    try {
+      ids = await conversationIdsWithTag(this.pool, parsed.key, parsed.value)
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err)
+      if (!/does not exist|relation/i.test(msg)) throw err
+      ids = []
+    }
+    if (ids.length === 0) return withSearchMeta([])
+    return this.searchUnfiltered(query, { ...options, tag: undefined, conversationIds: ids })
+  }
+
+  private async searchUnfiltered(query: string, options?: SearchOptions): Promise<SearchResults> {
     const mode = options?.mode ?? 'hybrid'
     const scope = options?.scope ?? 'both'
     const limit = options?.limit ?? 20
@@ -665,7 +704,12 @@ export class SearchEngine {
         }
         return withSearchMeta(hits)
       }
-      const hits = await this.vectorSearch(embedded.vec, { scope, limit, agent: options?.agent })
+      const hits = await this.vectorSearch(embedded.vec, {
+        scope,
+        limit,
+        agent: options?.agent,
+        conversationIds: options?.conversationIds,
+      })
       void this.bumpAccess(hits)
       return withSearchMeta(hits, { chunkArm: this.chunkArmSignal() })
     }
@@ -911,6 +955,10 @@ export class SearchEngine {
           params.push(options.agent)
           conds.push(`m.agent = $${String(params.length)}`)
         }
+        if (options?.conversationIds) {
+          params.push(options.conversationIds)
+          conds.push(`m.conversation_id = ANY($${String(params.length)}::uuid[])`)
+        }
         if (options?.since) {
           params.push(options.since)
           conds.push(`m.created_at >= $${String(params.length)}`)
@@ -950,6 +998,10 @@ export class SearchEngine {
           's.embedding IS NOT NULL', // summaries are cross-agent
           `length(btrim(s.content)) >= ${String(MIN_CONTENT_LEN)}`,
         ]
+        if (options?.conversationIds) {
+          params.push(options.conversationIds)
+          conds.push(`s.conversation_id = ANY($${String(params.length)}::uuid[])`)
+        }
         if (options?.since) {
           params.push(options.since)
           conds.push(`s.created_at >= $${String(params.length)}`)
@@ -1006,6 +1058,10 @@ export class SearchEngine {
     if (options?.agent) {
       params.push(options.agent)
       conds.push(`m.agent = $${String(params.length)}`)
+    }
+    if (options?.conversationIds) {
+      params.push(options.conversationIds)
+      conds.push(`m.conversation_id = ANY($${String(params.length)}::uuid[])`)
     }
     if (options?.since) {
       params.push(options.since)
@@ -1192,7 +1248,12 @@ export class SearchEngine {
    */
   async vectorSearch(
     embedding: number[],
-    options?: { scope?: 'messages' | 'summaries' | 'both'; limit?: number; agent?: string },
+    options?: {
+      scope?: 'messages' | 'summaries' | 'both'
+      limit?: number
+      agent?: string
+      conversationIds?: string[]
+    },
   ): Promise<SearchHit[]> {
     const scope = options?.scope ?? 'both'
     const limit = options?.limit ?? 10
@@ -1207,6 +1268,10 @@ export class SearchEngine {
         if (options?.agent) {
           params.push(options.agent)
           agentFilter = `AND m.agent = $${String(params.length)}`
+        }
+        if (options?.conversationIds) {
+          params.push(options.conversationIds)
+          agentFilter += ` AND m.conversation_id = ANY($${String(params.length)}::uuid[])`
         }
         params.push(limit)
         const limitIdx = params.length
@@ -1230,6 +1295,7 @@ export class SearchEngine {
         const parents = res.rows.map((r) => this.mapCandidate(r, 'message'))
         const chunks = await this.retrieveChunkCandidates(client, vecLiteral, limit, {
           agent: options?.agent,
+          conversationIds: options?.conversationIds,
         })
         const { merged, chunkWins, parentWins } = mergeChunkAndParentCandidates(
           parents,
@@ -1260,12 +1326,17 @@ export class SearchEngine {
                  + ${SUMMARY_IMPORTANCE} * ${W_IMPORTANCE}
                ) AS score
         FROM ros_summaries s
-        WHERE s.embedding IS NOT NULL
+        WHERE s.embedding IS NOT NULL ${options?.conversationIds ? 'AND s.conversation_id = ANY($3::uuid[])' : ''}
         ORDER BY s.embedding <=> $1::halfvec
         LIMIT $2
       `
 
-        const res = await client.query<SummarySearchRow>(sql, [vecLiteral, limit])
+        const res = await client.query<SummarySearchRow>(
+          sql,
+          options?.conversationIds
+            ? [vecLiteral, limit, options.conversationIds]
+            : [vecLiteral, limit],
+        )
         out.push(
           ...res.rows.map((r) => ({
             id: r.id,
@@ -1528,6 +1599,14 @@ export class SearchEngine {
     if (opts.agentFilter && options?.agent) {
       conditions.push(`${alias}.agent = $${String(pi)}`)
       params.push(options.agent)
+      pi++
+    }
+
+    // Tag filter, already resolved to conversations (messages and summaries
+    // both carry conversation_id).
+    if (options?.conversationIds) {
+      conditions.push(`${alias}.conversation_id = ANY($${String(pi)}::uuid[])`)
+      params.push(options.conversationIds)
       pi++
     }
 
