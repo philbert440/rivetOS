@@ -96,3 +96,22 @@ export function shouldIgnoreRowActivate(ev: {
   if (el != null && el.closest('[data-no-open]')) return true
   return false
 }
+
+/**
+ * The selected text, but only when the selection touches [container]. A
+ * selection elsewhere on the page (the editor, another pane) is not a
+ * drag-select of this row and must not swallow its click.
+ */
+export function selectionTextWithin(
+  sel: {
+    isCollapsed: boolean
+    anchorNode: unknown
+    focusNode: unknown
+    toString: () => string
+  } | null,
+  container: { contains: (node: never) => boolean } | null,
+): string {
+  if (!sel || sel.isCollapsed || !container) return ''
+  const inside = (node: unknown): boolean => node != null && container.contains(node as never)
+  return inside(sel.anchorNode) || inside(sel.focusNode) ? sel.toString() : ''
+}

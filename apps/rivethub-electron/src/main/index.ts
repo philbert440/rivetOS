@@ -351,6 +351,9 @@ function createWindow(isMain: boolean): BrowserWindow {
     if (win.isDestroyed()) return
     const choice = dialog.showMessageBoxSync(win, UNLOAD_DIALOG)
     if (shouldAllowUnload(choice)) event.preventDefault()
+    // Stay cancels the quit: drop the flag, or close-to-tray, summon and
+    // notification clicks stay inhibited for the rest of the session.
+    else quitting = false
   })
   if (isMain) {
     // close-to-tray for the MAIN window only (Quit is a deliberate act via

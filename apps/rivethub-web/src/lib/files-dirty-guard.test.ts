@@ -7,6 +7,7 @@ import {
   guardOpenFile,
   guardPathNav,
   shouldBlockFilesLeave,
+  selectionTextWithin,
   shouldIgnoreRowActivate,
 } from './files-dirty-guard.js'
 
@@ -202,5 +203,37 @@ describe('shouldIgnoreRowActivate', () => {
         selectionText: '',
       }),
     ).toBe(false)
+  })
+})
+
+describe('selectionTextWithin', () => {
+  const row = { contains: (n: never) => n === ('in-row' as never) }
+  const sel = (anchor: unknown, focus: unknown, collapsed = false) => ({
+    isCollapsed: collapsed,
+    anchorNode: anchor,
+    focusNode: focus,
+    toString: () => 'report.md',
+  })
+
+  it('returns the text when the selection starts or ends inside the row', () => {
+    expect(selectionTextWithin(sel('in-row', 'elsewhere'), row)).toBe('report.md')
+    expect(selectionTextWithin(sel('elsewhere', 'in-row'), row)).toBe('report.md')
+  })
+
+  it('ignores a selection elsewhere on the page, so it cannot swallow the row click', () => {
+    expect(selectionTextWithin(sel('editor', 'editor'), row)).toBe('')
+    expect(
+      shouldIgnoreRowActivate({
+        detail: 1,
+        target: null,
+        selectionText: selectionTextWithin(sel('editor', 'editor'), row),
+      }),
+    ).toBe(false)
+  })
+
+  it('ignores a collapsed selection, a missing selection and a missing row', () => {
+    expect(selectionTextWithin(sel('in-row', 'in-row', true), row)).toBe('')
+    expect(selectionTextWithin(null, row)).toBe('')
+    expect(selectionTextWithin(sel('in-row', 'in-row'), null)).toBe('')
   })
 })

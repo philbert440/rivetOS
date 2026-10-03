@@ -19,6 +19,7 @@ import {
   guardOpenFile,
   guardPathNav,
   shouldBlockFilesLeave,
+  selectionTextWithin,
   shouldIgnoreRowActivate,
 } from '../lib/files-dirty-guard.js'
 import {
@@ -605,12 +606,16 @@ export function FilesPage(): JSX.Element {
                     const activateRow = (ev: {
                       detail: number
                       target: EventTarget | null
+                      currentTarget: EventTarget | null
                     }): void => {
+                      // Only a selection inside this row is a drag-select of
+                      // its name; one elsewhere (the editor) must not eat the click.
+                      const row = (ev.currentTarget as HTMLElement | null)?.closest('tr') ?? null
                       if (
                         shouldIgnoreRowActivate({
                           detail: ev.detail,
                           target: ev.target,
-                          selectionText: window.getSelection()?.toString() ?? '',
+                          selectionText: selectionTextWithin(window.getSelection(), row),
                         })
                       ) {
                         return
@@ -629,11 +634,9 @@ export function FilesPage(): JSX.Element {
                         onDoubleClick={(ev) => {
                           if (performance.now() < suppressRawUntilRef.current) return
                           if (
-                            shouldIgnoreRowActivate({
-                              detail: 1,
-                              target: ev.target,
-                              selectionText: window.getSelection()?.toString() ?? '',
-                            })
+                            // A double-click selects the word under it; that
+                            // is not a drag-select, so no selection check here.
+                            shouldIgnoreRowActivate({ detail: 1, target: ev.target })
                           ) {
                             return
                           }
