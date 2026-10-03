@@ -6,6 +6,10 @@ export interface MergedPages {
   positions: number[]
   /** Positions where a later page disagreed with the first write. */
   conflicts: number[]
+  /** Winning page path per record (undefined when the input had none). */
+  sourcePaths: Array<string | undefined>
+  /** Winning source line per record. */
+  sourceLines: Array<number | undefined>
 }
 
 function recordJson(rec: unknown): string {
@@ -25,6 +29,8 @@ function recordJson(rec: unknown): string {
  */
 export function mergeParsedInputs(inputs: ParsedInput[]): MergedPages {
   const byPos = new Map<number, unknown>()
+  const pathByPos = new Map<number, string>()
+  const lineByPos = new Map<number, number>()
   const conflictSet = new Set<number>()
   for (const input of inputs) {
     const start = input.header?.a ?? 0
@@ -33,6 +39,9 @@ export function mergeParsedInputs(inputs: ParsedInput[]): MergedPages {
       const held = byPos.get(pos)
       if (held === undefined) {
         byPos.set(pos, rec)
+        if (input.sourcePath) pathByPos.set(pos, input.sourcePath)
+        const line = input.sourceLines?.[i]
+        if (typeof line === 'number') lineByPos.set(pos, line)
         return
       }
       if (recordJson(held) !== recordJson(rec)) conflictSet.add(pos)
@@ -40,11 +49,23 @@ export function mergeParsedInputs(inputs: ParsedInput[]): MergedPages {
   }
   const positions = [...byPos.keys()].sort((a, b) => a - b)
   const records: unknown[] = []
+  const sourcePaths: Array<string | undefined> = []
+  const sourceLines: Array<number | undefined> = []
   for (const p of positions) {
     const rec = byPos.get(p)
-    if (rec !== undefined) records.push(rec)
+    if (rec !== undefined) {
+      records.push(rec)
+      sourcePaths.push(pathByPos.get(p))
+      sourceLines.push(lineByPos.get(p))
+    }
   }
-  return { records, positions, conflicts: [...conflictSet].sort((a, b) => a - b) }
+  return {
+    records,
+    positions,
+    conflicts: [...conflictSet].sort((a, b) => a - b),
+    sourcePaths,
+    sourceLines,
+  }
 }
 
 export function formatMergeConflicts(conflicts: number[]): string {
@@ -61,12 +82,18 @@ export function formatMergeConflicts(conflicts: number[]): string {
 export function normalizePages(inputs: ParsedInput[], opts: NormalizeOptions): NormalizeResult {
   const merged = mergeParsedInputs(inputs)
   const headerId = inputs.find((p) => p.header?.id)?.header?.id
+  const hasPaths = merged.sourcePaths.some((p) => typeof p === 'string' && p.length > 0)
+  const hasLines = merged.sourceLines.some((n) => typeof n === 'number')
   const result = normalizeRecords(merged.records, {
     ...opts,
     format: opts.format ?? inputs[0]?.format,
     startPosition: merged.positions[0] ?? 0,
     positions: merged.positions,
     agentId: opts.agentId ?? headerId,
+    sourcePaths: hasPaths ? merged.sourcePaths.map((p) => p ?? '') : opts.sourcePaths,
+    sourceLines: hasLines
+      ? merged.sourceLines.map((n, i) => (typeof n === 'number' ? n : (merged.positions[i] ?? 0)))
+      : opts.sourceLines,
   })
   return { ...result, conflicts: merged.conflicts }
 }

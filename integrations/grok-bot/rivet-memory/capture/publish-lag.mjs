@@ -8,9 +8,20 @@ import { fileURLToPath } from 'node:url'
 
 export const DEFAULT_LAG_ENTRIES = 50
 export const DEFAULT_STALL_HOURS = 24
+export const DEFAULT_LAG_INTERVAL_MS = 60_000
 export const HOUR_MS = 3_600_000
 /** Once warned, stay warned until lag/stall fall to this fraction of the enter threshold. */
 export const WARN_CLEAR_RATIO = 0.5
+
+/**
+ * Periodic recheck interval. Non-numeric, non-finite, or non-positive values
+ * fall back to 60s so a bad knob cannot disable the late-publish guarantee.
+ */
+export function publishLagIntervalMs(raw) {
+  if (raw === undefined || raw === null || raw === '') return DEFAULT_LAG_INTERVAL_MS
+  const n = typeof raw === 'number' ? raw : Number(raw)
+  return Number.isFinite(n) && n > 0 ? n : DEFAULT_LAG_INTERVAL_MS
+}
 
 function asFiniteNumber(value) {
   if (typeof value === 'number' && Number.isFinite(value)) return value
@@ -70,14 +81,19 @@ export function publishLag(writerSeq, publishedThroughSeq) {
   return writerSeq - publishedThroughSeq
 }
 
-export function readPublishSnapshots(publishDir) {
-  const out = []
+/**
+ * Read every publish-state file. `readable: false` means the directory was
+ * missing or readdir failed — that is not the same as an empty directory.
+ */
+export function tryReadPublishSnapshots(publishDir) {
+  if (!publishDir || !existsSync(publishDir)) return { readable: false, snapshots: [] }
   let names
   try {
     names = readdirSync(publishDir)
   } catch {
-    return out
+    return { readable: false, snapshots: [] }
   }
+  const snapshots = []
   for (const name of names) {
     if (!name.endsWith('.json') || name.startsWith('.')) continue
     const id = name.slice(0, -'.json'.length)
@@ -95,9 +111,14 @@ export function readPublishSnapshots(publishDir) {
     } catch {
       mtimeMs = undefined
     }
-    out.push({ id, file, parsed, mtimeMs })
+    snapshots.push({ id, file, parsed, mtimeMs })
   }
-  return out
+  return { readable: true, snapshots }
+}
+
+export function readPublishSnapshots(publishDir) {
+  const read = tryReadPublishSnapshots(publishDir)
+  return read.readable ? read.snapshots : []
 }
 
 export function loadPublishLagStatus(statusPath) {
@@ -133,6 +154,23 @@ export function evaluatePublishLag(opts) {
   const nowMs = opts.nowMs ?? Date.now()
   const config = opts.config ?? loadPublishLagConfig()
   const previous = opts.previous?.agents ?? {}
+  // Callers that pass snapshots directly are observing those files. A pass
+  // that could not read the directory sets dirReadable: false and must not
+  // treat "no snapshots" as "every agent file is gone".
+  const dirReadable = opts.dirReadable !== false
+  if (!dirReadable) {
+    return {
+      status: {
+        updatedAt: new Date(nowMs).toISOString(),
+        lagEntries: config.lagEntries,
+        stallMs: config.stallMs,
+        agents: { ...previous },
+      },
+      warnings: [],
+      cleared: [],
+      skipped: [],
+    }
+  }
   const agents = {}
   const warnings = []
   const cleared = []
@@ -228,9 +266,18 @@ export function warningLatched(opts) {
   return lag > lagEntries * WARN_CLEAR_RATIO || stalledMs > stallMs * WARN_CLEAR_RATIO
 }
 
+let publishLagTmpSeq = 0
+
+/** Pid + counter + random, so two watchers never share one temp file. */
+export function publishLagTempPath(statusPath) {
+  publishLagTmpSeq += 1
+  const nonce = `${process.pid}-${publishLagTmpSeq}-${Math.random().toString(36).slice(2, 10)}`
+  return `${statusPath}.${nonce}.tmp`
+}
+
 export function writePublishLagStatus(statusPath, status) {
   mkdirSync(dirname(statusPath), { recursive: true })
-  const tmp = `${statusPath}.tmp`
+  const tmp = publishLagTempPath(statusPath)
   writeFileSync(tmp, `${JSON.stringify(status, null, 2)}\n`)
   renameSync(tmp, statusPath)
 }
@@ -242,8 +289,14 @@ export function runPublishLagPass(opts) {
   const nowMs = opts.nowMs ?? Date.now()
   const log = opts.log ?? (() => {})
   const previous = statusPath ? loadPublishLagStatus(statusPath) : { agents: {} }
-  const snapshots = publishDir && existsSync(publishDir) ? readPublishSnapshots(publishDir) : []
-  const result = evaluatePublishLag({ snapshots, previous, nowMs, config })
+  const read = publishDir ? tryReadPublishSnapshots(publishDir) : { readable: false, snapshots: [] }
+  const result = evaluatePublishLag({
+    snapshots: read.readable ? read.snapshots : [],
+    previous,
+    nowMs,
+    config,
+    dirReadable: read.readable,
+  })
   if (statusPath) writePublishLagStatus(statusPath, result.status)
   for (const row of result.warnings) log(formatPublishLagWarn(row))
   for (const id of result.cleared) log(`publish lag cleared agent=${id}`)

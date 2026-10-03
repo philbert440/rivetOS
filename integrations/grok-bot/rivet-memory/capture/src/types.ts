@@ -36,13 +36,21 @@ export type TimeSource =
   'tag' | 'tool_epoch' | 'stored' | 'inherited' | 'interpolated' | 'lookahead' | 'mtime'
 
 /**
- * Strip `-vN-voice*`, `-vN-store`, `-vN-rows`, `-vN-backfill`, `-vN`, or `-v2`
- * so identity helpers share one rule across -v3 / -v4 / later suffixes.
+ * Strip `-vN-voice*`, `-vN-store`, `-vN-rows`, `-vN`, or `-v2` so identity
+ * helpers share one rule across -v3 / -v4 / later suffixes.
+ *
+ * `-vN-backfill` is NOT cosmetic. Stripping it would let reclean rebuild a
+ * plain `-vN` session from backfill rows. See `isBackfillSession`.
  */
 export function stripSessionSuffix(session: string): string {
   const voice = /-v\d+-voice(?:-|$)/.exec(session)
   if (voice) return session.slice(0, voice.index)
-  return session.replace(/-v\d+(?:-store|-rows|-backfill)?$/, '')
+  return session.replace(/-v\d+(?:-store|-rows)?$/, '')
+}
+
+/** True for `…-vN-backfill` (optionally followed by another suffix). */
+export function isBackfillSession(session: string): boolean {
+  return /-v\d+-backfill(?:-|$)/.test(session)
 }
 
 export function sessionStoreSuffix(sessionSuffix = SESSION_SUFFIX_V3): string {
@@ -101,6 +109,8 @@ export interface ParsedInput {
   hasOlderFooter: boolean
   /** 0-based file line of each record (blank / header lines skipped). */
   sourceLines?: number[]
+  /** Page file this parse came from. Merged into per-record pointer paths. */
+  sourcePath?: string
 }
 
 export interface BotIdentity {
@@ -143,6 +153,11 @@ export interface NormalizeOptions {
   fileBirthtimeMs?: number
   /** Absolute source transcript / page path for memory_get_full pointers. */
   sourcePath?: string
+  /**
+   * Per-record source path when a merged page list spans files. Wins over
+   * `sourcePath` for that record. Empty string means "no path".
+   */
+  sourcePaths?: string[]
   /** 0-based source file line per record. Falls back to position. */
   sourceLines?: number[]
   /** Live session suffix (`-v3`, `-v4`) for reclean targets. */

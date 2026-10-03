@@ -3,7 +3,7 @@
  * Grok Bot capture CLI — convert, backfill, ingest-pages, reclean, compare, discover.
  * Never prints secrets, hostnames, or connection strings.
  */
-import { mkdirSync, readFileSync, readdirSync, statSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, readFileSync, readdirSync, statSync, writeFileSync } from 'node:fs'
 import { dirname, join, resolve } from 'node:path'
 import { parseArgs } from 'node:util'
 import { coalesceDashArgs } from './argv.js'
@@ -43,7 +43,12 @@ import {
 } from './reclean.js'
 import { readStoreSince, v3StoreSession } from './store.js'
 import { sourceFileTimes } from './timestamps.js'
-import { SESSION_SUFFIX_V3, sessionStoreSuffix, sessionVoiceSuffix } from './types.js'
+import {
+  SESSION_SUFFIX_V3,
+  isBackfillSession,
+  sessionStoreSuffix,
+  sessionVoiceSuffix,
+} from './types.js'
 import type { IngestRow, ParsedInput } from './types.js'
 import { parseVoiceCall, v3VoiceSession, voiceCallToRecords } from './voice.js'
 
@@ -86,7 +91,8 @@ const HELP = `Usage: grokbot-rivet-memory-capture <command> [opts]
           [--dry-run|--write]
       Re-clean source transcripts into <session>-vN. --from-rows and PG
       reads write <session>-vN-rows. Follows GROKBOT_SESSION_SUFFIX
-      / --session-suffix. Refuses already row-shaped sessions.
+      / --session-suffix. Refuses already row-shaped sessions and any
+      -vN-backfill source (that suffix is never folded into live -vN).
       --dry-run (default) performs zero writes and prints stats.
       Without --from-transcript/--from-rows, reads RIVETOS_PG_URL from the
       environment or ~/.rivetos/.env inside BEGIN TRANSACTION READ ONLY
@@ -103,15 +109,21 @@ const HELP = `Usage: grokbot-rivet-memory-capture <command> [opts]
 
   discover [--agents-dir DIR] [--json]
 
-  ingest-pages --input DIR [--commit] [--overlap-hours 48] [--agents-dir DIR]
-      ReadTranscript page backfill. Files are <bot-slug>-<before>.txt.
-      Dry-run (default) prints per-bot counts and writes nothing.
-      --commit INSERTs message rows into grokbot-<slug>-v4-backfill only
-      and never deletes. PostgresMemory.append still upserts that
-      session's ros_conversations row (updated_at, active) and may queue
-      tool-synthesis jobs. Never folds into plain -v4. Timestamps are
-      approximate (ts_approx=true); rows before the first <timestamp>
-      tag are skipped.
+  ingest-pages --input DIR [--commit] [--dry-run] [--overlap-hours 48]
+               [--agents-dir DIR]
+      ReadTranscript page backfill. Files are <bot-slug>-<before>.txt,
+      ordered by numeric <before> then header position.
+      Dry-run is the default and writes nothing. An explicit --dry-run
+      overrides --commit. --commit INSERTs message rows into
+      grokbot-<slug>-v4-backfill only and never deletes. A bot whose
+      pages conflict writes nothing; other bots still proceed (exit 3).
+      PostgresMemory.append still upserts that session's ros_conversations
+      row (updated_at, active) and may queue tool-synthesis jobs. Never
+      folds into plain -v4. Timestamps are approximate (ts_approx=true);
+      rows before the first <timestamp> tag are skipped.
+      --overlap-hours 0 disables -v4 content-hash suppression.
+      Unknown slugs and malformed pages are counted and exit 2.
+      --input must be a readable directory.
 `
 
 async function main(argv: string[]): Promise<number> {
@@ -486,6 +498,12 @@ async function cmdReclean(argv: string[]): Promise<number> {
     )
     return 2
   }
+  if (isBackfillSession(sourceSession)) {
+    console.error(
+      `reclean: ${sourceSession} is a -backfill session; refusing to fold it into a live -vN session`,
+    )
+    return 2
+  }
   const fromSource = Boolean(values['from-transcript'])
   const session = fromSource
     ? v3Session(sourceSession, suffix)
@@ -653,7 +671,10 @@ function cmdDiscover(argv: string[]): number {
   return 0
 }
 
-async function cmdIngestPages(argv: string[]): Promise<number> {
+export async function cmdIngestPages(
+  argv: string[],
+  hooks?: { loadDeps?: (commit: boolean) => Promise<IngestPagesDeps> },
+): Promise<number> {
   const { values, positionals } = parseArgs({
     args: coalesceDashArgs(argv),
     allowPositionals: true,
@@ -670,7 +691,21 @@ async function cmdIngestPages(argv: string[]): Promise<number> {
     console.error('ingest-pages needs --input DIR (or GROKBOT_PAGES_DIR)')
     return 2
   }
-  const commit = values.commit
+  try {
+    const st = statSync(input)
+    if (!st.isDirectory()) {
+      console.error(`ingest-pages: --input is not a directory: ${input}`)
+      return 2
+    }
+  } catch (err) {
+    const message = err instanceof Error ? err.message : 'unreadable'
+    console.error(`ingest-pages: cannot read --input ${input}: ${message}`)
+    return 2
+  }
+  if (values['dry-run'] && values.commit) {
+    console.error('ingest-pages: --dry-run overrides --commit; nothing will be written')
+  }
+  const commit = values.commit && !values['dry-run']
   const overlapHours = Number(
     values['overlap-hours'] ?? process.env.GROKBOT_BACKFILL_OVERLAP_HOURS ?? 48,
   )
@@ -678,22 +713,27 @@ async function cmdIngestPages(argv: string[]): Promise<number> {
     console.error('ingest-pages: --overlap-hours must be a non-negative number')
     return 2
   }
-  const deps = await loadIngestPagesDeps(commit)
-  if (commit && !deps.commit) {
-    console.error(
-      'ingest-pages --commit needs RIVETOS_PG_URL (environment or ~/.rivetos/.env). Dry-run needs no write.',
-    )
-    return 2
-  }
+  const deps = hooks?.loadDeps ? await hooks.loadDeps(commit) : await loadIngestPagesDeps(commit)
   try {
+    if (commit && !deps.commit) {
+      console.error(
+        deps.commitError ??
+          'ingest-pages --commit needs RIVETOS_PG_URL (environment or ~/.rivetos/.env). Dry-run needs no write.',
+      )
+      return 2
+    }
     const result = await ingestPages(input, {
       commit,
       agentsDir: values['agents-dir'],
       overlapHours,
+      overlapUnavailable: deps.overlapUnavailable,
       deps,
     })
     console.log(formatIngestPagesCounts(result))
-    if (commit && result.bots.some((b) => b.conflicts.length > 0)) return 3
+    const conflicts = result.bots.some((b) => b.conflicts.length > 0)
+    const failed = result.bots.some((b) => b.pagesFailed > 0 || b.unknownSlugs > 0)
+    if (commit && conflicts) return 3
+    if (failed) return 2
     return 0
   } catch (err) {
     const message = err instanceof Error ? err.message : 'ingest-pages failed'
@@ -707,32 +747,46 @@ async function cmdIngestPages(argv: string[]): Promise<number> {
 async function loadIngestPagesDeps(commit: boolean): Promise<IngestPagesDeps> {
   const deps: IngestPagesDeps = {}
   const url = loadRivetosPgUrlFromEnv()
-  if (!url) return deps
+  if (!url) {
+    deps.overlapUnavailable = true
+    if (commit) {
+      deps.commitError =
+        'ingest-pages --commit needs RIVETOS_PG_URL (environment or ~/.rivetos/.env). Dry-run needs no write.'
+    }
+    return deps
+  }
   deps.overlap = createPgOverlapStore(url)
   if (!commit) return deps
   try {
     deps.commit = await createPgCommit(url)
-  } catch {
-    deps.commit = undefined
+  } catch (err) {
+    const message = err instanceof Error ? err.message : 'ingest-pages --commit failed'
+    deps.commitError = `ingest-pages --commit failed: ${message}`
   }
   return deps
 }
 
+/**
+ * Deployed installs resolve `@rivetos/memory-postgres` from RIVETOS_ROOT.
+ * A dev checkout falls back to the workspace package at
+ * `plugins/memory/postgres` (four levels up from this capture package).
+ */
+export function resolveMemoryPostgresEntry(
+  exists: (path: string) => boolean = existsSync,
+  dirs?: { root?: string; packageDir?: string },
+): string {
+  const root = dirs?.root ?? (process.env.RIVETOS_ROOT || '/opt/rivetos')
+  const packageDir = dirs?.packageDir ?? fileDir()
+  const deployed = resolve(root, 'node_modules/@rivetos/memory-postgres/dist/index.js')
+  const local = resolve(packageDir, '../../../..', 'plugins/memory/postgres/dist/index.js')
+  if (exists(deployed)) return deployed
+  if (exists(local)) return local
+  throw new Error(`memory-postgres is not built (looked for ${deployed} and ${local})`)
+}
+
 async function createPgCommit(url: string): Promise<IngestPagesDeps['commit']> {
-  const { existsSync } = await import('node:fs')
-  const { resolve } = await import('node:path')
   const { pathToFileURL } = await import('node:url')
-  const root = process.env.RIVETOS_ROOT || '/opt/rivetos'
-  const memoryEntry = resolve(root, 'node_modules/@rivetos/memory-postgres/dist/index.js')
-  const localMemory = resolve(
-    fileDir(),
-    '../../../..',
-    'node_modules/@rivetos/memory-postgres/dist/index.js',
-  )
-  const entry = existsSync(memoryEntry) ? memoryEntry : localMemory
-  if (!existsSync(entry)) {
-    throw new Error('memory-postgres is not built')
-  }
+  const entry = resolveMemoryPostgresEntry()
   const memoryMod = (await import(pathToFileURL(entry).href)) as {
     PostgresMemory: new (opts: { connectionString: string }) => GrokbotIngestMemory & {
       close?: () => Promise<void>

@@ -23,7 +23,7 @@ import {
   STORE_WATCH_RE,
   writeStoreCursor,
 } from './live-state.mjs'
-import { loadPublishLagConfig, runPublishLagPass } from './publish-lag.mjs'
+import { loadPublishLagConfig, publishLagIntervalMs, runPublishLagPass } from './publish-lag.mjs'
 
 const HERE = dirname(fileURLToPath(import.meta.url))
 const HOME = process.env.HOME || homedir()
@@ -68,7 +68,7 @@ const PUBLISH_DIR = process.env.GROKBOT_PUBLISH_DIR || join(AGENT_DATA, 'transcr
 const PUBLISH_LAG_STATE =
   process.env.GROKBOT_PUBLISH_LAG_STATE ||
   join(dirname(STATE_FILE), `grokbot-publish-lag${SESSION_SUFFIX}.json`)
-const PUBLISH_LAG_INTERVAL_MS = Number(process.env.GROKBOT_PUBLISH_LAG_INTERVAL_MS ?? 60_000)
+const PUBLISH_LAG_INTERVAL_MS = publishLagIntervalMs(process.env.GROKBOT_PUBLISH_LAG_INTERVAL_MS)
 const DEBOUNCE_MS = 20_000
 const PYTHON = process.env.PYTHON || 'python3'
 const log = (...a) => console.log(new Date().toISOString(), ...a)

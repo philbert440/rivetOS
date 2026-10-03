@@ -12,8 +12,11 @@ import {
   loadPublishLagConfig,
   parsePublishState,
   publishLag,
+  publishLagIntervalMs,
+  publishLagTempPath,
   readPublishSnapshots,
   runPublishLagPass,
+  tryReadPublishSnapshots,
   WARN_CLEAR_RATIO,
   warningLatched,
 } from '../publish-lag.mjs'
@@ -363,6 +366,80 @@ describe('publish-lag', () => {
     expect(missing.warnings).toEqual([])
   })
 
+  it('keeps a warned agent when the publish dir is missing or unreadable', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'gb-pub-keep-'))
+    const statusPath = join(dir, 'grokbot-publish-lag-v4.json')
+    const previous = {
+      writerSeq: 80,
+      publishedThroughSeq: 1,
+      lag: 79,
+      stalledSince: 1_000,
+      warned: true,
+      reason: 'lag',
+    }
+    writeFileSync(
+      statusPath,
+      `${JSON.stringify({ agents: { [ALPHA_ID]: previous } }, null, 2)}\n`,
+    )
+    const logs: string[] = []
+    const log = (...a: unknown[]) => logs.push(a.map(String).join(' '))
+    const missing = runPublishLagPass({
+      publishDir: join(dir, 'no-such-publish'),
+      statusPath,
+      nowMs: 9_000,
+      config: { lagEntries: 10, stallMs: 1 },
+      log,
+    })
+    expect(missing.warnings).toEqual([])
+    expect(missing.cleared).toEqual([])
+    expect(missing.status.agents[ALPHA_ID]).toMatchObject({ warned: true, stalledSince: 1_000 })
+    expect(logs.some((line) => line.includes('cleared'))).toBe(false)
+    const onDisk = JSON.parse(readFileSync(statusPath, 'utf8')) as {
+      agents: Record<string, { warned?: boolean; stalledSince?: number }>
+    }
+    expect(onDisk.agents[ALPHA_ID]?.warned).toBe(true)
+    expect(onDisk.agents[ALPHA_ID]?.stalledSince).toBe(1_000)
+
+    const fileAsDir = join(dir, 'not-a-directory.json')
+    writeFileSync(fileAsDir, '{}\n')
+    expect(tryReadPublishSnapshots(fileAsDir).readable).toBe(false)
+    const thrown = runPublishLagPass({
+      publishDir: fileAsDir,
+      statusPath,
+      nowMs: 10_000,
+      config: { lagEntries: 10, stallMs: 1 },
+      log,
+    })
+    expect(thrown.cleared).toEqual([])
+    expect(thrown.warnings).toEqual([])
+    expect(thrown.status.agents[ALPHA_ID]?.warned).toBe(true)
+    expect(thrown.status.agents[ALPHA_ID]?.stalledSince).toBe(1_000)
+    const still = JSON.parse(readFileSync(statusPath, 'utf8')) as {
+      agents: Record<string, { warned?: boolean }>
+    }
+    expect(still.agents[ALPHA_ID]?.warned).toBe(true)
+    expect(logs.some((line) => line.includes('cleared'))).toBe(false)
+  })
+
+  it('falls back to 60s for a bad interval and uses a pid-unique status temp', () => {
+    expect(publishLagIntervalMs(undefined)).toBe(60_000)
+    expect(publishLagIntervalMs('')).toBe(60_000)
+    expect(publishLagIntervalMs('nope')).toBe(60_000)
+    expect(publishLagIntervalMs('0')).toBe(60_000)
+    expect(publishLagIntervalMs('-5')).toBe(60_000)
+    expect(publishLagIntervalMs(Number.NaN)).toBe(60_000)
+    expect(publishLagIntervalMs('15000')).toBe(15_000)
+    expect(publishLagIntervalMs(15_000)).toBe(15_000)
+    const statusPath = join(tmpdir(), 'grokbot-publish-lag-v4.json')
+    const a = publishLagTempPath(statusPath)
+    const b = publishLagTempPath(statusPath)
+    expect(a).not.toBe(b)
+    expect(a).not.toBe(`${statusPath}.tmp`)
+    expect(a).toContain(String(process.pid))
+    expect(a.endsWith('.tmp')).toBe(true)
+    expect(b.endsWith('.tmp')).toBe(true)
+  })
+
   it('watcher keeps publish-lag state next to capture-state and checks every pass', () => {
     const watch = readFileSync(join(ROOT, 'watch.mjs'), 'utf8')
     expect(watch).toContain('publish-lag.mjs')
@@ -370,8 +447,8 @@ describe('publish-lag', () => {
     expect(watch).toContain('transcript-publish')
     expect(watch).toContain('checkPublishLag')
     expect(watch).toContain('GROKBOT_PUBLISH_DIR')
-    expect(watch).toContain('Late-appearing transcript-publish/')
-    expect(watch).toContain('this interval')
+    expect(watch).toContain('publishLagIntervalMs(')
+    expect(watch).toContain('setInterval(checkPublishLag, PUBLISH_LAG_INTERVAL_MS)')
     expect(watch).not.toContain('Co-Authored-By')
     const helper = readFileSync(join(ROOT, 'publish-lag.mjs'), 'utf8')
     expect(helper).toContain('GROKBOT_PUBLISH_LAG_ENTRIES')

@@ -94,6 +94,8 @@ export {
   createPgOverlapStore,
   NEWEST_CREATED_SQL,
   ROWS_SINCE_SQL,
+  BACKFILL_SOURCE_IDS_SQL,
+  OVERLAP_TIME_TOLERANCE_MS,
   BACKFILL_SOURCE,
 } from './ingest-pages.js'
 export {
@@ -131,6 +133,7 @@ export {
   DEFAULT_AGENT_PREFIX,
   ORDINAL_STRIDE,
   stripSessionSuffix,
+  isBackfillSession,
   sessionStoreSuffix,
   sessionVoiceSuffix,
   sessionRowsSuffix,

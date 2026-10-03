@@ -14,6 +14,7 @@ import {
   DEFAULT_AGENT_PREFIX,
   DEFAULT_NODE_ID,
   SESSION_SUFFIX_V3,
+  isBackfillSession,
   stripSessionSuffix,
   type BotIdentity,
 } from './types.js'
@@ -282,14 +283,25 @@ export function personaSlugFromIdentity(ident: BotIdentity, cfg?: IdentityConfig
   return slug(ident.persona)
 }
 
+/**
+ * Roster base for a backfill session key. Lookup only — never a write target.
+ * `grokbot-alpha-v4-backfill` → `grokbot-alpha`.
+ */
+export function backfillIdentityBase(session: string): string | undefined {
+  if (!isBackfillSession(session)) return undefined
+  const stripped = session.replace(/-v\d+-backfill$/, '')
+  return stripped === session ? undefined : stripped
+}
+
 /** Roster lookup by the same slug discovery already derived from profile.json. */
 export function identityForSlug(
   want: string,
-  opts?: { agentsDir?: string; config?: IdentityConfig },
+  opts?: { agentsDir?: string; config?: IdentityConfig; catalog?: DiscoverResult },
 ): BotIdentity | undefined {
-  const lookup = makeIdentityLookup({ agentsDir: opts?.agentsDir })
   const cfg = opts?.config ?? loadIdentityConfig()
-  return lookup.catalog.models.find((m) => personaSlugFromIdentity(m, cfg) === want)
+  const models =
+    opts?.catalog?.models ?? makeIdentityLookup({ agentsDir: opts?.agentsDir }).catalog.models
+  return models.find((m) => personaSlugFromIdentity(m, cfg) === want)
 }
 
 /** Look up a discovered identity from a session key (with or without -v2/-v3/-v3-rows). */
@@ -297,7 +309,7 @@ export function identityForSession(
   session: string,
   opts?: { agentsDir?: string },
 ): BotIdentity | undefined {
-  const stripped = stripSessionSuffix(session)
+  const stripped = backfillIdentityBase(session) ?? stripSessionSuffix(session)
   const lookup = makeIdentityLookup({
     agentsDir: opts?.agentsDir,
   })

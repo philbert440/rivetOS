@@ -224,6 +224,22 @@ python3 integrations/grok-bot/rivet-memory/capture/pull-bridge.py ingest --dry-r
 python3 integrations/grok-bot/rivet-memory/capture/pull-bridge.py ingest --suffix -v3
 ```
 
+Backfill writes **one spool per agent**. Ingest each spool with its own
+`ingest-session.mjs` command. Session / agent / persona come from
+`cli.js discover --json` (or the roster). Page backfill and `pull-bridge.py`
+are alternatives for ReadTranscript pages — do not mix on-disk and page
+rows into the same `-v3` session.
+
+```bash
+node integrations/grok-bot/rivet-memory/capture/dist/cli.js discover --json
+
+# one ingest per agent (example: Alpha). Repeat for each discover --json model.
+# Agent tags are <prefix>-<slug> (default prefix grokbot).
+node integrations/grok-bot/rivet-memory/bin/ingest-session.mjs \
+  --session-id grokbot-alpha-v3 --agent grokbot-alpha --persona Alpha \
+  spool/grokbot-alpha-v3.jsonl
+```
+
 ### Backfill from ReadTranscript page dumps (`ingest-pages`)
 
 When the host publisher stalls, a parent agent can dump raw `ReadTranscript`
@@ -234,11 +250,19 @@ timestamps except the `<timestamp>` tags inside user turns.
 
 Dry-run is the default. It prints per-bot counts (`pages`, `entries_parsed`,
 `dropped_system`, `skipped_no_timestamp`, `skipped_no_position`,
-`skipped_overlap`, `new`) and writes nothing. `--commit` INSERTs message
-rows into `grokbot-<slug>-v4-backfill` and never deletes them; it still
-goes through `PostgresMemory.append`, which upserts that session's
-`ros_conversations` row (`updated_at`, `active`) and may queue
-tool-synthesis jobs. Nothing folds into plain `-v4`.
+`skipped_overlap`, `new`, `pages_failed`, `unknown_slugs`) and writes
+nothing. An explicit `--dry-run` overrides `--commit`. Without
+`RIVETOS_PG_URL` the summary includes
+`overlap=unavailable (no RIVETOS_PG_URL)` — those counts are not a commit
+preview. `--input` must be a readable directory (exit 2 otherwise). A
+malformed page or an unknown slug is counted and the process exits 2.
+`--commit` INSERTs message rows into `grokbot-<slug>-v4-backfill` and never
+deletes them; it still goes through `PostgresMemory.append`, which upserts
+that session's `ros_conversations` row (`updated_at`, `active`) and may
+queue tool-synthesis jobs. A bot whose pages disagree at a position writes
+nothing for that bot (exit 3); other bots in the same run still proceed.
+Nothing folds into plain `-v4`. `reclean` refuses a `-backfill` session so
+it cannot be rewritten onto a live `-vN` suffix.
 
 ```bash
 # 1. Parent agent dumps pages (example names only):
@@ -261,46 +285,41 @@ python3 integrations/grok-bot/rivet-memory/capture/pull-bridge.py ingest-pages \
 Fidelity caveats: every backfill row is `metadata.ts_approx=true` because
 timestamps are carried forward from the last user `<timestamp>` tag (any UTC
 offset) until the next tag. Rows before the first parsable tag are skipped
-and counted. Source id is `readtranscript:<bot-slug>:<position>`. The session
-tag is `grokbot-<bot-slug>-v4-backfill` — a sibling of `-v4`, never merged
-into it. Hidden system / agent wakes and system reminders follow the existing
-v4 normalizer (wrapper strip + hidden classification); system rows are not
-ingested on this tag. Content is bounded by the existing 256 KiB cap / pointer.
-Re-runs are idempotent: a row is skipped when its `source_id`
-(`readtranscript:<bot-slug>:<position>`) already exists under
-`-v4-backfill`. Against live `-v4` rows at or after a cutoff (default =
-that bot's newest `-v4` row minus 48h) a content-hash match still
-suppresses the backfill copy, but only up to the hash's multiplicity —
-a hash present *k* times in `-v4` suppresses at most *k* backfill rows.
-Message rows stay insert-only; `--commit` still goes through
-`PostgresMemory.append`, which upserts that backfill session's own
-`ros_conversations` row and may queue tool-synthesis jobs.
+and counted. A tag on a dropped record (hidden system turn, empty user
+text) still carries forward onto later kept rows; rows are never stamped
+with the backfill run's wall clock. Source id is
+`readtranscript:<bot-slug>:<position>:<sub>` (`<sub>` is the per-position
+sub-index, `0` for the first message at that position). Position `0` is
+valid. An older id without `:<sub>` still suppresses that position's sub 0
+when it is the only kept message there; when the position emitted several
+messages, the old shared id suppresses every sub so a re-run does not
+duplicate them. The session tag is `grokbot-<bot-slug>-v4-backfill` — a
+sibling of `-v4`, never merged into it. Hidden system / agent wakes and
+system reminders follow the existing v4 normalizer (wrapper strip + hidden
+classification); system rows are not ingested on this tag. Content is
+bounded by the existing 256 KiB cap. A truncated row's
+`session_jsonl_path` / `session_jsonl_line` point at the spool page that
+won that position. Re-runs are idempotent per source id under
+`-v4-backfill`. Against live `-v4`, suppression uses rows at or after
+`min(candidate created_at) − overlap hours` (default 48), and only when the
+content hash matches **and** the timestamps are within 60 minutes, up to
+that hash's multiplicity in the window. `--overlap-hours 0` disables this
+suppression (source-id idempotence stays on). Assistant tool rows hash
+`role + tool_name + canonical tool_args` so a later tool-synthesis rewrite
+of `content`, or JSONB key reordering, still matches. Message rows stay
+insert-only; `--commit` still goes through `PostgresMemory.append`, which
+upserts that backfill session's own `ros_conversations` row and may queue
+tool-synthesis jobs. Pages are ordered by the numeric `<before>` in the
+filename, then by the page header position.
 
 Env / config knobs:
 
 | knob | default | what it does |
 | --- | --- | --- |
 | `GROKBOT_PAGES_DIR` | (required unless `--input`) | page dump directory |
-| `GROKBOT_BACKFILL_OVERLAP_HOURS` / `--overlap-hours` | `48` | `-v4` content-hash window |
+| `GROKBOT_BACKFILL_OVERLAP_HOURS` / `--overlap-hours` | `48` | hours before the earliest candidate; `0` disables `-v4` suppression |
 | `GROKBOT_AGENTS` / `--agents-dir` | `~/agent-data/agents` | roster (`profile.json` slugs) |
 | `RIVETOS_PG_URL` | (env or `~/.rivetos/.env`) | overlap SELECT; required for `--commit` |
-
-
-Backfill writes **one spool per agent**. Ingest each spool with its own
-`ingest-session.mjs` command. Session / agent / persona come from
-`cli.js discover --json` (or the roster). Page backfill and `pull-bridge.py`
-are alternatives for ReadTranscript pages — do not mix on-disk and page
-rows into the same `-v3` session.
-
-```bash
-node integrations/grok-bot/rivet-memory/capture/dist/cli.js discover --json
-
-# one ingest per agent (example: Alpha). Repeat for each discover --json model.
-# Agent tags are <prefix>-<slug> (default prefix grokbot).
-node integrations/grok-bot/rivet-memory/bin/ingest-session.mjs \
-  --session-id grokbot-alpha-v3 --agent grokbot-alpha --persona Alpha \
-  spool/grokbot-alpha-v3.jsonl
-```
 
 ### Re-spool as `-v4` (leaves `-v3` rows and state alone)
 
@@ -340,7 +359,9 @@ by `conversation_id` (prod has two conversation rows for
 
 `--from-rows` and the Postgres path write `<session>${SUFFIX}-rows`.
 Already row-shaped sessions (`*-vN-rows` or rows with `capture_source`)
-are refused so tool calls are not split a second time.
+are refused so tool calls are not split a second time. A `-vN-backfill`
+session is also refused: reclean will not strip that suffix and emit a
+live `-vN` spool.
 Stored-row positions are the old sequential ingest ordinals and do not
 match source-transcript positions; mixing them in one session would
 collide. `--from-rows` cannot restore tool results: the old converter
@@ -456,8 +477,16 @@ State lives next to the watcher capture-state file
 (`grokbot-publish-lag${GROKBOT_SESSION_SUFFIX}.json`) so other tools can
 read it. A clear `WARN publish lag …` line is emitted **once** per agent
 when `lag` exceeds the entry threshold or the stall exceeds the time
-budget. The warning (and the status row) clear when that agent catches up
-(`lag <= 0`). Missing or malformed files are skipped.
+budget. The warning clears when lag or stall falls to half the enter
+threshold (hysteresis), or when the agent catches up (`lag <= 0`); either
+reset logs `publish lag cleared`. A malformed file skips that sample and
+keeps the previous per-agent stall/warn state. A missing or unreadable
+publish directory is a true no-op: previous warnings and stall clocks stay,
+nothing is logged as cleared, and the status file keeps its agents. An
+agent whose file is gone **while the directory was readable**, or whose
+file was read with `lag <= 0`, is cleared. A non-numeric or non-positive
+`GROKBOT_PUBLISH_LAG_INTERVAL_MS` falls back to 60000. The status file is
+written via a pid-unique temp name.
 
 | knob | default | what it does |
 | --- | --- | --- |
@@ -467,7 +496,7 @@ budget. The warning (and the status row) clear when that agent catches up
 | `GROKBOT_PUBLISH_LAG_ENTRIES` | `50` | warn when `lag` exceeds this |
 | `GROKBOT_PUBLISH_STALL_HOURS` | `24` | warn when a positive lag has not advanced this long |
 | `GROKBOT_PUBLISH_STALL_MS` | hours × 3600000 | same threshold in milliseconds |
-| `GROKBOT_PUBLISH_LAG_INTERVAL_MS` | `60000` | idle recheck while the watcher runs |
+| `GROKBOT_PUBLISH_LAG_INTERVAL_MS` | `60000` | idle recheck; invalid values fall back to 60000 |
 | `GROKBOT_CAPTURE_CONFIG` | unset | optional JSON `{ "publishLagEntries", "publishStallHours", "publishStallMs" }` |
 
 ### Deploy notes (no deploy from this PR)
