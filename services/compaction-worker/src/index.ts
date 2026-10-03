@@ -7,6 +7,7 @@
  * Tasks:
  *   - compact-conversation     — bottom-up leaf/branch/root compaction for one conversation
  *   - synthesize-tool-call     — fill empty-content assistant tool-call messages with synthesized natural-language content
+ *   - suggest-tags             — propose key:value tags for a committed leaf summary (session tagging)
  *   - enqueue-idle             — cron (every 5 min) — find idle conversations with unsummarized messages and enqueue them
  *   - extract-wiki             — durable topic patches from leaf summaries (WIKI_EXTRACTION)
  *   - enqueue-wiki-backfill    — cron — queue unextracted leaves for wiki mining
@@ -43,6 +44,7 @@ import { config } from './config.js'
 import { buildWorkerPlan, parseWorkerRole } from './role.js'
 import { compactConversationTask } from './tasks/compact-conversation.js'
 import { synthesizeToolCallTask } from './tasks/synthesize-tool-call.js'
+import { suggestTagsTask } from './tasks/suggest-tags.js'
 import { enqueueIdleTask } from './tasks/enqueue-idle.js'
 import { extractWikiTask } from './tasks/extract-wiki.js'
 import { enqueueWikiBackfillTask } from './tasks/enqueue-wiki-backfill.js'
@@ -55,6 +57,7 @@ import { reapDeadJobsTask } from './tasks/reap-dead-jobs.js'
 const TASK_HANDLERS = {
   'compact-conversation': compactConversationTask,
   'synthesize-tool-call': synthesizeToolCallTask,
+  'suggest-tags': suggestTagsTask,
   'enqueue-idle': enqueueIdleTask,
   'extract-wiki': extractWikiTask,
   'enqueue-wiki-backfill': enqueueWikiBackfillTask,
@@ -124,6 +127,13 @@ async function main(): Promise<void> {
         `attempt timeout before a fallback: ${String(config.llmFallbackAttemptTimeoutMs / 1000)}s`,
     )
   }
+  console.log(
+    config.taggingEnabled
+      ? `[CompactWorker] Session tagger: ${config.tagger.url} (model: ${config.tagger.model}, ` +
+          `${config.taggerWireShape}${config.taggerUsesCompactor ? ', compactor fallback' : ''}, ` +
+          `timeout ${String(config.taggerTimeoutMs / 1000)}s)`
+      : '[CompactWorker] Session tagger: disabled (SESSION_TAGGING)',
+  )
   console.log(
     `[CompactWorker] Idle threshold: ${config.idleMinutes} min, leaf window: ${config.leafBatchSize}, ` +
       `stale-partial: ${config.staleMinutes} min / >=${config.staleMinBatch} msgs`,

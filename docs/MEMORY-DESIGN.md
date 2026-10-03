@@ -199,6 +199,13 @@ Periodically summarize old messages into the summary DAG:
 
 This creates a tree: root → branches → leaves → source messages. The `memory_search` tool auto-expands this tree.
 
+### Tagger
+Sessions and summaries carry `key:value` tags (`ros_tags`, migration 0019) with a review loop: `suggested` → `accepted` / `rejected`. Rejected rows are kept so the same tag is never proposed twice.
+
+- **Rule tags** are facts and skip review: the capture path derives `project:<repo>` from the hook-recorded `settings.cwd` (origin remote name → git root → cwd basename; worktrees resolve to the main repo) and writes it `accepted`.
+- **Model tags** come from the `suggest-tags` task, enqueued after each leaf commit. It offers the accepted vocabulary (`ros_tag_taxonomy` + in-use accepted tags) to the tagger and writes proposals on both the summary and its conversation as `suggested`; unseen values also land in `ros_tag_taxonomy` as `suggested` so the vocabulary itself is reviewed.
+- **The tagger is a service like the embedder**: `RIVETOS_TAGGER_URL` / `_MODEL` / `_API_KEY` or `_TOKEN_COMMAND`, wire shape `openai` (chat completions + built-in prompt) or `native` (classifier POST). Unset, the compactor model tags. `SESSION_TAGGING=0` disables. Tagging is best-effort: each call is bounded by `RIVETOS_TAGGER_TIMEOUT_SECONDS` (60), a failing job is retried once and then dropped (never left dead), and there is no backfill for summaries compacted while tagging was off or the tagger was down. Orphaned tag rows (entity deleted) are removed by the hourly reap task.
+
 ## v5 memory-quality pipeline
 
 The v5 pipeline (April 2026) replaces the original cloud-model-tuned compactor with a local-first, thinking-model architecture optimized for faithfulness and searchability.

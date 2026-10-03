@@ -582,3 +582,95 @@ describe('callLlm', () => {
     })
   })
 })
+
+describe('callLlm with opts.endpoint (single endpoint, e.g. the session tagger)', () => {
+  const ok = (content: string) =>
+    jsonResponse({ choices: [{ finish_reason: 'stop', message: { content } }] })
+  const TAGGER = { url: 'http://tagger.test/v1', model: 'tag-model', apiKey: 'tag-key', transientStatuses: [] as number[] }
+
+  beforeEach(() => {
+    fetchMock.mockReset()
+    config.llmTransientStatuses = []
+    config.llmFallbacks = [
+      { url: 'http://fb1.test/v1', model: 'fb1-model', apiKey: 'fb1-key', transientStatuses: [] },
+    ]
+    resetLlmFailover()
+  })
+
+  it('calls only that endpoint with its own model and key', async () => {
+    fetchMock.mockResolvedValueOnce(ok('[]'))
+    await expect(callLlm('sys', 'user', 50, { minChars: 2, endpoint: TAGGER })).resolves.toBe('[]')
+    expect(fetchMock).toHaveBeenCalledTimes(1)
+    const [url, init] = fetchMock.mock.calls[0] as [string, { headers: Record<string, string>; body: string }]
+    expect(url).toBe('http://tagger.test/v1/chat/completions')
+    expect(init.headers.Authorization).toBe('Bearer tag-key')
+    expect(JSON.parse(init.body).model).toBe('tag-model')
+  })
+
+  it('never fails over to the primary or the fallbacks, and leaves sticky failover untouched', async () => {
+    fetchMock.mockResolvedValue(jsonResponse({}, 503, 'Service Unavailable'))
+    await expect(callLlm('sys', 'user', 50, { endpoint: TAGGER })).rejects.toBeInstanceOf(LlmCallError)
+    for (const call of fetchMock.mock.calls) {
+      expect(String(call[0])).toBe('http://tagger.test/v1/chat/completions')
+    }
+    // The next ordinary call still starts at the primary: the tagger outage
+    // did not move the compactor's failover index.
+    fetchMock.mockReset()
+    fetchMock.mockResolvedValueOnce(ok('a perfectly fine summary text'))
+    await callLlm('sys', 'user', 50)
+    expect(String(fetchMock.mock.calls[0][0])).toBe('http://llm.test:8003/v1/chat/completions')
+  })
+
+  it('honours a per-attempt timeout override', async () => {
+    const seen: number[] = []
+    const spy = vi.spyOn(globalThis, 'setTimeout')
+    fetchMock.mockResolvedValueOnce(ok('[]'))
+    await callLlm('sys', 'user', 50, { minChars: 2, endpoint: TAGGER, timeoutMs: 1234 })
+    for (const call of spy.mock.calls) if (typeof call[1] === 'number') seen.push(call[1])
+    spy.mockRestore()
+    expect(seen).toContain(1234)
+    expect(seen).not.toContain(5_000)
+  })
+
+  it('honours maxRetries: 0 means one attempt', async () => {
+    fetchMock.mockResolvedValue(jsonResponse({}, 503, 'Service Unavailable'))
+    await expect(callLlm('sys', 'user', 50, { endpoint: TAGGER, maxRetries: 0 })).rejects.toBeInstanceOf(
+      LlmCallError,
+    )
+    expect(fetchMock).toHaveBeenCalledTimes(1)
+  })
+
+  it('uses a minted token, and re-mints once when it is rejected with 401', async () => {
+    const tokens = ['stale', 'fresh']
+    const tokenSource = {
+      getToken: vi.fn(async () => tokens[0]),
+      invalidate: vi.fn(() => {
+        tokens.shift()
+      }),
+    }
+    fetchMock
+      .mockResolvedValueOnce(jsonResponse({}, 401, 'Unauthorized'))
+      .mockResolvedValueOnce(ok('[]'))
+    await expect(
+      callLlm('sys', 'user', 50, {
+        minChars: 2,
+        endpoint: { ...TAGGER, apiKey: 'ignored', tokenSource: tokenSource as never },
+      }),
+    ).resolves.toBe('[]')
+    expect(tokenSource.invalidate).toHaveBeenCalledExactlyOnceWith('stale')
+    const auth = fetchMock.mock.calls.map(
+      (c) => (c[1] as { headers: Record<string, string> }).headers.Authorization,
+    )
+    expect(auth).toEqual(['Bearer stale', 'Bearer fresh'])
+  })
+
+  it('a second 401 after the re-mint is a permanent failure, not a loop', async () => {
+    const tokenSource = { getToken: vi.fn(async () => 't'), invalidate: vi.fn() }
+    fetchMock.mockResolvedValue(jsonResponse({}, 401, 'Unauthorized'))
+    await expect(
+      callLlm('sys', 'user', 50, { endpoint: { ...TAGGER, tokenSource: tokenSource as never } }),
+    ).rejects.toMatchObject({ status: 401 })
+    expect(fetchMock).toHaveBeenCalledTimes(2)
+    expect(tokenSource.invalidate).toHaveBeenCalledTimes(1)
+  })
+})

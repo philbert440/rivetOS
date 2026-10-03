@@ -101,6 +101,28 @@ export interface CallLlmOptions {
    * caller's own parser still reports it.
    */
   accept?: (content: string) => string | null
+  /**
+   * Call this one endpoint only (no primary, no fallbacks). The session tagger
+   * uses it so a dedicated classifier host never fails over to the compactor
+   * chain, and the compactor chain never receives the tagger's credential.
+   */
+  endpoint?: LlmEndpoint
+  /**
+   * Per-attempt timeout override (capped at LLM_TIMEOUT_MS). Best-effort
+   * callers such as the tagger pass a short one so a stalled endpoint does not
+   * hold a worker slot for the compaction timeout.
+   */
+  timeoutMs?: number
+  /** In-call retries on a transient failure (default LLM_RETRIES). Best-effort callers pass fewer. */
+  maxRetries?: number
+}
+
+/** Authorization header for an endpoint: minted token wins over the static key. */
+export async function authHeadersFor(endpoint: LlmEndpoint): Promise<Record<string, string>> {
+  if (endpoint.tokenSource) {
+    return { Authorization: `Bearer ${await endpoint.tokenSource.getToken()}` }
+  }
+  return endpoint.apiKey ? { Authorization: `Bearer ${endpoint.apiKey}` } : {}
 }
 
 function primaryEndpoint(): LlmEndpoint {
@@ -158,7 +180,7 @@ export async function callLlmDetailed(
   maxTokens: number,
   opts: CallLlmOptions = {},
 ): Promise<LlmResult> {
-  const endpoints = [primaryEndpoint(), ...config.llmFallbacks]
+  const endpoints = opts.endpoint ? [opts.endpoint] : [primaryEndpoint(), ...config.llmFallbacks]
   if (endpoints.length === 1) {
     const content = await callEndpoint(endpoints[0], systemPrompt, userContent, maxTokens, opts)
     return { content, model: endpoints[0].model }
@@ -330,13 +352,14 @@ async function callEndpoint(
   // Middle fallbacks hand over sooner when they hang. The primary always keeps
   // LLM_TIMEOUT_MS so a slow local model on a large batch is not cut to the
   // fallback attempt timeout just because fallbacks are configured.
-  const timeoutMs = fullTimeout
-    ? LLM_TIMEOUT_MS
-    : Math.min(LLM_TIMEOUT_MS, config.llmFallbackAttemptTimeoutMs)
-  const headers: Record<string, string> = { 'Content-Type': 'application/json' }
-  if (endpoint.apiKey) {
-    headers['Authorization'] = `Bearer ${endpoint.apiKey}`
-  }
+  const timeoutMs =
+    opts.timeoutMs !== undefined
+      ? Math.min(LLM_TIMEOUT_MS, opts.timeoutMs)
+      : fullTimeout
+        ? LLM_TIMEOUT_MS
+        : Math.min(LLM_TIMEOUT_MS, config.llmFallbackAttemptTimeoutMs)
+  // A minted token rejected with 401 is invalidated and re-minted once.
+  let reminted = false
 
   const body = JSON.stringify({
     model: endpoint.model,
@@ -349,13 +372,20 @@ async function callEndpoint(
   })
 
   let lastError: Error | null = null
-  const totalAttempts = LLM_RETRIES + 1
+  const retries = Math.max(0, opts.maxRetries ?? LLM_RETRIES)
+  const totalAttempts = retries + 1
 
-  for (let attempt = 0; attempt <= LLM_RETRIES; attempt++) {
+  for (let attempt = 0; attempt <= retries; attempt++) {
     const ctrl = new AbortController()
     const timeout = setTimeout(() => ctrl.abort(), timeoutMs)
 
     try {
+      // Resolved per attempt so a refreshed token is picked up.
+      const token = endpoint.tokenSource ? await endpoint.tokenSource.getToken() : endpoint.apiKey
+      const headers: Record<string, string> = {
+        'Content-Type': 'application/json',
+        ...(token ? { Authorization: `Bearer ${token}` } : {}),
+      }
       const response = await undiciFetch(`${endpoint.url}/chat/completions`, {
         method: 'POST',
         headers,
@@ -363,6 +393,15 @@ async function callEndpoint(
         signal: ctrl.signal,
         dispatcher: httpDispatcher,
       })
+
+      if (response.status === 401 && endpoint.tokenSource && !reminted) {
+        // Short-lived token expired or was revoked: drop it and retry this
+        // attempt with a fresh mint, once.
+        reminted = true
+        endpoint.tokenSource.invalidate(token)
+        attempt -= 1
+        continue
+      }
 
       const transient4xx = endpoint.transientStatuses.includes(response.status)
       if (!response.ok && response.status < 500 && !transient4xx) {
@@ -382,10 +421,10 @@ async function callEndpoint(
         lastError = new Error(
           `LLM HTTP ${response.status}: ${response.statusText || (transient4xx ? 'client error' : 'server error')}`,
         )
-        if (attempt < LLM_RETRIES) {
+        if (attempt < retries) {
           const delay = backoffMs(attempt)
           console.error(
-            `[CompactWorker] ${lastError.message}, retry ${attempt + 1}/${LLM_RETRIES} in ${delay / 1000}s`,
+            `[CompactWorker] ${lastError.message}, retry ${attempt + 1}/${String(retries)} in ${delay / 1000}s`,
           )
           await sleep(delay)
           continue
@@ -419,10 +458,10 @@ async function callEndpoint(
         lastError = new Error(
           `Empty or too-short LLM response (minChars=${String(minChars)}, got ${content ? content.trim().length : 0})`,
         )
-        if (attempt < LLM_RETRIES) {
+        if (attempt < retries) {
           const delay = backoffMs(attempt)
           console.error(
-            `[CompactWorker] LLM empty/short, retry ${attempt + 1}/${LLM_RETRIES} in ${delay / 1000}s`,
+            `[CompactWorker] LLM empty/short, retry ${attempt + 1}/${String(retries)} in ${delay / 1000}s`,
           )
           await sleep(delay)
           continue
@@ -436,10 +475,10 @@ async function callEndpoint(
       if (err instanceof LlmCallError) throw err
 
       lastError = new Error(formatAttemptError(err, endpoint.url, timeoutMs))
-      if (attempt < LLM_RETRIES) {
+      if (attempt < retries) {
         const delay = backoffMs(attempt)
         console.error(
-          `[CompactWorker] LLM error: ${lastError.message}, retry ${attempt + 1}/${LLM_RETRIES} in ${delay / 1000}s`,
+          `[CompactWorker] LLM error: ${lastError.message}, retry ${attempt + 1}/${String(retries)} in ${delay / 1000}s`,
         )
         await sleep(delay)
         continue
