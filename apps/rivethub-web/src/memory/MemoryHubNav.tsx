@@ -1,17 +1,18 @@
 import type { JSX } from 'react'
 import { useNavigate } from '@tanstack/react-router'
-import { BarChart3, BookOpen, Clock, Search } from 'lucide-react'
+import { BarChart3, BookOpen, Clock, Search, Tags } from 'lucide-react'
 import type { RivetGateway } from '@rivetos/gateway-client'
 import { useIsNarrow } from '../lib/use-narrow.js'
 import { cn } from '../lib/utils.js'
 import { HealthTile } from './HealthTile.js'
 
-export type MemoryTab = 'search' | 'wiki' | 'browse' | 'stats'
+export type MemoryTab = 'search' | 'wiki' | 'browse' | 'tags' | 'stats'
 
 const TABS: { id: MemoryTab; label: string; icon: typeof Search }[] = [
   { id: 'search', label: 'Search', icon: Search },
   { id: 'wiki', label: 'Wiki', icon: BookOpen },
   { id: 'browse', label: 'Browse', icon: Clock },
+  { id: 'tags', label: 'Tags', icon: Tags },
   { id: 'stats', label: 'Stats', icon: BarChart3 },
 ]
 

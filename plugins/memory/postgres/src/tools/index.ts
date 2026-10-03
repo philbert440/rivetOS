@@ -14,9 +14,11 @@ import { createSearchTool } from './search-tool.js'
 import { createBrowseTool } from './browse-tool.js'
 import { createStatsTool } from './stats-tool.js'
 import { createGetFullTool } from './get-full-tool.js'
+import { createTagsTool } from './tags-tool.js'
 
 export type { MemoryToolsConfig } from './helpers.js'
 export { createGetFullTool } from './get-full-tool.js'
+export { createTagsTool } from './tags-tool.js'
 export {
   appendEventId,
   createMemoryWriteTools,
@@ -44,6 +46,7 @@ export function createMemoryTools(
       }),
     )
     tools.push(createGetFullTool(config.pool))
+    tools.push(createTagsTool(config.pool))
   }
 
   return tools

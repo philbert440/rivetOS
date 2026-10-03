@@ -3,6 +3,7 @@
  */
 
 import { sharedPath } from '@rivetos/types'
+import { createTokenSource, parseTokenCommandArgv, type TokenSource } from '@rivetos/token-command'
 
 function fail(message: string): never {
   console.error(`[CompactWorker] ${message}`)
@@ -87,7 +88,10 @@ function httpUrl(raw: string, where: string): string {
 export interface LlmEndpoint {
   url: string
   model: string
+  /** Static bearer. Ignored when `tokenSource` is set. */
   apiKey: string
+  /** Minted bearer (token_command), re-read per call so a refresh is picked up. */
+  tokenSource?: TokenSource
   /** 4xx codes this endpoint returns while overloaded; retried like a 5xx. */
   transientStatuses: number[]
 }
@@ -133,6 +137,71 @@ const llmModel = requireEnv(
   'OpenAI-compatible chat model id for compaction (example: gpt-4o-mini)',
 )
 
+/**
+ * Session tagger (suggest-tags task). Same shape as the embed service:
+ * endpoint + model + static key or token_command + wire shape. Unset, the
+ * compactor model tags with the built-in prompt, so every node that
+ * summarizes also tags. The static key falls back to the compactor's only
+ * when the URL did too — never send the compactor credential to a different
+ * host. SESSION_TAGGING=0 turns the task into a no-op.
+ */
+function resolveTaggerTokenSource(env: NodeJS.ProcessEnv): TokenSource | undefined {
+  const raw = env.RIVETOS_TAGGER_TOKEN_COMMAND
+  if (!raw) return undefined
+  let parsed: unknown
+  try {
+    parsed = JSON.parse(raw)
+  } catch {
+    fail('RIVETOS_TAGGER_TOKEN_COMMAND must be a JSON argv array (no shell string)')
+  }
+  const argv = parseTokenCommandArgv(parsed)
+  if (argv === null) return undefined
+  if (typeof argv === 'string') fail(argv)
+  const ttlMs = intEnv('RIVETOS_TAGGER_TOKEN_TTL_MS', 0)
+  const timeoutMs = intEnv('RIVETOS_TAGGER_TOKEN_COMMAND_TIMEOUT_MS', 0)
+  return createTokenSource({
+    argv,
+    ttlMs: ttlMs > 0 ? ttlMs : undefined,
+    timeoutMs: timeoutMs > 0 ? timeoutMs : undefined,
+  })
+}
+
+function resolveTaggerWireShape(raw: string | undefined): 'openai' | 'native' {
+  const v = (raw ?? '').trim().toLowerCase()
+  if (v === '' || v === 'openai') return 'openai'
+  if (v === 'native') return 'native'
+  return fail(`RIVETOS_TAGGER_WIRE_SHAPE must be "openai" or "native" (got ${JSON.stringify(raw)})`)
+}
+
+const taggingEnabled = !/^(0|false|no|off)$/i.test((process.env.SESSION_TAGGING ?? '').trim())
+const taggerUrlRaw = process.env.RIVETOS_TAGGER_URL?.trim() ?? ''
+const taggerUsesCompactor = taggerUrlRaw === ''
+const taggerUrl = taggerUsesCompactor ? llmUrl : httpUrl(taggerUrlRaw, 'RIVETOS_TAGGER_URL')
+const taggerModel = process.env.RIVETOS_TAGGER_MODEL?.trim() || llmModel
+// A set-but-empty key (the shape .env.example shows) counts as unset.
+const taggerKeyRaw = process.env.RIVETOS_TAGGER_API_KEY?.trim() ?? ''
+const taggerApiKey =
+  taggerKeyRaw !== ''
+    ? taggerKeyRaw
+    : taggerUsesCompactor
+      ? (process.env.RIVETOS_COMPACTOR_API_KEY ?? '')
+      : ''
+const taggerTokenSource = resolveTaggerTokenSource(process.env)
+const taggerWireShape = resolveTaggerWireShape(process.env.RIVETOS_TAGGER_WIRE_SHAPE)
+// Isolation runs both ways: a tagger credential without a tagger URL would be
+// sent to the compactor endpoint. Refuse it instead of defaulting silently
+// (only when tagging is on: a disabled tagger sends nothing anywhere).
+if (
+  taggingEnabled &&
+  taggerUsesCompactor &&
+  (taggerKeyRaw !== '' || taggerTokenSource !== undefined)
+) {
+  fail('RIVETOS_TAGGER_API_KEY / RIVETOS_TAGGER_TOKEN_COMMAND require RIVETOS_TAGGER_URL')
+}
+if (taggerWireShape === 'native' && taggerUsesCompactor) {
+  fail('RIVETOS_TAGGER_WIRE_SHAPE=native requires RIVETOS_TAGGER_URL')
+}
+
 export const config = {
   pgUrl: requireEnv('RIVETOS_PG_URL'),
   llmUrl,
@@ -155,6 +224,24 @@ export const config = {
   // LLM_TIMEOUT_MS — configuring fallbacks must not cut a slow local primary.
   llmFallbackAttemptTimeoutMs:
     positiveIntEnv('RIVETOS_COMPACTOR_FALLBACK_ATTEMPT_TIMEOUT_SECONDS', 300) * 1000,
+
+  // Session tagger — see resolveTagger* above. An LlmEndpoint so the same
+  // callEndpoint path (retries, transient statuses, auth) serves it.
+  taggingEnabled,
+  // Per-attempt timeout for a tagger call. Deliberately short: tagging is
+  // best-effort and shares the worker's slots with compaction, so a stalled
+  // tagger must hand the slot back in a minute, not after LLM_TIMEOUT_MS.
+  taggerTimeoutMs: positiveIntEnv('RIVETOS_TAGGER_TIMEOUT_SECONDS', 60) * 1000,
+  tagger: {
+    url: taggerUrl,
+    model: taggerModel,
+    apiKey: taggerApiKey,
+    transientStatuses: statusListEnv('RIVETOS_TAGGER_TRANSIENT_STATUSES'),
+    ...(taggerTokenSource ? { tokenSource: taggerTokenSource } : {}),
+  } satisfies LlmEndpoint,
+  taggerWireShape,
+  /** True when no RIVETOS_TAGGER_URL was given and the compactor is doing the tagging. */
+  taggerUsesCompactor,
 
   // Worker-local concurrency
   compactConcurrency: intEnv('COMPACT_CONCURRENCY', 1),

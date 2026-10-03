@@ -208,9 +208,15 @@ const memoryRoute = createRoute({
   path: '/memory',
   validateSearch: (
     search: Record<string, unknown>,
-  ): { tab?: 'search' | 'wiki' | 'browse' | 'stats' } => {
+  ): { tab?: 'search' | 'wiki' | 'browse' | 'tags' | 'stats' } => {
     const tab = search.tab
-    if (tab === 'search' || tab === 'wiki' || tab === 'browse' || tab === 'stats') {
+    if (
+      tab === 'search' ||
+      tab === 'wiki' ||
+      tab === 'browse' ||
+      tab === 'tags' ||
+      tab === 'stats'
+    ) {
       return { tab }
     }
     return {}

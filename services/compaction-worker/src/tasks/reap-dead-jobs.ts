@@ -10,6 +10,8 @@
  *
  * Never touches keyed rows — those still mean "this identity is stuck" and
  * belong to reschedule-dead / `rivetos memory requeue`.
+ *
+ * The same tick also sweeps orphaned ros_tags rows (see reapOrphanTagsSql).
  */
 
 import type { Task } from 'graphile-worker'
@@ -26,6 +28,7 @@ export const REAP_TASK_ALLOWLIST = [
   'compact-conversation',
   'embed-target',
   'synthesize-tool-call',
+  'suggest-tags',
 ] as const
 
 /**
@@ -47,6 +50,23 @@ export function reapDeadJobsSql(): string {
     )`
 }
 
+/**
+ * Tag rows whose entity is gone. ros_tags.entity_id is polymorphic (no FK),
+ * so a deleted conversation or summary leaves its tags behind; this is the
+ * sweep migration 0019's header refers to. Bounded like the job reap.
+ */
+export function reapOrphanTagsSql(): string {
+  return `DELETE FROM ros_tags
+    WHERE ctid IN (
+      SELECT t.ctid FROM ros_tags t
+       WHERE (t.entity_type = 'conversation'
+              AND NOT EXISTS (SELECT 1 FROM ros_conversations c WHERE c.id = t.entity_id))
+          OR (t.entity_type = 'summary'
+              AND NOT EXISTS (SELECT 1 FROM ros_summaries s WHERE s.id = t.entity_id))
+       LIMIT $1
+    )`
+}
+
 export const reapDeadJobsTask: Task = async (_payload, helpers) => {
   const cap = clampSweepLimit(config.reapDeadLimit)
   if (cap <= 0) return
@@ -55,6 +75,20 @@ export const reapDeadJobsTask: Task = async (_payload, helpers) => {
     const n = res.rowCount ?? 0
     if (n > 0) {
       helpers.logger.info(`[reap-dead-jobs] deleted ${String(n)} keyless dead job(s)`)
+    }
+    // Same hourly tick, separate concern: never let a tag-table problem
+    // (0019 not applied yet) fail the job reap.
+    try {
+      const tags = await client.query(reapOrphanTagsSql(), [cap])
+      const orphans = tags.rowCount ?? 0
+      if (orphans > 0) {
+        helpers.logger.info(`[reap-dead-jobs] deleted ${String(orphans)} orphaned tag row(s)`)
+      }
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err)
+      if (!/does not exist/i.test(msg)) {
+        helpers.logger.warn(`[reap-dead-jobs] orphan tag sweep failed: ${msg}`)
+      }
     }
   })
 }

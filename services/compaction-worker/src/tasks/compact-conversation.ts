@@ -25,7 +25,7 @@
  *   3. graphile_worker job-table writes AFTER COMMIT. SET LOCAL
  *      rivet.defer_embed_enqueue = on (migration 0016) stops the
  *      notify_embedding_queue trigger from add_job'ing inside the INSERT
- *      txn; enqueueEmbedTarget / enqueueExtractWiki run after COMMIT.
+ *      txn; enqueueEmbedTarget / enqueueExtractWiki / enqueueSuggestTags run after COMMIT.
  *
  * The 40P01 retry in withTransaction (DEADLOCK_RETRIES extra attempts after
  * the first, jittered — DEADLOCK_RETRIES+1 runs total) is belt-and-braces for
@@ -331,6 +331,29 @@ export async function enqueueExtractWiki(
 }
 
 /**
+ * Enqueue tag suggestions for a committed leaf. Best-effort and idempotent
+ * on summary_id; same after-COMMIT rule as extract-wiki. Skipped entirely
+ * when tagging is off so the queue does not fill with no-op jobs.
+ */
+export async function enqueueSuggestTags(
+  client: PgClient,
+  summaryId: string,
+  conversationId: string,
+): Promise<void> {
+  if (!config.taggingEnabled) return
+  try {
+    await client.query(
+      `SELECT graphile_worker.add_job('suggest-tags', $1::json,
+              job_key := $2, max_attempts := 2, priority := 6)`,
+      [JSON.stringify({ summaryId, conversationId }), `tags-${summaryId}`],
+    )
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err)
+    console.warn(`[CompactWorker] suggest-tags enqueue failed for ${summaryId.slice(0, 8)}: ${msg}`)
+  }
+}
+
+/**
  * Enqueue embed-target for a committed summary. The INSERT trigger is
  * suppressed by SET LOCAL rivet.defer_embed_enqueue (migration 0016); this
  * call after COMMIT is what actually queues the embedding. Best-effort:
@@ -345,10 +368,7 @@ export async function enqueueEmbedTarget(
     await client.query(
       `SELECT graphile_worker.add_job('embed-target', $1::json,
               job_key := $2, max_attempts := 5)`,
-      [
-        JSON.stringify({ targetTable, targetId }),
-        `embed-${targetTable}-${targetId}`,
-      ],
+      [JSON.stringify({ targetTable, targetId }), `embed-${targetTable}-${targetId}`],
     )
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err)
@@ -504,6 +524,7 @@ async function compactLeaf(
   // After COMMIT — embed-target was deferred by SET LOCAL; wiki is idempotent.
   await enqueueEmbedTarget(client, 'ros_summaries', summaryId)
   await enqueueExtractWiki(client, summaryId, conversationId)
+  await enqueueSuggestTags(client, summaryId, conversationId)
   return 1
 }
 

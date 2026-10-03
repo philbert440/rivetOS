@@ -92,6 +92,7 @@ import {
   createCaptureApiRoute,
   createMemoryTools,
   createMemoryWriteTools,
+  createTagsTool,
 } from '@rivetos/memory-postgres'
 import type { RivetConfig } from '../config.js'
 import { logger } from '@rivetos/core'
@@ -987,7 +988,7 @@ export async function registerAgentTools(
         embedEndpoint: embedEndpoint || undefined,
         embedModel: embedModel || undefined,
         ...memoryApiEmbedFromEnv(),
-        tools: (p) => memoryHttpTools(memoryFor(p), p),
+        tools: (p, routed) => memoryHttpTools(memoryFor(p), p, routed),
       }),
     )
   }
@@ -1640,9 +1641,25 @@ export function createApiMemoryLookup(opts: {
   }
 }
 
-/** Read tools (search/browse/stats/get_full) plus the write pair. */
-export function memoryHttpTools(memory: PostgresMemory, pool: pg.Pool): Tool[] {
-  const read = createMemoryTools(memory.getSearchEngine(), memory.getExpander(), { pool })
+/** Read tools (search/browse/stats/get_full/tags) plus the write pair and writable tags. */
+export function memoryHttpTools(
+  memory: PostgresMemory,
+  pool: pg.Pool,
+  routed: { kind: 'owner' } | { kind: 'user'; id: string } = { kind: 'owner' },
+): Tool[] {
+  // The den tool route carries the write surface (it sits behind the den's
+  // device-cert auth and the sidecar decides what it exposes), so memory_tags
+  // is the writable variant here; in-process agents keep the read-only one.
+  const read = createMemoryTools(memory.getSearchEngine(), memory.getExpander(), { pool }).map(
+    (tool) =>
+      tool.name === 'memory_tags'
+        ? createTagsTool(pool, {
+            allowWrite: true,
+            // A routed user is always recorded as themselves.
+            ...(routed.kind === 'user' ? { fixedDecider: routed.id } : {}),
+          })
+        : tool,
+  )
   const names = new Set(read.map((tool) => tool.name))
   const extra: Tool[] = []
   if (!names.has('memory_get_full')) extra.push(createGetFullTool(pool))

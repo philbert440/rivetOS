@@ -74,6 +74,13 @@ RIVETOS_COMPACTOR_URL=http://192.168.1.50:8000/v1
 RIVETOS_COMPACTOR_MODEL=rivet-v0.1
 ```
 
+Session tagging rides on the same worker. The `suggest-tags` task runs after
+every leaf summary and proposes `key:value` tags (`project:`, `topic:`, …) into
+`ros_tags` as `suggested` for review. By default it uses the compactor model;
+point it at a dedicated classifier with `RIVETOS_TAGGER_URL` / `_MODEL`
+(`RIVETOS_TAGGER_WIRE_SHAPE=native` for a classifier API), or disable it with
+`SESSION_TAGGING=0`.
+
 ## Schema Migrations
 
 Baseline SQL and the migration runner live under `src/schema/`. Apply pending migrations with:

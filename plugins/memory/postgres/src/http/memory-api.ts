@@ -9,7 +9,11 @@
  *   GET /api/memory/stats
  *   GET /api/memory/health
  *   POST /api/memory/tool/<name>   MCP-shaped tool call (search/browse/stats/
- *                                  get_full/append/ingest_session)
+ *                                  get_full/append/ingest_session/tags)
+ *   /api/memory/tags/*             session tagging — see tags-api.ts
+ *
+ * search and browse accept `tag=key:value` (accepted tags only) and return
+ * each hit's accepted conversation tags as `tags`.
  */
 
 import type { IncomingMessage, ServerResponse } from 'node:http'
@@ -33,6 +37,9 @@ import {
   type SearchResults,
 } from '../search.js'
 import { applyWindowArgs } from '../tools/helpers.js'
+import { taggedConversationsSql, tagsForConversations } from '../tags/store.js'
+import { handleTags } from './tags-api.js'
+import { formatTag, parseTagLiteral } from '@rivetos/types'
 
 /** One engine per pool so the chunk-arm privilege probe and the M1 query-embed
  *  cache survive across HTTP requests. Keyed by pool identity (owner vs each
@@ -238,6 +245,10 @@ export function createMemoryApiRoute(opts: MemoryApiOptions): GatewayRoute {
         // 405 for every non-GET on the existing resources.
         if (head === 'tool') {
           if (req.method !== 'POST') return json(res, 405, { error: 'method not allowed' })
+        } else if (head === 'tags') {
+          if (req.method !== 'GET' && req.method !== 'POST') {
+            return json(res, 405, { error: 'method not allowed' })
+          }
         } else if (req.method !== 'GET') {
           return json(res, 405, { error: 'method not allowed' })
         }
@@ -270,6 +281,18 @@ export function createMemoryApiRoute(opts: MemoryApiOptions): GatewayRoute {
           return await handleTool(req, res, name, pool, routed, toolsByPool, opts)
         }
 
+        if (head === 'tags') {
+          return await handleTags(
+            req,
+            res,
+            url,
+            parts.slice(1).filter(Boolean),
+            pool,
+            routed.kind === 'owner'
+              ? { id: 'owner', owner: true }
+              : { id: routed.id, owner: false },
+          )
+        }
         if (head === 'search') return await handleSearch(url, res, search, pool, embedOk)
         if (head === 'browse') return await handleBrowse(url, res, pool)
         if (head === 'stats') return await handleStats(res, pool)
@@ -287,7 +310,9 @@ export function createMemoryApiRoute(opts: MemoryApiOptions): GatewayRoute {
         // call is a normal 500 — the client must see the failure, not an
         // empty search payload.
         const path = new URL(req.url ?? '/', 'http://localhost').pathname
-        const isTool = /\/api\/memory\/tool(\/|$)/.test(path)
+        // Tool calls and tag routes own their error shapes (tags-api answers a
+        // missing tag schema itself); only search/browse/stats/health degrade here.
+        const isTool = /\/api\/memory\/(tool|tags)(\/|$)/.test(path)
         if (!isTool && /does not exist|relation/i.test(msg)) {
           return json(res, 200, emptyFor(req.url ?? ''))
         }
@@ -344,7 +369,14 @@ async function handleSearch(
   const scope =
     scopeRaw === 'messages' || scopeRaw === 'summaries' || scopeRaw === 'both' ? scopeRaw : 'both'
   const limit = Math.min(Math.max(intParam(url, 'limit', 20), 1), 50)
-  const hits = await search(pool, q, { scope, limit })
+  const tagRaw = url.searchParams.get('tag')
+  const tagFilter = tagRaw ? parseTagLiteral(tagRaw) : null
+  if (tagRaw && !tagFilter) return json(res, 400, { error: 'tag must be key:value' })
+  const hits = await search(pool, q, { scope, limit, ...(tagRaw ? { tag: tagRaw } : {}) })
+  const tagMap = await conversationTags(
+    pool,
+    hits.map((h) => h.conversationId),
+  )
   const keys = await sessionKeys(
     pool,
     hits.map((h) => h.conversationId).filter((id): id is string => Boolean(id)),
@@ -361,6 +393,7 @@ async function handleSearch(
     conversationId: h.conversationId,
     sessionId: h.conversationId ? (keys.get(h.conversationId) ?? null) : null,
     ...(h.fallback ? { fallback: h.fallback } : {}),
+    ...tagsField(tagMap, h.conversationId),
   }))
   const body: MemorySearchResponse = {
     query: q,
@@ -391,10 +424,42 @@ function httpSearchDegraded(
   return null
 }
 
+/** Accepted tag literals per conversation; empty map when the tag schema is absent. */
+async function conversationTags(
+  pool: pg.Pool,
+  conversationIds: Array<string | undefined>,
+): Promise<Map<string, string[]>> {
+  const ids = conversationIds.filter((id): id is string => Boolean(id))
+  const out = new Map<string, string[]>()
+  if (ids.length === 0) return out
+  try {
+    const map = await tagsForConversations(pool, ids, ['accepted'], { includeSummaryTags: true })
+    for (const [id, tags] of map) out.set(id, tags.map(formatTag))
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err)
+    // Pre-0019 schema: hits still render, just untagged.
+    if (!/does not exist|relation/i.test(msg)) throw err
+  }
+  return out
+}
+
+function tagsField(map: Map<string, string[]>, conversationId?: string): { tags?: string[] } {
+  const tags = conversationId ? map.get(conversationId) : undefined
+  return tags && tags.length > 0 ? { tags } : {}
+}
+
 async function handleBrowse(url: URL, res: ServerResponse, pool: pg.Pool): Promise<void> {
   const conditions: string[] = []
   const params: unknown[] = []
   let pi = 1
+  const tagRaw = url.searchParams.get('tag')
+  if (tagRaw) {
+    const parsed = parseTagLiteral(tagRaw)
+    if (!parsed) return json(res, 400, { error: 'tag must be key:value' })
+    conditions.push(`m.conversation_id IN ${taggedConversationsSql(pi, pi + 1)}`)
+    pi += 2
+    params.push(parsed.key, parsed.value)
+  }
   const role = url.searchParams.get('role')
   if (role) {
     conditions.push(`m.role = $${String(pi++)}`)
@@ -451,6 +516,10 @@ async function handleBrowse(url: URL, res: ServerResponse, pool: pg.Pool): Promi
        LIMIT $${String(pi)}`,
     params,
   )
+  const tagMap = await conversationTags(
+    pool,
+    rows.map((r) => r.conversation_id),
+  )
   const messages: MemoryBrowseMessage[] = rows.map((r) => ({
     id: r.id,
     role: r.role,
@@ -460,6 +529,7 @@ async function handleBrowse(url: URL, res: ServerResponse, pool: pg.Pool): Promi
     conversationId: r.conversation_id,
     sessionId: r.session_key,
     toolName: r.tool_name,
+    ...tagsField(tagMap, r.conversation_id),
   }))
   json(res, 200, { messages } satisfies MemoryBrowseResponse)
 }

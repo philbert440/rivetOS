@@ -72,6 +72,119 @@ describe('compaction-worker config', () => {
     expect(config.toolSynthModel).toBe('gpt-4o')
   })
 
+  it('tags with the compactor model when no RIVETOS_TAGGER_URL is set', async () => {
+    stubRequired({ RIVETOS_COMPACTOR_API_KEY: 'compactor-key' })
+    const { config } = await import('./config.js')
+    expect(config.taggingEnabled).toBe(true)
+    expect(config.taggerUsesCompactor).toBe(true)
+    expect(config.tagger).toEqual({
+      url: 'http://127.0.0.1:8000/v1',
+      model: 'gpt-4o-mini',
+      apiKey: 'compactor-key',
+      transientStatuses: [],
+    })
+    expect(config.taggerWireShape).toBe('openai')
+  })
+
+  it('does not send the compactor key to a different tagger host', async () => {
+    stubRequired({ RIVETOS_COMPACTOR_API_KEY: 'compactor-key' })
+    vi.stubEnv('RIVETOS_TAGGER_URL', 'https://edison.internal/classify')
+    vi.stubEnv('RIVETOS_TAGGER_MODEL', 'kaya')
+    vi.stubEnv('RIVETOS_TAGGER_WIRE_SHAPE', 'native')
+    const { config } = await import('./config.js')
+    expect(config.taggerUsesCompactor).toBe(false)
+    expect(config.tagger).toEqual({
+      url: 'https://edison.internal/classify',
+      model: 'kaya',
+      apiKey: '',
+      transientStatuses: [],
+    })
+    expect(config.taggerWireShape).toBe('native')
+  })
+
+  it('mints a tagger token from RIVETOS_TAGGER_TOKEN_COMMAND (JSON argv only)', async () => {
+    stubRequired()
+    vi.stubEnv('RIVETOS_TAGGER_URL', 'https://edison.internal/classify')
+    vi.stubEnv('RIVETOS_TAGGER_TOKEN_COMMAND', JSON.stringify(['/usr/local/bin/mint-token']))
+    const { config } = await import('./config.js')
+    expect(config.tagger.tokenSource).toBeDefined()
+    expect(typeof config.tagger.tokenSource?.getToken).toBe('function')
+  })
+
+  it('exits on a shell-string RIVETOS_TAGGER_TOKEN_COMMAND', async () => {
+    stubRequired()
+    vi.stubEnv('RIVETOS_TAGGER_TOKEN_COMMAND', 'mint --token')
+    const { exit, error } = trapExit()
+    await expect(import('./config.js')).rejects.toThrow(/process\.exit:1/)
+    expect(exit).toHaveBeenCalledWith(1)
+    expect(logged(error)).toContain('RIVETOS_TAGGER_TOKEN_COMMAND')
+  })
+
+  it('exits when wire shape is native without a tagger URL, or unknown', async () => {
+    stubRequired()
+    vi.stubEnv('RIVETOS_TAGGER_WIRE_SHAPE', 'native')
+    const first = trapExit()
+    await expect(import('./config.js')).rejects.toThrow(/process\.exit:1/)
+    expect(logged(first.error)).toContain('requires RIVETOS_TAGGER_URL')
+    vi.restoreAllMocks()
+    vi.resetModules()
+    stubRequired()
+    vi.stubEnv('RIVETOS_TAGGER_WIRE_SHAPE', 'grpc')
+    const second = trapExit()
+    await expect(import('./config.js')).rejects.toThrow(/process\.exit:1/)
+    expect(logged(second.error)).toContain('RIVETOS_TAGGER_WIRE_SHAPE')
+  })
+
+  it.each([
+    ['RIVETOS_TAGGER_API_KEY', 'edison-key'],
+    ['RIVETOS_TAGGER_TOKEN_COMMAND', JSON.stringify(['/usr/local/bin/mint-token'])],
+  ])('refuses %s without RIVETOS_TAGGER_URL (it would go to the compactor endpoint)', async (name, value) => {
+    stubRequired({ RIVETOS_COMPACTOR_API_KEY: 'compactor-key' })
+    vi.stubEnv(name, value)
+    const { exit, error } = trapExit()
+    await expect(import('./config.js')).rejects.toThrow(/process\.exit:1/)
+    expect(exit).toHaveBeenCalledWith(1)
+    expect(logged(error)).toContain('require RIVETOS_TAGGER_URL')
+  })
+
+  it('treats an empty RIVETOS_TAGGER_API_KEY as unset: the compactor fallback still authenticates', async () => {
+    stubRequired({ RIVETOS_COMPACTOR_API_KEY: 'compactor-key' })
+    process.env.RIVETOS_TAGGER_API_KEY = '  '
+    try {
+      const { config } = await import('./config.js')
+      expect(config.tagger.apiKey).toBe('compactor-key')
+    } finally {
+      delete process.env.RIVETOS_TAGGER_API_KEY
+    }
+  })
+
+  it('does not apply the credential guard when tagging is disabled', async () => {
+    stubRequired()
+    vi.stubEnv('SESSION_TAGGING', '0')
+    vi.stubEnv('RIVETOS_TAGGER_API_KEY', 'left-in-a-template')
+    const { config } = await import('./config.js')
+    expect(config.taggingEnabled).toBe(false)
+  })
+
+  it('keeps a tagger key with its own URL, and bounds the tagger timeout', async () => {
+    stubRequired({ RIVETOS_COMPACTOR_API_KEY: 'compactor-key' })
+    vi.stubEnv('RIVETOS_TAGGER_URL', 'https://edison.internal/v1')
+    vi.stubEnv('RIVETOS_TAGGER_API_KEY', 'edison-key')
+    const { config } = await import('./config.js')
+    expect(config.tagger.apiKey).toBe('edison-key')
+    expect(config.taggerTimeoutMs).toBe(60_000)
+    vi.resetModules()
+    vi.stubEnv('RIVETOS_TAGGER_TIMEOUT_SECONDS', '15')
+    expect((await import('./config.js')).config.taggerTimeoutMs).toBe(15_000)
+  })
+
+  it.each(['0', 'false', 'No', 'OFF'])('SESSION_TAGGING=%s disables tagging', async (value) => {
+    stubRequired()
+    vi.stubEnv('SESSION_TAGGING', value)
+    const { config } = await import('./config.js')
+    expect(config.taggingEnabled).toBe(false)
+  })
+
   it('leaves workerRoleEnv unset when WORKER_ROLE is unset (parsed in main)', async () => {
     stubRequired()
     vi.stubEnv('WORKER_ROLE', '')

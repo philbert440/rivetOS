@@ -11,6 +11,11 @@ import type { Tool } from '@rivetos/types'
 import type { Pool, PoolClient } from 'pg'
 import { z } from 'zod'
 import type { PostgresMemory } from '../adapter.js'
+import {
+  applyProjectRuleTag,
+  planProjectRuleTag,
+  type ProjectRuleOptions,
+} from '../tags/rule-project.js'
 
 const MAX_CONTENT = 16000 // keep in sync with integrations/grok/rivet-memory/capture
 const TRUNCATION_MARKER = '\n…[truncated]'
@@ -672,10 +677,21 @@ export interface CaptureResult {
 }
 export type CaptureWriteFn = (batch: CaptureBatch) => Promise<CaptureResult>
 
+/**
+ * Rule-based `project:` tag from `settings.cwd`. `resolveProject: null`
+ * disables it; `allowFilesystem: false` (routed users) limits it to the
+ * basename rule. See tags/rule-project.ts.
+ */
+export type CaptureBatchOptions = ProjectRuleOptions
+
 export async function captureBatch(
   source: Pool | PoolClient,
   batch: CaptureBatch,
+  options: CaptureBatchOptions = {},
 ): Promise<CaptureResult> {
+  // Resolved before BEGIN: no filesystem work while the session lock and a
+  // pooled connection are held. Never throws.
+  const projectHit = await planProjectRuleTag(batch.settings, options)
   return withSessionTransaction(source, batch.session_key, async (client) => {
     const { rows } = await client.query<{ id: string }>(
       `INSERT INTO ros_conversations (session_key, agent, channel, title, settings, task_id)
@@ -698,6 +714,9 @@ export async function captureBatch(
       ],
     )
     const conversationId = rows[0].id
+    // Rule tag planned above. Runs under a savepoint and swallows its own
+    // failures: capture never loses messages because of tagging.
+    if (projectHit) await applyProjectRuleTag(client, conversationId, projectHit)
     const { eventIds } = await existingOrdinalsAndEventIds(client, batch.session_key, batch.agent, {
       conversationId,
       eventIds: batch.messages.map((message) => message.event_id),

@@ -439,6 +439,28 @@ export type {
 } from './portability.js'
 
 export { createCaptureApiRoute } from './http/capture-api.js'
+export { handleTags } from './http/tags-api.js'
+export { createTagsTool } from './tools/tags-tool.js'
+export {
+  addTag,
+  conversationIdsWithTag,
+  decideTags,
+  decideTaxonomy,
+  listTags,
+  listTaxonomy,
+  mergeTaxonomyValue,
+  pendingTags,
+  tagCounts,
+  tagsForConversations,
+  tagsForSessionKeys,
+  upsertTaxonomy,
+} from './tags/store.js'
+export type { PendingTag, TagCount } from './tags/store.js'
+export {
+  applyProjectRuleTag,
+  planProjectRuleTag,
+  resolveProjectOnNode,
+} from './tags/rule-project.js'
 export type { CaptureApiOptions } from './http/capture-api.js'
 export { captureBatch } from './tools/write-tools.js'
 export type { CaptureBatch, CaptureResult, CaptureWriteFn } from './tools/write-tools.js'
