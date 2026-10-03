@@ -342,6 +342,7 @@ sibling_checkout_dir() {
 
 # Owned by root, by us, or by whoever ran sudo — and not writable by other
 # users. /tmp is root-owned but world-writable, so ownership alone is not it.
+# Group-writable is accepted (umask 002 checkouts with per-user groups).
 trusted_path() {
   local owner mode
   owner="$(stat -c %u "$1" 2>/dev/null)" || return 1
@@ -858,7 +859,7 @@ preflight_sources() {
       err "cannot find bin/rivethub-hub (run from a rivethub checkout: sudo bash install/datahub.sh, or set RIVETHUB_DISTRO_DIR) — refusing before any write."
     fi
     if skipped="$(sibling_checkout_dir)"; then
-      warn "not using the helpers in ${skipped}: it, or bin/ lib/ under it, is owned by another user or writable by others. Fetching verified copies instead; set RIVETHUB_DISTRO_DIR=${skipped} to use that checkout as is."
+      warn "not using the helpers in ${skipped}: it, or bin/ lib/ under it, is owned by another user or writable by others. Fetching verified copies instead. Only if you trust everything in that directory: set RIVETHUB_DISTRO_DIR=${skipped} to use it as is."
     fi
     fetch_distro_bundle
   fi
