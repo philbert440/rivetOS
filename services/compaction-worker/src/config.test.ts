@@ -166,6 +166,18 @@ describe('compaction-worker config', () => {
     expect(config.taggingEnabled).toBe(false)
   })
 
+  it('a disabled tagger ignores leftover tagger settings instead of refusing to start', async () => {
+    stubRequired({ RIVETOS_COMPACTOR_API_KEY: 'compactor-key' })
+    vi.stubEnv('SESSION_TAGGING', 'off')
+    vi.stubEnv('RIVETOS_TAGGER_TOKEN_COMMAND', 'not json')
+    vi.stubEnv('RIVETOS_TAGGER_WIRE_SHAPE', 'native')
+    vi.stubEnv('RIVETOS_TAGGER_URL', 'not a url')
+    const { config } = await import('./config.js')
+    expect(config.taggingEnabled).toBe(false)
+    expect(config.taggerWireShape).toBe('openai')
+    expect(config.tagger.tokenSource).toBeUndefined()
+  })
+
   it('keeps a tagger key with its own URL, and bounds the tagger timeout', async () => {
     stubRequired({ RIVETOS_COMPACTOR_API_KEY: 'compactor-key' })
     vi.stubEnv('RIVETOS_TAGGER_URL', 'https://edison.internal/v1')

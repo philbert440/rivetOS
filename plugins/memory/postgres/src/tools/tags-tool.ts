@@ -43,6 +43,9 @@ function strs(v: unknown): string[] {
   return Array.isArray(v) ? v.filter((x): x is string => typeof x === 'string' && x !== '') : []
 }
 
+/** Same cap as POST /api/memory/tags/decide. */
+const MAX_DECIDE_IDS = 1000
+
 /** Actions that change tags or the vocabulary. */
 const WRITE_ACTIONS: ReadonlySet<string> = new Set([
   'decide',
@@ -117,7 +120,11 @@ export function createTagsTool(pool: pg.Pool, opts: TagsToolOptions = {}): Tool 
           description: 'taxonomy_decide: [{key, value}]',
         },
         parent_value: { type: 'string', description: 'taxonomy_upsert: nest under this value' },
-        aliases: { type: 'array', items: { type: 'string' }, description: 'taxonomy_upsert' },
+        aliases: {
+          type: 'array',
+          items: { type: 'string' },
+          description: 'taxonomy_upsert: replaces the alias list ([] clears it; omit to keep it)',
+        },
         from: { type: 'string', description: 'taxonomy_merge: value to fold away' },
         into: { type: 'string', description: 'taxonomy_merge: value that survives' },
         reason: { type: 'string' },
@@ -131,6 +138,10 @@ export function createTagsTool(pool: pg.Pool, opts: TagsToolOptions = {}): Tool 
       const limit = typeof args.limit === 'number' ? args.limit : undefined
       if (!allowWrite && WRITE_ACTIONS.has(action)) {
         return `memory_tags: "${action}" is not available here (read-only surface). Review and edit tags in the hub under Memory → Tags.`
+      }
+      // A state that is given must be a real one; a typo is not "no filter".
+      if (args.state !== undefined && args.state !== null && !isTagState(args.state)) {
+        return 'bad state (suggested, accepted or rejected)'
       }
       try {
         switch (action) {
@@ -179,6 +190,7 @@ export function createTagsTool(pool: pg.Pool, opts: TagsToolOptions = {}): Tool 
             const ids = strs(args.ids)
             const state = args.state
             if (ids.length === 0) return 'ids required'
+            if (ids.length > MAX_DECIDE_IDS) return `at most ${String(MAX_DECIDE_IDS)} ids`
             if (state !== 'accepted' && state !== 'rejected')
               return 'state must be accepted or rejected'
             const changed = await decideTags(pool, ids, state, who(args))
@@ -279,6 +291,13 @@ export function createTagsTool(pool: pg.Pool, opts: TagsToolOptions = {}): Tool 
         }
       } catch (error: unknown) {
         const msg = error instanceof Error ? error.message : String(error)
+        // Before migration 0019 there are no tag tables: say so, like the
+        // HTTP routes do, instead of surfacing a relation error.
+        if (/relation "?ros_tag[a-z_]*"? does not exist/i.test(msg)) {
+          return WRITE_ACTIONS.has(action)
+            ? 'memory_tags: session tagging is not installed on this database yet (migration 0019).'
+            : 'No tags (session tagging is not installed on this database yet).'
+        }
         return `memory_tags failed: ${msg}`
       }
     },

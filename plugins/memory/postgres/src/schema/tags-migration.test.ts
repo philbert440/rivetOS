@@ -37,8 +37,8 @@ describe('0019 tags migration file', () => {
   })
 
   it('CHECKs only the closed/structural parts: entity_type, key/value length, self-parent', () => {
-    const checks = STATEMENTS.match(/CHECK \(([^;]*?)\)(?=,|\n)/g) ?? []
-    expect(checks).toHaveLength(8)
+    // Every CHECK is one of the clauses asserted below (2 + 2 + 1 + 1 + 1 + 1).
+    expect(STATEMENTS.match(/\bCHECK\s*\(/g)).toHaveLength(8)
     expect(STATEMENTS).toMatch(/CHECK \(confidence IS NULL OR \(confidence >= 0 AND confidence <= 1\)\)/)
     expect(STATEMENTS).toMatch(
       /CHECK \(parent_value IS NULL OR char_length\(parent_value\) BETWEEN 1 AND 128\)/,

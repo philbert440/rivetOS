@@ -82,6 +82,7 @@ export {
   normalizeTagKey,
   normalizeTagValue,
   parseTagLiteral,
+  splitTagLiteral,
 } from './tags.js'
 export type { ProjectRuleFs, ProjectRuleResult } from './project-rule.js'
 export {

@@ -174,28 +174,27 @@ function resolveTaggerWireShape(raw: string | undefined): 'openai' | 'native' {
 }
 
 const taggingEnabled = !/^(0|false|no|off)$/i.test((process.env.SESSION_TAGGING ?? '').trim())
-const taggerUrlRaw = process.env.RIVETOS_TAGGER_URL?.trim() ?? ''
+// A disabled tagger reads none of its settings: leftovers in a template
+// (a malformed token command, native wire shape without a URL) must not stop
+// the worker from starting. It resolves to the compactor defaults, unused.
+const taggerEnv: NodeJS.ProcessEnv = taggingEnabled ? process.env : {}
+const taggerUrlRaw = taggerEnv.RIVETOS_TAGGER_URL?.trim() ?? ''
 const taggerUsesCompactor = taggerUrlRaw === ''
 const taggerUrl = taggerUsesCompactor ? llmUrl : httpUrl(taggerUrlRaw, 'RIVETOS_TAGGER_URL')
-const taggerModel = process.env.RIVETOS_TAGGER_MODEL?.trim() || llmModel
+const taggerModel = taggerEnv.RIVETOS_TAGGER_MODEL?.trim() || llmModel
 // A set-but-empty key (the shape .env.example shows) counts as unset.
-const taggerKeyRaw = process.env.RIVETOS_TAGGER_API_KEY?.trim() ?? ''
+const taggerKeyRaw = taggerEnv.RIVETOS_TAGGER_API_KEY?.trim() ?? ''
 const taggerApiKey =
   taggerKeyRaw !== ''
     ? taggerKeyRaw
     : taggerUsesCompactor
       ? (process.env.RIVETOS_COMPACTOR_API_KEY ?? '')
       : ''
-const taggerTokenSource = resolveTaggerTokenSource(process.env)
-const taggerWireShape = resolveTaggerWireShape(process.env.RIVETOS_TAGGER_WIRE_SHAPE)
+const taggerTokenSource = resolveTaggerTokenSource(taggerEnv)
+const taggerWireShape = resolveTaggerWireShape(taggerEnv.RIVETOS_TAGGER_WIRE_SHAPE)
 // Isolation runs both ways: a tagger credential without a tagger URL would be
-// sent to the compactor endpoint. Refuse it instead of defaulting silently
-// (only when tagging is on: a disabled tagger sends nothing anywhere).
-if (
-  taggingEnabled &&
-  taggerUsesCompactor &&
-  (taggerKeyRaw !== '' || taggerTokenSource !== undefined)
-) {
+// sent to the compactor endpoint. Refuse it instead of defaulting silently.
+if (taggerUsesCompactor && (taggerKeyRaw !== '' || taggerTokenSource !== undefined)) {
   fail('RIVETOS_TAGGER_API_KEY / RIVETOS_TAGGER_TOKEN_COMMAND require RIVETOS_TAGGER_URL')
 }
 if (taggerWireShape === 'native' && taggerUsesCompactor) {

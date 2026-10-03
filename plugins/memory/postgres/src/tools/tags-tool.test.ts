@@ -47,7 +47,11 @@ describe('memory_tags tool', () => {
     const p = pool((sql) => (sql.includes('UPDATE ros_tags') ? { rows: [{ id: 'a' }, { id: 'b' }] } : { rows: [] }))
     const tool = createTagsTool(p, { decidedBy: 'rivet', allowWrite: true })
     expect(await tool.execute({ action: 'decide', ids: [] })).toBe('ids required')
-    expect(await tool.execute({ action: 'decide', ids: ['a'], state: 'maybe' })).toBe('state must be accepted or rejected')
+    expect(await tool.execute({ action: 'decide', ids: ['a'], state: 'maybe' })).toMatch(/^bad state/)
+    expect(await tool.execute({ action: 'decide', ids: ['a'], state: 'suggested' })).toBe('state must be accepted or rejected')
+    const tooMany = Array.from({ length: 1001 }, (_, n) => `id-${String(n)}`)
+    expect(await tool.execute({ action: 'decide', ids: tooMany, state: 'accepted' })).toBe('at most 1000 ids')
+    expect(p.query).not.toHaveBeenCalled()
     expect(await tool.execute({ action: 'decide', ids: ['a', 'b'], state: 'accepted' })).toBe('2 tag(s) accepted.')
     const [, params] = p.query.mock.calls[0] as unknown as [string, unknown[]]
     expect(params).toEqual([['a', 'b'], 'accepted', 'rivet'])
@@ -78,8 +82,24 @@ describe('memory_tags tool', () => {
   })
 
   it('surfaces store errors as a message instead of throwing', async () => {
-    const tool = createTagsTool(pool(() => { throw new Error('relation "ros_tags" does not exist') }))
-    expect(await tool.execute({ action: 'counts' })).toMatch(/memory_tags failed: relation "ros_tags" does not exist/)
+    const tool = createTagsTool(pool(() => { throw new Error('connection refused') }))
+    expect(await tool.execute({ action: 'counts' })).toBe('memory_tags failed: connection refused')
+  })
+
+  it('before migration 0019: reads say there are no tags, writes say tagging is not installed', async () => {
+    const missing = () => { throw new Error('relation "ros_tags" does not exist') }
+    const tool = createTagsTool(pool(missing), { allowWrite: true })
+    expect(await tool.execute({ action: 'counts' })).toMatch(/^No tags \(session tagging is not installed/)
+    expect(await tool.execute({ action: 'decide', ids: ['a'], state: 'accepted' })).toMatch(/not installed on this database yet \(migration 0019\)/)
+  })
+
+  it('an unknown state is an error on every action, not a silently dropped filter', async () => {
+    const p = pool(() => ({ rows: [] }))
+    const tool = createTagsTool(p)
+    for (const action of ['list', 'taxonomy']) {
+      expect(await tool.execute({ action, state: 'acepted' })).toMatch(/^bad state/)
+    }
+    expect(p.query).not.toHaveBeenCalled()
   })
 
   it('is read-only by default: every mutating action is refused without touching the pool', async () => {

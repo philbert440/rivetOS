@@ -134,6 +134,34 @@ describe.skipIf(PG_URL === '')('tag store (real Postgres)', () => {
     expect(narrowed.entityId).toBe(pathConv)
   })
 
+  it('tagCounts counts a conversation once whether the tag is on the session, a summary, or both', async () => {
+    const a = await conversation('codex:count-a')
+    const b = await conversation('codex:count-b')
+    await raw('conversation', a, 'topic', 'wiki', 'accepted')
+    await raw('summary', await summaryOf(a), 'topic', 'wiki', 'accepted')
+    await raw('summary', await summaryOf(b), 'topic', 'wiki', 'accepted')
+    await raw('summary', await summaryOf(b), 'topic', 'draft', 'suggested')
+    // A tag whose entity is gone is not a tagged conversation.
+    await raw('summary', '00000000-0000-4000-8000-000000000000', 'topic', 'wiki', 'accepted')
+    expect(await store.tagCounts(c, 'topic')).toEqual([
+      { key: 'topic', value: 'wiki', display: 'wiki', conversations: 2 },
+    ])
+    expect((await store.conversationIdsWithTag(c, 'topic', 'wiki')).sort()).toEqual([a, b].sort())
+  })
+
+  it('refuses an ambiguous session key however many conversations match', async () => {
+    const uuid = 'd4e5f6a7-4444-4555-8666-777788889999'
+    // 25 path-form conversations for one agent, then one more under another.
+    for (let n = 0; n < 25; n += 1) await conversation(`claude-code:-proj-${String(n)}/${uuid}`)
+    await c.query(
+      `INSERT INTO ros_conversations (session_key, title, agent, updated_at) VALUES ($1, 'T', 'grok', now() - interval '1 day')`,
+      [`claude-code:-old/${uuid}`],
+    )
+    await expect(
+      store.addTag(c, { entityType: 'conversation', sessionKey: `claude-code:${uuid}`, tag: 'topic:x' }, 'phil'),
+    ).rejects.toThrow(/several agents/)
+  })
+
   it('"tagged" means the session or any of its summaries, for the id list, the shared predicate, and enrichment', async () => {
     const conv = await conversation('codex:xyz')
     const sum = await summaryOf(conv)

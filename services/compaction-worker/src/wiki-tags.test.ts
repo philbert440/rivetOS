@@ -76,7 +76,7 @@ describe('acceptedTagsForSummary', () => {
       { literal: 'project:rivetos', key: 'project', value: 'rivetos', reviewed: false },
     ])
     const calls = p.query.mock.calls.map(([, params]) => params)
-    expect(calls).toContainEqual(['summary', 's1', ['accepted'], 200])
+    expect(calls).toContainEqual(['summary', 's1', ['accepted'], 100])
     expect(calls).toContainEqual([['c1'], ['accepted']])
   })
 
@@ -90,6 +90,18 @@ describe('acceptedTagsForSummary', () => {
       'c1',
     )
     expect(tags).toEqual([{ literal: 'project:rivetos', key: 'project', value: 'rivetos', reviewed: true }])
+  })
+
+  it('the rule tag counts as reviewed once someone other than the rule decided it', async () => {
+    // A person re-adding or re-accepting the rule tag keeps source=rule but
+    // stamps themselves as decider; the untouched rule row decided itself.
+    const byRule = { ...row('conversation', 'c1', 'project', 'rivetos', '', 'rule'), proposed_by: 'cwd-git-root', decided_by: 'cwd-git-root' }
+    const byPhil = { ...row('conversation', 'c1', 'project', 'tenpal', '', 'rule'), proposed_by: 'cwd-git-root', decided_by: 'phil' }
+    const tags = await acceptedTagsForSummary(pool([], [byRule, byPhil]), 's1', 'c1')
+    expect(tags).toEqual([
+      { literal: 'project:tenpal', key: 'project', value: 'tenpal', reviewed: true },
+      { literal: 'project:rivetos', key: 'project', value: 'rivetos', reviewed: false },
+    ])
   })
 
   it('an accepted tag from an unknown source is not treated as reviewed', async () => {
