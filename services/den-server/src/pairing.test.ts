@@ -26,10 +26,11 @@ afterEach(async () => {
 })
 
 function setup(nowRef = { t: 1_000_000 }, record: Partial<PairingRecord> = {}) {
-  // Like ~/.rivetos/devices/pairing: den only deletes p12s under devices/.
-  const dir = join(mkdtempSync(join(tmpdir(), 'pairing-')), 'devices', 'pairing')
+  // Like ~/.rivetos/devices + pairing/: p12s under devices/, records under pairing/.
+  const devices = join(mkdtempSync(join(tmpdir(), 'pairing-')), 'devices')
+  const dir = join(devices, 'pairing')
   mkdirSync(dir, { recursive: true })
-  const p12Path = join(dir, 'pixel.p12')
+  const p12Path = join(devices, 'pixel.p12')
   writeFileSync(p12Path, P12)
   const rec: PairingRecord = {
     v: 1,
@@ -42,18 +43,18 @@ function setup(nowRef = { t: 1_000_000 }, record: Partial<PairingRecord> = {}) {
   }
   const recordPath = join(dir, 'pixel.json')
   writeFileSync(recordPath, JSON.stringify(rec))
-  const routes = createPairingRoutes({ dir, now: () => nowRef.t })
-  return { dir, p12Path, recordPath, routes, nowRef }
+  const routes = createPairingRoutes({ dir, devicesDir: devices, now: () => nowRef.t })
+  return { dir, devices, p12Path, recordPath, routes, nowRef }
 }
 
 /** The record setup() writes, for tests that rewrite it with extra fields. */
-function recordFor(dir: string, t = 1_000_000): PairingRecord {
+function recordFor(devices: string, t = 1_000_000): PairingRecord {
   return {
     v: 1,
     deviceId: 'pixel',
     token: TOKEN,
     passphrase: 'pass-123',
-    p12Path: join(dir, 'pixel.p12'),
+    p12Path: join(devices, 'pixel.p12'),
     expiresAt: t + 60_000,
   }
 }
@@ -164,11 +165,14 @@ describe('pairing redemption', () => {
   })
 
   it('keeps the device certificate after a delivered redemption', async () => {
-    const { routes, dir } = setup(undefined, {})
+    const { routes, dir, devices } = setup(undefined, {})
     const cert = join(dir, 'issued', 'device-pixel.crt')
     mkdirSync(join(dir, 'issued'))
     writeFileSync(cert, 'crt')
-    writeFileSync(join(dir, 'pixel.json'), JSON.stringify({ ...recordFor(dir), certPath: cert }))
+    writeFileSync(
+      join(dir, 'pixel.json'),
+      JSON.stringify({ ...recordFor(devices), certPath: cert }),
+    )
     const base = await listen(routes)
     expect((await pair(base, { token: TOKEN })).status).toBe(200)
     await new Promise((r) => setTimeout(r, 20))
@@ -177,11 +181,11 @@ describe('pairing redemption', () => {
 
   it('sweeps an expired record with its p12 and its never-used certificate', async () => {
     const nowRef = { t: 1_000_000 }
-    const { routes, dir, recordPath, p12Path } = setup(nowRef)
+    const { routes, dir, devices, recordPath, p12Path } = setup(nowRef)
     const cert = join(dir, 'issued', 'device-pixel.crt')
     mkdirSync(join(dir, 'issued'))
     writeFileSync(cert, 'crt')
-    writeFileSync(recordPath, JSON.stringify({ ...recordFor(dir, nowRef.t), certPath: cert }))
+    writeFileSync(recordPath, JSON.stringify({ ...recordFor(devices, nowRef.t), certPath: cert }))
     nowRef.t += 60_001
     expect((await pair(await listen(routes), { token: TOKEN })).status).toBe(403)
     expect(existsSync(p12Path)).toBe(false)
@@ -208,6 +212,38 @@ describe('pairing redemption', () => {
     expect(existsSync(notACert)).toBe(true)
   })
 
+  it('deletes a p12 under ~/.rivetos/devices even when pairing dir is elsewhere', async () => {
+    const nowRef = { t: 1_000_000 }
+    const root = mkdtempSync(join(tmpdir(), 'pair-custom-'))
+    const devices = join(root, 'devices')
+    const pairing = join(root, 'custom-pairing')
+    mkdirSync(devices, { recursive: true })
+    mkdirSync(pairing, { recursive: true })
+    const p12Path = join(devices, 'pixel.p12')
+    writeFileSync(p12Path, P12)
+    const recordPath = join(pairing, 'pixel.json')
+    writeFileSync(
+      recordPath,
+      JSON.stringify({
+        v: 1,
+        deviceId: 'pixel',
+        token: TOKEN,
+        passphrase: 'pass-123',
+        p12Path,
+        expiresAt: nowRef.t + 60_000,
+      }),
+    )
+    const routes = createPairingRoutes({
+      dir: pairing,
+      devicesDir: devices,
+      now: () => nowRef.t,
+    })
+    expect((await pair(await listen(routes), { token: TOKEN })).status).toBe(200)
+    await new Promise((r) => setTimeout(r, 20))
+    expect(existsSync(p12Path)).toBe(false)
+    expect(readdirSync(pairing)).toEqual([])
+  })
+
   it('sweeps a claim a crash left behind once it has expired', async () => {
     const nowRef = { t: 1_000_000 }
     const { routes, dir, recordPath, p12Path } = setup(nowRef)
@@ -220,11 +256,11 @@ describe('pairing redemption', () => {
   })
 
   it('a response that never reached the phone is not paired, and frees the name', async () => {
-    const { routes, dir, recordPath } = setup()
+    const { routes, dir, devices, recordPath } = setup()
     const cert = join(dir, 'issued', 'device-pixel.crt')
     mkdirSync(join(dir, 'issued'))
     writeFileSync(cert, 'crt')
-    writeFileSync(recordPath, JSON.stringify({ ...recordFor(dir), certPath: cert }))
+    writeFileSync(recordPath, JSON.stringify({ ...recordFor(devices), certPath: cert }))
     const req = Object.assign(Readable.from([JSON.stringify({ token: TOKEN })]), {
       method: 'POST',
     }) as unknown as IncomingMessage

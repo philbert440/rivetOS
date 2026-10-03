@@ -23,6 +23,7 @@ import type { IncomingMessage, ServerResponse } from 'node:http'
 import { execFile } from 'node:child_process'
 import { timingSafeEqual } from 'node:crypto'
 import { existsSync, readdirSync, readFileSync, renameSync, unlinkSync } from 'node:fs'
+import { homedir } from 'node:os'
 import { basename, dirname, join, resolve, sep } from 'node:path'
 
 export const PAIR_PATH = '/api/devices/pair'
@@ -51,6 +52,12 @@ export interface PairingRoutes {
 
 export interface PairingRoutesOpts {
   dir: string
+  /**
+   * Where the CLI writes device p12s (`~/.rivetos/devices`). Independent of
+   * `dir` so a custom `RIVETOS_DEN_PAIRING_DIR` still lets den delete the
+   * phone's private key after redeem. Default: `~/.rivetos/devices`.
+   */
+  devicesDir?: string
   now?: () => number
   log?: (msg: string) => void
 }
@@ -133,8 +140,8 @@ export function createPairingRoutes(opts: PairingRoutesOpts): PairingRoutes {
   const log = opts.log ?? ((): void => {})
   /** deviceId → when this den handed it its p12. In memory: a restart forgets. */
   const redeemed = new Map<string, number>()
-  /** Where the CLI writes p12s (`~/.rivetos/devices`, the pairing dir's parent). */
-  const devicesDir = resolve(dirname(opts.dir))
+  /** Where the CLI writes p12s — not dirname(pairing dir), so a custom pairing dir still cleans up. */
+  const devicesDir = resolve(opts.devicesDir ?? join(homedir(), '.rivetos', 'devices'))
 
   // A record is data on disk: only delete files where the CLI puts them.
   const unlinkP12 = (rec: PairingRecord): void => {
