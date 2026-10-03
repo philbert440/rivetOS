@@ -177,6 +177,23 @@
     <string name="error_unreachable">Could not reach the entry node</string>
     <string name="error_pick_cert">Pick the device certificate first.</string>
     <string name="error_cert_load">Certificate didn\'t load: %1$s</string>
+    <string name="action_scan_pairing">Scan pairing QR</string>
+    <string name="pair_how">On the computer, open RivetHub → Settings → Pair a phone (or run rivetos pair &lt;name&gt;) and scan the code it shows.</string>
+    <string name="pair_or_file">Or import a certificate file</string>
+    <string name="pair_scan_hint">Point the camera at the pairing QR code</string>
+    <string name="pair_camera_denied">RivetHub needs the camera to scan the pairing QR. You can still import a certificate file below.</string>
+    <string name="pair_not_code">That QR code is not a RivetHub pairing code.</string>
+    <string name="pair_unsupported">This pairing code is from a newer RivetHub — update the app.</string>
+    <string name="pair_invalid">This pairing code is incomplete. Show a fresh one on the computer.</string>
+    <string name="pair_expired">This pairing code has expired or was already used. Show a new one on the computer.</string>
+    <string name="pair_gone">The computer no longer has this device\'s certificate. Show a new pairing code on the computer.</string>
+    <string name="pair_pin_mismatch">The computer\'s certificate doesn\'t match the pairing code. Make sure you\'re on the same network as the computer and scan again.</string>
+    <string name="pair_unreachable">Could not reach the computer. Check that the phone is on the same network.</string>
+    <string name="pair_spent">The computer took this code, but its answer did not arrive. Show a new code on the computer and scan again.</string>
+    <string name="pair_failed">Pairing failed (%1$s). Show a new code on the computer and scan again.</string>
+    <string name="pair_connect_failed">Paired: this phone\'s certificate is saved. Connecting to the computer failed (%1$s). Tap Connect to try again; no new code is needed.</string>
+    <string name="pair_camera_unavailable">The camera could not start (%1$s). You can still import a certificate file below.</string>
+    <string name="pair_local_network_denied">RivetHub needs the Nearby devices (local network) permission to reach the computer. Allow it in Android settings → Apps → RivetHub → Permissions, then scan again.</string>
 
     <string name="section_identity">Identity</string>
     <string name="section_appearance">Appearance</string>

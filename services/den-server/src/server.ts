@@ -63,6 +63,7 @@ import {
   type DenState,
 } from '@rivetos/den-protocol'
 import {
+  loadUsersRegistry,
   MeshParseError,
   formatSessionId,
   rosterCommandFor,
@@ -113,6 +114,12 @@ import { createHarnessStore, type HarnessStoreName } from './harness/harness-sto
 import { overlaySessionContext, sessionContext } from './term/context-window.js'
 import { createFilesRoutes } from './files.js'
 import { createDevicesRoutes, lookupDeviceName } from './devices.js'
+import {
+  createPairingRoutes,
+  createPhonePairingAdmin,
+  PAIR_PATH,
+  PHONE_PAIRING_PATH,
+} from './pairing.js'
 import { createAgentsRoutes, importAndMaterializeLegacyAgents } from './agents.js'
 import { createPresetPool, endPresetPool } from './preset-pool.js'
 import { createHarnessRegistry, type HarnessRegistry } from './harness/registry.js'
@@ -1212,6 +1219,29 @@ export function createDenServer(config: DenConfig, opts: DenServerOptions = {}):
       })
     : null
 
+  // Phone pairing by QR: the one-time token is the auth, matched before the gate.
+  const pairingRoutes = config.pairingDir
+    ? createPairingRoutes({ dir: config.pairingDir, log: console.error })
+    : null
+  // Settings → Pair a phone: runs `rivetos pair --json` and reloads users.json
+  // so the new phone is allowed without a den restart.
+  const phonePairing =
+    pairingRoutes && config.pairCaRootDir
+      ? createPhonePairingAdmin({
+          pairing: pairingRoutes,
+          cliPath: config.pairCliPath,
+          caRootDir: config.pairCaRootDir,
+          // Only with tenancy already on: without a registry every CA-issued
+          // device is allowed, and loading one now would lock the others out.
+          reloadUsers: () => {
+            if (!config.usersRegistry) return
+            const fresh = loadUsersRegistry(process.env)
+            if (fresh) config.usersRegistry = fresh
+          },
+          log: console.error,
+        })
+      : null
+
   // Agent presets (Settings → Agents). One registry: Postgres when this den
   // has a memory DB and `ros_agent_presets` is present, otherwise the per-node
   // agents.json. The pool is tiny (max 2, 5s connect, 10s query) and closed
@@ -1425,11 +1455,12 @@ export function createDenServer(config: DenConfig, opts: DenServerOptions = {}):
       // as the API: enrolled devices and loopback pass, an unenrolled remote
       // gets nothing — "if the admin did not enroll the device, Hub must not
       // work" includes the shell itself. Carve-outs above the gate: /healthz, the one-time WireGuard enroll
-      // redemption — a not-yet-enrolled device MUST reach it, and its
-      // pairing token is the auth (see auth.ts rule 4).
+      // redemption and the phone pairing redemption — a not-yet-enrolled device MUST reach
+      // them, and their pairing token is the auth (see auth.ts rule 4).
       const teamApi = url.pathname === '/api/team' || url.pathname.startsWith('/api/team/')
       if (
         !(devicesRoutes && url.pathname === '/api/devices/enroll') &&
+        !(pairingRoutes && url.pathname === PAIR_PATH) &&
         !teamApi &&
         !authorized(req, url)
       ) {
@@ -1483,6 +1514,10 @@ export function createDenServer(config: DenConfig, opts: DenServerOptions = {}):
       if (devicesRoutes && url.pathname === '/api/devices/enroll') {
         for (const [k, v] of Object.entries(CORS)) res.setHeader(k, v)
         if (await devicesRoutes.handleEnroll(req, res, url)) return
+      }
+      if (pairingRoutes && url.pathname === PAIR_PATH) {
+        for (const [k, v] of Object.entries(CORS)) res.setHeader(k, v)
+        if (await pairingRoutes.handle(req, res, url)) return
       }
       if (!authorized(req, url)) {
         unauthorized(req, res, url)
@@ -1542,6 +1577,21 @@ export function createDenServer(config: DenConfig, opts: DenServerOptions = {}):
           return json(res, 503, { error: 'device enrollment disabled on this node' })
         for (const [k, v] of Object.entries(CORS)) res.setHeader(k, v)
         if (await devicesRoutes.handle(req, res, url)) return
+        return json(res, 404, { error: 'not found' })
+      }
+
+      // Settings → Pair a phone (behind the mTLS gate). Owner only: the new
+      // device gets the owner's access.
+      if (
+        url.pathname === PHONE_PAIRING_PATH ||
+        url.pathname.startsWith(`${PHONE_PAIRING_PATH}/`)
+      ) {
+        for (const [k, v] of Object.entries(CORS)) res.setHeader(k, v)
+        if (userCtx && !userCtx.isOwner) {
+          return json(res, 403, { error: 'only the owner can pair a phone' })
+        }
+        if (!phonePairing) return json(res, 503, { error: 'phone pairing is off on this node' })
+        if (await phonePairing.handle(req, res, url)) return
         return json(res, 404, { error: 'not found' })
       }
 

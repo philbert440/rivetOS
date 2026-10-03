@@ -22,11 +22,11 @@ import {
   type UsersRegistry,
 } from '@rivetos/types'
 
-function defaultFile(): string {
+export function defaultFile(): string {
   return process.env.RIVETOS_USERS_FILE?.trim() || sharedPath('rivetos', 'users.json')
 }
 
-function load(file: string): UsersRegistry {
+export function load(file: string): UsersRegistry {
   if (!existsSync(file)) {
     const ownerUserId = process.env.RIVETOS_OWNER_USER_ID?.trim() || DEFAULT_OWNER_USER_ID
     return {
@@ -43,7 +43,7 @@ function load(file: string): UsersRegistry {
   return parsed
 }
 
-function save(file: string, registry: UsersRegistry): void {
+export function save(file: string, registry: UsersRegistry): void {
   mkdirSync(dirname(file), { recursive: true })
   const body = {
     ownerUserId: registry.ownerUserId,

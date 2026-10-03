@@ -339,3 +339,22 @@ describe('buildGatewayEnv — voice proxy passthrough', () => {
     expect(env.RIVETOS_DEN_VOICE_TTS_INSTRUCTIONS).toBeUndefined()
   })
 })
+
+describe('buildGatewayEnv — phone pairing CLI', () => {
+  // Embedded den sees only this env map, not RIVETOS_ROOT, so without this
+  // Settings → Pair a phone reports the CLI missing.
+  it('points den at the CLI in the install root', () => {
+    vi.stubEnv('RIVETOS_DEN_PAIR_CLI', '')
+    const env = buildGatewayEnv(base({}), '/opt/rivetos')
+    expect(env.RIVETOS_DEN_PAIR_CLI).toBe(
+      join('/opt/rivetos', 'packages', 'cli', 'dist', 'index.js'),
+    )
+  })
+
+  it('an explicit RIVETOS_DEN_PAIR_CLI wins', () => {
+    vi.stubEnv('RIVETOS_DEN_PAIR_CLI', '/usr/lib/rivetos/cli.js')
+    expect(buildGatewayEnv(base({}), '/opt/rivetos').RIVETOS_DEN_PAIR_CLI).toBe(
+      '/usr/lib/rivetos/cli.js',
+    )
+  })
+})

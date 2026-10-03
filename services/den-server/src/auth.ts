@@ -12,8 +12,9 @@
  *   2. Loopback HTTP without TLS is allowed (local node process: hooks, embed).
  *   3. Off-loopback requires TLS with a verified client cert whose subject is
  *      a device leaf (OU=client or CN starts with `device:`).
- *   4. WireGuard one-time enroll tokens on POST /api/devices/enroll stay as
- *      *pairing* secrets, not gateway application auth.
+ *   4. WireGuard one-time enroll tokens on POST /api/devices/enroll and phone
+ *      pairing tokens on POST /api/devices/pair stay as *pairing* secrets,
+ *      not gateway application auth.
  */
 
 import type { IncomingMessage } from 'node:http'

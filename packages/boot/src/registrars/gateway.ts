@@ -138,6 +138,11 @@ export function buildGatewayEnv(config: RivetConfig, installRoot: string): Recor
   const ownerUserId = process.env.RIVETOS_OWNER_USER_ID?.trim()
   if (shared) env.RIVETOS_SHARED_DIR = shared
   if (ownerUserId) env.RIVETOS_OWNER_USER_ID = ownerUserId
+  // Settings → Pair a phone runs `rivetos pair --json`; den finds the CLI
+  // here, since it does not see RIVETOS_ROOT (same reason as above).
+  env.RIVETOS_DEN_PAIR_CLI =
+    process.env.RIVETOS_DEN_PAIR_CLI?.trim() ||
+    join(installRoot, 'packages', 'cli', 'dist', 'index.js')
   // Mesh device enrollment (Settings → Devices).
   const devices = den.devices
   if (devices?.enabled === true) {
