@@ -662,7 +662,7 @@ EOF
   ' bash "${DATAHUB}"
   [ "${status}" -ne 0 ]
   [[ "${output}" == *"cannot find bin/rivethub-hub"* ]]
-  [[ "${output}" == *"refusing before any write"* ]]
+  [[ "${output}" == *"refusing before any hub write"* ]]
   [ ! -d "${RIVETHUB_ROOT}/shared" ]
   [ ! -f "${RIVETHUB_ROOT}/datahub.env" ]
 }
@@ -842,34 +842,62 @@ EOF
   [ "${status}" -eq 0 ]
 }
 
-# getent stand-in: the group of every path is "grp"; FAKE_SHARED adds a
-# second account (uid 4242) with it as primary group.
+# getent stand-in. By default every group is the caller's own per-user group
+# (named after the caller, no members).
 fake_getent() {
   mkdir -p "${TEST_TMP}/fake"
   cat >"${TEST_TMP}/fake/getent" <<'EOF'
 #!/bin/sh
-case "$1" in
-  group) echo "grp:x:$2:" ;;
-  passwd)
-    echo "me:x:$(id -u):$(id -g)::/:/bin/sh"
-    if [ -n "${FAKE_SHARED:-}" ]; then echo "other:x:4242:$(id -g)::/:/bin/sh"; fi
-    ;;
-esac
+[ -z "${FAKE_GETENT_FAIL:-}" ] || exit 2
+[ "$1" = group ] && echo "${FAKE_GROUP_NAME:-$(id -un)}:x:$2:${FAKE_MEMBERS:-}"
 EOF
   chmod +x "${TEST_TMP}/fake/getent"
 }
 
-@test "trusted_path accepts group-writable only when the group holds no one else" {
+trusted_path_with() {
+  run env PATH="${TEST_TMP}/fake:${PATH}" "$@" bash -c 'source "$1"; unset SUDO_UID; trusted_path "$2"' bash "${DATAHUB}" "${GW}"
+}
+
+@test "trusted_path accepts group-writable only for the owner's own per-user group" {
   fake_getent
-  : >"${TEST_TMP}/gw"
-  chmod 0664 "${TEST_TMP}/gw"
-  run env PATH="${TEST_TMP}/fake:${PATH}" bash -c 'source "$1"; unset SUDO_UID; trusted_path "$2"' bash "${DATAHUB}" "${TEST_TMP}/gw"
+  mkdir -p "${TEST_TMP}/gwd"
+  : >"${TEST_TMP}/gwf"
+  chmod 0775 "${TEST_TMP}/gwd"
+  chmod 0664 "${TEST_TMP}/gwf"
+  for GW in "${TEST_TMP}/gwd" "${TEST_TMP}/gwf"; do
+    trusted_path_with A=1
+    [ "${status}" -eq 0 ]
+    trusted_path_with FAKE_GROUP_NAME=staff
+    [ "${status}" -ne 0 ]
+    trusted_path_with FAKE_MEMBERS=someoneelse
+    [ "${status}" -ne 0 ]
+    trusted_path_with FAKE_GETENT_FAIL=1
+    [ "${status}" -ne 0 ]
+  done
+  chmod 0644 "${TEST_TMP}/gwf"
+  GW="${TEST_TMP}/gwf"
+  trusted_path_with FAKE_GROUP_NAME=staff
   [ "${status}" -eq 0 ]
-  run env PATH="${TEST_TMP}/fake:${PATH}" FAKE_SHARED=1 bash -c 'source "$1"; unset SUDO_UID; trusted_path "$2"' bash "${DATAHUB}" "${TEST_TMP}/gw"
+}
+
+@test "curl-pipe fetches are https-only outside test mode" {
+  mkdir -p "${TEST_TMP}/fake"
+  cat >"${TEST_TMP}/fake/curl" <<EOF
+#!/bin/sh
+echo "\$*" >>"${TEST_TMP}/curl.args"
+exit 22
+EOF
+  chmod +x "${TEST_TMP}/fake/curl"
+  run env -u RIVETHUB_TEST PATH="${TEST_TMP}/fake:${PATH}" TMPDIR="${TEST_TMP}" RIVETHUB_BASE_URL="https://get.example" \
+    bash -c 'source "$1"; fetch_distro_bundle' bash "${DATAHUB}"
   [ "${status}" -ne 0 ]
-  chmod 0644 "${TEST_TMP}/gw"
-  run env PATH="${TEST_TMP}/fake:${PATH}" FAKE_SHARED=1 bash -c 'source "$1"; unset SUDO_UID; trusted_path "$2"' bash "${DATAHUB}" "${TEST_TMP}/gw"
-  [ "${status}" -eq 0 ]
+  grep -q -- "--proto =https --proto-redir =https" "${TEST_TMP}/curl.args"
+  rm -f "${TEST_TMP}/curl.args"
+  run env -u RIVETHUB_TEST PATH="${TEST_TMP}/fake:${PATH}" TMPDIR="${TEST_TMP}" RIVETHUB_BASE_URL="http://get.example" \
+    bash -c 'source "$1"; fetch_distro_bundle' bash "${DATAHUB}"
+  [ "${status}" -ne 0 ]
+  [[ "${output}" == *"must be an https:// URL"* ]]
+  [ ! -f "${TEST_TMP}/curl.args" ]
 }
 
 @test "trusted_checkout covers systemd/ and pins/, files and directories" {

@@ -52,5 +52,6 @@ Nothing here is published by merging. The web root mirrors this directory,
 with `install/*.sh` served at the root (`get.rivethub.io/datahub.sh`). A
 change to an installer, a helper or `stable.json` goes out as one deploy:
 the script, `bin/`, `lib/`, `systemd/`, `pins/stable.json` and its root-level
-copy `stable.json`. The site's `releases/latest.json` carries
-`datahub_sh_sha256` and `node_sh_sha256` too; update them in the same deploy.
+copy `stable.json`. The site's `releases/latest.json` (written by release
+publishing, not kept in this tree) carries digests of the installers too;
+update them in the same deploy.

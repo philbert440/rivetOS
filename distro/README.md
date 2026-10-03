@@ -95,7 +95,8 @@ against its sha256 pin before the installer writes anything of its own. A
 missing pin or a mismatch is refused. (If `curl`, `openssl`, `flock` or
 `python3` is missing, preflight apt-installs it first, before the pins can be
 read.) Pins and files come from the same origin, so the check catches a
-broken or half-published deploy, not a compromised server. Publishing a helper therefore means updating its `*_sha256` in
+broken or half-published deploy, not a compromised server.
+Publishing a helper therefore means updating its `*_sha256` in
 `pins/stable.json` in the same deploy. `RIVETOS_COMPACTOR_MODEL` has no
 default: `--memory full` asks for it like the URLs.
 

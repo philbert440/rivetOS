@@ -346,28 +346,27 @@ trusted_uid() {
   [[ "$1" == "0" || "$1" == "${EUID}" || "$1" == "${SUDO_UID:-}" ]]
 }
 
-# A group is trusted when every account in it is: its listed members and
-# every account that has it as primary group. That is a per-user group
-# (umask 002 checkouts), not a shared one. Accounts a directory service does
-# not enumerate are not seen here.
+# A group is trusted only when it is the path owner's own per-user group:
+# the owner's primary group, named after the owner, with no other listed
+# member. That is the rule pam_umask uses to hand out umask 002, so ordinary
+# checkouts pass and a shared group (staff, "domain users") does not. Nothing
+# is enumerated, so a directory service that hides accounts cannot widen it.
 trusted_group() {
-  local gid="$1" line members m uid pgid
+  local gid="$1" owner="$2" owner_name line members m
+  owner_name="$(id -un "${owner}" 2>/dev/null)" || return 1
+  [[ "$(id -g "${owner}" 2>/dev/null)" == "${gid}" ]] || return 1
   line="$(getent group "${gid}" 2>/dev/null)" || return 1
+  [[ "${line%%:*}" == "${owner_name}" ]] || return 1
   members="${line##*:}"
   for m in ${members//,/ }; do
-    uid="$(id -u "${m}" 2>/dev/null)" || return 1
-    trusted_uid "${uid}" || return 1
+    [[ "${m}" == "${owner_name}" ]] || return 1
   done
-  while IFS=: read -r _ _ uid pgid _; do
-    [[ "${pgid}" == "${gid}" ]] || continue
-    trusted_uid "${uid}" || return 1
-  done < <(getent passwd 2>/dev/null)
   return 0
 }
 
 # Owned by a trusted uid and writable by nobody else. /tmp is root-owned but
 # world-writable, so ownership alone is not it; a group-writable path counts
-# only when the group is a trusted one.
+# only when the group is the owner's own.
 trusted_path() {
   local owner mode group
   owner="$(stat -c %u "$1" 2>/dev/null)" || return 1
@@ -376,7 +375,7 @@ trusted_path() {
   (( (8#${mode} & 2) == 0 )) || return 1
   (( (8#${mode} & 020) == 0 )) && return 0
   group="$(stat -c %g "$1" 2>/dev/null)" || return 1
-  trusted_group "${group}"
+  trusted_group "${group}" "${owner}"
 }
 
 # Everything the installer reads or runs from a checkout. systemd/ and pins/
@@ -679,16 +678,20 @@ BUNDLE_FILES=(
 
 fetch_distro_bundle() {
   local base dir entry rel key want got
-  local -a proto=(--proto '=https' --proto-redir '=https')
-  # The bats suites publish the bundle over file://.
-  if in_test; then proto=(); fi
   base="${RIVETHUB_BASE_URL:-https://get.rivethub.io}"
   base="${base%/}"
+  local -a proto=(--proto '=https' --proto-redir '=https')
+  # The bats suites publish the bundle over file://.
+  if in_test; then
+    proto=()
+  elif [[ "${base}" != https://* ]]; then
+    err "RIVETHUB_BASE_URL must be an https:// URL (got '${base}') — refusing before any hub write."
+  fi
   dir="$(mktemp -d "${TMPDIR:-/tmp}/rivethub-distro.XXXXXX")"
   _RIVETHUB_BUNDLE_DIR="${dir}"
   mkdir -p "${dir}/bin" "${dir}/lib" "${dir}/systemd" "${dir}/pins"
   if ! curl -fsSL "${proto[@]}" --max-time 30 -o "${dir}/pins/stable.json" -- "${base}/pins/stable.json"; then
-    err "could not fetch ${base}/pins/stable.json (run from a rivethub checkout, or set RIVETHUB_DISTRO_DIR) — refusing before any write."
+    err "could not fetch ${base}/pins/stable.json (run from a rivethub checkout, or set RIVETHUB_DISTRO_DIR) — refusing before any hub write."
   fi
   PINS_FILE="${dir}/pins/stable.json"
   for entry in "${BUNDLE_FILES[@]}"; do
@@ -696,14 +699,14 @@ fetch_distro_bundle() {
     key="${entry##*:}"
     want="$(pin_get "${key}" UNPINNED)"
     if [[ ! "${want}" =~ ^[0-9a-f]{64}$ ]]; then
-      err "pins/stable.json ${key} is not a sha256 (got '${want}'); will not install an unverified ${rel} — refusing before any write."
+      err "pins/stable.json ${key} is not a sha256 (got '${want}'); will not install an unverified ${rel} — refusing before any hub write."
     fi
     if ! curl -fsSL "${proto[@]}" --max-time 30 -o "${dir}/${rel}" -- "${base}/${rel}"; then
-      err "could not fetch ${base}/${rel} — refusing before any write."
+      err "could not fetch ${base}/${rel} — refusing before any hub write."
     fi
     got="$(sha256_file "${dir}/${rel}")"
     if [[ "${got}" != "${want}" ]]; then
-      err "checksum mismatch for ${rel}: got ${got} want ${want} (pins/stable.json ${key}) — refusing before any write."
+      err "checksum mismatch for ${rel}: got ${got} want ${want} (pins/stable.json ${key}) — refusing before any hub write."
     fi
   done
   DISTRO_ROOT="${dir}"
@@ -894,28 +897,29 @@ preflight_sources() {
   local tag skipped unit
   if [[ -z "${DISTRO_ROOT}" ]]; then
     if in_test && [[ -z "${RIVETHUB_BASE_URL:-}" ]]; then
-      err "cannot find bin/rivethub-hub (run from a rivethub checkout: sudo bash install/datahub.sh, or set RIVETHUB_DISTRO_DIR) — refusing before any write."
+      err "cannot find bin/rivethub-hub (run from a rivethub checkout: sudo bash install/datahub.sh, or set RIVETHUB_DISTRO_DIR) — refusing before any hub write."
     fi
     if skipped="$(sibling_checkout_dir)"; then
       warn "not using the helpers in ${skipped}: it, or bin/ lib/ under it, is owned by another user or writable by others. Fetching verified copies instead. Only if you trust everything in that directory: set RIVETHUB_DISTRO_DIR=${skipped} to use it as is."
     fi
     fetch_distro_bundle
-  elif [[ -n "${RIVETHUB_DISTRO_DIR:-}" ]] && ! in_test && ! trusted_checkout "${DISTRO_ROOT}"; then
-    warn "RIVETHUB_DISTRO_DIR=${DISTRO_ROOT} is owned by another user or writable by others; its helpers run as root unverified because you set it."
   fi
   if [[ ! -f "${DISTRO_ROOT}/bin/rivethub-hub" || ! -f "${DISTRO_ROOT}/lib/rivet-ca.sh" ]]; then
-    err "no bin/rivethub-hub + lib/rivet-ca.sh under ${DISTRO_ROOT} (check RIVETHUB_DISTRO_DIR) — refusing before any write."
+    err "no bin/rivethub-hub + lib/rivet-ca.sh under ${DISTRO_ROOT} (check RIVETHUB_DISTRO_DIR) — refusing before any hub write."
+  fi
+  if [[ -n "${RIVETHUB_DISTRO_DIR:-}" ]] && ! in_test && ! trusted_checkout "${DISTRO_ROOT}"; then
+    warn "RIVETHUB_DISTRO_DIR=${DISTRO_ROOT} is owned by another user or writable by others; its helpers run as root unverified because you set it."
   fi
   if [[ "${MEMORY_MODE}" == "full" ]]; then
     for unit in rivet-embedder.service rivet-compactor.service; do
       [[ -f "${DISTRO_ROOT}/systemd/${unit}" ]] \
-        || err "no systemd/${unit} under ${DISTRO_ROOT} (check RIVETHUB_DISTRO_DIR) — refusing before any write."
+        || err "no systemd/${unit} under ${DISTRO_ROOT} (check RIVETHUB_DISTRO_DIR) — refusing before any hub write."
     done
   fi
   if [[ -z "${RIVETHUB_MIGRATIONS_DIR:-}" ]]; then
     tag="$(pin_get rivetos_tag UNPINNED)"
     if [[ "${tag}" == "UNPINNED" ]]; then
-      err "pins/stable.json rivetos_tag is UNPINNED; set RIVETHUB_MIGRATIONS_DIR to plugins/memory/postgres/src/schema/migrations from a rivetOS checkout (refusing before any write)"
+      err "pins/stable.json rivetos_tag is UNPINNED; set RIVETHUB_MIGRATIONS_DIR to plugins/memory/postgres/src/schema/migrations from a rivetOS checkout (refusing before any hub write)"
     fi
     valid_pin_tag "${tag}" || err "pins/stable.json rivetos_tag '${tag}' is not a safe tag (expected [A-Za-z0-9._-]+)"
   fi
