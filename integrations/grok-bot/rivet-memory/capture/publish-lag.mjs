@@ -139,9 +139,8 @@ export function evaluatePublishLag(opts) {
     }
     const samePublished =
       prev && asFiniteNumber(prev.publishedThroughSeq) === snap.parsed.publishedThroughSeq
-    const stalledSince = samePublished && asFiniteNumber(prev.stalledSince)
-      ? prev.stalledSince
-      : nowMs
+    const prevStalled = asFiniteNumber(prev?.stalledSince)
+    const stalledSince = samePublished && prevStalled !== undefined ? prevStalled : nowMs
     const stalledMs = Math.max(0, nowMs - stalledSince)
     const overLag = lag > config.lagEntries
     const overStall = stalledMs > config.stallMs

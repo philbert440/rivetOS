@@ -154,10 +154,11 @@ export function applyBackfillTimestamps(
   messages: CaptureMessage[],
   tagByPosition: Map<number, string>,
 ): { kept: CaptureMessage[]; skippedNoTimestamp: number } {
-  const firstTagPos = [...tagByPosition.keys()].sort((a, b) => a - b)[0]
-  if (firstTagPos === undefined) {
+  const taggedPositions = [...tagByPosition.keys()].sort((a, b) => a - b)
+  if (taggedPositions.length === 0) {
     return { kept: [], skippedNoTimestamp: messages.length }
   }
+  const firstTagPos = taggedPositions[0] ?? 0
   const clock: TimeClock = {}
   const kept: CaptureMessage[] = []
   let skippedNoTimestamp = 0
@@ -440,7 +441,8 @@ export function createPgOverlapStore(connectionString: string): OverlapStore {
   return {
     async newestCreatedAt(sessionKey, agent) {
       const result = await query(NEWEST_CREATED_SQL, [sessionKey, agent])
-      const raw = result.rows[0]?.newest as string | Date | null | undefined
+      const row = result.rows[0] as { newest?: string | Date | null } | undefined
+      const raw = row?.newest
       if (!raw) return undefined
       const dt = new Date(raw)
       return Number.isNaN(dt.getTime()) ? undefined : dt

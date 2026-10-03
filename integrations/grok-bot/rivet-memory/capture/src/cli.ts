@@ -667,7 +667,7 @@ async function cmdIngestPages(argv: string[]): Promise<number> {
     console.error('ingest-pages needs --input DIR (or GROKBOT_PAGES_DIR)')
     return 2
   }
-  const commit = Boolean(values.commit)
+  const commit = values.commit
   const overlapHours = Number(
     values['overlap-hours'] ?? process.env.GROKBOT_BACKFILL_OVERLAP_HOURS ?? 48,
   )

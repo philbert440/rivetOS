@@ -99,21 +99,21 @@ describe('publish-lag', () => {
     const t0 = evaluatePublishLag({
       snapshots,
       previous: { agents: {} },
-      nowMs: 0,
+      nowMs: 1_000,
       config,
     })
     expect(t0.warnings).toHaveLength(0)
-    expect(t0.status.agents[BETA_ID]?.stalledSince).toBe(0)
+    expect(t0.status.agents[BETA_ID]?.stalledSince).toBe(1_000)
 
     const t1 = evaluatePublishLag({
       snapshots,
       previous: t0.status,
-      nowMs: 61_000,
+      nowMs: 62_000,
       config,
     })
     expect(t1.warnings).toHaveLength(1)
     expect(t1.warnings[0]?.reason).toBe('stall')
-    expect(t1.warnings[0]?.stalledSince).toBe(0)
+    expect(t1.warnings[0]?.stalledSince).toBe(1_000)
 
     const t2 = evaluatePublishLag({
       snapshots,
