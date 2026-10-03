@@ -166,6 +166,8 @@ export interface ParsedTranscript {
   sessionId: string | null
   aiTitle: string | null
   prUrl: string | null
+  /** Working directory recorded on transcript entries (first seen wins). */
+  cwd: string | null
   msgs: ParsedMessage[]
 }
 
@@ -345,6 +347,7 @@ export function parseTranscript(file: string): ParsedTranscript {
   let aiTitle: string | null = null
   let sessionId: string | null = null
   let prUrl: string | null = null
+  let cwd: string | null = null
   const msgs: ParsedMessage[] = []
 
   // Pre-scan: a tool_use's result lands in a *later* message (a user turn with a
@@ -389,6 +392,8 @@ export function parseTranscript(file: string): ParsedTranscript {
     } catch {
       continue
     }
+    // Every entry kind carries the session's working directory; first seen wins.
+    cwd = cwd ?? (asStr(o.cwd)?.trim() || null)
     if (o.type === 'ai-title') {
       aiTitle = asStr(o.aiTitle) ?? aiTitle
       sessionId = sessionId ?? asStr(o.sessionId)
@@ -472,7 +477,7 @@ export function parseTranscript(file: string): ParsedTranscript {
     })
   }
 
-  return { file, sessionId, aiTitle, prUrl, msgs }
+  return { file, sessionId, aiTitle, prUrl, cwd, msgs }
 }
 
 // ---------------------------------------------------------------------------
@@ -1130,6 +1135,10 @@ export async function ingestTranscript(opts: IngestOptions): Promise<IngestResul
       file: transcriptPath,
       session_id: opts.sessionId ?? parsed.sessionId,
       pr_url: parsed.prUrl ?? null,
+      // Read by the capture path's rule-based project: tagger. Omitted when
+      // unknown: settings replace the stored blob, and a null here would erase
+      // the cwd a hook batch recorded.
+      ...(parsed.cwd ? { cwd: parsed.cwd } : {}),
       last_event: event ?? null,
       last_ingest_at: new Date().toISOString(),
     }
@@ -1171,6 +1180,9 @@ export async function ingestTranscript(opts: IngestOptions): Promise<IngestResul
         file: transcriptPath,
         session_id: opts.sessionId ?? parsed.sessionId,
         pr_url: parsed.prUrl ?? null,
+        // Recorded for parity only: this direct-database transport bypasses
+        // captureBatch, so the rule-based project tag is NOT written here.
+        ...(parsed.cwd ? { cwd: parsed.cwd } : {}),
         last_event: event ?? null,
         last_ingest_at: new Date().toISOString(),
       }
@@ -1473,7 +1485,8 @@ export async function ingestHookEvent(opts: HookEventOptions): Promise<HookEvent
     const settings = {
       source: 'claude-code-hook',
       session_id: sessionId,
-      cwd: payload.cwd ?? null,
+      // Omitted when unknown: settings replace the stored blob wholesale.
+      ...(payload.cwd ? { cwd: payload.cwd } : {}),
       last_event: event,
       last_ingest_at: new Date().toISOString(),
     }
@@ -1522,7 +1535,8 @@ export async function ingestHookEvent(opts: HookEventOptions): Promise<HookEvent
       const settings = {
         source: 'claude-code-hook',
         session_id: sessionId,
-        cwd: payload.cwd ?? null,
+        // Omitted when unknown: settings replace the stored blob wholesale.
+        ...(payload.cwd ? { cwd: payload.cwd } : {}),
         last_event: event,
         last_ingest_at: new Date().toISOString(),
       }

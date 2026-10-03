@@ -83,6 +83,19 @@ export {
   normalizeTagValue,
   parseTagLiteral,
 } from './tags.js'
+export type { ProjectRuleFs, ProjectRuleResult } from './project-rule.js'
+export {
+  NO_FS,
+  PROJECT_RULE_MAX_WALK,
+  PROJECT_RULE_NAME,
+  findGitRoot,
+  isRootLike,
+  isSafeAbsolutePath,
+  originUrlFromConfig,
+  repoNameFromRemote,
+  resolveProjectFromCwd,
+  sanitizeRemote,
+} from './project-rule.js'
 export { isUsableUserDb } from './user-dbs.js'
 export type { UserDbEntry } from './user-dbs.js'
 export { TRUSTED_USER_HEADER, routedUserFromHeaders, routedUserResult } from './trusted-user.js'
