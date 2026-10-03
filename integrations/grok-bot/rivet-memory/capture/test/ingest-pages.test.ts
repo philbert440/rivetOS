@@ -1,4 +1,4 @@
-import { mkdtempSync, writeFileSync } from 'node:fs'
+import { mkdtempSync, readFileSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { describe, expect, it } from 'vitest'
@@ -6,6 +6,8 @@ import { contentTupleHash } from '@rivetos/capture-core'
 import { discoverModels } from '../src/identity.js'
 import {
   applyBackfillTimestamps,
+  attachBackfillMeta,
+  BACKFILL_SOURCE,
   backfillSession,
   backfillSourceId,
   contentHashForRow,
@@ -15,14 +17,17 @@ import {
   ingestPages,
   listPageSpoolFiles,
   liveV4Session,
+  loadOverlapIndex,
+  NEWEST_CREATED_SQL,
   parsePageFileName,
+  ROWS_SINCE_SQL,
+  type OverlapIndex,
   type OverlapRow,
   type OverlapStore,
 } from '../src/ingest-pages.js'
 import { normalizeRecords } from '../src/normalize.js'
 import { parsePageHeader } from '../src/parse.js'
 import { assertReadOnlySql } from '../src/pg-readonly.js'
-import { NEWEST_CREATED_SQL, ROWS_SINCE_SQL } from '../src/ingest-pages.js'
 import { stripSessionSuffix } from '../src/types.js'
 import { ALPHA_ID } from './ids.js'
 
@@ -50,10 +55,13 @@ function pageFile(
   return name
 }
 
-function memoryOverlap(rows: OverlapRow[], newest?: Date): OverlapStore {
+function sessionOverlap(
+  bySession: Record<string, { newest?: Date; rows: OverlapRow[] }>,
+): OverlapStore {
   return {
-    newestCreatedAt: async () => newest,
-    rowsSince: async (_session, _agent, since) => {
+    newestCreatedAt: async (sessionKey) => bySession[sessionKey]?.newest,
+    rowsSince: async (sessionKey, _agent, since) => {
+      const rows = bySession[sessionKey]?.rows ?? []
       if (!since) return rows
       return rows.filter((r) => {
         if (!r.created_at) return false
@@ -62,6 +70,33 @@ function memoryOverlap(rows: OverlapRow[], newest?: Date): OverlapStore {
     },
   }
 }
+
+function memoryOverlap(rows: OverlapRow[], newest?: Date): OverlapStore {
+  return sessionOverlap({
+    'grokbot-alpha-v4': { newest, rows },
+    'grokbot-alpha-v4-backfill': { rows },
+  })
+}
+
+function hashOf(role: string, content: string): string {
+  return contentHashForRow({ role, content })
+}
+
+function msg(
+  role: CaptureRole,
+  content: string,
+  sourceId: string,
+  extras?: Record<string, unknown>,
+) {
+  return {
+    event_id: sourceId,
+    role,
+    content,
+    metadata: { source_id: sourceId, ...extras },
+  }
+}
+
+type CaptureRole = 'user' | 'assistant' | 'system' | 'tool'
 
 describe('ingest-pages helpers', () => {
   it('parses <bot-slug>-<before>.txt and a generic Transcript of <target> header', () => {
@@ -129,23 +164,89 @@ describe('ingest-pages helpers', () => {
       contentTupleHash({ role: 'assistant', content: 'hi', toolName: undefined, toolArgs: undefined }),
     )
     const overlap = filterOverlap(
-      [
-        {
-          event_id: 'e1',
-          role: 'assistant',
-          content: 'hi',
-          metadata: { source_id: 'readtranscript:alpha:1', position: 1 },
-        },
-      ],
-      new Set([contentHashForRow(row)]),
+      [msg('assistant', 'hi', 'readtranscript:alpha:1', { position: 1 })],
+      { sourceIds: new Set(), v4HashCounts: new Map([[contentHashForRow(row), 1]]) },
     )
     expect(overlap.skippedOverlap).toBe(1)
     expect(overlap.kept).toHaveLength(0)
   })
 
-  it('overlap SELECTs are read-only', () => {
+  it('dedupes existing backfill rows by source_id, not content hash', () => {
+    const index: OverlapIndex = {
+      sourceIds: new Set(['readtranscript:alpha:5']),
+      v4HashCounts: new Map(),
+    }
+    const sameTextNewPos = filterOverlap(
+      [msg('assistant', 'ok', 'readtranscript:alpha:6', { position: 6 })],
+      index,
+    )
+    expect(sameTextNewPos.kept).toHaveLength(1)
+    expect(sameTextNewPos.skippedOverlap).toBe(0)
+    const samePos = filterOverlap(
+      [msg('assistant', 'different text', 'readtranscript:alpha:5', { position: 5 })],
+      index,
+    )
+    expect(samePos.kept).toHaveLength(0)
+    expect(samePos.skippedOverlap).toBe(1)
+  })
+
+  it('suppresses at most k backfill copies of a repeated short -v4 message', () => {
+    const hi = hashOf('assistant', 'hi')
+    const ok = hashOf('user', 'ok')
+    const overlap = filterOverlap(
+      [
+        msg('assistant', 'hi', 'readtranscript:alpha:10', { position: 10 }),
+        msg('assistant', 'hi', 'readtranscript:alpha:11', { position: 11 }),
+        msg('assistant', 'hi', 'readtranscript:alpha:12', { position: 12 }),
+        msg('user', 'ok', 'readtranscript:alpha:13', { position: 13 }),
+        msg('user', 'ok', 'readtranscript:alpha:14', { position: 14 }),
+      ],
+      {
+        sourceIds: new Set(),
+        v4HashCounts: new Map([
+          [hi, 2],
+          [ok, 1],
+        ]),
+      },
+    )
+    expect(overlap.skippedOverlap).toBe(3)
+    expect(overlap.kept.map((m) => m.metadata?.source_id)).toEqual([
+      'readtranscript:alpha:12',
+      'readtranscript:alpha:14',
+    ])
+  })
+
+  it('skips entries without a resolvable position and never invents :0', () => {
+    const tagged = attachBackfillMeta(
+      [
+        { event_id: 'a', role: 'assistant', content: 'zero is real', metadata: { position: 0 } },
+        { event_id: 'b', role: 'assistant', content: 'missing' },
+        { event_id: 'c', role: 'assistant', content: 'nan', metadata: { position: Number.NaN } },
+        { event_id: 'd', role: 'user', content: 'later', metadata: { position: 3 } },
+      ],
+      'alpha',
+    )
+    expect(tagged.skippedNoPosition).toBe(2)
+    expect(tagged.kept.map((m) => m.metadata?.source_id)).toEqual([
+      'readtranscript:alpha:0',
+      'readtranscript:alpha:3',
+    ])
+    expect(tagged.kept.every((m) => m.metadata?.source === BACKFILL_SOURCE)).toBe(true)
+    expect(tagged.kept.every((m) => m.metadata?.capture_source === BACKFILL_SOURCE)).toBe(true)
+    expect(tagged.kept.every((m) => m.metadata?.backfill === true)).toBe(true)
+    expect(tagged.kept.some((m) => m.content === 'missing' || m.content === 'nan')).toBe(false)
+  })
+
+  it('overlap SELECTs are read-only and go through one wrapReadOnlyClient pool', () => {
     expect(() => assertReadOnlySql(NEWEST_CREATED_SQL)).not.toThrow()
     expect(() => assertReadOnlySql(ROWS_SINCE_SQL)).not.toThrow()
+    const src = readFileSync(new URL('../src/ingest-pages.ts', import.meta.url), 'utf8')
+    expect(src).toContain('wrapReadOnlyClient')
+    expect(src).toContain('READONLY_POOL_OPTIONS')
+    expect(src.match(/new pg\.Pool/g)?.length).toBe(1)
+    expect(src).toContain('async close()')
+    const cli = readFileSync(new URL('../src/cli.ts', import.meta.url), 'utf8')
+    expect(cli).toContain('deps.overlap?.close')
   })
 })
 
@@ -194,6 +295,8 @@ describe('ingest-pages dry-run / commit', () => {
     expect(bot?.new).toBeGreaterThan(0)
     expect(formatIngestPagesCounts(result)).toMatch(/DRY slug=alpha/)
     expect(formatIngestPagesCounts(result)).toMatch(/dropped_system=/)
+    expect(formatIngestPagesCounts(result)).toMatch(/skipped_no_position=/)
+    expect(bot?.skippedNoPosition).toBe(0)
     expect(listPageSpoolFiles(dir)).toHaveLength(2)
   })
 
@@ -231,6 +334,52 @@ describe('ingest-pages dry-run / commit', () => {
     expect(bot?.session).toBe('grokbot-alpha-v4-backfill')
   })
 
+  it('keeps extra copies of a repeated short message after -v4 multiplicity is used up', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'gb-pages-hi-'))
+    pageFile(dir, 'alpha', 6, 4, [
+      userTurn(
+        '<timestamp>Saturday, Oct 3, 2026, 4:00 AM (UTC+0)</timestamp>\n<user_query>\nok\n</user_query>',
+      ),
+      assistantTurn('hi'),
+      assistantTurn('hi'),
+      assistantTurn('hi'),
+    ])
+    const newest = new Date('2026-10-03T05:00:00.000Z')
+    const store = sessionOverlap({
+      'grokbot-alpha-v4': {
+        newest,
+        rows: [
+          { role: 'assistant', content: 'hi', created_at: '2026-10-03T04:50:00.000Z' },
+          { role: 'assistant', content: 'hi', created_at: '2026-10-03T04:51:00.000Z' },
+        ],
+      },
+      'grokbot-alpha-v4-backfill': {
+        rows: [
+          {
+            role: 'user',
+            content: 'already stored',
+            metadata: { source_id: 'readtranscript:alpha:1' },
+          },
+        ],
+      },
+    })
+    const index = await loadOverlapIndex(
+      store,
+      { id: ALPHA_ID, session: 'grokbot-alpha', agent: 'grokbot-alpha', persona: 'Alpha' },
+      { overlapHours: 48 },
+    )
+    expect(index.sourceIds.has('readtranscript:alpha:1')).toBe(true)
+    expect(index.v4HashCounts.get(hashOf('assistant', 'hi'))).toBe(2)
+    const result = await ingestPages(dir, {
+      overlapHours: 48,
+      deps: { overlap: store },
+    })
+    const bot = result.bots[0]
+    expect(bot?.skippedOverlap).toBe(2)
+    expect(bot?.new).toBe(2)
+    expect(bot?.skippedNoPosition).toBe(0)
+  })
+
   it('commit INSERTs only and a second run is a no-op', async () => {
     const dir = mkdtempSync(join(tmpdir(), 'gb-pages-w-'))
     pageFile(dir, 'alpha', 4, 3, [
@@ -245,17 +394,26 @@ describe('ingest-pages dry-run / commit', () => {
       rowsSince: async () => existing,
     }
     const writes: Array<{ sessionId: string; n: number }> = []
-    const commit = async (input: { sessionId: string; messages: unknown[] }) => {
-      writes.push({ sessionId: input.sessionId, n: input.messages.length })
-      for (const msg of input.messages as Array<{
+    const commit = async (input: {
+      sessionId: string
+      source?: string
+      messages: Array<{
         role: string
         content: string
-        metadata?: { source_id?: string }
-      }>) {
+        metadata?: { source_id?: string; source?: string; backfill?: boolean; capture_source?: string }
+      }>
+    }) => {
+      writes.push({ sessionId: input.sessionId, n: input.messages.length })
+      expect(input.source).toBe(BACKFILL_SOURCE)
+      for (const row of input.messages) {
+        expect(row.metadata?.source_id).toMatch(/^readtranscript:alpha:\d+$/)
+        expect(row.metadata?.source).toBe(BACKFILL_SOURCE)
+        expect(row.metadata?.capture_source).toBe(BACKFILL_SOURCE)
+        expect(row.metadata?.backfill).toBe(true)
         existing.push({
-          role: msg.role,
-          content: msg.content,
-          metadata: { source_id: msg.metadata?.source_id },
+          role: row.role,
+          content: row.content,
+          metadata: { source_id: row.metadata?.source_id },
         })
       }
       return {
@@ -263,7 +421,7 @@ describe('ingest-pages dry-run / commit', () => {
         ingested: input.messages.length,
         skipped: 0,
         ids: input.messages.map((_, i) => `id-${String(i)}`),
-        source: 'grokbot',
+        source: BACKFILL_SOURCE,
         agent: 'grokbot-alpha',
         channel: 'grokbot',
       }

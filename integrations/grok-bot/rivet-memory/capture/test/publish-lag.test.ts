@@ -1,4 +1,4 @@
-import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs'
+import { mkdirSync, mkdtempSync, readFileSync, utimesSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -6,6 +6,7 @@ import { describe, expect, it } from 'vitest'
 import { ALPHA_ID, BETA_ID } from './ids.js'
 import {
   DEFAULT_LAG_ENTRIES,
+  DEFAULT_STALL_HOURS,
   evaluatePublishLag,
   formatPublishLagWarn,
   loadPublishLagConfig,
@@ -13,6 +14,8 @@ import {
   publishLag,
   readPublishSnapshots,
   runPublishLagPass,
+  WARN_CLEAR_RATIO,
+  warningLatched,
 } from '../publish-lag.mjs'
 
 const HERE = dirname(fileURLToPath(import.meta.url))
@@ -178,8 +181,140 @@ describe('publish-lag', () => {
     ).toEqual({ lagEntries: 9, stallMs: 1234 })
     expect(loadPublishLagConfig({})).toEqual({
       lagEntries: DEFAULT_LAG_ENTRIES,
-      stallMs: 24 * 3_600_000,
+      stallMs: DEFAULT_STALL_HOURS * 3_600_000,
     })
+    expect(
+      loadPublishLagConfig({
+        GROKBOT_PUBLISH_LAG_ENTRIES: '0',
+        GROKBOT_PUBLISH_STALL_HOURS: '-2',
+        GROKBOT_PUBLISH_STALL_MS: 'NaN',
+      }),
+    ).toEqual({
+      lagEntries: DEFAULT_LAG_ENTRIES,
+      stallMs: DEFAULT_STALL_HOURS * 3_600_000,
+    })
+    expect(
+      loadPublishLagConfig({
+        GROKBOT_PUBLISH_LAG_ENTRIES: 'nope',
+        GROKBOT_PUBLISH_STALL_HOURS: '0',
+      }),
+    ).toEqual({
+      lagEntries: DEFAULT_LAG_ENTRIES,
+      stallMs: DEFAULT_STALL_HOURS * 3_600_000,
+    })
+  })
+
+  it('keeps per-agent state when a snapshot is malformed', () => {
+    const config = { lagEntries: 5, stallMs: 24 * 3_600_000 }
+    const warned = evaluatePublishLag({
+      snapshots: [{ id: ALPHA_ID, parsed: { writerSeq: 20, publishedThroughSeq: 1 } }],
+      previous: { agents: {} },
+      nowMs: 1_000,
+      config,
+    })
+    expect(warned.status.agents[ALPHA_ID]?.warned).toBe(true)
+    const held = evaluatePublishLag({
+      snapshots: [{ id: ALPHA_ID, parsed: null }],
+      previous: warned.status,
+      nowMs: 2_000,
+      config,
+    })
+    expect(held.skipped).toEqual([ALPHA_ID])
+    expect(held.cleared).toEqual([])
+    expect(held.warnings).toEqual([])
+    expect(held.status.agents[ALPHA_ID]).toEqual(warned.status.agents[ALPHA_ID])
+  })
+
+  it('stays warned until lag falls below half the enter threshold, then logs cleared', () => {
+    const config = { lagEntries: 50, stallMs: 24 * 3_600_000 }
+    expect(WARN_CLEAR_RATIO).toBe(0.5)
+    expect(
+      warningLatched({ alreadyWarned: true, lag: 30, stalledMs: 0, lagEntries: 50, stallMs: config.stallMs }),
+    ).toBe(true)
+    expect(
+      warningLatched({ alreadyWarned: true, lag: 20, stalledMs: 0, lagEntries: 50, stallMs: config.stallMs }),
+    ).toBe(false)
+    const warned = evaluatePublishLag({
+      snapshots: [{ id: ALPHA_ID, parsed: { writerSeq: 80, publishedThroughSeq: 10 } }],
+      previous: { agents: {} },
+      nowMs: 1_000,
+      config,
+    })
+    expect(warned.warnings).toHaveLength(1)
+    const stillHigh = evaluatePublishLag({
+      snapshots: [{ id: ALPHA_ID, parsed: { writerSeq: 80, publishedThroughSeq: 50 } }],
+      previous: warned.status,
+      nowMs: 2_000,
+      config,
+    })
+    expect(stillHigh.warnings).toHaveLength(0)
+    expect(stillHigh.cleared).toEqual([])
+    expect(stillHigh.status.agents[ALPHA_ID]?.warned).toBe(true)
+    const belowHysteresis = evaluatePublishLag({
+      snapshots: [{ id: ALPHA_ID, parsed: { writerSeq: 80, publishedThroughSeq: 60 } }],
+      previous: stillHigh.status,
+      nowMs: 3_000,
+      config,
+    })
+    expect(belowHysteresis.cleared).toEqual([ALPHA_ID])
+    expect(belowHysteresis.status.agents[ALPHA_ID]?.warned).toBe(false)
+
+    const dir = mkdtempSync(join(tmpdir(), 'gb-pub-hyst-'))
+    const publishDir = join(dir, 'transcript-publish')
+    const statusPath = join(dir, 'grokbot-publish-lag-v4.json')
+    mkdirSync(publishDir)
+    writePublish(publishDir, ALPHA_ID, { writerSeq: 80, publishedThroughSeq: 10 })
+    runPublishLagPass({
+      publishDir,
+      statusPath,
+      nowMs: 5_000,
+      config,
+      log: () => {},
+    })
+    writePublish(publishDir, ALPHA_ID, { writerSeq: 80, publishedThroughSeq: 60 })
+    const logs: string[] = []
+    runPublishLagPass({
+      publishDir,
+      statusPath,
+      nowMs: 6_000,
+      config,
+      log: (...a: unknown[]) => logs.push(a.map(String).join(' ')),
+    })
+    expect(logs.some((l) => l === `publish lag cleared agent=${ALPHA_ID}`)).toBe(true)
+  })
+
+  it('uses file mtime as the stall-start lower bound for a first-seen lagging agent', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'gb-pub-mtime-'))
+    writePublish(dir, ALPHA_ID, { writerSeq: 40, publishedThroughSeq: 10 })
+    const file = join(dir, `${ALPHA_ID}.json`)
+    const mtimeSec = 1_700_000_000
+    utimesSync(file, mtimeSec, mtimeSec)
+    const snaps = readPublishSnapshots(dir)
+    expect(snaps[0]?.mtimeMs).toBeGreaterThan(0)
+    const nowMs = mtimeSec * 1000 + 3_600_000
+    const first = evaluatePublishLag({
+      snapshots: snaps,
+      previous: { agents: {} },
+      nowMs,
+      config: { lagEntries: 500, stallMs: 24 * 3_600_000 },
+    })
+    expect(first.status.agents[ALPHA_ID]?.stalledSince).toBe(snaps[0]?.mtimeMs)
+    expect(first.status.agents[ALPHA_ID]?.stalledSince).toBeLessThan(nowMs)
+    const alreadyLagging = evaluatePublishLag({
+      snapshots: [
+        {
+          id: BETA_ID,
+          parsed: { writerSeq: 20, publishedThroughSeq: 10 },
+          mtimeMs: 1_000,
+        },
+      ],
+      previous: { agents: {} },
+      nowMs: 5_000,
+      config: { lagEntries: 500, stallMs: 3_000 },
+    })
+    expect(alreadyLagging.status.agents[BETA_ID]?.stalledSince).toBe(1_000)
+    expect(alreadyLagging.warnings).toHaveLength(1)
+    expect(alreadyLagging.warnings[0]?.reason).toBe('stall')
   })
 
   it('writes a status file other tools can read and no-ops on a missing dir', () => {
@@ -235,6 +370,8 @@ describe('publish-lag', () => {
     expect(watch).toContain('transcript-publish')
     expect(watch).toContain('checkPublishLag')
     expect(watch).toContain('GROKBOT_PUBLISH_DIR')
+    expect(watch).toContain('Late-appearing transcript-publish/')
+    expect(watch).toContain('this interval')
     expect(watch).not.toContain('Co-Authored-By')
     const helper = readFileSync(join(ROOT, 'publish-lag.mjs'), 'utf8')
     expect(helper).toContain('GROKBOT_PUBLISH_LAG_ENTRIES')

@@ -385,6 +385,8 @@ if (existsSync(AGENTS)) {
 }
 checkPublishLag()
 if (Number.isFinite(PUBLISH_LAG_INTERVAL_MS) && PUBLISH_LAG_INTERVAL_MS > 0) {
+  // Late-appearing transcript-publish/ is covered by this interval; fs.watch
+  // is attached only when the directory already exists at startup.
   setInterval(checkPublishLag, PUBLISH_LAG_INTERVAL_MS).unref?.()
 }
 if (existsSync(PUBLISH_DIR)) {

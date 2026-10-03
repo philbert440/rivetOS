@@ -2,13 +2,15 @@
 // <agentDataDir>/transcript-publish/<agentId>.json; we only read it.
 // Missing or malformed files are skipped. State lives next to the
 // watcher's capture-state file so other tools can read the status JSON.
-import { existsSync, mkdirSync, readdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, readdirSync, readFileSync, renameSync, statSync, writeFileSync } from 'node:fs'
 import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 export const DEFAULT_LAG_ENTRIES = 50
 export const DEFAULT_STALL_HOURS = 24
 export const HOUR_MS = 3_600_000
+/** Once warned, stay warned until lag/stall fall to this fraction of the enter threshold. */
+export const WARN_CLEAR_RATIO = 0.5
 
 function asFiniteNumber(value) {
   if (typeof value === 'number' && Number.isFinite(value)) return value
@@ -30,16 +32,23 @@ export function loadPublishLagConfig(env = process.env, fileCfg = {}) {
       fromFile = {}
     }
   }
-  const lagEntries = asFiniteNumber(env.GROKBOT_PUBLISH_LAG_ENTRIES) ??
-    asFiniteNumber(fromFile.publishLagEntries) ??
-    DEFAULT_LAG_ENTRIES
-  const stallHours = asFiniteNumber(env.GROKBOT_PUBLISH_STALL_HOURS) ??
-    asFiniteNumber(fromFile.publishStallHours) ??
-    DEFAULT_STALL_HOURS
-  const stallMs = asFiniteNumber(env.GROKBOT_PUBLISH_STALL_MS) ??
-    asFiniteNumber(fromFile.publishStallMs) ??
-    stallHours * HOUR_MS
+  const lagEntries = positiveThreshold(
+    asFiniteNumber(env.GROKBOT_PUBLISH_LAG_ENTRIES) ?? asFiniteNumber(fromFile.publishLagEntries),
+    DEFAULT_LAG_ENTRIES,
+  )
+  const stallHours = positiveThreshold(
+    asFiniteNumber(env.GROKBOT_PUBLISH_STALL_HOURS) ?? asFiniteNumber(fromFile.publishStallHours),
+    DEFAULT_STALL_HOURS,
+  )
+  const stallMs = positiveThreshold(
+    asFiniteNumber(env.GROKBOT_PUBLISH_STALL_MS) ?? asFiniteNumber(fromFile.publishStallMs),
+    stallHours * HOUR_MS,
+  )
   return { lagEntries, stallMs }
+}
+
+function positiveThreshold(value, fallback) {
+  return typeof value === 'number' && Number.isFinite(value) && value > 0 ? value : fallback
 }
 
 export function parsePublishState(raw) {
@@ -75,12 +84,18 @@ export function readPublishSnapshots(publishDir) {
     if (!id) continue
     const file = join(publishDir, name)
     let parsed = null
+    let mtimeMs
     try {
       parsed = parsePublishState(JSON.parse(readFileSync(file, 'utf8')))
     } catch {
       parsed = null
     }
-    out.push({ id, file, parsed })
+    try {
+      mtimeMs = statSync(file).mtimeMs
+    } catch {
+      mtimeMs = undefined
+    }
+    out.push({ id, file, parsed, mtimeMs })
   }
   return out
 }
@@ -126,11 +141,12 @@ export function evaluatePublishLag(opts) {
 
   for (const snap of opts.snapshots ?? []) {
     if (!snap?.id) continue
+    seen.add(snap.id)
     if (!snap.parsed) {
       skipped.push(snap.id)
+      if (previous[snap.id]) agents[snap.id] = previous[snap.id]
       continue
     }
-    seen.add(snap.id)
     const lag = publishLag(snap.parsed.writerSeq, snap.parsed.publishedThroughSeq)
     const prev = previous[snap.id]
     if (lag <= 0) {
@@ -140,13 +156,25 @@ export function evaluatePublishLag(opts) {
     const samePublished =
       prev && asFiniteNumber(prev.publishedThroughSeq) === snap.parsed.publishedThroughSeq
     const prevStalled = asFiniteNumber(prev?.stalledSince)
-    const stalledSince = samePublished && prevStalled !== undefined ? prevStalled : nowMs
+    const firstSeen = !prev
+    const stalledSince =
+      samePublished && prevStalled !== undefined
+        ? prevStalled
+        : firstSeen && Number.isFinite(snap.mtimeMs)
+          ? Math.min(nowMs, snap.mtimeMs)
+          : nowMs
     const stalledMs = Math.max(0, nowMs - stalledSince)
+    const alreadyWarned = Boolean(prev?.warned)
+    const stayWarned = warningLatched({
+      alreadyWarned,
+      lag,
+      stalledMs,
+      lagEntries: config.lagEntries,
+      stallMs: config.stallMs,
+    })
     const overLag = lag > config.lagEntries
     const overStall = stalledMs > config.stallMs
-    const shouldWarn = overLag || overStall
-    const alreadyWarned = Boolean(prev?.warned)
-    const reason = overLag ? 'lag' : overStall ? 'stall' : undefined
+    const reason = overLag ? 'lag' : overStall ? 'stall' : alreadyWarned ? prev?.reason : undefined
     const row = {
       id: snap.id,
       writerSeq: snap.parsed.writerSeq,
@@ -154,7 +182,7 @@ export function evaluatePublishLag(opts) {
       lag,
       stalledSince,
       stalledMs,
-      warned: shouldWarn ? true : false,
+      warned: stayWarned,
       reason,
       lagEntries: config.lagEntries,
       stallMs: config.stallMs,
@@ -167,7 +195,8 @@ export function evaluatePublishLag(opts) {
       warned: row.warned,
       reason: row.reason ?? null,
     }
-    if (shouldWarn && !alreadyWarned) warnings.push(row)
+    if (stayWarned && !alreadyWarned) warnings.push(row)
+    if (alreadyWarned && !stayWarned) cleared.push(snap.id)
   }
 
   for (const [id, prev] of Object.entries(previous)) {
@@ -186,6 +215,17 @@ export function evaluatePublishLag(opts) {
     cleared,
     skipped,
   }
+}
+
+export function warningLatched(opts) {
+  const lag = opts.lag
+  const stalledMs = opts.stalledMs
+  const lagEntries = opts.lagEntries
+  const stallMs = opts.stallMs
+  if (lag <= 0) return false
+  if (lag > lagEntries || stalledMs > stallMs) return true
+  if (!opts.alreadyWarned) return false
+  return lag > lagEntries * WARN_CLEAR_RATIO || stalledMs > stallMs * WARN_CLEAR_RATIO
 }
 
 export function writePublishLagStatus(statusPath, status) {

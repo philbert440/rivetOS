@@ -106,9 +106,12 @@ const HELP = `Usage: grokbot-rivet-memory-capture <command> [opts]
   ingest-pages --input DIR [--commit] [--overlap-hours 48] [--agents-dir DIR]
       ReadTranscript page backfill. Files are <bot-slug>-<before>.txt.
       Dry-run (default) prints per-bot counts and writes nothing.
-      --commit INSERTs into grokbot-<slug>-v4-backfill only. Never UPDATE
-      or DELETE. Never folds into plain -v4. Timestamps are approximate
-      (ts_approx=true); rows before the first <timestamp> tag are skipped.
+      --commit INSERTs message rows into grokbot-<slug>-v4-backfill only
+      and never deletes. PostgresMemory.append still upserts that
+      session's ros_conversations row (updated_at, active) and may queue
+      tool-synthesis jobs. Never folds into plain -v4. Timestamps are
+      approximate (ts_approx=true); rows before the first <timestamp>
+      tag are skipped.
 `
 
 async function main(argv: string[]): Promise<number> {
@@ -696,6 +699,8 @@ async function cmdIngestPages(argv: string[]): Promise<number> {
     const message = err instanceof Error ? err.message : 'ingest-pages failed'
     console.error(message)
     return 2
+  } finally {
+    await deps.overlap?.close?.()
   }
 }
 

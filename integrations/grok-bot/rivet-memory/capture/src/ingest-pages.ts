@@ -23,6 +23,7 @@ import type { GrokbotIngestInput, GrokbotIngestResult } from './ingest-rows.js'
 import { clampCreatedAt, toIngestRows, type TimeClock } from './normalize.js'
 import { formatMergeConflicts, normalizePages } from './pages.js'
 import { parseInput, partText, recordParts, recordRole } from './parse.js'
+import { READONLY_POOL_OPTIONS, wrapReadOnlyClient } from './pg-readonly.js'
 import { extractTimestampTag } from './timestamps.js'
 import {
   DEFAULT_BACKFILL_OVERLAP_HOURS,
@@ -53,6 +54,14 @@ export interface OverlapRow {
 export interface OverlapStore {
   newestCreatedAt(sessionKey: string, agent: string): Promise<Date | undefined>
   rowsSince(sessionKey: string, agent: string, since?: Date): Promise<OverlapRow[]>
+  close?: () => Promise<void>
+}
+
+export interface OverlapIndex {
+  /** Existing -v4-backfill source ids (`readtranscript:<slug>:<position>`). */
+  sourceIds: Set<string>
+  /** Content-hash multiplicity for -v4 rows inside the overlap window. */
+  v4HashCounts: Map<string, number>
 }
 
 export interface IngestPagesCounts {
@@ -63,6 +72,7 @@ export interface IngestPagesCounts {
   entriesParsed: number
   droppedSystem: number
   skippedNoTimestamp: number
+  skippedNoPosition: number
   skippedOverlap: number
   new: number
   conflicts: number[]
@@ -203,17 +213,29 @@ export function dropSystemMessages(messages: CaptureMessage[]): {
   return { kept, droppedSystem }
 }
 
-export function attachBackfillMeta(messages: CaptureMessage[], slug: string): CaptureMessage[] {
-  return messages.map((message) => {
-    const position = typeof message.metadata?.position === 'number' ? message.metadata.position : 0
+export function attachBackfillMeta(
+  messages: CaptureMessage[],
+  slug: string,
+): { kept: CaptureMessage[]; skippedNoPosition: number } {
+  const kept: CaptureMessage[] = []
+  let skippedNoPosition = 0
+  for (const message of messages) {
+    const position = message.metadata?.position
+    if (typeof position !== 'number' || !Number.isFinite(position)) {
+      skippedNoPosition += 1
+      continue
+    }
     const metadata: Record<string, unknown> = {
       ...(message.metadata ?? {}),
       source: BACKFILL_SOURCE,
+      capture_source: BACKFILL_SOURCE,
+      backfill: true,
       source_id: backfillSourceId(slug, position),
       ts_approx: true,
     }
-    return { ...message, metadata }
-  })
+    kept.push({ ...message, metadata })
+  }
+  return { kept, skippedNoPosition }
 }
 
 function overlapKey(row: OverlapRow): string {
@@ -236,43 +258,49 @@ function messageHash(message: CaptureMessage): string {
   })
 }
 
-export async function loadOverlapHashes(
+export async function loadOverlapIndex(
   store: OverlapStore,
   ident: BotIdentity,
   opts?: { overlapHours?: number; liveSuffix?: string },
-): Promise<Set<string>> {
+): Promise<OverlapIndex> {
   const hours = opts?.overlapHours ?? DEFAULT_BACKFILL_OVERLAP_HOURS
   const liveSuffix = opts?.liveSuffix ?? SESSION_SUFFIX_V4
   const liveSession = liveV4Session(ident.session, liveSuffix)
   const backfill = backfillSession(ident.session, liveSuffix)
-  const hashes = new Set<string>()
+  const sourceIds = new Set<string>()
+  const v4HashCounts = new Map<string, number>()
   const newest = await store.newestCreatedAt(liveSession, ident.agent)
   const since = newest ? new Date(newest.getTime() - hours * 3_600_000) : undefined
   if (newest) {
     for (const row of await store.rowsSince(liveSession, ident.agent, since)) {
-      hashes.add(overlapKey(row))
+      const hash = overlapKey(row)
+      v4HashCounts.set(hash, (v4HashCounts.get(hash) ?? 0) + 1)
     }
   }
   for (const row of await store.rowsSince(backfill, ident.agent)) {
-    hashes.add(overlapKey(row))
     const sourceId = row.metadata?.source_id
-    if (typeof sourceId === 'string' && sourceId) hashes.add(`source:${sourceId}`)
+    if (typeof sourceId === 'string' && sourceId) sourceIds.add(sourceId)
   }
-  return hashes
+  return { sourceIds, v4HashCounts }
 }
 
 export function filterOverlap(
   messages: CaptureMessage[],
-  hashes: Set<string>,
+  index: OverlapIndex,
 ): { kept: CaptureMessage[]; skippedOverlap: number } {
+  const remaining = new Map(index.v4HashCounts)
   const kept: CaptureMessage[] = []
   let skippedOverlap = 0
   for (const message of messages) {
     const sourceId = message.metadata?.source_id
-    if (
-      hashes.has(messageHash(message)) ||
-      (typeof sourceId === 'string' && hashes.has(`source:${sourceId}`))
-    ) {
+    if (typeof sourceId === 'string' && index.sourceIds.has(sourceId)) {
+      skippedOverlap += 1
+      continue
+    }
+    const hash = messageHash(message)
+    const left = remaining.get(hash) ?? 0
+    if (left > 0) {
+      remaining.set(hash, left - 1)
       skippedOverlap += 1
       continue
     }
@@ -335,6 +363,7 @@ export async function ingestPages(
         entriesParsed: 0,
         droppedSystem: 0,
         skippedNoTimestamp: 0,
+        skippedNoPosition: 0,
         skippedOverlap: 0,
         new: 0,
         conflicts: [],
@@ -355,14 +384,14 @@ export async function ingestPages(
     const withoutSystem = dropSystemMessages(result.messages)
     const stamped = applyBackfillTimestamps(withoutSystem.kept, tagByPosition)
     const tagged = attachBackfillMeta(stamped.kept, slug)
-    let hashes = new Set<string>()
+    let index: OverlapIndex = { sourceIds: new Set(), v4HashCounts: new Map() }
     if (opts?.deps?.overlap) {
-      hashes = await loadOverlapHashes(opts.deps.overlap, ident, {
+      index = await loadOverlapIndex(opts.deps.overlap, ident, {
         overlapHours: opts.overlapHours,
         liveSuffix,
       })
     }
-    const overlap = filterOverlap(tagged, hashes)
+    const overlap = filterOverlap(tagged.kept, index)
     const counts: IngestPagesCounts = {
       slug,
       session,
@@ -371,6 +400,7 @@ export async function ingestPages(
       entriesParsed: result.stats.in,
       droppedSystem: result.stats.dropped + withoutSystem.droppedSystem,
       skippedNoTimestamp: stamped.skippedNoTimestamp,
+      skippedNoPosition: tagged.skippedNoPosition,
       skippedOverlap: overlap.skippedOverlap,
       new: overlap.kept.length,
       conflicts: result.conflicts ?? [],
@@ -385,7 +415,7 @@ export async function ingestPages(
         sessionId: session,
         agent: ident.agent,
         persona: ident.persona,
-        source: 'grokbot',
+        source: BACKFILL_SOURCE,
         channel: 'grokbot',
         messages: rows,
       })
@@ -430,17 +460,16 @@ SELECT m.role, m.content, m.tool_name, m.tool_args, m.tool_result,
 `.trim()
 
 export function createPgOverlapStore(connectionString: string): OverlapStore {
-  const query = async (sql: string, params: unknown[]) => {
-    const pool = new pg.Pool({ connectionString, max: 1 })
-    try {
-      return await pool.query(sql, params)
-    } finally {
-      await pool.end()
-    }
-  }
+  const pool = new pg.Pool({
+    connectionString,
+    ...READONLY_POOL_OPTIONS,
+  })
+  const guarded = wrapReadOnlyClient({
+    query: async (sql, params) => pool.query(sql, params),
+  })
   return {
     async newestCreatedAt(sessionKey, agent) {
-      const result = await query(NEWEST_CREATED_SQL, [sessionKey, agent])
+      const result = await guarded.query(NEWEST_CREATED_SQL, [sessionKey, agent])
       const row = result.rows[0] as { newest?: string | Date | null } | undefined
       const raw = row?.newest
       if (!raw) return undefined
@@ -448,8 +477,11 @@ export function createPgOverlapStore(connectionString: string): OverlapStore {
       return Number.isNaN(dt.getTime()) ? undefined : dt
     },
     async rowsSince(sessionKey, agent, since) {
-      const result = await query(ROWS_SINCE_SQL, [sessionKey, agent, since ?? null])
+      const result = await guarded.query(ROWS_SINCE_SQL, [sessionKey, agent, since ?? null])
       return result.rows as OverlapRow[]
+    },
+    async close() {
+      await pool.end()
     },
   }
 }
@@ -461,6 +493,7 @@ export function formatIngestPagesCounts(result: IngestPagesResult): string {
       `${prefix} slug=${b.slug} session=${b.session} agent=${b.agent} ` +
       `pages=${String(b.pages)} entries_parsed=${String(b.entriesParsed)} ` +
       `dropped_system=${String(b.droppedSystem)} skipped_no_timestamp=${String(b.skippedNoTimestamp)} ` +
+      `skipped_no_position=${String(b.skippedNoPosition)} ` +
       `skipped_overlap=${String(b.skippedOverlap)} new=${String(b.new)}`
     )
   })

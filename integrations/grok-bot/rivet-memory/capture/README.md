@@ -7,8 +7,11 @@ claude-code / grok-build / cursor capture.
 
 The node ingest path writes ingest jsonl (including per-row `metadata`,
 `ordinal`, and `event_id`) and `ingestGrokbotSession()` stores that metadata,
-the caller ordinal, and the event id. This CLI never DELETEs or UPDATEs
-existing rows.
+the caller ordinal, and the event id. Message rows are insert-only and
+this CLI never deletes existing rows. Writes still go through
+`PostgresMemory.append`, which upserts the session's own
+`ros_conversations` row (`updated_at`, `active`) and may queue
+tool-synthesis jobs.
 
 ## What changed in 0.3.0
 
@@ -230,9 +233,12 @@ conversation indices and do **not** match `store.db` seq. Lines have no
 timestamps except the `<timestamp>` tags inside user turns.
 
 Dry-run is the default. It prints per-bot counts (`pages`, `entries_parsed`,
-`dropped_system`, `skipped_no_timestamp`, `skipped_overlap`, `new`) and writes
-nothing. A real write requires `--commit` (INSERT only; never UPDATE/DELETE;
-never folds into plain `-v4`).
+`dropped_system`, `skipped_no_timestamp`, `skipped_no_position`,
+`skipped_overlap`, `new`) and writes nothing. `--commit` INSERTs message
+rows into `grokbot-<slug>-v4-backfill` and never deletes them; it still
+goes through `PostgresMemory.append`, which upserts that session's
+`ros_conversations` row (`updated_at`, `active`) and may queue
+tool-synthesis jobs. Nothing folds into plain `-v4`.
 
 ```bash
 # 1. Parent agent dumps pages (example names only):
@@ -260,9 +266,15 @@ tag is `grokbot-<bot-slug>-v4-backfill` — a sibling of `-v4`, never merged
 into it. Hidden system / agent wakes and system reminders follow the existing
 v4 normalizer (wrapper strip + hidden classification); system rows are not
 ingested on this tag. Content is bounded by the existing 256 KiB cap / pointer.
-Re-runs are idempotent: a row is skipped when the same content hash already
-exists for that bot under `-v4-backfill`, or under `-v4` at or after a cutoff
-(default = that bot's newest `-v4` row minus 48h).
+Re-runs are idempotent: a row is skipped when its `source_id`
+(`readtranscript:<bot-slug>:<position>`) already exists under
+`-v4-backfill`. Against live `-v4` rows at or after a cutoff (default =
+that bot's newest `-v4` row minus 48h) a content-hash match still
+suppresses the backfill copy, but only up to the hash's multiplicity —
+a hash present *k* times in `-v4` suppresses at most *k* backfill rows.
+Message rows stay insert-only; `--commit` still goes through
+`PostgresMemory.append`, which upserts that backfill session's own
+`ros_conversations` row and may queue tool-synthesis jobs.
 
 Env / config knobs:
 
