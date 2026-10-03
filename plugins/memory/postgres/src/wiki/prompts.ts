@@ -51,6 +51,9 @@ Rules:
 - Prefer **article_patches** over full **article**. Never shrink a rich lead into a narrow session blurb.
 - Crosslink peers with [[slug]] using candidate slugs when possible (e.g. [[hv-c]], [[rivetos-dev]]).
 - entities: stable kind:name ids (host:hv-c, model:deckard-40b, project:rivetos, domain:rivetos.dev).
+- Reviewed tags (when given) were added or accepted by a person (or imported), and are shown in their canonical lowercase form — copy them exactly when you use them as entities: a project:<x> tag names the project this session belongs to and is a strong signal for which candidate to UPDATE; topic:<x> tags say what the work was about. Carry them into the patch's entities (project:<x>) and tags (<x>) when the patch is about that subject. Do not contradict a reviewed tag.
+- A working-directory tag (when given) is automatic and unreviewed: it says where the session ran, NOT what it was about. Use it only to break a tie between candidates the summary already supports. Never add it as an entity, and never move facts about another subject (a host, a model, a different project) onto that project's page because of it.
+- A candidate marked (tag hint) was found from a tag, not from the summary text: update it only if the summary is actually about it.
 - Keep identifiers verbatim (hostnames, ports, versions, paths, domains).
 - 0-3 patches per summary. Less is more. action "create" only when no candidate matches the subject.
 
@@ -104,6 +107,12 @@ Hard rules:
 - Crosslink every durable peer you mention with [[kebab-slug]] from the known peer list when possible.
 - Keep identifiers verbatim.`
 
+/** Prompt section headers for tags (see the two tag rules in the system prompt). */
+export const REVIEWED_TAGS_HEADER =
+  '## Reviewed tags (added or accepted by the user — identity hints)'
+export const RULE_TAGS_HEADER =
+  '## Working-directory tag (automatic, unreviewed — where the session ran, not its subject)'
+
 export interface ExtractionCandidate {
   slug: string
   title: string
@@ -111,6 +120,8 @@ export interface ExtractionCandidate {
   entities?: string[]
   currentState: string
   article?: string
+  /** Found through a tag rather than the summary text; labelled in the prompt. */
+  fromTag?: true
 }
 
 export function formatExtractionPrompt(input: {
@@ -118,6 +129,10 @@ export function formatExtractionPrompt(input: {
   summaryDate: string
   agent?: string
   candidates: ExtractionCandidate[]
+  /** Tags a person added or accepted (`key:value`). Strong identity hints. */
+  reviewedTags?: string[]
+  /** The automatic cwd-derived `project:` tag. Where the session ran, nothing more. */
+  ruleTags?: string[]
 }): string {
   const candidates =
     input.candidates.length > 0
@@ -130,14 +145,21 @@ export function formatExtractionPrompt(input: {
               c.article && c.article.trim() !== ''
                 ? `\nArticle (excerpt):\n${c.article.slice(0, 800)}`
                 : ''
-            return `### ${c.slug} — ${c.title}${al}${ent}\nSummary:\n${c.currentState.slice(0, 1200)}${art}`
+            const hint = c.fromTag ? ' (tag hint)' : ''
+            return `### ${c.slug} — ${c.title}${hint}${al}${ent}\nSummary:\n${c.currentState.slice(0, 1200)}${art}`
           })
           .join('\n\n')
       : '(none — the wiki has no matching durable topics yet; create only for long-lived subjects)'
+  const clean = (list: string[] | undefined): string[] =>
+    (list ?? []).map((t) => t.replace(/\s+/g, ' ').trim()).filter((t) => t !== '')
+  const reviewed = clean(input.reviewedTags)
+  const rule = clean(input.ruleTags)
   return [
     `## Conversation leaf summary (${input.summaryDate}${input.agent ? `, agent: ${input.agent}` : ''})`,
     input.summary,
     '',
+    ...(reviewed.length > 0 ? [REVIEWED_TAGS_HEADER, reviewed.join(', '), ''] : []),
+    ...(rule.length > 0 ? [RULE_TAGS_HEADER, rule.join(', '), ''] : []),
     '## Existing durable topic candidates (UPDATE these slugs when the subject matches — do not invent child slugs)',
     candidates,
     '',
