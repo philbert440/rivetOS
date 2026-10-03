@@ -1823,25 +1823,34 @@ export class SearchEngine {
   // -----------------------------------------------------------------------
 
   private async bumpAccess(results: SearchHit[]): Promise<void> {
-    const msgIds = results.filter((r) => r.type === 'message').map((r) => r.id)
-    const sumIds = results.filter((r) => r.type === 'summary').map((r) => r.id)
+    // Callers fire this with `void`. A connect timeout rejects the query, and
+    // Node's default is to kill the process on an unhandled rejection — that
+    // takes the whole den down mid-turn. Access counts
+    // are telemetry. Swallow the failure.
+    try {
+      const msgIds = results.filter((r) => r.type === 'message').map((r) => r.id)
+      const sumIds = results.filter((r) => r.type === 'summary').map((r) => r.id)
 
-    if (msgIds.length > 0) {
-      await this.pool.query(
-        `UPDATE ros_messages
-         SET access_count = access_count + 1, last_accessed_at = NOW()
-         WHERE id = ANY($1::uuid[])`,
-        [msgIds],
-      )
-    }
+      if (msgIds.length > 0) {
+        await this.pool.query(
+          `UPDATE ros_messages
+           SET access_count = access_count + 1, last_accessed_at = NOW()
+           WHERE id = ANY($1::uuid[])`,
+          [msgIds],
+        )
+      }
 
-    if (sumIds.length > 0) {
-      await this.pool.query(
-        `UPDATE ros_summaries
-         SET access_count = access_count + 1, last_accessed_at = NOW()
-         WHERE id = ANY($1::uuid[])`,
-        [sumIds],
-      )
+      if (sumIds.length > 0) {
+        await this.pool.query(
+          `UPDATE ros_summaries
+           SET access_count = access_count + 1, last_accessed_at = NOW()
+           WHERE id = ANY($1::uuid[])`,
+          [sumIds],
+        )
+      }
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : String(err)
+      console.error(`[memory] access bump skipped: ${msg}`)
     }
   }
 }
