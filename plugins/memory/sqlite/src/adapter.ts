@@ -192,6 +192,10 @@ export class SqliteMemory implements Memory {
         case 0:
           // No-op: baseline DDL is in SCHEMA. Stamp to 1.
           break
+        case 1:
+          // v2: ros_tags + ros_tag_taxonomy. Both are CREATE IF NOT EXISTS in
+          // SCHEMA, already applied above. Stamp to 2.
+          break
         default:
           throw new MemoryError(
             'MEMORY_CONNECTION_FAILED',

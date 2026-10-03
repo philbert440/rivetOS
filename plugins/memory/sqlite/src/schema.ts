@@ -12,7 +12,7 @@
  */
 
 /** Current on-disk schema version. Bump when the DDL changes. */
-export const SCHEMA_VERSION = 1
+export const SCHEMA_VERSION = 2
 
 export const SCHEMA = `
 CREATE TABLE IF NOT EXISTS ros_conversations (
@@ -90,4 +90,53 @@ CREATE TABLE IF NOT EXISTS ros_embed_queue (
 );
 CREATE INDEX IF NOT EXISTS idx_ros_embed_queue_enqueued
     ON ros_embed_queue (enqueued_at);
+
+-- Session + summary tags (mirror of postgres 0019_tags.sql, same CHECKs).
+-- entity_id is polymorphic, so no FK. Phase 1 has no ros_summaries table
+-- here: entity_type 'summary' is accepted for parity but nothing backs it
+-- until summaries land in SQLite. aliases is a JSON array in TEXT, and
+-- created_at / updated_at have no DEFAULT (like every table here, the writer
+-- supplies ISO timestamps) where postgres defaults to now(). See
+-- packages/types/src/tags.ts for the lifecycle.
+CREATE TABLE IF NOT EXISTS ros_tags (
+    id            TEXT PRIMARY KEY NOT NULL,
+    entity_type   TEXT NOT NULL CHECK (entity_type IN ('conversation', 'summary')),
+    entity_id     TEXT NOT NULL,
+    key           TEXT NOT NULL CHECK (length(key) BETWEEN 1 AND 64 AND key NOT LIKE '%:%'),
+    value         TEXT NOT NULL CHECK (length(value) BETWEEN 1 AND 128),
+    display       TEXT NOT NULL DEFAULT '',
+    source        TEXT NOT NULL,
+    state         TEXT NOT NULL,
+    confidence    REAL CHECK (confidence IS NULL OR (confidence >= 0 AND confidence <= 1)),
+    proposed_by   TEXT NOT NULL DEFAULT '',
+    reason        TEXT NOT NULL DEFAULT '',
+    decided_by    TEXT,
+    decided_at    TEXT,
+    created_at    TEXT NOT NULL,
+    updated_at    TEXT NOT NULL
+);
+CREATE UNIQUE INDEX IF NOT EXISTS ux_ros_tags_entity_kv
+    ON ros_tags (entity_type, entity_id, key, value);
+CREATE INDEX IF NOT EXISTS idx_ros_tags_kv_state
+    ON ros_tags (key, value, state);
+CREATE INDEX IF NOT EXISTS idx_ros_tags_pending
+    ON ros_tags (created_at DESC) WHERE state = 'suggested';
+
+CREATE TABLE IF NOT EXISTS ros_tag_taxonomy (
+    key           TEXT NOT NULL CHECK (length(key) BETWEEN 1 AND 64 AND key NOT LIKE '%:%'),
+    value         TEXT NOT NULL CHECK (length(value) BETWEEN 1 AND 128),
+    display       TEXT NOT NULL DEFAULT '',
+    parent_value  TEXT CHECK (parent_value IS NULL OR length(parent_value) BETWEEN 1 AND 128),
+    aliases       TEXT NOT NULL DEFAULT '[]',
+    state         TEXT NOT NULL DEFAULT 'accepted',
+    source        TEXT NOT NULL DEFAULT 'user',
+    reason        TEXT NOT NULL DEFAULT '',
+    decided_at    TEXT,
+    created_at    TEXT NOT NULL,
+    updated_at    TEXT NOT NULL,
+    PRIMARY KEY (key, value),
+    CHECK (parent_value IS NULL OR parent_value <> value)
+);
+CREATE INDEX IF NOT EXISTS idx_ros_tag_taxonomy_parent
+    ON ros_tag_taxonomy (key, parent_value);
 `
