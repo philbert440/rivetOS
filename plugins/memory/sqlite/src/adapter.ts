@@ -1,7 +1,8 @@
 /**
  * SqliteMemory — implements the Memory interface from @rivetos/types.
  *
- * Phase 1: WAL file store, append, session/task history, settings, FTS5 search.
+ * Phase 1: WAL file store, append, session/task history, settings, FTS5 search,
+ * session tags (tags.ts).
  * Embeddings are queue-only (ros_embed_queue); search is FTS until a later
  * drain + vector arm lands. Driver choice matches SqliteTaskStore (node:sqlite).
  */
@@ -14,6 +15,7 @@ import { DatabaseSync, type SQLInputValue } from 'node:sqlite'
 import type { Memory, MemoryEntry, MemorySearchResult, Message } from '@rivetos/types'
 import { MemoryError } from '@rivetos/types'
 import { SCHEMA, SCHEMA_VERSION } from './schema.js'
+import { SqliteTagStore } from './tags.js'
 
 function warnMode(target: string, mode: string, err: unknown): void {
   let code = 'error'
@@ -161,6 +163,7 @@ export class SqliteMemory implements Memory {
   private readonly db: DatabaseSync
   private readonly filePath: string
   private closed = false
+  private tagStore: SqliteTagStore | undefined
 
   constructor(config: SqliteMemoryConfig) {
     const path = resolveSqlitePath(config.path)
@@ -506,6 +509,17 @@ export class SqliteMemory implements Memory {
          WHERE session_key = ? AND agent = ? AND active = 1`,
       )
       .run(taskId, iso(), sessionId, agent)
+  }
+
+  /**
+   * Session tags on this file (list, pending, decide, add, propose, lookup by
+   * session key, counts). Same behaviour as the Postgres tag store; see tags.ts
+   * for what phase 1 leaves out.
+   */
+  tags(): SqliteTagStore {
+    this.assertOpen()
+    this.tagStore ??= new SqliteTagStore(this.db)
+    return this.tagStore
   }
 
   /** Test helper — current PRAGMA user_version. */

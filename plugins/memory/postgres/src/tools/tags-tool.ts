@@ -22,7 +22,7 @@ import {
   upsertTaxonomy,
 } from '../tags/store.js'
 
-const ACTIONS = [
+export const TAGS_ACTIONS = [
   'list',
   'pending',
   'counts',
@@ -43,8 +43,11 @@ function strs(v: unknown): string[] {
   return Array.isArray(v) ? v.filter((x): x is string => typeof x === 'string' && x !== '') : []
 }
 
+/** Same cap as POST /api/memory/tags/decide. */
+const MAX_DECIDE_IDS = 1000
+
 /** Actions that change tags or the vocabulary. */
-const WRITE_ACTIONS: ReadonlySet<string> = new Set([
+export const TAGS_WRITE_ACTIONS: ReadonlySet<string> = new Set([
   'decide',
   'add',
   'taxonomy_upsert',
@@ -65,6 +68,11 @@ export interface TagsToolOptions {
    * `decided_by`. Set for a routed user: they are always recorded as themselves.
    */
   fixedDecider?: string
+}
+
+/** What a read-only surface answers to a mutating action. */
+export function tagsReadOnlyRefusal(action: string): string {
+  return `memory_tags: "${action}" is not available here (read-only surface). Review and edit tags in the hub under Memory → Tags.`
 }
 
 export function createTagsTool(pool: pg.Pool, opts: TagsToolOptions = {}): Tool {
@@ -90,7 +98,7 @@ export function createTagsTool(pool: pg.Pool, opts: TagsToolOptions = {}): Tool 
       properties: {
         action: {
           type: 'string',
-          enum: [...ACTIONS],
+          enum: [...TAGS_ACTIONS],
           description: 'What to do (default: pending)',
         },
         entity_type: { type: 'string', enum: ['conversation', 'summary'] },
@@ -117,7 +125,11 @@ export function createTagsTool(pool: pg.Pool, opts: TagsToolOptions = {}): Tool 
           description: 'taxonomy_decide: [{key, value}]',
         },
         parent_value: { type: 'string', description: 'taxonomy_upsert: nest under this value' },
-        aliases: { type: 'array', items: { type: 'string' }, description: 'taxonomy_upsert' },
+        aliases: {
+          type: 'array',
+          items: { type: 'string' },
+          description: 'taxonomy_upsert: replaces the alias list ([] clears it; omit to keep it)',
+        },
         from: { type: 'string', description: 'taxonomy_merge: value to fold away' },
         into: { type: 'string', description: 'taxonomy_merge: value that survives' },
         reason: { type: 'string' },
@@ -127,10 +139,14 @@ export function createTagsTool(pool: pg.Pool, opts: TagsToolOptions = {}): Tool 
       required: [],
     },
     async execute(args: Record<string, unknown>): Promise<string> {
-      const action = (str(args.action) ?? 'pending') as (typeof ACTIONS)[number]
+      const action = (str(args.action) ?? 'pending') as (typeof TAGS_ACTIONS)[number]
       const limit = typeof args.limit === 'number' ? args.limit : undefined
-      if (!allowWrite && WRITE_ACTIONS.has(action)) {
-        return `memory_tags: "${action}" is not available here (read-only surface). Review and edit tags in the hub under Memory → Tags.`
+      if (!allowWrite && TAGS_WRITE_ACTIONS.has(action)) {
+        return tagsReadOnlyRefusal(action)
+      }
+      // A state that is given must be a real one; a typo is not "no filter".
+      if (args.state !== undefined && args.state !== null && !isTagState(args.state)) {
+        return 'bad state (suggested, accepted or rejected)'
       }
       try {
         switch (action) {
@@ -179,6 +195,7 @@ export function createTagsTool(pool: pg.Pool, opts: TagsToolOptions = {}): Tool 
             const ids = strs(args.ids)
             const state = args.state
             if (ids.length === 0) return 'ids required'
+            if (ids.length > MAX_DECIDE_IDS) return `at most ${String(MAX_DECIDE_IDS)} ids`
             if (state !== 'accepted' && state !== 'rejected')
               return 'state must be accepted or rejected'
             const changed = await decideTags(pool, ids, state, who(args))
@@ -275,10 +292,17 @@ export function createTagsTool(pool: pg.Pool, opts: TagsToolOptions = {}): Tool 
             return `Merged ${args.key as string}:${args.from as string} into ${args.key as string}:${args.into as string}: ${String(r.moved)} tag(s) moved, ${String(r.dropped)} duplicate(s) dropped.`
           }
           default:
-            return `Unknown action "${String(action)}". One of: ${ACTIONS.join(', ')}`
+            return `Unknown action "${String(action)}". One of: ${TAGS_ACTIONS.join(', ')}`
         }
       } catch (error: unknown) {
         const msg = error instanceof Error ? error.message : String(error)
+        // Before migration 0019 there are no tag tables: say so, like the
+        // HTTP routes do, instead of surfacing a relation error.
+        if (/relation "?ros_tag[a-z_]*"? does not exist/i.test(msg)) {
+          return TAGS_WRITE_ACTIONS.has(action)
+            ? 'memory_tags: session tagging is not installed on this database yet (migration 0019).'
+            : 'No tags (session tagging is not installed on this database yet).'
+        }
         return `memory_tags failed: ${msg}`
       }
     },

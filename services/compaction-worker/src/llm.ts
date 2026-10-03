@@ -399,6 +399,8 @@ async function callEndpoint(
         // attempt with a fresh mint, once.
         reminted = true
         endpoint.tokenSource.invalidate(token)
+        // Release the rejected response's socket before retrying.
+        await response.body?.cancel().catch(() => {})
         attempt -= 1
         continue
       }

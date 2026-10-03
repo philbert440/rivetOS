@@ -226,6 +226,8 @@ export async function callNativeTagger(
       })
       if (response.status === 401 && target.tokenSource && attempt === 0) {
         target.tokenSource.invalidate(auth.Authorization?.replace(/^Bearer /, ''))
+        // Release the rejected response's socket before retrying.
+        await response.body?.cancel().catch(() => {})
         continue
       }
       if (!response.ok) {

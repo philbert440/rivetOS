@@ -6,6 +6,7 @@ import {
   normalizeTagKey,
   normalizeTagValue,
   parseTagLiteral,
+  splitTagLiteral,
 } from './tags.js'
 
 describe('normalizeTagValue', () => {
@@ -39,6 +40,16 @@ describe('normalizeTagValue: unicode and bounds', () => {
     expect(normalizeTagValue('a\tb\u0085c')).toBe('a-b-c')
     expect(normalizeTagValue('///')).toBe('')
     expect(normalizeTagValue('\u0000\u200B')).toBe('')
+  })
+
+  it('a full-width or compatibility colon separates a literal like an ASCII one', () => {
+    for (const colon of [':', '\uFF1A', '\uFE13', '\uFE55']) {
+      expect(parseTagLiteral(`project${colon}TenPAL`)).toEqual({ key: 'project', value: 'tenpal' })
+    }
+    // The first separator splits; a later one belongs to the value's text.
+    expect(splitTagLiteral('topic\uFF1Aa:b')).toEqual({ key: 'topic', value: 'a:b' })
+    expect(splitTagLiteral('no separator')).toBeNull()
+    expect(splitTagLiteral(':x')).toBeNull()
   })
 
   it('never returns a lone surrogate', () => {

@@ -7,6 +7,7 @@ import { createDenTools } from './den-tools.js'
 import {
   memoryBrowseInputSchema,
   memoryGetFullInputSchema,
+  memoryTagsInputSchema,
   memorySearchInputSchema,
   memoryStatsInputSchema,
 } from './memory.js'
@@ -85,6 +86,7 @@ describe('createDenTools', () => {
       'memory_browse',
       'memory_stats',
       'memory_get_full',
+      'memory_tags',
       'wiki_search',
       'wiki_read',
     ])
@@ -133,6 +135,37 @@ describe('createDenTools', () => {
     expect(await tool(handle, 'memory_get_full').execute({ id: 'row-1' })).toBe('memory_get_full')
     expect(memoryTool).toHaveBeenNthCalledWith(1, 'memory_stats', { agent: 'grok' }, undefined)
     expect(memoryTool).toHaveBeenNthCalledWith(2, 'memory_get_full', { id: 'row-1' }, undefined)
+  })
+
+  it('memory_tags forwards reads, and refuses writes locally unless the write surface is on', async () => {
+    const memoryTool = vi.fn(async (name: string): Promise<ToolResult> => name)
+    const base = {
+      denUrl: DEN,
+      enableDelegate: false,
+      requestedBy: 'mcp-sidecar',
+      log: () => undefined,
+      gateway: { memoryTool } as unknown as DenToolsGateway,
+    }
+    const readOnly = tool(createDenTools({ ...base, enableWrite: false }), 'memory_tags')
+    expect(readOnly.inputSchema).toBe(memoryTagsInputSchema)
+    expect(readOnly.annotations).toMatchObject({ readOnlyHint: true })
+    expect(readOnly.description).toContain('READ-ONLY')
+    expect(await readOnly.execute({ action: 'pending', limit: 5 })).toBe('memory_tags')
+    expect(await readOnly.execute({})).toBe('memory_tags')
+    expect(memoryTool).toHaveBeenCalledTimes(2)
+    for (const action of ['decide', 'add', 'taxonomy_upsert', 'taxonomy_decide', 'taxonomy_merge']) {
+      expect(await readOnly.execute({ action, ids: ['a'], state: 'accepted' })).toMatch(
+        /not available here \(read-only surface\)/,
+      )
+    }
+    expect(memoryTool).toHaveBeenCalledTimes(2)
+
+    const writable = tool(createDenTools({ ...base, enableWrite: true }), 'memory_tags')
+    expect(writable.annotations).toMatchObject({ readOnlyHint: false })
+    expect(writable.description).not.toContain('READ-ONLY')
+    const decide = { action: 'decide', ids: ['a'], state: 'accepted' }
+    expect(await writable.execute(decide)).toBe('memory_tags')
+    expect(memoryTool).toHaveBeenLastCalledWith('memory_tags', decide, undefined)
   })
 
   it('maps a status-0 GatewayError to den unreachable and does not throw', async () => {
@@ -385,7 +418,7 @@ Hello
       gateway: {} as DenToolsGateway,
     })
     const pg = [...memory.tools, ...wiki.tools, ...delegate.tools]
-    expect(pg).toHaveLength(10)
+    expect(pg).toHaveLength(11)
     for (const registration of pg) {
       const proxy = tool(den, registration.name)
       expect(proxy.name).toBe(registration.name)

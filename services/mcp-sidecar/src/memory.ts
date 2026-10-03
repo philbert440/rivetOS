@@ -1,6 +1,6 @@
 /**
  * Memory data-plane tools — `memory_search`, `memory_browse`,
- * `memory_stats`, `memory_get_full`, plus optional write tools.
+ * `memory_stats`, `memory_get_full`, `memory_tags`, plus optional write tools.
  *
  * Wraps the in-process tools exported by `@rivetos/memory-postgres` so external
  * MCP clients can hit the same surface a local agent has. All four tools share
@@ -14,13 +14,20 @@
  * recovering the full payload (daily friction for long tool outputs).
  */
 
-import { PostgresMemory, createMemoryTools as createPgMemoryTools } from '@rivetos/memory-postgres'
+import {
+  PostgresMemory,
+  TAGS_ACTIONS,
+  createMemoryTools as createPgMemoryTools,
+  createTagsTool,
+} from '@rivetos/memory-postgres'
 import type { Tool } from '@rivetos/types'
 import { z } from 'zod'
 
 import type { ToolRegistration } from '@rivetos/mcp'
 import { adaptRivetTool } from '@rivetos/mcp'
 import { createMemoryWriteTools } from './memory-write.js'
+
+export { TAGS_WRITE_ACTIONS, tagsReadOnlyRefusal } from '@rivetos/memory-postgres'
 
 export interface MemoryToolsOptions {
   /** Postgres connection string (e.g. value of `RIVETOS_PG_URL`). Required. */
@@ -31,7 +38,10 @@ export interface MemoryToolsOptions {
   embedModel?: string
   /** Override the wire-name prefix. Default `` (no prefix). claude-cli prefixes MCP tools as `mcp__<server>__<name>` so we keep the wire name clean. */
   prefix?: string
-  /** When true, also register memory_append / memory_ingest_session. */
+  /**
+   * When true, also register memory_append / memory_ingest_session, and let
+   * memory_tags decide, add and edit the vocabulary (read-only otherwise).
+   */
   enableWrite?: boolean
 }
 
@@ -44,9 +54,9 @@ export interface MemoryToolsHandle {
 
 /**
  * Build the full memory tool surface — `memory_search`, `memory_browse`,
- * `memory_stats`, `memory_get_full` — bootstrapping a `PostgresMemory` adapter
- * and adapting each tool to the MCP wire shape. One pool, four tools, single
- * shutdown path.
+ * `memory_stats`, `memory_get_full`, `memory_tags` — bootstrapping a
+ * `PostgresMemory` adapter and adapting each tool to the MCP wire shape. One
+ * pool, five tools, single shutdown path.
  */
 export function createMemoryTools(options: MemoryToolsOptions): MemoryToolsHandle {
   if (!options.pgUrl) {
@@ -119,6 +129,21 @@ export function createMemoryTools(options: MemoryToolsOptions): MemoryToolsHandl
         'a generic file reader. Mirrors the in-process `memory_get_full` tool.',
       annotations: { readOnlyHint: true, idempotentHint: true },
     }),
+    adaptRivetTool(
+      // The in-process tool is read-only; the write surface gets a writable
+      // one, with decisions recorded as made over MCP.
+      options.enableWrite
+        ? createTagsTool(pool, { allowWrite: true, decidedBy: 'mcp' })
+        : find('memory_tags'),
+      memoryTagsInputSchema,
+      {
+        name: `${prefix}memory_tags`,
+        description: memoryTagsDescription(options.enableWrite === true),
+        annotations: options.enableWrite
+          ? { readOnlyHint: false, idempotentHint: true }
+          : { readOnlyHint: true, idempotentHint: true },
+      },
+    ),
     ...(options.enableWrite ? createMemoryWriteTools(memory, prefix) : []),
   ]
 
@@ -135,6 +160,9 @@ export function createMemoryTools(options: MemoryToolsOptions): MemoryToolsHandl
 // ---------------------------------------------------------------------------
 // Input schemas — hand-mapped from plugins/memory/postgres/src/tools/*.ts
 // ---------------------------------------------------------------------------
+
+const TAG_FILTER_DESCRIPTION =
+  'Only results whose conversation carries this accepted key:value tag (e.g. project:tenpal). See memory_tags.'
 
 export const memorySearchInputSchema = {
   query: z.string().describe('Search query — natural language question or keywords'),
@@ -174,6 +202,7 @@ export const memorySearchInputSchema = {
     .describe(
       'Shortcut for time-bounded filters — resolves in the SERVER local timezone. last_7d/last_14d are rolling (prefer over this_week early in the week). Used only when neither since nor before is provided.',
     ),
+  tag: z.string().optional().describe(TAG_FILTER_DESCRIPTION),
   expand: z
     .boolean()
     .optional()
@@ -207,6 +236,7 @@ export const memoryBrowseInputSchema = {
       'Shortcut for time-bounded windows — resolves to (since, before) in the SERVER local timezone, no TZ math required. last_7d/last_14d are rolling (prefer over this_week early in the week). Used only when neither since nor before is provided.',
     ),
   agent: z.string().optional().describe('Filter by agent (opus, grok, etc.)'),
+  tag: z.string().optional().describe(TAG_FILTER_DESCRIPTION),
   include_tools: z
     .boolean()
     .optional()
@@ -235,4 +265,60 @@ export const memoryGetFullInputSchema = {
     .string()
     .min(1)
     .describe('Row id, as shown by memory_search / memory_browse truncation hints'),
+} satisfies z.ZodRawShape
+
+/** Description for `memory_tags`, on either transport. */
+export function memoryTagsDescription(writable: boolean): string {
+  return (
+    'Read key:value tags on sessions and summaries (session tagging). ' +
+    'Actions: pending (suggestions awaiting review; the default), list (tags on an entity or by key+value), ' +
+    'counts (accepted usage per tag), lookup (tags for session_keys), taxonomy (the vocabulary)' +
+    (writable
+      ? ', decide (accept or reject suggestion ids), add (tag a session or summary yourself; born accepted), ' +
+        'taxonomy_upsert / taxonomy_decide / taxonomy_merge (edit the vocabulary). '
+      : '. This surface is READ-ONLY: decide, add and the taxonomy edits are refused ' +
+        '(set RIVETOS_MCP_ENABLE_MEMORY_WRITE=1, or review in the hub under Memory → Tags). ') +
+    'Rejecting keeps the row so the tagger never re-proposes it. Use tag=key:value on ' +
+    'memory_search / memory_browse to filter by an accepted tag.'
+  )
+}
+
+export const memoryTagsInputSchema = {
+  action: z.enum(TAGS_ACTIONS).optional().describe('What to do (default: pending)'),
+  entity_type: z.enum(['conversation', 'summary']).optional().describe('list / add'),
+  entity_id: z.string().optional().describe('Conversation or summary id (list / add)'),
+  session_key: z
+    .string()
+    .optional()
+    .describe('add: tag the conversation captured under this session key'),
+  agent: z.string().optional().describe('add with session_key: narrow to one agent'),
+  key: z.string().optional().describe('Tag key, e.g. project, topic'),
+  value: z.string().optional().describe('Tag value'),
+  tag: z.string().optional().describe('key:value literal (add)'),
+  display: z.string().optional().describe('Display casing (add / taxonomy_upsert)'),
+  state: z
+    .enum(['suggested', 'accepted', 'rejected'])
+    .optional()
+    .describe('decide / taxonomy_decide: accepted or rejected. list / taxonomy: filter.'),
+  ids: z.array(z.string()).max(1000).optional().describe('Tag ids (decide)'),
+  session_keys: z.array(z.string()).max(500).optional().describe('lookup'),
+  entries: z
+    .array(z.object({ key: z.string(), value: z.string() }))
+    .max(500)
+    .optional()
+    .describe('taxonomy_decide: [{key, value}]'),
+  parent_value: z
+    .string()
+    .nullable()
+    .optional()
+    .describe('taxonomy_upsert: nest under this value (null clears the parent)'),
+  aliases: z
+    .array(z.string())
+    .optional()
+    .describe('taxonomy_upsert: replaces the alias list ([] clears it; omit to keep it)'),
+  from: z.string().optional().describe('taxonomy_merge: value to fold away'),
+  into: z.string().optional().describe('taxonomy_merge: value that survives'),
+  reason: z.string().optional(),
+  decided_by: z.string().optional().describe('decide / add: who decided (audit column)'),
+  limit: z.number().int().min(1).max(1000).optional(),
 } satisfies z.ZodRawShape

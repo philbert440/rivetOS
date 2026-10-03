@@ -16,6 +16,13 @@ export {
 } from './adapter.js'
 export type { SqliteMemoryConfig } from './adapter.js'
 export { SCHEMA, SCHEMA_VERSION } from './schema.js'
+export { SqliteTagStore } from './tags.js'
+export type {
+  SqliteAddTagInput,
+  SqliteListTagsOptions,
+  SqlitePendingTag,
+  SqliteTagCount,
+} from './tags.js'
 
 import { homedir } from 'node:os'
 import type { PluginManifest } from '@rivetos/types'
