@@ -176,12 +176,16 @@ export async function pendingTags(db: Queryable, limit = 50): Promise<PendingTag
     `SELECT ${TAG_COLUMNS.split(', ')
       .map((c) => `t.${c}`)
       .join(', ')},
-            c.session_key, c.title, c.agent,
+            COALESCE(c.session_key, sc.session_key) AS session_key,
+            COALESCE(c.title, sc.title) AS title,
+            COALESCE(c.agent, sc.agent) AS agent,
             COALESCE(c.id, s.conversation_id) AS conversation_id,
             left(s.content, 200) AS excerpt
        FROM ros_tags t
        LEFT JOIN ros_conversations c ON t.entity_type = 'conversation' AND c.id = t.entity_id
        LEFT JOIN ros_summaries s ON t.entity_type = 'summary' AND s.id = t.entity_id
+       -- A summary suggestion names its session too, so the reviewer can open it.
+       LEFT JOIN ros_conversations sc ON sc.id = s.conversation_id
       WHERE t.state = 'suggested'
         AND (c.id IS NOT NULL OR s.id IS NOT NULL)
       ORDER BY t.created_at DESC

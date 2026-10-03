@@ -134,6 +134,22 @@ describe.skipIf(PG_URL === '')('tag store (real Postgres)', () => {
     expect(narrowed.entityId).toBe(pathConv)
   })
 
+  it('a pending summary suggestion carries its session key, title and agent', async () => {
+    const conv = await conversation('codex:pending-sum')
+    const sum = await summaryOf(conv)
+    await raw('summary', sum, 'topic', 'wiki', 'suggested')
+    const [p] = await store.pendingTags(c)
+    expect(p).toMatchObject({
+      entityType: 'summary',
+      entityId: sum,
+      conversationId: conv,
+      sessionKey: 'codex:pending-sum',
+      title: 'T',
+      agent: 'rivet',
+      excerpt: 'summary',
+    })
+  })
+
   it('tagCounts counts a conversation once whether the tag is on the session, a summary, or both', async () => {
     const a = await conversation('codex:count-a')
     const b = await conversation('codex:count-b')

@@ -11,9 +11,12 @@ import type { RivetGateway } from '@rivetos/gateway-client'
 import type { PendingTagWire } from '@rivetos/types'
 import { Button } from '../components/ui/button.js'
 import { TagChip, TagChips } from '../components/tag-chips.js'
-import { groupPendingBySession, tagLabel } from '../lib/session-tags.js'
+import { groupPendingBySession, tagLabel, pendingCountLabel } from '../lib/session-tags.js'
 import { TAG_QUERY_ROOT } from '../lib/use-session-tags.js'
 import { relativeTime } from './format.js'
+
+/** Suggestions fetched per load; the count says "first N" when the page is full. */
+const PENDING_PAGE = 200
 
 export function TagsView(props: {
   gateway: RivetGateway
@@ -27,7 +30,7 @@ export function TagsView(props: {
 
   const pending = useQuery({
     queryKey: [TAG_QUERY_ROOT, props.baseUrl, 'pending'],
-    queryFn: ({ signal }) => props.gateway.memoryTagsPending(200, signal),
+    queryFn: ({ signal }) => props.gateway.memoryTagsPending(PENDING_PAGE, signal),
     retry: false,
   })
   const counts = useQuery({
@@ -84,7 +87,9 @@ export function TagsView(props: {
         <div className="mb-2 flex items-center gap-2">
           <h2 className="font-mono text-sm font-semibold text-em">Suggested tags</h2>
           <span className="muted small">
-            {pending.isLoading ? 'loading…' : `${String(pending.data?.tags.length ?? 0)} pending`}
+            {pending.isLoading
+              ? 'loading…'
+              : pendingCountLabel(pending.data?.tags.length ?? 0, PENDING_PAGE)}
           </span>
         </div>
         {pending.data && groups.length === 0 && (

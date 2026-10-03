@@ -62,6 +62,7 @@ import {
   sessionKeysOf,
   sortTagsForChips,
   type AnyTag,
+  settleTagFilters,
 } from '../lib/session-tags.js'
 import { useSessionTagsLookup, useTagEndpoint, useTagMutations } from '../lib/use-session-tags.js'
 import { AddTagInline, TagChips } from '../components/tag-chips.js'
@@ -297,20 +298,20 @@ export function SessionsPage(): JSX.Element {
     ]
   }, [tagMap])
   // A filter whose tag is gone (removed, or datahub dropped) would leave an
-  // empty list with no way back: clear it.
+  // empty list with no way back: settleTagFilters says what to keep.
+  const hasTagEndpoint = tagEndpoint !== null
   useEffect(() => {
-    // Only once the lookup for the current rows has answered: an unresolved
-    // lookup (a session was just added) says nothing about which tags exist.
-    if (!tagEndpoint) {
-      // Datahub gone: the controls are hidden, so nothing could clear these.
-      if (tagFilter !== '') setTagFilter('')
-      if (groupKey !== '') setGroupKey('')
-      return
-    }
-    if (tagLookupLoading) return
-    if (tagFilter !== '' && !tagFilterOptions.some((o) => o.value === tagFilter)) setTagFilter('')
-    if (groupKey !== '' && !tagKeyChoices.includes(groupKey)) setGroupKey('')
-  }, [tagEndpoint, tagLookupLoading, tagFilter, tagFilterOptions, groupKey, tagKeyChoices])
+    const next = settleTagFilters({
+      hasEndpoint: hasTagEndpoint,
+      lookupInFlight: tagLookupLoading,
+      tagFilter,
+      groupKey,
+      filterIdentities: tagFilterOptions.map((o) => o.value),
+      keyChoices: tagKeyChoices,
+    })
+    if (next.tagFilter !== tagFilter) setTagFilter(next.tagFilter)
+    if (next.groupKey !== groupKey) setGroupKey(next.groupKey)
+  }, [hasTagEndpoint, tagLookupLoading, tagFilter, tagFilterOptions, groupKey, tagKeyChoices])
   const rowTags = (row: SessionListRow): AnyTag[] => sortTagsForChips(tagsForRow(tagMap, row))
   const onTagClick = (t: AnyTag): void => setTagFilter(tagIdentity(t))
 
@@ -389,7 +390,7 @@ export function SessionsPage(): JSX.Element {
       )}
 
       {tagEndpoint && tagLookupError && (
-        <div className="font-mono text-[11px] text-warn" role="status">
+        <div className="font-mono text-[11px] text-warn" role="alert">
           tags unavailable: {tagLookupError.message}. Sessions are listed without them.
         </div>
       )}

@@ -124,20 +124,87 @@ export interface PendingSessionGroup {
 }
 
 export function groupPendingBySession(tags: readonly PendingTagWire[]): PendingSessionGroup[] {
+  // A session's own suggestions carry its session key; its summaries'
+  // suggestions carry only the conversation id. Both belong to one group, so
+  // the conversation id is the grouping key whenever it is known.
   const groups = new Map<string, PendingSessionGroup>()
   for (const t of tags) {
-    const key = t.sessionKey ?? t.conversationId ?? t.entityId
-    const g = groups.get(key) ?? {
-      sessionKey: key,
-      openable: typeof t.sessionKey === 'string' && t.sessionKey !== '',
-      title: t.title ?? null,
-      agent: t.agent ?? null,
+    const id = t.conversationId ?? t.sessionKey ?? t.entityId
+    const hasKey = typeof t.sessionKey === 'string' && t.sessionKey !== ''
+    const g = groups.get(id) ?? {
+      sessionKey: id,
+      openable: false,
+      title: null,
+      agent: null,
       tags: [],
     }
+    // Whichever tag knows the session key makes the whole group openable.
+    if (hasKey && !g.openable) {
+      g.sessionKey = t.sessionKey as string
+      g.openable = true
+    }
+    g.title ??= t.title ?? null
+    g.agent ??= t.agent ?? null
     g.tags.push(t)
-    groups.set(key, g)
+    groups.set(id, g)
   }
   return [...groups.values()]
+}
+
+/** Only an accepted tag is a filter: filters match accepted tags. */
+export function isFilterableChip(tag: Pick<AnyTag, 'state'>): boolean {
+  return tag.state === 'accepted'
+}
+
+/** "N pending", or "first N pending" when the list filled the page it was asked for. */
+export function pendingCountLabel(count: number, pageSize: number): string {
+  return count >= pageSize ? `first ${String(count)} pending` : `${String(count)} pending`
+}
+
+/**
+ * Whether the previous lookup's tags may stand in while a new one loads:
+ * only across a change of the session set on the same datahub — never across
+ * an endpoint change, and never once the endpoint is gone.
+ */
+export function keepLookupPlaceholder(
+  previousBaseUrl: unknown,
+  baseUrl: string | undefined,
+): boolean {
+  return baseUrl !== undefined && previousBaseUrl === baseUrl
+}
+
+/** True while a lookup for the current session set is in flight (first load or stand-in). */
+export function lookupInFlight(q: {
+  isLoading: boolean
+  isPlaceholderData: boolean
+  isFetching: boolean
+}): boolean {
+  return q.isLoading || (q.isPlaceholderData && q.isFetching)
+}
+
+/**
+ * The Tag filter and Group-by a sessions list should hold, given what the
+ * lookup knows. A value whose tag no longer exists would leave an empty list:
+ * it is cleared — but only on an answer. Without a datahub the controls are
+ * hidden, so both are cleared; while a lookup is in flight nothing is.
+ */
+export function settleTagFilters(input: {
+  hasEndpoint: boolean
+  lookupInFlight: boolean
+  tagFilter: string
+  groupKey: string
+  /** Identities (`key:value`) of the accepted tags on the listed rows. */
+  filterIdentities: readonly string[]
+  /** Keys that have at least one accepted tag. */
+  keyChoices: readonly string[]
+}): { tagFilter: string; groupKey: string } {
+  const { tagFilter, groupKey } = input
+  if (!input.hasEndpoint) return { tagFilter: '', groupKey: '' }
+  if (input.lookupInFlight) return { tagFilter, groupKey }
+  return {
+    tagFilter: tagFilter !== '' && !input.filterIdentities.includes(tagFilter) ? '' : tagFilter,
+    groupKey: groupKey !== '' && !input.keyChoices.includes(groupKey) ? '' : groupKey,
+  }
 }
 
 /** Session keys per lookup request (the server caps a request at 500). */

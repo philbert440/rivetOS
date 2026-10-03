@@ -88,6 +88,17 @@ describe('groupPendingBySession', () => {
     ])
   })
 
+  it('puts a session and its summaries in one group, openable when any tag knows the session key', () => {
+    const groups = groupPendingBySession([
+      // Summary suggestion first: it knows only the conversation.
+      pending({ id: '1', entityType: 'summary', entityId: 's1', sessionKey: null, conversationId: 'c1' }),
+      pending({ id: '2', entityId: 'c1', sessionKey: 'claude:a', conversationId: 'c1', title: 'A', agent: 'rivet' }),
+      pending({ id: '3', entityType: 'summary', entityId: 's2', sessionKey: null, conversationId: 'c1' }),
+    ])
+    expect(groups).toHaveLength(1)
+    expect(groups[0]).toMatchObject({ sessionKey: 'claude:a', openable: true, title: 'A', agent: 'rivet' })
+    expect(groups[0].tags.map((t) => t.id)).toEqual(['1', '2', '3'])
+  })
 })
 
 describe('lookup chunking', () => {
@@ -112,9 +123,69 @@ describe('mergeLookups', () => {
 })
 
 describe('chip click target', () => {
-  it('filtering by a tag only ever matches accepted tags (why suggested chips are not filters)', () => {
+  it('only an accepted chip is a filter, because filters match accepted tags only', async () => {
+    const { isFilterableChip } = await import('./session-tags.js')
+    expect(isFilterableChip({ state: 'accepted' })).toBe(true)
+    expect(isFilterableChip({ state: 'suggested' })).toBe(false)
+    expect(isFilterableChip({ state: 'rejected' })).toBe(false)
     const rows = [row('r1', 'claude:a')]
     const map = tagsBySession({ 'claude:a': [tag({ key: 'topic', value: 'x', state: 'suggested' })] })
     expect(filterRowsByTag(rows, map, 'topic:x')).toEqual([])
+  })
+})
+
+describe('lookup rules', () => {
+  it('keeps the previous tags only across a session-set change on the same datahub', async () => {
+    const { keepLookupPlaceholder } = await import('./session-tags.js')
+    expect(keepLookupPlaceholder('https://hub-a', 'https://hub-a')).toBe(true)
+    expect(keepLookupPlaceholder('https://hub-a', 'https://hub-b')).toBe(false)
+    expect(keepLookupPlaceholder('https://hub-a', undefined)).toBe(false)
+    expect(keepLookupPlaceholder(undefined, undefined)).toBe(false)
+    expect(keepLookupPlaceholder(undefined, 'https://hub-a')).toBe(false)
+  })
+
+  it('a lookup is in flight on first load or while a stand-in is being replaced, not when disabled', async () => {
+    const { lookupInFlight } = await import('./session-tags.js')
+    expect(lookupInFlight({ isLoading: true, isPlaceholderData: false, isFetching: true })).toBe(true)
+    expect(lookupInFlight({ isLoading: false, isPlaceholderData: true, isFetching: true })).toBe(true)
+    // A disabled query holding a placeholder is not loading and never will be.
+    expect(lookupInFlight({ isLoading: false, isPlaceholderData: true, isFetching: false })).toBe(false)
+    expect(lookupInFlight({ isLoading: false, isPlaceholderData: false, isFetching: true })).toBe(false)
+  })
+
+  it('settleTagFilters: keeps while loading, clears what no longer exists, clears all without a datahub', async () => {
+    const { settleTagFilters } = await import('./session-tags.js')
+    const base = {
+      hasEndpoint: true,
+      lookupInFlight: false,
+      tagFilter: 'project:tenpal',
+      groupKey: 'project',
+      filterIdentities: ['', 'project:tenpal'],
+      keyChoices: ['project'],
+    }
+    expect(settleTagFilters(base)).toEqual({ tagFilter: 'project:tenpal', groupKey: 'project' })
+    // A session was just added: the lookup has not answered, nothing is known yet.
+    expect(
+      settleTagFilters({ ...base, lookupInFlight: true, filterIdentities: [''], keyChoices: [] }),
+    ).toEqual({ tagFilter: 'project:tenpal', groupKey: 'project' })
+    // The tag was removed: the answer no longer has it.
+    expect(settleTagFilters({ ...base, filterIdentities: [''], keyChoices: [] })).toEqual({
+      tagFilter: '',
+      groupKey: '',
+    })
+    // Datahub gone: the controls are hidden, even mid-lookup.
+    expect(settleTagFilters({ ...base, hasEndpoint: false, lookupInFlight: true })).toEqual({
+      tagFilter: '',
+      groupKey: '',
+    })
+    expect(settleTagFilters({ ...base, tagFilter: '', groupKey: '' })).toEqual({ tagFilter: '', groupKey: '' })
+  })
+})
+
+describe('pending review helpers', () => {
+  it('says "first N" when the page is full', async () => {
+    const { pendingCountLabel } = await import('./session-tags.js')
+    expect(pendingCountLabel(3, 200)).toBe('3 pending')
+    expect(pendingCountLabel(200, 200)).toBe('first 200 pending')
   })
 })

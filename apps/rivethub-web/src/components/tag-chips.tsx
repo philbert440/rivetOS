@@ -7,7 +7,7 @@
 
 import { useState, type JSX } from 'react'
 import { Check, Plus, X } from 'lucide-react'
-import { tagLabel, type AnyTag } from '../lib/session-tags.js'
+import { tagLabel, type AnyTag, isFilterableChip } from '../lib/session-tags.js'
 import { cn } from '../lib/utils.js'
 
 export function TagChip(props: {
@@ -34,7 +34,7 @@ export function TagChip(props: {
   return (
     <span className={cn(base, tone, 'group max-w-full')} title={title} data-state={tag.state}>
       {/* Only an accepted tag is a filter: filters match accepted tags. */}
-      {props.onClick && !suggested ? (
+      {props.onClick && isFilterableChip(tag) ? (
         <button
           type="button"
           className="truncate hover:underline"
