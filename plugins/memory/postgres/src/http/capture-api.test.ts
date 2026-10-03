@@ -10,6 +10,7 @@ import { describe, expect, it, vi } from 'vitest'
 import type pg from 'pg'
 import { captureBatch, type CaptureBatch } from '../tools/write-tools.js'
 import { createCaptureApiRoute, type CaptureApiOptions } from './capture-api.js'
+import { resetProjectRuleWarnings } from '../tags/rule-project.js'
 
 const batch: CaptureBatch = {
   session_key: 'codex:s',
@@ -307,5 +308,193 @@ describe('capture HTTP validation and routing', () => {
       },
     })
     expect(response).toEqual({ status: 500, body: { error: 'failed' } })
+  })
+})
+
+describe('rule-based project tag', () => {
+  const HIT = {
+    key: 'project' as const,
+    value: 'rivetos',
+    display: 'rivetOS',
+    rule: 'git-remote' as const,
+    reason: 'git-remote: github.com/philbert440/rivetOS',
+    gitRoot: '/srv/code/rivetos',
+  }
+  const CWD = '/srv/code/rivetos/packages/types'
+  const resolveProject = vi.fn((cwd: string) => (cwd === CWD ? HIT : null))
+  const tagInserts = (db: ReturnType<typeof database>) =>
+    db.query.mock.calls.filter(([sql]) => sql.includes('INSERT INTO ros_tags'))
+  const sqls = (db: ReturnType<typeof database>) => db.query.mock.calls.map(([sql]) => sql)
+
+  it('resolves before BEGIN and writes an accepted, attributed rule tag under a savepoint', async () => {
+    const db = database()
+    resolveProject.mockClear()
+    let beganWhenResolved: boolean | undefined
+    resolveProject.mockImplementationOnce((cwd: string) => {
+      beganWhenResolved = db.query.mock.calls.length > 0
+      return cwd === CWD ? HIT : null
+    })
+    const input = { ...batch, settings: { cwd: `  ${CWD}  ` } }
+    expect((await request({ ...db, capture: { resolveProject } }, input)).status).toBe(200)
+    expect(resolveProject).toHaveBeenCalledWith(CWD)
+    expect(beganWhenResolved).toBe(false)
+    const inserts = tagInserts(db)
+    expect(inserts).toHaveLength(1)
+    expect(inserts[0][0]).toMatch(/ON CONFLICT \(entity_type, entity_id, key, value\) DO NOTHING/)
+    expect(inserts[0][0]).toMatch(/'rule', 'accepted', \$5, \$6, \$5, now\(\)/)
+    expect(inserts[0][1]).toEqual([
+      'conversation',
+      'project',
+      'rivetos',
+      'rivetOS',
+      'cwd-git-root',
+      'git-remote: github.com/philbert440/rivetOS',
+    ])
+    const order = sqls(db)
+    expect(order.indexOf('SAVEPOINT rivet_project_rule')).toBeGreaterThan(
+      order.findIndex((s) => s.includes('INSERT INTO ros_conversations')),
+    )
+    expect(order.indexOf('RELEASE SAVEPOINT rivet_project_rule')).toBeLessThan(
+      order.findIndex((s) => s.includes('INSERT INTO ros_messages')),
+    )
+    expect(order.at(-1)).toBe('COMMIT')
+  })
+
+  it('never fails capture when the tag write throws: rolls back to the savepoint and commits the messages', async () => {
+    const db = database()
+    const base = db.query.getMockImplementation()!
+    db.query.mockImplementation(async (sql: string, params?: unknown[]) => {
+      if (sql.includes('FROM ros_tags')) throw new Error('relation "ros_tags" does not exist')
+      return base(sql, params)
+    })
+    resetProjectRuleWarnings()
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    try {
+      const res = await request({ ...db, capture: { resolveProject } }, { ...batch, settings: { cwd: CWD } })
+      expect(res).toEqual({
+        status: 200,
+        body: { ok: true, conversation_id: 'conversation', inserted: 1, skipped: 0 },
+      })
+      const order = sqls(db)
+      expect(order).toContain('ROLLBACK TO SAVEPOINT rivet_project_rule')
+      expect(order.indexOf('ROLLBACK TO SAVEPOINT rivet_project_rule')).toBeLessThan(
+        order.findIndex((s) => s.includes('INSERT INTO ros_messages')),
+      )
+      expect(order.at(-1)).toBe('COMMIT')
+      expect(warn).toHaveBeenCalledWith(expect.stringContaining('tag tables missing'))
+      // The same failure on the next batch is not logged again.
+      await request({ ...db, capture: { resolveProject } }, { ...batch, settings: { cwd: CWD } })
+      expect(warn.mock.calls.filter(([m]) => String(m).includes('tag tables missing'))).toHaveLength(1)
+    } finally {
+      warn.mockRestore()
+    }
+  })
+
+  it('a throwing resolver means no tag, not a failed capture', async () => {
+    const db = database()
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    try {
+      const boom = vi.fn(() => {
+        throw new Error('EIO')
+      })
+      const res = await request({ ...db, capture: { resolveProject: boom } }, { ...batch, settings: { cwd: CWD } })
+      expect(res.status).toBe(200)
+      expect(tagInserts(db)).toHaveLength(0)
+      expect(sqls(db)).not.toContain('SAVEPOINT rivet_project_rule')
+    } finally {
+      warn.mockRestore()
+    }
+  })
+
+  it('writes at most once per conversation: an existing rule project tag (even rejected or merged) stops it', async () => {
+    const db = database()
+    const base = db.query.getMockImplementation()!
+    db.query.mockImplementation(async (sql: string, params?: unknown[]) => {
+      if (sql.includes('SELECT 1 FROM ros_tags')) return { rows: [{ '?column?': 1 }], rowCount: 1 }
+      return base(sql, params)
+    })
+    await captureBatch(db.pool, { ...batch, settings: { cwd: CWD } }, { resolveProject })
+    expect(tagInserts(db)).toHaveLength(0)
+  })
+
+  it('follows a vocabulary merge to the survivor and skips a rejected value', async () => {
+    const merged = database()
+    const base = merged.query.getMockImplementation()!
+    merged.query.mockImplementation(async (sql: string, params?: unknown[]) => {
+      if (sql.includes('FROM ros_tag_taxonomy'))
+        return { rows: [{ value: 'rivet-os', display: 'RivetOS', state: 'accepted' }], rowCount: 1 }
+      return base(sql, params)
+    })
+    await captureBatch(merged.pool, { ...batch, settings: { cwd: CWD } }, { resolveProject })
+    expect(tagInserts(merged)[0][1]).toEqual([
+      'conversation',
+      'project',
+      'rivet-os',
+      'RivetOS',
+      'cwd-git-root',
+      HIT.reason,
+    ])
+
+    const rejected = database()
+    const base2 = rejected.query.getMockImplementation()!
+    rejected.query.mockImplementation(async (sql: string, params?: unknown[]) => {
+      if (sql.includes('FROM ros_tag_taxonomy'))
+        return { rows: [{ value: 'rivetos', display: '', state: 'rejected' }], rowCount: 1 }
+      return base2(sql, params)
+    })
+    await captureBatch(rejected.pool, { ...batch, settings: { cwd: CWD } }, { resolveProject })
+    expect(tagInserts(rejected)).toHaveLength(0)
+  })
+
+  it('never resolves a routed user\'s cwd against this host: basename rule only', async () => {
+    const owner = database()
+    const user = database()
+    resolveProject.mockClear()
+    const res = await request(
+      { ...owner, userPools: new Map([['alice', user.pool]]), capture: { resolveProject } },
+      { ...batch, settings: { cwd: CWD } },
+      'POST',
+      { 'x-rivetos-user': 'alice' },
+    )
+    expect(res.status).toBe(200)
+    expect(resolveProject).not.toHaveBeenCalled()
+    expect(tagInserts(owner)).toHaveLength(0)
+    const inserts = tagInserts(user)
+    expect(inserts).toHaveLength(1)
+    expect(inserts[0][1]).toEqual([
+      'conversation',
+      'project',
+      'types',
+      'types',
+      'cwd-git-root',
+      'cwd-basename: types',
+    ])
+  })
+
+  it('a writer override is handed the per-request options, so it cannot bypass the routed-user guard', async () => {
+    const owner = database()
+    const user = database()
+    const seen: Array<boolean | undefined> = []
+    const writer = vi.fn((_pool: pg.Pool, options: { allowFilesystem?: boolean }) => {
+      seen.push(options.allowFilesystem)
+      return async () => ({ ok: true as const, conversation_id: 'c', inserted: 0, skipped: 0 })
+    })
+    const opts = { ...owner, userPools: new Map([['alice', user.pool]]), writer }
+    await request(opts, batch)
+    await request(opts, batch, 'POST', { 'x-rivetos-user': 'alice' })
+    expect(seen).toEqual([true, false])
+  })
+
+  it('skips the rule for no cwd, a relative or dotted cwd, a root-like cwd, or when disabled', async () => {
+    const db = database()
+    resolveProject.mockClear()
+    for (const settings of [{ source: 'x' }, { cwd: 'relative/dir' }, { cwd: '/srv/../etc' }, { cwd: 42 }]) {
+      await captureBatch(db.pool, { ...batch, settings }, { resolveProject })
+    }
+    expect(resolveProject).not.toHaveBeenCalled()
+    await captureBatch(db.pool, { ...batch, settings: { cwd: '/tmp' } }, { allowFilesystem: false })
+    await captureBatch(db.pool, { ...batch, settings: { cwd: CWD } }, { resolveProject: null })
+    expect(tagInserts(db)).toHaveLength(0)
+    expect(sqls(db)).not.toContain('SAVEPOINT rivet_project_rule')
   })
 })
