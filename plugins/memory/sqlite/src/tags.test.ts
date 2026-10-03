@@ -154,6 +154,16 @@ describe('SqliteTagStore', () => {
     })
   })
 
+  it('re-accepting a rejected rule tag promotes it; rejecting does not', async () => {
+    const conv = await conversation('codex:reaccept')
+    tags.propose('conversation', conv, [{ key: 'project', value: 'rivetos' }], { source: 'rule', proposedBy: 'cwd-git-root' })
+    const [rule] = tags.list({ entityId: conv, key: 'project' })
+    tags.decide([rule.id], 'rejected', 'phil')
+    expect(tags.list({ entityId: conv, key: 'project', states: ['rejected'] })[0].source).toBe('rule')
+    tags.decide([rule.id], 'accepted', 'phil')
+    expect(tags.list({ entityId: conv, key: 'project' })[0]).toMatchObject({ source: 'user', state: 'accepted' })
+  })
+
   it('refuses a session key that exists under two agents unless one is named', async () => {
     await conversation('codex:shared', 'rivet')
     const grok = await conversation('codex:shared', 'grok')

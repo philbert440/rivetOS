@@ -78,6 +78,20 @@ describe.skipIf(PG_URL === '')('applyProjectRuleTag (real Postgres)', () => {
     ])
   })
 
+  it('still counts its tag after a person re-added it (source promoted to user): no second project', async () => {
+    const id = await conv()
+    await apply(id)
+    // What addTag's conflict path does when a person re-adds the rule tag.
+    await client.query(
+      `UPDATE ros_tags SET source = 'user', decided_by = 'phil' WHERE entity_id = $1`,
+      [id],
+    )
+    expect(await apply(id, { ...HIT, value: 'other-repo', display: 'other-repo' })).toBe(false)
+    expect(await tagsOf(id)).toEqual([
+      { value: 'rivetos', state: 'accepted', source: 'user', decided_by: 'phil' },
+    ])
+  })
+
   it('follows a vocabulary merge to the survivor and skips a rejected vocabulary value', async () => {
     await client.query(
       `INSERT INTO ros_tag_taxonomy (key, value, display, aliases, state)

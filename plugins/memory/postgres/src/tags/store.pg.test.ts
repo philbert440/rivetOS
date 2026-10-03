@@ -144,11 +144,33 @@ describe.skipIf(PG_URL === '')('tag store (real Postgres)', () => {
     expect(kept).toMatchObject({ source: 'model', state: 'accepted' })
   })
 
+  it('re-accepting a rejected rule tag promotes it; rejecting does not', async () => {
+    const conv = await conversation('codex:reaccept')
+    await raw('conversation', conv, 'project', 'rivetos', 'accepted', 'rule')
+    const [{ id }] = (await c.query<{ id: string }>(`SELECT id FROM ros_tags WHERE entity_id = $1`, [conv])).rows
+    await store.decideTags(c, [id], 'rejected', 'phil')
+    expect((await c.query(`SELECT source FROM ros_tags WHERE id = $1`, [id])).rows[0]).toEqual({ source: 'rule' })
+    await store.decideTags(c, [id], 'accepted', 'phil')
+    expect((await c.query(`SELECT source FROM ros_tags WHERE id = $1`, [id])).rows[0]).toEqual({ source: 'user' })
+  })
+
+  it('a merge onto a rule survivor keeps the folded tag reviewed', async () => {
+    const conv = await conversation('codex:merge-source')
+    await raw('conversation', conv, 'project', 'a', 'accepted', 'rule')
+    await store.addTag(c, { entityType: 'conversation', entityId: conv, tag: 'project:b' }, 'phil')
+    await store.mergeTaxonomyValue(c, 'project', 'b', 'a')
+    const rows = (
+      await c.query(`SELECT value, source, state FROM ros_tags WHERE entity_id = $1 ORDER BY value`, [conv])
+    ).rows
+    expect(rows).toEqual([{ value: 'a', source: 'user', state: 'accepted' }])
+  })
+
   it('tagsForConversations honours a row limit', async () => {
     const conv = await conversation('codex:limit')
     for (const v of ['a', 'b', 'c']) await raw('conversation', conv, 'topic', v, 'accepted')
     expect((await store.tagsForConversations(c, [conv])).get(conv)).toHaveLength(3)
     expect((await store.tagsForConversations(c, [conv], ['accepted'], { limit: 2 })).get(conv)).toHaveLength(2)
+    expect((await store.tagsForConversations(c, [conv], ['accepted'], { limit: Number.NaN })).get(conv)).toHaveLength(3)
     expect(
       (await store.tagsForConversations(c, [conv], ['accepted'], { includeSummaryTags: true, limit: 1 })).get(conv),
     ).toHaveLength(1)

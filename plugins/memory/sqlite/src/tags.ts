@@ -185,7 +185,10 @@ export class SqliteTagStore {
     }))
   }
 
-  /** Accept or reject tags by id. Returns the ids that changed. */
+  /**
+   * Accept or reject tags by id. Returns the ids that changed. Re-accepting a
+   * rejected rule tag makes it a user tag, like re-adding it.
+   */
   decide(ids: readonly string[], state: 'accepted' | 'rejected', decidedBy: string): string[] {
     const changed: string[] = []
     const now = this.now()
@@ -194,11 +197,14 @@ export class SqliteTagStore {
       const rows = this.db
         .prepare(
           `UPDATE ros_tags
-              SET state = ?, decided_by = ?, decided_at = ?, updated_at = ?
+              SET state = ?, decided_by = ?, decided_at = ?, updated_at = ?,
+                  source = CASE WHEN source = 'rule' AND ? = 'accepted' THEN 'user' ELSE source END
             WHERE id IN (${marks(chunk.length)}) AND state <> ?
             RETURNING id`,
         )
-        .all(state, decidedBy, now, now, ...chunk, state) as unknown as Array<{ id: string }>
+        .all(state, decidedBy, now, now, state, ...chunk, state) as unknown as Array<{
+        id: string
+      }>
       changed.push(...rows.map((r) => r.id))
     }
     return changed
@@ -320,7 +326,9 @@ export class SqliteTagStore {
   ): Map<string, Tag[]> {
     const out = new Map<string, Tag[]>()
     const keys = [...new Set(sessionKeys.filter(Boolean))]
-    // An empty state list means the default, like list().
+    // An empty state list means the default, like list(). (Postgres'
+    // tagsForSessionKeys returns nothing for an empty list; here it would be
+    // invalid SQL, and nothing calls it that way.)
     const wanted: readonly TagState[] = states.length > 0 ? states : ['suggested', 'accepted']
     for (let i = 0; i < keys.length; i += 100) {
       this.lookupChunk(keys.slice(i, i + 100), wanted, out)

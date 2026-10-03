@@ -219,9 +219,12 @@ export async function applyProjectRuleTag(
     const existing = await client.query(
       `SELECT 1 FROM ros_tags
         WHERE entity_type = 'conversation' AND entity_id = $1
-          AND key = $2 AND source = 'rule'
+          AND key = $2 AND (source = 'rule' OR proposed_by = $3)
         LIMIT 1`,
-      [conversationId, hit.key],
+      // By the rule's identity, not only its source: a person re-adding or
+      // re-accepting the rule tag promotes its source to `user`, and that
+      // row must still count as "this conversation has its rule tag".
+      [conversationId, hit.key, PROJECT_RULE_NAME],
     )
     if ((existing.rowCount ?? existing.rows.length) === 0) {
       // Respect the vocabulary: follow a merge to its survivor, and do not

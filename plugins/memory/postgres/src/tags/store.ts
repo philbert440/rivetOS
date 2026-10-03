@@ -41,8 +41,10 @@ async function inTransaction<T>(
 ): Promise<T> {
   const maybePool = db as Partial<pg.Pool>
   if (typeof maybePool.connect !== 'function' || typeof maybePool.totalCount !== 'number') {
-    // A client: the caller owns the transaction, and the lock joins it.
-    // (`release` tells a real client from a bare query stub in unit tests.)
+    // A client: the caller owns the transaction, and the lock joins it. It
+    // only serializes anything if that caller is inside BEGIN — outside one
+    // the lock is released as soon as its statement ends. Every caller today
+    // passes a pool. (`release` tells a real client from a bare query stub.)
     if (lockName !== undefined && typeof (db as Partial<pg.PoolClient>).release === 'function') {
       await db.query('SELECT pg_advisory_xact_lock(hashtextextended($1, 0))', [lockName])
     }
@@ -208,7 +210,14 @@ export async function pendingTags(db: Queryable, limit = 50): Promise<PendingTag
   }))
 }
 
-/** Accept or reject tags by id. Returns the ids that changed. */
+/**
+ * Accept or reject tags by id. Returns the ids that changed. Accepting a
+ * rule tag (only possible after it was rejected) is a deliberate statement,
+ * so it becomes a user tag, like re-adding it. The promotion is made by
+ * whoever calls decide/add: on a surface where an agent may write (the den
+ * tool route, the sidecar with its write flag) that caller is trusted to
+ * review, the same as for any other tag it adds.
+ */
 export async function decideTags(
   db: Queryable,
   ids: string[],
@@ -218,7 +227,8 @@ export async function decideTags(
   if (ids.length === 0) return []
   const { rows } = await db.query<{ id: string }>(
     `UPDATE ros_tags
-        SET state = $2, decided_by = $3, decided_at = now(), updated_at = now()
+        SET state = $2, decided_by = $3, decided_at = now(), updated_at = now(),
+            source = CASE WHEN source = 'rule' AND $2 = 'accepted' THEN 'user' ELSE source END
       WHERE id = ANY($1::uuid[]) AND state <> $2
       RETURNING id`,
     [ids, state, decidedBy],
@@ -325,7 +335,10 @@ export async function tagsForConversations(
      * callers asking "what is tagged on the session itself" do not.
      */
     includeSummaryTags?: boolean
-    /** Cap on rows read, across all the conversations asked for. Default: none. */
+    /**
+     * Cap on rows read, across ALL the conversations asked for (so it is a
+     * per-conversation bound only for a single id). At least 1. Default: none.
+     */
     limit?: number
   } = {},
 ): Promise<Map<string, Tag[]>> {
@@ -336,7 +349,9 @@ export async function tagsForConversations(
     .map((c) => `t.${c}`)
     .join(', ')
   const limit =
-    typeof opts.limit === 'number' ? Math.min(Math.max(Math.trunc(opts.limit), 1), 5000) : null
+    typeof opts.limit === 'number' && Number.isFinite(opts.limit)
+      ? Math.min(Math.max(Math.trunc(opts.limit), 1), 5000)
+      : null
   const limitSql = limit === null ? '' : ' LIMIT $3'
   const { rows } = await db.query<TagRow & { conversation_id: string }>(
     opts.includeSummaryTags
@@ -761,6 +776,9 @@ export async function mergeTaxonomyValue(
       await q.query(
         `UPDATE ros_tags o
           SET state = t.state, decided_by = t.decided_by, decided_at = t.decided_at,
+              -- The decision that wins brings its reviewed source with it:
+              -- a rule survivor must not hide a person's tag folded into it.
+              source = CASE WHEN o.source = 'rule' AND t.source <> 'rule' THEN t.source ELSE o.source END,
               updated_at = now()
          FROM ros_tags t
         WHERE t.key = $1 AND t.value = $2
