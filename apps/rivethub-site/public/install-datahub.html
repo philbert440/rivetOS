@@ -92,9 +92,11 @@
     <p>On a terminal, unset fields are prompted (defaults shown), then a
     SUMMARY, then an explicit <code>yes</code> before anything is written.
     Flags and <code>RIVETHUB_*</code> env vars skip their own prompt;
-    <code>--yes</code> skips the final confirm. On non-TTY (plain ssh, no
-    controlling terminal) <code>--yes</code> also accepts each prompt's
-    documented default. Fields with no default are listed together in one
+    <code>--yes</code> skips the final confirm. With no terminal to ask
+    on (plain ssh without <code>-t</code>, cron) nothing is prompted and
+    there is no confirm, with or without <code>--yes</code>: flags, env vars
+    and each prompt's documented default apply, and the install proceeds.
+    Fields with no default are listed together in one
     error with their env names
     (<code>RIVETOS_EMBED_URL</code> / <code>RIVETOS_COMPACTOR_URL</code> /
     <code>RIVETOS_COMPACTOR_MODEL</code> for <code>--memory full</code>).</p>

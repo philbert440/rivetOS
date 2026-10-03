@@ -181,7 +181,7 @@ wizard_open_prompt_fd() {
     return 1
   fi
   if [[ -e /dev/tty && -r /dev/tty ]]; then
-    if exec {_WIZARD_PROMPT_FD}<>/dev/tty; then
+    if { exec {_WIZARD_PROMPT_FD}<>/dev/tty; } 2>/dev/null; then
       return 0
     fi
   fi
@@ -317,16 +317,27 @@ discover_distro_root() {
     printf '%s\n' "${RIVETHUB_DISTRO_DIR}"
     return 0
   fi
+  # Siblings are used unverified, so only a real checkout counts: this file
+  # in install/, and a parent owned by root or by whoever invoked us. A
+  # datahub.sh downloaded on its own into a shared directory (/tmp/x/) must
+  # not adopt a ../bin planted by another local user — it fetches instead.
   src="${BASH_SOURCE[0]:-}"
   if [[ -n "${src}" && -f "${src}" ]]; then
     here="$(cd "$(dirname "${src}")" && pwd)"
     parent="$(cd "${here}/.." && pwd)"
-    if [[ -f "${parent}/bin/rivethub-hub" && -f "${parent}/lib/rivet-ca.sh" ]]; then
+    if [[ "$(basename "${here}")" == "install" ]] && trusted_owner "${parent}" \
+      && [[ -f "${parent}/bin/rivethub-hub" && -f "${parent}/lib/rivet-ca.sh" ]]; then
       printf '%s\n' "${parent}"
       return 0
     fi
   fi
   return 1
+}
+
+trusted_owner() {
+  local owner
+  owner="$(stat -c %u "$1" 2>/dev/null)" || return 1
+  [[ "${owner}" == "0" || "${owner}" == "${EUID}" || "${owner}" == "${SUDO_UID:-}" ]]
 }
 
 init_paths() {
@@ -829,6 +840,9 @@ preflight_sources() {
       err "cannot find bin/rivethub-hub (run from a rivethub checkout: sudo bash install/datahub.sh, or set RIVETHUB_DISTRO_DIR) — refusing before any write."
     fi
     fetch_distro_bundle
+  fi
+  if [[ ! -f "${DISTRO_ROOT}/bin/rivethub-hub" || ! -f "${DISTRO_ROOT}/lib/rivet-ca.sh" ]]; then
+    err "no bin/rivethub-hub + lib/rivet-ca.sh under ${DISTRO_ROOT} (check RIVETHUB_DISTRO_DIR) — refusing before any write."
   fi
   if [[ -z "${RIVETHUB_MIGRATIONS_DIR:-}" ]]; then
     tag="$(pin_get rivetos_tag UNPINNED)"
@@ -1413,8 +1427,8 @@ install_one_helper() {
       chmod "${mode}" "${dest}"
       return 0
     fi
-    warn "leaving existing ${dest} (differs from ${src}; not clobbering operator edits)"
-    return 0
+    cp -pf "${dest}" "${dest}.prev"
+    warn "replacing ${dest} (it differs from this release); previous copy kept at ${dest}.prev"
   fi
   cp -f "${src}" "${dest}"
   chmod "${mode}" "${dest}"
@@ -1694,10 +1708,9 @@ RivetHub datahub ${VERSION} is installed.
 Check:
   rivethub-hub status
 
-On the first agent node, enroll against this datahub (node.sh is not
-published yet — coming; this is the command it will print):
+On the first agent node, enroll against this datahub:
 
-  curl -fsSL https://get.rivethub.io/node.sh | bash -s -- --hub user@this-host
+  curl -fsSL https://get.rivethub.io/node.sh | sudo bash -s -- --hub user@this-host
 
 Replace user@this-host with an SSH login that can run rivethub-hub on this
 host (example: owner@${host}).

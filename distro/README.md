@@ -43,7 +43,7 @@ installs Node 22 there.
 curl -fsSL https://get.rivethub.io/local.sh | bash
 ```
 
-**Channels.** Stable first-install (this one-liner, `pins/stable.json`, AppImage/exe/apk) lives on the production server (`get.rivethub.io` / `rivethub.io`). Dev and nightly app builds live on the mesh share `/rivet-shared/builds/rivethub/` — that is what already-installed desktop and Android check for updates. GitHub tags are source pins (`local_ref`), not the app update feed.
+**Channels.** Stable first-install (this one-liner, `pins/stable.json`, AppImage/exe/apk) lives on the production server (`get.rivethub.io` / `rivethub.io`). Dev and nightly app builds live on the mesh update share your deployment publishes — that is what already-installed desktop and Android check for updates. GitHub tags are source pins (`local_ref`), not the app update feed.
 
 On a terminal, unset fields are prompted (defaults shown), then a
 SUMMARY, then an explicit `yes` before any write. `--yes` skips the
@@ -118,8 +118,8 @@ Bare-metal (systemd, Node 22+, git clone at the `pins/stable.json`
 `rivetos_tag`) is the default; `--docker` runs the pinned GHCR image with
 host networking on mesh port 3000. Curl-pipe has no sibling `pins/`:
 `node.sh` fetches `https://get.rivethub.io/pins/stable.json` and falls back
-to an embedded copy of `pins/stable.json` (still `UNPINNED` placeholders —
-clone/image float until a real tag + digest-form image are filled in).
+to an embedded copy whose values are `UNPINNED`, so the clone and image
+float if that fetch fails.
 `rivetos mesh enroll` is not merged yet — `install/node.sh` implements the
 same tarball contract over SSH (`enroll_via_ssh`).
 

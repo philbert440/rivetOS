@@ -201,7 +201,7 @@ parse_print() {
 # banner
 # ---------------------------------------------------------------------------
 
-@test "banner names node.sh (coming), user@this-host, password file path, and rivethub-hub status" {
+@test "banner names node.sh, user@this-host, password file path, and rivethub-hub status" {
   run bash -c '
     source "$1"
     init_paths
@@ -212,8 +212,8 @@ parse_print() {
     print_banner
   ' bash "${DATAHUB}"
   [ "${status}" -eq 0 ]
-  [[ "${output}" == *"get.rivethub.io/node.sh"* ]]
-  [[ "${output}" == *"coming"* ]]
+  [[ "${output}" == *"get.rivethub.io/node.sh | sudo bash"* ]]
+  [[ "${output}" != *"not published"* ]]
   [[ "${output}" == *"user@this-host"* ]]
   [[ "${output}" == *"password file:"* ]]
   [[ "${output}" == *"${RIVETHUB_ROOT}/datahub.env"* ]]
@@ -763,6 +763,49 @@ for rel, key in (
   [[ "${output}" == *"Unanswered questions"* ]]
   [[ "${output}" == *"RIVETOS_COMPACTOR_MODEL"* ]]
   [ ! -f "${RIVETHUB_ROOT}/datahub.env" ]
+}
+
+@test "curl-pipe refuses a tampered worker unit too" {
+  publish_bundle
+  unset RIVETHUB_DISTRO_DIR
+  printf '\n# tampered\n' >>"${TEST_TMP}/pub/systemd/rivet-compactor.service"
+  run bash -s -- --yes --advertise-host 192.0.2.10 <"${DATAHUB}"
+  [ "${status}" -ne 0 ]
+  [[ "${output}" == *"checksum mismatch for systemd/rivet-compactor.service"* ]]
+  [ ! -f "${RIVETHUB_ROOT}/datahub.env" ]
+}
+
+@test "a lone datahub.sh does not adopt ../bin planted beside its directory" {
+  publish_bundle
+  unset RIVETHUB_DISTRO_DIR
+  mkdir -p "${TEST_TMP}/dl/x" "${TEST_TMP}/dl/bin" "${TEST_TMP}/dl/lib"
+  cp "${DATAHUB}" "${TEST_TMP}/dl/x/datahub.sh"
+  printf '#!/bin/sh\necho PLANTED\n' >"${TEST_TMP}/dl/bin/rivethub-hub"
+  printf '#!/bin/sh\necho PLANTED\n' >"${TEST_TMP}/dl/lib/rivet-ca.sh"
+  bash "${TEST_TMP}/dl/x/datahub.sh" --yes --advertise-host 192.0.2.10 \
+    >"${TEST_TMP}/lone.out" 2>"${TEST_TMP}/lone.err"
+  grep -q "sha256 verified" "${TEST_TMP}/lone.err"
+  cmp "${REPO}/bin/rivethub-hub" "${RIVETHUB_BIN_DIR}/rivethub-hub"
+  ! grep -q PLANTED "${TEST_TMP}/lone.out" "${TEST_TMP}/lone.err"
+}
+
+@test "a RIVETHUB_DISTRO_DIR without the helpers is refused before any write" {
+  export RIVETHUB_DISTRO_DIR="${TEST_TMP}/typo"
+  run bash "${DATAHUB}" --yes --advertise-host 192.0.2.10
+  [ "${status}" -ne 0 ]
+  [[ "${output}" == *"check RIVETHUB_DISTRO_DIR"* ]]
+  [ ! -d "${RIVETHUB_ROOT}/shared" ]
+  [ ! -f "${RIVETHUB_ROOT}/datahub.env" ]
+}
+
+@test "re-run replaces a helper that differs and keeps the previous copy" {
+  bash "${DATAHUB}" --yes --advertise-host 192.0.2.10 >/dev/null 2>&1
+  printf '\n# old release\n' >>"${RIVETHUB_BIN_DIR}/rivethub-hub"
+  run bash "${DATAHUB}" --yes --advertise-host 192.0.2.10
+  [ "${status}" -eq 0 ]
+  [[ "${output}" == *"previous copy kept at"* ]]
+  cmp "${REPO}/bin/rivethub-hub" "${RIVETHUB_BIN_DIR}/rivethub-hub"
+  grep -q "old release" "${RIVETHUB_BIN_DIR}/rivethub-hub.prev"
 }
 
 # ---------------------------------------------------------------------------
