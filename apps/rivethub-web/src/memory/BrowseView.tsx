@@ -15,10 +15,11 @@ export function BrowseView(props: {
   const [agent, setAgent] = useState('')
   const [window, setWindow] = useState('')
   const [limit, setLimit] = useState(50)
+  const [tag, setTag] = useState('')
 
   // Connection gating happens one level up (MemoryHubPage) — see SearchView.
   const res = useQuery({
-    queryKey: ['memory-browse', props.baseUrl, role, agent, window, limit],
+    queryKey: ['memory-browse', props.baseUrl, role, agent, window, limit, tag],
     queryFn: ({ signal }) =>
       props.gateway.memoryBrowse(
         {
@@ -26,6 +27,7 @@ export function BrowseView(props: {
           agent: agent || undefined,
           window: window || undefined,
           limit,
+          ...(tag.trim() ? { tag: tag.trim() } : {}),
         },
         signal,
       ),
@@ -58,6 +60,14 @@ export function BrowseView(props: {
           value={agent}
           placeholder="agent (optional)"
           onChange={(e) => setAgent(e.target.value)}
+        />
+        <input
+          type="text"
+          value={tag}
+          placeholder="tag (project:name)"
+          aria-label="tag filter"
+          title="Only sessions carrying this accepted tag"
+          onChange={(e) => setTag(e.target.value)}
         />
         <Select
           value={window}
@@ -118,6 +128,18 @@ export function BrowseView(props: {
                 </button>
               )}
             </div>
+            {m.tags && m.tags.length > 0 && (
+              <div className="mb-1 flex flex-wrap gap-1">
+                {m.tags.map((t) => (
+                  <span
+                    key={t}
+                    className="rounded border border-em/40 bg-em/10 px-1.5 py-0.5 font-mono text-[10px] text-em"
+                  >
+                    {t}
+                  </span>
+                ))}
+              </div>
+            )}
             <div className="hit-body">{preview(m.content, 360)}</div>
           </li>
         ))}

@@ -15,15 +15,18 @@ export function SearchView(props: {
   const [query, setQuery] = useState('')
   const [scope, setScope] = useState<'both' | 'messages' | 'summaries'>('both')
   const [verbose, setVerbose] = useState(false)
+  const [tagInput, setTagInput] = useState('')
+  const [tag, setTag] = useState('')
 
   // Connection gating happens one level up: MemoryHubPage renders the
   // needNode / resolving / unconfigured screens, so reaching this component
   // means the endpoint resolved. `enabled` here only parks the query until
   // the user submits a search.
   const res = useQuery({
-    queryKey: ['memory-search', props.baseUrl, query, scope],
+    queryKey: ['memory-search', props.baseUrl, query, scope, tag],
     enabled: query !== '',
-    queryFn: ({ signal }) => props.gateway.memorySearch({ q: query, scope, limit: 20 }, signal),
+    queryFn: ({ signal }) =>
+      props.gateway.memorySearch({ q: query, scope, limit: 20, ...(tag ? { tag } : {}) }, signal),
   })
 
   return (
@@ -34,6 +37,7 @@ export function SearchView(props: {
         onSubmit={(e) => {
           e.preventDefault()
           setQuery(input.trim())
+          setTag(tagInput.trim())
         }}
       >
         <input
@@ -52,6 +56,15 @@ export function SearchView(props: {
             { value: 'messages', label: 'messages' },
             { value: 'summaries', label: 'summaries' },
           ]}
+        />
+        <input
+          type="text"
+          value={tagInput}
+          placeholder="tag (project:name)"
+          aria-label="tag filter"
+          title="Only hits whose session carries this accepted tag"
+          onChange={(e) => setTagInput(e.target.value)}
+          style={{ flex: '0 1 11rem', minWidth: '9rem' }}
         />
         <label className="small check">
           <input type="checkbox" checked={verbose} onChange={(e) => setVerbose(e.target.checked)} />
@@ -117,6 +130,18 @@ export function SearchView(props: {
                   {verbose && <span className="mono small muted">{h.score.toFixed(4)}</span>}
                   {openable && <span className="open-hint small">open →</span>}
                 </div>
+                {h.tags && h.tags.length > 0 && (
+                  <div className="mb-1 flex flex-wrap gap-1">
+                    {h.tags.map((t) => (
+                      <span
+                        key={t}
+                        className="rounded border border-em/40 bg-em/10 px-1.5 py-0.5 font-mono text-[10px] text-em"
+                      >
+                        {t}
+                      </span>
+                    ))}
+                  </div>
+                )}
                 <div className="hit-body">{preview(h.content, 320)}</div>
               </button>
             </li>

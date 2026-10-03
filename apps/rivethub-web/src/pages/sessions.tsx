@@ -53,6 +53,18 @@ import {
 } from '../lib/session-route-id.js'
 import { createSyncLog, syncLogReducer, type SyncCause } from '../lib/session-sync-log.js'
 import { useIsNarrow } from '../lib/use-narrow.js'
+import {
+  filterRowsByTag,
+  groupRowsByTag,
+  tagIdentity,
+  tagKeyOptions,
+  tagsForRow,
+  sessionKeysOf,
+  sortTagsForChips,
+  type AnyTag,
+} from '../lib/session-tags.js'
+import { useSessionTagsLookup, useTagEndpoint, useTagMutations } from '../lib/use-session-tags.js'
+import { AddTagInline, TagChips } from '../components/tag-chips.js'
 import { cn } from '../lib/utils.js'
 import { useConnection } from '../stores/connection.js'
 
@@ -156,7 +168,10 @@ export function SessionsPage(): JSX.Element {
   const [harnessFilter, setHarnessFilter] = useState('')
   const [statusFilter, setStatusFilter] = useState<SessionStatusFilter>('all')
   const [textFilter, setTextFilter] = useState('')
+  const [groupKey, setGroupKey] = useState('')
+  const [tagFilter, setTagFilter] = useState('')
   const [listResyncedAt, setListResyncedAt] = useState<number | undefined>()
+  const tagEndpoint = useTagEndpoint()
 
   const registryQuery = useQuery({
     queryKey: ['harnesses', baseUrl],
@@ -251,6 +266,54 @@ export function SessionsPage(): JSX.Element {
     return [{ value: '', label: 'all harnesses' }, ...ids.map((id) => ({ value: id, label: id }))]
   }, [rows])
 
+  // Tags live on datahub, not the node: look them up for every listed row
+  // (not just the filtered ones, so the lookup is stable while filters change).
+  const sessionKeys = useMemo(() => sessionKeysOf(rows), [rows])
+  const {
+    map: tagMap,
+    error: tagLookupError,
+    isLoading: tagLookupLoading,
+  } = useSessionTagsLookup(tagEndpoint, sessionKeys)
+  const tagMutations = useTagMutations(tagEndpoint)
+  const tagKeyChoices = useMemo(() => tagKeyOptions(tagMap), [tagMap])
+  const tagged = useMemo(
+    () => filterRowsByTag(filtered, tagMap, tagFilter),
+    [filtered, tagMap, tagFilter],
+  )
+  const groups = useMemo(
+    () => (groupKey ? groupRowsByTag(tagged, tagMap, groupKey) : null),
+    [tagged, tagMap, groupKey],
+  )
+  const tagFilterOptions = useMemo(() => {
+    const seen = new Map<string, string>()
+    for (const tags of tagMap.values())
+      for (const t of tags)
+        if (t.state === 'accepted') seen.set(tagIdentity(t), `${t.key}:${t.display || t.value}`)
+    return [
+      { value: '', label: 'any tag' },
+      ...[...seen.entries()]
+        .sort((a, b) => a[1].localeCompare(b[1]))
+        .map(([value, label]) => ({ value, label })),
+    ]
+  }, [tagMap])
+  // A filter whose tag is gone (removed, or datahub dropped) would leave an
+  // empty list with no way back: clear it.
+  useEffect(() => {
+    // Only once the lookup for the current rows has answered: an unresolved
+    // lookup (a session was just added) says nothing about which tags exist.
+    if (!tagEndpoint) {
+      // Datahub gone: the controls are hidden, so nothing could clear these.
+      if (tagFilter !== '') setTagFilter('')
+      if (groupKey !== '') setGroupKey('')
+      return
+    }
+    if (tagLookupLoading) return
+    if (tagFilter !== '' && !tagFilterOptions.some((o) => o.value === tagFilter)) setTagFilter('')
+    if (groupKey !== '' && !tagKeyChoices.includes(groupKey)) setGroupKey('')
+  }, [tagEndpoint, tagLookupLoading, tagFilter, tagFilterOptions, groupKey, tagKeyChoices])
+  const rowTags = (row: SessionListRow): AnyTag[] => sortTagsForChips(tagsForRow(tagMap, row))
+  const onTagClick = (t: AnyTag): void => setTagFilter(tagIdentity(t))
+
   if (!connected) return <NotConnected />
 
   const openRow = (row: SessionListRow): void => {
@@ -287,6 +350,27 @@ export function SessionsPage(): JSX.Element {
               { value: 'ended', label: 'Ended' },
             ]}
           />
+          {tagEndpoint && (
+            <Select
+              value={tagFilter}
+              title="tag filter"
+              label="Tag"
+              onChange={setTagFilter}
+              options={tagFilterOptions}
+            />
+          )}
+          {tagEndpoint && tagKeyChoices.length > 0 && (
+            <Select
+              value={groupKey}
+              title="group by tag key"
+              label="Group"
+              onChange={setGroupKey}
+              options={[
+                { value: '', label: 'no grouping' },
+                ...tagKeyChoices.map((k) => ({ value: k, label: `by ${k}` })),
+              ]}
+            />
+          )}
           <input
             type="search"
             value={textFilter}
@@ -304,26 +388,65 @@ export function SessionsPage(): JSX.Element {
         </div>
       )}
 
+      {tagEndpoint && tagLookupError && (
+        <div className="font-mono text-[11px] text-warn" role="status">
+          tags unavailable: {tagLookupError.message}. Sessions are listed without them.
+        </div>
+      )}
+      {tagEndpoint && tagMutations.error && (
+        <div className="font-mono text-[11px] text-warn" role="alert">
+          tag update failed: {tagMutations.error.message}
+        </div>
+      )}
+
       {narrow ? (
         <ul className="flex flex-col gap-2">
-          {filtered.map((row) => (
-            <li key={row.key}>
-              <button
-                type="button"
-                onClick={() => openRow(row)}
-                className="flex w-full flex-col gap-1 rounded border border-line bg-panel px-4 py-3 text-left hover:border-em"
-              >
-                <span className="truncate text-sm text-ink">
-                  {row.title || shortNativeId(row.key)}
-                </span>
-                <span className="flex flex-wrap items-center gap-2">
-                  <HarnessBadge harnessId={row.harnessId} command={row.command} />
-                  <StatusPill status={row.status} blocked={row.blocked} />
-                </span>
-                <span className="font-mono text-[11px] text-ink-dim">
-                  {relativeUpdated(row.updatedAt)}
-                </span>
-              </button>
+          {(groups ?? [{ label: '', identity: '', rows: tagged }]).map((group) => (
+            <li key={group.identity || '__all'} className="flex flex-col gap-2">
+              {group.label && (
+                <div className="mt-2 font-mono text-[11px] text-ink-dim">
+                  {group.label} · {group.rows.length}
+                </div>
+              )}
+              <ul className="flex flex-col gap-2">
+                {group.rows.map((row) => (
+                  <li
+                    key={row.key}
+                    className="flex flex-col gap-1 rounded border border-line bg-panel hover:border-em"
+                  >
+                    {/* The row opens the session; chips are siblings of that
+                        button, never nested inside it. */}
+                    <button
+                      type="button"
+                      onClick={() => openRow(row)}
+                      className="flex w-full flex-col gap-1 px-4 pt-3 text-left"
+                    >
+                      <span className="truncate text-sm text-ink">
+                        {row.title || shortNativeId(row.key)}
+                      </span>
+                      <span className="flex flex-wrap items-center gap-2">
+                        <HarnessBadge harnessId={row.harnessId} command={row.command} />
+                        <StatusPill status={row.status} blocked={row.blocked} />
+                        <span className="font-mono text-[11px] text-ink-dim">
+                          {relativeUpdated(row.updatedAt)}
+                        </span>
+                      </span>
+                    </button>
+                    {rowTags(row).length > 0 && (
+                      <div className="px-4 pb-3">
+                        <TagChips
+                          tags={rowTags(row)}
+                          max={4}
+                          onClick={onTagClick}
+                          onAccept={(id) => void tagMutations.decide([id], 'accepted')}
+                          onReject={(id) => void tagMutations.decide([id], 'rejected')}
+                          busy={tagMutations.busy}
+                        />
+                      </div>
+                    )}
+                  </li>
+                ))}
+              </ul>
             </li>
           ))}
         </ul>
@@ -336,46 +459,76 @@ export function SessionsPage(): JSX.Element {
                 <th className="px-3 py-2 font-medium">Harness</th>
                 <th className="px-3 py-2 font-medium">Status</th>
                 <th className="px-3 py-2 font-medium">Updated</th>
+                {tagEndpoint && <th className="px-3 py-2 font-medium">Tags</th>}
                 <th className="px-3 py-2 font-medium">cwd</th>
                 <th className="px-3 py-2 font-medium">Id</th>
               </tr>
             </thead>
             <tbody>
-              {filtered.map((row) => (
-                <tr
-                  key={row.key}
-                  className="cursor-pointer border-b border-line/60 hover:bg-panel-2/40"
-                  onClick={() => openRow(row)}
-                >
-                  <td className="max-w-[14rem] truncate px-3 py-2 text-ink">
-                    {row.title || shortNativeId(row.key)}
-                  </td>
-                  <td className="px-3 py-2">
-                    <HarnessBadge harnessId={row.harnessId} command={row.command} />
-                  </td>
-                  <td className="px-3 py-2">
-                    <StatusPill status={row.status} blocked={row.blocked} />
-                  </td>
-                  <td className="px-3 py-2 font-mono text-[11px] text-ink-dim">
-                    {relativeUpdated(row.updatedAt)}
-                  </td>
-                  <td className="max-w-[8rem] truncate px-3 py-2 font-mono text-[11px] text-ink-dim">
-                    {cwdBasename(row.cwd) ?? '—'}
-                  </td>
-                  <td className="px-3 py-2 font-mono text-[11px] text-ink-dim">
-                    {shortNativeId(row.sessionId ?? row.key)}
-                  </td>
-                </tr>
-              ))}
+              {(groups ?? [{ label: '', identity: '', rows: tagged }]).flatMap((group) => [
+                ...(group.label
+                  ? [
+                      <tr
+                        key={`g-${group.identity || 'untagged'}`}
+                        className="border-b border-line/60 bg-panel-2/30"
+                      >
+                        <td
+                          colSpan={tagEndpoint ? 7 : 6}
+                          className="px-3 py-1.5 font-mono text-[11px] text-ink-dim"
+                        >
+                          {group.label} · {group.rows.length}
+                        </td>
+                      </tr>,
+                    ]
+                  : []),
+                ...group.rows.map((row) => (
+                  <tr
+                    key={`${group.identity}/${row.key}`}
+                    className="cursor-pointer border-b border-line/60 hover:bg-panel-2/40"
+                    onClick={() => openRow(row)}
+                  >
+                    <td className="max-w-[14rem] truncate px-3 py-2 text-ink">
+                      {row.title || shortNativeId(row.key)}
+                    </td>
+                    <td className="px-3 py-2">
+                      <HarnessBadge harnessId={row.harnessId} command={row.command} />
+                    </td>
+                    <td className="px-3 py-2">
+                      <StatusPill status={row.status} blocked={row.blocked} />
+                    </td>
+                    <td className="px-3 py-2 font-mono text-[11px] text-ink-dim">
+                      {relativeUpdated(row.updatedAt)}
+                    </td>
+                    {tagEndpoint && (
+                      <td className="max-w-[16rem] px-3 py-2">
+                        <TagChips
+                          tags={rowTags(row)}
+                          max={3}
+                          onClick={onTagClick}
+                          onAccept={(id) => void tagMutations.decide([id], 'accepted')}
+                          onReject={(id) => void tagMutations.decide([id], 'rejected')}
+                          busy={tagMutations.busy}
+                        />
+                      </td>
+                    )}
+                    <td className="max-w-[8rem] truncate px-3 py-2 font-mono text-[11px] text-ink-dim">
+                      {cwdBasename(row.cwd) ?? '—'}
+                    </td>
+                    <td className="px-3 py-2 font-mono text-[11px] text-ink-dim">
+                      {shortNativeId(row.sessionId ?? row.key)}
+                    </td>
+                  </tr>
+                )),
+              ])}
             </tbody>
           </table>
         </div>
       )}
 
-      {filtered.length === 0 && (
+      {tagged.length === 0 && (
         <p className="text-sm text-ink-dim">
           no sessions
-          {harnessFilter || statusFilter !== 'all' || textFilter.trim()
+          {harnessFilter || statusFilter !== 'all' || textFilter.trim() || tagFilter
             ? ' match these filters'
             : ''}
         </p>
@@ -400,6 +553,41 @@ type StripState =
   | { kind: 'reconnected'; turnCount: number; at: number }
   | { kind: 'resync-failed'; message: string }
   | { kind: 'fatal'; message: string }
+
+/** Tag chips for one session with inline accept / reject / add. Hidden without datahub. */
+function SessionTagsRow(props: { sessionKey: string }): JSX.Element | null {
+  const endpoint = useTagEndpoint()
+  const keys = useMemo(() => [props.sessionKey], [props.sessionKey])
+  const { map, error: lookupError } = useSessionTagsLookup(endpoint, keys)
+  const mutations = useTagMutations(endpoint)
+  if (!endpoint) return null
+  const tags = sortTagsForChips(map.get(props.sessionKey) ?? [])
+  return (
+    <div className="flex flex-wrap items-center gap-1.5">
+      <span className="font-mono text-[11px]">tags</span>
+      <TagChips
+        tags={tags}
+        size="md"
+        onAccept={(id) => void mutations.decide([id], 'accepted')}
+        onReject={(id) => void mutations.decide([id], 'rejected')}
+        busy={mutations.busy}
+      />
+      {tags.length === 0 && !lookupError && (
+        <span className="font-mono text-[11px] text-ink-dim">none yet</span>
+      )}
+      {lookupError && (
+        <span className="font-mono text-[11px] text-warn">unavailable: {lookupError.message}</span>
+      )}
+      <AddTagInline
+        busy={mutations.busy}
+        onAdd={(literal) => mutations.addToSession(props.sessionKey, literal)}
+      />
+      {mutations.error && (
+        <span className="font-mono text-[11px] text-red">{mutations.error.message}</span>
+      )}
+    </div>
+  )
+}
 
 export function SessionDetailPage(): JSX.Element {
   const { sessionId: routeSegment } = useParams({ from: '/sessions/$sessionId' })
@@ -717,6 +905,7 @@ export function SessionDetailPage(): JSX.Element {
                   cwd {summary.cwd}
                 </div>
               )}
+              <SessionTagsRow sessionKey={summary?.sessionId ?? chatKey} />
               <div className="font-mono text-[11px]">
                 created {summary?.createdAt ? new Date(summary.createdAt).toLocaleString() : '—'}
                 {' · '}
