@@ -446,7 +446,7 @@ PY
 # Pin / GitHub ref: letters, digits, dot, underscore, hyphen only. Blocks
 # `?ref=` query injection and `$HUB_ROOT/migrations/${tag}` traversal.
 valid_pin_tag() {
-  [[ "${1:-}" =~ ^[A-Za-z0-9._-]+$ ]]
+  [[ "${1:-}" =~ ^[A-Za-z0-9._-]+$ && "${1}" != .* ]]
 }
 
 pgvector_image() {
@@ -1158,6 +1158,21 @@ wait_for_postgres() {
 
 # Env-file reuse-not-rotate is wrong if datahub.env was lost and regenerated
 # against a docker volume that still has the original POSTGRES_PASSWORD.
+# The postgres image applies POSTGRES_PASSWORD only when it initializes an
+# empty volume. On an existing docker install the role's password has to be
+# changed in the running database, with the old one, before datahub.env
+# takes the new one — otherwise the env file stops matching the database.
+rotate_docker_postgres_password() {
+  local new="$1" old=""
+  old="$(env_get PGPASSWORD || true)"
+  [[ -n "${old}" ]] || return 0
+  if ! PGPASSWORD="${old}" psql -h "${PG_HOST}" -p "${PG_PORT}" -U "${PG_USER}" -d "${PG_DB}" -v ON_ERROR_STOP=1 \
+    <<<"ALTER ROLE ${PG_USER} WITH PASSWORD '${new}';" >/dev/null 2>&1; then
+    err "--force could not rotate the postgres password in the running database (is rivethub-postgres.service up?). ${HUB_ENV} is unchanged."
+  fi
+  log "rotated the postgres password in the running database"
+}
+
 probe_postgres_password() {
   local pass
   if in_test; then
@@ -2187,6 +2202,9 @@ datahub_main() {
 
   local pass
   pass="$(reuse_or_create_password)"
+  if [[ "${FLAG_FORCE}" -eq 1 && "${FLAG_DOCKER}" -eq 1 ]]; then
+    rotate_docker_postgres_password "${pass}"
+  fi
   if [[ "${FLAG_FORCE}" -eq 1 ]] || [[ ! -f "${HUB_ENV}" ]] || [[ -z "$(env_get PGPASSWORD || true)" ]]; then
     write_datahub_env "${pass}"
   else

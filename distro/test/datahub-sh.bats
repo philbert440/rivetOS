@@ -1385,6 +1385,26 @@ EOF
   [ "$(cat "${TEST_TMP}/p1")" != "$(cat "${TEST_TMP}/p3")" ]
 }
 
+@test "--force on an existing docker install rotates the password in the database first" {
+  bash "${DATAHUB}" --docker --yes --advertise-host 192.0.2.10 >/dev/null 2>"${TEST_TMP}/f1.err"
+  pass1="$(awk -F= '/^PGPASSWORD=/{print $2}' "${RIVETHUB_ROOT}/datahub.env")"
+  : >"${TEST_TMP}/psql.sql"
+  bash "${DATAHUB}" --docker --force --yes --advertise-host 192.0.2.10 >/dev/null 2>"${TEST_TMP}/f2.err"
+  pass2="$(awk -F= '/^PGPASSWORD=/{print $2}' "${RIVETHUB_ROOT}/datahub.env")"
+  [ "${pass1}" != "${pass2}" ]
+  grep -q "ALTER ROLE rivetos WITH PASSWORD '${pass2//\'/}'" "${TEST_TMP}/psql.sql"
+}
+
+@test "--force on docker leaves datahub.env untouched when the rotation fails" {
+  bash "${DATAHUB}" --docker --yes --advertise-host 192.0.2.10 >/dev/null 2>"${TEST_TMP}/f3.err"
+  cp "${RIVETHUB_ROOT}/datahub.env" "${TEST_TMP}/env.before"
+  printf '#!/bin/sh\nexit 1\n' >"${TEST_TMP}/bin/psql"
+  run bash "${DATAHUB}" --docker --force --yes --advertise-host 192.0.2.10
+  [ "${status}" -ne 0 ]
+  [[ "${output}" == *"could not rotate"* ]]
+  cmp "${TEST_TMP}/env.before" "${RIVETHUB_ROOT}/datahub.env"
+}
+
 @test "--docker --pg-port 5433 writes that host port into the unit" {
   bash "${DATAHUB}" --docker --pg-port 5433 --yes --advertise-host 192.0.2.10 \
     >/dev/null 2>"${TEST_TMP}/p.err"
