@@ -18,6 +18,7 @@ Plan and slice status: see `AGENT.md`. Build: `./gradlew :app:assembleDebug :app
    Each mints the phone's certificate and shows the QR. When the node has a users registry
    (`users.json`), the device is added to it; without one, tenancy is off and every device the CA
    issues is already allowed.
+
 2. On the phone (same network as the computer): RivetHub → Enroll → **Scan pairing QR**. Android 16+ asks
    for the Nearby devices (local network) permission first; without it the phone cannot reach the LAN.
 
@@ -25,7 +26,8 @@ The QR carries the gateway URL, a one-time token (10 minutes, one use) and the S
 gateway's TLS certificate; the app pins that certificate to redeem the token at `POST /api/devices/pair`
 for the PKCS#12 and its passphrase. The computer deletes its copy of the PKCS#12 on redemption and keeps
 the certificate so it can be revoked. Expired or used? Show a fresh code. A name that was already paired
-is refused: pick a new name, or revoke the old certificate first.
+is refused: pick a new name, or revoke the old certificate
+(`scripts/rivet-ca.sh revoke device:<name>`) and delete `issued/device-<name>.crt`.
 
 ## First run — certificate file (mesh operators)
 

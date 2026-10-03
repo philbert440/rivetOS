@@ -73,8 +73,10 @@ p12 from the same CA, adds `<name>` to the owner's devices in `users.json`
 pinning the certificate `den.tls_cert` names. The QR points at `--host`, else
 `den.host` when den is bound to one address, else the first LAN address. It
 never writes `config.yaml`. A name that already has a certificate is refused,
-so an enrolled device's key is never touched (revoke it first to reuse the
-name); re-running for a still-pending name re-shows the code with a new token.
+so an enrolled device's key is never touched (revoke it with
+`scripts/rivet-ca.sh revoke device:<name>`, then delete
+`issued/device-<name>.crt` to reuse the name); re-running for a still-pending
+name re-shows the code with a new token.
 Den reads `users.json` at startup, so restart den after pairing a new name
 (Settings → Pair a phone reloads it for you). `rivetos pair --check` reports
 whether this node can pair a phone without minting anything.
