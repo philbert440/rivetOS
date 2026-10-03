@@ -87,8 +87,8 @@ import io.rivethub.app.plane.imeEdit
 import io.rivethub.app.plane.ownerOverlay
 import io.rivethub.app.plane.termCellSizePx
 import io.rivethub.app.plane.termColsRows
-import io.rivethub.app.ui.components.DenBot
 import io.rivethub.app.ui.components.KeyToolbar
+import io.rivethub.app.ui.components.RhMark
 import io.rivethub.app.ui.components.RivetButton
 import io.rivethub.app.ui.components.RivetButtonSize
 import io.rivethub.app.ui.components.RivetButtonVariant
@@ -420,7 +420,7 @@ fun TerminalPane(
                     horizontalAlignment = Alignment.CenterHorizontally,
                     verticalArrangement = Arrangement.spacedBy(Dimens.grid2),
                 ) {
-                    DenBot(size = 36.dp, decorative = true)
+                    RhMark()
                     Text(
                         overlay.label,
                         color = colors.ink,

@@ -6,7 +6,7 @@
  */
 
 import { randomBytes } from 'node:crypto'
-import { chmodSync, copyFileSync, existsSync, mkdirSync } from 'node:fs'
+import { chmodSync, copyFileSync, existsSync, mkdirSync, rmSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { join } from 'node:path'
 import { execFailed, execFileAsync } from './harness-detect.js'
@@ -110,16 +110,20 @@ export interface MintDeviceP12Opts {
 
 export interface MintedDeviceP12 {
   id: string
-  cert: string
-  key: string
   p12Path: string
   passphrase: string
+  /** The issued leaf, kept so `rivet-ca.sh revoke device:<name>` can find it. */
+  certPath: string
 }
 
 /**
  * `issue-client <name>` then `openssl pkcs12 -export` into
  * `~/.rivetos/devices/<name>.p12`. Passphrase is generated and returned
- * once — the QR flow in PR 6 replaces hand-minting.
+ * once. The issued leaf key is deleted once it is inside the p12, so the p12
+ * is the only copy of the phone's key on this machine (den deletes it when
+ * the phone redeems its pairing QR). The certificate stays in `issued/`:
+ * `rivet-ca.sh revoke` finds leaves there, and issueClientDevice refuses to
+ * mint a second leaf for a name whose certificate is still there.
  */
 export async function mintDeviceP12(opts: MintDeviceP12Opts): Promise<MintedDeviceP12> {
   const home = opts.home ?? homedir()
@@ -161,7 +165,8 @@ export async function mintDeviceP12(opts: MintDeviceP12Opts): Promise<MintedDevi
     throw new Error(`openssl pkcs12 -export failed for ${opts.name}: ${detail}`)
   }
   chmod600(p12Path)
-  return { id: issued.id, cert: issued.cert, key: issued.key, p12Path, passphrase }
+  rmSync(issued.key, { force: true })
+  return { id: issued.id, p12Path, passphrase, certPath: issued.cert }
 }
 
 export function extraDeviceP12Path(home: string, name: string): string {

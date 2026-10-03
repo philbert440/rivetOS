@@ -31,6 +31,7 @@ import {
 } from '@rivetos/memory-postgres'
 import { config } from '../config.js'
 import { callLlm } from '../llm.js'
+import { rejectUnparseable } from '../wiki-accept.js'
 import { WikiWriter } from '../wiki-writer.js'
 
 export interface ExtractWikiPayload {
@@ -116,6 +117,7 @@ export const extractWikiTask: Task = async (payload, helpers) => {
     // callLlm throws LlmCallError with the real reason (network, HTTP, truncated,
     // empty). Do not collapse that into "empty LLM response" — graphile last_error
     // is how operators filter retry-failed after an outage.
+    const verifiedAt = (summary.latest_at ?? summary.created_at).toISOString()
     const raw = await callLlm(
       WIKI_EXTRACT_SYSTEM_PROMPT,
       formatExtractionPrompt({
@@ -128,10 +130,13 @@ export const extractWikiTask: Task = async (payload, helpers) => {
       // `[]` — "this summary holds no durable facts" — is the single most common
       // correct answer here, and it is 2 chars. The default 20-char floor scored
       // it as an empty response and failed the job.
-      { minChars: 2 },
+      {
+        minChars: 2,
+        // Unparseable JSON loses the whole leaf; let a fallback model try it.
+        accept: (content) => rejectUnparseable(parseWikiPatches(content, verifiedAt).rejected),
+      },
     )
 
-    const verifiedAt = (summary.latest_at ?? summary.created_at).toISOString()
     const { patches, rejected } = parseWikiPatches(raw, verifiedAt)
     for (const r of rejected) helpers.logger.warn(`extract-wiki: rejected patch — ${r}`)
 

@@ -69,6 +69,7 @@ export const COMMANDS: Partial<Record<string, CommandHandler>> = {
   gateway: () => import('./commands/gateway.js').then((m) => m.default()),
   memory: () => import('./commands/memory.js').then((m) => m.default()),
   db: () => import('./commands/db.js').then((m) => m.default()),
+  pair: (args) => import('./commands/pair.js').then((m) => m.default(args)),
   user: (args) => import('./commands/user.js').then((m) => m.default(args)),
   test: () => import('./commands/test.js').then((m) => m.default()),
   skills: () => import('./commands/skills.js').then((m) => m.default()),
@@ -173,6 +174,7 @@ export function helpText(): string {
     rivetos db status [--config <path>] Show applied migrations (embedded: data dir, owner)
 
   Users:
+    rivetos pair <device>               Pair a phone by QR (no config.yaml changes)
     rivetos user list                   Show the tenancy registry
     rivetos user add <id> --device <id> Add a user (device → their database)
 

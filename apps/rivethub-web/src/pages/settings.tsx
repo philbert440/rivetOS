@@ -9,6 +9,7 @@ import { isValidWikiBase } from '../lib/wiki-base.js'
 import { useWikiSettings } from '../stores/wiki-settings.js'
 import { BUILD_INFO } from '../lib/build-info.js'
 import { DevicesSection } from '../components/devices-section.js'
+import { PhonePairingSection } from '../components/phone-pairing-section.js'
 import { UpdatesSection } from '../components/updates-section.js'
 import { TerminalSection } from '../components/terminal-section.js'
 import { Toggle } from '../components/ui/toggle.js'
@@ -400,6 +401,8 @@ export function SettingsPage(): JSX.Element {
           {wikiNotice}
         </span>
       </div>
+
+      <PhonePairingSection />
 
       <DevicesSection />
 

@@ -152,6 +152,20 @@ export interface DenConfig {
   tls: DenTlsFileConfig
   /** Dedicated owner-only Codex app-server, loopback WebSocket. */
   codexAppServerUrl?: string
+  /**
+   * Phone pairing records written by `rivetos local --device` / `rivetos
+   * pair` (pairing.ts). Unset = POST /api/devices/pair is off. Env:
+   * RIVETOS_DEN_PAIRING_DIR, default `~/.rivetos/devices/pairing`.
+   */
+  pairingDir?: string
+  /**
+   * The `rivetos` CLI entry Settings → Pair a phone runs (`rivetos pair
+   * --json`). Env: RIVETOS_DEN_PAIR_CLI, else `$RIVETOS_ROOT/packages/cli/
+   * dist/index.js`. Unset = the Settings flow reports it unavailable.
+   */
+  pairCliPath?: string
+  /** CA root the pair CLI signs with; Settings pairing needs it on this node. */
+  pairCaRootDir?: string
   /** Directory for persisted state (per-viewer layouts). */
   stateDir: string
   /**
@@ -348,6 +362,14 @@ export function loadConfig(
       ? { codexAppServerUrl: env.RIVETOS_CODEX_APP_SERVER_URL }
       : {}),
     stateDir: denStateDir(env),
+    pairingDir:
+      nonEmpty(env.RIVETOS_DEN_PAIRING_DIR) ?? join(homedir(), '.rivetos', 'devices', 'pairing'),
+    pairCliPath:
+      nonEmpty(env.RIVETOS_DEN_PAIR_CLI) ??
+      (nonEmpty(env.RIVETOS_ROOT)
+        ? join(env.RIVETOS_ROOT as string, 'packages', 'cli', 'dist', 'index.js')
+        : undefined),
+    pairCaRootDir: join(homedir(), '.rivetos', 'ca', 'root'),
     nodeName: denNodeName(env),
     agentsDir: nonEmpty(env.RIVETOS_DEN_AGENTS_DIR) ?? join(homedir(), '.rivetos', 'agents'),
     staticDir: env.RIVETOS_DEN_STATIC_DIR ?? '',

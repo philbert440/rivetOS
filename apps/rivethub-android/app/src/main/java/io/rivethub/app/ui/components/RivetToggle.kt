@@ -15,7 +15,7 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.unit.dp
 import io.rivethub.app.ui.theme.Dimens
-import io.rivethub.app.ui.theme.Shape
+import io.rivethub.app.ui.theme.Radius
 import io.rivethub.app.ui.theme.RivetTheme
 
 /**
@@ -30,7 +30,8 @@ fun RivetToggle(
     interactive: Boolean = true,
 ) {
     val colors = RivetTheme.colors
-    val trackShape = RoundedCornerShape(Shape.row)
+    // Toggles stay round in the square Omarchy look (like dots and round buttons).
+    val trackShape = RoundedCornerShape(Radius.full)
     val toggle = if (interactive) {
         Modifier.toggleable(value = checked, role = Role.Switch, onValueChange = onChange)
     } else {

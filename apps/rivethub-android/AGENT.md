@@ -85,19 +85,19 @@ whose Conversations tab is the launch surface until the pick/new resolution open
 
 | Screen | File | ViewModel | Notes |
 |---|---|---|---|
-| Enroll | `ui/screens/EnrollScreen.kt` | none (container) | TopBar (decorative DenBot, no ☰ — no drawer exists pre-onboarding) + p12 + entry URL; 401 → cert refused; `https://` only |
-| Hub | `ui/screens/HubScreen.kt` | `HubViewModel` (activity-scoped `key=hub`) | Content only; hosted by `HubDrawer` (same file) — the ONE left ModalNavigationDrawer shared with Chat; Forget calls `shutdown()` on the same instance. Conversations tab = `ChatLaunchScreen` (launch/loading surface, NOT a list); Settings tab = Settings |
+| Enroll | `ui/screens/EnrollScreen.kt` | none (container) | TopBar (decorative rh mark, no ☰ — no drawer exists pre-onboarding) + **Scan pairing QR** (CAMERA asked on tap; the local-network permission is asked before the redeem, since without it LAN traffic is dropped and only times out; `ui/components/PairingScanner.kt` = CameraX + ZXing core; parse `plane/PairingCode.kt`; redeem `data/Pairing.kt`, leaf pinned by the QR's `certSha256`, POST `/api/devices/pair` → p12 + passphrase → `importPkcs12`) + the p12-file + entry URL fallback; 401 → cert refused; `https://` only |
+| Hub | `ui/screens/HubScreen.kt` | `HubViewModel` (activity-scoped `key=hub`) | Content only; hosted by `HubDrawer` (same file) — the ONE left drawer (`RivetDrawerHost`) shared with Chat; Forget calls `shutdown()` on the same instance. Conversations tab = `ChatLaunchScreen` (launch/loading surface, NOT a list); Settings tab = Settings |
 | ~~Conversations~~ | `ui/screens/ConversationsScreen.kt` | — | DELETED 2026-09-04 (emptied file, delete list) — the list is not an app screen; `ConversationsPane` moved to `ui/screens/ConversationsPane.kt` and is hosted only by the left drawer (`HubDrawer`, U2b) |
-| Chat launch | `ui/screens/ChatLaunchScreen.kt` | HubViewModel | TopBar (☰ + wordmark) + centered DenBot with "Loading most recent conversation…" and a New-conversation button (web `ChatLaunchLoading`) while the launch resolution (instant resume / pick / new draft) lands — never the list, never a blank, no spinner |
+| Chat launch | `ui/screens/ChatLaunchScreen.kt` | HubViewModel | TopBar (☰ + wordmark) + centered rh mark with "Loading most recent conversation…" and a New-conversation button (web `ChatLaunchLoading`) while the launch resolution (instant resume / pick / new draft) lands — never the list, never a blank, no spinner |
 | Settings | `ui/screens/SettingsScreen.kt` | HubViewModel + container | TopBar (☰ + `Settings` title) + desktop settings chrome; identity, theme, terminal font, mesh-feed Updates; title long-press → gallery |
-| Chat | `ui/screens/HarnessChatScreen.kt` | `HarnessChatViewModel` via `ScreenStores` | ONE 48dp chat header row owns the status inset (☰ · title block · Stop · Terminal chip · search · +); title tap = rename after a turn, long-press title = history drawer until U2b; search replaces the transcript with message hits and tap jumps to the turn; full-width 1dp context track — no TopBar, no back; `HistoryDrawer` (right, same file as HubDrawer, state lifted to MainActivity) = ConversationsPane; BOTH drawers `gesturesEnabled = false` — ONE unified edge-swipe layer on HubDrawer's root (decision `plane/DrawerSwipe.kt`, web edge-swipe.ts semantics: 20dp zone / 40dp travel / horizontal-dominant) opens AND closes each drawer; transcript pinned to bottom + `↓ latest` pill; Terminal chip selects the same session; Terminal header retains its segment until U6 (`ModePager swipe = false`); VT attach |
-| Chat | `ui/screens/HarnessChatScreen.kt` | `HarnessChatViewModel` via `ScreenStores` | ONE session header row owns the status inset (☰ · id · ctx % · Stop · Terminal\|Chat · history) — no TopBar, no back; ☰ AND history both open the ONE left drawer (U2b: there is no right drawer; `HistoryDrawer` deleted); the drawer runs `gesturesEnabled = false` — ONE edge-swipe layer on HubDrawer's root (decision `plane/DrawerSwipe.kt`, web edge-swipe.ts semantics: 20dp zone / 40dp travel / horizontal-dominant) opens it from the left bezel and closes it on a leftward drag that STARTS ON THE SCRIM (right of the open sheet — a drag starting on the sheet is left to the rows, so swipe-to-archive works; fix1); the right bezel is inert; transcript pinned to bottom + `↓ latest` pill; Terminal\|Chat segment only (`ModePager swipe = false`); VT attach |
+| Chat | `ui/screens/HarnessChatScreen.kt` | `HarnessChatViewModel` via `ScreenStores` | ONE 48dp chat header row owns the status inset (☰ · title block · Stop · Terminal chip · search · +); title tap = rename after a turn, long-press title = history drawer until U2b; search replaces the transcript with message hits and tap jumps to the turn; full-width 1dp context track — no TopBar, no back; `HistoryDrawer` (right, same file as HubDrawer, state lifted to MainActivity) = ConversationsPane; ONE unified edge-swipe layer on HubDrawer's root (decision `plane/DrawerSwipe.kt`, finger-following edge swipe, see "Drawer gestures" under Design system) opens AND closes each drawer; transcript pinned to bottom + `↓ latest` pill; Terminal chip selects the same session; Terminal header retains its segment until U6 (`ModePager swipe = false`); VT attach |
+| Chat | `ui/screens/HarnessChatScreen.kt` | `HarnessChatViewModel` via `ScreenStores` | ONE session header row owns the status inset (☰ · id · ctx % · Stop · Terminal\|Chat · history) — no TopBar, no back; ☰ AND history both open the ONE left drawer (U2b: there is no right drawer; `HistoryDrawer` deleted); ONE edge-swipe layer on HubDrawer's root (decision `plane/DrawerSwipe.kt`, finger-following edge swipe, see "Drawer gestures" under Design system) opens it from the left bezel and closes it on a leftward drag that STARTS ON THE SCRIM (right of the open sheet — a drag starting on the sheet is left to the rows, so swipe-to-archive works; fix1); the right bezel is inert; transcript pinned to bottom + `↓ latest` pill; Terminal\|Chat segment only (`ModePager swipe = false`); VT attach |
 | Memory | `ui/screens/MemoryScreen.kt` | `MemoryViewModel` (activity-scoped `key=memory`) | NATIVE wiki hub over datahub `GET /api/wiki` (mirror of the merged responsive web Memory hub: MemoryHubPage + pages/memory.tsx): TopBar (☰ + `Memory`) + Search/Wiki/Browse/Stats tab row + search field + compact topic rows (title + staleness badge). Pure layer `plane/MemoryWiki.kt` (tabs, rows, stats, TOC, staleness, datahub-node pick) mirrors web `lib/memory-hub.ts` + `lib/wiki-base.ts`; wire shapes in `gateway/Wire.kt`, calls `Gateway.wikiPages/wikiSearch/wikiTopic`. Datahub = mesh node named datahub, else `transport.entry()`; load failure = the web "Point RivetHub at datahub" pointer copy, never a spinner |
 | Memory topic | `ui/screens/MemoryTopicScreen.kt` | same `MemoryViewModel` | Pushed over Memory (its slug in `Screen.MemoryTopic`); header = Back + title (session-row vocabulary, no TopBar); lead + `MarkdownBody` body (`wikiBody` = currentState else full file), collapsible full-width Contents from the parsed ##/### headings; 404 = the web red-link state. Back pops to the hub list |
 | Gallery | `ui/components/ComponentGallery.kt` | none | D1a chrome + D1b chat + D2 top bar/rows/settings rhythm (dark + light) |
 
 **Drawer v2 (slice U2b, UX-SPEC §2).** There is no right drawer. `HubDrawer` (ui/screens/HubScreen.kt)
-is the one left `ModalNavigationDrawer`, width `drawerWidthDp` = min(300, 85%) (`Dimens.drawerWidth`
+is the one left drawer (`RivetDrawerHost`), width `drawerWidthDp` = min(300, 85%) (`Dimens.drawerWidth`
 300dp), hosting `RivetDrawerContent` (ui/components/RivetDrawer.kt). Top to bottom:
 `DrawerHeader` (wordmark + unread bell) → `NodeStatusStrip` (ui/components/NodeStatusStrip.kt) →
 the conversation list (`ConversationsPane`, passed in as the drawer's `conversations` slot so the
@@ -123,8 +123,8 @@ the row is then not fully visible, so "Today" / "Pinned" stay on screen above it
 to the row had pushed the header off the top — the "no section headers" screenshot).
 
 **Back ordering rule (fix1).** Back with the drawer open (or opening: `targetValue == Open`)
-closes the drawer and does nothing else. `HubDrawer` composes a `BackHandler` AFTER the
-`ModalNavigationDrawer` (so after every handler its content registers) inside `key(openTick)`, so
+closes the drawer and does nothing else. `HubDrawer` composes a `PredictiveBackHandler` AFTER the
+drawer (`RivetDrawerHost`) (so after every handler its content registers) inside `key(openTick)`, so
 it is re-added on every open and is the most recently added enabled callback — the
 `OnBackPressedDispatcher` runs that one first. It therefore beats MainActivity's `nav.pop()`
 handler, HubScreen's Settings → Conversations handler, and any handler a screen registered before that open. Sheets
@@ -204,8 +204,8 @@ year. A row files under `updatedAt`, else `createdAt` (`ChatItem.createdAt`, fro
 summary), else today; a future stamp also counts as today. The pane samples clock and zone in
 composition and keys its cached sections on `DayKey` (local date + zone); the drawer opening and
 ON_RESUME recompose it, so sections roll over midnight or a zone change with no timer. Headers are `SectionHeader` (mono 11sp
-caps, inkDim). Rows are pills (`ConversationRowChrome(pill = true)`: `Radius.full`, 36dp, 14dp
-side padding, one ellipsised line; swipe-to-archive unchanged), the in-flight status dot pulses,
+caps, inkDim). Rows are square chips (`ConversationRowChrome(pill = true)`: `Shape.row` (square), 36dp, 14dp
+side padding, one ellipsised line; swipe-to-archive unchanged — `pill` only picks the compact size), the in-flight status dot pulses,
 pinned rows carry a trailing `lucide_pin` (archived rows too). Host contract:
 `ConversationsPane(currentSessionKey, openTick)` — `HubDrawer` passes the open
 `Screen.Chat.sessionKey` (MainActivity) and bumps `openTick` whenever the drawer state targets
@@ -240,7 +240,8 @@ timeout/5xx only — 404 harness = plane-less, no badge). The drawer Memory entr
 entry, else pushes; Back returns to whatever is below).
 
 Prefs keys (DataStore `rivethub`): `entryUrl`, `strictHostnames`, `onboarded`, `themeMode`
-(`system`\|`light`\|`dark`), `sessionModes` (sessionId → `chat`\|`terminal`), `archived`,
+(`system`\|`light`\|`dark`\|`omarchy`), `omarchyPalette` (preset id, default `tokyo-night`), `defaultView`
+(`terminal`\|`chat`, default `chat`), `sessionModes` (sessionId → `chat`\|`terminal`), `archived`,
 `titleOverrides`, `agentPointers` (`sessionId\tnodeBaseUrl`), `terminalFontSp`, `viewNodeId`,
 `currentAgentId`, `agentsCollapsed`, `lastSessionKey` + `lastSessionNode` (instant-resume
 pointer, written on every chat open; drafts never written), `expFiles` / `expTasks` /
@@ -257,6 +258,42 @@ model ids — the composer model sheet's Favourites group, U5). Leftover Grok-Bo
 not required; their setters are gone.
 
 ## Design system
+
+**Look (desktop parity, web `components/brand.tsx`, `theme.css`, `lib/omarchy-*`).** Type brand:
+`ui/components/Brand.kt` `Wordmark` (`rivet` em + `hub` inkDim, JetBrains Mono ExtraBold) heads the
+drawer, `RhMark` (`r` + `h`) sits in the top bar, enroll, launch and terminal overlay. Launcher,
+monochrome and notification icons are vector `rh` outlines (`drawable/ic_launcher_fg.xml`,
+`ic_launcher_mono.xml`, `ic_notification.xml`, JetBrains Mono wght 800). JetBrains Mono for all UI
+text, square corners, no grid. Transcript author rows are mono `you ›` / `rivet ›` (no avatar).
+Agent rows show a letter tile (`AgentTile`: `plane/AgentAccent.kt agentInitials` on the accent,
+`tileInkOn` ink) and the harness label unless `sameLabel`. Settings → Appearance adds **Omarchy**
+(`themeMode = omarchy`) with an `omarchyPalette` pref: the 14 built-in palettes in
+`plane/OmarchyPresets.kt` (verbatim colors.toml, same list as web `lib/omarchy-presets.ts`) mapped by
+`plane/OmarchyTheme.kt` (port of web `omarchyAppTokens`; `OmarchyThemeTest` pins parity with the web
+output). The palette brings its own light/dark (`resolveRivetColors`).
+
+**Drawer gestures (`ui/components/RivetDrawerHost.kt`, pure rules `plane/DrawerSwipe.kt`).** The
+sheet follows the finger from the left edge and settles by fling (≥ 400dp/s) or halfway. On the hub
+home only (`HubDrawer(excludeBackGesture = true)`), the edge zone is max(24dp, system Back-gesture
+inset + 24dp) and a 200dp band mid-bezel is also excluded from the system Back gesture while the
+drawer is closed, so a swipe from the very edge opens it there. In a chat or its terminal the zone
+is max(24dp, inset), the bezel stays Back, and the claim waits for `PointerEventPass.Final` so a
+horizontal-scroll child under the down (unwrapped code, key toolbar) keeps its drag. A drag the
+gesture layer loses (pointer gone, layer restarted by rotation or an inset change) still settles by
+position. An open sheet closes on a leftward drag from the scrim, or from any part of the sheet whose
+content did not take the drag (rows keep swipe-to-archive), or a scrim tap; claim rules use
+`targetOpen` (not `isOpen`), so an edge swipe during the closing spring is not judged a scrim drag.
+Back is a `PredictiveBackHandler` in `HubDrawer` (sheet eases shut 35% of where it was when the
+gesture started, closes on commit, reopens on cancel). `RivetDrawerState` is `rememberSaveable`.
+`RivetDrawerStateTest` covers the state; the pointer loop itself is covered only by manual emulator runs.
+
+**Default view (web Settings → Conversations, `lib/use-session-view.ts`).** Settings → Conversations
+→ Default view (`defaultView` pref, Chat unless `terminal`, as on the web, so upgrading moves no conversation). `HarnessChatViewModel.boot` opens a
+conversation on `plane/SessionMode.kt resolveSessionMode`: this conversation's explicit switch
+(`sessionModes`, written only by the user's Terminal|Chat choice — system Back and the terminal
+chrome back arrow call `setMode(..., explicit = false)` and do not write) > terminal-only (not a
+draft and no resolvable harness, i.e. a legacy on-disk row) > the default. New conversations and
+older ones never switched both open on the default.
 
 U4 fenced code (built from `docs/UX-SPEC.md` only): `Radius.sm` block with a `panel`
 header (mono 11sp language, Copy, Lucide download/Save; 1dp `line` bottom), then
@@ -276,19 +313,18 @@ Every visual decision traces to a desktop file under `apps/rivethub-web` (`theme
 Do not invent Material chrome.
 
 Tailwind → Compose: `text-lg` 18sp semibold · `text-sm` 14sp · `text-xs` 13sp · mono
-`text-[11px]`/`[10px]`/`[9px]` 11/10/9sp. Sans = `RivetFonts.Sans` (DM Sans), mono =
-`RivetFonts.Mono` (JetBrains Mono). Spacing: 1 Tailwind unit = 4dp. Radius: `rounded` 4 /
-`rounded-md` 6 / `rounded-lg` 8 / `rounded-xl` 12 / `rounded-full` 999. Icons: `size-4` 16dp
+`text-[11px]`/`[10px]`/`[9px]` 11/10/9sp. Sans = `RivetFonts.Sans` (JetBrains Mono, like mono), mono =
+`RivetFonts.Mono` (JetBrains Mono). Spacing: 1 Tailwind unit = 4dp. Radius: square, as the
+desktop's Omarchy look: every `rounded*` maps to 0dp except `rounded-full` (999). Icons: `size-4` 16dp
 · `size-3` 12dp · `size-7` 28dp. Lucide drawables only (`R.drawable.lucide_*`) in D1a/D1b
-surfaces — no `Icons.*`. App root is `bg` + `Modifier.blueprintGrid()` (1dp `--grid-line`
-rects every 32dp — a 1px `drawLine` stroke anti-aliases to half coverage and reads too dim). Touch targets: keep desktop paddings for the look, add 44dp hit areas.
+surfaces — no `Icons.*`. App root is flat `bg` (no blueprint grid). Touch targets: keep desktop paddings for the look, add 44dp hit areas.
 
-Phone shape tokens (`ui/theme/Dimens.kt`): `Shape.row = Radius.full` for Pill,
-HarnessChip, toggle tracks, both segmented-control layers and selected NavRow (40dp);
-`Shape.card = Radius.xl` (12dp) for sheets, composer cards and cards;
-`Shape.bubble = Radius.xxl` (14dp) for message bubbles (U3b adopts it in Transcript);
-`Shape.control = Radius.md` (6dp) for buttons, fields and select triggers;
-`Shape.tight = Radius.sm` (4dp) for code, tool rows and tags. Buttons retain their
+Phone shape tokens (`ui/theme/Dimens.kt`): every `Radius` is 0dp except `Radius.full`, so every
+`Shape` token is square. `Shape.row` for Pill, HarnessChip, both segmented-control layers and selected
+NavRow (40dp); `Shape.card` for sheets, composer cards and cards; `Shape.bubble` for message bubbles;
+`Shape.control` for buttons, fields and select triggers; `Shape.tight` for code, tool rows and tags.
+Round on purpose (`Radius.full` / `CircleShape`): toggle tracks and knobs, status dots, round icon
+buttons. Buttons retain their
 variants and `Dimens.touchTarget` (44dp) minimum outer height. Fields use panel fill
 and a 1dp border (em while focused, line otherwise). NavRow has a growing 40dp visual
 row inside a minimum 44dp hit area. Modal sheets have card top corners, a centred 32×4dp line
@@ -326,7 +362,7 @@ D2 phone chrome (responsive rivethub-web ← sidebar.tsx MobileTopBar + chat.tsx
 
 | web (phone) | phone file |
 |---|---|
-| `sidebar.tsx:126` MobileTopBar (`h-12 border-b line bg-panel/80`, ☰ `size-5` in 44dp hit "Open menu", DenBot `size-7` decorative, `hubPageTitle` mono `text-sm em`) | `ui/components/TopBar.kt` on every non-session screen — the bar OWNS `statusBarsPadding` (panel/80 extends under the status bar); title rule `plane/HubChrome.kt topBarTitle` (wordmark on home, page title on Settings); NOT shown in a session (lib/session-header.ts showMobileTopBar) |
+| `sidebar.tsx:126` MobileTopBar (`h-12 border-b line bg-panel/80`, ☰ `size-5` in 44dp hit "Open menu", rh mark (`RhMark`) decorative, `hubPageTitle` mono `text-sm em`) | `ui/components/TopBar.kt` on every non-session screen — the bar OWNS `statusBarsPadding` (panel/80 extends under the status bar); title rule `plane/HubChrome.kt topBarTitle` (wordmark on home, page title on Settings); NOT shown in a session (lib/session-header.ts showMobileTopBar) |
 | `chat.tsx:1645` narrow session row (`h-12 flex-nowrap gap-2 border-b line bg-panel/40 px-2`: ☰ `size-5`/44px · id mono `text-xs inkDim` truncate flex-1 · ctx % · Stop · Terminal\|Chat · history `size-5`/44px "Conversations"; no back chevron) | `ui/components/ChatHeader.kt` — ONE `Row` `height(Dimens.pageHeader)` owning `statusBarsPadding`, Chat items from `plane/ChatChrome.kt headerItemsV2` (☰ · title block · Stop · Terminal chip · search · +), title long-press opens history until U2b; Terminal keeps `narrowHeaderItems`; the session screen calls no TopBar. Right history drawer (chat.tsx:585-626, `w-64 border-l line bg-panel`, bg/70 scrim) = `HistoryDrawer` hosting `ConversationsPane`; chat-first launch = `plane/LaunchSession.kt pickLaunchSession`, latched in MainActivity (chat.tsx:463-475); transcript pin = `plane/TranscriptPin.kt` (transcript.tsx:385-480, 120dp, `↓ latest` pill mono 11sp em on panel, em-dim/50 border) |
 | `chat.tsx:1645` narrow session row (`h-12 flex-nowrap gap-2 border-b line bg-panel/40 px-2`: ☰ `size-5`/44px · id mono `text-xs inkDim` truncate flex-1 · ctx % · Stop · Terminal\|Chat · history `size-5`/44px "Conversations"; no back chevron) | `ui/components/ChatHeader.kt` — ONE `Row` `height(Dimens.pageHeader)` owning `statusBarsPadding`, items from `plane/ChatChrome.kt narrowHeaderItems`; the session screen calls no TopBar. History button → the left drawer (U2b retired the right `HistoryDrawer`; the pane is the left drawer's body); chat-first launch = `plane/LaunchSession.kt pickLaunchSession`, latched in MainActivity (chat.tsx:463-475); transcript pin = `plane/TranscriptPin.kt` (transcript.tsx:385-480, 120dp, `↓ latest` pill mono 11sp em on panel, em-dim/50 border) |
 | `chat.tsx:631` flat row (`mb-1 rounded`, `px-3 py-2 text-xs`, idle `text-ink-dim`, active `text-em bg-panel-2`, chip mono 9sp `bg-panel-2`) | `ui/components/ConversationRow.kt` — 36dp rows, no cards, no 44dp row floor (source density wins over hit area here); the `SwipeToDismissBox` panel2 reveal paints ONLY while `dismissDirection == EndToStart` (an always-on backgroundContent shows through the transparent idle row as a card) |
@@ -515,7 +551,7 @@ Terminal attach errors (`TermAttachController` publish) set `UiState.termError` 
 a dismissed card does not come back.
 
 **Messages: bubbles, actions, jumper (UX slice U3b, UX-SPEC §1.2/§1.3).** User turn = avatar
-row, then a right-aligned bubble (`Radius.xxl` 14dp, `em` 12% fill, 1dp `em` 35% border, max
+row, then a right-aligned bubble (`Shape.bubble`, square, `em` 12% fill, 1dp `em` 35% border, max
 85% width) holding the body with the trailing `[attached: uri]` lines stripped
 (`plane/AttachedLines.kt splitAttachedLines`; only the trailing run of well-formed lines, a
 malformed/mid-text line stays text), then `AttachmentChips` (image types = 72dp thumbnails, tap →
@@ -582,7 +618,7 @@ Attach protocol (den-server `term/ws.ts`, rivethub-web `xterm-attach.tsx`):
    takes ownership. Wire shapes in `gateway/Wire.kt` (`TermOwner`/`TermOwnerFrame`/`TermClaimFrame`,
    `TermFrame.Owner`), pure helpers in `plane/TermOwner.kt` (`ownerOverlay`, `ownerFromFrame`),
    `termClaimJson` next to `termResizeJson` in `plane/TermPty.kt`. A non-owner sees a centered
-   overlay (DenBot + "This terminal is active on {device}." + "Use terminal here") in
+   overlay (rh mark + "This terminal is active on {device}." + "Use terminal here") in
    `TerminalPane` — the Canvas stays mounted behind the scrim; chat is untouched.
 
 Attach lives in `TermAttachController` (driven by `HarnessChatViewModel`) so Chat↔Terminal swipe

@@ -33,10 +33,10 @@
 
     <string name="cd_open_drawer">Open menu</string>
     <string name="cd_close_drawer">Close menu</string>
+    <string name="drawer_pane_title">Menu</string>
     <string name="cd_conversations">Conversations</string>
     <string name="cd_context_fill">Context %1$d%% of compaction</string>
     <string name="cd_coming_soon">coming soon</string>
-    <string name="cd_den_bot">Rivet den bot</string>
     <string name="unread_notifications">%d unread notifications</string>
     <string name="agents_section">Agents</string>
     <string name="agent_start_over">Start over</string>
@@ -81,7 +81,8 @@
     <string name="probe_ok">✓ node \"%1$s\" — %2$d agents</string>
     <string name="probe_ok_one">✓ node \"%1$s\" — 1 agent</string>
     <string name="probe_fail">✗ %1$s</string>
-    <string name="appearance_helper">System follows the OS light/dark setting.</string>
+    <string name="appearance_helper">System follows the OS light/dark setting. Omarchy paints one of the built-in Omarchy palettes, the same ones the desktop and browser offer.</string>
+    <string name="omarchy_palette">Omarchy palette</string>
     <string name="settings_auth_helper">Auth is the device client certificate, imported below as a .p12. Bearer tokens are not used.</string>
     <string name="strict_on">on</string>
     <string name="strict_off">off</string>
@@ -147,8 +148,10 @@
     <string name="composer_placeholder">Message Rivet…</string>
     <string name="composer_reconnecting">reconnecting…</string>
     <string name="thinking_chip">thinking</string>
-    <string name="label_you">You</string>
-    <string name="label_rivet">Rivet</string>
+    <string name="label_you">you ›</string>
+    <string name="label_rivet">rivet ›</string>
+    <string name="cd_author_you">You said</string>
+    <string name="cd_author_rivet">Rivet said</string>
     <string name="tap_terminal_retry">tap Terminal to retry</string>
     <string name="ws_reconnecting_ellipsis">reconnecting…</string>
     <string name="cd_copy_message">copy message</string>
@@ -174,10 +177,32 @@
     <string name="error_unreachable">Could not reach the entry node</string>
     <string name="error_pick_cert">Pick the device certificate first.</string>
     <string name="error_cert_load">Certificate didn\'t load: %1$s</string>
+    <string name="action_scan_pairing">Scan pairing QR</string>
+    <string name="pair_how">On the computer, open RivetHub → Settings → Pair a phone (or run rivetos pair &lt;name&gt;) and scan the code it shows.</string>
+    <string name="pair_or_file">Or import a certificate file</string>
+    <string name="pair_scan_hint">Point the camera at the pairing QR code</string>
+    <string name="pair_camera_denied">RivetHub needs the camera to scan the pairing QR. You can still import a certificate file below.</string>
+    <string name="pair_not_code">That QR code is not a RivetHub pairing code.</string>
+    <string name="pair_unsupported">This pairing code is from a newer RivetHub — update the app.</string>
+    <string name="pair_invalid">This pairing code is incomplete. Show a fresh one on the computer.</string>
+    <string name="pair_expired">This pairing code has expired or was already used. Show a new one on the computer.</string>
+    <string name="pair_gone">The computer no longer has this device\'s certificate. Show a new pairing code on the computer.</string>
+    <string name="pair_pin_mismatch">The computer\'s certificate doesn\'t match the pairing code. Make sure you\'re on the same network as the computer and scan again.</string>
+    <string name="pair_unreachable">Could not reach the computer. Check that the phone is on the same network.</string>
+    <string name="pair_spent">The computer took this code, but its answer did not arrive. Show a new code on the computer and scan again.</string>
+    <string name="pair_failed">Pairing failed (%1$s). Show a new code on the computer and scan again.</string>
+    <string name="pair_connect_failed">Paired: this phone\'s certificate is saved. Connecting to the computer failed (%1$s). Tap Connect to try again; no new code is needed.</string>
+    <string name="pair_camera_unavailable">The camera could not start (%1$s). You can still import a certificate file below.</string>
+    <string name="pair_local_network_denied">RivetHub needs the Nearby devices (local network) permission to reach the computer. Allow it in Android settings → Apps → RivetHub → Permissions, then scan again.</string>
 
     <string name="section_identity">Identity</string>
     <string name="section_appearance">Appearance</string>
     <string name="section_terminal">Terminal</string>
+    <string name="section_conversations">Conversations</string>
+    <string name="default_view">Default view</string>
+    <string name="default_view_terminal">Terminal</string>
+    <string name="default_view_chat">Chat</string>
+    <string name="default_view_helper">Where a conversation opens: new ones, and older ones you have not switched. Switching between Terminal and Chat inside a conversation is remembered for that conversation. Sessions that only run in a terminal open there unless you switched them to Chat.</string>
     <string name="section_experimental">Experimental features</string>
     <string name="experimental_helper">These are unfinished — turn them on to try them.</string>
     <string name="section_notifications">Notifications</string>
@@ -192,6 +217,7 @@
     <string name="appearance_system">System</string>
     <string name="appearance_light">Light</string>
     <string name="appearance_dark">Dark</string>
+    <string name="appearance_omarchy">Omarchy</string>
     <string name="font_small">Small</string>
     <string name="font_medium">Medium</string>
     <string name="font_large">Large</string>

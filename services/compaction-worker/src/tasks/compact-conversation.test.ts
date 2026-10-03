@@ -27,7 +27,14 @@ vi.mock('../config.js', () => ({
 
 vi.mock('../llm.js', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../llm.js')>()
-  return { ...actual, callLlm: vi.fn() }
+  const callLlm = vi.fn()
+  // compact-conversation calls callLlmDetailed; route it through the callLlm mock
+  // so each case scripts one function.
+  const callLlmDetailed = async (...args: Parameters<typeof actual.callLlm>) => ({
+    content: (await callLlm(...args)) as string,
+    model: 'served-model',
+  })
+  return { ...actual, callLlm, callLlmDetailed }
 })
 
 import {
@@ -416,6 +423,7 @@ describe('compact-conversation', () => {
       }
 
       const id = await insertSummary(mockClient, {
+        model: 'test-model',
         conversationId: 'conv-123',
         depth: 0,
         kind: 'leaf',
@@ -438,6 +446,7 @@ describe('compact-conversation', () => {
       }
 
       const result = await insertSummary(mockClient, {
+        model: 'test-model',
         conversationId: 'conv-xyz',
         depth: 1,
         kind: 'branch',
@@ -450,7 +459,7 @@ describe('compact-conversation', () => {
       expect(result).toBe('test-id-999')
     })
 
-    it('should use config.llmModel in pipeline_version field', async () => {
+    it('writes the serving model into the model column', async () => {
       const capturedParams: unknown[] = []
       const mockClient = {
         query: vi.fn(async (sql: string, params?: unknown[]) => {
@@ -462,6 +471,7 @@ describe('compact-conversation', () => {
       }
 
       await insertSummary(mockClient, {
+        model: 'fallback-model',
         conversationId: 'conv-1',
         depth: 2,
         kind: 'root',
@@ -471,8 +481,8 @@ describe('compact-conversation', () => {
         latestAt: new Date(),
       })
 
-      // Model should be in params[7]
-      expect(capturedParams[7]).toBeDefined()
+      // A fallback endpoint's model, not the configured primary
+      expect(capturedParams[7]).toBe('fallback-model')
     })
 
     it('should handle various summary kinds correctly', async () => {
@@ -487,6 +497,7 @@ describe('compact-conversation', () => {
         }
 
         await insertSummary(mockClient, {
+          model: 'test-model',
           conversationId: 'conv',
           depth: 0,
           kind,
@@ -510,6 +521,7 @@ describe('compact-conversation', () => {
         }
 
         await insertSummary(mockClient, {
+          model: 'test-model',
           conversationId: 'conv',
           depth,
           kind: 'leaf',
@@ -533,6 +545,7 @@ describe('compact-conversation', () => {
       const latest = new Date('2026-01-15')
 
       await insertSummary(mockClient, {
+        model: 'test-model',
         conversationId: 'conv',
         depth: 0,
         kind: 'leaf',
@@ -578,6 +591,7 @@ describe('compact-conversation', () => {
         mockClient,
         async () => {
         return insertSummary(mockClient, {
+          model: 'test-model',
           conversationId: 'conv-1',
           depth: 0,
           kind: 'leaf',
@@ -609,6 +623,7 @@ describe('compact-conversation', () => {
           mockClient,
           async () => {
           await insertSummary(mockClient, {
+            model: 'test-model',
             conversationId: 'conv',
             depth: 0,
             kind: 'leaf',

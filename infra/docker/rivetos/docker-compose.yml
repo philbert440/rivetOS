@@ -125,6 +125,16 @@ services:
       # exits 1.
       RIVETOS_COMPACTOR_URL: ${RIVETOS_COMPACTOR_URL:-}
       RIVETOS_COMPACTOR_MODEL: ${RIVETOS_COMPACTOR_MODEL:-}
+      RIVETOS_COMPACTOR_API_KEY: ${RIVETOS_COMPACTOR_API_KEY:-}
+      # Optional failover (docs/CONFIG-REFERENCE.md → Compaction worker). Each
+      # fallback's KEY_ENV is a variable name the worker reads; add a line here
+      # forwarding it (OPENROUTER_API_KEY below is the common one), or the
+      # worker exits naming the missing key.
+      RIVETOS_COMPACTOR_TRANSIENT_STATUSES: ${RIVETOS_COMPACTOR_TRANSIENT_STATUSES:-}
+      RIVETOS_COMPACTOR_FALLBACKS: ${RIVETOS_COMPACTOR_FALLBACKS:-}
+      RIVETOS_COMPACTOR_FALLBACK_COOLDOWN_MINUTES: ${RIVETOS_COMPACTOR_FALLBACK_COOLDOWN_MINUTES:-}
+      RIVETOS_COMPACTOR_FALLBACK_ATTEMPT_TIMEOUT_SECONDS: ${RIVETOS_COMPACTOR_FALLBACK_ATTEMPT_TIMEOUT_SECONDS:-}
+      OPENROUTER_API_KEY: ${OPENROUTER_API_KEY:-}
     healthcheck:
       disable: true
     depends_on:

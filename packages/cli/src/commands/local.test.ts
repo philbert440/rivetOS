@@ -28,6 +28,7 @@ import {
   buildLocalAnswers,
   chooseProvider,
   formatBanner,
+  formatPairingQrs,
   lastNLines,
   localWizardState,
   parseLocalArgs,
@@ -42,6 +43,7 @@ import {
   waitHealthz,
 } from './local.js'
 import { planLocalCa, localCaPaths, localNodeSans } from '../lib/local-ca.js'
+import { createPairing, pairingRecordPath } from '../lib/pairing.js'
 import type { DetectedHarness } from '../lib/harness-detect.js'
 
 const ORIG_SHARED = process.env.RIVETOS_SHARED_DIR
@@ -924,6 +926,64 @@ describe('runInit / runUp / runBackup / runReset', () => {
       ).rejects.toThrow(/still running/)
       expect(existsSync(pglite)).toBe(true)
       expect(existsSync(join(home, '.rivetos', 'config.yaml'))).toBe(true)
+    } finally {
+      rmSync(home, { recursive: true, force: true })
+    }
+  })
+})
+
+describe('formatPairingQrs without a LAN address', () => {
+  it('prints the p12 path and passphrase, and drops the record so den keeps the p12', async () => {
+    const home = mkdtempSync(join(tmpdir(), 'local-pair-nolan-'))
+    try {
+      const p12 = join(home, '.rivetos', 'devices', 'pixel.p12')
+      mkdirSync(join(home, '.rivetos', 'devices'), { recursive: true })
+      writeFileSync(p12, 'p12')
+      createPairing({ home, deviceId: 'pixel', p12Path: p12, passphrase: 'pass-123', now: 0 })
+      const out = await formatPairingQrs({
+        home,
+        hostname: 'box',
+        devices: ['pixel'],
+        port: 5174,
+        exposeLan: false,
+        lanAddrs: ['192.168.0.9'],
+        now: 1_000,
+      })
+      expect(out).toMatch(/QR not shown: the phone needs a LAN address/)
+      expect(out).toContain(`pixel: ${p12}  passphrase: pass-123`)
+      expect(existsSync(pairingRecordPath(home, 'pixel'))).toBe(false)
+      expect(existsSync(p12)).toBe(true)
+    } finally {
+      rmSync(home, { recursive: true, force: true })
+    }
+  })
+
+  it('still hands over the p12 after the TTL (--no-lan must not lose the passphrase)', async () => {
+    const home = mkdtempSync(join(tmpdir(), 'local-pair-nolan-exp-'))
+    try {
+      const p12 = join(home, '.rivetos', 'devices', 'pixel.p12')
+      mkdirSync(join(home, '.rivetos', 'devices'), { recursive: true })
+      writeFileSync(p12, 'p12')
+      createPairing({
+        home,
+        deviceId: 'pixel',
+        p12Path: p12,
+        passphrase: 'keep-me',
+        now: 0,
+      })
+      const { PAIRING_TTL_MS } = await import('../lib/pairing.js')
+      const out = await formatPairingQrs({
+        home,
+        hostname: 'box',
+        devices: ['pixel'],
+        port: 5174,
+        exposeLan: false,
+        lanAddrs: ['192.168.0.9'],
+        now: PAIRING_TTL_MS,
+      })
+      expect(out).toContain(`pixel: ${p12}  passphrase: keep-me`)
+      expect(existsSync(pairingRecordPath(home, 'pixel'))).toBe(false)
+      expect(existsSync(p12)).toBe(true)
     } finally {
       rmSync(home, { recursive: true, force: true })
     }

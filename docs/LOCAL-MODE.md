@@ -48,9 +48,38 @@ The node cert is re-issued on every `init` because DHCP addresses move.
 `--no-lan` binds `127.0.0.1` instead (still HTTPS) and sets `advertise_mdns:
 false`. The desktop app gets a pre-minted client
 leaf under the RivetHub userData `mtls/` directory. `--device <name>` mints a
-PKCS#12 at `~/.rivetos/devices/<name>.p12` and prints the passphrase once
-(the QR flow in a later change replaces hand-minting). Off-loopback terminals
+PKCS#12 at `~/.rivetos/devices/<name>.p12` and, once den is up, shows a
+pairing QR for RivetHub Android (gateway URL on the first LAN address, a
+one-time token, the SHA-256 of den's TLS leaf). The phone pins that leaf and
+redeems the token at `POST /api/devices/pair` for the p12 + passphrase; den
+deletes the p12 and the record (`~/.rivetos/devices/pairing/<name>.json`) on
+redemption. Codes expire after 10 minutes; re-run to get a new one
+(`rivetos local up --device <name>` re-shows a still-unredeemed code). The
+issued leaf key is removed once it is inside the p12, so the p12 is the only
+copy on the computer; the certificate stays in `issued/` so `rivet-ca.sh
+revoke device:<name>` can find it (an expired, never-redeemed code takes its
+certificate with it). Showing a code again always issues a new token, so an
+old photo of a QR never works. With `--no-lan`, or no LAN address, there is
+no QR: `local` prints the p12 path and passphrase instead for a manual import
+(Enroll → import a certificate file), and drops the pairing record so den
+does not delete the p12 while you copy it. Off-loopback terminals
 require that TLS material; validation rejects a LAN bind without it.
+
+**Pairing a phone on a node that is not a local install.** `rivetos local`
+rewrites `config.yaml` for a single machine, so on a mesh node (for example one
+whose memory lives on a datahub) use `rivetos pair <name>` instead. It mints the
+p12 from the same CA, adds `<name>` to the owner's devices in `users.json`
+(`--user <id>` for another user), writes the pairing record and prints the QR,
+pinning the certificate `den.tls_cert` names. The QR points at `--host`, else
+`den.host` when den is bound to one address, else the first LAN address. It
+never writes `config.yaml`. A name that already has a certificate is refused,
+so an enrolled device's key is never touched (revoke it with
+`scripts/rivet-ca.sh revoke device:<name>`, then delete
+`issued/device-<name>.crt` to reuse the name); re-running for a still-pending
+name re-shows the code with a new token.
+Den reads `users.json` at startup, so restart den after pairing a new name
+(Settings → Pair a phone reloads it for you). `rivetos pair --check` reports
+whether this node can pair a phone without minting anything.
 
 **Lite vs full memory.** Default `--memory lite` is capture + FTS/trigram
 recall, no embed/compaction workers (`rivet.defer_embed_enqueue=on`). It

@@ -52,6 +52,7 @@ import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.em
 import io.rivethub.app.R
+import io.rivethub.app.plane.ACCENT_LOCAL
 import io.rivethub.app.plane.AgentRow
 import io.rivethub.app.plane.AgentSheetAction
 import io.rivethub.app.plane.DrawerDest
@@ -61,6 +62,7 @@ import io.rivethub.app.plane.HubTab
 import io.rivethub.app.plane.NodeSheetModel
 import io.rivethub.app.plane.NodeSheetRow
 import io.rivethub.app.plane.accentForDrawer
+import io.rivethub.app.plane.agentInitials
 import io.rivethub.app.plane.agentRowSubtitle
 import io.rivethub.app.plane.agentSheetActions
 import io.rivethub.app.plane.discoveredNodeLabel
@@ -69,7 +71,10 @@ import io.rivethub.app.plane.drawerDestEnabled
 import io.rivethub.app.plane.drawerItemActive
 import io.rivethub.app.plane.drawerFlaggedRows
 import io.rivethub.app.plane.formatUnreadBadge
-import io.rivethub.app.ui.theme.Dimens
+import io.rivethub.app.plane.harnessLabel
+import io.rivethub.app.plane.parseAccentArgb
+import io.rivethub.app.plane.sameLabel
+import io.rivethub.app.plane.tileInkOn
 import io.rivethub.app.ui.theme.Radius
 import io.rivethub.app.ui.theme.RivetTheme
 import io.rivethub.app.ui.theme.RivetType
@@ -221,16 +226,9 @@ private fun DrawerHeader(unread: Int, onToggle: () -> Unit, onUnread: () -> Unit
                 .clickable(role = Role.Button, onClick = onToggle),
             contentAlignment = Alignment.Center,
         ) {
-            DenBot(size = Dimens.denBotHeader, decorative = true)
+            RhMark()
         }
-        Text(
-            stringResource(R.string.brand_rivethub),
-            color = colors.em,
-            style = RivetType.brand,
-            modifier = Modifier.weight(1f),
-            maxLines = 1,
-            overflow = TextOverflow.Ellipsis,
-        )
+        Wordmark(Modifier.weight(1f))
         if (badge != null) {
             Row(
                 Modifier
@@ -278,20 +276,24 @@ fun AgentRowChrome(
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.spacedBy(8.dp),
     ) {
-        Box(
-            Modifier
-                .size(8.dp)
-                .clip(CircleShape)
-                .background(rivetHexColor(hex)),
-        )
+        AgentTile(hex = hex, initials = agentInitials(row.name))
         Column(Modifier.weight(1f)) {
-            Text(
-                row.name,
-                color = colors.ink,
-                style = RivetType.xs,
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis,
-            )
+            // The harness is spelled out beside the name unless the agent is
+            // named after it ("Claude Code" on claude-code reads once).
+            val harness = harnessLabel(row.harnessId).takeUnless { it.isBlank() || sameLabel(it, row.name) }
+            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                Text(
+                    row.name,
+                    color = colors.ink,
+                    style = RivetType.xs,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                    modifier = Modifier.weight(1f, fill = false),
+                )
+                if (harness != null) {
+                    Text(harness, color = colors.inkDim, style = RivetType.mono10, maxLines = 1)
+                }
+            }
             if (!subtitle.isNullOrBlank()) {
                 Text(
                     subtitle,
@@ -311,6 +313,29 @@ fun AgentRowChrome(
                     .background(colors.inkDim),
             )
         }
+    }
+}
+
+/**
+ * Agent letter tile, Waybar-workspace style (web `AgentTile`): the agent's
+ * initials on its accent, square, with near-black or white ink by luminance
+ * so any preset color stays readable.
+ */
+@Composable
+fun AgentTile(hex: String, initials: String, modifier: Modifier = Modifier) {
+    val fill = parseAccentArgb(hex) ?: parseAccentArgb(ACCENT_LOCAL)!!
+    Box(
+        modifier
+            .size(20.dp)
+            .background(Color(fill)),
+        contentAlignment = Alignment.Center,
+    ) {
+        Text(
+            initials,
+            color = Color(tileInkOn(fill)),
+            style = RivetType.mono10.copy(fontWeight = FontWeight.Bold),
+            maxLines = 1,
+        )
     }
 }
 

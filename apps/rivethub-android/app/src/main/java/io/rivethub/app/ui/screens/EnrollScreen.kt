@@ -1,5 +1,7 @@
 package io.rivethub.app.ui.screens
 
+import android.Manifest
+import android.content.pm.PackageManager
 import android.net.Uri
 import android.provider.OpenableColumns
 import androidx.activity.compose.rememberLauncherForActivityResult
@@ -31,26 +33,37 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
+import androidx.core.content.ContextCompat
 import io.rivethub.app.AppContainer
 import io.rivethub.app.R
+import io.rivethub.app.data.LOCAL_NETWORK_PERMISSION
+import io.rivethub.app.data.PairingClient
+import io.rivethub.app.data.needsLocalNetworkPermission
 import io.rivethub.app.plane.EnrollErrorKind
 import io.rivethub.app.plane.EntryUrlError
+import io.rivethub.app.plane.PairingCodeError
+import io.rivethub.app.plane.PairingFailure
+import io.rivethub.app.plane.PairingParse
 import io.rivethub.app.plane.enrollError
+import io.rivethub.app.plane.looksLikePairingCode
+import io.rivethub.app.plane.parsePairingCode
 import io.rivethub.app.plane.validateEntryUrl
-import io.rivethub.app.ui.components.DenBot
 import io.rivethub.app.ui.components.Lucide
+import io.rivethub.app.ui.components.RhMark
+import io.rivethub.app.ui.components.PairingScannerDialog
 import io.rivethub.app.ui.components.RivetButton
 import io.rivethub.app.ui.components.RivetButtonVariant
 import io.rivethub.app.ui.components.RivetField
 import io.rivethub.app.ui.components.RivetFieldSize
 import io.rivethub.app.ui.components.TimeFmt
 import io.rivethub.app.ui.components.TopBar
+import io.rivethub.app.ui.components.Wordmark
 import io.rivethub.app.ui.theme.Dimens
 import io.rivethub.app.ui.theme.RivetTheme
 import io.rivethub.app.ui.theme.RivetType
@@ -58,7 +71,10 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
-/** Entry URL + device PKCS#12 → verify against /api/mesh → hub. */
+/**
+ * Pairing QR (gateway + one-time token → device PKCS#12), or entry URL + a picked
+ * PKCS#12 and its passphrase → verify against /api/mesh → hub.
+ */
 @Composable
 fun EnrollScreen(c: AppContainer, onBack: (() -> Unit)?, onDone: () -> Unit) {
     val ctx = LocalContext.current
@@ -71,6 +87,7 @@ fun EnrollScreen(c: AppContainer, onBack: (() -> Unit)?, onDone: () -> Unit) {
     var p12Name by remember { mutableStateOf<String?>(null) }
     var busy by remember { mutableStateOf(false) }
     var error by remember { mutableStateOf<String?>(null) }
+    var scanning by remember { mutableStateOf(false) }
     val existing = remember { c.identity.summary() }
 
     val pickP12 = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
@@ -88,6 +105,123 @@ fun EnrollScreen(c: AppContainer, onBack: (() -> Unit)?, onDone: () -> Unit) {
     val unreachable = stringResource(R.string.error_unreachable)
     val httpsRequired = stringResource(R.string.error_https_required)
     val pickCert = stringResource(R.string.error_pick_cert)
+    val cameraDenied = stringResource(R.string.pair_camera_denied)
+    val localNetworkDenied = stringResource(R.string.pair_local_network_denied)
+    /** A scanned code waiting on the local-network permission prompt. */
+    var awaitingLocalNetwork by remember { mutableStateOf<String?>(null) }
+
+    fun enrollMessage(e: Exception): String {
+        val mapped = enrollError(e)
+        return when (mapped.kind) {
+            EnrollErrorKind.CertRefused -> certRefused
+            EnrollErrorKind.Timeout -> timeout
+            EnrollErrorKind.Unreachable -> unreachable
+            EnrollErrorKind.Cleartext -> httpsRequired
+            EnrollErrorKind.Other -> {
+                if (c.identity.hasIdentity() && c.identity.summary() == null) {
+                    ctx.getString(R.string.error_cert_load, c.identity.lastError ?: "")
+                } else mapped.detail ?: e.javaClass.simpleName
+            }
+        }
+    }
+
+    /** Identity is in place: point at [entry], verify, and leave Enroll. */
+    suspend fun connect(entry: String) {
+        if (!c.identity.hasIdentity()) throw IllegalStateException(pickCert)
+        c.settings.setEntryUrl(entry)
+        c.dropClients()
+        c.transport.retarget(entry, emptySet())
+        withContext(Dispatchers.IO) { c.transport.discover() }
+        c.settings.setOnboarded(true)
+        onDone()
+    }
+
+    /** A scanned code to pair once the local-network permission was granted. */
+    var grantedPair by remember { mutableStateOf<String?>(null) }
+    val askLocalNetwork = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
+        val pending = awaitingLocalNetwork
+        awaitingLocalNetwork = null
+        if (!granted) error = localNetworkDenied else grantedPair = pending
+    }
+
+    fun pairWith(text: String) {
+        scanning = false
+        error = null
+        val code = when (val parsed = parsePairingCode(text)) {
+            is PairingParse.Ok -> parsed.code
+            is PairingParse.Err -> {
+                error = ctx.getString(
+                    when (parsed.error) {
+                        PairingCodeError.NotPairing -> R.string.pair_not_code
+                        PairingCodeError.Unsupported -> R.string.pair_unsupported
+                        PairingCodeError.Invalid -> R.string.pair_invalid
+                    },
+                )
+                return
+            }
+        }
+        // Android's local network protection silently drops connections to
+        // LAN addresses for an app without the permission, so the redeem would
+        // just time out as "could not reach". Ask first (for a real code), then pair.
+        if (needsLocalNetworkPermission(ctx)) {
+            awaitingLocalNetwork = text
+            askLocalNetwork.launch(LOCAL_NETWORK_PERMISSION)
+            return
+        }
+        scope.launch {
+            busy = true
+            // Set once the code is spent and the identity saved: a later
+            // failure is the connection, and Connect retries it.
+            var paired = false
+            try {
+                withContext(Dispatchers.IO) {
+                    val redeemed = c.pairing.redeem(code)
+                    c.identity.importPkcs12(redeemed.p12, redeemed.passphrase)
+                }
+                paired = true
+                url = code.gateway
+                p12Uri = null
+                p12Name = null
+                pass = ""
+                connect(code.gateway)
+            } catch (e: PairingClient.PairingException) {
+                error = when (e.failure) {
+                    PairingFailure.Expired -> ctx.getString(R.string.pair_expired)
+                    PairingFailure.Spent -> ctx.getString(R.string.pair_spent)
+                    PairingFailure.Gone -> ctx.getString(R.string.pair_gone)
+                    PairingFailure.PinMismatch -> ctx.getString(R.string.pair_pin_mismatch)
+                    PairingFailure.Unreachable -> ctx.getString(R.string.pair_unreachable)
+                    PairingFailure.Other -> ctx.getString(R.string.pair_failed, e.message ?: e.failure.name)
+                }
+            } catch (e: Exception) {
+                error = if (paired) ctx.getString(R.string.pair_connect_failed, enrollMessage(e)) else enrollMessage(e)
+            } finally {
+                busy = false
+            }
+        }
+    }
+
+    LaunchedEffect(grantedPair) {
+        val text = grantedPair ?: return@LaunchedEffect
+        grantedPair = null
+        pairWith(text)
+    }
+
+    val askCamera = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
+        if (granted) scanning = true else error = cameraDenied
+    }
+
+    if (scanning) {
+        PairingScannerDialog(
+            accept = ::looksLikePairingCode,
+            onCode = ::pairWith,
+            onCameraError = { reason ->
+                scanning = false
+                error = ctx.getString(R.string.pair_camera_unavailable, reason)
+            },
+            onDismiss = { scanning = false },
+        )
+    }
 
     Column(
         Modifier
@@ -125,13 +259,9 @@ fun EnrollScreen(c: AppContainer, onBack: (() -> Unit)?, onDone: () -> Unit) {
                 horizontalAlignment = Alignment.CenterHorizontally,
                 verticalArrangement = Arrangement.Top,
             ) {
-                DenBot(size = Dimens.denBotEnroll, modifier = Modifier.alpha(0.9f))
+                RhMark(size = Dimens.brandHeroSp.sp)
                 Spacer(Modifier.height(16.dp))
-                Text(
-                    stringResource(R.string.brand_rivethub),
-                    color = colors.em,
-                    style = RivetType.lg.copy(fontFamily = RivetType.brand.fontFamily),
-                )
+                Wordmark(size = 22.sp)
                 Spacer(Modifier.height(8.dp))
                 Text(
                     stringResource(R.string.enroll_blurb),
@@ -140,6 +270,27 @@ fun EnrollScreen(c: AppContainer, onBack: (() -> Unit)?, onDone: () -> Unit) {
                 )
                 Spacer(Modifier.height(24.dp))
                 Column(Modifier.fillMaxWidth(), horizontalAlignment = Alignment.Start) {
+                    RivetButton(
+                        text = stringResource(R.string.action_scan_pairing),
+                        onClick = {
+                            if (busy) return@RivetButton
+                            error = null
+                            val granted = ContextCompat.checkSelfPermission(ctx, Manifest.permission.CAMERA) ==
+                                PackageManager.PERMISSION_GRANTED
+                            if (granted) scanning = true else askCamera.launch(Manifest.permission.CAMERA)
+                        },
+                        enabled = !busy,
+                        modifier = Modifier.fillMaxWidth(),
+                    )
+                    Spacer(Modifier.height(8.dp))
+                    Text(stringResource(R.string.pair_how), color = colors.inkDim, style = RivetType.xs)
+                    Spacer(Modifier.height(24.dp))
+                    Text(
+                        stringResource(R.string.pair_or_file),
+                        color = colors.inkDim,
+                        style = RivetType.sm,
+                        modifier = Modifier.padding(bottom = 12.dp),
+                    )
                     Text(
                         stringResource(R.string.label_entry_url),
                         color = colors.inkDim,
@@ -220,26 +371,9 @@ fun EnrollScreen(c: AppContainer, onBack: (() -> Unit)?, onDone: () -> Unit) {
                                     pass = ""
                                     p12Uri = null
                                     p12Name = null
-                                    if (!c.identity.hasIdentity()) throw IllegalStateException(pickCert)
-                                    c.settings.setEntryUrl(entry)
-                                    c.dropClients()
-                                    c.transport.retarget(entry, emptySet())
-                                    withContext(Dispatchers.IO) { c.transport.discover() }
-                                    c.settings.setOnboarded(true)
-                                    onDone()
+                                    connect(entry)
                                 } catch (e: Exception) {
-                                    val mapped = enrollError(e)
-                                    error = when (mapped.kind) {
-                                        EnrollErrorKind.CertRefused -> certRefused
-                                        EnrollErrorKind.Timeout -> timeout
-                                        EnrollErrorKind.Unreachable -> unreachable
-                                        EnrollErrorKind.Cleartext -> httpsRequired
-                                        EnrollErrorKind.Other -> {
-                                            if (c.identity.hasIdentity() && c.identity.summary() == null) {
-                                                ctx.getString(R.string.error_cert_load, c.identity.lastError ?: "")
-                                            } else mapped.detail ?: e.javaClass.simpleName
-                                        }
-                                    }
+                                    error = enrollMessage(e)
                                 } finally {
                                     busy = false
                                 }

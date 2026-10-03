@@ -66,3 +66,19 @@ class LanNetwork(context: Context) {
             a is Inet4Address && (a.isSiteLocalAddress || a.isLinkLocalAddress)
         }
 }
+
+/**
+ * Android 16+ Local Network Protection gates RFC1918 traffic behind this
+ * permission; without it, connections to a LAN address are dropped and only
+ * time out. Referenced by string so older platforms (and emulator images)
+ * without the constant still compile and run.
+ */
+const val LOCAL_NETWORK_PERMISSION = "android.permission.ACCESS_LOCAL_NETWORK"
+
+/** True when this platform has the local-network permission and the app lacks it. */
+fun needsLocalNetworkPermission(context: Context): Boolean {
+    runCatching { context.packageManager.getPermissionInfo(LOCAL_NETWORK_PERMISSION, 0) }.getOrNull()
+        ?: return false
+    return context.checkSelfPermission(LOCAL_NETWORK_PERMISSION) !=
+        android.content.pm.PackageManager.PERMISSION_GRANTED
+}

@@ -75,6 +75,18 @@ Nodes should reload CA/CRL on a schedule (or restart) so revocations stick.
 membership. They are not gateway application auth and are not a substitute for
 device client certificates.
 
+## Phone pairing by QR
+
+`POST /api/devices/pair` is the other route above the mTLS gate: a phone with
+no client certificate yet trades a one-time pairing token (from Settings → Pair
+a phone, `rivetos pair` or `rivetos local --device`) for its PKCS#12 and
+passphrase. The token is the auth; the phone pins den's TLS leaf by the SHA-256
+in the QR for that one call. A record redeems once (atomic rename claim),
+expires after 10 minutes, and is deleted with the p12 on redemption. The
+device's certificate stays in `issued/` so `rivet-ca.sh revoke device:<name>`
+can find it. The Settings routes that mint codes (`/api/phone-pairing`) sit
+behind the gate and are owner-only. See `services/den-server/src/pairing.ts`.
+
 ## Operability (post-#491 rollout pieces)
 
 - **Node leaf SANs**: issue node certs with `IP:127.0.0.1` (plus the LAN IP)

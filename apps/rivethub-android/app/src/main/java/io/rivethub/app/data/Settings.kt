@@ -11,6 +11,8 @@ import androidx.datastore.preferences.core.stringPreferencesKey
 import androidx.datastore.preferences.core.stringSetPreferencesKey
 import androidx.datastore.preferences.preferencesDataStore
 import io.rivethub.app.gateway.wireJson
+import io.rivethub.app.plane.DEFAULT_OMARCHY_PRESET
+import io.rivethub.app.plane.MODE_CHAT
 import io.rivethub.app.plane.migrateLocalPrefs
 import io.rivethub.app.plane.nearestFontScale
 import io.rivethub.app.plane.toggleFavourite
@@ -34,8 +36,12 @@ data class Prefs(
     val onboarded: Boolean = false,
     val desktopUrl: String = "",
     val themeMode: String = "system",
+    /** Omarchy preset id (`plane/OmarchyPresets.kt`), painted when [themeMode] is `omarchy`. */
+    val omarchyPalette: String = DEFAULT_OMARCHY_PRESET,
     val fontScale: Float = 1.0f,
     val sessionModes: Map<String, String> = emptyMap(),
+    /** Settings → Conversations → Default view (`chat` | `terminal`); see plane/SessionMode.kt. */
+    val defaultView: String = MODE_CHAT,
     val archived: Set<String> = emptySet(),
     val titleOverrides: Map<String, String> = emptyMap(),
     val agentPointers: Map<String, String> = emptyMap(),
@@ -79,8 +85,10 @@ class Settings(context: Context) {
             onboarded = p[ONBOARDED] ?: false,
             desktopUrl = p[DESKTOP_URL] ?: "",
             themeMode = p[THEME] ?: "system",
+            omarchyPalette = p[OMARCHY_PALETTE] ?: DEFAULT_OMARCHY_PRESET,
             fontScale = nearestFontScale(p[FONT_SCALE] ?: 1.0f),
             sessionModes = decodeMap(p[SESSION_MODES]),
+            defaultView = p[DEFAULT_VIEW] ?: MODE_CHAT,
             archived = p[ARCHIVED] ?: emptySet(),
             titleOverrides = decodeMap(p[TITLES]),
             agentPointers = decodeMap(p[POINTERS]),
@@ -113,6 +121,7 @@ class Settings(context: Context) {
 
     suspend fun setFontScale(v: Float) = ds.edit { it[FONT_SCALE] = nearestFontScale(v) }
     suspend fun setThemeMode(mode: String) = ds.edit { it[THEME] = mode }
+    suspend fun setOmarchyPalette(id: String) = ds.edit { it[OMARCHY_PALETTE] = id }
     suspend fun setCodeLineNumbers(v: Boolean) = ds.edit { it[CODE_LINE_NUMBERS] = v }
     suspend fun setCodeWrap(v: Boolean) = ds.edit { it[CODE_WRAP] = v }
     suspend fun setExpFiles(v: Boolean) = ds.edit { it[EXP_FILES] = v }
@@ -145,6 +154,7 @@ class Settings(context: Context) {
         it.remove(LAST_SESSION_NODE)
     }
 
+    suspend fun setDefaultView(mode: String) = ds.edit { it[DEFAULT_VIEW] = mode }
     suspend fun setSessionMode(sessionId: String, mode: String) = ds.edit {
         it[SESSION_MODES] = encodeMap(decodeMap(it[SESSION_MODES]) + (sessionId to mode))
     }
@@ -202,7 +212,9 @@ class Settings(context: Context) {
         private val DESKTOP_URL = stringPreferencesKey("desktopUrl")
         private val FONT_SCALE = floatPreferencesKey("fontScale")
         private val THEME = stringPreferencesKey("themeMode")
+        private val OMARCHY_PALETTE = stringPreferencesKey("omarchyPalette")
         private val SESSION_MODES = stringPreferencesKey("sessionModes")
+        private val DEFAULT_VIEW = stringPreferencesKey("defaultView")
         private val ARCHIVED = stringSetPreferencesKey("archived")
         private val TITLES = stringPreferencesKey("titleOverrides")
         private val POINTERS = stringPreferencesKey("agentPointers")

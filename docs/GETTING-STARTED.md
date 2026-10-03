@@ -6,7 +6,7 @@
 2. `curl -fsSL https://get.rivethub.io/local.sh | bash`
 3. Start a **new session** in that tool so MCP recall loads (restart the tool, or on Grok run `/mcps reload`). Open RivetHub (Linux AppImage, or `https://localhost:5174`) and use the tool. Success = this new-session turn appears in Hub **and** a `memory_search` from the tool returns it. An already-open session will not see the new MCP server.
 
-Do **not** start with Docker, Proxmox, `rivetos init`, mesh enroll, or a Postgres URL. Those are day-2. Windows downloads the desktop app and talks to a Linux/mac node. Android pairs after the laptop is up (Settings → Devices QR). Developers clone this repo and run `npx rivetos local`, not `npx rivetos init`.
+Do **not** start with Docker, Proxmox, `rivetos init`, mesh enroll, or a Postgres URL. Those are day-2. Windows downloads the desktop app and talks to a Linux/mac node. Android pairs after the laptop is up (Settings → Pair a phone shows a QR to scan; `rivetos pair <name>` does the same from a terminal). Developers clone this repo and run `npx rivetos local`, not `npx rivetos init`.
 
 ---
 

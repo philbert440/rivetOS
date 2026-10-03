@@ -307,9 +307,18 @@ export async function ensureLocalCa(opts: EnsureLocalCaOpts): Promise<LocalCaPla
   return plan
 }
 
+/** Why a device name that already has a leaf cannot be minted again. */
+export function deviceHasCertificateMessage(id: string): string {
+  return (
+    `"${id}" already has a device certificate. Pick a new device name, or revoke the old one ` +
+    `first (scripts/rivet-ca.sh revoke device:${id}) and delete issued/device-${id}.crt`
+  )
+}
+
 /**
- * Issue an extra device client cert (`issue-client <name>`). Skips when the
- * leaf already exists.
+ * Issue an extra device client cert (`issue-client <name>`). Reuses a leaf
+ * whose cert and key are both still here; refuses a cert without its key
+ * (a device already holds that key).
  */
 export async function issueClientDevice(opts: {
   home?: string
@@ -335,9 +344,15 @@ export async function issueClientDevice(opts: {
   const cert = join(plan.sharedDir, 'issued', `device-${id}.crt`)
   const key = join(plan.sharedDir, 'issued', `device-${id}.key`)
   if (existsSync(cert) && existsSync(key)) return { cert, key, id }
-  if (existsSync(cert) || existsSync(key)) {
+  if (existsSync(cert)) {
+    // mintDeviceP12 keeps the certificate and deletes the key once it is in
+    // the device's p12: this name is (or was) a paired device. Minting again
+    // would leave its leaf live next to the new one.
+    throw new Error(deviceHasCertificateMessage(id))
+  }
+  if (existsSync(key)) {
     throw new Error(
-      `incomplete client ${id}: ${cert} / ${key} exist without a pair — delete both and re-run`,
+      `incomplete client ${id}: ${key} exists without its certificate — delete it and re-run`,
     )
   }
   const exec = opts.exec ?? execFileAsync

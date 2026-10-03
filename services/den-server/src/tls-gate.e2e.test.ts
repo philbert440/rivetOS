@@ -10,7 +10,7 @@
  */
 
 import { execFileSync } from 'node:child_process'
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { request, type RequestOptions } from 'node:https'
 import { networkInterfaces, tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -226,9 +226,17 @@ function makePki(extraIp: string | null): TestPki {
 function get(
   url: string,
   tls: { ca: string; cert?: string; key?: string },
+  body?: string,
 ): Promise<{ status: number; body: string }> {
   return new Promise((resolve, reject) => {
-    const opts: RequestOptions = { ca: tls.ca, cert: tls.cert, key: tls.key }
+    const opts: RequestOptions = {
+      ca: tls.ca,
+      cert: tls.cert,
+      key: tls.key,
+      ...(body === undefined
+        ? {}
+        : { method: 'POST', headers: { 'Content-Type': 'application/json' } }),
+    }
     const req = request(url, opts, (res) => {
       const chunks: Buffer[] = []
       res.on('data', (c: Buffer) => chunks.push(c))
@@ -238,7 +246,7 @@ function get(
       res.on('error', reject)
     })
     req.on('error', reject)
-    req.end()
+    req.end(body)
   })
 }
 
@@ -263,6 +271,7 @@ describe.skipIf(!haveOpenssl())('gateway TLS gate (real sockets)', () => {
           caPath: join(pki.dir, 'ca.crt'),
           requireClientCert: true,
         },
+        pairingDir: join(stateDir, 'pairing'),
       }),
     )
     // Wildcard bind so the same server is reachable via 127.0.0.1 (loopback
@@ -308,6 +317,34 @@ describe.skipIf(!haveOpenssl())('gateway TLS gate (real sockets)', () => {
       expect((await get(`${remoteBase}/sessions`, { ca: pki.ca })).status).toBe(401)
       expect((await get(`${remoteBase}/`, { ca: pki.ca })).status).toBe(401)
       expect((await get(`${remoteBase}/assets/anything.png`, { ca: pki.ca })).status).toBe(401)
+    })
+
+    it('lets a certless REMOTE redeem a pairing code, and nothing else under /api/devices', async () => {
+      const token = 'p'.repeat(43)
+      mkdirSync(join(stateDir, 'pairing'), { recursive: true })
+      const p12Path = join(stateDir, 'pixel.p12')
+      writeFileSync(p12Path, 'p12-bytes')
+      writeFileSync(
+        join(stateDir, 'pairing', 'pixel.json'),
+        JSON.stringify({
+          v: 1,
+          deviceId: 'pixel',
+          token,
+          passphrase: 'pw',
+          p12Path,
+          expiresAt: Date.now() + 60_000,
+        }),
+      )
+      const bad = await get(`${remoteBase}/api/devices/pair`, { ca: pki.ca }, '{"token":"nope"}')
+      expect(bad.status).toBe(403)
+      const ok = await get(
+        `${remoteBase}/api/devices/pair`,
+        { ca: pki.ca },
+        JSON.stringify({ token }),
+      )
+      expect(ok.status).toBe(200)
+      expect((JSON.parse(ok.body) as { deviceId?: string }).deviceId).toBe('pixel')
+      expect((await get(`${remoteBase}/api/devices`, { ca: pki.ca })).status).toBe(401)
     })
 
     it('admits a verified device leaf from a non-loopback remote', async () => {
