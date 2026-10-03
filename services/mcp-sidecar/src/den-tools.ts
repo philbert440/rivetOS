@@ -651,7 +651,10 @@ export function createDenTools(opts: DenToolsOptions): DenToolsHandle {
             }
             if (failure instanceof GatewayError) {
               if (failure.status === 0) return unreachable(denUrl, failure)
-              if (failure.status === 409 && failure.message.startsWith('delegation chain too deep')) {
+              if (
+                failure.status === 409 &&
+                failure.message.startsWith('delegation chain too deep')
+              ) {
                 return `[failed] ${failure.message}`
               }
               if (failure.status === 504) {
