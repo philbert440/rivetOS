@@ -15,8 +15,9 @@
  * extract-wiki, so a leaf's own model suggestions are normally still
  * `suggested` and not included (a delayed or re-mined leaf can see them once
  * accepted); a session tag accepted later informs the later leaves of
- * that session (session tags are inherited), but already-mined leaves are not
- * re-mined.
+ * that session (session tags are inherited), but a leaf already mined at the
+ * current WIKI_PIPELINE_VERSION is not re-mined. (The bump to v4 re-mined
+ * everything older once, so history saw the tags accepted by then.)
  *
  * Tags are optional enrichment: any lookup failure degrades to "no tags".
  * This runs whether or not SESSION_TAGGING is on — that switch controls the
