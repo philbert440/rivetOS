@@ -106,6 +106,7 @@ function PairingCard(props: { code: PhonePairingCode; onDone: () => void }): JSX
 export function PhonePairingSection(): JSX.Element | null {
   const connected = useGatewayReady()
   const [name, setName] = useState('')
+  const [host, setHost] = useState('')
   const [code, setCode] = useState<PhonePairingCode | null>(null)
 
   const info = useQuery({
@@ -116,7 +117,10 @@ export function PhonePairingSection(): JSX.Element | null {
   })
 
   const create = useMutation({
-    mutationFn: (n: string) => useConnection.getState().gateway.phonePairingCreate(n),
+    mutationFn: (args: { name: string; host?: string }) =>
+      useConnection.getState().gateway.phonePairingCreate(args.name, {
+        host: args.host,
+      }),
     onSuccess: (res) => {
       setCode(res)
       setName('')
@@ -133,7 +137,12 @@ export function PhonePairingSection(): JSX.Element | null {
   if (!info.data) return null
 
   const trimmed = name.trim()
+  const hostTrimmed = host.trim()
   const valid = NAME.test(trimmed)
+  const submit = (): void => {
+    if (!valid || create.isPending) return
+    create.mutate({ name: trimmed, host: hostTrimmed || undefined })
+  }
   return (
     <section>
       <h2 className="mt-10 mb-3 border-t border-line pt-6 font-mono text-sm font-semibold text-em">
@@ -147,23 +156,34 @@ export function PhonePairingSection(): JSX.Element | null {
             {info.data.gateway && (
               <>
                 {' '}
-                The phone will dial <span className="font-mono">{info.data.gateway}</span>.
+                The phone will dial <span className="font-mono">{info.data.gateway}</span>
+                {hostTrimmed ? '' : ' (override below if that address is wrong)'}.
               </>
             )}
           </p>
-          <div className="flex items-center gap-2">
+          <div className="flex flex-wrap items-center gap-2">
             <input
               value={name}
               onChange={(e) => setName(e.target.value)}
               onKeyDown={(e) => {
-                if (e.key === 'Enter' && valid && !create.isPending) create.mutate(trimmed)
+                if (e.key === 'Enter') submit()
               }}
               placeholder="phone name (e.g. pixel-8)"
               aria-label="Phone name"
               className="w-64 border border-line bg-panel px-3 py-2 text-sm outline-none focus:border-em"
             />
+            <input
+              value={host}
+              onChange={(e) => setHost(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter') submit()
+              }}
+              placeholder="gateway host (optional)"
+              aria-label="Gateway host override"
+              className="w-56 border border-line bg-panel px-3 py-2 text-sm outline-none focus:border-em"
+            />
             <button
-              onClick={() => create.mutate(trimmed)}
+              onClick={submit}
               disabled={!valid || create.isPending}
               className="bg-em px-3 py-2 text-sm font-semibold text-bg hover:opacity-90 disabled:opacity-50"
             >

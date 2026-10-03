@@ -510,11 +510,15 @@ export class RivetGateway {
     return request(this.config, '/api/phone-pairing', { signal })
   }
 
-  phonePairingCreate(name: string, signal?: AbortSignal): Promise<PhonePairingCode> {
+  phonePairingCreate(
+    name: string,
+    opts?: { host?: string; signal?: AbortSignal },
+  ): Promise<PhonePairingCode> {
+    const host = opts?.host?.trim()
     return request(this.config, '/api/phone-pairing', {
       method: 'POST',
-      body: { name },
-      signal,
+      body: host ? { name, host } : { name },
+      signal: opts?.signal,
     })
   }
 
