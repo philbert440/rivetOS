@@ -116,11 +116,6 @@ export function tryReadPublishSnapshots(publishDir) {
   return { readable: true, snapshots }
 }
 
-export function readPublishSnapshots(publishDir) {
-  const read = tryReadPublishSnapshots(publishDir)
-  return read.readable ? read.snapshots : []
-}
-
 export function loadPublishLagStatus(statusPath) {
   try {
     const raw = JSON.parse(readFileSync(statusPath, 'utf8'))
@@ -149,28 +144,40 @@ export function formatPublishLagWarn(row) {
  * Compare the latest publish snapshots against persisted stall state.
  * Warn once per agent when lag > N or the stall exceeds the time budget.
  * The warning (and the status row) clear when lag <= 0.
+ *
+ * `dirReadable` is required. Defaulting it to true let a caller that had
+ * collapsed an unreadable directory into `[]` clear every warned agent.
+ * While the directory cannot be read, warned agents stay warned and
+ * `dirUnreadableSince` records when that stretch began.
  */
 export function evaluatePublishLag(opts) {
+  if (!opts || typeof opts.dirReadable !== 'boolean') {
+    throw new Error('evaluatePublishLag requires opts.dirReadable (true or false)')
+  }
   const nowMs = opts.nowMs ?? Date.now()
   const config = opts.config ?? loadPublishLagConfig()
   const previous = opts.previous?.agents ?? {}
-  // Callers that pass snapshots directly are observing those files. A pass
-  // that could not read the directory sets dirReadable: false and must not
-  // treat "no snapshots" as "every agent file is gone".
-  const dirReadable = opts.dirReadable !== false
+  const dirReadable = opts.dirReadable
   if (!dirReadable) {
+    const rawSince = opts.previous?.dirUnreadableSince
+    const began = typeof rawSince !== 'string' || !rawSince
+    const dirUnreadableSince = began ? new Date(nowMs).toISOString() : rawSince
     return {
       status: {
         updatedAt: new Date(nowMs).toISOString(),
         lagEntries: config.lagEntries,
         stallMs: config.stallMs,
+        dirUnreadableSince,
         agents: { ...previous },
       },
       warnings: [],
       cleared: [],
       skipped: [],
+      dirState: began ? 'began' : 'ongoing',
     }
   }
+  const wasUnreadable = typeof opts.previous?.dirUnreadableSince === 'string' &&
+    opts.previous.dirUnreadableSince.length > 0
   const agents = {}
   const warnings = []
   const cleared = []
@@ -252,6 +259,7 @@ export function evaluatePublishLag(opts) {
     warnings,
     cleared,
     skipped,
+    dirState: wasUnreadable ? 'ended' : 'ok',
   }
 }
 
@@ -298,6 +306,11 @@ export function runPublishLagPass(opts) {
     dirReadable: read.readable,
   })
   if (statusPath) writePublishLagStatus(statusPath, result.status)
+  if (result.dirState === 'began') {
+    log(`WARN publish dir unreadable since=${result.status.dirUnreadableSince}`)
+  } else if (result.dirState === 'ended') {
+    log('publish dir readable again')
+  }
   for (const row of result.warnings) log(formatPublishLagWarn(row))
   for (const id of result.cleared) log(`publish lag cleared agent=${id}`)
   return result

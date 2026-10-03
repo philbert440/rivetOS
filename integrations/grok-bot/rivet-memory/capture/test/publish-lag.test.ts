@@ -14,7 +14,6 @@ import {
   publishLag,
   publishLagIntervalMs,
   publishLagTempPath,
-  readPublishSnapshots,
   runPublishLagPass,
   tryReadPublishSnapshots,
   WARN_CLEAR_RATIO,
@@ -55,7 +54,9 @@ describe('publish-lag', () => {
     writeFileSync(join(dir, `${BETA_ID}.json`), '{not json')
     writeFileSync(join(dir, 'notes.txt'), 'ignore')
     writePublish(dir, 'empty', { version: 2 })
-    const snaps = readPublishSnapshots(dir)
+    const read = tryReadPublishSnapshots(dir)
+    expect(read.readable).toBe(true)
+    const snaps = read.snapshots
     const ok = snaps.filter((s) => s.parsed)
     const bad = snaps.filter((s) => !s.parsed)
     expect(ok).toHaveLength(1)
@@ -73,6 +74,7 @@ describe('publish-lag', () => {
       },
     ]
     const first = evaluatePublishLag({
+      dirReadable: true,
       snapshots,
       previous: { agents: {} },
       nowMs: 1_000,
@@ -85,6 +87,7 @@ describe('publish-lag', () => {
     expect(formatPublishLagWarn(first.warnings[0])).toContain(ALPHA_ID)
 
     const second = evaluatePublishLag({
+      dirReadable: true,
       snapshots,
       previous: first.status,
       nowMs: 2_000,
@@ -103,6 +106,7 @@ describe('publish-lag', () => {
       },
     ]
     const t0 = evaluatePublishLag({
+      dirReadable: true,
       snapshots,
       previous: { agents: {} },
       nowMs: 1_000,
@@ -112,6 +116,7 @@ describe('publish-lag', () => {
     expect(t0.status.agents[BETA_ID]?.stalledSince).toBe(1_000)
 
     const t1 = evaluatePublishLag({
+      dirReadable: true,
       snapshots,
       previous: t0.status,
       nowMs: 62_000,
@@ -122,6 +127,7 @@ describe('publish-lag', () => {
     expect(t1.warnings[0]?.stalledSince).toBe(1_000)
 
     const t2 = evaluatePublishLag({
+      dirReadable: true,
       snapshots,
       previous: t1.status,
       nowMs: 120_000,
@@ -133,12 +139,14 @@ describe('publish-lag', () => {
   it('resets the stall clock when publishedThroughSeq advances', () => {
     const config = { lagEntries: 500, stallMs: 60_000 }
     const first = evaluatePublishLag({
+      dirReadable: true,
       snapshots: [{ id: ALPHA_ID, parsed: { writerSeq: 40, publishedThroughSeq: 10 } }],
       previous: { agents: {} },
       nowMs: 0,
       config,
     })
     const advanced = evaluatePublishLag({
+      dirReadable: true,
       snapshots: [{ id: ALPHA_ID, parsed: { writerSeq: 40, publishedThroughSeq: 12 } }],
       previous: first.status,
       nowMs: 50_000,
@@ -151,6 +159,7 @@ describe('publish-lag', () => {
   it('clears the warning when the agent catches up', () => {
     const config = { lagEntries: 5, stallMs: 24 * 3_600_000 }
     const warned = evaluatePublishLag({
+      dirReadable: true,
       snapshots: [{ id: ALPHA_ID, parsed: { writerSeq: 20, publishedThroughSeq: 1 } }],
       previous: { agents: {} },
       nowMs: 0,
@@ -158,6 +167,7 @@ describe('publish-lag', () => {
     })
     expect(warned.warnings).toHaveLength(1)
     const caught = evaluatePublishLag({
+      dirReadable: true,
       snapshots: [{ id: ALPHA_ID, parsed: { writerSeq: 20, publishedThroughSeq: 20 } }],
       previous: warned.status,
       nowMs: 10,
@@ -210,6 +220,7 @@ describe('publish-lag', () => {
   it('keeps per-agent state when a snapshot is malformed', () => {
     const config = { lagEntries: 5, stallMs: 24 * 3_600_000 }
     const warned = evaluatePublishLag({
+      dirReadable: true,
       snapshots: [{ id: ALPHA_ID, parsed: { writerSeq: 20, publishedThroughSeq: 1 } }],
       previous: { agents: {} },
       nowMs: 1_000,
@@ -217,6 +228,7 @@ describe('publish-lag', () => {
     })
     expect(warned.status.agents[ALPHA_ID]?.warned).toBe(true)
     const held = evaluatePublishLag({
+      dirReadable: true,
       snapshots: [{ id: ALPHA_ID, parsed: null }],
       previous: warned.status,
       nowMs: 2_000,
@@ -238,6 +250,7 @@ describe('publish-lag', () => {
       warningLatched({ alreadyWarned: true, lag: 20, stalledMs: 0, lagEntries: 50, stallMs: config.stallMs }),
     ).toBe(false)
     const warned = evaluatePublishLag({
+      dirReadable: true,
       snapshots: [{ id: ALPHA_ID, parsed: { writerSeq: 80, publishedThroughSeq: 10 } }],
       previous: { agents: {} },
       nowMs: 1_000,
@@ -245,6 +258,7 @@ describe('publish-lag', () => {
     })
     expect(warned.warnings).toHaveLength(1)
     const stillHigh = evaluatePublishLag({
+      dirReadable: true,
       snapshots: [{ id: ALPHA_ID, parsed: { writerSeq: 80, publishedThroughSeq: 50 } }],
       previous: warned.status,
       nowMs: 2_000,
@@ -254,6 +268,7 @@ describe('publish-lag', () => {
     expect(stillHigh.cleared).toEqual([])
     expect(stillHigh.status.agents[ALPHA_ID]?.warned).toBe(true)
     const belowHysteresis = evaluatePublishLag({
+      dirReadable: true,
       snapshots: [{ id: ALPHA_ID, parsed: { writerSeq: 80, publishedThroughSeq: 60 } }],
       previous: stillHigh.status,
       nowMs: 3_000,
@@ -292,10 +307,13 @@ describe('publish-lag', () => {
     const file = join(dir, `${ALPHA_ID}.json`)
     const mtimeSec = 1_700_000_000
     utimesSync(file, mtimeSec, mtimeSec)
-    const snaps = readPublishSnapshots(dir)
+    const read = tryReadPublishSnapshots(dir)
+    expect(read.readable).toBe(true)
+    const snaps = read.snapshots
     expect(snaps[0]?.mtimeMs).toBeGreaterThan(0)
     const nowMs = mtimeSec * 1000 + 3_600_000
     const first = evaluatePublishLag({
+      dirReadable: true,
       snapshots: snaps,
       previous: { agents: {} },
       nowMs,
@@ -304,6 +322,7 @@ describe('publish-lag', () => {
     expect(first.status.agents[ALPHA_ID]?.stalledSince).toBe(snaps[0]?.mtimeMs)
     expect(first.status.agents[ALPHA_ID]?.stalledSince).toBeLessThan(nowMs)
     const alreadyLagging = evaluatePublishLag({
+      dirReadable: true,
       snapshots: [
         {
           id: BETA_ID,
@@ -395,6 +414,7 @@ describe('publish-lag', () => {
     expect(missing.status.agents[ALPHA_ID]).toMatchObject({ warned: true, stalledSince: 1_000 })
     expect(logs.some((line) => line.includes('cleared'))).toBe(false)
     const onDisk = JSON.parse(readFileSync(statusPath, 'utf8')) as {
+      dirUnreadableSince?: string
       agents: Record<string, { warned?: boolean; stalledSince?: number }>
     }
     expect(onDisk.agents[ALPHA_ID]?.warned).toBe(true)
@@ -415,10 +435,50 @@ describe('publish-lag', () => {
     expect(thrown.status.agents[ALPHA_ID]?.warned).toBe(true)
     expect(thrown.status.agents[ALPHA_ID]?.stalledSince).toBe(1_000)
     const still = JSON.parse(readFileSync(statusPath, 'utf8')) as {
+      dirUnreadableSince?: string
       agents: Record<string, { warned?: boolean }>
     }
     expect(still.agents[ALPHA_ID]?.warned).toBe(true)
     expect(logs.some((line) => line.includes('cleared'))).toBe(false)
+    const unreadableLogs = logs.filter((line) => line.includes('publish dir unreadable'))
+    expect(unreadableLogs).toEqual([
+      `WARN publish dir unreadable since=${new Date(9_000).toISOString()}`,
+    ])
+    expect(onDisk.dirUnreadableSince).toBe(new Date(9_000).toISOString())
+    expect(still.dirUnreadableSince).toBe(new Date(9_000).toISOString())
+
+    const publishDir = join(dir, 'transcript-publish')
+    mkdirSync(publishDir)
+    writePublish(publishDir, ALPHA_ID, { writerSeq: 80, publishedThroughSeq: 1 })
+    const recoveredLogs: string[] = []
+    const back = runPublishLagPass({
+      publishDir,
+      statusPath,
+      nowMs: 11_000,
+      config: { lagEntries: 10, stallMs: 1 },
+      log: (...a: unknown[]) => recoveredLogs.push(a.map(String).join(' ')),
+    })
+    expect(recoveredLogs).toContain('publish dir readable again')
+    expect(recoveredLogs.some((line) => line.includes('publish dir unreadable'))).toBe(false)
+    expect(back.status.dirUnreadableSince).toBeUndefined()
+    expect(back.status.agents[ALPHA_ID]?.warned).toBe(true)
+    expect(back.cleared).toEqual([])
+    const recovered = JSON.parse(readFileSync(statusPath, 'utf8')) as {
+      dirUnreadableSince?: string
+      agents: Record<string, { warned?: boolean }>
+    }
+    expect(recovered.dirUnreadableSince).toBeUndefined()
+    expect(recovered.agents[ALPHA_ID]?.warned).toBe(true)
+  })
+
+  it('requires dirReadable so a missing directory cannot look like an empty one', () => {
+    expect(() =>
+      evaluatePublishLag({
+        snapshots: [],
+        previous: { agents: { [ALPHA_ID]: { warned: true } } },
+        nowMs: 1,
+      }),
+    ).toThrow(/dirReadable/)
   })
 
   it('falls back to 60s for a bad interval and uses a pid-unique status temp', () => {

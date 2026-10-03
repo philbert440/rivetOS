@@ -250,8 +250,8 @@ timestamps except the `<timestamp>` tags inside user turns.
 
 Dry-run is the default. It prints per-bot counts (`pages`, `entries_parsed`,
 `dropped_system`, `skipped_no_timestamp`, `skipped_no_position`,
-`skipped_overlap`, `new`, `pages_failed`, `unknown_slugs`) and writes
-nothing. An explicit `--dry-run` overrides `--commit`. Without
+`skipped_overlap`, `skipped_changed`, `new`, `pages_failed`, `unknown_slugs`)
+and writes nothing. An explicit `--dry-run` overrides `--commit`. Without
 `RIVETOS_PG_URL` the summary includes
 `overlap=unavailable (no RIVETOS_PG_URL)` — those counts are not a commit
 preview. `--input` must be a readable directory (exit 2 otherwise). A
@@ -260,7 +260,8 @@ malformed page or an unknown slug is counted and the process exits 2.
 deletes them; it still goes through `PostgresMemory.append`, which upserts
 that session's `ros_conversations` row (`updated_at`, `active`) and may
 queue tool-synthesis jobs. A bot whose pages disagree at a position writes
-nothing for that bot (exit 3); other bots in the same run still proceed.
+nothing for that bot. Page conflicts exit 3 on a dry-run and on `--commit`.
+Other bots in the same run still proceed.
 Nothing folds into plain `-v4`. `reclean` refuses a `-backfill` session so
 it cannot be rewritten onto a live `-vN` suffix.
 
@@ -290,21 +291,34 @@ text) still carries forward onto later kept rows; rows are never stamped
 with the backfill run's wall clock. Source id is
 `readtranscript:<bot-slug>:<position>:<sub>` (`<sub>` is the per-position
 sub-index, `0` for the first message at that position). Position `0` is
-valid. An older id without `:<sub>` still suppresses that position's sub 0
-when it is the only kept message there; when the position emitted several
-messages, the old shared id suppresses every sub so a re-run does not
-duplicate them. The session tag is `grokbot-<bot-slug>-v4-backfill` — a
+valid. A missing position is skipped and is not stored as `:0`. Idempotence
+is that exact id only — an older id without `:<sub>` does not match, because
+no row was ever written in that form. Each written row stores
+`metadata.content_hash` (the same hash used for overlap). A re-run that
+finds the same id with the same digest, or with no stored digest, skips
+quietly. A different digest is not written (`skipped_changed`); one stderr
+line names the bot and the positions, and the process exits 3 (dry-run or
+`--commit`). Other rows for that bot are still eligible to be written.
+The session tag is `grokbot-<bot-slug>-v4-backfill` — a
 sibling of `-v4`, never merged into it. Hidden system / agent wakes and
 system reminders follow the existing v4 normalizer (wrapper strip + hidden
 classification); system rows are not ingested on this tag. Content is
 bounded by the existing 256 KiB cap. A truncated row's
 `session_jsonl_path` / `session_jsonl_line` point at the spool page that
-won that position. Re-runs are idempotent per source id under
-`-v4-backfill`. Against live `-v4`, suppression uses rows at or after
-`min(candidate created_at) − overlap hours` (default 48), and only when the
-content hash matches **and** the timestamps are within 60 minutes, up to
-that hash's multiplicity in the window. `--overlap-hours 0` disables this
-suppression (source-id idempotence stays on). Assistant tool rows hash
+won that position. Re-runs are idempotent per exact source id under
+`-v4-backfill`. Against live `-v4`, rows are read from
+`min(candidate created_at) − overlap hours` (default 48) through
+`max(candidate created_at) + 60 minutes`. A content-hash match inside that
+60-minute tolerance suppresses a candidate only when an adjacent candidate
+(the previous or next row, in spool order) is also a tentative hash+time
+match — a run of consecutive messages live capture already has. A lone
+match, including a spool of one row, is inserted. A duplicate is tolerable;
+a missed row that live capture did not keep is not. Multiplicity still caps
+a confirmed run (`k` live copies suppress at most `k` backfill rows), and a
+match that is not confirmed does not consume a copy. `--overlap-hours 0`
+disables this suppression (source-id idempotence stays on). An empty
+`--overlap-hours` or `GROKBOT_BACKFILL_OVERLAP_HOURS` is the default 48,
+not 0. Assistant tool rows hash
 `role + tool_name + canonical tool_args` so a later tool-synthesis rewrite
 of `content`, or JSONB key reordering, still matches. Message rows stay
 insert-only; `--commit` still goes through `PostgresMemory.append`, which
@@ -317,7 +331,7 @@ Env / config knobs:
 | knob | default | what it does |
 | --- | --- | --- |
 | `GROKBOT_PAGES_DIR` | (required unless `--input`) | page dump directory |
-| `GROKBOT_BACKFILL_OVERLAP_HOURS` / `--overlap-hours` | `48` | hours before the earliest candidate; `0` disables `-v4` suppression |
+| `GROKBOT_BACKFILL_OVERLAP_HOURS` / `--overlap-hours` | `48` | hours before the earliest candidate; `0` disables `-v4` hash suppression; empty is 48 |
 | `GROKBOT_AGENTS` / `--agents-dir` | `~/agent-data/agents` | roster (`profile.json` slugs) |
 | `RIVETOS_PG_URL` | (env or `~/.rivetos/.env`) | overlap SELECT; required for `--commit` |
 
@@ -481,8 +495,12 @@ budget. The warning clears when lag or stall falls to half the enter
 threshold (hysteresis), or when the agent catches up (`lag <= 0`); either
 reset logs `publish lag cleared`. A malformed file skips that sample and
 keeps the previous per-agent stall/warn state. A missing or unreadable
-publish directory is a true no-op: previous warnings and stall clocks stay,
-nothing is logged as cleared, and the status file keeps its agents. An
+publish directory carries the previous warnings and stall clocks forward.
+Warned agents stay warned while the directory is unreadable. The status
+file records `dirUnreadableSince` for that stretch. One
+`WARN publish dir unreadable …` line is logged when the stretch begins, and
+one `publish dir readable again` line when the directory can be read again.
+Nothing is logged as cleared during the unreadable stretch. An
 agent whose file is gone **while the directory was readable**, or whose
 file was read with `lag <= 0`, is cleared. A non-numeric or non-positive
 `GROKBOT_PUBLISH_LAG_INTERVAL_MS` falls back to 60000. The status file is

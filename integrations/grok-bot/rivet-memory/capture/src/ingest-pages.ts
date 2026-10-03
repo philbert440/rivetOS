@@ -10,8 +10,11 @@
  * v4 normalizer, then system rows are dropped from this tag. Nothing is
  * folded into plain -v4.
  *
- * Overlap suppression is time-relative to the candidate rows. `--overlap-hours 0`
- * disables -v4 content-hash suppression (source_id idempotence stays on).
+ * Overlap suppression is time-relative to the candidate rows. A hash+time
+ * match is dropped only when an adjacent candidate is also a tentative
+ * match (a run). A lone match is inserted: a duplicate is tolerable, a
+ * missed row is not. `--overlap-hours 0` disables -v4 hash suppression.
+ * source_id idempotence stays on for the exact `:<position>:<sub>` id.
  */
 import { createHash } from 'node:crypto'
 import { readdirSync, readFileSync, statSync } from 'node:fs'
@@ -47,11 +50,11 @@ export const BACKFILL_SOURCE = 'grokbot-readtranscript-backfill'
  * tag, carried forward across the turn (then bumped 1ms so they stay ordered).
  * 60 minutes covers one long tool-using turn — a live row can land well after
  * its tag — without treating the same short text from a previous day as the
- * same occurrence. `--overlap-hours 0` turns suppression off entirely.
+ * same occurrence. `--overlap-hours 0` turns hash suppression off entirely.
+ * An isolated match inside that window is still inserted; only a run of
+ * adjacent tentative matches is suppressed.
  */
 export const OVERLAP_TIME_TOLERANCE_MS = 60 * 60 * 1000
-
-const NEW_SOURCE_ID_RE = /^readtranscript:(.+):(\d+):(\d+)$/
 
 export interface PageSpoolFile {
   path: string
@@ -69,11 +72,22 @@ export interface OverlapRow {
   metadata?: Record<string, unknown> | null
 }
 
+/** One stored backfill idempotence key, plus its content digest when present. */
+export interface StoredSourceId {
+  sourceId: string
+  /** Absent when the stored row has no `metadata.content_hash`. */
+  contentHash?: string
+}
+
 export interface OverlapStore {
   newestCreatedAt(sessionKey: string, agent: string): Promise<Date | undefined>
-  rowsSince(sessionKey: string, agent: string, since?: Date): Promise<OverlapRow[]>
-  /** Distinct backfill `metadata.source_id` values. Preferred over `rowsSince`. */
-  sourceIds?(sessionKey: string, agent: string): Promise<string[]>
+  /**
+   * `since` / `until` bound `created_at` when set. The backfill source-id
+   * fallback calls this with neither bound.
+   */
+  rowsSince(sessionKey: string, agent: string, since?: Date, until?: Date): Promise<OverlapRow[]>
+  /** Distinct backfill source ids and digests. Preferred over `rowsSince`. */
+  sourceIds?(sessionKey: string, agent: string): Promise<StoredSourceId[]>
   close?: () => Promise<void>
 }
 
@@ -83,8 +97,12 @@ export interface V4OverlapHit {
 }
 
 export interface OverlapIndex {
-  /** Existing -v4-backfill source ids, new form and legacy `…:<position>`. */
-  sourceIds: Set<string>
+  /**
+   * Exact `readtranscript:<slug>:<position>:<sub>` ids. The value is the
+   * stored content digest, or `undefined` when that row has none (treat as
+   * the same content). Legacy ids without `:<sub>` are not keys that match.
+   */
+  sourceIds: Map<string, string | undefined>
   /** -v4 rows inside the candidate-relative overlap window. */
   v4Hits: V4OverlapHit[]
 }
@@ -99,6 +117,8 @@ export interface IngestPagesCounts {
   skippedNoTimestamp: number
   skippedNoPosition: number
   skippedOverlap: number
+  /** Existing source id whose stored digest differs. Not written. */
+  skippedChanged: number
   new: number
   conflicts: number[]
   pagesFailed: number
@@ -176,8 +196,8 @@ export function liveV4Session(sessionBase: string, liveSuffix = SESSION_SUFFIX_V
 }
 
 /**
- * New ids are `readtranscript:<slug>:<position>:<sub>`. Omit `sub` for the
- * legacy per-position id written before sub-indexes existed.
+ * Stored ids are `readtranscript:<slug>:<position>:<sub>`. Omit `sub` only
+ * to build the historical two-part string; idempotence does not honor it.
  */
 export function backfillSourceId(slug: string, position: number, sub?: number): string {
   const base = `readtranscript:${slug}:${String(position)}`
@@ -357,6 +377,13 @@ export function attachBackfillMeta(
       backfill: true,
       source_id: backfillSourceId(slug, position, sub),
       sub_index: sub,
+      content_hash: contentHashForRow({
+        role: message.role,
+        content: message.content,
+        toolName: message.tool_name,
+        toolArgs: message.tool_args,
+        toolResult: message.tool_result,
+      }),
       ts_approx: true,
     }
     kept.push({ ...message, metadata })
@@ -403,10 +430,12 @@ export async function loadOverlapIndex(
   const liveSuffix = opts?.liveSuffix ?? SESSION_SUFFIX_V4
   const liveSession = liveV4Session(ident.session, liveSuffix)
   const backfill = backfillSession(ident.session, liveSuffix)
-  const sourceIds = new Set<string>()
+  const sourceIds = new Map<string, string | undefined>()
   const v4Hits: V4OverlapHit[] = []
-  // overlap-hours 0 disables -v4 suppression. The window otherwise starts at
-  // the earliest candidate time, not at the (possibly stalled) -v4 newest.
+  // overlap-hours 0 disables -v4 suppression. Otherwise the read is bounded
+  // by the candidate span: nothing before the earliest tag minus the overlap
+  // window, and nothing after the latest candidate plus the hash tolerance.
+  // A stalled -v4 newest is not the anchor.
   if (hours > 0) {
     const times: number[] = []
     for (const raw of opts?.candidateCreatedAt ?? []) {
@@ -416,7 +445,8 @@ export async function loadOverlapIndex(
     }
     if (times.length > 0) {
       const since = new Date(Math.min(...times) - hours * 3_600_000)
-      for (const row of await store.rowsSince(liveSession, ident.agent, since)) {
+      const until = new Date(Math.max(...times) + OVERLAP_TIME_TOLERANCE_MS)
+      for (const row of await store.rowsSince(liveSession, ident.agent, since, until)) {
         const ms = rowCreatedAtMs(row.created_at)
         if (ms === undefined) continue
         v4Hits.push({ hash: overlapKey(row), createdAtMs: ms })
@@ -424,87 +454,137 @@ export async function loadOverlapIndex(
     }
   }
   if (store.sourceIds) {
-    for (const id of await store.sourceIds(backfill, ident.agent)) {
-      if (id) sourceIds.add(id)
+    for (const ref of await store.sourceIds(backfill, ident.agent)) {
+      rememberSourceId(sourceIds, ref.sourceId, ref.contentHash)
     }
   } else {
     for (const row of await store.rowsSince(backfill, ident.agent)) {
-      const sourceId = row.metadata?.source_id
-      if (typeof sourceId === 'string' && sourceId) sourceIds.add(sourceId)
+      rememberSourceId(sourceIds, row.metadata?.source_id, row.metadata?.content_hash)
     }
   }
   return { sourceIds, v4Hits }
 }
 
-function positionCounts(messages: CaptureMessage[]): Map<number, number> {
-  const counts = new Map<number, number>()
-  for (const message of messages) {
-    const position = message.metadata?.position
-    if (typeof position !== 'number' || !Number.isFinite(position)) continue
-    counts.set(position, (counts.get(position) ?? 0) + 1)
+function rememberSourceId(
+  sourceIds: Map<string, string | undefined>,
+  sourceId: unknown,
+  contentHash: unknown,
+): void {
+  if (typeof sourceId !== 'string' || !sourceId) return
+  const digest = typeof contentHash === 'string' && contentHash ? contentHash : undefined
+  if (!sourceIds.has(sourceId)) {
+    sourceIds.set(sourceId, digest)
+    return
   }
-  return counts
+  // A later row that actually stored a digest wins over a missing one.
+  if (sourceIds.get(sourceId) === undefined && digest) sourceIds.set(sourceId, digest)
 }
 
 /**
- * Legacy ids are `readtranscript:<slug>:<position>` with no sub-index.
- * A single kept message at that position is provably sub 0. Several messages
- * shared one id, and DISTINCT cannot say which subs landed, so the legacy id
- * covers every sub — a re-run must not duplicate those rows.
+ * Exact source id only. No stored digest matches any content. A different
+ * digest is a visible change, not a quiet skip and not a hash suppression.
  */
-function coveredBySourceId(
+function sourceIdDisposition(
   message: CaptureMessage,
-  sourceIds: Set<string>,
-  counts: Map<number, number>,
-): boolean {
+  sourceIds: Map<string, string | undefined>,
+): 'none' | 'same' | 'changed' {
   const sourceId = message.metadata?.source_id
-  if (typeof sourceId !== 'string' || !sourceId) return false
-  if (sourceIds.has(sourceId)) return true
-  const parsed = NEW_SOURCE_ID_RE.exec(sourceId)
-  if (!parsed) return false
-  const legacy = `readtranscript:${parsed[1]}:${parsed[2]}`
-  if (!sourceIds.has(legacy)) return false
-  const position = Number(parsed[2])
-  const sub = Number(parsed[3])
-  const n = counts.get(position) ?? 1
-  if (n === 1 && sub === 0) return true
-  if (n > 1) return true
-  return false
+  if (typeof sourceId !== 'string' || !sourceId || !sourceIds.has(sourceId)) return 'none'
+  const stored = sourceIds.get(sourceId)
+  if (!stored) return 'same'
+  return stored === messageHash(message) ? 'same' : 'changed'
+}
+
+function messagePosition(message: CaptureMessage): number | undefined {
+  const position = message.metadata?.position
+  return typeof position === 'number' && Number.isFinite(position) ? position : undefined
+}
+
+type UsedHit = V4OverlapHit & { used: boolean }
+
+function matchingHitIndex(hits: UsedHit[], message: CaptureMessage, reserved: Set<number>): number {
+  const created = message.created_at ? Date.parse(message.created_at) : Number.NaN
+  if (!Number.isFinite(created)) return -1
+  const hash = messageHash(message)
+  return hits.findIndex(
+    (row, idx) =>
+      !row.used &&
+      !reserved.has(idx) &&
+      row.hash === hash &&
+      Math.abs(row.createdAtMs - created) <= OVERLAP_TIME_TOLERANCE_MS,
+  )
 }
 
 export function filterOverlap(
   messages: CaptureMessage[],
   index: OverlapIndex,
-): { kept: CaptureMessage[]; skippedOverlap: number } {
-  const counts = positionCounts(messages)
-  const unused = index.v4Hits.map((hit) => ({ ...hit, used: false }))
-  const kept: CaptureMessage[] = []
+): {
+  kept: CaptureMessage[]
+  skippedOverlap: number
+  skippedChanged: number
+  changedPositions: number[]
+} {
+  const suppressed = new Array<boolean>(messages.length).fill(false)
+  const changedPositions: number[] = []
   let skippedOverlap = 0
-  for (const message of messages) {
-    if (coveredBySourceId(message, index.sourceIds, counts)) {
+  let skippedChanged = 0
+  for (let i = 0; i < messages.length; i++) {
+    const message = messages[i]
+    const disposition = sourceIdDisposition(message, index.sourceIds)
+    if (disposition === 'none') continue
+    suppressed[i] = true
+    if (disposition === 'same') {
       skippedOverlap += 1
       continue
     }
-    const hash = messageHash(message)
-    const created = message.created_at ? Date.parse(message.created_at) : Number.NaN
-    if (!Number.isFinite(created)) {
-      kept.push(message)
-      continue
+    skippedChanged += 1
+    const position = messagePosition(message)
+    if (position !== undefined && !changedPositions.includes(position)) {
+      changedPositions.push(position)
     }
-    const hit = unused.find(
-      (row) =>
-        !row.used &&
-        row.hash === hash &&
-        Math.abs(row.createdAtMs - created) <= OVERLAP_TIME_TOLERANCE_MS,
-    )
-    if (hit) {
-      hit.used = true
-      skippedOverlap += 1
-      continue
-    }
-    kept.push(message)
   }
-  return { kept, skippedOverlap }
+
+  // Tentative hash+time matches keep multiplicity, but a hit is consumed
+  // only when the match is confirmed: the candidate and at least one
+  // adjacent candidate (spool order) both match a distinct live row. A
+  // length-1 run is not confirmed, so its hit stays free for a later run.
+  // One candidate alone is never hash-suppressed.
+  const hits: UsedHit[] = index.v4Hits.map((hit) => ({ ...hit, used: false }))
+  let i = 0
+  while (i < messages.length) {
+    if (suppressed[i]) {
+      i += 1
+      continue
+    }
+    const reserved = new Set<number>()
+    let j = i
+    while (j < messages.length && !suppressed[j]) {
+      const message = messages[j]
+      const hitIdx = matchingHitIndex(hits, message, reserved)
+      if (hitIdx < 0) break
+      reserved.add(hitIdx)
+      j += 1
+    }
+    if (j - i >= 2) {
+      for (let k = i; k < j; k++) suppressed[k] = true
+      for (const hitIdx of reserved) {
+        const hit = hits[hitIdx]
+        hit.used = true
+      }
+      skippedOverlap += j - i
+      i = j
+      continue
+    }
+    i += 1
+  }
+
+  const kept: CaptureMessage[] = []
+  for (let n = 0; n < messages.length; n++) {
+    const message = messages[n]
+    if (!suppressed[n]) kept.push(message)
+  }
+  changedPositions.sort((a, b) => a - b)
+  return { kept, skippedOverlap, skippedChanged, changedPositions }
 }
 
 function blankCounts(
@@ -524,11 +604,22 @@ function blankCounts(
     skippedNoTimestamp: 0,
     skippedNoPosition: 0,
     skippedOverlap: 0,
+    skippedChanged: 0,
     new: 0,
     conflicts: [],
     pagesFailed: extra?.pagesFailed ?? 0,
     unknownSlugs: extra?.unknownSlugs ?? 0,
   }
+}
+
+export function formatIngestPagesChanged(slug: string, positions: number[]): string {
+  if (positions.length === 0) return ''
+  const shown = positions.slice(0, 5).join(', ')
+  const more = positions.length > 5 ? '...' : ''
+  return (
+    `CHANGED slug=${slug} positions ${shown}${more} ` +
+    `content differs from the stored source_id. Those rows were not written.`
+  )
 }
 
 export function formatIngestPagesConflicts(slug: string, conflicts: number[]): string {
@@ -620,7 +711,7 @@ export async function ingestPages(
     const withoutSystem = dropSystemMessages(result.messages)
     const stamped = applyBackfillTimestamps(withoutSystem.kept, tagByPosition)
     const tagged = attachBackfillMeta(stamped.kept, slug)
-    let index: OverlapIndex = { sourceIds: new Set(), v4Hits: [] }
+    let index: OverlapIndex = { sourceIds: new Map(), v4Hits: [] }
     if (opts?.deps?.overlap) {
       index = await loadOverlapIndex(opts.deps.overlap, ident, {
         overlapHours: opts.overlapHours,
@@ -629,6 +720,9 @@ export async function ingestPages(
       })
     }
     const overlap = filterOverlap(tagged.kept, index)
+    if (overlap.changedPositions.length > 0) {
+      console.error(formatIngestPagesChanged(slug, overlap.changedPositions))
+    }
     const counts: IngestPagesCounts = {
       slug,
       session,
@@ -639,6 +733,7 @@ export async function ingestPages(
       skippedNoTimestamp: stamped.skippedNoTimestamp,
       skippedNoPosition: tagged.skippedNoPosition,
       skippedOverlap: overlap.skippedOverlap,
+      skippedChanged: overlap.skippedChanged,
       new: overlap.kept.length,
       conflicts,
       pagesFailed,
@@ -701,11 +796,13 @@ SELECT m.role, m.content, m.tool_name, m.tool_args, m.tool_result,
    AND c.session_key = $1
    AND c.agent = $2
    AND ($3::timestamptz IS NULL OR m.created_at >= $3)
+   AND ($4::timestamptz IS NULL OR m.created_at <= $4)
 `.trim()
 
 /** Backfill idempotence keys only. Does not load content or tool payloads. */
 export const BACKFILL_SOURCE_IDS_SQL = `
-SELECT DISTINCT m.metadata->>'source_id' AS source_id
+SELECT DISTINCT m.metadata->>'source_id' AS source_id,
+       m.metadata->>'content_hash' AS content_hash
   FROM ros_messages m
   JOIN ros_conversations c ON c.id = m.conversation_id
  WHERE c.channel = 'grokbot'
@@ -731,15 +828,28 @@ export function createPgOverlapStore(connectionString: string): OverlapStore {
       const dt = new Date(raw)
       return Number.isNaN(dt.getTime()) ? undefined : dt
     },
-    async rowsSince(sessionKey, agent, since) {
-      const result = await guarded.query(ROWS_SINCE_SQL, [sessionKey, agent, since ?? null])
+    async rowsSince(sessionKey, agent, since, until) {
+      const result = await guarded.query(ROWS_SINCE_SQL, [
+        sessionKey,
+        agent,
+        since ?? null,
+        until ?? null,
+      ])
       return result.rows as OverlapRow[]
     },
     async sourceIds(sessionKey, agent) {
       const result = await guarded.query(BACKFILL_SOURCE_IDS_SQL, [sessionKey, agent])
-      const ids: string[] = []
-      for (const row of result.rows as Array<{ source_id?: string | null }>) {
-        if (typeof row.source_id === 'string' && row.source_id) ids.push(row.source_id)
+      const ids: StoredSourceId[] = []
+      for (const row of result.rows as Array<{
+        source_id?: string | null
+        content_hash?: string | null
+      }>) {
+        if (typeof row.source_id !== 'string' || !row.source_id) continue
+        const contentHash =
+          typeof row.content_hash === 'string' && row.content_hash ? row.content_hash : undefined
+        ids.push(
+          contentHash ? { sourceId: row.source_id, contentHash } : { sourceId: row.source_id },
+        )
       }
       return ids
     },
@@ -758,7 +868,8 @@ export function formatIngestPagesCounts(result: IngestPagesResult): string {
       `dropped_system=${String(b.droppedSystem)} ` +
       `skipped_no_timestamp=${String(b.skippedNoTimestamp)} ` +
       `skipped_no_position=${String(b.skippedNoPosition)} ` +
-      `skipped_overlap=${String(b.skippedOverlap)} new=${String(b.new)} ` +
+      `skipped_overlap=${String(b.skippedOverlap)} ` +
+      `skipped_changed=${String(b.skippedChanged)} new=${String(b.new)} ` +
       `pages_failed=${String(b.pagesFailed)} unknown_slugs=${String(b.unknownSlugs)}`
     )
   })

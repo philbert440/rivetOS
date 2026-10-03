@@ -384,11 +384,11 @@ if (existsSync(AGENTS)) {
   })
 }
 checkPublishLag()
-if (Number.isFinite(PUBLISH_LAG_INTERVAL_MS) && PUBLISH_LAG_INTERVAL_MS > 0) {
-  // Late-appearing transcript-publish/ is covered by this interval; fs.watch
-  // is attached only when the directory already exists at startup.
-  setInterval(checkPublishLag, PUBLISH_LAG_INTERVAL_MS).unref?.()
-}
+// publishLagIntervalMs() already returns a finite positive interval, so this
+// timer is unconditional. A second > 0 guard here cannot fail.
+// Late-appearing transcript-publish/ is covered by this interval; fs.watch
+// is attached only when the directory already exists at startup.
+setInterval(checkPublishLag, PUBLISH_LAG_INTERVAL_MS).unref?.()
 if (existsSync(PUBLISH_DIR)) {
   const pw = watch(PUBLISH_DIR, { recursive: true }, () => enqueuePublishLag())
   pw.on('error', (e) => {

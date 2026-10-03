@@ -44,6 +44,7 @@ import {
 import { readStoreSince, v3StoreSession } from './store.js'
 import { sourceFileTimes } from './timestamps.js'
 import {
+  DEFAULT_BACKFILL_OVERLAP_HOURS,
   SESSION_SUFFIX_V3,
   isBackfillSession,
   sessionStoreSuffix,
@@ -116,12 +117,16 @@ const HELP = `Usage: grokbot-rivet-memory-capture <command> [opts]
       Dry-run is the default and writes nothing. An explicit --dry-run
       overrides --commit. --commit INSERTs message rows into
       grokbot-<slug>-v4-backfill only and never deletes. A bot whose
-      pages conflict writes nothing; other bots still proceed (exit 3).
+      pages conflict writes nothing; other bots still proceed.
+      Page conflicts exit 3 on a dry-run and on --commit.
+      A stored source_id whose content digest differs is not rewritten
+      (skipped_changed) and also exits 3.
       PostgresMemory.append still upserts that session's ros_conversations
       row (updated_at, active) and may queue tool-synthesis jobs. Never
       folds into plain -v4. Timestamps are approximate (ts_approx=true);
       rows before the first <timestamp> tag are skipped.
       --overlap-hours 0 disables -v4 content-hash suppression.
+      An empty --overlap-hours or GROKBOT_BACKFILL_OVERLAP_HOURS is 48, not 0.
       Unknown slugs and malformed pages are counted and exit 2.
       --input must be a readable directory.
 `
@@ -706,8 +711,10 @@ export async function cmdIngestPages(
     console.error('ingest-pages: --dry-run overrides --commit; nothing will be written')
   }
   const commit = values.commit && !values['dry-run']
-  const overlapHours = Number(
-    values['overlap-hours'] ?? process.env.GROKBOT_BACKFILL_OVERLAP_HOURS ?? 48,
+  const overlapFlag = values['overlap-hours']
+  const overlapHours = resolveOverlapHours(
+    typeof overlapFlag === 'string' ? overlapFlag : undefined,
+    process.env.GROKBOT_BACKFILL_OVERLAP_HOURS,
   )
   if (!Number.isFinite(overlapHours) || overlapHours < 0) {
     console.error('ingest-pages: --overlap-hours must be a non-negative number')
@@ -717,8 +724,10 @@ export async function cmdIngestPages(
   try {
     if (commit && !deps.commit) {
       console.error(
-        deps.commitError ??
-          'ingest-pages --commit needs RIVETOS_PG_URL (environment or ~/.rivetos/.env). Dry-run needs no write.',
+        redactConnectionDetails(
+          deps.commitError ??
+            'ingest-pages --commit needs RIVETOS_PG_URL (environment or ~/.rivetos/.env). Dry-run needs no write.',
+        ),
       )
       return 2
     }
@@ -731,13 +740,13 @@ export async function cmdIngestPages(
     })
     console.log(formatIngestPagesCounts(result))
     const conflicts = result.bots.some((b) => b.conflicts.length > 0)
+    const changed = result.bots.some((b) => b.skippedChanged > 0)
     const failed = result.bots.some((b) => b.pagesFailed > 0 || b.unknownSlugs > 0)
-    if (commit && conflicts) return 3
+    if (conflicts || changed) return 3
     if (failed) return 2
     return 0
   } catch (err) {
-    const message = err instanceof Error ? err.message : 'ingest-pages failed'
-    console.error(message)
+    console.error(redactConnectionDetails(commitFailureDetail(err)))
     return 2
   } finally {
     await deps.overlap?.close?.()
@@ -760,10 +769,42 @@ async function loadIngestPagesDeps(commit: boolean): Promise<IngestPagesDeps> {
   try {
     deps.commit = await createPgCommit(url)
   } catch (err) {
-    const message = err instanceof Error ? err.message : 'ingest-pages --commit failed'
-    deps.commitError = `ingest-pages --commit failed: ${message}`
+    deps.commitError = `ingest-pages --commit failed: ${redactConnectionDetails(
+      commitFailureDetail(err),
+    )}`
   }
   return deps
+}
+
+/**
+ * Empty flag or env is unset (the default), not zero. `Number('') === 0`,
+ * which would silently disable -v4 suppression.
+ */
+export function resolveOverlapHours(flag: string | undefined, fromEnv: string | undefined): number {
+  const raw = [flag, fromEnv].find((value) => value !== undefined && value.trim() !== '')
+  if (raw === undefined) return DEFAULT_BACKFILL_OVERLAP_HOURS
+  return Number(raw)
+}
+
+/** Drop postgres URLs and host:port so a commit failure cannot print them. */
+export function redactConnectionDetails(text: string): string {
+  return text
+    .replace(/\bpostgres(?:ql)?:\/\/\S+/gi, '[redacted]')
+    .replace(/\[[0-9a-fA-F:.]+\]:\d+/g, '[redacted]')
+    .replace(/\b(?:\d{1,3}\.){3}\d{1,3}:\d+\b/g, '[redacted]')
+    .replace(/\b(?:localhost|(?:[a-zA-Z0-9-]+\.)+[a-zA-Z0-9-]+):\d{2,5}\b/gi, (match) => {
+      const host = match.slice(0, match.lastIndexOf(':'))
+      if (/\.(?:js|mjs|cjs|ts|tsx|jsx|json|md|py|txt|map)$/i.test(host)) return match
+      return '[redacted]'
+    })
+}
+
+function commitFailureDetail(err: unknown): string {
+  if (!(err instanceof Error)) return 'ingest-pages --commit failed'
+  if (err.name && err.name !== 'Error' && !err.message.startsWith(err.name)) {
+    return `${err.name}: ${err.message}`
+  }
+  return err.message
 }
 
 /**
