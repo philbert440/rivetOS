@@ -234,7 +234,7 @@ The den server is embedded in the rivetos process as the per-node gateway
 (`/api/tasks`, `/api/catalog`, `/api/sessions`, `/api/memory`, `/api/wiki`, `/api/capture`,
 plus `/api/events|mesh|terminal` aliases). `POST /api/memory/tool/<name>` runs
 the sidecar memory tools (`memory_search`, `memory_browse`, `memory_stats`,
-`memory_get_full`, and `memory_append` / `memory_ingest_session` when that
+`memory_get_full`, `memory_tags`, and `memory_append` / `memory_ingest_session` when that
 pool has a Postgres memory) and returns `{ ok: true, result }` with the tool's
 own result. A missing wiki page (`GET /api/wiki/<slug>` and `.../raw`) answers
 `{ error: "no topic <slug>", suggestions: [{ slug, title }] }`. `POST /api/tasks`

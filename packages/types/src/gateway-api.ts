@@ -611,6 +611,8 @@ export interface MemoryTagsToolArgs {
   entity_id?: string
   /** add: the conversation captured under this session key. */
   session_key?: string
+  /** add with session_key: narrow to one agent. */
+  agent?: string
   key?: string
   value?: string
   /** `key:value` literal (add). */

@@ -50,11 +50,13 @@ schemas are the same on both transports. `delegate_task` is still stdio-only.
 ## `RIVETOS_PG_URL`
 
 On transport `pg`, this also registers the read-only memory tools (`memory_search`,
-`memory_browse`, `memory_stats`, `memory_get_full`) and the wiki tools
+`memory_browse`, `memory_stats`, `memory_get_full`, `memory_tags`) and the wiki tools
 (`wiki_search`, `wiki_read`). `WIKI_DIR` is the wiki repo root used by
 `wiki_read` (default `$RIVETOS_SHARED_DIR/wiki`, and `RIVETOS_SHARED_DIR`
 defaults to `/rivet-shared`). Memory write tools stay off until
-`RIVETOS_MCP_ENABLE_MEMORY_WRITE=1`. On transport `den` the same flag registers
+`RIVETOS_MCP_ENABLE_MEMORY_WRITE=1`; the same flag lets `memory_tags` decide
+suggestions, add tags and edit the vocabulary (on either transport it answers
+only its read actions otherwise). On transport `den` the same flag registers
 sidecar proxies for `memory_append` / `memory_ingest_session`. The den must
 independently have those write tools mounted; otherwise it returns 404.
 

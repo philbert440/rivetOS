@@ -42,6 +42,8 @@ Memory, wiki, and delegate tools:
 
 RIVETOS_PG_URL (transport=pg) enables:
   memory_search, memory_browse, memory_stats, memory_get_full (read-only)
+  memory_tags (read-only; decide/add/vocabulary edits need
+      RIVETOS_MCP_ENABLE_MEMORY_WRITE=1)
   wiki_search, wiki_read
   delegate_task, list_agents
       Preset name or id wins over a runtime agent id. Postgres direct
