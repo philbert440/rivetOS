@@ -245,10 +245,11 @@ pins/stable.json). Re-running is safe (idempotent). Version ${VERSION}.
 On a terminal (or curl-pipe with a controlling /dev/tty that can actually
 be opened), unset fields are prompted with defaults shown, then a SUMMARY,
 then an explicit yes is required before any write. Flags and RIVETHUB_*
-env vars skip their prompt. --yes skips the confirm. On non-TTY (plain
-ssh, no controlling terminal), --yes also accepts each prompt's documented
-default (one-click). Fields with no default are listed together in one
-error with their env names — never one question per rerun.
+env vars skip their prompt. --yes skips the confirm. With no terminal
+(plain ssh, no controlling terminal) nothing is prompted and there is no
+confirm, with or without --yes: flags, env vars and each prompt's
+documented default apply. Fields with no default are listed together in
+one error with their env names — never one question per rerun.
 
 Options:
   --docker                 Run Postgres 16 + pgvector as a systemd-managed
@@ -270,16 +271,16 @@ Options:
   --advertise-host HOST    This host as agents should reach it (DNS or
                            RFC 5737 example 192.0.2.10). Used in the banner.
                            Defaults to RIVETHUB_ADVERTISE_HOST when set.
-  -y, --yes                Skip the pre-mutation confirm. On non-TTY, also
-                           accept documented defaults for unset fields
-                           (the --defaults spelling is folded into --yes).
-                           Does not invent values for fields with no default
-                           (memory-full URLs).
+  -y, --yes                Skip the pre-mutation confirm (the --defaults
+                           spelling is folded into --yes). With no terminal
+                           the documented defaults apply either way. Does
+                           not invent values for fields with no default
+                           (memory-full URLs, compaction model).
   --force                  Re-init the mesh CA (ca-init --force) and rotate
                            the postgres password. Never implied by a re-run.
   -h, --help               Show this help.
 
-Environment (full non-interactive set; --yes accepts the defaults):
+Environment (full non-interactive set; unset ones take their defaults):
   RIVETHUB_ROOT            Hub root (default /var/lib/rivethub)
   RIVETHUB_DISTRO_DIR      Checkout containing bin/rivethub-hub and lib/rivet-ca.sh
   RIVETHUB_BASE_URL        Where curl-pipe fetches pins + helpers
@@ -340,21 +341,55 @@ sibling_checkout_dir() {
   printf '%s\n' "${parent}"
 }
 
-# Owned by root, by us, or by whoever ran sudo — and not writable by other
-# users. /tmp is root-owned but world-writable, so ownership alone is not it.
-# Group-writable is accepted (umask 002 checkouts with per-user groups).
-trusted_path() {
-  local owner mode
-  owner="$(stat -c %u "$1" 2>/dev/null)" || return 1
-  mode="$(stat -c %a "$1" 2>/dev/null)" || return 1
-  [[ "${owner}" == "0" || "${owner}" == "${EUID}" || "${owner}" == "${SUDO_UID:-}" ]] || return 1
-  (( (8#${mode} & 2) == 0 ))
+# root, us, or whoever ran sudo.
+trusted_uid() {
+  [[ "$1" == "0" || "$1" == "${EUID}" || "$1" == "${SUDO_UID:-}" ]]
 }
 
+# A group is trusted when every account in it is: its listed members and
+# every account that has it as primary group. That is a per-user group
+# (umask 002 checkouts), not a shared one. Accounts a directory service does
+# not enumerate are not seen here.
+trusted_group() {
+  local gid="$1" line members m uid pgid
+  line="$(getent group "${gid}" 2>/dev/null)" || return 1
+  members="${line##*:}"
+  for m in ${members//,/ }; do
+    uid="$(id -u "${m}" 2>/dev/null)" || return 1
+    trusted_uid "${uid}" || return 1
+  done
+  while IFS=: read -r _ _ uid pgid _; do
+    [[ "${pgid}" == "${gid}" ]] || continue
+    trusted_uid "${uid}" || return 1
+  done < <(getent passwd 2>/dev/null)
+  return 0
+}
+
+# Owned by a trusted uid and writable by nobody else. /tmp is root-owned but
+# world-writable, so ownership alone is not it; a group-writable path counts
+# only when the group is a trusted one.
+trusted_path() {
+  local owner mode group
+  owner="$(stat -c %u "$1" 2>/dev/null)" || return 1
+  mode="$(stat -c %a "$1" 2>/dev/null)" || return 1
+  trusted_uid "${owner}" || return 1
+  (( (8#${mode} & 2) == 0 )) || return 1
+  (( (8#${mode} & 020) == 0 )) && return 0
+  group="$(stat -c %g "$1" 2>/dev/null)" || return 1
+  trusted_group "${group}"
+}
+
+# Everything the installer reads or runs from a checkout. systemd/ and pins/
+# are checked when present (preflight refuses a missing one where needed).
 trusted_checkout() {
   local root="$1" p
   for p in "${root}" "${root}/install" "${root}/bin" "${root}/lib" \
     "${root}/bin/rivethub-hub" "${root}/lib/rivet-ca.sh"; do
+    trusted_path "${p}" || return 1
+  done
+  for p in "${root}/systemd" "${root}/systemd/rivet-embedder.service" \
+    "${root}/systemd/rivet-compactor.service" "${root}/pins" "${root}/pins/stable.json"; do
+    [[ -e "${p}" ]] || continue
     trusted_path "${p}" || return 1
   done
 }
@@ -644,12 +679,15 @@ BUNDLE_FILES=(
 
 fetch_distro_bundle() {
   local base dir entry rel key want got
+  local -a proto=(--proto '=https' --proto-redir '=https')
+  # The bats suites publish the bundle over file://.
+  if in_test; then proto=(); fi
   base="${RIVETHUB_BASE_URL:-https://get.rivethub.io}"
   base="${base%/}"
   dir="$(mktemp -d "${TMPDIR:-/tmp}/rivethub-distro.XXXXXX")"
   _RIVETHUB_BUNDLE_DIR="${dir}"
   mkdir -p "${dir}/bin" "${dir}/lib" "${dir}/systemd" "${dir}/pins"
-  if ! curl -fsSL --max-time 30 -o "${dir}/pins/stable.json" -- "${base}/pins/stable.json"; then
+  if ! curl -fsSL "${proto[@]}" --max-time 30 -o "${dir}/pins/stable.json" -- "${base}/pins/stable.json"; then
     err "could not fetch ${base}/pins/stable.json (run from a rivethub checkout, or set RIVETHUB_DISTRO_DIR) — refusing before any write."
   fi
   PINS_FILE="${dir}/pins/stable.json"
@@ -660,7 +698,7 @@ fetch_distro_bundle() {
     if [[ ! "${want}" =~ ^[0-9a-f]{64}$ ]]; then
       err "pins/stable.json ${key} is not a sha256 (got '${want}'); will not install an unverified ${rel} — refusing before any write."
     fi
-    if ! curl -fsSL --max-time 30 -o "${dir}/${rel}" -- "${base}/${rel}"; then
+    if ! curl -fsSL "${proto[@]}" --max-time 30 -o "${dir}/${rel}" -- "${base}/${rel}"; then
       err "could not fetch ${base}/${rel} — refusing before any write."
     fi
     got="$(sha256_file "${dir}/${rel}")"
@@ -862,6 +900,8 @@ preflight_sources() {
       warn "not using the helpers in ${skipped}: it, or bin/ lib/ under it, is owned by another user or writable by others. Fetching verified copies instead. Only if you trust everything in that directory: set RIVETHUB_DISTRO_DIR=${skipped} to use it as is."
     fi
     fetch_distro_bundle
+  elif [[ -n "${RIVETHUB_DISTRO_DIR:-}" ]] && ! in_test && ! trusted_checkout "${DISTRO_ROOT}"; then
+    warn "RIVETHUB_DISTRO_DIR=${DISTRO_ROOT} is owned by another user or writable by others; its helpers run as root unverified because you set it."
   fi
   if [[ ! -f "${DISTRO_ROOT}/bin/rivethub-hub" || ! -f "${DISTRO_ROOT}/lib/rivet-ca.sh" ]]; then
     err "no bin/rivethub-hub + lib/rivet-ca.sh under ${DISTRO_ROOT} (check RIVETHUB_DISTRO_DIR) — refusing before any write."
@@ -1963,7 +2003,7 @@ fail_unanswered_questions() {
   for line in "${UNANSWERED_QUESTIONS[@]}"; do
     printf '  - %s\n' "${line}" >&2
   done
-  printf 'datahub.sh: pass the flags or environment variables above, or re-run on a TTY. --yes accepts documented defaults on non-TTY.\n' >&2
+  printf 'datahub.sh: pass the flags or environment variables above, or re-run on a TTY. Fields with a documented default are not listed.\n' >&2
   exit 1
 }
 
@@ -2027,6 +2067,10 @@ run_wizard_flow() {
     wizard_existing_action
     if [[ "${WIZARD_ACTION}" == "reconfigure" ]]; then
       prompt_reconfigure_fields
+    elif [[ "${MEMORY_MODE}" == "full" ]]; then
+      # configure_memory_full runs last; ask here so a missing value is
+      # refused before the install, not after it.
+      fill_memory_full_endpoints
     fi
   else
     WIZARD_ACTION="fresh"

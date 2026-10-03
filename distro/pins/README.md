@@ -41,7 +41,10 @@ env `RIVET_CA_ROOT_DIR` / `RIVET_CA_SHARED_DIR`, `issue-node <id> [DNS:|IP:…]`
 `pgvector_image` pins the `--docker` image. Prefer digest form
 (`pgvector/pgvector@sha256:…`); it is currently the floating tag.
 
-`image` is the agent container image `node.sh --docker` runs.
+`image` is the agent container image `node.sh --docker` runs. It and
+`rivetos_tag` / `local_ref` point at a personal namespace
+(`ghcr.io/philbert440/…`, `philbert440/rivetOS`); an org-owned registry is a
+follow-up.
 
 ## Publishing
 

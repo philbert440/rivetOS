@@ -75,11 +75,12 @@ sudo bash install/datahub.sh [--docker] [--memory lite|full] [--owner NAME] [--a
 ```
 
 On a terminal, unset fields are prompted (defaults shown), then a SUMMARY,
-then an explicit `yes` before any write. `--yes` skips the confirm. On
-non-TTY (plain ssh with no controlling terminal — `/dev/tty` existing is
-not enough if it cannot be opened), `--yes` also accepts each prompt's
-documented default. Fields with no default (`RIVETOS_EMBED_URL` /
-`RIVETOS_COMPACTOR_URL` for `--memory full`) are listed together in one
+then an explicit `yes` before any write. `--yes` skips the confirm. With
+no terminal (plain ssh with no controlling terminal — `/dev/tty` existing
+is not enough if it cannot be opened) nothing is prompted and there is no
+confirm, with or without `--yes`: each prompt's documented default applies.
+Fields with no default (`RIVETOS_EMBED_URL` / `RIVETOS_COMPACTOR_URL` /
+`RIVETOS_COMPACTOR_MODEL` for `--memory full`) are listed together in one
 error with their env names. Flags and `RIVETHUB_*` env vars skip their
 prompt. Full non-interactive set: `RIVETHUB_OWNER` (default `owner`),
 `RIVETHUB_MEMORY` (default `lite`), `RIVETHUB_INSTALL_MODE` (default
@@ -90,8 +91,11 @@ memory-full URLs when needed.
 Curl-pipe has no sibling `bin/` / `lib/` / `systemd/`: preflight fetches
 `pins/stable.json`, `bin/rivethub-hub`, `lib/rivet-ca.sh` and the two worker
 units from `https://get.rivethub.io` (`RIVETHUB_BASE_URL`) and checks each
-against its sha256 pin before any system write. A missing pin or a mismatch
-is refused. Publishing a helper therefore means updating its `*_sha256` in
+against its sha256 pin before the installer writes anything of its own. A
+missing pin or a mismatch is refused. (If `curl`, `openssl`, `flock` or
+`python3` is missing, preflight apt-installs it first, before the pins can be
+read.) Pins and files come from the same origin, so the check catches a
+broken or half-published deploy, not a compromised server. Publishing a helper therefore means updating its `*_sha256` in
 `pins/stable.json` in the same deploy. `RIVETOS_COMPACTOR_MODEL` has no
 default: `--memory full` asks for it like the URLs.
 

@@ -700,6 +700,7 @@ repo = sys.argv[1]
 pins = json.load(open(repo + "/pins/stable.json", encoding="utf-8"))
 for rel, key in (
     ("install/datahub.sh", "datahub_sh_sha256"),
+    ("install/local.sh", "local_sh_sha256"),
     ("bin/rivethub-hub", "hub_helper_sha256"),
     ("lib/rivet-ca.sh", "rivet_ca_sha256"),
     ("systemd/rivet-embedder.service", "rivet_embedder_unit_sha256"),
@@ -839,6 +840,65 @@ EOF
   [ "${status}" -eq 0 ]
   run env PATH="${TEST_TMP}/fake:${PATH}" FAKE_OWNER="$(id -u)" bash -c 'source "$1"; unset SUDO_UID; trusted_path /x' bash "${DATAHUB}"
   [ "${status}" -eq 0 ]
+}
+
+# getent stand-in: the group of every path is "grp"; FAKE_SHARED adds a
+# second account (uid 4242) with it as primary group.
+fake_getent() {
+  mkdir -p "${TEST_TMP}/fake"
+  cat >"${TEST_TMP}/fake/getent" <<'EOF'
+#!/bin/sh
+case "$1" in
+  group) echo "grp:x:$2:" ;;
+  passwd)
+    echo "me:x:$(id -u):$(id -g)::/:/bin/sh"
+    if [ -n "${FAKE_SHARED:-}" ]; then echo "other:x:4242:$(id -g)::/:/bin/sh"; fi
+    ;;
+esac
+EOF
+  chmod +x "${TEST_TMP}/fake/getent"
+}
+
+@test "trusted_path accepts group-writable only when the group holds no one else" {
+  fake_getent
+  : >"${TEST_TMP}/gw"
+  chmod 0664 "${TEST_TMP}/gw"
+  run env PATH="${TEST_TMP}/fake:${PATH}" bash -c 'source "$1"; unset SUDO_UID; trusted_path "$2"' bash "${DATAHUB}" "${TEST_TMP}/gw"
+  [ "${status}" -eq 0 ]
+  run env PATH="${TEST_TMP}/fake:${PATH}" FAKE_SHARED=1 bash -c 'source "$1"; unset SUDO_UID; trusted_path "$2"' bash "${DATAHUB}" "${TEST_TMP}/gw"
+  [ "${status}" -ne 0 ]
+  chmod 0644 "${TEST_TMP}/gw"
+  run env PATH="${TEST_TMP}/fake:${PATH}" FAKE_SHARED=1 bash -c 'source "$1"; unset SUDO_UID; trusted_path "$2"' bash "${DATAHUB}" "${TEST_TMP}/gw"
+  [ "${status}" -eq 0 ]
+}
+
+@test "trusted_checkout covers systemd/ and pins/, files and directories" {
+  mkdir -p "${TEST_TMP}/tc"
+  cp -r "${REPO}/install" "${REPO}/bin" "${REPO}/lib" "${REPO}/pins" "${REPO}/systemd" "${TEST_TMP}/tc/"
+  chmod -R go-w "${TEST_TMP}/tc"
+  run bash -c 'source "$1"; unset SUDO_UID; trusted_checkout "$2"' bash "${DATAHUB}" "${TEST_TMP}/tc"
+  [ "${status}" -eq 0 ]
+  for p in systemd systemd/rivet-compactor.service pins/stable.json; do
+    chmod o+w "${TEST_TMP}/tc/${p}"
+    run bash -c 'source "$1"; unset SUDO_UID; trusted_checkout "$2"' bash "${DATAHUB}" "${TEST_TMP}/tc"
+    [ "${status}" -ne 0 ]
+    chmod o-w "${TEST_TMP}/tc/${p}"
+  done
+}
+
+@test "resume with --memory full asks for the endpoints before the install, not after" {
+  bash "${DATAHUB}" --advertise-host 192.0.2.10 >/dev/null 2>"${TEST_TMP}/r1.err"
+  printf '%s\n' 'resume' >"${TEST_TMP}/answers"
+  run env -u RIVETOS_EMBED_URL -u RIVETOS_EMBED_MODEL -u RIVETOS_COMPACTOR_URL -u RIVETOS_COMPACTOR_MODEL \
+    RIVETHUB_PROMPT_IN="${TEST_TMP}/answers" bash -c '
+      source "$1"
+      parse_args --memory full --advertise-host 192.0.2.10
+      init_paths
+      run_wizard_flow
+      echo REACHED-INSTALL
+    ' bash "${DATAHUB}"
+  [ "${status}" -ne 0 ]
+  [[ "${output}" != *"REACHED-INSTALL"* ]]
 }
 
 @test "a private checkout is used as is, without fetching" {
@@ -1370,10 +1430,9 @@ EOF
   [ ! -f "${RIVETHUB_ROOT}/datahub.env" ]
 }
 
-@test "help says --yes accepts defaults on non-TTY" {
+@test "help says defaults apply without a terminal, with or without --yes" {
   run bash "${DATAHUB}" -h
   [ "${status}" -eq 0 ]
-  [[ "${output}" == *"--yes"* ]]
-  [[ "${output}" == *"non-TTY"* ]]
+  [[ "${output}" == *"with or without --yes"* ]]
   [[ "${output}" == *"RIVETOS_EMBED_URL"* ]]
 }

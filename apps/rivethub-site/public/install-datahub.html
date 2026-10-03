@@ -78,7 +78,9 @@
     fetches <code>bin/rivethub-hub</code>, <code>lib/rivet-ca.sh</code> and
     the two worker units from <code>get.rivethub.io</code> and checks each
     against its SHA256 in <code>pins/stable.json</code>. A missing pin or a
-    mismatch is <strong>refused before any write</strong>. To read it first,
+    mismatch is <strong>refused before the installer writes anything</strong>.
+    The pins come from the same server as the files, so this catches a broken
+    or half-published release, not a compromised server. To read it first,
     download it and run the file:</p>
     <div class="term">
       <div class="term__bar"><i></i><i></i><i></i><span class="term__title">read, then run</span></div>
