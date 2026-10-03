@@ -15,7 +15,7 @@
 #
 # Installs a DATAHUB host: Postgres 16 + pgvector, memory schema, the mesh CA,
 # users.json, and rivethub-hub. No agent runs here. Debian 12 / Ubuntu LTS.
-# Bare-metal Postgres is the default; --docker runs the pinned pgvector image
+# Bare-metal Postgres is the default; --docker runs the pins pgvector image
 # (floating tag pgvector/pgvector:pg16 until pins/stable.json pgvector_image is set).
 # Memory workers are OFF (memory-lite) unless --memory full.
 #
@@ -312,32 +312,50 @@ EOF
 # Resolve the distro checkout. Curl-pipe has no sibling bin/; preflight then
 # fills DISTRO_ROOT from get.rivethub.io (fetch_distro_bundle).
 discover_distro_root() {
-  local src here parent
+  local parent
   if [[ -n "${RIVETHUB_DISTRO_DIR:-}" ]]; then
     printf '%s\n' "${RIVETHUB_DISTRO_DIR}"
     return 0
   fi
-  # Siblings are used unverified, so only a real checkout counts: this file
-  # in install/, and a parent owned by root or by whoever invoked us. A
-  # datahub.sh downloaded on its own into a shared directory (/tmp/x/) must
-  # not adopt a ../bin planted by another local user — it fetches instead.
-  src="${BASH_SOURCE[0]:-}"
-  if [[ -n "${src}" && -f "${src}" ]]; then
-    here="$(cd "$(dirname "${src}")" && pwd)"
-    parent="$(cd "${here}/.." && pwd)"
-    if [[ "$(basename "${here}")" == "install" ]] && trusted_owner "${parent}" \
-      && [[ -f "${parent}/bin/rivethub-hub" && -f "${parent}/lib/rivet-ca.sh" ]]; then
-      printf '%s\n' "${parent}"
-      return 0
-    fi
+  # Siblings are used unverified, so only a real checkout counts. A
+  # datahub.sh downloaded on its own into a shared directory (/tmp/install/)
+  # must not adopt a ../bin planted by another local user — it fetches.
+  if parent="$(sibling_checkout_dir)" && trusted_checkout "${parent}"; then
+    printf '%s\n' "${parent}"
+    return 0
   fi
   return 1
 }
 
-trusted_owner() {
-  local owner
+# The directory above this file, when this file is install/datahub.sh and
+# the helpers sit beside install/. Says nothing about whether to trust it.
+sibling_checkout_dir() {
+  local src here parent
+  src="${BASH_SOURCE[0]:-}"
+  [[ -n "${src}" && -f "${src}" ]] || return 1
+  here="$(cd "$(dirname "${src}")" && pwd)"
+  [[ "$(basename "${here}")" == "install" ]] || return 1
+  parent="$(cd "${here}/.." && pwd)"
+  [[ -f "${parent}/bin/rivethub-hub" && -f "${parent}/lib/rivet-ca.sh" ]] || return 1
+  printf '%s\n' "${parent}"
+}
+
+# Owned by root, by us, or by whoever ran sudo — and not writable by other
+# users. /tmp is root-owned but world-writable, so ownership alone is not it.
+trusted_path() {
+  local owner mode
   owner="$(stat -c %u "$1" 2>/dev/null)" || return 1
-  [[ "${owner}" == "0" || "${owner}" == "${EUID}" || "${owner}" == "${SUDO_UID:-}" ]]
+  mode="$(stat -c %a "$1" 2>/dev/null)" || return 1
+  [[ "${owner}" == "0" || "${owner}" == "${EUID}" || "${owner}" == "${SUDO_UID:-}" ]] || return 1
+  (( (8#${mode} & 2) == 0 ))
+}
+
+trusted_checkout() {
+  local root="$1" p
+  for p in "${root}" "${root}/install" "${root}/bin" "${root}/lib" \
+    "${root}/bin/rivethub-hub" "${root}/lib/rivet-ca.sh"; do
+    trusted_path "${p}" || return 1
+  done
 }
 
 init_paths() {
@@ -834,15 +852,24 @@ preflight_docker() {
 # must fail here, before ensure_layout or datahub.env (B3). RIVETHUB_TEST
 # never touches the network unless RIVETHUB_BASE_URL is set.
 preflight_sources() {
-  local tag
+  local tag skipped unit
   if [[ -z "${DISTRO_ROOT}" ]]; then
     if in_test && [[ -z "${RIVETHUB_BASE_URL:-}" ]]; then
       err "cannot find bin/rivethub-hub (run from a rivethub checkout: sudo bash install/datahub.sh, or set RIVETHUB_DISTRO_DIR) — refusing before any write."
+    fi
+    if skipped="$(sibling_checkout_dir)"; then
+      warn "not using the helpers in ${skipped}: it, or bin/ lib/ under it, is owned by another user or writable by others. Fetching verified copies instead; set RIVETHUB_DISTRO_DIR=${skipped} to use that checkout as is."
     fi
     fetch_distro_bundle
   fi
   if [[ ! -f "${DISTRO_ROOT}/bin/rivethub-hub" || ! -f "${DISTRO_ROOT}/lib/rivet-ca.sh" ]]; then
     err "no bin/rivethub-hub + lib/rivet-ca.sh under ${DISTRO_ROOT} (check RIVETHUB_DISTRO_DIR) — refusing before any write."
+  fi
+  if [[ "${MEMORY_MODE}" == "full" ]]; then
+    for unit in rivet-embedder.service rivet-compactor.service; do
+      [[ -f "${DISTRO_ROOT}/systemd/${unit}" ]] \
+        || err "no systemd/${unit} under ${DISTRO_ROOT} (check RIVETHUB_DISTRO_DIR) — refusing before any write."
+    done
   fi
   if [[ -z "${RIVETHUB_MIGRATIONS_DIR:-}" ]]; then
     tag="$(pin_get rivetos_tag UNPINNED)"
@@ -1427,11 +1454,14 @@ install_one_helper() {
       chmod "${mode}" "${dest}"
       return 0
     fi
-    cp -pf "${dest}" "${dest}.prev"
+    cp -f "${dest}" "${dest}.prev"
+    chmod 0644 "${dest}.prev"
     warn "replacing ${dest} (it differs from this release); previous copy kept at ${dest}.prev"
   fi
-  cp -f "${src}" "${dest}"
-  chmod "${mode}" "${dest}"
+  # Temp file + mv: a helper someone is running is never read half-written.
+  cp -f "${src}" "${dest}.new"
+  chmod "${mode}" "${dest}.new"
+  mv -f "${dest}.new" "${dest}"
 }
 
 install_hub_helper() {

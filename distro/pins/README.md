@@ -33,8 +33,8 @@ verifies its fetched helpers against (`bin/rivethub-hub`, `lib/rivet-ca.sh`,
 together, and publish both in the same deploy; `test/datahub-sh.bats` fails
 when they drift.
 
-`lib/rivet-ca.sh` is a vendored copy of `scripts/rivet-ca.sh` from this
-repository, pinned as the enroll interface: leaf files
+`lib/rivet-ca.sh` is vendored from `scripts/rivet-ca.sh` in this repository
+(header and usage examples differ), pinned as the enroll interface: leaf files
 `issued/<id>.{crt,key}`, intermediate `intermediate/{int.crt,int.key,chain.pem}`,
 env `RIVET_CA_ROOT_DIR` / `RIVET_CA_SHARED_DIR`, `issue-node <id> [DNS:|IP:…]`.
 

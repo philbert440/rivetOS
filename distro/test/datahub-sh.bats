@@ -789,6 +789,83 @@ for rel, key in (
   ! grep -q PLANTED "${TEST_TMP}/lone.out" "${TEST_TMP}/lone.err"
 }
 
+# A checkout-shaped tree under TEST_TMP/co with planted helpers.
+planted_checkout() {
+  mkdir -p "${TEST_TMP}/co/install" "${TEST_TMP}/co/bin" "${TEST_TMP}/co/lib"
+  cp "${DATAHUB}" "${TEST_TMP}/co/install/datahub.sh"
+  printf '#!/bin/sh\necho PLANTED\n' >"${TEST_TMP}/co/bin/rivethub-hub"
+  printf '#!/bin/sh\necho PLANTED\n' >"${TEST_TMP}/co/lib/rivet-ca.sh"
+}
+
+@test "install/datahub.sh under a world-writable parent fetches instead of trusting siblings" {
+  publish_bundle
+  unset RIVETHUB_DISTRO_DIR
+  planted_checkout
+  chmod 1777 "${TEST_TMP}/co"
+  bash "${TEST_TMP}/co/install/datahub.sh" --yes --advertise-host 192.0.2.10 \
+    >"${TEST_TMP}/ww.out" 2>"${TEST_TMP}/ww.err"
+  grep -q "not using the helpers in ${TEST_TMP}/co" "${TEST_TMP}/ww.err"
+  grep -q "sha256 verified" "${TEST_TMP}/ww.err"
+  cmp "${REPO}/bin/rivethub-hub" "${RIVETHUB_BIN_DIR}/rivethub-hub"
+}
+
+@test "a world-writable helper inside an otherwise private checkout is not trusted" {
+  publish_bundle
+  unset RIVETHUB_DISTRO_DIR
+  planted_checkout
+  chmod 0666 "${TEST_TMP}/co/bin/rivethub-hub"
+  bash "${TEST_TMP}/co/install/datahub.sh" --yes --advertise-host 192.0.2.10 \
+    >"${TEST_TMP}/wf.out" 2>"${TEST_TMP}/wf.err"
+  grep -q "sha256 verified" "${TEST_TMP}/wf.err"
+  cmp "${REPO}/bin/rivethub-hub" "${RIVETHUB_BIN_DIR}/rivethub-hub"
+}
+
+@test "trusted_path refuses a foreign owner and accepts root, us, and SUDO_UID" {
+  mkdir -p "${TEST_TMP}/fake"
+  cat >"${TEST_TMP}/fake/stat" <<'EOF'
+#!/bin/sh
+# stat -c %u|%a PATH — owner from FAKE_OWNER, mode fixed private.
+case "$2" in
+  %u) echo "${FAKE_OWNER}" ;;
+  %a) echo 755 ;;
+esac
+EOF
+  chmod +x "${TEST_TMP}/fake/stat"
+  run env PATH="${TEST_TMP}/fake:${PATH}" FAKE_OWNER=4242 bash -c 'source "$1"; unset SUDO_UID; trusted_path /x' bash "${DATAHUB}"
+  [ "${status}" -ne 0 ]
+  run env PATH="${TEST_TMP}/fake:${PATH}" FAKE_OWNER=4242 SUDO_UID=4242 bash -c 'source "$1"; trusted_path /x' bash "${DATAHUB}"
+  [ "${status}" -eq 0 ]
+  run env PATH="${TEST_TMP}/fake:${PATH}" FAKE_OWNER=0 bash -c 'source "$1"; unset SUDO_UID; trusted_path /x' bash "${DATAHUB}"
+  [ "${status}" -eq 0 ]
+  run env PATH="${TEST_TMP}/fake:${PATH}" FAKE_OWNER="$(id -u)" bash -c 'source "$1"; unset SUDO_UID; trusted_path /x' bash "${DATAHUB}"
+  [ "${status}" -eq 0 ]
+}
+
+@test "a private checkout is used as is, without fetching" {
+  unset RIVETHUB_DISTRO_DIR RIVETHUB_BASE_URL
+  mkdir -p "${TEST_TMP}/priv"
+  cp -r "${REPO}/install" "${REPO}/bin" "${REPO}/lib" "${REPO}/pins" "${REPO}/systemd" "${TEST_TMP}/priv/"
+  chmod -R go-w "${TEST_TMP}/priv"
+  bash "${TEST_TMP}/priv/install/datahub.sh" --yes --advertise-host 192.0.2.10 \
+    >"${TEST_TMP}/pv.out" 2>"${TEST_TMP}/pv.err"
+  ! grep -q "fetched helpers" "${TEST_TMP}/pv.err"
+  cmp "${REPO}/bin/rivethub-hub" "${RIVETHUB_BIN_DIR}/rivethub-hub"
+}
+
+@test "--memory full with a RIVETHUB_DISTRO_DIR lacking systemd/ is refused before any write" {
+  mkdir -p "${TEST_TMP}/nounits/bin" "${TEST_TMP}/nounits/lib"
+  cp "${REPO}/bin/rivethub-hub" "${TEST_TMP}/nounits/bin/"
+  cp "${REPO}/lib/rivet-ca.sh" "${TEST_TMP}/nounits/lib/"
+  export RIVETHUB_DISTRO_DIR="${TEST_TMP}/nounits"
+  export RIVETOS_EMBED_URL="https://embed.example/v1"
+  export RIVETOS_COMPACTOR_URL="https://llm.example/v1"
+  export RIVETOS_COMPACTOR_MODEL="gpt-4o-mini-compaction-example"
+  run bash "${DATAHUB}" --yes --memory full --advertise-host 192.0.2.10
+  [ "${status}" -ne 0 ]
+  [[ "${output}" == *"no systemd/rivet-embedder.service"* ]]
+  [ ! -f "${RIVETHUB_ROOT}/datahub.env" ]
+}
+
 @test "a RIVETHUB_DISTRO_DIR without the helpers is refused before any write" {
   export RIVETHUB_DISTRO_DIR="${TEST_TMP}/typo"
   run bash "${DATAHUB}" --yes --advertise-host 192.0.2.10
@@ -806,6 +883,8 @@ for rel, key in (
   [[ "${output}" == *"previous copy kept at"* ]]
   cmp "${REPO}/bin/rivethub-hub" "${RIVETHUB_BIN_DIR}/rivethub-hub"
   grep -q "old release" "${RIVETHUB_BIN_DIR}/rivethub-hub.prev"
+  [ ! -x "${RIVETHUB_BIN_DIR}/rivethub-hub.prev" ]
+  [ -x "${RIVETHUB_BIN_DIR}/rivethub-hub" ]
 }
 
 # ---------------------------------------------------------------------------
