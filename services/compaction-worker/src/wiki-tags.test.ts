@@ -76,8 +76,8 @@ describe('acceptedTagsForSummary', () => {
       { literal: 'project:rivetos', key: 'project', value: 'rivetos', reviewed: false },
     ])
     const calls = p.query.mock.calls.map(([, params]) => params)
-    expect(calls).toContainEqual(['summary', 's1', ['accepted'], 200])
-    expect(calls).toContainEqual([['c1'], ['accepted']])
+    expect(calls).toContainEqual(['summary', 's1', ['accepted'], 100])
+    expect(calls).toContainEqual([['c1'], ['accepted'], 100])
   })
 
   it('a tag that is both the cwd rule tag and a reviewed tag counts as reviewed', async () => {
@@ -90,6 +90,18 @@ describe('acceptedTagsForSummary', () => {
       'c1',
     )
     expect(tags).toEqual([{ literal: 'project:rivetos', key: 'project', value: 'rivetos', reviewed: true }])
+  })
+
+  it('review is decided by source alone: a caller-supplied decider does not promote the rule tag', async () => {
+    // decided_by is whatever the caller passed (the MCP tool defaults to "mcp").
+    const byMcp = { ...row('conversation', 'c1', 'project', 'rivetos', '', 'rule'), proposed_by: 'cwd-git-root', decided_by: 'mcp' }
+    // Re-adding the rule tag promotes its source to user in the store.
+    const promoted = { ...row('conversation', 'c1', 'project', 'tenpal', '', 'user'), proposed_by: 'cwd-git-root', decided_by: 'phil' }
+    const tags = await acceptedTagsForSummary(pool([], [byMcp, promoted]), 's1', 'c1')
+    expect(tags).toEqual([
+      { literal: 'project:tenpal', key: 'project', value: 'tenpal', reviewed: true },
+      { literal: 'project:rivetos', key: 'project', value: 'rivetos', reviewed: false },
+    ])
   })
 
   it('an accepted tag from an unknown source is not treated as reviewed', async () => {

@@ -94,7 +94,7 @@ CREATE INDEX IF NOT EXISTS idx_ros_embed_queue_enqueued
 -- Session + summary tags (mirror of postgres 0019_tags.sql, same CHECKs).
 -- entity_id is polymorphic, so no FK. Phase 1 has no ros_summaries table
 -- here: entity_type 'summary' is accepted for parity but nothing backs it
--- until summaries land in SQLite. aliases is a JSON array in TEXT, and
+-- until summaries land in SQLite. Reads and writes are in tags.ts. aliases is a JSON array in TEXT, and
 -- created_at / updated_at have no DEFAULT (like every table here, the writer
 -- supplies ISO timestamps) where postgres defaults to now(). See
 -- packages/types/src/tags.ts for the lifecycle.

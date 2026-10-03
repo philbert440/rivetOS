@@ -115,24 +115,28 @@ describe('addTag', () => {
     expect(params.slice(0, 6)).toEqual(['conversation', 'c1', 'project', 'tenpal', 'TenPAL', 'phil'])
   })
   it('refuses to guess when the session key exists under two agents and none was named', async () => {
-    const pool = db([
-      { id: 'c1', agent: 'rivet' },
-      { id: 'c2', agent: 'grok' },
-    ])
+    // The agent count comes from the whole match set, not the picked row.
+    const pool = db([{ id: 'c1', agents: '2' }])
     await expect(
       addTag(pool, { entityType: 'conversation', sessionKey: 'claude-code:x', tag: 'topic:x' }, 'phil'),
     ).rejects.toThrow(/several agents; pass agent/)
     expect(pool.query).toHaveBeenCalledTimes(1)
-    // A NULL agent is not a second agent.
-    const withNull = db([
-      { id: 'c1', agent: null },
-      { id: 'c2', agent: 'rivet' },
-    ])
-    withNull.query
-      .mockResolvedValueOnce({ rows: [{ id: 'c1', agent: null }, { id: 'c2', agent: 'rivet' }], rowCount: 2 })
+    const [sql] = pool.query.mock.calls[0] as unknown as [string]
+    expect(sql).toMatch(/SELECT count\(DISTINCT agent\) FROM m/)
+    expect(sql).not.toMatch(/LIMIT 20/)
+    // One named agent (count(DISTINCT) ignores NULL agents) is not ambiguous.
+    const single = db()
+    single.query
+      .mockResolvedValueOnce({ rows: [{ id: 'c1', agents: '1' }], rowCount: 1 })
       .mockResolvedValueOnce({ rows: [row({ entity_id: 'c1', source: 'user', state: 'accepted' })], rowCount: 1 })
-    const tag = await addTag(withNull, { entityType: 'conversation', sessionKey: 'claude-code:x', tag: 'topic:x' }, 'phil')
+    const tag = await addTag(single, { entityType: 'conversation', sessionKey: 'claude-code:x', tag: 'topic:x' }, 'phil')
     expect(tag.entityId).toBe('c1')
+  })
+  it('keeps the display casing of a literal typed with a full-width colon', async () => {
+    const pool = db([row({ source: 'user', state: 'accepted' })])
+    await addTag(pool, { entityType: 'conversation', entityId: 'c1', tag: 'Project\uFF1ATenPAL' }, 'phil')
+    const [, params] = pool.query.mock.calls[0] as unknown as [string, unknown[]]
+    expect(params.slice(2, 5)).toEqual(['project', 'tenpal', 'TenPAL'])
   })
 
   it('rejects a bad literal or missing parts', async () => {
@@ -143,7 +147,7 @@ describe('addTag', () => {
   it('resolves a conversation from session_key, and fails clearly when none was captured', async () => {
     const found = db([{ id: 'c-found' }])
     found.query
-      .mockResolvedValueOnce({ rows: [{ id: 'c-found' }], rowCount: 1 })
+      .mockResolvedValueOnce({ rows: [{ id: 'c-found', agents: '1' }], rowCount: 1 })
       .mockResolvedValueOnce({ rows: [row({ entity_id: 'c-found', source: 'user', state: 'accepted' })], rowCount: 1 })
     const tag = await addTag(found, { entityType: 'conversation', sessionKey: 'claude:abc', tag: 'topic:x' }, 'phil')
     expect(tag.entityId).toBe('c-found')

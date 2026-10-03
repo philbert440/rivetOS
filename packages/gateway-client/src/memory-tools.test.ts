@@ -65,6 +65,7 @@ const wrappers = {
   memory_get_full: 'memoryGetFull',
   memory_append: 'memoryAppend',
   memory_ingest_session: 'memoryIngestSession',
+  memory_tags: 'memoryTagsTool',
 } as const
 
 const results: ToolResult[] = ['found', [{ type: 'text', text: 'found' }]]
@@ -87,6 +88,7 @@ describe('memory tool routes', () => {
           memory_append: () => client.memoryAppend(args.memory_append, signal),
           memory_ingest_session: () =>
             client.memoryIngestSession(args.memory_ingest_session, signal),
+          memory_tags: () => client.memoryTagsTool(args.memory_tags, signal),
         }
         expect(await calls[name]()).toEqual(result)
         expect(fetch).toHaveBeenCalledExactlyOnceWith(`https://den.test/api/memory/tool/${name}`, {

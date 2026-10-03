@@ -24,6 +24,7 @@ import pg from 'pg'
 import { formatTag, type TagProposal } from '@rivetos/types'
 import { config } from '../config.js'
 import { suggestTags, type TaggerVocabulary } from '../tagger.js'
+import { isJobFinalAttempt } from './compact-conversation.js'
 
 export interface SuggestTagsPayload {
   summaryId: string
@@ -254,10 +255,9 @@ export const suggestTagsTask: Task = async (payload, helpers) => {
     // Dropping on the final attempt leaves no corpse; the writes are atomic
     // (see inTransaction), so what is dropped is the whole proposal, never half.
     // helpers.job is absent only in unit tests that call the task directly.
-    const job = helpers.job as { attempts?: number; max_attempts?: number } | undefined
-    const attempts = job?.attempts ?? 1
-    const maxAttempts = job?.max_attempts ?? 1
-    if (attempts < maxAttempts) throw err
+    const job = (helpers.job ?? {}) as { attempts?: number; max_attempts?: number }
+    if (!isJobFinalAttempt(job)) throw err
+    const attempts = job.attempts ?? 1
     const msg = err instanceof Error ? err.message : String(err)
     helpers.logger.warn(
       `suggest-tags: giving up on ${summaryId.slice(0, 8)} after ${String(attempts)} attempt(s) — ${msg}`,

@@ -102,7 +102,7 @@ export function normalizeTagValue(raw: string): string {
  */
 export function normalizeTagKey(raw: string): string {
   // `:` separates key from value in a literal, so a key can never contain one.
-  // NFKC first: compatibility colons (U+FF1A, U+FE13, U+2236, …) become ':'
+  // NFKC first: compatibility colons (U+FF1A, U+FE13, U+FE55) become ':'
   // and must be caught too. Idempotent: the result contains no colon.
   return slug(raw.normalize('NFKC').replace(/:/g, '-'), TAG_KEY_MAX)
 }
@@ -129,12 +129,26 @@ function slug(raw: string, max: number): string {
   return Array.from(s).slice(0, max).join('').replace(/-+$/, '')
 }
 
+/** `:` and the characters NFKC folds to it (full-width, small, presentation form). */
+const LITERAL_SEPARATOR = /[:\uFF1A\uFE13\uFE55]/
+
+/**
+ * Split a `key:value` literal at its first separator, without normalizing.
+ * A full-width colon (what a CJK input method types) separates too. Null when
+ * there is no separator or nothing before it.
+ */
+export function splitTagLiteral(literal: string): { key: string; value: string } | null {
+  const idx = literal.search(LITERAL_SEPARATOR)
+  if (idx <= 0) return null
+  return { key: literal.slice(0, idx), value: literal.slice(idx + 1) }
+}
+
 /** Parse `key:value` (first colon splits). Returns null when either side is empty after normalization. */
 export function parseTagLiteral(literal: string): { key: string; value: string } | null {
-  const idx = literal.indexOf(':')
-  if (idx <= 0) return null
-  const key = normalizeTagKey(literal.slice(0, idx))
-  const value = normalizeTagValue(literal.slice(idx + 1))
+  const raw = splitTagLiteral(literal)
+  if (!raw) return null
+  const key = normalizeTagKey(raw.key)
+  const value = normalizeTagValue(raw.value)
   if (!key || !value) return null
   return { key, value }
 }

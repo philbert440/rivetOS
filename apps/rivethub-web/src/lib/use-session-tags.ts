@@ -9,7 +9,14 @@ import { useMemo } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import type { RivetGateway } from '@rivetos/gateway-client'
 import { useWikiEndpoint } from './wiki-client.js'
-import { chunkKeys, mergeLookups, tagsBySession, type AnyTag } from './session-tags.js'
+import {
+  chunkKeys,
+  keepLookupPlaceholder,
+  lookupInFlight,
+  mergeLookups,
+  tagsBySession,
+  type AnyTag,
+} from './session-tags.js'
 
 export interface TagEndpoint {
   gateway: RivetGateway
@@ -19,16 +26,26 @@ export interface TagEndpoint {
 /** The datahub endpoint tags live on (same resolution as wiki/search). */
 export function useTagEndpoint(): TagEndpoint | null {
   const { endpoint } = useWikiEndpoint()
-  return endpoint ? { gateway: endpoint.gateway, baseUrl: endpoint.baseUrl } : null
+  const gateway = endpoint?.gateway
+  const baseUrl = endpoint?.baseUrl
+  // Stable identity while the endpoint is unchanged, so effects can depend on it.
+  return useMemo(
+    () => (gateway && baseUrl !== undefined ? { gateway, baseUrl } : null),
+    [gateway, baseUrl],
+  )
 }
 
 export const TAG_QUERY_ROOT = 'memory-tags'
+/** Index of the endpoint base URL in every tag query key. */
+const LOOKUP_KEY_BASE_URL = 1
 
 /**
  * Tags (accepted + suggested) for a set of session keys. Empty map without
- * datahub and on first load; when only the session set changes, the previous
- * tags stand in (with `isLoading` true) until the new lookup answers; `error` is set when the lookup failed so the
- * caller can say so instead of showing an untagged list as if it were true.
+ * datahub and on first load. When only the session set changes, the previous
+ * tags stand in until the new lookup answers; `isLoading` is true while a
+ * lookup for the current set is in flight. `error` is set when the lookup
+ * failed, so the caller can say so instead of showing an untagged list as if
+ * it were true.
  */
 export function useSessionTagsLookup(
   endpoint: TagEndpoint | null,
@@ -37,6 +54,7 @@ export function useSessionTagsLookup(
   const keys = [...sessionKeys].sort()
   const baseUrl = endpoint?.baseUrl
   const query = useQuery<Record<string, AnyTag[]>>({
+    // Position LOOKUP_KEY_BASE_URL holds the endpoint: the placeholder rule reads it.
     queryKey: [TAG_QUERY_ROOT, baseUrl, 'lookup', keys],
     enabled: Boolean(endpoint) && keys.length > 0,
     staleTime: 15_000,
@@ -46,7 +64,7 @@ export function useSessionTagsLookup(
     // Only across a change of the session set on the same datahub — never
     // across an endpoint change, and never once the endpoint is gone.
     placeholderData: (prev, prevQuery) =>
-      baseUrl !== undefined && prevQuery?.queryKey[1] === baseUrl ? prev : undefined,
+      keepLookupPlaceholder(prevQuery?.queryKey[LOOKUP_KEY_BASE_URL], baseUrl) ? prev : undefined,
     queryFn: async ({ signal }) => {
       if (!endpoint) return {}
       // Every key is looked up: past the per-request cap the list is chunked,
@@ -63,8 +81,8 @@ export function useSessionTagsLookup(
   const map = useMemo(() => tagsBySession(query.data), [query.data])
   return {
     map,
-    // Also true while the previous set's tags stand in during a refetch.
-    isLoading: query.isLoading || (query.isPlaceholderData && query.isFetching),
+    // True while a lookup for the current session set is in flight.
+    isLoading: lookupInFlight(query),
     error: query.error,
   }
 }

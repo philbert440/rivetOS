@@ -104,6 +104,37 @@ export function sessionKeyAliases(key: string): string[] {
   return [...new Set(out)]
 }
 
+/**
+ * How to find the conversations a requested session key may be stored under.
+ * `exact` are the forward aliases (sessionKeyAliases). `like` covers the
+ * shapes that cannot be derived from the requested key: Claude's
+ * path-fallback form `<harness>:<project-slug>/<uuid>` when asked with
+ * `<harness>:<uuid>`, and any `<harness>:<uuid>` / `…/<uuid>` when asked
+ * with a bare uuid. Only uuid-shaped natives get patterns, so a LIKE can
+ * never match by accident; `%` and `_` in the harness id are escaped with a
+ * backslash (Postgres' default LIKE escape; SQLite needs `ESCAPE '\'`).
+ */
+export function sessionKeyMatchers(key: string): { exact: string[]; like: string[] } {
+  const exact = sessionKeyAliases(key)
+  const like: string[] = []
+  if (NATIVE_UUID_RE.test(key)) {
+    // Asked with a bare uuid: the harness is unknown, so any prefix may hold it.
+    like.push(`%:${key}`, `%/${key}`)
+  } else {
+    // Asked with a canonical id: stay inside that harness. Only its
+    // path-fallback form is added; `codex:<uuid>` never answers for
+    // `claude-code:<uuid>`.
+    const colon = key.indexOf(':')
+    const native = colon < 0 ? '' : key.slice(colon + 1)
+    const tail = native.slice(native.lastIndexOf('/') + 1)
+    if (colon > 0 && NATIVE_UUID_RE.test(tail)) {
+      const harness = key.slice(0, colon).replace(/[\\%_]/g, '\\$&')
+      like.push(`${harness}:%/${tail}`)
+    }
+  }
+  return { exact, like }
+}
+
 // ---------------------------------------------------------------------------
 // Single-segment codec: enc(SessionId) = unpadded base64url of the UTF-8 id
 // ---------------------------------------------------------------------------

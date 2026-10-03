@@ -15,6 +15,8 @@ import {
   normalizeTagValue,
   parseTagLiteral,
   sessionKeyAliases,
+  sessionKeyMatchers,
+  splitTagLiteral,
   type Tag,
   type TagEntityType,
   type TagState,
@@ -27,14 +29,33 @@ type Queryable = Pick<pg.Pool, 'query'> | Pick<pg.PoolClient, 'query'>
  * Run `fn` in one transaction. A Pool gets its own client + BEGIN/COMMIT; a
  * client (already in the caller's transaction) is used as-is.
  */
-async function inTransaction<T>(db: Queryable, fn: (q: Queryable) => Promise<T>): Promise<T> {
+async function inTransaction<T>(
+  db: Queryable,
+  fn: (q: Queryable) => Promise<T>,
+  /**
+   * Serialize with every other transaction holding the same lock name (a
+   * transaction-scoped advisory lock, released at COMMIT/ROLLBACK). With a
+   * client it is taken in the caller's transaction.
+   */
+  lockName?: string,
+): Promise<T> {
   const maybePool = db as Partial<pg.Pool>
   if (typeof maybePool.connect !== 'function' || typeof maybePool.totalCount !== 'number') {
+    // A client: the caller owns the transaction, and the lock joins it. It
+    // only serializes anything if that caller is inside BEGIN — outside one
+    // the lock is released as soon as its statement ends. Every caller today
+    // passes a pool. (`release` tells a real client from a bare query stub.)
+    if (lockName !== undefined && typeof (db as Partial<pg.PoolClient>).release === 'function') {
+      await db.query('SELECT pg_advisory_xact_lock(hashtextextended($1, 0))', [lockName])
+    }
     return fn(db)
   }
   const client = await (db as pg.Pool).connect()
   try {
     await client.query('BEGIN')
+    if (lockName !== undefined) {
+      await client.query('SELECT pg_advisory_xact_lock(hashtextextended($1, 0))', [lockName])
+    }
     const out = await fn(client)
     await client.query('COMMIT')
     return out
@@ -45,6 +66,12 @@ async function inTransaction<T>(db: Queryable, fn: (q: Queryable) => Promise<T>)
     client.release()
   }
 }
+
+/**
+ * Sources whose accepted tags a person stands behind (added, accepted or
+ * imported). The wiki's "reviewed" test and the merge's source carry share it.
+ */
+export const REVIEWED_TAG_SOURCES: readonly string[] = Object.freeze(['user', 'model', 'import'])
 
 /** Ancestor walk bound for the taxonomy tree. */
 const TAXONOMY_MAX_DEPTH = 32
@@ -163,12 +190,16 @@ export async function pendingTags(db: Queryable, limit = 50): Promise<PendingTag
     `SELECT ${TAG_COLUMNS.split(', ')
       .map((c) => `t.${c}`)
       .join(', ')},
-            c.session_key, c.title, c.agent,
+            COALESCE(c.session_key, sc.session_key) AS session_key,
+            COALESCE(c.title, sc.title) AS title,
+            COALESCE(c.agent, sc.agent) AS agent,
             COALESCE(c.id, s.conversation_id) AS conversation_id,
             left(s.content, 200) AS excerpt
        FROM ros_tags t
        LEFT JOIN ros_conversations c ON t.entity_type = 'conversation' AND c.id = t.entity_id
        LEFT JOIN ros_summaries s ON t.entity_type = 'summary' AND s.id = t.entity_id
+       -- A summary suggestion names its session too, so the reviewer can open it.
+       LEFT JOIN ros_conversations sc ON sc.id = s.conversation_id
       WHERE t.state = 'suggested'
         AND (c.id IS NOT NULL OR s.id IS NOT NULL)
       ORDER BY t.created_at DESC
@@ -185,7 +216,14 @@ export async function pendingTags(db: Queryable, limit = 50): Promise<PendingTag
   }))
 }
 
-/** Accept or reject tags by id. Returns the ids that changed. */
+/**
+ * Accept or reject tags by id. Returns the ids that changed. Accepting a
+ * rule tag (only possible after it was rejected) is a deliberate statement,
+ * so it becomes a user tag, like re-adding it. The promotion is made by
+ * whoever calls decide/add: on a surface where an agent may write (the den
+ * tool route, the sidecar with its write flag) that caller is trusted to
+ * review, the same as for any other tag it adds.
+ */
 export async function decideTags(
   db: Queryable,
   ids: string[],
@@ -195,7 +233,8 @@ export async function decideTags(
   if (ids.length === 0) return []
   const { rows } = await db.query<{ id: string }>(
     `UPDATE ros_tags
-        SET state = $2, decided_by = $3, decided_at = now(), updated_at = now()
+        SET state = $2, decided_by = $3, decided_at = now(), updated_at = now(),
+            source = CASE WHEN source = 'rule' AND $2 = 'accepted' THEN 'user' ELSE source END
       WHERE id = ANY($1::uuid[]) AND state <> $2
       RETURNING id`,
     [ids, state, decidedBy],
@@ -226,7 +265,8 @@ export interface AddTagInput {
 /**
  * User-created tag: born accepted. If the same (entity, key, value) exists
  * in any state it is flipped to accepted (a user re-adding a rejected tag
- * means they changed their mind). Returns the row.
+ * means they changed their mind), and a rule tag becomes a user tag. Returns
+ * the row.
  */
 export async function addTag(db: Queryable, input: AddTagInput, decidedBy: string): Promise<Tag> {
   let key = input.key ? normalizeTagKey(input.key) : ''
@@ -237,29 +277,34 @@ export async function addTag(db: Queryable, input: AddTagInput, decidedBy: strin
     if (!parsed) throw new Error(`invalid tag literal "${input.tag}" (want key:value)`)
     key = parsed.key
     value = parsed.value
-    display = input.display ?? input.tag.slice(input.tag.indexOf(':') + 1).trim()
+    display = input.display ?? (splitTagLiteral(input.tag)?.value ?? '').trim()
   }
   if (!key || !value) throw new Error('key and value are required')
   let entityId = input.entityId
   if (!entityId && input.sessionKey && input.entityType === 'conversation') {
     const match = sessionKeyMatchers(input.sessionKey)
-    const found = await db.query<{ id: string; agent: string | null }>(
-      `SELECT id, agent FROM ros_conversations
-        WHERE (session_key = ANY($1::text[]) OR session_key LIKE ANY($4::text[]))
-          AND ($3::text IS NULL OR agent = $3)
-        ORDER BY (session_key = $2) DESC, updated_at DESC
-        LIMIT 20`,
-      [match.exact, input.sessionKey, input.agent ?? null, match.like],
-    )
     // The same key can exist under two agents. Tagging the wrong one would be
     // silent, so without an agent to narrow by this is refused, not guessed.
-    const agents = new Set(found.rows.map((r) => r.agent).filter((a): a is string => a !== null))
-    if (agents.size > 1) {
+    // The agent count covers every match, not just the row that is picked.
+    const found = await db.query<{ id: string; agents: string | number }>(
+      `WITH m AS (
+         SELECT id, agent, session_key, updated_at FROM ros_conversations
+          WHERE (session_key = ANY($1::text[]) OR session_key LIKE ANY($4::text[]))
+            AND ($3::text IS NULL OR agent = $3)
+       )
+       SELECT id, (SELECT count(DISTINCT agent) FROM m) AS agents
+         FROM m
+        ORDER BY (session_key = $2) DESC, updated_at DESC
+        LIMIT 1`,
+      [match.exact, input.sessionKey, input.agent ?? null, match.like],
+    )
+    const hit = found.rows.at(0)
+    if (hit && Number(hit.agents) > 1) {
       throw new Error(
         `invalid request: session "${input.sessionKey}" exists under several agents; pass agent`,
       )
     }
-    entityId = found.rows.at(0)?.id
+    entityId = hit?.id
     if (!entityId) throw new Error(`no conversation captured for session "${input.sessionKey}"`)
   }
   if (!entityId) throw new Error('entity_id (or session_key for a conversation) is required')
@@ -270,6 +315,9 @@ export async function addTag(db: Queryable, input: AddTagInput, decidedBy: strin
      ON CONFLICT (entity_type, entity_id, key, value) DO UPDATE
        SET state = 'accepted', decided_by = EXCLUDED.decided_by, decided_at = now(),
            updated_at = now(),
+           -- Adding a tag the cwd rule minted makes it the adder's statement:
+           -- it stops being "where the work ran" and becomes a reviewed tag.
+           source = CASE WHEN ros_tags.source = 'rule' THEN 'user' ELSE ros_tags.source END,
            display = CASE WHEN ros_tags.display = '' THEN EXCLUDED.display ELSE ros_tags.display END
      RETURNING ${TAG_COLUMNS}`,
     [input.entityType, entityId, key, value, display, decidedBy, input.reason ?? ''],
@@ -293,6 +341,11 @@ export async function tagsForConversations(
      * callers asking "what is tagged on the session itself" do not.
      */
     includeSummaryTags?: boolean
+    /**
+     * Cap on rows read, across ALL the conversations asked for (so it is a
+     * per-conversation bound only for a single id). At least 1. Default: none.
+     */
+    limit?: number
   } = {},
 ): Promise<Map<string, Tag[]>> {
   const out = new Map<string, Tag[]>()
@@ -301,6 +354,11 @@ export async function tagsForConversations(
   const cols = TAG_COLUMNS.split(', ')
     .map((c) => `t.${c}`)
     .join(', ')
+  const limit =
+    typeof opts.limit === 'number' && Number.isFinite(opts.limit)
+      ? Math.min(Math.max(Math.trunc(opts.limit), 1), 5000)
+      : null
+  const limitSql = limit === null ? '' : ' LIMIT $3'
   const { rows } = await db.query<TagRow & { conversation_id: string }>(
     opts.includeSummaryTags
       ? `SELECT ${cols}, COALESCE(c.id, s.conversation_id) AS conversation_id
@@ -308,12 +366,12 @@ export async function tagsForConversations(
            LEFT JOIN ros_conversations c ON t.entity_type = 'conversation' AND c.id = t.entity_id
            LEFT JOIN ros_summaries s ON t.entity_type = 'summary' AND s.id = t.entity_id
           WHERE COALESCE(c.id, s.conversation_id) = ANY($1::uuid[]) AND t.state = ANY($2::text[])
-          ORDER BY (t.entity_type = 'conversation') DESC, t.key, t.value`
+          ORDER BY (t.entity_type = 'conversation') DESC, t.key, t.value${limitSql}`
       : `SELECT ${cols}, t.entity_id AS conversation_id FROM ros_tags t
           WHERE t.entity_type = 'conversation' AND t.entity_id = ANY($1::uuid[])
             AND t.state = ANY($2::text[])
-          ORDER BY t.key, t.value`,
-    [ids, states],
+          ORDER BY t.key, t.value${limitSql}`,
+    limit === null ? [ids, states] : [ids, states, limit],
   )
   for (const r of rows) {
     const list = out.get(r.conversation_id) ?? []
@@ -324,37 +382,8 @@ export async function tagsForConversations(
   return out
 }
 
-const BARE_UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
-
-/**
- * How to find the conversations a requested session key may be stored under.
- * `exact` are the forward aliases (sessionKeyAliases). `like` covers the
- * shapes that cannot be derived from the requested key: Claude's
- * path-fallback form `<harness>:<project-slug>/<uuid>` when asked with
- * `<harness>:<uuid>`, and any `<harness>:<uuid>` / `…/<uuid>` when asked
- * with a bare uuid. Only uuid-shaped natives get patterns, so a LIKE can
- * never match by accident; the uuid has no LIKE metacharacters.
- */
-export function sessionKeyMatchers(key: string): { exact: string[]; like: string[] } {
-  const exact = sessionKeyAliases(key)
-  const like: string[] = []
-  if (BARE_UUID_RE.test(key)) {
-    // Asked with a bare uuid: the harness is unknown, so any prefix may hold it.
-    like.push(`%:${key}`, `%/${key}`)
-  } else {
-    // Asked with a canonical id: stay inside that harness. Only its
-    // path-fallback form is added; `codex:<uuid>` never answers for
-    // `claude-code:<uuid>`.
-    const colon = key.indexOf(':')
-    const native = colon < 0 ? '' : key.slice(colon + 1)
-    const tail = native.slice(native.lastIndexOf('/') + 1)
-    if (colon > 0 && BARE_UUID_RE.test(tail)) {
-      const harness = key.slice(0, colon).replace(/[\\%_]/g, '\\$&')
-      like.push(`${harness}:%/${tail}`)
-    }
-  }
-  return { exact, like }
-}
+// The matching rule is shared with the SQLite backend; it lives in @rivetos/types.
+export { sessionKeyMatchers }
 
 /**
  * Tags by session key (what the hub has), including suggestions. A session
@@ -455,20 +484,29 @@ export interface TagCount {
   conversations: number
 }
 
-/** Accepted tag usage across conversations, most used first. Feeds group-by-tag. */
+/**
+ * Accepted tag usage across conversations, most used first. Feeds
+ * group-by-tag. A conversation counts when the tag sits on the session or on
+ * any of its summaries — the same definition `tag=` filters use, so a count
+ * matches what the filter returns.
+ */
 export async function tagCounts(db: Queryable, key?: string, limit = 200): Promise<TagCount[]> {
   const params: unknown[] = []
-  let where = `WHERE state = 'accepted' AND entity_type = 'conversation'`
+  let where = `WHERE t.state = 'accepted' AND COALESCE(c.id, s.conversation_id) IS NOT NULL`
   if (key) {
     params.push(normalizeTagKey(key))
-    where += ` AND key = $${String(params.length)}`
+    where += ` AND t.key = $${String(params.length)}`
   }
   params.push(Math.min(Math.max(limit, 1), 1000))
   const { rows } = await db.query<{ key: string; value: string; display: string; n: string }>(
-    `SELECT key, value, max(display) AS display, count(DISTINCT entity_id)::text AS n
-       FROM ros_tags ${where}
-      GROUP BY key, value
-      ORDER BY count(DISTINCT entity_id) DESC, key, value
+    `SELECT t.key, t.value, max(t.display) AS display,
+            count(DISTINCT COALESCE(c.id, s.conversation_id))::text AS n
+       FROM ros_tags t
+       LEFT JOIN ros_conversations c ON t.entity_type = 'conversation' AND c.id = t.entity_id
+       LEFT JOIN ros_summaries s ON t.entity_type = 'summary' AND s.id = t.entity_id
+       ${where}
+      GROUP BY t.key, t.value
+      ORDER BY count(DISTINCT COALESCE(c.id, s.conversation_id)) DESC, t.key, t.value
       LIMIT $${String(params.length)}`,
     params,
   )
@@ -550,6 +588,11 @@ export interface UpsertTaxonomyInput {
   reason?: string
 }
 
+/** Advisory lock name for structural edits to one key's vocabulary tree. */
+function taxonomyLock(key: string): string {
+  return `ros_tag_taxonomy:${key}`
+}
+
 /** Create or update one vocabulary entry. User edits are accepted unless told otherwise. */
 export function upsertTaxonomy(
   db: Queryable,
@@ -557,8 +600,14 @@ export function upsertTaxonomy(
   source = 'user',
 ): Promise<TagTaxonomyEntry> {
   // The ancestor walk and the write are one unit: two concurrent edits must
-  // not each pass the walk and together close a cycle.
-  return inTransaction(db, (q) => upsertTaxonomyIn(q, input, source))
+  // not each pass the walk and together close a cycle. One transaction is not
+  // enough for that (both walks could read before either writes), so edits to
+  // one key's tree also take that key's lock.
+  return inTransaction(
+    db,
+    (q) => upsertTaxonomyIn(q, input, source),
+    taxonomyLock(normalizeTagKey(input.key)),
+  )
 }
 
 async function upsertTaxonomyIn(
@@ -662,47 +711,49 @@ export async function mergeTaxonomyValue(
   if (!k || !f || !requested || f === requested) {
     throw new Error('merge needs one key and two different values')
   }
-  return inTransaction(db, async (q) => {
-    // `into` may itself have been merged away: follow it to the survivor so
-    // tags never land on a value the vocabulary says resolves elsewhere.
-    const alias = await q.query<{ value: string }>(
-      `SELECT value FROM ros_tag_taxonomy
+  return inTransaction(
+    db,
+    async (q) => {
+      // `into` may itself have been merged away: follow it to the survivor so
+      // tags never land on a value the vocabulary says resolves elsewhere.
+      const alias = await q.query<{ value: string }>(
+        `SELECT value FROM ros_tag_taxonomy
         WHERE key = $1 AND $2 = ANY(aliases) AND state = 'accepted'
         ORDER BY value LIMIT 1`,
-      [k, requested],
-    )
-    const i = alias.rows.at(0)?.value ?? requested
-    if (i === f) throw new Error('invalid merge: the target resolves to the value being merged')
+        [k, requested],
+      )
+      const i = alias.rows.at(0)?.value ?? requested
+      if (i === f) throw new Error('invalid merge: the target resolves to the value being merged')
 
-    // `from` must be something: a vocabulary entry or a value in use. A typo
-    // would otherwise mint an alias for a value that never existed.
-    const known = await q.query(
-      `SELECT 1 FROM ros_tag_taxonomy WHERE key = $1 AND value = $2
+      // `from` must be something: a vocabulary entry or a value in use. A typo
+      // would otherwise mint an alias for a value that never existed.
+      const known = await q.query(
+        `SELECT 1 FROM ros_tag_taxonomy WHERE key = $1 AND value = $2
        UNION ALL
        SELECT 1 FROM ros_tags WHERE key = $1 AND value = $2
        LIMIT 1`,
-      [k, f],
-    )
-    if (known.rows.length === 0) {
-      throw new Error(`invalid merge: ${k}:${f} is not in the vocabulary or in use`)
-    }
-
-    // The survivor must not sit under the value being merged: re-homing
-    // `from`'s children onto it would close a loop.
-    let cursor: string | null = i
-    for (let depth = 0; cursor !== null && depth < TAXONOMY_MAX_DEPTH; depth += 1) {
-      const up: { rows: Array<{ parent_value: string | null }> } = await q.query(
-        `SELECT parent_value FROM ros_tag_taxonomy WHERE key = $1 AND value = $2`,
-        [k, cursor],
+        [k, f],
       )
-      cursor = up.rows.at(0)?.parent_value ?? null
-      if (cursor === f) throw new Error(`invalid merge: ${k}:${i} is nested under ${k}:${f}`)
-    }
-    if (cursor !== null) throw new Error('invalid merge: taxonomy is nested too deeply')
+      if (known.rows.length === 0) {
+        throw new Error(`invalid merge: ${k}:${f} is not in the vocabulary or in use`)
+      }
 
-    // Survivor takes `from` and everything `from` had absorbed as aliases.
-    await q.query(
-      `INSERT INTO ros_tag_taxonomy (key, value, display, aliases, state, source, reason, decided_at)
+      // The survivor must not sit under the value being merged: re-homing
+      // `from`'s children onto it would close a loop.
+      let cursor: string | null = i
+      for (let depth = 0; cursor !== null && depth < TAXONOMY_MAX_DEPTH; depth += 1) {
+        const up: { rows: Array<{ parent_value: string | null }> } = await q.query(
+          `SELECT parent_value FROM ros_tag_taxonomy WHERE key = $1 AND value = $2`,
+          [k, cursor],
+        )
+        cursor = up.rows.at(0)?.parent_value ?? null
+        if (cursor === f) throw new Error(`invalid merge: ${k}:${i} is nested under ${k}:${f}`)
+      }
+      if (cursor !== null) throw new Error('invalid merge: taxonomy is nested too deeply')
+
+      // Survivor takes `from` and everything `from` had absorbed as aliases.
+      await q.query(
+        `INSERT INTO ros_tag_taxonomy (key, value, display, aliases, state, source, reason, decided_at)
        VALUES ($1, $2, '', ARRAY[$3]::text[], 'accepted', 'user', 'merge target', now())
        ON CONFLICT (key, value) DO UPDATE SET
          aliases = (
@@ -712,24 +763,24 @@ export async function mergeTaxonomyValue(
            ) AS a WHERE a <> $2
          ),
          state = 'accepted', decided_at = now(), updated_at = now()`,
-      [k, i, f],
-    )
-    // Re-point tags that have no survivor row yet. display is cleared: it
-    // held the merged-away casing, and an empty display renders as the value.
-    const moved = await q.query(
-      `UPDATE ros_tags t SET value = $3, display = '', updated_at = now()
+        [k, i, f],
+      )
+      // Re-point tags that have no survivor row yet. display is cleared: it
+      // held the merged-away casing, and an empty display renders as the value.
+      const moved = await q.query(
+        `UPDATE ros_tags t SET value = $3, display = '', updated_at = now()
         WHERE t.key = $1 AND t.value = $2
           AND NOT EXISTS (SELECT 1 FROM ros_tags o
                            WHERE o.entity_type = t.entity_type AND o.entity_id = t.entity_id
                              AND o.key = $1 AND o.value = $3)`,
-      [k, f, i],
-    )
-    // Entities that carry both: the two rows are now the same tag, so the
-    // review decision must survive. A decided `from` row wins over an
-    // undecided survivor, and between two decisions the later one wins —
-    // an accepted tag is never silently replaced by a mere suggestion.
-    await q.query(
-      `UPDATE ros_tags o
+        [k, f, i],
+      )
+      // Entities that carry both: the two rows are now the same tag, so the
+      // review decision must survive. A decided `from` row wins over an
+      // undecided survivor, and between two decisions the later one wins —
+      // an accepted tag is never silently replaced by a mere suggestion.
+      await q.query(
+        `UPDATE ros_tags o
           SET state = t.state, decided_by = t.decided_by, decided_at = t.decided_at,
               updated_at = now()
          FROM ros_tags t
@@ -739,28 +790,44 @@ export async function mergeTaxonomyValue(
           AND t.state <> 'suggested'
           AND (o.state = 'suggested'
                OR COALESCE(t.decided_at, t.updated_at) > COALESCE(o.decided_at, o.updated_at))`,
-      [k, f, i],
-    )
-    const dropped = await q.query(`DELETE FROM ros_tags WHERE key = $1 AND value = $2`, [k, f])
-    // Vocabulary bookkeeping: retire `from`, hand its children to the
-    // survivor, and make sure no other entry still claims it as an alias.
-    await q.query(
-      `UPDATE ros_tag_taxonomy
+        [k, f, i],
+      )
+      // Independently of which decision wins: a rule survivor must not hide a
+      // reviewed tag folded into it. Reviewed means accepted: a mere suggestion
+      // or a rejected tag folded in promotes nothing. (The rule's guard keys on
+      // proposed_by, so the promoted row still counts as its rule tag.)
+      await q.query(
+        `UPDATE ros_tags o
+          SET source = t.source, updated_at = now()
+         FROM ros_tags t
+        WHERE t.key = $1 AND t.value = $2
+          AND o.key = $1 AND o.value = $3
+          AND o.entity_type = t.entity_type AND o.entity_id = t.entity_id
+          AND o.source = 'rule' AND t.source = ANY($4::text[]) AND t.state = 'accepted'`,
+        [k, f, i, REVIEWED_TAG_SOURCES],
+      )
+      const dropped = await q.query(`DELETE FROM ros_tags WHERE key = $1 AND value = $2`, [k, f])
+      // Vocabulary bookkeeping: retire `from`, hand its children to the
+      // survivor, and make sure no other entry still claims it as an alias.
+      await q.query(
+        `UPDATE ros_tag_taxonomy
           SET state = 'rejected', reason = $3, aliases = '{}', parent_value = NULL,
               decided_at = now(), updated_at = now()
         WHERE key = $1 AND value = $2`,
-      [k, f, `merged into ${k}:${i}`],
-    )
-    await q.query(
-      `UPDATE ros_tag_taxonomy SET parent_value = $3, updated_at = now()
+        [k, f, `merged into ${k}:${i}`],
+      )
+      await q.query(
+        `UPDATE ros_tag_taxonomy SET parent_value = $3, updated_at = now()
         WHERE key = $1 AND parent_value = $2 AND value <> $3`,
-      [k, f, i],
-    )
-    await q.query(
-      `UPDATE ros_tag_taxonomy SET aliases = array_remove(aliases, $2), updated_at = now()
+        [k, f, i],
+      )
+      await q.query(
+        `UPDATE ros_tag_taxonomy SET aliases = array_remove(aliases, $2), updated_at = now()
         WHERE key = $1 AND value <> $3 AND $2 = ANY(aliases)`,
-      [k, f, i],
-    )
-    return { moved: moved.rowCount ?? 0, dropped: dropped.rowCount ?? 0, into: i }
-  })
+        [k, f, i],
+      )
+      return { moved: moved.rowCount ?? 0, dropped: dropped.rowCount ?? 0, into: i }
+    },
+    taxonomyLock(k),
+  )
 }

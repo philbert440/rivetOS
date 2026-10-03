@@ -82,6 +82,7 @@ export {
   normalizeTagKey,
   normalizeTagValue,
   parseTagLiteral,
+  splitTagLiteral,
 } from './tags.js'
 export type { ProjectRuleFs, ProjectRuleResult } from './project-rule.js'
 export {
@@ -219,6 +220,7 @@ export {
   encodeSessionIdSegment,
   decodeSessionIdSegment,
   sessionKeyAliases,
+  sessionKeyMatchers,
 } from './harness-session-id.js'
 export type {
   WikiSourceRef,

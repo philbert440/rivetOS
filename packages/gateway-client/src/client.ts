@@ -33,6 +33,7 @@ import type {
   MemoryBrowseToolArgs,
   MemoryStatsToolArgs,
   MemoryGetFullToolArgs,
+  MemoryTagsToolArgs,
   MemoryAppendToolArgs,
   MemoryIngestSessionToolArgs,
   MemoryToolArgsByName,
@@ -573,6 +574,11 @@ export class RivetGateway {
 
   memoryGetFull(args: MemoryGetFullToolArgs, signal?: AbortSignal): Promise<ToolResult> {
     return this.memoryTool('memory_get_full', args, signal)
+  }
+
+  /** Session tags over the tool route (same actions as /api/memory/tags). */
+  memoryTagsTool(args: MemoryTagsToolArgs, signal?: AbortSignal): Promise<ToolResult> {
+    return this.memoryTool('memory_tags', args, signal)
   }
 
   memoryAppend(args: MemoryAppendToolArgs, signal?: AbortSignal): Promise<ToolResult> {
