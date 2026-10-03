@@ -949,6 +949,23 @@ harness gets them from `rivetos_resolve_den` (`den.port`, default 5174, and
 | `QWEN_BINARY`           | provider-qwen-code, setup script        | Override path/name of the `qwen` binary (default `qwen` on PATH). Honoured by the provider and the rivet-memory setup script.                                                                                                                                                                                                                                               |
 | `QWEN_HOME`             | plugins install, doctor, setup script   | Override where RivetOS looks for qwen's `settings.json` / `projects/` (default `~/.qwen`). Does not relocate where qwen itself writes — qwen-code 0.23.4 has no env/flag to move `~/.qwen`.                                                                                                                                                                                 |
 
+### Compaction worker
+
+`services/compaction-worker` reads its own environment (systemd unit, or the
+`compaction-worker` service in `infra/docker/rivetos/docker-compose.yml`).
+The full list is the header of `services/compaction-worker/src/index.ts`;
+these control which LLM it calls. An invalid value exits at startup.
+
+| Variable | Description |
+| --- | --- |
+| `RIVETOS_COMPACTOR_URL` | Required. OpenAI-compatible base URL (`http://` or `https://`); the worker appends `/chat/completions`. |
+| `RIVETOS_COMPACTOR_MODEL` | Required. Chat model id. |
+| `RIVETOS_COMPACTOR_API_KEY` | Bearer key for the primary, if it needs one. |
+| `RIVETOS_COMPACTOR_TRANSIENT_STATUSES` | Comma list of 4xx codes the **primary** returns while overloaded (e.g. `403,404` for NVIDIA's free tier). They retry with the 5xx backoff and, once retries run out, fail as retryable instead of marking the level terminal. Only 4xx codes are accepted. |
+| `RIVETOS_COMPACTOR_FALLBACKS` | Ordered, comma-separated `url\|model\|KEY_ENV\|STATUSES` entries tried when the primary fails. `KEY_ENV` names the variable holding that endpoint's key (empty for none), so keys stay out of the list. `STATUSES` is that endpoint's own `;`-separated transient 4xx list; the primary's list does not apply to fallbacks, since OpenRouter's 403/404 are permanent. Example: `https://integrate.api.nvidia.com/v1\|google/gemma-4-31b-it\|NVIDIA_API_KEY\|403;404,https://openrouter.ai/api/v1\|openai/gpt-oss-120b\|OPENROUTER_API_KEY`. |
+| `RIVETOS_COMPACTOR_FALLBACK_COOLDOWN_MINUTES` | Default 15. After an outage (network, timeout, 5xx, empty answers, 401/402/403/404/429, and other non-request-scoped 4xx such as 405/409/415/426), later calls stay on the endpoint that answered this long before trying the primary again. A request-scoped 400/413/422, or an answer the caller rejects (unparseable wiki JSON), moves only that call to the next endpoint and does not clear an active failover. Listing 400/401/413/422 in a transient-status list is accepted but warned: those codes then retry like a 5xx and can sticky-failover after exhaustion. |
+| `RIVETOS_COMPACTOR_FALLBACK_ATTEMPT_TIMEOUT_SECONDS` | Default 300. Per-attempt timeout on a **middle** fallback only (not the primary, not the last endpoint), so a hung fallback hands over in minutes. The primary and the last endpoint keep the full `LLM_TIMEOUT_MS` (60 min) — configuring fallbacks does not cut a slow local primary. |
+
 ---
 
 ## Full annotated example

@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Compaction worker
+
+- A burst of errors from the compactor's LLM provider no longer stalls compaction until a restart. `RIVETOS_COMPACTOR_TRANSIENT_STATUSES` (e.g. `403,404`) lists the 4xx codes the primary returns while overloaded; they retry like a 5xx and fail as retryable, not terminal.
+- `RIVETOS_COMPACTOR_FALLBACKS`: ordered `url|model|KEY_ENV|STATUSES` endpoints tried when the primary fails, each with its own key variable and transient codes. After an outage the worker stays on the endpoint that answered for `RIVETOS_COMPACTOR_FALLBACK_COOLDOWN_MINUTES` (default 15); a request-scoped 400/413/422 or an unparseable wiki answer moves only that call. An endpoint with a fallback after it times out per attempt after `RIVETOS_COMPACTOR_FALLBACK_ATTEMPT_TIMEOUT_SECONDS` (default 300). When every endpoint fails, the error names each one and stays retryable if any endpoint's failure was. Truncation is not failed over. Summaries record the model that wrote them. Both `extract-wiki` and `recompile-wiki` send unparseable JSON to the next endpoint. Retry backoff gains ±20% jitter. The Docker compose service forwards the new variables. See docs/CONFIG-REFERENCE.md → Compaction worker.
+- Invalid compactor settings exit at startup instead of being dropped: a non-4xx transient code, a non-http(s) URL, a fallback entry with more than four fields, a cooldown or timeout that is not a positive integer.
+
 ### Capture redaction
 
 - Optional write-path redaction in `@rivetos/capture-core` (`createCaptureWriter`).
