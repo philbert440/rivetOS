@@ -6,7 +6,7 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState, type DragEvent, type JSX } from 'react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
-import { useNavigate, useSearch } from '@tanstack/react-router'
+import { useBlocker, useNavigate, useSearch } from '@tanstack/react-router'
 import type { FileEntry } from '@rivetos/types'
 import { GatewayError } from '@rivetos/gateway-client'
 import { useConnection } from '../stores/connection.js'
@@ -14,6 +14,13 @@ import { NotConnected, useGatewayReady } from '../components/not-connected.js'
 import { Select } from '../components/select.js'
 import { copyTextToClipboard } from '../lib/clipboard.js'
 import { rivetShell } from '../lib/shell-bridge.js'
+import {
+  guardClosePreview,
+  guardOpenFile,
+  guardPathNav,
+  shouldBlockFilesLeave,
+  shouldIgnoreRowActivate,
+} from '../lib/files-dirty-guard.js'
 import {
   baseName,
   downloadTooLargeError,
@@ -89,7 +96,6 @@ export function FilesPage(): JSX.Element {
   const [sort, setSort] = useState<SortKey>('name')
   const [selected, setSelected] = useState<Set<string>>(() => new Set())
   const [previewPath, setPreviewPath] = useState<string | undefined>()
-  const [editorDirty, setEditorDirty] = useState(false)
   const editorDirtyRef = useRef(false)
   const discardDialog = useConfirmDialog()
   const discardConfirm = discardDialog.confirm
@@ -98,6 +104,9 @@ export function FilesPage(): JSX.Element {
   const [busy, setBusy] = useState(false)
   const dialog = useConfirmDialog()
   const dragDepth = useRef(0)
+  /** Ignore openRaw briefly after a dir navigate so a folder double-click
+   *  does not act on whatever row lands under the pointer in the child listing. */
+  const suppressRawUntilRef = useRef(0)
 
   const listing = useQuery({
     queryKey: ['files', baseUrl, path],
@@ -105,74 +114,88 @@ export function FilesPage(): JSX.Element {
     enabled: connected,
   })
 
-  // Clear selection when navigating
-  useEffect(() => {
-    setSelected(new Set())
-    if (editorDirtyRef.current) {
-      void discardConfirm('Discard unsaved changes?').then((ok) => {
-        if (ok) setPreviewPath(undefined)
-      })
-    } else {
-      setPreviewPath(undefined)
-    }
-  }, [path, discardConfirm, setPreviewPath])
-
   const setEditorDirtyTracked = useCallback((dirty: boolean) => {
     editorDirtyRef.current = dirty
-    setEditorDirty(dirty)
   }, [])
 
-  const confirmDiscard = useCallback(async (): Promise<boolean> => {
-    if (!editorDirtyRef.current) return true
-    const ok = await discardConfirm('Discard unsaved changes?')
-    if (ok) setEditorDirtyTracked(false)
-    return ok
-  }, [discardConfirm, setEditorDirtyTracked])
+  const clearDirty = useCallback(() => {
+    setEditorDirtyTracked(false)
+  }, [setEditorDirtyTracked])
+
+  const dirtyFileName = previewPath ? baseName(previewPath) : undefined
+
+  const shouldBlockFn = useCallback(
+    async () =>
+      shouldBlockFilesLeave({
+        dirty: editorDirtyRef.current,
+        fileName: dirtyFileName,
+        confirm: discardConfirm,
+        clearDirty,
+      }),
+    [clearDirty, discardConfirm, dirtyFileName],
+  )
+  const enableBeforeUnload = useCallback(() => editorDirtyRef.current, [])
+
+  // Route changes (sidebar leave, ?path= crumbs, browser Back/Forward) go
+  // through the router blocker so Cancel never leaves a foreign listing under
+  // an open pane. enableBeforeUnload covers tab close / reload in a browser;
+  // the Electron shell still needs will-prevent-unload (see rivethub-electron)
+  // because a cancelled beforeunload there silently aborts Quit/close.
+  useBlocker({ shouldBlockFn, enableBeforeUnload })
+
+  // Path landed (blocker already resolved any dirty prompt). Drop selection
+  // and close the preview — no after-the-fact confirm.
+  useEffect(() => {
+    setSelected(new Set())
+    setPreviewPath(undefined)
+  }, [path])
+
+  const markDirNavigated = useCallback((): void => {
+    suppressRawUntilRef.current = performance.now() + 500
+  }, [])
 
   const navigateGuarded = useCallback(
-    async (next: string): Promise<void> => {
-      if (!(await confirmDiscard())) return
+    (next: string): void => {
+      // Same-path must no-op BEFORE any confirm: an accepted discard that
+      // then setPaths to the current value would clear dirty while the pane
+      // stays open and leave later closes unguarded.
+      if (guardPathNav(path, next) === 'noop') return
+      markDirNavigated()
       setPath(next)
     },
-    [confirmDiscard, setPath],
+    [markDirNavigated, path, setPath],
   )
 
   useEffect(() => {
     setEditorDirtyTracked(false)
   }, [previewPath, setEditorDirtyTracked])
 
-  useEffect(() => {
-    if (!editorDirty) return
-    const onUnload = (e: BeforeUnloadEvent): void => {
-      e.preventDefault()
-    }
-    window.addEventListener('beforeunload', onUnload)
-    return () => window.removeEventListener('beforeunload', onUnload)
-  }, [editorDirty])
-
   const openEntry = useCallback(
     async (child: string, isDir: boolean): Promise<void> => {
-      if (!isDir && child === previewPath) return
-      if (!(await confirmDiscard())) return
       if (isDir) {
+        if (guardPathNav(path, child) === 'noop') return
+        markDirNavigated()
         setPath(child)
-      } else {
-        setPreviewPath(child)
+        return
       }
+      const decision = await guardOpenFile({
+        dirty: editorDirtyRef.current,
+        previewPath,
+        child,
+        fileName: dirtyFileName,
+        confirm: discardConfirm,
+        clearDirty,
+      })
+      if (decision !== 'proceed') return
+      setPreviewPath(child)
     },
-    [confirmDiscard, previewPath, setPath],
+    [clearDirty, dirtyFileName, discardConfirm, markDirNavigated, path, previewPath, setPath],
   )
 
   const openRaw = useCallback(
     (entry: FileEntry, child: string): void => {
       if (entry.type !== 'file') return
-      if (editorDirtyRef.current) {
-        showNotice({
-          kind: 'err',
-          text: `unsaved edits in ${baseName(previewPath ?? '')} — save or discard first`,
-        })
-        return
-      }
+      // Raw tab / download does not replace the preview buffer — no dirty gate.
       const url = gateway.fileDownloadUrl(child)
       if (rivetShell()) {
         if (previewKind(entry.name, entry.size) !== 'none') void openEntry(child, false)
@@ -188,7 +211,7 @@ export function FilesPage(): JSX.Element {
         window.open(url, '_blank', 'noopener,noreferrer')
       }
     },
-    [editorDirtyRef, gateway, openEntry, previewPath],
+    [gateway, openEntry],
   )
 
   const refresh = useCallback(async (): Promise<void> => {
@@ -418,7 +441,7 @@ export function FilesPage(): JSX.Element {
       <div className="flex flex-wrap items-center gap-1 border-b border-line bg-panel/40 px-4 py-2 font-mono text-xs">
         <button
           type="button"
-          onClick={() => void navigateGuarded('')}
+          onClick={() => navigateGuarded('')}
           className={crumbs.length === 0 ? 'text-em' : 'text-ink-dim hover:text-ink'}
         >
           {rootLabel}
@@ -428,7 +451,7 @@ export function FilesPage(): JSX.Element {
             <span className="text-ink-dim">/</span>
             <button
               type="button"
-              onClick={() => void navigateGuarded(crumbs.slice(0, i + 1).join('/'))}
+              onClick={() => navigateGuarded(crumbs.slice(0, i + 1).join('/'))}
               className={i === crumbs.length - 1 ? 'text-em' : 'text-ink-dim hover:text-ink'}
             >
               {seg}
@@ -568,7 +591,7 @@ export function FilesPage(): JSX.Element {
                       <td colSpan={3} className="py-1">
                         <button
                           type="button"
-                          onClick={() => void navigateGuarded(parentRel(path))}
+                          onClick={() => navigateGuarded(parentRel(path))}
                           className="font-mono text-ink-dim hover:text-ink"
                         >
                           ../
@@ -579,18 +602,41 @@ export function FilesPage(): JSX.Element {
                   {entries.map((e) => {
                     const child = joinRel(path, e.name)
                     const isSel = selected.has(e.name)
+                    const activateRow = (ev: {
+                      detail: number
+                      target: EventTarget | null
+                    }): void => {
+                      if (
+                        shouldIgnoreRowActivate({
+                          detail: ev.detail,
+                          target: ev.target,
+                          selectionText: window.getSelection()?.toString() ?? '',
+                        })
+                      ) {
+                        return
+                      }
+                      void openEntry(child, e.type === 'dir')
+                    }
                     return (
                       <tr
                         key={e.name}
-                        className={`border-b border-line/40 hover:bg-panel-2/50 ${
+                        className={`cursor-pointer border-b border-line/40 hover:bg-panel-2/50 ${
                           isSel ? 'bg-panel-2/40' : ''
                         }`}
                         onClick={(ev) => {
-                          if ((ev.target as HTMLElement).closest('input, label')) return
-                          void openEntry(child, e.type === 'dir')
+                          activateRow(ev)
                         }}
                         onDoubleClick={(ev) => {
-                          if ((ev.target as HTMLElement).closest('input, label')) return
+                          if (performance.now() < suppressRawUntilRef.current) return
+                          if (
+                            shouldIgnoreRowActivate({
+                              detail: 1,
+                              target: ev.target,
+                              selectionText: window.getSelection()?.toString() ?? '',
+                            })
+                          ) {
+                            return
+                          }
                           openRaw(e, child)
                         }}
                         draggable
@@ -640,7 +686,7 @@ export function FilesPage(): JSX.Element {
                             : undefined
                         }
                       >
-                        <td className="py-1.5 pr-2">
+                        <td className="py-1.5 pr-2" data-no-open>
                           <input
                             type="checkbox"
                             checked={isSel}
@@ -656,7 +702,14 @@ export function FilesPage(): JSX.Element {
                           />
                         </td>
                         <td className="py-1.5 pr-4">
-                          <button type="button" className="flex items-center gap-2 text-left">
+                          <button
+                            type="button"
+                            className="flex items-center gap-2 text-left"
+                            onClick={(ev) => {
+                              ev.stopPropagation()
+                              activateRow(ev)
+                            }}
+                          >
                             <span className="w-4 text-center font-mono text-ink-dim">
                               {e.type === 'dir' ? '▸' : '·'}
                             </span>
@@ -687,7 +740,13 @@ export function FilesPage(): JSX.Element {
             path={previewPath}
             onClose={() => {
               void (async () => {
-                if (!(await confirmDiscard())) return
+                const decision = await guardClosePreview({
+                  dirty: editorDirtyRef.current,
+                  fileName: dirtyFileName,
+                  confirm: discardConfirm,
+                  clearDirty,
+                })
+                if (decision !== 'proceed') return
                 setPreviewPath(undefined)
               })()
             }}
