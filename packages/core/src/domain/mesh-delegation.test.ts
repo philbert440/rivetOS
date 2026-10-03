@@ -313,6 +313,55 @@ describe('MeshDelegationEngine presets', () => {
     expect(findByAgent).not.toHaveBeenCalled()
   })
 
+  it('a preset with no harness does not shadow a runtime agent of the same name', async () => {
+    // Every runtime agent tends to have a same-named preset; one without a
+    // harness cannot run, so the runtime agent must still be reachable.
+    const findByAgent = vi.fn(async () => [node('node-c', ['reviewer'])])
+    const delegate = vi.fn(async () => ({ status: 'completed' as const, response: 'from preset' }))
+    const presets = {
+      find: async (handle: string) =>
+        handle === 'reviewer' ? { id: 'preset-1', name: 'reviewer', node: 'node-g' } : undefined,
+      delegate,
+      rosterText: () => '- reviewer (on node-g) — no harness configured',
+      rosterEntries: () => [],
+    } as unknown as PresetDelegationEngine
+    const fetchImpl = vi.fn(
+      async () => new Response(JSON.stringify({ response: 'from runtime' }), { status: 200 }),
+    )
+    const engine = new MeshDelegationEngine({
+      localEngine: { delegate: vi.fn() } as unknown as DelegationEngine,
+      router: { getAgents: () => [] } as unknown as Router,
+      meshRegistry: { ...makeRegistry([node('node-c', ['reviewer'])]), findByAgent },
+      tls: { ca: '', cert: '', key: '' },
+      httpsDispatcher: {},
+      localAgents: ['local'],
+      nodeName: 'node-f',
+      presets,
+      fetchImpl: fetchImpl as unknown as MeshDelegationEngine['config']['fetchImpl'],
+    })
+
+    await engine.delegate({ fromAgent: 'local', toAgent: 'reviewer', task: 'look' })
+    expect(delegate).not.toHaveBeenCalled()
+    expect(findByAgent).toHaveBeenCalledWith('reviewer')
+    expect(fetchImpl).toHaveBeenCalledTimes(1)
+    expect(String(fetchImpl.mock.calls[0][0])).toContain('node-c')
+
+    // …but with no runtime agent of that name the preset still runs (its own refusal).
+    const noRuntime = new MeshDelegationEngine({
+      localEngine: { delegate: vi.fn() } as unknown as DelegationEngine,
+      router: { getAgents: () => [] } as unknown as Router,
+      meshRegistry: { ...makeRegistry([]), findByAgent: vi.fn(async () => []) },
+      tls: { ca: '', cert: '', key: '' },
+      httpsDispatcher: {},
+      localAgents: ['local'],
+      nodeName: 'node-f',
+      presets,
+    })
+    const result = await noRuntime.delegate({ fromAgent: 'local', toAgent: 'reviewer', task: 'x' })
+    expect(result.response).toBe('from preset')
+    expect(delegate).toHaveBeenCalledTimes(1)
+  })
+
   it('roster advertises presets', async () => {
     const { engine: presets } = presetDouble(
       true,

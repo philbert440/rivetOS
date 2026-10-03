@@ -18,8 +18,12 @@ import {
   CLI_HARNESS_PROVIDERS,
   KNOWN_CHANNELS,
   KNOWN_HEARTBEAT_KEYS,
+  KNOWN_MEMORY_KEYS,
   KNOWN_MEMORY_POSTGRES_KEYS,
   KNOWN_MEMORY_EMBEDDED_KEYS,
+  KNOWN_MEMORY_SQLITE_KEYS,
+  KNOWN_MEMORY_CAPTURE_KEYS,
+  KNOWN_MEMORY_CAPTURE_REDACTION_KEYS,
   REMOVED_MEMORY_POSTGRES_KEYS,
   KNOWN_DEN_KEYS,
   KNOWN_DEN_TERMINAL_KEYS,
@@ -331,6 +335,103 @@ export function validateAgents(
 }
 
 // ---------------------------------------------------------------------------
+// token_command (providers + memory.postgres embed_*)
+// ---------------------------------------------------------------------------
+
+/**
+ * Validate an argv-array token mint command. `keyName` is the YAML key
+ * (`token_command` or `embed_token_command`).
+ */
+export function validateTokenCommandFields(
+  obj: Record<string, unknown>,
+  path: string,
+  label: string,
+  issues: ValidationIssue[],
+  keys: {
+    command: string
+    ttl: string
+    timeout: string
+  } = {
+    command: 'token_command',
+    ttl: 'token_ttl_ms',
+    timeout: 'token_command_timeout_ms',
+  },
+): void {
+  const raw = obj[keys.command]
+  if (raw !== undefined) {
+    if (typeof raw === 'string') {
+      issues.push({
+        severity: 'error',
+        path: `${path}.${keys.command}`,
+        message: `${label} ${keys.command} must be an argv array (no shell string)`,
+      })
+    } else if (
+      !Array.isArray(raw) ||
+      raw.length === 0 ||
+      !raw.every((item) => typeof item === 'string' && item.length > 0)
+    ) {
+      issues.push({
+        severity: 'error',
+        path: `${path}.${keys.command}`,
+        message: `${label} ${keys.command} must be a non-empty argv array of strings`,
+      })
+    }
+  }
+
+  for (const msKey of [keys.ttl, keys.timeout]) {
+    const v = obj[msKey]
+    if (v !== undefined && (typeof v !== 'number' || v < 1)) {
+      issues.push({
+        severity: 'error',
+        path: `${path}.${msKey}`,
+        message: `${label} ${msKey} must be a positive number`,
+      })
+    }
+  }
+
+  if (raw !== undefined && keys.command === 'token_command' && obj.api_key !== undefined) {
+    issues.push({
+      severity: 'warning',
+      path: `${path}.${keys.command}`,
+      message: `${label} has both api_key and token_command — token_command wins`,
+    })
+  }
+  if (
+    raw !== undefined &&
+    keys.command === 'embed_token_command' &&
+    obj.embed_api_key !== undefined
+  ) {
+    issues.push({
+      severity: 'warning',
+      path: `${path}.${keys.command}`,
+      message: `${label} has both embed_api_key and embed_token_command — embed_token_command wins`,
+    })
+  }
+}
+
+/** Providers that actually honor `token_command` (Bearer mint path). */
+const TOKEN_COMMAND_PROVIDERS = new Set(['anthropic', 'xai', 'vllm', 'llama-server'])
+
+/** Providers that expose the static `models` floor + `models_ttl_ms` catalog. */
+const MODEL_CATALOG_PROVIDERS = new Set(['vllm', 'llama-server'])
+
+/**
+ * Memory postgres embedding column width (`halfvec(1024)` after migration 0015).
+ * Kept here (boot does not depend on `@rivetos/token-command`) — must stay in
+ * lockstep with `EMBEDDING_COLUMN_DIMS` in that package and worker truncateDims.
+ */
+export const EMBEDDING_COLUMN_DIMS = 1024
+
+function validateTokenCommand(
+  provider: Record<string, unknown>,
+  path: string,
+  name: string,
+  issues: ValidationIssue[],
+): void {
+  validateTokenCommandFields(provider, path, `Provider "${name}"`, issues)
+}
+
+// ---------------------------------------------------------------------------
 // Providers
 // ---------------------------------------------------------------------------
 
@@ -461,6 +562,36 @@ export function validateProviders(
       }
     }
 
+    // Only providers that implement the Bearer mint path — avoid misleading
+    // "token_command wins over api_key" warnings on google / CLI harnesses.
+    if (TOKEN_COMMAND_PROVIDERS.has(name)) {
+      validateTokenCommand(provider, path, name, issues)
+    }
+
+    if (MODEL_CATALOG_PROVIDERS.has(name)) {
+      if (
+        provider.models !== undefined &&
+        (!Array.isArray(provider.models) ||
+          !provider.models.every((item) => typeof item === 'string' && item.length > 0))
+      ) {
+        issues.push({
+          severity: 'error',
+          path: `${path}.models`,
+          message: `Provider "${name}" models must be an array of non-empty strings (static catalog floor)`,
+        })
+      }
+
+      if (provider.models_ttl_ms !== undefined) {
+        if (typeof provider.models_ttl_ms !== 'number' || provider.models_ttl_ms < 1) {
+          issues.push({
+            severity: 'error',
+            path: `${path}.models_ttl_ms`,
+            message: `Provider "${name}" models_ttl_ms must be a positive number`,
+          })
+        }
+      }
+    }
+
     if (provider.max_tokens !== undefined) {
       if (typeof provider.max_tokens !== 'number' || provider.max_tokens < 1) {
         issues.push({
@@ -543,13 +674,21 @@ export function validateChannels(
 
 export function validateMemory(memory: Record<string, unknown>, issues: ValidationIssue[]): void {
   for (const key of Object.keys(memory)) {
-    if (key !== 'postgres') {
+    if (!KNOWN_MEMORY_KEYS.has(key)) {
       issues.push({
         severity: 'warning',
         path: `memory.${key}`,
-        message: `Unknown memory backend "${key}" — only "postgres" is currently supported`,
+        message: `Unknown memory key "${key}" — supported: "postgres" / "sqlite" (backend), "capture" (write-path options)`,
       })
     }
+  }
+
+  if (memory.postgres && memory.sqlite) {
+    issues.push({
+      severity: 'error',
+      path: 'memory',
+      message: '"postgres" and "sqlite" cannot both be set — pick one memory backend',
+    })
   }
 
   if (memory.postgres) {
@@ -584,8 +723,208 @@ export function validateMemory(memory: Record<string, unknown>, issues: Validati
           message: '"delegation_tracking" must be a boolean (true/false)',
         })
       }
+
+      validateTokenCommandFields(pg, 'memory.postgres', 'memory.postgres', issues, {
+        command: 'embed_token_command',
+        ttl: 'embed_token_ttl_ms',
+        timeout: 'embed_token_command_timeout_ms',
+      })
+
+      if (pg.embed_wire_shape !== undefined) {
+        if (pg.embed_wire_shape !== 'openai' && pg.embed_wire_shape !== 'native') {
+          issues.push({
+            severity: 'error',
+            path: 'memory.postgres.embed_wire_shape',
+            message: '"embed_wire_shape" must be "openai" or "native"',
+          })
+        }
+      }
+
+      if (pg.embed_expected_dims !== undefined) {
+        if (
+          typeof pg.embed_expected_dims !== 'number' ||
+          pg.embed_expected_dims !== EMBEDDING_COLUMN_DIMS
+        ) {
+          issues.push({
+            severity: 'error',
+            path: 'memory.postgres.embed_expected_dims',
+            message:
+              `"embed_expected_dims" must equal the embedding column width ` +
+              `(${String(EMBEDDING_COLUMN_DIMS)}); any other value bricks ` +
+              `halfvec inserts and vector search`,
+          })
+        }
+      }
+
+      if (pg.embed_api_key && typeof pg.embed_api_key === 'string') {
+        const key = pg.embed_api_key
+        if (!key.includes('${') && API_KEY_PATTERNS.some((p) => p.test(key))) {
+          issues.push({
+            severity: 'warning',
+            path: 'memory.postgres.embed_api_key',
+            message:
+              'memory.postgres.embed_api_key appears hardcoded — prefer environment variables or embed_token_command',
+          })
+        }
+      }
+
       if (pg.embedded !== undefined) {
         validateMemoryEmbedded(pg, issues)
+      }
+    }
+  }
+
+  if (memory.sqlite) {
+    validateMemorySqlite(memory.sqlite, issues)
+  }
+
+  if (memory.capture !== undefined) {
+    validateMemoryCapture(memory.capture, issues)
+  }
+}
+
+function validateMemorySqlite(raw: unknown, issues: ValidationIssue[]): void {
+  if (typeof raw !== 'object' || raw === null || Array.isArray(raw)) {
+    issues.push({
+      severity: 'error',
+      path: 'memory.sqlite',
+      message: '"memory.sqlite" must be an object',
+    })
+    return
+  }
+
+  const sqlite = raw as Record<string, unknown>
+  for (const key of Object.keys(sqlite)) {
+    if (!KNOWN_MEMORY_SQLITE_KEYS.has(key)) {
+      issues.push({
+        severity: 'warning',
+        path: `memory.sqlite.${key}`,
+        message: `Unknown memory.sqlite key "${key}"`,
+      })
+    }
+  }
+
+  if (sqlite.path === undefined) {
+    issues.push({
+      severity: 'error',
+      path: 'memory.sqlite.path',
+      message: '"memory.sqlite.path" is required (file path or ":memory:")',
+    })
+  } else if (typeof sqlite.path !== 'string' || sqlite.path.trim() === '') {
+    issues.push({
+      severity: 'error',
+      path: 'memory.sqlite.path',
+      message: '"memory.sqlite.path" must be a non-empty file path',
+    })
+  }
+}
+
+function validateMemoryCapture(capture: unknown, issues: ValidationIssue[]): void {
+  if (typeof capture !== 'object' || capture === null || Array.isArray(capture)) {
+    issues.push({
+      severity: 'error',
+      path: 'memory.capture',
+      message: '"memory.capture" must be an object',
+    })
+    return
+  }
+  const cap = capture as Record<string, unknown>
+  for (const key of Object.keys(cap)) {
+    if (!KNOWN_MEMORY_CAPTURE_KEYS.has(key)) {
+      issues.push({
+        severity: 'warning',
+        path: `memory.capture.${key}`,
+        message: `Unknown memory.capture key "${key}"`,
+      })
+    }
+  }
+  if (cap.redaction !== undefined) {
+    validateMemoryCaptureRedaction(cap.redaction, issues)
+  }
+}
+
+function validateMemoryCaptureRedaction(redaction: unknown, issues: ValidationIssue[]): void {
+  if (typeof redaction !== 'object' || redaction === null || Array.isArray(redaction)) {
+    issues.push({
+      severity: 'error',
+      path: 'memory.capture.redaction',
+      message: '"memory.capture.redaction" must be an object',
+    })
+    return
+  }
+  const red = redaction as Record<string, unknown>
+  for (const key of Object.keys(red)) {
+    if (!KNOWN_MEMORY_CAPTURE_REDACTION_KEYS.has(key)) {
+      issues.push({
+        severity: 'warning',
+        path: `memory.capture.redaction.${key}`,
+        message: `Unknown memory.capture.redaction key "${key}"`,
+      })
+    }
+  }
+  if (red.enabled !== undefined && typeof red.enabled !== 'boolean') {
+    issues.push({
+      severity: 'error',
+      path: 'memory.capture.redaction.enabled',
+      message: '"enabled" must be a boolean',
+    })
+  }
+  // Boot validates this block but does not inject it into harness hook envs yet.
+  // Without this warning, enabled:true looks like a working security control.
+  if (red.enabled === true) {
+    issues.push({
+      severity: 'warning',
+      path: 'memory.capture.redaction.enabled',
+      message:
+        'memory.capture.redaction is validated but not yet injected into harness hook processes; set RIVETOS_CAPTURE_REDACTION or pass CaptureWriterOptions.redaction to enable at runtime',
+    })
+  }
+  if (red.builtins !== undefined && typeof red.builtins !== 'boolean') {
+    issues.push({
+      severity: 'error',
+      path: 'memory.capture.redaction.builtins',
+      message: '"builtins" must be a boolean',
+    })
+  }
+  if (red.patterns !== undefined) {
+    if (!Array.isArray(red.patterns)) {
+      issues.push({
+        severity: 'error',
+        path: 'memory.capture.redaction.patterns',
+        message: '"patterns" must be an array of regex source strings',
+      })
+    } else {
+      for (let i = 0; i < red.patterns.length; i++) {
+        const source: unknown = red.patterns[i]
+        if (typeof source !== 'string' || source.length === 0) {
+          issues.push({
+            severity: 'error',
+            path: `memory.capture.redaction.patterns[${i}]`,
+            message: 'Each pattern must be a non-empty string (JS regex source)',
+          })
+          continue
+        }
+        // Nested quantifiers (e.g. (a+)+) can hang String.replace on large
+        // capture payloads; JS has no regex timeout. Reject at validate.
+        if (/\((?:[^\\)]|\\.)*[+*](?:[^\\)]|\\.)*\)(?:[+*?]|\{\d+,?\d*\})/.test(source)) {
+          issues.push({
+            severity: 'error',
+            path: `memory.capture.redaction.patterns[${i}]`,
+            message:
+              'Pattern looks ReDoS-prone (nested quantifiers); rewrite without nested +/* groups',
+          })
+          continue
+        }
+        try {
+          const compiled = new RegExp(source, 'g')
+          void compiled
+        } catch (error) {
+          issues.push({
+            severity: 'error',
+            path: `memory.capture.redaction.patterns[${i}]`,
+            message: `Invalid regex: ${error instanceof Error ? error.message : String(error)}`,
+          })
+        }
       }
     }
   }
@@ -919,6 +1258,31 @@ export function validateDen(den: Record<string, unknown>, issues: ValidationIssu
     }
   }
 
+  // allowed_harnesses: which harnesses this node offers for new launches.
+  // Unset = all registered. Unknown ids warn (same as tasks.harnesses).
+  if (den.allowed_harnesses !== undefined) {
+    const v = den.allowed_harnesses
+    if (!Array.isArray(v) || v.some((e) => typeof e !== 'string' || e.trim() === '')) {
+      issues.push({
+        severity: 'error',
+        path: `${path}.allowed_harnesses`,
+        message:
+          '"den.allowed_harnesses" must be a list of non-empty harness ids (omit the key to allow all)',
+      })
+    } else {
+      for (let i = 0; i < v.length; i++) {
+        const id = (v[i] as string).trim()
+        if (!(HARNESS_IDS as readonly string[]).includes(id)) {
+          issues.push({
+            severity: 'warning',
+            path: `${path}.allowed_harnesses[${i}]`,
+            message: `Unknown harness id "${id}" — expected one of: ${HARNESS_IDS.join(', ')}`,
+          })
+        }
+      }
+    }
+  }
+
   for (const key of ['static_dir'] as const) {
     if (den[key] !== undefined && (typeof den[key] !== 'string' || den[key].trim() === '')) {
       issues.push({
@@ -1097,6 +1461,79 @@ function validateTasksHarnesses(
         severity: 'error',
         path: `${path}.effort`,
         message: `"${path}.effort" must be 'low', 'medium' or 'high'`,
+      })
+    }
+    if (
+      section.isolation !== undefined &&
+      !['inherit', 'isolated'].includes(section.isolation as string)
+    ) {
+      issues.push({
+        severity: 'error',
+        path: `${path}.isolation`,
+        message: `"${path}.isolation" must be 'inherit' or 'isolated'`,
+      })
+    }
+    if (
+      section.allowed_tools !== undefined &&
+      !(
+        Array.isArray(section.allowed_tools) &&
+        section.allowed_tools.every(
+          (rule) =>
+            typeof rule === 'string' &&
+            rule.trim() !== '' &&
+            rule.trim().length <= 200 &&
+            !rule.trim().startsWith('-') &&
+            // eslint-disable-next-line no-control-regex
+            !/[\u0000-\u001f]/.test(rule.trim()),
+        )
+      )
+    ) {
+      // Mirrors the runtime parser, which would otherwise drop these silently.
+      issues.push({
+        severity: 'error',
+        path: `${path}.allowed_tools`,
+        message: `"${path}.allowed_tools" must be an array of permission rules: non-empty strings of at most 200 characters, not starting with "-", with no control characters`,
+      })
+    }
+    if (
+      (section.isolation !== undefined || section.allowed_tools !== undefined) &&
+      harnessId !== 'claude-code'
+    ) {
+      issues.push({
+        severity: 'warning',
+        path,
+        message: `"isolation" / "allowed_tools" are read by the claude-code executor only; ignored for "${harnessId}"`,
+      })
+    }
+    if (
+      section.models_mode !== undefined &&
+      !['discover', 'replace', 'merge'].includes(section.models_mode as string)
+    ) {
+      issues.push({
+        severity: 'error',
+        path: `${path}.models_mode`,
+        message: `"${path}.models_mode" must be 'discover', 'replace' or 'merge'`,
+      })
+    }
+    if (
+      section.models_mode === 'discover' &&
+      (section.models !== undefined || section.efforts !== undefined)
+    ) {
+      issues.push({
+        severity: 'warning',
+        path: `${path}.models_mode`,
+        message: `"${path}.models_mode" is 'discover', so "models" / "efforts" are ignored`,
+      })
+    }
+    if (
+      (section.models_mode === 'replace' || section.models_mode === 'merge') &&
+      section.models === undefined &&
+      section.efforts === undefined
+    ) {
+      issues.push({
+        severity: 'warning',
+        path: `${path}.models_mode`,
+        message: `"${path}.models_mode" is '${section.models_mode}' but no "models" or "efforts" list is set — the discovered list is kept`,
       })
     }
     if (section.models !== undefined && !Array.isArray(section.models)) {

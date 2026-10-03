@@ -83,6 +83,14 @@ export interface PostgresMemoryConfig {
   embedTimeoutMs?: number | string
   /** Per-query hnsw.ef_search (default 100, clamp 10..1000). */
   hnswEfSearch?: number | string
+  /** Static bearer for query-time embed (when no token source). */
+  embedApiKey?: string
+  /** TTL-cached mint source for query-time embed. */
+  embedTokenSource?: import('@rivetos/token-command').TokenSource
+  /** openai (default) or native. */
+  embedWireShape?: import('@rivetos/token-command').EmbedWireShape
+  /** Optional expected embedding width. */
+  embedExpectedDims?: number
 }
 
 // ---------------------------------------------------------------------------
@@ -143,6 +151,10 @@ export class PostgresMemory implements Memory {
       embedQueryInstruction: config.embedQueryInstruction,
       embedTimeoutMs: config.embedTimeoutMs,
       hnswEfSearch: config.hnswEfSearch,
+      embedApiKey: config.embedApiKey,
+      embedTokenSource: config.embedTokenSource,
+      embedWireShape: config.embedWireShape,
+      embedExpectedDims: config.embedExpectedDims,
     }
 
     this.searchEngine = new SearchEngine(this.pool, searchConfig)

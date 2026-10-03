@@ -161,6 +161,7 @@ export type {
   SendUserTurnResult,
   HarnessDriver,
   DelegatedSessionLink,
+  HarnessModelsSource,
 } from './harness.js'
 export type { SessionSummary as HarnessSessionSummary } from './harness.js'
 export {

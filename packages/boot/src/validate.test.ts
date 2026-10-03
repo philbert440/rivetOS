@@ -3,7 +3,7 @@
  * unknown keys, type checks, and helpful error messages.
  */
 
-import { describe, it } from 'vitest'
+import { describe, expect, it } from 'vitest'
 import * as assert from 'node:assert/strict'
 import { validateConfig, formatValidationResult, type ValidationResult } from './validate/index.js'
 import { MODEL_DEFAULTS } from '@rivetos/types'
@@ -547,6 +547,45 @@ describe('Config Validation', () => {
         )
       }
     })
+
+    it('accepts token_command argv and rejects a shell string', () => {
+      const cfg = validConfig()
+      ;(cfg.providers as Record<string, Record<string, unknown>>).anthropic.token_command = [
+        '/usr/local/bin/mint-token',
+      ]
+      assertValid(validateConfig(cfg))
+
+      ;(cfg.providers as Record<string, Record<string, unknown>>).anthropic.token_command =
+        'mint-token --out'
+      const result = validateConfig(cfg)
+      assertError(result, 'providers.anthropic.token_command', 'argv array')
+    })
+
+    it('warns when both api_key and token_command are set', () => {
+      const cfg = validConfig()
+      ;(cfg.providers as Record<string, Record<string, unknown>>).anthropic.api_key =
+        '${ANTHROPIC_API_KEY}'
+      ;(cfg.providers as Record<string, Record<string, unknown>>).anthropic.token_command = [
+        '/usr/local/bin/mint-token',
+      ]
+      const result = validateConfig(cfg)
+      assertWarning(result, 'providers.anthropic.token_command', 'token_command wins')
+    })
+
+    it('accepts vllm models floor without unknown-key warning', () => {
+      const cfg = validConfig()
+      ;(cfg.providers as Record<string, unknown>).vllm = {
+        base_url: 'http://127.0.0.1:8000',
+        model: 'default',
+        models: ['served-a'],
+        models_ttl_ms: 30_000,
+        token_command: ['/usr/local/bin/mint-token'],
+      }
+      const result = validateConfig(cfg)
+      assertValid(result)
+      const unknown = result.warnings.filter((w) => w.message.includes('Unknown key'))
+      assert.equal(unknown.length, 0)
+    })
   })
 
   // =========================================================================
@@ -607,11 +646,114 @@ describe('Config Validation', () => {
       assertValid(result)
     })
 
-    it('warns on unknown memory backend', () => {
+    it('warns on unknown memory key', () => {
       const cfg = validConfig()
       cfg.memory = { redis: { url: 'redis://localhost' } }
       const result = validateConfig(cfg)
-      assertWarning(result, 'memory.redis', 'Unknown memory backend')
+      assertWarning(result, 'memory.redis', 'Unknown memory key')
+    })
+
+    it('accepts memory.capture.redaction when well-formed', () => {
+      const cfg = validConfig()
+      cfg.memory = {
+        postgres: { connection_string: '${RIVETOS_PG_URL}' },
+        capture: {
+          redaction: {
+            enabled: false,
+            builtins: true,
+            patterns: ['\\bCUSTOM-[A-Z0-9]{8}\\b'],
+          },
+        },
+      }
+      assertValid(validateConfig(cfg))
+    })
+
+    it('warns when capture redaction is enabled but not yet injected', () => {
+      const cfg = validConfig()
+      cfg.memory = {
+        postgres: { connection_string: '${RIVETOS_PG_URL}' },
+        capture: {
+          redaction: {
+            enabled: true,
+            builtins: true,
+            patterns: ['\\b(?i:myprefix)-[a-z0-9]{20,}\\b'],
+          },
+        },
+      }
+      const result = validateConfig(cfg)
+      assertValid(result)
+      assertWarning(
+        result,
+        'memory.capture.redaction.enabled',
+        'not yet injected into harness hook processes',
+      )
+    })
+
+    it('errors on invalid capture redaction shapes', () => {
+      const cfg = validConfig()
+      cfg.memory = {
+        capture: {
+          redaction: {
+            enabled: 'yes',
+            patterns: ['(unclosed', 12, '(?i)\\bfoo', '(a+)+b'],
+          },
+        },
+      }
+      const result = validateConfig(cfg)
+      assertError(result, 'memory.capture.redaction.enabled', 'must be a boolean')
+      assertError(result, 'memory.capture.redaction.patterns[0]', 'Invalid regex')
+      assertError(result, 'memory.capture.redaction.patterns[1]', 'non-empty string')
+      assertError(result, 'memory.capture.redaction.patterns[2]', 'Invalid regex')
+      assertError(result, 'memory.capture.redaction.patterns[3]', 'ReDoS-prone')
+    })
+
+    it('accepts memory.sqlite with a path and leaves postgres-only configs valid', () => {
+      const sqliteOnly = validConfig()
+      sqliteOnly.memory = { sqlite: { path: '~/.rivetos/memory.sqlite' } }
+      assertValid(validateConfig(sqliteOnly))
+
+      const postgresOnly = validConfig()
+      postgresOnly.memory = { postgres: { connection_string: '${RIVETOS_PG_URL}' } }
+      const postgresResult = validateConfig(postgresOnly)
+      assertValid(postgresResult)
+      // Opt-in pin: postgres-only validate output has no sqlite-related issues.
+      expect(
+        [...postgresResult.errors, ...postgresResult.warnings].filter((i) =>
+          i.path.includes('sqlite'),
+        ),
+      ).toEqual([])
+
+      // Opt-in pin: no memory section → unchanged / valid.
+      const none = validConfig()
+      delete none.memory
+      assertValid(validateConfig(none))
+    })
+
+    it('errors when postgres and sqlite are both set', () => {
+      const cfg = validConfig()
+      cfg.memory = {
+        postgres: { connection_string: '${RIVETOS_PG_URL}' },
+        sqlite: { path: 'memory.sqlite' },
+      }
+      const result = validateConfig(cfg)
+      assertError(result, 'memory', 'cannot both be set')
+    })
+
+    it('errors when memory.sqlite.path is missing or blank', () => {
+      const missing = validConfig()
+      missing.memory = { sqlite: {} }
+      assertError(validateConfig(missing), 'memory.sqlite.path', 'is required')
+
+      const blank = validConfig()
+      blank.memory = { sqlite: { path: '   ' } }
+      assertError(validateConfig(blank), 'memory.sqlite.path', 'must be a non-empty file path')
+    })
+
+    it('warns on unknown memory.sqlite keys', () => {
+      const cfg = validConfig()
+      cfg.memory = { sqlite: { path: 'm.sqlite', wal: false } }
+      const result = validateConfig(cfg)
+      assertWarning(result, 'memory.sqlite.wal', 'Unknown memory.sqlite key')
     })
 
     it('warns on unknown postgres keys', () => {
@@ -650,6 +792,70 @@ describe('Config Validation', () => {
       const cfg = validConfig()
       cfg.memory = { postgres: { embed_model: 'nemotron' } }
       assertValid(validateConfig(cfg))
+    })
+
+    it('accepts embed_token_command and embed_wire_shape', () => {
+      const cfg = validConfig()
+      cfg.memory = {
+        postgres: {
+          embed_endpoint: 'http://127.0.0.1:9401',
+          embed_model: 'text-embedding-3-small',
+          embed_token_command: ['/usr/local/bin/mint-embed-token'],
+          embed_wire_shape: 'native',
+          embed_expected_dims: 1024,
+        },
+      }
+      assertValid(validateConfig(cfg))
+    })
+
+    it('warns when both embed_api_key and embed_token_command are set', () => {
+      const cfg = validConfig()
+      cfg.memory = {
+        postgres: {
+          embed_api_key: '${RIVETOS_EMBED_API_KEY}',
+          embed_token_command: ['/usr/local/bin/mint-embed-token'],
+        },
+      }
+      const result = validateConfig(cfg)
+      assertWarning(result, 'memory.postgres.embed_token_command', 'embed_token_command wins')
+    })
+
+    it('rejects embed_expected_dims that do not match the halfvec column width', () => {
+      const cfg = validConfig()
+      cfg.memory = {
+        postgres: {
+          embed_expected_dims: 4096,
+        },
+      }
+      const result = validateConfig(cfg)
+      assertError(result, 'memory.postgres.embed_expected_dims', 'column width')
+    })
+
+    it('does not validate token_command on providers that ignore it', () => {
+      const cfg = validConfig()
+      ;(cfg.providers as Record<string, unknown>).google = {
+        model: 'gemini-2.0-flash',
+        api_key: '${GOOGLE_API_KEY}',
+        token_command: ['/usr/local/bin/mint-token'],
+      }
+      const result = validateConfig(cfg)
+      // Unknown-key warning is fine; must not claim "token_command wins".
+      const wins = result.warnings.filter((w) => w.message.includes('token_command wins'))
+      assert.equal(wins.length, 0)
+      assert.equal(result.errors.length, 0)
+    })
+
+    it('rejects bad embed_wire_shape and shell-string embed_token_command', () => {
+      const cfg = validConfig()
+      cfg.memory = {
+        postgres: {
+          embed_wire_shape: 'grpc',
+          embed_token_command: 'mint --token',
+        },
+      }
+      const result = validateConfig(cfg)
+      assertError(result, 'memory.postgres.embed_wire_shape', 'openai')
+      assertError(result, 'memory.postgres.embed_token_command', 'argv array')
     })
 
     it('accepts embedded with defaults', () => {
@@ -1079,6 +1285,30 @@ describe('den', () => {
     assertWarning(validateConfig(cfg), 'den.prot', 'Unknown den key')
   })
 
+  it('accepts den.allowed_harnesses as a list of known ids', () => {
+    const cfg = validConfig()
+    cfg.den = { enabled: true, allowed_harnesses: ['claude-code', 'codex'] }
+    assertValid(validateConfig(cfg))
+  })
+
+  it('accepts an empty den.allowed_harnesses (none allowed)', () => {
+    const cfg = validConfig()
+    cfg.den = { enabled: true, allowed_harnesses: [] }
+    assertValid(validateConfig(cfg))
+  })
+
+  it('rejects a non-list den.allowed_harnesses', () => {
+    const cfg = validConfig()
+    cfg.den = { enabled: true, allowed_harnesses: 'claude-code' }
+    assertError(validateConfig(cfg), 'den.allowed_harnesses', 'must be a list')
+  })
+
+  it('warns on unknown ids in den.allowed_harnesses', () => {
+    const cfg = validConfig()
+    cfg.den = { enabled: true, allowed_harnesses: ['claude-code', 'not-a-harness'] }
+    assertWarning(validateConfig(cfg), 'den.allowed_harnesses[1]', 'Unknown harness id')
+  })
+
   it('accepts den.advertise_mdns (local-mode / PR 7 advertiser)', () => {
     const cfg = validConfig()
     cfg.den = { enabled: true, advertise_mdns: true }
@@ -1264,6 +1494,80 @@ describe('den', () => {
       const result = validateConfig(cfg)
       assertWarning(result, 'tasks.harnesses.claude-code.models', 'empty and will be ignored')
       assertWarning(result, 'tasks.harnesses.claude-code.efforts', 'empty and will be ignored')
+    })
+
+    it('validates claude-code isolation and allowed_tools', () => {
+      const ok = validConfig()
+      ok.tasks = {
+        harnesses: {
+          'claude-code': {
+            isolation: 'isolated',
+            allowed_tools: ['mcp__rivetos'],
+          },
+        },
+      }
+      const clean = validateConfig(ok)
+      expect(
+        [...clean.errors, ...clean.warnings].filter((i) =>
+          i.path.startsWith('tasks.harnesses.claude-code'),
+        ),
+      ).toEqual([])
+
+      const bad = validConfig()
+      bad.tasks = {
+        harnesses: { 'claude-code': { isolation: 'tools', allowed_tools: ['ok', ''] } },
+      }
+      const result = validateConfig(bad)
+      assertError(
+        result,
+        'tasks.harnesses.claude-code.isolation',
+        "must be 'inherit' or 'isolated'",
+      )
+      assertError(result, 'tasks.harnesses.claude-code.allowed_tools', 'permission rules')
+      // a rule the runtime parser would silently drop is an error at boot
+      const flag = validConfig()
+      flag.tasks = {
+        harnesses: { 'claude-code': { allowed_tools: ['--dangerously-skip-permissions'] } },
+      }
+      assertError(validateConfig(flag), 'tasks.harnesses.claude-code.allowed_tools', 'not starting')
+
+      const other = validConfig()
+      other.tasks = { harnesses: { 'kimi-code': { isolation: 'isolated' } } }
+      assertWarning(validateConfig(other), 'tasks.harnesses.kimi-code', 'claude-code executor only')
+    })
+
+    it('accepts models_mode discover | replace | merge and rejects anything else', () => {
+      for (const mode of ['discover', 'replace', 'merge']) {
+        const cfg = validConfig()
+        // discover with a list is a (warned) no-op; the clean shape is mode-only for
+        // discover and mode + list for the other two
+        const section =
+          mode === 'discover' ? { models_mode: mode } : { models_mode: mode, models: [{ id: 'x' }] }
+        cfg.tasks = { harnesses: { codex: section } }
+        const result = validateConfig(cfg)
+        expect(
+          [...result.errors, ...result.warnings].filter((i) =>
+            i.path.startsWith('tasks.harnesses.codex'),
+          ),
+        ).toEqual([])
+      }
+      const noop = validConfig()
+      noop.tasks = {
+        harnesses: {
+          codex: { models_mode: 'discover', models: [{ id: 'x' }] },
+          'claude-code': { models_mode: 'replace' },
+        },
+      }
+      const warned = validateConfig(noop)
+      assertWarning(warned, 'tasks.harnesses.codex.models_mode', 'ignored')
+      assertWarning(warned, 'tasks.harnesses.claude-code.models_mode', 'discovered list is kept')
+      const bad = validConfig()
+      bad.tasks = { harnesses: { codex: { models_mode: 'append' } } }
+      assertError(
+        validateConfig(bad),
+        'tasks.harnesses.codex.models_mode',
+        "must be 'discover', 'replace' or 'merge'",
+      )
     })
   })
 

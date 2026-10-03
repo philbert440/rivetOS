@@ -590,7 +590,7 @@ rivetos start
        ├── registerPlugins()          # Manifest-driven: providers, channels, memory, tools
        ├── registerAgentTools()       # Delegation, sub-agents, skills
        ├── writePidFile()             # ~/.rivetos/rivetos.pid
-       ├── registerShutdownHandlers() # SIGINT/SIGTERM → graceful stop
+       ├── registerShutdownHandlers() # SIGINT/SIGTERM/SIGHUP → graceful stop
        └── runtime.start()
             ├── workspace.load()      # Read workspace files
             ├── router.healthCheck()  # Verify providers are reachable

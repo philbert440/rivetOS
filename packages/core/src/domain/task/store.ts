@@ -228,11 +228,12 @@ export interface TaskStore {
   /**
    * Kill request: CAS flip any pre-terminal row (queued / awaiting-input /
    * running) to 'killed' and return its prior status; undefined when the row
-   * is missing or already terminal. Killing 'running' does NOT abort the
-   * in-flight turn — the runner re-reads the row at turn end and discards the
-   * outcome (same "let it finish, drop the result" semantics as the legacy
-   * subagent engine). A flip does notify `onTerminal`, so a parked permission
-   * prompt is denied even though the spawn keeps running.
+   * is missing or already terminal. The store itself only flips the row; the
+   * flip notifies `onTerminal`, and the runner that owns a 'running' row
+   * listens for it and aborts the in-flight turn (the executor stops its
+   * process), then records the outcome as killed. A parked permission prompt
+   * is denied by the same notification. A runner on another node, which never
+   * hears this instance's `onTerminal`, notices at its next turn boundary.
    */
   requestKill(id: string): Promise<TaskStatus | undefined>
 

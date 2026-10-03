@@ -93,8 +93,9 @@ const READ_ONLY = { readOnlyHint: true, idempotentHint: true } as const
 export const DELEGATE_TASK_HTTP_REASON =
   'delegate_task needs a per-harness stdio sidecar for the chain guard'
 
-/** Full-string preset match. Den keeps this sentence; it does not parse `agent@node`. */
-const PRESET_WINS_FULL_STRING = 'A preset name or id wins when it also matches a runtime agent id.'
+/** Full-string preset match. The den route resolves the same rule server-side, `agent@node` included. */
+const PRESET_WINS_FULL_STRING =
+  'A preset name or id wins when it also matches a runtime agent id, unless that preset has no harness configured — then the runtime agent runs.'
 
 const DELEGATE_TASK_OPENING =
   'Delegate work to a RivetHub agent (preset name or id) or a runtime agent id. ' +
@@ -133,7 +134,8 @@ function delegateTaskInputSchema(toAgent: string) {
 export const delegateTaskDefinition = {
   description:
     DELEGATE_TASK_OPENING +
-    'When no node is given, a preset name or id wins when it also matches a runtime agent id. ' +
+    'When no node is given, a preset name or id wins when it also matches a runtime agent id, ' +
+    'unless that preset has no harness configured — then the runtime agent runs. ' +
     'agent@node is resolved as a preset only if a preset has that exact name. ' +
     DELEGATE_TASK_HOW +
     '; use agent@node to pick the node when several host the same agent id. ' +
@@ -144,23 +146,11 @@ export const delegateTaskDefinition = {
 }
 
 /**
- * Den HTTPS `delegate_task` does not parse `agent@node` — the gateway is given
- * `to_agent` verbatim. Same fields as {@link delegateTaskDefinition}; the
- * description and `to_agent` text stay the pre-pin wording so the tool does
- * not advertise a syntax this transport cannot honor.
+ * Den HTTPS `delegate_task`. The den's task route resolves `to_agent` with the
+ * same rules as this file (a harness-less preset yields to a runtime agent,
+ * `agent@node` pins a node), so the den transport advertises the same tool.
  */
-export const denDelegateTaskDefinition = {
-  description:
-    DELEGATE_TASK_OPENING +
-    PRESET_WINS_FULL_STRING +
-    ' ' +
-    DELEGATE_TASK_HOW +
-    '. ' +
-    DELEGATE_TASK_WAIT,
-  inputSchema: delegateTaskInputSchema(
-    'RivetHub agent name or id, or a runtime agent id — call list_agents first',
-  ),
-}
+export const denDelegateTaskDefinition = delegateTaskDefinition
 
 export const listAgentsDefinition = {
   description:
@@ -824,8 +814,19 @@ export function createDelegateTools(deps: DelegateToolsDeps): DelegateToolsHandl
           }
           const invoking = deps.invokingSession?.()
 
-          const preset = await deps.presets.find(call.toAgent)
+          const found = await deps.presets.find(call.toAgent)
           if (signal?.aborted) return CLIENT_ABORT_TEXT
+          // A preset wins over a runtime agent of the same name only when it
+          // can run (has a harness). Every runtime agent tends to have a
+          // same-named preset ("Deepseek" next to runtime `deepseek`); a
+          // harness-less one must not make the runtime agent unreachable.
+          // With no runtime agent of that name it still runs, so the caller
+          // sees the preset's own "no harness configured" refusal.
+          const preset =
+            found &&
+            (found.harnessId || !pickOnlineHost(nodes, parseRuntimeTarget(call.toAgent).agentId))
+              ? found
+              : undefined
 
           const created = trackCreatedRow()
           const work = (async (): Promise<string> => {

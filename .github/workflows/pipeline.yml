@@ -273,6 +273,7 @@ jobs:
             packages/harness-pi
             packages/harness-qwen-code
             packages/aisdk
+            packages/token-command
             packages/workflows
             packages/mcp
             packages/mcp-v2

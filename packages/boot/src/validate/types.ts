@@ -51,6 +51,9 @@ export const KNOWN_TASKS_HARNESS_KEYS = new Set([
   'home',
   'models',
   'efforts',
+  'models_mode',
+  'isolation',
+  'allowed_tools',
 ])
 
 /** workflows.* keys (YAML snake_case). */
@@ -86,6 +89,7 @@ export const KNOWN_DEN_KEYS = new Set([
   'advertise_mdns',
   'allowed_origins',
   'allowed_hosts',
+  'allowed_harnesses',
 ])
 
 export const KNOWN_DEN_DEVICES_KEYS = new Set([
@@ -203,7 +207,16 @@ export const KNOWN_PROVIDERS: Partial<Record<string, Set<string>>> = {
     'context_window',
     'max_output_tokens',
   ]),
-  anthropic: new Set(['model', 'max_tokens', 'api_key', 'context_window', 'max_output_tokens']),
+  anthropic: new Set([
+    'model',
+    'max_tokens',
+    'api_key',
+    'token_command',
+    'token_ttl_ms',
+    'token_command_timeout_ms',
+    'context_window',
+    'max_output_tokens',
+  ]),
   'grok-cli': new Set([
     'model',
     'binary',
@@ -278,6 +291,9 @@ export const KNOWN_PROVIDERS: Partial<Record<string, Set<string>>> = {
     'model',
     'max_tokens',
     'api_key',
+    'token_command',
+    'token_ttl_ms',
+    'token_command_timeout_ms',
     'temperature',
     'context_window',
     'max_output_tokens',
@@ -317,6 +333,11 @@ export const KNOWN_PROVIDERS: Partial<Record<string, Set<string>>> = {
     'model',
     'base_url',
     'api_key',
+    'token_command',
+    'token_ttl_ms',
+    'token_command_timeout_ms',
+    'models',
+    'models_ttl_ms',
     'max_tokens',
     'temperature',
     'top_p',
@@ -345,6 +366,11 @@ export const KNOWN_PROVIDERS: Partial<Record<string, Set<string>>> = {
     'model',
     'base_url',
     'api_key',
+    'token_command',
+    'token_ttl_ms',
+    'token_command_timeout_ms',
+    'models',
+    'models_ttl_ms',
     'max_tokens',
     'temperature',
     'top_p',
@@ -387,10 +413,22 @@ export const KNOWN_HEARTBEAT_KEYS = new Set([
   'quiet_hours',
 ])
 
+/** Top-level keys under `memory` (backends + capture options). */
+export const KNOWN_MEMORY_KEYS = new Set(['postgres', 'sqlite', 'capture'])
+
 export const KNOWN_MEMORY_POSTGRES_KEYS = new Set([
   'connection_string',
   'embed_endpoint',
   'embed_model',
+  'embed_api_key',
+  'embed_token_command',
+  'embed_token_ttl_ms',
+  'embed_token_command_timeout_ms',
+  'embed_wire_shape',
+  'embed_expected_dims',
+  'embed_query_instruction',
+  'embed_timeout_ms',
+  'hnsw_ef_search',
   'delegation_tracking',
   'embedded',
 ])
@@ -401,6 +439,16 @@ export const KNOWN_MEMORY_EMBEDDED_KEYS = new Set([
   'auto_migrate',
   'max_connections',
 ])
+
+/** `memory.sqlite` — file-backed Memory backend (phase 1: WAL + FTS5). */
+export const KNOWN_MEMORY_SQLITE_KEYS = new Set(['path'])
+
+/** Backends with a known plugin under `plugins/memory/<name>`. */
+export const KNOWN_MEMORY_BACKENDS = new Set(['postgres', 'sqlite'])
+
+export const KNOWN_MEMORY_CAPTURE_KEYS = new Set(['redaction'])
+
+export const KNOWN_MEMORY_CAPTURE_REDACTION_KEYS = new Set(['enabled', 'builtins', 'patterns'])
 
 /**
  * Keys removed in the phase-0 deletion pass — hard error so stale config

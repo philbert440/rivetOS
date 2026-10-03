@@ -499,6 +499,8 @@ describe('SqliteTaskStore', () => {
     expect(dump(path)).toEqual(before)
   })
 
+  // 500 create/claim/await cycles — under CI load this can exceed the 5s
+  // default (observed 8s on PR #1061). Keep the volume; give the suite headroom.
   it('listClaimable returns the oldest runnable row, not the newest list page', async () => {
     const { store, path } = open()
     const resume = await store.create(input({ goal: 'resume me' }))
@@ -536,7 +538,7 @@ describe('SqliteTaskStore', () => {
     const ids = (await store.listClaimable('n1', 20)).map((row) => row.id)
     expect(ids).toContain(local.id)
     expect(ids).not.toContain(foreign.id)
-  })
+  }, 15_000)
 
   it('opens in WAL mode', () => {
     const { path } = open()

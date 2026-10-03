@@ -88,7 +88,12 @@ import { createRosterProvider, defaultSpawnCwd } from './term/roster.js'
 import { createSessionCwdStore } from './term/session-cwd.js'
 import { loadRealPtySpawn, type PtySpawn } from './term/pty.js'
 import { createTermManager, TermSpawnError, type TermManager } from './term/manager.js'
-import { EFFORT_TOKEN_RE, MODEL_TOKEN_RE, ROSTER_TO_HARNESS } from './harness/model-sheets.js'
+import {
+  EFFORT_TOKEN_RE,
+  MODEL_TOKEN_RE,
+  ROSTER_TO_HARNESS,
+  presetModelList,
+} from './harness/model-sheets.js'
 import { TmuxUnavailableError, type TmuxCtl } from './term/tmux.js'
 import type { HerdrCtl } from './term/herdr.js'
 import { createTermWs } from './term/ws.js'
@@ -119,7 +124,8 @@ import { OpencodeDriver } from './harness/opencode-driver.js'
 import { PiDriver } from './harness/pi-driver.js'
 import { QwenCodeDriver } from './harness/qwen-code-driver.js'
 import { CursorDriver } from './harness/cursor-driver.js'
-import { createInstalledProbe } from './harness/installed.js'
+import { createInstalledProbe, HARNESS_TO_ROSTER } from './harness/installed.js'
+import { createAllowedProbe, harnessNotAllowedMessage } from './harness/allowed.js'
 import { CodexDriver } from './harness/codex-driver.js'
 import { CodexProtocolDriver, codexThreadDefaults } from './harness/codex-protocol-driver.js'
 import { CodexRpcClient } from './harness/codex-rpc.js'
@@ -410,6 +416,17 @@ export interface DenServerOptions {
    * probe of each roster argv[0] on the den's spawn PATH (`harness/installed.ts`).
    */
   isHarnessInstalled?: (harnessId: HarnessId) => boolean
+  /**
+   * Stamps `allowed` / refuses new launches. Default: `config.allowedHarnesses`
+   * via `createAllowedProbe` (`harness/allowed.ts`). Unset config = all allowed.
+   */
+  isHarnessAllowed?: (harnessId: HarnessId) => boolean
+  /**
+   * Test seam for control-plane session-create resume existence. Production
+   * uses `harnessSessionExists` via the roster command. When set, overrides
+   * that probe for `POST /api/harnesses/:id/sessions` allow-list exemption.
+   */
+  harnessSessionExistsForAllow?: (harnessId: HarnessId, nativeSessionId: string) => boolean
   /**
    * Preset-registry pool. Production builds one from `config.pgUrl`
    * ({@link createPresetPool}: error listeners, 5s connect, 10s query).
@@ -1015,6 +1032,8 @@ export function createDenServer(config: DenConfig, opts: DenServerOptions = {}):
     for (const driver of builtinDrivers) harnesses.register(driver)
   }
   for (const driver of opts.harnessDrivers ?? []) harnesses.register(driver)
+  // Undefined when the allow-list is unset — presence alone stamps + gates.
+  const isHarnessAllowed = opts.isHarnessAllowed ?? createAllowedProbe(config.allowedHarnesses)
   const harnessRoutes = createHarnessRoutes({
     registry: harnesses,
     log: console.error,
@@ -1024,6 +1043,13 @@ export function createDenServer(config: DenConfig, opts: DenServerOptions = {}):
         roster: () => rosterProvider.get(),
         // The app-server driver talks to an endpoint, not a local binary.
         alwaysInstalled: (id) => id === 'codex' && !!config.codexAppServerUrl,
+      }),
+    isAllowed: isHarnessAllowed,
+    sessionExists:
+      opts.harnessSessionExistsForAllow ??
+      ((hid, native) => {
+        const cmd = HARNESS_TO_ROSTER.get(hid)
+        return !!cmd && harnessSessionExists(cmd, native)
       }),
     filterSessions: async (req, sessions) => {
       const ctx = boundRequestUser(req)
@@ -1247,6 +1273,12 @@ export function createDenServer(config: DenConfig, opts: DenServerOptions = {}):
     nodeName: config.nodeName,
     directoryRoot: config.agentsDir,
     ...(config.sharedRoot ? { sharedDir: config.sharedRoot } : {}),
+    // The same resolved sheet the spawn path appends `--model` from, so a
+    // preset naming an unlisted model is caught at save time (400 when the
+    // operator pinned the list with `replace`, a warning otherwise).
+    modelList: (harnessId) =>
+      presetModelList(harnessId, config.harnesses?.[harnessId], console.error),
+    isHarnessAllowed,
   })
 
   const authorized = (req: IncomingMessage, _url: URL): boolean =>
@@ -1658,17 +1690,28 @@ export function createDenServer(config: DenConfig, opts: DenServerOptions = {}):
 
         if (req.method === 'GET' && url.pathname === '/term/config') {
           const roster = rosterProvider.get()
-          return json(res, 200, {
-            enabled: termEnabled,
-            default: roster.default,
-            maxPtys: config.term.maxPtys,
-            active: termManager?.active() ?? 0,
-            // keys + labels only — argv/cwd/env are operator-private
-            commands: Object.entries(roster.commands).map(([cmdId, c]) => ({
+          // Drop roster keys whose harness is off the allow-list so terminal
+          // pickers never offer a command POST /term would 403. Non-harness
+          // (shell) entries stay. Existing live PTYs are unaffected.
+          const commands = Object.entries(roster.commands)
+            .filter(([cmdId]) => {
+              if (!isHarnessAllowed) return true
+              const hid = ROSTER_TO_HARNESS[cmdId]
+              return !hid || isHarnessAllowed(hid)
+            })
+            .map(([cmdId, c]) => ({
               id: cmdId,
               label: c.label,
               room: c.room,
-            })),
+            }))
+          const defaultOk = commands.some((c) => c.id === roster.default)
+          return json(res, 200, {
+            enabled: termEnabled,
+            default: defaultOk ? roster.default : (commands[0]?.id ?? roster.default),
+            maxPtys: config.term.maxPtys,
+            active: termManager?.active() ?? 0,
+            // keys + labels only — argv/cwd/env are operator-private
+            commands,
           })
         }
 
@@ -1824,6 +1867,30 @@ export function createDenServer(config: DenConfig, opts: DenServerOptions = {}):
             // recorded. A different directory is a conflict (another preset,
             // or this preset was moved) unless the client passes force.
             const spawnCommand = command ?? rosterProvider.get().default
+            // Allow-list gate for new term launches only. A resume of a real
+            // existing session of THIS harness keeps working after it leaves
+            // the list — but a never-seen key, or a live pty/codex id from a
+            // different harness, must NOT mint a fresh off-list spawn.
+            const spawnHarnessId = ROSTER_TO_HARNESS[spawnCommand]
+            const resumePtyId = resumeKey ? manager.ptyForSession(resumeKey) : undefined
+            const resumePty = resumePtyId ? manager.get(resumePtyId) : undefined
+            const resumeExists =
+              !!resumeKey &&
+              ((!!resumePty && resumePty.command === spawnCommand) ||
+                (spawnCommand === 'codex' && !!codexProtocol?.manages(resumeKey)) ||
+                harnessSessionExists(spawnCommand, resumeKey))
+            if (
+              isHarnessAllowed &&
+              spawnHarnessId &&
+              !isHarnessAllowed(spawnHarnessId) &&
+              !resumeExists
+            ) {
+              return json(res, 403, {
+                error: harnessNotAllowedMessage(spawnHarnessId),
+                code: 'harness_not_allowed',
+                harnessId: spawnHarnessId,
+              })
+            }
             const recorded = cwdOverride
               ? recordedCwdFor(spawnCommand, [resumeKey, sessionKey])
               : undefined

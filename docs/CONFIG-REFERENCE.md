@@ -206,15 +206,18 @@ providers:
     max_tokens: 8192
 ```
 
-| Key                 | Type   | Default                | Description                                                         |
-| ------------------- | ------ | ---------------------- | ------------------------------------------------------------------- |
-| `model`             | string | `claude-opus-4-7`      | Model identifier.                                                   |
-| `max_tokens`        | number | `8192`                 | Maximum output tokens.                                              |
-| `api_key`           | string | `${ANTHROPIC_API_KEY}` | API key. Prefer env var.                                            |
-| `context_window`    | number | —                      | Override the model's context-window size (advanced; for budgeting). |
-| `max_output_tokens` | number | —                      | Hard cap on output tokens, independent of `max_tokens`.             |
+| Key                        | Type     | Default                | Description                                                                |
+| -------------------------- | -------- | ---------------------- | -------------------------------------------------------------------------- |
+| `model`                    | string   | `claude-opus-4-7`      | Model identifier.                                                          |
+| `max_tokens`               | number   | `8192`                 | Maximum output tokens.                                                     |
+| `api_key`                  | string   | `${ANTHROPIC_API_KEY}` | API key. Prefer env var.                                                   |
+| `token_command`            | string[] | —                      | Argv that prints a bearer token on stdout (no shell). Wins over `api_key`. |
+| `token_ttl_ms`             | number   | `300000`               | Cache lifetime for a minted token.                                         |
+| `token_command_timeout_ms` | number   | `5000`                 | Mint timeout; the helper is SIGKILL'd on expiry.                           |
+| `context_window`           | number   | —                      | Override the model's context-window size (advanced; for budgeting).        |
+| `max_output_tokens`        | number   | —                      | Hard cap on output tokens, independent of `max_tokens`.                    |
 
-**Auth:** Set `ANTHROPIC_API_KEY` in `.env`. For subscription/OAuth auth instead of an API key, use the `claude-cli` provider (below), which delegates auth to the `claude` binary.
+**Auth:** Set `ANTHROPIC_API_KEY` in `.env`, or set `token_command` to an argv helper that mints a short-lived token (cached, reminted on expiry or HTTP 401). For subscription/OAuth auth instead of an API key, use the `claude-cli` provider (below), which delegates auth to the `claude` binary.
 
 ### xAI (Grok)
 
@@ -224,14 +227,17 @@ providers:
     model: grok-4.20-reasoning
 ```
 
-| Key                 | Type   | Default               | Description                                                                          |
-| ------------------- | ------ | --------------------- | ------------------------------------------------------------------------------------ |
-| `model`             | string | `grok-4.20-reasoning` | Model identifier. (`grok-4-1-fast-reasoning` is a cheaper tier good for compaction.) |
-| `api_key`           | string | `${XAI_API_KEY}`      | API key.                                                                             |
-| `max_tokens`        | number | `4096`                | Maximum output tokens.                                                               |
-| `temperature`       | number | —                     | Sampling temperature.                                                                |
-| `context_window`    | number | —                     | Override the model's context-window size (advanced).                                 |
-| `max_output_tokens` | number | —                     | Hard cap on output tokens.                                                           |
+| Key                        | Type     | Default               | Description                                                                          |
+| -------------------------- | -------- | --------------------- | ------------------------------------------------------------------------------------ |
+| `model`                    | string   | `grok-4.20-reasoning` | Model identifier. (`grok-4-1-fast-reasoning` is a cheaper tier good for compaction.) |
+| `api_key`                  | string   | `${XAI_API_KEY}`      | API key.                                                                             |
+| `token_command`            | string[] | —                     | Argv that prints a bearer token on stdout (no shell). Wins over `api_key`.           |
+| `token_ttl_ms`             | number   | `300000`              | Cache lifetime for a minted token.                                                   |
+| `token_command_timeout_ms` | number   | `5000`                | Mint timeout; the helper is SIGKILL'd on expiry.                                     |
+| `max_tokens`               | number   | `4096`                | Maximum output tokens.                                                               |
+| `temperature`              | number   | —                     | Sampling temperature.                                                                |
+| `context_window`           | number   | —                     | Override the model's context-window size (advanced).                                 |
+| `max_output_tokens`        | number   | —                     | Hard cap on output tokens.                                                           |
 
 ### Google (Gemini)
 
@@ -300,33 +306,38 @@ providers:
 
 Use `models_url` only if the models listing lives somewhere other than `<base><api_prefix>/models`.
 
-| Key                    | Type     | Default           | Description                                                                                                |
-| ---------------------- | -------- | ----------------- | ---------------------------------------------------------------------------------------------------------- |
-| `base_url`             | string   | **required**      | vLLM server URL (`/v1` optional; stripped and re-appended via `api_prefix`).                               |
-| `api_prefix`           | string   | `"/v1"`           | OpenAI-compat path prefix. `""` means none (chat at `<base>/chat/completions`).                            |
-| `models_url`           | string   | —                 | Optional absolute URL when the models listing is hosted elsewhere (overrides `<base><api_prefix>/models`). |
-| `probe_models`         | boolean  | `true`            | When `false`, skip the models probe/discovery and treat the provider as available.                         |
-| `model`                | string   | `default`         | Served model id; `default` auto-discovers.                                                                 |
-| `api_key`              | string   | `${VLLM_API_KEY}` | Bearer token (only if `--api-key` set).                                                                    |
-| `max_tokens`           | number   | `4096`            | Maximum output tokens.                                                                                     |
-| `temperature`          | number   | `0.7`             | Sampling temperature.                                                                                      |
-| `top_p`                | number   | `0.95`            | Nucleus sampling.                                                                                          |
-| `top_k`                | number   | —                 | vLLM sampling extension.                                                                                   |
-| `min_p`                | number   | —                 | vLLM sampling extension.                                                                                   |
-| `presence_penalty`     | number   | —                 | Standard OpenAI penalty.                                                                                   |
-| `frequency_penalty`    | number   | —                 | Standard OpenAI penalty.                                                                                   |
-| `repetition_penalty`   | number   | —                 | vLLM extension.                                                                                            |
-| `min_tokens`           | number   | —                 | vLLM extension; minimum output tokens.                                                                     |
-| `stop`                 | string[] | —                 | Stop sequences.                                                                                            |
-| `seed`                 | number   | —                 | Reproducible sampling seed.                                                                                |
-| `context_window`       | number   | —                 | Context-window size reported to the runtime.                                                               |
-| `max_output_tokens`    | number   | —                 | Hard cap on output tokens.                                                                                 |
-| `default_tool_choice`  | string   | `auto`            | `auto`, `none`, or `required`.                                                                             |
-| `verify_model_on_init` | boolean  | `false`           | Reject availability when the pinned model is missing from the models listing.                              |
-| `name`                 | string   | —                 | Display name for the provider.                                                                             |
-| `mm_processor_kwargs`  | object   | —                 | vLLM multimodal processor kwargs (passthrough).                                                            |
-| `chat_template_kwargs` | object   | —                 | vLLM chat-template kwargs (passthrough).                                                                   |
-| `extra_body`           | object   | —                 | Arbitrary JSON merged into the request body (vLLM passthrough).                                            |
+| Key                        | Type     | Default           | Description                                                                                                |
+| -------------------------- | -------- | ----------------- | ---------------------------------------------------------------------------------------------------------- |
+| `base_url`                 | string   | **required**      | vLLM server URL (`/v1` optional; stripped and re-appended via `api_prefix`).                               |
+| `api_prefix`               | string   | `"/v1"`           | OpenAI-compat path prefix. `""` means none (chat at `<base>/chat/completions`).                            |
+| `models_url`               | string   | —                 | Optional absolute URL when the models listing is hosted elsewhere (overrides `<base><api_prefix>/models`). |
+| `probe_models`             | boolean  | `true`            | When `false`, skip the models probe/discovery and treat the provider as available.                         |
+| `model`                    | string   | `default`         | Served model id; `default` auto-discovers.                                                                 |
+| `api_key`                  | string   | `${VLLM_API_KEY}` | Bearer token (only if `--api-key` set).                                                                    |
+| `token_command`            | string[] | —                 | Argv that prints a bearer token on stdout (no shell). Wins over `api_key`.                                 |
+| `token_ttl_ms`             | number   | `300000`          | Cache lifetime for a minted token.                                                                         |
+| `token_command_timeout_ms` | number   | `5000`            | Mint timeout; the helper is SIGKILL'd on expiry.                                                           |
+| `models`                   | string[] | —                 | Static model catalog floor for `listModels()` (building block — no UI/harness reader yet; floor first).    |
+| `models_ttl_ms`            | number   | `60000`           | Background refresh interval for the endpoint model catalog (`listModels()` building block).                |
+| `max_tokens`               | number   | `4096`            | Maximum output tokens.                                                                                     |
+| `temperature`              | number   | `0.7`             | Sampling temperature.                                                                                      |
+| `top_p`                    | number   | `0.95`            | Nucleus sampling.                                                                                          |
+| `top_k`                    | number   | —                 | vLLM sampling extension.                                                                                   |
+| `min_p`                    | number   | —                 | vLLM sampling extension.                                                                                   |
+| `presence_penalty`         | number   | —                 | Standard OpenAI penalty.                                                                                   |
+| `frequency_penalty`        | number   | —                 | Standard OpenAI penalty.                                                                                   |
+| `repetition_penalty`       | number   | —                 | vLLM extension.                                                                                            |
+| `min_tokens`               | number   | —                 | vLLM extension; minimum output tokens.                                                                     |
+| `stop`                     | string[] | —                 | Stop sequences.                                                                                            |
+| `seed`                     | number   | —                 | Reproducible sampling seed.                                                                                |
+| `context_window`           | number   | —                 | Context-window size reported to the runtime.                                                               |
+| `max_output_tokens`        | number   | —                 | Hard cap on output tokens.                                                                                 |
+| `default_tool_choice`      | string   | `auto`            | `auto`, `none`, or `required`.                                                                             |
+| `verify_model_on_init`     | boolean  | `false`           | Reject availability when the pinned model is missing from the models listing.                              |
+| `name`                     | string   | —                 | Display name for the provider.                                                                             |
+| `mm_processor_kwargs`      | object   | —                 | vLLM multimodal processor kwargs (passthrough).                                                            |
+| `chat_template_kwargs`     | object   | —                 | vLLM chat-template kwargs (passthrough).                                                                   |
+| `extra_body`               | object   | —                 | Arbitrary JSON merged into the request body (vLLM passthrough).                                            |
 
 ### llama-server
 
@@ -343,26 +354,31 @@ providers:
     min_p: 0.05
 ```
 
-| Key                    | Type     | Default                   | Description                                                              |
-| ---------------------- | -------- | ------------------------- | ------------------------------------------------------------------------ |
-| `base_url`             | string   | **required**              | llama-server URL (`/v1` optional).                                       |
-| `model`                | string   | `default`                 | Served model id; `default` auto-discovers.                               |
-| `api_key`              | string   | `${LLAMA_SERVER_API_KEY}` | Bearer token (only if `--api-key` set).                                  |
-| `max_tokens`           | number   | `4096`                    | Maximum output tokens.                                                   |
-| `temperature`          | number   | `0.7`                     | Sampling temperature.                                                    |
-| `top_p`                | number   | `0.95`                    | Nucleus sampling.                                                        |
-| `top_k`                | number   | —                         | llama.cpp sampling extension.                                            |
-| `min_p`                | number   | —                         | llama.cpp sampling extension.                                            |
-| `presence_penalty`     | number   | —                         | Standard OpenAI penalty.                                                 |
-| `frequency_penalty`    | number   | —                         | Standard OpenAI penalty.                                                 |
-| `stop`                 | string[] | —                         | Stop sequences.                                                          |
-| `seed`                 | number   | —                         | Reproducible sampling seed.                                              |
-| `context_window`       | number   | —                         | Context-window size reported to the runtime.                             |
-| `max_output_tokens`    | number   | —                         | Hard cap on output tokens.                                               |
-| `default_tool_choice`  | string   | `auto`                    | `auto`, `none`, or `required`.                                           |
-| `verify_model_on_init` | boolean  | `false`                   | Probe `/v1/models` at boot to confirm the model is served.               |
-| `name`                 | string   | —                         | Display name for the provider.                                           |
-| `extra_body`           | object   | —                         | Arbitrary JSON merged into the request body (e.g. `grammar`, `n_probs`). |
+| Key                        | Type     | Default                   | Description                                                                |
+| -------------------------- | -------- | ------------------------- | -------------------------------------------------------------------------- |
+| `base_url`                 | string   | **required**              | llama-server URL (`/v1` optional).                                         |
+| `model`                    | string   | `default`                 | Served model id; `default` auto-discovers.                                 |
+| `api_key`                  | string   | `${LLAMA_SERVER_API_KEY}` | Bearer token (only if `--api-key` set).                                    |
+| `token_command`            | string[] | —                         | Argv that prints a bearer token on stdout (no shell). Wins over `api_key`. |
+| `token_ttl_ms`             | number   | `300000`                  | Cache lifetime for a minted token.                                         |
+| `token_command_timeout_ms` | number   | `5000`                    | Mint timeout; the helper is SIGKILL'd on expiry.                           |
+| `models`                   | string[] | —                         | Static model catalog floor for `listModels()` (building block — no UI/harness reader yet). |
+| `models_ttl_ms`            | number   | `60000`                   | Background refresh interval for the endpoint model catalog (`listModels()` building block). |
+| `max_tokens`               | number   | `4096`                    | Maximum output tokens.                                                     |
+| `temperature`              | number   | `0.7`                     | Sampling temperature.                                                      |
+| `top_p`                    | number   | `0.95`                    | Nucleus sampling.                                                          |
+| `top_k`                    | number   | —                         | llama.cpp sampling extension.                                              |
+| `min_p`                    | number   | —                         | llama.cpp sampling extension.                                              |
+| `presence_penalty`         | number   | —                         | Standard OpenAI penalty.                                                   |
+| `frequency_penalty`        | number   | —                         | Standard OpenAI penalty.                                                   |
+| `stop`                     | string[] | —                         | Stop sequences.                                                            |
+| `seed`                     | number   | —                         | Reproducible sampling seed.                                                |
+| `context_window`           | number   | —                         | Context-window size reported to the runtime.                               |
+| `max_output_tokens`        | number   | —                         | Hard cap on output tokens.                                                 |
+| `default_tool_choice`      | string   | `auto`                    | `auto`, `none`, or `required`.                                             |
+| `verify_model_on_init`     | boolean  | `false`                   | Probe `/v1/models` at boot to confirm the model is served.                 |
+| `name`                     | string   | —                         | Display name for the provider.                                             |
+| `extra_body`               | object   | —                         | Arbitrary JSON merged into the request body (e.g. `grammar`, `n_probs`).   |
 
 ### claude-cli
 
@@ -375,15 +391,15 @@ providers:
     model: claude-opus-4-7 # optional — defaults to whatever the CLI picks
 ```
 
-| Key                       | Type           | Default   | Description                                                                                                                                                                                                                                                                                  |
-| ------------------------- | -------------- | --------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `binary`                  | string         | `claude`  | Path to the `claude` binary.                                                                                                                                                                                                                                                                 |
-| `model`                   | string         | —         | Model alias to pass to the CLI.                                                                                                                                                                                                                                                              |
-| `extra_args`              | string[]       | `[]`      | Additional CLI flags (advanced).                                                                                                                                                                                                                                                             |
-| `allowed_api_key_sources` | string[]       | —         | Extra `apiKeySource` values besides `none`. Unset keeps the OAuth-only gate.                                                                                                                                                                                                                 |
-| `permission_mode`         | string         | `default` | `--permission-mode`. The provider code default is `default` (Claude Code's manual mode). `dontAsk` elsewhere in this document is the grok-cli default and matches that provider's code; it is not this provider's default.                                                                  |
+| Key                       | Type           | Default   | Description                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                             |
+| ------------------------- | -------------- | --------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `binary`                  | string         | `claude`  | Path to the `claude` binary.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                            |
+| `model`                   | string         | —         | Model alias to pass to the CLI.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                         |
+| `extra_args`              | string[]       | `[]`      | Additional CLI flags (advanced).                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        |
+| `allowed_api_key_sources` | string[]       | —         | Extra `apiKeySource` values besides `none`. Unset keeps the OAuth-only gate.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                            |
+| `permission_mode`         | string         | `default` | `--permission-mode`. The provider code default is `default` (Claude Code's manual mode). `dontAsk` elsewhere in this document is the grok-cli default and matches that provider's code; it is not this provider's default.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                              |
 | `permission_prompts`      | `ui` \| `none` | unset     | Headless claude-code task executor only (not the interactive chat path). Unset passes no `--permission-prompts` flag, so the CLI invocation is unchanged. `none` passes `--permission-prompts none` and the CLI denies a prompt immediately instead of waiting out its decision timeout. `ui` passes `--permission-prompts host` and `--permission-prompt-tool mcp__rivetos__request_permission`. The embedded bridge parks the call, emits an approval-request, and returns the decision. Answer from the task page or `POST /api/tasks/:id/approvals/:requestId` with `{"decision":"allow"\|"deny"}`. Unanswered prompts deny after `permission_timeout_ms` (default 60s); the outcome is appended to the row at `spec.permissionDecisions`. `GET /api/tasks/:id/wait?onApproval=return` yields the parked prompt instead of blocking until the task ends. The default wait does not. |
-| `permission_timeout_ms`   | number         | `60000`   | How long a headless `ui` prompt stays parked before it denies. Positive integer, at most 600000. Unset uses 60000. The interactive chat path does not read this key. |
+| `permission_timeout_ms`   | number         | `60000`   | How long a headless `ui` prompt stays parked before it denies. Positive integer, at most 600000. Unset uses 60000. The interactive chat path does not read this key.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                    |
 
 **Auth:** `claude login` (via the CLI itself). RivetOS does not handle the OAuth flow; the CLI does. On system init, a reported `apiKeySource` other than `none` kills the spawn unless it is listed in `allowed_api_key_sources`. Set that only for an Anthropic-compatible proxy the CLI reaches through its own `apiKeyHelper` (the value is the source string the CLI prints, matched exactly). The default stays unset: subscription OAuth is the sanctioned pattern, and API-key auth bills the console. Listing a source does not stop RivetOS from deleting `ANTHROPIC_API_KEY` and `ANTHROPIC_AUTH_TOKEN` on the child.
 
@@ -485,7 +501,7 @@ providers:
 | `model`            | CLI default (optional)          | Passed as `-m` when set. Omit to use the CLI's configured model.                                                                                                                               |
 | `permission_mode`  | `dontAsk`                       | `--permission-mode`. `dontAsk` auto-denies tools not covered by `allow`.                                                                                                                       |
 | `reasoning_effort` | CLI default                     | `--reasoning-effort`. Per-turn `thinking` (`low`/`medium`/`high`+) overrides.                                                                                                                  |
-| `max_turns` | unset | `--max-turns`, only passed when set. Unset lets grok run its tool loop to completion; `1` = answer only, and any tool call then ends the turn as `error_max_turns`. |
+| `max_turns`        | unset                           | `--max-turns`, only passed when set. Unset lets grok run its tool loop to completion; `1` = answer only, and any tool call then ends the turn as `error_max_turns`.                            |
 | `no_plan`          | `true`                          | `--no-plan` — plan mode would swallow a headless run.                                                                                                                                          |
 | `system_prompt`    | `prepend`                       | `prepend` = RivetOS system prompt at the top of the prompt, grok keeps its own; `override` = `--system-prompt-override`; `off` = dropped. Applies on first turn and on later `--resume` turns. |
 | `session`          | `resume`                        | `resume` = one grok session per RivetOS conversation (`~/.rivetos/grok-cli-sessions.json`). `replay` = full transcript every turn, no session flags.                                           |
@@ -550,22 +566,22 @@ mesh:
     seed_port: 3000
 ```
 
-| Key                          | Type           | Default                                            | Description                                                                                                              |
-| ---------------------------- | -------------- | -------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------ |
-| `mesh.enabled`               | bool           | `false`                                            | Enable mesh networking.                                                                                                  |
-| `mesh.node_name`             | string         | hostname                                           | Node name — **must match cert CN**.                                                                                      |
-| `mesh.tls`                   | bool \| object | —                                                  | mTLS config. **Required** when `mesh.enabled: true`.                                                                     |
-| `mesh.tls.ca_path`           | string         | `$RIVETOS_SHARED_DIR/rivet-ca/intermediate/ca-chain.pem` | CA chain PEM. Unset `RIVETOS_SHARED_DIR` → product default.                                                          |
-| `mesh.tls.cert_path`         | string         | `$RIVETOS_SHARED_DIR/rivet-ca/issued/<node_name>.crt`    | Node cert PEM.                                                                                                       |
-| `mesh.tls.key_path`          | string         | `$RIVETOS_SHARED_DIR/rivet-ca/issued/<node_name>.key`    | Node private key PEM.                                                                                                |
-| `mesh.agent_channel_port`    | number         | `3000`                                             | HTTPS port for the agent channel.                                                                                        |
-| `mesh.storage_dir`           | string         | `$RIVETOS_SHARED_DIR` (unset → product default)    | Directory containing `mesh.json`.                                                                                        |
-| `mesh.heartbeat_interval_ms` | number         | `30000`                                            | Heartbeat write interval.                                                                                                |
-| `mesh.stale_threshold_ms`    | number         | `90000`                                            | Age before a node is marked stale.                                                                                       |
-| `mesh.discovery.mode`        | string         | —                                                  | `seed` \| `static` \| `mdns`.                                                                                            |
-| `mesh.discovery.seed_host`   | string         | —                                                  | Seed node hostname (use `<nodeName>.mesh`).                                                                              |
-| `mesh.discovery.seed_port`   | number         | `3100`                                             | Seed node port.                                                                                                          |
-| `mesh.secret`                | string         | —                                                  | **Ignored** — mesh agent-channel auth is mTLS only. Accepted with a warning for back-compat; remove it from your config. |
+| Key                          | Type           | Default                                                  | Description                                                                                                              |
+| ---------------------------- | -------------- | -------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------ |
+| `mesh.enabled`               | bool           | `false`                                                  | Enable mesh networking.                                                                                                  |
+| `mesh.node_name`             | string         | hostname                                                 | Node name — **must match cert CN**.                                                                                      |
+| `mesh.tls`                   | bool \| object | —                                                        | mTLS config. **Required** when `mesh.enabled: true`.                                                                     |
+| `mesh.tls.ca_path`           | string         | `$RIVETOS_SHARED_DIR/rivet-ca/intermediate/ca-chain.pem` | CA chain PEM. Unset `RIVETOS_SHARED_DIR` → product default.                                                              |
+| `mesh.tls.cert_path`         | string         | `$RIVETOS_SHARED_DIR/rivet-ca/issued/<node_name>.crt`    | Node cert PEM.                                                                                                           |
+| `mesh.tls.key_path`          | string         | `$RIVETOS_SHARED_DIR/rivet-ca/issued/<node_name>.key`    | Node private key PEM.                                                                                                    |
+| `mesh.agent_channel_port`    | number         | `3000`                                                   | HTTPS port for the agent channel.                                                                                        |
+| `mesh.storage_dir`           | string         | `$RIVETOS_SHARED_DIR` (unset → product default)          | Directory containing `mesh.json`.                                                                                        |
+| `mesh.heartbeat_interval_ms` | number         | `30000`                                                  | Heartbeat write interval.                                                                                                |
+| `mesh.stale_threshold_ms`    | number         | `90000`                                                  | Age before a node is marked stale.                                                                                       |
+| `mesh.discovery.mode`        | string         | —                                                        | `seed` \| `static` \| `mdns`.                                                                                            |
+| `mesh.discovery.seed_host`   | string         | —                                                        | Seed node hostname (use `<nodeName>.mesh`).                                                                              |
+| `mesh.discovery.seed_port`   | number         | `3100`                                                   | Seed node port.                                                                                                          |
+| `mesh.secret`                | string         | —                                                        | **Ignored** — mesh agent-channel auth is mTLS only. Accepted with a warning for back-compat; remove it from your config. |
 
 ---
 
@@ -601,6 +617,9 @@ den:
 | `advertise_mdns`  | boolean  | `false`                                         | Publish `_rivethub._tcp` via mDNS so LAN apps can find this node. No-op unless the gateway actually started.                                         |
 | `allowed_origins` | string[] | —                                               | Extra browser origins (`scheme://host[:port]`) allowed to call the gateway. See **Browser origin policy** below. Env: `RIVETOS_DEN_ALLOWED_ORIGINS`. |
 | `allowed_hosts`   | string[] | —                                               | Extra `Host` names a plain-HTTP (no TLS) gateway accepts from loopback callers, e.g. a local reverse proxy's name. Env: `RIVETOS_DEN_ALLOWED_HOSTS`. |
+| `allowed_harnesses` | string[] | `RIVETOS_DEN_ALLOWED_HARNESSES` (standalone den) | Harness ids this node offers for **new** launches (Agents picker, `POST /term`, control-plane session create, harness-session tasks). Unset = every registered harness. Empty = none. Unknown ids warn at validate time. Boot copies the YAML key onto the embedded den; a standalone den reads the env (comma/space list). `GET /api/harnesses` stamps `allowed` when set; off-list create/spawn/preset/task is refused (`harness_not_allowed`). Existing sessions / real resumes still work; a never-seen resume key on `/term` or `POST /api/harnesses/:id/sessions` does not mint an off-list spawn. The task runner re-checks on the node that claims the row (legacy `claude-cli` targets canonicalize to `claude-code` first). |
+
+**Harness allow-list.** When `den.allowed_harnesses` is set, the den stamps each `GET /api/harnesses` row with `allowed: true|false` (alongside `installed`). RivetHub web and Android **new-conversation / Agents** pickers keep only rows where `installed !== false` and `allowed !== false` (absent fields count as true, so older dens and unset allow-lists behave as today). Existing-session drawers still list off-list harnesses so previously started sessions remain visible and resumable. A fresh spawn, preset save, or harness-session task that names an off-list harness is refused with `harness_not_allowed` (HTTP 403). Resumes of existing sessions still work when the resume target exists. The task runner enforces the list on the node that claims the row.
 
 **Browser origin policy.** The gateway answers a browser only when the request's `Origin` is one of:
 
@@ -615,7 +634,49 @@ Requests without an `Origin` (the Android app, hooks, CLI tools, mesh peers) are
 
 ## `memory`
 
-Memory backend configuration. Currently supports PostgreSQL.
+Memory backend configuration. Supported backends: `postgres` (default path today) and
+`sqlite` (opt-in file store for the in-process `Memory` contract). Set exactly one — both
+together is a validation error. Optional `memory.capture` controls write-path behaviour
+for harness capture hooks that post through `@rivetos/capture-core`.
+
+### Capture redaction
+
+Off by default. When enabled, `@rivetos/capture-core` redacts common secret
+shapes (and optional operator regexes) in message `content`, `tool_result`, and
+`tool_args` **before** the batch is posted or spooled. Logs report a span count
+only — never the matched text. Placeholders are deterministic
+(`[REDACTED:bearer]`, `[REDACTED:pattern:0]`, …). Regex scanning of `content`
+and `tool_result` is limited to the first 16,000 UTF-16 units (the same budget
+the writer keeps after the field cap). `tool_args` string leaves are not
+field-capped, so they are scanned in full. Built-in assignment / secret-key
+detectors match exact stems and underscore/hyphen compounds (`SECRET_KEY`,
+`db_password`) — bare `key`/`auth` only behind a separator, so ordinary fields
+like `author` / `token_count` are kept. Split secrets (half in `content`, half
+in `tool_result`) are not reassembled — each field is redacted independently.
+
+```yaml
+memory:
+  capture:
+    redaction:
+      enabled: false
+      builtins: true
+      # patterns:
+      #   - '\\b[Mm][Yy][Pp]refix-[a-z0-9]{20,}\\b'
+```
+
+| Key        | Type     | Default | Description                                                                                                            |
+| ---------- | -------- | ------- | ---------------------------------------------------------------------------------------------------------------------- |
+| `enabled`  | boolean  | `false` | Run the write-path redactor.                                                                                           |
+| `builtins` | boolean  | `true`  | Built-in detectors (Bearer/Basic auth, credential assignments, PEM private keys, common token shapes, JWTs). Ignored when `enabled` is false. |
+| `patterns` | string[] | —       | Extra JS regex **source** strings. Only the `g` flag is applied — do not wrap in `/…/flags`, and do not use Python-style `(?i)` at the start of the pattern (it does not compile in JS). For case-insensitivity spell out character classes (e.g. `[Mm][Yy][Pp]refix`); RegExp modifier groups like `(?i:…)` need a newer V8 than the repo's Node 22 floor. Invalid sources are a config error. Nested-quantifier shapes such as `(a+)+` are rejected (ReDoS). |
+
+Hooks that do not load YAML yet can enable the same built-ins with
+`RIVETOS_CAPTURE_REDACTION=1` (or `true` / `yes` / `on`). An explicit
+`redaction: { enabled: false }` on `createCaptureWriter` wins over the env.
+Wiring YAML → every hook process is separate from validation; until boot
+injects this block, set the env (or pass `CaptureWriterOptions.redaction`) to
+turn it on. Config validation warns when `enabled: true` because nothing
+consumes the YAML block yet.
 
 ### PostgreSQL
 
@@ -628,12 +689,19 @@ memory:
     # delegation_tracking: true
 ```
 
-| Key                   | Type    | Default             | Description                                                                                             |
-| --------------------- | ------- | ------------------- | ------------------------------------------------------------------------------------------------------- |
-| `connection_string`   | string  | `${RIVETOS_PG_URL}` | PostgreSQL connection URL.                                                                              |
-| `embed_endpoint`      | string  | —                   | OpenAI-compatible embeddings endpoint used by the embedding worker. Overrides the built-in default.     |
-| `delegation_tracking` | boolean | `false`             | Persist delegation events into memory (`ros_messages`, channel `delegation`) for auditing.              |
-| `embedded`            | object  | —                   | In-process PGlite transport for the same postgres backend. Mutually exclusive with `connection_string`. |
+| Key                              | Type     | Default             | Description                                                                                             |
+| -------------------------------- | -------- | ------------------- | ------------------------------------------------------------------------------------------------------- |
+| `connection_string`              | string   | `${RIVETOS_PG_URL}` | PostgreSQL connection URL.                                                                              |
+| `embed_endpoint`                 | string   | —                   | Embeddings endpoint base used by the embedding worker and query-time search.                            |
+| `embed_model`                    | string   | —                   | Embedding model id (required when an embed URL is set).                                                 |
+| `embed_api_key`                  | string   | —                   | Static bearer for the embed endpoint (also honors `RIVETOS_EMBED_API_KEY`). Does **not** fall back to `OPENAI_API_KEY` — that would send a global OpenAI credential to whatever `embed_endpoint` is configured. |
+| `embed_token_command`            | string[] | —                   | Argv that prints a bearer token on stdout (no shell). Wins over `embed_api_key`.                        |
+| `embed_token_ttl_ms`             | number   | `300000`            | Cache lifetime for a minted embed token.                                                                |
+| `embed_token_command_timeout_ms` | number   | `5000`              | Mint timeout for `embed_token_command`.                                                                 |
+| `embed_wire_shape`               | string   | `openai`            | `openai` → `POST <base>/v1/embeddings`; `native` → `POST <base>` with `{texts,input}`.                  |
+| `embed_expected_dims`            | number   | —                   | When set, must equal the embedding column width (`halfvec(1024)`). Rejects any vector whose length differs (longer vectors null out — truncation is `EMBED_TRUNCATE_DIMS` only). Any other configured value bricks inserts and vector search. Worker env: `RIVETOS_EMBED_EXPECTED_DIMS`. |
+| `delegation_tracking`            | boolean  | `false`             | Persist delegation events into memory (`ros_messages`, channel `delegation`) for auditing.              |
+| `embedded`                       | object   | —                   | In-process PGlite transport for the same postgres backend. Mutually exclusive with `connection_string`. |
 
 **Required extensions:** `pgvector` (for embedding storage and similarity search).
 
@@ -676,6 +744,33 @@ Day-2 commands (no extra daemon):
 - `rivetos db migrate` / `rivetos db status` — same acquire-or-attach wrap. `--config <path>` selects the YAML (not forwarded to the migrator). `db migrate --url` bypasses the embedded engine and talks to that Postgres URL. `db status` on embedded prints data dir, size on disk, owner, socket port, and `_rivetos_migrations` count. If no node is running, `db status` boots the engine for the duration of the command and labels the owner `this command (no node running)`.
 - `rivetos doctor` — does not warn that `RIVETOS_PG_URL` is missing when `memory.postgres.embedded` is set; if the socket refuses, it says to start the node.
 
+### SQLite (opt-in)
+
+Presence of `memory.sqlite` registers the `@rivetos/memory-sqlite` plugin. No Postgres or
+PGlite process is required for the in-process `Memory` path (chat append, session/task
+history, settings, FTS5 search). HTTP `/api/capture` and memory HTTP/MCP routes still need
+a Postgres pool in phase 1 — the memory MCP sidecar has no sqlite path yet. Vectors,
+compaction, wiki, and multi-user routing come later. Phase 1 is single-user: one file holds
+all transcripts; routed users in the tenancy registry are not isolated. If `memory.sqlite`
+is set, remove or ignore a stale `RIVETOS_PG_URL` in `~/.rivetos/.env` so the MCP sidecar
+does not keep reading an old Postgres store while chat appends write sqlite. The parent
+directory is created mode `0700` and the DB file (plus `-wal`/`-shm`) is `0600`. With this
+block unset, behaviour is unchanged.
+
+```yaml
+memory:
+  sqlite:
+    path: ~/.rivetos/memory.sqlite
+```
+
+| Key    | Type   | Default | Description                                                                        |
+| ------ | ------ | ------- | ---------------------------------------------------------------------------------- |
+| `path` | string | —       | Required. File path (`~` expanded) or `:memory:`. Relative paths are cwd-relative. |
+
+The file is opened with WAL, a 5s busy timeout, and foreign keys on. Search is FTS5 only
+until an embedding drain lands; append still enqueues `ros_embed_queue` rows for that
+later worker.
+
 ---
 
 ## `tasks`
@@ -690,14 +785,58 @@ in that file, polled by this process (no graphile-worker, no `LISTEN`). If
 both are set, Postgres wins and the sqlite file is not opened. Relative
 paths are cwd-relative. Keep this file separate from any other app database.
 
-| Key           | Type    | Default | Description                                                                 |
-| ------------- | ------- | ------- | --------------------------------------------------------------------------- |
-| `enabled`     | boolean | `true`  | Start the embedded task runner. Inert while nothing creates tasks.         |
+| Key           | Type    | Default | Description                                                                   |
+| ------------- | ------- | ------- | ----------------------------------------------------------------------------- |
+| `enabled`     | boolean | `true`  | Start the embedded task runner. Inert while nothing creates tasks.            |
 | `sqlite_path` | string  | —       | Task file when there is no pgUrl. Ignored (with a warning) when pgUrl is set. |
 
 Env knobs: `RIVETOS_TASKS_CONCURRENCY` (default 4), `RIVETOS_TASKS_POLL_MS` (default 2000).
 
 Headless harness executors can also be keyed under `tasks.harnesses` (`pi`, `qwen-code`, …) with `binary` / `model` / `cwd` / `home` — see the site architecture sample. For qwen-code, `providers.qwen-code.home` is accepted for parity with the other CLI providers and currently unused; `tasks.harnesses.qwen-code.home` is where the task executor looks for qwen's `projects/` sessions (default `~/.qwen`). Neither key relocates qwen's own writes.
+
+#### Task isolation (claude-code): `isolation` / `allowed_tools`
+
+A delegated `claude-code` task runs as the service user, so by default it loads that user's personal Claude Code setup: `~/.claude/settings.json` (permission rules and default mode, hooks, enabled plugins), the plugins' MCP servers, and the user-level `CLAUDE.md`. `tasks.harnesses.claude-code.isolation` chooses whether a task inherits that:
+
+```yaml
+tasks:
+  harnesses:
+    claude-code:
+      isolation: isolated # inherit (default) | isolated
+      allowed_tools:
+        - mcp__rivetos # the embedded RivetOS bridge's tools
+        - 'Bash(git status:*)'
+```
+
+- `inherit` (default) passes no extra flags; nothing changes for a node that does not set the key.
+- `isolated` spawns with `--setting-sources project` and `--strict-mcp-config`: no personal settings, permission rules, hooks, plugins or user `CLAUDE.md`, and the embedded RivetOS bridge is the only MCP server. The per-checkout `.claude/settings.local.json` is personal too and is not loaded either. The RivetOS capture hooks are supplied by the runtime through an inline `--settings` object, so task transcripts keep working. With `providers.claude-cli.permission_prompts` unset it also passes `--permission-prompts none`, so every prompt — built-in or MCP — is denied rather than left to the CLI's default.
+- Project settings (`.claude/settings.json` in the task's working directory) load at both levels: they belong to the repository, not the operator.
+- `allowed_tools` is passed as `--allowedTools` at both levels. Under `isolated` the operator's own allow rules are gone, so list what a headless run may call without a prompt (or set `providers.claude-cli.permission_mode`).
+- The node setting is a floor. A task can tighten it with `spec.isolation: isolated` on `POST /api/tasks`; a spec cannot loosen an `isolated` node (the spec is caller-controlled, and a task can create child tasks), and an unknown value is ignored.
+- `isolated` removes the operator's personal setup. It does not sandbox the working tree: a repository's own `.claude/settings.json` hooks and allow rules still apply, so point isolated tasks at trees you trust.
+- Under `isolated`, unless `permission_mode` is `bypassPermissions` or `permission_prompts` is `ui` (the broker answers prompts), list `mcp__rivetos` in `allowed_tools` or the bridge's own tools are denied; boot warns when it is missing.
+
+#### Model lists: `tasks.harnesses.<id>.models` / `efforts` / `models_mode`
+
+The den discovers each harness's model list from the harness itself where it can (Claude's global config cache, Grok's and Codex's catalog caches, Codex's `codex debug models`, Kimi's and OpenCode's config, Hermes's configured endpoint) and falls back to a built-in static list. `GET /api/harnesses` reports where the list came from as `capabilities.modelsSource`: `discovered`, `config`, `merged`, or `static`.
+
+```yaml
+tasks:
+  harnesses:
+    codex:
+      models_mode: merge # discover (default) | replace | merge
+      models:
+        - { id: my-gateway/gpt-x, label: 'GPT-X via gateway', default: true }
+        - { id: gpt-5.5, efforts: [{ id: low }, { id: high, default: true }] }
+      efforts: # same treatment as models
+        - { id: ultra, label: Ultra }
+```
+
+- `discover` — the discovered list, falling back to the static one. A `models` / `efforts` list is ignored (the validator warns).
+- `replace` — the key you set (`models`, `efforts`, or both) replaces that list; a key you leave out keeps the discovered or static one. **A `models` or `efforts` list with no `models_mode` means `replace`** (the historical meaning, so older configs do not change). Under a pinned, non-empty `models` list (`modelsSource: config`), an agent preset that names a model outside it is refused with a 400 on save; under the other modes it is saved with one warning in the den log.
+- `merge` — the discovered list plus the config entries, deduped by id; a config entry wins on `label`, `default`, and `efforts`, and a config `default: true` becomes the only default. Use this for a custom gateway that serves ids the harness's own catalog does not know.
+
+Entries are `{ id, label?, default?, efforts? }`; malformed rows are dropped and an empty list keeps the discovered one. Model ids pass the same token rule as the spawn path: 1–64 characters from `A-Z a-z 0-9 . _ [ ] : / -`, `~` allowed after the first character, no `..`. For Codex, the literal id `default` (what pre-discovery clients stored) means "the CLI's own default": no model flag is passed and it is never vetted.
 
 ---
 
@@ -797,16 +936,16 @@ harness gets them from `rivetos_resolve_den` (`den.port`, default 5174, and
 | `RIVETOS_PG_URL`        | memory-postgres, mcp-sidecar            | PostgreSQL connection string (node owner database). The sidecar uses it only for transport `pg`.                                                                                                                                                                                                                                                                             |
 | `RIVETOS_MCP_TRANSPORT` | mcp-sidecar                             | `den` or `pg`. Default `den` when `RIVET_DEN_URL` is set and `RIVETOS_USER_ID` is empty; otherwise `pg` when `RIVETOS_PG_URL` is set. `den` is HTTPS to the local den with no sidecar Postgres pool. A routed user id keeps `pg`.                                                                                                                                              |
 | `RIVET_DEN_URL`         | mcp-sidecar                             | Den origin for the sidecar (`https://127.0.0.1:<den.port>`, default port 5174). Den-spawned sessions already have it. The memory launcher fills it from `~/.rivetos/config.yaml` when unset.                                                                                                                                                                                 |
-| `RIVET_DEN_CA`          | mcp-sidecar                             | PEM path for the den's CA. The launcher exports it as `NODE_EXTRA_CA_CERTS` when that is unset, from `den.tls_ca`, else `RIVETOS_DEN_TLS_CA`, else `/rivet-shared/rivet-ca/intermediate/chain.pem`. A missing file unsets `RIVET_DEN_URL`.                                                                                                                                 |
+| `RIVET_DEN_CA`          | mcp-sidecar                             | PEM path for the den's CA. The launcher exports it as `NODE_EXTRA_CA_CERTS` when that is unset, from `den.tls_ca`, else `RIVETOS_DEN_TLS_CA`, else `/rivet-shared/rivet-ca/intermediate/chain.pem`. For an https den URL a missing file unsets `RIVET_DEN_URL`; a plain-http URL needs no CA and is kept.                                                                                                                                 |
 | `RIVETOS_PG_POOL_MAX`   | boot                                    | Max connections for the one host-owned Postgres pool per runtime process (shared by the task engine, heartbeats, memory and the API). Default 8, min 4.                                                                                                                                                                                                                     |
 | `RIVETOS_USERS_FILE`    | den, memory-postgres, claude-cli        | Optional explicit path to the tenancy registry (`users.json`). When unset, RivetOS loads `$RIVETOS_SHARED_DIR/rivetos/users.json`, then `~/.rivetos/users.json`. Per-user memory routing comes only from this file — a user is routable iff their record has a usable `pgUrl`. A present-but-invalid shared-dir file fails closed (does not fall through to the home file). |
-| `RIVETOS_OWNER_USER_ID` | den, users-registry, `rivetos user add` | Node-owner user id used by the fail-closed seed and the CLI missing-file seed. Default `owner` (fleet compatibility); deployments override this env var. Forwarded to the embedded den.                                                                                                                                                                                      |
+| `RIVETOS_OWNER_USER_ID` | den, users-registry, `rivetos user add` | Node-owner user id used by the fail-closed seed and the CLI missing-file seed. Default `owner` (fleet compatibility); deployments override this env var. Forwarded to the embedded den.                                                                                                                                                                                     |
 | `RIVETOS_AGENT_SECRET`  | channel-agent                           | **Deprecated** — was the bearer secret for agent mesh. No longer used for agent-channel auth (replaced by mTLS).                                                                                                                                                                                                                                                            |
 | `RIVETOS_LOG_LEVEL`     | core                                    | Log level: `error`, `warn`, `info`, `debug`                                                                                                                                                                                                                                                                                                                                 |
 | `RIVETOS_LOG_FORMAT`    | core                                    | Log format: `pretty` (default) or `json`                                                                                                                                                                                                                                                                                                                                    |
 | `GOOGLE_CSE_ID`         | tool-web-search                         | Google Custom Search Engine ID                                                                                                                                                                                                                                                                                                                                              |
 | `GOOGLE_CSE_KEY`        | tool-web-search                         | Google CSE API key                                                                                                                                                                                                                                                                                                                                                          |
-| `OPENAI_API_KEY`        | memory-postgres (embeddings)            | OpenAI API key for embeddings                                                                                                                                                                                                                                                                                                                                               |
+| `RIVETOS_EMBED_API_KEY` | memory-postgres / embedding-worker      | Optional static bearer for the configured embed endpoint. Opt-in — `OPENAI_API_KEY` is not used as a fallback.                                                                                                                                                                                                                                                              |
 | `QWEN_BINARY`           | provider-qwen-code, setup script        | Override path/name of the `qwen` binary (default `qwen` on PATH). Honoured by the provider and the rivet-memory setup script.                                                                                                                                                                                                                                               |
 | `QWEN_HOME`             | plugins install, doctor, setup script   | Override where RivetOS looks for qwen's `settings.json` / `projects/` (default `~/.qwen`). Does not relocate where qwen itself writes — qwen-code 0.23.4 has no env/flag to move `~/.qwen`.                                                                                                                                                                                 |
 

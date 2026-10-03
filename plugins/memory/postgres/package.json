@@ -17,6 +17,7 @@
     "prepublishOnly": "npm run build"
   },
   "dependencies": {
+    "@rivetos/token-command": "0.5.0",
     "@rivetos/types": "0.5.0",
     "@rivetos/wiki-core": "0.5.0",
     "fzstd": "^0.1.1",

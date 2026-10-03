@@ -89,6 +89,14 @@ export interface TaskApiOptions {
    */
   resolvePreset?: (agentId: string) => Promise<AgentPreset | undefined>
   /**
+   * The node that hosts a RUNTIME agent with this id — a local config agent
+   * (this node) or an online mesh host — or undefined when there is none.
+   * With `node`, only that node counts. Two uses: a preset that cannot run
+   * (no harness configured) must not shadow a runtime agent of the same name,
+   * and `agent@node` pins a runtime agent to a named node.
+   */
+  resolveRuntimeAgent?: (agentId: string, node?: string) => Promise<string | undefined>
+  /**
    * Coverage context for that preset row. Same pre-flight as delegate_task:
    * no harness / unimplemented → 400, hosting node offline or unknown → 409.
    * Omit only in tests that assert row shape without coverage.
@@ -104,6 +112,13 @@ export interface TaskApiOptions {
    * `POST .../approvals` 404s (fail closed) and `?onApproval=return` is ignored.
    */
   permissionBroker?: TaskPermissionBroker
+  /**
+   * Operator allow-list (`den.allowed_harnesses`). When set, a harness-session
+   * create whose executorTarget is off the list is refused with 403. Absent =
+   * every harness id is allowed (opt-in off). The runner also re-checks on the
+   * node that claims the row (peer affinity / pre-list rows).
+   */
+  isHarnessAllowed?: (harnessId: string) => boolean
 }
 
 const TERMINAL_STATUS: readonly TaskStatus[] = ['completed', 'failed', 'killed', 'timeout']
@@ -292,8 +307,9 @@ function applyCriteriaPolicy(input: NewTaskInput, policy: CriteriaPolicy): NewTa
 export function createTaskApiRoute(opts: TaskApiOptions): GatewayRoute {
   const { store, waiter } = opts
   const broker = opts.permissionBroker
-  // requestKill does not abort the spawn. Deny at the row transition so a
-  // parked prompt cannot still be allowed after the task is terminal.
+  // Deny at the row transition so a parked prompt cannot still be allowed
+  // after the task is terminal. (The runner aborts the spawn on a kill, but a
+  // finish or a sweep flips the row with the spawn possibly still parked.)
   if (broker && store.onTerminal) {
     store.onTerminal((taskId) => {
       broker.denyPending(taskId, 'task is terminal')
@@ -329,7 +345,37 @@ export function createTaskApiRoute(opts: TaskApiOptions): GatewayRoute {
           const executorExplicit = typeof body.executor === 'string'
           let tookPresetBranch = false
           if (!executorExplicit && opts.resolvePreset) {
-            const preset = await opts.resolvePreset(input.agentId)
+            let preset = await opts.resolvePreset(input.agentId)
+            // A preset with no harness cannot run anything. Every runtime agent
+            // tends to have a same-named preset ("Grok" next to runtime `grok`),
+            // and refusing here made the runtime agent unreachable through this
+            // route — the path `delegate_task` takes from a den-transport
+            // sidecar. With no runtime agent of that name the preset still
+            // answers with its own "no harness configured" refusal.
+            if (preset && !preset.harnessId && opts.resolveRuntimeAgent) {
+              // The preset store matches names case-insensitively ("Grok"),
+              // runtime ids are exact (`grok`): try the id as given, then its
+              // lowercase form, and store the runtime spelling on the row.
+              const ids = [...new Set([input.agentId.trim(), input.agentId.trim().toLowerCase()])]
+              let anywhere = false
+              for (const id of ids) {
+                // A client-supplied nodeAffinity is validated, not trusted: the
+                // row must land on a node that actually hosts the agent.
+                const host = await opts.resolveRuntimeAgent(id, input.nodeAffinity)
+                if (host) {
+                  preset = undefined
+                  input.agentId = id
+                  input.nodeAffinity = host
+                  break
+                }
+                if (input.nodeAffinity && (await opts.resolveRuntimeAgent(id))) anywhere = true
+              }
+              if (preset && anywhere) {
+                return json(res, 400, {
+                  error: `runtime agent "${ids.at(-1) ?? input.agentId}" is not hosted on an online node "${input.nodeAffinity ?? ''}"`,
+                })
+              }
+            }
             if (preset) {
               tookPresetBranch = true
               if (opts.presetHost) {
@@ -348,6 +394,39 @@ export function createTaskApiRoute(opts: TaskApiOptions): GatewayRoute {
           // Defence in depth for the runner: a forged presetId must not be
           // stored on a row this route did not build from a resolved preset.
           if (!tookPresetBranch) input.spec = stripClientPresetFields(input.spec)
+          // `agent@node` pins a runtime agent to a named node. Only when no
+          // preset matched the full string (a preset name wins), and only for
+          // a node that is online and hosts that agent.
+          if (!tookPresetBranch && opts.resolveRuntimeAgent) {
+            const pinned = /^([^@\s]+)@([^@\s]+)$/.exec(input.agentId.trim())
+            if (pinned) {
+              if (input.nodeAffinity && input.nodeAffinity !== pinned[2]) {
+                return json(res, 400, {
+                  error: `agent "${input.agentId.trim()}" pins node "${pinned[2]}" but nodeAffinity is "${input.nodeAffinity}"`,
+                })
+              }
+              const host = await opts.resolveRuntimeAgent(pinned[1], pinned[2])
+              if (!host) {
+                return json(res, 400, {
+                  error: `runtime agent "${pinned[1]}" is not hosted on an online node "${pinned[2]}"`,
+                })
+              }
+              input.agentId = pinned[1]
+              input.nodeAffinity = host
+            }
+          }
+          if (
+            input.executor === 'harness-session' &&
+            input.executorTarget &&
+            opts.isHarnessAllowed &&
+            !opts.isHarnessAllowed(input.executorTarget)
+          ) {
+            return json(res, 403, {
+              error: `harness "${input.executorTarget}" is not allowed on this node (den.allowed_harnesses)`,
+              code: 'harness_not_allowed',
+              harnessId: input.executorTarget,
+            })
+          }
           if (!input.nodeAffinity && opts.resolveAffinity) {
             const resolved = await opts.resolveAffinity(input.agentId)
             if (typeof resolved === 'object' && resolved !== null)

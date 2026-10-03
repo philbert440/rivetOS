@@ -293,7 +293,7 @@ Hello
         'Runtime agents (mesh):',
         '- grok (node-f)',
         '',
-        'to_agent accepts a preset name or id, or a runtime agent id.',
+        'to_agent accepts a preset name or id, or a runtime agent id (agent@node pins the node).',
       ].join('\n'),
     )
     const body: TaskCreateRequest = {
@@ -391,12 +391,12 @@ Hello
       expect(proxy.name).toBe(registration.name)
       expect(proxy.annotations).toEqual(registration.annotations)
       if (registration.name === 'delegate_task') {
-        // Den does not implement agent@node, so description and to_agent text differ.
+        // The den route resolves to_agent with the same rules, agent@node included,
+        // so both transports advertise one definition.
         expect(proxy.description).toBe(denDelegateTaskDefinition.description)
-        expect(proxy.description).not.toContain('agent@node')
-        expect(registration.description).toContain('agent@node')
+        expect(proxy.description).toBe(registration.description)
+        expect(proxy.description).toContain('agent@node')
         expect(Object.is(proxy.inputSchema, denDelegateTaskDefinition.inputSchema)).toBe(true)
-        expect(Object.is(proxy.inputSchema, registration.inputSchema)).toBe(false)
         continue
       }
       expect(Object.is(proxy.inputSchema, registration.inputSchema)).toBe(true)
@@ -574,7 +574,12 @@ Hello
   it('formats failure and empty completion with elapsed time and no absent tokens', async () => {
     vi.spyOn(Date, 'now').mockReturnValue(100)
     const { execute } = delegationGateway(async () => ({
-      task: taskWire({ status: 'failed', result: undefined, error: 'boom', nodeAffinity: 'node-f' }),
+      task: taskWire({
+        status: 'failed',
+        result: undefined,
+        error: 'boom',
+        nodeAffinity: 'node-f',
+      }),
     }))
     expect(await execute({ to_agent: 'reviewer', task: 'go' })).toBe(
       '[failed] Remote delegation to reviewer on node-f failed: boom\n\n---\n_Delegation [failed]: 0ms_',

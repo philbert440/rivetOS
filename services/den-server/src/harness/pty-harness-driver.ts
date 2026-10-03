@@ -261,8 +261,8 @@ export interface PtyHarnessDriverDeps<S extends HarnessStoreHost = HarnessStoreH
   log?: (msg: string) => void
   /**
    * Config override for this driver's model/effort sheet
-   * (`tasks.harnesses.<id>.models` / `.efforts`). Replaces the sheet lists
-   * when present.
+   * (`tasks.harnesses.<id>.models` / `.efforts` / `.models_mode`). Replaces
+   * or merges the sheet lists per `resolveModelsMode`.
    */
   sheetOverride?: SheetOverride
   /** Injectable file readers for grok/kimi sheets (tests). */
@@ -554,7 +554,7 @@ export abstract class PtyHarnessDriver<S extends HarnessStoreHost = HarnessStore
       deps.sheet ??
       ((): ModelSheet =>
         applySheetOverride(
-          sheetForHarness(identity.harnessId, deps.sheetReaders),
+          sheetForHarness(identity.harnessId, deps.sheetReaders, this.log),
           deps.sheetOverride,
           this.log,
         ))
@@ -601,6 +601,8 @@ export abstract class PtyHarnessDriver<S extends HarnessStoreHost = HarnessStore
   private mergeSheet(sheet: ModelSheet): void {
     if (sheet.models) this.declared.models = sheet.models
     else delete this.declared.models
+    if (sheet.modelsSource) this.declared.modelsSource = sheet.modelsSource
+    else delete this.declared.modelsSource
     if (sheet.efforts) this.declared.efforts = sheet.efforts
     else delete this.declared.efforts
     if (sheet.modelFlag) this.declared.modelFlag = sheet.modelFlag

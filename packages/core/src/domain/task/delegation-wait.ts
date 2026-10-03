@@ -29,7 +29,7 @@ export async function settleDelegatedTask(args: {
 
     if (!terminal) {
       // Deadline (or vanished row): kill before returning so the runner
-      // discards the in-flight outcome — no zombie delegations.
+      // aborts the in-flight turn — no zombie delegations.
       await store.requestKill(rowId)
       return {
         status: 'timeout',

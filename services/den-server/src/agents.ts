@@ -32,6 +32,8 @@ import {
   type AgentPreset,
   type HarnessId,
 } from '@rivetos/types'
+import { harnessNotAllowedMessage } from './harness/allowed.js'
+import { isCodexDefaultModel } from './harness/model-sheets.js'
 import {
   PresetConflictError,
   PresetMigrationRequiredError,
@@ -175,6 +177,20 @@ export function createAgentsRoutes(opts: {
   now?: () => number
   /** `level` defaults to `error` for a pre-existing `(msg) => void` logger. */
   log?: AgentRouteLog
+  /**
+   * The resolved model list for a harness — the one the spawn path appends
+   * `--model` from. A preset naming an id outside it is refused (400) when
+   * `strict` (the operator pinned the list with `models_mode: replace`) and
+   * warned about otherwise, instead of silently running the harness default
+   * at spawn. Absent, or an empty `ids` (no picker) → no check.
+   */
+  modelList?: (harnessId: HarnessId) => { ids: string[]; strict: boolean; source: string }
+  /**
+   * Operator allow-list gate (`den.allowed_harnesses`). Absent = every
+   * known harness is allowed. When set, create/PATCH with a disallowed
+   * harnessId is refused with 400.
+   */
+  isHarnessAllowed?: (harnessId: HarnessId) => boolean
 }): AgentsRoutes {
   const store = opts.store
   const nodeName = opts.nodeName
@@ -195,6 +211,22 @@ export function createAgentsRoutes(opts: {
   }
   const warn = (msg: string): void => {
     log(msg, 'warn')
+  }
+
+  /** 400 text when `model` is off a strict list; a warning line otherwise. */
+  const vetModel = (
+    harnessId: HarnessId | undefined,
+    model: string,
+    presetName: string,
+  ): string | undefined => {
+    if (!harnessId || !model || isCodexDefaultModel(harnessId, model) || !opts.modelList)
+      return undefined
+    const list = opts.modelList(harnessId)
+    if (list.ids.length === 0 || list.ids.includes(model)) return undefined
+    const detail = `model "${model}" is not on the ${harnessId} model list (${list.source})`
+    if (list.strict) return detail
+    warn(`agent "${presetName}": ${detail} — the harness will run its own default`)
+    return undefined
   }
   const error = (msg: string): void => {
     log(msg, 'error')
@@ -337,6 +369,14 @@ export function createAgentsRoutes(opts: {
       return
     }
     const harnessId: HarnessId | undefined = hid
+    if (harnessId && opts.isHarnessAllowed && !opts.isHarnessAllowed(harnessId)) {
+      json(res, 403, {
+        error: harnessNotAllowedMessage(harnessId),
+        code: 'harness_not_allowed',
+        harnessId,
+      })
+      return
+    }
     const systemPrompt =
       typeof raw.systemPrompt === 'string'
         ? raw.systemPrompt.trim().slice(0, SYSTEM_PROMPT_MAX_CHARS)
@@ -363,6 +403,14 @@ export function createAgentsRoutes(opts: {
     // concurrent PATCH just enabled. `sharedLink: false` never creates one.
     // A directory this call created is removed only when the store rejects
     // the row, the directory is still empty, and no stored row owns it.
+    // Vet before anything touches disk: a refused model must not leave a
+    // directory behind.
+    const modelIssue = vetModel(harnessId, model, name)
+    if (modelIssue) {
+      json(res, 400, { error: modelIssue })
+      return
+    }
+
     const dirExisted = existsSync(directory)
     let createdDir: boolean
     try {
@@ -478,6 +526,14 @@ export function createAgentsRoutes(opts: {
         json(res, 400, { error: 'harnessId must be a known harness' })
         return
       }
+      if (hid && opts.isHarnessAllowed && !opts.isHarnessAllowed(hid)) {
+        json(res, 403, {
+          error: harnessNotAllowedMessage(hid),
+          code: 'harness_not_allowed',
+          harnessId: hid,
+        })
+        return
+      }
       patch.harnessId = hid ?? null
     }
     if (typeof raw.systemPrompt === 'string') {
@@ -546,6 +602,21 @@ export function createAgentsRoutes(opts: {
         patch.directory = fallback
       }
       materializeDirectory = true
+    }
+
+    // Re-vet only a changed (harness, model) pair. A form that round-trips
+    // every field must not 400 a rename, and must not re-log the warning.
+    const nextHarness: HarnessId | undefined =
+      patch.harnessId === null ? undefined : (patch.harnessId ?? existing.harnessId ?? undefined)
+    const nextModel = patch.model ?? existing.model ?? ''
+    const pairChanged =
+      nextHarness !== (existing.harnessId ?? undefined) || nextModel !== (existing.model ?? '')
+    if (pairChanged) {
+      const modelIssue = vetModel(nextHarness, nextModel, name)
+      if (modelIssue) {
+        json(res, 400, { error: modelIssue })
+        return
+      }
     }
 
     let agent: AgentPreset | undefined
