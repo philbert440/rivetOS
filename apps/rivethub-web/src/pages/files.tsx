@@ -687,9 +687,7 @@ export function FilesPage(): JSX.Element {
             path={previewPath}
             onClose={() => {
               void (async () => {
-                if (editorDirtyRef.current && !(await discardConfirm('Discard unsaved changes?'))) {
-                  return
-                }
+                if (!(await confirmDiscard())) return
                 setPreviewPath(undefined)
               })()
             }}
