@@ -294,10 +294,16 @@ export function normalizeRecords(records: unknown[], opts: NormalizeOptions): No
     const createdAt = derived.time
     const timeSource = derived.source
     const sourceLine = opts.sourceLines?.[i] ?? position
+    const fromList = opts.sourcePaths?.[i]
+    const recordSource = fromList && fromList.length > 0 ? fromList : opts.sourcePath
+    const recordOpts: NormalizeOptions =
+      recordSource && recordSource !== opts.sourcePath
+        ? { ...opts, sourcePath: recordSource }
+        : opts
 
     if (role === 'tool') {
       const emitted = emitToolParts(parts, {
-        opts,
+        opts: recordOpts,
         position,
         createdAt,
         timeSource,
@@ -313,7 +319,7 @@ export function normalizeRecords(records: unknown[], opts: NormalizeOptions): No
 
     if (role === 'assistant' || role === 'system') {
       const emitted = emitAssistantParts(parts, {
-        opts,
+        opts: recordOpts,
         position,
         createdAt,
         timeSource,
@@ -339,7 +345,7 @@ export function normalizeRecords(records: unknown[], opts: NormalizeOptions): No
     // user. Hidden-only SAND turns have empty userText after extractUserText.
     if (userText) {
       const row = makeMessage({
-        opts,
+        opts: recordOpts,
         role: 'user',
         content: userText,
         position,
@@ -365,7 +371,7 @@ export function normalizeRecords(records: unknown[], opts: NormalizeOptions): No
       }
       seenSystem.add(dedupeKey)
       const row = makeMessage({
-        opts,
+        opts: recordOpts,
         role: 'system',
         content,
         position,
@@ -398,7 +404,7 @@ export function normalizeRecords(records: unknown[], opts: NormalizeOptions): No
       }
       seenSystem.add(dedupeKey)
       const row = makeMessage({
-        opts,
+        opts: recordOpts,
         role: 'system',
         content,
         position,

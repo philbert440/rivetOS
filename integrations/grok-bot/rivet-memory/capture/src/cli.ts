@@ -1,9 +1,9 @@
 #!/usr/bin/env node
 /**
- * Grok Bot capture CLI — convert, backfill, reclean, compare, discover.
+ * Grok Bot capture CLI — convert, backfill, ingest-pages, reclean, compare, discover.
  * Never prints secrets, hostnames, or connection strings.
  */
-import { mkdirSync, readFileSync, readdirSync, statSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, readFileSync, readdirSync, statSync, writeFileSync } from 'node:fs'
 import { dirname, join, resolve } from 'node:path'
 import { parseArgs } from 'node:util'
 import { coalesceDashArgs } from './argv.js'
@@ -18,10 +18,17 @@ import {
   peekParentLastKnownTime,
   resolveSourceAgentId,
 } from './identity.js'
+import {
+  createPgOverlapStore,
+  formatIngestPagesCounts,
+  ingestPages,
+  type IngestPagesDeps,
+} from './ingest-pages.js'
+import { ingestGrokbotSession, type GrokbotIngestMemory } from './ingest-rows.js'
 import { normalizeRecords, toIngestRows } from './normalize.js'
 import { formatMergeConflicts, normalizePages } from './pages.js'
 import { parseInput } from './parse.js'
-import { connectAndFetchGrokbotRows } from './pg-readonly.js'
+import { connectAndFetchGrokbotRows, loadRivetosPgUrlFromEnv } from './pg-readonly.js'
 import {
   FROM_ROWS_LIMITS,
   LIST_CONVERSATIONS_SQL,
@@ -36,7 +43,13 @@ import {
 } from './reclean.js'
 import { readStoreSince, v3StoreSession } from './store.js'
 import { sourceFileTimes } from './timestamps.js'
-import { SESSION_SUFFIX_V3, sessionStoreSuffix, sessionVoiceSuffix } from './types.js'
+import {
+  DEFAULT_BACKFILL_OVERLAP_HOURS,
+  SESSION_SUFFIX_V3,
+  isBackfillSession,
+  sessionStoreSuffix,
+  sessionVoiceSuffix,
+} from './types.js'
 import type { IngestRow, ParsedInput } from './types.js'
 import { parseVoiceCall, v3VoiceSession, voiceCallToRecords } from './voice.js'
 
@@ -79,7 +92,8 @@ const HELP = `Usage: grokbot-rivet-memory-capture <command> [opts]
           [--dry-run|--write]
       Re-clean source transcripts into <session>-vN. --from-rows and PG
       reads write <session>-vN-rows. Follows GROKBOT_SESSION_SUFFIX
-      / --session-suffix. Refuses already row-shaped sessions.
+      / --session-suffix. Refuses already row-shaped sessions and any
+      -vN-backfill source (that suffix is never folded into live -vN).
       --dry-run (default) performs zero writes and prints stats.
       Without --from-transcript/--from-rows, reads RIVETOS_PG_URL from the
       environment or ~/.rivetos/.env inside BEGIN TRANSACTION READ ONLY
@@ -95,6 +109,36 @@ const HELP = `Usage: grokbot-rivet-memory-capture <command> [opts]
       Before (legacy convert-transcript + pull-bridge) vs after (normalizer).
 
   discover [--agents-dir DIR] [--json]
+
+  ingest-pages --input DIR [--commit] [--dry-run] [--overlap-hours N]
+               [--agents-dir DIR]
+      ReadTranscript page backfill. Files are <bot-slug>-<before>.txt,
+      ordered by numeric <before> then header position.
+      Dry-run is the default and writes nothing. An explicit --dry-run
+      overrides --commit. --commit INSERTs message rows into
+      grokbot-<slug>-v4-backfill only and never deletes. A bot whose
+      pages conflict writes nothing; other bots still proceed.
+      Page conflicts exit 3 on a dry-run and on --commit.
+      A stored source_id whose content digest differs is not rewritten
+      (skipped_changed) and also exits 3. Several stored digests for one
+      source_id: a row matching any of them is a quiet skip; only a row
+      matching none is skipped_changed.
+      Unknown slugs and malformed pages are counted and exit 2. When a
+      run has both that failure and page conflicts or skipped_changed,
+      exit 2 wins and both reasons are printed.
+      PostgresMemory.append still upserts that session's ros_conversations
+      row (updated_at, active) and may queue tool-synthesis jobs. Never
+      folds into plain -v4. Timestamps are approximate (ts_approx=true);
+      rows before the first <timestamp> tag are skipped.
+      The default writes every page row, so rows that live capture also
+      has appear in both -vN and -vN-backfill. -v4 is not read and
+      nothing is suppressed by hash. --overlap-hours N (N > 0, or
+      GROKBOT_BACKFILL_OVERLAP_HOURS) trades that for a risk of dropping
+      a missed row when two or more consecutive missed rows coincide
+      with rows -vN has within 60 minutes (repeated short replies,
+      repeated identical tool calls). An empty --overlap-hours or
+      GROKBOT_BACKFILL_OVERLAP_HOURS is the default 0, not a positive
+      window. --input must be a readable directory.
 `
 
 async function main(argv: string[]): Promise<number> {
@@ -111,6 +155,7 @@ async function main(argv: string[]): Promise<number> {
   if (cmd === 'reclean') return cmdReclean(argv.slice(1))
   if (cmd === 'compare') return cmdCompare(argv.slice(1))
   if (cmd === 'discover') return cmdDiscover(argv.slice(1))
+  if (cmd === 'ingest-pages') return cmdIngestPages(argv.slice(1))
   console.error(`unknown command: ${cmd}`)
   console.log(HELP)
   return 2
@@ -468,6 +513,12 @@ async function cmdReclean(argv: string[]): Promise<number> {
     )
     return 2
   }
+  if (isBackfillSession(sourceSession)) {
+    console.error(
+      `reclean: ${sourceSession} is a -backfill session; refusing to fold it into a live -vN session`,
+    )
+    return 2
+  }
   const fromSource = Boolean(values['from-transcript'])
   const session = fromSource
     ? v3Session(sourceSession, suffix)
@@ -633,6 +684,182 @@ function cmdDiscover(argv: string[]): number {
     )
   }
   return 0
+}
+
+export async function cmdIngestPages(
+  argv: string[],
+  hooks?: { loadDeps?: (commit: boolean) => Promise<IngestPagesDeps> },
+): Promise<number> {
+  const { values, positionals } = parseArgs({
+    args: coalesceDashArgs(argv),
+    allowPositionals: true,
+    options: {
+      input: { type: 'string' },
+      commit: { type: 'boolean', default: false },
+      'dry-run': { type: 'boolean', default: false },
+      'overlap-hours': { type: 'string' },
+      'agents-dir': { type: 'string' },
+    },
+  })
+  const input = values.input || positionals[0] || process.env.GROKBOT_PAGES_DIR
+  if (!input) {
+    console.error('ingest-pages needs --input DIR (or GROKBOT_PAGES_DIR)')
+    return 2
+  }
+  try {
+    const st = statSync(input)
+    if (!st.isDirectory()) {
+      console.error(`ingest-pages: --input is not a directory: ${input}`)
+      return 2
+    }
+  } catch (err) {
+    const message = err instanceof Error ? err.message : 'unreadable'
+    console.error(`ingest-pages: cannot read --input ${input}: ${message}`)
+    return 2
+  }
+  if (values['dry-run'] && values.commit) {
+    console.error('ingest-pages: --dry-run overrides --commit; nothing will be written')
+  }
+  const commit = values.commit && !values['dry-run']
+  const overlapFlag = values['overlap-hours']
+  const overlapHours = resolveOverlapHours(
+    typeof overlapFlag === 'string' ? overlapFlag : undefined,
+    process.env.GROKBOT_BACKFILL_OVERLAP_HOURS,
+  )
+  if (!Number.isFinite(overlapHours) || overlapHours < 0) {
+    console.error('ingest-pages: --overlap-hours must be a non-negative number')
+    return 2
+  }
+  const deps = hooks?.loadDeps ? await hooks.loadDeps(commit) : await loadIngestPagesDeps(commit)
+  try {
+    if (commit && !deps.commit) {
+      console.error(
+        redactConnectionDetails(
+          deps.commitError ??
+            'ingest-pages --commit needs RIVETOS_PG_URL (environment or ~/.rivetos/.env). Dry-run needs no write.',
+        ),
+      )
+      return 2
+    }
+    const result = await ingestPages(input, {
+      commit,
+      agentsDir: values['agents-dir'],
+      overlapHours,
+      overlapUnavailable: deps.overlapUnavailable,
+      deps,
+    })
+    console.log(formatIngestPagesCounts(result))
+    const conflicts = result.bots.some((b) => b.conflicts.length > 0)
+    const changed = result.bots.some((b) => b.skippedChanged > 0)
+    const failed = result.bots.some((b) => b.pagesFailed > 0 || b.unknownSlugs > 0)
+    // Parse/roster failure (exit 2) beats conflict and digest drift (exit 3).
+    // ingestPages already printed both reasons.
+    if (failed) return 2
+    if (conflicts || changed) return 3
+    return 0
+  } catch (err) {
+    console.error(redactConnectionDetails(commitFailureDetail(err)))
+    return 2
+  } finally {
+    await deps.overlap?.close?.()
+  }
+}
+
+async function loadIngestPagesDeps(commit: boolean): Promise<IngestPagesDeps> {
+  const deps: IngestPagesDeps = {}
+  const url = loadRivetosPgUrlFromEnv()
+  if (!url) {
+    deps.overlapUnavailable = true
+    if (commit) {
+      deps.commitError =
+        'ingest-pages --commit needs RIVETOS_PG_URL (environment or ~/.rivetos/.env). Dry-run needs no write.'
+    }
+    return deps
+  }
+  deps.overlap = createPgOverlapStore(url)
+  if (!commit) return deps
+  try {
+    deps.commit = await createPgCommit(url)
+  } catch (err) {
+    deps.commitError = `ingest-pages --commit failed: ${redactConnectionDetails(
+      commitFailureDetail(err),
+    )}`
+  }
+  return deps
+}
+
+/**
+ * Empty flag or env is unset, which is the default (0): do not parse `''`.
+ * `Number('') === 0`, and a whitespace-only value must not become NaN.
+ * The first non-empty of flag, then env, wins. A positive value opts into
+ * -v4 hash suppression; 0 does not read `-v4`.
+ */
+export function resolveOverlapHours(flag: string | undefined, fromEnv: string | undefined): number {
+  const raw = [flag, fromEnv].find((value) => value !== undefined && value.trim() !== '')
+  if (raw === undefined) return DEFAULT_BACKFILL_OVERLAP_HOURS
+  return Number(raw)
+}
+
+/** Drop URLs, hostnames, and host:port so a commit failure cannot print them. */
+export function redactConnectionDetails(text: string): string {
+  return text
+    .replace(/\b[a-z][a-z0-9+.-]*:\/\/\S+/gi, '[redacted]')
+    .replace(/\b((?:getaddrinfo\s+)?(?:ENOTFOUND|EAI_AGAIN))\s+\S+/gi, '$1 [redacted]')
+    .replace(/\[[0-9a-fA-F:.]+\]:\d+/g, '[redacted]')
+    .replace(
+      /(^|[^0-9A-Fa-f:.])(?:(?:[0-9A-Fa-f]{0,4}:){2,}[0-9A-Fa-f]{0,4}):\d{2,5}\b/g,
+      '$1[redacted]',
+    )
+    .replace(/\b(?:\d{1,3}\.){3}\d{1,3}:\d+\b/g, '[redacted]')
+    .replace(/\b(?:localhost|(?:[a-zA-Z0-9-]+\.)+[a-zA-Z0-9-]+):\d{2,5}\b/gi, (match) => {
+      const host = match.slice(0, match.lastIndexOf(':'))
+      if (/\.(?:js|mjs|cjs|ts|tsx|jsx|json|md|py|txt|map)$/i.test(host)) return match
+      return '[redacted]'
+    })
+}
+
+function commitFailureDetail(err: unknown): string {
+  if (!(err instanceof Error)) return 'ingest-pages --commit failed'
+  if (err.name && err.name !== 'Error' && !err.message.startsWith(err.name)) {
+    return `${err.name}: ${err.message}`
+  }
+  return err.message
+}
+
+/**
+ * Deployed installs resolve `@rivetos/memory-postgres` from RIVETOS_ROOT.
+ * A dev checkout falls back to the workspace package at
+ * `plugins/memory/postgres` (four levels up from this capture package).
+ */
+export function resolveMemoryPostgresEntry(
+  exists: (path: string) => boolean = existsSync,
+  dirs?: { root?: string; packageDir?: string },
+): string {
+  const root = dirs?.root ?? (process.env.RIVETOS_ROOT || '/opt/rivetos')
+  const packageDir = dirs?.packageDir ?? fileDir()
+  const deployed = resolve(root, 'node_modules/@rivetos/memory-postgres/dist/index.js')
+  const local = resolve(packageDir, '../../../..', 'plugins/memory/postgres/dist/index.js')
+  if (exists(deployed)) return deployed
+  if (exists(local)) return local
+  throw new Error(`memory-postgres is not built (looked for ${deployed} and ${local})`)
+}
+
+async function createPgCommit(url: string): Promise<IngestPagesDeps['commit']> {
+  const { pathToFileURL } = await import('node:url')
+  const entry = resolveMemoryPostgresEntry()
+  const memoryMod = (await import(pathToFileURL(entry).href)) as {
+    PostgresMemory: new (opts: { connectionString: string }) => GrokbotIngestMemory & {
+      close?: () => Promise<void>
+    }
+  }
+  return async (input) => {
+    const memory = new memoryMod.PostgresMemory({ connectionString: url })
+    try {
+      return await ingestGrokbotSession(memory, input)
+    } finally {
+      await memory.close?.()
+    }
+  }
 }
 
 function resolveIdent(agentId?: string, session?: string, agent?: string) {

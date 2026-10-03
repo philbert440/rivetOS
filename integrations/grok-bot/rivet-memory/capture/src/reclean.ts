@@ -7,6 +7,7 @@ import {
   ORDINAL_STRIDE,
   SESSION_SUFFIX_V3,
   STORAGE_LIMIT,
+  isBackfillSession,
   isRowShapedSession,
   sessionRowsSuffix,
   stripSessionSuffix,
@@ -32,12 +33,22 @@ export interface RecleanResult {
   dryRun: boolean
 }
 
+function refuseBackfillSource(session: string): void {
+  if (isBackfillSession(session)) {
+    throw new Error(
+      `reclean: ${session} is a -backfill session; refusing to fold it into a live -vN session`,
+    )
+  }
+}
+
 export function v3Session(session: string, suffix = SESSION_SUFFIX_V3): string {
+  refuseBackfillSource(session)
   return `${stripSessionSuffix(session)}${suffix}`
 }
 
 /** Row-based re-clean writes here so source-transcript ordinals never collide. */
 export function v3RowsSession(session: string, suffix = SESSION_SUFFIX_V3): string {
+  refuseBackfillSource(session)
   return `${stripSessionSuffix(session)}${sessionRowsSuffix(suffix)}`
 }
 

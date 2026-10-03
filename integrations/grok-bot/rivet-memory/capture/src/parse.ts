@@ -2,7 +2,9 @@ import { isRecord } from '@rivetos/capture-core'
 import type { InputFormat, PageHeader, ParsedInput } from './types.js'
 
 const PAGE_HEADER_RE =
-  /^Transcript of (?:agent "(?<name>.*)" \((?<id>[0-9a-f-]{36})\)|this conversation),\s*positions\s+(?<a>\d+)\s*[–—-]\s*(?<b>\d+)\s+of\s+(?<total>\d+):?\s*$/
+  /^Transcript of\s+(?<target>.+),\s*positions\s+(?<a>\d+)\s*[–—-]\s*(?<b>\d+)\s+of\s+(?<total>\d+):?\s*$/
+
+const NAMED_AGENT_RE = /^agent\s+"(?<name>.*)"\s+\((?<id>[0-9a-f-]{36})\)$/i
 
 const PAGE_FOOTER_RE = /Older messages remain:.*before=(\d+)/
 
@@ -20,13 +22,16 @@ export function detectFormat(text: string): InputFormat {
 export function parsePageHeader(line: string): PageHeader | undefined {
   const m = PAGE_HEADER_RE.exec(line.trim())
   if (!m?.groups) return undefined
+  const target = m.groups.target.trim()
+  const named = NAMED_AGENT_RE.exec(target)
   return {
-    name: m.groups.name,
-    id: m.groups.id,
+    name: named?.groups?.name,
+    id: named?.groups?.id,
     a: Number(m.groups.a),
     b: Number(m.groups.b),
     total: Number(m.groups.total),
-    thisConversation: !m.groups.id,
+    thisConversation: /^this conversation$/i.test(target),
+    target,
   }
 }
 

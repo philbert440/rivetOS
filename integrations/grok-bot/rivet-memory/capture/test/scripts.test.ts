@@ -40,6 +40,20 @@ describe('node capture scripts', () => {
     ensureDist()
   })
 
+  it('pull-bridge ingest-pages delegates to the TypeScript CLI and stays dry by default', () => {
+    const src = readFileSync(join(ROOT, 'pull-bridge.py'), 'utf8')
+    expect(src).toContain('ingest-pages')
+    expect(src).toContain('cmd_ingest_pages')
+    expect(src).toContain('"ingest-pages"')
+    expect(src).toMatch(/dry-run default/)
+    const out = loadPyFn(
+      join(ROOT, 'pull-bridge.py'),
+      'print(" ".join([mod.NODE, str(mod.CLI_JS), "ingest-pages", "--input", "/tmp/pages"]))',
+    )
+    expect(out).toContain('ingest-pages')
+    expect(out).toContain('--input')
+  })
+
   it('pull-bridge convert_cmd passes --session so event ids match ingest', () => {
     const out = loadPyFn(
       join(ROOT, 'pull-bridge.py'),
