@@ -69,6 +69,12 @@ export interface MeshNode {
   /** Arbitrary metadata */
   metadata?: Record<string, unknown>
 
+  // sshUser, installRoot and platform are OPERATOR-SET: edited in mesh.json,
+  // never sent by the node itself, and kept across its re-registration
+  // and across `rivetos mesh sync` for fields the hub's copy does not carry
+  // (inheritOperatorFields below). An explicit incoming value wins; delete the
+  // key to clear it. Add new such fields there too.
+
   /**
    * SSH login for update/deploy tooling when it isn't `rivet`
    * (e.g. desktop → `user`). Consumed by CLI `update` / `mesh` / `keys`.
@@ -87,6 +93,34 @@ export interface MeshNode {
    * `update --mesh` probes and reports them without attempting git/systemd.
    */
   platform?: string
+}
+
+/**
+ * Keep the operator-set fields (sshUser, installRoot, platform) of the
+ * existing roster entry when the incoming one does not name them. An incoming
+ * value replaces the stored one; `null` counts as "not given". To clear a
+ * field, delete it from mesh.json. Pure: returns `incoming` itself when there
+ * is nothing to inherit from.
+ */
+export function inheritOperatorFields(
+  incoming: MeshNode,
+  existing: MeshNode | undefined,
+): MeshNode {
+  if (!existing) return incoming
+  const merged: MeshNode = { ...incoming }
+  if (merged.sshUser == null) {
+    if (existing.sshUser !== undefined) merged.sshUser = existing.sshUser
+    else delete merged.sshUser
+  }
+  if (merged.installRoot == null) {
+    if (existing.installRoot !== undefined) merged.installRoot = existing.installRoot
+    else delete merged.installRoot
+  }
+  if (merged.platform == null) {
+    if (existing.platform !== undefined) merged.platform = existing.platform
+    else delete merged.platform
+  }
+  return merged
 }
 
 // ---------------------------------------------------------------------------

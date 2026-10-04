@@ -24,6 +24,7 @@ import { join, dirname } from 'node:path'
 import {
   sharedDir,
   parseMeshFile,
+  inheritOperatorFields,
   isMeshFlatArrayError,
   MeshParseError,
   type MeshFile,
@@ -94,15 +95,17 @@ export class FileMeshRegistry implements MeshRegistry {
     const data = await this.load()
     const existing = data.nodes[node.id]
 
-    data.nodes[node.id] = node
+    const merged = inheritWithWarning(node, existing)
+
+    data.nodes[merged.id] = merged
     data.updatedAt = Date.now()
     await this.save(data)
 
     if (!existing) {
-      this.emit({ type: 'node:joined', node, timestamp: Date.now() })
+      this.emit({ type: 'node:joined', node: merged, timestamp: Date.now() })
       log.info(`Node registered: ${node.name} (${node.id}) at ${node.host}:${String(node.port)}`)
     } else {
-      this.emit({ type: 'node:updated', node, timestamp: Date.now() })
+      this.emit({ type: 'node:updated', node: merged, timestamp: Date.now() })
       log.info(`Node updated: ${node.name} (${node.id})`)
     }
   }
@@ -316,7 +319,8 @@ export class FileMeshRegistry implements MeshRegistry {
       for (const remote of remoteNodes) {
         const local = localData.nodes[remote.id]
         if (!local || remote.lastSeen > local.lastSeen) {
-          localData.nodes[remote.id] = remote
+          // The seed's copy of a node may not carry the operator-set fields.
+          localData.nodes[remote.id] = inheritWithWarning(remote, local)
           merged++
         }
       }
@@ -397,7 +401,8 @@ export interface BuildLocalNodeArgs {
   capabilities?: string[]
   /**
    * Arbitrary node metadata (e.g. `{ denPort: 5174 }` when the node runs a
-   * den server). Note: register() wholesale-replaces the node's roster entry,
+   * den server). Note: register() replaces the node's roster entry (except the operator-set
+   * sshUser / installRoot / platform, which it keeps),
    * so anything that must survive a restart has to flow through here — tags
    * hand-edited into mesh.json on a runtime-owned entry are wiped on the next
    * startup.
@@ -424,4 +429,24 @@ export function buildLocalNode(args: BuildLocalNodeArgs): MeshNode {
     registeredAt: Date.now(),
     version: args.version,
   }
+}
+/**
+ * inheritOperatorFields (@rivetos/types) plus a warning when the entry it
+ * inherits from was recorded for another host: a re-imaged machine that keeps
+ * its node name would otherwise silently keep the old user and path.
+ */
+function inheritWithWarning(incoming: MeshNode, existing: MeshNode | undefined): MeshNode {
+  const merged = inheritOperatorFields(incoming, existing)
+  if (existing && existing.host !== incoming.host) {
+    const kept = (['sshUser', 'installRoot', 'platform'] as const).filter(
+      (f) => merged[f] !== undefined && incoming[f] == null,
+    )
+    if (kept.length > 0) {
+      log.warn(
+        `Node ${incoming.id}: keeping ${kept.join(', ')} recorded for host ${existing.host} ` +
+          `on new host ${incoming.host} — check mesh.json`,
+      )
+    }
+  }
+  return merged
 }
