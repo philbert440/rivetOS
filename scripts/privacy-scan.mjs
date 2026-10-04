@@ -436,6 +436,18 @@ export function scanArchiveFile(file, denyHashes) {
   return findings
 }
 
+/**
+ * Entries deliberately taken off the denylist, by hash. The list must not
+ * shrink by accident, so a removal is allowed only for a hash named here, in
+ * the same reviewed change. Reason for these two: they were added as private
+ * names but are also ordinary words (an English adjective and a common given
+ * name), and the word rule blocked them in plain prose.
+ */
+export const RETIRED_DENY_HASHES = new Set([
+  '0f1324de378fb2e399bc66843abb736ca47eb638b6a05bacb23a82efb5ffd62b',
+  '3464f13b59481aa6bc54e9e86694a2e52344ba3dccf24c46475a2f1596271619',
+])
+
 function denylistRemovedVsMain(current) {
   let mainJson
   try {
@@ -446,7 +458,9 @@ function denylistRemovedVsMain(current) {
   } catch {
     return null
   }
-  return removedHashes(parseDenyHashes(JSON.parse(mainJson)), current)
+  return removedHashes(parseDenyHashes(JSON.parse(mainJson)), current).filter(
+    (hash) => !RETIRED_DENY_HASHES.has(hash),
+  )
 }
 
 function shown(f) {

@@ -12,7 +12,9 @@ import {
   isVendoredPath,
   parseDenyHashes,
   shouldCheckPersonaToken,
+  loadDenyHashes,
   removedHashes,
+  RETIRED_DENY_HASHES,
   scanText,
   sha256,
 } from './privacy-scan.mjs'
@@ -156,6 +158,20 @@ test('parseDenyHashes folds case and drops junk', () => {
   })
   assert.equal(set.size, 2)
   assert.ok(set.has('a'.repeat(64)))
+})
+
+test('a retired hash is off the denylist, and retiring is the only way to shrink it', () => {
+  const current = loadDenyHashes()
+  for (const hash of RETIRED_DENY_HASHES) {
+    assert.match(hash, /^[0-9a-f]{64}$/)
+    // Retired and still listed would mean the word is both allowed and blocked.
+    assert.equal(current.has(hash), false)
+  }
+  // A baseline that had the retired entries plus one more: only the other one counts as removed.
+  const other = 'c'.repeat(64)
+  const baseline = new Set([...current, ...RETIRED_DENY_HASHES, other])
+  const removed = removedHashes(baseline, current).filter((h) => !RETIRED_DENY_HASHES.has(h))
+  assert.deepEqual(removed, [other])
 })
 
 test('removedHashes detects a shrink', () => {
@@ -332,7 +348,9 @@ test('hashed IPv4 prefix matches a full address and the 3-octet prefix', () => {
   const prefix = ['203', '0', '113'].join('.')
   const hashes = new Set([sha256(prefix)])
   assert.equal(
-    scanText(`gw ${prefix}.10`, { denyHashes: hashes }).some((h) => h.rule === 'denylist-ip-prefix'),
+    scanText(`gw ${prefix}.10`, { denyHashes: hashes }).some(
+      (h) => h.rule === 'denylist-ip-prefix',
+    ),
     true,
   )
   assert.equal(
@@ -370,7 +388,10 @@ test('vendored paths skip home and host rules; dropbear README still scans', () 
 })
 
 test('overlay archives are identified as committed assets', () => {
-  assert.equal(isArchivePath('apps/rivet-android/app/src/main/assets/rivet-phone-overlay.bin'), true)
+  assert.equal(
+    isArchivePath('apps/rivet-android/app/src/main/assets/rivet-phone-overlay.bin'),
+    true,
+  )
   assert.equal(
     isCommittedOverlayArchive('apps/rivet-android/app/src/main/assets/rivet-phone-overlay.bin'),
     true,
