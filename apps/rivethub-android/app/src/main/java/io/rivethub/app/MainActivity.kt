@@ -50,7 +50,7 @@ import io.rivethub.app.plane.NarrowLaunchTarget
 import io.rivethub.app.plane.ConsumedTaps
 import io.rivethub.app.plane.OpenTaskTap
 import io.rivethub.app.plane.openTaskFromIntent
-import io.rivethub.app.plane.looksLikePairingCode
+import io.rivethub.app.plane.pairingLinkFromIntent
 import io.rivethub.app.plane.rememberConsumedTap
 import io.rivethub.app.plane.chatHomeNav
 import io.rivethub.app.plane.displayTitle
@@ -193,9 +193,9 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun readPairing(intent: android.content.Intent?) {
-        if (intent?.action != android.content.Intent.ACTION_VIEW) return
-        val text = intent.dataString?.trim().orEmpty()
-        if (text.isEmpty() || !looksLikePairingCode(text)) return
+        // Only a rivethub://pair link. It opens the Enroll screen, which asks
+        // before it pairs: a link can come from any app or web page.
+        val text = pairingLinkFromIntent(intent?.action, intent?.dataString) ?: return
         if (text == consumedPairing) return
         pendingPairing = text
     }

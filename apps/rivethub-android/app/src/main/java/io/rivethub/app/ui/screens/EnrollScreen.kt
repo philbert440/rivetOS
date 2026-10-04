@@ -52,12 +52,14 @@ import io.rivethub.app.plane.PairingFailure
 import io.rivethub.app.plane.PairingParse
 import io.rivethub.app.plane.enrollError
 import io.rivethub.app.plane.looksLikePairingCode
+import io.rivethub.app.plane.pairingGatewayLabel
 import io.rivethub.app.plane.parsePairingCode
 import io.rivethub.app.plane.validateEntryUrl
 import io.rivethub.app.ui.components.Lucide
 import io.rivethub.app.ui.components.RhMark
 import io.rivethub.app.ui.components.PairingScannerDialog
 import io.rivethub.app.ui.components.RivetButton
+import io.rivethub.app.ui.components.RivetConfirmDialog
 import io.rivethub.app.ui.components.RivetButtonVariant
 import io.rivethub.app.ui.components.RivetField
 import io.rivethub.app.ui.components.RivetFieldSize
@@ -213,12 +215,41 @@ fun EnrollScreen(
         pairWith(text)
     }
 
-    // A code the camera app handed over via rivethub://pair. Consumed once so
-    // a rotation does not redeem the same single-use token again.
+    // A code handed over by a rivethub://pair link. The link can come from the
+    // camera app, but also from any other app or a web page, so it never pairs
+    // by itself: the person is shown which computer it names and has to agree.
+    // Pairing replaces this phone's certificate, and the old one may exist
+    // nowhere else. Consumed once so a rotation does not ask again.
+    var linkCode by remember { mutableStateOf<String?>(null) }
     LaunchedEffect(pendingCode) {
         val text = pendingCode ?: return@LaunchedEffect
         onPendingCodeConsumed()
-        pairWith(text)
+        when (parsePairingCode(text)) {
+            is PairingParse.Ok -> linkCode = text
+            // Not a usable code: pairWith only reports why, it contacts nothing.
+            is PairingParse.Err -> pairWith(text)
+        }
+    }
+    linkCode?.let { text ->
+        val parsed = parsePairingCode(text)
+        if (parsed is PairingParse.Ok) {
+            val computer = pairingGatewayLabel(parsed.code)
+            val replaces = c.identity.hasIdentity()
+            RivetConfirmDialog(
+                title = stringResource(R.string.pair_link_title),
+                message = stringResource(
+                    if (replaces) R.string.pair_link_replace else R.string.pair_link_confirm,
+                    computer,
+                ),
+                confirmLabel = stringResource(R.string.pair_link_action),
+                danger = replaces,
+                onConfirm = {
+                    linkCode = null
+                    pairWith(text)
+                },
+                onDismiss = { linkCode = null },
+            )
+        }
     }
 
     val askCamera = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->

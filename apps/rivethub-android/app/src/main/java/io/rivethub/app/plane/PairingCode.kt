@@ -36,6 +36,30 @@ fun looksLikePairingCode(text: String): Boolean {
     return trimmed.contains("\"$KIND\"")
 }
 
+/**
+ * The pairing link a launch intent carries, or null. Only a
+ * `rivethub://pair?…` VIEW counts. Anything else another app or a web page
+ * hands the activity (raw JSON, some other URI that merely mentions a
+ * pairing code) is not a pairing request: raw JSON is read by this app's own
+ * scanner and nowhere else.
+ */
+fun pairingLinkFromIntent(action: String?, data: String?): String? {
+    if (action != "android.intent.action.VIEW") return null
+    val text = data?.trim().orEmpty()
+    if (!text.startsWith("rivethub://pair?", ignoreCase = true)) return null
+    return text
+}
+
+/**
+ * The computer a code would pair this phone with, as shown to the person
+ * before a link is acted on: host and port, without the scheme.
+ */
+fun pairingGatewayLabel(code: PairingCode): String {
+    val uri = runCatching { java.net.URI(code.gateway) }.getOrNull() ?: return code.gateway
+    val host = uri.host?.takeIf { it.isNotBlank() } ?: return code.gateway
+    return if (uri.port == -1) host else "$host:${uri.port}"
+}
+
 fun parsePairingCode(text: String): PairingParse {
     val jsonText = pairingJsonText(text) ?: return PairingParse.Err(PairingCodeError.NotPairing)
     val obj = runCatching { json.parseToJsonElement(jsonText) as? JsonObject }.getOrNull()

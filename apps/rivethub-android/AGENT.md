@@ -766,6 +766,10 @@ first, the one post-enroll screen HubDrawer does not host. Also set
   (`packages/cli` `pairingQrText`). No `package=`, so debug and release both open it. The system
   scanner only launches `http` and `intent:` URIs; a bare `rivethub://` code stays text. The app
   still parses `rivethub://pair` (what that intent becomes) and raw JSON from an older node.
+  A launch intent is a pairing request only when it is a `rivethub://pair?` VIEW
+  (`pairingLinkFromIntent`); raw JSON is read by the in-app scanner only. A link never redeems by
+  itself: `EnrollScreen` shows a confirm naming the gateway (`pairingGatewayLabel`), and says so when
+  it would replace an existing certificate. Any app or page can fire the link, so keep that gate.
   The scanner asks CameraX for RGBA, then the preview bitmap, then `convertYUVToBitmap`, then the
   Y plane (`pixelStride` 2 on Pixel 10 Pro P010; do not rewind). A frame that decodes as something
   else is kept only when no source in that frame looks like a pairing code. The scan dialog preview

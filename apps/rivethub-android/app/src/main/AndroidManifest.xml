@@ -47,19 +47,14 @@
             </intent-filter>
             <!-- Pairing QR. The system scanner fires the intent: URI, which
                  becomes rivethub://pair. No package= in the link, so debug and
-                 release both claim it. The scheme-only filter is the fallback
-                 when a resolver drops the host. -->
+                 release both claim it. Any app or web page can fire this too:
+                 the link only opens the Enroll screen, which asks before it
+                 pairs (MainActivity.readPairing, EnrollScreen). -->
             <intent-filter>
                 <action android:name="android.intent.action.VIEW" />
                 <category android:name="android.intent.category.DEFAULT" />
                 <category android:name="android.intent.category.BROWSABLE" />
                 <data android:scheme="rivethub" android:host="pair" />
-            </intent-filter>
-            <intent-filter>
-                <action android:name="android.intent.action.VIEW" />
-                <category android:name="android.intent.category.DEFAULT" />
-                <category android:name="android.intent.category.BROWSABLE" />
-                <data android:scheme="rivethub" />
             </intent-filter>
         </activity>
         <provider

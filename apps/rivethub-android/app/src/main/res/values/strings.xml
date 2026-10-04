@@ -194,6 +194,10 @@
     <string name="pair_connect_failed">Paired: this phone\'s certificate is saved. Connecting to the computer failed (%1$s). Tap Connect to try again; no new code is needed.</string>
     <string name="pair_camera_unavailable">The camera could not start (%1$s). You can still import a certificate file below.</string>
     <string name="pair_local_network_denied">RivetHub needs the Nearby devices (local network) permission to reach the computer. Allow it in Android settings → Apps → RivetHub → Permissions, then scan again.</string>
+    <string name="pair_link_title">Pair this phone?</string>
+    <string name="pair_link_confirm">A pairing link asks to pair this phone with %1$s. Continue only if you just scanned the code shown on your own computer.</string>
+    <string name="pair_link_replace">A pairing link asks to pair this phone with %1$s. This replaces the certificate this phone has now. Continue only if you just scanned the code shown on your own computer.</string>
+    <string name="pair_link_action">Pair</string>
 
     <string name="section_identity">Identity</string>
     <string name="section_appearance">Appearance</string>

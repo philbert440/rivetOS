@@ -82,6 +82,33 @@ class PairingCodeTest {
         assertEquals(invalid, parsePairingCode(qr(cert = "z".repeat(64))))
     }
 
+    @Test fun `only a rivethub pair link is taken from a launch intent`() {
+        val link = "rivethub://pair?d=abc"
+        assertEquals(link, pairingLinkFromIntent("android.intent.action.VIEW", " $link "))
+        val view = "android.intent.action.VIEW"
+        assertEquals("RIVETHUB://PAIR?d=abc", pairingLinkFromIntent(view, "RIVETHUB://PAIR?d=abc"))
+        // Raw JSON, other schemes, other hosts and other actions are not pairing requests.
+        val notLinks: List<String?> = listOf(
+            qr(),
+            "https://example.com/?x=\"rivethub-pair\"",
+            "rivethub://other?d=abc",
+            "rivethub://pair",
+            "intent://pair?d=abc#Intent;scheme=rivethub;end",
+            "",
+            null,
+        )
+        for (data in notLinks) assertEquals(null, pairingLinkFromIntent(view, data))
+        assertEquals(null, pairingLinkFromIntent("android.intent.action.SEND", link))
+        assertEquals(null, pairingLinkFromIntent(null, link))
+    }
+
+    @Test fun `the confirmation names the computer by host and port`() {
+        assertEquals("192.0.2.20:5174", pairingGatewayLabel(PairingCode("https://192.0.2.20:5174", "tok", pin)))
+        assertEquals("node.example.com", pairingGatewayLabel(PairingCode("https://node.example.com", "tok", pin)))
+        // Something that is not a URL is shown as it is, never hidden.
+        assertEquals("not a url", pairingGatewayLabel(PairingCode("not a url", "tok", pin)))
+    }
+
     @Test fun `redeem statuses map to failures`() {
         assertEquals(PairingFailure.Expired, pairingFailureForStatus(403))
         assertEquals(PairingFailure.Gone, pairingFailureForStatus(410))

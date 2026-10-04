@@ -24,7 +24,9 @@ Plan and slice status: see `AGENT.md`. Build: `./gradlew :app:assembleDebug :app
 
 The QR is an `intent:` link (VIEW + BROWSABLE, no package name, so the debug and release apps both open it).
 The phone's system scanner opens RivetHub with it; **Scan pairing QR** reads the same code. Older
-codes that are a `rivethub://` link or the raw JSON still scan inside the app. The link carries the gateway URL, a one-time token
+codes that are a `rivethub://` link or the raw JSON still scan inside the app. A link that opens the app from outside
+(the camera app, a browser, another app) never pairs by itself: the app shows which computer it names and pairs only
+when you confirm, since pairing replaces the phone's certificate. The link carries the gateway URL, a one-time token
 (10 minutes, one use) and the SHA-256 of the gateway's TLS certificate; the app pins that certificate
 to redeem the token at `POST /api/devices/pair` for the PKCS#12 and its passphrase. The computer deletes its copy of the PKCS#12 on redemption and keeps
 the certificate so it can be revoked. Expired or used? Show a fresh code. A name that was already paired
