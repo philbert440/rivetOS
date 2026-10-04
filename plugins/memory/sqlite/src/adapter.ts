@@ -170,7 +170,8 @@ export interface SqliteMemoryConfig {
   compaction?: Partial<CompactionSettings>
   /**
    * User ids from the users registry other than the node owner. The file is
-   * the owner's: `search` and `getContextForTurn` return nothing for these.
+   * the owner's: these users get no search results or turn context from it,
+   * and their sessions (`<channel>:<user>` keys) are neither stored nor read.
    */
   otherUsers?: Iterable<string>
   /**
@@ -261,6 +262,7 @@ export class SqliteMemory implements Memory {
   private readonly clock: () => Date
   private backendInstance: SqliteBackend | undefined
   private readonly otherUsers: ReadonlySet<string>
+  private readonly warnedUsers = new Set<string>()
   private readonly summaryIndex: VectorIndex
   private readonly compactor: SqliteCompactor | undefined
   private readonly log: (line: string) => void
@@ -439,6 +441,9 @@ export class SqliteMemory implements Memory {
 
   async append(entry: MemoryEntry): Promise<string> {
     this.assertOpen()
+    // Another registry user's session is neither read nor written here: the
+    // file is the owner's, and that user has no store on this node yet.
+    if (this.isOtherUsersSession(entry.sessionId)) return randomUUID()
     try {
       return this.tx(() => {
         const taskId = resolveTaskId(entry.sessionId, entry.metadata)
@@ -653,6 +658,7 @@ export class SqliteMemory implements Memory {
 
   async getSessionHistory(sessionId: string, options?: { limit?: number }): Promise<Message[]> {
     this.assertOpen()
+    if (this.isOtherUsersSession(sessionId)) return []
     const limit = options?.limit ?? 100
     const rows = this.db
       .prepare(
@@ -707,6 +713,7 @@ export class SqliteMemory implements Memory {
 
   async saveSessionSettings(sessionId: string, settings: Record<string, unknown>): Promise<void> {
     this.assertOpen()
+    if (this.isOtherUsersSession(sessionId)) return
     this.db
       .prepare(
         `UPDATE ros_conversations SET settings = ?, updated_at = ?
@@ -717,6 +724,7 @@ export class SqliteMemory implements Memory {
 
   async loadSessionSettings(sessionId: string): Promise<Record<string, unknown> | null> {
     this.assertOpen()
+    if (this.isOtherUsersSession(sessionId)) return null
     const row = this.db
       .prepare(
         `SELECT settings FROM ros_conversations
@@ -1434,6 +1442,27 @@ export class SqliteMemory implements Memory {
   /** True for a user id the registry lists as someone other than the owner. */
   private isOtherUser(userId: string | undefined): boolean {
     return userId !== undefined && this.otherUsers.has(userId)
+  }
+
+  /**
+   * True when a session key names another registry user. Session keys are
+   * `<channel>:<user>` (the turn handler's convention, and the one the
+   * Postgres backend routes by); `task:<id>` is the task engine's and never
+   * a user's.
+   */
+  private isOtherUsersSession(sessionId: string): boolean {
+    if (this.otherUsers.size === 0 || sessionId.startsWith('task:')) return false
+    const at = sessionId.lastIndexOf(':')
+    if (at < 0 || at === sessionId.length - 1) return false
+    const user = sessionId.slice(at + 1)
+    if (!this.otherUsers.has(user)) return false
+    if (!this.warnedUsers.has(user)) {
+      this.warnedUsers.add(user)
+      this.log(
+        `[memory.sqlite] user "${user}" has no memory on this node: the store is the owner's, so their sessions are not stored or read`,
+      )
+    }
+    return true
   }
 
   private assertOpen(): void {

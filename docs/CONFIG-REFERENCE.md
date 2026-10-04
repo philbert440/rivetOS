@@ -759,13 +759,13 @@ Day-2 commands (no extra daemon):
 
 Presence of `memory.sqlite` registers the `@rivetos/memory-sqlite` plugin. No Postgres or
 PGlite process is required for the in-process `Memory` path (chat append, session/task
-history, settings, search). HTTP `/api/capture` and memory HTTP/MCP routes still need
-a Postgres pool — the memory MCP sidecar has no sqlite path yet. Compaction, wiki, and
-multi-user routing come later. With an embedding endpoint set, messages are embedded in the
+history, settings, search). With an embedding endpoint set, messages are embedded in the
 background by a job loop inside the runtime (no worker service), vectors are stored in the
 file, and search fuses full-text, a literal-match arm and a vector arm with the same ranking
-policy as Postgres; without one, search is full-text only. Single-user: one file holds
-all transcripts; routed users in the tenancy registry are not isolated. If `memory.sqlite`
+policy as Postgres; without one, search is full-text only. Single-user: the file is the node
+owner's. Other users in the tenancy registry get no memory from it (their sessions are not
+stored, and search, turn context, the agent's memory tools and the memory HTTP routes refuse
+them) until per-user files arrive. If `memory.sqlite`
 is set, remove or ignore a stale `RIVETOS_PG_URL` in `~/.rivetos/.env` so the MCP sidecar
 does not keep reading an old Postgres store while chat appends write sqlite. The parent
 directory is created mode `0700` and the DB file (plus `-wal`/`-shm`) is `0600`. With this

@@ -233,6 +233,29 @@ describe('SqliteBackend', () => {
     expect(health.compaction).toEqual({ eligible: 0, activeTail: 0, belowFloor: 3 })
   })
 
+  it('health is degraded while an embedding keeps failing', async () => {
+    memory.close()
+    const fetch = vi.fn(async () => new Response('no', { status: 400 })) as unknown as typeof globalThis.fetch
+    let clock = new Date('2026-10-04T12:00:00Z')
+    memory = new SqliteMemory({
+      path: ':memory:',
+      workers: false,
+      log: () => {},
+      now: () => clock,
+      embed: { endpoint: 'https://embed.test', model: 'toy', fetch, sleep: noWait, maxRetries: 0 },
+    })
+    backend = memory.backend()
+    await backend.capture(batch({ messages: [batch().messages[0]] }))
+    for (let i = 0; i < 6; i += 1) {
+      await memory.runJobs()
+      clock = new Date(clock.getTime() + 60 * 60_000)
+    }
+    const health = await backend.health()
+    expect(health.embeddings.status).toBe('ok')
+    expect(health.failedEmbeddings).toBe(1)
+    expect(health.status).toBe('degraded')
+  })
+
   describe('tags', () => {
     it('adds, lists, counts, decides and looks up through the backend', async () => {
       await backend.capture(batch())

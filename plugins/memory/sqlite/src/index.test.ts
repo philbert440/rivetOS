@@ -175,7 +175,7 @@ describe('memory-sqlite manifest', () => {
     expect(String(await stats.execute({}))).toMatch(/Backend: sqlite/)
   })
 
-  it('gives another registry user no search results and no turn context from the owner\'s file', async () => {
+  it('gives another registry user nothing from the owner\'s file and stores nothing of theirs in it', async () => {
     const dir = mkdtempSync(join(tmpdir(), 'ros-mem-plugin-'))
     dirs.push(dir)
     const usersFile = join(dir, 'users.json')
@@ -210,6 +210,32 @@ describe('memory-sqlite manifest', () => {
     // The other registry user sees nothing of it.
     expect(await memory.search('budget', { userId: 'guest' })).toEqual([])
     expect(await memory.getContextForTurn('budget', 'rivet', { userId: 'guest' })).toBe('')
+
+    // A guest's own session (`<channel>:<user>`) is neither stored nor read.
+    await memory.append({
+      sessionId: 'gateway:guest',
+      agent: 'rivet',
+      channel: 'gateway',
+      role: 'user',
+      content: 'the guest asks about the budget review too',
+    })
+    expect(await memory.getSessionHistory('gateway:guest')).toEqual([])
+    await memory.saveSessionSettings?.('gateway:guest', { thinking: 'high' })
+    expect(await memory.loadSessionSettings?.('gateway:guest')).toBeNull()
+    expect(await memory.search('guest asks')).toEqual([])
+    // The owner's sessions under the same channel are unaffected, and task
+    // sessions are never a user's.
+    await memory.append({
+      sessionId: 'gateway:alice',
+      agent: 'rivet',
+      channel: 'gateway',
+      role: 'user',
+      content: 'the owner continues the budget thread from the web hub',
+    })
+    expect(await memory.getSessionHistory('gateway:alice')).toHaveLength(1)
+    await memory.append({ sessionId: 'task:guest', agent: 'rivet', channel: 'task', role: 'user', content: 'task work' })
+    expect(await memory.getSessionHistory('task:guest')).toHaveLength(1)
+    expect(ctx.logger.warn).toHaveBeenCalledWith(expect.stringContaining('user "guest" has no memory on this node'))
   })
 })
 

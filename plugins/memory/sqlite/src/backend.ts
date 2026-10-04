@@ -676,16 +676,24 @@ export class SqliteBackend implements MemoryBackend {
 
     const embedding = this.host.hasEmbedding()
     const failed = this.failedEmbeddings()
-    // Status looks at the last week, as on Postgres: one old dead job must not
-    // keep the banner up for good. The counts above stay cumulative.
+    // Status looks at recent trouble only: one old dead job or failed row
+    // must not keep the banner up for good. The counts stay cumulative.
     const recentBefore = new Date(now.getTime() - HEALTH_WINDOW_MS).toISOString()
     const dead =
       this.count(
         `SELECT count(*) AS n FROM ros_jobs WHERE state = 'dead' AND updated_at > ?`,
         recentBefore,
       ) > 0
+    const recentFailed = this.count(
+      `SELECT (SELECT count(*) FROM ros_messages
+                WHERE embedding IS NULL AND embed_status IS NULL AND embed_failures > 0 AND created_at > ?)
+            + (SELECT count(*) FROM ros_summaries
+                WHERE embedding IS NULL AND embed_status IS NULL AND embed_failures > 0 AND created_at > ?) AS n`,
+      recentBefore,
+      recentBefore,
+    )
     return {
-      status: embedding && !dead ? 'ok' : 'degraded',
+      status: embedding && !dead && recentFailed === 0 ? 'ok' : 'degraded',
       observedAt: nowIso,
       embeddings: embedding
         ? { status: 'ok', checkedAt: nowIso }
@@ -1236,7 +1244,7 @@ export class SqliteBackend implements MemoryBackend {
           source: { type: 'string' },
           channel: { type: 'string' },
         },
-        required: ['session_id', 'content', 'role'],
+        required: ['session_id', 'role'],
       },
       execute: async (args) => {
         const sessionId = (str(args.session_id) ?? '').trim()
