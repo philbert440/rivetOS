@@ -174,6 +174,11 @@ export interface SqliteMemoryConfig {
   /** Batch sizes and idle thresholds; defaults match the Postgres worker. */
   compaction?: Partial<CompactionSettings>
   /**
+   * Whose store this is. Stamped on every conversation and message it writes
+   * (`owner_user_id`), so a row says whom it belongs to even after an export.
+   */
+  userId?: string
+  /**
    * User ids from the users registry other than the node owner. The file is
    * the owner's: these users get no search results or turn context from it,
    * and their sessions (`<channel>:<user>` keys) are neither stored nor read.
@@ -283,6 +288,7 @@ export class SqliteMemory implements Memory {
   private readonly clock: () => Date
   private backendInstance: SqliteBackend | undefined
   private readonly otherUsers: ReadonlySet<string>
+  private readonly userId: string | null
   private readonly warnedUsers = new Set<string>()
   private readonly summaryIndex: VectorIndex
   private readonly topicIndex: VectorIndex
@@ -296,6 +302,7 @@ export class SqliteMemory implements Memory {
   private readonly log: (line: string) => void
 
   constructor(config: SqliteMemoryConfig) {
+    this.userId = config.userId?.trim() || null
     this.otherUsers = new Set(config.otherUsers ?? [])
     this.clock = config.now ?? (() => new Date())
     const path = resolveSqlitePath(config.path)
@@ -316,6 +323,10 @@ export class SqliteMemory implements Memory {
     this.db.exec(
       `CREATE INDEX IF NOT EXISTS idx_ros_messages_unembedded ON ros_messages (created_at)
         WHERE embedding IS NULL AND embed_status IS NULL`,
+    )
+    this.db.exec(
+      `CREATE INDEX IF NOT EXISTS idx_ros_conversations_owner ON ros_conversations (owner_user_id)
+        WHERE owner_user_id IS NOT NULL`,
     )
     if (path !== ':memory:') {
       // WAL/SHM appear after journal_mode=WAL; tighten DB + siblings.
@@ -500,6 +511,10 @@ export class SqliteMemory implements Memory {
         case 4:
           // v5: the wiki index tables are all new, created by SCHEMA above.
           break
+        case 5:
+          // v6: owner_user_id on conversations and messages.
+          this.migrateToV6()
+          break
         default:
           throw new MemoryError(
             'MEMORY_CONNECTION_FAILED',
@@ -535,6 +550,17 @@ export class SqliteMemory implements Memory {
       )
       .run(now, now)
     this.db.exec('DELETE FROM ros_embed_queue')
+  }
+
+  private migrateToV6(): void {
+    for (const table of ['ros_conversations', 'ros_messages']) {
+      const cols = (
+        this.db.prepare(`PRAGMA table_info(${table})`).all() as Array<{ name: string }>
+      ).map((c) => c.name)
+      if (!cols.includes('owner_user_id')) {
+        this.db.exec(`ALTER TABLE ${table} ADD COLUMN owner_user_id TEXT`)
+      }
+    }
   }
 
   /** Absolute path (or `:memory:`) this store opened. */
@@ -573,8 +599,8 @@ export class SqliteMemory implements Memory {
           .prepare(
             `INSERT INTO ros_messages
                (id, conversation_id, agent, channel, role, content,
-                tool_name, tool_args, tool_result, metadata, created_at)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+                tool_name, tool_args, tool_result, metadata, created_at, owner_user_id)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
           )
           .run(
             id,
@@ -588,6 +614,7 @@ export class SqliteMemory implements Memory {
             toolResult,
             metadata,
             createdAt,
+            this.userId,
           )
 
         this.db
@@ -1569,6 +1596,11 @@ export class SqliteMemory implements Memory {
     }))
   }
 
+  /** Whose store this is (`owner_user_id` on its rows); null when not told. */
+  ownerUserId(): string | null {
+    return this.userId
+  }
+
   /** The tag vocabulary: reading it, editing it, and the rule-based project tag. */
   vocabulary(): SqliteTagVocabulary {
     this.assertOpen()
@@ -1605,6 +1637,7 @@ export class SqliteMemory implements Memory {
       tags: () => this.tags(),
       wiki: () => this.wiki(),
       vocabulary: () => this.vocabulary(),
+      userId: this.userId,
       projectRule: this.projectRule,
       log: this.log,
       assertOpen: () => {
@@ -1753,8 +1786,9 @@ export class SqliteMemory implements Memory {
     const upserted = this.db
       .prepare(
         `INSERT INTO ros_conversations
-           (id, session_key, agent, channel, title, task_id, created_at, updated_at, active)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1)
+           (id, session_key, agent, channel, title, task_id, created_at, updated_at, active,
+            owner_user_id)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1, ?)
          ON CONFLICT (session_key, agent) DO UPDATE SET
            updated_at = excluded.updated_at,
            active = 1,
@@ -1764,8 +1798,17 @@ export class SqliteMemory implements Memory {
            END
          RETURNING id`,
       )
-      .get(randomUUID(), sessionId, agent, channelValue, title, taskValue, now, now) as
-      ConversationRow | undefined
+      .get(
+        randomUUID(),
+        sessionId,
+        agent,
+        channelValue,
+        title,
+        taskValue,
+        now,
+        now,
+        this.userId,
+      ) as ConversationRow | undefined
 
     if (!upserted?.id) {
       throw new Error('ensureConversation failed to return an id')
@@ -1839,6 +1882,15 @@ export class SqliteMemory implements Memory {
       .prepare(`SELECT embedding FROM ros_wiki_topics WHERE slug = ?`)
       .get(slug) as { embedding: Uint8Array | null } | undefined
     return row?.embedding ? row.embedding.byteLength / 4 : 0
+  }
+
+  /** Test helper — the distinct owner ids stamped on this store's messages. */
+  ownerColumnForTest(): Array<string | null> {
+    return (
+      this.db
+        .prepare(`SELECT DISTINCT owner_user_id AS id FROM ros_messages ORDER BY 1`)
+        .all() as unknown as Array<{ id: string | null }>
+    ).map((r) => r.id)
   }
 
   /** Test helper — the conversation id for a session and agent. */

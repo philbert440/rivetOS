@@ -27,6 +27,7 @@ export { SqliteCompactor, COMPACT_TASK, DEFAULT_COMPACTION_SETTINGS } from './co
 export type { CompactionSettings } from './compaction.js'
 export { SqliteWikiIndex, SqliteWikiExtractor, EXTRACT_WIKI_TASK } from './wiki.js'
 export type { WikiTopicRow, WikiTopicHit, TopicResolution } from './wiki.js'
+export { SqliteRoutingMemory, userFromSessionKey, isSafeUserId } from './routing.js'
 export { EmbedClient } from './embed.js'
 export type { EmbedConfig, EmbedOutcome } from './embed.js'
 export { ExactScanIndex, encodeVector, decodeVector } from './vectors.js'
@@ -39,8 +40,11 @@ export type {
 } from './tags.js'
 
 import { homedir } from 'node:os'
+import { dirname, join } from 'node:path'
 import type { PluginManifest } from '@rivetos/types'
-import { loadUsersRegistry, sharedPath } from '@rivetos/types'
+import { DEFAULT_OWNER_USER_ID, loadUsersRegistry, sharedPath } from '@rivetos/types'
+import type { Tool } from '@rivetos/types'
+import { BLOCKED, SqliteRoutingMemory, isSafeUserId } from './routing.js'
 import { SqliteMemory, resolveSqlitePath } from './adapter.js'
 import { clampEmbedTimeoutMs } from '@rivetos/memory-core'
 import { MIN_BATCH_SIZE } from '@rivetos/memory-core'
@@ -66,12 +70,14 @@ export const manifest: PluginManifest = {
     const compactor = await resolveCompactorConfig(cfg, ctx.env, (line) => {
       ctx.logger.warn(line)
     })
-    // Everyone the users registry lists besides the owner. Only these are
-    // refused: the owner's own turns carry other ids (the default owner id,
-    // platform ids), and must keep working.
-    const otherUsers = otherUsersOf(ctx.env, (line) => {
+    // The users registry names the node owner and anyone else who has an
+    // account here. Only those other users are routed or refused: the
+    // owner's own turns carry other ids (the default owner id, platform ids)
+    // and must keep working.
+    const users = usersOf(ctx.env, (line) => {
       ctx.logger.warn(line)
     })
+    const otherUsers = users.others
     const wiki = resolveWikiConfig(cfg, ctx.env)
     const tagging = resolveTaggingConfig(cfg, ctx.env)
     if (tagging.enabled && !tagging.llm && !compactor) tagging.enabled = false
@@ -80,41 +86,99 @@ export const manifest: PluginManifest = {
         'memory.sqlite: wiki extraction is on but no compactor endpoint is set; no pages will be written',
       )
     }
-    const memory = new SqliteMemory({
-      path,
-      otherUsers,
+    const log = (line: string): void => {
+      ctx.logger.warn(line)
+    }
+    const shared = {
       tagging,
       ...(cfg.project_rule === false ? { projectRule: null } : {}),
       ...(embed ? { embed } : {}),
       ...(compactor ? { compactor, compaction: resolveCompactionSettings(ctx.env) } : {}),
-      wiki,
       ...(typeof cfg.workers === 'boolean' ? { workers: cfg.workers } : {}),
-      log: (line) => {
-        ctx.logger.warn(line)
-      },
-    })
-    ctx.registerMemory(memory)
+      log,
+    }
+    const main = new SqliteMemory({ path, userId: users.owner, otherUsers, wiki, ...shared })
+
+    // One file per other user, beside the owner's. A user whose store cannot
+    // be opened is blocked, never sent to the owner's file. With
+    // `per_user_files: false` there are no user stores and those users are
+    // refused outright.
+    const userStores = new Map<string, SqliteMemory | typeof BLOCKED>()
+    if (cfg.per_user_files !== false) {
+      const usersDir = resolveUsersDir(cfg, path)
+      for (const id of otherUsers) {
+        try {
+          if (!isSafeUserId(id)) throw new Error('the user id is not usable as a directory name')
+          userStores.set(
+            id,
+            new SqliteMemory({
+              path: usersDir === ':memory:' ? ':memory:' : join(usersDir, id, 'memory.sqlite'),
+              userId: id,
+              // In this user's file, everyone else (the owner included) is the other user.
+              otherUsers: [...otherUsers, users.owner].filter((other) => other !== id),
+              wiki: { dir: join(wiki.dir, 'users', id), extraction: wiki.extraction },
+              ...shared,
+            }),
+          )
+        } catch (err) {
+          ctx.logger.error(
+            `memory.sqlite: store for user "${id}" failed to open; their memory is blocked: ${
+              err instanceof Error ? err.message : String(err)
+            }`,
+          )
+          userStores.set(id, BLOCKED)
+        }
+      }
+    }
+    const routing = userStores.size > 0 ? new SqliteRoutingMemory(main, userStores) : undefined
+    ctx.registerMemory(routing ?? main)
+
     // The agent's memory tools. Writing tools (append, ingest) are served over
-    // HTTP for capture clients, not handed to the agent. The file is the node
-    // owner's: a turn den resolved to another registry user gets a refusal.
-    for (const tool of memory.backend().readTools()) {
+    // HTTP for capture clients, not handed to the agent. A turn den resolved
+    // to another registry user is served from that user's own store, or
+    // refused when they have none: never from the owner's.
+    const toolsByStore = new WeakMap<SqliteMemory, Map<string, Tool>>()
+    const toolFor = (store: SqliteMemory, name: string): Tool | undefined => {
+      let tools = toolsByStore.get(store)
+      if (!tools) {
+        tools = new Map(
+          store
+            .backend()
+            .readTools()
+            .map((t) => [t.name, t]),
+        )
+        toolsByStore.set(store, tools)
+      }
+      return tools.get(name)
+    }
+    for (const tool of main.backend().readTools()) {
       ctx.registerTool({
         ...tool,
         async execute(args, signal, context) {
           const uid = context?.session?.userId
           if (uid && otherUsers.has(uid)) {
-            throw new Error(
-              `memory for user "${uid}" is unavailable (this node's memory is a single-user store)`,
-            )
+            const store = userStores.get(uid)
+            const routed = store && store !== BLOCKED ? toolFor(store, tool.name) : undefined
+            if (!routed) {
+              throw new Error(`memory for user "${uid}" is unavailable on this node`)
+            }
+            return routed.execute(args, signal, context)
           }
           return tool.execute(args, signal, context)
         },
       })
     }
     ctx.registerShutdown(async () => {
-      await memory.stopWorkers()
-      memory.close()
+      for (const store of routing?.stores() ?? [main]) {
+        await store.stopWorkers()
+        store.close()
+      }
     })
+    if (userStores.size > 0) {
+      ctx.logger.info(
+        `sqlite memory: ${String(userStores.size)} other user(s) each have their own file under ${resolveUsersDir(cfg, path)}`,
+      )
+    }
     if (compactor) {
       ctx.logger.info(`sqlite memory: summarizing with ${compactor.model}`)
     }
@@ -141,20 +205,10 @@ export const manifest: PluginManifest = {
           : path
     ctx.logger.info(`sqlite memory ready at ${display}`)
 
-    // Phase 1 is single-file / single-user. Warn when a users registry defines
-    // additional accounts so operators know transcripts are not isolated.
-    try {
-      const registry = loadUsersRegistry(ctx.env)
-      if (registry) {
-        const others = Object.keys(registry.users).filter((id) => id !== registry.ownerUserId)
-        if (others.length > 0) {
-          ctx.logger.warn(
-            `memory.sqlite is single-user in phase 1 — ${others.length} routed user(s) in the users registry get no memory from this store: their sessions are not stored or read, and search, context and tools refuse them`,
-          )
-        }
-      }
-    } catch {
-      // registry load failures are unrelated to opening the store
+    if (userStores.size === 0 && otherUsers.size > 0) {
+      ctx.logger.warn(
+        `memory.sqlite: per-user files are off — ${String(otherUsers.size)} other user(s) in the users registry get no memory from this store: their sessions are not stored or read, and search, context and tools refuse them`,
+      )
     }
   },
 }
@@ -293,25 +347,42 @@ export function resolveCompactionSettings(
 }
 
 /**
- * The users registry's users other than the owner. Empty when there is no
- * registry. A registry that cannot be read is reported: den may still be
- * resolving users from it, and this process then cannot tell them apart.
+ * Who the users registry says the owner is, and everyone else it lists.
+ * Without a registry the owner is `RIVETOS_USER_ID` (or the default owner
+ * id) and there is nobody else. A registry that cannot be read is reported:
+ * den may still be resolving users from it, and this process then cannot
+ * tell them apart.
  */
-function otherUsersOf(
+function usersOf(
   env: Record<string, string | undefined>,
   warn: (line: string) => void,
-): Set<string> {
+): { owner: string; others: Set<string> } {
+  const fallback = env.RIVETOS_USER_ID?.trim() || DEFAULT_OWNER_USER_ID
   try {
     const registry = loadUsersRegistry(env)
-    if (!registry) return new Set()
-    return new Set(Object.keys(registry.users).filter((id) => id !== registry.ownerUserId))
+    if (!registry) return { owner: fallback, others: new Set() }
+    return {
+      owner: registry.ownerUserId,
+      others: new Set(Object.keys(registry.users).filter((id) => id !== registry.ownerUserId)),
+    }
   } catch (err) {
     warn(
       `memory.sqlite: the users registry could not be read (${err instanceof Error ? err.message : String(err)}); ` +
-        'routed users cannot be told apart from the owner and are not refused',
+        'other users cannot be told apart from the owner and are not routed or refused',
     )
-    return new Set()
+    return { owner: fallback, others: new Set() }
   }
+}
+
+/**
+ * Where the other users' files go: `users_dir`, or `users/` beside the
+ * owner's file. Each user gets `<dir>/<userId>/memory.sqlite`.
+ */
+export function resolveUsersDir(cfg: Record<string, unknown>, ownerPath: string): string {
+  if (typeof cfg.users_dir === 'string' && cfg.users_dir.trim() !== '') {
+    return resolveSqlitePath(cfg.users_dir.trim())
+  }
+  return ownerPath === ':memory:' ? ':memory:' : join(dirname(ownerPath), 'users')
 }
 
 /**

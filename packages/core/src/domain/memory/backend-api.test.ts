@@ -82,8 +82,12 @@ describe('backend memory routes', () => {
     server = undefined
   })
 
-  async function serve(backend: MemoryBackend): Promise<string> {
-    const routes = [createBackendCaptureRoute(backend), createBackendMemoryRoute(backend)]
+  async function serve(
+    backend: MemoryBackend,
+    forUser?: (userId: string) => MemoryBackend | null,
+  ): Promise<string> {
+    const opts = forUser ? { forUser } : {}
+    const routes = [createBackendCaptureRoute(backend, opts), createBackendMemoryRoute(backend, opts)]
     server = createServer((req, res) => {
       const route = routes.find((r) => (req.url ?? '').startsWith(r.prefix))
       if (!route) {
@@ -142,6 +146,31 @@ describe('backend memory routes', () => {
     expect((await post(`${base}/api/memory/tool/memory_stats`, {}, stamped)).status).toBe(503)
     expect((await post(`${base}/api/memory/tags/decide`, { ids: [TAG.id], state: 'accepted' }, stamped)).status).toBe(503)
     expect(calls).toEqual([])
+  })
+
+  it('serves a stamped user from their own store, and refuses one who has none', async () => {
+    const owner = fakeBackend()
+    const guest = fakeBackend()
+    const base = await serve(owner.backend, (id) => (id === 'guest' ? guest.backend : null))
+    const asGuest = { [TRUSTED_USER_HEADER]: 'guest' }
+    const batch = { session_key: 's', agent: 'a', messages: [] }
+
+    expect((await post(`${base}/api/capture`, batch, asGuest)).status).toBe(200)
+    // A routed user's batch is never resolved against this host's filesystem.
+    expect(guest.calls).toEqual([['capture', batch, { allowFilesystem: false }]])
+    expect((await fetch(`${base}/api/memory/search?q=x`, { headers: asGuest })).status).toBe(200)
+    expect((await post(`${base}/api/memory/tool/memory_stats`, { agent: 'rivet' }, asGuest)).status).toBe(200)
+    // A routed user decides tags as themselves, whatever the body says.
+    await post(`${base}/api/memory/tags/decide`, { ids: [TAG.id], state: 'accepted', decided_by: 'owner' }, asGuest)
+    expect(guest.calls.at(-1)).toEqual(['tags.decide', [TAG.id], 'accepted', 'guest'])
+    expect(owner.calls).toEqual([])
+
+    // Unknown users, and ids that are not safe names, are refused: never the owner's store.
+    for (const id of ['stranger', '../guest', 'a/b']) {
+      const res = await fetch(`${base}/api/memory/stats`, { headers: { [TRUSTED_USER_HEADER]: id } })
+      expect(res.status).toBe(503)
+    }
+    expect(owner.calls).toEqual([])
   })
 
   it('search and browse pass clamped, validated parameters', async () => {
