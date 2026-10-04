@@ -6,6 +6,7 @@
  * pg_advisory_xact_lock(hashtext(session_key)) before check-then-insert.
  */
 
+import { hasOwnerUserIdColumn } from '../owner-column.js'
 import crypto from 'node:crypto'
 import type { Tool } from '@rivetos/types'
 import type { Pool, PoolClient } from 'pg'
@@ -682,7 +683,13 @@ export type CaptureWriteFn = (batch: CaptureBatch) => Promise<CaptureResult>
  * disables it; `allowFilesystem: false` (routed users) limits it to the
  * basename rule. See tags/rule-project.ts.
  */
-export type CaptureBatchOptions = ProjectRuleOptions
+export type CaptureBatchOptions = ProjectRuleOptions & {
+  /**
+   * Whose batch this is: written to `owner_user_id` on the conversation and
+   * its messages (where the column exists). Unset: not written.
+   */
+  ownerUserId?: string
+}
 
 export async function captureBatch(
   source: Pool | PoolClient,
@@ -693,10 +700,16 @@ export async function captureBatch(
   // pooled connection are held. Never throws.
   const projectHit = await planProjectRuleTag(batch.settings, options)
   return withSessionTransaction(source, batch.session_key, async (client) => {
+    const wanted = options.ownerUserId?.trim()
+    const owner = wanted && (await hasOwnerUserIdColumn(source, client)) ? wanted : undefined
     const { rows } = await client.query<{ id: string }>(
-      `INSERT INTO ros_conversations (session_key, agent, channel, title, settings, task_id)
-       VALUES ($1, $2, $3, $4, COALESCE($5::jsonb, '{}'::jsonb), $6)
-       ON CONFLICT (session_key, agent) DO UPDATE SET updated_at = now(),
+      `INSERT INTO ros_conversations (session_key, agent, channel, title, settings, task_id${owner ? ', owner_user_id' : ''})
+       VALUES ($1, $2, $3, $4, COALESCE($5::jsonb, '{}'::jsonb), $6${owner ? ', $10' : ''})
+       ON CONFLICT (session_key, agent) DO UPDATE SET updated_at = now(),${
+         owner
+           ? '\n         owner_user_id = COALESCE(ros_conversations.owner_user_id, EXCLUDED.owner_user_id),'
+           : ''
+       }
          title = CASE WHEN $7 THEN EXCLUDED.title ELSE ros_conversations.title END,
          settings = CASE WHEN $8 THEN EXCLUDED.settings ELSE ros_conversations.settings END,
          task_id = CASE WHEN $9 THEN EXCLUDED.task_id ELSE ros_conversations.task_id END
@@ -711,6 +724,7 @@ export async function captureBatch(
         batch.title !== undefined,
         batch.settings !== undefined,
         batch.task_id !== undefined,
+        ...(owner ? [owner] : []),
       ],
     )
     const conversationId = rows[0].id
@@ -737,8 +751,8 @@ export async function captureBatch(
         message.tool_result === undefined ? null : cap(message.tool_result, 'tool_result')
       await client.query(
         `INSERT INTO ros_messages
-          (conversation_id, agent, channel, role, content, tool_name, tool_args, tool_result, metadata, created_at)
-         VALUES ($1, $2, $3, $4, $5, $6, $7::jsonb, $8, $9::jsonb, COALESCE($10::timestamptz, now()))`,
+          (conversation_id, agent, channel, role, content, tool_name, tool_args, tool_result, metadata, created_at${owner ? ', owner_user_id' : ''})
+         VALUES ($1, $2, $3, $4, $5, $6, $7::jsonb, $8, $9::jsonb, COALESCE($10::timestamptz, now())${owner ? ', $11' : ''})`,
         [
           conversationId,
           batch.agent,
@@ -750,6 +764,7 @@ export async function captureBatch(
           toolResult,
           JSON.stringify(metadata),
           message.created_at ?? null,
+          ...(owner ? [owner] : []),
         ],
       )
       inserted++

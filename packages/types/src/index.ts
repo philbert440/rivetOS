@@ -115,6 +115,7 @@ export {
   registryFromEnv,
   resolveUser,
   resolveUserById,
+  ownerUserIdFromEnv,
   sessionVisibleTo,
   userDbsFromRegistry,
 } from './users-registry.js'

@@ -117,6 +117,7 @@ export { computeRelevance, temporalDecay } from './scoring.js'
 
 import {
   loadUsersRegistry,
+  ownerUserIdFromEnv,
   type PluginManifest,
   type DelegationAfterContext,
   type Tool,
@@ -126,6 +127,7 @@ import { PostgresMemory } from './adapter.js'
 import { createMemoryTools } from './tools/index.js'
 import { ensureEmbedderSchema } from './embedder.js'
 import { BlockedMemory, RoutingMemory, userDbsFromRegistry } from './user-routing.js'
+import { hasOwnerUserIdColumn } from './owner-column.js'
 
 function isPgPool(value: unknown): value is import('pg').Pool {
   if (value == null || typeof value !== 'object') return false
@@ -204,8 +206,10 @@ export const manifest: PluginManifest = {
         ? shared.pool
         : undefined
 
+    const ownerUserId = ownerUserIdFromEnv(ctx.env)
     const memory = new PostgresMemory({
       connectionString,
+      userId: ownerUserId,
       ...(adopted ? { pool: adopted } : {}),
       embedEndpoint: embedEndpoint || undefined,
       embedModel,
@@ -232,6 +236,7 @@ export const manifest: PluginManifest = {
       try {
         const store = new PostgresMemory({
           connectionString: db.pgUrl,
+          userId,
           embedEndpoint: embedEndpoint || undefined,
           embedModel,
           embedQueryInstruction,
@@ -338,9 +343,10 @@ export const manifest: PluginManifest = {
           if (conv.rows.length === 0) return
           const convId = (conv.rows[0] as Record<string, unknown>).id as string
 
+          const owner = (await hasOwnerUserIdColumn(pool, pool)) ? ownerUserId : undefined
           await pool.query(
-            `INSERT INTO ros_messages (conversation_id, agent, channel, role, content, metadata, created_at)
-           VALUES ($1, $2, 'delegation', 'system', $3, $4, NOW())`,
+            `INSERT INTO ros_messages (conversation_id, agent, channel, role, content, metadata, created_at${owner ? ', owner_user_id' : ''})
+           VALUES ($1, $2, 'delegation', 'system', $3, $4, NOW()${owner ? ', $5' : ''})`,
             [
               convId,
               delCtx.agentId,
@@ -354,6 +360,7 @@ export const manifest: PluginManifest = {
                 toolsUsed: delCtx.toolsUsed,
                 cached: delCtx.cached,
               }),
+              ...(owner ? [owner] : []),
             ],
           )
 

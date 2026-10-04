@@ -22,6 +22,7 @@ import { WikiIndex } from './wiki/index-reader.js'
 import type { SearchEngineConfig } from './search.js'
 import { Expander } from './expand.js'
 import { fmtHitWhen } from './tools/helpers.js'
+import { hasOwnerUserIdColumn } from './owner-column.js'
 
 const { Pool } = pg
 
@@ -61,6 +62,11 @@ function isTaskUuid(value: string): boolean {
 
 export interface PostgresMemoryConfig {
   connectionString: string
+  /**
+   * Whose store this is. Written to `owner_user_id` on the conversations and
+   * messages this adapter creates (where the column exists). Unset: not written.
+   */
+  userId?: string
   /**
    * Host-owned pool. When set, this adapter uses it and must not end() it.
    * Own `error`/`connect` handlers are skipped — the host already installed
@@ -119,8 +125,11 @@ export class PostgresMemory implements Memory {
    * result is never cached — see hasConversationTaskId.
    */
   private conversationTaskId = false
+  /** Whose store this is; see {@link PostgresMemoryConfig.userId}. */
+  private readonly userId: string | undefined
 
   constructor(config: PostgresMemoryConfig) {
+    this.userId = config.userId?.trim() || undefined
     if (config.pool) {
       this.pool = config.pool
       this.ownsPool = false
@@ -236,18 +245,23 @@ export class PostgresMemory implements Memory {
         await client.query('BEGIN')
       }
 
+      const owner =
+        this.userId !== undefined && (await hasOwnerUserIdColumn(this.pool, client))
+          ? this.userId
+          : undefined
       const convId = await this.ensureConversation(
         client,
         entry.sessionId,
         entry.agent,
         entry.channel,
+        owner,
       )
 
       const result = await client.query<IdRow>(
         `INSERT INTO ros_messages
            (conversation_id, agent, channel, role, content,
-            tool_name, tool_args, tool_result, metadata, created_at)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, COALESCE($10, NOW()))
+            tool_name, tool_args, tool_result, metadata, created_at${owner ? ', owner_user_id' : ''})
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, COALESCE($10, NOW())${owner ? ', $11' : ''})
          RETURNING id`,
         [
           convId,
@@ -260,6 +274,7 @@ export class PostgresMemory implements Memory {
           entry.toolResult ?? null,
           entry.metadata ? JSON.stringify(entry.metadata) : '{}',
           entry.createdAt ?? null,
+          ...(owner ? [owner] : []),
         ],
       )
 
@@ -571,6 +586,11 @@ export class PostgresMemory implements Memory {
   // Lifecycle
   // -----------------------------------------------------------------------
 
+  /** Whose store this is, when told. */
+  ownerUserId(): string | undefined {
+    return this.userId
+  }
+
   async close(): Promise<void> {
     if (this.ownsPool) {
       await this.pool.end()
@@ -586,6 +606,8 @@ export class PostgresMemory implements Memory {
     sessionId: string,
     agent: string,
     channel?: string,
+    /** Written to `owner_user_id`; undefined when unknown or the column is not there. */
+    owner?: string,
   ): Promise<string> {
     if (await this.hasConversationUniqueIndex(client)) {
       // Race-safe path: one (session_key, agent) => one conversation, enforced by
@@ -601,12 +623,17 @@ export class PostgresMemory implements Memory {
       // Pre-0009 this created a second conversation row instead — which is the
       // duplication the migration had to clean up.
       const upserted = await client.query<IdRow>(
-        `INSERT INTO ros_conversations (session_key, agent, channel, title, created_at, updated_at)
-         VALUES ($1, $2, $3, $4, NOW(), NOW())
+        `INSERT INTO ros_conversations
+           (session_key, agent, channel, title, created_at, updated_at${owner ? ', owner_user_id' : ''})
+         VALUES ($1, $2, $3, $4, NOW(), NOW()${owner ? ', $5' : ''})
          ON CONFLICT (session_key, agent) DO UPDATE
-           SET updated_at = NOW(), active = true
+           SET updated_at = NOW(), active = true${
+             owner
+               ? ', owner_user_id = COALESCE(ros_conversations.owner_user_id, EXCLUDED.owner_user_id)'
+               : ''
+           }
          RETURNING id`,
-        [sessionId, agent, channel ?? 'unknown', `Session ${sessionId}`],
+        [sessionId, agent, channel ?? 'unknown', `Session ${sessionId}`, ...(owner ? [owner] : [])],
       )
       return upserted.rows[0].id
     }
@@ -624,15 +651,22 @@ export class PostgresMemory implements Memory {
     )
 
     if (existing.rows.length > 0) {
+      if (owner) {
+        await client.query(
+          'UPDATE ros_conversations SET owner_user_id = $2 WHERE id = $1 AND owner_user_id IS NULL',
+          [existing.rows[0].id, owner],
+        )
+      }
       return existing.rows[0].id
     }
 
     // Create a new conversation
     const result = await client.query<IdRow>(
-      `INSERT INTO ros_conversations (session_key, agent, channel, title, created_at, updated_at)
-       VALUES ($1, $2, $3, $4, NOW(), NOW())
+      `INSERT INTO ros_conversations
+         (session_key, agent, channel, title, created_at, updated_at${owner ? ', owner_user_id' : ''})
+       VALUES ($1, $2, $3, $4, NOW(), NOW()${owner ? ', $5' : ''})
        RETURNING id`,
-      [sessionId, agent, channel ?? 'unknown', `Session ${sessionId}`],
+      [sessionId, agent, channel ?? 'unknown', `Session ${sessionId}`, ...(owner ? [owner] : [])],
     )
 
     return result.rows[0].id

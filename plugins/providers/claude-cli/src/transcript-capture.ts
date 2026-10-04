@@ -98,6 +98,41 @@ export async function closeAllCapturePools(): Promise<void> {
   await Promise.all(pools.map((pool) => pool.end().catch(() => undefined)))
 }
 
+/** The user each open capture client writes for; set by the ingest that opened it. */
+const captureOwners = new WeakMap<PoolClient, string>()
+const ownerColumnSeen = new WeakSet<PoolClient>()
+
+/**
+ * Say whose capture this client carries: `RIVETOS_USER_ID` of the session (a
+ * session spawned for a registry user). Unset for the node owner's sessions,
+ * whose rows carry no owner id here (a row without one is the owner's).
+ */
+function setCaptureOwner(client: PoolClient, opts: { env?: NodeJS.ProcessEnv }): void {
+  const owner = (opts.env ?? process.env).RIVETOS_USER_ID?.trim()
+  if (owner) captureOwners.set(client, owner)
+}
+
+/**
+ * The owner id to write on this client's rows, or undefined when there is
+ * none or the database has no `owner_user_id` yet (migration 0013). Safe in
+ * an open transaction: the probe cannot raise.
+ */
+async function ownerFor(client: PoolClient): Promise<string | undefined> {
+  const owner = captureOwners.get(client)
+  if (!owner) return undefined
+  // Asked once per client: a capture run inserts many rows on one connection.
+  // Only a yes is kept, as in the memory plugin's probe.
+  if (ownerColumnSeen.has(client)) return owner
+  const res = await client.query<{ n: number }>(
+    `SELECT count(*)::int AS n FROM pg_attribute
+      WHERE attname = 'owner_user_id' AND NOT attisdropped
+        AND attrelid IN (to_regclass('ros_conversations'), to_regclass('ros_messages'))`,
+  )
+  if (res.rows[0]?.n !== 2) return undefined
+  ownerColumnSeen.add(client)
+  return owner
+}
+
 export async function applyCaptureGuards(client: PoolClient): Promise<void> {
   await client.query(`SET idle_in_transaction_session_timeout = '${IDLE_IN_TRANSACTION_TIMEOUT}'`)
   await client.query(`SET statement_timeout = '${STATEMENT_TIMEOUT}'`)
@@ -653,14 +688,24 @@ async function findOrCreateConversation(
         [existing.rows[0].id, taskId],
       )
     }
+    // A conversation with no owner gets this session's; one already set is kept.
+    const adopter = await ownerFor(client)
+    if (adopter) {
+      await client.query(
+        `UPDATE ros_conversations SET owner_user_id = $2 WHERE id = $1 AND owner_user_id IS NULL`,
+        [existing.rows[0].id, adopter],
+      )
+    }
     return { id: existing.rows[0].id, created: false, title: existing.rows[0].title }
   }
+  const owner = await ownerFor(client)
+  const ownerParam = taskId !== undefined ? '$10' : '$9'
   const conv = await client.query<{ id: string }>(
     `INSERT INTO ros_conversations
        (session_key, agent, channel, title, settings, active, created_at, updated_at
-        ${taskId !== undefined ? ', task_id' : ''})
+        ${taskId !== undefined ? ', task_id' : ''}${owner ? ', owner_user_id' : ''})
      VALUES ($1,$2,$3,$4,$5,$6,COALESCE($7,now()),COALESCE($8,now())
-        ${taskId !== undefined ? ', $9' : ''})
+        ${taskId !== undefined ? ', $9' : ''}${owner ? `, ${ownerParam}` : ''})
      RETURNING id`,
     [
       sessionKey,
@@ -672,6 +717,7 @@ async function findOrCreateConversation(
       init.firstTs,
       init.lastTs,
       ...(taskId !== undefined ? [taskId] : []),
+      ...(owner ? [owner] : []),
     ],
   )
   return { id: conv.rows[0].id, created: true, title: null }
@@ -691,10 +737,11 @@ async function insertMessage(
     ts?: string | null
   },
 ): Promise<void> {
+  const owner = await ownerFor(client)
   await client.query(
     `INSERT INTO ros_messages
-       (conversation_id, agent, channel, role, content, tool_name, tool_args, tool_result, metadata, created_at)
-     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,COALESCE($10,now()))`,
+       (conversation_id, agent, channel, role, content, tool_name, tool_args, tool_result, metadata, created_at${owner ? ', owner_user_id' : ''})
+     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,COALESCE($10,now())${owner ? ', $11' : ''})`,
     [
       conversationId,
       CAPTURE_AGENT,
@@ -706,6 +753,7 @@ async function insertMessage(
       m.toolResult ?? null,
       JSON.stringify(m.metadata),
       m.ts ?? null,
+      ...(owner ? [owner] : []),
     ],
   )
 }
@@ -1172,6 +1220,7 @@ export async function ingestTranscript(opts: IngestOptions): Promise<IngestResul
   }
 
   return await withCaptureClient(opts.pgUrl ?? transport.pgUrl, async (client) => {
+    setCaptureOwner(client, opts)
     await client.query('BEGIN')
     try {
       // Serialise concurrent ingests of the same session (find-or-create +
@@ -1534,6 +1583,7 @@ export async function ingestHookEvent(opts: HookEventOptions): Promise<HookEvent
   }
 
   return await withCaptureClient(opts.pgUrl ?? transport.pgUrl, async (client) => {
+    setCaptureOwner(client, opts)
     await client.query('BEGIN')
     try {
       await client.query('SELECT pg_advisory_xact_lock(hashtext($1))', [sessionKey])

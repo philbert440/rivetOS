@@ -86,6 +86,7 @@ import {
   type MeshRegistry,
   type Tool,
   hasMemoryBackend,
+  ownerUserIdFromEnv,
 } from '@rivetos/types'
 import {
   PostgresMemory,
@@ -1042,14 +1043,20 @@ export async function registerAgentTools(
     }
     if (!memoryBackend) {
       gatewayRoutes.push(
-        createCaptureApiRoute({ pool, userPools }),
+        createCaptureApiRoute({ pool, userPools, ownerUserId: ownerUserIdFromEnv(process.env) }),
         createMemoryApiRoute({
           pool,
           userPools,
           embedEndpoint: embedEndpoint || undefined,
           embedModel: embedModel || undefined,
           ...memoryApiEmbedFromEnv(),
-          tools: (p, routed) => memoryHttpTools(memoryFor(p), p, routed),
+          // Rows written through these tools are stamped with whose pool it is.
+          tools: (p, routed) =>
+            memoryHttpTools(
+              memoryFor(p, routed.kind === 'user' ? routed.id : ownerUserIdFromEnv(process.env)),
+              p,
+              routed,
+            ),
         }),
       )
     }
@@ -1680,9 +1687,10 @@ export function createApiMemoryLookup(opts: {
     embedTimeoutMs?: string
     hnswEfSearch?: string
   }
-}): (pool: pg.Pool) => PostgresMemory {
+}): (pool: pg.Pool, userId?: string) => PostgresMemory {
   const memories = new WeakMap<pg.Pool, PostgresMemory>()
-  return (pool) => {
+  // A pool is one user's database, so the id given with it never changes.
+  return (pool, userId) => {
     const cached = memories.get(pool)
     if (cached) return cached
     if (
@@ -1696,6 +1704,7 @@ export function createApiMemoryLookup(opts: {
     const created = new PostgresMemory({
       connectionString: opts.pgUrl ?? '',
       pool,
+      ...(userId ? { userId } : {}),
       ...opts.embed,
     })
     memories.set(pool, created)

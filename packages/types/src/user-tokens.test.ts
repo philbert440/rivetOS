@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it } from 'vitest'
 import { clearUserTokens, mintUserToken, userForToken } from './user-tokens.js'
-import { resolveUserById, type UsersRegistry } from './users-registry.js'
+import { ownerUserIdFromEnv, resolveUserById, type UsersRegistry } from './users-registry.js'
 
 afterEach(() => {
   clearUserTokens()
@@ -48,5 +48,15 @@ describe('resolveUserById', () => {
   it('fails closed for an unknown user and for a user with nothing to route to', () => {
     expect(resolveUserById(registry(true), 'nobody')).toMatchObject({ ok: false })
     expect(resolveUserById(registry(false), 'guest')).toMatchObject({ ok: false })
+  })
+})
+
+describe('ownerUserIdFromEnv', () => {
+  it('is the registry owner, or the default owner id without a registry', () => {
+    const none = { RIVETOS_USERS_FILE: '/nonexistent/users.json', HOME: '/nonexistent' }
+    expect(ownerUserIdFromEnv(none)).toBe('owner')
+    expect(ownerUserIdFromEnv({ ...none, RIVETOS_OWNER_USER_ID: 'alice' })).toBe('alice')
+    // A session's own user id is not the node owner's.
+    expect(ownerUserIdFromEnv({ ...none, RIVETOS_USER_ID: 'guest' })).toBe('owner')
   })
 })
