@@ -2,7 +2,7 @@
   "name": "@rivetos/rivethub-electron",
   "version": "0.5.28",
   "private": true,
-  "description": "RivetHub desktop \u2014 Electron shell over rivethub-web: tray, native notifications, multi-window, native mTLS device identity",
+  "description": "RivetHub desktop — Electron shell over rivethub-web: tray, native notifications, multi-window, native mTLS device identity",
   "main": "dist-electron/main.cjs",
   "scripts": {
     "bundle": "node scripts/bundle.mjs",
@@ -32,5 +32,11 @@
       "type:app",
       "domain:interfaces"
     ]
+  },
+  "overrides": {
+    "brace-expansion@^1": "1.1.21",
+    "brace-expansion@^2": "2.1.7",
+    "brace-expansion@^5": "5.0.12",
+    "http-cache-semantics": "^4.3.0"
   }
 }
