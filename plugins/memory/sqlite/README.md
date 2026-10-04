@@ -32,7 +32,16 @@ Session tags: `memory.tags()` reads and writes `ros_tags` with the same
 lifecycle as the Postgres backend (`add` is born accepted, `propose` writes
 suggestions, `decide` accepts or rejects, a rejected tag is never
 re-proposed, `forSessionKeys` resolves a session through its key aliases).
-There is no HTTP or MCP surface for it here yet, no summary tags, and the
-vocabulary table is not edited through it.
+Tags are served over HTTP and through the `memory_tags` tool (below). There
+are no summary tags yet, and the vocabulary table is read but not edited.
+
+HTTP and tools: `memory.backend()` implements `MemoryBackend`
+(`@rivetos/types`), and the runtime mounts the den's `/api/capture` and
+`/api/memory/*` routes on it. Harness capture hooks, the hub's Memory pages
+(search, browse, stats, health, tags) and the MCP sidecar's den transport
+work on a SQLite node with the same wire contract as Postgres. The agent
+gets `memory_search`, `memory_browse`, `memory_stats`, `memory_get_full` and
+`memory_tags`. A request stamped for a routed user is refused: this store is
+the node owner's.
 
 Uses Node's built-in `node:sqlite` (`DatabaseSync`). No native addons.

@@ -809,6 +809,11 @@ embedded when an embedding endpoint is set. The worker's `COMPACT_LEAF_BATCH`,
 `COMPACT_BRANCH_BATCH`, `COMPACT_ROOT_BATCH`, `COMPACT_MIN_LEAFS`, `COMPACT_MIN_BRANCHES`,
 `COMPACT_IDLE_MINUTES`, `COMPACT_STALE_MINUTES` and `COMPACT_STALE_MIN_BATCH` variables tune it.
 
+A node with `memory.sqlite` serves `POST /api/capture` and `/api/memory/*` (search, browse, stats,
+health, tags, and the memory tools the MCP sidecar's den transport calls) from the file, with the
+same request and response shapes as a Postgres node. Vocabulary edits answer 501 for now, and a
+request the den stamped for a routed user is refused rather than served from the owner's file.
+
 ---
 
 ## `tasks`

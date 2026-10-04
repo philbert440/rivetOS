@@ -29,6 +29,7 @@ import {
   shouldTrigramFallback,
   temporalDecay,
 } from '@rivetos/memory-core'
+import { SqliteBackend } from './backend.js'
 import { COMPACT_TASK, SqliteCompactor, type CompactionSettings } from './compaction.js'
 import { EmbedClient, type EmbedConfig } from './embed.js'
 import { JobRunner, SqliteJobQueue } from './jobs.js'
@@ -253,6 +254,7 @@ export class SqliteMemory implements Memory {
   private readonly expectedDims: number | undefined
   private embedStoreReconciled = false
   private readonly clock: () => Date
+  private backendInstance: SqliteBackend | undefined
   private readonly summaryIndex: VectorIndex
   private readonly compactor: SqliteCompactor | undefined
   private readonly log: (line: string) => void
@@ -467,20 +469,7 @@ export class SqliteMemory implements Memory {
           .run(createdAt, convId)
 
         // Queue the row for embedding. Best-effort — never fail the append.
-        // Only with an endpoint: without one a job per message would pile up
-        // for nothing. Rows written meanwhile are found by the
-        // enqueue-unembedded sweep once an endpoint is configured.
-        if (this.embedClient) {
-          try {
-            this.jobQueue.enqueue(
-              EMBED_TARGET_TASK,
-              { targetTable: 'ros_messages', targetId: id },
-              { key: `embed-ros_messages-${id}` },
-            )
-          } catch {
-            // ignore queue failures
-          }
-        }
+        this.enqueueMessageEmbed(id)
 
         return id
       })
@@ -504,6 +493,8 @@ export class SqliteMemory implements Memory {
       scope?: 'messages' | 'summaries' | 'both'
       userId?: string
     },
+    /** Filled in when the vector arm was dropped for this query. */
+    info?: { degraded?: string },
   ): Promise<SqliteSearchHit[]> {
     this.assertOpen()
     void options?.userId
@@ -513,7 +504,7 @@ export class SqliteMemory implements Memory {
     const match = buildFtsMatchQuery(query)
 
     try {
-      if (this.embedClient) return await this.hybridSearch(query, match, agent, limit, scope)
+      if (this.embedClient) return await this.hybridSearch(query, match, agent, limit, scope, info)
       // No vector arm: full-text only. A query with no searchable token has no results.
       if (!match) return []
       return this.ftsSearch(match, agent, limit, scope)
@@ -764,6 +755,7 @@ export class SqliteMemory implements Memory {
     agent: string | undefined,
     limit: number,
     scope: 'messages' | 'summaries' | 'both',
+    info?: { degraded?: string },
   ): Promise<SqliteSearchHit[]> {
     const pool = hybridPoolSize(limit)
     const wantMessages = scope !== 'summaries'
@@ -827,10 +819,10 @@ export class SqliteMemory implements Memory {
         }
       } catch (err) {
         if (this.closed) throw err
+        const reason = err instanceof Error ? err.message : String(err)
+        if (info) info.degraded = `query embedding failed: ${reason}`
         this.log(
-          `[memory.sqlite] query embedding failed, searching without the vector arm: ${
-            err instanceof Error ? err.message : String(err)
-          }`,
+          `[memory.sqlite] query embedding failed, searching without the vector arm: ${reason}`,
         )
       }
     }
@@ -1328,6 +1320,45 @@ export class SqliteMemory implements Memory {
       messageCount: r.message_count,
       model: r.model,
     }))
+  }
+
+  /**
+   * The wider surface (capture, the hub's Memory pages, tools over HTTP) on
+   * this store. See `MemoryBackend` in `@rivetos/types`.
+   */
+  backend(): SqliteBackend {
+    this.assertOpen()
+    this.backendInstance ??= new SqliteBackend({
+      db: this.db,
+      tx: (fn) => this.tx(fn),
+      search: (query, options, info) => this.search(query, options, info),
+      hasEmbedding: () => this.embedClient !== undefined,
+      hasCompactor: () => this.compactor !== undefined,
+      enqueueMessageEmbed: (id) => {
+        this.enqueueMessageEmbed(id)
+      },
+      tags: () => this.tags(),
+      assertOpen: () => {
+        this.assertOpen()
+      },
+    })
+    return this.backendInstance
+  }
+
+  private enqueueMessageEmbed(id: string): void {
+    // Only with an endpoint: without one a job per message would pile up
+    // for nothing. Rows written meanwhile are found by the
+    // enqueue-unembedded sweep once an endpoint is configured.
+    if (!this.embedClient) return
+    try {
+      this.jobQueue.enqueue(
+        EMBED_TARGET_TASK,
+        { targetTable: 'ros_messages', targetId: id },
+        { key: `embed-ros_messages-${id}` },
+      )
+    } catch {
+      // Best-effort: a write never fails because of the queue.
+    }
   }
 
   /** The job queue behind the background work, for stats and requeueing. */

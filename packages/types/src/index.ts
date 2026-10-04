@@ -435,3 +435,18 @@ export type {
   MemoryTaxonomyMergeRequest,
   MemoryTaxonomyMergeResponse,
 } from './gateway-api.js'
+export { MemoryRequestError, MemoryUnsupportedError, hasMemoryBackend } from './memory-backend.js'
+export type {
+  MemoryBackend,
+  MemoryTagsBackend,
+  WithMemoryBackend,
+  CaptureMessage,
+  CaptureBatchRequest,
+  CaptureBatchResult,
+  MemoryBrowseFilter,
+  MemoryTagListFilter,
+  MemoryTagAddInput,
+  MemoryPendingTag,
+  MemoryTagUsage,
+  MemoryTaxonomyInput,
+} from './memory-backend.js'

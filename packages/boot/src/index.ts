@@ -220,8 +220,9 @@ async function bootWithConfig(
 
   // 2. Runtime — one host-owned pool, injected everywhere. Ended after
   //    runtime.stop() and before embedded PG itself is stopped.
-  const pgUrl =
-    (config.memory?.postgres.connection_string as string | undefined) ?? process.env.RIVETOS_PG_URL
+  // `memory.postgres` is absent on a node whose memory is another backend.
+  const pgSlice: Record<string, unknown> | undefined = config.memory?.postgres
+  const pgUrl = (pgSlice?.connection_string as string | undefined) ?? process.env.RIVETOS_PG_URL
   const sharedPool = pgUrl ? createSharedPgPool(pgUrl) : undefined
   const endSharedPool = createEndSharedPool(sharedPool, log)
 

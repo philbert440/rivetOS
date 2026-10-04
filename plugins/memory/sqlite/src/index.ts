@@ -1,8 +1,9 @@
 /**
  * @rivetos/memory-sqlite
  *
- * SQLite Memory backend — WAL + FTS5 for the in-process Memory contract.
- * Phase 1: append, history, settings, FTS search. HTTP /api/capture is deferred.
+ * SQLite Memory backend — the in-process Memory contract plus the wider
+ * MemoryBackend surface (capture, the hub's Memory pages, tools over HTTP)
+ * on one WAL file.
  */
 
 export {
@@ -73,6 +74,9 @@ export const manifest: PluginManifest = {
       },
     })
     ctx.registerMemory(memory)
+    // The agent's memory tools. Writing tools (append, ingest) are served over
+    // HTTP for capture clients, not handed to the agent.
+    for (const tool of memory.backend().readTools()) ctx.registerTool(tool)
     ctx.registerShutdown(async () => {
       await memory.stopWorkers()
       memory.close()
