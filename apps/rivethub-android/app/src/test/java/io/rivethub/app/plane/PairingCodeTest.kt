@@ -104,8 +104,15 @@ class PairingCodeTest {
     @Test fun `the confirmation names the computer by host and port`() {
         assertEquals("192.0.2.20:5174", pairingGatewayLabel(PairingCode("https://192.0.2.20:5174", "tok", pin)))
         assertEquals("node.example.com", pairingGatewayLabel(PairingCode("https://node.example.com", "tok", pin)))
-        // Something that is not a URL is shown as it is, never hidden.
-        assertEquals("not a url", pairingGatewayLabel(PairingCode("not a url", "tok", pin)))
+        // A gateway that could be read two ways is not shown at all: the link is refused.
+        for (gateway in listOf(
+            "not a url",
+            "https://trusted.example@evil.example",
+            "https://evil.example\\@trusted.example",
+            "https://",
+        )) {
+            assertEquals(null, pairingGatewayLabel(PairingCode(gateway, "tok", pin)))
+        }
     }
 
     @Test fun `redeem statuses map to failures`() {

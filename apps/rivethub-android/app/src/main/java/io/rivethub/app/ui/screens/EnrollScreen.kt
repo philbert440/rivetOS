@@ -224,16 +224,24 @@ fun EnrollScreen(
     LaunchedEffect(pendingCode) {
         val text = pendingCode ?: return@LaunchedEffect
         onPendingCodeConsumed()
-        when (parsePairingCode(text)) {
-            is PairingParse.Ok -> linkCode = text
+        when (val parsed = parsePairingCode(text)) {
+            is PairingParse.Ok ->
+                if (pairingGatewayLabel(parsed.code) == null) {
+                    // A gateway that cannot be shown plainly is not offered for confirmation.
+                    error = ctx.getString(R.string.pair_invalid)
+                } else if (linkCode == null) {
+                    linkCode = text
+                }
+                // else: a question is already on screen. A second link must not
+                // change what the person is being asked to agree to.
             // Not a usable code: pairWith only reports why, it contacts nothing.
             is PairingParse.Err -> pairWith(text)
         }
     }
     linkCode?.let { text ->
         val parsed = parsePairingCode(text)
-        if (parsed is PairingParse.Ok) {
-            val computer = pairingGatewayLabel(parsed.code)
+        val computer = (parsed as? PairingParse.Ok)?.let { pairingGatewayLabel(it.code) }
+        if (computer != null) {
             val replaces = c.identity.hasIdentity()
             RivetConfirmDialog(
                 title = stringResource(R.string.pair_link_title),

@@ -52,11 +52,16 @@ fun pairingLinkFromIntent(isView: Boolean, data: String?): String? {
 
 /**
  * The computer a code would pair this phone with, as shown to the person
- * before a link is acted on: host and port, without the scheme.
+ * before a link is acted on: host and port, without the scheme. Null when
+ * the gateway cannot be shown without a chance of misleading (it does not
+ * parse as a plain URL, or carries a user part or a backslash, which URL
+ * parsers read differently): such a link is refused, not confirmed.
  */
-fun pairingGatewayLabel(code: PairingCode): String {
-    val uri = runCatching { java.net.URI(code.gateway) }.getOrNull() ?: return code.gateway
-    val host = uri.host?.takeIf { it.isNotBlank() } ?: return code.gateway
+fun pairingGatewayLabel(code: PairingCode): String? {
+    if (code.gateway.contains('\\') || code.gateway.contains('@')) return null
+    val uri = runCatching { java.net.URI(code.gateway) }.getOrNull() ?: return null
+    if (uri.userInfo != null) return null
+    val host = uri.host?.takeIf { it.isNotBlank() } ?: return null
     return if (uri.port == -1) host else "$host:${uri.port}"
 }
 
