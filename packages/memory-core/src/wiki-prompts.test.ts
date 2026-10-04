@@ -5,7 +5,7 @@ import {
   WIKI_EXTRACT_SYSTEM_PROMPT,
   formatExtractionPrompt,
   parseWikiPatches,
-} from './prompts.js'
+} from './wiki-prompts.js'
 
 const AT = '2026-07-07T00:00:00Z'
 

@@ -17,7 +17,7 @@ import { join } from 'node:path'
 import pg from 'pg'
 import type { Tool } from '@rivetos/types'
 import type { SearchRuntimeStats } from '../search.js'
-import { MIN_BATCH_SIZE } from '../compactor/types.js'
+import { MIN_BATCH_SIZE } from '@rivetos/memory-core'
 import {
   fmtDate,
   timeSince,

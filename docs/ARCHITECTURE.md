@@ -468,6 +468,7 @@ rivetOS/
     aisdk/                       ← AI SDK ↔ RivetOS adapter (secondary path)
     workflows/
     wiki-core/
+    memory-core/                 ← backend-neutral memory logic (scoring, fusion, prompts)
     den-protocol/                ← harness event contract
     gateway-client/              ← typed HTTP+WS client (Hub)
     harness-kimi-code/           ← headless kimi-code task executor

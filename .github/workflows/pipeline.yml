@@ -269,6 +269,7 @@ jobs:
             # order (deps first)
             packages/den-protocol
             packages/wiki-core
+            packages/memory-core
             packages/types
             packages/gateway-client
             packages/capture-core

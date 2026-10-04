@@ -16,7 +16,8 @@
  *   expand.ts       — summary DAG traversal (parent_id on ros_summaries)
  *   tools/          — agent tools: memory_search (unified), memory_browse, memory_stats
  *   embedder.ts     — schema migration helpers (ensureEmbedderSchema)
- *   compactor/      — types, prompts, constants (shared with Datahub worker)
+ *   (compactor prompts, wiki prompts, scoring and fusion policy live in
+ *    @rivetos/memory-core and are re-exported from here)
  *   scoring.ts      — pure domain: relevance scoring functions (no I/O)
  *
  * Embedding and compaction jobs run as graphile-worker services:
@@ -97,7 +98,7 @@ export {
   type ConversationMeta,
   type CompactMessageRow,
   type SummaryRow,
-} from './compactor/index.js'
+} from '@rivetos/memory-core'
 
 export {
   synthesizeToolCallContent,
@@ -391,8 +392,8 @@ export {
   formatRecompilePrompt,
   parseWikiPatches,
   parseRecompileResult,
-} from './wiki/prompts.js'
-export type { ExtractionCandidate } from './wiki/prompts.js'
+} from '@rivetos/memory-core'
+export type { ExtractionCandidate } from '@rivetos/memory-core'
 export type {
   WikiTopicRow,
   WikiTopicHit,

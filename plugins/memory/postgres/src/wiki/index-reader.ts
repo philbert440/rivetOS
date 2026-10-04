@@ -18,7 +18,7 @@ import {
   type WikiCitation,
   type WikiPage,
 } from '@rivetos/wiki-core'
-import { WIKI_PIPELINE_VERSION } from './prompts.js'
+import { WIKI_PIPELINE_VERSION } from '@rivetos/memory-core'
 
 export interface WikiTopicRow {
   slug: string

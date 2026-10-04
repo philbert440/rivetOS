@@ -50,6 +50,7 @@ RivetOS is a lightweight AI agent runtime. It connects LLM providers (Anthropic,
 │   ├── aisdk/                   # AI SDK ↔ RivetOS adapter (message + stream-part conversion)
 │   ├── workflows/               # Workflows v1 engine — document model, step SDK, journal replay
 │   ├── wiki-core/               # Memory wiki page model — parse/apply/serialize, pure
+│   ├── memory-core/             # Backend-neutral memory logic — scoring, fusion policy, compaction + wiki prompts, pure
 │   ├── den-protocol/            # rivet-den event protocol + pure room-state reducer
 │   ├── gateway-client/          # Typed HTTP+WS client for the gateway API (RivetHub's bridge)
 │   ├── mcp/                     # MCP primitives shared by the sidecar and clients
@@ -146,6 +147,7 @@ den-protocol            ← Leaf. No workspace deps.
 wiki-core               ← Leaf. No workspace deps.
 workflows               ← Leaf. No workspace deps.
 nx (nx-plugin)          ← Leaf. No workspace deps.
+memory-core             ← wiki-core
 
 types                   ← den-protocol
 aisdk                   ← types
@@ -160,7 +162,7 @@ cli                     ← boot, workflows
 
 plugins/providers/*     ← types, aisdk
   └─ claude-cli         ← + mcp, mcp-v2
-plugins/memory/postgres ← types, wiki-core
+plugins/memory/postgres ← types, wiki-core, memory-core
 plugins/channels/*      ← types
 plugins/tools/*         ← types
   └─ mcp-client         ← + mcp-v2

@@ -2,8 +2,9 @@
  * Compactor formatters — exact spec from pr-spec.md §1.2.
  *
  * The actual compaction worker lives at `services/compaction-worker/` (graphile-worker
- * service). This file only retains the prompt-formatting functions that the worker
- * imports from `@rivetos/memory-postgres`.
+ * service). This file holds the prompt-formatting functions; it lives in
+ * `@rivetos/memory-core` so every memory backend formats the same way, and the
+ * worker reaches it through the `@rivetos/memory-postgres` re-export.
  */
 
 import {

@@ -217,7 +217,7 @@ The v5 pipeline (April 2026) replaces the original cloud-model-tuned compactor w
 
 ### Prompt architecture
 
-Three system prompts live in `plugins/memory/postgres/src/compactor/types.ts`:
+Three system prompts live in `packages/memory-core/src/compactor/types.ts`:
 
 - `LEAF_SYSTEM_PROMPT`: summarize raw messages
 - `BRANCH_SYSTEM_PROMPT`: summarize leaves
