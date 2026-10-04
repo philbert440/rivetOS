@@ -767,7 +767,9 @@ registry gets a file of their own under `users/` beside it (`users_dir`), with t
 loop, wiki directory (`<wiki_dir>/users/<userId>`) and tags. A turn, a capture or a memory request
 that den resolved to such a user is served from that user's file and never from the owner's; a
 user whose file cannot be opened, or whose id differs from another's only by case, is refused. The
-registry is re-read while the node runs. New conversations and messages record whose store they
+registry is checked on every lookup and re-read when it changes; a user seen once stays routed to
+their own store until restart. With an in-memory owner store (`path: ':memory:'`) the other
+users' stores are in-memory too and do not survive a restart. New conversations and messages record whose store they
 were written to (`owner_user_id`). With `per_user_files: false` those users get no memory on
 this node at all (nothing stored, nothing read). If `memory.sqlite`
 is set, remove or ignore a stale `RIVETOS_PG_URL` in `~/.rivetos/.env` so the MCP sidecar

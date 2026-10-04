@@ -39,10 +39,11 @@ export type {
   SqliteTagCount,
 } from './tags.js'
 
+import { statSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { dirname, join } from 'node:path'
 import type { PluginManifest } from '@rivetos/types'
-import { DEFAULT_OWNER_USER_ID, loadUsersRegistry, sharedPath } from '@rivetos/types'
+import { DEFAULT_OWNER_USER_ID, loadUsersRegistry, sharedDir, sharedPath } from '@rivetos/types'
 import type { Tool } from '@rivetos/types'
 import { BLOCKED, SqliteRoutingMemory, foldUserId, isSafeUserId } from './routing.js'
 import { SqliteMemory, resolveSqlitePath } from './adapter.js'
@@ -170,13 +171,21 @@ export const manifest: PluginManifest = {
         ...tool,
         async execute(args, signal, context) {
           const uid = context?.session?.userId
-          if (uid && registry.others().has(uid)) {
-            // Throws for a user whose store is blocked.
-            const routed = routing ? toolFor(routing.storeFor(uid), tool.name) : undefined
-            if (!routed) {
-              throw new Error(`memory for user "${uid}" is unavailable on this node`)
+          if (uid) {
+            if (routing) {
+              // The same decision every other surface makes; throws for a
+              // user whose store is blocked.
+              const store = routing.storeFor(uid)
+              if (store !== main) {
+                const routed = toolFor(store, tool.name)
+                if (!routed) throw new Error(`memory for user "${uid}" is unavailable on this node`)
+                return routed.execute(args, signal, context)
+              }
+            } else if (registry.others().has(uid)) {
+              throw new Error(
+                `memory for user "${uid}" is unavailable on this node (per-user files are off)`,
+              )
             }
-            return routed.execute(args, signal, context)
           }
           return tool.execute(args, signal, context)
         },
@@ -361,51 +370,76 @@ export function resolveCompactionSettings(
   return out
 }
 
-/** How long a read of the users registry is reused. */
-const REGISTRY_TTL_MS = 5000
-
 /**
- * A live view of the users registry: who the owner is and everyone else it
- * lists. Re-read at most every few seconds. Without a registry the owner is
- * `RIVETOS_USER_ID` (or the default owner id) and there is nobody else. A
- * registry that cannot be read is reported, and the last good view is kept:
- * a user already known stays routed.
+ * A live view of the users registry: who the owner is, and everyone else it
+ * has ever listed while this process ran.
+ *
+ * - Fresh on every call: the registry files are stat'ed each time and re-read
+ *   when one changed, so a user den starts stamping is known here at once.
+ * - Never forgets: a user seen once stays an "other user" until restart. A
+ *   registry file caught half-written (or emptied, or made invalid) cannot
+ *   send that user's traffic to the owner's file, and a user removed from
+ *   the registry keeps being routed to their own store, never the owner's.
+ *
+ * Without a registry the owner is `RIVETOS_USER_ID` (or the default owner
+ * id) and there is nobody else.
  */
 function registryView(
   env: Record<string, string | undefined>,
   warn: (line: string) => void,
 ): { owner: () => string; others: () => ReadonlySet<string> } {
   const fallback = env.RIVETOS_USER_ID?.trim() || DEFAULT_OWNER_USER_ID
-  let view: { owner: string; others: ReadonlySet<string> } = { owner: fallback, others: new Set() }
-  let readAt = Number.NEGATIVE_INFINITY
-  let warned = false
-  const current = (): { owner: string; others: ReadonlySet<string> } => {
-    const now = Date.now()
-    if (now - readAt < REGISTRY_TTL_MS) return view
-    readAt = now
+  // The files loadUsersRegistry may read, in its order.
+  const candidates = [
+    env.RIVETOS_USERS_FILE?.trim() || undefined,
+    join(env.RIVETOS_SHARED_DIR?.trim() || sharedDir(), 'rivetos', 'users.json'),
+    join(homedir(), '.rivetos', 'users.json'),
+  ].filter((p): p is string => p !== undefined)
+  const signature = (): string =>
+    candidates
+      .map((path) => {
+        try {
+          const st = statSync(path)
+          return `${String(st.mtimeMs)}:${String(st.size)}`
+        } catch {
+          return '-'
+        }
+      })
+      .join('|')
+
+  let owner = fallback
+  const others = new Set<string>()
+  let seen: string | undefined
+  const current = (): void => {
+    const now = signature()
+    if (now === seen) return
+    seen = now
     try {
       const registry = loadUsersRegistry(env)
-      view = registry
-        ? {
-            owner: registry.ownerUserId,
-            others: new Set(
-              Object.keys(registry.users).filter((id) => id !== registry.ownerUserId),
-            ),
-          }
-        : { owner: fallback, others: new Set() }
-      warned = false
+      if (!registry) return
+      const listed = Object.keys(registry.users).filter((id) => id !== registry.ownerUserId)
+      // A registry that lists only its owner after one that listed more is
+      // what a half-written or invalid file looks like: keep who we know.
+      if (listed.length > 0 || others.size === 0) owner = registry.ownerUserId
+      for (const id of listed) others.add(id)
+      // The owner is never an "other user", whatever an earlier read said.
+      others.delete(owner)
     } catch (err) {
-      if (!warned) {
-        warned = true
-        warn(
-          `memory.sqlite: the users registry could not be read (${err instanceof Error ? err.message : String(err)}); ` +
-            'keeping the last known users',
-        )
-      }
+      warn(
+        `memory.sqlite: the users registry could not be read (${err instanceof Error ? err.message : String(err)}); keeping the users already known`,
+      )
     }
-    return view
   }
-  return { owner: () => current().owner, others: () => current().others }
+  return {
+    owner: () => {
+      current()
+      return owner
+    },
+    others: () => {
+      current()
+      return others
+    },
+  }
 }
 
 /**

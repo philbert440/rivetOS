@@ -318,7 +318,8 @@ export class SqliteMemory implements Memory {
     }
     this.db = new DatabaseSync(path)
     // busy_timeout before WAL so a cold-open race waits instead of throwing SQLITE_BUSY.
-    // A failure while preparing the file must not leave it open.
+    // A failure anywhere in the rest of the constructor must not leave the
+    // file open.
     try {
       this.db.exec('PRAGMA busy_timeout = 5000')
       this.db.exec('PRAGMA journal_mode = WAL')
@@ -336,6 +337,159 @@ export class SqliteMemory implements Memory {
         `CREATE INDEX IF NOT EXISTS idx_ros_conversations_owner ON ros_conversations (owner_user_id)
           WHERE owner_user_id IS NOT NULL`,
       )
+      if (path !== ':memory:') {
+        // WAL/SHM appear after journal_mode=WAL; tighten DB + siblings.
+        restrictSqliteFileModes(path)
+      }
+
+      this.log =
+        config.log ??
+        ((line) => {
+          console.warn(line)
+        })
+      this.jobQueue = new SqliteJobQueue(this.db, config.now)
+      this.vectorIndex = new ExactScanIndex(
+        this.db,
+        `FROM ros_messages m WHERE ${MESSAGE_QUALITY_SQL}`,
+        this.log,
+      )
+      this.summaryIndex = new ExactScanIndex(
+        this.db,
+        `FROM ros_summaries m LEFT JOIN ros_conversations c ON c.id = m.conversation_id WHERE 1 = 1`,
+        this.log,
+        'c.agent',
+      )
+      this.vocabularyStore = new SqliteTagVocabulary(
+        this.db,
+        (fn) => this.tx(fn),
+        () => this.stamp(),
+      )
+      this.projectRule = config.projectRule
+      // Topics are keyed by slug and belong to no agent.
+      this.topicIndex = new ExactScanIndex(
+        this.db,
+        `FROM (SELECT slug AS id, embedding, '' AS agent FROM ros_wiki_topics) m WHERE 1 = 1`,
+        this.log,
+      )
+      this.embedClient = config.embed ? new EmbedClient(config.embed) : undefined
+      this.expectedDims = config.embed?.expectedDims
+      const embedClient = this.embedClient
+      this.wikiDir = config.wiki?.dir
+      this.wikiIndex = config.wiki
+        ? new SqliteWikiIndex(this.db, {
+            ...(embedClient
+              ? { embedQuery: (text) => embedClient.embedQuery(text), vectors: this.topicIndex }
+              : {}),
+            onTopicChanged: (slug) => {
+              this.enqueueTopicEmbed(slug)
+            },
+            now: this.clock,
+          })
+        : undefined
+      this.jobRunner = new JobRunner(this.jobQueue, {
+        log: this.log,
+        ...(config.now ? { now: config.now } : {}),
+      })
+      this.jobRunner.handle(EMBED_TARGET_TASK, (payload) => this.embedTarget(payload))
+      if (this.embedClient) {
+        // Backstop: rows that have no job (written before embedding was
+        // configured), and rows whose job died during an endpoint outage, are
+        // queued again in batches.
+        this.jobRunner.sweep({
+          name: 'enqueue-unembedded',
+          everyMs: 10 * 60 * 1000,
+          run: () => {
+            this.enqueueUnembedded()
+            this.enqueueUnembeddedTopics()
+          },
+        })
+        if (config.workers ?? true) this.reconcileEmbedStore()
+        else this.warnOnForeignModel(this.embedClient.model)
+      }
+      const taggerLlmConfig = config.tagging?.enabled
+        ? (config.tagging.llm ?? config.compactor)
+        : undefined
+      if (taggerLlmConfig) {
+        const tagger = new SqliteTagger(
+          this.db,
+          // The tagger's own budget, whichever endpoint it borrows: a short call,
+          // retried once.
+          new LlmClient({ ...taggerLlmConfig, maxRetries: TAG_LLM_RETRIES, timeoutMs: 60_000 }),
+          this.jobQueue,
+          () => this.tags(),
+          this.vocabularyStore,
+          (fn) => this.tx(fn),
+          this.log,
+        )
+        this.tagger = tagger
+        this.jobRunner.handle(SUGGEST_TAGS_TASK, async (payload) => {
+          await tagger.suggest(payload)
+        })
+      }
+      if (config.compactor) {
+        const llm = new LlmClient(config.compactor)
+        if (config.wiki?.extraction && this.wikiIndex) {
+          const extractor = new SqliteWikiExtractor(
+            this.db,
+            this.wikiIndex,
+            config.wiki.dir,
+            llm,
+            this.jobQueue,
+            () => this.tags(),
+            { log: this.log, now: this.clock },
+          )
+          this.wikiExtractor = extractor
+          this.jobRunner.handle(EXTRACT_WIKI_TASK, (payload) => extractor.extract(payload))
+          // Leaves written before extraction was on, failed ones, and ones mined
+          // by an older pipeline version.
+          this.jobRunner.sweep({
+            name: 'enqueue-wiki-backfill',
+            everyMs: 10 * 60 * 1000,
+            run: () => {
+              extractor.enqueueBackfill()
+            },
+          })
+        }
+        this.compactor = new SqliteCompactor(
+          this.db,
+          llm,
+          this.jobQueue,
+          config.compaction,
+          {
+            log: this.log,
+            onSummary: ({ id, kind }) => {
+              this.enqueueSummaryEmbed(id)
+              if (kind === 'leaf') {
+                try {
+                  this.wikiExtractor?.enqueue(id)
+                } catch {
+                  // the backfill sweep picks it up
+                }
+                try {
+                  this.tagger?.enqueue(id)
+                } catch {
+                  // a summary without suggestions can still be tagged by hand
+                }
+              }
+            },
+          },
+          config.now,
+        )
+        const compactor = this.compactor
+        this.jobRunner.handle(COMPACT_TASK, async (payload) => {
+          await compactor.compactConversation(payload)
+        })
+        this.jobRunner.sweep({
+          name: 'enqueue-idle',
+          everyMs: 5 * 60 * 1000,
+          run: () => {
+            compactor.enqueueIdle()
+          },
+        })
+      }
+      if ((this.embedClient || this.compactor || this.tagger) && (config.workers ?? true)) {
+        this.jobRunner.start()
+      }
     } catch (err) {
       try {
         this.db.close()
@@ -343,159 +497,6 @@ export class SqliteMemory implements Memory {
         // already closed
       }
       throw err
-    }
-    if (path !== ':memory:') {
-      // WAL/SHM appear after journal_mode=WAL; tighten DB + siblings.
-      restrictSqliteFileModes(path)
-    }
-
-    this.log =
-      config.log ??
-      ((line) => {
-        console.warn(line)
-      })
-    this.jobQueue = new SqliteJobQueue(this.db, config.now)
-    this.vectorIndex = new ExactScanIndex(
-      this.db,
-      `FROM ros_messages m WHERE ${MESSAGE_QUALITY_SQL}`,
-      this.log,
-    )
-    this.summaryIndex = new ExactScanIndex(
-      this.db,
-      `FROM ros_summaries m LEFT JOIN ros_conversations c ON c.id = m.conversation_id WHERE 1 = 1`,
-      this.log,
-      'c.agent',
-    )
-    this.vocabularyStore = new SqliteTagVocabulary(
-      this.db,
-      (fn) => this.tx(fn),
-      () => this.stamp(),
-    )
-    this.projectRule = config.projectRule
-    // Topics are keyed by slug and belong to no agent.
-    this.topicIndex = new ExactScanIndex(
-      this.db,
-      `FROM (SELECT slug AS id, embedding, '' AS agent FROM ros_wiki_topics) m WHERE 1 = 1`,
-      this.log,
-    )
-    this.embedClient = config.embed ? new EmbedClient(config.embed) : undefined
-    this.expectedDims = config.embed?.expectedDims
-    const embedClient = this.embedClient
-    this.wikiDir = config.wiki?.dir
-    this.wikiIndex = config.wiki
-      ? new SqliteWikiIndex(this.db, {
-          ...(embedClient
-            ? { embedQuery: (text) => embedClient.embedQuery(text), vectors: this.topicIndex }
-            : {}),
-          onTopicChanged: (slug) => {
-            this.enqueueTopicEmbed(slug)
-          },
-          now: this.clock,
-        })
-      : undefined
-    this.jobRunner = new JobRunner(this.jobQueue, {
-      log: this.log,
-      ...(config.now ? { now: config.now } : {}),
-    })
-    this.jobRunner.handle(EMBED_TARGET_TASK, (payload) => this.embedTarget(payload))
-    if (this.embedClient) {
-      // Backstop: rows that have no job (written before embedding was
-      // configured), and rows whose job died during an endpoint outage, are
-      // queued again in batches.
-      this.jobRunner.sweep({
-        name: 'enqueue-unembedded',
-        everyMs: 10 * 60 * 1000,
-        run: () => {
-          this.enqueueUnembedded()
-          this.enqueueUnembeddedTopics()
-        },
-      })
-      if (config.workers ?? true) this.reconcileEmbedStore()
-      else this.warnOnForeignModel(this.embedClient.model)
-    }
-    const taggerLlmConfig = config.tagging?.enabled
-      ? (config.tagging.llm ?? config.compactor)
-      : undefined
-    if (taggerLlmConfig) {
-      const tagger = new SqliteTagger(
-        this.db,
-        // The tagger's own budget, whichever endpoint it borrows: a short call,
-        // retried once.
-        new LlmClient({ ...taggerLlmConfig, maxRetries: TAG_LLM_RETRIES, timeoutMs: 60_000 }),
-        this.jobQueue,
-        () => this.tags(),
-        this.vocabularyStore,
-        (fn) => this.tx(fn),
-        this.log,
-      )
-      this.tagger = tagger
-      this.jobRunner.handle(SUGGEST_TAGS_TASK, async (payload) => {
-        await tagger.suggest(payload)
-      })
-    }
-    if (config.compactor) {
-      const llm = new LlmClient(config.compactor)
-      if (config.wiki?.extraction && this.wikiIndex) {
-        const extractor = new SqliteWikiExtractor(
-          this.db,
-          this.wikiIndex,
-          config.wiki.dir,
-          llm,
-          this.jobQueue,
-          () => this.tags(),
-          { log: this.log, now: this.clock },
-        )
-        this.wikiExtractor = extractor
-        this.jobRunner.handle(EXTRACT_WIKI_TASK, (payload) => extractor.extract(payload))
-        // Leaves written before extraction was on, failed ones, and ones mined
-        // by an older pipeline version.
-        this.jobRunner.sweep({
-          name: 'enqueue-wiki-backfill',
-          everyMs: 10 * 60 * 1000,
-          run: () => {
-            extractor.enqueueBackfill()
-          },
-        })
-      }
-      this.compactor = new SqliteCompactor(
-        this.db,
-        llm,
-        this.jobQueue,
-        config.compaction,
-        {
-          log: this.log,
-          onSummary: ({ id, kind }) => {
-            this.enqueueSummaryEmbed(id)
-            if (kind === 'leaf') {
-              try {
-                this.wikiExtractor?.enqueue(id)
-              } catch {
-                // the backfill sweep picks it up
-              }
-              try {
-                this.tagger?.enqueue(id)
-              } catch {
-                // a summary without suggestions can still be tagged by hand
-              }
-            }
-          },
-        },
-        config.now,
-      )
-      const compactor = this.compactor
-      this.jobRunner.handle(COMPACT_TASK, async (payload) => {
-        await compactor.compactConversation(payload)
-      })
-      this.jobRunner.sweep({
-        name: 'enqueue-idle',
-        everyMs: 5 * 60 * 1000,
-        run: () => {
-          compactor.enqueueIdle()
-        },
-      })
-    }
-    if ((this.embedClient || this.compactor || this.tagger) && (config.workers ?? true)) {
-      this.jobRunner.start()
     }
   }
 

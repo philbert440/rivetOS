@@ -38,7 +38,9 @@ describe('memory-sqlite manifest', () => {
 
   function makeCtx(
     pluginConfig: Record<string, unknown> | undefined,
-    env: NodeJS.ProcessEnv = process.env,
+    // Hermetic by default: the host's embedding or compactor endpoints must
+    // never be picked up by a test.
+    env: NodeJS.ProcessEnv = {},
   ): {
     ctx: RegistrationContext
     getRegistered: () => Memory | undefined
@@ -124,7 +126,7 @@ describe('memory-sqlite manifest', () => {
     )
     const { ctx } = makeCtx(
       { path: join(dir, 'm.sqlite'), per_user_files: false },
-      { ...process.env, RIVETOS_USERS_FILE: usersFile },
+      { RIVETOS_USERS_FILE: usersFile },
     )
     await (manifest as PluginManifest).register(ctx)
     expect(ctx.logger.warn).toHaveBeenCalledWith(expect.stringContaining('get no memory from this store'))
@@ -149,7 +151,7 @@ describe('memory-sqlite manifest', () => {
     const tools: Tool[] = []
     const { ctx } = makeCtx(
       { path: join(dir, 'm.sqlite'), per_user_files: false },
-      { ...process.env, RIVETOS_USERS_FILE: usersFile },
+      { RIVETOS_USERS_FILE: usersFile },
     )
     ctx.registerTool = (tool) => {
       tools.push(tool)
@@ -194,7 +196,7 @@ describe('memory-sqlite manifest', () => {
     )
     const { ctx, getRegistered } = makeCtx(
       { path: join(dir, 'm.sqlite'), per_user_files: false },
-      { ...process.env, RIVETOS_USERS_FILE: usersFile },
+      { RIVETOS_USERS_FILE: usersFile },
     )
     await (manifest as PluginManifest).register(ctx)
     const memory = getRegistered()
@@ -262,7 +264,7 @@ describe('memory-sqlite manifest', () => {
     const tools: Tool[] = []
     const { ctx, getRegistered } = makeCtx(
       { path: join(dir, 'm.sqlite') },
-      { ...process.env, RIVETOS_USERS_FILE: usersFile },
+      { RIVETOS_USERS_FILE: usersFile },
     )
     ctx.registerTool = (tool) => {
       tools.push(tool)
@@ -314,43 +316,58 @@ describe('memory-sqlite manifest', () => {
     expect(String(await search.execute({ query: 'budget' }, undefined, session('owner')))).toMatch(/quarterly/)
   })
 
-  it('a user added to the registry while the node runs gets their own file, not the owner\'s', async () => {
-    vi.useFakeTimers({ toFake: ['Date'] })
-    try {
-      const dir = mkdtempSync(join(tmpdir(), 'ros-mem-plugin-'))
-      dirs.push(dir)
-      const usersFile = join(dir, 'users.json')
-      const { writeFileSync, existsSync } = await import('node:fs')
-      const write = (users: Record<string, unknown>): void => {
-        writeFileSync(usersFile, JSON.stringify({ ownerUserId: 'alice', unmappedIsOwner: false, users }))
-      }
-      write({ alice: { id: 'alice', devices: [] } })
-      const { ctx, getRegistered } = makeCtx(
-        { path: join(dir, 'm.sqlite') },
-        { ...process.env, RIVETOS_USERS_FILE: usersFile },
-      )
-      await (manifest as PluginManifest).register(ctx)
-      const memory = getRegistered()
-      if (!memory || !hasMemoryBackend(memory)) throw new Error('not registered')
-      expect(memory.backendForUser?.('latecomer')).toBeNull()
+  it('a user added to the registry while the node runs gets their own file at once, and is never forgotten', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'ros-mem-plugin-'))
+    dirs.push(dir)
+    const usersFile = join(dir, 'users.json')
+    const { writeFileSync, existsSync } = await import('node:fs')
+    const write = (users: Record<string, unknown>): void => {
+      writeFileSync(usersFile, JSON.stringify({ ownerUserId: 'alice', unmappedIsOwner: false, users }))
+    }
+    write({ alice: { id: 'alice', devices: [] } })
+    const tools: Tool[] = []
+    const { ctx, getRegistered } = makeCtx(
+      { path: join(dir, 'm.sqlite') },
+      { RIVETOS_USERS_FILE: usersFile },
+    )
+    ctx.registerTool = (tool) => {
+      tools.push(tool)
+    }
+    await (manifest as PluginManifest).register(ctx)
+    const memory = getRegistered()
+    if (!memory || !hasMemoryBackend(memory)) throw new Error('not registered')
+    await memory.append({ sessionId: 'gateway:alice', agent: 'rivet', channel: 'gateway', role: 'user', content: 'the owner reviews the quarterly budget' })
+    expect(memory.backendForUser?.('latecomer')).toBeNull()
 
-      // The registry gains a user; the plugin re-reads it within a few seconds.
-      write({ alice: { id: 'alice', devices: [] }, latecomer: { id: 'latecomer', devices: ['dev9'] } })
-      vi.advanceTimersByTime(6000)
-      await memory.append({
-        sessionId: 'gateway:latecomer',
-        agent: 'rivet',
-        channel: 'gateway',
-        role: 'user',
-        content: 'the new user asks about the quarterly budget',
-      })
-      expect(existsSync(join(dir, 'users', 'latecomer', 'memory.sqlite'))).toBe(true)
-      expect(await memory.search('budget')).toEqual([])
+    // The registry gains a user. Their very first turn, with no wait, goes to
+    // their own file, and they see nothing of the owner's.
+    write({ alice: { id: 'alice', devices: [] }, latecomer: { id: 'latecomer', devices: ['dev9'] } })
+    const session = { session: { userId: 'latecomer' } } as unknown as ToolContext
+    expect(await memory.getContextForTurn('budget', 'rivet', { userId: 'latecomer' })).not.toMatch(/quarterly/)
+    expect(String(await tools[0].execute({ query: 'budget' }, undefined, session))).not.toMatch(/quarterly/)
+    await memory.append({
+      sessionId: 'gateway:latecomer',
+      agent: 'rivet',
+      channel: 'gateway',
+      role: 'user',
+      content: 'the new user asks about the travel budget',
+    })
+    expect(existsSync(join(dir, 'users', 'latecomer', 'memory.sqlite'))).toBe(true)
+    expect((await memory.search('budget')).map((h) => h.content)).toEqual(['the owner reviews the quarterly budget'])
+    expect((await memory.search('budget', { userId: 'latecomer' })).map((h) => h.content)).toEqual([
+      'the new user asks about the travel budget',
+    ])
+    expect((await memory.backendForUser?.('latecomer')?.stats())?.messages).toBe(1)
+    expect((await memory.backend().stats()).messages).toBe(1)
+
+    // The file is caught half-written, then emptied of everyone but the owner,
+    // then removed: the user is still theirs, never the owner's.
+    for (const broken of ['{"ownerUserId":"alice","users":{', JSON.stringify({ ownerUserId: 'alice', users: { alice: { id: 'alice', devices: [] } } })]) {
+      writeFileSync(usersFile, broken)
       expect(await memory.search('budget', { userId: 'latecomer' })).toHaveLength(1)
-      expect((await memory.backendForUser?.('latecomer')?.stats())?.messages).toBe(1)
-      expect((await memory.backend().stats()).messages).toBe(0)
-    } finally {
-      vi.useRealTimers()
+      expect(memory.backendForUser?.('latecomer')).not.toBeNull()
+      expect(String(await tools[0].execute({ query: 'budget' }, undefined, session))).toMatch(/travel budget/)
+      expect(await memory.search('budget')).toHaveLength(1)
     }
   })
 
@@ -375,7 +392,7 @@ describe('memory-sqlite manifest', () => {
     const tools: Tool[] = []
     const { ctx, getRegistered } = makeCtx(
       { path: join(dir, 'm.sqlite') },
-      { ...process.env, RIVETOS_USERS_FILE: usersFile },
+      { RIVETOS_USERS_FILE: usersFile },
     )
     ctx.registerTool = (tool) => {
       tools.push(tool)
@@ -395,6 +412,10 @@ describe('memory-sqlite manifest', () => {
         memory.append({ sessionId: `gateway:${id}`, agent: 'rivet', channel: 'gateway', role: 'user', content: 'hello' }),
       ).rejects.toThrow(/unavailable/)
       await expect(memory.search('hello', { userId: id })).rejects.toThrow(/unavailable/)
+      await expect(memory.getContextForTurn('hello', 'rivet', { userId: id })).rejects.toThrow(/unavailable/)
+      await expect(memory.getSessionHistory(`gateway:${id}`)).rejects.toThrow(/unavailable/)
+      await expect(memory.saveSessionSettings?.(`gateway:${id}`, { a: 1 })).rejects.toThrow(/unavailable/)
+      await expect(memory.loadSessionSettings?.(`gateway:${id}`)).rejects.toThrow(/unavailable/)
       await expect(
         tools[0].execute({ query: 'hello' }, undefined, { session: { userId: id } } as unknown as ToolContext),
       ).rejects.toThrow(/unavailable/)

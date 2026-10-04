@@ -15,6 +15,9 @@ import type {
 } from '@rivetos/types'
 import type { SqliteMemory } from './adapter.js'
 
+/** How long a blocked user's store is left alone before the open is tried again. */
+const BLOCKED_RETRY_MS = 60_000
+
 /** A user whose store could not be opened: refused, never sent to the owner's. */
 export const BLOCKED = Symbol('blocked user store')
 
@@ -43,6 +46,7 @@ export function foldUserId(id: string): string {
 // promise, like every other failure of the Memory contract.
 export class SqliteRoutingMemory implements Memory {
   private readonly users = new Map<string, SqliteMemory | typeof BLOCKED>()
+  private readonly blockedAt = new Map<string, number>()
 
   /**
    * @param resolve Called for a user id with no store yet. Returns that
@@ -56,15 +60,27 @@ export class SqliteRoutingMemory implements Memory {
     private readonly resolve: (userId: string) => SqliteMemory | typeof BLOCKED | undefined = () =>
       undefined,
   ) {
-    for (const [id, store] of users) this.users.set(id, store)
+    for (const [id, store] of users) {
+      this.users.set(id, store)
+      if (store === BLOCKED) this.blockedAt.set(id, Date.now())
+    }
   }
 
   private lookup(userId: string): SqliteMemory | typeof BLOCKED | undefined {
     const known = this.users.get(userId)
-    if (known !== undefined) return known
+    if (known !== undefined && known !== BLOCKED) return known
+    // A blocked user stays refused; the open is tried again after a while,
+    // so a passing failure does not lock them out until restart.
+    if (known === BLOCKED) {
+      const since = this.blockedAt.get(userId) ?? 0
+      if (Date.now() - since < BLOCKED_RETRY_MS) return BLOCKED
+    }
     // Not seen at registration: the registry may have gained this user since.
     const found = this.resolve(userId)
-    if (found !== undefined) this.users.set(userId, found)
+    if (found === undefined) return known
+    this.users.set(userId, found)
+    if (found === BLOCKED) this.blockedAt.set(userId, Date.now())
+    else this.blockedAt.delete(userId)
     return found
   }
 
