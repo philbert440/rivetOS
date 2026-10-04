@@ -153,6 +153,8 @@ fun EnrollScreen(
     }
 
     fun pairWith(text: String) {
+        // One pairing at a time: a second one would import over the first.
+        if (busy) return
         scanning = false
         error = null
         val code = when (val parsed = parsePairingCode(text)) {
@@ -241,7 +243,7 @@ fun EnrollScreen(
     linkCode?.let { text ->
         val parsed = parsePairingCode(text)
         val computer = (parsed as? PairingParse.Ok)?.let { pairingGatewayLabel(it.code) }
-        if (computer != null) {
+        if (computer != null && !busy) {
             val replaces = c.identity.hasIdentity()
             RivetConfirmDialog(
                 title = stringResource(R.string.pair_link_title),
