@@ -388,6 +388,7 @@ function AgentEditor({
     >
       <Dialog.Portal>
         <Dialog.Overlay className="fixed inset-0 z-50 bg-bg/70" />
+        {discardDialog.element}
         <Dialog.Content
           aria-label={agent ? 'Edit agent' : duplicate ? 'Copy agent' : 'New agent'}
           onInteractOutside={(e) => e.preventDefault()}
