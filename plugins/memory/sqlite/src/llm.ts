@@ -136,10 +136,10 @@ export class LlmClient {
           }>
         }
         const choice = data.choices?.[0]
-        // A thinking model may leave `content` empty and answer in `reasoning_content`.
-        const content = choice?.message?.content?.trim()
-          ? choice.message.content
-          : (choice?.message?.reasoning_content ?? null)
+        // As the compaction worker: reasoning stands in only when there is no
+        // content at all. Blank content is rejected below, never replaced by
+        // a chain of thought that would be stored as the summary.
+        const content = choice?.message?.content ?? choice?.message?.reasoning_content ?? null
         // Same prompt, same budget: it would truncate again. Not retried here.
         if (choice?.finish_reason === 'length') throw new LlmTruncatedError(maxTokens)
         if (!content || content.trim().length < minChars) {

@@ -195,11 +195,11 @@ describe('resolveCompactorConfig', () => {
     })
     expect(
       await resolveCompactorConfig(
-        { compactor_endpoint: 'https://cfg.test/v1', compactor_model: 'cfg-model', compactor_timeout_ms: 1000 },
+        { compactor_endpoint: 'https://cfg.test/v1', compactor_model: 'cfg-model', compactor_timeout_ms: 1 },
         env,
         warn,
       ),
-    ).toEqual({ endpoint: 'https://cfg.test/v1', model: 'cfg-model', apiKey: 'env-key', timeoutMs: 1000 })
+    ).toEqual({ endpoint: 'https://cfg.test/v1', model: 'cfg-model', apiKey: 'env-key', timeoutMs: 5000 })
   })
 
   it('requires a model with an endpoint', async () => {

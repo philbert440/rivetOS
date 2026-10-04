@@ -793,7 +793,7 @@ memory:
 | `compactor_model` | string | `RIVETOS_COMPACTOR_MODEL` | Model that writes summaries. Required with an endpoint. |
 | `compactor_api_key` | string | `RIVETOS_COMPACTOR_API_KEY` | Bearer key for the summarization endpoint. |
 | `compactor_token_command` | string[] | — | Command that prints a bearer token; wins over the key. |
-| `compactor_timeout_ms` | number | `600000` | Per-request timeout. |
+| `compactor_timeout_ms` | number | `600000` | Per-request timeout, clamped to 5 seconds – 60 minutes. |
 | `workers` | boolean | `true` when an embedding or summarization endpoint is set | Run the in-process job loop. `false` queues work without draining it, and a model change is not applied on open: stored vectors are cleared only by a process that runs the job loop (or calls `runJobs()`). |
 
 The file is opened with WAL, a 5s busy timeout, and foreign keys on. Without an embedding

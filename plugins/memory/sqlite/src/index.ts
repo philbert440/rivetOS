@@ -206,7 +206,10 @@ export async function resolveCompactorConfig(
   if (typeof argv === 'string') warn(`memory.sqlite.compactor_token_command: ${argv}`)
   if (Array.isArray(argv)) out.tokenSource = createTokenSource({ argv })
   const timeout = Number(cfg.compactor_timeout_ms)
-  if (Number.isFinite(timeout) && timeout > 0) out.timeoutMs = Math.min(timeout, 60 * 60 * 1000)
+  // Clamped to 5 seconds – 60 minutes: a tiny value would fail every call.
+  if (Number.isFinite(timeout) && timeout > 0) {
+    out.timeoutMs = Math.min(Math.max(timeout, 5000), 60 * 60 * 1000)
+  }
   return out
 }
 

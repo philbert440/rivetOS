@@ -91,7 +91,7 @@ describe('LlmClient', () => {
 describe('compaction on the job loop', () => {
   let memory: SqliteMemory
   afterEach(() => {
-    memory.close()
+    (memory as SqliteMemory | undefined)?.close()
   })
 
   async function fill(m: SqliteMemory, sessionId: string, count: number, agent = 'rivet'): Promise<void> {
@@ -296,16 +296,17 @@ describe('compaction on the job loop', () => {
     await memory.runJobs()
     const summaryHits = await memory.search('datastore', { scope: 'summaries' })
     expect(summaryHits).toHaveLength(1)
-    expect(summaryHits[0]).toMatchObject({ role: 'summary', agent: 'rivet' })
+    // The Postgres shape: role is the summary's kind, agent the marker.
+    expect(summaryHits[0]).toMatchObject({ role: 'leaf', agent: 'summary', layer: 'summary' })
     // 'both' returns the summary alongside messages; 'messages' leaves it out.
-    expect((await memory.search('datastore', { scope: 'both' })).map((h) => h.role)).toContain('summary')
-    expect((await memory.search('datastore', { scope: 'messages' })).map((h) => h.role)).not.toContain('summary')
+    expect((await memory.search('datastore', { scope: 'both' })).map((h) => h.agent)).toContain('summary')
+    expect((await memory.search('datastore', { scope: 'messages' })).map((h) => h.agent)).not.toContain('summary')
     // Returned summaries are reinforced on the full-text path too.
     expect(memory.summaryAccessCountForTest(summaryHits[0].id)).toBeGreaterThanOrEqual(2)
     // Another agent's filter does not see it.
     expect(await memory.search('datastore', { scope: 'summaries', agent: 'other' })).toEqual([])
     // The turn context includes the summary as relevant context.
-    expect(await memory.getContextForTurn('datastore', 'rivet')).toMatch(/\[rivet\/summary\] Decided to keep the datastore/)
+    expect(await memory.getContextForTurn('datastore', 'rivet')).toMatch(/\[summary\/leaf\] Decided to keep the datastore/)
   })
 
   it('embeds summaries and ranks them in hybrid search when an embedding endpoint is set', async () => {
@@ -337,6 +338,6 @@ describe('compaction on the job loop', () => {
     expect(memory.summaryEmbedDimsForTest(leaf.id)).toBe(3)
     // "datastore" matches nothing by full-text; the vector arm finds the summary.
     const hits = await memory.search('datastore', { scope: 'both', limit: 3 })
-    expect(hits[0]).toMatchObject({ id: leaf.id, role: 'summary' })
+    expect(hits[0]).toMatchObject({ id: leaf.id, role: 'leaf', agent: 'summary' })
   })
 })

@@ -193,6 +193,16 @@ const MESSAGE_QUALITY_SQL = `(
   OR (m.role = 'tool' AND length(trim(coalesce(m.tool_result, ''))) >= ${String(HYBRID_MIN_CONTENT_LEN)})
 )`
 
+/**
+ * A summary hit carries the shape the Postgres backend returns: `role` is the
+ * summary's kind (leaf, branch, root) and `agent` is this marker. Filtering
+ * by agent still goes by the conversation the summary belongs to.
+ */
+export const SUMMARY_AGENT = 'summary'
+
+/** A search hit that also says which layer it came from. */
+export type SqliteSearchHit = MemorySearchResult & { layer: 'message' | 'summary' }
+
 /** Job name shared with the Postgres embedding worker. */
 export const EMBED_TARGET_TASK = 'embed-target'
 
@@ -496,7 +506,7 @@ export class SqliteMemory implements Memory {
       scope?: 'messages' | 'summaries' | 'both'
       userId?: string
     },
-  ): Promise<MemorySearchResult[]> {
+  ): Promise<SqliteSearchHit[]> {
     this.assertOpen()
     void options?.userId
     const scope = options?.scope ?? 'both'
@@ -527,8 +537,8 @@ export class SqliteMemory implements Memory {
     agent: string | undefined,
     limit: number,
     scope: 'messages' | 'summaries' | 'both',
-  ): MemorySearchResult[] {
-    const out: Array<MemorySearchResult & { rank: number }> = []
+  ): SqliteSearchHit[] {
+    const out: Array<SqliteSearchHit & { rank: number }> = []
     if (scope !== 'summaries') {
       const rows = this.db
         .prepare(
@@ -550,6 +560,7 @@ export class SqliteMemory implements Memory {
           // bm25() is negative for matches; abs so relevance varies and higher = better.
           relevanceScore: relevanceFromBm25(r.rank),
           createdAt: new Date(r.created_at),
+          layer: 'message',
           rank: r.rank,
         })
       }
@@ -557,7 +568,7 @@ export class SqliteMemory implements Memory {
     if (scope !== 'messages') {
       const rows = this.db
         .prepare(
-          `SELECT s.id, s.content, coalesce(c.agent, '') AS agent, s.created_at,
+          `SELECT s.id, s.content, s.kind AS role, s.created_at,
                   bm25(ros_summaries_fts) AS rank
              FROM ros_summaries_fts
              JOIN ros_summaries s ON s.id = ros_summaries_fts.id
@@ -567,23 +578,25 @@ export class SqliteMemory implements Memory {
             LIMIT ?`,
         )
         .all(...(agent ? [match, agent, limit] : [match, limit])) as unknown as Array<
-        Omit<SearchRow, 'role'>
+        Omit<SearchRow, 'agent'>
       >
       for (const r of rows) {
         out.push({
           id: r.id,
           content: r.content,
-          role: 'summary',
-          agent: r.agent,
+          // The shape Postgres returns for a summary: role is its kind.
+          role: r.role,
+          agent: SUMMARY_AGENT,
           relevanceScore: relevanceFromBm25(r.rank),
           createdAt: new Date(r.created_at),
+          layer: 'summary',
           rank: r.rank,
         })
       }
     }
     const top = out.sort((x, y) => x.rank - y.rank).slice(0, limit)
     // Returned rows are reinforced on every path, as in hybrid search.
-    this.bumpAccess(top.map((h) => (h.role === 'summary' ? `s:${h.id}` : `m:${h.id}`)))
+    this.bumpAccess(top.map((h) => (h.layer === 'summary' ? `s:${h.id}` : `m:${h.id}`)))
     return top.map(({ rank: _rank, ...hit }) => hit)
   }
 
@@ -753,7 +766,7 @@ export class SqliteMemory implements Memory {
     agent: string | undefined,
     limit: number,
     scope: 'messages' | 'summaries' | 'both',
-  ): Promise<MemorySearchResult[]> {
+  ): Promise<SqliteSearchHit[]> {
     const pool = hybridPoolSize(limit)
     const wantMessages = scope !== 'summaries'
     const wantSummaries = scope !== 'messages'
@@ -858,13 +871,14 @@ export class SqliteMemory implements Memory {
     const top = scored[0]?.score ?? 0
     const kept = scored.filter((s) => s.arms >= 2 || s.score >= top * GATE_FRACTION).slice(0, limit)
     this.bumpAccess(kept.map((k) => k.key))
-    return kept.map(({ row, score }) => ({
+    return kept.map(({ key: k, row, score }) => ({
       id: row.id,
       content: row.content,
       role: row.role,
       agent: row.agent,
       relevanceScore: score,
       createdAt: new Date(row.created_at),
+      layer: k.startsWith('s:') ? 'summary' : 'message',
     }))
   }
 
@@ -887,10 +901,9 @@ export class SqliteMemory implements Memory {
       const chunk = summaryIds.slice(i, i + 500)
       const got = this.db
         .prepare(
-          `SELECT s.id, s.content, 'summary' AS role, coalesce(c.agent, '') AS agent,
+          `SELECT s.id, s.content, s.kind AS role, '${SUMMARY_AGENT}' AS agent,
                   s.created_at, NULL AS tool_name, s.access_count
              FROM ros_summaries s
-             LEFT JOIN ros_conversations c ON c.id = s.conversation_id
             WHERE s.id IN (${chunk.map(() => '?').join(', ')})`,
         )
         .all(...chunk) as unknown as HybridRow[]
