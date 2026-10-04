@@ -82,7 +82,7 @@ COPY --from=build /build/plugins/memory/postgres/node_modules/ ./plugins/memory/
 #   node services/embedding-worker/dist/index.js
 #   node services/compaction-worker/dist/index.js
 # Only their compiled output plus the workspace packages they pull in
-# (memory-postgres above, and types → den-protocol, wiki-core) are copied —
+# (memory-postgres above, and types → den-protocol, wiki-core, memory-core) are copied —
 # everything else they need is already hoisted into node_modules.
 COPY --from=build /build/services/embedding-worker/package.json ./services/embedding-worker/
 COPY --from=build /build/services/embedding-worker/dist/ ./services/embedding-worker/dist/
@@ -95,6 +95,8 @@ COPY --from=build /build/packages/den-protocol/package.json ./packages/den-proto
 COPY --from=build /build/packages/den-protocol/dist/ ./packages/den-protocol/dist/
 COPY --from=build /build/packages/wiki-core/package.json ./packages/wiki-core/
 COPY --from=build /build/packages/wiki-core/dist/ ./packages/wiki-core/dist/
+COPY --from=build /build/packages/memory-core/package.json ./packages/memory-core/
+COPY --from=build /build/packages/memory-core/dist/ ./packages/memory-core/dist/
 
 # Source-tree files referenced by the runtime (e.g. workspace templates).
 # Created as a directory in the build stage to ensure COPY succeeds.

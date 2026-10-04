@@ -35,6 +35,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Memory
 
+- New package `@rivetos/memory-core`: the backend-neutral half of the memory system (relevance scoring and RRF, the hybrid fusion policy, compaction prompts and formatters, wiki extraction prompts and patch parsing), with no database or network dependency. `@rivetos/memory-postgres` re-exports everything it exported before, so nothing changes for existing imports; the SQLite backend can now share the same ranking and prompts.
 - Opt-in SQLite memory backend (`plugins/memory/sqlite`, `@rivetos/memory-sqlite`) behind the
   `Memory` contract: WAL file store, append, session/task history, settings, and FTS5 search.
   Config: `memory.sqlite.path`. Mutually exclusive with `memory.postgres`. With the block

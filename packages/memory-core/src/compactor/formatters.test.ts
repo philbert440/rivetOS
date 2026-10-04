@@ -10,9 +10,9 @@ import {
   formatBranchPrompt,
   formatRootPrompt,
   capLeafMessageContent,
-} from './compactor.ts'
-import { fmtIsoMinute, LEAF_MESSAGE_CHAR_CAP } from './types.ts'
-import type { ConversationMeta, CompactMessageRow, SummaryRow } from './types.ts'
+} from './compactor.js'
+import { fmtIsoMinute, LEAF_MESSAGE_CHAR_CAP } from './types.js'
+import type { ConversationMeta, CompactMessageRow, SummaryRow } from './types.js'
 
 // ---------------------------------------------------------------------
 // Fixtures

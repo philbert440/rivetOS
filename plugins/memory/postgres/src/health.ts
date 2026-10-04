@@ -1,6 +1,6 @@
 /** Shared memory diagnostics for MCP and the authenticated HTTP surface. */
 import type pg from 'pg'
-import { MIN_BATCH_SIZE } from './compactor/types.js'
+import { MIN_BATCH_SIZE } from '@rivetos/memory-core'
 import {
   sqlNotHeartbeatConversation,
   type QueueHealthRow,

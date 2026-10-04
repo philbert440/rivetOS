@@ -11,7 +11,7 @@ import { describe, it, expect, beforeAll, afterAll } from 'vitest'
 import pg from 'pg'
 import { applyPatch } from '@rivetos/wiki-core'
 import { WikiIndex } from './index-reader.js'
-import { WIKI_PIPELINE_VERSION } from './prompts.js'
+import { WIKI_PIPELINE_VERSION } from '@rivetos/memory-core'
 
 const TEST_PG_URL =
   process.env.RIVETOS_WIKI_TEST_PG_URL ?? process.env.RIVETOS_TASKS_TEST_PG_URL ?? ''

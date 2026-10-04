@@ -5,7 +5,7 @@
 
 import { describe, it, expect } from 'vitest'
 import { isExtractionCurrent } from './index-reader.js'
-import { WIKI_PIPELINE_VERSION } from './prompts.js'
+import { WIKI_PIPELINE_VERSION } from '@rivetos/memory-core'
 
 describe('isExtractionCurrent', () => {
   it('returns false when no extraction row exists', () => {
