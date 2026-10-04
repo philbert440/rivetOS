@@ -25,7 +25,7 @@ export {
   type ResolveDenUrlProbes,
 } from './den-url.js'
 export { capForStorage, loadEnvFile, isRecord, asString, safeJson } from './helpers.js'
-export { resolveCaptureTransport, type CaptureTransport } from './transport.js'
+export { resolveCaptureTransport, type CaptureTransport, type CaptureUser } from './transport.js'
 export { withFileLock, LockTimeout, type FileLockOptions } from './lock.js'
 export {
   eventIdFromContent,

@@ -169,6 +169,7 @@ async function main(): Promise<void> {
       try {
         const handle = createDenTools({
           denUrl: transport.denUrl,
+          ...(transport.userToken ? { userToken: transport.userToken } : {}),
           enableWrite,
           enableDelegate,
           requestedBy,

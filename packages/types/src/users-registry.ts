@@ -374,6 +374,19 @@ export function resolveUser(registry: UsersRegistry, deviceId: string | null): R
   return { ok: true, ctx: contextFor(registry, matched, bare, db) }
 }
 
+/**
+ * Resolve a registry user by id, for a caller that has already proved who it
+ * is (a per-user token). Fails closed like {@link resolveUser}: an unknown
+ * user, or one with nothing to route to, is an error and never the owner.
+ */
+export function resolveUserById(registry: UsersRegistry, userId: string): ResolveUserResult {
+  const record = Object.values(registry.users).find((rec) => rec.id === userId)
+  if (!record) return { ok: false, error: `user "${userId}" is not in the users registry` }
+  const db = routeFor(registry, record)
+  if (!db) return { ok: false, error: `user "${record.id}" has no usable database` }
+  return { ok: true, ctx: contextFor(registry, record, null, db) }
+}
+
 /** Sessions with no owner row belong to the node owner. */
 export function sessionVisibleTo(ownerUserId: string | undefined, ctx: UserContext): boolean {
   if (!ownerUserId) return ctx.isOwner

@@ -47,7 +47,7 @@ export type {
   SqliteTagCount,
 } from './tags.js'
 
-import { statSync } from 'node:fs'
+import { readdirSync, statSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { dirname, join } from 'node:path'
 import type { PluginManifest } from '@rivetos/types'
@@ -129,6 +129,14 @@ export const manifest: PluginManifest = {
         )
         if (twin !== undefined) {
           throw new Error(`the id differs from "${twin}" only by case or trailing dots`)
+        }
+        // The same for a directory an earlier user left behind: on such a
+        // filesystem this id would open that user's file.
+        const left = usersDir === ':memory:' ? undefined : leftoverTwin(usersDir, id)
+        if (left !== undefined) {
+          throw new Error(
+            `the directory of an earlier user "${left}" differs from this id only by case or trailing dots`,
+          )
         }
         return new SqliteMemory({
           path: usersDir === ':memory:' ? ':memory:' : join(usersDir, id, 'memory.sqlite'),
@@ -455,6 +463,17 @@ function registryView(
  * Where the other users' files go: `users_dir`, or `users/` beside the
  * owner's file. Each user gets `<dir>/<userId>/memory.sqlite`.
  */
+/** A directory under `usersDir` whose name is not `id` but folds to it. */
+function leftoverTwin(usersDir: string, id: string): string | undefined {
+  let names: string[]
+  try {
+    names = readdirSync(usersDir)
+  } catch {
+    return undefined
+  }
+  return names.find((name) => name !== id && foldUserId(name) === foldUserId(id))
+}
+
 export function resolveUsersDir(cfg: Record<string, unknown>, ownerPath: string): string {
   if (typeof cfg.users_dir === 'string' && cfg.users_dir.trim() !== '') {
     return resolveSqlitePath(cfg.users_dir.trim())

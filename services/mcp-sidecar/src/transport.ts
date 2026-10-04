@@ -2,13 +2,17 @@
  * Which backend the sidecar uses for memory, wiki, and delegate tools.
  *
  * `den` is HTTPS to the node's own den (no Postgres in this process).
- * `pg` is the direct pools. A non-empty `RIVETOS_USER_ID` never selects
- * `den`: loopback callers are the owner, so a routed user would read and
- * write the wrong pool. That holds even when transport is forced to `den`.
+ * `pg` is the direct pools. A non-empty `RIVETOS_USER_ID` selects `den`
+ * only together with `RIVETOS_USER_TOKEN`: loopback callers are the owner,
+ * so a routed user without the token the node minted for them would read
+ * and write the wrong store. That holds even when transport is forced to
+ * `den`. With the token, the den serves the session as that user.
  */
 
 export type SidecarTransport =
-  { kind: 'den'; denUrl: string } | { kind: 'pg'; pgUrl: string } | { kind: 'none'; reason: string }
+  | { kind: 'den'; denUrl: string; userToken?: string }
+  | { kind: 'pg'; pgUrl: string }
+  | { kind: 'none'; reason: string }
 
 const USER_BLOCKS_DEN =
   'RIVETOS_USER_ID is set — den transport would hit the owner pool on loopback — and RIVETOS_PG_URL is not set'
@@ -27,7 +31,11 @@ export function resolveSidecarTransport(env: NodeJS.ProcessEnv): SidecarTranspor
   const forced = trimmed(env.RIVETOS_MCP_TRANSPORT)
   const denUrl = trimmed(env.RIVET_DEN_URL)
   const pgUrl = trimmed(env.RIVETOS_PG_URL)
-  const userBlocksDen = env.RIVETOS_USER_ID !== undefined && env.RIVETOS_USER_ID !== ''
+  const routedUser = env.RIVETOS_USER_ID !== undefined && env.RIVETOS_USER_ID !== ''
+  const userToken = routedUser ? trimmed(env.RIVETOS_USER_TOKEN) : ''
+  const userBlocksDen = routedUser && userToken === ''
+  const den = (url: string): SidecarTransport =>
+    userToken ? { kind: 'den', denUrl: url, userToken } : { kind: 'den', denUrl: url }
 
   if (forced === 'den') {
     if (!denUrl) {
@@ -37,7 +45,7 @@ export function resolveSidecarTransport(env: NodeJS.ProcessEnv): SidecarTranspor
       if (pgUrl) return { kind: 'pg', pgUrl }
       return { kind: 'none', reason: USER_BLOCKS_DEN }
     }
-    return { kind: 'den', denUrl }
+    return den(denUrl)
   }
 
   if (forced === 'pg') {
@@ -47,7 +55,7 @@ export function resolveSidecarTransport(env: NodeJS.ProcessEnv): SidecarTranspor
     return { kind: 'pg', pgUrl }
   }
 
-  if (denUrl && !userBlocksDen) return { kind: 'den', denUrl }
+  if (denUrl && !userBlocksDen) return den(denUrl)
   if (pgUrl) return { kind: 'pg', pgUrl }
   if (userBlocksDen && denUrl) return { kind: 'none', reason: USER_BLOCKS_DEN }
   return { kind: 'none', reason: 'RIVET_DEN_URL and RIVETOS_PG_URL are not set' }

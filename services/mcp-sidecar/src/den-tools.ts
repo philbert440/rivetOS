@@ -10,6 +10,7 @@
  */
 
 import { GatewayError, RivetGateway } from '@rivetos/gateway-client'
+import { USER_TOKEN_HEADER } from '@rivetos/types'
 import type { ToolExecuteContext, ToolExecuteResult, ToolRegistration } from '@rivetos/mcp'
 import { toolResultToStructured } from '@rivetos/mcp'
 import { MAX_CHAIN_DEPTH, harnessExecutorGap } from '@rivetos/core'
@@ -127,6 +128,18 @@ export interface DenToolsGateway {
   killTask: RivetGateway['killTask']
 }
 
+/** `fetch` that adds the session's user token to every request. */
+export function fetchWithUserToken(
+  token: string,
+  base: typeof globalThis.fetch = globalThis.fetch,
+): typeof globalThis.fetch {
+  return (input, init) => {
+    const headers = new Headers(init?.headers)
+    headers.set(USER_TOKEN_HEADER, token)
+    return base(input, { ...init, headers })
+  }
+}
+
 export interface DenToolsOptions {
   denUrl: string
   enableWrite: boolean
@@ -134,6 +147,8 @@ export interface DenToolsOptions {
   requestedBy: string
   parentTaskId?: string
   log: (message: string) => void
+  /** The token of the user this session was spawned for; sent with every den request. */
+  userToken?: string
   /** Test seam. Default `new RivetGateway({ baseUrl: denUrl })`. */
   gateway?: DenToolsGateway
 }
@@ -587,7 +602,12 @@ async function onClientDeadline(
 }
 
 export function createDenTools(opts: DenToolsOptions): DenToolsHandle {
-  const gateway = opts.gateway ?? new RivetGateway({ baseUrl: opts.denUrl })
+  const gateway =
+    opts.gateway ??
+    new RivetGateway({
+      baseUrl: opts.denUrl,
+      ...(opts.userToken ? { fetch: fetchWithUserToken(opts.userToken) } : {}),
+    })
   const denUrl = opts.denUrl
   const parent = parentCreateFields(opts.parentTaskId, opts.log)
 

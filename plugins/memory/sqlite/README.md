@@ -70,6 +70,10 @@ refused. Every conversation and message carries `owner_user_id`, the user
 whose store it was written to. `per_user_files: false` turns the per-user
 files off: other users then get no memory here.
 
+A session the node spawns for another user (a claude-cli turn, a hub
+terminal) reaches that user's file through the den with a per-user token
+(`RIVETOS_USER_TOKEN`; see `packages/types/src/user-tokens.ts`).
+
 Moving memory: `rivetos memory export` and `import` read and write the gzip
 NDJSON v1 dump that the Postgres backend uses (`portability.ts`), so a store
 moves between SQLite and Postgres in either direction. Vectors are not in

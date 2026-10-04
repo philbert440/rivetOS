@@ -36,6 +36,12 @@ export interface CaptureRedactionOptions {
 
 export interface CaptureWriterOptions {
   denUrl: string
+  /**
+   * The routed user this session was spawned for (`RIVETOS_USER_ID` and
+   * `RIVETOS_USER_TOKEN`). The token is sent to the den, which writes the
+   * batch to that user's store; the spool is that user's own directory.
+   */
+  user?: { id: string; token: string }
   fetch?: typeof globalThis.fetch
   spoolDir?: string
   log?: (line: string) => void

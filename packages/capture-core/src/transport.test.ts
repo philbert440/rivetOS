@@ -183,3 +183,32 @@ it('den transport carries RIVET_DEN_URL guard warnings for the caller to log', (
   // A clean URL attaches no warnings key at all.
   expect(resolveCaptureTransport({ RIVET_DEN_URL: DEN }, noConfig)).toEqual({ kind: 'den', denUrl: DEN })
 })
+
+it('a routed user with the token the node minted uses the den, as that user', () => {
+  for (const forced of ['den', undefined]) {
+    expect(
+      resolveCaptureTransport({
+        ...(forced ? { RIVETOS_CAPTURE_TRANSPORT: forced } : {}),
+        RIVET_DEN_URL: 'https://127.0.0.1:5174',
+        RIVETOS_USER_ID: 'guest',
+        RIVETOS_USER_TOKEN: ' tok-123 ',
+      }),
+    ).toEqual({
+      kind: 'den',
+      denUrl: 'https://127.0.0.1:5174',
+      user: { id: 'guest', token: 'tok-123' },
+    })
+  }
+  // A token without a user id is not a routed session: the owner's den path, no token sent.
+  expect(
+    resolveCaptureTransport({ RIVET_DEN_URL: 'https://127.0.0.1:5174', RIVETOS_USER_TOKEN: 'tok-123' }),
+  ).toEqual({ kind: 'den', denUrl: 'https://127.0.0.1:5174' })
+  // An empty token still blocks the den.
+  expect(
+    resolveCaptureTransport({
+      RIVET_DEN_URL: 'https://127.0.0.1:5174',
+      RIVETOS_USER_ID: 'guest',
+      RIVETOS_USER_TOKEN: '  ',
+    }).kind,
+  ).toBe('none')
+})

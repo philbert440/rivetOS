@@ -101,12 +101,20 @@ export { isUsableUserDb } from './user-dbs.js'
 export type { UserDbEntry } from './user-dbs.js'
 export { TRUSTED_USER_HEADER, routedUserFromHeaders, routedUserResult } from './trusted-user.js'
 export {
+  USER_TOKEN_HEADER,
+  USER_TOKEN_ENV,
+  mintUserToken,
+  userForToken,
+  clearUserTokens,
+} from './user-tokens.js'
+export {
   DEFAULT_OWNER_USER_ID,
   loadUsersRegistry,
   mergeUserDbs,
   parseUsersRegistry,
   registryFromEnv,
   resolveUser,
+  resolveUserById,
   sessionVisibleTo,
   userDbsFromRegistry,
 } from './users-registry.js'

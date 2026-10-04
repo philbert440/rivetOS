@@ -41,6 +41,7 @@ import {
   type CaptureBatch,
   type CaptureMessage,
   type CaptureTransport,
+  type CaptureUser,
   type OccurrenceKey,
 } from '@rivetos/capture-core'
 import pg from 'pg'
@@ -727,9 +728,14 @@ function isoTimestamp(ts: string | null | undefined): string | undefined {
 async function postCaptureBatch(
   batch: CaptureBatch,
   denUrl: string,
-  opts: { fetch?: typeof globalThis.fetch; spoolDir?: string },
+  opts: { fetch?: typeof globalThis.fetch; spoolDir?: string; user?: CaptureUser },
 ): Promise<{ conversationId: string; inserted: number; skipped: number }> {
-  const writer = createCaptureWriter({ denUrl, fetch: opts.fetch, spoolDir: opts.spoolDir })
+  const writer = createCaptureWriter({
+    denUrl,
+    fetch: opts.fetch,
+    spoolDir: opts.spoolDir,
+    ...(opts.user ? { user: opts.user } : {}),
+  })
   const result = await writer.write(batch)
   if ('spooled' in result) {
     if (!result.spooled) throw new Error(result.error)
@@ -1154,7 +1160,7 @@ export async function ingestTranscript(opts: IngestOptions): Promise<IngestResul
         messages,
       },
       transport.denUrl,
-      opts,
+      { ...opts, ...(transport.user ? { user: transport.user } : {}) },
     )
     return {
       sessionKey,
@@ -1516,7 +1522,7 @@ export async function ingestHookEvent(opts: HookEventOptions): Promise<HookEvent
         ],
       },
       transport.denUrl,
-      opts,
+      { ...opts, ...(transport.user ? { user: transport.user } : {}) },
     )
     return {
       sessionKey,

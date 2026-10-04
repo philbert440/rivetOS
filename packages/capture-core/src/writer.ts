@@ -1,4 +1,5 @@
 import { readFile, unlink } from 'node:fs/promises'
+import { createHash } from 'node:crypto'
 import { homedir } from 'node:os'
 import { join } from 'node:path'
 import {
@@ -90,8 +91,25 @@ function resolveWriterRedaction(opts: CaptureWriterOptions): ResolvedCaptureReda
   return resolveCaptureRedaction(captureRedactionFromEnv())
 }
 
+/** Same header as `USER_TOKEN_HEADER` in `@rivetos/types` (this package has no dependencies). */
+const USER_TOKEN_HEADER = 'x-rivetos-user-token'
+
+/** A directory name for a user id, whatever characters the id has. */
+function spoolNameFor(userId: string): string {
+  return createHash('sha256').update(userId).digest('hex').slice(0, 32)
+}
+
 export function createCaptureWriter(opts: CaptureWriterOptions): CaptureWriter {
-  const dir = opts.spoolDir ?? join(homedir(), '.rivetos', 'capture-spool')
+  // A session spawned for another user proves it to the den with its token,
+  // and spools to a directory of that user's own: a spooled batch is replayed
+  // by whoever next writes from the same directory, and must not be replayed
+  // as anyone else.
+  const user = opts.user
+  const dir =
+    opts.spoolDir ??
+    (user
+      ? join(homedir(), '.rivetos', 'capture-spool-users', spoolNameFor(user.id))
+      : join(homedir(), '.rivetos', 'capture-spool'))
   const fetch = opts.fetch ?? globalThis.fetch
   const requested = opts.maxChunkBytes ?? DEFAULT_CHUNK_BYTES
   const maxChunkBytes =
@@ -217,10 +235,18 @@ export function createCaptureWriter(opts: CaptureWriterOptions): CaptureWriter {
   const post = async (body: string): Promise<CaptureResult> => {
     const response = await fetch(`${opts.denUrl.replace(/\/$/, '')}/api/capture`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: {
+        'Content-Type': 'application/json',
+        ...(user ? { [USER_TOKEN_HEADER]: user.token } : {}),
+      },
       body,
     })
     if (!response.ok) await response.body?.cancel().catch(log)
+    // A token the den does not know (the node restarted since this session
+    // was spawned) is not a bad batch: keep it for the user's next session.
+    if (user && (response.status === 401 || response.status === 403)) {
+      throw new Error(`capture HTTP ${String(response.status)} (user token not accepted)`)
+    }
     if (response.status >= 400 && response.status < 500) {
       throw new CaptureClientError(`capture HTTP ${response.status}`)
     }
