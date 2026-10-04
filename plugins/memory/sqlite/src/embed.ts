@@ -85,7 +85,14 @@ export class EmbedClient {
   async embed(texts: string[]): Promise<number[][]> {
     const vectors = await this.embedLenient(texts)
     return vectors.map((vec, i) => {
-      if (!vec) throw new Error(`embedding ${String(i)} missing or of an unexpected width`)
+      if (!vec) {
+        throw new Error(
+          `embedding ${String(i)} is missing or not the expected width` +
+            (this.config.expectedDims !== undefined
+              ? ` (expected ${String(this.config.expectedDims)})`
+              : ''),
+        )
+      }
       return vec
     })
   }

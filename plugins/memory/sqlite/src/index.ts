@@ -158,8 +158,8 @@ export async function resolveEmbedConfig(
   if (timeout !== undefined) out.timeoutMs = clampEmbedTimeoutMs(timeout)
   // Not trimmed: a prefix like "query: " needs its trailing space.
   const rawInstruction = cfg.embed_query_instruction ?? env.RIVETOS_EMBED_QUERY_INSTRUCTION
-  if (typeof rawInstruction === 'string' && rawInstruction.trim() !== '') {
-    out.queryInstruction = rawInstruction
-  }
+  // Any string is passed through, the empty one included: "" turns the prefix
+  // off. Unset leaves the client's default (the same instruction as Postgres).
+  if (typeof rawInstruction === 'string') out.queryInstruction = rawInstruction
   return out
 }

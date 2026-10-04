@@ -101,11 +101,28 @@ describe('embedding drain', () => {
   })
 
   it('without an endpoint nothing is queued and search is full-text only; adding one later embeds what was written', async () => {
-    memory = new SqliteMemory({ path: ':memory:' })
-    const id = await add(memory, 'postgres database tuning')
-    expect(memory.hasEmbedQueueEntryForTest(id)).toBe(false)
-    expect((await memory.search('postgres')).map((r) => r.id)).toEqual([id])
-    expect(await memory.search('datastore')).toEqual([])
+    const dir = mkdtempSync(join(tmpdir(), 'rivet-sqlite-later-'))
+    const path = join(dir, 'memory.sqlite')
+    try {
+      memory = new SqliteMemory({ path })
+      const id = await add(memory, 'postgres database tuning notes written before any endpoint')
+      expect(memory.hasEmbedQueueEntryForTest(id)).toBe(false)
+      expect((await memory.search('postgres')).map((r) => r.id)).toEqual([id])
+      expect(await memory.search('datastore')).toEqual([])
+      memory.close()
+      // The same file, now with an endpoint: the sweep finds the unembedded row.
+      const endpoint = fakeEndpoint()
+      memory = new SqliteMemory({
+        path,
+        workers: false,
+        embed: { endpoint: 'https://embed.test', model: 'toy', fetch: endpoint.fetch, sleep: noWait },
+      })
+      expect(await memory.runJobs()).toBe(1)
+      expect(memory.embedStateForTest([id])[id].status).toBe('done')
+      expect((await memory.search('datastore')).map((r) => r.id)).toEqual([id])
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
   })
 
   it('a job that went dead during an outage is revived by the sweep and embeds once the endpoint is back', async () => {
@@ -188,12 +205,10 @@ describe('embedding drain', () => {
     await expect(client.embedMessage('database', null)).rejects.toThrow(/no usable vector/)
   })
 
-  it('a different vector width clears the stored vectors and re-embeds them', async () => {
+  it('one vector of another width fails its job and leaves the store alone; a configured width change re-embeds', async () => {
     let dims: number | undefined
-    const calls: string[][] = []
     const fetch = vi.fn(async (_url: string | URL | Request, init?: RequestInit) => {
       const body = JSON.parse(String(init?.body)) as { input: string[] }
-      calls.push(body.input)
       return Response.json({
         data: body.input.map((text, index) => ({
           index,
@@ -201,24 +216,101 @@ describe('embedding drain', () => {
         })),
       })
     }) as unknown as typeof globalThis.fetch
-    const logs: string[] = []
-    memory = new SqliteMemory({
-      path: ':memory:',
-      workers: false,
-      log: (l) => logs.push(l),
-      embed: { endpoint: 'https://embed.test', model: 'toy', fetch, sleep: noWait },
-    })
-    const first = await add(memory, 'postgres database notes embedded at the first width')
-    await memory.runJobs()
-    expect(memory.embedStateForTest([first])[first].dims).toBe(TOPICS.length)
-    dims = 3
-    const second = await add(memory, 'sqlite database notes embedded at the second width')
-    await memory.runJobs()
-    expect(logs.join('\n')).toMatch(/embedding width changed \(6 → 3\)/)
-    const state = memory.embedStateForTest([first, second])
-    expect(state[second].dims).toBe(3)
-    // The old vector is gone, not left to be compared against the new width.
-    expect(state[first]).toMatchObject({ status: null, dims: 0 })
+    const dir = mkdtempSync(join(tmpdir(), 'rivet-sqlite-width-'))
+    const path = join(dir, 'memory.sqlite')
+    try {
+      const logs: string[] = []
+      memory = new SqliteMemory({
+        path,
+        workers: false,
+        log: (l) => logs.push(l),
+        embed: { endpoint: 'https://embed.test', model: 'toy', fetch, sleep: noWait },
+      })
+      const first = await add(memory, 'postgres database notes embedded at the first width')
+      await memory.runJobs()
+      expect(memory.embedStateForTest([first])[first].dims).toBe(TOPICS.length)
+      // The endpoint returns an odd width once: nothing is wiped, the job fails.
+      dims = 3
+      const second = await add(memory, 'sqlite database notes that arrive at another width')
+      await memory.runJobs()
+      const state = memory.embedStateForTest([first, second])
+      expect(state[first]).toMatchObject({ status: 'done', dims: TOPICS.length })
+      expect(state[second].error).toMatch(/3 wide but the store holds 6-wide vectors; set embed_expected_dims to 3/)
+      expect(logs.join('\n')).not.toMatch(/embedding width changed/)
+      memory.close()
+
+      // The operator confirms the new width: now the old vectors are re-embedded.
+      memory = new SqliteMemory({
+        path,
+        workers: false,
+        log: (l) => logs.push(l),
+        embed: { endpoint: 'https://embed.test', model: 'toy', expectedDims: 3, fetch, sleep: noWait },
+      })
+      memory.jobs().requeueDead()
+      const third = await add(memory, 'another sqlite database note, written after the change')
+      await memory.runJobs()
+      expect(logs.join('\n')).toMatch(/embedding width changed \(6 → 3\)/)
+      expect(memory.embedStateForTest([first])[first]).toMatchObject({ status: null, dims: 0 })
+      expect(memory.embedStateForTest([third])[third].dims).toBe(3)
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
+  it('a store without a recorded width adopts the common one and re-queues the rest', async () => {
+    const endpoint = fakeEndpoint()
+    const dir = mkdtempSync(join(tmpdir(), 'rivet-sqlite-adopt-'))
+    const path = join(dir, 'memory.sqlite')
+    try {
+      const embed = { endpoint: 'https://embed.test', model: 'toy', fetch: endpoint.fetch, sleep: noWait }
+      memory = new SqliteMemory({ path, workers: false, embed })
+      const a = await add(memory, 'postgres database notes, the first of the common width')
+      const b = await add(memory, 'sqlite database notes, the second of the common width')
+      const odd = await add(memory, 'a kitchen recipe stored with a stray narrower vector')
+      await memory.runJobs()
+      memory.close()
+      // As an older build left it: no recorded width, one vector of another size.
+      const raw = new DatabaseSync(path)
+      raw.exec(`DELETE FROM ros_meta WHERE key = 'embed_dims'`)
+      raw.prepare(`UPDATE ros_messages SET embedding = ? WHERE id = ?`).run(new Uint8Array(8), odd)
+      raw.close()
+      const logs: string[] = []
+      memory = new SqliteMemory({ path, workers: false, log: (l) => logs.push(l), embed })
+      expect(logs.join('\n')).toMatch(/1 stored vector\(s\) were not 6 wide and will be re-embedded/)
+      const state = memory.embedStateForTest([a, b, odd])
+      expect(state[a].dims).toBe(TOPICS.length)
+      expect(state[b].dims).toBe(TOPICS.length)
+      expect(state[odd]).toMatchObject({ status: null, dims: 0 })
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
+  it('the live index and a reloaded one agree on rows at the quality floor', async () => {
+    const endpoint = fakeEndpoint()
+    const dir = mkdtempSync(join(tmpdir(), 'rivet-sqlite-floor-'))
+    const path = join(dir, 'memory.sqlite')
+    try {
+      const embed = { endpoint: 'https://embed.test', model: 'toy', fetch: endpoint.fetch, sleep: noWait }
+      memory = new SqliteMemory({ path, workers: false, embed })
+      // Load the index first, so later vectors arrive through add().
+      await memory.search('database')
+      // 38 characters plus two newlines: SQLite's trim() strips spaces only, so
+      // this row is past the floor in SQL although a JS trim would cut it.
+      const trailing = await add(memory, `database ${'x'.repeat(29)}\n\n`)
+      // 25 astral characters: 25 by SQLite's count, 50 UTF-16 units in JS.
+      const astral = await add(memory, `database ${'\u{1F600}'.repeat(16)}`)
+      await memory.runJobs()
+      const live = (await memory.search('datastore', { limit: 10 })).map((h) => h.id).sort()
+      memory.close()
+      memory = new SqliteMemory({ path, workers: false, embed })
+      const reloaded = (await memory.search('datastore', { limit: 10 })).map((h) => h.id).sort()
+      expect(live).toEqual(reloaded)
+      expect(live).toContain(trailing)
+      expect(live).not.toContain(astral)
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
   })
 
   it('normalizes a query and applies the default instruction, like the Postgres backend', async () => {
@@ -239,7 +331,7 @@ describe('embedding drain', () => {
       fetch: endpoint.fetch,
       sleep: noWait,
     })
-    await expect(client.embed(['x'])).rejects.toThrow(/missing or of an unexpected width/)
+    await expect(client.embed(['x'])).rejects.toThrow(/embedding 0 is missing or not the expected width \(expected 6\)/)
   })
 
   it('long text is chunked and pooled into one vector', async () => {

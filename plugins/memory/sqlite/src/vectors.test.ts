@@ -78,22 +78,29 @@ describe('ExactScanIndex', () => {
     expect(index.search([1, 0], 0)).toEqual([])
   })
 
-  it('add() appends or replaces a vector without reloading, and size() does not load', () => {
+  it('add() appends or replaces a vector without reloading, applying the index predicate in SQL', () => {
     const db = new DatabaseSync(':memory:')
     db.exec(SCHEMA)
     store(db, 'east', 'a', [1, 0])
-    const index = new ExactScanIndex(db)
+    store(db, 'north', 'b', null)
+    store(db, 'x', 'b', null)
+    // Only rows whose content is longer than one character are searchable here.
+    const index = new ExactScanIndex(db, 'ros_messages', 'length(m.content) > 1')
     expect(index.size()).toBe(1)
-    // Before the first search add() is a no-op: the load will pick the row up.
-    index.add('ignored', 'a', encodeVector([0, 1]) as Uint8Array)
+    // Before the first search add() is a no-op: the load will pick rows up.
+    index.add('north', 'b', encodeVector([0, 1]) as Uint8Array)
     expect(index.search([0, 1], 5).map((h) => h.id)).toEqual(['east'])
-    // Loaded now: a new vector is searchable at once, with no row in the table.
+    // Loaded now: a new vector is searchable at once, without a reload.
     index.add('north', 'b', encodeVector([0, 1]) as Uint8Array)
     expect(index.search([0, 1], 1)[0].id).toBe('north')
     expect(index.search([0, 1], 5, { agent: 'a' }).map((h) => h.id)).toEqual(['east'])
+    // Replacing an existing row's vector.
     index.add('east', 'a', encodeVector([0, 1]) as Uint8Array)
-    expect(index.size()).toBe(2)
     expect(index.search([0, 1], 5, { agent: 'a' })[0].score).toBeCloseTo(1, 5)
+    // A row the predicate excludes, or one that does not exist, is not added.
+    index.add('x', 'b', encodeVector([0, 1]) as Uint8Array)
+    index.add('missing', 'b', encodeVector([0, 1]) as Uint8Array)
+    expect(index.search([0, 1], 5).map((h) => h.id).sort()).toEqual(['east', 'north'])
   })
 
   it('scans a few thousand vectors quickly', () => {

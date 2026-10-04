@@ -103,12 +103,23 @@ export class ExactScanIndex implements VectorIndex {
   }
 
   /**
-   * Add or replace one vector without reloading. A no-op until the index has
-   * been loaded (the next search loads everything, this row included).
+   * Add or replace one vector without reloading, if the row passes the
+   * index's predicate. A no-op until the index has been loaded (the next
+   * search loads everything, this row included).
    */
   add(id: string, agent: string, vector: Uint8Array): void {
     const data = this.loaded
     if (!data) return
+    // The same predicate a reload applies, evaluated by SQLite itself, so
+    // the live index and a reloaded one never disagree about a row.
+    const eligible = this.db
+      .prepare(`SELECT 1 AS ok FROM ${this.table} m WHERE m.id = ? AND (${this.where})`)
+      .get(id) as { ok: number } | undefined
+    if (!eligible) {
+      const at = data.position.get(id)
+      if (at !== undefined) this.loaded = undefined
+      return
+    }
     const decoded = decodeVector(vector)
     if (data.ids.length === 0) data.dims = decoded.length
     if (decoded.length !== data.dims) {

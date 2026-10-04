@@ -151,6 +151,13 @@ describe('resolveEmbedConfig', () => {
     })
   })
 
+  it('an empty query instruction is passed through (it disables the prefix); unset leaves the default', async () => {
+    const base = { embed_endpoint: 'https://cfg.test', embed_model: 'm' }
+    expect((await resolveEmbedConfig({ ...base, embed_query_instruction: '' }, {}, warn))?.queryInstruction).toBe('')
+    expect((await resolveEmbedConfig(base, { RIVETOS_EMBED_QUERY_INSTRUCTION: '' }, warn))?.queryInstruction).toBe('')
+    expect(await resolveEmbedConfig(base, {}, warn)).not.toHaveProperty('queryInstruction')
+  })
+
   it('requires a model with an endpoint, never borrows another provider key, and warns on a bad wire shape', async () => {
     await expect(resolveEmbedConfig({ embed_endpoint: 'https://cfg.test' }, {}, warn)).rejects.toThrow(
       /RIVETOS_EMBED_MODEL .* is required/,

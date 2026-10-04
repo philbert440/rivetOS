@@ -222,6 +222,7 @@ export class SqliteMemory implements Memory {
   private readonly jobRunner: JobRunner
   private readonly embedClient: EmbedClient | undefined
   private readonly vectorIndex: VectorIndex
+  private readonly expectedDims: number | undefined
   private readonly log: (line: string) => void
 
   constructor(config: SqliteMemoryConfig) {
@@ -250,6 +251,7 @@ export class SqliteMemory implements Memory {
     this.jobQueue = new SqliteJobQueue(this.db, config.now)
     this.vectorIndex = new ExactScanIndex(this.db, 'ros_messages', MESSAGE_QUALITY_SQL, this.log)
     this.embedClient = config.embed ? new EmbedClient(config.embed) : undefined
+    this.expectedDims = config.embed?.expectedDims
     this.jobRunner = new JobRunner(this.jobQueue, {
       log: this.log,
       ...(config.now ? { now: config.now } : {}),
@@ -267,6 +269,7 @@ export class SqliteMemory implements Memory {
         },
       })
       this.noteEmbedModel(this.embedClient.model)
+      this.adoptEmbedDims()
       if (config.workers ?? true) this.jobRunner.start()
     }
   }
@@ -315,6 +318,13 @@ export class SqliteMemory implements Memory {
     if (!cols.has('embed_failures')) {
       this.db.exec('ALTER TABLE ros_messages ADD COLUMN embed_failures INTEGER NOT NULL DEFAULT 0')
     }
+    // Keeps the unembedded-rows sweep proportional to the backlog, not the
+    // table. Created here, not in SCHEMA: on an older file the columns it
+    // names do not exist until the ALTERs above have run.
+    this.db.exec(
+      `CREATE INDEX IF NOT EXISTS idx_ros_messages_unembedded ON ros_messages (created_at)
+        WHERE embedding IS NULL AND embed_status IS NULL`,
+    )
     const now = iso()
     this.db
       .prepare(
@@ -796,10 +806,9 @@ export class SqliteMemory implements Memory {
     if (p?.targetTable !== 'ros_messages' || typeof p.targetId !== 'string') return
     const id = p.targetId
     const row = this.db
-      .prepare(`SELECT content, tool_result, agent, role FROM ros_messages WHERE id = ?`)
+      .prepare(`SELECT content, tool_result, agent FROM ros_messages WHERE id = ?`)
       .get(id) as unknown as
-      | { content: string | null; tool_result: string | null; agent: string; role: string }
-      | undefined
+      { content: string | null; tool_result: string | null; agent: string } | undefined
     // The row was deleted since it was queued: nothing to do.
     if (!row) return
     try {
@@ -824,9 +833,8 @@ export class SqliteMemory implements Memory {
             WHERE id = ?`,
         )
         .run(blob, id)
-      // Searchable rows are the ones past the quality floor (MESSAGE_QUALITY_SQL).
-      const body = row.role === 'tool' ? (row.tool_result ?? '') : (row.content ?? '')
-      if (body.trim().length >= HYBRID_MIN_CONTENT_LEN) this.vectorIndex.add(id, row.agent, blob)
+      // The index applies the quality floor itself (MESSAGE_QUALITY_SQL).
+      this.vectorIndex.add(id, row.agent, blob)
     } catch (err) {
       if (!this.closed) {
         this.db
@@ -842,8 +850,9 @@ export class SqliteMemory implements Memory {
   /**
    * Queue rows that still need a vector: those with no job at all, and those
    * whose job went dead (an endpoint outage longer than the retries). Dead
-   * jobs are given fresh attempts once per sweep, so a hard-down endpoint is
-   * retried on the sweep's interval rather than hammered. Oldest first.
+   * jobs get fresh attempts and are due at once; the single-job runner and
+   * the queue's backoff pace them, and they can go dead again at most once
+   * per sweep. Oldest first.
    */
   private enqueueUnembedded(limit = 500): number {
     const now = iso()
@@ -858,6 +867,17 @@ export class SqliteMemory implements Memory {
         )
         .run(now, now, EMBED_TARGET_TASK).changes,
     )
+    // Dead jobs whose row no longer needs a vector (embedded since, marked
+    // unembeddable, or deleted) would otherwise sit in the queue for good.
+    this.db
+      .prepare(
+        `DELETE FROM ros_jobs
+          WHERE state = 'dead' AND task = ?
+            AND NOT EXISTS (SELECT 1 FROM ros_messages m
+                             WHERE m.embedding IS NULL AND m.embed_status IS NULL
+                               AND ros_jobs.job_key = 'embed-ros_messages-' || m.id)`,
+      )
+      .run(EMBED_TARGET_TASK)
     const rows = this.db
       .prepare(
         `SELECT m.id FROM ros_messages m
@@ -909,16 +929,23 @@ export class SqliteMemory implements Memory {
   }
 
   /**
-   * Remember how wide the stored vectors are. A vector of another width (a
-   * changed `embed_expected_dims`, or an endpoint that now returns a different
-   * size under the same model name) is not comparable with the stored ones:
-   * they are cleared and re-queued, like a model change.
+   * Check a new vector's width against the store's. Vectors of different
+   * widths are not comparable, but one odd response must not destroy the
+   * store: a width that differs from the recorded one clears and re-embeds
+   * only when it is the configured `embed_expected_dims` (a deliberate
+   * change). Otherwise the job fails and says what to set.
    */
   private noteEmbedDims(dims: number): void {
     const prior = this.db.prepare(`SELECT value FROM ros_meta WHERE key = 'embed_dims'`).get() as
       { value: string } | undefined
     if (prior && Number(prior.value) === dims) return
     if (prior) {
+      if (this.expectedDims !== dims) {
+        throw new Error(
+          `embedding is ${String(dims)} wide but the store holds ${prior.value}-wide vectors; ` +
+            `set embed_expected_dims to ${String(dims)} to re-embed at the new width`,
+        )
+      }
       this.log(
         `[memory.sqlite] embedding width changed (${prior.value} → ${String(dims)}); re-embedding stored messages`,
       )
@@ -934,6 +961,38 @@ export class SqliteMemory implements Memory {
          ON CONFLICT (key) DO UPDATE SET value = excluded.value`,
       )
       .run(String(dims))
+  }
+
+  /**
+   * A store written before the width was recorded: adopt the width most
+   * vectors have, and re-queue the rest instead of leaving them out of
+   * vector search for good.
+   */
+  private adoptEmbedDims(): void {
+    const known = this.db.prepare(`SELECT 1 AS ok FROM ros_meta WHERE key = 'embed_dims'`).get()
+    if (known) return
+    const widths = this.db
+      .prepare(
+        `SELECT length(embedding) / 4 AS dims, count(*) AS n FROM ros_messages
+          WHERE embedding IS NOT NULL GROUP BY 1 ORDER BY n DESC, dims DESC`,
+      )
+      .all() as unknown as Array<{ dims: number; n: number }>
+    if (widths.length === 0) return
+    const dims = widths[0].dims
+    this.db
+      .prepare(`INSERT OR REPLACE INTO ros_meta (key, value) VALUES ('embed_dims', ?)`)
+      .run(String(dims))
+    if (widths.length > 1) {
+      const reset = this.db
+        .prepare(
+          `UPDATE ros_messages SET embedding = NULL, embed_status = NULL, embed_error = NULL, embed_failures = 0
+            WHERE embedding IS NOT NULL AND length(embedding) <> ?`,
+        )
+        .run(dims * 4)
+      this.log(
+        `[memory.sqlite] ${String(reset.changes)} stored vector(s) were not ${String(dims)} wide and will be re-embedded`,
+      )
+    }
   }
 
   /** The job queue behind the background work, for stats and requeueing. */

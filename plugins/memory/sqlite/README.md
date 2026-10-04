@@ -17,8 +17,8 @@ Embeddings and hybrid search: set `embed_endpoint` + `embed_model` (or
 on the row as float32 BLOBs, and `search` fuses full-text, literal-match and
 vector arms with the policy shared with Postgres (`@rivetos/memory-core`).
 Vector search is an exact scan behind the `VectorIndex` interface — no native
-extension. Without an endpoint search stays full-text and embedding work waits
-in the queue.
+extension. Without an endpoint search stays full-text and nothing is queued;
+rows written meanwhile are embedded by a sweep once an endpoint is set.
 
 Session tags: `memory.tags()` reads and writes `ros_tags` with the same
 lifecycle as the Postgres backend (`add` is born accepted, `propose` writes
