@@ -6,8 +6,7 @@
  * and stamps who/when), and a rejected row blocks re-suggestion.
  *
  * Scope follows the backend's phase: conversations only have tags to show
- * (there is no ros_summaries here yet, so a `summary` tag is stored but
- * nothing joins to it), and the vocabulary (ros_tag_taxonomy) is not edited
+ * (a `summary` tag is stored, but nothing joins it to ros_summaries yet), and the vocabulary (ros_tag_taxonomy) is not edited
  * through this store. node:sqlite is synchronous, so is this.
  */
 

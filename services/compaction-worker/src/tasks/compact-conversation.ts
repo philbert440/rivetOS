@@ -44,6 +44,9 @@ import {
   ROOT_MAX_TOKENS,
   PIPELINE_VERSION,
   MIN_BATCH_SIZE,
+  leafFloorFor,
+  isLlmTruncationError,
+  shrinkLeafBatch,
   formatLeafPrompt,
   formatBranchPrompt,
   formatRootPrompt,
@@ -64,21 +67,13 @@ import {
   type CompactKind,
 } from '../circuit-breaker.js'
 
+// The batch policy is shared with the SQLite backend (@rivetos/memory-core,
+// re-exported by memory-postgres); these names stay exported from here.
+export { leafFloorFor, isLlmTruncationError, shrinkLeafBatch }
+
 export interface CompactConversationPayload {
   conversationId: string
   triggerType?: 'threshold' | 'session_idle' | 'session_stale' | 'explicit'
-}
-
-/**
- * Leaf floor for a compaction job: a 'session_stale' flush treats the
- * conversation as final and drops to staleMinBatch so its leftover below-floor
- * tail gets summarized; every other trigger holds the normal MIN_BATCH_SIZE.
- */
-export function leafFloorFor(
-  triggerType: CompactConversationPayload['triggerType'],
-  staleMinBatch: number,
-): number {
-  return triggerType === 'session_stale' ? staleMinBatch : MIN_BATCH_SIZE
 }
 
 interface PgClient {
@@ -165,24 +160,6 @@ export function isJobFinalAttempt(job: { attempts?: number; max_attempts?: numbe
   const attempts = job.attempts ?? 1
   const maxAttempts = job.max_attempts ?? 1
   return attempts >= maxAttempts
-}
-
-const TRUNCATION_RE = /truncated at max_tokens=/i
-
-/** True when callLlm exhausted the output budget — same prompt will not help. */
-export function isLlmTruncationError(err: unknown): boolean {
-  const msg = err instanceof Error ? err.message : String(err)
-  return TRUNCATION_RE.test(msg)
-}
-
-/**
- * Next smaller leaf batch after a truncated LLM response.
- * Null when the batch is already at the floor (cannot shrink further).
- */
-export function shrinkLeafBatch(current: number, minBatch: number): number | null {
-  if (current <= minBatch) return null
-  const next = Math.max(minBatch, Math.floor(current / 2))
-  return next < current ? next : null
 }
 
 /**

@@ -789,12 +789,25 @@ memory:
 | `embed_expected_dims` | number | `RIVETOS_EMBED_EXPECTED_DIMS` | Require exactly this vector width. Unset: vectors longer than 1024 are truncated to 1024. A store keeps one width: a vector of another width fails its job unless this key names the new width, in which case the stored vectors are cleared and re-embedded. |
 | `embed_timeout_ms` | number | `RIVETOS_EMBED_TIMEOUT_MS`, else 8000 | Per-request timeout, clamped to 500–60000. |
 | `embed_query_instruction` | string | `RIVETOS_EMBED_QUERY_INSTRUCTION`, else the same default as Postgres | Prefix for search queries. Empty string disables. |
-| `workers` | boolean | `true` when an endpoint is set | Run the in-process job loop. `false` queues work without draining it, and a model change is not applied on open: stored vectors are cleared only by a process that runs the job loop (or calls `runJobs()`). |
+| `compactor_endpoint` | string | `RIVETOS_COMPACTOR_URL` | OpenAI-compatible chat base URL (`/chat/completions` is appended). Unset → no summaries are written and no conversation text is sent anywhere. |
+| `compactor_model` | string | `RIVETOS_COMPACTOR_MODEL` | Model that writes summaries. Required with an endpoint. |
+| `compactor_api_key` | string | `RIVETOS_COMPACTOR_API_KEY` | Bearer key for the summarization endpoint. |
+| `compactor_token_command` | string[] | — | Command that prints a bearer token; wins over the key. |
+| `compactor_timeout_ms` | number | `600000` | Per-request timeout, clamped to 5 seconds – 60 minutes. |
+| `workers` | boolean | `true` when an embedding or summarization endpoint is set | Run the in-process job loop. `false` queues work without draining it, and a model change is not applied on open: stored vectors are cleared only by a process that runs the job loop (or calls `runJobs()`). |
 
 The file is opened with WAL, a 5s busy timeout, and foreign keys on. Without an embedding
 endpoint search is FTS5 only and no embedding work is queued; rows written meanwhile are
 embedded once an endpoint is configured. Embedding jobs retry with backoff; a job that runs
 out of attempts during an outage is revived by a ten-minute sweep.
+
+With a summarization endpoint the same job loop compacts conversations into leaf, branch and
+root summaries, using the prompts and batch policy of the Postgres compaction worker. A sweep
+every five minutes queues conversations that have a full window of unsummarized messages, have
+been idle, or have gone stale. Summaries are searchable (`scope: summaries` or `both`) and are
+embedded when an embedding endpoint is set. The worker's `COMPACT_LEAF_BATCH`,
+`COMPACT_BRANCH_BATCH`, `COMPACT_ROOT_BATCH`, `COMPACT_MIN_LEAFS`, `COMPACT_MIN_BRANCHES`,
+`COMPACT_IDLE_MINUTES`, `COMPACT_STALE_MINUTES` and `COMPACT_STALE_MIN_BATCH` variables tune it.
 
 ---
 

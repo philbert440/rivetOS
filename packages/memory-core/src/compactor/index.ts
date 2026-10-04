@@ -34,3 +34,19 @@ export {
   formatRootPrompt,
   capLeafMessageContent,
 } from './compactor.js'
+
+// Batch policy shared by the backends.
+export {
+  DEFAULT_LEAF_BATCH,
+  DEFAULT_BRANCH_BATCH,
+  DEFAULT_MIN_LEAVES_FOR_BRANCH,
+  DEFAULT_ROOT_BATCH,
+  DEFAULT_MIN_BRANCHES_FOR_ROOT,
+  DEFAULT_IDLE_MINUTES,
+  DEFAULT_STALE_MINUTES,
+  DEFAULT_STALE_MIN_BATCH,
+  MAX_LEAF_ROUNDS,
+  leafFloorFor,
+  isLlmTruncationError,
+  shrinkLeafBatch,
+} from './policy.js'

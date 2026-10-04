@@ -138,7 +138,7 @@ describe('SqliteMemory Memory contract', () => {
     const summaries = await memory.search('flurbnozzle', { scope: 'summaries' })
     expect(summaries).toEqual([])
 
-    // Phase 1: scope 'both' is messages-only (no summary arm yet).
+    // No summaries were written here, so 'both' returns the messages.
     const both = await memory.search('flurbnozzle', { scope: 'both' })
     expect(both.length).toBeGreaterThanOrEqual(1)
   })
@@ -403,10 +403,12 @@ describe('schema upgrade v1 → v2 (tag tables)', () => {
         /embed_status {6}TEXT,\n(?: {4}--[^\n]*\n)* {4}embedding[^\n]*\n {4}embed_error[^\n]*\n {4}embed_failures[^\n]*\n/,
         'embed_status      TEXT\n',
       )
-      expect(v1Schema).not.toMatch(/embed_failures/)
+      expect(v1Schema).not.toBe(SCHEMA)
       v1.exec(v1Schema)
       v1.exec('DROP TABLE ros_tags; DROP TABLE ros_tag_taxonomy;')
       v1.exec('DROP TABLE ros_jobs; DROP TABLE ros_meta;')
+      // v4 summary tables (their triggers go with them).
+      v1.exec('DROP TABLE ros_summaries_fts; DROP TABLE ros_summary_sources; DROP TABLE ros_summaries;')
       v1.exec('PRAGMA user_version = 1')
       v1.prepare(
         `INSERT INTO ros_conversations (id, session_key, agent, created_at, updated_at)
@@ -437,6 +439,14 @@ describe('schema upgrade v1 → v2 (tag tables)', () => {
           .prepare(`SELECT name FROM sqlite_master WHERE type = 'index' AND name = 'idx_ros_messages_unembedded'`)
           .get(),
       ).toBeDefined()
+      const summaryTables = (
+        after
+          .prepare(
+            `SELECT name FROM sqlite_master WHERE name IN ('ros_summaries', 'ros_summary_sources', 'ros_summaries_fts')`,
+          )
+          .all() as Array<{ name: string }>
+      ).map((r) => r.name)
+      expect(summaryTables.sort()).toEqual(['ros_summaries', 'ros_summaries_fts', 'ros_summary_sources'])
       const columns = (after.prepare('PRAGMA table_info(ros_messages)').all() as Array<{ name: string }>).map(
         (c) => c.name,
       )

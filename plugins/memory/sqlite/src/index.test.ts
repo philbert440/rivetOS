@@ -7,7 +7,12 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import type { Memory, PluginManifest, RegistrationContext } from '@rivetos/types'
-import { manifest, resolveEmbedConfig } from './index.ts'
+import {
+  manifest,
+  resolveCompactionSettings,
+  resolveCompactorConfig,
+  resolveEmbedConfig,
+} from './index.ts'
 import type { SqliteMemory } from './adapter.ts'
 
 describe('memory-sqlite manifest', () => {
@@ -170,5 +175,50 @@ describe('resolveEmbedConfig', () => {
     expect(out?.apiKey).toBeUndefined()
     expect(out?.wireShape).toBe('openai')
     expect(warn).toHaveBeenCalledWith(expect.stringContaining('embed_wire_shape'))
+  })
+})
+
+describe('resolveCompactorConfig', () => {
+  const warn = (): void => {}
+
+  it('is undefined without an endpoint; config wins over the environment', async () => {
+    expect(await resolveCompactorConfig({}, {}, warn)).toBeUndefined()
+    const env = {
+      RIVETOS_COMPACTOR_URL: 'https://env.test/v1',
+      RIVETOS_COMPACTOR_MODEL: 'env-model',
+      RIVETOS_COMPACTOR_API_KEY: 'env-key',
+    }
+    expect(await resolveCompactorConfig({}, env, warn)).toEqual({
+      endpoint: 'https://env.test/v1',
+      model: 'env-model',
+      apiKey: 'env-key',
+    })
+    expect(
+      await resolveCompactorConfig(
+        { compactor_endpoint: 'https://cfg.test/v1', compactor_model: 'cfg-model', compactor_timeout_ms: 1 },
+        env,
+        warn,
+      ),
+    ).toEqual({ endpoint: 'https://cfg.test/v1', model: 'cfg-model', apiKey: 'env-key', timeoutMs: 5000 })
+  })
+
+  it('requires a model with an endpoint', async () => {
+    await expect(resolveCompactorConfig({ compactor_endpoint: 'https://cfg.test/v1' }, {}, warn)).rejects.toThrow(
+      /RIVETOS_COMPACTOR_MODEL/,
+    )
+  })
+
+  it('reads the batch thresholds from the worker variables, ignoring junk', () => {
+    expect(
+      resolveCompactionSettings({ COMPACT_LEAF_BATCH: '20', COMPACT_IDLE_MINUTES: 'soon', COMPACT_MIN_LEAFS: '0' }),
+    ).toEqual({ leafBatch: 20 })
+    // A leaf window below the floor of 5 could never be written.
+    expect(resolveCompactionSettings({ COMPACT_LEAF_BATCH: '3' })).toEqual({})
+    // A parent batch smaller than the children it needs could never be written either.
+    expect(resolveCompactionSettings({ COMPACT_BRANCH_BATCH: '2', COMPACT_ROOT_BATCH: '1' })).toEqual({})
+    expect(resolveCompactionSettings({ COMPACT_BRANCH_BATCH: '2', COMPACT_MIN_LEAFS: '2' })).toEqual({
+      branchBatch: 2,
+      minLeavesForBranch: 2,
+    })
   })
 })

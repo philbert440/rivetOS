@@ -452,6 +452,11 @@ export const KNOWN_MEMORY_SQLITE_KEYS = new Set([
   'embed_expected_dims',
   'embed_timeout_ms',
   'embed_query_instruction',
+  'compactor_endpoint',
+  'compactor_model',
+  'compactor_api_key',
+  'compactor_token_command',
+  'compactor_timeout_ms',
   'workers',
 ])
 
