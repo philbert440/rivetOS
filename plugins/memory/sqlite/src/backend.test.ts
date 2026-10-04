@@ -270,8 +270,10 @@ describe('SqliteBackend', () => {
       expect(await tags.pending(10)).toEqual([])
       expect((await tags.forSessionKeys(['sess-1'], ['rejected'])).get('sess-1')).toHaveLength(1)
       expect(await tags.taxonomy({})).toEqual([])
-      // Vocabulary edits are not offered here: the route answers 501.
-      expect(tags.upsertTaxonomy).toBeUndefined()
+      // The vocabulary is editable through the backend.
+      const entry = await tags.upsertTaxonomy?.({ key: 'project', value: 'Acme App', display: 'Acme App' })
+      expect(entry).toMatchObject({ key: 'project', value: 'acme-app', state: 'accepted' })
+      expect(await tags.taxonomy({ key: 'project' })).toHaveLength(1)
     })
   })
 
@@ -308,6 +310,16 @@ describe('SqliteBackend', () => {
       )
       expect(await memory.tags().list({})).toEqual([])
       expect(JSON.parse(String(await agentTags?.execute({ action: 'list' }))) as object).toEqual({ tags: [] })
+      // The vocabulary is not the agent's to edit either.
+      for (const action of ['taxonomy_upsert', 'taxonomy_decide', 'taxonomy_merge']) {
+        expect(
+          String(await agentTags?.execute({ action, key: 'project', value: 'x', from: 'a', into: 'b' })),
+        ).toMatch(/not available to the agent/)
+      }
+      expect(memory.vocabulary().list({ states: ['suggested', 'accepted', 'rejected'] })).toEqual([])
+      expect(JSON.parse(String(await agentTags?.execute({ action: 'taxonomy' }))) as object).toEqual({
+        entries: [],
+      })
     })
 
     it('memory_search lists hits with ids, and memory_get_full returns the record behind one', async () => {
@@ -434,7 +446,7 @@ describe('SqliteBackend', () => {
       }
     })
 
-    it('memory_tags reads and writes tags and refuses vocabulary edits', async () => {
+    it('the HTTP memory_tags tool reads and writes tags and validates vocabulary edits', async () => {
       const tags = tool('memory_tags')
       const added = JSON.parse(
         String(await tags.execute({ action: 'add', entity_type: 'conversation', session_key: 'sess-1', tag: 'project:acmeapp' })),
@@ -446,8 +458,9 @@ describe('SqliteBackend', () => {
       ) as { changed: string[] }
       expect(decided.changed).toEqual([added.tag.id])
       expect(String(await tags.execute({ action: 'taxonomy_merge', key: 'k', from: 'a', into: 'b' }))).toMatch(
-        /does not support action "taxonomy_merge"/,
+        /^Error: invalid merge: k:a is not in the vocabulary or in use/,
       )
+      expect(String(await tags.execute({ action: 'bogus' }))).toMatch(/does not support action "bogus"/)
       // The default action is the review queue, as on Postgres.
       expect(JSON.parse(String(await tags.execute({}))) as object).toEqual({ tags: [] })
       // More ids than the route accepts is an error, not a silent cut.

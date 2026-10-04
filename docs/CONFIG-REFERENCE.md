@@ -794,6 +794,9 @@ memory:
 | `compactor_api_key` | string | `RIVETOS_COMPACTOR_API_KEY` | Bearer key for the summarization endpoint. |
 | `compactor_token_command` | string[] | — | Command that prints a bearer token; wins over the key. |
 | `compactor_timeout_ms` | number | `600000` | Per-request timeout, clamped to 5 seconds – 60 minutes. |
+| `tagging` | boolean | on unless `SESSION_TAGGING=0` | Suggest `key:value` tags for each leaf summary. Needs a summarization endpoint (or the tagger's own). |
+| `tagger_endpoint`, `tagger_model`, `tagger_api_key` | string | `RIVETOS_TAGGER_URL`, `RIVETOS_TAGGER_MODEL`, `RIVETOS_TAGGER_API_KEY` | A separate OpenAI-compatible endpoint for the tagger. Unset: the compactor's. |
+| `project_rule` | boolean | `true` | Tag a captured session with `project:<name>` from its working directory's git root. |
 | `wiki_dir` | string | `WIKI_DIR`, else the shared directory's `wiki` | Where the wiki's page files live (a git repository the writer creates). |
 | `wiki_extraction` | boolean | `WIKI_EXTRACTION=1` | Mine leaf summaries into wiki pages. Needs a summarization endpoint. Off by default. |
 | `workers` | boolean | `true` when an embedding or summarization endpoint is set | Run the in-process job loop. `false` queues work without draining it, and a model change is not applied on open: stored vectors are cleared only by a process that runs the job loop (or calls `runJobs()`). |
@@ -819,9 +822,17 @@ and leaves mined by an older pipeline version. The turn context gains a "Wiki (c
 section, and the den serves `/api/wiki` and `/wiki` from this index. Topics are embedded when an
 embedding endpoint is set.
 
+Tagging works as on Postgres. A captured session whose `settings.cwd` sits in a git checkout gets
+an accepted `project:` tag once (a batch from another machine is never resolved against this
+host's filesystem). Each leaf summary is sent to the tagger, and its proposals are stored as
+suggestions on the summary and on the session, with new values proposed to the vocabulary; a
+person accepts or rejects them in the hub. A rejected tag is not proposed again for the session
+or summary it was rejected on (a later summary can be offered the same tag). Only the
+OpenAI-compatible chat shape is spoken to the tagger here.
+
 A node with `memory.sqlite` serves `POST /api/capture` and `/api/memory/*` (search, browse, stats,
 health, tags, and the memory tools the MCP sidecar's den transport calls) from the file, with the
-same request and response shapes as a Postgres node. Vocabulary edits answer 501 for now, and a
+same request and response shapes as a Postgres node, vocabulary edits included. A
 request the den stamped for a routed user is refused (503) rather than served from the owner's file;
 the agent's memory tools refuse such a turn the same way. On a node that has both `memory.sqlite`
 and a Postgres URL, the SQLite store answers these routes, so routed users who had a Postgres

@@ -1,7 +1,7 @@
 {
   "name": "@rivetos/memory-core",
   "version": "0.5.0",
-  "description": "Backend-neutral memory logic — scoring, fusion policy, compaction and wiki prompts (pure, no I/O)",
+  "description": "Backend-neutral memory logic \u2014 scoring, fusion policy, compaction and wiki prompts and the tagger prompt (no database, no network)",
   "license": "Apache-2.0",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
@@ -14,6 +14,7 @@
     "prepublishOnly": "npm run build"
   },
   "dependencies": {
+    "@rivetos/types": "0.5.0",
     "@rivetos/wiki-core": "0.5.0"
   },
   "devDependencies": {

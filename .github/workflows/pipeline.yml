@@ -269,8 +269,8 @@ jobs:
             # order (deps first)
             packages/den-protocol
             packages/wiki-core
-            packages/memory-core
             packages/types
+            packages/memory-core
             packages/gateway-client
             packages/capture-core
             packages/agent-registry

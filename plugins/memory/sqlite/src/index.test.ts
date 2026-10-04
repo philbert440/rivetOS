@@ -18,6 +18,7 @@ import {
   resolveCompactionSettings,
   resolveCompactorConfig,
   resolveEmbedConfig,
+  resolveTaggingConfig,
   resolveWikiConfig,
 } from './index.ts'
 import type { SqliteMemory } from './adapter.ts'
@@ -354,5 +355,25 @@ describe('resolveWikiConfig', () => {
       resolveWikiConfig({ wiki_dir: '/cfg/wiki', wiki_extraction: false }, { WIKI_DIR: '/data/wiki', WIKI_EXTRACTION: '1' }),
     ).toEqual({ dir: '/cfg/wiki', extraction: false })
     expect(resolveWikiConfig({}, { WIKI_EXTRACTION: 'true' }).extraction).toBe(false)
+  })
+})
+
+describe('resolveTaggingConfig', () => {
+  it('is on by default, off by config or SESSION_TAGGING=0, and takes its own endpoint when given one', () => {
+    expect(resolveTaggingConfig({}, {})).toEqual({ enabled: true })
+    expect(resolveTaggingConfig({}, { SESSION_TAGGING: '0' })).toEqual({ enabled: false })
+    expect(resolveTaggingConfig({ tagging: false }, {})).toEqual({ enabled: false })
+    expect(resolveTaggingConfig({ tagging: true }, { SESSION_TAGGING: 'off' })).toEqual({ enabled: true })
+    expect(
+      resolveTaggingConfig({}, { RIVETOS_TAGGER_URL: 'https://tagger.test/v1', RIVETOS_TAGGER_MODEL: 'tagger-v1' }),
+    ).toEqual({ enabled: true, llm: { endpoint: 'https://tagger.test/v1', model: 'tagger-v1' } })
+    expect(
+      resolveTaggingConfig(
+        { tagger_endpoint: 'https://cfg.test/v1', tagger_model: 'cfg', tagger_api_key: 'k' },
+        { RIVETOS_TAGGER_URL: 'https://tagger.test/v1', RIVETOS_TAGGER_MODEL: 'tagger-v1' },
+      ),
+    ).toEqual({ enabled: true, llm: { endpoint: 'https://cfg.test/v1', model: 'cfg', apiKey: 'k' } })
+    // An endpoint without a model falls back to the compactor's.
+    expect(resolveTaggingConfig({}, { RIVETOS_TAGGER_URL: 'https://tagger.test/v1' })).toEqual({ enabled: true })
   })
 })

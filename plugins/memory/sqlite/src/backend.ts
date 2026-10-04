@@ -9,7 +9,13 @@
 
 import { createHash, randomUUID } from 'node:crypto'
 import type { DatabaseSync, SQLInputValue } from 'node:sqlite'
-import { DEFAULT_IDLE_MINUTES, MIN_BATCH_SIZE, applyWindowArgs } from '@rivetos/memory-core'
+import {
+  DEFAULT_IDLE_MINUTES,
+  MIN_BATCH_SIZE,
+  applyWindowArgs,
+  planProjectRuleTag,
+  type ProjectResolver,
+} from '@rivetos/memory-core'
 import {
   MemoryRequestError,
   formatTag,
@@ -29,13 +35,14 @@ import type {
   MemorySearchResponse,
   MemoryStatsResponse,
   MemoryTagsBackend,
+  ProjectRuleResult,
   TagState,
-  TagTaxonomyEntry,
   Tool,
 } from '@rivetos/types'
 import type { SqliteSearchHit } from './adapter.js'
-import type { SqliteTagStore } from './tags.js'
+import { TAGGED_CONVERSATIONS_SQL, type SqliteTagStore } from './tags.js'
 import type { SqliteWikiIndex } from './wiki.js'
+import type { SqliteTagVocabulary } from './tag-vocabulary.js'
 
 /** Same cap as the Postgres capture path. */
 const MAX_CONTENT = 16000
@@ -63,6 +70,10 @@ export interface SqliteBackendHost {
   enqueueMessageEmbed(id: string): void
   tags(): SqliteTagStore
   wiki(): { index: SqliteWikiIndex; wikiDir: string } | undefined
+  vocabulary(): SqliteTagVocabulary
+  /** `null` turns the rule-based project tag off; undefined is the default rule. */
+  projectRule: ProjectResolver | null | undefined
+  log(line: string): void
   assertOpen(): void
 }
 
@@ -154,13 +165,24 @@ export class SqliteBackend implements MemoryBackend {
   // Capture
   // -------------------------------------------------------------------------
 
-  // `allowFilesystem` has nothing to gate yet: nothing in a batch is resolved
-  // against this host until the rule-based project tag arrives.
   async capture(
     batch: CaptureBatchRequest,
-    _options?: { allowFilesystem?: boolean },
+    options?: { allowFilesystem?: boolean },
   ): Promise<CaptureBatchResult> {
-    return this.write(batch).result
+    // Resolved before the transaction: no filesystem work while the write
+    // lock is held. A batch from another machine never touches this host's
+    // filesystem. Never throws.
+    const project = await planProjectRuleTag(
+      batch.settings,
+      {
+        ...(this.host.projectRule !== undefined ? { resolveProject: this.host.projectRule } : {}),
+        allowFilesystem: options?.allowFilesystem !== false,
+      },
+      (line) => {
+        this.host.log(line)
+      },
+    )
+    return this.write(batch, false, project).result
   }
 
   /**
@@ -171,6 +193,7 @@ export class SqliteBackend implements MemoryBackend {
   private write(
     batch: CaptureBatchRequest,
     capped = false,
+    project: ProjectRuleResult | null = null,
   ): {
     result: CaptureBatchResult
     rows: Array<{ eventId: string; id: string; inserted: boolean }>
@@ -207,6 +230,18 @@ export class SqliteBackend implements MemoryBackend {
         ) as { id: string } | undefined
       if (!conversation) throw new Error('capture could not open the conversation')
       const conversationId = conversation.id
+      // The rule tag never costs a capture its messages.
+      if (project) {
+        try {
+          this.host.vocabulary().applyRuleTag(conversationId, project)
+        } catch (err) {
+          this.host.log(
+            `[memory.sqlite] project rule tag skipped for ${conversationId.slice(0, 8)}: ${
+              err instanceof Error ? err.message : String(err)
+            }`,
+          )
+        }
+      }
 
       // Delivery is at-least-once: an event already stored is skipped.
       const seen = new Map<string, string>()
@@ -435,11 +470,41 @@ export class SqliteBackend implements MemoryBackend {
   private acceptedTags(conversationIds: Array<string | null | undefined>): Map<string, string[]> {
     const out = new Map<string, string[]>()
     const ids = [...new Set(conversationIds.filter((id): id is string => Boolean(id)))]
-    for (const id of ids) {
-      const tags = this.host
-        .tags()
-        .list({ entityType: 'conversation', entityId: id, states: ['accepted'] })
-      if (tags.length > 0) out.set(id, tags.map(formatTag))
+    // A tag on the session or on any of its summaries: the definition the
+    // tag filter and the counts use, so a hit shows the tag that selected it.
+    for (let i = 0; i < ids.length; i += 500) {
+      const chunk = ids.slice(i, i + 500)
+      const marks = placeholders(chunk.length)
+      const rows = this.db
+        .prepare(
+          `SELECT conversation_id, key, value, display FROM (
+             SELECT t.entity_id AS conversation_id, t.key, t.value, t.display, t.created_at
+               FROM ros_tags t
+              WHERE t.entity_type = 'conversation' AND t.state = 'accepted'
+                AND t.entity_id IN (${marks})
+             UNION ALL
+             SELECT s.conversation_id, t.key, t.value, t.display, t.created_at
+               FROM ros_tags t
+               JOIN ros_summaries s ON t.entity_type = 'summary' AND s.id = t.entity_id
+              WHERE t.state = 'accepted' AND s.conversation_id IN (${marks})
+           )
+           ORDER BY conversation_id, key, value, created_at`,
+        )
+        .all(...chunk, ...chunk) as unknown as Array<{
+        conversation_id: string
+        key: string
+        value: string
+        display: string
+      }>
+      const seen = new Set<string>()
+      for (const r of rows) {
+        const id = `${r.conversation_id}\0${r.key}:${r.value}`
+        if (seen.has(id)) continue
+        seen.add(id)
+        const list = out.get(r.conversation_id) ?? []
+        list.push(formatTag(r))
+        out.set(r.conversation_id, list)
+      }
     }
     return out
   }
@@ -461,12 +526,10 @@ export class SqliteBackend implements MemoryBackend {
     if (filter.tag) {
       const parsed = parseTagLiteral(filter.tag)
       if (!parsed) throw new MemoryRequestError('tag must be key:value')
-      conds.push(
-        `m.conversation_id IN (SELECT t.entity_id FROM ros_tags t
-                                 WHERE t.entity_type = 'conversation' AND t.key = ? AND t.value = ?
-                                   AND t.state = 'accepted')`,
-      )
-      params.push(normalizeTagKey(parsed.key), normalizeTagValue(parsed.value))
+      conds.push(`m.conversation_id IN (${TAGGED_CONVERSATIONS_SQL})`)
+      const tagKey = normalizeTagKey(parsed.key)
+      const tagValue = normalizeTagValue(parsed.value)
+      params.push(tagKey, tagValue, tagKey, tagValue)
     }
     if (filter.conversationId) {
       conds.push('m.conversation_id = ?')
@@ -738,68 +801,11 @@ export class SqliteBackend implements MemoryBackend {
       decide: async (ids, state, decidedBy) => store().decide(ids, state, decidedBy),
       add: async (input, decidedBy) => store().add(input, decidedBy),
       forSessionKeys: async (keys, states) => store().forSessionKeys(keys, states),
-      taxonomy: async (filter) => this.taxonomy(filter),
+      taxonomy: async (filter) => this.host.vocabulary().list(filter),
+      upsertTaxonomy: async (input) => this.host.vocabulary().upsert(input),
+      decideTaxonomy: async (entries, state) => this.host.vocabulary().decide(entries, state),
+      mergeTaxonomy: async (key, from, into) => this.host.vocabulary().merge(key, from, into),
     }
-  }
-
-  private taxonomy(filter: {
-    key?: string
-    states?: TagState[]
-    limit?: number
-  }): TagTaxonomyEntry[] {
-    const states =
-      filter.states && filter.states.length > 0 ? filter.states : ['suggested', 'accepted']
-    const conds = [`state IN (${placeholders(states.length)})`]
-    const params: SQLInputValue[] = [...states]
-    if (filter.key) {
-      conds.push('key = ?')
-      params.push(filter.key.trim().toLowerCase())
-    }
-    const rows = this.db
-      .prepare(
-        `SELECT key, value, display, parent_value, aliases, state, source, reason,
-                decided_at, created_at, updated_at
-           FROM ros_tag_taxonomy
-          WHERE ${conds.join(' AND ')}
-          ORDER BY key, parent_value IS NOT NULL, parent_value, value
-          LIMIT ?`,
-      )
-      .all(...params, clampInt(filter.limit, 500, 1, 5000)) as unknown as Array<{
-      key: string
-      value: string
-      display: string
-      parent_value: string | null
-      aliases: string
-      state: TagState
-      source: TagTaxonomyEntry['source']
-      reason: string
-      decided_at: string | null
-      created_at: string
-      updated_at: string
-    }>
-    return rows.map((r) => {
-      let aliases: string[] = []
-      try {
-        const parsed: unknown = JSON.parse(r.aliases)
-        if (Array.isArray(parsed))
-          aliases = parsed.filter((x): x is string => typeof x === 'string')
-      } catch {
-        // a malformed alias list reads as none
-      }
-      return {
-        key: r.key,
-        value: r.value,
-        display: r.display,
-        ...(r.parent_value === null ? {} : { parentValue: r.parent_value }),
-        aliases,
-        state: r.state,
-        source: r.source,
-        reason: r.reason,
-        ...(r.decided_at === null ? {} : { decidedAt: new Date(r.decided_at) }),
-        createdAt: new Date(r.created_at),
-        updatedAt: new Date(r.updated_at),
-      }
-    })
   }
 
   /** The wiki index and page directory, for the den's wiki routes. */
@@ -1088,14 +1094,26 @@ export class SqliteBackend implements MemoryBackend {
   private tagsTool(allowWrite: boolean): Tool {
     return {
       name: 'memory_tags',
-      description:
-        'Read and decide session tags: list, pending, counts, add, decide, lookup, taxonomy.',
+      description: allowWrite
+        ? 'Read and decide session tags: list, pending, counts, add, decide, lookup, taxonomy and its edits.'
+        : 'Read session tags: list, pending, counts, lookup, taxonomy. Read-only: adding and deciding tags, and editing the vocabulary, is done by a person.',
       parameters: {
         type: 'object',
         properties: {
           action: {
             type: 'string',
-            enum: ['list', 'pending', 'counts', 'decide', 'add', 'lookup', 'taxonomy'],
+            enum: [
+              'list',
+              'pending',
+              'counts',
+              'decide',
+              'add',
+              'lookup',
+              'taxonomy',
+              'taxonomy_upsert',
+              'taxonomy_decide',
+              'taxonomy_merge',
+            ],
           },
           entity_type: { type: 'string', enum: ['conversation', 'summary'] },
           entity_id: { type: 'string' },
@@ -1108,6 +1126,11 @@ export class SqliteBackend implements MemoryBackend {
           state: { type: 'string', enum: ['suggested', 'accepted', 'rejected'] },
           ids: { type: 'array', items: { type: 'string' } },
           session_keys: { type: 'array', items: { type: 'string' } },
+          entries: { type: 'array', items: { type: 'object' } },
+          parent_value: { type: 'string' },
+          aliases: { type: 'array', items: { type: 'string' } },
+          from: { type: 'string' },
+          into: { type: 'string' },
           reason: { type: 'string' },
           decided_by: { type: 'string' },
           limit: { type: 'number' },
@@ -1158,6 +1181,57 @@ export class SqliteBackend implements MemoryBackend {
                 limit: clampInt(args.limit, 500, 1, 5000),
               }),
             })
+          }
+          if (action.startsWith('taxonomy_')) {
+            if (!allowWrite) {
+              return `Error: "${action}" is not available to the agent; the vocabulary is edited by a person`
+            }
+            const vocab = this.host.vocabulary()
+            if (action === 'taxonomy_upsert') {
+              const key = str(args.key)
+              const value = str(args.value)
+              if (!key || !value) return 'Error: key and value required'
+              return JSON.stringify({
+                entry: vocab.upsert({
+                  key,
+                  value,
+                  display: str(args.display),
+                  parentValue:
+                    args.parent_value === null ? null : (str(args.parent_value) ?? undefined),
+                  aliases: Array.isArray(args.aliases) ? strings(args.aliases) : undefined,
+                  state:
+                    args.state === 'suggested' ||
+                    args.state === 'accepted' ||
+                    args.state === 'rejected'
+                      ? args.state
+                      : undefined,
+                  reason: str(args.reason),
+                }),
+              })
+            }
+            if (action === 'taxonomy_decide') {
+              const entries = (
+                Array.isArray(args.entries) ? (args.entries as unknown[]) : []
+              ).filter(
+                (e): e is { key: string; value: string } =>
+                  typeof e === 'object' &&
+                  e !== null &&
+                  typeof (e as { key?: unknown }).key === 'string' &&
+                  typeof (e as { value?: unknown }).value === 'string',
+              )
+              if (entries.length === 0) return 'Error: entries required'
+              if (args.state !== 'accepted' && args.state !== 'rejected') {
+                return 'Error: state must be accepted or rejected'
+              }
+              return JSON.stringify({ changed: vocab.decide(entries, args.state) })
+            }
+            if (action === 'taxonomy_merge') {
+              const key = str(args.key)
+              const from = str(args.from)
+              const into = str(args.into)
+              if (!key || !from || !into) return 'Error: key, from and into required'
+              return JSON.stringify(vocab.merge(key, from, into))
+            }
           }
           if (action === 'lookup') {
             const keys = strings(args.session_keys)

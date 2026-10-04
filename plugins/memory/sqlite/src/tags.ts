@@ -5,9 +5,10 @@
  * first-seen casing, a decision never deletes (accept/reject flips `state`
  * and stamps who/when), and a rejected row blocks re-suggestion.
  *
- * Scope follows the backend's phase: conversations only have tags to show
- * (a `summary` tag is stored, but nothing joins it to ros_summaries yet), and the vocabulary (ros_tag_taxonomy) is not edited
- * through this store. node:sqlite is synchronous, so is this.
+ * Tags sit on conversations and on summaries; a summary's tag counts for its
+ * conversation in filters, counts and the review queue. The vocabulary
+ * (ros_tag_taxonomy) is in tag-vocabulary.ts. node:sqlite is synchronous, so
+ * is this.
  */
 
 import { randomUUID } from 'node:crypto'
@@ -113,6 +114,10 @@ export interface SqlitePendingTag extends Tag {
   sessionKey: string | null
   title: string | null
   agent: string | null
+  /** The session, or the conversation a tagged summary belongs to. */
+  conversationId: string | null
+  /** First 200 characters of a tagged summary. */
+  excerpt: string | null
 }
 
 export interface SqliteTagCount {
@@ -121,6 +126,19 @@ export interface SqliteTagCount {
   display: string
   conversations: number
 }
+
+/**
+ * Conversations carrying an accepted tag, on the session or on any of its
+ * summaries. Binds key, value, key, value. Yields `conversation_id`.
+ */
+export const TAGGED_CONVERSATIONS_SQL = `
+  SELECT c.id AS conversation_id FROM ros_tags t
+    JOIN ros_conversations c ON t.entity_type = 'conversation' AND c.id = t.entity_id
+   WHERE t.key = ? AND t.value = ? AND t.state = 'accepted'
+  UNION
+  SELECT s.conversation_id FROM ros_tags t
+    JOIN ros_summaries s ON t.entity_type = 'summary' AND s.id = t.entity_id
+   WHERE t.key = ? AND t.value = ? AND t.state = 'accepted' AND s.conversation_id IS NOT NULL`
 
 export class SqliteTagStore {
   constructor(
@@ -162,25 +180,47 @@ export class SqliteTagStore {
     return rows.map(rowToTag)
   }
 
-  /** Suggestions awaiting review, newest first. A suggestion whose conversation is gone is left out. */
+  /**
+   * Suggestions awaiting review, newest first, on sessions and on summaries
+   * (a summary suggestion carries its conversation and an excerpt). A
+   * suggestion whose conversation or summary is gone is left out.
+   */
   pending(limit = 50): SqlitePendingTag[] {
     const rows = this.db
       .prepare(
-        `SELECT ${T_COLUMNS}, c.session_key, c.title, c.agent
-           FROM ros_tags t
-           JOIN ros_conversations c ON t.entity_type = 'conversation' AND c.id = t.entity_id
-          WHERE t.state = 'suggested'
-          ORDER BY t.created_at DESC
-          LIMIT ?`,
+        `SELECT * FROM (
+           SELECT ${T_COLUMNS}, c.session_key, c.title, c.agent,
+                  c.id AS conversation_id, NULL AS excerpt
+             FROM ros_tags t
+             JOIN ros_conversations c ON t.entity_type = 'conversation' AND c.id = t.entity_id
+            WHERE t.state = 'suggested'
+           UNION ALL
+           SELECT ${T_COLUMNS}, c.session_key, c.title, c.agent,
+                  s.conversation_id, substr(s.content, 1, 200) AS excerpt
+             FROM ros_tags t
+             JOIN ros_summaries s ON t.entity_type = 'summary' AND s.id = t.entity_id
+             LEFT JOIN ros_conversations c ON c.id = s.conversation_id
+            WHERE t.state = 'suggested'
+         )
+         ORDER BY created_at DESC, id
+         LIMIT ?`,
       )
       .all(clamp(limit, 50, 500)) as unknown as Array<
-      TagRow & { session_key: string | null; title: string | null; agent: string | null }
+      TagRow & {
+        session_key: string | null
+        title: string | null
+        agent: string | null
+        conversation_id: string | null
+        excerpt: string | null
+      }
     >
     return rows.map((r) => ({
       ...rowToTag(r),
       sessionKey: r.session_key,
       title: r.title,
       agent: r.agent,
+      conversationId: r.conversation_id,
+      excerpt: r.excerpt,
     }))
   }
 
@@ -377,14 +417,11 @@ export class SqliteTagStore {
 
   /** Conversation ids carrying an accepted `key:value`. */
   conversationIdsWithTag(key: string, value: string): string[] {
+    const k = normalizeTagKey(key)
+    const v = normalizeTagValue(value)
     const rows = this.db
-      .prepare(
-        `SELECT DISTINCT c.id AS id
-           FROM ros_tags t
-           JOIN ros_conversations c ON t.entity_type = 'conversation' AND c.id = t.entity_id
-          WHERE t.key = ? AND t.value = ? AND t.state = 'accepted'`,
-      )
-      .all(normalizeTagKey(key), normalizeTagValue(value)) as unknown as Array<{ id: string }>
+      .prepare(`SELECT conversation_id AS id FROM (${TAGGED_CONVERSATIONS_SQL})`)
+      .all(k, v, k, v) as unknown as Array<{ id: string }>
     return rows.map((r) => r.id)
   }
 
@@ -397,12 +434,18 @@ export class SqliteTagStore {
       params.push(normalizeTagKey(key))
     }
     params.push(clamp(limit, 200, 1000))
+    // A conversation counts when the tag sits on the session or on any of
+    // its summaries: the definition the tag filter uses.
     const rows = this.db
       .prepare(
-        `SELECT t.key, t.value, max(t.display) AS display, count(DISTINCT c.id) AS n
+        `SELECT t.key, t.value, max(t.display) AS display,
+                count(DISTINCT CASE WHEN t.entity_type = 'conversation' THEN c.id
+                                    ELSE s.conversation_id END) AS n
            FROM ros_tags t
-           JOIN ros_conversations c ON t.entity_type = 'conversation' AND c.id = t.entity_id
+           LEFT JOIN ros_conversations c ON t.entity_type = 'conversation' AND c.id = t.entity_id
+           LEFT JOIN ros_summaries s ON t.entity_type = 'summary' AND s.id = t.entity_id
            ${where}
+            AND (c.id IS NOT NULL OR s.conversation_id IS NOT NULL)
           GROUP BY t.key, t.value
           ORDER BY n DESC, t.key, t.value
           LIMIT ?`,
