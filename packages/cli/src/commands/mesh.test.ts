@@ -263,6 +263,31 @@ describe('mesh sync / renew (mocked ssh)', () => {
     expect(text).toMatch(/1 → 2 nodes \(\+1\)/)
   })
 
+  it('keeps operator-set fields edited on this node when the hub copy lacks them', async () => {
+    const dest = join(process.env.RIVETOS_SHARED_DIR!, 'mesh.json')
+    const local = JSON.parse(MESH_TWO) as { nodes: Record<string, Record<string, unknown>> }
+    local.nodes.desktop.sshUser = 'deskuser'
+    local.nodes.desktop.installRoot = '/home/deskuser/rivetos'
+    writeFileSync(dest, JSON.stringify(local))
+    sshExecCaptureMock.mockImplementation(async (_host, command) => {
+      if (command === 'echo ok') return { stdout: 'ok\n', stderr: '' }
+      if (command.includes('mesh-export')) return { stdout: MESH_TWO, stderr: '' }
+      throw new Error(`unexpected ssh command: ${command}`)
+    })
+    await meshSync(['rivet@datahub'])
+    const written = JSON.parse(readFileSync(dest, 'utf-8')) as {
+      nodes: Record<string, Record<string, unknown>>
+    }
+    expect(written.nodes.desktop).toMatchObject({
+      name: 'desktop',
+      sshUser: 'deskuser',
+      installRoot: '/home/deskuser/rivetos',
+    })
+    // A node the hub knows and this file did not edit is written as the hub sent it.
+    const other = Object.keys(written.nodes).find((id) => id !== 'desktop')
+    expect(other && 'sshUser' in written.nodes[other]).toBe(false)
+  })
+
   it('rejects a malformed mesh-export as malformed-mesh', async () => {
     sshExecCaptureMock.mockImplementation(async (_host, command) => {
       if (command === 'echo ok') return { stdout: 'ok\n', stderr: '' }

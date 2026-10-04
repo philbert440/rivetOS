@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { request, RivetGateway } from './index.js'
+import { GatewayError, request, RivetGateway } from './index.js'
 
 afterEach(() => vi.unstubAllGlobals())
 
@@ -61,5 +61,54 @@ describe.each([true, false])('fetch injection enabled: %s', (injected) => {
       Object.keys(opts?.headers ?? {}).some((name) => name.toLowerCase() === 'authorization'),
     ).toBe(false)
     expect(fallback).not.toHaveBeenCalled()
+  })
+})
+
+describe('request abort reason', () => {
+  it('rethrows a TimeoutError signal reason instead of gateway unreachable', async () => {
+    const controller = new AbortController()
+    const reason = new DOMException('Delegation deadline exceeded', 'TimeoutError')
+    const fetch = vi.fn<typeof globalThis.fetch>(async () => {
+      controller.abort(reason)
+      throw new TypeError('fetch failed')
+    })
+    await expect(
+      request({ baseUrl: 'https://den.test', fetch }, '/api/tasks/t/wait', {
+        signal: controller.signal,
+      }),
+    ).rejects.toBe(reason)
+  })
+
+  it('rethrows the signal reason when fetch rejects with a plain AbortError', async () => {
+    const controller = new AbortController()
+    const reason = new DOMException('Delegation deadline exceeded', 'TimeoutError')
+    const fetch = vi.fn<typeof globalThis.fetch>(async () => {
+      controller.abort(reason)
+      throw new DOMException('This operation was aborted', 'AbortError')
+    })
+    await expect(
+      request({ baseUrl: 'https://den.test', fetch }, '/api/tasks/t/wait', {
+        signal: controller.signal,
+      }),
+    ).rejects.toBe(reason)
+  })
+
+  it('still rethrows a plain AbortError when the signal is not aborted', async () => {
+    const abort = new DOMException('cancelled', 'AbortError')
+    const fetch = vi.fn<typeof globalThis.fetch>(async () => {
+      throw abort
+    })
+    await expect(request({ baseUrl: 'https://den.test', fetch }, '/t')).rejects.toBe(abort)
+  })
+
+  it('wraps a non-abort fetch failure as gateway unreachable', async () => {
+    const fetch = vi.fn<typeof globalThis.fetch>(async () => {
+      throw new TypeError('fetch failed')
+    })
+    const err = await request({ baseUrl: 'https://den.test', fetch }, '/t').catch(
+      (caught: unknown) => caught,
+    )
+    expect(err).toBeInstanceOf(GatewayError)
+    expect(err).toMatchObject({ status: 0 })
   })
 })

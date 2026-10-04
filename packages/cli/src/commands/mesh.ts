@@ -30,6 +30,7 @@ import {
   defaultAdvertiseHost,
   formatEnrollSnippet,
   hubRemoteCommand,
+  keepLocalOperatorFields,
   mergeConfigFile,
   meshNodeCount,
   parseEnrollArgs,
@@ -307,7 +308,7 @@ export async function meshSync(args: string[]): Promise<void> {
     }
   }
   await mkdir(dirname(dest), { recursive: true })
-  const body = trimmed.endsWith('\n') ? trimmed : `${trimmed}\n`
+  const body = await keepLocalOperatorFields(dest, trimmed)
   await atomicWriteFile(dest, body)
   const delta = afterCount - beforeCount
   const sign = delta > 0 ? '+' : ''
