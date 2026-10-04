@@ -287,3 +287,68 @@ describe('sessionVisibleTo', () => {
     expect(sessionVisibleTo('owner', ownerCtx)).toBe(true)
   })
 })
+
+describe('local stores (a node whose memory is file-based)', () => {
+  const dirs: string[] = []
+  afterEach(() => {
+    dirs.splice(0).forEach((d) => rmSync(d, { recursive: true, force: true }))
+  })
+
+  function registryFile(doc: unknown): { file: string; dir: string } {
+    const dir = mkdtempSync(join(tmpdir(), 'users-local-'))
+    dirs.push(dir)
+    const file = join(dir, 'users.json')
+    writeFileSync(file, typeof doc === 'string' ? doc : JSON.stringify(doc))
+    return { file, dir }
+  }
+
+  const doc = {
+    ownerUserId: 'alice',
+    unmappedIsOwner: false,
+    users: { alice: { devices: ['desktop-1'] }, guest: { devices: ['phone-2'] } },
+  }
+
+  it('without the marker, users with no database are refused (as before)', () => {
+    const { file, dir } = registryFile(doc)
+    const reg = loadUsersRegistry({}, { path: file, homedir: () => dir })
+    if (!reg) throw new Error('no registry')
+    expect(reg.localStores).toBeUndefined()
+    expect(resolveUser(reg, null)).toEqual({ ok: false, error: 'owner user "alice" has no usable database' })
+    expect(resolveUser(reg, 'phone-2').ok).toBe(false)
+  })
+
+  it('RIVETOS_USER_STORES=local routes every registry user without a database URL', () => {
+    const { file, dir } = registryFile(doc)
+    const reg = loadUsersRegistry({ RIVETOS_USER_STORES: 'local' }, { path: file, homedir: () => dir })
+    if (!reg) throw new Error('no registry')
+    expect(reg.localStores).toBe(true)
+    const owner = resolveUser(reg, null)
+    expect(owner).toMatchObject({ ok: true, ctx: { userId: 'alice', isOwner: true, db: { pgUrl: '' } } })
+    const guest = resolveUser(reg, 'device:phone-2')
+    expect(guest).toMatchObject({ ok: true, ctx: { userId: 'guest', isOwner: false, db: { pgUrl: '' } } })
+    // An unknown device is still refused, and no user is handed to Postgres routing.
+    expect(resolveUser(reg, 'stranger').ok).toBe(false)
+    expect(userDbsFromRegistry(reg)).toBeUndefined()
+  })
+
+  it('a user who does have a database keeps it', () => {
+    const { file, dir } = registryFile({
+      ...doc,
+      users: { ...doc.users, guest: { devices: ['phone-2'], pgUrl: 'postgres://guest@db/guest_memory' } },
+    })
+    const reg = loadUsersRegistry({ RIVETOS_USER_STORES: 'local' }, { path: file, homedir: () => dir })
+    if (!reg) throw new Error('no registry')
+    expect(resolveUser(reg, 'phone-2')).toMatchObject({
+      ok: true,
+      ctx: { db: { pgUrl: 'postgres://guest@db/guest_memory' } },
+    })
+  })
+
+  it('an invalid registry file still fails closed for devices, but the loopback owner keeps working', () => {
+    const { file, dir } = registryFile('{not json')
+    const reg = loadUsersRegistry({ RIVETOS_USER_STORES: 'local' }, { path: file, homedir: () => dir })
+    if (!reg) throw new Error('no registry')
+    expect(resolveUser(reg, null).ok).toBe(true)
+    expect(resolveUser(reg, 'desktop-1').ok).toBe(false)
+  })
+})

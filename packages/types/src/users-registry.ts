@@ -43,6 +43,13 @@ export interface UsersRegistry {
    */
   unmappedIsOwner: boolean
   users: Record<string, UserRecord>
+  /**
+   * The node keeps memory in files of its own (SQLite), one per user, not in
+   * a database per user. Every user in the registry is then routable without
+   * a `pgUrl`: the memory backend decides which file is theirs. Set by
+   * {@link loadUsersRegistry} from `RIVETOS_USER_STORES=local`.
+   */
+  localStores?: boolean
 }
 
 export type ResolveUserResult = { ok: true; ctx: UserContext } | { ok: false; error: string }
@@ -73,6 +80,19 @@ function contextFor(
 
 function dbFor(record: UserRecord): UserDbEntry | undefined {
   return record.db && isUsableUserDb(record.db) ? record.db : undefined
+}
+
+/**
+ * The handle a user resolves to on a node with local stores: no database
+ * URL. Nothing is exported to spawned sessions for it (an empty `pgUrl` is
+ * never a connection string), and Postgres routing never sees it
+ * ({@link userDbsFromRegistry} lists real entries only).
+ */
+const LOCAL_STORE: UserDbEntry = Object.freeze({ pgUrl: '' })
+
+/** What a user's requests are routed to: their database, or the node's local store. */
+function routeFor(registry: UsersRegistry, record: UserRecord): UserDbEntry | undefined {
+  return dbFor(record) ?? (registry.localStores ? LOCAL_STORE : undefined)
 }
 
 /**
@@ -161,14 +181,17 @@ function defaultReadFile(path: string): string | undefined {
 
 function failClosedOwner(env: EnvLike): UsersRegistry {
   const ownerUserId = env.RIVETOS_OWNER_USER_ID?.trim() || DEFAULT_OWNER_USER_ID
-  return mergeUserDbs(
-    {
-      ownerUserId,
-      unmappedIsOwner: false,
-      users: { [ownerUserId]: { id: ownerUserId, devices: [] } },
-    },
-    undefined,
-    env.RIVETOS_PG_URL,
+  return withStoreKind(
+    mergeUserDbs(
+      {
+        ownerUserId,
+        unmappedIsOwner: false,
+        users: { [ownerUserId]: { id: ownerUserId, devices: [] } },
+      },
+      undefined,
+      env.RIVETOS_PG_URL,
+    ),
+    env,
   )
 }
 
@@ -209,7 +232,7 @@ export function loadUsersRegistry(
       )
       return failClosedOwner(env)
     }
-    return mergeUserDbs(fileReg, undefined, env.RIVETOS_PG_URL)
+    return withStoreKind(mergeUserDbs(fileReg, undefined, env.RIVETOS_PG_URL), env)
   }
 
   const sharedFile = join(sharedRoot, 'rivetos', 'users.json')
@@ -222,12 +245,17 @@ export function loadUsersRegistry(
       )
       return failClosedOwner(env)
     }
-    return mergeUserDbs(fileReg, undefined, env.RIVETOS_PG_URL)
+    return withStoreKind(mergeUserDbs(fileReg, undefined, env.RIVETOS_PG_URL), env)
   }
 
   const homeReg = tryParse(join(home(), '.rivetos', 'users.json'))
   if (!homeReg) return undefined
-  return mergeUserDbs(homeReg, undefined, env.RIVETOS_PG_URL)
+  return withStoreKind(mergeUserDbs(homeReg, undefined, env.RIVETOS_PG_URL), env)
+}
+
+/** `RIVETOS_USER_STORES=local`: the node's memory is file-based, one store per user. */
+function withStoreKind(registry: UsersRegistry, env: EnvLike): UsersRegistry {
+  return env.RIVETOS_USER_STORES?.trim() === 'local' ? { ...registry, localStores: true } : registry
 }
 
 /**
@@ -311,7 +339,7 @@ export function resolveUser(registry: UsersRegistry, deviceId: string | null): R
   if (!owner) return { ok: false, error: `owner user "${registry.ownerUserId}" is missing` }
 
   if (deviceId === null) {
-    const db = dbFor(owner)
+    const db = routeFor(registry, owner)
     if (!db) return { ok: false, error: `owner user "${owner.id}" has no usable database` }
     return { ok: true, ctx: contextFor(registry, owner, null, db) }
   }
@@ -329,12 +357,12 @@ export function resolveUser(registry: UsersRegistry, deviceId: string | null): R
     if (!registry.unmappedIsOwner) {
       return { ok: false, error: `device "${bare}" is not in the users registry` }
     }
-    const db = dbFor(owner)
+    const db = routeFor(registry, owner)
     if (!db) return { ok: false, error: `owner user "${owner.id}" has no usable database` }
     return { ok: true, ctx: contextFor(registry, owner, bare, db) }
   }
 
-  const db = dbFor(matched)
+  const db = routeFor(registry, matched)
   if (!db) {
     return {
       ok: false,

@@ -42,9 +42,11 @@
 // Entrypoint
 // ---------------------------------------------------------------------------
 
-import { createReadStream, createWriteStream } from 'node:fs'
-import { hostname as osHostname } from 'node:os'
+import { createReadStream, createWriteStream, existsSync, readFileSync } from 'node:fs'
+import { homedir as osHomedir, hostname as osHostname } from 'node:os'
+import { join } from 'node:path'
 import { finished } from 'node:stream/promises'
+import { parse as parseYaml } from 'yaml'
 import { loadRivetEnv } from '../lib/env-file.js'
 import { CLOUD_IMPORT_HINT, isRivetCloudPgUrl } from './cloud.js'
 
@@ -903,11 +905,15 @@ async function requeue(args: string[]): Promise<void> {
 export interface MemoryExportFlags {
   out?: string
   since?: string
+  /** Export from this SQLite memory file instead of the Postgres store. */
+  sqlite?: string
 }
 
 export interface MemoryImportFlags {
   file: string
   dryRun: boolean
+  /** Import into this SQLite memory file instead of the Postgres store. */
+  sqlite?: string
 }
 
 export function parseExportFlags(args: string[]): MemoryExportFlags {
@@ -928,6 +934,12 @@ export function parseExportFlags(args: string[]): MemoryExportFlags {
         flags.since = v
         break
       }
+      case '--sqlite': {
+        const v = args[++i]
+        if (!v || v.startsWith('-')) throw new Error('--sqlite requires a file path')
+        flags.sqlite = v
+        break
+      }
       default:
         throw new Error(`Unknown option: ${arg}`)
     }
@@ -941,6 +953,12 @@ export function parseImportFlags(args: string[]): MemoryImportFlags {
     const arg = args[i]
     if (arg === '--dry-run') {
       flags.dryRun = true
+      continue
+    }
+    if (arg === '--sqlite') {
+      const v = args[++i]
+      if (!v || v.startsWith('-')) throw new Error('--sqlite requires a file path')
+      flags.sqlite = v
       continue
     }
     if (arg.startsWith('-')) throw new Error(`Unknown option: ${arg}`)
@@ -957,6 +975,29 @@ export function shouldRefuseGzipToTty(
   isTTY: boolean | undefined,
 ): boolean {
   return !out && Boolean(isTTY)
+}
+
+/**
+ * The SQLite memory file a command should use: `--sqlite <path>`, or, on a
+ * node with no Postgres URL, `memory.sqlite.path` from the node's config.
+ */
+export function resolveSqliteMemoryPath(
+  flag: string | undefined,
+  env: Record<string, string | undefined> = process.env,
+  home: string = osHomedir(),
+): string | undefined {
+  const expand = (p: string): string => (p.startsWith('~/') ? join(home, p.slice(2)) : p)
+  if (flag) return expand(flag)
+  if (env.RIVETOS_PG_URL) return undefined
+  try {
+    const parsed = parseYaml(readFileSync(join(home, '.rivetos', 'config.yaml'), 'utf-8')) as {
+      memory?: { sqlite?: { path?: unknown } }
+    } | null
+    const path = parsed?.memory?.sqlite?.path
+    return typeof path === 'string' && path.trim() !== '' ? expand(path.trim()) : undefined
+  } catch {
+    return undefined
+  }
 }
 
 function requirePgUrl(): string {
@@ -996,6 +1037,8 @@ async function memoryExport(args: string[]): Promise<void> {
   Options:
     --out <file>     Write to this path instead of stdout
     --since <iso>    Only rows with created_at/cited_at >= this timestamp
+    --sqlite <file>  Export from this SQLite memory file (default on a node
+                     whose config has memory.sqlite and no RIVETOS_PG_URL)
 `)
     return
   }
@@ -1012,6 +1055,27 @@ async function memoryExport(args: string[]): Promise<void> {
   if (shouldRefuseGzipToTty(flags.out, process.stdout.isTTY)) {
     console.error('Error: refusing to write gzip to a TTY (redirect stdout or pass --out <file>)')
     process.exit(1)
+  }
+
+  const sqlitePath = resolveSqliteMemoryPath(flags.sqlite)
+  if (sqlitePath) {
+    if (!existsSync(sqlitePath)) {
+      console.error(`Error: ${sqlitePath} does not exist`)
+      process.exit(1)
+    }
+    const { SqliteMemory, exportSqliteMemory } = await import('@rivetos/memory-sqlite')
+    const memory = new SqliteMemory({ path: sqlitePath, workers: false })
+    const dest = flags.out ? createWriteStream(flags.out) : process.stdout
+    try {
+      await exportSqliteMemory(memory.database(), dest, {
+        since: flags.since,
+        source: { kind: 'local', id: osHostname() },
+      })
+      if (flags.out) await finished(dest)
+    } finally {
+      memory.close()
+    }
+    return
   }
 
   const pgUrl = requirePgUrl()
@@ -1047,7 +1111,9 @@ async function memoryImport(args: string[]): Promise<void> {
   \`rivetos cloud import\` (tenant roles cannot write summaries/wiki).
 
   Options:
-    --dry-run   Parse and validate the file; do not write
+    --dry-run        Parse and validate the file; do not write
+    --sqlite <file>  Import into this SQLite memory file (default on a node
+                     whose config has memory.sqlite and no RIVETOS_PG_URL)
 `)
     return
   }
@@ -1058,6 +1124,25 @@ async function memoryImport(args: string[]): Promise<void> {
   } catch (err) {
     console.error(`Error: ${(err as Error).message}`)
     process.exit(1)
+    return
+  }
+
+  const sqlitePath = resolveSqliteMemoryPath(flags.sqlite)
+  if (sqlitePath) {
+    // Opening the store creates the file and brings its schema up to date.
+    const { SqliteMemory, importSqliteMemory } = await import('@rivetos/memory-sqlite')
+    const memory = new SqliteMemory({ path: sqlitePath, workers: false })
+    try {
+      const summary = await importSqliteMemory(memory.database(), createReadStream(flags.file), {
+        dryRun: flags.dryRun,
+      })
+      console.log(JSON.stringify(summary, null, 2))
+      console.log(
+        'Embeddings are not in the file: the node embeds the imported rows once it runs with an embedding endpoint.',
+      )
+    } finally {
+      memory.close()
+    }
     return
   }
 

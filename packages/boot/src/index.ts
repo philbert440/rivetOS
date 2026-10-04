@@ -220,6 +220,13 @@ async function bootWithConfig(
 
   // 2. Runtime — one host-owned pool, injected everywhere. Ended after
   //    runtime.stop() and before embedded PG itself is stopped.
+  // A node whose memory is SQLite keeps one file per user, not a database
+  // per user. The users registry (den reads it from the environment, and
+  // re-reads it at runtime) must route users without a Postgres URL.
+  if (config.memory?.sqlite !== undefined && !process.env.RIVETOS_USER_STORES) {
+    process.env.RIVETOS_USER_STORES = 'local'
+  }
+
   // `memory.postgres` is absent on a node whose memory is another backend.
   const pgSlice: Record<string, unknown> | undefined = config.memory?.postgres
   const pgUrl = (pgSlice?.connection_string as string | undefined) ?? process.env.RIVETOS_PG_URL

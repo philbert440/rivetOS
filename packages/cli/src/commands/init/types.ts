@@ -46,6 +46,14 @@ export interface WizardLocal {
   hostname: string
   root?: string
   memory?: 'lite' | 'full'
+  /**
+   * Where memory and tasks live. `pglite` (default): embedded Postgres under
+   * `dataDir`. `sqlite`: two files, no database process.
+   */
+  db?: 'pglite' | 'sqlite'
+  /** `db: 'sqlite'`: the memory file and the task file. */
+  sqliteMemoryPath?: string
+  sqliteTasksPath?: string
   muxNone?: boolean
   embedEndpoint?: string
   embedModel?: string

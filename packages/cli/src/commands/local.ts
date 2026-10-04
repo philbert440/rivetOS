@@ -8,7 +8,15 @@
  * PGlite socket in-process.
  */
 
-import { chmodSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import {
+  chmodSync,
+  existsSync,
+  mkdirSync,
+  readFileSync,
+  rmSync,
+  statSync,
+  writeFileSync,
+} from 'node:fs'
 import { createInterface } from 'node:readline'
 import { homedir, hostname as osHostname, userInfo } from 'node:os'
 import { dirname, join, resolve as resolvePath, sep } from 'node:path'
@@ -82,6 +90,9 @@ export {
 const DEFAULT_PORT = 5174
 const DEFAULT_PG_PORT = 5433
 const HEALTHZ_TIMEOUT_MS = 60_000
+/** `--db sqlite`: file names under ~/.rivetos. */
+const SQLITE_MEMORY_FILE = 'memory.sqlite'
+const SQLITE_TASKS_FILE = 'tasks.sqlite'
 const SUBS = new Set(['init', 'up', 'status', 'backup', 'reset'])
 
 const PROVIDER_ALIASES: Record<string, string> = {
@@ -101,8 +112,9 @@ plugins, and a user service. Bare \`rivetos local\` runs init then up.
 Commands:
   init      Write config/env, mint CA + identities, warm the DB, install plugins
   up        Start the user service (or print rivetos start) and wait for /healthz
-  status    Den healthz + embedded DB + detected harnesses
-  backup    PGlite dumpDataDir gzip tarball (stop the node first)
+  status    Den healthz + database + detected harnesses
+  backup    PGlite dumpDataDir gzip tarball (stop the node first), or a consistent
+            copy of the SQLite memory file
   reset     Stop the service and delete local-mode data (confirm unless --yes)
 
 Options:
@@ -116,6 +128,8 @@ Options:
   --device <name>       Pair a phone: mints its certificate and shows a QR for
                         RivetHub Android to scan (repeatable; re-run to re-pair)
   --memory lite|full    lite (default) = FTS/trigram; full requires RIVETOS_EMBED_URL
+  --db pglite|sqlite    Where memory and tasks live (init). pglite (default) = embedded
+                        Postgres; sqlite = two files under ~/.rivetos, no database process
   --out <path>          backup destination
   -h, --help            Show this help
 `
@@ -135,6 +149,8 @@ export interface LocalFlags {
   service: boolean
   devices: string[]
   memory: 'lite' | 'full'
+  /** Memory and task storage: embedded Postgres (default) or SQLite files. */
+  db: 'pglite' | 'sqlite'
   out?: string
   help: boolean
 }
@@ -173,6 +189,7 @@ export function parseLocalArgs(args: string[]): LocalFlags {
     service: true,
     devices: [],
     memory: 'lite',
+    db: 'pglite',
     help: false,
   }
   for (let i = 0; i < args.length; i++) {
@@ -203,6 +220,12 @@ export function parseLocalArgs(args: string[]): LocalFlags {
         throw new Error('--memory must be lite or full')
       }
       flags.memory = m
+    } else if (a === '--db' && args[i + 1]) {
+      const db = args[++i]
+      if (db !== 'pglite' && db !== 'sqlite') {
+        throw new Error('--db must be pglite or sqlite')
+      }
+      flags.db = db
     } else if (a === '--out' && args[i + 1]) {
       flags.out = args[++i]
     } else if (a.startsWith('-')) {
@@ -301,7 +324,9 @@ export function localWizardState(
     agents: answered.agents,
     channels: [],
     postgresPassword: '',
-    postgresUrl: answered.postgresUrl,
+    // A SQLite node has no Postgres: no RIVETOS_PG_URL is written, so nothing
+    // (the MCP sidecar included) reaches for a database that is not there.
+    postgresUrl: local.db === 'sqlite' ? undefined : answered.postgresUrl,
     ownerId: answered.ownerId,
     local,
   }
@@ -529,8 +554,12 @@ export function readPersistedDen(configPath: string): { port: number; exposeLan:
   let port = DEFAULT_PORT
   let exposeLan = true
   try {
-    const embedded = readEmbeddedConfig(configPath)
-    const den = (embedded?.config as { den?: { port?: number; host?: string } } | undefined)?.den
+    // The den block is read straight from the file: a SQLite node has no
+    // embedded-Postgres section for readEmbeddedConfig to find.
+    const parsed = parseYaml(readFileSync(configPath, 'utf-8')) as {
+      den?: { port?: number; host?: string }
+    } | null
+    const den = parsed?.den
     if (typeof den?.port === 'number') port = den.port
     if (den?.host === '127.0.0.1' || den?.host === 'localhost' || den?.host === '::1') {
       exposeLan = false
@@ -775,6 +804,13 @@ async function runInit(
     hostname,
     root: root ?? undefined,
     memory: flags.memory,
+    db: flags.db,
+    ...(flags.db === 'sqlite'
+      ? {
+          sqliteMemoryPath: join(dir, SQLITE_MEMORY_FILE),
+          sqliteTasksPath: join(dir, SQLITE_TASKS_FILE),
+        }
+      : {}),
     muxNone,
     embedEndpoint:
       flags.memory === 'full' ? process.env.RIVETOS_EMBED_URL?.trim() || undefined : undefined,
@@ -836,17 +872,22 @@ async function runInit(
     console.log(`Device ${name}: certificate ready — scan the pairing QR shown once the node is up`)
   }
 
-  console.log('starting memory engine…')
-  const embedded = readEmbeddedConfig(join(dir, 'config.yaml'))
-  if (!embedded) {
-    throw new Error('generated config is missing memory.postgres.embedded')
-  }
-  const warm = deps.withEmbeddedPg ?? withEmbeddedPg
-  await warm(embedded.config, async (handle) => {
-    if (handle.owned) {
-      await migrateEmbedded(handle.pgUrl)
+  if (flags.db === 'sqlite') {
+    // Nothing to warm: the runtime creates and migrates the files on first open.
+    console.log(`memory: SQLite at ${join(dir, SQLITE_MEMORY_FILE)}`)
+  } else {
+    console.log('starting memory engine…')
+    const embedded = readEmbeddedConfig(join(dir, 'config.yaml'))
+    if (!embedded) {
+      throw new Error('generated config is missing memory.postgres.embedded')
     }
-  })
+    const warm = deps.withEmbeddedPg ?? withEmbeddedPg
+    await warm(embedded.config, async (handle) => {
+      if (handle.owned) {
+        await migrateEmbedded(handle.pgUrl)
+      }
+    })
+  }
 
   try {
     const install = deps.pluginsInstall ?? pluginsInstall
@@ -1144,7 +1185,16 @@ async function runStatus(deps: LocalDeps): Promise<void> {
       )
     }
   } else {
-    console.log('⚠️  embedded PGlite: not configured')
+    const sqlite = existsSync(configPath) ? readSqliteConfig(configPath, home) : undefined
+    if (sqlite) {
+      console.log(
+        existsSync(sqlite.memoryPath)
+          ? `✅ SQLite memory: ${sqlite.memoryPath} (${formatBytes(fileSizeBytes(sqlite.memoryPath))})`
+          : `⚠️  SQLite memory: ${sqlite.memoryPath} not created yet — start the node`,
+      )
+    } else {
+      console.log('⚠️  database: neither embedded PGlite nor SQLite is configured')
+    }
   }
 
   const harnessRows = await checkHarnesses({ home })
@@ -1158,12 +1208,34 @@ async function runBackup(flags: LocalFlags, deps: LocalDeps): Promise<void> {
   const home = deps.home ?? homedir()
   applySharedDir(home)
   const configPath = join(home, '.rivetos', 'config.yaml')
-  const embedded = readEmbeddedConfig(configPath)
-  if (!embedded) {
-    throw new Error('memory.postgres.embedded is not configured — run rivetos local init')
-  }
   const now: () => Date = deps.now ?? ((): Date => new Date())
   const stamp = now().toISOString().replace(/[:.]/g, '-').slice(0, 19)
+  const sqlite = readSqliteConfig(configPath, home)
+  if (sqlite) {
+    if (!existsSync(sqlite.memoryPath)) {
+      throw new Error(`${sqlite.memoryPath} does not exist yet — nothing to back up`)
+    }
+    const out = flags.out ?? join(home, '.rivetos', 'backups', `memory-${stamp}.sqlite`)
+    if (existsSync(out)) throw new Error(`${out} already exists`)
+    mkdirSync(dirname(out), { recursive: true })
+    // VACUUM INTO writes a consistent copy while the node keeps running.
+    const { DatabaseSync } = await import('node:sqlite')
+    const db = new DatabaseSync(sqlite.memoryPath, { readOnly: true })
+    try {
+      db.prepare('VACUUM INTO ?').run(out)
+    } finally {
+      db.close()
+    }
+    chmod600(out)
+    console.log(`✅ backup wrote ${out}`)
+    return
+  }
+  const embedded = readEmbeddedConfig(configPath)
+  if (!embedded) {
+    throw new Error(
+      'neither memory.postgres.embedded nor memory.sqlite is configured — run rivetos local init',
+    )
+  }
   const out = flags.out ?? join(home, '.rivetos', 'backups', `pglite-${stamp}.tar.gz`)
   const warm = deps.withEmbeddedPg ?? withEmbeddedPg
   await warm(embedded.config, async (handle) => {
@@ -1205,6 +1277,65 @@ function embeddedDataDirsForReset(home: string): string[] {
   return [...dirs]
 }
 
+/** `memory.sqlite.path` and `tasks.sqlite_path` from a local-mode config, when it is a SQLite node. */
+function readSqliteConfig(
+  configPath: string,
+  home: string = homedir(),
+): { memoryPath: string; tasksPath?: string } | undefined {
+  let parsed: unknown
+  try {
+    parsed = parseYaml(readFileSync(configPath, 'utf-8'))
+  } catch {
+    return undefined
+  }
+  const cfg = parsed as {
+    memory?: { sqlite?: { path?: unknown } }
+    tasks?: { sqlite_path?: unknown }
+  } | null
+  const memoryPath = cfg?.memory?.sqlite?.path
+  if (typeof memoryPath !== 'string' || memoryPath.trim() === '') return undefined
+  const expand = (p: string): string => (p.startsWith('~/') ? join(home, p.slice(2)) : p)
+  const tasksPath = cfg?.tasks?.sqlite_path
+  return {
+    memoryPath: expand(memoryPath.trim()),
+    ...(typeof tasksPath === 'string' && tasksPath.trim() !== ''
+      ? { tasksPath: expand(tasksPath.trim()) }
+      : {}),
+  }
+}
+
+function fileSizeBytes(path: string): number {
+  try {
+    return statSync(path).size
+  } catch {
+    return 0
+  }
+}
+
+/**
+ * The SQLite files a reset removes: the default memory and task files with
+ * their WAL companions, the per-user files beside them, and whatever a
+ * readable config points at. Paths outside ~/.rivetos are refused later.
+ */
+function sqliteFilesForReset(home: string): string[] {
+  const dir = rivetDir(home)
+  const bases = new Set<string>([join(dir, SQLITE_MEMORY_FILE), join(dir, SQLITE_TASKS_FILE)])
+  const configPath = join(dir, 'config.yaml')
+  // Only files under ~/.rivetos are reset's to delete: a store the config
+  // keeps elsewhere is left alone.
+  const base = resolvePath(dir)
+  const mine = (p: string): boolean => resolvePath(p).startsWith(base + sep)
+  const configured = existsSync(configPath) ? readSqliteConfig(configPath, home) : undefined
+  if (configured) {
+    if (mine(configured.memoryPath)) bases.add(configured.memoryPath)
+    if (configured.tasksPath && mine(configured.tasksPath)) bases.add(configured.tasksPath)
+  }
+  const out: string[] = []
+  for (const base of bases) out.push(base, `${base}-wal`, `${base}-shm`)
+  out.push(join(dir, 'users'))
+  return out.filter((p) => existsSync(p))
+}
+
 async function runReset(flags: LocalFlags, deps: LocalDeps): Promise<void> {
   const ok = await confirmReset(flags.yes, deps.confirm)
   if (!ok) {
@@ -1227,6 +1358,7 @@ async function runReset(flags: LocalFlags, deps: LocalDeps): Promise<void> {
 
   const targets = [
     join(dir, 'pglite'),
+    ...sqliteFilesForReset(home),
     join(dir, 'config.yaml'),
     join(dir, '.env'),
     ...identityPathsToReset(home),
