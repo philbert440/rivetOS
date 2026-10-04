@@ -281,6 +281,9 @@ describe('embedding drain', () => {
       expect(state[a].dims).toBe(TOPICS.length)
       expect(state[b].dims).toBe(TOPICS.length)
       expect(state[odd]).toMatchObject({ status: null, dims: 0 })
+      // The sweep picks the reset row up and embeds it at the adopted width.
+      expect(await memory.runJobs()).toBe(1)
+      expect(memory.embedStateForTest([odd])[odd]).toMatchObject({ status: 'done', dims: TOPICS.length })
     } finally {
       rmSync(dir, { recursive: true, force: true })
     }
@@ -515,5 +518,27 @@ describe('schema v3 on an existing file', () => {
     expect(await memory.runJobs()).toBe(1)
     expect(memory.embedStateForTest(['m1']).m1.status).toBe('done')
     memory.close()
+
+    // A model of another width needs nothing more than the model name.
+    const narrow = (async (_url: string | URL | Request, init?: RequestInit) => {
+      const body = JSON.parse(String(init?.body)) as { input: string[] }
+      return Response.json({ data: body.input.map((_t, index) => ({ index, embedding: [1, 2, 3] })) })
+    }) as unknown as typeof globalThis.fetch
+    memory = new SqliteMemory({
+      path,
+      workers: false,
+      log: () => {},
+      embed: { ...embed, model: 'toy-narrow', fetch: narrow },
+    })
+    expect(await memory.runJobs()).toBe(1)
+    expect(memory.embedStateForTest(['m1']).m1).toMatchObject({ status: 'done', dims: 3 })
+    memory.close()
+
+    // The sweep's partial index exists on a migrated file.
+    const raw = new DatabaseSync(path)
+    expect(
+      raw.prepare(`SELECT name FROM sqlite_master WHERE type = 'index' AND name = 'idx_ros_messages_unembedded'`).get(),
+    ).toBeDefined()
+    raw.close()
   })
 })

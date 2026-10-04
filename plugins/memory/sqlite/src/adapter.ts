@@ -238,6 +238,13 @@ export class SqliteMemory implements Memory {
     this.db.exec('PRAGMA foreign_keys = ON')
     this.db.exec(SCHEMA)
     this.migrateSchema()
+    // Keeps the unembedded-rows sweep proportional to the backlog, not the
+    // table. Created on every open, after the migrations: the columns it
+    // names do not exist on an older file until those have run.
+    this.db.exec(
+      `CREATE INDEX IF NOT EXISTS idx_ros_messages_unembedded ON ros_messages (created_at)
+        WHERE embedding IS NULL AND embed_status IS NULL`,
+    )
     if (path !== ':memory:') {
       // WAL/SHM appear after journal_mode=WAL; tighten DB + siblings.
       restrictSqliteFileModes(path)
@@ -318,13 +325,6 @@ export class SqliteMemory implements Memory {
     if (!cols.has('embed_failures')) {
       this.db.exec('ALTER TABLE ros_messages ADD COLUMN embed_failures INTEGER NOT NULL DEFAULT 0')
     }
-    // Keeps the unembedded-rows sweep proportional to the backlog, not the
-    // table. Created here, not in SCHEMA: on an older file the columns it
-    // names do not exist until the ALTERs above have run.
-    this.db.exec(
-      `CREATE INDEX IF NOT EXISTS idx_ros_messages_unembedded ON ros_messages (created_at)
-        WHERE embedding IS NULL AND embed_status IS NULL`,
-    )
     const now = iso()
     this.db
       .prepare(
@@ -918,6 +918,8 @@ export class SqliteMemory implements Memory {
         `UPDATE ros_messages SET embedding = NULL, embed_status = NULL, embed_error = NULL, embed_failures = 0
           WHERE embedding IS NOT NULL OR embed_status = 'done'`,
       )
+      // No vectors are left, so the new model is free to set its own width.
+      this.db.exec(`DELETE FROM ros_meta WHERE key = 'embed_dims'`)
       this.vectorIndex.invalidate()
     }
     this.db

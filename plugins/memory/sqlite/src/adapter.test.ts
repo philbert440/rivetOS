@@ -432,6 +432,11 @@ describe('schema upgrade v1 → v2 (tag tables)', () => {
           .all() as Array<{ name: string }>
       ).map((r) => r.name)
       expect(later.sort()).toEqual(['ros_jobs', 'ros_meta'])
+      expect(
+        after
+          .prepare(`SELECT name FROM sqlite_master WHERE type = 'index' AND name = 'idx_ros_messages_unembedded'`)
+          .get(),
+      ).toBeDefined()
       const columns = (after.prepare('PRAGMA table_info(ros_messages)').all() as Array<{ name: string }>).map(
         (c) => c.name,
       )
