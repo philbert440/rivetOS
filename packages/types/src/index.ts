@@ -449,4 +449,6 @@ export type {
   MemoryPendingTag,
   MemoryTagUsage,
   MemoryTaxonomyInput,
+  MemoryWikiIndex,
+  MemoryWikiTopic,
 } from './memory-backend.js'

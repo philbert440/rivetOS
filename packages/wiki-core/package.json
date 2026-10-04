@@ -1,7 +1,7 @@
 {
   "name": "@rivetos/wiki-core",
   "version": "0.5.0",
-  "description": "Memory wiki page model — parse/apply/serialize, pure (no I/O)",
+  "description": "Memory wiki page model \u2014 parse/apply/serialize (pure) and the git-backed page writer (Node)",
   "license": "Apache-2.0",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",

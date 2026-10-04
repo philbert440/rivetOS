@@ -18,6 +18,7 @@ import {
   resolveCompactionSettings,
   resolveCompactorConfig,
   resolveEmbedConfig,
+  resolveWikiConfig,
 } from './index.ts'
 import type { SqliteMemory } from './adapter.ts'
 
@@ -338,5 +339,20 @@ describe('resolveCompactorConfig', () => {
       branchBatch: 2,
       minLeavesForBranch: 2,
     })
+  })
+})
+
+describe('resolveWikiConfig', () => {
+  it('reads the directory and the switch from config, then the environment; extraction is off by default', () => {
+    expect(resolveWikiConfig({}, {}).extraction).toBe(false)
+    expect(resolveWikiConfig({}, {}).dir).toMatch(/wiki$/)
+    expect(resolveWikiConfig({}, { WIKI_DIR: '/data/wiki', WIKI_EXTRACTION: '1' })).toEqual({
+      dir: '/data/wiki',
+      extraction: true,
+    })
+    expect(
+      resolveWikiConfig({ wiki_dir: '/cfg/wiki', wiki_extraction: false }, { WIKI_DIR: '/data/wiki', WIKI_EXTRACTION: '1' }),
+    ).toEqual({ dir: '/cfg/wiki', extraction: false })
+    expect(resolveWikiConfig({}, { WIKI_EXTRACTION: 'true' }).extraction).toBe(false)
   })
 })

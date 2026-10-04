@@ -9,7 +9,7 @@ memory:
 ```
 
 WAL file store, append + session/task history, FTS5 + vector search,
-summaries. Wiki and multi-user routing are later phases.
+summaries, wiki. Multi-user routing is a later phase.
 
 Embeddings and hybrid search: set `embed_endpoint` + `embed_model` (or
 `RIVETOS_EMBED_URL` / `RIVETOS_EMBED_MODEL`). An in-process job loop
@@ -27,6 +27,17 @@ conversations into leaf, branch and root summaries (`ros_summaries`,
 compaction worker. Summaries are full-text indexed, embedded when an embedding
 endpoint is set, and returned by `search` for scope `summaries` or `both`.
 Without an endpoint nothing is summarized and no text leaves the machine.
+
+Wiki: `wiki_extraction: true` (or `WIKI_EXTRACTION=1`) with a compactor
+endpoint mines each leaf summary into wiki pages (`wiki.ts`). Pages are
+markdown files under `wiki_dir/topics` in a git repository, written by the
+`WikiWriter` shared with the Postgres pipeline (`@rivetos/wiki-core`); the
+SQLite file holds the topic index (`ros_wiki_topics` + FTS, provenance,
+citations, redirects, per-summary extraction marks). Topic search fuses
+full-text, a literal slug/title/alias match and, with an embedding endpoint,
+a vector leg. The turn context gets a wiki section and the den serves
+`/api/wiki` and `/wiki` from this index. Not ported: the manual
+consolidate and recompile tasks.
 
 Session tags: `memory.tags()` reads and writes `ros_tags` with the same
 lifecycle as the Postgres backend (`add` is born accepted, `propose` writes

@@ -35,6 +35,7 @@ import type {
 } from '@rivetos/types'
 import type { SqliteSearchHit } from './adapter.js'
 import type { SqliteTagStore } from './tags.js'
+import type { SqliteWikiIndex } from './wiki.js'
 
 /** Same cap as the Postgres capture path. */
 const MAX_CONTENT = 16000
@@ -61,6 +62,7 @@ export interface SqliteBackendHost {
   workersRunning(): boolean
   enqueueMessageEmbed(id: string): void
   tags(): SqliteTagStore
+  wiki(): { index: SqliteWikiIndex; wikiDir: string } | undefined
   assertOpen(): void
 }
 
@@ -798,6 +800,12 @@ export class SqliteBackend implements MemoryBackend {
         updatedAt: new Date(r.updated_at),
       }
     })
+  }
+
+  /** The wiki index and page directory, for the den's wiki routes. */
+  wiki(): { index: SqliteWikiIndex; wikiDir: string } | undefined {
+    this.host.assertOpen()
+    return this.host.wiki()
   }
 
   // -------------------------------------------------------------------------

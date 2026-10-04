@@ -397,6 +397,17 @@ export {
   parseRecompileResult,
 } from '@rivetos/memory-core'
 export type { ExtractionCandidate } from '@rivetos/memory-core'
+// Wiki tag rules: moved to @rivetos/memory-core, re-exported for the worker.
+export {
+  WIKI_TAGS_MAX,
+  safeLiteral,
+  mentionedIn,
+  ruleEntityIds,
+  withoutRuleEntities,
+  tagCandidateQuery,
+  mergeTagCandidates,
+} from '@rivetos/memory-core'
+export type { WikiTag } from '@rivetos/memory-core'
 export type {
   WikiTopicRow,
   WikiTopicHit,

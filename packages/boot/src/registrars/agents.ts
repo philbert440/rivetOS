@@ -960,11 +960,32 @@ export async function registerAgentTools(
   // pool-backed memory only, and are not mounted beside it.
   const registeredMemory = runtime.getMemory()
   const memoryBackend = hasMemoryBackend(registeredMemory) ? registeredMemory.backend() : undefined
+  const backendWiki = memoryBackend?.wiki?.()
   if (memoryBackend) {
     gatewayRoutes.push(
       createBackendCaptureRoute(memoryBackend),
       createBackendMemoryRoute(memoryBackend),
     )
+    // The backend's own wiki: its index, and the page files it points at.
+    // It takes precedence over the pool-backed wiki routes below even when a
+    // Postgres pool exists (for tasks): the node's memory is this backend,
+    // and `memory.postgres` cannot be configured beside it.
+    // One store, so a routed user is refused rather than shown the owner's.
+    if (backendWiki) {
+      gatewayRoutes.push(
+        createWikiApiRoute({
+          index: backendWiki.index,
+          wikiDir: backendWiki.wikiDir,
+          forUser: () => null,
+        }),
+        createWikiHtmlRoute({
+          index: backendWiki.index,
+          wikiDir: backendWiki.wikiDir,
+          nodeName: config.mesh?.node_name,
+          forUser: () => null,
+        }),
+      )
+    }
   }
   // Phase 3e: wiki routes — read-only over the PG index + NFS repo files.
   // Mounted whenever the shared pool exists; degrade to empty results until
@@ -988,15 +1009,17 @@ export async function registerAgentTools(
         ...memoryApiEmbedFromEnv(),
       },
     })
-    gatewayRoutes.push(
-      createWikiApiRoute({ index: wikiIndex, wikiDir: wikiRoot, forUser: wikiFor }),
-      createWikiHtmlRoute({
-        index: wikiIndex,
-        wikiDir: wikiRoot,
-        nodeName: config.mesh?.node_name,
-        forUser: wikiFor,
-      }),
-    )
+    if (!backendWiki) {
+      gatewayRoutes.push(
+        createWikiApiRoute({ index: wikiIndex, wikiDir: wikiRoot, forUser: wikiFor }),
+        createWikiHtmlRoute({
+          index: wikiIndex,
+          wikiDir: wikiRoot,
+          nodeName: config.mesh?.node_name,
+          forUser: wikiFor,
+        }),
+      )
+    }
     if (!memoryBackend) {
       gatewayRoutes.push(
         createCaptureApiRoute({ pool, userPools }),
