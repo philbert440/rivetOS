@@ -581,10 +581,10 @@ export class SqliteMemory implements Memory {
         })
       }
     }
-    return out
-      .sort((x, y) => x.rank - y.rank)
-      .slice(0, limit)
-      .map(({ rank: _rank, ...hit }) => hit)
+    const top = out.sort((x, y) => x.rank - y.rank).slice(0, limit)
+    // Returned rows are reinforced on every path, as in hybrid search.
+    this.bumpAccess(top.map((h) => (h.role === 'summary' ? `s:${h.id}` : `m:${h.id}`)))
+    return top.map(({ rank: _rank, ...hit }) => hit)
   }
 
   async getContextForTurn(
@@ -1113,12 +1113,12 @@ export class SqliteMemory implements Memory {
       this.db
         .prepare(
           `DELETE FROM ros_jobs
-            WHERE state = 'dead' AND task = ? AND job_key LIKE ? || '%'
+            WHERE state = 'dead' AND task = ? AND substr(job_key, 1, length(?)) = ?
               AND NOT EXISTS (SELECT 1 FROM ${table} m
                                WHERE m.embedding IS NULL AND m.embed_status IS NULL
                                  AND ros_jobs.job_key = ? || m.id)`,
         )
-        .run(EMBED_TARGET_TASK, prefix, prefix)
+        .run(EMBED_TARGET_TASK, prefix, prefix, prefix)
       const rows = this.db
         .prepare(
           `SELECT m.id FROM ${table} m
@@ -1182,7 +1182,7 @@ export class SqliteMemory implements Memory {
     if (prior?.value === model) return
     if (prior) {
       this.log(
-        `[memory.sqlite] embedding model changed (${prior.value} → ${model}); re-embedding stored messages`,
+        `[memory.sqlite] embedding model changed (${prior.value} → ${model}); re-embedding stored messages and summaries`,
       )
       this.clearVectors()
       // No vectors are left, so the new model is free to set its own width.
@@ -1215,7 +1215,7 @@ export class SqliteMemory implements Memory {
         )
       }
       this.log(
-        `[memory.sqlite] embedding width changed (${prior.value} → ${String(dims)}); re-embedding stored messages`,
+        `[memory.sqlite] embedding width changed (${prior.value} → ${String(dims)}); re-embedding stored messages and summaries`,
       )
       this.clearVectors()
     }
@@ -1237,8 +1237,11 @@ export class SqliteMemory implements Memory {
     if (known) return
     const widths = this.db
       .prepare(
-        `SELECT length(embedding) / 4 AS dims, count(*) AS n FROM ros_messages
-          WHERE embedding IS NOT NULL GROUP BY 1 ORDER BY n DESC, dims DESC`,
+        `SELECT dims, count(*) AS n FROM (
+           SELECT length(embedding) / 4 AS dims FROM ros_messages WHERE embedding IS NOT NULL
+           UNION ALL
+           SELECT length(embedding) / 4 FROM ros_summaries WHERE embedding IS NOT NULL
+         ) GROUP BY dims ORDER BY n DESC, dims DESC`,
       )
       .all() as unknown as Array<{ dims: number; n: number }>
     if (widths.length === 0) return
@@ -1279,7 +1282,7 @@ export class SqliteMemory implements Memory {
     this.summaryIndex.invalidate()
   }
 
-  /** Summaries for stats, tools and tests: newest first. */
+  /** Summaries for stats, tools and tests: by depth, oldest first. */
   summariesForConversation(conversationId: string): Array<{
     id: string
     kind: string
@@ -1484,6 +1487,13 @@ export class SqliteMemory implements Memory {
       { conversationId: id, triggerType: 'session_idle' },
       { key: `compact-${id}`, maxAttempts: 3 },
     )
+  }
+
+  /** Test helper — how often a summary was returned by search. */
+  summaryAccessCountForTest(id: string): number {
+    const row = this.db.prepare(`SELECT access_count FROM ros_summaries WHERE id = ?`).get(id) as
+      { access_count: number } | undefined
+    return row?.access_count ?? 0
   }
 
   /** Test helper — width of a summary's stored vector (0 when none). */

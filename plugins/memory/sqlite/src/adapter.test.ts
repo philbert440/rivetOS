@@ -138,7 +138,7 @@ describe('SqliteMemory Memory contract', () => {
     const summaries = await memory.search('flurbnozzle', { scope: 'summaries' })
     expect(summaries).toEqual([])
 
-    // Phase 1: scope 'both' is messages-only (no summary arm yet).
+    // No summaries were written here, so 'both' returns the messages.
     const both = await memory.search('flurbnozzle', { scope: 'both' })
     expect(both.length).toBeGreaterThanOrEqual(1)
   })

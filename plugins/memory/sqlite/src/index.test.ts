@@ -212,5 +212,7 @@ describe('resolveCompactorConfig', () => {
     expect(
       resolveCompactionSettings({ COMPACT_LEAF_BATCH: '20', COMPACT_IDLE_MINUTES: 'soon', COMPACT_MIN_LEAFS: '0' }),
     ).toEqual({ leafBatch: 20 })
+    // A leaf window below the floor of 5 could never be written.
+    expect(resolveCompactionSettings({ COMPACT_LEAF_BATCH: '3' })).toEqual({})
   })
 })

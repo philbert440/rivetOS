@@ -223,6 +223,33 @@ describe('compaction on the job loop', () => {
     expect(logs.join('\n')).toMatch(/compact-conversation .* failed \(attempt 1\/3, retry\): LLM HTTP 503/)
   })
 
+  it('a compaction job that ran out of attempts is revived by the sweep once the endpoint recovers', async () => {
+    let clock = new Date('2026-10-04T12:00:00Z')
+    let down = true
+    const chat = fakeChat(() => (down ? { status: 400 } : { content: SUMMARY }))
+    memory = new SqliteMemory({
+      path: ':memory:',
+      workers: false,
+      log: () => {},
+      now: () => clock,
+      compactor: { endpoint: 'https://llm.test/v1', model: 'm', fetch: chat.fetch, sleep: noWait },
+    })
+    await fill(memory, 's1', 10)
+    // Three attempts, each past the previous backoff, and the job is dead.
+    for (let i = 0; i < 3; i += 1) {
+      await memory.runJobs()
+      clock = new Date(clock.getTime() + 10 * 60_000)
+    }
+    expect(memory.jobs().counts()).toEqual([{ task: 'compact-conversation', state: 'dead', count: 1 }])
+    // The endpoint is back: the next sweep revives the dead job and it runs.
+    down = false
+    clock = new Date(clock.getTime() + 10 * 60_000)
+    expect(await memory.runJobs()).toBe(1)
+    const conv = memory.conversationIdForTest('s1', 'rivet')
+    expect(memory.summariesForConversation(conv)).toHaveLength(1)
+    expect(memory.jobs().counts()).toEqual([])
+  })
+
   it('summaries are found by search, with and without an embedding endpoint', async () => {
     const chat = fakeChat(() => ({
       content: 'Decided to keep the datastore on a laptop and summarize it nightly with the local model.',
@@ -241,6 +268,8 @@ describe('compaction on the job loop', () => {
     // 'both' returns the summary alongside messages; 'messages' leaves it out.
     expect((await memory.search('datastore', { scope: 'both' })).map((h) => h.role)).toContain('summary')
     expect((await memory.search('datastore', { scope: 'messages' })).map((h) => h.role)).not.toContain('summary')
+    // Returned summaries are reinforced on the full-text path too.
+    expect(memory.summaryAccessCountForTest(summaryHits[0].id)).toBeGreaterThanOrEqual(2)
     // Another agent's filter does not see it.
     expect(await memory.search('datastore', { scope: 'summaries', agent: 'other' })).toEqual([])
     // The turn context includes the summary as relevant context.

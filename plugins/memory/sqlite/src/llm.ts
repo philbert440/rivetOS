@@ -7,7 +7,7 @@
  * few times inside the call and then fails the job, which backs off.
  */
 
-import { LLM_TEMPERATURE, delayForRetry } from '@rivetos/memory-core'
+import { LLM_TEMPERATURE, delayForRetry, isRetryableHttpStatus } from '@rivetos/memory-core'
 import type { TokenSource } from '@rivetos/token-command'
 
 export interface LlmConfig {
@@ -118,7 +118,7 @@ export class LlmClient {
         }
         if (!res.ok) {
           await res.body?.cancel().catch(() => {})
-          const transient = res.status === 408 || res.status === 429 || res.status >= 500
+          const transient = isRetryableHttpStatus(res.status)
           if (!transient) {
             throw new LlmPermanentError(`LLM HTTP ${String(res.status)} (not retrying)`, res.status)
           }
@@ -136,7 +136,10 @@ export class LlmClient {
           }>
         }
         const choice = data.choices?.[0]
-        const content = choice?.message?.content ?? choice?.message?.reasoning_content ?? null
+        // A thinking model may leave `content` empty and answer in `reasoning_content`.
+        const content = choice?.message?.content?.trim()
+          ? choice.message.content
+          : (choice?.message?.reasoning_content ?? null)
         // Same prompt, same budget: it would truncate again. Not retried here.
         if (choice?.finish_reason === 'length') throw new LlmTruncatedError(maxTokens)
         if (!content || content.trim().length < minChars) {

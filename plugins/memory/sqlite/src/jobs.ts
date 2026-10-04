@@ -173,6 +173,25 @@ export class SqliteJobQueue {
     return Number(r.changes)
   }
 
+  /**
+   * A dead job holds its key, so `enqueue` with that key is a no-op. Give it
+   * fresh attempts (and the new payload) instead. False when no dead job has
+   * that key.
+   */
+  revive(key: string, payload: unknown): boolean {
+    const now = this.now().toISOString()
+    return (
+      Number(
+        this.db
+          .prepare(
+            `UPDATE ros_jobs SET state = 'queued', attempts = 0, run_at = ?, updated_at = ?, payload = ?
+              WHERE job_key = ? AND state = 'dead'`,
+          )
+          .run(now, now, JSON.stringify(payload ?? null), key).changes,
+      ) > 0
+    )
+  }
+
   /** Dead jobs back to the queue with fresh attempts. Returns how many. */
   requeueDead(task?: string): number {
     const now = this.now().toISOString()

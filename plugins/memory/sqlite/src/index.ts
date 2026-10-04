@@ -40,6 +40,7 @@ import type { PluginManifest } from '@rivetos/types'
 import { loadUsersRegistry } from '@rivetos/types'
 import { SqliteMemory, resolveSqlitePath } from './adapter.js'
 import { clampEmbedTimeoutMs } from '@rivetos/memory-core'
+import { MIN_BATCH_SIZE } from '@rivetos/memory-core'
 import type { CompactionSettings } from './compaction.js'
 import type { EmbedConfig } from './embed.js'
 import type { LlmConfig } from './llm.js'
@@ -226,5 +227,8 @@ export function resolveCompactionSettings(
   set('idleMinutes', 'COMPACT_IDLE_MINUTES')
   set('staleMinutes', 'COMPACT_STALE_MINUTES')
   set('staleMinBatch', 'COMPACT_STALE_MIN_BATCH')
+  // A leaf window below the floor could never be written: the sweep would
+  // queue a job every pass that does nothing.
+  if (out.leafBatch !== undefined && out.leafBatch < MIN_BATCH_SIZE) delete out.leafBatch
   return out
 }

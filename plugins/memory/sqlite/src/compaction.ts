@@ -69,6 +69,8 @@ export const DEFAULT_COMPACTION_SETTINGS: CompactionSettings = {
 
 /** Conversations the idle sweep considers per pass. */
 const ENQUEUE_LIMIT = 50
+/** Conversations examined per sweep, oldest activity first. */
+const CANDIDATE_LIMIT = 500
 
 /** Messages worth summarizing: real text, or a tool call. Same rule as Postgres. */
 const SUMMARIZABLE_SQL = `((m.content IS NOT NULL AND length(m.content) > 10) OR m.tool_name IS NOT NULL)`
@@ -139,22 +141,41 @@ export class SqliteCompactor {
     const nowMs = this.now().getTime()
     const idleBefore = new Date(nowMs - s.idleMinutes * 60_000).toISOString()
     const staleBefore = new Date(nowMs - s.staleMinutes * 60_000).toISOString()
+    // Candidate conversations are bounded before the message aggregate, so a
+    // large file is not grouped in full on every sweep. A candidate has an
+    // unsummarized message and no live job (a dead one is revived below).
     const rows = this.db
       .prepare(
         `SELECT c.id AS conversation_id, count(m.id) AS unsummarized, c.updated_at
-           FROM ros_conversations c
+           FROM (
+                SELECT c.id, c.updated_at
+                  FROM ros_conversations c
+                 WHERE (c.session_key IS NULL OR c.session_key NOT LIKE 'heartbeat:%')
+                   AND NOT EXISTS (
+                         SELECT 1 FROM ros_jobs j
+                          WHERE j.job_key = 'compact-' || c.id AND j.state <> 'dead'
+                       )
+                   AND EXISTS (
+                         SELECT 1 FROM ros_messages m
+                           LEFT JOIN ros_summary_sources ss ON ss.message_id = m.id
+                          WHERE m.conversation_id = c.id AND ss.summary_id IS NULL
+                            AND ${SUMMARIZABLE_SQL}
+                       )
+                 ORDER BY c.updated_at ASC
+                 LIMIT ?
+                ) c
            JOIN ros_messages m ON m.conversation_id = c.id
            LEFT JOIN ros_summary_sources ss ON ss.message_id = m.id
           WHERE ss.summary_id IS NULL
             AND ${SUMMARIZABLE_SQL}
-            AND (c.session_key IS NULL OR c.session_key NOT LIKE 'heartbeat:%')
-          GROUP BY c.id
+          GROUP BY c.id, c.updated_at
          HAVING (count(m.id) >= ? AND (count(m.id) >= ? OR c.updated_at < ?))
              OR (count(m.id) >= ? AND c.updated_at < ?)
           ORDER BY c.updated_at ASC
           LIMIT ?`,
       )
       .all(
+        CANDIDATE_LIMIT,
         MIN_BATCH_SIZE,
         s.leafBatch,
         idleBefore,
@@ -169,12 +190,13 @@ export class SqliteCompactor {
     let queued = 0
     for (const row of rows) {
       const triggerType = row.unsummarized >= MIN_BATCH_SIZE ? 'session_idle' : 'session_stale'
+      const payload = { conversationId: row.conversation_id, triggerType }
+      const key = `compact-${row.conversation_id}`
+      // A job that ran out of attempts still holds the key: revive it, or the
+      // conversation would never be summarized again.
       if (
-        this.jobs.enqueue(
-          COMPACT_TASK,
-          { conversationId: row.conversation_id, triggerType },
-          { key: `compact-${row.conversation_id}`, maxAttempts: 3 },
-        )
+        this.jobs.enqueue(COMPACT_TASK, payload, { key, maxAttempts: 3 }) ||
+        this.jobs.revive(key, payload)
       ) {
         queued += 1
       }
@@ -381,13 +403,10 @@ export class SqliteCompactor {
         )
         .get(...ids) as unknown as { n: number }
       if (free.n !== ids.length) return false
-      const earliest = batch
-        .map((c) => c.earliest_at)
-        .filter((v): v is string => v !== null)
-        .sort()[0]
+      // A child without a range falls back to when it was written.
+      const earliest = batch.map((c) => c.earliest_at ?? c.created_at).sort()[0]
       const latest = batch
-        .map((c) => c.latest_at)
-        .filter((v): v is string => v !== null)
+        .map((c) => c.latest_at ?? c.created_at)
         .sort()
         .at(-1)
       this.insertSummary({
