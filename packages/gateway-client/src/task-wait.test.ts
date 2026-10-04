@@ -35,3 +35,16 @@ describe('RivetGateway.waitTask', () => {
     await expect(client.waitTask('t')).rejects.toBe(abort)
   })
 })
+
+describe('RivetGateway.killTask', () => {
+  it('forwards an optional signal on the kill POST', async () => {
+    const fetch = vi.fn(async () => new Response(JSON.stringify({ ok: true, prior: 'running' })))
+    const client = new RivetGateway({ baseUrl: 'https://den.invalid', fetch })
+    const signal = new AbortController().signal
+    await client.killTask('task/id', signal)
+    expect(fetch).toHaveBeenCalledWith(
+      'https://den.invalid/api/tasks/task%2Fid/kill',
+      expect.objectContaining({ method: 'POST', signal }),
+    )
+  })
+})

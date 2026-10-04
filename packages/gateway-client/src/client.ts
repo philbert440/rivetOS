@@ -349,9 +349,10 @@ export class RivetGateway {
     })
   }
 
-  killTask(taskId: string): Promise<TaskKillResponse> {
+  killTask(taskId: string, signal?: AbortSignal): Promise<TaskKillResponse> {
     return request(this.config, `/api/tasks/${encodeURIComponent(taskId)}/kill`, {
       method: 'POST',
+      signal,
     })
   }
 

@@ -2,8 +2,14 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import { GatewayError } from '@rivetos/gateway-client'
 import type { ContentPart, TaskCreateRequest, TaskWire, ToolResult } from '@rivetos/types'
 
+import { getEventListeners } from 'node:events'
+
 import type { DenToolsGateway } from './den-tools.js'
-import { createDenTools } from './den-tools.js'
+import {
+  createDenTools,
+  DELEGATE_CLEANUP_TIMEOUT_MS,
+  DELEGATE_CLIENT_GRACE_MS,
+} from './den-tools.js'
 import {
   memoryBrowseInputSchema,
   memoryGetFullInputSchema,
@@ -22,6 +28,7 @@ import {
 } from './delegate.js'
 
 afterEach(() => {
+  vi.useRealTimers()
   vi.restoreAllMocks()
 })
 
@@ -347,7 +354,11 @@ Hello
       }),
     ).toBe('done\n\n---\n_Delegation [completed]: 10ms | tokens: 3_')
     expect(createTask).toHaveBeenCalledWith(body)
-    expect(waitTask).toHaveBeenCalledWith('task-1', { timeoutMs: 5_000 })
+    expect(createTask.mock.calls[0]).toHaveLength(1)
+    expect(waitTask).toHaveBeenCalledWith('task-1', {
+      timeoutMs: 5_000,
+      signal: expect.any(AbortSignal),
+    })
   })
 
   it('maps chain-too-deep 409 and den unreachable on delegate_task', async () => {
@@ -475,7 +486,7 @@ Hello
     expect(await execute({ to_agent: 'reviewer', task: 'go', timeout_ms: 5000 })).toBe(
       '[timeout] Remote delegation to reviewer timed out after 5000ms (task task-1 killed): wait deadline exceeded — task killed — no runner claimed or finished it in time — is the rivetos runtime running on "node-f"?\n\n---\n_Delegation [timeout]: 6000ms_',
     )
-    expect(killTask).toHaveBeenCalledExactlyOnceWith('task-1')
+    expect(killTask).toHaveBeenCalledExactlyOnceWith('task-1', expect.any(AbortSignal))
   })
 
   it('kills on the observation-only wait deadline without a task body', async () => {
@@ -485,7 +496,7 @@ Hello
     expect(await execute({ to_agent: 'reviewer', task: 'go', timeout_ms: 5000 })).toContain(
       '[timeout] Remote delegation to reviewer timed out after 5000ms (task task-1 killed)',
     )
-    expect(killTask).toHaveBeenCalledExactlyOnceWith('task-1')
+    expect(killTask).toHaveBeenCalledExactlyOnceWith('task-1', expect.any(AbortSignal))
   })
 
   it.each(['terminal', 'missing'])(
@@ -500,8 +511,8 @@ Hello
       expect(await execute({ to_agent: 'reviewer', task: 'go', timeout_ms: 5000 })).toBe(
         'done\n\n---\n_Delegation [completed]: 6000ms | tokens: 3_',
       )
-      expect(killTask).toHaveBeenCalledExactlyOnceWith('task-1')
-      expect(getTask).toHaveBeenCalledExactlyOnceWith('task-1')
+      expect(killTask).toHaveBeenCalledExactlyOnceWith('task-1', expect.any(AbortSignal))
+      expect(getTask).toHaveBeenCalledExactlyOnceWith('task-1', expect.any(AbortSignal))
     },
   )
 
@@ -538,12 +549,16 @@ Hello
       const pending = execute({ to_agent: 'reviewer', task: 'go' }, { signal: controller.signal })
       await Promise.resolve()
       expect(waitTask).toHaveBeenCalledWith('task-1', {
-        timeoutMs: 1200000,
-        signal: controller.signal,
+        timeoutMs: 1_200_000,
+        signal: expect.any(AbortSignal),
       })
+      const waited = waitTask.mock.calls[0]?.[1]
+      expect(waited?.signal).toEqual(expect.any(AbortSignal))
+      expect(waited?.signal).not.toBe(controller.signal)
       controller.abort()
+      expect(waited?.signal?.aborted).toBe(true)
       await expect(pending).rejects.toMatchObject({ name: 'AbortError' })
-      expect(killTask).toHaveBeenCalledExactlyOnceWith('task-1')
+      expect(killTask).toHaveBeenCalledExactlyOnceWith('task-1', expect.any(AbortSignal))
     },
   )
 
@@ -569,7 +584,7 @@ Hello
       expect(waitTask).toHaveBeenCalledOnce()
       controller.abort('user cancelled')
       await expect(pending).rejects.toMatchObject({ name: 'AbortError' })
-      expect(killTask).toHaveBeenCalledExactlyOnceWith('task-1')
+      expect(killTask).toHaveBeenCalledExactlyOnceWith('task-1', expect.any(AbortSignal))
     },
   )
 
@@ -589,7 +604,7 @@ Hello
       ).rejects.toMatchObject({ name: 'AbortError' })
       expect(waitTask).not.toHaveBeenCalled()
       if (createFails) expect(killTask).not.toHaveBeenCalled()
-      else expect(killTask).toHaveBeenCalledExactlyOnceWith('task-1')
+      else expect(killTask).toHaveBeenCalledExactlyOnceWith('task-1', expect.any(AbortSignal))
     },
   )
 
@@ -623,6 +638,180 @@ Hello
     expect(await summary.execute({ to_agent: 'reviewer', task: 'go' })).toBe(
       '[no response from remote agent]\n\n---\n_Delegation [completed]: 0ms_',
     )
+  })
+
+  function runningRow(budgetMs: number, createdAt: number): TaskWire {
+    return taskWire({
+      status: 'running',
+      result: undefined,
+      durationMs: undefined,
+      budget: { maxWallClockMs: budgetMs },
+      createdAt,
+    })
+  }
+
+  it('starts the client deadline when the wait starts, not during create', async () => {
+    vi.useFakeTimers()
+    vi.setSystemTime(1_000_000)
+    let resolveCreate: (value: { task: TaskWire }) => void = () => undefined
+    const controller = new AbortController()
+    const waitTask = vi.fn<DenToolsGateway['waitTask']>(() => new Promise(() => undefined))
+    const { execute, createTask, killTask, getTask } = delegationGateway(waitTask)
+    createTask.mockImplementationOnce(
+      () =>
+        new Promise((resolve) => {
+          resolveCreate = resolve
+        }),
+    )
+    getTask.mockResolvedValue({
+      task: runningRow(5_000, 0),
+    })
+    const pending = execute(
+      { to_agent: 'reviewer', task: 'go', timeout_ms: 5_000 },
+      { signal: controller.signal },
+    )
+    await vi.advanceTimersByTimeAsync(5_000 + DELEGATE_CLIENT_GRACE_MS + 60_000)
+    expect(waitTask).not.toHaveBeenCalled()
+    expect(killTask).not.toHaveBeenCalled()
+    expect(getEventListeners(controller.signal, 'abort')).toHaveLength(0)
+    expect(createTask.mock.calls[0]).toHaveLength(1)
+
+    resolveCreate({ task: taskWire({ status: 'queued' }) })
+    await vi.advanceTimersByTimeAsync(0)
+    expect(waitTask).toHaveBeenCalledOnce()
+    expect(getEventListeners(controller.signal, 'abort')).toHaveLength(1)
+    const waited = waitTask.mock.calls[0]?.[1]
+    expect(waited?.signal).toEqual(expect.any(AbortSignal))
+    expect(waited?.signal).not.toBe(controller.signal)
+
+    await vi.advanceTimersByTimeAsync(5_000 + DELEGATE_CLIENT_GRACE_MS - 1)
+    expect(killTask).not.toHaveBeenCalled()
+    expect(waited?.signal?.aborted).toBe(false)
+
+    await vi.advanceTimersByTimeAsync(1)
+    const text = await pending
+    expect(text).toContain('[deadline] The den did not answer in time')
+    expect(text).toContain('task task-1')
+    expect(text).toContain('was killed')
+    expect(text).not.toContain('timed out')
+    expect(text).not.toContain('[timeout]')
+    expect(killTask).toHaveBeenCalledExactlyOnceWith('task-1', expect.any(AbortSignal))
+    expect(getEventListeners(controller.signal, 'abort')).toHaveLength(0)
+    expect(waited?.signal?.aborted).toBe(true)
+  })
+
+  it('leaves a task running when a client deadline is still inside its budget', async () => {
+    vi.useFakeTimers()
+    vi.setSystemTime(1_000_000)
+    const waitTask = vi.fn<DenToolsGateway['waitTask']>(() => new Promise(() => undefined))
+    const { execute, killTask, getTask } = delegationGateway(waitTask)
+    getTask.mockResolvedValue({
+      task: runningRow(5_000 + DELEGATE_CLIENT_GRACE_MS + 1_000, 1_000_000),
+    })
+    const pending = execute({ to_agent: 'reviewer', task: 'go', timeout_ms: 5_000 })
+    await vi.advanceTimersByTimeAsync(0)
+    await vi.advanceTimersByTimeAsync(5_000 + DELEGATE_CLIENT_GRACE_MS)
+    const text = await pending
+    expect(text).toBe(
+      '[deadline] The den did not answer in time for the delegation to reviewer (task task-1 is still running).\n\n---\n_Delegation [deadline]: ' +
+        `${String(5_000 + DELEGATE_CLIENT_GRACE_MS)}ms_`,
+    )
+    expect(killTask).not.toHaveBeenCalled()
+    expect(getTask).toHaveBeenCalledExactlyOnceWith('task-1', expect.any(AbortSignal))
+  })
+
+  it('returns a finished row on a client deadline without killing it', async () => {
+    vi.useFakeTimers()
+    vi.setSystemTime(100)
+    const waitTask = vi.fn<DenToolsGateway['waitTask']>(() => new Promise(() => undefined))
+    const { execute, killTask, getTask } = delegationGateway(waitTask)
+    getTask.mockResolvedValue({ task: taskWire() })
+    const pending = execute({ to_agent: 'reviewer', task: 'go', timeout_ms: 5_000 })
+    await vi.advanceTimersByTimeAsync(0)
+    await vi.advanceTimersByTimeAsync(5_000 + DELEGATE_CLIENT_GRACE_MS)
+    expect(await pending).toBe(
+      `done\n\n---\n_Delegation [completed]: ${String(5_000 + DELEGATE_CLIENT_GRACE_MS)}ms | tokens: 3_`,
+    )
+    expect(killTask).not.toHaveBeenCalled()
+  })
+
+  it('does not kill when the post-deadline getTask never settles', async () => {
+    vi.useFakeTimers()
+    vi.setSystemTime(10_000)
+    const waitTask = vi.fn<DenToolsGateway['waitTask']>(() => new Promise(() => undefined))
+    const { execute, killTask, getTask } = delegationGateway(waitTask)
+    getTask.mockImplementation(() => new Promise(() => undefined))
+    const pending = execute({ to_agent: 'reviewer', task: 'go', timeout_ms: 5_000 })
+    await vi.advanceTimersByTimeAsync(0)
+    await vi.advanceTimersByTimeAsync(5_000 + DELEGATE_CLIENT_GRACE_MS)
+    await vi.advanceTimersByTimeAsync(DELEGATE_CLEANUP_TIMEOUT_MS)
+    const text = await pending
+    expect(text).toContain('The den did not answer in time')
+    expect(text).toContain('task task-1 is still running')
+    expect(text).not.toContain('timed out')
+    expect(killTask).not.toHaveBeenCalled()
+  })
+
+  it('does not fire the deadline after a successful wait', async () => {
+    vi.useFakeTimers()
+    vi.setSystemTime(10_000)
+    const { execute, killTask, getTask } = delegationGateway(async () => ({ task: taskWire() }))
+    await execute({ to_agent: 'reviewer', task: 'go', timeout_ms: 5_000 })
+    await vi.advanceTimersByTimeAsync(
+      5_000 + DELEGATE_CLIENT_GRACE_MS + DELEGATE_CLEANUP_TIMEOUT_MS,
+    )
+    expect(killTask).not.toHaveBeenCalled()
+    expect(getTask).not.toHaveBeenCalled()
+  })
+
+  it('does not accumulate caller abort listeners across calls', async () => {
+    const controller = new AbortController()
+    const { execute } = delegationGateway(async () => ({ task: taskWire() }))
+    expect(getEventListeners(controller.signal, 'abort')).toHaveLength(0)
+    await execute({ to_agent: 'reviewer', task: 'go' }, { signal: controller.signal })
+    await execute({ to_agent: 'reviewer', task: 'go' }, { signal: controller.signal })
+    expect(getEventListeners(controller.signal, 'abort')).toHaveLength(0)
+  })
+
+  it('bounds killTask after a caller abort', async () => {
+    vi.useFakeTimers()
+    const controller = new AbortController()
+    const waitTask = vi.fn<DenToolsGateway['waitTask']>(async (_id, opts) => {
+      return new Promise((_resolve, reject) => {
+        opts?.signal?.addEventListener('abort', () => {
+          reject(new DOMException('aborted', 'AbortError'))
+        })
+      })
+    })
+    const { execute, killTask, getTask } = delegationGateway(waitTask)
+    killTask.mockImplementation(() => new Promise(() => undefined))
+    const pending = execute({ to_agent: 'reviewer', task: 'go' }, { signal: controller.signal })
+    await vi.advanceTimersByTimeAsync(0)
+    expect(waitTask).toHaveBeenCalled()
+    controller.abort()
+    const assertion = expect(pending).rejects.toMatchObject({ name: 'AbortError' })
+    await vi.advanceTimersByTimeAsync(0)
+    await vi.advanceTimersByTimeAsync(DELEGATE_CLEANUP_TIMEOUT_MS)
+    await assertion
+    expect(killTask).toHaveBeenCalledOnce()
+    expect(getTask).not.toHaveBeenCalled()
+  })
+
+  it('treats a TimeoutError from the wait as a client deadline, not an unreachable den', async () => {
+    const reason = new DOMException('Delegation deadline exceeded', 'TimeoutError')
+    const waitTask = vi.fn<DenToolsGateway['waitTask']>(async () => {
+      throw reason
+    })
+    const { execute, killTask, getTask } = delegationGateway(waitTask)
+    getTask.mockResolvedValue({
+      task: runningRow(60_000_000, Date.now()),
+    })
+    const text = await execute({ to_agent: 'reviewer', task: 'go', timeout_ms: 5_000 })
+    expect(text).toContain('[deadline] The den did not answer in time')
+    expect(text).toContain('task task-1 is still running')
+    expect(text).not.toContain('den unreachable')
+    expect(text).not.toContain('timed out')
+    expect(killTask).not.toHaveBeenCalled()
   })
 
   it('omits delegate tools when enableDelegate is false', () => {
