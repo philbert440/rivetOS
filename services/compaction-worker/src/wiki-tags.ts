@@ -50,7 +50,7 @@ export interface WikiTag {
  * The literal shown to the model: `key:value` from the NORMALIZED value, not
  * the display casing. Wiki entity ids are compared case-sensitively, so a tag
  * the model copies into `entities` must be the canonical form
- * (`project:tenpal`, not `project:TenPAL`). One line, no markdown structure,
+ * (`project:acmeapp`, not `project:AcmeApp`). One line, no markdown structure,
  * bounded by code point.
  */
 export function safeLiteral(tag: Pick<Tag, 'key' | 'value'>): string {

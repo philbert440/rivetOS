@@ -24,8 +24,8 @@ function row(over: Partial<TagRow> = {}): TagRow {
     entity_type: 'conversation',
     entity_id: 'c1',
     key: 'project',
-    value: 'tenpal',
-    display: 'TenPAL',
+    value: 'acmeapp',
+    display: 'AcmeApp',
     source: 'model',
     state: 'suggested',
     confidence: 0.8,
@@ -51,8 +51,8 @@ describe('rowToTag', () => {
       entityType: 'conversation',
       entityId: 'c1',
       key: 'project',
-      value: 'tenpal',
-      display: 'TenPAL',
+      value: 'acmeapp',
+      display: 'AcmeApp',
       source: 'model',
       state: 'suggested',
       confidence: 0.8,
@@ -67,10 +67,10 @@ describe('rowToTag', () => {
 describe('listTags', () => {
   it('normalizes key/value filters and defaults to suggested+accepted', async () => {
     const pool = db([row()])
-    await listTags(pool, { entityType: 'conversation', entityId: 'c1', key: 'Project', value: 'TenPAL' })
+    await listTags(pool, { entityType: 'conversation', entityId: 'c1', key: 'Project', value: 'AcmeApp' })
     const [sql, params] = pool.query.mock.calls[0] as unknown as [string, unknown[]]
     expect(sql).toMatch(/entity_type = \$1 AND entity_id = \$2 AND key = \$3 AND value = \$4 AND state = ANY\(\$5::text\[\]\)/)
-    expect(params).toEqual(['conversation', 'c1', 'project', 'tenpal', ['suggested', 'accepted'], 200])
+    expect(params).toEqual(['conversation', 'c1', 'project', 'acmeapp', ['suggested', 'accepted'], 200])
   })
 })
 
@@ -91,11 +91,11 @@ describe('pendingTags', () => {
 describe('decideTags', () => {
   it('flips state with audit columns and returns changed ids', async () => {
     const pool = db([{ id: 'a' }])
-    expect(await decideTags(pool, ['a', 'b'], 'rejected', 'phil')).toEqual(['a'])
+    expect(await decideTags(pool, ['a', 'b'], 'rejected', 'alice')).toEqual(['a'])
     const [sql, params] = pool.query.mock.calls[0] as unknown as [string, unknown[]]
     expect(sql).toMatch(/SET state = \$2, decided_by = \$3, decided_at = now\(\)/)
     expect(sql).toMatch(/AND state <> \$2/)
-    expect(params).toEqual([['a', 'b'], 'rejected', 'phil'])
+    expect(params).toEqual([['a', 'b'], 'rejected', 'alice'])
   })
   it('is a no-op for an empty id list', async () => {
     const pool = db()
@@ -107,18 +107,18 @@ describe('decideTags', () => {
 describe('addTag', () => {
   it('parses a literal, keeps display casing, and upserts to accepted', async () => {
     const pool = db([row({ source: 'user', state: 'accepted' })])
-    const tag = await addTag(pool, { entityType: 'conversation', entityId: 'c1', tag: 'Project:TenPAL' }, 'phil')
+    const tag = await addTag(pool, { entityType: 'conversation', entityId: 'c1', tag: 'Project:AcmeApp' }, 'alice')
     expect(tag.state).toBe('accepted')
     const [sql, params] = pool.query.mock.calls[0] as unknown as [string, unknown[]]
     expect(sql).toMatch(/'user', 'accepted'/)
     expect(sql).toMatch(/ON CONFLICT \(entity_type, entity_id, key, value\) DO UPDATE/)
-    expect(params.slice(0, 6)).toEqual(['conversation', 'c1', 'project', 'tenpal', 'TenPAL', 'phil'])
+    expect(params.slice(0, 6)).toEqual(['conversation', 'c1', 'project', 'acmeapp', 'AcmeApp', 'alice'])
   })
   it('refuses to guess when the session key exists under two agents and none was named', async () => {
     // The agent count comes from the whole match set, not the picked row.
     const pool = db([{ id: 'c1', agents: '2' }])
     await expect(
-      addTag(pool, { entityType: 'conversation', sessionKey: 'claude-code:x', tag: 'topic:x' }, 'phil'),
+      addTag(pool, { entityType: 'conversation', sessionKey: 'claude-code:x', tag: 'topic:x' }, 'alice'),
     ).rejects.toThrow(/several agents; pass agent/)
     expect(pool.query).toHaveBeenCalledTimes(1)
     const [sql] = pool.query.mock.calls[0] as unknown as [string]
@@ -129,14 +129,14 @@ describe('addTag', () => {
     single.query
       .mockResolvedValueOnce({ rows: [{ id: 'c1', agents: '1' }], rowCount: 1 })
       .mockResolvedValueOnce({ rows: [row({ entity_id: 'c1', source: 'user', state: 'accepted' })], rowCount: 1 })
-    const tag = await addTag(single, { entityType: 'conversation', sessionKey: 'claude-code:x', tag: 'topic:x' }, 'phil')
+    const tag = await addTag(single, { entityType: 'conversation', sessionKey: 'claude-code:x', tag: 'topic:x' }, 'alice')
     expect(tag.entityId).toBe('c1')
   })
   it('keeps the display casing of a literal typed with a full-width colon', async () => {
     const pool = db([row({ source: 'user', state: 'accepted' })])
-    await addTag(pool, { entityType: 'conversation', entityId: 'c1', tag: 'Project\uFF1ATenPAL' }, 'phil')
+    await addTag(pool, { entityType: 'conversation', entityId: 'c1', tag: 'Project\uFF1AAcmeApp' }, 'alice')
     const [, params] = pool.query.mock.calls[0] as unknown as [string, unknown[]]
-    expect(params.slice(2, 5)).toEqual(['project', 'tenpal', 'TenPAL'])
+    expect(params.slice(2, 5)).toEqual(['project', 'acmeapp', 'AcmeApp'])
   })
 
   it('rejects a bad literal or missing parts', async () => {
@@ -149,13 +149,13 @@ describe('addTag', () => {
     found.query
       .mockResolvedValueOnce({ rows: [{ id: 'c-found', agents: '1' }], rowCount: 1 })
       .mockResolvedValueOnce({ rows: [row({ entity_id: 'c-found', source: 'user', state: 'accepted' })], rowCount: 1 })
-    const tag = await addTag(found, { entityType: 'conversation', sessionKey: 'claude:abc', tag: 'topic:x' }, 'phil')
+    const tag = await addTag(found, { entityType: 'conversation', sessionKey: 'claude:abc', tag: 'topic:x' }, 'alice')
     expect(tag.entityId).toBe('c-found')
     const [sql, params] = found.query.mock.calls[0] as unknown as [string, unknown[]]
     expect(sql).toMatch(/session_key = ANY\(\$1::text\[\]\) OR session_key LIKE ANY\(\$4::text\[\]\)/)
     expect(params).toEqual([['claude:abc'], 'claude:abc', null, []])
     const none = db([])
-    await expect(addTag(none, { entityType: 'conversation', sessionKey: 'claude:none', tag: 'topic:x' }, 'phil')).rejects.toThrow(/no conversation captured/)
+    await expect(addTag(none, { entityType: 'conversation', sessionKey: 'claude:none', tag: 'topic:x' }, 'alice')).rejects.toThrow(/no conversation captured/)
   })
 })
 
@@ -221,14 +221,14 @@ describe('lookups', () => {
   })
   it('conversationIdsWithTag normalizes and covers summary-only tags', async () => {
     const pool = db([{ id: 'c9' }])
-    expect(await conversationIdsWithTag(pool, 'Project', 'TenPAL')).toEqual(['c9'])
+    expect(await conversationIdsWithTag(pool, 'Project', 'AcmeApp')).toEqual(['c9'])
     const [sql, params] = pool.query.mock.calls[0] as unknown as [string, unknown[]]
     expect(sql).toMatch(/COALESCE\(c\.id, s\.conversation_id\)/)
-    expect(params).toEqual(['project', 'tenpal'])
+    expect(params).toEqual(['project', 'acmeapp'])
   })
   it('tagCounts parses counts', async () => {
-    const pool = db([{ key: 'project', value: 'tenpal', display: 'TenPAL', n: '7' }])
-    expect(await tagCounts(pool, 'project')).toEqual([{ key: 'project', value: 'tenpal', display: 'TenPAL', conversations: 7 }])
+    const pool = db([{ key: 'project', value: 'acmeapp', display: 'AcmeApp', n: '7' }])
+    expect(await tagCounts(pool, 'project')).toEqual([{ key: 'project', value: 'acmeapp', display: 'AcmeApp', conversations: 7 }])
   })
 })
 

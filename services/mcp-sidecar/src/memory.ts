@@ -162,7 +162,7 @@ export function createMemoryTools(options: MemoryToolsOptions): MemoryToolsHandl
 // ---------------------------------------------------------------------------
 
 const TAG_FILTER_DESCRIPTION =
-  'Only results whose conversation carries this accepted key:value tag (e.g. project:tenpal). See memory_tags.'
+  'Only results whose conversation carries this accepted key:value tag (e.g. project:acmeapp). See memory_tags.'
 
 export const memorySearchInputSchema = {
   query: z.string().describe('Search query — natural language question or keywords'),

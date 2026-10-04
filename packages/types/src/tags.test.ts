@@ -11,7 +11,7 @@ import {
 
 describe('normalizeTagValue', () => {
   it('lowercases and trims', () => {
-    expect(normalizeTagValue(' TenPAL ')).toBe('tenpal')
+    expect(normalizeTagValue(' AcmeApp ')).toBe('acmeapp')
   })
 
   it('collapses whitespace and slashes to single dashes', () => {
@@ -32,7 +32,7 @@ describe('normalizeTagValue', () => {
 describe('normalizeTagValue: unicode and bounds', () => {
   it('unifies composed/decomposed, full-width and compatibility forms (NFKC)', () => {
     expect(normalizeTagValue('caf\u00e9')).toBe(normalizeTagValue('cafe\u0301'))
-    expect(normalizeTagValue('\uff34\uff45\uff4e\uff30\uff21\uff2c')).toBe('tenpal')
+    expect(normalizeTagValue('\uff21\uff43\uff4d\uff45\uff21\uff50\uff50')).toBe('acmeapp')
   })
 
   it('treats control characters as separators and returns "" when nothing is left', () => {
@@ -44,7 +44,7 @@ describe('normalizeTagValue: unicode and bounds', () => {
 
   it('a full-width or compatibility colon separates a literal like an ASCII one', () => {
     for (const colon of [':', '\uFF1A', '\uFE13', '\uFE55']) {
-      expect(parseTagLiteral(`project${colon}TenPAL`)).toEqual({ key: 'project', value: 'tenpal' })
+      expect(parseTagLiteral(`project${colon}AcmeApp`)).toEqual({ key: 'project', value: 'acmeapp' })
     }
     // The first separator splits; a later one belongs to the value's text.
     expect(splitTagLiteral('topic\uFF1Aa:b')).toEqual({ key: 'topic', value: 'a:b' })
@@ -59,8 +59,8 @@ describe('normalizeTagValue: unicode and bounds', () => {
   })
 
   it('drops every invisible format character, not only zero-width ones', () => {
-    expect(normalizeTagValue('ten\u00ADpal')).toBe('tenpal')
-    expect(normalizeTagValue('\u200Etenpal\u200F')).toBe('tenpal')
+    expect(normalizeTagValue('acme\u00ADapp')).toBe('acmeapp')
+    expect(normalizeTagValue('\u200Eacmeapp\u200F')).toBe('acmeapp')
   })
 
   it('a key never contains a colon, so every literal round-trips', () => {
@@ -80,8 +80,8 @@ describe('normalizeTagValue: unicode and bounds', () => {
   })
 
   it('drops zero-width characters instead of keeping an invisible difference', () => {
-    expect(normalizeTagValue('ten\u200Bpal')).toBe('tenpal')
-    expect(normalizeTagValue('\uFEFFtenpal\u200D')).toBe('tenpal')
+    expect(normalizeTagValue('acme\u200Bapp')).toBe('acmeapp')
+    expect(normalizeTagValue('\uFEFFacmeapp\u200D')).toBe('acmeapp')
   })
 
   it('truncates to the storage bounds without splitting a surrogate pair or leaving a trailing dash', () => {
@@ -95,7 +95,7 @@ describe('normalizeTagValue: unicode and bounds', () => {
 
 describe('parseTagLiteral', () => {
   it('splits on the first colon and normalizes both sides', () => {
-    expect(parseTagLiteral('Project:TenPAL')).toEqual({ key: 'project', value: 'tenpal' })
+    expect(parseTagLiteral('Project:AcmeApp')).toEqual({ key: 'project', value: 'acmeapp' })
   })
 
   it('keeps later colons inside the value', () => {
@@ -111,22 +111,22 @@ describe('parseTagLiteral', () => {
 
 describe('formatTag round-trip', () => {
   it('falls back to the value when display does not normalize to it', () => {
-    const literal = formatTag({ key: 'project', value: 'tenpal', display: 'Ten PAL ' })
-    expect(literal).toBe('project:tenpal')
-    expect(parseTagLiteral(literal)).toEqual({ key: 'project', value: 'tenpal' })
+    const literal = formatTag({ key: 'project', value: 'acmeapp', display: 'Acme App ' })
+    expect(literal).toBe('project:acmeapp')
+    expect(parseTagLiteral(literal)).toEqual({ key: 'project', value: 'acmeapp' })
   })
 
   it('every rendered literal parses back to the same tag', () => {
-    for (const display of ['TenPAL', 'tenpal', '', 'Other Thing']) {
-      const literal = formatTag({ key: 'project', value: 'tenpal', display })
-      expect(parseTagLiteral(literal)).toEqual({ key: 'project', value: 'tenpal' })
+    for (const display of ['AcmeApp', 'acmeapp', '', 'Other Thing']) {
+      const literal = formatTag({ key: 'project', value: 'acmeapp', display })
+      expect(parseTagLiteral(literal)).toEqual({ key: 'project', value: 'acmeapp' })
     }
   })
 })
 
 describe('formatTag', () => {
   it('prefers display casing, falls back to value', () => {
-    expect(formatTag({ key: 'project', value: 'tenpal', display: 'TenPAL' })).toBe('project:TenPAL')
-    expect(formatTag({ key: 'project', value: 'tenpal', display: '' })).toBe('project:tenpal')
+    expect(formatTag({ key: 'project', value: 'acmeapp', display: 'AcmeApp' })).toBe('project:AcmeApp')
+    expect(formatTag({ key: 'project', value: 'acmeapp', display: '' })).toBe('project:acmeapp')
   })
 })

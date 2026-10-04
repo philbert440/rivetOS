@@ -6,7 +6,7 @@
  *   openai  — any chat-completions model with the prompt below. This is the
  *             default and, with no RIVETOS_TAGGER_URL at all, runs against the
  *             compactor model: every node that summarizes also tags.
- *   native  — a classifier service (Jev, Kaya, …): POST <url> with
+ *   native  — a classifier service e.g. a hosted text classifier: POST <url> with
  *             { text, title, agent, keys, vocabulary, max } and read back
  *             { tags: [{ key, value, confidence?, reason? }] }.
  *
