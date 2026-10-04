@@ -6,7 +6,13 @@ import { mkdtempSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import type { Memory, PluginManifest, RegistrationContext } from '@rivetos/types'
+import type {
+  Memory,
+  PluginManifest,
+  RegistrationContext,
+  Tool,
+  ToolContext,
+} from '@rivetos/types'
 import {
   manifest,
   resolveCompactionSettings,
@@ -117,7 +123,119 @@ describe('memory-sqlite manifest', () => {
       { ...process.env, RIVETOS_USERS_FILE: usersFile },
     )
     await (manifest as PluginManifest).register(ctx)
-    expect(ctx.logger.warn).toHaveBeenCalledWith(expect.stringContaining('single-user in phase 1'))
+    expect(ctx.logger.warn).toHaveBeenCalledWith(expect.stringContaining('get no memory from this store'))
+  })
+
+  it('registers the read tools, and refuses them to a turn that belongs to another user', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'ros-mem-plugin-'))
+    dirs.push(dir)
+    const usersFile = join(dir, 'users.json')
+    const { writeFileSync } = await import('node:fs')
+    writeFileSync(
+      usersFile,
+      JSON.stringify({
+        ownerUserId: 'owner',
+        unmappedIsOwner: false,
+        users: {
+          owner: { id: 'owner', devices: [] },
+          guest: { id: 'guest', devices: ['dev1'] },
+        },
+      }),
+    )
+    const tools: Tool[] = []
+    const { ctx } = makeCtx(
+      { path: join(dir, 'm.sqlite') },
+      { ...process.env, RIVETOS_USERS_FILE: usersFile },
+    )
+    ctx.registerTool = (tool) => {
+      tools.push(tool)
+    }
+    await (manifest as PluginManifest).register(ctx)
+    expect(tools.map((t) => t.name)).toEqual([
+      'memory_search',
+      'memory_browse',
+      'memory_stats',
+      'memory_get_full',
+      'memory_tags',
+    ])
+    const session = (userId: string | undefined): ToolContext =>
+      ({ session: { userId } }) as unknown as ToolContext
+    for (const tool of tools) {
+      await expect(tool.execute({ query: 'x', id: 'x' }, undefined, session('guest'))).rejects.toThrow(
+        /memory for user "guest" is unavailable/,
+      )
+    }
+    // Only the registry's other users are refused. The owner's turns arrive
+    // under several ids (the registry's owner id, the runtime's default
+    // owner id, a platform id) and are all served.
+    const stats = tools[2]
+    for (const id of ['owner', 'alice', 'gateway-user', '12345', undefined]) {
+      expect(String(await stats.execute({}, undefined, session(id)))).toMatch(/Backend: sqlite/)
+    }
+    expect(String(await stats.execute({}))).toMatch(/Backend: sqlite/)
+  })
+
+  it('gives another registry user nothing from the owner\'s file and stores nothing of theirs in it', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'ros-mem-plugin-'))
+    dirs.push(dir)
+    const usersFile = join(dir, 'users.json')
+    const { writeFileSync } = await import('node:fs')
+    writeFileSync(
+      usersFile,
+      JSON.stringify({
+        ownerUserId: 'alice',
+        unmappedIsOwner: false,
+        users: { alice: { id: 'alice', devices: [] }, guest: { id: 'guest', devices: ['dev1'] } },
+      }),
+    )
+    const { ctx, getRegistered } = makeCtx(
+      { path: join(dir, 'm.sqlite') },
+      { ...process.env, RIVETOS_USERS_FILE: usersFile },
+    )
+    await (manifest as PluginManifest).register(ctx)
+    const memory = getRegistered()
+    if (!memory) throw new Error('not registered')
+    await memory.append({
+      sessionId: 's1',
+      agent: 'rivet',
+      channel: 'cli',
+      role: 'user',
+      content: 'the owner wrote a private note about the quarterly budget review',
+    })
+    // The owner, under any of the ids their turns carry, sees their memory.
+    for (const userId of [undefined, 'alice', 'owner']) {
+      expect(await memory.search('budget', { userId })).toHaveLength(1)
+      expect(await memory.getContextForTurn('budget', 'rivet', { userId })).toMatch(/quarterly budget/)
+    }
+    // The other registry user sees nothing of it.
+    expect(await memory.search('budget', { userId: 'guest' })).toEqual([])
+    expect(await memory.getContextForTurn('budget', 'rivet', { userId: 'guest' })).toBe('')
+
+    // A guest's own session (`<channel>:<user>`) is neither stored nor read.
+    await memory.append({
+      sessionId: 'gateway:guest',
+      agent: 'rivet',
+      channel: 'gateway',
+      role: 'user',
+      content: 'the guest asks about the budget review too',
+    })
+    expect(await memory.getSessionHistory('gateway:guest')).toEqual([])
+    await memory.saveSessionSettings?.('gateway:guest', { thinking: 'high' })
+    expect(await memory.loadSessionSettings?.('gateway:guest')).toBeNull()
+    expect(await memory.search('guest asks')).toEqual([])
+    // The owner's sessions under the same channel are unaffected, and task
+    // sessions are never a user's.
+    await memory.append({
+      sessionId: 'gateway:alice',
+      agent: 'rivet',
+      channel: 'gateway',
+      role: 'user',
+      content: 'the owner continues the budget thread from the web hub',
+    })
+    expect(await memory.getSessionHistory('gateway:alice')).toHaveLength(1)
+    await memory.append({ sessionId: 'task:guest', agent: 'rivet', channel: 'task', role: 'user', content: 'task work' })
+    expect(await memory.getSessionHistory('task:guest')).toHaveLength(1)
+    expect(ctx.logger.warn).toHaveBeenCalledWith(expect.stringContaining('user "guest" has no memory on this node'))
   })
 })
 

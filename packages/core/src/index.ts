@@ -114,6 +114,11 @@ export {
 export type { EscalationNotifier, TaskEscalationPayload } from './domain/task/escalation.js'
 export { createCatalogApiRoute, buildCatalogAgents } from './domain/task/catalog-api.js'
 export { createOutcomesApiRoute } from './domain/task/outcomes-api.js'
+export {
+  createBackendCaptureRoute,
+  createBackendMemoryRoute,
+  parseCaptureBatch,
+} from './domain/memory/backend-api.js'
 export { createWikiApiRoute } from './domain/wiki/wiki-api.js'
 export type { WikiIndexLike, WikiApiOptions } from './domain/wiki/wiki-api.js'
 export { createWikiHtmlRoute, renderMarkdown } from './domain/wiki/wiki-html.js'

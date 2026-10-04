@@ -263,6 +263,11 @@ export class JobRunner {
     this.handlers.set(task, handler)
   }
 
+  /** True between `start()` and `stop()`. */
+  isRunning(): boolean {
+    return this.timer !== undefined
+  }
+
   sweep(sweep: Sweep): void {
     this.sweeps.push({ ...sweep, last: 0 })
   }

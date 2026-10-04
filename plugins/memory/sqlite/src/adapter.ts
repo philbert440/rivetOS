@@ -29,6 +29,7 @@ import {
   shouldTrigramFallback,
   temporalDecay,
 } from '@rivetos/memory-core'
+import { SqliteBackend } from './backend.js'
 import { COMPACT_TASK, SqliteCompactor, type CompactionSettings } from './compaction.js'
 import { EmbedClient, type EmbedConfig } from './embed.js'
 import { JobRunner, SqliteJobQueue } from './jobs.js'
@@ -168,6 +169,12 @@ export interface SqliteMemoryConfig {
   /** Batch sizes and idle thresholds; defaults match the Postgres worker. */
   compaction?: Partial<CompactionSettings>
   /**
+   * User ids from the users registry other than the node owner. The file is
+   * the owner's: these users get no search results or turn context from it,
+   * and their sessions (`<channel>:<user>` keys) are neither stored nor read.
+   */
+  otherUsers?: Iterable<string>
+  /**
    * Run the in-process job loop (embedding, compaction; wiki and tagging as
    * they land). Default: on when `embed` or `compactor` is set. Turn off to
    * queue work without draining it, e.g. in a short-lived CLI process.
@@ -253,11 +260,15 @@ export class SqliteMemory implements Memory {
   private readonly expectedDims: number | undefined
   private embedStoreReconciled = false
   private readonly clock: () => Date
+  private backendInstance: SqliteBackend | undefined
+  private readonly otherUsers: ReadonlySet<string>
+  private readonly warnedUsers = new Set<string>()
   private readonly summaryIndex: VectorIndex
   private readonly compactor: SqliteCompactor | undefined
   private readonly log: (line: string) => void
 
   constructor(config: SqliteMemoryConfig) {
+    this.otherUsers = new Set(config.otherUsers ?? [])
     this.clock = config.now ?? (() => new Date())
     const path = resolveSqlitePath(config.path)
     this.filePath = path
@@ -430,6 +441,9 @@ export class SqliteMemory implements Memory {
 
   async append(entry: MemoryEntry): Promise<string> {
     this.assertOpen()
+    // Another registry user's session is neither read nor written here: the
+    // file is the owner's, and that user has no store on this node yet.
+    if (this.isOtherUsersSession(entry.sessionId)) return randomUUID()
     try {
       return this.tx(() => {
         const taskId = resolveTaskId(entry.sessionId, entry.metadata)
@@ -467,20 +481,7 @@ export class SqliteMemory implements Memory {
           .run(createdAt, convId)
 
         // Queue the row for embedding. Best-effort — never fail the append.
-        // Only with an endpoint: without one a job per message would pile up
-        // for nothing. Rows written meanwhile are found by the
-        // enqueue-unembedded sweep once an endpoint is configured.
-        if (this.embedClient) {
-          try {
-            this.jobQueue.enqueue(
-              EMBED_TARGET_TASK,
-              { targetTable: 'ros_messages', targetId: id },
-              { key: `embed-ros_messages-${id}` },
-            )
-          } catch {
-            // ignore queue failures
-          }
-        }
+        this.enqueueMessageEmbed(id)
 
         return id
       })
@@ -504,16 +505,20 @@ export class SqliteMemory implements Memory {
       scope?: 'messages' | 'summaries' | 'both'
       userId?: string
     },
+    /** Filled in when the vector arm was dropped for this query. */
+    info?: { degraded?: string },
   ): Promise<SqliteSearchHit[]> {
     this.assertOpen()
-    void options?.userId
+    // This file is the node owner's. A turn den resolved to another user gets
+    // nothing from it, rather than the owner's transcripts.
+    if (this.isOtherUser(options?.userId)) return []
     const scope = options?.scope ?? 'both'
     const limit = options?.limit ?? 20
     const agent = options?.agent
     const match = buildFtsMatchQuery(query)
 
     try {
-      if (this.embedClient) return await this.hybridSearch(query, match, agent, limit, scope)
+      if (this.embedClient) return await this.hybridSearch(query, match, agent, limit, scope, info)
       // No vector arm: full-text only. A query with no searchable token has no results.
       if (!match) return []
       return this.ftsSearch(match, agent, limit, scope)
@@ -604,7 +609,7 @@ export class SqliteMemory implements Memory {
     options?: { maxTokens?: number; userId?: string },
   ): Promise<string> {
     this.assertOpen()
-    void options?.userId
+    if (this.isOtherUser(options?.userId)) return ''
     const maxTokens = options?.maxTokens ?? 4000
     const sections: string[] = []
     let tokenEstimate = 0
@@ -653,6 +658,7 @@ export class SqliteMemory implements Memory {
 
   async getSessionHistory(sessionId: string, options?: { limit?: number }): Promise<Message[]> {
     this.assertOpen()
+    if (this.isOtherUsersSession(sessionId)) return []
     const limit = options?.limit ?? 100
     const rows = this.db
       .prepare(
@@ -707,6 +713,7 @@ export class SqliteMemory implements Memory {
 
   async saveSessionSettings(sessionId: string, settings: Record<string, unknown>): Promise<void> {
     this.assertOpen()
+    if (this.isOtherUsersSession(sessionId)) return
     this.db
       .prepare(
         `UPDATE ros_conversations SET settings = ?, updated_at = ?
@@ -717,6 +724,7 @@ export class SqliteMemory implements Memory {
 
   async loadSessionSettings(sessionId: string): Promise<Record<string, unknown> | null> {
     this.assertOpen()
+    if (this.isOtherUsersSession(sessionId)) return null
     const row = this.db
       .prepare(
         `SELECT settings FROM ros_conversations
@@ -764,6 +772,7 @@ export class SqliteMemory implements Memory {
     agent: string | undefined,
     limit: number,
     scope: 'messages' | 'summaries' | 'both',
+    info?: { degraded?: string },
   ): Promise<SqliteSearchHit[]> {
     const pool = hybridPoolSize(limit)
     const wantMessages = scope !== 'summaries'
@@ -827,10 +836,10 @@ export class SqliteMemory implements Memory {
         }
       } catch (err) {
         if (this.closed) throw err
+        const reason = err instanceof Error ? err.message : String(err)
+        if (info) info.degraded = `query embedding failed: ${reason}`
         this.log(
-          `[memory.sqlite] query embedding failed, searching without the vector arm: ${
-            err instanceof Error ? err.message : String(err)
-          }`,
+          `[memory.sqlite] query embedding failed, searching without the vector arm: ${reason}`,
         )
       }
     }
@@ -1330,6 +1339,46 @@ export class SqliteMemory implements Memory {
     }))
   }
 
+  /**
+   * The wider surface (capture, the hub's Memory pages, tools over HTTP) on
+   * this store. See `MemoryBackend` in `@rivetos/types`.
+   */
+  backend(): SqliteBackend {
+    this.assertOpen()
+    this.backendInstance ??= new SqliteBackend({
+      db: this.db,
+      tx: (fn) => this.tx(fn),
+      search: (query, options, info) => this.search(query, options, info),
+      hasEmbedding: () => this.embedClient !== undefined,
+      hasCompactor: () => this.compactor !== undefined,
+      workersRunning: () => this.jobRunner.isRunning(),
+      enqueueMessageEmbed: (id) => {
+        this.enqueueMessageEmbed(id)
+      },
+      tags: () => this.tags(),
+      assertOpen: () => {
+        this.assertOpen()
+      },
+    })
+    return this.backendInstance
+  }
+
+  private enqueueMessageEmbed(id: string): void {
+    // Only with an endpoint: without one a job per message would pile up
+    // for nothing. Rows written meanwhile are found by the
+    // enqueue-unembedded sweep once an endpoint is configured.
+    if (!this.embedClient) return
+    try {
+      this.jobQueue.enqueue(
+        EMBED_TARGET_TASK,
+        { targetTable: 'ros_messages', targetId: id },
+        { key: `embed-ros_messages-${id}` },
+      )
+    } catch {
+      // Best-effort: a write never fails because of the queue.
+    }
+  }
+
   /** The job queue behind the background work, for stats and requeueing. */
   jobs(): SqliteJobQueue {
     this.assertOpen()
@@ -1388,6 +1437,32 @@ export class SqliteMemory implements Memory {
   /** Now, as stored text. One clock for rows and jobs, so their timestamps compare. */
   private stamp(): string {
     return this.clock().toISOString()
+  }
+
+  /** True for a user id the registry lists as someone other than the owner. */
+  private isOtherUser(userId: string | undefined): boolean {
+    return userId !== undefined && this.otherUsers.has(userId)
+  }
+
+  /**
+   * True when a session key names another registry user. Session keys are
+   * `<channel>:<user>` (the turn handler's convention, and the one the
+   * Postgres backend routes by); `task:<id>` is the task engine's and never
+   * a user's.
+   */
+  private isOtherUsersSession(sessionId: string): boolean {
+    if (this.otherUsers.size === 0 || sessionId.startsWith('task:')) return false
+    const at = sessionId.lastIndexOf(':')
+    if (at < 0 || at === sessionId.length - 1) return false
+    const user = sessionId.slice(at + 1)
+    if (!this.otherUsers.has(user)) return false
+    if (!this.warnedUsers.has(user)) {
+      this.warnedUsers.add(user)
+      this.log(
+        `[memory.sqlite] user "${user}" has no memory on this node: the store is the owner's, so their sessions are not stored or read`,
+      )
+    }
+    return true
   }
 
   private assertOpen(): void {

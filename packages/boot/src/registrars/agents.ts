@@ -62,6 +62,8 @@ import {
   createHostExecutorRegistry,
   createWorkflowApiRouteList,
   createWorkflowTools,
+  createBackendCaptureRoute,
+  createBackendMemoryRoute,
 } from '@rivetos/core'
 import { WorkflowEngine, resolveCaseDirRoot, defaultWorkflowsDefsRoot } from '@rivetos/workflows'
 import {
@@ -83,6 +85,7 @@ import {
   type MeshConfig,
   type MeshRegistry,
   type Tool,
+  hasMemoryBackend,
 } from '@rivetos/types'
 import {
   PostgresMemory,
@@ -952,6 +955,17 @@ export async function registerAgentTools(
       createOutcomesApiRoute({ store: taskEngineStore }),
     )
   }
+  // A registered memory that implements MemoryBackend (SQLite) serves
+  // capture and /api/memory itself; the Postgres routes below are for the
+  // pool-backed memory only, and are not mounted beside it.
+  const registeredMemory = runtime.getMemory()
+  const memoryBackend = hasMemoryBackend(registeredMemory) ? registeredMemory.backend() : undefined
+  if (memoryBackend) {
+    gatewayRoutes.push(
+      createBackendCaptureRoute(memoryBackend),
+      createBackendMemoryRoute(memoryBackend),
+    )
+  }
   // Phase 3e: wiki routes — read-only over the PG index + NFS repo files.
   // Mounted whenever the shared pool exists; degrade to empty results until
   // 0005 is applied (WikiIndex.isReady guards nothing here — reads fail soft).
@@ -982,16 +996,20 @@ export async function registerAgentTools(
         nodeName: config.mesh?.node_name,
         forUser: wikiFor,
       }),
-      createCaptureApiRoute({ pool, userPools }),
-      createMemoryApiRoute({
-        pool,
-        userPools,
-        embedEndpoint: embedEndpoint || undefined,
-        embedModel: embedModel || undefined,
-        ...memoryApiEmbedFromEnv(),
-        tools: (p, routed) => memoryHttpTools(memoryFor(p), p, routed),
-      }),
     )
+    if (!memoryBackend) {
+      gatewayRoutes.push(
+        createCaptureApiRoute({ pool, userPools }),
+        createMemoryApiRoute({
+          pool,
+          userPools,
+          embedEndpoint: embedEndpoint || undefined,
+          embedModel: embedModel || undefined,
+          ...memoryApiEmbedFromEnv(),
+          tools: (p, routed) => memoryHttpTools(memoryFor(p), p, routed),
+        }),
+      )
+    }
   }
   gatewayRoutes.push(
     createCatalogApiRoute({
