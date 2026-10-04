@@ -41,7 +41,11 @@ const SINCE_COLUMN: Partial<Record<ExportTable, string>> = {
 }
 
 export interface SqliteExportOptions {
-  /** Only rows written at or after this time (and what they depend on). */
+  /**
+   * Only rows written at or after this time, with the conversation they
+   * belong to. A summary's older parent is not pulled in: an incremental
+   * dump is for adding to a store that already has the earlier rows.
+   */
   since?: Date | string
   /** Recorded in the header. */
   source?: { kind: 'cloud' | 'local' | 'datahub'; id: string }
