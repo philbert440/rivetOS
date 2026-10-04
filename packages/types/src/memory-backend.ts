@@ -206,7 +206,14 @@ export interface MemoryWikiIndex {
 
 /** A `Memory` that also offers the wider surface. */
 export interface WithMemoryBackend {
+  /** The node owner's store. */
   backend(): MemoryBackend
+  /**
+   * The store of a den-stamped user, when the memory keeps one per user.
+   * Null: that user has no store here and is refused. Absent: the memory is
+   * single-user, and every stamped user is refused.
+   */
+  backendForUser?(userId: string): MemoryBackend | null
 }
 
 export function hasMemoryBackend(memory: unknown): memory is WithMemoryBackend {

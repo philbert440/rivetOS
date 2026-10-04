@@ -12,7 +12,7 @@
  */
 
 /** Current on-disk schema version. Bump when the DDL changes. */
-export const SCHEMA_VERSION = 5
+export const SCHEMA_VERSION = 6
 
 export const SCHEMA = `
 CREATE TABLE IF NOT EXISTS ros_conversations (
@@ -27,7 +27,9 @@ CREATE TABLE IF NOT EXISTS ros_conversations (
     active        INTEGER NOT NULL DEFAULT 1,
     task_id       TEXT,
     created_at    TEXT NOT NULL,
-    updated_at    TEXT NOT NULL
+    updated_at    TEXT NOT NULL,
+    -- v6: whose conversation this is (the user this store belongs to).
+    owner_user_id TEXT
 );
 CREATE UNIQUE INDEX IF NOT EXISTS ux_ros_conversations_session_agent
     ON ros_conversations (session_key, agent);
@@ -57,7 +59,9 @@ CREATE TABLE IF NOT EXISTS ros_messages (
     -- the last attempt failed. See vectors.ts / embed.ts.
     embedding         BLOB,
     embed_error       TEXT,
-    embed_failures    INTEGER NOT NULL DEFAULT 0
+    embed_failures    INTEGER NOT NULL DEFAULT 0,
+    -- v6: who this row belongs to (the user this store is for).
+    owner_user_id     TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_ros_messages_conversation
     ON ros_messages (conversation_id, created_at);

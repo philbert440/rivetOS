@@ -9,7 +9,7 @@ memory:
 ```
 
 WAL file store, append + session/task history, FTS5 + vector search,
-summaries, wiki. Multi-user routing is a later phase.
+summaries, wiki, tags, one file per user.
 
 Embeddings and hybrid search: set `embed_endpoint` + `embed_model` (or
 `RIVETOS_EMBED_URL` / `RIVETOS_EMBED_MODEL`). An in-process job loop
@@ -59,7 +59,15 @@ HTTP and tools: `memory.backend()` implements `MemoryBackend`
 work on a SQLite node with the same wire contract as Postgres. The agent
 gets `memory_search`, `memory_browse`, `memory_stats`, `memory_get_full` and
 a read-only `memory_tags` (adding and deciding tags is a person's call, over
-HTTP). A request stamped for a routed user is refused, and so is a tool call
-from a turn that belongs to another user: this store is the node owner's.
+HTTP).
+
+Users (`routing.ts`): the configured file is the node owner's. Every other
+user in the users registry gets `users/<userId>/memory.sqlite` beside it,
+opened as a full store of its own (job loop, wiki directory, tags). Turns,
+captures, memory requests and tool calls that den resolved to such a user go
+to their file and never to the owner's; one whose file cannot be opened is
+refused. Every conversation and message carries `owner_user_id`, the user
+whose store it was written to. `per_user_files: false` turns the per-user
+files off: other users then get no memory here.
 
 Uses Node's built-in `node:sqlite` (`DatabaseSync`). No native addons.

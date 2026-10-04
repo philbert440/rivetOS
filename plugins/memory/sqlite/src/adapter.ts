@@ -174,11 +174,17 @@ export interface SqliteMemoryConfig {
   /** Batch sizes and idle thresholds; defaults match the Postgres worker. */
   compaction?: Partial<CompactionSettings>
   /**
-   * User ids from the users registry other than the node owner. The file is
-   * the owner's: these users get no search results or turn context from it,
-   * and their sessions (`<channel>:<user>` keys) are neither stored nor read.
+   * Whose store this is. Stamped on every conversation and message it writes
+   * (`owner_user_id`), so a row says whom it belongs to even after an export.
    */
-  otherUsers?: Iterable<string>
+  userId?: string
+  /**
+   * The users this store does not belong to: every other user in the users
+   * registry. They get no search results or turn context from it, and their
+   * sessions (`<channel>:<user>` keys) are neither stored nor read. A function
+   * is asked each time, so users added to the registry later are covered.
+   */
+  otherUsers?: Iterable<string> | (() => ReadonlySet<string>)
   /**
    * Suggest tags for each leaf summary (needs a compactor endpoint, or an
    * endpoint of its own in `llm`). Suggestions wait for a person to decide.
@@ -282,7 +288,8 @@ export class SqliteMemory implements Memory {
   private embedStoreReconciled = false
   private readonly clock: () => Date
   private backendInstance: SqliteBackend | undefined
-  private readonly otherUsers: ReadonlySet<string>
+  private readonly otherUsersView: () => ReadonlySet<string>
+  private readonly userId: string | null
   private readonly warnedUsers = new Set<string>()
   private readonly summaryIndex: VectorIndex
   private readonly topicIndex: VectorIndex
@@ -296,7 +303,13 @@ export class SqliteMemory implements Memory {
   private readonly log: (line: string) => void
 
   constructor(config: SqliteMemoryConfig) {
-    this.otherUsers = new Set(config.otherUsers ?? [])
+    this.userId = config.userId?.trim() || null
+    if (typeof config.otherUsers === 'function') {
+      this.otherUsersView = config.otherUsers
+    } else {
+      const fixed: ReadonlySet<string> = new Set(config.otherUsers ?? [])
+      this.otherUsersView = () => fixed
+    }
     this.clock = config.now ?? (() => new Date())
     const path = resolveSqlitePath(config.path)
     this.filePath = path
@@ -305,170 +318,185 @@ export class SqliteMemory implements Memory {
     }
     this.db = new DatabaseSync(path)
     // busy_timeout before WAL so a cold-open race waits instead of throwing SQLITE_BUSY.
-    this.db.exec('PRAGMA busy_timeout = 5000')
-    this.db.exec('PRAGMA journal_mode = WAL')
-    this.db.exec('PRAGMA foreign_keys = ON')
-    this.db.exec(SCHEMA)
-    this.migrateSchema()
-    // Keeps the unembedded-rows sweep proportional to the backlog, not the
-    // table. Created on every open, after the migrations: the columns it
-    // names do not exist on an older file until those have run.
-    this.db.exec(
-      `CREATE INDEX IF NOT EXISTS idx_ros_messages_unembedded ON ros_messages (created_at)
-        WHERE embedding IS NULL AND embed_status IS NULL`,
-    )
-    if (path !== ':memory:') {
-      // WAL/SHM appear after journal_mode=WAL; tighten DB + siblings.
-      restrictSqliteFileModes(path)
-    }
+    // A failure anywhere in the rest of the constructor must not leave the
+    // file open.
+    try {
+      this.db.exec('PRAGMA busy_timeout = 5000')
+      this.db.exec('PRAGMA journal_mode = WAL')
+      this.db.exec('PRAGMA foreign_keys = ON')
+      this.db.exec(SCHEMA)
+      this.migrateSchema()
+      // Keeps the unembedded-rows sweep proportional to the backlog, not the
+      // table. Created on every open, after the migrations: the columns it
+      // names do not exist on an older file until those have run.
+      this.db.exec(
+        `CREATE INDEX IF NOT EXISTS idx_ros_messages_unembedded ON ros_messages (created_at)
+          WHERE embedding IS NULL AND embed_status IS NULL`,
+      )
+      this.db.exec(
+        `CREATE INDEX IF NOT EXISTS idx_ros_conversations_owner ON ros_conversations (owner_user_id)
+          WHERE owner_user_id IS NOT NULL`,
+      )
+      if (path !== ':memory:') {
+        // WAL/SHM appear after journal_mode=WAL; tighten DB + siblings.
+        restrictSqliteFileModes(path)
+      }
 
-    this.log =
-      config.log ??
-      ((line) => {
-        console.warn(line)
-      })
-    this.jobQueue = new SqliteJobQueue(this.db, config.now)
-    this.vectorIndex = new ExactScanIndex(
-      this.db,
-      `FROM ros_messages m WHERE ${MESSAGE_QUALITY_SQL}`,
-      this.log,
-    )
-    this.summaryIndex = new ExactScanIndex(
-      this.db,
-      `FROM ros_summaries m LEFT JOIN ros_conversations c ON c.id = m.conversation_id WHERE 1 = 1`,
-      this.log,
-      'c.agent',
-    )
-    this.vocabularyStore = new SqliteTagVocabulary(
-      this.db,
-      (fn) => this.tx(fn),
-      () => this.stamp(),
-    )
-    this.projectRule = config.projectRule
-    // Topics are keyed by slug and belong to no agent.
-    this.topicIndex = new ExactScanIndex(
-      this.db,
-      `FROM (SELECT slug AS id, embedding, '' AS agent FROM ros_wiki_topics) m WHERE 1 = 1`,
-      this.log,
-    )
-    this.embedClient = config.embed ? new EmbedClient(config.embed) : undefined
-    this.expectedDims = config.embed?.expectedDims
-    const embedClient = this.embedClient
-    this.wikiDir = config.wiki?.dir
-    this.wikiIndex = config.wiki
-      ? new SqliteWikiIndex(this.db, {
-          ...(embedClient
-            ? { embedQuery: (text) => embedClient.embedQuery(text), vectors: this.topicIndex }
-            : {}),
-          onTopicChanged: (slug) => {
-            this.enqueueTopicEmbed(slug)
-          },
-          now: this.clock,
+      this.log =
+        config.log ??
+        ((line) => {
+          console.warn(line)
         })
-      : undefined
-    this.jobRunner = new JobRunner(this.jobQueue, {
-      log: this.log,
-      ...(config.now ? { now: config.now } : {}),
-    })
-    this.jobRunner.handle(EMBED_TARGET_TASK, (payload) => this.embedTarget(payload))
-    if (this.embedClient) {
-      // Backstop: rows that have no job (written before embedding was
-      // configured), and rows whose job died during an endpoint outage, are
-      // queued again in batches.
-      this.jobRunner.sweep({
-        name: 'enqueue-unembedded',
-        everyMs: 10 * 60 * 1000,
-        run: () => {
-          this.enqueueUnembedded()
-          this.enqueueUnembeddedTopics()
-        },
-      })
-      if (config.workers ?? true) this.reconcileEmbedStore()
-      else this.warnOnForeignModel(this.embedClient.model)
-    }
-    const taggerLlmConfig = config.tagging?.enabled
-      ? (config.tagging.llm ?? config.compactor)
-      : undefined
-    if (taggerLlmConfig) {
-      const tagger = new SqliteTagger(
+      this.jobQueue = new SqliteJobQueue(this.db, config.now)
+      this.vectorIndex = new ExactScanIndex(
         this.db,
-        // The tagger's own budget, whichever endpoint it borrows: a short call,
-        // retried once.
-        new LlmClient({ ...taggerLlmConfig, maxRetries: TAG_LLM_RETRIES, timeoutMs: 60_000 }),
-        this.jobQueue,
-        () => this.tags(),
-        this.vocabularyStore,
-        (fn) => this.tx(fn),
+        `FROM ros_messages m WHERE ${MESSAGE_QUALITY_SQL}`,
         this.log,
       )
-      this.tagger = tagger
-      this.jobRunner.handle(SUGGEST_TAGS_TASK, async (payload) => {
-        await tagger.suggest(payload)
+      this.summaryIndex = new ExactScanIndex(
+        this.db,
+        `FROM ros_summaries m LEFT JOIN ros_conversations c ON c.id = m.conversation_id WHERE 1 = 1`,
+        this.log,
+        'c.agent',
+      )
+      this.vocabularyStore = new SqliteTagVocabulary(
+        this.db,
+        (fn) => this.tx(fn),
+        () => this.stamp(),
+      )
+      this.projectRule = config.projectRule
+      // Topics are keyed by slug and belong to no agent.
+      this.topicIndex = new ExactScanIndex(
+        this.db,
+        `FROM (SELECT slug AS id, embedding, '' AS agent FROM ros_wiki_topics) m WHERE 1 = 1`,
+        this.log,
+      )
+      this.embedClient = config.embed ? new EmbedClient(config.embed) : undefined
+      this.expectedDims = config.embed?.expectedDims
+      const embedClient = this.embedClient
+      this.wikiDir = config.wiki?.dir
+      this.wikiIndex = config.wiki
+        ? new SqliteWikiIndex(this.db, {
+            ...(embedClient
+              ? { embedQuery: (text) => embedClient.embedQuery(text), vectors: this.topicIndex }
+              : {}),
+            onTopicChanged: (slug) => {
+              this.enqueueTopicEmbed(slug)
+            },
+            now: this.clock,
+          })
+        : undefined
+      this.jobRunner = new JobRunner(this.jobQueue, {
+        log: this.log,
+        ...(config.now ? { now: config.now } : {}),
       })
-    }
-    if (config.compactor) {
-      const llm = new LlmClient(config.compactor)
-      if (config.wiki?.extraction && this.wikiIndex) {
-        const extractor = new SqliteWikiExtractor(
-          this.db,
-          this.wikiIndex,
-          config.wiki.dir,
-          llm,
-          this.jobQueue,
-          () => this.tags(),
-          { log: this.log, now: this.clock },
-        )
-        this.wikiExtractor = extractor
-        this.jobRunner.handle(EXTRACT_WIKI_TASK, (payload) => extractor.extract(payload))
-        // Leaves written before extraction was on, failed ones, and ones mined
-        // by an older pipeline version.
+      this.jobRunner.handle(EMBED_TARGET_TASK, (payload) => this.embedTarget(payload))
+      if (this.embedClient) {
+        // Backstop: rows that have no job (written before embedding was
+        // configured), and rows whose job died during an endpoint outage, are
+        // queued again in batches.
         this.jobRunner.sweep({
-          name: 'enqueue-wiki-backfill',
+          name: 'enqueue-unembedded',
           everyMs: 10 * 60 * 1000,
           run: () => {
-            extractor.enqueueBackfill()
+            this.enqueueUnembedded()
+            this.enqueueUnembeddedTopics()
+          },
+        })
+        if (config.workers ?? true) this.reconcileEmbedStore()
+        else this.warnOnForeignModel(this.embedClient.model)
+      }
+      const taggerLlmConfig = config.tagging?.enabled
+        ? (config.tagging.llm ?? config.compactor)
+        : undefined
+      if (taggerLlmConfig) {
+        const tagger = new SqliteTagger(
+          this.db,
+          // The tagger's own budget, whichever endpoint it borrows: a short call,
+          // retried once.
+          new LlmClient({ ...taggerLlmConfig, maxRetries: TAG_LLM_RETRIES, timeoutMs: 60_000 }),
+          this.jobQueue,
+          () => this.tags(),
+          this.vocabularyStore,
+          (fn) => this.tx(fn),
+          this.log,
+        )
+        this.tagger = tagger
+        this.jobRunner.handle(SUGGEST_TAGS_TASK, async (payload) => {
+          await tagger.suggest(payload)
+        })
+      }
+      if (config.compactor) {
+        const llm = new LlmClient(config.compactor)
+        if (config.wiki?.extraction && this.wikiIndex) {
+          const extractor = new SqliteWikiExtractor(
+            this.db,
+            this.wikiIndex,
+            config.wiki.dir,
+            llm,
+            this.jobQueue,
+            () => this.tags(),
+            { log: this.log, now: this.clock },
+          )
+          this.wikiExtractor = extractor
+          this.jobRunner.handle(EXTRACT_WIKI_TASK, (payload) => extractor.extract(payload))
+          // Leaves written before extraction was on, failed ones, and ones mined
+          // by an older pipeline version.
+          this.jobRunner.sweep({
+            name: 'enqueue-wiki-backfill',
+            everyMs: 10 * 60 * 1000,
+            run: () => {
+              extractor.enqueueBackfill()
+            },
+          })
+        }
+        this.compactor = new SqliteCompactor(
+          this.db,
+          llm,
+          this.jobQueue,
+          config.compaction,
+          {
+            log: this.log,
+            onSummary: ({ id, kind }) => {
+              this.enqueueSummaryEmbed(id)
+              if (kind === 'leaf') {
+                try {
+                  this.wikiExtractor?.enqueue(id)
+                } catch {
+                  // the backfill sweep picks it up
+                }
+                try {
+                  this.tagger?.enqueue(id)
+                } catch {
+                  // a summary without suggestions can still be tagged by hand
+                }
+              }
+            },
+          },
+          config.now,
+        )
+        const compactor = this.compactor
+        this.jobRunner.handle(COMPACT_TASK, async (payload) => {
+          await compactor.compactConversation(payload)
+        })
+        this.jobRunner.sweep({
+          name: 'enqueue-idle',
+          everyMs: 5 * 60 * 1000,
+          run: () => {
+            compactor.enqueueIdle()
           },
         })
       }
-      this.compactor = new SqliteCompactor(
-        this.db,
-        llm,
-        this.jobQueue,
-        config.compaction,
-        {
-          log: this.log,
-          onSummary: ({ id, kind }) => {
-            this.enqueueSummaryEmbed(id)
-            if (kind === 'leaf') {
-              try {
-                this.wikiExtractor?.enqueue(id)
-              } catch {
-                // the backfill sweep picks it up
-              }
-              try {
-                this.tagger?.enqueue(id)
-              } catch {
-                // a summary without suggestions can still be tagged by hand
-              }
-            }
-          },
-        },
-        config.now,
-      )
-      const compactor = this.compactor
-      this.jobRunner.handle(COMPACT_TASK, async (payload) => {
-        await compactor.compactConversation(payload)
-      })
-      this.jobRunner.sweep({
-        name: 'enqueue-idle',
-        everyMs: 5 * 60 * 1000,
-        run: () => {
-          compactor.enqueueIdle()
-        },
-      })
-    }
-    if ((this.embedClient || this.compactor || this.tagger) && (config.workers ?? true)) {
-      this.jobRunner.start()
+      if ((this.embedClient || this.compactor || this.tagger) && (config.workers ?? true)) {
+        this.jobRunner.start()
+      }
+    } catch (err) {
+      try {
+        this.db.close()
+      } catch {
+        // already closed
+      }
+      throw err
     }
   }
 
@@ -499,6 +527,10 @@ export class SqliteMemory implements Memory {
           break
         case 4:
           // v5: the wiki index tables are all new, created by SCHEMA above.
+          break
+        case 5:
+          // v6: owner_user_id on conversations and messages.
+          this.migrateToV6()
           break
         default:
           throw new MemoryError(
@@ -537,6 +569,17 @@ export class SqliteMemory implements Memory {
     this.db.exec('DELETE FROM ros_embed_queue')
   }
 
+  private migrateToV6(): void {
+    for (const table of ['ros_conversations', 'ros_messages']) {
+      const cols = (
+        this.db.prepare(`PRAGMA table_info(${table})`).all() as Array<{ name: string }>
+      ).map((c) => c.name)
+      if (!cols.includes('owner_user_id')) {
+        this.db.exec(`ALTER TABLE ${table} ADD COLUMN owner_user_id TEXT`)
+      }
+    }
+  }
+
   /** Absolute path (or `:memory:`) this store opened. */
   getPath(): string {
     return this.filePath
@@ -555,8 +598,8 @@ export class SqliteMemory implements Memory {
 
   async append(entry: MemoryEntry): Promise<string> {
     this.assertOpen()
-    // Another registry user's session is neither read nor written here: the
-    // file is the owner's, and that user has no store on this node yet.
+    // Another user's session is neither read nor written here: this file is
+    // not theirs.
     if (this.isOtherUsersSession(entry.sessionId)) return randomUUID()
     try {
       return this.tx(() => {
@@ -573,8 +616,8 @@ export class SqliteMemory implements Memory {
           .prepare(
             `INSERT INTO ros_messages
                (id, conversation_id, agent, channel, role, content,
-                tool_name, tool_args, tool_result, metadata, created_at)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+                tool_name, tool_args, tool_result, metadata, created_at, owner_user_id)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
           )
           .run(
             id,
@@ -588,6 +631,7 @@ export class SqliteMemory implements Memory {
             toolResult,
             metadata,
             createdAt,
+            this.userId,
           )
 
         this.db
@@ -1569,6 +1613,11 @@ export class SqliteMemory implements Memory {
     }))
   }
 
+  /** Whose store this is (`owner_user_id` on its rows); null when not told. */
+  ownerUserId(): string | null {
+    return this.userId
+  }
+
   /** The tag vocabulary: reading it, editing it, and the rule-based project tag. */
   vocabulary(): SqliteTagVocabulary {
     this.assertOpen()
@@ -1605,6 +1654,7 @@ export class SqliteMemory implements Memory {
       tags: () => this.tags(),
       wiki: () => this.wiki(),
       vocabulary: () => this.vocabulary(),
+      userId: this.userId,
       projectRule: this.projectRule,
       log: this.log,
       assertOpen: () => {
@@ -1692,7 +1742,7 @@ export class SqliteMemory implements Memory {
 
   /** True for a user id the registry lists as someone other than the owner. */
   private isOtherUser(userId: string | undefined): boolean {
-    return userId !== undefined && this.otherUsers.has(userId)
+    return userId !== undefined && this.otherUsersView().has(userId)
   }
 
   /**
@@ -1702,11 +1752,12 @@ export class SqliteMemory implements Memory {
    * a user's.
    */
   private isOtherUsersSession(sessionId: string): boolean {
-    if (this.otherUsers.size === 0 || sessionId.startsWith('task:')) return false
+    const others = this.otherUsersView()
+    if (others.size === 0 || sessionId.startsWith('task:')) return false
     const at = sessionId.lastIndexOf(':')
     if (at < 0 || at === sessionId.length - 1) return false
     const user = sessionId.slice(at + 1)
-    if (!this.otherUsers.has(user)) return false
+    if (!others.has(user)) return false
     if (!this.warnedUsers.has(user)) {
       this.warnedUsers.add(user)
       this.log(
@@ -1753,8 +1804,9 @@ export class SqliteMemory implements Memory {
     const upserted = this.db
       .prepare(
         `INSERT INTO ros_conversations
-           (id, session_key, agent, channel, title, task_id, created_at, updated_at, active)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1)
+           (id, session_key, agent, channel, title, task_id, created_at, updated_at, active,
+            owner_user_id)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1, ?)
          ON CONFLICT (session_key, agent) DO UPDATE SET
            updated_at = excluded.updated_at,
            active = 1,
@@ -1764,8 +1816,17 @@ export class SqliteMemory implements Memory {
            END
          RETURNING id`,
       )
-      .get(randomUUID(), sessionId, agent, channelValue, title, taskValue, now, now) as
-      ConversationRow | undefined
+      .get(
+        randomUUID(),
+        sessionId,
+        agent,
+        channelValue,
+        title,
+        taskValue,
+        now,
+        now,
+        this.userId,
+      ) as ConversationRow | undefined
 
     if (!upserted?.id) {
       throw new Error('ensureConversation failed to return an id')
@@ -1839,6 +1900,15 @@ export class SqliteMemory implements Memory {
       .prepare(`SELECT embedding FROM ros_wiki_topics WHERE slug = ?`)
       .get(slug) as { embedding: Uint8Array | null } | undefined
     return row?.embedding ? row.embedding.byteLength / 4 : 0
+  }
+
+  /** Test helper — the distinct owner ids stamped on this store's messages. */
+  ownerColumnForTest(): Array<string | null> {
+    return (
+      this.db
+        .prepare(`SELECT DISTINCT owner_user_id AS id FROM ros_messages ORDER BY 1`)
+        .all() as unknown as Array<{ id: string | null }>
+    ).map((r) => r.id)
   }
 
   /** Test helper — the conversation id for a session and agent. */

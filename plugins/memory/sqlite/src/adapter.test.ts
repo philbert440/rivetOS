@@ -460,4 +460,42 @@ describe('schema upgrade v1 → v2 (tag tables)', () => {
       rmSync(dir, { recursive: true, force: true })
     }
   })
+
+  describe('schema upgrade v5 → v6 (owner_user_id)', () => {
+    it('adds the owner column to an existing file, keeps its rows, and stamps new ones', async () => {
+      const dir = mkdtempSync(join(tmpdir(), 'rivet-sqlite-v6-'))
+      const file = join(dir, 'memory.sqlite')
+      try {
+        // A v5 file: the current schema without the owner column.
+        const v5Schema = SCHEMA.replace(/,\n\s*-- v6:[^\n]*\n\s*owner_user_id\s+TEXT/g, '')
+        expect(v5Schema).not.toMatch(/owner_user_id/)
+        const old = new DatabaseSync(file)
+        old.exec(v5Schema)
+        old.exec(`
+          INSERT INTO ros_conversations (id, session_key, agent, created_at, updated_at)
+            VALUES ('c1', 'old-session', 'rivet', '2026-10-01T00:00:00Z', '2026-10-01T00:00:00Z');
+          INSERT INTO ros_messages (id, conversation_id, agent, channel, role, content, created_at)
+            VALUES ('m1', 'c1', 'rivet', 'cli', 'user', 'a message from before the upgrade', '2026-10-01T00:00:00Z');
+          PRAGMA user_version = 5;
+        `)
+        old.close()
+
+        const memory = new SqliteMemory({ path: file, log: () => {}, userId: 'alice' })
+        expect(memory.schemaVersionForTest()).toBe(SCHEMA_VERSION)
+        expect(await memory.getSessionHistory('old-session')).toHaveLength(1)
+        await memory.append({
+          sessionId: 'old-session',
+          agent: 'rivet',
+          channel: 'cli',
+          role: 'user',
+          content: 'a message written after the upgrade',
+        })
+        // Old rows keep no owner; new rows carry this store's user.
+        expect(memory.ownerColumnForTest()).toEqual([null, 'alice'])
+        memory.close()
+      } finally {
+        rmSync(dir, { recursive: true, force: true })
+      }
+    })
+  })
 })

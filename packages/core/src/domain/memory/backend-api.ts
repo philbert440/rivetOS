@@ -91,18 +91,42 @@ async function readJsonObject(
   return parsed as Record<string, unknown>
 }
 
-/** Owner requests only. Returns false after answering a routed or malformed one. */
-function ownerOnly(req: IncomingMessage, res: ServerResponse): boolean {
+export interface BackendRouteOptions {
+  /**
+   * The store of a den-stamped user. Null (or no resolver at all) refuses
+   * the request: a stamped user is never served from the owner's store.
+   */
+  forUser?: (userId: string) => MemoryBackend | null
+}
+
+const SAFE_USER_ID_RE = /^[a-zA-Z0-9][a-zA-Z0-9._-]{0,63}$/
+
+/**
+ * Which store a request may see: no den stamp is the owner; a stamped user
+ * gets their own store or a refusal; a malformed stamp is refused. Answers
+ * the refusal itself and returns undefined.
+ */
+function resolveBackend(
+  req: IncomingMessage,
+  res: ServerResponse,
+  owner: MemoryBackend,
+  opts: BackendRouteOptions,
+): { backend: MemoryBackend; routed: boolean } | undefined {
   const routed = routedUserResult(req.headers)
   if (routed.kind === 'invalid') {
     json(res, 503, { error: 'malformed routing identity' })
-    return false
+    return undefined
   }
-  if (routed.kind !== 'owner') {
+  if (routed.kind === 'owner') return { backend: owner, routed: false }
+  const user =
+    SAFE_USER_ID_RE.test(routed.id) && !routed.id.includes('..')
+      ? (opts.forUser?.(routed.id) ?? null)
+      : null
+  if (!user) {
     json(res, 503, { error: `memory is not available for user "${routed.id}"` })
-    return false
+    return undefined
   }
-  return true
+  return { backend: user, routed: true }
 }
 
 function fail(res: ServerResponse, err: unknown): void {
@@ -192,13 +216,17 @@ export function parseCaptureBatch(body: unknown): CaptureBatchRequest | string {
 }
 
 /** `POST /api/capture` on a `MemoryBackend`. */
-export function createBackendCaptureRoute(backend: MemoryBackend): GatewayRoute {
+export function createBackendCaptureRoute(
+  owner: MemoryBackend,
+  opts: BackendRouteOptions = {},
+): GatewayRoute {
   return {
     prefix: '/api/capture',
     handler: async (req, res) => {
       try {
         if (req.method !== 'POST') return json(res, 405, { error: 'method not allowed' })
-        if (!ownerOnly(req, res)) return
+        const target = resolveBackend(req, res, owner, opts)
+        if (!target) return
         const raw = await readBody(req, MAX_CAPTURE_BYTES)
         if (raw === TOO_LARGE) return tooLarge(req, res)
         let body: unknown
@@ -209,7 +237,13 @@ export function createBackendCaptureRoute(backend: MemoryBackend): GatewayRoute 
         }
         const batch = parseCaptureBatch(body)
         if (typeof batch === 'string') return json(res, 400, { error: batch })
-        return json(res, 200, await backend.capture(batch, { allowFilesystem: true }))
+        // A routed user's batch comes from another tenant, usually another
+        // machine: nothing in it is resolved against this host's filesystem.
+        return json(
+          res,
+          200,
+          await target.backend.capture(batch, { allowFilesystem: !target.routed }),
+        )
       } catch (err) {
         fail(res, err)
       }
@@ -229,8 +263,11 @@ function clamp(n: number, lo: number, hi: number): number {
 }
 
 /** `/api/memory/{search,browse,stats,health,tool/<name>,tags/*}` on a `MemoryBackend`. */
-export function createBackendMemoryRoute(backend: MemoryBackend): GatewayRoute {
-  let tools: Tool[] | undefined
+export function createBackendMemoryRoute(
+  owner: MemoryBackend,
+  opts: BackendRouteOptions = {},
+): GatewayRoute {
+  const toolsByBackend = new WeakMap<MemoryBackend, Tool[]>()
   return {
     prefix: '/api/memory',
     handler: async (req, res) => {
@@ -248,20 +285,33 @@ export function createBackendMemoryRoute(backend: MemoryBackend): GatewayRoute {
         } else if (method !== 'GET') {
           return json(res, 405, { error: 'method not allowed' })
         }
-        if (!ownerOnly(req, res)) return
+        const target = resolveBackend(req, res, owner, opts)
+        if (!target) return
+        const backend = target.backend
 
         if (head === 'tool') {
           const name = parts[1]
           if (parts.length !== 2 || !name) return json(res, 404, { error: 'unknown memory tool' })
           const args = await readJsonObject(req, res, MAX_JSON_BYTES)
           if (!args) return
-          tools ??= backend.tools()
+          let tools = toolsByBackend.get(backend)
+          if (!tools) {
+            tools = backend.tools()
+            toolsByBackend.set(backend, tools)
+          }
           const tool = tools.find((candidate) => candidate.name === name)
           if (!tool) return json(res, 404, { error: 'unknown memory tool' })
           return json(res, 200, { ok: true, result: await tool.execute(args) })
         }
         if (head === 'tags') {
-          return await handleTags(req, res, url, parts.slice(1).filter(Boolean), backend.tags())
+          return await handleTags(
+            req,
+            res,
+            url,
+            parts.slice(1).filter(Boolean),
+            backend.tags(),
+            routedUserResult(req.headers),
+          )
         }
         if (head === 'search') {
           const q = (url.searchParams.get('q') ?? '').trim()
@@ -343,8 +393,9 @@ function statesParam(raw: string | null): TagState[] | undefined | typeof BAD_ST
   return tokens.length > 0 ? tokens : undefined
 }
 
-/** The owner may name who decided; the default is "owner". */
-function decider(body: Record<string, unknown>): string {
+/** The owner may name who decided (default "owner"); a routed user decides as themselves. */
+function decider(body: Record<string, unknown>, who: { kind: string; id?: string }): string {
+  if (who.kind === 'user' && who.id) return who.id
   return typeof body.decided_by === 'string' && body.decided_by.trim() !== ''
     ? body.decided_by.trim().slice(0, 120)
     : 'owner'
@@ -356,6 +407,7 @@ async function handleTags(
   url: URL,
   sub: string[],
   tags: MemoryTagsBackend,
+  who: { kind: string; id?: string },
 ): Promise<void> {
   const path = sub.join('/')
   if ((req.method ?? 'GET') === 'GET') {
@@ -416,7 +468,7 @@ async function handleTags(
       if (state !== 'accepted' && state !== 'rejected') {
         return json(res, 400, { error: 'state must be accepted or rejected' })
       }
-      return json(res, 200, { changed: await tags.decide(ids, state, decider(body)) })
+      return json(res, 200, { changed: await tags.decide(ids, state, decider(body, who)) })
     }
     if (path === 'add') {
       const hasEntity = typeof body.entity_id === 'string' && body.entity_id !== ''
@@ -438,7 +490,7 @@ async function handleTags(
           display: str(body.display),
           reason: str(body.reason),
         },
-        decider(body),
+        decider(body, who),
       )
       return json(res, 200, { tag })
     }

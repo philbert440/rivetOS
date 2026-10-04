@@ -762,10 +762,16 @@ PGlite process is required for the in-process `Memory` path (chat append, sessio
 history, settings, search). With an embedding endpoint set, messages are embedded in the
 background by a job loop inside the runtime (no worker service), vectors are stored in the
 file, and search fuses full-text, a literal-match arm and a vector arm with the same ranking
-policy as Postgres; without one, search is full-text only. Single-user: the file is the node
-owner's. Other users in the tenancy registry get no memory from it (their sessions are not
-stored, and search, turn context, the agent's memory tools and the memory HTTP routes refuse
-them) until per-user files arrive. If `memory.sqlite`
+policy as Postgres; without one, search is full-text only. One file per user: the configured file is the node owner's, and every other user in the tenancy
+registry gets a file of their own under `users/` beside it (`users_dir`), with their own job
+loop, wiki directory (`<wiki_dir>/users/<userId>`) and tags. A turn, a capture or a memory request
+that den resolved to such a user is served from that user's file and never from the owner's; a
+user whose file cannot be opened, or whose id differs from another's only by case, is refused. The
+registry is checked on every lookup and re-read when it changes; a user seen once stays routed to
+their own store until restart. With an in-memory owner store (`path: ':memory:'`) the other
+users' stores are in-memory too and do not survive a restart. New conversations and messages record whose store they
+were written to (`owner_user_id`). With `per_user_files: false` those users get no memory on
+this node at all (nothing stored, nothing read). If `memory.sqlite`
 is set, remove or ignore a stale `RIVETOS_PG_URL` in `~/.rivetos/.env` so the MCP sidecar
 does not keep reading an old Postgres store while chat appends write sqlite. The parent
 directory is created mode `0700` and the DB file (plus `-wal`/`-shm`) is `0600`. With this
@@ -797,6 +803,8 @@ memory:
 | `tagging` | boolean | on unless `SESSION_TAGGING=0` | Suggest `key:value` tags for each leaf summary. Needs a summarization endpoint (or the tagger's own). |
 | `tagger_endpoint`, `tagger_model`, `tagger_api_key` | string | `RIVETOS_TAGGER_URL`, `RIVETOS_TAGGER_MODEL`, `RIVETOS_TAGGER_API_KEY` | A separate OpenAI-compatible endpoint for the tagger. Unset: the compactor's. |
 | `project_rule` | boolean | `true` | Tag a captured session with `project:<name>` from its working directory's git root. |
+| `per_user_files` | boolean | `true` | Give every other user in the users registry a SQLite file of their own. `false`: those users get no memory on this node. |
+| `users_dir` | string | `users/` beside the owner's file | Where the other users' files go (`<users_dir>/<userId>/memory.sqlite`). |
 | `wiki_dir` | string | `WIKI_DIR`, else the shared directory's `wiki` | Where the wiki's page files live (a git repository the writer creates). |
 | `wiki_extraction` | boolean | `WIKI_EXTRACTION=1` | Mine leaf summaries into wiki pages. Needs a summarization endpoint. Off by default. |
 | `workers` | boolean | `true` when an embedding or summarization endpoint is set | Run the in-process job loop. `false` queues work without draining it, and a model change is not applied on open: stored vectors are cleared only by a process that runs the job loop (or calls `runJobs()`). |
@@ -833,10 +841,9 @@ OpenAI-compatible chat shape is spoken to the tagger here.
 A node with `memory.sqlite` serves `POST /api/capture` and `/api/memory/*` (search, browse, stats,
 health, tags, and the memory tools the MCP sidecar's den transport calls) from the file, with the
 same request and response shapes as a Postgres node, vocabulary edits included. A
-request the den stamped for a routed user is refused (503) rather than served from the owner's file;
-the agent's memory tools refuse such a turn the same way. On a node that has both `memory.sqlite`
-and a Postgres URL, the SQLite store answers these routes, so routed users who had a Postgres
-database of their own are refused here too.
+request the den stamped for another user is served from that user's own file (their batches are
+never resolved against this host's filesystem, and they decide tags as themselves), or refused
+with 503 when they have none. The agent's memory tools follow the turn's user the same way.
 
 ---
 

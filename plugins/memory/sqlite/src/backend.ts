@@ -71,6 +71,8 @@ export interface SqliteBackendHost {
   tags(): SqliteTagStore
   wiki(): { index: SqliteWikiIndex; wikiDir: string } | undefined
   vocabulary(): SqliteTagVocabulary
+  /** Whose store this is; stamped on rows as `owner_user_id`. */
+  userId: string | null
   /** `null` turns the rule-based project tag off; undefined is the default rule. */
   projectRule: ProjectResolver | null | undefined
   log(line: string): void
@@ -205,8 +207,9 @@ export class SqliteBackend implements MemoryBackend {
       const conversation = db
         .prepare(
           `INSERT INTO ros_conversations
-             (id, session_key, agent, channel, title, settings, task_id, created_at, updated_at, active)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 1)
+             (id, session_key, agent, channel, title, settings, task_id, created_at, updated_at, active,
+              owner_user_id)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?)
            ON CONFLICT (session_key, agent) DO UPDATE SET
              updated_at = excluded.updated_at,
              title = CASE WHEN ? THEN excluded.title ELSE ros_conversations.title END,
@@ -224,6 +227,7 @@ export class SqliteBackend implements MemoryBackend {
           batch.task_id ?? null,
           now,
           now,
+          this.host.userId,
           batch.title !== undefined ? 1 : 0,
           batch.settings !== undefined ? 1 : 0,
           batch.task_id !== undefined ? 1 : 0,
@@ -262,8 +266,8 @@ export class SqliteBackend implements MemoryBackend {
       const insert = db.prepare(
         `INSERT INTO ros_messages
            (id, conversation_id, agent, channel, role, content,
-            tool_name, tool_args, tool_result, metadata, created_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+            tool_name, tool_args, tool_result, metadata, created_at, owner_user_id)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       )
       let inserted = 0
       for (const message of batch.messages) {
@@ -296,6 +300,7 @@ export class SqliteBackend implements MemoryBackend {
           toolResult,
           JSON.stringify(metadata),
           message.created_at ? isoUtc(message.created_at, 'created_at') : now,
+          this.host.userId,
         )
         this.host.enqueueMessageEmbed(id)
         seen.set(message.event_id, id)

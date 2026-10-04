@@ -962,27 +962,38 @@ export async function registerAgentTools(
   const memoryBackend = hasMemoryBackend(registeredMemory) ? registeredMemory.backend() : undefined
   const backendWiki = memoryBackend?.wiki?.()
   if (memoryBackend) {
+    // A memory that keeps a store per user serves a den-stamped user from
+    // their own; otherwise every stamped user is refused.
+    const backendForUser = hasMemoryBackend(registeredMemory)
+      ? registeredMemory.backendForUser?.bind(registeredMemory)
+      : undefined
+    const forUser = backendForUser ? { forUser: backendForUser } : {}
     gatewayRoutes.push(
-      createBackendCaptureRoute(memoryBackend),
-      createBackendMemoryRoute(memoryBackend),
+      createBackendCaptureRoute(memoryBackend, forUser),
+      createBackendMemoryRoute(memoryBackend, forUser),
     )
     // The backend's own wiki: its index, and the page files it points at.
     // It takes precedence over the pool-backed wiki routes below even when a
     // Postgres pool exists (for tasks): the node's memory is this backend,
     // and `memory.postgres` cannot be configured beside it.
-    // One store, so a routed user is refused rather than shown the owner's.
+    // A routed user sees their own store's wiki, or is refused: never the
+    // owner's.
     if (backendWiki) {
+      const wikiForUser = (
+        userId: string,
+      ): { index: typeof backendWiki.index; wikiDir: string } | null =>
+        backendForUser?.(userId)?.wiki?.() ?? null
       gatewayRoutes.push(
         createWikiApiRoute({
           index: backendWiki.index,
           wikiDir: backendWiki.wikiDir,
-          forUser: () => null,
+          forUser: wikiForUser,
         }),
         createWikiHtmlRoute({
           index: backendWiki.index,
           wikiDir: backendWiki.wikiDir,
           nodeName: config.mesh?.node_name,
-          forUser: () => null,
+          forUser: wikiForUser,
         }),
       )
     }
