@@ -88,14 +88,14 @@ describe('compaction-worker config', () => {
 
   it('does not send the compactor key to a different tagger host', async () => {
     stubRequired({ RIVETOS_COMPACTOR_API_KEY: 'compactor-key' })
-    vi.stubEnv('RIVETOS_TAGGER_URL', 'https://edison.internal/classify')
-    vi.stubEnv('RIVETOS_TAGGER_MODEL', 'kaya')
+    vi.stubEnv('RIVETOS_TAGGER_URL', 'https://classifier.internal/classify')
+    vi.stubEnv('RIVETOS_TAGGER_MODEL', 'tagger-v1')
     vi.stubEnv('RIVETOS_TAGGER_WIRE_SHAPE', 'native')
     const { config } = await import('./config.js')
     expect(config.taggerUsesCompactor).toBe(false)
     expect(config.tagger).toEqual({
-      url: 'https://edison.internal/classify',
-      model: 'kaya',
+      url: 'https://classifier.internal/classify',
+      model: 'tagger-v1',
       apiKey: '',
       transientStatuses: [],
     })
@@ -104,7 +104,7 @@ describe('compaction-worker config', () => {
 
   it('mints a tagger token from RIVETOS_TAGGER_TOKEN_COMMAND (JSON argv only)', async () => {
     stubRequired()
-    vi.stubEnv('RIVETOS_TAGGER_URL', 'https://edison.internal/classify')
+    vi.stubEnv('RIVETOS_TAGGER_URL', 'https://classifier.internal/classify')
     vi.stubEnv('RIVETOS_TAGGER_TOKEN_COMMAND', JSON.stringify(['/usr/local/bin/mint-token']))
     const { config } = await import('./config.js')
     expect(config.tagger.tokenSource).toBeDefined()
@@ -136,7 +136,7 @@ describe('compaction-worker config', () => {
   })
 
   it.each([
-    ['RIVETOS_TAGGER_API_KEY', 'edison-key'],
+    ['RIVETOS_TAGGER_API_KEY', 'classifier-key'],
     ['RIVETOS_TAGGER_TOKEN_COMMAND', JSON.stringify(['/usr/local/bin/mint-token'])],
   ])('refuses %s without RIVETOS_TAGGER_URL (it would go to the compactor endpoint)', async (name, value) => {
     stubRequired({ RIVETOS_COMPACTOR_API_KEY: 'compactor-key' })
@@ -175,7 +175,7 @@ describe('compaction-worker config', () => {
     vi.stubEnv('RIVETOS_TAGGER_TIMEOUT_SECONDS', '0')
     vi.stubEnv('RIVETOS_TAGGER_TRANSIENT_STATUSES', '500')
     vi.stubEnv('RIVETOS_TAGGER_API_KEY', 'left-in-a-template')
-    vi.stubEnv('RIVETOS_TAGGER_MODEL', 'kaya')
+    vi.stubEnv('RIVETOS_TAGGER_MODEL', 'tagger-v1')
     const { config } = await import('./config.js')
     expect(config.taggingEnabled).toBe(false)
     expect(config.taggerTimeoutMs).toBe(60_000)
@@ -188,10 +188,10 @@ describe('compaction-worker config', () => {
 
   it('keeps a tagger key with its own URL, and bounds the tagger timeout', async () => {
     stubRequired({ RIVETOS_COMPACTOR_API_KEY: 'compactor-key' })
-    vi.stubEnv('RIVETOS_TAGGER_URL', 'https://edison.internal/v1')
-    vi.stubEnv('RIVETOS_TAGGER_API_KEY', 'edison-key')
+    vi.stubEnv('RIVETOS_TAGGER_URL', 'https://classifier.internal/v1')
+    vi.stubEnv('RIVETOS_TAGGER_API_KEY', 'classifier-key')
     const { config } = await import('./config.js')
-    expect(config.tagger.apiKey).toBe('edison-key')
+    expect(config.tagger.apiKey).toBe('classifier-key')
     expect(config.taggerTimeoutMs).toBe(60_000)
     vi.resetModules()
     vi.stubEnv('RIVETOS_TAGGER_TIMEOUT_SECONDS', '15')

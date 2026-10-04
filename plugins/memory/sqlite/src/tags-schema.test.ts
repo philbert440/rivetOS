@@ -71,8 +71,8 @@ describe('sqlite tags schema (v2)', () => {
   it('rejects a duplicate (entity_type, entity_id, key, value) so a rejected row blocks re-suggestion', () => {
     const db = fresh()
     const ins = db.prepare(INSERT_TAG)
-    ins.run('t1', 'conversation', 'project', 'tenpal', 'rejected')
-    expect(() => ins.run('t2', 'conversation', 'project', 'tenpal', 'suggested')).toThrow(/UNIQUE/)
+    ins.run('t1', 'conversation', 'project', 'acmeapp', 'rejected')
+    expect(() => ins.run('t2', 'conversation', 'project', 'acmeapp', 'suggested')).toThrow(/UNIQUE/)
     db.close()
   })
 

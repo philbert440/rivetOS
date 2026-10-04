@@ -96,10 +96,10 @@ describe('acceptedTagsForSummary', () => {
     // decided_by is whatever the caller passed (the MCP tool defaults to "mcp").
     const byMcp = { ...row('conversation', 'c1', 'project', 'rivetos', '', 'rule'), proposed_by: 'cwd-git-root', decided_by: 'mcp' }
     // Re-adding the rule tag promotes its source to user in the store.
-    const promoted = { ...row('conversation', 'c1', 'project', 'tenpal', '', 'user'), proposed_by: 'cwd-git-root', decided_by: 'phil' }
+    const promoted = { ...row('conversation', 'c1', 'project', 'acmeapp', '', 'user'), proposed_by: 'cwd-git-root', decided_by: 'alice' }
     const tags = await acceptedTagsForSummary(pool([], [byMcp, promoted]), 's1', 'c1')
     expect(tags).toEqual([
-      { literal: 'project:tenpal', key: 'project', value: 'tenpal', reviewed: true },
+      { literal: 'project:acmeapp', key: 'project', value: 'acmeapp', reviewed: true },
       { literal: 'project:rivetos', key: 'project', value: 'rivetos', reviewed: false },
     ])
   })
@@ -125,11 +125,11 @@ describe('acceptedTagsForSummary', () => {
 
   it('shows the canonical lowercase literal, not the display casing (entity ids are case-sensitive)', async () => {
     const tags = await acceptedTagsForSummary(
-      pool([], [row('conversation', 'c', 'project', 'tenpal', 'TenPAL')]),
+      pool([], [row('conversation', 'c', 'project', 'acmeapp', 'AcmeApp')]),
       's',
       'c',
     )
-    expect(tags[0].literal).toBe('project:tenpal')
+    expect(tags[0].literal).toBe('project:acmeapp')
   })
 
   it('skips the conversation lookup without a conversation id', async () => {
@@ -183,10 +183,10 @@ describe('mentionedIn / withoutRuleEntities', () => {
   })
 
   it('drops an entity that is only the automatic rule tag, case-insensitively, and keeps reviewed ones', () => {
-    const tags = [tag('project', 'rivetos', false), tag('project', 'tenpal', true)]
+    const tags = [tag('project', 'rivetos', false), tag('project', 'acmeapp', true)]
     expect(
-      withoutRuleEntities(['project:RivetOS', 'project:tenpal', 'host:hv-c'], tags),
-    ).toEqual(['project:tenpal', 'host:hv-c'])
+      withoutRuleEntities(['project:RivetOS', 'project:acmeapp', 'host:hv-c'], tags),
+    ).toEqual(['project:acmeapp', 'host:hv-c'])
     expect(withoutRuleEntities(undefined, tags)).toBeUndefined()
     expect(withoutRuleEntities(['project:rivetos'], [tag('project', 'rivetos', true)])).toEqual(['project:rivetos'])
   })

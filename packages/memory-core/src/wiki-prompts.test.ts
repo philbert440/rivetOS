@@ -92,12 +92,12 @@ describe('formatExtractionPrompt', () => {
         { slug: 'a', title: 'A', aliases: [], currentState: 's' },
         { slug: 'b', title: 'B', aliases: [], currentState: 's', fromTag: true },
       ],
-      reviewedTags: ['project:TenPAL', 'topic:wiki', ''],
+      reviewedTags: ['project:AcmeApp', 'topic:wiki', ''],
       ruleTags: ['project:rivet\nOS'],
     })
     const lines = prompt.split('\n')
     expect(lines).toContain(REVIEWED_TAGS_HEADER)
-    expect(lines).toContain('project:TenPAL, topic:wiki')
+    expect(lines).toContain('project:AcmeApp, topic:wiki')
     expect(lines).toContain(RULE_TAGS_HEADER)
     expect(lines).toContain('project:rivet OS')
     const at = (needle: string): number => lines.findIndex((l) => l === needle)

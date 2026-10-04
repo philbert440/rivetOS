@@ -63,7 +63,7 @@ export function createBrowseTool(pool: pg.Pool): Tool {
         tag: {
           type: 'string',
           description:
-            'Only conversations carrying this accepted key:value tag (e.g. project:tenpal). See memory_tags.',
+            'Only conversations carrying this accepted key:value tag (e.g. project:acmeapp). See memory_tags.',
         },
         include_tools: {
           type: 'boolean',

@@ -83,10 +83,10 @@ describe.skipIf(PG_URL === '')('applyProjectRuleTag (real Postgres)', () => {
     const id = await conv()
     await apply(id)
     // A person re-adds the rule tag: addTag's conflict path promotes its source.
-    await addTag(client, { entityType: 'conversation', entityId: id, tag: 'project:rivetos' }, 'phil')
+    await addTag(client, { entityType: 'conversation', entityId: id, tag: 'project:rivetos' }, 'alice')
     expect(await apply(id, { ...HIT, value: 'other-repo', display: 'other-repo' })).toBe(false)
     expect(await tagsOf(id)).toEqual([
-      { value: 'rivetos', state: 'accepted', source: 'user', decided_by: 'phil' },
+      { value: 'rivetos', state: 'accepted', source: 'user', decided_by: 'alice' },
     ])
   })
 
@@ -94,12 +94,12 @@ describe.skipIf(PG_URL === '')('applyProjectRuleTag (real Postgres)', () => {
     const id = await conv()
     await apply(id)
     // The session also carries the survivor, so the merge deletes the rule's row.
-    await addTag(client, { entityType: 'conversation', entityId: id, tag: 'project:tenpal' }, 'phil')
-    await mergeTaxonomyValue(client, 'project', 'rivetos', 'tenpal')
-    expect((await tagsOf(id)).map((t) => t.value)).toEqual(['tenpal'])
+    await addTag(client, { entityType: 'conversation', entityId: id, tag: 'project:zeta-app' }, 'alice')
+    await mergeTaxonomyValue(client, 'project', 'rivetos', 'zeta-app')
+    expect((await tagsOf(id)).map((t) => t.value)).toEqual(['zeta-app'])
     // A later batch from the same checkout resolves to the survivor: nothing new.
     await apply(id)
-    expect((await tagsOf(id)).map((t) => t.value)).toEqual(['tenpal'])
+    expect((await tagsOf(id)).map((t) => t.value)).toEqual(['zeta-app'])
   })
 
   it('follows a vocabulary merge to the survivor and skips a rejected vocabulary value', async () => {

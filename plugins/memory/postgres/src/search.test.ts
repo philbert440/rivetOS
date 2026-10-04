@@ -787,14 +787,14 @@ describe('tag filter', () => {
     const unfiltered = vi
       .spyOn(engine as unknown as { searchUnfiltered: () => Promise<unknown> }, 'searchUnfiltered')
       .mockResolvedValue(hits)
-    const out = await engine.search('q', { tag: 'Project:TenPAL', limit: 7 })
+    const out = await engine.search('q', { tag: 'Project:AcmeApp', limit: 7 })
     expect(out).toBe(hits)
     expect(unfiltered).toHaveBeenCalledWith(
       'q',
       expect.objectContaining({ limit: 7, tag: undefined, conversationIds: ['c-yes'] }),
     )
     const [, params] = query.mock.calls[0] as unknown as [string, unknown[]]
-    expect(params).toEqual(['project', 'tenpal'])
+    expect(params).toEqual(['project', 'acmeapp'])
   })
 
   it('pushes the conversation predicate into the message and summary queries', async () => {

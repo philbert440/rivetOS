@@ -25,7 +25,7 @@ describe('tagLabel / sortTagsForChips', () => {
   it('uses display casing and orders accepted before suggested, dropping rejected', () => {
     const sorted = sortTagsForChips([
       tag({ key: 'topic', value: 'b', state: 'suggested' }),
-      tag({ key: 'project', value: 'tenpal', display: 'TenPAL', state: 'rejected' }),
+      tag({ key: 'project', value: 'acmeapp', display: 'AcmeApp', state: 'rejected' }),
       tag({ key: 'topic', value: 'a' }),
       tag({ key: 'project', value: 'x' }),
     ])
@@ -48,7 +48,7 @@ describe('tagsBySession / sessionKeysOf / tagKeyOptions', () => {
 describe('groupRowsByTag / filterRowsByTag', () => {
   const rows = [row('r1', 'claude:a'), row('r2', 'claude:b'), row('r3', 'claude:c'), row('r4', 'claude:d')]
   const map = tagsBySession({
-    'claude:a': [tag({ key: 'project', value: 'tenpal', display: 'TenPAL' }), tag({ key: 'project', value: 'rivetos' })],
+    'claude:a': [tag({ key: 'project', value: 'acmeapp', display: 'AcmeApp' }), tag({ key: 'project', value: 'rivetos' })],
     'claude:b': [tag({ key: 'project', value: 'rivetos' })],
     'claude:c': [tag({ key: 'project', value: 'rivetos', state: 'suggested' })],
   })
@@ -57,7 +57,7 @@ describe('groupRowsByTag / filterRowsByTag', () => {
     const groups = groupRowsByTag(rows, map, 'project')
     expect(groups.map((g) => [g.label, g.rows.map((r) => r.key)])).toEqual([
       ['project:rivetos', ['r1', 'r2']],
-      ['project:TenPAL', ['r1']],
+      ['project:AcmeApp', ['r1']],
       ['(untagged)', ['r3', 'r4']],
     ])
   })
@@ -169,16 +169,16 @@ describe('lookup rules', () => {
     const base = {
       hasEndpoint: true,
       lookupInFlight: false,
-      tagFilter: 'project:tenpal',
+      tagFilter: 'project:acmeapp',
       groupKey: 'project',
-      filterIdentities: ['', 'project:tenpal'],
+      filterIdentities: ['', 'project:acmeapp'],
       keyChoices: ['project'],
     }
-    expect(settleTagFilters(base)).toEqual({ tagFilter: 'project:tenpal', groupKey: 'project' })
+    expect(settleTagFilters(base)).toEqual({ tagFilter: 'project:acmeapp', groupKey: 'project' })
     // A session was just added: the lookup has not answered, nothing is known yet.
     expect(
       settleTagFilters({ ...base, lookupInFlight: true, filterIdentities: [''], keyChoices: [] }),
-    ).toEqual({ tagFilter: 'project:tenpal', groupKey: 'project' })
+    ).toEqual({ tagFilter: 'project:acmeapp', groupKey: 'project' })
     // The tag was removed: the answer no longer has it.
     expect(settleTagFilters({ ...base, filterIdentities: [''], keyChoices: [] })).toEqual({
       tagFilter: '',
@@ -196,8 +196,8 @@ describe('lookup rules', () => {
 describe('isTagLiteral', () => {
   it('accepts what the server accepts, including a full-width colon', async () => {
     const { isTagLiteral } = await import('./session-tags.js')
-    expect(isTagLiteral('project:TenPAL')).toBe(true)
-    expect(isTagLiteral('project\uFF1Atenpal')).toBe(true)
+    expect(isTagLiteral('project:AcmeApp')).toBe(true)
+    expect(isTagLiteral('project\uFF1Aacmeapp')).toBe(true)
     for (const bad of ['project', ':x', 'project:', 'project:   ', '']) {
       expect(isTagLiteral(bad)).toBe(false)
     }

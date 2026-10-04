@@ -31,25 +31,25 @@ describe('SqliteTagStore', () => {
 
   it('add is born accepted, keeps display casing, and re-adding a rejected tag accepts it again', async () => {
     const conv = await conversation('codex:one')
-    const tag = tags.add({ entityType: 'conversation', entityId: conv, tag: 'Project:TenPAL' }, 'phil')
+    const tag = tags.add({ entityType: 'conversation', entityId: conv, tag: 'Project:AcmeApp' }, 'alice')
     expect(tag).toMatchObject({
       entityId: conv,
       key: 'project',
-      value: 'tenpal',
-      display: 'TenPAL',
+      value: 'acmeapp',
+      display: 'AcmeApp',
       source: 'user',
       state: 'accepted',
-      decidedBy: 'phil',
+      decidedBy: 'alice',
     })
     expect(tag.decidedAt).toBeInstanceOf(Date)
-    expect(tags.decide([tag.id], 'rejected', 'phil')).toEqual([tag.id])
+    expect(tags.decide([tag.id], 'rejected', 'alice')).toEqual([tag.id])
     // Deciding to the state it already has changes nothing.
-    expect(tags.decide([tag.id], 'rejected', 'phil')).toEqual([])
+    expect(tags.decide([tag.id], 'rejected', 'alice')).toEqual([])
     expect(tags.list({ entityId: conv })).toEqual([])
-    const again = tags.add({ entityType: 'conversation', entityId: conv, key: 'project', value: 'tenpal' }, 'phil')
+    const again = tags.add({ entityType: 'conversation', entityId: conv, key: 'project', value: 'acmeapp' }, 'alice')
     expect(again.id).toBe(tag.id)
     expect(again.state).toBe('accepted')
-    expect(again.display).toBe('TenPAL')
+    expect(again.display).toBe('AcmeApp')
   })
 
   it('accepts a literal typed with a full-width colon and refuses a bad one', async () => {
@@ -91,7 +91,7 @@ describe('SqliteTagStore', () => {
       agent: 'rivet',
     })
     expect(pending.decidedBy).toBeUndefined()
-    tags.decide([pending.id], 'rejected', 'phil')
+    tags.decide([pending.id], 'rejected', 'alice')
     expect(tags.propose('conversation', conv, [{ key: 'topic', value: 'memory compaction' }], model)).toBe(0)
     expect(tags.pending()).toEqual([])
 
@@ -113,7 +113,7 @@ describe('SqliteTagStore', () => {
     const conv = await conversation(`claude-code:-home-rivet-proj/${UUID}`)
     const added = tags.add(
       { entityType: 'conversation', sessionKey: `claude-code:${UUID}`, tag: 'project:rivetos' },
-      'phil',
+      'alice',
     )
     expect(added.entityId).toBe(conv)
     expect(tags.forSessionKeys([`claude-code:${UUID}`]).get(`claude-code:${UUID}`)?.map((t) => t.value)).toEqual([
@@ -122,7 +122,7 @@ describe('SqliteTagStore', () => {
     expect(tags.forSessionKeys([UUID]).get(UUID)).toHaveLength(1)
     // The same uuid under another harness does not answer a canonical ask.
     const codex = await conversation(`codex:${UUID}`)
-    tags.add({ entityType: 'conversation', entityId: codex, tag: 'topic:codex-only' }, 'phil')
+    tags.add({ entityType: 'conversation', entityId: codex, tag: 'topic:codex-only' }, 'alice')
     expect(tags.forSessionKeys([`claude-code:${UUID}`]).get(`claude-code:${UUID}`)?.map((t) => t.value)).toEqual([
       'rivetos',
     ])
@@ -147,10 +147,10 @@ describe('SqliteTagStore', () => {
   it('re-adding the cwd rule tag makes it a user tag', async () => {
     const conv = await conversation('codex:promote')
     tags.propose('conversation', conv, [{ key: 'project', value: 'rivetos' }], { source: 'rule', proposedBy: 'cwd-git-root' })
-    expect(tags.add({ entityType: 'conversation', entityId: conv, tag: 'project:rivetos' }, 'phil')).toMatchObject({
+    expect(tags.add({ entityType: 'conversation', entityId: conv, tag: 'project:rivetos' }, 'alice')).toMatchObject({
       source: 'user',
       proposedBy: 'cwd-git-root',
-      decidedBy: 'phil',
+      decidedBy: 'alice',
     })
   })
 
@@ -158,9 +158,9 @@ describe('SqliteTagStore', () => {
     const conv = await conversation('codex:reaccept')
     tags.propose('conversation', conv, [{ key: 'project', value: 'rivetos' }], { source: 'rule', proposedBy: 'cwd-git-root' })
     const [rule] = tags.list({ entityId: conv, key: 'project' })
-    tags.decide([rule.id], 'rejected', 'phil')
+    tags.decide([rule.id], 'rejected', 'alice')
     expect(tags.list({ entityId: conv, key: 'project', states: ['rejected'] })[0].source).toBe('rule')
-    tags.decide([rule.id], 'accepted', 'phil')
+    tags.decide([rule.id], 'accepted', 'alice')
     expect(tags.list({ entityId: conv, key: 'project' })[0]).toMatchObject({ source: 'user', state: 'accepted' })
   })
 
@@ -181,18 +181,18 @@ describe('SqliteTagStore', () => {
   it('counts accepted tags per conversation and lists the conversations carrying one', async () => {
     const a = await conversation('codex:a')
     const b = await conversation('codex:b')
-    tags.add({ entityType: 'conversation', entityId: a, tag: 'project:TenPAL' }, 'p')
-    tags.add({ entityType: 'conversation', entityId: b, tag: 'project:TenPAL' }, 'p')
+    tags.add({ entityType: 'conversation', entityId: a, tag: 'project:AcmeApp' }, 'p')
+    tags.add({ entityType: 'conversation', entityId: b, tag: 'project:AcmeApp' }, 'p')
     tags.add({ entityType: 'conversation', entityId: b, tag: 'topic:wiki' }, 'p')
     tags.propose('conversation', a, [{ key: 'topic', value: 'wiki' }], { source: 'model', proposedBy: 'm' })
     // A tag whose conversation does not exist is not a tagged conversation.
-    tags.add({ entityType: 'conversation', entityId: 'gone', tag: 'project:tenpal' }, 'p')
+    tags.add({ entityType: 'conversation', entityId: 'gone', tag: 'project:acmeapp' }, 'p')
     expect(tags.counts()).toEqual([
-      { key: 'project', value: 'tenpal', display: 'TenPAL', conversations: 2 },
+      { key: 'project', value: 'acmeapp', display: 'AcmeApp', conversations: 2 },
       { key: 'topic', value: 'wiki', display: 'wiki', conversations: 1 },
     ])
     expect(tags.counts('topic')).toHaveLength(1)
-    expect(tags.conversationIdsWithTag('Project', 'TenPAL').sort()).toEqual([a, b].sort())
+    expect(tags.conversationIdsWithTag('Project', 'AcmeApp').sort()).toEqual([a, b].sort())
   })
 
   it('list filters by entity, key, value and state, accepted first', async () => {
@@ -214,7 +214,7 @@ describe('SqliteTagStore', () => {
     expect(tags.propose('conversation', conv, proposals, { source: 'model', proposedBy: 'm' })).toBe(620)
     const ids = tags.list({ entityId: conv, states: ['suggested'], limit: 1000 }).map((t) => t.id)
     expect(ids).toHaveLength(620)
-    expect(tags.decide(ids, 'accepted', 'phil')).toHaveLength(620)
+    expect(tags.decide(ids, 'accepted', 'alice')).toHaveLength(620)
     memory.close()
     expect(() => memory.tags()).toThrow(/closed/)
   })
