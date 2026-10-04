@@ -142,9 +142,7 @@ export const manifest: PluginManifest = {
     // Always routed when per-user files are on, so a user who joins the
     // registry later gets a store the first time they are seen.
     const routing = perUser
-      ? new SqliteRoutingMemory(main, userStores, (id) =>
-          registry.others().has(id) ? openUser(id) : undefined,
-        )
+      ? new SqliteRoutingMemory(main, userStores, openUser, (id) => registry.others().has(id))
       : undefined
     ctx.registerMemory(routing ?? main)
 

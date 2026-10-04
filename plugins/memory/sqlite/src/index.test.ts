@@ -421,6 +421,23 @@ describe('memory-sqlite manifest', () => {
       ).rejects.toThrow(/unavailable/)
     }
     expect((await memory.backend().stats()).messages).toBe(0)
+
+    // A blocked user who becomes the node owner is the owner: served from the
+    // owner's store, not refused by a stale block.
+    writeFileSync(
+      usersFile,
+      JSON.stringify({
+        ownerUserId: 'guest',
+        unmappedIsOwner: false,
+        users: { alice: { id: 'alice', devices: [] }, guest: { id: 'guest', devices: ['dev2'] } },
+      }),
+    )
+    await memory.append({ sessionId: 'gateway:guest', agent: 'rivet', channel: 'gateway', role: 'user', content: 'the new owner writes a note' })
+    expect(await memory.search('note', { userId: 'guest' })).toHaveLength(1)
+    expect((await memory.backend().stats()).messages).toBe(1)
+    expect(String(await tools[2].execute({}, undefined, { session: { userId: 'guest' } } as unknown as ToolContext))).toMatch(
+      /Messages: 1/,
+    )
   })
 })
 

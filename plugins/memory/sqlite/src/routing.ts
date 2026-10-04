@@ -49,16 +49,16 @@ export class SqliteRoutingMemory implements Memory {
   private readonly blockedAt = new Map<string, number>()
 
   /**
-   * @param resolve Called for a user id with no store yet. Returns that
-   *   user's store (opening it), `BLOCKED` when they are a registry user
-   *   whose store cannot be used, or undefined when the id is not another
-   *   registry user at all (then the request is the owner's).
+   * @param resolve Opens the store of another registry user who has none
+   *   yet. Returns it, or `BLOCKED` (also assumed when it returns nothing).
    */
   constructor(
     private readonly main: SqliteMemory,
     users: ReadonlyMap<string, SqliteMemory | typeof BLOCKED>,
     private readonly resolve: (userId: string) => SqliteMemory | typeof BLOCKED | undefined = () =>
       undefined,
+    /** Whether an id is another registry user right now. Default: the ids given at construction. */
+    private readonly isOther: (userId: string) => boolean = (id) => users.has(id),
   ) {
     for (const [id, store] of users) {
       this.users.set(id, store)
@@ -67,6 +67,16 @@ export class SqliteRoutingMemory implements Memory {
   }
 
   private lookup(userId: string): SqliteMemory | typeof BLOCKED | undefined {
+    // Asked first, every time: an id that is not another registry user (the
+    // owner's own ids, and a user who has since become the owner) is the
+    // owner's, whatever was remembered about it.
+    if (!this.isOther(userId)) {
+      if (this.users.get(userId) === BLOCKED) {
+        this.users.delete(userId)
+        this.blockedAt.delete(userId)
+      }
+      return undefined
+    }
     const known = this.users.get(userId)
     if (known !== undefined && known !== BLOCKED) return known
     // A blocked user stays refused; the open is tried again after a while,
@@ -75,9 +85,7 @@ export class SqliteRoutingMemory implements Memory {
       const since = this.blockedAt.get(userId) ?? 0
       if (Date.now() - since < BLOCKED_RETRY_MS) return BLOCKED
     }
-    // Not seen at registration: the registry may have gained this user since.
-    const found = this.resolve(userId)
-    if (found === undefined) return known
+    const found = this.resolve(userId) ?? BLOCKED
     this.users.set(userId, found)
     if (found === BLOCKED) this.blockedAt.set(userId, Date.now())
     else this.blockedAt.delete(userId)
