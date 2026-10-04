@@ -27,7 +27,7 @@ export { SqliteCompactor, COMPACT_TASK, DEFAULT_COMPACTION_SETTINGS } from './co
 export type { CompactionSettings } from './compaction.js'
 export { SqliteWikiIndex, SqliteWikiExtractor, EXTRACT_WIKI_TASK } from './wiki.js'
 export type { WikiTopicRow, WikiTopicHit, TopicResolution } from './wiki.js'
-export { SqliteRoutingMemory, userFromSessionKey, isSafeUserId } from './routing.js'
+export { SqliteRoutingMemory, userFromSessionKey, isSafeUserId, foldUserId } from './routing.js'
 export { EmbedClient } from './embed.js'
 export type { EmbedConfig, EmbedOutcome } from './embed.js'
 export { ExactScanIndex, encodeVector, decodeVector } from './vectors.js'
@@ -44,7 +44,7 @@ import { dirname, join } from 'node:path'
 import type { PluginManifest } from '@rivetos/types'
 import { DEFAULT_OWNER_USER_ID, loadUsersRegistry, sharedPath } from '@rivetos/types'
 import type { Tool } from '@rivetos/types'
-import { BLOCKED, SqliteRoutingMemory, isSafeUserId } from './routing.js'
+import { BLOCKED, SqliteRoutingMemory, foldUserId, isSafeUserId } from './routing.js'
 import { SqliteMemory, resolveSqlitePath } from './adapter.js'
 import { clampEmbedTimeoutMs } from '@rivetos/memory-core'
 import { MIN_BATCH_SIZE } from '@rivetos/memory-core'
@@ -73,11 +73,13 @@ export const manifest: PluginManifest = {
     // The users registry names the node owner and anyone else who has an
     // account here. Only those other users are routed or refused: the
     // owner's own turns carry other ids (the default owner id, platform ids)
-    // and must keep working.
-    const users = usersOf(ctx.env, (line) => {
+    // and must keep working. The registry is re-read (at most every few
+    // seconds), because den reloads it too: a user added while the node runs
+    // must not land in the owner's file.
+    const registry = registryView(ctx.env, (line) => {
       ctx.logger.warn(line)
     })
-    const otherUsers = users.others
+    const otherUsers = (): ReadonlySet<string> => registry.others()
     const wiki = resolveWikiConfig(cfg, ctx.env)
     const tagging = resolveTaggingConfig(cfg, ctx.env)
     if (tagging.enabled && !tagging.llm && !compactor) tagging.enabled = false
@@ -97,40 +99,52 @@ export const manifest: PluginManifest = {
       ...(typeof cfg.workers === 'boolean' ? { workers: cfg.workers } : {}),
       log,
     }
-    const main = new SqliteMemory({ path, userId: users.owner, otherUsers, wiki, ...shared })
+    const main = new SqliteMemory({ path, userId: registry.owner(), otherUsers, wiki, ...shared })
 
     // One file per other user, beside the owner's. A user whose store cannot
     // be opened is blocked, never sent to the owner's file. With
     // `per_user_files: false` there are no user stores and those users are
     // refused outright.
-    const userStores = new Map<string, SqliteMemory | typeof BLOCKED>()
-    if (cfg.per_user_files !== false) {
-      const usersDir = resolveUsersDir(cfg, path)
-      for (const id of otherUsers) {
-        try {
-          if (!isSafeUserId(id)) throw new Error('the user id is not usable as a directory name')
-          userStores.set(
-            id,
-            new SqliteMemory({
-              path: usersDir === ':memory:' ? ':memory:' : join(usersDir, id, 'memory.sqlite'),
-              userId: id,
-              // In this user's file, everyone else (the owner included) is the other user.
-              otherUsers: [...otherUsers, users.owner].filter((other) => other !== id),
-              wiki: { dir: join(wiki.dir, 'users', id), extraction: wiki.extraction },
-              ...shared,
-            }),
-          )
-        } catch (err) {
-          ctx.logger.error(
-            `memory.sqlite: store for user "${id}" failed to open; their memory is blocked: ${
-              err instanceof Error ? err.message : String(err)
-            }`,
-          )
-          userStores.set(id, BLOCKED)
+    const perUser = cfg.per_user_files !== false
+    const usersDir = resolveUsersDir(cfg, path)
+    const openUser = (id: string): SqliteMemory | typeof BLOCKED => {
+      try {
+        if (!isSafeUserId(id)) throw new Error('the user id is not usable as a directory name')
+        // Two ids that fold to one directory name on a case-insensitive
+        // filesystem would share a file: neither gets one.
+        const twin = [...registry.others(), registry.owner()].find(
+          (other) => other !== id && foldUserId(other) === foldUserId(id),
+        )
+        if (twin !== undefined) {
+          throw new Error(`the id differs from "${twin}" only by case or trailing dots`)
         }
+        return new SqliteMemory({
+          path: usersDir === ':memory:' ? ':memory:' : join(usersDir, id, 'memory.sqlite'),
+          userId: id,
+          // In this user's file, everyone else (the owner included) is the other user.
+          otherUsers: () =>
+            new Set([...registry.others(), registry.owner()].filter((other) => other !== id)),
+          wiki: { dir: join(wiki.dir, 'users', id), extraction: wiki.extraction },
+          ...shared,
+        })
+      } catch (err) {
+        ctx.logger.error(
+          `memory.sqlite: store for user "${id}" is not available; their memory is blocked: ${
+            err instanceof Error ? err.message : String(err)
+          }`,
+        )
+        return BLOCKED
       }
     }
-    const routing = userStores.size > 0 ? new SqliteRoutingMemory(main, userStores) : undefined
+    const userStores = new Map<string, SqliteMemory | typeof BLOCKED>()
+    if (perUser) for (const id of registry.others()) userStores.set(id, openUser(id))
+    // Always routed when per-user files are on, so a user who joins the
+    // registry later gets a store the first time they are seen.
+    const routing = perUser
+      ? new SqliteRoutingMemory(main, userStores, (id) =>
+          registry.others().has(id) ? openUser(id) : undefined,
+        )
+      : undefined
     ctx.registerMemory(routing ?? main)
 
     // The agent's memory tools. Writing tools (append, ingest) are served over
@@ -156,9 +170,9 @@ export const manifest: PluginManifest = {
         ...tool,
         async execute(args, signal, context) {
           const uid = context?.session?.userId
-          if (uid && otherUsers.has(uid)) {
-            const store = userStores.get(uid)
-            const routed = store && store !== BLOCKED ? toolFor(store, tool.name) : undefined
+          if (uid && registry.others().has(uid)) {
+            // Throws for a user whose store is blocked.
+            const routed = routing ? toolFor(routing.storeFor(uid), tool.name) : undefined
             if (!routed) {
               throw new Error(`memory for user "${uid}" is unavailable on this node`)
             }
@@ -174,9 +188,10 @@ export const manifest: PluginManifest = {
         store.close()
       }
     })
-    if (userStores.size > 0) {
+    const opened = [...userStores.values()].filter((store) => store !== BLOCKED).length
+    if (opened > 0) {
       ctx.logger.info(
-        `sqlite memory: ${String(userStores.size)} other user(s) each have their own file under ${resolveUsersDir(cfg, path)}`,
+        `sqlite memory: ${String(opened)} other user(s) each have their own file under ${usersDir}`,
       )
     }
     if (compactor) {
@@ -205,9 +220,9 @@ export const manifest: PluginManifest = {
           : path
     ctx.logger.info(`sqlite memory ready at ${display}`)
 
-    if (userStores.size === 0 && otherUsers.size > 0) {
+    if (!perUser && registry.others().size > 0) {
       ctx.logger.warn(
-        `memory.sqlite: per-user files are off — ${String(otherUsers.size)} other user(s) in the users registry get no memory from this store: their sessions are not stored or read, and search, context and tools refuse them`,
+        `memory.sqlite: per-user files are off — ${String(registry.others().size)} other user(s) in the users registry get no memory from this store: their sessions are not stored or read, and search, context and tools refuse them`,
       )
     }
   },
@@ -346,32 +361,51 @@ export function resolveCompactionSettings(
   return out
 }
 
+/** How long a read of the users registry is reused. */
+const REGISTRY_TTL_MS = 5000
+
 /**
- * Who the users registry says the owner is, and everyone else it lists.
- * Without a registry the owner is `RIVETOS_USER_ID` (or the default owner
- * id) and there is nobody else. A registry that cannot be read is reported:
- * den may still be resolving users from it, and this process then cannot
- * tell them apart.
+ * A live view of the users registry: who the owner is and everyone else it
+ * lists. Re-read at most every few seconds. Without a registry the owner is
+ * `RIVETOS_USER_ID` (or the default owner id) and there is nobody else. A
+ * registry that cannot be read is reported, and the last good view is kept:
+ * a user already known stays routed.
  */
-function usersOf(
+function registryView(
   env: Record<string, string | undefined>,
   warn: (line: string) => void,
-): { owner: string; others: Set<string> } {
+): { owner: () => string; others: () => ReadonlySet<string> } {
   const fallback = env.RIVETOS_USER_ID?.trim() || DEFAULT_OWNER_USER_ID
-  try {
-    const registry = loadUsersRegistry(env)
-    if (!registry) return { owner: fallback, others: new Set() }
-    return {
-      owner: registry.ownerUserId,
-      others: new Set(Object.keys(registry.users).filter((id) => id !== registry.ownerUserId)),
+  let view: { owner: string; others: ReadonlySet<string> } = { owner: fallback, others: new Set() }
+  let readAt = Number.NEGATIVE_INFINITY
+  let warned = false
+  const current = (): { owner: string; others: ReadonlySet<string> } => {
+    const now = Date.now()
+    if (now - readAt < REGISTRY_TTL_MS) return view
+    readAt = now
+    try {
+      const registry = loadUsersRegistry(env)
+      view = registry
+        ? {
+            owner: registry.ownerUserId,
+            others: new Set(
+              Object.keys(registry.users).filter((id) => id !== registry.ownerUserId),
+            ),
+          }
+        : { owner: fallback, others: new Set() }
+      warned = false
+    } catch (err) {
+      if (!warned) {
+        warned = true
+        warn(
+          `memory.sqlite: the users registry could not be read (${err instanceof Error ? err.message : String(err)}); ` +
+            'keeping the last known users',
+        )
+      }
     }
-  } catch (err) {
-    warn(
-      `memory.sqlite: the users registry could not be read (${err instanceof Error ? err.message : String(err)}); ` +
-        'other users cannot be told apart from the owner and are not routed or refused',
-    )
-    return { owner: fallback, others: new Set() }
+    return view
   }
+  return { owner: () => current().owner, others: () => current().others }
 }
 
 /**

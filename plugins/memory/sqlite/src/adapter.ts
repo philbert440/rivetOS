@@ -179,11 +179,12 @@ export interface SqliteMemoryConfig {
    */
   userId?: string
   /**
-   * User ids from the users registry other than the node owner. The file is
-   * the owner's: these users get no search results or turn context from it,
-   * and their sessions (`<channel>:<user>` keys) are neither stored nor read.
+   * The users this store does not belong to: every other user in the users
+   * registry. They get no search results or turn context from it, and their
+   * sessions (`<channel>:<user>` keys) are neither stored nor read. A function
+   * is asked each time, so users added to the registry later are covered.
    */
-  otherUsers?: Iterable<string>
+  otherUsers?: Iterable<string> | (() => ReadonlySet<string>)
   /**
    * Suggest tags for each leaf summary (needs a compactor endpoint, or an
    * endpoint of its own in `llm`). Suggestions wait for a person to decide.
@@ -287,7 +288,7 @@ export class SqliteMemory implements Memory {
   private embedStoreReconciled = false
   private readonly clock: () => Date
   private backendInstance: SqliteBackend | undefined
-  private readonly otherUsers: ReadonlySet<string>
+  private readonly otherUsersView: () => ReadonlySet<string>
   private readonly userId: string | null
   private readonly warnedUsers = new Set<string>()
   private readonly summaryIndex: VectorIndex
@@ -303,7 +304,12 @@ export class SqliteMemory implements Memory {
 
   constructor(config: SqliteMemoryConfig) {
     this.userId = config.userId?.trim() || null
-    this.otherUsers = new Set(config.otherUsers ?? [])
+    if (typeof config.otherUsers === 'function') {
+      this.otherUsersView = config.otherUsers
+    } else {
+      const fixed: ReadonlySet<string> = new Set(config.otherUsers ?? [])
+      this.otherUsersView = () => fixed
+    }
     this.clock = config.now ?? (() => new Date())
     const path = resolveSqlitePath(config.path)
     this.filePath = path
@@ -312,22 +318,32 @@ export class SqliteMemory implements Memory {
     }
     this.db = new DatabaseSync(path)
     // busy_timeout before WAL so a cold-open race waits instead of throwing SQLITE_BUSY.
-    this.db.exec('PRAGMA busy_timeout = 5000')
-    this.db.exec('PRAGMA journal_mode = WAL')
-    this.db.exec('PRAGMA foreign_keys = ON')
-    this.db.exec(SCHEMA)
-    this.migrateSchema()
-    // Keeps the unembedded-rows sweep proportional to the backlog, not the
-    // table. Created on every open, after the migrations: the columns it
-    // names do not exist on an older file until those have run.
-    this.db.exec(
-      `CREATE INDEX IF NOT EXISTS idx_ros_messages_unembedded ON ros_messages (created_at)
-        WHERE embedding IS NULL AND embed_status IS NULL`,
-    )
-    this.db.exec(
-      `CREATE INDEX IF NOT EXISTS idx_ros_conversations_owner ON ros_conversations (owner_user_id)
-        WHERE owner_user_id IS NOT NULL`,
-    )
+    // A failure while preparing the file must not leave it open.
+    try {
+      this.db.exec('PRAGMA busy_timeout = 5000')
+      this.db.exec('PRAGMA journal_mode = WAL')
+      this.db.exec('PRAGMA foreign_keys = ON')
+      this.db.exec(SCHEMA)
+      this.migrateSchema()
+      // Keeps the unembedded-rows sweep proportional to the backlog, not the
+      // table. Created on every open, after the migrations: the columns it
+      // names do not exist on an older file until those have run.
+      this.db.exec(
+        `CREATE INDEX IF NOT EXISTS idx_ros_messages_unembedded ON ros_messages (created_at)
+          WHERE embedding IS NULL AND embed_status IS NULL`,
+      )
+      this.db.exec(
+        `CREATE INDEX IF NOT EXISTS idx_ros_conversations_owner ON ros_conversations (owner_user_id)
+          WHERE owner_user_id IS NOT NULL`,
+      )
+    } catch (err) {
+      try {
+        this.db.close()
+      } catch {
+        // already closed
+      }
+      throw err
+    }
     if (path !== ':memory:') {
       // WAL/SHM appear after journal_mode=WAL; tighten DB + siblings.
       restrictSqliteFileModes(path)
@@ -581,8 +597,8 @@ export class SqliteMemory implements Memory {
 
   async append(entry: MemoryEntry): Promise<string> {
     this.assertOpen()
-    // Another registry user's session is neither read nor written here: the
-    // file is the owner's, and that user has no store on this node yet.
+    // Another user's session is neither read nor written here: this file is
+    // not theirs.
     if (this.isOtherUsersSession(entry.sessionId)) return randomUUID()
     try {
       return this.tx(() => {
@@ -1725,7 +1741,7 @@ export class SqliteMemory implements Memory {
 
   /** True for a user id the registry lists as someone other than the owner. */
   private isOtherUser(userId: string | undefined): boolean {
-    return userId !== undefined && this.otherUsers.has(userId)
+    return userId !== undefined && this.otherUsersView().has(userId)
   }
 
   /**
@@ -1735,11 +1751,12 @@ export class SqliteMemory implements Memory {
    * a user's.
    */
   private isOtherUsersSession(sessionId: string): boolean {
-    if (this.otherUsers.size === 0 || sessionId.startsWith('task:')) return false
+    const others = this.otherUsersView()
+    if (others.size === 0 || sessionId.startsWith('task:')) return false
     const at = sessionId.lastIndexOf(':')
     if (at < 0 || at === sessionId.length - 1) return false
     const user = sessionId.slice(at + 1)
-    if (!this.otherUsers.has(user)) return false
+    if (!others.has(user)) return false
     if (!this.warnedUsers.has(user)) {
       this.warnedUsers.add(user)
       this.log(

@@ -31,19 +31,50 @@ export function isSafeUserId(id: string): boolean {
   return /^[a-zA-Z0-9][a-zA-Z0-9._-]{0,63}$/.test(id) && !id.includes('..')
 }
 
+/**
+ * Two ids that would land in the same directory on a case-insensitive
+ * filesystem, or on one that drops trailing dots, share a folded form.
+ */
+export function foldUserId(id: string): string {
+  return id.toLowerCase().replace(/\.+$/, '')
+}
+
+// The methods are async so that a blocked user's refusal is a rejected
+// promise, like every other failure of the Memory contract.
 export class SqliteRoutingMemory implements Memory {
+  private readonly users = new Map<string, SqliteMemory | typeof BLOCKED>()
+
+  /**
+   * @param resolve Called for a user id with no store yet. Returns that
+   *   user's store (opening it), `BLOCKED` when they are a registry user
+   *   whose store cannot be used, or undefined when the id is not another
+   *   registry user at all (then the request is the owner's).
+   */
   constructor(
     private readonly main: SqliteMemory,
-    private readonly users: ReadonlyMap<string, SqliteMemory | typeof BLOCKED>,
-  ) {}
+    users: ReadonlyMap<string, SqliteMemory | typeof BLOCKED>,
+    private readonly resolve: (userId: string) => SqliteMemory | typeof BLOCKED | undefined = () =>
+      undefined,
+  ) {
+    for (const [id, store] of users) this.users.set(id, store)
+  }
 
-  /** The store for a user id: theirs if they have one, the owner's otherwise. */
+  private lookup(userId: string): SqliteMemory | typeof BLOCKED | undefined {
+    const known = this.users.get(userId)
+    if (known !== undefined) return known
+    // Not seen at registration: the registry may have gained this user since.
+    const found = this.resolve(userId)
+    if (found !== undefined) this.users.set(userId, found)
+    return found
+  }
+
+  /** The store for a user id: theirs if they are another registry user, the owner's otherwise. */
   storeFor(userId: string | undefined): SqliteMemory {
     if (!userId) return this.main
-    const store = this.users.get(userId)
+    const store = this.lookup(userId)
     if (store === undefined) return this.main
     if (store === BLOCKED) {
-      throw new Error(`memory for user "${userId}" is unavailable (store failed to open)`)
+      throw new Error(`memory for user "${userId}" is unavailable on this node`)
     }
     return store
   }
@@ -59,11 +90,11 @@ export class SqliteRoutingMemory implements Memory {
     return out
   }
 
-  append(entry: MemoryEntry): Promise<string> {
+  async append(entry: MemoryEntry): Promise<string> {
     return this.forSession(entry.sessionId).append(entry)
   }
 
-  search(
+  async search(
     query: string,
     options?: {
       agent?: string
@@ -75,7 +106,7 @@ export class SqliteRoutingMemory implements Memory {
     return this.storeFor(options?.userId).search(query, options)
   }
 
-  getContextForTurn(
+  async getContextForTurn(
     query: string,
     agent: string,
     options?: { maxTokens?: number; userId?: string },
@@ -83,7 +114,7 @@ export class SqliteRoutingMemory implements Memory {
     return this.storeFor(options?.userId).getContextForTurn(query, agent, options)
   }
 
-  getSessionHistory(sessionId: string, options?: { limit?: number }): Promise<Message[]> {
+  async getSessionHistory(sessionId: string, options?: { limit?: number }): Promise<Message[]> {
     return this.forSession(sessionId).getSessionHistory(sessionId, options)
   }
 
@@ -92,11 +123,11 @@ export class SqliteRoutingMemory implements Memory {
     return this.main.getTaskHistory(taskId, options)
   }
 
-  saveSessionSettings(sessionId: string, settings: Record<string, unknown>): Promise<void> {
+  async saveSessionSettings(sessionId: string, settings: Record<string, unknown>): Promise<void> {
     return this.forSession(sessionId).saveSessionSettings(sessionId, settings)
   }
 
-  loadSessionSettings(sessionId: string): Promise<Record<string, unknown> | null> {
+  async loadSessionSettings(sessionId: string): Promise<Record<string, unknown> | null> {
     return this.forSession(sessionId).loadSessionSettings(sessionId)
   }
 
@@ -121,7 +152,7 @@ export class SqliteRoutingMemory implements Memory {
    * refuse them. Never the owner's.
    */
   backendForUser(userId: string): MemoryBackend | null {
-    const store = this.users.get(userId)
+    const store = this.lookup(userId)
     return store === undefined || store === BLOCKED ? null : store.backend()
   }
 }
