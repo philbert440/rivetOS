@@ -592,6 +592,7 @@ export class SearchEngine {
   private dropBucketCounts = new Array<number>(DROP_BUCKET_MINUTES).fill(0)
   private dropBucketEpoch = new Array<number>(DROP_BUCKET_MINUTES).fill(-1)
   private lastVectorDropLogAt = 0
+  private lastAccessBumpLogAt = 0
   /**
    * Chunk-arm availability, probed once per engine (grants/DDL do not change
    * under a live process in practice, and a probe per search is a wasted
@@ -1823,25 +1824,38 @@ export class SearchEngine {
   // -----------------------------------------------------------------------
 
   private async bumpAccess(results: SearchHit[]): Promise<void> {
-    const msgIds = results.filter((r) => r.type === 'message').map((r) => r.id)
-    const sumIds = results.filter((r) => r.type === 'summary').map((r) => r.id)
+    // Callers fire this with `void`. A connect timeout rejects the query, and
+    // Node's default is to kill the process on an unhandled rejection, which
+    // takes the whole den down mid-turn. Access counts are telemetry, so the
+    // failure is dropped (and logged, rate-limited).
+    try {
+      const msgIds = results.filter((r) => r.type === 'message').map((r) => r.id)
+      const sumIds = results.filter((r) => r.type === 'summary').map((r) => r.id)
 
-    if (msgIds.length > 0) {
-      await this.pool.query(
-        `UPDATE ros_messages
-         SET access_count = access_count + 1, last_accessed_at = NOW()
-         WHERE id = ANY($1::uuid[])`,
-        [msgIds],
-      )
-    }
+      if (msgIds.length > 0) {
+        await this.pool.query(
+          `UPDATE ros_messages
+           SET access_count = access_count + 1, last_accessed_at = NOW()
+           WHERE id = ANY($1::uuid[])`,
+          [msgIds],
+        )
+      }
 
-    if (sumIds.length > 0) {
-      await this.pool.query(
-        `UPDATE ros_summaries
-         SET access_count = access_count + 1, last_accessed_at = NOW()
-         WHERE id = ANY($1::uuid[])`,
-        [sumIds],
-      )
+      if (sumIds.length > 0) {
+        await this.pool.query(
+          `UPDATE ros_summaries
+           SET access_count = access_count + 1, last_accessed_at = NOW()
+           WHERE id = ANY($1::uuid[])`,
+          [sumIds],
+        )
+      }
+    } catch (err: unknown) {
+      const now = Date.now()
+      if (now - this.lastAccessBumpLogAt >= VECTOR_DROP_LOG_INTERVAL_MS) {
+        const msg = err instanceof Error ? err.message : String(err)
+        console.warn(`[memory-search] access bump skipped: ${msg}`)
+        this.lastAccessBumpLogAt = now
+      }
     }
   }
 }
