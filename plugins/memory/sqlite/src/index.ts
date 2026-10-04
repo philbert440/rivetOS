@@ -92,7 +92,8 @@ export const manifest: PluginManifest = {
     })
     const otherUsers = (): ReadonlySet<string> => registry.others()
     const wiki = resolveWikiConfig(cfg, ctx.env)
-    const tagging = resolveTaggingConfig(cfg, ctx.env)
+    const { error: taggingError, ...tagging } = resolveTaggingConfig(cfg, ctx.env)
+    if (taggingError) ctx.logger.error(`memory.sqlite: ${taggingError}`)
     if (tagging.enabled && !tagging.llm && !tagging.native && !compactor) tagging.enabled = false
     if (wiki.extraction && !compactor) {
       ctx.logger.warn(
@@ -486,12 +487,13 @@ export function resolveWikiConfig(
  * unless it is given one of its own (`tagger_endpoint` + `tagger_model`, or
  * `RIVETOS_TAGGER_URL` + `RIVETOS_TAGGER_MODEL`), spoken to as a chat model
  * or, with `tagger_wire_shape: native`, as a classifier service. An unknown
- * shape, or `native` without an endpoint and model, is a configuration error.
+ * shape, or `native` without an endpoint and model, turns tagging off and
+ * returns the reason as `error`.
  */
 export function resolveTaggingConfig(
   cfg: Record<string, unknown>,
   env: Record<string, string | undefined>,
-): { enabled: boolean; llm?: LlmConfig; native?: NativeTagger } {
+): { enabled: boolean; llm?: LlmConfig; native?: NativeTagger; error?: string } {
   const str = (v: unknown): string | undefined =>
     typeof v === 'string' && v.trim() !== '' ? v.trim() : undefined
   const enabled =
@@ -506,14 +508,22 @@ export function resolveTaggingConfig(
     str(env.RIVETOS_TAGGER_WIRE_SHAPE) ??
     'openai'
   ).toLowerCase()
+  // A setting that cannot be honoured turns tagging off and says why; it
+  // does not take the rest of memory down with it, and it does not send the
+  // chat prompt to a classifier.
   if (shape !== 'openai' && shape !== 'native') {
-    throw new Error(`memory.sqlite: tagger_wire_shape must be "openai" or "native", not "${shape}"`)
+    return {
+      enabled: false,
+      error: `tagger_wire_shape must be "openai" or "native", not "${shape}"; tag suggestions are off`,
+    }
   }
   if (!endpoint || !model) {
     if (shape === 'native') {
-      throw new Error(
-        'memory.sqlite: tagger_wire_shape "native" needs tagger_endpoint and tagger_model',
-      )
+      return {
+        enabled: false,
+        error:
+          'tagger_wire_shape "native" needs tagger_endpoint and tagger_model; tag suggestions are off',
+      }
     }
     return { enabled: true }
   }

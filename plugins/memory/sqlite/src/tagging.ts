@@ -80,7 +80,7 @@ async function callNativeTagger(
     })
     if (!response.ok) {
       await response.body?.cancel().catch(() => {})
-      throw new Error(`tagger HTTP ${String(response.status)}: ${response.statusText}`)
+      throw new Error(`tagger HTTP ${String(response.status)}: ${response.statusText || 'error'}`)
     }
     return await response.text()
   } finally {

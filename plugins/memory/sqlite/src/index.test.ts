@@ -591,10 +591,14 @@ describe('resolveTaggingConfig', () => {
         {},
       ),
     ).toEqual({ enabled: true, native: { url: 'https://tagger.test/tag', model: 'tagger-v1' } })
-    expect(() => resolveTaggingConfig({ tagger_wire_shape: 'nativ' }, {})).toThrow(/must be "openai" or "native"/)
-    expect(() => resolveTaggingConfig({ tagger_wire_shape: 'native' }, {})).toThrow(
-      /needs tagger_endpoint and tagger_model/,
-    )
+    expect(resolveTaggingConfig({ tagger_wire_shape: 'nativ' }, {})).toEqual({
+      enabled: false,
+      error: expect.stringMatching(/must be "openai" or "native"/) as string,
+    })
+    expect(resolveTaggingConfig({ tagger_wire_shape: 'native' }, {})).toEqual({
+      enabled: false,
+      error: expect.stringMatching(/needs tagger_endpoint and tagger_model/) as string,
+    })
     // An endpoint without a model falls back to the compactor's.
     expect(resolveTaggingConfig({}, { RIVETOS_TAGGER_URL: 'https://tagger.test/v1' })).toEqual({ enabled: true })
   })

@@ -209,7 +209,7 @@ export class SqliteWikiMaintenance {
     // A slug names a file under topics/: one that is not a plain slug is
     // counted as failed and never becomes a path.
     let slugs = [...new Set(asked.filter((s) => SLUG.test(s)))]
-    const refused = new Set(asked.filter((s) => !SLUG.test(s))).size
+    const refused = asked.filter((s) => !SLUG.test(s)).length
     const limit = Number.isFinite(opts.limit)
       ? Math.min(Math.max(Math.trunc(opts.limit as number), 1), 100)
       : 5

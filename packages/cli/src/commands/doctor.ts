@@ -571,7 +571,12 @@ export async function checkSqliteMemoryFile(path: string): Promise<CheckResult> 
     )
   }
   // Rows not yet folded into the main file live in the write-ahead log.
-  const walBytes = existsSync(`${path}-wal`) ? statSync(`${path}-wal`).size : 0
+  let walBytes = 0
+  try {
+    walBytes = statSync(`${path}-wal`).size
+  } catch {
+    // No log, or it went away: nothing to add.
+  }
   try {
     const { DatabaseSync } = await import('node:sqlite')
     const db = new DatabaseSync(path, { readOnly: true })

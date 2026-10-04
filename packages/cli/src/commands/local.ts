@@ -1253,7 +1253,13 @@ async function runBackup(flags: LocalFlags, deps: LocalDeps): Promise<void> {
       }
     } catch (err) {
       // All or nothing: a partial set would pass for a backup.
-      for (const to of [...written, copies[written.length].to]) rmSync(to, { force: true })
+      for (const to of [...written, copies[written.length].to]) {
+        try {
+          rmSync(to, { force: true })
+        } catch {
+          // The copy's own failure is the one to report.
+        }
+      }
       throw err
     } finally {
       process.umask(umask)
@@ -1308,7 +1314,7 @@ function assertUnderRivetDir(home: string, target: string): void {
   // this refuses a directory reached through one.)
   // The target's own name is kept as written and its directory resolved, as
   // far up as exists, so a path that is not there yet compares like one that is.
-  const base = realOrLexical(rivetDir(home))
+  const base = realOfNearest(rivetDir(home))
   const resolved = join(realOfNearest(dirname(resolvePath(target))), basename(target))
   if (resolved !== base && !resolved.startsWith(base + sep)) {
     throw new Error(`reset refuses to delete ${target} (outside ~/.rivetos)`)
@@ -1353,7 +1359,9 @@ function readSqliteConfig(
   } | null
   const memoryPath = cfg?.memory?.sqlite?.path
   if (typeof memoryPath !== 'string' || memoryPath.trim() === '') return undefined
-  const expand = (p: string): string => (p.startsWith('~/') ? join(home, p.slice(2)) : p)
+  // `~` and `~/…` as the plugin reads them (`resolveSqlitePath`).
+  const expand = (p: string): string =>
+    p === '~' ? home : p.startsWith('~/') ? join(home, p.slice(2)) : p
   const tasksPath = cfg?.tasks?.sqlite_path
   // Where the plugin keeps the other users' files (`resolveUsersDir`).
   const usersDir = cfg?.memory?.sqlite?.users_dir
@@ -1388,8 +1396,10 @@ function sqliteFilesForReset(home: string): string[] {
   const configPath = join(dir, 'config.yaml')
   // Only files under ~/.rivetos are reset's to delete: a store the config
   // keeps elsewhere is left alone.
-  const base = resolvePath(dir)
-  const mine = (p: string): boolean => resolvePath(p).startsWith(base + sep)
+  // Real paths on both sides, as the delete check compares them.
+  const base = realOfNearest(dir)
+  const mine = (p: string): boolean =>
+    join(realOfNearest(dirname(resolvePath(p))), basename(p)).startsWith(base + sep)
   const configured = existsSync(configPath) ? readSqliteConfig(configPath, home) : undefined
   if (configured) {
     if (mine(configured.memoryPath)) bases.add(configured.memoryPath)
@@ -1432,8 +1442,10 @@ async function runReset(flags: LocalFlags, deps: LocalDeps): Promise<void> {
     ...identityPathsToReset(home),
   ]
   const errors: string[] = []
+  // Every target is checked before the first is removed: a refusal leaves
+  // the node whole, not half reset.
+  for (const t of targets) assertUnderRivetDir(home, t)
   for (const t of targets) {
-    assertUnderRivetDir(home, t)
     try {
       rmSync(t, { recursive: true, force: true })
     } catch (err) {

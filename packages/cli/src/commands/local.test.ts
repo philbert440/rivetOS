@@ -1039,6 +1039,39 @@ describe('runInit / runUp / runBackup / runReset', () => {
     }
   })
 
+  it('runReset works when ~/.rivetos is absent under a linked home, and a refusal removes nothing', async () => {
+    const real = mkdtempSync(join(tmpdir(), 'local-reset-real-'))
+    const outside = mkdtempSync(join(tmpdir(), 'local-reset-outside-'))
+    const linkParent = mkdtempSync(join(tmpdir(), 'local-reset-link-'))
+    try {
+      // The home directory itself is reached through a link.
+      const home = join(linkParent, 'home')
+      symlinkSync(real, home)
+      const exec = vi.fn(async () => ({ stdout: '', stderr: '', code: 0, timedOut: false }))
+      const deps = { home, platform: 'linux' as const, confirm: async () => true, exec }
+      // Nothing to reset yet: not an error.
+      await runReset(parseLocalArgs(['reset', '--yes']), deps)
+
+      // A users directory that a link takes out of ~/.rivetos is refused,
+      // and the refusal comes before anything is removed.
+      const dir = join(home, '.rivetos')
+      mkdirSync(dir, { recursive: true })
+      mkdirSync(join(outside, 'people'))
+      symlinkSync(outside, join(dir, 'link'))
+      writeFileSync(join(dir, 'memory.sqlite'), 'store')
+      writeFileSync(
+        join(dir, 'config.yaml'),
+        ['memory:', '  sqlite:', '    path: ~/.rivetos/memory.sqlite', '    users_dir: ~/.rivetos/link/people', ''].join('\n'),
+      )
+      await runReset(parseLocalArgs(['reset', '--yes']), deps)
+      // The linked directory is not under ~/.rivetos once resolved: left alone, the rest reset.
+      expect(existsSync(join(outside, 'people'))).toBe(true)
+      expect(existsSync(join(dir, 'memory.sqlite'))).toBe(false)
+    } finally {
+      for (const d of [real, outside, linkParent]) rmSync(d, { recursive: true, force: true })
+    }
+  })
+
   it('runReset refuses to delete while the embedded owner lock is alive', async () => {
     const home = mkdtempSync(join(tmpdir(), 'local-lock-'))
     try {
