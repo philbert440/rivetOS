@@ -348,7 +348,9 @@ test('hashed IPv4 prefix matches a full address and the 3-octet prefix', () => {
   const prefix = ['203', '0', '113'].join('.')
   const hashes = new Set([sha256(prefix)])
   assert.equal(
-    scanText(`gw ${prefix}.10`, { denyHashes: hashes }).some((h) => h.rule === 'denylist-ip-prefix'),
+    scanText(`gw ${prefix}.10`, { denyHashes: hashes }).some(
+      (h) => h.rule === 'denylist-ip-prefix',
+    ),
     true,
   )
   assert.equal(
@@ -386,7 +388,10 @@ test('vendored paths skip home and host rules; dropbear README still scans', () 
 })
 
 test('overlay archives are identified as committed assets', () => {
-  assert.equal(isArchivePath('apps/rivet-android/app/src/main/assets/rivet-phone-overlay.bin'), true)
+  assert.equal(
+    isArchivePath('apps/rivet-android/app/src/main/assets/rivet-phone-overlay.bin'),
+    true,
+  )
   assert.equal(
     isCommittedOverlayArchive('apps/rivet-android/app/src/main/assets/rivet-phone-overlay.bin'),
     true,
