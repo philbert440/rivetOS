@@ -7,6 +7,7 @@ import {
   parseRequeueFlags,
   parseExportFlags,
   parseImportFlags,
+  resolveSqliteMemoryPath,
   shouldRefuseGzipToTty,
   requeueDeadJobs,
   REQUEUE_PRIORITY,
@@ -310,5 +311,45 @@ describe('cloud direct-import gate', () => {
     ).toBe(true)
     expect(isRivetCloudPgUrl('postgres://u:p@127.0.0.1:5432/local')).toBe(false)
     expect(CLOUD_IMPORT_HINT).toMatch(/rivetos cloud import/)
+  })
+})
+
+describe('SQLite memory for export / import', () => {
+  it('parses --sqlite on both commands', () => {
+    expect(parseExportFlags(['--sqlite', '/data/memory.sqlite', '--out', 'm.gz'])).toEqual({
+      sqlite: '/data/memory.sqlite',
+      out: 'm.gz',
+    })
+    expect(parseImportFlags(['dump.ndjson.gz', '--sqlite', '/data/memory.sqlite'])).toEqual({
+      file: 'dump.ndjson.gz',
+      dryRun: false,
+      sqlite: '/data/memory.sqlite',
+    })
+    expect(() => parseExportFlags(['--sqlite'])).toThrow(/--sqlite requires a file path/)
+    expect(() => parseImportFlags(['dump.gz', '--sqlite', '--dry-run'])).toThrow(/--sqlite requires a file path/)
+  })
+
+  it('uses the flag, else the node config when there is no Postgres URL', async () => {
+    const { mkdtempSync, mkdirSync, writeFileSync, rmSync } = await import('node:fs')
+    const { tmpdir } = await import('node:os')
+    const { join } = await import('node:path')
+    const home = mkdtempSync(join(tmpdir(), 'mem-sqlite-path-'))
+    try {
+      expect(resolveSqliteMemoryPath('~/m.sqlite', {}, home)).toBe(join(home, 'm.sqlite'))
+      // No config: nothing to fall back to.
+      expect(resolveSqliteMemoryPath(undefined, {}, home)).toBeUndefined()
+      mkdirSync(join(home, '.rivetos'))
+      writeFileSync(
+        join(home, '.rivetos', 'config.yaml'),
+        ['memory:', '  sqlite:', '    path: ~/.rivetos/memory.sqlite', ''].join('\n'),
+      )
+      expect(resolveSqliteMemoryPath(undefined, {}, home)).toBe(join(home, '.rivetos', 'memory.sqlite'))
+      // A Postgres URL means the Postgres store, unless the flag says otherwise.
+      const env = { RIVETOS_PG_URL: 'postgres://example.invalid/db' }
+      expect(resolveSqliteMemoryPath(undefined, env, home)).toBeUndefined()
+      expect(resolveSqliteMemoryPath('/x.sqlite', env, home)).toBe('/x.sqlite')
+    } finally {
+      rmSync(home, { recursive: true, force: true })
+    }
   })
 })

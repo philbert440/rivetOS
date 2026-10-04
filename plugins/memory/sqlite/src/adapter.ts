@@ -1874,6 +1874,12 @@ export class SqliteMemory implements Memory {
     return out
   }
 
+  /** The open database, for export and import (`portability.ts`) and tests. */
+  database(): DatabaseSync {
+    this.assertOpen()
+    return this.db
+  }
+
   /** Test helper — run a raw statement (fixtures that no API writes). */
   rawForTest(sql: string): void {
     this.db.exec(sql)

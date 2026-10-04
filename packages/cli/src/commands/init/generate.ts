@@ -123,7 +123,16 @@ export function buildConfigYaml(state: WizardState): string {
   }
 
   // Memory
-  if (state.local) {
+  if (state.local?.db === 'sqlite') {
+    // No database process: memory is one SQLite file. The embedding endpoint
+    // comes from the environment (RIVETOS_EMBED_URL), as for Postgres.
+    const sqlite: Record<string, unknown> = { path: state.local.sqliteMemoryPath }
+    if (state.local.memory === 'full' && state.local.embedEndpoint) {
+      sqlite.embed_endpoint = state.local.embedEndpoint
+      if (state.local.embedModel) sqlite.embed_model = state.local.embedModel
+    }
+    config.memory = { sqlite }
+  } else if (state.local) {
     const postgres: Record<string, unknown> = {
       embedded: {
         data_dir: state.local.dataDir,
@@ -152,9 +161,12 @@ export function buildConfigYaml(state: WizardState): string {
       if (!h.id || !h.binary) continue
       harnesses[h.id] = { binary: h.binary }
     }
-    if (Object.keys(harnesses).length > 0) {
-      config.tasks = { harnesses }
+    const tasks: Record<string, unknown> = {}
+    if (Object.keys(harnesses).length > 0) tasks.harnesses = harnesses
+    if (state.local.db === 'sqlite' && state.local.sqliteTasksPath) {
+      tasks.sqlite_path = state.local.sqliteTasksPath
     }
+    if (Object.keys(tasks).length > 0) config.tasks = tasks
   }
 
   // Deployment (only for docker/proxmox)
@@ -221,7 +233,14 @@ export function buildLocalPluginList(state: WizardState): string[] {
     seen.add(name)
     out.push(name)
   }
-  for (const name of LOCAL_CORE_PLUGINS) add(name)
+  for (const name of LOCAL_CORE_PLUGINS) {
+    // A SQLite node loads the SQLite memory plugin in place of the Postgres one.
+    add(
+      state.local?.db === 'sqlite' && name === '@rivetos/memory-postgres'
+        ? '@rivetos/memory-sqlite'
+        : name,
+    )
+  }
   for (const agent of state.agents) {
     const pkg = PROVIDER_PLUGIN_PACKAGES[agent.provider]
     if (pkg) add(pkg)

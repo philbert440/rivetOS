@@ -96,6 +96,38 @@ The mesh agent channel binds `127.0.0.1:18789` in local mode (not `:3000` on
 all interfaces). The node leaf is `issued/<hostname>.crt`, matching
 `mesh.node_name` and `den.tls_cert` / `den.tls_key`.
 
+## SQLite instead of embedded Postgres
+
+`rivetos local init --db sqlite` sets the node up without any database
+process. Memory lives in `~/.rivetos/memory.sqlite` and tasks in
+`~/.rivetos/tasks.sqlite`; the config carries `memory.sqlite` and
+`tasks.sqlite_path` in place of `memory.postgres.embedded`, the SQLite memory
+plugin is loaded in place of the Postgres one, and no `RIVETOS_PG_URL` is
+written. The default is unchanged: without `--db`, local mode uses embedded
+PGlite.
+
+What a SQLite node has: capture from the harness hooks, search (full-text,
+and hybrid with `--memory full` and an embedding endpoint), summaries, wiki
+and tag suggestions when a summarization endpoint is set
+(`RIVETOS_COMPACTOR_URL` / `RIVETOS_COMPACTOR_MODEL`), the hub's Memory pages,
+and the memory tools. See the `memory.sqlite` section of
+[CONFIG-REFERENCE.md](CONFIG-REFERENCE.md).
+
+- `rivetos local status` reports the memory file and its size.
+- `rivetos local backup` writes a consistent copy of the memory file
+  (`VACUUM INTO`) to `~/.rivetos/backups/memory-<stamp>.sqlite`. The node can
+  keep running.
+- `rivetos local reset` removes the SQLite files under `~/.rivetos`,
+  including the per-user files in `users/`. A file the config keeps elsewhere
+  is left alone.
+- `rivetos memory export` and `rivetos memory import` move a store between a
+  SQLite node and a Postgres one in either direction (same dump format).
+  Each command works on **one file**, the node owner's unless `--sqlite
+  <file>` names another. `rivetos local backup` always copies the owner's
+  file and has no such option. On a node with other users, each user's memory
+  is its own file under `users/<userId>/` and is in neither: save each one
+  with `rivetos memory export --sqlite <that file> --out <dump>`.
+
 ## Layout
 
 | Path                            | Role                                                                                                  |
@@ -103,6 +135,8 @@ all interfaces). The node leaf is `issued/<hostname>.crt`, matching
 | `~/.rivetos/config.yaml`        | Generated config (`memory.postgres.embedded`, `den`, `mesh`, harness binaries)                        |
 | `~/.rivetos/.env`               | `RIVETOS_PG_URL`, `RIVETOS_SHARED_DIR`, `RIVETOS_ROOT`, API keys (mode 0600; rewritten on every init) |
 | `~/.rivetos/pglite`             | PGlite data dir (WASM files)                                                                          |
+| `~/.rivetos/memory.sqlite`      | `--db sqlite`: the memory file (with `-wal` / `-shm` beside it); other users' files under `users/`    |
+| `~/.rivetos/tasks.sqlite`       | `--db sqlite`: the task engine's file                                                                 |
 | `~/.rivetos/shared`             | `RIVETOS_SHARED_DIR` — users.json, CA, filestore                                                      |
 | `~/.rivetos/ca/root`            | Offline-ish root key (this laptop only)                                                               |
 | `~/.rivetos/shared/rivet-ca`    | Intermediate + issued leaves (`chain.pem` for den, `ca-chain.pem` for CLI helpers)                    |

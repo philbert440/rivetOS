@@ -136,6 +136,7 @@ describe('parseLocalArgs', () => {
       service: false,
       devices: ['phone', 'tablet'],
       memory: 'full',
+      db: 'pglite',
       out: undefined,
       help: false,
     })
@@ -250,6 +251,56 @@ describe('config/env emission lan vs no-lan', () => {
     expect(validateConfig(parsed).valid).toBe(true)
     expect(validateConfig(parsed).errors).toEqual([])
     assertLocalConfigReady(parsed)
+  })
+
+  it('--db sqlite writes memory.sqlite and tasks.sqlite_path, no embedded Postgres and no PG URL', () => {
+    const state = stateFrom(
+      localFixture({
+        db: 'sqlite',
+        sqliteMemoryPath: '/home/user/.rivetos/memory.sqlite',
+        sqliteTasksPath: '/home/user/.rivetos/tasks.sqlite',
+      }),
+    )
+    const yaml = buildConfigYaml(state)
+    const parsed = parseYaml(yaml) as {
+      memory: Record<string, Record<string, unknown>>
+      tasks: Record<string, unknown>
+      plugins: string[]
+    }
+    expect(parsed.memory).toEqual({ sqlite: { path: '/home/user/.rivetos/memory.sqlite' } })
+    expect(parsed.tasks.sqlite_path).toBe('/home/user/.rivetos/tasks.sqlite')
+    expect(parsed.tasks.harnesses).toBeDefined()
+    expect(parsed.plugins).toContain('@rivetos/memory-sqlite')
+    expect(parsed.plugins).not.toContain('@rivetos/memory-postgres')
+    expect(yaml).not.toContain('pglite')
+    expect(validateConfig(parsed).errors).toEqual([])
+    assertLocalConfigReady(parsed)
+    // No Postgres URL in the env file: nothing reaches for a database that is not there.
+    const env = Object.fromEntries(buildEnvFile(state).map((e) => [e.key, e.value]))
+    expect(env.RIVETOS_PG_URL).toBeUndefined()
+    // The local-store marker is set by boot from the registered backend, never written to a file.
+    expect(env.RIVETOS_USER_STORES).toBeUndefined()
+    expect(env.RIVETOS_SHARED_DIR).toBe('/tmp/rivetos-shared')
+  })
+
+  it('--db sqlite with full memory passes the embedding endpoint to the SQLite plugin', () => {
+    const yaml = buildConfigYaml(
+      stateFrom(
+        localFixture({
+          db: 'sqlite',
+          sqliteMemoryPath: '/home/user/.rivetos/memory.sqlite',
+          memory: 'full',
+          embedEndpoint: 'https://embed.test/v1',
+          embedModel: 'toy-embed',
+        }),
+      ),
+    )
+    const parsed = parseYaml(yaml) as { memory: { sqlite: Record<string, unknown> } }
+    expect(parsed.memory.sqlite).toEqual({
+      path: '/home/user/.rivetos/memory.sqlite',
+      embed_endpoint: 'https://embed.test/v1',
+      embed_model: 'toy-embed',
+    })
   })
 
   it('no-lan binds 127.0.0.1; tls omitted when local.tls is false', () => {
@@ -441,6 +492,12 @@ describe('spawn/exec mocked', () => {
 })
 
 describe('parseLocalArgs error paths', () => {
+  it('--db picks the store and rejects anything else', () => {
+    expect(parseLocalArgs([]).db).toBe('pglite')
+    expect(parseLocalArgs(['init', '--db', 'sqlite']).db).toBe('sqlite')
+    expect(() => parseLocalArgs(['--db', 'mysql'])).toThrow(/--db must be pglite or sqlite/)
+  })
+
   it('rejects unknown flags, unknown --memory, and extra args', () => {
     expect(() => parseLocalArgs(['--nope'])).toThrow(/unknown flag/)
     expect(() => parseLocalArgs(['--memory', 'huge'])).toThrow(/lite or full/)
@@ -510,6 +567,23 @@ describe('formatBanner + readPersistedDen + waitHealthz', () => {
     expect(text).toContain('RivetHub local is prepared; run `rivetos start`.')
     expect(text).toContain('https://localhost:5174')
     expect(text).toContain('192.0.2.10')
+  })
+
+  it('readPersistedDen reads the den block of a SQLite node too', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'local-den-sqlite-'))
+    try {
+      const configPath = join(dir, 'config.yaml')
+      writeFileSync(
+        configPath,
+        ['memory:', '  sqlite:', '    path: ~/.rivetos/memory.sqlite', 'den:', '  port: 5274', '  host: 127.0.0.1', ''].join(
+          '\n',
+        ),
+      )
+      expect(readPersistedDen(configPath)).toEqual({ port: 5274, exposeLan: false })
+      expect(readPersistedDen(join(dir, 'missing.yaml'))).toEqual({ port: 5174, exposeLan: true })
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
   })
 
   it('readPersistedDen reads den.port and loopback host', () => {
