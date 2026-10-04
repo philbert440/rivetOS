@@ -50,6 +50,7 @@ import {
   type CaptureRole,
   type CaptureTransport,
   type CaptureWriter,
+  type CaptureUser,
 } from '@rivetos/capture-core'
 import pg from 'pg'
 import type { PoolClient } from 'pg'
@@ -1156,6 +1157,8 @@ export function primeCursor(file: string, fromStart: boolean): FileCursor {
 
 interface DenSink {
   denUrl: string
+  /** The routed user the transport resolved, passed on so writer and transport cannot disagree. */
+  user?: CaptureUser
   fetch?: typeof globalThis.fetch
   spoolDir?: string
 }
@@ -1245,6 +1248,7 @@ async function deliverParsed(
   const batch = batchFromParsed(parsed, file, triggerEvent, finalize)
   const writer: CaptureWriter = createCaptureWriter({
     denUrl: sink.denUrl,
+    ...(sink.user ? { user: sink.user } : {}),
     fetch: sink.fetch,
     spoolDir: sink.spoolDir,
     log: (line) => {
@@ -1393,7 +1397,10 @@ export async function runBackfill(
   }
   const root = sessionsDir ?? codexSessionsDir()
   const source = typeof days === 'number' ? `backfill:${String(days)}d` : 'backfill'
-  const den = transport.kind === 'den' ? { denUrl: transport.denUrl } : undefined
+  const den =
+    transport.kind === 'den'
+      ? { denUrl: transport.denUrl, ...(transport.user ? { user: transport.user } : {}) }
+      : undefined
   const run = (client: Queryable | null): Promise<boolean | null> =>
     withStateLock(
       client ?? undefined,
@@ -1527,7 +1534,12 @@ export async function ingestTranscriptFile(
             ? await ingestNewLinesDen(
                 abs,
                 cursor,
-                { denUrl: transport.denUrl, fetch: opts.fetch, spoolDir: opts.spoolDir },
+                {
+                  denUrl: transport.denUrl,
+                  ...(transport.user ? { user: transport.user } : {}),
+                  fetch: opts.fetch,
+                  spoolDir: opts.spoolDir,
+                },
                 triggerEvent,
                 finalize,
               )

@@ -21,6 +21,10 @@ export const USER_TOKEN_HEADER = 'x-rivetos-user-token'
 /** The environment variable a spawned session finds its token in. */
 export const USER_TOKEN_ENV = 'RIVETOS_USER_TOKEN'
 
+/** Longest user id a token is minted for; the token is the id in base64url, a dot and 43 characters. */
+const MAX_USER_ID_BYTES = 256
+const MAX_TOKEN_LENGTH = Math.ceil((MAX_USER_ID_BYTES * 4) / 3) + 1 + 43
+
 interface TokenStore {
   byUser: Map<string, string>
   /** sha256(token) → user id. Looked up by digest, so no token is compared byte by byte. */
@@ -45,6 +49,12 @@ export function mintUserToken(userId: string): string {
   const s = store()
   const existing = s.byUser.get(userId)
   if (existing) return existing
+  // A token longer than the lookup accepts would be minted and never honoured.
+  if (Buffer.byteLength(userId, 'utf8') > MAX_USER_ID_BYTES) {
+    throw new Error(
+      `user id is too long for a session token (over ${String(MAX_USER_ID_BYTES)} bytes)`,
+    )
+  }
   // The id rides in front so a session can tell whose token it holds (its
   // capture spool is named from it); the secret is the part after the dot.
   const token = `${Buffer.from(userId, 'utf8').toString('base64url')}.${randomBytes(32).toString('base64url')}`
@@ -55,7 +65,7 @@ export function mintUserToken(userId: string): string {
 
 /** The user a token was minted for, or undefined. */
 export function userForToken(token: string): string | undefined {
-  if (token.length < 16 || token.length > 512) return undefined
+  if (token.length < 16 || token.length > MAX_TOKEN_LENGTH) return undefined
   return store().byDigest.get(digest(token))
 }
 

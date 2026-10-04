@@ -1,4 +1,4 @@
-import { mkdtemp, readFile, readdir, rm, stat, writeFile } from 'node:fs/promises'
+import { mkdtemp, readFile, readdir, rm, stat, utimes, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
@@ -90,6 +90,16 @@ describe('capture writer', () => {
     status = 403
     expect(await writer.write(one)).toMatchObject({ spooled: true })
     expect(await readdir(spoolDir)).toHaveLength(1)
+
+    // Still refused a week later (the user left the registry, or their store
+    // is blocked: 503): set aside. A younger file is kept.
+    const [spooled] = await readdir(spoolDir)
+    expect(await writer.replay()).toMatchObject({ replayed: 0, dead: 0, remaining: 1 })
+    const old = new Date(Date.now() - 8 * 24 * 60 * 60 * 1000)
+    await utimes(join(spoolDir, spooled), old, old)
+    status = 503
+    expect(await writer.replay()).toMatchObject({ replayed: 0, dead: 1, remaining: 0 })
+    expect(await readdir(join(spoolDir, 'dead'))).toEqual([spooled])
 
     // Without an explicit directory, a routed user spools apart from the owner and from other users.
     const home = await mkdtemp(join(tmpdir(), 'capture-home-'))
