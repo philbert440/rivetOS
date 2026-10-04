@@ -13,6 +13,8 @@ import {
   existsSync,
   mkdirSync,
   readFileSync,
+  readdirSync,
+  realpathSync,
   rmSync,
   statSync,
   writeFileSync,
@@ -1220,14 +1222,29 @@ async function runBackup(flags: LocalFlags, deps: LocalDeps): Promise<void> {
     mkdirSync(dirname(out), { recursive: true })
     // VACUUM INTO writes a consistent copy while the node keeps running.
     const { DatabaseSync } = await import('node:sqlite')
-    const db = new DatabaseSync(sqlite.memoryPath, { readOnly: true })
-    try {
-      db.prepare('VACUUM INTO ?').run(out)
-    } finally {
-      db.close()
+    const copy = (from: string, to: string): void => {
+      if (existsSync(to)) throw new Error(`${to} already exists`)
+      const db = new DatabaseSync(from, { readOnly: true })
+      try {
+        db.prepare('VACUUM INTO ?').run(to)
+      } finally {
+        db.close()
+      }
+      chmod600(to)
+      console.log(`✅ backup wrote ${to}`)
     }
-    chmod600(out)
-    console.log(`✅ backup wrote ${out}`)
+    copy(sqlite.memoryPath, out)
+    // Every other user's file too: each is a store of its own beside the
+    // owner's, and a backup that left them out would not be a backup.
+    const usersDir = join(dirname(sqlite.memoryPath), 'users')
+    if (existsSync(usersDir)) {
+      const stem = out.replace(/\.sqlite$/, '')
+      for (const entry of readdirSync(usersDir, { withFileTypes: true })) {
+        if (!entry.isDirectory() || !/^[a-zA-Z0-9][a-zA-Z0-9._-]{0,63}$/.test(entry.name)) continue
+        const userFile = join(usersDir, entry.name, 'memory.sqlite')
+        if (existsSync(userFile)) copy(userFile, `${stem}.user-${entry.name}.sqlite`)
+      }
+    }
     return
   }
   const embedded = readEmbeddedConfig(configPath)
@@ -1248,9 +1265,23 @@ async function runBackup(flags: LocalFlags, deps: LocalDeps): Promise<void> {
   console.log(`✅ backup wrote ${out}`)
 }
 
+/** The real path of something that exists; the lexical one otherwise. */
+function realOrLexical(path: string): string {
+  try {
+    return realpathSync(path)
+  } catch {
+    return resolvePath(path)
+  }
+}
+
 function assertUnderRivetDir(home: string, target: string): void {
-  const base = resolvePath(rivetDir(home))
-  const resolved = resolvePath(target)
+  // Real paths on both sides: a link under ~/.rivetos must not lead a delete
+  // out of it. (Removing a link removes the link, never what it points at;
+  // this refuses a directory reached through one.)
+  const base = realOrLexical(rivetDir(home))
+  const resolved = existsSync(target)
+    ? join(realOrLexical(dirname(target)), target.slice(dirname(target).length + 1))
+    : resolvePath(target)
   if (resolved !== base && !resolved.startsWith(base + sep)) {
     throw new Error(`reset refuses to delete ${target} (outside ~/.rivetos)`)
   }

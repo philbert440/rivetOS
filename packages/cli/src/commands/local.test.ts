@@ -903,6 +903,80 @@ describe('runInit / runUp / runBackup / runReset', () => {
     }
   })
 
+  it('on a SQLite node, runBackup copies every store and runReset removes the files under ~/.rivetos', async () => {
+    const home = mkdtempSync(join(tmpdir(), 'local-sqlite-'))
+    try {
+      const dir = join(home, '.rivetos')
+      mkdirSync(join(dir, 'users', 'guest'), { recursive: true })
+      const memoryPath = join(dir, 'memory.sqlite')
+      const elsewhere = join(home, 'elsewhere.sqlite')
+      writeFileSync(
+        join(dir, 'config.yaml'),
+        [
+          'memory:',
+          '  sqlite:',
+          '    path: ~/.rivetos/memory.sqlite',
+          'tasks:',
+          `  sqlite_path: ${elsewhere}`,
+          'den:',
+          '  port: 5174',
+          '',
+        ].join('\n'),
+      )
+      const { DatabaseSync } = await import('node:sqlite')
+      const make = (path: string, body: string): void => {
+        const db = new DatabaseSync(path)
+        db.exec('CREATE TABLE notes (body TEXT)')
+        db.prepare('INSERT INTO notes VALUES (?)').run(body)
+        db.close()
+      }
+      make(memoryPath, 'kept in the backup')
+      make(join(dir, 'users', 'guest', 'memory.sqlite'), 'the guest store')
+      writeFileSync(join(dir, 'tasks.sqlite'), 'tasks')
+      writeFileSync(elsewhere, 'not under ~/.rivetos')
+
+      await runBackup(parseLocalArgs(['backup']), {
+        home,
+        now: () => new Date('2026-01-02T03:04:05.000Z'),
+      })
+      const read = (path: string): unknown => {
+        const db = new DatabaseSync(path, { readOnly: true })
+        try {
+          return db.prepare('SELECT body FROM notes').get()
+        } finally {
+          db.close()
+        }
+      }
+      const out = join(dir, 'backups', 'memory-2026-01-02T03-04-05.sqlite')
+      expect(statSync(out).mode & 0o777).toBe(0o600)
+      expect(read(out)).toEqual({ body: 'kept in the backup' })
+      // Every other user's file is copied too, beside the owner's.
+      const guestOut = join(dir, 'backups', 'memory-2026-01-02T03-04-05.user-guest.sqlite')
+      expect(statSync(guestOut).mode & 0o777).toBe(0o600)
+      expect(read(guestOut)).toEqual({ body: 'the guest store' })
+      // A second backup to the same path is refused, not overwritten.
+      await expect(
+        runBackup(parseLocalArgs(['backup', '--out', out]), { home, now: () => new Date() }),
+      ).rejects.toThrow(/already exists/)
+
+      const exec = vi.fn(async () => ({ stdout: '', stderr: '', code: 0, timedOut: false }))
+      await runReset(parseLocalArgs(['reset', '--yes']), {
+        home,
+        platform: 'linux',
+        confirm: async () => true,
+        exec,
+      })
+      expect(existsSync(memoryPath)).toBe(false)
+      expect(existsSync(join(dir, 'tasks.sqlite'))).toBe(false)
+      expect(existsSync(join(dir, 'users'))).toBe(false)
+      expect(existsSync(join(dir, 'config.yaml'))).toBe(false)
+      // A store the config keeps outside ~/.rivetos is left alone.
+      expect(existsSync(elsewhere)).toBe(true)
+    } finally {
+      rmSync(home, { recursive: true, force: true })
+    }
+  })
+
   it('runReset refuses to delete while the embedded owner lock is alive', async () => {
     const home = mkdtempSync(join(tmpdir(), 'local-lock-'))
     try {

@@ -773,8 +773,8 @@ users' stores are in-memory too and do not survive a restart. New conversations 
 were written to (`owner_user_id`). With `per_user_files: false` those users get no memory on
 this node at all (nothing stored, nothing read); den still accepts their devices for everything
 that is not memory. `rivetos memory export` / `import` work on one file
-per command and `rivetos local backup` copies the owner's file only: each other user's file is
-exported on its own with `rivetos memory export --sqlite <file>`. If `memory.sqlite`
+per command (each other user's file is exported on its own with `--sqlite <file>`);
+`rivetos local backup` copies the owner's file and every user's. If `memory.sqlite`
 is set, remove or ignore a stale `RIVETOS_PG_URL` in `~/.rivetos/.env` so the MCP sidecar
 does not keep reading an old Postgres store while chat appends write sqlite. The parent
 directory is created mode `0700` and the DB file (plus `-wal`/`-shm`) is `0600`. With this
@@ -804,7 +804,8 @@ memory:
 | `compactor_token_command` | string[] | — | Command that prints a bearer token; wins over the key. |
 | `compactor_timeout_ms` | number | `600000` | Per-request timeout, clamped to 5 seconds – 60 minutes. |
 | `tagging` | boolean | on unless `SESSION_TAGGING=0` | Suggest `key:value` tags for each leaf summary. Needs a summarization endpoint (or the tagger's own). |
-| `tagger_endpoint`, `tagger_model`, `tagger_api_key` | string | `RIVETOS_TAGGER_URL`, `RIVETOS_TAGGER_MODEL`, `RIVETOS_TAGGER_API_KEY` | A separate OpenAI-compatible endpoint for the tagger. Unset: the compactor's. |
+| `tagger_endpoint`, `tagger_model`, `tagger_api_key` | string | `RIVETOS_TAGGER_URL`, `RIVETOS_TAGGER_MODEL`, `RIVETOS_TAGGER_API_KEY` | A separate endpoint for the tagger. Unset: the compactor's. |
+| `tagger_wire_shape` | `openai` \| `native` | `RIVETOS_TAGGER_WIRE_SHAPE` | `openai` (default): a chat endpoint, given the built-in prompt. `native`: a classifier service; `tagger_endpoint` is the URL posted to. |
 | `project_rule` | boolean | `true` | Tag a captured session with `project:<name>` from its working directory's git root. |
 | `per_user_files` | boolean | `true` | Give every other user in the users registry a SQLite file of their own. `false`: those users get no memory on this node. |
 | `users_dir` | string | `users/` beside the owner's file | Where the other users' files go (`<users_dir>/<userId>/memory.sqlite`). |
@@ -838,8 +839,7 @@ an accepted `project:` tag once (a batch from another machine is never resolved 
 host's filesystem). Each leaf summary is sent to the tagger, and its proposals are stored as
 suggestions on the summary and on the session, with new values proposed to the vocabulary; a
 person accepts or rejects them in the hub. A rejected tag is not proposed again for the session
-or summary it was rejected on (a later summary can be offered the same tag). Only the
-OpenAI-compatible chat shape is spoken to the tagger here.
+or summary it was rejected on (a later summary can be offered the same tag).
 
 A node with `memory.sqlite` serves `POST /api/capture` and `/api/memory/*` (search, browse, stats,
 health, tags, and the memory tools the MCP sidecar's den transport calls) from the file, with the

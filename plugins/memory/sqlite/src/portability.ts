@@ -30,6 +30,14 @@ const JSON_COLUMNS: Partial<Record<ExportTable, readonly string[]>> = {
 const BOOLEAN_COLUMNS: Partial<Record<ExportTable, readonly string[]>> = {
   ros_conversations: ['active'],
 }
+/** Summaries written in the window, plus every ancestor of one. Binds the timestamp once. */
+const SELECTED_SUMMARIES_SQL = `
+  WITH RECURSIVE selected(id, parent_id) AS (
+    SELECT id, parent_id FROM ros_summaries WHERE created_at >= ?
+    UNION
+    SELECT p.id, p.parent_id FROM ros_summaries p JOIN selected s ON p.id = s.parent_id
+  ) SELECT id FROM selected`
+
 /** Row timestamp for `--since`. */
 const SINCE_COLUMN: Partial<Record<ExportTable, string>> = {
   ros_conversations: 'updated_at',
@@ -42,9 +50,8 @@ const SINCE_COLUMN: Partial<Record<ExportTable, string>> = {
 
 export interface SqliteExportOptions {
   /**
-   * Only rows written at or after this time, with the conversation they
-   * belong to. A summary's older parent is not pulled in: an incremental
-   * dump is for adding to a store that already has the earlier rows.
+   * Only rows written at or after this time, with what they depend on: the
+   * conversation they belong to, and a summary's chain of parents.
    */
   since?: Date | string
   /** Recorded in the header. */
@@ -132,15 +139,21 @@ export async function exportSqliteMemory(
         const params: SQLInputValue[] = []
         if (since !== undefined) {
           const col = SINCE_COLUMN[table]
-          if (table === 'ros_summary_sources') {
+          if (table === 'ros_summaries') {
+            // A summary in the window travels with its parent chain, so the
+            // tree it belongs to arrives whole.
+            where = ` WHERE t.id IN (${SELECTED_SUMMARIES_SQL})`
+            params.push(since)
+          } else if (table === 'ros_summary_sources') {
             // A link travels with its summary.
-            where = ` WHERE t.summary_id IN (SELECT id FROM ros_summaries WHERE created_at >= ?)`
+            where = ` WHERE t.summary_id IN (${SELECTED_SUMMARIES_SQL})`
             params.push(since)
           } else if (table === 'ros_conversations') {
             // A conversation travels when it changed, or when a row that needs it does.
             where = ` WHERE t.updated_at >= ?
                          OR t.id IN (SELECT conversation_id FROM ros_messages WHERE created_at >= ?)
-                         OR t.id IN (SELECT conversation_id FROM ros_summaries WHERE created_at >= ?)`
+                         OR t.id IN (SELECT conversation_id FROM ros_summaries
+                                      WHERE id IN (${SELECTED_SUMMARIES_SQL}))`
             params.push(since, since, since)
           } else if (col) {
             where = ` WHERE t.${col} >= ?`

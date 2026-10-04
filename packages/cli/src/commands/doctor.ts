@@ -60,7 +60,7 @@ import { sharedDir, sharedPath } from '@rivetos/types'
 import { loadMeshFile } from '../lib/mesh-file.js'
 import { leafCertExpiryCheck, renewHubTargetFromSeed } from '../lib/mesh-enroll.js'
 import { resolveLocalNodeName } from '../lib/node-identity.js'
-import { REQUEUE_ALLOWED_TASKS } from './memory.js'
+import { REQUEUE_ALLOWED_TASKS, resolveSqliteMemoryPath } from './memory.js'
 import {
   HERDR_VERSION,
   herdrBinPath,
@@ -402,7 +402,10 @@ function checkEnvVars(rawConfig: string | null): CheckResult[] {
       // Doctor no longer probes their bot tokens.
 
       const pg = memory.postgres
-      if (pg && pg.embedded !== undefined && pg.embedded !== null) {
+      if (memory.sqlite !== undefined && memory.sqlite !== null) {
+        // A SQLite node has no database URL to require.
+        requirePgUrl = false
+      } else if (pg && pg.embedded !== undefined && pg.embedded !== null) {
         requirePgUrl = false
       } else if (pg && !pg.connection_string) {
         envChecks.push({ name: 'RIVETOS_PG_URL', context: 'memory: postgres' })
@@ -554,6 +557,58 @@ function checkContainers(): CheckResult[] {
 // Check: Memory Backend
 // ---------------------------------------------------------------------------
 
+/**
+ * The SQLite memory file of a node configured with `memory.sqlite`: readable,
+ * passes SQLite's own integrity check, and what it holds. Opened read-only.
+ */
+export async function checkSqliteMemoryFile(path: string): Promise<CheckResult> {
+  if (!existsSync(path)) {
+    return check(
+      'memory',
+      'sqlite',
+      'warn',
+      `SQLite memory: ${path} not created yet — start the node`,
+    )
+  }
+  try {
+    const { DatabaseSync } = await import('node:sqlite')
+    const db = new DatabaseSync(path, { readOnly: true })
+    try {
+      const integrity = db.prepare('PRAGMA quick_check').get() as
+        Record<string, unknown> | undefined
+      const verdict = integrity ? String(Object.values(integrity)[0]) : 'no answer'
+      if (verdict !== 'ok') {
+        return check(
+          'memory',
+          'sqlite',
+          'fail',
+          `SQLite memory: ${path} failed its integrity check (${verdict})`,
+        )
+      }
+      const version = (db.prepare('PRAGMA user_version').get() as { user_version: number })
+        .user_version
+      const messages = (db.prepare('SELECT count(*) AS n FROM ros_messages').get() as { n: number })
+        .n
+      const size = formatBytes(statSync(path).size)
+      return check(
+        'memory',
+        'sqlite',
+        'pass',
+        `SQLite memory: ${path} (${size}, schema v${String(version)}, ${String(messages)} messages)`,
+      )
+    } finally {
+      db.close()
+    }
+  } catch (err) {
+    return check(
+      'memory',
+      'sqlite',
+      'fail',
+      `SQLite memory: ${path} cannot be read — ${(err as Error).message}`,
+    )
+  }
+}
+
 type DoctorPgQuery = (sql: string) => Promise<{ rows: Array<Record<string, unknown>> }>
 
 export async function checkMemoryBackend(): Promise<{
@@ -637,6 +692,11 @@ export async function checkMemoryBackend(): Promise<{
   const pgUrl = process.env.RIVETOS_PG_URL
 
   if (!pgUrl) {
+    const sqlitePath = resolveSqliteMemoryPath(undefined)
+    if (sqlitePath) {
+      results.push(await checkSqliteMemoryFile(sqlitePath))
+      return { results }
+    }
     results.push(check('memory', 'postgres', 'warn', 'Memory backend: RIVETOS_PG_URL not set'))
     return { results }
   }

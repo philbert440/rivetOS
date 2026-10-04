@@ -1,5 +1,10 @@
 import { describe, it, expect, vi } from 'vitest'
-import { checkMemoryQueue, MEMORY_QUEUE_DEAD_SQL, type MemoryQueueDeadRow } from './doctor.js'
+import {
+  checkMemoryQueue,
+  checkSqliteMemoryFile,
+  MEMORY_QUEUE_DEAD_SQL,
+  type MemoryQueueDeadRow,
+} from './doctor.js'
 
 function fakeClient(handler: (sql: string) => Promise<{ rows: MemoryQueueDeadRow[] }>) {
   return {
@@ -211,5 +216,32 @@ describe('doctor memory queue check', () => {
     }))
     const results = await checkMemoryQueue(client)
     expect(results.find((r) => r.name === 'queue-extract-wiki-starved')).toBeUndefined()
+  })
+})
+
+describe('checkSqliteMemoryFile', () => {
+  it('reports a healthy file, a missing one and one that is not a database', async () => {
+    const { mkdtempSync, rmSync, writeFileSync } = await import('node:fs')
+    const { tmpdir } = await import('node:os')
+    const { join } = await import('node:path')
+    const { DatabaseSync } = await import('node:sqlite')
+    const dir = mkdtempSync(join(tmpdir(), 'doctor-sqlite-'))
+    try {
+      const good = join(dir, 'memory.sqlite')
+      const db = new DatabaseSync(good)
+      db.exec("CREATE TABLE ros_messages (id TEXT); INSERT INTO ros_messages VALUES ('m1'); PRAGMA user_version = 6;")
+      db.close()
+      const ok = await checkSqliteMemoryFile(good)
+      expect(ok.status).toBe('pass')
+      expect(ok.message).toMatch(/schema v6, 1 messages/)
+
+      expect((await checkSqliteMemoryFile(join(dir, 'absent.sqlite'))).status).toBe('warn')
+
+      const bad = join(dir, 'bad.sqlite')
+      writeFileSync(bad, 'this is not a database, just text that is long enough to be read as a header')
+      expect((await checkSqliteMemoryFile(bad)).status).toBe('fail')
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
   })
 })

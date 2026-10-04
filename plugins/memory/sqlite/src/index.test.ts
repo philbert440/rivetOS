@@ -573,6 +573,17 @@ describe('resolveTaggingConfig', () => {
         { RIVETOS_TAGGER_URL: 'https://tagger.test/v1', RIVETOS_TAGGER_MODEL: 'tagger-v1' },
       ),
     ).toEqual({ enabled: true, llm: { endpoint: 'https://cfg.test/v1', model: 'cfg', apiKey: 'k' } })
+    // The native shape: the endpoint is a classifier, posted to as given.
+    expect(
+      resolveTaggingConfig(
+        {},
+        {
+          RIVETOS_TAGGER_URL: 'https://tagger.test/tag',
+          RIVETOS_TAGGER_MODEL: 'tagger-v1',
+          RIVETOS_TAGGER_WIRE_SHAPE: 'native',
+        },
+      ),
+    ).toEqual({ enabled: true, native: { url: 'https://tagger.test/tag', model: 'tagger-v1' } })
     // An endpoint without a model falls back to the compactor's.
     expect(resolveTaggingConfig({}, { RIVETOS_TAGGER_URL: 'https://tagger.test/v1' })).toEqual({ enabled: true })
   })

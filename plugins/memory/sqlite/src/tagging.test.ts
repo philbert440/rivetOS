@@ -338,6 +338,45 @@ describe('tag suggestions on the job loop', () => {
     expect(memory.tags().pending(20)).toEqual([])
   })
 
+  it('speaks the native classifier shape: one POST with the summary and the vocabulary', async () => {
+    const chat = fakeChat(() => ({ content: ANSWER }))
+    const posts: Array<{ url: string; body: Record<string, unknown>; auth: string | null }> = []
+    const taggerFetch = vi.fn(async (url: string | URL | Request, init?: RequestInit) => {
+      posts.push({
+        url: String(url),
+        body: JSON.parse(String(init?.body)) as Record<string, unknown>,
+        auth: new Headers(init?.headers).get('authorization'),
+      })
+      return new Response(ANSWER)
+    }) as unknown as typeof globalThis.fetch
+    memory = new SqliteMemory({
+      path: ':memory:',
+      workers: false,
+      log: () => {},
+      projectRule: null,
+      tagging: {
+        enabled: true,
+        native: { url: 'https://classifier.internal/tag', model: 'tagger-v1', apiKey: 'k', fetch: taggerFetch },
+      },
+      compactor: { endpoint: 'https://llm.test/v1', model: 'm', fetch: chat.fetch, sleep: noWait },
+    })
+    memory.vocabulary().upsert({ key: 'topic', value: 'memory-compaction' })
+    await fill(memory, 's1')
+    await drain(memory)
+    expect(posts).toHaveLength(1)
+    expect(posts[0]).toMatchObject({
+      url: 'https://classifier.internal/tag',
+      auth: 'Bearer k',
+      body: { model: 'tagger-v1', keys: ['project', 'topic'], max: 8, vocabulary: ['topic:memory-compaction'] },
+    })
+    expect(String(posts[0].body.text)).toMatch(/^The team reworked the acmeapp deploy scripts/)
+    // The chat prompt was not used for tagging.
+    expect(chat.calls.some((c) => c.system === TAG_SYSTEM_PROMPT)).toBe(false)
+    const pending = memory.tags().pending(20)
+    expect(pending).toHaveLength(4)
+    expect(pending.every((t) => t.proposedBy === 'tagger-v1')).toBe(true)
+  })
+
   it('a failing tagger fails the job and leaves the summary untouched', async () => {
     const chat = fakeChat(() => ({ status: 400 }))
     const logs: string[] = []

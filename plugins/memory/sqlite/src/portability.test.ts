@@ -172,6 +172,32 @@ describe('SQLite memory export / import', () => {
     expect(all.filter((r) => r.t === 'ros_conversations')).toHaveLength(1)
   })
 
+  it('--since carries a recent summary\'s older parents, so the tree arrives whole', async () => {
+    const source = new SqliteMemory({ path: ':memory:', log: () => {} })
+    const target = new SqliteMemory({ path: ':memory:', log: () => {} })
+    open.push(source, target)
+    source.rawForTest(`
+      INSERT INTO ros_conversations (id, session_key, agent, created_at, updated_at)
+        VALUES ('c1', 's1', 'rivet', '2026-01-01T00:00:00.000Z', '2026-01-01T00:00:00.000Z');
+      INSERT INTO ros_summaries (id, conversation_id, parent_id, depth, content, kind, created_at)
+        VALUES ('root', 'c1', NULL, 2, 'the root summary', 'root', '2026-01-02T00:00:00.000Z'),
+               ('branch', 'c1', 'root', 1, 'the branch summary', 'branch', '2026-01-03T00:00:00.000Z'),
+               ('leaf', 'c1', 'branch', 0, 'a recent leaf summary', 'leaf', '2026-06-01T00:00:00.000Z'),
+               ('other', 'c1', NULL, 0, 'an old unrelated leaf', 'leaf', '2026-01-04T00:00:00.000Z');
+    `)
+    const gz = await dump(source, '2026-05-01T00:00:00Z')
+    const rows = lines(gz)
+    const ids = rows.filter((r) => r.t === 'ros_summaries').map((r) => (r.r as { id: string }).id)
+    expect(ids.sort()).toEqual(['branch', 'leaf', 'root'])
+    expect(rows.filter((r) => r.t === 'ros_conversations')).toHaveLength(1)
+
+    const result = await importSqliteMemory(target.database(), Readable.from([gz]))
+    expect(result.inserted.ros_summaries).toBe(3)
+    const tree = target.summariesForConversation('c1')
+    expect(tree.find((t) => t.id === 'leaf')?.parentId).toBe('branch')
+    expect(tree.find((t) => t.id === 'branch')?.parentId).toBe('root')
+  })
+
   it('refuses a file that is not an export, and leaves the store untouched when a row is bad', async () => {
     const target = new SqliteMemory({ path: ':memory:', log: () => {} })
     open.push(target)
