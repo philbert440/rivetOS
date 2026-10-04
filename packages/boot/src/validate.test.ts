@@ -749,6 +749,27 @@ describe('Config Validation', () => {
       assertError(validateConfig(blank), 'memory.sqlite.path', 'must be a non-empty file path')
     })
 
+    it('accepts the memory.sqlite embedding and worker keys', () => {
+      const cfg = validConfig()
+      cfg.memory = {
+        sqlite: {
+          path: 'm.sqlite',
+          embed_endpoint: 'https://embed.internal',
+          embed_model: 'embed-v1',
+          embed_api_key: 'k',
+          embed_token_command: ['printf', 't'],
+          embed_wire_shape: 'native',
+          embed_expected_dims: 1024,
+          embed_timeout_ms: 5000,
+          embed_query_instruction: 'query: ',
+          workers: false,
+        },
+      }
+      const result = validateConfig(cfg)
+      assertValid(result)
+      expect(result.warnings.filter((w) => w.path.startsWith('memory.sqlite'))).toEqual([])
+    })
+
     it('warns on unknown memory.sqlite keys', () => {
       const cfg = validConfig()
       cfg.memory = { sqlite: { path: 'm.sqlite', wal: false } }

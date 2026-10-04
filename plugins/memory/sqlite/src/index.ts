@@ -142,7 +142,10 @@ export async function resolveEmbedConfig(
   if (expected !== undefined) out.expectedDims = expected
   const timeout = num(cfg.embed_timeout_ms) ?? num(env.RIVETOS_EMBED_TIMEOUT_MS)
   if (timeout !== undefined) out.timeoutMs = timeout
-  const instruction = str(cfg.embed_query_instruction) ?? str(env.RIVETOS_EMBED_QUERY_INSTRUCTION)
-  if (instruction) out.queryInstruction = instruction
+  // Not trimmed: a prefix like "query: " needs its trailing space.
+  const rawInstruction = cfg.embed_query_instruction ?? env.RIVETOS_EMBED_QUERY_INSTRUCTION
+  if (typeof rawInstruction === 'string' && rawInstruction.trim() !== '') {
+    out.queryInstruction = rawInstruction
+  }
   return out
 }
