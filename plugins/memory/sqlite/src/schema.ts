@@ -4,15 +4,15 @@
  * Mirrors the postgres ros_conversations / ros_messages shape with TEXT
  * stand-ins for UUID/JSONB/timestamptz. FTS5 indexes content + tool_result
  * and stays in sync via AFTER INSERT/UPDATE/DELETE triggers on ros_messages.
- * ros_embed_queue is written on append for a later drain worker; phase 1
- * never reads it.
+ * Embedding work is queued in ros_jobs and drained by the in-process runner
+ * (jobs.ts); vectors are stored on the row (vectors.ts).
  *
  * SCHEMA_VERSION is stamped with PRAGMA user_version after apply. Bump it
  * when adding columns/tables and extend migrateSchema()'s switch.
  */
 
 /** Current on-disk schema version. Bump when the DDL changes. */
-export const SCHEMA_VERSION = 2
+export const SCHEMA_VERSION = 3
 
 export const SCHEMA = `
 CREATE TABLE IF NOT EXISTS ros_conversations (
@@ -52,7 +52,12 @@ CREATE TABLE IF NOT EXISTS ros_messages (
     access_count      INTEGER NOT NULL DEFAULT 0,
     last_accessed_at  TEXT,
     created_at        TEXT NOT NULL,
-    embed_status      TEXT
+    embed_status      TEXT,
+    -- v3: the vector itself (little-endian float32, L2-normalized) and why
+    -- the last attempt failed. See vectors.ts / embed.ts.
+    embedding         BLOB,
+    embed_error       TEXT,
+    embed_failures    INTEGER NOT NULL DEFAULT 0
 );
 CREATE INDEX IF NOT EXISTS idx_ros_messages_conversation
     ON ros_messages (conversation_id, created_at);
@@ -81,6 +86,35 @@ CREATE TRIGGER IF NOT EXISTS ros_messages_au AFTER UPDATE OF content, tool_resul
   VALUES (new.id, new.content, coalesce(new.tool_result, ''));
 END;
 
+-- v3: the in-process job queue (jobs.ts). One row per pending unit of work;
+-- job_key dedupes ("embed this row" is queued once). A finished job is
+-- deleted, a job out of attempts stays as 'dead'.
+CREATE TABLE IF NOT EXISTS ros_jobs (
+    id            TEXT PRIMARY KEY NOT NULL,
+    task          TEXT NOT NULL,
+    job_key       TEXT UNIQUE,
+    payload       TEXT NOT NULL DEFAULT 'null',
+    run_at        TEXT NOT NULL,
+    attempts      INTEGER NOT NULL DEFAULT 0,
+    max_attempts  INTEGER NOT NULL DEFAULT 5,
+    state         TEXT NOT NULL DEFAULT 'queued' CHECK (state IN ('queued', 'running', 'dead')),
+    last_error    TEXT,
+    locked_at     TEXT,
+    created_at    TEXT NOT NULL,
+    updated_at    TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_ros_jobs_due
+    ON ros_jobs (state, run_at);
+
+-- v3: small key/value facts about the store (which embedding model wrote the
+-- vectors, and how wide they are).
+CREATE TABLE IF NOT EXISTS ros_meta (
+    key    TEXT PRIMARY KEY NOT NULL,
+    value  TEXT NOT NULL
+);
+
+-- Phase-1 queue, superseded by ros_jobs in v3. Kept so a v1/v2 file opens;
+-- its rows are moved into ros_jobs by the v2 → v3 migration.
 CREATE TABLE IF NOT EXISTS ros_embed_queue (
     id          TEXT PRIMARY KEY,
     message_id  TEXT NOT NULL UNIQUE REFERENCES ros_messages(id) ON DELETE CASCADE,

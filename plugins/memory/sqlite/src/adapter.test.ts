@@ -375,16 +375,17 @@ describe('SqliteMemory Memory contract', () => {
     expect(hits.length).toBe(1)
   })
 
-  it('enqueues embed work on append without requiring an embedder', async () => {
+  it('queues no embed work without an embedding endpoint (nothing to pile up)', async () => {
     const memory = memStore()
     const id = await memory.append({
-      sessionId: 'embed-q',
-      agent: 'grok',
-      channel: 'test',
+      sessionId: 's1',
+      agent: 'rivet',
+      channel: 'cli',
       role: 'user',
-      content: 'queue me',
+      content: 'no embedder configured',
     })
-    expect(memory.hasEmbedQueueEntryForTest(id)).toBe(true)
+    expect(memory.hasEmbedQueueEntryForTest(id)).toBe(false)
+    expect(memory.jobs().counts()).toEqual([])
   })
 })
 
@@ -393,10 +394,19 @@ describe('schema upgrade v1 → v2 (tag tables)', () => {
     const dir = mkdtempSync(join(tmpdir(), 'ros-mem-v1-'))
     const file = join(dir, 'memory.sqlite')
     try {
-      // A v1 database: today's DDL minus the v2 tables, stamped user_version = 1.
+      // A v1 database: today's DDL minus everything later versions added
+      // (v2 tag tables; v3 job/meta tables and the vector columns), stamped
+      // user_version = 1, so the upgrade path really has work to do.
       const v1 = new DatabaseSync(file)
-      v1.exec(SCHEMA)
+      // ros_messages as it was before v3: no vector columns.
+      const v1Schema = SCHEMA.replace(
+        /embed_status {6}TEXT,\n(?: {4}--[^\n]*\n)* {4}embedding[^\n]*\n {4}embed_error[^\n]*\n {4}embed_failures[^\n]*\n/,
+        'embed_status      TEXT\n',
+      )
+      expect(v1Schema).not.toMatch(/embed_failures/)
+      v1.exec(v1Schema)
       v1.exec('DROP TABLE ros_tags; DROP TABLE ros_tag_taxonomy;')
+      v1.exec('DROP TABLE ros_jobs; DROP TABLE ros_meta;')
       v1.exec('PRAGMA user_version = 1')
       v1.prepare(
         `INSERT INTO ros_conversations (id, session_key, agent, created_at, updated_at)
@@ -416,6 +426,21 @@ describe('schema upgrade v1 → v2 (tag tables)', () => {
           .all() as Array<{ name: string }>
       ).map((r) => r.name)
       expect(tables.sort()).toEqual(['ros_tag_taxonomy', 'ros_tags'])
+      const later = (
+        after
+          .prepare(`SELECT name FROM sqlite_master WHERE type = 'table' AND name IN ('ros_jobs', 'ros_meta')`)
+          .all() as Array<{ name: string }>
+      ).map((r) => r.name)
+      expect(later.sort()).toEqual(['ros_jobs', 'ros_meta'])
+      expect(
+        after
+          .prepare(`SELECT name FROM sqlite_master WHERE type = 'index' AND name = 'idx_ros_messages_unembedded'`)
+          .get(),
+      ).toBeDefined()
+      const columns = (after.prepare('PRAGMA table_info(ros_messages)').all() as Array<{ name: string }>).map(
+        (c) => c.name,
+      )
+      expect(columns).toEqual(expect.arrayContaining(['embedding', 'embed_error', 'embed_failures']))
       const kept = after.prepare(`SELECT session_key FROM ros_conversations WHERE id = 'c-v1'`).get() as
         | { session_key: string }
         | undefined

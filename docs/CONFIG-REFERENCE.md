@@ -759,9 +759,12 @@ Day-2 commands (no extra daemon):
 
 Presence of `memory.sqlite` registers the `@rivetos/memory-sqlite` plugin. No Postgres or
 PGlite process is required for the in-process `Memory` path (chat append, session/task
-history, settings, FTS5 search). HTTP `/api/capture` and memory HTTP/MCP routes still need
-a Postgres pool in phase 1 — the memory MCP sidecar has no sqlite path yet. Vectors,
-compaction, wiki, and multi-user routing come later. Phase 1 is single-user: one file holds
+history, settings, search). HTTP `/api/capture` and memory HTTP/MCP routes still need
+a Postgres pool — the memory MCP sidecar has no sqlite path yet. Compaction, wiki, and
+multi-user routing come later. With an embedding endpoint set, messages are embedded in the
+background by a job loop inside the runtime (no worker service), vectors are stored in the
+file, and search fuses full-text, a literal-match arm and a vector arm with the same ranking
+policy as Postgres; without one, search is full-text only. Single-user: one file holds
 all transcripts; routed users in the tenancy registry are not isolated. If `memory.sqlite`
 is set, remove or ignore a stale `RIVETOS_PG_URL` in `~/.rivetos/.env` so the MCP sidecar
 does not keep reading an old Postgres store while chat appends write sqlite. The parent
@@ -777,10 +780,21 @@ memory:
 | Key    | Type   | Default | Description                                                                        |
 | ------ | ------ | ------- | ---------------------------------------------------------------------------------- |
 | `path` | string | —       | Required. File path (`~` expanded) or `:memory:`. Relative paths are cwd-relative. |
+| `embed_endpoint` | string | `RIVETOS_EMBED_URL` | Embedding endpoint. Set → background embedding + vector search. Unset → full-text only; nothing is queued, and rows written meanwhile are embedded by a sweep once an endpoint is set. |
+| `embed_model` | string | `RIVETOS_EMBED_MODEL` | Required with an endpoint. Changing it clears the stored vectors and re-embeds (in the process that runs the job loop): vectors from different models are not comparable. |
+| `embed_api_key` | string | `RIVETOS_EMBED_API_KEY` | Bearer key. No fallback to any other provider key. |
+| `embed_token_command` | string[] | `RIVETOS_EMBED_TOKEN_COMMAND` (JSON argv) | Command that prints a bearer token; wins over the key. |
+| `embed_token_ttl_ms` | number | — | How long a minted token is reused before the command runs again. |
+| `embed_wire_shape` | `openai` \| `native` | `RIVETOS_EMBED_WIRE_SHAPE`, else `openai` | Request shape, as for Postgres. |
+| `embed_expected_dims` | number | `RIVETOS_EMBED_EXPECTED_DIMS` | Require exactly this vector width. Unset: vectors longer than 1024 are truncated to 1024. A store keeps one width: a vector of another width fails its job unless this key names the new width, in which case the stored vectors are cleared and re-embedded. |
+| `embed_timeout_ms` | number | `RIVETOS_EMBED_TIMEOUT_MS`, else 8000 | Per-request timeout, clamped to 500–60000. |
+| `embed_query_instruction` | string | `RIVETOS_EMBED_QUERY_INSTRUCTION`, else the same default as Postgres | Prefix for search queries. Empty string disables. |
+| `workers` | boolean | `true` when an endpoint is set | Run the in-process job loop. `false` queues work without draining it, and a model change is not applied on open: stored vectors are cleared only by a process that runs the job loop (or calls `runJobs()`). |
 
-The file is opened with WAL, a 5s busy timeout, and foreign keys on. Search is FTS5 only
-until an embedding drain lands; append still enqueues `ros_embed_queue` rows for that
-later worker.
+The file is opened with WAL, a 5s busy timeout, and foreign keys on. Without an embedding
+endpoint search is FTS5 only and no embedding work is queued; rows written meanwhile are
+embedded once an endpoint is configured. Embedding jobs retry with backoff; a job that runs
+out of attempts during an outage is revived by a ten-minute sweep.
 
 ---
 

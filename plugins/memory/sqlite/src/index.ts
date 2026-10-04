@@ -7,6 +7,7 @@
 
 export {
   SqliteMemory,
+  EMBED_TARGET_TASK,
   resolveSqlitePath,
   buildFtsMatchQuery,
   relevanceFromBm25,
@@ -17,6 +18,12 @@ export {
 export type { SqliteMemoryConfig } from './adapter.js'
 export { SCHEMA, SCHEMA_VERSION } from './schema.js'
 export { SqliteTagStore } from './tags.js'
+export { SqliteJobQueue, JobRunner, retryDelayMs } from './jobs.js'
+export type { Job, JobHandler, EnqueueOptions, Sweep } from './jobs.js'
+export { EmbedClient } from './embed.js'
+export type { EmbedConfig, EmbedOutcome } from './embed.js'
+export { ExactScanIndex, encodeVector, decodeVector } from './vectors.js'
+export type { VectorIndex, VectorHit, VectorFilter } from './vectors.js'
 export type {
   SqliteAddTagInput,
   SqliteListTagsOptions,
@@ -28,24 +35,43 @@ import { homedir } from 'node:os'
 import type { PluginManifest } from '@rivetos/types'
 import { loadUsersRegistry } from '@rivetos/types'
 import { SqliteMemory, resolveSqlitePath } from './adapter.js'
+import { clampEmbedTimeoutMs } from '@rivetos/memory-core'
+import type { EmbedConfig } from './embed.js'
 
 export const manifest: PluginManifest = {
   type: 'memory',
   name: 'sqlite',
-  register(ctx) {
+  async register(ctx) {
     const cfg = ctx.pluginConfig ?? {}
     const rawPath = typeof cfg.path === 'string' ? cfg.path.trim() : ''
     if (!rawPath) {
       ctx.logger.warn('memory.sqlite.path is missing — sqlite memory not registered')
-      return Promise.resolve()
+      return
     }
 
     const path = resolveSqlitePath(rawPath)
-    const memory = new SqliteMemory({ path })
+    const embed = await resolveEmbedConfig(cfg, ctx.env, (line) => {
+      ctx.logger.warn(line)
+    })
+    const memory = new SqliteMemory({
+      path,
+      ...(embed ? { embed } : {}),
+      ...(typeof cfg.workers === 'boolean' ? { workers: cfg.workers } : {}),
+      log: (line) => {
+        ctx.logger.warn(line)
+      },
+    })
     ctx.registerMemory(memory)
-    ctx.registerShutdown(() => {
+    ctx.registerShutdown(async () => {
+      await memory.stopWorkers()
       memory.close()
     })
+    if (embed) {
+      ctx.logger.info(
+        `sqlite memory: embedding with ${embed.model}, vector search on` +
+          (cfg.workers === false ? ' (workers off: rows are queued, not embedded)' : ''),
+      )
+    }
 
     const display =
       path === ':memory:'
@@ -70,7 +96,70 @@ export const manifest: PluginManifest = {
     } catch {
       // registry load failures are unrelated to opening the store
     }
-
-    return Promise.resolve()
   },
+}
+
+/**
+ * Embedding settings, config first then environment — the same keys and
+ * variables the Postgres backend reads, under `memory.sqlite`. Returns
+ * undefined when no endpoint is configured (full-text search only).
+ */
+export async function resolveEmbedConfig(
+  cfg: Record<string, unknown>,
+  env: Record<string, string | undefined>,
+  warn: (line: string) => void,
+): Promise<EmbedConfig | undefined> {
+  const str = (v: unknown): string | undefined =>
+    typeof v === 'string' && v.trim() !== '' ? v.trim() : undefined
+  const endpoint = str(cfg.embed_endpoint) ?? str(env.RIVETOS_EMBED_URL)
+  if (!endpoint) return undefined
+  const model = str(cfg.embed_model) ?? str(env.RIVETOS_EMBED_MODEL)
+  if (!model) {
+    throw new Error(
+      'RIVETOS_EMBED_MODEL (or memory.sqlite.embed_model) is required when an embedding URL is set',
+    )
+  }
+  const { createTokenSource, parseTokenCommandArgv, parseEmbedWireShape } =
+    await import('@rivetos/token-command')
+  const wire = parseEmbedWireShape(str(cfg.embed_wire_shape) ?? str(env.RIVETOS_EMBED_WIRE_SHAPE))
+  if (typeof wire === 'object') warn(`memory.sqlite.embed_wire_shape: ${wire.error}`)
+  // Config value (an argv array), else the worker's variable (a JSON argv string).
+  let rawArgv: unknown = cfg.embed_token_command
+  if (rawArgv === undefined && str(env.RIVETOS_EMBED_TOKEN_COMMAND)) {
+    try {
+      rawArgv = JSON.parse(env.RIVETOS_EMBED_TOKEN_COMMAND ?? '') as unknown
+    } catch {
+      warn('RIVETOS_EMBED_TOKEN_COMMAND must be a JSON argv array (no shell string)')
+    }
+  }
+  const argv = parseTokenCommandArgv(rawArgv)
+  if (typeof argv === 'string') warn(`memory.sqlite.embed_token_command: ${argv}`)
+  const num = (v: unknown): number | undefined => {
+    const n = typeof v === 'number' ? v : typeof v === 'string' ? Number(v) : Number.NaN
+    return Number.isFinite(n) && n > 0 ? n : undefined
+  }
+  const out: EmbedConfig = {
+    endpoint,
+    model,
+    wireShape: typeof wire === 'object' ? 'openai' : wire,
+  }
+  // Opt-in only: no fallback to a general provider key, which would send that
+  // credential to whatever endpoint is configured here.
+  const apiKey = str(cfg.embed_api_key) ?? str(env.RIVETOS_EMBED_API_KEY)
+  if (apiKey) out.apiKey = apiKey
+  if (Array.isArray(argv)) {
+    const ttlMs = num(cfg.embed_token_ttl_ms)
+    out.tokenSource = createTokenSource({ argv, ...(ttlMs !== undefined ? { ttlMs } : {}) })
+  }
+  const expected = num(cfg.embed_expected_dims) ?? num(env.RIVETOS_EMBED_EXPECTED_DIMS)
+  if (expected !== undefined) out.expectedDims = expected
+  // Clamped to the same 500 ms – 60 s range as the Postgres backend.
+  const timeout = cfg.embed_timeout_ms ?? env.RIVETOS_EMBED_TIMEOUT_MS
+  if (timeout !== undefined) out.timeoutMs = clampEmbedTimeoutMs(timeout)
+  // Not trimmed: a prefix like "query: " needs its trailing space.
+  const rawInstruction = cfg.embed_query_instruction ?? env.RIVETOS_EMBED_QUERY_INSTRUCTION
+  // Any string is passed through, the empty one included: "" turns the prefix
+  // off. Unset leaves the client's default (the same instruction as Postgres).
+  if (typeof rawInstruction === 'string') out.queryInstruction = rawInstruction
+  return out
 }

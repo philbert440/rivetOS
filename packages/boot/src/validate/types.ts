@@ -441,7 +441,19 @@ export const KNOWN_MEMORY_EMBEDDED_KEYS = new Set([
 ])
 
 /** `memory.sqlite` — file-backed Memory backend (phase 1: WAL + FTS5). */
-export const KNOWN_MEMORY_SQLITE_KEYS = new Set(['path'])
+export const KNOWN_MEMORY_SQLITE_KEYS = new Set([
+  'path',
+  'embed_endpoint',
+  'embed_model',
+  'embed_api_key',
+  'embed_token_command',
+  'embed_token_ttl_ms',
+  'embed_wire_shape',
+  'embed_expected_dims',
+  'embed_timeout_ms',
+  'embed_query_instruction',
+  'workers',
+])
 
 /** Backends with a known plugin under `plugins/memory/<name>`. */
 export const KNOWN_MEMORY_BACKENDS = new Set(['postgres', 'sqlite'])
