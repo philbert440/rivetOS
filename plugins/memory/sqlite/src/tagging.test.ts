@@ -294,6 +294,11 @@ describe('tag suggestions on the job loop', () => {
     ])
     const browse = await memory.backend().browse({ tag: 'project:acmeapp', limit: 5 })
     expect(browse.messages).toHaveLength(5)
+    // The hits carry the tag that selected them, though it sits on a summary.
+    expect(browse.messages[0].tags).toEqual(['project:AcmeApp'])
+    const hits = await memory.backend().search('acmeapp', { scope: 'messages', limit: 3, tag: 'project:acmeapp' })
+    expect(hits.results.length).toBeGreaterThan(0)
+    expect(hits.results[0].tags).toEqual(['project:AcmeApp'])
   })
 
   it('a rejected tag is not proposed again, and tagging off proposes nothing', async () => {

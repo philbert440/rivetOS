@@ -826,7 +826,8 @@ Tagging works as on Postgres. A captured session whose `settings.cwd` sits in a 
 an accepted `project:` tag once (a batch from another machine is never resolved against this
 host's filesystem). Each leaf summary is sent to the tagger, and its proposals are stored as
 suggestions on the summary and on the session, with new values proposed to the vocabulary; a
-person accepts or rejects them in the hub. A rejected tag is not proposed again. Only the
+person accepts or rejects them in the hub. A rejected tag is not proposed again for the session
+or summary it was rejected on (a later summary can be offered the same tag). Only the
 OpenAI-compatible chat shape is spoken to the tagger here.
 
 A node with `memory.sqlite` serves `POST /api/capture` and `/api/memory/*` (search, browse, stats,

@@ -310,6 +310,16 @@ describe('SqliteBackend', () => {
       )
       expect(await memory.tags().list({})).toEqual([])
       expect(JSON.parse(String(await agentTags?.execute({ action: 'list' }))) as object).toEqual({ tags: [] })
+      // The vocabulary is not the agent's to edit either.
+      for (const action of ['taxonomy_upsert', 'taxonomy_decide', 'taxonomy_merge']) {
+        expect(
+          String(await agentTags?.execute({ action, key: 'project', value: 'x', from: 'a', into: 'b' })),
+        ).toMatch(/not available to the agent/)
+      }
+      expect(memory.vocabulary().list({ states: ['suggested', 'accepted', 'rejected'] })).toEqual([])
+      expect(JSON.parse(String(await agentTags?.execute({ action: 'taxonomy' }))) as object).toEqual({
+        entries: [],
+      })
     })
 
     it('memory_search lists hits with ids, and memory_get_full returns the record behind one', async () => {
@@ -436,7 +446,7 @@ describe('SqliteBackend', () => {
       }
     })
 
-    it('memory_tags reads and writes tags and refuses vocabulary edits', async () => {
+    it('the HTTP memory_tags tool reads and writes tags and validates vocabulary edits', async () => {
       const tags = tool('memory_tags')
       const added = JSON.parse(
         String(await tags.execute({ action: 'add', entity_type: 'conversation', session_key: 'sess-1', tag: 'project:acmeapp' })),

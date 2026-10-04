@@ -28,6 +28,7 @@ import {
   reciprocalRankFusion,
   shouldTrigramFallback,
   temporalDecay,
+  TAG_LLM_RETRIES,
 } from '@rivetos/memory-core'
 import type { ProjectResolver } from '@rivetos/memory-core'
 import { SqliteBackend } from './backend.js'
@@ -391,7 +392,9 @@ export class SqliteMemory implements Memory {
     if (taggerLlmConfig) {
       const tagger = new SqliteTagger(
         this.db,
-        new LlmClient({ maxRetries: 1, timeoutMs: 60_000, ...taggerLlmConfig }),
+        // The tagger's own budget, whichever endpoint it borrows: a short call,
+        // retried once.
+        new LlmClient({ ...taggerLlmConfig, maxRetries: TAG_LLM_RETRIES, timeoutMs: 60_000 }),
         this.jobQueue,
         () => this.tags(),
         this.vocabularyStore,

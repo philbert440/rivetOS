@@ -470,11 +470,41 @@ export class SqliteBackend implements MemoryBackend {
   private acceptedTags(conversationIds: Array<string | null | undefined>): Map<string, string[]> {
     const out = new Map<string, string[]>()
     const ids = [...new Set(conversationIds.filter((id): id is string => Boolean(id)))]
-    for (const id of ids) {
-      const tags = this.host
-        .tags()
-        .list({ entityType: 'conversation', entityId: id, states: ['accepted'] })
-      if (tags.length > 0) out.set(id, tags.map(formatTag))
+    // A tag on the session or on any of its summaries: the definition the
+    // tag filter and the counts use, so a hit shows the tag that selected it.
+    for (let i = 0; i < ids.length; i += 500) {
+      const chunk = ids.slice(i, i + 500)
+      const marks = placeholders(chunk.length)
+      const rows = this.db
+        .prepare(
+          `SELECT conversation_id, key, value, display FROM (
+             SELECT t.entity_id AS conversation_id, t.key, t.value, t.display, t.created_at
+               FROM ros_tags t
+              WHERE t.entity_type = 'conversation' AND t.state = 'accepted'
+                AND t.entity_id IN (${marks})
+             UNION ALL
+             SELECT s.conversation_id, t.key, t.value, t.display, t.created_at
+               FROM ros_tags t
+               JOIN ros_summaries s ON t.entity_type = 'summary' AND s.id = t.entity_id
+              WHERE t.state = 'accepted' AND s.conversation_id IN (${marks})
+           )
+           ORDER BY conversation_id, key, value, created_at`,
+        )
+        .all(...chunk, ...chunk) as unknown as Array<{
+        conversation_id: string
+        key: string
+        value: string
+        display: string
+      }>
+      const seen = new Set<string>()
+      for (const r of rows) {
+        const id = `${r.conversation_id}\0${r.key}:${r.value}`
+        if (seen.has(id)) continue
+        seen.add(id)
+        const list = out.get(r.conversation_id) ?? []
+        list.push(formatTag(r))
+        out.set(r.conversation_id, list)
+      }
     }
     return out
   }
@@ -1064,8 +1094,9 @@ export class SqliteBackend implements MemoryBackend {
   private tagsTool(allowWrite: boolean): Tool {
     return {
       name: 'memory_tags',
-      description:
-        'Read and decide session tags: list, pending, counts, add, decide, lookup, taxonomy.',
+      description: allowWrite
+        ? 'Read and decide session tags: list, pending, counts, add, decide, lookup, taxonomy and its edits.'
+        : 'Read session tags: list, pending, counts, lookup, taxonomy. Read-only: adding and deciding tags, and editing the vocabulary, is done by a person.',
       parameters: {
         type: 'object',
         properties: {

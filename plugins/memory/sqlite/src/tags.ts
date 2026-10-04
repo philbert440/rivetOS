@@ -5,9 +5,10 @@
  * first-seen casing, a decision never deletes (accept/reject flips `state`
  * and stamps who/when), and a rejected row blocks re-suggestion.
  *
- * Scope follows the backend's phase: conversations only have tags to show
- * (a `summary` tag is stored, but nothing joins it to ros_summaries yet), and the vocabulary (ros_tag_taxonomy) is not edited
- * through this store. node:sqlite is synchronous, so is this.
+ * Tags sit on conversations and on summaries; a summary's tag counts for its
+ * conversation in filters, counts and the review queue. The vocabulary
+ * (ros_tag_taxonomy) is in tag-vocabulary.ts. node:sqlite is synchronous, so
+ * is this.
  */
 
 import { randomUUID } from 'node:crypto'
