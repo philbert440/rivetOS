@@ -38,13 +38,13 @@ fun looksLikePairingCode(text: String): Boolean {
 
 /**
  * The pairing link a launch intent carries, or null. Only a
- * `rivethub://pair?…` VIEW counts. Anything else another app or a web page
+ * `rivethub://pair?…` VIEW counts ([isView]: the intent's action is VIEW). Anything else another app or a web page
  * hands the activity (raw JSON, some other URI that merely mentions a
  * pairing code) is not a pairing request: raw JSON is read by this app's own
  * scanner and nowhere else.
  */
-fun pairingLinkFromIntent(action: String?, data: String?): String? {
-    if (action != "android.intent.action.VIEW") return null
+fun pairingLinkFromIntent(isView: Boolean, data: String?): String? {
+    if (!isView) return null
     val text = data?.trim().orEmpty()
     if (!text.startsWith("rivethub://pair?", ignoreCase = true)) return null
     return text

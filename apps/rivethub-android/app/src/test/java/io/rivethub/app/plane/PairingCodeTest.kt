@@ -84,9 +84,8 @@ class PairingCodeTest {
 
     @Test fun `only a rivethub pair link is taken from a launch intent`() {
         val link = "rivethub://pair?d=abc"
-        assertEquals(link, pairingLinkFromIntent("android.intent.action.VIEW", " $link "))
-        val view = "android.intent.action.VIEW"
-        assertEquals("RIVETHUB://PAIR?d=abc", pairingLinkFromIntent(view, "RIVETHUB://PAIR?d=abc"))
+        assertEquals(link, pairingLinkFromIntent(true, " $link "))
+        assertEquals("RIVETHUB://PAIR?d=abc", pairingLinkFromIntent(true, "RIVETHUB://PAIR?d=abc"))
         // Raw JSON, other schemes, other hosts and other actions are not pairing requests.
         val notLinks: List<String?> = listOf(
             qr(),
@@ -97,9 +96,9 @@ class PairingCodeTest {
             "",
             null,
         )
-        for (data in notLinks) assertEquals(null, pairingLinkFromIntent(view, data))
-        assertEquals(null, pairingLinkFromIntent("android.intent.action.SEND", link))
-        assertEquals(null, pairingLinkFromIntent(null, link))
+        for (data in notLinks) assertEquals(null, pairingLinkFromIntent(true, data))
+        // An intent that is not a VIEW carries no pairing request, whatever its data.
+        assertEquals(null, pairingLinkFromIntent(false, link))
     }
 
     @Test fun `the confirmation names the computer by host and port`() {

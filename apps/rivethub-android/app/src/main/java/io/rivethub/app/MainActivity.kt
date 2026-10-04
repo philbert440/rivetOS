@@ -195,7 +195,8 @@ class MainActivity : ComponentActivity() {
     private fun readPairing(intent: android.content.Intent?) {
         // Only a rivethub://pair link. It opens the Enroll screen, which asks
         // before it pairs: a link can come from any app or web page.
-        val text = pairingLinkFromIntent(intent?.action, intent?.dataString) ?: return
+        val isView = intent?.action == android.content.Intent.ACTION_VIEW
+        val text = pairingLinkFromIntent(isView, intent?.dataString) ?: return
         if (text == consumedPairing) return
         pendingPairing = text
     }
