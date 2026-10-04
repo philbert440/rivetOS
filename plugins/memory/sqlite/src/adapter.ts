@@ -919,10 +919,15 @@ export class SqliteMemory implements Memory {
    * (worker start, or the first `runJobs()`).
    */
   reconcileEmbedStore(): void {
+    this.assertOpen()
     if (this.embedStoreReconciled || !this.embedClient) return
+    const model = this.embedClient.model
+    // One transaction: a failure leaves the store as it was, to try again.
+    this.tx(() => {
+      this.noteEmbedModel(model)
+      this.adoptEmbedDims()
+    })
     this.embedStoreReconciled = true
-    this.noteEmbedModel(this.embedClient.model)
-    this.adoptEmbedDims()
   }
 
   private warnOnForeignModel(model: string): void {
@@ -1025,6 +1030,8 @@ export class SqliteMemory implements Memory {
             WHERE embedding IS NOT NULL AND length(embedding) <> ?`,
         )
         .run(dims * 4)
+      // The index may already hold the rows that were just reset.
+      this.vectorIndex.invalidate()
       this.log(
         `[memory.sqlite] ${String(reset.changes)} stored vector(s) were not ${String(dims)} wide and will be re-embedded`,
       )

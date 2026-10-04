@@ -228,6 +228,7 @@ export class JobRunner {
   private timer: ReturnType<typeof setInterval> | undefined
   private busy = false
   private halted = false
+  private recovered = false
   private readonly log: (line: string) => void
   private readonly now: () => Date
 
@@ -249,6 +250,7 @@ export class JobRunner {
 
   start(): void {
     if (this.timer) return
+    this.recovered = true
     const recovered = this.queue.recoverRunning()
     if (recovered > 0) this.log(`[sqlite-jobs] ${String(recovered)} interrupted job(s) requeued`)
     this.timer = setInterval(() => {
@@ -287,6 +289,16 @@ export class JobRunner {
   async tick(): Promise<number> {
     if (this.busy || this.halted) return 0
     this.busy = true
+    // A process that drains by hand (no timer) still has to pick up jobs a
+    // crash left `running`. Once: later ticks would requeue their own work.
+    if (!this.timer && !this.recovered) {
+      this.recovered = true
+      try {
+        this.queue.recoverRunning()
+      } catch (err) {
+        this.log(`[sqlite-jobs] recovering interrupted jobs failed: ${message(err)}`)
+      }
+    }
     let ran = 0
     try {
       const nowMs = this.now().getTime()
