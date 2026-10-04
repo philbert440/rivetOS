@@ -21,6 +21,7 @@ import { GatewayError } from '@rivetos/gateway-client'
 import { useConnection } from '../stores/connection.js'
 import { useIsNarrow } from '../lib/use-narrow.js'
 import { joinRel } from '../lib/files-ui.js'
+import { useWorkflowDirtyGuard } from '../lib/workflow-dirty-guard.js'
 import { NotConnected, useGatewayReady } from '../components/not-connected.js'
 import { SegmentedControl } from '../components/segmented-control.js'
 import { useConfirmDialog } from '../components/confirm-dialog.js'
@@ -217,22 +218,21 @@ export function WorkflowTriggerPage(): JSX.Element {
   const [submitting, setSubmitting] = useState(false)
   /** Run | Edit — Edit only when the def exposes editPath (under files root). */
   const [pageMode, setPageMode] = useState<'run' | 'edit'>('run')
-  /** Unsaved-edit tracking from the edit panel — guards leaving edit mode. */
-  const editDirtyRef = useRef(false)
-  const discardDialog = useConfirmDialog()
+  const {
+    markDirty: setEditDirty,
+    confirmDiscard: confirmEditDiscard,
+    isDirty: editIsDirty,
+  } = useWorkflowDirtyGuard()
   const switchMode = useCallback(
     async (next: 'run' | 'edit') => {
       // Clicking the already-active chip must be a pure no-op — clearing the
       // dirty ref here would disarm the guard without any re-render to
       // re-report dirty (same-value setState bails).
       if (next === pageMode) return
-      if (editDirtyRef.current && !(await discardDialog.confirm('Discard unsaved changes?'))) {
-        return
-      }
-      editDirtyRef.current = false
+      if (!(await confirmEditDiscard())) return
       setPageMode(next)
     },
-    [pageMode, discardDialog.confirm],
+    [pageMode, confirmEditDiscard],
   )
 
   const fields: WorkflowField[] = def.data?.workflow.input ?? []
@@ -311,12 +311,19 @@ export function WorkflowTriggerPage(): JSX.Element {
           : `mx-auto px-4 py-8 md:px-6 ${pageMode === 'edit' ? 'max-w-5xl' : 'max-w-3xl'}`
       }
     >
-      {discardDialog.element}
       {!runWithCanvas && (
         <div className="mb-4 flex flex-wrap items-center justify-between gap-2">
           <Link
             to="/workflows"
             className="font-mono text-[11px] text-ink-dim hover:text-em hover:underline"
+            onClick={(e) => {
+              if (editIsDirty()) return
+              e.preventDefault()
+              void (async () => {
+                if (!(await confirmEditDiscard())) return
+                void navigate({ to: '/workflows' })
+              })()
+            }}
           >
             ← workflows
           </Link>
@@ -356,9 +363,7 @@ export function WorkflowTriggerPage(): JSX.Element {
             key={editPath}
             workflowId={workflowId}
             editPath={editPath}
-            onDirtyChange={(d) => {
-              editDirtyRef.current = d
-            }}
+            onDirtyChange={setEditDirty}
           />
         </>
       )}
@@ -391,18 +396,10 @@ export function WorkflowTriggerPage(): JSX.Element {
             input={def.data.workflow.input}
             output={def.data.workflow.output}
             workflowOptions={workflowOptions}
-            onDirtyChange={(d) => {
-              editDirtyRef.current = d
-            }}
+            onDirtyChange={setEditDirty}
             onWorkflowChange={(id) => {
               void (async () => {
-                if (
-                  editDirtyRef.current &&
-                  !(await discardDialog.confirm('Discard unsaved changes?'))
-                ) {
-                  return
-                }
-                editDirtyRef.current = false
+                if (!(await confirmEditDiscard())) return
                 void navigate({ to: '/workflows/$workflowId', params: { workflowId: id } })
               })()
             }}
@@ -411,11 +408,10 @@ export function WorkflowTriggerPage(): JSX.Element {
                 to="/workflows"
                 className="font-mono text-[11px] text-ink-dim hover:text-em hover:underline"
                 onClick={(e) => {
-                  if (!editDirtyRef.current) return
+                  if (editIsDirty()) return
                   e.preventDefault()
                   void (async () => {
-                    if (!(await discardDialog.confirm('Discard unsaved changes?'))) return
-                    editDirtyRef.current = false
+                    if (!(await confirmEditDiscard())) return
                     void navigate({ to: '/workflows' })
                   })()
                 }}
