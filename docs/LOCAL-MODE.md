@@ -125,8 +125,10 @@ and the memory tools. See the `memory.sqlite` section of
   Each of the two works on **one file**, the node owner's unless `--sqlite
   <file>` names another: on a node with other users, export each user's file
   under `users/<userId>/` with `--sqlite <that file>`. `rivetos local backup`
-  copies every store: the owner's file and each user's, as
-  `memory-<stamp>.sqlite` and `memory-<stamp>.user-<userId>.sqlite`.
+  copies every store: the owner's file and each user's (from
+  `memory.sqlite.users_dir` when that is set), as `memory-<stamp>.sqlite` and
+  `memory-<stamp>.user-<userId>.sqlite`. If one store cannot be copied, none
+  is kept.
 
 ## Layout
 

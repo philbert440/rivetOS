@@ -570,6 +570,8 @@ export async function checkSqliteMemoryFile(path: string): Promise<CheckResult> 
       `SQLite memory: ${path} not created yet — start the node`,
     )
   }
+  // Rows not yet folded into the main file live in the write-ahead log.
+  const walBytes = existsSync(`${path}-wal`) ? statSync(`${path}-wal`).size : 0
   try {
     const { DatabaseSync } = await import('node:sqlite')
     const db = new DatabaseSync(path, { readOnly: true })
@@ -582,7 +584,7 @@ export async function checkSqliteMemoryFile(path: string): Promise<CheckResult> 
           'memory',
           'sqlite',
           'fail',
-          `SQLite memory: ${path} failed its integrity check (${verdict})`,
+          `SQLite memory: ${path} failed SQLite's quick check (${verdict})`,
         )
       }
       const version = (db.prepare('PRAGMA user_version').get() as { user_version: number })
@@ -590,16 +592,27 @@ export async function checkSqliteMemoryFile(path: string): Promise<CheckResult> 
       const messages = (db.prepare('SELECT count(*) AS n FROM ros_messages').get() as { n: number })
         .n
       const size = formatBytes(statSync(path).size)
+      const wal = walBytes > 0 ? ` + ${formatBytes(walBytes)} write-ahead log` : ''
       return check(
         'memory',
         'sqlite',
         'pass',
-        `SQLite memory: ${path} (${size}, schema v${String(version)}, ${String(messages)} messages)`,
+        `SQLite memory: ${path} (${size}${wal}, schema v${String(version)}, ${String(messages)} messages, quick check ok)`,
       )
     } finally {
       db.close()
     }
   } catch (err) {
+    // A read-only open cannot replay a write-ahead log left by a node that
+    // was killed: the node does that itself when it next starts.
+    if (walBytes > 0) {
+      return check(
+        'memory',
+        'sqlite',
+        'warn',
+        `SQLite memory: ${path} could not be read with its write-ahead log in place (${(err as Error).message}) — start the node, which recovers it, and run doctor again`,
+      )
+    }
     return check(
       'memory',
       'sqlite',

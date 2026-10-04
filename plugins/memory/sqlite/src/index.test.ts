@@ -584,6 +584,17 @@ describe('resolveTaggingConfig', () => {
         },
       ),
     ).toEqual({ enabled: true, native: { url: 'https://tagger.test/tag', model: 'tagger-v1' } })
+    // The shape is checked: a typo, or a native tagger with no endpoint, is an error and not a silent fallback.
+    expect(
+      resolveTaggingConfig(
+        { tagger_wire_shape: 'NATIVE', tagger_endpoint: 'https://tagger.test/tag', tagger_model: 'tagger-v1' },
+        {},
+      ),
+    ).toEqual({ enabled: true, native: { url: 'https://tagger.test/tag', model: 'tagger-v1' } })
+    expect(() => resolveTaggingConfig({ tagger_wire_shape: 'nativ' }, {})).toThrow(/must be "openai" or "native"/)
+    expect(() => resolveTaggingConfig({ tagger_wire_shape: 'native' }, {})).toThrow(
+      /needs tagger_endpoint and tagger_model/,
+    )
     // An endpoint without a model falls back to the compactor's.
     expect(resolveTaggingConfig({}, { RIVETOS_TAGGER_URL: 'https://tagger.test/v1' })).toEqual({ enabled: true })
   })

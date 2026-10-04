@@ -4,8 +4,10 @@ import {
   mkdirSync,
   mkdtempSync,
   readFileSync,
+  readdirSync,
   rmSync,
   statSync,
+  symlinkSync,
   writeFileSync,
 } from 'node:fs'
 import { createServer } from 'node:http'
@@ -974,6 +976,66 @@ describe('runInit / runUp / runBackup / runReset', () => {
       expect(existsSync(elsewhere)).toBe(true)
     } finally {
       rmSync(home, { recursive: true, force: true })
+    }
+  })
+
+  it('backup and reset follow a configured users_dir, through a linked ~/.rivetos, all or nothing', async () => {
+    const real = mkdtempSync(join(tmpdir(), 'local-sqlite-real-'))
+    const home = mkdtempSync(join(tmpdir(), 'local-sqlite-home-'))
+    try {
+      // ~/.rivetos is a link to a directory elsewhere.
+      symlinkSync(real, join(home, '.rivetos'))
+      const dir = join(home, '.rivetos')
+      mkdirSync(join(dir, 'people', 'guest'), { recursive: true })
+      mkdirSync(join(dir, 'people', 'visitor'), { recursive: true })
+      writeFileSync(
+        join(dir, 'config.yaml'),
+        [
+          'memory:',
+          '  sqlite:',
+          '    path: ~/.rivetos/memory.sqlite',
+          '    users_dir: ~/.rivetos/people',
+          '',
+        ].join('\n'),
+      )
+      const { DatabaseSync } = await import('node:sqlite')
+      for (const path of [
+        join(dir, 'memory.sqlite'),
+        join(dir, 'people', 'guest', 'memory.sqlite'),
+      ]) {
+        const db = new DatabaseSync(path)
+        db.exec('CREATE TABLE notes (body TEXT)')
+        db.close()
+      }
+      // One user's store is not a database: nothing is left behind.
+      writeFileSync(
+        join(dir, 'people', 'visitor', 'memory.sqlite'),
+        'not a database at all, just text that is long enough to be read as a header',
+      )
+      const now = (): Date => new Date('2026-01-02T03:04:05.000Z')
+      await expect(runBackup(parseLocalArgs(['backup']), { home, now })).rejects.toThrow()
+      expect(readdirSync(join(dir, 'backups'))).toEqual([])
+
+      rmSync(join(dir, 'people', 'visitor'), { recursive: true })
+      await runBackup(parseLocalArgs(['backup']), { home, now })
+      expect(readdirSync(join(dir, 'backups')).sort()).toEqual([
+        'memory-2026-01-02T03-04-05.sqlite',
+        'memory-2026-01-02T03-04-05.user-guest.sqlite',
+      ])
+
+      const exec = vi.fn(async () => ({ stdout: '', stderr: '', code: 0, timedOut: false }))
+      await runReset(parseLocalArgs(['reset', '--yes']), {
+        home,
+        platform: 'linux',
+        confirm: async () => true,
+        exec,
+      })
+      expect(existsSync(join(dir, 'memory.sqlite'))).toBe(false)
+      expect(existsSync(join(dir, 'people'))).toBe(false)
+      expect(existsSync(join(dir, 'config.yaml'))).toBe(false)
+    } finally {
+      rmSync(home, { recursive: true, force: true })
+      rmSync(real, { recursive: true, force: true })
     }
   })
 

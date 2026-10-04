@@ -145,9 +145,10 @@ export async function exportSqliteMemory(
             where = ` WHERE t.id IN (${SELECTED_SUMMARIES_SQL})`
             params.push(since)
           } else if (table === 'ros_summary_sources') {
-            // A link travels with its summary.
-            where = ` WHERE t.summary_id IN (${SELECTED_SUMMARIES_SQL})`
-            params.push(since)
+            // A link travels when both its ends do.
+            where = ` WHERE t.summary_id IN (${SELECTED_SUMMARIES_SQL})
+                        AND t.message_id IN (SELECT id FROM ros_messages WHERE created_at >= ?)`
+            params.push(since, since)
           } else if (table === 'ros_conversations') {
             // A conversation travels when it changed, or when a row that needs it does.
             where = ` WHERE t.updated_at >= ?

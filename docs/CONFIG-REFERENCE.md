@@ -805,7 +805,7 @@ memory:
 | `compactor_timeout_ms` | number | `600000` | Per-request timeout, clamped to 5 seconds – 60 minutes. |
 | `tagging` | boolean | on unless `SESSION_TAGGING=0` | Suggest `key:value` tags for each leaf summary. Needs a summarization endpoint (or the tagger's own). |
 | `tagger_endpoint`, `tagger_model`, `tagger_api_key` | string | `RIVETOS_TAGGER_URL`, `RIVETOS_TAGGER_MODEL`, `RIVETOS_TAGGER_API_KEY` | A separate endpoint for the tagger. Unset: the compactor's. |
-| `tagger_wire_shape` | `openai` \| `native` | `RIVETOS_TAGGER_WIRE_SHAPE` | `openai` (default): a chat endpoint, given the built-in prompt. `native`: a classifier service; `tagger_endpoint` is the URL posted to. |
+| `tagger_wire_shape` | `openai` \| `native` | `RIVETOS_TAGGER_WIRE_SHAPE` | `openai` (default): a chat endpoint, given the built-in prompt. `native`: a classifier service; `tagger_endpoint` is the URL posted to, and it and `tagger_model` are required. Any other value is refused at start. |
 | `project_rule` | boolean | `true` | Tag a captured session with `project:<name>` from its working directory's git root. |
 | `per_user_files` | boolean | `true` | Give every other user in the users registry a SQLite file of their own. `false`: those users get no memory on this node. |
 | `users_dir` | string | `users/` beside the owner's file | Where the other users' files go (`<users_dir>/<userId>/memory.sqlite`). |

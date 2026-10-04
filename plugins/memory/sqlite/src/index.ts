@@ -61,6 +61,7 @@ import { DEFAULT_COMPACTION_SETTINGS, type CompactionSettings } from './compacti
 import type { EmbedConfig } from './embed.js'
 import type { LlmConfig } from './llm.js'
 import type { NativeTagger } from './tagging.js'
+export type { NativeTagger } from './tagging.js'
 
 export const manifest: PluginManifest = {
   type: 'memory',
@@ -483,8 +484,9 @@ export function resolveWikiConfig(
  * Tag suggestions: on unless `tagging: false` or `SESSION_TAGGING=0`, the
  * switch the Postgres worker reads. The tagger uses the compactor's endpoint
  * unless it is given one of its own (`tagger_endpoint` + `tagger_model`, or
- * `RIVETOS_TAGGER_URL` + `RIVETOS_TAGGER_MODEL`); only the OpenAI-compatible
- * chat shape is spoken here.
+ * `RIVETOS_TAGGER_URL` + `RIVETOS_TAGGER_MODEL`), spoken to as a chat model
+ * or, with `tagger_wire_shape: native`, as a classifier service. An unknown
+ * shape, or `native` without an endpoint and model, is a configuration error.
  */
 export function resolveTaggingConfig(
   cfg: Record<string, unknown>,
@@ -499,11 +501,25 @@ export function resolveTaggingConfig(
   if (!enabled) return { enabled: false }
   const endpoint = str(cfg.tagger_endpoint) ?? str(env.RIVETOS_TAGGER_URL)
   const model = str(cfg.tagger_model) ?? str(env.RIVETOS_TAGGER_MODEL)
-  if (!endpoint || !model) return { enabled: true }
+  const shape = (
+    str(cfg.tagger_wire_shape) ??
+    str(env.RIVETOS_TAGGER_WIRE_SHAPE) ??
+    'openai'
+  ).toLowerCase()
+  if (shape !== 'openai' && shape !== 'native') {
+    throw new Error(`memory.sqlite: tagger_wire_shape must be "openai" or "native", not "${shape}"`)
+  }
+  if (!endpoint || !model) {
+    if (shape === 'native') {
+      throw new Error(
+        'memory.sqlite: tagger_wire_shape "native" needs tagger_endpoint and tagger_model',
+      )
+    }
+    return { enabled: true }
+  }
   const apiKey = str(cfg.tagger_api_key) ?? str(env.RIVETOS_TAGGER_API_KEY)
   // `native`: the endpoint is a classifier service that takes the summary and
   // the vocabulary in one POST, as the Postgres worker's native shape does.
-  const shape = str(cfg.tagger_wire_shape) ?? str(env.RIVETOS_TAGGER_WIRE_SHAPE) ?? 'openai'
   if (shape === 'native') {
     return { enabled: true, native: { url: endpoint, model, ...(apiKey ? { apiKey } : {}) } }
   }

@@ -519,7 +519,10 @@ export class SqliteMemory implements Memory {
           await maintenance.recompile(payload ?? {})
         })
       }
-      if ((this.embedClient || this.compactor || this.tagger) && (config.workers ?? true)) {
+      if (
+        (this.embedClient || this.compactor || this.tagger || this.wikiMaintenance) &&
+        (config.workers ?? true)
+      ) {
         this.jobRunner.start()
       }
     } catch (err) {

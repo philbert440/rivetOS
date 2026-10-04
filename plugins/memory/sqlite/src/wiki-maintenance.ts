@@ -33,6 +33,9 @@ export const RECOMPILE_WIKI_TASK = 'recompile-wiki'
 /** The marker the Postgres task writes as the source of a recompile. */
 const RECOMPILE_SOURCE_ID = '00000000-0000-0000-0000-000000000007'
 
+/** What `normalizeSlug` produces, with room for the longer slugs older pages have. */
+const SLUG = /^[a-z0-9][a-z0-9-]{0,199}$/
+
 export interface ConsolidateOptions {
   dryRun?: boolean
   limitClusters?: number
@@ -166,7 +169,7 @@ export class SqliteWikiMaintenance {
           await unlink(path)
           await writer
             .git('rm', '-f', '--cached', join('topics', `${loser}.md`))
-            .catch(() => undefined)
+            .catch(() => writer.git('add', '-u', 'topics').catch(() => undefined))
         }
         try {
           await writer.git('add', join('topics', `${canonicalSlug}.md`))
@@ -174,7 +177,7 @@ export class SqliteWikiMaintenance {
             .git(
               'commit',
               '-m',
-              `wiki(${canonicalSlug}): consolidate ${String(losers.length)} near-duplicate topics\n\nMerged: ${losers.join(', ')}`,
+              `wiki(${canonicalSlug}): consolidate ${String(losers.length)} near-duplicate topics\n\nMerged: ${losers.join(', ')}\nPipeline: wiki-v6-consolidate`,
             )
             .catch(() => undefined)
         } catch (err) {
@@ -200,25 +203,31 @@ export class SqliteWikiMaintenance {
     const llm = this.llm
     if (!llm) throw new Error('wiki recompile needs a summarization endpoint (compactor)')
     const dryRun = opts.dryRun === true
-    let slugs = [...(opts.slug ? [opts.slug] : []), ...(opts.slugs ?? [])]
-    slugs = [...new Set(slugs.map((s) => s.trim()).filter(Boolean))]
-    if (slugs.length === 0) {
+    const asked = [...(opts.slug ? [opts.slug] : []), ...(opts.slugs ?? [])]
+      .map((s) => s.trim())
+      .filter(Boolean)
+    // A slug names a file under topics/: one that is not a plain slug is
+    // counted as failed and never becomes a path.
+    let slugs = [...new Set(asked.filter((s) => SLUG.test(s)))]
+    const refused = new Set(asked.filter((s) => !SLUG.test(s))).size
+    const limit = Number.isFinite(opts.limit)
+      ? Math.min(Math.max(Math.trunc(opts.limit as number), 1), 100)
+      : 5
+    if (asked.length === 0) {
       slugs = (
         this.db
           .prepare(
             `SELECT slug FROM ros_wiki_topics
               ORDER BY history_count DESC, length(current_state) ASC, slug LIMIT ?`,
           )
-          .all(Math.min(Math.max(Math.trunc(opts.limit ?? 5), 1), 100)) as unknown as Array<{
-          slug: string
-        }>
+          .all(limit) as unknown as Array<{ slug: string }>
       ).map((r) => r.slug)
     }
     await this.writer.ensureRepo()
     const peerSlugs = (await this.index.listTopics({ limit: 200 })).topics.map((t) => t.slug)
 
     let ok = 0
-    let failed = 0
+    let failed = refused
     for (const slug of slugs) {
       try {
         const page = await this.writer.readPage(slug)
@@ -244,6 +253,8 @@ export class SqliteWikiMaintenance {
           Math.max(WIKI_EXTRACT_MAX_TOKENS, 8000),
           { minChars: 2 },
         )
+        // An answer that does not parse is a failure here. (The Postgres task
+        // hands it to a fallback model first; this client has one model.)
         const { patch, rejected } = parseRecompileResult(answer.content, slug, verifiedAt)
         if (!patch) {
           this.log(`[memory.sqlite] wiki recompile: ${slug} rejected — ${String(rejected)}`)

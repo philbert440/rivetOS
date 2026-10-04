@@ -237,6 +237,17 @@ describe('checkSqliteMemoryFile', () => {
 
       expect((await checkSqliteMemoryFile(join(dir, 'absent.sqlite'))).status).toBe('warn')
 
+      // A live store in write-ahead mode: read as it is, the log's size reported.
+      const live = join(dir, 'live.sqlite')
+      const writer = new DatabaseSync(live)
+      writer.exec(
+        "PRAGMA journal_mode = WAL; CREATE TABLE ros_messages (id TEXT); INSERT INTO ros_messages VALUES ('m1'), ('m2');",
+      )
+      const whileOpen = await checkSqliteMemoryFile(live)
+      writer.close()
+      expect(whileOpen.status).toBe('pass')
+      expect(whileOpen.message).toMatch(/write-ahead log, schema v0, 2 messages/)
+
       const bad = join(dir, 'bad.sqlite')
       writeFileSync(bad, 'this is not a database, just text that is long enough to be read as a header')
       expect((await checkSqliteMemoryFile(bad)).status).toBe('fail')

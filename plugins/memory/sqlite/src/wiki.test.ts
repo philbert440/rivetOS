@@ -488,6 +488,10 @@ describe('wiki maintenance', () => {
     expect((await wiki.index.getTopic('acmeapp-deploys'))?.aliases).toContain('acmeapp-deploys-rollback')
     // Nothing left to fold.
     expect(await maintenance.consolidate()).toEqual({ merged: 0, pagesRemoved: 0 })
+    // A store with a wiki and nothing else still runs its job loop, so a
+    // queued consolidate is picked up.
+    const runner = (memory as unknown as { jobRunner: { isRunning(): boolean } }).jobRunner
+    expect(runner.isRunning()).toBe(true)
   })
 
   it('recompile rewrites a page from its history, counts a bad answer as failed, and needs an endpoint', async () => {
@@ -534,6 +538,8 @@ describe('wiki maintenance', () => {
 
     good = false
     expect(await maintenance.recompile({ slugs: ['acmeapp-deploys', 'no-such-page'] })).toEqual({ ok: 0, failed: 2 })
+    // A slug that is not a plain slug never becomes a path.
+    expect(await maintenance.recompile({ slug: '../outside' })).toEqual({ ok: 0, failed: 1 })
     // The job names are the Postgres worker's, and run on the loop.
     good = true
     memory.jobs().enqueue('recompile-wiki', { slug: 'acmeapp-deploys' })

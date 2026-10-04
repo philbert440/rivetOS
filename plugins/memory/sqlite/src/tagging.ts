@@ -80,7 +80,7 @@ async function callNativeTagger(
     })
     if (!response.ok) {
       await response.body?.cancel().catch(() => {})
-      throw new Error(`tagger HTTP ${String(response.status)}`)
+      throw new Error(`tagger HTTP ${String(response.status)}: ${response.statusText}`)
     }
     return await response.text()
   } finally {
@@ -144,7 +144,7 @@ export class SqliteTagger {
         : {
             content: await callNativeTagger(this.llm, {
               ...input,
-              vocabulary: this.vocabulary.forTagger(200),
+              vocabulary: this.vocabulary.forTagger(TAG_VOCAB_LIMIT),
             }),
             model: this.llm.model,
           }
