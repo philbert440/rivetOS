@@ -51,6 +51,12 @@ describe('workflows dirty-guard wiring', () => {
     expect(page).toContain('{discardDialogElement}')
   })
 
+  it('the back links leave the prompt to the blocker (one prompt, not two)', () => {
+    const page = read('../pages/workflows-hub.tsx')
+    expect(page.match(/to="\/workflows"/g)?.length).toBeGreaterThanOrEqual(2)
+    expect(page).not.toContain('if (editIsDirty()) return')
+  })
+
   it('both editors report clean when they unmount', () => {
     for (const path of ['../components/workflow-edit-panel.tsx', '../components/flows-author.tsx']) {
       expect(read(path)).toContain('reportDirty.current?.(false)')

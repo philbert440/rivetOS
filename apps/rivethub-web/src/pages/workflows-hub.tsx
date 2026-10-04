@@ -221,7 +221,6 @@ export function WorkflowTriggerPage(): JSX.Element {
   const {
     markDirty: setEditDirty,
     confirmDiscard: confirmEditDiscard,
-    isDirty: editIsDirty,
     element: discardDialogElement,
   } = useWorkflowDirtyGuard()
   const switchMode = useCallback(
@@ -315,17 +314,11 @@ export function WorkflowTriggerPage(): JSX.Element {
       {discardDialogElement}
       {!runWithCanvas && (
         <div className="mb-4 flex flex-wrap items-center justify-between gap-2">
+          {/* No click handler: leaving is a route change, and the dirty guard's
+              router blocker asks about unsaved edits for every route change. */}
           <Link
             to="/workflows"
             className="font-mono text-[11px] text-ink-dim hover:text-em hover:underline"
-            onClick={(e) => {
-              if (editIsDirty()) return
-              e.preventDefault()
-              void (async () => {
-                if (!(await confirmEditDiscard())) return
-                void navigate({ to: '/workflows' })
-              })()
-            }}
           >
             ← workflows
           </Link>
@@ -409,14 +402,6 @@ export function WorkflowTriggerPage(): JSX.Element {
               <Link
                 to="/workflows"
                 className="font-mono text-[11px] text-ink-dim hover:text-em hover:underline"
-                onClick={(e) => {
-                  if (editIsDirty()) return
-                  e.preventDefault()
-                  void (async () => {
-                    if (!(await confirmEditDiscard())) return
-                    void navigate({ to: '/workflows' })
-                  })()
-                }}
               >
                 ← workflows
               </Link>
