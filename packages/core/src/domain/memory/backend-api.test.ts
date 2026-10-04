@@ -287,6 +287,10 @@ describe('parseCaptureBatch', () => {
       { ...base, messages: [{ event_id: 'e', role: 'user', content: '', created_at: '2026-10-04 10:00' }] },
       'messages[0].created_at must be an ISO timestamp with an offset',
     ],
+    [
+      { ...base, messages: [{ event_id: 'e', role: 'user', content: '', created_at: '2026-10-04T10:00+02:00' }] },
+      'messages[0].created_at must be an ISO timestamp with an offset',
+    ],
     [[], 'body must be a JSON object'],
   ])('rejects %j', (body, message) => {
     expect(parseCaptureBatch(body)).toBe(message)

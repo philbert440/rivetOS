@@ -41,6 +41,8 @@ const MAX_CONTENT = 16000
 const EMBED_TASK = 'embed-target'
 /** The widest pool ranked for a tag-filtered search. */
 const TAG_FILTER_POOL_MAX = 2000
+/** How far back a dead job still marks the store degraded. */
+const HEALTH_WINDOW_MS = 7 * 24 * 60 * 60 * 1000
 const KEYWORD_ONLY = 'Keyword / FTS ranking only — not meaning-based.'
 const SUMMARIZABLE_SQL = `((m.content IS NOT NULL AND length(m.content) > 10) OR m.tool_name IS NOT NULL)`
 
@@ -109,6 +111,20 @@ function answerBadRequests(tool: Tool): Tool {
         throw err
       }
     },
+  }
+}
+
+/** True when the stored metadata JSON has `key: true` at its top level. */
+function metadataFlag(json: string, key: string): boolean {
+  try {
+    const parsed: unknown = JSON.parse(json)
+    return (
+      typeof parsed === 'object' &&
+      parsed !== null &&
+      (parsed as Record<string, unknown>)[key] === true
+    )
+  } catch {
+    return false
   }
 }
 
@@ -658,9 +674,16 @@ export class SqliteBackend implements MemoryBackend {
 
     const embedding = this.host.hasEmbedding()
     const failed = this.failedEmbeddings()
-    const dead = queues.some((q) => q.dead > 0)
+    // Status looks at the last week, as on Postgres: one old dead job must not
+    // keep the banner up for good. The counts above stay cumulative.
+    const recentBefore = new Date(now.getTime() - HEALTH_WINDOW_MS).toISOString()
+    const dead =
+      this.count(
+        `SELECT count(*) AS n FROM ros_jobs WHERE state = 'dead' AND updated_at > ?`,
+        recentBefore,
+      ) > 0
     return {
-      status: embedding && failed === 0 && !dead ? 'ok' : 'degraded',
+      status: embedding && !dead ? 'ok' : 'degraded',
       observedAt: nowIso,
       embeddings: embedding
         ? { status: 'ok', checkedAt: nowIso }
@@ -970,7 +993,7 @@ export class SqliteBackend implements MemoryBackend {
           if (m.tool_args) lines.push(`Tool args: ${m.tool_args}`)
           lines.push('', m.content)
           if (m.tool_result) lines.push('', 'Tool result:', m.tool_result)
-          if (/"truncated":\s*true/.test(m.metadata)) {
+          if (metadataFlag(m.metadata, 'truncated')) {
             lines.push(
               '',
               '(stored text was truncated at capture; the original is not in this store)',
