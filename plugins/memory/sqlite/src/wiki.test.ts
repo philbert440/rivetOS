@@ -141,6 +141,14 @@ describe('SqliteWikiIndex', () => {
     expect(await index.searchTopics('   ')).toEqual([])
     // Operators and quotes in a query are text, not syntax.
     expect(await index.searchTopics('"unbalanced AND (')).toEqual([])
+    // A query with no ASCII letters or digits has no slug form. It must not
+    // match every topic through an empty pattern.
+    for (const q of ['日本語のメモ', '😀😀😀', '---', 'ÄÖÜ']) {
+      expect(await index.searchTopics(q)).toEqual([])
+    }
+    // A non-ASCII title is still found by its own text.
+    index.upsertTopic(page({ slug: 'nihongo-notes', title: '日本語のメモ', summary: 'Notes kept in Japanese.' }))
+    expect((await index.searchTopics('日本語のメモ')).map((h) => h.slug)).toEqual(['nihongo-notes'])
   })
 
   it('resolves a proposed slug to the topic it already is', async () => {

@@ -1242,17 +1242,27 @@ export class SqliteMemory implements Memory {
     }
   }
 
-  /** Topics that still need a vector and have no job (the sweep's wiki half). */
+  /**
+   * Topics that still need a vector and have no job (the sweep's wiki half).
+   * A job that ran out of attempts rests for an hour before it is revived, so
+   * a page that cannot be embedded is not retried on every sweep.
+   */
   private enqueueUnembeddedTopics(limit = 200): number {
     const rows = this.db
       .prepare(
         `SELECT t.slug FROM ros_wiki_topics t
           WHERE t.embedding IS NULL AND t.embed_status IS NULL AND length(t.search_text) > 20
             AND NOT EXISTS (SELECT 1 FROM ros_jobs j
-                             WHERE j.job_key = 'embed-ros_wiki_topics-' || t.slug AND j.state <> 'dead')
+                             WHERE j.job_key = 'embed-ros_wiki_topics-' || t.slug
+                               AND (j.state <> 'dead' OR j.updated_at > ?))
           ORDER BY t.updated_at ASC LIMIT ?`,
       )
-      .all(limit) as unknown as Array<{ slug: string }>
+      .all(
+        new Date(this.clock().getTime() - 60 * 60_000).toISOString(),
+        limit,
+      ) as unknown as Array<{
+      slug: string
+    }>
     for (const { slug } of rows) this.enqueueTopicEmbed(slug)
     return rows.length
   }

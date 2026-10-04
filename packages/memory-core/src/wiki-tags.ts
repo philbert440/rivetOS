@@ -8,7 +8,6 @@
 /** Tags offered to one extraction, at most. */
 export const WIKI_TAGS_MAX = 20
 const LITERAL_MAX = 80
-/** Rows read per source before dedupe, sort and cap. */
 
 export interface WikiTag {
   /** Normalized `key:value` (the canonical entity form), single line, bounded. */

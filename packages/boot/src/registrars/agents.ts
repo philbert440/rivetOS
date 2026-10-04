@@ -967,6 +967,9 @@ export async function registerAgentTools(
       createBackendMemoryRoute(memoryBackend),
     )
     // The backend's own wiki: its index, and the page files it points at.
+    // It takes precedence over the pool-backed wiki routes below even when a
+    // Postgres pool exists (for tasks): the node's memory is this backend,
+    // and `memory.postgres` cannot be configured beside it.
     // One store, so a routed user is refused rather than shown the owner's.
     if (backendWiki) {
       gatewayRoutes.push(

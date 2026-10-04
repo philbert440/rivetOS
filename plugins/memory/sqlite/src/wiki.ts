@@ -248,15 +248,21 @@ export class SqliteWikiIndex {
     const needle = text.slice(0, 120)
     if (needle.length >= 3) {
       const like = `%${escapeLike(needle.toLowerCase())}%`
-      const slugLike = `%${escapeLike(normalizeSlug(needle))}%`
+      // A query with no ASCII letters or digits has no slug form: an empty
+      // pattern would match every slug, so the slug arm is left out then.
+      const slug = normalizeSlug(needle)
+      const conds = [`lower(title) LIKE ? ESCAPE '\\'`, `lower(aliases) LIKE ? ESCAPE '\\'`]
+      const params: SQLInputValue[] = [like, like]
+      if (slug !== '') {
+        conds.push(`slug LIKE ? ESCAPE '\\'`)
+        params.push(`%${escapeLike(slug)}%`)
+      }
       const rows = this.db
         .prepare(
-          `SELECT slug FROM ros_wiki_topics
-            WHERE lower(title) LIKE ? ESCAPE '\\' OR slug LIKE ? ESCAPE '\\'
-               OR lower(aliases) LIKE ? ESCAPE '\\'
+          `SELECT slug FROM ros_wiki_topics WHERE ${conds.join(' OR ')}
             ORDER BY length(slug), slug LIMIT ?`,
         )
-        .all(like, slugLike, like, perLeg) as unknown as Array<{ slug: string }>
+        .all(...params, perLeg) as unknown as Array<{ slug: string }>
       legs.push(rows.map((r) => r.slug))
     }
 
@@ -411,7 +417,15 @@ export class SqliteWikiIndex {
            current_state = excluded.current_state, article = excluded.article,
            search_text = excluded.search_text, history_count = excluded.history_count,
            git_sha = excluded.git_sha, last_verified_at = excluded.last_verified_at,
-           updated_at = excluded.updated_at`,
+           updated_at = excluded.updated_at,
+           embedding = CASE WHEN ros_wiki_topics.search_text = excluded.search_text
+                            THEN ros_wiki_topics.embedding END,
+           embed_status = CASE WHEN ros_wiki_topics.search_text = excluded.search_text
+                               THEN ros_wiki_topics.embed_status END,
+           embed_error = CASE WHEN ros_wiki_topics.search_text = excluded.search_text
+                              THEN ros_wiki_topics.embed_error END,
+           embed_failures = CASE WHEN ros_wiki_topics.search_text = excluded.search_text
+                                 THEN ros_wiki_topics.embed_failures ELSE 0 END`,
       )
       .run(
         page.meta.slug,
@@ -429,14 +443,9 @@ export class SqliteWikiIndex {
         now,
         now,
       )
+    // The vector is cleared by the statement above when the text it was made
+    // from changed (title, aliases, lead, article excerpt, related): one write.
     if (changed) {
-      this.db
-        .prepare(
-          `UPDATE ros_wiki_topics
-              SET embedding = NULL, embed_status = NULL, embed_error = NULL, embed_failures = 0
-            WHERE slug = ?`,
-        )
-        .run(page.meta.slug)
       this.opts.vectors?.invalidate()
       this.opts.onTopicChanged?.(page.meta.slug)
     }
@@ -473,16 +482,19 @@ export class SqliteWikiIndex {
   }
 
   setRedirect(from: string, to: string): void {
+    const f = normalizeSlug(from)
+    const t = normalizeSlug(to)
+    if (f === '' || t === '' || f === t) return
     this.db
       .prepare(
         `INSERT INTO ros_wiki_redirects (from_slug, to_slug, created_at) VALUES (?, ?, ?)
          ON CONFLICT (from_slug) DO UPDATE SET to_slug = excluded.to_slug`,
       )
-      .run(normalizeSlug(from), normalizeSlug(to), this.stamp())
+      .run(f, t, this.stamp())
   }
 
   deleteTopic(slug: string): void {
-    this.db.prepare(`DELETE FROM ros_wiki_topics WHERE slug = ?`).run(slug)
+    this.db.prepare(`DELETE FROM ros_wiki_topics WHERE slug = ?`).run(normalizeSlug(slug))
     this.opts.vectors?.invalidate()
   }
 
@@ -510,8 +522,9 @@ export class SqliteWikiIndex {
     const row = this.db
       .prepare(`SELECT status, pipeline_version FROM ros_wiki_extractions WHERE summary_id = ?`)
       .get(summaryId) as { status: string; pipeline_version: number } | undefined
-    if (!row || row.status === 'failed') return false
-    return row.status === 'skipped' || row.pipeline_version >= minVersion
+    if (!row) return false
+    if (row.status === 'skipped') return true
+    return row.status === 'done' && row.pipeline_version >= minVersion
   }
 
   markExtraction(mark: ExtractionMark): void {
