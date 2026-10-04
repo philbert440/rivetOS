@@ -852,7 +852,7 @@ describe('/api/memory/tags + tag filters', () => {
         if (text.includes('UPDATE ros_tags')) return { rows: [{ id: PENDING_ROW.id }] }
         if (text.includes('c.session_key = ANY')) return { rows: [{ ...PENDING_ROW, state: 'accepted' }] }
         if (text.includes('COALESCE(c.id, s.conversation_id) = ANY'))
-          return { rows: [{ ...PENDING_ROW, state: 'accepted', key: 'project', value: 'tenpal', display: 'TenPAL' }] }
+          return { rows: [{ ...PENDING_ROW, state: 'accepted', key: 'project', value: 'acmeapp', display: 'AcmeApp' }] }
         if (text.includes('SELECT id, session_key FROM ros_conversations'))
           return { rows: [{ id: CONV, session_key: 'claude-code:native-1' }] }
         if (text.includes('FROM ros_messages m')) {
@@ -890,11 +890,11 @@ describe('/api/memory/tags + tag filters', () => {
     expect((await post('decide', { ids: ['a'], state: 'maybe' })).status).toBe(400)
     expect((await post('decide', { ids: ['not-a-uuid'], state: 'accepted' })).status).toBe(400)
     expect((await fetch(`${base}/api/memory/tags?entity_id=nope`)).status).toBe(400)
-    const ok = await post('decide', { ids: [PENDING_ROW.id], state: 'rejected', decided_by: 'phil' })
+    const ok = await post('decide', { ids: [PENDING_ROW.id], state: 'rejected', decided_by: 'alice' })
     expect(ok.status).toBe(200)
     expect(await ok.json()).toEqual({ changed: [PENDING_ROW.id] })
     const update = pool.calls.find(([sql]) => sql.includes('UPDATE ros_tags'))
-    expect(update?.[1]).toEqual([[PENDING_ROW.id], 'rejected', 'phil'])
+    expect(update?.[1]).toEqual([[PENDING_ROW.id], 'rejected', 'alice'])
     expect((await fetch(`${base}/api/memory/tags/decide`, { method: 'DELETE' })).status).toBe(405)
     expect((await post('nope', {})).status).toBe(404)
     expect((await fetch(`${base}/api/memory/tags/decide`, { method: 'POST', body: 'not json' })).status).toBe(400)
@@ -915,24 +915,24 @@ describe('/api/memory/tags + tag filters', () => {
     const search = vi.fn(async () => [HIT])
     const base = await serve({ pool: tagPool(), search })
     expect((await fetch(`${base}/api/memory/search?q=x&tag=nocolon`)).status).toBe(400)
-    const body = (await (await fetch(`${base}/api/memory/search?q=x&tag=project:tenpal`)).json()) as {
+    const body = (await (await fetch(`${base}/api/memory/search?q=x&tag=project:acmeapp`)).json()) as {
       results: Array<{ tags?: string[] }>
     }
-    expect(search).toHaveBeenLastCalledWith(expect.anything(), 'x', expect.objectContaining({ tag: 'project:tenpal' }))
-    expect(body.results[0].tags).toEqual(['project:TenPAL'])
+    expect(search).toHaveBeenLastCalledWith(expect.anything(), 'x', expect.objectContaining({ tag: 'project:acmeapp' }))
+    expect(body.results[0].tags).toEqual(['project:AcmeApp'])
   })
 
   it('browse adds the accepted-tag subquery and returns message tags', async () => {
     const pool = tagPool()
     const base = await serve({ pool })
     expect((await fetch(`${base}/api/memory/browse?tag=bad`)).status).toBe(400)
-    const body = (await (await fetch(`${base}/api/memory/browse?tag=Project:TenPAL`)).json()) as {
+    const body = (await (await fetch(`${base}/api/memory/browse?tag=Project:AcmeApp`)).json()) as {
       messages: Array<{ tags?: string[] }>
     }
     const browse = pool.calls.find(([sql]) => sql.includes('FROM ros_messages m'))
     expect(browse?.[0]).toMatch(/m\.conversation_id IN \(SELECT COALESCE\(tc\.id, ts\.conversation_id\)/)
-    expect(browse?.[1]?.slice(0, 2)).toEqual(['project', 'tenpal'])
-    expect(body.messages[0].tags).toEqual(['project:TenPAL'])
+    expect(browse?.[1]?.slice(0, 2)).toEqual(['project', 'acmeapp'])
+    expect(body.messages[0].tags).toEqual(['project:AcmeApp'])
   })
 
   it('on a database without the tag tables: reads are empty, writes are 503 (never a fake success)', async () => {

@@ -112,12 +112,12 @@ describe('resolveProjectFromCwd', () => {
   it('never stores credentials or host paths from a credentialed origin', async () => {
     const fs = fakeFs(['/srv/app', '/srv/app/.git'], {
       '/srv/app/.git/config':
-        '[remote "origin"]\n\turl = https://phil:ghp_SECRETtoken123@github.com/acme/App.git\n',
+        '[remote "origin"]\n\turl = https://alice:ghp_SECRETtoken123@github.com/acme/App.git\n',
     })
     const hit = await resolveProjectFromCwd('/srv/app/src', fs)
     expect(hit).toMatchObject({ value: 'app', display: 'App', rule: 'git-remote' })
     expect(hit?.reason).toBe('git-remote: github.com/acme/App')
-    expect(JSON.stringify({ ...hit, gitRoot: undefined })).not.toMatch(/ghp_|phil:|\/srv\//)
+    expect(JSON.stringify({ ...hit, gitRoot: undefined })).not.toMatch(/ghp_|alice:|\/srv\//)
   })
 
   it.each([
@@ -151,7 +151,7 @@ describe('resolveProjectFromCwd', () => {
     for (const p of [
       '/',
       '/home/rivet',
-      '/Users/phil/',
+      '/Users/alice/',
       '/root',
       '/tmp',
       '/var/tmp',
@@ -160,7 +160,7 @@ describe('resolveProjectFromCwd', () => {
       '/srv',
       '/mnt',
       '/home/rivet/Downloads',
-      '/Users/phil/Desktop',
+      '/Users/alice/Desktop',
       '',
       '   ',
     ]) {
@@ -176,11 +176,11 @@ describe('resolveProjectFromCwd', () => {
   })
 
   it('treats Windows home directories and /var/root as root-like', async () => {
-    expect(await resolveProjectFromCwd('C:\\Users\\phil', NO_FS)).toBeNull()
-    expect(await resolveProjectFromCwd('C:/Users/phil/Downloads', NO_FS)).toBeNull()
+    expect(await resolveProjectFromCwd('C:\\Users\\alice', NO_FS)).toBeNull()
+    expect(await resolveProjectFromCwd('C:/Users/alice/Downloads', NO_FS)).toBeNull()
     expect(await resolveProjectFromCwd('/var/root', NO_FS)).toBeNull()
     expect(
-      await resolveProjectFromCwd('C:/Users/phil/src', fakeFs(['C:/Users/phil', 'C:/Users/phil/.git'])),
+      await resolveProjectFromCwd('C:/Users/alice/src', fakeFs(['C:/Users/alice', 'C:/Users/alice/.git'])),
     ).toBeNull()
   })
 

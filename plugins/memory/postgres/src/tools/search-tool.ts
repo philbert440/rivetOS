@@ -58,7 +58,7 @@ export function createSearchTool(
         tag: {
           type: 'string',
           description:
-            'Only hits whose conversation carries this accepted key:value tag (e.g. project:tenpal). See memory_tags.',
+            'Only hits whose conversation carries this accepted key:value tag (e.g. project:acmeapp). See memory_tags.',
         },
         since: {
           type: 'string',

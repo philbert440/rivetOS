@@ -88,7 +88,7 @@ export interface TagTaxonomyEntry {
  * decomposed forms, full-width and compatibility characters are one value),
  * zero-width characters removed, control characters treated as spaces, trimmed, lowercased, whitespace and `/`
  * runs collapsed to `-`, outer `-` stripped, truncated to TAG_VALUE_MAX.
- * `TenPAL`, `tenpal`, ` TenPAL ` and `ＴｅｎＰＡＬ` are the same tag.
+ * `AcmeApp`, `acmeapp`, ` AcmeApp ` and `ＡｃｍｅＡｐｐ` are the same tag.
  * Returns `''` when the input has no slug characters; callers must treat
  * that as "no tag" (parseTagLiteral does).
  */

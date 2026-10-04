@@ -60,12 +60,12 @@ describe('memory_tags tool', () => {
   it('add tags a session from a literal and reports the row', async () => {
     const p = pool((sql) =>
       sql.includes('INSERT INTO ros_tags')
-        ? { rows: [{ ...PENDING, source: 'user', state: 'accepted', key: 'project', value: 'tenpal', display: 'TenPAL' }] }
+        ? { rows: [{ ...PENDING, source: 'user', state: 'accepted', key: 'project', value: 'acmeapp', display: 'AcmeApp' }] }
         : { rows: [] },
     )
     const tool = createTagsTool(p, { allowWrite: true })
-    expect(await tool.execute({ action: 'add', entity_type: 'conversation', entity_id: 'c1', tag: 'project:TenPAL' })).toBe(
-      `Added project:TenPAL to conversation c1 (${PENDING.id}).`,
+    expect(await tool.execute({ action: 'add', entity_type: 'conversation', entity_id: 'c1', tag: 'project:AcmeApp' })).toBe(
+      `Added project:AcmeApp to conversation c1 (${PENDING.id}).`,
     )
     expect(await tool.execute({ action: 'add', tag: 'project:x' })).toBe('entity_type and entity_id (or session_key) required')
   })
@@ -73,12 +73,12 @@ describe('memory_tags tool', () => {
   it('lookup lists tags per session key and marks suggestions with ?', async () => {
     const p = pool((sql) =>
       sql.includes('c.session_key = ANY')
-        ? { rows: [{ ...PENDING, session_key: 'claude:abc' }, { ...PENDING, id: 'x', key: 'project', value: 'tenpal', display: 'TenPAL', state: 'accepted', session_key: 'claude:abc' }] }
+        ? { rows: [{ ...PENDING, session_key: 'claude:abc' }, { ...PENDING, id: 'x', key: 'project', value: 'acmeapp', display: 'AcmeApp', state: 'accepted', session_key: 'claude:abc' }] }
         : { rows: [] },
     )
     const tool = createTagsTool(p)
     const out = await tool.execute({ action: 'lookup', session_keys: ['claude:abc', 'codex:none'] })
-    expect(out).toBe('claude:abc: topic:Memory Compaction?, project:TenPAL\ncodex:none: (none)')
+    expect(out).toBe('claude:abc: topic:Memory Compaction?, project:AcmeApp\ncodex:none: (none)')
   })
 
   it('surfaces store errors as a message instead of throwing', async () => {

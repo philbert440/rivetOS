@@ -78,15 +78,15 @@ describe.skipIf(PG_URL === '')('tag store (real Postgres)', () => {
     const conv = await conversation(uuid) // den-spawned: stored under the bare native id
     const added = await store.addTag(
       c,
-      { entityType: 'conversation', sessionKey: `claude-code:${uuid}`, tag: 'Project:TenPAL' },
-      'phil',
+      { entityType: 'conversation', sessionKey: `claude-code:${uuid}`, tag: 'Project:AcmeApp' },
+      'alice',
     )
-    expect(added).toMatchObject({ entityId: conv, value: 'tenpal', display: 'TenPAL', state: 'accepted' })
+    expect(added).toMatchObject({ entityId: conv, value: 'acmeapp', display: 'AcmeApp', state: 'accepted' })
     await raw('conversation', conv, 'topic', 'wiki-pages', 'suggested')
     const pending = await store.pendingTags(c, 10)
     expect(pending).toHaveLength(1)
     expect(pending[0]).toMatchObject({ sessionKey: uuid, title: 'T' })
-    expect(await store.decideTags(c, [pending[0].id], 'rejected', 'phil')).toHaveLength(1)
+    expect(await store.decideTags(c, [pending[0].id], 'rejected', 'alice')).toHaveLength(1)
     const again = await c.query(
       `INSERT INTO ros_tags (entity_type, entity_id, key, value, source, state)
        VALUES ('conversation', $1, 'topic', 'wiki-pages', 'model', 'suggested')
@@ -96,7 +96,7 @@ describe.skipIf(PG_URL === '')('tag store (real Postgres)', () => {
     expect(again.rowCount).toBe(0)
     // Lookup under the canonical key returns the tags of the bare-keyed conversation.
     const map = await store.tagsForSessionKeys(c, [`claude-code:${uuid}`])
-    expect(map.get(`claude-code:${uuid}`)?.map((t) => t.value)).toEqual(['tenpal'])
+    expect(map.get(`claude-code:${uuid}`)?.map((t) => t.value)).toEqual(['acmeapp'])
   })
 
   it('session key matching works in both directions: path-form and canonical stored keys', async () => {
@@ -105,7 +105,7 @@ describe.skipIf(PG_URL === '')('tag store (real Postgres)', () => {
     const added = await store.addTag(
       c,
       { entityType: 'conversation', sessionKey: `claude-code:${uuid}`, tag: 'project:rivetos' },
-      'phil',
+      'alice',
     )
     expect(added.entityId).toBe(pathConv)
     expect((await store.tagsForSessionKeys(c, [`claude-code:${uuid}`])).get(`claude-code:${uuid}`)).toHaveLength(1)
@@ -124,12 +124,12 @@ describe.skipIf(PG_URL === '')('tag store (real Postgres)', () => {
     // Same key under two agents: refused without an agent, resolved with one.
     await conversation(`claude-code:${uuid}`, 'grok')
     await expect(
-      store.addTag(c, { entityType: 'conversation', sessionKey: `claude-code:${uuid}`, tag: 'topic:x' }, 'phil'),
+      store.addTag(c, { entityType: 'conversation', sessionKey: `claude-code:${uuid}`, tag: 'topic:x' }, 'alice'),
     ).rejects.toThrow(/several agents/)
     const narrowed = await store.addTag(
       c,
       { entityType: 'conversation', sessionKey: `claude-code:${uuid}`, agent: 'rivet', tag: 'topic:x' },
-      'phil',
+      'alice',
     )
     expect(narrowed.entityId).toBe(pathConv)
   })
@@ -142,15 +142,15 @@ describe.skipIf(PG_URL === '')('tag store (real Postgres)', () => {
       [conv],
     )
     await raw('conversation', conv, 'topic', 'wiki', 'suggested', 'model')
-    const promoted = await store.addTag(c, { entityType: 'conversation', entityId: conv, tag: 'project:rivetos' }, 'phil')
+    const promoted = await store.addTag(c, { entityType: 'conversation', entityId: conv, tag: 'project:rivetos' }, 'alice')
     // proposed_by survives: the rule's guard recognizes its tag by it.
     expect(promoted).toMatchObject({
       source: 'user',
       state: 'accepted',
-      decidedBy: 'phil',
+      decidedBy: 'alice',
       proposedBy: 'cwd-git-root',
     })
-    const kept = await store.addTag(c, { entityType: 'conversation', entityId: conv, tag: 'topic:wiki' }, 'phil')
+    const kept = await store.addTag(c, { entityType: 'conversation', entityId: conv, tag: 'topic:wiki' }, 'alice')
     expect(kept).toMatchObject({ source: 'model', state: 'accepted' })
   })
 
@@ -158,16 +158,16 @@ describe.skipIf(PG_URL === '')('tag store (real Postgres)', () => {
     const conv = await conversation('codex:reaccept')
     await raw('conversation', conv, 'project', 'rivetos', 'accepted', 'rule')
     const [{ id }] = (await c.query<{ id: string }>(`SELECT id FROM ros_tags WHERE entity_id = $1`, [conv])).rows
-    await store.decideTags(c, [id], 'rejected', 'phil')
+    await store.decideTags(c, [id], 'rejected', 'alice')
     expect((await c.query(`SELECT source FROM ros_tags WHERE id = $1`, [id])).rows[0]).toEqual({ source: 'rule' })
-    await store.decideTags(c, [id], 'accepted', 'phil')
+    await store.decideTags(c, [id], 'accepted', 'alice')
     expect((await c.query(`SELECT source FROM ros_tags WHERE id = $1`, [id])).rows[0]).toEqual({ source: 'user' })
   })
 
   it('a merge onto a rule survivor keeps the folded tag reviewed', async () => {
     const conv = await conversation('codex:merge-source')
     await raw('conversation', conv, 'project', 'a', 'accepted', 'rule')
-    await store.addTag(c, { entityType: 'conversation', entityId: conv, tag: 'project:b' }, 'phil')
+    await store.addTag(c, { entityType: 'conversation', entityId: conv, tag: 'project:b' }, 'alice')
     await store.mergeTaxonomyValue(c, 'project', 'b', 'a')
     const rows = (
       await c.query(`SELECT value, source, state FROM ros_tags WHERE entity_id = $1 ORDER BY value`, [conv])
@@ -177,7 +177,7 @@ describe.skipIf(PG_URL === '')('tag store (real Postgres)', () => {
 
   it('a merge onto a rule survivor keeps the folded tag reviewed even when the person tagged first', async () => {
     const conv = await conversation('codex:merge-older')
-    await store.addTag(c, { entityType: 'conversation', entityId: conv, tag: 'project:b' }, 'phil')
+    await store.addTag(c, { entityType: 'conversation', entityId: conv, tag: 'project:b' }, 'alice')
     // The rule's row is decided later than the person's.
     await c.query(
       `INSERT INTO ros_tags (entity_type, entity_id, key, value, source, state, proposed_by, decided_by, decided_at)
@@ -259,7 +259,7 @@ describe.skipIf(PG_URL === '')('tag store (real Postgres)', () => {
       [`claude-code:-old/${uuid}`],
     )
     await expect(
-      store.addTag(c, { entityType: 'conversation', sessionKey: `claude-code:${uuid}`, tag: 'topic:x' }, 'phil'),
+      store.addTag(c, { entityType: 'conversation', sessionKey: `claude-code:${uuid}`, tag: 'topic:x' }, 'alice'),
     ).rejects.toThrow(/several agents/)
   })
 

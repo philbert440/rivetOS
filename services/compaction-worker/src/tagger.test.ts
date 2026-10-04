@@ -35,16 +35,16 @@ import {
 describe('parseTagProposals', () => {
   it('normalizes keys and values, keeps display casing and clamps confidence', () => {
     const { proposals, rejected } = parseTagProposals(
-      '[{"key":"Project","value":"TenPAL","confidence":1.7,"reason":"the summary is about TenPAL"}]',
+      '[{"key":"Project","value":"AcmeApp","confidence":1.7,"reason":"the summary is about AcmeApp"}]',
     )
     expect(rejected).toEqual([])
     expect(proposals).toEqual([
       {
         key: 'project',
-        value: 'tenpal',
-        display: 'TenPAL',
+        value: 'acmeapp',
+        display: 'AcmeApp',
         confidence: 1,
-        reason: 'the summary is about TenPAL',
+        reason: 'the summary is about AcmeApp',
       },
     ])
   })
@@ -137,15 +137,15 @@ describe('suggestTags transport', () => {
     fetchMock.mockResolvedValue({
       ok: true,
       status: 200,
-      text: async () => '{"tags":[{"key":"project","value":"TenPAL","confidence":0.9}]}',
+      text: async () => '{"tags":[{"key":"project","value":"AcmeApp","confidence":0.9}]}',
     })
     const tokenSource = { getToken: vi.fn(async () => 'minted') }
     const out = await suggestTags(
       {
         wireShape: 'native',
         target: {
-          url: 'https://edison/classify',
-          model: 'kaya',
+          url: 'https://classifier.test/classify',
+          model: 'tagger-v1',
           apiKey: 'ignored',
           transientStatuses: [],
           tokenSource: tokenSource as never,
@@ -154,13 +154,13 @@ describe('suggestTags transport', () => {
       { summary: 'S', title: 'T', vocabulary: { accepted: ['project:rivetOS'] } },
     )
     expect(out.proposals).toEqual([
-      { key: 'project', value: 'tenpal', display: 'TenPAL', confidence: 0.9 },
+      { key: 'project', value: 'acmeapp', display: 'AcmeApp', confidence: 0.9 },
     ])
     const [url, init] = fetchMock.mock.calls[0] as [string, { headers: Record<string, string>; body: string }]
-    expect(url).toBe('https://edison/classify')
+    expect(url).toBe('https://classifier.test/classify')
     expect(init.headers.Authorization).toBe('Bearer minted')
     expect(JSON.parse(init.body)).toMatchObject({
-      model: 'kaya',
+      model: 'tagger-v1',
       text: 'S',
       title: 'T',
       keys: ['project', 'topic'],
@@ -181,7 +181,7 @@ describe('suggestTags transport', () => {
       .mockResolvedValueOnce({ ok: false, status: 401, statusText: 'Unauthorized', text: async () => '' })
       .mockResolvedValueOnce({ ok: true, status: 200, text: async () => '{"tags":[]}' })
     const raw = await callNativeTagger(
-      { url: 'https://edison/classify', model: 'kaya', apiKey: '', transientStatuses: [], tokenSource: tokenSource as never },
+      { url: 'https://classifier.test/classify', model: 'tagger-v1', apiKey: '', transientStatuses: [], tokenSource: tokenSource as never },
       { summary: 'S', vocabulary: { accepted: [] } },
     )
     expect(raw).toBe('{"tags":[]}')
@@ -208,7 +208,7 @@ describe('suggestTags transport', () => {
   it('native shape: summary is bounded and title/agent are cleaned, like the chat prompt', async () => {
     fetchMock.mockResolvedValue({ ok: true, status: 200, text: async () => '{"tags":[]}' })
     await callNativeTagger(
-      { url: 'https://edison/classify', model: 'kaya', apiKey: '', transientStatuses: [] },
+      { url: 'https://classifier.test/classify', model: 'tagger-v1', apiKey: '', transientStatuses: [] },
       { summary: 's'.repeat(TAG_SUMMARY_MAX_CHARS + 500), title: 'a\n## b', agent: 'x\u202Ey', vocabulary: { accepted: [] } },
     )
     const body = JSON.parse((fetchMock.mock.calls[0][1] as { body: string }).body) as {
@@ -224,7 +224,7 @@ describe('suggestTags transport', () => {
   it('native shape: a non-2xx answer throws', async () => {
     fetchMock.mockResolvedValue({ ok: false, status: 503, statusText: 'down', text: async () => '' })
     await expect(
-      callNativeTagger({ url: 'https://edison/classify', model: 'kaya', apiKey: '', transientStatuses: [] }, {
+      callNativeTagger({ url: 'https://classifier.test/classify', model: 'tagger-v1', apiKey: '', transientStatuses: [] }, {
         summary: 'S',
         vocabulary: { accepted: [] },
       }),
