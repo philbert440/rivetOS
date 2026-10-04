@@ -40,6 +40,7 @@ import {
 } from './scoring.js'
 import {
   GATE_FRACTION,
+  HYBRID_MIN_CONTENT_LEN,
   HYBRID_RRF_K,
   SUMMARY_FUSION_BONUS,
   hybridPoolSize,
@@ -344,7 +345,7 @@ const CHUNK_ARM_PROBE_SQL = `SELECT
  * `[tool] name`). The quality floor therefore accepts role=tool when
  * tool_result is substantive — see {@link MESSAGE_QUALITY_SQL}.
  */
-const MIN_CONTENT_LEN = 40
+const MIN_CONTENT_LEN = HYBRID_MIN_CONTENT_LEN
 
 /**
  * Hybrid quality floor for ros_messages: substantive non-tool content, or a

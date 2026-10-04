@@ -64,3 +64,12 @@ export function shouldTrigramFallback(q: string): boolean {
   if (looksLiteral(q)) return true
   return /[^\s][./:-][^\s]/.test(q)
 }
+
+/**
+ * Quality floor for the full-text and vector arms of a hybrid search: a
+ * message needs this much substantive text (its content, or for a tool row
+ * its tool result) to be a candidate. One-liners ("ok", "thanks") otherwise
+ * crowd the pool. The literal arm is exempt: a "find this exact token" sweep
+ * must still reach short rows.
+ */
+export const HYBRID_MIN_CONTENT_LEN = 40

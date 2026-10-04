@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import {
   GATE_FRACTION,
+  HYBRID_MIN_CONTENT_LEN,
   HYBRID_POOL_MAX,
   HYBRID_POOL_MIN,
   HYBRID_RRF_K,
@@ -18,7 +19,8 @@ describe('hybrid fusion policy', () => {
   })
 
   it('pins the constants every backend ranks with', () => {
-    expect({ HYBRID_RRF_K, GATE_FRACTION, SUMMARY_FUSION_BONUS }).toEqual({
+    expect({ HYBRID_RRF_K, GATE_FRACTION, SUMMARY_FUSION_BONUS, HYBRID_MIN_CONTENT_LEN }).toEqual({
+      HYBRID_MIN_CONTENT_LEN: 40,
       HYBRID_RRF_K: 20,
       GATE_FRACTION: 0.5,
       SUMMARY_FUSION_BONUS: 1.3,
