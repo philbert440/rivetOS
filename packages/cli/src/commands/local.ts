@@ -13,13 +13,15 @@ import {
   existsSync,
   mkdirSync,
   readFileSync,
+  readdirSync,
+  realpathSync,
   rmSync,
   statSync,
   writeFileSync,
 } from 'node:fs'
 import { createInterface } from 'node:readline'
 import { homedir, hostname as osHostname, userInfo } from 'node:os'
-import { dirname, join, resolve as resolvePath, sep } from 'node:path'
+import { basename, dirname, join, resolve as resolvePath, sep } from 'node:path'
 import { readFile } from 'node:fs/promises'
 import { parse as parseYaml } from 'yaml'
 import { fetch as undiciFetch, Agent as UndiciAgent } from 'undici'
@@ -1220,14 +1222,50 @@ async function runBackup(flags: LocalFlags, deps: LocalDeps): Promise<void> {
     mkdirSync(dirname(out), { recursive: true })
     // VACUUM INTO writes a consistent copy while the node keeps running.
     const { DatabaseSync } = await import('node:sqlite')
-    const db = new DatabaseSync(sqlite.memoryPath, { readOnly: true })
-    try {
-      db.prepare('VACUUM INTO ?').run(out)
-    } finally {
-      db.close()
+    const { isSafeUserId } = await import('@rivetos/memory-sqlite')
+    // Every store: the owner's file and each other user's, a store of its
+    // own in the users directory. All are checked before any is written.
+    const copies: Array<{ from: string; to: string }> = [{ from: sqlite.memoryPath, to: out }]
+    if (existsSync(sqlite.usersDir)) {
+      const stem = out.replace(/\.sqlite$/, '')
+      for (const entry of readdirSync(sqlite.usersDir, { withFileTypes: true })) {
+        if (!entry.isDirectory() || !isSafeUserId(entry.name)) continue
+        const userFile = join(sqlite.usersDir, entry.name, 'memory.sqlite')
+        if (existsSync(userFile)) {
+          copies.push({ from: userFile, to: `${stem}.user-${entry.name}.sqlite` })
+        }
+      }
     }
-    chmod600(out)
-    console.log(`✅ backup wrote ${out}`)
+    for (const { to } of copies) if (existsSync(to)) throw new Error(`${to} already exists`)
+    // Files are created owner-only: they hold every user's memory.
+    const umask = process.umask(0o077)
+    const written: string[] = []
+    try {
+      for (const { from, to } of copies) {
+        const db = new DatabaseSync(from, { readOnly: true })
+        try {
+          db.prepare('VACUUM INTO ?').run(to)
+        } finally {
+          db.close()
+        }
+        chmod600(to)
+        written.push(to)
+      }
+    } catch (err) {
+      // All or nothing: a partial set would pass for a backup.
+      for (const to of [...written, copies[written.length].to]) {
+        try {
+          rmSync(to, { force: true })
+        } catch {
+          // The copy's own failure is the one to report.
+        }
+      }
+      throw err
+    } finally {
+      process.umask(umask)
+    }
+    for (const to of written) console.log(`✅ backup wrote ${to}`)
+    console.log(`${String(written.length)} store(s) copied`)
     return
   }
   const embedded = readEmbeddedConfig(configPath)
@@ -1248,9 +1286,36 @@ async function runBackup(flags: LocalFlags, deps: LocalDeps): Promise<void> {
   console.log(`✅ backup wrote ${out}`)
 }
 
+/** The real path of something that exists; the lexical one otherwise. */
+function realOrLexical(path: string): string {
+  try {
+    return realpathSync(path)
+  } catch {
+    return resolvePath(path)
+  }
+}
+
+/** The real path of the nearest ancestor that exists, with the rest appended as written. */
+function realOfNearest(path: string): string {
+  const rest: string[] = []
+  let at = resolvePath(path)
+  while (!existsSync(at)) {
+    const up = dirname(at)
+    if (up === at) return resolvePath(path)
+    rest.unshift(basename(at))
+    at = up
+  }
+  return join(realOrLexical(at), ...rest)
+}
+
 function assertUnderRivetDir(home: string, target: string): void {
-  const base = resolvePath(rivetDir(home))
-  const resolved = resolvePath(target)
+  // Real paths on both sides: a link under ~/.rivetos must not lead a delete
+  // out of it. (Removing a link removes the link, never what it points at;
+  // this refuses a directory reached through one.)
+  // The target's own name is kept as written and its directory resolved, as
+  // far up as exists, so a path that is not there yet compares like one that is.
+  const base = realOfNearest(rivetDir(home))
+  const resolved = join(realOfNearest(dirname(resolvePath(target))), basename(target))
   if (resolved !== base && !resolved.startsWith(base + sep)) {
     throw new Error(`reset refuses to delete ${target} (outside ~/.rivetos)`)
   }
@@ -1281,7 +1346,7 @@ function embeddedDataDirsForReset(home: string): string[] {
 function readSqliteConfig(
   configPath: string,
   home: string = homedir(),
-): { memoryPath: string; tasksPath?: string } | undefined {
+): { memoryPath: string; usersDir: string; tasksPath?: string } | undefined {
   let parsed: unknown
   try {
     parsed = parseYaml(readFileSync(configPath, 'utf-8'))
@@ -1289,15 +1354,23 @@ function readSqliteConfig(
     return undefined
   }
   const cfg = parsed as {
-    memory?: { sqlite?: { path?: unknown } }
+    memory?: { sqlite?: { path?: unknown; users_dir?: unknown } }
     tasks?: { sqlite_path?: unknown }
   } | null
   const memoryPath = cfg?.memory?.sqlite?.path
   if (typeof memoryPath !== 'string' || memoryPath.trim() === '') return undefined
-  const expand = (p: string): string => (p.startsWith('~/') ? join(home, p.slice(2)) : p)
+  // `~` and `~/…` as the plugin reads them (`resolveSqlitePath`).
+  const expand = (p: string): string =>
+    p === '~' ? home : p.startsWith('~/') ? join(home, p.slice(2)) : p
   const tasksPath = cfg?.tasks?.sqlite_path
+  // Where the plugin keeps the other users' files (`resolveUsersDir`).
+  const usersDir = cfg?.memory?.sqlite?.users_dir
   return {
     memoryPath: expand(memoryPath.trim()),
+    usersDir:
+      typeof usersDir === 'string' && usersDir.trim() !== ''
+        ? resolvePath(expand(usersDir.trim()))
+        : join(dirname(expand(memoryPath.trim())), 'users'),
     ...(typeof tasksPath === 'string' && tasksPath.trim() !== ''
       ? { tasksPath: expand(tasksPath.trim()) }
       : {}),
@@ -1323,8 +1396,10 @@ function sqliteFilesForReset(home: string): string[] {
   const configPath = join(dir, 'config.yaml')
   // Only files under ~/.rivetos are reset's to delete: a store the config
   // keeps elsewhere is left alone.
-  const base = resolvePath(dir)
-  const mine = (p: string): boolean => resolvePath(p).startsWith(base + sep)
+  // Real paths on both sides, as the delete check compares them.
+  const base = realOfNearest(dir)
+  const mine = (p: string): boolean =>
+    join(realOfNearest(dirname(resolvePath(p))), basename(p)).startsWith(base + sep)
   const configured = existsSync(configPath) ? readSqliteConfig(configPath, home) : undefined
   if (configured) {
     if (mine(configured.memoryPath)) bases.add(configured.memoryPath)
@@ -1333,6 +1408,9 @@ function sqliteFilesForReset(home: string): string[] {
   const out: string[] = []
   for (const base of bases) out.push(base, `${base}-wal`, `${base}-shm`)
   out.push(join(dir, 'users'))
+  if (configured && configured.usersDir !== join(dir, 'users') && mine(configured.usersDir)) {
+    out.push(configured.usersDir)
+  }
   return out.filter((p) => existsSync(p))
 }
 
@@ -1364,8 +1442,10 @@ async function runReset(flags: LocalFlags, deps: LocalDeps): Promise<void> {
     ...identityPathsToReset(home),
   ]
   const errors: string[] = []
+  // Every target is checked before the first is removed: a refusal leaves
+  // the node whole, not half reset.
+  for (const t of targets) assertUnderRivetDir(home, t)
   for (const t of targets) {
-    assertUnderRivetDir(home, t)
     try {
       rmSync(t, { recursive: true, force: true })
     } catch (err) {

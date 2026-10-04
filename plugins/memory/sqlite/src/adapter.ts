@@ -38,10 +38,16 @@ import { JobRunner, SqliteJobQueue } from './jobs.js'
 import { LlmClient, type LlmConfig } from './llm.js'
 import { SCHEMA, SCHEMA_VERSION } from './schema.js'
 import { SqliteTagVocabulary } from './tag-vocabulary.js'
-import { SUGGEST_TAGS_TASK, SqliteTagger } from './tagging.js'
+import { SUGGEST_TAGS_TASK, SqliteTagger, type NativeTagger } from './tagging.js'
 import { SqliteTagStore } from './tags.js'
 import { ExactScanIndex, encodeVector, type VectorIndex } from './vectors.js'
 import { EXTRACT_WIKI_TASK, SqliteWikiExtractor, SqliteWikiIndex } from './wiki.js'
+import {
+  CONSOLIDATE_WIKI_TASK,
+  RECOMPILE_WIKI_TASK,
+  SqliteWikiMaintenance,
+} from './wiki-maintenance.js'
+import { WikiWriter } from '@rivetos/wiki-core'
 
 function warnMode(target: string, mode: string, err: unknown): void {
   let code = 'error'
@@ -189,7 +195,7 @@ export interface SqliteMemoryConfig {
    * Suggest tags for each leaf summary (needs a compactor endpoint, or an
    * endpoint of its own in `llm`). Suggestions wait for a person to decide.
    */
-  tagging?: { enabled: boolean; llm?: LlmConfig }
+  tagging?: { enabled: boolean; llm?: LlmConfig; native?: NativeTagger }
   /**
    * How a capture's working directory becomes a `project:` tag. Default: the
    * git-root rule on this machine's filesystem. `null` turns the rule off.
@@ -296,6 +302,7 @@ export class SqliteMemory implements Memory {
   private readonly wikiIndex: SqliteWikiIndex | undefined
   private readonly wikiDir: string | undefined
   private readonly wikiExtractor: SqliteWikiExtractor | undefined
+  private readonly wikiMaintenance: SqliteWikiMaintenance | undefined
   private readonly vocabularyStore: SqliteTagVocabulary
   private readonly tagger: SqliteTagger | undefined
   private readonly projectRule: ProjectResolver | null | undefined
@@ -409,12 +416,18 @@ export class SqliteMemory implements Memory {
       const taggerLlmConfig = config.tagging?.enabled
         ? (config.tagging.llm ?? config.compactor)
         : undefined
-      if (taggerLlmConfig) {
+      const nativeTagger = config.tagging?.enabled ? config.tagging.native : undefined
+      if (taggerLlmConfig || nativeTagger) {
         const tagger = new SqliteTagger(
           this.db,
           // The tagger's own budget, whichever endpoint it borrows: a short call,
           // retried once.
-          new LlmClient({ ...taggerLlmConfig, maxRetries: TAG_LLM_RETRIES, timeoutMs: 60_000 }),
+          nativeTagger ??
+            new LlmClient({
+              ...(taggerLlmConfig as LlmConfig),
+              maxRetries: TAG_LLM_RETRIES,
+              timeoutMs: 60_000,
+            }),
           this.jobQueue,
           () => this.tags(),
           this.vocabularyStore,
@@ -487,7 +500,29 @@ export class SqliteMemory implements Memory {
           },
         })
       }
-      if ((this.embedClient || this.compactor || this.tagger) && (config.workers ?? true)) {
+      // On-demand wiki maintenance: merge near-duplicate pages, and rewrite a
+      // page from its history. Queued by hand (or called directly); the job
+      // names are the Postgres worker's.
+      if (this.wikiIndex && config.wiki) {
+        const maintenance = new SqliteWikiMaintenance(
+          this.db,
+          this.wikiIndex,
+          this.wikiExtractor?.writer ?? new WikiWriter(config.wiki.dir),
+          config.compactor ? new LlmClient(config.compactor) : undefined,
+          this.log,
+        )
+        this.wikiMaintenance = maintenance
+        this.jobRunner.handle(CONSOLIDATE_WIKI_TASK, async (payload) => {
+          await maintenance.consolidate(payload ?? {})
+        })
+        this.jobRunner.handle(RECOMPILE_WIKI_TASK, async (payload) => {
+          await maintenance.recompile(payload ?? {})
+        })
+      }
+      if (
+        (this.embedClient || this.compactor || this.tagger || this.wikiMaintenance) &&
+        (config.workers ?? true)
+      ) {
         this.jobRunner.start()
       }
     } catch (err) {
@@ -1625,13 +1660,21 @@ export class SqliteMemory implements Memory {
   }
 
   /** The wiki index and where its page files live; undefined without a wiki. */
-  wiki(): { index: SqliteWikiIndex; wikiDir: string; extractor?: SqliteWikiExtractor } | undefined {
+  wiki():
+    | {
+        index: SqliteWikiIndex
+        wikiDir: string
+        extractor?: SqliteWikiExtractor
+        maintenance?: SqliteWikiMaintenance
+      }
+    | undefined {
     this.assertOpen()
     if (!this.wikiIndex || !this.wikiDir) return undefined
     return {
       index: this.wikiIndex,
       wikiDir: this.wikiDir,
       ...(this.wikiExtractor ? { extractor: this.wikiExtractor } : {}),
+      ...(this.wikiMaintenance ? { maintenance: this.wikiMaintenance } : {}),
     }
   }
 

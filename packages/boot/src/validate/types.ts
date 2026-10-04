@@ -463,6 +463,7 @@ export const KNOWN_MEMORY_SQLITE_KEYS = new Set([
   'tagger_endpoint',
   'tagger_model',
   'tagger_api_key',
+  'tagger_wire_shape',
   'project_rule',
   'per_user_files',
   'users_dir',

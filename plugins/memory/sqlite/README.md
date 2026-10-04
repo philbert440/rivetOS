@@ -36,8 +36,8 @@ SQLite file holds the topic index (`ros_wiki_topics` + FTS, provenance,
 citations, redirects, per-summary extraction marks). Topic search fuses
 full-text, a literal slug/title/alias match and, with an embedding endpoint,
 a vector leg. The turn context gets a wiki section and the den serves
-`/api/wiki` and `/wiki` from this index. Not ported: the manual
-consolidate and recompile tasks.
+`/api/wiki` and `/wiki` from this index. The on-demand `consolidate-wiki`
+and `recompile-wiki` tasks are in `wiki-maintenance.ts`.
 
 Session tags: `memory.tags()` reads and writes `ros_tags` with the same
 lifecycle as the Postgres backend (`add` is born accepted, `propose` writes

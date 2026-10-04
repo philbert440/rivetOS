@@ -573,6 +573,32 @@ describe('resolveTaggingConfig', () => {
         { RIVETOS_TAGGER_URL: 'https://tagger.test/v1', RIVETOS_TAGGER_MODEL: 'tagger-v1' },
       ),
     ).toEqual({ enabled: true, llm: { endpoint: 'https://cfg.test/v1', model: 'cfg', apiKey: 'k' } })
+    // The native shape: the endpoint is a classifier, posted to as given.
+    expect(
+      resolveTaggingConfig(
+        {},
+        {
+          RIVETOS_TAGGER_URL: 'https://tagger.test/tag',
+          RIVETOS_TAGGER_MODEL: 'tagger-v1',
+          RIVETOS_TAGGER_WIRE_SHAPE: 'native',
+        },
+      ),
+    ).toEqual({ enabled: true, native: { url: 'https://tagger.test/tag', model: 'tagger-v1' } })
+    // The shape is checked: a typo, or a native tagger with no endpoint, is an error and not a silent fallback.
+    expect(
+      resolveTaggingConfig(
+        { tagger_wire_shape: 'NATIVE', tagger_endpoint: 'https://tagger.test/tag', tagger_model: 'tagger-v1' },
+        {},
+      ),
+    ).toEqual({ enabled: true, native: { url: 'https://tagger.test/tag', model: 'tagger-v1' } })
+    expect(resolveTaggingConfig({ tagger_wire_shape: 'nativ' }, {})).toEqual({
+      enabled: false,
+      error: expect.stringMatching(/must be "openai" or "native"/) as string,
+    })
+    expect(resolveTaggingConfig({ tagger_wire_shape: 'native' }, {})).toEqual({
+      enabled: false,
+      error: expect.stringMatching(/needs tagger_endpoint and tagger_model/) as string,
+    })
     // An endpoint without a model falls back to the compactor's.
     expect(resolveTaggingConfig({}, { RIVETOS_TAGGER_URL: 'https://tagger.test/v1' })).toEqual({ enabled: true })
   })

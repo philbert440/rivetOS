@@ -26,6 +26,12 @@ export type { LlmConfig, LlmAnswer } from './llm.js'
 export { SqliteCompactor, COMPACT_TASK, DEFAULT_COMPACTION_SETTINGS } from './compaction.js'
 export type { CompactionSettings } from './compaction.js'
 export { SqliteWikiIndex, SqliteWikiExtractor, EXTRACT_WIKI_TASK } from './wiki.js'
+export {
+  SqliteWikiMaintenance,
+  CONSOLIDATE_WIKI_TASK,
+  RECOMPILE_WIKI_TASK,
+} from './wiki-maintenance.js'
+export type { ConsolidateOptions, RecompileOptions } from './wiki-maintenance.js'
 export type { WikiTopicRow, WikiTopicHit, TopicResolution } from './wiki.js'
 export { SqliteRoutingMemory, userFromSessionKey, isSafeUserId, foldUserId } from './routing.js'
 export { exportSqliteMemory, importSqliteMemory } from './portability.js'
@@ -54,6 +60,8 @@ import { MIN_BATCH_SIZE } from '@rivetos/memory-core'
 import { DEFAULT_COMPACTION_SETTINGS, type CompactionSettings } from './compaction.js'
 import type { EmbedConfig } from './embed.js'
 import type { LlmConfig } from './llm.js'
+import type { NativeTagger } from './tagging.js'
+export type { NativeTagger } from './tagging.js'
 
 export const manifest: PluginManifest = {
   type: 'memory',
@@ -84,8 +92,9 @@ export const manifest: PluginManifest = {
     })
     const otherUsers = (): ReadonlySet<string> => registry.others()
     const wiki = resolveWikiConfig(cfg, ctx.env)
-    const tagging = resolveTaggingConfig(cfg, ctx.env)
-    if (tagging.enabled && !tagging.llm && !compactor) tagging.enabled = false
+    const { error: taggingError, ...tagging } = resolveTaggingConfig(cfg, ctx.env)
+    if (taggingError) ctx.logger.error(`memory.sqlite: ${taggingError}`)
+    if (tagging.enabled && !tagging.llm && !tagging.native && !compactor) tagging.enabled = false
     if (wiki.extraction && !compactor) {
       ctx.logger.warn(
         'memory.sqlite: wiki extraction is on but no compactor endpoint is set; no pages will be written',
@@ -208,7 +217,7 @@ export const manifest: PluginManifest = {
     }
     if (tagging.enabled) {
       ctx.logger.info(
-        `sqlite memory: suggesting tags with ${tagging.llm?.model ?? compactor?.model ?? '?'}`,
+        `sqlite memory: suggesting tags with ${tagging.native?.model ?? tagging.llm?.model ?? compactor?.model ?? '?'}`,
       )
     }
     if (wiki.extraction && compactor) {
@@ -476,13 +485,15 @@ export function resolveWikiConfig(
  * Tag suggestions: on unless `tagging: false` or `SESSION_TAGGING=0`, the
  * switch the Postgres worker reads. The tagger uses the compactor's endpoint
  * unless it is given one of its own (`tagger_endpoint` + `tagger_model`, or
- * `RIVETOS_TAGGER_URL` + `RIVETOS_TAGGER_MODEL`); only the OpenAI-compatible
- * chat shape is spoken here.
+ * `RIVETOS_TAGGER_URL` + `RIVETOS_TAGGER_MODEL`), spoken to as a chat model
+ * or, with `tagger_wire_shape: native`, as a classifier service. An unknown
+ * shape, or `native` without an endpoint and model, turns tagging off and
+ * returns the reason as `error`.
  */
 export function resolveTaggingConfig(
   cfg: Record<string, unknown>,
   env: Record<string, string | undefined>,
-): { enabled: boolean; llm?: LlmConfig } {
+): { enabled: boolean; llm?: LlmConfig; native?: NativeTagger; error?: string } {
   const str = (v: unknown): string | undefined =>
     typeof v === 'string' && v.trim() !== '' ? v.trim() : undefined
   const enabled =
@@ -492,7 +503,35 @@ export function resolveTaggingConfig(
   if (!enabled) return { enabled: false }
   const endpoint = str(cfg.tagger_endpoint) ?? str(env.RIVETOS_TAGGER_URL)
   const model = str(cfg.tagger_model) ?? str(env.RIVETOS_TAGGER_MODEL)
-  if (!endpoint || !model) return { enabled: true }
+  const shape = (
+    str(cfg.tagger_wire_shape) ??
+    str(env.RIVETOS_TAGGER_WIRE_SHAPE) ??
+    'openai'
+  ).toLowerCase()
+  // A setting that cannot be honoured turns tagging off and says why; it
+  // does not take the rest of memory down with it, and it does not send the
+  // chat prompt to a classifier.
+  if (shape !== 'openai' && shape !== 'native') {
+    return {
+      enabled: false,
+      error: `tagger_wire_shape must be "openai" or "native", not "${shape}"; tag suggestions are off`,
+    }
+  }
+  if (!endpoint || !model) {
+    if (shape === 'native') {
+      return {
+        enabled: false,
+        error:
+          'tagger_wire_shape "native" needs tagger_endpoint and tagger_model; tag suggestions are off',
+      }
+    }
+    return { enabled: true }
+  }
   const apiKey = str(cfg.tagger_api_key) ?? str(env.RIVETOS_TAGGER_API_KEY)
+  // `native`: the endpoint is a classifier service that takes the summary and
+  // the vocabulary in one POST, as the Postgres worker's native shape does.
+  if (shape === 'native') {
+    return { enabled: true, native: { url: endpoint, model, ...(apiKey ? { apiKey } : {}) } }
+  }
   return { enabled: true, llm: { endpoint, model, ...(apiKey ? { apiKey } : {}) } }
 }

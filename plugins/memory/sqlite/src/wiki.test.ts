@@ -434,3 +434,122 @@ describe('wiki extraction on the job loop', () => {
     expect(memory.topicEmbedDimsForTest('acmeapp-deploys')).toBe(3)
   })
 })
+
+describe('wiki maintenance', () => {
+  let memory: SqliteMemory
+  let dir: string
+  beforeEach(() => {
+    dir = mkdtempSync(join(tmpdir(), 'rivet-sqlite-wiki-'))
+  })
+  afterEach(() => {
+    ;(memory as SqliteMemory | undefined)?.close()
+    rmSync(dir, { recursive: true, force: true })
+  })
+
+  async function seed(m: SqliteMemory, slug: string, title: string, summary: string): Promise<void> {
+    const wiki = m.wiki()
+    if (!wiki?.maintenance) throw new Error('no wiki')
+    const writer = (wiki.maintenance as unknown as { writer: { ensureRepo(): Promise<void>; apply: (p: unknown, o: unknown) => Promise<{ page: WikiPage; gitSha: string }> } }).writer
+    await writer.ensureRepo()
+    const applied = await writer.apply(
+      {
+        action: 'create',
+        slug,
+        title,
+        currentState: summary,
+        historyEntry: { date: '2026-10-01', title: 'Created', body: `Created ${slug}.` },
+        verifiedAt: '2026-10-01T00:00:00.000Z',
+      },
+      { summaryId: 'seed' },
+    )
+    wiki.index.upsertTopic(applied.page, applied.gitSha)
+  }
+
+  it('consolidate folds slug variants into one page, with redirects, and a dry run changes nothing', async () => {
+    memory = new SqliteMemory({ path: ':memory:', log: () => {}, wiki: { dir } })
+    await seed(memory, 'acmeapp-deploys', 'Acmeapp deploys', 'Deployed blue-green from the release branch.')
+    await seed(memory, 'acmeapp-deploys-rollback', 'Acmeapp deploys rollback', 'Rollback is a traffic switch back.')
+    await seed(memory, 'staging-database', 'Staging database', 'Restored nightly.')
+    const wiki = memory.wiki()
+    const maintenance = wiki?.maintenance
+    if (!wiki || !maintenance) throw new Error('no maintenance')
+
+    expect(await maintenance.consolidate({ dryRun: true })).toEqual({ merged: 1, pagesRemoved: 1 })
+    expect(wiki.index.listAllSlugs()).toHaveLength(3)
+
+    expect(await maintenance.consolidate()).toEqual({ merged: 1, pagesRemoved: 1 })
+    expect(wiki.index.listAllSlugs()).toEqual(['acmeapp-deploys', 'staging-database'])
+    expect(existsSync(join(dir, 'topics', 'acmeapp-deploys-rollback.md'))).toBe(false)
+    const page = readFileSync(join(dir, 'topics', 'acmeapp-deploys.md'), 'utf8')
+    expect(page).toMatch(/blue-green/)
+    expect(page).toMatch(/traffic switch back/)
+    // The old slug still resolves, by redirect and as an alias.
+    expect((await wiki.index.getTopic('acmeapp-deploys-rollback'))?.slug).toBe('acmeapp-deploys')
+    expect((await wiki.index.getTopic('acmeapp-deploys'))?.aliases).toContain('acmeapp-deploys-rollback')
+    // Nothing left to fold.
+    expect(await maintenance.consolidate()).toEqual({ merged: 0, pagesRemoved: 0 })
+    // A store with a wiki and nothing else still runs its job loop, so a
+    // queued consolidate is picked up.
+    const runner = (memory as unknown as { jobRunner: { isRunning(): boolean } }).jobRunner
+    expect(runner.isRunning()).toBe(true)
+  })
+
+  it('recompile rewrites a page from its history, counts a bad answer as failed, and needs an endpoint', async () => {
+    let good = true
+    const fetch = vi.fn(async () =>
+      Response.json({
+        choices: [
+          {
+            finish_reason: 'stop',
+            message: {
+              content: good
+                ? JSON.stringify({
+                    summary: 'Acmeapp deploys are blue-green; rollback is a traffic switch.',
+                    article: '## Process\nCut the branch, deploy, watch the health check.',
+                    history_entry: { date: new Date().toISOString().slice(0, 10), title: 'Recompiled', body: 'Rewritten from history.' },
+                  })
+                : 'not json at all',
+            },
+          },
+        ],
+      }),
+    ) as unknown as typeof globalThis.fetch
+    memory = new SqliteMemory({
+      path: ':memory:',
+      workers: false,
+      log: () => {},
+      wiki: { dir },
+      compactor: { endpoint: 'https://llm.test/v1', model: 'm', fetch, sleep: noWait, maxRetries: 0 },
+    })
+    await seed(memory, 'acmeapp-deploys', 'Acmeapp deploys', 'thin')
+    const wiki = memory.wiki()
+    const maintenance = wiki?.maintenance
+    if (!wiki || !maintenance) throw new Error('no maintenance')
+
+    expect(await maintenance.recompile({ dryRun: true })).toEqual({ ok: 1, failed: 0 })
+    expect((await wiki.index.getTopic('acmeapp-deploys'))?.currentState).toBe('thin')
+    expect(await maintenance.recompile({ slug: 'acmeapp-deploys' })).toEqual({ ok: 1, failed: 0 })
+    const topic = await wiki.index.getTopic('acmeapp-deploys')
+    expect(topic?.currentState).toMatch(/rollback is a traffic switch/)
+    expect(topic?.article).toMatch(/watch the health check/)
+    // The rewrite is recorded in the page's history (the old summary may be kept there too).
+    const afterFirst = topic?.historyCount ?? 0
+    expect(afterFirst).toBeGreaterThan(1)
+
+    good = false
+    expect(await maintenance.recompile({ slugs: ['acmeapp-deploys', 'no-such-page'] })).toEqual({ ok: 0, failed: 2 })
+    // A slug that is not a plain slug never becomes a path.
+    expect(await maintenance.recompile({ slug: '../outside' })).toEqual({ ok: 0, failed: 1 })
+    // The job names are the Postgres worker's, and run on the loop.
+    good = true
+    memory.jobs().enqueue('recompile-wiki', { slug: 'acmeapp-deploys' })
+    expect(await memory.runJobs()).toBe(1)
+    // The same answer again adds no second history entry.
+    expect((await wiki.index.getTopic('acmeapp-deploys'))?.historyCount).toBe(afterFirst)
+    expect(memory.jobs().counts()).toEqual([])
+
+    const bare = new SqliteMemory({ path: ':memory:', log: () => {}, wiki: { dir } })
+    await expect(bare.wiki()?.maintenance?.recompile({ slug: 'x' })).rejects.toThrow(/needs a summarization endpoint/)
+    bare.close()
+  })
+})
