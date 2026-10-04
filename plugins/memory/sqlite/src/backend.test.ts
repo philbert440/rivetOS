@@ -127,7 +127,8 @@ describe('SqliteBackend', () => {
       expect(stats.embedQueueDepth).toBe(0)
       expect(stats.embeddedMessages).toBe(3)
       const health = await backend.health()
-      expect(health).toMatchObject({ status: 'ok', embeddings: { status: 'ok' }, queueStatus: 'available' })
+      // This store was opened without the job loop: its queues are not being drained.
+      expect(health).toMatchObject({ status: 'ok', embeddings: { status: 'ok' }, queueStatus: 'unavailable' })
     })
   })
 
@@ -167,6 +168,33 @@ describe('SqliteBackend', () => {
       await expect(backend.search('staging', { scope: 'messages', limit: 10, tag: 'nocolon' })).rejects.toBeInstanceOf(
         MemoryRequestError,
       )
+    })
+
+    it('a tag filter still finds tagged hits ranked below many untagged ones', async () => {
+      // 40 untagged conversations that match better than the one tagged match.
+      for (let i = 0; i < 40; i += 1) {
+        await backend.capture(
+          batch({
+            session_key: `noise-${String(i)}`,
+            messages: [{ event_id: 'n', role: 'user', content: 'rollback rollback rollback procedure notes' }],
+          }),
+        )
+      }
+      await backend.capture(
+        batch({
+          session_key: 'tagged',
+          messages: [
+            {
+              event_id: 't',
+              role: 'user',
+              content: 'a long note that mentions the rollback only once among many other unrelated words here',
+            },
+          ],
+        }),
+      )
+      await memory.tags().add({ entityType: 'conversation', sessionKey: 'tagged', tag: 'project:rare' }, 'owner')
+      const res = await backend.search('rollback', { scope: 'messages', limit: 2, tag: 'project:rare' })
+      expect(res.results.map((h) => h.sessionId)).toEqual(['tagged'])
     })
 
     it('browses newest first with role, agent, tool, tag and time filters', async () => {
@@ -248,6 +276,17 @@ describe('SqliteBackend', () => {
       ])
     })
 
+    it('the agent\'s tags tool reads but cannot add or decide', async () => {
+      const agentTags = backend.readTools().find((t) => t.name === 'memory_tags')
+      const add = { action: 'add', entity_type: 'conversation', session_key: 'sess-1', tag: 'project:acmeapp' }
+      expect(String(await agentTags?.execute(add))).toMatch(/not available to the agent/)
+      expect(String(await agentTags?.execute({ action: 'decide', ids: ['x'], state: 'accepted' }))).toMatch(
+        /not available to the agent/,
+      )
+      expect(await memory.tags().list({})).toEqual([])
+      expect(JSON.parse(String(await agentTags?.execute({ action: 'list' }))) as object).toEqual({ tags: [] })
+    })
+
     it('memory_search lists hits with ids, and memory_get_full returns the record behind one', async () => {
       const out = String(await tool('memory_search').execute({ query: 'deploy', limit: 5 }))
       expect(out).toMatch(/^⚠ embedding endpoint not configured/)
@@ -262,33 +301,114 @@ describe('SqliteBackend', () => {
     })
 
     it('memory_browse and memory_stats report in text', async () => {
-      const browse = String(await tool('memory_browse').execute({ include_tools: false }))
+      // Defaults match the Postgres tool: newest first, tool traffic left out.
+      const browse = String(await tool('memory_browse').execute({}))
       expect(browse).toMatch(/rivet\/user/)
       expect(browse).not.toMatch(/Bash/)
+      expect(browse.indexOf('rivet/assistant')).toBeGreaterThan(browse.indexOf('rivet/user'))
+      expect(String(await tool('memory_browse').execute({ include_tools: true }))).toMatch(/Bash/)
+      // A bad filter is answered in text, not thrown.
+      expect(String(await tool('memory_browse').execute({ window: 'someday' }))).toMatch(/^Error: /)
+      expect(String(await tool('memory_search').execute({ query: 'deploy', tag: 'nocolon' }))).toBe(
+        'Error: tag must be key:value',
+      )
       const stats = String(await tool('memory_stats').execute({}))
       expect(stats).toMatch(/Backend: sqlite/)
       expect(stats).toMatch(/Messages: 3 \(0 embedded, 1 tool calls\)/)
       expect(stats).toMatch(/Summarization: off/)
     })
 
-    it('memory_append and memory_ingest_session write idempotently', async () => {
+    it('memory_append answers in the Postgres shape, is idempotent, and refuses what Postgres refuses', async () => {
       const append = tool('memory_append')
       const args = { session_id: 'mcp-1', role: 'user', content: 'remember the release checklist', source: 'cli' }
-      expect(JSON.parse(String(await append.execute(args)))).toMatchObject({ ok: true, inserted: 1 })
-      expect(JSON.parse(String(await append.execute(args)))).toMatchObject({ inserted: 0, skipped: 1 })
-      expect(String(await append.execute({ ...args, role: 'robot' }))).toMatch(/^Error: role/)
+      const first = JSON.parse(String(await append.execute(args))) as Record<string, unknown>
+      expect(first).toMatchObject({ session_id: 'mcp-1', source: 'cli', agent: 'mcp', channel: 'mcp' })
+      expect(first.id).toMatch(/^[0-9a-f-]{36}$/)
+      expect(first.event_id).toMatch(/^[0-9a-f]{64}$/)
+      const again = JSON.parse(String(await append.execute(args))) as Record<string, unknown>
+      expect(again).toMatchObject({ skipped: true, id: first.id, event_id: first.event_id })
+      // An explicit event id is the identity.
+      const keyed = JSON.parse(String(await append.execute({ ...args, content: 'other', event_id: 'evt-9' }))) as {
+        event_id: string
+      }
+      expect(keyed.event_id).toBe('evt-9')
+      await expect(append.execute({ ...args, role: 'robot' })).rejects.toThrow(/role must be/)
+      await expect(append.execute({ ...args, content: '' })).rejects.toThrow(/content is required/)
+      await expect(append.execute({ ...args, session_id: '  ' })).rejects.toThrow(/session_id is required/)
+      // A tool-call message may have no content.
+      const call = JSON.parse(
+        String(await append.execute({ session_id: 'mcp-1', role: 'assistant', content: '', tool_name: 'Bash' })),
+      ) as { id: string }
+      expect(call.id).toBeDefined()
+      // Oversized text is cut with a marker and reported.
+      const big = JSON.parse(
+        String(await append.execute({ session_id: 'mcp-1', role: 'user', content: 'y'.repeat(17000) })),
+      ) as { truncated: boolean; full_content_length: number; id: string }
+      expect(big).toMatchObject({ truncated: true, full_content_length: 17000 })
+      expect(String(await tool('memory_get_full').execute({ id: big.id }))).toMatch(/…\[truncated\]/)
+    })
 
+    it('memory_ingest_session answers in the Postgres shape and stores tool calls as tool rows', async () => {
       const ingest = tool('memory_ingest_session')
       const messages = [
         { role: 'user', content: 'same line' },
         { role: 'user', content: 'same line' },
+        { role: 'assistant', content: '', tool_calls: [{ id: 't1', name: 'Bash', input: { command: 'ls' } }] },
         { role: 'assistant', content: 'noted twice', created_at: '2026-10-04T10:00:00Z' },
+        { role: 'user', content: '' },
+        { role: 'user', content: 'bad stamp', created_at: 'whenever' },
       ]
-      const first = JSON.parse(String(await ingest.execute({ session_id: 'mcp-2', messages }))) as { inserted: number }
-      expect(first.inserted).toBe(3)
-      const second = JSON.parse(String(await ingest.execute({ session_id: 'mcp-2', messages }))) as { skipped: number }
-      expect(second.skipped).toBe(3)
-      expect(String(await ingest.execute({ session_id: 'mcp-2', messages: [{ role: 'user' }] }))).toMatch(/^Error/)
+      const first = JSON.parse(String(await ingest.execute({ session_id: 'mcp-2', messages }))) as {
+        ingested: number
+        skipped: number
+        ids: string[]
+        session_id: string
+        agent: string
+      }
+      expect(first).toMatchObject({ session_id: 'mcp-2', ingested: 4, skipped: 2, agent: 'mcp', source: 'mcp' })
+      expect(first.ids).toHaveLength(4)
+      const second = JSON.parse(String(await ingest.execute({ session_id: 'mcp-2', messages }))) as {
+        ingested: number
+        skipped: number
+      }
+      expect(second).toMatchObject({ ingested: 0, skipped: 6 })
+      expect((await backend.browse({ toolName: 'Bash', agent: 'mcp' })).messages).toHaveLength(1)
+      // The same line with a different tool name is a different event.
+      const renamed = messages.map((m) =>
+        m.tool_calls ? { ...m, tool_calls: [{ id: 't1', name: 'Read', input: {} }] } : m,
+      )
+      const third = JSON.parse(String(await ingest.execute({ session_id: 'mcp-2', messages: renamed }))) as {
+        ingested: number
+      }
+      expect(third.ingested).toBe(1)
+      await expect(ingest.execute({ session_id: 'mcp-2', messages: [] })).rejects.toThrow(/non-empty/)
+      await expect(ingest.execute({ session_id: 'mcp-2', messages: [{ role: 'robot', content: 'x' }] })).rejects.toThrow(
+        /role is invalid/,
+      )
+    })
+
+    it('write tools take their attribution from the harness variables when no argument names it', async () => {
+      const prior = { ...process.env }
+      process.env.RIVETOS_MEMORY_AGENT = 'deskagent'
+      process.env.RIVETOS_MEMORY_SOURCE = 'harness'
+      process.env.RIVETOS_MEMORY_PERSONA = 'reviewer'
+      try {
+        const out = JSON.parse(
+          String(await tool('memory_append').execute({ session_id: 'env-1', role: 'user', content: 'attributed by env' })),
+        ) as Record<string, unknown>
+        expect(out).toMatchObject({ agent: 'deskagent', source: 'harness', persona: 'reviewer', channel: 'mcp' })
+        const explicit = JSON.parse(
+          String(
+            await tool('memory_append').execute({ session_id: 'env-1', role: 'user', content: 'named', agent: 'other' }),
+          ),
+        ) as Record<string, unknown>
+        expect(explicit.agent).toBe('other')
+      } finally {
+        for (const k of ['RIVETOS_MEMORY_AGENT', 'RIVETOS_MEMORY_SOURCE', 'RIVETOS_MEMORY_PERSONA']) {
+          if (prior[k] === undefined) delete process.env[k]
+          else process.env[k] = prior[k]
+        }
+      }
     })
 
     it('memory_tags reads and writes tags and refuses vocabulary edits', async () => {
@@ -304,6 +424,13 @@ describe('SqliteBackend', () => {
       expect(decided.changed).toEqual([added.tag.id])
       expect(String(await tags.execute({ action: 'taxonomy_merge', key: 'k', from: 'a', into: 'b' }))).toMatch(
         /does not support action "taxonomy_merge"/,
+      )
+      // The default action is the review queue, as on Postgres.
+      expect(JSON.parse(String(await tags.execute({}))) as object).toEqual({ tags: [] })
+      // More ids than the route accepts is an error, not a silent cut.
+      const many = Array.from({ length: 1001 }, () => added.tag.id)
+      expect(String(await tags.execute({ action: 'decide', ids: many, state: 'accepted' }))).toBe(
+        'Error: at most 1000 ids',
       )
     })
   })

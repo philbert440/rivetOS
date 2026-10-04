@@ -10,7 +10,13 @@
 import { createHash, randomUUID } from 'node:crypto'
 import type { DatabaseSync, SQLInputValue } from 'node:sqlite'
 import { DEFAULT_IDLE_MINUTES, MIN_BATCH_SIZE, applyWindowArgs } from '@rivetos/memory-core'
-import { MemoryRequestError, formatTag, parseTagLiteral } from '@rivetos/types'
+import {
+  MemoryRequestError,
+  formatTag,
+  normalizeTagKey,
+  normalizeTagValue,
+  parseTagLiteral,
+} from '@rivetos/types'
 import type {
   CaptureBatchRequest,
   CaptureBatchResult,
@@ -33,6 +39,8 @@ import type { SqliteTagStore } from './tags.js'
 /** Same cap as the Postgres capture path. */
 const MAX_CONTENT = 16000
 const EMBED_TASK = 'embed-target'
+/** The widest pool ranked for a tag-filtered search. */
+const TAG_FILTER_POOL_MAX = 2000
 const KEYWORD_ONLY = 'Keyword / FTS ranking only — not meaning-based.'
 const SUMMARIZABLE_SQL = `((m.content IS NOT NULL AND length(m.content) > 10) OR m.tool_name IS NOT NULL)`
 
@@ -47,6 +55,8 @@ export interface SqliteBackendHost {
   ): Promise<SqliteSearchHit[]>
   hasEmbedding(): boolean
   hasCompactor(): boolean
+  /** True while this process runs the job loop. */
+  workersRunning(): boolean
   enqueueMessageEmbed(id: string): void
   tags(): SqliteTagStore
   assertOpen(): void
@@ -70,6 +80,36 @@ function capText(text: string, field: string, metadata: Record<string, unknown>)
   metadata.truncated = true
   const last = text.charCodeAt(MAX_CONTENT - 1)
   return text.slice(0, MAX_CONTENT - (last >= 0xd800 && last <= 0xdbff ? 1 : 0))
+}
+
+const TRUNCATION_MARKER = '\n…[truncated]'
+
+/** The write tools' cut: the marker tells a reader the tail is gone. */
+function truncateWithMarker(
+  text: string,
+  metadata: Record<string, unknown>,
+  field: string,
+): string {
+  if (text.length <= MAX_CONTENT || text.endsWith(TRUNCATION_MARKER)) return text
+  metadata[`full_${field}_length`] = text.length
+  metadata.truncated = true
+  const last = text.charCodeAt(MAX_CONTENT - 1)
+  return text.slice(0, MAX_CONTENT - (last >= 0xd800 && last <= 0xdbff ? 1 : 0)) + TRUNCATION_MARKER
+}
+
+/** A read tool answers a bad filter in text, like its Postgres counterpart. */
+function answerBadRequests(tool: Tool): Tool {
+  return {
+    ...tool,
+    execute: async (args, signal, context) => {
+      try {
+        return await tool.execute(args, signal, context)
+      } catch (err) {
+        if (err instanceof MemoryRequestError) return `Error: ${err.message}`
+        throw err
+      }
+    },
+  }
 }
 
 function clampInt(v: unknown, fallback: number, lo: number, hi: number): number {
@@ -96,7 +136,27 @@ export class SqliteBackend implements MemoryBackend {
   // Capture
   // -------------------------------------------------------------------------
 
-  async capture(batch: CaptureBatchRequest): Promise<CaptureBatchResult> {
+  // `allowFilesystem` has nothing to gate yet: nothing in a batch is resolved
+  // against this host until the rule-based project tag arrives.
+  async capture(
+    batch: CaptureBatchRequest,
+    _options?: { allowFilesystem?: boolean },
+  ): Promise<CaptureBatchResult> {
+    return this.write(batch).result
+  }
+
+  /**
+   * One transaction per batch. `rows` says, per message, which stored row it
+   * is and whether this call wrote it. `capped`: the caller already cut the
+   * text and recorded that in the metadata.
+   */
+  private write(
+    batch: CaptureBatchRequest,
+    capped = false,
+  ): {
+    result: CaptureBatchResult
+    rows: Array<{ eventId: string; id: string; inserted: boolean }>
+  } {
     const db = this.db
     return this.host.tx(() => {
       const now = new Date().toISOString()
@@ -131,18 +191,19 @@ export class SqliteBackend implements MemoryBackend {
       const conversationId = conversation.id
 
       // Delivery is at-least-once: an event already stored is skipped.
-      const seen = new Set<string>()
+      const seen = new Map<string, string>()
+      const written: Array<{ eventId: string; id: string; inserted: boolean }> = []
       const eventIds = batch.messages.map((m) => m.event_id)
       for (let i = 0; i < eventIds.length; i += 500) {
         const chunk = eventIds.slice(i, i + 500)
         const rows = db
           .prepare(
-            `SELECT json_extract(metadata, '$.event_id') AS event_id FROM ros_messages
+            `SELECT id, json_extract(metadata, '$.event_id') AS event_id FROM ros_messages
               WHERE conversation_id = ?
                 AND json_extract(metadata, '$.event_id') IN (${placeholders(chunk.length)})`,
           )
-          .all(conversationId, ...chunk) as unknown as Array<{ event_id: string }>
-        for (const r of rows) seen.add(r.event_id)
+          .all(conversationId, ...chunk) as unknown as Array<{ id: string; event_id: string }>
+        for (const r of rows) seen.set(r.event_id, r.id)
       }
 
       const insert = db.prepare(
@@ -153,16 +214,22 @@ export class SqliteBackend implements MemoryBackend {
       )
       let inserted = 0
       for (const message of batch.messages) {
-        if (seen.has(message.event_id)) continue
+        const existing = seen.get(message.event_id)
+        if (existing !== undefined) {
+          written.push({ eventId: message.event_id, id: existing, inserted: false })
+          continue
+        }
         const metadata: Record<string, unknown> = {
           ...message.metadata,
           event_id: message.event_id,
         }
-        const content = capText(message.content, 'content', metadata)
+        const content = capped ? message.content : capText(message.content, 'content', metadata)
         const toolResult =
           message.tool_result === undefined
             ? null
-            : capText(message.tool_result, 'tool_result', metadata)
+            : capped
+              ? message.tool_result
+              : capText(message.tool_result, 'tool_result', metadata)
         const id = randomUUID()
         insert.run(
           id,
@@ -178,7 +245,8 @@ export class SqliteBackend implements MemoryBackend {
           message.created_at ? isoUtc(message.created_at, 'created_at') : now,
         )
         this.host.enqueueMessageEmbed(id)
-        seen.add(message.event_id)
+        seen.set(message.event_id, id)
+        written.push({ eventId: message.event_id, id, inserted: true })
         inserted += 1
       }
       if (batch.finalize) {
@@ -187,10 +255,13 @@ export class SqliteBackend implements MemoryBackend {
         ).run(now, conversationId)
       }
       return {
-        ok: true,
-        conversation_id: conversationId,
-        inserted,
-        skipped: batch.messages.length - inserted,
+        result: {
+          ok: true,
+          conversation_id: conversationId,
+          inserted,
+          skipped: batch.messages.length - inserted,
+        },
+        rows: written,
       }
     })
   }
@@ -216,20 +287,29 @@ export class SqliteBackend implements MemoryBackend {
       tagged = new Set(this.host.tags().conversationIdsWithTag(parsed.key, parsed.value))
     }
     const info: { degraded?: string } = {}
-    // A tag filter is applied after ranking, so rank a wider pool for it.
-    const pool = tagged ? Math.min(options.limit * 5, 250) : options.limit
-    const hits =
-      tagged && tagged.size === 0
-        ? []
-        : await this.host.search(
-            query,
-            {
-              scope: options.scope,
-              limit: pool,
-              ...(options.agent ? { agent: options.agent } : {}),
-            },
-            info,
-          )
+    const agentOpt = options.agent ? { agent: options.agent } : {}
+    let hits: SqliteSearchHit[] = []
+    if (!tagged) {
+      hits = await this.host.search(
+        query,
+        { scope: options.scope, limit: options.limit, ...agentOpt },
+        info,
+      )
+    } else if (tagged.size > 0) {
+      // The filter is applied after ranking, so rank a wider pool, and widen
+      // it again while it yields fewer tagged hits than asked for.
+      for (const pool of [options.limit * 5, options.limit * 25, TAG_FILTER_POOL_MAX]) {
+        const size = Math.min(pool, TAG_FILTER_POOL_MAX)
+        hits = await this.host.search(
+          query,
+          { scope: options.scope, limit: size, ...agentOpt },
+          info,
+        )
+        if (hits.length < size) break
+        if (this.countTagged(hits, tagged) >= options.limit) break
+        if (size >= TAG_FILTER_POOL_MAX) break
+      }
+    }
 
     const detail = new Map<
       string,
@@ -242,14 +322,15 @@ export class SqliteBackend implements MemoryBackend {
     >()
     const messageIds = hits.filter((h) => h.layer === 'message').map((h) => h.id)
     const summaryIds = hits.filter((h) => h.layer === 'summary').map((h) => h.id)
-    if (messageIds.length > 0) {
+    for (let i = 0; i < messageIds.length; i += 500) {
+      const chunk = messageIds.slice(i, i + 500)
       const rows = db
         .prepare(
           `SELECT m.id, m.conversation_id, m.tool_name, c.session_key FROM ros_messages m
              LEFT JOIN ros_conversations c ON c.id = m.conversation_id
-            WHERE m.id IN (${placeholders(messageIds.length)})`,
+            WHERE m.id IN (${placeholders(chunk.length)})`,
         )
-        .all(...messageIds) as unknown as Array<{
+        .all(...chunk) as unknown as Array<{
         id: string
         conversation_id: string
         tool_name: string | null
@@ -257,14 +338,15 @@ export class SqliteBackend implements MemoryBackend {
       }>
       for (const r of rows) detail.set(r.id, r)
     }
-    if (summaryIds.length > 0) {
+    for (let i = 0; i < summaryIds.length; i += 500) {
+      const chunk = summaryIds.slice(i, i + 500)
       const rows = db
         .prepare(
           `SELECT s.id, s.conversation_id, s.kind, c.session_key FROM ros_summaries s
              LEFT JOIN ros_conversations c ON c.id = s.conversation_id
-            WHERE s.id IN (${placeholders(summaryIds.length)})`,
+            WHERE s.id IN (${placeholders(chunk.length)})`,
         )
-        .all(...summaryIds) as unknown as Array<{
+        .all(...chunk) as unknown as Array<{
         id: string
         conversation_id: string | null
         kind: string
@@ -308,6 +390,27 @@ export class SqliteBackend implements MemoryBackend {
     return { query, scope: options.scope, degraded, results }
   }
 
+  /** How many of these hits belong to a tagged conversation. */
+  private countTagged(hits: readonly SqliteSearchHit[], tagged: ReadonlySet<string>): number {
+    let n = 0
+    for (const [layer, table] of [
+      ['message', 'ros_messages'],
+      ['summary', 'ros_summaries'],
+    ] as const) {
+      const ids = hits.filter((h) => h.layer === layer).map((h) => h.id)
+      for (let i = 0; i < ids.length; i += 500) {
+        const chunk = ids.slice(i, i + 500)
+        const rows = this.db
+          .prepare(
+            `SELECT conversation_id FROM ${table} WHERE id IN (${placeholders(chunk.length)})`,
+          )
+          .all(...chunk) as unknown as Array<{ conversation_id: string | null }>
+        for (const r of rows) if (r.conversation_id && tagged.has(r.conversation_id)) n += 1
+      }
+    }
+    return n
+  }
+
   /** Accepted `key:value` tags per conversation id. */
   private acceptedTags(conversationIds: Array<string | null | undefined>): Map<string, string[]> {
     const out = new Map<string, string[]>()
@@ -338,10 +441,12 @@ export class SqliteBackend implements MemoryBackend {
     if (filter.tag) {
       const parsed = parseTagLiteral(filter.tag)
       if (!parsed) throw new MemoryRequestError('tag must be key:value')
-      const ids = this.host.tags().conversationIdsWithTag(parsed.key, parsed.value)
-      if (ids.length === 0) return []
-      conds.push(`m.conversation_id IN (${placeholders(ids.length)})`)
-      params.push(...ids)
+      conds.push(
+        `m.conversation_id IN (SELECT t.entity_id FROM ros_tags t
+                                 WHERE t.entity_type = 'conversation' AND t.key = ? AND t.value = ?
+                                   AND t.state = 'accepted')`,
+      )
+      params.push(normalizeTagKey(parsed.key), normalizeTagValue(parsed.value))
     }
     if (filter.conversationId) {
       conds.push('m.conversation_id = ?')
@@ -422,7 +527,7 @@ export class SqliteBackend implements MemoryBackend {
     return row?.n ?? 0
   }
 
-  /** Embedding work not done yet: live jobs, plus rows no job covers yet. */
+  /** Embedding jobs queued or running. */
   private embedQueueDepth(): number {
     return this.count(
       `SELECT count(*) AS n FROM ros_jobs WHERE task = ? AND state IN ('queued', 'running')`,
@@ -571,7 +676,8 @@ export class SqliteBackend implements MemoryBackend {
         `SELECT (SELECT count(*) FROM ros_messages WHERE embed_status = 'unembeddable')
               + (SELECT count(*) FROM ros_summaries WHERE embed_status = 'unembeddable') AS n`,
       ),
-      queueStatus: 'available',
+      // Without the job loop nothing drains the queues this process can see.
+      queueStatus: this.host.workersRunning() ? 'available' : 'unavailable',
       queues,
       compaction,
       capture: {
@@ -667,22 +773,29 @@ export class SqliteBackend implements MemoryBackend {
 
   tools(): Tool[] {
     this.toolList ??= [
-      this.searchTool(),
-      this.browseTool(),
+      answerBadRequests(this.searchTool()),
+      answerBadRequests(this.browseTool()),
       this.statsTool(),
       this.getFullTool(),
-      this.tagsTool(),
+      this.tagsTool(true),
       this.appendTool(),
       this.ingestTool(),
     ]
     return this.toolList
   }
 
-  /** The read tools, for registering with the agent runtime. */
+  /**
+   * The tools handed to the agent: reading only. The tags tool here cannot
+   * add or decide, as on Postgres: deciding a tag is a person's call.
+   */
   readTools(): Tool[] {
-    return this.tools().filter(
-      (t) => t.name !== 'memory_append' && t.name !== 'memory_ingest_session',
-    )
+    return [
+      this.searchTool(),
+      this.browseTool(),
+      this.statsTool(),
+      this.getFullTool(),
+      this.tagsTool(false),
+    ].map(answerBadRequests)
   }
 
   private searchTool(): Tool {
@@ -748,7 +861,7 @@ export class SqliteBackend implements MemoryBackend {
           tag: { type: 'string', description: 'key:value' },
           include_tools: {
             type: 'boolean',
-            description: 'Include tool calls and results (default true)',
+            description: 'Include tool calls and results (default false)',
           },
           limit: { type: 'number', description: '1–200 (default 50)' },
           order: { type: 'string', enum: ['asc', 'desc'] },
@@ -762,9 +875,9 @@ export class SqliteBackend implements MemoryBackend {
           window: str(args.window),
           agent: str(args.agent),
           tag: str(args.tag),
-          includeTools: args.include_tools !== false,
+          includeTools: args.include_tools === true,
           limit: clampInt(args.limit, 50, 1, 200),
-          order: args.order === 'desc' ? 'desc' : 'asc',
+          order: args.order === 'asc' ? 'asc' : 'desc',
         })
         if (rows.length === 0) return 'No messages in that range.'
         return rows
@@ -931,7 +1044,7 @@ export class SqliteBackend implements MemoryBackend {
     }
   }
 
-  private tagsTool(): Tool {
+  private tagsTool(allowWrite: boolean): Tool {
     return {
       name: 'memory_tags',
       description:
@@ -961,8 +1074,11 @@ export class SqliteBackend implements MemoryBackend {
       },
       execute: async (args) => {
         const tags = this.tags()
-        const action = str(args.action) ?? 'list'
-        const by = str(args.decided_by)?.trim().slice(0, 120) ?? 'agent'
+        const action = str(args.action) ?? 'pending'
+        const by = str(args.decided_by)?.trim().slice(0, 120) || 'mcp'
+        if (!allowWrite && (action === 'decide' || action === 'add')) {
+          return `Error: "${action}" is not available to the agent; tags are decided by a person`
+        }
         const strings = (v: unknown): string[] =>
           Array.isArray(v) ? v.filter((x): x is string => typeof x === 'string' && x !== '') : []
         try {
@@ -1012,12 +1128,11 @@ export class SqliteBackend implements MemoryBackend {
           if (action === 'decide') {
             const ids = strings(args.ids)
             if (ids.length === 0) return 'Error: ids required'
+            if (ids.length > 1000) return 'Error: at most 1000 ids'
             if (args.state !== 'accepted' && args.state !== 'rejected') {
               return 'Error: state must be accepted or rejected'
             }
-            return JSON.stringify({
-              changed: await tags.decide(ids.slice(0, 1000), args.state, by),
-            })
+            return JSON.stringify({ changed: await tags.decide(ids, args.state, by) })
           }
           if (action === 'add') {
             if (args.entity_type !== 'conversation' && args.entity_type !== 'summary') {
@@ -1051,19 +1166,31 @@ export class SqliteBackend implements MemoryBackend {
     }
   }
 
-  private writeDefaults(args: Record<string, unknown>): {
+  /** Who a tool write is attributed to: arguments, then the harness's variables, then "mcp". */
+  private writeTags(args: Record<string, unknown>): {
+    source: string
     agent: string
     channel: string
-    metadata: Record<string, unknown>
+    persona?: string
   } {
-    const source = (str(args.source) ?? 'mcp').trim()
-    const persona = (str(args.persona) ?? '').trim()
+    const pick = (arg: unknown, env: string | undefined): string =>
+      ((typeof arg === 'string' ? arg : undefined) ?? env ?? 'mcp').trim() || 'mcp'
+    const persona = (
+      (typeof args.persona === 'string' ? args.persona : undefined) ??
+      process.env.RIVETOS_MEMORY_PERSONA ??
+      ''
+    ).trim()
     return {
-      agent: (str(args.agent) ?? 'mcp').trim() || 'mcp',
-      channel: (str(args.channel) ?? 'mcp').trim() || 'mcp',
-      metadata: { source, ...(persona ? { persona } : {}) },
+      source: pick(args.source, process.env.RIVETOS_MEMORY_SOURCE),
+      agent: pick(args.agent, process.env.RIVETOS_MEMORY_AGENT),
+      channel: pick(args.channel, process.env.RIVETOS_MEMORY_CHANNEL),
+      ...(persona ? { persona } : {}),
     }
   }
+
+  // The two write tools answer with the JSON the Postgres tools return, and
+  // refuse the same inputs (by throwing), so a capture client cannot tell
+  // the backends apart.
 
   private appendTool(): Tool {
     return {
@@ -1087,40 +1214,83 @@ export class SqliteBackend implements MemoryBackend {
         required: ['session_id', 'content', 'role'],
       },
       execute: async (args) => {
-        const sessionId = str(args.session_id)?.trim()
+        const sessionId = (str(args.session_id) ?? '').trim()
+        const content = typeof args.content === 'string' ? args.content : ''
         const role = args.role
-        if (!sessionId) return 'Error: session_id is required'
-        if (typeof args.content !== 'string') return 'Error: content is required'
-        if (role !== 'user' && role !== 'assistant' && role !== 'system' && role !== 'tool') {
-          return 'Error: role must be user, assistant, system or tool'
-        }
-        const d = this.writeDefaults(args)
         const toolName = str(args.tool_name)
+        if (!sessionId) throw new Error('memory_append: session_id is required')
+        if (role !== 'user' && role !== 'assistant' && role !== 'system' && role !== 'tool') {
+          throw new Error('memory_append: role must be user|assistant|system|tool')
+        }
+        if (!content && !toolName && role !== 'tool') {
+          throw new Error(
+            'memory_append: content is required (or provide tool_name for tool-call messages)',
+          )
+        }
+        const tags = this.writeTags(args)
         const eventId =
-          str(args.event_id) ??
+          str(args.event_id)?.trim() ||
           createHash('sha256')
             .update(
-              ['append', sessionId, d.agent, role, args.content, toolName ?? ''].join('\0'),
+              ['append', sessionId, tags.agent, role, content, toolName ?? ''].join('\0'),
               'utf8',
             )
             .digest('hex')
-        const result = await this.capture({
-          session_key: sessionId,
-          agent: d.agent,
-          channel: d.channel,
-          messages: [
-            {
-              event_id: eventId,
-              role,
-              content: args.content,
-              ...(toolName ? { tool_name: toolName } : {}),
-              ...(args.tool_args !== undefined ? { tool_args: args.tool_args } : {}),
-              ...(str(args.tool_result) ? { tool_result: str(args.tool_result) } : {}),
-              metadata: d.metadata,
-            },
-          ],
+        const metadata: Record<string, unknown> = {
+          source: tags.source,
+          ...(tags.persona ? { persona: tags.persona } : {}),
+        }
+        const toolArgs =
+          typeof args.tool_args === 'object' &&
+          args.tool_args !== null &&
+          !Array.isArray(args.tool_args)
+            ? args.tool_args
+            : undefined
+        const toolResult =
+          typeof args.tool_result === 'string' && args.tool_result ? args.tool_result : undefined
+        const { rows } = this.write(
+          {
+            session_key: sessionId,
+            agent: tags.agent,
+            channel: tags.channel,
+            messages: [
+              {
+                event_id: eventId,
+                role,
+                content: truncateWithMarker(content, metadata, 'content'),
+                ...(toolName ? { tool_name: toolName } : {}),
+                ...(toolArgs ? { tool_args: toolArgs } : {}),
+                ...(toolResult
+                  ? { tool_result: truncateWithMarker(toolResult, metadata, 'tool_result') }
+                  : {}),
+                metadata,
+              },
+            ],
+          },
+          true,
+        )
+        const row = rows[0]
+        if (!row.inserted) {
+          return JSON.stringify({
+            skipped: true,
+            id: row.id,
+            event_id: eventId,
+            session_id: sessionId,
+            ...tags,
+          })
+        }
+        const full = Math.max(
+          Number(metadata.full_content_length ?? 0),
+          Number(metadata.full_tool_result_length ?? 0),
+        )
+        return JSON.stringify({
+          id: row.id,
+          event_id: eventId,
+          session_id: sessionId,
+          ...tags,
+          ...(metadata.truncated ? { truncated: true } : {}),
+          ...(full > 0 ? { full_content_length: full } : {}),
         })
-        return JSON.stringify(result)
       },
     }
   }
@@ -1143,46 +1313,93 @@ export class SqliteBackend implements MemoryBackend {
         required: ['session_id', 'messages'],
       },
       execute: async (args) => {
-        const sessionId = str(args.session_id)?.trim()
-        if (!sessionId) return 'Error: session_id is required'
-        if (!Array.isArray(args.messages)) return 'Error: messages must be an array'
-        const d = this.writeDefaults(args)
+        const sessionId = (str(args.session_id) ?? '').trim()
+        if (!sessionId) throw new Error('memory_ingest_session: session_id is required')
+        if (!Array.isArray(args.messages) || args.messages.length === 0) {
+          throw new Error('memory_ingest_session: messages array is required and must be non-empty')
+        }
+        const tags = this.writeTags(args)
         const messages: CaptureBatchRequest['messages'] = []
+        let skipped = 0
+        let truncated = false
+        let fullLength = 0
         for (const [ordinal, raw] of (args.messages as unknown[]).entries()) {
-          if (typeof raw !== 'object' || raw === null)
-            return `Error: messages[${String(ordinal)}] must be an object`
+          if (typeof raw !== 'object' || raw === null) {
+            throw new Error(`memory_ingest_session: messages[${String(ordinal)}] must be an object`)
+          }
           const m = raw as Record<string, unknown>
           const role = m.role
           if (role !== 'user' && role !== 'assistant' && role !== 'system' && role !== 'tool') {
-            return `Error: messages[${String(ordinal)}].role is invalid`
+            throw new Error(`memory_ingest_session: messages[${String(ordinal)}].role is invalid`)
           }
-          if (typeof m.content !== 'string')
-            return `Error: messages[${String(ordinal)}].content must be a string`
-          const calls = Array.isArray(m.tool_calls) ? m.tool_calls : undefined
+          const content = typeof m.content === 'string' ? m.content : ''
+          const calls = (Array.isArray(m.tool_calls) ? (m.tool_calls as unknown[]) : []).map(
+            (tc) => {
+              const o = typeof tc === 'object' && tc !== null ? (tc as Record<string, unknown>) : {}
+              return {
+                ...(typeof o.id === 'string' ? { id: o.id } : {}),
+                name: typeof o.name === 'string' ? o.name : '',
+                ...(typeof o.input === 'object' && o.input !== null && !Array.isArray(o.input)
+                  ? { input: o.input as Record<string, unknown> }
+                  : {}),
+              }
+            },
+          )
+          // Nothing to store, or a timestamp that is not one: skipped, as on Postgres.
+          if (!content && calls.length === 0) {
+            skipped += 1
+            continue
+          }
           const createdAt = str(m.created_at)
           if (createdAt && Number.isNaN(Date.parse(createdAt))) {
-            return `Error: messages[${String(ordinal)}].created_at is not a timestamp`
+            skipped += 1
+            continue
+          }
+          const primary = calls.at(0)
+          const metadata: Record<string, unknown> = {
+            source: tags.source,
+            ordinal,
+            ...(tags.persona ? { persona: tags.persona } : {}),
+            ...(calls.length > 0 ? { tool_calls: calls } : {}),
+          }
+          const stored = truncateWithMarker(content, metadata, 'content')
+          if (metadata.truncated) {
+            truncated = true
+            fullLength = Math.max(fullLength, Number(metadata.full_content_length ?? 0))
           }
           messages.push({
             // Position in the batch is part of the identity, so a repeated
             // line is kept and a re-sent batch is not stored twice.
             event_id: createHash('sha256')
-              .update([sessionId, d.agent, role, m.content, String(ordinal)].join('\0'), 'utf8')
+              .update(
+                [sessionId, tags.agent, role, content, String(ordinal), primary?.name ?? ''].join(
+                  '\0',
+                ),
+                'utf8',
+              )
               .digest('hex'),
             role,
-            content: m.content,
+            content: stored,
+            ...(primary?.name ? { tool_name: primary.name } : {}),
+            ...(primary?.input ? { tool_args: primary.input } : {}),
             ...(createdAt ? { created_at: new Date(Date.parse(createdAt)).toISOString() } : {}),
-            metadata: { ...d.metadata, ...(calls ? { tool_calls: calls } : {}) },
+            metadata,
           })
         }
-        return JSON.stringify(
-          await this.capture({
-            session_key: sessionId,
-            agent: d.agent,
-            channel: d.channel,
-            messages,
-          }),
+        const { rows } = this.write(
+          { session_key: sessionId, agent: tags.agent, channel: tags.channel, messages },
+          true,
         )
+        const ids = rows.filter((r) => r.inserted).map((r) => r.id)
+        return JSON.stringify({
+          session_id: sessionId,
+          ingested: ids.length,
+          skipped: skipped + rows.length - ids.length,
+          ids,
+          ...(truncated ? { truncated: true } : {}),
+          ...(fullLength > 0 ? { full_content_length: fullLength } : {}),
+          ...tags,
+        })
       },
     }
   }

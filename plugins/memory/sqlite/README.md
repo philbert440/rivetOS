@@ -41,7 +41,8 @@ HTTP and tools: `memory.backend()` implements `MemoryBackend`
 (search, browse, stats, health, tags) and the MCP sidecar's den transport
 work on a SQLite node with the same wire contract as Postgres. The agent
 gets `memory_search`, `memory_browse`, `memory_stats`, `memory_get_full` and
-`memory_tags`. A request stamped for a routed user is refused: this store is
-the node owner's.
+a read-only `memory_tags` (adding and deciding tags is a person's call, over
+HTTP). A request stamped for a routed user is refused, and so is a tool call
+from a turn that belongs to another user: this store is the node owner's.
 
 Uses Node's built-in `node:sqlite` (`DatabaseSync`). No native addons.

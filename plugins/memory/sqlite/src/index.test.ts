@@ -6,7 +6,13 @@ import { mkdtempSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import type { Memory, PluginManifest, RegistrationContext } from '@rivetos/types'
+import type {
+  Memory,
+  PluginManifest,
+  RegistrationContext,
+  Tool,
+  ToolContext,
+} from '@rivetos/types'
 import {
   manifest,
   resolveCompactionSettings,
@@ -118,6 +124,52 @@ describe('memory-sqlite manifest', () => {
     )
     await (manifest as PluginManifest).register(ctx)
     expect(ctx.logger.warn).toHaveBeenCalledWith(expect.stringContaining('single-user in phase 1'))
+  })
+
+  it('registers the read tools, and refuses them to a turn that belongs to another user', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'ros-mem-plugin-'))
+    dirs.push(dir)
+    const usersFile = join(dir, 'users.json')
+    const { writeFileSync } = await import('node:fs')
+    writeFileSync(
+      usersFile,
+      JSON.stringify({
+        ownerUserId: 'owner',
+        unmappedIsOwner: false,
+        users: {
+          owner: { id: 'owner', devices: [] },
+          guest: { id: 'guest', devices: ['dev1'] },
+        },
+      }),
+    )
+    const tools: Tool[] = []
+    const { ctx } = makeCtx(
+      { path: join(dir, 'm.sqlite') },
+      { ...process.env, RIVETOS_USERS_FILE: usersFile },
+    )
+    ctx.registerTool = (tool) => {
+      tools.push(tool)
+    }
+    await (manifest as PluginManifest).register(ctx)
+    expect(tools.map((t) => t.name)).toEqual([
+      'memory_search',
+      'memory_browse',
+      'memory_stats',
+      'memory_get_full',
+      'memory_tags',
+    ])
+    const session = (userId: string | undefined): ToolContext =>
+      ({ session: { userId } }) as unknown as ToolContext
+    for (const tool of tools) {
+      await expect(tool.execute({ query: 'x', id: 'x' }, undefined, session('guest'))).rejects.toThrow(
+        /memory for user "guest" is unavailable/,
+      )
+    }
+    // The owner, and a turn with no resolved user, are served.
+    const stats = tools[2]
+    expect(String(await stats.execute({}, undefined, session('owner')))).toMatch(/Backend: sqlite/)
+    expect(String(await stats.execute({}, undefined, session(undefined)))).toMatch(/Backend: sqlite/)
+    expect(String(await stats.execute({}))).toMatch(/Backend: sqlite/)
   })
 })
 

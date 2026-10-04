@@ -75,8 +75,24 @@ export const manifest: PluginManifest = {
     })
     ctx.registerMemory(memory)
     // The agent's memory tools. Writing tools (append, ingest) are served over
-    // HTTP for capture clients, not handed to the agent.
-    for (const tool of memory.backend().readTools()) ctx.registerTool(tool)
+    // HTTP for capture clients, not handed to the agent. The file is the node
+    // owner's: a turn den resolved to another user gets a refusal, never the
+    // owner's transcripts.
+    const ownerUserId = ownerOf(ctx.env)
+    for (const tool of memory.backend().readTools()) {
+      ctx.registerTool({
+        ...tool,
+        async execute(args, signal, context) {
+          const uid = context?.session?.userId
+          if (uid && ownerUserId !== undefined && uid !== ownerUserId) {
+            throw new Error(
+              `memory for user "${uid}" is unavailable (this node's memory is a single-user store)`,
+            )
+          }
+          return tool.execute(args, signal, context)
+        },
+      })
+    }
     ctx.registerShutdown(async () => {
       await memory.stopWorkers()
       memory.close()
@@ -248,4 +264,16 @@ export function resolveCompactionSettings(
     delete out.minBranchesForRoot
   }
   return out
+}
+
+/**
+ * The node owner's user id from the users registry. Undefined when there is
+ * no registry: then den resolves no other users and nothing is refused.
+ */
+function ownerOf(env: Record<string, string | undefined>): string | undefined {
+  try {
+    return loadUsersRegistry(env)?.ownerUserId
+  } catch {
+    return undefined
+  }
 }

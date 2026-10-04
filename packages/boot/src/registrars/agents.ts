@@ -955,9 +955,6 @@ export async function registerAgentTools(
       createOutcomesApiRoute({ store: taskEngineStore }),
     )
   }
-  // Phase 3e: wiki routes — read-only over the PG index + NFS repo files.
-  // Mounted whenever the shared pool exists; degrade to empty results until
-  // 0005 is applied (WikiIndex.isReady guards nothing here — reads fail soft).
   // A registered memory that implements MemoryBackend (SQLite) serves
   // capture and /api/memory itself; the Postgres routes below are for the
   // pool-backed memory only, and are not mounted beside it.
@@ -969,6 +966,9 @@ export async function registerAgentTools(
       createBackendMemoryRoute(memoryBackend),
     )
   }
+  // Phase 3e: wiki routes — read-only over the PG index + NFS repo files.
+  // Mounted whenever the shared pool exists; degrade to empty results until
+  // 0005 is applied (WikiIndex.isReady guards nothing here — reads fail soft).
   if (pool) {
     const wikiIndex = new WikiIndex(pool)
     // WIKI_DIR matches the compaction-worker's writer env (same default), so

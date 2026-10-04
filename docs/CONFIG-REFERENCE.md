@@ -812,7 +812,10 @@ embedded when an embedding endpoint is set. The worker's `COMPACT_LEAF_BATCH`,
 A node with `memory.sqlite` serves `POST /api/capture` and `/api/memory/*` (search, browse, stats,
 health, tags, and the memory tools the MCP sidecar's den transport calls) from the file, with the
 same request and response shapes as a Postgres node. Vocabulary edits answer 501 for now, and a
-request the den stamped for a routed user is refused rather than served from the owner's file.
+request the den stamped for a routed user is refused (503) rather than served from the owner's file;
+the agent's memory tools refuse such a turn the same way. On a node that has both `memory.sqlite`
+and a Postgres URL, the SQLite store answers these routes, so routed users who had a Postgres
+database of their own are refused here too.
 
 ---
 

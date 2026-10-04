@@ -1334,6 +1334,7 @@ export class SqliteMemory implements Memory {
       search: (query, options, info) => this.search(query, options, info),
       hasEmbedding: () => this.embedClient !== undefined,
       hasCompactor: () => this.compactor !== undefined,
+      workersRunning: () => this.jobRunner.isRunning(),
       enqueueMessageEmbed: (id) => {
         this.enqueueMessageEmbed(id)
       },
