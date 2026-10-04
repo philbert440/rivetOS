@@ -128,7 +128,7 @@ export const manifest: PluginManifest = {
         const others = Object.keys(registry.users).filter((id) => id !== registry.ownerUserId)
         if (others.length > 0) {
           ctx.logger.warn(
-            `memory.sqlite is single-user in phase 1 — ${others.length} routed user(s) in the users registry get no memory from this store (no search, context or tools); their own turns are still written to it`,
+            `memory.sqlite is single-user in phase 1 — ${others.length} routed user(s) in the users registry get no memory from this store: their sessions are not stored or read, and search, context and tools refuse them`,
           )
         }
       }
