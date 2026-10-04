@@ -17,6 +17,7 @@ import { Bot, ChevronDown, ChevronRight, Pencil, Plus, Trash2, X } from 'lucide-
 import { migrateAgentPreset, type HarnessId } from '@rivetos/types'
 import { GatewayError } from '@rivetos/gateway-client'
 import { useConnection } from '../stores/connection.js'
+import { agentDraftDirty, captureAgentDraft } from '../lib/agent-draft-dirty.js'
 import { healthzQueryOptions, useMeshNodeName, useNodeName, urlLabel } from '../lib/node-name.js'
 import { useNodeDiscovery } from '../lib/use-node-discovery.js'
 import { agentDirectoryPlaceholder } from '../lib/agent-directory.js'
@@ -236,42 +237,45 @@ function AgentEditor({
   const formRef = useRef<HTMLFormElement | null>(null)
 
   const initialDraft = useMemo(
-    () => ({
-      name: duplicate ? copyName(duplicate.draft.name) : (init?.name ?? ''),
-      color: init?.color ?? '',
-      rawHarnessId: init?.harnessId ?? '',
-      rawModel: init?.model ?? '',
-      rawEffort: init?.effort ?? '',
-      systemPrompt: init?.systemPrompt ?? '',
-      draftDirectory: agent?.directory ?? duplicate?.draft.directory ?? '',
-      sharedLink: agent?.sharedLink ?? duplicate?.draft.sharedLink ?? true,
-    }),
+    () =>
+      captureAgentDraft({
+        name: duplicate ? copyName(duplicate.draft.name) : (init?.name ?? ''),
+        color: init?.color ?? '',
+        rawHarnessId: init?.harnessId ?? '',
+        rawModel: init?.model ?? '',
+        rawEffort: init?.effort ?? '',
+        systemPrompt: init?.systemPrompt ?? '',
+        draftDirectory: agent?.directory ?? duplicate?.draft.directory ?? '',
+        sharedLink: agent?.sharedLink ?? duplicate?.draft.sharedLink ?? true,
+      }),
     // Seeded once per mount; later harness-driven field defaults are edits.
     [],
   )
 
-  const isDirty = useCallback((): boolean => {
-    return (
-      name !== initialDraft.name ||
-      color !== initialDraft.color ||
-      rawHarnessId !== initialDraft.rawHarnessId ||
-      rawModel !== initialDraft.rawModel ||
-      rawEffort !== initialDraft.rawEffort ||
-      systemPrompt !== initialDraft.systemPrompt ||
-      draftDirectory !== initialDraft.draftDirectory ||
-      sharedLink !== initialDraft.sharedLink
-    )
-  }, [
-    name,
-    color,
-    rawHarnessId,
-    rawModel,
-    rawEffort,
-    systemPrompt,
-    draftDirectory,
-    sharedLink,
-    initialDraft,
-  ])
+  const isDirty = useCallback(
+    (): boolean =>
+      agentDraftDirty(initialDraft, {
+        name,
+        color,
+        rawHarnessId,
+        rawModel,
+        rawEffort,
+        systemPrompt,
+        draftDirectory,
+        sharedLink,
+      }),
+    [
+      name,
+      color,
+      rawHarnessId,
+      rawModel,
+      rawEffort,
+      systemPrompt,
+      draftDirectory,
+      sharedLink,
+      initialDraft,
+    ],
+  )
 
   const discardDialog = useConfirmDialog()
   const confirmLeave = useCallback(async (): Promise<boolean> => {
