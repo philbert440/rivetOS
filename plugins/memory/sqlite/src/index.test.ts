@@ -214,5 +214,11 @@ describe('resolveCompactorConfig', () => {
     ).toEqual({ leafBatch: 20 })
     // A leaf window below the floor of 5 could never be written.
     expect(resolveCompactionSettings({ COMPACT_LEAF_BATCH: '3' })).toEqual({})
+    // A parent batch smaller than the children it needs could never be written either.
+    expect(resolveCompactionSettings({ COMPACT_BRANCH_BATCH: '2', COMPACT_ROOT_BATCH: '1' })).toEqual({})
+    expect(resolveCompactionSettings({ COMPACT_BRANCH_BATCH: '2', COMPACT_MIN_LEAFS: '2' })).toEqual({
+      branchBatch: 2,
+      minLeavesForBranch: 2,
+    })
   })
 })

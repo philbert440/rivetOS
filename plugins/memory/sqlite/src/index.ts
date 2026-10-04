@@ -41,7 +41,7 @@ import { loadUsersRegistry } from '@rivetos/types'
 import { SqliteMemory, resolveSqlitePath } from './adapter.js'
 import { clampEmbedTimeoutMs } from '@rivetos/memory-core'
 import { MIN_BATCH_SIZE } from '@rivetos/memory-core'
-import type { CompactionSettings } from './compaction.js'
+import { DEFAULT_COMPACTION_SETTINGS, type CompactionSettings } from './compaction.js'
 import type { EmbedConfig } from './embed.js'
 import type { LlmConfig } from './llm.js'
 
@@ -230,5 +230,15 @@ export function resolveCompactionSettings(
   // A leaf window below the floor could never be written: the sweep would
   // queue a job every pass that does nothing.
   if (out.leafBatch !== undefined && out.leafBatch < MIN_BATCH_SIZE) delete out.leafBatch
+  // Likewise a parent batch smaller than the number of children it needs.
+  const d = DEFAULT_COMPACTION_SETTINGS
+  if ((out.branchBatch ?? d.branchBatch) < (out.minLeavesForBranch ?? d.minLeavesForBranch)) {
+    delete out.branchBatch
+    delete out.minLeavesForBranch
+  }
+  if ((out.rootBatch ?? d.rootBatch) < (out.minBranchesForRoot ?? d.minBranchesForRoot)) {
+    delete out.rootBatch
+    delete out.minBranchesForRoot
+  }
   return out
 }

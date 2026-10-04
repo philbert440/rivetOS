@@ -71,6 +71,8 @@ export const DEFAULT_COMPACTION_SETTINGS: CompactionSettings = {
 const ENQUEUE_LIMIT = 50
 /** Conversations examined per sweep, oldest activity first. */
 const CANDIDATE_LIMIT = 500
+/** How long a job that ran out of attempts rests before the sweep revives it. */
+const DEAD_JOB_REST_MS = 60 * 60 * 1000
 
 /** Messages worth summarizing: real text, or a tool call. Same rule as Postgres. */
 const SUMMARIZABLE_SQL = `((m.content IS NOT NULL AND length(m.content) > 10) OR m.tool_name IS NOT NULL)`
@@ -142,26 +144,44 @@ export class SqliteCompactor {
     const idleBefore = new Date(nowMs - s.idleMinutes * 60_000).toISOString()
     const staleBefore = new Date(nowMs - s.staleMinutes * 60_000).toISOString()
     // Candidate conversations are bounded before the message aggregate, so a
-    // large file is not grouped in full on every sweep. A candidate has an
-    // unsummarized message and no live job (a dead one is revived below).
+    // large file is not grouped in full on every sweep. A candidate could be
+    // written now: a floor-sized backlog, or a smaller tail that has gone
+    // stale. A tail that can never qualify (one message) or cannot yet must
+    // not hold a slot in the window, or it would starve the ones that can.
+    // No live job either; a dead job is revived below once it has rested, so
+    // a conversation that keeps failing is retried hourly, not every sweep.
+    const deadAfter = new Date(nowMs - DEAD_JOB_REST_MS).toISOString()
+    // A dead job whose conversation is gone would hold its key for good.
+    this.db
+      .prepare(
+        `DELETE FROM ros_jobs
+          WHERE state = 'dead' AND task = ?
+            AND NOT EXISTS (SELECT 1 FROM ros_conversations c WHERE ros_jobs.job_key = 'compact-' || c.id)`,
+      )
+      .run(COMPACT_TASK)
     const rows = this.db
       .prepare(
         `SELECT c.id AS conversation_id, count(m.id) AS unsummarized, c.updated_at
            FROM (
-                SELECT c.id, c.updated_at
-                  FROM ros_conversations c
-                 WHERE (c.session_key IS NULL OR c.session_key NOT LIKE 'heartbeat:%')
-                   AND NOT EXISTS (
-                         SELECT 1 FROM ros_jobs j
-                          WHERE j.job_key = 'compact-' || c.id AND j.state <> 'dead'
-                       )
-                   AND EXISTS (
-                         SELECT 1 FROM ros_messages m
-                           LEFT JOIN ros_summary_sources ss ON ss.message_id = m.id
-                          WHERE m.conversation_id = c.id AND ss.summary_id IS NULL
-                            AND ${SUMMARIZABLE_SQL}
-                       )
-                 ORDER BY c.updated_at ASC
+                SELECT id, updated_at FROM (
+                  SELECT c.id, c.updated_at,
+                         (SELECT count(*) FROM (
+                            SELECT 1 FROM ros_messages m
+                              LEFT JOIN ros_summary_sources ss ON ss.message_id = m.id
+                             WHERE m.conversation_id = c.id AND ss.summary_id IS NULL
+                               AND ${SUMMARIZABLE_SQL}
+                             LIMIT ?
+                          )) AS backlog
+                    FROM ros_conversations c
+                   WHERE (c.session_key IS NULL OR c.session_key NOT LIKE 'heartbeat:%')
+                     AND NOT EXISTS (
+                           SELECT 1 FROM ros_jobs j
+                            WHERE j.job_key = 'compact-' || c.id
+                              AND (j.state <> 'dead' OR j.updated_at > ?)
+                         )
+                )
+                 WHERE backlog >= ? OR (backlog >= ? AND updated_at < ?)
+                 ORDER BY updated_at ASC
                  LIMIT ?
                 ) c
            JOIN ros_messages m ON m.conversation_id = c.id
@@ -175,6 +195,11 @@ export class SqliteCompactor {
           LIMIT ?`,
       )
       .all(
+        Math.max(MIN_BATCH_SIZE, s.staleMinBatch),
+        deadAfter,
+        MIN_BATCH_SIZE,
+        s.staleMinBatch,
+        staleBefore,
         CANDIDATE_LIMIT,
         MIN_BATCH_SIZE,
         s.leafBatch,

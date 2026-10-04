@@ -241,13 +241,45 @@ describe('compaction on the job loop', () => {
       clock = new Date(clock.getTime() + 10 * 60_000)
     }
     expect(memory.jobs().counts()).toEqual([{ task: 'compact-conversation', state: 'dead', count: 1 }])
-    // The endpoint is back: the next sweep revives the dead job and it runs.
+    // The endpoint is back. A dead job rests for an hour before it is revived,
+    // so a conversation that keeps failing is not retried on every sweep.
     down = false
     clock = new Date(clock.getTime() + 10 * 60_000)
+    expect(await memory.runJobs()).toBe(0)
+    clock = new Date(clock.getTime() + 61 * 60_000)
     expect(await memory.runJobs()).toBe(1)
     const conv = memory.conversationIdForTest('s1', 'rivet')
     expect(memory.summariesForConversation(conv)).toHaveLength(1)
     expect(memory.jobs().counts()).toEqual([])
+  })
+
+  it('one-message tails never fill the sweep window: a ready conversation behind 600 of them is still queued', async () => {
+    let clock = new Date('2026-09-01T00:00:00Z')
+    const chat = fakeChat(() => ({ content: SUMMARY }))
+    memory = new SqliteMemory({
+      path: ':memory:',
+      workers: false,
+      log: () => {},
+      now: () => clock,
+      compactor: { endpoint: 'https://llm.test/v1', model: 'm', fetch: chat.fetch, sleep: noWait },
+    })
+    // 600 old conversations, each left with a single unsummarized message.
+    for (let i = 0; i < 600; i += 1) {
+      await memory.append({
+        sessionId: `tail-${String(i)}`,
+        agent: 'rivet',
+        channel: 'cli',
+        role: 'user',
+        content: 'a lone trailing message that can never form a batch',
+        createdAt: new Date(clock.getTime() + i * 1000),
+      })
+    }
+    // A newer conversation with a full leaf window.
+    clock = new Date('2026-10-04T12:00:00Z')
+    await fill(memory, 'ready', 10)
+    expect(await memory.runJobs()).toBe(1)
+    const conv = memory.conversationIdForTest('ready', 'rivet')
+    expect(memory.summariesForConversation(conv)).toHaveLength(1)
   })
 
   it('summaries are found by search, with and without an embedding endpoint', async () => {
