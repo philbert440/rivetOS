@@ -37,6 +37,7 @@ import { LlmClient, type LlmConfig } from './llm.js'
 import { SCHEMA, SCHEMA_VERSION } from './schema.js'
 import { SqliteTagStore } from './tags.js'
 import { ExactScanIndex, encodeVector, type VectorIndex } from './vectors.js'
+import { EXTRACT_WIKI_TASK, SqliteWikiExtractor, SqliteWikiIndex } from './wiki.js'
 
 function warnMode(target: string, mode: string, err: unknown): void {
   let code = 'error'
@@ -175,6 +176,12 @@ export interface SqliteMemoryConfig {
    */
   otherUsers?: Iterable<string>
   /**
+   * The wiki. `dir` is where the page files live (a git repository the
+   * writer creates). With `extraction` on and a compactor endpoint, leaf
+   * summaries are mined into pages. Without `dir` there is no wiki.
+   */
+  wiki?: { dir: string; extraction?: boolean }
+  /**
    * Run the in-process job loop (embedding, compaction; wiki and tagging as
    * they land). Default: on when `embed` or `compactor` is set. Turn off to
    * queue work without draining it, e.g. in a short-lived CLI process.
@@ -264,6 +271,10 @@ export class SqliteMemory implements Memory {
   private readonly otherUsers: ReadonlySet<string>
   private readonly warnedUsers = new Set<string>()
   private readonly summaryIndex: VectorIndex
+  private readonly topicIndex: VectorIndex
+  private readonly wikiIndex: SqliteWikiIndex | undefined
+  private readonly wikiDir: string | undefined
+  private readonly wikiExtractor: SqliteWikiExtractor | undefined
   private readonly compactor: SqliteCompactor | undefined
   private readonly log: (line: string) => void
 
@@ -311,8 +322,27 @@ export class SqliteMemory implements Memory {
       this.log,
       'c.agent',
     )
+    // Topics are keyed by slug and belong to no agent.
+    this.topicIndex = new ExactScanIndex(
+      this.db,
+      `FROM (SELECT slug AS id, embedding, '' AS agent FROM ros_wiki_topics) m WHERE 1 = 1`,
+      this.log,
+    )
     this.embedClient = config.embed ? new EmbedClient(config.embed) : undefined
     this.expectedDims = config.embed?.expectedDims
+    const embedClient = this.embedClient
+    this.wikiDir = config.wiki?.dir
+    this.wikiIndex = config.wiki
+      ? new SqliteWikiIndex(this.db, {
+          ...(embedClient
+            ? { embedQuery: (text) => embedClient.embedQuery(text), vectors: this.topicIndex }
+            : {}),
+          onTopicChanged: (slug) => {
+            this.enqueueTopicEmbed(slug)
+          },
+          now: this.clock,
+        })
+      : undefined
     this.jobRunner = new JobRunner(this.jobQueue, {
       log: this.log,
       ...(config.now ? { now: config.now } : {}),
@@ -327,21 +357,52 @@ export class SqliteMemory implements Memory {
         everyMs: 10 * 60 * 1000,
         run: () => {
           this.enqueueUnembedded()
+          this.enqueueUnembeddedTopics()
         },
       })
       if (config.workers ?? true) this.reconcileEmbedStore()
       else this.warnOnForeignModel(this.embedClient.model)
     }
     if (config.compactor) {
+      const llm = new LlmClient(config.compactor)
+      if (config.wiki?.extraction && this.wikiIndex) {
+        const extractor = new SqliteWikiExtractor(
+          this.db,
+          this.wikiIndex,
+          config.wiki.dir,
+          llm,
+          this.jobQueue,
+          () => this.tags(),
+          { log: this.log, now: this.clock },
+        )
+        this.wikiExtractor = extractor
+        this.jobRunner.handle(EXTRACT_WIKI_TASK, (payload) => extractor.extract(payload))
+        // Leaves written before extraction was on, failed ones, and ones mined
+        // by an older pipeline version.
+        this.jobRunner.sweep({
+          name: 'enqueue-wiki-backfill',
+          everyMs: 10 * 60 * 1000,
+          run: () => {
+            extractor.enqueueBackfill()
+          },
+        })
+      }
       this.compactor = new SqliteCompactor(
         this.db,
-        new LlmClient(config.compactor),
+        llm,
         this.jobQueue,
         config.compaction,
         {
           log: this.log,
-          onSummary: ({ id }) => {
+          onSummary: ({ id, kind }) => {
             this.enqueueSummaryEmbed(id)
+            if (kind === 'leaf') {
+              try {
+                this.wikiExtractor?.enqueue(id)
+              } catch {
+                // the backfill sweep picks it up
+              }
+            }
           },
         },
         config.now,
@@ -385,6 +446,9 @@ export class SqliteMemory implements Memory {
         case 3:
           // v4: ros_summaries, ros_summary_sources and their FTS table are
           // all new tables, created by SCHEMA above. Stamp to 4.
+          break
+        case 4:
+          // v5: the wiki index tables are all new, created by SCHEMA above.
           break
         default:
           throw new MemoryError(
@@ -637,6 +701,31 @@ export class SqliteMemory implements Memory {
         tokenEstimate += Math.ceil(line.length / 4)
         if (tokenEstimate > maxTokens) break
         sections.push(line)
+      }
+    }
+
+    // Curated state before raw recall, as on Postgres. A wiki failure costs
+    // this turn its wiki section, nothing more.
+    if (this.wikiIndex) {
+      try {
+        const topics = await this.wikiIndex.searchTopics(query, { limit: 3 })
+        if (topics.length > 0) {
+          const lines: string[] = []
+          for (const t of topics) {
+            const body =
+              t.currentState.slice(0, 1200) + (t.article ? `\n${t.article.slice(0, 800)}` : '')
+            const line = `**${t.title}** (wiki:${t.slug})\n${body}`
+            tokenEstimate += Math.ceil(line.length / 4)
+            if (tokenEstimate > maxTokens) break
+            seen.add(dedupKey(t.currentState))
+            lines.push(line)
+          }
+          if (lines.length > 0) sections.push('\n## Wiki (curated state)', ...lines)
+        }
+      } catch (err) {
+        this.log(
+          `[memory.sqlite] wiki context skipped: ${err instanceof Error ? err.message : String(err)}`,
+        )
       }
     }
 
@@ -1004,6 +1093,10 @@ export class SqliteMemory implements Memory {
       await this.embedSummary(client, id)
       return
     }
+    if (p.targetTable === 'ros_wiki_topics') {
+      await this.embedTopic(client, id)
+      return
+    }
     if (p.targetTable !== 'ros_messages') return
     const row = this.db
       .prepare(`SELECT content, tool_result, agent FROM ros_messages WHERE id = ?`)
@@ -1089,6 +1182,79 @@ export class SqliteMemory implements Memory {
       }
       throw err
     }
+  }
+
+  /** Embed a wiki topic's search text; the row is keyed by slug. */
+  private async embedTopic(client: EmbedClient, slug: string): Promise<void> {
+    const row = this.db
+      .prepare(`SELECT search_text FROM ros_wiki_topics WHERE slug = ?`)
+      .get(slug) as { search_text: string } | undefined
+    if (!row) return
+    try {
+      const outcome = await client.embedMessage(row.search_text, null)
+      if (this.closed) return
+      if (outcome.kind === 'unembeddable') {
+        this.db
+          .prepare(
+            `UPDATE ros_wiki_topics SET embed_status = 'unembeddable', embed_error = ?, embedding = NULL
+              WHERE slug = ?`,
+          )
+          .run(`unembeddable: ${outcome.reason}`, slug)
+        return
+      }
+      const blob = encodeVector(outcome.vector)
+      if (!blob) throw new Error('embedding is a zero vector')
+      this.noteEmbedDims(outcome.vector.length)
+      // Only if the text is still the one that was embedded: a page rewritten
+      // meanwhile has a newer job of its own.
+      const stored = this.db
+        .prepare(
+          `UPDATE ros_wiki_topics
+              SET embedding = ?, embed_status = 'done', embed_error = NULL, embed_failures = 0
+            WHERE slug = ? AND search_text = ?`,
+        )
+        .run(blob, slug, row.search_text)
+      if (Number(stored.changes) > 0) this.topicIndex.add(slug, '', blob)
+    } catch (err) {
+      if (!this.closed) {
+        this.db
+          .prepare(
+            `UPDATE ros_wiki_topics SET embed_error = ?, embed_failures = embed_failures + 1 WHERE slug = ?`,
+          )
+          .run((err instanceof Error ? err.message : String(err)).slice(0, 500), slug)
+      }
+      throw err
+    }
+  }
+
+  /** Queue a wiki topic whose search text changed (no-op without an endpoint). */
+  private enqueueTopicEmbed(slug: string): void {
+    if (!this.embedClient) return
+    const payload = { targetTable: 'ros_wiki_topics', targetId: slug }
+    const key = `embed-ros_wiki_topics-${slug}`
+    try {
+      // A dead job for an older text holds the key: give it the new work.
+      if (!this.jobQueue.enqueue(EMBED_TARGET_TASK, payload, { key })) {
+        this.jobQueue.revive(key, payload)
+      }
+    } catch {
+      // the sweep picks it up
+    }
+  }
+
+  /** Topics that still need a vector and have no job (the sweep's wiki half). */
+  private enqueueUnembeddedTopics(limit = 200): number {
+    const rows = this.db
+      .prepare(
+        `SELECT t.slug FROM ros_wiki_topics t
+          WHERE t.embedding IS NULL AND t.embed_status IS NULL AND length(t.search_text) > 20
+            AND NOT EXISTS (SELECT 1 FROM ros_jobs j
+                             WHERE j.job_key = 'embed-ros_wiki_topics-' || t.slug AND j.state <> 'dead')
+          ORDER BY t.updated_at ASC LIMIT ?`,
+      )
+      .all(limit) as unknown as Array<{ slug: string }>
+    for (const { slug } of rows) this.enqueueTopicEmbed(slug)
+    return rows.length
   }
 
   /** Queue a freshly written summary for embedding (no-op without an endpoint). */
@@ -1261,6 +1427,8 @@ export class SqliteMemory implements Memory {
            SELECT length(embedding) / 4 AS dims FROM ros_messages WHERE embedding IS NOT NULL
            UNION ALL
            SELECT length(embedding) / 4 FROM ros_summaries WHERE embedding IS NOT NULL
+           UNION ALL
+           SELECT length(embedding) / 4 FROM ros_wiki_topics WHERE embedding IS NOT NULL
          ) GROUP BY dims ORDER BY n DESC, dims DESC`,
       )
       .all() as unknown as Array<{ dims: number; n: number }>
@@ -1270,7 +1438,7 @@ export class SqliteMemory implements Memory {
       .prepare(`INSERT OR REPLACE INTO ros_meta (key, value) VALUES ('embed_dims', ?)`)
       .run(String(dims))
     let reset = 0
-    for (const table of ['ros_messages', 'ros_summaries']) {
+    for (const table of ['ros_messages', 'ros_summaries', 'ros_wiki_topics']) {
       reset += Number(
         this.db
           .prepare(
@@ -1284,6 +1452,7 @@ export class SqliteMemory implements Memory {
       // The indexes may already hold the rows that were just reset.
       this.vectorIndex.invalidate()
       this.summaryIndex.invalidate()
+      this.topicIndex.invalidate()
       this.log(
         `[memory.sqlite] ${String(reset)} stored vector(s) were not ${String(dims)} wide and will be re-embedded`,
       )
@@ -1292,7 +1461,7 @@ export class SqliteMemory implements Memory {
 
   /** Drop every stored vector (messages and summaries) so the sweep re-embeds them. */
   private clearVectors(): void {
-    for (const table of ['ros_messages', 'ros_summaries']) {
+    for (const table of ['ros_messages', 'ros_summaries', 'ros_wiki_topics']) {
       this.db.exec(
         `UPDATE ${table} SET embedding = NULL, embed_status = NULL, embed_error = NULL, embed_failures = 0
           WHERE embedding IS NOT NULL OR embed_status = 'done'`,
@@ -1300,6 +1469,7 @@ export class SqliteMemory implements Memory {
     }
     this.vectorIndex.invalidate()
     this.summaryIndex.invalidate()
+    this.topicIndex.invalidate()
   }
 
   /** Summaries for stats, tools and tests: by depth, oldest first. */
@@ -1339,6 +1509,17 @@ export class SqliteMemory implements Memory {
     }))
   }
 
+  /** The wiki index and where its page files live; undefined without a wiki. */
+  wiki(): { index: SqliteWikiIndex; wikiDir: string; extractor?: SqliteWikiExtractor } | undefined {
+    this.assertOpen()
+    if (!this.wikiIndex || !this.wikiDir) return undefined
+    return {
+      index: this.wikiIndex,
+      wikiDir: this.wikiDir,
+      ...(this.wikiExtractor ? { extractor: this.wikiExtractor } : {}),
+    }
+  }
+
   /**
    * The wider surface (capture, the hub's Memory pages, tools over HTTP) on
    * this store. See `MemoryBackend` in `@rivetos/types`.
@@ -1356,6 +1537,7 @@ export class SqliteMemory implements Memory {
         this.enqueueMessageEmbed(id)
       },
       tags: () => this.tags(),
+      wiki: () => this.wiki(),
       assertOpen: () => {
         this.assertOpen()
       },
@@ -1560,6 +1742,34 @@ export class SqliteMemory implements Memory {
       }
     }
     return out
+  }
+
+  /** Test helper — run a raw statement (fixtures that no API writes). */
+  rawForTest(sql: string): void {
+    this.db.exec(sql)
+  }
+
+  /** Test helper — row count of one of the store's tables. */
+  countForTest(table: string): number {
+    if (!/^ros_[a-z_]+$/.test(table)) throw new Error('not a store table')
+    return (this.db.prepare(`SELECT count(*) AS n FROM ${table}`).get() as { n: number }).n
+  }
+
+  /** Test helper — wiki extraction status per summary, oldest first. */
+  extractionStatusForTest(): string[] {
+    return (
+      this.db
+        .prepare(`SELECT status FROM ros_wiki_extractions ORDER BY extracted_at, summary_id`)
+        .all() as unknown as Array<{ status: string }>
+    ).map((r) => r.status)
+  }
+
+  /** Test helper — width of a wiki topic's stored vector (0 when none). */
+  topicEmbedDimsForTest(slug: string): number {
+    const row = this.db
+      .prepare(`SELECT embedding FROM ros_wiki_topics WHERE slug = ?`)
+      .get(slug) as { embedding: Uint8Array | null } | undefined
+    return row?.embedding ? row.embedding.byteLength / 4 : 0
   }
 
   /** Test helper — the conversation id for a session and agent. */

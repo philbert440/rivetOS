@@ -25,6 +25,8 @@ export { LlmClient, LlmTruncatedError, LlmPermanentError } from './llm.js'
 export type { LlmConfig, LlmAnswer } from './llm.js'
 export { SqliteCompactor, COMPACT_TASK, DEFAULT_COMPACTION_SETTINGS } from './compaction.js'
 export type { CompactionSettings } from './compaction.js'
+export { SqliteWikiIndex, SqliteWikiExtractor, EXTRACT_WIKI_TASK } from './wiki.js'
+export type { WikiTopicRow, WikiTopicHit, TopicResolution } from './wiki.js'
 export { EmbedClient } from './embed.js'
 export type { EmbedConfig, EmbedOutcome } from './embed.js'
 export { ExactScanIndex, encodeVector, decodeVector } from './vectors.js'
@@ -38,7 +40,7 @@ export type {
 
 import { homedir } from 'node:os'
 import type { PluginManifest } from '@rivetos/types'
-import { loadUsersRegistry } from '@rivetos/types'
+import { loadUsersRegistry, sharedPath } from '@rivetos/types'
 import { SqliteMemory, resolveSqlitePath } from './adapter.js'
 import { clampEmbedTimeoutMs } from '@rivetos/memory-core'
 import { MIN_BATCH_SIZE } from '@rivetos/memory-core'
@@ -70,11 +72,18 @@ export const manifest: PluginManifest = {
     const otherUsers = otherUsersOf(ctx.env, (line) => {
       ctx.logger.warn(line)
     })
+    const wiki = resolveWikiConfig(cfg, ctx.env)
+    if (wiki.extraction && !compactor) {
+      ctx.logger.warn(
+        'memory.sqlite: wiki extraction is on but no compactor endpoint is set; no pages will be written',
+      )
+    }
     const memory = new SqliteMemory({
       path,
       otherUsers,
       ...(embed ? { embed } : {}),
       ...(compactor ? { compactor, compaction: resolveCompactionSettings(ctx.env) } : {}),
+      wiki,
       ...(typeof cfg.workers === 'boolean' ? { workers: cfg.workers } : {}),
       log: (line) => {
         ctx.logger.warn(line)
@@ -104,6 +113,9 @@ export const manifest: PluginManifest = {
     })
     if (compactor) {
       ctx.logger.info(`sqlite memory: summarizing with ${compactor.model}`)
+    }
+    if (wiki.extraction && compactor) {
+      ctx.logger.info(`sqlite memory: mining summaries into the wiki at ${wiki.dir}`)
     }
     if (embed) {
       ctx.logger.info(
@@ -291,4 +303,23 @@ function otherUsersOf(
     )
     return new Set()
   }
+}
+
+/**
+ * Where the wiki's page files live and whether summaries are mined into
+ * them. Config first, then the variables the Postgres pipeline reads
+ * (`WIKI_DIR`, `WIKI_EXTRACTION=1`). Extraction is off unless asked for.
+ */
+export function resolveWikiConfig(
+  cfg: Record<string, unknown>,
+  env: Record<string, string | undefined>,
+): { dir: string; extraction: boolean } {
+  const configured =
+    typeof cfg.wiki_dir === 'string' && cfg.wiki_dir.trim() !== ''
+      ? cfg.wiki_dir.trim()
+      : env.WIKI_DIR?.trim() || undefined
+  const dir = configured ? resolveSqlitePath(configured) : sharedPath('wiki')
+  const extraction =
+    typeof cfg.wiki_extraction === 'boolean' ? cfg.wiki_extraction : env.WIKI_EXTRACTION === '1'
+  return { dir, extraction }
 }

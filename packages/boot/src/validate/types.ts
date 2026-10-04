@@ -457,6 +457,8 @@ export const KNOWN_MEMORY_SQLITE_KEYS = new Set([
   'compactor_api_key',
   'compactor_token_command',
   'compactor_timeout_ms',
+  'wiki_dir',
+  'wiki_extraction',
   'workers',
 ])
 

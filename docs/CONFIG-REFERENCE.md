@@ -794,6 +794,8 @@ memory:
 | `compactor_api_key` | string | `RIVETOS_COMPACTOR_API_KEY` | Bearer key for the summarization endpoint. |
 | `compactor_token_command` | string[] | — | Command that prints a bearer token; wins over the key. |
 | `compactor_timeout_ms` | number | `600000` | Per-request timeout, clamped to 5 seconds – 60 minutes. |
+| `wiki_dir` | string | `WIKI_DIR`, else the shared directory's `wiki` | Where the wiki's page files live (a git repository the writer creates). |
+| `wiki_extraction` | boolean | `WIKI_EXTRACTION=1` | Mine leaf summaries into wiki pages. Needs a summarization endpoint. Off by default. |
 | `workers` | boolean | `true` when an embedding or summarization endpoint is set | Run the in-process job loop. `false` queues work without draining it, and a model change is not applied on open: stored vectors are cleared only by a process that runs the job loop (or calls `runJobs()`). |
 
 The file is opened with WAL, a 5s busy timeout, and foreign keys on. Without an embedding
@@ -808,6 +810,14 @@ been idle, or have gone stale. Summaries are searchable (`scope: summaries` or `
 embedded when an embedding endpoint is set. The worker's `COMPACT_LEAF_BATCH`,
 `COMPACT_BRANCH_BATCH`, `COMPACT_ROOT_BATCH`, `COMPACT_MIN_LEAFS`, `COMPACT_MIN_BRANCHES`,
 `COMPACT_IDLE_MINUTES`, `COMPACT_STALE_MINUTES` and `COMPACT_STALE_MIN_BATCH` variables tune it.
+
+With `wiki_extraction` on, each leaf summary is mined into wiki pages by the same prompts, patch
+rules and page writer as the Postgres pipeline: pages are markdown files under `wiki_dir/topics`,
+committed to a git repository there, and indexed in the SQLite file for search. A sweep every ten
+minutes picks up leaves written before extraction was turned on, failed attempts older than a day,
+and leaves mined by an older pipeline version. The turn context gains a "Wiki (curated state)"
+section, and the den serves `/api/wiki` and `/wiki` from this index. Topics are embedded when an
+embedding endpoint is set.
 
 A node with `memory.sqlite` serves `POST /api/capture` and `/api/memory/*` (search, browse, stats,
 health, tags, and the memory tools the MCP sidecar's den transport calls) from the file, with the

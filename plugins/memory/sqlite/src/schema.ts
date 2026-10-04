@@ -12,7 +12,7 @@
  */
 
 /** Current on-disk schema version. Bump when the DDL changes. */
-export const SCHEMA_VERSION = 4
+export const SCHEMA_VERSION = 5
 
 export const SCHEMA = `
 CREATE TABLE IF NOT EXISTS ros_conversations (
@@ -229,4 +229,82 @@ CREATE TABLE IF NOT EXISTS ros_tag_taxonomy (
 );
 CREATE INDEX IF NOT EXISTS idx_ros_tag_taxonomy_parent
     ON ros_tag_taxonomy (key, parent_value);
+
+-- v5: the wiki index. Page content lives in git-backed files under the wiki
+-- directory; these tables are the search, provenance and idempotency index
+-- over them. List columns (aliases, tags, entities, related, topics_touched)
+-- hold JSON arrays.
+CREATE TABLE IF NOT EXISTS ros_wiki_topics (
+    slug              TEXT PRIMARY KEY NOT NULL,
+    title             TEXT NOT NULL,
+    aliases           TEXT NOT NULL DEFAULT '[]',
+    tags              TEXT NOT NULL DEFAULT '[]',
+    entities          TEXT NOT NULL DEFAULT '[]',
+    related           TEXT NOT NULL DEFAULT '[]',
+    current_state     TEXT NOT NULL DEFAULT '',
+    article           TEXT NOT NULL DEFAULT '',
+    search_text       TEXT NOT NULL DEFAULT '',
+    history_count     INTEGER NOT NULL DEFAULT 0,
+    git_sha           TEXT,
+    last_verified_at  TEXT,
+    created_at        TEXT NOT NULL,
+    updated_at        TEXT NOT NULL,
+    embed_status      TEXT,
+    embedding         BLOB,
+    embed_error       TEXT,
+    embed_failures    INTEGER NOT NULL DEFAULT 0
+);
+CREATE INDEX IF NOT EXISTS idx_ros_wiki_topics_updated
+    ON ros_wiki_topics (updated_at DESC);
+
+CREATE VIRTUAL TABLE IF NOT EXISTS ros_wiki_topics_fts USING fts5(
+    slug UNINDEXED,
+    search_text,
+    tokenize = 'porter unicode61'
+);
+CREATE TRIGGER IF NOT EXISTS ros_wiki_topics_ai AFTER INSERT ON ros_wiki_topics BEGIN
+    INSERT INTO ros_wiki_topics_fts (slug, search_text) VALUES (new.slug, new.search_text);
+END;
+CREATE TRIGGER IF NOT EXISTS ros_wiki_topics_ad AFTER DELETE ON ros_wiki_topics BEGIN
+    DELETE FROM ros_wiki_topics_fts WHERE slug = old.slug;
+END;
+CREATE TRIGGER IF NOT EXISTS ros_wiki_topics_au AFTER UPDATE OF search_text ON ros_wiki_topics BEGIN
+    DELETE FROM ros_wiki_topics_fts WHERE slug = old.slug;
+    INSERT INTO ros_wiki_topics_fts (slug, search_text) VALUES (new.slug, new.search_text);
+END;
+
+CREATE TABLE IF NOT EXISTS ros_wiki_provenance (
+    topic_slug       TEXT NOT NULL REFERENCES ros_wiki_topics(slug) ON DELETE CASCADE,
+    source_kind      TEXT NOT NULL CHECK (source_kind IN ('summary', 'message', 'conversation', 'task')),
+    source_id        TEXT NOT NULL,
+    conversation_id  TEXT,
+    git_sha          TEXT,
+    created_at       TEXT NOT NULL,
+    PRIMARY KEY (topic_slug, source_kind, source_id)
+);
+
+CREATE TABLE IF NOT EXISTS ros_wiki_extractions (
+    summary_id        TEXT PRIMARY KEY NOT NULL REFERENCES ros_summaries(id) ON DELETE CASCADE,
+    status            TEXT NOT NULL CHECK (status IN ('done', 'skipped', 'failed')),
+    pipeline_version  INTEGER NOT NULL,
+    topics_touched    TEXT NOT NULL DEFAULT '[]',
+    git_sha           TEXT,
+    error             TEXT,
+    extracted_at      TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS ros_wiki_citations (
+    topic_slug  TEXT NOT NULL REFERENCES ros_wiki_topics(slug) ON DELETE CASCADE,
+    summary_id  TEXT NOT NULL,
+    kind        TEXT,
+    note        TEXT,
+    cited_at    TEXT NOT NULL,
+    PRIMARY KEY (topic_slug, summary_id)
+);
+
+CREATE TABLE IF NOT EXISTS ros_wiki_redirects (
+    from_slug   TEXT PRIMARY KEY NOT NULL,
+    to_slug     TEXT NOT NULL REFERENCES ros_wiki_topics(slug) ON DELETE CASCADE,
+    created_at  TEXT NOT NULL
+);
 `

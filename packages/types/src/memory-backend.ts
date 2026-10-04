@@ -167,6 +167,41 @@ export interface MemoryBackend {
   /** Tools served by `POST /api/memory/tool/<name>`. */
   tools(): Tool[]
   tags(): MemoryTagsBackend
+  /**
+   * The wiki: an index over the page files in `wikiDir`. Absent, or returning
+   * undefined, when the backend has no wiki.
+   */
+  wiki?(): { index: MemoryWikiIndex; wikiDir: string } | undefined
+}
+
+/** A wiki topic as the index lists it. */
+export interface MemoryWikiTopic {
+  slug: string
+  title: string
+  aliases: string[]
+  tags: string[]
+  entities: string[]
+  currentState: string
+  gitSha: string | null
+  updatedAt: string
+  lastVerifiedAt?: string
+}
+
+/** What the den's wiki routes need from a topic index (page bodies are files). */
+export interface MemoryWikiIndex {
+  getTopic(slug: string): Promise<MemoryWikiTopic | undefined>
+  listTopics(opts?: {
+    tag?: string
+    entity?: string
+    limit?: number
+    offset?: number
+  }): Promise<{ topics: MemoryWikiTopic[]; total: number }>
+  searchTopics(query: string, opts?: { limit?: number }): Promise<MemoryWikiTopic[]>
+  gaps(opts?: { staleLimit?: number }): Promise<{
+    redLinks: Array<{ entity: string; referencedBy: string[] }>
+    stalest: MemoryWikiTopic[]
+  }>
+  resolveTopic?(slug: string): Promise<{ candidates: Array<{ slug: string; title: string }> }>
 }
 
 /** A `Memory` that also offers the wider surface. */
