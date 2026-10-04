@@ -12,13 +12,16 @@ import { normalizeSlug, type WikiArticlePatch, type WikiPatch } from '@rivetos/w
  * v1 = phase 3c free-form topics
  * v2 = durable topics + hard identity
  * v3 = Wikipedia-style Summary/Article/See also + shrink-safe merges
+ * v4 = accepted session tags as extraction input (reviewed tags as identity
+ *      hints and candidate search terms). Leaves mined before a tag was
+ *      accepted are re-mined with it.
  *
  * A bump re-queues `ros_wiki_extractions` rows with status=`done` and
  * `pipeline_version < WIKI_PIPELINE_VERSION` (enqueue-wiki-backfill) and
  * makes `WikiIndex.extractionDone` return false for those rows so
  * extract-wiki re-mines. `skipped` stays terminal (version-independent).
  */
-export const WIKI_PIPELINE_VERSION = 3
+export const WIKI_PIPELINE_VERSION = 4
 
 // 32000, not 6000 or 2048: the local qwen-27b serves with thinking ON, and
 // reasoning scales with the input — a v7 extract carries candidate pages plus
