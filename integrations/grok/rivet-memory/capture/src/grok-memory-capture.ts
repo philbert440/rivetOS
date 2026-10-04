@@ -32,6 +32,7 @@
  *   never blocked. Failures go to ~/.rivetos/grok-memory-capture.log.
  */
 
+import { createHash } from 'node:crypto'
 import {
   isRecord,
   asString,
@@ -54,7 +55,19 @@ export const CAPTURE_AGENT = 'rivet-grok'
 export const CAPTURE_CHANNEL = 'grok-build'
 
 const LOG_FILE = path.join(os.homedir(), '.rivetos', 'grok-memory-capture.log')
-const SPOOL_DIR = path.join(os.tmpdir(), 'rivetos-grok-capture')
+/**
+ * The hook payload spool. A session spawned for another registry user spools
+ * apart: a payload that outlives its worker is ingested by whichever worker
+ * next sweeps the directory, with that worker's identity, and must not be
+ * ingested as someone else's.
+ */
+function spoolDirFor(name: string): string {
+  const base = path.join(os.tmpdir(), name)
+  const userId = process.env.RIVETOS_USER_ID
+  if (userId === undefined || userId === '') return base
+  return `${base}-user-${createHash('sha256').update(userId).digest('hex').slice(0, 32)}`
+}
+const SPOOL_DIR = spoolDirFor('rivetos-grok-capture')
 const stateDir = (): string => path.join(os.homedir(), '.rivetos', 'capture-state')
 const sessionsRoot = (): string => path.join(os.homedir(), '.grok', 'sessions')
 const MAX_CONTENT = 16000 // keep in sync with plugins/providers/claude-cli/src/transcript-capture.ts

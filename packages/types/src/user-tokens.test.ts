@@ -27,6 +27,12 @@ describe('user tokens', () => {
     clearUserTokens()
     expect(userForToken(guest)).toBeUndefined()
   })
+
+  it('honours the longest id it mints for, and refuses to mint for a longer one', () => {
+    const long = 'u'.repeat(256)
+    expect(userForToken(mintUserToken(long))).toBe(long)
+    expect(() => mintUserToken('u'.repeat(257))).toThrow(/too long/)
+  })
 })
 
 describe('resolveUserById', () => {

@@ -185,7 +185,11 @@ async function main(): Promise<void> {
           },
         })
         const selected = delegateToolsForTransport(handle.tools, stdioMode)
-        if (!enableDelegate) {
+        if (routedSession) {
+          console.log(
+            '[rivetos-mcp-sidecar] session spawned for another user — delegate tools disabled',
+          )
+        } else if (!enableDelegate) {
           console.log(
             '[rivetos-mcp-sidecar] RIVETOS_MCP_ENABLE_DELEGATE=0 — delegate tools disabled',
           )

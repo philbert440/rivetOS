@@ -31,6 +31,7 @@
  *   never blocked. Failures go to ~/.rivetos/kimi-memory-capture.log.
  */
 
+import { createHash } from 'node:crypto'
 import {
   isRecord,
   asString,
@@ -54,7 +55,19 @@ export const CAPTURE_AGENT = 'rivet-kimi'
 export const CAPTURE_CHANNEL = 'kimi-code'
 
 const LOG_FILE = path.join(os.homedir(), '.rivetos', 'kimi-memory-capture.log')
-const SPOOL_DIR = path.join(os.tmpdir(), 'rivetos-kimi-capture')
+/**
+ * The hook payload spool. A session spawned for another registry user spools
+ * apart: a payload that outlives its worker is ingested by whichever worker
+ * next sweeps the directory, with that worker's identity, and must not be
+ * ingested as someone else's.
+ */
+function spoolDirFor(name: string): string {
+  const base = path.join(os.tmpdir(), name)
+  const userId = process.env.RIVETOS_USER_ID
+  if (userId === undefined || userId === '') return base
+  return `${base}-user-${createHash('sha256').update(userId).digest('hex').slice(0, 32)}`
+}
+const SPOOL_DIR = spoolDirFor('rivetos-kimi-capture')
 
 /**
  * Candidate kimi config / session homes. Docs disagree between ~/.kimi and

@@ -95,7 +95,7 @@ function resolveWriterRedaction(opts: CaptureWriterOptions): ResolvedCaptureReda
 /** Same header as `USER_TOKEN_HEADER` in `@rivetos/types` (this package has no dependencies). */
 const USER_TOKEN_HEADER = 'x-rivetos-user-token'
 
-/** The den did not accept this session's user token. Retried later, for a while. */
+/** The den did not accept this session's token, or has this user's store blocked. Retried later, for a while. */
 class CaptureTokenRefused extends Error {}
 
 /** How long a batch the den keeps refusing stays in a user's spool before it is set aside. */
@@ -262,9 +262,10 @@ export function createCaptureWriter(opts: CaptureWriterOptions): CaptureWriter {
     if (!response.ok) await response.body?.cancel().catch(log)
     // A token the den does not know (the node restarted since this session
     // was spawned) is not a bad batch: keep it for the user's next session.
-    if (user && (response.status === 401 || response.status === 403)) {
+    // The same for a user whose store the node has blocked (503).
+    if (user && (response.status === 401 || response.status === 403 || response.status === 503)) {
       throw new CaptureTokenRefused(
-        `capture HTTP ${String(response.status)} (user token not accepted)`,
+        `capture HTTP ${String(response.status)} (not accepted for this user)`,
       )
     }
     if (response.status >= 400 && response.status < 500) {
