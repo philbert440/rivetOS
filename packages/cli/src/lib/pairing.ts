@@ -31,7 +31,11 @@ export interface PairingRecord {
   expiresAt: number
 }
 
-/** The QR body. Keep in sync with the Android `PairingCode` parser. */
+/**
+ * The QR body. Keep in sync with the Android `PairingCode` parser.
+ * The code the screen shows is a `rivethub://pair?d=` link around this JSON,
+ * so the phone camera can open RivetHub. The phone still accepts the raw JSON.
+ */
 export interface PairingQr {
   v: 1
   kind: 'rivethub-pair'
@@ -211,7 +215,20 @@ export function pairingQrText(opts: {
     token: opts.token,
     certSha256: opts.certSha256,
   }
-  return JSON.stringify(qr)
+  // No package name in the link: debug (`io.rivethub.app.debug`) and release
+  // both register the scheme, and whichever is installed opens.
+  const d = Buffer.from(JSON.stringify(qr), 'utf8').toString('base64url')
+  return `rivethub://pair?d=${d}`
+}
+
+/** JSON inside a pairing QR: the `rivethub://pair` link, or raw JSON from an older node. */
+export function parsePairingQrText(text: string): unknown {
+  const trimmed = text.trim()
+  const match = /^rivethub:\/\/pair\?(.*)$/i.exec(trimmed)
+  if (!match) return JSON.parse(trimmed)
+  const payload = new URLSearchParams(match[1]).get('d')
+  if (!payload) throw new Error('pairing link has no payload')
+  return JSON.parse(Buffer.from(payload, 'base64url').toString('utf8'))
 }
 
 export async function renderTerminalQr(text: string): Promise<string> {

@@ -45,6 +45,13 @@
                 <category android:name="android.intent.category.DEFAULT" />
                 <data android:mimeType="image/*" />
             </intent-filter>
+            <!-- Pairing QR. No package= in the link, so debug and release both claim it. -->
+            <intent-filter>
+                <action android:name="android.intent.action.VIEW" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <category android:name="android.intent.category.BROWSABLE" />
+                <data android:scheme="rivethub" android:host="pair" />
+            </intent-filter>
         </activity>
         <provider
             android:name="androidx.core.content.FileProvider"

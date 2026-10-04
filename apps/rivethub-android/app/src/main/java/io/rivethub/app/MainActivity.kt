@@ -50,6 +50,7 @@ import io.rivethub.app.plane.NarrowLaunchTarget
 import io.rivethub.app.plane.ConsumedTaps
 import io.rivethub.app.plane.OpenTaskTap
 import io.rivethub.app.plane.openTaskFromIntent
+import io.rivethub.app.plane.looksLikePairingCode
 import io.rivethub.app.plane.rememberConsumedTap
 import io.rivethub.app.plane.chatHomeNav
 import io.rivethub.app.plane.displayTitle
@@ -77,6 +78,10 @@ class MainActivity : ComponentActivity() {
     private var pendingShare by mutableStateOf<List<android.net.Uri>>(emptyList())
     /** A tapped task-completion notification, until App() consumes it. */
     private var pendingTap by mutableStateOf<OpenTaskTap?>(null)
+    /** A rivethub://pair link from the camera app, until Enroll consumes it. */
+    private var pendingPairing by mutableStateOf<String?>(null)
+    /** The link already handed to Enroll. Survives recreation so it is not redeemed twice. */
+    private var consumedPairing: String? = null
     /**
      * Markers of the taps App() handled: the launch intent's marker pinned for
      * the Activity's lifetime, plus the recent onNewIntent ones (capped). Saved
@@ -95,7 +100,9 @@ class MainActivity : ComponentActivity() {
             launch = savedInstanceState?.getString(STATE_LAUNCH_TAP),
             recent = savedInstanceState?.getStringArrayList(STATE_CONSUMED_TAPS).orEmpty(),
         )
+        consumedPairing = savedInstanceState?.getString(STATE_CONSUMED_PAIRING)
         readOpenTask(intent, fromLaunch = true)
+        readPairing(intent)
         // Compose UI 1.8+ reports every text field to the Autofill framework, so password
         // managers (1Password) kept offering themselves on the chat composer and the terminal
         // field. Nothing here takes a credential — tokens come from the mesh — so opt the whole
@@ -133,6 +140,8 @@ class MainActivity : ComponentActivity() {
                     onShareConsumed = { pendingShare = emptyList() },
                     openTaskId = pendingTap?.taskId,
                     onOpenTaskConsumed = { consumeOpenTask() },
+                    pairingLink = pendingPairing,
+                    onPairingLinkConsumed = { consumePairing() },
                 )
             }
         }
@@ -143,12 +152,14 @@ class MainActivity : ComponentActivity() {
         setIntent(intent)
         pendingShare = extractShareUris(intent)
         readOpenTask(intent, fromLaunch = false)
+        readPairing(intent)
     }
 
     override fun onSaveInstanceState(outState: Bundle) {
         super.onSaveInstanceState(outState)
         outState.putString(STATE_LAUNCH_TAP, consumedTaps.launch)
         outState.putStringArrayList(STATE_CONSUMED_TAPS, ArrayList(consumedTaps.recent))
+        outState.putString(STATE_CONSUMED_PAIRING, consumedPairing)
     }
 
     /**
@@ -181,9 +192,25 @@ class MainActivity : ComponentActivity() {
         intent?.removeExtra(TaskNotifier.EXTRA_OPEN_TASK_NONCE)
     }
 
+    private fun readPairing(intent: android.content.Intent?) {
+        if (intent?.action != android.content.Intent.ACTION_VIEW) return
+        val text = intent.dataString?.trim().orEmpty()
+        if (text.isEmpty() || !looksLikePairingCode(text)) return
+        if (text == consumedPairing) return
+        pendingPairing = text
+    }
+
+    private fun consumePairing() {
+        val text = pendingPairing ?: return
+        consumedPairing = text
+        pendingPairing = null
+        if (intent?.dataString == text) intent.data = null
+    }
+
     private companion object {
         const val STATE_CONSUMED_TAPS = "consumed_open_tasks"
         const val STATE_LAUNCH_TAP = "consumed_launch_open_task"
+        const val STATE_CONSUMED_PAIRING = "consumed_pairing_link"
     }
 
     /** Ask for the local-network permission up front; no-op when granted or not on this platform. */
@@ -248,6 +275,8 @@ fun App(
     onShareConsumed: () -> Unit = {},
     openTaskId: String? = null,
     onOpenTaskConsumed: () -> Unit = {},
+    pairingLink: String? = null,
+    onPairingLinkConsumed: () -> Unit = {},
 ) {
     val prefs by c.settings.prefs.collectAsState(initial = null)
     val p = prefs
@@ -317,6 +346,13 @@ fun App(
     // post-enroll screen EXCEPT the component Gallery — so leave the Gallery
     // first (it is only ever pushed over a HubDrawer screen; a lone Gallery
     // root falls back to Hub). Pre-enroll the tap is dropped.
+    var enrollCode by remember { mutableStateOf<String?>(null) }
+    LaunchedEffect(pairingLink) {
+        val text = pairingLink ?: return@LaunchedEffect
+        enrollCode = text
+        if (nav.current != Screen.Enroll) nav.push(Screen.Enroll)
+    }
+
     LaunchedEffect(openTaskId) {
         val taskId = openTaskId ?: return@LaunchedEffect
         onOpenTaskConsumed()
@@ -545,6 +581,11 @@ fun App(
             c,
             onBack = if (nav.stack.size > 1) ({ nav.pop() }) else null,
             onDone = { nav.replaceAll(Screen.Hub) },
+            pendingCode = enrollCode,
+            onPendingCodeConsumed = {
+                enrollCode = null
+                onPairingLinkConsumed()
+            },
         )
         // Session-header slice: the hub AND a chat session live inside the
         // same left ModalNavigationDrawer (one HubDrawer implementation) —

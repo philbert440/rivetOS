@@ -6,10 +6,12 @@ import kotlinx.serialization.json.intOrNull
 import kotlinx.serialization.json.jsonPrimitive
 
 /**
- * The pairing QR `rivetos local --device <id>` shows (packages/cli/src/lib/pairing.ts):
- * `{v:1, kind:"rivethub-pair", gateway, token, certSha256}`. [certSha256] is the
- * lowercase hex SHA-256 of the gateway's TLS leaf — the phone has no CA yet, so it
- * pins that leaf for the one redeem call.
+ * The pairing QR `rivetos pair` shows (packages/cli/src/lib/pairing.ts).
+ * The body is `{v:1, kind:"rivethub-pair", gateway, token, certSha256}`, wrapped in
+ * `rivethub://pair?d=<base64url>` so the phone camera can open this app.
+ * Raw JSON from an older node still parses. [certSha256] is the lowercase hex
+ * SHA-256 of the gateway's TLS leaf — the phone has no CA yet, so it pins that
+ * leaf for the one redeem call.
  */
 data class PairingCode(val gateway: String, val token: String, val certSha256: String)
 
@@ -25,10 +27,15 @@ private val HEX64 = Regex("^[0-9a-f]{64}$")
 private val json = Json { ignoreUnknownKeys = true }
 
 /** Cheap pre-check so the scanner keeps looking past unrelated QR codes. */
-fun looksLikePairingCode(text: String): Boolean = text.contains("\"$KIND\"")
+fun looksLikePairingCode(text: String): Boolean {
+    val trimmed = text.trim()
+    if (trimmed.startsWith("rivethub://pair", ignoreCase = true)) return true
+    return trimmed.contains("\"$KIND\"")
+}
 
 fun parsePairingCode(text: String): PairingParse {
-    val obj = runCatching { json.parseToJsonElement(text.trim()) as? JsonObject }.getOrNull()
+    val jsonText = pairingJsonText(text) ?: return PairingParse.Err(PairingCodeError.NotPairing)
+    val obj = runCatching { json.parseToJsonElement(jsonText) as? JsonObject }.getOrNull()
         ?: return PairingParse.Err(PairingCodeError.NotPairing)
     fun str(key: String): String? = runCatching { obj[key]?.jsonPrimitive?.content }.getOrNull()
     if (str("kind") != KIND) return PairingParse.Err(PairingCodeError.NotPairing)
@@ -42,6 +49,27 @@ fun parsePairingCode(text: String): PairingParse {
     }
     return PairingParse.Ok(PairingCode(gateway, token, pin))
 }
+
+/**
+ * Raw JSON, or the JSON inside a `rivethub://pair?d=` link. Null when the
+ * link is missing its payload or the payload is not base64url.
+ */
+private fun pairingJsonText(text: String): String? {
+    val trimmed = text.trim()
+    if (!trimmed.startsWith("rivethub://pair", ignoreCase = true)) return trimmed
+    val query = trimmed.substringAfter('?', "")
+    val payload = query.split('&').firstNotNullOfOrNull { part ->
+        val eq = part.indexOf('=')
+        if (eq <= 0) null else if (part.substring(0, eq) == "d") part.substring(eq + 1) else null
+    } ?: return null
+    return decodeBase64Url(payload)
+}
+
+private fun decodeBase64Url(encoded: String): String? = runCatching {
+    val pad = (4 - encoded.length % 4) % 4
+    val bytes = java.util.Base64.getUrlDecoder().decode(encoded + "=".repeat(pad))
+    String(bytes, Charsets.UTF_8)
+}.getOrNull()
 
 /**
  * Why a pairing redeem failed, for the Enroll screen. [Spent]: a retry after a

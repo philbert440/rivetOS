@@ -76,7 +76,13 @@ import kotlinx.coroutines.withContext
  * PKCS#12 and its passphrase → verify against /api/mesh → hub.
  */
 @Composable
-fun EnrollScreen(c: AppContainer, onBack: (() -> Unit)?, onDone: () -> Unit) {
+fun EnrollScreen(
+    c: AppContainer,
+    onBack: (() -> Unit)?,
+    onDone: () -> Unit,
+    pendingCode: String? = null,
+    onPendingCodeConsumed: () -> Unit = {},
+) {
     val ctx = LocalContext.current
     val scope = rememberCoroutineScope()
     val colors = RivetTheme.colors
@@ -204,6 +210,14 @@ fun EnrollScreen(c: AppContainer, onBack: (() -> Unit)?, onDone: () -> Unit) {
     LaunchedEffect(grantedPair) {
         val text = grantedPair ?: return@LaunchedEffect
         grantedPair = null
+        pairWith(text)
+    }
+
+    // A code the camera app handed over via rivethub://pair. Consumed once so
+    // a rotation does not redeem the same single-use token again.
+    LaunchedEffect(pendingCode) {
+        val text = pendingCode ?: return@LaunchedEffect
+        onPendingCodeConsumed()
         pairWith(text)
     }
 

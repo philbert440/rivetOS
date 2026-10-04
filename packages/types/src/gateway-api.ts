@@ -1658,7 +1658,7 @@ export interface PhonePairingCode {
   gateway: string
   /** Unix ms after which the code no longer redeems. */
   expiresAt: number
-  /** The QR body as-is (JSON the phone parses); render it, do not rebuild it. */
+  /** The QR body as-is (`rivethub://pair?d=…`); render it, do not rebuild it. */
   qrText: string
   /** True when a still-pending code for this name was shown again. */
   reshown: boolean

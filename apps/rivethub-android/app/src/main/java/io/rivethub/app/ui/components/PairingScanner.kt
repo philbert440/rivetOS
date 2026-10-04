@@ -42,10 +42,12 @@ import com.google.zxing.ReaderException
 import com.google.zxing.common.HybridBinarizer
 import com.google.zxing.qrcode.QRCodeReader
 import io.rivethub.app.R
+import io.rivethub.app.plane.yLuminance
 import io.rivethub.app.ui.theme.RivetTheme
 import io.rivethub.app.ui.theme.RivetType
 import java.util.concurrent.Executors
 import java.util.concurrent.atomic.AtomicBoolean
+import java.util.concurrent.atomic.AtomicReference
 
 /**
  * Full-screen camera view that reads QR codes (CameraX preview + ZXing on the
@@ -120,7 +122,14 @@ private fun QrCameraView(
     val onCodeNow by rememberUpdatedState(onCode)
     val onOtherCodeNow by rememberUpdatedState(onOtherCode)
     val onCameraErrorNow by rememberUpdatedState(onCameraError)
-    val previewView = remember { PreviewView(context) }
+    // TextureView, not the default SurfaceView: a SurfaceView inside this
+    // dialog punches a hole and the preview never appears, so aiming is blind.
+    val previewView = remember {
+        PreviewView(context).apply {
+            implementationMode = PreviewView.ImplementationMode.COMPATIBLE
+            scaleType = PreviewView.ScaleType.FILL_CENTER
+        }
+    }
 
     DisposableEffect(lifecycleOwner) {
         val executor = Executors.newSingleThreadExecutor()
@@ -128,6 +137,8 @@ private fun QrCameraView(
         // Set on dispose: a provider that resolves after Cancel must not bind.
         val disposed = AtomicBoolean(false)
         val sawOther = AtomicBoolean(false)
+        // One scrambled frame must not stick the "not a pairing code" hint.
+        val lastOther = AtomicReference<String?>(null)
         val reader = QRCodeReader()
         val hints = mapOf(DecodeHintType.TRY_HARDER to true)
         val main = ContextCompat.getMainExecutor(context)
@@ -136,13 +147,15 @@ private fun QrCameraView(
 
         val analysis = ImageAnalysis.Builder()
             .setBackpressureStrategy(ImageAnalysis.STRATEGY_KEEP_ONLY_LATEST)
+            .setOutputImageFormat(ImageAnalysis.OUTPUT_IMAGE_FORMAT_YUV_420_888)
             .build()
         analysis.setAnalyzer(executor) { image ->
             image.use {
                 if (done.get()) return@use
                 val text = decodeQr(reader, hints, it) ?: return@use
                 if (!acceptNow(text)) {
-                    if (sawOther.compareAndSet(false, true)) main.execute { onOtherCodeNow() }
+                    val repeat = lastOther.getAndSet(text) == text
+                    if (repeat && sawOther.compareAndSet(false, true)) main.execute { onOtherCodeNow() }
                 } else if (done.compareAndSet(false, true)) {
                     main.execute { onCodeNow(text) }
                 }
@@ -177,13 +190,16 @@ private fun QrCameraView(
 /** Y plane → ZXing; retries inverted so light-on-dark terminal QRs read too. */
 private fun decodeQr(reader: QRCodeReader, hints: Map<DecodeHintType, Any>, image: ImageProxy): String? {
     val plane = image.planes.firstOrNull() ?: return null
-    val rowStride = plane.rowStride
-    val width = image.width
-    val height = image.height
-    val buf = plane.buffer.duplicate().apply { rewind() }
-    val data = ByteArray(rowStride * height)
-    buf.get(data, 0, minOf(buf.remaining(), data.size))
-    val source = PlanarYUVLuminanceSource(data, rowStride, height, 0, 0, width, height, false)
+    val packed = try {
+        yLuminance(plane.buffer, image.width, image.height, plane.rowStride, plane.pixelStride)
+    } catch (_: Exception) {
+        null
+    } ?: return null
+    val source = try {
+        PlanarYUVLuminanceSource(packed, image.width, image.height, 0, 0, image.width, image.height, false)
+    } catch (_: IllegalArgumentException) {
+        return null
+    }
     for (candidate in listOf(source, source.invert())) {
         try {
             return reader.decode(BinaryBitmap(HybridBinarizer(candidate)), hints).text
