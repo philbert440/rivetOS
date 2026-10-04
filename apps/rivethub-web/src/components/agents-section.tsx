@@ -236,20 +236,17 @@ function AgentEditor({
   const catalogClash = catalogNameClashes(trimmedName, catalogQuery.data?.agents ?? [], agent?.id)
   const formRef = useRef<HTMLFormElement | null>(null)
 
-  const initialDraft = useMemo(
-    () =>
-      captureAgentDraft({
-        name: duplicate ? copyName(duplicate.draft.name) : (init?.name ?? ''),
-        color: init?.color ?? '',
-        rawHarnessId: init?.harnessId ?? '',
-        rawModel: init?.model ?? '',
-        rawEffort: init?.effort ?? '',
-        systemPrompt: init?.systemPrompt ?? '',
-        draftDirectory: agent?.directory ?? duplicate?.draft.directory ?? '',
-        sharedLink: agent?.sharedLink ?? duplicate?.draft.sharedLink ?? true,
-      }),
-    // Seeded once per mount; later harness-driven field defaults are edits.
-    [],
+  const [initialDraft, setInitialDraft] = useState(() =>
+    captureAgentDraft({
+      name: duplicate ? copyName(duplicate.draft.name) : (init?.name ?? ''),
+      color: init?.color ?? '',
+      rawHarnessId: init?.harnessId ?? '',
+      rawModel: init?.model ?? '',
+      rawEffort: init?.effort ?? '',
+      systemPrompt: init?.systemPrompt ?? '',
+      draftDirectory: agent?.directory ?? duplicate?.draft.directory ?? '',
+      sharedLink: agent?.sharedLink ?? duplicate?.draft.sharedLink ?? true,
+    }),
   )
 
   const isDirty = useCallback(
@@ -348,12 +345,26 @@ function AgentEditor({
 
   useEffect(() => {
     if (agent || duplicate || harnessId || harnesses.length === 0) return
+    const agentDirectory = init?.directory ?? ''
     const first = harnesses[0].harnessId
     setHarnessId(first)
     const firstSheet = harnesses[0].capabilities
     const m = defaultModel(firstSheet)
+    const effort = defaultEffort(firstSheet, m)
     setModel(m)
-    setEffort(defaultEffort(firstSheet, m))
+    setEffort(effort)
+    setInitialDraft(
+      captureAgentDraft({
+        name: init?.name ?? '',
+        color: init?.color ?? '',
+        rawHarnessId: first,
+        rawModel: m,
+        rawEffort: effort,
+        systemPrompt: init?.systemPrompt ?? '',
+        draftDirectory: agentDirectory,
+        sharedLink: true,
+      }),
+    )
   }, [agent, duplicate, harnessId, harnesses])
 
   // Restore focus to the opener (Plus / Pencil) when the dialog closes.

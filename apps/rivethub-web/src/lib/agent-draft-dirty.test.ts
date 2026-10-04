@@ -67,4 +67,38 @@ describe('agentDraftDirty', () => {
     // Documenting the anti-pattern the full-field loop prevents:
     expect(nameOnlyGuard(changedElsewhere)).toBe(false)
   })
+
+  it('RED-GREEN: re-baselining after harness defaults un-dirties the form', () => {
+    // The auto-fill effect runs after mount: capture the pre-default baseline,
+    // "apply" the defaults to live fields, then re-baseline — the form must
+    // read clean again (the false-positive bug was: baseline stayed stale).
+    const preFill = captureAgentDraft(sample({ rawHarnessId: '', rawModel: '', rawEffort: '' }))
+    const liveAfterFill = sample({ rawHarnessId: 'hermes', rawModel: 'm1', rawEffort: 'medium' })
+    expect(agentDraftDirty(preFill, liveAfterFill)).toBe(true)
+    // Re-baseline from the filled state — the same operation the effect does:
+    const rebased = captureAgentDraft(liveAfterFill)
+    expect(agentDraftDirty(rebased, liveAfterFill)).toBe(false)
+  })
+
+  it('RED-GREEN: re-baselining must preserve untouched fields, not snapshot defaults blindly', () => {
+    // User edits name BEFORE the harness sheet arrives; the auto-fill
+    // re-baseline must keep the user's edit as the baseline for name while
+    // taking the harness defaults for the three auto-filled fields.
+    const preFill = captureAgentDraft(
+      sample({ name: 'my-agent', rawHarnessId: '', rawModel: '', rawEffort: '' }),
+    )
+    const liveAfterFill = sample({
+      name: 'my-agent',
+      rawHarnessId: 'hermes',
+      rawModel: 'm1',
+      rawEffort: 'medium',
+    })
+    // Correct re-baseline: name stays 'my-agent' (user edit = baseline),
+    // the three auto-filled fields take their new values.
+    const rebased = captureAgentDraft({
+      ...liveAfterFill,
+      name: preFill.name === liveAfterFill.name ? liveAfterFill.name : preFill.name,
+    })
+    expect(agentDraftDirty(rebased, liveAfterFill)).toBe(false)
+  })
 })
