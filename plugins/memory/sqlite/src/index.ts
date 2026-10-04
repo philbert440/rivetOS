@@ -20,6 +20,10 @@ export { SCHEMA, SCHEMA_VERSION } from './schema.js'
 export { SqliteTagStore } from './tags.js'
 export { SqliteJobQueue, JobRunner, retryDelayMs } from './jobs.js'
 export type { Job, JobHandler, EnqueueOptions, Sweep } from './jobs.js'
+export { LlmClient, LlmTruncatedError, LlmPermanentError } from './llm.js'
+export type { LlmConfig, LlmAnswer } from './llm.js'
+export { SqliteCompactor, COMPACT_TASK, DEFAULT_COMPACTION_SETTINGS } from './compaction.js'
+export type { CompactionSettings } from './compaction.js'
 export { EmbedClient } from './embed.js'
 export type { EmbedConfig, EmbedOutcome } from './embed.js'
 export { ExactScanIndex, encodeVector, decodeVector } from './vectors.js'
@@ -36,7 +40,9 @@ import type { PluginManifest } from '@rivetos/types'
 import { loadUsersRegistry } from '@rivetos/types'
 import { SqliteMemory, resolveSqlitePath } from './adapter.js'
 import { clampEmbedTimeoutMs } from '@rivetos/memory-core'
+import type { CompactionSettings } from './compaction.js'
 import type { EmbedConfig } from './embed.js'
+import type { LlmConfig } from './llm.js'
 
 export const manifest: PluginManifest = {
   type: 'memory',
@@ -53,9 +59,13 @@ export const manifest: PluginManifest = {
     const embed = await resolveEmbedConfig(cfg, ctx.env, (line) => {
       ctx.logger.warn(line)
     })
+    const compactor = await resolveCompactorConfig(cfg, ctx.env, (line) => {
+      ctx.logger.warn(line)
+    })
     const memory = new SqliteMemory({
       path,
       ...(embed ? { embed } : {}),
+      ...(compactor ? { compactor, compaction: resolveCompactionSettings(ctx.env) } : {}),
       ...(typeof cfg.workers === 'boolean' ? { workers: cfg.workers } : {}),
       log: (line) => {
         ctx.logger.warn(line)
@@ -66,6 +76,9 @@ export const manifest: PluginManifest = {
       await memory.stopWorkers()
       memory.close()
     })
+    if (compactor) {
+      ctx.logger.info(`sqlite memory: summarizing with ${compactor.model}`)
+    }
     if (embed) {
       ctx.logger.info(
         `sqlite memory: embedding with ${embed.model}, vector search on` +
@@ -161,5 +174,57 @@ export async function resolveEmbedConfig(
   // Any string is passed through, the empty one included: "" turns the prefix
   // off. Unset leaves the client's default (the same instruction as Postgres).
   if (typeof rawInstruction === 'string') out.queryInstruction = rawInstruction
+  return out
+}
+
+/**
+ * Summarization endpoint, config first then environment — the variables the
+ * Postgres compaction worker reads. Undefined when none is configured: no
+ * summaries are written and nothing is sent anywhere.
+ */
+export async function resolveCompactorConfig(
+  cfg: Record<string, unknown>,
+  env: Record<string, string | undefined>,
+  warn: (line: string) => void,
+): Promise<LlmConfig | undefined> {
+  const str = (v: unknown): string | undefined =>
+    typeof v === 'string' && v.trim() !== '' ? v.trim() : undefined
+  const endpoint = str(cfg.compactor_endpoint) ?? str(env.RIVETOS_COMPACTOR_URL)
+  if (!endpoint) return undefined
+  const model = str(cfg.compactor_model) ?? str(env.RIVETOS_COMPACTOR_MODEL)
+  if (!model) {
+    throw new Error(
+      'RIVETOS_COMPACTOR_MODEL (or memory.sqlite.compactor_model) is required when a compactor URL is set',
+    )
+  }
+  const out: LlmConfig = { endpoint, model }
+  const apiKey = str(cfg.compactor_api_key) ?? str(env.RIVETOS_COMPACTOR_API_KEY)
+  if (apiKey) out.apiKey = apiKey
+  const { createTokenSource, parseTokenCommandArgv } = await import('@rivetos/token-command')
+  const argv = parseTokenCommandArgv(cfg.compactor_token_command)
+  if (typeof argv === 'string') warn(`memory.sqlite.compactor_token_command: ${argv}`)
+  if (Array.isArray(argv)) out.tokenSource = createTokenSource({ argv })
+  const timeout = Number(cfg.compactor_timeout_ms)
+  if (Number.isFinite(timeout) && timeout > 0) out.timeoutMs = Math.min(timeout, 60 * 60 * 1000)
+  return out
+}
+
+/** Batch sizes and idle thresholds from the worker's `COMPACT_*` variables. */
+export function resolveCompactionSettings(
+  env: Record<string, string | undefined>,
+): Partial<CompactionSettings> {
+  const out: Partial<CompactionSettings> = {}
+  const set = (key: keyof CompactionSettings, name: string): void => {
+    const n = Number(env[name])
+    if (env[name] !== undefined && Number.isInteger(n) && n > 0) out[key] = n
+  }
+  set('leafBatch', 'COMPACT_LEAF_BATCH')
+  set('branchBatch', 'COMPACT_BRANCH_BATCH')
+  set('rootBatch', 'COMPACT_ROOT_BATCH')
+  set('minLeavesForBranch', 'COMPACT_MIN_LEAFS')
+  set('minBranchesForRoot', 'COMPACT_MIN_BRANCHES')
+  set('idleMinutes', 'COMPACT_IDLE_MINUTES')
+  set('staleMinutes', 'COMPACT_STALE_MINUTES')
+  set('staleMinBatch', 'COMPACT_STALE_MIN_BATCH')
   return out
 }

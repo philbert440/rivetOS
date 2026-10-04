@@ -12,7 +12,7 @@
  */
 
 /** Current on-disk schema version. Bump when the DDL changes. */
-export const SCHEMA_VERSION = 3
+export const SCHEMA_VERSION = 4
 
 export const SCHEMA = `
 CREATE TABLE IF NOT EXISTS ros_conversations (
@@ -124,6 +124,62 @@ CREATE TABLE IF NOT EXISTS ros_embed_queue (
 );
 CREATE INDEX IF NOT EXISTS idx_ros_embed_queue_enqueued
     ON ros_embed_queue (enqueued_at);
+
+-- v4: summaries (mirror of the postgres ros_summaries / ros_summary_sources).
+-- A leaf covers a batch of messages (ros_summary_sources); a branch covers
+-- leaves and a root covers branches, linked through parent_id. Written by
+-- compaction.ts; searched through ros_summaries_fts and the stored vector.
+CREATE TABLE IF NOT EXISTS ros_summaries (
+    id                TEXT PRIMARY KEY NOT NULL,
+    conversation_id   TEXT REFERENCES ros_conversations(id) ON DELETE CASCADE,
+    parent_id         TEXT REFERENCES ros_summaries(id) ON DELETE SET NULL,
+    depth             INTEGER NOT NULL DEFAULT 0,
+    content           TEXT NOT NULL,
+    kind              TEXT NOT NULL DEFAULT 'leaf',
+    message_count     INTEGER NOT NULL DEFAULT 0,
+    earliest_at       TEXT,
+    latest_at         TEXT,
+    model             TEXT,
+    pipeline_version  INTEGER NOT NULL DEFAULT 1,
+    access_count      INTEGER NOT NULL DEFAULT 0,
+    last_accessed_at  TEXT,
+    created_at        TEXT NOT NULL,
+    embed_status      TEXT,
+    embedding         BLOB,
+    embed_error       TEXT,
+    embed_failures    INTEGER NOT NULL DEFAULT 0
+);
+CREATE INDEX IF NOT EXISTS idx_ros_summaries_conversation
+    ON ros_summaries (conversation_id, kind, created_at);
+CREATE INDEX IF NOT EXISTS idx_ros_summaries_parent
+    ON ros_summaries (parent_id);
+CREATE INDEX IF NOT EXISTS idx_ros_summaries_time
+    ON ros_summaries (latest_at DESC);
+
+CREATE TABLE IF NOT EXISTS ros_summary_sources (
+    summary_id  TEXT NOT NULL REFERENCES ros_summaries(id) ON DELETE CASCADE,
+    message_id  TEXT NOT NULL REFERENCES ros_messages(id) ON DELETE CASCADE,
+    ordinal     INTEGER NOT NULL DEFAULT 0,
+    PRIMARY KEY (summary_id, message_id)
+);
+CREATE INDEX IF NOT EXISTS idx_ros_summary_sources_message
+    ON ros_summary_sources (message_id);
+
+CREATE VIRTUAL TABLE IF NOT EXISTS ros_summaries_fts USING fts5(
+    id UNINDEXED,
+    content,
+    tokenize = 'porter unicode61'
+);
+CREATE TRIGGER IF NOT EXISTS ros_summaries_ai AFTER INSERT ON ros_summaries BEGIN
+  INSERT INTO ros_summaries_fts(id, content) VALUES (new.id, new.content);
+END;
+CREATE TRIGGER IF NOT EXISTS ros_summaries_ad AFTER DELETE ON ros_summaries BEGIN
+  DELETE FROM ros_summaries_fts WHERE id = old.id;
+END;
+CREATE TRIGGER IF NOT EXISTS ros_summaries_au AFTER UPDATE OF content, id ON ros_summaries BEGIN
+  DELETE FROM ros_summaries_fts WHERE id = old.id;
+  INSERT INTO ros_summaries_fts(id, content) VALUES (new.id, new.content);
+END;
 
 -- Session + summary tags (mirror of postgres 0019_tags.sql, same CHECKs).
 -- entity_id is polymorphic, so no FK. Phase 1 has no ros_summaries table

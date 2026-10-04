@@ -68,7 +68,7 @@ describe('ExactScanIndex', () => {
     store(db, 'three', 'a', [1, 0, 0])
     store(db, 'two-b', 'a', [0, 1])
     const logs: string[] = []
-    const index = new ExactScanIndex(db, 'ros_messages', '1 = 1', (l) => logs.push(l))
+    const index = new ExactScanIndex(db, undefined, (l) => logs.push(l))
     // The common width is the index's; the stray row is left out, and said so.
     expect(index.search([1, 0], 5).map((h) => h.id)).toEqual(['two', 'two-b'])
     expect(index.size()).toBe(2)
@@ -85,7 +85,7 @@ describe('ExactScanIndex', () => {
     store(db, 'north', 'b', null)
     store(db, 'x', 'b', null)
     // Only rows whose content is longer than one character are searchable here.
-    const index = new ExactScanIndex(db, 'ros_messages', 'length(m.content) > 1')
+    const index = new ExactScanIndex(db, 'FROM ros_messages m WHERE length(m.content) > 1')
     expect(index.size()).toBe(1)
     // Before the first search add() is a no-op: the load will pick rows up.
     index.add('north', 'b', encodeVector([0, 1]) as Uint8Array)

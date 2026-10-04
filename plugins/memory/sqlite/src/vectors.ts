@@ -57,6 +57,9 @@ export interface VectorIndex {
   add(id: string, agent: string, vector: Uint8Array): void
 }
 
+/** Every message row. Callers narrow it with their own predicate. */
+export const MESSAGES_SOURCE = 'FROM ros_messages m WHERE 1 = 1'
+
 /** Past this many vectors the exact scan is no longer cheap: say so once. */
 export const LARGE_INDEX_ROWS = 200_000
 
@@ -80,11 +83,13 @@ export class ExactScanIndex implements VectorIndex {
 
   constructor(
     private readonly db: DatabaseSync,
-    /** Table with `id`, `agent`, `embedding` columns. */
-    private readonly table: 'ros_messages' = 'ros_messages',
-    /** Extra SQL predicate over alias `m` choosing which rows are searchable. */
-    private readonly where = '1 = 1',
+    /**
+     * `FROM … WHERE …` selecting the searchable rows, with alias `m` exposing
+     * `id`, `embedding` and (through `agentExpr`) the agent the row belongs to.
+     */
+    private readonly source: string = MESSAGES_SOURCE,
     private readonly log: (line: string) => void = () => {},
+    private readonly agentExpr = 'm.agent',
   ) {}
 
   invalidate(): void {
@@ -95,9 +100,7 @@ export class ExactScanIndex implements VectorIndex {
   size(): number {
     if (this.loaded) return this.loaded.ids.length
     const row = this.db
-      .prepare(
-        `SELECT count(*) AS n FROM ${this.table} m WHERE m.embedding IS NOT NULL AND (${this.where})`,
-      )
+      .prepare(`SELECT count(*) AS n ${this.source} AND m.embedding IS NOT NULL`)
       .get() as unknown as { n: number }
     return row.n
   }
@@ -112,9 +115,8 @@ export class ExactScanIndex implements VectorIndex {
     if (!data) return
     // The same predicate a reload applies, evaluated by SQLite itself, so
     // the live index and a reloaded one never disagree about a row.
-    const eligible = this.db
-      .prepare(`SELECT 1 AS ok FROM ${this.table} m WHERE m.id = ? AND (${this.where})`)
-      .get(id) as { ok: number } | undefined
+    const eligible = this.db.prepare(`SELECT 1 AS ok ${this.source} AND m.id = ?`).get(id) as
+      { ok: number } | undefined
     if (!eligible) {
       const at = data.position.get(id)
       if (at !== undefined) this.loaded = undefined
@@ -167,10 +169,9 @@ export class ExactScanIndex implements VectorIndex {
     if (this.loaded) return this.loaded
     const found = this.db
       .prepare(
-        `SELECT m.id, m.agent, m.embedding FROM ${this.table} m
-          WHERE m.embedding IS NOT NULL AND (${this.where})`,
+        `SELECT m.id, ${this.agentExpr} AS agent, m.embedding ${this.source} AND m.embedding IS NOT NULL`,
       )
-      .all() as unknown as Array<{ id: string; agent: string; embedding: Uint8Array }>
+      .all() as unknown as Array<{ id: string; agent: string | null; embedding: Uint8Array }>
     // The most common width is the index's; a stray row of another width
     // must not decide it.
     const widths = new Map<number, number>()
@@ -202,7 +203,7 @@ export class ExactScanIndex implements VectorIndex {
     usable.forEach((r, i) => position.set(r.id, i))
     this.loaded = {
       ids: usable.map((r) => r.id),
-      agents: usable.map((r) => r.agent),
+      agents: usable.map((r) => r.agent ?? ''),
       dims,
       rows: usable.map((r) => decodeVector(r.embedding)),
       position,

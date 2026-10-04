@@ -18,6 +18,8 @@ import {
   GATE_FRACTION,
   HYBRID_MIN_CONTENT_LEN,
   HYBRID_RRF_K,
+  SUMMARY_FUSION_BONUS,
+  SUMMARY_IMPORTANCE,
   W_IMPORTANCE,
   W_TEMPORAL,
   hybridPoolSize,
@@ -27,8 +29,10 @@ import {
   shouldTrigramFallback,
   temporalDecay,
 } from '@rivetos/memory-core'
+import { COMPACT_TASK, SqliteCompactor, type CompactionSettings } from './compaction.js'
 import { EmbedClient, type EmbedConfig } from './embed.js'
 import { JobRunner, SqliteJobQueue } from './jobs.js'
+import { LlmClient, type LlmConfig } from './llm.js'
 import { SCHEMA, SCHEMA_VERSION } from './schema.js'
 import { SqliteTagStore } from './tags.js'
 import { ExactScanIndex, encodeVector, type VectorIndex } from './vectors.js'
@@ -52,6 +56,16 @@ function isTaskUuid(value: string): boolean {
 
 function isHeartbeatSessionKey(sessionKey: string | null | undefined): boolean {
   return typeof sessionKey === 'string' && sessionKey.startsWith(HEARTBEAT_SESSION_PREFIX)
+}
+
+/** Merge two ranked lists rank by rank, so neither layer starts at a disadvantage. */
+function interleave(a: readonly string[], b: readonly string[]): string[] {
+  const out: string[] = []
+  for (let i = 0; i < Math.max(a.length, b.length); i += 1) {
+    if (i < a.length) out.push(a[i])
+    if (i < b.length) out.push(b[i])
+  }
+  return out
 }
 
 /** Expand a leading `~/` and resolve relative paths against cwd. */
@@ -150,9 +164,17 @@ export interface SqliteMemoryConfig {
    */
   embed?: EmbedConfig
   /**
-   * Run the in-process job loop (embedding today; compaction, wiki and
-   * tagging as they land). Default: on when `embed` is set. Turn off to queue
-   * work without draining it, e.g. in a short-lived CLI process.
+   * Summarization endpoint (OpenAI-compatible chat). When set, conversations
+   * are compacted into leaf / branch / root summaries in the background, with
+   * the same prompts and batch policy as the Postgres worker.
+   */
+  compactor?: LlmConfig
+  /** Batch sizes and idle thresholds; defaults match the Postgres worker. */
+  compaction?: Partial<CompactionSettings>
+  /**
+   * Run the in-process job loop (embedding, compaction; wiki and tagging as
+   * they land). Default: on when `embed` or `compactor` is set. Turn off to
+   * queue work without draining it, e.g. in a short-lived CLI process.
    */
   workers?: boolean
   /** Where the job loop reports failures. Default: console.warn. */
@@ -224,6 +246,8 @@ export class SqliteMemory implements Memory {
   private readonly vectorIndex: VectorIndex
   private readonly expectedDims: number | undefined
   private embedStoreReconciled = false
+  private readonly summaryIndex: VectorIndex
+  private readonly compactor: SqliteCompactor | undefined
   private readonly log: (line: string) => void
 
   constructor(config: SqliteMemoryConfig) {
@@ -257,7 +281,17 @@ export class SqliteMemory implements Memory {
         console.warn(line)
       })
     this.jobQueue = new SqliteJobQueue(this.db, config.now)
-    this.vectorIndex = new ExactScanIndex(this.db, 'ros_messages', MESSAGE_QUALITY_SQL, this.log)
+    this.vectorIndex = new ExactScanIndex(
+      this.db,
+      `FROM ros_messages m WHERE ${MESSAGE_QUALITY_SQL}`,
+      this.log,
+    )
+    this.summaryIndex = new ExactScanIndex(
+      this.db,
+      `FROM ros_summaries m LEFT JOIN ros_conversations c ON c.id = m.conversation_id WHERE 1 = 1`,
+      this.log,
+      'c.agent',
+    )
     this.embedClient = config.embed ? new EmbedClient(config.embed) : undefined
     this.expectedDims = config.embed?.expectedDims
     this.jobRunner = new JobRunner(this.jobQueue, {
@@ -276,15 +310,36 @@ export class SqliteMemory implements Memory {
           this.enqueueUnembedded()
         },
       })
-      // Only a process that drains the queue may clear vectors: a one-off
-      // open with another model must not wipe a store it will never refill.
-      if (config.workers ?? true) {
-        this.reconcileEmbedStore()
-        this.jobRunner.start()
-      } else {
-        this.warnOnForeignModel(this.embedClient.model)
-      }
+      if (config.workers ?? true) this.reconcileEmbedStore()
+      else this.warnOnForeignModel(this.embedClient.model)
     }
+    if (config.compactor) {
+      this.compactor = new SqliteCompactor(
+        this.db,
+        new LlmClient(config.compactor),
+        this.jobQueue,
+        config.compaction,
+        {
+          log: this.log,
+          onSummary: ({ id }) => {
+            this.enqueueSummaryEmbed(id)
+          },
+        },
+        config.now,
+      )
+      const compactor = this.compactor
+      this.jobRunner.handle(COMPACT_TASK, async (payload) => {
+        await compactor.compactConversation(payload)
+      })
+      this.jobRunner.sweep({
+        name: 'enqueue-idle',
+        everyMs: 5 * 60 * 1000,
+        run: () => {
+          compactor.enqueueIdle()
+        },
+      })
+    }
+    if ((this.embedClient || this.compactor) && (config.workers ?? true)) this.jobRunner.start()
   }
 
   /** Apply incremental upgrades and stamp PRAGMA user_version. */
@@ -307,6 +362,10 @@ export class SqliteMemory implements Memory {
           // its old ros_messages, so the vector columns are added here, and
           // what waited in the phase-1 queue moves to the job queue.
           this.migrateToV3()
+          break
+        case 3:
+          // v4: ros_summaries, ros_summary_sources and their FTS table are
+          // all new tables, created by SCHEMA above. Stamp to 4.
           break
         default:
           throw new MemoryError(
@@ -440,68 +499,16 @@ export class SqliteMemory implements Memory {
   ): Promise<MemorySearchResult[]> {
     this.assertOpen()
     void options?.userId
-    // Phase 1: summaries are empty, so scope 'both' returns messages only.
     const scope = options?.scope ?? 'both'
-    if (scope === 'summaries') return []
-
-    const match = buildFtsMatchQuery(query)
-    // Without a vector arm, a query with no searchable token has no results.
-    if (!match && !this.embedClient) return []
-
     const limit = options?.limit ?? 20
     const agent = options?.agent
+    const match = buildFtsMatchQuery(query)
 
-    if (this.embedClient) {
-      try {
-        return await this.hybridSearch(query, match, agent, limit)
-      } catch (err: unknown) {
-        throw new MemoryError(
-          'MEMORY_QUERY_FAILED',
-          `Memory search failed: ${err instanceof Error ? err.message : String(err)}`,
-          {
-            cause: err instanceof Error ? err : undefined,
-            context: { operation: 'search' },
-          },
-        )
-      }
-    }
-
-    if (!match) return []
     try {
-      const rows = (agent
-        ? this.db
-            .prepare(
-              `SELECT m.id, m.content, m.role, m.agent, m.created_at,
-                        bm25(ros_messages_fts) AS rank
-                   FROM ros_messages_fts
-                   JOIN ros_messages m ON m.id = ros_messages_fts.id
-                  WHERE ros_messages_fts MATCH ?
-                    AND m.agent = ?
-                  ORDER BY rank
-                  LIMIT ?`,
-            )
-            .all(match, agent, limit)
-        : this.db
-            .prepare(
-              `SELECT m.id, m.content, m.role, m.agent, m.created_at,
-                        bm25(ros_messages_fts) AS rank
-                   FROM ros_messages_fts
-                   JOIN ros_messages m ON m.id = ros_messages_fts.id
-                  WHERE ros_messages_fts MATCH ?
-                  ORDER BY rank
-                  LIMIT ?`,
-            )
-            .all(match, limit)) as unknown as SearchRow[]
-
-      return rows.map((r) => ({
-        id: r.id,
-        content: r.content,
-        role: r.role,
-        agent: r.agent,
-        // bm25() is negative for matches; abs so relevance varies and higher = better.
-        relevanceScore: relevanceFromBm25(r.rank),
-        createdAt: new Date(r.created_at),
-      }))
+      if (this.embedClient) return await this.hybridSearch(query, match, agent, limit, scope)
+      // No vector arm: full-text only. A query with no searchable token has no results.
+      if (!match) return []
+      return this.ftsSearch(match, agent, limit, scope)
     } catch (err: unknown) {
       throw new MemoryError(
         'MEMORY_QUERY_FAILED',
@@ -512,6 +519,72 @@ export class SqliteMemory implements Memory {
         },
       )
     }
+  }
+
+  /** Full-text search over messages and/or summaries, best bm25 first. */
+  private ftsSearch(
+    match: string,
+    agent: string | undefined,
+    limit: number,
+    scope: 'messages' | 'summaries' | 'both',
+  ): MemorySearchResult[] {
+    const out: Array<MemorySearchResult & { rank: number }> = []
+    if (scope !== 'summaries') {
+      const rows = this.db
+        .prepare(
+          `SELECT m.id, m.content, m.role, m.agent, m.created_at,
+                  bm25(ros_messages_fts) AS rank
+             FROM ros_messages_fts
+             JOIN ros_messages m ON m.id = ros_messages_fts.id
+            WHERE ros_messages_fts MATCH ?${agent ? ' AND m.agent = ?' : ''}
+            ORDER BY rank
+            LIMIT ?`,
+        )
+        .all(...(agent ? [match, agent, limit] : [match, limit])) as unknown as SearchRow[]
+      for (const r of rows) {
+        out.push({
+          id: r.id,
+          content: r.content,
+          role: r.role,
+          agent: r.agent,
+          // bm25() is negative for matches; abs so relevance varies and higher = better.
+          relevanceScore: relevanceFromBm25(r.rank),
+          createdAt: new Date(r.created_at),
+          rank: r.rank,
+        })
+      }
+    }
+    if (scope !== 'messages') {
+      const rows = this.db
+        .prepare(
+          `SELECT s.id, s.content, coalesce(c.agent, '') AS agent, s.created_at,
+                  bm25(ros_summaries_fts) AS rank
+             FROM ros_summaries_fts
+             JOIN ros_summaries s ON s.id = ros_summaries_fts.id
+             LEFT JOIN ros_conversations c ON c.id = s.conversation_id
+            WHERE ros_summaries_fts MATCH ?${agent ? ' AND c.agent = ?' : ''}
+            ORDER BY rank
+            LIMIT ?`,
+        )
+        .all(...(agent ? [match, agent, limit] : [match, limit])) as unknown as Array<
+        Omit<SearchRow, 'role'>
+      >
+      for (const r of rows) {
+        out.push({
+          id: r.id,
+          content: r.content,
+          role: 'summary',
+          agent: r.agent,
+          relevanceScore: relevanceFromBm25(r.rank),
+          createdAt: new Date(r.created_at),
+          rank: r.rank,
+        })
+      }
+    }
+    return out
+      .sort((x, y) => x.rank - y.rank)
+      .slice(0, limit)
+      .map(({ rank: _rank, ...hit }) => hit)
   }
 
   async getContextForTurn(
@@ -551,7 +624,7 @@ export class SqliteMemory implements Memory {
       }
     }
 
-    const relevant = await this.search(query, { agent, limit: 10, scope: 'messages' })
+    const relevant = await this.search(query, { agent, limit: 10, scope: 'both' })
     if (relevant.length > 0) {
       sections.push('\n## Relevant Context')
       for (const r of relevant) {
@@ -668,48 +741,79 @@ export class SqliteMemory implements Memory {
   }
 
   /**
-   * Hybrid search: full-text, a literal arm for queries FTS tokenization
-   * mangles, and a vector arm, fused with the policy every backend shares
-   * (@rivetos/memory-core). A failed query embedding drops the vector arm
-   * rather than failing the search.
+   * Hybrid search over messages and summaries: per layer a full-text arm, a
+   * literal arm for queries FTS tokenization mangles, and a vector arm, all
+   * fused with the policy every backend shares (@rivetos/memory-core).
+   * Summaries get the same fusion bonus and importance as on Postgres. A
+   * failed query embedding drops the vector arms rather than failing the search.
    */
   private async hybridSearch(
     query: string,
     match: string | null,
     agent: string | undefined,
     limit: number,
+    scope: 'messages' | 'summaries' | 'both',
   ): Promise<MemorySearchResult[]> {
     const pool = hybridPoolSize(limit)
-    const agentSql = agent ? ' AND m.agent = ?' : ''
+    const wantMessages = scope !== 'summaries'
+    const wantSummaries = scope !== 'messages'
     const agentArgs: SQLInputValue[] = agent ? [agent] : []
+    const key = (layer: 'm' | 's', id: string): string => `${layer}:${id}`
 
-    const ftsIds = match
-      ? (
-          this.db
-            .prepare(
-              `SELECT m.id FROM ros_messages_fts
-                 JOIN ros_messages m ON m.id = ros_messages_fts.id
-                WHERE ros_messages_fts MATCH ? AND ${MESSAGE_QUALITY_SQL}${agentSql}
-                ORDER BY bm25(ros_messages_fts)
-                LIMIT ?`,
-            )
-            .all(match, ...agentArgs, pool) as unknown as Array<{ id: string }>
-        ).map((r) => r.id)
-      : []
+    const fts: string[] = []
+    if (match && wantMessages) {
+      const rows = this.db
+        .prepare(
+          `SELECT m.id, bm25(ros_messages_fts) AS rank FROM ros_messages_fts
+             JOIN ros_messages m ON m.id = ros_messages_fts.id
+            WHERE ros_messages_fts MATCH ? AND ${MESSAGE_QUALITY_SQL}${agent ? ' AND m.agent = ?' : ''}
+            ORDER BY rank
+            LIMIT ?`,
+        )
+        .all(match, ...agentArgs, pool) as unknown as Array<{ id: string; rank: number }>
+      for (const r of rows) fts.push(key('m', r.id))
+    }
+    const ftsSummaries: string[] = []
+    if (match && wantSummaries) {
+      const rows = this.db
+        .prepare(
+          `SELECT s.id FROM ros_summaries_fts
+             JOIN ros_summaries s ON s.id = ros_summaries_fts.id
+             LEFT JOIN ros_conversations c ON c.id = s.conversation_id
+            WHERE ros_summaries_fts MATCH ?${agent ? ' AND c.agent = ?' : ''}
+            ORDER BY bm25(ros_summaries_fts)
+            LIMIT ?`,
+        )
+        .all(match, ...agentArgs, pool) as unknown as Array<{ id: string }>
+      for (const r of rows) ftsSummaries.push(key('s', r.id))
+    }
 
     // Literal arm: substring match, for dotted ids, paths, host:port. Joins
     // the fusion when the query looks literal; otherwise only when full-text
     // found nothing and the query has a token worth a substring try.
-    const useLiteral = looksLiteral(query) || (ftsIds.length === 0 && shouldTrigramFallback(query))
-    const literalIds = useLiteral ? this.literalIds(query, agentSql, agentArgs, pool) : []
+    const ftsEmpty = fts.length === 0 && ftsSummaries.length === 0
+    const useLiteral = looksLiteral(query) || (ftsEmpty && shouldTrigramFallback(query))
+    const literal = useLiteral
+      ? this.literalKeys(query, agent, pool, wantMessages, wantSummaries)
+      : []
 
-    let vectorIds: string[] = []
+    const vector: string[] = []
+    const vectorSummaries: string[] = []
     if (this.embedClient) {
       try {
-        const vector = await this.embedClient.embedQuery(query)
+        const queryVector = await this.embedClient.embedQuery(query)
         // The store may have been closed while the embedding was in flight.
         this.assertOpen()
-        vectorIds = this.vectorIndex.search(vector, pool, { agent }).map((h) => h.id)
+        if (wantMessages) {
+          for (const h of this.vectorIndex.search(queryVector, pool, { agent })) {
+            vector.push(key('m', h.id))
+          }
+        }
+        if (wantSummaries) {
+          for (const h of this.summaryIndex.search(queryVector, pool, { agent })) {
+            vectorSummaries.push(key('s', h.id))
+          }
+        }
       } catch (err) {
         if (this.closed) throw err
         this.log(
@@ -720,38 +824,40 @@ export class SqliteMemory implements Memory {
       }
     }
 
-    const lists = [ftsIds, literalIds, vectorIds].filter((l) => l.length > 0)
+    // One ranked list per arm, both layers interleaved by their own rank, as
+    // the Postgres arms return messages and summaries together.
+    const lists = [
+      interleave(fts, ftsSummaries),
+      literal,
+      interleave(vector, vectorSummaries),
+    ].filter((l) => l.length > 0)
     if (lists.length === 0) return []
-    const fused = reciprocalRankFusion(lists, (id) => id, HYBRID_RRF_K)
-    const ids = [...fused.keys()]
-    const rows = new Map<string, HybridRow>()
-    for (let i = 0; i < ids.length; i += 500) {
-      const chunk = ids.slice(i, i + 500)
-      const got = this.db
-        .prepare(
-          `SELECT id, content, role, agent, created_at, tool_name, access_count
-             FROM ros_messages WHERE id IN (${chunk.map(() => '?').join(', ')})`,
-        )
-        .all(...chunk) as unknown as HybridRow[]
-      for (const r of got) rows.set(r.id, r)
-    }
+    const fused = reciprocalRankFusion(lists, (k) => k, HYBRID_RRF_K)
+    const rows = this.loadHits([...fused.keys()])
 
     const nowMs = Date.now()
-    const scored: Array<{ row: HybridRow; score: number; arms: number }> = []
-    for (const [id, { rrf }] of fused) {
-      const row = rows.get(id)
+    const scored: Array<{ key: string; row: HybridRow; score: number; arms: number }> = []
+    for (const [k, { rrf }] of fused) {
+      const row = rows.get(k)
       if (!row) continue
+      const isSummary = k.startsWith('s:')
       const days = Math.max(0, (nowMs - new Date(row.created_at).getTime()) / 86_400_000)
-      const boost =
-        temporalDecay(days, row.access_count) * W_TEMPORAL +
-        importanceForRole(row.role, row.tool_name !== null) * W_IMPORTANCE
-      const arms = lists.reduce((n, l) => n + (l.includes(id) ? 1 : 0), 0)
-      scored.push({ row, score: rrf * (1 + boost), arms })
+      const importance = isSummary
+        ? SUMMARY_IMPORTANCE
+        : importanceForRole(row.role, row.tool_name !== null)
+      const boost = temporalDecay(days, row.access_count) * W_TEMPORAL + importance * W_IMPORTANCE
+      const arms = lists.reduce((n, l) => n + (l.includes(k) ? 1 : 0), 0)
+      scored.push({
+        key: k,
+        row,
+        score: rrf * (1 + boost) * (isSummary ? SUMMARY_FUSION_BONUS : 1),
+        arms,
+      })
     }
     scored.sort((a, b) => b.score - a.score)
     const top = scored[0]?.score ?? 0
     const kept = scored.filter((s) => s.arms >= 2 || s.score >= top * GATE_FRACTION).slice(0, limit)
-    this.bumpAccess(kept.map((k) => k.row.id))
+    this.bumpAccess(kept.map((k) => k.key))
     return kept.map(({ row, score }) => ({
       id: row.id,
       content: row.content,
@@ -762,59 +868,123 @@ export class SqliteMemory implements Memory {
     }))
   }
 
+  /** Rows behind fused keys (`m:<id>` message, `s:<id>` summary). */
+  private loadHits(keys: readonly string[]): Map<string, HybridRow> {
+    const out = new Map<string, HybridRow>()
+    const messageIds = keys.filter((k) => k.startsWith('m:')).map((k) => k.slice(2))
+    const summaryIds = keys.filter((k) => k.startsWith('s:')).map((k) => k.slice(2))
+    for (let i = 0; i < messageIds.length; i += 500) {
+      const chunk = messageIds.slice(i, i + 500)
+      const got = this.db
+        .prepare(
+          `SELECT id, content, role, agent, created_at, tool_name, access_count
+             FROM ros_messages WHERE id IN (${chunk.map(() => '?').join(', ')})`,
+        )
+        .all(...chunk) as unknown as HybridRow[]
+      for (const r of got) out.set(`m:${r.id}`, r)
+    }
+    for (let i = 0; i < summaryIds.length; i += 500) {
+      const chunk = summaryIds.slice(i, i + 500)
+      const got = this.db
+        .prepare(
+          `SELECT s.id, s.content, 'summary' AS role, coalesce(c.agent, '') AS agent,
+                  s.created_at, NULL AS tool_name, s.access_count
+             FROM ros_summaries s
+             LEFT JOIN ros_conversations c ON c.id = s.conversation_id
+            WHERE s.id IN (${chunk.map(() => '?').join(', ')})`,
+        )
+        .all(...chunk) as unknown as HybridRow[]
+      for (const r of got) out.set(`s:${r.id}`, r)
+    }
+    return out
+  }
+
   /**
    * Returned rows are reinforced, as on Postgres: the access count feeds the
    * temporal term (capped). Best-effort — a failed bump never fails a search.
    */
-  private bumpAccess(ids: readonly string[]): void {
-    if (ids.length === 0) return
-    try {
-      const at = iso()
-      for (let i = 0; i < ids.length; i += 500) {
-        const chunk = ids.slice(i, i + 500)
-        this.db
-          .prepare(
-            `UPDATE ros_messages SET access_count = access_count + 1, last_accessed_at = ?
-              WHERE id IN (${chunk.map(() => '?').join(', ')})`,
-          )
-          .run(at, ...chunk)
+  private bumpAccess(keys: readonly string[]): void {
+    const now = iso()
+    for (const [prefix, table] of [
+      ['m:', 'ros_messages'],
+      ['s:', 'ros_summaries'],
+    ] as const) {
+      const ids = keys.filter((k) => k.startsWith(prefix)).map((k) => k.slice(2))
+      try {
+        for (let i = 0; i < ids.length; i += 500) {
+          const chunk = ids.slice(i, i + 500)
+          this.db
+            .prepare(
+              `UPDATE ${table} SET access_count = access_count + 1, last_accessed_at = ?
+                WHERE id IN (${chunk.map(() => '?').join(', ')})`,
+            )
+            .run(now, ...chunk)
+        }
+      } catch {
+        // access stats are best-effort
       }
-    } catch {
-      // access stats are best-effort
     }
   }
 
-  /** Newest rows whose content or tool result contains the query text. */
-  private literalIds(
+  /** Newest rows whose text contains the query, as fused keys. */
+  private literalKeys(
     query: string,
-    agentSql: string,
-    agentArgs: SQLInputValue[],
+    agent: string | undefined,
     pool: number,
+    wantMessages: boolean,
+    wantSummaries: boolean,
   ): string[] {
     const needle = query.trim()
     if (needle.length < 3) return []
     const pattern = `%${needle.replace(/[\\%_]/g, '\\$&')}%`
-    return (
-      this.db
+    const agentArgs: SQLInputValue[] = agent ? [agent] : []
+    const found: Array<{ key: string; at: string }> = []
+    if (wantMessages) {
+      const rows = this.db
         .prepare(
-          `SELECT m.id FROM ros_messages m
+          `SELECT m.id, m.created_at FROM ros_messages m
             WHERE (m.content LIKE ? ESCAPE '\\' OR m.tool_result LIKE ? ESCAPE '\\')
-              AND ${MESSAGE_QUALITY_SQL}${agentSql}
+              AND ${MESSAGE_QUALITY_SQL}${agent ? ' AND m.agent = ?' : ''}
             ORDER BY m.created_at DESC
             LIMIT ?`,
         )
-        .all(pattern, pattern, ...agentArgs, pool) as unknown as Array<{ id: string }>
-    ).map((r) => r.id)
+        .all(pattern, pattern, ...agentArgs, pool) as unknown as Array<{
+        id: string
+        created_at: string
+      }>
+      for (const r of rows) found.push({ key: `m:${r.id}`, at: r.created_at })
+    }
+    if (wantSummaries) {
+      const rows = this.db
+        .prepare(
+          `SELECT s.id, s.created_at FROM ros_summaries s
+             LEFT JOIN ros_conversations c ON c.id = s.conversation_id
+            WHERE s.content LIKE ? ESCAPE '\\'${agent ? ' AND c.agent = ?' : ''}
+            ORDER BY s.created_at DESC
+            LIMIT ?`,
+        )
+        .all(pattern, ...agentArgs, pool) as unknown as Array<{ id: string; created_at: string }>
+      for (const r of rows) found.push({ key: `s:${r.id}`, at: r.created_at })
+    }
+    return found
+      .sort((a, b) => (a.at < b.at ? 1 : a.at > b.at ? -1 : 0))
+      .slice(0, pool)
+      .map((f) => f.key)
   }
 
-  /** `embed-target` job: embed one message and store the vector on its row. */
+  /** `embed-target` job: embed one message or summary and store the vector on its row. */
   private async embedTarget(payload: unknown): Promise<void> {
     const client = this.embedClient
     // No endpoint: leave the work queued for when one is configured.
     if (!client) throw new Error('no embed endpoint configured')
     const p = payload as { targetTable?: unknown; targetId?: unknown } | null
-    if (p?.targetTable !== 'ros_messages' || typeof p.targetId !== 'string') return
+    if (typeof p?.targetId !== 'string') return
     const id = p.targetId
+    if (p.targetTable === 'ros_summaries') {
+      await this.embedSummary(client, id)
+      return
+    }
+    if (p.targetTable !== 'ros_messages') return
     const row = this.db
       .prepare(`SELECT content, tool_result, agent FROM ros_messages WHERE id = ?`)
       .get(id) as unknown as
@@ -857,6 +1027,64 @@ export class SqliteMemory implements Memory {
     }
   }
 
+  private async embedSummary(client: EmbedClient, id: string): Promise<void> {
+    const row = this.db
+      .prepare(
+        `SELECT s.content, coalesce(c.agent, '') AS agent FROM ros_summaries s
+           LEFT JOIN ros_conversations c ON c.id = s.conversation_id
+          WHERE s.id = ?`,
+      )
+      .get(id) as unknown as { content: string; agent: string } | undefined
+    if (!row) return
+    try {
+      const outcome = await client.embedMessage(row.content, null)
+      if (this.closed) return
+      if (outcome.kind === 'unembeddable') {
+        this.db
+          .prepare(
+            `UPDATE ros_summaries SET embed_status = 'unembeddable', embed_error = ?, embedding = NULL
+              WHERE id = ?`,
+          )
+          .run(`unembeddable: ${outcome.reason}`, id)
+        return
+      }
+      const blob = encodeVector(outcome.vector)
+      if (!blob) throw new Error('embedding is a zero vector')
+      this.noteEmbedDims(outcome.vector.length)
+      this.db
+        .prepare(
+          `UPDATE ros_summaries
+              SET embedding = ?, embed_status = 'done', embed_error = NULL, embed_failures = 0
+            WHERE id = ?`,
+        )
+        .run(blob, id)
+      this.summaryIndex.add(id, row.agent, blob)
+    } catch (err) {
+      if (!this.closed) {
+        this.db
+          .prepare(
+            `UPDATE ros_summaries SET embed_error = ?, embed_failures = embed_failures + 1 WHERE id = ?`,
+          )
+          .run((err instanceof Error ? err.message : String(err)).slice(0, 500), id)
+      }
+      throw err
+    }
+  }
+
+  /** Queue a freshly written summary for embedding (no-op without an endpoint). */
+  private enqueueSummaryEmbed(id: string): void {
+    if (!this.embedClient) return
+    try {
+      this.jobQueue.enqueue(
+        EMBED_TARGET_TASK,
+        { targetTable: 'ros_summaries', targetId: id },
+        { key: `embed-ros_summaries-${id}` },
+      )
+    } catch {
+      // ignore queue failures
+    }
+  }
+
   /**
    * Queue rows that still need a vector: those with no job at all, and those
    * whose job went dead (an endpoint outage longer than the retries). Dead
@@ -866,47 +1094,50 @@ export class SqliteMemory implements Memory {
    */
   private enqueueUnembedded(limit = 500): number {
     const now = iso()
-    const revived = Number(
+    let queued = 0
+    for (const table of ['ros_messages', 'ros_summaries'] as const) {
+      const prefix = `embed-${table}-`
+      queued += Number(
+        this.db
+          .prepare(
+            `UPDATE ros_jobs SET state = 'queued', attempts = 0, run_at = ?, updated_at = ?
+              WHERE state = 'dead' AND task = ?
+                AND EXISTS (SELECT 1 FROM ${table} m
+                             WHERE m.embedding IS NULL AND m.embed_status IS NULL
+                               AND ros_jobs.job_key = ? || m.id)`,
+          )
+          .run(now, now, EMBED_TARGET_TASK, prefix).changes,
+      )
+      // Dead jobs whose row no longer needs a vector (embedded since, marked
+      // unembeddable, or deleted) would otherwise sit in the queue for good.
       this.db
         .prepare(
-          `UPDATE ros_jobs SET state = 'queued', attempts = 0, run_at = ?, updated_at = ?
-            WHERE state = 'dead' AND task = ?
-              AND EXISTS (SELECT 1 FROM ros_messages m
-                           WHERE m.embedding IS NULL AND m.embed_status IS NULL
-                             AND ros_jobs.job_key = 'embed-ros_messages-' || m.id)`,
+          `DELETE FROM ros_jobs
+            WHERE state = 'dead' AND task = ? AND job_key LIKE ? || '%'
+              AND NOT EXISTS (SELECT 1 FROM ${table} m
+                               WHERE m.embedding IS NULL AND m.embed_status IS NULL
+                                 AND ros_jobs.job_key = ? || m.id)`,
         )
-        .run(now, now, EMBED_TARGET_TASK).changes,
-    )
-    // Dead jobs whose row no longer needs a vector (embedded since, marked
-    // unembeddable, or deleted) would otherwise sit in the queue for good.
-    this.db
-      .prepare(
-        `DELETE FROM ros_jobs
-          WHERE state = 'dead' AND task = ?
-            AND NOT EXISTS (SELECT 1 FROM ros_messages m
-                             WHERE m.embedding IS NULL AND m.embed_status IS NULL
-                               AND ros_jobs.job_key = 'embed-ros_messages-' || m.id)`,
-      )
-      .run(EMBED_TARGET_TASK)
-    const rows = this.db
-      .prepare(
-        `SELECT m.id FROM ros_messages m
-          WHERE m.embedding IS NULL AND m.embed_status IS NULL
-            AND NOT EXISTS (SELECT 1 FROM ros_jobs j WHERE j.job_key = 'embed-ros_messages-' || m.id)
-          ORDER BY m.created_at ASC
-          LIMIT ?`,
-      )
-      .all(limit) as unknown as Array<{ id: string }>
-    let queued = revived
-    for (const { id } of rows) {
-      if (
-        this.jobQueue.enqueue(
-          EMBED_TARGET_TASK,
-          { targetTable: 'ros_messages', targetId: id },
-          { key: `embed-ros_messages-${id}` },
+        .run(EMBED_TARGET_TASK, prefix, prefix)
+      const rows = this.db
+        .prepare(
+          `SELECT m.id FROM ${table} m
+            WHERE m.embedding IS NULL AND m.embed_status IS NULL
+              AND NOT EXISTS (SELECT 1 FROM ros_jobs j WHERE j.job_key = ? || m.id)
+            ORDER BY m.created_at ASC
+            LIMIT ?`,
         )
-      ) {
-        queued += 1
+        .all(prefix, limit) as unknown as Array<{ id: string }>
+      for (const { id } of rows) {
+        if (
+          this.jobQueue.enqueue(
+            EMBED_TARGET_TASK,
+            { targetTable: table, targetId: id },
+            { key: `${prefix}${id}` },
+          )
+        ) {
+          queued += 1
+        }
       }
     }
     return queued
@@ -953,13 +1184,9 @@ export class SqliteMemory implements Memory {
       this.log(
         `[memory.sqlite] embedding model changed (${prior.value} → ${model}); re-embedding stored messages`,
       )
-      this.db.exec(
-        `UPDATE ros_messages SET embedding = NULL, embed_status = NULL, embed_error = NULL, embed_failures = 0
-          WHERE embedding IS NOT NULL OR embed_status = 'done'`,
-      )
+      this.clearVectors()
       // No vectors are left, so the new model is free to set its own width.
       this.db.exec(`DELETE FROM ros_meta WHERE key = 'embed_dims'`)
-      this.vectorIndex.invalidate()
     }
     this.db
       .prepare(
@@ -990,11 +1217,7 @@ export class SqliteMemory implements Memory {
       this.log(
         `[memory.sqlite] embedding width changed (${prior.value} → ${String(dims)}); re-embedding stored messages`,
       )
-      this.db.exec(
-        `UPDATE ros_messages SET embedding = NULL, embed_status = NULL, embed_error = NULL, embed_failures = 0
-          WHERE embedding IS NOT NULL OR embed_status = 'done'`,
-      )
-      this.vectorIndex.invalidate()
+      this.clearVectors()
     }
     this.db
       .prepare(
@@ -1023,19 +1246,74 @@ export class SqliteMemory implements Memory {
     this.db
       .prepare(`INSERT OR REPLACE INTO ros_meta (key, value) VALUES ('embed_dims', ?)`)
       .run(String(dims))
-    if (widths.length > 1) {
-      const reset = this.db
-        .prepare(
-          `UPDATE ros_messages SET embedding = NULL, embed_status = NULL, embed_error = NULL, embed_failures = 0
-            WHERE embedding IS NOT NULL AND length(embedding) <> ?`,
-        )
-        .run(dims * 4)
-      // The index may already hold the rows that were just reset.
-      this.vectorIndex.invalidate()
-      this.log(
-        `[memory.sqlite] ${String(reset.changes)} stored vector(s) were not ${String(dims)} wide and will be re-embedded`,
+    let reset = 0
+    for (const table of ['ros_messages', 'ros_summaries']) {
+      reset += Number(
+        this.db
+          .prepare(
+            `UPDATE ${table} SET embedding = NULL, embed_status = NULL, embed_error = NULL, embed_failures = 0
+              WHERE embedding IS NOT NULL AND length(embedding) <> ?`,
+          )
+          .run(dims * 4).changes,
       )
     }
+    if (reset > 0) {
+      // The indexes may already hold the rows that were just reset.
+      this.vectorIndex.invalidate()
+      this.summaryIndex.invalidate()
+      this.log(
+        `[memory.sqlite] ${String(reset)} stored vector(s) were not ${String(dims)} wide and will be re-embedded`,
+      )
+    }
+  }
+
+  /** Drop every stored vector (messages and summaries) so the sweep re-embeds them. */
+  private clearVectors(): void {
+    for (const table of ['ros_messages', 'ros_summaries']) {
+      this.db.exec(
+        `UPDATE ${table} SET embedding = NULL, embed_status = NULL, embed_error = NULL, embed_failures = 0
+          WHERE embedding IS NOT NULL OR embed_status = 'done'`,
+      )
+    }
+    this.vectorIndex.invalidate()
+    this.summaryIndex.invalidate()
+  }
+
+  /** Summaries for stats, tools and tests: newest first. */
+  summariesForConversation(conversationId: string): Array<{
+    id: string
+    kind: string
+    depth: number
+    parentId: string | null
+    content: string
+    messageCount: number
+    model: string | null
+  }> {
+    this.assertOpen()
+    return (
+      this.db
+        .prepare(
+          `SELECT id, kind, depth, parent_id, content, message_count, model FROM ros_summaries
+            WHERE conversation_id = ? ORDER BY depth, created_at, id`,
+        )
+        .all(conversationId) as unknown as Array<{
+        id: string
+        kind: string
+        depth: number
+        parent_id: string | null
+        content: string
+        message_count: number
+        model: string | null
+      }>
+    ).map((r) => ({
+      id: r.id,
+      kind: r.kind,
+      depth: r.depth,
+      parentId: r.parent_id,
+      content: r.content,
+      messageCount: r.message_count,
+      model: r.model,
+    }))
   }
 
   /** The job queue behind the background work, for stats and requeueing. */
@@ -1188,6 +1466,31 @@ export class SqliteMemory implements Memory {
       }
     }
     return out
+  }
+
+  /** Test helper — the conversation id for a session and agent. */
+  conversationIdForTest(sessionId: string, agent: string): string {
+    const row = this.db
+      .prepare(`SELECT id FROM ros_conversations WHERE session_key = ? AND agent = ?`)
+      .get(sessionId, agent) as { id: string } | undefined
+    return row?.id ?? ''
+  }
+
+  /** Test helper — queue a compaction job for a conversation now. */
+  enqueueCompactionForTest(sessionId: string, agent: string): void {
+    const id = this.conversationIdForTest(sessionId, agent)
+    this.jobQueue.enqueue(
+      COMPACT_TASK,
+      { conversationId: id, triggerType: 'session_idle' },
+      { key: `compact-${id}`, maxAttempts: 3 },
+    )
+  }
+
+  /** Test helper — width of a summary's stored vector (0 when none). */
+  summaryEmbedDimsForTest(id: string): number {
+    const row = this.db.prepare(`SELECT embedding FROM ros_summaries WHERE id = ?`).get(id) as
+      { embedding: Uint8Array | null } | undefined
+    return row?.embedding ? row.embedding.byteLength / 4 : 0
   }
 
   /** Test helper — how often a message was returned by search. */
