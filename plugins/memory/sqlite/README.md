@@ -43,8 +43,14 @@ Session tags: `memory.tags()` reads and writes `ros_tags` with the same
 lifecycle as the Postgres backend (`add` is born accepted, `propose` writes
 suggestions, `decide` accepts or rejects, a rejected tag is never
 re-proposed, `forSessionKeys` resolves a session through its key aliases).
-Tags are served over HTTP and through the `memory_tags` tool (below). There
-are no summary tags yet, and the vocabulary table is read but not edited.
+Tags are served over HTTP and through the `memory_tags` tool (below).
+
+Tagging on the loop (`tagging.ts`, `tag-vocabulary.ts`): a captured session
+gets the rule-based `project:` tag from its working directory, each leaf
+summary gets tag suggestions from the tagger (same prompt and parser as
+Postgres) on the summary and on its session, and the vocabulary
+(`ros_tag_taxonomy`) can be added to, decided and merged. A tag on a summary
+counts for its conversation in tag filters and counts.
 
 HTTP and tools: `memory.backend()` implements `MemoryBackend`
 (`@rivetos/types`), and the runtime mounts the den's `/api/capture` and

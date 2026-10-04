@@ -29,12 +29,15 @@ import {
   shouldTrigramFallback,
   temporalDecay,
 } from '@rivetos/memory-core'
+import type { ProjectResolver } from '@rivetos/memory-core'
 import { SqliteBackend } from './backend.js'
 import { COMPACT_TASK, SqliteCompactor, type CompactionSettings } from './compaction.js'
 import { EmbedClient, type EmbedConfig } from './embed.js'
 import { JobRunner, SqliteJobQueue } from './jobs.js'
 import { LlmClient, type LlmConfig } from './llm.js'
 import { SCHEMA, SCHEMA_VERSION } from './schema.js'
+import { SqliteTagVocabulary } from './tag-vocabulary.js'
+import { SUGGEST_TAGS_TASK, SqliteTagger } from './tagging.js'
 import { SqliteTagStore } from './tags.js'
 import { ExactScanIndex, encodeVector, type VectorIndex } from './vectors.js'
 import { EXTRACT_WIKI_TASK, SqliteWikiExtractor, SqliteWikiIndex } from './wiki.js'
@@ -176,6 +179,16 @@ export interface SqliteMemoryConfig {
    */
   otherUsers?: Iterable<string>
   /**
+   * Suggest tags for each leaf summary (needs a compactor endpoint, or an
+   * endpoint of its own in `llm`). Suggestions wait for a person to decide.
+   */
+  tagging?: { enabled: boolean; llm?: LlmConfig }
+  /**
+   * How a capture's working directory becomes a `project:` tag. Default: the
+   * git-root rule on this machine's filesystem. `null` turns the rule off.
+   */
+  projectRule?: ProjectResolver | null
+  /**
    * The wiki. `dir` is where the page files live (a git repository the
    * writer creates). With `extraction` on and a compactor endpoint, leaf
    * summaries are mined into pages. Without `dir` there is no wiki.
@@ -275,6 +288,9 @@ export class SqliteMemory implements Memory {
   private readonly wikiIndex: SqliteWikiIndex | undefined
   private readonly wikiDir: string | undefined
   private readonly wikiExtractor: SqliteWikiExtractor | undefined
+  private readonly vocabularyStore: SqliteTagVocabulary
+  private readonly tagger: SqliteTagger | undefined
+  private readonly projectRule: ProjectResolver | null | undefined
   private readonly compactor: SqliteCompactor | undefined
   private readonly log: (line: string) => void
 
@@ -322,6 +338,12 @@ export class SqliteMemory implements Memory {
       this.log,
       'c.agent',
     )
+    this.vocabularyStore = new SqliteTagVocabulary(
+      this.db,
+      (fn) => this.tx(fn),
+      () => this.stamp(),
+    )
+    this.projectRule = config.projectRule
     // Topics are keyed by slug and belong to no agent.
     this.topicIndex = new ExactScanIndex(
       this.db,
@@ -363,6 +385,24 @@ export class SqliteMemory implements Memory {
       if (config.workers ?? true) this.reconcileEmbedStore()
       else this.warnOnForeignModel(this.embedClient.model)
     }
+    const taggerLlmConfig = config.tagging?.enabled
+      ? (config.tagging.llm ?? config.compactor)
+      : undefined
+    if (taggerLlmConfig) {
+      const tagger = new SqliteTagger(
+        this.db,
+        new LlmClient({ maxRetries: 1, timeoutMs: 60_000, ...taggerLlmConfig }),
+        this.jobQueue,
+        () => this.tags(),
+        this.vocabularyStore,
+        (fn) => this.tx(fn),
+        this.log,
+      )
+      this.tagger = tagger
+      this.jobRunner.handle(SUGGEST_TAGS_TASK, async (payload) => {
+        await tagger.suggest(payload)
+      })
+    }
     if (config.compactor) {
       const llm = new LlmClient(config.compactor)
       if (config.wiki?.extraction && this.wikiIndex) {
@@ -402,6 +442,11 @@ export class SqliteMemory implements Memory {
               } catch {
                 // the backfill sweep picks it up
               }
+              try {
+                this.tagger?.enqueue(id)
+              } catch {
+                // a summary without suggestions can still be tagged by hand
+              }
             }
           },
         },
@@ -419,7 +464,9 @@ export class SqliteMemory implements Memory {
         },
       })
     }
-    if ((this.embedClient || this.compactor) && (config.workers ?? true)) this.jobRunner.start()
+    if ((this.embedClient || this.compactor || this.tagger) && (config.workers ?? true)) {
+      this.jobRunner.start()
+    }
   }
 
   /** Apply incremental upgrades and stamp PRAGMA user_version. */
@@ -1519,6 +1566,12 @@ export class SqliteMemory implements Memory {
     }))
   }
 
+  /** The tag vocabulary: reading it, editing it, and the rule-based project tag. */
+  vocabulary(): SqliteTagVocabulary {
+    this.assertOpen()
+    return this.vocabularyStore
+  }
+
   /** The wiki index and where its page files live; undefined without a wiki. */
   wiki(): { index: SqliteWikiIndex; wikiDir: string; extractor?: SqliteWikiExtractor } | undefined {
     this.assertOpen()
@@ -1548,6 +1601,9 @@ export class SqliteMemory implements Memory {
       },
       tags: () => this.tags(),
       wiki: () => this.wiki(),
+      vocabulary: () => this.vocabulary(),
+      projectRule: this.projectRule,
+      log: this.log,
       assertOpen: () => {
         this.assertOpen()
       },

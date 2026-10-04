@@ -73,6 +73,8 @@ export const manifest: PluginManifest = {
       ctx.logger.warn(line)
     })
     const wiki = resolveWikiConfig(cfg, ctx.env)
+    const tagging = resolveTaggingConfig(cfg, ctx.env)
+    if (tagging.enabled && !tagging.llm && !compactor) tagging.enabled = false
     if (wiki.extraction && !compactor) {
       ctx.logger.warn(
         'memory.sqlite: wiki extraction is on but no compactor endpoint is set; no pages will be written',
@@ -81,6 +83,8 @@ export const manifest: PluginManifest = {
     const memory = new SqliteMemory({
       path,
       otherUsers,
+      tagging,
+      ...(cfg.project_rule === false ? { projectRule: null } : {}),
       ...(embed ? { embed } : {}),
       ...(compactor ? { compactor, compaction: resolveCompactionSettings(ctx.env) } : {}),
       wiki,
@@ -113,6 +117,11 @@ export const manifest: PluginManifest = {
     })
     if (compactor) {
       ctx.logger.info(`sqlite memory: summarizing with ${compactor.model}`)
+    }
+    if (tagging.enabled) {
+      ctx.logger.info(
+        `sqlite memory: suggesting tags with ${tagging.llm?.model ?? compactor?.model ?? '?'}`,
+      )
     }
     if (wiki.extraction && compactor) {
       ctx.logger.info(`sqlite memory: mining summaries into the wiki at ${wiki.dir}`)
@@ -322,4 +331,29 @@ export function resolveWikiConfig(
   const extraction =
     typeof cfg.wiki_extraction === 'boolean' ? cfg.wiki_extraction : env.WIKI_EXTRACTION === '1'
   return { dir, extraction }
+}
+
+/**
+ * Tag suggestions: on unless `tagging: false` or `SESSION_TAGGING=0`, the
+ * switch the Postgres worker reads. The tagger uses the compactor's endpoint
+ * unless it is given one of its own (`tagger_endpoint` + `tagger_model`, or
+ * `RIVETOS_TAGGER_URL` + `RIVETOS_TAGGER_MODEL`); only the OpenAI-compatible
+ * chat shape is spoken here.
+ */
+export function resolveTaggingConfig(
+  cfg: Record<string, unknown>,
+  env: Record<string, string | undefined>,
+): { enabled: boolean; llm?: LlmConfig } {
+  const str = (v: unknown): string | undefined =>
+    typeof v === 'string' && v.trim() !== '' ? v.trim() : undefined
+  const enabled =
+    typeof cfg.tagging === 'boolean'
+      ? cfg.tagging
+      : !/^(0|false|no|off)$/i.test((env.SESSION_TAGGING ?? '').trim())
+  if (!enabled) return { enabled: false }
+  const endpoint = str(cfg.tagger_endpoint) ?? str(env.RIVETOS_TAGGER_URL)
+  const model = str(cfg.tagger_model) ?? str(env.RIVETOS_TAGGER_MODEL)
+  if (!endpoint || !model) return { enabled: true }
+  const apiKey = str(cfg.tagger_api_key) ?? str(env.RIVETOS_TAGGER_API_KEY)
+  return { enabled: true, llm: { endpoint, model, ...(apiKey ? { apiKey } : {}) } }
 }

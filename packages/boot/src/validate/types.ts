@@ -459,6 +459,11 @@ export const KNOWN_MEMORY_SQLITE_KEYS = new Set([
   'compactor_timeout_ms',
   'wiki_dir',
   'wiki_extraction',
+  'tagging',
+  'tagger_endpoint',
+  'tagger_model',
+  'tagger_api_key',
+  'project_rule',
   'workers',
 ])
 
