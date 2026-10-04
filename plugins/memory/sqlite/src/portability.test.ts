@@ -181,8 +181,15 @@ describe('SQLite memory export / import', () => {
     await expect(importSqliteMemory(db, gz('{"type":"rivet-memory-export","version":2}\n'))).rejects.toThrow(/unsupported export version/)
     const header = '{"type":"rivet-memory-export","version":1}\n'
     const conv = JSON.stringify({ t: 'ros_conversations', r: { id: 'c1', session_key: 's', agent: 'a', created_at: 'x', updated_at: 'x' } })
-    await expect(importSqliteMemory(db, gz(`${header}${conv}\n{"t":"ros_secrets","r":{}}\n`))).rejects.toThrow(/unknown table/)
+    // A row that is not a row fails the import, and nothing before it is kept.
+    await expect(importSqliteMemory(db, gz(`${header}${conv}\n{"t":"ros_messages","r":7}\n`))).rejects.toThrow(/malformed row/)
     expect(target.countForTest('ros_conversations')).toBe(0)
+    // A table from a newer dump is skipped; nulls take this store's defaults.
+    const sparse = JSON.stringify({ t: 'ros_conversations', r: { id: 'c2', session_key: 's2', agent: 'a', settings: null, active: null, created_at: 'x', updated_at: 'x' } })
+    const newer = await importSqliteMemory(db, gz(`${header}${sparse}\n{"t":"ros_future_table","r":{}}\n`))
+    expect(newer.inserted.ros_conversations).toBe(1)
+    expect(await target.loadSessionSettings('s2')).toEqual({})
+    target.rawForTest(`DELETE FROM ros_conversations`)
     // A message whose conversation is nowhere is skipped, not inserted loose.
     const orphan = JSON.stringify({ t: 'ros_messages', r: { id: 'm1', conversation_id: 'missing', agent: 'a', channel: 'c', role: 'user', content: 'x', created_at: 'x' } })
     const result = await importSqliteMemory(db, gz(`${header}${orphan}\n`))

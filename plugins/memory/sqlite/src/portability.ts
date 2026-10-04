@@ -151,7 +151,8 @@ export async function exportSqliteMemory(
       db.exec('COMMIT')
     }
   }
-  await pipeline(lines, createGzip(), out)
+  // The destination is the caller's to end (it may be stdout).
+  await pipeline(lines, createGzip(), out, { end: false })
 }
 
 /**
@@ -185,7 +186,9 @@ export async function importSqliteMemory(
     topic: db.prepare(`SELECT 1 AS ok FROM ros_wiki_topics WHERE slug = ?`),
   }
   const insertRow = (table: ExportTable, row: Record<string, unknown>): boolean => {
-    const cols = (columns.get(table) ?? []).filter((c) => c in row)
+    // A null in the dump is left out, so a column with a default here gets
+    // its default instead of failing a NOT NULL constraint.
+    const cols = (columns.get(table) ?? []).filter((c) => row[c] !== undefined && row[c] !== null)
     if (cols.length === 0) return false
     const r = db
       .prepare(
@@ -261,6 +264,7 @@ export async function importSqliteMemory(
   const rl = createInterface({ input: input.pipe(createGunzip()), crlfDelay: Infinity })
   let headerSeen = false
   let tableIndex = -1
+  const unknownTables = new Set<string>()
   db.exec('BEGIN IMMEDIATE')
   try {
     for await (const line of rl) {
@@ -280,7 +284,12 @@ export async function importSqliteMemory(
         throw new Error('malformed row in export')
       }
       const index = (EXPORT_TABLES as readonly string[]).indexOf(table)
-      if (index === -1) throw new Error(`unknown table in export: ${table}`)
+      // A table this version does not know (a newer dump): skipped, as the
+      // Postgres importer does.
+      if (index === -1) {
+        unknownTables.add(table)
+        continue
+      }
       if (index < tableIndex) throw new Error(`table ${table} is out of order in export`)
       tableIndex = index
       apply(table as ExportTable, row as Record<string, unknown>)
@@ -304,6 +313,7 @@ export async function importSqliteMemory(
     }
     throw err
   }
+  if (unknownTables.size > 0) log(`skipped unknown tables: ${[...unknownTables].join(', ')}`)
   log(
     `${opts.dryRun ? 'dry run: would insert' : 'inserted'} ${EXPORT_TABLES.map((t) => `${t}=${String(inserted[t])}`).join(' ')}`,
   )

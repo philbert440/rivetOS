@@ -1063,17 +1063,22 @@ async function memoryExport(args: string[]): Promise<void> {
       console.error(`Error: ${sqlitePath} does not exist`)
       process.exit(1)
     }
-    const { SqliteMemory, exportSqliteMemory } = await import('@rivetos/memory-sqlite')
-    const memory = new SqliteMemory({ path: sqlitePath, workers: false })
+    // Read-only: an export never creates, migrates or otherwise writes the file.
+    const { exportSqliteMemory } = await import('@rivetos/memory-sqlite')
+    const { DatabaseSync } = await import('node:sqlite')
+    const db = new DatabaseSync(sqlitePath, { readOnly: true })
     const dest = flags.out ? createWriteStream(flags.out) : process.stdout
     try {
-      await exportSqliteMemory(memory.database(), dest, {
+      await exportSqliteMemory(db, dest, {
         since: flags.since,
         source: { kind: 'local', id: osHostname() },
       })
-      if (flags.out) await finished(dest)
+      if (flags.out) {
+        dest.end()
+        await finished(dest)
+      }
     } finally {
-      memory.close()
+      db.close()
     }
     return
   }
@@ -1131,7 +1136,10 @@ async function memoryImport(args: string[]): Promise<void> {
   if (sqlitePath) {
     // Opening the store creates the file and brings its schema up to date.
     const { SqliteMemory, importSqliteMemory } = await import('@rivetos/memory-sqlite')
-    const memory = new SqliteMemory({ path: sqlitePath, workers: false })
+    // A dry run against a file that does not exist yet checks the dump
+    // against a fresh in-memory store and creates nothing.
+    const target = flags.dryRun && !existsSync(sqlitePath) ? ':memory:' : sqlitePath
+    const memory = new SqliteMemory({ path: target, workers: false })
     try {
       const summary = await importSqliteMemory(memory.database(), createReadStream(flags.file), {
         dryRun: flags.dryRun,

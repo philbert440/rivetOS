@@ -278,7 +278,8 @@ describe('config/env emission lan vs no-lan', () => {
     // No Postgres URL in the env file: nothing reaches for a database that is not there.
     const env = Object.fromEntries(buildEnvFile(state).map((e) => [e.key, e.value]))
     expect(env.RIVETOS_PG_URL).toBeUndefined()
-    expect(env.RIVETOS_USER_STORES).toBe('local')
+    // The local-store marker is set by boot from the registered backend, never written to a file.
+    expect(env.RIVETOS_USER_STORES).toBeUndefined()
     expect(env.RIVETOS_SHARED_DIR).toBe('/tmp/rivetos-shared')
   })
 

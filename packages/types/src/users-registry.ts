@@ -47,7 +47,9 @@ export interface UsersRegistry {
    * The node keeps memory in files of its own (SQLite), one per user, not in
    * a database per user. Every user in the registry is then routable without
    * a `pgUrl`: the memory backend decides which file is theirs. Set by
-   * {@link loadUsersRegistry} from `RIVETOS_USER_STORES=local`.
+   * {@link loadUsersRegistry} from `RIVETOS_USER_STORES=local`, which boot
+   * sets only when the registered memory keeps a store per user (and clears
+   * otherwise): on any other memory a user without a database stays refused.
    */
   localStores?: boolean
 }

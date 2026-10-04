@@ -960,6 +960,14 @@ export async function registerAgentTools(
   // pool-backed memory only, and are not mounted beside it.
   const registeredMemory = runtime.getMemory()
   const memoryBackend = hasMemoryBackend(registeredMemory) ? registeredMemory.backend() : undefined
+  // The users registry (den reads it from the environment, and re-reads it
+  // at runtime) may route a user without a database URL only when the memory
+  // that is actually registered keeps its own store per user. Decided here,
+  // from the registered backend, never from config text or a leftover
+  // environment line: on any other memory a user without a database must
+  // stay refused, or their turns would fall through to the owner's store.
+  if (memoryBackend) process.env.RIVETOS_USER_STORES = 'local'
+  else delete process.env.RIVETOS_USER_STORES
   const backendWiki = memoryBackend?.wiki?.()
   if (memoryBackend) {
     // A memory that keeps a store per user serves a den-stamped user from

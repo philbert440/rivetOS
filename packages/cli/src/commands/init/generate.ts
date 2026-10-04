@@ -369,13 +369,6 @@ export function buildEnvFile(state: WizardState): EnvEntry[] {
     // Boot treats a set RIVETOS_ROOT as production unless this is workspace
     // (packages/boot/src/index.ts plugin discovery). Systemd loads this via
     // EnvironmentFile; launchd copies the parsed .env into the plist.
-    if (state.local.db === 'sqlite') {
-      entries.push({
-        key: 'RIVETOS_USER_STORES',
-        value: 'local',
-        comment: 'memory is SQLite: one file per user, no database URL per user',
-      })
-    }
     entries.push({
       key: 'RIVETOS_MODE',
       value: 'workspace',
