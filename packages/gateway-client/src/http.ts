@@ -48,6 +48,33 @@ export function buildUrl(
   return url.toString()
 }
 
+/**
+ * Error to rethrow when `signal` aborted the fetch. Prefer the signal's own
+ * reason so a TimeoutError deadline is not reported as "gateway unreachable"
+ * and is not collapsed to a generic AbortError just because that is the name
+ * fetch threw. Undefined means this failure is not an abort.
+ */
+function abortReason(signal: AbortSignal | undefined, err: unknown): Error | undefined {
+  if (signal?.aborted === true) {
+    const reason: unknown = signal.reason
+    if (reason instanceof Error) return reason
+    if (err instanceof Error && err.name === 'AbortError') return err
+    const message = typeof reason === 'string' && reason.length > 0 ? reason : 'aborted'
+    return new DOMException(message, 'AbortError')
+  }
+  if (err instanceof Error && err.name === 'AbortError') return err
+  if (err instanceof Error && signal?.reason !== undefined && err === signal.reason) return err
+  if (
+    err instanceof Error &&
+    signal?.reason instanceof Error &&
+    err.name === signal.reason.name &&
+    (err.name === 'AbortError' || err.name === 'TimeoutError')
+  ) {
+    return signal.reason
+  }
+  return undefined
+}
+
 export async function request<T>(
   config: GatewayClientConfig,
   path: string,
@@ -59,8 +86,9 @@ export async function request<T>(
 
   // Single error surface: network/DNS/TLS failures and malformed 2xx JSON
   // also become GatewayError (status 0) so callers only ever catch one type.
-  // Deliberate exception: AbortError propagates untouched — an abort is the
-  // caller's own signal, not a gateway failure.
+  // Deliberate exception: an aborted call is the caller's signal, not a
+  // gateway failure. Rethrow the signal's reason — a client deadline aborts
+  // with TimeoutError, and wrapping that as status 0 reports a dead den.
   let res: Response
   try {
     // Client certs: browsers use the OS/browser store (no fetch option).
@@ -74,7 +102,8 @@ export async function request<T>(
       signal: opts.signal,
     })
   } catch (err: unknown) {
-    if (err instanceof Error && err.name === 'AbortError') throw err
+    const aborted = abortReason(opts.signal, err)
+    if (aborted) throw aborted
     const msg = err instanceof Error ? err.message : String(err)
     throw new GatewayError(0, `gateway unreachable: ${msg}`, undefined)
   }

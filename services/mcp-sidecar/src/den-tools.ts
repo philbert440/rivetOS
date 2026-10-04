@@ -46,6 +46,35 @@ const TASK_ID_UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{
 /** Tool default. Same as the pg delegate tool. */
 const DEFAULT_TIMEOUT_MS = 1_200_000
 const MAX_TIMEOUT_MS = 1_800_000
+/**
+ * How long the client waits past `timeoutMs` for the den's own 504, measured
+ * from when `waitTask` starts — not from `createTask`.
+ *
+ * `GET /api/tasks/:id/wait` answers 504 at `timeoutMs` (`clampWaitMs`).
+ * `TaskCompletionWaiter` polls every `POLL_LISTEN_MS` (10s) while LISTEN is
+ * healthy, and the sleep is `min(poll, time remaining)`, so a healthy waiter
+ * is late by about one store read, not a full poll. Grace is still one poll
+ * plus 5s so a late 504 beats this deadline if that cap is missed.
+ *
+ * Not `WAIT_GRACE_MS` in `delegate.ts` (5s). That matches the extra wait the
+ * preset and mesh engines add (`timeoutMs + 5_000`). This grace has to
+ * outlast the den waiter's poll cadence, so the two constants stay separate.
+ *
+ * Fetch bound of the client this process actually uses: `cli.ts` calls
+ * `createDenTools` with no gateway, which does `new RivetGateway({ baseUrl })`
+ * and passes no `fetch`. `request()` then calls `globalThis.fetch` with no
+ * dispatcher. Node's built-in undici agent defaults an unset `headersTimeout`
+ * and `bodyTimeout` to 300_000 ms (`3e5`, the Node 24.15 binary). The wait
+ * route sends status and body together in `json()` (`writeHead` + `end`), so
+ * a silent long-poll is already failed by fetch at about 5 minutes and
+ * surfaces as `GatewayError` status 0 ("den unreachable"), not as this
+ * deadline. This deadline is the additional bound for a poll that stays open
+ * past `timeoutMs` + grace. It does not disable those fetch timeouts.
+ */
+const DEN_WAIT_POLL_LISTEN_MS = 10_000
+export const DELEGATE_CLIENT_GRACE_MS = DEN_WAIT_POLL_LISTEN_MS + 5_000
+/** Bound for `killTask` / `getTask` after a deadline or a caller abort. */
+export const DELEGATE_CLEANUP_TIMEOUT_MS = 10_000
 /** Fail-closed child depth: parent is treated as `MAX_CHAIN_DEPTH - 1`. */
 const FAIL_CLOSED_CHILD_DEPTH = MAX_CHAIN_DEPTH
 
@@ -142,6 +171,52 @@ function unreachable(denUrl: string, err: GatewayError): string {
 
 function isAbort(err: unknown): boolean {
   return err instanceof Error && err.name === 'AbortError'
+}
+
+function isDeadline(err: unknown): boolean {
+  return err instanceof Error && err.name === 'TimeoutError'
+}
+
+/**
+ * Bound a long-poll. `until` rejects on the caller's abort or on the
+ * deadline, and `signal` is the one to hand to fetch. `cancel` drops the
+ * timer once the work has finished so a successful call does not later
+ * reject. The leftover rejection is swallowed here.
+ */
+function clientDeadline(
+  ms: number,
+  parent?: AbortSignal,
+): { signal: AbortSignal; until: Promise<never>; cancel: () => void } {
+  const controller = new AbortController()
+  let rejectDeadline: (err: unknown) => void = () => undefined
+  const until = new Promise<never>((_resolve, reject) => {
+    rejectDeadline = reject
+  })
+  until.catch(() => undefined)
+  const timer = setTimeout(() => {
+    const err = new DOMException('Delegation deadline exceeded', 'TimeoutError')
+    controller.abort(err)
+    rejectDeadline(err)
+  }, ms)
+  // A cleared timer never fires. unref keeps a missed cancel() from holding
+  // a CLI process open after the call has otherwise finished.
+  timer.unref()
+  const onParent = (): void => {
+    const reason: unknown = parent?.reason
+    controller.abort(reason)
+    rejectDeadline(reason instanceof Error ? reason : new DOMException('aborted', 'AbortError'))
+  }
+  if (parent?.aborted) onParent()
+  else parent?.addEventListener('abort', onParent, { once: true })
+  return {
+    signal: controller.signal,
+    until,
+    cancel() {
+      clearTimeout(timer)
+      parent?.removeEventListener('abort', onParent)
+      rejectDeadline(new DOMException('deadline cancelled', 'AbortError'))
+    },
+  }
 }
 
 function errorMessage(err: unknown): string {
@@ -374,6 +449,143 @@ function timeoutTask(body: unknown): SettledTask | undefined {
   return task as unknown as SettledTask
 }
 
+function delegateAbort(): DOMException {
+  return new DOMException('delegate_task aborted', 'AbortError')
+}
+
+/** Read abort state fresh. A narrowed `signal.aborted` check goes stale across an await. */
+function signalAborted(signal: AbortSignal | undefined): boolean {
+  return signal?.aborted === true
+}
+
+function deadlineFired(deadline: { signal: AbortSignal } | undefined): boolean {
+  if (deadline?.signal.aborted !== true) return false
+  const reason: unknown = deadline.signal.reason
+  return reason instanceof Error && reason.name === 'TimeoutError'
+}
+
+/**
+ * Bound a cleanup call. The race settles even if `work` ignores the signal;
+ * the signal still aborts a real fetch so the socket does not stay open.
+ * The timer is cleared when the race settles, and unref'd so a straggler
+ * cannot hold the process. A late rejection of the loser is observed.
+ */
+function withCleanupTimeout<T>(work: (signal: AbortSignal) => Promise<T>): Promise<T> {
+  const controller = new AbortController()
+  let timer: ReturnType<typeof setTimeout> | undefined
+  const bounded = new Promise<never>((_resolve, reject) => {
+    timer = setTimeout(() => {
+      const err = new DOMException('delegate_task cleanup timed out', 'TimeoutError')
+      controller.abort(err)
+      reject(err)
+    }, DELEGATE_CLEANUP_TIMEOUT_MS)
+    timer.unref()
+  })
+  void bounded.catch(() => undefined)
+  return Promise.race([work(controller.signal), bounded]).finally(() => {
+    if (timer !== undefined) clearTimeout(timer)
+  })
+}
+
+async function bestEffortKill(gateway: DenToolsGateway, taskId: string | undefined): Promise<void> {
+  if (!taskId) return
+  try {
+    await withCleanupTimeout((signal) => gateway.killTask(taskId, signal))
+  } catch {
+    /* best effort — a timed-out kill must not hang the tool */
+  }
+}
+
+function isTerminalStatus(status: TaskWire['status']): boolean {
+  return (
+    status === 'completed' || status === 'failed' || status === 'killed' || status === 'timeout'
+  )
+}
+
+/**
+ * Past the row's own wall clock, not our client grace. Missing budget or
+ * `createdAt` is not "past" — we only kill when the row itself says so.
+ */
+function isPastOwnBudget(task: TaskWire, now: number): boolean {
+  const wall = task.budget.maxWallClockMs
+  if (typeof wall !== 'number' || !Number.isFinite(wall) || wall <= 0) return false
+  if (!Number.isFinite(task.createdAt)) return false
+  return now >= task.createdAt + wall
+}
+
+async function readTaskForDeadline(
+  gateway: DenToolsGateway,
+  taskId: string,
+): Promise<TaskWire | undefined> {
+  try {
+    const response = await withCleanupTimeout((signal) => gateway.getTask(taskId, signal))
+    const task = response.task
+    if (!isTaskStatus(task.status)) return undefined
+    return task
+  } catch {
+    return undefined
+  }
+}
+
+function formatClientDeadline(
+  toAgent: string,
+  taskId: string | undefined,
+  elapsedMs: number,
+  disposition: 'running' | 'killed' | 'none',
+): string {
+  let detail: string
+  if (disposition === 'killed' && taskId) {
+    detail = `task ${taskId} was still non-terminal past its own budget and was killed`
+  } else if (disposition === 'running' && taskId) {
+    detail = `task ${taskId} is still running`
+  } else {
+    detail = 'no task id was returned'
+  }
+  return (
+    `[deadline] The den did not answer in time for the delegation to ${toAgent} (${detail}).` +
+    `\n\n---\n_Delegation [deadline]: ${String(elapsedMs)}ms_`
+  )
+}
+
+/**
+ * Pure client deadline (the den never said 504). Best-effort `getTask`.
+ * Kill only a non-terminal row that is past its own budget. Otherwise name
+ * the id and leave the task running. A failed or timed-out read does not
+ * kill. Caller abort is handled before this and still kills.
+ */
+async function onClientDeadline(
+  gateway: DenToolsGateway,
+  taskId: string,
+  toAgent: string,
+  elapsedMs: number,
+  caller: AbortSignal | undefined,
+): Promise<string> {
+  const task = await readTaskForDeadline(gateway, taskId)
+  if (signalAborted(caller)) {
+    await bestEffortKill(gateway, taskId)
+    throw delegateAbort()
+  }
+  if (task && isTerminalStatus(task.status)) {
+    const settled = timeoutTask({ task })
+    if (settled) return formatSettledTask(settled, toAgent, elapsedMs)
+  }
+  if (task && !isTerminalStatus(task.status) && isPastOwnBudget(task, Date.now())) {
+    let killed: boolean
+    try {
+      const result = await withCleanupTimeout((signal) => gateway.killTask(taskId, signal))
+      killed = result.prior !== null
+    } catch {
+      killed = false
+    }
+    if (signalAborted(caller)) {
+      if (!killed) await bestEffortKill(gateway, taskId)
+      throw delegateAbort()
+    }
+    return formatClientDeadline(toAgent, taskId, elapsedMs, killed ? 'killed' : 'running')
+  }
+  return formatClientDeadline(toAgent, taskId, elapsedMs, 'running')
+}
+
 export function createDenTools(opts: DenToolsOptions): DenToolsHandle {
   const gateway = opts.gateway ?? new RivetGateway({ baseUrl: opts.denUrl })
   const denUrl = opts.denUrl
@@ -551,10 +763,14 @@ export function createDenTools(opts: DenToolsOptions): DenToolsHandle {
         async execute(args, ctx?: ToolExecuteContext): Promise<string> {
           const call = readDelegateCall(args)
           if (typeof call === 'string') return call
-          if (ctx?.signal?.aborted) throw new DOMException('delegate_task aborted', 'AbortError')
+          if (signalAborted(ctx?.signal)) throw delegateAbort()
           const goal = delegationGoal(call.task, call.context)
           const startTime = Date.now()
           let taskId: string | undefined
+          // Deadline covers the wait only. Create stays awaited and is not
+          // aborted: the creating caller owns cancellation, and the id has to
+          // be observed so the row can be killed.
+          let deadline: ReturnType<typeof clientDeadline> | undefined
           try {
             const created = await gateway.createTask({
               goal,
@@ -569,22 +785,33 @@ export function createDenTools(opts: DenToolsOptions): DenToolsHandle {
               },
             })
             taskId = created.task.id
-            if (ctx?.signal?.aborted) throw new DOMException('delegate_task aborted', 'AbortError')
-            const settled = await gateway.waitTask(taskId, {
-              timeoutMs: call.timeoutMs,
-              ...(ctx?.signal ? { signal: ctx.signal } : {}),
-            })
+            if (signalAborted(ctx?.signal)) throw delegateAbort()
+            deadline = clientDeadline(call.timeoutMs + DELEGATE_CLIENT_GRACE_MS, ctx?.signal)
+            const settled = await Promise.race([
+              gateway.waitTask(taskId, {
+                timeoutMs: call.timeoutMs,
+                signal: deadline.signal,
+              }),
+              deadline.until,
+            ])
             return formatSettledTask(settled.task, call.toAgent, Date.now() - startTime)
           } catch (err: unknown) {
-            if (ctx?.signal?.aborted === true || isAbort(err)) {
-              if (taskId) {
-                try {
-                  await gateway.killTask(taskId)
-                } catch {
-                  /* best effort */
-                }
+            const callerAborted = signalAborted(ctx?.signal)
+            if (callerAborted || (isAbort(err) && !deadlineFired(deadline))) {
+              await bestEffortKill(gateway, taskId)
+              throw delegateAbort()
+            }
+            if (isDeadline(err) || deadlineFired(deadline)) {
+              if (!taskId) {
+                return formatClientDeadline(call.toAgent, undefined, Date.now() - startTime, 'none')
               }
-              throw new DOMException('delegate_task aborted', 'AbortError')
+              return await onClientDeadline(
+                gateway,
+                taskId,
+                call.toAgent,
+                Date.now() - startTime,
+                ctx?.signal,
+              )
             }
             if (err instanceof GatewayError) {
               if (err.status === 0) return unreachable(denUrl, err)
@@ -594,11 +821,16 @@ export function createDenTools(opts: DenToolsOptions): DenToolsHandle {
               if (err.status === 504) {
                 const fallback = `[timeout] Remote delegation to ${call.toAgent} timed out after ${String(call.timeoutMs)}ms`
                 // GET /wait only observes: the creating caller owns cancellation.
+                // The den said 504, so this kill is the den-timeout contract,
+                // not the pure client-deadline rule.
                 let killed = false
                 if (taskId) {
+                  const id = taskId
                   let reread: boolean
                   try {
-                    const result = await gateway.killTask(taskId)
+                    const result = await withCleanupTimeout((signal) =>
+                      gateway.killTask(id, signal),
+                    )
                     killed = result.prior !== null
                     reread = result.prior === null
                   } catch (killError: unknown) {
@@ -606,7 +838,9 @@ export function createDenTools(opts: DenToolsOptions): DenToolsHandle {
                   }
                   if (reread) {
                     try {
-                      const task = timeoutTask(await gateway.getTask(taskId))
+                      const task = timeoutTask(
+                        await withCleanupTimeout((signal) => gateway.getTask(id, signal)),
+                      )
                       if (
                         task &&
                         ['completed', 'failed', 'killed', 'timeout'].includes(task.status)
@@ -620,7 +854,9 @@ export function createDenTools(opts: DenToolsOptions): DenToolsHandle {
                 }
                 try {
                   const task = timeoutTask(err.body)
-                  if (isRecord(err.body) && err.body.task !== undefined && !task) return fallback
+                  if (isRecord(err.body) && err.body.task !== undefined && !task) {
+                    return fallback
+                  }
                   const id = killed ? taskId : undefined
                   const diagnostic =
                     isRecord(err.body) && typeof err.body.error === 'string'
@@ -647,6 +883,8 @@ _Delegation [timeout]: ${String(Date.now() - startTime)}ms_`
               return `[failed] delegate_task failed: ${err.message}`
             }
             return `[failed] delegate_task failed: ${errorMessage(err)}`
+          } finally {
+            deadline?.cancel()
           }
         },
       },
