@@ -29,8 +29,7 @@ import { Tooltip } from './ui/tooltip.js'
 
 /** Primary views after Conversations. Sessions sits where Terminal used to
  *  (standalone Terminal is gone — chat embeds it as a per-session mode).
- *  Memory and Files are the day-to-day workspace. Lucide icons match the
- *  TenPAL rail. */
+ *  Memory and Files are the day-to-day workspace. Icons are Lucide. */
 const PRIMARY_NAV = [
   { to: '/sessions', label: 'Sessions', icon: History },
   { to: '/memory', label: 'Memory', icon: Library },

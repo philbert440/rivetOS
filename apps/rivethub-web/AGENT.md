@@ -262,7 +262,7 @@ cd apps/rivethub-electron && npm install && npm run dist   # or: npm run dev
 - `src/pages/chat.tsx` — seamless session, terminal/den modes, queue pump
 - `src/pages/sessions.tsx` — session index + read-only detail (connection strip)
 - `src/lib/session-route-id.ts`, `session-sync-log.ts`, `session-list.ts`, `session-transcript.ts` — session page pure helpers
-- `src/memory/` — Search / Browse / Stats hub (TenPAL back-port)
+- `src/memory/` — Search / Browse / Stats hub
 - `src/pages/memory.tsx` — wiki encyclopedia (Wiki tab + `/memory/$slug`)
 - `src/pages/tasks.tsx` — list + create form + detail
 - `src/lib/task-create.ts` — criteria lines + agent options (local+mesh)
