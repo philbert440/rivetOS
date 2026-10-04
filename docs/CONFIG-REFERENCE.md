@@ -771,7 +771,9 @@ registry is checked on every lookup and re-read when it changes; a user seen onc
 their own store until restart. With an in-memory owner store (`path: ':memory:'`) the other
 users' stores are in-memory too and do not survive a restart. New conversations and messages record whose store they
 were written to (`owner_user_id`). With `per_user_files: false` those users get no memory on
-this node at all (nothing stored, nothing read). If `memory.sqlite`
+this node at all (nothing stored, nothing read). `rivetos memory export` / `import` work on one file
+per command and `rivetos local backup` copies the owner's file only: each other user's file is
+exported on its own with `rivetos memory export --sqlite <file>`. If `memory.sqlite`
 is set, remove or ignore a stale `RIVETOS_PG_URL` in `~/.rivetos/.env` so the MCP sidecar
 does not keep reading an old Postgres store while chat appends write sqlite. The parent
 directory is created mode `0700` and the DB file (plus `-wal`/`-shm`) is `0600`. With this

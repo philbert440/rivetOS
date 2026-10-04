@@ -148,12 +148,13 @@ export async function exportSqliteMemory(
         }
       }
     } finally {
-      // Read-only work: ending the transaction either way. An abandoned
-      // export may still have a cursor open, which must not mask the cause.
+      // Read-only work, so there is nothing to keep. An abandoned export may
+      // still have a cursor open; failing to end the transaction then must
+      // not mask what stopped the export.
       try {
         db.exec('COMMIT')
       } catch {
-        // nothing was written
+        // the caller closes the connection, which ends it
       }
     }
   }
