@@ -48,3 +48,5 @@ export {
   clusterSlugsByStem,
   entitiesOverlap,
 } from './identity.js'
+export { WikiWriter } from './writer.js'
+export type { AppliedPatch } from './writer.js'
