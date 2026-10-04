@@ -278,6 +278,7 @@ export {
   assertRecordMeshFile,
   isMeshFlatArrayError,
   MeshParseError,
+  inheritOperatorFields,
 } from './mesh.js'
 export { hasImages, getToolResultText, getToolResultImages, toolResultHasImages } from './utils.js'
 export { sharedDir, sharedPath } from './shared-dir.js'

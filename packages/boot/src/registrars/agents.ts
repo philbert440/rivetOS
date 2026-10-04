@@ -471,8 +471,9 @@ export async function registerAgentTools(
     // Build and register the local node.
     //
     // Capabilities/metadata are derived from config on every startup because
-    // register() wholesale-replaces this node's roster entry — hand-edited
-    // tags in mesh.json don't survive a restart. den.enabled here is what
+    // register() replaces this node's roster entry — hand-edited tags in
+    // mesh.json don't survive a restart. The operator-set deploy fields
+    // (sshUser, installRoot, platform) are the exception: they are kept. den.enabled here is what
     // makes den-node discovery (viewer /mesh.json) restart-proof.
     const denEnabled = config.den?.enabled === true
     // With gateway TLS (#491) the den answers https only — advertise a full

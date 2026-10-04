@@ -11,7 +11,7 @@ import { hostname, networkInterfaces } from 'node:os'
 import { dirname, join } from 'node:path'
 import { randomBytes, X509Certificate } from 'node:crypto'
 import { gunzipSync, gzipSync } from 'node:zlib'
-import { parseMeshFile, sharedPath } from '@rivetos/types'
+import { inheritOperatorFields, parseMeshFile, sharedPath, type MeshNode } from '@rivetos/types'
 import { parse as parseYaml, stringify as toYaml } from 'yaml'
 import { assertSafeArg, isSafeArg, quoteShellArg } from './ssh.js'
 
@@ -508,7 +508,8 @@ export async function writeEnrollLayout(unpacked: UnpackedEnroll): Promise<void>
   await chmod(keyPath, 0o600)
   await writeFile(join(intermediate, 'ca-chain.pem'), unpacked.caChain)
   await writeFile(join(intermediate, 'chain.pem'), unpacked.caChain)
-  await atomicWriteFile(sharedPath('mesh.json'), unpacked.meshJson)
+  const meshDest = sharedPath('mesh.json')
+  await atomicWriteFile(meshDest, await keepLocalOperatorFields(meshDest, unpacked.meshJson))
 }
 
 export function configPath(): string {
@@ -734,3 +735,31 @@ export function renewHubTargetFromSeed(seedHost: string | undefined): string {
 }
 
 export { sharedPath }
+
+/**
+ * The hub's copy (mesh sync, enroll, renew) replaces the local roster. Operator-set fields (sshUser,
+ * installRoot, platform) that were edited on this node and that the hub's
+ * copy does not carry are kept, the same rule a node's re-registration
+ * follows. Anything unparseable falls back to the hub's text unchanged.
+ */
+export async function keepLocalOperatorFields(dest: string, incoming: string): Promise<string> {
+  const withNewline = incoming.endsWith('\n') ? incoming : `${incoming}\n`
+  try {
+    const local = JSON.parse(await readFile(dest, 'utf-8')) as { nodes?: Record<string, MeshNode> }
+    const next = JSON.parse(incoming) as { nodes?: Record<string, MeshNode> }
+    if (!local.nodes || !next.nodes) return withNewline
+    let changed = false
+    for (const [id, node] of Object.entries(next.nodes)) {
+      // A null or non-object entry is left for the parser to skip.
+      if (typeof node !== 'object' || node === null) continue
+      const merged = inheritOperatorFields(node, local.nodes[id])
+      if (merged !== node && JSON.stringify(merged) !== JSON.stringify(node)) {
+        next.nodes[id] = merged
+        changed = true
+      }
+    }
+    return changed ? `${JSON.stringify(next, null, 2)}\n` : withNewline
+  } catch {
+    return withNewline
+  }
+}

@@ -2,6 +2,7 @@ import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import { mkdtemp, rm, readFile, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
+import { inheritOperatorFields } from '@rivetos/types'
 import { FileMeshRegistry, buildLocalNode } from './mesh.js'
 import type { MeshNode, MeshNodeEvent } from '@rivetos/types'
 
@@ -319,6 +320,90 @@ describe('FileMeshRegistry', () => {
     const byCapability = await registry.findByCapability('den')
     expect(byCapability).toHaveLength(1)
     expect(byCapability[0].metadata).toEqual({ denPort: 5199 })
+  })
+
+  it('re-registration keeps the operator-set fields, and an explicit value wins', async () => {
+    const node = buildLocalNode({
+      name: 'desk',
+      agents: ['opus'],
+      host: '192.168.1.50',
+      port: 3000,
+      providers: [],
+      models: [],
+      version: '0.7.0',
+    })
+    await registry.register(node)
+    // An operator edits the roster: this desktop runs as another user.
+    await registry.register({
+      ...node,
+      sshUser: 'deskuser',
+      installRoot: '/home/deskuser/rivetos',
+      platform: 'linux',
+    })
+
+    // The node restarts and registers itself again; it knows none of them.
+    await registry.register({ ...node, lastSeen: Date.now(), version: '0.8.0' })
+    let stored = await registry.getNode(node.id)
+    expect(stored).toMatchObject({
+      sshUser: 'deskuser',
+      installRoot: '/home/deskuser/rivetos',
+      platform: 'linux',
+      version: '0.8.0',
+    })
+
+    // A registration that names a field replaces it; null is "not given".
+    await registry.register({ ...node, sshUser: 'rivet' })
+    await registry.register({ ...node, installRoot: null } as unknown as typeof node)
+    stored = await registry.getNode(node.id)
+    expect(stored).toMatchObject({ sshUser: 'rivet', installRoot: '/home/deskuser/rivetos' })
+
+    // A first registration has nothing to inherit.
+    const fresh = buildLocalNode({
+      name: 'new',
+      agents: [],
+      host: '192.168.1.51',
+      port: 3000,
+      providers: [],
+      models: [],
+      version: '0.8.0',
+    })
+    await registry.register(fresh)
+    const freshStored = await registry.getNode(fresh.id)
+    expect(freshStored).toBeDefined()
+    expect('sshUser' in (freshStored ?? {})).toBe(false)
+  })
+
+  it('start() re-registers the local node without erasing a hand-edited roster entry', async () => {
+    const local = buildLocalNode({
+      existingId: 'desk',
+      name: 'desk',
+      agents: [],
+      host: '192.168.1.50',
+      port: 3000,
+      providers: [],
+      models: [],
+      version: '0.8.0',
+    })
+    await registry.register({ ...local, sshUser: 'deskuser' })
+    await registry.start(local)
+    await registry.stop()
+    expect((await registry.getNode('desk'))?.sshUser).toBe('deskuser')
+  })
+
+  it('inheritOperatorFields: nothing to inherit leaves the node as it came', () => {
+    const node = buildLocalNode({
+      name: 'n',
+      agents: [],
+      host: '192.168.1.60',
+      port: 3000,
+      providers: [],
+      models: [],
+      version: '0.8.0',
+    })
+    expect(inheritOperatorFields(node, undefined)).toBe(node)
+    const out = inheritOperatorFields(node, { ...node, host: '192.168.1.61', sshUser: 'deskuser' })
+    expect(out.sshUser).toBe('deskuser')
+    expect('platform' in out).toBe(false)
   })
 
   it('getNodes returns all nodes', async () => {
