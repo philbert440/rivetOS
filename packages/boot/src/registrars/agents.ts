@@ -962,7 +962,8 @@ export async function registerAgentTools(
   const memoryBackend = hasMemoryBackend(registeredMemory) ? registeredMemory.backend() : undefined
   // The users registry (den reads it from the environment, and re-reads it
   // at runtime) may route a user without a database URL only when the memory
-  // that is actually registered keeps its own store per user. Decided here,
+  // that is actually registered implements MemoryBackend: such a memory
+  // serves each user from their own store or refuses them itself. Decided here,
   // from the registered backend, never from config text or a leftover
   // environment line: on any other memory a user without a database must
   // stay refused, or their turns would fall through to the owner's store.

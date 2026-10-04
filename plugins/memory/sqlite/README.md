@@ -73,7 +73,9 @@ files off: other users then get no memory here.
 Moving memory: `rivetos memory export` and `import` read and write the gzip
 NDJSON v1 dump that the Postgres backend uses (`portability.ts`), so a store
 moves between SQLite and Postgres in either direction. Vectors are not in
-the file; the importing node re-embeds.
+the file; the importing node re-embeds. One file per command: on a node
+with other users, each user's file under `users/<userId>/` is exported
+separately (`--sqlite <file>`).
 
 Local mode: `rivetos local init --db sqlite` sets up a node whose memory and
 tasks are SQLite files, with no database process.

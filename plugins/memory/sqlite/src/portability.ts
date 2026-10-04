@@ -148,7 +148,13 @@ export async function exportSqliteMemory(
         }
       }
     } finally {
-      db.exec('COMMIT')
+      // Read-only work: ending the transaction either way. An abandoned
+      // export may still have a cursor open, which must not mask the cause.
+      try {
+        db.exec('COMMIT')
+      } catch {
+        // nothing was written
+      }
     }
   }
   // The destination is the caller's to end (it may be stdout).
@@ -311,6 +317,9 @@ export async function importSqliteMemory(
     } catch {
       // already rolled back
     }
+    // Stop reading: the source must not be left flowing into nothing.
+    rl.close()
+    input.destroy()
     throw err
   }
   if (unknownTables.size > 0) log(`skipped unknown tables: ${[...unknownTables].join(', ')}`)

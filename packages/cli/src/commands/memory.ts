@@ -1116,7 +1116,9 @@ async function memoryImport(args: string[]): Promise<void> {
   \`rivetos cloud import\` (tenant roles cannot write summaries/wiki).
 
   Options:
-    --dry-run        Parse and validate the file; do not write
+    --dry-run        Parse and validate the file; no rows are written (an
+                     existing SQLite file is still opened and brought up to
+                     the current schema)
     --sqlite <file>  Import into this SQLite memory file (default on a node
                      whose config has memory.sqlite and no RIVETOS_PG_URL)
 `)

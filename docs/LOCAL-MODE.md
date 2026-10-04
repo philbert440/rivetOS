@@ -122,6 +122,10 @@ and the memory tools. See the `memory.sqlite` section of
   is left alone.
 - `rivetos memory export` and `rivetos memory import` move a store between a
   SQLite node and a Postgres one in either direction (same dump format).
+  Both commands, and `rivetos local backup`, work on **one file**: the node
+  owner's by default. On a node with other users, each user's memory is its
+  own file under `users/<userId>/` and is not included; export or back up
+  each one with `--sqlite <that file>`.
 
 ## Layout
 
