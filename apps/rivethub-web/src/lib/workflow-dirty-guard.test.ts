@@ -1,3 +1,4 @@
+import { readFileSync } from 'node:fs'
 import { describe, expect, it, vi } from 'vitest'
 import { shouldBlockFilesLeave } from './files-dirty-guard.js'
 
@@ -34,5 +35,31 @@ describe('workflows dirty-guard contract', () => {
     const clearDirty = vi.fn()
     await expect(shouldBlockFilesLeave({ dirty: true, confirm, clearDirty })).resolves.toBe(true)
     expect(clearDirty).not.toHaveBeenCalled()
+  })
+})
+
+// The hook's dialog is asked through a queue that only a mounted dialog can
+// answer: these pin that the hook hands the element out and the page renders
+// it, and that an editor clears the guard when it unmounts.
+describe('workflows dirty-guard wiring', () => {
+  const read = (path: string): string => readFileSync(new URL(path, import.meta.url), 'utf8')
+
+  it('the hook returns the dialog element and the page renders it', () => {
+    expect(read('./workflow-dirty-guard.ts')).toContain('element: discardDialog.element')
+    const page = read('../pages/workflows-hub.tsx')
+    expect(page).toContain('element: discardDialogElement')
+    expect(page).toContain('{discardDialogElement}')
+  })
+
+  it('both editors report clean when they unmount', () => {
+    for (const path of ['../components/workflow-edit-panel.tsx', '../components/flows-author.tsx']) {
+      expect(read(path)).toContain('reportDirty.current?.(false)')
+    }
+  })
+
+  it('leaves tab close and reload to the router blocker', () => {
+    const hook = read('./workflow-dirty-guard.ts')
+    expect(hook).toContain('useBlocker({ shouldBlockFn, enableBeforeUnload })')
+    expect(hook).not.toContain("addEventListener('beforeunload'")
   })
 })

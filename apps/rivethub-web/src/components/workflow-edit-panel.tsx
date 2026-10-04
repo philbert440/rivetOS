@@ -4,7 +4,7 @@
  * bytes. Validate button runs POST /api/workflows/:id/validate.
  */
 
-import { useCallback, useEffect, useMemo, useState, type JSX, type ReactNode } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState, type JSX, type ReactNode } from 'react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { parse as parseYaml, stringify as stringifyYaml } from 'yaml'
 import type { WorkflowDiagnostic, WorkflowField } from '@rivetos/types'
@@ -110,6 +110,17 @@ export function WorkflowEditPanel(props: {
   useEffect(() => {
     onDirtyChange?.(dirty)
   }, [dirty, onDirtyChange])
+
+  // An editor that goes away takes its unsaved state with it: the page's
+  // guard must not keep asking about edits nobody can see or save.
+  const reportDirty = useRef(onDirtyChange)
+  reportDirty.current = onDirtyChange
+  useEffect(
+    () => () => {
+      reportDirty.current?.(false)
+    },
+    [],
+  )
 
   const treeQuery = useQuery({
     queryKey: ['workflow-edit-tree', baseUrl, editPath],

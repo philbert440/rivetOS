@@ -55,6 +55,17 @@ export function FlowsAuthor(props: {
     props.onDirtyChange?.(dirty)
   }, [dirty, props.onDirtyChange])
 
+  // An editor that goes away takes its unsaved state with it: the page's
+  // guard must not keep asking about edits nobody can see or save.
+  const reportDirty = useRef(props.onDirtyChange)
+  reportDirty.current = props.onDirtyChange
+  useEffect(
+    () => () => {
+      reportDirty.current?.(false)
+    },
+    [],
+  )
+
   useEffect(() => {
     if (!dirty) return
     const onUnload = (e: BeforeUnloadEvent): void => {

@@ -222,6 +222,7 @@ export function WorkflowTriggerPage(): JSX.Element {
     markDirty: setEditDirty,
     confirmDiscard: confirmEditDiscard,
     isDirty: editIsDirty,
+    element: discardDialogElement,
   } = useWorkflowDirtyGuard()
   const switchMode = useCallback(
     async (next: 'run' | 'edit') => {
@@ -311,6 +312,7 @@ export function WorkflowTriggerPage(): JSX.Element {
           : `mx-auto px-4 py-8 md:px-6 ${pageMode === 'edit' ? 'max-w-5xl' : 'max-w-3xl'}`
       }
     >
+      {discardDialogElement}
       {!runWithCanvas && (
         <div className="mb-4 flex flex-wrap items-center justify-between gap-2">
           <Link
