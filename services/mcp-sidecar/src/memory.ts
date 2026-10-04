@@ -20,7 +20,7 @@ import {
   createMemoryTools as createPgMemoryTools,
   createTagsTool,
 } from '@rivetos/memory-postgres'
-import type { Tool } from '@rivetos/types'
+import { ownerUserIdFromEnv, type Tool } from '@rivetos/types'
 import { z } from 'zod'
 
 import type { ToolRegistration } from '@rivetos/mcp'
@@ -67,6 +67,8 @@ export function createMemoryTools(options: MemoryToolsOptions): MemoryToolsHandl
 
   const memory = new PostgresMemory({
     connectionString: options.pgUrl,
+    // This process serves one user: the one it was spawned for, else the node owner.
+    userId: process.env.RIVETOS_USER_ID?.trim() || ownerUserIdFromEnv(process.env),
     embedEndpoint: options.embedEndpoint,
     embedModel: options.embedModel,
   })

@@ -475,14 +475,25 @@ describe('rule-based project tag', () => {
     const owner = database()
     const user = database()
     const seen: Array<boolean | undefined> = []
-    const writer = vi.fn((_pool: pg.Pool, options: { allowFilesystem?: boolean }) => {
-      seen.push(options.allowFilesystem)
-      return async () => ({ ok: true as const, conversation_id: 'c', inserted: 0, skipped: 0 })
-    })
-    const opts = { ...owner, userPools: new Map([['alice', user.pool]]), writer }
+    const owners: Array<string | undefined> = []
+    const writer = vi.fn(
+      (_pool: pg.Pool, options: { allowFilesystem?: boolean; ownerUserId?: string }) => {
+        seen.push(options.allowFilesystem)
+        owners.push(options.ownerUserId)
+        return async () => ({ ok: true as const, conversation_id: 'c', inserted: 0, skipped: 0 })
+      },
+    )
+    const opts = {
+      ...owner,
+      userPools: new Map([['alice', user.pool]]),
+      writer,
+      ownerUserId: 'owner',
+    }
     await request(opts, batch)
     await request(opts, batch, 'POST', { 'x-rivetos-user': 'alice' })
     expect(seen).toEqual([true, false])
+    // Each batch is stamped with whose it is: the node owner's, or the routed user's.
+    expect(owners).toEqual(['owner', 'alice'])
   })
 
   it('skips the rule for no cwd, a relative or dotted cwd, a root-like cwd, or when disabled', async () => {

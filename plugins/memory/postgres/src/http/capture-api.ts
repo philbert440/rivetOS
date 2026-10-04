@@ -19,6 +19,8 @@ export interface CaptureApiOptions {
   writer?: (pool: pg.Pool, options: CaptureBatchOptions) => CaptureWriteFn
   /** Forwarded to `captureBatch` when no `writer` override is given. */
   capture?: CaptureBatchOptions
+  /** The node owner's id, stamped on the owner's batches; a routed user's get that user's id. */
+  ownerUserId?: string
 }
 
 function json(res: ServerResponse, status: number, body: unknown): void {
@@ -77,6 +79,7 @@ export function createCaptureApiRoute(opts: CaptureApiOptions): GatewayRoute {
         const captureOptions: CaptureBatchOptions = {
           ...opts.capture,
           allowFilesystem: routed.kind === 'owner' && opts.capture?.allowFilesystem !== false,
+          ownerUserId: routed.kind === 'owner' ? opts.ownerUserId : routed.id,
         }
         const writer =
           opts.writer?.(pool, captureOptions) ??

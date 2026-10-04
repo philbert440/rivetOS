@@ -375,6 +375,14 @@ export function resolveUser(registry: UsersRegistry, deviceId: string | null): R
 }
 
 /**
+ * The node owner's id: the registry's owner, else the default owner id. What
+ * the owner's memory rows are stamped with.
+ */
+export function ownerUserIdFromEnv(env: EnvLike): string {
+  return loadUsersRegistry(env)?.ownerUserId ?? DEFAULT_OWNER_USER_ID
+}
+
+/**
  * Resolve a registry user by id, for a caller that has already proved who it
  * is (a per-user token). Fails closed like {@link resolveUser}: an unknown
  * user, or one with nothing to route to, is an error and never the owner.

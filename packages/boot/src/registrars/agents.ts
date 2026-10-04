@@ -86,6 +86,7 @@ import {
   type MeshRegistry,
   type Tool,
   hasMemoryBackend,
+  ownerUserIdFromEnv,
 } from '@rivetos/types'
 import {
   PostgresMemory,
@@ -1042,7 +1043,7 @@ export async function registerAgentTools(
     }
     if (!memoryBackend) {
       gatewayRoutes.push(
-        createCaptureApiRoute({ pool, userPools }),
+        createCaptureApiRoute({ pool, userPools, ownerUserId: ownerUserIdFromEnv(process.env) }),
         createMemoryApiRoute({
           pool,
           userPools,
