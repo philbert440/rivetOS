@@ -789,7 +789,7 @@ memory:
 | `embed_expected_dims` | number | `RIVETOS_EMBED_EXPECTED_DIMS` | Require exactly this vector width. Unset: vectors longer than 1024 are truncated to 1024. A store keeps one width: a vector of another width fails its job unless this key names the new width, in which case the stored vectors are cleared and re-embedded. |
 | `embed_timeout_ms` | number | `RIVETOS_EMBED_TIMEOUT_MS`, else 8000 | Per-request timeout, clamped to 500–60000. |
 | `embed_query_instruction` | string | `RIVETOS_EMBED_QUERY_INSTRUCTION`, else the same default as Postgres | Prefix for search queries. Empty string disables. |
-| `workers` | boolean | `true` when an endpoint is set | Run the in-process job loop. `false` queues work without draining it. |
+| `workers` | boolean | `true` when an endpoint is set | Run the in-process job loop. `false` queues work without draining it, and never clears stored vectors (a model change is applied by a process that runs the loop). |
 
 The file is opened with WAL, a 5s busy timeout, and foreign keys on. Without an embedding
 endpoint search is FTS5 only and no embedding work is queued; rows written meanwhile are

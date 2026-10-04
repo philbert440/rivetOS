@@ -291,6 +291,7 @@ export class JobRunner {
     try {
       const nowMs = this.now().getTime()
       for (const sweep of this.sweeps) {
+        if (this.halted) break
         if (nowMs - sweep.last < sweep.everyMs) continue
         sweep.last = nowMs
         try {

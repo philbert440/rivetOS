@@ -276,6 +276,7 @@ describe('embedding drain', () => {
       raw.close()
       const logs: string[] = []
       memory = new SqliteMemory({ path, workers: false, log: (l) => logs.push(l), embed })
+      memory.reconcileEmbedStore()
       expect(logs.join('\n')).toMatch(/1 stored vector\(s\) were not 6 wide and will be re-embedded/)
       const state = memory.embedStateForTest([a, b, odd])
       expect(state[a].dims).toBe(TOPICS.length)
@@ -512,6 +513,10 @@ describe('schema v3 on an existing file', () => {
       log: (l) => logs.push(l),
       embed: { ...embed, model: 'toy-v2' },
     })
+    // An open that will not drain jobs only warns: it must not wipe the store.
+    expect(logs.join('\n')).toMatch(/stored vectors were written by toy, this process is configured for toy-v2/)
+    expect(memory.embedStateForTest(['m1']).m1).toMatchObject({ status: 'done', dims: TOPICS.length })
+    memory.reconcileEmbedStore()
     expect(logs.join('\n')).toMatch(/embedding model changed \(toy → toy-v2\)/)
     expect(memory.embedStateForTest(['m1']).m1).toMatchObject({ status: null, dims: 0 })
     // The first pass runs the unembedded-rows sweep, which queues it again.

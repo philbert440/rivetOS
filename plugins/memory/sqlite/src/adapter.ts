@@ -223,6 +223,7 @@ export class SqliteMemory implements Memory {
   private readonly embedClient: EmbedClient | undefined
   private readonly vectorIndex: VectorIndex
   private readonly expectedDims: number | undefined
+  private embedStoreReconciled = false
   private readonly log: (line: string) => void
 
   constructor(config: SqliteMemoryConfig) {
@@ -275,9 +276,14 @@ export class SqliteMemory implements Memory {
           this.enqueueUnembedded()
         },
       })
-      this.noteEmbedModel(this.embedClient.model)
-      this.adoptEmbedDims()
-      if (config.workers ?? true) this.jobRunner.start()
+      // Only a process that drains the queue may clear vectors: a one-off
+      // open with another model must not wipe a store it will never refill.
+      if (config.workers ?? true) {
+        this.reconcileEmbedStore()
+        this.jobRunner.start()
+      } else {
+        this.warnOnForeignModel(this.embedClient.model)
+      }
     }
   }
 
@@ -763,14 +769,18 @@ export class SqliteMemory implements Memory {
   private bumpAccess(ids: readonly string[]): void {
     if (ids.length === 0) return
     try {
-      this.db
-        .prepare(
-          `UPDATE ros_messages SET access_count = access_count + 1, last_accessed_at = ?
-            WHERE id IN (${ids.map(() => '?').join(', ')})`,
-        )
-        .run(iso(), ...ids)
+      const at = iso()
+      for (let i = 0; i < ids.length; i += 500) {
+        const chunk = ids.slice(i, i + 500)
+        this.db
+          .prepare(
+            `UPDATE ros_messages SET access_count = access_count + 1, last_accessed_at = ?
+              WHERE id IN (${chunk.map(() => '?').join(', ')})`,
+          )
+          .run(at, ...chunk)
+      }
     } catch {
-      // ignore
+      // access stats are best-effort
     }
   }
 
@@ -903,6 +913,30 @@ export class SqliteMemory implements Memory {
   }
 
   /**
+   * Bring the stored vectors in line with the configured model: a model
+   * change clears them for re-embedding, and a store without a recorded
+   * width adopts one. Runs once, when this process starts draining jobs
+   * (worker start, or the first `runJobs()`).
+   */
+  reconcileEmbedStore(): void {
+    if (this.embedStoreReconciled || !this.embedClient) return
+    this.embedStoreReconciled = true
+    this.noteEmbedModel(this.embedClient.model)
+    this.adoptEmbedDims()
+  }
+
+  private warnOnForeignModel(model: string): void {
+    const prior = this.db.prepare(`SELECT value FROM ros_meta WHERE key = 'embed_model'`).get() as
+      { value: string } | undefined
+    if (prior && prior.value !== model) {
+      this.log(
+        `[memory.sqlite] stored vectors were written by ${prior.value}, this process is configured for ${model}; ` +
+          `they are re-embedded only by a process that runs the job loop`,
+      )
+    }
+  }
+
+  /**
    * Remember which model wrote the vectors. Vectors from another model are
    * not comparable: when the model changes they are cleared and re-queued.
    */
@@ -1006,6 +1040,7 @@ export class SqliteMemory implements Memory {
   /** Run due background jobs now. Returns how many ran. Tests and CLI use this. */
   async runJobs(): Promise<number> {
     this.assertOpen()
+    this.reconcileEmbedStore()
     return this.jobRunner.tick()
   }
 
