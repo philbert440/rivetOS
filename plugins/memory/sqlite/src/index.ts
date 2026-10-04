@@ -64,8 +64,15 @@ export const manifest: PluginManifest = {
     const compactor = await resolveCompactorConfig(cfg, ctx.env, (line) => {
       ctx.logger.warn(line)
     })
+    // Everyone the users registry lists besides the owner. Only these are
+    // refused: the owner's own turns carry other ids (the default owner id,
+    // platform ids), and must keep working.
+    const otherUsers = otherUsersOf(ctx.env, (line) => {
+      ctx.logger.warn(line)
+    })
     const memory = new SqliteMemory({
       path,
+      otherUsers,
       ...(embed ? { embed } : {}),
       ...(compactor ? { compactor, compaction: resolveCompactionSettings(ctx.env) } : {}),
       ...(typeof cfg.workers === 'boolean' ? { workers: cfg.workers } : {}),
@@ -76,15 +83,13 @@ export const manifest: PluginManifest = {
     ctx.registerMemory(memory)
     // The agent's memory tools. Writing tools (append, ingest) are served over
     // HTTP for capture clients, not handed to the agent. The file is the node
-    // owner's: a turn den resolved to another user gets a refusal, never the
-    // owner's transcripts.
-    const ownerUserId = ownerOf(ctx.env)
+    // owner's: a turn den resolved to another registry user gets a refusal.
     for (const tool of memory.backend().readTools()) {
       ctx.registerTool({
         ...tool,
         async execute(args, signal, context) {
           const uid = context?.session?.userId
-          if (uid && ownerUserId !== undefined && uid !== ownerUserId) {
+          if (uid && otherUsers.has(uid)) {
             throw new Error(
               `memory for user "${uid}" is unavailable (this node's memory is a single-user store)`,
             )
@@ -123,7 +128,7 @@ export const manifest: PluginManifest = {
         const others = Object.keys(registry.users).filter((id) => id !== registry.ownerUserId)
         if (others.length > 0) {
           ctx.logger.warn(
-            `memory.sqlite is single-user in phase 1 — ${others.length} routed user(s) in the users registry share this file; per-user isolation is deferred`,
+            `memory.sqlite is single-user in phase 1 — ${others.length} routed user(s) in the users registry get no memory from this store (no search, context or tools); their own turns are still written to it`,
           )
         }
       }
@@ -267,13 +272,23 @@ export function resolveCompactionSettings(
 }
 
 /**
- * The node owner's user id from the users registry. Undefined when there is
- * no registry: then den resolves no other users and nothing is refused.
+ * The users registry's users other than the owner. Empty when there is no
+ * registry. A registry that cannot be read is reported: den may still be
+ * resolving users from it, and this process then cannot tell them apart.
  */
-function ownerOf(env: Record<string, string | undefined>): string | undefined {
+function otherUsersOf(
+  env: Record<string, string | undefined>,
+  warn: (line: string) => void,
+): Set<string> {
   try {
-    return loadUsersRegistry(env)?.ownerUserId
-  } catch {
-    return undefined
+    const registry = loadUsersRegistry(env)
+    if (!registry) return new Set()
+    return new Set(Object.keys(registry.users).filter((id) => id !== registry.ownerUserId))
+  } catch (err) {
+    warn(
+      `memory.sqlite: the users registry could not be read (${err instanceof Error ? err.message : String(err)}); ` +
+        'routed users cannot be told apart from the owner and are not refused',
+    )
+    return new Set()
   }
 }

@@ -314,8 +314,10 @@ export class SqliteBackend implements MemoryBackend {
     } else if (tagged.size > 0) {
       // The filter is applied after ranking, so rank a wider pool, and widen
       // it again while it yields fewer tagged hits than asked for.
-      for (const pool of [options.limit * 5, options.limit * 25, TAG_FILTER_POOL_MAX]) {
-        const size = Math.min(pool, TAG_FILTER_POOL_MAX)
+      const pools = [options.limit * 5, options.limit * 25, TAG_FILTER_POOL_MAX].map((n) =>
+        Math.min(n, TAG_FILTER_POOL_MAX),
+      )
+      for (const size of [...new Set(pools)]) {
         hits = await this.host.search(
           query,
           { scope: options.scope, limit: size, ...agentOpt },

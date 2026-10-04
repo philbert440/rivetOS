@@ -169,6 +169,11 @@ export interface SqliteMemoryConfig {
   /** Batch sizes and idle thresholds; defaults match the Postgres worker. */
   compaction?: Partial<CompactionSettings>
   /**
+   * User ids from the users registry other than the node owner. The file is
+   * the owner's: `search` and `getContextForTurn` return nothing for these.
+   */
+  otherUsers?: Iterable<string>
+  /**
    * Run the in-process job loop (embedding, compaction; wiki and tagging as
    * they land). Default: on when `embed` or `compactor` is set. Turn off to
    * queue work without draining it, e.g. in a short-lived CLI process.
@@ -255,11 +260,13 @@ export class SqliteMemory implements Memory {
   private embedStoreReconciled = false
   private readonly clock: () => Date
   private backendInstance: SqliteBackend | undefined
+  private readonly otherUsers: ReadonlySet<string>
   private readonly summaryIndex: VectorIndex
   private readonly compactor: SqliteCompactor | undefined
   private readonly log: (line: string) => void
 
   constructor(config: SqliteMemoryConfig) {
+    this.otherUsers = new Set(config.otherUsers ?? [])
     this.clock = config.now ?? (() => new Date())
     const path = resolveSqlitePath(config.path)
     this.filePath = path
@@ -497,7 +504,9 @@ export class SqliteMemory implements Memory {
     info?: { degraded?: string },
   ): Promise<SqliteSearchHit[]> {
     this.assertOpen()
-    void options?.userId
+    // This file is the node owner's. A turn den resolved to another user gets
+    // nothing from it, rather than the owner's transcripts.
+    if (this.isOtherUser(options?.userId)) return []
     const scope = options?.scope ?? 'both'
     const limit = options?.limit ?? 20
     const agent = options?.agent
@@ -595,7 +604,7 @@ export class SqliteMemory implements Memory {
     options?: { maxTokens?: number; userId?: string },
   ): Promise<string> {
     this.assertOpen()
-    void options?.userId
+    if (this.isOtherUser(options?.userId)) return ''
     const maxTokens = options?.maxTokens ?? 4000
     const sections: string[] = []
     let tokenEstimate = 0
@@ -1420,6 +1429,11 @@ export class SqliteMemory implements Memory {
   /** Now, as stored text. One clock for rows and jobs, so their timestamps compare. */
   private stamp(): string {
     return this.clock().toISOString()
+  }
+
+  /** True for a user id the registry lists as someone other than the owner. */
+  private isOtherUser(userId: string | undefined): boolean {
+    return userId !== undefined && this.otherUsers.has(userId)
   }
 
   private assertOpen(): void {
