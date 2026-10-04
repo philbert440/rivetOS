@@ -246,6 +246,7 @@ function AgentEditor({
       systemPrompt: init?.systemPrompt ?? '',
       draftDirectory: agent?.directory ?? duplicate?.draft.directory ?? '',
       sharedLink: agent?.sharedLink ?? duplicate?.draft.sharedLink ?? true,
+      nodeBaseUrl,
     }),
   )
 
@@ -260,6 +261,7 @@ function AgentEditor({
         systemPrompt,
         draftDirectory,
         sharedLink,
+        nodeBaseUrl,
       }),
     [
       name,
@@ -270,6 +272,7 @@ function AgentEditor({
       systemPrompt,
       draftDirectory,
       sharedLink,
+      nodeBaseUrl,
       initialDraft,
     ],
   )
@@ -353,7 +356,7 @@ function AgentEditor({
     const effort = defaultEffort(firstSheet, m)
     setModel(m)
     setEffort(effort)
-    setInitialDraft(
+    setInitialDraft((prev) =>
       captureAgentDraft({
         name: init?.name ?? '',
         color: init?.color ?? '',
@@ -363,6 +366,8 @@ function AgentEditor({
         systemPrompt: init?.systemPrompt ?? '',
         draftDirectory: agentDirectory,
         sharedLink: true,
+        // The node the form opened on: a node picked since then is an edit.
+        nodeBaseUrl: prev.nodeBaseUrl,
       }),
     )
   }, [agent, duplicate, harnessId, harnesses])
@@ -407,14 +412,20 @@ function AgentEditor({
         <Dialog.Content
           aria-label={agent ? 'Edit agent' : duplicate ? 'Copy agent' : 'New agent'}
           onInteractOutside={(e) => e.preventDefault()}
+          // Radix would move focus to the dialog itself; the Name field's
+          // autoFocus is where typing should start.
+          onOpenAutoFocus={(e) => e.preventDefault()}
+          aria-describedby={undefined}
           className="fixed left-1/2 top-1/2 z-50 flex max-h-[85vh] w-96 -translate-x-1/2 -translate-y-1/2 flex-col gap-3 overflow-y-auto rounded-md border border-line bg-panel p-4 shadow-lg outline-none"
           asChild
         >
           <form ref={formRef} onSubmit={handleSubmit}>
             <div className="flex items-center justify-between">
-              <span className="text-sm font-semibold text-em">
-                {agent ? 'Edit Agent' : duplicate ? 'Copy Agent' : 'New Agent'}
-              </span>
+              <Dialog.Title asChild>
+                <span className="text-sm font-semibold text-em">
+                  {agent ? 'Edit Agent' : duplicate ? 'Copy Agent' : 'New Agent'}
+                </span>
+              </Dialog.Title>
               <button
                 type="button"
                 onClick={() => {

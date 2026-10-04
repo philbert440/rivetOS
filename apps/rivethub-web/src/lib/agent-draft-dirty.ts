@@ -12,6 +12,8 @@ export interface AgentDraftFields {
   systemPrompt: string
   draftDirectory: string
   sharedLink: boolean
+  /** The node the agent is created on (or copied to). Submitted with the form, so it counts. */
+  nodeBaseUrl: string
 }
 
 export function captureAgentDraft(fields: AgentDraftFields): AgentDraftFields {
@@ -27,6 +29,7 @@ const FIELDS: (keyof AgentDraftFields)[] = [
   'systemPrompt',
   'draftDirectory',
   'sharedLink',
+  'nodeBaseUrl',
 ]
 
 /** True when any live field diverges from the captured baseline. */

@@ -11,6 +11,7 @@ function sample(overrides: Partial<AgentDraftFields> = {}): AgentDraftFields {
     systemPrompt: '',
     draftDirectory: '/tmp/wf',
     sharedLink: true,
+    nodeBaseUrl: 'https://node-a.example:5174',
     ...overrides,
   }
 }
@@ -35,6 +36,11 @@ describe('agentDraftDirty', () => {
       expect(agentDraftDirty(base, sample({ [field]: base[field] + 'x' })), field).toBe(true)
     }
     expect(agentDraftDirty(base, sample({ sharedLink: false })), 'sharedLink').toBe(true)
+    // Picking another node and nothing else is an unsaved change too.
+    expect(
+      agentDraftDirty(base, sample({ nodeBaseUrl: 'https://node-b.example:5174' })),
+      'nodeBaseUrl',
+    ).toBe(true)
   })
 
   it('whitespace-only name difference counts (caller trims for the label only)', () => {
