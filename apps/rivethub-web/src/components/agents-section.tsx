@@ -235,6 +235,53 @@ function AgentEditor({
   const catalogClash = catalogNameClashes(trimmedName, catalogQuery.data?.agents ?? [], agent?.id)
   const formRef = useRef<HTMLFormElement | null>(null)
 
+  const initialDraft = useMemo(
+    () => ({
+      name: duplicate ? copyName(duplicate.draft.name) : (init?.name ?? ''),
+      color: init?.color ?? '',
+      rawHarnessId: init?.harnessId ?? '',
+      rawModel: init?.model ?? '',
+      rawEffort: init?.effort ?? '',
+      systemPrompt: init?.systemPrompt ?? '',
+      draftDirectory: agent?.directory ?? duplicate?.draft.directory ?? '',
+      sharedLink: agent?.sharedLink ?? duplicate?.draft.sharedLink ?? true,
+    }),
+    // Seeded once per mount; later harness-driven field defaults are edits.
+    [],
+  )
+
+  const isDirty = useCallback((): boolean => {
+    return (
+      name !== initialDraft.name ||
+      color !== initialDraft.color ||
+      rawHarnessId !== initialDraft.rawHarnessId ||
+      rawModel !== initialDraft.rawModel ||
+      rawEffort !== initialDraft.rawEffort ||
+      systemPrompt !== initialDraft.systemPrompt ||
+      draftDirectory !== initialDraft.draftDirectory ||
+      sharedLink !== initialDraft.sharedLink
+    )
+  }, [
+    name,
+    color,
+    rawHarnessId,
+    rawModel,
+    rawEffort,
+    systemPrompt,
+    draftDirectory,
+    sharedLink,
+    initialDraft,
+  ])
+
+  const discardDialog = useConfirmDialog()
+  const confirmLeave = useCallback(async (): Promise<boolean> => {
+    if (!isDirty()) return true
+    return discardDialog.confirm(
+      `Discard unsaved changes to agent "${trimmedName || 'new agent'}"?`,
+      { confirmLabel: 'Discard', danger: true },
+    )
+  }, [isDirty, discardDialog, trimmedName])
+
   const harnessesQuery = useQuery({
     queryKey: ['harnesses', nodeBaseUrl, transportEpoch],
     queryFn: async ({ signal }) => (await gatewayFor(nodeBaseUrl)).harnesses(signal),
@@ -332,7 +379,11 @@ function AgentEditor({
     <Dialog.Root
       open
       onOpenChange={(open) => {
-        if (!open) onCancel()
+        if (!open)
+          void (async () => {
+            if (!(await confirmLeave())) return
+            onCancel()
+          })()
       }}
     >
       <Dialog.Portal>
@@ -350,7 +401,12 @@ function AgentEditor({
               </span>
               <button
                 type="button"
-                onClick={onCancel}
+                onClick={() => {
+                  void (async () => {
+                    if (!(await confirmLeave())) return
+                    onCancel()
+                  })()
+                }}
                 className="text-ink-dim hover:text-em"
                 aria-label="cancel"
               >
@@ -575,7 +631,12 @@ function AgentEditor({
               </button>
               <button
                 type="button"
-                onClick={onCancel}
+                onClick={() => {
+                  void (async () => {
+                    if (!(await confirmLeave())) return
+                    onCancel()
+                  })()
+                }}
                 disabled={disabled}
                 className="rounded border border-line px-3 py-1.5 text-xs text-ink-dim hover:border-em hover:text-em disabled:opacity-50"
               >
