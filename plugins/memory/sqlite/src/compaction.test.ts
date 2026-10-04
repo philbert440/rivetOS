@@ -253,6 +253,32 @@ describe('compaction on the job loop', () => {
     expect(memory.jobs().counts()).toEqual([])
   })
 
+  it('new activity ends a dead job\'s rest at once', async () => {
+    let clock = new Date('2026-10-04T12:00:00Z')
+    let down = true
+    const chat = fakeChat(() => (down ? { status: 400 } : { content: SUMMARY }))
+    memory = new SqliteMemory({
+      path: ':memory:',
+      workers: false,
+      log: () => {},
+      now: () => clock,
+      compactor: { endpoint: 'https://llm.test/v1', model: 'm', fetch: chat.fetch, sleep: noWait },
+    })
+    await fill(memory, 's1', 10)
+    for (let i = 0; i < 3; i += 1) {
+      await memory.runJobs()
+      clock = new Date(clock.getTime() + 10 * 60_000)
+    }
+    expect(memory.jobs().counts()).toEqual([{ task: 'compact-conversation', state: 'dead', count: 1 }])
+    down = false
+    // Within the rest, but the conversation gets new messages: revived now.
+    clock = new Date(clock.getTime() + 6 * 60_000)
+    await fill(memory, 's1', 1)
+    expect(await memory.runJobs()).toBe(1)
+    expect(memory.summariesForConversation(memory.conversationIdForTest('s1', 'rivet')).length).toBeGreaterThan(0)
+    expect(memory.jobs().counts()).toEqual([])
+  })
+
   it('one-message tails never fill the sweep window: a ready conversation behind 600 of them is still queued', async () => {
     let clock = new Date('2026-09-01T00:00:00Z')
     const chat = fakeChat(() => ({ content: SUMMARY }))

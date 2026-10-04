@@ -144,19 +144,19 @@ export class SqliteCompactor {
     const idleBefore = new Date(nowMs - s.idleMinutes * 60_000).toISOString()
     const staleBefore = new Date(nowMs - s.staleMinutes * 60_000).toISOString()
     // Candidate conversations are bounded before the message aggregate, so a
-    // large file is not grouped in full on every sweep. A candidate could be
-    // written now: a floor-sized backlog, or a smaller tail that has gone
-    // stale. A tail that can never qualify (one message) or cannot yet must
+    // large file is not grouped in full on every sweep. A candidate holds a
+    // floor-sized backlog, or a smaller tail that has gone stale. A tail that can never qualify (one message) or cannot yet must
     // not hold a slot in the window, or it would starve the ones that can.
     // No live job either; a dead job is revived below once it has rested, so
     // a conversation that keeps failing is retried hourly, not every sweep.
+    // New activity since the job died ends the rest at once.
     const deadAfter = new Date(nowMs - DEAD_JOB_REST_MS).toISOString()
     // A dead job whose conversation is gone would hold its key for good.
     this.db
       .prepare(
         `DELETE FROM ros_jobs
-          WHERE state = 'dead' AND task = ?
-            AND NOT EXISTS (SELECT 1 FROM ros_conversations c WHERE ros_jobs.job_key = 'compact-' || c.id)`,
+          WHERE state = 'dead' AND task = ? AND substr(job_key, 1, 8) = 'compact-'
+            AND NOT EXISTS (SELECT 1 FROM ros_conversations c WHERE c.id = substr(ros_jobs.job_key, 9))`,
       )
       .run(COMPACT_TASK)
     const rows = this.db
@@ -177,7 +177,8 @@ export class SqliteCompactor {
                      AND NOT EXISTS (
                            SELECT 1 FROM ros_jobs j
                             WHERE j.job_key = 'compact-' || c.id
-                              AND (j.state <> 'dead' OR j.updated_at > ?)
+                              AND (j.state <> 'dead'
+                                   OR (j.updated_at > ? AND c.updated_at <= j.updated_at))
                          )
                 )
                  WHERE backlog >= ? OR (backlog >= ? AND updated_at < ?)

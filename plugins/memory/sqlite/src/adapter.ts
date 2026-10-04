@@ -79,10 +79,6 @@ export function resolveSqlitePath(raw: string): string {
   return isAbsolute(path) ? path : resolve(process.cwd(), path)
 }
 
-function iso(ms: number = Date.now()): string {
-  return new Date(ms).toISOString()
-}
-
 /**
  * Turn a free-text query into an FTS5 MATCH expression.
  * Strips FTS operators so operator characters cannot alter query structure;
@@ -256,11 +252,13 @@ export class SqliteMemory implements Memory {
   private readonly vectorIndex: VectorIndex
   private readonly expectedDims: number | undefined
   private embedStoreReconciled = false
+  private readonly clock: () => Date
   private readonly summaryIndex: VectorIndex
   private readonly compactor: SqliteCompactor | undefined
   private readonly log: (line: string) => void
 
   constructor(config: SqliteMemoryConfig) {
+    this.clock = config.now ?? (() => new Date())
     const path = resolveSqlitePath(config.path)
     this.filePath = path
     if (path !== ':memory:') {
@@ -400,7 +398,7 @@ export class SqliteMemory implements Memory {
     if (!cols.has('embed_failures')) {
       this.db.exec('ALTER TABLE ros_messages ADD COLUMN embed_failures INTEGER NOT NULL DEFAULT 0')
     }
-    const now = iso()
+    const now = this.stamp()
     this.db
       .prepare(
         `INSERT OR IGNORE INTO ros_jobs
@@ -437,7 +435,7 @@ export class SqliteMemory implements Memory {
         const taskId = resolveTaskId(entry.sessionId, entry.metadata)
         const convId = this.ensureConversation(entry.sessionId, entry.agent, entry.channel, taskId)
         const id = randomUUID()
-        const createdAt = entry.createdAt ? entry.createdAt.toISOString() : iso()
+        const createdAt = entry.createdAt ? entry.createdAt.toISOString() : this.stamp()
         const toolArgs = entry.toolArgs ? JSON.stringify(entry.toolArgs) : null
         const metadata = entry.metadata ? JSON.stringify(entry.metadata) : '{}'
         const toolResult = entry.toolResult ?? null
@@ -714,7 +712,7 @@ export class SqliteMemory implements Memory {
         `UPDATE ros_conversations SET settings = ?, updated_at = ?
          WHERE session_key = ? AND active = 1`,
       )
-      .run(JSON.stringify(settings), iso(), sessionId)
+      .run(JSON.stringify(settings), this.stamp(), sessionId)
   }
 
   async loadSessionSettings(sessionId: string): Promise<Record<string, unknown> | null> {
@@ -750,7 +748,7 @@ export class SqliteMemory implements Memory {
         `UPDATE ros_conversations SET task_id = ?, updated_at = ?
          WHERE session_key = ? AND agent = ? AND active = 1`,
       )
-      .run(taskId, iso(), sessionId, agent)
+      .run(taskId, this.stamp(), sessionId, agent)
   }
 
   /**
@@ -917,7 +915,7 @@ export class SqliteMemory implements Memory {
    * temporal term (capped). Best-effort — a failed bump never fails a search.
    */
   private bumpAccess(keys: readonly string[]): void {
-    const now = iso()
+    const now = this.stamp()
     for (const [prefix, table] of [
       ['m:', 'ros_messages'],
       ['s:', 'ros_summaries'],
@@ -1106,7 +1104,7 @@ export class SqliteMemory implements Memory {
    * per sweep. Oldest first.
    */
   private enqueueUnembedded(limit = 500): number {
-    const now = iso()
+    const now = this.stamp()
     let queued = 0
     for (const table of ['ros_messages', 'ros_summaries'] as const) {
       const prefix = `embed-${table}-`
@@ -1387,6 +1385,11 @@ export class SqliteMemory implements Memory {
     this.db.close()
   }
 
+  /** Now, as stored text. One clock for rows and jobs, so their timestamps compare. */
+  private stamp(): string {
+    return this.clock().toISOString()
+  }
+
   private assertOpen(): void {
     if (this.closed) {
       throw new MemoryError('MEMORY_CONNECTION_FAILED', 'SqliteMemory is closed')
@@ -1415,7 +1418,7 @@ export class SqliteMemory implements Memory {
     channel?: string,
     taskId?: string | null,
   ): string {
-    const now = iso()
+    const now = this.stamp()
     const channelValue = channel ?? 'unknown'
     const title = isHeartbeatSessionKey(sessionId) ? `Heartbeat ${agent}` : `Session ${sessionId}`
     const taskValue = taskId ?? null
