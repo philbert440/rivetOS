@@ -39,6 +39,10 @@ COPY bin/ bin/
 
 # Install workspace deps (skip postinstall — we'll run only what we need).
 RUN npm ci --ignore-scripts
+# Whether a workspace gets a nested node_modules depends on how npm hoists
+# (e.g. which undici major lands at the root). The runtime stage copies these
+# two when they exist; create them so the COPY succeeds under either layout.
+RUN mkdir -p plugins/memory/postgres/node_modules services/compaction-worker/node_modules
 
 # Per-package tsc build (for cross-package type resolution + service deps).
 # Then esbuild bundle for the runtime entrypoint.
@@ -68,9 +72,10 @@ COPY --from=build /build/node_modules/ ./node_modules/
 # into these trees, so the package.json must come along for resolution.
 COPY --from=build /build/plugins/memory/postgres/package.json ./plugins/memory/postgres/
 COPY --from=build /build/plugins/memory/postgres/dist/ ./plugins/memory/postgres/dist/
-# Nested dep: npm hoists undici@6 to the root for other consumers; this package
-# (and compaction-worker below) lock undici@8 in a nested node_modules. Without
-# these copies the in-image workers silently resolve the wrong undici major.
+# Nested deps, when npm does not hoist them: this package (and
+# compaction-worker below) need undici@8. With undici@8 at the root these
+# directories are empty; if a different major is hoisted they hold the nested
+# copy, and without it the in-image workers would resolve the wrong major.
 COPY --from=build /build/plugins/memory/postgres/node_modules/ ./plugins/memory/postgres/node_modules/
 
 # Worker services. These are separate processes, not part of dist/rivetos.js:
