@@ -1,5 +1,5 @@
 import { expect, it } from 'vitest'
-import { resolveCaptureTransport } from './transport.js'
+import { captureUser, captureUserFromEnv, resolveCaptureTransport } from './transport.js'
 
 const DEN = 'https://127.0.0.1:5174'
 const PG = 'postgres://localhost/rivet'
@@ -211,4 +211,24 @@ it('a routed user with the token the node minted uses the den, as that user', ()
       RIVETOS_USER_TOKEN: '  ',
     }).kind,
   ).toBe('none')
+})
+
+it('the user of a token is the id the node put in front of it, whatever RIVETOS_USER_ID says', () => {
+  const token = `${Buffer.from('guest').toString('base64url')}.secret-secret-secret`
+  expect(captureUser('visitor', token)).toEqual({ id: 'guest', token })
+  // A token without that part keeps the given id.
+  expect(captureUser('visitor', 'tok-123')).toEqual({ id: 'visitor', token: 'tok-123' })
+  expect(captureUser('visitor', '.tok')).toEqual({ id: 'visitor', token: '.tok' })
+  expect(captureUser('visitor', '!!!.tok')).toEqual({ id: 'visitor', token: '!!!.tok' })
+})
+
+it('a routed session without a token is refused, never taken for the owner', () => {
+  expect(captureUserFromEnv({})).toBeUndefined()
+  expect(captureUserFromEnv({ RIVETOS_USER_ID: '' })).toBeUndefined()
+  expect(captureUserFromEnv({ RIVETOS_USER_ID: 'guest', RIVETOS_USER_TOKEN: 'tok-123' })).toEqual({
+    id: 'guest',
+    token: 'tok-123',
+  })
+  expect(() => captureUserFromEnv({ RIVETOS_USER_ID: 'guest' })).toThrow(/refusing to write to the den/)
+  expect(() => captureUserFromEnv({ RIVETOS_USER_ID: ' ', RIVETOS_USER_TOKEN: ' ' })).toThrow()
 })

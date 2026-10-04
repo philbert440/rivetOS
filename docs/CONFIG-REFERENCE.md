@@ -1015,8 +1015,13 @@ send it to the den as `x-rivetos-user-token`; the den accepts it from this
 machine only and serves the request as that user. A token the den does not
 know (the node restarted) is refused, never served as the owner: capture
 keeps the batch in that user's own spool (`~/.rivetos/capture-spool-users/`)
-until a session spawned after the restart replays it. Nothing sets or reads
-the token on a node whose users each have a database.
+until a session spawned after the restart replays it; a batch still refused
+after a week is moved to that spool's `dead/`. Every capture integration
+gets this from the shared writer, which reads the two variables itself and
+refuses to post for a session that has a user id and no token. Such a
+session gets its user's memory and wiki tools and no delegation. Terminals
+never inherit either variable from the node or from a running tmux server.
+Nothing sets the token on a node whose users each have a database.
 
 | Variable                | Used By                                 | Description                                                                                                                                                                                                                                                                                                                                                                 |
 | ----------------------- | --------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |

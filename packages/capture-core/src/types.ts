@@ -40,8 +40,10 @@ export interface CaptureWriterOptions {
    * The routed user this session was spawned for (`RIVETOS_USER_ID` and
    * `RIVETOS_USER_TOKEN`). The token is sent to the den, which writes the
    * batch to that user's store; the spool is that user's own directory.
+   * Left out: read from this process's environment (and a routed session
+   * without a token throws). `null`: the node owner, whatever the environment.
    */
-  user?: { id: string; token: string }
+  user?: { id: string; token: string } | null
   fetch?: typeof globalThis.fetch
   spoolDir?: string
   log?: (line: string) => void

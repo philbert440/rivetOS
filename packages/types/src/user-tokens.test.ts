@@ -9,7 +9,8 @@ afterEach(() => {
 describe('user tokens', () => {
   it('mints one token per user and maps it back to that user only', () => {
     const guest = mintUserToken('guest')
-    expect(guest).toMatch(/^[A-Za-z0-9_-]{43}$/)
+    // The user's id in front, then 32 random bytes.
+    expect(guest).toMatch(/^Z3Vlc3Q\.[A-Za-z0-9_-]{43}$/)
     expect(mintUserToken('guest')).toBe(guest)
     const visitor = mintUserToken('visitor')
     expect(visitor).not.toBe(guest)

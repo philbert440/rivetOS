@@ -25,7 +25,8 @@ function trimmed(value: string | undefined): string {
  * `RIVETOS_MCP_TRANSPORT=den|pg` forces. Default: `den` when `RIVET_DEN_URL`
  * is set and `RIVETOS_USER_ID` is empty, else `pg` when `RIVETOS_PG_URL` is
  * set, else `none`. Forced `den` without a URL is `none`. A routed user id
- * refuses `den` and keeps `pg` (or `none` when no Postgres URL is set).
+ * without `RIVETOS_USER_TOKEN` refuses `den` and keeps `pg` (or `none` when
+ * no Postgres URL is set); with the token it uses `den` as that user.
  */
 export function resolveSidecarTransport(env: NodeJS.ProcessEnv): SidecarTransport {
   const forced = trimmed(env.RIVETOS_MCP_TRANSPORT)

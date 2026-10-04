@@ -2428,6 +2428,8 @@ export function createDenServer(config: DenConfig, opts: DenServerOptions = {}):
       }
       bindRequestUser(req, resolved.ctx)
     }
+    // As on the HTTP path: no upgrade handler sees the caller's token.
+    delete req.headers['x-rivetos-user-token']
     if (url.pathname === '/ws') {
       wss.handleUpgrade(req, socket, head, (ws) => wss.emit('connection', ws, req))
       return

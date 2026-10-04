@@ -23,6 +23,44 @@ export interface CaptureUser {
   token: string
 }
 
+/**
+ * The user a token belongs to. The node puts the user's id in front of the
+ * token (`<base64url id>.<secret>`), and that is the id used here, so the
+ * session's spool directory and the store the den writes to are the same
+ * user's whatever `RIVETOS_USER_ID` says. A token without that part falls
+ * back to the given id.
+ */
+export function captureUser(fallbackId: string, token: string): CaptureUser {
+  const dot = token.indexOf('.')
+  if (dot > 0) {
+    try {
+      const id = Buffer.from(token.slice(0, dot), 'base64url').toString('utf8')
+      if (id !== '' && Buffer.from(id, 'utf8').toString('base64url') === token.slice(0, dot)) {
+        return { id, token }
+      }
+    } catch {
+      // Not ours: use the fallback.
+    }
+  }
+  return { id: fallbackId, token }
+}
+
+/**
+ * The routed user of this process, from its environment: undefined for the
+ * owner's sessions. Throws when the session is a routed user's but has no
+ * token: such a session must not reach the den, where it would be the owner.
+ */
+export function captureUserFromEnv(env: NodeJS.ProcessEnv): CaptureUser | undefined {
+  if (env.RIVETOS_USER_ID === undefined || env.RIVETOS_USER_ID === '') return undefined
+  const token = trimmed(env.RIVETOS_USER_TOKEN)
+  if (token === '') {
+    throw new Error(
+      'RIVETOS_USER_ID is set without RIVETOS_USER_TOKEN: refusing to write to the den as the node owner',
+    )
+  }
+  return captureUser(env.RIVETOS_USER_ID, token)
+}
+
 export type CaptureTransport =
   /** `warnings` — one line per `RIVET_DEN_URL` guard that fired (see `guardDenUrl`); callers log them. */
   /** `user` — the routed user this session was spawned for, and the token that proves it to the den. */
@@ -52,7 +90,7 @@ export function resolveCaptureTransport(
     kind: 'den',
     denUrl: url,
     ...(resolved?.warnings ? { warnings: resolved.warnings } : {}),
-    ...(userToken ? { user: { id: env.RIVETOS_USER_ID as string, token: userToken } } : {}),
+    ...(userToken ? { user: captureUser(env.RIVETOS_USER_ID as string, userToken) } : {}),
   })
   const pgUrl = trimmed(env.RIVETOS_PG_URL)
   const userBlocksDen = routedUser && userToken === ''

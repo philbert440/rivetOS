@@ -116,6 +116,40 @@ describe('capture writer', () => {
     }
   })
 
+  it('a writer built without a user takes it from the environment, so no integration can post a routed session as the owner', async () => {
+    const seen: Array<string | null> = []
+    const fetch = vi.fn(async (_url: string | URL | Request, init?: RequestInit) => {
+      seen.push(new Headers(init?.headers).get('x-rivetos-user-token'))
+      return Response.json(okResult(1))
+    }) as unknown as typeof globalThis.fetch
+    const one: CaptureBatch = {
+      session_key: 's1',
+      agent: 'a',
+      messages: [{ event_id: 'e1', role: 'user', content: 'hello' }],
+    }
+    const saved = { id: process.env.RIVETOS_USER_ID, token: process.env.RIVETOS_USER_TOKEN }
+    try {
+      process.env.RIVETOS_USER_ID = 'guest'
+      process.env.RIVETOS_USER_TOKEN = 'tok-123'
+      await (await setup(fetch)).writer.write(one)
+      // `null` says the owner, whatever the environment (the node writing its own rows).
+      await (await setup(fetch, { user: null })).writer.write(one)
+      delete process.env.RIVETOS_USER_TOKEN
+      await expect(setup(fetch)).rejects.toThrow(/refusing to write to the den/)
+      delete process.env.RIVETOS_USER_ID
+      await (await setup(fetch)).writer.write(one)
+    } finally {
+      for (const [key, value] of [
+        ['RIVETOS_USER_ID', saved.id],
+        ['RIVETOS_USER_TOKEN', saved.token],
+      ] as const) {
+        if (value === undefined) delete process.env[key]
+        else process.env[key] = value
+      }
+    }
+    expect(seen).toEqual(['tok-123', null, null])
+  })
+
   it('posts the exact batch and returns the result', async () => {
     const fetch = vi.fn<typeof globalThis.fetch>().mockResolvedValue(Response.json(result))
     const { writer } = await setup(fetch)

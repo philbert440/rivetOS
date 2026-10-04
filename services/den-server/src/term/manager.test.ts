@@ -1971,6 +1971,15 @@ describe('term manager (tmux mux)', () => {
       'set-option',
       '@rivet_user',
       'owner',
+      // An owner session never inherits another user's identity from the tmux server.
+      ';',
+      'set-environment',
+      '-r',
+      'RIVETOS_USER_ID',
+      ';',
+      'set-environment',
+      '-r',
+      'RIVETOS_USER_TOKEN',
     ])
     expect(argv.slice(argv.indexOf('new-session'))).not.toContain('-t')
     // -e carries every manager-set/overridden var for an EXISTING server…
@@ -2103,6 +2112,7 @@ describe('term manager (tmux mux)', () => {
       expect(body).toContain("RIVETOS_ENV_FILE='/home/user/.env'")
       expect(body).toContain('unset RIVETOS_PG_URL')
       expect(body).toContain('unset RIVETOS_USER_ID')
+      expect(body).toContain('unset RIVETOS_USER_TOKEN')
       expect(body).not.toContain('RIVETOS_USER_DBS')
       expect(chain).toEqual([
         'set-option',
@@ -2120,6 +2130,10 @@ describe('term manager (tmux mux)', () => {
         'set-environment',
         '-r',
         'RIVETOS_USER_ID',
+        ';',
+        'set-environment',
+        '-r',
+        'RIVETOS_USER_TOKEN',
       ])
       expect(argv.slice(argv.indexOf('new-session'))).not.toContain('-t')
       // and they left the PTY env entirely

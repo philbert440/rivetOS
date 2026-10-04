@@ -45,7 +45,9 @@ export function mintUserToken(userId: string): string {
   const s = store()
   const existing = s.byUser.get(userId)
   if (existing) return existing
-  const token = randomBytes(32).toString('base64url')
+  // The id rides in front so a session can tell whose token it holds (its
+  // capture spool is named from it); the secret is the part after the dot.
+  const token = `${Buffer.from(userId, 'utf8').toString('base64url')}.${randomBytes(32).toString('base64url')}`
   s.byUser.set(userId, token)
   s.byDigest.set(digest(token), userId)
   return token
@@ -53,7 +55,7 @@ export function mintUserToken(userId: string): string {
 
 /** The user a token was minted for, or undefined. */
 export function userForToken(token: string): string | undefined {
-  if (token.length < 16 || token.length > 256) return undefined
+  if (token.length < 16 || token.length > 512) return undefined
   return store().byDigest.get(digest(token))
 }
 

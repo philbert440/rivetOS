@@ -29,6 +29,7 @@
  * All capture activity is appended to ~/.rivetos/claude-capture.log.
  */
 
+import { createHash } from 'node:crypto'
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
@@ -58,7 +59,14 @@ export const DEFAULT_SPOOL_MAX_ATTEMPTS = 5
 export const MAX_SWEEP_FILES = 20
 
 export function getSpoolDir(): string {
-  return process.env.RIVETOS_CLAUDE_HOOK_SPOOL ?? path.join(os.tmpdir(), 'rivetos-claude-hook')
+  if (process.env.RIVETOS_CLAUDE_HOOK_SPOOL) return process.env.RIVETOS_CLAUDE_HOOK_SPOOL
+  const base = path.join(os.tmpdir(), 'rivetos-claude-hook')
+  // A session spawned for another user spools apart: a leftover payload is
+  // re-ingested by whichever worker sweeps the directory, with that worker's
+  // identity, and must not be ingested as someone else's.
+  const userId = process.env.RIVETOS_USER_ID
+  if (userId === undefined || userId === '') return base
+  return `${base}-user-${createHash('sha256').update(userId).digest('hex').slice(0, 32)}`
 }
 
 export function workerDeadlineMs(env: NodeJS.ProcessEnv = process.env): number {

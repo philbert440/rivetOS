@@ -58,18 +58,20 @@ import type { BridgeLogger } from './log.js'
 import { createLogger } from './log.js'
 
 /** Loaded once at module import (boot), matching den / memory-postgres / agents. */
-const usersRegistry = loadUsersRegistry(process.env)
-const routedUserDbs = userDbsFromRegistry(usersRegistry)
+const routedUserDbs = userDbsFromRegistry(loadUsersRegistry(process.env))
 
 /**
- * True when the node's memory is file stores (boot says so once the memory
- * plugin is registered, which is after this module loads, hence the read at
- * call time) and `userId` is a registry user other than the owner.
+ * True when the node's memory is file stores and `userId` is a registry user
+ * other than the owner. Both are read when asked, not when this module
+ * loads: boot says the stores are local once the memory plugin is
+ * registered, and a user who joins the registry while the node runs is
+ * served by the memory plugin and the den at once.
  */
 function localStoreUser(userId: string): boolean {
-  if (process.env.RIVETOS_USER_STORES?.trim() !== 'local' || !usersRegistry) return false
-  if (userId === usersRegistry.ownerUserId) return false
-  return Object.values(usersRegistry.users).some((rec) => rec.id === userId)
+  if (process.env.RIVETOS_USER_STORES?.trim() !== 'local') return false
+  const registry = loadUsersRegistry(process.env)
+  if (!registry || userId === registry.ownerUserId) return false
+  return Object.values(registry.users).some((rec) => rec.id === userId)
 }
 
 // Spawn / flag-assembly / stream-json layer lives in spawn-turn.ts (shared

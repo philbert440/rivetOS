@@ -459,21 +459,23 @@ function registryView(
   }
 }
 
-/**
- * Where the other users' files go: `users_dir`, or `users/` beside the
- * owner's file. Each user gets `<dir>/<userId>/memory.sqlite`.
- */
 /** A directory under `usersDir` whose name is not `id` but folds to it. */
 function leftoverTwin(usersDir: string, id: string): string | undefined {
   let names: string[]
   try {
-    names = readdirSync(usersDir)
+    names = readdirSync(usersDir, { withFileTypes: true })
+      .filter((entry) => entry.isDirectory())
+      .map((entry) => entry.name)
   } catch {
     return undefined
   }
   return names.find((name) => name !== id && foldUserId(name) === foldUserId(id))
 }
 
+/**
+ * Where the other users' files go: `users_dir`, or `users/` beside the
+ * owner's file. Each user gets `<dir>/<userId>/memory.sqlite`.
+ */
 export function resolveUsersDir(cfg: Record<string, unknown>, ownerPath: string): string {
   if (typeof cfg.users_dir === 'string' && cfg.users_dir.trim() !== '') {
     return resolveSqlitePath(cfg.users_dir.trim())

@@ -30,7 +30,9 @@ Memory, wiki, and delegate tools:
       den (default when RIVET_DEN_URL is set and RIVETOS_USER_ID is empty)
       calls the local den over HTTPS and opens no Postgres pool. pg uses
       RIVETOS_PG_URL. A non-empty RIVETOS_USER_ID stays on pg: loopback den
-      calls are the owner pool, even if transport is forced to den.
+      calls are the owner pool, even if transport is forced to den. With
+      RIVETOS_USER_TOKEN as well (set by the node for a session it spawned
+      for that user) den is used as that user, without the delegate tools.
       Forced den without RIVET_DEN_URL disables these tools.
   RIVET_DEN_URL
       Den origin, for example https://127.0.0.1:5174. The memory launcher
