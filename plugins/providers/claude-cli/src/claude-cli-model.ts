@@ -37,7 +37,12 @@ import type {
 } from '@ai-sdk/provider'
 import { APICallError } from '@ai-sdk/provider'
 import type { Tool } from '@rivetos/types'
-import { loadUsersRegistry, userDbsFromRegistry } from '@rivetos/types'
+import {
+  USER_TOKEN_ENV,
+  loadUsersRegistry,
+  mintUserToken,
+  userDbsFromRegistry,
+} from '@rivetos/types'
 import { embedMcpServerForTurn, type EmbeddedMcpHandle } from './mcp-bridge.js'
 import {
   apiKeySourceAllowed,
@@ -54,6 +59,20 @@ import { createLogger } from './log.js'
 
 /** Loaded once at module import (boot), matching den / memory-postgres / agents. */
 const routedUserDbs = userDbsFromRegistry(loadUsersRegistry(process.env))
+
+/**
+ * True when the node's memory is file stores and `userId` is a registry user
+ * other than the owner. Both are read when asked, not when this module
+ * loads: boot says the stores are local once the memory plugin is
+ * registered, and a user who joins the registry while the node runs is
+ * served by the memory plugin and the den at once.
+ */
+function localStoreUser(userId: string): boolean {
+  if (process.env.RIVETOS_USER_STORES?.trim() !== 'local') return false
+  const registry = loadUsersRegistry(process.env)
+  if (!registry || userId === registry.ownerUserId) return false
+  return Object.values(registry.users).some((rec) => rec.id === userId)
+}
 
 // Spawn / flag-assembly / stream-json layer lives in spawn-turn.ts (shared
 // with the ClaudeCliExecutor). Re-export the types this module historically
@@ -322,7 +341,7 @@ function mapEffortFromProviderOptions(
  * transcript into the owner's database — failing the turn is the privacy-
  * preserving direction.
  */
-function userRoutingEnv(
+export function userRoutingEnv(
   providerOptions: LanguageModelV3CallOptions['providerOptions'],
 ): Record<string, string | undefined> | undefined {
   const rivetos = providerOptions?.rivetos as { userId?: unknown } | undefined
@@ -334,6 +353,17 @@ function userRoutingEnv(
   // Registry is loaded once at module scope (not per turn) so a changed
   // pgUrl cannot split capture vs memory/den until the node restarts.
   const db = routedUserDbs?.[userId]
+  if (!db && localStoreUser(userId)) {
+    // This node keeps each user's memory in a store of its own, reached
+    // through the den: the session gets the token that says whose it is, and
+    // no database URL or env file of the owner's.
+    return {
+      RIVETOS_USER_ID: userId,
+      [USER_TOKEN_ENV]: mintUserToken(userId),
+      RIVETOS_PG_URL: undefined,
+      RIVETOS_ENV_FILE: undefined,
+    }
+  }
   if (!db) {
     throw new Error(
       `per-user memory routing for "${userId}" has no usable users-registry database on this node — refusing to spawn with the node owner's capture env`,
@@ -347,6 +377,7 @@ function userRoutingEnv(
     RIVETOS_USER_ID: userId,
     RIVETOS_PG_URL: db.pgUrl,
     RIVETOS_ENV_FILE: db.envFile ?? undefined,
+    [USER_TOKEN_ENV]: undefined,
   }
 }
 

@@ -221,7 +221,10 @@ export class SqliteWikiMaintenance {
               ORDER BY history_count DESC, length(current_state) ASC, slug LIMIT ?`,
           )
           .all(limit) as unknown as Array<{ slug: string }>
-      ).map((r) => r.slug)
+      )
+        .map((r) => r.slug)
+        // The index can hold what an import put there: same rule as for a slug that was asked for.
+        .filter((slug) => SLUG.test(slug))
     }
     await this.writer.ensureRepo()
     const peerSlugs = (await this.index.listTopics({ limit: 200 })).topics.map((t) => t.slug)

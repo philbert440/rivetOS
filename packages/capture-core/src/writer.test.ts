@@ -71,6 +71,85 @@ afterEach(async () => {
 })
 
 describe('capture writer', () => {
+  it('a routed user: the token is sent, a refused token is spooled, and the spool is that user\'s own', async () => {
+    const seen: Array<string | null> = []
+    let status = 200
+    const fetch = vi.fn(async (_url: string | URL | Request, init?: RequestInit) => {
+      seen.push(new Headers(init?.headers).get('x-rivetos-user-token'))
+      return status === 200 ? Response.json(okResult(1)) : new Response('no', { status })
+    }) as unknown as typeof globalThis.fetch
+    const { writer, spoolDir } = await setup(fetch, { user: { id: 'guest', token: 'tok-123' } })
+    const one: CaptureBatch = {
+      session_key: 's1',
+      agent: 'a',
+      messages: [{ event_id: 'e1', role: 'user', content: 'hello' }],
+    }
+    expect(await writer.write(one)).toMatchObject({ ok: true, inserted: 1 })
+    expect(seen).toEqual(['tok-123'])
+    // The node restarted and no longer knows the token: kept, not dropped.
+    status = 403
+    expect(await writer.write(one)).toMatchObject({ spooled: true })
+    expect(await readdir(spoolDir)).toHaveLength(1)
+
+    // Without an explicit directory, a routed user spools apart from the owner and from other users.
+    const home = await mkdtemp(join(tmpdir(), 'capture-home-'))
+    dirs.push(home)
+    const realHome = process.env.HOME
+    process.env.HOME = home
+    try {
+      // The den is down: everyone spools.
+      status = 503
+      for (const user of [{ id: 'guest', token: 't1-padding-padding' }, { id: '../visitor', token: 't2-padding-padding' }, undefined]) {
+        const w = createCaptureWriter({ denUrl: 'https://localhost:5174/', fetch, ...(user ? { user } : {}) })
+        expect(await w.write(one)).toMatchObject({ spooled: true })
+      }
+      const users = await readdir(join(home, '.rivetos', 'capture-spool-users'))
+      expect(users).toHaveLength(2)
+      for (const name of users) expect(name).toMatch(/^[0-9a-f]{32}$/)
+      // One file each: the owner's spool holds only the owner's batch.
+      expect(await readdir(join(home, '.rivetos', 'capture-spool'))).toHaveLength(1)
+      for (const name of users) {
+        expect(await readdir(join(home, '.rivetos', 'capture-spool-users', name))).toHaveLength(1)
+      }
+    } finally {
+      process.env.HOME = realHome
+    }
+  })
+
+  it('a writer built without a user takes it from the environment, so no integration can post a routed session as the owner', async () => {
+    const seen: Array<string | null> = []
+    const fetch = vi.fn(async (_url: string | URL | Request, init?: RequestInit) => {
+      seen.push(new Headers(init?.headers).get('x-rivetos-user-token'))
+      return Response.json(okResult(1))
+    }) as unknown as typeof globalThis.fetch
+    const one: CaptureBatch = {
+      session_key: 's1',
+      agent: 'a',
+      messages: [{ event_id: 'e1', role: 'user', content: 'hello' }],
+    }
+    const saved = { id: process.env.RIVETOS_USER_ID, token: process.env.RIVETOS_USER_TOKEN }
+    try {
+      process.env.RIVETOS_USER_ID = 'guest'
+      process.env.RIVETOS_USER_TOKEN = 'tok-123'
+      await (await setup(fetch)).writer.write(one)
+      // `null` says the owner, whatever the environment (the node writing its own rows).
+      await (await setup(fetch, { user: null })).writer.write(one)
+      delete process.env.RIVETOS_USER_TOKEN
+      await expect(setup(fetch)).rejects.toThrow(/refusing to write to the den/)
+      delete process.env.RIVETOS_USER_ID
+      await (await setup(fetch)).writer.write(one)
+    } finally {
+      for (const [key, value] of [
+        ['RIVETOS_USER_ID', saved.id],
+        ['RIVETOS_USER_TOKEN', saved.token],
+      ] as const) {
+        if (value === undefined) delete process.env[key]
+        else process.env[key] = value
+      }
+    }
+    expect(seen).toEqual(['tok-123', null, null])
+  })
+
   it('posts the exact batch and returns the result', async () => {
     const fetch = vi.fn<typeof globalThis.fetch>().mockResolvedValue(Response.json(result))
     const { writer } = await setup(fetch)

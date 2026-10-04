@@ -371,6 +371,38 @@ describe('memory-sqlite manifest', () => {
     }
   })
 
+  it('blocks a user whose id would open a directory an earlier user left behind', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'ros-mem-plugin-'))
+    dirs.push(dir)
+    const usersFile = join(dir, 'users.json')
+    const { writeFileSync, mkdirSync, readdirSync } = await import('node:fs')
+    // An earlier user "Guest" was removed from the registry; "guest" joined.
+    mkdirSync(join(dir, 'users', 'Guest'), { recursive: true })
+    writeFileSync(
+      usersFile,
+      JSON.stringify({
+        ownerUserId: 'alice',
+        unmappedIsOwner: false,
+        users: {
+          alice: { id: 'alice', devices: [] },
+          guest: { id: 'guest', devices: ['dev2'] },
+        },
+      }),
+    )
+    const { ctx, getRegistered } = makeCtx(
+      { path: join(dir, 'm.sqlite') },
+      { RIVETOS_USERS_FILE: usersFile },
+    )
+    await (manifest as PluginManifest).register(ctx)
+    const memory = getRegistered()
+    if (!memory || !hasMemoryBackend(memory)) throw new Error('not registered')
+    expect(ctx.logger.error).toHaveBeenCalledWith(
+      expect.stringContaining('the directory of an earlier user "Guest"'),
+    )
+    expect(memory.backendForUser?.('guest')).toBeNull()
+    expect(readdirSync(join(dir, 'users'))).toEqual(['Guest'])
+  })
+
   it('blocks users whose ids would share a directory, and a blocked user is refused everywhere', async () => {
     const dir = mkdtempSync(join(tmpdir(), 'ros-mem-plugin-'))
     dirs.push(dir)

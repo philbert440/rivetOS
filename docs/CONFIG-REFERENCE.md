@@ -1003,7 +1003,25 @@ over loopback HTTPS and opens no Postgres pool. `RIVET_DEN_URL` and
 `RIVET_DEN_CA` are set by the den for sessions it spawns; a hand-started
 harness gets them from `rivetos_resolve_den` (`den.port`, default 5174, and
 `den.tls_ca` or `RIVETOS_DEN_TLS_CA`). A non-empty `RIVETOS_USER_ID` stays on
-`pg`, because loopback den calls are the owner pool.
+`pg`, because loopback den calls are the owner pool, unless the session also
+has `RIVETOS_USER_TOKEN`.
+
+`RIVETOS_USER_TOKEN` is how a session spawned for another user reaches that
+user's memory on a node whose stores are files (`memory.sqlite`), where there
+is no per-user database URL to hand it. The node mints one random token per
+user, in memory, and puts it in the environment of the sessions it spawns for
+that user (a claude-cli turn, a hub terminal). Capture hooks and the sidecar
+send it to the den as `x-rivetos-user-token`; the den accepts it from this
+machine only and serves the request as that user. A token the den does not
+know (the node restarted) is refused, never served as the owner: capture
+keeps the batch in that user's own spool (`~/.rivetos/capture-spool-users/`)
+until a session spawned after the restart replays it; a batch still refused
+after a week is moved to that spool's `dead/`. Every capture integration
+gets this from the shared writer, which reads the two variables itself and
+refuses to post for a session that has a user id and no token. Such a
+session gets its user's memory and wiki tools and no delegation. Terminals
+never inherit either variable from the node or from a running tmux server.
+Nothing sets the token on a node whose users each have a database.
 
 | Variable                | Used By                                 | Description                                                                                                                                                                                                                                                                                                                                                                 |
 | ----------------------- | --------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |

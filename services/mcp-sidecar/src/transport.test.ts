@@ -1,10 +1,29 @@
 import { describe, expect, it } from 'vitest'
 import { resolveSidecarTransport, sidecarTransportLog } from './transport.js'
+import { fetchWithUserToken } from './den-tools.js'
 
 const DEN = 'https://127.0.0.1:5174'
 const PG = 'postgres://localhost/rivet'
 
 describe('resolveSidecarTransport', () => {
+  it('a routed user with the token the node minted uses the den', () => {
+    for (const forced of ['den', undefined]) {
+      expect(
+        resolveSidecarTransport({
+          ...(forced ? { RIVETOS_MCP_TRANSPORT: forced } : {}),
+          RIVET_DEN_URL: DEN,
+          RIVETOS_USER_ID: 'guest',
+          RIVETOS_USER_TOKEN: 'tok-123',
+        }),
+      ).toEqual({ kind: 'den', denUrl: DEN, userToken: 'tok-123' })
+    }
+    // A token without a routed user id is ignored.
+    expect(resolveSidecarTransport({ RIVET_DEN_URL: DEN, RIVETOS_USER_TOKEN: 'tok-123' })).toEqual({
+      kind: 'den',
+      denUrl: DEN,
+    })
+  })
+
   it('forces den when RIVET_DEN_URL is set', () => {
     const transport = resolveSidecarTransport({
       RIVETOS_MCP_TRANSPORT: 'den',
@@ -140,5 +159,20 @@ describe('resolveSidecarTransport', () => {
       kind: 'den',
       denUrl: DEN,
     })
+  })
+})
+
+describe('fetchWithUserToken', () => {
+  it('adds the token to every request and keeps the caller\'s headers', async () => {
+    const seen: Headers[] = []
+    const base = (async (_input: string | URL | Request, init?: RequestInit) => {
+      seen.push(new Headers(init?.headers))
+      return new Response('ok')
+    }) as typeof globalThis.fetch
+    const fetch = fetchWithUserToken('tok-123', base)
+    await fetch('https://127.0.0.1:5174/api/memory/search', { headers: { 'content-type': 'application/json' } })
+    await fetch('https://127.0.0.1:5174/api/agents')
+    expect(seen.map((h) => h.get('x-rivetos-user-token'))).toEqual(['tok-123', 'tok-123'])
+    expect(seen[0].get('content-type')).toBe('application/json')
   })
 })

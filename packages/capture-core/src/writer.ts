@@ -1,4 +1,5 @@
-import { readFile, unlink } from 'node:fs/promises'
+import { readFile, stat, unlink } from 'node:fs/promises'
+import { createHash } from 'node:crypto'
 import { homedir } from 'node:os'
 import { join } from 'node:path'
 import {
@@ -8,6 +9,7 @@ import {
   type ResolvedCaptureRedaction,
 } from './redaction.js'
 import { deadLetter, spoolBatch, spoolFiles } from './spool.js'
+import { captureUserFromEnv } from './transport.js'
 import type {
   CaptureBatch,
   CaptureMessage,
@@ -90,8 +92,42 @@ function resolveWriterRedaction(opts: CaptureWriterOptions): ResolvedCaptureReda
   return resolveCaptureRedaction(captureRedactionFromEnv())
 }
 
+/** Same header as `USER_TOKEN_HEADER` in `@rivetos/types` (this package has no dependencies). */
+const USER_TOKEN_HEADER = 'x-rivetos-user-token'
+
+/** The den did not accept this session's user token. Retried later, for a while. */
+class CaptureTokenRefused extends Error {}
+
+/** How long a batch the den keeps refusing stays in a user's spool before it is set aside. */
+const SPOOL_REFUSED_MAX_AGE_MS = 7 * 24 * 60 * 60 * 1000
+
+async function olderThan(path: string, ms: number): Promise<boolean> {
+  try {
+    return Date.now() - (await stat(path)).mtimeMs > ms
+  } catch {
+    return false
+  }
+}
+
+/** A directory name for a user id, whatever characters the id has. */
+function spoolNameFor(userId: string): string {
+  return createHash('sha256').update(userId).digest('hex').slice(0, 32)
+}
+
 export function createCaptureWriter(opts: CaptureWriterOptions): CaptureWriter {
-  const dir = opts.spoolDir ?? join(homedir(), '.rivetos', 'capture-spool')
+  // A session spawned for another user proves it to the den with its token,
+  // and spools to a directory of that user's own: a spooled batch is replayed
+  // by whoever next writes from the same directory, and must not be replayed
+  // as anyone else.
+  // Every den writer is covered, whichever integration built it: left unsaid,
+  // the user is this process's own (its environment), and a routed session
+  // without a token is refused here, not written as the owner.
+  const user = opts.user === undefined ? captureUserFromEnv(process.env) : (opts.user ?? undefined)
+  const dir =
+    opts.spoolDir ??
+    (user
+      ? join(homedir(), '.rivetos', 'capture-spool-users', spoolNameFor(user.id))
+      : join(homedir(), '.rivetos', 'capture-spool'))
   const fetch = opts.fetch ?? globalThis.fetch
   const requested = opts.maxChunkBytes ?? DEFAULT_CHUNK_BYTES
   const maxChunkBytes =
@@ -217,10 +253,20 @@ export function createCaptureWriter(opts: CaptureWriterOptions): CaptureWriter {
   const post = async (body: string): Promise<CaptureResult> => {
     const response = await fetch(`${opts.denUrl.replace(/\/$/, '')}/api/capture`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: {
+        'Content-Type': 'application/json',
+        ...(user ? { [USER_TOKEN_HEADER]: user.token } : {}),
+      },
       body,
     })
     if (!response.ok) await response.body?.cancel().catch(log)
+    // A token the den does not know (the node restarted since this session
+    // was spawned) is not a bad batch: keep it for the user's next session.
+    if (user && (response.status === 401 || response.status === 403)) {
+      throw new CaptureTokenRefused(
+        `capture HTTP ${String(response.status)} (user token not accepted)`,
+      )
+    }
     if (response.status >= 400 && response.status < 500) {
       throw new CaptureClientError(`capture HTTP ${response.status}`)
     }
@@ -242,7 +288,13 @@ export function createCaptureWriter(opts: CaptureWriterOptions): CaptureWriter {
           replayed++
         } catch (error) {
           log(error)
-          if (error instanceof CaptureClientError) {
+          if (
+            error instanceof CaptureClientError ||
+            (error instanceof CaptureTokenRefused &&
+              (await olderThan(join(dir, file), SPOOL_REFUSED_MAX_AGE_MS)))
+          ) {
+            // A bad batch, or one the den has refused for a week (the user
+            // is gone from the registry, or their store is blocked).
             await deadLetter(dir, file)
             dead++
           } else if ((error as NodeJS.ErrnoException).code !== 'ENOENT') {

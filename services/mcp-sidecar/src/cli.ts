@@ -39,7 +39,10 @@
  *                             local den over HTTPS and opens no Postgres
  *                             pool. A non-empty RIVETOS_USER_ID keeps `pg`
  *                             even if transport is forced to `den`: loopback
- *                             is the owner pool. Forced `den` without
+ *                             is the owner pool. With RIVETOS_USER_TOKEN
+ *                             (a session the node spawned for that user on
+ *                             a node with file stores) it uses `den` as
+ *                             that user, without delegation. Forced `den` without
  *                             RIVET_DEN_URL leaves these tools disabled.
  *   RIVET_DEN_URL           — den origin (https://127.0.0.1:<port>). The
  *                             launcher fills this from den.port when unset.
@@ -161,7 +164,10 @@ async function main(): Promise<void> {
       : transportLine,
   )
   const enableWrite = process.env.RIVETOS_MCP_ENABLE_MEMORY_WRITE === '1'
-  const enableDelegate = process.env.RIVETOS_MCP_ENABLE_DELEGATE !== '0'
+  // A session spawned for another user gets that user's memory and wiki, and
+  // nothing else: a delegated task would run, and be recorded, as the owner's.
+  const routedSession = transport.kind === 'den' && transport.userToken !== undefined
+  const enableDelegate = process.env.RIVETOS_MCP_ENABLE_DELEGATE !== '0' && !routedSession
   const requestedBy = process.env.RIVETOS_AGENT_ID ?? 'mcp-sidecar'
 
   switch (transport.kind) {
@@ -169,6 +175,7 @@ async function main(): Promise<void> {
       try {
         const handle = createDenTools({
           denUrl: transport.denUrl,
+          ...(transport.userToken ? { userToken: transport.userToken } : {}),
           enableWrite,
           enableDelegate,
           requestedBy,

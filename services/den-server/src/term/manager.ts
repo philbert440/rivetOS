@@ -559,6 +559,7 @@ const CREDENTIAL_NAMED = new Set([
   'RIVETOS_PG_URL',
   'RIVETOS_ENV_FILE',
   'RIVETOS_USER_ID',
+  'RIVETOS_USER_TOKEN',
 ])
 
 const CREDENTIAL_RE = /(TOKEN|SECRET|PASSWORD|KEY|_URL)$/
@@ -2347,13 +2348,23 @@ export function createTermManager(config: DenConfig, deps: TermManagerDeps): Ter
       // server's global env (the first spawner's, possibly the node owner's
       // credentials) does not leak into this user's session (#6).
       const tmuxEnvDeleted: string[] = []
+      // Who a session is (the user id, and the token that proves it to the
+      // den) is never inherited: not from this process, and not from a tmux
+      // server another user's terminal started. That holds for the owner's
+      // sessions too, which have no override: an owner session that picked
+      // up a routed user's id and token would write into that user's store.
+      const identityKeys = ['RIVETOS_USER_ID', 'RIVETOS_USER_TOKEN']
+      for (const k of identityKeys) Reflect.deleteProperty(env, k)
       if (envOverride) {
         delete env.RIVETOS_PG_URL
         delete env.RIVETOS_ENV_FILE
-        delete env.RIVETOS_USER_ID
         if (!('RIVETOS_PG_URL' in envOverride)) tmuxEnvDeleted.push('RIVETOS_PG_URL')
         if (!('RIVETOS_ENV_FILE' in envOverride)) tmuxEnvDeleted.push('RIVETOS_ENV_FILE')
-        if (!('RIVETOS_USER_ID' in envOverride)) tmuxEnvDeleted.push('RIVETOS_USER_ID')
+      }
+      for (const k of identityKeys) {
+        if (!envOverride || !(k in envOverride)) tmuxEnvDeleted.push(k)
+      }
+      if (envOverride) {
         Object.assign(env, envOverride)
         for (const k of Object.keys(envOverride)) if (!ptyEnvDeny.test(k)) tmuxEnvKeys.add(k)
       }

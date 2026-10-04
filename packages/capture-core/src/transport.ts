@@ -6,9 +6,10 @@ import { resolveDenUrl } from './den-url.js'
  * `den` posts to the node's own den and opens no Postgres connection.
  * `pg` is the direct pool, kept for one release. A present
  * `RIVETOS_USER_ID` (any value except unset or `''`, including whitespace)
- * never selects `den`: loopback callers are the owner, so a routed user
- * would write the wrong pool. That holds even when transport is forced
- * to `den`.
+ * selects `den` only together with `RIVETOS_USER_TOKEN`: loopback callers
+ * are the owner, so a routed user without the token the node minted for
+ * them would write the wrong store. That holds even when transport is
+ * forced to `den`. With the token, the den serves the request as that user.
  *
  * For an https den, `rivetos_resolve_den` unsets `RIVET_DEN_URL` when the CA
  * file is missing but still exports `RIVET_DEN_CA`. That pair means the
@@ -17,9 +18,53 @@ import { resolveDenUrl } from './den-url.js'
  * still exported) and this pair never forms.
  */
 
+export interface CaptureUser {
+  id: string
+  token: string
+}
+
+/**
+ * The user a token belongs to. The node puts the user's id in front of the
+ * token (`<base64url id>.<secret>`), and that is the id used here, so the
+ * session's spool directory and the store the den writes to are the same
+ * user's whatever `RIVETOS_USER_ID` says. A token without that part falls
+ * back to the given id.
+ */
+export function captureUser(fallbackId: string, token: string): CaptureUser {
+  const dot = token.indexOf('.')
+  if (dot > 0) {
+    try {
+      const id = Buffer.from(token.slice(0, dot), 'base64url').toString('utf8')
+      if (id !== '' && Buffer.from(id, 'utf8').toString('base64url') === token.slice(0, dot)) {
+        return { id, token }
+      }
+    } catch {
+      // Not ours: use the fallback.
+    }
+  }
+  return { id: fallbackId, token }
+}
+
+/**
+ * The routed user of this process, from its environment: undefined for the
+ * owner's sessions. Throws when the session is a routed user's but has no
+ * token: such a session must not reach the den, where it would be the owner.
+ */
+export function captureUserFromEnv(env: NodeJS.ProcessEnv): CaptureUser | undefined {
+  if (env.RIVETOS_USER_ID === undefined || env.RIVETOS_USER_ID === '') return undefined
+  const token = trimmed(env.RIVETOS_USER_TOKEN)
+  if (token === '') {
+    throw new Error(
+      'RIVETOS_USER_ID is set without RIVETOS_USER_TOKEN: refusing to write to the den as the node owner',
+    )
+  }
+  return captureUser(env.RIVETOS_USER_ID, token)
+}
+
 export type CaptureTransport =
   /** `warnings` — one line per `RIVET_DEN_URL` guard that fired (see `guardDenUrl`); callers log them. */
-  | { kind: 'den'; denUrl: string; warnings?: string[] }
+  /** `user` — the routed user this session was spawned for, and the token that proves it to the den. */
+  | { kind: 'den'; denUrl: string; warnings?: string[]; user?: CaptureUser }
   | { kind: 'pg'; pgUrl: string }
   | { kind: 'none'; reason: string }
 
@@ -39,12 +84,16 @@ export function resolveCaptureTransport(
     trimmed(env.RIVET_DEN_URL).length === 0 && trimmed(env.RIVET_DEN_CA).length > 0
   const resolved = launcherDisabledDen ? undefined : resolveDenUrl(env, readConfig)
   const denUrl = resolved?.denUrl
-  const den = (url: string): CaptureTransport =>
-    resolved?.warnings
-      ? { kind: 'den', denUrl: url, warnings: resolved.warnings }
-      : { kind: 'den', denUrl: url }
+  const routedUser = env.RIVETOS_USER_ID !== undefined && env.RIVETOS_USER_ID !== ''
+  const userToken = routedUser ? trimmed(env.RIVETOS_USER_TOKEN) : ''
+  const den = (url: string): CaptureTransport => ({
+    kind: 'den',
+    denUrl: url,
+    ...(resolved?.warnings ? { warnings: resolved.warnings } : {}),
+    ...(userToken ? { user: captureUser(env.RIVETOS_USER_ID as string, userToken) } : {}),
+  })
   const pgUrl = trimmed(env.RIVETOS_PG_URL)
-  const userBlocksDen = env.RIVETOS_USER_ID !== undefined && env.RIVETOS_USER_ID !== ''
+  const userBlocksDen = routedUser && userToken === ''
 
   if (forced === 'den') {
     if (!denUrl) {
