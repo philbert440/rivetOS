@@ -22,17 +22,24 @@ function toyVector(text: string): number[] {
   return v.some((x) => x > 0) ? v : [0.01, 0.01, 0.01, 0.01, 0.01, 0.01]
 }
 
-function fakeEndpoint(opts: { fail?: () => boolean; dims?: number } = {}) {
+const noWait = async (): Promise<void> => {}
+
+function fakeEndpoint(opts: { fail?: () => boolean; dims?: number; status?: number; nullAt?: number } = {}) {
   const calls: Array<{ url: string; input: string[]; auth: string | null }> = []
   const fetch = vi.fn(async (url: string | URL | Request, init?: RequestInit) => {
     const body = JSON.parse(String(init?.body)) as { input: string[] }
     const headers = new Headers(init?.headers)
     calls.push({ url: String(url), input: body.input, auth: headers.get('authorization') })
-    if (opts.fail?.()) return new Response('overloaded', { status: 503 })
+    if (opts.fail?.()) return new Response('overloaded', { status: opts.status ?? 503 })
     return Response.json({
       data: body.input.map((text, index) => ({
         index,
-        embedding: opts.dims ? Array.from({ length: opts.dims }, () => 1) : toyVector(text),
+        embedding:
+          index === opts.nullAt
+            ? null
+            : opts.dims
+              ? Array.from({ length: opts.dims }, () => 1)
+              : toyVector(text),
       })),
     })
   })
@@ -54,7 +61,7 @@ describe('embedding drain', () => {
     memory = new SqliteMemory({
       path: ':memory:',
       workers: false,
-      embed: { endpoint: 'https://embed.test', model: 'toy', apiKey: 'k', fetch: endpoint.fetch },
+      embed: { endpoint: 'https://embed.test', model: 'toy', apiKey: 'k', fetch: endpoint.fetch, sleep: noWait },
     })
     const a = await add(memory, 'postgres database tuning')
     const blob = await add(memory, `iVBORw0KGgo${'A'.repeat(400)}`)
@@ -81,7 +88,7 @@ describe('embedding drain', () => {
       path: ':memory:',
       workers: false,
       log: (l) => logs.push(l),
-      embed: { endpoint: 'https://embed.test', model: 'toy', fetch: endpoint.fetch },
+      embed: { endpoint: 'https://embed.test', model: 'toy', fetch: endpoint.fetch, sleep: noWait },
     })
     const id = await add(memory, 'sqlite database')
     expect(await memory.runJobs()).toBe(1)
@@ -93,12 +100,134 @@ describe('embedding drain', () => {
     expect(await memory.runJobs()).toBe(0)
   })
 
-  it('without an endpoint the work stays queued and search is full-text only', async () => {
+  it('without an endpoint nothing is queued and search is full-text only; adding one later embeds what was written', async () => {
     memory = new SqliteMemory({ path: ':memory:' })
     const id = await add(memory, 'postgres database tuning')
-    expect(memory.hasEmbedQueueEntryForTest(id)).toBe(true)
+    expect(memory.hasEmbedQueueEntryForTest(id)).toBe(false)
     expect((await memory.search('postgres')).map((r) => r.id)).toEqual([id])
     expect(await memory.search('datastore')).toEqual([])
+  })
+
+  it('a job that went dead during an outage is revived by the sweep and embeds once the endpoint is back', async () => {
+    let down = true
+    const endpoint = fakeEndpoint({ fail: () => down })
+    let clock = new Date('2026-10-04T12:00:00Z')
+    memory = new SqliteMemory({
+      path: ':memory:',
+      workers: false,
+      log: () => {},
+      now: () => clock,
+      embed: { endpoint: 'https://embed.test', model: 'toy', fetch: endpoint.fetch, sleep: noWait },
+    })
+    const id = await add(memory, 'sqlite database written during the outage window')
+    // Five attempts, each after its retry delay, all against a dead endpoint.
+    for (let attempt = 0; attempt < 5; attempt += 1) {
+      await memory.runJobs()
+      clock = new Date(clock.getTime() + 2 * 60 * 60 * 1000)
+    }
+    expect(memory.jobs().counts()).toEqual([{ task: 'embed-target', state: 'dead', count: 1 }])
+    expect(memory.embedStateForTest([id])[id].failures).toBe(5)
+    // Endpoint recovers. The next sweep gives the dead job fresh attempts.
+    down = false
+    clock = new Date(clock.getTime() + 11 * 60 * 1000)
+    expect(await memory.runJobs()).toBe(1)
+    expect(memory.embedStateForTest([id])[id]).toMatchObject({ status: 'done', failures: 0 })
+    expect(memory.jobs().counts()).toEqual([])
+  })
+
+  it('retries a 503 inside the call, and honours Retry-After on a 429', async () => {
+    let failures = 2
+    const endpoint = fakeEndpoint({ fail: () => failures-- > 0 })
+    const waits: number[] = []
+    const client = new EmbedClient({
+      endpoint: 'https://embed.test',
+      model: 'toy',
+      fetch: endpoint.fetch,
+      sleep: async (ms) => {
+        waits.push(ms)
+      },
+    })
+    expect(await client.embed(['postgres'])).toHaveLength(1)
+    expect(endpoint.calls).toHaveLength(3)
+    expect(waits).toEqual([1000, 2000])
+
+    const limited = vi.fn(async () =>
+      new Response('slow down', { status: 429, headers: { 'Retry-After': '3' } }),
+    )
+    const waits429: number[] = []
+    const client429 = new EmbedClient({
+      endpoint: 'https://embed.test',
+      model: 'toy',
+      maxRetries: 1,
+      fetch: limited as unknown as typeof globalThis.fetch,
+      sleep: async (ms) => {
+        waits429.push(ms)
+      },
+    })
+    await expect(client429.embed(['x'])).rejects.toThrow('embed HTTP 429')
+    expect(waits429).toEqual([3000])
+    // A 400 is not retried.
+    const bad = fakeEndpoint({ fail: () => true, status: 400 })
+    const client400 = new EmbedClient({ endpoint: 'https://embed.test', model: 'toy', fetch: bad.fetch, sleep: noWait })
+    await expect(client400.embed(['x'])).rejects.toThrow('embed HTTP 400')
+    expect(bad.calls).toHaveLength(1)
+  })
+
+  it('pools the chunks that embedded when one chunk comes back empty', async () => {
+    const endpoint = fakeEndpoint({ nullAt: 0 })
+    const client = new EmbedClient({
+      endpoint: 'https://embed.test',
+      model: 'toy',
+      charsPerChunk: 40,
+      fetch: endpoint.fetch,
+      sleep: noWait,
+    })
+    const out = await client.embedMessage(`${'database '.repeat(6)}${'kitchen '.repeat(6)}`, null)
+    expect(out.kind).toBe('vector')
+    // A single-chunk message with no vector is a failure, not a silent skip.
+    await expect(client.embedMessage('database', null)).rejects.toThrow(/no usable vector/)
+  })
+
+  it('a different vector width clears the stored vectors and re-embeds them', async () => {
+    let dims: number | undefined
+    const calls: string[][] = []
+    const fetch = vi.fn(async (_url: string | URL | Request, init?: RequestInit) => {
+      const body = JSON.parse(String(init?.body)) as { input: string[] }
+      calls.push(body.input)
+      return Response.json({
+        data: body.input.map((text, index) => ({
+          index,
+          embedding: dims ? Array.from({ length: dims }, (_, d) => d + 1) : toyVector(text),
+        })),
+      })
+    }) as unknown as typeof globalThis.fetch
+    const logs: string[] = []
+    memory = new SqliteMemory({
+      path: ':memory:',
+      workers: false,
+      log: (l) => logs.push(l),
+      embed: { endpoint: 'https://embed.test', model: 'toy', fetch, sleep: noWait },
+    })
+    const first = await add(memory, 'postgres database notes embedded at the first width')
+    await memory.runJobs()
+    expect(memory.embedStateForTest([first])[first].dims).toBe(TOPICS.length)
+    dims = 3
+    const second = await add(memory, 'sqlite database notes embedded at the second width')
+    await memory.runJobs()
+    expect(logs.join('\n')).toMatch(/embedding width changed \(6 → 3\)/)
+    const state = memory.embedStateForTest([first, second])
+    expect(state[second].dims).toBe(3)
+    // The old vector is gone, not left to be compared against the new width.
+    expect(state[first]).toMatchObject({ status: null, dims: 0 })
+  })
+
+  it('normalizes a query and applies the default instruction, like the Postgres backend', async () => {
+    const endpoint = fakeEndpoint()
+    const client = new EmbedClient({ endpoint: 'https://embed.test', model: 'toy', fetch: endpoint.fetch, sleep: noWait })
+    await client.embedQuery('  postgres   tuning ')
+    await client.embedQuery('postgres tuning')
+    expect(endpoint.calls).toHaveLength(1)
+    expect(endpoint.calls[0].input[0]).toMatch(/^Instruct: .*\nQuery: postgres tuning$/)
   })
 
   it('rejects a vector of an unexpected width instead of storing it', async () => {
@@ -108,8 +237,9 @@ describe('embedding drain', () => {
       model: 'toy',
       expectedDims: 6,
       fetch: endpoint.fetch,
+      sleep: noWait,
     })
-    await expect(client.embed(['x'])).rejects.toThrow(/has 8 dimensions, expected 6/)
+    await expect(client.embed(['x'])).rejects.toThrow(/missing or of an unexpected width/)
   })
 
   it('long text is chunked and pooled into one vector', async () => {
@@ -119,6 +249,7 @@ describe('embedding drain', () => {
       model: 'toy',
       charsPerChunk: 40,
       fetch: endpoint.fetch,
+      sleep: noWait,
     })
     const out = await client.embedMessage(`${'database '.repeat(6)}${'kitchen '.repeat(6)}`, null)
     expect(endpoint.calls[0].input.length).toBeGreaterThan(1)
@@ -136,6 +267,7 @@ describe('embedding drain', () => {
       model: 'toy',
       queryInstruction: 'query: ',
       fetch: endpoint.fetch,
+      sleep: noWait,
     })
     await client.embedQuery('postgres')
     await client.embedQuery('postgres')
@@ -154,7 +286,7 @@ describe('hybrid search', () => {
     memory = new SqliteMemory({
       path: ':memory:',
       workers: false,
-      embed: { endpoint: 'https://embed.test', model: 'toy', fetch: endpoint.fetch },
+      embed: { endpoint: 'https://embed.test', model: 'toy', fetch: endpoint.fetch, sleep: noWait },
     })
     ids = {
       pg: await add(memory, 'postgres database tuning notes from the long migration weekend'),
@@ -209,12 +341,19 @@ describe('hybrid search', () => {
       path: ':memory:',
       workers: false,
       log: (l) => logs.push(l),
-      embed: { endpoint: 'https://embed.test', model: 'toy', fetch: failing.fetch },
+      embed: { endpoint: 'https://embed.test', model: 'toy', fetch: failing.fetch, sleep: noWait },
     })
     const id = await m.append({ sessionId: 's', agent: 'rivet', channel: 'cli', role: 'user', content: 'postgres notes that are long enough to pass the quality floor' })
     expect((await m.search('postgres')).map((h) => h.id)).toEqual([id])
     expect(logs.join('\n')).toMatch(/query embedding failed, searching without the vector arm/)
     m.close()
+  })
+
+  it('reinforces returned rows: their access count rises', async () => {
+    await memory.search('postgres database')
+    await memory.search('postgres database')
+    expect(memory.accessCountForTest(ids.pg)).toBe(2)
+    expect(memory.accessCountForTest(ids.food)).toBe(0)
   })
 
   it('scope summaries is still empty, and the limit is honoured', async () => {
@@ -259,7 +398,7 @@ describe('schema v3 on an existing file', () => {
     old.close()
 
     const endpoint = fakeEndpoint()
-    const embed = { endpoint: 'https://embed.test', model: 'toy', fetch: endpoint.fetch }
+    const embed = { endpoint: 'https://embed.test', model: 'toy', fetch: endpoint.fetch, sleep: noWait }
     let memory = new SqliteMemory({ path, workers: false, embed })
     expect(memory.schemaVersionForTest()).toBe(SCHEMA_VERSION)
     expect(SCHEMA_VERSION).toBeGreaterThanOrEqual(3)

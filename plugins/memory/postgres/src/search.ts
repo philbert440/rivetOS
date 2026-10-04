@@ -39,6 +39,13 @@ import {
   reciprocalRankFusion,
 } from './scoring.js'
 import {
+  DEFAULT_EMBED_QUERY_INSTRUCTION,
+  DEFAULT_EMBED_TIMEOUT_MS,
+  MAX_EMBED_TIMEOUT_MS,
+  MIN_EMBED_TIMEOUT_MS,
+  applyEmbedQueryInstruction,
+  clampEmbedTimeoutMs,
+  normalizeQueryText,
   GATE_FRACTION,
   HYBRID_MIN_CONTENT_LEN,
   HYBRID_RRF_K,
@@ -51,6 +58,16 @@ import {
 // The fusion policy is shared with the other memory backends; these two stay
 // exported from here for existing importers.
 export { looksLiteral, shouldTrigramFallback }
+// Query preparation is shared too; re-exported under the names this module had.
+export {
+  DEFAULT_EMBED_QUERY_INSTRUCTION,
+  DEFAULT_EMBED_TIMEOUT_MS,
+  MAX_EMBED_TIMEOUT_MS,
+  MIN_EMBED_TIMEOUT_MS,
+  applyEmbedQueryInstruction,
+  clampEmbedTimeoutMs,
+  normalizeQueryText,
+}
 
 // ---------------------------------------------------------------------------
 // Types
@@ -293,19 +310,11 @@ interface ChunkCandidateRow extends CandidateRow {
 // Constants
 // ---------------------------------------------------------------------------
 
-/** Qwen3-Embedding query prefix. Documents get nothing. Empty string disables. */
-export const DEFAULT_EMBED_QUERY_INSTRUCTION =
-  'Instruct: Given a search query, retrieve relevant passages that answer the query\nQuery: '
-
-export const DEFAULT_EMBED_TIMEOUT_MS = 8_000
-export const MIN_EMBED_TIMEOUT_MS = 500
-export const MAX_EMBED_TIMEOUT_MS = 60_000
 export const DEFAULT_HNSW_EF_SEARCH = 100
 export const MIN_HNSW_EF_SEARCH = 10
 export const MAX_HNSW_EF_SEARCH = 1_000
 export const QUERY_EMBED_CACHE_MAX = 256
 export const QUERY_EMBED_CACHE_TTL_MS = 10 * 60 * 1000
-const EMBED_INPUT_MAX = 8_000
 const VECTOR_DROP_LOG_INTERVAL_MS = 60_000
 const DROP_BUCKET_MINUTES = 60
 const MINUTE_MS = 60_000
@@ -357,23 +366,6 @@ export const MESSAGE_QUALITY_SQL = `(
   OR
   (m.role = 'tool' AND length(btrim(coalesce(m.tool_result, ''))) >= ${String(MIN_CONTENT_LEN)})
 )`
-
-export function normalizeQueryText(text: string): string {
-  return text.trim().replace(/\s+/g, ' ')
-}
-
-export function applyEmbedQueryInstruction(instruction: string, text: string): string {
-  const budget = Math.max(0, EMBED_INPUT_MAX - instruction.length)
-  const sliced = text.slice(0, budget)
-  if (!instruction) return sliced
-  return `${instruction}${sliced}`
-}
-
-export function clampEmbedTimeoutMs(raw: unknown): number {
-  const n = coerceNumber(raw)
-  if (n === null) return DEFAULT_EMBED_TIMEOUT_MS
-  return Math.min(MAX_EMBED_TIMEOUT_MS, Math.max(MIN_EMBED_TIMEOUT_MS, Math.trunc(n)))
-}
 
 export function clampHnswEfSearch(raw: unknown): number {
   const n = coerceNumber(raw)

@@ -447,6 +447,7 @@ export const KNOWN_MEMORY_SQLITE_KEYS = new Set([
   'embed_model',
   'embed_api_key',
   'embed_token_command',
+  'embed_token_ttl_ms',
   'embed_wire_shape',
   'embed_expected_dims',
   'embed_timeout_ms',

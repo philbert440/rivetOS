@@ -1,10 +1,10 @@
 /**
  * SqliteMemory — implements the Memory interface from @rivetos/types.
  *
- * Phase 1: WAL file store, append, session/task history, settings, FTS5 search,
- * session tags (tags.ts).
- * Embeddings are queue-only (ros_embed_queue); search is FTS until a later
- * drain + vector arm lands. Driver choice matches SqliteTaskStore (node:sqlite).
+ * WAL file store, append, session/task history, settings, session tags
+ * (tags.ts), background embedding on an in-process job loop (jobs.ts,
+ * embed.ts) and hybrid full-text + vector search (vectors.ts).
+ * Driver choice matches SqliteTaskStore (node:sqlite).
  */
 
 import { randomUUID } from 'node:crypto'
@@ -157,6 +157,8 @@ export interface SqliteMemoryConfig {
   workers?: boolean
   /** Where the job loop reports failures. Default: console.warn. */
   log?: (line: string) => void
+  /** Clock for the job queue (run times, retry delays, sweeps). For tests. */
+  now?: () => Date
 }
 
 /**
@@ -245,14 +247,18 @@ export class SqliteMemory implements Memory {
       ((line) => {
         console.warn(line)
       })
-    this.jobQueue = new SqliteJobQueue(this.db)
-    this.vectorIndex = new ExactScanIndex(this.db, 'ros_messages', MESSAGE_QUALITY_SQL)
+    this.jobQueue = new SqliteJobQueue(this.db, config.now)
+    this.vectorIndex = new ExactScanIndex(this.db, 'ros_messages', MESSAGE_QUALITY_SQL, this.log)
     this.embedClient = config.embed ? new EmbedClient(config.embed) : undefined
-    this.jobRunner = new JobRunner(this.jobQueue, { log: this.log })
+    this.jobRunner = new JobRunner(this.jobQueue, {
+      log: this.log,
+      ...(config.now ? { now: config.now } : {}),
+    })
     this.jobRunner.handle(EMBED_TARGET_TASK, (payload) => this.embedTarget(payload))
     if (this.embedClient) {
-      // Backstop: rows that never got a job (written before embedding was
-      // configured, or whose job was lost) are queued in small batches.
+      // Backstop: rows that have no job (written before embedding was
+      // configured), and rows whose job died during an endpoint outage, are
+      // queued again in batches.
       this.jobRunner.sweep({
         name: 'enqueue-unembedded',
         everyMs: 10 * 60 * 1000,
@@ -378,16 +384,19 @@ export class SqliteMemory implements Memory {
           .run(createdAt, convId)
 
         // Queue the row for embedding. Best-effort — never fail the append.
-        // Queued even without an embed endpoint, so configuring one later
-        // picks up what was written in the meantime.
-        try {
-          this.jobQueue.enqueue(
-            EMBED_TARGET_TASK,
-            { targetTable: 'ros_messages', targetId: id },
-            { key: `embed-ros_messages-${id}` },
-          )
-        } catch {
-          // ignore queue failures
+        // Only with an endpoint: without one a job per message would pile up
+        // for nothing. Rows written meanwhile are found by the
+        // enqueue-unembedded sweep once an endpoint is configured.
+        if (this.embedClient) {
+          try {
+            this.jobQueue.enqueue(
+              EMBED_TARGET_TASK,
+              { targetTable: 'ros_messages', targetId: id },
+              { key: `embed-ros_messages-${id}` },
+            )
+          } catch {
+            // ignore queue failures
+          }
         }
 
         return id
@@ -682,8 +691,11 @@ export class SqliteMemory implements Memory {
     if (this.embedClient) {
       try {
         const vector = await this.embedClient.embedQuery(query)
+        // The store may have been closed while the embedding was in flight.
+        this.assertOpen()
         vectorIds = this.vectorIndex.search(vector, pool, { agent }).map((h) => h.id)
       } catch (err) {
+        if (this.closed) throw err
         this.log(
           `[memory.sqlite] query embedding failed, searching without the vector arm: ${
             err instanceof Error ? err.message : String(err)
@@ -722,17 +734,34 @@ export class SqliteMemory implements Memory {
     }
     scored.sort((a, b) => b.score - a.score)
     const top = scored[0]?.score ?? 0
-    return scored
-      .filter((s) => s.arms >= 2 || s.score >= top * GATE_FRACTION)
-      .slice(0, limit)
-      .map(({ row, score }) => ({
-        id: row.id,
-        content: row.content,
-        role: row.role,
-        agent: row.agent,
-        relevanceScore: score,
-        createdAt: new Date(row.created_at),
-      }))
+    const kept = scored.filter((s) => s.arms >= 2 || s.score >= top * GATE_FRACTION).slice(0, limit)
+    this.bumpAccess(kept.map((k) => k.row.id))
+    return kept.map(({ row, score }) => ({
+      id: row.id,
+      content: row.content,
+      role: row.role,
+      agent: row.agent,
+      relevanceScore: score,
+      createdAt: new Date(row.created_at),
+    }))
+  }
+
+  /**
+   * Returned rows are reinforced, as on Postgres: the access count feeds the
+   * temporal term (capped). Best-effort — a failed bump never fails a search.
+   */
+  private bumpAccess(ids: readonly string[]): void {
+    if (ids.length === 0) return
+    try {
+      this.db
+        .prepare(
+          `UPDATE ros_messages SET access_count = access_count + 1, last_accessed_at = ?
+            WHERE id IN (${ids.map(() => '?').join(', ')})`,
+        )
+        .run(iso(), ...ids)
+    } catch {
+      // ignore
+    }
   }
 
   /** Newest rows whose content or tool result contains the query text. */
@@ -749,7 +778,8 @@ export class SqliteMemory implements Memory {
       this.db
         .prepare(
           `SELECT m.id FROM ros_messages m
-            WHERE (m.content LIKE ? ESCAPE '\\' OR m.tool_result LIKE ? ESCAPE '\\')${agentSql}
+            WHERE (m.content LIKE ? ESCAPE '\\' OR m.tool_result LIKE ? ESCAPE '\\')
+              AND ${MESSAGE_QUALITY_SQL}${agentSql}
             ORDER BY m.created_at DESC
             LIMIT ?`,
         )
@@ -766,8 +796,10 @@ export class SqliteMemory implements Memory {
     if (p?.targetTable !== 'ros_messages' || typeof p.targetId !== 'string') return
     const id = p.targetId
     const row = this.db
-      .prepare(`SELECT content, tool_result FROM ros_messages WHERE id = ?`)
-      .get(id) as unknown as { content: string | null; tool_result: string | null } | undefined
+      .prepare(`SELECT content, tool_result, agent, role FROM ros_messages WHERE id = ?`)
+      .get(id) as unknown as
+      | { content: string | null; tool_result: string | null; agent: string; role: string }
+      | undefined
     // The row was deleted since it was queued: nothing to do.
     if (!row) return
     try {
@@ -784,12 +816,17 @@ export class SqliteMemory implements Memory {
       }
       const blob = encodeVector(outcome.vector)
       if (!blob) throw new Error('embedding is a zero vector')
+      this.noteEmbedDims(outcome.vector.length)
       this.db
         .prepare(
-          `UPDATE ros_messages SET embedding = ?, embed_status = 'done', embed_error = NULL WHERE id = ?`,
+          `UPDATE ros_messages
+              SET embedding = ?, embed_status = 'done', embed_error = NULL, embed_failures = 0
+            WHERE id = ?`,
         )
         .run(blob, id)
-      this.vectorIndex.invalidate()
+      // Searchable rows are the ones past the quality floor (MESSAGE_QUALITY_SQL).
+      const body = row.role === 'tool' ? (row.tool_result ?? '') : (row.content ?? '')
+      if (body.trim().length >= HYBRID_MIN_CONTENT_LEN) this.vectorIndex.add(id, row.agent, blob)
     } catch (err) {
       if (!this.closed) {
         this.db
@@ -802,18 +839,35 @@ export class SqliteMemory implements Memory {
     }
   }
 
-  /** Queue rows that have neither a vector, a verdict, nor a pending job. */
+  /**
+   * Queue rows that still need a vector: those with no job at all, and those
+   * whose job went dead (an endpoint outage longer than the retries). Dead
+   * jobs are given fresh attempts once per sweep, so a hard-down endpoint is
+   * retried on the sweep's interval rather than hammered. Oldest first.
+   */
   private enqueueUnembedded(limit = 500): number {
+    const now = iso()
+    const revived = Number(
+      this.db
+        .prepare(
+          `UPDATE ros_jobs SET state = 'queued', attempts = 0, run_at = ?, updated_at = ?
+            WHERE state = 'dead' AND task = ?
+              AND EXISTS (SELECT 1 FROM ros_messages m
+                           WHERE m.embedding IS NULL AND m.embed_status IS NULL
+                             AND ros_jobs.job_key = 'embed-ros_messages-' || m.id)`,
+        )
+        .run(now, now, EMBED_TARGET_TASK).changes,
+    )
     const rows = this.db
       .prepare(
         `SELECT m.id FROM ros_messages m
           WHERE m.embedding IS NULL AND m.embed_status IS NULL
             AND NOT EXISTS (SELECT 1 FROM ros_jobs j WHERE j.job_key = 'embed-ros_messages-' || m.id)
-          ORDER BY m.created_at DESC
+          ORDER BY m.created_at ASC
           LIMIT ?`,
       )
       .all(limit) as unknown as Array<{ id: string }>
-    let queued = 0
+    let queued = revived
     for (const { id } of rows) {
       if (
         this.jobQueue.enqueue(
@@ -852,6 +906,34 @@ export class SqliteMemory implements Memory {
          ON CONFLICT (key) DO UPDATE SET value = excluded.value`,
       )
       .run(model)
+  }
+
+  /**
+   * Remember how wide the stored vectors are. A vector of another width (a
+   * changed `embed_expected_dims`, or an endpoint that now returns a different
+   * size under the same model name) is not comparable with the stored ones:
+   * they are cleared and re-queued, like a model change.
+   */
+  private noteEmbedDims(dims: number): void {
+    const prior = this.db.prepare(`SELECT value FROM ros_meta WHERE key = 'embed_dims'`).get() as
+      { value: string } | undefined
+    if (prior && Number(prior.value) === dims) return
+    if (prior) {
+      this.log(
+        `[memory.sqlite] embedding width changed (${prior.value} → ${String(dims)}); re-embedding stored messages`,
+      )
+      this.db.exec(
+        `UPDATE ros_messages SET embedding = NULL, embed_status = NULL, embed_error = NULL, embed_failures = 0
+          WHERE embedding IS NOT NULL OR embed_status = 'done'`,
+      )
+      this.vectorIndex.invalidate()
+    }
+    this.db
+      .prepare(
+        `INSERT INTO ros_meta (key, value) VALUES ('embed_dims', ?)
+         ON CONFLICT (key) DO UPDATE SET value = excluded.value`,
+      )
+      .run(String(dims))
   }
 
   /** The job queue behind the background work, for stats and requeueing. */
@@ -973,22 +1055,43 @@ export class SqliteMemory implements Memory {
   /** Test helper — embedding state per message id. */
   embedStateForTest(
     ids: readonly string[],
-  ): Record<string, { status: string | null; error: string | null; dims: number }> {
-    const out: Record<string, { status: string | null; error: string | null; dims: number }> = {}
+  ): Record<
+    string,
+    { status: string | null; error: string | null; dims: number; failures: number }
+  > {
+    const out: Record<
+      string,
+      { status: string | null; error: string | null; dims: number; failures: number }
+    > = {}
     for (const id of ids) {
       const row = this.db
-        .prepare(`SELECT embed_status, embed_error, embedding FROM ros_messages WHERE id = ?`)
+        .prepare(
+          `SELECT embed_status, embed_error, embedding, embed_failures FROM ros_messages WHERE id = ?`,
+        )
         .get(id) as unknown as
-        | { embed_status: string | null; embed_error: string | null; embedding: Uint8Array | null }
+        | {
+            embed_status: string | null
+            embed_error: string | null
+            embedding: Uint8Array | null
+            embed_failures: number
+          }
         | undefined
       if (!row) continue
       out[id] = {
         status: row.embed_status,
         error: row.embed_error,
         dims: row.embedding ? row.embedding.byteLength / 4 : 0,
+        failures: row.embed_failures,
       }
     }
     return out
+  }
+
+  /** Test helper — how often a message was returned by search. */
+  accessCountForTest(id: string): number {
+    const row = this.db.prepare(`SELECT access_count FROM ros_messages WHERE id = ?`).get(id) as
+      { access_count: number } | undefined
+    return row?.access_count ?? 0
   }
 
   /** Test helper — whether a message id has an embed job waiting. */

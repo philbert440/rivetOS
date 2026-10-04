@@ -9,6 +9,7 @@
 
 import { buildEmbedRequest, normalizeEmbedVector, parseEmbedResponse } from '@rivetos/token-command'
 import { config } from './config.js'
+import { delayForRetry, isRetryableHttpStatus } from '@rivetos/memory-core'
 
 function isTransientError(err: unknown): boolean {
   if (err instanceof TypeError) return true
@@ -22,44 +23,11 @@ function isTransientError(err: unknown): boolean {
   return false
 }
 
-/**
- * HTTP statuses the embed endpoint can recover from if we wait.
- *
- * 4xx used to be treated as "not retrying → null vector", which turned
- * rate-limits (429) and timeouts (408) into permanent `Embedding returned
- * null` deaths. 5xx was already retried.
- */
-export function isRetryableHttpStatus(status: number): boolean {
-  return status === 408 || status === 425 || status === 429 || status >= 500
-}
+// Retry classification and backoff are shared with the SQLite backend.
+export { isRetryableHttpStatus, delayForRetry }
 
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms))
-}
-
-/** Cap so a huge or far-future Retry-After cannot stall the worker. */
-const RETRY_AFTER_MAX_MS = 60_000
-
-/**
- * Backoff before the next attempt. 429 honors Retry-After (delta-seconds or
- * HTTP-date) when present and well-formed; anything else falls back to
- * exponential `2^attempt` seconds.
- */
-export function delayForRetry(attempt: number, response?: Response): number {
-  if (response && response.status === 429) {
-    const header = response.headers.get('Retry-After')
-    if (header) {
-      const seconds = Number(header)
-      if (Number.isFinite(seconds) && seconds >= 0) {
-        return Math.min(seconds * 1000, RETRY_AFTER_MAX_MS)
-      }
-      const when = Date.parse(header)
-      if (Number.isFinite(when)) {
-        return Math.min(Math.max(0, when - Date.now()), RETRY_AFTER_MAX_MS)
-      }
-    }
-  }
-  return Math.pow(2, attempt) * 1000
 }
 
 async function authHeaders(): Promise<{ headers: Record<string, string>; sentToken?: string }> {

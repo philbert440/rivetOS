@@ -23,8 +23,7 @@ export function composeMessageEmbedText(
 ): string {
   const c = typeof content === 'string' ? content.trim() : ''
   const rawT = typeof toolResult === 'string' ? toolResult.trim() : ''
-  const t =
-    rawT.length > TOOL_RESULT_EMBED_CAP ? rawT.slice(0, TOOL_RESULT_EMBED_CAP) : rawT
+  const t = rawT.length > TOOL_RESULT_EMBED_CAP ? rawT.slice(0, TOOL_RESULT_EMBED_CAP) : rawT
   if (!c) return t
   if (!t) return c
   return `${c}\n${t}`

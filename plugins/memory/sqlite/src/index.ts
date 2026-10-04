@@ -35,6 +35,7 @@ import { homedir } from 'node:os'
 import type { PluginManifest } from '@rivetos/types'
 import { loadUsersRegistry } from '@rivetos/types'
 import { SqliteMemory, resolveSqlitePath } from './adapter.js'
+import { clampEmbedTimeoutMs } from '@rivetos/memory-core'
 import type { EmbedConfig } from './embed.js'
 
 export const manifest: PluginManifest = {
@@ -122,7 +123,16 @@ export async function resolveEmbedConfig(
     await import('@rivetos/token-command')
   const wire = parseEmbedWireShape(str(cfg.embed_wire_shape) ?? str(env.RIVETOS_EMBED_WIRE_SHAPE))
   if (typeof wire === 'object') warn(`memory.sqlite.embed_wire_shape: ${wire.error}`)
-  const argv = parseTokenCommandArgv(cfg.embed_token_command)
+  // Config value (an argv array), else the worker's variable (a JSON argv string).
+  let rawArgv: unknown = cfg.embed_token_command
+  if (rawArgv === undefined && str(env.RIVETOS_EMBED_TOKEN_COMMAND)) {
+    try {
+      rawArgv = JSON.parse(env.RIVETOS_EMBED_TOKEN_COMMAND ?? '') as unknown
+    } catch {
+      warn('RIVETOS_EMBED_TOKEN_COMMAND must be a JSON argv array (no shell string)')
+    }
+  }
+  const argv = parseTokenCommandArgv(rawArgv)
   if (typeof argv === 'string') warn(`memory.sqlite.embed_token_command: ${argv}`)
   const num = (v: unknown): number | undefined => {
     const n = typeof v === 'number' ? v : typeof v === 'string' ? Number(v) : Number.NaN
@@ -137,11 +147,15 @@ export async function resolveEmbedConfig(
   // credential to whatever endpoint is configured here.
   const apiKey = str(cfg.embed_api_key) ?? str(env.RIVETOS_EMBED_API_KEY)
   if (apiKey) out.apiKey = apiKey
-  if (Array.isArray(argv)) out.tokenSource = createTokenSource({ argv })
+  if (Array.isArray(argv)) {
+    const ttlMs = num(cfg.embed_token_ttl_ms)
+    out.tokenSource = createTokenSource({ argv, ...(ttlMs !== undefined ? { ttlMs } : {}) })
+  }
   const expected = num(cfg.embed_expected_dims) ?? num(env.RIVETOS_EMBED_EXPECTED_DIMS)
   if (expected !== undefined) out.expectedDims = expected
-  const timeout = num(cfg.embed_timeout_ms) ?? num(env.RIVETOS_EMBED_TIMEOUT_MS)
-  if (timeout !== undefined) out.timeoutMs = timeout
+  // Clamped to the same 500 ms – 60 s range as the Postgres backend.
+  const timeout = cfg.embed_timeout_ms ?? env.RIVETOS_EMBED_TIMEOUT_MS
+  if (timeout !== undefined) out.timeoutMs = clampEmbedTimeoutMs(timeout)
   // Not trimmed: a prefix like "query: " needs its trailing space.
   const rawInstruction = cfg.embed_query_instruction ?? env.RIVETOS_EMBED_QUERY_INSTRUCTION
   if (typeof rawInstruction === 'string' && rawInstruction.trim() !== '') {

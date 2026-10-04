@@ -783,16 +783,17 @@ memory:
 | `embed_endpoint` | string | `RIVETOS_EMBED_URL` | Embedding endpoint. Set → background embedding + vector search. Unset → full-text only (rows are still queued, so setting it later embeds what was written meanwhile). |
 | `embed_model` | string | `RIVETOS_EMBED_MODEL` | Required with an endpoint. Changing it clears the stored vectors and re-embeds: vectors from different models are not comparable. |
 | `embed_api_key` | string | `RIVETOS_EMBED_API_KEY` | Bearer key. No fallback to any other provider key. |
-| `embed_token_command` | string[] | — | JSON argv that prints a bearer token; wins over the key. |
+| `embed_token_command` | string[] | `RIVETOS_EMBED_TOKEN_COMMAND` (JSON argv) | Command that prints a bearer token; wins over the key. `embed_token_ttl_ms` sets how long a token is reused. |
 | `embed_wire_shape` | `openai` \| `native` | `RIVETOS_EMBED_WIRE_SHAPE`, else `openai` | Request shape, as for Postgres. |
 | `embed_expected_dims` | number | `RIVETOS_EMBED_EXPECTED_DIMS` | Require exactly this vector width. Unset: vectors longer than 1024 are truncated to 1024. |
-| `embed_timeout_ms` | number | `RIVETOS_EMBED_TIMEOUT_MS`, else 8000 | Per-request timeout. |
-| `embed_query_instruction` | string | `RIVETOS_EMBED_QUERY_INSTRUCTION` | Prefix for search queries, for models that want one. |
+| `embed_timeout_ms` | number | `RIVETOS_EMBED_TIMEOUT_MS`, else 8000 | Per-request timeout, clamped to 500–60000. |
+| `embed_query_instruction` | string | `RIVETOS_EMBED_QUERY_INSTRUCTION`, else the same default as Postgres | Prefix for search queries. Empty string disables. |
 | `workers` | boolean | `true` when an endpoint is set | Run the in-process job loop. `false` queues work without draining it. |
 
-The file is opened with WAL, a 5s busy timeout, and foreign keys on. Search is FTS5 only
-until an embedding drain lands; append still enqueues `ros_embed_queue` rows for that
-later worker.
+The file is opened with WAL, a 5s busy timeout, and foreign keys on. Without an embedding
+endpoint search is FTS5 only and no embedding work is queued; rows written meanwhile are
+embedded once an endpoint is configured. Embedding jobs retry with backoff; a job that runs
+out of attempts during an outage is revived by a ten-minute sweep.
 
 ---
 
