@@ -22,9 +22,9 @@ Plan and slice status: see `AGENT.md`. Build: `./gradlew :app:assembleDebug :app
 2. On the phone (same network as the computer): RivetHub → Enroll → **Scan pairing QR**. Android 16+ asks
    for the Nearby devices (local network) permission first; without it the phone cannot reach the LAN.
 
-The QR is a `rivethub://pair` link (no package name, so the debug and release apps both open it).
-The phone camera opens RivetHub with it; **Scan pairing QR** reads the same code. Older codes that
-are the raw JSON still scan inside the app. The link carries the gateway URL, a one-time token
+The QR is an `intent:` link (VIEW + BROWSABLE, no package name, so the debug and release apps both open it).
+The phone's system scanner opens RivetHub with it; **Scan pairing QR** reads the same code. Older
+codes that are a `rivethub://` link or the raw JSON still scan inside the app. The link carries the gateway URL, a one-time token
 (10 minutes, one use) and the SHA-256 of the gateway's TLS certificate; the app pins that certificate
 to redeem the token at `POST /api/devices/pair` for the PKCS#12 and its passphrase. The computer deletes its copy of the PKCS#12 on redemption and keeps
 the certificate so it can be revoked. Expired or used? Show a fresh code. A name that was already paired

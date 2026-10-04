@@ -212,9 +212,14 @@ describe('QR payload', () => {
     expect(certSha256(CERT)).toBe(CERT_SHA256)
   })
 
-  it('is a rivethub://pair link around the v1 JSON the phone parses', () => {
+  it('is an intent: link the system scanner can launch, around the v1 JSON', () => {
     const text = pairingQrText({ gateway: 'https://10.0.0.5:5174', token: 't', certSha256: 'ab' })
-    expect(text.startsWith('rivethub://pair?d=')).toBe(true)
+    expect(text.startsWith('intent://pair?d=')).toBe(true)
+    expect(text).toContain('#Intent;scheme=rivethub;')
+    expect(text).toContain('action=android.intent.action.VIEW;')
+    expect(text).toContain('category=android.intent.category.BROWSABLE;')
+    expect(text.endsWith(';end')).toBe(true)
+    expect(text).not.toContain('package=')
     expect(text).not.toContain('io.rivethub.app')
     expect(parsePairingQrText(text)).toEqual({
       v: 1,

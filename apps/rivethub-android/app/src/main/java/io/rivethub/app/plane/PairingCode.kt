@@ -8,8 +8,10 @@ import kotlinx.serialization.json.jsonPrimitive
 /**
  * The pairing QR `rivetos pair` shows (packages/cli/src/lib/pairing.ts).
  * The body is `{v:1, kind:"rivethub-pair", gateway, token, certSha256}`, wrapped in
- * `rivethub://pair?d=<base64url>` so the phone camera can open this app.
- * Raw JSON from an older node still parses. [certSha256] is the lowercase hex
+ * `intent://pair?d=<base64url>#Intent;scheme=rivethub;end` so the system
+ * QR scanner (which only launches http and intent URIs) opens this app.
+ * `rivethub://pair?d=` and raw JSON from an older node still parse.
+ * [certSha256] is the lowercase hex
  * SHA-256 of the gateway's TLS leaf — the phone has no CA yet, so it pins that
  * leaf for the one redeem call.
  */
@@ -30,6 +32,7 @@ private val json = Json { ignoreUnknownKeys = true }
 fun looksLikePairingCode(text: String): Boolean {
     val trimmed = text.trim()
     if (trimmed.startsWith("rivethub://pair", ignoreCase = true)) return true
+    if (pairingLinkQuery(trimmed) != null) return true
     return trimmed.contains("\"$KIND\"")
 }
 
@@ -54,10 +57,28 @@ fun parsePairingCode(text: String): PairingParse {
  * Raw JSON, or the JSON inside a `rivethub://pair?d=` link. Null when the
  * link is missing its payload or the payload is not base64url.
  */
+/**
+ * Query of a pairing link, or null when [text] is not one.
+ * `intent://pair?d=…#Intent;scheme=rivethub;end` is what the system scanner
+ * reads; after it launches us the activity data is `rivethub://pair?d=…`.
+ */
+private fun pairingLinkQuery(text: String): String? {
+    val direct = Regex("^rivethub://pair\\?(.*)$", RegexOption.IGNORE_CASE).find(text)
+    if (direct != null) return direct.groupValues[1]
+    val intent = Regex("^intent://pair\\?([^#]+)#Intent;(.*)$", RegexOption.IGNORE_CASE).find(text)
+        ?: return null
+    val scheme = Regex("(?:^|;)scheme=([^;]+)", RegexOption.IGNORE_CASE)
+        .find(intent.groupValues[2])?.groupValues?.get(1)
+    if (!scheme.equals("rivethub", ignoreCase = true)) return null
+    return intent.groupValues[1]
+}
+
 private fun pairingJsonText(text: String): String? {
     val trimmed = text.trim()
-    if (!trimmed.startsWith("rivethub://pair", ignoreCase = true)) return trimmed
-    val query = trimmed.substringAfter('?', "")
+    val query = pairingLinkQuery(trimmed) ?: return if (
+        trimmed.startsWith("rivethub://", ignoreCase = true) ||
+        trimmed.startsWith("intent:", ignoreCase = true)
+    ) null else trimmed
     val payload = query.split('&').firstNotNullOfOrNull { part ->
         val eq = part.indexOf('=')
         if (eq <= 0) null else if (part.substring(0, eq) == "d") part.substring(eq + 1) else null

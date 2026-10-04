@@ -42,6 +42,15 @@ class PairingCodeTest {
         assertEquals(parsePairingCode(payload), parsePairingCode(link))
     }
 
+    @Test fun `the intent uri the system scanner launches decodes to the same code`() {
+        val payload = qr()
+        val d = Base64.getUrlEncoder().withoutPadding().encodeToString(payload.toByteArray())
+        val intent = "intent://pair?d=$d#Intent;scheme=rivethub;action=android.intent.action.VIEW;category=android.intent.category.BROWSABLE;end"
+        assertTrue(looksLikePairingCode(intent))
+        assertEquals(parsePairingCode(payload), parsePairingCode(intent))
+        assertFalse(looksLikePairingCode("intent://pair?d=$d#Intent;scheme=other;end"))
+    }
+
     @Test fun `a link that is not a pairing payload is rejected`() {
         val other = """{"v":1,"kind":"rivet-mesh-enroll"}"""
         val d = Base64.getUrlEncoder().withoutPadding().encodeToString(other.toByteArray())

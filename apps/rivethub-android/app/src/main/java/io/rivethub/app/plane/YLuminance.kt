@@ -42,3 +42,36 @@ fun yLuminance(
     }
     return out
 }
+
+/**
+ * RGBA plane → packed ARGB pixels for ZXing. CameraX
+ * [androidx.camera.core.ImageAnalysis.OUTPUT_IMAGE_FORMAT_RGBA_8888] is this
+ * layout: pixelStride 4, rowStride may pad. The buffer is read from its
+ * current position. Returns null when the buffer is shorter than the plane.
+ */
+fun rgbaPixels(
+    buffer: ByteBuffer,
+    width: Int,
+    height: Int,
+    rowStride: Int,
+    pixelStride: Int,
+): IntArray? {
+    if (width <= 0 || height <= 0 || pixelStride < 3 || rowStride <= 0) return null
+    if (width * pixelStride > rowStride) return null
+    val view = buffer.duplicate()
+    val base = view.position()
+    val needed = (height - 1) * rowStride + width * pixelStride
+    if (view.remaining() < needed) return null
+    val out = IntArray(width * height)
+    for (y in 0 until height) {
+        val row = base + y * rowStride
+        for (x in 0 until width) {
+            val i = row + x * pixelStride
+            val r = view.get(i).toInt() and 0xff
+            val g = view.get(i + 1).toInt() and 0xff
+            val b = view.get(i + 2).toInt() and 0xff
+            out[y * width + x] = (0xFF shl 24) or (r shl 16) or (g shl 8) or b
+        }
+    }
+    return out
+}
