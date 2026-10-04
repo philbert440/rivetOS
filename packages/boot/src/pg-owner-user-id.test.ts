@@ -4,7 +4,7 @@
  * does not have the column yet.
  */
 
-import { afterEach, describe, expect, it } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 import { existsSync } from 'node:fs'
 import { mkdtemp, rm } from 'node:fs/promises'
 import net from 'node:net'
@@ -55,7 +55,10 @@ afterEach(async () => {
 
 describe('owner_user_id on Postgres (real PGlite)', () => {
   it('is written by the adapter and by a capture batch, and skipped where the column is missing', async () => {
-    delete process.env.RIVETOS_EMBED_URL
+    vi.stubEnv('RIVETOS_EMBED_URL', '')
+    cleanups.push(async () => {
+      vi.unstubAllEnvs()
+    })
     const tmp = await mkdtemp(join(tmpdir(), 'rivetos-pglite-owner-'))
     cleanups.push(() => rm(tmp, { recursive: true, force: true }))
     const port = await freePort()
@@ -117,8 +120,19 @@ describe('owner_user_id on Postgres (real PGlite)', () => {
     await captureBatch(pool, batch('s-capture', 'e3'), { ownerUserId: 'alice', resolveProject: null })
     expect((await owners('s-capture')).conv).toBe('guest')
 
-    // A database that has not run migration 0013: every writer still works.
+    // Half a migration (one table only) counts as none: no writer names the column.
     await pool.query('ALTER TABLE ros_messages DROP COLUMN owner_user_id')
+    const half = new pg.Pool({ connectionString: pgUrl, max: 2 })
+    cleanups.push(() => half.end())
+    const halfMemory = new PostgresMemory({ connectionString: pgUrl, pool: half, userId: 'alice' })
+    await halfMemory.append({ sessionId: 's-half', agent: 'rivet', channel: 'hub', role: 'user', content: 'hello' })
+    await captureBatch(half, batch('s-half-capture', 'e1'), { ownerUserId: 'guest', resolveProject: null })
+    const halfOwners = await half.query<{ owner_user_id: string | null }>(
+      `SELECT owner_user_id FROM ros_conversations WHERE session_key IN ('s-half', 's-half-capture')`,
+    )
+    expect(halfOwners.rows.map((r) => r.owner_user_id)).toEqual([null, null])
+
+    // A database that has not run migration 0013: every writer still works.
     await pool.query('ALTER TABLE ros_conversations DROP COLUMN owner_user_id')
     const older = new pg.Pool({ connectionString: pgUrl, max: 2 })
     cleanups.push(() => older.end())

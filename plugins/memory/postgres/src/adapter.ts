@@ -651,6 +651,12 @@ export class PostgresMemory implements Memory {
     )
 
     if (existing.rows.length > 0) {
+      if (owner) {
+        await client.query(
+          'UPDATE ros_conversations SET owner_user_id = $2 WHERE id = $1 AND owner_user_id IS NULL',
+          [existing.rows[0].id, owner],
+        )
+      }
       return existing.rows[0].id
     }
 

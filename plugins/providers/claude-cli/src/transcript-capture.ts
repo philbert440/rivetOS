@@ -100,7 +100,7 @@ export async function closeAllCapturePools(): Promise<void> {
 
 /** The user each open capture client writes for; set by the ingest that opened it. */
 const captureOwners = new WeakMap<PoolClient, string>()
-const ownerColumnSeen = new WeakMap<PoolClient, boolean>()
+const ownerColumnSeen = new WeakSet<PoolClient>()
 
 /**
  * Say whose capture this client carries: `RIVETOS_USER_ID` of the session (a
@@ -121,16 +121,16 @@ async function ownerFor(client: PoolClient): Promise<string | undefined> {
   const owner = captureOwners.get(client)
   if (!owner) return undefined
   // Asked once per client: a capture run inserts many rows on one connection.
-  const known = ownerColumnSeen.get(client)
-  if (known !== undefined) return known ? owner : undefined
+  // Only a yes is kept, as in the memory plugin's probe.
+  if (ownerColumnSeen.has(client)) return owner
   const res = await client.query<{ n: number }>(
     `SELECT count(*)::int AS n FROM pg_attribute
       WHERE attname = 'owner_user_id' AND NOT attisdropped
         AND attrelid IN (to_regclass('ros_conversations'), to_regclass('ros_messages'))`,
   )
-  const present = res.rows[0]?.n === 2
-  ownerColumnSeen.set(client, present)
-  return present ? owner : undefined
+  if (res.rows[0]?.n !== 2) return undefined
+  ownerColumnSeen.add(client)
+  return owner
 }
 
 export async function applyCaptureGuards(client: PoolClient): Promise<void> {
@@ -686,6 +686,14 @@ async function findOrCreateConversation(
       await client.query(
         `UPDATE ros_conversations SET task_id = $2 WHERE id = $1 AND task_id IS NULL`,
         [existing.rows[0].id, taskId],
+      )
+    }
+    // A conversation with no owner gets this session's; one already set is kept.
+    const adopter = await ownerFor(client)
+    if (adopter) {
+      await client.query(
+        `UPDATE ros_conversations SET owner_user_id = $2 WHERE id = $1 AND owner_user_id IS NULL`,
+        [existing.rows[0].id, adopter],
       )
     }
     return { id: existing.rows[0].id, created: false, title: existing.rows[0].title }
