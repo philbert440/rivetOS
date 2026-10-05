@@ -80,7 +80,7 @@ function PairingCard(props: { code: PhonePairingCode; onDone: () => void }): JSX
         <>
           <canvas ref={canvasRef} className="mx-auto bg-white p-1" aria-label="Pairing QR code" />
           <p className="mt-3 text-sm text-ink">
-            On the phone, open RivetHub and tap{' '}
+            Scan it with the phone&apos;s camera — it opens RivetHub — or open RivetHub and tap{' '}
             <span className="font-mono text-em">Scan pairing QR</span>.
           </p>
           <p className="mt-1 text-xs text-ink-dim">

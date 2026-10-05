@@ -4,6 +4,7 @@ import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
+import java.util.Base64
 
 class PairingCodeTest {
     private val pin = "022ab72bf949c39a134d766ece5b288c60b51780c77540bf84f16b4944e37433"
@@ -33,6 +34,32 @@ class PairingCodeTest {
         assertTrue(parsePairingCode(withExtra) is PairingParse.Ok)
     }
 
+    @Test fun `a rivethub link decodes to the same code`() {
+        val payload = qr()
+        val d = Base64.getUrlEncoder().withoutPadding().encodeToString(payload.toByteArray())
+        val link = "rivethub://pair?d=$d"
+        assertTrue(looksLikePairingCode(link))
+        assertEquals(parsePairingCode(payload), parsePairingCode(link))
+    }
+
+    @Test fun `the intent uri the system scanner launches decodes to the same code`() {
+        val payload = qr()
+        val d = Base64.getUrlEncoder().withoutPadding().encodeToString(payload.toByteArray())
+        val intent = "intent://pair?d=$d#Intent;scheme=rivethub;action=android.intent.action.VIEW;category=android.intent.category.BROWSABLE;end"
+        assertTrue(looksLikePairingCode(intent))
+        assertEquals(parsePairingCode(payload), parsePairingCode(intent))
+        assertFalse(looksLikePairingCode("intent://pair?d=$d#Intent;scheme=other;end"))
+    }
+
+    @Test fun `a link that is not a pairing payload is rejected`() {
+        val other = """{"v":1,"kind":"rivet-mesh-enroll"}"""
+        val d = Base64.getUrlEncoder().withoutPadding().encodeToString(other.toByteArray())
+        assertEquals(PairingParse.Err(PairingCodeError.NotPairing), parsePairingCode("rivethub://pair?d=$d"))
+        assertEquals(PairingParse.Err(PairingCodeError.NotPairing), parsePairingCode("rivethub://pair"))
+        assertTrue(looksLikePairingCode("rivethub://pair"))
+        assertFalse(looksLikePairingCode("rivethub://other"))
+    }
+
     @Test fun `other QR codes are not pairing codes`() {
         assertEquals(PairingParse.Err(PairingCodeError.NotPairing), parsePairingCode("https://example.com"))
         assertEquals(PairingParse.Err(PairingCodeError.NotPairing), parsePairingCode("[1,2]"))
@@ -53,6 +80,39 @@ class PairingCodeTest {
         assertEquals(invalid, parsePairingCode(qr(token = "")))
         assertEquals(invalid, parsePairingCode(qr(cert = "abc")))
         assertEquals(invalid, parsePairingCode(qr(cert = "z".repeat(64))))
+    }
+
+    @Test fun `only a rivethub pair link is taken from a launch intent`() {
+        val link = "rivethub://pair?d=abc"
+        assertEquals(link, pairingLinkFromIntent(true, " $link "))
+        assertEquals("RIVETHUB://PAIR?d=abc", pairingLinkFromIntent(true, "RIVETHUB://PAIR?d=abc"))
+        // Raw JSON, other schemes, other hosts and other actions are not pairing requests.
+        val notLinks: List<String?> = listOf(
+            qr(),
+            "https://example.com/?x=\"rivethub-pair\"",
+            "rivethub://other?d=abc",
+            "rivethub://pair",
+            "intent://pair?d=abc#Intent;scheme=rivethub;end",
+            "",
+            null,
+        )
+        for (data in notLinks) assertEquals(null, pairingLinkFromIntent(true, data))
+        // An intent that is not a VIEW carries no pairing request, whatever its data.
+        assertEquals(null, pairingLinkFromIntent(false, link))
+    }
+
+    @Test fun `the confirmation names the computer by host and port`() {
+        assertEquals("192.0.2.20:5174", pairingGatewayLabel(PairingCode("https://192.0.2.20:5174", "tok", pin)))
+        assertEquals("node.example.com", pairingGatewayLabel(PairingCode("https://node.example.com", "tok", pin)))
+        // A gateway that could be read two ways is not shown at all: the link is refused.
+        for (gateway in listOf(
+            "not a url",
+            "https://trusted.example@evil.example",
+            "https://evil.example\\@trusted.example",
+            "https://",
+        )) {
+            assertEquals(null, pairingGatewayLabel(PairingCode(gateway, "tok", pin)))
+        }
     }
 
     @Test fun `redeem statuses map to failures`() {

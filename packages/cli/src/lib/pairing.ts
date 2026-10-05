@@ -31,7 +31,12 @@ export interface PairingRecord {
   expiresAt: number
 }
 
-/** The QR body. Keep in sync with the Android `PairingCode` parser. */
+/**
+ * The QR body. Keep in sync with the Android `PairingCode` parser.
+ * The code the screen shows is an `intent:` URI around this JSON, which the
+ * system QR scanner turns into `rivethub://pair` and opens. The phone still
+ * accepts a bare `rivethub://` link and the raw JSON.
+ */
 export interface PairingQr {
   v: 1
   kind: 'rivethub-pair'
@@ -211,7 +216,37 @@ export function pairingQrText(opts: {
     token: opts.token,
     certSha256: opts.certSha256,
   }
-  return JSON.stringify(qr)
+  // Pixel's system scanner (Quick Settings → Scan QR code) only launches
+  // http(s) and `intent:` URIs. A bare `rivethub://` code is shown as text and
+  // never opens the app. No `package=`: debug (`io.rivethub.app.debug`) and
+  // release both claim the scheme, and the VIEW + BROWSABLE categories are
+  // what the scanner requires before it will start an activity.
+  const d = Buffer.from(JSON.stringify(qr), 'utf8').toString('base64url')
+  return `intent://pair?d=${d}#Intent;scheme=rivethub;action=android.intent.action.VIEW;category=android.intent.category.BROWSABLE;end`
+}
+
+/**
+ * Query of a pairing link (`d=...`), or null when `text` is not one.
+ * Accepts `rivethub://pair?d=` and the `intent:` form the system scanner launches.
+ */
+function pairingLinkQuery(text: string): string | null {
+  const direct = /^rivethub:\/\/pair\?(.*)$/i.exec(text)
+  if (direct) return direct[1]
+  const intent = /^intent:\/\/pair\?([^#]+)#Intent;(.*)$/i.exec(text)
+  if (!intent) return null
+  const scheme = /(?:^|;)scheme=([^;]+)/i.exec(intent[2])?.[1]
+  if (scheme?.toLowerCase() !== 'rivethub') return null
+  return intent[1]
+}
+
+/** JSON inside a pairing QR: the link, or raw JSON from an older node. */
+export function parsePairingQrText(text: string): unknown {
+  const trimmed = text.trim()
+  const query = pairingLinkQuery(trimmed)
+  if (query == null) return JSON.parse(trimmed)
+  const payload = new URLSearchParams(query).get('d')
+  if (!payload) throw new Error('pairing link has no payload')
+  return JSON.parse(Buffer.from(payload, 'base64url').toString('utf8'))
 }
 
 export async function renderTerminalQr(text: string): Promise<string> {

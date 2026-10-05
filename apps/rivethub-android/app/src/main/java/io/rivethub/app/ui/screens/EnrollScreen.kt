@@ -52,12 +52,14 @@ import io.rivethub.app.plane.PairingFailure
 import io.rivethub.app.plane.PairingParse
 import io.rivethub.app.plane.enrollError
 import io.rivethub.app.plane.looksLikePairingCode
+import io.rivethub.app.plane.pairingGatewayLabel
 import io.rivethub.app.plane.parsePairingCode
 import io.rivethub.app.plane.validateEntryUrl
 import io.rivethub.app.ui.components.Lucide
 import io.rivethub.app.ui.components.RhMark
 import io.rivethub.app.ui.components.PairingScannerDialog
 import io.rivethub.app.ui.components.RivetButton
+import io.rivethub.app.ui.components.RivetConfirmDialog
 import io.rivethub.app.ui.components.RivetButtonVariant
 import io.rivethub.app.ui.components.RivetField
 import io.rivethub.app.ui.components.RivetFieldSize
@@ -76,7 +78,13 @@ import kotlinx.coroutines.withContext
  * PKCS#12 and its passphrase → verify against /api/mesh → hub.
  */
 @Composable
-fun EnrollScreen(c: AppContainer, onBack: (() -> Unit)?, onDone: () -> Unit) {
+fun EnrollScreen(
+    c: AppContainer,
+    onBack: (() -> Unit)?,
+    onDone: () -> Unit,
+    pendingCode: String? = null,
+    onPendingCodeConsumed: () -> Unit = {},
+) {
     val ctx = LocalContext.current
     val scope = rememberCoroutineScope()
     val colors = RivetTheme.colors
@@ -145,6 +153,8 @@ fun EnrollScreen(c: AppContainer, onBack: (() -> Unit)?, onDone: () -> Unit) {
     }
 
     fun pairWith(text: String) {
+        // One pairing at a time: a second one would import over the first.
+        if (busy) return
         scanning = false
         error = null
         val code = when (val parsed = parsePairingCode(text)) {
@@ -205,6 +215,51 @@ fun EnrollScreen(c: AppContainer, onBack: (() -> Unit)?, onDone: () -> Unit) {
         val text = grantedPair ?: return@LaunchedEffect
         grantedPair = null
         pairWith(text)
+    }
+
+    // A code handed over by a rivethub://pair link. The link can come from the
+    // camera app, but also from any other app or a web page, so it never pairs
+    // by itself: the person is shown which computer it names and has to agree.
+    // Pairing replaces this phone's certificate, and the old one may exist
+    // nowhere else. Consumed once so a rotation does not ask again.
+    var linkCode by remember { mutableStateOf<String?>(null) }
+    LaunchedEffect(pendingCode) {
+        val text = pendingCode ?: return@LaunchedEffect
+        onPendingCodeConsumed()
+        when (val parsed = parsePairingCode(text)) {
+            is PairingParse.Ok ->
+                if (pairingGatewayLabel(parsed.code) == null) {
+                    // A gateway that cannot be shown plainly is not offered for confirmation.
+                    error = ctx.getString(R.string.pair_invalid)
+                } else if (linkCode == null) {
+                    linkCode = text
+                }
+                // else: a question is already on screen. A second link must not
+                // change what the person is being asked to agree to.
+            // Not a usable code: pairWith only reports why, it contacts nothing.
+            is PairingParse.Err -> pairWith(text)
+        }
+    }
+    linkCode?.let { text ->
+        val parsed = parsePairingCode(text)
+        val computer = (parsed as? PairingParse.Ok)?.let { pairingGatewayLabel(it.code) }
+        if (computer != null && !busy) {
+            val replaces = c.identity.hasIdentity()
+            RivetConfirmDialog(
+                title = stringResource(R.string.pair_link_title),
+                message = stringResource(
+                    if (replaces) R.string.pair_link_replace else R.string.pair_link_confirm,
+                    computer,
+                ),
+                confirmLabel = stringResource(R.string.pair_link_action),
+                danger = replaces,
+                onConfirm = {
+                    linkCode = null
+                    pairWith(text)
+                },
+                onDismiss = { linkCode = null },
+            )
+        }
     }
 
     val askCamera = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->

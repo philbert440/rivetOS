@@ -1,7 +1,10 @@
 package io.rivethub.app.ui.components
 
+import android.graphics.Bitmap
+import android.util.Log
 import androidx.camera.core.CameraSelector
 import androidx.camera.core.ImageAnalysis
+import androidx.camera.core.ImageProcessingUtil
 import androidx.camera.core.ImageProxy
 import androidx.camera.core.Preview
 import androidx.camera.lifecycle.ProcessCameraProvider
@@ -36,16 +39,24 @@ import androidx.compose.ui.window.DialogProperties
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.compose.LocalLifecycleOwner
 import com.google.zxing.BinaryBitmap
+import com.google.zxing.Binarizer
 import com.google.zxing.DecodeHintType
+import com.google.zxing.LuminanceSource
 import com.google.zxing.PlanarYUVLuminanceSource
+import com.google.zxing.RGBLuminanceSource
 import com.google.zxing.ReaderException
+import com.google.zxing.common.GlobalHistogramBinarizer
 import com.google.zxing.common.HybridBinarizer
 import com.google.zxing.qrcode.QRCodeReader
 import io.rivethub.app.R
+import io.rivethub.app.plane.looksLikePairingCode
+import io.rivethub.app.plane.rgbaPixels
+import io.rivethub.app.plane.yLuminance
 import io.rivethub.app.ui.theme.RivetTheme
 import io.rivethub.app.ui.theme.RivetType
 import java.util.concurrent.Executors
 import java.util.concurrent.atomic.AtomicBoolean
+import java.util.concurrent.atomic.AtomicReference
 
 /**
  * Full-screen camera view that reads QR codes (CameraX preview + ZXing on the
@@ -120,7 +131,14 @@ private fun QrCameraView(
     val onCodeNow by rememberUpdatedState(onCode)
     val onOtherCodeNow by rememberUpdatedState(onOtherCode)
     val onCameraErrorNow by rememberUpdatedState(onCameraError)
-    val previewView = remember { PreviewView(context) }
+    // TextureView, not the default SurfaceView: a SurfaceView inside this
+    // dialog punches a hole and the preview never appears, so aiming is blind.
+    val previewView = remember {
+        PreviewView(context).apply {
+            implementationMode = PreviewView.ImplementationMode.COMPATIBLE
+            scaleType = PreviewView.ScaleType.FILL_CENTER
+        }
+    }
 
     DisposableEffect(lifecycleOwner) {
         val executor = Executors.newSingleThreadExecutor()
@@ -128,6 +146,8 @@ private fun QrCameraView(
         // Set on dispose: a provider that resolves after Cancel must not bind.
         val disposed = AtomicBoolean(false)
         val sawOther = AtomicBoolean(false)
+        // One scrambled frame must not stick the "not a pairing code" hint.
+        val lastOther = AtomicReference<String?>(null)
         val reader = QRCodeReader()
         val hints = mapOf(DecodeHintType.TRY_HARDER to true)
         val main = ContextCompat.getMainExecutor(context)
@@ -136,13 +156,20 @@ private fun QrCameraView(
 
         val analysis = ImageAnalysis.Builder()
             .setBackpressureStrategy(ImageAnalysis.STRATEGY_KEEP_ONLY_LATEST)
+            // RGBA, not the raw Y plane. On Pixel 10 Pro the Y plane is 10-bit and a
+            // hand read of it decodes as a stable non-pairing string.
+            .setOutputImageFormat(ImageAnalysis.OUTPUT_IMAGE_FORMAT_RGBA_8888)
             .build()
         analysis.setAnalyzer(executor) { image ->
             image.use {
                 if (done.get()) return@use
-                val text = decodeQr(reader, hints, it) ?: return@use
+                val text = decodeQr(reader, hints, it, previewView) ?: return@use
                 if (!acceptNow(text)) {
-                    if (sawOther.compareAndSet(false, true)) main.execute { onOtherCodeNow() }
+                    val repeat = lastOther.getAndSet(text) == text
+                    if (repeat && sawOther.compareAndSet(false, true)) {
+                        Log.i(TAG, "other qr len=${text.length} head=${text.take(12).map(::safeChar).joinToString("")}")
+                        main.execute { onOtherCodeNow() }
+                    }
                 } else if (done.compareAndSet(false, true)) {
                     main.execute { onCodeNow(text) }
                 }
@@ -174,24 +201,121 @@ private fun QrCameraView(
     AndroidView(factory = { previewView }, modifier = modifier)
 }
 
-/** Y plane → ZXing; retries inverted so light-on-dark terminal QRs read too. */
-private fun decodeQr(reader: QRCodeReader, hints: Map<DecodeHintType, Any>, image: ImageProxy): String? {
-    val plane = image.planes.firstOrNull() ?: return null
-    val rowStride = plane.rowStride
-    val width = image.width
-    val height = image.height
-    val buf = plane.buffer.duplicate().apply { rewind() }
-    val data = ByteArray(rowStride * height)
-    buf.get(data, 0, minOf(buf.remaining(), data.size))
-    val source = PlanarYUVLuminanceSource(data, rowStride, height, 0, 0, width, height, false)
-    for (candidate in listOf(source, source.invert())) {
-        try {
-            return reader.decode(BinaryBitmap(HybridBinarizer(candidate)), hints).text
-        } catch (_: ReaderException) {
-            // not in this frame
-        } finally {
-            reader.reset()
+private const val TAG = "RivetPair"
+
+/** Scheme-shaped prefix only. The payload after this is a one-time token. */
+private fun safeChar(c: Char): Char = if (c.isLetterOrDigit() || c == ':' || c == '/') c else '?'
+
+/**
+ * Several views of one frame. The Pixel 10 Pro sensor is 10-bit; a bad view
+ * can still be a valid QR of the wrong text, so a pairing-shaped result from
+ * any view wins over the first thing that merely decodes.
+ */
+private fun decodeQr(
+    reader: QRCodeReader,
+    hints: Map<DecodeHintType, Any>,
+    image: ImageProxy,
+    preview: PreviewView,
+): String? {
+    val sources = ArrayList<LuminanceSource>(4)
+    // Analysis frames are small. The preview bitmap is the whole screen, so it
+    // is only the fallback when the analysis frame did not contain a pairing code.
+    val stride = image.planes.firstOrNull()?.pixelStride ?: 0
+    if (stride >= 4) {
+        rgbaSource(image)?.let { sources.add(it) }
+    } else {
+        // YUV fallback only. convertYUVToBitmap on an RGBA frame is a native crash.
+        yuvBitmapSource(image)?.let { sources.add(it) }
+        yPlaneSource(image)?.let { sources.add(it) }
+    }
+    previewSource(preview)?.let { sources.add(it) }
+    var other: String? = null
+    for (source in sources) {
+        for (candidate in listOf(source, source.invert())) {
+            for (binarizer in listOf<(LuminanceSource) -> Binarizer>(
+                { HybridBinarizer(it) },
+                { GlobalHistogramBinarizer(it) },
+            )) {
+                val text = try {
+                    reader.decode(BinaryBitmap(binarizer(candidate)), hints).text
+                } catch (_: Exception) {
+                    null
+                } finally {
+                    reader.reset()
+                } ?: continue
+                if (looksLikePairingCode(text)) return text
+                if (other == null) other = text
+            }
         }
     }
-    return null
+    return other
+}
+
+private fun previewSource(preview: PreviewView): LuminanceSource? {
+    return try {
+        val bitmap = preview.bitmap ?: return null
+        bitmapSource(bitmap, recycle = true)
+    } catch (_: Exception) {
+        null
+    }
+}
+
+/** CameraX RGBA output. Null when this frame is not an RGBA plane. */
+private fun rgbaSource(image: ImageProxy): LuminanceSource? {
+    val plane = image.planes.firstOrNull() ?: return null
+    if (plane.pixelStride < 4) return null
+    val pixels = try {
+        rgbaPixels(plane.buffer, image.width, image.height, plane.rowStride, plane.pixelStride)
+    } catch (_: Exception) {
+        null
+    } ?: return null
+    return RGBLuminanceSource(image.width, image.height, pixels)
+}
+
+private fun yuvBitmapSource(image: ImageProxy): LuminanceSource? = try {
+    val bitmap = ImageProcessingUtil.convertYUVToBitmap(image)
+    bitmapSource(bitmap, recycle = true)
+} catch (_: Exception) {
+    null
+}
+
+private fun yPlaneSource(image: ImageProxy): LuminanceSource? {
+    val plane = image.planes.firstOrNull() ?: return null
+    if (plane.pixelStride > 2) return null
+    val packed = try {
+        yLuminance(plane.buffer, image.width, image.height, plane.rowStride, plane.pixelStride)
+    } catch (_: Exception) {
+        null
+    } ?: return null
+    return try {
+        PlanarYUVLuminanceSource(packed, image.width, image.height, 0, 0, image.width, image.height, false)
+    } catch (_: IllegalArgumentException) {
+        null
+    }
+}
+
+private fun bitmapSource(bitmap: Bitmap, recycle: Boolean): LuminanceSource? {
+    val argb = if (bitmap.config == Bitmap.Config.HARDWARE) {
+        bitmap.copy(Bitmap.Config.ARGB_8888, false) ?: bitmap
+    } else {
+        bitmap
+    }
+    val edge = maxOf(argb.width, argb.height)
+    val soft = if (edge > 960) {
+        val scale = 960f / edge
+        Bitmap.createScaledBitmap(argb, (argb.width * scale).toInt().coerceAtLeast(1), (argb.height * scale).toInt().coerceAtLeast(1), true)
+    } else {
+        argb
+    }
+    return try {
+        val pixels = IntArray(soft.width * soft.height)
+        soft.getPixels(pixels, 0, soft.width, 0, 0, soft.width, soft.height)
+        RGBLuminanceSource(soft.width, soft.height, pixels)
+    } catch (_: Exception) {
+        null
+    } finally {
+        if (soft !== argb && !soft.isRecycled) soft.recycle()
+        if (argb !== bitmap && !argb.isRecycled) argb.recycle()
+        if (recycle && !bitmap.isRecycled) bitmap.recycle()
+    }
 }

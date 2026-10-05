@@ -3,7 +3,7 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import pairCommand, { readDenForPairing, resolvePairingTarget, runPair } from './pair.js'
-import { pairingRecordPath } from '../lib/pairing.js'
+import { pairingRecordPath, parsePairingQrText } from '../lib/pairing.js'
 
 // Throwaway self-signed P-256 leaf (same one lib/pairing.test.ts pins).
 const CERT = `-----BEGIN CERTIFICATE-----
@@ -226,7 +226,7 @@ describe('runPair', () => {
       expect(res.gateway).toBe('https://192.168.0.183:5174')
       expect(res.addedToUsers).toBe(true)
       expect(res.reshown).toBe(false)
-      const qr = JSON.parse(res.qrText) as { gateway: string; certSha256: string; token: string }
+      const qr = parsePairingQrText(res.qrText) as { gateway: string; certSha256: string; token: string }
       expect(qr.gateway).toBe('https://192.168.0.183:5174')
       // Pins the leaf named by den.tls_cert (arctic.crt), not the local-mode one.
       expect(qr.certSha256).toBe(CERT_SHA256)
@@ -266,7 +266,7 @@ describe('runPair', () => {
       )
       expect(lines).toEqual([])
       expect(res.expiresAt).toBe(1_000 + 10 * 60 * 1000)
-      expect(JSON.parse(res.qrText).kind).toBe('rivethub-pair')
+      expect((parsePairingQrText(res.qrText) as { kind: string }).kind).toBe('rivethub-pair')
     } finally {
       m.cleanup()
     }
@@ -290,7 +290,9 @@ describe('runPair', () => {
       expect(again.reshown).toBe(true)
       expect(again.addedToUsers).toBe(false)
       // Same pending p12, new token: a copy of the first QR no longer redeems.
-      expect(JSON.parse(again.qrText).token).not.toBe(JSON.parse(first.qrText).token)
+      expect((parsePairingQrText(again.qrText) as { token: string }).token).not.toBe(
+        (parsePairingQrText(first.qrText) as { token: string }).token,
+      )
       expect(exec).not.toHaveBeenCalled()
     } finally {
       m.cleanup()
@@ -342,7 +344,9 @@ describe('runPair', () => {
       expect(again.reshown).toBe(false)
       expect(exec).toHaveBeenCalled()
       expect(again.expiresAt).toBe(later + 10 * 60 * 1000)
-      expect(JSON.parse(again.qrText).token).not.toBe(JSON.parse(first.qrText).token)
+      expect((parsePairingQrText(again.qrText) as { token: string }).token).not.toBe(
+        (parsePairingQrText(first.qrText) as { token: string }).token,
+      )
     } finally {
       m.cleanup()
     }

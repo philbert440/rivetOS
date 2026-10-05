@@ -16,6 +16,7 @@ import {
   createPairing,
   PAIRING_TTL_MS,
   pairingQrText,
+  parsePairingQrText,
   pairingRecordPath,
   releasePairing,
   renderTerminalQr,
@@ -211,15 +212,33 @@ describe('QR payload', () => {
     expect(certSha256(CERT)).toBe(CERT_SHA256)
   })
 
-  it('is the v1 rivethub-pair JSON the phone parses', () => {
+  it('is an intent: link the system scanner can launch, around the v1 JSON', () => {
     const text = pairingQrText({ gateway: 'https://10.0.0.5:5174', token: 't', certSha256: 'ab' })
-    expect(JSON.parse(text)).toEqual({
+    expect(text.startsWith('intent://pair?d=')).toBe(true)
+    expect(text).toContain('#Intent;scheme=rivethub;')
+    expect(text).toContain('action=android.intent.action.VIEW;')
+    expect(text).toContain('category=android.intent.category.BROWSABLE;')
+    expect(text.endsWith(';end')).toBe(true)
+    expect(text).not.toContain('package=')
+    expect(text).not.toContain('io.rivethub.app')
+    expect(parsePairingQrText(text)).toEqual({
       v: 1,
       kind: 'rivethub-pair',
       gateway: 'https://10.0.0.5:5174',
       token: 't',
       certSha256: 'ab',
     })
+  })
+
+  it('still reads a raw JSON code from an older node', () => {
+    const raw = JSON.stringify({
+      v: 1,
+      kind: 'rivethub-pair',
+      gateway: 'https://10.0.0.5:5174',
+      token: 't',
+      certSha256: 'ab',
+    })
+    expect(parsePairingQrText(raw)).toEqual(JSON.parse(raw))
   })
 
   it('renders to a terminal block', async () => {

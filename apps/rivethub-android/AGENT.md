@@ -762,6 +762,18 @@ first, the one post-enroll screen HubDrawer does not host. Also set
   Pixel — import the device p12 once per build type. Note the session ring is keyed by the cert CN
   (`deviceTag()` = SHA-256 of the CN), so two installs sharing one p12 share one gateway session ring;
   give the debug install its own device cert if you need them independent.
+- Pairing QR is `intent://pair?d=<base64url json>#Intent;scheme=rivethub;action=android.intent.action.VIEW;category=android.intent.category.BROWSABLE;end`
+  (`packages/cli` `pairingQrText`). No `package=`, so debug and release both open it. The system
+  scanner only launches `http` and `intent:` URIs; a bare `rivethub://` code stays text. The app
+  still parses `rivethub://pair` (what that intent becomes) and raw JSON from an older node.
+  A launch intent is a pairing request only when it is a `rivethub://pair?` VIEW
+  (`pairingLinkFromIntent`); raw JSON is read by the in-app scanner only. A link never redeems by
+  itself: `EnrollScreen` shows a confirm naming the gateway (`pairingGatewayLabel`), and says so when
+  it would replace an existing certificate. Any app or page can fire the link, so keep that gate.
+  The scanner asks CameraX for RGBA, then the preview bitmap, then `convertYUVToBitmap`, then the
+  Y plane (`pixelStride` 2 on Pixel 10 Pro P010; do not rewind). A frame that decodes as something
+  else is kept only when no source in that frame looks like a pairing code. The scan dialog preview
+  is a TextureView (`PreviewView.ImplementationMode.COMPATIBLE`).
 - Assistant bodies render through `MarkdownBody` (ATX headings, bold/italic, blockquote, pipe tables, nested lists, inline/fenced code, http(s) links). Not a full GFM port.
 - Drafts are in-memory only (`HubViewModel` drafts list). A background-killed app loses unsent drafts
   and composer text. `+ new` is cheap; composer `rememberSaveable` is still open.
