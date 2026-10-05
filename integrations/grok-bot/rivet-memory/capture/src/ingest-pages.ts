@@ -1,5 +1,6 @@
 /**
- * ReadTranscript page backfill → <session>-v4-backfill.
+ * ReadTranscript page backfill → <session>-v4-backfill
+ * (or <session>-v4-backfill-<rev> when --revision is set).
  *
  * Pages are dumped as <bot-slug>-<before>.txt. Positions are conversation
  * indices, not store.db seq. Timestamps come only from user `<timestamp>`
@@ -42,6 +43,7 @@ import {
   DEFAULT_BACKFILL_OVERLAP_HOURS,
   ORDINAL_STRIDE,
   SESSION_SUFFIX_V4,
+  sessionBackfillSuffix,
   type BotIdentity,
   type ParsedInput,
 } from './types.js'
@@ -192,8 +194,31 @@ export function listPageSpoolFiles(dir: string): PageSpoolFile[] {
   return out
 }
 
-export function backfillSession(sessionBase: string, liveSuffix = SESSION_SUFFIX_V4): string {
-  const suffix = `${liveSuffix}-backfill`
+/** Short lowercase alnum token. CLI `--revision` must match this. */
+export const BACKFILL_REVISION_RE = /^[a-z0-9]{1,16}$/
+
+/**
+ * Accept a revision token or reject it. Empty / omitted is unset (default tag).
+ * Callers at the CLI boundary print the error and exit 2.
+ */
+export function parseBackfillRevision(raw: string | undefined): string | undefined {
+  if (raw === undefined) return undefined
+  const trimmed = raw.trim()
+  if (!trimmed) {
+    throw new Error('ingest-pages: --revision must be a short lowercase alphanumeric token')
+  }
+  if (!BACKFILL_REVISION_RE.test(trimmed)) {
+    throw new Error('ingest-pages: --revision must be a short lowercase alphanumeric token')
+  }
+  return trimmed
+}
+
+export function backfillSession(
+  sessionBase: string,
+  liveSuffix = SESSION_SUFFIX_V4,
+  revision?: string,
+): string {
+  const suffix = sessionBackfillSuffix(liveSuffix, revision)
   return sessionBase.endsWith(suffix) ? sessionBase : `${sessionBase}${suffix}`
 }
 
@@ -359,6 +384,7 @@ function subIndexFor(message: CaptureMessage, fallback: number): number {
 export function attachBackfillMeta(
   messages: CaptureMessage[],
   slug: string,
+  revision?: string,
 ): { kept: CaptureMessage[]; skippedNoPosition: number } {
   const kept: CaptureMessage[] = []
   let skippedNoPosition = 0
@@ -392,6 +418,7 @@ export function attachBackfillMeta(
       }),
       ts_approx: true,
     }
+    if (revision) metadata.backfill_revision = revision
     kept.push({ ...message, metadata })
   }
   return { kept, skippedNoPosition }
@@ -429,13 +456,14 @@ export async function loadOverlapIndex(
   opts?: {
     overlapHours?: number
     liveSuffix?: string
+    revision?: string
     candidateCreatedAt?: Array<string | undefined>
   },
 ): Promise<OverlapIndex> {
   const hours = opts?.overlapHours ?? DEFAULT_BACKFILL_OVERLAP_HOURS
   const liveSuffix = opts?.liveSuffix ?? SESSION_SUFFIX_V4
   const liveSession = liveV4Session(ident.session, liveSuffix)
-  const backfill = backfillSession(ident.session, liveSuffix)
+  const backfill = backfillSession(ident.session, liveSuffix, opts?.revision)
   const sourceIds = new Map<string, string | readonly string[] | undefined>()
   const v4Hits: V4OverlapHit[] = []
   // overlap-hours 0 (the default) does not read -v4. A positive window is
@@ -669,12 +697,14 @@ export async function ingestPages(
     agentsDir?: string
     overlapHours?: number
     liveSuffix?: string
+    revision?: string
     overlapUnavailable?: boolean
     deps?: IngestPagesDeps
   },
 ): Promise<IngestPagesResult> {
   const commit = Boolean(opts?.commit)
   const liveSuffix = opts?.liveSuffix ?? SESSION_SUFFIX_V4
+  const revision = opts?.revision
   const discover = opts?.deps?.discover ?? discoverModels
   const catalog = discover({ agentsDir: opts?.agentsDir })
   const cfg = loadIdentityConfig()
@@ -701,7 +731,7 @@ export async function ingestPages(
       continue
     }
     const slug = personaSlugFromIdentity(ident, cfg)
-    const session = backfillSession(ident.session, liveSuffix)
+    const session = backfillSession(ident.session, liveSuffix, revision)
     const ordered = [...slugPages].sort((a, b) => compareParsedPages(a, b))
     const loaded: Array<{ page: PageSpoolFile; parsed: ParsedInput }> = []
     let pagesFailed = 0
@@ -738,12 +768,13 @@ export async function ingestPages(
     const tagByPosition = tagTimesFromParsed(parsed)
     const withoutSystem = dropSystemMessages(result.messages)
     const stamped = applyBackfillTimestamps(withoutSystem.kept, tagByPosition)
-    const tagged = attachBackfillMeta(stamped.kept, slug)
+    const tagged = attachBackfillMeta(stamped.kept, slug, revision)
     let index: OverlapIndex = { sourceIds: new Map(), v4Hits: [] }
     if (opts?.deps?.overlap) {
       index = await loadOverlapIndex(opts.deps.overlap, ident, {
         overlapHours: opts.overlapHours,
         liveSuffix,
+        revision,
         candidateCreatedAt: tagged.kept.map((message) => message.created_at),
       })
     }

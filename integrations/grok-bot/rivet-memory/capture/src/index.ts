@@ -89,6 +89,7 @@ export {
   contentHashForRow,
   backfillSourceId,
   backfillSession,
+  parseBackfillRevision,
   liveV4Session,
   formatIngestPagesCounts,
   createPgOverlapStore,
