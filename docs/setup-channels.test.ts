@@ -25,6 +25,12 @@ describe('setup docs channels', () => {
     assert.match(text, /update share/)
     assert.match(text, /in-app Updates/)
     assert.match(text, /production server/)
+    assert.match(text, /Settings → Devices/)
+    assert.match(text, /not yet in the current installer/)
+    assert.ok(
+      !/Settings → Pair a phone shows a QR/.test(text),
+      'GETTING-STARTED still presents Pair a phone as the current-installer path',
+    )
   })
 
   it('LOCAL-MODE, RELEASES, and HUB-SETUP name prod stable vs mesh-share nightly', () => {
