@@ -13,6 +13,7 @@ import {
   BACKFILL_SOURCE_IDS_SQL,
   backfillSession,
   backfillSourceId,
+  parseBackfillRevision,
   compareParsedPages,
   contentHashForRow,
   dropSystemMessages,
@@ -122,11 +123,18 @@ describe('ingest-pages helpers', () => {
 
   it('keeps -v4-backfill off the live -v4 session', () => {
     expect(backfillSession('grokbot-alpha')).toBe('grokbot-alpha-v4-backfill')
+    expect(backfillSession('grokbot-alpha', undefined, 'r2')).toBe('grokbot-alpha-v4-backfill-r2')
     expect(liveV4Session('grokbot-alpha')).toBe('grokbot-alpha-v4')
     expect(stripSessionSuffix('grokbot-alpha-v4-backfill')).toBe('grokbot-alpha-v4-backfill')
     expect(backfillSourceId('alpha', 919)).toBe('readtranscript:alpha:919')
     expect(backfillSourceId('alpha', 919, 0)).toBe('readtranscript:alpha:919:0')
     expect(backfillSourceId('alpha', 0, 1)).toBe('readtranscript:alpha:0:1')
+    expect(parseBackfillRevision(undefined)).toBeUndefined()
+    expect(parseBackfillRevision('r2')).toBe('r2')
+    expect(() => parseBackfillRevision('R2')).toThrow(/lowercase alphanumeric/)
+    expect(() => parseBackfillRevision('r-2')).toThrow(/lowercase alphanumeric/)
+    expect(() => parseBackfillRevision('../x')).toThrow(/lowercase alphanumeric/)
+    expect(() => parseBackfillRevision('')).toThrow(/lowercase alphanumeric/)
   })
 
   it('carries the user <timestamp> forward and skips rows before the first tag', () => {
@@ -278,6 +286,7 @@ describe('ingest-pages helpers', () => {
     expect(tagged.kept.every((m) => m.metadata?.source === BACKFILL_SOURCE)).toBe(true)
     expect(tagged.kept.every((m) => m.metadata?.capture_source === BACKFILL_SOURCE)).toBe(true)
     expect(tagged.kept.every((m) => m.metadata?.backfill === true)).toBe(true)
+    expect(tagged.kept.every((m) => m.metadata?.backfill_revision === undefined)).toBe(true)
     expect(tagged.kept.some((m) => m.content === 'missing' || m.content === 'nan')).toBe(false)
   })
 
@@ -533,6 +542,177 @@ describe('ingest-pages dry-run / commit', () => {
     const printed = formatIngestPagesCounts(result)
     expect(printed).toMatch(/unknown_slugs=1/)
     expect(printed).toMatch(/pages_failed=1/)
+  })
+})
+
+describe('ingest-pages --revision', () => {
+  function writeTaggedPage(dir: string) {
+    pageFile(dir, 'alpha', 4, 3, [
+      userTurn(
+        '<timestamp>Saturday, Oct 3, 2026, 3:00 AM (UTC+0)</timestamp>\n<user_query>\nwrite me\n</user_query>',
+      ),
+      assistantTurn('written'),
+    ])
+  }
+
+  it('keeps the default tag and metadata when --revision is omitted', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'gb-pages-rev-default-'))
+    writeTaggedPage(dir)
+    const written: Array<{ sessionId: string; revision?: unknown }> = []
+    const result = await ingestPages(dir, {
+      commit: true,
+      deps: {
+        commit: async (input) => {
+          written.push({
+            sessionId: input.sessionId,
+            revision: input.messages[0]?.metadata?.backfill_revision,
+          })
+          return commitResult(input)
+        },
+      },
+    })
+    expect(result.bots[0]?.session).toBe('grokbot-alpha-v4-backfill')
+    expect(written[0]?.sessionId).toBe('grokbot-alpha-v4-backfill')
+    expect(written[0]?.revision).toBeUndefined()
+    expect(formatIngestPagesCounts(result)).toMatch(/WRITE slug=alpha session=grokbot-alpha-v4-backfill /)
+    expect(formatIngestPagesCounts(result)).not.toMatch(/v4-backfill-r2/)
+  })
+
+  it('writes the r2 tag, stamps backfill_revision, and does not let -v4-backfill rows suppress it', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'gb-pages-rev-r2-'))
+    writeTaggedPage(dir)
+    const sessions: string[] = []
+    const store: OverlapStore = {
+      newestCreatedAt: async () => undefined,
+      rowsSince: async (sessionKey) => {
+        if (sessionKey === 'grokbot-alpha-v4-backfill') {
+          return [
+            {
+              role: 'user',
+              content: 'write me',
+              metadata: { source_id: 'readtranscript:alpha:3:0', content_hash: hashOf('user', 'write me') },
+            },
+            {
+              role: 'assistant',
+              content: 'written',
+              metadata: { source_id: 'readtranscript:alpha:4:0', content_hash: hashOf('assistant', 'written') },
+            },
+          ]
+        }
+        return []
+      },
+      sourceIds: async (sessionKey) => {
+        sessions.push(`ids:${sessionKey}`)
+        if (sessionKey !== 'grokbot-alpha-v4-backfill') return []
+        return [
+          { sourceId: 'readtranscript:alpha:3:0', contentHash: hashOf('user', 'write me') },
+          { sourceId: 'readtranscript:alpha:4:0', contentHash: hashOf('assistant', 'written') },
+        ]
+      },
+    }
+    const written: Array<{ sessionId: string; revision?: unknown; sourceId?: unknown }> = []
+    const result = await ingestPages(dir, {
+      commit: true,
+      revision: 'r2',
+      deps: {
+        overlap: store,
+        commit: async (input) => {
+          for (const row of input.messages) {
+            written.push({
+              sessionId: input.sessionId,
+              revision: row.metadata?.backfill_revision,
+              sourceId: row.metadata?.source_id,
+            })
+          }
+          return commitResult(input)
+        },
+      },
+    })
+    expect(sessions).toEqual(['ids:grokbot-alpha-v4-backfill-r2'])
+    expect(result.bots[0]?.session).toBe('grokbot-alpha-v4-backfill-r2')
+    expect(result.bots[0]?.new).toBeGreaterThan(0)
+    expect(result.bots[0]?.skippedOverlap).toBe(0)
+    expect(written.every((row) => row.sessionId === 'grokbot-alpha-v4-backfill-r2')).toBe(true)
+    expect(written.every((row) => row.revision === 'r2')).toBe(true)
+    expect(formatIngestPagesCounts(result)).toMatch(
+      /WRITE slug=alpha session=grokbot-alpha-v4-backfill-r2 /,
+    )
+  })
+
+  it('makes an r2 rerun a no-op against rows already in -v4-backfill-r2', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'gb-pages-rev-idemp-'))
+    writeTaggedPage(dir)
+    const stored = new Map<string, Array<{ sourceId: string; contentHash?: string }>>()
+    const store: OverlapStore = {
+      newestCreatedAt: async () => undefined,
+      rowsSince: async () => [],
+      sourceIds: async (sessionKey) => stored.get(sessionKey) ?? [],
+    }
+    const writes: string[] = []
+    const commit = async (input: GrokbotIngestInput) => {
+      writes.push(input.sessionId)
+      const list = stored.get(input.sessionId) ?? []
+      for (const row of input.messages) {
+        const sourceId = String(row.metadata?.source_id ?? '')
+        const contentHash =
+          typeof row.metadata?.content_hash === 'string' ? row.metadata.content_hash : undefined
+        list.push(contentHash ? { sourceId, contentHash } : { sourceId })
+        expect(row.metadata?.backfill_revision).toBe('r2')
+      }
+      stored.set(input.sessionId, list)
+      return commitResult(input)
+    }
+    const first = await ingestPages(dir, { commit: true, revision: 'r2', deps: { overlap: store, commit } })
+    expect(first.wrote).toBe(true)
+    expect(writes).toEqual(['grokbot-alpha-v4-backfill-r2'])
+    const second = await ingestPages(dir, { commit: true, revision: 'r2', deps: { overlap: store, commit } })
+    expect(second.bots[0]?.session).toBe('grokbot-alpha-v4-backfill-r2')
+    expect(second.bots[0]?.new).toBe(0)
+    expect(second.bots[0]?.skippedOverlap).toBeGreaterThan(0)
+    expect(writes).toHaveLength(1)
+    expect(formatIngestPagesCounts(second)).toMatch(
+      /WRITE slug=alpha session=grokbot-alpha-v4-backfill-r2 /,
+    )
+  })
+
+  it('rejects a non-token --revision at the CLI and still prints the r2 session on a dry-run', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'gb-pages-rev-cli-'))
+    writeTaggedPage(dir)
+    const errs: string[] = []
+    const err = console.error
+    console.error = (...a: unknown[]) => {
+      errs.push(a.map(String).join(' '))
+    }
+    try {
+      expect(await cmdIngestPages(['--input', dir, '--revision', 'R2'])).toBe(2)
+      expect(await cmdIngestPages(['--input', dir, '--revision', 'r-2'])).toBe(2)
+    } finally {
+      console.error = err
+    }
+    expect(errs.join('\n')).toMatch(/lowercase alphanumeric/)
+    const dryLogs: string[] = []
+    const log = console.log
+    console.log = (...a: unknown[]) => {
+      dryLogs.push(a.map(String).join(' '))
+    }
+    try {
+      const code = await cmdIngestPages(['--input', dir, '--revision', 'r2', '--dry-run'], {
+        loadDeps: async () => ({
+          overlap: {
+            newestCreatedAt: async () => undefined,
+            rowsSince: async () => [],
+            sourceIds: async () => [],
+          },
+        }),
+      })
+      expect(code).toBe(0)
+    } finally {
+      console.log = log
+    }
+    expect(dryLogs.join('\n')).toMatch(/DRY slug=alpha session=grokbot-alpha-v4-backfill-r2 /)
+    const help = await captureMain(['help'])
+    expect(help.out).toContain('--revision REV')
+    expect(help.out).toContain('grokbot-<slug>-v4-backfill-REV')
   })
 })
 

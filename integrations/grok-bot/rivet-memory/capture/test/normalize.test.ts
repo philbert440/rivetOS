@@ -1383,6 +1383,10 @@ describe('reclean', () => {
       agent: 'grokbot-alpha',
       session: 'grokbot-alpha',
     })
+    expect(identityForSession('grokbot-alpha-v4-backfill-r2')).toMatchObject({
+      agent: 'grokbot-alpha',
+      session: 'grokbot-alpha',
+    })
     const errs: string[] = []
     const err = console.error
     console.error = (...a: unknown[]) => {

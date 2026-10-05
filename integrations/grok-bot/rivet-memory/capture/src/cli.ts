@@ -22,6 +22,7 @@ import {
   createPgOverlapStore,
   formatIngestPagesCounts,
   ingestPages,
+  parseBackfillRevision,
   type IngestPagesDeps,
 } from './ingest-pages.js'
 import { ingestGrokbotSession, type GrokbotIngestMemory } from './ingest-rows.js'
@@ -111,12 +112,14 @@ const HELP = `Usage: grokbot-rivet-memory-capture <command> [opts]
   discover [--agents-dir DIR] [--json]
 
   ingest-pages --input DIR [--commit] [--dry-run] [--overlap-hours N]
-               [--agents-dir DIR]
+               [--agents-dir DIR] [--revision REV]
       ReadTranscript page backfill. Files are <bot-slug>-<before>.txt,
       ordered by numeric <before> then header position.
       Dry-run is the default and writes nothing. An explicit --dry-run
       overrides --commit. --commit INSERTs message rows into
-      grokbot-<slug>-v4-backfill only and never deletes. A bot whose
+      grokbot-<slug>-v4-backfill only and never deletes. --revision REV
+      (short lowercase alnum, e.g. r2) writes grokbot-<slug>-v4-backfill-REV
+      instead; omitted, the plain -v4-backfill tag is unchanged. A bot whose
       pages conflict writes nothing; other bots still proceed.
       Page conflicts exit 3 on a dry-run and on --commit.
       A stored source_id whose content digest differs is not rewritten
@@ -699,6 +702,7 @@ export async function cmdIngestPages(
       'dry-run': { type: 'boolean', default: false },
       'overlap-hours': { type: 'string' },
       'agents-dir': { type: 'string' },
+      revision: { type: 'string' },
     },
   })
   const input = values.input || positionals[0] || process.env.GROKBOT_PAGES_DIR
@@ -730,6 +734,14 @@ export async function cmdIngestPages(
     console.error('ingest-pages: --overlap-hours must be a non-negative number')
     return 2
   }
+  let revision: string | undefined
+  try {
+    revision = parseBackfillRevision(values.revision)
+  } catch (err) {
+    const message = err instanceof Error ? err.message : 'ingest-pages: invalid --revision'
+    console.error(message)
+    return 2
+  }
   const deps = hooks?.loadDeps ? await hooks.loadDeps(commit) : await loadIngestPagesDeps(commit)
   try {
     if (commit && !deps.commit) {
@@ -745,6 +757,7 @@ export async function cmdIngestPages(
       commit,
       agentsDir: values['agents-dir'],
       overlapHours,
+      revision,
       overlapUnavailable: deps.overlapUnavailable,
       deps,
     })

@@ -75,8 +75,9 @@ export const SESSION_SUFFIX_V4 = '-v4'
  */
 export const DEFAULT_BACKFILL_OVERLAP_HOURS = 0
 
-export function sessionBackfillSuffix(liveSuffix = SESSION_SUFFIX_V4): string {
-  return `${liveSuffix}-backfill`
+export function sessionBackfillSuffix(liveSuffix = SESSION_SUFFIX_V4, revision?: string): string {
+  const base = `${liveSuffix}-backfill`
+  return revision ? `${base}-${revision}` : base
 }
 
 export function isRowShapedSession(session: string): boolean {

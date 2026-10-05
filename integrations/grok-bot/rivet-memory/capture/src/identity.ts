@@ -286,10 +286,11 @@ export function personaSlugFromIdentity(ident: BotIdentity, cfg?: IdentityConfig
 /**
  * Roster base for a backfill session key. Lookup only — never a write target.
  * `grokbot-alpha-v4-backfill` → `grokbot-alpha`.
+ * `grokbot-alpha-v4-backfill-r2` → `grokbot-alpha`.
  */
 export function backfillIdentityBase(session: string): string | undefined {
   if (!isBackfillSession(session)) return undefined
-  const stripped = session.replace(/-v\d+-backfill$/, '')
+  const stripped = session.replace(/-v\d+-backfill(?:-[a-z0-9]+)?$/, '')
   return stripped === session ? undefined : stripped
 }
 
