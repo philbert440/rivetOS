@@ -89,6 +89,14 @@ describe('parseTagProposals', () => {
     expect(proposals[1].value).toBe('a'.repeat(63))
   })
 
+  it('keeps a removal as a suggestion and rejects an unknown action', () => {
+    const { proposals, rejected } = parseTagProposals(
+      '[{"key":"project","value":"rivetos","action":"remove","reason":"wrong repo"},{"key":"topic","value":"wiki","action":"drop"}]',
+    )
+    expect(proposals).toEqual([{ key: 'project', value: 'rivetos', reason: 'wrong repo', action: 'remove' }])
+    expect(rejected).toEqual(['bad action for "topic:wiki"'])
+  })
+
   it('returns nothing for non-JSON, non-array, or empty answers', () => {
     expect(parseTagProposals('no tags here').proposals).toEqual([])
     expect(parseTagProposals('"just a string"').proposals).toEqual([])

@@ -1,0 +1,8 @@
+{
+  "mcpServers": {
+    "rivet-cowork-capture": {
+      "command": "${CLAUDE_PLUGIN_ROOT}/bin/rivet-cowork-capture.sh",
+      "args": ["--mcp"]
+    }
+  }
+}

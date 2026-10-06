@@ -26,6 +26,7 @@ export const HARNESS_IDS = [
   'pi',
   'qwen-code',
   'cursor',
+  'cowork',
 ] as const
 export type HarnessId = (typeof HARNESS_IDS)[number]
 
@@ -45,6 +46,7 @@ export const ROSTER_COMMAND: Record<HarnessId, string> = {
   pi: 'pi',
   'qwen-code': 'qwen',
   cursor: 'cursor',
+  cowork: 'cowork',
 }
 
 export function rosterCommandFor(harnessId: string | undefined): string | undefined {
@@ -115,6 +117,12 @@ export type HarnessCapabilities = {
   approvals: boolean
   liveStream: boolean
   listSessions: boolean
+  /**
+   * The control plane can accept turns (start, resume, send). Absent means
+   * the historical "can accept turns". Explicit `false` is capture/read-only:
+   * UIs hide the composer and the terminal instead of probing for a 501.
+   */
+  drive?: boolean
   /** Native per-turn model/effort settings (not CLI spawn flags). */
   turnOptions?: boolean
   /**

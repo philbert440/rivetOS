@@ -4,7 +4,12 @@
  * backend brings its own LLM call and its own store.
  */
 
-import { normalizeTagKey, normalizeTagValue, type TagProposal } from '@rivetos/types'
+import {
+  normalizeTagKey,
+  normalizeTagValue,
+  PROJECT_RULE_NAME,
+  type TagProposal,
+} from '@rivetos/types'
 
 /** Seed keys the prompt always offers. Free-form keys are still accepted. */
 export const TAG_SEED_KEYS = ['project', 'topic'] as const
@@ -34,6 +39,19 @@ export interface TaggerInput {
   title?: string
   agent?: string
   vocabulary: TaggerVocabulary
+  /** Accepted `key:value` literals already on the summary or its conversation. */
+  currentTags?: readonly string[]
+}
+
+/**
+ * A person added this tag, or a person accepted it. The tagger must not
+ * propose removing it unless the operator opts in. The cwd rule's own
+ * `decided_by` is not a person.
+ */
+export function tagRemovalIsProtected(tag: { source: string; decidedBy?: string | null }): boolean {
+  if (tag.source === 'user') return true
+  const by = (tag.decidedBy ?? '').trim()
+  return by !== '' && by !== PROJECT_RULE_NAME
 }
 
 /** Model text that will be stored and rendered: no control characters, single-spaced. */
@@ -54,7 +72,8 @@ Rules:
 - Keys: prefer "project" (a codebase, product or repo) and "topic" (what the work was about). Add another key only when neither fits.
 - Values: 1-4 words, lowercase, specific. "topic:memory-compaction" not "topic:software".
 - Reuse an existing vocabulary tag whenever it fits. Propose a new value only when nothing existing applies.
-- At most ${String(TAG_MAX_PROPOSALS)} tags. Fewer is better. Return [] when the summary is noise (heartbeats, empty sessions).
+- To flag a tag already on the conversation as wrong, return {"key","value","action":"remove","confidence","reason"}. Only a tag listed under "already on this conversation". A removal is a suggestion: it is not applied until a person accepts it.
+- At most ${String(TAG_MAX_PROPOSALS)} tags, removals included. Fewer is better. Return [] when the summary is noise (heartbeats, empty sessions).
 - Never invent projects or topics that the summary does not mention.`
 
 /** The summary offered to a tagger: bounded by code point (never a split surrogate pair). */
@@ -74,6 +93,12 @@ export function formatTagPrompt(input: TaggerInput): string {
     vocab.length > 0
       ? `Existing vocabulary (reuse when it fits):\n${vocab.map((v) => `- ${v}`).join('\n')}`
       : 'Existing vocabulary: (none yet)',
+  )
+  const current = (input.currentTags ?? []).slice(0, 40).map((v) => cleanTagText(v, 200))
+  lines.push(
+    current.length > 0
+      ? `Tags already on this conversation (suggest action "remove" only for one of these, and only when the summary shows it is wrong):\n${current.map((v) => `- ${v}`).join('\n')}`
+      : 'Tags already on this conversation: (none)',
   )
   lines.push(`Summary:\n${boundTagSummary(input.summary)}`)
   lines.push('Tags (JSON array only):')
@@ -150,8 +175,17 @@ export function parseTagProposals(raw: string): { proposals: TagProposal[]; reje
       continue
     }
     const literal = `${key}:${value}`
-    if (seen.has(literal)) continue
-    seen.add(literal)
+    let action: 'remove' | undefined
+    if (o.action !== undefined && o.action !== 'add') {
+      if (o.action !== 'remove') {
+        rejected.push(`bad action for "${literal}"`)
+        continue
+      }
+      action = 'remove'
+    }
+    const seenKey = `${action ?? 'add'}:${literal}`
+    if (seen.has(seenKey)) continue
+    seen.add(seenKey)
     const confidence =
       typeof o.confidence === 'number' && Number.isFinite(o.confidence)
         ? Math.min(1, Math.max(0, o.confidence))
@@ -164,6 +198,7 @@ export function parseTagProposals(raw: string): { proposals: TagProposal[]; reje
       ...(display && display !== value ? { display } : {}),
       ...(confidence === undefined ? {} : { confidence }),
       ...(reason ? { reason } : {}),
+      ...(action ? { action } : {}),
     })
     if (proposals.length >= TAG_MAX_PROPOSALS) break
   }

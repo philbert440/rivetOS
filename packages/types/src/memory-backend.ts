@@ -52,6 +52,13 @@ export interface CaptureBatchRequest {
   settings?: Record<string, unknown>
   task_id?: string
   finalize?: boolean
+  /**
+   * Conversation timestamps from the source (metadata `createdAt` /
+   * `lastActivityAt`), not ingest time. ISO with an offset. On insert they
+   * win over `now()`; on conflict `updated_at` only moves forward.
+   */
+  created_at?: string
+  updated_at?: string
   messages: CaptureMessage[]
 }
 
@@ -101,6 +108,8 @@ export interface MemoryPendingTag extends Tag {
   agent?: string | null
   conversationId?: string | null
   excerpt?: string | null
+  /** `remove` is a suggestion to drop the tag. Absent means a suggested add. */
+  action?: 'add' | 'remove'
 }
 
 export interface MemoryTagUsage {

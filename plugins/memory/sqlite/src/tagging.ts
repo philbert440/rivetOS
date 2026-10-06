@@ -6,6 +6,8 @@
  */
 
 import type { DatabaseSync } from 'node:sqlite'
+import type { TokenSource } from '@rivetos/token-command'
+import { formatTag } from '@rivetos/types'
 import {
   TAG_MAX_PROPOSALS,
   TAG_MAX_TOKENS,
@@ -48,44 +50,64 @@ export interface NativeTagger {
   url: string
   model: string
   apiKey?: string
+  /** Wins over `apiKey`. A rejected token (401) is re-minted once. */
+  tokenSource?: TokenSource
   timeoutMs?: number
   fetch?: typeof globalThis.fetch
 }
 
 async function callNativeTagger(
   target: NativeTagger,
-  input: { summary: string; title?: string; agent?: string; vocabulary: string[] },
+  input: {
+    summary: string
+    title?: string
+    agent?: string
+    vocabulary: string[]
+    currentTags?: readonly string[]
+  },
 ): Promise<string> {
-  const ctrl = new AbortController()
-  const timer = setTimeout(() => {
-    ctrl.abort()
-  }, target.timeoutMs ?? 60_000)
-  try {
-    const response = await (target.fetch ?? globalThis.fetch)(target.url, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        ...(target.apiKey ? { Authorization: `Bearer ${target.apiKey}` } : {}),
-      },
-      signal: ctrl.signal,
-      body: JSON.stringify({
-        model: target.model,
-        text: boundTagSummary(input.summary),
-        title: input.title ? cleanTagText(input.title, 200) : null,
-        agent: input.agent ? cleanTagText(input.agent, 80) : null,
-        keys: TAG_SEED_KEYS,
-        vocabulary: input.vocabulary.slice(0, 200),
-        max: TAG_MAX_PROPOSALS,
-      }),
-    })
-    if (!response.ok) {
-      await response.body?.cancel().catch(() => {})
-      throw new Error(`tagger HTTP ${String(response.status)}: ${response.statusText || 'error'}`)
+  const body = JSON.stringify({
+    model: target.model,
+    text: boundTagSummary(input.summary),
+    title: input.title ? cleanTagText(input.title, 200) : null,
+    agent: input.agent ? cleanTagText(input.agent, 80) : null,
+    keys: TAG_SEED_KEYS,
+    vocabulary: input.vocabulary.slice(0, 200),
+    current: (input.currentTags ?? []).slice(0, 40),
+    max: TAG_MAX_PROPOSALS,
+  })
+  const post = async (token: string | undefined): Promise<Response> => {
+    const ctrl = new AbortController()
+    const timer = setTimeout(() => {
+      ctrl.abort()
+    }, target.timeoutMs ?? 60_000)
+    try {
+      return await (target.fetch ?? globalThis.fetch)(target.url, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          ...(token ? { Authorization: `Bearer ${token}` } : {}),
+        },
+        signal: ctrl.signal,
+        body,
+      })
+    } finally {
+      clearTimeout(timer)
     }
-    return await response.text()
-  } finally {
-    clearTimeout(timer)
   }
+  let token = target.tokenSource ? await target.tokenSource.getToken() : target.apiKey
+  let response = await post(token)
+  if (response.status === 401 && target.tokenSource) {
+    await response.body?.cancel().catch(() => {})
+    target.tokenSource.invalidate(token ?? '')
+    token = await target.tokenSource.getToken()
+    response = await post(token)
+  }
+  if (!response.ok) {
+    await response.body?.cancel().catch(() => {})
+    throw new Error(`tagger HTTP ${String(response.status)}: ${response.statusText || 'error'}`)
+  }
+  return await response.text()
 }
 
 export class SqliteTagger {
@@ -98,6 +120,8 @@ export class SqliteTagger {
     private readonly vocabulary: SqliteTagVocabulary,
     private readonly tx: <T>(fn: () => T) => T,
     private readonly log: (line: string) => void = () => {},
+    /** Suggest removing a tag a person added or accepted. Default: no. */
+    private readonly allowProtectedRemovals = false,
   ) {}
 
   /** Queue one summary (the compactor calls this for each leaf it writes). */
@@ -129,6 +153,7 @@ export class SqliteTagger {
       summary: summary.content,
       title: summary.title ?? undefined,
       agent: summary.agent ?? undefined,
+      currentTags: this.currentTagLiterals(summaryId, summary.conversation_id),
     }
     const answer =
       'chat' in this.llm
@@ -152,21 +177,49 @@ export class SqliteTagger {
     for (const r of rejected) this.log(`[memory.sqlite] tags: rejected — ${r}`)
     if (proposals.length === 0) return 0
 
+    const additions = proposals.filter((p) => p.action !== 'remove')
+    const removals = proposals.filter((p) => p.action === 'remove')
     const by = { source: 'model', proposedBy: answer.model }
     const conversationId = summary.conversation_id
+    const allowProtected = this.allowProtectedRemovals
     // One transaction: a tag is not left on the summary without its session.
+    // Removals are only flagged; nothing is dropped until a person accepts.
     const written = this.tx(() => {
       const store = this.tags()
-      const onSummary = store.propose('summary', summaryId, proposals, by)
+      const onSummary = store.propose('summary', summaryId, additions, by)
       const onConversation = conversationId
-        ? store.propose('conversation', conversationId, proposals, by)
+        ? store.propose('conversation', conversationId, additions, by)
         : 0
-      this.vocabulary.propose(proposals, answer.model)
-      return onSummary + onConversation
+      const removed =
+        store.proposeRemovals('summary', summaryId, removals, { allowProtected }) +
+        (conversationId
+          ? store.proposeRemovals('conversation', conversationId, removals, { allowProtected })
+          : 0)
+      this.vocabulary.propose(additions, answer.model)
+      return onSummary + onConversation + removed
     })
     this.log(
       `[memory.sqlite] tags: ${summaryId.slice(0, 8)} — ${String(proposals.length)} proposed, ${String(written)} new`,
     )
     return written
+  }
+
+  /** Accepted tags on the summary and its conversation, for the prompt. */
+  private currentTagLiterals(summaryId: string, conversationId: string | null): string[] {
+    const rows = this.db
+      .prepare(
+        `SELECT key, value, display FROM ros_tags
+          WHERE state = 'accepted'
+            AND ((entity_type = 'summary' AND entity_id = ?)
+              OR (entity_type = 'conversation' AND entity_id = ?))
+          ORDER BY key, value
+          LIMIT 40`,
+      )
+      .all(summaryId, conversationId) as unknown as Array<{
+      key: string
+      value: string
+      display: string
+    }>
+    return rows.map((r) => formatTag(r))
   }
 }

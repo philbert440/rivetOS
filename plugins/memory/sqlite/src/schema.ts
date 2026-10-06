@@ -12,7 +12,7 @@
  */
 
 /** Current on-disk schema version. Bump when the DDL changes. */
-export const SCHEMA_VERSION = 6
+export const SCHEMA_VERSION = 7
 
 export const SCHEMA = `
 CREATE TABLE IF NOT EXISTS ros_conversations (
@@ -207,7 +207,12 @@ CREATE TABLE IF NOT EXISTS ros_tags (
     decided_by    TEXT,
     decided_at    TEXT,
     created_at    TEXT NOT NULL,
-    updated_at    TEXT NOT NULL
+    updated_at    TEXT NOT NULL,
+    -- v7: a model may suggest removing an accepted tag. NULL until then.
+    -- The partial index is created after migrateSchema: an older file does
+    -- not have the column until that migration runs.
+    removal_state  TEXT CHECK (removal_state IS NULL OR removal_state IN ('suggested', 'rejected')),
+    removal_reason TEXT NOT NULL DEFAULT ''
 );
 CREATE UNIQUE INDEX IF NOT EXISTS ux_ros_tags_entity_kv
     ON ros_tags (entity_type, entity_id, key, value);

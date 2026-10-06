@@ -84,6 +84,31 @@ describe('rule-based project tag at capture', () => {
     expect(memory.tags().list({})[0]).toMatchObject({ key: 'project', value: 'widgetshop', source: 'rule' })
   })
 
+  it('a cowork batch ignores the sandbox cwd and tags an attached folder', async () => {
+    await memory.backend().capture(
+      batch({
+        channel: 'cowork',
+        settings: { cwd: '/private/var/empty', source: 'cowork-hook' },
+      }),
+    )
+    expect(resolver).not.toHaveBeenCalled()
+    expect(memory.tags().list({})).toEqual([])
+    await memory.backend().capture(
+      batch({
+        session_key: 'cowork-folder',
+        channel: 'cowork',
+        settings: {
+          cwd: '/private/var/empty',
+          source: 'cowork-transcript',
+          folders: ['/private/var/empty', '/work/acmeapp'],
+        },
+        messages: [{ event_id: 'e9', role: 'user', content: 'working on the acmeapp deploy scripts today' }],
+      }),
+    )
+    expect(resolver).toHaveBeenCalledWith('/work/acmeapp')
+    expect(memory.tags().list({})[0]).toMatchObject({ key: 'project', value: 'acmeapp' })
+  })
+
   it('no cwd, an unsafe cwd, or the rule turned off: no tag, and the capture still lands', async () => {
     await memory.backend().capture(batch({ settings: {} }))
     await memory.backend().capture(batch({ session_key: 's2', settings: { cwd: 'relative/path' } }))
