@@ -22,6 +22,8 @@ import {
   ingestPages,
   listPageSpoolFiles,
   liveV4Session,
+  pageIngestSession,
+  v4LiveSession,
   loadOverlapIndex,
   NEWEST_CREATED_SQL,
   OVERLAP_TIME_TOLERANCE_MS,
@@ -125,7 +127,11 @@ describe('ingest-pages helpers', () => {
     expect(backfillSession('grokbot-alpha')).toBe('grokbot-alpha-v4-backfill')
     expect(backfillSession('grokbot-alpha', undefined, 'r2')).toBe('grokbot-alpha-v4-backfill-r2')
     expect(liveV4Session('grokbot-alpha')).toBe('grokbot-alpha-v4')
+    expect(v4LiveSession('grokbot-alpha')).toBe('grokbot-alpha-v4-live')
+    expect(pageIngestSession('grokbot-alpha', { live: true })).toBe('grokbot-alpha-v4-live')
+    expect(pageIngestSession('grokbot-alpha', { revision: 'r2' })).toBe('grokbot-alpha-v4-backfill-r2')
     expect(stripSessionSuffix('grokbot-alpha-v4-backfill')).toBe('grokbot-alpha-v4-backfill')
+    expect(stripSessionSuffix('grokbot-alpha-v4-live')).toBe('grokbot-alpha-v4-live')
     expect(backfillSourceId('alpha', 919)).toBe('readtranscript:alpha:919')
     expect(backfillSourceId('alpha', 919, 0)).toBe('readtranscript:alpha:919:0')
     expect(backfillSourceId('alpha', 0, 1)).toBe('readtranscript:alpha:0:1')

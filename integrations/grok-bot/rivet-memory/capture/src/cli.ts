@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 /**
- * Grok Bot capture CLI — convert, backfill, ingest-pages, reclean, compare, discover.
+ * Grok Bot capture CLI — convert, backfill, ingest-pages, spool-state, needs,
+ * reclean, compare, discover.
  * Never prints secrets, hostnames, or connection strings.
  */
 import { existsSync, mkdirSync, readFileSync, readdirSync, statSync, writeFileSync } from 'node:fs'
@@ -14,17 +15,40 @@ import {
   discoverModels,
   identityFor,
   identityForSession,
+  identityForSlug,
   listInputFiles,
+  loadIdentityConfig,
   peekParentLastKnownTime,
+  personaSlugFromIdentity,
   resolveSourceAgentId,
 } from './identity.js'
 import {
   createPgOverlapStore,
   formatIngestPagesCounts,
   ingestPages,
+  listPageSpoolFiles,
   parseBackfillRevision,
   type IngestPagesDeps,
 } from './ingest-pages.js'
+import {
+  applySpoolConsensus,
+  coveredPositions,
+  formatNeedsLines,
+  inspectPageFiles,
+  neededPositions,
+  skippedGapPositions,
+} from './page-validate.js'
+import {
+  emptyWatermark,
+  formatWatermarkJson,
+  getAgentWatermark,
+  parseTotalFlag,
+  readSpoolState,
+  recordOkIngest,
+  resolveSpoolStatePath,
+  TotalDecreasedError,
+  writeSpoolState,
+} from './spool-state.js'
 import { ingestGrokbotSession, type GrokbotIngestMemory } from './ingest-rows.js'
 import { normalizeRecords, toIngestRows } from './normalize.js'
 import { formatMergeConflicts, normalizePages } from './pages.js'
@@ -48,6 +72,7 @@ import {
   DEFAULT_BACKFILL_OVERLAP_HOURS,
   SESSION_SUFFIX_V3,
   isBackfillSession,
+  isLiveSession,
   sessionStoreSuffix,
   sessionVoiceSuffix,
 } from './types.js'
@@ -94,7 +119,8 @@ const HELP = `Usage: grokbot-rivet-memory-capture <command> [opts]
       Re-clean source transcripts into <session>-vN. --from-rows and PG
       reads write <session>-vN-rows. Follows GROKBOT_SESSION_SUFFIX
       / --session-suffix. Refuses already row-shaped sessions and any
-      -vN-backfill source (that suffix is never folded into live -vN).
+      -vN-backfill or -vN-live source (those suffixes are never folded
+      into live -vN).
       --dry-run (default) performs zero writes and prints stats.
       Without --from-transcript/--from-rows, reads RIVETOS_PG_URL from the
       environment or ~/.rivetos/.env inside BEGIN TRANSACTION READ ONLY
@@ -112,15 +138,20 @@ const HELP = `Usage: grokbot-rivet-memory-capture <command> [opts]
   discover [--agents-dir DIR] [--json]
 
   ingest-pages --input DIR [--commit] [--dry-run] [--overlap-hours N]
-               [--agents-dir DIR] [--revision REV]
-      ReadTranscript page backfill. Files are <bot-slug>-<before>.txt,
-      ordered by numeric <before> then header position.
-      Dry-run is the default and writes nothing. An explicit --dry-run
-      overrides --commit. --commit INSERTs message rows into
+               [--agents-dir DIR] [--revision REV | --live]
+      ReadTranscript page backfill or live ingest. Files are
+      <bot-slug>-<before>.txt, ordered by numeric <before> then header
+      position. Dry-run is the default and writes nothing. An explicit
+      --dry-run overrides --commit. --commit INSERTs message rows into
       grokbot-<slug>-v4-backfill only and never deletes. --revision REV
       (short lowercase alnum, e.g. r2) writes grokbot-<slug>-v4-backfill-REV
-      instead; omitted, the plain -v4-backfill tag is unchanged. A bot whose
-      pages conflict writes nothing; other bots still proceed.
+      instead; omitted, the plain -v4-backfill tag is unchanged. --live
+      writes grokbot-<slug>-v4-live instead and cannot be combined with
+      --revision. Re-ingesting overlapping pages into the live session
+      skips rows already stored by source_id
+      (readtranscript:<slug>:<position>:<sub>), including the same
+      positions from two fetch copies. A bot whose pages conflict writes
+      nothing; other bots still proceed.
       Page conflicts exit 3 on a dry-run and on --commit.
       A stored source_id whose content digest differs is not rewritten
       (skipped_changed) and also exits 3. Several stored digests for one
@@ -129,6 +160,11 @@ const HELP = `Usage: grokbot-rivet-memory-capture <command> [opts]
       Unknown slugs and malformed pages are counted and exit 2. When a
       run has both that failure and page conflicts or skipped_changed,
       exit 2 wins and both reasons are printed.
+      Before ingest, a page whose header range does not match its JSON
+      body, whose JSON does not parse, or (with --live) whose header
+      total or agent id does not match the other pages for that slug,
+      is skipped with a reason. Those positions stay as gaps. Files
+      are not modified.
       PostgresMemory.append still upserts that session's ros_conversations
       row (updated_at, active) and may queue tool-synthesis jobs. Never
       folds into plain -v4. Timestamps are approximate (ts_approx=true);
@@ -142,6 +178,20 @@ const HELP = `Usage: grokbot-rivet-memory-capture <command> [opts]
       repeated identical tool calls). An empty --overlap-hours or
       GROKBOT_BACKFILL_OVERLAP_HOURS is the default 0, not a positive
       window. --input must be a readable directory.
+
+  spool-state get [--agent-id UUID] [--state FILE]
+      Print per-agent watermark JSON (lastIngestedPosition, lastIngestAt,
+      lastSeenTotal). Path is GROKBOT_SPOOL_STATE, else
+      GROKBOT_CAPTURE_DIR/spool-state.json (gitignored).
+
+  spool-state record --agent-id UUID --position N --total N [--state FILE]
+      Advance the watermark after a successful ingest. Refuses (exit 3)
+      when --total is lower than lastSeenTotal.
+
+  needs --input DIR [--agents-dir DIR] [--state FILE] [--total SLUG=N]
+      Print needs: <slug> positions A-B for missing positions (one line
+      per range). Exit 0 whether or not any agent needs pages. Total
+      comes from --total slug=N or lastSeenTotal in the state.
 `
 
 async function main(argv: string[]): Promise<number> {
@@ -159,6 +209,8 @@ async function main(argv: string[]): Promise<number> {
   if (cmd === 'compare') return cmdCompare(argv.slice(1))
   if (cmd === 'discover') return cmdDiscover(argv.slice(1))
   if (cmd === 'ingest-pages') return cmdIngestPages(argv.slice(1))
+  if (cmd === 'spool-state') return cmdSpoolState(argv.slice(1))
+  if (cmd === 'needs') return cmdNeeds(argv.slice(1))
   console.error(`unknown command: ${cmd}`)
   console.log(HELP)
   return 2
@@ -522,6 +574,12 @@ async function cmdReclean(argv: string[]): Promise<number> {
     )
     return 2
   }
+  if (isLiveSession(sourceSession)) {
+    console.error(
+      `reclean: ${sourceSession} is a -vN-live session; refusing to fold it into a live -vN session`,
+    )
+    return 2
+  }
   const fromSource = Boolean(values['from-transcript'])
   const session = fromSource
     ? v3Session(sourceSession, suffix)
@@ -703,6 +761,7 @@ export async function cmdIngestPages(
       'overlap-hours': { type: 'string' },
       'agents-dir': { type: 'string' },
       revision: { type: 'string' },
+      live: { type: 'boolean', default: false },
     },
   })
   const input = values.input || positionals[0] || process.env.GROKBOT_PAGES_DIR
@@ -734,9 +793,13 @@ export async function cmdIngestPages(
     console.error('ingest-pages: --overlap-hours must be a non-negative number')
     return 2
   }
+  if (values.live && values.revision !== undefined) {
+    console.error('ingest-pages: --live cannot be combined with --revision')
+    return 2
+  }
   let revision: string | undefined
   try {
-    revision = parseBackfillRevision(values.revision)
+    revision = values.live ? undefined : parseBackfillRevision(values.revision)
   } catch (err) {
     const message = err instanceof Error ? err.message : 'ingest-pages: invalid --revision'
     console.error(message)
@@ -758,6 +821,7 @@ export async function cmdIngestPages(
       agentsDir: values['agents-dir'],
       overlapHours,
       revision,
+      live: values.live,
       overlapUnavailable: deps.overlapUnavailable,
       deps,
     })
@@ -776,6 +840,171 @@ export async function cmdIngestPages(
   } finally {
     await deps.overlap?.close?.()
   }
+}
+
+export function cmdSpoolState(argv: string[]): number {
+  const sub = argv[0]
+  if (!sub || sub === '-h' || sub === '--help' || sub === 'help') {
+    console.log(
+      'Usage: spool-state get [--agent-id UUID] [--state FILE]\n' +
+        '       spool-state record --agent-id UUID --position N --total N [--state FILE]',
+    )
+    return sub ? 0 : 2
+  }
+  if (sub === 'get') return cmdSpoolStateGet(argv.slice(1))
+  if (sub === 'record') return cmdSpoolStateRecord(argv.slice(1))
+  console.error(`unknown spool-state command: ${sub}`)
+  return 2
+}
+
+function cmdSpoolStateGet(argv: string[]): number {
+  const { values } = parseArgs({
+    args: coalesceDashArgs(argv),
+    options: {
+      'agent-id': { type: 'string' },
+      state: { type: 'string' },
+    },
+  })
+  const path = values.state || resolveSpoolStatePath()
+  let state
+  try {
+    state = readSpoolState(path)
+  } catch (err) {
+    const message = err instanceof Error ? err.message : 'unreadable'
+    console.error(`spool-state get: cannot read ${path}: ${message}`)
+    return 2
+  }
+  if (values['agent-id']) {
+    process.stdout.write(
+      `${formatWatermarkJson(values['agent-id'], getAgentWatermark(state, values['agent-id']))}\n`,
+    )
+    return 0
+  }
+  process.stdout.write(`${JSON.stringify(state)}\n`)
+  return 0
+}
+
+function cmdSpoolStateRecord(argv: string[]): number {
+  const { values } = parseArgs({
+    args: coalesceDashArgs(argv),
+    options: {
+      'agent-id': { type: 'string' },
+      position: { type: 'string' },
+      total: { type: 'string' },
+      state: { type: 'string' },
+    },
+  })
+  const agentId = values['agent-id']
+  if (!agentId) {
+    console.error('spool-state record needs --agent-id UUID')
+    return 2
+  }
+  if (values.position === undefined || values.total === undefined) {
+    console.error('spool-state record needs --position N and --total N')
+    return 2
+  }
+  const position = Number(values.position)
+  const total = Number(values.total)
+  const path = values.state || resolveSpoolStatePath()
+  try {
+    const next = recordOkIngest(readSpoolState(path), agentId, { position, total })
+    writeSpoolState(path, next)
+    process.stdout.write(
+      `${formatWatermarkJson(agentId, next.agents[agentId] ?? emptyWatermark())}\n`,
+    )
+    return 0
+  } catch (err) {
+    if (err instanceof TotalDecreasedError) {
+      console.error(err.message)
+      return 3
+    }
+    const message = err instanceof Error ? err.message : 'spool-state record failed'
+    console.error(message)
+    return 2
+  }
+}
+
+export function cmdNeeds(argv: string[]): number {
+  const { values } = parseArgs({
+    args: coalesceDashArgs(argv),
+    options: {
+      input: { type: 'string' },
+      'agents-dir': { type: 'string' },
+      state: { type: 'string' },
+      total: { type: 'string', multiple: true },
+    },
+  })
+  const input = values.input || process.env.GROKBOT_PAGES_DIR
+  if (!input) {
+    console.error('needs needs --input DIR (or GROKBOT_PAGES_DIR)')
+    return 2
+  }
+  try {
+    const st = statSync(input)
+    if (!st.isDirectory()) {
+      console.error(`needs: --input is not a directory: ${input}`)
+      return 2
+    }
+  } catch (err) {
+    const message = err instanceof Error ? err.message : 'unreadable'
+    console.error(`needs: cannot read --input ${input}: ${message}`)
+    return 2
+  }
+  const totals = new Map<string, number>()
+  try {
+    for (const raw of values.total ?? []) {
+      const parsed = parseTotalFlag(raw)
+      totals.set(parsed.slug, parsed.total)
+    }
+  } catch (err) {
+    const message = err instanceof Error ? err.message : 'needs: invalid --total'
+    console.error(message)
+    return 2
+  }
+  const statePath = values.state || resolveSpoolStatePath()
+  let state
+  try {
+    state = readSpoolState(statePath)
+  } catch (err) {
+    const message = err instanceof Error ? err.message : 'unreadable'
+    console.error(`needs: cannot read state: ${message}`)
+    return 2
+  }
+  const catalog = discoverModels({ agentsDir: values['agents-dir'] })
+  const cfg = loadIdentityConfig()
+  const files = listPageSpoolFiles(input)
+  const bySlug = new Map<string, typeof files>()
+  for (const file of files) {
+    const list = bySlug.get(file.slug) ?? []
+    list.push(file)
+    bySlug.set(file.slug, list)
+  }
+  const slugs = new Set<string>([...bySlug.keys(), ...totals.keys()])
+  for (const id of Object.keys(state.agents)) {
+    const model = catalog.models.find((item) => item.id === id)
+    if (model) slugs.add(personaSlugFromIdentity(model, cfg))
+  }
+  const lines: string[] = []
+  for (const slug of [...slugs].sort()) {
+    const ident = identityForSlug(slug, {
+      agentsDir: values['agents-dir'],
+      config: cfg,
+      catalog,
+    })
+    const decided = applySpoolConsensus(inspectPageFiles(bySlug.get(slug) ?? []), { live: true })
+    const watermark = ident ? getAgentWatermark(state, ident.id) : emptyWatermark()
+    const total = totals.has(slug) ? totals.get(slug) : watermark.lastSeenTotal
+    if (total == null) continue
+    const missing = neededPositions({
+      covered: coveredPositions(decided),
+      lastIngestedPosition: watermark.lastIngestedPosition,
+      total,
+      extraGaps: skippedGapPositions(decided),
+    })
+    lines.push(...formatNeedsLines(slug, missing))
+  }
+  if (lines.length > 0) process.stdout.write(`${lines.join('\n')}\n`)
+  return 0
 }
 
 async function loadIngestPagesDeps(commit: boolean): Promise<IngestPagesDeps> {
