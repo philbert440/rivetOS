@@ -95,9 +95,9 @@ describe('live spool consensus', () => {
     expect(pages[1]?.error?.code).toBe('total_mismatch')
     expect(pages[1]?.skippedPositions).toEqual([10, 11])
     expect(pages[1]?.reason).toMatch(/positions 10-11 left as gaps/)
-    expect(pages[2]?.ok).toBe(false)
-    expect(pages[2]?.error?.code).toBe('agent_id_mismatch')
-    expect(pages[3]?.ok).toBe(true)
+    expect(pages[2]?.ok).toBe(true)
+    expect(pages[3]?.ok).toBe(false)
+    expect(pages[3]?.error?.code).toBe('agent_id_mismatch')
   })
 
   it('does not apply total consensus unless --live', () => {

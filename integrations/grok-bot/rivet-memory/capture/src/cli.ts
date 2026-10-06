@@ -821,7 +821,7 @@ export async function cmdIngestPages(
       agentsDir: values['agents-dir'],
       overlapHours,
       revision,
-      live: Boolean(values.live),
+      live: values.live,
       overlapUnavailable: deps.overlapUnavailable,
       deps,
     })
@@ -909,7 +909,9 @@ function cmdSpoolStateRecord(argv: string[]): number {
   try {
     const next = recordOkIngest(readSpoolState(path), agentId, { position, total })
     writeSpoolState(path, next)
-    process.stdout.write(`${formatWatermarkJson(agentId, next.agents[agentId] ?? emptyWatermark())}\n`)
+    process.stdout.write(
+      `${formatWatermarkJson(agentId, next.agents[agentId] ?? emptyWatermark())}\n`,
+    )
     return 0
   } catch (err) {
     if (err instanceof TotalDecreasedError) {

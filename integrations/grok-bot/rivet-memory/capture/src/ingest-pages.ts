@@ -40,11 +40,7 @@ import { normalizePages } from './pages.js'
 import { partText, recordParts, recordRole } from './parse.js'
 import { READONLY_POOL_OPTIONS, wrapReadOnlyClient } from './pg-readonly.js'
 import { extractTimestampTag } from './timestamps.js'
-import {
-  applySpoolConsensus,
-  inspectPageFiles,
-  toParsedInput,
-} from './page-validate.js'
+import { applySpoolConsensus, inspectPageFiles, toParsedInput } from './page-validate.js'
 import {
   DEFAULT_BACKFILL_OVERLAP_HOURS,
   ORDINAL_STRIDE,
@@ -774,9 +770,10 @@ export async function ingestPages(
         pagesFailed += 1
         skippedGaps += item.skippedPositions.length
         const name = basename(item.file.path)
-        const prefix = item.error?.code === 'total_mismatch' || item.error?.code === 'agent_id_mismatch'
-          ? 'SKIP page'
-          : 'SKIP malformed page'
+        const prefix =
+          item.error?.code === 'total_mismatch' || item.error?.code === 'agent_id_mismatch'
+            ? 'SKIP page'
+            : 'SKIP malformed page'
         console.error(`${prefix} ${name}: ${item.reason ?? 'rejected'}`)
         continue
       }
@@ -790,7 +787,9 @@ export async function ingestPages(
       ),
     )
     if (loaded.length === 0) {
-      bots.push(blankCounts(slug, session, ident.agent, slugPages.length, { pagesFailed, skippedGaps }))
+      bots.push(
+        blankCounts(slug, session, ident.agent, slugPages.length, { pagesFailed, skippedGaps }),
+      )
       continue
     }
     const parsed = loaded.map((item) => item.parsed)

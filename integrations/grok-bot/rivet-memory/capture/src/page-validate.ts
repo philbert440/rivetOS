@@ -15,11 +15,7 @@ export interface PageFileRef {
 const PAGE_FOOTER_RE = /Older messages remain:.*before=(\d+)/
 
 export type PageRejectCode =
-  | 'missing_header'
-  | 'range_mismatch'
-  | 'json_parse'
-  | 'total_mismatch'
-  | 'agent_id_mismatch'
+  'missing_header' | 'range_mismatch' | 'json_parse' | 'total_mismatch' | 'agent_id_mismatch'
 
 export interface PageInspectError {
   code: PageRejectCode
@@ -79,7 +75,9 @@ function skippedPositionsFor(header: PageHeader | undefined): number[] {
   return headerPositions(header)
 }
 
-function withReason(page: Omit<InspectedPage, 'ok' | 'reason'> & { error: PageInspectError }): InspectedPage {
+function withReason(
+  page: Omit<InspectedPage, 'ok' | 'reason'> & { error: PageInspectError },
+): InspectedPage {
   const skipped = skippedPositionsFor(page.header)
   const gaps = skipped.length ? ` (positions ${formatGapRange(skipped)} left as gaps)` : ''
   return {
@@ -164,8 +162,7 @@ export function inspectPageText(text: string): {
       hasOlderFooter,
       error: {
         code: 'range_mismatch',
-        detail:
-          `header range ${String(header.a)}–${String(header.b)} of ${String(header.total)} is out of bounds`,
+        detail: `header range ${String(header.a)}–${String(header.b)} of ${String(header.total)} is out of bounds`,
       },
     }
   }
