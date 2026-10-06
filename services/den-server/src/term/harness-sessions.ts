@@ -38,6 +38,12 @@ import {
   cursorTurnsFromObjects,
 } from '../harness/adapters/index.js'
 import { extractTurnText } from '../harness/adapters/parse-helpers.js'
+import {
+  coworkWatchDirs,
+  findCoworkTask,
+  listCoworkTasks,
+  readCoworkTurns,
+} from '../harness/cowork-store.js'
 import { stripPastedContentWrapper } from '../harness/adapters/claude.js'
 import type { HarnessStoreRef } from '../harness/adapters/types.js'
 import { hermesDbPath, openHermesDb } from './hermes-db.js'
@@ -2434,6 +2440,7 @@ export function harnessSessionExists(command: string, id: string): boolean {
   if (command === 'pi') return piSessionExists(id)
   if (command === 'qwen') return qwenSessionExists(id)
   if (command === 'cursor') return cursorSessionExists(id)
+  if (command === 'cowork') return false // async lookup; resume is unsupported anyway
   let dir: string
   let hit: (top: string) => string
   if (command === 'claude') {
@@ -2499,6 +2506,18 @@ function withAncestors(ranked: HarnessSession[], limit: number): HarnessSession[
   return extras.length ? [...kept, ...extras] : kept
 }
 
+async function listCoworkSessions(limit: number): Promise<HarnessSession[]> {
+  const tasks = await listCoworkTasks()
+  return tasks.slice(0, limit).map((task) => ({
+    id: task.cliSessionId,
+    command: 'cowork',
+    title: task.title || task.cliSessionId,
+    updatedAt: task.updatedAtMs,
+    createdAt: task.createdAtMs,
+    ...(task.cwd ? { cwd: task.cwd } : {}),
+  }))
+}
+
 /**
  * List the on-disk sessions for the given roster harnesses, newest first.
  * Only harnesses with a known store contribute; unknown ones are silently
@@ -2519,6 +2538,7 @@ export async function listHarnessSessions(
   if (commands.includes('pi')) all.push(...(await listPiSessions(limit)))
   if (commands.includes('qwen')) all.push(...(await listQwenSessions(limit)))
   if (commands.includes('cursor')) all.push(...(await listCursorSessions(limit)))
+  if (commands.includes('cowork')) all.push(...(await listCoworkSessions(limit)))
   all.sort((a, b) => b.updatedAt - a.updatedAt) // last-updated first
   return withAncestors(all, limit)
 }
@@ -2805,6 +2825,11 @@ export async function readHarnessTranscript(id: string): Promise<HarnessTranscri
     if (cursor.turns.length > 0) return { ...cursor, id }
   }
 
+  if (wants('cowork')) {
+    const turns = await readCoworkTurns(native)
+    if (turns.length > 0) return { id, command: 'cowork', turns }
+  }
+
   return { id, command: '', turns: [] }
 }
 
@@ -3001,6 +3026,10 @@ export async function resolveHarnessStore(id: string): Promise<HarnessStoreRef |
     const path = cursorTranscriptPath(native)
     if (path) return { command: 'cursor', path }
   }
+  if (wants('cowork')) {
+    const task = await findCoworkTask(native)
+    if (task?.transcriptPath) return { command: 'cowork', path: task.transcriptPath }
+  }
   return undefined
 }
 
@@ -3017,6 +3046,7 @@ export function harnessStoreDirs(): string[] {
     piSessionsDir(),
     qwenProjectsDir(),
     cursorProjectsDir(),
+    ...coworkWatchDirs(),
   ]
   return candidates.filter((d) => existsSync(d))
 }

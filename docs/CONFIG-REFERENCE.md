@@ -805,7 +805,9 @@ memory:
 | `compactor_timeout_ms` | number | `600000` | Per-request timeout, clamped to 5 seconds – 60 minutes. |
 | `tagging` | boolean | on unless `SESSION_TAGGING=0` | Suggest `key:value` tags for each leaf summary. Needs a summarization endpoint (or the tagger's own). |
 | `tagger_endpoint`, `tagger_model`, `tagger_api_key` | string | `RIVETOS_TAGGER_URL`, `RIVETOS_TAGGER_MODEL`, `RIVETOS_TAGGER_API_KEY` | A separate endpoint for the tagger. Unset: the compactor's. |
+| `tagger_token_command` | string[] | `RIVETOS_TAGGER_TOKEN_COMMAND` (JSON argv) | Mints a bearer for that separate tagger, re-minted per call. Wins over `tagger_api_key`. A command that is not an argv array turns tagging off (it does not fall back to the static key). Ignored when no separate tagger endpoint and model are set. |
 | `tagger_wire_shape` | `openai` \| `native` | `RIVETOS_TAGGER_WIRE_SHAPE` | `openai` (default): a chat endpoint, given the built-in prompt. `native`: a classifier service; `tagger_endpoint` is the URL posted to, and it and `tagger_model` are required. Any other value, or `native` without them, turns tag suggestions off with an error in the log. |
+| `tagger_allow_protected_removals` | boolean | `RIVETOS_TAGGER_ALLOW_PROTECTED_REMOVALS` | When true, the tagger may suggest removing a tag a person added or accepted. Default false: those tags are never proposed for removal. A removal is only a review-queue suggestion either way. This does not gate capture. |
 | `project_rule` | boolean | `true` | Tag a captured session with `project:<name>` from its working directory's git root. |
 | `per_user_files` | boolean | `true` | Give every other user in the users registry a SQLite file of their own. `false`: those users get no memory on this node. |
 | `users_dir` | string | `users/` beside the owner's file | Where the other users' files go (`<users_dir>/<userId>/memory.sqlite`). |

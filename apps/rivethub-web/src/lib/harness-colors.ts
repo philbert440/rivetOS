@@ -13,6 +13,7 @@ export const ACCENT_OPENCODE = '#2dd4bf'
 export const ACCENT_PI = '#f472b6'
 export const ACCENT_QWEN_CODE = '#a78bfa'
 export const ACCENT_CURSOR = '#f97316'
+export const ACCENT_COWORK = '#6b8f71'
 export const ACCENT_FALLBACK = '#34d399'
 
 /** String-keyed so opencode/pi compile before those ids land in HARNESS_IDS. */
@@ -30,6 +31,7 @@ export const HARNESS_ACCENTS: Record<string, string> = {
   'qwen-code': ACCENT_QWEN_CODE,
   qwen: ACCENT_QWEN_CODE,
   cursor: ACCENT_CURSOR,
+  cowork: ACCENT_COWORK,
 }
 
 export function harnessAccent(command?: string): string {

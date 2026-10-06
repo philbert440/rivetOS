@@ -450,6 +450,7 @@ export {
   chunkIds,
   summarySourcesByExportedIdsSql,
   conversationsByExportedIdsSql,
+  backfillPostgresProjectRules,
 } from './portability.js'
 export type {
   ExportHeader,

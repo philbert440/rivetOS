@@ -591,22 +591,24 @@ describe('resolveWikiConfig', () => {
 })
 
 describe('resolveTaggingConfig', () => {
-  it('is on by default, off by config or SESSION_TAGGING=0, and takes its own endpoint when given one', () => {
-    expect(resolveTaggingConfig({}, {})).toEqual({ enabled: true })
-    expect(resolveTaggingConfig({}, { SESSION_TAGGING: '0' })).toEqual({ enabled: false })
-    expect(resolveTaggingConfig({ tagging: false }, {})).toEqual({ enabled: false })
-    expect(resolveTaggingConfig({ tagging: true }, { SESSION_TAGGING: 'off' })).toEqual({ enabled: true })
-    expect(
+  it('is on by default, off by config or SESSION_TAGGING=0, and takes its own endpoint when given one', async () => {
+    await expect(resolveTaggingConfig({}, {})).resolves.toEqual({ enabled: true })
+    await expect(resolveTaggingConfig({}, { SESSION_TAGGING: '0' })).resolves.toEqual({ enabled: false })
+    await expect(resolveTaggingConfig({ tagging: false }, {})).resolves.toEqual({ enabled: false })
+    await expect(resolveTaggingConfig({ tagging: true }, { SESSION_TAGGING: 'off' })).resolves.toEqual({
+      enabled: true,
+    })
+    await expect(
       resolveTaggingConfig({}, { RIVETOS_TAGGER_URL: 'https://tagger.test/v1', RIVETOS_TAGGER_MODEL: 'tagger-v1' }),
-    ).toEqual({ enabled: true, llm: { endpoint: 'https://tagger.test/v1', model: 'tagger-v1' } })
-    expect(
+    ).resolves.toEqual({ enabled: true, llm: { endpoint: 'https://tagger.test/v1', model: 'tagger-v1' } })
+    await expect(
       resolveTaggingConfig(
         { tagger_endpoint: 'https://cfg.test/v1', tagger_model: 'cfg', tagger_api_key: 'k' },
         { RIVETOS_TAGGER_URL: 'https://tagger.test/v1', RIVETOS_TAGGER_MODEL: 'tagger-v1' },
       ),
-    ).toEqual({ enabled: true, llm: { endpoint: 'https://cfg.test/v1', model: 'cfg', apiKey: 'k' } })
+    ).resolves.toEqual({ enabled: true, llm: { endpoint: 'https://cfg.test/v1', model: 'cfg', apiKey: 'k' } })
     // The native shape: the endpoint is a classifier, posted to as given.
-    expect(
+    await expect(
       resolveTaggingConfig(
         {},
         {
@@ -615,23 +617,93 @@ describe('resolveTaggingConfig', () => {
           RIVETOS_TAGGER_WIRE_SHAPE: 'native',
         },
       ),
-    ).toEqual({ enabled: true, native: { url: 'https://tagger.test/tag', model: 'tagger-v1' } })
+    ).resolves.toEqual({ enabled: true, native: { url: 'https://tagger.test/tag', model: 'tagger-v1' } })
     // The shape is checked: a typo, or a native tagger with no endpoint, is an error and not a silent fallback.
-    expect(
+    await expect(
       resolveTaggingConfig(
         { tagger_wire_shape: 'NATIVE', tagger_endpoint: 'https://tagger.test/tag', tagger_model: 'tagger-v1' },
         {},
       ),
-    ).toEqual({ enabled: true, native: { url: 'https://tagger.test/tag', model: 'tagger-v1' } })
-    expect(resolveTaggingConfig({ tagger_wire_shape: 'nativ' }, {})).toEqual({
+    ).resolves.toEqual({ enabled: true, native: { url: 'https://tagger.test/tag', model: 'tagger-v1' } })
+    await expect(resolveTaggingConfig({ tagger_wire_shape: 'nativ' }, {})).resolves.toEqual({
       enabled: false,
       error: expect.stringMatching(/must be "openai" or "native"/) as string,
     })
-    expect(resolveTaggingConfig({ tagger_wire_shape: 'native' }, {})).toEqual({
+    await expect(resolveTaggingConfig({ tagger_wire_shape: 'native' }, {})).resolves.toEqual({
       enabled: false,
       error: expect.stringMatching(/needs tagger_endpoint and tagger_model/) as string,
     })
-    // An endpoint without a model falls back to the compactor's.
-    expect(resolveTaggingConfig({}, { RIVETOS_TAGGER_URL: 'https://tagger.test/v1' })).toEqual({ enabled: true })
+    // An endpoint without a model falls back to the compactor's. A token command with no endpoint is ignored.
+    await expect(resolveTaggingConfig({}, { RIVETOS_TAGGER_URL: 'https://tagger.test/v1' })).resolves.toEqual({
+      enabled: true,
+    })
+    await expect(
+      resolveTaggingConfig({}, { RIVETOS_TAGGER_TOKEN_COMMAND: 'not-json' }),
+    ).resolves.toEqual({ enabled: true })
+  })
+
+  it('mints a tagger bearer from tagger_token_command and refuses a bad command', async () => {
+    const minted = await resolveTaggingConfig(
+      {
+        tagger_endpoint: 'https://cfg.test/v1',
+        tagger_model: 'cfg',
+        tagger_api_key: 'static',
+        tagger_token_command: ['mint-tagger'],
+      },
+      {},
+    )
+    expect(minted.enabled).toBe(true)
+    expect(minted.llm?.endpoint).toBe('https://cfg.test/v1')
+    expect(minted.llm?.apiKey).toBeUndefined()
+    expect(minted.llm?.tokenSource).toBeDefined()
+
+    const fromEnv = await resolveTaggingConfig(
+      { tagger_endpoint: 'https://tagger.test/tag', tagger_model: 'tagger-v1', tagger_wire_shape: 'native' },
+      { RIVETOS_TAGGER_TOKEN_COMMAND: '["mint-tagger"]' },
+    )
+    expect(fromEnv.native?.tokenSource).toBeDefined()
+    expect(fromEnv.native?.apiKey).toBeUndefined()
+
+    await expect(
+      resolveTaggingConfig(
+        { tagger_endpoint: 'https://cfg.test/v1', tagger_model: 'cfg', tagger_api_key: 'static' },
+        { RIVETOS_TAGGER_TOKEN_COMMAND: 'not-json' },
+      ),
+    ).resolves.toEqual({
+      enabled: false,
+      error: expect.stringMatching(/JSON argv array/) as string,
+    })
+    await expect(
+      resolveTaggingConfig(
+        {
+          tagger_endpoint: 'https://cfg.test/v1',
+          tagger_model: 'cfg',
+          tagger_token_command: 'mint-tagger',
+        },
+        {},
+      ),
+    ).resolves.toEqual({
+      enabled: false,
+      error: expect.stringMatching(/argv array/) as string,
+    })
+  })
+
+  it('opts into protected-tag removal proposals only when asked', async () => {
+    await expect(resolveTaggingConfig({ tagger_allow_protected_removals: true }, {})).resolves.toEqual({
+      enabled: true,
+      allowProtectedRemovals: true,
+    })
+    await expect(
+      resolveTaggingConfig({}, { RIVETOS_TAGGER_ALLOW_PROTECTED_REMOVALS: '1' }),
+    ).resolves.toEqual({ enabled: true, allowProtectedRemovals: true })
+    await expect(
+      resolveTaggingConfig(
+        { tagger_allow_protected_removals: false },
+        { RIVETOS_TAGGER_ALLOW_PROTECTED_REMOVALS: '1' },
+      ),
+    ).resolves.toEqual({ enabled: true })
+    await expect(
+      resolveTaggingConfig({ tagging: false, tagger_allow_protected_removals: true }, {}),
+    ).resolves.toEqual({ enabled: false })
   })
 })

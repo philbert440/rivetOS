@@ -498,4 +498,34 @@ describe('schema upgrade v1 → v2 (tag tables)', () => {
       }
     })
   })
+
+  describe('schema upgrade v6 → v7 (tag removal_state)', () => {
+    it('adds the removal columns and index to an existing file', () => {
+      const dir = mkdtempSync(join(tmpdir(), 'rivet-sqlite-v7-'))
+      const file = join(dir, 'memory.sqlite')
+      try {
+        const v6Schema = SCHEMA.replace(/,\n\s*-- v7:[\s\S]*?removal_reason\s+TEXT NOT NULL DEFAULT ''/, '')
+        expect(v6Schema).not.toMatch(/removal_state/)
+        const old = new DatabaseSync(file)
+        old.exec(v6Schema)
+        old.exec('PRAGMA user_version = 6')
+        old.close()
+
+        const memory = new SqliteMemory({ path: file, log: () => {}, workers: false })
+        const cols = (
+          memory.database().prepare('PRAGMA table_info(ros_tags)').all() as Array<{ name: string }>
+        ).map((c) => c.name)
+        expect(cols).toEqual(expect.arrayContaining(['removal_state', 'removal_reason']))
+        const index = memory
+          .database()
+          .prepare(`SELECT name FROM sqlite_master WHERE name = 'idx_ros_tags_removal_state'`)
+          .get() as { name: string } | undefined
+        expect(index?.name).toBe('idx_ros_tags_removal_state')
+        expect(memory.schemaVersionForTest()).toBe(SCHEMA_VERSION)
+        memory.close()
+      } finally {
+        rmSync(dir, { recursive: true, force: true })
+      }
+    })
+  })
 })

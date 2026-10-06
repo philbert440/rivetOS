@@ -21,6 +21,7 @@ const HARNESS_LABEL: Record<HarnessId | 'pi', string> = {
   pi: 'pi',
   'qwen-code': 'Qwen Code',
   cursor: 'Cursor',
+  cowork: 'Cowork',
 }
 
 /**

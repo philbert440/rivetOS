@@ -10,12 +10,16 @@ import type { Readable, Writable } from 'node:stream'
 import { pipeline } from 'node:stream/promises'
 import { createGunzip, createGzip } from 'node:zlib'
 import { hostname as osHostname } from 'node:os'
+import { planProjectRuleTag } from '@rivetos/memory-core'
+import type { ProjectRuleResult } from '@rivetos/types'
+import type { PoolClient } from 'pg'
 import {
   EXPORT_COLUMNS,
   EXPORT_SINCE_COLUMN,
   EXPORT_TABLES,
   type ExportTable,
 } from './portability-columns.js'
+import { applyProjectRuleTag } from './tags/rule-project.js'
 
 export { EXPORT_COLUMNS, EXPORT_TABLES, EXPORT_SINCE_COLUMN }
 export type { ExportTable }
@@ -572,7 +576,7 @@ export async function importMemory(
   const conversationIdMap = new Map<string, string>()
 
   try {
-    return await withClient(pool, async (client) => {
+    const result = await withClient(pool, async (client) => {
       // Client first, then attach the iterator, then start the source.
       // Piping before connect drops the header when connect is slow (X4).
       const gunzip = createGunzip()
@@ -860,10 +864,66 @@ export async function importMemory(
         rl.close()
       }
     })
+    if (!dryRun) {
+      try {
+        const tagged = await backfillPostgresProjectRules(pool, { log })
+        if (tagged > 0) log(`project rule tagged ${String(tagged)} imported conversation(s)`)
+      } catch (err) {
+        log(`project rule backfill skipped: ${err instanceof Error ? err.message : String(err)}`)
+      }
+    }
+    return result
   } catch (err) {
     destroyQuiet(input)
     throw err
   }
+}
+
+/**
+ * Apply the rule-based `project:` tag to conversations that already have
+ * `settings.cwd`. Idempotent, and a rejected rule tag stays rejected.
+ * Runs in its own transaction after the caller has released any import client.
+ */
+export async function backfillPostgresProjectRules(
+  pool: PortabilityPool,
+  opts: { since?: string; log?: (line: string) => void } = {},
+): Promise<number> {
+  const log = opts.log ?? (() => {})
+  return withClient(pool, async (client) => {
+    const params: string[] = []
+    let where = `jsonb_typeof(settings) = 'object' AND btrim(COALESCE(settings->>'cwd', '')) <> ''`
+    if (opts.since) {
+      params.push(opts.since)
+      where += ` AND (updated_at >= $1::timestamptz OR created_at >= $1::timestamptz)`
+    }
+    const { rows } = await client.query(
+      `SELECT id, settings FROM ros_conversations WHERE ${where}`,
+      params,
+    )
+    const planned: Array<{ id: string; hit: ProjectRuleResult }> = []
+    for (const row of rows) {
+      const id = asText(row.id)
+      if (!id) continue
+      const settings =
+        row.settings && typeof row.settings === 'object' && !Array.isArray(row.settings)
+          ? (row.settings as Record<string, unknown>)
+          : undefined
+      const hit = await planProjectRuleTag(settings, {}, log)
+      if (hit) planned.push({ id, hit })
+    }
+    await client.query('BEGIN')
+    try {
+      let tagged = 0
+      for (const item of planned) {
+        if (await applyProjectRuleTag(client as PoolClient, item.id, item.hit, log)) tagged += 1
+      }
+      await client.query('COMMIT')
+      return tagged
+    } catch (err) {
+      await client.query('ROLLBACK').catch(() => {})
+      throw err
+    }
+  })
 }
 
 function assertHeader(value: unknown): asserts value is ExportHeader {

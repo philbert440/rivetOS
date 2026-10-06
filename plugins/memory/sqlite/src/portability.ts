@@ -15,7 +15,15 @@ import type { Readable, Writable } from 'node:stream'
 import { pipeline } from 'node:stream/promises'
 import { createGunzip, createGzip } from 'node:zlib'
 import type { DatabaseSync, SQLInputValue } from 'node:sqlite'
-import { EXPORT_COLUMNS, EXPORT_TABLES, type ExportTable } from '@rivetos/memory-core'
+import {
+  EXPORT_COLUMNS,
+  EXPORT_TABLES,
+  planProjectRuleTag,
+  type ExportTable,
+  type ProjectResolver,
+} from '@rivetos/memory-core'
+import type { ProjectRuleResult } from '@rivetos/types'
+import { SqliteTagVocabulary } from './tag-vocabulary.js'
 
 export const EXPORT_TYPE = 'rivet-memory-export'
 export const EXPORT_VERSION = 1
@@ -345,5 +353,73 @@ export async function importSqliteMemory(
   log(
     `${opts.dryRun ? 'dry run: would insert' : 'inserted'} ${EXPORT_TABLES.map((t) => `${t}=${String(inserted[t])}`).join(' ')}`,
   )
+  if (!opts.dryRun) {
+    try {
+      const { tagged } = await backfillSqliteProjectRules(db, { log })
+      if (tagged > 0) log(`project rule tagged ${String(tagged)} imported conversation(s)`)
+    } catch (err) {
+      log(`project rule backfill skipped: ${err instanceof Error ? err.message : String(err)}`)
+    }
+  }
   return { inserted, skipped, merged }
+}
+
+/**
+ * Apply the rule-based `project:` tag to conversations that already have
+ * `settings.cwd`. Idempotent: a rule tag in any state, including rejected,
+ * is left alone. A task-sandbox cwd is skipped inside `planProjectRuleTag`.
+ */
+export async function backfillSqliteProjectRules(
+  db: DatabaseSync,
+  opts: {
+    since?: string
+    log?: (line: string) => void
+    resolveProject?: ProjectResolver | null
+  } = {},
+): Promise<{ tagged: number; scanned: number }> {
+  const log = opts.log ?? (() => {})
+  const params: string[] = []
+  let where = `json_extract(settings, '$.cwd') IS NOT NULL AND trim(json_extract(settings, '$.cwd')) <> ''`
+  if (opts.since) {
+    params.push(opts.since, opts.since)
+    where += ` AND (updated_at >= ? OR created_at >= ?)`
+  }
+  const rows = db
+    .prepare(`SELECT id, settings FROM ros_conversations WHERE ${where}`)
+    .all(...params) as unknown as Array<{ id: string; settings: string }>
+  const planned: Array<{ id: string; hit: ProjectRuleResult }> = []
+  for (const row of rows) {
+    let settings: Record<string, unknown> | undefined
+    try {
+      const parsed = JSON.parse(row.settings) as unknown
+      if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+        settings = parsed as Record<string, unknown>
+      }
+    } catch {
+      continue
+    }
+    const hit = await planProjectRuleTag(
+      settings,
+      opts.resolveProject === undefined ? {} : { resolveProject: opts.resolveProject },
+      log,
+    )
+    if (hit) planned.push({ id: row.id, hit })
+  }
+  const vocab = new SqliteTagVocabulary(db, (fn) => fn())
+  let tagged = 0
+  db.exec('BEGIN')
+  try {
+    for (const item of planned) {
+      if (vocab.applyRuleTag(item.id, item.hit)) tagged += 1
+    }
+    db.exec('COMMIT')
+  } catch (err) {
+    try {
+      db.exec('ROLLBACK')
+    } catch {
+      // already rolled back
+    }
+    throw err
+  }
+  return { tagged, scanned: rows.length }
 }

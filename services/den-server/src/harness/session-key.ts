@@ -34,7 +34,7 @@ import { normalizeSessionId } from './alias.js'
 
 /** The roster tokens whose on-disk stores `term/harness-sessions` can read. */
 export type StoreCommand =
-  'claude' | 'grok' | 'hermes' | 'kimi' | 'codex' | 'opencode' | 'pi' | 'qwen' | 'cursor'
+  'claude' | 'grok' | 'hermes' | 'kimi' | 'codex' | 'opencode' | 'pi' | 'qwen' | 'cursor' | 'cowork'
 
 /**
  * `HarnessId` → the roster token naming its store.
@@ -55,6 +55,7 @@ const STORE_COMMAND: Record<HarnessId, StoreCommand> = {
   pi: 'pi',
   'qwen-code': 'qwen',
   cursor: 'cursor',
+  cowork: 'cowork',
 }
 
 /** What an inbound session id says about where its session lives. */

@@ -13,7 +13,9 @@ import {
   DEFAULT_IDLE_MINUTES,
   MIN_BATCH_SIZE,
   applyWindowArgs,
+  pickCoworkHookRewrite,
   planProjectRuleTag,
+  type CoworkHookRow,
   type ProjectResolver,
 } from '@rivetos/memory-core'
 import {
@@ -179,6 +181,7 @@ export class SqliteBackend implements MemoryBackend {
       {
         ...(this.host.projectRule !== undefined ? { resolveProject: this.host.projectRule } : {}),
         allowFilesystem: options?.allowFilesystem !== false,
+        channel: batch.channel,
       },
       (line) => {
         this.host.log(line)
@@ -203,6 +206,10 @@ export class SqliteBackend implements MemoryBackend {
     const db = this.db
     return this.host.tx(() => {
       const now = new Date().toISOString()
+      // Source timestamps win on insert. A later batch only moves updated_at
+      // forward, so a backfill cannot shove an old task to the top of the list.
+      const createdAt = batch.created_at ? isoUtc(batch.created_at, 'created_at') : now
+      const updatedAt = batch.updated_at ? isoUtc(batch.updated_at, 'updated_at') : now
       const channel = batch.channel ?? 'unknown'
       const conversation = db
         .prepare(
@@ -211,7 +218,10 @@ export class SqliteBackend implements MemoryBackend {
               owner_user_id)
            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?)
            ON CONFLICT (session_key, agent) DO UPDATE SET
-             updated_at = excluded.updated_at,
+             updated_at = CASE
+               WHEN excluded.updated_at > ros_conversations.updated_at THEN excluded.updated_at
+               ELSE ros_conversations.updated_at
+             END,
              title = CASE WHEN ? THEN excluded.title ELSE ros_conversations.title END,
              settings = CASE WHEN ? THEN excluded.settings ELSE ros_conversations.settings END,
              task_id = CASE WHEN ? THEN excluded.task_id ELSE ros_conversations.task_id END
@@ -225,8 +235,8 @@ export class SqliteBackend implements MemoryBackend {
           batch.title ?? null,
           JSON.stringify(batch.settings ?? {}),
           batch.task_id ?? null,
-          now,
-          now,
+          createdAt,
+          updatedAt,
           this.host.userId,
           batch.title !== undefined ? 1 : 0,
           batch.settings !== undefined ? 1 : 0,
@@ -247,21 +257,63 @@ export class SqliteBackend implements MemoryBackend {
         }
       }
 
-      // Delivery is at-least-once: an event already stored is skipped.
-      const seen = new Map<string, string>()
+      // Delivery is at-least-once: an event already stored is skipped,
+      // except a pending tool row, which a later result fills in place.
+      const seen = new Map<string, { id: string; toolResult: string | null }>()
       const written: Array<{ eventId: string; id: string; inserted: boolean }> = []
       const eventIds = batch.messages.map((m) => m.event_id)
       for (let i = 0; i < eventIds.length; i += 500) {
         const chunk = eventIds.slice(i, i + 500)
         const rows = db
           .prepare(
-            `SELECT id, json_extract(metadata, '$.event_id') AS event_id FROM ros_messages
+            `SELECT id, json_extract(metadata, '$.event_id') AS event_id, tool_result
+               FROM ros_messages
               WHERE conversation_id = ?
                 AND json_extract(metadata, '$.event_id') IN (${placeholders(chunk.length)})`,
           )
-          .all(conversationId, ...chunk) as unknown as Array<{ id: string; event_id: string }>
-        for (const r of rows) seen.set(r.event_id, r.id)
+          .all(conversationId, ...chunk) as unknown as Array<{
+          id: string
+          event_id: string
+          tool_result: string | null
+        }>
+        for (const r of rows) seen.set(r.event_id, { id: r.id, toolResult: r.tool_result })
       }
+
+      const needsHookClaim = batch.messages.some(
+        (message) =>
+          message.metadata?.source === 'cowork-transcript' &&
+          (message.role === 'user' || message.role === 'assistant'),
+      )
+      const hookRows: CoworkHookRow[] = needsHookClaim
+        ? (
+            db
+              .prepare(
+                `SELECT id, role, content, json_extract(metadata, '$.event_id') AS event_id
+                   FROM ros_messages
+                  WHERE conversation_id = ?
+                    AND role IN ('user', 'assistant')
+                    AND json_extract(metadata, '$.source') = 'cowork-hook'
+                  ORDER BY created_at, id`,
+              )
+              .all(conversationId) as unknown as Array<{
+              id: string
+              role: string
+              content: string
+              event_id: string | null
+            }>
+          ).map((row) => ({
+            id: row.id,
+            role: row.role,
+            content: row.content,
+            eventId: row.event_id ?? '',
+          }))
+        : []
+      const consumedHooks = new Set<string>()
+      const claimHook = db.prepare(
+        `UPDATE ros_messages
+            SET metadata = json_set(json_set(COALESCE(metadata, '{}'), '$.event_id', ?), '$.source', 'cowork-transcript')
+          WHERE id = ?`,
+      )
 
       const insert = db.prepare(
         `INSERT INTO ros_messages
@@ -269,13 +321,14 @@ export class SqliteBackend implements MemoryBackend {
             tool_name, tool_args, tool_result, metadata, created_at, owner_user_id)
          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       )
+      const fillTool = db.prepare(
+        `UPDATE ros_messages
+            SET tool_result = ?, content = ?, tool_name = COALESCE(tool_name, ?),
+                tool_args = COALESCE(tool_args, ?), metadata = ?
+          WHERE id = ? AND (tool_result IS NULL OR tool_result = '')`,
+      )
       let inserted = 0
       for (const message of batch.messages) {
-        const existing = seen.get(message.event_id)
-        if (existing !== undefined) {
-          written.push({ eventId: message.event_id, id: existing, inserted: false })
-          continue
-        }
         const metadata: Record<string, unknown> = {
           ...message.metadata,
           event_id: message.event_id,
@@ -287,6 +340,40 @@ export class SqliteBackend implements MemoryBackend {
             : capped
               ? message.tool_result
               : capText(message.tool_result, 'tool_result', metadata)
+        const existing = seen.get(message.event_id)
+        if (existing !== undefined) {
+          if (toolResult && !existing.toolResult) {
+            metadata.pending_result = false
+            fillTool.run(
+              toolResult,
+              content,
+              message.tool_name ?? null,
+              message.tool_args === undefined ? null : JSON.stringify(message.tool_args),
+              JSON.stringify(metadata),
+              existing.id,
+            )
+            existing.toolResult = toolResult
+          }
+          written.push({ eventId: message.event_id, id: existing.id, inserted: false })
+          continue
+        }
+        const claim = pickCoworkHookRewrite(
+          {
+            role: message.role,
+            content,
+            source: message.metadata?.source,
+            replacesEventId: message.metadata?.replaces_event_id,
+          },
+          hookRows,
+          consumedHooks,
+        )
+        if (claim) {
+          claimHook.run(message.event_id, claim.id)
+          consumedHooks.add(claim.id)
+          seen.set(message.event_id, { id: claim.id, toolResult })
+          written.push({ eventId: message.event_id, id: claim.id, inserted: false })
+          continue
+        }
         const id = randomUUID()
         insert.run(
           id,
@@ -303,14 +390,17 @@ export class SqliteBackend implements MemoryBackend {
           this.host.userId,
         )
         this.host.enqueueMessageEmbed(id)
-        seen.set(message.event_id, id)
+        seen.set(message.event_id, { id, toolResult })
         written.push({ eventId: message.event_id, id, inserted: true })
         inserted += 1
       }
       if (batch.finalize) {
         db.prepare(
-          `UPDATE ros_conversations SET active = 0, updated_at = ? WHERE id = ? AND active = 1`,
-        ).run(now, conversationId)
+          `UPDATE ros_conversations
+              SET active = 0,
+                  updated_at = CASE WHEN ? > updated_at THEN ? ELSE updated_at END
+            WHERE id = ? AND active = 1`,
+        ).run(updatedAt, updatedAt, conversationId)
       }
       return {
         result: {

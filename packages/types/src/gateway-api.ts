@@ -762,6 +762,8 @@ export interface PendingTagWire extends TagWire {
   agent?: string | null
   conversationId?: string | null
   excerpt?: string | null
+  /** `remove` is a suggestion to drop the tag. Absent means a suggested add. */
+  action?: 'add' | 'remove'
 }
 
 export interface MemoryTagsListResponse {

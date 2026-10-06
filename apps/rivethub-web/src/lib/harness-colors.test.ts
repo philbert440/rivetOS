@@ -10,6 +10,7 @@ import {
   ACCENT_PI,
   ACCENT_QWEN_CODE,
   ACCENT_CURSOR,
+  ACCENT_COWORK,
   harnessAccent,
 } from './harness-colors.js'
 
@@ -23,6 +24,7 @@ const KNOWN_IDS = [
   'pi',
   'qwen-code',
   'cursor',
+  'cowork',
 ] as const
 
 const EXPECTED: Record<(typeof KNOWN_IDS)[number], string> = {
@@ -35,6 +37,7 @@ const EXPECTED: Record<(typeof KNOWN_IDS)[number], string> = {
   pi: ACCENT_PI,
   'qwen-code': ACCENT_QWEN_CODE,
   cursor: ACCENT_CURSOR,
+  cowork: ACCENT_COWORK,
 }
 
 describe('harnessAccent', () => {

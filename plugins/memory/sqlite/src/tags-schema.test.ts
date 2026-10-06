@@ -15,6 +15,12 @@ const PG_0019 = readFileSync(
   'utf8',
 ).replace(/--[^\n]*/g, '')
 
+/** Columns added after 0019, in migration order. The index is created on open, not in SCHEMA. */
+const PG_TAG_ALTERS = readFileSync(
+  resolve(__dirname, '../../postgres/src/schema/migrations/0020_tag_removals.sql'),
+  'utf8',
+).replace(/--[^\n]*/g, '')
+
 /** Column names of one CREATE TABLE in the postgres migration, in order. */
 function pgColumns(table: string): string[] {
   const m = new RegExp(`CREATE TABLE IF NOT EXISTS ${table} \\(([\\s\\S]*?)\\n\\);`).exec(PG_0019)
@@ -45,10 +51,12 @@ describe('sqlite tags schema (v2)', () => {
     expect(SCHEMA_VERSION).toBeGreaterThanOrEqual(2)
   })
 
-  it('has exactly the columns of postgres 0019, in the same order', () => {
+  it('has exactly the columns of postgres 0019 plus later tag alters, in the same order', () => {
     const db = fresh()
+    const added = [...PG_TAG_ALTERS.matchAll(/ADD COLUMN IF NOT EXISTS (\w+)/g)].map((m) => m[1])
+    expect(added).toEqual(['removal_state', 'removal_reason'])
     expect(pgColumns('ros_tags').length).toBeGreaterThan(10)
-    expect(sqliteColumns(db, 'ros_tags')).toEqual(pgColumns('ros_tags'))
+    expect(sqliteColumns(db, 'ros_tags')).toEqual([...pgColumns('ros_tags'), ...added])
     expect(sqliteColumns(db, 'ros_tag_taxonomy')).toEqual(pgColumns('ros_tag_taxonomy'))
     db.close()
   })
