@@ -71,6 +71,7 @@ export async function callNativeTagger(
     agent: input.agent ? cleanTagText(input.agent, 80) : null,
     keys: TAG_SEED_KEYS,
     vocabulary: input.vocabulary.accepted.slice(0, 200),
+    current: (input.currentTags ?? []).slice(0, 40),
     max: TAG_MAX_PROPOSALS,
   })
   for (let attempt = 0; ; attempt += 1) {

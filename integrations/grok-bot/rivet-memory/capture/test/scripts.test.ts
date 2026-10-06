@@ -46,6 +46,11 @@ describe('node capture scripts', () => {
     expect(src).toContain('cmd_ingest_pages')
     expect(src).toContain('"ingest-pages"')
     expect(src).toMatch(/dry-run default/)
+    expect(src).toContain('--revision REV')
+    expect(src).toContain('--live')
+    expect(src).toContain('spool-state')
+    expect(src).toContain('needs --input DIR')
+    expect(src).toContain('cmd_delegate')
     const out = loadPyFn(
       join(ROOT, 'pull-bridge.py'),
       'print(" ".join([mod.NODE, str(mod.CLI_JS), "ingest-pages", "--input", "/tmp/pages"]))',

@@ -53,8 +53,10 @@ describe('memory_tags tool', () => {
     expect(await tool.execute({ action: 'decide', ids: tooMany, state: 'accepted' })).toBe('at most 1000 ids')
     expect(p.query).not.toHaveBeenCalled()
     expect(await tool.execute({ action: 'decide', ids: ['a', 'b'], state: 'accepted' })).toBe('2 tag(s) accepted.')
-    const [, params] = p.query.mock.calls[0] as unknown as [string, unknown[]]
-    expect(params).toEqual([['a', 'b'], 'accepted', 'rivet'])
+    // A removal suggestion is classified first; the state and the decider
+    // travel on the UPDATE of the tags that are ordinary additions.
+    const update = p.query.mock.calls.find((call) => String(call[0]).includes('UPDATE ros_tags'))
+    expect(update?.[1]).toEqual([['a', 'b'], 'accepted', 'rivet'])
   })
 
   it('add tags a session from a literal and reports the row', async () => {
@@ -116,8 +118,8 @@ describe('memory_tags tool', () => {
     const p = pool((sql) => (sql.includes('UPDATE ros_tags') ? { rows: [{ id: 'a' }] } : { rows: [] }))
     const tool = createTagsTool(p, { allowWrite: true, fixedDecider: 'alice' })
     await tool.execute({ action: 'decide', ids: ['a'], state: 'accepted', decided_by: 'someone-else' })
-    const [, params] = p.query.mock.calls[0] as unknown as [string, unknown[]]
-    expect(params).toEqual([['a'], 'accepted', 'alice'])
+    const update = p.query.mock.calls.find((call) => String(call[0]).includes('UPDATE ros_tags'))
+    expect(update?.[1]).toEqual([['a'], 'accepted', 'alice'])
     expect(createTagsTool(p).description).toContain('READ-ONLY')
     expect(tool.description).not.toContain('READ-ONLY')
   })

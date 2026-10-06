@@ -65,6 +65,7 @@
     "plugins/transports/*",
     "services/*",
     "integrations/herdr",
+    "integrations/cowork/rivet-memory/capture",
     "integrations/cursor/rivet-memory/capture",
     "integrations/grok-bot/rivet-memory/capture",
     "integrations/grok/rivet-memory/capture",

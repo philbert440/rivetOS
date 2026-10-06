@@ -54,6 +54,7 @@ export {
   identityForSession,
   identityForSlug,
   personaSlugFromIdentity,
+  liveIdentityBase,
   listInputFiles,
   applySessionSuffix,
   listUnmappedTranscripts,
@@ -78,6 +79,24 @@ export {
 } from './voice.js'
 export { mergeParsedInputs, normalizePages, formatMergeConflicts } from './pages.js'
 export {
+  inspectPageText,
+  inspectPageFiles,
+  applySpoolConsensus,
+  neededPositions,
+  formatNeedsLine,
+  formatNeedsLines,
+  coveredPositions,
+} from './page-validate.js'
+export {
+  resolveSpoolStatePath,
+  readSpoolState,
+  writeSpoolState,
+  recordOkIngest,
+  getAgentWatermark,
+  TotalDecreasedError,
+  SPOOL_STATE_BASENAME,
+} from './spool-state.js'
+export {
   ingestPages,
   listPageSpoolFiles,
   parsePageFileName,
@@ -89,7 +108,10 @@ export {
   contentHashForRow,
   backfillSourceId,
   backfillSession,
+  parseBackfillRevision,
   liveV4Session,
+  v4LiveSession,
+  pageIngestSession,
   formatIngestPagesCounts,
   createPgOverlapStore,
   NEWEST_CREATED_SQL,
@@ -134,13 +156,16 @@ export {
   ORDINAL_STRIDE,
   stripSessionSuffix,
   isBackfillSession,
+  isLiveSession,
   sessionStoreSuffix,
   sessionVoiceSuffix,
   sessionRowsSuffix,
   sessionBackfillSuffix,
+  sessionLiveSuffix,
   isRowShapedSession,
   SESSION_SUFFIX_V4,
   SESSION_SUFFIX_V4_BACKFILL,
+  SESSION_SUFFIX_V4_LIVE,
   DEFAULT_BACKFILL_OVERLAP_HOURS,
 } from './types.js'
 export type {

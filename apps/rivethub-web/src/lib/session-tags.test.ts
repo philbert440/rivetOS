@@ -204,6 +204,16 @@ describe('isTagLiteral', () => {
   })
 })
 
+describe('chipLabel', () => {
+  it('marks a removal suggestion and leaves an addition alone', async () => {
+    const { chipLabel } = await import('./session-tags.js')
+    expect(chipLabel({ key: 'project', value: 'rivetos', display: 'rivetOS', action: 'remove' })).toBe(
+      'suggest remove project:rivetOS',
+    )
+    expect(chipLabel({ key: 'topic', value: 'wiki', display: '' })).toBe('topic:wiki')
+  })
+})
+
 describe('pending review helpers', () => {
   it('says "first N" when the page is full', async () => {
     const { pendingCountLabel } = await import('./session-tags.js')

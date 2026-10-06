@@ -280,6 +280,7 @@ describe('harnessGate', () => {
       // claude-code always reports approvals:false — its prompts live in the TUI
       canApprove: false,
       canResume: true,
+      readOnly: false,
     })
     // no registry (older node) → nothing is bound, the legacy path owns it
     expect(harnessGate(item, []).bound).toBe(false)
@@ -314,7 +315,32 @@ describe('harnessGate', () => {
       canInterrupt: false,
       canApprove: false,
       canResume: false,
+      readOnly: false,
     })
+  })
+
+  it('hides drive affordances when the harness is capture-only', () => {
+    const bare: HarnessDescriptor = {
+      harnessId: 'cowork',
+      capabilities: {
+        interrupt: false,
+        resume: false,
+        approvals: false,
+        liveStream: false,
+        listSessions: true,
+        drive: false,
+      },
+    }
+    expect(
+      harnessGate(
+        {
+          kind: 'harness',
+          harnessId: 'cowork',
+          sessionId: `cowork:${UUID_A}` as SessionId,
+        },
+        [bare],
+      ).readOnly,
+    ).toBe(true)
   })
 })
 

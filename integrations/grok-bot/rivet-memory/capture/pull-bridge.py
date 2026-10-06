@@ -10,10 +10,17 @@ Commands:
   next <agentId>            LATEST or NEED_OLDER before=N
   ingest [agentId...] [--dry-run] [--suffix -v3]
   ingest-pages --input DIR [--commit] [--overlap-hours N]
-                            ReadTranscript dump backfill (dry-run default).
+               [--revision REV | --live]
+                            ReadTranscript dump ingest (dry-run default).
                             -v4 hash suppression is off unless --overlap-hours
                             is positive; that opt-in can drop a coincident
-                            missed run.
+                            missed run. --revision REV writes
+                            grokbot-<slug>-v4-backfill-REV instead of the
+                            default -v4-backfill tag. --live writes
+                            grokbot-<slug>-v4-live (not with --revision).
+  spool-state get|record    watermark helpers (delegates to the TS CLI)
+  needs --input DIR [--total SLUG=N]
+                            missing positions for the live capturer
   status
 
 Ingest runs the capture-core normalizer (16_000 UTF-16 capForStorage, no 4 KB
@@ -275,11 +282,15 @@ def cmd_ingest(ids: list[str], dry: bool, suffix: str) -> int:
     return rc
 
 
-def cmd_ingest_pages(argv: list[str]) -> int:
-    """Delegate page-dump backfill to the TypeScript normalizer (dry-run default)."""
+def cmd_delegate(cmd: str, argv: list[str]) -> int:
     require_dist()
-    r = subprocess.run([NODE, str(CLI_JS), "ingest-pages", *argv])
+    r = subprocess.run([NODE, str(CLI_JS), cmd, *argv])
     return int(r.returncode or 0)
+
+
+def cmd_ingest_pages(argv: list[str]) -> int:
+    """Delegate page-dump ingest to the TypeScript normalizer (dry-run default)."""
+    return cmd_delegate("ingest-pages", argv)
 
 
 def cmd_status() -> None:
@@ -315,6 +326,8 @@ if __name__ == "__main__":
         sys.exit(cmd_ingest(rest, "--dry-run" in a, suffix))
     elif a[0] == "ingest-pages":
         sys.exit(cmd_ingest_pages(a[1:]))
+    elif a[0] in ("needs", "spool-state"):
+        sys.exit(cmd_delegate(a[0], a[1:]))
     elif a[0] == "status":
         cmd_status()
     else:

@@ -92,7 +92,9 @@ describe('decideTags', () => {
   it('flips state with audit columns and returns changed ids', async () => {
     const pool = db([{ id: 'a' }])
     expect(await decideTags(pool, ['a', 'b'], 'rejected', 'alice')).toEqual(['a'])
-    const [sql, params] = pool.query.mock.calls[0] as unknown as [string, unknown[]]
+    const update = pool.query.mock.calls.find(([sql]) => String(sql).includes('SET state = $2'))
+    expect(update).toBeDefined()
+    const [sql, params] = update as unknown as [string, unknown[]]
     expect(sql).toMatch(/SET state = \$2, decided_by = \$3, decided_at = now\(\)/)
     expect(sql).toMatch(/AND state <> \$2/)
     expect(params).toEqual([['a', 'b'], 'rejected', 'alice'])

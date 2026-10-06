@@ -129,6 +129,7 @@ export const ROSTER_TO_HARNESS: Record<string, HarnessId> = {
   pi: 'pi',
   qwen: 'qwen-code',
   cursor: 'cursor',
+  cowork: 'cowork',
 }
 
 const CLAUDE_EFFORTS: EffortOption[] = [
@@ -1404,6 +1405,8 @@ export function sheetForHarness(
       return qwenCodeSheet(readJson, home)
     case 'cursor':
       return cursorSheet()
+    case 'cowork':
+      return coworkSheet()
   }
 }
 
@@ -1414,6 +1417,11 @@ export function sheetForHarness(
  */
 export function cursorSheet(): ModelSheet {
   return { modelFlag: '--model', models: [], modelsSource: 'static' }
+}
+
+/** Cowork is capture-only. No launch flags and no model catalog. */
+export function coworkSheet(): ModelSheet {
+  return { models: [], modelsSource: 'static' }
 }
 
 export function sheetForRosterCommand(

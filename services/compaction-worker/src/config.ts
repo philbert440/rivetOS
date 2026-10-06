@@ -207,6 +207,13 @@ if (taggerWireShape === 'native' && taggerUsesCompactor) {
 
 export const config = {
   pgUrl: requireEnv('RIVETOS_PG_URL'),
+  /**
+   * When true, suggest-tags may propose removing a tag a person added or
+   * accepted. Default off. Does not turn capture on or off.
+   */
+  taggerAllowProtectedRemovals: /^(1|true|yes|on)$/i.test(
+    (taggerEnv.RIVETOS_TAGGER_ALLOW_PROTECTED_REMOVALS ?? '').trim(),
+  ),
   llmUrl,
   llmModel,
   llmApiKey: process.env.RIVETOS_COMPACTOR_API_KEY ?? '',

@@ -95,10 +95,15 @@ describe('capture transaction', () => {
       true,
       true,
       true,
+      null,
+      null,
     ])
     expect(db.query.mock.calls.at(-2)).toEqual([
-      'UPDATE ros_conversations SET active=false, updated_at=now() WHERE id=$1 AND active=true',
-      ['conversation'],
+      `UPDATE ros_conversations
+            SET active=false,
+                updated_at = GREATEST(updated_at, COALESCE($2::timestamptz, now()))
+          WHERE id=$1 AND active=true`,
+      ['conversation', null],
     ])
     const sql = db.query.mock.calls[2][0]
     expect(sql).toContain('title = CASE WHEN $7')
@@ -111,10 +116,13 @@ describe('capture transaction', () => {
       inserted: 0,
       skipped: 0,
     })
-    expect(db.query.mock.calls[2][1]?.slice(-3)).toEqual([false, false, false])
+    expect(db.query.mock.calls[2][1]?.slice(6, 9)).toEqual([false, false, false])
     expect(db.query).toHaveBeenCalledWith(
-      'UPDATE ros_conversations SET active=false, updated_at=now() WHERE id=$1 AND active=true',
-      ['conversation'],
+      `UPDATE ros_conversations
+            SET active=false,
+                updated_at = GREATEST(updated_at, COALESCE($2::timestamptz, now()))
+          WHERE id=$1 AND active=true`,
+      ['conversation', null],
     )
     expect(db.query.mock.calls.some(([sql]) => sql.includes('INSERT INTO ros_messages'))).toBe(
       false,

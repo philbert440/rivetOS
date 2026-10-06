@@ -52,7 +52,8 @@ describe('session view integration', () => {
   it('threads registry status to the view hook and renders the selected surface', () => {
     expect(chat).toContain('const { mode, setMode } = useSessionView(')
     expect(chat).toContain('remoteRegistry.status,')
-    expect(chat).toContain("{mode === 'chat' ? (")
+    expect(chat).toContain("{viewMode === 'chat' ? (")
+    expect(chat).toContain("const viewMode = gate.readOnly ? 'chat' : mode")
   })
 
   it('does not mask native scan rows with command-less canonical placeholders', () => {

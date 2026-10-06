@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto'
 import { expect, it } from 'vitest'
 import { contentTupleHash, eventIdFromContent, occurrenceIndex } from './event-id.js'
 
@@ -30,6 +31,12 @@ it('folds occurrence into the hash without changing the hash that omits it', () 
   expect(zero).not.toBe(id)
   expect(one).not.toBe(zero)
   expect(eventIdFromContent({ ...base, occurrence: 1 })).toBe(one)
+})
+
+it('hashes a tool-less row as role, content, and two empty fields', () => {
+  expect(contentTupleHash({ role: 'user', content: 'ship it' })).toBe(
+    createHash('sha256').update('user\0ship it\0\0', 'utf8').digest('hex'),
+  )
 })
 
 it('hashes the content tuple without session or occurrence', () => {

@@ -140,6 +140,7 @@ describe('executor registry harness keying', () => {
       { harnessId: 'pi', registered: false, implemented: false },
       { harnessId: 'qwen-code', registered: false, implemented: false },
       { harnessId: 'cursor', registered: false, implemented: false },
+      { harnessId: 'cowork', registered: false, implemented: false },
     ])
   })
 
@@ -235,7 +236,7 @@ describe('not-implemented harness executor', () => {
   })
 
   it('every gap reason is real prose, one per unimplemented harness', () => {
-    for (const id of ['grok-build', 'hermes', 'codex', 'cursor']) {
+    for (const id of ['grok-build', 'hermes', 'codex', 'cursor', 'cowork']) {
       expect(harnessExecutorGap(id).length).toBeGreaterThan(40)
     }
     // claude-code, kimi-code, opencode, pi and qwen-code are implemented — no recorded gap,

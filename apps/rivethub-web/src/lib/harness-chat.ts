@@ -453,6 +453,8 @@ export interface HarnessGate {
   canInterrupt: boolean
   canApprove: boolean
   canResume: boolean
+  /** `capabilities.drive === false`. Hide the composer and the terminal. */
+  readOnly: boolean
 }
 
 const CLOSED: HarnessGate = {
@@ -461,6 +463,7 @@ const CLOSED: HarnessGate = {
   canInterrupt: false,
   canApprove: false,
   canResume: false,
+  readOnly: false,
 }
 
 /**
@@ -485,6 +488,7 @@ export function harnessGate(
     canInterrupt: caps.interrupt,
     canApprove: caps.approvals,
     canResume: caps.resume,
+    readOnly: caps.drive === false,
   }
 }
 

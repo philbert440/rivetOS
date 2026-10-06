@@ -32,7 +32,12 @@
  *       Gzip NDJSON v1 dump. Default stdout. Refuses gzip to a TTY.
  *
  *   rivetos memory import <file> [--dry-run]
- *       Load a gzip NDJSON v1 dump (ON CONFLICT DO NOTHING).
+ *       Load a gzip NDJSON v1 dump (ON CONFLICT DO NOTHING). A real import
+ *       also applies the rule-based project: tag where settings.cwd is set.
+ *
+ *   rivetos memory tags backfill-rule [--since <iso>] [--sqlite <file>]
+ *       Apply that same project: rule to conversations already stored.
+ *       Idempotent. A rejected rule tag stays rejected.
  *
  * Environment:
  *   RIVETOS_PG_URL  Required.
@@ -76,6 +81,9 @@ export default async function memory(): Promise<void> {
     case 'import':
       await memoryImport(args.slice(1))
       break
+    case 'tags':
+      await memoryTags(args.slice(1))
+      break
     default:
       printHelp()
   }
@@ -92,6 +100,7 @@ function printHelp(): void {
     requeue               Revive dead jobs via reschedule_jobs (operators' default)
     export                Write a gzip NDJSON v1 dump (stdout or --out)
     import                Load a gzip NDJSON v1 dump (ON CONFLICT DO NOTHING)
+    tags backfill-rule    Apply the project: rule to conversations that have a cwd
 
   Run "rivetos memory <command> --help" for command-specific options.
 `)
@@ -1000,6 +1009,100 @@ export function resolveSqliteMemoryPath(
   }
 }
 
+async function memoryTags(args: string[]): Promise<void> {
+  const sub = args[0]
+  if (!sub || sub === '--help' || sub === '-h') {
+    console.log(`
+  rivetos memory tags backfill-rule [--since <iso>] [--sqlite <file>]
+
+  Apply the rule-based project: tag to conversations that already have
+  settings.cwd. Idempotent: a rule tag in any state, including rejected, is
+  left alone. A Cowork task-sandbox cwd is skipped.
+
+  The same rule runs at the end of a real \`rivetos memory import\`.
+
+  Options:
+    --since <iso>    Only conversations updated or created at or after this time
+    --sqlite <file>  Use this SQLite memory file (default on a node whose
+                     config has memory.sqlite and no RIVETOS_PG_URL)
+`)
+    return
+  }
+  if (sub !== 'backfill-rule') {
+    console.error(`Error: unknown memory tags command "${sub}"`)
+    printHelp()
+    process.exit(1)
+  }
+  await backfillRuleTags(args.slice(1))
+}
+
+async function backfillRuleTags(args: string[]): Promise<void> {
+  if (args.includes('--help') || args.includes('-h')) {
+    await memoryTags(['--help'])
+    return
+  }
+  let since: string | undefined
+  let sqliteFlag: string | undefined
+  try {
+    for (let i = 0; i < args.length; i += 1) {
+      const arg = args[i]
+      if (arg === '--since' || arg === '--sqlite') {
+        const value = args[i + 1]
+        if (!value || value.startsWith('-')) throw new Error(`${arg} requires a value`)
+        if (arg === '--since') since = value
+        else sqliteFlag = value
+        i += 1
+        continue
+      }
+      if (arg.startsWith('-')) throw new Error(`Unknown option: ${arg}`)
+      throw new Error(`unexpected argument: ${arg}`)
+    }
+  } catch (err) {
+    console.error(`Error: ${(err as Error).message}`)
+    process.exit(1)
+  }
+
+  const sqlitePath = resolveSqliteMemoryPath(sqliteFlag)
+  if (sqlitePath) {
+    if (!existsSync(sqlitePath)) {
+      console.error(`Error: ${sqlitePath} does not exist`)
+      process.exit(1)
+    }
+    const { SqliteMemory, backfillSqliteProjectRules } = await import('@rivetos/memory-sqlite')
+    const memory = new SqliteMemory({ path: sqlitePath, workers: false })
+    try {
+      const { tagged, scanned } = await backfillSqliteProjectRules(memory.database(), {
+        since,
+        log: (line) => {
+          console.log(line)
+        },
+      })
+      console.log(
+        `project rule: tagged ${String(tagged)} of ${String(scanned)} conversation(s) with a cwd`,
+      )
+    } finally {
+      memory.close()
+    }
+    return
+  }
+
+  const pgUrl = requirePgUrl()
+  const { default: pg } = await import('pg')
+  const { backfillPostgresProjectRules } = await import('@rivetos/memory-postgres')
+  const pool = new pg.Pool({ connectionString: pgUrl, max: 2 })
+  try {
+    const tagged = await backfillPostgresProjectRules(pool, {
+      since,
+      log: (line) => {
+        console.log(line)
+      },
+    })
+    console.log(`project rule: tagged ${String(tagged)} conversation(s)`)
+  } finally {
+    await pool.end()
+  }
+}
+
 function requirePgUrl(): string {
   const pgUrl = process.env.RIVETOS_PG_URL
   if (!pgUrl) {
@@ -1121,6 +1224,10 @@ async function memoryImport(args: string[]): Promise<void> {
                      the current schema)
     --sqlite <file>  Import into this SQLite memory file (default on a node
                      whose config has memory.sqlite and no RIVETOS_PG_URL)
+
+  A real import (not --dry-run) also applies the rule-based project: tag to
+  conversations whose settings.cwd is set. A rejected rule tag stays rejected.
+  Run it again later with \`rivetos memory tags backfill-rule [--since <iso>]\`.
 `)
     return
   }

@@ -2,6 +2,7 @@ spool/
 dist/
 pull/
 pull-state.json
+spool-state.json
 *.tmp
 models.local.json
 

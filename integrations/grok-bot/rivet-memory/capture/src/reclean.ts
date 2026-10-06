@@ -8,6 +8,7 @@ import {
   SESSION_SUFFIX_V3,
   STORAGE_LIMIT,
   isBackfillSession,
+  isLiveSession,
   isRowShapedSession,
   sessionRowsSuffix,
   stripSessionSuffix,
@@ -37,6 +38,11 @@ function refuseBackfillSource(session: string): void {
   if (isBackfillSession(session)) {
     throw new Error(
       `reclean: ${session} is a -backfill session; refusing to fold it into a live -vN session`,
+    )
+  }
+  if (isLiveSession(session)) {
+    throw new Error(
+      `reclean: ${session} is a -vN-live session; refusing to fold it into a live -vN session`,
     )
   }
 }

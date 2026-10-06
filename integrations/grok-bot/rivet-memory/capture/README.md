@@ -126,7 +126,8 @@ Nothing in this tree names a host, address, port, or lab layout.
 | suffix             | source                                      | position                   |
 | ------------------ | ------------------------------------------- | -------------------------- |
 | `-v3` / `-v4`      | on-disk jsonl / ReadTranscript pages        | line index / page position |
-| `-v4-backfill`     | ReadTranscript page dumps (`ingest-pages`)  | page position              |
+| `-v4-backfill` / `-v4-backfill-<rev>` | ReadTranscript page dumps (`ingest-pages`) | page position |
+| `-v4-live`         | ReadTranscript pages (`ingest-pages --live`) | page position |
 | `-v3-rows`         | Postgres / `--from-rows` reclean            | stored ordinal             |
 | `-v3-store` / `-v4-store` | `agents/<id>/store.db` `transcript_entries` | `seq`               |
 | `-v3-voice-<stem>` / `-v4-voice-<stem>` | `voice-calls/*.json`       | turn index                 |
@@ -257,7 +258,9 @@ and writes nothing. An explicit `--dry-run` overrides `--commit`. Without
 preview. `--input` must be a readable directory (exit 2 otherwise). A
 malformed page or an unknown slug is counted and the process exits 2.
 `--commit` INSERTs message rows into `grokbot-<slug>-v4-backfill` and never
-deletes them; it still goes through `PostgresMemory.append`, which upserts
+deletes them; `--revision REV` (short lowercase alnum, for example `r2`)
+writes `grokbot-<slug>-v4-backfill-REV` instead. It still goes through
+`PostgresMemory.append`, which upserts
 that session's `ros_conversations` row (`updated_at`, `active`) and may
 queue tool-synthesis jobs. A bot whose pages disagree at a position writes
 nothing for that bot. Page conflicts exit 3 on a dry-run and on `--commit`.
@@ -283,7 +286,101 @@ node integrations/grok-bot/rivet-memory/capture/dist/cli.js ingest-pages \
 # 3. After review, commit INSERTs into grokbot-<slug>-v4-backfill
 python3 integrations/grok-bot/rivet-memory/capture/pull-bridge.py ingest-pages \
   --input path/to/pages --commit
+
+# optional: write a sibling revision tag (quarantine the default backfill)
+python3 integrations/grok-bot/rivet-memory/capture/pull-bridge.py ingest-pages \
+  --input path/to/pages --commit --revision r2
+
+# hourly temporal-harness capture (not with --revision)
+python3 integrations/grok-bot/rivet-memory/capture/pull-bridge.py ingest-pages \
+  --input path/to/pages --commit --live
 ```
+
+### Temporal-harness live capture
+
+Grok Bot agents that run on the server-side (temporal) harness keep their
+transcripts on the server. The box-side `-v4` watcher only sees local
+`agents/<id>/store.db` / jsonl writes, so it no longer observes new turns
+for those agents. The supported read is the Grok Bot
+`ReadTranscript(agent_id, limit, before)` tool.
+
+One capturer owns everything except fetching pages:
+
+1. Discover agents at runtime (roster / `discover --json`). Nothing in this
+   tree names a host, agent, or install path.
+2. For each agent, read new positions with `ReadTranscript` and write each
+   page **verbatim** to a spool directory (`<bot-slug>-<before>.txt`).
+3. Run `ingest-pages --input DIR --live --commit`. That tags
+   `grokbot-<slug>-v4-live` (a sibling of `-v4` and `-v4-backfill`; never
+   folded into them).
+4. On an ok ingest, advance the per-agent watermark with
+   `spool-state record`. Do not advance on a failed ingest.
+5. Re-read a few positions behind the watermark each run. Overlap is
+   expected; the live session skips a row whose
+   `readtranscript:<slug>:<position>:<sub>` source id is already stored
+   with a matching content digest, so two fetch copies of the same
+   positions do not insert duplicates.
+
+Secrets (`RIVETOS_PG_URL` and any other credentials) come from the
+environment or `~/.rivetos/.env`. This CLI never prints them.
+
+```bash
+# watermark (path: GROKBOT_SPOOL_STATE or GROKBOT_CAPTURE_DIR/spool-state.json)
+node integrations/grok-bot/rivet-memory/capture/dist/cli.js spool-state get \
+  --agent-id 00000000-0000-4000-8000-000000000001
+node integrations/grok-bot/rivet-memory/capture/dist/cli.js spool-state record \
+  --agent-id 00000000-0000-4000-8000-000000000001 --position 12 --total 40
+
+# missing positions; exit 0 even when the list is empty
+node integrations/grok-bot/rivet-memory/capture/dist/cli.js needs \
+  --input path/to/pages --total alpha=40
+```
+
+`needs` prints one line per hole, `needs: <slug> positions A-B`, and
+prints nothing for an agent that is up to date. The latest total is
+`--total slug=N` or `lastSeenTotal` already stored on a successful
+record. A later `record` whose `--total` is lower than `lastSeenTotal`
+exits 3 and does not rewrite the file.
+
+Before ingest, `ingest-pages` rejects a page (stderr reason, file left
+unchanged) when:
+
+- the header range does not match the number of JSON body lines
+  (example: `positions 12–13` with one JSON line)
+- a body line is not valid JSON
+- `--live` and the header `of T` or agent id does not match the other
+  accepted pages for that slug (current total is the max `T` in the
+  spool; leftover older pages with a smaller `T` are skipped)
+
+Skipped positions stay as gaps and are counted (`skipped_gaps`) / listed
+in the skip reason. They are not filled with placeholder rows.
+
+### ReadTranscript page format
+
+A page file is UTF-8 text, saved verbatim from the tool:
+
+1. **Header** (required, one line):
+   `Transcript of <target>, positions A–B of T:`
+   `<target>` may be `agent "Name" (uuid)`, `this conversation`, or a
+   slug. `A`/`B`/`T` are decimal integers. Positions are 0-based
+   conversation indices, not `store.db` seq. En dash, em dash, or ASCII
+   hyphen are accepted between `A` and `B`.
+2. **Body**: one JSON object per position from `A` through `B` inclusive,
+   one object per line, in order. No extra JSON lines. A line that does
+   not parse, or a line count other than `B − A + 1`, rejects the whole
+   page. The rejected header range is left as a gap; the file is not
+   rewritten.
+3. **Trailer** (optional):
+   `Older messages remain: call ReadTranscript again with the same target and before=N.`
+   Present when older turns exist (`A > 0`). Absent when the page starts
+   at position 0.
+
+Ghost or truncated positions (claimed by `of T` or by a header range,
+but never emitted as a kept JSON line on any accepted page) are **gaps**:
+the merger does not invent filler rows, and ingest does not store a
+placeholder at that index. Overlapping accepted pages are merged by
+position; the first write wins. A later page that disagrees at a
+position is a `CONFLICT` and writes nothing for that bot.
 
 Fidelity caveats: every backfill row is `metadata.ts_approx=true` because
 timestamps are carried forward from the last user `<timestamp>` tag (any UTC
@@ -305,7 +402,10 @@ line names the bot and the positions, and the process exits 3 (dry-run or
 in which case exit 2 wins and both reasons are printed. Other rows for
 that bot are still eligible to be written.
 The session tag is `grokbot-<bot-slug>-v4-backfill` — a
-sibling of `-v4`, never merged into it. Hidden system / agent wakes and
+sibling of `-v4`, never merged into it. `--revision r2` writes
+`grokbot-<bot-slug>-v4-backfill-r2` and stamps `metadata.backfill_revision`.
+Idempotence and source-id dedupe are scoped to that revision tag, so rows
+already in plain `-v4-backfill` do not suppress an `-r2` insert. Hidden system / agent wakes and
 system reminders follow the existing v4 normalizer (wrapper strip + hidden
 classification); system rows are not ingested on this tag. Content is
 bounded by the existing 256 KiB cap. A truncated row's
@@ -343,6 +443,10 @@ Env / config knobs:
 | --- | --- | --- |
 | `GROKBOT_PAGES_DIR` | (required unless `--input`) | page dump directory |
 | `GROKBOT_BACKFILL_OVERLAP_HOURS` / `--overlap-hours` | `0` | positive N reads `-v4` from the earliest candidate minus N hours and can drop a coincident missed run; `0` or empty does not read `-v4` |
+| `--revision` | (unset) | short lowercase alnum token; writes `-v4-backfill-<rev>` and scopes source-id dedupe to that tag |
+| `--live` | (unset) | mutually exclusive with `--revision`; writes `grokbot-<slug>-v4-live` and scopes source-id dedupe to that tag |
+| `GROKBOT_SPOOL_STATE` | `$GROKBOT_CAPTURE_DIR/spool-state.json` | gitignored live-capture watermark file |
+| `GROKBOT_CAPTURE_DIR` | this package directory | default parent for `spool-state.json` / `pull-state.json` |
 | `GROKBOT_AGENTS` / `--agents-dir` | `~/agent-data/agents` | roster (`profile.json` slugs) |
 | `RIVETOS_PG_URL` | (env or `~/.rivetos/.env`) | overlap SELECT; required for `--commit` |
 

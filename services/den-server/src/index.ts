@@ -1,4 +1,5 @@
 import { loadConfig } from './config.js'
+import { startCoworkCaptureCatchUp } from './harness/cowork-capture-boot.js'
 import { createDenServer } from './server.js'
 
 const config = loadConfig()
@@ -9,6 +10,7 @@ den.server.listen(config.port, config.host, () => {
     `[den-server] listening on ${config.host}:${config.port} (POST /event, WS /ws)` +
       (config.token ? ' [auth on]' : ' [auth off]'),
   )
+  startCoworkCaptureCatchUp()
 })
 
 for (const sig of ['SIGINT', 'SIGTERM'] as const) {

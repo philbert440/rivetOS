@@ -7,11 +7,17 @@
 
 import { useState, type JSX } from 'react'
 import { Check, Plus, X } from 'lucide-react'
-import { tagLabel, type AnyTag, isFilterableChip, isTagLiteral } from '../lib/session-tags.js'
+import {
+  chipLabel,
+  tagLabel,
+  type AnyTag,
+  isFilterableChip,
+  isTagLiteral,
+} from '../lib/session-tags.js'
 import { cn } from '../lib/utils.js'
 
 export function TagChip(props: {
-  tag: AnyTag
+  tag: AnyTag & { action?: 'add' | 'remove' }
   onAccept?: (id: string) => void
   onReject?: (id: string) => void
   onClick?: (tag: AnyTag) => void
@@ -19,8 +25,10 @@ export function TagChip(props: {
   size?: 'sm' | 'md'
 }): JSX.Element {
   const { tag } = props
-  const suggested = tag.state === 'suggested'
-  const label = tagLabel(tag)
+  const removal = tag.action === 'remove'
+  const suggested = tag.state === 'suggested' || removal
+  const label = chipLabel(tag)
+  const plain = tagLabel(tag)
   const base =
     props.size === 'md'
       ? 'inline-flex items-center gap-1 rounded border px-2 py-0.5 font-mono text-[11px]'
@@ -32,7 +40,12 @@ export function TagChip(props: {
     ? `Suggested by ${tag.source}${'reason' in tag && (tag as { reason?: string }).reason ? ` — ${(tag as { reason?: string }).reason ?? ''}` : ''}`
     : `${label} (${tag.source})`
   return (
-    <span className={cn(base, tone, 'group max-w-full')} title={title} data-state={tag.state}>
+    <span
+      className={cn(base, tone, 'group max-w-full')}
+      title={title}
+      data-state={tag.state}
+      data-action={removal ? 'remove' : 'add'}
+    >
       {/* Only an accepted tag is a filter: filters match accepted tags. */}
       {props.onClick && isFilterableChip(tag) ? (
         <button
@@ -51,8 +64,8 @@ export function TagChip(props: {
       {suggested && props.onAccept && (
         <button
           type="button"
-          aria-label={`accept ${label}`}
-          title="accept"
+          aria-label={removal ? `remove ${plain}` : `accept ${plain}`}
+          title={removal ? 'remove' : 'accept'}
           disabled={props.busy}
           className="rounded p-0.5 hover:bg-em/20 hover:text-em disabled:opacity-50"
           onClick={(e) => {
@@ -66,8 +79,8 @@ export function TagChip(props: {
       {props.onReject && (
         <button
           type="button"
-          aria-label={suggested ? `reject ${label}` : `remove ${label}`}
-          title={suggested ? 'reject' : 'remove'}
+          aria-label={removal ? `keep ${plain}` : suggested ? `reject ${plain}` : `remove ${plain}`}
+          title={removal ? 'keep' : suggested ? 'reject' : 'remove'}
           disabled={props.busy}
           className={cn(
             'rounded p-0.5 hover:bg-red/20 hover:text-red disabled:opacity-50',

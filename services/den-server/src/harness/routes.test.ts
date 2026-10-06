@@ -241,6 +241,7 @@ describe('GET /api/harnesses', () => {
       'pi',
       'qwen-code',
       'cursor',
+      'cowork',
       'opencode',
       'codex',
     ])
@@ -249,6 +250,9 @@ describe('GET /api/harnesses', () => {
     for (const h of body.harnesses) {
       expect(h.capabilities).toMatchObject({ approvals: false, listSessions: true })
     }
+    const cowork = body.harnesses.find((h) => h.harnessId === 'cowork')
+    expect(cowork?.capabilities.drive).toBe(false)
+    expect(cowork?.capabilities.resume).toBe(false)
   })
   it('lists the built-in drivers a real node boots with', async () => {
     // No fakes: this is what `createDenServer` actually registers. Reading the
@@ -266,6 +270,7 @@ describe('GET /api/harnesses', () => {
       'pi',
       'qwen-code',
       'cursor',
+      'cowork',
       'opencode',
       'codex',
     ])
@@ -1361,6 +1366,7 @@ describe('capability runtime truthing', () => {
       'pi',
       'qwen-code',
       'cursor',
+      'cowork',
       'opencode',
       'codex',
     ])
@@ -1395,10 +1401,15 @@ describe('capability runtime truthing', () => {
       'pi',
       'qwen-code',
       'cursor',
+      'cowork',
       'opencode',
       'codex',
     ])
     for (const h of body.harnesses) {
+      if (h.harnessId === 'cowork') {
+        expect(h.capabilities).toMatchObject({ interrupt: false, resume: false, drive: false })
+        continue
+      }
       expect(h.capabilities).toMatchObject({ interrupt: true, resume: true })
     }
   })

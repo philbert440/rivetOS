@@ -15,6 +15,14 @@ export function tagLabel(tag: Pick<AnyTag, 'key' | 'value' | 'display'>): string
   return `${tag.key}:${tag.display || tag.value}`
 }
 
+/** Review-queue label. A removal stays on the entity until a person accepts it. */
+export function chipLabel(
+  tag: Pick<AnyTag, 'key' | 'value' | 'display'> & { action?: 'add' | 'remove' },
+): string {
+  const label = tagLabel(tag)
+  return tag.action === 'remove' ? `suggest remove ${label}` : label
+}
+
 /** Identity for a tag independent of the row: `key:value` normalized. */
 export function tagIdentity(tag: Pick<AnyTag, 'key' | 'value'>): string {
   return `${tag.key}:${tag.value}`

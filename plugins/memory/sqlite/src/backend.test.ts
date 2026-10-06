@@ -95,6 +95,135 @@ describe('SqliteBackend', () => {
       expect((await backend.stats()).recentSessions[0].title).toBe('Renamed')
     })
 
+    it('keeps source conversation timestamps and only moves updated_at forward', async () => {
+      const old = '2020-01-01T00:00:00.000Z'
+      const mid = '2024-06-01T00:00:00.000Z'
+      await backend.capture(
+        batch({
+          session_key: 'old-task',
+          messages: [{ event_id: 'e1', role: 'user', content: 'then' }],
+          created_at: old,
+          updated_at: mid,
+        }),
+      )
+      expect((await backend.stats()).recentSessions.find((s) => s.sessionId === 'old-task')?.lastActive).toBe(mid)
+      await backend.capture(
+        batch({
+          session_key: 'old-task',
+          messages: [],
+          updated_at: old,
+        }),
+      )
+      expect((await backend.stats()).recentSessions.find((s) => s.sessionId === 'old-task')?.lastActive).toBe(mid)
+      const later = '2025-01-01T00:00:00.000Z'
+      await backend.capture(batch({ session_key: 'old-task', messages: [], updated_at: later }))
+      expect((await backend.stats()).recentSessions.find((s) => s.sessionId === 'old-task')?.lastActive).toBe(later)
+    })
+
+    it('fills a pending tool result in place and does not insert a second row', async () => {
+      const first = await backend.capture(
+        batch({
+          messages: [
+            {
+              event_id: 'cowork:s:tool:tu1',
+              role: 'tool',
+              content: '[tool call] Bash',
+              tool_name: 'Bash',
+              metadata: { pending_result: true, tool_use_id: 'tu1' },
+            },
+          ],
+        }),
+      )
+      expect(first.inserted).toBe(1)
+      const again = await backend.capture(
+        batch({
+          messages: [
+            {
+              event_id: 'cowork:s:tool:tu1',
+              role: 'tool',
+              content: '[tool call] Bash',
+              tool_name: 'Bash',
+              tool_result: 'ok',
+              metadata: { tool_use_id: 'tu1' },
+            },
+          ],
+        }),
+      )
+      expect(again).toMatchObject({ inserted: 0, skipped: 1, conversation_id: first.conversation_id })
+      expect((await backend.stats()).messages).toBe(1)
+      const { messages } = await backend.browse({})
+      const full = String(await tool('memory_get_full').execute({ id: messages[0].id }))
+      expect(full).toContain('ok')
+    })
+
+    it('rewrites a cowork hook prompt onto the transcript id, once', async () => {
+      const hook = await backend.capture(
+        batch({
+          channel: 'cowork',
+          session_key: 'cowork:sess',
+          agent: 'rivet-cowork',
+          settings: { source: 'cowork-hook', cwd: '/private/var/empty' },
+          messages: [
+            {
+              event_id: 'cowork:sess:hook:prompt',
+              role: 'user',
+              content: 'ship it',
+              metadata: { source: 'cowork-hook' },
+            },
+            {
+              event_id: 'cowork:sess:hook:reply',
+              role: 'assistant',
+              content: 'shipped',
+              metadata: { source: 'cowork-hook' },
+            },
+          ],
+        }),
+      )
+      expect(hook.inserted).toBe(2)
+      const transcript = await backend.capture(
+        batch({
+          channel: 'cowork',
+          session_key: 'cowork:sess',
+          agent: 'rivet-cowork',
+          settings: { source: 'cowork-transcript' },
+          messages: [
+            {
+              event_id: 'cowork:sess:uuid-prompt',
+              role: 'user',
+              content: 'ship it',
+              metadata: { source: 'cowork-transcript' },
+            },
+            {
+              event_id: 'cowork:sess:uuid-reply',
+              role: 'assistant',
+              content: 'shipped',
+              metadata: { source: 'cowork-transcript' },
+            },
+          ],
+        }),
+      )
+      expect(transcript).toMatchObject({ inserted: 0, skipped: 2 })
+      expect((await backend.stats()).messages).toBe(2)
+      const again = await backend.capture(
+        batch({
+          channel: 'cowork',
+          session_key: 'cowork:sess',
+          agent: 'rivet-cowork',
+          settings: { source: 'cowork-transcript' },
+          messages: [
+            {
+              event_id: 'cowork:sess:uuid-prompt',
+              role: 'user',
+              content: 'ship it',
+              metadata: { source: 'cowork-transcript' },
+            },
+          ],
+        }),
+      )
+      expect(again).toMatchObject({ inserted: 0, skipped: 1 })
+      expect((await backend.stats()).messages).toBe(2)
+    })
+
     it('stores timestamps in UTC, caps oversized text and records that it did', async () => {
       const big = 'x'.repeat(20000)
       await backend.capture(

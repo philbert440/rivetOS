@@ -39,8 +39,9 @@ export type TimeSource =
  * Strip `-vN-voice*`, `-vN-store`, `-vN-rows`, `-vN`, or `-v2` so identity
  * helpers share one rule across -v3 / -v4 / later suffixes.
  *
- * `-vN-backfill` is NOT cosmetic. Stripping it would let reclean rebuild a
- * plain `-vN` session from backfill rows. See `isBackfillSession`.
+ * `-vN-backfill` and `-vN-live` are NOT cosmetic. Stripping them would let
+ * reclean rebuild a plain `-vN` session from those sibling rows. See
+ * `isBackfillSession` / `isLiveSession`.
  */
 export function stripSessionSuffix(session: string): string {
   const voice = /-v\d+-voice(?:-|$)/.exec(session)
@@ -51,6 +52,11 @@ export function stripSessionSuffix(session: string): string {
 /** True for `…-vN-backfill` (optionally followed by another suffix). */
 export function isBackfillSession(session: string): boolean {
   return /-v\d+-backfill(?:-|$)/.test(session)
+}
+
+/** True for `…-vN-live` (hourly ReadTranscript capture). */
+export function isLiveSession(session: string): boolean {
+  return /-v\d+-live(?:-|$)/.test(session)
 }
 
 export function sessionStoreSuffix(sessionSuffix = SESSION_SUFFIX_V3): string {
@@ -68,6 +74,8 @@ export function sessionRowsSuffix(sessionSuffix = SESSION_SUFFIX_V3): string {
 /** ReadTranscript page backfill. Never folds into plain `-v4`. */
 export const SESSION_SUFFIX_V4_BACKFILL = '-v4-backfill'
 export const SESSION_SUFFIX_V4 = '-v4'
+/** Hourly ReadTranscript live capture. Sibling of `-v4` / `-v4-backfill`. */
+export const SESSION_SUFFIX_V4_LIVE = '-v4-live'
 /**
  * Default overlap window for ingest-pages. 0 does not read live `-v4` and
  * does not suppress by content hash. A positive `--overlap-hours` or
@@ -75,8 +83,13 @@ export const SESSION_SUFFIX_V4 = '-v4'
  */
 export const DEFAULT_BACKFILL_OVERLAP_HOURS = 0
 
-export function sessionBackfillSuffix(liveSuffix = SESSION_SUFFIX_V4): string {
-  return `${liveSuffix}-backfill`
+export function sessionBackfillSuffix(liveSuffix = SESSION_SUFFIX_V4, revision?: string): string {
+  const base = `${liveSuffix}-backfill`
+  return revision ? `${base}-${revision}` : base
+}
+
+export function sessionLiveSuffix(liveSuffix = SESSION_SUFFIX_V4): string {
+  return `${liveSuffix}-live`
 }
 
 export function isRowShapedSession(session: string): boolean {
