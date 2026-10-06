@@ -13,7 +13,15 @@ import { fileURLToPath } from 'node:url'
 export function findCoworkCaptureBundle(start: string): string | undefined {
   let dir = start
   for (let depth = 0; depth < 8; depth++) {
-    const candidate = join(dir, 'integrations', 'cowork', 'rivet-memory', 'capture', 'dist', 'cli.js')
+    const candidate = join(
+      dir,
+      'integrations',
+      'cowork',
+      'rivet-memory',
+      'capture',
+      'dist',
+      'cli.js',
+    )
     if (existsSync(candidate)) return candidate
     const parent = dirname(dir)
     if (parent === dir) break
@@ -34,15 +42,13 @@ export function startCoworkCaptureCatchUp(
 ): void {
   const env = opts.env ?? process.env
   const explicit = opts.bundle ?? env.RIVETOS_COWORK_CAPTURE_BIN?.trim()
-  const bundle =
-    explicit ||
-    findCoworkCaptureBundle(dirname(fileURLToPath(import.meta.url)))
+  const bundle = explicit || findCoworkCaptureBundle(dirname(fileURLToPath(import.meta.url)))
   if (!bundle || !existsSync(bundle)) return
   try {
     const spawnImpl = opts.spawnImpl ?? spawn
     const child = spawnImpl(process.execPath, [bundle, '--backfill'], { stdio: 'ignore', env })
-    child.unref?.()
-    child.on?.('error', () => {})
+    child.unref()
+    child.on('error', () => {})
   } catch {
     /* A missing node or a bad bundle must not take the den down. */
   }

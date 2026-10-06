@@ -151,7 +151,11 @@ async function findTranscript(taskDir: string, id: string): Promise<string | und
   return best?.path
 }
 
-async function transcriptForMeta(metaFile: string, id: string, cwd?: string): Promise<string | undefined> {
+async function transcriptForMeta(
+  metaFile: string,
+  id: string,
+  cwd?: string,
+): Promise<string | undefined> {
   for (const taskDir of taskDirectoryCandidates(metaFile, cwd)) {
     const found = await findTranscript(taskDir, id)
     if (found) return found

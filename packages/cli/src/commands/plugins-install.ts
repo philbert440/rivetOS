@@ -1274,7 +1274,9 @@ async function buildCoworkCapture(
 ): Promise<{ ok: boolean; detail: string }> {
   const capture = join(root, 'integrations', 'cowork', 'rivet-memory', 'capture')
   const script = join(capture, 'build.mjs')
-  if (!existsSync(script)) return { ok: false, detail: `cowork capture build script missing: ${script}` }
+  if (!existsSync(script)) {
+    return { ok: false, detail: `cowork capture build script missing: ${script}` }
+  }
   const result = await exec(process.execPath, [script], { timeoutMs: 120_000, cwd: capture })
   if (result.code !== 0) {
     const detail = (result.stderr || result.stdout).trim().slice(0, 400)
@@ -1284,9 +1286,11 @@ async function buildCoworkCapture(
     }
   }
   const bundle = join(capture, 'dist', 'cli.js')
-  if (!existsSync(bundle)) return { ok: false, detail: `cowork capture build did not write ${bundle}` }
+  if (!existsSync(bundle)) {
+    return { ok: false, detail: `cowork capture build did not write ${bundle}` }
+  }
   const mcpPath = join(root, 'integrations', 'cowork', 'rivet-memory', '.mcp.json')
-  let mcp = ''
+  let mcp: string
   try {
     mcp = readFileSync(mcpPath, 'utf8')
   } catch {

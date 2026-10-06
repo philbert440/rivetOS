@@ -1668,8 +1668,8 @@ export function coworkBundleReady(root: string | null): boolean {
   if (!root) return false
   const plugin = join(root, 'integrations', 'cowork', 'rivet-memory')
   if (!existsSync(join(plugin, 'capture', 'dist', 'cli.js'))) return false
-  let mcp = ''
-  let shell = ''
+  let mcp: string
+  let shell: string
   try {
     mcp = readFileSync(join(plugin, '.mcp.json'), 'utf8')
     shell = readFileSync(join(plugin, 'bin', 'rivet-cowork-capture.sh'), 'utf8')

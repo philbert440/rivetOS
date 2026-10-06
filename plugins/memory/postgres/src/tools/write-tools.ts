@@ -766,7 +766,7 @@ export async function captureBatch(
         [conversationId],
       )
       hookRows = found.rows.map((row) => ({
-        id: String(row.id),
+        id: row.id,
         role: row.role,
         content: row.content,
         eventId: row.hook_event_id ?? '',
