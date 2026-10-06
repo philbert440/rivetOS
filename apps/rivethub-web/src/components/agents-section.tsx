@@ -10,12 +10,14 @@
  */
 
 import { Fragment, useCallback, useEffect, useMemo, useRef, useState, type JSX } from 'react'
+import * as Dialog from '@radix-ui/react-dialog'
 import { useMutation, useQueries, useQuery, useQueryClient } from '@tanstack/react-query'
 import { useNavigate } from '@tanstack/react-router'
 import { Bot, ChevronDown, ChevronRight, Pencil, Plus, Trash2, X } from 'lucide-react'
 import { migrateAgentPreset, type HarnessId } from '@rivetos/types'
 import { GatewayError } from '@rivetos/gateway-client'
 import { useConnection } from '../stores/connection.js'
+import { agentDraftDirty, captureAgentDraft } from '../lib/agent-draft-dirty.js'
 import { healthzQueryOptions, useMeshNodeName, useNodeName, urlLabel } from '../lib/node-name.js'
 import { useNodeDiscovery } from '../lib/use-node-discovery.js'
 import { agentDirectoryPlaceholder } from '../lib/agent-directory.js'
@@ -233,14 +235,56 @@ function AgentEditor({
   const trimmedName = name.trim()
   const catalogClash = catalogNameClashes(trimmedName, catalogQuery.data?.agents ?? [], agent?.id)
   const formRef = useRef<HTMLFormElement | null>(null)
-  // A picker's Radix popper still being mounted means that popover owns the
-  // event (its own dismiss handlers run first, in the same dispatch).
-  const pickerOpen = (): boolean =>
-    document.querySelector('[data-radix-popper-content-wrapper]') !== null
-  // Only a press that STARTED on the backdrop (with no picker open) may
-  // cancel — dismissing a picker by clicking outside must not also land on
-  // the backdrop and unmount the editor, losing the draft.
-  const backdropArmed = useRef(false)
+
+  const [initialDraft, setInitialDraft] = useState(() =>
+    captureAgentDraft({
+      name: duplicate ? copyName(duplicate.draft.name) : (init?.name ?? ''),
+      color: init?.color ?? '',
+      rawHarnessId: init?.harnessId ?? '',
+      rawModel: init?.model ?? '',
+      rawEffort: init?.effort ?? '',
+      systemPrompt: init?.systemPrompt ?? '',
+      draftDirectory: agent?.directory ?? duplicate?.draft.directory ?? '',
+      sharedLink: agent?.sharedLink ?? duplicate?.draft.sharedLink ?? true,
+      nodeBaseUrl,
+    }),
+  )
+
+  const isDirty = useCallback(
+    (): boolean =>
+      agentDraftDirty(initialDraft, {
+        name,
+        color,
+        rawHarnessId,
+        rawModel,
+        rawEffort,
+        systemPrompt,
+        draftDirectory,
+        sharedLink,
+        nodeBaseUrl,
+      }),
+    [
+      name,
+      color,
+      rawHarnessId,
+      rawModel,
+      rawEffort,
+      systemPrompt,
+      draftDirectory,
+      sharedLink,
+      nodeBaseUrl,
+      initialDraft,
+    ],
+  )
+
+  const discardDialog = useConfirmDialog()
+  const confirmLeave = useCallback(async (): Promise<boolean> => {
+    if (!isDirty()) return true
+    return discardDialog.confirm(
+      `Discard unsaved changes to agent "${trimmedName || 'new agent'}"?`,
+      { confirmLabel: 'Discard', danger: true },
+    )
+  }, [isDirty, discardDialog, trimmedName])
 
   const harnessesQuery = useQuery({
     queryKey: ['harnesses', nodeBaseUrl, transportEpoch],
@@ -304,12 +348,28 @@ function AgentEditor({
 
   useEffect(() => {
     if (agent || duplicate || harnessId || harnesses.length === 0) return
+    const agentDirectory = init?.directory ?? ''
     const first = harnesses[0].harnessId
     setHarnessId(first)
     const firstSheet = harnesses[0].capabilities
     const m = defaultModel(firstSheet)
+    const effort = defaultEffort(firstSheet, m)
     setModel(m)
-    setEffort(defaultEffort(firstSheet, m))
+    setEffort(effort)
+    setInitialDraft((prev) =>
+      captureAgentDraft({
+        name: init?.name ?? '',
+        color: init?.color ?? '',
+        rawHarnessId: first,
+        rawModel: m,
+        rawEffort: effort,
+        systemPrompt: init?.systemPrompt ?? '',
+        draftDirectory: agentDirectory,
+        sharedLink: true,
+        // The node the form opened on: a node picked since then is an edit.
+        nodeBaseUrl: prev.nodeBaseUrl,
+      }),
+    )
   }, [agent, duplicate, harnessId, harnesses])
 
   // Restore focus to the opener (Plus / Pencil) when the dialog closes.
@@ -317,37 +377,6 @@ function AgentEditor({
     const opener = document.activeElement instanceof HTMLElement ? document.activeElement : null
     return () => opener?.focus()
   }, [])
-
-  // Document-level keys, mirroring confirm-dialog: Escape cancels and Tab
-  // cycles within the dialog — except while a picker popover is open, which
-  // owns both.
-  useEffect(() => {
-    const onKeyDown = (e: KeyboardEvent): void => {
-      if (pickerOpen()) return
-      if (e.key === 'Escape') {
-        e.preventDefault()
-        onCancel()
-        return
-      }
-      if (e.key !== 'Tab') return
-      e.preventDefault()
-      const el = formRef.current
-      const focusables = el
-        ? Array.from(el.querySelectorAll<HTMLElement>('input, button, textarea')).filter(
-            (n) => !n.hasAttribute('disabled'),
-          )
-        : []
-      if (focusables.length === 0) return
-      const idx = focusables.indexOf(document.activeElement as HTMLElement)
-      const next =
-        idx === -1
-          ? focusables[e.shiftKey ? focusables.length - 1 : 0]
-          : focusables[(idx + (e.shiftKey ? -1 : 1) + focusables.length) % focusables.length]
-      next.focus()
-    }
-    document.addEventListener('keydown', onKeyDown)
-    return () => document.removeEventListener('keydown', onKeyDown)
-  }, [onCancel])
 
   const handleSubmit = (e: React.SyntheticEvent<HTMLFormElement>): void => {
     e.preventDefault()
@@ -367,264 +396,284 @@ function AgentEditor({
   }
 
   return (
-    <div
-      className="fixed inset-0 z-50 flex items-center justify-center bg-bg/70"
-      role="presentation"
-      onPointerDown={(e) => {
-        backdropArmed.current = e.target === e.currentTarget && !pickerOpen()
-      }}
-      onClick={(e) => {
-        if (e.target === e.currentTarget && backdropArmed.current) onCancel()
-        backdropArmed.current = false
+    <Dialog.Root
+      open
+      onOpenChange={(open) => {
+        if (!open)
+          void (async () => {
+            if (!(await confirmLeave())) return
+            onCancel()
+          })()
       }}
     >
-      <form
-        ref={formRef}
-        role="dialog"
-        aria-modal="true"
-        aria-label={agent ? 'Edit agent' : duplicate ? 'Copy agent' : 'New agent'}
-        onClick={(e) => e.stopPropagation()}
-        onSubmit={handleSubmit}
-        className="flex max-h-[85vh] w-96 flex-col gap-3 overflow-y-auto rounded-md border border-line bg-panel p-4 shadow-lg"
-      >
-        <div className="flex items-center justify-between">
-          <span className="text-sm font-semibold text-em">
-            {agent ? 'Edit Agent' : duplicate ? 'Copy Agent' : 'New Agent'}
-          </span>
-          <button
-            type="button"
-            onClick={onCancel}
-            className="text-ink-dim hover:text-em"
-            aria-label="cancel"
-          >
-            <X className="size-4" />
-          </button>
-        </div>
+      <Dialog.Portal>
+        <Dialog.Overlay className="fixed inset-0 z-50 bg-bg/70" />
+        {discardDialog.element}
+        <Dialog.Content
+          aria-label={agent ? 'Edit agent' : duplicate ? 'Copy agent' : 'New agent'}
+          onInteractOutside={(e) => e.preventDefault()}
+          // Radix would move focus to the dialog itself; the Name field's
+          // autoFocus is where typing should start.
+          onOpenAutoFocus={(e) => e.preventDefault()}
+          aria-describedby={undefined}
+          className="fixed left-1/2 top-1/2 z-50 flex max-h-[85vh] w-96 -translate-x-1/2 -translate-y-1/2 flex-col gap-3 overflow-y-auto rounded-md border border-line bg-panel p-4 shadow-lg outline-none"
+          asChild
+        >
+          <form ref={formRef} onSubmit={handleSubmit}>
+            <div className="flex items-center justify-between">
+              <Dialog.Title asChild>
+                <span className="text-sm font-semibold text-em">
+                  {agent ? 'Edit Agent' : duplicate ? 'Copy Agent' : 'New Agent'}
+                </span>
+              </Dialog.Title>
+              <button
+                type="button"
+                onClick={() => {
+                  void (async () => {
+                    if (!(await confirmLeave())) return
+                    onCancel()
+                  })()
+                }}
+                className="text-ink-dim hover:text-em"
+                aria-label="cancel"
+              >
+                <X className="size-4" />
+              </button>
+            </div>
 
-        <div className="flex flex-col gap-1">
-          <label className="text-xs text-ink-dim">Name</label>
-          <input
-            value={name}
-            onChange={(e) => setName(e.target.value)}
-            placeholder="Agent name"
-            required
-            autoFocus
-            disabled={disabled}
-            className="rounded border border-line bg-panel-2 px-2 py-1.5 text-xs text-ink outline-none focus:border-em disabled:opacity-50"
-          />
-          {catalogClash && (
-            <p className="text-xs text-ink-dim" role="status">
-              This name matches a catalog agent id, which wins over a preset name for delegate_task.
-            </p>
-          )}
-        </div>
+            <div className="flex flex-col gap-1">
+              <label className="text-xs text-ink-dim">Name</label>
+              <input
+                value={name}
+                onChange={(e) => setName(e.target.value)}
+                placeholder="Agent name"
+                required
+                autoFocus
+                disabled={disabled}
+                className="rounded border border-line bg-panel-2 px-2 py-1.5 text-xs text-ink outline-none focus:border-em disabled:opacity-50"
+              />
+              {catalogClash && (
+                <p className="text-xs text-ink-dim" role="status">
+                  This name matches a catalog agent id, which wins over a preset name for
+                  delegate_task.
+                </p>
+              )}
+            </div>
 
-        <div className="flex flex-col gap-1">
-          <label className="text-xs text-ink-dim">Color (optional)</label>
-          <div className="flex items-center gap-2">
-            <input
-              type="color"
-              value={color || '#3b82f6'}
-              onChange={(e) => setColor(e.target.value)}
-              disabled={disabled}
-              className="size-8 rounded border border-line disabled:opacity-50"
-            />
-            <input
-              type="text"
-              value={color}
-              onChange={(e) => setColor(e.target.value)}
-              placeholder="#3b82f6"
-              disabled={disabled}
-              className="flex-1 rounded border border-line bg-panel-2 px-2 py-1.5 font-mono text-xs text-ink outline-none focus:border-em disabled:opacity-50"
-            />
-          </div>
-        </div>
-
-        {agent ? (
-          <div className="flex flex-col gap-1">
-            <span className="text-xs text-ink-dim">Node</span>
-            <p className="rounded border border-line bg-panel-2 px-2 py-1.5 text-xs text-ink">
-              {agent.node || hostingNode || 'unknown'}
-            </p>
-          </div>
-        ) : (
-          <NodeSelector
-            excludedNodes={excludedNodes}
-            value={nodeBaseUrl}
-            onChange={setNodeBaseUrl}
-            disabled={disabled}
-          />
-        )}
-
-        <div className="flex flex-col gap-1">
-          <label className="text-xs text-ink-dim">Directory</label>
-          <input
-            value={directory}
-            onChange={(e) => setDirectory(e.target.value)}
-            placeholder={agentDirectoryPlaceholder(directoryRoot, name)}
-            disabled={disabled}
-            spellCheck={false}
-            className="rounded border border-line bg-panel-2 px-2 py-1.5 font-mono text-xs text-ink outline-none focus:border-em disabled:opacity-50"
-          />
-        </div>
-
-        <label className="flex items-center gap-2 text-xs text-ink-dim">
-          <input
-            type="checkbox"
-            checked={sharedLink}
-            onChange={(e) => setSharedLink(e.target.checked)}
-            disabled={disabled}
-          />
-          Link shared directory (rivet-shared)
-        </label>
-
-        <div className="flex flex-col gap-1">
-          <label className="text-xs text-ink-dim">Harness</label>
-          <Select
-            value={harnessId}
-            options={harnessOptions}
-            onChange={(id) => {
-              setHarnessId(id)
-              const next = harnesses.find((h) => h.harnessId === id)?.capabilities
-              const m = defaultModel(next)
-              setModel(m)
-              setEffort(defaultEffort(next, m))
-            }}
-            disabled={disabled || harnessesQuery.isError}
-            title={
-              harnessesQuery.isError ? `Couldn't load harnesses from ${nodeBaseUrl}` : undefined
-            }
-            label="Harness"
-            className="w-full"
-          />
-          {harnessesQuery.isError && (
-            <div role="status" className="flex flex-col gap-1.5">
-              <span className="text-xs text-red">
-                Couldn't load harnesses from {nodeBaseUrl}.
-                {offerCopy
-                  ? " Saving also needs a successful connection to this node. A preset's node cannot be changed. You can create a copy on another reachable node; the original stays on its node and can be deleted when that node is reachable again."
-                  : agent
-                    ? ' Saving requires a connection to the preset’s node.'
-                    : ' Pick another node or retry when this node is reachable.'}
-              </span>
-              {offerCopy && onDuplicate && (
-                <button
-                  type="button"
-                  onClick={() =>
-                    onDuplicate({
-                      name,
-                      color,
-                      harnessId,
-                      model,
-                      effort,
-                      systemPrompt,
-                      directory,
-                      sharedLink,
-                    })
-                  }
+            <div className="flex flex-col gap-1">
+              <label className="text-xs text-ink-dim">Color (optional)</label>
+              <div className="flex items-center gap-2">
+                <input
+                  type="color"
+                  value={color || '#3b82f6'}
+                  onChange={(e) => setColor(e.target.value)}
                   disabled={disabled}
-                  className="self-start rounded border border-line px-3 py-1.5 text-xs text-ink-dim hover:border-em hover:text-em disabled:opacity-50"
-                >
-                  Copy to another node…
-                </button>
+                  className="size-8 rounded border border-line disabled:opacity-50"
+                />
+                <input
+                  type="text"
+                  value={color}
+                  onChange={(e) => setColor(e.target.value)}
+                  placeholder="#3b82f6"
+                  disabled={disabled}
+                  className="flex-1 rounded border border-line bg-panel-2 px-2 py-1.5 font-mono text-xs text-ink outline-none focus:border-em disabled:opacity-50"
+                />
+              </div>
+            </div>
+
+            {agent ? (
+              <div className="flex flex-col gap-1">
+                <span className="text-xs text-ink-dim">Node</span>
+                <p className="rounded border border-line bg-panel-2 px-2 py-1.5 text-xs text-ink">
+                  {agent.node || hostingNode || 'unknown'}
+                </p>
+              </div>
+            ) : (
+              <NodeSelector
+                excludedNodes={excludedNodes}
+                value={nodeBaseUrl}
+                onChange={setNodeBaseUrl}
+                disabled={disabled}
+              />
+            )}
+
+            <div className="flex flex-col gap-1">
+              <label className="text-xs text-ink-dim">Directory</label>
+              <input
+                value={directory}
+                onChange={(e) => setDirectory(e.target.value)}
+                placeholder={agentDirectoryPlaceholder(directoryRoot, name)}
+                disabled={disabled}
+                spellCheck={false}
+                className="rounded border border-line bg-panel-2 px-2 py-1.5 font-mono text-xs text-ink outline-none focus:border-em disabled:opacity-50"
+              />
+            </div>
+
+            <label className="flex items-center gap-2 text-xs text-ink-dim">
+              <input
+                type="checkbox"
+                checked={sharedLink}
+                onChange={(e) => setSharedLink(e.target.checked)}
+                disabled={disabled}
+              />
+              Link shared directory (rivet-shared)
+            </label>
+
+            <div className="flex flex-col gap-1">
+              <label className="text-xs text-ink-dim">Harness</label>
+              <Select
+                value={harnessId}
+                options={harnessOptions}
+                onChange={(id) => {
+                  setHarnessId(id)
+                  const next = harnesses.find((h) => h.harnessId === id)?.capabilities
+                  const m = defaultModel(next)
+                  setModel(m)
+                  setEffort(defaultEffort(next, m))
+                }}
+                disabled={disabled || harnessesQuery.isError}
+                title={
+                  harnessesQuery.isError ? `Couldn't load harnesses from ${nodeBaseUrl}` : undefined
+                }
+                label="Harness"
+                className="w-full"
+              />
+              {harnessesQuery.isError && (
+                <div role="status" className="flex flex-col gap-1.5">
+                  <span className="text-xs text-red">
+                    Couldn't load harnesses from {nodeBaseUrl}.
+                    {offerCopy
+                      ? " Saving also needs a successful connection to this node. A preset's node cannot be changed. You can create a copy on another reachable node; the original stays on its node and can be deleted when that node is reachable again."
+                      : agent
+                        ? ' Saving requires a connection to the preset’s node.'
+                        : ' Pick another node or retry when this node is reachable.'}
+                  </span>
+                  {offerCopy && onDuplicate && (
+                    <button
+                      type="button"
+                      onClick={() =>
+                        onDuplicate({
+                          name,
+                          color,
+                          harnessId,
+                          model,
+                          effort,
+                          systemPrompt,
+                          directory,
+                          sharedLink,
+                        })
+                      }
+                      disabled={disabled}
+                      className="self-start rounded border border-line px-3 py-1.5 text-xs text-ink-dim hover:border-em hover:text-em disabled:opacity-50"
+                    >
+                      Copy to another node…
+                    </button>
+                  )}
+                </div>
+              )}
+              {duplicate && (
+                <div role="status" className="text-xs text-ink-dim">
+                  Create a copy on a reachable node. The original preset and its history stay on the
+                  original node; delete that preset when its node is reachable again.
+                  {!nodeBaseUrl && <p>Add another node to the roster to create a copy.</p>}
+                  {harnessesQuery.isSuccess && !harnessesQuery.isFetching && (
+                    <>
+                      {copy?.notes.map((note) => (
+                        <p key={note}>{note}</p>
+                      ))}
+                      {!harnessId && <p>This target offers no harnesses. Choose another node.</p>}
+                    </>
+                  )}
+                </div>
               )}
             </div>
-          )}
-          {duplicate && (
-            <div role="status" className="text-xs text-ink-dim">
-              Create a copy on a reachable node. The original preset and its history stay on the
-              original node; delete that preset when its node is reachable again.
-              {!nodeBaseUrl && <p>Add another node to the roster to create a copy.</p>}
-              {harnessesQuery.isSuccess && !harnessesQuery.isFetching && (
-                <>
-                  {copy?.notes.map((note) => (
-                    <p key={note}>{note}</p>
-                  ))}
-                  {!harnessId && <p>This target offers no harnesses. Choose another node.</p>}
-                </>
-              )}
+
+            {models.length > 0 && (
+              <div className="flex flex-col gap-1">
+                <label className="text-xs text-ink-dim">Model</label>
+                <Select
+                  value={model}
+                  options={models}
+                  onChange={(id) => {
+                    setHarnessId(harnessId)
+                    setModel(id)
+                    setEffort(defaultEffort(sheet, id))
+                  }}
+                  disabled={disabled}
+                  label="Model"
+                  className="w-full"
+                />
+              </div>
+            )}
+
+            {efforts.length > 0 && (
+              <div className="flex flex-col gap-1">
+                <label className="text-xs text-ink-dim">Effort</label>
+                <Select
+                  value={effort}
+                  options={efforts}
+                  onChange={(id) => {
+                    setHarnessId(harnessId)
+                    setModel(model)
+                    setEffort(id)
+                  }}
+                  disabled={disabled}
+                  label="Effort"
+                  className="w-full"
+                />
+              </div>
+            )}
+
+            <div className="flex flex-col gap-1">
+              <label className="text-xs text-ink-dim">System Prompt (optional)</label>
+              <textarea
+                value={systemPrompt}
+                onChange={(e) => setSystemPrompt(e.target.value)}
+                placeholder="Custom system prompt..."
+                rows={4}
+                disabled={disabled}
+                className="resize-y rounded border border-line bg-panel-2 px-2 py-1.5 text-xs text-ink outline-none focus:border-em disabled:opacity-50"
+              />
             </div>
-          )}
-        </div>
 
-        {models.length > 0 && (
-          <div className="flex flex-col gap-1">
-            <label className="text-xs text-ink-dim">Model</label>
-            <Select
-              value={model}
-              options={models}
-              onChange={(id) => {
-                setHarnessId(harnessId)
-                setModel(id)
-                setEffort(defaultEffort(sheet, id))
-              }}
-              disabled={disabled}
-              label="Model"
-              className="w-full"
-            />
-          </div>
-        )}
+            {errorText && (
+              <div role="alert" className="text-xs text-red">
+                {errorText}
+              </div>
+            )}
 
-        {efforts.length > 0 && (
-          <div className="flex flex-col gap-1">
-            <label className="text-xs text-ink-dim">Effort</label>
-            <Select
-              value={effort}
-              options={efforts}
-              onChange={(id) => {
-                setHarnessId(harnessId)
-                setModel(model)
-                setEffort(id)
-              }}
-              disabled={disabled}
-              label="Effort"
-              className="w-full"
-            />
-          </div>
-        )}
-
-        <div className="flex flex-col gap-1">
-          <label className="text-xs text-ink-dim">System Prompt (optional)</label>
-          <textarea
-            value={systemPrompt}
-            onChange={(e) => setSystemPrompt(e.target.value)}
-            placeholder="Custom system prompt..."
-            rows={4}
-            disabled={disabled}
-            className="resize-y rounded border border-line bg-panel-2 px-2 py-1.5 text-xs text-ink outline-none focus:border-em disabled:opacity-50"
-          />
-        </div>
-
-        {errorText && (
-          <div role="alert" className="text-xs text-red">
-            {errorText}
-          </div>
-        )}
-
-        <div className="flex gap-2">
-          <button
-            type="submit"
-            disabled={
-              !copyReady ||
-              !name.trim() ||
-              disabled ||
-              (color.trim() !== '' && !/^#(?:[0-9a-fA-F]{3}|[0-9a-fA-F]{6})$/.test(color.trim()))
-            }
-            className="flex-1 rounded bg-em px-3 py-1.5 text-xs font-semibold text-bg hover:opacity-90 disabled:opacity-50"
-          >
-            {agent ? 'Update' : duplicate ? 'Create copy' : 'Create'}
-          </button>
-          <button
-            type="button"
-            onClick={onCancel}
-            disabled={disabled}
-            className="rounded border border-line px-3 py-1.5 text-xs text-ink-dim hover:border-em hover:text-em disabled:opacity-50"
-          >
-            Cancel
-          </button>
-        </div>
-      </form>
-    </div>
+            <div className="flex gap-2">
+              <button
+                type="submit"
+                disabled={
+                  !copyReady ||
+                  !name.trim() ||
+                  disabled ||
+                  (color.trim() !== '' &&
+                    !/^#(?:[0-9a-fA-F]{3}|[0-9a-fA-F]{6})$/.test(color.trim()))
+                }
+                className="flex-1 rounded bg-em px-3 py-1.5 text-xs font-semibold text-bg hover:opacity-90 disabled:opacity-50"
+              >
+                {agent ? 'Update' : duplicate ? 'Create copy' : 'Create'}
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  void (async () => {
+                    if (!(await confirmLeave())) return
+                    onCancel()
+                  })()
+                }}
+                disabled={disabled}
+                className="rounded border border-line px-3 py-1.5 text-xs text-ink-dim hover:border-em hover:text-em disabled:opacity-50"
+              >
+                Cancel
+              </button>
+            </div>
+          </form>
+        </Dialog.Content>
+      </Dialog.Portal>
+    </Dialog.Root>
   )
 }
 
