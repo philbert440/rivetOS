@@ -4,13 +4,21 @@
  * Hooks are the primary path: a Desktop plugin `mcp_tool` hook calls
  * `memory_capture_event` on this host-side MCP sidecar, which works when the
  * full-VM sandbox hides the transcript. `--backfill` reads host transcripts
- * on demand (never a resident poll). Event ids match across the two paths
- * when the hook carries a uuid, message id, or tool_use_id.
+ * on demand (never a resident poll).
  *
- * A hook that has none of those uses `cowork:<session>:hook:<hash>`. That
- * row does not dedupe with a later occurrence-hash transcript row. Whether
- * the hook payload carries `cliSessionId` is unverified: the session key is
- * `cliSessionId`, else `session_id`, else `unknown`.
+ * Hook `session_id` is the CLI session id, the same value as task metadata
+ * `cliSessionId` and the transcript filename `<cliSessionId>.jsonl`. The
+ * task file's own `sessionId` (`local_<task-uuid>`) is a different value and
+ * is never the session key. `sessionPart` prefers an explicit `cliSessionId`
+ * only when that field is the CLI id.
+ *
+ * When a hook's `transcript_path` is a file this process can read, the hook
+ * does not emit its own text. It runs the same cursor-based transcript ingest
+ * as `--backfill` for that one file, so both paths store transcript ids. A
+ * line that is not flushed yet is left for the next hook or for backfill.
+ * Hook-only text (`cowork:<session>:hook:<hash>`) is only for a transcript
+ * the host cannot read. The store rewrites those rows onto the transcript id
+ * once the file becomes readable.
  *
  * Capture is always on. There is no harness allow-list and no on/off switch.
  */
@@ -19,7 +27,7 @@ import { openSync, readSync, closeSync, statSync, readdirSync, readFileSync } fr
 import { basename, dirname, join } from 'node:path'
 import { homedir } from 'node:os'
 import { contentTupleHash, occurrenceIndex, type OccurrenceKey } from '@rivetos/capture-core'
-import type { CaptureBatch, CaptureMessage } from '@rivetos/capture-core'
+import type { CaptureBatch, CaptureMessage, CaptureWriter } from '@rivetos/capture-core'
 
 export const CAPTURE_AGENT = 'rivet-cowork'
 export const CAPTURE_CHANNEL = 'cowork'
@@ -140,6 +148,8 @@ export interface HookInput {
   uuid?: string
   message_id?: string
   prompt_id?: string
+  /** Host path of `<cliSessionId>.jsonl`, when the hook template expanded it. */
+  transcript_path?: string
   tool_name?: string
   tool_input?: unknown
   tool_use_id?: string
@@ -373,6 +383,7 @@ export function batchFor(opts: {
   source: string
   createdAtMs?: number
   updatedAtMs?: number
+  folders?: string[]
 }): CaptureBatch | undefined {
   if (opts.messages.length === 0) return undefined
   const settings: Record<string, unknown> = {
@@ -380,6 +391,7 @@ export function batchFor(opts: {
     cliSessionId: opts.part,
   }
   if (opts.cwd) settings.cwd = opts.cwd
+  if (opts.folders && opts.folders.length > 0) settings.folders = opts.folders
   return {
     session_key: sessionKey(opts.part),
     agent: CAPTURE_AGENT,
@@ -396,12 +408,97 @@ export interface CoworkTaskFile {
   cliSessionId: string
   title?: string
   cwd?: string
+  /** Repos the person attached. Empty when the task has none. */
+  folders?: string[]
   createdAtMs?: number
   updatedAtMs?: number
+  archived?: boolean
   transcriptPath?: string
 }
 
 const META_RE = /^local_.+\.json$/
+
+function sameDir(a: string, b: string): boolean {
+  return a.replace(/\\/g, '/').replace(/\/+$/, '') === b.replace(/\\/g, '/').replace(/\/+$/, '')
+}
+
+function stringList(value: unknown): string[] | undefined {
+  if (!Array.isArray(value)) return undefined
+  const out = value
+    .filter((item): item is string => typeof item === 'string' && item.trim() !== '')
+    .map((item) => item.trim())
+  return out.length > 0 ? out : undefined
+}
+
+/**
+ * Task directories to try, in order. Older builds use `local_<task>` next to
+ * the metadata file. Desktop 2.19675.1 uses the first 8 hex of the task uuid
+ * (no `local_` prefix); the metadata `cwd` is `<that dir>/outputs`.
+ */
+export function taskDirectoryCandidates(metaFile: string, cwd?: string): string[] {
+  const dir = dirname(metaFile)
+  const base = basename(metaFile, '.json')
+  const out: string[] = []
+  const push = (candidate: string): void => {
+    if (out.some((item) => sameDir(item, candidate))) return
+    out.push(candidate)
+  }
+  push(join(dir, base))
+  if (cwd && cwd.trim() !== '') {
+    const parent = dirname(cwd.trim())
+    if (sameDir(dirname(parent), dir)) push(parent)
+  }
+  const uuid = base.startsWith('local_') ? base.slice('local_'.length) : ''
+  if (uuid.length >= 8) push(join(dir, uuid.slice(0, 8)))
+  return out
+}
+
+/** Newest `<cliSessionId>.jsonl` under `projects/`. Does not rebuild the slug. */
+function findTranscriptFile(taskDir: string, id: string): string | undefined {
+  const projects = join(taskDir, '.claude', 'projects')
+  let best: { path: string; mtime: number } | undefined
+  const walk = (dir: string, depth: number): void => {
+    if (depth > 6) return
+    let names: string[]
+    try {
+      names = readdirSync(dir)
+    } catch {
+      return
+    }
+    for (const name of names) {
+      if (name.includes('..')) continue
+      const full = join(dir, name)
+      let st
+      try {
+        st = statSync(full)
+      } catch {
+        continue
+      }
+      if (st.isDirectory()) walk(full, depth + 1)
+      else if (st.isFile() && name === `${id}.jsonl` && (!best || st.mtimeMs >= best.mtime)) {
+        best = { path: full, mtime: st.mtimeMs }
+      }
+    }
+  }
+  walk(projects, 0)
+  return best?.path
+}
+
+function transcriptForMeta(metaFile: string, id: string, cwd?: string): string | undefined {
+  for (const taskDir of taskDirectoryCandidates(metaFile, cwd)) {
+    const found = findTranscriptFile(taskDir, id)
+    if (found) return found
+  }
+  return undefined
+}
+
+function isReadableFile(file: string): boolean {
+  try {
+    return statSync(file).isFile()
+  } catch {
+    return false
+  }
+}
 
 function epochMs(value: unknown): number | undefined {
   if (typeof value === 'number' && Number.isFinite(value)) return value
@@ -450,29 +547,19 @@ export function discoverTasks(roots: string[]): CoworkTaskFile[] {
     if (!isRecord(parsed)) continue
     const id = asString(parsed.cliSessionId)
     if (!id || id.includes('/') || id.includes('..') || id.includes('\\')) continue
-    const taskDir = join(dirname(file), basename(file, '.json'))
-    let transcriptPath: string | undefined
-    const projects = join(taskDir, '.claude', 'projects')
-    try {
-      for (const slug of readdirSync(projects)) {
-        if (slug.includes('..')) continue
-        const candidate = join(projects, slug, `${id}.jsonl`)
-        try {
-          if (statSync(candidate).isFile()) transcriptPath = candidate
-        } catch {
-          /* miss */
-        }
-      }
-    } catch {
-      /* no transcript */
-    }
+    // Never key on the task file's sessionId (`local_<uuid>`). cliSessionId is the CLI id.
+    const cwd = asString(parsed.cwd)
+    const folders = stringList(parsed.userSelectedFolders)
     const row: CoworkTaskFile = {
       cliSessionId: id,
       title: asString(parsed.title),
-      cwd: asString(parsed.cwd),
-      createdAtMs: epochMs(parsed.createdAt),
-      updatedAtMs: epochMs(parsed.lastActivityAt) ?? epochMs(parsed.createdAt),
-      transcriptPath,
+      cwd,
+      ...(folders ? { folders } : {}),
+      createdAtMs: epochMs(parsed.createdAt) ?? epochMs(parsed.created_at),
+      updatedAtMs:
+        epochMs(parsed.lastActivityAt) ?? epochMs(parsed.updatedAt) ?? epochMs(parsed.createdAt),
+      archived: parsed.archived === true || parsed.isArchived === true,
+      transcriptPath: transcriptForMeta(file, id, cwd),
     }
     const prev = byId.get(id)
     if (!prev || (row.updatedAtMs ?? 0) >= (prev.updatedAtMs ?? 0)) byId.set(id, row)
@@ -517,11 +604,96 @@ export function backfillTranscript(
     part: task.cliSessionId,
     messages: parsed.messages,
     cwd: task.cwd,
+    folders: task.folders,
     title: pickTitle(task.title, parsed.aiTitle, parsed.firstPrompt),
     source: 'cowork-transcript',
     createdAtMs: task.createdAtMs,
     updatedAtMs: task.updatedAtMs,
   })
+}
+
+/**
+ * Metadata for this CLI session, walking up from the transcript. The task
+ * file sits next to the task directory, not inside it. Ignores `sessionId`.
+ */
+function metaForTranscript(transcriptPath: string, cliSessionId: string): CoworkTaskFile | undefined {
+  let dir = dirname(transcriptPath)
+  for (let depth = 0; depth < 8; depth++) {
+    let names: string[] = []
+    try {
+      names = readdirSync(dir)
+    } catch {
+      names = []
+    }
+    for (const name of names) {
+      if (!META_RE.test(name)) continue
+      let parsed: unknown
+      try {
+        parsed = JSON.parse(readFileSync(join(dir, name), 'utf8')) as unknown
+      } catch {
+        continue
+      }
+      if (!isRecord(parsed) || asString(parsed.cliSessionId) !== cliSessionId) continue
+      const cwd = asString(parsed.cwd)
+      const folders = stringList(parsed.userSelectedFolders)
+      return {
+        cliSessionId,
+        title: asString(parsed.title),
+        cwd,
+        ...(folders ? { folders } : {}),
+        createdAtMs: epochMs(parsed.createdAt) ?? epochMs(parsed.created_at),
+        updatedAtMs:
+          epochMs(parsed.lastActivityAt) ?? epochMs(parsed.updatedAt) ?? epochMs(parsed.createdAt),
+        archived: parsed.archived === true || parsed.isArchived === true,
+        transcriptPath,
+      }
+    }
+    const parent = dirname(dir)
+    if (parent === dir) break
+    dir = parent
+  }
+  return undefined
+}
+
+/**
+ * Readable transcript: ingest that file and do not also emit hook text.
+ * Unreadable (full-VM): the hook payload is the only copy.
+ */
+export function captureFromHook(input: HookInput, state: BackfillState): CaptureBatch | undefined {
+  const transcriptPath = asString(input.transcript_path)
+  if (transcriptPath && isReadableFile(transcriptPath)) {
+    const part = sessionPart({
+      cliSessionId: asString(input.cliSessionId) || asString(input.cli_session_id),
+      session_id: asString(input.session_id),
+    })
+    const meta = metaForTranscript(transcriptPath, part)
+    return backfillTranscript(
+      {
+        cliSessionId: part,
+        transcriptPath,
+        title: meta?.title,
+        cwd: meta?.cwd,
+        folders: meta?.folders,
+        createdAtMs: meta?.createdAtMs,
+        updatedAtMs: meta?.updatedAtMs,
+        archived: meta?.archived,
+      },
+      state,
+    )
+  }
+  return hookBatch(input)
+}
+
+/** Post, or keep the batch. `{ spooled: true }` is not a drop. 4xx still throws. */
+export async function deliverBatch(
+  batch: CaptureBatch | undefined,
+  writer: Pick<CaptureWriter, 'write'>,
+): Promise<{ inserted: number; skipped: number; spooled: boolean }> {
+  if (!batch) return { inserted: 0, skipped: 0, spooled: false }
+  const result = await writer.write(batch)
+  if ('inserted' in result) return { inserted: result.inserted, skipped: result.skipped, spooled: false }
+  if ('error' in result) throw new Error(result.error)
+  return { inserted: 0, skipped: 0, spooled: true }
 }
 
 export function encodeFrame(payload: unknown): Buffer {
@@ -599,6 +771,7 @@ export async function handleMcp(
               cliSessionId: { type: 'string' },
               prompt: { type: 'string' },
               cwd: { type: 'string' },
+              transcript_path: { type: 'string' },
               uuid: { type: 'string' },
               tool_name: { type: 'string' },
               tool_use_id: { type: 'string' },

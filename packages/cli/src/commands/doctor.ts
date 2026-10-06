@@ -1663,7 +1663,29 @@ function kimiPluginInstalled(home: string, configHome: string): boolean {
   return false
 }
 
-function pluginMarker(h: DetectedHarness, home: string, probe: HarnessDoctorProbe = {}): boolean {
+/** Built sidecar plus a plugin manifest that launches it. */
+export function coworkBundleReady(root: string | null): boolean {
+  if (!root) return false
+  const plugin = join(root, 'integrations', 'cowork', 'rivet-memory')
+  if (!existsSync(join(plugin, 'capture', 'dist', 'cli.js'))) return false
+  let mcp = ''
+  let shell = ''
+  try {
+    mcp = readFileSync(join(plugin, '.mcp.json'), 'utf8')
+    shell = readFileSync(join(plugin, 'bin', 'rivet-cowork-capture.sh'), 'utf8')
+  } catch {
+    return false
+  }
+  const points = mcp.includes('rivet-cowork-capture.sh') || mcp.includes('capture/dist/cli.js')
+  return points && shell.includes('capture/dist/cli.js')
+}
+
+function pluginMarker(
+  h: DetectedHarness,
+  home: string,
+  probe: HarnessDoctorProbe = {},
+  root: string | null = null,
+): boolean {
   switch (h.id) {
     case 'grok-build':
       return tomlFileHasRivetosTable(join(h.configHome, 'config.toml'))
@@ -1696,9 +1718,7 @@ function pluginMarker(h: DetectedHarness, home: string, probe: HarnessDoctorProb
       }
     }
     case 'cowork':
-      // Desktop plugin, not a CLI setup script. Absent binary means doctor
-      // never asks; a detected `cowork` binary still has nothing to mark here.
-      return false
+      return coworkBundleReady(root)
   }
 }
 
@@ -1802,7 +1822,7 @@ export async function checkHarnesses(probe: HarnessDoctorProbe = {}): Promise<Ch
 
   for (const h of found) {
     const ver = h.version ? ` ${h.version}` : ''
-    let installed = pluginMarker(h, home, probe)
+    let installed = pluginMarker(h, home, probe, root)
     if (h.id === 'claude-code') {
       const listed = await claudePluginListed(h.binary, exec)
       installed = listed === true || (await claudeHooksStatus(exec, root))

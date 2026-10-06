@@ -44,6 +44,38 @@ describe('cowork store', () => {
     expect(await findCoworkTask('../etc')).toBeUndefined()
   })
 
+  it('reads the Desktop 2.19675.1 task directory and isArchived', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'cowork-store-'))
+    const org = join(root, 'local-agent-mode-sessions', 'acct', 'org')
+    const taskUuid = 'af1d0ad3-ab84-4a4d-8c7e-d344b9e7ee17'
+    const id = '44444444-4444-4444-4444-444444444444'
+    const taskDir = join(org, taskUuid.slice(0, 8))
+    const projects = join(taskDir, '.claude', 'projects', 'session')
+    mkdirSync(projects, { recursive: true })
+    writeFileSync(
+      join(org, `local_${taskUuid}.json`),
+      JSON.stringify({
+        sessionId: `local_${taskUuid}`,
+        cliSessionId: id,
+        title: 'Real layout',
+        cwd: `${taskDir}/outputs`,
+        isArchived: true,
+        createdAt: 1_700_000_000_000,
+        lastActivityAt: 1_700_000_050_000,
+      }),
+    )
+    writeFileSync(
+      join(projects, `${id}.jsonl`),
+      `${JSON.stringify({ type: 'user', message: { role: 'user', content: 'from desktop' } })}\n`,
+    )
+    setCoworkRootsForTest([root])
+    const tasks = await listCoworkTasks()
+    expect(tasks).toHaveLength(1)
+    expect(tasks[0]?.archived).toBe(true)
+    expect(tasks[0]?.transcriptPath).toBe(join(projects, `${id}.jsonl`))
+    expect((await readCoworkTurns(id)).map((turn) => turn.text)).toEqual(['from desktop'])
+  })
+
   it('keeps the newest metadata when the same session is listed twice', async () => {
     const root = mkdtempSync(join(tmpdir(), 'cowork-store-'))
     const sessions = join(root, 'local-agent-mode-sessions')

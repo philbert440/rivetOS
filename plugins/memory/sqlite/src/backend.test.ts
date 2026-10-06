@@ -156,6 +156,74 @@ describe('SqliteBackend', () => {
       expect(full).toContain('ok')
     })
 
+    it('rewrites a cowork hook prompt onto the transcript id, once', async () => {
+      const hook = await backend.capture(
+        batch({
+          channel: 'cowork',
+          session_key: 'cowork:sess',
+          agent: 'rivet-cowork',
+          settings: { source: 'cowork-hook', cwd: '/private/var/empty' },
+          messages: [
+            {
+              event_id: 'cowork:sess:hook:prompt',
+              role: 'user',
+              content: 'ship it',
+              metadata: { source: 'cowork-hook' },
+            },
+            {
+              event_id: 'cowork:sess:hook:reply',
+              role: 'assistant',
+              content: 'shipped',
+              metadata: { source: 'cowork-hook' },
+            },
+          ],
+        }),
+      )
+      expect(hook.inserted).toBe(2)
+      const transcript = await backend.capture(
+        batch({
+          channel: 'cowork',
+          session_key: 'cowork:sess',
+          agent: 'rivet-cowork',
+          settings: { source: 'cowork-transcript' },
+          messages: [
+            {
+              event_id: 'cowork:sess:uuid-prompt',
+              role: 'user',
+              content: 'ship it',
+              metadata: { source: 'cowork-transcript' },
+            },
+            {
+              event_id: 'cowork:sess:uuid-reply',
+              role: 'assistant',
+              content: 'shipped',
+              metadata: { source: 'cowork-transcript' },
+            },
+          ],
+        }),
+      )
+      expect(transcript).toMatchObject({ inserted: 0, skipped: 2 })
+      expect((await backend.stats()).messages).toBe(2)
+      const again = await backend.capture(
+        batch({
+          channel: 'cowork',
+          session_key: 'cowork:sess',
+          agent: 'rivet-cowork',
+          settings: { source: 'cowork-transcript' },
+          messages: [
+            {
+              event_id: 'cowork:sess:uuid-prompt',
+              role: 'user',
+              content: 'ship it',
+              metadata: { source: 'cowork-transcript' },
+            },
+          ],
+        }),
+      )
+      expect(again).toMatchObject({ inserted: 0, skipped: 1 })
+      expect((await backend.stats()).messages).toBe(2)
+    })
+
     it('stores timestamps in UTC, caps oversized text and records that it did', async () => {
       const big = 'x'.repeat(20000)
       await backend.capture(

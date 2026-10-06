@@ -12,6 +12,7 @@
               "session_id": "${session_id}",
               "prompt": "${prompt}",
               "cwd": "${cwd}",
+              "transcript_path": "${transcript_path}",
               "prompt_id": "${prompt_id}"
             }
           }
@@ -29,6 +30,7 @@
               "hook_event_name": "PostToolUse",
               "session_id": "${session_id}",
               "cwd": "${cwd}",
+              "transcript_path": "${transcript_path}",
               "tool_name": "${tool_name}",
               "tool_use_id": "${tool_use_id}",
               "tool_input": "${tool_input}",
@@ -49,6 +51,7 @@
               "hook_event_name": "Stop",
               "session_id": "${session_id}",
               "cwd": "${cwd}",
+              "transcript_path": "${transcript_path}",
               "last_assistant_message": "${last_assistant_message}"
             }
           }
@@ -66,6 +69,7 @@
               "hook_event_name": "SubagentStop",
               "session_id": "${session_id}",
               "cwd": "${cwd}",
+              "transcript_path": "${transcript_path}",
               "agent_id": "${agent_id}",
               "agent_type": "${agent_type}",
               "last_assistant_message": "${last_assistant_message}"

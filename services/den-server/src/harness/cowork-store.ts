@@ -3,10 +3,15 @@
  *
  * Sandbox-off tasks leave metadata at `local_<task>.json` under
  * `local-agent-mode-sessions/` (and the older `claude-code-sessions/`).
- * The transcript, when the sandbox wrote one, is the sibling
- * `local_<task>/.claude/projects/<slug>/<cliSessionId>.jsonl` in Claude
- * Code JSONL. Full-VM mode keeps that file inside a disk image; listing
- * still works from metadata, and the transcript read is empty.
+ * The transcript, when the sandbox wrote one, is
+ * `<task>/.claude/projects/<any slug>/<cliSessionId>.jsonl` in Claude Code JSONL.
+ * Older builds name the task directory `local_<task>`. Desktop 2.19675.1
+ * names it the first 8 hex of the task uuid, and the metadata cwd is
+ * `<that dir>/outputs`. Full-VM mode keeps the file inside a disk image;
+ * listing still works from metadata, and the transcript read is empty.
+ *
+ * The session key is `cliSessionId`. The task file's `sessionId`
+ * (`local_<uuid>`) is a different value and is not read.
  */
 
 import { open, readdir, readFile, stat } from 'node:fs/promises'
@@ -91,27 +96,67 @@ async function walkMeta(dir: string, out: string[], depth = 0): Promise<void> {
   }
 }
 
+function sameDir(a: string, b: string): boolean {
+  return a.replace(/\\/g, '/').replace(/\/+$/, '') === b.replace(/\\/g, '/').replace(/\/+$/, '')
+}
+
+/** Older `local_<task>`, then the parent of metadata cwd, then the uuid's first 8 chars. */
+function taskDirectoryCandidates(metaFile: string, cwd?: string): string[] {
+  const dir = dirname(metaFile)
+  const base = basename(metaFile, '.json')
+  const out: string[] = []
+  const push = (candidate: string): void => {
+    if (out.some((item) => sameDir(item, candidate))) return
+    out.push(candidate)
+  }
+  push(join(dir, base))
+  if (cwd && cwd.trim() !== '') {
+    const parent = dirname(cwd.trim())
+    if (sameDir(dirname(parent), dir)) push(parent)
+  }
+  const uuid = base.startsWith('local_') ? base.slice('local_'.length) : ''
+  if (uuid.length >= 8) push(join(dir, uuid.slice(0, 8)))
+  return out
+}
+
+/** Newest `<id>.jsonl` under `projects/`, at any slug depth. */
 async function findTranscript(taskDir: string, id: string): Promise<string | undefined> {
   const projects = join(taskDir, '.claude', 'projects')
-  let slugs
-  try {
-    slugs = await readdir(projects, { withFileTypes: true })
-  } catch {
-    return undefined
-  }
   let best: { path: string; mtime: number } | undefined
-  for (const slug of slugs) {
-    if (!slug.isDirectory() || slug.name.includes('..')) continue
-    const path = join(projects, slug.name, `${id}.jsonl`)
+  const walk = async (dir: string, depth: number): Promise<void> => {
+    if (depth > 6) return
+    let entries
     try {
-      const st = await stat(path)
-      if (!st.isFile()) continue
-      if (!best || st.mtimeMs >= best.mtime) best = { path, mtime: st.mtimeMs }
+      entries = await readdir(dir, { withFileTypes: true })
     } catch {
-      /* miss */
+      return
+    }
+    for (const ent of entries) {
+      if (ent.name.includes('..')) continue
+      const path = join(dir, ent.name)
+      if (ent.isDirectory()) {
+        await walk(path, depth + 1)
+        continue
+      }
+      if (!ent.isFile() || ent.name !== `${id}.jsonl`) continue
+      try {
+        const st = await stat(path)
+        if (!best || st.mtimeMs >= best.mtime) best = { path, mtime: st.mtimeMs }
+      } catch {
+        /* miss */
+      }
     }
   }
+  await walk(projects, 0)
   return best?.path
+}
+
+async function transcriptForMeta(metaFile: string, id: string, cwd?: string): Promise<string | undefined> {
+  for (const taskDir of taskDirectoryCandidates(metaFile, cwd)) {
+    const found = await findTranscript(taskDir, id)
+    if (found) return found
+  }
+  return undefined
 }
 
 async function readMeta(path: string): Promise<CoworkTaskMeta | undefined> {
@@ -134,16 +179,16 @@ async function readMeta(path: string): Promise<CoworkTaskMeta | undefined> {
   const created = epochMs(row.createdAt) ?? epochMs(row.created_at)
   const updated = epochMs(row.lastActivityAt) ?? epochMs(row.updatedAt) ?? created
   if (created === undefined || updated === undefined) return undefined
-  const taskDir = join(dirname(path), basename(path, '.json'))
+  const cwd = typeof row.cwd === 'string' && row.cwd.trim() ? row.cwd.trim() : undefined
   return {
     cliSessionId: id,
     title: typeof row.title === 'string' && row.title.trim() ? row.title.trim() : undefined,
-    cwd: typeof row.cwd === 'string' && row.cwd.trim() ? row.cwd.trim() : undefined,
+    cwd,
     createdAtMs: created,
     updatedAtMs: updated,
-    archived: row.archived === true,
+    archived: row.archived === true || row.isArchived === true,
     metadataPath: path,
-    transcriptPath: await findTranscript(taskDir, id),
+    transcriptPath: await transcriptForMeta(path, id, cwd),
   }
 }
 

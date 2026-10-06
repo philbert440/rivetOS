@@ -6,6 +6,7 @@
  * pg_advisory_xact_lock(hashtext(session_key)) before check-then-insert.
  */
 
+import { pickCoworkHookRewrite, type CoworkHookRow } from '@rivetos/memory-core'
 import { hasOwnerUserIdColumn } from '../owner-column.js'
 import crypto from 'node:crypto'
 import type { Tool } from '@rivetos/types'
@@ -700,7 +701,10 @@ export async function captureBatch(
 ): Promise<CaptureResult> {
   // Resolved before BEGIN: no filesystem work while the session lock and a
   // pooled connection are held. Never throws.
-  const projectHit = await planProjectRuleTag(batch.settings, options)
+  const projectHit = await planProjectRuleTag(batch.settings, {
+    ...options,
+    channel: batch.channel ?? options.channel,
+  })
   return withSessionTransaction(source, batch.session_key, async (client) => {
     const wanted = options.ownerUserId?.trim()
     const owner = wanted && (await hasOwnerUserIdColumn(source, client)) ? wanted : undefined
@@ -740,6 +744,35 @@ export async function captureBatch(
       conversationId,
       eventIds: batch.messages.map((message) => message.event_id),
     })
+    const needsHookClaim = batch.messages.some(
+      (message) =>
+        message.metadata?.source === 'cowork-transcript' &&
+        (message.role === 'user' || message.role === 'assistant'),
+    )
+    let hookRows: CoworkHookRow[] = []
+    if (needsHookClaim) {
+      const found = await client.query<{
+        id: string
+        role: string
+        content: string
+        hook_event_id: string | null
+      }>(
+        `SELECT id, role, content, metadata->>'event_id' AS hook_event_id
+           FROM ros_messages
+          WHERE conversation_id = $1
+            AND role IN ('user', 'assistant')
+            AND metadata->>'source' = 'cowork-hook'
+          ORDER BY created_at, id`,
+        [conversationId],
+      )
+      hookRows = found.rows.map((row) => ({
+        id: String(row.id),
+        role: row.role,
+        content: row.content,
+        eventId: row.hook_event_id ?? '',
+      }))
+    }
+    const consumedHooks = new Set<string>()
     let inserted = 0
     for (const message of batch.messages) {
       const metadata: Record<string, unknown> = { ...message.metadata, event_id: message.event_id }
@@ -779,6 +812,27 @@ export async function captureBatch(
             ],
           )
         }
+        continue
+      }
+      const claim = pickCoworkHookRewrite(
+        {
+          role: message.role,
+          content,
+          source: message.metadata?.source,
+          replacesEventId: message.metadata?.replaces_event_id,
+        },
+        hookRows,
+        consumedHooks,
+      )
+      if (claim) {
+        await client.query(
+          `UPDATE ros_messages
+              SET metadata = COALESCE(metadata, '{}'::jsonb) || jsonb_build_object('event_id', $2::text, 'source', 'cowork-transcript')
+            WHERE id = $1`,
+          [claim.id, message.event_id],
+        )
+        consumedHooks.add(claim.id)
+        eventIds.add(message.event_id)
         continue
       }
       await client.query(

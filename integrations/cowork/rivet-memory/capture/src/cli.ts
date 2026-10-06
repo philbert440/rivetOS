@@ -13,15 +13,15 @@
 import { readFileSync, writeFileSync, mkdirSync } from 'node:fs'
 import { dirname } from 'node:path'
 import { createCaptureWriter, resolveCaptureTransport } from '@rivetos/capture-core'
-import type { CaptureBatch } from '@rivetos/capture-core'
 import {
   backfillTranscript,
+  captureFromHook,
   defaultStatePath,
+  deliverBatch,
   discoverTasks,
   emptyState,
   encodeFrame,
   handleMcp,
-  hookBatch,
   pushFrames,
   type BackfillState,
   type HookInput,
@@ -35,26 +35,16 @@ function rootsFromEnv(env: NodeJS.ProcessEnv): string[] {
   return roots
 }
 
-async function postBatch(
-  batch: CaptureBatch | undefined,
-): Promise<{ inserted: number; skipped: number }> {
-  if (!batch) return { inserted: 0, skipped: 0 }
-  const transport = resolveCaptureTransport(process.env)
-  const override = process.env.RIVETOS_CAPTURE_URL?.trim()
-  if (transport.kind !== 'den' && !override) {
-    throw new Error(
-      transport.kind === 'none' ? transport.reason : 'cowork capture posts to the den',
-    )
-  }
-  const denUrl = override || (transport.kind === 'den' ? transport.denUrl : '')
-  const writer = createCaptureWriter({
+function writerForEnv(env: NodeJS.ProcessEnv = process.env) {
+  const override = env.RIVETOS_CAPTURE_URL?.trim()
+  const transport = resolveCaptureTransport(env)
+  // No den URL yet: still hand the batch to the writer. The post fails and
+  // the writer spools it in the same per-user directory the other kits use.
+  const denUrl = override || (transport.kind === 'den' ? transport.denUrl : 'http://127.0.0.1:9')
+  return createCaptureWriter({
     denUrl,
     log: (line) => console.error(line),
   })
-  const result = await writer.write(batch)
-  if ('inserted' in result) return { inserted: result.inserted, skipped: result.skipped }
-  if ('error' in result) throw new Error(result.error)
-  return { inserted: 0, skipped: 0 }
 }
 
 function loadState(file: string): BackfillState {
@@ -69,30 +59,57 @@ function loadState(file: string): BackfillState {
   }
 }
 
-async function backfill(): Promise<void> {
+function saveState(stateFile: string, state: BackfillState): void {
+  mkdirSync(dirname(stateFile), { recursive: true })
+  writeFileSync(stateFile, JSON.stringify(state))
+}
+
+async function backfill(log: (line: string) => void = console.log): Promise<void> {
   const stateFile = process.env.RIVETOS_COWORK_STATE || defaultStatePath()
   const state = loadState(stateFile)
+  const writer = writerForEnv()
   const tasks = discoverTasks(rootsFromEnv(process.env))
   let inserted = 0
   for (const task of tasks) {
     const batch = backfillTranscript(task, state)
-    const counts = await postBatch(batch)
+    const counts = await deliverBatch(batch, writer)
     inserted += counts.inserted
+    saveState(stateFile, state)
   }
-  mkdirSync(dirname(stateFile), { recursive: true })
-  writeFileSync(stateFile, JSON.stringify(state))
-  console.log(`cowork backfill inserted ${String(inserted)}`)
+  // Drain even when no transcript grew, so a batch spooled while the den
+  // was down is delivered at startup.
+  await writer.replay()
+  if (tasks.length === 0) saveState(stateFile, state)
+  log(`cowork backfill inserted ${String(inserted)}`)
+}
+
+async function onCapture(hook: HookInput): Promise<{ inserted: number; skipped: number }> {
+  const stateFile = process.env.RIVETOS_COWORK_STATE || defaultStatePath()
+  const state = loadState(stateFile)
+  const batch = captureFromHook(hook, state)
+  const counts = await deliverBatch(batch, writerForEnv())
+  saveState(stateFile, state)
+  return { inserted: counts.inserted, skipped: counts.skipped }
 }
 
 async function serveMcp(): Promise<void> {
-  let buf = Buffer.alloc(0)
+  // Desktop spawns this at session start. One catch-up, then hooks.
+  // Stderr only: stdout is the MCP frame stream.
+  try {
+    await backfill((line) => console.error(line))
+  } catch (error) {
+    console.error(error instanceof Error ? error.message : String(error))
+  }
+  // `Buffer` defaults to ArrayBufferLike. `Buffer.alloc` infers ArrayBuffer,
+  // which cannot be assigned the leftover from `pushFrames`.
+  let buf: Buffer = Buffer.alloc(0)
+  let chain = Promise.resolve()
   process.stdin.on('data', (chunk: Buffer) => {
     const fed = pushFrames(buf, chunk)
     buf = fed.buf
     for (const message of fed.messages) {
-      void handleMcp(message, {
-        onCapture: async (hook: HookInput) => postBatch(hookBatch(hook)),
-      }).then((response) => {
+      chain = chain.then(async () => {
+        const response = await handleMcp(message, { onCapture })
         if (response) process.stdout.write(encodeFrame(response))
       })
     }

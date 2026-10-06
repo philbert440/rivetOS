@@ -1,10 +1,13 @@
-import { mkdtempSync, writeFileSync, mkdirSync } from 'node:fs'
+import { mkdtempSync, readdirSync, writeFileSync, mkdirSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { describe, expect, it } from 'vitest'
+import { createCaptureWriter } from '@rivetos/capture-core'
 import {
   backfillTranscript,
+  captureFromHook,
   consumeTranscriptChunk,
+  deliverBatch,
   discoverTasks,
   emptyState,
   encodeFrame,
@@ -15,6 +18,7 @@ import {
   pickTitle,
   pushFrames,
   sessionPart,
+  taskDirectoryCandidates,
 } from '../src/cowork-capture.js'
 
 describe('cowork capture ids', () => {
@@ -178,5 +182,150 @@ describe('cowork mcp framing', () => {
       { onCapture: async () => ({ inserted: 1, skipped: 0 }) },
     )
     expect(JSON.stringify(call)).toContain('inserted 1')
+  })
+})
+
+describe('desktop task layout', () => {
+  const taskUuid = 'af1d0ad3-ab84-4a4d-8c7e-d344b9e7ee17'
+  const cli = '55555555-5555-5555-5555-555555555555'
+
+  function layout(): { root: string; transcript: string; taskDir: string } {
+    const root = mkdtempSync(join(tmpdir(), 'cowork-desktop-'))
+    const org = join(root, 'local-agent-mode-sessions', 'acct', 'org')
+    const taskDir = join(org, taskUuid.slice(0, 8))
+    const projects = join(taskDir, '.claude', 'projects', 'session')
+    mkdirSync(projects, { recursive: true })
+    const transcript = join(projects, `${cli}.jsonl`)
+    writeFileSync(
+      join(org, `local_${taskUuid}.json`),
+      JSON.stringify({
+        sessionId: `local_${taskUuid}`,
+        cliSessionId: cli,
+        title: 'Desktop shape',
+        cwd: `${taskDir}/outputs`,
+        isArchived: false,
+        userSelectedFolders: ['/work/real-repo'],
+        createdAt: 1_700_000_000_000,
+        lastActivityAt: 1_700_000_100_000,
+      }),
+    )
+    return { root, transcript, taskDir }
+  }
+
+  it('keys on cliSessionId and finds the 8-hex task directory', () => {
+    const { root, transcript, taskDir } = layout()
+    writeFileSync(
+      transcript,
+      `${JSON.stringify({ type: 'user', uuid: 'u-prompt', message: { role: 'user', content: 'ship it' } })}\n`,
+    )
+    const [task] = discoverTasks([root])
+    expect(task?.cliSessionId).toBe(cli)
+    expect(task?.transcriptPath).toBe(transcript)
+    expect(task?.folders).toEqual(['/work/real-repo'])
+    expect(task?.cwd).toBe(`${taskDir}/outputs`)
+    const batch = backfillTranscript(task!, emptyState())
+    expect(batch?.session_key).toBe(`cowork:${cli}`)
+    expect(batch?.settings?.folders).toEqual(['/work/real-repo'])
+    expect(batch?.messages.map((message) => message.event_id)).toEqual([`cowork:${cli}:u-prompt`])
+  })
+
+  it('tries the older local_ directory before the short uuid', () => {
+    const meta = join('/org', `local_${taskUuid}.json`)
+    expect(taskDirectoryCandidates(meta, `/org/${taskUuid.slice(0, 8)}/outputs`)).toEqual([
+      join('/org', `local_${taskUuid}`),
+      join('/org', taskUuid.slice(0, 8)),
+    ])
+  })
+
+  it('a hook prompt then a transcript pass stores one row', () => {
+    const { root, transcript } = layout()
+    const line = JSON.stringify({
+      type: 'user',
+      uuid: 'u-prompt',
+      message: { role: 'user', content: 'ship it' },
+    })
+    writeFileSync(transcript, '')
+    const state = emptyState()
+    expect(
+      captureFromHook(
+        {
+          hook_event_name: 'UserPromptSubmit',
+          session_id: cli,
+          prompt: 'ship it',
+          cwd: '/private/var/empty',
+          transcript_path: transcript,
+        },
+        state,
+      ),
+    ).toBeUndefined()
+    writeFileSync(transcript, `${line}\n`)
+    const hooked = captureFromHook(
+      {
+        hook_event_name: 'UserPromptSubmit',
+        session_id: cli,
+        prompt: 'ship it',
+        cwd: '/private/var/empty',
+        transcript_path: transcript,
+      },
+      state,
+    )
+    expect(hooked?.messages).toHaveLength(1)
+    expect(hooked?.messages[0]?.event_id).toBe(`cowork:${cli}:u-prompt`)
+    expect(hooked?.messages[0]?.metadata).toMatchObject({ source: 'cowork-transcript' })
+    expect(hooked?.settings?.cwd).not.toBe('/private/var/empty')
+    expect(hooked?.settings?.folders).toEqual(['/work/real-repo'])
+    const [task] = discoverTasks([root])
+    expect(backfillTranscript(task!, state)).toBeUndefined()
+  })
+
+  it('a Stop hook then a transcript pass stores the assistant reply once', () => {
+    const { root, transcript } = layout()
+    const line = JSON.stringify({
+      type: 'assistant',
+      uuid: 'u-reply',
+      message: { role: 'assistant', content: 'shipped' },
+    })
+    writeFileSync(transcript, `${line}\n`)
+    const state = emptyState()
+    const hooked = captureFromHook(
+      {
+        hook_event_name: 'Stop',
+        session_id: cli,
+        cwd: '/private/var/empty',
+        last_assistant_message: 'shipped',
+        transcript_path: transcript,
+      },
+      state,
+    )
+    expect(hooked?.messages).toEqual([
+      expect.objectContaining({
+        event_id: `cowork:${cli}:u-reply`,
+        role: 'assistant',
+        content: 'shipped',
+      }),
+    ])
+    const [task] = discoverTasks([root])
+    expect(backfillTranscript(task!, state)).toBeUndefined()
+  })
+})
+
+describe('deliverBatch', () => {
+  it('spools when the den cannot be reached', async () => {
+    const spoolDir = mkdtempSync(join(tmpdir(), 'cowork-spool-'))
+    const writer = createCaptureWriter({
+      denUrl: 'http://127.0.0.1:9',
+      spoolDir,
+      fetch: async () => {
+        throw new Error('econnrefused')
+      },
+    })
+    const batch = hookBatch({
+      hook_event_name: 'UserPromptSubmit',
+      session_id: 'sess',
+      prompt: 'keep me',
+    })
+    const result = await deliverBatch(batch, writer)
+    expect(result.spooled).toBe(true)
+    expect(readdirSync(spoolDir).some((name) => name.endsWith('.json'))).toBe(true)
   })
 })

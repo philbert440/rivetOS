@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
-import { checkHarnesses } from './doctor.js'
+import { checkHarnesses, coworkBundleReady } from './doctor.js'
 import type { DetectedHarness, ExecResult } from '../lib/harness-detect.js'
 
 function grokHarness(home: string): DetectedHarness {
@@ -25,6 +25,16 @@ function claudeHarness(home: string): DetectedHarness {
   }
 }
 
+function coworkHarness(home: string): DetectedHarness {
+  return {
+    id: 'cowork',
+    command: 'cowork',
+    binary: '/bin/cowork',
+    providerKey: undefined,
+    configHome: join(home, '.config', 'Claude'),
+  }
+}
+
 function ok(stdout = ''): ExecResult {
   return { stdout, stderr: '', code: 0, timedOut: false }
 }
@@ -41,6 +51,39 @@ describe('checkHarnesses', () => {
   afterEach(() => {
     rmSync(home, { recursive: true, force: true })
     rmSync(root, { recursive: true, force: true })
+  })
+
+  it('warns on cowork until the bundle exists and .mcp.json points at it', async () => {
+    const exec = vi.fn(async (): Promise<ExecResult> => ok('2.0'))
+    const missing = await checkHarnesses({
+      home,
+      root,
+      detect: async () => [coworkHarness(home)],
+      exec,
+    })
+    expect(missing[0]?.status).toBe('warn')
+    expect(coworkBundleReady(root)).toBe(false)
+
+    const plugin = join(root, 'integrations', 'cowork', 'rivet-memory')
+    mkdirSync(join(plugin, 'capture', 'dist'), { recursive: true })
+    mkdirSync(join(plugin, 'bin'), { recursive: true })
+    writeFileSync(join(plugin, 'capture', 'dist', 'cli.js'), '// bundle\n')
+    writeFileSync(
+      join(plugin, '.mcp.json'),
+      '{"mcpServers":{"rivet-cowork-capture":{"command":"${CLAUDE_PLUGIN_ROOT}/bin/rivet-cowork-capture.sh"}}}\n',
+    )
+    writeFileSync(
+      join(plugin, 'bin', 'rivet-cowork-capture.sh'),
+      'exec node "$ROOT/capture/dist/cli.js" "$@"\n',
+    )
+    const ready = await checkHarnesses({
+      home,
+      root,
+      detect: async () => [coworkHarness(home)],
+      exec,
+    })
+    expect(ready[0]?.status).toBe('pass')
+    expect(ready[0]?.message).toMatch(/memory plugin installed/)
   })
 
   it('returns no rows at all when nothing is detected', async () => {

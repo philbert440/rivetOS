@@ -320,7 +320,8 @@ function stepsFor(h: DetectedHarness, root: string): string[] {
       return [`run ${SETUP_SCRIPTS.cursor} --apply`, 'install Cursor hooks + MCP']
     case 'cowork':
       return [
-        'cowork capture is the Desktop plugin at integrations/cowork/rivet-memory — install it in Claude Desktop, not via this CLI',
+        'build integrations/cowork/rivet-memory/capture into capture/dist/cli.js',
+        'install that directory as a Claude Desktop plugin (node only on the target)',
       ]
   }
 }
@@ -1267,6 +1268,39 @@ function writeDenTerm(
   console.log(`✅ den-term.json  wrote {${keys}} → ${dest}`)
 }
 
+async function buildCoworkCapture(
+  root: string,
+  exec: typeof execFileAsync,
+): Promise<{ ok: boolean; detail: string }> {
+  const capture = join(root, 'integrations', 'cowork', 'rivet-memory', 'capture')
+  const script = join(capture, 'build.mjs')
+  if (!existsSync(script)) return { ok: false, detail: `cowork capture build script missing: ${script}` }
+  const result = await exec(process.execPath, [script], { timeoutMs: 120_000, cwd: capture })
+  if (result.code !== 0) {
+    const detail = (result.stderr || result.stdout).trim().slice(0, 400)
+    return {
+      ok: false,
+      detail: `cowork capture build failed (exit ${result.code ?? 'n/a'}${result.timedOut ? ', timed out' : ''}): ${detail}`,
+    }
+  }
+  const bundle = join(capture, 'dist', 'cli.js')
+  if (!existsSync(bundle)) return { ok: false, detail: `cowork capture build did not write ${bundle}` }
+  const mcpPath = join(root, 'integrations', 'cowork', 'rivet-memory', '.mcp.json')
+  let mcp = ''
+  try {
+    mcp = readFileSync(mcpPath, 'utf8')
+  } catch {
+    return { ok: false, detail: `cowork plugin .mcp.json missing: ${mcpPath}` }
+  }
+  if (!mcp.includes('rivet-cowork-capture.sh') && !mcp.includes('capture/dist/cli.js')) {
+    return { ok: false, detail: 'cowork .mcp.json does not point at the capture sidecar' }
+  }
+  return {
+    ok: true,
+    detail: `built ${bundle}. Install integrations/cowork/rivet-memory as a Claude Desktop plugin.`,
+  }
+}
+
 export async function runPluginsInstall(
   parsed: ParsedInstallArgs,
   deps: PluginsInstallDeps = {},
@@ -1366,11 +1400,7 @@ export async function runPluginsInstall(
           )
           break
         case 'cowork':
-          result = {
-            ok: true,
-            detail:
-              'cowork capture is the Desktop plugin at integrations/cowork/rivet-memory — install it in Claude Desktop, not via this CLI',
-          }
+          result = await buildCoworkCapture(root, exec)
           break
       }
       emit(h.id, result.ok, result.detail)

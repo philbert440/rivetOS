@@ -13,7 +13,9 @@ import {
   DEFAULT_IDLE_MINUTES,
   MIN_BATCH_SIZE,
   applyWindowArgs,
+  pickCoworkHookRewrite,
   planProjectRuleTag,
+  type CoworkHookRow,
   type ProjectResolver,
 } from '@rivetos/memory-core'
 import {
@@ -179,6 +181,7 @@ export class SqliteBackend implements MemoryBackend {
       {
         ...(this.host.projectRule !== undefined ? { resolveProject: this.host.projectRule } : {}),
         allowFilesystem: options?.allowFilesystem !== false,
+        channel: batch.channel,
       },
       (line) => {
         this.host.log(line)
@@ -276,6 +279,42 @@ export class SqliteBackend implements MemoryBackend {
         for (const r of rows) seen.set(r.event_id, { id: r.id, toolResult: r.tool_result })
       }
 
+      const needsHookClaim = batch.messages.some(
+        (message) =>
+          message.metadata?.source === 'cowork-transcript' &&
+          (message.role === 'user' || message.role === 'assistant'),
+      )
+      const hookRows: CoworkHookRow[] = needsHookClaim
+        ? (
+            db
+              .prepare(
+                `SELECT id, role, content, json_extract(metadata, '$.event_id') AS event_id
+                   FROM ros_messages
+                  WHERE conversation_id = ?
+                    AND role IN ('user', 'assistant')
+                    AND json_extract(metadata, '$.source') = 'cowork-hook'
+                  ORDER BY created_at, id`,
+              )
+              .all(conversationId) as unknown as Array<{
+              id: string
+              role: string
+              content: string
+              event_id: string | null
+            }>
+          ).map((row) => ({
+            id: row.id,
+            role: row.role,
+            content: row.content,
+            eventId: row.event_id ?? '',
+          }))
+        : []
+      const consumedHooks = new Set<string>()
+      const claimHook = db.prepare(
+        `UPDATE ros_messages
+            SET metadata = json_set(json_set(COALESCE(metadata, '{}'), '$.event_id', ?), '$.source', 'cowork-transcript')
+          WHERE id = ?`,
+      )
+
       const insert = db.prepare(
         `INSERT INTO ros_messages
            (id, conversation_id, agent, channel, role, content,
@@ -316,6 +355,23 @@ export class SqliteBackend implements MemoryBackend {
             existing.toolResult = toolResult
           }
           written.push({ eventId: message.event_id, id: existing.id, inserted: false })
+          continue
+        }
+        const claim = pickCoworkHookRewrite(
+          {
+            role: message.role,
+            content,
+            source: message.metadata?.source,
+            replacesEventId: message.metadata?.replaces_event_id,
+          },
+          hookRows,
+          consumedHooks,
+        )
+        if (claim) {
+          claimHook.run(message.event_id, claim.id)
+          consumedHooks.add(claim.id)
+          seen.set(message.event_id, { id: claim.id, toolResult })
+          written.push({ eventId: message.event_id, id: claim.id, inserted: false })
           continue
         }
         const id = randomUUID()

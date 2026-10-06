@@ -6,27 +6,27 @@ Claude Desktop Cowork sessions are a `cowork` harness. This plugin captures them
 
 Full-VM mode keeps the transcript on a disk image the host cannot read. Plugin MCP servers run on the host, and the bundled CLI can call them from `{ "type": "mcp_tool" }` hooks. That is the path that works with the sandbox on. Hooks carry the prompt, the final text, tool calls and results, and subagent stops. They do not carry reasoning or model usage.
 
-With the sandbox off (`lastSeenRequireCoworkFullVmSandbox` null), task metadata is `local-agent-mode-sessions/**/local_<task>.json` and the transcript is the sibling `local_<task>/.claude/projects/<slug>/<cliSessionId>.jsonl`. `rivet-cowork-capture.sh --backfill` imports those files once. It is not a resident poll. A byte cursor per transcript skips a partial last line.
+With the sandbox off, task metadata is `local-agent-mode-sessions/**/local_<task>.json`. The transcript is `<task-dir>/.claude/projects/<slug>/<cliSessionId>.jsonl`. Older builds name the task directory `local_<task>`. Desktop 2.19675.1 names it the first 8 hex of the task uuid (no `local_` prefix) and sets metadata `cwd` to `<that dir>/outputs`. `rivet-cowork-capture.sh --backfill` imports those files once. It is not a resident poll. The den runs that same pass once at startup when the bundle exists, and drains the capture spool. A byte cursor per transcript skips a partial last line.
 
 ## Install
 
-1. Build the sidecar: `npm run build` in `capture/`.
-2. Install this directory as a Claude Desktop plugin (`integrations/cowork/rivet-memory`).
-3. The den must be reachable. `RIVETOS_CAPTURE_URL` overrides the den URL. Loopback capture uses the den's normal local path.
+1. `rivetos plugins install cowork` writes `capture/dist/cli.js`, a single file. The target machine needs node, not npm.
+2. Install this directory as a Claude Desktop plugin (`integrations/cowork/rivet-memory`). `.mcp.json` points at `bin/rivet-cowork-capture.sh`, which execs the bundle.
+3. The den must be reachable. `RIVETOS_CAPTURE_URL` overrides the den URL. If the den is down, the batch is spooled and delivered on the next drain. Loopback capture uses the den's normal local path.
 
 ## Event ids
 
 Text with a uuid is `cowork:<session>:<uuid>`. A tool is `cowork:<session>:tool:<tool_use_id>`. A transcript line with neither is `cowork:<session>:occ:<sha256>:<n>`.
 
-A hook uses the same id when the payload has `uuid`, `message_id`, `prompt_id`, or `tool_use_id`. Otherwise it stores `cowork:<session>:hook:<hash>`, which does not collide with an occurrence id and also does not dedupe against one. `tool_use_id` is the reliable match between a hook row and a later transcript row.
+Hook `session_id` is `cliSessionId`: the CLI writes that id into the transcript filename, every transcript line's `sessionId`, and the hook payload. The task file's own `sessionId` (`local_<task-uuid>`) is a different value and is never the session key.
 
-The session key is `cliSessionId` when the hook carries it, else `session_id`, else `unknown`. It is not verified that the hook payload includes `cliSessionId`. The hook templates send `session_id`. If that is the bundled CLI's session id, it matches the transcript's `cliSessionId`.
+Every hook passes `transcript_path`. When that file is readable, the hook does not store its own text. It ingests the transcript, so prompt and reply rows use transcript ids on both paths. A line not flushed yet waits for the next hook or for backfill. Hook-only text (`cowork:<session>:hook:<hash>`) happens only when the host cannot read the file. Once the transcript is readable, the store rewrites that hook row's event id to the transcript id, so a later pass stores nothing new. `tool_use_id` still matches tool rows on both paths.
 
 ## Timestamps and the project tag
 
 Backfill sets the conversation's `created_at` from metadata `createdAt` and `updated_at` from `lastActivityAt`, so old tasks do not jump to the top of the session list. A tool row stays pending until its result arrives, including across backfill runs, and the result updates the same event id.
 
-`settings.cwd` is recorded. Cowork's cwd is the task sandbox (`…/local_<task>/outputs`), and the project rule skips those paths.
+`settings.cwd` is recorded for display. It is not a project: the task cwd is the sandbox outputs directory, and the CLI cwd is `/private/var/empty`. Attached repos are metadata `userSelectedFolders`, stored as `settings.folders`, and those are what the project rule uses.
 
 ## Titles
 

@@ -113,17 +113,21 @@ export const resolveProjectOnNode: ProjectResolver = nodeResolver
 export const resolveProjectWithoutFs: ProjectResolver = (cwd) => resolveProjectFromCwd(cwd, NO_FS)
 
 /**
- * Cowork's task sandbox (`…/local_<task>` or `…/local_<task>/outputs`) is not
- * a repository. The project rule must not fire on it. Backslashes are
- * normalized so a Windows path matches the same way.
+ * Cowork's task sandbox is not a repository. The project rule must not fire
+ * on it. That is `…/local_<task>`, `…/local_<task>/outputs`, the Desktop
+ * layout `…/local-agent-mode-sessions/<task>/outputs`, and the CLI cwd
+ * `/private/var/empty`. Backslashes are normalized so a Windows path matches
+ * the same way.
  */
 export function isTaskSandboxCwd(cwd: string): boolean {
   const norm = cwd.replace(/\\/g, '/').replace(/\/+$/, '')
+  if (norm === '/private/var/empty') return true
   const parts = norm.split('/')
   const last = parts[parts.length - 1] ?? ''
   const parent = parts[parts.length - 2] ?? ''
   if (/^local_.+/.test(last)) return true
-  return last === 'outputs' && /^local_.+/.test(parent)
+  if (last === 'outputs' && /^local_.+/.test(parent)) return true
+  return last === 'outputs' && parts.includes('local-agent-mode-sessions')
 }
 
 /** `settings.cwd` when it is a trimmed, safe absolute path, else undefined. */
@@ -147,23 +151,47 @@ export interface ProjectRuleOptions {
    * only the basename rule runs, whatever resolver was injected.
    */
   allowFilesystem?: boolean
+  /**
+   * Capture channel. `cowork` does not resolve `settings.cwd` (that path is
+   * the task sandbox or `/private/var/empty`). Attached repos, when present,
+   * are `settings.folders`.
+   */
+  channel?: string
+}
+
+function isCoworkCapture(
+  settings: Record<string, unknown> | undefined,
+  channel: string | undefined,
+): boolean {
+  if (channel === 'cowork') return true
+  const source = settings?.source
+  return source === 'cowork-hook' || source === 'cowork-transcript'
+}
+
+/** Absolute, non-sandbox paths from `settings.folders`. */
+function foldersFromSettings(settings: Record<string, unknown> | undefined): string[] {
+  const raw = settings?.folders
+  if (!Array.isArray(raw)) return []
+  const out: string[] = []
+  for (const item of raw) {
+    if (typeof item !== 'string') continue
+    const folder = item.trim()
+    if (folder === '' || folder.length > 4096 || !isSafeAbsolutePath(folder)) continue
+    if (isTaskSandboxCwd(folder)) continue
+    out.push(folder)
+  }
+  return out
 }
 
 /**
  * Phase 1, outside any transaction. Never throws: a resolver failure means
  * no tag.
  */
-export async function planProjectRuleTag(
-  settings: Record<string, unknown> | undefined,
-  options: ProjectRuleOptions = {},
-  log: (line: string) => void = (line) => {
-    console.warn(line)
-  },
+async function resolveOne(
+  cwd: string,
+  options: ProjectRuleOptions,
+  log: (line: string) => void,
 ): Promise<ProjectRuleResult | null> {
-  if (options.resolveProject === null) return null
-  const cwd = cwdFromSettings(settings)
-  if (cwd === undefined) return null
-  if (isTaskSandboxCwd(cwd)) return null
   const resolve =
     options.allowFilesystem === false
       ? resolveProjectWithoutFs
@@ -174,4 +202,26 @@ export async function planProjectRuleTag(
     log(`[memory] project rule resolve failed: ${err instanceof Error ? err.message : String(err)}`)
     return null
   }
+}
+
+export async function planProjectRuleTag(
+  settings: Record<string, unknown> | undefined,
+  options: ProjectRuleOptions = {},
+  log: (line: string) => void = (line) => {
+    console.warn(line)
+  },
+): Promise<ProjectRuleResult | null> {
+  if (options.resolveProject === null) return null
+  // Cowork's cwd is never a project. Attached folders are, sandbox paths aside.
+  if (isCoworkCapture(settings, options.channel)) {
+    for (const folder of foldersFromSettings(settings)) {
+      const hit = await resolveOne(folder, options, log)
+      if (hit) return hit
+    }
+    return null
+  }
+  const cwd = cwdFromSettings(settings)
+  if (cwd === undefined) return null
+  if (isTaskSandboxCwd(cwd)) return null
+  return resolveOne(cwd, options, log)
 }
