@@ -281,22 +281,25 @@ async function runSuggestTags(summaryId: string, helpers: JobHelpers): Promise<v
   const additions = proposals.filter((p) => p.action !== 'remove')
   const removals = proposals.filter((p) => p.action === 'remove')
   const proposedBy = config.tagger.model
-  const allowProtected = config.taggerAllowProtectedRemovals === true
+  const allowProtected = config.taggerAllowProtectedRemovals
   // One transaction: the writes land together or not at all, so a failure
   // that is later dropped on the final attempt cannot leave a summary tagged
   // without its conversation. Removals are only flagged.
-  const { onSummary, onConversation, taxonomy, removed } = await inTransaction(client, async (tx) => ({
-    onSummary: await insertSuggestions(tx, 'summary', summaryId, additions, proposedBy),
-    onConversation: conversationId
-      ? await insertSuggestions(tx, 'conversation', conversationId, additions, proposedBy)
-      : 0,
-    taxonomy: await proposeTaxonomyValues(tx, additions, proposedBy),
-    removed:
-      (await proposeTagRemovals(tx, 'summary', summaryId, removals, allowProtected)) +
-      (conversationId
-        ? await proposeTagRemovals(tx, 'conversation', conversationId, removals, allowProtected)
-        : 0),
-  }))
+  const { onSummary, onConversation, taxonomy, removed } = await inTransaction(
+    client,
+    async (tx) => ({
+      onSummary: await insertSuggestions(tx, 'summary', summaryId, additions, proposedBy),
+      onConversation: conversationId
+        ? await insertSuggestions(tx, 'conversation', conversationId, additions, proposedBy)
+        : 0,
+      taxonomy: await proposeTaxonomyValues(tx, additions, proposedBy),
+      removed:
+        (await proposeTagRemovals(tx, 'summary', summaryId, removals, allowProtected)) +
+        (conversationId
+          ? await proposeTagRemovals(tx, 'conversation', conversationId, removals, allowProtected)
+          : 0),
+    }),
+  )
   helpers.logger.info(
     `suggest-tags: ${short} — ${String(additions.length)} add, ${String(removals.length)} remove, ` +
       `${String(onSummary)} new on summary, ${String(onConversation)} new on conversation, ` +

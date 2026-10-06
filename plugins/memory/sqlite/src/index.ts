@@ -34,7 +34,11 @@ export {
 export type { ConsolidateOptions, RecompileOptions } from './wiki-maintenance.js'
 export type { WikiTopicRow, WikiTopicHit, TopicResolution } from './wiki.js'
 export { SqliteRoutingMemory, userFromSessionKey, isSafeUserId, foldUserId } from './routing.js'
-export { exportSqliteMemory, importSqliteMemory, backfillSqliteProjectRules } from './portability.js'
+export {
+  exportSqliteMemory,
+  importSqliteMemory,
+  backfillSqliteProjectRules,
+} from './portability.js'
 export type { SqliteExportOptions, SqliteImportOptions, SqliteImportResult } from './portability.js'
 export { EmbedClient } from './embed.js'
 export type { EmbedConfig, EmbedOutcome } from './embed.js'
@@ -590,7 +594,8 @@ export async function resolveTaggingConfig(
       })
     }
     const tokenSource = createTokenSource({ argv })
-    if (shape === 'native') return done({ enabled: true, native: { url: endpoint, model, tokenSource } })
+    if (shape === 'native')
+      return done({ enabled: true, native: { url: endpoint, model, tokenSource } })
     return done({ enabled: true, llm: { endpoint, model, tokenSource } })
   }
   const apiKey = str(cfg.tagger_api_key) ?? str(env.RIVETOS_TAGGER_API_KEY)

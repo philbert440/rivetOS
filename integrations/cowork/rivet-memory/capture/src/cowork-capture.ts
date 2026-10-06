@@ -18,11 +18,7 @@
 import { openSync, readSync, closeSync, statSync, readdirSync, readFileSync } from 'node:fs'
 import { basename, dirname, join } from 'node:path'
 import { homedir } from 'node:os'
-import {
-  contentTupleHash,
-  occurrenceIndex,
-  type OccurrenceKey,
-} from '@rivetos/capture-core'
+import { contentTupleHash, occurrenceIndex, type OccurrenceKey } from '@rivetos/capture-core'
 import type { CaptureBatch, CaptureMessage } from '@rivetos/capture-core'
 
 export const CAPTURE_AGENT = 'rivet-cowork'
@@ -72,10 +68,7 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return !!value && typeof value === 'object' && !Array.isArray(value)
 }
 
-export function sessionPart(input: {
-  cliSessionId?: string
-  session_id?: string
-}): string {
+export function sessionPart(input: { cliSessionId?: string; session_id?: string }): string {
   return input.cliSessionId || input.session_id || 'unknown'
 }
 
@@ -87,7 +80,7 @@ function textOf(content: unknown): string {
   if (typeof content === 'string') return content
   if (!Array.isArray(content)) return ''
   return content
-    .map((block) => (isRecord(block) && block.type === 'text' ? asString(block.text) ?? '' : ''))
+    .map((block) => (isRecord(block) && block.type === 'text' ? (asString(block.text) ?? '') : ''))
     .filter((part) => part !== '')
     .join('\n')
 }
@@ -533,7 +526,10 @@ export function backfillTranscript(
 
 export function encodeFrame(payload: unknown): Buffer {
   const body = Buffer.from(JSON.stringify(payload), 'utf8')
-  return Buffer.concat([Buffer.from(`Content-Length: ${String(body.length)}\r\n\r\n`, 'utf8'), body])
+  return Buffer.concat([
+    Buffer.from(`Content-Length: ${String(body.length)}\r\n\r\n`, 'utf8'),
+    body,
+  ])
 }
 
 export function pushFrames(buf: Buffer, chunk: Buffer): { buf: Buffer; messages: unknown[] } {
@@ -594,8 +590,7 @@ export async function handleMcp(
       tools: [
         {
           name: CAPTURE_TOOL,
-          description:
-            'Record one Cowork hook event into RivetOS memory. Capture is always on.',
+          description: 'Record one Cowork hook event into RivetOS memory. Capture is always on.',
           inputSchema: {
             type: 'object',
             properties: {
@@ -623,7 +618,12 @@ export async function handleMcp(
     try {
       const counts = await deps.onCapture(args)
       return respond({
-        content: [{ type: 'text', text: `inserted ${String(counts.inserted)} skipped ${String(counts.skipped)}` }],
+        content: [
+          {
+            type: 'text',
+            text: `inserted ${String(counts.inserted)} skipped ${String(counts.skipped)}`,
+          },
+        ],
       })
     } catch (error) {
       return fail(-32000, error instanceof Error ? error.message : String(error))

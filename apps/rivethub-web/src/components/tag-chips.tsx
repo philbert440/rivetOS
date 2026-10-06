@@ -7,7 +7,13 @@
 
 import { useState, type JSX } from 'react'
 import { Check, Plus, X } from 'lucide-react'
-import { chipLabel, tagLabel, type AnyTag, isFilterableChip, isTagLiteral } from '../lib/session-tags.js'
+import {
+  chipLabel,
+  tagLabel,
+  type AnyTag,
+  isFilterableChip,
+  isTagLiteral,
+} from '../lib/session-tags.js'
 import { cn } from '../lib/utils.js'
 
 export function TagChip(props: {

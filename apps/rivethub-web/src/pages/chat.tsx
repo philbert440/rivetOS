@@ -2138,22 +2138,22 @@ function ActiveSession(props: {
       )}
       {/* [Terminal | Chat] — hidden when the harness cannot be driven. */}
       {!gate.readOnly && (
-      <span className="shrink-0">
-        <SegmentedControl
-          ariaLabel="Session view"
-          value={mode}
-          onChange={(v) => {
-            // Terminal goes through enterTerminal: a parked ('failed')
-            // spawn gate re-arms the spawn effect.
-            if (v === 'terminal') enterTerminal()
-            else setMode(v)
-          }}
-          options={[
-            { value: 'terminal', label: 'Terminal' },
-            { value: 'chat', label: 'Chat' },
-          ]}
-        />
-      </span>
+        <span className="shrink-0">
+          <SegmentedControl
+            ariaLabel="Session view"
+            value={mode}
+            onChange={(v) => {
+              // Terminal goes through enterTerminal: a parked ('failed')
+              // spawn gate re-arms the spawn effect.
+              if (v === 'terminal') enterTerminal()
+              else setMode(v)
+            }}
+            options={[
+              { value: 'terminal', label: 'Terminal' },
+              { value: 'chat', label: 'Chat' },
+            ]}
+          />
+        </span>
       )}
     </>
   )
@@ -2257,46 +2257,46 @@ function ActiveSession(props: {
             </div>
           )}
           {!gate.readOnly && (
-          <Composer
-            nativeControls={turnOptions.models.length > 0}
-            turnOptions={turnOptions}
-            onTurnPick={
-              nativeHarnessId
-                ? (pick) =>
-                    setSetting(settingsKey, { turnPick: { harnessId: nativeHarnessId, ...pick } })
-                : undefined
-            }
-            launchOptions={launchOptions}
-            onLaunchModel={(model) => writeLaunchState({ model })}
-            sessionId={props.sessionId}
-            wsStatus={wsStatus}
-            settingsKey={settingsKey}
-            gatewayBase={isRemote ? sessionBase : undefined}
-            agent={settings?.agent || undefined}
-            agentLocked={spawnInFlight}
-            effort={settings?.effort ?? 'medium'}
-            systemPrompt={settings?.systemPrompt}
-            onSetting={(patch) => setSetting(settingsKey, patch)}
-            onSend={sendToHarness}
-            handleRef={composerRef}
-            ask={askDismissed ? [] : askQuestions}
-            askScreen={canonicalId ? boundPrompt?.screen : undefined}
-            askKey={askKey}
-            onDismissAsk={onDismissAsk}
-            onAnswerAsk={
-              canonicalId
-                ? async (answers) => {
-                    const prompt =
-                      useChat.getState().prompts[
-                        useChat.getState().resolveSessionKey(props.sessionId)
-                      ]?.[0]
-                    if (!prompt) throw new Error('no open prompt')
-                    const gw = await sessionGateway()
-                    await gw.answerHarnessPrompt(canonicalId, prompt.promptId, { answers })
-                  }
-                : undefined
-            }
-          />
+            <Composer
+              nativeControls={turnOptions.models.length > 0}
+              turnOptions={turnOptions}
+              onTurnPick={
+                nativeHarnessId
+                  ? (pick) =>
+                      setSetting(settingsKey, { turnPick: { harnessId: nativeHarnessId, ...pick } })
+                  : undefined
+              }
+              launchOptions={launchOptions}
+              onLaunchModel={(model) => writeLaunchState({ model })}
+              sessionId={props.sessionId}
+              wsStatus={wsStatus}
+              settingsKey={settingsKey}
+              gatewayBase={isRemote ? sessionBase : undefined}
+              agent={settings?.agent || undefined}
+              agentLocked={spawnInFlight}
+              effort={settings?.effort ?? 'medium'}
+              systemPrompt={settings?.systemPrompt}
+              onSetting={(patch) => setSetting(settingsKey, patch)}
+              onSend={sendToHarness}
+              handleRef={composerRef}
+              ask={askDismissed ? [] : askQuestions}
+              askScreen={canonicalId ? boundPrompt?.screen : undefined}
+              askKey={askKey}
+              onDismissAsk={onDismissAsk}
+              onAnswerAsk={
+                canonicalId
+                  ? async (answers) => {
+                      const prompt =
+                        useChat.getState().prompts[
+                          useChat.getState().resolveSessionKey(props.sessionId)
+                        ]?.[0]
+                      if (!prompt) throw new Error('no open prompt')
+                      const gw = await sessionGateway()
+                      await gw.answerHarnessPrompt(canonicalId, prompt.promptId, { answers })
+                    }
+                  : undefined
+              }
+            />
           )}
         </>
       ) : termError ? (

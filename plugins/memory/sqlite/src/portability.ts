@@ -15,7 +15,13 @@ import type { Readable, Writable } from 'node:stream'
 import { pipeline } from 'node:stream/promises'
 import { createGunzip, createGzip } from 'node:zlib'
 import type { DatabaseSync, SQLInputValue } from 'node:sqlite'
-import { EXPORT_COLUMNS, EXPORT_TABLES, planProjectRuleTag, type ExportTable, type ProjectResolver } from '@rivetos/memory-core'
+import {
+  EXPORT_COLUMNS,
+  EXPORT_TABLES,
+  planProjectRuleTag,
+  type ExportTable,
+  type ProjectResolver,
+} from '@rivetos/memory-core'
 import type { ProjectRuleResult } from '@rivetos/types'
 import { SqliteTagVocabulary } from './tag-vocabulary.js'
 
@@ -352,9 +358,7 @@ export async function importSqliteMemory(
       const { tagged } = await backfillSqliteProjectRules(db, { log })
       if (tagged > 0) log(`project rule tagged ${String(tagged)} imported conversation(s)`)
     } catch (err) {
-      log(
-        `project rule backfill skipped: ${err instanceof Error ? err.message : String(err)}`,
-      )
+      log(`project rule backfill skipped: ${err instanceof Error ? err.message : String(err)}`)
     }
   }
   return { inserted, skipped, merged }

@@ -1077,7 +1077,9 @@ async function backfillRuleTags(args: string[]): Promise<void> {
           console.log(line)
         },
       })
-      console.log(`project rule: tagged ${String(tagged)} of ${String(scanned)} conversation(s) with a cwd`)
+      console.log(
+        `project rule: tagged ${String(tagged)} of ${String(scanned)} conversation(s) with a cwd`,
+      )
     } finally {
       memory.close()
     }

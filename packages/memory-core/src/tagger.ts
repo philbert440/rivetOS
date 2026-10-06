@@ -4,7 +4,12 @@
  * backend brings its own LLM call and its own store.
  */
 
-import { normalizeTagKey, normalizeTagValue, PROJECT_RULE_NAME, type TagProposal } from '@rivetos/types'
+import {
+  normalizeTagKey,
+  normalizeTagValue,
+  PROJECT_RULE_NAME,
+  type TagProposal,
+} from '@rivetos/types'
 
 /** Seed keys the prompt always offers. Free-form keys are still accepted. */
 export const TAG_SEED_KEYS = ['project', 'topic'] as const

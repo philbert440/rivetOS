@@ -29,21 +29,22 @@ import {
 
 function rootsFromEnv(env: NodeJS.ProcessEnv): string[] {
   const home = env.HOME || env.USERPROFILE || ''
-  const roots = [
-    `${home}/Library/Application Support/Claude`,
-    `${home}/.config/Claude`,
-  ]
+  const roots = [`${home}/Library/Application Support/Claude`, `${home}/.config/Claude`]
   const extra = env.CLAUDE_CONFIG_DIR?.trim()
   if (extra) roots.push(extra)
   return roots
 }
 
-async function postBatch(batch: CaptureBatch | undefined): Promise<{ inserted: number; skipped: number }> {
+async function postBatch(
+  batch: CaptureBatch | undefined,
+): Promise<{ inserted: number; skipped: number }> {
   if (!batch) return { inserted: 0, skipped: 0 }
   const transport = resolveCaptureTransport(process.env)
   const override = process.env.RIVETOS_CAPTURE_URL?.trim()
   if (transport.kind !== 'den' && !override) {
-    throw new Error(transport.kind === 'none' ? transport.reason : 'cowork capture posts to the den')
+    throw new Error(
+      transport.kind === 'none' ? transport.reason : 'cowork capture posts to the den',
+    )
   }
   const denUrl = override || (transport.kind === 'den' ? transport.denUrl : '')
   const writer = createCaptureWriter({

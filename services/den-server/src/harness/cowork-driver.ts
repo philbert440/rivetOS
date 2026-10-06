@@ -15,13 +15,18 @@ import {
   type HarnessCapabilities,
   type HarnessDriver,
   type HarnessEvent,
+  type HarnessSessionSummary,
   type SendUserTurnResult,
   type SessionId,
-  type SessionSummary,
   type StartSessionOpts,
   type UserTurn,
 } from '@rivetos/types'
-import { findCoworkTask, listCoworkTasks, readCoworkTurns, type CoworkTaskMeta } from './cowork-store.js'
+import {
+  findCoworkTask,
+  listCoworkTasks,
+  readCoworkTurns,
+  type CoworkTaskMeta,
+} from './cowork-store.js'
 
 export const COWORK_HARNESS_ID = 'cowork' as const
 
@@ -35,14 +40,12 @@ const CAPABILITIES: HarnessCapabilities = {
 }
 
 function unsupported(op: string): HarnessError {
-  return new HarnessError(
-    'capability_unsupported',
-    `cowork is capture-only and cannot ${op}`,
-    { harnessId: COWORK_HARNESS_ID },
-  )
+  return new HarnessError('capability_unsupported', `cowork is capture-only and cannot ${op}`, {
+    harnessId: COWORK_HARNESS_ID,
+  })
 }
 
-function summary(task: CoworkTaskMeta): SessionSummary {
+function summary(task: CoworkTaskMeta): HarnessSessionSummary {
   return {
     sessionId: formatSessionId(COWORK_HARNESS_ID, task.cliSessionId),
     harnessId: COWORK_HARNESS_ID,
@@ -58,11 +61,11 @@ export class CoworkDriver implements HarnessDriver {
   readonly harnessId = COWORK_HARNESS_ID
   readonly capabilities = CAPABILITIES
 
-  startSession(_opts?: StartSessionOpts): Promise<SessionSummary> {
+  startSession(_opts?: StartSessionOpts): Promise<HarnessSessionSummary> {
     return Promise.reject(unsupported('start a session'))
   }
 
-  resumeSession(_sessionId: SessionId): Promise<SessionSummary> {
+  resumeSession(_sessionId: SessionId): Promise<HarnessSessionSummary> {
     return Promise.reject(unsupported('resume a session'))
   }
 
@@ -92,12 +95,12 @@ export class CoworkDriver implements HarnessDriver {
 
   close(): void {}
 
-  async listSessions(): Promise<SessionSummary[]> {
+  async listSessions(): Promise<HarnessSessionSummary[]> {
     const tasks = await listCoworkTasks()
     return tasks.map(summary)
   }
 
-  async getSession(sessionId: SessionId): Promise<SessionSummary | null> {
+  async getSession(sessionId: SessionId): Promise<HarnessSessionSummary | null> {
     const { harnessId, nativeSessionId } = parseSessionId(sessionId)
     if (harnessId !== COWORK_HARNESS_ID) return null
     const task = await findCoworkTask(nativeSessionId)
@@ -105,7 +108,9 @@ export class CoworkDriver implements HarnessDriver {
   }
 
   /** Hard-resync source for `GET /api/harness-sessions/:id/transcript`. */
-  async transcript(sessionId: SessionId): Promise<{ turns: Awaited<ReturnType<typeof readCoworkTurns>> }> {
+  async transcript(
+    sessionId: SessionId,
+  ): Promise<{ turns: Awaited<ReturnType<typeof readCoworkTurns>> }> {
     const { harnessId, nativeSessionId } = parseSessionId(sessionId)
     if (harnessId !== COWORK_HARNESS_ID) return { turns: [] }
     return { turns: await readCoworkTurns(nativeSessionId) }

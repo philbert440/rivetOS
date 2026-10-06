@@ -896,18 +896,20 @@ export async function backfillPostgresProjectRules(
       params.push(opts.since)
       where += ` AND (updated_at >= $1::timestamptz OR created_at >= $1::timestamptz)`
     }
-    const { rows } = await client.query<{ id: string; settings: unknown }>(
+    const { rows } = await client.query(
       `SELECT id, settings FROM ros_conversations WHERE ${where}`,
       params,
     )
     const planned: Array<{ id: string; hit: ProjectRuleResult }> = []
     for (const row of rows) {
+      const id = asText(row.id)
+      if (!id) continue
       const settings =
         row.settings && typeof row.settings === 'object' && !Array.isArray(row.settings)
           ? (row.settings as Record<string, unknown>)
           : undefined
       const hit = await planProjectRuleTag(settings, {}, log)
-      if (hit) planned.push({ id: row.id, hit })
+      if (hit) planned.push({ id, hit })
     }
     await client.query('BEGIN')
     try {

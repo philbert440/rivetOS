@@ -226,9 +226,7 @@ export class SqliteTagStore {
       const removal = r.removal_state === 'suggested'
       return {
         ...tag,
-        ...(removal
-          ? { action: 'remove' as const, reason: r.removal_reason || tag.reason }
-          : {}),
+        ...(removal ? { action: 'remove' as const, reason: r.removal_reason || tag.reason } : {}),
         sessionKey: r.session_key,
         title: r.title,
         agent: r.agent,
@@ -248,9 +246,7 @@ export class SqliteTagStore {
     for (let i = 0; i < ids.length; i += MAX_BOUND) {
       const chunk = ids.slice(i, i + MAX_BOUND)
       const classified = this.db
-        .prepare(
-          `SELECT id, removal_state FROM ros_tags WHERE id IN (${marks(chunk.length)})`,
-        )
+        .prepare(`SELECT id, removal_state FROM ros_tags WHERE id IN (${marks(chunk.length)})`)
         .all(...chunk) as unknown as Array<{ id: string; removal_state: string | null }>
       const removalIds = classified.filter((r) => r.removal_state === 'suggested').map((r) => r.id)
       const addIds = chunk.filter((id) => !removalIds.includes(id))
