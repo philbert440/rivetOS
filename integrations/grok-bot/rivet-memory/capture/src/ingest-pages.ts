@@ -1,6 +1,7 @@
 /**
- * ReadTranscript page backfill → <session>-v4-backfill
- * (or <session>-v4-backfill-<rev> when --revision is set).
+ * ReadTranscript page ingest → <session>-v4-backfill
+ * (or <session>-v4-backfill-<rev> when --revision is set, or
+ * <session>-v4-live when --live is set).
  *
  * Pages are dumped as <bot-slug>-<before>.txt. Positions are conversation
  * indices, not store.db seq. Timestamps come only from user `<timestamp>`
@@ -22,7 +23,7 @@
  * the exact `:<position>:<sub>` id.
  */
 import { createHash } from 'node:crypto'
-import { readdirSync, readFileSync, statSync } from 'node:fs'
+import { readdirSync, statSync } from 'node:fs'
 import { basename, join } from 'node:path'
 import type { CaptureMessage } from '@rivetos/capture-core'
 import pg from 'pg'
@@ -36,14 +37,20 @@ import {
 import type { GrokbotIngestInput, GrokbotIngestResult } from './ingest-rows.js'
 import { clampCreatedAt, toIngestRows, type TimeClock } from './normalize.js'
 import { normalizePages } from './pages.js'
-import { parseInput, partText, recordParts, recordRole } from './parse.js'
+import { partText, recordParts, recordRole } from './parse.js'
 import { READONLY_POOL_OPTIONS, wrapReadOnlyClient } from './pg-readonly.js'
 import { extractTimestampTag } from './timestamps.js'
+import {
+  applySpoolConsensus,
+  inspectPageFiles,
+  toParsedInput,
+} from './page-validate.js'
 import {
   DEFAULT_BACKFILL_OVERLAP_HOURS,
   ORDINAL_STRIDE,
   SESSION_SUFFIX_V4,
   sessionBackfillSuffix,
+  sessionLiveSuffix,
   type BotIdentity,
   type ParsedInput,
 } from './types.js'
@@ -131,6 +138,8 @@ export interface IngestPagesCounts {
   conflicts: number[]
   pagesFailed: number
   unknownSlugs: number
+  /** Header-range positions skipped because a page was rejected. */
+  skippedGaps: number
 }
 
 export interface IngestPagesResult {
@@ -224,6 +233,21 @@ export function backfillSession(
 
 export function liveV4Session(sessionBase: string, liveSuffix = SESSION_SUFFIX_V4): string {
   return sessionBase.endsWith(liveSuffix) ? sessionBase : `${sessionBase}${liveSuffix}`
+}
+
+/** Hourly capture tag: `grokbot-<slug>-v4-live`. */
+export function v4LiveSession(sessionBase: string, liveSuffix = SESSION_SUFFIX_V4): string {
+  const suffix = sessionLiveSuffix(liveSuffix)
+  return sessionBase.endsWith(suffix) ? sessionBase : `${sessionBase}${suffix}`
+}
+
+export function pageIngestSession(
+  sessionBase: string,
+  opts?: { live?: boolean; liveSuffix?: string; revision?: string },
+): string {
+  const liveSuffix = opts?.liveSuffix ?? SESSION_SUFFIX_V4
+  if (opts?.live) return v4LiveSession(sessionBase, liveSuffix)
+  return backfillSession(sessionBase, liveSuffix, opts?.revision)
 }
 
 /**
@@ -457,13 +481,18 @@ export async function loadOverlapIndex(
     overlapHours?: number
     liveSuffix?: string
     revision?: string
+    live?: boolean
     candidateCreatedAt?: Array<string | undefined>
   },
 ): Promise<OverlapIndex> {
   const hours = opts?.overlapHours ?? DEFAULT_BACKFILL_OVERLAP_HOURS
   const liveSuffix = opts?.liveSuffix ?? SESSION_SUFFIX_V4
   const liveSession = liveV4Session(ident.session, liveSuffix)
-  const backfill = backfillSession(ident.session, liveSuffix, opts?.revision)
+  const idSession = pageIngestSession(ident.session, {
+    live: opts?.live,
+    liveSuffix,
+    revision: opts?.revision,
+  })
   const sourceIds = new Map<string, string | readonly string[] | undefined>()
   const v4Hits: V4OverlapHit[] = []
   // overlap-hours 0 (the default) does not read -v4. A positive window is
@@ -496,11 +525,11 @@ export async function loadOverlapIndex(
     }
   }
   if (store.sourceIds) {
-    for (const ref of await store.sourceIds(backfill, ident.agent)) {
+    for (const ref of await store.sourceIds(idSession, ident.agent)) {
       rememberSourceId(sourceIds, ref.sourceId, ref.contentHash)
     }
   } else {
-    for (const row of await store.rowsSince(backfill, ident.agent)) {
+    for (const row of await store.rowsSince(idSession, ident.agent)) {
       rememberSourceId(sourceIds, row.metadata?.source_id, row.metadata?.content_hash)
     }
   }
@@ -648,7 +677,7 @@ function blankCounts(
   session: string,
   agent: string,
   pages: number,
-  extra?: Partial<Pick<IngestPagesCounts, 'pagesFailed' | 'unknownSlugs'>>,
+  extra?: Partial<Pick<IngestPagesCounts, 'pagesFailed' | 'unknownSlugs' | 'skippedGaps'>>,
 ): IngestPagesCounts {
   return {
     slug,
@@ -665,6 +694,7 @@ function blankCounts(
     conflicts: [],
     pagesFailed: extra?.pagesFailed ?? 0,
     unknownSlugs: extra?.unknownSlugs ?? 0,
+    skippedGaps: extra?.skippedGaps ?? 0,
   }
 }
 
@@ -698,13 +728,15 @@ export async function ingestPages(
     overlapHours?: number
     liveSuffix?: string
     revision?: string
+    live?: boolean
     overlapUnavailable?: boolean
     deps?: IngestPagesDeps
   },
 ): Promise<IngestPagesResult> {
   const commit = Boolean(opts?.commit)
   const liveSuffix = opts?.liveSuffix ?? SESSION_SUFFIX_V4
-  const revision = opts?.revision
+  const revision = opts?.live ? undefined : opts?.revision
+  const live = Boolean(opts?.live)
   const discover = opts?.deps?.discover ?? discoverModels
   const catalog = discover({ agentsDir: opts?.agentsDir })
   const cfg = loadIdentityConfig()
@@ -731,19 +763,25 @@ export async function ingestPages(
       continue
     }
     const slug = personaSlugFromIdentity(ident, cfg)
-    const session = backfillSession(ident.session, liveSuffix, revision)
+    const session = pageIngestSession(ident.session, { live, liveSuffix, revision })
     const ordered = [...slugPages].sort((a, b) => compareParsedPages(a, b))
+    const decided = applySpoolConsensus(inspectPageFiles(ordered), { live })
     const loaded: Array<{ page: PageSpoolFile; parsed: ParsedInput }> = []
     let pagesFailed = 0
-    for (const page of ordered) {
-      try {
-        const parsed = parseInput(readFileSync(page.path, 'utf8'), 'page')
-        loaded.push({ page, parsed: { ...parsed, sourcePath: page.path } })
-      } catch (err) {
+    let skippedGaps = 0
+    for (const item of decided) {
+      if (!item.ok) {
         pagesFailed += 1
-        const message = err instanceof Error ? err.message : 'parse failed'
-        console.error(`SKIP malformed page ${basename(page.path)}: ${message}`)
+        skippedGaps += item.skippedPositions.length
+        const name = basename(item.file.path)
+        const prefix = item.error?.code === 'total_mismatch' || item.error?.code === 'agent_id_mismatch'
+          ? 'SKIP page'
+          : 'SKIP malformed page'
+        console.error(`${prefix} ${name}: ${item.reason ?? 'rejected'}`)
+        continue
       }
+      const parsed = toParsedInput(item)
+      if (parsed) loaded.push({ page: item.file, parsed })
     }
     loaded.sort((a, b) =>
       compareParsedPages(
@@ -752,7 +790,7 @@ export async function ingestPages(
       ),
     )
     if (loaded.length === 0) {
-      bots.push(blankCounts(slug, session, ident.agent, slugPages.length, { pagesFailed }))
+      bots.push(blankCounts(slug, session, ident.agent, slugPages.length, { pagesFailed, skippedGaps }))
       continue
     }
     const parsed = loaded.map((item) => item.parsed)
@@ -775,6 +813,7 @@ export async function ingestPages(
         overlapHours: opts.overlapHours,
         liveSuffix,
         revision,
+        live,
         candidateCreatedAt: tagged.kept.map((message) => message.created_at),
       })
     }
@@ -797,6 +836,7 @@ export async function ingestPages(
       conflicts,
       pagesFailed,
       unknownSlugs: 0,
+      skippedGaps,
     }
     if (commit && conflicts.length === 0 && overlap.kept.length > 0) {
       const write = opts?.deps?.commit
@@ -929,7 +969,8 @@ export function formatIngestPagesCounts(result: IngestPagesResult): string {
       `skipped_no_position=${String(b.skippedNoPosition)} ` +
       `skipped_overlap=${String(b.skippedOverlap)} ` +
       `skipped_changed=${String(b.skippedChanged)} new=${String(b.new)} ` +
-      `pages_failed=${String(b.pagesFailed)} unknown_slugs=${String(b.unknownSlugs)}`
+      `pages_failed=${String(b.pagesFailed)} unknown_slugs=${String(b.unknownSlugs)} ` +
+      `skipped_gaps=${String(b.skippedGaps)}`
     )
   })
   const summary =

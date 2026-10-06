@@ -1379,7 +1379,12 @@ describe('reclean', () => {
     expect(v4.session).toBe('grokbot-beta-v4')
     expect(() => v3Session('grokbot-alpha-v4-backfill', '-v4')).toThrow(/-backfill/)
     expect(() => v3RowsSession('grokbot-alpha-v4-backfill', '-v4')).toThrow(/-backfill/)
+    expect(() => v3Session('grokbot-alpha-v4-live', '-v4')).toThrow(/-vN-live/)
     expect(identityForSession('grokbot-alpha-v4-backfill')).toMatchObject({
+      agent: 'grokbot-alpha',
+      session: 'grokbot-alpha',
+    })
+    expect(identityForSession('grokbot-alpha-v4-live')).toMatchObject({
       agent: 'grokbot-alpha',
       session: 'grokbot-alpha',
     })

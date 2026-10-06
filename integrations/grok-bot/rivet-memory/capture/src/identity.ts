@@ -15,6 +15,7 @@ import {
   DEFAULT_NODE_ID,
   SESSION_SUFFIX_V3,
   isBackfillSession,
+  isLiveSession,
   stripSessionSuffix,
   type BotIdentity,
 } from './types.js'
@@ -294,6 +295,16 @@ export function backfillIdentityBase(session: string): string | undefined {
   return stripped === session ? undefined : stripped
 }
 
+/**
+ * Roster base for a live-capture session key. Lookup only — never a write target.
+ * `grokbot-alpha-v4-live` → `grokbot-alpha`.
+ */
+export function liveIdentityBase(session: string): string | undefined {
+  if (!isLiveSession(session)) return undefined
+  const stripped = session.replace(/-v\d+-live$/, '')
+  return stripped === session ? undefined : stripped
+}
+
 /** Roster lookup by the same slug discovery already derived from profile.json. */
 export function identityForSlug(
   want: string,
@@ -310,7 +321,8 @@ export function identityForSession(
   session: string,
   opts?: { agentsDir?: string },
 ): BotIdentity | undefined {
-  const stripped = backfillIdentityBase(session) ?? stripSessionSuffix(session)
+  const stripped =
+    backfillIdentityBase(session) ?? liveIdentityBase(session) ?? stripSessionSuffix(session)
   const lookup = makeIdentityLookup({
     agentsDir: opts?.agentsDir,
   })
