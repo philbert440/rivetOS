@@ -1695,6 +1695,10 @@ function pluginMarker(h: DetectedHarness, home: string, probe: HarnessDoctorProb
         return false
       }
     }
+    case 'cowork':
+      // Desktop plugin, not a CLI setup script. Absent binary means doctor
+      // never asks; a detected `cowork` binary still has nothing to mark here.
+      return false
   }
 }
 

@@ -175,11 +175,15 @@ export interface PendingTag extends Tag {
   conversationId?: string | null
   /** First ~200 chars of the summary, for summary suggestions. */
   excerpt?: string | null
+  /** `remove` is a suggestion to drop the tag. Absent means a suggested add. */
+  action?: 'add' | 'remove'
 }
 
 export async function pendingTags(db: Queryable, limit = 50): Promise<PendingTag[]> {
   const { rows } = await db.query<
     TagRow & {
+      removal_state: string | null
+      removal_reason: string | null
       session_key: string | null
       title: string | null
       agent: string | null
@@ -190,6 +194,7 @@ export async function pendingTags(db: Queryable, limit = 50): Promise<PendingTag
     `SELECT ${TAG_COLUMNS.split(', ')
       .map((c) => `t.${c}`)
       .join(', ')},
+            t.removal_state, t.removal_reason,
             COALESCE(c.session_key, sc.session_key) AS session_key,
             COALESCE(c.title, sc.title) AS title,
             COALESCE(c.agent, sc.agent) AS agent,
@@ -200,20 +205,25 @@ export async function pendingTags(db: Queryable, limit = 50): Promise<PendingTag
        LEFT JOIN ros_summaries s ON t.entity_type = 'summary' AND s.id = t.entity_id
        -- A summary suggestion names its session too, so the reviewer can open it.
        LEFT JOIN ros_conversations sc ON sc.id = s.conversation_id
-      WHERE t.state = 'suggested'
+      WHERE (t.state = 'suggested' OR t.removal_state = 'suggested')
         AND (c.id IS NOT NULL OR s.id IS NOT NULL)
-      ORDER BY t.created_at DESC
+      ORDER BY CASE WHEN t.removal_state = 'suggested' THEN t.updated_at ELSE t.created_at END DESC
       LIMIT $1`,
     [Math.min(Math.max(limit, 1), 500)],
   )
-  return rows.map((r) => ({
-    ...rowToTag(r),
-    sessionKey: r.session_key,
-    title: r.title,
-    agent: r.agent,
-    conversationId: r.conversation_id,
-    excerpt: r.excerpt,
-  }))
+  return rows.map((r) => {
+    const tag = rowToTag(r)
+    const removal = r.removal_state === 'suggested'
+    return {
+      ...tag,
+      ...(removal ? { action: 'remove' as const, reason: r.removal_reason || tag.reason } : {}),
+      sessionKey: r.session_key,
+      title: r.title,
+      agent: r.agent,
+      conversationId: r.conversation_id,
+      excerpt: r.excerpt,
+    }
+  })
 }
 
 /**
@@ -231,15 +241,45 @@ export async function decideTags(
   decidedBy: string,
 ): Promise<string[]> {
   if (ids.length === 0) return []
+  const classified = await db.query<{ id: string; removal_state: string | null }>(
+    `SELECT id, removal_state FROM ros_tags WHERE id = ANY($1::uuid[])`,
+    [ids],
+  )
+  const removalIds = classified.rows.filter((r) => r.removal_state === 'suggested').map((r) => r.id)
+  const addIds = ids.filter((id) => !removalIds.includes(id))
+  const changed: string[] = []
+  if (removalIds.length > 0) {
+    // Accepting a removal rejects the tag (it leaves the visible set and is
+    // not proposed again). Rejecting a removal keeps the tag.
+    const { rows } =
+      state === 'accepted'
+        ? await db.query<{ id: string }>(
+            `UPDATE ros_tags
+                SET state = 'rejected', removal_state = NULL,
+                    decided_by = $2, decided_at = now(), updated_at = now()
+              WHERE id = ANY($1::uuid[]) AND removal_state = 'suggested'
+              RETURNING id`,
+            [removalIds, decidedBy],
+          )
+        : await db.query<{ id: string }>(
+            `UPDATE ros_tags
+                SET removal_state = 'rejected', updated_at = now()
+              WHERE id = ANY($1::uuid[]) AND removal_state = 'suggested'
+              RETURNING id`,
+            [removalIds],
+          )
+    changed.push(...rows.map((r) => r.id))
+  }
+  if (addIds.length === 0) return changed
   const { rows } = await db.query<{ id: string }>(
     `UPDATE ros_tags
         SET state = $2, decided_by = $3, decided_at = now(), updated_at = now(),
             source = CASE WHEN source = 'rule' AND $2 = 'accepted' THEN 'user' ELSE source END
       WHERE id = ANY($1::uuid[]) AND state <> $2
       RETURNING id`,
-    [ids, state, decidedBy],
+    [addIds, state, decidedBy],
   )
-  return rows.map((r) => r.id)
+  return [...changed, ...rows.map((r) => r.id)]
 }
 
 export interface AddTagInput {

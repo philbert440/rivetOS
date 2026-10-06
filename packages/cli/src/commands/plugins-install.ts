@@ -318,6 +318,10 @@ function stepsFor(h: DetectedHarness, root: string): string[] {
       ]
     case 'cursor':
       return [`run ${SETUP_SCRIPTS.cursor} --apply`, 'install Cursor hooks + MCP']
+    case 'cowork':
+      return [
+        'cowork capture is the Desktop plugin at integrations/cowork/rivet-memory — install it in Claude Desktop, not via this CLI',
+      ]
   }
 }
 
@@ -1360,6 +1364,13 @@ export async function runPluginsInstall(
               uid: deps.uid,
             },
           )
+          break
+        case 'cowork':
+          result = {
+            ok: true,
+            detail:
+              'cowork capture is the Desktop plugin at integrations/cowork/rivet-memory — install it in Claude Desktop, not via this CLI',
+          }
           break
       }
       emit(h.id, result.ok, result.detail)

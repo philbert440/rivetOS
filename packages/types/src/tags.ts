@@ -65,6 +65,11 @@ export interface TagProposal {
   display?: string
   confidence?: number
   reason?: string
+  /**
+   * `remove` asks the review queue to drop a tag already on the entity.
+   * Absent means add. Removals are never applied until a person accepts them.
+   */
+  action?: 'add' | 'remove'
 }
 
 /** One vocabulary entry. `parentValue` nests under the same key (a tree). */

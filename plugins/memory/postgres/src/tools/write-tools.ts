@@ -656,6 +656,8 @@ export const captureBatchSchema = z.object({
   settings: z.record(z.string(), z.unknown()).optional(),
   task_id: z.string().optional(),
   finalize: z.boolean().optional(),
+  created_at: z.iso.datetime({ offset: true }).optional(),
+  updated_at: z.iso.datetime({ offset: true }).optional(),
   messages: z.array(
     z.object({
       event_id: z.string().min(1),
@@ -703,13 +705,14 @@ export async function captureBatch(
     const wanted = options.ownerUserId?.trim()
     const owner = wanted && (await hasOwnerUserIdColumn(source, client)) ? wanted : undefined
     const { rows } = await client.query<{ id: string }>(
-      `INSERT INTO ros_conversations (session_key, agent, channel, title, settings, task_id${owner ? ', owner_user_id' : ''})
-       VALUES ($1, $2, $3, $4, COALESCE($5::jsonb, '{}'::jsonb), $6${owner ? ', $10' : ''})
-       ON CONFLICT (session_key, agent) DO UPDATE SET updated_at = now(),${
-         owner
-           ? '\n         owner_user_id = COALESCE(ros_conversations.owner_user_id, EXCLUDED.owner_user_id),'
-           : ''
-       }
+      `INSERT INTO ros_conversations (session_key, agent, channel, title, settings, task_id, created_at, updated_at${owner ? ', owner_user_id' : ''})
+       VALUES ($1, $2, $3, $4, COALESCE($5::jsonb, '{}'::jsonb), $6, COALESCE($10::timestamptz, now()), COALESCE($11::timestamptz, now())${owner ? ', $12' : ''})
+       ON CONFLICT (session_key, agent) DO UPDATE SET
+         updated_at = GREATEST(ros_conversations.updated_at, EXCLUDED.updated_at),${
+           owner
+             ? '\n         owner_user_id = COALESCE(ros_conversations.owner_user_id, EXCLUDED.owner_user_id),'
+             : ''
+         }
          title = CASE WHEN $7 THEN EXCLUDED.title ELSE ros_conversations.title END,
          settings = CASE WHEN $8 THEN EXCLUDED.settings ELSE ros_conversations.settings END,
          task_id = CASE WHEN $9 THEN EXCLUDED.task_id ELSE ros_conversations.task_id END
@@ -724,6 +727,8 @@ export async function captureBatch(
         batch.title !== undefined,
         batch.settings !== undefined,
         batch.task_id !== undefined,
+        batch.created_at ?? null,
+        batch.updated_at ?? null,
         ...(owner ? [owner] : []),
       ],
     )
@@ -737,7 +742,6 @@ export async function captureBatch(
     })
     let inserted = 0
     for (const message of batch.messages) {
-      if (eventIds.has(message.event_id)) continue
       const metadata: Record<string, unknown> = { ...message.metadata, event_id: message.event_id }
       const cap = (text: string, field: string): string => {
         if (text.length <= MAX_CONTENT) return text
@@ -749,6 +753,34 @@ export async function captureBatch(
       const content = cap(message.content, 'content')
       const toolResult =
         message.tool_result === undefined ? null : cap(message.tool_result, 'tool_result')
+      if (eventIds.has(message.event_id)) {
+        // A pending tool row (no result yet) is filled in place. A result
+        // already stored is left alone, so a replay stays idempotent.
+        if (toolResult) {
+          metadata.pending_result = false
+          await client.query(
+            `UPDATE ros_messages
+                SET tool_result = $3,
+                    content = $4,
+                    metadata = COALESCE(metadata, '{}'::jsonb) || $5::jsonb,
+                    tool_name = COALESCE(tool_name, $6),
+                    tool_args = COALESCE(tool_args, $7::jsonb)
+              WHERE conversation_id = $1
+                AND metadata->>'event_id' = $2
+                AND (tool_result IS NULL OR tool_result = '')`,
+            [
+              conversationId,
+              message.event_id,
+              toolResult,
+              content,
+              JSON.stringify(metadata),
+              message.tool_name ?? null,
+              message.tool_args === undefined ? null : JSON.stringify(message.tool_args),
+            ],
+          )
+        }
+        continue
+      }
       await client.query(
         `INSERT INTO ros_messages
           (conversation_id, agent, channel, role, content, tool_name, tool_args, tool_result, metadata, created_at${owner ? ', owner_user_id' : ''})
@@ -772,8 +804,11 @@ export async function captureBatch(
     }
     if (batch.finalize) {
       await client.query(
-        'UPDATE ros_conversations SET active=false, updated_at=now() WHERE id=$1 AND active=true',
-        [conversationId],
+        `UPDATE ros_conversations
+            SET active=false,
+                updated_at = GREATEST(updated_at, COALESCE($2::timestamptz, now()))
+          WHERE id=$1 AND active=true`,
+        [conversationId, batch.updated_at ?? null],
       )
     }
     return {

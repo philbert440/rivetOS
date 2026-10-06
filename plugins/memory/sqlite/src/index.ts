@@ -34,7 +34,7 @@ export {
 export type { ConsolidateOptions, RecompileOptions } from './wiki-maintenance.js'
 export type { WikiTopicRow, WikiTopicHit, TopicResolution } from './wiki.js'
 export { SqliteRoutingMemory, userFromSessionKey, isSafeUserId, foldUserId } from './routing.js'
-export { exportSqliteMemory, importSqliteMemory } from './portability.js'
+export { exportSqliteMemory, importSqliteMemory, backfillSqliteProjectRules } from './portability.js'
 export type { SqliteExportOptions, SqliteImportOptions, SqliteImportResult } from './portability.js'
 export { EmbedClient } from './embed.js'
 export type { EmbedConfig, EmbedOutcome } from './embed.js'
@@ -92,7 +92,7 @@ export const manifest: PluginManifest = {
     })
     const otherUsers = (): ReadonlySet<string> => registry.others()
     const wiki = resolveWikiConfig(cfg, ctx.env)
-    const { error: taggingError, ...tagging } = resolveTaggingConfig(cfg, ctx.env)
+    const { error: taggingError, ...tagging } = await resolveTaggingConfig(cfg, ctx.env)
     if (taggingError) ctx.logger.error(`memory.sqlite: ${taggingError}`)
     if (tagging.enabled && !tagging.llm && !tagging.native && !compactor) tagging.enabled = false
     if (wiki.extraction && !compactor) {
@@ -509,19 +509,38 @@ export function resolveWikiConfig(
  * `RIVETOS_TAGGER_URL` + `RIVETOS_TAGGER_MODEL`), spoken to as a chat model
  * or, with `tagger_wire_shape: native`, as a classifier service. An unknown
  * shape, or `native` without an endpoint and model, turns tagging off and
- * returns the reason as `error`.
+ * returns the reason as `error`. A separate tagger may mint its bearer with
+ * `tagger_token_command` (or `RIVETOS_TAGGER_TOKEN_COMMAND`, a JSON argv
+ * string). The command wins over a static key. A command that cannot be
+ * parsed turns tagging off instead of falling back to that key. With no
+ * separate endpoint the command is ignored — the compactor has its own.
  */
-export function resolveTaggingConfig(
+export async function resolveTaggingConfig(
   cfg: Record<string, unknown>,
   env: Record<string, string | undefined>,
-): { enabled: boolean; llm?: LlmConfig; native?: NativeTagger; error?: string } {
+): Promise<{
+  enabled: boolean
+  llm?: LlmConfig
+  native?: NativeTagger
+  error?: string
+  /** Set only when tagging is on and the operator opted in. */
+  allowProtectedRemovals?: boolean
+}> {
   const str = (v: unknown): string | undefined =>
     typeof v === 'string' && v.trim() !== '' ? v.trim() : undefined
+  const protect =
+    typeof cfg.tagger_allow_protected_removals === 'boolean'
+      ? cfg.tagger_allow_protected_removals
+      : /^(1|true|yes|on)$/i.test((env.RIVETOS_TAGGER_ALLOW_PROTECTED_REMOVALS ?? '').trim())
+  const done = <T extends { enabled: boolean }>(
+    result: T,
+  ): T & { allowProtectedRemovals?: boolean } =>
+    result.enabled && protect ? { ...result, allowProtectedRemovals: true } : result
   const enabled =
     typeof cfg.tagging === 'boolean'
       ? cfg.tagging
       : !/^(0|false|no|off)$/i.test((env.SESSION_TAGGING ?? '').trim())
-  if (!enabled) return { enabled: false }
+  if (!enabled) return done({ enabled: false })
   const endpoint = str(cfg.tagger_endpoint) ?? str(env.RIVETOS_TAGGER_URL)
   const model = str(cfg.tagger_model) ?? str(env.RIVETOS_TAGGER_MODEL)
   const shape = (
@@ -533,26 +552,52 @@ export function resolveTaggingConfig(
   // does not take the rest of memory down with it, and it does not send the
   // chat prompt to a classifier.
   if (shape !== 'openai' && shape !== 'native') {
-    return {
+    return done({
       enabled: false,
       error: `tagger_wire_shape must be "openai" or "native", not "${shape}"; tag suggestions are off`,
-    }
+    })
   }
   if (!endpoint || !model) {
     if (shape === 'native') {
-      return {
+      return done({
         enabled: false,
         error:
           'tagger_wire_shape "native" needs tagger_endpoint and tagger_model; tag suggestions are off',
-      }
+      })
     }
-    return { enabled: true }
+    return done({ enabled: true })
+  }
+  let rawArgv: unknown = cfg.tagger_token_command
+  const envCmd = str(env.RIVETOS_TAGGER_TOKEN_COMMAND)
+  if (rawArgv === undefined && envCmd) {
+    try {
+      rawArgv = JSON.parse(envCmd) as unknown
+    } catch {
+      return done({
+        enabled: false,
+        error:
+          'RIVETOS_TAGGER_TOKEN_COMMAND must be a JSON argv array (no shell string); tag suggestions are off',
+      })
+    }
+  }
+  if (rawArgv !== undefined) {
+    const { createTokenSource, parseTokenCommandArgv } = await import('@rivetos/token-command')
+    const argv = parseTokenCommandArgv(rawArgv)
+    if (typeof argv === 'string' || argv === null) {
+      return done({
+        enabled: false,
+        error: `${argv ?? 'tagger_token_command must be a non-empty argv array'}; tag suggestions are off`,
+      })
+    }
+    const tokenSource = createTokenSource({ argv })
+    if (shape === 'native') return done({ enabled: true, native: { url: endpoint, model, tokenSource } })
+    return done({ enabled: true, llm: { endpoint, model, tokenSource } })
   }
   const apiKey = str(cfg.tagger_api_key) ?? str(env.RIVETOS_TAGGER_API_KEY)
   // `native`: the endpoint is a classifier service that takes the summary and
   // the vocabulary in one POST, as the Postgres worker's native shape does.
   if (shape === 'native') {
-    return { enabled: true, native: { url: endpoint, model, ...(apiKey ? { apiKey } : {}) } }
+    return done({ enabled: true, native: { url: endpoint, model, ...(apiKey ? { apiKey } : {}) } })
   }
-  return { enabled: true, llm: { endpoint, model, ...(apiKey ? { apiKey } : {}) } }
+  return done({ enabled: true, llm: { endpoint, model, ...(apiKey ? { apiKey } : {}) } })
 }

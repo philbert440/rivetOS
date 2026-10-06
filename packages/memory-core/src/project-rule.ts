@@ -112,6 +112,20 @@ export const resolveProjectOnNode: ProjectResolver = nodeResolver
 /** The rule without any filesystem access: cwd basename only. */
 export const resolveProjectWithoutFs: ProjectResolver = (cwd) => resolveProjectFromCwd(cwd, NO_FS)
 
+/**
+ * Cowork's task sandbox (`…/local_<task>` or `…/local_<task>/outputs`) is not
+ * a repository. The project rule must not fire on it. Backslashes are
+ * normalized so a Windows path matches the same way.
+ */
+export function isTaskSandboxCwd(cwd: string): boolean {
+  const norm = cwd.replace(/\\/g, '/').replace(/\/+$/, '')
+  const parts = norm.split('/')
+  const last = parts[parts.length - 1] ?? ''
+  const parent = parts[parts.length - 2] ?? ''
+  if (/^local_.+/.test(last)) return true
+  return last === 'outputs' && /^local_.+/.test(parent)
+}
+
 /** `settings.cwd` when it is a trimmed, safe absolute path, else undefined. */
 export function cwdFromSettings(settings: Record<string, unknown> | undefined): string | undefined {
   const raw = settings?.cwd
@@ -149,6 +163,7 @@ export async function planProjectRuleTag(
   if (options.resolveProject === null) return null
   const cwd = cwdFromSettings(settings)
   if (cwd === undefined) return null
+  if (isTaskSandboxCwd(cwd)) return null
   const resolve =
     options.allowFilesystem === false
       ? resolveProjectWithoutFs

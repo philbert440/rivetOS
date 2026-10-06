@@ -154,6 +154,56 @@ describe('SqliteTagStore', () => {
     })
   })
 
+  it('suggests a removal into the review queue and never applies it itself', async () => {
+    const conv = await conversation('codex:remove')
+    const model = { source: 'model', proposedBy: 'gemma' }
+    tags.propose('conversation', conv, [{ key: 'project', value: 'rivetos' }], {
+      source: 'rule',
+      proposedBy: 'cwd-git-root',
+    })
+    const user = tags.add({ entityType: 'conversation', entityId: conv, tag: 'topic:kept' }, 'alice')
+    tags.propose('conversation', conv, [{ key: 'topic', value: 'picked' }], model)
+    const picked = tags.pending().find((t) => t.value === 'picked')
+    expect(picked).toBeDefined()
+    tags.decide([picked!.id], 'accepted', 'alice')
+
+    const remove = [
+      { key: 'project', value: 'rivetos', action: 'remove' as const, reason: 'wrong repo' },
+      { key: 'topic', value: 'kept', action: 'remove' as const, reason: 'user tag' },
+      { key: 'topic', value: 'picked', action: 'remove' as const, reason: 'person accepted' },
+      { key: 'topic', value: 'missing', action: 'remove' as const },
+    ]
+    expect(tags.propose('conversation', conv, remove, model)).toBe(0)
+    expect(tags.proposeRemovals('conversation', conv, remove)).toBe(1)
+    expect(tags.proposeRemovals('conversation', conv, remove)).toBe(0)
+
+    const [flag] = tags.pending()
+    expect(flag).toMatchObject({
+      id: expect.any(String),
+      key: 'project',
+      value: 'rivetos',
+      state: 'accepted',
+      action: 'remove',
+      reason: 'wrong repo',
+    })
+    expect(tags.list({ entityId: conv, key: 'project' })[0].state).toBe('accepted')
+
+    expect(tags.decide([flag.id], 'rejected', 'alice')).toEqual([flag.id])
+    expect(tags.pending()).toEqual([])
+    expect(tags.list({ entityId: conv, key: 'project' })[0].state).toBe('accepted')
+    expect(tags.proposeRemovals('conversation', conv, remove)).toBe(0)
+
+    expect(tags.proposeRemovals('conversation', conv, remove, { allowProtected: true })).toBe(2)
+    const flagged = tags.pending()
+    expect(flagged.map((t) => t.value).sort()).toEqual(['kept', 'picked'])
+    expect(flagged.every((t) => t.action === 'remove' && t.state === 'accepted')).toBe(true)
+    expect(tags.decide([user.id], 'accepted', 'alice')).toEqual([user.id])
+    expect(tags.list({ entityId: conv, states: ['accepted', 'rejected'] }).find((t) => t.id === user.id)?.state).toBe(
+      'rejected',
+    )
+    expect(tags.pending().find((t) => t.id === user.id)).toBeUndefined()
+  })
+
   it('re-accepting a rejected rule tag promotes it; rejecting does not', async () => {
     const conv = await conversation('codex:reaccept')
     tags.propose('conversation', conv, [{ key: 'project', value: 'rivetos' }], { source: 'rule', proposedBy: 'cwd-git-root' })

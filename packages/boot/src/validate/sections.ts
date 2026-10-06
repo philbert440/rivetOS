@@ -407,6 +407,17 @@ export function validateTokenCommandFields(
       message: `${label} has both embed_api_key and embed_token_command — embed_token_command wins`,
     })
   }
+  if (
+    raw !== undefined &&
+    keys.command === 'tagger_token_command' &&
+    obj.tagger_api_key !== undefined
+  ) {
+    issues.push({
+      severity: 'warning',
+      path: `${path}.${keys.command}`,
+      message: `${label} has both tagger_api_key and tagger_token_command — tagger_token_command wins`,
+    })
+  }
 }
 
 /** Providers that actually honor `token_command` (Bearer mint path). */
@@ -802,6 +813,23 @@ function validateMemorySqlite(raw: unknown, issues: ValidationIssue[]): void {
         message: `Unknown memory.sqlite key "${key}"`,
       })
     }
+  }
+
+  validateTokenCommandFields(sqlite, 'memory.sqlite', 'memory.sqlite', issues, {
+    command: 'tagger_token_command',
+    ttl: 'tagger_token_ttl_ms',
+    timeout: 'tagger_token_command_timeout_ms',
+  })
+
+  if (
+    sqlite.tagger_allow_protected_removals !== undefined &&
+    typeof sqlite.tagger_allow_protected_removals !== 'boolean'
+  ) {
+    issues.push({
+      severity: 'error',
+      path: 'memory.sqlite.tagger_allow_protected_removals',
+      message: '"tagger_allow_protected_removals" must be a boolean',
+    })
   }
 
   if (sqlite.path === undefined) {

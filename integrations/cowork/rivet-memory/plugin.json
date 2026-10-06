@@ -1,0 +1,7 @@
+{
+  "name": "rivet-memory-cowork",
+  "version": "0.1.0",
+  "description": "RivetOS memory capture for Claude Desktop Cowork. Host-side MCP hooks, plus on-demand transcript backfill when the sandbox leaves a file. Capture is always on.",
+  "license": "MIT",
+  "author": { "name": "RivetOS" }
+}

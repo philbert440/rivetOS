@@ -21,7 +21,7 @@
 
 import type { JobHelpers, Task } from 'graphile-worker'
 import pg from 'pg'
-import { formatTag, type TagProposal } from '@rivetos/types'
+import { formatTag, PROJECT_RULE_NAME, type TagProposal } from '@rivetos/types'
 import { config } from '../config.js'
 import { suggestTags, type TaggerVocabulary } from '../tagger.js'
 import { isJobFinalAttempt } from './compact-conversation.js'
@@ -113,6 +113,7 @@ export async function insertSuggestions(
 ): Promise<number> {
   let inserted = 0
   for (const p of proposals) {
+    if (p.action === 'remove') continue
     const { rowCount } = await client.query(
       `INSERT INTO ros_tags
          (entity_type, entity_id, key, value, display, source, state, confidence, proposed_by, reason)
@@ -142,6 +143,7 @@ export async function proposeTaxonomyValues(
 ): Promise<number> {
   let inserted = 0
   for (const p of proposals) {
+    if (p.action === 'remove') continue
     const { rowCount } = await client.query(
       `INSERT INTO ros_tag_taxonomy (key, value, display, state, source, reason)
        VALUES ($1, $2, $3, 'suggested', 'model', $4)
@@ -151,6 +153,63 @@ export async function proposeTaxonomyValues(
     inserted += rowCount ?? 0
   }
   return inserted
+}
+
+/**
+ * Flag accepted tags for removal. Does not delete or reject them. A tag a
+ * person added or accepted is skipped unless `allowProtected`. Matches
+ * `tagRemovalIsProtected` in `@rivetos/memory-core`: source `user`, or a
+ * `decided_by` that is not the cwd rule.
+ */
+export async function proposeTagRemovals(
+  client: pg.Pool | pg.PoolClient,
+  entityType: 'conversation' | 'summary',
+  entityId: string,
+  proposals: TagProposal[],
+  allowProtected: boolean,
+): Promise<number> {
+  let updated = 0
+  for (const p of proposals) {
+    if (p.action !== 'remove') continue
+    const { rowCount } = await client.query(
+      `UPDATE ros_tags
+          SET removal_state = 'suggested',
+              removal_reason = $1,
+              updated_at = now()
+        WHERE entity_type = $2 AND entity_id = $3 AND key = $4 AND value = $5
+          AND state = 'accepted'
+          AND removal_state IS NULL
+          AND (
+            $6::boolean
+            OR (
+              source <> 'user'
+              AND (decided_by IS NULL OR btrim(decided_by) = '' OR decided_by = $7)
+            )
+          )`,
+      [p.reason ?? '', entityType, entityId, p.key, p.value, allowProtected, PROJECT_RULE_NAME],
+    )
+    updated += rowCount ?? 0
+  }
+  return updated
+}
+
+async function loadCurrentTags(
+  client: pg.Pool | pg.PoolClient,
+  summaryId: string,
+  conversationId: string | null,
+): Promise<string[]> {
+  const { rows } = await client.query<{ key: string; value: string; display: string }>(
+    `SELECT key, value, display FROM ros_tags
+      WHERE state = 'accepted'
+        AND (
+          (entity_type = 'summary' AND entity_id = $1)
+          OR (entity_type = 'conversation' AND entity_id = $2)
+        )
+      ORDER BY key, value
+      LIMIT 40`,
+    [summaryId, conversationId],
+  )
+  return rows.map((r) => formatTag(r))
 }
 
 /** The work itself. Throws on any failure; the task wrapper decides what that means. */
@@ -197,6 +256,8 @@ async function runSuggestTags(summaryId: string, helpers: JobHelpers): Promise<v
     }
     throw err
   }
+  const conversationId = summary.conversation_id
+  const currentTags = await loadCurrentTags(client, summaryId, conversationId)
   const { proposals, rejected } = await suggestTags(
     {
       wireShape: config.taggerWireShape,
@@ -208,6 +269,7 @@ async function runSuggestTags(summaryId: string, helpers: JobHelpers): Promise<v
       title: summary.title ?? undefined,
       agent: summary.agent ?? undefined,
       vocabulary,
+      currentTags,
     },
   )
   for (const r of rejected) helpers.logger.warn(`suggest-tags: rejected — ${r}`)
@@ -216,22 +278,29 @@ async function runSuggestTags(summaryId: string, helpers: JobHelpers): Promise<v
     return
   }
 
+  const additions = proposals.filter((p) => p.action !== 'remove')
+  const removals = proposals.filter((p) => p.action === 'remove')
   const proposedBy = config.tagger.model
-  // One transaction: the three writes land together or not at all, so a
-  // failure that is later dropped on the final attempt cannot leave a
-  // summary tagged without its conversation or its vocabulary entries.
-  const conversationId = summary.conversation_id
-  const { onSummary, onConversation, taxonomy } = await inTransaction(client, async (tx) => ({
-    onSummary: await insertSuggestions(tx, 'summary', summaryId, proposals, proposedBy),
+  const allowProtected = config.taggerAllowProtectedRemovals === true
+  // One transaction: the writes land together or not at all, so a failure
+  // that is later dropped on the final attempt cannot leave a summary tagged
+  // without its conversation. Removals are only flagged.
+  const { onSummary, onConversation, taxonomy, removed } = await inTransaction(client, async (tx) => ({
+    onSummary: await insertSuggestions(tx, 'summary', summaryId, additions, proposedBy),
     onConversation: conversationId
-      ? await insertSuggestions(tx, 'conversation', conversationId, proposals, proposedBy)
+      ? await insertSuggestions(tx, 'conversation', conversationId, additions, proposedBy)
       : 0,
-    taxonomy: await proposeTaxonomyValues(tx, proposals, proposedBy),
+    taxonomy: await proposeTaxonomyValues(tx, additions, proposedBy),
+    removed:
+      (await proposeTagRemovals(tx, 'summary', summaryId, removals, allowProtected)) +
+      (conversationId
+        ? await proposeTagRemovals(tx, 'conversation', conversationId, removals, allowProtected)
+        : 0),
   }))
   helpers.logger.info(
-    `suggest-tags: ${short} — ${String(proposals.length)} proposed, ` +
+    `suggest-tags: ${short} — ${String(additions.length)} add, ${String(removals.length)} remove, ` +
       `${String(onSummary)} new on summary, ${String(onConversation)} new on conversation, ` +
-      `${String(taxonomy)} new taxonomy values`,
+      `${String(taxonomy)} new taxonomy values, ${String(removed)} removal flags`,
   )
 }
 

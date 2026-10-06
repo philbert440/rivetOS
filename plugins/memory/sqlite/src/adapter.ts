@@ -195,7 +195,13 @@ export interface SqliteMemoryConfig {
    * Suggest tags for each leaf summary (needs a compactor endpoint, or an
    * endpoint of its own in `llm`). Suggestions wait for a person to decide.
    */
-  tagging?: { enabled: boolean; llm?: LlmConfig; native?: NativeTagger }
+  tagging?: {
+    enabled: boolean
+    llm?: LlmConfig
+    native?: NativeTagger
+    /** When true, the tagger may suggest removing a tag a person added or accepted. */
+    allowProtectedRemovals?: boolean
+  }
   /**
    * How a capture's working directory becomes a `project:` tag. Default: the
    * git-root rule on this machine's filesystem. `null` turns the rule off.
@@ -344,6 +350,10 @@ export class SqliteMemory implements Memory {
         `CREATE INDEX IF NOT EXISTS idx_ros_conversations_owner ON ros_conversations (owner_user_id)
           WHERE owner_user_id IS NOT NULL`,
       )
+      this.db.exec(
+        `CREATE INDEX IF NOT EXISTS idx_ros_tags_removal_state ON ros_tags (removal_state)
+          WHERE removal_state = 'suggested'`,
+      )
       if (path !== ':memory:') {
         // WAL/SHM appear after journal_mode=WAL; tighten DB + siblings.
         restrictSqliteFileModes(path)
@@ -433,6 +443,7 @@ export class SqliteMemory implements Memory {
           this.vocabularyStore,
           (fn) => this.tx(fn),
           this.log,
+          config.tagging?.allowProtectedRemovals === true,
         )
         this.tagger = tagger
         this.jobRunner.handle(SUGGEST_TAGS_TASK, async (payload) => {
@@ -567,6 +578,12 @@ export class SqliteMemory implements Memory {
           // v6: owner_user_id on conversations and messages.
           this.migrateToV6()
           break
+        case 6:
+          // v7: removal_state on ros_tags. Fresh files already have the column
+          // from SCHEMA; an older file does not, because CREATE IF NOT EXISTS
+          // will not alter it.
+          this.migrateToV7()
+          break
         default:
           throw new MemoryError(
             'MEMORY_CONNECTION_FAILED',
@@ -612,6 +629,20 @@ export class SqliteMemory implements Memory {
       if (!cols.includes('owner_user_id')) {
         this.db.exec(`ALTER TABLE ${table} ADD COLUMN owner_user_id TEXT`)
       }
+    }
+  }
+
+  private migrateToV7(): void {
+    const cols = (
+      this.db.prepare('PRAGMA table_info(ros_tags)').all() as Array<{ name: string }>
+    ).map((c) => c.name)
+    if (!cols.includes('removal_state')) {
+      this.db.exec(
+        `ALTER TABLE ros_tags ADD COLUMN removal_state TEXT CHECK (removal_state IS NULL OR removal_state IN ('suggested', 'rejected'))`,
+      )
+    }
+    if (!cols.includes('removal_reason')) {
+      this.db.exec(`ALTER TABLE ros_tags ADD COLUMN removal_reason TEXT NOT NULL DEFAULT ''`)
     }
   }
 

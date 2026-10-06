@@ -14,6 +14,7 @@
 import { randomUUID } from 'node:crypto'
 import type { DatabaseSync, SQLInputValue } from 'node:sqlite'
 import {
+  PROJECT_RULE_NAME,
   normalizeTagKey,
   normalizeTagValue,
   parseTagLiteral,
@@ -118,6 +119,8 @@ export interface SqlitePendingTag extends Tag {
   conversationId: string | null
   /** First 200 characters of a tagged summary. */
   excerpt: string | null
+  /** `remove` is a suggestion to drop the tag. Absent means a suggested add. */
+  action?: 'add' | 'remove'
 }
 
 export interface SqliteTagCount {
@@ -189,24 +192,28 @@ export class SqliteTagStore {
     const rows = this.db
       .prepare(
         `SELECT * FROM (
-           SELECT ${T_COLUMNS}, c.session_key, c.title, c.agent,
+           SELECT ${T_COLUMNS}, t.removal_state, t.removal_reason,
+                  c.session_key, c.title, c.agent,
                   c.id AS conversation_id, NULL AS excerpt
              FROM ros_tags t
              JOIN ros_conversations c ON t.entity_type = 'conversation' AND c.id = t.entity_id
-            WHERE t.state = 'suggested'
+            WHERE t.state = 'suggested' OR t.removal_state = 'suggested'
            UNION ALL
-           SELECT ${T_COLUMNS}, c.session_key, c.title, c.agent,
+           SELECT ${T_COLUMNS}, t.removal_state, t.removal_reason,
+                  c.session_key, c.title, c.agent,
                   s.conversation_id, substr(s.content, 1, 200) AS excerpt
              FROM ros_tags t
              JOIN ros_summaries s ON t.entity_type = 'summary' AND s.id = t.entity_id
              LEFT JOIN ros_conversations c ON c.id = s.conversation_id
-            WHERE t.state = 'suggested'
+            WHERE t.state = 'suggested' OR t.removal_state = 'suggested'
          )
-         ORDER BY created_at DESC, id
+         ORDER BY CASE WHEN removal_state = 'suggested' THEN updated_at ELSE created_at END DESC, id
          LIMIT ?`,
       )
       .all(clamp(limit, 50, 500)) as unknown as Array<
       TagRow & {
+        removal_state: string | null
+        removal_reason: string
         session_key: string | null
         title: string | null
         agent: string | null
@@ -214,14 +221,21 @@ export class SqliteTagStore {
         excerpt: string | null
       }
     >
-    return rows.map((r) => ({
-      ...rowToTag(r),
-      sessionKey: r.session_key,
-      title: r.title,
-      agent: r.agent,
-      conversationId: r.conversation_id,
-      excerpt: r.excerpt,
-    }))
+    return rows.map((r) => {
+      const tag = rowToTag(r)
+      const removal = r.removal_state === 'suggested'
+      return {
+        ...tag,
+        ...(removal
+          ? { action: 'remove' as const, reason: r.removal_reason || tag.reason }
+          : {}),
+        sessionKey: r.session_key,
+        title: r.title,
+        agent: r.agent,
+        conversationId: r.conversation_id,
+        excerpt: r.excerpt,
+      }
+    })
   }
 
   /**
@@ -233,15 +247,48 @@ export class SqliteTagStore {
     const now = this.now()
     for (let i = 0; i < ids.length; i += MAX_BOUND) {
       const chunk = ids.slice(i, i + MAX_BOUND)
+      const classified = this.db
+        .prepare(
+          `SELECT id, removal_state FROM ros_tags WHERE id IN (${marks(chunk.length)})`,
+        )
+        .all(...chunk) as unknown as Array<{ id: string; removal_state: string | null }>
+      const removalIds = classified.filter((r) => r.removal_state === 'suggested').map((r) => r.id)
+      const addIds = chunk.filter((id) => !removalIds.includes(id))
+      if (removalIds.length > 0) {
+        // Accepting a removal takes the tag off the entity by rejecting it,
+        // which also stops the project rule and the tagger from writing it
+        // again. Rejecting a removal keeps the tag and remembers that.
+        const rows =
+          state === 'accepted'
+            ? (this.db
+                .prepare(
+                  `UPDATE ros_tags
+                      SET state = 'rejected', removal_state = NULL,
+                          decided_by = ?, decided_at = ?, updated_at = ?
+                    WHERE id IN (${marks(removalIds.length)}) AND removal_state = 'suggested'
+                    RETURNING id`,
+                )
+                .all(decidedBy, now, now, ...removalIds) as unknown as Array<{ id: string }>)
+            : (this.db
+                .prepare(
+                  `UPDATE ros_tags
+                      SET removal_state = 'rejected', updated_at = ?
+                    WHERE id IN (${marks(removalIds.length)}) AND removal_state = 'suggested'
+                    RETURNING id`,
+                )
+                .all(now, ...removalIds) as unknown as Array<{ id: string }>)
+        changed.push(...rows.map((r) => r.id))
+      }
+      if (addIds.length === 0) continue
       const rows = this.db
         .prepare(
           `UPDATE ros_tags
               SET state = ?, decided_by = ?, decided_at = ?, updated_at = ?,
                   source = CASE WHEN source = 'rule' AND ? = 'accepted' THEN 'user' ELSE source END
-            WHERE id IN (${marks(chunk.length)}) AND state <> ?
+            WHERE id IN (${marks(addIds.length)}) AND state <> ?
             RETURNING id`,
         )
-        .all(state, decidedBy, now, now, state, ...chunk, state) as unknown as Array<{
+        .all(state, decidedBy, now, now, state, ...addIds, state) as unknown as Array<{
         id: string
       }>
       changed.push(...rows.map((r) => r.id))
@@ -325,6 +372,7 @@ export class SqliteTagStore {
     )
     let written = 0
     for (const p of proposals) {
+      if (p.action === 'remove') continue
       const key = normalizeTagKey(p.key)
       const value = normalizeTagValue(p.value)
       if (!key || !value) continue
@@ -350,6 +398,50 @@ export class SqliteTagStore {
         now,
       )
       written += Number(r.changes)
+    }
+    return written
+  }
+
+  /**
+   * Suggest removing tags already on the entity. Never applied here: the row
+   * stays accepted and `removal_state` becomes `suggested` until a person
+   * decides. A tag a person added (`source = user`) or accepted (`decided_by`
+   * is anyone but the cwd rule) is left alone unless `allowProtected`. A
+   * removal that was already suggested or rejected is not proposed again.
+   * Returns how many rows were newly flagged.
+   */
+  proposeRemovals(
+    entityType: TagEntityType,
+    entityId: string,
+    proposals: readonly TagProposal[],
+    opts: { allowProtected?: boolean } = {},
+  ): number {
+    const now = this.now()
+    const allow = opts.allowProtected === true ? 1 : 0
+    const update = this.db.prepare(
+      `UPDATE ros_tags
+          SET removal_state = 'suggested', removal_reason = ?, updated_at = ?
+        WHERE entity_type = ? AND entity_id = ? AND key = ? AND value = ?
+          AND state = 'accepted'
+          AND removal_state IS NULL
+          AND (
+            ? = 1
+            OR (
+              source <> 'user'
+              AND (decided_by IS NULL OR decided_by = '' OR decided_by = ?)
+            )
+          )`,
+    )
+    let written = 0
+    for (const p of proposals) {
+      if (p.action !== 'remove') continue
+      const key = normalizeTagKey(p.key)
+      const value = normalizeTagValue(p.value)
+      if (!key || !value) continue
+      written += Number(
+        update.run(p.reason ?? '', now, entityType, entityId, key, value, allow, PROJECT_RULE_NAME)
+          .changes,
+      )
     }
     return written
   }

@@ -28,6 +28,8 @@ export const HARNESS_BINARIES: Record<HarnessId | 'codex', string> = {
   'qwen-code': 'qwen',
   // Roster key is `cursor`. The CLI argv0 is `agent`.
   cursor: 'agent',
+  // No Desktop binary on PATH. Detection no-ops until something named `cowork` exists.
+  cowork: 'cowork',
 }
 
 /** `providers.<key>` in config.yaml. */
@@ -51,6 +53,7 @@ export const HARNESS_PROVIDER_KEYS: Record<HarnessId, HarnessProviderKey | undef
   pi: 'pi-cli',
   'qwen-code': 'qwen-code',
   cursor: undefined,
+  cowork: undefined,
 }
 
 export const HARNESS_CONFIG_DIRS: Record<HarnessId, string> = {
@@ -64,6 +67,7 @@ export const HARNESS_CONFIG_DIRS: Record<HarnessId, string> = {
   pi: '.pi/agent',
   'qwen-code': '.qwen',
   cursor: '.cursor',
+  cowork: '.config/Claude',
 }
 
 const HERMES_VENV_REL = join('hermes-agent', 'venv')

@@ -1,0 +1,78 @@
+{
+  "hooks": {
+    "UserPromptSubmit": [
+      {
+        "hooks": [
+          {
+            "type": "mcp_tool",
+            "server": "plugin:rivet-memory-cowork:rivet-cowork-capture",
+            "tool": "memory_capture_event",
+            "input": {
+              "hook_event_name": "UserPromptSubmit",
+              "session_id": "${session_id}",
+              "prompt": "${prompt}",
+              "cwd": "${cwd}",
+              "prompt_id": "${prompt_id}"
+            }
+          }
+        ]
+      }
+    ],
+    "PostToolUse": [
+      {
+        "hooks": [
+          {
+            "type": "mcp_tool",
+            "server": "plugin:rivet-memory-cowork:rivet-cowork-capture",
+            "tool": "memory_capture_event",
+            "input": {
+              "hook_event_name": "PostToolUse",
+              "session_id": "${session_id}",
+              "cwd": "${cwd}",
+              "tool_name": "${tool_name}",
+              "tool_use_id": "${tool_use_id}",
+              "tool_input": "${tool_input}",
+              "tool_response": "${tool_response}"
+            }
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "mcp_tool",
+            "server": "plugin:rivet-memory-cowork:rivet-cowork-capture",
+            "tool": "memory_capture_event",
+            "input": {
+              "hook_event_name": "Stop",
+              "session_id": "${session_id}",
+              "cwd": "${cwd}",
+              "last_assistant_message": "${last_assistant_message}"
+            }
+          }
+        ]
+      }
+    ],
+    "SubagentStop": [
+      {
+        "hooks": [
+          {
+            "type": "mcp_tool",
+            "server": "plugin:rivet-memory-cowork:rivet-cowork-capture",
+            "tool": "memory_capture_event",
+            "input": {
+              "hook_event_name": "SubagentStop",
+              "session_id": "${session_id}",
+              "cwd": "${cwd}",
+              "agent_id": "${agent_id}",
+              "agent_type": "${agent_type}",
+              "last_assistant_message": "${last_assistant_message}"
+            }
+          }
+        ]
+      }
+    ]
+  }
+}

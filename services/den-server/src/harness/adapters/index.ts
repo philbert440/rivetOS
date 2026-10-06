@@ -7,6 +7,7 @@ import { opencodeAdapter } from './opencode.js'
 import { piAdapter } from './pi.js'
 import { qwenCodeAdapter } from './qwen-code.js'
 import { cursorAdapter } from './cursor.js'
+import { coworkAdapter } from './cowork.js'
 import type { HarnessAdapter } from './types.js'
 
 export type { HarnessAdapter, HarnessStoreRef } from './types.js'
@@ -19,6 +20,7 @@ export { opencodeTurnsFromMessages, readOpencodeTurns, opencodeAdapter } from '.
 export { piTurnsFromLines, piAdapter } from './pi.js'
 export { qwenCodeTurnsFromLines, qwenCodeAdapter } from './qwen-code.js'
 export { cursorTurnsFromObjects, cursorAdapter } from './cursor.js'
+export { coworkTurnsFromObjects, coworkAdapter } from './cowork.js'
 
 const BY_COMMAND: Record<string, HarnessAdapter> = {
   claude: claudeAdapter,
@@ -30,6 +32,7 @@ const BY_COMMAND: Record<string, HarnessAdapter> = {
   pi: piAdapter,
   qwen: qwenCodeAdapter,
   cursor: cursorAdapter,
+  cowork: coworkAdapter,
 }
 
 export function adapterForCommand(command: string): HarnessAdapter | undefined {

@@ -23,6 +23,7 @@
 //        | ?session=<den>       live bytes (see term/ws.ts for the framing)
 //   WS   /ws?session=<id>       snapshot + live events (no filter = all)
 //   GET  /healthz               liveness (never auth-gated)
+//   GET  /api/capabilities      subsystems + per-harness list/read/drive/resume
 //   GET  /*                     built hub app, when staticDir is configured
 //   GET  /v1/models             OpenAI list (agent id = model id; gateway mount)
 //   POST /v1/chat/completions   OpenAI chat (SSE or JSON; gateway mount)
@@ -131,6 +132,8 @@ import { OpencodeDriver } from './harness/opencode-driver.js'
 import { PiDriver } from './harness/pi-driver.js'
 import { QwenCodeDriver } from './harness/qwen-code-driver.js'
 import { CursorDriver } from './harness/cursor-driver.js'
+import { CoworkDriver } from './harness/cowork-driver.js'
+import { nodeCapabilities } from './harness/node-capabilities.js'
 import { createInstalledProbe, HARNESS_TO_ROSTER } from './harness/installed.js'
 import { createAllowedProbe, harnessNotAllowedMessage } from './harness/allowed.js'
 import { CodexDriver } from './harness/codex-driver.js'
@@ -996,6 +999,7 @@ export function createDenServer(config: DenConfig, opts: DenServerOptions = {}):
         transcript: opts.transcriptWatcher,
         screen: screenFor,
       }),
+      new CoworkDriver(),
       new OpencodeDriver({
         store: harnessStore('opencode'),
         pty: termEnabled ? () => ensureManager() : undefined,
@@ -1600,6 +1604,25 @@ export function createDenServer(config: DenConfig, opts: DenServerOptions = {}):
         for (const [k, v] of Object.entries(CORS)) res.setHeader(k, v)
         if (await agentsRoutes.handle(req, res, url)) return
         return json(res, 404, { error: 'not found' })
+      }
+
+      // Node capability discovery. Registered beside the harness plane so a
+      // client can hide what this node does not run instead of probing 501s.
+      if (url.pathname === '/api/capabilities' && req.method === 'GET') {
+        for (const [k, v] of Object.entries(CORS)) res.setHeader(k, v)
+        const meshReadable = meshFilePaths(config.meshFile, config.sharedRoot).some((p) =>
+          existsSync(p),
+        )
+        json(
+          res,
+          200,
+          nodeCapabilities({
+            devicesEnabled: Boolean(devicesRoutes),
+            meshReadable,
+            harnesses: harnesses.list(),
+          }),
+        )
+        return
       }
 
       // Harness control plane (behind the mTLS gate). Runs alongside the

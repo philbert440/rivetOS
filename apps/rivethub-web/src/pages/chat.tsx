@@ -1268,6 +1268,9 @@ function ActiveSession(props: {
     remoteRegistry.data?.harnesses,
     remoteRegistry.status,
   )
+  // Capture-only harnesses (drive: false) stay on the transcript. A saved
+  // terminal choice is ignored so the view never spawns a PTY.
+  const viewMode = gate.readOnly ? 'chat' : mode
   const [termPtyId, setTermPtyId] = useState<string | undefined>()
   // The selector is locked for the duration of a spawn request so the
   // conversation's agent cannot change under an in-flight launch. A request
@@ -1298,7 +1301,7 @@ function ActiveSession(props: {
   // rides the boolean selectors below, so a busy stream doesn't repaint the
   // whole session view (header, xterm) per token.
   const liveRaw = useChat((s) =>
-    mode === 'chat' ? s.live[s.resolveSessionKey(props.sessionId)] : undefined,
+    viewMode === 'chat' ? s.live[s.resolveSessionKey(props.sessionId)] : undefined,
   )
   const live = useMemo(() => {
     if (!liveRaw) return undefined
@@ -1711,7 +1714,7 @@ function ActiveSession(props: {
   const spawnGate = useRef<'idle' | 'inflight' | 'failed'>('idle')
   const [spawnNonce, setSpawnNonce] = useState(0)
   useEffect(() => {
-    if (mode !== 'terminal' || termPtyId || remoteDead) return
+    if (viewMode !== 'terminal' || termPtyId || remoteDead) return
     if (spawnGate.current !== 'idle') return
     spawnGate.current = 'inflight'
     setTermError(undefined) // a stale error must not mask this attempt
@@ -1724,7 +1727,7 @@ function ActiveSession(props: {
         spawnGate.current = 'failed'
         setTermError((e as Error).message)
       })
-  }, [mode, termPtyId, spawnNonce, props.sessionId])
+  }, [viewMode, termPtyId, spawnNonce, props.sessionId])
 
   const enterTerminal = (): void => {
     if (spawnGate.current === 'failed') {
@@ -2133,8 +2136,8 @@ function ActiveSession(props: {
           Stop
         </button>
       )}
-      {/* [Terminal | Chat] — two views of ONE session, ordered by
-          immersion (terminal is home). */}
+      {/* [Terminal | Chat] — hidden when the harness cannot be driven. */}
+      {!gate.readOnly && (
       <span className="shrink-0">
         <SegmentedControl
           ariaLabel="Session view"
@@ -2151,6 +2154,7 @@ function ActiveSession(props: {
           ]}
         />
       </span>
+      )}
     </>
   )
 
@@ -2213,7 +2217,7 @@ function ActiveSession(props: {
           {presetNotice}
         </p>
       )}
-      {mode === 'chat' ? (
+      {viewMode === 'chat' ? (
         <>
           {/* Transcript owns its scroll container (stick-to-bottom lives there). */}
           <Transcript
@@ -2252,6 +2256,7 @@ function ActiveSession(props: {
               <HarnessApprovalCard pending={pendingApprovals} onDecide={onDecideApproval} />
             </div>
           )}
+          {!gate.readOnly && (
           <Composer
             nativeControls={turnOptions.models.length > 0}
             turnOptions={turnOptions}
@@ -2292,6 +2297,7 @@ function ActiveSession(props: {
                 : undefined
             }
           />
+          )}
         </>
       ) : termError ? (
         <div className="flex flex-1 flex-col items-center justify-center gap-1">

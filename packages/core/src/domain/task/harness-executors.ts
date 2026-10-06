@@ -254,6 +254,11 @@ export const HARNESS_EXECUTOR_GAPS: Readonly<Partial<Record<string, string>>> = 
     'mints its own chat id and `agent --resume <chatId>` references existing chats only ' +
     '(no --session-id). The den term manager spawns the interactive CLI; a headless ' +
     'executor is not wired',
+  cowork:
+    'cowork is capture-only: Claude Desktop Cowork sessions are listed and read from ' +
+    'host metadata (and a transcript when the sandbox left one on disk). There is no ' +
+    'task executor, no resume, and no turn injection — the Desktop plugin captures ' +
+    'through host MCP hooks',
 })
 
 /** The recorded gap for a harness, or a generic one for an unlisted id. */
