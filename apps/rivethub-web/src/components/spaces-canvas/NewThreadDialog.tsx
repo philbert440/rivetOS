@@ -50,6 +50,8 @@ export function NewThreadDialog(props: {
   const firstSpace = props.spaces.length > 0 ? props.spaces[0] : undefined
   const [spaceId, setSpaceId] = useState(locked ?? firstSpace?.id ?? '')
   const [agentId, setAgentId] = useState('')
+  // True once the user picks an agent (including Plain draft) after seeding.
+  const [agentTouched, setAgentTouched] = useState(false)
   const [prompt, setPrompt] = useState('')
   const [model, setModel] = useState('')
   const [effort, setEffort] = useState<ThinkingLevel>('medium')
@@ -77,6 +79,7 @@ export function NewThreadDialog(props: {
     const fields = initialThreadFields(defaultsRef.current, agentsRef.current)
     seededTarget.current = target
     setAgentId(fields.agentId)
+    setAgentTouched(false)
     setModel(fields.model)
     setEffort(fields.effort)
     setSeedReady(true)
@@ -84,6 +87,7 @@ export function NewThreadDialog(props: {
 
   const applyAgentPick = (value: string): void => {
     setAgentId(value)
+    setAgentTouched(true)
     const next = agents.find((row) => row.id === value)
     if (!next) {
       setModel('')
@@ -136,6 +140,14 @@ export function NewThreadDialog(props: {
       model: model || undefined,
       effort,
       node: agent ? undefined : defaults?.node,
+      missingPreset:
+        !agent &&
+        !agentTouched &&
+        !isLoading &&
+        defaults?.agentId &&
+        !agents.some((row) => row.id === defaults.agentId)
+          ? { agentId: defaults.agentId, harnessId: defaults.harnessId }
+          : undefined,
     })
     if (!id) return
     props.onStarted(id)

@@ -289,7 +289,7 @@ describe('NewThreadDialog seeding', () => {
     ).toBe(base)
   })
 
-  it('plain draft does not carry a missing preset id', () => {
+  it("carries the space's deleted preset when the agent is left untouched", () => {
     roster.agents = [PRESET]
     roster.isLoading = false
     const spaceId = useSpaces.getState().addSpace('Home')
@@ -313,9 +313,15 @@ describe('NewThreadDialog seeding', () => {
     })
     const base = useConnection.getState().baseUrl
     const settings = useChatSettings.getState().byKey[`${base}::${started}`]
-    expect(settings?.agentId).toBeUndefined()
-    expect(settings?.harnessId).toBeUndefined()
-    expect(settings).toMatchObject({ model: 'm2', effort: 'high' })
+    // Round-2 review (gippity B1): the space's own deleted default reaches the
+    // spawn recovery and DELETED_PRESET_NOTICE; only an explicit Plain draft
+    // pick drops it (covered in new-thread.test.ts).
+    expect(settings).toMatchObject({
+      agentId: 'gone',
+      harnessId: 'claude-code',
+      model: 'm2',
+      effort: 'high',
+    })
   })
 
   it('copies the newly picked preset after the space seed', () => {

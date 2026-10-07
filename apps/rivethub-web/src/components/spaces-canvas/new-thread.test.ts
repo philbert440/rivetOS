@@ -160,6 +160,29 @@ describe('applyChooser', () => {
     expect(agentForSession(id)).toBeUndefined()
   })
 
+  it('carries the space default preset that was deleted, but not on an explicit plain draft', () => {
+    const base = useConnection.getState().baseUrl
+    const spaceId = useSpaces.getState().addSpace('Home')
+    const kept = applyChooser({
+      type: 'prompt',
+      prompt: 'hello',
+      spaceId,
+      baseUrl: base,
+      model: 'm2',
+      missingPreset: { agentId: 'gone' },
+    })
+    expect(kept).toBeTruthy()
+    if (!kept) return
+    expect(useChatSettings.getState().byKey[`${base}::${kept}`]).toMatchObject({
+      agentId: 'gone',
+      model: 'm2',
+    })
+    const plain = applyChooser({ type: 'prompt', prompt: 'hello', spaceId, baseUrl: base })
+    expect(plain).toBeTruthy()
+    if (!plain) return
+    expect(useChatSettings.getState().byKey[`${base}::${plain}`]?.agentId).toBeUndefined()
+  })
+
   it('files a chosen remote agent under that node', () => {
     const base = useConnection.getState().baseUrl
     const remote = 'http://192.168.1.30:8787'

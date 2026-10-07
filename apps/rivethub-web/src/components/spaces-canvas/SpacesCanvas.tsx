@@ -1477,7 +1477,9 @@ export function SpacesCanvas(props: {
           {ghost.title}
         </div>
       ) : null}
-      <div className="pointer-events-none absolute inset-0">
+      {/* z-20: #world is z-1 (above the breathing ground), so the HUD must sit
+          above it or tiles paint over and take clicks from the ladder and dock. */}
+      <div className="pointer-events-none absolute inset-0 z-20">
         <nav
           data-hud=""
           aria-label="Location"
@@ -1581,6 +1583,20 @@ export function SpacesCanvas(props: {
           >
             Needs you{' '}
             <span className={needsCount > 0 ? 'text-warn' : 'text-ink-dim'}>{needsCount}</span>
+          </button>
+          <button
+            type="button"
+            data-dock="recent"
+            className="px-3 py-2 text-sm text-ink hover:bg-em/15 disabled:opacity-40"
+            disabled={mruPreviewId(mru, 1) === undefined}
+            onClick={() => {
+              // Previous thread — the way to step back at Thread, where Ctrl+` is
+              // left to the terminal.
+              const id = mruPreviewId(mru, 1)
+              if (id !== undefined) beginThread(id)
+            }}
+          >
+            Recent
           </button>
           <button
             type="button"

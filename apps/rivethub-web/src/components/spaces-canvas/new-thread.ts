@@ -73,6 +73,12 @@ export type ChooserAction =
       effort?: ThinkingLevel
       /** Den base URL used when no preset is chosen. Not a directory. */
       node?: string
+      /**
+       * The space's default preset when it is no longer in the roster and the
+       * user did not pick another agent. Carried so the first spawn reaches
+       * the den's agent-not-found recovery and DELETED_PRESET_NOTICE.
+       */
+      missingPreset?: { agentId: string; harnessId?: HarnessId }
     }
   | {
       type: 'history'
@@ -146,9 +152,11 @@ function writeSettings(
   agent: PromptAgent | undefined,
   model: string | undefined,
   effort: ThinkingLevel | undefined,
+  missingPreset?: { agentId: string; harnessId?: HarnessId },
 ): void {
-  // Plain draft does not copy a missing preset id. Ctrl+T uses
-  // `writeSpaceSettings`, which still does, so that path can show the notice.
+  // An explicit Plain draft does not copy a missing preset id; the space's
+  // own deleted default (missingPreset, set by the dialog only when the user
+  // left the agent untouched) does, so the first spawn shows the notice.
   const base: Partial<ChatSettings> = agent
     ? agentThreadSettings({
         id: agent.id,
@@ -158,6 +166,13 @@ function writeSettings(
         systemPrompt: agent.systemPrompt ?? '',
       })
     : { agent: '', effort: effort ?? 'medium' }
+  if (!agent && missingPreset) {
+    base.agentId = missingPreset.agentId
+    if (missingPreset.harnessId) {
+      base.harnessId = missingPreset.harnessId
+      base.agent = rosterCommandFor(missingPreset.harnessId) ?? ''
+    }
+  }
   if (model !== undefined) base.model = model
   if (effort !== undefined) {
     base.effort = effort
@@ -299,7 +314,7 @@ export function applyChooser(action: ChooserAction): string | undefined {
     setSessionNodeBinding(id, resolved.node, action.baseUrl)
   }
   const key = `${resolved.node}::${id}`
-  writeSettings(key, agent, action.model, action.effort)
+  writeSettings(key, agent, action.model, action.effort, agent ? undefined : action.missingPreset)
   useSpaces.getState().place(key, action.spaceId)
   useChat.getState().enqueueOutbound(id, text)
   return id

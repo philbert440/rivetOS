@@ -1128,6 +1128,34 @@ describe('SpacesCanvas mount', () => {
     ).toBeNull()
   })
 
+  it('keeps the HUD above the canvas and steps back with the dock Recent button', async () => {
+    vi.useFakeTimers(FLY_CLOCK)
+    placeOnHome(['a', 'b'])
+    const opened: string[] = []
+    mount([row('a', 'Alpha'), row('b', 'Beta')], (id) => {
+      opened.push(id)
+    })
+    const hud = host?.querySelector('[data-hud]')?.parentElement
+    expect(hud?.className).toContain('z-20')
+    for (const id of ['a', 'b']) {
+      const hit = host?.querySelector(`[data-tile-hit="${id}"]`)
+      if (!hit) throw new Error(`missing tile ${id}`)
+      act(() => {
+        pointerClick(hit)
+      })
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(400)
+      })
+    }
+    expect(opened.at(-1)).toBe('b')
+    const recent = host?.querySelector('[data-dock="recent"]')
+    if (!(recent instanceof HTMLElement)) throw new Error('missing recent')
+    act(() => {
+      recent.click()
+    })
+    expect(opened.at(-1)).toBe('a')
+  })
+
   it('lists every key from the shared table and closes on ?', () => {
     placeOnHome(['a'])
     mount([row('a', 'Alpha')], () => undefined)

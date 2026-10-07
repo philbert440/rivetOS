@@ -106,7 +106,13 @@ function useTileTarget(item: ChatItem, descriptors: HarnessDescriptor[] | undefi
     return () => {
       const current = published.current
       queueMicrotask(() => {
-        if (current !== undefined && paintedTargets.get(current.key) === current.record) {
+        // A StrictMode replay re-runs setup before this fires and republishes
+        // a new `published.current`; only a real unmount leaves it unchanged.
+        if (
+          current !== undefined &&
+          published.current === current &&
+          paintedTargets.get(current.key) === current.record
+        ) {
           paintedTargets.delete(current.key)
         }
       })

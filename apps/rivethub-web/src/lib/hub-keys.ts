@@ -253,7 +253,7 @@ export const CANVAS_KEYS: readonly CanvasKeyEntry[] = [
     id: 'mru',
     keys: 'Ctrl+`',
     summary: 'Step recent threads. Releasing Ctrl opens the preview.',
-    thread: 'Not claimed. The dock Recent button steps threads while one is open.',
+    thread: 'Not claimed. The dock Recent button opens the previous thread.',
     claimedAtThread: false,
     matches: (e) => ctrlOnly(e) && e.code === 'Backquote',
     probe: { ...bare('`', 'Backquote'), ctrlKey: true },

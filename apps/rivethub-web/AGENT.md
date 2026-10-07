@@ -347,7 +347,7 @@ polite toast when a session flips to blocked while you are not in it. **Find**
 (`/`, not claimed at Thread) fades non-hits to 0.15; Enter opens needs-you
 then recency, and only while the find field itself is focused.
 **Recent** (Ctrl+`) steps an in-memory MRU at Space and Everything; releasing
-Ctrl opens the preview. It is not claimed at Thread — the dock Recent button
+Ctrl opens the preview. It is not claimed at Thread — the dock Recent button (previous thread)
 is the step there.
 
 The per-session watch/attach lives in `src/lib/use-session-stream.ts`
