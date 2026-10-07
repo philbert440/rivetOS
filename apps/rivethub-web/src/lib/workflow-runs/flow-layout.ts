@@ -153,3 +153,34 @@ export function layoutFlowGraph(nodes: GraphNode[], edges: GraphEdge[]): LaidFlo
     height: maxY + FLOW_PAD,
   }
 }
+
+/**
+ * Tidy an authoring graph: same nodes, edges, and data — only x/y change.
+ * Start takes the entry slot; nodes it feeds (and unwired ones) are roots.
+ */
+export function autoLayoutAuthorGraph<
+  N extends { id: string; kind: string; label: string; x: number; y: number },
+  E extends { from: string; to: string },
+>(graph: { nodes: N[]; edges: E[] }, startId: string): { nodes: N[]; edges: E[] } {
+  const others = graph.nodes.filter((n) => n.id !== startId)
+  const nodes: GraphNode[] = others.map((n) => ({
+    id: n.id,
+    label: n.label,
+    kind: n.kind,
+    status: 'pending',
+    fromOutline: true,
+    fromJournal: false,
+  }))
+  const edges: GraphEdge[] = graph.edges
+    .filter((e) => e.from !== startId && e.to !== startId)
+    .map((e) => ({ id: `${e.from}→${e.to}`, from: e.from, to: e.to, kind: 'declared' }))
+  const laid = layoutFlowGraph(nodes, edges)
+  const pos = new Map(laid.nodes.map((n) => [n.id === FLOW_ENTRY_ID ? startId : n.id, n]))
+  return {
+    ...graph,
+    nodes: graph.nodes.map((n) => {
+      const p = pos.get(n.id)
+      return p ? { ...n, x: p.x, y: p.y } : n
+    }),
+  }
+}

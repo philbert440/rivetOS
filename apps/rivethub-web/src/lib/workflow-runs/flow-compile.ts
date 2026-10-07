@@ -217,75 +217,127 @@ function kahnLeftover(graph: FlowAuthorGraph, reachable: Set<string>): string[] 
   return ids.filter((id) => !seen.has(id))
 }
 
-function validateFlow(graph: FlowAuthorGraph, meta: CompileMeta): void {
+export type FlowIssueSeverity = 'error' | 'warning'
+
+/** One problem with a canvas graph. Errors block Save; warnings don't. */
+export interface FlowIssue {
+  severity: FlowIssueSeverity
+  message: string
+  /** Node the issue is about, when there is one — the canvas badges it. */
+  nodeId?: string
+}
+
+/**
+ * Every problem with a graph, in the order compile would hit them. Errors are
+ * exactly what `compileFlow` refuses (it throws the first); warnings flag
+ * things that compile but are probably mistakes.
+ */
+export function flowIssues(
+  graph: FlowAuthorGraph,
+  meta: Pick<CompileMeta, 'knownWorkflowIds'>,
+): FlowIssue[] {
+  const issues: FlowIssue[] = []
+  const error = (message: string, nodeId?: string): void => {
+    issues.push({ severity: 'error', message, ...(nodeId !== undefined ? { nodeId } : {}) })
+  }
+  const check = (nodeId: string, fn: () => void): void => {
+    try {
+      fn()
+    } catch (err) {
+      if (!(err instanceof FlowCompileError)) throw err
+      error(err.message, nodeId)
+    }
+  }
+
   const ids = new Set<string>()
   for (const n of graph.nodes) {
-    if (ids.has(n.id)) throw new FlowCompileError(`duplicate node id "${n.id}"`)
+    if (ids.has(n.id)) error(`duplicate node id "${n.id}"`, n.id)
     ids.add(n.id)
   }
   if (!graph.nodes.some((n) => n.id === FLOW_START_ID && n.kind === 'start')) {
-    throw new FlowCompileError('graph is missing a start node')
+    error('graph is missing a start node')
   }
   for (const e of graph.edges) {
     if (!ids.has(e.from) || !ids.has(e.to)) {
-      throw new FlowCompileError(`dangling edge "${e.id}" (${e.from} → ${e.to})`)
+      error(`dangling edge "${e.id}" (${e.from} → ${e.to})`)
     }
   }
   const reachable = reachableFromStart(graph)
   const leftover = kahnLeftover(graph, reachable)
   if (leftover.length > 0) {
-    throw new FlowCompileError(
-      `cycle involving ${leftover.map((id) => JSON.stringify(id)).join(', ')}`,
-    )
+    error(`cycle involving ${leftover.map((id) => JSON.stringify(id)).join(', ')}`, leftover[0])
   }
 
   const idents = new Map<string, string>()
   const emittedPaths = new Map<string, string>()
   for (const n of graph.nodes) {
-    if (!reachable.has(n.id) || n.id === FLOW_START_ID) continue
+    if (n.id === FLOW_START_ID) continue
+    if (!reachable.has(n.id)) {
+      issues.push({
+        severity: 'warning',
+        message: `"${n.label}" isn't wired from Start — it won't run`,
+        nodeId: n.id,
+      })
+      continue
+    }
     const i = ident(n.id)
     if (RESERVED_IDENTS.has(i)) {
-      throw new FlowCompileError(`reserved ident ${JSON.stringify(i)} from node "${n.id}"`)
+      error(`reserved ident ${JSON.stringify(i)} from node "${n.id}"`, n.id)
     }
     if (n.kind !== 'done') {
       const prev = idents.get(i)
       if (prev && prev !== n.id) {
-        throw new FlowCompileError(`ident collision: "${prev}" and "${n.id}" both compile as ${i}`)
+        error(`ident collision: "${prev}" and "${n.id}" both compile as ${i}`, n.id)
       }
       idents.set(i, n.id)
     }
     if (n.kind === 'run') {
       const path = scriptPathOf(n)
-      assertSafeRelPath(path, n.id)
+      check(n.id, () => assertSafeRelPath(path, n.id))
       const prev = emittedPaths.get(path)
-      if (prev) {
-        throw new FlowCompileError(`duplicate emitted path "${path}" ("${prev}" and "${n.id}")`)
-      }
+      if (prev) error(`duplicate emitted path "${path}" ("${prev}" and "${n.id}")`, n.id)
       emittedPaths.set(path, n.id)
     }
     if (n.kind === 'agent') {
       const stem = agentStem(n)
-      assertSafeAgentStem(stem, n.id)
+      check(n.id, () => assertSafeAgentStem(stem, n.id))
       const path = `agents/${stem}.md`
       const prev = emittedPaths.get(path)
-      if (prev) {
-        throw new FlowCompileError(`duplicate emitted path "${path}" ("${prev}" and "${n.id}")`)
-      }
+      if (prev) error(`duplicate emitted path "${path}" ("${prev}" and "${n.id}")`, n.id)
       emittedPaths.set(path, n.id)
+      if (!(n.prompt ?? '').trim()) {
+        issues.push({
+          severity: 'warning',
+          message: `agent "${n.label}" has no instructions`,
+          nodeId: n.id,
+        })
+      }
+    }
+    if (n.kind === 'human' && (n.gateFields ?? []).length === 0) {
+      issues.push({
+        severity: 'warning',
+        message: `gate "${n.label}" asks for no fields`,
+        nodeId: n.id,
+      })
     }
     if (n.kind === 'call') {
       const ref = (n.callRef ?? '').trim()
       if (!ref) {
-        throw new FlowCompileError(`call "${n.id}" has an empty workflow id`)
+        error(`call "${n.id}" has an empty workflow id`, n.id)
+        continue
       }
       const known = meta.knownWorkflowIds
       if (known && known.length > 0 && !known.includes(ref)) {
-        throw new FlowCompileError(
-          `call "${n.id}" references unknown workflow ${JSON.stringify(ref)}`,
-        )
+        error(`call "${n.id}" references unknown workflow ${JSON.stringify(ref)}`, n.id)
       }
     }
   }
+  return issues
+}
+
+function validateFlow(graph: FlowAuthorGraph, meta: CompileMeta): void {
+  const first = flowIssues(graph, meta).find((i) => i.severity === 'error')
+  if (first) throw new FlowCompileError(first.message)
 }
 
 function ownedFromNodes(nodes: FlowAuthorNode[], reachable: Set<string>): string[] {

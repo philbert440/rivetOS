@@ -2,7 +2,7 @@
  * Flows workbench: palette, canvas, properties. Authoring when `editable`.
  */
 
-import { useState, type JSX, type ReactNode } from 'react'
+import { useMemo, useState, type JSX, type ReactNode } from 'react'
 import { Select } from './select.js'
 import { FlowsCanvas } from './flows-canvas.js'
 import {
@@ -19,11 +19,17 @@ import {
   type FlowAuthorKind,
 } from '../lib/workflow-runs/flow-graph.js'
 import { GRAPH_NODE_STATUS_LABELS, type GraphNodeStatus } from '../lib/workflow-runs/status.js'
+import type { FlowIssue, FlowIssueSeverity } from '../lib/workflow-runs/flow-compile.js'
 
 export interface FlowsWorkbenchProps {
   graph: FlowAuthorGraph
-  onChange?: (graph: FlowAuthorGraph) => void
+  /** `coalesceKey`: consecutive changes with the same key are one undo step. */
+  onChange?: (graph: FlowAuthorGraph, coalesceKey?: string) => void
   editable?: boolean
+  /** Problems from `flowIssues` — badged on nodes and listed under Properties. */
+  issues?: FlowIssue[]
+  /** Fit the canvas to the graph whenever this changes. */
+  fitKey?: string
   workflowOptions: { value: string; label: string }[]
   workflowId: string
   onWorkflowChange?: (id: string) => void
@@ -76,7 +82,7 @@ function NodeInspector(props: {
   graph: FlowAuthorGraph
   selectedId: string | null
   editable: boolean
-  onChange?: (graph: FlowAuthorGraph) => void
+  onChange?: (graph: FlowAuthorGraph, coalesceKey?: string) => void
   status?: GraphNodeStatus
   childRunId?: string
   onOpenChildRun?: (runId: string) => void
@@ -85,9 +91,13 @@ function NodeInspector(props: {
   if (!node) {
     return <p className="mb-4 text-sm text-ink-dim">Select a node or drag from an output port.</p>
   }
+  // Typing in one field is one undo step: key by node + field.
   const patch = (p: Parameters<typeof updateFlowNode>[2]): void => {
     if (!props.editable) return
-    props.onChange?.(updateFlowNode(props.graph, node.id, p))
+    props.onChange?.(
+      updateFlowNode(props.graph, node.id, p),
+      `edit:${node.id}:${Object.keys(p).join(',')}`,
+    )
   }
   return (
     <div className="mb-4">
@@ -232,9 +242,65 @@ function NodeInspector(props: {
   )
 }
 
+function ProblemsList(props: {
+  issues: FlowIssue[]
+  graph: FlowAuthorGraph
+  onSelect: (id: string) => void
+}): JSX.Element | null {
+  if (props.issues.length === 0) return null
+  const errors = props.issues.filter((i) => i.severity === 'error').length
+  return (
+    <section className="mb-4 border-b border-line pb-3" aria-label="Problems">
+      <h2 className="mb-2 font-mono text-[10px] font-semibold uppercase tracking-wide text-ink-dim">
+        Problems · {String(props.issues.length)}
+        {errors > 0 && <span className="text-red"> · {String(errors)} block save</span>}
+      </h2>
+      <ul className="flex flex-col gap-1">
+        {props.issues.map((i, idx) => {
+          const node = i.nodeId ? nodeById(props.graph, i.nodeId) : undefined
+          const body = (
+            <>
+              <span className={i.severity === 'error' ? 'text-red' : 'text-[#d97706]'}>
+                {i.severity === 'error' ? '✕' : '!'}
+              </span>{' '}
+              {i.message}
+            </>
+          )
+          return (
+            <li key={`${String(idx)}:${i.message}`} className="font-mono text-[11px] text-ink-dim">
+              {node ? (
+                <button
+                  type="button"
+                  onClick={() => props.onSelect(node.id)}
+                  className="text-left hover:text-ink"
+                >
+                  {body}
+                </button>
+              ) : (
+                body
+              )}
+            </li>
+          )
+        })}
+      </ul>
+    </section>
+  )
+}
+
+/** Worst severity per node for the canvas badges. */
+function issuesByNodeOf(issues: FlowIssue[] | undefined): Record<string, FlowIssueSeverity> {
+  const out: Record<string, FlowIssueSeverity> = {}
+  for (const i of issues ?? []) {
+    if (!i.nodeId) continue
+    if (out[i.nodeId] !== 'error') out[i.nodeId] = i.severity
+  }
+  return out
+}
+
 export function FlowsWorkbench(props: FlowsWorkbenchProps): JSX.Element {
   const [selectedEdgeId, setSelectedEdgeId] = useState<string | null>(null)
   const reachable = reachableFromStart(props.graph)
+  const issuesByNode = useMemo(() => issuesByNodeOf(props.issues), [props.issues])
   const add = (kind: Exclude<FlowAuthorKind, 'start'>): void => {
     if (!props.editable || !props.onChange) return
     const next = addFlowNode(props.graph, kind)
@@ -324,6 +390,8 @@ export function FlowsWorkbench(props: FlowsWorkbenchProps): JSX.Element {
           }}
           onChange={props.onChange}
           editable={props.editable}
+          issuesByNode={issuesByNode}
+          fitKey={props.fitKey}
           statusById={props.statusById}
           selectedEdgeId={selectedEdgeId}
           onSelectEdge={setSelectedEdgeId}
@@ -332,6 +400,16 @@ export function FlowsWorkbench(props: FlowsWorkbenchProps): JSX.Element {
         />
 
         <aside className="flex w-72 shrink-0 flex-col overflow-y-auto border-l border-line bg-panel p-3">
+          {props.issues && (
+            <ProblemsList
+              issues={props.issues}
+              graph={props.graph}
+              onSelect={(id) => {
+                setSelectedEdgeId(null)
+                props.onSelect(id)
+              }}
+            />
+          )}
           <h2 className="mb-3 font-mono text-[10px] font-semibold uppercase tracking-wide text-ink-dim">
             Properties
           </h2>

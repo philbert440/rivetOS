@@ -1,5 +1,7 @@
 /**
- * Flows canvas — pan, select, drag nodes, wire output→input ports.
+ * Flows canvas — pan / zoom, select, drag nodes, wire output→input ports.
+ * Geometry lives in world coordinates; `view` maps world → screen
+ * (screen = world * k + offset), and every hit test goes through it.
  */
 
 import {
@@ -17,7 +19,10 @@ import { flowNodeFamily, type FlowNodeFamily } from '../lib/workflow-runs/flow-k
 import {
   canConnect,
   connectFlowNodes,
+  deleteFlowNode,
   disconnectFlowEdge,
+  duplicateFlowNode,
+  FLOW_START_ID,
   updateFlowNode,
   type FlowAuthorEdge,
   type FlowAuthorGraph,
@@ -30,6 +35,15 @@ import {
   overlayEdgeKind,
   type CanvasSceneColors,
 } from '../lib/workflow-runs/flow-overlay.js'
+import {
+  DEFAULT_FLOW_VIEW,
+  fitView,
+  screenToWorld,
+  wheelView,
+  zoomAt,
+  type FlowView,
+} from '../lib/workflow-runs/flow-view.js'
+import type { FlowIssueSeverity } from '../lib/workflow-runs/flow-compile.js'
 import { useResolvedTheme } from '../stores/theme.js'
 import { GRAPH_NODE_STATUS_LABELS, type GraphNodeStatus } from '../lib/workflow-runs/status.js'
 
@@ -41,13 +55,21 @@ const FAMILY_FILL: Record<FlowNodeFamily, string> = {
 const SCRIPT_FILL = '#1d4ed8'
 const PORT_R = 5
 const PORT_SLOP = 14
+const WARNING_FILL = '#d97706'
+const NUDGE = 8
+const ZOOM_STEP = 1.2
 
 export interface FlowsCanvasProps {
   graph: FlowAuthorGraph
   selectedId?: string
   onSelect?: (id: string | null) => void
-  onChange?: (graph: FlowAuthorGraph) => void
+  /** `coalesceKey`: consecutive changes with the same key are one undo step. */
+  onChange?: (graph: FlowAuthorGraph, coalesceKey?: string) => void
   editable?: boolean
+  /** Worst issue per node id — drawn as a badge on the node. */
+  issuesByNode?: Record<string, FlowIssueSeverity>
+  /** Fit the graph to the viewport whenever this changes (e.g. per loaded def). */
+  fitKey?: string
   /** Journal status keyed by authoring node id — same canvas, live overlay. */
   statusById?: Record<string, GraphNodeStatus>
   selectedEdgeId?: string | null
@@ -174,7 +196,7 @@ function drawBezier(
 function drawScene(
   ctx: CanvasRenderingContext2D,
   graph: FlowAuthorGraph,
-  pan: { x: number; y: number },
+  view: FlowView,
   selectedId: string | undefined,
   hover: { id: string; side?: 'in' | 'out' } | undefined,
   connecting: { fromId: string; x: number; y: number } | undefined,
@@ -184,6 +206,7 @@ function drawScene(
   cssW: number,
   cssH: number,
   colors: CanvasSceneColors,
+  issuesByNode: Record<string, FlowIssueSeverity> | undefined,
 ): void {
   ctx.save()
   ctx.setTransform(1, 0, 0, 1, 0, 0)
@@ -194,9 +217,10 @@ function drawScene(
   ctx.fillStyle = colors.bg
   ctx.fillRect(0, 0, cssW, cssH)
   ctx.fillStyle = colors.gridDot
-  const grid = 25
-  const ox = pan.x % grid
-  const oy = pan.y % grid
+  // Grid scales with zoom; zoomed far out, double the spacing so dots don't mush.
+  const grid = 25 * view.k * (view.k < 0.5 ? 2 : 1)
+  const ox = ((view.x % grid) + grid) % grid
+  const oy = ((view.y % grid) + grid) % grid
   for (let x = ox; x < cssW; x += grid) {
     for (let y = oy; y < cssH; y += grid) {
       ctx.beginPath()
@@ -205,7 +229,8 @@ function drawScene(
     }
   }
 
-  ctx.translate(pan.x, pan.y)
+  ctx.translate(view.x, view.y)
+  ctx.scale(view.k, view.k)
   const byId = new Map(graph.nodes.map((n) => [n.id, n]))
 
   for (const e of graph.edges) {
@@ -303,6 +328,22 @@ function drawScene(
     ctx.fillStyle = colors.sublabel
     const sub = status ? GRAPH_NODE_STATUS_LABELS[status] : n.kind === 'run' ? 'script' : n.kind
     ctx.fillText(sub, n.x + FLOW_NODE_SIZE / 2, n.y + FLOW_NODE_SIZE / 2 + 16)
+
+    const issue = issuesByNode?.[n.id]
+    if (issue) {
+      const bx = n.x + FLOW_NODE_SIZE - 4
+      const by = n.y + 4
+      ctx.beginPath()
+      ctx.arc(bx, by, 10, 0, Math.PI * 2)
+      ctx.fillStyle = issue === 'error' ? colors.failed : WARNING_FILL
+      ctx.fill()
+      ctx.lineWidth = 2
+      ctx.strokeStyle = colors.bg
+      ctx.stroke()
+      ctx.fillStyle = '#ffffff'
+      ctx.font = 'bold 13px "JetBrains Mono", ui-monospace, monospace'
+      ctx.fillText('!', bx, by + 1)
+    }
   }
   ctx.restore()
 }
@@ -320,10 +361,14 @@ export function FlowsCanvas(props: FlowsCanvasProps): JSX.Element {
     childRunIdById,
     onOpenChildRun,
     className,
+    issuesByNode,
+    fitKey,
   } = props
   const wrapRef = useRef<HTMLDivElement>(null)
   const canvasRef = useRef<HTMLCanvasElement>(null)
-  const [pan, setPan] = useState({ x: 0, y: 0 })
+  const [view, setView] = useState<FlowView>(DEFAULT_FLOW_VIEW)
+  /** Bumped per pointer-down so each drag is its own undo step. */
+  const gestureSeq = useRef(0)
   const [hover, setHover] = useState<{ id: string; side?: 'in' | 'out' } | undefined>()
   const [panning, setPanning] = useState(false)
   const [connecting, setConnecting] = useState<
@@ -360,7 +405,7 @@ export function FlowsCanvas(props: FlowsCanvasProps): JSX.Element {
     drawScene(
       ctx,
       graph,
-      pan,
+      view,
       selectedId,
       hover,
       connecting,
@@ -370,8 +415,52 @@ export function FlowsCanvas(props: FlowsCanvasProps): JSX.Element {
       cssW,
       cssH,
       canvasSceneColors(resolvedTheme),
+      issuesByNode,
     )
-  }, [graph, pan, selectedId, hover, connecting, statusById, pulse, selectedEdgeId, resolvedTheme])
+  }, [
+    graph,
+    view,
+    selectedId,
+    hover,
+    connecting,
+    statusById,
+    pulse,
+    selectedEdgeId,
+    resolvedTheme,
+    issuesByNode,
+  ])
+
+  const fit = useCallback(() => {
+    const wrap = wrapRef.current
+    if (!wrap) return
+    setView(fitView(graph.nodes, wrap.clientWidth, wrap.clientHeight))
+  }, [graph.nodes])
+  const fitRef = useRef(fit)
+  fitRef.current = fit
+  // Fit per fitKey only — not on every graph edit, which would yank the view.
+  useEffect(() => {
+    fitRef.current()
+  }, [fitKey])
+
+  const zoomBy = useCallback((factor: number) => {
+    const wrap = wrapRef.current
+    if (!wrap) return
+    setView((v) => zoomAt(v, wrap.clientWidth / 2, wrap.clientHeight / 2, factor))
+  }, [])
+
+  // Native, non-passive listener: React's onWheel is passive, so it can't
+  // stop the page (or browser pinch-zoom) from scrolling under the canvas.
+  useEffect(() => {
+    const canvas = canvasRef.current
+    if (!canvas) return
+    const onWheel = (ev: WheelEvent): void => {
+      ev.preventDefault()
+      const rect = canvas.getBoundingClientRect()
+      setView((v) => wheelView(v, ev, ev.clientX - rect.left, ev.clientY - rect.top))
+    }
+    canvas.addEventListener('wheel', onWheel, { passive: false })
+    return () => canvas.removeEventListener('wheel', onWheel)
+  }, [])
 
   useEffect(() => {
     paint()
@@ -402,12 +491,13 @@ export function FlowsCanvas(props: FlowsCanvasProps): JSX.Element {
   const toWorld = (ev: { clientX: number; clientY: number }): { x: number; y: number } => {
     const canvas = canvasRef.current!
     const rect = canvas.getBoundingClientRect()
-    return { x: ev.clientX - rect.left - pan.x, y: ev.clientY - rect.top - pan.y }
+    return screenToWorld(view, ev.clientX - rect.left, ev.clientY - rect.top)
   }
 
   const onPointerDown = (ev: PointerEvent<HTMLCanvasElement>): void => {
     const world = toWorld(ev)
     ev.currentTarget.setPointerCapture(ev.pointerId)
+    gestureSeq.current += 1
     const port = hitPort(graph.nodes, world.x, world.y)
     if (editable && port?.side === 'out') {
       drag.current = {
@@ -464,10 +554,15 @@ export function FlowsCanvas(props: FlowsCanvasProps): JSX.Element {
     const dy = ev.clientY - d.lastY
     d.lastX = ev.clientX
     d.lastY = ev.clientY
-    if (d.mode === 'pan') setPan((p) => ({ x: p.x + dx, y: p.y + dy }))
+    if (d.mode === 'pan') setView((v) => ({ ...v, x: v.x + dx, y: v.y + dy }))
     if (d.mode === 'node' && d.nodeId) {
       const n = graph.nodes.find((x) => x.id === d.nodeId)
-      if (n) onChange?.(updateFlowNode(graph, n.id, { x: n.x + dx, y: n.y + dy }))
+      if (n) {
+        onChange?.(
+          updateFlowNode(graph, n.id, { x: n.x + dx / view.k, y: n.y + dy / view.k }),
+          `move:${String(gestureSeq.current)}`,
+        )
+      }
     }
   }
 
@@ -507,12 +602,60 @@ export function FlowsCanvas(props: FlowsCanvasProps): JSX.Element {
   }
 
   const onKeyDown = (ev: KeyboardEvent<HTMLCanvasElement>): void => {
-    if (!editable || !onChange) return
-    if (ev.key !== 'Delete' && ev.key !== 'Backspace') return
-    if (selectedEdgeId) {
+    const mod = ev.metaKey || ev.ctrlKey
+    // View keys work read-only too.
+    if (!mod && (ev.key === '=' || ev.key === '+')) {
       ev.preventDefault()
-      onChange(disconnectFlowEdge(graph, selectedEdgeId))
-      onSelectEdge?.(null)
+      zoomBy(ZOOM_STEP)
+      return
+    }
+    if (!mod && ev.key === '-') {
+      ev.preventDefault()
+      zoomBy(1 / ZOOM_STEP)
+      return
+    }
+    if (!mod && (ev.key === 'f' || ev.key === '0')) {
+      ev.preventDefault()
+      fit()
+      return
+    }
+    if (!editable || !onChange) return
+    const node = selectedId && selectedId !== FLOW_START_ID ? selectedId : undefined
+    if (ev.key === 'Delete' || ev.key === 'Backspace') {
+      if (selectedEdgeId) {
+        ev.preventDefault()
+        onChange(disconnectFlowEdge(graph, selectedEdgeId))
+        onSelectEdge?.(null)
+      } else if (node) {
+        ev.preventDefault()
+        onChange(deleteFlowNode(graph, node))
+        onSelect?.(null)
+      }
+      return
+    }
+    if (mod && ev.key.toLowerCase() === 'd' && node) {
+      ev.preventDefault()
+      const dup = duplicateFlowNode(graph, node)
+      onChange(dup.graph)
+      if (dup.id) onSelect?.(dup.id)
+      return
+    }
+    const arrows: Record<string, [number, number]> = {
+      ArrowLeft: [-1, 0],
+      ArrowRight: [1, 0],
+      ArrowUp: [0, -1],
+      ArrowDown: [0, 1],
+    }
+    const dir = arrows[ev.key] as [number, number] | undefined
+    if (dir && selectedId && !mod) {
+      const n = graph.nodes.find((x) => x.id === selectedId)
+      if (!n) return
+      ev.preventDefault()
+      const step = ev.shiftKey ? NUDGE * 5 : NUDGE
+      onChange(
+        updateFlowNode(graph, n.id, { x: n.x + dir[0] * step, y: n.y + dir[1] * step }),
+        `nudge:${n.id}`,
+      )
     }
   }
 
@@ -522,7 +665,11 @@ export function FlowsCanvas(props: FlowsCanvasProps): JSX.Element {
         ref={canvasRef}
         role="application"
         tabIndex={0}
-        aria-label="Workflow flows canvas. Delete removes the selected wire."
+        aria-label={
+          editable
+            ? 'Workflow flows canvas. Scroll to pan, pinch or ⌘-scroll to zoom, F to fit. Delete removes the selection, ⌘D duplicates a node, arrow keys nudge it.'
+            : 'Workflow flows canvas. Scroll to pan, pinch or ⌘-scroll to zoom, F to fit.'
+        }
         className="block size-full"
         style={{ cursor }}
         onPointerDown={onPointerDown}
@@ -532,6 +679,42 @@ export function FlowsCanvas(props: FlowsCanvasProps): JSX.Element {
         onDoubleClick={onDoubleClick}
         onKeyDown={onKeyDown}
       />
+      <div className="absolute bottom-3 right-3 flex items-center gap-0.5 rounded border border-line bg-panel/90 p-0.5 font-mono text-xs text-ink-dim shadow">
+        <button
+          type="button"
+          aria-label="Zoom out"
+          title="Zoom out (-)"
+          onClick={() => zoomBy(1 / ZOOM_STEP)}
+          className="rounded px-2 py-1 hover:bg-panel-2 hover:text-ink"
+        >
+          −
+        </button>
+        <button
+          type="button"
+          title="Reset to 100%"
+          onClick={() => zoomBy(1 / view.k)}
+          className="w-12 rounded py-1 text-center hover:bg-panel-2 hover:text-ink"
+        >
+          {String(Math.round(view.k * 100))}%
+        </button>
+        <button
+          type="button"
+          aria-label="Zoom in"
+          title="Zoom in (+)"
+          onClick={() => zoomBy(ZOOM_STEP)}
+          className="rounded px-2 py-1 hover:bg-panel-2 hover:text-ink"
+        >
+          +
+        </button>
+        <button
+          type="button"
+          title="Fit to view (F)"
+          onClick={fit}
+          className="rounded px-2 py-1 hover:bg-panel-2 hover:text-ink"
+        >
+          Fit
+        </button>
+      </div>
     </div>
   )
 }
