@@ -5,10 +5,12 @@
  * transcript — XtermAttach mounts only inside the focused thread.
  *
  * The stream hook is ref-counted: this mount and a focused ActiveSession
- * for the same session share one watch or attach.
+ * for the same session share one watch or attach. A row with no stream
+ * after the shared target resolution is seeded from sessionMessages.
  */
 
 import { useEffect, useMemo, useRef, useState, type JSX } from 'react'
+import { useQueryClient } from '@tanstack/react-query'
 import type { HarnessDescriptor } from '@rivetos/types'
 import { Transcript } from '../transcript.js'
 import { useChat, type OutboundItem } from '../../stores/chat.js'
@@ -18,29 +20,65 @@ import { harnessGate, type ChatItem } from '../../lib/harness-chat.js'
 import { statusActivity } from '../../lib/harness-fold.js'
 import { deriveReplyWait, nextWaitClock, type ReplyWaitClock } from '../../lib/harness-turns.js'
 import { getSessionMode } from '../../lib/session-mode.js'
-import { sessionNodeFor } from '../../lib/session-node.js'
 import { storageKey } from '../../lib/session-rekey.js'
-import { useSessionStream } from '../../lib/use-session-stream.js'
+import { bindSessionStream, useSessionStream } from '../../lib/use-session-stream.js'
+import { useSessionTarget } from '../../lib/use-session-target.js'
 
 const EMPTY_OUTBOUND: OutboundItem[] = []
+
+function useTileTarget(item: ChatItem, descriptors: HarnessDescriptor[] | undefined) {
+  const baseUrl = useConnection((s) => s.baseUrl)
+  const roster = useConnection((s) => s.roster)
+  const epoch = useConnection((s) => s.transportEpoch)
+  const rosterUrls = useMemo(() => roster.map((r) => r.baseUrl), [roster])
+  const target = useSessionTarget({
+    sessionId: item.key,
+    item,
+    gate: harnessGate(item, descriptors),
+    harnessCommand: item.command,
+    baseUrl,
+    rosterUrls,
+    epoch,
+  })
+  return { epoch, target }
+}
 
 export function ThreadMini(props: {
   item: ChatItem
   descriptors?: HarnessDescriptor[]
 }): JSX.Element {
   const id = props.item.key
-  const baseUrl = useConnection((s) => s.baseUrl)
-  const roster = useConnection((s) => s.roster)
-  const rosterUrls = useMemo(() => roster.map((r) => r.baseUrl), [roster])
-  const sessionBase = sessionNodeFor(id, baseUrl, rosterUrls)
-  const isRemote = sessionBase !== baseUrl
-  const gate = harnessGate(props.item, props.descriptors)
-  const streamId = gate.stream ? props.item.sessionId : undefined
-  useSessionStream({ sessionId: id, item: props.item, streamId, isRemote, sessionBase })
+  const { target } = useTileTarget(props.item, props.descriptors)
+  const { streamError } = useSessionStream({
+    sessionId: id,
+    item: target.item,
+    streamId: target.streamId,
+    isRemote: target.isRemote,
+    sessionBase: target.sessionBase,
+  })
+  const sessionsDirty = useChat((s) => s.sessionsDirty)
+  // No control-plane stream (remote summary still closed, or a legacy row):
+  // one HTTP backfill, refreshed when the session list is marked dirty.
+  useEffect(() => {
+    if (target.streamId !== undefined) return
+    const ctrl = new AbortController()
+    let gone = false
+    void target
+      .sessionGateway()
+      .then((gw) => gw.sessionMessages(id, ctrl.signal))
+      .then((data) => {
+        if (!gone) useChat.getState().seed(id, data.messages)
+      })
+      .catch(() => undefined)
+    return () => {
+      gone = true
+      ctrl.abort()
+    }
+  }, [target.streamId, target.sessionGateway, id, sessionsDirty])
 
   // Remembered terminal mode still shows the transcript tail. The value is
   // read so a later slice can badge it; the mini never mounts a PTY.
-  const remembered = getSessionMode(storageKey(sessionBase, id), 'chat')
+  const remembered = getSessionMode(storageKey(target.sessionBase, id), 'chat')
 
   const messages = useChat((s) => s.messages[s.resolveSessionKey(id)])
   const liveRaw = useChat((s) => s.live[s.resolveSessionKey(id)])
@@ -111,6 +149,77 @@ export function ThreadMini(props: {
         statusLine={replyWait.statusLine}
         accent={accent}
       />
+      {streamError ? (
+        <p className="truncate px-3 py-1 text-xs text-ink-dim">{streamError}</p>
+      ) : null}
     </div>
   )
+}
+
+/** Holds a space tile's lease while the mini itself is not painted. */
+export function WarmLease(props: { item: ChatItem; descriptors?: HarnessDescriptor[] }): null {
+  const { target } = useTileTarget(props.item, props.descriptors)
+  useSessionStream({
+    sessionId: props.item.key,
+    item: target.item,
+    streamId: target.streamId,
+    isRemote: target.isRemote,
+    sessionBase: target.sessionBase,
+  })
+  return null
+}
+
+/**
+ * At Everything, warm the selected tile during idle time and release it
+ * immediately so the lease lingers. The focused thread holds its own ref.
+ */
+export function SelectedPrewarm(props: {
+  item: ChatItem
+  descriptors?: HarnessDescriptor[]
+}): null {
+  const { epoch, target } = useTileTarget(props.item, props.descriptors)
+  const queryClient = useQueryClient()
+  const id = props.item.key
+  const item = target.item
+  const harnessId = item?.harnessId
+  const streamId = target.streamId
+  const isRemote = target.isRemote
+  const sessionBase = target.sessionBase
+  const sessionGateway = target.sessionGateway
+  useEffect(() => {
+    let cancelled = false
+    const run = (): void => {
+      if (cancelled) return
+      const release = bindSessionStream({
+        sessionId: id,
+        item,
+        streamId,
+        isRemote,
+        sessionBase,
+        harnessId,
+        transportEpoch: epoch,
+        sessionGateway,
+        queryClient,
+        onStreamError: () => undefined,
+      })
+      release()
+    }
+    const idleHost = window as Window & {
+      requestIdleCallback?: (cb: () => void) => number
+      cancelIdleCallback?: (handle: number) => void
+    }
+    if (typeof idleHost.requestIdleCallback === 'function') {
+      const handle = idleHost.requestIdleCallback(run)
+      return () => {
+        cancelled = true
+        idleHost.cancelIdleCallback(handle)
+      }
+    }
+    const timer = setTimeout(run, 0)
+    return () => {
+      cancelled = true
+      clearTimeout(timer)
+    }
+  }, [id, item, streamId, isRemote, sessionBase, harnessId, epoch, sessionGateway, queryClient])
+  return null
 }

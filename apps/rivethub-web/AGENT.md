@@ -291,12 +291,31 @@ the expanded tile). This slice has one implicit region, "Unplaced", holding
 every drawer row. Spaces store, history, and drag are not in this slice.
 
 The per-session watch/attach lives in `src/lib/use-session-stream.ts`
-(`useSessionStream` / `bindSessionStream`). It is ref-counted per session
-signature. A space mini and the focused `ActiveSession` for the same session
-share one watch or one harness attach; the mini stays mounted until the fly
-lands and the thread has acquired the lease, so the socket survives the
-mini→focus handoff. Harness-bound minis use that same attach — there is no
-HTTP backfill fallback. `ActiveSession` calls the same hook.
+(`useSessionStream` / `bindSessionStream`). Leases are ref-counted per
+signature (session, stream id, node, harness, transport epoch). The last
+reader does not close the socket: the lease stays idle-warm for `LINGER_MS`
+(10 minutes) so a mini↔thread jump reuses the live attachment, with no
+resync and no `unbindHarness`. At most `WARM_MAX` (24) idle leases are kept;
+past that the least-recently-released idle lease is stopped. Held readers
+are never evicted and do not count toward the cap. A transport epoch bump,
+a gateway `baseUrl` change, or `useChat.connect` switching gateways stops
+every lease (held or idle); the next acquire opens fresh.
+
+At Space altitude the canvas acquires every tile in the region, not only the
+ones on screen. Below the live-zoom threshold a mini is not painted, but its
+lease stays held. At Everything, changing the selection prewarms that tile
+in idle time (`requestIdleCallback`, or `setTimeout`) and releases it so the
+lease lingers warm. The focused thread holds its own ref.
+
+Remote and pinned rows resolve their gate and stream through
+`useSessionTarget` (the session node's registry and summary), the same
+resolution `ActiveSession` uses. A row that still has no stream after that
+is seeded from `sessionMessages` and refreshed when `sessionsDirty` bumps.
+Harness-bound rows use the shared attach and do not take that HTTP path.
+
+Tile order freezes while the altitude is Thread, so a recency update cannot
+move the focused tile and drop the landing. If the open row disappears, the
+canvas returns to Space.
 
 `ActiveSession` mounts only for the focused tile, only after the camera fly
 lands (`onLand`), and unmounts when the altitude leaves Thread. Opening a
@@ -307,10 +326,11 @@ The canvas replaces the drawer + split + session column only when
 default **off**) and the viewport is at least 768px. Narrow keeps today's
 list/thread UI. With the flag off, the desktop layout is unchanged.
 
-Keys (capture phase, `lib/hub-keys.ts`, dialog guard, no auto-repeat):
-Ctrl+Space toggles Thread ↔ Space (from Everything, into the selection);
-Ctrl+0 frames Everything. At Space and Everything only: arrows / h j k l
-move the selection, Enter opens, Esc steps out one level. At Thread every
+Keys (capture phase, `lib/hub-keys.ts`, no auto-repeat): Ctrl+Space and
+Ctrl+0 keep today's dialog guard. Arrows / h j k l / Enter / Esc are claimed
+only when focus is on `body` or inside the canvas, and not on a button,
+link, field, or inside a menu, listbox, or dialog. At Space and Everything
+those keys move the selection, open, or step out one level. At Thread every
 other key, including Esc, is left for the focused session. Ctrl+Space is
 the way out of Thread.
 

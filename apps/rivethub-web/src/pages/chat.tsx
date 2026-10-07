@@ -73,7 +73,6 @@ import { presetsFromAgentsQueryData, sessionPointerMatches } from '../lib/agent-
 import {
   clearSessionNodeBinding,
   rekeySessionNodeBinding,
-  sessionNodeFor,
   touchSessionNodeBinding,
 } from '../lib/session-node.js'
 import { gatewayFor } from '../lib/agent-gateway.js'
@@ -106,7 +105,6 @@ import { outboundPumpFor } from '../lib/chat-outbound.js'
 import {
   ancestorChatKeys,
   applyRegistryEventToPlaneSessions,
-  chatItemFromSummary,
   chatItems,
   chatRowMatchesQuery,
   denRoomKey,
@@ -145,6 +143,7 @@ import { shouldCloseHistoryOnSelect } from '../lib/drawer-selection.js'
 import { narrowLaunchTarget } from '../lib/launch-session.js'
 import { useSessionView } from '../lib/use-session-view.js'
 import { useSessionStream } from '../lib/use-session-stream.js'
+import { useSessionTarget } from '../lib/use-session-target.js'
 import { SpacesCanvas } from '../components/spaces-canvas/SpacesCanvas.js'
 import { useConversationView } from '../stores/conversation-view.js'
 
@@ -1164,60 +1163,42 @@ function ActiveSession(props: {
   // node falls back to the current one. Resolved per mount (the component is
   // keyed by session id) and re-checked when the global node changes under it.
   const rosterUrls = useMemo(() => roster.map((r) => r.baseUrl), [roster])
-  // FROZEN per mount: every call site below must agree on home-vs-remote for
-  // the life of this view, so re-resolution may only move the base to a
-  // DIFFERENT roster-valid node (a pointer legitimately retargeted). A
-  // resolution that falls back to the current node — roster drop, binding
-  // eviction, a global node switch under an open thread — is rejected: the
-  // thread keeps the node it was opened against rather than silently
-  // retargeting attach/inject/uploads at whatever the app is pointed at.
-  const frozenBaseRef = useRef<string | undefined>(undefined)
-  const sessionBase = useMemo(() => {
-    const resolved = sessionNodeFor(props.sessionId, baseUrl, rosterUrls)
-    const prev = frozenBaseRef.current
-    const next = prev === undefined || (resolved !== prev && resolved !== baseUrl) ? resolved : prev
-    frozenBaseRef.current = next
-    return next
-  }, [props.sessionId, baseUrl, rosterUrls])
-  const isRemote = sessionBase !== baseUrl
+  // Same node/gate/stream resolution a space mini uses. The frozen base and
+  // the remote summary/registry queries live in the hook; this view is still
+  // the only caller that touches bindings or declares a remote 404.
+  const {
+    sessionBase,
+    isRemote,
+    sessionGateway,
+    remoteSummary,
+    remoteRegistry,
+    item,
+    gate,
+    harnessCommand,
+    canonicalId,
+    streamId,
+  } = useSessionTarget({
+    sessionId: props.sessionId,
+    item: props.item,
+    gate: props.gate,
+    harnessCommand: props.harnessCommand,
+    baseUrl,
+    rosterUrls,
+    epoch: epochForNode,
+  })
   // The open thread is the ONE reader whose interest keeps its binding
   // alive — store reads are peeks, so viewing refreshes recency explicitly.
   useEffect(() => {
     touchSessionNodeBinding(props.sessionId)
   }, [props.sessionId])
   const remoteNodeName = useNodeName(sessionBase)
-  // The session's gateway: the shared global client on the home path (it
-  // carries the live transport state), a pipe-routed per-node client when
-  // the thread lives elsewhere. Callers re-acquire per call, so an epoch
-  // bump mid-session is picked up by the next operation.
-  const sessionGateway = useCallback(
-    () => (isRemote ? gatewayFor(sessionBase) : Promise.resolve(useConnection.getState().gateway)),
-    // epochForNode: gatewayFor consults the pipe map, which the epoch
-    // invalidates — rebuilding the closure keeps awaited callers fresh.
-    [isRemote, sessionBase, epochForNode],
-  )
-
-  // Cross-node rows have no local drawer entry: fetch the summary and the
-  // registry sheet from the session's node and synthesize what the drawer
-  // would have provided. A 404 here means the thread is gone — the gate
-  // stays closed and the transcript backfill renders what history remains.
-  const remoteSummary = useQuery({
-    queryKey: ['remote-session', sessionBase, props.sessionId, epochForNode],
-    queryFn: async ({ signal }) =>
-      (await gatewayFor(sessionBase)).getHarnessSession(props.sessionId, signal),
-    enabled: isRemote,
-    retry: 1,
-  })
+  // Same key the shared hook fetches, so a spawn that waits on the registry
+  // hits that cache instead of starting a second request.
   const registryQueryKey = isRemote
     ? (['harnesses', sessionBase, epochForNode] as const)
     : (['harnesses', sessionBase] as const)
   const registryQueryFn = ({ signal }: { signal: AbortSignal }) =>
     gatewayFor(sessionBase).then((gw) => gw.harnesses(signal))
-  const remoteRegistry = useQuery({
-    queryKey: registryQueryKey,
-    queryFn: registryQueryFn,
-    staleTime: 300_000,
-  })
   // A definitive 404 means the thread's session is gone on its node — except
   // an unclaimed draft (still in useChat.drafts) 404s until first turn, and
   // a bare-id GET may 404 a live claimed session. Drafts stay exempt; other
@@ -1285,16 +1266,6 @@ function ActiveSession(props: {
       }
     }
   }, [remoteDead, props.sessionId])
-  const remoteItem = useMemo(
-    () => (isRemote && remoteSummary.data ? chatItemFromSummary(remoteSummary.data) : undefined),
-    [isRemote, remoteSummary.data],
-  )
-  const item = isRemote ? remoteItem : props.item
-  const gate = isRemote ? harnessGate(remoteItem, remoteRegistry.data?.harnesses) : props.gate
-  const harnessCommand = isRemote ? remoteItem?.command : props.harnessCommand
-
-  /** Canonical `<harness-id>:<native>` for a harness row (including legacy PTY rows). */
-  const canonicalId = gate.bound ? item?.sessionId : undefined
   // The header names the conversation the way the pane does — the user's
   // rename, else the derived title — and keeps the raw id as a tooltip.
   const nameBase = item?.pinNodeBaseUrl ?? baseUrl
@@ -1458,9 +1429,9 @@ function ActiveSession(props: {
   //
   // Otherwise: the legacy push-synced watch. The server watches the on-disk
   // store and pushes turn deltas over the sessions WS; the store applies them.
-  const streamId = gate.stream ? canonicalId : undefined
-  // Same watch/attach the space minis use, ref-counted so a mini and this
-  // view share one socket. Sinks and cleanup live in use-session-stream.ts.
+  // `streamId` comes from useSessionTarget (canonical id only while the gate
+  // has a control-plane stream). Minis share this lease. Sinks and cleanup
+  // live in use-session-stream.ts.
   const { streamError, setStreamError } = useSessionStream({
     sessionId: props.sessionId,
     item,

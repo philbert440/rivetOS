@@ -1,10 +1,11 @@
 /**
  * One conversation on the canvas. Three faces: a card (everything), a live
  * mini (space), and the focused thread (mounted by the parent after the
- * fly lands). Click selects; click on the selection opens.
+ * fly lands). The stage owns pointer selection; this hit target only
+ * exposes the name.
  */
 
-import type { JSX, ReactNode } from 'react'
+import type { CSSProperties, JSX, ReactNode } from 'react'
 import type { HarnessDescriptor, SessionMessage } from '@rivetos/types'
 import { accentFor } from '../../lib/agent-accent.js'
 import { denRoomKey, type ChatItem } from '../../lib/harness-chat.js'
@@ -32,19 +33,22 @@ function persistedName(
   return native === key ? undefined : byKey[storageKey(baseUrl, native)]
 }
 
+/** Custom props are not in CSSProperties' closed index. */
+function withVars(vars: Record<`--${string}`, string>, style: CSSProperties): CSSProperties {
+  return { ...style, ...vars }
+}
+
 export function Tile(props: {
   item: ChatItem
   altitude: Altitude
   selected: boolean
   blocked: boolean
   geometry: { x: number; y: number; w: number; h: number }
-  /** Space altitude, or the focused tile holding the stream across the fly. */
+  /** Space altitude and zoomed in far enough to paint the mini. */
   showMini: boolean
   showThread: boolean
   descriptors?: HarnessDescriptor[]
   renderThread: (id: string) => ReactNode
-  onActivate: (id: string) => void
-  onOpen: (id: string) => void
 }): JSX.Element {
   const id = props.item.key
   const status: TileStatus = tileStatus(props.item.status, props.blocked)
@@ -95,49 +99,69 @@ export function Tile(props: {
         borderWidth: emphasize ? 'calc(2px * min(var(--inv, 1), 4))' : undefined,
         outline: outlined ? 'calc(2.5px * var(--inv, 1)) solid var(--color-em)' : undefined,
         outlineOffset: outlined ? 'calc(7px * var(--inv, 1))' : undefined,
-        transition: 'opacity .28s, left .32s, top .32s, width .32s, height .32s',
       }}
     >
       <button
         type="button"
         data-tile-hit={id}
-        onClick={() => props.onActivate(id)}
-        onDoubleClick={() => props.onOpen(id)}
         className={`absolute inset-0 z-[1] cursor-pointer bg-transparent${
           props.showThread ? ' pointer-events-none' : ''
         }`}
         tabIndex={props.showThread ? -1 : 0}
         aria-pressed={props.selected}
-        aria-label={title}
+        aria-label={`${chip}, ${title}, ${tilePill(status)}`}
       />
       <div
-        className="pointer-events-none absolute bottom-full left-4 z-[2] mb-2 flex max-w-[90%] items-center gap-2 rounded-full border border-line bg-panel px-2 py-1 font-mono text-xs"
-        style={{ opacity: props.altitude === 'thread' ? 0 : 'var(--live, 0)' }}
+        aria-hidden="true"
+        className="pointer-events-none absolute bottom-full z-[2] flex max-w-[90%] items-center rounded-full border border-line bg-panel font-mono"
+        style={withVars(
+          { '--ch': 'min(var(--inv, 1), 2.2)' },
+          {
+            left: 'calc(16px * var(--ch, 1))',
+            marginBottom: 'calc(9px * var(--ch, 1))',
+            fontSize: 'calc(12.5px * var(--ch, 1))',
+            gap: '0.55em',
+            padding: '0.32em 0.9em 0.32em 0.75em',
+            borderWidth: 'calc(1px * var(--ch, 1))',
+            opacity: props.altitude === 'thread' ? 0 : 'var(--live, 0)',
+          },
+        )}
       >
         <span
-          className="size-1.5 shrink-0 rounded-full"
-          style={{ background: accent }}
-          aria-hidden
+          className="shrink-0 rounded-full"
+          style={{ width: '0.62em', height: '0.62em', background: accent }}
         />
         <b className="truncate">{chip}</b>
         <span className="truncate text-ink-dim">{title}</span>
       </div>
       <div
         data-face="card"
-        className="pointer-events-none absolute inset-0 flex flex-col justify-center gap-2 px-6 py-4"
-        style={{ opacity: 'calc(1 - var(--live, 0))' }}
+        aria-hidden="true"
+        className="pointer-events-none absolute inset-0 flex min-w-0 flex-col justify-center"
+        style={withVars(
+          { '--cs': 'min(var(--inv, 1), 4.4)' },
+          {
+            opacity: 'calc(1 - var(--live, 0))',
+            gap: 'calc(8px * var(--cs, 1))',
+            padding: 'calc(18px * var(--cs, 1)) calc(24px * var(--cs, 1))',
+          },
+        )}
       >
-        <div className="flex items-center gap-2 font-mono text-lg text-ink">
+        <div
+          className="flex items-center font-mono text-ink"
+          style={{ fontSize: 'calc(24px * var(--cs, 1))', gap: '0.4em' }}
+        >
           <span
-            className="size-2 shrink-0 rounded-full"
-            style={{ background: accent }}
-            aria-hidden
+            className="shrink-0 rounded-full"
+            style={{ width: '0.62em', height: '0.62em', background: accent }}
           />
           <span className="truncate">{chip}</span>
         </div>
-        <div className="truncate text-sm text-ink-dim">{title}</div>
+        <div className="truncate text-ink-dim" style={{ fontSize: 'calc(13px * var(--cs, 1))' }}>
+          {title}
+        </div>
         <span
-          className={`self-start rounded-full px-2 py-1 font-mono text-[10px] tracking-wide uppercase ${
+          className={`self-start rounded-full font-mono uppercase ${
             status === 'needs'
               ? 'bg-warn text-bg'
               : status === 'working'
@@ -146,10 +170,22 @@ export function Tile(props: {
                   ? 'text-em'
                   : 'bg-panel-2 text-ink-dim'
           }`}
+          style={{
+            fontSize: 'calc(10px * var(--cs, 1))',
+            letterSpacing: '0.06em',
+            padding: '0.45em 0.8em',
+          }}
         >
           {tilePill(status)}
         </span>
-        {last ? <div className="truncate text-xs text-ink-dim">{last}</div> : null}
+        {last ? (
+          <div
+            className="truncate text-ink-dim"
+            style={{ fontSize: 'calc(11.5px * var(--cs, 1))', lineHeight: 1.3 }}
+          >
+            {last}
+          </div>
+        ) : null}
       </div>
       {props.showMini ? <ThreadMini item={props.item} descriptors={props.descriptors} /> : null}
       {props.showThread ? (
