@@ -31,6 +31,7 @@ export { flowNodeFamily, type FlowNodeFamily } from './flow-kind.js'
 export {
   FLOW_ENTRY_ID,
   FLOW_NODE_SIZE,
+  autoLayoutAuthorGraph,
   layoutFlowGraph,
   type LaidFlowGraph,
   type LaidFlowNode,
@@ -42,13 +43,37 @@ export {
   addFlowNode,
   canConnect,
   connectFlowNodes,
+  duplicateFlowNode,
   emptyFlowGraph,
   type FlowAuthorGraph,
   type FlowAuthorKind,
   type FlowAuthorNode,
 } from './flow-graph.js'
 
-export { compileFlow, FLOWS_FILE, parseFlowsFile } from './flow-compile.js'
+export {
+  compileFlow,
+  flowIssues,
+  FLOWS_FILE,
+  parseFlowsFile,
+  type FlowIssue,
+  type FlowIssueSeverity,
+} from './flow-compile.js'
+export {
+  clampZoom,
+  DEFAULT_FLOW_VIEW,
+  fitView,
+  screenToWorld,
+  wheelView,
+  zoomAt,
+  type FlowView,
+} from './flow-view.js'
+export {
+  createHistory,
+  pushHistory,
+  redoHistory,
+  undoHistory,
+  type History,
+} from './flow-history.js'
 
 export { authorGraphFromOutline, authorGraphFromProjection } from './flow-hydrate.js'
 

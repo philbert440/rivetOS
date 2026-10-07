@@ -261,3 +261,30 @@ export function topoSort(graph: FlowAuthorGraph): string[] {
   }
   return out
 }
+
+/**
+ * Copy a node (not its wires) next to the original. The copy gets its own
+ * agent file / script path — two nodes emitting one file is a compile error.
+ */
+export function duplicateFlowNode(
+  graph: FlowAuthorGraph,
+  id: string,
+): { graph: FlowAuthorGraph; id?: string } {
+  const src = nodeById(graph, id)
+  if (!src || src.kind === 'start') return { graph }
+  const copyId = nextNodeId(graph)
+  const copy: FlowAuthorNode = {
+    ...src,
+    id: copyId,
+    label: `${src.label} copy`,
+    x: src.x + 32,
+    y: src.y + 32,
+  }
+  if (src.kind === 'agent') copy.agentName = copyId
+  if (src.kind === 'run') copy.scriptPath = `scripts/${copyId}.sh`
+  for (const key of ['tools', 'gateFields'] as const) {
+    const v = src[key]
+    if (v) copy[key] = [...v]
+  }
+  return { graph: { ...graph, nodes: [...graph.nodes, copy] }, id: copyId }
+}

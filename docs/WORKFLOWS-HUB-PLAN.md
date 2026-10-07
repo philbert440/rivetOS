@@ -89,20 +89,32 @@ Hub UI
   budgets are edited through the Files tab's workflow.yaml form. Revisit if
   that form proves too buried.
 
-### 4. Canvas
+### 4. Canvas — first half done
 
-In dependency order:
+Done:
 
-1. View transform (zoom/pan as one matrix; all hit-testing through it),
-   cursor-anchored wheel / pinch zoom, fit-to-view.
-2. Undo / redo — history stack over `FlowAuthorGraph` (edits are already pure).
-3. Diagnostics badges on nodes; clicking a diagnostic selects its node.
-4. "+" affordance at wire ends; drag from palette onto canvas.
-5. Auto-layout button (reuse `flow-layout.ts`).
-6. Keyboard: delete, duplicate, ⌘S, ⌘Z; an off-screen node list mirroring
-   selection for screen readers and tests.
-7. Save shows a diff of generated files (`run.ts`, `agents/*`).
-8. Test-run from the editor using the existing `statusById` overlay.
+- View transform (`flow-view.ts`): zoom/pan as one view, all hit-testing
+  through it; ⌘/pinch-wheel zooms at the cursor (per-event capped so a mouse
+  notch is a step), plain wheel pans; zoom −/%/+/Fit control; the canvas
+  fits on load and after Tidy.
+- Undo / redo (`flow-history.ts`): one step per action — a drag, or typing
+  in one inspector field, coalesces into a single step. Unsaved = differs
+  from the last loaded/saved graph, so undoing everything is clean.
+- Problems (`flowIssues` in flow-compile.ts): compile's checks now collect
+  every issue with its node instead of throwing the first (compile still
+  throws the first error, same messages). Plus warnings for unwired nodes,
+  agents without instructions, and gates without fields. Badged on nodes;
+  listed above Properties; clicking one selects the node.
+- Tidy (`autoLayoutAuthorGraph`): re-runs the layout, positions only.
+- Keys: ⌘S save, ⌘Z / ⇧⌘Z / ⌘Y undo-redo (text fields keep native undo),
+  Delete removes the selected wire or node, ⌘D duplicates a node (with its
+  own agent file / script), arrows nudge (⇧ ×5), +/− zoom, F fit.
+
+Still to do:
+
+- "+" affordance at wire ends; drag from palette onto the canvas.
+- Save shows a diff of generated files (`run.ts`, `agents/*`).
+- Test-run from the editor using the existing `statusById` overlay.
 
 ### 5. Create from prompt
 
