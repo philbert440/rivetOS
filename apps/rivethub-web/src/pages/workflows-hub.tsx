@@ -638,7 +638,11 @@ export function WorkflowRunDetailPage(): JSX.Element {
   if (!connected) return <NotConnected />
 
   return (
-    <div className="mx-auto max-w-3xl px-4 py-8 md:px-6">
+    // Graph view hosts the workbench's node list + inspector beside the canvas;
+    // at max-w-3xl that leaves the canvas ~240px wide, room for one node.
+    <div
+      className={`mx-auto px-4 py-8 md:px-6 ${detailView === 'graph' ? 'max-w-6xl' : 'max-w-3xl'}`}
+    >
       {killDialog.element}
       <div className="mb-4 flex flex-wrap items-center justify-between gap-2">
         <Link
