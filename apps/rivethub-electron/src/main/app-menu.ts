@@ -1,8 +1,13 @@
 /**
- * Application menu — exists for its ACCELERATORS on Linux/macOS (the bar is
- * hidden off darwin). NOT installed on Windows: menu accelerators make
- * Chromium round-trip every keydown through main, the den-xterm typing lag
- * (#566); the renderer forwards win32 chords over rivetShell instead.
+ * Application menu — installed on macOS only, where the bar is visible and
+ * Cmd is not a terminal modifier. NOT installed on Windows or Linux: menu
+ * accelerators make Chromium round-trip every keydown through main, the
+ * den-xterm typing lag (#566). The bar is hidden off darwin, so a Linux menu
+ * existed only for those accelerators and paid the same tax. The renderer
+ * forwards the chords over rivetShell instead (rivethub-web lib/shell-keys.ts).
+ * Ctrl+Q is not one of them: it is XON in a terminal. Quit on Linux is
+ * Ctrl+Shift+Q or the tray. F11 fullscreen goes away with the menu; the
+ * window manager already owns that key.
  *
  * Constraints, all load-bearing: no auto-hide bar (it answers the lone Alt
  * key, a terminal modifier); no editMenu off darwin (Ctrl+C in a den xterm
@@ -15,6 +20,11 @@
  * Template is data (roles + handler tags), built pure for testability; the
  * caller maps tags to real handlers.
  */
+
+/** Darwin only. See the file header. */
+export function installsApplicationMenu(platform: NodeJS.Platform): boolean {
+  return platform === 'darwin'
+}
 
 export type AppMenuAction = 'new-window' | 'quit' | 'reload' | 'close-window'
 

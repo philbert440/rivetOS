@@ -1,15 +1,26 @@
 import { describe, expect, it } from 'vitest'
-import { appMenuTemplate, type AppMenuItem } from './app-menu.js'
+import { appMenuTemplate, installsApplicationMenu, type AppMenuItem } from './app-menu.js'
 
 function flatten(items: AppMenuItem[]): AppMenuItem[] {
   return items.flatMap((i) => [i, ...(i.submenu ? flatten(i.submenu) : [])])
 }
 
+describe('installsApplicationMenu', () => {
+  it('is macOS only — linux and windows null the menu', () => {
+    expect(installsApplicationMenu('darwin')).toBe(true)
+    expect(installsApplicationMenu('linux')).toBe(false)
+    expect(installsApplicationMenu('win32')).toBe(false)
+  })
+})
+
 describe('appMenuTemplate', () => {
   it('linux template carries the accelerators the nulled menu used to drop', () => {
-    // win32 uses the same template data, but index.ts must NOT install it:
-    // Electron's application-menu accelerator matcher lags every keystroke
-    // on Windows (the #560 typing-lag regression).
+    // The template still describes the chords, but index.ts must NOT install
+    // it on linux or win32: Electron's application-menu accelerator matcher
+    // lags every keystroke (the #560 / #566 typing-lag regression). Live
+    // chords on those platforms are rivethub-web shell-keys.ts. Ctrl+Q stays
+    // in this unused linux template; the live binding is Ctrl+Shift+Q so a
+    // terminal still receives XON.
     const all = flatten(appMenuTemplate('linux', true))
     expect(flatten(appMenuTemplate('win32', true)).some((i) => i.action === 'quit')).toBe(true)
     // zoom + fullscreen come back as roles
