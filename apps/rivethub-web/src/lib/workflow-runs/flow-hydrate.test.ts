@@ -1,6 +1,12 @@
 import { describe, expect, it } from 'vitest'
 import { disconnectFlowEdge, FLOW_START_ID } from './flow-graph.js'
-import { authorGraphFromOutline } from './flow-hydrate.js'
+import {
+  applyAgentFile,
+  applyRunTsBindings,
+  authorGraphFromOutline,
+  stepBindingsFromRunTs,
+} from './flow-hydrate.js'
+import { RUN_TS_MARKER } from './flow-compile.js'
 
 describe('authorGraphFromOutline', () => {
   it('injects Start and maps gate → human', () => {
@@ -27,5 +33,75 @@ describe('authorGraphFromOutline', () => {
     )
     const next = disconnectFlowEdge(g, `${FLOW_START_ID}→load`)
     expect(next.edges).toHaveLength(0)
+  })
+})
+
+// Shape of workflows/hello-world/run.ts: the agent step's label differs from
+// its agent file, and its options hold a multi-line templated prompt.
+const HELLO_RUN_TS = `
+  await step.run('prepare', {
+    script: 'scripts/prepare.sh',
+    in: { name },
+  })
+  const result = await step.agent('greet', {
+    agent: 'greeter',
+    prompt: ['Compose a greeting', \`for \${name}\`].join('\\n'),
+    out: ['greeting'],
+  })
+  await step.human('approve-gate', { prompt: 'Approve?', fields: ['approved'] })
+`
+
+describe('stepBindingsFromRunTs', () => {
+  it('maps step labels to the agent file and script run.ts uses', () => {
+    const b = stepBindingsFromRunTs(HELLO_RUN_TS)
+    expect(b.get('greet')).toEqual({ agent: 'greeter' })
+    expect(b.get('prepare')).toEqual({ script: 'scripts/prepare.sh' })
+    expect(b.has('approve-gate')).toBe(false)
+  })
+
+  it("does not borrow a later step's agent for a step that names none", () => {
+    const b = stepBindingsFromRunTs(
+      "await step.agent('a', { prompt: 'x' })\nawait step.agent('b', { agent: 'bee' })",
+    )
+    expect(b.has('a')).toBe(false)
+    expect(b.get('b')).toEqual({ agent: 'bee' })
+  })
+})
+
+describe('applyRunTsBindings', () => {
+  it('replaces the outline guess with the real agent and script', () => {
+    const g = applyRunTsBindings(
+      authorGraphFromOutline([
+        { id: 'prepare', label: 'Prepare', kind: 'run' },
+        { id: 'greet', label: 'Greet', kind: 'agent' },
+      ]),
+      stepBindingsFromRunTs(HELLO_RUN_TS),
+    )
+    expect(g.nodes.find((n) => n.id === 'greet')?.agentName).toBe('greeter')
+    expect(g.nodes.find((n) => n.id === 'prepare')?.scriptPath).toBe('scripts/prepare.sh')
+  })
+})
+
+describe('applyAgentFile', () => {
+  const node = { id: 'greet', kind: 'agent' as const, label: 'Greet', x: 0, y: 0 }
+
+  it('fills instructions and frontmatter fields from the agent file', () => {
+    const n = applyAgentFile(
+      node,
+      '---\nmaxTurns: 5\nmodel: opus\ntools: [read]\n---\n\n# Greeter\n\nBe friendly.\n',
+    )
+    expect(n.prompt).toBe('# Greeter\n\nBe friendly.')
+    expect(n.maxTurns).toBe(5)
+    expect(n.model).toBe('opus')
+    expect(n.tools).toEqual(['read'])
+  })
+
+  it('drops the generated marker from canvas-written agent bodies', () => {
+    const n = applyAgentFile(node, `---\ntools: []\n---\n\n<!-- ${RUN_TS_MARKER} -->\n\nHi.\n`)
+    expect(n.prompt).toBe('Hi.')
+  })
+
+  it('leaves the node unchanged when frontmatter is malformed', () => {
+    expect(applyAgentFile(node, '---\nmaxTurns: 5\nno closing fence')).toEqual(node)
   })
 })

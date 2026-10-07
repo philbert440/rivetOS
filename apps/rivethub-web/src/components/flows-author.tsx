@@ -5,7 +5,7 @@
 import { useCallback, useEffect, useRef, useState, type JSX, type ReactNode } from 'react'
 import { useQueryClient } from '@tanstack/react-query'
 import { parse as parseYaml } from 'yaml'
-import { GatewayError } from '@rivetos/gateway-client'
+import { GatewayError, type RivetGateway } from '@rivetos/gateway-client'
 import type { WorkflowField, WorkflowOutlineStep } from '@rivetos/types'
 import { useConnection } from '../stores/connection.js'
 import { joinRel } from '../lib/files-ui.js'
@@ -17,7 +17,12 @@ import {
   pathsToPrune,
   RUN_TS_MARKER,
 } from '../lib/workflow-runs/flow-compile.js'
-import { authorGraphFromOutline } from '../lib/workflow-runs/flow-hydrate.js'
+import {
+  applyAgentFile,
+  applyRunTsBindings,
+  authorGraphFromOutline,
+  stepBindingsFromRunTs,
+} from '../lib/workflow-runs/flow-hydrate.js'
 import { emptyFlowGraph, type FlowAuthorGraph } from '../lib/workflow-runs/flow-graph.js'
 import { FlowsWorkbench } from './flows-workbench.js'
 import { useConfirmDialog } from './confirm-dialog.js'
@@ -103,9 +108,14 @@ export function FlowsAuthor(props: {
           }
         }
       }
+      if (cancelRef.cancelled) return
+      hadFlowsJson.current = false
+      let hydrated = authorGraphFromOutline(outlineRef.current)
+      if (props.editPath) hydrated = await hydrateFromDefFiles(gw, props.editPath, hydrated)
+      // The cleanup can set `cancelled` during the await above.
+      // eslint-disable-next-line @typescript-eslint/no-unnecessary-condition
       if (!cancelRef.cancelled) {
-        hadFlowsJson.current = false
-        setGraph(authorGraphFromOutline(outlineRef.current))
+        setGraph(hydrated)
         setLoaded(true)
       }
     })()
@@ -124,7 +134,7 @@ export function FlowsAuthor(props: {
     if (!props.editPath) return
     if (!hadFlowsJson.current && (props.outline?.length ?? 0) > 1) {
       const ok = await confirmDialog.confirm(
-        'This definition has no flows.json yet. Saving writes the canvas over run.ts and linearizes the existing outline (branches and parallel structure in the old script are replaced). Continue?',
+        'This definition has no flows.json yet, so its run.ts was written by hand. Saving replaces run.ts with code generated from the canvas: the outline is linearized, and step prompts, declared outputs, and any other logic in the old script are discarded. Existing agent files and scripts are kept. Continue?',
         { confirmLabel: 'Save' },
       )
       if (!ok) return
@@ -279,15 +289,42 @@ export function FlowsAuthor(props: {
   )
 }
 
-async function ensureDir(
-  gw: ReturnType<typeof useConnection.getState>['gateway'],
-  parent: string,
-  name: string,
-): Promise<void> {
+async function ensureDir(gw: RivetGateway, parent: string, name: string): Promise<void> {
   try {
     await gw.filesMkdir(parent, name)
   } catch (err) {
     if (err instanceof GatewayError && err.status === 409) return
     throw err
   }
+}
+
+/**
+ * A def without flows.json was written by hand: read run.ts and the agent
+ * files it names so the canvas shows the agents and scripts the workflow
+ * really uses. Missing or unreadable files leave the outline guess in place.
+ */
+async function hydrateFromDefFiles(
+  gw: RivetGateway,
+  editPath: string,
+  graph: FlowAuthorGraph,
+): Promise<FlowAuthorGraph> {
+  let next = graph
+  try {
+    const runTs = await gw.filesReadText(joinRel(editPath, 'run.ts'))
+    next = applyRunTsBindings(next, stepBindingsFromRunTs(runTs))
+  } catch {
+    // No readable run.ts — keep the outline guess.
+  }
+  const nodes = await Promise.all(
+    next.nodes.map(async (n) => {
+      if (n.kind !== 'agent' || !n.agentName) return n
+      try {
+        const text = await gw.filesReadText(joinRel(editPath, `agents/${n.agentName}.md`))
+        return applyAgentFile(n, text)
+      } catch {
+        return n
+      }
+    }),
+  )
+  return { ...next, nodes }
 }
