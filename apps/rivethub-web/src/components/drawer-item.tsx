@@ -6,7 +6,7 @@
 
 import { useRef, useState, type JSX } from 'react'
 import { Archive, ArchiveRestore, Pencil, Trash2 } from 'lucide-react'
-import { accentFor, sameLabel } from '../lib/agent-accent.js'
+import { accentFor, harnessAccentKey, sameLabel } from '../lib/agent-accent.js'
 import { rowOwnedByAgent } from '../lib/agent-session.js'
 import { denRoomKey, nativeIdOf, shortNativeId, type ChatItem } from '../lib/harness-chat.js'
 import { rowPillText } from '../lib/harness-options.js'
@@ -109,6 +109,8 @@ export function DrawerItem(props: {
   onToggleNest?: () => void
   /** Child of another conversation. Label is the subagent type, with an elbow. */
   nested?: boolean
+  /** Canvas History: harness token class, no inline hex. The drawer keeps accentFor. */
+  tokenAccent?: boolean
 }): JSX.Element {
   const hubBase = useConnection((s) => s.baseUrl)
   const storeBase = props.item.pinNodeBaseUrl ?? hubBase
@@ -208,17 +210,28 @@ export function DrawerItem(props: {
         )}
         {/* same accent as the Agents rail dot (preset hex, else harness).
             On a nested row it sits after the type pill. */}
-        <span
-          className="size-1.5 shrink-0 rounded-full"
-          style={{
-            background: accentFor({
-              presetColor: props.item.accent,
+        {props.tokenAccent ? (
+          <span
+            className="sc-accent size-1.5 shrink-0 rounded-full"
+            data-harness={harnessAccentKey({
               harnessId: props.item.harnessId,
               command: props.item.command,
-            }),
-          }}
-          aria-hidden
-        />
+            })}
+            aria-hidden
+          />
+        ) : (
+          <span
+            className="size-1.5 shrink-0 rounded-full"
+            style={{
+              background: accentFor({
+                presetColor: props.item.accent,
+                harnessId: props.item.harnessId,
+                command: props.item.command,
+              }),
+            }}
+            aria-hidden
+          />
+        )}
         {!showTypePill && <span className="min-w-0 truncate">{visibleLabel}</span>}
         {kids > 0 && !props.expanded && (
           <span

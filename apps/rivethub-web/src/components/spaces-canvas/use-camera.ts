@@ -110,10 +110,13 @@ export function useCamera(opts: {
   )
 
   const commit = useCallback(
-    (next: Cam) => {
+    (next: Cam, publish = true) => {
       camRef.current = next
       paint(next, vpRef.current)
-      setCam(next)
+      // Intermediate fly frames paint the DOM only. Publishing each one
+      // re-renders every tile. The last frame (or a reduced-motion snap)
+      // is the React commit.
+      if (publish) setCam(next)
     },
     [paint],
   )
@@ -137,7 +140,7 @@ export function useCamera(opts: {
       const step = (now: number): void => {
         if (flyToken.current !== token) return
         const t = dur === 0 ? 1 : Math.min(1, (now - t0) / dur)
-        commit(flyStep(from, to, t))
+        commit(flyStep(from, to, t), t === 1)
         if (t < 1) {
           rafRef.current = requestAnimationFrame(step)
           return

@@ -530,7 +530,11 @@ describe('new thread in a space', () => {
       model: 'opus',
       effort: 'low',
     })
+  })
+
+  it('directoryBasename is the last path segment', () => {
     expect(directoryBasename('/home/rivet/src/rivetOS/')).toBe('rivetOS')
+    expect(directoryBasename('')).toBe('')
   })
 
   it('shows a directory chip only for a preset that can start', () => {

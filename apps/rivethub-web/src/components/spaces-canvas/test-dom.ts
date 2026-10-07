@@ -119,7 +119,7 @@ function createStyle(): CSSStyleDeclaration {
       return prev
     },
     get cssText(): string {
-      return ''
+      return [...values.entries()].map(([name, value]) => `${name}: ${value}`).join('; ')
     },
     set cssText(_value: string) {
       values.clear()

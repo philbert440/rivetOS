@@ -63,8 +63,6 @@ interface SpacesState {
   /** Move a membership entry when a draft's chat key is adopted. No-op if `from` is absent. */
   rekey: (from: string, to: string) => void
   spaceOf: (rowKey: string) => string | undefined
-  /** Rows whose `.key` is the membership key (`${baseUrl}::${session}`). */
-  rowsIn: <T extends { key: string }>(spaceId: string, rows: readonly T[]) => T[]
 }
 
 type Persisted = Pick<SpacesState, 'spaces' | 'membership'>
@@ -318,7 +316,6 @@ export const useSpaces = create<SpacesState>()(
         if (id === undefined) return undefined
         return get().spaces.some((space) => space.id === id) ? id : undefined
       },
-      rowsIn: (spaceId, rows) => rows.filter((row) => get().membership[row.key] === spaceId),
     }),
     {
       name: KEY,

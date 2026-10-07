@@ -22,42 +22,11 @@ export type HubKeyAction = 'agent-next' | 'agent-prev' | 'toggle-sidebar' | 'new
 /** Canvas chords. Kept off `matchHubKey` so the sidebar listener does not claim them. */
 export type CanvasChord = 'zoom-toggle' | 'everything'
 
-/**
- * Ctrl+Space toggles thread/space (and from everything opens the selection).
- * Ctrl+0 frames everything. Same modifier rule as `matchHubKey`: Ctrl, and
- * neither Alt, Meta, nor Shift.
- */
-export function matchCanvasChord(
-  e: Pick<KeyboardEvent, 'code' | 'ctrlKey' | 'shiftKey' | 'altKey' | 'metaKey'>,
-): CanvasChord | null {
-  if (!e.ctrlKey || e.altKey || e.metaKey || e.shiftKey) return null
-  if (e.code === 'Space') return 'zoom-toggle'
-  if (e.code === 'Digit0') return 'everything'
-  return null
-}
-
 export type CanvasNav = 'left' | 'right' | 'up' | 'down' | 'open' | 'out'
 
-/**
- * Selection keys at space / everything altitude. Not a Ctrl chord. Esc is
- * "out" here; the canvas listener must not claim it at thread altitude.
- * `h` is History (see `matchCanvasAction`), so left is ArrowLeft only.
- */
-export function matchCanvasNav(
-  e: Pick<KeyboardEvent, 'key' | 'ctrlKey' | 'shiftKey' | 'altKey' | 'metaKey'>,
-): CanvasNav | null {
-  if (e.ctrlKey || e.altKey || e.metaKey || e.shiftKey) return null
-  if (e.key === 'ArrowLeft') return 'left'
-  if (e.key === 'ArrowRight' || e.key === 'l') return 'right'
-  if (e.key === 'ArrowUp' || e.key === 'k') return 'up'
-  if (e.key === 'ArrowDown' || e.key === 'j') return 'down'
-  if (e.key === 'Enter') return 'open'
-  if (e.key === 'Escape') return 'out'
-  return null
-}
-
 /** Canvas commands that are not camera navigation. Single-letter keys and
- *  Ctrl+J are not claimed at Thread altitude. Ctrl+` is. */
+ *  Ctrl+J are not claimed at Thread altitude. Ctrl+` is. `?` opens the
+ *  Keys panel at Space and Everything; the dock button does it at Thread. */
 export type CanvasAction =
   | 'new-space'
   | 'rename-space'
@@ -69,29 +38,267 @@ export type CanvasAction =
   | 'history'
   | 'next-waiting'
   | 'mru'
+  | 'keys'
+
+type CanvasKeyEvent = Pick<
+  KeyboardEvent,
+  'key' | 'code' | 'ctrlKey' | 'shiftKey' | 'altKey' | 'metaKey'
+>
+
+/** One row the matchers, the Thread claim, and the Keys panel all read. */
+export interface CanvasKeyEntry {
+  id: string
+  keys: string
+  summary: string
+  /** Spelled out at Thread, including when the key is not claimed. */
+  thread: string
+  claimedAtThread: boolean
+  handler: 'chord' | 'nav' | 'action'
+  matches: (e: CanvasKeyEvent) => boolean
+  /** Event the matcher must accept. The coverage test fires this. */
+  probe: CanvasKeyEvent
+}
+
+function bare(key: string, code = ''): CanvasKeyEvent {
+  return { key, code, ctrlKey: false, shiftKey: false, altKey: false, metaKey: false }
+}
+
+function noMod(e: CanvasKeyEvent): boolean {
+  return !e.ctrlKey && !e.altKey && !e.metaKey && !e.shiftKey
+}
+
+function ctrlOnly(e: CanvasKeyEvent): boolean {
+  return e.ctrlKey && !e.altKey && !e.metaKey && !e.shiftKey
+}
+
+function letter(e: CanvasKeyEvent, lower: string): boolean {
+  return noMod(e) && (e.key === lower || e.key === lower.toUpperCase())
+}
+
+function defineKey<H extends 'chord' | 'nav' | 'action'>(
+  handler: H,
+  row: {
+    id: H extends 'chord' ? CanvasChord : H extends 'nav' ? CanvasNav : CanvasAction
+    keys: string
+    summary: string
+    thread: string
+    claimedAtThread: boolean
+    matches: (e: CanvasKeyEvent) => boolean
+    probe: CanvasKeyEvent
+  },
+): CanvasKeyEntry {
+  return { handler, ...row }
+}
+
+/**
+ * `h` is History, not left. `?` allows Shift (`?` is Shift+/ on a US keyboard)
+ * and does not require it, so the matcher keys off `e.key`.
+ */
+export const CANVAS_KEYS: readonly CanvasKeyEntry[] = [
+  defineKey('chord', {
+    id: 'zoom-toggle',
+    keys: 'Ctrl+Space',
+    summary: 'Toggle Thread and Space. From Everything, open the selection.',
+    thread: 'Zooms out to the space.',
+    claimedAtThread: true,
+    matches: (e) => ctrlOnly(e) && e.code === 'Space',
+    probe: { ...bare('', 'Space'), ctrlKey: true },
+  }),
+  defineKey('chord', {
+    id: 'everything',
+    keys: 'Ctrl+0',
+    summary: 'Frame every space.',
+    thread: 'Leaves the thread and frames every space.',
+    claimedAtThread: true,
+    matches: (e) => ctrlOnly(e) && e.code === 'Digit0',
+    probe: { ...bare('', 'Digit0'), ctrlKey: true },
+  }),
+  defineKey('nav', {
+    id: 'left',
+    keys: '←',
+    summary: 'Move the selection left. h is History, not left.',
+    thread: 'Not claimed. The session keeps the arrow.',
+    claimedAtThread: false,
+    matches: (e) => noMod(e) && e.key === 'ArrowLeft',
+    probe: bare('ArrowLeft'),
+  }),
+  defineKey('nav', {
+    id: 'right',
+    keys: '→ or l',
+    summary: 'Move the selection right.',
+    thread: 'Not claimed.',
+    claimedAtThread: false,
+    matches: (e) => noMod(e) && (e.key === 'ArrowRight' || e.key === 'l'),
+    probe: bare('l'),
+  }),
+  defineKey('nav', {
+    id: 'up',
+    keys: '↑ or k',
+    summary: 'Move the selection up.',
+    thread: 'Not claimed.',
+    claimedAtThread: false,
+    matches: (e) => noMod(e) && (e.key === 'ArrowUp' || e.key === 'k'),
+    probe: bare('k'),
+  }),
+  defineKey('nav', {
+    id: 'down',
+    keys: '↓ or j',
+    summary: 'Move the selection down.',
+    thread: 'Not claimed.',
+    claimedAtThread: false,
+    matches: (e) => noMod(e) && (e.key === 'ArrowDown' || e.key === 'j'),
+    probe: bare('j'),
+  }),
+  defineKey('nav', {
+    id: 'open',
+    keys: 'Enter',
+    summary: 'Open the selection at Thread.',
+    thread: 'Not claimed. Enter stays in the composer.',
+    claimedAtThread: false,
+    matches: (e) => noMod(e) && e.key === 'Enter',
+    probe: bare('Enter'),
+  }),
+  defineKey('nav', {
+    id: 'out',
+    keys: 'Esc',
+    summary: 'From Space, back to Everything. From Everything, nothing.',
+    thread: 'Not claimed. Esc stays with the session.',
+    claimedAtThread: false,
+    matches: (e) => noMod(e) && e.key === 'Escape',
+    probe: bare('Escape'),
+  }),
+  defineKey('action', {
+    id: 'new-space',
+    keys: 'N',
+    summary: 'New space. Name only — defaults are edited after.',
+    thread: 'Not claimed.',
+    claimedAtThread: false,
+    matches: (e) => letter(e, 'n'),
+    probe: bare('n'),
+  }),
+  defineKey('action', {
+    id: 'rename-space',
+    keys: 'E',
+    summary: 'Edit the space you are in (name and defaults).',
+    thread: 'Not claimed. The region Edit button is hidden at Thread.',
+    claimedAtThread: false,
+    matches: (e) => letter(e, 'e'),
+    probe: bare('e'),
+  }),
+  defineKey('action', {
+    id: 'new-thread',
+    keys: 'T',
+    summary: 'New thread in the space you are in.',
+    thread: 'Not claimed. The dock + Thread button still opens the chooser.',
+    claimedAtThread: false,
+    matches: (e) => letter(e, 't'),
+    probe: bare('t'),
+  }),
+  defineKey('action', {
+    id: 'move',
+    keys: 'M',
+    summary:
+      'Move the selected thread to another space, or back to History. Keyboard alternative to dragging.',
+    thread: 'Not claimed. The dock Move button still opens Move to….',
+    claimedAtThread: false,
+    matches: (e) => letter(e, 'm'),
+    probe: bare('m'),
+  }),
+  defineKey('action', {
+    id: 'history',
+    keys: 'H',
+    summary: 'Show or hide History.',
+    thread: 'Not claimed. The dock History button still toggles it.',
+    claimedAtThread: false,
+    matches: (e) => letter(e, 'h'),
+    probe: bare('h'),
+  }),
+  defineKey('action', {
+    id: 'find',
+    keys: '/',
+    summary: 'Find an agent, thread, or space. Enter opens the top hit.',
+    thread: 'Not claimed. Find closes when a thread opens.',
+    claimedAtThread: false,
+    matches: (e) => noMod(e) && e.key === '/',
+    probe: bare('/'),
+  }),
+  defineKey('action', {
+    id: 'remove-thread',
+    keys: 'Delete',
+    summary: 'Archive the selected thread. An unpinned draft is discarded. Backspace does nothing.',
+    thread: 'Not claimed.',
+    claimedAtThread: false,
+    matches: (e) => noMod(e) && e.key === 'Delete',
+    probe: bare('Delete'),
+  }),
+  defineKey('action', {
+    id: 'remove-space',
+    keys: 'Shift+Delete',
+    summary: 'Remove the space you are in. Its threads move to History; sessions are not deleted.',
+    thread: 'Not claimed.',
+    claimedAtThread: false,
+    matches: (e) => e.shiftKey && !e.ctrlKey && !e.altKey && !e.metaKey && e.key === 'Delete',
+    probe: { ...bare('Delete'), shiftKey: true },
+  }),
+  defineKey('action', {
+    id: 'next-waiting',
+    keys: 'Ctrl+J',
+    summary: 'Open the next thread that is waiting on you.',
+    thread: 'Not claimed. The Needs you dock button and the toast still jump.',
+    claimedAtThread: false,
+    matches: (e) => ctrlOnly(e) && e.code === 'KeyJ',
+    probe: { ...bare('j', 'KeyJ'), ctrlKey: true },
+  }),
+  defineKey('action', {
+    id: 'mru',
+    keys: 'Ctrl+`',
+    summary: 'Step recent threads. Releasing Ctrl opens the preview.',
+    thread: 'Claimed. Recent threads still step while a thread is open.',
+    claimedAtThread: true,
+    matches: (e) => ctrlOnly(e) && e.code === 'Backquote',
+    probe: { ...bare('`', 'Backquote'), ctrlKey: true },
+  }),
+  defineKey('action', {
+    id: 'keys',
+    keys: '?',
+    summary: 'Show or hide this list.',
+    thread: 'Not claimed. The dock ? button still opens it.',
+    claimedAtThread: false,
+    matches: (e) => !e.ctrlKey && !e.altKey && !e.metaKey && e.key === '?',
+    probe: { ...bare('?', 'Slash'), shiftKey: true },
+  }),
+]
+
+function matchFrom(handler: CanvasKeyEntry['handler'], e: CanvasKeyEvent): string | null {
+  for (const entry of CANVAS_KEYS) {
+    if (entry.handler !== handler) continue
+    if (entry.matches(e)) return entry.id
+  }
+  return null
+}
+
+/** Ctrl+Space toggles thread/space. Ctrl+0 frames everything. */
+export function matchCanvasChord(
+  e: Pick<KeyboardEvent, 'code' | 'ctrlKey' | 'shiftKey' | 'altKey' | 'metaKey'>,
+): CanvasChord | null {
+  return matchFrom('chord', { key: '', ...e }) as CanvasChord | null
+}
+
+/**
+ * Selection keys at space / everything altitude. Not a Ctrl chord. Esc is
+ * "out" here; the canvas listener must not claim it at thread altitude.
+ * `h` is History, so left is ArrowLeft only.
+ */
+export function matchCanvasNav(
+  e: Pick<KeyboardEvent, 'key' | 'ctrlKey' | 'shiftKey' | 'altKey' | 'metaKey'>,
+): CanvasNav | null {
+  return matchFrom('nav', { code: '', ...e }) as CanvasNav | null
+}
 
 export function matchCanvasAction(
   e: Pick<KeyboardEvent, 'key' | 'code' | 'ctrlKey' | 'shiftKey' | 'altKey' | 'metaKey'>,
 ): CanvasAction | null {
-  if (e.altKey || e.metaKey) return null
-  if (e.ctrlKey) {
-    if (e.shiftKey) return null
-    if (e.code === 'KeyJ') return 'next-waiting'
-    if (e.code === 'Backquote') return 'mru'
-    return null
-  }
-  if (e.shiftKey) {
-    if (e.key === 'Delete') return 'remove-space'
-    return null
-  }
-  if (e.key === 'n' || e.key === 'N') return 'new-space'
-  if (e.key === 'e' || e.key === 'E') return 'rename-space'
-  if (e.key === 't' || e.key === 'T') return 'new-thread'
-  if (e.key === 'm' || e.key === 'M') return 'move'
-  if (e.key === 'h' || e.key === 'H') return 'history'
-  if (e.key === '/') return 'find'
-  if (e.key === 'Delete') return 'remove-thread'
-  return null
+  return matchFrom('action', e) as CanvasAction | null
 }
 
 /** Pure matcher; takes the fields it needs so tests can pass plain objects. */

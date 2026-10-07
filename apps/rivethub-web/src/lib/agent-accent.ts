@@ -6,7 +6,7 @@
  * colour on both surfaces.
  */
 
-import { harnessAccent } from './harness-colors.js'
+import { HARNESS_ACCENTS, harnessAccent } from './harness-colors.js'
 
 /** 3- or 6-digit hex, matching the agent editor's colour field. */
 const HEX = /^#(?:[0-9a-fA-F]{3}|[0-9a-fA-F]{6})$/
@@ -19,6 +19,17 @@ export function accentFor(input: {
   const preset = input.presetColor?.trim()
   if (preset && HEX.test(preset)) return preset
   return harnessAccent(input.harnessId ?? input.command)
+}
+
+/**
+ * Stylesheet key for a canvas accent (`--harness-accent-<key>`).
+ * Unknown harnesses use `fallback`, which the canvas maps to `--color-em`.
+ * A custom preset hex is not a token, so the canvas does not paint it inline.
+ */
+export function harnessAccentKey(input: { harnessId?: string; command?: string }): string {
+  const raw = (input.harnessId ?? input.command ?? '').trim().toLowerCase()
+  if (raw.length > 0 && Object.hasOwn(HARNESS_ACCENTS, raw)) return raw
+  return 'fallback'
 }
 
 /**

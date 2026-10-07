@@ -520,7 +520,7 @@ describe('SpaceDefaultsDialog save while the roster loads', () => {
     if (!space) throw new Error('missing space')
     mount(createElement(SpaceDefaultsDialog, { space, descriptors, onClose: () => undefined }))
     expect(document.querySelector('[aria-label="model: M2"]')).not.toBeNull()
-    const agent = document.querySelector('[aria-label="Agent"]')
+    const agent = document.querySelector('[id="space-agent"]')
     if (!agent) throw new Error('missing agent picker')
     act(() => {
       agent.dispatchEvent(new MouseEvent('click', { bubbles: true }))
@@ -633,7 +633,7 @@ describe('SpaceDefaultsDialog save while the roster loads', () => {
     act(() => {
       ;(effortNone as HTMLButtonElement).click()
     })
-    const agent = document.querySelector('[aria-label="Agent"]')
+    const agent = document.querySelector('[id="space-agent"]')
     if (!agent) throw new Error('missing agent picker')
     act(() => {
       agent.dispatchEvent(new MouseEvent('click', { bubbles: true }))

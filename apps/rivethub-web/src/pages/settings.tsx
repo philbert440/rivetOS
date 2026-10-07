@@ -465,8 +465,7 @@ function ConversationsSection(): JSX.Element {
         <Toggle id="spaces-canvas" value={canvasEnabled} onChange={setCanvasEnabled} />
       </div>
       <p className="mt-2 text-xs text-ink-dim">
-        On a wide screen, conversations open on a zoomable canvas instead of the list. The phone
-        layout stays the list and the open thread.
+        On a wide screen, conversations open on a zoomable canvas instead of the list.
       </p>
     </>
   )

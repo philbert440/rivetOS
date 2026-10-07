@@ -135,6 +135,7 @@ export function HistoryPanel(props: {
             expanded={expanded}
             onToggleNest={kids > 0 ? () => toggleNest(it.key) : undefined}
             nested={depth > 0}
+            tokenAccent
           />
           {expanded && <div className="pl-3">{renderNodes(node.children, depth + 1)}</div>}
         </div>

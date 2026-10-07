@@ -148,8 +148,7 @@ import { useSessionStream } from '../lib/use-session-stream.js'
 import { useSessionTarget } from '../lib/use-session-target.js'
 import { SpacesCanvas } from '../components/spaces-canvas/SpacesCanvas.js'
 import { useConversationView } from '../stores/conversation-view.js'
-
-export { DrawerItem, selectDrawerItems } from '../components/drawer-item.js'
+import { ConversationEmpty } from '../components/conversation-empty.js'
 
 /** Stable empty array for zustand selectors — `?? []` inside a selector
  *  allocates a new [] every run when the key is missing, which zustand treats
@@ -647,7 +646,7 @@ export function ChatPage(): JSX.Element {
         // (the compose state) from the launch effect a tick later.
         <ChatLaunchLoading />
       ) : (
-        showEmpty && <EmptyState />
+        showEmpty && <ConversationEmpty />
       )}
       {/* Narrow RIGHT history drawer . Same pane, same
           width rule as the left rail (w-64, sidebar.tsx:186-197). Mounted
@@ -2031,15 +2030,6 @@ function ActiveSession(props: {
           spawning terminal…
         </div>
       )}
-    </div>
-  )
-}
-
-function EmptyState(): JSX.Element {
-  return (
-    <div className="flex flex-1 flex-col items-center justify-center gap-2">
-      <RhMark className="text-5xl opacity-90" />
-      <div className="text-sm text-ink-dim">Pick a conversation or start a new one.</div>
     </div>
   )
 }
