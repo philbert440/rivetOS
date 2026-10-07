@@ -4,6 +4,7 @@ import {
   cycleAgentId,
   focusInForeignDialog,
   isCurrentSeq,
+  matchCanvasAction,
   matchCanvasChord,
   matchCanvasNav,
   matchHubKey,
@@ -96,9 +97,9 @@ describe('matchCanvasChord', () => {
 })
 
 describe('matchCanvasNav', () => {
-  it('maps arrows and hjkl, Enter, and Esc', () => {
+  it('maps arrows and jkl, Enter, and Esc', () => {
     expect(matchCanvasNav(keyEvent({ key: 'ArrowLeft' }))).toBe('left')
-    expect(matchCanvasNav(keyEvent({ key: 'h' }))).toBe('left')
+    expect(matchCanvasNav(keyEvent({ key: 'h' }))).toBeNull()
     expect(matchCanvasNav(keyEvent({ key: 'l' }))).toBe('right')
     expect(matchCanvasNav(keyEvent({ key: 'k' }))).toBe('up')
     expect(matchCanvasNav(keyEvent({ key: 'j' }))).toBe('down')
@@ -108,8 +109,37 @@ describe('matchCanvasNav', () => {
 
   it('ignores modified keys', () => {
     expect(matchCanvasNav(keyEvent({ key: 'ArrowLeft', ctrlKey: true }))).toBeNull()
-    expect(matchCanvasNav(keyEvent({ key: 'h', shiftKey: true }))).toBeNull()
+    expect(matchCanvasNav(keyEvent({ key: 'l', shiftKey: true }))).toBeNull()
     expect(matchCanvasNav(keyEvent({ key: 'Escape', altKey: true }))).toBeNull()
+  })
+})
+
+describe('matchCanvasAction', () => {
+  it('maps space, history, find, move, and remove keys', () => {
+    expect(matchCanvasAction(keyEvent({ key: 'n' }))).toBe('new-space')
+    expect(matchCanvasAction(keyEvent({ key: 'e' }))).toBe('rename-space')
+    expect(matchCanvasAction(keyEvent({ key: 't' }))).toBe('new-thread')
+    expect(matchCanvasAction(keyEvent({ key: 'h' }))).toBe('history')
+    expect(matchCanvasAction(keyEvent({ key: 'm' }))).toBe('move')
+    expect(matchCanvasAction(keyEvent({ key: '/' }))).toBe('find')
+    expect(matchCanvasAction(keyEvent({ key: 'Delete' }))).toBe('remove-thread')
+    expect(matchCanvasAction(keyEvent({ key: 'Delete', shiftKey: true }))).toBe('remove-space')
+    expect(matchCanvasAction(keyEvent({ key: 'Backspace', shiftKey: true }))).toBe('remove-space')
+  })
+
+  it('maps Ctrl+J and Ctrl+` and ignores Alt, Meta, and Shift chords', () => {
+    expect(matchCanvasAction(keyEvent({ key: 'j', code: 'KeyJ', ctrlKey: true }))).toBe(
+      'next-waiting',
+    )
+    expect(matchCanvasAction(keyEvent({ key: '`', code: 'Backquote', ctrlKey: true }))).toBe('mru')
+    expect(
+      matchCanvasAction(keyEvent({ key: 'j', code: 'KeyJ', ctrlKey: true, shiftKey: true })),
+    ).toBe(null)
+    expect(matchCanvasAction(keyEvent({ key: 'h', altKey: true }))).toBeNull()
+    expect(
+      matchCanvasAction(keyEvent({ key: '`', code: 'Backquote', ctrlKey: true, metaKey: true })),
+    ).toBe(null)
+    expect(matchCanvasAction(keyEvent({ key: 'l' }))).toBeNull()
   })
 })
 

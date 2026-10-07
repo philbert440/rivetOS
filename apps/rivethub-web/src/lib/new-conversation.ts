@@ -9,15 +9,18 @@ import { useAgentFilter } from '../stores/agent-filter.js'
 import { useChat } from '../stores/chat.js'
 import { uuidv4 } from './uuid.js'
 
-export function startNewConversation(): void {
+/** Returns the draft id when one was created synchronously, otherwise undefined. */
+export function startNewConversation(): string | undefined {
+  const chat = useChat.getState()
+  const before = new Set(chat.drafts)
   const { startNew } = useAgentFilter.getState()
   if (startNew) {
     startNew()
-    return
+  } else {
+    // A draft id IS a UUID so it can become the harness's native session id.
+    const id = uuidv4()
+    chat.addDraft(id)
+    chat.setActive(id)
   }
-  // A draft id IS a UUID so it can become the harness's native session id.
-  const id = uuidv4()
-  const chat = useChat.getState()
-  chat.addDraft(id)
-  chat.setActive(id)
+  return useChat.getState().drafts.find((id) => !before.has(id))
 }

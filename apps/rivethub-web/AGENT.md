@@ -282,13 +282,43 @@ Design: `docs/MICBRIDGE.md`. den-server opt-in `RIVETOS_DEN_AUDIO=1` exposes
 voice sees a recorder without `/dev/snd`. **Hub capture client is Phase 2**
 (global Ctrl+Space → stream to active node). Gateway helper: `audioMicWsUrl()`.
 
-## Spaces canvas (slice 1)
+## Spaces canvas
 
 Desktop-only zoomable conversations surface (`src/components/spaces-canvas/`).
 Three altitudes: **Everything** (cards), **Space** (live read-only minis of
-each thread), **Thread** (the existing `ActiveSession` at 100% zoom inside
-the expanded tile). This slice has one implicit region, "Unplaced", holding
-every drawer row. Spaces store, history, and drag are not in this slice.
+the framed space's threads), **Thread** (the existing `ActiveSession` at 100%
+zoom inside the expanded tile). Spaces live in the Zustand persist store
+`rivethub.spaces` (`src/stores/spaces.ts`; Electron mirrors it via
+`SETTINGS_KEYS`). Shape: `spaces: { id, name, order, createdAt, defaults? }[]`
+and `membership: Record<rowKey, spaceId>` keyed `${baseUrl}::${sessionKey}`,
+the same string archive uses. A thread is in exactly one space or in History.
+With no spaces stored, the canvas still shows one Unplaced region of every
+non-archived row. The first real space switches to membership: a thread with
+no membership is History only, not a tile. `+ New space` is always an extra
+dashed region and is not a drop target. `+ New thread` is the phantom slot
+at the end of each real space.
+
+**History** (`HistoryPanel.tsx`) is the session drawer minus placed rows
+(same agent and archive filters, same `DrawerItem`). Dock toggle and `H`.
+Opening a row opens it at Thread and does not place it. History rows are not
+prewarmed. `Ctrl+Shift+E` still collapses the side panes; History closes on
+that transition and `H` can open it again while the panes stay collapsed.
+
+**Drag** is pointer-based (no HTML5 drag-and-drop). It arms after 8px on a
+tile or a History row, and a press on a tile does not pan the camera.
+History row → region places; tile → another region moves; tile → the History
+panel unplaces. A drop on empty space snaps back. `M` on a selected tile
+opens a Move-to popover (the spaces, plus History).
+
+**New thread** is a chooser: a prompt (mint like the rail's start-over, write
+model/effort into chat settings, place, enqueue one outbound turn) or History
+in pick mode (`Add to <space>`). Cancel writes nothing.
+
+**Needs you** reads the blocked ids already on the canvas (no polling): dock
+count, Ctrl+J cycles placed tiles oldest-first, a polite toast when a
+session flips to blocked while you are not in it. **Find** (`/`, not claimed
+at Thread) fades non-hits to 0.15; Enter opens needs-you then recency.
+**Recent** (Ctrl+`) steps an in-memory MRU; releasing Ctrl opens the preview.
 
 The per-session watch/attach lives in `src/lib/use-session-stream.ts`
 (`useSessionStream` / `bindSessionStream`). Leases are ref-counted per
@@ -306,11 +336,13 @@ If the destination already has a lease on a different stream, that lease
 stays and the moved one is closed without unbinding the destination.
 Otherwise the moved lease is re-pointed onto the new id.
 
-At Space altitude the canvas acquires every tile in the region, not only the
+At Space altitude the canvas acquires every tile in that space, not only the
 ones on screen. Below the live-zoom threshold a mini is not painted, but its
-lease stays held. At Everything, changing the selection prewarms that tile
-in idle time (`requestIdleCallback`, or `setTimeout`) and releases it so the
-lease lingers warm. The focused thread holds its own ref.
+lease stays held. At Everything, changing the selection prewarms that canvas
+tile (not a History row) in idle time (`requestIdleCallback`, or `setTimeout`)
+and releases it so the lease lingers warm. The focused thread holds its own
+ref. A tile's React key is the row key, so moving it between spaces does not
+drop the lease.
 
 Remote and pinned rows resolve their gate and stream through
 `useSessionTarget` (the session node's registry and summary), the same
@@ -336,13 +368,18 @@ The canvas replaces the drawer + split + session column only when
 default **off**) and the viewport is at least 768px. Narrow keeps today's
 list/thread UI. With the flag off, the desktop layout is unchanged.
 
-Keys (capture phase, `lib/hub-keys.ts`, no auto-repeat): Ctrl+Space and
-Ctrl+0 keep today's dialog guard. Arrows / h j k l / Enter / Esc are claimed
-only when focus is on `body` or inside the canvas, and not on a button,
-link, field, or inside a menu, listbox, or dialog. At Space and Everything
-those keys move the selection, open, or step out one level. At Thread every
-other key, including Esc, is left for the focused session. Ctrl+Space is
-the way out of Thread.
+Keys (capture phase, `lib/hub-keys.ts`, no auto-repeat, dialog guard):
+Ctrl+Space and Ctrl+0 stay. Arrows / j k l / Enter / Esc are claimed only
+when focus is on `body` or inside the canvas, and not on a button, link,
+field, or inside a menu, listbox, or dialog. At Space, arrows stay inside
+the framed space; at Everything they move across placed tiles. At Thread
+every single-letter key, including Esc, is left for the focused session.
+Ctrl+Space is the way out of Thread. Also: `N` new space (name only), `E`
+rename the space you are in, `T` new thread, `M` move, `H` history, `/`
+find, Delete/Backspace archive or discard the selected thread (unpinned
+drafts are discarded), Shift+Delete remove the space you are in (unplaces
+its threads, never deletes sessions). `h` is History, not left. Ctrl+J and
+Ctrl+` are claimed at Thread too.
 
 ## Gotchas
 

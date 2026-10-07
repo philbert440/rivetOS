@@ -5,7 +5,7 @@ import { createRoot, type Root } from 'react-dom/client'
 import { renderToStaticMarkup } from 'react-dom/server'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import type { HarnessDescriptor, SessionId } from '@rivetos/types'
-import { afterEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 const { gatewayFor } = vi.hoisted(() => ({
   gatewayFor: vi.fn(),
@@ -26,10 +26,13 @@ vi.mock('../transcript.js', () => ({
 import type { ChatItem } from '../../lib/harness-chat.js'
 import { attachHarnessSession } from '../../lib/harness-attach.js'
 import { clearSessionNodeBinding, setSessionNodeBinding } from '../../lib/session-node.js'
+import { storageKey } from '../../lib/session-rekey.js'
 import { MINI_BACKFILL_DEBOUNCE_MS, MINI_BACKFILL_MAX_WAIT_MS } from './ThreadMini.js'
 import { resetSessionStreams } from '../../lib/use-session-stream.js'
+import { useAgentFilter } from '../../stores/agent-filter.js'
 import { useChat } from '../../stores/chat.js'
 import { useConnection } from '../../stores/connection.js'
+import { useSpaces } from '../../stores/spaces.js'
 import { canvasKeyClaims, performCanvasEffect, reduceCanvasCommand } from './canvas-input.js'
 import { SpacesCanvas } from './SpacesCanvas.js'
 import { ThreadMini } from './ThreadMini.js'
@@ -71,6 +74,12 @@ function harnessRow(native: string): ChatItem {
     status: 'idle',
   }
 }
+
+beforeEach(() => {
+  localStorage.removeItem('rivethub.spaces')
+  useSpaces.setState({ spaces: [], membership: {} })
+  useAgentFilter.getState().clear()
+})
 
 function row(key: string, title: string, status?: ChatItem['status']): ChatItem {
   return { key, kind: 'legacy', title, updatedAt: 1, status }
@@ -633,6 +642,41 @@ describe('SpacesCanvas mount', () => {
       clearSessionNodeBinding(remoteRow.key)
       useConnection.getState().removeNode(remoteBase)
     }
+  })
+
+  it('puts threads in their spaces and sends a removed space to History', () => {
+    const home = useSpaces.getState().addSpace('Home')
+    const work = useSpaces.getState().addSpace('Work')
+    const base = useConnection.getState().baseUrl
+    useSpaces.getState().place(storageKey(base, 'a'), home)
+    useSpaces.getState().place(storageKey(base, 'b'), work)
+    mount([row('a', 'Alpha'), row('b', 'Beta'), row('c', 'Gamma')], () => undefined)
+    expect(host?.querySelector('[data-tile="a"]')?.getAttribute('data-space')).toBe(home)
+    expect(host?.querySelector('[data-tile="b"]')?.getAttribute('data-space')).toBe(work)
+    expect(host?.querySelector('[data-tile="c"]')).toBeNull()
+    expect(host?.querySelector(`[data-region="${home}"]`)).not.toBeNull()
+    expect(host?.querySelector(`[data-region="${work}"]`)).not.toBeNull()
+    const text = host?.textContent ?? ''
+    expect(text).toContain('Home')
+    expect(text).toContain('Work')
+    expect(text).not.toContain('Unplaced')
+    act(() => {
+      useSpaces.getState().place(storageKey(base, 'a'), work)
+    })
+    expect(host?.querySelector('[data-tile="a"]')?.getAttribute('data-space')).toBe(work)
+    expect(host?.querySelector('[data-tile="b"]')?.getAttribute('data-space')).toBe(work)
+    act(() => {
+      useSpaces.getState().removeSpace(work)
+    })
+    expect(host?.querySelector('[data-tile="a"]')).toBeNull()
+    expect(host?.querySelector('[data-tile="b"]')).toBeNull()
+    document.body.focus()
+    act(() => {
+      window.dispatchEvent(new KeyboardEvent('keydown', { key: 'h', bubbles: true }))
+    })
+    expect(host?.querySelector('[data-history-row="a"]')).not.toBeNull()
+    expect(host?.querySelector('[data-history-row="b"]')).not.toBeNull()
+    expect(host?.querySelector('[data-history-row="c"]')).not.toBeNull()
   })
 })
 

@@ -5,6 +5,7 @@
  * only the chords — arrows, Enter and Esc stay with the focused session.
  */
 
+import type { CanvasAction } from '../../lib/hub-keys.js'
 import { neighbor, type Altitude, type Direction, type NeighborTile } from './camera.js'
 
 export type CanvasChord = 'zoom-toggle' | 'everything'
@@ -21,14 +22,20 @@ export type CanvasEffect =
   | { type: 'go'; altitude: 'everything' | 'space' }
   | { type: 'noop' }
 
-/** True when this key is claimed at `altitude` (and must not reach the session). */
+const THREAD_ACTIONS: ReadonlySet<CanvasAction> = new Set(['next-waiting', 'mru'])
+
+/** True when this key is claimed at `altitude` (and must not reach the session).
+ *  Single-letter canvas actions are not claimed at Thread. Ctrl+J and Ctrl+` are. */
 export function canvasKeyClaims(
   altitude: Altitude,
   chord: CanvasChord | null,
   nav: CanvasNav | null,
+  action: CanvasAction | null = null,
 ): boolean {
   if (chord) return true
+  if (action !== null && THREAD_ACTIONS.has(action)) return true
   if (altitude === 'thread') return false
+  if (action !== null) return true
   return nav !== null
 }
 
