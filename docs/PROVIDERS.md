@@ -2,7 +2,7 @@
 
 Providers connect your agents to large language models. Each provider plugin handles API authentication, streaming, tool calling format differences, and thinking/reasoning support so your agent config stays clean.
 
-API and local plugins: Anthropic, xAI, Google, Ollama, vLLM, llama-server. Harness CLIs: claude-cli, opencode-cli, codex-cli, grok-cli, hermes-cli, kimi-code, pi-cli, and the rest under `plugins/providers/`.
+API and local plugins: Anthropic, xAI, Google, Ollama, vLLM, llama-server. Harness CLIs: claude-cli, opencode-cli, codex-cli, grok-cli, hermes-cli, kimi-code, pi-cli, and the rest under `plugins/providers/`. The current RivetHub installer ships claude-cli, codex-cli, grok-cli, hermes-cli, and kimi-code; opencode-cli and pi-cli are in the source tree but not yet in the installer.
 
 | Provider | Kind | Notes |
 |----------|------|-------|
@@ -360,6 +360,8 @@ server with `--api-key`.
 
 ## opencode-cli
 
+In the source tree, not yet in the current RivetHub installer.
+
 Drives the local OpenCode CLI (`opencode`) for harness id `opencode` by shelling `opencode run --format json`. Default `model` is `zai/glm-5.3-flash`. The installed CLI owns backend, endpoint, and credentials. RivetOS sets no HTTP protocol. Add `@rivetos/provider-opencode-cli` to `plugins`.
 
 ```yaml
@@ -399,6 +401,8 @@ Drives the local Hermes Agent CLI (`hermes chat -q`). Hermes owns tools, memory,
 Drives the local Kimi Code CLI (`kimi -p --output-format stream-json`). Path: `plugins/providers/kimi-code/`.
 
 ### pi-cli
+
+In the source tree, not yet in the current RivetHub installer.
 
 Drives the local `pi` binary (`@earendil-works/pi-coding-agent`) headlessly. Harness id is `pi`. Recommended default backend is z.ai GLM. Add `@rivetos/provider-pi-cli` to `plugins`.
 
