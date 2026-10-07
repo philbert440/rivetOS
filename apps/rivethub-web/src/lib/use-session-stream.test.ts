@@ -505,4 +505,102 @@ describe('bindSessionStream', () => {
     expect(useChat.getState().transcripts['sess-1']?.turns).toEqual([])
     rebound()
   })
+
+  it('keeps a held destination when it was created before the rotation', async () => {
+    vi.useFakeTimers()
+    const closes: Array<ReturnType<typeof vi.fn>> = []
+    const sessions: string[] = []
+    vi.mocked(attachHarnessSession).mockImplementation((opts) => {
+      sessions.push(opts.sessionId)
+      const close = vi.fn()
+      closes.push(close)
+      return { close, resync: vi.fn(), sync: vi.fn() }
+    })
+    const unbind = trackUnbind()
+    const onU2 = vi.fn()
+    const u1 = 'claude-code:U1'
+    const u2 = 'claude-code:U2'
+    const predecessor = bindSessionStream(
+      args({ sessionId: u1, streamId: u1, harnessId: 'claude-code' }),
+    )
+    await Promise.resolve()
+    predecessor()
+    const held = bindSessionStream(
+      args({
+        sessionId: u2,
+        streamId: u2,
+        harnessId: 'claude-code',
+        onStreamError: onU2,
+      }),
+    )
+    await Promise.resolve()
+    useChat.getState().adoptSessionKey(u2, u1)
+    expect(sessions).toEqual([u1, u2])
+    expect(closes[0]).toHaveBeenCalledTimes(1)
+    expect(closes[1]).not.toHaveBeenCalled()
+    expect(useChat.getState().harnessBound[u2]).toBe(true)
+    expect(unbind).not.toHaveBeenCalled()
+    const live = vi.mocked(attachHarnessSession).mock.calls[1]?.[0]
+    if (!live?.onStatus) throw new Error('missing U2 attach handlers')
+    live.onStatus('open')
+    expect(onU2).toHaveBeenCalledWith(undefined)
+    await vi.advanceTimersByTimeAsync(LINGER_MS)
+    expect(closes[1]).not.toHaveBeenCalled()
+    expect(useChat.getState().harnessBound[u2]).toBe(true)
+    expect(unbind).not.toHaveBeenCalled()
+    live.onStatus('open')
+    expect(onU2).toHaveBeenCalledTimes(2)
+    const again = bindSessionStream(args({ sessionId: u2, streamId: u2, harnessId: 'claude-code' }))
+    await Promise.resolve()
+    expect(attachHarnessSession).toHaveBeenCalledTimes(2)
+    again()
+    held()
+  })
+
+  it('attaches the created successor after a rotation and keeps that reader', async () => {
+    vi.useFakeTimers()
+    const closes: Array<ReturnType<typeof vi.fn>> = []
+    const sessions: string[] = []
+    vi.mocked(attachHarnessSession).mockImplementation((opts) => {
+      sessions.push(opts.sessionId)
+      const close = vi.fn()
+      closes.push(close)
+      return { close, resync: vi.fn(), sync: vi.fn() }
+    })
+    const unbind = trackUnbind()
+    const onU2 = vi.fn()
+    const u1 = 'claude-code:U1'
+    const u2 = 'claude-code:U2'
+    const predecessor = bindSessionStream(
+      args({ sessionId: u1, streamId: u1, harnessId: 'claude-code' }),
+    )
+    await Promise.resolve()
+    predecessor()
+    useChat.getState().adoptSessionKey(u2, u1)
+    const held = bindSessionStream(
+      args({
+        sessionId: u2,
+        streamId: u2,
+        harnessId: 'claude-code',
+        onStreamError: onU2,
+      }),
+    )
+    await Promise.resolve()
+    expect(sessions).toEqual([u1, u2])
+    expect(closes[0]).toHaveBeenCalledTimes(1)
+    expect(closes[1]).not.toHaveBeenCalled()
+    expect(useChat.getState().harnessBound[u2]).toBe(true)
+    expect(unbind).not.toHaveBeenCalled()
+    const live = vi.mocked(attachHarnessSession).mock.calls[1]?.[0]
+    if (!live?.onStatus) throw new Error('missing U2 attach handlers')
+    live.onStatus('open')
+    expect(onU2).toHaveBeenCalledWith(undefined)
+    await vi.advanceTimersByTimeAsync(LINGER_MS)
+    expect(closes[1]).not.toHaveBeenCalled()
+    expect(useChat.getState().harnessBound[u2]).toBe(true)
+    expect(unbind).not.toHaveBeenCalled()
+    live.onStatus('open')
+    expect(onU2).toHaveBeenCalledTimes(2)
+    held()
+  })
 })

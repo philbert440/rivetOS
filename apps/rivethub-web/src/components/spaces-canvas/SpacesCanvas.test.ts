@@ -563,6 +563,77 @@ describe('SpacesCanvas mount', () => {
       'canon-1',
     )
   })
+
+  it('holds the mini lease after its node binding is evicted', async () => {
+    vi.useFakeTimers(FLY_CLOCK)
+    const remoteBase = 'http://192.168.1.30:8787'
+    const remoteRow = harnessRow('remote-1')
+    const remoteGateway = {
+      ...idleGateway('remote'),
+      getHarnessSession: () =>
+        Promise.resolve({
+          sessionId: remoteRow.sessionId,
+          harnessId: 'claude-code',
+          createdAt: '2026-08-08T00:00:00.000Z',
+          updatedAt: '2026-08-08T00:05:00.000Z',
+          status: 'idle',
+          title: 'Remote',
+        }),
+      harnesses: () => Promise.resolve({ harnesses: [CLAUDE] }),
+    }
+    gatewayFor.mockImplementation((base: string) =>
+      Promise.resolve(base === remoteBase ? remoteGateway : idleGateway(base)),
+    )
+    const attaches: Array<{ gateway: unknown }> = []
+    const closes: Array<ReturnType<typeof vi.fn>> = []
+    const resyncs: Array<ReturnType<typeof vi.fn>> = []
+    vi.mocked(attachHarnessSession).mockImplementation((opts) => {
+      attaches.push({ gateway: opts.gateway })
+      const close = vi.fn()
+      const resync = vi.fn()
+      closes.push(close)
+      resyncs.push(resync)
+      return { close, resync, sync: vi.fn() }
+    })
+    useConnection.getState().addNode({ name: 'other', baseUrl: remoteBase })
+    setSessionNodeBinding(remoteRow.key, remoteBase, useConnection.getState().baseUrl)
+    const onOpen = vi.fn()
+    try {
+      mount([remoteRow], onOpen, { descriptors: [CLAUDE] })
+      const space = host?.querySelector('[data-alt="space"]')
+      if (!(space instanceof HTMLElement)) throw new Error('missing space')
+      act(() => {
+        space.click()
+      })
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(400)
+      })
+      expect(host?.querySelector('[data-face="mini"]')).not.toBeNull()
+      expect(attaches).toHaveLength(1)
+      expect(attaches[0]?.gateway).toBe(remoteGateway)
+      clearSessionNodeBinding(remoteRow.key)
+      const hit = host?.querySelector(`[data-tile-hit="${remoteRow.key}"]`)
+      if (!hit) throw new Error('missing tile')
+      act(() => {
+        pointerClick(hit)
+      })
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(400)
+      })
+      expect(attaches).toHaveLength(1)
+      expect(attaches[0]?.gateway).toBe(remoteGateway)
+      expect(closes[0]).not.toHaveBeenCalled()
+      expect(resyncs[0]).not.toHaveBeenCalled()
+      expect(onOpen).toHaveBeenCalledWith(remoteRow.key)
+    } finally {
+      act(() => {
+        root?.unmount()
+      })
+      root = undefined
+      clearSessionNodeBinding(remoteRow.key)
+      useConnection.getState().removeNode(remoteBase)
+    }
+  })
 })
 
 function LandProbe(props: { onLand: () => void }): ReactNode {

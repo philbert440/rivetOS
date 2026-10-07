@@ -11,11 +11,14 @@
  *
  * The pool key is the resolved session id (`resolveSessionKey`) plus the
  * stream signature, not the raw view id. A rekey moves that lease onto the
- * new id and keeps one attachment. A different stream for the same resolved
- * session closes the other socket. Stopping a lease never unwatches or
- * unbinds a key that another lease of the same kind, held or idle, still
- * owns. A superseded promise cannot attach, and a promise cannot replace a
- * socket the surviving lease already holds.
+ * new id only when the destination has no lease yet. A lease already at the
+ * destination on a different stream is the live session: the moved lease is
+ * closed and must not unwatch or unbind the destination (`rekey` has aliased
+ * the old id there). A different stream for the same resolved session closes
+ * the other socket. Stopping a lease never unwatches or unbinds a key that
+ * another lease of the same kind, held or idle, still owns. A superseded
+ * promise cannot attach, and a promise cannot replace a socket the surviving
+ * lease already holds.
  *
  * A signature change (stream id, node, harness, transport epoch) is a
  * different lease. Gaining a stream id retires the legacy watch for that
@@ -270,10 +273,13 @@ function sameStreamSignature(a: Lease, b: Lease): boolean {
 /**
  * One socket per resolved session. The lease that just attached, or that was
  * just re-pointed onto this id, closes every other stream. A watch (no
- * stream id) must not take down an attach.
+ * stream id) must not take down an attach. A still-mounted holder of a
+ * retired lease is not told: `report` drops once the lease is superseded,
+ * and its later release is a no-op. No current path keeps two differently
+ * signed holders mounted, so that stays latent.
  */
 function retireDifferentSignatures(keeper: Lease): void {
-  if (keeper.streamId === undefined) return
+  if (keeper.superseded || keeper.streamId === undefined) return
   const resolved = resolvedId(keeper.identity)
   for (const other of [...leases.values()]) {
     if (other === keeper || other.superseded) continue
@@ -483,23 +489,62 @@ function foldLease(preferred: Lease, incoming: Lease): void {
   leases.set(keep.key, keep)
 }
 
+/**
+ * Close a predecessor that lost to a lease already living at the destination.
+ * `rekey` has aliased `from` onto `to` and moved the store binding, so the
+ * normal retire path would unwatch or unbind the live session.
+ */
+function retireMovedLease(lease: Lease): void {
+  if (lease.superseded) return
+  lease.superseded = true
+  if (lease.idleTimer !== undefined) {
+    clearTimeout(lease.idleTimer)
+    lease.idleTimer = undefined
+  }
+  closeAttachment(lease)
+  lease.bound = false
+  lease.watched = false
+  lease.mode = 'none'
+  if (leases.get(lease.key) === lease) leases.delete(lease.key)
+}
+
 function migrateIdentity(from: string, to: string): void {
   if (from === to) return
   const moving = [...leases.values()].filter((lease) => {
     if (lease.superseded || lease.identity === to) return false
     return lease.identity === from || resolvedId(lease.identity) === to
   })
+  const movingSet = new Set(moving)
+  // Already at `to` before this move (session-created can beat the rotation).
+  // That lease is the live session when its stream differs from the one moving in.
+  const staying = [...leases.values()].filter((lease) => {
+    if (lease.superseded || movingSet.has(lease)) return false
+    return lease.identity === to || resolvedId(lease.identity) === to
+  })
   for (const lease of moving) {
+    // An earlier iteration may have retired this member. Do not write it back.
+    if (lease.superseded) continue
     const nextKey = signatureKey(to, lease)
+    const existing = leases.get(nextKey)
+    if (existing && existing !== lease) {
+      if (leases.get(lease.key) === lease) leases.delete(lease.key)
+      lease.identity = to
+      lease.key = nextKey
+      foldLease(existing, lease)
+      continue
+    }
+    const destinationOwnsOtherStream = staying.some(
+      (other) => !other.superseded && !sameStreamSignature(other, lease),
+    )
+    if (destinationOwnsOtherStream) {
+      retireMovedLease(lease)
+      continue
+    }
     if (leases.get(lease.key) === lease) leases.delete(lease.key)
     lease.identity = to
     lease.key = nextKey
-    const existing = leases.get(nextKey)
-    if (existing && existing !== lease) foldLease(existing, lease)
-    else {
-      leases.set(nextKey, lease)
-      retireDifferentSignatures(lease)
-    }
+    leases.set(nextKey, lease)
+    retireDifferentSignatures(lease)
   }
 }
 

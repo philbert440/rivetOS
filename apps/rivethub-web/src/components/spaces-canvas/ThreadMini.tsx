@@ -38,6 +38,19 @@ export const MINI_BACKFILL_MAX_WAIT_MS = 5_000
 
 const EMPTY_OUTBOUND: OutboundItem[] = []
 
+/** Frozen target of a mounted tile reader, keyed by row id. */
+interface PaintedTarget {
+  item: ChatItem | undefined
+  streamId: string | undefined
+  isRemote: boolean
+  sessionBase: string
+  harnessId: string | undefined
+  transportEpoch: number
+  sessionGateway: () => Promise<HarnessAttachGateway>
+}
+
+const paintedTargets = new Map<string, PaintedTarget>()
+
 function useTileTarget(item: ChatItem, descriptors: HarnessDescriptor[] | undefined) {
   const baseUrl = useConnection((s) => s.baseUrl)
   const roster = useConnection((s) => s.roster)
@@ -52,6 +65,38 @@ function useTileTarget(item: ChatItem, descriptors: HarnessDescriptor[] | undefi
     rosterUrls,
     epoch,
   })
+  // During render, not an effect: a click hold runs before the next commit,
+  // and a layout-effect hold runs before this mount's passive cleanup.
+  // A rekey changes the row id on the same mount; drop the previous id here,
+  // because the passive cleanup runs after that render has replaced the ref.
+  const published = useRef<{ key: string; record: PaintedTarget } | undefined>(undefined)
+  const record: PaintedTarget = {
+    item: target.item,
+    streamId: target.streamId,
+    isRemote: target.isRemote,
+    sessionBase: target.sessionBase,
+    harnessId: target.item?.harnessId,
+    transportEpoch: epoch,
+    sessionGateway: target.sessionGateway,
+  }
+  const previous = published.current
+  if (
+    previous !== undefined &&
+    previous.key !== item.key &&
+    paintedTargets.get(previous.key) === previous.record
+  ) {
+    paintedTargets.delete(previous.key)
+  }
+  published.current = { key: item.key, record }
+  paintedTargets.set(item.key, record)
+  useEffect(() => {
+    return () => {
+      const current = published.current
+      if (current !== undefined && paintedTargets.get(current.key) === current.record) {
+        paintedTargets.delete(current.key)
+      }
+    }
+  }, [])
   return { epoch, target }
 }
 
@@ -204,15 +249,33 @@ export function ThreadMini(props: {
 }
 
 /**
- * Same signature a painted mini resolves, so a synchronous hold shares that
- * lease instead of opening a second socket. Remote rows use the cached
- * summary when the mini has already switched onto the stream.
+ * Same signature the painted reader resolved, including the base
+ * `useSessionTarget` froze for that mount. Recomputing node and base from
+ * the live binding would miss that freeze after an eviction and open a
+ * second socket. Nothing painted yet: there is no frozen target, so resolve
+ * from the current binding the same way a fresh mount would.
  */
 export function holdTileLease(
   item: ChatItem,
   descriptors: HarnessDescriptor[] | undefined,
   queryClient: QueryClient,
 ): () => void {
+  const painted = paintedTargets.get(item.key)
+  if (painted) {
+    return bindSessionStream({
+      sessionId: item.key,
+      item: painted.item,
+      streamId: painted.streamId,
+      isRemote: painted.isRemote,
+      sessionBase: painted.sessionBase,
+      harnessId: painted.harnessId,
+      transportEpoch: painted.transportEpoch,
+      linger: true,
+      sessionGateway: painted.sessionGateway,
+      queryClient,
+      onStreamError: () => undefined,
+    })
+  }
   const connection = useConnection.getState()
   const rosterUrls = connection.roster.map((node) => node.baseUrl)
   const sessionBase = sessionNodeFor(item.key, connection.baseUrl, rosterUrls)

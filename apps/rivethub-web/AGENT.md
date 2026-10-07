@@ -292,14 +292,19 @@ every drawer row. Spaces store, history, and drag are not in this slice.
 
 The per-session watch/attach lives in `src/lib/use-session-stream.ts`
 (`useSessionStream` / `bindSessionStream`). Leases are ref-counted per
-signature (session, stream id, node, harness, transport epoch). The last
-reader does not close the socket: the lease stays idle-warm for `LINGER_MS`
-(10 minutes) so a mini↔thread jump reuses the live attachment, with no
-resync and no `unbindHarness`. At most `WARM_MAX` (24) idle leases are kept;
-past that the least-recently-released idle lease is stopped. Held readers
-are never evicted and do not count toward the cap. A transport epoch bump,
-a gateway `baseUrl` change, or `useChat.connect` switching gateways stops
-every lease (held or idle); the next acquire opens fresh.
+signature (resolved session, stream id, node, harness, transport epoch).
+Canvas readers pass `linger: true`: the last release does not close, so a
+mini↔thread jump reuses the live attachment (no resync, no unbind) and the
+lease stays idle-warm for `LINGER_MS` (10 minutes). The drawer and the
+narrow layout omit linger and stop on the last release (close, then unwatch
+or unbind). At most `WARM_MAX` (24) idle leases are kept; past that the
+least-recently-released idle lease is stopped. Held readers are never
+evicted and do not count toward the cap. A transport epoch bump, a gateway
+`baseUrl` change, or `useChat.connect` switching gateways stops every lease
+(held or idle); the next acquire opens fresh. A rekey keeps one attachment.
+If the destination already has a lease on a different stream, that lease
+stays and the moved one is closed without unbinding the destination.
+Otherwise the moved lease is re-pointed onto the new id.
 
 At Space altitude the canvas acquires every tile in the region, not only the
 ones on screen. Below the live-zoom threshold a mini is not painted, but its
@@ -309,9 +314,14 @@ lease lingers warm. The focused thread holds its own ref.
 
 Remote and pinned rows resolve their gate and stream through
 `useSessionTarget` (the session node's registry and summary), the same
-resolution `ActiveSession` uses. A row that still has no stream after that
-is seeded from `sessionMessages` and refreshed when `sessionsDirty` bumps.
-Harness-bound rows use the shared attach and do not take that HTTP path.
+resolution `ActiveSession` uses. That result is frozen for the mount: a
+fallback to the current node (binding eviction, roster drop) does not
+retarget it. The opening hold reuses that frozen target, so it keys the
+mini's existing lease instead of recomputing node and base. A row that
+still has no stream after that is seeded once from `sessionMessages`. Later
+`sessionsDirty` bumps refetch on a 2s debounce capped at 5s; a bump cannot
+abort the first seed or postpone the refetch past the cap. Harness-bound
+rows use the shared attach and do not take that HTTP path.
 
 Tile order freezes while the altitude is Thread, so a recency update cannot
 move the focused tile and drop the landing. If the open row disappears, the

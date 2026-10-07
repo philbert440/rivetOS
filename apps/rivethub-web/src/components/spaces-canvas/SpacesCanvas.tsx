@@ -10,6 +10,7 @@ import {
   cloneElement,
   isValidElement,
   useEffect,
+  useLayoutEffect,
   useMemo,
   useRef,
   useState,
@@ -106,6 +107,8 @@ export function SpacesCanvas(props: {
   const armRef = useRef<string | undefined>(undefined)
   const frozenKeys = useRef<string[] | null>(null)
   const openingHold = useRef<(() => void) | undefined>(undefined)
+  /** Store/URL open. Applied in layout so the hold is not a render-phase store write. */
+  const pendingOpenHold = useRef<string | undefined>(undefined)
   const queryClient = useQueryClient()
   // First id we rendered for an alias chain. A rekey changes row.key; the
   // React key must not, or Tile and ActiveSession remount under the user.
@@ -165,10 +168,11 @@ export function SpacesCanvas(props: {
       setOpenId(activeId)
       setSelectedId(activeId)
       if (!sameThread) {
-        // Same hold as a click. This commit unmounts every mini; without a
-        // ref the opening lease can be the oldest idle one and get evicted
-        // before ActiveSession acquires on landing.
-        holdOpening(activeId)
+        // Same hold as a click, taken in layout (below) rather than here.
+        // This commit unmounts every mini; without a ref the opening lease
+        // can be the oldest idle one and get evicted before ActiveSession
+        // acquires on landing. Layout still runs before that passive release.
+        pendingOpenHold.current = activeId
         navBridge.current = true
         setAltitude('thread')
         setThreadMounted(false)
@@ -321,6 +325,18 @@ export function SpacesCanvas(props: {
     if (altitude !== 'thread' && threadMounted) setThreadMounted(false)
   }, [altitude, threadMounted])
 
+  // Store selection. bindSessionStream can write the chat store; doing that
+  // during render warns if another subscriber is mounted. Layout is before
+  // the minis' passive cleanups, so the ref is held before they release.
+  const holdOpeningRef = useRef(holdOpening)
+  holdOpeningRef.current = holdOpening
+  useLayoutEffect(() => {
+    const id = pendingOpenHold.current
+    if (id === undefined) return
+    pendingOpenHold.current = undefined
+    holdOpeningRef.current(id)
+  })
+
   // Release only after the focused session has acquired. Child effects run
   // before this one, so ActiveSession's bind is already held.
   useEffect(() => {
@@ -377,6 +393,22 @@ export function SpacesCanvas(props: {
     window.addEventListener('keydown', onKey, true)
     return () => window.removeEventListener('keydown', onKey, true)
   }, [])
+
+  const stableFor = new Map<string, string>()
+  for (const row of displayRows) stableFor.set(row.key, stableKey(row.key))
+  // Drop rows that left. The alias copy above has already stored the stable
+  // id under the current resolved key, so a rekey does not remount.
+  {
+    const resolve = useChat.getState().resolveSessionKey
+    const keep = new Set<string>()
+    for (const row of displayRows) {
+      keep.add(row.key)
+      keep.add(resolve(row.key))
+    }
+    for (const key of renderKeys.current.keys()) {
+      if (!keep.has(key)) renderKeys.current.delete(key)
+    }
+  }
 
   let activeCount = 0
   let waitingCount = 0
@@ -458,7 +490,7 @@ export function SpacesCanvas(props: {
             const showThread = altitude === 'thread' && isOpen && threadMounted
             return (
               <Tile
-                key={stableKey(row.key)}
+                key={stableFor.get(row.key) ?? row.key}
                 item={row}
                 altitude={altitude}
                 selected={altitude === 'thread' ? isOpen : row.key === selectedId}
@@ -472,7 +504,7 @@ export function SpacesCanvas(props: {
                   if (!isValidElement(node)) return node
                   // renderThread keys ActiveSession by the view id (chat.tsx).
                   // Override it so a rekey updates the id without remounting.
-                  return cloneElement(node, { key: stableKey(id) })
+                  return cloneElement(node, { key: stableFor.get(id) ?? stableKey(id) })
                 }}
               />
             )
