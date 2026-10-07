@@ -133,7 +133,7 @@ import {
 
 const engine = new WorkflowEngine({
   caseDirRoot: '/var/rivetos/workflow-runs', // config — never hardcode in call sites
-  executors: new MockExecutorRegistry(),    // or LocalExecutorRegistry (stubs until wired)
+  executors: new MockExecutorRegistry(),    // host: @rivetos/core createHostExecutorRegistry
   workflowsRoots: ['/path/to/workflows'],
 })
 
@@ -149,7 +149,7 @@ if (started.suspended) {
 | Key | Default | Notes |
 |-----|---------|-------|
 | `caseDirRoot` | `/rivet-shared/workflows/runs` | Override in tests with a temp dir |
-| `defaultStepTimeoutMs` | 30 min | Passed to executors; full AbortSignal enforcement TODO |
+| `defaultStepTimeoutMs` | 30 min | Passed to executors as `timeoutMs`; host executors enforce it |
 | `maxRunRuntimeMs` | 24 h | Engine races the run script against this deadline |
 | `executors` | required | `agent` + `run` backends |
 | `callRegistry` | native only | Register foreign namespaces (`ext:` etc.) as needed |
@@ -161,7 +161,7 @@ if (started.suspended) {
 | Layer | Status |
 |-------|--------|
 | Run max-runtime | Enforced in engine via Promise race |
-| Step timeout | Passed as `timeoutMs` to executors; **real AbortSignal kill is TODO** when ros_task executor lands |
+| Step timeout | Passed as `timeoutMs` to executors. Host executors enforce it: agent steps request a task kill at the deadline, script steps SIGKILL the process group |
 | Child kill cascade | `killRun` writes `KILLED` file; flag checked between steps |
 
 ## Executors
@@ -169,7 +169,7 @@ if (started.suspended) {
 Backend-neutral. Ship:
 
 - **`MockExecutorRegistry`** — fixture tests
-- **`LocalExecutorRegistry`** — stubs that throw until reviewer wires ros_task / script backends
+- Host executors live in `@rivetos/core` (`domain/workflows/host-executors.ts`): `step.agent` → ros_task, `step.run` → child process in the caseDir. Both enforce `timeoutMs`.
 
 ```ts
 interface ExecutorRegistry {
@@ -216,4 +216,6 @@ CLI: `rivetos workflow new <name>` (see `packages/cli`).
 
 ## Non-goals (v1)
 
-Expression languages · graph IDE · fire-and-forget calls · secrets in case state · building on old RivetHub canvas code · cancelling sibling parallel branches via AbortSignal (tracked follow-up).
+Graph authoring was originally a non-goal; RivetHub now has a flows canvas that writes this directory format (see `apps/rivethub-web/AGENT.md`, "Flows canvas compile semantics"). `run.ts` stays the source of truth.
+
+Expression languages · fire-and-forget calls · secrets in case state · building on old RivetHub canvas code · cancelling sibling parallel branches via AbortSignal (tracked follow-up).

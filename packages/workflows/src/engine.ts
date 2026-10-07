@@ -407,9 +407,9 @@ export class WorkflowEngine {
       fields: caseState.fields,
     }
 
-    // Engine-level max runtime: race the script against a timer.
-    // Per-step timeout is passed to executors; full enforcement is TODO when
-    // real executors support AbortSignal (documented in README/NOTES).
+    // Engine-level max runtime: race the script against a timer. Per-step
+    // timeouts are passed to executors as `timeoutMs` and enforced there — the
+    // core host executors kill the task / script process group at the deadline.
     try {
       // Script load lives INSIDE the durable try: a missing/broken run.ts must
       // mark the run failed, not strand it at 'running' (matters for detached

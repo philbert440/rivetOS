@@ -114,7 +114,6 @@ export {
 // Executors
 export {
   MockExecutorRegistry,
-  LocalExecutorRegistry,
   type AgentExecuteOpts,
   type RunExecuteOpts,
   type AgentExecutor,

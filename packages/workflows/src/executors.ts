@@ -1,14 +1,12 @@
 /**
  * Backend-neutral executor interfaces.
  *
- * At home: agent → ros_task on the mesh (reviewer wires real impl).
- * Other deployments can back these with any agent runtime (cloud SDKs, etc.).
- * Same step SDK semantics; only the registry differs.
+ * The RivetOS host registry lives in @rivetos/core
+ * (`domain/workflows/host-executors.ts`): agent steps run as ros_tasks and
+ * script steps as child processes in the caseDir. Other deployments can back
+ * these with any agent runtime; step SDK semantics are the same.
  *
- * This package ships:
- *  - interfaces
- *  - MockExecutorRegistry (for fixture tests)
- *  - LocalExecutorRegistry with TODO stubs for real ros_task / script backends
+ * This package ships the interfaces and MockExecutorRegistry (fixture tests).
  */
 
 import type { AgentDef, LoadedWorkflow, StepUsage } from './types.js'
@@ -128,40 +126,5 @@ export class MockExecutorRegistry implements ExecutorRegistry {
         return await runHandler(opts)
       },
     }
-  }
-}
-
-// ---------------------------------------------------------------------------
-// Local / production stubs (reviewer wires real backends)
-// ---------------------------------------------------------------------------
-
-/**
- * LocalExecutorRegistry — interface-complete stub for host RivetOS.
- *
- * TODO(reviewer): wire agent executor to ros_task / mesh task API.
- * TODO(reviewer): wire run executor to shell/skill/API dispatch.
- *
- * Until wired, both throw so misconfiguration fails loud rather than silent.
- */
-export class LocalExecutorRegistry implements ExecutorRegistry {
-  readonly agent: AgentExecutor = {
-    execute(opts: AgentExecuteOpts): Promise<Record<string, unknown>> {
-      // TODO: dispatch ros_task with agent instructions + tools from opts.agentDef
-      // and return structured out-fields. See product plan §Orchestration.
-      throw new Error(
-        `LocalExecutorRegistry.agent is a stub (step "${opts.label}"). ` +
-          `Wire ros_task-backed executor before production use.`,
-      )
-    },
-  }
-
-  readonly run: RunExecutor = {
-    execute(opts: RunExecuteOpts): Promise<unknown> {
-      // TODO: run script/skill/API work unit; capture result blob.
-      throw new Error(
-        `LocalExecutorRegistry.run is a stub (step "${opts.label}"). ` +
-          `Wire script/skill/API executor before production use.`,
-      )
-    },
   }
 }
