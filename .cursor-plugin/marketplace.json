@@ -8,7 +8,7 @@
   "plugins": [
     {
       "name": "rivethub-grokbot",
-      "description": "RivetHub member kit for Grok Bot: shared memory MCP, onboard (cloud vs local DataHub), status, mesh-delegate skill. Same plugin either mode. Install then run rivetos-onboard. House nodes can keep ~/.rivetos/.env.",
+      "description": "RivetHub member kit for Grok Bot: shared memory MCP, onboard (cloud vs local DataHub), status, list_agents + delegate_task. Same plugin either mode. Install then run rivetos-onboard. House nodes can keep ~/.rivetos/.env.",
       "source": "./integrations/grok-bot/rivethub-grokbot",
       "category": "productivity",
       "homepage": "https://github.com/philbert440/rivetOS"
