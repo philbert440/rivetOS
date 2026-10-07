@@ -69,8 +69,16 @@ function DiscoveredNodeRow(props: {
  * sidebar NodeSwitcher. Always re-points the gateway client so the local UI
  * stays put. Full node management (remove / token) still lives in the
  * sidebar switcher. Labels: hostname via /healthz.
+ *
+ * `onSelect` is the space-default case: choosing a row reports a den base
+ * URL and does not switch the hub. Empty string is none.
  */
-export function NodePicker(props: { disabled?: boolean }): JSX.Element | null {
+export function NodePicker(props: {
+  disabled?: boolean
+  /** Selected den base URL when `onSelect` is set. Empty is none. */
+  selected?: string
+  onSelect?: (baseUrl: string) => void
+}): JSX.Element | null {
   const { baseUrl, roster, switchTo, addNode } = useConnection()
   const queryClient = useQueryClient()
   const [open, setOpen] = useState(false)
@@ -78,10 +86,23 @@ export function NodePicker(props: { disabled?: boolean }): JSX.Element | null {
 
   const { mesh, discovered, hidden } = useNodeDiscovery()
 
+  const selecting = props.onSelect !== undefined
+  const selectedUrl = selecting ? (props.selected ?? '') : ''
   const current = roster.find((n) => n.baseUrl === baseUrl)
   const currentName = useNodeName(baseUrl) ?? current?.name ?? urlLabel(baseUrl)
+  const selectedChoice = roster.find((n) => n.baseUrl === selectedUrl)
+  const selectedName =
+    useNodeName(selectedUrl) ??
+    selectedChoice?.name ??
+    (selectedUrl ? urlLabel(selectedUrl) : 'None')
+  const triggerName = selecting ? selectedName : currentName
 
   const doSwitch = (url: string): void => {
+    if (props.onSelect) {
+      props.onSelect(url)
+      setOpen(false)
+      return
+    }
     if (!performNodeSwitch(url, switchTo)) {
       setSwitchError('invalid hub URL')
       return
@@ -108,14 +129,14 @@ export function NodePicker(props: { disabled?: boolean }): JSX.Element | null {
           size="sm"
           disabled={props.disabled}
           title="node"
-          aria-label={`node: ${currentName}`}
+          aria-label={`node: ${triggerName}`}
           className={cn(
             'relative h-8 rounded-full px-2.5 font-normal',
             "after:absolute after:-inset-y-2 after:content-['']",
           )}
         >
           <Server className="size-3.5" />
-          <span className="hidden max-w-40 truncate sm:inline">{currentName}</span>
+          <span className="hidden max-w-40 truncate sm:inline">{triggerName}</span>
           <ChevronDown className="size-3.5 opacity-60" />
         </Button>
       </PopoverTrigger>
@@ -124,12 +145,27 @@ export function NodePicker(props: { disabled?: boolean }): JSX.Element | null {
           <PopoverTitle>Node</PopoverTitle>
         </PopoverHeader>
         <div className="max-h-72 overflow-y-auto p-1.5">
+          {selecting ? (
+            <button
+              type="button"
+              onClick={() => doSwitch('')}
+              className={cn(
+                'flex w-full items-center gap-2 rounded-md px-2.5 py-2 text-left text-sm transition-colors',
+                selectedUrl === ''
+                  ? 'bg-panel text-ink'
+                  : 'text-ink-dim hover:bg-panel hover:text-ink',
+              )}
+            >
+              <span className="min-w-0 flex-1 truncate">None</span>
+              {selectedUrl === '' && <Check className="size-3.5 shrink-0 text-em" />}
+            </button>
+          ) : null}
           {roster.map((n) => (
             <SavedNodeRow
               key={n.baseUrl}
               name={n.name}
               baseUrl={n.baseUrl}
-              active={n.baseUrl === baseUrl}
+              active={selecting ? n.baseUrl === selectedUrl : n.baseUrl === baseUrl}
               onSwitch={doSwitch}
             />
           ))}

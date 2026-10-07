@@ -182,7 +182,15 @@ describe('spaces store', () => {
               order: 2,
               createdAt: 5,
               extra: 'ignore',
-              defaults: { cwd: '/tmp' },
+              defaults: {
+                cwd: '/tmp',
+                extra: true,
+                model: 'opus',
+                effort: 'nope',
+                agentId: 'preset-1',
+                harnessId: 'not-a-harness',
+                node: 'http://192.168.1.9:8787',
+              },
             },
             { id: '', name: 'nope', order: 0, createdAt: 0 },
             { name: 'no id' },
@@ -195,10 +203,70 @@ describe('spaces store', () => {
     )
     await useSpaces.persist.rehydrate()
     expect(useSpaces.getState().spaces).toEqual([
-      { id: 's', name: 'Work', order: 2, createdAt: 5, defaults: { cwd: '/tmp' } },
+      {
+        id: 's',
+        name: 'Work',
+        order: 2,
+        createdAt: 5,
+        defaults: { agentId: 'preset-1', model: 'opus', node: 'http://192.168.1.9:8787' },
+      },
     ])
     expect(useSpaces.getState().membership).toEqual({ 'http://x::a': 's' })
     expect('future' in useSpaces.getState()).toBe(false)
+  })
+
+  it('drops a non-object defaults blob without throwing', async () => {
+    store.setItem(
+      SPACES_STORAGE_KEY,
+      JSON.stringify({
+        state: {
+          spaces: [
+            { id: 's', name: 'Work', order: 0, createdAt: 1, defaults: '/tmp' },
+            { id: 't', name: 'Home', order: 1, createdAt: 2, defaults: ['cwd'] },
+          ],
+          membership: {},
+        },
+        version: 0,
+      }),
+    )
+    await expect(useSpaces.persist.rehydrate()).resolves.toBeUndefined()
+    expect(useSpaces.getState().spaces.map((space) => space.defaults)).toEqual([
+      undefined,
+      undefined,
+    ])
+  })
+
+  it('round-trips defaults and clears a field when the patch sets it undefined', () => {
+    const id = useSpaces.getState().addSpace('Work')
+    useSpaces.getState().setSpaceDefaults(id, {
+      agentId: 'preset-1',
+      model: 'opus',
+      effort: 'high',
+      harnessId: 'claude-code',
+      node: 'http://192.168.1.30:8787',
+    })
+    expect(useSpaces.getState().spaces[0]?.defaults).toEqual({
+      agentId: 'preset-1',
+      model: 'opus',
+      effort: 'high',
+      harnessId: 'claude-code',
+      node: 'http://192.168.1.30:8787',
+    })
+    useSpaces.getState().setSpaceDefaults(id, { model: undefined, effort: undefined })
+    expect(useSpaces.getState().spaces[0]?.defaults).toEqual({
+      agentId: 'preset-1',
+      harnessId: 'claude-code',
+      node: 'http://192.168.1.30:8787',
+    })
+    useSpaces.getState().setSpaceDefaults(id, {
+      agentId: '',
+      harnessId: undefined,
+      node: undefined,
+    })
+    expect(useSpaces.getState().spaces[0]?.defaults).toBeUndefined()
+    const before = useSpaces.getState().spaces
+    useSpaces.getState().setSpaceDefaults('missing', { model: 'opus' })
+    expect(useSpaces.getState().spaces).toBe(before)
   })
 
   it('does not throw when storage is missing or throws', async () => {
