@@ -558,19 +558,46 @@ type Dispatchable = DomNode | DomWindow
 function dispatch(target: Dispatchable, event: DomEvent): boolean {
   event.target = target as unknown as EventTarget
   const chain = chainOf(target)
+  let stopped = false
   for (const node of [...chain].reverse()) {
     event.currentTarget = node as unknown as EventTarget
     node.fire(event, true)
-    if (event.cancelBubble) return !event.defaultPrevented
+    if (event.cancelBubble) {
+      stopped = true
+      break
+    }
   }
-  if (event.bubbles) {
+  if (!stopped && event.bubbles) {
     for (const node of chain) {
       event.currentTarget = node as unknown as EventTarget
       node.fire(event, false)
       if (event.cancelBubble) break
     }
   }
+  // stopPropagation does not cancel the default action. preventDefault does.
+  if (!event.defaultPrevented) applyDefault(event)
   return !event.defaultPrevented
+}
+
+/**
+ * The slice of browser default actions these tests assert. A prevented key
+ * must not activate the focused button; an unprevented Enter must. Pointer
+ * down focuses a tabbable button the way a browser does, so a later arrow
+ * sees that focus. Capture retargeting is not modeled.
+ */
+function applyDefault(event: DomEvent): void {
+  if (event.type === 'pointerdown') {
+    const hit = event.target
+    if (hit instanceof DomElement && hit.tagName === 'BUTTON') {
+      if (hit.getAttribute('tabindex') === '-1') return
+      hit.focus()
+    }
+    return
+  }
+  if (event.type === 'keydown' && event.key === 'Enter') {
+    const active = (globalThis as unknown as { document?: DomDocument }).document?.activeElement
+    if (active instanceof DomElement && active.tagName === 'BUTTON') active.click()
+  }
 }
 
 function chainOf(target: Dispatchable): Dispatchable[] {

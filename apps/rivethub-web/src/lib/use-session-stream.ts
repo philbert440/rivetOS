@@ -2,15 +2,23 @@
  * One watch or harness attach per session, shared by every mounted reader.
  *
  * A space mini and the focused ActiveSession for the same session must not
- * open two sockets. The last release does not close: the lease stays
- * idle-warm so a mini↔thread jump reuses the live attachment (no resync,
- * no unbind, store state untouched). Idle leases linger, then stop. Past
- * the cap, the least-recently-released idle lease is stopped. Held leases
- * are never evicted and do not count toward the cap.
+ * open two sockets. Canvas readers pass `linger: true`: the last release
+ * does not close, so a mini↔thread jump reuses the live attachment (no
+ * resync, no unbind, store state untouched). Idle leases linger, then stop.
+ * Past the cap, the least-recently-released idle lease is stopped. Held
+ * leases are never evicted and do not count toward the cap. The drawer and
+ * the narrow layout omit linger and stop on the last release.
+ *
+ * The pool key is the resolved session id (`resolveSessionKey`) plus the
+ * stream signature, not the raw view id. A rekey moves that lease onto the
+ * new id and keeps one attachment. Stopping a lease never unwatches or
+ * unbinds a key that a held lease of the same kind still owns, and a
+ * superseded lease's in-flight gateway promise does not attach.
  *
  * A signature change (stream id, node, harness, transport epoch) is a
- * different lease, so a stale attach is not reused. An epoch bump or a
- * gateway identity change stops every lease; the next acquire opens fresh.
+ * different lease. Gaining a stream id retires the legacy watch for that
+ * session so the two never run together. An epoch bump or a gateway
+ * identity change stops every lease; the next acquire opens fresh.
  * The error string sticks for the life of a lease — a late joiner hears it
  * until the next open.
  */
@@ -22,10 +30,10 @@ import { gatewayFor } from './agent-gateway.js'
 import { attachHarnessSession, type HarnessAttachGateway } from './harness-attach.js'
 import { outboundPumpFor } from './chat-outbound.js'
 import type { ChatItem } from './harness-chat.js'
-import { registerSessionStreamReset, useChat } from '../stores/chat.js'
+import { registerSessionStreamReset, subscribeChatThreads, useChat } from '../stores/chat.js'
 import { useConnection } from '../stores/connection.js'
 
-/** How long an unreferenced lease keeps its socket. Altitude jumps must not resync. */
+/** How long an unreferenced canvas lease keeps its socket. Altitude jumps must not resync. */
 export const LINGER_MS = 10 * 60_000
 /** Idle-warm leases only. A held reader is never counted and never evicted. */
 export const WARM_MAX = 24
@@ -37,6 +45,8 @@ export interface SessionStreamArgs {
   streamId: string | undefined
   isRemote: boolean
   sessionBase: string
+  /** Canvas keeps the socket warm. Drawer and narrow omit this and stop immediately. */
+  linger?: boolean
 }
 
 interface LeaseArgs extends SessionStreamArgs {
@@ -50,13 +60,29 @@ interface LeaseArgs extends SessionStreamArgs {
 
 interface Lease {
   key: string
+  identity: string
+  streamId: string | undefined
+  isRemote: boolean
+  sessionBase: string
+  harnessId: string | undefined
+  transportEpoch: number
   refs: number
   error: string | undefined
   listeners: Set<(message: string | undefined) => void>
-  stop: () => void
   /** Monotonic stamp of the last release. Zero while held. */
   releasedOrder: number
   idleTimer?: ReturnType<typeof setTimeout>
+  superseded: boolean
+  /** Releases of a merged-away lease decrement this one. */
+  survivor?: Lease
+  /** Bumped so an in-flight sessionGateway() cannot attach after supersede. */
+  attachGen: number
+  attachment?: { close: () => void }
+  mode: 'watch' | 'attach' | 'none'
+  watched: boolean
+  /** Identity we last passed to watchTranscript. Rekey changes `identity` only. */
+  watchedIdentity?: string
+  bound: boolean
 }
 
 const leases = new Map<string, Lease>()
@@ -80,6 +106,10 @@ function generationSnapshot(): number {
   return streamGeneration
 }
 
+function resolvedId(sessionId: string): string {
+  return useChat.getState().resolveSessionKey(sessionId)
+}
+
 function streamKey(args: {
   sessionId: string
   streamId: string | undefined
@@ -88,8 +118,21 @@ function streamKey(args: {
   harnessId: string | undefined
   transportEpoch: number
 }): string {
+  return signatureKey(resolvedId(args.sessionId), args)
+}
+
+function signatureKey(
+  identity: string,
+  args: {
+    streamId: string | undefined
+    isRemote: boolean
+    sessionBase: string
+    harnessId: string | undefined
+    transportEpoch: number
+  },
+): string {
   return [
-    args.sessionId,
+    identity,
     args.streamId ?? '',
     args.isRemote ? 'r' : 'l',
     args.sessionBase,
@@ -103,17 +146,66 @@ function report(lease: Lease, message: string | undefined): void {
   for (const listener of lease.listeners) listener(message)
 }
 
+function currentLease(lease: Lease): Lease {
+  let cursor = lease
+  const seen = new Set<Lease>()
+  while (cursor.survivor && !seen.has(cursor)) {
+    seen.add(cursor)
+    cursor = cursor.survivor
+  }
+  return cursor
+}
+
+/** A held lease of this kind still owns the resolved id, so stop must not clear it. */
+function heldSameMode(identity: string, mode: 'watch' | 'attach', except: Lease): boolean {
+  const resolved = resolvedId(identity)
+  for (const other of leases.values()) {
+    if (other === except || other.superseded || other.refs <= 0 || other.mode !== mode) continue
+    if (resolvedId(other.identity) !== resolved) continue
+    if (mode === 'watch' && !other.watched) continue
+    if (mode === 'attach' && !other.bound) continue
+    return true
+  }
+  return false
+}
+
+function closeAttachment(lease: Lease): void {
+  lease.attachGen += 1
+  const attachment = lease.attachment
+  lease.attachment = undefined
+  attachment?.close()
+}
+
+function releaseBinding(lease: Lease): void {
+  if (lease.mode === 'watch' && lease.watched) {
+    lease.watched = false
+    if (!heldSameMode(lease.identity, 'watch', lease)) {
+      useChat.getState().unwatchTranscript(lease.identity)
+    }
+  }
+  if (lease.mode === 'attach' && lease.bound) {
+    lease.bound = false
+    if (!heldSameMode(lease.identity, 'attach', lease)) {
+      useChat.getState().unbindHarness(lease.identity)
+    }
+  }
+  lease.mode = 'none'
+}
+
 function retire(lease: Lease): void {
+  if (lease.superseded) return
+  lease.superseded = true
   if (lease.idleTimer !== undefined) {
     clearTimeout(lease.idleTimer)
     lease.idleTimer = undefined
   }
-  lease.stop()
+  closeAttachment(lease)
+  releaseBinding(lease)
   if (leases.get(lease.key) === lease) leases.delete(lease.key)
 }
 
 function evictIdle(): void {
-  const idle = [...leases.values()].filter((lease) => lease.refs <= 0)
+  const idle = [...leases.values()].filter((lease) => lease.refs <= 0 && !lease.superseded)
   idle.sort((a, b) => a.releasedOrder - b.releasedOrder)
   while (idle.length > WARM_MAX) {
     const oldest = idle.shift()
@@ -125,89 +217,139 @@ function park(lease: Lease): void {
   lease.releasedOrder = ++releaseSeq
   lease.idleTimer = setTimeout(() => {
     lease.idleTimer = undefined
-    if (lease.refs > 0) return
+    if (lease.refs > 0 || lease.superseded) return
     if (leases.get(lease.key) !== lease) return
     retire(lease)
   }, LINGER_MS)
   evictIdle()
 }
 
-function startLease(args: LeaseArgs): Lease {
-  let stopped = false
+function attachOwns(identity: string): boolean {
+  const resolved = resolvedId(identity)
+  for (const other of leases.values()) {
+    if (other.superseded || other.mode !== 'attach') continue
+    if (resolvedId(other.identity) === resolved) return true
+  }
+  return false
+}
+
+/** A stream replaces the legacy watch. They must not both push into one session. */
+function retireWatches(identity: string): void {
+  const resolved = resolvedId(identity)
+  for (const other of [...leases.values()]) {
+    if (other.superseded || other.mode !== 'watch') continue
+    if (resolvedId(other.identity) !== resolved) continue
+    retire(other)
+  }
+}
+
+/**
+ * True when this lease was released and a newer lease owns the same stream,
+ * so its gateway promise must not open a second socket.
+ */
+function blockedAttach(lease: Lease): boolean {
+  if (lease.superseded) return true
+  if (lease.refs > 0) return false
+  const resolved = resolvedId(lease.identity)
+  for (const other of leases.values()) {
+    if (other === lease || other.superseded) continue
+    if (resolvedId(other.identity) !== resolved) continue
+    if ((other.streamId ?? '') !== (lease.streamId ?? '')) continue
+    if (other.sessionBase !== lease.sessionBase || other.isRemote !== lease.isRemote) continue
+    if ((other.harnessId ?? '') !== (lease.harnessId ?? '')) continue
+    if (other.transportEpoch !== lease.transportEpoch) continue
+    if (other.refs > 0 || other.attachment) return true
+  }
+  return false
+}
+
+function startLease(args: LeaseArgs, key: string): Lease {
+  const identity = resolvedId(args.sessionId)
   const lease: Lease = {
-    key: '',
+    key,
+    identity,
+    streamId: args.streamId,
+    isRemote: args.isRemote,
+    sessionBase: args.sessionBase,
+    harnessId: args.harnessId,
+    transportEpoch: args.transportEpoch,
     refs: 0,
     error: undefined,
     listeners: new Set(),
-    stop: () => {
-      stopped = true
-    },
     releasedOrder: 0,
+    superseded: false,
+    attachGen: 0,
+    mode: 'none',
+    watched: false,
+    bound: false,
   }
-  const { sessionId } = args
   if (args.streamId === undefined) {
     // Cross-node threads have no legacy watch on this node's socket. The
     // focused view attaches once its remote summary resolves; until then
-    // both readers hold an idle lease.
-    if (!args.isRemote) {
-      useChat.getState().watchTranscript(sessionId)
-      lease.stop = () => {
-        if (stopped) return
-        stopped = true
-        useChat.getState().unwatchTranscript(sessionId)
-      }
+    // both readers hold an idle lease. A session that already has an attach
+    // must not also watch.
+    if (!args.isRemote && !attachOwns(identity)) {
+      useChat.getState().watchTranscript(identity)
+      lease.mode = 'watch'
+      lease.watched = true
+      lease.watchedIdentity = identity
     }
     return lease
   }
 
+  retireWatches(identity)
   const streamId = args.streamId
-  let disposed = false
-  let attachment: { close: () => void } | undefined
-  useChat.getState().bindHarness(sessionId, args.harnessId ?? 'harness')
+  useChat.getState().bindHarness(identity, args.harnessId ?? 'harness')
+  lease.mode = 'attach'
+  lease.bound = true
+  const gen = lease.attachGen
   void args
     .sessionGateway()
     .then((gw) => {
-      if (disposed) return
-      attachment = attachHarnessSession({
+      if (gen !== lease.attachGen || lease.superseded) return
+      if (leases.get(lease.key) !== lease) return
+      if (blockedAttach(lease)) return
+      lease.attachment = attachHarnessSession({
         gateway: gw,
         sessionId: streamId,
-        onResync: (turns, ctx) => useChat.getState().syncHarnessTranscript(sessionId, turns, ctx),
-        onTranscript: (ev) => useChat.getState().applyHarnessTranscriptEvent(sessionId, ev),
+        onResync: (turns, ctx) =>
+          useChat.getState().syncHarnessTranscript(lease.identity, turns, ctx),
+        onTranscript: (ev) => useChat.getState().applyHarnessTranscriptEvent(lease.identity, ev),
         onAgentStatus: (ev) => {
-          useChat.getState().applyAgentStatus(sessionId, ev)
-          if (ev.status === 'working') outboundPumpFor(sessionId).pump.onBusy()
+          useChat.getState().applyAgentStatus(lease.identity, ev)
+          if (ev.status === 'working') outboundPumpFor(lease.identity).pump.onBusy()
         },
-        onPrompt: (ev) => useChat.getState().applyPromptEvent(sessionId, ev),
-        onControlReset: () => useChat.getState().clearHarnessPrompts(sessionId),
+        onPrompt: (ev) => useChat.getState().applyPromptEvent(lease.identity, ev),
+        onControlReset: () => useChat.getState().clearHarnessPrompts(lease.identity),
         onLive: (turn, reason) => {
           if (reason === 'resync') {
-            useChat.getState().clearLive(sessionId)
+            useChat.getState().clearLive(lease.identity)
             return
           }
-          if (!turn) useChat.getState().clearAcceptedReply(sessionId)
-          useChat.getState().setLive(sessionId, turn)
+          if (!turn) useChat.getState().clearAcceptedReply(lease.identity)
+          useChat.getState().setLive(lease.identity, turn)
         },
-        onApproval: (event) => useChat.getState().applyApprovalEvent(sessionId, event),
+        onApproval: (event) => useChat.getState().applyApprovalEvent(lease.identity, event),
         onTurnComplete: () => {
-          useChat.getState().clearAcceptedReply(sessionId)
-          outboundPumpFor(sessionId).pump.onIdle()
+          useChat.getState().clearAcceptedReply(lease.identity)
+          outboundPumpFor(lease.identity).pump.onIdle()
         },
         onSessionUpdated: () => {
           void args.queryClient.invalidateQueries({
-            queryKey: ['remote-session', args.sessionBase, sessionId],
+            queryKey: ['remote-session', args.sessionBase, lease.identity],
           })
         },
         liveSource: () =>
-          useChat.getState().liveSource[useChat.getState().resolveSessionKey(sessionId)],
+          useChat.getState().liveSource[useChat.getState().resolveSessionKey(lease.identity)],
         onError: (err) => {
-          useChat.getState().clearAcceptedReply(sessionId)
+          useChat.getState().clearAcceptedReply(lease.identity)
           report(lease, err instanceof Error ? err.message : String(err))
         },
         onFatal: (message) => {
-          outboundPumpFor(sessionId).pump.onDeliveryLost()
-          outboundPumpFor(sessionId).closeObserver()
-          useChat.getState().clearAcceptedReply(sessionId)
-          useChat.getState().setLive(sessionId, undefined)
+          outboundPumpFor(lease.identity).pump.onDeliveryLost()
+          outboundPumpFor(lease.identity).closeObserver()
+          useChat.getState().clearAcceptedReply(lease.identity)
+          useChat.getState().setLive(lease.identity, undefined)
           report(lease, `${message} — this session is no longer attachable`)
         },
         onStatus: (status) => {
@@ -216,17 +358,66 @@ function startLease(args: LeaseArgs): Lease {
       })
     })
     .catch((err: unknown) => {
-      if (disposed) return
+      if (gen !== lease.attachGen || lease.superseded) return
       report(lease, err instanceof Error ? err.message : String(err))
     })
-  lease.stop = () => {
-    if (stopped) return
-    stopped = true
-    disposed = true
-    attachment?.close()
-    useChat.getState().unbindHarness(sessionId)
-  }
   return lease
+}
+
+function foldLease(keep: Lease, drop: Lease): void {
+  if (keep === drop || drop.superseded) return
+  keep.refs += drop.refs
+  for (const listener of drop.listeners) keep.listeners.add(listener)
+  if (drop.error !== undefined && keep.error === undefined) keep.error = drop.error
+  drop.refs = 0
+  drop.listeners.clear()
+  drop.superseded = true
+  drop.survivor = keep
+  drop.attachGen += 1
+  if (drop.idleTimer !== undefined) {
+    clearTimeout(drop.idleTimer)
+    drop.idleTimer = undefined
+  }
+  if (drop.attachment && !keep.attachment) {
+    keep.attachment = drop.attachment
+    drop.attachment = undefined
+  } else {
+    drop.attachment?.close()
+    drop.attachment = undefined
+  }
+  if (drop.bound && !keep.bound) {
+    keep.bound = true
+    keep.mode = 'attach'
+  }
+  if (drop.watched && keep.mode !== 'attach') {
+    keep.watched = true
+    if (keep.mode === 'none') keep.mode = 'watch'
+    if (keep.watchedIdentity === undefined) keep.watchedIdentity = drop.watchedIdentity
+  } else if (drop.watched && keep.mode === 'attach') {
+    drop.watched = false
+    useChat.getState().unwatchTranscript(drop.identity)
+  }
+  drop.bound = false
+  drop.watched = false
+  drop.mode = 'none'
+  if (leases.get(drop.key) === drop) leases.delete(drop.key)
+}
+
+function migrateIdentity(from: string, to: string): void {
+  if (from === to) return
+  const moving = [...leases.values()].filter((lease) => {
+    if (lease.superseded || lease.identity === to) return false
+    return lease.identity === from || resolvedId(lease.identity) === to
+  })
+  for (const lease of moving) {
+    const nextKey = signatureKey(to, lease)
+    if (leases.get(lease.key) === lease) leases.delete(lease.key)
+    lease.identity = to
+    lease.key = nextKey
+    const existing = leases.get(nextKey)
+    if (existing && existing !== lease) foldLease(existing, lease)
+    else leases.set(nextKey, lease)
+  }
 }
 
 /** Acquire the shared stream. The returned function releases one reference. */
@@ -234,8 +425,7 @@ export function bindSessionStream(args: LeaseArgs): () => void {
   const key = streamKey(args)
   let lease = leases.get(key)
   if (!lease) {
-    lease = startLease(args)
-    lease.key = key
+    lease = startLease(args, key)
     leases.set(key, lease)
   } else if (lease.idleTimer !== undefined) {
     // Re-acquire of an idle-warm lease: keep the live attach.
@@ -243,20 +433,29 @@ export function bindSessionStream(args: LeaseArgs): () => void {
     lease.idleTimer = undefined
     lease.releasedOrder = 0
   }
+  // rekey drops the store's watch on the old id. The lease object survives;
+  // the next acquire re-watches the id it resolves to now.
+  if (lease.mode === 'watch' && lease.watchedIdentity !== lease.identity) {
+    useChat.getState().watchTranscript(lease.identity)
+    lease.watchedIdentity = lease.identity
+    lease.watched = true
+  }
   lease.refs += 1
   lease.listeners.add(args.onStreamError)
   if (lease.error !== undefined) args.onStreamError(lease.error)
+  const linger = args.linger === true
   let released = false
   return () => {
     if (released) return
     released = true
-    const held = leases.get(key)
-    if (held !== lease) return
-    held.listeners.delete(args.onStreamError)
-    held.refs -= 1
-    if (held.refs <= 0) {
-      held.refs = 0
-      park(held)
+    const current = currentLease(lease)
+    if (leases.get(current.key) !== current) return
+    current.listeners.delete(args.onStreamError)
+    current.refs -= 1
+    if (current.refs <= 0) {
+      current.refs = 0
+      if (linger) park(current)
+      else retire(current)
     }
   }
 }
@@ -265,11 +464,24 @@ function dropAll(notify: boolean): void {
   const held = [...leases.values()]
   leases.clear()
   for (const lease of held) {
+    if (lease.superseded) continue
+    lease.superseded = true
     if (lease.idleTimer !== undefined) {
       clearTimeout(lease.idleTimer)
       lease.idleTimer = undefined
     }
-    lease.stop()
+    closeAttachment(lease)
+    // The map is empty, so every binding is released. Epoch/gateway reset
+    // stops held leases too — sessions are per gateway.
+    if (lease.mode === 'watch' && lease.watched) {
+      lease.watched = false
+      useChat.getState().unwatchTranscript(lease.identity)
+    }
+    if (lease.mode === 'attach' && lease.bound) {
+      lease.bound = false
+      useChat.getState().unbindHarness(lease.identity)
+    }
+    lease.mode = 'none'
   }
   if (notify) bumpGeneration()
 }
@@ -287,6 +499,17 @@ export function resetSessionStreams(): void {
 useConnection.subscribe((state, prev) => {
   if (state.transportEpoch !== prev.transportEpoch || state.baseUrl !== prev.baseUrl) {
     stopAllSessionStreams()
+  }
+})
+
+subscribeChatThreads((event) => {
+  if (event.type === 'move') migrateIdentity(event.from, event.to)
+  else if (event.type === 'remove') {
+    for (const lease of [...leases.values()]) {
+      if (event.keys.has(lease.identity) || event.keys.has(resolvedId(lease.identity))) {
+        retire(lease)
+      }
+    }
   }
 })
 
@@ -317,6 +540,7 @@ export function useSessionStream(args: SessionStreamArgs): {
   // harnessId only — the row object is a new identity whenever the drawer
   // recomputes, and restarting the lease on that would drop the socket.
   const harnessId = args.item?.harnessId
+  const linger = args.linger === true
   useEffect(() => {
     return bindSessionStream({
       sessionId: args.sessionId,
@@ -325,6 +549,7 @@ export function useSessionStream(args: SessionStreamArgs): {
       sessionBase: args.sessionBase,
       harnessId,
       transportEpoch: epoch,
+      linger,
       sessionGateway,
       queryClient,
       onStreamError: setStreamError,
@@ -337,6 +562,7 @@ export function useSessionStream(args: SessionStreamArgs): {
     harnessId,
     epoch,
     generation,
+    linger,
     sessionGateway,
     queryClient,
     setStreamError,

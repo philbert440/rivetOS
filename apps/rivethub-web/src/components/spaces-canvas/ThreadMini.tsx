@@ -10,19 +10,29 @@
  */
 
 import { useEffect, useMemo, useRef, useState, type JSX } from 'react'
-import { useQueryClient } from '@tanstack/react-query'
-import type { HarnessDescriptor } from '@rivetos/types'
+import { useQueryClient, type QueryClient } from '@tanstack/react-query'
+import type { HarnessDescriptor, HarnessSessionResponse, HarnessesResponse } from '@rivetos/types'
 import { Transcript } from '../transcript.js'
 import { useChat, type OutboundItem } from '../../stores/chat.js'
 import { useConnection } from '../../stores/connection.js'
 import { accentFor } from '../../lib/agent-accent.js'
-import { harnessGate, type ChatItem } from '../../lib/harness-chat.js'
+import { gatewayFor } from '../../lib/agent-gateway.js'
+import type { HarnessAttachGateway } from '../../lib/harness-attach.js'
+import { chatItemFromSummary, harnessGate, type ChatItem } from '../../lib/harness-chat.js'
 import { statusActivity } from '../../lib/harness-fold.js'
 import { deriveReplyWait, nextWaitClock, type ReplyWaitClock } from '../../lib/harness-turns.js'
 import { getSessionMode } from '../../lib/session-mode.js'
 import { storageKey } from '../../lib/session-rekey.js'
+import { sessionNodeFor } from '../../lib/session-node.js'
 import { bindSessionStream, useSessionStream } from '../../lib/use-session-stream.js'
 import { useSessionTarget } from '../../lib/use-session-target.js'
+
+/**
+ * `sessions-dirty` is global. A no-stream mini waits this long after the
+ * latest bump so a busy agent does not refetch every tile on every frame.
+ * The first seed for a session is immediate.
+ */
+export const MINI_BACKFILL_DEBOUNCE_MS = 2_000
 
 const EMPTY_OUTBOUND: OutboundItem[] = []
 
@@ -55,23 +65,37 @@ export function ThreadMini(props: {
     streamId: target.streamId,
     isRemote: target.isRemote,
     sessionBase: target.sessionBase,
+    linger: true,
   })
   const sessionsDirty = useChat((s) => s.sessionsDirty)
   // No control-plane stream (remote summary still closed, or a legacy row):
-  // one HTTP backfill, refreshed when the session list is marked dirty.
+  // seed once, then refetch on a dirty bump only after the debounce. The
+  // counter is global, so this tile does not hit the network on every frame.
+  const dirtySeen = useRef<number | null>(null)
   useEffect(() => {
     if (target.streamId !== undefined) return
     const ctrl = new AbortController()
-    let gone = false
-    void target
-      .sessionGateway()
-      .then((gw) => gw.sessionMessages(id, ctrl.signal))
-      .then((data) => {
-        if (!gone) useChat.getState().seed(id, data.messages)
-      })
-      .catch(() => undefined)
+    let timer: ReturnType<typeof setTimeout> | undefined
+    const run = (): void => {
+      void target
+        .sessionGateway()
+        .then((gw) => gw.sessionMessages(id, ctrl.signal))
+        .then((data) => {
+          if (!ctrl.signal.aborted) useChat.getState().seed(id, data.messages)
+        })
+        .catch(() => undefined)
+    }
+    // Same counter as last time covers the first seed and a StrictMode replay.
+    // Only a real bump waits.
+    if (dirtySeen.current === null || dirtySeen.current === sessionsDirty) {
+      dirtySeen.current = sessionsDirty
+      run()
+    } else {
+      dirtySeen.current = sessionsDirty
+      timer = setTimeout(run, MINI_BACKFILL_DEBOUNCE_MS)
+    }
     return () => {
-      gone = true
+      if (timer !== undefined) clearTimeout(timer)
       ctrl.abort()
     }
   }, [target.streamId, target.sessionGateway, id, sessionsDirty])
@@ -156,6 +180,53 @@ export function ThreadMini(props: {
   )
 }
 
+/**
+ * Same signature a painted mini resolves, so a synchronous hold shares that
+ * lease instead of opening a second socket. Remote rows use the cached
+ * summary when the mini has already switched onto the stream.
+ */
+export function holdTileLease(
+  item: ChatItem,
+  descriptors: HarnessDescriptor[] | undefined,
+  queryClient: QueryClient,
+): () => void {
+  const connection = useConnection.getState()
+  const rosterUrls = connection.roster.map((node) => node.baseUrl)
+  const sessionBase = sessionNodeFor(item.key, connection.baseUrl, rosterUrls)
+  const isRemote = sessionBase !== connection.baseUrl
+  const epoch = connection.transportEpoch
+  let gateItem: ChatItem | undefined = item
+  let gateDescriptors = descriptors
+  if (isRemote) {
+    const summary = queryClient.getQueryData<HarnessSessionResponse>([
+      'remote-session',
+      sessionBase,
+      item.key,
+      epoch,
+    ])
+    const registry = queryClient.getQueryData<HarnessesResponse>(['harnesses', sessionBase, epoch])
+    gateItem = summary ? chatItemFromSummary(summary) : undefined
+    gateDescriptors = registry?.harnesses
+  }
+  const gate = harnessGate(gateItem, gateDescriptors)
+  const streamId = gate.stream ? gateItem?.sessionId : undefined
+  const sessionGateway = (): Promise<HarnessAttachGateway> =>
+    isRemote ? gatewayFor(sessionBase) : Promise.resolve(useConnection.getState().gateway)
+  return bindSessionStream({
+    sessionId: item.key,
+    item: gateItem,
+    streamId,
+    isRemote,
+    sessionBase,
+    harnessId: gateItem?.harnessId,
+    transportEpoch: epoch,
+    linger: true,
+    sessionGateway,
+    queryClient,
+    onStreamError: () => undefined,
+  })
+}
+
 /** Holds a space tile's lease while the mini itself is not painted. */
 export function WarmLease(props: { item: ChatItem; descriptors?: HarnessDescriptor[] }): null {
   const { target } = useTileTarget(props.item, props.descriptors)
@@ -165,6 +236,7 @@ export function WarmLease(props: { item: ChatItem; descriptors?: HarnessDescript
     streamId: target.streamId,
     isRemote: target.isRemote,
     sessionBase: target.sessionBase,
+    linger: true,
   })
   return null
 }
@@ -198,6 +270,7 @@ export function SelectedPrewarm(props: {
         sessionBase,
         harnessId,
         transportEpoch: epoch,
+        linger: true,
         sessionGateway,
         queryClient,
         onStreamError: () => undefined,

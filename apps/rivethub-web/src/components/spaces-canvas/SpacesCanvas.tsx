@@ -7,9 +7,11 @@
  */
 
 import { useEffect, useMemo, useRef, useState, type JSX, type ReactNode } from 'react'
+import { useQueryClient } from '@tanstack/react-query'
 import type { HarnessDescriptor } from '@rivetos/types'
 import type { ChatItem } from '../../lib/harness-chat.js'
 import { focusInForeignDialog, matchCanvasChord, matchCanvasNav } from '../../lib/hub-keys.js'
+import { useChat } from '../../stores/chat.js'
 import {
   focusRect,
   layout,
@@ -26,7 +28,7 @@ import {
   type CanvasKeyState,
 } from './canvas-input.js'
 import { Tile } from './Tile.js'
-import { SelectedPrewarm, WarmLease } from './ThreadMini.js'
+import { holdTileLease, SelectedPrewarm, WarmLease } from './ThreadMini.js'
 import { tileStatus } from './tile-status.js'
 import { useCamera } from './use-camera.js'
 
@@ -39,9 +41,35 @@ const FOCUS_SINK =
 function navFocusAllowed(root: HTMLElement | null): boolean {
   const active = document.activeElement
   if (!(active instanceof Element)) return false
+  // A pointer click focuses the tile's hit button. That button is the
+  // canvas's own selection, not a sink that should swallow arrows.
+  if (active.closest('[data-tile-hit]')) return true
   if (active.closest(FOCUS_SINK)) return false
   if (active === document.body) return true
   return root !== null && root.contains(active)
+}
+
+/**
+ * Frozen order keeps the relative positions the fly started with, follows a
+ * rekey in place, and appends rows that appeared after the snapshot.
+ */
+function projectFrozen(frozen: readonly string[], rows: readonly ChatItem[]): string[] {
+  const live = new Set(rows.map((row) => row.key))
+  const resolve = useChat.getState().resolveSessionKey
+  const used = new Set<string>()
+  const next: string[] = []
+  for (const key of frozen) {
+    const mapped = live.has(key) ? key : resolve(key)
+    if (!live.has(mapped) || used.has(mapped)) continue
+    used.add(mapped)
+    next.push(mapped)
+  }
+  for (const row of rows) {
+    if (used.has(row.key)) continue
+    used.add(row.key)
+    next.push(row.key)
+  }
+  return next
 }
 
 export function SpacesCanvas(props: {
@@ -68,6 +96,8 @@ export function SpacesCanvas(props: {
   const navBridge = useRef(false)
   const armRef = useRef<string | undefined>(undefined)
   const frozenKeys = useRef<string[] | null>(null)
+  const openingHold = useRef<(() => void) | undefined>(undefined)
+  const queryClient = useQueryClient()
 
   if (
     rows.length > 0 &&
@@ -91,12 +121,22 @@ export function SpacesCanvas(props: {
         setNavNonce((n) => n + 1)
       }
     } else {
-      navBridge.current = true
+      const resolvedOpen =
+        openId !== undefined ? useChat.getState().resolveSessionKey(openId) : undefined
+      // A draft's first send rekeys the same thread. Keep the mounted
+      // session; restarting the fly would unmount it out from under the user.
+      const sameThread =
+        altitude === 'thread' &&
+        openId !== undefined &&
+        (openId === activeId || resolvedOpen === activeId)
       setOpenId(activeId)
       setSelectedId(activeId)
-      setAltitude('thread')
-      setThreadMounted(false)
-      setNavNonce((n) => n + 1)
+      if (!sameThread) {
+        navBridge.current = true
+        setAltitude('thread')
+        setThreadMounted(false)
+        setNavNonce((n) => n + 1)
+      }
     }
   }
 
@@ -109,9 +149,11 @@ export function SpacesCanvas(props: {
   openRef.current = openId
 
   // Capture order on the way into Thread; live order applies again on the
-  // way out. Missing keys drop out, but the ones that remain do not reshuffle.
+  // way out. Project before the memo so a rekey or a new row is visible
+  // on the same render that the rows change.
   if (altitude === 'thread') {
     if (frozenKeys.current === null) frozenKeys.current = rows.map((row) => row.key)
+    frozenKeys.current = projectFrozen(frozenKeys.current, rows)
   } else if (frozenKeys.current !== null) {
     frozenKeys.current = null
   }
@@ -190,12 +232,22 @@ export function SpacesCanvas(props: {
     setNavNonce((n) => n + 1)
   }
   const beginThread = (id: string): void => {
+    // Already opening or open: a second click must not restart the fly.
+    // The arm ref is cleared on a microtask, before a dblclick arrives.
+    if (openId === id && altitude === 'thread') return
     if (armRef.current === id) return
-    if (altitude === 'thread' && openId === id && threadMounted) return
     armRef.current = id
     queueMicrotask(() => {
       if (armRef.current === id) armRef.current = undefined
     })
+    // Hold before setState. Entering Thread unmounts every mini in the same
+    // commit; without this ref the opening lease can be the oldest idle one
+    // and LRU-evicted before ActiveSession acquires on landing.
+    const row = rows.find((item) => item.key === id)
+    const next = row ? holdTileLease(row, descriptors, queryClient) : undefined
+    const previous = openingHold.current
+    openingHold.current = next
+    if (previous) previous()
     bump()
     setSelectedId(id)
     setOpenId(id)
@@ -235,6 +287,25 @@ export function SpacesCanvas(props: {
   useEffect(() => {
     if (altitude !== 'thread' && threadMounted) setThreadMounted(false)
   }, [altitude, threadMounted])
+
+  // Release only after the focused session has acquired. Child effects run
+  // before this one, so ActiveSession's bind is already held.
+  useEffect(() => {
+    if (!openingHold.current) return
+    if (threadMounted || altitude !== 'thread') {
+      const release = openingHold.current
+      openingHold.current = undefined
+      release()
+    }
+  }, [threadMounted, altitude])
+
+  useEffect(() => {
+    return () => {
+      const release = openingHold.current
+      openingHold.current = undefined
+      release?.()
+    }
+  }, [])
 
   useEffect(() => {
     if (altitude !== 'thread' || openId === undefined) return
@@ -299,7 +370,7 @@ export function SpacesCanvas(props: {
         ? displayRows.map((row) => <WarmLease key={row.key} item={row} descriptors={descriptors} />)
         : null}
       {altitude === 'everything' && selectedRow ? (
-        <SelectedPrewarm item={selectedRow} descriptors={descriptors} />
+        <SelectedPrewarm key={selectedRow.key} item={selectedRow} descriptors={descriptors} />
       ) : null}
       <div
         ref={stageRef}

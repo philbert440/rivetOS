@@ -583,6 +583,7 @@ export function ChatPage(): JSX.Element {
           gate={harnessGate(row, descriptors)}
           summaryReady={summaryReady}
           harnessCommand={row?.command}
+          linger
         />
       </SessionErrorBoundary>
     )
@@ -1146,6 +1147,11 @@ function ActiveSession(props: {
   gate: HarnessGate
   summaryReady: boolean
   harnessCommand?: string
+  /**
+   * Canvas only. The drawer and the narrow layout omit this so a released
+   * session stops immediately, the way it did before the warm pool.
+   */
+  linger?: boolean
 }): JSX.Element {
   const baseUrl = useConnection((s) => s.baseUrl)
   const roster = useConnection((s) => s.roster)
@@ -1438,6 +1444,7 @@ function ActiveSession(props: {
     streamId,
     isRemote,
     sessionBase,
+    linger: props.linger,
   })
   // The inject button's last send queued Esc ahead of the paste (den `dismissedDialog`).
   const [dialogDismissedAt, setDialogDismissedAt] = useState<number | undefined>()

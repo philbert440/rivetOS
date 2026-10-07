@@ -400,6 +400,9 @@ export function useCamera(opts: {
       if (rafRef.current !== null) cancelAnimationFrame(rafRef.current)
       rafRef.current = null
       pendingLand.current = undefined
+      // StrictMode replays this effect without resetting refs. Clearing the
+      // latch lets the replay take the init fly and arm onLand again.
+      seen.current = false
     }
   }, [])
 
