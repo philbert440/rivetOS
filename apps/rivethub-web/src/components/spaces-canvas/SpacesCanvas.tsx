@@ -1588,11 +1588,11 @@ export function SpacesCanvas(props: {
             type="button"
             data-dock="recent"
             className="px-3 py-2 text-sm text-ink hover:bg-em/15 disabled:opacity-40"
-            disabled={mruPreviewId(mru, 1) === undefined}
+            disabled={mru.length < 2}
             onClick={() => {
               // Previous thread — the way to step back at Thread, where Ctrl+` is
-              // left to the terminal.
-              const id = mruPreviewId(mru, 1)
+              // left to the terminal. mru[1], not the wrapping preview helper.
+              const id = mru[1]
               if (id !== undefined) beginThread(id)
             }}
           >

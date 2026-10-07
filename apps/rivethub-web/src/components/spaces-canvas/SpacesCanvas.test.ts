@@ -1137,6 +1137,8 @@ describe('SpacesCanvas mount', () => {
     })
     const hud = host?.querySelector('[data-hud]')?.parentElement
     expect(hud?.className).toContain('z-20')
+    const recentAtStart = host?.querySelector('[data-dock="recent"]')
+    expect(recentAtStart?.hasAttribute('disabled')).toBe(true)
     for (const id of ['a', 'b']) {
       const hit = host?.querySelector(`[data-tile-hit="${id}"]`)
       if (!hit) throw new Error(`missing tile ${id}`)
@@ -1149,6 +1151,7 @@ describe('SpacesCanvas mount', () => {
     }
     expect(opened.at(-1)).toBe('b')
     const recent = host?.querySelector('[data-dock="recent"]')
+    expect(recent?.hasAttribute('disabled')).toBe(false)
     if (!(recent instanceof HTMLElement)) throw new Error('missing recent')
     act(() => {
       recent.click()
