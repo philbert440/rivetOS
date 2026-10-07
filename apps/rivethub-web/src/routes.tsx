@@ -25,11 +25,8 @@ import { MemoryTopicPage } from './pages/memory.js'
 import { SettingsPage } from './pages/settings.js'
 import { TaskDetailPage, TasksPage } from './pages/tasks.js'
 import { SessionDetailPage, SessionsPage } from './pages/sessions.js'
-import {
-  WorkflowRunDetailPage,
-  WorkflowsHubPage,
-  WorkflowTriggerPage,
-} from './pages/workflows-hub.js'
+import { WorkflowRunDetailPage, WorkflowsHubPage } from './pages/workflows-hub.js'
+import { WorkflowPage } from './pages/workflow-page.js'
 import { useChat } from './stores/chat.js'
 import { useConnection } from './stores/connection.js'
 import { useNotifications } from './stores/notifications.js'
@@ -270,16 +267,20 @@ const workflowsRoute = createRoute({
   component: WorkflowsHubPage,
 })
 
-/** Contract trigger form for a workflow def.
+/** Workflow page — overview / canvas / files, Run sheet.
  *  Known edge: the param segment shadows def ids literally named `runs` or
  *  `canvas` (static routes rank higher) — don't name workflow defs that. */
 const workflowTriggerRoute = createRoute({
   getParentRoute: () => rootRoute,
   path: '/workflows/$workflowId',
-  /** `?mode=edit` opens the definition editor (hub card "Edit"). */
-  validateSearch: (search: Record<string, unknown>): { mode?: 'edit' } =>
-    search.mode === 'edit' ? { mode: 'edit' } : {},
-  component: WorkflowTriggerPage,
+  /** `?view=canvas|files` picks the view (default overview); `?run=true` opens
+   *  the Run sheet on arrival (hub card "Run"). Not `tab`: that key is the
+   *  Memory page's, and route search types merge across the tree. */
+  validateSearch: (search: Record<string, unknown>): { view?: 'canvas' | 'files'; run?: true } => ({
+    ...(search.view === 'canvas' || search.view === 'files' ? { view: search.view } : {}),
+    ...(search.run === true || search.run === 'true' ? { run: true as const } : {}),
+  }),
+  component: WorkflowPage,
 })
 
 /** Run detail — journal, gate, kill. Must be registered before $workflowId

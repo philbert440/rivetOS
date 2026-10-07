@@ -53,6 +53,8 @@ export function FlowsAuthor(props: {
   const [saveMsg, setSaveMsg] = useState<string | undefined>()
   const [saving, setSaving] = useState(false)
   const hadFlowsJson = useRef(false)
+  /** Hand-written run.ts (no flows.json, real outline): the canvas is a projection of it. */
+  const [codeOwned, setCodeOwned] = useState(false)
   const outlineRef = useRef(props.outline)
   outlineRef.current = props.outline
 
@@ -98,6 +100,7 @@ export function FlowsAuthor(props: {
           const text = await gw.filesReadText(path)
           if (!cancelRef.cancelled) {
             hadFlowsJson.current = true
+            setCodeOwned(false)
             setGraph(parseFlowsFile(text))
             setLoaded(true)
             return
@@ -110,6 +113,7 @@ export function FlowsAuthor(props: {
       }
       if (cancelRef.cancelled) return
       hadFlowsJson.current = false
+      setCodeOwned((outlineRef.current?.length ?? 0) > 1)
       let hydrated = authorGraphFromOutline(outlineRef.current)
       if (props.editPath) hydrated = await hydrateFromDefFiles(gw, props.editPath, hydrated)
       // The cleanup can set `cancelled` during the await above.
@@ -237,6 +241,7 @@ export function FlowsAuthor(props: {
         }
       }
       hadFlowsJson.current = true
+      setCodeOwned(false)
       setDirty(false)
       setSaveMsg(removed.length > 0 ? `Saved (removed ${removed.join(', ')})` : 'Saved')
       await queryClient.invalidateQueries({ queryKey: ['workflow'] })
@@ -251,41 +256,49 @@ export function FlowsAuthor(props: {
   const saveOk = Boolean(saveMsg?.startsWith('Saved'))
 
   return (
-    <>
+    <div className="flex h-full min-h-0 flex-col">
       {confirmDialog.element}
-      <FlowsWorkbench
-        graph={graph}
-        onChange={editable ? onChange : undefined}
-        editable={editable && loaded}
-        workflowOptions={props.workflowOptions}
-        workflowId={props.workflowId}
-        onWorkflowChange={props.onWorkflowChange}
-        selectedId={selectedId}
-        onSelect={setSelectedId}
-        toolbarLeft={props.toolbarLeft}
-        toolbarRight={
-          <>
-            {editable && (
-              <button
-                type="button"
-                disabled={saving || !loaded}
-                onClick={() => void onSave()}
-                className="rounded bg-em-dim px-3 py-1 font-mono text-xs font-medium text-bg hover:bg-em disabled:opacity-40"
-              >
-                {saving ? 'Saving…' : dirty ? 'Save' : 'Saved'}
-              </button>
-            )}
-            {saveMsg && (
-              <span className={`font-mono text-[11px] ${saveOk ? 'text-em' : 'text-red'}`}>
-                {saveMsg}
-              </span>
-            )}
-            {props.toolbarRight}
-          </>
-        }
-        inspectorExtra={props.inspectorExtra}
-      />
-    </>
+      {codeOwned && editable && (
+        <p className="shrink-0 border-b border-line bg-panel px-3 py-2 font-mono text-[11px] text-ink-dim">
+          This workflow’s <span className="text-ink">run.ts</span> was written by hand — the canvas
+          shows its outline. Saving here replaces run.ts with code generated from the canvas.
+        </p>
+      )}
+      <div className="min-h-0 flex-1">
+        <FlowsWorkbench
+          graph={graph}
+          onChange={editable ? onChange : undefined}
+          editable={editable && loaded}
+          workflowOptions={props.workflowOptions}
+          workflowId={props.workflowId}
+          onWorkflowChange={props.onWorkflowChange}
+          selectedId={selectedId}
+          onSelect={setSelectedId}
+          toolbarLeft={props.toolbarLeft}
+          toolbarRight={
+            <>
+              {editable && (
+                <button
+                  type="button"
+                  disabled={saving || !loaded}
+                  onClick={() => void onSave()}
+                  className="rounded bg-em-dim px-3 py-1 font-mono text-xs font-medium text-bg hover:bg-em disabled:opacity-40"
+                >
+                  {saving ? 'Saving…' : dirty ? 'Save' : 'Saved'}
+                </button>
+              )}
+              {saveMsg && (
+                <span className={`font-mono text-[11px] ${saveOk ? 'text-em' : 'text-red'}`}>
+                  {saveMsg}
+                </span>
+              )}
+              {props.toolbarRight}
+            </>
+          }
+          inspectorExtra={props.inspectorExtra}
+        />
+      </div>
+    </div>
   )
 }
 

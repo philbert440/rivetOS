@@ -72,16 +72,22 @@ Hub UI
 - Hub **New workflow** dialog: _From scratch_ / _Duplicate_ (and, in step 5,
   _From prompt_). Lands in the editor.
 
-### 3. Workflow page restructure
+### 3. Workflow page restructure — done
 
-- Tabs: **Overview** (this workflow's runs + stats) · **Editor** · **Settings**
-  (input/output contract, `runLabel`, budgets).
-- **Run** is a button opening the trigger form in a side sheet; submitting
-  navigates to the live run page.
-- Editor = canvas + inspector; the file tree / raw YAML becomes a collapsible
-  **Files** drawer instead of a separate mode.
-- Hand-written `run.ts` defs the canvas can't fully represent open with an
-  explicit "code-owned — canvas read-only" banner.
+- `pages/workflow-page.tsx`: tabs **Overview** (description, health tiles,
+  input/output contract, `runLabel`, this workflow's runs with a status
+  filter) · **Canvas** (flows editor) · **Files** (file tree + workflow.yaml
+  form, unchanged). The tab is `?view=canvas|files` — not `tab`, which the
+  Memory page owns and route search types merge.
+- **Run** opens a right-hand sheet (run name + contract form) from any tab;
+  starting navigates to the live run page. The sheet is local state, not a
+  URL change, so opening it never trips the unsaved-edits blocker.
+- Hand-written `run.ts` defs show a notice on the canvas that saving
+  replaces run.ts with generated code (the save-time confirm still applies).
+- Deviation from the original sketch: Files stays a tab rather than a
+  drawer, and there is no separate Settings tab — the contract / `runLabel` /
+  budgets are edited through the Files tab's workflow.yaml form. Revisit if
+  that form proves too buried.
 
 ### 4. Canvas
 
