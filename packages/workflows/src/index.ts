@@ -97,9 +97,28 @@ export {
   listRuns,
   listChildRuns,
   listWorkflowDefs,
+  summarizeRunsByWorkflow,
   type RunSummary,
   type ListRunsOptions,
+  type WorkflowRunStats,
 } from './list-runs.js'
+export {
+  createWorkflowDef,
+  slugifyWorkflowId,
+  validateNewWorkflowId,
+  WorkflowCreateError,
+  type CreateWorkflowOptions,
+} from './create.js'
+export {
+  RUN_META_FILENAME,
+  RUN_LABEL_MAX,
+  readRunMeta,
+  writeRunMeta,
+  normalizeRunLabel,
+  renderRunLabel,
+  resolveRunLabel,
+  type RunMeta,
+} from './run-meta.js'
 export {
   CASE_FILENAME,
   casePath,

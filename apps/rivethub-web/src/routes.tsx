@@ -276,6 +276,9 @@ const workflowsRoute = createRoute({
 const workflowTriggerRoute = createRoute({
   getParentRoute: () => rootRoute,
   path: '/workflows/$workflowId',
+  /** `?mode=edit` opens the definition editor (hub card "Edit"). */
+  validateSearch: (search: Record<string, unknown>): { mode?: 'edit' } =>
+    search.mode === 'edit' ? { mode: 'edit' } : {},
   component: WorkflowTriggerPage,
 })
 

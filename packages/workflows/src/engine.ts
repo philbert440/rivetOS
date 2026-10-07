@@ -27,6 +27,7 @@ import {
 import { appendJournal, readJournal, nowIso, ensureJournal, findOpenGate } from './journal.js'
 import { loadWorkflowDir, resolveWorkflowDir } from './loader.js'
 import { validateStartInput } from './manifest.js'
+import { resolveRunLabel, writeRunMeta } from './run-meta.js'
 import { createStepRuntime, type Step } from './step.js'
 import { createCallRegistry, type CallRegistry, type CallResolver } from './registry.js'
 import {
@@ -66,6 +67,8 @@ export interface StartRunOptions {
   runScript?: RunScript
   /** Pre-loaded workflow (skips resolve + load). */
   workflow?: LoadedWorkflow
+  /** Explicit display label; falls back to the manifest's `runLabel` template. */
+  label?: string
 }
 
 export interface StartRunResult {
@@ -190,6 +193,9 @@ export class WorkflowEngine {
       fields: { ...input },
     }
     await writeCase(caseDir, caseState)
+
+    const label = resolveRunLabel(options.label, workflow.manifest.runLabel, input)
+    if (label !== undefined) await writeRunMeta(caseDir, { label })
 
     const started: JournalEntry = {
       type: 'run_started',
