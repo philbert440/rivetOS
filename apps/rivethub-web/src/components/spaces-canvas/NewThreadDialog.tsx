@@ -8,9 +8,9 @@
  * after that. Preset model and effort are copied only when the user picks
  * an agent, so a space override is not replaced on open — cached roster
  * or still loading. Switching space re-applies that space's overrides.
- * A preset that is no longer startable stays off the picker, but its id
- * is still copied onto the thread so the existing deleted-preset notice
- * can fire. An explicit node that left the connection roster is not used.
+ * A preset that is no longer startable stays off the picker. Plain draft
+ * does not copy that id (Ctrl+T still does). An explicit node that left
+ * the connection roster is not used.
  */
 
 import { useEffect, useRef, useState, type JSX } from 'react'
@@ -111,10 +111,6 @@ export function NewThreadDialog(props: {
   const nodeNotice = nodeResolved.unavailable
     ? offRosterStartNotice(nodeResolved.unavailable, baseUrl)
     : undefined
-  const missingPreset =
-    !isLoading && !agent && defaults?.agentId && !agents.some((row) => row.id === defaults.agentId)
-      ? { id: defaults.agentId, harnessId: defaults.harnessId }
-      : undefined
 
   const launch = launchModelOptions({
     preBind: true,
@@ -140,7 +136,6 @@ export function NewThreadDialog(props: {
       model: model || undefined,
       effort,
       node: agent ? undefined : defaults?.node,
-      missingPreset,
     })
     if (!id) return
     props.onStarted(id)

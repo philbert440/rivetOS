@@ -521,6 +521,10 @@ html[data-theme='light'] {
   --harness-accent-cowork: #6b8f71;
   --harness-accent-fallback: var(--color-em);
 }
+/* #9ca3af on paper (#fdfcf8) is about 2.5:1. gray-600 clears the non-text 3:1. */
+html[data-theme='light'] .spaces-canvas {
+  --harness-accent-grok-build: #4b5563;
+}
 .spaces-canvas .sc-accent {
   background-color: var(--harness-accent-fallback);
 }
@@ -592,8 +596,29 @@ html[data-theme='light'] {
     opacity: 1;
   }
 }
-.spaces-canvas .sc-ground {
+/* Dots breathe on their own layer. Animating .sc-ground fades #world, the
+   tiles, and the open thread. Thread altitude holds the dots still. */
+.spaces-canvas .sc-ground::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  z-index: 0;
+  pointer-events: none;
+  background-image: radial-gradient(
+    circle,
+    color-mix(in srgb, var(--color-line) calc(var(--dot-a, 0) * 100%), transparent) 1px,
+    transparent 1.6px
+  );
+  background-size: var(--dot-size, 0px) var(--dot-size, 0px);
+  background-position: var(--dot-x, 0px) var(--dot-y, 0px);
   animation: spaces-breathe 4.8s ease-in-out infinite;
+}
+.spaces-canvas[data-altitude='thread'] .sc-ground::before {
+  animation: none;
+  opacity: 1;
+}
+.spaces-canvas #world {
+  z-index: 1;
 }
 .spaces-canvas .sc-toast {
   animation: spaces-toast-in 180ms ease-out;
@@ -611,7 +636,7 @@ html[data-theme='light'] {
   [data-tile] {
     transition: none;
   }
-  .spaces-canvas .sc-ground,
+  .spaces-canvas .sc-ground::before,
   .spaces-canvas .sc-toast,
   .spaces-canvas .sc-ghost,
   .spaces-canvas .sc-dot,

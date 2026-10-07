@@ -10,6 +10,7 @@ import {
   DELETED_PRESET_NOTICE,
   presetHasHarnessFlag,
   recoverDeletedAgentSpawnUsingCache,
+  settledRosterAgentIds,
   spawnOnceWithCommandFallback,
   termSpawnBody,
 } from '../lib/term-spawn.js'
@@ -1366,9 +1367,11 @@ function ActiveSession(props: {
         agentId: settings?.agentId,
         model: settledLaunch.spawn.model,
         effort: settledLaunch.spawn.effort,
-        // A preset with no harness must not send agentId — the den 400s
-        // `agent has no harness and no command was given`.
-        presetHasHarness: presetHasHarnessFlag(settings),
+        // A live preset with no harness must not send agentId — the den 400s
+        // `agent has no harness and no command was given`. An id missing from
+        // the settled roster is sent anyway so the 404 recovery can show
+        // DELETED_PRESET_NOTICE. An unknown roster keeps the omit.
+        presetHasHarness: presetHasHarnessFlag(settings, settledRosterAgentIds(queryClient)),
       })
       // An API-only agent has no roster command → fall back to the node default
       // rather than 404 (keeps session, model, and effort). That fallback is

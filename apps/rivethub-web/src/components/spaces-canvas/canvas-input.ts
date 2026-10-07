@@ -2,7 +2,8 @@
  * Keyboard decisions for the spaces canvas. The capture listener in
  * SpacesCanvas turns a key into one of these commands; this module says
  * what that does to the selection and the altitude. Thread altitude claims
- * only the chords — arrows, Enter and Esc stay with the focused session.
+ * only Ctrl+Space and Ctrl+0. Arrows, Enter, Esc, and Ctrl+` stay with the
+ * focused session; recent threads use the dock button there.
  */
 
 import { CANVAS_KEYS, type CanvasAction, type CanvasChord } from '../../lib/hub-keys.js'

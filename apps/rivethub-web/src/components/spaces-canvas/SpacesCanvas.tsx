@@ -79,7 +79,7 @@ import {
   type DropHit,
 } from './drop-target.js'
 import { HistoryPanel } from './HistoryPanel.js'
-import { applyChooser, startThreadInSpace } from './new-thread.js'
+import { applyChooser, startThreadInSpace, takeOffRosterNotice } from './new-thread.js'
 import { NewThreadDialog } from './NewThreadDialog.js'
 import { SpaceDefaultsDialog } from './SpaceDefaultsDialog.js'
 import { defaultAgentChip, startablePreset, startsInDirectory } from './space-defaults.js'
@@ -231,6 +231,8 @@ interface PaintedTile {
   showThread: boolean
   spaceId: string | undefined
   faded: boolean
+  /** Spoken name of the row. One row per tile so a move does not remount it. */
+  rowLabel: string
 }
 
 export function SpacesCanvas(props: {
@@ -282,6 +284,7 @@ export function SpacesCanvas(props: {
   const [mruStep, setMruStep] = useState(0)
   const [toasts, setToasts] = useState<NeedsToast[]>([])
   const [keysOpen, setKeysOpen] = useState(false)
+  const [rosterNotice, setRosterNotice] = useState<string | undefined>()
   const localOpen = useRef<string | undefined>(undefined)
   const navBridge = useRef(false)
   const armRef = useRef<string | undefined>(undefined)
@@ -401,7 +404,8 @@ export function SpacesCanvas(props: {
         // Same hold as a click, taken in layout (below) rather than here.
         // This commit unmounts every mini; without a ref the opening lease
         // can be the oldest idle one and get evicted before ActiveSession
-        // acquires on landing. Layout still runs before that passive release.
+        // acquires on landing. The mini defers dropping its frozen target
+        // so this hold still sees it. Passive stream release is later.
         pendingOpenHold.current = activeId
         navBridge.current = true
         setAltitude('thread')
@@ -422,6 +426,7 @@ export function SpacesCanvas(props: {
   const tilesRef = useRef<NeighborTile[]>([])
   const rowsRef = useRef(rows)
   const baseUrlRef = useRef(baseUrl)
+  const membershipRef = useRef(membership)
   const modalRef = useRef(false)
   const spaceInFocusRef = useRef<() => string | undefined>(() => undefined)
   const pickRef = useRef(pick)
@@ -440,6 +445,7 @@ export function SpacesCanvas(props: {
   openRef.current = openId
   rowsRef.current = rows
   baseUrlRef.current = baseUrl
+  membershipRef.current = membership
   modalRef.current =
     namePrompt !== null ||
     removePrompt !== null ||
@@ -615,7 +621,7 @@ export function SpacesCanvas(props: {
   const spaceForSession = (id: string): string | undefined => {
     const state = useSpaces.getState()
     const row = rowsRef.current.find((item) => item.key === id)
-    if (row) return state.spaceOf(rowMembershipKey(baseUrlRef.current, row))
+    if (row) return state.spaceOf(rowMembershipKey(baseUrlRef.current, row, state.membership))
     if (useChat.getState().drafts.includes(id)) {
       return state.spaceOf(storageKey(baseUrlRef.current, id))
     }
@@ -988,7 +994,9 @@ export function SpacesCanvas(props: {
       if (!spaceId) return undefined
       const defaults = useSpaces.getState().spaces.find((space) => space.id === spaceId)?.defaults
       if (!defaults) return undefined
-      return startThreadInSpace(spaceId, useConnection.getState().baseUrl, rosterRef.current)
+      const id = startThreadInSpace(spaceId, useConnection.getState().baseUrl, rosterRef.current)
+      setRosterNotice(takeOffRosterNotice())
+      return id
     })
     return () => bindSpaceThreadStarter(null)
   }, [])
@@ -1021,7 +1029,7 @@ export function SpacesCanvas(props: {
       if (!row) return
       dragRef.current = {
         source: 'tile',
-        memberKey: rowMembershipKey(baseUrlRef.current, row),
+        memberKey: rowMembershipKey(baseUrlRef.current, row, membershipRef.current),
         originSpace: tile.getAttribute('data-space') ?? undefined,
         title: row.title,
         x: event.clientX,
@@ -1141,9 +1149,14 @@ export function SpacesCanvas(props: {
       ?.directory,
   )
 
+  const rowLabelFor = (spaceId: string | undefined): string => {
+    if (!spaceId || spaceId === UNPLACED_ID) return 'History'
+    return regionName(regions, spaceId) ?? 'Space'
+  }
   const paintedTiles: PaintedTile[] = placed.map((item) => {
     const isOpen = item.row.key === openId
     const focused = altitude === 'thread' && isOpen
+    const spaceId = item.spaceId === UNPLACED_ID ? undefined : item.spaceId
     return {
       row: item.row,
       selected: altitude === 'thread' ? isOpen : item.row.key === selectedId,
@@ -1152,8 +1165,9 @@ export function SpacesCanvas(props: {
         : { x: item.slot.x, y: item.slot.y, w: item.slot.w, h: item.slot.h },
       showMini: paintMini && item.spaceId === framedRegionId,
       showThread: altitude === 'thread' && isOpen && threadMounted,
-      spaceId: item.spaceId === UNPLACED_ID ? undefined : item.spaceId,
+      spaceId,
       faded: filtering && !hitIds.has(item.row.key),
+      rowLabel: rowLabelFor(spaceId),
     }
   })
   // Same array as the placed tiles, so a placed ↔ History move keeps the
@@ -1167,8 +1181,11 @@ export function SpacesCanvas(props: {
       showThread: threadMounted,
       spaceId: undefined,
       faded: false,
+      rowLabel: 'History',
     })
   }
+  const nothingSelected = !paintedTiles.some((item) => item.selected)
+  const firstTileId = paintedTiles[0]?.row.key
   const tileRows = paintedTiles.map((item) => item.row)
   for (const row of tileRows) stableFor.set(row.key, stableKey(row.key))
   // Prune after commit. stableKey still writes during render so this pass
@@ -1237,10 +1254,6 @@ export function SpacesCanvas(props: {
       <div
         ref={stageRef}
         className="sc-ground absolute inset-0 cursor-grab touch-none overflow-hidden [&.is-panning]:cursor-grabbing"
-        style={{
-          backgroundImage:
-            'radial-gradient(circle, color-mix(in srgb, var(--color-line) calc(var(--dot-a, 0) * 100%), transparent) 1px, transparent 1.6px)',
-        }}
       >
         <div
           id="world"
@@ -1270,6 +1283,8 @@ export function SpacesCanvas(props: {
                 key={region.id}
                 data-region={region.id}
                 role="presentation"
+                inert={hidden ? true : undefined}
+                aria-hidden={hidden ? true : undefined}
                 className={`sc-region absolute border border-line ${dashed ? 'border-dashed' : 'border-solid'}`}
                 style={{
                   left: region.rect.x,
@@ -1341,22 +1356,33 @@ export function SpacesCanvas(props: {
               </div>
             )
           })}
-          {paintedTiles.map((item) => (
-            <Tile
-              key={stableFor.get(item.row.key) ?? item.row.key}
-              item={item.row}
-              altitude={altitude}
-              selected={item.selected}
-              blocked={isBlocked(item.row, blockedIds)}
-              geometry={item.geometry}
-              showMini={item.showMini}
-              showThread={item.showThread}
-              spaceId={item.spaceId}
-              faded={item.faded}
-              descriptors={descriptors}
-              renderThread={renderKeyedThread}
-            />
-          ))}
+          {paintedTiles.map((item) => {
+            const concealRow = altitude === 'thread' && item.row.key !== openId
+            return (
+              <div
+                key={stableFor.get(item.row.key) ?? item.row.key}
+                role="row"
+                aria-label={item.rowLabel}
+                inert={concealRow ? true : undefined}
+                aria-hidden={concealRow ? true : undefined}
+              >
+                <Tile
+                  item={item.row}
+                  altitude={altitude}
+                  selected={item.selected}
+                  blocked={isBlocked(item.row, blockedIds)}
+                  geometry={item.geometry}
+                  showMini={item.showMini}
+                  showThread={item.showThread}
+                  spaceId={item.spaceId}
+                  faded={item.faded}
+                  fallbackTab={nothingSelected && item.row.key === firstTileId}
+                  descriptors={descriptors}
+                  renderThread={renderKeyedThread}
+                />
+              </div>
+            )
+          })}
           {regions.map((region) => {
             if (region.id === UNPLACED_ID) return null
             const laidRegion = laid.regions.find((item) => item.id === region.id)
@@ -1377,6 +1403,8 @@ export function SpacesCanvas(props: {
                 data-act=""
                 data-add-thread={region.id}
                 data-empty-thread={empty ? '' : undefined}
+                inert={hidden ? true : undefined}
+                aria-hidden={hidden ? true : undefined}
                 className={`absolute border border-dashed border-line text-sm text-ink-dim hover:border-em hover:text-em${
                   empty ? ' flex items-center justify-center' : ''
                 }`}
@@ -1416,7 +1444,7 @@ export function SpacesCanvas(props: {
             if (!row) return
             applyChooser({
               type: 'history',
-              rowKey: rowMembershipKey(baseUrlRef.current, row),
+              rowKey: rowMembershipKey(baseUrlRef.current, row, membershipRef.current),
               spaceId: choosing.spaceId,
               sessionId: id,
               open: (sessionId) => beginThread(sessionId),
@@ -1430,8 +1458,8 @@ export function SpacesCanvas(props: {
           if (pick || modalRef.current || event.button !== 0) return
           dragRef.current = {
             source: 'history',
-            memberKey: rowMembershipKey(baseUrl, item),
-            originSpace: useSpaces.getState().spaceOf(rowMembershipKey(baseUrl, item)),
+            memberKey: rowMembershipKey(baseUrl, item, membership),
+            originSpace: useSpaces.getState().spaceOf(rowMembershipKey(baseUrl, item, membership)),
             title: item.title,
             x: event.clientX,
             y: event.clientY,
@@ -1589,7 +1617,7 @@ export function SpacesCanvas(props: {
                     onClick={() => {
                       useSpaces
                         .getState()
-                        .place(rowMembershipKey(baseUrl, selectedPlaced.row), space.id)
+                        .place(rowMembershipKey(baseUrl, selectedPlaced.row, membership), space.id)
                       setMoveOpen(false)
                     }}
                   >
@@ -1600,7 +1628,9 @@ export function SpacesCanvas(props: {
                   type="button"
                   className="block w-full px-3 py-1.5 text-left text-sm text-ink hover:bg-em/15"
                   onClick={() => {
-                    useSpaces.getState().unplace(rowMembershipKey(baseUrl, selectedPlaced.row))
+                    useSpaces
+                      .getState()
+                      .unplace(rowMembershipKey(baseUrl, selectedPlaced.row, membership))
                     setMoveOpen(false)
                   }}
                 >
@@ -1664,6 +1694,15 @@ export function SpacesCanvas(props: {
             ? <kbd className="text-ink-dim">Keys</kbd>
           </button>
         </div>
+        {rosterNotice ? (
+          <p
+            role="status"
+            data-roster-notice=""
+            className="absolute top-16 left-1/2 z-40 max-w-md -translate-x-1/2 border border-line bg-panel px-3 py-2 text-center font-mono text-sm text-ink-dim"
+          >
+            {rosterNotice}
+          </p>
+        ) : null}
         <div
           aria-live="polite"
           data-needs-toasts=""

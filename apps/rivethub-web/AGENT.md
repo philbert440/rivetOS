@@ -330,9 +330,11 @@ while the canvas is focused on a space that has defaults it mints straight
 away via `startThreadInSpace` (same place-and-send path, no dialog). Inside a
 space those defaults win over a selected agents-rail filter; outside a
 space, or when the space has no defaults, Ctrl+T is unchanged. A preset id
-that is no longer on the roster shows as "(missing preset)" in Edit. New
-threads still carry that id (not pinned) so the first spawn uses the
-existing deleted-preset notice, then continues without it. An explicit
+that is no longer on the roster shows as "(missing preset)" in Edit. Ctrl+T
+still carries that id (not pinned) so the first spawn uses the existing
+deleted-preset notice, then continues without it. Choosing Plain draft in
+the new-thread dialog does not. In Edit, changing the agent clears the
+model; choosing None drops a model-only default. An explicit
 node, or a preset node, that is no longer on the connection roster is not
 used: the thread starts on the hub, and the new-thread dialog says so.
 Settings, the node binding, and space membership are written on the
@@ -344,7 +346,9 @@ claimed at Thread — the dock button and the toast are the jump there), a
 polite toast when a session flips to blocked while you are not in it. **Find**
 (`/`, not claimed at Thread) fades non-hits to 0.15; Enter opens needs-you
 then recency, and only while the find field itself is focused.
-**Recent** (Ctrl+`) steps an in-memory MRU; releasing Ctrl opens the preview.
+**Recent** (Ctrl+`) steps an in-memory MRU at Space and Everything; releasing
+Ctrl opens the preview. It is not claimed at Thread — the dock Recent button
+is the step there.
 
 The per-session watch/attach lives in `src/lib/use-session-stream.ts`
 (`useSessionStream` / `bindSessionStream`). Leases are ref-counted per
@@ -442,8 +446,10 @@ history, `/` find, Delete archives or discards the selected thread (unpinned
 drafts are discarded; Backspace is not a remove key), Shift+Delete removes
 the space you are in (threads move to History, sessions are not deleted).
 `h` is History, not left. Ctrl+J is claimed at Space and Everything only.
-Ctrl+`is claimed at Thread too.`?` opens the Keys panel (`#keys`) at Space
-and Everything; at Thread the dock `?`button opens it and`?` is not claimed.
+Ctrl+`is not claimed at Thread (recent threads step at Space and Everything;
+the dock Recent button does it while a thread is open).`?` opens the Keys
+panel (`#keys`) at Space and Everything; at Thread the dock `?`button opens
+it and`?` is not claimed.
 
 **Known limit.** A draft tile and its canonical tile, both already mounted,
 do not share one React key. Adopting one identity remounts the other. The

@@ -4,16 +4,9 @@ import { createElement, type ReactNode } from 'react'
 import { act } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { GatewayError } from '@rivetos/gateway-client'
 import type { HarnessDescriptor, HarnessId } from '@rivetos/types'
 import { urlLabel } from '../../lib/node-name.js'
 import { sessionNodeFor } from '../../lib/session-node.js'
-import {
-  DELETED_PRESET_NOTICE,
-  presetHasHarnessFlag,
-  recoverDeletedAgentSpawn,
-  termSpawnBody,
-} from '../../lib/term-spawn.js'
 import { useChat } from '../../stores/chat.js'
 import { useChatSettings } from '../../stores/chat-settings.js'
 import { useConnection } from '../../stores/connection.js'
@@ -296,7 +289,7 @@ describe('NewThreadDialog seeding', () => {
     ).toBe(base)
   })
 
-  it('carries a deleted preset id so spawn recovery raises the existing notice', async () => {
+  it('plain draft does not carry a missing preset id', () => {
     roster.agents = [PRESET]
     roster.isLoading = false
     const spaceId = useSpaces.getState().addSpace('Home')
@@ -312,6 +305,7 @@ describe('NewThreadDialog seeding', () => {
         started = id
       }),
     )
+    expect(document.body.textContent).toContain('Plain draft')
     expect(document.body.textContent).not.toContain('missing preset was removed')
     setField('#new-thread-prompt', 'hello')
     act(() => {
@@ -319,22 +313,9 @@ describe('NewThreadDialog seeding', () => {
     })
     const base = useConnection.getState().baseUrl
     const settings = useChatSettings.getState().byKey[`${base}::${started}`]
-    expect(settings?.agentId).toBe('gone')
-    expect(settings?.harnessId).toBe('claude-code')
-    const body = termSpawnBody({
-      sessionId: started,
-      agentId: settings?.agentId,
-      model: settings?.model,
-      effort: settings?.effort,
-      presetHasHarness: presetHasHarnessFlag(settings),
-    })
-    expect(body.agentId).toBe('gone')
-    const spawned = await recoverDeletedAgentSpawn(async (req) => {
-      if (req.agentId) throw new GatewayError(404, 'agent not found', undefined)
-      return 'pty'
-    }, body)
-    expect(spawned.droppedAgentId).toBe(true)
-    expect(DELETED_PRESET_NOTICE).toBe('Preset not found on this node; opened without it')
+    expect(settings?.agentId).toBeUndefined()
+    expect(settings?.harnessId).toBeUndefined()
+    expect(settings).toMatchObject({ model: 'm2', effort: 'high' })
   })
 
   it('copies the newly picked preset after the space seed', () => {

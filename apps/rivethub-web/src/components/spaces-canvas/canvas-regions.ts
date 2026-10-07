@@ -36,7 +36,7 @@ export function buildCanvasRegions(opts: {
   const ids = new Set(spaces.map((space) => space.id))
   const buckets = new Map<string, ChatItem[]>(spaces.map((space) => [space.id, []]))
   for (const row of opts.rows) {
-    const memberKey = rowMembershipKey(opts.baseUrl, row)
+    const memberKey = rowMembershipKey(opts.baseUrl, row, opts.membership)
     if (!Object.hasOwn(opts.membership, memberKey)) continue
     const spaceId = opts.membership[memberKey]
     if (!ids.has(spaceId)) continue

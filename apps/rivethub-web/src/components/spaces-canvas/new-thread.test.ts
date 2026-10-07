@@ -9,7 +9,7 @@ import {
   sessionNodeFor,
   setSessionNodeBinding,
 } from '../../lib/session-node.js'
-import { adoptRegistrySession } from '../../lib/session-rekey.js'
+import { adoptRegistrySession, storageKey } from '../../lib/session-rekey.js'
 import {
   DELETED_PRESET_NOTICE,
   presetHasHarnessFlag,
@@ -25,9 +25,11 @@ import { bindSpaceThreadStarter, startNewConversation } from '../../lib/new-conv
 import {
   applyChooser,
   initialThreadFields,
+  offRosterStartNotice,
   resolveRosterNode,
   startThreadInSpace,
   canStartThread,
+  takeOffRosterNotice,
 } from './new-thread.js'
 import { buildCanvasRegions } from './canvas-regions.js'
 import { defaultAgentChip, directoryBasename } from './space-defaults.js'
@@ -43,6 +45,7 @@ beforeEach(() => {
   useChatSettings.setState({ byKey: {} })
   useAgentFilter.getState().clear()
   bindSpaceThreadStarter(null)
+  takeOffRosterNotice()
 })
 
 function listOnRoster(baseUrl: string, name: string): void {
@@ -336,6 +339,7 @@ describe('new thread in a space', () => {
     expect(getSessionNodeBinding(id)).toBe(remote)
     expect(sessionNodeFor(id, base, rosterUrls())).toBe(remote)
     expect(agentForSession(id)).toBeUndefined()
+    expect(takeOffRosterNotice()).toBeUndefined()
   })
 
   it('keeps a node-only draft in the space after the canonical id is adopted', () => {
@@ -403,6 +407,44 @@ describe('new thread in a space', () => {
     expect(region?.rows.map((item) => item.key)).toEqual([id])
   })
 
+  it('buildCanvasRegions uses the membership map it is given, not the store', () => {
+    const base = useConnection.getState().baseUrl
+    const home = useSpaces.getState().addSpace('Home')
+    const other = useSpaces.getState().addSpace('Other')
+    const id = 'snap'
+    useSpaces.getState().place(storageKey(base, id), home)
+    const item: ChatItem = { key: id, kind: 'legacy', title: 'snap', updatedAt: 0 }
+    const regions = buildCanvasRegions({
+      spaces: useSpaces.getState().spaces,
+      rows: [item],
+      membership: { [storageKey(base, id)]: other },
+      baseUrl: base,
+      frozenKeys: null,
+    })
+    expect(regions.find((region) => region.id === other)?.rows.map((row) => row.key)).toEqual([id])
+    expect(regions.find((region) => region.id === home)?.rows ?? []).toEqual([])
+  })
+
+  it('files a bound-off-hub row under the snapshot membership, not the store', () => {
+    const base = useConnection.getState().baseUrl
+    const remote = 'http://192.168.1.41:8787'
+    listOnRoster(remote, 'node-b')
+    const spaceId = useSpaces.getState().addSpace('Away')
+    const id = 'remote-row'
+    setSessionNodeBinding(id, remote, base)
+    const item: ChatItem = { key: id, kind: 'legacy', title: 'remote', updatedAt: 0 }
+    const regions = buildCanvasRegions({
+      spaces: useSpaces.getState().spaces,
+      rows: [item],
+      membership: { [storageKey(remote, id)]: spaceId },
+      baseUrl: base,
+      frozenKeys: null,
+    })
+    expect(regions.find((region) => region.id === spaceId)?.rows.map((row) => row.key)).toEqual([
+      id,
+    ])
+  })
+
   it('does not write a node-only default whose node left the roster', () => {
     const base = useConnection.getState().baseUrl
     const gone = 'http://192.168.1.49:8787'
@@ -424,6 +466,7 @@ describe('new thread in a space', () => {
     expect(useSpaces.getState().spaceOf(`${base}::${id}`)).toBe(spaceId)
     expect(sessionNodeFor(id, base, rosterUrls())).toBe(base)
     expect(agentForSession(id)).toBeUndefined()
+    expect(takeOffRosterNotice()).toBe(offRosterStartNotice(gone, base))
   })
 
   it('does not pin a preset whose node left the roster', () => {
@@ -449,6 +492,7 @@ describe('new thread in a space', () => {
     })
     expect(useSpaces.getState().spaceOf(`${base}::${id}`)).toBe(spaceId)
     expect(sessionNodeFor(id, base, rosterUrls())).toBe(base)
+    expect(takeOffRosterNotice()).toBe(offRosterStartNotice(PRESET.sourceNodeBaseUrl, base))
   })
 
   it('no defaults places the draft and writes no settings or node binding', () => {

@@ -42,13 +42,6 @@ class DomEvent {
   buttons = 0
   detail = 0
   which = 0
-  key = ''
-  code = ''
-  ctrlKey = false
-  metaKey = false
-  altKey = false
-  shiftKey = false
-  repeat = false
   view: unknown = null
 
   constructor(type: string, init: EventInit & Record<string, unknown> = {}) {
@@ -104,7 +97,57 @@ function assignInit(event: DomEvent, init: Record<string, unknown>): void {
 
 class DomMouseEvent extends DomEvent {}
 class DomPointerEvent extends DomMouseEvent {}
+
+interface KeyBits {
+  key: string
+  code: string
+  ctrlKey: boolean
+  metaKey: boolean
+  altKey: boolean
+  shiftKey: boolean
+  repeat: boolean
+}
+
+const keyboardBits = new WeakMap<object, KeyBits>()
+
+function bitsFor(event: object): KeyBits {
+  let state = keyboardBits.get(event)
+  if (!state) {
+    state = {
+      key: '',
+      code: '',
+      ctrlKey: false,
+      metaKey: false,
+      altKey: false,
+      shiftKey: false,
+      repeat: false,
+    }
+    keyboardBits.set(event, state)
+  }
+  return state
+}
+
+/**
+ * `key` / `code` / modifiers live on the prototype, the way a browser
+ * `KeyboardEvent` does. An object spread of the event must not see them.
+ * `assignInit` writes through these setters, so they are not own properties.
+ */
 class DomKeyboardEvent extends DomEvent {}
+
+for (const name of ['key', 'code', 'ctrlKey', 'metaKey', 'altKey', 'shiftKey', 'repeat'] as const) {
+  Object.defineProperty(DomKeyboardEvent.prototype, name, {
+    configurable: true,
+    enumerable: true,
+    get(this: object): string | boolean {
+      return bitsFor(this)[name]
+    },
+    set(this: object, value: string | boolean): void {
+      const state = bitsFor(this)
+      if (name === 'key' || name === 'code') state[name] = String(value)
+      else state[name] = value === true
+    },
+  })
+}
 
 function createStyle(): CSSStyleDeclaration {
   const values = new Map<string, string>()
@@ -370,7 +413,21 @@ class DomElement extends DomNode {
     return this.attrs.has(name)
   }
 
+  /**
+   * Reflects the HTML `inert` attribute. React sets the property. Focus
+   * skips an inert element and anything inside it, matching a browser.
+   */
+  get inert(): boolean {
+    return this.hasAttribute('inert')
+  }
+
+  set inert(value: boolean) {
+    if (value) this.setAttribute('inert', '')
+    else this.removeAttribute('inert')
+  }
+
   focus(): void {
+    if (inertElement(this)) return
     if (this.ownerDocument) this.ownerDocument.activeElement = this
   }
 
@@ -745,6 +802,16 @@ function dispatch(target: Dispatchable, event: DomEvent): boolean {
  * down focuses a tabbable button the way a browser does, so a later arrow
  * sees that focus. Capture retargeting is not modeled.
  */
+/** True when `el` or an ancestor is inert. Focus must not land there. */
+function inertElement(el: DomElement): boolean {
+  let node: DomElement | null = el
+  while (node) {
+    if (node.inert) return true
+    node = node.parentElement
+  }
+  return false
+}
+
 function applyDefault(event: DomEvent): void {
   if (event.type === 'pointerdown') {
     const hit = event.target
@@ -754,7 +821,9 @@ function applyDefault(event: DomEvent): void {
     }
     return
   }
-  if (event.type === 'keydown' && event.key === 'Enter') {
+  // `key` is a prototype getter on KeyboardEvent, not a field of every event.
+  const key = (event as { key?: unknown }).key
+  if (event.type === 'keydown' && key === 'Enter') {
     const active = (globalThis as unknown as { document?: DomDocument }).document?.activeElement
     if (active instanceof DomElement && active.tagName === 'BUTTON') active.click()
   }

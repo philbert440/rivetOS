@@ -102,8 +102,11 @@ export function useCamera(opts: {
         const step = 48 * z
         const dotA = step < 9 ? 0 : Math.min(0.4, (step - 9) / 34)
         stage.style.setProperty('--dot-a', String(dotA))
-        stage.style.backgroundSize = `${step}px ${step}px`
-        stage.style.backgroundPosition = `${tx}px ${ty}px`
+        // The dot grid is a pseudo-element, not the ground itself, so this
+        // opacity breathe does not fade tiles or the open thread.
+        stage.style.setProperty('--dot-size', `${step}px`)
+        stage.style.setProperty('--dot-x', `${tx}px`)
+        stage.style.setProperty('--dot-y', `${ty}px`)
       }
     },
     [stageRef, worldRef],

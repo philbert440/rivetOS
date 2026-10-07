@@ -60,8 +60,16 @@ function sameTile(prev: TileProps, next: TileProps): boolean {
     prev.spaceId === next.spaceId &&
     prev.faded === next.faded &&
     prev.descriptors === next.descriptors &&
-    prev.renderThread === next.renderThread
+    prev.renderThread === next.renderThread &&
+    prev.fallbackTab === next.fallbackTab
   )
+}
+
+/** Roving tabindex. Thread leaves Tab with the session. Otherwise the
+ *  selected tile, or the first tile when nothing is selected. */
+export function tileHitTabIndex(altitude: Altitude, selected: boolean, fallback: boolean): 0 | -1 {
+  if (altitude === 'thread') return -1
+  return selected || fallback ? 0 : -1
 }
 
 interface TileProps {
@@ -77,6 +85,8 @@ interface TileProps {
   spaceId?: string
   /** Find miss. Non-hits fade; the open thread's own dim wins. */
   faded?: boolean
+  /** True for the first tile when no tile is selected. */
+  fallbackTab?: boolean
   descriptors?: HarnessDescriptor[]
   renderThread: (id: string) => ReactNode
 }
@@ -144,7 +154,7 @@ export const Tile = memo(function Tile(props: TileProps): JSX.Element {
         className={`absolute inset-0 z-[1] cursor-pointer bg-transparent${
           props.showThread ? ' pointer-events-none' : ''
         }`}
-        tabIndex={props.altitude === 'thread' || !props.selected ? -1 : 0}
+        tabIndex={tileHitTabIndex(props.altitude, props.selected, props.fallbackTab === true)}
         aria-pressed={props.selected}
         aria-label={`${chip}, ${title}, ${tilePill(status)}`}
       />

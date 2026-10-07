@@ -66,9 +66,11 @@ function useTileTarget(item: ChatItem, descriptors: HarnessDescriptor[] | undefi
     epoch,
   })
   // Layout, not render: a discarded or StrictMode render must not be the
-  // publisher. A click hold runs after the previous commit's layout effect,
-  // so the record is already there. Children layout effects run before the
-  // parent's holdOpening, and before this mount's passive cleanup.
+  // publisher. A click hold runs while this mount is still up. A store or
+  // URL open unmounts it in the same commit as the parent's hold, and this
+  // cleanup would otherwise run first. The delete waits one turn so the
+  // hold still reads the frozen target. A later republish of the key is
+  // a different record and is left in place.
   const published = useRef<{ key: string; record: PaintedTarget } | undefined>(undefined)
   const record = useMemo<PaintedTarget>(
     () => ({
@@ -103,9 +105,11 @@ function useTileTarget(item: ChatItem, descriptors: HarnessDescriptor[] | undefi
     paintedTargets.set(item.key, record)
     return () => {
       const current = published.current
-      if (current !== undefined && paintedTargets.get(current.key) === current.record) {
-        paintedTargets.delete(current.key)
-      }
+      queueMicrotask(() => {
+        if (current !== undefined && paintedTargets.get(current.key) === current.record) {
+          paintedTargets.delete(current.key)
+        }
+      })
     }
   }, [item.key, record])
   return { epoch, target }

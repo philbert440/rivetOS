@@ -24,8 +24,8 @@ export type CanvasChord = 'zoom-toggle' | 'everything'
 
 export type CanvasNav = 'left' | 'right' | 'up' | 'down' | 'open' | 'out'
 
-/** Canvas commands that are not camera navigation. Single-letter keys and
- *  Ctrl+J are not claimed at Thread altitude. Ctrl+` is. `?` opens the
+/** Canvas commands that are not camera navigation. Single-letter keys,
+ *  Ctrl+J, and Ctrl+` are not claimed at Thread altitude. `?` opens the
  *  Keys panel at Space and Everything; the dock button does it at Thread. */
 export type CanvasAction =
   | 'new-space'
@@ -43,7 +43,7 @@ export type CanvasAction =
 type CanvasKeyEvent = Pick<
   KeyboardEvent,
   'key' | 'code' | 'ctrlKey' | 'shiftKey' | 'altKey' | 'metaKey'
->
+> & { repeat?: boolean }
 
 /** One row the matchers, the Thread claim, and the Keys panel all read. */
 export interface CanvasKeyEntry {
@@ -253,8 +253,8 @@ export const CANVAS_KEYS: readonly CanvasKeyEntry[] = [
     id: 'mru',
     keys: 'Ctrl+`',
     summary: 'Step recent threads. Releasing Ctrl opens the preview.',
-    thread: 'Claimed. Recent threads still step while a thread is open.',
-    claimedAtThread: true,
+    thread: 'Not claimed. The dock Recent button steps threads while one is open.',
+    claimedAtThread: false,
     matches: (e) => ctrlOnly(e) && e.code === 'Backquote',
     probe: { ...bare('`', 'Backquote'), ctrlKey: true },
   }),
@@ -277,11 +277,36 @@ function matchFrom(handler: CanvasKeyEntry['handler'], e: CanvasKeyEvent): strin
   return null
 }
 
+type CanvasKeySource = {
+  key?: string
+  code?: string
+  ctrlKey?: boolean
+  shiftKey?: boolean
+  altKey?: boolean
+  metaKey?: boolean
+  repeat?: boolean
+}
+
+/**
+ * Read the fields. A browser `KeyboardEvent` keeps them on the prototype, and
+ * an object spread only copies own properties, so `{ key: '', ...event }`
+ * arrives with `key` forced empty and `ctrlKey` / `code` missing.
+ */
+function readCanvasKey(e: CanvasKeySource): CanvasKeyEvent {
+  return {
+    key: e.key ?? '',
+    code: e.code ?? '',
+    ctrlKey: e.ctrlKey === true,
+    shiftKey: e.shiftKey === true,
+    altKey: e.altKey === true,
+    metaKey: e.metaKey === true,
+    repeat: e.repeat === true,
+  }
+}
+
 /** Ctrl+Space toggles thread/space. Ctrl+0 frames everything. */
-export function matchCanvasChord(
-  e: Pick<KeyboardEvent, 'code' | 'ctrlKey' | 'shiftKey' | 'altKey' | 'metaKey'>,
-): CanvasChord | null {
-  return matchFrom('chord', { key: '', ...e }) as CanvasChord | null
+export function matchCanvasChord(e: CanvasKeySource): CanvasChord | null {
+  return matchFrom('chord', readCanvasKey(e)) as CanvasChord | null
 }
 
 /**
@@ -289,16 +314,12 @@ export function matchCanvasChord(
  * "out" here; the canvas listener must not claim it at thread altitude.
  * `h` is History, so left is ArrowLeft only.
  */
-export function matchCanvasNav(
-  e: Pick<KeyboardEvent, 'key' | 'ctrlKey' | 'shiftKey' | 'altKey' | 'metaKey'>,
-): CanvasNav | null {
-  return matchFrom('nav', { code: '', ...e }) as CanvasNav | null
+export function matchCanvasNav(e: CanvasKeySource): CanvasNav | null {
+  return matchFrom('nav', readCanvasKey(e)) as CanvasNav | null
 }
 
-export function matchCanvasAction(
-  e: Pick<KeyboardEvent, 'key' | 'code' | 'ctrlKey' | 'shiftKey' | 'altKey' | 'metaKey'>,
-): CanvasAction | null {
-  return matchFrom('action', e) as CanvasAction | null
+export function matchCanvasAction(e: CanvasKeySource): CanvasAction | null {
+  return matchFrom('action', readCanvasKey(e)) as CanvasAction | null
 }
 
 /** Pure matcher; takes the fields it needs so tests can pass plain objects. */
