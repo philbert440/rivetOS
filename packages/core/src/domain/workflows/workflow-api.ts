@@ -1,12 +1,14 @@
 /**
  * /api/workflows + /api/workflow-runs — gateway route families (slice C + J).
  *
- *   GET  /api/workflows              list defs from workflowsRoots
+ *   GET  /api/workflows              list defs from workflowsRoots (+ stats, createRoots)
+ *   POST /api/workflows              create a def: { id, name, description?, root?, from? }
  *   GET  /api/workflows/:id          single def (+ editPath when under files root)
  *   POST /api/workflows/:id/validate loader + determinism lint diagnostics
  *   POST /api/workflows/:id/runs     start a run (body = input fields)
- *   GET  /api/workflow-runs          recent runs (scan caseDirRoot)
+ *   GET  /api/workflow-runs          recent runs (scan caseDirRoot); ?workflowId=&status=a,b&q=
  *   GET  /api/workflow-runs/:id      detail: case + journal + children + openGate
+ *   PATCH /api/workflow-runs/:id     body = { label } — rename (blank clears)
  *   POST /api/workflow-runs/:id/resume  body = { gateResponse }
  *   POST /api/workflow-runs/:id/kill
  *
@@ -15,17 +17,20 @@
 
 import { randomUUID } from 'node:crypto'
 import { readFile, readdir } from 'node:fs/promises'
-import { join, relative, sep } from 'node:path'
+import { join, relative, resolve, sep } from 'node:path'
 import type { IncomingMessage, ServerResponse } from 'node:http'
 import {
   sharedDir,
   sharedPath,
   type GatewayRoute,
   type NotificationFrame,
+  type WorkflowCreateResponse,
   type WorkflowDefSummary,
   type WorkflowDiagnostic,
   type WorkflowKillResponse,
+  type WorkflowDefStats,
   type WorkflowRunDetail,
+  type WorkflowRunStatus,
   type WorkflowRunSummary,
   type WorkflowRunsListResponse,
   type WorkflowStartRunResponse,
@@ -40,13 +45,20 @@ import {
   WorkflowEngine,
   WorkflowNotFoundError,
   checkRunScriptDeterminism,
+  createWorkflowDef,
+  WorkflowCreateError,
   findOpenGate,
   listChildRuns,
   listRuns,
   loadWorkflowDir,
   appendJournal,
   listWorkflowDefs,
+  normalizeRunLabel,
   readCase,
+  readRunMeta,
+  resolveRunLabel,
+  summarizeRunsByWorkflow,
+  writeRunMeta,
   readJournal,
   updateRun,
   validateStartInput,
@@ -57,6 +69,16 @@ import {
 import { logger } from '../../logger.js'
 
 const log = logger('WorkflowApi')
+
+const EMPTY_STATS: WorkflowDefStats = { recent: 0, recentFailed: 0, waiting: 0 }
+
+const RUN_STATUSES: ReadonlySet<string> = new Set<WorkflowRunStatus>([
+  'running',
+  'paused_human',
+  'done',
+  'failed',
+  'killed',
+])
 
 const MAX_BODY_BYTES = 256 * 1024
 
@@ -112,16 +134,19 @@ async function readJsonBody(req: IncomingMessage): Promise<Record<string, unknow
   return parsed as Record<string, unknown>
 }
 
-function toRunSummary(run: {
-  id: string
-  workflowId: string
-  status: WorkflowRunSummary['status']
-  startedAt?: string
-  finishedAt?: string
-  current?: string
-  version?: string
-  parent?: { runId: string }
-}): WorkflowRunSummary {
+function toRunSummary(
+  run: {
+    id: string
+    workflowId: string
+    status: WorkflowRunSummary['status']
+    startedAt?: string
+    finishedAt?: string
+    current?: string
+    version?: string
+    parent?: { runId: string }
+  },
+  label?: string,
+): WorkflowRunSummary {
   return {
     id: run.id,
     workflowId: run.workflowId,
@@ -131,12 +156,13 @@ function toRunSummary(run: {
     current: run.current,
     version: run.version,
     parentRunId: run.parent?.runId,
+    ...(label !== undefined ? { label } : {}),
   }
 }
 
-function fromStartResult(result: StartRunResult): WorkflowStartRunResponse {
+function fromStartResult(result: StartRunResult, label?: string): WorkflowStartRunResponse {
   return {
-    run: toRunSummary(result.run),
+    run: toRunSummary(result.run, label),
     suspended: result.suspended,
     suspension: result.suspension,
   }
@@ -197,10 +223,78 @@ export function createWorkflowApiRoutes(opts: WorkflowApiOptions): WorkflowRoute
         // GET /api/workflows
         if (req.method === 'GET' && parts.length === 0) {
           const loaded = await listWorkflowDefs(workflowsRoots, (m) => log.warn(m))
+          const allRuns = await listRuns(caseDirRoot, { limit: Infinity }, (m) => log.warn(m))
+          const stats = summarizeRunsByWorkflow(allRuns)
           const body: WorkflowsListResponse = {
-            workflows: loaded.map((w) => toDefSummary(w, filesRoot)),
+            workflows: loaded.map((w) => ({
+              ...toDefSummary(w, filesRoot),
+              stats: stats.get(w.manifest.id) ?? EMPTY_STATS,
+            })),
+            createRoots: [...creatableRoots(workflowsRoots, filesRoot).keys()],
           }
           return json(res, 200, body)
+        }
+
+        // POST /api/workflows — create (blank or duplicate). Only under a defs
+        // root inside the files root, so the new def is editable in RivetHub.
+        if (req.method === 'POST' && parts.length === 0) {
+          const body = await readJsonBody(req).catch((err: unknown) => {
+            const tooLarge = err instanceof BodyTooLarge
+            json(res, tooLarge ? 413 : 400, {
+              error: (err as Error).message || 'invalid JSON body',
+            })
+            if (tooLarge) res.once('finish', () => req.destroy())
+            return null
+          })
+          if (body === null) return
+          if (
+            body === undefined ||
+            typeof body.id !== 'string' ||
+            typeof body.name !== 'string' ||
+            (body.description !== undefined && typeof body.description !== 'string') ||
+            (body.root !== undefined && typeof body.root !== 'string') ||
+            (body.from !== undefined && typeof body.from !== 'string')
+          ) {
+            return json(res, 400, {
+              error: 'body must be { id, name, description?, root?, from? } (strings)',
+            })
+          }
+          const roots = creatableRoots(workflowsRoots, filesRoot)
+          const rootAbs =
+            body.root !== undefined ? roots.get(body.root) : roots.values().next().value
+          if (!rootAbs) {
+            return json(res, 400, {
+              error:
+                body.root !== undefined
+                  ? `not a creatable workflows root: ${body.root}`
+                  : 'no workflows root sits inside the files root — cannot create here',
+            })
+          }
+          const loaded = await listWorkflowDefs(workflowsRoots, (m) => log.warn(m))
+          if (loaded.some((w) => w.manifest.id === body.id)) {
+            return json(res, 409, { error: `workflow id already in use: ${body.id}` })
+          }
+          let fromDir: string | undefined
+          if (body.from !== undefined) {
+            fromDir = loaded.find((w) => w.manifest.id === body.from)?.dir
+            if (!fromDir) return json(res, 404, { error: `workflow not found: ${body.from}` })
+          }
+          try {
+            const created = await createWorkflowDef({
+              root: rootAbs,
+              id: body.id,
+              name: body.name,
+              description: body.description,
+              fromDir,
+            })
+            const out: WorkflowCreateResponse = { workflow: toDefSummary(created, filesRoot) }
+            return json(res, 201, out)
+          } catch (err) {
+            if (err instanceof WorkflowCreateError) {
+              return json(res, err.code === 'exists' ? 409 : 400, { error: err.message })
+            }
+            throw err
+          }
         }
 
         // POST /api/workflows/:id/runs
@@ -223,6 +317,10 @@ export function createWorkflowApiRoutes(opts: WorkflowApiOptions): WorkflowRoute
               : // Allow top-level fields as input for convenience (excluding control keys)
                 stripControlKeys(body)
 
+          if (body.label !== undefined && typeof body.label !== 'string') {
+            return json(res, 400, { error: 'label must be a string' })
+          }
+
           const userId =
             (typeof body.startedById === 'string' && body.startedById) ||
             opts.resolveUserId?.(req) ||
@@ -240,14 +338,18 @@ export function createWorkflowApiRoutes(opts: WorkflowApiOptions): WorkflowRoute
             throw err
           }
 
+          const label = resolveRunLabel(body.label, def.manifest.runLabel, input)
+
           if (url.searchParams.get('wait') === 'true') {
             try {
-              const result = await opts.engine.startRun(workflowId, input, {
-                type: 'human',
-                id: userId,
-              })
+              const result = await opts.engine.startRun(
+                workflowId,
+                input,
+                { type: 'human', id: userId },
+                { label },
+              )
               notifyGate(opts, result)
-              return json(res, 201, fromStartResult(result))
+              return json(res, 201, fromStartResult(result, label))
             } catch (err) {
               if (err instanceof ContractValidationError) return contractError(res, err)
               if (err instanceof WorkflowNotFoundError) {
@@ -294,7 +396,7 @@ export function createWorkflowApiRoutes(opts: WorkflowApiOptions): WorkflowRoute
           const runId = randomUUID()
           const caseDir = join(caseDirRoot, runId)
           void opts.engine
-            .startRun(workflowId, input, { type: 'human', id: userId }, { runId, caseDir })
+            .startRun(workflowId, input, { type: 'human', id: userId }, { runId, caseDir, label })
             .then((result) => notifyGate(opts, result))
             .catch(async (err: unknown) => {
               const message = err instanceof Error ? err.message : String(err)
@@ -318,6 +420,7 @@ export function createWorkflowApiRoutes(opts: WorkflowApiOptions): WorkflowRoute
               workflowId,
               status: 'running',
               version: def.manifest.version,
+              ...(label !== undefined ? { label } : {}),
             },
             suspended: false,
             detached: true,
@@ -374,7 +477,23 @@ export function createWorkflowApiRoutes(opts: WorkflowApiOptions): WorkflowRoute
           const limit = limitRaw
             ? Math.min(500, Math.max(1, Number.parseInt(limitRaw, 10) || 100))
             : 100
-          const runs = await listRuns(caseDirRoot, { limit }, (m) => log.warn(m))
+          const statusRaw = url.searchParams.get('status')
+          const statuses = statusRaw
+            ? statusRaw
+                .split(',')
+                .map((v) => v.trim())
+                .filter((v): v is WorkflowRunStatus => RUN_STATUSES.has(v))
+            : undefined
+          const runs = await listRuns(
+            caseDirRoot,
+            {
+              limit,
+              workflowId: url.searchParams.get('workflowId') || undefined,
+              statuses,
+              q: url.searchParams.get('q') || undefined,
+            },
+            (m) => log.warn(m),
+          )
           const body: WorkflowRunsListResponse = {
             runs: runs.map((r) => ({
               id: r.id,
@@ -386,6 +505,7 @@ export function createWorkflowApiRoutes(opts: WorkflowApiOptions): WorkflowRoute
               version: r.version,
               nested: r.nested,
               parentRunId: r.parentRunId,
+              ...(r.label !== undefined ? { label: r.label } : {}),
             })),
           }
           return json(res, 200, body)
@@ -399,6 +519,33 @@ export function createWorkflowApiRoutes(opts: WorkflowApiOptions): WorkflowRoute
           try {
             const detail = await loadRunDetail(opts.engine, caseDirRoot, runId)
             return json(res, 200, { run: detail })
+          } catch (err) {
+            if (err instanceof RunNotFoundError) return json(res, 404, { error: err.message })
+            throw err
+          }
+        }
+
+        // PATCH /api/workflow-runs/:id — rename. Label lives in run-meta.json,
+        // so finished (immutable case.json) runs can be renamed too.
+        if (req.method === 'PATCH' && runId && !action) {
+          const body = await readJsonBody(req).catch((err: unknown) => {
+            const tooLarge = err instanceof BodyTooLarge
+            json(res, tooLarge ? 413 : 400, {
+              error: (err as Error).message || 'invalid JSON body',
+            })
+            if (tooLarge) res.once('finish', () => req.destroy())
+            return null
+          })
+          if (body === null) return
+          if (body === undefined || typeof body.label !== 'string') {
+            return json(res, 400, { error: 'body must be { label: string }' })
+          }
+          try {
+            const caseDir = await opts.engine.resolveCaseDir(runId)
+            const caseState = await readCase(caseDir)
+            const label = normalizeRunLabel(body.label)
+            await writeRunMeta(caseDir, label !== undefined ? { label } : {})
+            return json(res, 200, { run: toRunSummary(caseState.run, label) })
           } catch (err) {
             if (err instanceof RunNotFoundError) return json(res, 404, { error: err.message })
             throw err
@@ -494,7 +641,7 @@ export function createWorkflowApiRoutes(opts: WorkflowApiOptions): WorkflowRoute
           }
         }
 
-        if (req.method !== 'GET' && req.method !== 'POST') {
+        if (req.method !== 'GET' && req.method !== 'POST' && req.method !== 'PATCH') {
           return json(res, 405, { error: 'method not allowed' })
         }
         return json(res, 404, { error: `no workflow-runs route for /${rest}` })
@@ -525,10 +672,11 @@ async function loadRunDetail(
   const journal = await readJournal(caseDir)
   const children = await listChildRuns(caseDir, (m) => log.warn(m))
   const open = findOpenGate(journal)
+  const { label } = await readRunMeta(caseDir)
 
   return {
     run: {
-      ...toRunSummary(caseState.run),
+      ...toRunSummary(caseState.run, label),
       caseDir,
       error: caseState.run.error,
       output: caseState.run.output,
@@ -616,6 +764,7 @@ function stripControlKeys(body: Record<string, unknown>): Record<string, unknown
   const out: Record<string, unknown> = { ...body }
   delete out.input
   delete out.startedById
+  delete out.label
   delete out.gateResponse
   return out
 }
@@ -644,6 +793,19 @@ export function editPathForDefDir(
   return rel.split(sep).join('/')
 }
 
+/** Defs roots under the files root, keyed by their files-root-relative path. */
+function creatableRoots(
+  workflowsRoots: string[],
+  filesRoot: string | undefined,
+): Map<string, string> {
+  const out = new Map<string, string>()
+  for (const root of workflowsRoots) {
+    const rel = editPathForDefDir(resolve(root), filesRoot)
+    if (rel !== undefined && !out.has(rel)) out.set(rel, resolve(root))
+  }
+  return out
+}
+
 function toDefSummary(w: LoadedWorkflow, filesRoot: string | undefined): WorkflowDefSummary {
   const editPath = editPathForDefDir(w.dir, filesRoot)
   return {
@@ -655,6 +817,7 @@ function toDefSummary(w: LoadedWorkflow, filesRoot: string | undefined): Workflo
     output: w.manifest.output,
     outline: w.manifest.outline,
     ...(editPath !== undefined ? { editPath } : {}),
+    ...(w.manifest.runLabel !== undefined ? { runLabel: w.manifest.runLabel } : {}),
   }
 }
 

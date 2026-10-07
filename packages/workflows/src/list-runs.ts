@@ -7,6 +7,7 @@ import { readdir, readFile } from 'node:fs/promises'
 import { existsSync } from 'node:fs'
 import { join } from 'node:path'
 import { loadWorkflowDir } from './loader.js'
+import { readRunMeta } from './run-meta.js'
 import type { CaseState, LoadedWorkflow, Run, RunStatus } from './types.js'
 
 export interface RunSummary {
@@ -21,11 +22,19 @@ export interface RunSummary {
   nested?: boolean
   parentRunId?: string
   version?: string
+  /** Display label from run-meta.json. */
+  label?: string
 }
 
 export interface ListRunsOptions {
-  /** Max runs to return (newest first by startedAt). Default 100. */
+  /** Max runs to return (newest first by startedAt), applied after filters. Default 100. */
   limit?: number
+  /** Only runs of this workflow id. */
+  workflowId?: string
+  /** Only runs in one of these statuses. */
+  statuses?: RunStatus[]
+  /** Case-insensitive substring over label, run id, and workflow id. */
+  q?: string
   /**
    * How deep to scan for nested child runs (0 = top-level only).
    * Default 0 for the list endpoint; detail uses listChildRuns.
@@ -49,12 +58,67 @@ export async function listRuns(
   const found: RunSummary[] = []
   await scanRuns(caseDirRoot, depth, 0, found, onWarn, undefined)
 
-  found.sort((a, b) => {
+  const q = opts.q?.trim().toLowerCase()
+  const filtered = found.filter(
+    (r) =>
+      (opts.workflowId === undefined || r.workflowId === opts.workflowId) &&
+      (opts.statuses === undefined || opts.statuses.includes(r.status)) &&
+      (!q ||
+        r.id.toLowerCase().includes(q) ||
+        r.workflowId.toLowerCase().includes(q) ||
+        (r.label?.toLowerCase().includes(q) ?? false)),
+  )
+  filtered.sort((a, b) => {
     const ta = a.startedAt ?? ''
     const tb = b.startedAt ?? ''
     return tb.localeCompare(ta)
   })
-  return found.slice(0, limit)
+  return filtered.slice(0, limit)
+}
+
+export interface WorkflowRunStats {
+  lastRun?: { id: string; status: RunStatus; startedAt?: string; label?: string }
+  /** Runs started within the window. */
+  recent: number
+  /** Of `recent`, how many ended failed. */
+  recentFailed: number
+  /** Runs currently parked at a human gate (any age). */
+  waiting: number
+}
+
+/**
+ * Per-workflow health from a run list. `windowMs` bounds `recent` /
+ * `recentFailed` (default 7 days). Runs without startedAt never count as recent.
+ */
+export function summarizeRunsByWorkflow(
+  runs: RunSummary[],
+  now: number = Date.now(),
+  windowMs: number = 7 * 24 * 60 * 60 * 1000,
+): Map<string, WorkflowRunStats> {
+  const out = new Map<string, WorkflowRunStats>()
+  const since = now - windowMs
+  for (const r of runs) {
+    let s = out.get(r.workflowId)
+    if (!s) {
+      s = { recent: 0, recentFailed: 0, waiting: 0 }
+      out.set(r.workflowId, s)
+    }
+    if (!s.lastRun || (r.startedAt ?? '') > (s.lastRun.startedAt ?? '')) {
+      s.lastRun = {
+        id: r.id,
+        status: r.status,
+        startedAt: r.startedAt,
+        ...(r.label !== undefined ? { label: r.label } : {}),
+      }
+    }
+    const t = r.startedAt ? Date.parse(r.startedAt) : NaN
+    if (!Number.isNaN(t) && t >= since) {
+      s.recent += 1
+      if (r.status === 'failed') s.recentFailed += 1
+    }
+    if (r.status === 'paused_human') s.waiting += 1
+  }
+  return out
 }
 
 /**
@@ -186,7 +250,10 @@ async function readRunSummary(
       onWarn(`listRuns: malformed case.json (missing run.id/workflowId) in ${caseDir}`)
       return null
     }
-    return toSummary(run, caseDir, parentRunId)
+    const { label } = await readRunMeta(caseDir)
+    const summary = toSummary(run, caseDir, parentRunId)
+    if (label !== undefined) summary.label = label
+    return summary
   } catch (err) {
     onWarn(`listRuns: skip ${caseDir}: ${errMsg(err)}`)
     return null
