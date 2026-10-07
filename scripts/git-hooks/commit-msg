@@ -1,14 +1,16 @@
 #!/bin/sh
-# Commit authorship guard — runs after the commit is recorded to verify the
-# author, committer, and Co-authored-by trailers are house identities only
-# (no Cursor, Claude, Dependabot, etc.). Installed via the root `prepare`
-# script setting core.hooksPath=scripts/git-hooks.
+# Commit authorship guard — verifies the pending author, committer, and
+# Co-authored-by trailers are house identities or repository collaborators
+# (no Cursor, Claude, Dependabot, [bot] accounts, etc.). Installed via the
+# root `prepare` script setting core.hooksPath=scripts/git-hooks.
 #
-# This hook runs AFTER commit-msg is written but BEFORE the transaction is
-# finalized, so a rejected commit never becomes part of history.
+# commit-msg runs BEFORE the new object exists, so this must not inspect
+# HEAD (that is still the parent). Identities come from git-var; trailers
+# come from the message file git passes as $1.
 #
 # Bypass (rare): git commit --no-verify
-node "$(git rev-parse --show-toplevel)/scripts/authorship-check.mjs" HEAD || {
+ROOT="$(git rev-parse --show-toplevel)"
+node "$ROOT/scripts/authorship-check.mjs" --pending "$1" || {
   echo "commit-msg: blocked by authorship-check (see above). Override with --no-verify only if certain." >&2
   echo "           To fix: git commit --amend --author='Rivet Philbot <rivetphilbot@gmail.com>' --reset-author" >&2
   exit 1
