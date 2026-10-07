@@ -44,7 +44,7 @@ import {
   isBundledUrl,
   serveDist,
 } from './serve-dist.js'
-import { appMenuTemplate, type AppMenuItem } from './app-menu.js'
+import { appMenuTemplate, installsApplicationMenu, type AppMenuItem } from './app-menu.js'
 import { contextMenuTemplate } from './context-menu.js'
 import { RendererReloadPolicy } from './reload-policy.js'
 import { totalUnread } from './unread.js'
@@ -599,8 +599,9 @@ function startup(): void {
   // FIRST, before anything that can throw: with the menu left at Electron's
   // default, every keydown round-trips the main-process accelerator matcher
   // — the den-xterm typing lag fixed in #566. A startup fault later in this
-  // function must not resurrect it.
-  if (process.platform === 'win32') Menu.setApplicationMenu(null)
+  // function must not resurrect it. Linux pays the same tax (the bar is
+  // hidden there anyway); only macOS keeps a menu.
+  if (!installsApplicationMenu(process.platform)) Menu.setApplicationMenu(null)
 
   // Packaged: serve the web dist from memory. The AppImage extraction dir
   // can be deleted out from under a running app (a second launch of the
@@ -708,12 +709,12 @@ function startup(): void {
     logFault('tray', err instanceof Error ? (err.stack ?? err.message) : err)
   }
 
-  // Application menu — accelerators for Linux/macOS (bar hidden off darwin).
-  // win32 nulled the menu at the top of startup(): menu accelerators put
-  // per-keystroke work on the main-process input path (#566); the tray keeps
-  // Show / New Window / Quit and the renderer forwards window chords over
-  // rivetShell (rivethub-web lib/shell-keys.ts).
-  if (process.platform !== 'win32') {
+  // Application menu — macOS only. Linux and win32 nulled it at the top of
+  // startup(): menu accelerators put per-keystroke work on the main-process
+  // input path (#566). The tray keeps Show / New Window / Quit and the
+  // renderer forwards window chords over rivetShell
+  // (rivethub-web lib/shell-keys.ts).
+  if (installsApplicationMenu(process.platform)) {
     const mapMenuItem = (item: AppMenuItem): MenuItemConstructorOptions => {
       const { action, submenu, ...rest } = item
       const out = rest as MenuItemConstructorOptions

@@ -1,21 +1,25 @@
 /**
- * Window-management chords for the Electron shell on WINDOWS ONLY: the shell
- * installs no application menu there (menu accelerators put per-keystroke
+ * Window-management chords for the Electron shell on Windows and Linux. Those
+ * platforms install no application menu (menu accelerators put per-keystroke
  * work on the main-process input path — terminal typing lag), so the chords
- * are handled here and forwarded over rivetShell. Linux/macOS keep the
- * accelerator-bearing menu, which consumes these combos in main — installing
- * here too would double-fire. Capture phase so a focused xterm cannot
- * swallow them; none of these are terminal keys (plain Ctrl+Q/R/F are
- * deliberately not bound). A chord is claimed ONLY when the shell method
- * exists — a newer dist on an older shell must let the key fall through,
- * not eat it.
+ * are handled here and forwarded over rivetShell. macOS keeps the menu, which
+ * consumes these combos in main — installing here too would double-fire.
+ * Capture phase so a focused xterm cannot swallow them; none of these are
+ * terminal keys (plain Ctrl+Q/R/F are deliberately not bound; Ctrl+Q is XON).
+ * A chord is claimed ONLY when the shell method exists — a newer dist on an
+ * older shell must let the key fall through, not eat it.
  */
 
 import { rivetShell } from './shell-bridge.js'
 
+/** Platforms whose application menu is nulled. Darwin keeps the menu. */
+export function shellKeysForPlatform(platform: string | undefined): boolean {
+  return platform === 'win32' || platform === 'linux'
+}
+
 export function installShellKeys(): void {
   const shell = rivetShell()
-  if (!shell || shell.platform !== 'win32') return
+  if (!shell || !shellKeysForPlatform(shell.platform)) return
   window.addEventListener(
     'keydown',
     (e) => {
