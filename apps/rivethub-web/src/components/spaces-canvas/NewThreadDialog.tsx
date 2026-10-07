@@ -31,6 +31,7 @@ import {
   resolveRosterNode,
   type PromptAgent,
   type SpaceRosterAgent,
+  canStartThread,
 } from './new-thread.js'
 import { startsInDirectory } from './space-defaults.js'
 
@@ -125,7 +126,11 @@ export function NewThreadDialog(props: {
   const directory = agents.find((row) => row.id === agentId)?.directory
   const startsIn = startsInDirectory(directory)
 
+  // Same guard as the Start button: Enter must not start before the space's
+  // defaults are seeded (an unseeded start would ignore the preset's node).
+  const canStart = canStartThread({ prompt, target, seedReady })
   const start = (): void => {
+    if (!canStart) return
     const id = applyChooser({
       type: 'prompt',
       prompt,
@@ -264,7 +269,7 @@ export function NewThreadDialog(props: {
             </button>
             <button
               type="button"
-              disabled={!prompt.trim() || !target || !seedReady}
+              disabled={!canStart}
               onClick={start}
               className="bg-em-dim px-3 py-1.5 text-xs font-medium text-bg hover:bg-em disabled:opacity-40"
             >

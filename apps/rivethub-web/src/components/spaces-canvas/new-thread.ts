@@ -299,3 +299,16 @@ export function applyChooser(action: ChooserAction): string | undefined {
   useChat.getState().enqueueOutbound(id, text)
   return id
 }
+
+/**
+ * Whether the chooser's Prompt path may start. Shared by the Start button and
+ * Enter in the prompt box, so a keyboard start can never skip the seeding
+ * guard (an unseeded start would ignore the space's preset and node).
+ */
+export function canStartThread(input: {
+  prompt: string
+  target: string | undefined
+  seedReady: boolean
+}): boolean {
+  return input.prompt.trim().length > 0 && Boolean(input.target) && input.seedReady
+}

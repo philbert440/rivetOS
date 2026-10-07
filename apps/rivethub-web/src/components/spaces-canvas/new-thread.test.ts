@@ -27,6 +27,7 @@ import {
   initialThreadFields,
   resolveRosterNode,
   startThreadInSpace,
+  canStartThread,
 } from './new-thread.js'
 import { buildCanvasRegions } from './canvas-regions.js'
 import { defaultAgentChip, directoryBasename } from './space-defaults.js'
@@ -559,5 +560,14 @@ describe('resolveRosterNode', () => {
     )
     expect(resolveRosterNode(hub, hub, roster)).toEqual({ node: hub, unavailable: undefined })
     expect(resolveRosterNode(undefined, hub, roster).node).toBe(hub)
+  })
+})
+
+describe('canStartThread', () => {
+  it('refuses until the space defaults are seeded, whatever the caller', () => {
+    expect(canStartThread({ prompt: 'ship it', target: 'sp1', seedReady: false })).toBe(false)
+    expect(canStartThread({ prompt: 'ship it', target: 'sp1', seedReady: true })).toBe(true)
+    expect(canStartThread({ prompt: '   ', target: 'sp1', seedReady: true })).toBe(false)
+    expect(canStartThread({ prompt: 'ship it', target: undefined, seedReady: true })).toBe(false)
   })
 })
