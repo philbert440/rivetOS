@@ -344,6 +344,24 @@ describe('ChatLoopExecutor specifics', () => {
     expect(result.error).toBe('could not')
   })
 
+  it('a turn that only surfaces a provider error fails the task', async () => {
+    const provider = makeMockProvider({
+      id: 'mock',
+      chunks: [{ type: 'error', error: 'x-api-key header is required' }],
+    })
+    const router = {
+      getAgents: () => [{ id: 'conformance-agent', name: 'conformance-agent', provider: 'mock' }],
+      getProviders: () => [provider],
+    } as unknown as Router
+    const executor = createChatLoopExecutor(makeConfig({ router }))
+    const result = await executor.start(makeConformanceSpec(), {
+      signal: new AbortController().signal,
+    }).result
+    expect(result.verdict).toBe('failed')
+    expect(result.error).toBe('x-api-key header is required')
+    expect(result.output).toBeUndefined()
+  })
+
   it('no fence → phase-1 fallback shape (whole response as summary)', async () => {
     const executor = createChatLoopExecutor(makeConfig())
     const result = await executor.start(makeConformanceSpec(), {

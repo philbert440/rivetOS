@@ -332,6 +332,7 @@ describe('AgentLoop', () => {
       `Expected error in response, got: "${result.response}"`,
     )
     assert.ok(result.response.startsWith('⚠️'), 'Error response should start with warning emoji')
+    assert.ok(result.error?.includes('timed out'), 'Error-only turn should set result.error')
     assert.equal(result.aborted, false)
     assert.ok(events.some((e) => e.type === 'error'))
   })

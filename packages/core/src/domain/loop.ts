@@ -142,6 +142,12 @@ export interface TurnResult {
   usage?: { promptTokens: number; completionTokens: number }
   /** Whether the user injected a steer message during this turn */
   hadSteer?: boolean
+  /**
+   * Set when the turn produced no text and `response` is only the surfaced
+   * provider error. Chat shows the `⚠️` response as-is; task executors use
+   * this to fail the task instead of treating the error as the answer.
+   */
+  error?: string
 }
 
 // ---------------------------------------------------------------------------
@@ -357,6 +363,7 @@ export class AgentLoop {
       response: string
       aborted: boolean
       partialResponse?: string
+      error?: string
     }): TurnResult => ({
       response: over.response,
       toolsUsed: state.toolsUsed,
@@ -365,6 +372,7 @@ export class AgentLoop {
       ...(over.partialResponse !== undefined ? { partialResponse: over.partialResponse } : {}),
       usage: state.totalUsage,
       hadSteer: state.hadSteer,
+      ...(over.error !== undefined ? { error: over.error } : {}),
     })
 
     try {
@@ -482,8 +490,11 @@ export class AgentLoop {
     }
 
     // Normal finish: prefer text, fall back to lastError, then empty.
-    const finalResponse = textContent.trim() || (lastError ? `⚠️ ${lastError}` : '')
-    return makeTurnResult({ response: finalResponse, aborted: false })
+    const text = textContent.trim()
+    if (!text && lastError) {
+      return makeTurnResult({ response: `⚠️ ${lastError}`, aborted: false, error: lastError })
+    }
+    return makeTurnResult({ response: text, aborted: false })
   }
 
   // -----------------------------------------------------------------------

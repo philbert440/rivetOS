@@ -336,6 +336,13 @@ async function runTask(
         break
       }
 
+      // A turn whose only output is a provider error (bad key, rate limit,
+      // network) must not complete the task with the error text as its
+      // answer — callers such as workflow agent steps would consume it as data.
+      if (turn.error !== undefined) {
+        return fail(turn.error)
+      }
+
       lastResponse = turn.response
       history.push(
         { role: 'user', content: message },
