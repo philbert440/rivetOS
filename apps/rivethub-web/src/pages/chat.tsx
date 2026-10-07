@@ -99,7 +99,6 @@ import { SessionErrorBoundary } from '../components/session-error-boundary.js'
 import { HarnessApprovalCard } from '../components/harness-approval-card.js'
 import { isAskUserTool, questionsFromLiveTools } from '../lib/ask-user.js'
 import { accentFor, sameLabel } from '../lib/agent-accent.js'
-import { attachHarnessSession } from '../lib/harness-attach.js'
 import { statusActivity } from '../lib/harness-fold.js'
 import { deriveReplyWait, nextWaitClock, type ReplyWaitClock } from '../lib/harness-turns.js'
 import { createPtyEnsurer } from '../lib/pty-ensure.js'
@@ -145,6 +144,9 @@ import { discardDraft } from '../lib/discard-session.js'
 import { shouldCloseHistoryOnSelect } from '../lib/drawer-selection.js'
 import { narrowLaunchTarget } from '../lib/launch-session.js'
 import { useSessionView } from '../lib/use-session-view.js'
+import { useSessionStream } from '../lib/use-session-stream.js'
+import { SpacesCanvas } from '../components/spaces-canvas/SpacesCanvas.js'
+import { useConversationView } from '../stores/conversation-view.js'
 
 /** Stable empty array for zustand selectors — `?? []` inside a selector
  *  allocates a new [] every run when the key is missing, which zustand treats
@@ -384,6 +386,13 @@ export function ChatPage(): JSX.Element {
     }
     return sortByRecency(listed)
   }, [baseItems, drafts, pinVersion, houseTick, active, queryClient])
+  const blockedIds = useMemo(() => {
+    const ids = new Set<string>()
+    for (const summary of planeQuery.data ?? []) {
+      if (summary.blocked) ids.add(summary.sessionId)
+    }
+    return ids
+  }, [planeQuery.data])
   const setActive = useChat((s) => s.setActive)
   const addDraft = useChat((s) => s.addDraft)
   const clearLastActive = useChat((s) => s.clearLastActive)
@@ -394,6 +403,7 @@ export function ChatPage(): JSX.Element {
   const historyOpen = useSidebarPrefs((s) => s.historyOpen)
   const setHistoryOpen = useSidebarPrefs((s) => s.setHistoryOpen)
   const narrow = useIsNarrow()
+  const canvasEnabled = useConversationView((s) => s.canvasEnabled)
   // Bidirectional ?session= sync. One effect, one direction at a time,
   // arbitrated by lastUrlRef so the two never fight:
   //   - URL changed (first load, deep link, back/forward) → URL wins. A
@@ -558,6 +568,27 @@ export function ChatPage(): JSX.Element {
     return () => window.removeEventListener('resize', onResize)
   }, [])
 
+  const summaryReady =
+    !harnessQuery.isPending &&
+    !harnessQuery.isError &&
+    harnessQuery.data !== undefined &&
+    (!descriptors?.length ||
+      (!planeQuery.isPending && !planeQuery.isError && planeQuery.data !== undefined))
+  const renderThread = (id: string): JSX.Element => {
+    const row = findChatItem(items, id)
+    return (
+      <SessionErrorBoundary key={id} sessionId={id} onClose={() => setActive(undefined)}>
+        <ActiveSession
+          sessionId={id}
+          item={row}
+          gate={harnessGate(row, descriptors)}
+          summaryReady={summaryReady}
+          harnessCommand={row?.command}
+        />
+      </SessionErrorBoundary>
+    )
+  }
+
   if (!connected) {
     return (
       <>
@@ -572,6 +603,22 @@ export function ChatPage(): JSX.Element {
   // .
   const showList = !narrow && !conversationsCollapsed
   const showEmpty = !narrow && !active
+  // Canvas is desktop-only. Narrow keeps the existing session surface, and
+  // the flag defaults off so this branch is not taken for today's layout.
+  if (canvasEnabled && !narrow) {
+    return (
+      <div className="flex h-full min-h-0">
+        <SpacesCanvas
+          rows={items}
+          activeId={active}
+          blockedIds={blockedIds}
+          descriptors={descriptors}
+          onOpen={(id) => setActive(id)}
+          renderThread={renderThread}
+        />
+      </div>
+    )
+  }
 
   return (
     <div className="flex h-full min-h-0">
@@ -606,13 +653,7 @@ export function ChatPage(): JSX.Element {
             sessionId={active}
             item={activeItem}
             gate={gate}
-            summaryReady={
-              !harnessQuery.isPending &&
-              !harnessQuery.isError &&
-              harnessQuery.data !== undefined &&
-              (!descriptors?.length ||
-                (!planeQuery.isPending && !planeQuery.isError && planeQuery.data !== undefined))
-            }
+            summaryReady={summaryReady}
             harnessCommand={activeItem?.command}
           />
         </SessionErrorBoundary>
@@ -1418,7 +1459,15 @@ function ActiveSession(props: {
   // Otherwise: the legacy push-synced watch. The server watches the on-disk
   // store and pushes turn deltas over the sessions WS; the store applies them.
   const streamId = gate.stream ? canonicalId : undefined
-  const [streamError, setStreamError] = useState<string | undefined>()
+  // Same watch/attach the space minis use, ref-counted so a mini and this
+  // view share one socket. Sinks and cleanup live in use-session-stream.ts.
+  const { streamError, setStreamError } = useSessionStream({
+    sessionId: props.sessionId,
+    item,
+    streamId,
+    isRemote,
+    sessionBase,
+  })
   // The inject button's last send queued Esc ahead of the paste (den `dismissedDialog`).
   const [dialogDismissedAt, setDialogDismissedAt] = useState<number | undefined>()
   useEffect(() => {
@@ -1427,90 +1476,6 @@ function ActiveSession(props: {
     const timer = setTimeout(() => setDialogDismissedAt(undefined), remaining)
     return () => clearTimeout(timer)
   }, [dialogDismissedAt])
-  useEffect(() => {
-    if (streamId === undefined) {
-      // The legacy watch rides the GLOBAL sessions socket, which only carries
-      // this node's frames — a cross-node thread would watch the wrong node,
-      // so it waits for its remote summary to open the control-plane path
-      // (backfill renders history meanwhile).
-      if (isRemote) return
-      useChat.getState().watchTranscript(props.sessionId)
-      return () => useChat.getState().unwatchTranscript(props.sessionId)
-    }
-    let disposed = false
-    let attachment: ReturnType<typeof attachHarnessSession> | undefined
-    useChat.getState().bindHarness(props.sessionId, item?.harnessId ?? 'harness')
-    void sessionGateway().then((gw) => {
-      if (disposed) return
-      attachment = attachHarnessSession({
-        gateway: gw,
-        sessionId: streamId,
-        onResync: (turns, ctx) =>
-          useChat.getState().syncHarnessTranscript(props.sessionId, turns, ctx),
-        onTranscript: (ev) => useChat.getState().applyHarnessTranscriptEvent(props.sessionId, ev),
-        onAgentStatus: (ev) => {
-          useChat.getState().applyAgentStatus(props.sessionId, ev)
-          if (ev.status === 'working') outboundPumpFor(props.sessionId).pump.onBusy()
-        },
-        onPrompt: (ev) => useChat.getState().applyPromptEvent(props.sessionId, ev),
-        onControlReset: () => useChat.getState().clearHarnessPrompts(props.sessionId),
-        onLive: (turn, reason) => {
-          // A snapshot resets the overlay, not the in-flight send generation.
-          if (reason === 'resync') {
-            useChat.getState().clearLive(props.sessionId)
-            return
-          }
-          if (!turn) clearAcceptedReply()
-          useChat.getState().setLive(props.sessionId, turn)
-        },
-        onApproval: (event) => useChat.getState().applyApprovalEvent(props.sessionId, event),
-        onTurnComplete: () => {
-          clearAcceptedReply()
-          outboundPumpFor(props.sessionId).pump.onIdle()
-        },
-        onSessionUpdated: () => {
-          void queryClient.invalidateQueries({
-            queryKey: ['remote-session', sessionBase, props.sessionId],
-          })
-        },
-        liveSource: () =>
-          useChat.getState().liveSource[useChat.getState().resolveSessionKey(props.sessionId)],
-        onError: (err) => {
-          clearAcceptedReply()
-          setStreamError(err instanceof Error ? err.message : String(err))
-        },
-        // Terminal: the attachment has already stopped itself, so say so plainly
-        // instead of leaving a banner that looks like it might clear.
-        onFatal: (message) => {
-          outboundPumpFor(props.sessionId).pump.onDeliveryLost()
-          outboundPumpFor(props.sessionId).closeObserver()
-          clearAcceptedReply()
-          useChat.getState().setLive(props.sessionId, undefined)
-          setStreamError(`${message} — this session is no longer attachable`)
-        },
-        onStatus: (status) => {
-          if (status === 'open') setStreamError(undefined)
-        },
-      })
-    })
-    return () => {
-      disposed = true
-      attachment?.close()
-      useChat.getState().unbindHarness(props.sessionId)
-    }
-    // epochForNode: enrolling mid-run swaps transports; the attach snapshots
-    // its gateway, so it must tear down and rebind on the new pipe.
-  }, [
-    props.sessionId,
-    streamId,
-    item?.harnessId,
-    epochForNode,
-    isRemote,
-    sessionGateway,
-    sessionBase,
-    queryClient,
-    clearAcceptedReply,
-  ])
   const transcript = useChat((s) => s.transcripts[s.resolveSessionKey(props.sessionId)])
   const storeHasTurns = (transcript?.turns.length ?? 0) > 0
   // Backfill gate: bindHarness seeds rev 0; the first transcript frame bumps

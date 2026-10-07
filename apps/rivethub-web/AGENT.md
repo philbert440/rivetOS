@@ -282,6 +282,38 @@ Design: `docs/MICBRIDGE.md`. den-server opt-in `RIVETOS_DEN_AUDIO=1` exposes
 voice sees a recorder without `/dev/snd`. **Hub capture client is Phase 2**
 (global Ctrl+Space → stream to active node). Gateway helper: `audioMicWsUrl()`.
 
+## Spaces canvas (slice 1)
+
+Desktop-only zoomable conversations surface (`src/components/spaces-canvas/`).
+Three altitudes: **Everything** (cards), **Space** (live read-only minis of
+each thread), **Thread** (the existing `ActiveSession` at 100% zoom inside
+the expanded tile). This slice has one implicit region, "Unplaced", holding
+every drawer row. Spaces store, history, and drag are not in this slice.
+
+The per-session watch/attach lives in `src/lib/use-session-stream.ts`
+(`useSessionStream` / `bindSessionStream`). It is ref-counted per session
+signature. A space mini and the focused `ActiveSession` for the same session
+share one watch or one harness attach; the mini stays mounted until the fly
+lands and the thread has acquired the lease, so the socket survives the
+mini→focus handoff. Harness-bound minis use that same attach — there is no
+HTTP backfill fallback. `ActiveSession` calls the same hook.
+
+`ActiveSession` mounts only for the focused tile, only after the camera fly
+lands (`onLand`), and unmounts when the altitude leaves Thread. Opening a
+tile sets `?session=` through the existing chat route search.
+
+The canvas replaces the drawer + split + session column only when
+`canvasEnabled` is on (Settings → "Spaces canvas (preview)", persisted,
+default **off**) and the viewport is at least 768px. Narrow keeps today's
+list/thread UI. With the flag off, the desktop layout is unchanged.
+
+Keys (capture phase, `lib/hub-keys.ts`, dialog guard, no auto-repeat):
+Ctrl+Space toggles Thread ↔ Space (from Everything, into the selection);
+Ctrl+0 frames Everything. At Space and Everything only: arrows / h j k l
+move the selection, Enter opens, Esc steps out one level. At Thread every
+other key, including Esc, is left for the focused session. Ctrl+Space is
+the way out of Thread.
+
 ## Gotchas
 
 - Tauri origin is not http(s) — desktop starts unconfigured until a node is set.
