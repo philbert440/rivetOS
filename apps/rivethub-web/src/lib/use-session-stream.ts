@@ -11,9 +11,11 @@
  *
  * The pool key is the resolved session id (`resolveSessionKey`) plus the
  * stream signature, not the raw view id. A rekey moves that lease onto the
- * new id and keeps one attachment. Stopping a lease never unwatches or
- * unbinds a key that a held lease of the same kind still owns, and a
- * superseded lease's in-flight gateway promise does not attach.
+ * new id and keeps one attachment. A different stream for the same resolved
+ * session closes the other socket. Stopping a lease never unwatches or
+ * unbinds a key that another lease of the same kind, held or idle, still
+ * owns. A superseded promise cannot attach, and a promise cannot replace a
+ * socket the surviving lease already holds.
  *
  * A signature change (stream id, node, harness, transport epoch) is a
  * different lease. Gaining a stream id retires the legacy watch for that
@@ -142,8 +144,10 @@ function signatureKey(
 }
 
 function report(lease: Lease, message: string | undefined): void {
-  lease.error = message
-  for (const listener of lease.listeners) listener(message)
+  const current = activeLease(lease)
+  if (!current) return
+  current.error = message
+  for (const listener of current.listeners) listener(message)
 }
 
 function currentLease(lease: Lease): Lease {
@@ -156,11 +160,21 @@ function currentLease(lease: Lease): Lease {
   return cursor
 }
 
-/** A held lease of this kind still owns the resolved id, so stop must not clear it. */
+/** The lease readers should hear. Undefined once it has been retired. */
+function activeLease(lease: Lease): Lease | undefined {
+  const current = currentLease(lease)
+  return current.superseded ? undefined : current
+}
+
+function liveIdentity(lease: Lease): string | undefined {
+  return activeLease(lease)?.identity
+}
+
+/** Another lease of this kind still owns the resolved id, held or idle. */
 function heldSameMode(identity: string, mode: 'watch' | 'attach', except: Lease): boolean {
   const resolved = resolvedId(identity)
   for (const other of leases.values()) {
-    if (other === except || other.superseded || other.refs <= 0 || other.mode !== mode) continue
+    if (other === except || other.superseded || other.mode !== mode) continue
     if (resolvedId(other.identity) !== resolved) continue
     if (mode === 'watch' && !other.watched) continue
     if (mode === 'attach' && !other.bound) continue
@@ -243,6 +257,32 @@ function retireWatches(identity: string): void {
   }
 }
 
+function sameStreamSignature(a: Lease, b: Lease): boolean {
+  return (
+    (a.streamId ?? '') === (b.streamId ?? '') &&
+    a.isRemote === b.isRemote &&
+    a.sessionBase === b.sessionBase &&
+    (a.harnessId ?? '') === (b.harnessId ?? '') &&
+    a.transportEpoch === b.transportEpoch
+  )
+}
+
+/**
+ * One socket per resolved session. The lease that just attached, or that was
+ * just re-pointed onto this id, closes every other stream. A watch (no
+ * stream id) must not take down an attach.
+ */
+function retireDifferentSignatures(keeper: Lease): void {
+  if (keeper.streamId === undefined) return
+  const resolved = resolvedId(keeper.identity)
+  for (const other of [...leases.values()]) {
+    if (other === keeper || other.superseded) continue
+    if (resolvedId(other.identity) !== resolved) continue
+    if (sameStreamSignature(other, keeper)) continue
+    retire(other)
+  }
+}
+
 /**
  * True when this lease was released and a newer lease owns the same stream,
  * so its gateway promise must not open a second socket.
@@ -308,48 +348,84 @@ function startLease(args: LeaseArgs, key: string): Lease {
     .then((gw) => {
       if (gen !== lease.attachGen || lease.superseded) return
       if (leases.get(lease.key) !== lease) return
+      // Folding may have handed this lease a live socket. Do not open another.
+      if (lease.attachment) return
       if (blockedAttach(lease)) return
       lease.attachment = attachHarnessSession({
         gateway: gw,
         sessionId: streamId,
-        onResync: (turns, ctx) =>
-          useChat.getState().syncHarnessTranscript(lease.identity, turns, ctx),
-        onTranscript: (ev) => useChat.getState().applyHarnessTranscriptEvent(lease.identity, ev),
-        onAgentStatus: (ev) => {
-          useChat.getState().applyAgentStatus(lease.identity, ev)
-          if (ev.status === 'working') outboundPumpFor(lease.identity).pump.onBusy()
+        onResync: (turns, ctx) => {
+          const identity = liveIdentity(lease)
+          if (identity === undefined) return
+          useChat.getState().syncHarnessTranscript(identity, turns, ctx)
         },
-        onPrompt: (ev) => useChat.getState().applyPromptEvent(lease.identity, ev),
-        onControlReset: () => useChat.getState().clearHarnessPrompts(lease.identity),
+        onTranscript: (ev) => {
+          const identity = liveIdentity(lease)
+          if (identity === undefined) return false
+          return useChat.getState().applyHarnessTranscriptEvent(identity, ev)
+        },
+        onAgentStatus: (ev) => {
+          const identity = liveIdentity(lease)
+          if (identity === undefined) return
+          useChat.getState().applyAgentStatus(identity, ev)
+          if (ev.status === 'working') outboundPumpFor(identity).pump.onBusy()
+        },
+        onPrompt: (ev) => {
+          const identity = liveIdentity(lease)
+          if (identity === undefined) return
+          useChat.getState().applyPromptEvent(identity, ev)
+        },
+        onControlReset: () => {
+          const identity = liveIdentity(lease)
+          if (identity === undefined) return
+          useChat.getState().clearHarnessPrompts(identity)
+        },
         onLive: (turn, reason) => {
+          const identity = liveIdentity(lease)
+          if (identity === undefined) return
           if (reason === 'resync') {
-            useChat.getState().clearLive(lease.identity)
+            useChat.getState().clearLive(identity)
             return
           }
-          if (!turn) useChat.getState().clearAcceptedReply(lease.identity)
-          useChat.getState().setLive(lease.identity, turn)
+          if (!turn) useChat.getState().clearAcceptedReply(identity)
+          useChat.getState().setLive(identity, turn)
         },
-        onApproval: (event) => useChat.getState().applyApprovalEvent(lease.identity, event),
+        onApproval: (event) => {
+          const identity = liveIdentity(lease)
+          if (identity === undefined) return
+          useChat.getState().applyApprovalEvent(identity, event)
+        },
         onTurnComplete: () => {
-          useChat.getState().clearAcceptedReply(lease.identity)
-          outboundPumpFor(lease.identity).pump.onIdle()
+          const identity = liveIdentity(lease)
+          if (identity === undefined) return
+          useChat.getState().clearAcceptedReply(identity)
+          outboundPumpFor(identity).pump.onIdle()
         },
         onSessionUpdated: () => {
+          const identity = liveIdentity(lease)
+          if (identity === undefined) return
           void args.queryClient.invalidateQueries({
-            queryKey: ['remote-session', args.sessionBase, lease.identity],
+            queryKey: ['remote-session', args.sessionBase, identity],
           })
         },
-        liveSource: () =>
-          useChat.getState().liveSource[useChat.getState().resolveSessionKey(lease.identity)],
+        liveSource: () => {
+          const identity = liveIdentity(lease)
+          if (identity === undefined) return undefined
+          return useChat.getState().liveSource[useChat.getState().resolveSessionKey(identity)]
+        },
         onError: (err) => {
-          useChat.getState().clearAcceptedReply(lease.identity)
+          const identity = liveIdentity(lease)
+          if (identity !== undefined) useChat.getState().clearAcceptedReply(identity)
           report(lease, err instanceof Error ? err.message : String(err))
         },
         onFatal: (message) => {
-          outboundPumpFor(lease.identity).pump.onDeliveryLost()
-          outboundPumpFor(lease.identity).closeObserver()
-          useChat.getState().clearAcceptedReply(lease.identity)
-          useChat.getState().setLive(lease.identity, undefined)
+          const identity = liveIdentity(lease)
+          if (identity !== undefined) {
+            outboundPumpFor(identity).pump.onDeliveryLost()
+            outboundPumpFor(identity).closeObserver()
+            useChat.getState().clearAcceptedReply(identity)
+            useChat.getState().setLive(identity, undefined)
+          }
           report(lease, `${message} — this session is no longer attachable`)
         },
         onStatus: (status) => {
@@ -364,8 +440,12 @@ function startLease(args: LeaseArgs, key: string): Lease {
   return lease
 }
 
-function foldLease(keep: Lease, drop: Lease): void {
-  if (keep === drop || drop.superseded) return
+function foldLease(preferred: Lease, incoming: Lease): void {
+  if (preferred === incoming || incoming.superseded || preferred.superseded) return
+  // The open socket is the survivor. Listeners move onto it; the other
+  // lease's pending gateway promise is cancelled so it cannot attach again.
+  const keep = incoming.attachment && !preferred.attachment ? incoming : preferred
+  const drop = keep === preferred ? incoming : preferred
   keep.refs += drop.refs
   for (const listener of drop.listeners) keep.listeners.add(listener)
   if (drop.error !== undefined && keep.error === undefined) keep.error = drop.error
@@ -378,11 +458,8 @@ function foldLease(keep: Lease, drop: Lease): void {
     clearTimeout(drop.idleTimer)
     drop.idleTimer = undefined
   }
-  if (drop.attachment && !keep.attachment) {
-    keep.attachment = drop.attachment
-    drop.attachment = undefined
-  } else {
-    drop.attachment?.close()
+  if (drop.attachment) {
+    drop.attachment.close()
     drop.attachment = undefined
   }
   if (drop.bound && !keep.bound) {
@@ -393,14 +470,17 @@ function foldLease(keep: Lease, drop: Lease): void {
     keep.watched = true
     if (keep.mode === 'none') keep.mode = 'watch'
     if (keep.watchedIdentity === undefined) keep.watchedIdentity = drop.watchedIdentity
-  } else if (drop.watched && keep.mode === 'attach') {
+  } else if (drop.watched) {
     drop.watched = false
-    useChat.getState().unwatchTranscript(drop.identity)
+    if (!heldSameMode(drop.identity, 'watch', drop)) {
+      useChat.getState().unwatchTranscript(drop.identity)
+    }
   }
   drop.bound = false
   drop.watched = false
   drop.mode = 'none'
   if (leases.get(drop.key) === drop) leases.delete(drop.key)
+  leases.set(keep.key, keep)
 }
 
 function migrateIdentity(from: string, to: string): void {
@@ -416,7 +496,10 @@ function migrateIdentity(from: string, to: string): void {
     lease.key = nextKey
     const existing = leases.get(nextKey)
     if (existing && existing !== lease) foldLease(existing, lease)
-    else leases.set(nextKey, lease)
+    else {
+      leases.set(nextKey, lease)
+      retireDifferentSignatures(lease)
+    }
   }
 }
 
@@ -424,21 +507,33 @@ function migrateIdentity(from: string, to: string): void {
 export function bindSessionStream(args: LeaseArgs): () => void {
   const key = streamKey(args)
   let lease = leases.get(key)
+  let reacquired = false
   if (!lease) {
     lease = startLease(args, key)
     leases.set(key, lease)
+    // In the map first, so the retired peer sees this binding and does not
+    // unbind the session out from under the socket we just started.
+    if (lease.mode === 'attach') retireDifferentSignatures(lease)
   } else if (lease.idleTimer !== undefined) {
     // Re-acquire of an idle-warm lease: keep the live attach.
+    reacquired = true
     clearTimeout(lease.idleTimer)
     lease.idleTimer = undefined
     lease.releasedOrder = 0
   }
-  // rekey drops the store's watch on the old id. The lease object survives;
-  // the next acquire re-watches the id it resolves to now.
-  if (lease.mode === 'watch' && lease.watchedIdentity !== lease.identity) {
+  // A sibling expiry or rekey can clear the store while this lease still
+  // thinks it owns the binding. watchTranscript is idempotent. bindHarness
+  // resets the live floor, so it runs only when the store binding is gone.
+  if (lease.mode === 'watch' && (reacquired || lease.watchedIdentity !== lease.identity)) {
     useChat.getState().watchTranscript(lease.identity)
     lease.watchedIdentity = lease.identity
     lease.watched = true
+  } else if (
+    lease.mode === 'attach' &&
+    !useChat.getState().harnessBound[resolvedId(lease.identity)]
+  ) {
+    useChat.getState().bindHarness(lease.identity, lease.harnessId ?? 'harness')
+    lease.bound = true
   }
   lease.refs += 1
   lease.listeners.add(args.onStreamError)

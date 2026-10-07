@@ -6,7 +6,16 @@
  * recency update cannot move the focused tile out from under the fly.
  */
 
-import { useEffect, useMemo, useRef, useState, type JSX, type ReactNode } from 'react'
+import {
+  cloneElement,
+  isValidElement,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type JSX,
+  type ReactNode,
+} from 'react'
 import { useQueryClient } from '@tanstack/react-query'
 import type { HarnessDescriptor } from '@rivetos/types'
 import type { ChatItem } from '../../lib/harness-chat.js'
@@ -98,6 +107,30 @@ export function SpacesCanvas(props: {
   const frozenKeys = useRef<string[] | null>(null)
   const openingHold = useRef<(() => void) | undefined>(undefined)
   const queryClient = useQueryClient()
+  // First id we rendered for an alias chain. A rekey changes row.key; the
+  // React key must not, or Tile and ActiveSession remount under the user.
+  const renderKeys = useRef(new Map<string, string>())
+  const stableKey = (rowKey: string): string => {
+    const resolve = useChat.getState().resolveSessionKey
+    const resolved = resolve(rowKey)
+    const known = renderKeys.current.get(resolved)
+    if (known !== undefined) return known
+    for (const [previous, stable] of renderKeys.current) {
+      if (resolve(previous) === resolved) {
+        renderKeys.current.set(resolved, stable)
+        return stable
+      }
+    }
+    renderKeys.current.set(resolved, rowKey)
+    return rowKey
+  }
+  const holdOpening = (id: string): void => {
+    const row = rows.find((item) => item.key === id)
+    const next = row ? holdTileLease(row, descriptors, queryClient) : undefined
+    const previous = openingHold.current
+    openingHold.current = next
+    if (previous) previous()
+  }
 
   if (
     rows.length > 0 &&
@@ -132,6 +165,10 @@ export function SpacesCanvas(props: {
       setOpenId(activeId)
       setSelectedId(activeId)
       if (!sameThread) {
+        // Same hold as a click. This commit unmounts every mini; without a
+        // ref the opening lease can be the oldest idle one and get evicted
+        // before ActiveSession acquires on landing.
+        holdOpening(activeId)
         navBridge.current = true
         setAltitude('thread')
         setThreadMounted(false)
@@ -243,11 +280,7 @@ export function SpacesCanvas(props: {
     // Hold before setState. Entering Thread unmounts every mini in the same
     // commit; without this ref the opening lease can be the oldest idle one
     // and LRU-evicted before ActiveSession acquires on landing.
-    const row = rows.find((item) => item.key === id)
-    const next = row ? holdTileLease(row, descriptors, queryClient) : undefined
-    const previous = openingHold.current
-    openingHold.current = next
-    if (previous) previous()
+    holdOpening(id)
     bump()
     setSelectedId(id)
     setOpenId(id)
@@ -425,7 +458,7 @@ export function SpacesCanvas(props: {
             const showThread = altitude === 'thread' && isOpen && threadMounted
             return (
               <Tile
-                key={row.key}
+                key={stableKey(row.key)}
                 item={row}
                 altitude={altitude}
                 selected={altitude === 'thread' ? isOpen : row.key === selectedId}
@@ -434,7 +467,13 @@ export function SpacesCanvas(props: {
                 showMini={paintMini}
                 showThread={showThread}
                 descriptors={descriptors}
-                renderThread={renderThread}
+                renderThread={(id) => {
+                  const node = renderThread(id)
+                  if (!isValidElement(node)) return node
+                  // renderThread keys ActiveSession by the view id (chat.tsx).
+                  // Override it so a rekey updates the id without remounting.
+                  return cloneElement(node, { key: stableKey(id) })
+                }}
               />
             )
           })}

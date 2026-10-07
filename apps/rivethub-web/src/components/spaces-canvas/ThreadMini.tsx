@@ -30,9 +30,11 @@ import { useSessionTarget } from '../../lib/use-session-target.js'
 /**
  * `sessions-dirty` is global. A no-stream mini waits this long after the
  * latest bump so a busy agent does not refetch every tile on every frame.
- * The first seed for a session is immediate.
+ * The first seed for a session is immediate. Bumps closer than the debounce
+ * cannot postpone the refetch past the max wait.
  */
 export const MINI_BACKFILL_DEBOUNCE_MS = 2_000
+export const MINI_BACKFILL_MAX_WAIT_MS = 5_000
 
 const EMPTY_OUTBOUND: OutboundItem[] = []
 
@@ -67,16 +69,22 @@ export function ThreadMini(props: {
     sessionBase: target.sessionBase,
     linger: true,
   })
-  const sessionsDirty = useChat((s) => s.sessionsDirty)
   // No control-plane stream (remote summary still closed, or a legacy row):
-  // seed once, then refetch on a dirty bump only after the debounce. The
-  // counter is global, so this tile does not hit the network on every frame.
+  // seed once, then refetch on a dirty bump. The effect does not depend on
+  // the counter, so a bump cannot abort the seed. A burst of bumps waits out
+  // the debounce but never longer than the max wait.
   const dirtySeen = useRef<number | null>(null)
+  const waitStarted = useRef(0)
   useEffect(() => {
     if (target.streamId !== undefined) return
     const ctrl = new AbortController()
     let timer: ReturnType<typeof setTimeout> | undefined
     const run = (): void => {
+      if (timer !== undefined) {
+        clearTimeout(timer)
+        timer = undefined
+      }
+      waitStarted.current = 0
       void target
         .sessionGateway()
         .then((gw) => gw.sessionMessages(id, ctrl.signal))
@@ -85,20 +93,35 @@ export function ThreadMini(props: {
         })
         .catch(() => undefined)
     }
+    const arm = (now: number): void => {
+      if (waitStarted.current === 0) waitStarted.current = now
+      const elapsed = now - waitStarted.current
+      const remaining = MINI_BACKFILL_MAX_WAIT_MS - elapsed
+      const delay = Math.max(0, Math.min(MINI_BACKFILL_DEBOUNCE_MS, remaining))
+      if (timer !== undefined) clearTimeout(timer)
+      timer = setTimeout(run, delay)
+    }
     // Same counter as last time covers the first seed and a StrictMode replay.
     // Only a real bump waits.
-    if (dirtySeen.current === null || dirtySeen.current === sessionsDirty) {
-      dirtySeen.current = sessionsDirty
+    const dirtyNow = useChat.getState().sessionsDirty
+    if (dirtySeen.current === null || dirtySeen.current === dirtyNow) {
+      dirtySeen.current = dirtyNow
       run()
     } else {
-      dirtySeen.current = sessionsDirty
-      timer = setTimeout(run, MINI_BACKFILL_DEBOUNCE_MS)
+      dirtySeen.current = dirtyNow
+      arm(Date.now())
     }
+    const unsubscribe = useChat.subscribe((state, prev) => {
+      if (state.sessionsDirty === prev.sessionsDirty) return
+      dirtySeen.current = state.sessionsDirty
+      arm(Date.now())
+    })
     return () => {
+      unsubscribe()
       if (timer !== undefined) clearTimeout(timer)
       ctrl.abort()
     }
-  }, [target.streamId, target.sessionGateway, id, sessionsDirty])
+  }, [target.streamId, target.sessionGateway, id])
 
   // Remembered terminal mode still shows the transcript tail. The value is
   // read so a later slice can badge it; the mini never mounts a PTY.

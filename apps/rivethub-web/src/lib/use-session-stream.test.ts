@@ -402,4 +402,107 @@ describe('bindSessionStream', () => {
     expect(held.close).not.toHaveBeenCalled()
     attachRelease()
   })
+
+  it('closes the rotated socket so one resolved session has one attachment', async () => {
+    const closes: Array<ReturnType<typeof vi.fn>> = []
+    vi.mocked(attachHarnessSession).mockImplementation(() => {
+      const close = vi.fn()
+      closes.push(close)
+      return { close, resync: vi.fn(), sync: vi.fn() }
+    })
+    const u1 = 'claude-code:U1'
+    const u2 = 'claude-code:U2'
+    const first = bindSessionStream(args({ sessionId: u1, streamId: u1, harnessId: 'claude-code' }))
+    await Promise.resolve()
+    first()
+    useChat.getState().adoptSessionKey(u2, u1)
+    const second = bindSessionStream(
+      args({ sessionId: u2, streamId: u2, harnessId: 'claude-code' }),
+    )
+    await Promise.resolve()
+    expect(attachHarnessSession).toHaveBeenCalledTimes(2)
+    expect(closes[0]).toHaveBeenCalledTimes(1)
+    expect(closes[1]).not.toHaveBeenCalled()
+    second()
+  })
+
+  it('keeps the open socket when an attached lease folds into a pending one', async () => {
+    let resolveGw: (gw: HarnessAttachGateway) => void = () => undefined
+    const pending = new Promise<HarnessAttachGateway>((resolve) => {
+      resolveGw = resolve
+    })
+    const closes: Array<ReturnType<typeof vi.fn>> = []
+    vi.mocked(attachHarnessSession).mockImplementation(() => {
+      const close = vi.fn()
+      closes.push(close)
+      return { close, resync: vi.fn(), sync: vi.fn() }
+    })
+    const onError = vi.fn()
+    const streamId = 'claude-code:native-1'
+    const bare = bindSessionStream(
+      args({ sessionId: 'native-1', streamId, harnessId: 'claude-code' }),
+    )
+    await Promise.resolve()
+    expect(closes).toHaveLength(1)
+    bare()
+    const held = bindSessionStream(
+      args({
+        sessionId: streamId,
+        streamId,
+        harnessId: 'claude-code',
+        sessionGateway: () => pending,
+        onStreamError: onError,
+      }),
+    )
+    useChat.getState().adoptSessionKey(streamId)
+    resolveGw(gateway)
+    await Promise.resolve()
+    await Promise.resolve()
+    expect(attachHarnessSession).toHaveBeenCalledTimes(1)
+    expect(closes[0]).not.toHaveBeenCalled()
+    const opts = vi.mocked(attachHarnessSession).mock.calls[0]?.[0]
+    if (!opts?.onError || !opts.onStatus) throw new Error('missing attach handlers')
+    opts.onError(new Error('boom'))
+    expect(onError).toHaveBeenCalledWith('boom')
+    opts.onStatus('open')
+    expect(onError).toHaveBeenLastCalledWith(undefined)
+    held()
+  })
+
+  it('does not drop a session when an older idle lease expires, and re-acquire restores it', async () => {
+    vi.useFakeTimers()
+    const { watched, unwatch } = trackWatch()
+    const older = bindSessionStream(args({ sessionId: 'sess-1' }))
+    older()
+    await vi.advanceTimersByTimeAsync(1)
+    const younger = bindSessionStream(args({ sessionId: 'sess-1', harnessId: 'claude-code' }))
+    younger()
+    expect(watched.has('sess-1')).toBe(true)
+    await vi.advanceTimersByTimeAsync(LINGER_MS - 1)
+    expect(unwatch).not.toHaveBeenCalled()
+    expect(watched.has('sess-1')).toBe(true)
+    useChat.getState().unwatchTranscript('sess-1')
+    expect(watched.has('sess-1')).toBe(false)
+    const again = bindSessionStream(args({ sessionId: 'sess-1', harnessId: 'claude-code' }))
+    expect(watched.has('sess-1')).toBe(true)
+    again()
+
+    const unbind = trackUnbind()
+    const streamId = 'claude-code:sess-1'
+    const attached = bindSessionStream(
+      args({ sessionId: 'sess-1', streamId, harnessId: 'claude-code' }),
+    )
+    await Promise.resolve()
+    attached()
+    expect(useChat.getState().harnessBound['sess-1']).toBe(true)
+    useChat.getState().unbindHarness('sess-1')
+    expect(unbind).toHaveBeenCalledWith('sess-1')
+    expect(useChat.getState().harnessBound['sess-1']).toBeUndefined()
+    const rebound = bindSessionStream(
+      args({ sessionId: 'sess-1', streamId, harnessId: 'claude-code' }),
+    )
+    expect(useChat.getState().harnessBound['sess-1']).toBe(true)
+    expect(useChat.getState().transcripts['sess-1']?.turns).toEqual([])
+    rebound()
+  })
 })

@@ -1,5 +1,5 @@
 import './test-dom.js'
-import { createElement, StrictMode, useRef, type ReactNode } from 'react'
+import { createElement, StrictMode, useEffect, useRef, type ReactNode } from 'react'
 import { act } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
 import { renderToStaticMarkup } from 'react-dom/server'
@@ -26,7 +26,7 @@ vi.mock('../transcript.js', () => ({
 import type { ChatItem } from '../../lib/harness-chat.js'
 import { attachHarnessSession } from '../../lib/harness-attach.js'
 import { clearSessionNodeBinding, setSessionNodeBinding } from '../../lib/session-node.js'
-import { MINI_BACKFILL_DEBOUNCE_MS } from './ThreadMini.js'
+import { MINI_BACKFILL_DEBOUNCE_MS, MINI_BACKFILL_MAX_WAIT_MS } from './ThreadMini.js'
 import { resetSessionStreams } from '../../lib/use-session-stream.js'
 import { useChat } from '../../stores/chat.js'
 import { useConnection } from '../../stores/connection.js'
@@ -198,7 +198,12 @@ describe('SpacesCanvas mount', () => {
   function mount(
     rows: ChatItem[],
     onOpen: (id: string) => void,
-    opts?: { activeId?: string; strict?: boolean; descriptors?: HarnessDescriptor[] },
+    opts?: {
+      activeId?: string
+      strict?: boolean
+      descriptors?: HarnessDescriptor[]
+      renderThread?: (id: string) => ReactNode
+    },
   ) {
     host = document.createElement('div')
     document.body.appendChild(host)
@@ -215,7 +220,9 @@ describe('SpacesCanvas mount', () => {
           activeId,
           descriptors: opts?.descriptors,
           onOpen,
-          renderThread: (id: string) => createElement('div', { 'data-active-session': id }, id),
+          renderThread:
+            opts?.renderThread ??
+            ((id: string) => createElement('div', { 'data-active-session': id }, id)),
         }),
       )
       root?.render(opts?.strict ? createElement(StrictMode, null, canvas) : canvas)
@@ -484,6 +491,78 @@ describe('SpacesCanvas mount', () => {
     expect(closes.get(target)?.[0]).not.toHaveBeenCalled()
     expect(onOpen).toHaveBeenCalledTimes(1)
   })
+
+  it('holds the opening lease when the store selects a thread', async () => {
+    vi.useFakeTimers(FLY_CLOCK)
+    const closes = new Map<string, ReturnType<typeof vi.fn>[]>()
+    vi.mocked(attachHarnessSession).mockImplementation((opts) => {
+      const close = vi.fn()
+      const list = closes.get(opts.sessionId) ?? []
+      list.push(close)
+      closes.set(opts.sessionId, list)
+      return { close, resync: vi.fn(), sync: vi.fn() }
+    })
+    const rows = Array.from({ length: 30 }, (_, i) => harnessRow(`n${String(i)}`))
+    const target = rows[0]?.key
+    if (!target) throw new Error('missing row')
+    const onOpen = vi.fn()
+    const { render } = mount(rows, onOpen, { descriptors: [CLAUDE] })
+    const space = host?.querySelector('[data-alt="space"]')
+    if (!(space instanceof HTMLElement)) throw new Error('missing space')
+    act(() => {
+      space.click()
+    })
+    await act(async () => {
+      await Promise.resolve()
+    })
+    expect(closes.get(target)?.length).toBeGreaterThan(0)
+    act(() => {
+      render(rows, target)
+    })
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(400)
+    })
+    expect(closes.get(target)).toHaveLength(1)
+    expect(closes.get(target)?.[0]).not.toHaveBeenCalled()
+  })
+
+  it('does not remount the open thread when its row is rekeyed', async () => {
+    vi.useFakeTimers(FLY_CLOCK)
+    let mounts = 0
+    let unmounts = 0
+    function Probe(props: { id: string }): ReactNode {
+      useEffect(() => {
+        mounts += 1
+        return () => {
+          unmounts += 1
+        }
+      }, [])
+      return createElement('div', { 'data-active-session': props.id })
+    }
+    const onOpen = vi.fn()
+    const { render } = mount([row('draft-1', 'Draft')], onOpen, {
+      renderThread: (id) => createElement(Probe, { key: id, id }),
+    })
+    const hit = host?.querySelector('[data-tile-hit="draft-1"]')
+    if (!hit) throw new Error('missing tile')
+    act(() => {
+      pointerClick(hit)
+    })
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(400)
+    })
+    expect(mounts).toBe(1)
+    expect(unmounts).toBe(0)
+    act(() => {
+      useChat.getState().rekey('draft-1', 'canon-1')
+      render([row('canon-1', 'Canon')], 'canon-1')
+    })
+    expect(unmounts).toBe(0)
+    expect(mounts).toBe(1)
+    expect(host?.querySelector('[data-active-session]')?.getAttribute('data-active-session')).toBe(
+      'canon-1',
+    )
+  })
 })
 
 function LandProbe(props: { onLand: () => void }): ReactNode {
@@ -679,6 +758,43 @@ describe('ThreadMini backfill', () => {
     await act(async () => {
       await vi.advanceTimersByTimeAsync(MINI_BACKFILL_DEBOUNCE_MS)
     })
+    expect(sessionMessages).toHaveBeenCalledTimes(2)
+  })
+
+  it('keeps the first seed and refetches by the max wait while dirty keeps bumping', async () => {
+    vi.useFakeTimers()
+    const signals: AbortSignal[] = []
+    const sessionMessages = vi
+      .spyOn(useConnection.getState().gateway, 'sessionMessages')
+      .mockImplementation((_sessionId: string, signal?: AbortSignal) => {
+        if (signal) signals.push(signal)
+        return Promise.resolve({ messages: [] })
+      })
+    mountMini(false)
+    await act(async () => {
+      await Promise.resolve()
+    })
+    expect(sessionMessages).toHaveBeenCalledTimes(1)
+    const first = signals[0]
+    if (!first) throw new Error('missing seed signal')
+    const step = 500
+    for (let t = 0; t < MINI_BACKFILL_MAX_WAIT_MS - step; t += step) {
+      act(() => {
+        useChat.setState({ sessionsDirty: useChat.getState().sessionsDirty + 1 })
+      })
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(step)
+      })
+      expect(sessionMessages).toHaveBeenCalledTimes(1)
+      expect(first.aborted).toBe(false)
+    }
+    act(() => {
+      useChat.setState({ sessionsDirty: useChat.getState().sessionsDirty + 1 })
+    })
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(step)
+    })
+    expect(first.aborted).toBe(false)
     expect(sessionMessages).toHaveBeenCalledTimes(2)
   })
 })
