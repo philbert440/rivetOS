@@ -324,6 +324,8 @@ test('owner-identity paths skip persona and email only', () => {
   assert.equal(isOwnerIdentityPath('package.json'), true)
   assert.equal(isOwnerIdentityPath('apps/site/package.json'), true)
   assert.equal(isOwnerIdentityPath('scripts/authorship-check.test.mjs'), true)
+  assert.equal(isOwnerIdentityPath('scripts/authorship-allowlist.json'), true)
+  assert.equal(isOwnerIdentityPath('scripts/sync-authorship-allowlist.mjs'), true)
   assert.equal(isOwnerIdentityPath('.claude-plugin/marketplace.json'), true)
   assert.equal(isOwnerIdentityPath('docs/MEMORY-DESIGN.md'), false)
   const hits = scanText(`persona: "${SYNTH_PERSONA}" mail ${TEST_EMAIL} id ${TEST_UUID}`, {

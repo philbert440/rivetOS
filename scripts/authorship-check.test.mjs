@@ -2,7 +2,12 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { execFileSync } from 'node:child_process'
-import { checkCommit, extractCoAuthors } from './authorship-check.mjs'
+import { mkdtempSync, writeFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
+import { checkCommit, extractCoAuthors, parseGitIdent } from './authorship-check.mjs'
+
+const checker = new URL('./authorship-check.mjs', import.meta.url)
 
 // Test fixtures
 const house = {
@@ -209,9 +214,7 @@ test('accepts repository collaborators by email with any display name', () => {
     ['tomthornton', '40962668+tomthornton@users.noreply.github.com'],
     ['tomthornton', 'tomthornton@users.noreply.github.com'],
     ['tomthornton', 'tombozwell@gmail.com'],
-    ['wSedlacek', 'william.sedlacek@icloud.com'],
-    ['wSedlacek', '8206108+wSedlacek@users.noreply.github.com'],
-    ['wSedlacek', 'wSedlacek@users.noreply.github.com'],
+    ['cesarulo', 'dragunsky@gmail.com'],
     ['cesarulo', '13575641+cesarulo@users.noreply.github.com'],
     ['cesarulo', 'cesarulo@users.noreply.github.com'],
     ['zzhang-1', 'zhangzhen52013147654@gmail.com'],
@@ -266,3 +269,97 @@ test('CLI guard: importing the module does not run main()', () => {
   )
   assert.equal(stdout.trim(), '', 'importing the module produces no CLI output')
 })
+
+function runChecker(args, { cwd, env = {} } = {}) {
+  try {
+    const stdout = execFileSync(process.execPath, [checker.pathname, ...args], {
+      encoding: 'utf8',
+      cwd,
+      stdio: ['ignore', 'pipe', 'pipe'],
+      env: { ...process.env, NODE_OPTIONS: '', ...env },
+    })
+    return { status: 0, stdout, stderr: '' }
+  } catch (e) {
+    return {
+      status: e.status ?? 1,
+      stdout: e.stdout || '',
+      stderr: e.stderr || '',
+    }
+  }
+}
+
+function initRepoWithParent(authorName, authorEmail) {
+  const dir = mkdtempSync(join(tmpdir(), 'authorship-pending-'))
+  execFileSync('git', ['init', '-b', 'main'], { cwd: dir })
+  execFileSync('git', ['config', 'user.name', authorName], { cwd: dir })
+  execFileSync('git', ['config', 'user.email', authorEmail], { cwd: dir })
+  execFileSync(
+    'git',
+    ['-c', 'commit.gpgsign=false', 'commit', '--allow-empty', '--no-verify', '-m', 'disallowed parent'],
+    {
+      cwd: dir,
+      env: {
+        ...process.env,
+        GIT_AUTHOR_NAME: authorName,
+        GIT_AUTHOR_EMAIL: authorEmail,
+        GIT_COMMITTER_NAME: authorName,
+        GIT_COMMITTER_EMAIL: authorEmail,
+      },
+    },
+  )
+  return dir
+}
+
+const pendingHouseEnv = {
+  GIT_AUTHOR_NAME: 'Rivet Philbot',
+  GIT_AUTHOR_EMAIL: 'rivetphilbot@gmail.com',
+  GIT_COMMITTER_NAME: 'Rivet Philbot',
+  GIT_COMMITTER_EMAIL: 'rivetphilbot@gmail.com',
+}
+
+test('parseGitIdent reads git-var output', () => {
+  assert.deepEqual(parseGitIdent('Rivet Philbot <rivetphilbot@gmail.com> 1 +0000'), {
+    name: 'Rivet Philbot',
+    email: 'rivetphilbot@gmail.com',
+  })
+})
+
+test('an allowed collaborator passes as author and committer', () => {
+  const identity = { name: 'cesarulo', email: 'dragunsky@gmail.com' }
+  assert.deepEqual(checkCommit(makeCommit({ author: identity, committer: identity })), [])
+})
+
+test('a product identity such as Cursor Agent is rejected', () => {
+  const issues = checkCommit(makeCommit({ author: cursorAgent, committer: house.rivetPhilbot }))
+  assert.ok(
+    issues.some((i) => i.field === 'author' && i.reason.includes('blocked pattern')),
+    'Cursor Agent <cursoragent@cursor.com> is rejected as author',
+  )
+})
+
+test('a bad Co-authored-by trailer is rejected', () => {
+  const commit = makeCommit({
+    author: house.rivetPhilbot,
+    committer: house.rivetPhilbot,
+    coAuthors: [cursorAgent],
+  })
+  assert.ok(
+    checkCommit(commit).some(
+      (i) => i.field === 'Co-authored-by' && i.reason.includes('blocked pattern'),
+    ),
+  )
+})
+
+test('a disallowed parent commit no longer blocks a valid new commit', () => {
+  const dir = initRepoWithParent('Random User', 'random@example.com')
+  const head = runChecker(['HEAD'], { cwd: dir })
+  assert.equal(head.status, 1, 'recorded parent is still rejected when checked as HEAD')
+  assert.match(head.stderr, /random@example.com/)
+
+  const msg = join(dir, 'COMMIT_EDITMSG')
+  writeFileSync(msg, 'valid new commit\n')
+  const pending = runChecker(['--pending', msg], { cwd: dir, env: pendingHouseEnv })
+  assert.equal(pending.status, 0, 'pending house identities pass even when HEAD is disallowed')
+  assert.match(pending.stdout, /valid house identities/)
+})
+
