@@ -31,7 +31,9 @@ import { MINI_BACKFILL_DEBOUNCE_MS, MINI_BACKFILL_MAX_WAIT_MS } from './ThreadMi
 import { resetSessionStreams } from '../../lib/use-session-stream.js'
 import { useAgentFilter } from '../../stores/agent-filter.js'
 import { useArchived } from '../../stores/archived.js'
+import { startNewConversation } from '../../lib/new-conversation.js'
 import { useChat } from '../../stores/chat.js'
+import { useChatSettings } from '../../stores/chat-settings.js'
 import { useConnection } from '../../stores/connection.js'
 import { useSpaces } from '../../stores/spaces.js'
 import { canvasKeyClaims, performCanvasEffect, reduceCanvasCommand } from './canvas-input.js'
@@ -908,6 +910,42 @@ describe('SpacesCanvas mount', () => {
     expect(host?.querySelector('[data-altitude]')?.getAttribute('data-altitude')).toBe('everything')
     press({ key: 't' })
     expect(document.querySelector('[aria-label="Space"]')).not.toBeNull()
+  })
+
+  it('does not mint a space thread while a dialog is open', () => {
+    const spaceId = placeOnHome(['a'])
+    useSpaces.getState().setSpaceDefaults(spaceId, { model: 'opus', effort: 'high' })
+    mount([row('a', 'Alpha')], () => undefined)
+    const crumb = host?.querySelector('[aria-label="Location"]')?.querySelectorAll('button')[1]
+    if (!(crumb instanceof HTMLElement)) throw new Error('missing space crumb')
+    crumb.focus()
+    act(() => {
+      window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }))
+    })
+    expect(host?.querySelector('[data-altitude]')?.getAttribute('data-altitude')).toBe('space')
+    press({ key: 't' })
+    expect(document.getElementById('new-thread-prompt')).not.toBeNull()
+    const base = useConnection.getState().baseUrl
+    let blocked = ''
+    act(() => {
+      blocked = startNewConversation() ?? ''
+    })
+    expect(blocked).toBeTruthy()
+    expect(useSpaces.getState().spaceOf(`${base}::${blocked}`)).toBeUndefined()
+    expect(useChatSettings.getState().byKey[`${base}::${blocked}`]).toBeUndefined()
+    cancelDialog()
+    document.body.focus()
+    let placed = ''
+    act(() => {
+      placed = startNewConversation() ?? ''
+    })
+    expect(placed).toBeTruthy()
+    if (!placed) return
+    expect(useSpaces.getState().spaceOf(`${base}::${placed}`)).toBe(spaceId)
+    expect(useChatSettings.getState().byKey[`${base}::${placed}`]).toMatchObject({
+      model: 'opus',
+      effort: 'high',
+    })
   })
 })
 

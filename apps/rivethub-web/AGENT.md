@@ -329,10 +329,13 @@ the canvas is focused on a space that has defaults — pre-fill the existing
 chooser and mint path. They do not take a second creation path. Inside a
 space those defaults win over a selected agents-rail filter; outside a
 space, or when the space has no defaults, Ctrl+T is unchanged. A preset id
-that is no longer on the roster shows as "(missing preset)" in Edit and is
-not copied onto new threads. A thread that already carries a stale id still
-uses the existing deleted-preset spawn notice. Threads already running are
-not rewritten.
+that is no longer on the roster shows as "(missing preset)" in Edit. New
+threads still carry that id (not pinned) so the first spawn uses the
+existing deleted-preset notice, then continues without it. An explicit
+node, or a preset node, that is no longer on the connection roster is not
+used: the thread starts on the hub, and the new-thread dialog says so.
+Settings, the node binding, and space membership are written on the
+resolved node. Threads already running are not rewritten.
 
 **Needs you** reads the blocked ids already on the canvas (no polling): dock
 count, Ctrl+J cycles placed tiles oldest-first at Space and Everything (not

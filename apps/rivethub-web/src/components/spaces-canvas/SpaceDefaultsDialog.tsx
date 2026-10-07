@@ -32,6 +32,9 @@ export function SpaceDefaultsDialog(props: {
   const [model, setModel] = useState(stored?.model ?? '')
   const [effort, setEffort] = useState<ThinkingLevel | undefined>(stored?.effort)
   const [node, setNode] = useState(stored?.node ?? '')
+  // A stored preset must not be saved as "none" while the roster query is
+  // still in flight — that write clears agentId and harnessId.
+  const [ready, setReady] = useState(!stored?.agentId)
   const seeded = useRef(false)
 
   useEffect(() => {
@@ -43,10 +46,11 @@ export function SpaceDefaultsDialog(props: {
     if (storedAgent && !found) {
       setMissingId(storedAgent)
       setAgentId('')
-      return
+    } else {
+      setMissingId(undefined)
+      setAgentId(found?.id ?? '')
     }
-    setMissingId(undefined)
-    setAgentId(found?.id ?? '')
+    setReady(true)
   }, [agents, isLoading, stored])
 
   const agent = agents.find((row) => row.id === agentId)
@@ -58,12 +62,18 @@ export function SpaceDefaultsDialog(props: {
     registry: props.descriptors,
     model,
   })
+  // A stored model from the previous harness must not stay selected once
+  // the new sheet does not offer it. Same rule as the chat launch picker.
+  useEffect(() => {
+    if (launch.clearModel) setModel('')
+  }, [launch.clearModel])
   const modelOptions = [{ value: '', label: 'None' }, ...launch.models]
   const nodeLabel = agent?.node?.trim() || (agent ? urlLabel(agent.sourceNodeBaseUrl) : '')
   const startsIn = startsInDirectoryOn(agent?.directory, nodeLabel)
-  const showNode = !agent && !missingId
+  const showNode = ready && !agent && !missingId
 
   const save = (): void => {
+    if (!ready) return
     const trimmed = name.trim()
     if (!trimmed) return
     let nextAgent: string | undefined
@@ -216,7 +226,7 @@ export function SpaceDefaultsDialog(props: {
               </button>
               <button
                 type="submit"
-                disabled={!name.trim()}
+                disabled={!name.trim() || !ready}
                 className="bg-em-dim px-3 py-1.5 text-xs font-medium text-bg hover:bg-em disabled:opacity-40"
               >
                 Save

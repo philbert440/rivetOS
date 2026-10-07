@@ -4,8 +4,13 @@
  * the target space; the panel places the chosen row.
  *
  * When the chosen space has defaults, the Prompt fields start from them.
- * A preset that is no longer startable is left off — the thread starts
- * without it. Model and effort from the space still pre-fill.
+ * The agent is seeded first; the space's model and effort are applied
+ * after that. Preset model and effort are copied only when the user picks
+ * an agent, so a space override is not replaced on open — cached roster
+ * or still loading. Switching space re-applies that space's overrides.
+ * A preset that is no longer startable stays off the picker, but its id
+ * is still copied onto the thread so the existing deleted-preset notice
+ * can fire. An explicit node that left the connection roster is not used.
  */
 
 import { useEffect, useRef, useState, type JSX } from 'react'
@@ -22,6 +27,8 @@ import { ModelPicker } from '../pickers/model-picker.js'
 import {
   applyChooser,
   initialThreadFields,
+  offRosterStartNotice,
+  resolveRosterNode,
   type PromptAgent,
   type SpaceRosterAgent,
 } from './new-thread.js'
@@ -45,6 +52,9 @@ export function NewThreadDialog(props: {
   const [prompt, setPrompt] = useState('')
   const [model, setModel] = useState('')
   const [effort, setEffort] = useState<ThinkingLevel>('medium')
+  // Start stays shut until the space seed has landed. A stored preset's
+  // roster row is not known while that query is loading.
+  const [seedReady, setSeedReady] = useState(false)
   const target = locked ?? spaceId
   const defaults = props.spaces.find((space) => space.id === target)?.defaults
   const agent: PromptAgent | undefined = agents.find((row) => row.id === agentId)
@@ -53,25 +63,27 @@ export function NewThreadDialog(props: {
   const defaultsRef = useRef(defaults)
   defaultsRef.current = defaults
   const seededTarget = useRef<string | null>(null)
-  const skipSync = useRef(false)
 
   useEffect(() => {
     if (seededTarget.current === target) return
-    if (defaultsRef.current?.agentId && isLoading) return
-    seededTarget.current = target
+    if (defaultsRef.current?.agentId && isLoading) {
+      setSeedReady(false)
+      return
+    }
+    // Agent first, then the space's model and effort. Preset model/effort
+    // are applied only when the user picks an agent, so this seed is not
+    // overwritten on the flush — cached roster or still loading.
     const fields = initialThreadFields(defaultsRef.current, agentsRef.current)
-    skipSync.current = true
+    seededTarget.current = target
     setAgentId(fields.agentId)
     setModel(fields.model)
     setEffort(fields.effort)
+    setSeedReady(true)
   }, [target, isLoading])
 
-  useEffect(() => {
-    if (skipSync.current) {
-      skipSync.current = false
-      return
-    }
-    const next = agentsRef.current.find((row) => row.id === agentId)
+  const applyAgentPick = (value: string): void => {
+    setAgentId(value)
+    const next = agents.find((row) => row.id === value)
     if (!next) {
       setModel('')
       setEffort('medium')
@@ -90,7 +102,18 @@ export function NewThreadDialog(props: {
     } else {
       setEffort('medium')
     }
-  }, [agentId])
+  }
+
+  const rosterUrls = useConnection((s) => s.roster).map((node) => node.baseUrl)
+  const nodeCandidate = agent?.sourceNodeBaseUrl || (!agent ? defaults?.node : undefined)
+  const nodeResolved = resolveRosterNode(nodeCandidate, baseUrl, rosterUrls)
+  const nodeNotice = nodeResolved.unavailable
+    ? offRosterStartNotice(nodeResolved.unavailable, baseUrl)
+    : undefined
+  const missingPreset =
+    !isLoading && !agent && defaults?.agentId && !agents.some((row) => row.id === defaults.agentId)
+      ? { id: defaults.agentId, harnessId: defaults.harnessId }
+      : undefined
 
   const launch = launchModelOptions({
     preBind: true,
@@ -112,6 +135,7 @@ export function NewThreadDialog(props: {
       model: model || undefined,
       effort,
       node: agent ? undefined : defaults?.node,
+      missingPreset,
     })
     if (!id) return
     props.onStarted(id)
@@ -189,7 +213,7 @@ export function NewThreadDialog(props: {
                 { value: '', label: 'Plain draft' },
                 ...agents.map((row) => ({ value: row.id, label: row.name })),
               ]}
-              onChange={setAgentId}
+              onChange={applyAgentPick}
               aria-label="Agent"
               label="Agent"
               className="w-full"
@@ -202,6 +226,7 @@ export function NewThreadDialog(props: {
                   : ''}
               </p>
             ) : null}
+            {nodeNotice ? <p className="mt-1 text-xs text-ink-dim">{nodeNotice}</p> : null}
           </div>
           <label className="mb-1 block text-xs text-ink-dim" htmlFor="new-thread-prompt">
             What should it do?
@@ -239,7 +264,7 @@ export function NewThreadDialog(props: {
             </button>
             <button
               type="button"
-              disabled={!prompt.trim() || !target}
+              disabled={!prompt.trim() || !target || !seedReady}
               onClick={start}
               className="bg-em-dim px-3 py-1.5 text-xs font-medium text-bg hover:bg-em disabled:opacity-40"
             >
