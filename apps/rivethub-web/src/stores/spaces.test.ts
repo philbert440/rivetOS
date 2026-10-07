@@ -19,11 +19,13 @@ vi.stubGlobal('localStorage', store)
 afterAll(() => vi.unstubAllGlobals())
 
 const { useSpaces, SPACES_STORAGE_KEY, SPACES_MEMBERSHIP_CAP } = await import('./spaces.js')
+const { useArchived } = await import('./archived.js')
 
 describe('spaces store', () => {
   beforeEach(() => {
     store.clear()
     useSpaces.setState({ spaces: [], membership: {} })
+    useArchived.setState({ keys: [] })
   })
 
   it('adds a space with a name and returns its id', () => {
@@ -120,6 +122,46 @@ describe('spaces store', () => {
     expect(keys.at(-1)).toBe(`http://x::s${String(SPACES_MEMBERSHIP_CAP)}`)
   })
 
+  it('moves membership onto the new key', () => {
+    const id = useSpaces.getState().addSpace('Work')
+    useSpaces.getState().place('http://192.168.1.20:8787::from', id)
+    useSpaces.getState().rekey('http://192.168.1.20:8787::from', 'http://192.168.1.20:8787::to')
+    expect(useSpaces.getState().spaceOf('http://192.168.1.20:8787::to')).toBe(id)
+    expect(useSpaces.getState().spaceOf('http://192.168.1.20:8787::from')).toBeUndefined()
+  })
+
+  it('keeps a destination that is already placed and drops the source', () => {
+    const source = useSpaces.getState().addSpace('Source')
+    const dest = useSpaces.getState().addSpace('Dest')
+    useSpaces.getState().place('http://192.168.1.20:8787::from', source)
+    useSpaces.getState().place('http://192.168.1.20:8787::to', dest)
+    useSpaces.getState().rekey('http://192.168.1.20:8787::from', 'http://192.168.1.20:8787::to')
+    expect(useSpaces.getState().spaceOf('http://192.168.1.20:8787::to')).toBe(dest)
+    expect(useSpaces.getState().spaceOf('http://192.168.1.20:8787::from')).toBeUndefined()
+    expect(Object.keys(useSpaces.getState().membership)).toEqual(['http://192.168.1.20:8787::to'])
+  })
+
+  it('does not rekey when the source was never placed', () => {
+    const id = useSpaces.getState().addSpace('Work')
+    useSpaces.getState().place('http://192.168.1.20:8787::kept', id)
+    const before = useSpaces.getState().membership
+    useSpaces.getState().rekey('http://192.168.1.20:8787::missing', 'http://192.168.1.20:8787::to')
+    useSpaces.getState().rekey('http://192.168.1.20:8787::kept', 'http://192.168.1.20:8787::kept')
+    expect(useSpaces.getState().membership).toBe(before)
+  })
+
+  it('archive unplaces a thread and place unarchives it', () => {
+    const id = useSpaces.getState().addSpace('Work')
+    const key = 'http://192.168.1.20:8787::archived'
+    useSpaces.getState().place(key, id)
+    useArchived.getState().archive(key)
+    expect(useArchived.getState().isArchived(key)).toBe(true)
+    expect(useSpaces.getState().spaceOf(key)).toBeUndefined()
+    useSpaces.getState().place(key, id)
+    expect(useArchived.getState().isArchived(key)).toBe(false)
+    expect(useSpaces.getState().spaceOf(key)).toBe(id)
+  })
+
   it('re-placing a thread makes it the newest membership entry', () => {
     const id = useSpaces.getState().addSpace('Work')
     useSpaces.getState().place('http://x::a', id)
@@ -145,7 +187,7 @@ describe('spaces store', () => {
             { id: '', name: 'nope', order: 0, createdAt: 0 },
             { name: 'no id' },
           ],
-          membership: { 'http://x::a': 's', bad: 1, '': 's' },
+          membership: { 'http://x::a': 's', 'http://x::gone': 'missing', bad: 1, '': 's' },
           future: true,
         },
         version: 0,

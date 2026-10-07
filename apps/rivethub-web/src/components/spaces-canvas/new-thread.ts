@@ -3,16 +3,15 @@
  * these; they are the only writers, so cancel is the absence of a write.
  *
  * A chosen roster agent mints the way the rail's start-over does (`openFresh`):
- * chat settings, node binding, agent pin, draft. A plain draft uses
- * `startNewConversation` (the rail filter's `startNew`, or a bare draft).
- * The first turn is one `enqueueOutbound` — the composer's queue, not a
- * second send path.
+ * chat settings, node binding, agent pin, draft, on that agent's node.
+ * Plain draft is a hub draft — it does not call the rail filter's `startNew`.
+ * An agent with no roster node is refused, same as the rail. The first turn
+ * is one `enqueueOutbound` — the composer's queue, not a second send path.
  */
 
 import type { HarnessId, ThinkingLevel } from '@rivetos/types'
 import { agentThreadSettings } from '../../lib/agent-roster.js'
 import { setAgentLastSession } from '../../lib/agent-session.js'
-import { startNewConversation } from '../../lib/new-conversation.js'
 import { setSessionNodeBinding } from '../../lib/session-node.js'
 import { uuidv4 } from '../../lib/uuid.js'
 import { useChat } from '../../stores/chat.js'
@@ -62,6 +61,15 @@ function mintWithAgent(agent: PromptAgent, baseUrl: string): string | undefined 
   return id
 }
 
+/** Hub draft. Does not consult the rail's selected agent. */
+function mintPlainDraft(): string {
+  const id = uuidv4()
+  const chat = useChat.getState()
+  chat.addDraft(id)
+  chat.setActive(id)
+  return id
+}
+
 function settingsKeyFor(id: string, agent: PromptAgent | undefined, baseUrl: string): string {
   const node = agent?.sourceNodeBaseUrl
   return `${node && node.length > 0 ? node : baseUrl}::${id}`
@@ -102,9 +110,10 @@ export function applyChooser(action: ChooserAction): string | undefined {
   }
   const text = action.prompt.trim()
   if (!text) return undefined
-  const id = action.agent?.sourceNodeBaseUrl
-    ? mintWithAgent(action.agent, action.baseUrl)
-    : startNewConversation()
+  // Off-roster: the rail refuses to mint. Do not fall through to a hub draft
+  // that still wears the agent's settings.
+  if (action.agent && !action.agent.sourceNodeBaseUrl) return undefined
+  const id = action.agent ? mintWithAgent(action.agent, action.baseUrl) : mintPlainDraft()
   if (!id) return undefined
   const key = settingsKeyFor(id, action.agent, action.baseUrl)
   writeSettings(key, action.agent, action.model, action.effort)

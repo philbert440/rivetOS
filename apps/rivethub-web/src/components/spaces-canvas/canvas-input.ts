@@ -22,10 +22,11 @@ export type CanvasEffect =
   | { type: 'go'; altitude: 'everything' | 'space' }
   | { type: 'noop' }
 
-const THREAD_ACTIONS: ReadonlySet<CanvasAction> = new Set(['next-waiting', 'mru'])
+const THREAD_ACTIONS: ReadonlySet<CanvasAction> = new Set(['mru'])
 
 /** True when this key is claimed at `altitude` (and must not reach the session).
- *  Single-letter canvas actions are not claimed at Thread. Ctrl+J and Ctrl+` are. */
+ *  Single-letter canvas actions and Ctrl+J are not claimed at Thread.
+ *  Ctrl+` is. At Thread, Needs you is the dock button and the toast. */
 export function canvasKeyClaims(
   altitude: Altitude,
   chord: CanvasChord | null,

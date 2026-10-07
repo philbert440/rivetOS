@@ -124,7 +124,8 @@ describe('matchCanvasAction', () => {
     expect(matchCanvasAction(keyEvent({ key: '/' }))).toBe('find')
     expect(matchCanvasAction(keyEvent({ key: 'Delete' }))).toBe('remove-thread')
     expect(matchCanvasAction(keyEvent({ key: 'Delete', shiftKey: true }))).toBe('remove-space')
-    expect(matchCanvasAction(keyEvent({ key: 'Backspace', shiftKey: true }))).toBe('remove-space')
+    expect(matchCanvasAction(keyEvent({ key: 'Backspace' }))).toBeNull()
+    expect(matchCanvasAction(keyEvent({ key: 'Backspace', shiftKey: true }))).toBeNull()
   })
 
   it('maps Ctrl+J and Ctrl+` and ignores Alt, Meta, and Shift chords', () => {

@@ -9,6 +9,7 @@
 
 import { create } from 'zustand'
 import { persist } from 'zustand/middleware'
+import { useSpaces } from './spaces.js'
 
 const KEY = 'rivethub.archivedSessions'
 const MAX = 1000
@@ -25,11 +26,14 @@ export const useArchived = create<ArchivedState>()(
     (set, get) => ({
       keys: [],
       isArchived: (key) => get().keys.includes(key),
-      archive: (key) =>
+      archive: (key) => {
         set((s) => {
           const next = [...s.keys.filter((k) => k !== key), key]
           return { keys: next.length > MAX ? next.slice(-MAX) : next }
-        }),
+        })
+        // An archived thread lives in History's archived list, not on a space.
+        useSpaces.getState().unplace(key)
+      },
       unarchive: (key) =>
         set((s) => (s.keys.includes(key) ? { keys: s.keys.filter((k) => k !== key) } : s)),
     }),

@@ -67,7 +67,7 @@ import {
   subscribeAgentSessions,
   getAgentSessionsVersion,
 } from '../lib/agent-session.js'
-import { migrateSessionKey, storageKey } from '../lib/session-rekey.js'
+import { adoptRegistrySession, migrateSessionKey, storageKey } from '../lib/session-rekey.js'
 import { presetsFromAgentsQueryData, sessionPointerMatches } from '../lib/agent-roster.js'
 import {
   clearSessionNodeBinding,
@@ -137,7 +137,6 @@ import {
 import { Button } from '../components/ui/button.js'
 import { useSessionNames } from '../stores/session-names.js'
 import { useArchived } from '../stores/archived.js'
-import { useSpaces } from '../stores/spaces.js'
 import { useSidebarPrefs } from '../stores/sidebar-prefs.js'
 import { useAgentFilter } from '../stores/agent-filter.js'
 import { startNewConversation } from '../lib/new-conversation.js'
@@ -258,9 +257,7 @@ export function ChatPage(): JSX.Element {
       // `opened` under its bare id keeps catching bridge frames onto records
       // no drawer row renders.
       const previous = event.type === 'session-updated' ? event.previousSessionId : undefined
-      for (const from of useChat.getState().adoptSessionKey(event.sessionId, previous)) {
-        migrateSessionKey(baseUrl, pageRosterUrls, from, event.sessionId)
-      }
+      adoptRegistrySession(baseUrl, pageRosterUrls, event.sessionId, previous)
       queryClient.setQueryData<HarnessSessionSummary[]>(planeQueryKey, (prev) =>
         applyRegistryEventToPlaneSessions(prev, event),
       )
@@ -511,17 +508,12 @@ export function ChatPage(): JSX.Element {
   const activeKey = activeItem?.key
   useEffect(() => {
     if (active === undefined || activeKey === undefined || activeKey === active) return
-    // Only migrate persisted state when the records actually moved — see
-    // `migrateSessionKey`.
-    const bases = new Set([baseUrl])
-    if (activeItem?.pinNodeBaseUrl) bases.add(activeItem.pinNodeBaseUrl)
-    for (const base of bases) {
-      useSpaces.getState().rekey(storageKey(base, active), storageKey(base, activeKey))
-    }
+    // Only when the records moved. Membership moves inside `migrateSessionKey`,
+    // on the session's node, and a collision (rekey returns false) touches neither.
     if (useChat.getState().rekey(active, activeKey)) {
       migrateSessionKey(baseUrl, pageRosterUrls, active, activeKey)
     }
-  }, [active, activeKey, activeItem, baseUrl, pageRosterUrls])
+  }, [active, activeKey, baseUrl, pageRosterUrls])
 
   // Resizable drawer: cut-off titles are the drawer's whole job, so the user
   // decides how much room they get. Persisted; double-click resets.

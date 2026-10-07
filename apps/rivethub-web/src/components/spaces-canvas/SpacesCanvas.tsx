@@ -1,8 +1,9 @@
 /**
  * Desktop conversations canvas. One region per space, in store order, plus a
- * dashed "+ New space". With no spaces stored, the slice-1 Unplaced region
- * still holds every non-archived row. Thread altitude freezes tile order so
- * a recency update cannot move the focused tile out from under the fly.
+ * dashed "+ New space". With no spaces stored, that placeholder and a History
+ * hint are the whole canvas — unplaced threads stay in History. Thread
+ * altitude freezes tile order so a recency update cannot move the focused
+ * tile out from under the fly.
  */
 
 import {
@@ -51,6 +52,7 @@ import {
   mruPreviewId,
   nextWaitingId,
   rankFindHits,
+  reconcileNeedsEpisodes,
   rememberThread,
   removeSpaceMessage,
   type FindRow,
@@ -357,6 +359,8 @@ export function SpacesCanvas(props: {
         navBridge.current = true
         setAltitude('thread')
         setThreadMounted(false)
+        setFindOpen(false)
+        setFindQuery('')
         setMruStep(0)
         setMru((list) => rememberThread(list, activeId))
         setNavNonce((n) => n + 1)
@@ -428,7 +432,6 @@ export function SpacesCanvas(props: {
     if (!laidRegion) continue
     region.rows.forEach((row, index) => {
       const slot = laidRegion.slots[index]
-      if (!slot) return
       placed.push({ row, spaceId: region.id, slot })
     })
   }
@@ -609,16 +612,15 @@ export function SpacesCanvas(props: {
     if (regionId === undefined || regionId === UNPLACED_ID) return undefined
     return spaces.some((space) => space.id === regionId) ? regionId : undefined
   }
+  // Space altitude: the framed space, even when the selection sits in another
+  // region. Everything has no framed space, so the chooser keeps its selector.
+  // Thread (dock only — letters are not claimed) uses the open thread's space.
   const spaceYouAreIn = (): string | undefined => {
+    if (altitude === 'space') return realSpace(framedRegionId)
     if (altitude === 'thread') {
-      const openSpace = realSpace(openId !== undefined ? spaceByRow.get(openId) : undefined)
-      if (openSpace) return openSpace
+      return realSpace(openId !== undefined ? spaceByRow.get(openId) : undefined)
     }
-    const selectedSpace = realSpace(
-      selectedId !== undefined ? spaceByRow.get(selectedId) : undefined,
-    )
-    if (selectedSpace) return selectedSpace
-    return spaces[0]?.id
+    return undefined
   }
   const removeSelectedThread = (): void => {
     const id = selectedRef.current
@@ -758,18 +760,15 @@ export function SpacesCanvas(props: {
   useEffect(() => {
     if (blockedReady !== true) return
     const ids = blockedIds ?? new Set<string>()
-    const now = Date.now()
-    for (const id of ids) {
-      if (!sinceRef.current.has(id)) sinceRef.current.set(id, now)
-    }
-    if (!primedRef.current) {
-      primedRef.current = true
-      for (const id of ids) announcedRef.current.add(id)
-      return
-    }
-    for (const id of ids) {
-      if (announcedRef.current.has(id)) continue
-      announcedRef.current.add(id)
+    const episode = reconcileNeedsEpisodes(
+      sinceRef.current,
+      announcedRef.current,
+      ids,
+      Date.now(),
+      primedRef.current,
+    )
+    primedRef.current = episode.primed
+    for (const id of episode.fresh) {
       const open = openRef.current
       const openRow = rowsRef.current.find((row) => row.key === open)
       if (open !== undefined && (open === id || openRow?.sessionId === id)) continue
@@ -797,7 +796,11 @@ export function SpacesCanvas(props: {
     const onKey = (event: KeyboardEvent): void => {
       if (event.repeat) return
       if (modalRef.current) return
-      if (findOpenRef.current && plainEscape(event)) {
+      const findFocused = (): boolean => {
+        const active = document.activeElement
+        return active instanceof Element && active.getAttribute('data-dock') === 'find'
+      }
+      if (findOpenRef.current && findFocused() && plainEscape(event)) {
         event.preventDefault()
         event.stopPropagation()
         setFindOpen(false)
@@ -806,6 +809,7 @@ export function SpacesCanvas(props: {
       }
       if (
         findOpenRef.current &&
+        findFocused() &&
         event.key === 'Enter' &&
         !event.shiftKey &&
         !event.ctrlKey &&
@@ -921,8 +925,7 @@ export function SpacesCanvas(props: {
         if (Math.hypot(dx, dy) < DRAG_START_PX) return
         drag.active = true
         if (drag.source === 'tile') suppressGestureRef.current = true
-        const root = document.documentElement
-        if (root) root.style.cursor = 'grabbing'
+        document.documentElement.style.cursor = 'grabbing'
       }
       const hit = hitAt(event.clientX, event.clientY)
       const key = hitKey(hit)
@@ -936,8 +939,7 @@ export function SpacesCanvas(props: {
       const drag = dragRef.current
       if (!drag) return
       dragRef.current = null
-      const root = document.documentElement
-      if (root) root.style.cursor = ''
+      document.documentElement.style.cursor = ''
       if (!drag.active || cancel) {
         if (drag.active && drag.source === 'tile') suppressGestureRef.current = false
         if (drag.active) {
@@ -984,8 +986,7 @@ export function SpacesCanvas(props: {
       window.removeEventListener('pointerup', onUp, true)
       window.removeEventListener('pointercancel', onCancel, true)
       window.removeEventListener('click', onClick, true)
-      const root = document.documentElement
-      if (root) root.style.cursor = ''
+      document.documentElement.style.cursor = ''
     }
   }, [])
 
@@ -1013,7 +1014,7 @@ export function SpacesCanvas(props: {
   const removeRows = regions.find((region) => region.id === removePrompt)?.rows ?? []
 
   const tileRows = placed.map((item) => item.row)
-  if (showSynthetic && openRow) tileRows.push(openRow)
+  if (showSynthetic) tileRows.push(openRow)
   for (const row of tileRows) stableFor.set(row.key, stableKey(row.key))
   // Drop rows that left. The alias copy above has already stored the stable
   // id under the current resolved key, so a rekey does not remount.
@@ -1044,6 +1045,14 @@ export function SpacesCanvas(props: {
           item={selectedCanvas.row}
           descriptors={descriptors}
         />
+      ) : null}
+      {spaces.length === 0 ? (
+        <p
+          data-empty-spaces=""
+          className="pointer-events-none absolute top-1/2 left-1/2 z-10 max-w-sm -translate-x-1/2 -translate-y-1/2 text-center text-sm text-ink-dim"
+        >
+          No spaces yet. Threads live in History.
+        </p>
       ) : null}
       <div
         ref={stageRef}

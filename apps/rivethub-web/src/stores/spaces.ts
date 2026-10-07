@@ -14,6 +14,7 @@
 import { create } from 'zustand'
 import { persist, createJSONStorage } from 'zustand/middleware'
 import { uuidv4 } from '../lib/uuid.js'
+import { useArchived } from './archived.js'
 
 const KEY = 'rivethub.spaces'
 const MAX_MEMBERSHIP = 2000
@@ -46,13 +47,36 @@ interface SpacesState {
 
 type Persisted = Pick<SpacesState, 'spaces' | 'membership'>
 
+/** Present key, or undefined. Index access is `string` without `noUncheckedIndexedAccess`. */
+function readMembership(
+  membership: Readonly<Record<string, string>>,
+  key: string,
+): string | undefined {
+  if (!Object.hasOwn(membership, key)) return undefined
+  return membership[key]
+}
+
 function capMembership(membership: Record<string, string>): Record<string, string> {
   const keys = Object.keys(membership)
   if (keys.length <= MAX_MEMBERSHIP) return membership
   const next: Record<string, string> = {}
   for (const key of keys.slice(keys.length - MAX_MEMBERSHIP)) {
-    const spaceId = membership[key]
-    if (spaceId !== undefined) next[key] = spaceId
+    const spaceId = readMembership(membership, key)
+    if (spaceId === undefined) continue
+    next[key] = spaceId
+  }
+  return next
+}
+
+/** Drop entries whose space was rejected by `normalizeSpaces`. */
+export function pruneMembership(
+  membership: Record<string, string>,
+  spaces: readonly SpaceDef[],
+): Record<string, string> {
+  const ids = new Set(spaces.map((space) => space.id))
+  const next: Record<string, string> = {}
+  for (const [key, spaceId] of Object.entries(membership)) {
+    if (ids.has(spaceId)) next[key] = spaceId
   }
   return next
 }
@@ -154,11 +178,13 @@ export const useSpaces = create<SpacesState>()(
       },
       place: (rowKey, spaceId) => {
         if (!rowKey || !get().spaces.some((space) => space.id === spaceId)) return
+        // A placed row is on the canvas, not in History's archive.
+        useArchived.getState().unarchive(rowKey)
         set((s) => ({ membership: withMembership(s.membership, rowKey, spaceId) }))
       },
       unplace: (rowKey) => {
         set((s) => {
-          if (s.membership[rowKey] === undefined) return s
+          if (!Object.hasOwn(s.membership, rowKey)) return s
           const membership: Record<string, string> = {}
           for (const [key, spaceId] of Object.entries(s.membership)) {
             if (key !== rowKey) membership[key] = spaceId
@@ -169,21 +195,21 @@ export const useSpaces = create<SpacesState>()(
       rekey: (from, to) => {
         if (!from || !to || from === to) return
         set((s) => {
-          const spaceId = s.membership[from]
+          const spaceId = readMembership(s.membership, from)
           if (spaceId === undefined) return s
+          // Destination already placed: keep it. Drop the retired key either way.
+          const destinationPlaced = Object.hasOwn(s.membership, to)
           const membership: Record<string, string> = {}
           for (const [key, value] of Object.entries(s.membership)) {
-            if (key === from) {
-              if (membership[to] === undefined) membership[to] = spaceId
-            } else if (key !== to) {
-              membership[key] = value
-            }
+            if (key === from) continue
+            membership[key] = value
           }
+          if (!destinationPlaced) membership[to] = spaceId
           return { membership }
         })
       },
       spaceOf: (rowKey) => {
-        const id = get().membership[rowKey]
+        const id = readMembership(get().membership, rowKey)
         if (id === undefined) return undefined
         return get().spaces.some((space) => space.id === id) ? id : undefined
       },
@@ -222,7 +248,10 @@ export const useSpaces = create<SpacesState>()(
         return {
           ...current,
           spaces: normalizeSpaces(blob?.spaces),
-          membership: normalizeMembership(blob?.membership),
+          membership: pruneMembership(
+            normalizeMembership(blob?.membership),
+            normalizeSpaces(blob?.spaces),
+          ),
         }
       },
     },

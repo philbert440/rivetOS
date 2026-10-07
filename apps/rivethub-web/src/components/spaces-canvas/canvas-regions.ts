@@ -1,7 +1,6 @@
 /**
  * Which threads sit in which region. A thread with no membership is History,
- * not a tile — except when no spaces exist yet, where the slice-1 Unplaced
- * region still holds every row so the canvas is not an empty frame.
+ * not a tile. With no spaces, the canvas has no thread region at all.
  */
 
 import type { ChatItem } from '../../lib/harness-chat.js'
@@ -33,14 +32,14 @@ export function buildCanvasRegions(opts: {
   frozenKeys: readonly string[] | null
 }): CanvasRegion[] {
   const spaces = [...opts.spaces].sort((a, b) => a.order - b.order || a.createdAt - b.createdAt)
-  if (spaces.length === 0) {
-    return [{ id: UNPLACED_ID, name: 'Unplaced', rows: ordered(opts.rows, opts.frozenKeys) }]
-  }
+  if (spaces.length === 0) return []
   const ids = new Set(spaces.map((space) => space.id))
   const buckets = new Map<string, ChatItem[]>(spaces.map((space) => [space.id, []]))
   for (const row of opts.rows) {
-    const spaceId = opts.membership[rowMembershipKey(opts.baseUrl, row)]
-    if (spaceId === undefined || !ids.has(spaceId)) continue
+    const memberKey = rowMembershipKey(opts.baseUrl, row)
+    if (!Object.hasOwn(opts.membership, memberKey)) continue
+    const spaceId = opts.membership[memberKey]
+    if (!ids.has(spaceId)) continue
     buckets.get(spaceId)?.push(row)
   }
   return spaces.map((space) => ({

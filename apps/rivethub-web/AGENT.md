@@ -292,11 +292,12 @@ zoom inside the expanded tile). Spaces live in the Zustand persist store
 `SETTINGS_KEYS`). Shape: `spaces: { id, name, order, createdAt, defaults? }[]`
 and `membership: Record<rowKey, spaceId>` keyed `${baseUrl}::${sessionKey}`,
 the same string archive uses. A thread is in exactly one space or in History.
-With no spaces stored, the canvas still shows one Unplaced region of every
-non-archived row. The first real space switches to membership: a thread with
-no membership is History only, not a tile. `+ New space` is always an extra
-dashed region and is not a drop target. `+ New thread` is the phantom slot
-at the end of each real space.
+With no spaces stored, the canvas shows only the dashed `+ New space` region
+and a hint that threads live in History — there is no Unplaced tile region.
+A thread with no membership (or membership pointing at a space that no longer
+exists) is History only, not a tile. `+ New space` is always an extra dashed
+region and is not a drop target. `+ New thread` is the phantom slot at the
+end of each real space.
 
 **History** (`HistoryPanel.tsx`) is the session drawer minus placed rows
 (same agent and archive filters, same `DrawerItem`). Dock toggle and `H`.
@@ -315,9 +316,11 @@ model/effort into chat settings, place, enqueue one outbound turn) or History
 in pick mode (`Add to <space>`). Cancel writes nothing.
 
 **Needs you** reads the blocked ids already on the canvas (no polling): dock
-count, Ctrl+J cycles placed tiles oldest-first, a polite toast when a
-session flips to blocked while you are not in it. **Find** (`/`, not claimed
-at Thread) fades non-hits to 0.15; Enter opens needs-you then recency.
+count, Ctrl+J cycles placed tiles oldest-first at Space and Everything (not
+claimed at Thread — the dock button and the toast are the jump there), a
+polite toast when a session flips to blocked while you are not in it. **Find**
+(`/`, not claimed at Thread) fades non-hits to 0.15; Enter opens needs-you
+then recency, and only while the find field itself is focused.
 **Recent** (Ctrl+`) steps an in-memory MRU; releasing Ctrl opens the preview.
 
 The per-session watch/attach lives in `src/lib/use-session-stream.ts`
@@ -376,10 +379,11 @@ the framed space; at Everything they move across placed tiles. At Thread
 every single-letter key, including Esc, is left for the focused session.
 Ctrl+Space is the way out of Thread. Also: `N` new space (name only), `E`
 rename the space you are in, `T` new thread, `M` move, `H` history, `/`
-find, Delete/Backspace archive or discard the selected thread (unpinned
-drafts are discarded), Shift+Delete remove the space you are in (unplaces
-its threads, never deletes sessions). `h` is History, not left. Ctrl+J and
-Ctrl+` are claimed at Thread too.
+find, Delete archives or discards the selected thread (unpinned drafts are
+discarded; Backspace is not a remove key), Shift+Delete removes the space
+you are in (unplaces its threads, never deletes sessions). `h` is History,
+not left. Ctrl+J is claimed at Space and Everything only. Ctrl+` is claimed
+at Thread too.
 
 ## Gotchas
 

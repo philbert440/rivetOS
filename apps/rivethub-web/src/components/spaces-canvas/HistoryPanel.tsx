@@ -41,13 +41,16 @@ export function HistoryPanel(props: {
   const archive = useArchived((s) => s.archive)
   const unarchive = useArchived((s) => s.unarchive)
   const membership = useSpaces((s) => s.membership)
+  const spaces = useSpaces((s) => s.spaces)
   const agentId = useAgentFilter((s) => s.agentId)
   const [showArchived, setShowArchived] = useState(false)
   const [openGroups, setOpenGroups] = useState<ReadonlySet<string>>(() => new Set())
 
   const unplaced = (item: ChatItem): boolean => {
     const key = rowMembershipKey(baseUrl, item)
-    return !Object.hasOwn(membership, key)
+    if (!Object.hasOwn(membership, key)) return true
+    const spaceId = membership[key]
+    return !spaces.some((space) => space.id === spaceId)
   }
 
   const listed = selectDrawerItems({
@@ -109,7 +112,12 @@ export function HistoryPanel(props: {
           data-history-row={it.key}
           onPointerDown={(event) => {
             const target = event.target
-            if (target instanceof Element && target.closest('button[aria-label]')) return
+            if (!(target instanceof Element)) return
+            if (target.closest('button[aria-label]')) return
+            // A nested row sits inside its ancestor's wrapper. Only the nearest
+            // row may arm a drag; otherwise the ancestor overwrites it.
+            if (target.closest('[data-history-row]') !== event.currentTarget) return
+            event.stopPropagation()
             props.onDragPointerDown(event, it)
           }}
         >

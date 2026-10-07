@@ -1,5 +1,7 @@
 import './test-dom.js'
 import { beforeEach, describe, expect, it } from 'vitest'
+import { agentForSession, getAgentPin } from '../../lib/agent-session.js'
+import { getSessionNodeBinding } from '../../lib/session-node.js'
 import { useAgentFilter } from '../../stores/agent-filter.js'
 import { useChat } from '../../stores/chat.js'
 import { useChatSettings } from '../../stores/chat-settings.js'
@@ -9,8 +11,10 @@ import { applyChooser } from './new-thread.js'
 
 beforeEach(() => {
   localStorage.removeItem('rivethub.spaces')
+  localStorage.removeItem('rivethub.agent.lastSession')
+  localStorage.removeItem('rivethub.sessionNodes')
   useSpaces.setState({ spaces: [], membership: {} })
-  useChat.setState({ drafts: [], active: undefined, outbound: {} })
+  useChat.setState({ drafts: [], active: undefined, outbound: {}, opened: [] })
   useChatSettings.setState({ byKey: {} })
   useAgentFilter.getState().clear()
 })
@@ -94,6 +98,74 @@ describe('applyChooser', () => {
     expect(
       applyChooser({ type: 'prompt', prompt: 'hello', spaceId: 'missing', baseUrl: base }),
     ).toBeUndefined()
+    expect(snap()).toEqual(before)
+  })
+
+  it('plain draft stays on the hub when a remote rail agent is selected', () => {
+    const base = useConnection.getState().baseUrl
+    const spaceId = useSpaces.getState().addSpace('Home')
+    useAgentFilter.getState().select({
+      agentId: 'remote-agent',
+      name: 'Remote',
+      accent: '#abc',
+      startNew: () => {
+        throw new Error('plain draft must not call the rail startNew')
+      },
+    })
+    const id = applyChooser({ type: 'prompt', prompt: 'hello', spaceId, baseUrl: base })
+    expect(id).toBeTruthy()
+    if (!id) return
+    const key = `${base}::${id}`
+    expect(useSpaces.getState().spaceOf(key)).toBe(spaceId)
+    expect(useChatSettings.getState().byKey[key]).toMatchObject({ agent: '', effort: 'medium' })
+    expect(getSessionNodeBinding(id)).toBeUndefined()
+    expect(getAgentPin('remote-agent')).toBeUndefined()
+    expect(agentForSession(id)).toBeUndefined()
+  })
+
+  it('files a chosen remote agent under that node', () => {
+    const base = useConnection.getState().baseUrl
+    const remote = 'http://192.168.1.30:8787'
+    const spaceId = useSpaces.getState().addSpace('Home')
+    const id = applyChooser({
+      type: 'prompt',
+      prompt: 'ship it',
+      spaceId,
+      baseUrl: base,
+      agent: {
+        id: 'agent-remote',
+        harnessId: 'claude-code',
+        model: 'claude-sonnet',
+        effort: 'low',
+        systemPrompt: '',
+        sourceNodeBaseUrl: remote,
+      },
+    })
+    expect(id).toBeTruthy()
+    if (!id) return
+    const key = `${remote}::${id}`
+    expect(useSpaces.getState().spaceOf(key)).toBe(spaceId)
+    expect(useSpaces.getState().spaceOf(`${base}::${id}`)).toBeUndefined()
+    expect(useChatSettings.getState().byKey[key]).toMatchObject({ agentId: 'agent-remote' })
+    expect(useChatSettings.getState().byKey[`${base}::${id}`]).toBeUndefined()
+    expect(getSessionNodeBinding(id)).toBe(remote)
+    expect(agentForSession(id)).toBe('agent-remote')
+  })
+
+  it('refuses an agent that is not on a roster node', () => {
+    const base = useConnection.getState().baseUrl
+    const spaceId = useSpaces.getState().addSpace('Home')
+    const before = snap()
+    expect(
+      applyChooser({
+        type: 'prompt',
+        prompt: 'hello',
+        spaceId,
+        baseUrl: base,
+        agent: { id: 'off-roster', sourceNodeBaseUrl: '' },
+      }),
+    ).toBeUndefined()
+    expect(useChat.getState().drafts).toEqual([])
     expect(snap()).toEqual(before)
   })
 })

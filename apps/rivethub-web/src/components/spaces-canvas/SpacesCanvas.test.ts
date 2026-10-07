@@ -30,6 +30,7 @@ import { storageKey } from '../../lib/session-rekey.js'
 import { MINI_BACKFILL_DEBOUNCE_MS, MINI_BACKFILL_MAX_WAIT_MS } from './ThreadMini.js'
 import { resetSessionStreams } from '../../lib/use-session-stream.js'
 import { useAgentFilter } from '../../stores/agent-filter.js'
+import { useArchived } from '../../stores/archived.js'
 import { useChat } from '../../stores/chat.js'
 import { useConnection } from '../../stores/connection.js'
 import { useSpaces } from '../../stores/spaces.js'
@@ -78,8 +79,16 @@ function harnessRow(native: string): ChatItem {
 beforeEach(() => {
   localStorage.removeItem('rivethub.spaces')
   useSpaces.setState({ spaces: [], membership: {} })
+  useArchived.setState({ keys: [] })
   useAgentFilter.getState().clear()
 })
+
+function placeOnHome(keys: readonly string[]): string {
+  const id = useSpaces.getState().addSpace('Home')
+  const base = useConnection.getState().baseUrl
+  for (const key of keys) useSpaces.getState().place(storageKey(base, key), id)
+  return id
+}
 
 function row(key: string, title: string, status?: ChatItem['status']): ChatItem {
   return { key, kind: 'legacy', title, updatedAt: 1, status }
@@ -115,7 +124,7 @@ const FLY_CLOCK = {
 } as const
 
 describe('SpacesCanvas', () => {
-  it('renders one card tile per row at everything', () => {
+  it('renders no tiles when no space exists yet', () => {
     const html = markup(
       createElement(SpacesCanvas, {
         rows: [row('a', 'Alpha', 'idle'), row('b', 'Beta', 'active')],
@@ -123,21 +132,13 @@ describe('SpacesCanvas', () => {
         renderThread: () => null,
       }),
     )
-    expect(html).toContain('data-tile="a"')
-    expect(html).toContain('data-tile="b"')
-    expect(html).toContain('data-face="card"')
+    expect(html).not.toContain('data-tile=')
+    expect(html).not.toContain('Unplaced')
+    expect(html).toContain('No spaces yet. Threads live in History.')
+    expect(html).toContain('+ New space')
     expect(html).toContain('data-altitude="everything"')
     expect(html).not.toContain('data-face="mini"')
     expect(html).not.toContain('id="conversations-pane"')
-    expect(html).toContain('st-idle')
-    expect(html).toContain('st-working')
-    expect(html).toContain('Alpha')
-    expect(html).toContain('Unplaced')
-    expect(html).toContain('1 active · 0 waiting on you')
-    expect(html).toContain('idle')
-    expect(html).toContain('working')
-    expect(html).toContain('--cs')
-    expect(html).toContain('--ch')
   })
 
   it('selecting and Enter calls onOpen', () => {
@@ -166,6 +167,10 @@ describe('SpacesCanvas', () => {
     expect(onOpen).toHaveBeenCalledWith('b')
     expect(canvasKeyClaims('thread', null, 'open')).toBe(false)
     expect(canvasKeyClaims('space', null, 'open')).toBe(true)
+    expect(canvasKeyClaims('thread', null, null, 'next-waiting')).toBe(false)
+    expect(canvasKeyClaims('space', null, null, 'next-waiting')).toBe(true)
+    expect(canvasKeyClaims('everything', null, null, 'next-waiting')).toBe(true)
+    expect(canvasKeyClaims('thread', null, null, 'mru')).toBe(true)
   })
 })
 
@@ -207,8 +212,10 @@ describe('SpacesCanvas mount', () => {
   function mount(
     rows: ChatItem[],
     onOpen: (id: string) => void,
-    opts?: {
+    initial?: {
       activeId?: string
+      blockedIds?: ReadonlySet<string>
+      blockedReady?: boolean
       strict?: boolean
       descriptors?: HarnessDescriptor[]
       renderThread?: (id: string) => ReactNode
@@ -218,23 +225,35 @@ describe('SpacesCanvas mount', () => {
     document.body.appendChild(host)
     root = createRoot(host)
     const query = client()
-    let activeId = opts?.activeId
-    const render = (next: ChatItem[], nextActive?: string): void => {
-      if (nextActive !== undefined) activeId = nextActive
+    let opts = initial ?? {}
+    const render = (
+      next: ChatItem[],
+      patch?:
+        | string
+        | {
+            activeId?: string
+            blockedIds?: ReadonlySet<string>
+            blockedReady?: boolean
+          },
+    ): void => {
+      if (typeof patch === 'string') opts = { ...opts, activeId: patch }
+      else if (patch) opts = { ...opts, ...patch }
       const canvas = createElement(
         QueryClientProvider,
         { client: query },
         createElement(SpacesCanvas, {
           rows: next,
-          activeId,
-          descriptors: opts?.descriptors,
+          activeId: opts.activeId,
+          blockedIds: opts.blockedIds,
+          blockedReady: opts.blockedReady,
+          descriptors: opts.descriptors,
           onOpen,
           renderThread:
-            opts?.renderThread ??
+            opts.renderThread ??
             ((id: string) => createElement('div', { 'data-active-session': id }, id)),
         }),
       )
-      root?.render(opts?.strict ? createElement(StrictMode, null, canvas) : canvas)
+      root?.render(opts.strict ? createElement(StrictMode, null, canvas) : canvas)
     }
     act(() => {
       render(rows)
@@ -242,9 +261,41 @@ describe('SpacesCanvas mount', () => {
     return { render }
   }
 
+  function press(init: KeyboardEventInit): KeyboardEvent {
+    document.body.focus()
+    const event = new KeyboardEvent('keydown', { bubbles: true, cancelable: true, ...init })
+    act(() => {
+      window.dispatchEvent(event)
+    })
+    return event
+  }
+
+  function cancelDialog(): void {
+    const cancel = [...document.querySelectorAll('button')].find(
+      (button) => button.textContent?.trim() === 'Cancel',
+    )
+    if (!cancel) throw new Error('missing cancel')
+    act(() => {
+      cancel.click()
+    })
+  }
+
   it('click selects a card and the next click opens it', () => {
     const onOpen = vi.fn()
-    mount([row('a', 'Alpha'), row('b', 'Beta')], onOpen)
+    placeOnHome(['a', 'b'])
+    mount([row('a', 'Alpha', 'idle'), row('b', 'Beta', 'active')], onOpen)
+    expect(host?.querySelector('[data-tile="a"]')?.className).toContain('st-idle')
+    expect(host?.querySelector('[data-tile="b"]')?.className).toContain('st-working')
+    expect(host?.querySelector('[data-face="card"]')).not.toBeNull()
+    expect(host?.querySelector('[data-face="mini"]')).toBeNull()
+    expect(host?.querySelector('#conversations-pane')).toBeNull()
+    expect(host?.textContent).toContain('Home')
+    expect(host?.textContent).not.toContain('Unplaced')
+    expect(host?.textContent).toContain('1 active · 0 waiting on you')
+    expect(host?.textContent).toContain('idle')
+    expect(host?.textContent).toContain('working')
+    const face = host?.querySelector('[data-face="card"]')
+    expect(face?.style.getPropertyValue('--cs')).toContain('var(--inv')
     const hit = host?.querySelector('[data-tile-hit="b"]')
     if (!hit) throw new Error('missing tile')
     act(() => {
@@ -261,6 +312,7 @@ describe('SpacesCanvas mount', () => {
 
   it('Enter on body opens and Enter on a dock button does not', () => {
     const onOpen = vi.fn()
+    placeOnHome(['a', 'b'])
     mount([row('a', 'Alpha'), row('b', 'Beta')], onOpen)
     document.body.focus()
     act(() => {
@@ -281,6 +333,7 @@ describe('SpacesCanvas mount', () => {
   it('lands one thread after rows reorder mid-fly, and Ctrl+Space leaves it', async () => {
     vi.useFakeTimers(FLY_CLOCK)
     const onOpen = vi.fn()
+    placeOnHome(['a', 'b'])
     const { render } = mount([row('a', 'Alpha'), row('b', 'Beta')], onOpen)
     const hit = host?.querySelector('[data-tile-hit="a"]')
     if (!hit) throw new Error('missing tile')
@@ -306,6 +359,7 @@ describe('SpacesCanvas mount', () => {
 
   it('keeps keyboard nav after a pointer selects a tile', () => {
     const onOpen = vi.fn()
+    placeOnHome(['a', 'b', 'c', 'd'])
     mount([row('a', 'Alpha'), row('b', 'Beta'), row('c', 'Gamma'), row('d', 'Delta')], onOpen)
     const hit = host?.querySelector('[data-tile-hit="c"]')
     if (!(hit instanceof HTMLElement)) throw new Error('missing tile')
@@ -323,11 +377,13 @@ describe('SpacesCanvas mount', () => {
 
   it('Enter on a focused location button activates it and the canvas does not claim it', () => {
     const onOpen = vi.fn()
+    placeOnHome(['a', 'b'])
     mount([row('a', 'Alpha'), row('b', 'Beta')], onOpen)
     expect(host?.querySelector('[data-altitude]')?.getAttribute('data-altitude')).toBe('everything')
-    const unplaced = host?.querySelector('[aria-label="Location"]')?.querySelectorAll('button')[1]
-    if (!(unplaced instanceof HTMLElement)) throw new Error('missing Unplaced')
-    unplaced.focus()
+    const crumb = host?.querySelector('[aria-label="Location"]')?.querySelectorAll('button')[1]
+    if (!(crumb instanceof HTMLElement)) throw new Error('missing space crumb')
+    expect(crumb.textContent).toBe('Home')
+    crumb.focus()
     act(() => {
       window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }))
     })
@@ -338,6 +394,8 @@ describe('SpacesCanvas mount', () => {
   it('keeps the open thread mounted across a draft rekey and admits a new row', async () => {
     vi.useFakeTimers(FLY_CLOCK)
     const onOpen = vi.fn()
+    const home = placeOnHome(['draft-1'])
+    const base = useConnection.getState().baseUrl
     const { render } = mount([row('draft-1', 'Draft')], onOpen)
     const hit = host?.querySelector('[data-tile-hit="draft-1"]')
     if (!hit) throw new Error('missing tile')
@@ -351,6 +409,8 @@ describe('SpacesCanvas mount', () => {
       'draft-1',
     )
     act(() => {
+      // migrateSessionKey moves membership alongside the chat rekey.
+      useSpaces.getState().rekey(storageKey(base, 'draft-1'), storageKey(base, 'canon-1'))
       useChat.getState().rekey('draft-1', 'canon-1')
       render([row('canon-1', 'Canon')], 'canon-1')
     })
@@ -359,6 +419,7 @@ describe('SpacesCanvas mount', () => {
       'canon-1',
     )
     act(() => {
+      useSpaces.getState().place(storageKey(base, 'new-1'), home)
       render([row('canon-1', 'Canon'), row('new-1', 'Newcomer')], 'canon-1')
     })
     const added = host?.querySelector('[data-tile-hit="new-1"]')
@@ -378,6 +439,7 @@ describe('SpacesCanvas mount', () => {
   it('does not restart the fly when the opening tile is opened again', async () => {
     vi.useFakeTimers(FLY_CLOCK)
     const onOpen = vi.fn()
+    placeOnHome(['a', 'b'])
     mount([row('a', 'Alpha'), row('b', 'Beta')], onOpen)
     const hit = host?.querySelector('[data-tile-hit="a"]')
     if (!hit) throw new Error('missing tile')
@@ -402,6 +464,7 @@ describe('SpacesCanvas mount', () => {
   it('lands once under StrictMode when a thread is already active', async () => {
     vi.useFakeTimers(FLY_CLOCK)
     const onOpen = vi.fn()
+    placeOnHome(['a', 'b'])
     mount([row('a', 'Alpha'), row('b', 'Beta')], onOpen, { activeId: 'a', strict: true })
     await act(async () => {
       await vi.advanceTimersByTimeAsync(400)
@@ -440,6 +503,7 @@ describe('SpacesCanvas mount', () => {
     useConnection.getState().addNode({ name: 'other', baseUrl: remoteBase })
     setSessionNodeBinding(remoteId.key, remoteBase, useConnection.getState().baseUrl)
     const onOpen = vi.fn()
+    placeOnHome([remoteId.key, localId.key])
     try {
       mount([remoteId, localId], onOpen, { descriptors: [CLAUDE] })
       await act(async () => {
@@ -479,6 +543,7 @@ describe('SpacesCanvas mount', () => {
     const target = rows[0]?.key
     if (!target) throw new Error('missing row')
     const onOpen = vi.fn()
+    placeOnHome(rows.map((item) => item.key))
     mount(rows, onOpen, { descriptors: [CLAUDE] })
     const space = host?.querySelector('[data-alt="space"]')
     if (!(space instanceof HTMLElement)) throw new Error('missing space')
@@ -515,6 +580,7 @@ describe('SpacesCanvas mount', () => {
     const target = rows[0]?.key
     if (!target) throw new Error('missing row')
     const onOpen = vi.fn()
+    placeOnHome(rows.map((item) => item.key))
     const { render } = mount(rows, onOpen, { descriptors: [CLAUDE] })
     const space = host?.querySelector('[data-alt="space"]')
     if (!(space instanceof HTMLElement)) throw new Error('missing space')
@@ -549,6 +615,8 @@ describe('SpacesCanvas mount', () => {
       return createElement('div', { 'data-active-session': props.id })
     }
     const onOpen = vi.fn()
+    placeOnHome(['draft-1'])
+    const base = useConnection.getState().baseUrl
     const { render } = mount([row('draft-1', 'Draft')], onOpen, {
       renderThread: (id) => createElement(Probe, { key: id, id }),
     })
@@ -563,6 +631,7 @@ describe('SpacesCanvas mount', () => {
     expect(mounts).toBe(1)
     expect(unmounts).toBe(0)
     act(() => {
+      useSpaces.getState().rekey(storageKey(base, 'draft-1'), storageKey(base, 'canon-1'))
       useChat.getState().rekey('draft-1', 'canon-1')
       render([row('canon-1', 'Canon')], 'canon-1')
     })
@@ -607,6 +676,7 @@ describe('SpacesCanvas mount', () => {
     useConnection.getState().addNode({ name: 'other', baseUrl: remoteBase })
     setSessionNodeBinding(remoteRow.key, remoteBase, useConnection.getState().baseUrl)
     const onOpen = vi.fn()
+    placeOnHome([remoteRow.key])
     try {
       mount([remoteRow], onOpen, { descriptors: [CLAUDE] })
       const space = host?.querySelector('[data-alt="space"]')
@@ -677,6 +747,167 @@ describe('SpacesCanvas mount', () => {
     expect(host?.querySelector('[data-history-row="a"]')).not.toBeNull()
     expect(host?.querySelector('[data-history-row="b"]')).not.toBeNull()
     expect(host?.querySelector('[data-history-row="c"]')).not.toBeNull()
+  })
+
+  it('with no spaces shows only the new-space control and keeps threads in History', () => {
+    mount([row('a', 'Alpha'), row('b', 'Beta')], () => undefined)
+    expect(host?.querySelector('[data-tile]')).toBeNull()
+    expect(host?.querySelector('[data-empty-spaces]')?.textContent).toContain(
+      'No spaces yet. Threads live in History.',
+    )
+    expect(host?.textContent).toContain('+ New space')
+    press({ key: 'h' })
+    expect(host?.querySelector('[data-history-row="a"]')).not.toBeNull()
+    expect(host?.querySelector('[data-history-row="b"]')).not.toBeNull()
+  })
+
+  it('does not let Find claim Enter or Escape after an external open', () => {
+    const rows = [row('a', 'Alpha'), row('b', 'Beta')]
+    placeOnHome(['a', 'b'])
+    const { render } = mount(rows, () => undefined)
+    press({ key: '/' })
+    expect(document.querySelector('[data-dock="find"]')).not.toBeNull()
+    act(() => {
+      render(rows, { activeId: 'a' })
+    })
+    expect(host?.querySelector('[data-altitude]')?.getAttribute('data-altitude')).toBe('thread')
+    expect(document.querySelector('[data-dock="find"]')).toBeNull()
+    const enter = press({ key: 'Enter' })
+    const escape = press({ key: 'Escape' })
+    expect(enter.defaultPrevented).toBe(false)
+    expect(escape.defaultPrevented).toBe(false)
+  })
+
+  it('claims Ctrl+J at Everything and not at Thread', () => {
+    placeOnHome(['a'])
+    mount([row('a', 'Alpha')], () => undefined)
+    const claimed = press({ key: 'j', code: 'KeyJ', ctrlKey: true })
+    expect(claimed.defaultPrevented).toBe(true)
+    act(() => {
+      root?.unmount()
+    })
+    host?.remove()
+    mount([row('a', 'Alpha')], () => undefined, { activeId: 'a' })
+    const left = press({ key: 'j', code: 'KeyJ', ctrlKey: true })
+    expect(host?.querySelector('[data-altitude]')?.getAttribute('data-altitude')).toBe('thread')
+    expect(left.defaultPrevented).toBe(false)
+  })
+
+  it('drags the nested History row, not its ancestor', () => {
+    const parent = row('parent', 'Parent')
+    const child = { ...row('child', 'Child task'), parentKey: 'parent', updatedAt: 9 }
+    mount([parent, child], () => undefined)
+    press({ key: 'h' })
+    const expand = host?.querySelector('[aria-label="expand nested conversations"]')
+    if (!expand) throw new Error('missing expand')
+    act(() => {
+      expand.click()
+    })
+    const childRow = host?.querySelector('[data-history-row="child"]')
+    if (!childRow) throw new Error('missing child row')
+    const title = [...childRow.querySelectorAll('button')].find(
+      (button) => !button.hasAttribute('aria-label'),
+    )
+    if (!title) throw new Error('missing child title')
+    act(() => {
+      title.dispatchEvent(
+        new PointerEvent('pointerdown', {
+          bubbles: true,
+          cancelable: true,
+          clientX: 0,
+          clientY: 0,
+        }),
+      )
+      window.dispatchEvent(
+        new PointerEvent('pointermove', {
+          bubbles: true,
+          cancelable: true,
+          clientX: 40,
+          clientY: 40,
+        }),
+      )
+    })
+    expect(host?.querySelector('[data-drag-ghost]')?.textContent).toBe('Child task')
+  })
+
+  it('toasts a needs-you episode after the thread goes back to working', () => {
+    const rows = [row('a', 'Alpha'), row('b', 'Beta')]
+    const { render } = mount(rows, () => undefined, {
+      activeId: 'a',
+      blockedIds: new Set(['a', 'b']),
+      blockedReady: true,
+    })
+    expect(document.querySelector('[data-needs-toasts]')?.textContent).not.toContain('needs you')
+    act(() => {
+      render(rows, { blockedIds: new Set() })
+    })
+    act(() => {
+      render(rows, { blockedIds: new Set(['a', 'b']) })
+    })
+    const toasts = document.querySelector('[data-needs-toasts]')?.textContent ?? ''
+    expect(toasts).toContain('Beta needs you')
+    expect(toasts).not.toContain('Alpha needs you')
+  })
+
+  it('treats membership in a missing space as History', () => {
+    const base = useConnection.getState().baseUrl
+    useSpaces.getState().addSpace('Home')
+    useSpaces.setState({ membership: { [storageKey(base, 'a')]: 'missing' } })
+    mount([row('a', 'Alpha')], () => undefined)
+    expect(host?.querySelector('[data-tile="a"]')).toBeNull()
+    press({ key: 'h' })
+    expect(host?.querySelector('[data-history-row="a"]')).not.toBeNull()
+  })
+
+  it('targets the framed space, not the selected tile in another space', () => {
+    const home = placeOnHome(['a'])
+    mount([row('a', 'Alpha')], () => undefined)
+    // The only tile starts selected. Clicking it would open Thread, where N is not claimed.
+    expect(host?.querySelector('[data-tile="a"]')?.getAttribute('data-selected')).toBe('true')
+    press({ key: 'n' })
+    const input = document.querySelector('[aria-label="Space name"]')
+    if (!input) throw new Error('missing space name')
+    const field = input as {
+      type: string
+      value: string
+      _valueTracker?: { setValue: (value: string) => void }
+    }
+    field.type = 'text'
+    field._valueTracker?.setValue('')
+    field.value = 'Empty'
+    act(() => {
+      input.dispatchEvent(new Event('input', { bubbles: true }))
+    })
+    const form = input.closest('form')
+    if (!form) throw new Error('missing form')
+    act(() => {
+      form.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true }))
+    })
+    expect(host?.querySelector('[data-altitude]')?.getAttribute('data-altitude')).toBe('space')
+    expect(host?.querySelector('[data-tile="a"]')?.getAttribute('data-selected')).toBe('true')
+    expect(host?.querySelector('[data-tile="a"]')?.getAttribute('data-space')).toBe(home)
+
+    press({ key: 'e' })
+    const rename = document.querySelector('[aria-label="Space name"]')
+    expect((rename as { value?: string } | null)?.value).toBe('Empty')
+    cancelDialog()
+
+    press({ key: 'Delete', shiftKey: true })
+    const remove = document.body.textContent ?? ''
+    expect(remove).toContain('Remove “Empty”?')
+    expect(remove).toContain('It has no threads yet.')
+    cancelDialog()
+
+    press({ key: 't' })
+    expect(document.body.textContent).toContain('Space ·')
+    expect(document.body.textContent).toContain('Empty')
+    expect(document.querySelector('[aria-label="Space"]')).toBeNull()
+    cancelDialog()
+
+    press({ key: '0', code: 'Digit0', ctrlKey: true })
+    expect(host?.querySelector('[data-altitude]')?.getAttribute('data-altitude')).toBe('everything')
+    press({ key: 't' })
+    expect(document.querySelector('[aria-label="Space"]')).not.toBeNull()
   })
 })
 

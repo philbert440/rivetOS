@@ -9,6 +9,41 @@ export interface WaitingTile {
 }
 
 /**
+ * Drop blocked ids that have gone back to working, then stamp new ones.
+ * The first call (not yet primed) records the snapshot and toasts nothing.
+ * A later blocked → working → blocked id is fresh: new `since`, and listed
+ * in `fresh` so the canvas can toast it.
+ */
+export function reconcileNeedsEpisodes(
+  since: Map<string, number>,
+  announced: Set<string>,
+  blocked: ReadonlySet<string>,
+  now: number,
+  primed: boolean,
+): { primed: true; fresh: string[] } {
+  for (const id of [...since.keys()]) {
+    if (!blocked.has(id)) since.delete(id)
+  }
+  for (const id of [...announced]) {
+    if (!blocked.has(id)) announced.delete(id)
+  }
+  for (const id of blocked) {
+    if (!since.has(id)) since.set(id, now)
+  }
+  if (!primed) {
+    for (const id of blocked) announced.add(id)
+    return { primed: true, fresh: [] }
+  }
+  const fresh: string[] = []
+  for (const id of blocked) {
+    if (announced.has(id)) continue
+    announced.add(id)
+    fresh.push(id)
+  }
+  return { primed: true, fresh }
+}
+
+/**
  * Next blocked tile. Oldest `since` first. At thread altitude, cycle forward
  * from the current tile (wrapping). Anywhere else, jump to the oldest.
  */

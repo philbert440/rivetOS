@@ -56,8 +56,8 @@ export function matchCanvasNav(
   return null
 }
 
-/** Canvas commands that are not camera navigation. Single-letter keys are
- *  not claimed at Thread altitude; Ctrl+J and Ctrl+` are. */
+/** Canvas commands that are not camera navigation. Single-letter keys and
+ *  Ctrl+J are not claimed at Thread altitude. Ctrl+` is. */
 export type CanvasAction =
   | 'new-space'
   | 'rename-space'
@@ -81,7 +81,7 @@ export function matchCanvasAction(
     return null
   }
   if (e.shiftKey) {
-    if (e.key === 'Delete' || e.key === 'Backspace') return 'remove-space'
+    if (e.key === 'Delete') return 'remove-space'
     return null
   }
   if (e.key === 'n' || e.key === 'N') return 'new-space'
@@ -90,7 +90,7 @@ export function matchCanvasAction(
   if (e.key === 'm' || e.key === 'M') return 'move'
   if (e.key === 'h' || e.key === 'H') return 'history'
   if (e.key === '/') return 'find'
-  if (e.key === 'Delete' || e.key === 'Backspace') return 'remove-thread'
+  if (e.key === 'Delete') return 'remove-thread'
   return null
 }
 

@@ -7,20 +7,13 @@
 import { useEffect, useRef, useState, type JSX } from 'react'
 import * as Dialog from '@radix-ui/react-dialog'
 import type { HarnessDescriptor, ThinkingLevel } from '@rivetos/types'
-import { useQueryClient } from '@tanstack/react-query'
-import { dedupeRosterAgents, type ListedAgents } from '../../lib/agent-roster.js'
 import { launchModelOptions } from '../../lib/conversation-model-options.js'
+import { useRosterAgents } from '../../lib/use-agent-roster.js'
 import { useConnection } from '../../stores/connection.js'
 import { Select } from '../select.js'
 import { EffortPicker } from '../pickers/effort-picker.js'
 import { ModelPicker } from '../pickers/model-picker.js'
 import { applyChooser, type PromptAgent } from './new-thread.js'
-
-function readRoster(client: ReturnType<typeof useQueryClient>): ListedAgents[] {
-  return client
-    .getQueriesData<ListedAgents[]>({ queryKey: ['agents-all-nodes'] })
-    .flatMap(([, data]) => data ?? [])
-}
 
 export function NewThreadDialog(props: {
   spaceId?: string
@@ -31,21 +24,11 @@ export function NewThreadDialog(props: {
   onPickHistory: (spaceId: string) => void
 }): JSX.Element {
   const baseUrl = useConnection((s) => s.baseUrl)
-  const roster = useConnection((s) => s.roster)
-  const client = useQueryClient()
-  const [lists, setLists] = useState<ListedAgents[]>(() => readRoster(client))
-  useEffect(
-    () =>
-      client.getQueryCache().subscribe((event) => {
-        // queryKey is Query<any>'s key (tanstack); same cast as pages/chat.tsx.
-        const key: unknown = (event.query.queryKey as readonly unknown[])[0]
-        if (key === 'agents-all-nodes') setLists(readRoster(client))
-      }),
-    [client],
-  )
-  const agents = dedupeRosterAgents(lists, { currentBaseUrl: baseUrl, mesh: [], roster })
+  const { agents: rosterAgents } = useRosterAgents()
+  const agents = rosterAgents.filter((row) => row.sourceNodeBaseUrl.length > 0)
   const locked = props.spaceId
-  const [spaceId, setSpaceId] = useState(locked ?? props.spaces[0]?.id ?? '')
+  const firstSpace = props.spaces.length > 0 ? props.spaces[0] : undefined
+  const [spaceId, setSpaceId] = useState(locked ?? firstSpace?.id ?? '')
   const [agentId, setAgentId] = useState('')
   const [prompt, setPrompt] = useState('')
   const [model, setModel] = useState('')
@@ -62,7 +45,7 @@ export function NewThreadDialog(props: {
       setEffort('medium')
       return
     }
-    setModel(next.model ?? '')
+    setModel(next.model)
     const level = next.effort
     if (
       level === 'off' ||

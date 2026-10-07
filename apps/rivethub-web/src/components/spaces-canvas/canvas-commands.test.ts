@@ -3,6 +3,7 @@ import {
   mruPreviewId,
   nextWaitingId,
   rankFindHits,
+  reconcileNeedsEpisodes,
   rememberThread,
   removeSpaceMessage,
 } from './canvas-commands.js'
@@ -28,6 +29,26 @@ describe('nextWaitingId', () => {
 
   it('is undefined when nothing is waiting', () => {
     expect(nextWaitingId([], 'old', true)).toBeUndefined()
+  })
+})
+
+describe('reconcileNeedsEpisodes', () => {
+  it('stays quiet on the first snapshot and stamps a fresh since on the next episode', () => {
+    const since = new Map<string, number>()
+    const announced = new Set<string>()
+    const first = reconcileNeedsEpisodes(since, announced, new Set(['a']), 100, false)
+    expect(first).toEqual({ primed: true, fresh: [] })
+    expect(since.get('a')).toBe(100)
+    expect(announced.has('a')).toBe(true)
+
+    reconcileNeedsEpisodes(since, announced, new Set(), 200, true)
+    expect(since.has('a')).toBe(false)
+    expect(announced.has('a')).toBe(false)
+
+    const again = reconcileNeedsEpisodes(since, announced, new Set(['a']), 300, true)
+    expect(again.fresh).toEqual(['a'])
+    expect(since.get('a')).toBe(300)
+    expect(announced.has('a')).toBe(true)
   })
 })
 
