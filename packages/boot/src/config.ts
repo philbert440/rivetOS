@@ -3,6 +3,7 @@
  */
 
 import { readFile } from 'node:fs/promises'
+import { isAbsolute, resolve } from 'node:path'
 import { parse as parseYaml } from 'yaml'
 import { logger } from '@rivetos/core'
 import type { EffortOption, HarnessModelOption } from '@rivetos/types'
@@ -60,7 +61,10 @@ export interface MemoryPostgresEmbeddedSection {
 
 /** Workflows engine host config (YAML snake_case). */
 export interface WorkflowsSection {
-  /** Absolute path for run caseDirs (default /rivet-shared/workflows/runs). */
+  /**
+   * Root for run caseDirs (default /rivet-shared/workflows/runs). Relative
+   * paths here and in `defs_roots` resolve against the launch directory.
+   */
   runs_dir?: string
   /**
    * Roots scanned for `<root>/<id>/workflow.yaml`.
@@ -76,6 +80,28 @@ export interface WorkflowsSection {
    * Entry `*` allows all. Human gateway trigger is NOT gated by this list.
    */
   agent_allowlist?: string[]
+}
+
+/**
+ * Make relative `workflows.runs_dir` / `defs_roots` absolute against `baseDir`
+ * (the launch directory). Boot chdirs into the agent workspace before the
+ * workflows registrar reads these, so a relative `./workflows` would otherwise
+ * resolve under the workspace — unlike `runtime.workspace` and the embedded
+ * pg `data_dir`, which resolve against the launch directory. A leading `~`
+ * expands to $HOME, as `runtime.workspace` does.
+ */
+export function anchorWorkflowPaths(section: WorkflowsSection | undefined, baseDir: string): void {
+  if (!section) return
+  const anchor = (p: string): string => {
+    const trimmed = p.trim()
+    if (!trimmed) return p
+    const expanded = trimmed.replace(/^~(?=$|\/)/, process.env.HOME ?? '~')
+    return isAbsolute(expanded) ? expanded : resolve(baseDir, expanded)
+  }
+  if (typeof section.runs_dir === 'string') section.runs_dir = anchor(section.runs_dir)
+  if (Array.isArray(section.defs_roots)) {
+    section.defs_roots = section.defs_roots.map((r) => (typeof r === 'string' ? anchor(r) : r))
+  }
 }
 
 // ---------------------------------------------------------------------------

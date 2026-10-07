@@ -11,7 +11,7 @@ import { Runtime } from '@rivetos/core'
 import { logger } from '@rivetos/core'
 import type { ThinkingLevel } from '@rivetos/types'
 
-import { loadConfig, type RivetConfig } from './config.js'
+import { anchorWorkflowPaths, loadConfig, type RivetConfig } from './config.js'
 import { discoverPlugins } from './discovery.js'
 import { registerHooks } from './registrars/hooks.js'
 import { registerPlugins } from './registrars/plugins.js'
@@ -204,6 +204,10 @@ async function bootWithConfig(
     explicitPlugins: config.plugins,
     additionalPaths: config.runtime.plugin_dirs,
   })
+
+  // Relative workflow paths are read after the chdir below — pin them to the
+  // launch directory first, like the rest of the config.
+  anchorWorkflowPaths(config.workflows, process.cwd())
 
   // After plugin discovery, anchor process.cwd() to the workspace so tool
   // fallbacks (file/shell/search) operate in the agent's workspace rather

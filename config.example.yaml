@@ -180,8 +180,10 @@ memory:
 
 # ---------------------------------------------------------------------------
 # Workflows v1 — journal-replay engine (gateway API + agent start door).
-# Gold recipes ship in-repo under workflows/ (pr-review, change). Default
-# defs_roots includes <installRoot>/workflows and /rivet-shared/workflows/defs.
+# The repo ships only the hello-world example under workflows/; real recipes
+# (pr-review, change) live in a separate defs repo checked out at
+# /rivet-shared/workflows/defs. Default defs_roots is that shared dir, then
+# <installRoot>/workflows. Relative paths resolve against the launch directory.
 # ---------------------------------------------------------------------------
 # workflows:
 #   enabled: true
