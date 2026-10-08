@@ -29,7 +29,9 @@ import {
   matchCanvasNav,
   type CanvasAction,
 } from '../../lib/hub-keys.js'
+import { bindSpaceThreadStarter } from '../../lib/new-conversation.js'
 import { storageKey } from '../../lib/session-rekey.js'
+import { useRosterAgents } from '../../lib/use-agent-roster.js'
 import { useArchived } from '../../stores/archived.js'
 import { useChat } from '../../stores/chat.js'
 import { useConnection } from '../../stores/connection.js'
@@ -74,8 +76,10 @@ import {
   type DropHit,
 } from './drop-target.js'
 import { HistoryPanel } from './HistoryPanel.js'
-import { applyChooser } from './new-thread.js'
+import { applyChooser, startThreadInSpace } from './new-thread.js'
 import { NewThreadDialog } from './NewThreadDialog.js'
+import { SpaceDefaultsDialog } from './SpaceDefaultsDialog.js'
+import { defaultAgentChip, startablePreset, startsInDirectory } from './space-defaults.js'
 import { Tile } from './Tile.js'
 import { tileStatus } from './tile-status.js'
 import { holdTileLease, SelectedPrewarm, WarmLease } from './ThreadMini.js'
@@ -205,6 +209,9 @@ export function SpacesCanvas(props: {
   const spaces = useSpaces((s) => s.spaces)
   const membership = useSpaces((s) => s.membership)
   const baseUrl = useConnection((s) => s.baseUrl)
+  const { agents: rosterAgents } = useRosterAgents()
+  const rosterRef = useRef(rosterAgents)
+  rosterRef.current = rosterAgents
   const archivedKeys = useArchived((s) => s.keys)
   const conversationsCollapsed = useSidebarPrefs((s) => s.conversationsCollapsed)
 
@@ -225,6 +232,7 @@ export function SpacesCanvas(props: {
   const [findOpen, setFindOpen] = useState(false)
   const [findQuery, setFindQuery] = useState('')
   const [namePrompt, setNamePrompt] = useState<NamePrompt | null>(null)
+  const [editSpace, setEditSpace] = useState<string | null>(null)
   const [removePrompt, setRemovePrompt] = useState<string | null>(null)
   const [newThread, setNewThread] = useState<{ spaceId?: string } | null>(null)
   const [moveOpen, setMoveOpen] = useState(false)
@@ -375,6 +383,7 @@ export function SpacesCanvas(props: {
   const rowsRef = useRef(rows)
   const baseUrlRef = useRef(baseUrl)
   const modalRef = useRef(false)
+  const spaceInFocusRef = useRef<() => string | undefined>(() => undefined)
   const pickRef = useRef(pick)
   const findOpenRef = useRef(findOpen)
   const bestHitRef = useRef<string | undefined>(undefined)
@@ -390,7 +399,8 @@ export function SpacesCanvas(props: {
   openRef.current = openId
   rowsRef.current = rows
   baseUrlRef.current = baseUrl
-  modalRef.current = namePrompt !== null || removePrompt !== null || newThread !== null
+  modalRef.current =
+    namePrompt !== null || removePrompt !== null || newThread !== null || editSpace !== null
   pickRef.current = pick
   findOpenRef.current = findOpen
   mruRef.current = mru
@@ -622,6 +632,7 @@ export function SpacesCanvas(props: {
     }
     return undefined
   }
+  spaceInFocusRef.current = spaceYouAreIn
   const removeSelectedThread = (): void => {
     const id = selectedRef.current
     if (id === undefined) return
@@ -639,9 +650,8 @@ export function SpacesCanvas(props: {
       case 'rename-space': {
         const id = spaceYouAreIn()
         if (id === undefined) return
-        const space = spaces.find((item) => item.id === id)
-        if (!space) return
-        setNamePrompt({ mode: 'rename', id, initial: space.name })
+        if (!spaces.some((item) => item.id === id)) return
+        setEditSpace(id)
         return
       }
       case 'remove-space': {
@@ -880,6 +890,19 @@ export function SpacesCanvas(props: {
   }, [])
 
   useEffect(() => {
+    bindSpaceThreadStarter(() => {
+      if (modalRef.current) return undefined
+      if (!navFocusAllowed(rootRef.current)) return undefined
+      const spaceId = spaceInFocusRef.current()
+      if (!spaceId) return undefined
+      const defaults = useSpaces.getState().spaces.find((space) => space.id === spaceId)?.defaults
+      if (!defaults) return undefined
+      return startThreadInSpace(spaceId, useConnection.getState().baseUrl, rosterRef.current)
+    })
+    return () => bindSpaceThreadStarter(null)
+  }, [])
+
+  useEffect(() => {
     const hitAt = (clientX: number, clientY: number): DropHit => {
       const stage = stageRef.current
       if (!stage) return { kind: 'none' }
@@ -1012,6 +1035,11 @@ export function SpacesCanvas(props: {
   const historyOpen = historyWanted || pick !== null
   const removeSpace = spaces.find((space) => space.id === removePrompt)
   const removeRows = regions.find((region) => region.id === removePrompt)?.rows ?? []
+  const editing = editSpace ? spaces.find((space) => space.id === editSpace) : undefined
+  const dockStartsIn = startsInDirectory(
+    startablePreset(spaces.find((space) => space.id === spaceYouAreIn())?.defaults, rosterAgents)
+      ?.directory,
+  )
 
   const tileRows = placed.map((item) => item.row)
   if (showSynthetic) tileRows.push(openRow)
@@ -1079,6 +1107,10 @@ export function SpacesCanvas(props: {
               ? model.rows.filter((row) => isNeeds(row, blockedIds)).length
               : 0
             const real = !isNew && region.id !== UNPLACED_ID
+            const regionSpace = real ? spaces.find((space) => space.id === region.id) : undefined
+            const chip = regionSpace
+              ? defaultAgentChip(regionSpace.defaults, rosterAgents)
+              : undefined
             return (
               <div
                 key={region.id}
@@ -1117,21 +1149,24 @@ export function SpacesCanvas(props: {
                     <b className="text-ink" style={{ fontSize: '1.35em' }}>
                       {model?.name ?? region.id}
                     </b>
+                    {chip ? (
+                      <span
+                        data-space-default=""
+                        className="border border-line px-1.5 text-ink-dim"
+                      >
+                        {chip.name}
+                        {chip.directoryBase ? ` · ${chip.directoryBase}` : ''}
+                      </span>
+                    ) : null}
                     {countLabel(active, waitingOn)}
                     {real ? (
                       <>
                         <button
                           type="button"
                           data-act=""
-                          aria-label={`Rename ${model?.name ?? 'space'}`}
+                          aria-label={`Edit ${model?.name ?? 'space'}`}
                           className="hover:text-ink"
-                          onClick={() =>
-                            setNamePrompt({
-                              mode: 'rename',
-                              id: region.id,
-                              initial: model?.name ?? '',
-                            })
-                          }
+                          onClick={() => setEditSpace(region.id)}
                         >
                           Edit
                         </button>
@@ -1180,6 +1215,12 @@ export function SpacesCanvas(props: {
             if (!laidRegion) return null
             const slot = tileSlot(region.id, laidRegion.rect, region.rows.length)
             const hidden = altitude === 'thread'
+            const slotStartsIn = startsInDirectory(
+              startablePreset(
+                spaces.find((space) => space.id === region.id)?.defaults,
+                rosterAgents,
+              )?.directory,
+            )
             return (
               <button
                 key={`add-${region.id}`}
@@ -1196,6 +1237,7 @@ export function SpacesCanvas(props: {
                   pointerEvents: hidden ? 'none' : undefined,
                   borderWidth: 'calc(1.5px * var(--inv, 1))',
                 }}
+                title={slotStartsIn}
                 onClick={() => setNewThread({ spaceId: region.id })}
               >
                 + New thread
@@ -1379,6 +1421,7 @@ export function SpacesCanvas(props: {
             type="button"
             data-dock="thread"
             className="px-3 py-2 text-sm text-ink hover:bg-em/15"
+            title={dockStartsIn}
             onClick={() => setNewThread({ spaceId: spaceYouAreIn() })}
           >
             + Thread <kbd className="text-ink-dim">T</kbd>
@@ -1554,7 +1597,11 @@ export function SpacesCanvas(props: {
       {newThread ? (
         <NewThreadDialog
           spaceId={newThread.spaceId}
-          spaces={spaces.map((space) => ({ id: space.id, name: space.name }))}
+          spaces={spaces.map((space) => ({
+            id: space.id,
+            name: space.name,
+            defaults: space.defaults,
+          }))}
           descriptors={descriptors}
           onClose={() => setNewThread(null)}
           onStarted={(id) => {
@@ -1566,6 +1613,13 @@ export function SpacesCanvas(props: {
             setNewThread(null)
             setPick({ spaceId, title: `Add to ${name}` })
           }}
+        />
+      ) : null}
+      {editing ? (
+        <SpaceDefaultsDialog
+          space={editing}
+          descriptors={descriptors}
+          onClose={() => setEditSpace(null)}
         />
       ) : null}
     </div>

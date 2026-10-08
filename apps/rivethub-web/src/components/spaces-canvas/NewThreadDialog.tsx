@@ -2,30 +2,50 @@
  * New thread: a prompt for an agent, or History in pick mode. Prompt is the
  * default. Esc / Cancel close without writing. From History hands the canvas
  * the target space; the panel places the chosen row.
+ *
+ * When the chosen space has defaults, the Prompt fields start from them.
+ * The agent is seeded first; the space's model and effort are applied
+ * after that. Preset model and effort are copied only when the user picks
+ * an agent, so a space override is not replaced on open — cached roster
+ * or still loading. Switching space re-applies that space's overrides.
+ * A preset that is no longer startable stays off the picker, but its id
+ * is still copied onto the thread so the existing deleted-preset notice
+ * can fire. An explicit node that left the connection roster is not used.
  */
 
 import { useEffect, useRef, useState, type JSX } from 'react'
 import * as Dialog from '@radix-ui/react-dialog'
 import type { HarnessDescriptor, ThinkingLevel } from '@rivetos/types'
 import { launchModelOptions } from '../../lib/conversation-model-options.js'
+import { urlLabel } from '../../lib/node-name.js'
 import { useRosterAgents } from '../../lib/use-agent-roster.js'
 import { useConnection } from '../../stores/connection.js'
+import type { SpaceDefaults } from '../../stores/spaces.js'
 import { Select } from '../select.js'
 import { EffortPicker } from '../pickers/effort-picker.js'
 import { ModelPicker } from '../pickers/model-picker.js'
-import { applyChooser, type PromptAgent } from './new-thread.js'
+import {
+  applyChooser,
+  initialThreadFields,
+  offRosterStartNotice,
+  resolveRosterNode,
+  type PromptAgent,
+  type SpaceRosterAgent,
+  canStartThread,
+} from './new-thread.js'
+import { startsInDirectory } from './space-defaults.js'
 
 export function NewThreadDialog(props: {
   spaceId?: string
-  spaces: { id: string; name: string }[]
+  spaces: { id: string; name: string; defaults?: SpaceDefaults }[]
   descriptors?: HarnessDescriptor[]
   onClose: () => void
   onStarted: (sessionId: string) => void
   onPickHistory: (spaceId: string) => void
 }): JSX.Element {
   const baseUrl = useConnection((s) => s.baseUrl)
-  const { agents: rosterAgents } = useRosterAgents()
-  const agents = rosterAgents.filter((row) => row.sourceNodeBaseUrl.length > 0)
+  const { agents: rosterAgents, isLoading } = useRosterAgents()
+  const agents: SpaceRosterAgent[] = rosterAgents.filter((row) => row.sourceNodeBaseUrl.length > 0)
   const locked = props.spaceId
   const firstSpace = props.spaces.length > 0 ? props.spaces[0] : undefined
   const [spaceId, setSpaceId] = useState(locked ?? firstSpace?.id ?? '')
@@ -33,13 +53,38 @@ export function NewThreadDialog(props: {
   const [prompt, setPrompt] = useState('')
   const [model, setModel] = useState('')
   const [effort, setEffort] = useState<ThinkingLevel>('medium')
+  // Start stays shut until the space seed has landed. A stored preset's
+  // roster row is not known while that query is loading.
+  const [seedReady, setSeedReady] = useState(false)
   const target = locked ?? spaceId
+  const defaults = props.spaces.find((space) => space.id === target)?.defaults
   const agent: PromptAgent | undefined = agents.find((row) => row.id === agentId)
   const agentsRef = useRef(agents)
   agentsRef.current = agents
+  const defaultsRef = useRef(defaults)
+  defaultsRef.current = defaults
+  const seededTarget = useRef<string | null>(null)
 
   useEffect(() => {
-    const next = agentsRef.current.find((row) => row.id === agentId)
+    if (seededTarget.current === target) return
+    if (defaultsRef.current?.agentId && isLoading) {
+      setSeedReady(false)
+      return
+    }
+    // Agent first, then the space's model and effort. Preset model/effort
+    // are applied only when the user picks an agent, so this seed is not
+    // overwritten on the flush — cached roster or still loading.
+    const fields = initialThreadFields(defaultsRef.current, agentsRef.current)
+    seededTarget.current = target
+    setAgentId(fields.agentId)
+    setModel(fields.model)
+    setEffort(fields.effort)
+    setSeedReady(true)
+  }, [target, isLoading])
+
+  const applyAgentPick = (value: string): void => {
+    setAgentId(value)
+    const next = agents.find((row) => row.id === value)
     if (!next) {
       setModel('')
       setEffort('medium')
@@ -58,7 +103,18 @@ export function NewThreadDialog(props: {
     } else {
       setEffort('medium')
     }
-  }, [agentId])
+  }
+
+  const rosterUrls = useConnection((s) => s.roster).map((node) => node.baseUrl)
+  const nodeCandidate = agent?.sourceNodeBaseUrl || (!agent ? defaults?.node : undefined)
+  const nodeResolved = resolveRosterNode(nodeCandidate, baseUrl, rosterUrls)
+  const nodeNotice = nodeResolved.unavailable
+    ? offRosterStartNotice(nodeResolved.unavailable, baseUrl)
+    : undefined
+  const missingPreset =
+    !isLoading && !agent && defaults?.agentId && !agents.some((row) => row.id === defaults.agentId)
+      ? { id: defaults.agentId, harnessId: defaults.harnessId }
+      : undefined
 
   const launch = launchModelOptions({
     preBind: true,
@@ -67,8 +123,14 @@ export function NewThreadDialog(props: {
     model,
   })
   const modelOptions = [{ value: '', label: launch.defaultModelLabel }, ...launch.models]
+  const directory = agents.find((row) => row.id === agentId)?.directory
+  const startsIn = startsInDirectory(directory)
 
+  // Same guard as the Start button: Enter must not start before the space's
+  // defaults are seeded (an unseeded start would ignore the preset's node).
+  const canStart = canStartThread({ prompt, target, seedReady })
   const start = (): void => {
+    if (!canStart) return
     const id = applyChooser({
       type: 'prompt',
       prompt,
@@ -77,6 +139,8 @@ export function NewThreadDialog(props: {
       agent,
       model: model || undefined,
       effort,
+      node: agent ? undefined : defaults?.node,
+      missingPreset,
     })
     if (!id) return
     props.onStarted(id)
@@ -93,6 +157,7 @@ export function NewThreadDialog(props: {
         <Dialog.Overlay className="fixed inset-0 z-50 bg-bg/70" />
         <Dialog.Content
           className="fixed top-1/2 left-1/2 z-50 w-[28rem] max-w-[calc(100%-2rem)] -translate-x-1/2 -translate-y-1/2 border border-line bg-panel p-4 font-mono shadow-lg outline-none"
+          title={startsIn}
           onOpenAutoFocus={(event) => {
             event.preventDefault()
             const field = document.getElementById('new-thread-prompt')
@@ -102,6 +167,7 @@ export function NewThreadDialog(props: {
           <Dialog.Title className="mb-3 text-sm text-ink">New thread</Dialog.Title>
           <Dialog.Description className="sr-only">
             Send a prompt, or add a thread from History.
+            {startsIn ? ` ${startsIn}.` : ''}
           </Dialog.Description>
           <div className="mb-3 flex gap-1" role="tablist" aria-label="How to start">
             <button
@@ -152,11 +218,20 @@ export function NewThreadDialog(props: {
                 { value: '', label: 'Plain draft' },
                 ...agents.map((row) => ({ value: row.id, label: row.name })),
               ]}
-              onChange={setAgentId}
+              onChange={applyAgentPick}
               aria-label="Agent"
               label="Agent"
               className="w-full"
             />
+            {startsIn ? (
+              <p className="mt-1 text-xs text-ink-dim">
+                {startsIn}
+                {agent?.sourceNodeBaseUrl
+                  ? ` on ${agents.find((row) => row.id === agentId)?.node?.trim() || urlLabel(agent.sourceNodeBaseUrl)}`
+                  : ''}
+              </p>
+            ) : null}
+            {nodeNotice ? <p className="mt-1 text-xs text-ink-dim">{nodeNotice}</p> : null}
           </div>
           <label className="mb-1 block text-xs text-ink-dim" htmlFor="new-thread-prompt">
             What should it do?
@@ -194,7 +269,7 @@ export function NewThreadDialog(props: {
             </button>
             <button
               type="button"
-              disabled={!prompt.trim() || !target}
+              disabled={!canStart}
               onClick={start}
               className="bg-em-dim px-3 py-1.5 text-xs font-medium text-bg hover:bg-em disabled:opacity-40"
             >

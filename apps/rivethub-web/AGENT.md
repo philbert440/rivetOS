@@ -315,6 +315,28 @@ opens a Move-to popover (the spaces, plus History).
 model/effort into chat settings, place, enqueue one outbound turn) or History
 in pick mode (`Add to <space>`). Cancel writes nothing.
 
+**Space defaults.** Create stays name-only (`N`). `E` and the region Edit
+button open the space's settings: the name, plus optional defaults
+`{ agentId, model, effort, harnessId, node }`. `node` is a den base URL for
+`setSessionNodeBinding`, not a directory. There is no cwd field and this
+client never sends one. The den does not accept a raw working directory:
+`TermSpawnRequest.agentId` names a preset, and the den derives command,
+model, effort, and cwd from that preset (explicit spawn fields still win).
+A space's starting directory is therefore the chosen preset's own
+`directory`, shown read-only (`Starts in <directory> on <node>`).
+New threads in that space — the `+ New thread` slot, `T`, and Ctrl+T while
+the canvas is focused on a space that has defaults — pre-fill the existing
+chooser and mint path. They do not take a second creation path. Inside a
+space those defaults win over a selected agents-rail filter; outside a
+space, or when the space has no defaults, Ctrl+T is unchanged. A preset id
+that is no longer on the roster shows as "(missing preset)" in Edit. New
+threads still carry that id (not pinned) so the first spawn uses the
+existing deleted-preset notice, then continues without it. An explicit
+node, or a preset node, that is no longer on the connection roster is not
+used: the thread starts on the hub, and the new-thread dialog says so.
+Settings, the node binding, and space membership are written on the
+resolved node. Threads already running are not rewritten.
+
 **Needs you** reads the blocked ids already on the canvas (no polling): dock
 count, Ctrl+J cycles placed tiles oldest-first at Space and Everything (not
 claimed at Thread — the dock button and the toast are the jump there), a
@@ -378,7 +400,7 @@ field, or inside a menu, listbox, or dialog. At Space, arrows stay inside
 the framed space; at Everything they move across placed tiles. At Thread
 every single-letter key, including Esc, is left for the focused session.
 Ctrl+Space is the way out of Thread. Also: `N` new space (name only), `E`
-rename the space you are in, `T` new thread, `M` move, `H` history, `/`
+edits the space you are in (name and defaults), `T` new thread, `M` move, `H` history, `/`
 find, Delete archives or discards the selected thread (unpinned drafts are
 discarded; Backspace is not a remove key), Shift+Delete removes the space
 you are in (unplaces its threads, never deletes sessions). `h` is History,
