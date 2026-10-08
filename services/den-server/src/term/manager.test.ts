@@ -4352,6 +4352,46 @@ describe('term manager (herdr mux)', () => {
     expect(procs[0].writes).toEqual(['\x1b[200~hello\x1b[201~'])
   })
 
+  it('absolute-path agent kind: a quiet pane waits until herdr detects the agent idle', async () => {
+    vi.useFakeTimers()
+    const ctl = new FakeHerdrCtl()
+    let probe: { agent: string | null; status?: string } = { agent: null }
+    ctl.paneAgent = () => Promise.resolve(probe)
+    const roster = defaultRoster()
+    roster.commands.claude = { ...roster.commands.claude, cmd: ['/opt/claude/bin/claude'] }
+    const { manager, procs, logs } = makeManager(
+      { mux: 'herdr', injectReadyMs: 300, injectReadyMaxMs: 15_000, injectSubmitDelayMs: 80 },
+      { herdrCtl: ctl, roster },
+    )
+    const pty = manager.spawn('claude', 80, 24, '', uuid)
+    expect(manager.inject(pty.id, 'hello', true)).toBe(true)
+    procs[0].emitData('splash')
+    // A startup pause longer than injectReadyMs: no agent yet, so no paste.
+    await vi.advanceTimersByTimeAsync(1_000)
+    expect(procs[0].writes).toEqual([])
+    probe = { agent: 'claude', status: 'idle' }
+    await vi.advanceTimersByTimeAsync(300)
+    expect(procs[0].writes).toEqual(['\x1b[200~hello\x1b[201~', '\r'])
+    expect(logs.some((l) => l.includes('then herdr agent detection'))).toBe(true)
+  })
+
+  it('absolute-path agent kind: an unavailable probe keeps plain quiescence', async () => {
+    vi.useFakeTimers()
+    const ctl = new FakeHerdrCtl()
+    ctl.paneAgent = () => Promise.resolve(undefined)
+    const roster = defaultRoster()
+    roster.commands.claude = { ...roster.commands.claude, cmd: ['/opt/claude/bin/claude'] }
+    const { manager, procs } = makeManager(
+      { mux: 'herdr', injectReadyMs: 300, injectReadyMaxMs: 15_000, injectSubmitDelayMs: 80 },
+      { herdrCtl: ctl, roster },
+    )
+    const pty = manager.spawn('claude', 80, 24, '', uuid)
+    expect(manager.inject(pty.id, 'hello', true)).toBe(true)
+    procs[0].emitData('splash')
+    await vi.advanceTimersByTimeAsync(300)
+    expect(procs[0].writes).toEqual(['\x1b[200~hello\x1b[201~'])
+  })
+
   it('wrapper roster command uses quiescence, not agent-idle', () => {
     vi.useFakeTimers()
     const ctl = new FakeHerdrCtl()

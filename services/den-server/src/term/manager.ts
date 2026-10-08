@@ -103,6 +103,7 @@ import {
   herdrEventNamedAgent,
   herdrEventPaneId,
   herdrEventTimestamp,
+  herdrKindForArgv0,
   herdrPaneAgentLive,
   herdrStatusToFrame,
   herdrSessionName,
@@ -344,6 +345,8 @@ interface PtyRecord {
   releaseUnconfirmed?: boolean
   /** In-flight paneAgent call; at most one per record. */
   probeInflight?: boolean
+  /** In-flight quiescence probe of a plain pane running a known agent kind. */
+  quietProbeInflight?: boolean
   /** `now()` of the last paneAgent attempt (inject re-probe rate limit). */
   lastProbeAt?: number
   /** Next spawn-probe backoff delay (500 → 1000 → 2000 capped). */
@@ -1368,12 +1371,57 @@ export function createTermManager(config: DenConfig, deps: TermManagerDeps): Ter
     r.readyCeilingTimer.unref()
   }
 
+  /**
+   * A plain herdr pane whose argv[0] is a PATH-less build of a known agent
+   * kind (`/…/opencode`). It runs verbatim — no agent.start, no status
+   * stream — but herdr still detects the agent in it, so quiescence can ask
+   * herdr before trusting a quiet pane.
+   */
+  const detectsPlainAgent = (r: PtyRecord): boolean =>
+    r.muxKind === 'herdr' &&
+    !r.agentPane &&
+    Boolean(r.tmuxName) &&
+    herdr?.paneAgent !== undefined &&
+    herdrKindForArgv0(basename(r.argv[0] ?? '')) !== undefined
+
+  /**
+   * Quiescence alone fires during a TUI's startup pauses (MCP, plugins) and
+   * the first paste lands before the input box exists — silently, since a
+   * plain pane has no first-turn confirm. For a detectable plain pane, wait
+   * until herdr reports the agent idle. An unavailable probe keeps the old
+   * quiescence behavior; the injectReadyMaxMs ceiling still flushes.
+   */
+  const settleQuietPlainAgent = async (r: PtyRecord): Promise<void> => {
+    const ctl = herdr
+    const muxName = r.tmuxName
+    if (!ctl?.paneAgent || !muxName || r.quietProbeInflight) return
+    refreshPaneId(r)
+    r.quietProbeInflight = true
+    let probed: { agent: string | null; status?: string } | undefined
+    try {
+      probed = r.paneId ? await ctl.paneAgent(muxName, r.paneId) : undefined
+    } catch {
+      probed = undefined
+    }
+    r.quietProbeInflight = false
+    if (r.ready || r.state !== 'running') return
+    if (
+      probed === undefined ||
+      (herdrPaneAgentLive(probed) && (probed.status === undefined || probed.status === 'idle'))
+    ) {
+      markReadyAndFlush(r)
+      return
+    }
+    armQuiescence(r)
+  }
+
   const armQuiescence = (r: PtyRecord): void => {
     if (r.ready || usesHerdrIdleSignal(r)) return
     if (r.readyTimer) clearTimeout(r.readyTimer)
     r.readyTimer = setTimeout(() => {
       r.readyTimer = undefined
-      markReadyAndFlush(r)
+      if (detectsPlainAgent(r)) void settleQuietPlainAgent(r)
+      else markReadyAndFlush(r)
     }, config.term.injectReadyMs)
     r.readyTimer.unref()
   }
@@ -2706,9 +2754,12 @@ export function createTermManager(config: DenConfig, deps: TermManagerDeps): Ter
             : a0.includes('/')
               ? `argv[0] '${a0}' is a path, not a bare command`
               : `argv[0] '${a0}' is not a herdr agent kind`
+          const fallback = detectsPlainAgent(r)
+            ? 'output quiescence, then herdr agent detection'
+            : 'output quiescence'
           deps.log(
             `[den-server] term: '${recordKey}' has no agent-idle ready-gate — ${why}. ` +
-              `First-turn confirm is off; falling back to output quiescence.`,
+              `First-turn confirm is off; falling back to ${fallback}.`,
           )
         }
         proc.onData((data) => {
