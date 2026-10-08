@@ -4,7 +4,7 @@
 //
 // Mirrors kimi-driver.test.ts — OpenCode cannot pin a new session's id.
 
-import { describe, expect, it, vi } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 import { HarnessError, type HarnessEvent, type SessionId } from '@rivetos/types'
 import type { HarnessSession } from '../term/harness-sessions.js'
 import { OpencodeDriver, type OpencodePtyHost, type OpencodeStoreHost } from './opencode-driver.js'
@@ -430,6 +430,93 @@ describe('adoption — how an opencode session enters the control plane', () => 
       expect(seen.some((e) => e.type === 'session-created' && e.sessionId === SID)).toBe(true)
     })
     expect(await f.driver.getSession(SID)).toMatchObject({ sessionId: SID, status: 'idle' })
+  })
+
+  describe('a roster spawn whose first prompt comes later', () => {
+    const rosterStart = (room: string): DenAgentEventLike => ({
+      v: 1,
+      session: room,
+      harness: 'rivetos',
+      name: 'rivet-node:opencode',
+      type: 'session.start',
+      title: 'OpenCode',
+    })
+    const row = (id: string, createdAt: number): FakeRow => ({
+      id,
+      command: 'opencode',
+      title: 'late',
+      updatedAt: createdAt,
+      createdAt,
+      directory: '/home/rivet',
+    })
+    const adopted = (seen: HarnessEvent[]): boolean =>
+      seen.some((e) => e.type === 'session-created' && e.sessionId === SID)
+    const land = (f: Fakes, id: string): void => {
+      f.store.byId.set(id, row(id, Date.now()))
+      f.store.sessions.add(id)
+    }
+
+    afterEach(() => {
+      vi.useRealTimers()
+    })
+
+    it('adopts the session row written when the user first submits, well after spawn', async () => {
+      vi.useFakeTimers()
+      const f = makeDriver({ cwd: () => '/home/rivet', now: () => Date.now() })
+      const seen: HarnessEvent[] = []
+      f.driver.subscribeEvents((e) => seen.push(e))
+      f.emitDen(rosterStart(ROOM))
+      // OpenCode writes no row until the prompt is submitted — 22s in, here.
+      await vi.advanceTimersByTimeAsync(22_000)
+      expect(adopted(seen)).toBe(false)
+      land(f, NAT)
+      await vi.advanceTimersByTimeAsync(2_000)
+      expect(adopted(seen)).toBe(true)
+    })
+
+    it('still adopts after the fast window, on the slow poll', async () => {
+      vi.useFakeTimers()
+      const f = makeDriver({ cwd: () => '/home/rivet', now: () => Date.now() })
+      const seen: HarnessEvent[] = []
+      f.driver.subscribeEvents((e) => seen.push(e))
+      f.emitDen(rosterStart(ROOM))
+      await vi.advanceTimersByTimeAsync(10 * 60_000)
+      land(f, NAT)
+      await vi.advanceTimersByTimeAsync(10_000)
+      expect(adopted(seen)).toBe(true)
+    })
+
+    it('stops looking once the pane ends', async () => {
+      vi.useFakeTimers()
+      const f = makeDriver({ cwd: () => '/home/rivet', now: () => Date.now() })
+      const seen: HarnessEvent[] = []
+      f.driver.subscribeEvents((e) => seen.push(e))
+      f.emitDen(rosterStart(ROOM))
+      await vi.advanceTimersByTimeAsync(5_000)
+      f.emitDen({ v: 1, session: ROOM, harness: 'rivetos', type: 'session.end' })
+      // A later OpenCode in the same directory is not this ended room's.
+      land(f, NAT)
+      await vi.advanceTimersByTimeAsync(60_000)
+      expect(adopted(seen)).toBe(false)
+    })
+
+    it('does not take a session another room already runs', async () => {
+      vi.useFakeTimers()
+      const f = makeDriver({ cwd: () => '/home/rivet', now: () => Date.now() })
+      const seen: HarnessEvent[] = []
+      f.driver.subscribeEvents((e) => seen.push(e))
+      f.emitDen(rosterStart(ROOM))
+      await vi.advanceTimersByTimeAsync(1_000)
+      // A second pane in the same directory submits first and is bound.
+      land(f, NAT2)
+      adopt(f, 'den-pty-other', NAT2)
+      await vi.advanceTimersByTimeAsync(10_000)
+      expect(adopted(seen)).toBe(false)
+      // This room's own prompt lands later and is adopted.
+      land(f, NAT)
+      await vi.advanceTimersByTimeAsync(2_000)
+      expect(adopted(seen)).toBe(true)
+    })
   })
 
   it('keeps streaming a session it resumed itself when the hook is too old to send the id', async () => {

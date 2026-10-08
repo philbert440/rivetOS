@@ -69,6 +69,16 @@ import {
 } from './pty-harness-driver.js'
 
 /**
+ * Store-scan adoption timing for drivers whose CLI has no den hook (opencode,
+ * cursor): quick tries right after spawn, then a steady poll while the user
+ * is likely about to type, then a slow poll for a pane left at its prompt.
+ */
+export const ADOPT_QUICK_MS = [250, 1_000, 3_000] as const
+export const ADOPT_POLL_MS = 2_000
+export const ADOPT_FAST_WINDOW_MS = 120_000
+export const ADOPT_SLOW_MS = 10_000
+
+/**
  * Identity for an adopting driver: the pinning drivers' identity plus the
  * verbatim reason `startSession` is refused (product knowledge — it names the
  * harness's actual CLI flags, or the lack of them).

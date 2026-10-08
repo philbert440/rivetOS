@@ -28,7 +28,13 @@
  */
 
 import { formatSessionId, type SessionId } from '@rivetos/types'
-import { AdoptingPtyHarnessDriver } from './adopting-harness-driver.js'
+import {
+  ADOPT_FAST_WINDOW_MS,
+  ADOPT_POLL_MS,
+  ADOPT_QUICK_MS,
+  ADOPT_SLOW_MS,
+  AdoptingPtyHarnessDriver,
+} from './adopting-harness-driver.js'
 import {
   type DenAgentEventLike,
   type HarnessPtyHost,
@@ -111,15 +117,21 @@ export class OpencodeDriver extends AdoptingPtyHarnessDriver<OpencodeStoreHost> 
 
   /**
    * Fresh roster spawn: den emits a synthetic `rivetos` session.start with
-   * no `harnessSession` (OpenCode has no den hook). Learn the native id from
-   * the newest session row for the room's cwd created after spawn, then bind
-   * as if the hook had stamped it.
+   * no `harnessSession`. With the rivet-den plugin installed
+   * (integrations/opencode/rivet-den) the plugin's own events stamp the id
+   * and bind the room exactly. Without it, learn the native id from the
+   * newest session row for the room's cwd created after spawn, then bind as
+   * if the hook had stamped it.
    */
   protected override nativeFor(ev: DenAgentEventLike): string | undefined {
     const existing = super.nativeFor(ev)
     if (existing) return existing
     const room = ev.session
     if (!room) return undefined
+    if (ev.type === 'session.end') {
+      this.stopAdopt(room)
+      return undefined
+    }
     const isRoster =
       ev.harness === 'rivetos' &&
       typeof ev.name === 'string' &&
@@ -128,6 +140,7 @@ export class OpencodeDriver extends AdoptingPtyHarnessDriver<OpencodeStoreHost> 
     if (ev.type === 'session.start') this.pendingSpawn.set(room, this.now())
     const native = this.adoptFromStore(room)
     if (native) {
+      this.stopAdopt(room)
       this.bindRoom(room, native)
       return native
     }
@@ -149,19 +162,54 @@ export class OpencodeDriver extends AdoptingPtyHarnessDriver<OpencodeStoreHost> 
       if (cwd === undefined || tried.has(cwd)) continue
       tried.add(cwd)
       const id = this.deps.store.newestAfter?.(cwd, since)
-      if (id && OPENCODE_NATIVE_RE.test(id)) return id
+      if (id && OPENCODE_NATIVE_RE.test(id) && !this.claimedElsewhere(id, room)) return id
     }
     return undefined
   }
 
-  private scheduleAdopt(room: string): void {
-    for (const ms of [250, 1_000, 3_000]) {
-      const t = setTimeout(() => {
-        if (this.roomNative.has(room)) return
-        const native = this.adoptFromStore(room)
-        if (native) this.bindRoom(room, native)
-      }, ms)
-      t.unref()
-    }
+  /** A native already bound to another room is that room's session, not this one's. */
+  private claimedElsewhere(native: string, room: string): boolean {
+    const owner = this.nativeRoom.get(native)
+    return owner !== undefined && owner !== room
+  }
+
+  private readonly adoptTimers = new Map<string, NodeJS.Timeout>()
+
+  /**
+   * The session row appears when the first prompt is submitted, not at spawn —
+   * a roster spawn can sit at an empty prompt for seconds or hours. Keep
+   * looking until the room binds or its pane ends: quick tries first, then
+   * every ADOPT_POLL_MS for ADOPT_FAST_WINDOW_MS, then every ADOPT_SLOW_MS.
+   */
+  private scheduleAdopt(room: string, attempt = 0): void {
+    const pending = this.adoptTimers.get(room)
+    if (pending) clearTimeout(pending)
+    const spawnedAt = this.pendingSpawn.get(room) ?? this.now()
+    const ms =
+      attempt < ADOPT_QUICK_MS.length
+        ? ADOPT_QUICK_MS[attempt]
+        : this.now() - spawnedAt < ADOPT_FAST_WINDOW_MS
+          ? ADOPT_POLL_MS
+          : ADOPT_SLOW_MS
+    const t = setTimeout(() => {
+      this.adoptTimers.delete(room)
+      if (this.roomNative.has(room) || !this.pendingSpawn.has(room)) return
+      const native = this.adoptFromStore(room)
+      if (native) {
+        this.pendingSpawn.delete(room)
+        this.bindRoom(room, native)
+        return
+      }
+      this.scheduleAdopt(room, attempt + 1)
+    }, ms)
+    t.unref()
+    this.adoptTimers.set(room, t)
+  }
+
+  private stopAdopt(room: string): void {
+    const t = this.adoptTimers.get(room)
+    if (t) clearTimeout(t)
+    this.adoptTimers.delete(room)
+    this.pendingSpawn.delete(room)
   }
 }
