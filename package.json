@@ -75,6 +75,7 @@
     "integrations/codex/rivet-memory/capture",
     "integrations/codex/rivet-memory/backfill",
     "integrations/pi/rivet-memory/capture",
+    "integrations/opencode/rivet-den",
     "integrations/opencode/rivet-memory/capture",
     "integrations/qwen-code/rivet-memory/capture"
   ],

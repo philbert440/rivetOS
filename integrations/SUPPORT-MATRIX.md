@@ -15,7 +15,7 @@ otherwise. Nothing here is a publish or listing promise.
 | Qwen Code | vendor-claimed, untested | — | Installs Claude marketplaces. |
 | Gemini CLI | vendor-claimed, untested | — | Own extension manifest; not this kit. |
 | Kimi Code CLI | vendor-claimed, untested | — | Own plugin filename. |
-| OpenCode | vendor-claimed, untested | — | npm plugin, not Claude marketplace. |
+| OpenCode | local kit, partial | 2026-10-07 | npm plugin, not Claude marketplace. `integrations/opencode/rivet-den` for den events: plugin tests against recorded event shapes; not yet run against a live OpenCode. |
 | pi (pi-coding-agent) | vendor-claimed, untested | — | No MCP. |
 | Hermes Agent | vendor-claimed, untested | — | Native provider plugin. |
 | Junie CLI | vendor-claimed, untested | — | Reads `.claude-plugin/marketplace.json`. |
