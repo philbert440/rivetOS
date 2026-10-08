@@ -102,7 +102,7 @@ export function removeSpaceMessage(name: string, threadCount: number, liveCount:
   const threads =
     threadCount === 0
       ? `It has no threads yet. This can't be undone, and you'll have to make a new one if you want it back.`
-      : `This closes its ${String(threadCount)} thread${threadCount === 1 ? '' : 's'}${
+      : `This moves its ${String(threadCount)} thread${threadCount === 1 ? '' : 's'} to History${
           liveCount > 0 ? `, ${String(liveCount)} of them still active` : ''
         }. This can't be undone, and you'll have to make a new one if you want it back.`
   return `Remove “${name}”? ${threads}`

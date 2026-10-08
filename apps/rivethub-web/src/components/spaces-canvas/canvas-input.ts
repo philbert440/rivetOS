@@ -2,13 +2,14 @@
  * Keyboard decisions for the spaces canvas. The capture listener in
  * SpacesCanvas turns a key into one of these commands; this module says
  * what that does to the selection and the altitude. Thread altitude claims
- * only the chords — arrows, Enter and Esc stay with the focused session.
+ * only Ctrl+Space and Ctrl+0. Arrows, Enter, Esc, and Ctrl+` stay with the
+ * focused session; recent threads use the dock button there.
  */
 
-import type { CanvasAction } from '../../lib/hub-keys.js'
+import { CANVAS_KEYS, type CanvasAction, type CanvasChord } from '../../lib/hub-keys.js'
 import { neighbor, type Altitude, type Direction, type NeighborTile } from './camera.js'
 
-export type CanvasChord = 'zoom-toggle' | 'everything'
+export type { CanvasChord }
 export type CanvasNav = Direction | 'open' | 'out'
 
 export interface CanvasKeyState {
@@ -22,22 +23,25 @@ export type CanvasEffect =
   | { type: 'go'; altitude: 'everything' | 'space' }
   | { type: 'noop' }
 
-const THREAD_ACTIONS: ReadonlySet<CanvasAction> = new Set(['mru'])
+function claimedAtThread(id: string, handler: 'chord' | 'nav' | 'action'): boolean {
+  const entry = CANVAS_KEYS.find((row) => row.handler === handler && row.id === id)
+  return entry?.claimedAtThread === true
+}
 
 /** True when this key is claimed at `altitude` (and must not reach the session).
- *  Single-letter canvas actions and Ctrl+J are not claimed at Thread.
- *  Ctrl+` is. At Thread, Needs you is the dock button and the toast. */
+ *  Thread claims come from `CANVAS_KEYS`, the same table as the Keys panel. */
 export function canvasKeyClaims(
   altitude: Altitude,
   chord: CanvasChord | null,
   nav: CanvasNav | null,
   action: CanvasAction | null = null,
 ): boolean {
-  if (chord) return true
-  if (action !== null && THREAD_ACTIONS.has(action)) return true
-  if (altitude === 'thread') return false
-  if (action !== null) return true
-  return nav !== null
+  if (altitude === 'thread') {
+    if (chord) return claimedAtThread(chord, 'chord')
+    if (action) return claimedAtThread(action, 'action')
+    return false
+  }
+  return chord !== null || action !== null || nav !== null
 }
 
 export function reduceCanvasCommand(

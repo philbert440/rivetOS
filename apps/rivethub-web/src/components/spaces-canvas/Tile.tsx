@@ -5,9 +5,9 @@
  * exposes the name.
  */
 
-import type { CSSProperties, JSX, ReactNode } from 'react'
+import { memo, useEffect, type CSSProperties, type JSX, type ReactNode } from 'react'
 import type { HarnessDescriptor, SessionMessage } from '@rivetos/types'
-import { accentFor } from '../../lib/agent-accent.js'
+import { harnessAccentKey } from '../../lib/agent-accent.js'
 import { denRoomKey, type ChatItem } from '../../lib/harness-chat.js'
 import { storageKey } from '../../lib/session-rekey.js'
 import { useChat } from '../../stores/chat.js'
@@ -38,7 +38,41 @@ function withVars(vars: Record<`--${string}`, string>, style: CSSProperties): CS
   return { ...style, ...vars }
 }
 
-export function Tile(props: {
+/** Test hook. Unset in production. Called from an effect, never conditionally. */
+let tileCommitProbe: ((id: string) => void) | undefined
+
+export function setTileCommitProbe(probe: ((id: string) => void) | undefined): void {
+  tileCommitProbe = probe
+}
+
+function sameTile(prev: TileProps, next: TileProps): boolean {
+  return (
+    prev.item === next.item &&
+    prev.altitude === next.altitude &&
+    prev.selected === next.selected &&
+    prev.blocked === next.blocked &&
+    prev.geometry.x === next.geometry.x &&
+    prev.geometry.y === next.geometry.y &&
+    prev.geometry.w === next.geometry.w &&
+    prev.geometry.h === next.geometry.h &&
+    prev.showMini === next.showMini &&
+    prev.showThread === next.showThread &&
+    prev.spaceId === next.spaceId &&
+    prev.faded === next.faded &&
+    prev.descriptors === next.descriptors &&
+    prev.renderThread === next.renderThread &&
+    prev.fallbackTab === next.fallbackTab
+  )
+}
+
+/** Roving tabindex. Thread leaves Tab with the session. Otherwise the
+ *  selected tile, or the first tile when nothing is selected. */
+export function tileHitTabIndex(altitude: Altitude, selected: boolean, fallback: boolean): 0 | -1 {
+  if (altitude === 'thread') return -1
+  return selected || fallback ? 0 : -1
+}
+
+interface TileProps {
   item: ChatItem
   altitude: Altitude
   selected: boolean
@@ -51,9 +85,13 @@ export function Tile(props: {
   spaceId?: string
   /** Find miss. Non-hits fade; the open thread's own dim wins. */
   faded?: boolean
+  /** True for the first tile when no tile is selected. */
+  fallbackTab?: boolean
   descriptors?: HarnessDescriptor[]
   renderThread: (id: string) => ReactNode
-}): JSX.Element {
+}
+
+export const Tile = memo(function Tile(props: TileProps): JSX.Element {
   const id = props.item.key
   const status: TileStatus = tileStatus(props.item.status, props.blocked)
   const baseUrl = useConnection((s) => s.baseUrl)
@@ -68,10 +106,12 @@ export function Tile(props: {
     const text = msgs && msgs.length > 0 ? msgs[msgs.length - 1]?.text : undefined
     return text ? oneLine(text) : ''
   })
-  const accent = accentFor({
-    presetColor: props.item.accent,
+  const harness = harnessAccentKey({
     harnessId: props.item.harnessId,
     command: props.item.command,
+  })
+  useEffect(() => {
+    tileCommitProbe?.(id)
   })
   const chip =
     props.item.agentName?.trim() || props.item.command || props.item.harnessId || 'session'
@@ -87,6 +127,7 @@ export function Tile(props: {
       data-find-hit={props.faded ? 'false' : 'true'}
       data-status={status}
       data-selected={props.selected ? 'true' : 'false'}
+      role="gridcell"
       className={`st-${status} absolute flex min-h-0 flex-col border border-line bg-panel${
         focused ? ' focus' : ''
       }`}
@@ -113,7 +154,7 @@ export function Tile(props: {
         className={`absolute inset-0 z-[1] cursor-pointer bg-transparent${
           props.showThread ? ' pointer-events-none' : ''
         }`}
-        tabIndex={props.showThread ? -1 : 0}
+        tabIndex={tileHitTabIndex(props.altitude, props.selected, props.fallbackTab === true)}
         aria-pressed={props.selected}
         aria-label={`${chip}, ${title}, ${tilePill(status)}`}
       />
@@ -134,8 +175,9 @@ export function Tile(props: {
         )}
       >
         <span
-          className="shrink-0 rounded-full"
-          style={{ width: '0.62em', height: '0.62em', background: accent }}
+          className="sc-accent shrink-0 rounded-full"
+          data-harness={harness}
+          style={{ width: '0.62em', height: '0.62em' }}
         />
         <b className="truncate">{chip}</b>
         <span className="truncate text-ink-dim">{title}</span>
@@ -158,8 +200,9 @@ export function Tile(props: {
           style={{ fontSize: 'calc(24px * var(--cs, 1))', gap: '0.4em' }}
         >
           <span
-            className="shrink-0 rounded-full"
-            style={{ width: '0.62em', height: '0.62em', background: accent }}
+            className="sc-accent shrink-0 rounded-full"
+            data-harness={harness}
+            style={{ width: '0.62em', height: '0.62em' }}
           />
           <span className="truncate">{chip}</span>
         </div>
@@ -204,4 +247,4 @@ export function Tile(props: {
       ) : null}
     </div>
   )
-}
+}, sameTile)

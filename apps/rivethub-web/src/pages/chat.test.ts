@@ -66,6 +66,7 @@ describe('session view integration', () => {
     expect(chat).toContain('termSpawnBody(')
     expect(chat).toContain('spawnOnceWithCommandFallback(')
     expect(chat).toContain('presetHasHarness: presetHasHarnessFlag(')
+    expect(chat).toContain('settledRosterAgentIds(')
     expect(chat).toContain("queryKey: ['agents-all-nodes']")
     expect(chat).toContain('recoverDeletedAgentSpawnUsingCache(')
     expect(chat).toContain('settledLaunch.spawn')

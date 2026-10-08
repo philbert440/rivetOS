@@ -7,14 +7,43 @@ import { presetsFromAgentsQueryData } from './agent-roster.js'
 export const DELETED_PRESET_NOTICE = 'Preset not found on this node; opened without it'
 
 /**
- * Chat wiring for `termSpawnBody`'s `presetHasHarness`. A preset id with no
- * harness is `false` (omit `agentId`). No preset id leaves the flag unset.
+ * Chat wiring for `termSpawnBody`'s `presetHasHarness`.
+ *
+ * No preset id leaves the flag unset. A harness id sends `agentId`. A live
+ * preset with no harness is `false` (omit `agentId`): the den 400s
+ * `agent has no harness and no command was given`. Pass `rosterIds` when the
+ * roster has settled. An id missing from that list is a deleted preset: return
+ * `true` so the spawn sends `agentId`, the den 404s, and recovery can show
+ * `DELETED_PRESET_NOTICE`. Omit `rosterIds` when the roster is unknown — a
+ * harness-less preset stays omitted rather than guessing it was deleted.
+ * An empty list is a settled roster with no presets.
  */
 export function presetHasHarnessFlag(
   settings: { agentId?: string; harnessId?: string } | undefined,
+  rosterIds?: readonly string[],
 ): boolean | undefined {
-  if (!settings?.agentId) return undefined
-  return Boolean(settings.harnessId)
+  const agentId = settings?.agentId?.trim()
+  if (!agentId) return undefined
+  if (settings?.harnessId) return true
+  if (rosterIds !== undefined && !agentIdIsListed(agentId, rosterIds)) return true
+  return false
+}
+
+/**
+ * Ids on active `agents-all-nodes` queries that have succeeded. No such query
+ * means the roster is unknown (`undefined`), not empty. Inactive and pending
+ * entries are ignored so a stale or still-loading list cannot mark a live
+ * harness-less preset as deleted.
+ */
+export function settledRosterAgentIds(queryClient: QueryClient): readonly string[] | undefined {
+  const settled = queryClient
+    .getQueryCache()
+    .findAll({ queryKey: ['agents-all-nodes'], type: 'active' })
+    .filter((query) => query.state.status === 'success')
+  if (settled.length === 0) return undefined
+  return settled.flatMap((query) =>
+    presetsFromAgentsQueryData(query.state.data).map((preset) => preset.id),
+  )
 }
 
 /**

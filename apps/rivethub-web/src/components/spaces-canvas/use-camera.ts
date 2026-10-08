@@ -102,18 +102,24 @@ export function useCamera(opts: {
         const step = 48 * z
         const dotA = step < 9 ? 0 : Math.min(0.4, (step - 9) / 34)
         stage.style.setProperty('--dot-a', String(dotA))
-        stage.style.backgroundSize = `${step}px ${step}px`
-        stage.style.backgroundPosition = `${tx}px ${ty}px`
+        // The dot grid is a pseudo-element, not the ground itself, so this
+        // opacity breathe does not fade tiles or the open thread.
+        stage.style.setProperty('--dot-size', `${step}px`)
+        stage.style.setProperty('--dot-x', `${tx}px`)
+        stage.style.setProperty('--dot-y', `${ty}px`)
       }
     },
     [stageRef, worldRef],
   )
 
   const commit = useCallback(
-    (next: Cam) => {
+    (next: Cam, publish = true) => {
       camRef.current = next
       paint(next, vpRef.current)
-      setCam(next)
+      // Intermediate fly frames paint the DOM only. Publishing each one
+      // re-renders every tile. The last frame (or a reduced-motion snap)
+      // is the React commit.
+      if (publish) setCam(next)
     },
     [paint],
   )
@@ -137,7 +143,7 @@ export function useCamera(opts: {
       const step = (now: number): void => {
         if (flyToken.current !== token) return
         const t = dur === 0 ? 1 : Math.min(1, (now - t0) / dur)
-        commit(flyStep(from, to, t))
+        commit(flyStep(from, to, t), t === 1)
         if (t < 1) {
           rafRef.current = requestAnimationFrame(step)
           return

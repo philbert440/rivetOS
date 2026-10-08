@@ -286,6 +286,53 @@ describe('bindSessionStream', () => {
     held()
   })
 
+  it('does not close a moved attach when the destination only watches', async () => {
+    const closes: Array<ReturnType<typeof vi.fn>> = []
+    vi.mocked(attachHarnessSession).mockImplementation(() => {
+      const close = vi.fn()
+      closes.push(close)
+      return { close, resync: vi.fn(), sync: vi.fn() }
+    })
+    const unbind = trackUnbind()
+    const streamId = 'claude-code:native-1'
+    const moved = bindSessionStream(
+      args({ sessionId: 'draft-1', streamId, harnessId: 'claude-code' }),
+    )
+    const destination = bindSessionStream(args({ sessionId: 'canon-1' }))
+    await Promise.resolve()
+    expect(closes).toHaveLength(1)
+    useChat.getState().rekey('draft-1', 'canon-1')
+    expect(closes[0]).not.toHaveBeenCalled()
+    expect(unbind).not.toHaveBeenCalled()
+    expect(useChat.getState().harnessBound['canon-1']).toBe(true)
+    moved()
+    destination()
+  })
+
+  it('unwatches a moved watch when the destination already has an attach', async () => {
+    const closes: Array<ReturnType<typeof vi.fn>> = []
+    vi.mocked(attachHarnessSession).mockImplementation(() => {
+      const close = vi.fn()
+      closes.push(close)
+      return { close, resync: vi.fn(), sync: vi.fn() }
+    })
+    const { unwatch } = trackWatch()
+    const unbind = trackUnbind()
+    const streamId = 'claude-code:native-1'
+    const moved = bindSessionStream(args({ sessionId: 'draft-1' }))
+    const destination = bindSessionStream(
+      args({ sessionId: 'canon-1', streamId, harnessId: 'claude-code' }),
+    )
+    await Promise.resolve()
+    useChat.getState().rekey('draft-1', 'canon-1')
+    expect(unwatch).toHaveBeenCalledWith('draft-1')
+    expect(unbind).not.toHaveBeenCalled()
+    expect(closes[0]).not.toHaveBeenCalled()
+    expect(useChat.getState().harnessBound['canon-1']).toBe(true)
+    moved()
+    destination()
+  })
+
   it('adopts a bare native id with one attach and ignores the superseded promise', async () => {
     let resolveGw: (gw: HarnessAttachGateway) => void = () => undefined
     const pending = new Promise<HarnessAttachGateway>((resolve) => {

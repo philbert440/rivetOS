@@ -47,7 +47,7 @@ export function HistoryPanel(props: {
   const [openGroups, setOpenGroups] = useState<ReadonlySet<string>>(() => new Set())
 
   const unplaced = (item: ChatItem): boolean => {
-    const key = rowMembershipKey(baseUrl, item)
+    const key = rowMembershipKey(baseUrl, item, membership)
     if (!Object.hasOwn(membership, key)) return true
     const spaceId = membership[key]
     return !spaces.some((space) => space.id === spaceId)
@@ -135,6 +135,7 @@ export function HistoryPanel(props: {
             expanded={expanded}
             onToggleNest={kids > 0 ? () => toggleNest(it.key) : undefined}
             nested={depth > 0}
+            tokenAccent
           />
           {expanded && <div className="pl-3">{renderNodes(node.children, depth + 1)}</div>}
         </div>

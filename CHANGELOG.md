@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### RivetHub
+
+- Spaces canvas (preview, still **off** by default): dark, light, and Omarchy all come from tokens; reduced motion snaps the camera and the canvas motion; tiles are a roving-tabindex grid with a spoken altitude; `?` opens a Keys panel built from the same shortcut table the handler uses; empty states for no conversations, no spaces, and an empty space. Moving the open thread to History no longer remounts it, and History's pick mode no longer takes Escape while a thread is open.
+
 ### Compaction worker
 
 - A burst of errors from the compactor's LLM provider no longer stalls compaction until a restart. `RIVETOS_COMPACTOR_TRANSIENT_STATUSES` (e.g. `403,404`) lists the 4xx codes the primary returns while overloaded; they retry like a 5xx and fail as retryable, not terminal.

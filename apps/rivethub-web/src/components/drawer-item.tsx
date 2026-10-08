@@ -6,7 +6,7 @@
 
 import { useRef, useState, type JSX } from 'react'
 import { Archive, ArchiveRestore, Pencil, Trash2 } from 'lucide-react'
-import { accentFor, sameLabel } from '../lib/agent-accent.js'
+import { accentFor, harnessAccentKey, sameLabel } from '../lib/agent-accent.js'
 import { rowOwnedByAgent } from '../lib/agent-session.js'
 import { denRoomKey, nativeIdOf, shortNativeId, type ChatItem } from '../lib/harness-chat.js'
 import { rowPillText } from '../lib/harness-options.js'
@@ -14,7 +14,6 @@ import { storageKey } from '../lib/session-rekey.js'
 import { getSessionNodeBinding } from '../lib/session-node.js'
 import { useConnection } from '../stores/connection.js'
 import { useSessionNames } from '../stores/session-names.js'
-import { useSpaces } from '../stores/spaces.js'
 
 /**
  * Read a thread's persisted value, falling back to the pre-canonical key.
@@ -77,14 +76,20 @@ export function selectDrawerItems(opts: {
  * stays on the hub when that entry exists, or when nothing is bound — History
  * places there even if the session is also bound to another node. A node-only
  * space default is filed under the binding, which is the key adoption rekeys.
+ *
+ * `membership` is the caller's map. This does not read the spaces store, so a
+ * snapshot passed into `buildCanvasRegions` cannot disagree with the lookup.
  */
-export function rowMembershipKey(baseUrl: string, item: ChatItem): string {
+export function rowMembershipKey(
+  baseUrl: string,
+  item: ChatItem,
+  membership: Readonly<Record<string, string>>,
+): string {
   if (item.pinNodeBaseUrl) return storageKey(item.pinNodeBaseUrl, item.key)
   const hubKey = storageKey(baseUrl, item.key)
   const binding = getSessionNodeBinding(item.key)
   if (!binding || binding === baseUrl) return hubKey
   const boundKey = storageKey(binding, item.key)
-  const membership = useSpaces.getState().membership
   if (Object.hasOwn(membership, hubKey) || !Object.hasOwn(membership, boundKey)) return hubKey
   return boundKey
 }
@@ -109,6 +114,8 @@ export function DrawerItem(props: {
   onToggleNest?: () => void
   /** Child of another conversation. Label is the subagent type, with an elbow. */
   nested?: boolean
+  /** Canvas History: harness token class, no inline hex. The drawer keeps accentFor. */
+  tokenAccent?: boolean
 }): JSX.Element {
   const hubBase = useConnection((s) => s.baseUrl)
   const storeBase = props.item.pinNodeBaseUrl ?? hubBase
@@ -208,17 +215,28 @@ export function DrawerItem(props: {
         )}
         {/* same accent as the Agents rail dot (preset hex, else harness).
             On a nested row it sits after the type pill. */}
-        <span
-          className="size-1.5 shrink-0 rounded-full"
-          style={{
-            background: accentFor({
-              presetColor: props.item.accent,
+        {props.tokenAccent ? (
+          <span
+            className="sc-accent size-1.5 shrink-0 rounded-full"
+            data-harness={harnessAccentKey({
               harnessId: props.item.harnessId,
               command: props.item.command,
-            }),
-          }}
-          aria-hidden
-        />
+            })}
+            aria-hidden
+          />
+        ) : (
+          <span
+            className="size-1.5 shrink-0 rounded-full"
+            style={{
+              background: accentFor({
+                presetColor: props.item.accent,
+                harnessId: props.item.harnessId,
+                command: props.item.command,
+              }),
+            }}
+            aria-hidden
+          />
+        )}
         {!showTypePill && <span className="min-w-0 truncate">{visibleLabel}</span>}
         {kids > 0 && !props.expanded && (
           <span

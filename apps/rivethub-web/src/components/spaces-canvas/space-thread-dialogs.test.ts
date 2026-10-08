@@ -4,16 +4,9 @@ import { createElement, type ReactNode } from 'react'
 import { act } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { GatewayError } from '@rivetos/gateway-client'
 import type { HarnessDescriptor, HarnessId } from '@rivetos/types'
 import { urlLabel } from '../../lib/node-name.js'
 import { sessionNodeFor } from '../../lib/session-node.js'
-import {
-  DELETED_PRESET_NOTICE,
-  presetHasHarnessFlag,
-  recoverDeletedAgentSpawn,
-  termSpawnBody,
-} from '../../lib/term-spawn.js'
 import { useChat } from '../../stores/chat.js'
 import { useChatSettings } from '../../stores/chat-settings.js'
 import { useConnection } from '../../stores/connection.js'
@@ -296,7 +289,7 @@ describe('NewThreadDialog seeding', () => {
     ).toBe(base)
   })
 
-  it('carries a deleted preset id so spawn recovery raises the existing notice', async () => {
+  it("carries the space's deleted preset when the agent is left untouched", () => {
     roster.agents = [PRESET]
     roster.isLoading = false
     const spaceId = useSpaces.getState().addSpace('Home')
@@ -312,6 +305,7 @@ describe('NewThreadDialog seeding', () => {
         started = id
       }),
     )
+    expect(document.body.textContent).toContain('Plain draft')
     expect(document.body.textContent).not.toContain('missing preset was removed')
     setField('#new-thread-prompt', 'hello')
     act(() => {
@@ -319,22 +313,15 @@ describe('NewThreadDialog seeding', () => {
     })
     const base = useConnection.getState().baseUrl
     const settings = useChatSettings.getState().byKey[`${base}::${started}`]
-    expect(settings?.agentId).toBe('gone')
-    expect(settings?.harnessId).toBe('claude-code')
-    const body = termSpawnBody({
-      sessionId: started,
-      agentId: settings?.agentId,
-      model: settings?.model,
-      effort: settings?.effort,
-      presetHasHarness: presetHasHarnessFlag(settings),
+    // Round-2 review (gippity B1): the space's own deleted default reaches the
+    // spawn recovery and DELETED_PRESET_NOTICE; only an explicit Plain draft
+    // pick drops it (covered in new-thread.test.ts).
+    expect(settings).toMatchObject({
+      agentId: 'gone',
+      harnessId: 'claude-code',
+      model: 'm2',
+      effort: 'high',
     })
-    expect(body.agentId).toBe('gone')
-    const spawned = await recoverDeletedAgentSpawn(async (req) => {
-      if (req.agentId) throw new GatewayError(404, 'agent not found', undefined)
-      return 'pty'
-    }, body)
-    expect(spawned.droppedAgentId).toBe(true)
-    expect(DELETED_PRESET_NOTICE).toBe('Preset not found on this node; opened without it')
   })
 
   it('copies the newly picked preset after the space seed', () => {
@@ -520,7 +507,7 @@ describe('SpaceDefaultsDialog save while the roster loads', () => {
     if (!space) throw new Error('missing space')
     mount(createElement(SpaceDefaultsDialog, { space, descriptors, onClose: () => undefined }))
     expect(document.querySelector('[aria-label="model: M2"]')).not.toBeNull()
-    const agent = document.querySelector('[aria-label="Agent"]')
+    const agent = document.querySelector('[id="space-agent"]')
     if (!agent) throw new Error('missing agent picker')
     act(() => {
       agent.dispatchEvent(new MouseEvent('click', { bubbles: true }))
@@ -633,7 +620,7 @@ describe('SpaceDefaultsDialog save while the roster loads', () => {
     act(() => {
       ;(effortNone as HTMLButtonElement).click()
     })
-    const agent = document.querySelector('[aria-label="Agent"]')
+    const agent = document.querySelector('[id="space-agent"]')
     if (!agent) throw new Error('missing agent picker')
     act(() => {
       agent.dispatchEvent(new MouseEvent('click', { bubbles: true }))
