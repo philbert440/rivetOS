@@ -275,9 +275,10 @@ export interface PtyHarnessDriverDeps<S extends HarnessStoreHost = HarnessStoreH
   transcript?: Pick<TranscriptWatcher, 'subscribe' | 'sync'>
   /**
    * herdr screen capture for the den room (native id for pinning harnesses,
-   * room key for adopting ones). Empty / omitted under tmux.
+   * room key for adopting ones). Empty / omitted under tmux. `ansi` keeps
+   * SGR so the pre-send read can tell dim ghost text from a typed draft.
    */
-  screen?: (native: string) => Promise<string> | string
+  screen?: (native: string, opts?: { ansi?: boolean }) => Promise<string> | string
 }
 
 /** Per-driver identity, supplied by the subclass's constructor. */
@@ -1871,7 +1872,7 @@ export abstract class PtyHarnessDriver<S extends HarnessStoreHost = HarnessStore
   protected async preSendBlock(native: string): Promise<PreSendBlock> {
     if (!this.dialogGate) return {}
     try {
-      const raw = await this.deps.screen?.(this.room(native))
+      const raw = await this.deps.screen?.(this.room(native), { ansi: true })
       return parsePreSendBlock(raw ?? '')
     } catch (err) {
       this.log(

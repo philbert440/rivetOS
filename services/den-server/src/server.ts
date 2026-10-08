@@ -894,11 +894,11 @@ export function createDenServer(config: DenConfig, opts: DenServerOptions = {}):
     return () => denEventSinks.delete(sink)
   }
   const screenFor = termEnabled
-    ? async (native: string): Promise<string> => {
+    ? async (native: string, opts?: { ansi?: boolean }): Promise<string> => {
         const m = await ensureManager()
         if (!m) return ''
         const id = m.ptyForSession(native)
-        return id ? m.screen(id, 40) : ''
+        return id ? m.screen(id, 40, opts) : ''
       }
     : undefined
   /** Built-ins we own the lifetime of — closed on shutdown to drop the tap. */
@@ -2282,7 +2282,7 @@ export function createDenServer(config: DenConfig, opts: DenServerOptions = {}):
           let resubmit = false
           if (claudeHarness && submit && p.text && !interrupt) {
             const { dialog, draft, draftText } = await preSendBlockOnScreen(() =>
-              manager.screen(ptyId, 40),
+              manager.screen(ptyId, 40, { ansi: true }),
             )
             // This same message, stuck unsent (its Enter was swallowed): press
             // Enter on it instead of refusing every retry.

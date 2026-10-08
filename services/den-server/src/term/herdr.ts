@@ -136,10 +136,11 @@ export interface HerdrCtl {
   create(opts: HerdrCreateOpts): void | Promise<void>
   /** TUI client argv for the den PTY. */
   attachArgv(name: string): string[]
-  /** Scrollback via `agent read` / `pane read`. Empty string on failure. */
-  capture?(name: string, lines: number): string
+  /** Scrollback via `agent read` / `pane read`. Empty string on failure.
+   *  `ansi` keeps SGR, so dim ghost text can be told from typed text. */
+  capture?(name: string, lines: number, opts?: HerdrCaptureOpts): string
   /** Same, without blocking the event loop (execFile). Prefer this. */
-  captureAsync?(name: string, lines: number): Promise<string>
+  captureAsync?(name: string, lines: number, opts?: HerdrCaptureOpts): Promise<string>
   /** Cheap async liveness probe (`pane list` / `agent list`), scoped to
    *  one pane when `paneId` is passed. `undefined` means the probe is
    *  unavailable, failed, or the pane id is unknown/absent — callers fail
@@ -359,12 +360,50 @@ export function herdrAgentListArgv(name: string): string[] {
   return ['herdr', '--session', name, 'agent', 'list']
 }
 
-export function herdrAgentReadArgv(name: string, target: string, lines: number): string[] {
-  return ['herdr', '--session', name, 'agent', 'read', target, '--lines', String(lines)]
+export interface HerdrCaptureOpts {
+  ansi?: boolean
 }
 
-export function herdrPaneReadArgv(name: string, pane: string, lines: number): string[] {
-  return ['herdr', '--session', name, 'pane', 'read', pane, '--lines', String(lines)]
+function readFormat(opts?: HerdrCaptureOpts): string[] {
+  return opts?.ansi ? ['--format', 'ansi'] : []
+}
+
+export function herdrAgentReadArgv(
+  name: string,
+  target: string,
+  lines: number,
+  opts?: HerdrCaptureOpts,
+): string[] {
+  return [
+    'herdr',
+    '--session',
+    name,
+    'agent',
+    'read',
+    target,
+    '--lines',
+    String(lines),
+    ...readFormat(opts),
+  ]
+}
+
+export function herdrPaneReadArgv(
+  name: string,
+  pane: string,
+  lines: number,
+  opts?: HerdrCaptureOpts,
+): string[] {
+  return [
+    'herdr',
+    '--session',
+    name,
+    'pane',
+    'read',
+    pane,
+    '--lines',
+    String(lines),
+    ...readFormat(opts),
+  ]
 }
 
 export function herdrPaneListArgv(name: string): string[] {
@@ -1632,23 +1671,23 @@ export function createRealHerdrCtl(
     attachArgv(name) {
       return herdrAttachArgv(name)
     },
-    capture(name, lines) {
+    capture(name, lines, opts) {
       const meta = readMeta(configHome, name)
       const label = name // the agent is registered under the hashed session name
       try {
-        const agent = run(herdrAgentReadArgv(name, label, lines).slice(1), 2000)
+        const agent = run(herdrAgentReadArgv(name, label, lines, opts).slice(1), 2000)
         if (agent !== null && agent.trim()) return agent
       } catch {
         // fall through to pane read
       }
       const pane = meta.paneId ?? HERDR_DEFAULT_PANE
       try {
-        return run(herdrPaneReadArgv(name, pane, lines).slice(1), 2000) ?? ''
+        return run(herdrPaneReadArgv(name, pane, lines, opts).slice(1), 2000) ?? ''
       } catch {
         return ''
       }
     },
-    captureAsync(name, lines) {
+    captureAsync(name, lines, opts) {
       const meta = readMeta(configHome, name)
       const runAsync = (args: string[]): Promise<string> =>
         new Promise((resolve) => {
@@ -1659,10 +1698,12 @@ export function createRealHerdrCtl(
             (err, stdout) => resolve(err ? '' : stdout),
           )
         })
-      return runAsync(herdrAgentReadArgv(name, name, lines).slice(1)).then((agent) =>
+      return runAsync(herdrAgentReadArgv(name, name, lines, opts).slice(1)).then((agent) =>
         agent.trim()
           ? agent
-          : runAsync(herdrPaneReadArgv(name, meta.paneId ?? HERDR_DEFAULT_PANE, lines).slice(1)),
+          : runAsync(
+              herdrPaneReadArgv(name, meta.paneId ?? HERDR_DEFAULT_PANE, lines, opts).slice(1),
+            ),
       )
     },
     resolvePaneId,
