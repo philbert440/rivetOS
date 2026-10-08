@@ -237,6 +237,11 @@ interface PaintedTile {
   rowLabel: string
 }
 
+/** The dock's key column: each button leads with its current binding. */
+function DockKey(props: { label: string }): JSX.Element {
+  return <kbd className="w-24 shrink-0 text-left text-ink-dim">{props.label}</kbd>
+}
+
 export function SpacesCanvas(props: {
   rows: ChatItem[]
   activeId?: string
@@ -1575,7 +1580,7 @@ export function SpacesCanvas(props: {
           <div
             data-hud=""
             data-dock-bar=""
-            className="pointer-events-auto absolute right-2 bottom-11 flex max-h-[calc(100%-4rem)] flex-col items-stretch gap-0.5 overflow-y-auto border border-line bg-panel p-1 [&>button]:text-left"
+            className="pointer-events-auto absolute right-2 bottom-11 flex max-h-[calc(100%-4rem)] flex-col items-stretch gap-0.5 overflow-y-auto border border-line bg-panel p-1 [&>button]:flex [&>button]:items-baseline [&>button]:gap-2 [&>button]:text-left"
           >
             <button
               type="button"
@@ -1587,7 +1592,8 @@ export function SpacesCanvas(props: {
                 setHistoryWanted((open) => !open)
               }}
             >
-              History <kbd className="text-ink-dim">H</kbd>
+              <DockKey label={label('history')} />
+              History
             </button>
             <button
               type="button"
@@ -1598,6 +1604,7 @@ export function SpacesCanvas(props: {
                 if (id !== undefined) beginThread(id)
               }}
             >
+              <DockKey label={label('next-waiting')} />
               Needs you{' '}
               <span className={needsCount > 0 ? 'text-warn' : 'text-ink-dim'}>{needsCount}</span>
             </button>
@@ -1613,6 +1620,7 @@ export function SpacesCanvas(props: {
                 if (id !== undefined) beginThread(id)
               }}
             >
+              <DockKey label={label('mru')} />
               Recent
             </button>
             <button
@@ -1622,7 +1630,7 @@ export function SpacesCanvas(props: {
               title={dockStartsIn}
               onClick={() => setNewThread({ spaceId: spaceYouAreIn() })}
             >
-              + Thread <kbd className="text-ink-dim">T</kbd>
+              <DockKey label={label('new-thread')} />+ Thread
             </button>
             {moveOpen && selectedPlaced ? (
               <Popover
@@ -1637,7 +1645,8 @@ export function SpacesCanvas(props: {
                     data-dock="move"
                     className="px-3 py-2 text-sm text-em hover:bg-em/15"
                   >
-                    Move <kbd className="text-ink-dim">M</kbd>
+                    <DockKey label={label('move')} />
+                    Move
                   </button>
                 </PopoverTrigger>
                 <PopoverContent align="center" className="w-56 p-1 font-mono">
@@ -1683,7 +1692,8 @@ export function SpacesCanvas(props: {
                   if (selectedPlaced) setMoveOpen(true)
                 }}
               >
-                Move <kbd className="text-ink-dim">M</kbd>
+                <DockKey label={label('move')} />
+                Move
               </button>
             )}
             {findOpen ? (
@@ -1709,15 +1719,16 @@ export function SpacesCanvas(props: {
                 performCanvasEffect(effect, actionsRef.current)
               }}
             >
-              {altitude === 'thread' ? 'Zoom out' : 'Zoom in'}{' '}
-              <kbd className="text-ink-dim">Ctrl Space</kbd>
+              <DockKey label={label('zoom-toggle')} />
+              {altitude === 'thread' ? 'Zoom out' : 'Zoom in'}
             </button>
             <button
               type="button"
               className="px-3 py-2 text-sm text-ink hover:bg-em/15"
               onClick={() => leaveTo('everything')}
             >
-              Everything <kbd className="text-ink-dim">Ctrl 0</kbd>
+              <DockKey label={label('everything')} />
+              Everything
             </button>
             <button
               type="button"
@@ -1727,7 +1738,8 @@ export function SpacesCanvas(props: {
               className={`px-3 py-2 text-sm hover:bg-em/15 ${keysOpen ? 'text-em' : 'text-ink'}`}
               onClick={() => setKeysOpen((open) => !open)}
             >
-              ? <kbd className="text-ink-dim">Keys</kbd>
+              <DockKey label={label('keys')} />
+              Keys
             </button>
           </div>
         ) : null}
