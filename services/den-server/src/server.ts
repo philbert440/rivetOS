@@ -107,7 +107,7 @@ import {
   describeGrokSession,
   listHarnessSessions,
   harnessSessionExists,
-  qwenSessionCwd,
+  harnessSessionCwd,
   readHarnessTranscript,
 } from './term/harness-sessions.js'
 import { stampDelegatedOwners, verifyDelegatedClaims } from './term/delegated-sessions.js'
@@ -754,7 +754,7 @@ export function createDenServer(config: DenConfig, opts: DenServerOptions = {}):
     for (const id of ids) {
       if (!id || seen.has(id)) continue
       seen.add(id)
-      const raw = sessionCwdStore.get(cmd, id) ?? (cmd === 'qwen' ? qwenSessionCwd(id) : undefined)
+      const raw = sessionCwdStore.get(cmd, id) ?? harnessSessionCwd(cmd, id)
       const validated = validateDirectory(raw)
       if (validated) return validated
     }
@@ -795,7 +795,7 @@ export function createDenServer(config: DenConfig, opts: DenServerOptions = {}):
         sessionExists: harnessSessionExists,
         isTaskSession: (id) => taskSessionIds.has(id),
         sessionCwd: (command, id) =>
-          sessionCwdStore.get(command, id) ?? (command === 'qwen' ? qwenSessionCwd(id) : undefined),
+          sessionCwdStore.get(command, id) ?? harnessSessionCwd(command, id),
         recordSessionCwd: writeSessionCwd,
         forgetSessionCwd: (command, id) => {
           sessionCwdStore.delete(command, id)

@@ -1862,7 +1862,7 @@ async function readQwenSession(
     return undefined
   }
   const title = (await qwenTitleFromTranscript(transcript).catch(() => '')) || id
-  const cwd = qwenCwdFromFile(transcript)
+  const cwd = cwdFromJsonl(transcript)
   return {
     id,
     command: 'qwen',
@@ -1874,7 +1874,8 @@ async function readQwenSession(
 }
 
 /** First `cwd` stamped on a qwen jsonl line. Sync — term spawn is sync. */
-function qwenCwdFromFile(file: string): string | undefined {
+/** First `cwd` recorded in a JSONL transcript (bounded read) — the session's start directory. */
+function cwdFromJsonl(file: string): string | undefined {
   try {
     const text = readFileSync(file, 'utf8')
     const window = text.length > 64 * 1024 ? text.slice(0, 64 * 1024) : text
@@ -1901,7 +1902,39 @@ export function qwenSessionCwd(id: string): string | undefined {
   if (!id || id.includes('/') || id.includes('..')) return undefined
   const path = qwenTranscriptPath(id)
   if (!path) return undefined
-  return qwenCwdFromFile(path)
+  return cwdFromJsonl(path)
+}
+
+/**
+ * Start directory of a Claude Code session, from its transcript. Claude files
+ * sessions under a slug of the directory they began in, and `claude --resume
+ * <id>` only finds ones whose slug matches the spawn cwd — so resuming a
+ * session started outside RivetHub (no recorded cwd) from the roster default
+ * ($HOME) fails with "No conversation found". The first `cwd` line is the
+ * start directory; later lines follow the agent's `cd`s and are not.
+ */
+export function claudeSessionCwd(id: string): string | undefined {
+  if (!claudeIdSafe(id) || !CLAUDE_SESSION_UUID_RE.test(id)) return undefined
+  const dir = claudeProjectsDir()
+  let slugs: string[]
+  try {
+    slugs = readdirSync(dir)
+  } catch {
+    return undefined
+  }
+  for (const slug of slugs) {
+    const file = join(dir, slug, `${id}.jsonl`)
+    if (existsSync(file)) return cwdFromJsonl(file)
+  }
+  return undefined
+}
+
+/** Start directory a harness recorded in its own store, for harnesses whose
+ *  `--resume` is cwd-scoped. Undefined for the rest. */
+export function harnessSessionCwd(command: string, id: string): string | undefined {
+  if (command === 'qwen') return qwenSessionCwd(id)
+  if (command === 'claude') return claudeSessionCwd(id)
+  return undefined
 }
 
 async function collectQwenSessionFiles(): Promise<

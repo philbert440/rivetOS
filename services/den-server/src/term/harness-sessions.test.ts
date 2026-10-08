@@ -14,6 +14,8 @@ import {
   describePiSession,
   describeQwenCodeSession,
   qwenSessionCwd,
+  claudeSessionCwd,
+  harnessSessionCwd,
   claudeTurnsFromLines,
   grokTurnsFromLines,
   listHarnessSessions,
@@ -159,6 +161,31 @@ function fakeClaudeStore(): string {
   process.env.CLAUDE_CONFIG_DIR = base
   return base
 }
+
+describe('claudeSessionCwd', () => {
+  it('reads the start directory from the session transcript, not later cds', () => {
+    const base = mkdtempSync(join(tmpdir(), 'claude-cwd-'))
+    const id = '33333333-3333-3333-3333-333333333333'
+    const dir = join(base, 'projects', '-home-example-proj')
+    mkdirSync(dir, { recursive: true })
+    writeFileSync(
+      join(dir, `${id}.jsonl`),
+      [
+        JSON.stringify({ type: 'queue-operation', sessionId: id }),
+        JSON.stringify({ type: 'user', cwd: '/home/example/proj', sessionId: id }),
+        JSON.stringify({ type: 'assistant', cwd: '/home/example/proj/sub', sessionId: id }),
+      ].join('\n') + '\n',
+    )
+    process.env.CLAUDE_CONFIG_DIR = base
+    expect(claudeSessionCwd(id)).toBe('/home/example/proj')
+    expect(harnessSessionCwd('claude', id)).toBe('/home/example/proj')
+    expect(claudeSessionCwd('44444444-4444-4444-4444-444444444444')).toBeUndefined()
+    expect(claudeSessionCwd('../../etc/passwd')).toBeUndefined()
+    expect(claudeSessionCwd('agent-abc')).toBeUndefined()
+    expect(harnessSessionCwd('codex', id)).toBeUndefined()
+    rmSync(base, { recursive: true, force: true })
+  })
+})
 
 describe('listHarnessSessions', () => {
   it('lists Claude sessions across all project dirs, newest first, with titles', async () => {
