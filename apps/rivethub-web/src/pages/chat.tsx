@@ -292,11 +292,14 @@ export function ChatPage(): JSX.Element {
   // Pin enrichment below reads the house-agents cache by peek (getQueriesData
   // is not a subscription), so track those queries explicitly — a freshly
   // minted pin would otherwise show the raw agentId and no swatch until some
-  // other dep of the items memo happened to change.
+  // other dep of the items memo happened to change. Only cache changes count:
+  // observer events fire on every render of a roster subscriber, and the
+  // canvas renders one under this page — reacting to those loops forever.
   const [houseTick, setHouseTick] = useState(0)
   useEffect(
     () =>
       queryClient.getQueryCache().subscribe((event) => {
+        if (event.type !== 'added' && event.type !== 'removed' && event.type !== 'updated') return
         const key: unknown = (event.query.queryKey as readonly unknown[])[0]
         if (key === 'agents-all-nodes') setHouseTick((t) => t + 1)
       }),
