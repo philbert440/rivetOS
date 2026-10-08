@@ -104,16 +104,17 @@ export function regH(n: number): number {
 }
 
 /**
- * Screen padding the camera must keep clear of the HUD. Dock height is the
- * mock's floor (the slice dock is shorter, so the floor still clears it).
+ * Screen padding the camera must keep clear of the HUD. The dock is tucked
+ * behind a corner toggle inside the right inset (beside the zoom panel), so
+ * the bottom only needs the side margin. Narrow keeps the mock's dock floor.
  * Narrow breakpoints match the mock (720), not the app's 768 list cutoff.
  */
 export function insets(mode: Altitude, vp: Viewport): Insets {
   const narrow = vp.w < 720
   if (mode === 'thread') {
-    return narrow ? { t: 150, b: 96, l: 16, r: 16 } : { t: 64, b: 78, l: 16, r: 170 }
+    return narrow ? { t: 150, b: 96, l: 16, r: 16 } : { t: 64, b: 16, l: 16, r: 170 }
   }
-  return narrow ? { t: 150, b: 110, l: 24, r: 24 } : { t: 72, b: 90, l: 24, r: 180 }
+  return narrow ? { t: 150, b: 110, l: 24, r: 24 } : { t: 72, b: 24, l: 24, r: 180 }
 }
 
 /**
