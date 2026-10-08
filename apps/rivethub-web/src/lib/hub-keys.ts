@@ -19,6 +19,42 @@
 
 export type HubKeyAction = 'agent-next' | 'agent-prev' | 'toggle-sidebar' | 'new-conversation'
 
+/** Canvas chords. Kept off `matchHubKey` so the sidebar listener does not claim them. */
+export type CanvasChord = 'zoom-toggle' | 'everything'
+
+/**
+ * Ctrl+Space toggles thread/space (and from everything opens the selection).
+ * Ctrl+0 frames everything. Same modifier rule as `matchHubKey`: Ctrl, and
+ * neither Alt, Meta, nor Shift.
+ */
+export function matchCanvasChord(
+  e: Pick<KeyboardEvent, 'code' | 'ctrlKey' | 'shiftKey' | 'altKey' | 'metaKey'>,
+): CanvasChord | null {
+  if (!e.ctrlKey || e.altKey || e.metaKey || e.shiftKey) return null
+  if (e.code === 'Space') return 'zoom-toggle'
+  if (e.code === 'Digit0') return 'everything'
+  return null
+}
+
+export type CanvasNav = 'left' | 'right' | 'up' | 'down' | 'open' | 'out'
+
+/**
+ * Selection keys at space / everything altitude. Not a Ctrl chord. Esc is
+ * "out" here; the canvas listener must not claim it at thread altitude.
+ */
+export function matchCanvasNav(
+  e: Pick<KeyboardEvent, 'key' | 'ctrlKey' | 'shiftKey' | 'altKey' | 'metaKey'>,
+): CanvasNav | null {
+  if (e.ctrlKey || e.altKey || e.metaKey || e.shiftKey) return null
+  if (e.key === 'ArrowLeft' || e.key === 'h') return 'left'
+  if (e.key === 'ArrowRight' || e.key === 'l') return 'right'
+  if (e.key === 'ArrowUp' || e.key === 'k') return 'up'
+  if (e.key === 'ArrowDown' || e.key === 'j') return 'down'
+  if (e.key === 'Enter') return 'open'
+  if (e.key === 'Escape') return 'out'
+  return null
+}
+
 /** Pure matcher; takes the fields it needs so tests can pass plain objects. */
 export function matchHubKey(
   e: Pick<KeyboardEvent, 'key' | 'code' | 'ctrlKey' | 'shiftKey' | 'altKey' | 'metaKey'>,

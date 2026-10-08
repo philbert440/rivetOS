@@ -482,11 +482,24 @@ html[data-theme='light'] {
   outline: 2px dashed var(--em);
   outline-offset: -2px;
 }
+/* Tile geometry moves with the camera. The rule lives here, not inline,
+   so the reduced-motion block below can win at the same specificity. */
+[data-tile] {
+  transition:
+    opacity 0.28s,
+    left 0.32s,
+    top 0.32s,
+    width 0.32s,
+    height 0.32s;
+}
 /* No motion: hold a static ring instead — animationend may not fire, so the
    class is removed by xterm-attach's timeout fallback. */
 @media (prefers-reduced-motion: reduce) {
   .term-bell-flash {
     animation: none;
     outline-color: var(--color-em);
+  }
+  [data-tile] {
+    transition: none;
   }
 }

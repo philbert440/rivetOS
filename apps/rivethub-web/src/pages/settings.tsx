@@ -421,6 +421,8 @@ export function SettingsPage(): JSX.Element {
 function ConversationsSection(): JSX.Element {
   const defaultView = useConversationView((s) => s.defaultView)
   const setDefaultView = useConversationView((s) => s.setDefaultView)
+  const canvasEnabled = useConversationView((s) => s.canvasEnabled)
+  const setCanvasEnabled = useConversationView((s) => s.setCanvasEnabled)
   return (
     <>
       <h2 className="mt-10 mb-3 border-t border-line pt-6 font-mono text-sm font-semibold text-em">
@@ -455,6 +457,16 @@ function ConversationsSection(): JSX.Element {
         Where a conversation opens: new ones, and older ones you have not switched. Switching
         between Terminal and Chat inside a conversation is remembered for that conversation.
         Sessions that only run in a terminal always open there.
+      </p>
+      <div className="mt-4 flex items-center justify-between gap-3">
+        <label htmlFor="spaces-canvas" className="text-xs text-ink-dim">
+          Spaces canvas (preview)
+        </label>
+        <Toggle id="spaces-canvas" value={canvasEnabled} onChange={setCanvasEnabled} />
+      </div>
+      <p className="mt-2 text-xs text-ink-dim">
+        On a wide screen, conversations open on a zoomable canvas instead of the list. The phone
+        layout stays the list and the open thread.
       </p>
     </>
   )

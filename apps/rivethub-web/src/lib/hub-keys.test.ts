@@ -4,6 +4,8 @@ import {
   cycleAgentId,
   focusInForeignDialog,
   isCurrentSeq,
+  matchCanvasChord,
+  matchCanvasNav,
   matchHubKey,
 } from './hub-keys.js'
 
@@ -74,6 +76,40 @@ describe('matchHubKey', () => {
     expect(
       matchHubKey(keyEvent({ key: 'f', code: 'KeyF', ctrlKey: true, shiftKey: true })),
     ).toBeNull()
+  })
+})
+
+describe('matchCanvasChord', () => {
+  it('maps Ctrl+Space and Ctrl+0, and leaves Shift/Alt/Meta alone', () => {
+    expect(matchCanvasChord(keyEvent({ code: 'Space', ctrlKey: true }))).toBe('zoom-toggle')
+    expect(matchCanvasChord(keyEvent({ code: 'Digit0', ctrlKey: true }))).toBe('everything')
+    expect(matchCanvasChord(keyEvent({ code: 'Space', ctrlKey: true, shiftKey: true }))).toBeNull()
+    expect(matchCanvasChord(keyEvent({ code: 'Space', ctrlKey: true, altKey: true }))).toBeNull()
+    expect(matchCanvasChord(keyEvent({ code: 'Space', ctrlKey: true, metaKey: true }))).toBeNull()
+    expect(matchCanvasChord(keyEvent({ code: 'Space' }))).toBeNull()
+  })
+
+  it('does not steal the existing hub chords', () => {
+    expect(matchHubKey(keyEvent({ key: ' ', code: 'Space', ctrlKey: true }))).toBeNull()
+    expect(matchHubKey(keyEvent({ key: '0', code: 'Digit0', ctrlKey: true }))).toBeNull()
+  })
+})
+
+describe('matchCanvasNav', () => {
+  it('maps arrows and hjkl, Enter, and Esc', () => {
+    expect(matchCanvasNav(keyEvent({ key: 'ArrowLeft' }))).toBe('left')
+    expect(matchCanvasNav(keyEvent({ key: 'h' }))).toBe('left')
+    expect(matchCanvasNav(keyEvent({ key: 'l' }))).toBe('right')
+    expect(matchCanvasNav(keyEvent({ key: 'k' }))).toBe('up')
+    expect(matchCanvasNav(keyEvent({ key: 'j' }))).toBe('down')
+    expect(matchCanvasNav(keyEvent({ key: 'Enter' }))).toBe('open')
+    expect(matchCanvasNav(keyEvent({ key: 'Escape' }))).toBe('out')
+  })
+
+  it('ignores modified keys', () => {
+    expect(matchCanvasNav(keyEvent({ key: 'ArrowLeft', ctrlKey: true }))).toBeNull()
+    expect(matchCanvasNav(keyEvent({ key: 'h', shiftKey: true }))).toBeNull()
+    expect(matchCanvasNav(keyEvent({ key: 'Escape', altKey: true }))).toBeNull()
   })
 })
 
