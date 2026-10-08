@@ -14,6 +14,7 @@ import { UpdatesSection } from '../components/updates-section.js'
 import { TerminalSection } from '../components/terminal-section.js'
 import { Toggle } from '../components/ui/toggle.js'
 import { Select } from '../components/select.js'
+import { KeyBindingsSection } from '../components/key-bindings-section.js'
 import { DEFAULT_OMARCHY_PRESET, OMARCHY_PRESETS } from '../lib/omarchy-presets.js'
 import { useExperimental } from '../stores/experimental.js'
 
@@ -332,6 +333,7 @@ export function SettingsPage(): JSX.Element {
       </p>
 
       <ConversationsSection />
+      <KeyBindingsSection />
 
       <TerminalSection />
 

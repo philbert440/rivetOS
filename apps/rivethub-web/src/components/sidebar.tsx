@@ -15,6 +15,7 @@ import { useExperimental } from '../stores/experimental.js'
 import { useSidebarPrefs } from '../stores/sidebar-prefs.js'
 import { shouldCloseDrawerOnSelection } from '../lib/drawer-selection.js'
 import { focusInForeignDialog, matchHubKey } from '../lib/hub-keys.js'
+import { useKeyLabel } from '../lib/use-key-label.js'
 import { startNewConversation } from '../lib/new-conversation.js'
 import { visibleNav } from '../lib/visible-nav.js'
 import { useIsNarrow } from '../lib/use-narrow.js'
@@ -190,6 +191,8 @@ export function Sidebar(): JSX.Element {
   const collapsed = narrow ? false : railCollapsed
   const toggle = railToggle(collapsed)
   const logoLabel = narrow ? (drawerOpen ? 'Close sidebar' : 'Open sidebar') : toggle.label
+  const label = useKeyLabel()
+  const panesKey = label('toggle-sidebar')
   const logoExpanded = narrow ? drawerOpen : toggle.ariaExpanded
 
   // Ctrl+Shift+E collapses every side pane — the rail AND the conversations
@@ -252,7 +255,7 @@ export function Sidebar(): JSX.Element {
       }
     >
       <div className={railHeaderClass(collapsed)}>
-        <Tooltip label={`${logoLabel} · Ctrl+Shift+E hides all panes`}>
+        <Tooltip label={panesKey ? `${logoLabel} · ${panesKey} hides all panes` : logoLabel}>
           <Button
             variant="ghost"
             size="icon"
