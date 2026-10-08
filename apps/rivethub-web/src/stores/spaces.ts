@@ -7,10 +7,11 @@
  * `storageKey` / the archive store use. Object key order is recency: placing
  * a thread moves its key to the end, and the cap drops the oldest.
  *
- * `defaults` is reserved for a later slice (starting directory and the like).
- * This slice never reads it.
+ * `defaults` pre-fill a new thread. There is no directory field: the den
+ * derives cwd from the preset id, and `node` is only a den base URL.
  */
 
+import { HARNESS_IDS, type HarnessId, type ThinkingLevel } from '@rivetos/types'
 import { create } from 'zustand'
 import { persist, createJSONStorage } from 'zustand/middleware'
 import { uuidv4 } from '../lib/uuid.js'
@@ -18,13 +19,32 @@ import { useArchived } from './archived.js'
 
 const KEY = 'rivethub.spaces'
 const MAX_MEMBERSHIP = 2000
+const THINKING_LEVELS: readonly ThinkingLevel[] = ['off', 'low', 'medium', 'high', 'xhigh']
+
+/** Optional starting point for threads minted inside this space. */
+export interface SpaceDefaults {
+  agentId?: string
+  model?: string
+  effort?: ThinkingLevel
+  harnessId?: HarnessId
+  /** Den base URL. Not a working directory. */
+  node?: string
+}
+
+/**
+ * Patch for `setSpaceDefaults`. A key that is present is written.
+ * `undefined` or `''` clears that field.
+ */
+export type SpaceDefaultsPatch = {
+  [K in keyof SpaceDefaults]?: SpaceDefaults[K] | undefined
+}
 
 export interface SpaceDef {
   id: string
   name: string
   order: number
   createdAt: number
-  defaults?: Record<string, unknown>
+  defaults?: SpaceDefaults
 }
 
 interface SpacesState {
@@ -36,6 +56,8 @@ interface SpacesState {
   /** Drops the space. Its threads lose membership (they return to History). */
   removeSpace: (id: string) => void
   reorderSpace: (id: string, order: number) => void
+  /** `undefined` on a present key clears that default. Unknown id is a no-op. */
+  setSpaceDefaults: (id: string, patch: SpaceDefaultsPatch) => void
   place: (rowKey: string, spaceId: string) => void
   unplace: (rowKey: string) => void
   /** Move a membership entry when a draft's chat key is adopted. No-op if `from` is absent. */
@@ -98,6 +120,76 @@ function isPlainObject(raw: unknown): raw is Record<string, unknown> {
   return raw !== null && typeof raw === 'object' && !Array.isArray(raw)
 }
 
+function nonEmpty(value: unknown): string | undefined {
+  if (typeof value !== 'string') return undefined
+  const trimmed = value.trim()
+  return trimmed.length > 0 ? trimmed : undefined
+}
+
+function asThinkingLevel(value: unknown): ThinkingLevel | undefined {
+  return typeof value === 'string' && (THINKING_LEVELS as readonly string[]).includes(value)
+    ? (value as ThinkingLevel)
+    : undefined
+}
+
+function asHarnessId(value: unknown): HarnessId | undefined {
+  const id = nonEmpty(value)
+  return id !== undefined && (HARNESS_IDS as readonly string[]).includes(id)
+    ? (id as HarnessId)
+    : undefined
+}
+
+/** Keep known fields. Anything else (including a raw cwd) is dropped. */
+export function normalizeSpaceDefaults(raw: unknown): SpaceDefaults | undefined {
+  if (!isPlainObject(raw)) return undefined
+  const next: SpaceDefaults = {}
+  const agentId = nonEmpty(raw.agentId)
+  if (agentId) next.agentId = agentId
+  const model = nonEmpty(raw.model)
+  if (model) next.model = model
+  const effort = asThinkingLevel(raw.effort)
+  if (effort) next.effort = effort
+  const harnessId = asHarnessId(raw.harnessId)
+  if (harnessId) next.harnessId = harnessId
+  const node = nonEmpty(raw.node)
+  if (node) next.node = node
+  return Object.keys(next).length > 0 ? next : undefined
+}
+
+function applyDefaultsPatch(
+  current: SpaceDefaults | undefined,
+  patch: SpaceDefaultsPatch,
+): SpaceDefaults | undefined {
+  const base: SpaceDefaults = { ...current }
+  const read = <K extends keyof SpaceDefaults>(key: K): SpaceDefaults[K] | undefined => {
+    if (!Object.hasOwn(patch, key)) return base[key]
+    const value = patch[key]
+    if (value === undefined || value === '') return undefined
+    return value
+  }
+  const next: SpaceDefaults = {}
+  const agentId = read('agentId')
+  if (agentId) next.agentId = agentId
+  const model = read('model')
+  if (model) next.model = model
+  const effort = read('effort')
+  if (effort) next.effort = effort
+  const harnessId = read('harnessId')
+  if (harnessId) next.harnessId = harnessId
+  const node = read('node')
+  if (node) next.node = node
+  return Object.keys(next).length > 0 ? next : undefined
+}
+
+function spaceWithDefaults(space: SpaceDef, defaults: SpaceDefaults | undefined): SpaceDef {
+  if (!defaults) {
+    if (!space.defaults) return space
+    const { defaults: _gone, ...rest } = space
+    return rest
+  }
+  return { ...space, defaults }
+}
+
 export function normalizeSpaces(raw: unknown): SpaceDef[] {
   if (!Array.isArray(raw)) return []
   const seen = new Set<string>()
@@ -113,7 +205,8 @@ export function normalizeSpaces(raw: unknown): SpaceDef[] {
     const createdAt =
       typeof item.createdAt === 'number' && Number.isFinite(item.createdAt) ? item.createdAt : 0
     const space: SpaceDef = { id: item.id, name: item.name, order, createdAt }
-    if (isPlainObject(item.defaults)) space.defaults = item.defaults
+    const defaults = normalizeSpaceDefaults(item.defaults)
+    if (defaults) space.defaults = defaults
     spaces.push(space)
   }
   return spaces
@@ -173,6 +266,18 @@ export const useSpaces = create<SpacesState>()(
           if (!s.spaces.some((space) => space.id === id)) return s
           return {
             spaces: s.spaces.map((space) => (space.id === id ? { ...space, order } : space)),
+          }
+        })
+      },
+      setSpaceDefaults: (id, patch) => {
+        set((s) => {
+          if (!s.spaces.some((space) => space.id === id)) return s
+          return {
+            spaces: s.spaces.map((space) =>
+              space.id === id
+                ? spaceWithDefaults(space, applyDefaultsPatch(space.defaults, patch))
+                : space,
+            ),
           }
         })
       },

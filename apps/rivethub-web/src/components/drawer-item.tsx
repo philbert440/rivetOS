@@ -11,8 +11,10 @@ import { rowOwnedByAgent } from '../lib/agent-session.js'
 import { denRoomKey, nativeIdOf, shortNativeId, type ChatItem } from '../lib/harness-chat.js'
 import { rowPillText } from '../lib/harness-options.js'
 import { storageKey } from '../lib/session-rekey.js'
+import { getSessionNodeBinding } from '../lib/session-node.js'
 import { useConnection } from '../stores/connection.js'
 import { useSessionNames } from '../stores/session-names.js'
+import { useSpaces } from '../stores/spaces.js'
 
 /**
  * Read a thread's persisted value, falling back to the pre-canonical key.
@@ -70,9 +72,21 @@ export function selectDrawerItems(opts: {
   })
 }
 
-/** Membership key for a drawer row: the pin's node when the row has one. */
+/**
+ * Membership key for a drawer row. A pin names its node. An unpinned row
+ * stays on the hub when that entry exists, or when nothing is bound — History
+ * places there even if the session is also bound to another node. A node-only
+ * space default is filed under the binding, which is the key adoption rekeys.
+ */
 export function rowMembershipKey(baseUrl: string, item: ChatItem): string {
-  return storageKey(item.pinNodeBaseUrl ?? baseUrl, item.key)
+  if (item.pinNodeBaseUrl) return storageKey(item.pinNodeBaseUrl, item.key)
+  const hubKey = storageKey(baseUrl, item.key)
+  const binding = getSessionNodeBinding(item.key)
+  if (!binding || binding === baseUrl) return hubKey
+  const boundKey = storageKey(binding, item.key)
+  const membership = useSpaces.getState().membership
+  if (Object.hasOwn(membership, hubKey) || !Object.hasOwn(membership, boundKey)) return hubKey
+  return boundKey
 }
 
 /** One conversation row — shows the custom name (if set) over the derived

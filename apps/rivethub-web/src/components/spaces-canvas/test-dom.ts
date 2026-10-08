@@ -613,6 +613,12 @@ class DomWindow {
   sessionStorage: Storage
   innerWidth = 1280
   innerHeight = 800
+  // floating-ui checks `instanceof getWindow(node).HTMLElement`. The globals
+  // below are not on this object, and a missing constructor throws.
+  Node = DomNode
+  Element = DomElement
+  HTMLElement = DomHTMLElement
+  HTMLInputElement = DomInputElement
 
   getComputedStyle(): {
     paddingLeft: string
