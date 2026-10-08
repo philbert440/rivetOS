@@ -21,7 +21,12 @@ import { useChat } from '../../stores/chat.js'
 import { useChatSettings } from '../../stores/chat-settings.js'
 import { useConnection } from '../../stores/connection.js'
 import { useSpaces } from '../../stores/spaces.js'
-import { bindSpaceThreadStarter, startNewConversation } from '../../lib/new-conversation.js'
+import {
+  bindFocusedSpace,
+  bindSpaceThreadStarter,
+  placeNewDraft,
+  startNewConversation,
+} from '../../lib/new-conversation.js'
 import {
   applyChooser,
   initialThreadFields,
@@ -45,6 +50,7 @@ beforeEach(() => {
   useChatSettings.setState({ byKey: {} })
   useAgentFilter.getState().clear()
   bindSpaceThreadStarter(null)
+  bindFocusedSpace(null)
   takeOffRosterNotice()
 })
 
@@ -597,6 +603,35 @@ describe('new thread in a space', () => {
       model: 'opus',
       effort: 'low',
     })
+  })
+
+  it('a new conversation outside the canvas lands in the default space', () => {
+    const base = useConnection.getState().baseUrl
+    const id = startNewConversation()
+    expect(id).toBeTruthy()
+    if (!id) return
+    const [general] = useSpaces.getState().spaces
+    expect(general?.name).toBe('General')
+    expect(useSpaces.getState().spaceOf(`${base}::${id}`)).toBe(general?.id)
+  })
+
+  it('a new conversation lands in the focused space, even without defaults', () => {
+    const base = useConnection.getState().baseUrl
+    useSpaces.getState().addSpace('Work')
+    const home = useSpaces.getState().addSpace('Home')
+    bindFocusedSpace(() => home)
+    const id = startNewConversation()
+    if (!id) throw new Error('no draft')
+    expect(useSpaces.getState().spaceOf(`${base}::${id}`)).toBe(home)
+  })
+
+  it('places a node-bound draft under its node key', () => {
+    const base = useConnection.getState().baseUrl
+    const remote = 'https://remote.example:5174'
+    const work = useSpaces.getState().addSpace('Work')
+    setSessionNodeBinding('n1', remote, base)
+    placeNewDraft('n1')
+    expect(useSpaces.getState().spaceOf(`${remote}::n1`)).toBe(work)
   })
 
   it('directoryBasename is the last path segment', () => {
