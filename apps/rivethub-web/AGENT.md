@@ -282,6 +282,68 @@ Design: `docs/MICBRIDGE.md`. den-server opt-in `RIVETOS_DEN_AUDIO=1` exposes
 voice sees a recorder without `/dev/snd`. **Hub capture client is Phase 2**
 (global Ctrl+Space → stream to active node). Gateway helper: `audioMicWsUrl()`.
 
+## Spaces canvas (slice 1)
+
+Desktop-only zoomable conversations surface (`src/components/spaces-canvas/`).
+Three altitudes: **Everything** (cards), **Space** (live read-only minis of
+each thread), **Thread** (the existing `ActiveSession` at 100% zoom inside
+the expanded tile). This slice has one implicit region, "Unplaced", holding
+every drawer row. Spaces store, history, and drag are not in this slice.
+
+The per-session watch/attach lives in `src/lib/use-session-stream.ts`
+(`useSessionStream` / `bindSessionStream`). Leases are ref-counted per
+signature (resolved session, stream id, node, harness, transport epoch).
+Canvas readers pass `linger: true`: the last release does not close, so a
+mini↔thread jump reuses the live attachment (no resync, no unbind) and the
+lease stays idle-warm for `LINGER_MS` (10 minutes). The drawer and the
+narrow layout omit linger and stop on the last release (close, then unwatch
+or unbind). At most `WARM_MAX` (24) idle leases are kept; past that the
+least-recently-released idle lease is stopped. Held readers are never
+evicted and do not count toward the cap. A transport epoch bump, a gateway
+`baseUrl` change, or `useChat.connect` switching gateways stops every lease
+(held or idle); the next acquire opens fresh. A rekey keeps one attachment.
+If the destination already has a lease on a different stream, that lease
+stays and the moved one is closed without unbinding the destination.
+Otherwise the moved lease is re-pointed onto the new id.
+
+At Space altitude the canvas acquires every tile in the region, not only the
+ones on screen. Below the live-zoom threshold a mini is not painted, but its
+lease stays held. At Everything, changing the selection prewarms that tile
+in idle time (`requestIdleCallback`, or `setTimeout`) and releases it so the
+lease lingers warm. The focused thread holds its own ref.
+
+Remote and pinned rows resolve their gate and stream through
+`useSessionTarget` (the session node's registry and summary), the same
+resolution `ActiveSession` uses. That result is frozen for the mount: a
+fallback to the current node (binding eviction, roster drop) does not
+retarget it. The opening hold reuses that frozen target, so it keys the
+mini's existing lease instead of recomputing node and base. A row that
+still has no stream after that is seeded once from `sessionMessages`. Later
+`sessionsDirty` bumps refetch on a 2s debounce capped at 5s; a bump cannot
+abort the first seed or postpone the refetch past the cap. Harness-bound
+rows use the shared attach and do not take that HTTP path.
+
+Tile order freezes while the altitude is Thread, so a recency update cannot
+move the focused tile and drop the landing. If the open row disappears, the
+canvas returns to Space.
+
+`ActiveSession` mounts only for the focused tile, only after the camera fly
+lands (`onLand`), and unmounts when the altitude leaves Thread. Opening a
+tile sets `?session=` through the existing chat route search.
+
+The canvas replaces the drawer + split + session column only when
+`canvasEnabled` is on (Settings → "Spaces canvas (preview)", persisted,
+default **off**) and the viewport is at least 768px. Narrow keeps today's
+list/thread UI. With the flag off, the desktop layout is unchanged.
+
+Keys (capture phase, `lib/hub-keys.ts`, no auto-repeat): Ctrl+Space and
+Ctrl+0 keep today's dialog guard. Arrows / h j k l / Enter / Esc are claimed
+only when focus is on `body` or inside the canvas, and not on a button,
+link, field, or inside a menu, listbox, or dialog. At Space and Everything
+those keys move the selection, open, or step out one level. At Thread every
+other key, including Esc, is left for the focused session. Ctrl+Space is
+the way out of Thread.
+
 ## Gotchas
 
 - Tauri origin is not http(s) — desktop starts unconfigured until a node is set.

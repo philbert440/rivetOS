@@ -543,6 +543,13 @@ function notifyThread(event: ThreadLifecycleEvent): void {
   for (const listener of threadListeners) listener(event)
 }
 
+// The stream pool stops every lease when the gateway changes. Registered from
+// use-session-stream.ts so this store does not import it (that import cycles).
+let resetSessionStreamsOnConnect: () => void = () => undefined
+export function registerSessionStreamReset(fn: () => void): void {
+  resetSessionStreamsOnConnect = fn
+}
+
 const MAX_SESSION_ALIASES = 256
 // Weak ownership avoids retaining old maps just to suppress repeated diagnostics.
 const warnedAliasMaps = new WeakSet<Record<string, string>>()
@@ -1280,6 +1287,7 @@ export const useChat = create<ChatState>()(
         if (currentEndpoint !== undefined && currentEndpoint !== endpointKey) {
           notifyThread({ type: 'clear' })
           watchedSessions.clear() // session ids are only meaningful per gateway
+          resetSessionStreamsOnConnect()
           set({
             messages: {},
             transcripts: {},
