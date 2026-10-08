@@ -158,18 +158,23 @@ export function SpaceDefaultsDialog(props: {
                 </button>
               </p>
             ) : null}
-            <div className="mb-3" id="space-agent">
+            <div className="mb-3">
               <Select
+                id="space-agent"
                 value={agentId}
                 options={[
                   { value: '', label: 'None' },
                   ...agents.map((row) => ({ value: row.id, label: row.name })),
                 ]}
                 onChange={(value) => {
+                  const previousHarness =
+                    agents.find((row) => row.id === agentId)?.harnessId ??
+                    (missingId ? stored?.harnessId : undefined)
+                  const nextHarness = agents.find((row) => row.id === value)?.harnessId
                   setAgentId(value)
                   if (value) setMissingId(undefined)
+                  if (nextHarness !== previousHarness) setModel('')
                 }}
-                aria-label="Agent"
                 label="Agent"
                 className="w-full"
               />

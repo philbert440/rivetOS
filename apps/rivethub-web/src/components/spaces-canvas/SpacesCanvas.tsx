@@ -9,6 +9,7 @@
 import {
   cloneElement,
   isValidElement,
+  useCallback,
   useEffect,
   useLayoutEffect,
   useMemo,
@@ -23,6 +24,7 @@ import type { HarnessDescriptor } from '@rivetos/types'
 import type { ChatItem } from '../../lib/harness-chat.js'
 import { discardDraft } from '../../lib/discard-session.js'
 import {
+  CANVAS_KEYS,
   focusInForeignDialog,
   matchCanvasAction,
   matchCanvasChord,
@@ -37,6 +39,7 @@ import { useChat } from '../../stores/chat.js'
 import { useConnection } from '../../stores/connection.js'
 import { useSidebarPrefs } from '../../stores/sidebar-prefs.js'
 import { useSpaces } from '../../stores/spaces.js'
+import { ConversationEmpty } from '../conversation-empty.js'
 import { isRowArchived, rowMembershipKey } from '../drawer-item.js'
 import { Popover, PopoverContent, PopoverTrigger } from '../ui/popover.js'
 import {
@@ -76,7 +79,7 @@ import {
   type DropHit,
 } from './drop-target.js'
 import { HistoryPanel } from './HistoryPanel.js'
-import { applyChooser, startThreadInSpace } from './new-thread.js'
+import { applyChooser, startThreadInSpace, takeOffRosterNotice } from './new-thread.js'
 import { NewThreadDialog } from './NewThreadDialog.js'
 import { SpaceDefaultsDialog } from './SpaceDefaultsDialog.js'
 import { defaultAgentChip, startablePreset, startsInDirectory } from './space-defaults.js'
@@ -165,7 +168,7 @@ interface NeedsToast {
   title: string
 }
 
-type NamePrompt = { mode: 'create' } | { mode: 'rename'; id: string; initial: string }
+type NamePrompt = { mode: 'create' }
 
 interface PickState {
   spaceId: string
@@ -191,6 +194,45 @@ function countLabel(active: number, waiting: number): JSX.Element {
       {active} active · {waiting} waiting on you
     </span>
   )
+}
+
+function threadsPhrase(count: number): string {
+  return `${String(count)} ${count === 1 ? 'thread' : 'threads'}`
+}
+
+function waitingPhrase(count: number): string {
+  return count === 1 ? '1 waiting on you' : `${String(count)} waiting on you`
+}
+
+/** Spoken altitude. "Space: Code, 4 threads, 1 waiting on you". */
+export function altitudeLiveLabel(
+  altitude: Altitude,
+  spaceName: string | undefined,
+  spaceThreads: number,
+  spaceWaiting: number,
+  placedCount: number,
+  needsCount: number,
+  threadTitle: string | undefined,
+): string {
+  if (altitude === 'thread') {
+    return threadTitle ? `Thread: ${threadTitle}` : 'Thread'
+  }
+  if (altitude === 'space') {
+    return `Space: ${spaceName ?? 'Space'}, ${threadsPhrase(spaceThreads)}, ${waitingPhrase(spaceWaiting)}`
+  }
+  return `Everything: ${threadsPhrase(placedCount)}, ${waitingPhrase(needsCount)}`
+}
+
+interface PaintedTile {
+  row: ChatItem
+  selected: boolean
+  geometry: { x: number; y: number; w: number; h: number }
+  showMini: boolean
+  showThread: boolean
+  spaceId: string | undefined
+  faded: boolean
+  /** Spoken name of the row. One row per tile so a move does not remount it. */
+  rowLabel: string
 }
 
 export function SpacesCanvas(props: {
@@ -241,6 +283,8 @@ export function SpacesCanvas(props: {
   const [mru, setMru] = useState<string[]>([])
   const [mruStep, setMruStep] = useState(0)
   const [toasts, setToasts] = useState<NeedsToast[]>([])
+  const [keysOpen, setKeysOpen] = useState(false)
+  const [rosterNotice, setRosterNotice] = useState<string | undefined>()
   const localOpen = useRef<string | undefined>(undefined)
   const navBridge = useRef(false)
   const armRef = useRef<string | undefined>(undefined)
@@ -252,6 +296,7 @@ export function SpacesCanvas(props: {
   // First id we rendered for an alias chain. A rekey changes row.key; the
   // React key must not, or Tile and ActiveSession remount under the user.
   const renderKeys = useRef(new Map<string, string>())
+  const tileKeyRef = useRef<string[]>([])
   const stableKey = (rowKey: string): string => {
     const resolve = useChat.getState().resolveSessionKey
     const resolved = resolve(rowKey)
@@ -268,20 +313,17 @@ export function SpacesCanvas(props: {
   }
   // Filled once per render (below) from the tiles on the canvas.
   const stableFor = new Map<string, string>()
-  const renderKeyedThread = (id: string): ReactNode => {
-    const node = renderThread(id)
+  const renderThreadRef = useRef(renderThread)
+  renderThreadRef.current = renderThread
+  const stableForRef = useRef(stableFor)
+  stableForRef.current = stableFor
+  const renderKeyedThread = useCallback((id: string): ReactNode => {
+    const node = renderThreadRef.current(id)
     if (!isValidElement(node)) return node
     // renderThread keys ActiveSession by the view id (chat.tsx). Override it
     // so a rekey updates the id without remounting.
-    return cloneElement(node, { key: stableFor.get(id) ?? stableKey(id) })
-  }
-  const holdOpening = (id: string): void => {
-    const row = rows.find((item) => item.key === id)
-    const next = row ? holdTileLease(row, descriptors, queryClient) : undefined
-    const previous = openingHold.current
-    openingHold.current = next
-    if (previous) previous()
-  }
+    return cloneElement(node, { key: stableForRef.current.get(id) ?? id })
+  }, [])
   const suppressGestureRef = useRef(false)
   const consumedClickRef = useRef(false)
   const dragRef = useRef<DragState | null>(null)
@@ -362,11 +404,13 @@ export function SpacesCanvas(props: {
         // Same hold as a click, taken in layout (below) rather than here.
         // This commit unmounts every mini; without a ref the opening lease
         // can be the oldest idle one and get evicted before ActiveSession
-        // acquires on landing. Layout still runs before that passive release.
+        // acquires on landing. The mini defers dropping its frozen target
+        // so this hold still sees it. Passive stream release is later.
         pendingOpenHold.current = activeId
         navBridge.current = true
         setAltitude('thread')
         setThreadMounted(false)
+        setPick(null)
         setFindOpen(false)
         setFindQuery('')
         setMruStep(0)
@@ -382,10 +426,12 @@ export function SpacesCanvas(props: {
   const tilesRef = useRef<NeighborTile[]>([])
   const rowsRef = useRef(rows)
   const baseUrlRef = useRef(baseUrl)
+  const membershipRef = useRef(membership)
   const modalRef = useRef(false)
   const spaceInFocusRef = useRef<() => string | undefined>(() => undefined)
   const pickRef = useRef(pick)
   const findOpenRef = useRef(findOpen)
+  const keysOpenRef = useRef(keysOpen)
   const bestHitRef = useRef<string | undefined>(undefined)
   const regionRectsRef = useRef<{ id: string; rect: Rect }[]>([])
   const camScreenRef = useRef({ tx: 0, ty: 0, z: 1 })
@@ -399,10 +445,16 @@ export function SpacesCanvas(props: {
   openRef.current = openId
   rowsRef.current = rows
   baseUrlRef.current = baseUrl
+  membershipRef.current = membership
   modalRef.current =
-    namePrompt !== null || removePrompt !== null || newThread !== null || editSpace !== null
+    namePrompt !== null ||
+    removePrompt !== null ||
+    newThread !== null ||
+    editSpace !== null ||
+    keysOpen
   pickRef.current = pick
   findOpenRef.current = findOpen
+  keysOpenRef.current = keysOpen
   mruRef.current = mru
   mruStepRef.current = mruStep
 
@@ -499,9 +551,15 @@ export function SpacesCanvas(props: {
     })
   }
   waitingRef.current = waiting
-  regionRectsRef.current = laid.regions
-    .filter((region) => region.id !== NEW_SPACE_ID && region.id !== UNPLACED_ID)
-    .map((region) => ({ id: region.id, rect: region.rect }))
+  // At Thread the regions are opacity 0 and ignore pointers. Publishing their
+  // rects let a History drop place into a region the user cannot see, which
+  // also jumped the open tile between lists and remounted it.
+  regionRectsRef.current =
+    altitude === 'thread'
+      ? []
+      : laid.regions
+          .filter((region) => region.id !== NEW_SPACE_ID && region.id !== UNPLACED_ID)
+          .map((region) => ({ id: region.id, rect: region.rect }))
 
   const navSource =
     altitude === 'space' ? placed.filter((item) => item.spaceId === framedRegionId) : placed
@@ -545,16 +603,27 @@ export function SpacesCanvas(props: {
     detachedRef.current = false
     setNavNonce((n) => n + 1)
   }
+  const holdOpening = (id: string): void => {
+    let row = rowsRef.current.find((item) => item.key === id)
+    if (!row && useChat.getState().drafts.includes(id)) {
+      row = {
+        key: id,
+        kind: 'draft',
+        title: 'new conversation',
+        updatedAt: useChat.getState().draftCreatedAt[id] ?? 0,
+      }
+    }
+    const next = row ? holdTileLease(row, descriptors, queryClient) : undefined
+    const previous = openingHold.current
+    openingHold.current = next
+    if (previous) previous()
+  }
   const spaceForSession = (id: string): string | undefined => {
     const state = useSpaces.getState()
     const row = rowsRef.current.find((item) => item.key === id)
-    if (row) {
-      const found = state.spaceOf(rowMembershipKey(baseUrlRef.current, row))
-      if (found) return found
-    }
-    const suffix = `::${id}`
-    for (const [key, value] of Object.entries(state.membership)) {
-      if (key.endsWith(suffix) && state.spaces.some((space) => space.id === value)) return value
+    if (row) return state.spaceOf(rowMembershipKey(baseUrlRef.current, row, state.membership))
+    if (useChat.getState().drafts.includes(id)) {
+      return state.spaceOf(storageKey(baseUrlRef.current, id))
     }
     return undefined
   }
@@ -575,6 +644,7 @@ export function SpacesCanvas(props: {
     setMru((list) => rememberThread(list, id))
     const spaceId = spaceForSession(id)
     if (spaceId) setSpaceFocus(spaceId)
+    setPick(null)
     setFindOpen(false)
     setFindQuery('')
     setMoveOpen(false)
@@ -643,57 +713,46 @@ export function SpacesCanvas(props: {
     else useArchived.getState().archive(storageKey(node, row.key))
   }
   const runAction = (action: CanvasAction): void => {
-    switch (action) {
-      case 'new-space':
-        setNamePrompt({ mode: 'create' })
-        return
-      case 'rename-space': {
+    const handlers: Record<CanvasAction, () => void> = {
+      'new-space': () => setNamePrompt({ mode: 'create' }),
+      'rename-space': () => {
         const id = spaceYouAreIn()
         if (id === undefined) return
         if (!spaces.some((item) => item.id === id)) return
         setEditSpace(id)
-        return
-      }
-      case 'remove-space': {
+      },
+      'remove-space': () => {
         const id = spaceYouAreIn()
         if (id === undefined) return
         setRemovePrompt(id)
-        return
-      }
-      case 'new-thread':
-        setNewThread({ spaceId: spaceYouAreIn() })
-        return
-      case 'remove-thread':
-        removeSelectedThread()
-        return
-      case 'move':
+      },
+      'new-thread': () => setNewThread({ spaceId: spaceYouAreIn() }),
+      'remove-thread': () => removeSelectedThread(),
+      move: () => {
         if (selectedRef.current !== undefined && canvasIds.includes(selectedRef.current)) {
           setMoveOpen((open) => !open)
         }
-        return
-      case 'history':
+      },
+      history: () => {
         if (pickRef.current) return
         setHistoryWanted((open) => !open)
-        return
-      case 'find':
-        setFindOpen(true)
-        return
-      case 'next-waiting': {
+      },
+      find: () => setFindOpen(true),
+      'next-waiting': () => {
         const id = nextWaitingId(
           waitingRef.current,
           openRef.current,
           altitudeRef.current === 'thread',
         )
         if (id !== undefined) beginThread(id)
-        return
-      }
-      case 'mru':
+      },
+      mru: () => {
         if (mruRef.current.length === 0) return
         setMruStep((step) => step + 1)
-        return
-      default:
-        return
+      },
+      keys: () => setKeysOpen((open) => !open),
     }
+    handlers[action]()
   }
   runActionRef.current = runAction
 
@@ -768,6 +827,18 @@ export function SpacesCanvas(props: {
   }, [findOpen])
 
   useEffect(() => {
+    const active = document.activeElement
+    if (!(active instanceof Element) || active.closest('[data-tile-hit]') === null) return
+    if (selectedId === undefined) return
+    const root = rootRef.current
+    if (!root) return
+    const next = root.querySelector(
+      `[data-tile-hit="${selectedId.replace(/\\/g, '\\\\').replace(/"/g, '\\"')}"]`,
+    )
+    if (next instanceof HTMLElement && next !== active) next.focus()
+  }, [selectedId])
+
+  useEffect(() => {
     if (blockedReady !== true) return
     const ids = blockedIds ?? new Set<string>()
     const episode = reconcileNeedsEpisodes(
@@ -805,6 +876,26 @@ export function SpacesCanvas(props: {
   useEffect(() => {
     const onKey = (event: KeyboardEvent): void => {
       if (event.repeat) return
+      // The panel is a modal, so this has to run before that guard. `?` is
+      // not claimed at Thread; the dock button opens it there, and `?` closes
+      // it again. A field keeps the character.
+      if (
+        keysOpenRef.current &&
+        event.key === '?' &&
+        !event.ctrlKey &&
+        !event.altKey &&
+        !event.metaKey
+      ) {
+        const active = document.activeElement
+        const typing =
+          active instanceof Element && active.closest('input, textarea, select') !== null
+        if (!typing) {
+          event.preventDefault()
+          event.stopPropagation()
+          setKeysOpen(false)
+          return
+        }
+      }
       if (modalRef.current) return
       const findFocused = (): boolean => {
         const active = document.activeElement
@@ -835,9 +926,15 @@ export function SpacesCanvas(props: {
         if (id !== undefined) beginThreadRef.current(id)
         return
       }
-      if (pickRef.current && plainEscape(event)) {
+      if (pickRef.current && plainEscape(event) && altitudeRef.current !== 'thread') {
         const active = document.activeElement
         if (active instanceof Element && active.closest('input, textarea')) return
+        const root = rootRef.current
+        const inCanvas = active instanceof Node && root !== null && root.contains(active)
+        const inHistory =
+          active instanceof Element && active.closest('[data-history-panel]') !== null
+        const onBody = active === document.body || active === document.documentElement
+        if (!inCanvas && !inHistory && !onBody) return
         event.preventDefault()
         event.stopPropagation()
         setPick(null)
@@ -897,7 +994,9 @@ export function SpacesCanvas(props: {
       if (!spaceId) return undefined
       const defaults = useSpaces.getState().spaces.find((space) => space.id === spaceId)?.defaults
       if (!defaults) return undefined
-      return startThreadInSpace(spaceId, useConnection.getState().baseUrl, rosterRef.current)
+      const id = startThreadInSpace(spaceId, useConnection.getState().baseUrl, rosterRef.current)
+      setRosterNotice(takeOffRosterNotice())
+      return id
     })
     return () => bindSpaceThreadStarter(null)
   }, [])
@@ -930,7 +1029,7 @@ export function SpacesCanvas(props: {
       if (!row) return
       dragRef.current = {
         source: 'tile',
-        memberKey: rowMembershipKey(baseUrlRef.current, row),
+        memberKey: rowMembershipKey(baseUrlRef.current, row, membershipRef.current),
         originSpace: tile.getAttribute('data-space') ?? undefined,
         title: row.title,
         x: event.clientX,
@@ -978,7 +1077,15 @@ export function SpacesCanvas(props: {
       } else if (action === 'unplace') {
         useSpaces.getState().unplace(drag.memberKey)
       }
-      if (drag.source === 'history') consumedClickRef.current = true
+      if (drag.source === 'history') {
+        // The click that follows pointerup is synchronous, so it still sees
+        // the flag. A pointerup outside the window never fires that click;
+        // the microtask clears the flag before the next real History click.
+        consumedClickRef.current = true
+        queueMicrotask(() => {
+          consumedClickRef.current = false
+        })
+      }
       const stage = stageRef.current
       const target = event.target
       const inside = target instanceof Node && stage !== null && stage.contains(target)
@@ -1015,12 +1122,13 @@ export function SpacesCanvas(props: {
 
   const framedRegion = regions.find((region) => region.id === framedRegionId)
   const crumbSpace = framedRegion?.name
+  const framedRows = framedRegion?.rows ?? []
+  const framedNeeds = framedRows.filter((row) => isNeeds(row, blockedIds)).length
   const crumbThread =
     rows.find((row) => row.key === (altitude === 'thread' ? openId : selectedId)) ??
     rows.find((row) => row.key === selectedId)
   const zoomPct = Math.round(cam.z * 100)
   const paintMini = altitude === 'space' && cam.z >= LIVE_LO
-  const framedRows = framedRegion?.rows ?? []
   const selectedCanvas = placed.find((item) => item.row.key === selectedId)
   const openRow = openId !== undefined ? visibleRows.find((row) => row.key === openId) : undefined
   const showSynthetic =
@@ -1041,28 +1149,65 @@ export function SpacesCanvas(props: {
       ?.directory,
   )
 
-  const tileRows = placed.map((item) => item.row)
-  if (showSynthetic) tileRows.push(openRow)
+  const rowLabelFor = (spaceId: string | undefined): string => {
+    if (!spaceId || spaceId === UNPLACED_ID) return 'History'
+    return regionName(regions, spaceId) ?? 'Space'
+  }
+  const paintedTiles: PaintedTile[] = placed.map((item) => {
+    const isOpen = item.row.key === openId
+    const focused = altitude === 'thread' && isOpen
+    const spaceId = item.spaceId === UNPLACED_ID ? undefined : item.spaceId
+    return {
+      row: item.row,
+      selected: altitude === 'thread' ? isOpen : item.row.key === selectedId,
+      geometry: focused
+        ? focusRect(item.slot, vp)
+        : { x: item.slot.x, y: item.slot.y, w: item.slot.w, h: item.slot.h },
+      showMini: paintMini && item.spaceId === framedRegionId,
+      showThread: altitude === 'thread' && isOpen && threadMounted,
+      spaceId,
+      faded: filtering && !hitIds.has(item.row.key),
+      rowLabel: rowLabelFor(spaceId),
+    }
+  })
+  // Same array as the placed tiles, so a placed ↔ History move keeps the
+  // open thread's React parent and does not remount ActiveSession.
+  if (showSynthetic && openRow && focusSlot) {
+    paintedTiles.push({
+      row: openRow,
+      selected: true,
+      geometry: focusRect(focusSlot, vp),
+      showMini: false,
+      showThread: threadMounted,
+      spaceId: undefined,
+      faded: false,
+      rowLabel: 'History',
+    })
+  }
+  const nothingSelected = !paintedTiles.some((item) => item.selected)
+  const firstTileId = paintedTiles[0]?.row.key
+  const tileRows = paintedTiles.map((item) => item.row)
   for (const row of tileRows) stableFor.set(row.key, stableKey(row.key))
-  // Drop rows that left. The alias copy above has already stored the stable
-  // id under the current resolved key, so a rekey does not remount.
-  {
+  // Prune after commit. stableKey still writes during render so this pass
+  // has a key; deleting here cannot drop a key the children are about to use.
+  tileKeyRef.current = tileRows.map((row) => row.key)
+  useLayoutEffect(() => {
     const resolve = useChat.getState().resolveSessionKey
     const keep = new Set<string>()
-    for (const row of tileRows) {
-      keep.add(row.key)
-      keep.add(resolve(row.key))
+    for (const key of tileKeyRef.current) {
+      keep.add(key)
+      keep.add(resolve(key))
     }
     for (const key of renderKeys.current.keys()) {
       if (!keep.has(key)) renderKeys.current.delete(key)
     }
-  }
+  })
 
   return (
     <div
       ref={rootRef}
       data-altitude={altitude}
-      className="relative h-full min-h-0 min-w-0 flex-1 overflow-hidden bg-bg font-mono text-ink"
+      className="spaces-canvas relative h-full min-h-0 min-w-0 flex-1 overflow-hidden bg-bg font-mono text-ink"
     >
       {altitude === 'space' && !paintMini
         ? framedRows.map((row) => <WarmLease key={row.key} item={row} descriptors={descriptors} />)
@@ -1074,25 +1219,47 @@ export function SpacesCanvas(props: {
           descriptors={descriptors}
         />
       ) : null}
-      {spaces.length === 0 ? (
-        <p
+      {rows.length === 0 ? (
+        <div className="pointer-events-none absolute inset-0 z-10 flex items-center justify-center">
+          <ConversationEmpty />
+        </div>
+      ) : spaces.length === 0 ? (
+        <div
           data-empty-spaces=""
-          className="pointer-events-none absolute top-1/2 left-1/2 z-10 max-w-sm -translate-x-1/2 -translate-y-1/2 text-center text-sm text-ink-dim"
+          className="pointer-events-none absolute top-1/2 left-1/2 z-10 flex max-w-sm -translate-x-1/2 -translate-y-1/2 flex-col items-center gap-3 text-center"
         >
-          No spaces yet. Threads live in History.
-        </p>
+          <p className="text-sm text-ink-dim">No spaces yet. Threads live in History.</p>
+          <button
+            type="button"
+            data-act=""
+            data-empty-new-space=""
+            className="pointer-events-auto text-sm text-ink-dim hover:text-em"
+            onClick={() => setNamePrompt({ mode: 'create' })}
+          >
+            + New space
+          </button>
+        </div>
       ) : null}
+      <p className="sr-only" aria-live="polite" data-altitude-live="">
+        {altitudeLiveLabel(
+          altitude,
+          crumbSpace,
+          framedRows.length,
+          framedNeeds,
+          placed.length,
+          needsCount,
+          crumbThread?.title,
+        )}
+      </p>
       <div
         ref={stageRef}
-        className="absolute inset-0 cursor-grab touch-none overflow-hidden [&.is-panning]:cursor-grabbing"
-        style={{
-          backgroundImage:
-            'radial-gradient(circle, color-mix(in srgb, var(--color-line) calc(var(--dot-a, 0) * 100%), transparent) 1px, transparent 1.6px)',
-        }}
+        className="sc-ground absolute inset-0 cursor-grab touch-none overflow-hidden [&.is-panning]:cursor-grabbing"
       >
         <div
           id="world"
           ref={worldRef}
+          role="grid"
+          aria-label="Conversations"
           className="absolute top-0 left-0"
           style={{ transformOrigin: '0 0' }}
         >
@@ -1115,7 +1282,10 @@ export function SpacesCanvas(props: {
               <div
                 key={region.id}
                 data-region={region.id}
-                className={`absolute border border-line ${dashed ? 'border-dashed' : 'border-solid'}`}
+                role="presentation"
+                inert={hidden ? true : undefined}
+                aria-hidden={hidden ? true : undefined}
+                className={`sc-region absolute border border-line ${dashed ? 'border-dashed' : 'border-solid'}`}
                 style={{
                   left: region.rect.x,
                   top: region.rect.y,
@@ -1186,33 +1356,38 @@ export function SpacesCanvas(props: {
               </div>
             )
           })}
-          {placed.map((item) => {
-            const isOpen = item.row.key === openId
-            const focused = altitude === 'thread' && isOpen
-            const geometry = focused
-              ? focusRect(item.slot, vp)
-              : { x: item.slot.x, y: item.slot.y, w: item.slot.w, h: item.slot.h }
+          {paintedTiles.map((item) => {
+            const concealRow = altitude === 'thread' && item.row.key !== openId
             return (
-              <Tile
+              <div
                 key={stableFor.get(item.row.key) ?? item.row.key}
-                item={item.row}
-                altitude={altitude}
-                selected={altitude === 'thread' ? isOpen : item.row.key === selectedId}
-                blocked={isBlocked(item.row, blockedIds)}
-                geometry={geometry}
-                showMini={paintMini && item.spaceId === framedRegionId}
-                showThread={altitude === 'thread' && isOpen && threadMounted}
-                spaceId={item.spaceId === UNPLACED_ID ? undefined : item.spaceId}
-                faded={filtering && !hitIds.has(item.row.key)}
-                descriptors={descriptors}
-                renderThread={renderKeyedThread}
-              />
+                role="row"
+                aria-label={item.rowLabel}
+                inert={concealRow ? true : undefined}
+                aria-hidden={concealRow ? true : undefined}
+              >
+                <Tile
+                  item={item.row}
+                  altitude={altitude}
+                  selected={item.selected}
+                  blocked={isBlocked(item.row, blockedIds)}
+                  geometry={item.geometry}
+                  showMini={item.showMini}
+                  showThread={item.showThread}
+                  spaceId={item.spaceId}
+                  faded={item.faded}
+                  fallbackTab={nothingSelected && item.row.key === firstTileId}
+                  descriptors={descriptors}
+                  renderThread={renderKeyedThread}
+                />
+              </div>
             )
           })}
           {regions.map((region) => {
             if (region.id === UNPLACED_ID) return null
             const laidRegion = laid.regions.find((item) => item.id === region.id)
             if (!laidRegion) return null
+            const empty = region.rows.length === 0
             const slot = tileSlot(region.id, laidRegion.rect, region.rows.length)
             const hidden = altitude === 'thread'
             const slotStartsIn = startsInDirectory(
@@ -1227,12 +1402,17 @@ export function SpacesCanvas(props: {
                 type="button"
                 data-act=""
                 data-add-thread={region.id}
-                className="absolute border border-dashed border-line text-sm text-ink-dim hover:border-em hover:text-em"
+                data-empty-thread={empty ? '' : undefined}
+                inert={hidden ? true : undefined}
+                aria-hidden={hidden ? true : undefined}
+                className={`absolute border border-dashed border-line text-sm text-ink-dim hover:border-em hover:text-em${
+                  empty ? ' flex items-center justify-center' : ''
+                }`}
                 style={{
-                  left: slot.x,
-                  top: slot.y,
-                  width: slot.w,
-                  height: slot.h,
+                  left: empty ? laidRegion.rect.x : slot.x,
+                  top: empty ? laidRegion.rect.y : slot.y,
+                  width: empty ? laidRegion.rect.w : slot.w,
+                  height: empty ? laidRegion.rect.h : slot.h,
                   opacity: hidden ? 0 : filtering ? 0.15 : 1,
                   pointerEvents: hidden ? 'none' : undefined,
                   borderWidth: 'calc(1.5px * var(--inv, 1))',
@@ -1244,21 +1424,6 @@ export function SpacesCanvas(props: {
               </button>
             )
           })}
-          {showSynthetic && openRow && focusSlot ? (
-            <Tile
-              key={stableFor.get(openRow.key) ?? openRow.key}
-              item={openRow}
-              altitude={altitude}
-              selected
-              blocked={isBlocked(openRow, blockedIds)}
-              geometry={focusRect(focusSlot, vp)}
-              showMini={false}
-              showThread={threadMounted}
-              faded={false}
-              descriptors={descriptors}
-              renderThread={renderKeyedThread}
-            />
-          ) : null}
         </div>
       </div>
       <HistoryPanel
@@ -1279,7 +1444,7 @@ export function SpacesCanvas(props: {
             if (!row) return
             applyChooser({
               type: 'history',
-              rowKey: rowMembershipKey(baseUrlRef.current, row),
+              rowKey: rowMembershipKey(baseUrlRef.current, row, membershipRef.current),
               spaceId: choosing.spaceId,
               sessionId: id,
               open: (sessionId) => beginThread(sessionId),
@@ -1290,11 +1455,11 @@ export function SpacesCanvas(props: {
           beginThread(id)
         }}
         onDragPointerDown={(event, item) => {
-          if (modalRef.current || event.button !== 0) return
+          if (pick || modalRef.current || event.button !== 0) return
           dragRef.current = {
             source: 'history',
-            memberKey: rowMembershipKey(baseUrl, item),
-            originSpace: useSpaces.getState().spaceOf(rowMembershipKey(baseUrl, item)),
+            memberKey: rowMembershipKey(baseUrl, item, membership),
+            originSpace: useSpaces.getState().spaceOf(rowMembershipKey(baseUrl, item, membership)),
             title: item.title,
             x: event.clientX,
             y: event.clientY,
@@ -1306,13 +1471,15 @@ export function SpacesCanvas(props: {
       {ghost ? (
         <div
           data-drag-ghost=""
-          className="pointer-events-none fixed z-50 border border-em bg-panel px-3 py-2 font-mono text-sm text-ink"
+          className="sc-ghost pointer-events-none fixed z-50 border border-em bg-panel px-3 py-2 font-mono text-sm text-ink"
           style={{ left: ghost.x + 12, top: ghost.y + 12 }}
         >
           {ghost.title}
         </div>
       ) : null}
-      <div className="pointer-events-none absolute inset-0">
+      {/* z-20: #world is z-1 (above the breathing ground), so the HUD must sit
+          above it or tiles paint over and take clicks from the ladder and dock. */}
+      <div className="pointer-events-none absolute inset-0 z-20">
         <nav
           data-hud=""
           aria-label="Location"
@@ -1419,6 +1586,20 @@ export function SpacesCanvas(props: {
           </button>
           <button
             type="button"
+            data-dock="recent"
+            className="px-3 py-2 text-sm text-ink hover:bg-em/15 disabled:opacity-40"
+            disabled={mru.length < 2}
+            onClick={() => {
+              // Previous thread — the way to step back at Thread, where Ctrl+` is
+              // left to the terminal. mru[1], not the wrapping preview helper.
+              const id = mru[1]
+              if (id !== undefined) beginThread(id)
+            }}
+          >
+            Recent
+          </button>
+          <button
+            type="button"
             data-dock="thread"
             className="px-3 py-2 text-sm text-ink hover:bg-em/15"
             title={dockStartsIn}
@@ -1452,7 +1633,7 @@ export function SpacesCanvas(props: {
                     onClick={() => {
                       useSpaces
                         .getState()
-                        .place(rowMembershipKey(baseUrl, selectedPlaced.row), space.id)
+                        .place(rowMembershipKey(baseUrl, selectedPlaced.row, membership), space.id)
                       setMoveOpen(false)
                     }}
                   >
@@ -1463,7 +1644,9 @@ export function SpacesCanvas(props: {
                   type="button"
                   className="block w-full px-3 py-1.5 text-left text-sm text-ink hover:bg-em/15"
                   onClick={() => {
-                    useSpaces.getState().unplace(rowMembershipKey(baseUrl, selectedPlaced.row))
+                    useSpaces
+                      .getState()
+                      .unplace(rowMembershipKey(baseUrl, selectedPlaced.row, membership))
                     setMoveOpen(false)
                   }}
                 >
@@ -1516,7 +1699,26 @@ export function SpacesCanvas(props: {
           >
             Everything <kbd className="text-ink-dim">Ctrl 0</kbd>
           </button>
+          <button
+            type="button"
+            data-dock="keys"
+            aria-pressed={keysOpen}
+            aria-label="Keys"
+            className={`px-3 py-2 text-sm hover:bg-em/15 ${keysOpen ? 'text-em' : 'text-ink'}`}
+            onClick={() => setKeysOpen((open) => !open)}
+          >
+            ? <kbd className="text-ink-dim">Keys</kbd>
+          </button>
         </div>
+        {rosterNotice ? (
+          <p
+            role="status"
+            data-roster-notice=""
+            className="absolute top-16 left-1/2 z-40 max-w-md -translate-x-1/2 border border-line bg-panel px-3 py-2 text-center font-mono text-sm text-ink-dim"
+          >
+            {rosterNotice}
+          </p>
+        ) : null}
         <div
           aria-live="polite"
           data-needs-toasts=""
@@ -1526,7 +1728,7 @@ export function SpacesCanvas(props: {
             <button
               key={toast.id}
               type="button"
-              className="pointer-events-auto border border-warn bg-panel px-3 py-2 text-left text-sm text-ink"
+              className="sc-toast pointer-events-auto border border-warn bg-panel px-3 py-2 text-left text-sm text-ink"
               onClick={() => {
                 setToasts((prev) => prev.filter((item) => item.id !== toast.id))
                 beginThread(toast.rowKey)
@@ -1558,23 +1760,58 @@ export function SpacesCanvas(props: {
       </div>
       {namePrompt ? (
         <NameDialog
-          title={namePrompt.mode === 'create' ? 'New space' : 'Rename space'}
-          initial={namePrompt.mode === 'rename' ? namePrompt.initial : ''}
-          confirm={namePrompt.mode === 'create' ? 'Create' : 'Rename'}
+          title="New space"
+          initial=""
+          confirm="Create"
           onCancel={() => setNamePrompt(null)}
           onSubmit={(name) => {
-            if (namePrompt.mode === 'create') {
-              const id = useSpaces.getState().addSpace(name)
-              setNamePrompt(null)
-              if (!id) return
-              setSpaceFocus(id)
-              leaveTo('space')
-              return
-            }
-            useSpaces.getState().renameSpace(namePrompt.id, name)
+            const id = useSpaces.getState().addSpace(name)
             setNamePrompt(null)
+            if (!id) return
+            setSpaceFocus(id)
+            leaveTo('space')
           }}
         />
+      ) : null}
+      {keysOpen ? (
+        <Dialog.Root
+          open
+          onOpenChange={(open) => {
+            if (!open) setKeysOpen(false)
+          }}
+        >
+          <Dialog.Portal>
+            <Dialog.Overlay className="fixed inset-0 z-50 bg-bg/70" />
+            <Dialog.Content
+              id="keys"
+              data-keys-panel=""
+              className="fixed top-1/2 left-1/2 z-50 max-h-[calc(100%-2rem)] w-[40rem] max-w-[calc(100%-2rem)] -translate-x-1/2 -translate-y-1/2 overflow-y-auto border border-line bg-panel p-4 font-mono shadow-lg outline-none"
+            >
+              <Dialog.Title className="mb-1 text-sm text-ink">Keys</Dialog.Title>
+              <Dialog.Description className="mb-3 text-xs text-ink-dim">
+                Thread altitude leaves most of these to the session. The dock buttons still work.
+              </Dialog.Description>
+              <table className="w-full text-left text-xs">
+                <thead>
+                  <tr className="text-ink-dim">
+                    <th className="py-1 pr-3 font-medium">Key</th>
+                    <th className="py-1 pr-3 font-medium">Does</th>
+                    <th className="py-1 font-medium">At Thread</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {CANVAS_KEYS.map((entry) => (
+                    <tr key={entry.id} data-key-row={entry.id} className="align-top text-ink">
+                      <td className="py-1 pr-3 whitespace-nowrap text-em">{entry.keys}</td>
+                      <td className="py-1 pr-3 text-ink-dim">{entry.summary}</td>
+                      <td className="py-1 text-ink-dim">{entry.thread}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </Dialog.Content>
+          </Dialog.Portal>
+        </Dialog.Root>
       ) : null}
       {removePrompt && removeSpace ? (
         <RemoveDialog

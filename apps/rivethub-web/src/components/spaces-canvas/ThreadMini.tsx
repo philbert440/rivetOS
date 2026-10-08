@@ -9,13 +9,13 @@
  * after the shared target resolution is seeded from sessionMessages.
  */
 
-import { useEffect, useMemo, useRef, useState, type JSX } from 'react'
+import { memo, useEffect, useLayoutEffect, useMemo, useRef, useState, type JSX } from 'react'
 import { useQueryClient, type QueryClient } from '@tanstack/react-query'
 import type { HarnessDescriptor, HarnessSessionResponse, HarnessesResponse } from '@rivetos/types'
 import { Transcript } from '../transcript.js'
 import { useChat, type OutboundItem } from '../../stores/chat.js'
 import { useConnection } from '../../stores/connection.js'
-import { accentFor } from '../../lib/agent-accent.js'
+import { harnessAccentKey } from '../../lib/agent-accent.js'
 import { gatewayFor } from '../../lib/agent-gateway.js'
 import type { HarnessAttachGateway } from '../../lib/harness-attach.js'
 import { chatItemFromSummary, harnessGate, type ChatItem } from '../../lib/harness-chat.js'
@@ -65,42 +65,70 @@ function useTileTarget(item: ChatItem, descriptors: HarnessDescriptor[] | undefi
     rosterUrls,
     epoch,
   })
-  // During render, not an effect: a click hold runs before the next commit,
-  // and a layout-effect hold runs before this mount's passive cleanup.
-  // A rekey changes the row id on the same mount; drop the previous id here,
-  // because the passive cleanup runs after that render has replaced the ref.
+  // Layout, not render: a discarded or StrictMode render must not be the
+  // publisher. A click hold runs while this mount is still up. A store or
+  // URL open unmounts it in the same commit as the parent's hold, and this
+  // cleanup would otherwise run first. The delete waits one turn so the
+  // hold still reads the frozen target. A later republish of the key is
+  // a different record and is left in place.
   const published = useRef<{ key: string; record: PaintedTarget } | undefined>(undefined)
-  const record: PaintedTarget = {
-    item: target.item,
-    streamId: target.streamId,
-    isRemote: target.isRemote,
-    sessionBase: target.sessionBase,
-    harnessId: target.item?.harnessId,
-    transportEpoch: epoch,
-    sessionGateway: target.sessionGateway,
-  }
-  const previous = published.current
-  if (
-    previous !== undefined &&
-    previous.key !== item.key &&
-    paintedTargets.get(previous.key) === previous.record
-  ) {
-    paintedTargets.delete(previous.key)
-  }
-  published.current = { key: item.key, record }
-  paintedTargets.set(item.key, record)
-  useEffect(() => {
+  const record = useMemo<PaintedTarget>(
+    () => ({
+      item: target.item,
+      streamId: target.streamId,
+      isRemote: target.isRemote,
+      sessionBase: target.sessionBase,
+      harnessId: target.item?.harnessId,
+      transportEpoch: epoch,
+      sessionGateway: target.sessionGateway,
+    }),
+    [
+      target.item,
+      target.streamId,
+      target.isRemote,
+      target.sessionBase,
+      target.item?.harnessId,
+      epoch,
+      target.sessionGateway,
+    ],
+  )
+  useLayoutEffect(() => {
+    const previous = published.current
+    if (
+      previous !== undefined &&
+      previous.key !== item.key &&
+      paintedTargets.get(previous.key) === previous.record
+    ) {
+      paintedTargets.delete(previous.key)
+    }
+    published.current = { key: item.key, record }
+    paintedTargets.set(item.key, record)
     return () => {
       const current = published.current
-      if (current !== undefined && paintedTargets.get(current.key) === current.record) {
-        paintedTargets.delete(current.key)
-      }
+      queueMicrotask(() => {
+        // A StrictMode replay re-runs setup before this fires and republishes
+        // a new `published.current`; only a real unmount leaves it unchanged.
+        if (
+          current !== undefined &&
+          published.current === current &&
+          paintedTargets.get(current.key) === current.record
+        ) {
+          paintedTargets.delete(current.key)
+        }
+      })
     }
-  }, [])
+  }, [item.key, record])
   return { epoch, target }
 }
 
-export function ThreadMini(props: {
+let miniCommitProbe: ((id: string) => void) | undefined
+
+/** Test hook. Unset in production. */
+export function setMiniCommitProbe(probe: ((id: string) => void) | undefined): void {
+  miniCommitProbe = probe
+}
+
+export const ThreadMini = memo(function ThreadMini(props: {
   item: ChatItem
   descriptors?: HarnessDescriptor[]
 }): JSX.Element {
@@ -222,10 +250,12 @@ export function ThreadMini(props: {
     return () => clearTimeout(timer)
   }, [deadline])
 
-  const accent = accentFor({
-    presetColor: props.item.accent,
+  const accent = `var(--harness-accent-${harnessAccentKey({
     harnessId: props.item.harnessId,
     command: props.item.command,
+  })})`
+  useEffect(() => {
+    miniCommitProbe?.(id)
   })
 
   return (
@@ -246,7 +276,7 @@ export function ThreadMini(props: {
       ) : null}
     </div>
   )
-}
+})
 
 /**
  * Same signature the painted reader resolved, including the base
@@ -314,7 +344,10 @@ export function holdTileLease(
 }
 
 /** Holds a space tile's lease while the mini itself is not painted. */
-export function WarmLease(props: { item: ChatItem; descriptors?: HarnessDescriptor[] }): null {
+export const WarmLease = memo(function WarmLease(props: {
+  item: ChatItem
+  descriptors?: HarnessDescriptor[]
+}): null {
   const { target } = useTileTarget(props.item, props.descriptors)
   useSessionStream({
     sessionId: props.item.key,
@@ -325,13 +358,13 @@ export function WarmLease(props: { item: ChatItem; descriptors?: HarnessDescript
     linger: true,
   })
   return null
-}
+})
 
 /**
  * At Everything, warm the selected tile during idle time and release it
  * immediately so the lease lingers. The focused thread holds its own ref.
  */
-export function SelectedPrewarm(props: {
+export const SelectedPrewarm = memo(function SelectedPrewarm(props: {
   item: ChatItem
   descriptors?: HarnessDescriptor[]
 }): null {
@@ -344,20 +377,24 @@ export function SelectedPrewarm(props: {
   const isRemote = target.isRemote
   const sessionBase = target.sessionBase
   const sessionGateway = target.sessionGateway
+  const itemRef = useRef(item)
+  const gatewayRef = useRef(sessionGateway)
+  itemRef.current = item
+  gatewayRef.current = sessionGateway
   useEffect(() => {
     let cancelled = false
     const run = (): void => {
       if (cancelled) return
       const release = bindSessionStream({
         sessionId: id,
-        item,
+        item: itemRef.current,
         streamId,
         isRemote,
         sessionBase,
         harnessId,
         transportEpoch: epoch,
         linger: true,
-        sessionGateway,
+        sessionGateway: gatewayRef.current,
         queryClient,
         onStreamError: () => undefined,
       })
@@ -379,6 +416,6 @@ export function SelectedPrewarm(props: {
       cancelled = true
       clearTimeout(timer)
     }
-  }, [id, item, streamId, isRemote, sessionBase, harnessId, epoch, sessionGateway, queryClient])
+  }, [id, streamId, isRemote, sessionBase, harnessId, epoch, queryClient])
   return null
-}
+})

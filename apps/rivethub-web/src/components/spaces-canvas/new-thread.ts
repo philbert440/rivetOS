@@ -53,12 +53,6 @@ export interface SpaceRosterAgent extends PromptAgent {
   directory?: string
 }
 
-/** Preset id that is no longer startable. Carried so spawn recovery can notice it. Not pinned. */
-export interface MissingPreset {
-  id: string
-  harnessId?: HarnessId
-}
-
 const THINKING_LEVELS: readonly ThinkingLevel[] = ['off', 'low', 'medium', 'high', 'xhigh']
 
 function asThinkingLevel(value: string | undefined): ThinkingLevel | undefined {
@@ -79,8 +73,12 @@ export type ChooserAction =
       effort?: ThinkingLevel
       /** Den base URL used when no preset is chosen. Not a directory. */
       node?: string
-      /** Unresolved space preset. Omitted when a live agent is chosen. */
-      missingPreset?: MissingPreset
+      /**
+       * The space's default preset when it is no longer in the roster and the
+       * user did not pick another agent. Carried so the first spawn reaches
+       * the den's agent-not-found recovery and DELETED_PRESET_NOTICE.
+       */
+      missingPreset?: { agentId: string; harnessId?: HarnessId }
     }
   | {
       type: 'history'
@@ -119,6 +117,16 @@ export function offRosterStartNotice(node: string, hub: string): string {
   return `${urlLabel(node)} is not in your roster — starting on ${urlLabel(hub)}`
 }
 
+/** Set by `startThreadInSpace` when Ctrl+T fell back to the hub. */
+let offRosterNotice: string | undefined
+
+/** The dialog sentence, if the last `startThreadInSpace` fell back. One read. */
+export function takeOffRosterNotice(): string | undefined {
+  const notice = offRosterNotice
+  offRosterNotice = undefined
+  return notice
+}
+
 function mintWithAgent(agent: PromptAgent, baseUrl: string): string | undefined {
   const nodeUrl = agent.sourceNodeBaseUrl
   if (!nodeUrl) return undefined
@@ -144,8 +152,11 @@ function writeSettings(
   agent: PromptAgent | undefined,
   model: string | undefined,
   effort: ThinkingLevel | undefined,
-  missing: MissingPreset | undefined,
+  missingPreset?: { agentId: string; harnessId?: HarnessId },
 ): void {
+  // An explicit Plain draft does not copy a missing preset id; the space's
+  // own deleted default (missingPreset, set by the dialog only when the user
+  // left the agent untouched) does, so the first spawn shows the notice.
   const base: Partial<ChatSettings> = agent
     ? agentThreadSettings({
         id: agent.id,
@@ -155,11 +166,11 @@ function writeSettings(
         systemPrompt: agent.systemPrompt ?? '',
       })
     : { agent: '', effort: effort ?? 'medium' }
-  if (!agent && missing?.id) {
-    base.agentId = missing.id
-    if (missing.harnessId) {
-      base.harnessId = missing.harnessId
-      base.agent = rosterCommandFor(missing.harnessId) ?? ''
+  if (!agent && missingPreset) {
+    base.agentId = missingPreset.agentId
+    if (missingPreset.harnessId) {
+      base.harnessId = missingPreset.harnessId
+      base.agent = rosterCommandFor(missingPreset.harnessId) ?? ''
     }
   }
   if (model !== undefined) base.model = model
@@ -173,8 +184,7 @@ function writeSettings(
 /**
  * Prompt-path fields for a space. A preset that is not startable is omitted
  * from the picker so the thread does not look selected. Model and effort
- * still pre-fill. The missing id is copied later, at the write, so spawn
- * recovery can show the existing deleted-preset notice.
+ * still pre-fill. Plain draft does not copy the missing id. Ctrl+T does.
  */
 export function initialThreadFields(
   defaults: SpaceDefaults | undefined,
@@ -233,14 +243,18 @@ function writeSpaceSettings(
  * Mint a draft in `spaceId` the way `startNewConversation` mints a bare
  * draft, then stamp the space defaults. Does not enqueue a turn and does
  * not call the rail. No defaults still places the draft and writes nothing.
- * An off-roster node is not written: the draft stays on the hub.
+ * An off-roster node is not written: the draft stays on the hub, and
+ * `takeOffRosterNotice` returns the dialog's sentence for that fallback.
  */
 export function startThreadInSpace(
   spaceId: string,
   baseUrl: string,
   roster: readonly SpaceRosterAgent[],
 ): string | undefined {
-  if (!spaceExists(spaceId)) return undefined
+  if (!spaceExists(spaceId)) {
+    offRosterNotice = undefined
+    return undefined
+  }
   const defaults = useSpaces.getState().spaces.find((space) => space.id === spaceId)?.defaults
   const found = startablePreset(defaults, roster)
   const resolved = resolveRosterNode(
@@ -252,7 +266,10 @@ export function startThreadInSpace(
   // fail closed and ignore this hub fallback.
   const agent = found && !resolved.unavailable ? found : undefined
   const id = agent ? mintWithAgent(agent, baseUrl) : mintPlainDraft()
-  if (!id) return undefined
+  if (!id) {
+    offRosterNotice = undefined
+    return undefined
+  }
   if (!agent && resolved.node !== baseUrl) setSessionNodeBinding(id, resolved.node, baseUrl)
   const key = `${resolved.node}::${id}`
   const settingsDefaults: SpaceDefaults | undefined =
@@ -264,6 +281,9 @@ export function startThreadInSpace(
       : defaults
   writeSpaceSettings(key, settingsDefaults, agent)
   useSpaces.getState().place(key, spaceId)
+  offRosterNotice = resolved.unavailable
+    ? offRosterStartNotice(resolved.unavailable, baseUrl)
+    : undefined
   return id
 }
 

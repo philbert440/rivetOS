@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import {
+  CANVAS_KEYS,
   createPressScheduler,
   cycleAgentId,
   focusInForeignDialog,
@@ -141,6 +142,85 @@ describe('matchCanvasAction', () => {
       matchCanvasAction(keyEvent({ key: '`', code: 'Backquote', ctrlKey: true, metaKey: true })),
     ).toBe(null)
     expect(matchCanvasAction(keyEvent({ key: 'l' }))).toBeNull()
+  })
+})
+
+/**
+ * Browser `KeyboardEvent` fields are prototype getters. Object spread copies
+ * only own properties, which is what used to drop every canvas chord and nav.
+ */
+class PrototypeKeyEvent {
+  #key: string
+  #code: string
+  #ctrlKey: boolean
+  #shiftKey: boolean
+  #altKey: boolean
+  #metaKey: boolean
+  #repeat: boolean
+
+  constructor(init: {
+    key?: string
+    code?: string
+    ctrlKey?: boolean
+    shiftKey?: boolean
+    altKey?: boolean
+    metaKey?: boolean
+    repeat?: boolean
+  }) {
+    this.#key = init.key ?? ''
+    this.#code = init.code ?? ''
+    this.#ctrlKey = init.ctrlKey === true
+    this.#shiftKey = init.shiftKey === true
+    this.#altKey = init.altKey === true
+    this.#metaKey = init.metaKey === true
+    this.#repeat = init.repeat === true
+  }
+
+  get key(): string {
+    return this.#key
+  }
+
+  get code(): string {
+    return this.#code
+  }
+
+  get ctrlKey(): boolean {
+    return this.#ctrlKey
+  }
+
+  get shiftKey(): boolean {
+    return this.#shiftKey
+  }
+
+  get altKey(): boolean {
+    return this.#altKey
+  }
+
+  get metaKey(): boolean {
+    return this.#metaKey
+  }
+
+  get repeat(): boolean {
+    return this.#repeat
+  }
+}
+
+describe('canvas keys on a prototype-getter event', () => {
+  it('matches every CANVAS_KEYS entry when spread would drop the fields', () => {
+    for (const entry of CANVAS_KEYS) {
+      const event = new PrototypeKeyEvent(entry.probe)
+      expect(Object.hasOwn(event, 'key')).toBe(false)
+      expect(Object.hasOwn(event, 'code')).toBe(false)
+      expect(Object.hasOwn(event, 'ctrlKey')).toBe(false)
+      const spread = { key: '', ...event }
+      expect(spread.key).toBe('')
+      expect(spread).not.toHaveProperty('code')
+      expect(spread).not.toHaveProperty('ctrlKey')
+      const chord = entry.handler === 'chord' ? matchCanvasChord(event) : null
+      const nav = entry.handler === 'nav' ? matchCanvasNav(event) : null
+      const action = entry.handler === 'action' ? matchCanvasAction(event) : null
+      expect(chord ?? nav ?? action).toBe(entry.id)
+    }
   })
 })
 

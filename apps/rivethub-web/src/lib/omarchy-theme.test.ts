@@ -114,8 +114,14 @@ describe('omarchyAppTokens', () => {
       '--mono',
     ])
     for (const name of [...declared]) {
-      // Font and corner-radius tokens are type/shape, not palette.
-      if (name.startsWith('--font-') || name.startsWith('--radius') || aliases.has(name)) {
+      // Font and corner-radius tokens are type/shape, not palette; harness
+      // accents are fixed identity colours (same per harness in every theme).
+      if (
+        name.startsWith('--font-') ||
+        name.startsWith('--radius') ||
+        name.startsWith('--harness-accent-') ||
+        aliases.has(name)
+      ) {
         declared.delete(name)
       }
     }

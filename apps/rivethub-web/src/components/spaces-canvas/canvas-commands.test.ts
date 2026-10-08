@@ -86,9 +86,9 @@ describe('removeSpaceMessage', () => {
     expect(removeSpaceMessage('Home', 0, 0)).toContain(
       "It has no threads yet. This can't be undone",
     )
-    expect(removeSpaceMessage('Home', 1, 0)).toContain('This closes its 1 thread.')
+    expect(removeSpaceMessage('Home', 1, 0)).toContain('This moves its 1 thread to History.')
     expect(removeSpaceMessage('Home', 2, 1)).toContain(
-      'This closes its 2 threads, 1 of them still active.',
+      'This moves its 2 threads to History, 1 of them still active.',
     )
   })
 })

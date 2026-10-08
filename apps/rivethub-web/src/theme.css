@@ -124,6 +124,13 @@ html[data-theme='light'] {
     outline: 1px solid var(--color-em);
     outline-offset: 1px;
   }
+
+  /* Canvas HUD and tiles. Stays in base so an outline-none utility (Find)
+     still wins. 2px so a keyboard stop is obvious on the dark ground. */
+  .spaces-canvas :where(button, a, input, [role='gridcell']):focus-visible {
+    outline: 2px solid var(--color-em);
+    outline-offset: 2px;
+  }
 }
 
 /* xterm's helper textarea and tabindex=0 screen match the rule above
@@ -490,7 +497,134 @@ html[data-theme='light'] {
     left 0.32s,
     top 0.32s,
     width 0.32s,
-    height 0.32s;
+    height 0.32s,
+    border-color 0.28s;
+}
+
+/* Harness identity on the canvas. Hex lives here, never on an inline style.
+   A custom preset swatch is not representable as a token, so the canvas
+   uses the harness key (or --color-em via fallback). */
+.spaces-canvas {
+  --harness-accent-claude-code: #cc785c;
+  --harness-accent-claude: var(--harness-accent-claude-code);
+  --harness-accent-grok-build: #9ca3af;
+  --harness-accent-grok: var(--harness-accent-grok-build);
+  --harness-accent-codex: #5b8def;
+  --harness-accent-kimi-code: #8b7cf6;
+  --harness-accent-kimi: var(--harness-accent-kimi-code);
+  --harness-accent-hermes: #e0a340;
+  --harness-accent-opencode: #2dd4bf;
+  --harness-accent-pi: #f472b6;
+  --harness-accent-qwen-code: #a78bfa;
+  --harness-accent-qwen: var(--harness-accent-qwen-code);
+  --harness-accent-cursor: #f97316;
+  --harness-accent-cowork: #6b8f71;
+  --harness-accent-fallback: var(--color-em);
+}
+/* #9ca3af on paper (#fdfcf8) is about 2.5:1. gray-600 clears the non-text 3:1. */
+html[data-theme='light'] .spaces-canvas {
+  --harness-accent-grok-build: #4b5563;
+}
+.spaces-canvas .sc-accent {
+  background-color: var(--harness-accent-fallback);
+}
+.spaces-canvas .sc-accent[data-harness='claude-code'],
+.spaces-canvas .sc-accent[data-harness='claude'] {
+  background-color: var(--harness-accent-claude-code);
+}
+.spaces-canvas .sc-accent[data-harness='grok-build'],
+.spaces-canvas .sc-accent[data-harness='grok'] {
+  background-color: var(--harness-accent-grok-build);
+}
+.spaces-canvas .sc-accent[data-harness='codex'] {
+  background-color: var(--harness-accent-codex);
+}
+.spaces-canvas .sc-accent[data-harness='kimi-code'],
+.spaces-canvas .sc-accent[data-harness='kimi'] {
+  background-color: var(--harness-accent-kimi-code);
+}
+.spaces-canvas .sc-accent[data-harness='hermes'] {
+  background-color: var(--harness-accent-hermes);
+}
+.spaces-canvas .sc-accent[data-harness='opencode'] {
+  background-color: var(--harness-accent-opencode);
+}
+.spaces-canvas .sc-accent[data-harness='pi'] {
+  background-color: var(--harness-accent-pi);
+}
+.spaces-canvas .sc-accent[data-harness='qwen-code'],
+.spaces-canvas .sc-accent[data-harness='qwen'] {
+  background-color: var(--harness-accent-qwen-code);
+}
+.spaces-canvas .sc-accent[data-harness='cursor'] {
+  background-color: var(--harness-accent-cursor);
+}
+.spaces-canvas .sc-accent[data-harness='cowork'] {
+  background-color: var(--harness-accent-cowork);
+}
+.spaces-canvas [data-status='working'] .sc-accent {
+  background-color: var(--color-em);
+}
+.spaces-canvas [data-status='needs'] .sc-accent {
+  background-color: var(--color-warn);
+}
+
+@keyframes spaces-breathe {
+  0%,
+  100% {
+    opacity: 0.65;
+  }
+  50% {
+    opacity: 1;
+  }
+}
+@keyframes spaces-toast-in {
+  from {
+    opacity: 0;
+    transform: translateY(-6px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+@keyframes spaces-ghost-in {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+/* Dots breathe on their own layer. Animating .sc-ground fades #world, the
+   tiles, and the open thread. Thread altitude holds the dots still. */
+.spaces-canvas .sc-ground::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  z-index: 0;
+  pointer-events: none;
+  background-image: radial-gradient(
+    circle,
+    color-mix(in srgb, var(--color-line) calc(var(--dot-a, 0) * 100%), transparent) 1px,
+    transparent 1.6px
+  );
+  background-size: var(--dot-size, 0px) var(--dot-size, 0px);
+  background-position: var(--dot-x, 0px) var(--dot-y, 0px);
+  animation: spaces-breathe 4.8s ease-in-out infinite;
+}
+.spaces-canvas[data-altitude='thread'] .sc-ground::before {
+  animation: none;
+  opacity: 1;
+}
+.spaces-canvas #world {
+  z-index: 1;
+}
+.spaces-canvas .sc-toast {
+  animation: spaces-toast-in 180ms ease-out;
+}
+.spaces-canvas .sc-ghost {
+  animation: spaces-ghost-in 120ms ease-out;
 }
 /* No motion: hold a static ring instead — animationend may not fire, so the
    class is removed by xterm-attach's timeout fallback. */
@@ -500,6 +634,15 @@ html[data-theme='light'] {
     outline-color: var(--color-em);
   }
   [data-tile] {
+    transition: none;
+  }
+  .spaces-canvas .sc-ground::before,
+  .spaces-canvas .sc-toast,
+  .spaces-canvas .sc-ghost,
+  .spaces-canvas .sc-dot,
+  .spaces-canvas .sc-region,
+  .spaces-canvas [data-add-thread] {
+    animation: none;
     transition: none;
   }
 }

@@ -10,6 +10,7 @@ import {
   DELETED_PRESET_NOTICE,
   presetHasHarnessFlag,
   recoverDeletedAgentSpawnUsingCache,
+  settledRosterAgentIds,
   spawnOnceWithCommandFallback,
   termSpawnBody,
 } from '../lib/term-spawn.js'
@@ -148,8 +149,7 @@ import { useSessionStream } from '../lib/use-session-stream.js'
 import { useSessionTarget } from '../lib/use-session-target.js'
 import { SpacesCanvas } from '../components/spaces-canvas/SpacesCanvas.js'
 import { useConversationView } from '../stores/conversation-view.js'
-
-export { DrawerItem, selectDrawerItems } from '../components/drawer-item.js'
+import { ConversationEmpty } from '../components/conversation-empty.js'
 
 /** Stable empty array for zustand selectors — `?? []` inside a selector
  *  allocates a new [] every run when the key is missing, which zustand treats
@@ -664,7 +664,7 @@ export function ChatPage(): JSX.Element {
         // (the compose state) from the launch effect a tick later.
         <ChatLaunchLoading />
       ) : (
-        showEmpty && <EmptyState />
+        showEmpty && <ConversationEmpty />
       )}
       {/* Narrow RIGHT history drawer . Same pane, same
           width rule as the left rail (w-64, sidebar.tsx:186-197). Mounted
@@ -1384,9 +1384,11 @@ function ActiveSession(props: {
         agentId: settings?.agentId,
         model: settledLaunch.spawn.model,
         effort: settledLaunch.spawn.effort,
-        // A preset with no harness must not send agentId — the den 400s
-        // `agent has no harness and no command was given`.
-        presetHasHarness: presetHasHarnessFlag(settings),
+        // A live preset with no harness must not send agentId — the den 400s
+        // `agent has no harness and no command was given`. An id missing from
+        // the settled roster is sent anyway so the 404 recovery can show
+        // DELETED_PRESET_NOTICE. An unknown roster keeps the omit.
+        presetHasHarness: presetHasHarnessFlag(settings, settledRosterAgentIds(queryClient)),
       })
       // An API-only agent has no roster command → fall back to the node default
       // rather than 404 (keeps session, model, and effort). That fallback is
@@ -2048,15 +2050,6 @@ function ActiveSession(props: {
           spawning terminal…
         </div>
       )}
-    </div>
-  )
-}
-
-function EmptyState(): JSX.Element {
-  return (
-    <div className="flex flex-1 flex-col items-center justify-center gap-2">
-      <RhMark className="text-5xl opacity-90" />
-      <div className="text-sm text-ink-dim">Pick a conversation or start a new one.</div>
     </div>
   )
 }

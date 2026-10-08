@@ -324,14 +324,17 @@ client never sends one. The den does not accept a raw working directory:
 model, effort, and cwd from that preset (explicit spawn fields still win).
 A space's starting directory is therefore the chosen preset's own
 `directory`, shown read-only (`Starts in <directory> on <node>`).
-New threads in that space — the `+ New thread` slot, `T`, and Ctrl+T while
-the canvas is focused on a space that has defaults — pre-fill the existing
-chooser and mint path. They do not take a second creation path. Inside a
+New threads in that space — the `+ New thread` slot and `T` — open the
+chooser, pre-filled from those defaults. Ctrl+T does not open the chooser:
+while the canvas is focused on a space that has defaults it mints straight
+away via `startThreadInSpace` (same place-and-send path, no dialog). Inside a
 space those defaults win over a selected agents-rail filter; outside a
 space, or when the space has no defaults, Ctrl+T is unchanged. A preset id
-that is no longer on the roster shows as "(missing preset)" in Edit. New
-threads still carry that id (not pinned) so the first spawn uses the
-existing deleted-preset notice, then continues without it. An explicit
+that is no longer on the roster shows as "(missing preset)" in Edit. Ctrl+T
+still carries that id (not pinned) so the first spawn uses the existing
+deleted-preset notice, then continues without it. Choosing Plain draft in
+the new-thread dialog does not. In Edit, changing the agent clears the
+model; choosing None drops a model-only default. An explicit
 node, or a preset node, that is no longer on the connection roster is not
 used: the thread starts on the hub, and the new-thread dialog says so.
 Settings, the node binding, and space membership are written on the
@@ -343,7 +346,9 @@ claimed at Thread — the dock button and the toast are the jump there), a
 polite toast when a session flips to blocked while you are not in it. **Find**
 (`/`, not claimed at Thread) fades non-hits to 0.15; Enter opens needs-you
 then recency, and only while the find field itself is focused.
-**Recent** (Ctrl+`) steps an in-memory MRU; releasing Ctrl opens the preview.
+**Recent** (Ctrl+`) steps an in-memory MRU at Space and Everything; releasing
+Ctrl opens the preview. It is not claimed at Thread — the dock Recent button (previous thread)
+is the step there.
 
 The per-session watch/attach lives in `src/lib/use-session-stream.ts`
 (`useSessionStream` / `bindSessionStream`). Leases are ref-counted per
@@ -357,9 +362,12 @@ least-recently-released idle lease is stopped. Held readers are never
 evicted and do not count toward the cap. A transport epoch bump, a gateway
 `baseUrl` change, or `useChat.connect` switching gateways stops every lease
 (held or idle); the next acquire opens fresh. A rekey keeps one attachment.
-If the destination already has a lease on a different stream, that lease
-stays and the moved one is closed without unbinding the destination.
-Otherwise the moved lease is re-pointed onto the new id.
+If the destination already has an **attach** lease (a stream id, different
+signature), that lease stays and the moved one is closed without unbinding
+the destination. A watch-only lease there is not a keeper: it must not close
+the moved attach. The reverse — a moved watch meeting an existing attach —
+drops the watch flag and unwatches. `retire(lease, { keepBinding })` is that
+path. Otherwise the moved lease is re-pointed onto the new id.
 
 At Space altitude the canvas acquires every tile in that space, not only the
 ones on screen. Below the live-zoom threshold a mini is not painted, but its
@@ -389,23 +397,63 @@ lands (`onLand`), and unmounts when the altitude leaves Thread. Opening a
 tile sets `?session=` through the existing chat route search.
 
 The canvas replaces the drawer + split + session column only when
-`canvasEnabled` is on (Settings → "Spaces canvas (preview)", persisted,
-default **off**) and the viewport is at least 768px. Narrow keeps today's
-list/thread UI. With the flag off, the desktop layout is unchanged.
+`canvasEnabled` is on (Settings → "Spaces canvas (preview)", one-line
+description, persisted, default **off** — do not flip it; Phil decides after
+a desktop pass) and the viewport is at least 768px. Narrow keeps today's
+list/thread UI. Phone layout is out of scope. With the flag off, the desktop
+layout is unchanged.
 
-Keys (capture phase, `lib/hub-keys.ts`, no auto-repeat, dialog guard):
-Ctrl+Space and Ctrl+0 stay. Arrows / j k l / Enter / Esc are claimed only
-when focus is on `body` or inside the canvas, and not on a button, link,
-field, or inside a menu, listbox, or dialog. At Space, arrows stay inside
-the framed space; at Everything they move across placed tiles. At Thread
-every single-letter key, including Esc, is left for the focused session.
-Ctrl+Space is the way out of Thread. Also: `N` new space (name only), `E`
-edits the space you are in (name and defaults), `T` new thread, `M` move, `H` history, `/`
-find, Delete archives or discards the selected thread (unpinned drafts are
-discarded; Backspace is not a remove key), Shift+Delete removes the space
-you are in (unplaces its threads, never deletes sessions). `h` is History,
-not left. Ctrl+J is claimed at Space and Everything only. Ctrl+` is claimed
-at Thread too.
+**Theme.** Canvas surfaces (ground, regions, tiles, needs-you, the harness
+accent, HUD, toasts, the drag ghost) use tokens only, so dark, light
+(paper/ink), and an Omarchy palette all come from the same variables. A
+harness accent on the canvas is a stylesheet variable (`--harness-accent-*`
+on `.spaces-canvas`, selected with `.sc-accent[data-harness]`), never an
+inline hex. A custom preset swatch is not painted on the canvas; it falls
+back to the harness token, then `--color-em`. The non-canvas drawer still
+uses `accentFor`'s hex. `prefers-reduced-motion: reduce` snaps the fly
+(duration 0) and disables tile, toast, breathe, and ghost animation.
+
+**Keyboard and the screen reader.** Tiles are `role="grid"` / `role="gridcell"`
+with a roving tabindex (only the selection is tabbable, and nothing is while
+a thread is open). Arrow navigation is two-dimensional; a listbox would be
+one row, so it does not fit. HUD controls are ordinary buttons and stay in
+the tab order, with a 2px `--color-em` `:focus-visible` outline. An
+`aria-live="polite"` region announces the altitude ("Space: Code, 4 threads,
+1 waiting on you").
+
+**Empty.** No conversations: the same "Pick a conversation or start a new
+one." as the chat column (`ConversationEmpty`). No spaces: that hint plus
+`+ New space`, and threads stay in History. An empty space centres
+`+ New thread` in the region.
+
+The open thread's tile is one child of one list whether or not it has a
+space, so Move → History at Thread does not remount `ActiveSession`. History
+pick mode consumes Escape only at Space or Everything, and only when focus
+is in the canvas, the History panel, or the body — not in a field. Entering
+Thread clears pick.
+
+Keys (capture phase, one `CANVAS_KEYS` table in `lib/hub-keys.ts` that the
+matchers, the Thread claim, and the `?` panel all read; no auto-repeat;
+dialog guard): Ctrl+Space and Ctrl+0 stay. Arrows / j k l / Enter / Esc are
+claimed only when focus is on `body` or inside the canvas, and not on a
+button, link, field, or inside a menu, listbox, or dialog. At Space, arrows
+stay inside the framed space; at Everything they move across placed tiles.
+At Thread every single-letter key, including Esc, is left for the focused
+session. Ctrl+Space is the way out of Thread. Also: `N` new space (name
+only), `E` edits the space you are in (name and defaults), `T` new thread,
+`M` move (the keyboard alternative to dragging; the panel says so), `H`
+history, `/` find, Delete archives or discards the selected thread (unpinned
+drafts are discarded; Backspace is not a remove key), Shift+Delete removes
+the space you are in (threads move to History, sessions are not deleted).
+`h` is History, not left. Ctrl+J is claimed at Space and Everything only.
+Ctrl+`is not claimed at Thread (recent threads step at Space and Everything;
+the dock Recent button does it while a thread is open).`?` opens the Keys
+panel (`#keys`) at Space and Everything; at Thread the dock `?`button opens
+it and`?` is not claimed.
+
+**Known limit.** A draft tile and its canonical tile, both already mounted,
+do not share one React key. Adopting one identity remounts the other. The
+placed ↔ History case above is not that: those two are the same list entry.
 
 ## Gotchas
 

@@ -11,14 +11,17 @@
  *
  * The pool key is the resolved session id (`resolveSessionKey`) plus the
  * stream signature, not the raw view id. A rekey moves that lease onto the
- * new id only when the destination has no lease yet. A lease already at the
- * destination on a different stream is the live session: the moved lease is
- * closed and must not unwatch or unbind the destination (`rekey` has aliased
- * the old id there). A different stream for the same resolved session closes
- * the other socket. Stopping a lease never unwatches or unbinds a key that
- * another lease of the same kind, held or idle, still owns. A superseded
- * promise cannot attach, and a promise cannot replace a socket the surviving
- * lease already holds.
+ * new id unless an attach already at the destination owns a different stream.
+ * Only that attach (a real stream id, not a watch) is the keeper: the moved
+ * lease is closed and must not unbind the destination (`rekey` has aliased
+ * the old id there). A watch waiting at the destination is not a keeper —
+ * the moved attach is re-pointed and `retireDifferentSignatures` retires the
+ * watch. A moved watch dropped against an existing attach unwatches the
+ * store when it drops the watch flag, and does not unbind the attach.
+ * Stopping a lease never unwatches or unbinds a key that another lease of
+ * the same kind, held or idle, still owns. A superseded promise cannot
+ * attach, and a promise cannot replace a socket the surviving lease already
+ * holds.
  *
  * A signature change (stream id, node, harness, transport epoch) is a
  * different lease. Gaining a stream id retires the legacy watch for that
@@ -209,15 +212,32 @@ function releaseBinding(lease: Lease): void {
   lease.mode = 'none'
 }
 
-function retire(lease: Lease): void {
+function retire(lease: Lease, opts?: { keepBinding?: boolean }): void {
   if (lease.superseded) return
+  // Superseded before release so heldSameMode skips this lease.
   lease.superseded = true
   if (lease.idleTimer !== undefined) {
     clearTimeout(lease.idleTimer)
     lease.idleTimer = undefined
   }
   closeAttachment(lease)
-  releaseBinding(lease)
+  if (opts?.keepBinding) {
+    // The destination attach keeps the store binding. A moved watch still
+    // has to drop its own subscription, or the store watches a session no
+    // lease owns.
+    if (lease.mode === 'watch' && lease.watched) {
+      const identity = lease.watchedIdentity ?? lease.identity
+      lease.watched = false
+      if (!heldSameMode(identity, 'watch', lease)) {
+        useChat.getState().unwatchTranscript(identity)
+      }
+    }
+    lease.bound = false
+    lease.watched = false
+    lease.mode = 'none'
+  } else {
+    releaseBinding(lease)
+  }
   if (leases.get(lease.key) === lease) leases.delete(lease.key)
 }
 
@@ -489,25 +509,6 @@ function foldLease(preferred: Lease, incoming: Lease): void {
   leases.set(keep.key, keep)
 }
 
-/**
- * Close a predecessor that lost to a lease already living at the destination.
- * `rekey` has aliased `from` onto `to` and moved the store binding, so the
- * normal retire path would unwatch or unbind the live session.
- */
-function retireMovedLease(lease: Lease): void {
-  if (lease.superseded) return
-  lease.superseded = true
-  if (lease.idleTimer !== undefined) {
-    clearTimeout(lease.idleTimer)
-    lease.idleTimer = undefined
-  }
-  closeAttachment(lease)
-  lease.bound = false
-  lease.watched = false
-  lease.mode = 'none'
-  if (leases.get(lease.key) === lease) leases.delete(lease.key)
-}
-
 function migrateIdentity(from: string, to: string): void {
   if (from === to) return
   const moving = [...leases.values()].filter((lease) => {
@@ -533,11 +534,17 @@ function migrateIdentity(from: string, to: string): void {
       foldLease(existing, lease)
       continue
     }
-    const destinationOwnsOtherStream = staying.some(
-      (other) => !other.superseded && !sameStreamSignature(other, lease),
+    // A watch (no stream) must not win. It used to, and the moved attach
+    // closed while harnessBound[to] kept the binding with no owner.
+    const destinationAttach = staying.some(
+      (other) =>
+        !other.superseded &&
+        other.mode === 'attach' &&
+        other.streamId !== undefined &&
+        !sameStreamSignature(other, lease),
     )
-    if (destinationOwnsOtherStream) {
-      retireMovedLease(lease)
+    if (destinationAttach) {
+      retire(lease, { keepBinding: true })
       continue
     }
     if (leases.get(lease.key) === lease) leases.delete(lease.key)

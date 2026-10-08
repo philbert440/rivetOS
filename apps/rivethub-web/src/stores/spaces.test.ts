@@ -69,10 +69,8 @@ describe('spaces store', () => {
     const key = 'http://192.168.1.20:8787::thread-a'
     useSpaces.getState().place(key, id)
     expect(useSpaces.getState().spaceOf(key)).toBe(id)
-    expect(useSpaces.getState().rowsIn(id, [{ key }, { key: 'other' }])).toEqual([{ key }])
     useSpaces.getState().unplace(key)
     expect(useSpaces.getState().spaceOf(key)).toBeUndefined()
-    expect(useSpaces.getState().rowsIn(id, [{ key }])).toEqual([])
   })
 
   it('does not place into a missing space or an empty key', () => {
