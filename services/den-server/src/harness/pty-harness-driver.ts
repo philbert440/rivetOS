@@ -463,6 +463,23 @@ function pasteWouldCollapse(text: string): boolean {
   )
 }
 
+/** The Enter keystroke, written raw (not as a paste) so the TUI submits. */
+const SUBMIT_KEY = '\r'
+
+/**
+ * The input box already holds this turn: an earlier paste of it whose Enter
+ * the TUI swallowed, now being retried. Submitting what is there delivers it
+ * once; pasting again would glue a second copy on. A collapsed
+ * `[Pasted text #N]` placeholder is never matched — nothing on screen says
+ * which paste it is.
+ */
+function draftIsTurn(draft: string, turnTexts: readonly string[]): boolean {
+  if (/\[Pasted text #\d+/.test(draft)) return false
+  const box = deliveryKey(draft)
+  if (!box) return false
+  return turnTexts.some((text) => deliveryKey(text) === box)
+}
+
 /** Fallback AskUserQuestion answer: labels joined by ", "; multi-question
  *  lines are `header: labels`; `other` appended. */
 export function composePromptText(
@@ -902,11 +919,32 @@ export abstract class PtyHarnessDriver<S extends HarnessStoreHost = HarnessStore
       // `undefined` (not false) keeps the recorded interrupt flag absent on
       // the ordinary path.
       const bypassDialogGate = turn.bypassDialogGate === true
-      const { dialog, draft } = await this.preSendBlock(native)
-      if (dialog && !bypassDialogGate) throw dialogRejection(dialog)
-      if (draft) throw draftRejection()
+      const { dialog, draft, draftText } = await this.preSendBlock(native)
+      if (dialog && !bypassDialogGate) {
+        this.logSendRefusal(native, dialog)
+        throw dialogRejection(dialog)
+      }
+      // Our own earlier paste of this turn, stuck unsent: submit it rather
+      // than refuse every retry of it.
+      const resubmit =
+        draft === true && draftText !== undefined && draftIsTurn(draftText, [turn.text, injected])
+      if (draft && !resubmit) {
+        this.logSendRefusal(native)
+        throw draftRejection()
+      }
       dismissedDialog = Boolean(dialog)
-      if (!pty.inject(ptyId, injected, true, dialog ? true : undefined)) {
+      if (resubmit) {
+        this.log(
+          `[den-server] harness: ${this.harnessId}:${native} input already holds this turn; submitting it`,
+        )
+        if (!pty.inject(ptyId, SUBMIT_KEY, false)) {
+          throw new HarnessError(
+            'turn_in_flight',
+            `${this.harnessId} ${native} is not accepting input yet`,
+            { harnessId: this.harnessId, sessionId },
+          )
+        }
+      } else if (!pty.inject(ptyId, injected, true, dialog ? true : undefined)) {
         // The term manager keeps its session→pty mapping until the EXITED
         // record is reaped (exitLingerMs), so a harness that just died still
         // resolves to a pty that refuses writes. Answering
@@ -920,8 +958,14 @@ export abstract class PtyHarnessDriver<S extends HarnessStoreHost = HarnessStore
         ptyId = await this.spawnFor(pty, native, true)
         const retry = await this.preSendBlock(native)
         const retryDialog = retry.dialog
-        if (retryDialog && !bypassDialogGate) throw dialogRejection(retryDialog)
-        if (retry.draft) throw draftRejection()
+        if (retryDialog && !bypassDialogGate) {
+          this.logSendRefusal(native, retryDialog)
+          throw dialogRejection(retryDialog)
+        }
+        if (retry.draft) {
+          this.logSendRefusal(native)
+          throw draftRejection()
+        }
         dismissedDialog = Boolean(retryDialog)
         if (!pty.inject(ptyId, injected, true, retryDialog ? true : undefined)) {
           // A live-but-unwritable harness means its pre-ready inject buffer is
@@ -1812,6 +1856,18 @@ export abstract class PtyHarnessDriver<S extends HarnessStoreHost = HarnessStore
    * instead of `sendUserTurn`. They are answering the dialog; running the gate
    * there would 409 the answer.
    */
+  /**
+   * A refused send is otherwise silent on the node: the client gets the 409,
+   * the log gets nothing, and a false positive cannot be traced. Pane text is
+   * not logged — only the dialog's title and option count.
+   */
+  protected logSendRefusal(native: string, dialog?: BlockingDialog): void {
+    const why = dialog
+      ? `a dialog is open (${JSON.stringify(dialog.title.slice(0, 60))}, ${String(dialog.options.length)} options)`
+      : 'the input box holds unsent text'
+    this.log(`[den-server] harness: send refused for ${this.harnessId}:${native}: ${why}`)
+  }
+
   protected async preSendBlock(native: string): Promise<PreSendBlock> {
     if (!this.dialogGate) return {}
     try {
@@ -1986,6 +2042,11 @@ export abstract class PtyHarnessDriver<S extends HarnessStoreHost = HarnessStore
     if (this.inputHoldsTurn(raw, key, turnText)) {
       if (!delivery.stuckOnce) {
         delivery.stuckOnce = true
+        // The paste landed but its Enter was swallowed (it reached the TUI
+        // while the paste was still being taken in). Press it once more; the
+        // next peek fails the delivery if that did not submit either.
+        await this.pressSubmit(native)
+        if (this.live.get(native)?.delivery !== delivery) return
         const peek = setTimeout(() => {
           void this.peekDelivery(native)
         }, 1_000)
@@ -1997,6 +2058,23 @@ export abstract class PtyHarnessDriver<S extends HarnessStoreHost = HarnessStore
       this.failDelivery(
         native,
         `${this.productName} didn't submit the message (it's still in the input box); check the terminal`,
+      )
+    }
+  }
+
+  /** Raw Enter into the session's pane. Best-effort: a missing pty is a no-op. */
+  protected async pressSubmit(native: string): Promise<void> {
+    let pty: HarnessPtyHost | null | undefined
+    try {
+      pty = await this.deps.pty?.()
+    } catch {
+      return
+    }
+    const ptyId = pty?.ptyForSession(this.room(native))
+    if (!pty || !ptyId) return
+    if (pty.inject(ptyId, SUBMIT_KEY, false)) {
+      this.log(
+        `[den-server] harness: ${this.harnessId}:${native} paste still in the input box; pressed Enter again`,
       )
     }
   }

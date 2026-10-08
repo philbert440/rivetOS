@@ -892,6 +892,18 @@ describe('POST /term/inject (seamless modes 5c)', () => {
     expect(fakeProcs[0].writes).toEqual([])
   })
 
+  it('presses Enter on unsent text that is this same message instead of 409ing', async () => {
+    const { base, herdr } = await spawnHarness('claude', 'chat-stuck', () =>
+      Promise.resolve(SLASH_DRAFT_SCREEN),
+    )
+    markHarnessIdle(herdr)
+    const inj = await post(base, '/term/inject', { session: 'chat-stuck', text: '/model' })
+    expect(inj.status).toBe(202)
+    await new Promise((r) => setTimeout(r, 150))
+    // One raw Enter; never a second paste glued onto the first.
+    expect(fakeProcs[0].writes).toEqual(['\r'])
+  })
+
   it('pastes a forced inject normally when no dialog is on screen', async () => {
     const { base, herdr } = await spawnHarness('claude', 'chat-idle-bypass', () =>
       Promise.resolve(IDLE_HARNESS_SCREEN),

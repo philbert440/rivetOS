@@ -423,7 +423,7 @@ describe('dialogOnScreen (legacy POST /term/inject gate)', () => {
 
 describe('parsePreSendBlock', () => {
   it('reports unsent text in the input box as a draft', () => {
-    expect(parsePreSendBlock(SLASH_DRAFT_SCREEN)).toEqual({ draft: true })
+    expect(parsePreSendBlock(SLASH_DRAFT_SCREEN)).toEqual({ draft: true, draftText: '/model' })
   })
 
   it('blocks nothing on an idle screen, a fresh placeholder prompt, or an empty read', () => {
