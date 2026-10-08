@@ -7,20 +7,44 @@
  * The canvas binds a starter while it is focused on a space that has
  * defaults. That mint wins over the rail. No binding, or a starter that
  * returns undefined, keeps today's behaviour.
+ *
+ * Every new conversation lands in a space: the one the canvas is focused on,
+ * else the default space (stores/spaces). The canvas binds the focus getter.
  */
 
 import { useAgentFilter } from '../stores/agent-filter.js'
 import { useChat } from '../stores/chat.js'
+import { useConnection } from '../stores/connection.js'
+import { useSpaces } from '../stores/spaces.js'
+import { storageKey } from './session-rekey.js'
+import { getSessionNodeBinding } from './session-node.js'
 import { uuidv4 } from './uuid.js'
 
 /** Returns a new draft id, or undefined when this Ctrl+T should stay on the rail. */
 type SpaceThreadStarter = () => string | undefined
 
 let spaceThreadStarter: SpaceThreadStarter | null = null
+let focusedSpace: (() => string | undefined) | null = null
 
 /** Canvas-only. `null` clears it. The starter must mint synchronously. */
 export function bindSpaceThreadStarter(starter: SpaceThreadStarter | null): void {
   spaceThreadStarter = starter
+}
+
+/** Canvas-only. `null` clears it. Returns the space the canvas is focused on. */
+export function bindFocusedSpace(getter: (() => string | undefined) | null): void {
+  focusedSpace = getter
+}
+
+/** Place a fresh draft in the focused space, else the default space. A
+ *  node-bound draft is keyed on its node, as `rowMembershipKey` reads it. */
+export function placeNewDraft(id: string): void {
+  const spaces = useSpaces.getState()
+  const focused = focusedSpace?.()
+  const target =
+    focused && spaces.spaces.some((s) => s.id === focused) ? focused : spaces.defaultSpaceId()
+  const node = getSessionNodeBinding(id) ?? useConnection.getState().baseUrl
+  spaces.place(storageKey(node, id), target)
 }
 
 /** Returns the draft id when one was created synchronously, otherwise undefined. */
@@ -38,5 +62,7 @@ export function startNewConversation(): string | undefined {
     chat.addDraft(id)
     chat.setActive(id)
   }
-  return useChat.getState().drafts.find((id) => !before.has(id))
+  const id = useChat.getState().drafts.find((draft) => !before.has(draft))
+  if (id) placeNewDraft(id)
+  return id
 }

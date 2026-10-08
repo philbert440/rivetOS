@@ -41,7 +41,7 @@ import { startNewConversation } from '../../lib/new-conversation.js'
 import { useChat } from '../../stores/chat.js'
 import { useChatSettings } from '../../stores/chat-settings.js'
 import { useConnection } from '../../stores/connection.js'
-import { useSpaces } from '../../stores/spaces.js'
+import { useSpaces, withDefaultSpace } from '../../stores/spaces.js'
 import { canvasKeyClaims, performCanvasEffect, reduceCanvasCommand } from './canvas-input.js'
 import { SpacesCanvas } from './SpacesCanvas.js'
 import { setMiniCommitProbe, ThreadMini } from './ThreadMini.js'
@@ -139,7 +139,8 @@ const FLY_CLOCK = {
 } as const
 
 describe('SpacesCanvas', () => {
-  it('renders no tiles when no space exists yet', () => {
+  it('renders the seeded General space with no tiles; threads stay in History', () => {
+    useSpaces.setState({ spaces: withDefaultSpace([]) })
     const html = markup(
       createElement(SpacesCanvas, {
         rows: [row('a', 'Alpha', 'idle'), row('b', 'Beta', 'active')],
@@ -149,7 +150,8 @@ describe('SpacesCanvas', () => {
     )
     expect(html).not.toContain('data-tile=')
     expect(html).not.toContain('Unplaced')
-    expect(html).toContain('No spaces yet. Threads live in History.')
+    expect(html).not.toContain('No spaces yet')
+    expect(html).toContain('<b class="text-ink" style="font-size:1.35em">General</b>')
     expect(html).toContain('+ New space')
     expect(html).toContain('data-altitude="everything"')
     expect(html).not.toContain('data-face="mini"')
@@ -854,12 +856,12 @@ describe('SpacesCanvas mount', () => {
     expect(host?.querySelector('[data-history-row="c"]')).not.toBeNull()
   })
 
-  it('with no spaces shows only the new-space control and keeps threads in History', () => {
+  it('with only the seeded General space keeps unplaced threads in History', () => {
+    useSpaces.setState({ spaces: withDefaultSpace([]) })
     mount([row('a', 'Alpha'), row('b', 'Beta')], () => undefined)
     expect(host?.querySelector('[data-tile]')).toBeNull()
-    expect(host?.querySelector('[data-empty-spaces]')?.textContent).toContain(
-      'No spaces yet. Threads live in History.',
-    )
+    expect(host?.querySelector('[data-empty-spaces]')).toBeNull()
+    expect(host?.textContent).toContain('General')
     expect(host?.textContent).toContain('+ New space')
     press({ key: 'h' })
     expect(host?.querySelector('[data-history-row="a"]')).not.toBeNull()
@@ -1086,7 +1088,8 @@ describe('SpacesCanvas mount', () => {
       blocked = startNewConversation() ?? ''
     })
     expect(blocked).toBeTruthy()
-    expect(useSpaces.getState().spaceOf(`${base}::${blocked}`)).toBeUndefined()
+    // Still lands in the space in focus — only the defaults are withheld.
+    expect(useSpaces.getState().spaceOf(`${base}::${blocked}`)).toBe(spaceId)
     expect(useChatSettings.getState().byKey[`${base}::${blocked}`]).toBeUndefined()
     cancelDialog()
     document.body.focus()

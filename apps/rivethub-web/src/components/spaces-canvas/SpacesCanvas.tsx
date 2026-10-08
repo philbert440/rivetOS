@@ -1,7 +1,7 @@
 /**
  * Desktop conversations canvas. One region per space, in store order, plus a
- * dashed "+ New space". With no spaces stored, that placeholder and a History
- * hint are the whole canvas — unplaced threads stay in History. Thread
+ * dashed "+ New space". The store always holds at least one space (General),
+ * and unplaced threads stay in History. Thread
  * altitude freezes tile order so a recency update cannot move the focused
  * tile out from under the fly.
  */
@@ -31,7 +31,7 @@ import {
   matchCanvasNav,
   type CanvasAction,
 } from '../../lib/hub-keys.js'
-import { bindSpaceThreadStarter } from '../../lib/new-conversation.js'
+import { bindFocusedSpace, bindSpaceThreadStarter } from '../../lib/new-conversation.js'
 import { storageKey } from '../../lib/session-rekey.js'
 import { useRosterAgents } from '../../lib/use-agent-roster.js'
 import { useArchived } from '../../stores/archived.js'
@@ -1002,6 +1002,11 @@ export function SpacesCanvas(props: {
   }, [])
 
   useEffect(() => {
+    bindFocusedSpace(() => spaceInFocusRef.current())
+    return () => bindFocusedSpace(null)
+  }, [])
+
+  useEffect(() => {
     const hitAt = (clientX: number, clientY: number): DropHit => {
       const stage = stageRef.current
       if (!stage) return { kind: 'none' }
@@ -1222,22 +1227,6 @@ export function SpacesCanvas(props: {
       {rows.length === 0 ? (
         <div className="pointer-events-none absolute inset-0 z-10 flex items-center justify-center">
           <ConversationEmpty />
-        </div>
-      ) : spaces.length === 0 ? (
-        <div
-          data-empty-spaces=""
-          className="pointer-events-none absolute top-1/2 left-1/2 z-10 flex max-w-sm -translate-x-1/2 -translate-y-1/2 flex-col items-center gap-3 text-center"
-        >
-          <p className="text-sm text-ink-dim">No spaces yet. Threads live in History.</p>
-          <button
-            type="button"
-            data-act=""
-            data-empty-new-space=""
-            className="pointer-events-auto text-sm text-ink-dim hover:text-em"
-            onClick={() => setNamePrompt({ mode: 'create' })}
-          >
-            + New space
-          </button>
         </div>
       ) : null}
       <p className="sr-only" aria-live="polite" data-altitude-live="">

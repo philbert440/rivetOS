@@ -46,6 +46,7 @@ import {
   modelOptionsFor,
 } from '../lib/harness-options.js'
 import { rosterCommandFor } from '../lib/harness-chat.js'
+import { placeNewDraft } from '../lib/new-conversation.js'
 import { uuidv4 } from '../lib/uuid.js'
 import {
   agentForSession,
@@ -1173,6 +1174,7 @@ export function AgentsSection(props: { compact?: boolean }): JSX.Element {
     applyAgentSettings(sessionId, agent, nodeUrl, opts)
     setSessionNodeBinding(sessionId, nodeUrl, currentBase)
     addDraft(sessionId)
+    placeNewDraft(sessionId)
     setActive(sessionId)
     useSidebarPrefs.getState().setDrawerOpen(false)
     void navigate({ to: '/', replace: true })
