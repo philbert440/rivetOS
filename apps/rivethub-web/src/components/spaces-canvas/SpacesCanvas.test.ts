@@ -93,6 +93,15 @@ beforeEach(() => {
   useAgentFilter.getState().clear()
 })
 
+/** A dock button, opening the tucked dock first (it hides behind a toggle). */
+function dockButton(name: string): Element | null {
+  if (!document.querySelector('[data-dock-bar]')) {
+    const toggle = document.querySelector('[data-dock-toggle]')
+    if (toggle instanceof HTMLElement) act(() => toggle.click())
+  }
+  return document.querySelector(`[data-dock="${name}"]`)
+}
+
 function placeOnHome(keys: readonly string[]): string {
   const id = useSpaces.getState().addSpace('Home')
   const base = useConnection.getState().baseUrl
@@ -1131,6 +1140,23 @@ describe('SpacesCanvas mount', () => {
     ).toBeNull()
   })
 
+  it('tucks the dock behind the corner toggle and shows it for Find', () => {
+    placeOnHome(['a'])
+    mount([row('a', 'Alpha')], () => undefined)
+    expect(host?.querySelector('[data-dock-bar]')).toBeNull()
+    const toggle = host?.querySelector('[data-dock-toggle]')
+    if (!(toggle instanceof HTMLElement)) throw new Error('missing dock toggle')
+    expect(toggle.getAttribute('aria-expanded')).toBe('false')
+    act(() => toggle.click())
+    expect(host?.querySelector('[data-dock-bar]')).not.toBeNull()
+    expect(toggle.getAttribute('aria-expanded')).toBe('true')
+    act(() => toggle.click())
+    expect(host?.querySelector('[data-dock-bar]')).toBeNull()
+    press({ key: '/' })
+    expect(document.querySelector('[data-dock-bar]')).not.toBeNull()
+    expect(document.querySelector('[data-dock="find"]')).not.toBeNull()
+  })
+
   it('keeps the HUD above the canvas and steps back with the dock Recent button', async () => {
     vi.useFakeTimers(FLY_CLOCK)
     placeOnHome(['a', 'b'])
@@ -1140,7 +1166,7 @@ describe('SpacesCanvas mount', () => {
     })
     const hud = host?.querySelector('[data-hud]')?.parentElement
     expect(hud?.className).toContain('z-20')
-    const recentAtStart = host?.querySelector('[data-dock="recent"]')
+    const recentAtStart = dockButton('recent')
     expect(recentAtStart?.hasAttribute('disabled')).toBe(true)
     for (const id of ['a', 'b']) {
       const hit = host?.querySelector(`[data-tile-hit="${id}"]`)
@@ -1153,7 +1179,7 @@ describe('SpacesCanvas mount', () => {
       })
     }
     expect(opened.at(-1)).toBe('b')
-    const recent = host?.querySelector('[data-dock="recent"]')
+    const recent = dockButton('recent')
     expect(recent?.hasAttribute('disabled')).toBe(false)
     if (!(recent instanceof HTMLElement)) throw new Error('missing recent')
     act(() => {
@@ -1165,7 +1191,7 @@ describe('SpacesCanvas mount', () => {
   it('lists every key from the shared table and closes on ?', () => {
     placeOnHome(['a'])
     mount([row('a', 'Alpha')], () => undefined)
-    const dock = host?.querySelector('[data-dock="keys"]')
+    const dock = dockButton('keys')
     if (!(dock instanceof HTMLElement)) throw new Error('missing keys button')
     expect(dock.tabIndex).not.toBe(-1)
     act(() => {
@@ -1201,7 +1227,7 @@ describe('SpacesCanvas mount', () => {
     const ignored = press({ key: '?', shiftKey: true })
     expect(ignored.defaultPrevented).toBe(false)
     expect(document.getElementById('keys')).toBeNull()
-    const dock = host?.querySelector('[data-dock="keys"]')
+    const dock = dockButton('keys')
     if (!(dock instanceof HTMLElement)) throw new Error('missing keys button')
     act(() => {
       dock.click()
@@ -1214,7 +1240,7 @@ describe('SpacesCanvas mount', () => {
     placeOnHome(['a'])
     const rows = [row('a', 'Alpha'), row('b', 'Beta')]
     const { render } = mount(rows, () => undefined)
-    const thread = host?.querySelector('[data-dock="thread"]')
+    const thread = dockButton('thread')
     if (!(thread instanceof HTMLElement)) throw new Error('missing new thread')
     act(() => {
       thread.click()
@@ -1259,7 +1285,7 @@ describe('SpacesCanvas mount', () => {
     act(() => {
       space.click()
     })
-    const thread = host?.querySelector('[data-dock="thread"]')
+    const thread = dockButton('thread')
     if (!(thread instanceof HTMLElement)) throw new Error('missing new thread')
     act(() => {
       thread.click()
@@ -1332,7 +1358,7 @@ describe('SpacesCanvas mount', () => {
     expect(mounts).toBe(1)
     expect(unmounts).toBe(0)
     expect(vi.mocked(attachHarnessSession)).toHaveBeenCalledTimes(1)
-    const move = host?.querySelector('[data-dock="move"]')
+    const move = dockButton('move')
     if (!(move instanceof HTMLElement)) throw new Error('missing move')
     act(() => {
       move.click()
@@ -1571,7 +1597,7 @@ describe('SpacesCanvas mount', () => {
     if (!(field instanceof HTMLElement)) throw new Error('missing session field')
     field.focus()
     expect(document.activeElement).toBe(field)
-    const dock = host?.querySelector('[data-dock="keys"]')
+    const dock = dockButton('keys')
     if (!(dock instanceof HTMLElement)) throw new Error('missing keys button')
     dock.focus()
     expect(document.activeElement).toBe(dock)
