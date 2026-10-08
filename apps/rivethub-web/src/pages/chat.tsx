@@ -1903,7 +1903,7 @@ function ActiveSession(props: {
   )
 
   return (
-    <div className="relative flex min-w-0 flex-1 flex-col">
+    <div className="relative flex min-h-0 min-w-0 flex-1 flex-col">
       {narrow ? (
         /* ONE 48px row on the phone — same tokens as the
            desktop header below (border-b border-line, bg-panel/40, mono

@@ -7,7 +7,7 @@ import { formatSpinnerMeta, parseSpinnerMeta } from '../lib/spinner-meta.js'
 import { copyTextToClipboard } from '../lib/clipboard.js'
 import { Markdown } from './markdown.js'
 import { SpeakMessage } from './speak-message.js'
-import { arrivalJump, type TranscriptEdge } from '../lib/transcript-follow.js'
+import { arrivalJump, scrollToEnd, type TranscriptEdge } from '../lib/transcript-follow.js'
 
 /** Transcript-sourced tool → the live stack's entry shape (same renderer). */
 function toLiveTool(t: HarnessTranscriptTool, id: string): LiveToolEntry {
@@ -393,7 +393,6 @@ export function Transcript(props: {
 }): JSX.Element {
   const scrollRef = useRef<HTMLDivElement>(null)
   const contentRef = useRef<HTMLDivElement>(null)
-  const endRef = useRef<HTMLDivElement>(null)
   // Stick-to-bottom: auto-scroll ONLY while the user is already at (or near)
   // the bottom. Scrolling up to reread during a streaming reply must not be
   // yanked back down on every frame. The ref mirrors the state so the content
@@ -420,7 +419,7 @@ export function Transcript(props: {
   const jumpToLatest = (): void => {
     pinnedRef.current = true
     setPinned(true)
-    endRef.current?.scrollIntoView({ block: 'end' })
+    if (scrollRef.current) scrollToEnd(scrollRef.current)
   }
 
   const followSoon = (): void => {
@@ -428,7 +427,7 @@ export function Transcript(props: {
     if (rafRef.current !== undefined) cancelAnimationFrame(rafRef.current)
     rafRef.current = requestAnimationFrame(() => {
       rafRef.current = undefined
-      if (pinnedRef.current) endRef.current?.scrollIntoView({ block: 'end' })
+      if (pinnedRef.current && scrollRef.current) scrollToEnd(scrollRef.current)
     })
   }
 
@@ -485,7 +484,6 @@ export function Transcript(props: {
           {!props.live && props.statusLine && (
             <AgentStatusLine text={props.statusLine.text} tool={props.statusLine.tool} />
           )}
-          <div ref={endRef} />
         </div>
       </div>
       {!pinned && (

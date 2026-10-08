@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { arrivalJump, type TranscriptEdge } from './transcript-follow.js'
+import { arrivalJump, scrollToEnd, type TranscriptEdge } from './transcript-follow.js'
 
 const idle: TranscriptEdge = { lastId: 'm1', live: false, reasoning: false }
 
@@ -29,5 +29,21 @@ describe('arrivalJump', () => {
 
   it('does not jump when history empties or loads nothing new at the end', () => {
     expect(arrivalJump(idle, { ...idle, lastId: undefined })).toBe(false)
+  })
+})
+
+describe('scrollToEnd', () => {
+  it('moves only the given scroll box to its bottom', () => {
+    const el = { scrollTop: 0, scrollHeight: 1200 }
+    scrollToEnd(el)
+    expect(el.scrollTop).toBe(1200)
+  })
+})
+
+describe('transcript follow', () => {
+  it('never calls scrollIntoView, which also scrolls canvas ancestors', async () => {
+    const { readFile } = await import('node:fs/promises')
+    const src = await readFile(new URL('../components/transcript.tsx', import.meta.url), 'utf8')
+    expect(src).not.toContain('scrollIntoView')
   })
 })

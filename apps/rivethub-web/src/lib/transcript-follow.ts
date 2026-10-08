@@ -20,3 +20,13 @@ export function arrivalJump(prev: TranscriptEdge, next: TranscriptEdge): boolean
   if (prev.live && !next.live) return true
   return prev.live && next.live && prev.reasoning && !next.reasoning
 }
+
+/**
+ * Bring the transcript's own scroll box to its bottom. Never scrollIntoView:
+ * that also scrolls every scrollable ancestor — overflow-hidden ones included —
+ * so inside a canvas tile it slid the whole thread up, pushing the header off
+ * the top and the composer off the bottom.
+ */
+export function scrollToEnd(el: Pick<HTMLElement, 'scrollTop' | 'scrollHeight'>): void {
+  el.scrollTop = el.scrollHeight
+}
