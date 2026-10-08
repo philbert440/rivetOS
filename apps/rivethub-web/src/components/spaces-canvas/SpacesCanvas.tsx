@@ -1,9 +1,9 @@
 /**
- * Desktop conversations canvas. One implicit region ("Unplaced") holds every
- * drawer row. Everything shows cards, Space shows live read-only minis, and
- * Thread mounts ActiveSession inside the focused tile only after the fly
- * lands. Tile order freezes for the whole time altitude is Thread so a
- * recency update cannot move the focused tile out from under the fly.
+ * Desktop conversations canvas. One region per space, in store order, plus a
+ * dashed "+ New space". With no spaces stored, that placeholder and a History
+ * hint are the whole canvas — unplaced threads stay in History. Thread
+ * altitude freezes tile order so a recency update cannot move the focused
+ * tile out from under the fly.
  */
 
 import {
@@ -17,32 +17,71 @@ import {
   type JSX,
   type ReactNode,
 } from 'react'
+import * as Dialog from '@radix-ui/react-dialog'
 import { useQueryClient } from '@tanstack/react-query'
 import type { HarnessDescriptor } from '@rivetos/types'
 import type { ChatItem } from '../../lib/harness-chat.js'
-import { focusInForeignDialog, matchCanvasChord, matchCanvasNav } from '../../lib/hub-keys.js'
-import { useChat } from '../../stores/chat.js'
+import { discardDraft } from '../../lib/discard-session.js'
 import {
+  focusInForeignDialog,
+  matchCanvasAction,
+  matchCanvasChord,
+  matchCanvasNav,
+  type CanvasAction,
+} from '../../lib/hub-keys.js'
+import { storageKey } from '../../lib/session-rekey.js'
+import { useArchived } from '../../stores/archived.js'
+import { useChat } from '../../stores/chat.js'
+import { useConnection } from '../../stores/connection.js'
+import { useSidebarPrefs } from '../../stores/sidebar-prefs.js'
+import { useSpaces } from '../../stores/spaces.js'
+import { isRowArchived, rowMembershipKey } from '../drawer-item.js'
+import { Popover, PopoverContent, PopoverTrigger } from '../ui/popover.js'
+import {
+  apply,
   focusRect,
   layout,
   LIVE_LO,
+  tileSlot,
   type Altitude,
   type NeighborTile,
   type Rect,
   type Viewport,
 } from './camera.js'
 import {
+  mruPreviewId,
+  nextWaitingId,
+  rankFindHits,
+  reconcileNeedsEpisodes,
+  rememberThread,
+  removeSpaceMessage,
+  type FindRow,
+  type WaitingTile,
+} from './canvas-commands.js'
+import {
   canvasKeyClaims,
   performCanvasEffect,
   reduceCanvasCommand,
   type CanvasKeyState,
 } from './canvas-input.js'
+import { buildCanvasRegions, NEW_SPACE_ID, UNPLACED_ID } from './canvas-regions.js'
+import {
+  clientRectToWorld,
+  clientToWorld,
+  DRAG_START_PX,
+  dropTarget,
+  resolveDrop,
+  type DropHit,
+} from './drop-target.js'
+import { HistoryPanel } from './HistoryPanel.js'
+import { applyChooser } from './new-thread.js'
+import { NewThreadDialog } from './NewThreadDialog.js'
 import { Tile } from './Tile.js'
-import { holdTileLease, SelectedPrewarm, WarmLease } from './ThreadMini.js'
 import { tileStatus } from './tile-status.js'
+import { holdTileLease, SelectedPrewarm, WarmLease } from './ThreadMini.js'
 import { useCamera } from './use-camera.js'
 
-const REGION_ID = 'unplaced'
+const TOAST_MS = 7000
 
 /** Buttons, fields, and popup roles keep their own keys. */
 const FOCUS_SINK =
@@ -79,7 +118,75 @@ function projectFrozen(frozen: readonly string[], rows: readonly ChatItem[]): st
     used.add(row.key)
     next.push(row.key)
   }
+  // Same order, same array: keeps the regions memo stable at Thread.
+  if (next.length === frozen.length && next.every((key, index) => key === frozen[index])) {
+    return frozen as string[]
+  }
   return next
+}
+
+function isBlocked(row: ChatItem, blockedIds: ReadonlySet<string> | undefined): boolean {
+  if (blockedIds === undefined) return false
+  if (row.sessionId !== undefined && blockedIds.has(row.sessionId)) return true
+  return blockedIds.has(row.key)
+}
+
+function isNeeds(row: ChatItem, blockedIds: ReadonlySet<string> | undefined): boolean {
+  return tileStatus(row.status, isBlocked(row, blockedIds)) === 'needs'
+}
+
+function isLive(row: ChatItem, blockedIds: ReadonlySet<string> | undefined): boolean {
+  const status = tileStatus(row.status, isBlocked(row, blockedIds))
+  return status === 'working' || status === 'needs'
+}
+
+function hitKey(hit: DropHit): string {
+  return hit.kind === 'region' ? `region:${hit.id}` : hit.kind
+}
+
+interface DragState {
+  source: 'tile' | 'history'
+  memberKey: string
+  originSpace: string | undefined
+  title: string
+  x: number
+  y: number
+  active: boolean
+  hitKey: string
+}
+
+interface NeedsToast {
+  id: string
+  rowKey: string
+  title: string
+}
+
+type NamePrompt = { mode: 'create' } | { mode: 'rename'; id: string; initial: string }
+
+interface PickState {
+  spaceId: string
+  title: string
+}
+
+function plainEscape(event: KeyboardEvent): boolean {
+  return (
+    event.key === 'Escape' && !event.ctrlKey && !event.metaKey && !event.altKey && !event.shiftKey
+  )
+}
+
+function countLabel(active: number, waiting: number): JSX.Element {
+  if (waiting > 0) {
+    return (
+      <span>
+        {active} active · <span className="text-warn">{waiting} waiting on you</span>
+      </span>
+    )
+  }
+  return (
+    <span>
+      {active} active · {waiting} waiting on you
+    </span>
+  )
 }
 
 export function SpacesCanvas(props: {
@@ -87,21 +194,45 @@ export function SpacesCanvas(props: {
   activeId?: string
   /** Plane session ids whose summary is `blocked` (needs you). */
   blockedIds?: ReadonlySet<string>
+  /** False until the plane query has settled. No prime and no toast before that. */
+  blockedReady?: boolean
   descriptors?: HarnessDescriptor[]
   onOpen: (id: string) => void
   renderThread: (id: string) => ReactNode
 }): JSX.Element {
-  const { rows, activeId, onOpen, renderThread, descriptors } = props
+  const { rows, activeId, onOpen, renderThread, descriptors, blockedReady } = props
   const blockedIds = props.blockedIds
+  const spaces = useSpaces((s) => s.spaces)
+  const membership = useSpaces((s) => s.membership)
+  const baseUrl = useConnection((s) => s.baseUrl)
+  const archivedKeys = useArchived((s) => s.keys)
+  const conversationsCollapsed = useSidebarPrefs((s) => s.conversationsCollapsed)
+
   const rootRef = useRef<HTMLDivElement>(null)
   const stageRef = useRef<HTMLDivElement>(null)
   const worldRef = useRef<HTMLDivElement>(null)
+  const panelRef = useRef<HTMLElement | null>(null)
+  const findInputRef = useRef<HTMLInputElement>(null)
   const [altitude, setAltitude] = useState<Altitude>(activeId ? 'thread' : 'everything')
   const [selectedId, setSelectedId] = useState<string | undefined>(activeId ?? rows[0]?.key)
   const [openId, setOpenId] = useState<string | undefined>(activeId)
   const [threadMounted, setThreadMounted] = useState(false)
   const [navNonce, setNavNonce] = useState(0)
   const [trackedActive, setTrackedActive] = useState(activeId)
+  const [spaceFocus, setSpaceFocus] = useState<string | undefined>(undefined)
+  const [historyWanted, setHistoryWanted] = useState(false)
+  const [pick, setPick] = useState<PickState | null>(null)
+  const [findOpen, setFindOpen] = useState(false)
+  const [findQuery, setFindQuery] = useState('')
+  const [namePrompt, setNamePrompt] = useState<NamePrompt | null>(null)
+  const [removePrompt, setRemovePrompt] = useState<string | null>(null)
+  const [newThread, setNewThread] = useState<{ spaceId?: string } | null>(null)
+  const [moveOpen, setMoveOpen] = useState(false)
+  const [hover, setHover] = useState<DropHit | null>(null)
+  const [ghost, setGhost] = useState<{ x: number; y: number; title: string } | null>(null)
+  const [mru, setMru] = useState<string[]>([])
+  const [mruStep, setMruStep] = useState(0)
+  const [toasts, setToasts] = useState<NeedsToast[]>([])
   const localOpen = useRef<string | undefined>(undefined)
   const navBridge = useRef(false)
   const armRef = useRef<string | undefined>(undefined)
@@ -127,6 +258,15 @@ export function SpacesCanvas(props: {
     renderKeys.current.set(resolved, rowKey)
     return rowKey
   }
+  // Filled once per render (below) from the tiles on the canvas.
+  const stableFor = new Map<string, string>()
+  const renderKeyedThread = (id: string): ReactNode => {
+    const node = renderThread(id)
+    if (!isValidElement(node)) return node
+    // renderThread keys ActiveSession by the view id (chat.tsx). Override it
+    // so a rekey updates the id without remounting.
+    return cloneElement(node, { key: stableFor.get(id) ?? stableKey(id) })
+  }
   const holdOpening = (id: string): void => {
     const row = rows.find((item) => item.key === id)
     const next = row ? holdTileLease(row, descriptors, queryClient) : undefined
@@ -134,12 +274,50 @@ export function SpacesCanvas(props: {
     openingHold.current = next
     if (previous) previous()
   }
+  const suppressGestureRef = useRef(false)
+  const consumedClickRef = useRef(false)
+  const dragRef = useRef<DragState | null>(null)
+  const sinceRef = useRef(new Map<string, number>())
+  const announcedRef = useRef(new Set<string>())
+  const primedRef = useRef(false)
+  const toastTimers = useRef<number[]>([])
+  const collapsedWas = useRef(conversationsCollapsed)
 
+  const visibleRows = useMemo(
+    () => rows.filter((row) => !isRowArchived(row, archivedKeys, baseUrl)),
+    [rows, archivedKeys, baseUrl],
+  )
+
+  // Capture order on the way into Thread; live order applies again on the
+  // way out. Switching threads at Thread does not reshuffle. Project before
+  // the memo so a rekey or a new row is visible on the same render that the
+  // rows change.
+  if (altitude === 'thread') {
+    if (frozenKeys.current === null) frozenKeys.current = visibleRows.map((row) => row.key)
+    frozenKeys.current = projectFrozen(frozenKeys.current, visibleRows)
+  } else if (frozenKeys.current !== null) {
+    frozenKeys.current = null
+  }
+  const frozen = altitude === 'thread' ? frozenKeys.current : null
+  const regions = useMemo(
+    () =>
+      buildCanvasRegions({
+        spaces,
+        rows: visibleRows,
+        membership,
+        baseUrl,
+        frozenKeys: frozen,
+      }),
+    [spaces, visibleRows, membership, baseUrl, frozen],
+  )
+
+  const canvasIds = regions.flatMap((region) => region.rows.map((row) => row.key))
   if (
-    rows.length > 0 &&
-    (selectedId === undefined || !rows.some((row) => row.key === selectedId))
+    altitude !== 'thread' &&
+    canvasIds.length > 0 &&
+    (selectedId === undefined || !canvasIds.includes(selectedId))
   ) {
-    setSelectedId(rows[0].key)
+    setSelectedId(canvasIds[0])
   }
 
   // URL / store selection changed outside a canvas open. Adjust during render
@@ -167,7 +345,12 @@ export function SpacesCanvas(props: {
         (openId === activeId || resolvedOpen === activeId)
       setOpenId(activeId)
       setSelectedId(activeId)
-      if (!sameThread) {
+      if (sameThread) {
+        // The rekeyed id replaces the old one in recents.
+        if (openId !== activeId) {
+          setMru((list) => list.map((key) => (key === openId ? activeId : key)))
+        }
+      } else {
         // Same hold as a click, taken in layout (below) rather than here.
         // This commit unmounts every mini; without a ref the opening lease
         // can be the oldest idle one and get evicted before ActiveSession
@@ -176,6 +359,10 @@ export function SpacesCanvas(props: {
         navBridge.current = true
         setAltitude('thread')
         setThreadMounted(false)
+        setFindOpen(false)
+        setFindQuery('')
+        setMruStep(0)
+        setMru((list) => rememberThread(list, activeId))
         setNavNonce((n) => n + 1)
       }
     }
@@ -185,66 +372,140 @@ export function SpacesCanvas(props: {
   const selectedRef = useRef(selectedId)
   const openRef = useRef(openId)
   const tilesRef = useRef<NeighborTile[]>([])
+  const rowsRef = useRef(rows)
+  const baseUrlRef = useRef(baseUrl)
+  const modalRef = useRef(false)
+  const pickRef = useRef(pick)
+  const findOpenRef = useRef(findOpen)
+  const bestHitRef = useRef<string | undefined>(undefined)
+  const regionRectsRef = useRef<{ id: string; rect: Rect }[]>([])
+  const camScreenRef = useRef({ tx: 0, ty: 0, z: 1 })
+  const mruRef = useRef(mru)
+  const mruStepRef = useRef(mruStep)
+  const waitingRef = useRef<WaitingTile[]>([])
+  const beginThreadRef = useRef<(id: string) => void>(() => undefined)
+  const runActionRef = useRef<(action: CanvasAction) => void>(() => undefined)
   altitudeRef.current = altitude
   selectedRef.current = selectedId
   openRef.current = openId
+  rowsRef.current = rows
+  baseUrlRef.current = baseUrl
+  modalRef.current = namePrompt !== null || removePrompt !== null || newThread !== null
+  pickRef.current = pick
+  findOpenRef.current = findOpen
+  mruRef.current = mru
+  mruStepRef.current = mruStep
 
-  // Capture order on the way into Thread; live order applies again on the
-  // way out. Project before the memo so a rekey or a new row is visible
-  // on the same render that the rows change.
-  if (altitude === 'thread') {
-    if (frozenKeys.current === null) frozenKeys.current = rows.map((row) => row.key)
-    frozenKeys.current = projectFrozen(frozenKeys.current, rows)
-  } else if (frozenKeys.current !== null) {
-    frozenKeys.current = null
+  const spaceByRow = new Map<string, string>()
+  for (const region of regions) {
+    for (const row of region.rows) spaceByRow.set(row.key, region.id)
   }
-  const displayRows = useMemo(() => {
-    const keys = altitude === 'thread' ? frozenKeys.current : null
-    if (keys === null) return rows
-    const byKey = new Map(rows.map((row) => [row.key, row]))
-    const ordered: ChatItem[] = []
-    for (const key of keys) {
-      const row = byKey.get(key)
-      if (row) ordered.push(row)
-    }
-    return ordered
-  }, [rows, altitude])
+  const focusRowId = altitude === 'thread' ? openId : selectedId
+  let framedRegionId: string | undefined
+  if (
+    altitude === 'space' &&
+    spaceFocus !== undefined &&
+    regions.some((region) => region.id === spaceFocus)
+  ) {
+    framedRegionId = spaceFocus
+  } else if (focusRowId !== undefined && spaceByRow.has(focusRowId)) {
+    framedRegionId = spaceByRow.get(focusRowId)
+  } else {
+    framedRegionId = regions.find((region) => region.id !== UNPLACED_ID)?.id ?? regions[0]?.id
+  }
 
-  const framedId = altitude === 'thread' ? (openId ?? selectedId) : selectedId
-  // Layout needs the viewport, and the viewport lives in the camera hook.
-  // Frame with the last vp the hook reported; when it changes, restart the
-  // render so the hook's effect commits against the matching rect.
   const framedVp = useRef<Viewport>({ w: 1280, h: 800 })
   const [vpTick, setVpTick] = useState(0)
-  const framed = useMemo(() => {
-    const view = framedVp.current
-    const laid = layout([{ id: REGION_ID, name: 'Unplaced', count: displayRows.length }], view)
-    const region = laid.regions[0]
-    const tiles: NeighborTile[] = displayRows.map((row, index) => {
-      const slot = laid.slots[index]
-      return { id: row.key, x: slot.x, y: slot.y }
+  const view = framedVp.current
+  const layoutItems = [
+    ...regions.map((region) => ({
+      id: region.id,
+      name: region.name,
+      count: region.rows.length,
+    })),
+    { id: NEW_SPACE_ID, name: 'New space', count: 0 },
+  ]
+  const laid = layout(layoutItems, view)
+  const placed: { row: ChatItem; spaceId: string; slot: (typeof laid.slots)[number] }[] = []
+  for (const region of regions) {
+    const laidRegion = laid.regions.find((item) => item.id === region.id)
+    if (!laidRegion) continue
+    region.rows.forEach((row, index) => {
+      const slot = laidRegion.slots[index]
+      placed.push({ row, spaceId: region.id, slot })
     })
-    const slot = framedId ? tiles.find((tile) => tile.id === framedId) : undefined
-    let rect: Rect = laid.allRect
-    if (altitude === 'thread' && slot) rect = focusRect(slot, view)
-    else if (altitude === 'space') rect = region.rect
-    const key = [
-      navNonce,
-      altitude,
-      altitude === 'thread' ? (framedId ?? '') : '',
-      rect.x,
-      rect.y,
-      rect.w,
-      rect.h,
-    ].join(':')
-    return { laid, region, tiles, rect, key }
-  }, [displayRows, altitude, framedId, navNonce, vpTick])
+  }
+  const openPlaced = placed.find((item) => item.row.key === openId)
+  const focusSlot =
+    openPlaced?.slot ??
+    (altitude === 'thread' && openId !== undefined
+      ? tileSlot('focus', { x: 0, y: 0 }, 0)
+      : undefined)
+  let rect: Rect = laid.allRect
+  if (altitude === 'thread' && focusSlot) rect = focusRect(focusSlot, view)
+  else if (altitude === 'space') {
+    const framed = laid.regions.find((region) => region.id === framedRegionId)
+    if (framed) rect = framed.rect
+  }
+  const frameKey = [
+    navNonce,
+    altitude,
+    altitude === 'thread' ? (openId ?? '') : altitude === 'space' ? (framedRegionId ?? '') : '',
+    rect.x,
+    rect.y,
+    rect.w,
+    rect.h,
+    vpTick,
+  ].join(':')
+
+  const filtering = findQuery.trim().length > 0
+  const findRows: FindRow[] = placed.map((item) => ({
+    id: item.row.key,
+    needs: isNeeds(item.row, blockedIds),
+    updatedAt: item.row.updatedAt,
+    haystack: [
+      item.row.agentName,
+      item.row.title,
+      item.row.command,
+      regionName(regions, item.spaceId),
+    ]
+      .filter((part) => part !== undefined && part.length > 0)
+      .join(' '),
+  }))
+  const hits = filtering ? rankFindHits(findRows, findQuery) : []
+  const hitIds = new Set(hits.map((hit) => hit.id))
+  bestHitRef.current = hits[0]?.id
+
+  const waiting: WaitingTile[] = []
+  let needsCount = 0
+  for (const item of placed) {
+    if (!isNeeds(item.row, blockedIds)) continue
+    needsCount += 1
+    const sessionSince =
+      item.row.sessionId !== undefined ? sinceRef.current.get(item.row.sessionId) : undefined
+    waiting.push({
+      id: item.row.key,
+      since: sessionSince ?? sinceRef.current.get(item.row.key) ?? item.row.updatedAt,
+    })
+  }
+  waitingRef.current = waiting
+  regionRectsRef.current = laid.regions
+    .filter((region) => region.id !== NEW_SPACE_ID && region.id !== UNPLACED_ID)
+    .map((region) => ({ id: region.id, rect: region.rect }))
+
+  const navSource =
+    altitude === 'space' ? placed.filter((item) => item.spaceId === framedRegionId) : placed
+  tilesRef.current = navSource.map((item) => ({
+    id: item.row.key,
+    x: item.slot.x,
+    y: item.slot.y,
+  }))
 
   const gestureRef = useRef<(id: string, kind: 'up' | 'double') => void>(() => undefined)
   const camera = useCamera({
     stageRef,
     worldRef,
-    target: { key: framed.key, mode: altitude, rect: framed.rect },
+    target: { key: frameKey, mode: altitude, rect },
     onLand: () => {
       if (altitudeRef.current === 'thread') setThreadMounted(true)
     },
@@ -253,26 +514,42 @@ export function SpacesCanvas(props: {
       if (next === 'everything') setThreadMounted(false)
     },
     onTileGesture: (id, kind) => gestureRef.current(id, kind),
+    suppressGestureRef,
   })
   const { vp, cam, navRef, detachedRef } = camera
   if (vp.w !== framedVp.current.w || vp.h !== framedVp.current.h) {
     framedVp.current = vp
     setVpTick((n) => n + 1)
   }
+  const screen = apply(cam, vp)
+  camScreenRef.current = { tx: screen.tx, ty: screen.ty, z: screen.z }
 
   if (navBridge.current) {
     navRef.current = true
     detachedRef.current = false
     navBridge.current = false
   }
-  tilesRef.current = framed.tiles
 
   const bump = (): void => {
     navRef.current = true
     detachedRef.current = false
     setNavNonce((n) => n + 1)
   }
+  const spaceForSession = (id: string): string | undefined => {
+    const state = useSpaces.getState()
+    const row = rowsRef.current.find((item) => item.key === id)
+    if (row) {
+      const found = state.spaceOf(rowMembershipKey(baseUrlRef.current, row))
+      if (found) return found
+    }
+    const suffix = `::${id}`
+    for (const [key, value] of Object.entries(state.membership)) {
+      if (key.endsWith(suffix) && state.spaces.some((space) => space.id === value)) return value
+    }
+    return undefined
+  }
   const beginThread = (id: string): void => {
+    setMruStep(0)
     // Already opening or open: a second click must not restart the fly.
     // The arm ref is cleared on a microtask, before a dblclick arrives.
     if (openId === id && altitude === 'thread') return
@@ -285,6 +562,12 @@ export function SpacesCanvas(props: {
     // commit; without this ref the opening lease can be the oldest idle one
     // and LRU-evicted before ActiveSession acquires on landing.
     holdOpening(id)
+    setMru((list) => rememberThread(list, id))
+    const spaceId = spaceForSession(id)
+    if (spaceId) setSpaceFocus(spaceId)
+    setFindOpen(false)
+    setFindQuery('')
+    setMoveOpen(false)
     bump()
     setSelectedId(id)
     setOpenId(id)
@@ -295,31 +578,124 @@ export function SpacesCanvas(props: {
       onOpen(id)
     }
   }
+  beginThreadRef.current = beginThread
   const leaveTo = (next: 'everything' | 'space'): void => {
     bump()
     setAltitude(next)
     if (next === 'everything') setThreadMounted(false)
+  }
+  const selectTile = (id: string): void => {
+    setSelectedId(id)
+    const regionId = spaceByRow.get(id)
+    if (
+      regionId !== undefined &&
+      regionId !== UNPLACED_ID &&
+      spaces.some((space) => space.id === regionId)
+    ) {
+      setSpaceFocus(regionId)
+    }
   }
   gestureRef.current = (id, kind) => {
     if (kind === 'double') {
       beginThread(id)
       return
     }
-    // At Thread a click on another tile opens it; the open tile is a no-op.
     if (altitudeRef.current === 'thread') {
       if (id !== openRef.current) beginThread(id)
       return
     }
     if (id === selectedRef.current) beginThread(id)
-    else setSelectedId(id)
+    else selectTile(id)
   }
+
+  const realSpace = (regionId: string | undefined): string | undefined => {
+    if (regionId === undefined || regionId === UNPLACED_ID) return undefined
+    return spaces.some((space) => space.id === regionId) ? regionId : undefined
+  }
+  // Space altitude: the framed space, even when the selection sits in another
+  // region. Everything has no framed space, so the chooser keeps its selector.
+  // Thread (dock only — letters are not claimed) uses the open thread's space.
+  const spaceYouAreIn = (): string | undefined => {
+    if (altitude === 'space') return realSpace(framedRegionId)
+    if (altitude === 'thread') {
+      return realSpace(openId !== undefined ? spaceByRow.get(openId) : undefined)
+    }
+    return undefined
+  }
+  const removeSelectedThread = (): void => {
+    const id = selectedRef.current
+    if (id === undefined) return
+    const row = rowsRef.current.find((item) => item.key === id)
+    if (!row) return
+    const node = row.pinNodeBaseUrl ?? baseUrlRef.current
+    if (row.kind === 'draft' && row.pin !== true) discardDraft(node, row.key)
+    else useArchived.getState().archive(storageKey(node, row.key))
+  }
+  const runAction = (action: CanvasAction): void => {
+    switch (action) {
+      case 'new-space':
+        setNamePrompt({ mode: 'create' })
+        return
+      case 'rename-space': {
+        const id = spaceYouAreIn()
+        if (id === undefined) return
+        const space = spaces.find((item) => item.id === id)
+        if (!space) return
+        setNamePrompt({ mode: 'rename', id, initial: space.name })
+        return
+      }
+      case 'remove-space': {
+        const id = spaceYouAreIn()
+        if (id === undefined) return
+        setRemovePrompt(id)
+        return
+      }
+      case 'new-thread':
+        setNewThread({ spaceId: spaceYouAreIn() })
+        return
+      case 'remove-thread':
+        removeSelectedThread()
+        return
+      case 'move':
+        if (selectedRef.current !== undefined && canvasIds.includes(selectedRef.current)) {
+          setMoveOpen((open) => !open)
+        }
+        return
+      case 'history':
+        if (pickRef.current) return
+        setHistoryWanted((open) => !open)
+        return
+      case 'find':
+        setFindOpen(true)
+        return
+      case 'next-waiting': {
+        const id = nextWaitingId(
+          waitingRef.current,
+          openRef.current,
+          altitudeRef.current === 'thread',
+        )
+        if (id !== undefined) beginThread(id)
+        return
+      }
+      case 'mru':
+        if (mruRef.current.length === 0) return
+        setMruStep((step) => step + 1)
+        return
+      default:
+        return
+    }
+  }
+  runActionRef.current = runAction
 
   const actionsRef = useRef({
     open: beginThread,
-    select: setSelectedId,
+    select: selectTile,
     go: leaveTo,
   })
-  actionsRef.current = { open: beginThread, select: setSelectedId, go: leaveTo }
+  actionsRef.current = { open: beginThread, select: selectTile, go: leaveTo }
+
+  const selectedPlaced = placed.find((item) => item.row.key === selectedId)
+  if (moveOpen && selectedPlaced === undefined) setMoveOpen(false)
 
   useEffect(() => {
     if (altitude !== 'thread' && threadMounted) setThreadMounted(false)
@@ -356,22 +732,111 @@ export function SpacesCanvas(props: {
     }
   }, [])
 
+  const visibleKey = visibleRows.map((row) => row.key).join('\0')
   useEffect(() => {
     if (altitude !== 'thread' || openId === undefined) return
-    if (rows.some((row) => row.key === openId)) return
+    if (visibleRows.some((row) => row.key === openId)) return
+    if (useChat.getState().drafts.includes(openId)) return
     navRef.current = true
     detachedRef.current = false
     setNavNonce((n) => n + 1)
     setAltitude('space')
     setThreadMounted(false)
-  }, [altitude, openId, rows, navRef, detachedRef])
+  }, [altitude, openId, visibleKey, visibleRows, navRef, detachedRef])
+
+  useEffect(() => {
+    const prev = collapsedWas.current
+    collapsedWas.current = conversationsCollapsed
+    if (!prev && conversationsCollapsed) {
+      setHistoryWanted(false)
+      setPick(null)
+    }
+  }, [conversationsCollapsed])
+
+  useEffect(() => {
+    if (findOpen) findInputRef.current?.focus()
+  }, [findOpen])
+
+  useEffect(() => {
+    if (blockedReady !== true) return
+    const ids = blockedIds ?? new Set<string>()
+    const episode = reconcileNeedsEpisodes(
+      sinceRef.current,
+      announcedRef.current,
+      ids,
+      Date.now(),
+      primedRef.current,
+    )
+    primedRef.current = episode.primed
+    for (const id of episode.fresh) {
+      const open = openRef.current
+      const openRow = rowsRef.current.find((row) => row.key === open)
+      if (open !== undefined && (open === id || openRow?.sessionId === id)) continue
+      const row = rowsRef.current.find((item) => item.key === id || item.sessionId === id)
+      const toast: NeedsToast = {
+        id,
+        rowKey: row?.key ?? id,
+        title: row?.title ?? 'Session',
+      }
+      setToasts((prev) => [...prev, toast])
+      const timer = window.setTimeout(() => {
+        setToasts((prev) => prev.filter((item) => item.id !== id))
+      }, TOAST_MS)
+      toastTimers.current.push(timer)
+    }
+  }, [blockedIds, blockedReady])
+
+  useEffect(() => {
+    return () => {
+      for (const timer of toastTimers.current) window.clearTimeout(timer)
+    }
+  }, [])
 
   useEffect(() => {
     const onKey = (event: KeyboardEvent): void => {
       if (event.repeat) return
+      if (modalRef.current) return
+      const findFocused = (): boolean => {
+        const active = document.activeElement
+        return active instanceof Element && active.getAttribute('data-dock') === 'find'
+      }
+      if (findOpenRef.current && findFocused() && plainEscape(event)) {
+        event.preventDefault()
+        event.stopPropagation()
+        setFindOpen(false)
+        setFindQuery('')
+        return
+      }
+      if (
+        findOpenRef.current &&
+        findFocused() &&
+        event.key === 'Enter' &&
+        !event.shiftKey &&
+        !event.ctrlKey &&
+        !event.altKey &&
+        !event.metaKey &&
+        !event.isComposing
+      ) {
+        event.preventDefault()
+        event.stopPropagation()
+        const id = bestHitRef.current
+        setFindOpen(false)
+        setFindQuery('')
+        if (id !== undefined) beginThreadRef.current(id)
+        return
+      }
+      if (pickRef.current && plainEscape(event)) {
+        const active = document.activeElement
+        if (active instanceof Element && active.closest('input, textarea')) return
+        event.preventDefault()
+        event.stopPropagation()
+        setPick(null)
+        return
+      }
       const chord = matchCanvasChord(event)
       const nav = matchCanvasNav(event)
-      if (chord) {
+      const action = matchCanvasAction(event)
+      if (chord || action === 'next-waiting' || action === 'mru') {
         if (focusInForeignDialog(document.activeElement)) return
       } else if (!navFocusAllowed(rootRef.current)) {
         return
@@ -380,9 +845,13 @@ export function SpacesCanvas(props: {
         altitude: altitudeRef.current,
         selectedId: selectedRef.current,
       }
-      if (!canvasKeyClaims(state.altitude, chord, nav)) return
+      if (!canvasKeyClaims(state.altitude, chord, nav, action)) return
       event.preventDefault()
       event.stopPropagation()
+      if (action) {
+        runActionRef.current(action)
+        return
+      }
       const effect = reduceCanvasCommand(
         state,
         { chord: chord ?? undefined, nav: nav ?? undefined },
@@ -390,18 +859,169 @@ export function SpacesCanvas(props: {
       )
       performCanvasEffect(effect, actionsRef.current)
     }
+    const commitMru = (): void => {
+      const step = mruStepRef.current
+      if (step <= 0) return
+      const id = mruPreviewId(mruRef.current, step)
+      setMruStep(0)
+      if (id !== undefined) beginThreadRef.current(id)
+    }
+    const onKeyUp = (event: KeyboardEvent): void => {
+      if (event.key === 'Control') commitMru()
+    }
     window.addEventListener('keydown', onKey, true)
-    return () => window.removeEventListener('keydown', onKey, true)
+    window.addEventListener('keyup', onKeyUp, true)
+    window.addEventListener('blur', commitMru)
+    return () => {
+      window.removeEventListener('keydown', onKey, true)
+      window.removeEventListener('keyup', onKeyUp, true)
+      window.removeEventListener('blur', commitMru)
+    }
   }, [])
 
-  const stableFor = new Map<string, string>()
-  for (const row of displayRows) stableFor.set(row.key, stableKey(row.key))
+  useEffect(() => {
+    const hitAt = (clientX: number, clientY: number): DropHit => {
+      const stage = stageRef.current
+      if (!stage) return { kind: 'none' }
+      const bounds = stage.getBoundingClientRect()
+      const camNow = camScreenRef.current
+      const point = clientToWorld({ x: clientX, y: clientY }, bounds, camNow)
+      const panel = panelRef.current
+      const panelRect = panel
+        ? clientRectToWorld(panel.getBoundingClientRect(), bounds, camNow)
+        : null
+      return dropTarget(point, regionRectsRef.current, panelRect)
+    }
+    const onDown = (event: PointerEvent): void => {
+      if (modalRef.current) return
+      if (event.button !== 0) return
+      const target = event.target
+      if (!(target instanceof Element)) return
+      if (target.closest('[data-thread-live]')) return
+      if (target.closest('[data-act]')) return
+      const tile = target.closest('[data-tile]')
+      if (!tile) return
+      const id = tile.getAttribute('data-tile')
+      if (!id) return
+      const row = rowsRef.current.find((item) => item.key === id)
+      if (!row) return
+      dragRef.current = {
+        source: 'tile',
+        memberKey: rowMembershipKey(baseUrlRef.current, row),
+        originSpace: tile.getAttribute('data-space') ?? undefined,
+        title: row.title,
+        x: event.clientX,
+        y: event.clientY,
+        active: false,
+        hitKey: '',
+      }
+    }
+    const onMove = (event: PointerEvent): void => {
+      const drag = dragRef.current
+      if (!drag) return
+      if (!drag.active) {
+        const dx = event.clientX - drag.x
+        const dy = event.clientY - drag.y
+        if (Math.hypot(dx, dy) < DRAG_START_PX) return
+        drag.active = true
+        if (drag.source === 'tile') suppressGestureRef.current = true
+        document.documentElement.style.cursor = 'grabbing'
+      }
+      const hit = hitAt(event.clientX, event.clientY)
+      const key = hitKey(hit)
+      if (drag.hitKey !== key) {
+        drag.hitKey = key
+        setHover(hit)
+      }
+      setGhost({ x: event.clientX, y: event.clientY, title: drag.title })
+    }
+    const endDrag = (event: PointerEvent, cancel: boolean): void => {
+      const drag = dragRef.current
+      if (!drag) return
+      dragRef.current = null
+      document.documentElement.style.cursor = ''
+      if (!drag.active || cancel) {
+        if (drag.active && drag.source === 'tile') suppressGestureRef.current = false
+        if (drag.active) {
+          setGhost(null)
+          setHover(null)
+        }
+        return
+      }
+      const hit = hitAt(event.clientX, event.clientY)
+      const action = resolveDrop({ source: drag.source, originSpace: drag.originSpace, hit })
+      if (action === 'place' && hit.kind === 'region') {
+        useSpaces.getState().place(drag.memberKey, hit.id)
+      } else if (action === 'unplace') {
+        useSpaces.getState().unplace(drag.memberKey)
+      }
+      if (drag.source === 'history') consumedClickRef.current = true
+      const stage = stageRef.current
+      const target = event.target
+      const inside = target instanceof Node && stage !== null && stage.contains(target)
+      if (!inside) suppressGestureRef.current = false
+      setGhost(null)
+      setHover(null)
+    }
+    const onUp = (event: PointerEvent): void => {
+      endDrag(event, false)
+    }
+    const onCancel = (event: PointerEvent): void => {
+      endDrag(event, true)
+    }
+    const onClick = (event: MouseEvent): void => {
+      if (!consumedClickRef.current) return
+      consumedClickRef.current = false
+      event.preventDefault()
+      event.stopPropagation()
+    }
+    window.addEventListener('pointerdown', onDown, true)
+    window.addEventListener('pointermove', onMove, true)
+    window.addEventListener('pointerup', onUp, true)
+    window.addEventListener('pointercancel', onCancel, true)
+    window.addEventListener('click', onClick, true)
+    return () => {
+      window.removeEventListener('pointerdown', onDown, true)
+      window.removeEventListener('pointermove', onMove, true)
+      window.removeEventListener('pointerup', onUp, true)
+      window.removeEventListener('pointercancel', onCancel, true)
+      window.removeEventListener('click', onClick, true)
+      document.documentElement.style.cursor = ''
+    }
+  }, [])
+
+  const framedRegion = regions.find((region) => region.id === framedRegionId)
+  const crumbSpace = framedRegion?.name
+  const crumbThread =
+    rows.find((row) => row.key === (altitude === 'thread' ? openId : selectedId)) ??
+    rows.find((row) => row.key === selectedId)
+  const zoomPct = Math.round(cam.z * 100)
+  const paintMini = altitude === 'space' && cam.z >= LIVE_LO
+  const framedRows = framedRegion?.rows ?? []
+  const selectedCanvas = placed.find((item) => item.row.key === selectedId)
+  const openRow = openId !== undefined ? visibleRows.find((row) => row.key === openId) : undefined
+  const showSynthetic =
+    altitude === 'thread' &&
+    openRow !== undefined &&
+    openPlaced === undefined &&
+    focusSlot !== undefined
+  const previewId = mruPreviewId(mru, mruStep)
+  const mruHead = mru.slice(0, 5)
+  const mruShown =
+    previewId !== undefined && !mruHead.includes(previewId) ? [...mruHead, previewId] : mruHead
+  const historyOpen = historyWanted || pick !== null
+  const removeSpace = spaces.find((space) => space.id === removePrompt)
+  const removeRows = regions.find((region) => region.id === removePrompt)?.rows ?? []
+
+  const tileRows = placed.map((item) => item.row)
+  if (showSynthetic) tileRows.push(openRow)
+  for (const row of tileRows) stableFor.set(row.key, stableKey(row.key))
   // Drop rows that left. The alias copy above has already stored the stable
   // id under the current resolved key, so a rekey does not remount.
   {
     const resolve = useChat.getState().resolveSessionKey
     const keep = new Set<string>()
-    for (const row of displayRows) {
+    for (const row of tileRows) {
       keep.add(row.key)
       keep.add(resolve(row.key))
     }
@@ -410,21 +1030,6 @@ export function SpacesCanvas(props: {
     }
   }
 
-  let activeCount = 0
-  let waitingCount = 0
-  for (const row of rows) {
-    const blocked =
-      blockedIds !== undefined &&
-      ((row.sessionId !== undefined && blockedIds.has(row.sessionId)) || blockedIds.has(row.key))
-    const status = tileStatus(row.status, blocked)
-    if (status === 'working' || status === 'needs') activeCount += 1
-    if (status === 'needs') waitingCount += 1
-  }
-  const selectedRow = rows.find((row) => row.key === selectedId)
-  const region = framed.region
-  const zoomPct = Math.round(cam.z * 100)
-  const paintMini = altitude === 'space' && cam.z >= LIVE_LO
-
   return (
     <div
       ref={rootRef}
@@ -432,10 +1037,22 @@ export function SpacesCanvas(props: {
       className="relative h-full min-h-0 min-w-0 flex-1 overflow-hidden bg-bg font-mono text-ink"
     >
       {altitude === 'space' && !paintMini
-        ? displayRows.map((row) => <WarmLease key={row.key} item={row} descriptors={descriptors} />)
+        ? framedRows.map((row) => <WarmLease key={row.key} item={row} descriptors={descriptors} />)
         : null}
-      {altitude === 'everything' && selectedRow ? (
-        <SelectedPrewarm key={selectedRow.key} item={selectedRow} descriptors={descriptors} />
+      {altitude === 'everything' && selectedCanvas ? (
+        <SelectedPrewarm
+          key={selectedCanvas.row.key}
+          item={selectedCanvas.row}
+          descriptors={descriptors}
+        />
+      ) : null}
+      {spaces.length === 0 ? (
+        <p
+          data-empty-spaces=""
+          className="pointer-events-none absolute top-1/2 left-1/2 z-10 max-w-sm -translate-x-1/2 -translate-y-1/2 text-center text-sm text-ink-dim"
+        >
+          No spaces yet. Threads live in History.
+        </p>
       ) : null}
       <div
         ref={stageRef}
@@ -451,66 +1068,208 @@ export function SpacesCanvas(props: {
           className="absolute top-0 left-0"
           style={{ transformOrigin: '0 0' }}
         >
-          <div
-            data-region="unplaced"
-            className="absolute border border-dashed border-line"
-            style={{
-              left: region.rect.x,
-              top: region.rect.y,
-              width: region.rect.w,
-              height: region.rect.h,
-              opacity: altitude === 'thread' ? 0 : 1,
-              borderWidth: 'calc(1.5px * var(--inv, 1))',
-            }}
-          >
-            <div
-              data-region-label=""
-              className="absolute bottom-full left-0 flex items-baseline gap-3 pb-3 text-sm text-ink-dim"
-              style={{ fontSize: 'calc(14px * var(--inv, 1))' }}
-            >
-              <b className="text-ink" style={{ fontSize: '1.35em' }}>
-                Unplaced
-              </b>
-              <span>
-                {activeCount} active · {waitingCount} waiting on you
-              </span>
-            </div>
-          </div>
-          {displayRows.map((row, index) => {
-            const slot = framed.laid.slots[index]
-            const isOpen = row.key === openId
+          {laid.regions.map((region) => {
+            const model = regions.find((item) => item.id === region.id)
+            const isNew = region.id === NEW_SPACE_ID
+            const dashed = isNew || region.id === UNPLACED_ID
+            const hidden = altitude === 'thread'
+            const faded = !hidden && filtering && isNew
+            const active = model ? model.rows.filter((row) => isLive(row, blockedIds)).length : 0
+            const waitingOn = model
+              ? model.rows.filter((row) => isNeeds(row, blockedIds)).length
+              : 0
+            const real = !isNew && region.id !== UNPLACED_ID
+            return (
+              <div
+                key={region.id}
+                data-region={region.id}
+                className={`absolute border border-line ${dashed ? 'border-dashed' : 'border-solid'}`}
+                style={{
+                  left: region.rect.x,
+                  top: region.rect.y,
+                  width: region.rect.w,
+                  height: region.rect.h,
+                  opacity: hidden ? 0 : faded ? 0.15 : 1,
+                  pointerEvents: hidden ? 'none' : undefined,
+                  borderWidth: 'calc(1.5px * var(--inv, 1))',
+                  outline:
+                    hover?.kind === 'region' && hover.id === region.id
+                      ? '2px solid var(--color-em)'
+                      : undefined,
+                }}
+              >
+                {isNew ? (
+                  <button
+                    type="button"
+                    data-act=""
+                    data-add-space=""
+                    className="absolute inset-0 text-sm text-ink-dim hover:text-em"
+                    onClick={() => setNamePrompt({ mode: 'create' })}
+                  >
+                    + New space
+                  </button>
+                ) : (
+                  <div
+                    data-region-label=""
+                    className="absolute bottom-full left-0 flex items-baseline gap-3 pb-3 text-sm text-ink-dim"
+                    style={{ fontSize: 'calc(14px * var(--inv, 1))' }}
+                  >
+                    <b className="text-ink" style={{ fontSize: '1.35em' }}>
+                      {model?.name ?? region.id}
+                    </b>
+                    {countLabel(active, waitingOn)}
+                    {real ? (
+                      <>
+                        <button
+                          type="button"
+                          data-act=""
+                          aria-label={`Rename ${model?.name ?? 'space'}`}
+                          className="hover:text-ink"
+                          onClick={() =>
+                            setNamePrompt({
+                              mode: 'rename',
+                              id: region.id,
+                              initial: model?.name ?? '',
+                            })
+                          }
+                        >
+                          Edit
+                        </button>
+                        <button
+                          type="button"
+                          data-act=""
+                          aria-label={`Remove ${model?.name ?? 'space'}`}
+                          className="hover:text-ink"
+                          onClick={() => setRemovePrompt(region.id)}
+                        >
+                          ×
+                        </button>
+                      </>
+                    ) : null}
+                  </div>
+                )}
+              </div>
+            )
+          })}
+          {placed.map((item) => {
+            const isOpen = item.row.key === openId
             const focused = altitude === 'thread' && isOpen
             const geometry = focused
-              ? focusRect(slot, vp)
-              : { x: slot.x, y: slot.y, w: slot.w, h: slot.h }
-            const blocked =
-              blockedIds !== undefined &&
-              ((row.sessionId !== undefined && blockedIds.has(row.sessionId)) ||
-                blockedIds.has(row.key))
-            const showThread = altitude === 'thread' && isOpen && threadMounted
+              ? focusRect(item.slot, vp)
+              : { x: item.slot.x, y: item.slot.y, w: item.slot.w, h: item.slot.h }
             return (
               <Tile
-                key={stableFor.get(row.key) ?? row.key}
-                item={row}
+                key={stableFor.get(item.row.key) ?? item.row.key}
+                item={item.row}
                 altitude={altitude}
-                selected={altitude === 'thread' ? isOpen : row.key === selectedId}
-                blocked={blocked}
+                selected={altitude === 'thread' ? isOpen : item.row.key === selectedId}
+                blocked={isBlocked(item.row, blockedIds)}
                 geometry={geometry}
-                showMini={paintMini}
-                showThread={showThread}
+                showMini={paintMini && item.spaceId === framedRegionId}
+                showThread={altitude === 'thread' && isOpen && threadMounted}
+                spaceId={item.spaceId === UNPLACED_ID ? undefined : item.spaceId}
+                faded={filtering && !hitIds.has(item.row.key)}
                 descriptors={descriptors}
-                renderThread={(id) => {
-                  const node = renderThread(id)
-                  if (!isValidElement(node)) return node
-                  // renderThread keys ActiveSession by the view id (chat.tsx).
-                  // Override it so a rekey updates the id without remounting.
-                  return cloneElement(node, { key: stableFor.get(id) ?? stableKey(id) })
-                }}
+                renderThread={renderKeyedThread}
               />
             )
           })}
+          {regions.map((region) => {
+            if (region.id === UNPLACED_ID) return null
+            const laidRegion = laid.regions.find((item) => item.id === region.id)
+            if (!laidRegion) return null
+            const slot = tileSlot(region.id, laidRegion.rect, region.rows.length)
+            const hidden = altitude === 'thread'
+            return (
+              <button
+                key={`add-${region.id}`}
+                type="button"
+                data-act=""
+                data-add-thread={region.id}
+                className="absolute border border-dashed border-line text-sm text-ink-dim hover:border-em hover:text-em"
+                style={{
+                  left: slot.x,
+                  top: slot.y,
+                  width: slot.w,
+                  height: slot.h,
+                  opacity: hidden ? 0 : filtering ? 0.15 : 1,
+                  pointerEvents: hidden ? 'none' : undefined,
+                  borderWidth: 'calc(1.5px * var(--inv, 1))',
+                }}
+                onClick={() => setNewThread({ spaceId: region.id })}
+              >
+                + New thread
+              </button>
+            )
+          })}
+          {showSynthetic && openRow && focusSlot ? (
+            <Tile
+              key={stableFor.get(openRow.key) ?? openRow.key}
+              item={openRow}
+              altitude={altitude}
+              selected
+              blocked={isBlocked(openRow, blockedIds)}
+              geometry={focusRect(focusSlot, vp)}
+              showMini={false}
+              showThread={threadMounted}
+              faded={false}
+              descriptors={descriptors}
+              renderThread={renderKeyedThread}
+            />
+          ) : null}
         </div>
       </div>
+      <HistoryPanel
+        items={rows}
+        active={openId}
+        open={historyOpen}
+        highlighted={hover?.kind === 'history'}
+        panelRef={panelRef}
+        pick={pick ? { title: pick.title, onCancel: () => setPick(null) } : undefined}
+        onOpen={(id) => {
+          if (consumedClickRef.current) {
+            consumedClickRef.current = false
+            return
+          }
+          const choosing = pickRef.current
+          if (choosing) {
+            const row = rowsRef.current.find((item) => item.key === id)
+            if (!row) return
+            applyChooser({
+              type: 'history',
+              rowKey: rowMembershipKey(baseUrlRef.current, row),
+              spaceId: choosing.spaceId,
+              sessionId: id,
+              open: (sessionId) => beginThread(sessionId),
+            })
+            setPick(null)
+            return
+          }
+          beginThread(id)
+        }}
+        onDragPointerDown={(event, item) => {
+          if (modalRef.current || event.button !== 0) return
+          dragRef.current = {
+            source: 'history',
+            memberKey: rowMembershipKey(baseUrl, item),
+            originSpace: useSpaces.getState().spaceOf(rowMembershipKey(baseUrl, item)),
+            title: item.title,
+            x: event.clientX,
+            y: event.clientY,
+            active: false,
+            hitKey: '',
+          }
+        }}
+      />
+      {ghost ? (
+        <div
+          data-drag-ghost=""
+          className="pointer-events-none fixed z-50 border border-em bg-panel px-3 py-2 font-mono text-sm text-ink"
+          style={{ left: ghost.x + 12, top: ghost.y + 12 }}
+        >
+          {ghost.title}
+        </div>
+      ) : null}
       <div className="pointer-events-none absolute inset-0">
         <nav
           data-hud=""
@@ -524,23 +1283,30 @@ export function SpacesCanvas(props: {
           >
             Everything
           </button>
-          <span aria-hidden="true">›</span>
-          <button
-            type="button"
-            className="px-2 py-1 hover:text-ink"
-            onClick={() => leaveTo('space')}
-          >
-            Unplaced
-          </button>
-          {selectedRow ? (
+          {crumbSpace ? (
+            <>
+              <span aria-hidden="true">›</span>
+              <button
+                type="button"
+                className="px-2 py-1 hover:text-ink"
+                onClick={() => {
+                  if (framedRegionId !== undefined) setSpaceFocus(framedRegionId)
+                  leaveTo('space')
+                }}
+              >
+                {crumbSpace}
+              </button>
+            </>
+          ) : null}
+          {crumbThread ? (
             <>
               <span aria-hidden="true">›</span>
               <button
                 type="button"
                 className="truncate px-2 py-1 text-ink hover:text-ink"
-                onClick={() => beginThread(selectedRow.key)}
+                onClick={() => beginThread(crumbThread.key)}
               >
-                {selectedRow.title}
+                {crumbThread.title}
               </button>
             </>
           ) : null}
@@ -583,8 +1349,108 @@ export function SpacesCanvas(props: {
         </nav>
         <div
           data-hud=""
-          className="pointer-events-auto absolute bottom-4 left-1/2 flex -translate-x-1/2 gap-1 border border-line bg-panel p-1"
+          className="pointer-events-auto absolute bottom-4 left-1/2 flex max-w-[calc(100%-2rem)] -translate-x-1/2 flex-wrap justify-center gap-1 border border-line bg-panel p-1"
         >
+          <button
+            type="button"
+            data-dock="history"
+            aria-pressed={historyWanted}
+            className={`px-3 py-2 text-sm hover:bg-em/15 ${historyWanted ? 'text-em' : 'text-ink'}`}
+            onClick={() => {
+              if (pick) return
+              setHistoryWanted((open) => !open)
+            }}
+          >
+            History <kbd className="text-ink-dim">H</kbd>
+          </button>
+          <button
+            type="button"
+            data-dock="needs"
+            className="px-3 py-2 text-sm text-ink hover:bg-em/15"
+            onClick={() => {
+              const id = nextWaitingId(waiting, openId, altitude === 'thread')
+              if (id !== undefined) beginThread(id)
+            }}
+          >
+            Needs you{' '}
+            <span className={needsCount > 0 ? 'text-warn' : 'text-ink-dim'}>{needsCount}</span>
+          </button>
+          <button
+            type="button"
+            data-dock="thread"
+            className="px-3 py-2 text-sm text-ink hover:bg-em/15"
+            onClick={() => setNewThread({ spaceId: spaceYouAreIn() })}
+          >
+            + Thread <kbd className="text-ink-dim">T</kbd>
+          </button>
+          {moveOpen && selectedPlaced ? (
+            <Popover
+              open
+              onOpenChange={(open) => {
+                if (!open) setMoveOpen(false)
+              }}
+            >
+              <PopoverTrigger asChild>
+                <button
+                  type="button"
+                  data-dock="move"
+                  className="px-3 py-2 text-sm text-em hover:bg-em/15"
+                >
+                  Move <kbd className="text-ink-dim">M</kbd>
+                </button>
+              </PopoverTrigger>
+              <PopoverContent align="center" className="w-56 p-1 font-mono">
+                <div className="px-3 py-2 text-xs text-ink-dim">Move to…</div>
+                {spaces.map((space) => (
+                  <button
+                    key={space.id}
+                    type="button"
+                    className="block w-full px-3 py-1.5 text-left text-sm text-ink hover:bg-em/15"
+                    onClick={() => {
+                      useSpaces
+                        .getState()
+                        .place(rowMembershipKey(baseUrl, selectedPlaced.row), space.id)
+                      setMoveOpen(false)
+                    }}
+                  >
+                    {space.name}
+                  </button>
+                ))}
+                <button
+                  type="button"
+                  className="block w-full px-3 py-1.5 text-left text-sm text-ink hover:bg-em/15"
+                  onClick={() => {
+                    useSpaces.getState().unplace(rowMembershipKey(baseUrl, selectedPlaced.row))
+                    setMoveOpen(false)
+                  }}
+                >
+                  History
+                </button>
+              </PopoverContent>
+            </Popover>
+          ) : (
+            <button
+              type="button"
+              data-dock="move"
+              className="px-3 py-2 text-sm text-ink hover:bg-em/15"
+              onClick={() => {
+                if (selectedPlaced) setMoveOpen(true)
+              }}
+            >
+              Move <kbd className="text-ink-dim">M</kbd>
+            </button>
+          )}
+          {findOpen ? (
+            <input
+              ref={findInputRef}
+              data-dock="find"
+              aria-label="Find an agent"
+              placeholder="Agent, thread or space"
+              value={findQuery}
+              onChange={(event) => setFindQuery(event.target.value)}
+              className="w-56 border border-line bg-bg px-2 py-1.5 text-sm text-ink outline-none placeholder:text-ink-dim"
+            />
+          ) : null}
           <button
             type="button"
             className="px-3 py-2 text-sm text-ink hover:bg-em/15"
@@ -592,7 +1458,7 @@ export function SpacesCanvas(props: {
               const effect = reduceCanvasCommand(
                 { altitude, selectedId },
                 { chord: 'zoom-toggle' },
-                framed.tiles,
+                tilesRef.current,
               )
               performCanvasEffect(effect, actionsRef.current)
             }}
@@ -608,7 +1474,204 @@ export function SpacesCanvas(props: {
             Everything <kbd className="text-ink-dim">Ctrl 0</kbd>
           </button>
         </div>
+        <div
+          aria-live="polite"
+          data-needs-toasts=""
+          className="pointer-events-none absolute top-16 left-1/2 z-40 flex -translate-x-1/2 flex-col gap-1"
+        >
+          {toasts.map((toast) => (
+            <button
+              key={toast.id}
+              type="button"
+              className="pointer-events-auto border border-warn bg-panel px-3 py-2 text-left text-sm text-ink"
+              onClick={() => {
+                setToasts((prev) => prev.filter((item) => item.id !== toast.id))
+                beginThread(toast.rowKey)
+              }}
+            >
+              {toast.title} needs you
+            </button>
+          ))}
+        </div>
+        {mruStep > 0 ? (
+          <div
+            data-mru=""
+            className="pointer-events-none absolute top-16 right-4 flex max-w-sm gap-1 border border-line bg-panel p-1 text-xs"
+          >
+            {mruShown.map((id) => (
+              <span
+                key={id}
+                className={
+                  id === previewId
+                    ? 'max-w-32 truncate bg-em/15 px-2 py-1 text-em'
+                    : 'max-w-32 truncate px-2 py-1 text-ink-dim'
+                }
+              >
+                {rows.find((row) => row.key === id)?.title ?? id}
+              </span>
+            ))}
+          </div>
+        ) : null}
       </div>
+      {namePrompt ? (
+        <NameDialog
+          title={namePrompt.mode === 'create' ? 'New space' : 'Rename space'}
+          initial={namePrompt.mode === 'rename' ? namePrompt.initial : ''}
+          confirm={namePrompt.mode === 'create' ? 'Create' : 'Rename'}
+          onCancel={() => setNamePrompt(null)}
+          onSubmit={(name) => {
+            if (namePrompt.mode === 'create') {
+              const id = useSpaces.getState().addSpace(name)
+              setNamePrompt(null)
+              if (!id) return
+              setSpaceFocus(id)
+              leaveTo('space')
+              return
+            }
+            useSpaces.getState().renameSpace(namePrompt.id, name)
+            setNamePrompt(null)
+          }}
+        />
+      ) : null}
+      {removePrompt && removeSpace ? (
+        <RemoveDialog
+          message={removeSpaceMessage(
+            removeSpace.name,
+            removeRows.length,
+            removeRows.filter((row) => isLive(row, blockedIds)).length,
+          )}
+          onCancel={() => setRemovePrompt(null)}
+          onConfirm={() => {
+            const id = removePrompt
+            const leaving = altitude === 'space' && framedRegionId === id
+            useSpaces.getState().removeSpace(id)
+            setRemovePrompt(null)
+            if (spaceFocus === id) setSpaceFocus(undefined)
+            if (leaving) leaveTo('everything')
+          }}
+        />
+      ) : null}
+      {newThread ? (
+        <NewThreadDialog
+          spaceId={newThread.spaceId}
+          spaces={spaces.map((space) => ({ id: space.id, name: space.name }))}
+          descriptors={descriptors}
+          onClose={() => setNewThread(null)}
+          onStarted={(id) => {
+            setNewThread(null)
+            beginThread(id)
+          }}
+          onPickHistory={(spaceId) => {
+            const name = spaces.find((space) => space.id === spaceId)?.name ?? 'space'
+            setNewThread(null)
+            setPick({ spaceId, title: `Add to ${name}` })
+          }}
+        />
+      ) : null}
     </div>
+  )
+}
+
+function regionName(regions: { id: string; name: string }[], id: string): string | undefined {
+  return regions.find((region) => region.id === id)?.name
+}
+
+function NameDialog(props: {
+  title: string
+  initial: string
+  confirm: string
+  onCancel: () => void
+  onSubmit: (name: string) => void
+}): JSX.Element {
+  const [value, setValue] = useState(props.initial)
+  return (
+    <Dialog.Root
+      open
+      onOpenChange={(open) => {
+        if (!open) props.onCancel()
+      }}
+    >
+      <Dialog.Portal>
+        <Dialog.Overlay className="fixed inset-0 z-50 bg-bg/70" />
+        <Dialog.Content className="fixed top-1/2 left-1/2 z-50 w-80 max-w-[calc(100%-2rem)] -translate-x-1/2 -translate-y-1/2 border border-line bg-panel p-4 font-mono shadow-lg outline-none">
+          <Dialog.Title className="mb-3 text-sm text-ink">{props.title}</Dialog.Title>
+          <Dialog.Description className="sr-only">{props.title}</Dialog.Description>
+          <form
+            onSubmit={(event) => {
+              event.preventDefault()
+              const name = value.trim()
+              if (!name) return
+              props.onSubmit(name)
+            }}
+          >
+            <input
+              autoFocus
+              aria-label="Space name"
+              value={value}
+              onChange={(event) => setValue(event.target.value)}
+              placeholder="Space name"
+              className="mb-3 w-full border border-line bg-bg px-2 py-1.5 text-sm text-ink outline-none"
+            />
+            <div className="flex justify-end gap-2">
+              <button
+                type="button"
+                onClick={props.onCancel}
+                className="border border-line px-3 py-1.5 text-xs text-ink-dim hover:text-ink"
+              >
+                Cancel
+              </button>
+              <button
+                type="submit"
+                disabled={!value.trim()}
+                className="bg-em-dim px-3 py-1.5 text-xs font-medium text-bg hover:bg-em disabled:opacity-40"
+              >
+                {props.confirm}
+              </button>
+            </div>
+          </form>
+        </Dialog.Content>
+      </Dialog.Portal>
+    </Dialog.Root>
+  )
+}
+
+function RemoveDialog(props: {
+  message: string
+  onCancel: () => void
+  onConfirm: () => void
+}): JSX.Element {
+  return (
+    <Dialog.Root
+      open
+      onOpenChange={(open) => {
+        if (!open) props.onCancel()
+      }}
+    >
+      <Dialog.Portal>
+        <Dialog.Overlay className="fixed inset-0 z-50 bg-bg/70" />
+        <Dialog.Content className="fixed top-1/2 left-1/2 z-50 w-96 max-w-[calc(100%-2rem)] -translate-x-1/2 -translate-y-1/2 border border-line bg-panel p-4 font-mono shadow-lg outline-none">
+          <Dialog.Title className="mb-3 text-sm text-ink">Remove space</Dialog.Title>
+          <Dialog.Description className="mb-4 text-sm text-ink-dim">
+            {props.message}
+          </Dialog.Description>
+          <div className="flex justify-end gap-2">
+            <button
+              type="button"
+              onClick={props.onCancel}
+              className="border border-line px-3 py-1.5 text-xs text-ink-dim hover:text-ink"
+            >
+              Cancel
+            </button>
+            <button
+              type="button"
+              onClick={props.onConfirm}
+              className="border border-red/40 px-3 py-1.5 text-xs text-red hover:border-red"
+            >
+              Remove
+            </button>
+          </div>
+        </Dialog.Content>
+      </Dialog.Portal>
+    </Dialog.Root>
   )
 }

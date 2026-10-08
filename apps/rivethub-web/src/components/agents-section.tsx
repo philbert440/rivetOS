@@ -14,7 +14,7 @@ import * as Dialog from '@radix-ui/react-dialog'
 import { useMutation, useQueries, useQuery, useQueryClient } from '@tanstack/react-query'
 import { useNavigate } from '@tanstack/react-router'
 import { Bot, ChevronDown, ChevronRight, Pencil, Plus, Trash2, X } from 'lucide-react'
-import { migrateAgentPreset, type HarnessId } from '@rivetos/types'
+import { type HarnessId } from '@rivetos/types'
 import { GatewayError } from '@rivetos/gateway-client'
 import { useConnection } from '../stores/connection.js'
 import { agentDraftDirty, captureAgentDraft } from '../lib/agent-draft-dirty.js'
@@ -62,22 +62,15 @@ import {
   agentThreadSettings,
   agentUpdateTarget,
   aggregateAgentActivity,
-  dedupeRosterAgents,
   meshDenName,
   nodeOptionLabel,
   pointersToPoll,
   sessionPointerMatches,
   uniqueRosterNodes,
-  type ListedAgents,
-  type NodeChoice,
   type ResolvedRosterAgent,
 } from '../lib/agent-roster.js'
-import {
-  applyPendingOrder,
-  moveAgentId,
-  sortOrderWrites,
-  sortRosterAgents,
-} from '../lib/agent-order.js'
+import { applyPendingOrder, moveAgentId, sortOrderWrites } from '../lib/agent-order.js'
+import { listedNodeDirectory, useRosterAgents } from '../lib/use-agent-roster.js'
 import {
   createPressScheduler,
   cycleAgentId,
@@ -101,16 +94,6 @@ import { Tooltip } from './ui/tooltip.js'
 import { cn } from '../lib/utils.js'
 
 type RosterAgent = ResolvedRosterAgent
-
-type NodeListMeta = {
-  node?: string
-  directoryRoot?: string
-  sharedDir?: string
-  backend?: 'postgres' | 'file'
-}
-
-const nodeListMeta = new Map<string, NodeListMeta>()
-const lastGoodSliceByNode = new Map<string, ListedAgents & NodeListMeta>()
 
 /** Safety cap on the status fan-out. Pointers are unique per (agent, node),
  *  so the real bound is roster size — this only guards a pathological map. */
@@ -224,7 +207,7 @@ function AgentEditor({
   )
   const nodeLocked = Boolean(agent)
   const hostingNode = useMeshNodeName(agent?.sourceNodeBaseUrl ?? '')
-  const directoryRoot = nodeListMeta.get(nodeBaseUrl)?.directoryRoot
+  const directoryRoot = listedNodeDirectory(nodeBaseUrl)
   const catalogQuery = useQuery({
     queryKey: ['agent-catalog', nodeBaseUrl, transportEpoch],
     queryFn: async ({ signal }) => (await gatewayFor(nodeBaseUrl)).catalog(signal),
@@ -313,8 +296,8 @@ function AgentEditor({
           {
             ...duplicate.source,
             directoryRoot:
-              nodeListMeta.get(duplicate.source.sourceNodeBaseUrl)?.directoryRoot ??
-              nodeListMeta.get(duplicate.source.listedBaseUrl)?.directoryRoot,
+              listedNodeDirectory(duplicate.source.sourceNodeBaseUrl) ??
+              listedNodeDirectory(duplicate.source.listedBaseUrl),
           },
           { nodeBaseUrl, harnesses },
         )
@@ -957,7 +940,7 @@ export function AgentsSection(props: { compact?: boolean }): JSX.Element {
   const compact = props.compact ?? false
   const queryClient = useQueryClient()
   const navigate = useNavigate()
-  const { baseUrl, roster, transportEpoch } = useConnection()
+  const { baseUrl, transportEpoch } = useConnection()
   // Whole-store useChat() keeps the marker fresh; agentForSession is not reactive.
   const { addDraft, setActive } = useChat()
   const activeSession = useChat((s) => s.active)
@@ -970,68 +953,11 @@ export function AgentsSection(props: { compact?: boolean }): JSX.Element {
   )
   const dialog = useConfirmDialog()
 
-  const uniqueNodes: NodeChoice[] = uniqueRosterNodes(roster, baseUrl)
-  const { mesh } = useNodeDiscovery()
-  const meshNodes = mesh.isError ? [] : (mesh.data?.nodes ?? [])
-  const probes = useQueries({ queries: uniqueNodes.map((n) => healthzQueryOptions(n.baseUrl)) })
-  const rosterForResolve: NodeChoice[] = uniqueNodes.map((n, i) => {
-    const node = probes[i]?.data?.node || undefined
-    return { name: n.name, baseUrl: n.baseUrl, ...(node ? { node } : {}) }
-  })
-  // Sorted roster URLs only. Healthz nodes and mesh aliases are applied when
-  // deduping the cached lists, so a probe resolving does not refetch every den.
-  const rosterUrlKey = uniqueNodes
-    .map((n) => n.baseUrl.trim().replace(/\/+$/, ''))
-    .filter((url) => url !== '')
-    .sort()
-    .join('|')
-
-  const nodeQueries = useQuery({
-    queryKey: ['agents-all-nodes', rosterUrlKey, transportEpoch],
-    queryFn: async ({ signal }) => {
-      const results = await Promise.all(
-        uniqueNodes.map(async (node) => {
-          try {
-            const res = await (await gatewayFor(node.baseUrl)).agentsList(signal)
-            const slice: ListedAgents & NodeListMeta = {
-              baseUrl: node.baseUrl,
-              node: res.node,
-              directoryRoot: res.directoryRoot,
-              sharedDir: res.sharedDir,
-              backend: res.backend,
-              agents: res.agents.map((agent) => migrateAgentPreset(agent)),
-            }
-            lastGoodSliceByNode.set(node.baseUrl, slice)
-            nodeListMeta.set(node.baseUrl, slice)
-            return slice
-          } catch (err) {
-            if (signal.aborted) throw err
-            const kept = lastGoodSliceByNode.get(node.baseUrl)
-            if (kept) {
-              nodeListMeta.set(node.baseUrl, kept)
-              return kept
-            }
-            return { baseUrl: node.baseUrl, agents: [] }
-          }
-        }),
-      )
-      return results
-    },
-    placeholderData: (prev) => prev,
-  })
-
-  const storedAgents = sortRosterAgents(
-    dedupeRosterAgents(nodeQueries.data ?? [], {
-      currentBaseUrl: baseUrl,
-      mesh: meshNodes,
-      roster: rosterForResolve,
-    }),
-  )
+  const { agents: storedAgents, isLoading } = useRosterAgents()
   // Optimistic order while a reorder saves. Cleared only when this save is
   // still the latest request; a queued save keeps the order on screen.
   const [pendingOrder, setPendingOrder] = useState<string[] | null>(null)
   const agents = applyPendingOrder(storedAgents, pendingOrder)
-  const isLoading = nodeQueries.isLoading
 
   // Latest sortOrder this client knows. Re-seeded from the query whenever no
   // save is pending, then updated from each successful PATCH so the next save

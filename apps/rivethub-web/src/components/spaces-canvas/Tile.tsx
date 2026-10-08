@@ -47,6 +47,10 @@ export function Tile(props: {
   /** Space altitude and zoomed in far enough to paint the mini. */
   showMini: boolean
   showThread: boolean
+  /** Membership space. Stays on the element so a move does not remount. */
+  spaceId?: string
+  /** Find miss. Non-hits fade; the open thread's own dim wins. */
+  faded?: boolean
   descriptors?: HarnessDescriptor[]
   renderThread: (id: string) => ReactNode
 }): JSX.Element {
@@ -79,6 +83,8 @@ export function Tile(props: {
   return (
     <div
       data-tile={id}
+      data-space={props.spaceId}
+      data-find-hit={props.faded ? 'false' : 'true'}
       data-status={status}
       data-selected={props.selected ? 'true' : 'false'}
       className={`st-${status} absolute flex min-h-0 flex-col border border-line bg-panel${
@@ -90,7 +96,7 @@ export function Tile(props: {
         width: props.geometry.w,
         height: props.geometry.h,
         zIndex: focused ? 5 : 1,
-        opacity: dimmed ? 0.12 : status === 'done' ? 0.7 : undefined,
+        opacity: dimmed ? 0.12 : props.faded ? 0.15 : status === 'done' ? 0.7 : undefined,
         borderColor: focused
           ? 'var(--color-em)'
           : status === 'needs'

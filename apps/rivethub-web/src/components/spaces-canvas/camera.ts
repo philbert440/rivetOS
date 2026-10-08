@@ -85,6 +85,18 @@ export interface NeighborTile {
   y: number
 }
 
+/** One tile inside a region. Index `count` is the phantom new-thread slot. */
+export function tileSlot(regionId: string, origin: Pick<Rect, 'x' | 'y'>, index: number): TileSlot {
+  return {
+    regionId,
+    index,
+    x: origin.x + PAD + (index % 2) * (TW + GAP),
+    y: origin.y + PAD + Math.floor(index / 2) * (TH + GAP),
+    w: TW,
+    h: TH,
+  }
+}
+
 /** Region height for `n` threads. The +1 is the mock's phantom new-thread slot. */
 export function regH(n: number): number {
   const rows = Math.max(1, Math.ceil((Math.max(0, n) + 1) / 2))
@@ -170,14 +182,7 @@ export function layout(items: readonly LayoutRegion[], vp: Viewport): LayoutResu
     maxX = Math.max(maxX, rect.x + rect.w)
     const regionSlots: TileSlot[] = []
     for (let j = 0; j < it.n.count; j++) {
-      const slot: TileSlot = {
-        regionId: it.n.id,
-        index: j,
-        x: rect.x + PAD + (j % 2) * (TW + GAP),
-        y: rect.y + PAD + Math.floor(j / 2) * (TH + GAP),
-        w: TW,
-        h: TH,
-      }
+      const slot = tileSlot(it.n.id, rect, j)
       regionSlots.push(slot)
       slots.push(slot)
     }

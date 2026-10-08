@@ -8,6 +8,14 @@ const ELEMENT_NODE = 1
 const TEXT_NODE = 3
 const DOCUMENT_NODE = 9
 
+const NODE_FILTER = {
+  SHOW_ELEMENT: 1,
+  SHOW_TEXT: 4,
+  FILTER_ACCEPT: 1,
+  FILTER_REJECT: 2,
+  FILTER_SKIP: 3,
+} as const
+
 interface ListenerRec {
   fn: (event: DomEvent) => void
   capture: boolean
@@ -257,7 +265,7 @@ class DomNode {
     if (!list) return
     for (const rec of [...list]) {
       if (rec.capture !== capture) continue
-      event.currentTarget = this as unknown as EventTarget
+      writeEventField(event, 'currentTarget', this)
       rec.fn(event)
       if (event.stopImmediate) break
     }
@@ -404,6 +412,35 @@ class DomElement extends DomNode {
     return this.captured.has(pointerId)
   }
 
+  get children(): DomElement[] {
+    return this.childNodes.filter((child): child is DomElement => child instanceof DomElement)
+  }
+
+  get parentElement(): DomElement | null {
+    return this.parentNode instanceof DomElement ? this.parentNode : null
+  }
+
+  get firstElementChild(): DomElement | null {
+    for (const child of this.childNodes) {
+      if (child instanceof DomElement) return child
+    }
+    return null
+  }
+
+  get lastElementChild(): DomElement | null {
+    for (let i = this.childNodes.length - 1; i >= 0; i--) {
+      const child = this.childNodes[i]
+      if (child instanceof DomElement) return child
+    }
+    return null
+  }
+
+  insertAdjacentElement(position: string, element: DomElement): DomElement {
+    if (position === 'afterbegin') this.insertBefore(element, this.firstElementChild)
+    else this.appendChild(element)
+    return element
+  }
+
   closest(selector: string): DomElement | null {
     return closestFrom(this, selector)
   }
@@ -425,7 +462,45 @@ class DomElement extends DomNode {
   }
 }
 
-class DomHTMLElement extends DomElement {}
+class DomHTMLElement extends DomElement {
+  /** HTML inputs default to text. React ignores onChange when `type` is missing. */
+  get type(): string {
+    const attr = this.getAttribute('type')
+    if (attr !== null) return attr
+    return this.nodeName === 'INPUT' ? 'text' : ''
+  }
+
+  set type(value: string) {
+    this.setAttribute('type', value)
+  }
+
+  /** Buttons and inputs are in the tab order unless tabindex says otherwise. */
+  get tabIndex(): number {
+    const attr = this.getAttribute('tabindex')
+    if (attr !== null) {
+      const parsed = Number(attr)
+      return Number.isFinite(parsed) ? parsed : -1
+    }
+    switch (this.nodeName) {
+      case 'INPUT':
+      case 'BUTTON':
+      case 'SELECT':
+      case 'TEXTAREA':
+        return 0
+      default:
+        return -1
+    }
+  }
+
+  set tabIndex(value: number) {
+    this.setAttribute('tabindex', String(value))
+  }
+}
+
+/** Inputs are a distinct class so Radix can `instanceof HTMLInputElement`. */
+class DomInputElement extends DomHTMLElement {
+  select(): void {}
+}
 
 class DomText extends DomNode {
   constructor(text: string) {
@@ -441,6 +516,12 @@ class DomDocument extends DomNode {
   activeElement: DomElement | null = null
   defaultView: DomWindow | null = null
   compatMode = 'CSS1Compat'
+  /**
+   * React decides once, at import, whether `input` events drive onChange
+   * (`"oninput" in document`). Without this it uses a legacy path that
+   * ignores `input`, so controlled fields never update in these tests.
+   */
+  oninput: unknown = null
 
   constructor() {
     super(DOCUMENT_NODE, '#document')
@@ -448,9 +529,39 @@ class DomDocument extends DomNode {
   }
 
   createElement(tag: string): DomHTMLElement {
-    const el = new DomHTMLElement(tag)
+    const el = tag.toLowerCase() === 'input' ? new DomInputElement(tag) : new DomHTMLElement(tag)
     el.ownerDocument = this
     return el
+  }
+
+  /** Radix focus scope walks tabbable descendants. SHOW_ELEMENT only. */
+  createTreeWalker(
+    root: DomNode,
+    _whatToShow?: number,
+    filter?: { acceptNode?: (node: DomNode) => number } | null,
+  ): { currentNode: DomNode; nextNode: () => DomNode | null } {
+    const accepted: DomNode[] = []
+    const visit = (node: DomNode): void => {
+      for (const child of node.childNodes) {
+        if (!(child instanceof DomElement)) continue
+        const verdict = filter?.acceptNode?.(child) ?? NODE_FILTER.FILTER_ACCEPT
+        if (verdict === NODE_FILTER.FILTER_REJECT) continue
+        if (verdict === NODE_FILTER.FILTER_ACCEPT) accepted.push(child)
+        visit(child)
+      }
+    }
+    visit(root)
+    let index = 0
+    return {
+      currentNode: root,
+      nextNode(): DomNode | null {
+        const next = accepted[index]
+        index += 1
+        if (!next) return null
+        this.currentNode = next
+        return next
+      },
+    }
   }
 
   createElementNS(_ns: string, tag: string): DomHTMLElement {
@@ -498,11 +609,45 @@ class DomWindow {
   listeners = new Map<string, ListenerRec[]>()
   top: DomWindow
   self: DomWindow
+  localStorage: Storage
+  sessionStorage: Storage
+  innerWidth = 1280
+  innerHeight = 800
+
+  getComputedStyle(): {
+    paddingLeft: string
+    paddingTop: string
+    paddingRight: string
+    marginLeft: string
+    marginTop: string
+    marginRight: string
+    getPropertyValue: (name: string) => string
+  } {
+    return {
+      paddingLeft: '0',
+      paddingTop: '0',
+      paddingRight: '0',
+      marginLeft: '0',
+      marginTop: '0',
+      marginRight: '0',
+      getPropertyValue: () => '0',
+    }
+  }
+
+  setTimeout(handler: (...args: unknown[]) => void, timeout?: number, ...args: unknown[]): number {
+    return globalThis.setTimeout(handler, timeout, ...args) as unknown as number
+  }
+
+  clearTimeout(id: number): void {
+    globalThis.clearTimeout(id)
+  }
 
   constructor(document: DomDocument) {
     this.document = document
     this.top = this
     this.self = this
+    this.localStorage = storage()
+    this.sessionStorage = storage()
   }
 
   addEventListener(
@@ -546,7 +691,7 @@ class DomWindow {
     if (!list) return
     for (const rec of [...list]) {
       if (rec.capture !== capture) continue
-      event.currentTarget = this as unknown as EventTarget
+      writeEventField(event, 'currentTarget', this)
       rec.fn(event)
       if (event.stopImmediate) break
     }
@@ -555,12 +700,21 @@ class DomWindow {
 
 type Dispatchable = DomNode | DomWindow
 
+/** Native Event.target is read-only. Radix dispatches CustomEvent through this shim. */
+function writeEventField(event: object, field: string, value: unknown): void {
+  try {
+    Object.defineProperty(event, field, { value, configurable: true, writable: true })
+  } catch {
+    /* already a non-configurable getter */
+  }
+}
+
 function dispatch(target: Dispatchable, event: DomEvent): boolean {
-  event.target = target as unknown as EventTarget
+  writeEventField(event, 'target', target)
   const chain = chainOf(target)
   let stopped = false
   for (const node of [...chain].reverse()) {
-    event.currentTarget = node as unknown as EventTarget
+    writeEventField(event, 'currentTarget', node)
     node.fire(event, true)
     if (event.cancelBubble) {
       stopped = true
@@ -569,7 +723,7 @@ function dispatch(target: Dispatchable, event: DomEvent): boolean {
   }
   if (!stopped && event.bubbles) {
     for (const node of chain) {
-      event.currentTarget = node as unknown as EventTarget
+      writeEventField(event, 'currentTarget', node)
       node.fire(event, false)
       if (event.cancelBubble) break
     }
@@ -699,13 +853,23 @@ function install(): void {
   globals.document = doc
   globals.Element = DomElement
   globals.HTMLElement = DomHTMLElement
+  globals.HTMLInputElement = DomInputElement
   globals.Node = DomNode
+  globals.NodeFilter = NODE_FILTER
   globals.Event = DomEvent
   globals.MouseEvent = DomMouseEvent
   globals.PointerEvent = DomPointerEvent
   globals.KeyboardEvent = DomKeyboardEvent
-  globals.localStorage = storage()
-  globals.sessionStorage = storage()
+  globals.localStorage = win.localStorage
+  globals.sessionStorage = win.sessionStorage
+  globals.getComputedStyle = (): { animationName: string } => ({ animationName: 'none' })
+  globals.MutationObserver = class {
+    observe(): void {}
+    disconnect(): void {}
+    takeRecords(): [] {
+      return []
+    }
+  }
   globals.IS_REACT_ACT_ENVIRONMENT = true
   if (typeof globals.requestAnimationFrame !== 'function') {
     globals.requestAnimationFrame = (cb: FrameRequestCallback): number =>
