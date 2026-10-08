@@ -29,6 +29,7 @@ import {
   matchCanvasAction,
   matchCanvasChord,
   matchCanvasNav,
+  keyLabel,
 } from '../../lib/hub-keys.js'
 import { attachHarnessSession } from '../../lib/harness-attach.js'
 import { clearSessionNodeBinding, setSessionNodeBinding } from '../../lib/session-node.js'
@@ -1201,7 +1202,7 @@ describe('SpacesCanvas mount', () => {
     expect(panel).not.toBeNull()
     for (const entry of CANVAS_KEYS) {
       expect(panel?.querySelector(`[data-key-row="${entry.id}"]`)?.textContent).toContain(
-        entry.keys,
+        keyLabel(entry.id),
       )
       expect(panel?.textContent).toContain(entry.thread)
     }

@@ -18,6 +18,7 @@ const SETTINGS_KEYS = [
   'rivethub.spaces',
   'rivethub.remoteUi',
   'rivethub.agent.lastSession',
+  'rivethub.keyBindings',
 ] as const
 
 /**

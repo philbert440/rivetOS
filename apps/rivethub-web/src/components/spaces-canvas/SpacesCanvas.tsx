@@ -33,6 +33,7 @@ import {
   type CanvasAction,
 } from '../../lib/hub-keys.js'
 import { bindFocusedSpace, bindSpaceThreadStarter } from '../../lib/new-conversation.js'
+import { useKeyLabel } from '../../lib/use-key-label.js'
 import { storageKey } from '../../lib/session-rekey.js'
 import { useRosterAgents } from '../../lib/use-agent-roster.js'
 import { useArchived } from '../../stores/archived.js'
@@ -289,6 +290,7 @@ export function SpacesCanvas(props: {
   // leaving the width to the thread. Find and Move live in it, so it shows
   // while either is open even when tucked.
   const [dockOpen, setDockOpen] = useState(false)
+  const label = useKeyLabel()
   const [rosterNotice, setRosterNotice] = useState<string | undefined>()
   const localOpen = useRef<string | undefined>(undefined)
   const navBridge = useRef(false)
@@ -1821,7 +1823,9 @@ export function SpacesCanvas(props: {
                 <tbody>
                   {CANVAS_KEYS.map((entry) => (
                     <tr key={entry.id} data-key-row={entry.id} className="align-top text-ink">
-                      <td className="py-1 pr-3 whitespace-nowrap text-em">{entry.keys}</td>
+                      <td className="py-1 pr-3 whitespace-nowrap text-em">
+                        {label(entry.id) || 'unbound'}
+                      </td>
                       <td className="py-1 pr-3 text-ink-dim">{entry.summary}</td>
                       <td className="py-1 text-ink-dim">{entry.thread}</td>
                     </tr>

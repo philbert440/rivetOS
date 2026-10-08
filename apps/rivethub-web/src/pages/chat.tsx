@@ -141,6 +141,7 @@ import { useArchived } from '../stores/archived.js'
 import { useSidebarPrefs } from '../stores/sidebar-prefs.js'
 import { useAgentFilter } from '../stores/agent-filter.js'
 import { startNewConversation } from '../lib/new-conversation.js'
+import { useKeyLabel } from '../lib/use-key-label.js'
 import { discardDraft } from '../lib/discard-session.js'
 import { shouldCloseHistoryOnSelect } from '../lib/drawer-selection.js'
 import { narrowLaunchTarget } from '../lib/launch-session.js'
@@ -724,6 +725,7 @@ function SessionDrawer(props: {
   error?: string
   fullWidth?: boolean
 }): JSX.Element {
+  const newKey = useKeyLabel()('new-conversation')
   const setActive = useChat((s) => s.setActive)
   const wsStatus = useChat((s) => s.wsStatus)
   const baseUrl = useConnection((s) => s.baseUrl)
@@ -862,8 +864,8 @@ function SessionDrawer(props: {
           onClick={startNew}
           title={
             agentFilter.name
-              ? `new session with ${agentFilter.name} (Ctrl+T)`
-              : 'new session (Ctrl+T)'
+              ? `new session with ${agentFilter.name}${newKey ? ` (${newKey})` : ''}`
+              : `new session${newKey ? ` (${newKey})` : ''}`
           }
           className="rounded border border-line px-2 py-1 text-xs text-ink-dim hover:border-em hover:text-em"
         >
