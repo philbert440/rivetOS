@@ -41,17 +41,56 @@ export type CanvasNav = 'left' | 'right' | 'up' | 'down' | 'open' | 'out'
 /**
  * Selection keys at space / everything altitude. Not a Ctrl chord. Esc is
  * "out" here; the canvas listener must not claim it at thread altitude.
+ * `h` is History (see `matchCanvasAction`), so left is ArrowLeft only.
  */
 export function matchCanvasNav(
   e: Pick<KeyboardEvent, 'key' | 'ctrlKey' | 'shiftKey' | 'altKey' | 'metaKey'>,
 ): CanvasNav | null {
   if (e.ctrlKey || e.altKey || e.metaKey || e.shiftKey) return null
-  if (e.key === 'ArrowLeft' || e.key === 'h') return 'left'
+  if (e.key === 'ArrowLeft') return 'left'
   if (e.key === 'ArrowRight' || e.key === 'l') return 'right'
   if (e.key === 'ArrowUp' || e.key === 'k') return 'up'
   if (e.key === 'ArrowDown' || e.key === 'j') return 'down'
   if (e.key === 'Enter') return 'open'
   if (e.key === 'Escape') return 'out'
+  return null
+}
+
+/** Canvas commands that are not camera navigation. Single-letter keys and
+ *  Ctrl+J are not claimed at Thread altitude. Ctrl+` is. */
+export type CanvasAction =
+  | 'new-space'
+  | 'rename-space'
+  | 'new-thread'
+  | 'remove-thread'
+  | 'remove-space'
+  | 'find'
+  | 'move'
+  | 'history'
+  | 'next-waiting'
+  | 'mru'
+
+export function matchCanvasAction(
+  e: Pick<KeyboardEvent, 'key' | 'code' | 'ctrlKey' | 'shiftKey' | 'altKey' | 'metaKey'>,
+): CanvasAction | null {
+  if (e.altKey || e.metaKey) return null
+  if (e.ctrlKey) {
+    if (e.shiftKey) return null
+    if (e.code === 'KeyJ') return 'next-waiting'
+    if (e.code === 'Backquote') return 'mru'
+    return null
+  }
+  if (e.shiftKey) {
+    if (e.key === 'Delete') return 'remove-space'
+    return null
+  }
+  if (e.key === 'n' || e.key === 'N') return 'new-space'
+  if (e.key === 'e' || e.key === 'E') return 'rename-space'
+  if (e.key === 't' || e.key === 'T') return 'new-thread'
+  if (e.key === 'm' || e.key === 'M') return 'move'
+  if (e.key === 'h' || e.key === 'H') return 'history'
+  if (e.key === '/') return 'find'
+  if (e.key === 'Delete') return 'remove-thread'
   return null
 }
 

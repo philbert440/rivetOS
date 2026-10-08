@@ -48,6 +48,11 @@ export function useCamera(opts: {
   onHandAltitude: (next: 'everything' | 'space') => void
   /** Unmoved pointerup (`up`) or a double-click (`double`) on a tile. */
   onTileGesture: (id: string, kind: 'up' | 'double') => void
+  /**
+   * Set when a canvas drag (tile move) has claimed the gesture. The camera
+   * must not turn that pointerup into a click. Cleared here on the way out.
+   */
+  suppressGestureRef?: RefObject<boolean>
 }): {
   vp: Viewport
   cam: Cam
@@ -74,9 +79,11 @@ export function useCamera(opts: {
   const onLandRef = useRef(onLand)
   const onHandRef = useRef(onHandAltitude)
   const gestureRef = useRef(onTileGesture)
+  const suppressHolder = useRef(opts.suppressGestureRef)
   onLandRef.current = onLand
   onHandRef.current = onHandAltitude
   gestureRef.current = onTileGesture
+  suppressHolder.current = opts.suppressGestureRef
   modeRef.current = target?.mode ?? modeRef.current
   vpRef.current = vp
 
@@ -255,6 +262,7 @@ export function useCamera(opts: {
     }
     const exempt = (targetEl: Element | null): boolean => {
       if (targetEl?.closest('[data-hud]')) return true
+      if (targetEl?.closest('[data-act]')) return true
       if (modeRef.current === 'thread' && targetEl?.closest('[data-thread-live]')) return true
       return false
     }
@@ -265,8 +273,10 @@ export function useCamera(opts: {
       const p = local(e)
       ptrs.set(e.pointerId, p)
       pressedId = tileIdFrom(e.target)
+      // A press on a tile is a click or a thread drag, never a camera pan.
+      const onTile = targetEl !== null && targetEl.closest('[data-tile]') !== null
       if (ptrs.size === 1) {
-        drag = { ...p, moved: false }
+        drag = onTile ? null : { ...p, moved: false }
         movedRef.current = false
       } else if (ptrs.size === 2) {
         drag = null
@@ -328,7 +338,14 @@ export function useCamera(opts: {
         stage.classList.remove('is-panning')
       }
       if (stage.hasPointerCapture(e.pointerId)) stage.releasePointerCapture(e.pointerId)
-      if (!cancel && !wasDrag && id && ptrs.size === 0) gestureRef.current(id, 'up')
+      if (!cancel && !wasDrag && id && ptrs.size === 0) {
+        const hold = suppressHolder.current
+        if (hold?.current) {
+          hold.current = false
+          return
+        }
+        gestureRef.current(id, 'up')
+      }
     }
     const onUp = (e: PointerEvent): void => {
       endPtr(e, false)

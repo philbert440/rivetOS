@@ -10,8 +10,10 @@ import { rekeyAgentLastSessions } from './agent-session.js'
 import { moveSessionMode } from './session-mode.js'
 import { rekeySessionNodeBinding, sessionNodeFor } from './session-node.js'
 import { rekeySystemPromptSent } from './system-prompt-sent.js'
+import { useChat } from '../stores/chat.js'
 import { useChatSettings } from '../stores/chat-settings.js'
 import { useSessionNames } from '../stores/session-names.js'
+import { useSpaces } from '../stores/spaces.js'
 
 /** localStorage key for a thread's per-node persisted state. */
 export const storageKey = (baseUrl: string, key: string): string => `${baseUrl}::${key}`
@@ -53,6 +55,9 @@ export function migrateSessionKey(
     settings.set(storageKey(node, to), prior)
   }
   settings.clear(storageKey(node, from))
+  // Same non-clobber as names: a destination that is already placed keeps
+  // its space. The source entry is dropped either way (the old id is retired).
+  useSpaces.getState().rekey(storageKey(node, from), storageKey(node, to))
   // Dest-non-clobber (names rule): an existing remembered view on the
   // canonical key survives adoption. Deliberately the OPPOSITE of the node
   // binding's last-write-wins below — a stale mode costs one click, a stale
@@ -61,4 +66,20 @@ export function migrateSessionKey(
   rekeyAgentLastSessions(from, to)
   rekeySessionNodeBinding(from, to)
   rekeySystemPromptSent(from, to)
+}
+
+/**
+ * Registry `session-created` (adoption) and `session-updated` (rotation).
+ * Only keys whose chat records actually moved are migrated — a destination
+ * collision leaves the two threads apart, membership included.
+ */
+export function adoptRegistrySession(
+  currentBase: string,
+  rosterUrls: readonly string[],
+  canonical: string,
+  previous?: string,
+): void {
+  for (const from of useChat.getState().adoptSessionKey(canonical, previous)) {
+    migrateSessionKey(currentBase, rosterUrls, from, canonical)
+  }
 }
