@@ -429,7 +429,11 @@ export function ChatPage(): JSX.Element {
       setActive(sessionFromUrl)
       return
     }
-    const urlTarget = active !== undefined && !drafts.includes(active) ? active : undefined
+    // Read the store, not the render's `active`: StrictMode re-runs this
+    // effect with the pre-setActive closure, which would write `/` back and
+    // drop a deep link on first load.
+    const current = useChat.getState().active
+    const urlTarget = current !== undefined && !drafts.includes(current) ? current : undefined
     if (urlTarget !== sessionFromUrl) {
       lastUrlRef.current = urlTarget
       void navigate({ to: '/', search: urlTarget ? { session: urlTarget } : {}, replace: true })
