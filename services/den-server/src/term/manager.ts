@@ -1390,6 +1390,9 @@ export function createTermManager(config: DenConfig, deps: TermManagerDeps): Ter
    * plain pane has no first-turn confirm. For a detectable plain pane, wait
    * until herdr reports the agent idle. An unavailable probe keeps the old
    * quiescence behavior; the injectReadyMaxMs ceiling still flushes.
+   * A live row with no status is not an unavailable probe: herdr has seen
+   * the process and has not reported idle (`unknown` is the explicit
+   * no-status sentinel and does not flush either).
    */
   const settleQuietPlainAgent = async (r: PtyRecord): Promise<void> => {
     const ctl = herdr
@@ -1405,10 +1408,7 @@ export function createTermManager(config: DenConfig, deps: TermManagerDeps): Ter
     }
     r.quietProbeInflight = false
     if (r.ready || r.state !== 'running') return
-    if (
-      probed === undefined ||
-      (herdrPaneAgentLive(probed) && (probed.status === undefined || probed.status === 'idle'))
-    ) {
+    if (probed === undefined || (herdrPaneAgentLive(probed) && probed.status === 'idle')) {
       markReadyAndFlush(r)
       return
     }
