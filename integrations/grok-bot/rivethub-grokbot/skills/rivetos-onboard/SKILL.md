@@ -97,7 +97,7 @@ User steps:
 
 ## After prove
 
-- Memory skills (`memory-recall`) and mesh-delegate stay unchanged.
+- Memory skills (`memory-recall`) stay unchanged. Mesh handoff is `list_agents` then `delegate_task` on the plugin MCP.
 - Capture still uses the same store (plugin vars first, `.env` fallback).
 - If prove fails: say what is missing (mode, Tailscale, reachable host, token
   set/unset). Do not print the URL.
