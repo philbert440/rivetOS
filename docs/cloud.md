@@ -1,6 +1,6 @@
 # Rivet Cloud — connect, export, import
 
-> **Note:** The `rivetos cloud` commands ship in the next RivetHub release and
+> **Note:** The `rivetos cloud` commands and `rivetos memory export` / `rivetos memory import` ship in the next RivetHub release and
 > are not in the current installer yet.
 
 Rivet Cloud is hosted memory (`rivetos.cloud`) that any coding harness already
