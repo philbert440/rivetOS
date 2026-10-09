@@ -272,12 +272,12 @@ export interface PreSendBlock {
 /**
  * Unsent text that is this same message: an earlier paste of it whose Enter
  * the TUI swallowed. The caller submits it instead of refusing the retry.
- * Compares the first 80 characters, whitespace-collapsed. A collapsed
- * `[Pasted text #N]` placeholder never matches.
+ * Compares the whole whitespace-collapsed text. A shared prefix is a
+ * different message. A collapsed `[Pasted text #N]` placeholder never matches.
  */
 export function draftIsText(draft: string, text: string): boolean {
   if (/\[Pasted text #\d+/.test(draft)) return false
-  const norm = (value: string): string => value.replace(/\s+/g, ' ').trim().slice(0, 80)
+  const norm = (value: string): string => value.replace(/\s+/g, ' ').trim()
   const box = norm(draft)
   return box !== '' && box === norm(text)
 }

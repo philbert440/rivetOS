@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import {
   dialogOnScreen,
+  draftIsText,
   parseBlockingDialog,
   parsePreSendBlock,
   preSendBlockOnScreen,
@@ -444,5 +445,21 @@ describe('parsePreSendBlock', () => {
 
   it('fails open when the screen read throws', async () => {
     expect(await preSendBlockOnScreen(() => Promise.reject(new Error('read failed')))).toEqual({})
+  })
+})
+
+describe('draftIsText', () => {
+  it('matches the whole message, not an 80-character prefix', () => {
+    const head = 'a'.repeat(80)
+    expect(draftIsText(`${head} typed`, `${head} typed`)).toBe(true)
+    expect(draftIsText(`${head} typed`, `${head} edited`)).toBe(false)
+  })
+
+  it('collapses whitespace before comparing', () => {
+    expect(draftIsText('a   b', 'a b')).toBe(true)
+  })
+
+  it('never matches a pasted-text placeholder', () => {
+    expect(draftIsText('[Pasted text #1 +12 lines]', 'hello')).toBe(false)
   })
 })

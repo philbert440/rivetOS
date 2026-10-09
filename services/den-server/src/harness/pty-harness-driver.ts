@@ -297,13 +297,6 @@ const DEFAULT_DELIVERY_FALLBACK_MS = 10_000
 const DEFAULT_DELIVERY_PEEK_MS = 1_500
 /** Prefix compared between a turn and its hook echo. Slice before collapsing. */
 const DELIVERY_KEY_CHARS = 80
-/**
- * Claude Code collapses a paste into `[Pasted text #N]` once it is too big for
- * the composer (several lines, or at least this many characters). A shorter
- * turn cannot own that placeholder.
- */
-const PASTE_COLLAPSE_MIN_CHARS = 160
-const PASTE_COLLAPSE_MIN_LINES = 4
 /** Re-read grok/kimi sheets at most this often (`verifyCapabilities` is hot). */
 const SHEET_TTL_MS = 60_000
 /** Fresh PTYs get a sane default geometry; a real attach resizes immediately. */
@@ -444,9 +437,15 @@ function escapeRegExp(text: string): string {
   return text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
 }
 
-/** Whitespace-collapsed prefix. Sliced before the collapse so a large paste is not rewritten whole. */
+/** Whitespace-collapsed prefix. Sliced before the collapse so a large paste is not rewritten whole.
+ *  Echo matching only. A draft compare uses `turnIdentity` — an 80-character prefix is not the message. */
 function deliveryKey(text: string): string {
   return unwrapDeliveryText(text).slice(0, DELIVERY_KEY_CHARS).replace(/\s+/g, ' ').trim()
+}
+
+/** The whole turn, whitespace-collapsed, wrappers stripped. No prefix cut. */
+function turnIdentity(text: string): string {
+  return unwrapDeliveryText(text).replace(/\s+/g, ' ').trim()
 }
 
 /** True when `echo` contains `key` with flexible whitespace, without collapsing the whole echo. */
@@ -456,12 +455,6 @@ function deliveryEchoHasKey(echo: string, key: string): boolean {
   if (parts.length === 0) return false
   const pattern = parts.map(escapeRegExp).join('\\s+')
   return new RegExp(pattern).test(unwrapDeliveryText(echo))
-}
-
-function pasteWouldCollapse(text: string): boolean {
-  return (
-    text.split('\n').length >= PASTE_COLLAPSE_MIN_LINES || text.length >= PASTE_COLLAPSE_MIN_CHARS
-  )
 }
 
 /** The Enter keystroke, written raw (not as a paste) so the TUI submits. */
@@ -475,10 +468,11 @@ const SUBMIT_KEY = '\r'
  * which paste it is.
  */
 function draftIsTurn(draft: string, turnTexts: readonly string[]): boolean {
+  // A `[Pasted text #N]` placeholder does not say which paste it is.
   if (/\[Pasted text #\d+/.test(draft)) return false
-  const box = deliveryKey(draft)
+  const box = turnIdentity(draft)
   if (!box) return false
-  return turnTexts.some((text) => deliveryKey(text) === box)
+  return turnTexts.some((text) => turnIdentity(text) === box)
 }
 
 /** Fallback AskUserQuestion answer: labels joined by ", "; multi-question
@@ -1995,20 +1989,12 @@ export abstract class PtyHarnessDriver<S extends HarnessStoreHost = HarnessStore
     this.endTurn(native, 'undelivered')
   }
 
-  protected inputHoldsTurn(raw: string, key: string, turnText: string): boolean {
+  protected inputHoldsTurn(raw: string, _key: string, turnText: string): boolean {
     const input = parseComposerInput(raw)
     if (input === undefined) return false
-    if (/\[Pasted text #\d+/.test(input)) {
-      const marks = input.match(/\[Pasted text #\d+/g) ?? []
-      const sole = marks.length === 1 && /^\s*\[Pasted text #\d+[^\]]*\]\s*$/.test(input)
-      // A placeholder is this paste only when the turn was long enough for the
-      // TUI to collapse it and no other paste is sitting in the box. Anything
-      // else falls through to the deadline instead of failing the peek.
-      if (sole && pasteWouldCollapse(turnText)) return true
-      if (sole) return false
-    }
-    if (!key) return false
-    return deliveryKey(input).includes(key.slice(0, 30))
+    // Exact text, not a prefix. `raw` must be an ANSI capture: a dim
+    // suggestion that happens to equal this turn is not the user's draft.
+    return draftIsTurn(input, [turnText])
   }
 
   protected async peekDelivery(native: string): Promise<void> {
@@ -2022,7 +2008,10 @@ export abstract class PtyHarnessDriver<S extends HarnessStoreHost = HarnessStore
     const turnText = delivery.text
     let raw: string
     try {
-      raw = (await this.deps.screen?.(this.room(native))) ?? ''
+      // ANSI, not a plain read. The Enter below is only legal when the
+      // non-dim text in the box is this turn. A plain capture cannot tell a
+      // dim suggestion from typed text.
+      raw = (await this.deps.screen?.(this.room(native), { ansi: true })) ?? ''
     } catch (err) {
       this.log(
         `[den-server] harness: delivery screen capture failed for ${this.harnessId}:${native}: ` +

@@ -2999,19 +2999,21 @@ describe('sendUserTurn delivery confirm', () => {
     driver.close()
   })
 
-  it('a collapsed paste of this turn fails as stuck input', async () => {
+  it('a collapsed paste placeholder is not submitted', async () => {
     vi.useFakeTimers()
     const long = `${'line of the paste\n'.repeat(5)}tail`
     const stuck = screenAfterPaste(composerScreen('[Pasted text #1 +12 lines]'))
-    const { driver, seen } = await warm({ screen: stuck.screen })
+    const { driver, seen, pty } = await warm({ screen: stuck.screen })
     await driver.sendUserTurn(sid, { text: long })
     stuck.pasted()
-    await vi.advanceTimersByTimeAsync(1_500)
+    const writes = pty.injects.length
+    // The placeholder does not identify the paste, so no extra Enter.
+    await vi.advanceTimersByTimeAsync(2_500)
+    expect(pty.injects).toHaveLength(writes)
     expect(undelivered(seen)).toEqual([])
-    await vi.advanceTimersByTimeAsync(999)
-    expect(undelivered(seen)).toEqual([])
-    await vi.advanceTimersByTimeAsync(1)
-    expect(undelivered(seen)[0]?.message).toMatch(/input box/)
+    await vi.advanceTimersByTimeAsync(7_500)
+    expect(undelivered(seen)).toHaveLength(1)
+    expect(undelivered(seen)[0]?.message).toMatch(/10s/)
     driver.close()
   })
 
