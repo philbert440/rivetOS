@@ -1,0 +1,66 @@
+{
+  "house": [
+    {
+      "name": "Rivet Philbot",
+      "email": "rivetphilbot@gmail.com"
+    },
+    {
+      "name": "Rivet",
+      "email": "rivetphilbot@gmail.com"
+    },
+    {
+      "name": "Philip",
+      "email": "philbert440@gmail.com"
+    },
+    {
+      "name": "Philip",
+      "email": "philbert440@users.noreply.github.com"
+    },
+    {
+      "name": "philbert440",
+      "email": "philbert440@gmail.com"
+    },
+    {
+      "name": "philbert440",
+      "email": "philbert440@users.noreply.github.com"
+    }
+  ],
+  "collaborators": [
+    {
+      "login": "cesarulo",
+      "id": 13575641,
+      "emails": [
+        "13575641+cesarulo@users.noreply.github.com",
+        "cesarulo@users.noreply.github.com",
+        "dragunsky@gmail.com"
+      ]
+    },
+    {
+      "login": "tomthornton",
+      "id": 40962668,
+      "emails": [
+        "40962668+tomthornton@users.noreply.github.com",
+        "tombozwell@gmail.com",
+        "tomthornton@users.noreply.github.com"
+      ]
+    },
+    {
+      "login": "xreed88",
+      "id": 779983,
+      "emails": [
+        "779983+xreed88@users.noreply.github.com",
+        "xreed88@gmail.com",
+        "xreed88@users.noreply.github.com"
+      ]
+    },
+    {
+      "login": "zzhang-1",
+      "id": 54903512,
+      "emails": [
+        "54903512+zzhang-1@users.noreply.github.com",
+        "zhangzhen52013147654@gmail.com",
+        "zzhang-1@users.noreply.github.com"
+      ]
+    }
+  ]
+}

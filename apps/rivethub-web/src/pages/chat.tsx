@@ -243,10 +243,27 @@ export function ChatPage(): JSX.Element {
     enabled: connected && (descriptors?.length ?? 0) > 0,
   })
 
+  // The plane cache is patched in place on each registry event. This refetch
+  // is only reconciliation, and listHarnessSessions walks every harness store
+  // synchronously on the den loop that also echoes PTY keystrokes. Coalesce
+  // bursts to the same 1s window as agents-section.
+  const invalidateTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined)
   const invalidateSessions = (): void => {
-    void queryClient.invalidateQueries({ queryKey: ['harness-sessions', baseUrl] })
-    void queryClient.invalidateQueries({ queryKey: ['harness-plane-sessions', baseUrl] })
+    if (invalidateTimer.current !== undefined) return
+    invalidateTimer.current = setTimeout(() => {
+      invalidateTimer.current = undefined
+      void queryClient.invalidateQueries({ queryKey: ['harness-sessions', baseUrl] })
+      void queryClient.invalidateQueries({ queryKey: ['harness-plane-sessions', baseUrl] })
+    }, 1_000)
   }
+  useEffect(() => {
+    return () => {
+      if (invalidateTimer.current !== undefined) {
+        clearTimeout(invalidateTimer.current)
+        invalidateTimer.current = undefined
+      }
+    }
+  }, [baseUrl])
   useEffect(() => {
     if (sessionsDirty > 0) invalidateSessions()
   }, [sessionsDirty, baseUrl, queryClient])

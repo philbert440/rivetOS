@@ -1,11 +1,11 @@
 # rivethub-grokbot expansion plan (narrowed + prioritized)
 
-**Status:** plan only — hold for maintainer approval before any implementation  
+**Status:** Step 1 (Capture) landed in #1106. Step 2 (Delegation) uses the kit MCP tools `list_agents` and `delegate_task` on the den task API — the curl skill path is gone. Step 3 (Den live stream) remains parked.  
 **Scope:** expand `rivethub-grokbot` to mesh-agent parity with Claude Code (`rivet-memory` + `rivet-den`) and Grok Build (`rivet-memory`).  
 **Priority order (locked 2026-09-12 — do not reorder):**  
-1. **Capture**  
-2. **Delegation**  
-3. **Den** (live session stream for RivetHub / native apps)  
+1. **Capture** — landed (#1106)  
+2. **Delegation** — landed (`list_agents` + `delegate_task` on the kit MCP)  
+3. **Den** (live session stream for RivetHub / native apps) — parked  
 **Owner (draft):** rivethub-grokbot maintainers · **Requester:** RivetOS
 **Current kit:** `integrations/grok-bot/rivethub-grokbot` **0.2.0** (local prove PASS 2026-09-05)
 
@@ -17,9 +17,9 @@ Same loop other mesh agents have — delivered in priority order:
 
 | Priority | Piece | Today | Target |
 | --- | --- | --- | --- |
-| 1 | Capture | Host file watcher; hooks example only | Fail-loud watcher; prove tool rows; hooks when Grok Bot has them; **same ingest contract** as Claude/Grok; **no third path** |
-| 2 | Delegation | `mesh-delegate` skill → curl | Real MCP tool on den task API |
-| 3 | Den | Missing | `rivet-den`-style live session stream so RivetHub / native apps see the session, not only Postgres after the fact |
+| 1 | Capture | Host file watcher; live ReadTranscript ingest (#1106); hooks example only | Fail-loud watcher; prove tool rows; hooks when Grok Bot has them; **same ingest contract** as Claude/Grok; **no third path** |
+| 2 | Delegation | `list_agents` + `delegate_task` on the kit MCP (`rivetos-memory`) | Real MCP tools on den task API — done |
+| 3 | Den | Missing | parked — `rivet-den`-style live session stream so RivetHub / native apps see the session, not only Postgres after the fact |
 
 Supporting parity (discipline skills, slash shortcuts, memory-researcher, member rule, MCP as recall door) stays in scope but **does not jump ahead of 1→2→3**.
 
@@ -29,15 +29,17 @@ Supporting parity (discipline skills, slash shortcuts, memory-researcher, member
 
 ## Current state (short)
 
-- MCP + `memory-recall` + `mesh-delegate` skill + thin member rule  
-- Capture: host file-watch / batch; `hooks/` is example only  
-- Mesh: skill text, not MCP  
-- Den: no Grok Bot / Cursor sibling  
+- MCP (`rivetos-memory`) exposes memory tools plus `list_agents` and `delegate_task` (stdio sidecar; den transport `POST /api/tasks?wait=1`)
+- `mesh-delegate` skill is when to call those tools — no curl / raw HTTP recipe
+- Capture: host file-watch / batch + live ReadTranscript ingest (#1106); `hooks/` is example only
+- Den live stream: parked
 - Local prove PASS; Grok Bot still doesn’t load `~/.cursor/plugins/local`
 
 ---
 
 ## Priority 1 — Capture (first)
+
+**Status:** landed (#1106) for the live ReadTranscript ingest / watermark / needs path. Host watcher + hooks-when-available remain the capture contract. No third path.
 
 **Goal:** fail-loud watcher, prove tool rows, hooks when the host supports them. Same ingest contract as Claude Code / Grok Build. No third path. No app patches.
 
@@ -62,24 +64,28 @@ Tool-row ingest proven on watcher; hooks ready to flip; zero app patches; still 
 
 ## Priority 2 — Delegation (second)
 
+**Status:** landed. The kit MCP already registers `list_agents` and `delegate_task` (#976, #1012). The skill is when to call them. There is no curl fallback.
+
 **Goal:** mesh handoff as a **real MCP tool** on the den task API — not a skill that points at curl.
 
 ### Work
 
-1. MCP tool(s) e.g. `mesh_delegate` / `mesh_task_status` wrapping den tasks API (`goal`, `agentId`, `nodeAffinity`, `requestedBy`, budget, acceptance).
-2. Skill `mesh-delegate` becomes “when to call these tools,” not a curl recipe.
+1. Use the sidecar tools that already exist: `list_agents` (roster) and `delegate_task` (`to_agent`, `task`, optional `context` / `timeout_ms` / `model`). Den transport waits on `POST /api/tasks?wait=1`.
+2. Skill `mesh-delegate` is “when to call these tools,” not a curl recipe.
 3. Fan-out policy unchanged: one teammate default; ask before multi.
 4. Still no injecting into Grok Bot UI threads (no public app API).
 
 ### Done when
 
-Create + poll a mesh task via MCP.
+Create + wait for a mesh task via MCP (`delegate_task` waits). No second path.
 
 **Depends on:** Priority 1 does not block starting design, but ship after capture prove is green so the member kit isn’t “delegate without durable memory.”
 
 ---
 
 ## Priority 3 — Den for native apps (third)
+
+**Status:** parked. Do not build this slice.
 
 **Goal:** `rivet-den`-style live session stream so RivetHub / native apps see the session live — not only Postgres after the fact.
 
@@ -115,9 +121,9 @@ These fill out “full parity” but **the sequence is Capture → Delegation �
 ## Sequencing (locked)
 
 ```
-1 Capture (fail-loud watcher → prove tool rows → hooks when available)
-2 Delegation (mesh MCP tool on den task API)
-3 Den (rivet-den live stream for RivetHub / native apps)
+1 Capture (fail-loud watcher → prove tool rows → hooks when available) — landed (#1106)
+2 Delegation (mesh MCP tools on den task API) — landed
+3 Den (rivet-den live stream for RivetHub / native apps) — parked
 Then: discipline / researcher / member-rule polish as needed
 ```
 
@@ -128,7 +134,7 @@ Then: discipline / researcher / member-rule polish as needed
 - Grok Bot app patches  
 - Second store / new agent tags / third capture path  
 - Collapsing Claude Code or Grok Build plugins into this kit  
-- Building before maintainer approval  
+- Building step 3 while it is parked  
 
 ---
 
@@ -140,6 +146,6 @@ Then: discipline / researcher / member-rule polish as needed
 
 ---
 
-## Hold
+## Parked
 
-No implementation until approved.
+Step 3 (Den live stream) stays parked. Do not build it here.

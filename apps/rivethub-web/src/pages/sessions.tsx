@@ -196,10 +196,29 @@ export function SessionsPage(): JSX.Element {
     enabled: connected,
   })
 
-  const invalidateSessions = useCallback((): void => {
+  // Same reconciliation refetch as the chat drawer. Debounced: the list walks
+  // every harness store synchronously on the den loop that echoes PTY bytes.
+  // A stream reopen still refetches immediately (no replay).
+  const invalidateTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined)
+  const invalidateSessionsNow = useCallback((): void => {
     void queryClient.invalidateQueries({ queryKey: ['harness-sessions', baseUrl] })
     void queryClient.invalidateQueries({ queryKey: ['harness-plane-sessions', baseUrl] })
   }, [queryClient, baseUrl])
+  const invalidateSessions = useCallback((): void => {
+    if (invalidateTimer.current !== undefined) return
+    invalidateTimer.current = setTimeout(() => {
+      invalidateTimer.current = undefined
+      invalidateSessionsNow()
+    }, 1_000)
+  }, [invalidateSessionsNow])
+  useEffect(() => {
+    return () => {
+      if (invalidateTimer.current !== undefined) {
+        clearTimeout(invalidateTimer.current)
+        invalidateTimer.current = undefined
+      }
+    }
+  }, [baseUrl])
 
   const hasDrivers = (descriptors?.length ?? 0) > 0
   useEffect(() => {
@@ -220,7 +239,7 @@ export function SessionsPage(): JSX.Element {
           opens += 1
           // Registry stream has no replay — refetch on every reopen.
           if (opens > 1) {
-            invalidateSessions()
+            invalidateSessionsNow()
             setListResyncedAt(Date.now())
           }
         },
@@ -235,6 +254,7 @@ export function SessionsPage(): JSX.Element {
     queryClient,
     descriptors?.length,
     invalidateSessions,
+    invalidateSessionsNow,
   ])
 
   const items = useMemo(

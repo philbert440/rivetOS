@@ -89,6 +89,8 @@ const OWNER_IDENTITY_RE = [
   /(^|\/)NOTICE$/,
   /(^|\/)package\.json$/,
   /^scripts\/authorship-check(\.test)?\.mjs$/,
+  /^scripts\/authorship-allowlist\.json$/,
+  /^scripts\/sync-authorship-allowlist\.mjs$/,
   /^scripts\/git-hooks\/commit-msg$/,
   /^\.claude-plugin\/marketplace\.json$/,
 ]

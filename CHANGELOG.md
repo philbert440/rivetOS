@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Grok Bot member kit
+
+- rivethub-grokbot mesh handoff uses the plugin MCP tools `list_agents` and `delegate_task` (den task API). The curl recipe is gone. Step 3 (den live stream) stays parked.
+
 ### Compaction worker
 
 - A burst of errors from the compactor's LLM provider no longer stalls compaction until a restart. `RIVETOS_COMPACTOR_TRANSIENT_STATUSES` (e.g. `403,404`) lists the 4xx codes the primary returns while overloaded; they retry like a 5xx and fail as retryable, not terminal.

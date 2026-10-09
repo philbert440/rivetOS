@@ -50,7 +50,7 @@ Never commit secrets. Status and persist scripts never print PG URLs or tokens.
 
 | Layer | Provides |
 | --- | --- |
-| Plugin (in-app) | Memory MCP, recall + onboard/status + mesh-delegate skills, member rules |
+| Plugin (in-app) | Memory MCP (`list_agents` + `delegate_task`), recall + onboard/status + mesh-delegate skills, member rules |
 | Host companion | Transcript discover/watch/ingest (see `host/` — expansion plan, not this onboarding slice) |
 | Hooks (soon) | Turn-end capture when Grok Bot exposes hooks — see `hooks/` |
 
@@ -71,7 +71,7 @@ This package is the wider **member kit**. Phase 1 reuses that MCP launcher. We m
 ## Plans
 
 - `PLAN-STRANGER-ONBOARDING.md` — approved for implementation (this slice)
-- `PLAN-EXPANSION.md` — Capture → Delegation → Den (plan only)
+- `PLAN-EXPANSION.md` — Capture landed (#1106); Delegation uses MCP `list_agents` + `delegate_task`; Den live stream parked
 
 ## Version
 

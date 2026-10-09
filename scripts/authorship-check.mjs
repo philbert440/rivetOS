@@ -1,89 +1,39 @@
 #!/usr/bin/env node
-// Commit authorship guard. Validates that all commits in a range are authored
-// and committed by house identities or repository collaborators only — no
-// third-party product names (Cursor, Claude, Dependabot) or Co-authored-by
-// trailers.
+// Commit authorship guard. Validates that commits are authored and committed
+// by house identities or repository collaborators only — no third-party
+// product names (Cursor, Claude, Dependabot, [bot] accounts, GitHub Actions,
+// root) or disallowed Co-authored-by trailers.
 //
 // Usage:
-//   authorship-check.mjs <base>..<head>   # CI: check a PR's commit range
-//   authorship-check.mjs HEAD              # local hook: check the last commit
+//   authorship-check.mjs --pending <msgfile>   # commit-msg hook
+//   authorship-check.mjs <base>..<head>        # CI: check a PR's commit range
+//   authorship-check.mjs HEAD                  # already-recorded tip only
 //
-// House identities (exact name + email):
-//   - Rivet Philbot <rivetphilbot@gmail.com>
-//   - Rivet <rivetphilbot@gmail.com>
-//   - Philip <philbert440@gmail.com>
-//   - Philip <philbert440@users.noreply.github.com>
-//   - philbert440 <philbert440@gmail.com>
-//   - philbert440 <philbert440@users.noreply.github.com>
-//
-// Repository collaborators (matched by email): xreed88, tomthornton,
-//   wSedlacek, cesarulo, zzhang-1
-//   Add one by appending { login, emails } to COLLABORATORS below.
-//
-// Blocked: Cursor, Cursor Agent, cursoragent@cursor.com, Claude, Anthropic,
-//          Dependabot, Renovate, or any other product name / third-party account.
+// House identities and collaborator emails live in authorship-allowlist.json
+// (shared by the hook and CI). Re-sync collaborators with:
+//   node scripts/sync-authorship-allowlist.mjs
 //
 // Exception: GitHub web-flow <noreply@github.com> as committer when the author
 //            is already an allowed identity (squash-merge or merge button). NOT
 //            allowed as author.
 
 import { execFileSync } from 'node:child_process'
+import { readFileSync } from 'node:fs'
+import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
-// House identities (exact name + email; only these)
-const HOUSE = [
-  { name: 'Rivet Philbot', email: 'rivetphilbot@gmail.com' },
-  { name: 'Rivet', email: 'rivetphilbot@gmail.com' },
-  { name: 'Philip', email: 'philbert440@gmail.com' },
-  { name: 'Philip', email: 'philbert440@users.noreply.github.com' },
-  { name: 'philbert440', email: 'philbert440@gmail.com' },
-  { name: 'philbert440', email: 'philbert440@users.noreply.github.com' },
-]
+const HERE = dirname(fileURLToPath(import.meta.url))
+export const ALLOWLIST_PATH = join(HERE, 'authorship-allowlist.json')
 
-// Repository collaborators, matched on email only (case-insensitive), under any
-// display name. A blocked pattern in the name or email still rejects them.
-// Add a collaborator by appending { login, emails } here.
-const COLLABORATORS = [
-  {
-    login: 'xreed88',
-    emails: [
-      'xreed88@gmail.com',
-      '779983+xreed88@users.noreply.github.com',
-      'xreed88@users.noreply.github.com',
-    ],
-  },
-  {
-    login: 'tomthornton',
-    emails: [
-      '40962668+tomthornton@users.noreply.github.com',
-      'tomthornton@users.noreply.github.com',
-      'tombozwell@gmail.com',
-    ],
-  },
-  {
-    login: 'wSedlacek',
-    emails: [
-      'william.sedlacek@icloud.com',
-      '8206108+wSedlacek@users.noreply.github.com',
-      'wSedlacek@users.noreply.github.com',
-    ],
-  },
-  {
-    login: 'cesarulo',
-    emails: [
-      '13575641+cesarulo@users.noreply.github.com',
-      'cesarulo@users.noreply.github.com',
-    ],
-  },
-  {
-    login: 'zzhang-1',
-    emails: [
-      'zhangzhen52013147654@gmail.com',
-      '54903512+zzhang-1@users.noreply.github.com',
-      'zzhang-1@users.noreply.github.com',
-    ],
-  },
-]
+function loadAllowlist() {
+  const data = JSON.parse(readFileSync(ALLOWLIST_PATH, 'utf8'))
+  if (!Array.isArray(data.house) || !Array.isArray(data.collaborators)) {
+    throw new Error(`invalid allowlist: ${ALLOWLIST_PATH}`)
+  }
+  return data
+}
+
+const { house: HOUSE, collaborators: COLLABORATORS } = loadAllowlist()
 
 // GitHub web-flow committer (allowed as committer when author is allowed)
 const GITHUB_WEBFLOW = { name: 'GitHub', email: 'noreply@github.com' }
@@ -96,6 +46,9 @@ const BLOCKED_PATTERNS = [
   'dependabot',
   'renovate',
   'cursoragent@cursor.com',
+  '[bot]',
+  'github-actions',
+  'root@',
 ]
 
 /** Normalize an identity to lowercase for comparison */
@@ -129,6 +82,7 @@ function isGitHubWebFlow(identity) {
 /** Check if an identity contains a blocked pattern */
 function hasBlockedPattern(identity) {
   const n = normalize(identity)
+  if (n.name === 'root') return true
   const combined = `${n.name} ${n.email}`
   return BLOCKED_PATTERNS.some((p) => combined.includes(p.toLowerCase()))
 }
@@ -148,6 +102,14 @@ export function extractCoAuthors(body) {
     coAuthors.push({ name: m[1].trim(), email: m[2].trim() })
   }
   return coAuthors
+}
+
+/** Parse `git var GIT_*_IDENT` (`Name <email> timestamp tz`) */
+export function parseGitIdent(ident) {
+  const text = String(ident || '').trim()
+  const m = text.match(/^(.*)<([^>]+)>(?:\s+\d+\s+[+-]\d+)?\s*$/)
+  if (!m) throw new Error(`cannot parse git ident: ${ident}`)
+  return { name: m[1].trim(), email: m[2].trim() }
 }
 
 /** Check a single commit for authorship violations */
@@ -217,6 +179,29 @@ export function checkCommit(commit) {
   return issues
 }
 
+function gitVar(name, cwd) {
+  try {
+    return execFileSync('git', ['var', name], {
+      encoding: 'utf8',
+      cwd,
+      stdio: ['ignore', 'pipe', 'pipe'],
+    }).trim()
+  } catch (e) {
+    throw new Error(`git var ${name} failed: ${e.message}`)
+  }
+}
+
+/** Pending commit from git-var identities + the commit-msg file. Never reads HEAD. */
+export function readPendingCommit(msgPath, { cwd } = {}) {
+  return {
+    sha: 'pending',
+    author: parseGitIdent(gitVar('GIT_AUTHOR_IDENT', cwd)),
+    committer: parseGitIdent(gitVar('GIT_COMMITTER_IDENT', cwd)),
+    parentCount: 0,
+    body: readFileSync(msgPath, 'utf8'),
+  }
+}
+
 /** Get commits in a git range */
 export function getCommits(range) {
   // Format: sha|%an|%ae|%cn|%ce|%P (count parents)|%B (body)
@@ -279,6 +264,40 @@ function fmtIdentity(identity) {
   return `${identity.name} <${identity.email}>`
 }
 
+function formatAllowedHelp() {
+  const houseLines = HOUSE.map((h) => `\n  - ${h.name} <${h.email}>`).join('')
+  const logins = COLLABORATORS.map((c) => c.login).join(', ')
+  return (
+    '\nAllowed identities (house):' +
+    houseLines +
+    `\n\nRepository collaborators (matched by email): ${logins}` +
+    `\n  Source: ${ALLOWLIST_PATH}` +
+    '\n  Re-sync: node scripts/sync-authorship-allowlist.mjs' +
+    '\n\nBlocked: Cursor, Claude, Anthropic, Dependabot, Renovate, [bot] accounts, GitHub Actions, root, and any disallowed Co-authored-by trailers.' +
+    '\n\nException: GitHub <noreply@github.com> as committer when the author is an allowed identity (GitHub merge/squash).\n'
+  )
+}
+
+function reportViolations(violations) {
+  if (violations.length === 0) {
+    console.log('✅ authorship-check: all commits have valid house identities')
+    process.exit(0)
+  }
+
+  console.error(`\n❌ authorship-check: ${violations.length} commit(s) with invalid identities:\n`)
+
+  for (const { commit, issues } of violations) {
+    console.error(`  ${commit.sha.slice(0, 8)}`)
+    for (const issue of issues) {
+      console.error(`    ${issue.field}: ${fmtIdentity(issue.identity)}`)
+      console.error(`      → ${issue.reason}`)
+    }
+  }
+
+  console.error(formatAllowedHelp())
+  process.exit(1)
+}
+
 /** Check commits and report violations */
 export function checkRange(range) {
   const commits = getCommits(range)
@@ -295,14 +314,33 @@ export function checkRange(range) {
 }
 
 function main() {
-  let range = process.argv[2]
+  const args = process.argv.slice(2)
+  if (args[0] === '--pending') {
+    const msgPath = args[1]
+    if (!msgPath) {
+      console.error('usage: authorship-check.mjs --pending <msgfile>')
+      process.exit(2)
+    }
+    let commit
+    try {
+      commit = readPendingCommit(msgPath)
+    } catch (e) {
+      console.error(`❌ authorship-check: ${e.message}`)
+      process.exit(1)
+    }
+    const issues = checkCommit(commit)
+    reportViolations(issues.length ? [{ commit, issues }] : [])
+    return
+  }
+
+  let range = args[0]
   if (!range) {
-    console.error('usage: authorship-check.mjs <base>..<head>  |  authorship-check.mjs HEAD')
+    console.error('usage: authorship-check.mjs --pending <msgfile>  |  authorship-check.mjs <base>..<head>')
     process.exit(2)
   }
 
-  // When checking "HEAD", we want to check only the single most recent commit,
-  // not the entire history leading to it. Use -1 to limit to one commit.
+  // Already-recorded tip only. The commit-msg hook must use --pending instead:
+  // at hook time HEAD is still the parent.
   if (range === 'HEAD') {
     range = '-1 HEAD'
   }
@@ -315,37 +353,7 @@ function main() {
     process.exit(1)
   }
 
-  if (violations.length === 0) {
-    console.log('✅ authorship-check: all commits have valid house identities')
-    process.exit(0)
-  }
-
-  // Report violations
-  console.error(`\n❌ authorship-check: ${violations.length} commit(s) with invalid identities:\n`)
-
-  for (const { commit, issues } of violations) {
-    console.error(`  ${commit.sha.slice(0, 8)}`)
-    for (const issue of issues) {
-      console.error(`    ${issue.field}: ${fmtIdentity(issue.identity)}`)
-      console.error(`      → ${issue.reason}`)
-    }
-  }
-
-  console.error(
-    '\nAllowed identities (house):' +
-      '\n  - Rivet Philbot <rivetphilbot@gmail.com>' +
-      '\n  - Rivet <rivetphilbot@gmail.com>' +
-      '\n  - Philip <philbert440@gmail.com>' +
-      '\n  - Philip <philbert440@users.noreply.github.com>' +
-      '\n  - philbert440 <philbert440@gmail.com>' +
-      '\n  - philbert440 <philbert440@users.noreply.github.com>' +
-      '\n\nRepository collaborators (matched by email): xreed88, tomthornton, wSedlacek, cesarulo, zzhang-1' +
-      '\n  Add one by appending { login, emails } to COLLABORATORS in scripts/authorship-check.mjs.' +
-      '\n\nBlocked: Cursor, Claude, Anthropic, Dependabot, Renovate, and any Co-authored-by trailers.' +
-      '\n\nException: GitHub <noreply@github.com> as committer when the author is an allowed identity (GitHub merge/squash).\n',
-  )
-
-  process.exit(1)
+  reportViolations(violations)
 }
 
 // Only execute as a CLI; importing the module (tests) must not run main().
