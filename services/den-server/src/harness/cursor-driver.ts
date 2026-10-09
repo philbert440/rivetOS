@@ -58,6 +58,8 @@ export interface CursorStoreHost extends HarnessStoreHost {
    * `harnessSession`.
    */
   newestAfter?(cwd: string, sinceMs: number): string | undefined
+  /** Newest-first ids for `cwd` modified at or after `sinceMs`. */
+  candidatesAfter?(cwd: string, sinceMs: number): readonly string[]
 }
 
 export type CursorDriverDeps = PtyHarnessDriverDeps<CursorStoreHost>
@@ -144,8 +146,56 @@ export class CursorDriver extends AdoptingPtyHarnessDriver<CursorStoreHost> {
   }
 
   private readonly pendingSpawn = new Map<string, number>()
+  /** Rooms whose pane this poll has already observed. A later miss means it exited. */
+  private readonly seenPane = new Set<string>()
+  private adoptClosed = false
+
+  override close(): void {
+    this.adoptClosed = true
+    for (const room of [...this.pendingSpawn.keys()]) this.stopAdopt(room)
+    super.close()
+  }
+
+  private adoptCwds(room: string): string[] {
+    const recorded = this.deps.sessionCwd?.(this.rosterCommand, room)
+    const rosterCwd = this.deps.cwd?.() ?? ''
+    const out: string[] = []
+    for (const cwd of [recorded, rosterCwd]) {
+      if (cwd && !out.includes(cwd)) out.push(cwd)
+    }
+    return out
+  }
+
+  /** Two unbound panes in one directory cannot be told apart by "newest row". */
+  private storeAdoptAmbiguous(room: string): boolean {
+    const mine = new Set(this.adoptCwds(room))
+    for (const other of this.pendingSpawn.keys()) {
+      if (other === room || this.roomNative.has(other)) continue
+      for (const cwd of this.adoptCwds(other)) {
+        if (mine.has(cwd)) return true
+      }
+    }
+    return false
+  }
+
+  private async paneStillThere(room: string): Promise<boolean> {
+    if (!this.deps.pty) return true
+    let host: CursorPtyHost | null | undefined
+    try {
+      host = await this.deps.pty()
+    } catch {
+      return true
+    }
+    if (!host) return false
+    if (host.ptyForSession(room)) {
+      this.seenPane.add(room)
+      return true
+    }
+    return !this.seenPane.has(room)
+  }
 
   private adoptFromStore(room: string): string | undefined {
+    if (this.storeAdoptAmbiguous(room)) return undefined
     const recorded = this.deps.sessionCwd?.(this.rosterCommand, room)
     const rosterCwd = this.deps.cwd?.() ?? ''
     const since = (this.pendingSpawn.get(room) ?? this.now()) - 2_000
@@ -153,8 +203,12 @@ export class CursorDriver extends AdoptingPtyHarnessDriver<CursorStoreHost> {
     for (const cwd of [recorded, rosterCwd]) {
       if (cwd === undefined || tried.has(cwd)) continue
       tried.add(cwd)
-      const id = this.deps.store.newestAfter?.(cwd, since)
-      if (id && CURSOR_NATIVE_RE.test(id) && !this.claimedElsewhere(id, room)) return id
+      const ids =
+        this.deps.store.candidatesAfter?.(cwd, since) ??
+        [this.deps.store.newestAfter?.(cwd, since)].filter((id): id is string => !!id)
+      for (const id of ids) {
+        if (CURSOR_NATIVE_RE.test(id) && !this.claimedElsewhere(id, room)) return id
+      }
     }
     return undefined
   }
@@ -184,18 +238,29 @@ export class CursorDriver extends AdoptingPtyHarnessDriver<CursorStoreHost> {
           ? ADOPT_POLL_MS
           : ADOPT_SLOW_MS
     const t = setTimeout(() => {
-      this.adoptTimers.delete(room)
-      if (this.roomNative.has(room) || !this.pendingSpawn.has(room)) return
-      const native = this.adoptFromStore(room)
-      if (native) {
-        this.pendingSpawn.delete(room)
-        this.bindRoom(room, native)
-        return
-      }
-      this.scheduleAdopt(room, attempt + 1)
+      void this.tickAdopt(room, attempt)
     }, ms)
     t.unref()
     this.adoptTimers.set(room, t)
+  }
+
+  private async tickAdopt(room: string, attempt: number): Promise<void> {
+    this.adoptTimers.delete(room)
+    if (this.adoptClosed || this.roomNative.has(room) || !this.pendingSpawn.has(room)) return
+    if (!(await this.paneStillThere(room))) {
+      if (!this.adoptClosed) this.stopAdopt(room)
+      return
+    }
+    if (this.adoptClosed || !this.pendingSpawn.has(room) || this.roomNative.has(room)) return
+    const native = this.adoptFromStore(room)
+    if (native) {
+      this.pendingSpawn.delete(room)
+      this.seenPane.delete(room)
+      this.bindRoom(room, native)
+      return
+    }
+    if (this.adoptClosed || !this.pendingSpawn.has(room)) return
+    this.scheduleAdopt(room, attempt + 1)
   }
 
   private stopAdopt(room: string): void {
@@ -203,5 +268,6 @@ export class CursorDriver extends AdoptingPtyHarnessDriver<CursorStoreHost> {
     if (t) clearTimeout(t)
     this.adoptTimers.delete(room)
     this.pendingSpawn.delete(room)
+    this.seenPane.delete(room)
   }
 }

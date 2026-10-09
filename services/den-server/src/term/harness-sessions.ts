@@ -1600,20 +1600,16 @@ function cursorTranscriptPath(id: string): string | undefined {
   return best?.path
 }
 
-/**
- * Newest Cursor chat whose transcript was modified at or after `sinceMs`,
- * scoped to the project slug for `cwd`. Sync: the adopting driver calls it
- * on the den event path.
- */
-export function newestCursorSessionAfter(cwd: string, sinceMs: number): string | undefined {
+/** Cursor chats for `cwd` modified at or after `sinceMs`, newest first. */
+export function cursorSessionsAfter(cwd: string, sinceMs: number): string[] {
   const dir = join(cursorProjectsDir(), cursorProjectSlug(cwd), 'agent-transcripts')
   let ids: string[]
   try {
     ids = readdirSync(dir)
   } catch {
-    return undefined
+    return []
   }
-  let best: { id: string; mtime: number } | undefined
+  const hits: { id: string; mtime: number }[] = []
   for (const id of ids) {
     if (!CURSOR_UUID_RE.test(id)) continue
     const path = join(dir, id, `${id}.jsonl`)
@@ -1624,9 +1620,19 @@ export function newestCursorSessionAfter(cwd: string, sinceMs: number): string |
       continue
     }
     if (!st.isFile() || st.mtimeMs < sinceMs) continue
-    if (!best || st.mtimeMs >= best.mtime) best = { id, mtime: st.mtimeMs }
+    hits.push({ id, mtime: st.mtimeMs })
   }
-  return best?.id
+  hits.sort((a, b) => b.mtime - a.mtime)
+  return hits.map((h) => h.id)
+}
+
+/**
+ * Newest Cursor chat whose transcript was modified at or after `sinceMs`,
+ * scoped to the project slug for `cwd`. Sync: the adopting driver calls it
+ * on the den event path.
+ */
+export function newestCursorSessionAfter(cwd: string, sinceMs: number): string | undefined {
+  return cursorSessionsAfter(cwd, sinceMs)[0]
 }
 
 async function cursorPreviewTitle(file: string): Promise<string> {
@@ -2348,32 +2354,44 @@ export function describeOpencodeSession(id: string): Promise<HarnessSession | un
 }
 
 /**
- * Newest OpenCode session for `cwd` created at or after `sinceMs`. Used by
- * the adopting driver to learn a fresh roster spawn's native id when no
- * hook stamped `harnessSession`.
+ * OpenCode sessions for `cwd` created at or after `sinceMs`, newest first.
+ * A child session (`parent_id`, when that column exists) is not a pane's
+ * own chat. Used by the adopting driver when no hook stamped `harnessSession`.
  */
-export function newestOpencodeSessionAfter(cwd: string, sinceMs: number): string | undefined {
+export function opencodeSessionsAfter(cwd: string, sinceMs: number): string[] {
   const db = openOpencodeDb()
-  if (!db) return undefined
+  if (!db) return []
   try {
     const cwdResolved = cwd ? resolve(cwd) : ''
+    let hasParent = false
+    try {
+      const cols = db.prepare(`PRAGMA table_info(session)`).all() as Array<{ name?: unknown }>
+      hasParent = cols.some((c) => c.name === 'parent_id')
+    } catch {
+      hasParent = false
+    }
     const rows = db
       .prepare(
-        `SELECT id, directory, time_created FROM session
-         WHERE time_created >= ?
-         ORDER BY time_created DESC, time_updated DESC`,
+        hasParent
+          ? `SELECT id, directory, time_created FROM session
+             WHERE time_created >= ? AND parent_id IS NULL
+             ORDER BY time_created DESC, time_updated DESC`
+          : `SELECT id, directory, time_created FROM session
+             WHERE time_created >= ?
+             ORDER BY time_created DESC, time_updated DESC`,
       )
       .all(sinceMs)
+    const ids: string[] = []
     for (const r of rows) {
       const id = typeof r.id === 'string' ? r.id : ''
       if (!id) continue
       const dir = typeof r.directory === 'string' ? r.directory : undefined
       if (dir !== undefined && cwdResolved && resolve(dir) !== cwdResolved) continue
-      return id
+      ids.push(id)
     }
-    return undefined
+    return ids
   } catch {
-    return undefined
+    return []
   } finally {
     try {
       db.close()
@@ -2381,6 +2399,11 @@ export function newestOpencodeSessionAfter(cwd: string, sinceMs: number): string
       /* ignore */
     }
   }
+}
+
+/** Newest OpenCode session for `cwd` created at or after `sinceMs`. */
+export function newestOpencodeSessionAfter(cwd: string, sinceMs: number): string | undefined {
+  return opencodeSessionsAfter(cwd, sinceMs)[0]
 }
 
 function opencodeSessionExists(id: string): boolean {

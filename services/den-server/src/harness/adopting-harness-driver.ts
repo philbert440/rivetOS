@@ -288,6 +288,15 @@ export abstract class AdoptingPtyHarnessDriver<
       if (!this.cwdSettled(room, native)) this.rememberNativeCwd(room, native)
       return
     }
+    // This native already belonged to another room (a store poll guessed,
+    // then the plugin stamped the room that actually owns it). Drop the
+    // stale forward mapping. Leaving it would keep two rooms on one session,
+    // and the next stamp on the old room would rotate somebody else's id.
+    const other = this.nativeRoom.get(native)
+    if (other !== undefined && other !== room && this.roomNative.get(other) === native) {
+      this.roomNative.delete(other)
+      this.forgetCwdPair(other, native)
+    }
     if (previous !== undefined) this.forgetCwdPair(room, previous)
     this.roomNative.set(room, native)
     this.nativeRoom.set(native, room)
