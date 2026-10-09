@@ -19,7 +19,15 @@
 // harness yields [] — the drawer just shows nothing for it rather than breaking.
 
 import { readdir, stat, open, readFile } from 'node:fs/promises'
-import { closeSync, existsSync, openSync, readFileSync, readdirSync, readSync, statSync } from 'node:fs'
+import {
+  closeSync,
+  existsSync,
+  openSync,
+  readFileSync,
+  readdirSync,
+  readSync,
+  statSync,
+} from 'node:fs'
 import { StringDecoder } from 'node:string_decoder'
 import { basename, dirname, join, resolve } from 'node:path'
 import { homedir } from 'node:os'
