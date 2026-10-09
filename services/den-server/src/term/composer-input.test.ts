@@ -158,6 +158,15 @@ describe('parseComposerInput on ANSI captures', () => {
     ).toBeUndefined()
   })
 
+  it('treats a non-dim allowlisted example as an empty box', () => {
+    expect(
+      parseComposerInput(ansiBox(`Try "write a test for <filepath>"${ESC}[0m`)),
+    ).toBeUndefined()
+    expect(
+      parseComposerInput(ansiBox(`${ESC}[22mPress up to edit queued messages`)),
+    ).toBeUndefined()
+  })
+
   it('reads typed text as a draft', () => {
     expect(parseComposerInput(ansiBox('push it to my fork'))).toBe('push it to my fork')
   })

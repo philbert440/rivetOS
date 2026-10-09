@@ -6,8 +6,9 @@
  * suggested next prompt after a reply) is drawn dim (`ESC[2m`). The pre-send
  * read asks herdr for `--format ansi`, so a capture that carries SGR is
  * judged by it: only non-dim text after `❯` is a draft. A plain-text capture
- * (older herdr, a fallback read) has lost the dim marker, so it falls back to
- * an allowlist of Claude Code 2.1.x empty-box strings. A user who typed one of those strings verbatim and did
+ * (older herdr, a fallback read) has lost the dim marker, so it relies on
+ * an allowlist of Claude Code 2.1.x empty-box strings, which also applies to
+ * the non-dim text of an ANSI capture. A user who typed one of those strings verbatim and did
  * not send is treated as an empty box: the turn is pasted onto it. Refusing
  * would block every fresh session — the rotating example is on screen before
  * the first message — and the inject button is refused on a draft too, so
@@ -116,8 +117,8 @@ export function parseComposerInput(screen: string): string | undefined {
     if (!m || OPTION_LINE.test(line)) continue
     if (!belowIsChrome(lines, i)) continue
     if (i === 0 || !SEPARATOR.test(lines[i - 1])) continue
-    if (rawLines[i].includes('\u001b')) return typedAfterPrompt(rawLines[i]) || undefined
-    const text = m[1].trim()
+    // A build that draws the example without dim still matches the allowlist.
+    const text = rawLines[i].includes('\u001b') ? typedAfterPrompt(rawLines[i]) : m[1].trim()
     if (isEmptyBoxPlaceholder(text)) return undefined
     return text || undefined
   }
