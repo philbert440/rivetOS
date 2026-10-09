@@ -185,6 +185,54 @@ describe('claudeSessionCwd', () => {
     expect(harnessSessionCwd('codex', id)).toBeUndefined()
     rmSync(base, { recursive: true, force: true })
   })
+
+  it('reads a cwd record larger than 64 KiB and ignores a later cd', () => {
+    const base = mkdtempSync(join(tmpdir(), 'claude-cwd-big-'))
+    const id = '55555555-5555-5555-5555-555555555555'
+    const dir = join(base, 'projects', '-home-example-proj')
+    mkdirSync(dir, { recursive: true })
+    const pasted = 'x'.repeat(70 * 1024)
+    writeFileSync(
+      join(dir, `${id}.jsonl`),
+      [
+        JSON.stringify({ type: 'user', cwd: '/home/example/proj', sessionId: id, message: pasted }),
+        JSON.stringify({ type: 'assistant', cwd: '/home/example/proj/sub', sessionId: id }),
+      ].join('\n') + '\n',
+    )
+    process.env.CLAUDE_CONFIG_DIR = base
+    try {
+      expect(claudeSessionCwd(id)).toBe('/home/example/proj')
+    } finally {
+      rmSync(base, { recursive: true, force: true })
+    }
+  })
+
+  it('uses the newest project dir when the same id was copied', () => {
+    const base = mkdtempSync(join(tmpdir(), 'claude-cwd-dup-'))
+    const id = '66666666-6666-6666-6666-666666666666'
+    const stale = join(base, 'projects', '-home-example-old')
+    const fresh = join(base, 'projects', '-home-example-new')
+    mkdirSync(stale, { recursive: true })
+    mkdirSync(fresh, { recursive: true })
+    const staleFile = join(stale, `${id}.jsonl`)
+    const freshFile = join(fresh, `${id}.jsonl`)
+    writeFileSync(
+      staleFile,
+      JSON.stringify({ type: 'user', cwd: '/home/example/old', sessionId: id }) + '\n',
+    )
+    writeFileSync(
+      freshFile,
+      JSON.stringify({ type: 'user', cwd: '/home/example/new', sessionId: id }) + '\n',
+    )
+    utimesSync(staleFile, new Date(1_000), new Date(1_000))
+    utimesSync(freshFile, new Date(2_000), new Date(2_000))
+    process.env.CLAUDE_CONFIG_DIR = base
+    try {
+      expect(claudeSessionCwd(id)).toBe('/home/example/new')
+    } finally {
+      rmSync(base, { recursive: true, force: true })
+    }
+  })
 })
 
 describe('listHarnessSessions', () => {
