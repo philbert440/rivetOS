@@ -69,6 +69,16 @@ import {
 } from './pty-harness-driver.js'
 
 /**
+ * Store-scan adoption timing for drivers whose CLI has no den hook (opencode,
+ * cursor): quick tries right after spawn, then a steady poll while the user
+ * is likely about to type, then a slow poll for a pane left at its prompt.
+ */
+export const ADOPT_QUICK_MS = [250, 1_000, 3_000] as const
+export const ADOPT_POLL_MS = 2_000
+export const ADOPT_FAST_WINDOW_MS = 120_000
+export const ADOPT_SLOW_MS = 10_000
+
+/**
  * Identity for an adopting driver: the pinning drivers' identity plus the
  * verbatim reason `startSession` is refused (product knowledge — it names the
  * harness's actual CLI flags, or the lack of them).
@@ -277,6 +287,15 @@ export abstract class AdoptingPtyHarnessDriver<
       // A room with no record does not hit the store on every equal event.
       if (!this.cwdSettled(room, native)) this.rememberNativeCwd(room, native)
       return
+    }
+    // This native already belonged to another room (a store poll guessed,
+    // then the plugin stamped the room that actually owns it). Drop the
+    // stale forward mapping. Leaving it would keep two rooms on one session,
+    // and the next stamp on the old room would rotate somebody else's id.
+    const other = this.nativeRoom.get(native)
+    if (other !== undefined && other !== room && this.roomNative.get(other) === native) {
+      this.roomNative.delete(other)
+      this.forgetCwdPair(other, native)
     }
     if (previous !== undefined) this.forgetCwdPair(room, previous)
     this.roomNative.set(room, native)
