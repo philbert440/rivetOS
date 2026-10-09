@@ -1,11 +1,14 @@
 /**
  * Parse Claude Code's composer input box out of a herdr screen capture.
- * Fixture-driven from Claude Code 2.1.280.
+ * Fixture-driven from Claude Code 2.1.280 and 2.1.293.
  *
- * Plain-text captures drop the dim SGR (`ESC[2m`) that marks ghost text, and
- * the pre-send read cannot ask for it (herdr `agent read` / `pane read`, no
- * escape flag). Placeholders are therefore an allowlist of Claude Code 2.1.x
- * empty-box strings. A user who typed one of those strings verbatim and did
+ * Ghost text (the rotating example, queue hints, and since 2.1.29x the
+ * suggested next prompt after a reply) is drawn dim (`ESC[2m`). The pre-send
+ * read asks herdr for `--format ansi`, so a capture that carries SGR is
+ * judged by it: only non-dim text after `❯` is a draft. A plain-text capture
+ * (older herdr, a fallback read) has lost the dim marker, so it relies on
+ * an allowlist of Claude Code 2.1.x empty-box strings, which also applies to
+ * the non-dim text of an ANSI capture. A user who typed one of those strings verbatim and did
  * not send is treated as an empty box: the turn is pasted onto it. Refusing
  * would block every fresh session — the rotating example is on screen before
  * the first message — and the inject button is refused on a draft too, so
@@ -13,6 +16,9 @@
  */
 
 import { screenLines } from './permission-prompt.js'
+
+// eslint-disable-next-line no-control-regex
+const ESCAPE = /\u001b(?:\[([0-9;:?]*)[ -/]*([@-~])|\][^\u0007\u001b]*(?:\u0007|\u001b\\))/g
 
 const INPUT_LINE = /^\s*❯\s?(.*)$/
 const OPTION_LINE = /^\s*(?:❯\s*)?\d+\.\s+/
@@ -66,17 +72,53 @@ function belowIsChrome(lines: string[], idx: number): boolean {
   return true
 }
 
+/** Whether one SGR parameter list leaves the pen dim. 38/48/58 carry colour
+ *  arguments (`38;2;r;g;b`, `38;5;n`) that must not be read as attributes. */
+function applySgr(params: string, dim: boolean): boolean {
+  const codes = params === '' ? ['0'] : params.split(/[;:]/)
+  for (let i = 0; i < codes.length; i++) {
+    const code = Number(codes[i] || '0')
+    if (code === 38 || code === 48 || code === 58) {
+      i += codes[i + 1] === '5' ? 2 : codes[i + 1] === '2' ? 4 : 1
+    } else if (code === 0 || code === 22) {
+      dim = false
+    } else if (code === 2) {
+      dim = true
+    }
+  }
+  return dim
+}
+
+/** The non-dim text of one raw (SGR-carrying) line after its `❯` prompt. */
+function typedAfterPrompt(raw: string): string {
+  const at = raw.indexOf('❯')
+  if (at < 0) return ''
+  let dim = false
+  let out = ''
+  let last = 0
+  const rest = raw.slice(at + 1)
+  for (const m of rest.matchAll(ESCAPE)) {
+    if (!dim) out += rest.slice(last, m.index)
+    if (m[2] === 'm') dim = applySgr(m[1], dim)
+    last = m.index + m[0].length
+  }
+  if (!dim) out += rest.slice(last)
+  return out.trim()
+}
+
 /** Text in Claude Code's input box, or undefined when the box is empty/not found. */
 export function parseComposerInput(screen: string): string | undefined {
   if (!screen) return undefined
   const lines = screenLines(screen)
+  const rawLines = screen.replace(/\r\n/g, '\n').replace(/\r/g, '\n').split('\n')
   for (let i = lines.length - 1; i >= 0; i--) {
     const line = lines[i]
     const m = INPUT_LINE.exec(line)
     if (!m || OPTION_LINE.test(line)) continue
     if (!belowIsChrome(lines, i)) continue
     if (i === 0 || !SEPARATOR.test(lines[i - 1])) continue
-    const text = m[1].trim()
+    // A build that draws the example without dim still matches the allowlist.
+    const text = rawLines[i].includes('\u001b') ? typedAfterPrompt(rawLines[i]) : m[1].trim()
     if (isEmptyBoxPlaceholder(text)) return undefined
     return text || undefined
   }

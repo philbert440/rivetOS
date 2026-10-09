@@ -84,7 +84,7 @@ import {
 import { auditTenancyDeny, createSessionOwners, sessionForbidden } from './session-owners.js'
 import { createMeshView, loadMeshFile, meshDenOrigins, meshFilePaths } from './mesh.js'
 import { checkOrigin, type OriginPolicyOptions } from './origin-policy.js'
-import { preSendBlockOnScreen } from './term/blocking-dialog.js'
+import { draftIsText, preSendBlockOnScreen } from './term/blocking-dialog.js'
 import { composeTermAttach, wirePtyInfo } from './term/attach.js'
 import { createRosterProvider, defaultSpawnCwd } from './term/roster.js'
 import { createSessionCwdStore } from './term/session-cwd.js'
@@ -894,11 +894,11 @@ export function createDenServer(config: DenConfig, opts: DenServerOptions = {}):
     return () => denEventSinks.delete(sink)
   }
   const screenFor = termEnabled
-    ? async (native: string): Promise<string> => {
+    ? async (native: string, opts?: { ansi?: boolean }): Promise<string> => {
         const m = await ensureManager()
         if (!m) return ''
         const id = m.ptyForSession(native)
-        return id ? m.screen(id, 40) : ''
+        return id ? m.screen(id, 40, opts) : ''
       }
     : undefined
   /** Built-ins we own the lifetime of — closed on shutdown to drop the tap. */
@@ -2279,11 +2279,20 @@ export function createDenServer(config: DenConfig, opts: DenServerOptions = {}):
           // not a confirm. Interrupt already sends Esc before the paste.
           const bypassDialogGate = p.bypassDialogGate === true
           let dismissDialog = false
+          let resubmit = false
           if (claudeHarness && submit && p.text && !interrupt) {
-            const { dialog, draft } = await preSendBlockOnScreen(() => manager.screen(ptyId, 40))
+            const { dialog, draft, draftText } = await preSendBlockOnScreen(() =>
+              manager.screen(ptyId, 40, { ansi: true }),
+            )
+            // This same message, stuck unsent (its Enter was swallowed): press
+            // Enter on it instead of refusing every retry.
+            resubmit = draft === true && draftText !== undefined && draftIsText(draftText, p.text)
             // Unsent text in the input would merge with the paste. Refused
             // even on the inject button: Esc can't clear it safely.
-            if (draft) {
+            if (draft && !resubmit) {
+              console.error(
+                `[den-server] term inject refused for ${ptyId}: the input box holds unsent text`,
+              )
               return json(res, 409, {
                 error:
                   'harness has unsent text in its input; send or clear it in the terminal first',
@@ -2294,6 +2303,11 @@ export function createDenServer(config: DenConfig, opts: DenServerOptions = {}):
             }
             if (dialog) {
               if (!bypassDialogGate) {
+                console.error(
+                  `[den-server] term inject refused for ${ptyId}: a dialog is open (${JSON.stringify(
+                    dialog.title.slice(0, 60),
+                  )}, ${String(dialog.options.length)} options)`,
+                )
                 return json(res, 409, {
                   error: 'harness is showing a dialog; answer it in the terminal first',
                   code: 'turn_in_flight',
@@ -2304,7 +2318,15 @@ export function createDenServer(config: DenConfig, opts: DenServerOptions = {}):
               dismissDialog = true
             }
           }
-          if (!manager.inject(ptyId, p.text, submit, interrupt || dismissDialog)) {
+          if (resubmit) {
+            console.error(
+              `[den-server] term inject for ${ptyId}: input already holds this message; submitting it`,
+            )
+          }
+          const written = resubmit
+            ? manager.inject(ptyId, '\r', false)
+            : manager.inject(ptyId, p.text, submit, interrupt || dismissDialog)
+          if (!written) {
             const inf = manager.get(ptyId)
             // Keep HTTP 409. Distinguish "not seen yet" (client can retry)
             // from "harness ended" (`harness not writable` / after reap

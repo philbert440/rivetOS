@@ -265,6 +265,21 @@ export interface PreSendBlock {
   /** The input box holds unsent text. A paste would be appended to it and
    *  submitted as one message (`/model` + `test 1` → `/modeltest 1`). */
   draft?: boolean
+  /** That text, as read off the `❯` line. Set whenever `draft` is. */
+  draftText?: string
+}
+
+/**
+ * Unsent text that is this same message: an earlier paste of it whose Enter
+ * the TUI swallowed. The caller submits it instead of refusing the retry.
+ * Compares the whole whitespace-collapsed text. A shared prefix is a
+ * different message. A collapsed `[Pasted text #N]` placeholder never matches.
+ */
+export function draftIsText(draft: string, text: string): boolean {
+  if (/\[Pasted text #\d+/.test(draft)) return false
+  const norm = (value: string): string => value.replace(/\s+/g, ' ').trim()
+  const box = norm(draft)
+  return box !== '' && box === norm(text)
 }
 
 /** Parse one pre-send screen read. An empty screen blocks nothing. */
@@ -272,7 +287,8 @@ export function parsePreSendBlock(raw: string): PreSendBlock {
   if (!raw) return {}
   const dialog = parseBlockingDialog(raw)
   if (dialog) return { dialog }
-  return parseComposerInput(raw) !== undefined ? { draft: true } : {}
+  const draftText = parseComposerInput(raw)
+  return draftText !== undefined ? { draft: true, draftText } : {}
 }
 
 /** Read and parse the screen, failing open for callers without their own logging
