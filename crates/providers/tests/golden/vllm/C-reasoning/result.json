@@ -1,0 +1,36 @@
+{
+  "turnResult": {
+    "response": "Hi!",
+    "toolsUsed": [],
+    "iterations": 0,
+    "aborted": false,
+    "usage": {
+      "promptTokens": 25,
+      "completionTokens": 30,
+      "reasoningTokens": 22
+    },
+    "hadSteer": false
+  },
+  "toolCalls": [],
+  "toolResults": [],
+  "chunkAccumulator": {
+    "usage": {
+      "promptTokens": 25,
+      "completionTokens": 30,
+      "reasoningTokens": 22
+    },
+    "citations": [],
+    "hadTextContent": true,
+    "responseId": "chatcmpl-golden-vllm-C-1"
+  },
+  "aiSdkWarnings": [],
+  "console": [],
+  "providerStateAfterTurn": {
+    "model": "test-model",
+    "contextWindow": 0
+  },
+  "masks": {
+    "generatedIds": 0,
+    "generatedTimestampsInParts": 0
+  }
+}

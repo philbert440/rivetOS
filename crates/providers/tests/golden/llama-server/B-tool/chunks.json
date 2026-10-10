@@ -1,0 +1,38 @@
+[
+  {
+    "type": "tool_call_start",
+    "toolCall": {
+      "index": 0,
+      "id": "call_golden_echo_1",
+      "name": "echo"
+    }
+  },
+  {
+    "type": "tool_call_delta",
+    "delta": "{\"text\":\"hi\",",
+    "toolCall": {
+      "index": 0
+    }
+  },
+  {
+    "type": "tool_call_delta",
+    "delta": "\"n\":1.0}",
+    "toolCall": {
+      "index": 0
+    }
+  },
+  {
+    "type": "tool_call_done",
+    "toolCall": {
+      "index": 0
+    }
+  },
+  {
+    "type": "text",
+    "delta": "The echo tool returned "
+  },
+  {
+    "type": "text",
+    "delta": "hi."
+  }
+]

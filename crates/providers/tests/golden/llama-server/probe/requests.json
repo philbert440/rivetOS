@@ -1,0 +1,54 @@
+[
+  {
+    "index": 1,
+    "method": "GET",
+    "target": "/v1/models",
+    "path": "/v1/models",
+    "query": [],
+    "headers": [
+      [
+        "host",
+        "127.0.0.1:47815"
+      ],
+      [
+        "connection",
+        "keep-alive"
+      ],
+      [
+        "Authorization",
+        "Bearer <redacted>"
+      ],
+      [
+        "accept",
+        "*/*"
+      ],
+      [
+        "accept-language",
+        "*"
+      ],
+      [
+        "sec-fetch-mode",
+        "cors"
+      ],
+      [
+        "user-agent",
+        "node"
+      ],
+      [
+        "accept-encoding",
+        "gzip, deflate"
+      ]
+    ],
+    "body": "",
+    "served": {
+      "status": 200,
+      "headers": [
+        [
+          "Content-Type",
+          "application/json"
+        ]
+      ],
+      "bodyFile": "response-1.txt"
+    }
+  }
+]

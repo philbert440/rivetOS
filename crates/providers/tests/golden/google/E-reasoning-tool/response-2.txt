@@ -1,0 +1,4 @@
+data: {"candidates":[{"content":{"parts":[{"text":"The echo tool returned "}],"role":"model"},"index":0}],"usageMetadata":{"promptTokenCount":110,"totalTokenCount":110,"promptTokensDetails":[{"modality":"TEXT","tokenCount":110}]},"modelVersion":"test-model","responseId":"golden-google-E-2"}
+
+data: {"candidates":[{"content":{"parts":[{"text":"hi."}],"role":"model"},"finishReason":"STOP","index":0}],"usageMetadata":{"promptTokenCount":110,"candidatesTokenCount":9,"totalTokenCount":119,"promptTokensDetails":[{"modality":"TEXT","tokenCount":110}],"candidatesTokensDetails":[{"modality":"TEXT","tokenCount":9}]},"modelVersion":"test-model","responseId":"golden-google-E-2"}
+

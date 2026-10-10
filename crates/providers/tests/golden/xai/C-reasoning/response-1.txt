@@ -1,0 +1,51 @@
+event: response.created
+data: {"type":"response.created","sequence_number":0,"response":{"id":"resp_golden_C_1","object":"response","created_at":1791590400,"model":"test-model","output":[],"status":"in_progress"}}
+
+event: response.in_progress
+data: {"type":"response.in_progress","sequence_number":1,"response":{"id":"resp_golden_C_1","object":"response","created_at":1791590400,"model":"test-model","output":[],"status":"in_progress"}}
+
+event: response.output_item.added
+data: {"type":"response.output_item.added","sequence_number":2,"output_index":0,"item":{"type":"reasoning","id":"rs_golden_C_1","summary":[],"status":"in_progress"}}
+
+event: response.reasoning_summary_part.added
+data: {"type":"response.reasoning_summary_part.added","sequence_number":3,"item_id":"rs_golden_C_1","output_index":0,"summary_index":0,"part":{"type":"summary_text","text":""}}
+
+event: response.reasoning_summary_text.delta
+data: {"type":"response.reasoning_summary_text.delta","sequence_number":4,"item_id":"rs_golden_C_1","output_index":0,"summary_index":0,"delta":"The user wants a greeting."}
+
+event: response.reasoning_summary_text.delta
+data: {"type":"response.reasoning_summary_text.delta","sequence_number":5,"item_id":"rs_golden_C_1","output_index":0,"summary_index":0,"delta":" Keep it short."}
+
+event: response.reasoning_summary_text.done
+data: {"type":"response.reasoning_summary_text.done","sequence_number":6,"item_id":"rs_golden_C_1","output_index":0,"summary_index":0,"text":"The user wants a greeting. Keep it short."}
+
+event: response.reasoning_summary_part.done
+data: {"type":"response.reasoning_summary_part.done","sequence_number":7,"item_id":"rs_golden_C_1","output_index":0,"summary_index":0,"part":{"type":"summary_text","text":"The user wants a greeting. Keep it short."}}
+
+event: response.output_item.done
+data: {"type":"response.output_item.done","sequence_number":8,"output_index":0,"item":{"type":"reasoning","id":"rs_golden_C_1","summary":[{"type":"summary_text","text":"The user wants a greeting. Keep it short."}],"status":"completed"}}
+
+event: response.output_item.added
+data: {"type":"response.output_item.added","sequence_number":9,"output_index":1,"item":{"type":"message","id":"msg_golden_C_1","role":"assistant","content":[],"status":"in_progress"}}
+
+event: response.content_part.added
+data: {"type":"response.content_part.added","sequence_number":10,"item_id":"msg_golden_C_1","output_index":1,"content_index":0,"part":{"type":"output_text","text":"","annotations":[],"logprobs":[]}}
+
+event: response.output_text.delta
+data: {"type":"response.output_text.delta","sequence_number":11,"item_id":"msg_golden_C_1","output_index":1,"content_index":0,"delta":"Hi","logprobs":[]}
+
+event: response.output_text.delta
+data: {"type":"response.output_text.delta","sequence_number":12,"item_id":"msg_golden_C_1","output_index":1,"content_index":0,"delta":"!","logprobs":[]}
+
+event: response.output_text.done
+data: {"type":"response.output_text.done","sequence_number":13,"item_id":"msg_golden_C_1","output_index":1,"content_index":0,"text":"Hi!","logprobs":[]}
+
+event: response.content_part.done
+data: {"type":"response.content_part.done","sequence_number":14,"item_id":"msg_golden_C_1","output_index":1,"content_index":0,"part":{"type":"output_text","text":"Hi!","annotations":[],"logprobs":[]}}
+
+event: response.output_item.done
+data: {"type":"response.output_item.done","sequence_number":15,"output_index":1,"item":{"type":"message","id":"msg_golden_C_1","role":"assistant","content":[{"type":"output_text","text":"Hi!","annotations":[],"logprobs":[]}],"status":"completed"}}
+
+event: response.completed
+data: {"type":"response.completed","sequence_number":16,"response":{"id":"resp_golden_C_1","object":"response","created_at":1791590400,"model":"test-model","output":[{"type":"reasoning","id":"rs_golden_C_1","summary":[{"type":"summary_text","text":"The user wants a greeting. Keep it short."}],"status":"completed"},{"type":"message","id":"msg_golden_C_1","role":"assistant","content":[{"type":"output_text","text":"Hi!","annotations":[],"logprobs":[]}],"status":"completed"}],"status":"completed","usage":{"input_tokens":25,"output_tokens":30,"total_tokens":55,"input_tokens_details":{"cached_tokens":0},"output_tokens_details":{"reasoning_tokens":22}}}}
+

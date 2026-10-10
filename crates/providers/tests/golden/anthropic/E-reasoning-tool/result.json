@@ -1,0 +1,75 @@
+{
+  "turnResult": {
+    "response": "The echo tool returned hi.",
+    "toolsUsed": [
+      "echo"
+    ],
+    "iterations": 1,
+    "aborted": false,
+    "usage": {
+      "promptTokens": 110,
+      "completionTokens": 40
+    },
+    "hadSteer": false
+  },
+  "toolCalls": [
+    {
+      "toolCallId": "toolu_golden_echo_1",
+      "toolName": "echo",
+      "input": {
+        "text": "hi",
+        "n": 1
+      }
+    }
+  ],
+  "toolResults": [
+    {
+      "toolCallId": "toolu_golden_echo_1",
+      "toolName": "echo",
+      "output": "{\"text\":\"hi\",\"n\":1}"
+    }
+  ],
+  "chunkAccumulator": {
+    "usage": {
+      "promptTokens": 110,
+      "completionTokens": 9
+    },
+    "citations": [],
+    "hadTextContent": true,
+    "responseId": "msg_golden_E_2"
+  },
+  "aiSdkWarnings": [
+    {
+      "warnings": [
+        {
+          "type": "compatibility",
+          "feature": "maxOutputTokens",
+          "details": "The model \"test-model\" is unknown. The max output tokens have been limited to 4096. Set maxOutputTokens explicitly to override this limit."
+        }
+      ],
+      "provider": "anthropic.messages",
+      "model": "test-model"
+    },
+    {
+      "warnings": [
+        {
+          "type": "compatibility",
+          "feature": "maxOutputTokens",
+          "details": "The model \"test-model\" is unknown. The max output tokens have been limited to 4096. Set maxOutputTokens explicitly to override this limit."
+        }
+      ],
+      "provider": "anthropic.messages",
+      "model": "test-model"
+    }
+  ],
+  "console": [
+    {
+      "level": "info",
+      "text": "[Tool] echo args={\"text\":\"hi\",\"n\":1} → 19b in <ms>ms"
+    }
+  ],
+  "masks": {
+    "generatedIds": 0,
+    "generatedTimestampsInParts": 2
+  }
+}

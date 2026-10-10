@@ -1,0 +1,42 @@
+{
+  "turnResult": {
+    "response": "Hi!",
+    "toolsUsed": [],
+    "iterations": 0,
+    "aborted": false,
+    "usage": {
+      "promptTokens": 25,
+      "completionTokens": 30
+    },
+    "hadSteer": false
+  },
+  "toolCalls": [],
+  "toolResults": [],
+  "chunkAccumulator": {
+    "usage": {
+      "promptTokens": 25,
+      "completionTokens": 30
+    },
+    "citations": [],
+    "hadTextContent": true,
+    "responseId": "msg_golden_C_1"
+  },
+  "aiSdkWarnings": [
+    {
+      "warnings": [
+        {
+          "type": "compatibility",
+          "feature": "maxOutputTokens",
+          "details": "The model \"test-model\" is unknown. The max output tokens have been limited to 4096. Set maxOutputTokens explicitly to override this limit."
+        }
+      ],
+      "provider": "anthropic.messages",
+      "model": "test-model"
+    }
+  ],
+  "console": [],
+  "masks": {
+    "generatedIds": 0,
+    "generatedTimestampsInParts": 1
+  }
+}

@@ -1,0 +1,10 @@
+[
+  {
+    "type": "text",
+    "delta": "Hi"
+  },
+  {
+    "type": "text",
+    "delta": " there!"
+  }
+]

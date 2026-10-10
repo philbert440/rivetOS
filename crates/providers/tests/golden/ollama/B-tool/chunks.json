@@ -1,0 +1,31 @@
+[
+  {
+    "type": "tool_call_start",
+    "toolCall": {
+      "index": 0,
+      "id": "<generated-id-2>",
+      "name": "echo"
+    }
+  },
+  {
+    "type": "tool_call_delta",
+    "delta": "{\"text\":\"hi\",\"n\":1}",
+    "toolCall": {
+      "index": 0
+    }
+  },
+  {
+    "type": "tool_call_done",
+    "toolCall": {
+      "index": 0
+    }
+  },
+  {
+    "type": "text",
+    "delta": "The echo tool returned "
+  },
+  {
+    "type": "text",
+    "delta": "hi."
+  }
+]

@@ -1,0 +1,216 @@
+[
+  {
+    "type": "start"
+  },
+  {
+    "type": "start-step",
+    "request": {
+      "body": {
+        "generationConfig": {},
+        "contents": [
+          {
+            "role": "user",
+            "parts": [
+              {
+                "text": "Say hi."
+              }
+            ]
+          }
+        ],
+        "systemInstruction": {
+          "parts": [
+            {
+              "text": "You are a test."
+            }
+          ]
+        },
+        "tools": [
+          {
+            "functionDeclarations": [
+              {
+                "name": "echo",
+                "description": "Echo the arguments back as JSON.",
+                "parameters": {
+                  "required": [
+                    "text"
+                  ],
+                  "type": "object",
+                  "properties": {
+                    "text": {
+                      "description": "Text to echo back.",
+                      "type": "string"
+                    },
+                    "n": {
+                      "description": "A number to echo back.",
+                      "type": "number"
+                    }
+                  }
+                }
+              },
+              {
+                "name": "compact_context",
+                "description": "Summarize and compact conversation history to free context window space. Provide ranges of messages to replace with summaries. Message indices are 0-based positions in the conversation history (index 0 = first user or assistant message; system messages are excluded from indexing).",
+                "parameters": {
+                  "required": [
+                    "replacements"
+                  ],
+                  "type": "object",
+                  "properties": {
+                    "replacements": {
+                      "description": "Message ranges to replace with summaries",
+                      "type": "array",
+                      "items": {
+                        "required": [
+                          "start_index",
+                          "end_index",
+                          "summary"
+                        ],
+                        "type": "object",
+                        "properties": {
+                          "start_index": {
+                            "description": "Start index in conversation history (0-based, inclusive)",
+                            "type": "number"
+                          },
+                          "end_index": {
+                            "description": "End index in conversation history (0-based, inclusive)",
+                            "type": "number"
+                          },
+                          "summary": {
+                            "description": "Brief summary replacing these messages. Include key decisions, outcomes, and any information still relevant.",
+                            "type": "string"
+                          }
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            ]
+          }
+        ],
+        "toolConfig": {
+          "functionCallingConfig": {
+            "mode": "AUTO"
+          }
+        }
+      }
+    },
+    "warnings": []
+  },
+  {
+    "type": "text-start",
+    "id": "0"
+  },
+  {
+    "type": "text-delta",
+    "id": "0",
+    "text": "Hi"
+  },
+  {
+    "type": "text-delta",
+    "id": "0",
+    "text": " there!"
+  },
+  {
+    "type": "text-end",
+    "id": "0"
+  },
+  {
+    "type": "finish-step",
+    "finishReason": "stop",
+    "rawFinishReason": "STOP",
+    "usage": {
+      "inputTokens": 25,
+      "inputTokenDetails": {
+        "noCacheTokens": 15,
+        "cacheReadTokens": 10
+      },
+      "outputTokens": 5,
+      "outputTokenDetails": {
+        "textTokens": 5,
+        "reasoningTokens": 0
+      },
+      "totalTokens": 30,
+      "raw": {
+        "cachedContentTokenCount": 10,
+        "promptTokenCount": 25,
+        "candidatesTokenCount": 5,
+        "totalTokenCount": 30,
+        "promptTokensDetails": [
+          {
+            "modality": "TEXT",
+            "tokenCount": 25
+          }
+        ],
+        "candidatesTokensDetails": [
+          {
+            "modality": "TEXT",
+            "tokenCount": 5
+          }
+        ]
+      },
+      "reasoningTokens": 0,
+      "cachedInputTokens": 10
+    },
+    "providerMetadata": {
+      "google": {
+        "promptFeedback": null,
+        "groundingMetadata": null,
+        "urlContextMetadata": null,
+        "safetyRatings": null,
+        "usageMetadata": {
+          "cachedContentTokenCount": 10,
+          "promptTokenCount": 25,
+          "candidatesTokenCount": 5,
+          "totalTokenCount": 30,
+          "promptTokensDetails": [
+            {
+              "modality": "TEXT",
+              "tokenCount": 25
+            }
+          ],
+          "candidatesTokensDetails": [
+            {
+              "modality": "TEXT",
+              "tokenCount": 5
+            }
+          ]
+        },
+        "finishMessage": null,
+        "serviceTier": null
+      }
+    },
+    "response": {
+      "id": "golden-google-A-1",
+      "timestamp": "<generated-timestamp>",
+      "modelId": "test-model",
+      "headers": {
+        "cache-control": "no-cache",
+        "connection": "keep-alive",
+        "content-type": "text/event-stream",
+        "keep-alive": "timeout=5",
+        "transfer-encoding": "chunked"
+      }
+    }
+  },
+  {
+    "type": "finish",
+    "finishReason": "stop",
+    "rawFinishReason": "STOP",
+    "totalUsage": {
+      "inputTokens": 25,
+      "inputTokenDetails": {
+        "noCacheTokens": 15,
+        "cacheReadTokens": 10
+      },
+      "outputTokens": 5,
+      "outputTokenDetails": {
+        "textTokens": 5,
+        "reasoningTokens": 0
+      },
+      "totalTokens": 30,
+      "reasoningTokens": 0,
+      "cachedInputTokens": 10
+    }
+  }
+]

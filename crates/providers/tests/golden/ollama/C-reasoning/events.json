@@ -1,0 +1,18 @@
+[
+  {
+    "type": "reasoning",
+    "content": "The user wants a greeting."
+  },
+  {
+    "type": "reasoning",
+    "content": " Keep it short."
+  },
+  {
+    "type": "text",
+    "content": "Hi"
+  },
+  {
+    "type": "text",
+    "content": "!"
+  }
+]

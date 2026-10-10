@@ -1,0 +1,140 @@
+[
+  {
+    "index": 1,
+    "method": "POST",
+    "target": "/v1beta/models/test-model:streamGenerateContent?alt=sse",
+    "path": "/v1beta/models/test-model:streamGenerateContent",
+    "query": [
+      [
+        "alt",
+        "sse"
+      ]
+    ],
+    "headers": [
+      [
+        "host",
+        "127.0.0.1:47813"
+      ],
+      [
+        "connection",
+        "keep-alive"
+      ],
+      [
+        "content-type",
+        "application/json"
+      ],
+      [
+        "user-agent",
+        "ai-sdk/google/3.0.103 ai-sdk/provider-utils/4.0.41 runtime/node.js/22"
+      ],
+      [
+        "x-goog-api-key",
+        "<redacted>"
+      ],
+      [
+        "accept",
+        "*/*"
+      ],
+      [
+        "accept-language",
+        "*"
+      ],
+      [
+        "sec-fetch-mode",
+        "cors"
+      ],
+      [
+        "accept-encoding",
+        "gzip, deflate"
+      ],
+      [
+        "content-length",
+        "1484"
+      ]
+    ],
+    "body": "{\"generationConfig\":{\"thinkingConfig\":{\"thinkingBudget\":8192,\"includeThoughts\":true}},\"contents\":[{\"role\":\"user\",\"parts\":[{\"text\":\"Say hi.\"}]}],\"systemInstruction\":{\"parts\":[{\"text\":\"You are a test.\"}]},\"tools\":[{\"functionDeclarations\":[{\"name\":\"echo\",\"description\":\"Echo the arguments back as JSON.\",\"parameters\":{\"required\":[\"text\"],\"type\":\"object\",\"properties\":{\"text\":{\"description\":\"Text to echo back.\",\"type\":\"string\"},\"n\":{\"description\":\"A number to echo back.\",\"type\":\"number\"}}}},{\"name\":\"compact_context\",\"description\":\"Summarize and compact conversation history to free context window space. Provide ranges of messages to replace with summaries. Message indices are 0-based positions in the conversation history (index 0 = first user or assistant message; system messages are excluded from indexing).\",\"parameters\":{\"required\":[\"replacements\"],\"type\":\"object\",\"properties\":{\"replacements\":{\"description\":\"Message ranges to replace with summaries\",\"type\":\"array\",\"items\":{\"required\":[\"start_index\",\"end_index\",\"summary\"],\"type\":\"object\",\"properties\":{\"start_index\":{\"description\":\"Start index in conversation history (0-based, inclusive)\",\"type\":\"number\"},\"end_index\":{\"description\":\"End index in conversation history (0-based, inclusive)\",\"type\":\"number\"},\"summary\":{\"description\":\"Brief summary replacing these messages. Include key decisions, outcomes, and any information still relevant.\",\"type\":\"string\"}}}}}}}]}],\"toolConfig\":{\"functionCallingConfig\":{\"mode\":\"AUTO\"}}}",
+    "served": {
+      "status": 200,
+      "headers": [
+        [
+          "Content-Type",
+          "text/event-stream"
+        ],
+        [
+          "Cache-Control",
+          "no-cache"
+        ]
+      ],
+      "bodyFile": "response-1.txt"
+    }
+  },
+  {
+    "index": 2,
+    "method": "POST",
+    "target": "/v1beta/models/test-model:streamGenerateContent?alt=sse",
+    "path": "/v1beta/models/test-model:streamGenerateContent",
+    "query": [
+      [
+        "alt",
+        "sse"
+      ]
+    ],
+    "headers": [
+      [
+        "host",
+        "127.0.0.1:47813"
+      ],
+      [
+        "connection",
+        "keep-alive"
+      ],
+      [
+        "content-type",
+        "application/json"
+      ],
+      [
+        "user-agent",
+        "ai-sdk/google/3.0.103 ai-sdk/provider-utils/4.0.41 runtime/node.js/22"
+      ],
+      [
+        "x-goog-api-key",
+        "<redacted>"
+      ],
+      [
+        "accept",
+        "*/*"
+      ],
+      [
+        "accept-language",
+        "*"
+      ],
+      [
+        "sec-fetch-mode",
+        "cors"
+      ],
+      [
+        "accept-encoding",
+        "gzip, deflate"
+      ],
+      [
+        "content-length",
+        "1747"
+      ]
+    ],
+    "body": "{\"generationConfig\":{\"thinkingConfig\":{\"thinkingBudget\":8192,\"includeThoughts\":true}},\"contents\":[{\"role\":\"user\",\"parts\":[{\"text\":\"Say hi.\"}]},{\"role\":\"model\",\"parts\":[{\"functionCall\":{\"id\":\"<generated-id-1>\",\"name\":\"echo\",\"args\":{\"text\":\"hi\",\"n\":1}}}]},{\"role\":\"user\",\"parts\":[{\"functionResponse\":{\"id\":\"<generated-id-1>\",\"name\":\"echo\",\"response\":{\"name\":\"echo\",\"content\":\"{\\\"text\\\":\\\"hi\\\",\\\"n\\\":1}\"}}}]}],\"systemInstruction\":{\"parts\":[{\"text\":\"You are a test.\"}]},\"tools\":[{\"functionDeclarations\":[{\"name\":\"echo\",\"description\":\"Echo the arguments back as JSON.\",\"parameters\":{\"required\":[\"text\"],\"type\":\"object\",\"properties\":{\"text\":{\"description\":\"Text to echo back.\",\"type\":\"string\"},\"n\":{\"description\":\"A number to echo back.\",\"type\":\"number\"}}}},{\"name\":\"compact_context\",\"description\":\"Summarize and compact conversation history to free context window space. Provide ranges of messages to replace with summaries. Message indices are 0-based positions in the conversation history (index 0 = first user or assistant message; system messages are excluded from indexing).\",\"parameters\":{\"required\":[\"replacements\"],\"type\":\"object\",\"properties\":{\"replacements\":{\"description\":\"Message ranges to replace with summaries\",\"type\":\"array\",\"items\":{\"required\":[\"start_index\",\"end_index\",\"summary\"],\"type\":\"object\",\"properties\":{\"start_index\":{\"description\":\"Start index in conversation history (0-based, inclusive)\",\"type\":\"number\"},\"end_index\":{\"description\":\"End index in conversation history (0-based, inclusive)\",\"type\":\"number\"},\"summary\":{\"description\":\"Brief summary replacing these messages. Include key decisions, outcomes, and any information still relevant.\",\"type\":\"string\"}}}}}}}]}],\"toolConfig\":{\"functionCallingConfig\":{\"mode\":\"AUTO\"}}}",
+    "served": {
+      "status": 200,
+      "headers": [
+        [
+          "Content-Type",
+          "text/event-stream"
+        ],
+        [
+          "Cache-Control",
+          "no-cache"
+        ]
+      ],
+      "bodyFile": "response-2.txt"
+    }
+  }
+]

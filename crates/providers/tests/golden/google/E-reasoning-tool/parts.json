@@ -1,0 +1,505 @@
+[
+  {
+    "type": "start"
+  },
+  {
+    "type": "start-step",
+    "request": {
+      "body": {
+        "generationConfig": {
+          "thinkingConfig": {
+            "thinkingBudget": 8192,
+            "includeThoughts": true
+          }
+        },
+        "contents": [
+          {
+            "role": "user",
+            "parts": [
+              {
+                "text": "Say hi."
+              }
+            ]
+          }
+        ],
+        "systemInstruction": {
+          "parts": [
+            {
+              "text": "You are a test."
+            }
+          ]
+        },
+        "tools": [
+          {
+            "functionDeclarations": [
+              {
+                "name": "echo",
+                "description": "Echo the arguments back as JSON.",
+                "parameters": {
+                  "required": [
+                    "text"
+                  ],
+                  "type": "object",
+                  "properties": {
+                    "text": {
+                      "description": "Text to echo back.",
+                      "type": "string"
+                    },
+                    "n": {
+                      "description": "A number to echo back.",
+                      "type": "number"
+                    }
+                  }
+                }
+              },
+              {
+                "name": "compact_context",
+                "description": "Summarize and compact conversation history to free context window space. Provide ranges of messages to replace with summaries. Message indices are 0-based positions in the conversation history (index 0 = first user or assistant message; system messages are excluded from indexing).",
+                "parameters": {
+                  "required": [
+                    "replacements"
+                  ],
+                  "type": "object",
+                  "properties": {
+                    "replacements": {
+                      "description": "Message ranges to replace with summaries",
+                      "type": "array",
+                      "items": {
+                        "required": [
+                          "start_index",
+                          "end_index",
+                          "summary"
+                        ],
+                        "type": "object",
+                        "properties": {
+                          "start_index": {
+                            "description": "Start index in conversation history (0-based, inclusive)",
+                            "type": "number"
+                          },
+                          "end_index": {
+                            "description": "End index in conversation history (0-based, inclusive)",
+                            "type": "number"
+                          },
+                          "summary": {
+                            "description": "Brief summary replacing these messages. Include key decisions, outcomes, and any information still relevant.",
+                            "type": "string"
+                          }
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            ]
+          }
+        ],
+        "toolConfig": {
+          "functionCallingConfig": {
+            "mode": "AUTO"
+          }
+        }
+      }
+    },
+    "warnings": []
+  },
+  {
+    "type": "reasoning-start",
+    "id": "0"
+  },
+  {
+    "type": "reasoning-delta",
+    "id": "0",
+    "text": "I should call the echo tool."
+  },
+  {
+    "type": "tool-input-start",
+    "id": "<generated-id-1>",
+    "toolName": "echo",
+    "providerMetadata": {
+      "google": {
+        "thoughtSignature": "Z29sZGVuLXRob3VnaHQtc2lnbmF0dXJlLUUx"
+      }
+    },
+    "dynamic": false
+  },
+  {
+    "type": "tool-input-delta",
+    "id": "<generated-id-1>",
+    "delta": "{\"text\":\"hi\",\"n\":1}",
+    "providerMetadata": {
+      "google": {
+        "thoughtSignature": "Z29sZGVuLXRob3VnaHQtc2lnbmF0dXJlLUUx"
+      }
+    }
+  },
+  {
+    "type": "tool-input-end",
+    "id": "<generated-id-1>",
+    "providerMetadata": {
+      "google": {
+        "thoughtSignature": "Z29sZGVuLXRob3VnaHQtc2lnbmF0dXJlLUUx"
+      }
+    }
+  },
+  {
+    "type": "tool-call",
+    "toolCallId": "<generated-id-1>",
+    "toolName": "echo",
+    "input": {
+      "text": "hi",
+      "n": 1
+    },
+    "providerMetadata": {
+      "google": {
+        "thoughtSignature": "Z29sZGVuLXRob3VnaHQtc2lnbmF0dXJlLUUx"
+      }
+    }
+  },
+  {
+    "type": "tool-result",
+    "toolCallId": "<generated-id-1>",
+    "toolName": "echo",
+    "input": {
+      "text": "hi",
+      "n": 1
+    },
+    "output": "{\"text\":\"hi\",\"n\":1}",
+    "dynamic": false,
+    "providerMetadata": {
+      "google": {
+        "thoughtSignature": "Z29sZGVuLXRob3VnaHQtc2lnbmF0dXJlLUUx"
+      }
+    }
+  },
+  {
+    "type": "reasoning-end",
+    "id": "0"
+  },
+  {
+    "type": "finish-step",
+    "finishReason": "tool-calls",
+    "rawFinishReason": "STOP",
+    "usage": {
+      "inputTokens": 60,
+      "inputTokenDetails": {
+        "noCacheTokens": 60,
+        "cacheReadTokens": 0
+      },
+      "outputTokens": 40,
+      "outputTokenDetails": {
+        "textTokens": 20,
+        "reasoningTokens": 20
+      },
+      "totalTokens": 100,
+      "raw": {
+        "thoughtsTokenCount": 20,
+        "promptTokenCount": 60,
+        "candidatesTokenCount": 20,
+        "totalTokenCount": 100,
+        "promptTokensDetails": [
+          {
+            "modality": "TEXT",
+            "tokenCount": 60
+          }
+        ],
+        "candidatesTokensDetails": [
+          {
+            "modality": "TEXT",
+            "tokenCount": 20
+          }
+        ]
+      },
+      "reasoningTokens": 20,
+      "cachedInputTokens": 0
+    },
+    "providerMetadata": {
+      "google": {
+        "promptFeedback": null,
+        "groundingMetadata": null,
+        "urlContextMetadata": null,
+        "safetyRatings": null,
+        "usageMetadata": {
+          "thoughtsTokenCount": 20,
+          "promptTokenCount": 60,
+          "candidatesTokenCount": 20,
+          "totalTokenCount": 100,
+          "promptTokensDetails": [
+            {
+              "modality": "TEXT",
+              "tokenCount": 60
+            }
+          ],
+          "candidatesTokensDetails": [
+            {
+              "modality": "TEXT",
+              "tokenCount": 20
+            }
+          ]
+        },
+        "finishMessage": null,
+        "serviceTier": null
+      }
+    },
+    "response": {
+      "id": "golden-google-E-1",
+      "timestamp": "<generated-timestamp>",
+      "modelId": "test-model",
+      "headers": {
+        "cache-control": "no-cache",
+        "connection": "keep-alive",
+        "content-type": "text/event-stream",
+        "keep-alive": "timeout=5",
+        "transfer-encoding": "chunked"
+      }
+    }
+  },
+  {
+    "type": "start-step",
+    "request": {
+      "body": {
+        "generationConfig": {
+          "thinkingConfig": {
+            "thinkingBudget": 8192,
+            "includeThoughts": true
+          }
+        },
+        "contents": [
+          {
+            "role": "user",
+            "parts": [
+              {
+                "text": "Say hi."
+              }
+            ]
+          },
+          {
+            "role": "model",
+            "parts": [
+              {
+                "text": "I should call the echo tool.",
+                "thought": true
+              },
+              {
+                "functionCall": {
+                  "id": "<generated-id-1>",
+                  "name": "echo",
+                  "args": {
+                    "text": "hi",
+                    "n": 1
+                  }
+                },
+                "thoughtSignature": "Z29sZGVuLXRob3VnaHQtc2lnbmF0dXJlLUUx"
+              }
+            ]
+          },
+          {
+            "role": "user",
+            "parts": [
+              {
+                "functionResponse": {
+                  "id": "<generated-id-1>",
+                  "name": "echo",
+                  "response": {
+                    "name": "echo",
+                    "content": "{\"text\":\"hi\",\"n\":1}"
+                  }
+                }
+              }
+            ]
+          }
+        ],
+        "systemInstruction": {
+          "parts": [
+            {
+              "text": "You are a test."
+            }
+          ]
+        },
+        "tools": [
+          {
+            "functionDeclarations": [
+              {
+                "name": "echo",
+                "description": "Echo the arguments back as JSON.",
+                "parameters": {
+                  "required": [
+                    "text"
+                  ],
+                  "type": "object",
+                  "properties": {
+                    "text": {
+                      "description": "Text to echo back.",
+                      "type": "string"
+                    },
+                    "n": {
+                      "description": "A number to echo back.",
+                      "type": "number"
+                    }
+                  }
+                }
+              },
+              {
+                "name": "compact_context",
+                "description": "Summarize and compact conversation history to free context window space. Provide ranges of messages to replace with summaries. Message indices are 0-based positions in the conversation history (index 0 = first user or assistant message; system messages are excluded from indexing).",
+                "parameters": {
+                  "required": [
+                    "replacements"
+                  ],
+                  "type": "object",
+                  "properties": {
+                    "replacements": {
+                      "description": "Message ranges to replace with summaries",
+                      "type": "array",
+                      "items": {
+                        "required": [
+                          "start_index",
+                          "end_index",
+                          "summary"
+                        ],
+                        "type": "object",
+                        "properties": {
+                          "start_index": {
+                            "description": "Start index in conversation history (0-based, inclusive)",
+                            "type": "number"
+                          },
+                          "end_index": {
+                            "description": "End index in conversation history (0-based, inclusive)",
+                            "type": "number"
+                          },
+                          "summary": {
+                            "description": "Brief summary replacing these messages. Include key decisions, outcomes, and any information still relevant.",
+                            "type": "string"
+                          }
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            ]
+          }
+        ],
+        "toolConfig": {
+          "functionCallingConfig": {
+            "mode": "AUTO"
+          }
+        }
+      }
+    },
+    "warnings": []
+  },
+  {
+    "type": "text-start",
+    "id": "0"
+  },
+  {
+    "type": "text-delta",
+    "id": "0",
+    "text": "The echo tool returned "
+  },
+  {
+    "type": "text-delta",
+    "id": "0",
+    "text": "hi."
+  },
+  {
+    "type": "text-end",
+    "id": "0"
+  },
+  {
+    "type": "finish-step",
+    "finishReason": "stop",
+    "rawFinishReason": "STOP",
+    "usage": {
+      "inputTokens": 110,
+      "inputTokenDetails": {
+        "noCacheTokens": 110,
+        "cacheReadTokens": 0
+      },
+      "outputTokens": 9,
+      "outputTokenDetails": {
+        "textTokens": 9,
+        "reasoningTokens": 0
+      },
+      "totalTokens": 119,
+      "raw": {
+        "promptTokenCount": 110,
+        "candidatesTokenCount": 9,
+        "totalTokenCount": 119,
+        "promptTokensDetails": [
+          {
+            "modality": "TEXT",
+            "tokenCount": 110
+          }
+        ],
+        "candidatesTokensDetails": [
+          {
+            "modality": "TEXT",
+            "tokenCount": 9
+          }
+        ]
+      },
+      "reasoningTokens": 0,
+      "cachedInputTokens": 0
+    },
+    "providerMetadata": {
+      "google": {
+        "promptFeedback": null,
+        "groundingMetadata": null,
+        "urlContextMetadata": null,
+        "safetyRatings": null,
+        "usageMetadata": {
+          "promptTokenCount": 110,
+          "candidatesTokenCount": 9,
+          "totalTokenCount": 119,
+          "promptTokensDetails": [
+            {
+              "modality": "TEXT",
+              "tokenCount": 110
+            }
+          ],
+          "candidatesTokensDetails": [
+            {
+              "modality": "TEXT",
+              "tokenCount": 9
+            }
+          ]
+        },
+        "finishMessage": null,
+        "serviceTier": null
+      }
+    },
+    "response": {
+      "id": "golden-google-E-2",
+      "timestamp": "<generated-timestamp>",
+      "modelId": "test-model",
+      "headers": {
+        "cache-control": "no-cache",
+        "connection": "keep-alive",
+        "content-type": "text/event-stream",
+        "keep-alive": "timeout=5",
+        "transfer-encoding": "chunked"
+      }
+    }
+  },
+  {
+    "type": "finish",
+    "finishReason": "stop",
+    "rawFinishReason": "STOP",
+    "totalUsage": {
+      "inputTokens": 170,
+      "inputTokenDetails": {
+        "noCacheTokens": 170,
+        "cacheReadTokens": 0
+      },
+      "outputTokens": 49,
+      "outputTokenDetails": {
+        "textTokens": 29,
+        "reasoningTokens": 20
+      },
+      "totalTokens": 219,
+      "reasoningTokens": 20,
+      "cachedInputTokens": 0
+    }
+  }
+]

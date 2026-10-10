@@ -1,0 +1,2 @@
+data: {"candidates":[{"content":{"parts":[{"functionCall":{"name":"echo","args":{"text":"hi","n":1.0}}}],"role":"model"},"finishReason":"STOP","index":0}],"usageMetadata":{"promptTokenCount":60,"candidatesTokenCount":18,"totalTokenCount":78,"promptTokensDetails":[{"modality":"TEXT","tokenCount":60}],"candidatesTokensDetails":[{"modality":"TEXT","tokenCount":18}]},"modelVersion":"test-model","responseId":"golden-google-B-1"}
+

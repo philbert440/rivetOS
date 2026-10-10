@@ -1,0 +1,9 @@
+{
+  "available": true,
+  "providerStateAfterProbe": {
+    "lastResponseId": null,
+    "lastResponseModel": null,
+    "promptCacheKey": null
+  },
+  "console": []
+}

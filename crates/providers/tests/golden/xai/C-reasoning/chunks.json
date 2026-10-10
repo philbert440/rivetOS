@@ -1,0 +1,18 @@
+[
+  {
+    "type": "reasoning",
+    "delta": "The user wants a greeting."
+  },
+  {
+    "type": "reasoning",
+    "delta": " Keep it short."
+  },
+  {
+    "type": "text",
+    "delta": "Hi"
+  },
+  {
+    "type": "text",
+    "delta": "!"
+  }
+]

@@ -1,0 +1,37 @@
+{
+  "turnResult": {
+    "response": "Hi there!",
+    "toolsUsed": [],
+    "iterations": 0,
+    "aborted": false,
+    "usage": {
+      "promptTokens": 25,
+      "completionTokens": 5,
+      "cachedTokens": 10
+    },
+    "hadSteer": false
+  },
+  "toolCalls": [],
+  "toolResults": [],
+  "chunkAccumulator": {
+    "usage": {
+      "promptTokens": 25,
+      "completionTokens": 5,
+      "cachedTokens": 10
+    },
+    "citations": [],
+    "hadTextContent": true,
+    "responseId": "resp_golden_A_1"
+  },
+  "aiSdkWarnings": [],
+  "console": [],
+  "providerStateAfterTurn": {
+    "lastResponseId": null,
+    "lastResponseModel": null,
+    "promptCacheKey": "test-session"
+  },
+  "masks": {
+    "generatedIds": 0,
+    "generatedTimestampsInParts": 0
+  }
+}
