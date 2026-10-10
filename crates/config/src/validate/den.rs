@@ -182,12 +182,13 @@ fn validate_harnesses(den: &Map<String, Value>, issues: &mut Issues) {
 }
 
 fn validate_paths(den: &Map<String, Value>, issues: &mut Issues) {
-    if let Some(value) = den.get("static_dir")
+    let key = "static_dir";
+    if let Some(value) = den.get(key)
         && !trimmed_nonempty(value)
     {
         issues.error(
-            "den.static_dir",
-            "\"den.static_dir\" must be a non-empty string path",
+            format!("den.{key}"),
+            format!("\"den.{key}\" must be a non-empty string path"),
         );
     }
     if let Some(value) = den.get("files_root")

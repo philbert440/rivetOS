@@ -164,7 +164,7 @@ fn validate_harness(
         if !ok {
             issues.error(
                 format!("{path}.effort"),
-                format!("\"{path}.effort\" must be '{low}', '{medium}' or '{high}'"),
+                format!("\"{path}.effort\" must be 'low', 'medium' or 'high'"),
             );
         }
     }
@@ -284,10 +284,11 @@ fn rule_ok(value: &Value) -> bool {
 }
 
 fn validate_eval(eval_section: &Map<String, Value>, issues: &mut Issues) {
+    let path = "tasks.eval";
     for key in eval_section.keys() {
         if !keys::has(keys::KNOWN_TASKS_EVAL, key) {
             issues.warning(
-                format!("tasks.eval.{key}"),
+                format!("{path}.{key}"),
                 format!("Unknown tasks.eval key \"{key}\""),
             );
         }
@@ -297,8 +298,8 @@ fn validate_eval(eval_section: &Map<String, Value>, issues: &mut Issues) {
             && !value.is_boolean()
         {
             issues.error(
-                format!("tasks.eval.{flag}"),
-                format!("\"tasks.eval.{flag}\" must be a boolean"),
+                format!("{path}.{flag}"),
+                format!("\"{path}.{flag}\" must be a boolean"),
             );
         }
     }
@@ -306,8 +307,8 @@ fn validate_eval(eval_section: &Map<String, Value>, issues: &mut Issues) {
         && !is_non_negative_int(retries)
     {
         issues.error(
-            "tasks.eval.max_retries",
-            "\"tasks.eval.max_retries\" must be a non-negative integer",
+            format!("{path}.max_retries"),
+            format!("\"{path}.max_retries\" must be a non-negative integer"),
         );
     }
     if let Some(origins) = eval_section.get("skip_origins") {
@@ -316,8 +317,8 @@ fn validate_eval(eval_section: &Map<String, Value>, issues: &mut Issues) {
             .is_some_and(|items| items.iter().all(Value::is_string));
         if !ok {
             issues.error(
-                "tasks.eval.skip_origins",
-                "\"tasks.eval.skip_origins\" must be an array of strings",
+                format!("{path}.skip_origins"),
+                format!("\"{path}.skip_origins\" must be an array of strings"),
             );
         }
     }
@@ -326,13 +327,14 @@ fn validate_eval(eval_section: &Map<String, Value>, issues: &mut Issues) {
 }
 
 fn validate_verifier(eval_section: &Map<String, Value>, issues: &mut Issues) {
+    let path = "tasks.eval";
     let Some(verifier) = eval_section.get("verifier") else {
         return;
     };
     if !non_null_objectish(verifier) {
         issues.error(
-            "tasks.eval.verifier",
-            "\"tasks.eval.verifier\" must be an object",
+            format!("{path}.verifier"),
+            format!("\"{path}.verifier\" must be an object"),
         );
     }
     let Some(executor) = verifier.as_object().and_then(|map| map.get("executor")) else {
@@ -345,22 +347,21 @@ fn validate_verifier(eval_section: &Map<String, Value>, issues: &mut Issues) {
         .is_some_and(|text| text == chat_loop || text == harness_session);
     if !ok {
         issues.error(
-            "tasks.eval.verifier.executor",
-            format!(
-                "\"tasks.eval.verifier.executor\" must be '{chat_loop}' or '{harness_session}'"
-            ),
+            format!("{path}.verifier.executor"),
+            format!("\"{path}.verifier.executor\" must be 'chat-loop' or 'harness-session'"),
         );
     }
 }
 
 fn validate_escalation(eval_section: &Map<String, Value>, issues: &mut Issues) {
+    let path = "tasks.eval";
     let Some(escalation) = eval_section.get("escalation") else {
         return;
     };
     if !non_null_objectish(escalation) {
         issues.error(
-            "tasks.eval.escalation",
-            "\"tasks.eval.escalation\" must be an object",
+            format!("{path}.escalation"),
+            format!("\"{path}.escalation\" must be an object"),
         );
         return;
     }
@@ -369,8 +370,8 @@ fn validate_escalation(eval_section: &Map<String, Value>, issues: &mut Issues) {
     };
     if !channel.is_string() {
         issues.error(
-            "tasks.eval.escalation.channel",
-            "\"tasks.eval.escalation.channel\" must be a string",
+            format!("{path}.escalation.channel"),
+            format!("\"{path}.escalation.channel\" must be a string"),
         );
     }
 }

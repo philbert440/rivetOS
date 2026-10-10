@@ -162,7 +162,7 @@ impl Visitor<'_> for JsNumberVisitor {
     }
 }
 
-fn json_number(value: f64) -> String {
+pub(crate) fn json_number(value: f64) -> String {
     if value == 0.0 {
         return "0".to_string();
     }

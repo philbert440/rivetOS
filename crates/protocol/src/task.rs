@@ -1,4 +1,5 @@
 use serde::de::Deserializer;
+use serde::ser::Error;
 use serde::{Deserialize, Serialize, Serializer};
 use serde_json::{Map, Value};
 
@@ -172,7 +173,7 @@ impl Serialize for ParsedArtifact {
     where
         S: Serializer,
     {
-        self.object.serialize(serializer)
+        serialize_preserved(&self.object, serializer)
     }
 }
 
@@ -209,7 +210,18 @@ impl Serialize for ParsedCriterion {
     where
         S: Serializer,
     {
-        self.object.serialize(serializer)
+        serialize_preserved(&self.object, serializer)
+    }
+}
+
+fn serialize_preserved<S>(object: &Map<String, Value>, serializer: S) -> Result<S::Ok, S::Error>
+where
+    S: Serializer,
+{
+    let text = crate::js::stringify(&Value::Object(object.clone()));
+    match serde_json::value::RawValue::from_string(text) {
+        Ok(raw) => raw.serialize(serializer),
+        Err(err) => Err(S::Error::custom(err)),
     }
 }
 
@@ -270,7 +282,7 @@ pub fn parse_task_result_json(json: &str) -> Option<ParsedTaskResult> {
 fn fence_content_offset(after_marker: &str) -> Option<usize> {
     let prefix_end = after_marker
         .char_indices()
-        .find(|(_, ch)| !ch.is_whitespace())
+        .find(|(_, ch)| !crate::js::is_js_whitespace(*ch))
         .map(|(index, _)| index)
         .unwrap_or(after_marker.len());
     let prefix = &after_marker[..prefix_end];

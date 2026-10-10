@@ -103,7 +103,10 @@ fn validate_postgres(pg: &Map<String, Value>, issues: &mut Issues) {
         if !ok {
             issues.error(
                 "memory.postgres.embed_expected_dims",
-                "\"embed_expected_dims\" must equal the embedding column width (1024); any other value bricks halfvec inserts and vector search",
+                format!(
+                    "\"embed_expected_dims\" must equal the embedding column width ({}); any other value bricks halfvec inserts and vector search",
+                    keys::EMBEDDING_COLUMN_DIMS
+                ),
             );
         }
     }

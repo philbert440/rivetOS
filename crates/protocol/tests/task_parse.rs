@@ -119,3 +119,31 @@ fn non_objects_are_filtered_and_missing_lists_follow_typescript() {
     assert!(missing.artifacts.is_empty());
     assert!(missing.criteria_self_report.is_none());
 }
+
+#[test]
+fn preserved_payloads_use_javascript_number_and_key_order() {
+    let raw = r#"{"verdict":"completed","summary":"ok","artifacts":[{"kind":"patch","ref":"x","note":1.0,"extra":{"b":true,"2":2,"1":0.1}}],"criteriaSelfReport":[{"id":"c1","met":false,"evidence":{"n":-0,"big":1e21,"small":1.5e-7,"10":true,"9":null}}]}"#;
+    let parsed = parse_task_result_json(raw).unwrap();
+    assert_eq!(
+        serde_json::to_string(&parsed.artifacts[0]).unwrap(),
+        r#"{"kind":"patch","ref":"x","note":1,"extra":{"1":0.1,"2":2,"b":true}}"#
+    );
+    let criteria = parsed.criteria_self_report.unwrap();
+    assert_eq!(
+        serde_json::to_string(&criteria[0]).unwrap(),
+        r#"{"id":"c1","met":false,"evidence":{"9":null,"10":true,"n":0,"big":1e+21,"small":1.5e-7}}"#
+    );
+}
+
+#[test]
+fn bom_between_fence_tag_and_newline_parses() {
+    let text = "```TASK_RESULT\u{FEFF}\n{\"verdict\":\"completed\",\"summary\":\"s\"}\n```";
+    let parsed = parse_task_result(text).unwrap();
+    assert_eq!(parsed.summary, "s");
+}
+
+#[test]
+fn next_line_at_fence_tag_is_not_whitespace() {
+    let text = "```TASK_RESULT\u{0085}\n{\"verdict\":\"completed\",\"summary\":\"s\"}\n```";
+    assert!(parse_task_result(text).is_none());
+}

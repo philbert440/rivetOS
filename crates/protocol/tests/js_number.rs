@@ -56,10 +56,17 @@ fn javascript_number_spelling() {
     for (value, expected) in cases {
         assert_eq!(spell(*value), *expected, "{value}");
         let parsed: JsNumber = serde_json::from_str(expected).unwrap();
-        if parsed.as_f64() == *value {
-            assert_eq!(spell(parsed.as_f64()), *expected, "{expected}");
-        }
+        assert_eq!(parsed.as_f64(), *value, "{expected}");
+        assert_eq!(spell(parsed.as_f64()), *expected, "{expected}");
     }
+}
+
+#[test]
+fn large_integer_token_round_trips() {
+    let token = "123456789012345680000";
+    let parsed: JsNumber = serde_json::from_str(token).unwrap();
+    assert_eq!(parsed.as_f64(), 123456789012345680000.0);
+    assert_eq!(spell(parsed.as_f64()), token);
 }
 
 #[test]

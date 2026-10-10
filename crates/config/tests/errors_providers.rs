@@ -309,3 +309,55 @@ fn invalid_regex_prefix() {
         result.errors
     );
 }
+
+fn yaml_quote(text: &str) -> String {
+    let mut out = String::from("\"");
+    for ch in text.chars() {
+        match ch {
+            '\\' | '"' => {
+                out.push('\\');
+                out.push(ch);
+            }
+            _ => out.push(ch),
+        }
+    }
+    out.push('"');
+    out
+}
+
+fn v8_regex_message(source: &str, reason: &str) -> String {
+    let mut out = String::from("Invalid regex: Invalid regular expression: /");
+    out.push_str(source);
+    out.push_str("/g: ");
+    out.push_str(reason);
+    out
+}
+
+#[test]
+fn invalid_regex_v8_text() {
+    let cases = [
+        ("*", "Nothing to repeat"),
+        ("+", "Nothing to repeat"),
+        ("?", "Nothing to repeat"),
+        ("{1}", "Nothing to repeat"),
+        ("(?<=a)*", "Nothing to repeat"),
+        ("(", "Unterminated group"),
+        (")", "Unmatched ')'"),
+        ("())", "Unmatched ')'"),
+        ("(?", "Invalid group"),
+        ("(?i)", "Invalid group"),
+        ("[", "Unterminated character class"),
+        ("\\", "Invalid escape"),
+        ("(?<a>x)\\k<b>", "Invalid named capture referenced"),
+        ("(?<a>x)(?<a>y)", "Duplicate capture group name"),
+        ("a{2,1}", "numbers out of order in {} quantifier"),
+        ("[z-a]", "Range out of order in character class"),
+    ];
+    for (source, reason) in cases {
+        let yaml = memory(&format!(
+            "  capture:\n    redaction:\n      patterns: [{}]\n",
+            yaml_quote(source)
+        ));
+        assert_has_error(&yaml, &v8_regex_message(source, reason));
+    }
+}

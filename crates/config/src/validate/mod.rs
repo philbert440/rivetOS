@@ -284,7 +284,7 @@ pub fn format_validation_result(result: &ValidationResult) -> String {
     if !result.errors.is_empty() {
         lines.push("Errors:".to_string());
         for err in &result.errors {
-            lines.push(format_line("  \u{274c} ", &err.path, &err.message));
+            lines.push(format_error_line(&err.path, &err.message));
         }
     }
     if !result.warnings.is_empty() {
@@ -293,44 +293,67 @@ pub fn format_validation_result(result: &ValidationResult) -> String {
         }
         lines.push("Warnings:".to_string());
         for warn in &result.warnings {
-            lines.push(format_line(
-                "  \u{26a0}\u{fe0f}  ",
-                &warn.path,
-                &warn.message,
-            ));
+            lines.push(format_warning_line(&warn.path, &warn.message));
         }
     }
     if result.valid && result.warnings.is_empty() {
         lines.push("\u{2705} Config is valid.".to_string());
     } else if result.valid {
         lines.push(String::new());
-        let noun = plural(result.warnings.len(), "warning", "warnings");
+        let count = result.warnings.len();
+        let suffix = if count == 1 { "" } else { "s" };
         lines.push(format!(
-            "\u{2705} Config is valid ({} {noun}).",
-            result.warnings.len()
+            "\u{2705} Config is valid ({} warning{}).",
+            count, suffix
         ));
     } else {
         lines.push(String::new());
-        let errors = plural(result.errors.len(), "error", "errors");
-        let mut summary = format!("\u{274c} Config has {} {errors}", result.errors.len());
-        if !result.warnings.is_empty() {
-            let warnings = plural(result.warnings.len(), "warning", "warnings");
-            summary.push_str(&format!(" and {} {warnings}", result.warnings.len()));
-        }
-        summary.push('.');
-        lines.push(summary);
+        let count = result.errors.len();
+        let suffix = if count == 1 { "" } else { "s" };
+        let warnings_clause = warning_clause(result.warnings.len());
+        lines.push(format!(
+            "\u{274c} Config has {} error{}{}.",
+            count, suffix, warnings_clause
+        ));
     }
     lines.join("\n")
 }
 
-fn format_line(icon: &str, path: &str, message: &str) -> String {
-    if path.is_empty() {
-        format!("{icon}{message}")
-    } else {
-        format!("{icon}[{path}] {message}")
-    }
+fn format_error_line(path: &str, message: &str) -> String {
+    let path_part = path_part(path);
+    format!("  \u{274c} {path_part}{message}")
 }
 
-fn plural<'a>(count: usize, one: &'a str, many: &'a str) -> &'a str {
-    if count == 1 { one } else { many }
+fn format_warning_line(path: &str, message: &str) -> String {
+    let path_part = path_part(path);
+    format!("  \u{26a0}\u{fe0f}  {path_part}{message}")
+}
+
+fn path_part(path: &str) -> String {
+    if path.is_empty() {
+        return String::new();
+    }
+    let mut out = String::new();
+    out.push('[');
+    out.push_str(path);
+    out.push(']');
+    out.push(' ');
+    out
+}
+
+fn warning_clause(count: usize) -> String {
+    if count == 0 {
+        return String::new();
+    }
+    let mut out = String::new();
+    out.push(' ');
+    out.push_str("and");
+    out.push(' ');
+    out.push_str(&count.to_string());
+    out.push(' ');
+    out.push_str("warning");
+    if count != 1 {
+        out.push('s');
+    }
+    out
 }

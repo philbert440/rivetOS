@@ -13,6 +13,11 @@ on:
       - rustfmt.toml
       - .github/workflows/rust.yml
       - plugins/memory/postgres/src/schema/migrations/**
+      - packages/boot/src/**
+      - packages/types/src/**
+      - packages/cli/src/lib/**
+      - packages/capture-core/src/**
+      - plugins/providers/claude-cli/src/**
   pull_request:
     branches:
       - main
@@ -26,6 +31,11 @@ on:
       - rustfmt.toml
       - .github/workflows/rust.yml
       - plugins/memory/postgres/src/schema/migrations/**
+      - packages/boot/src/**
+      - packages/types/src/**
+      - packages/cli/src/lib/**
+      - packages/capture-core/src/**
+      - plugins/providers/claude-cli/src/**
   workflow_dispatch: {}
 
 permissions:
