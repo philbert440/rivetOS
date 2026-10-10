@@ -22,9 +22,21 @@ impl<T> OrderedMap<T> {
             .find(|(existing, _)| existing == &key)
         {
             *slot = value;
-        } else {
-            self.entries.push((key, value));
+            return;
         }
+        let Some(index) = canonical_index(&key) else {
+            self.entries.push((key, value));
+            return;
+        };
+        let position = self
+            .entries
+            .iter()
+            .position(|(existing, _)| match canonical_index(existing) {
+                Some(existing_index) => existing_index > index,
+                None => true,
+            })
+            .unwrap_or(self.entries.len());
+        self.entries.insert(position, (key, value));
     }
 
     pub fn get(&self, key: &str) -> Option<&T> {
@@ -79,11 +91,29 @@ where
         D: Deserializer<'de>,
     {
         let map = Map::<String, Value>::deserialize(deserializer)?;
-        let mut entries = Vec::with_capacity(map.len());
+        let mut ordered = Self::new();
         for (key, value) in map {
             let parsed = serde_json::from_value(value).map_err(serde::de::Error::custom)?;
-            entries.push((key, parsed));
+            ordered.insert(key, parsed);
         }
-        Ok(Self { entries })
+        Ok(ordered)
     }
+}
+
+fn canonical_index(key: &str) -> Option<u32> {
+    let bytes = key.as_bytes();
+    if bytes.is_empty() || bytes.len() > 10 {
+        return None;
+    }
+    if bytes.len() > 1 && bytes[0] == b'0' {
+        return None;
+    }
+    if !bytes.iter().all(|byte| byte.is_ascii_digit()) {
+        return None;
+    }
+    let value: u64 = key.parse().ok()?;
+    if value > 4_294_967_294 {
+        return None;
+    }
+    u32::try_from(value).ok()
 }

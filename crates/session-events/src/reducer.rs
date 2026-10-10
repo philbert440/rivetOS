@@ -6,6 +6,7 @@ use crate::JsNumber;
 use crate::activity::{Activity, tool_activity};
 use crate::event::{AgentEvent, AgentEventBody};
 use crate::ordered::OrderedMap;
+use crate::utf16::Utf16String;
 
 protocol::wire_enum! {
     pub enum LogWho {
@@ -33,7 +34,7 @@ pub struct RoomState {
     pub activity: Activity,
     pub tool: Option<String>,
     pub tasks: Vec<Task>,
-    pub thought: String,
+    pub thought: Utf16String,
     pub last_message: String,
     pub log: Vec<LogEntry>,
     pub term: Vec<String>,
@@ -67,7 +68,7 @@ pub fn initial_room_state() -> RoomState {
         activity: Activity::Idle,
         tool: None,
         tasks: Vec::new(),
-        thought: String::new(),
+        thought: Utf16String::from(""),
         last_message: String::new(),
         log: Vec::new(),
         term: Vec::new(),
@@ -146,10 +147,14 @@ pub fn reduce_room(mut state: RoomState, event: &AgentEvent) -> RoomState {
             state
         }
         AgentEventBody::ThinkingDelta { text } => {
-            let thought = if is_spinner_line(text) {
-                text.clone()
+            let mut units = event.text_units();
+            if units.is_empty() && !text.is_empty() {
+                units.extend(text.encode_utf16());
+            }
+            let thought = if is_spinner_line(&units) {
+                Utf16String::from_units(&units)
             } else {
-                window_thought(&state.thought, text)
+                window_thought(&state.thought, &units)
             };
             state.thought = thought;
             state.activity = Activity::Thinking;
@@ -300,49 +305,55 @@ fn push_capped<T>(items: &mut Vec<T>, item: T, max: usize) {
     }
 }
 
-fn is_spinner_line(text: &str) -> bool {
-    let mut chars = text.chars();
-    let Some(first) = chars.next() else {
+fn is_spinner_line(units: &[u16]) -> bool {
+    let Some(first) = units.first().copied() else {
         return false;
     };
-    let Some(second) = chars.next() else {
+    let Some(second) = units.get(1).copied() else {
         return false;
     };
-    second == ' ' && matches!(first, '✳' | '✢' | '✻' | '✽' | '·')
+    if second != u16::from(b' ') {
+        return false;
+    }
+    let Some(ch) = char::from_u32(u32::from(first)) else {
+        return false;
+    };
+    matches!(ch, '✳' | '✢' | '✻' | '✽' | '·')
 }
 
-fn window_thought(existing: &str, delta: &str) -> String {
-    let mut units: Vec<u16> = existing.encode_utf16().collect();
-    units.extend(delta.encode_utf16());
+fn window_thought(existing: &Utf16String, delta: &[u16]) -> Utf16String {
+    let mut units = existing.units();
+    units.extend_from_slice(delta);
     if units.len() > THOUGHT_MAX {
         let start = units.len() - THOUGHT_MAX;
         units.drain(0..start);
     }
-    let full = units.len() == THOUGHT_MAX;
-    let text = String::from_utf16_lossy(&units);
-    if full {
-        trim_to_word_boundary(&text)
-    } else {
-        text
+    if units.len() == THOUGHT_MAX {
+        units = trim_to_word_boundary(&units);
     }
+    Utf16String::from_units(&units)
 }
 
-fn trim_to_word_boundary(text: &str) -> String {
+fn trim_to_word_boundary(units: &[u16]) -> Vec<u16> {
     let mut consumed_ws = false;
     let mut cut = 0;
-    for (index, ch) in text.char_indices() {
-        if is_js_whitespace(ch) {
+    for (index, unit) in units.iter().enumerate() {
+        if is_whitespace_unit(*unit) {
             consumed_ws = true;
-            cut = index + ch.len_utf8();
+            cut = index + 1;
         } else if consumed_ws {
-            return text[cut..].to_string();
+            return units[cut..].to_vec();
         }
     }
     if consumed_ws {
-        String::new()
+        Vec::new()
     } else {
-        text.to_string()
+        units.to_vec()
     }
+}
+
+fn is_whitespace_unit(unit: u16) -> bool {
+    char::from_u32(u32::from(unit)).is_some_and(is_js_whitespace)
 }
 
 fn is_js_whitespace(ch: char) -> bool {
