@@ -16,7 +16,7 @@ use tokio::sync::Notify;
 
 use crate::transcript::{
     HookEventOptions, HookEventResult, IngestOptions, IngestResult, ingest_hook_event,
-    ingest_transcript, resolve_hook_event_id, resolve_task_context, select_transport,
+    ingest_transcript, resolve_hook_event_id, resolve_task_context,
 };
 
 pub const DEFAULT_WORKER_DEADLINE_MS: u64 = 120_000;
@@ -122,10 +122,12 @@ pub fn arm_worker_deadline(opts: DeadlineOptions) -> DeadlineHandle {
         if flag_task.swap(true, Ordering::SeqCst) {
             return;
         }
-        (opts.log)(&format!(
+        let line = format!(
             "worker: deadline exceeded ({}ms) — closing clients and exiting",
             opts.ms
-        ));
+        );
+        let log = opts.log.clone();
+        let _ = tokio::task::spawn_blocking(move || log(&line)).await;
         (opts.close)();
         (opts.exit)(1);
     });
@@ -221,15 +223,12 @@ pub fn claim_spool(path: &Path) -> Option<PathBuf> {
 }
 
 pub fn write_spool_payload(payload: &Value, dir: &Path) -> std::io::Result<PathBuf> {
-    let mut builder = std::fs::DirBuilder::new();
-    builder.recursive(true).mode(0o700);
-    builder.create(dir)?;
-    let _ = std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o700));
-    let body = serde_json::to_string(payload).unwrap_or_else(|_| "{}".to_string());
+    ensure_private_dir(dir)?;
+    let body = protocol::js::stringify(payload);
     let mut last = std::io::Error::other("spool name was not created");
-    for salt in 0..8u32 {
-        let token = claim_token();
-        let file = dir.join(format!("{}-{token}{salt:x}.a1.json", unix_ms_now().max(0)));
+    for _ in 0..8u32 {
+        let token = base36_token();
+        let file = dir.join(format!("{}-{token}.a1.json", unix_ms_now().max(0)));
         match write_exclusive(&file, body.as_bytes()) {
             Ok(()) => return Ok(file),
             Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
@@ -255,7 +254,7 @@ pub async fn ingest_spool_file(spool_file: &Path, deps: &WorkerDeps) -> Result<(
     lock_set(&deps.skip_files).insert(display_path(&claimed));
     let claimed_read = claimed.clone();
     let payload = match spawn_io(move || std::fs::read_to_string(&claimed_read)).await? {
-        Ok(text) => match serde_json::from_str::<Value>(&text) {
+        Ok(text) => match protocol::js::parse(&text) {
             Ok(value) => value,
             Err(error) => {
                 emit(
@@ -340,7 +339,7 @@ pub async fn run_hook(harness: &str) -> Result<(), String> {
         return Ok(());
     }
     let raw = read_stdin().await;
-    let mut payload = match serde_json::from_str::<Value>(&raw) {
+    let mut payload = match protocol::js::parse(&raw) {
         Ok(Value::Object(map)) => Value::Object(map),
         _ => return Ok(()),
     };
@@ -419,8 +418,8 @@ pub fn hook_command(exe: &Path) -> String {
     )
 }
 
-pub fn status_text(settings: &Path) -> String {
-    let hooks = read_hooks(settings);
+pub fn status_text(settings: &Path) -> Result<String, String> {
+    let hooks = read_hooks(settings)?;
     let mut installed = 0usize;
     let mut lines = Vec::new();
     for event in CAPTURE_EVENTS {
@@ -436,11 +435,11 @@ pub fn status_text(settings: &Path) -> String {
     } else {
         "Capture incomplete.".to_string()
     });
-    lines.join("\n")
+    Ok(lines.join("\n"))
 }
 
-pub fn install_hooks(settings: &Path, command: &str, log: &Path) -> String {
-    let mut root = read_settings(settings);
+pub fn install_hooks(settings: &Path, command: &str, log: &Path) -> Result<String, String> {
+    let mut root = read_settings(settings)?;
     let mut hooks = hooks_object(&root);
     for event in CAPTURE_EVENTS {
         let mut cleaned = strip_ours(hooks.get(event));
@@ -448,26 +447,26 @@ pub fn install_hooks(settings: &Path, command: &str, log: &Path) -> String {
         hooks.insert((*event).to_string(), Value::Array(cleaned));
     }
     root.insert("hooks".to_string(), Value::Object(hooks));
-    write_settings(settings, &Value::Object(root));
-    format!(
+    write_settings(settings, &Value::Object(root))?;
+    Ok(format!(
         "Installed RivetOS capture hooks for: {}\n  settings: {}\n  command:  {command}\n  log:      {}",
         CAPTURE_EVENTS.join(", "),
         settings.display(),
         log.display()
-    )
+    ))
 }
 
-pub fn uninstall_hooks(settings: &Path) -> String {
-    let mut root = read_settings(settings);
+pub fn uninstall_hooks(settings: &Path) -> Result<String, String> {
+    let mut root = read_settings(settings)?;
     let Some(existing) = root.get("hooks").cloned() else {
-        return "No hooks configured — nothing to remove.".to_string();
+        return Ok("No hooks configured — nothing to remove.".to_string());
     };
     let mut hooks = match existing {
         Value::Object(map) => map,
         _ => Map::new(),
     };
     if root.get("hooks").is_none() {
-        return "No hooks configured — nothing to remove.".to_string();
+        return Ok("No hooks configured — nothing to remove.".to_string());
     }
     for event in CAPTURE_EVENTS {
         let cleaned = strip_ours(hooks.get(event));
@@ -482,8 +481,8 @@ pub fn uninstall_hooks(settings: &Path) -> String {
     } else {
         root.insert("hooks".to_string(), Value::Object(hooks));
     }
-    write_settings(settings, &Value::Object(root));
-    "Removed RivetOS capture hooks.".to_string()
+    write_settings(settings, &Value::Object(root))?;
+    Ok("Removed RivetOS capture hooks.".to_string())
 }
 
 pub fn is_direct_cli(argv1: Option<&Path>, self_path: &Path) -> bool {
@@ -513,8 +512,7 @@ async fn dispatch_claimed(
 ) -> Result<(), String> {
     stamp_event_id(payload, claimed, stem, deps).await?;
     if deps.ingest_hook.is_none() && deps.ingest_transcript.is_none() {
-        let env = deps.env.as_deref();
-        let transport = select_transport(env, None);
+        let transport = crate::transcript::select_transport_async(deps.env.clone(), None).await;
         match &transport {
             capture::CaptureTransport::None { reason } => {
                 return Err(format!("capture transport unavailable: {reason}"));
@@ -610,7 +608,7 @@ async fn stamp_event_id(
             Value::String(resolved.event_id),
         );
     }
-    let text = serde_json::to_string(payload).unwrap_or_else(|_| "{}".to_string());
+    let text = protocol::js::stringify(payload);
     let path = claimed.to_path_buf();
     tokio::task::spawn_blocking(move || std::fs::write(path, text))
         .await
@@ -901,6 +899,58 @@ fn is_spool_name(name: &str) -> bool {
     name.to_ascii_lowercase().ends_with(".json") || claim_suffix_start(name).is_some()
 }
 
+fn base36_token() -> String {
+    let mut bytes = [0u8; 8];
+    let opened = std::fs::File::open("/dev/urandom")
+        .and_then(|mut file| std::io::Read::read_exact(&mut file, &mut bytes));
+    let mut value = if opened.is_ok() {
+        u64::from_le_bytes(bytes)
+    } else {
+        u64::from(std::process::id())
+    };
+    let alphabet = b"0123456789abcdefghijklmnopqrstuvwxyz";
+    let mut out = [b'0'; 6];
+    for slot in (0..6).rev() {
+        let index = usize::try_from(value % 36).unwrap_or(0);
+        out[slot] = alphabet[index];
+        value /= 36;
+    }
+    String::from_utf8(out.to_vec()).unwrap_or_else(|_| "000000".to_string())
+}
+
+fn ensure_private_dir(path: &Path) -> std::io::Result<()> {
+    if path.as_os_str().is_empty() || std::fs::metadata(path).is_ok() {
+        return Ok(());
+    }
+    let mut missing = Vec::new();
+    let mut cursor = path.to_path_buf();
+    loop {
+        if cursor.as_os_str().is_empty() {
+            break;
+        }
+        if std::fs::metadata(&cursor).is_ok() {
+            break;
+        }
+        missing.push(cursor.clone());
+        match cursor.parent() {
+            Some(parent) if parent != cursor.as_path() => cursor = parent.to_path_buf(),
+            _ => break,
+        }
+    }
+    for dir in missing.iter().rev() {
+        let mut builder = std::fs::DirBuilder::new();
+        builder.mode(0o700);
+        match builder.create(dir) {
+            Ok(()) => {
+                let _ = std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o700));
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {}
+            Err(error) => return Err(error),
+        }
+    }
+    Ok(())
+}
+
 fn claim_token() -> String {
     let mut bytes = [0u8; 4];
     let opened = std::fs::File::open("/dev/urandom")
@@ -989,21 +1039,20 @@ fn is_stale(now: i64, mtime: i64, stale_after: u64) -> bool {
     i128::from(now) - i128::from(mtime) >= i128::from(stale_after)
 }
 
-fn read_settings(path: &Path) -> Map<String, Value> {
-    let Ok(text) = std::fs::read_to_string(path) else {
-        return Map::new();
-    };
-    serde_json::from_str::<Value>(&text)
-        .ok()
-        .and_then(|value| match value {
-            Value::Object(map) => Some(map),
-            _ => None,
-        })
-        .unwrap_or_default()
+fn read_settings(path: &Path) -> Result<Map<String, Value>, String> {
+    match std::fs::read_to_string(path) {
+        Ok(text) => match protocol::js::parse(&text) {
+            Ok(Value::Object(map)) => Ok(map),
+            Ok(_) => Ok(Map::new()),
+            Err(error) => Err(error.to_string()),
+        },
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(Map::new()),
+        Err(error) => Err(error.to_string()),
+    }
 }
 
-fn read_hooks(path: &Path) -> Map<String, Value> {
-    hooks_object(&read_settings(path))
+fn read_hooks(path: &Path) -> Result<Map<String, Value>, String> {
+    Ok(hooks_object(&read_settings(path)?))
 }
 
 fn hooks_object(root: &Map<String, Value>) -> Map<String, Value> {
@@ -1013,12 +1062,14 @@ fn hooks_object(root: &Map<String, Value>) -> Map<String, Value> {
         .unwrap_or_default()
 }
 
-fn write_settings(path: &Path, value: &Value) {
-    if let Some(parent) = path.parent() {
-        let _ = std::fs::create_dir_all(parent);
+fn write_settings(path: &Path, value: &Value) -> Result<(), String> {
+    if let Some(parent) = path.parent()
+        && !parent.as_os_str().is_empty()
+    {
+        std::fs::create_dir_all(parent).map_err(|error| error.to_string())?;
     }
-    let body = serde_json::to_string_pretty(value).unwrap_or_else(|_| "{}".to_string());
-    let _ = std::fs::write(path, format!("{body}\n"));
+    let body = serde_json::to_string_pretty(value).map_err(|error| error.to_string())?;
+    std::fs::write(path, format!("{body}\n")).map_err(|error| error.to_string())
 }
 
 fn command_is_ours(command: &str) -> bool {

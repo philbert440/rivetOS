@@ -186,24 +186,41 @@ impl CaptureWriter {
     }
 
     pub async fn write(&self, batch: CaptureBatch) -> Result<WriteOutcome, CaptureError> {
+        let value = serde_json::to_value(&batch).unwrap_or(Value::Null);
+        self.write_value(value).await
+    }
+
+    pub async fn write_value(&self, batch: Value) -> Result<WriteOutcome, CaptureError> {
         self.replay(ReplayOptions { max: Some(50.0) }).await;
-        let messages = self.prepare_messages(batch.messages);
-        let prepared = CaptureBatch { messages, ..batch };
+        let original = match &batch {
+            Value::Object(map) => map.clone(),
+            _ => Map::new(),
+        };
+        let prepared = match serde_json::from_value::<CaptureBatch>(Value::Object(original.clone()))
+        {
+            Ok(mut parsed) => {
+                parsed.messages = self.prepare_messages(std::mem::take(&mut parsed.messages));
+                parsed
+            }
+            Err(_) => empty_batch(),
+        };
         let chunks = split_chunks(prepared, self.max_chunk_bytes, &self.log);
         let base = (self.now_ms)();
         let mut inserted = 0u64;
         let mut skipped = 0u64;
         let mut conversation_id = String::new();
         let mut files = Vec::new();
+        let chunk_count = chunks.len();
         for (index, chunk) in chunks.iter().enumerate() {
-            if encoded_len(chunk) > self.max_chunk_bytes {
+            let body_value = project_chunk(&original, chunk, index + 1 == chunk_count);
+            let body = protocol::js::stringify(&body_value);
+            if body.len() > self.max_chunk_bytes {
                 self.emit(CHUNK_OVER_LIMIT);
                 return Ok(WriteOutcome::NotSaved {
                     error: CHUNK_OVER_LIMIT.to_string(),
                 });
             }
-            let body = serde_json::to_string(chunk).unwrap_or_else(|_| "{}".to_string());
-            match self.post(body).await {
+            match self.post(body.clone()).await {
                 Ok(result) => {
                     inserted = inserted.saturating_add(result.inserted);
                     skipped = skipped.saturating_add(result.skipped);
@@ -217,12 +234,12 @@ impl CaptureWriter {
                         return Err(error);
                     }
                     let when = base.saturating_add(index as i64);
-                    match spool::spool_batch(&self.dir, chunk, when).await {
+                    match spool::spool_text(&self.dir, &body, when).await {
                         Ok(path) => files.push(path.display().to_string()),
                         Err(spool_error) => {
-                            let detail = format!("Error: {spool_error}: {}", self.dir.display());
-                            let message =
-                                format!("capture spool failed; batch was not saved: {detail}");
+                            let message = format!(
+                                "capture spool failed; batch was not saved: Error: {spool_error}"
+                            );
                             self.emit(&message);
                             return Ok(WriteOutcome::NotSaved { error: message });
                         }
@@ -326,6 +343,16 @@ impl CaptureWriter {
             .await
             .map_err(|error| CaptureError::Transport(error.to_string()))?;
         let status = response.status().as_u16();
+        if !(200..300).contains(&status) {
+            drop(response);
+            return classify_response(
+                self.user.is_some(),
+                HttpReply {
+                    status,
+                    body: String::new(),
+                },
+            );
+        }
         let text = response
             .text()
             .await
@@ -334,7 +361,11 @@ impl CaptureWriter {
     }
 
     async fn client(&self) -> Result<reqwest::Client, CaptureError> {
-        let ca_path = self.ca_path.clone();
+        let ca_path = if crate::den_url::den_scheme_is_https(&self.den_url) {
+            self.ca_path.clone()
+        } else {
+            None
+        };
         let timeout = self.timeout;
         self.client
             .get_or_try_init(|| async move {
@@ -598,7 +629,13 @@ fn push_group(groups: &mut Vec<Vec<Tracked>>, current: &mut Vec<Tracked>) {
 fn same_tracked(left: &Tracked, right: &Tracked) -> bool {
     left.args_done == right.args_done
         && left.meta_done == right.meta_done
-        && serde_json::to_string(&left.message).ok() == serde_json::to_string(&right.message).ok()
+        && message_wire(&left.message) == message_wire(&right.message)
+}
+
+fn message_wire(message: &CaptureMessage) -> Option<String> {
+    serde_json::to_value(message)
+        .ok()
+        .map(|value| protocol::js::stringify(&value))
 }
 
 fn shrink_singleton(
@@ -731,9 +768,56 @@ fn chunk_for(batch: &CaptureBatch, messages: Vec<CaptureMessage>, is_last: bool)
 }
 
 fn encoded_len(batch: &CaptureBatch) -> usize {
-    serde_json::to_string(batch)
-        .map(|text| text.len())
-        .unwrap_or(usize::MAX)
+    match serde_json::to_value(batch) {
+        Ok(value) => protocol::js::stringify(&value).len(),
+        Err(_) => usize::MAX,
+    }
+}
+
+fn empty_batch() -> CaptureBatch {
+    CaptureBatch {
+        session_key: String::new(),
+        agent: String::new(),
+        channel: None,
+        title: None,
+        settings: None,
+        task_id: None,
+        finalize: None,
+        created_at: None,
+        updated_at: None,
+        messages: Vec::new(),
+    }
+}
+
+fn project_chunk(original: &Map<String, Value>, chunk: &CaptureBatch, is_last: bool) -> Value {
+    let mut out = if original.is_empty() {
+        serde_json::to_value(chunk)
+            .ok()
+            .and_then(|value| value.as_object().cloned())
+            .unwrap_or_default()
+    } else {
+        original.clone()
+    };
+    if !is_last || chunk.finalize.is_none() {
+        out.shift_remove("finalize");
+    } else if let Some(flag) = chunk.finalize {
+        out.insert("finalize".to_string(), Value::Bool(flag));
+    }
+    match &chunk.settings {
+        Some(value) => {
+            out.insert("settings".to_string(), value.clone());
+        }
+        None => {
+            out.shift_remove("settings");
+        }
+    }
+    let messages = chunk
+        .messages
+        .iter()
+        .map(|message| serde_json::to_value(message).unwrap_or(Value::Null))
+        .collect();
+    out.insert("messages".to_string(), Value::Array(messages));
+    Value::Object(out)
 }
 
 fn emit(log: &Option<LogFn>, line: &str) {

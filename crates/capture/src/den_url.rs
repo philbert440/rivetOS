@@ -354,14 +354,14 @@ fn format_port(digits: &str) -> String {
 }
 
 pub fn acceptable_http_url(url: &str) -> bool {
-    let rest = if let Some(rest) = url.strip_prefix("https://") {
-        rest
-    } else if let Some(rest) = url.strip_prefix("http://") {
-        rest
-    } else {
-        return false;
-    };
-    !rest.is_empty() && !rest.chars().any(|ch| ch.is_whitespace())
+    match url::Url::parse(url) {
+        Ok(parsed) => matches!(parsed.scheme(), "http" | "https"),
+        Err(_) => false,
+    }
+}
+
+pub fn den_scheme_is_https(url: &str) -> bool {
+    url::Url::parse(url).is_ok_and(|parsed| parsed.scheme() == "https")
 }
 
 pub fn default_config_reader() -> Option<String> {

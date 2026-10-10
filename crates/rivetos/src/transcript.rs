@@ -295,6 +295,20 @@ pub fn parse_transcript(file: &Path) -> std::io::Result<ParsedTranscript> {
     Ok(parse_transcript_text(file, &text))
 }
 
+pub(crate) async fn select_transport_async(
+    env: Option<Arc<dyn capture::EnvLookup>>,
+    pg_url: Option<String>,
+) -> CaptureTransport {
+    tokio::task::spawn_blocking(move || match &env {
+        Some(env) => select_transport(Some(env.as_ref()), pg_url.as_deref()),
+        None => select_transport(None, pg_url.as_deref()),
+    })
+    .await
+    .unwrap_or_else(|_| CaptureTransport::None {
+        reason: "transport lookup failed".to_string(),
+    })
+}
+
 pub(crate) fn select_transport(
     env: Option<&dyn capture::EnvLookup>,
     pg_url: Option<&str>,
@@ -422,7 +436,7 @@ pub async fn ingest_transcript(opts: IngestOptions) -> Result<IngestResult, Stri
         transcript_session_id: parsed.session_id.as_deref(),
         fallback_key: &fallback_key,
     });
-    let transport = select_transport(env_ref, opts.pg_url.as_deref());
+    let transport = select_transport_async(env.clone(), opts.pg_url.clone()).await;
     match transport {
         CaptureTransport::None { reason } => {
             Err(format!("capture transport unavailable: {reason}"))
@@ -593,12 +607,14 @@ pub async fn ingest_hook_event(opts: HookEventOptions) -> Result<HookEventResult
         let name = field_str(&opts.payload, "tool_name")
             .unwrap_or("unknown")
             .to_string();
-        let raw = opts
-            .payload
-            .get("tool_response")
-            .or_else(|| opts.payload.get("tool_result"))
-            .cloned()
-            .unwrap_or(Value::Null);
+        let raw = match opts.payload.get("tool_response") {
+            Some(value) if !value.is_null() => value.clone(),
+            _ => opts
+                .payload
+                .get("tool_result")
+                .cloned()
+                .unwrap_or(Value::Null),
+        };
         let result = stringify_result(&raw);
         let args = opts
             .payload
@@ -623,7 +639,7 @@ pub async fn ingest_hook_event(opts: HookEventOptions) -> Result<HookEventResult
     let env_ref = env
         .as_ref()
         .map(|item| item.as_ref() as &dyn capture::EnvLookup);
-    let transport = select_transport(env_ref, opts.pg_url.as_deref());
+    let transport = select_transport_async(env.clone(), opts.pg_url.clone()).await;
     match transport {
         CaptureTransport::None { reason } => {
             Err(format!("capture transport unavailable: {reason}"))
@@ -911,7 +927,7 @@ fn parse_object(line: &str) -> Option<Map<String, Value>> {
     if trimmed.is_empty() {
         return None;
     }
-    serde_json::from_str::<Value>(trimmed)
+    protocol::js::parse(trimmed)
         .ok()
         .and_then(|value| value.as_object().cloned())
 }
@@ -936,7 +952,7 @@ fn stringify_result_value(value: &Value) -> String {
     if let Some(text) = value.as_str() {
         return text.to_string();
     }
-    serde_json::to_string(value).unwrap_or_else(|_| "null".to_string())
+    protocol::js::stringify(value)
 }
 
 fn stringify_result(value: &Value) -> Option<String> {
@@ -1386,7 +1402,13 @@ async fn post_batch(
     options.env = env_arc.clone();
     options.exchange = exchange;
     options.spool_dir = spool_dir;
-    options.ca_path = ca_path(env_arc.as_ref(), injected);
+    let lookup_env = env_arc.clone();
+    let lookup_url = den_url.to_string();
+    options.ca_path =
+        tokio::task::spawn_blocking(move || ca_path(lookup_env.as_ref(), injected, &lookup_url))
+            .await
+            .ok()
+            .flatten();
     let writer = create_capture_writer(options).map_err(|error| error.to_string())?;
     match writer.write(batch).await {
         Ok(WriteOutcome::Delivered {
@@ -1413,7 +1435,10 @@ fn capture_error_text(error: &CaptureError) -> String {
     error.to_string()
 }
 
-fn ca_path(env: &dyn capture::EnvLookup, injected: bool) -> Option<PathBuf> {
+fn ca_path(env: &dyn capture::EnvLookup, injected: bool, den_url: &str) -> Option<PathBuf> {
+    if !capture::den_scheme_is_https(den_url) {
+        return None;
+    }
     let resolved = if injected {
         resolve_den_url(env, || None, &capture::path_exists)
     } else {

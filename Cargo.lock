@@ -178,6 +178,7 @@ dependencies = [
  "hex",
  "protocol",
  "regex",
+ "regress",
  "reqwest",
  "serde",
  "serde_json",
@@ -185,6 +186,7 @@ dependencies = [
  "tempfile",
  "thiserror",
  "tokio",
+ "url",
  "uuid",
 ]
 

@@ -169,13 +169,30 @@ impl HoldGuard {
         if let Some(handle) = self.heartbeat.take() {
             handle.abort();
         }
-        let _ = std::fs::remove_file(&self.path);
+        unlink_path(&self.path);
     }
 }
 
 impl Drop for HoldGuard {
     fn drop(&mut self) {
         self.release();
+    }
+}
+
+fn unlink_path(path: &Path) {
+    let path = path.to_path_buf();
+    let work = move || {
+        let _ = std::fs::remove_file(&path);
+    };
+    if let Ok(handle) = tokio::runtime::Handle::try_current() {
+        let (tx, rx) = std::sync::mpsc::sync_channel(1);
+        handle.spawn_blocking(move || {
+            work();
+            let _ = tx.send(());
+        });
+        let _ = rx.recv_timeout(Duration::from_secs(5));
+    } else {
+        work();
     }
 }
 
@@ -209,7 +226,7 @@ impl Drop for AttemptGuard {
             return;
         }
         for path in &self.paths {
-            let _ = std::fs::remove_file(path);
+            unlink_path(path);
         }
     }
 }
@@ -223,7 +240,10 @@ async fn acquire(
 ) -> Result<PathBuf, LockError> {
     let deadline = Instant::now() + Duration::from_millis(wait_ms);
     loop {
-        let token = make_token(host);
+        let host_for_token = host.to_string();
+        let token = tokio::task::spawn_blocking(move || make_token(&host_for_token))
+            .await
+            .unwrap_or_else(|_| format!("{:x}", std::process::id()));
         let temp_path = lock_dir.join(format!("{PUBLISH_PREFIX}{token}"));
         let owner_path = lock_dir.join(format!("{HOLDER_PREFIX}{token}"));
         let record = owner_json(std::process::id(), host, &token);
