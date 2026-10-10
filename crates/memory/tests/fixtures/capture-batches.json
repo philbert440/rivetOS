@@ -1,0 +1,41 @@
+{
+  "cases": [
+    {
+      "name": "finalize",
+      "session_key": "claude-code:fix-final",
+      "agent": "rivet-claude",
+      "finalize": true,
+      "messages": [],
+      "expect_inserted": 0,
+      "expect_active": false
+    },
+    {
+      "name": "duplicate-event-id",
+      "session_key": "claude-code:fix-dup",
+      "agent": "rivet-claude",
+      "messages": [
+        {"event_id": "e1", "role": "user", "content": "one"},
+        {"event_id": "e1", "role": "user", "content": "two"}
+      ],
+      "expect_inserted_second_pass": 0,
+      "expect_skipped_second_pass": 2
+    },
+    {
+      "name": "routed-user",
+      "session_key": "claude-code:phil",
+      "agent": "rivet-claude",
+      "owner_user_id": "phil",
+      "messages": [
+        {"event_id": "o1", "role": "user", "content": "owned"}
+      ],
+      "expect_owner_user_id": "phil"
+    },
+    {
+      "name": "over-cap-surrogate-boundary",
+      "note": "The test builds content as 15999 x characters, one emoji, then tail. Stored text is the 15999 x characters with no truncation marker.",
+      "expect_content_len": 15999,
+      "expect_full_len": 16005,
+      "expect_marker": false
+    }
+  ]
+}
