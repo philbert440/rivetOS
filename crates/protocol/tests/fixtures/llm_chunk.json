@@ -1,0 +1,8 @@
+{
+  "type": "tool_call_delta",
+  "delta": "{\"q\":\"",
+  "toolCall": { "index": 0, "name": "search" },
+  "usage": { "promptTokens": 1, "completionTokens": 0 },
+  "citations": ["https://example.test"],
+  "error": "nope"
+}

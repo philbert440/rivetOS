@@ -1,0 +1,11 @@
+{
+  "name": "HarnessError",
+  "code": "turn_in_flight",
+  "message": "a turn is running",
+  "severity": "transient",
+  "retryable": true,
+  "timestamp": 1710000000000,
+  "context": { "harnessId": "claude-code", "sessionId": "claude-code:abc" },
+  "cause": "busy",
+  "stack": "HarnessError: a turn is running"
+}
