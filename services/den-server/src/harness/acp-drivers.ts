@@ -137,7 +137,7 @@ class AcpRouting {
     return true
   }
 
-  async startSession(opts: StartSessionOpts & { effort?: string }): Promise<HarnessSessionSummary> {
+  async startSession(opts: StartSessionOpts): Promise<HarnessSessionSummary> {
     let cwd = this.d.cwd() ?? homedir()
     if (opts.cwd !== undefined) {
       const validated = validateDirectory(opts.cwd)
@@ -223,9 +223,7 @@ export class GrokAcpDriver extends GrokBuildDriver {
     return this.acp.chatTurnRunning(native)
   }
 
-  override async startSession(
-    opts: StartSessionOpts & { effort?: string } = {},
-  ): Promise<HarnessSessionSummary> {
+  override async startSession(opts: StartSessionOpts = {}): Promise<HarnessSessionSummary> {
     // A caller-minted id must be pinned, which only the TUI's --session-id can do.
     return opts.nativeSessionId || opts.sessionId
       ? super.startSession(opts)
@@ -315,9 +313,7 @@ export class OpencodeAcpDriver extends OpencodeDriver {
   }
 
   /** OpenCode cannot pin an id in the TUI either, so ACP is the only start path. */
-  override async startSession(
-    opts: StartSessionOpts & { effort?: string } = {},
-  ): Promise<HarnessSessionSummary> {
+  override async startSession(opts: StartSessionOpts = {}): Promise<HarnessSessionSummary> {
     return this.acp.startSession(opts)
   }
 

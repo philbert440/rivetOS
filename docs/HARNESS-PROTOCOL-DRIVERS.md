@@ -216,12 +216,14 @@ a den's HTTP API with terminals on (OpenCode): a terminal refused with 409
 mid-turn, the next turn typed into the open TUI, and after the pane was
 killed the ACP agent reloaded and knew the TUI's reply.
 
+New chats start over the control plane when their harness advertises
+`protocolStart`: the harness the user picked, the agent preset's harness
+(`POST /api/harnesses/:id/sessions { agentId }`, resolved by the same code
+as `POST /term`: directory, model, effort), or the node's default roster
+command when neither is set. A preset with no harness keeps the spawn path.
+
 Not done yet:
 
-- **New chats with an agent preset**, or with no harness chosen, still spawn
-  the TUI first: the preset's directory and model are applied by the spawn
-  route. A new chat with a chosen ACP harness starts over the control plane
-  (the driver advertises `protocolStart`) and moves onto the agent's id.
 - **A pane that outlives a peek.** Opening the terminal once leaves the pane
   running, so chat stays on the PTY path until it exits.
 - **Grok approvals.** Confirm Grok sends `session/request_permission` for a

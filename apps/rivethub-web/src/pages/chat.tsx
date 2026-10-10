@@ -69,7 +69,7 @@ import {
   getAgentSessionsVersion,
 } from '../lib/agent-session.js'
 import { migrateSessionKey, storageKey } from '../lib/session-rekey.js'
-import { protocolStartHarness } from '../lib/protocol-start.js'
+import { protocolStartPlan } from '../lib/protocol-start.js'
 import { presetsFromAgentsQueryData, sessionPointerMatches } from '../lib/agent-roster.js'
 import {
   clearSessionNodeBinding,
@@ -124,6 +124,7 @@ import {
   type ChatItem,
   type ChatNode,
   type HarnessGate,
+  harnessForRosterCommand,
 } from '../lib/harness-chat.js'
 import { rowPillText } from '../lib/harness-options.js'
 import { RhMark } from '../components/brand.js'
@@ -1907,17 +1908,33 @@ function ActiveSession(props: {
     // An ACP harness starts its session over the control plane: spawning the
     // TUI would hand the session's turns to that pane from the first send.
     // The harness mints the id, so the draft moves onto it once the turn is in.
-    const startHarness = protocolStartHarness({
+    // With no harness picked, the node's default roster command decides.
+    const needsDefault = isDraft && !termPtyRef.current && !launch.harnessId && !settings?.agentId
+    const nodeDefault = needsDefault
+      ? await queryClient
+          .fetchQuery({
+            queryKey: ['term-config', sessionBase, epochForNode],
+            queryFn: ({ signal }) => gw.termConfig(signal),
+            staleTime: 300_000,
+          })
+          .then((config) => harnessForRosterCommand(config.default))
+          .catch(() => undefined)
+      : undefined
+    const plan = protocolStartPlan({
       isDraft,
       hasPty: Boolean(termPtyRef.current),
       harnessId: launch.harnessId,
       agentId: settings?.agentId,
+      presetHasHarness: presetHasHarnessFlag(settings),
+      defaultHarnessId: nodeDefault,
       registry: remoteRegistry.data?.harnesses,
     })
-    if (startHarness) {
+    if (plan) {
       try {
-        const started = await gw.startHarnessSession(startHarness, {
+        const started = await gw.startHarnessSession(plan.harnessId, {
+          ...(plan.agentId ? { agentId: plan.agentId } : {}),
           ...(launch.spawn.model ? { model: launch.spawn.model } : {}),
+          ...(launch.spawn.effort ? { effort: launch.spawn.effort } : {}),
         })
         writeLaunchState({ launched: true })
         await sendProtocol(started.sessionId)

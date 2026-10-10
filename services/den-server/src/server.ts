@@ -1080,7 +1080,93 @@ export function createDenServer(config: DenConfig, opts: DenServerOptions = {}):
   for (const driver of opts.harnessDrivers ?? []) harnesses.register(driver)
   // Undefined when the allow-list is unset — presence alone stamps + gates.
   const isHarnessAllowed = opts.isHarnessAllowed ?? createAllowedProbe(config.allowedHarnesses)
+  /**
+   * An agent preset as launch settings, shared by POST /term and the control
+   * plane's session start. Explicit command/model/effort win and the preset
+   * fills the rest; its directory is created when missing and is the cwd —
+   * clients never send a raw one. Preset-derived tokens are checked again so
+   * a bad stored value is a 400 that names the preset.
+   */
+  const resolveAgentLaunch = async (
+    agentId: string,
+    explicit: { command?: string; model?: string; effort?: string },
+  ): Promise<
+    | {
+        ok: true
+        name: string
+        harnessId?: string
+        command?: string
+        cwd: string
+        model?: string
+        effort?: string
+      }
+    | { ok: false; status: number; body: Record<string, unknown> }
+  > => {
+    const refuse = (status: number, body: Record<string, unknown>) =>
+      ({ ok: false, status, body }) as const
+    let preset
+    try {
+      preset = await presetStore.get(agentId)
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err)
+      console.error(`[den-server] agent registry unavailable: ${msg}`)
+      return refuse(503, { error: 'agent registry unavailable' })
+    }
+    if (!preset) return refuse(404, { error: 'agent not found' })
+    if (preset.node && preset.node !== config.nodeName) {
+      return refuse(409, {
+        error: `agent "${preset.name}" is hosted on ${preset.node}`,
+        node: preset.node,
+      })
+    }
+    if (!preset.directory) return refuse(409, { error: `agent "${preset.name}" has no directory` })
+    try {
+      ensureAgentDirectory(preset, {
+        ...(config.sharedRoot ? { sharedDir: config.sharedRoot } : {}),
+        log: (msg) => console.error(`[den-server] ${msg}`),
+      })
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err)
+      return refuse(500, { error: `could not create agent directory: ${msg}` })
+    }
+    let command = explicit.command
+    if (command === undefined) {
+      command = rosterCommandFor(preset.harnessId)
+      if (!command) return refuse(400, { error: 'agent has no harness and no command was given' })
+    }
+    const derive = (value: string, re: RegExp): string | null => (re.test(value) ? value : null)
+    let model = explicit.model
+    if (model === undefined && preset.model) {
+      const derived = derive(preset.model, MODEL_TOKEN_RE)
+      if (derived === null)
+        return refuse(400, { error: `agent "${preset.name}" model must be a 1-64 token` })
+      model = derived
+    }
+    let effort = explicit.effort
+    if (effort === undefined && preset.effort) {
+      const derived = derive(preset.effort, EFFORT_TOKEN_RE)
+      if (derived === null)
+        return refuse(400, { error: `agent "${preset.name}" effort must be a 1-64 token` })
+      effort = derived
+    }
+    // Normalised once: the record, the spawn, and the response all share it.
+    // A trailing slash or surrounding whitespace must not look like a
+    // different directory.
+    const cwd = validateDirectory(preset.directory)
+    if (!cwd) return refuse(409, { error: `agent "${preset.name}" has no directory` })
+    return {
+      ok: true,
+      name: preset.name,
+      ...(preset.harnessId ? { harnessId: preset.harnessId } : {}),
+      command,
+      cwd,
+      ...(model !== undefined ? { model } : {}),
+      ...(effort !== undefined ? { effort } : {}),
+    }
+  }
+
   const harnessRoutes = createHarnessRoutes({
+    resolveAgent: (agentId, explicit) => resolveAgentLaunch(agentId, explicit),
     registry: harnesses,
     log: console.error,
     isInstalled:
@@ -1881,65 +1967,16 @@ export function createDenServer(config: DenConfig, opts: DenServerOptions = {}):
           let command: string | undefined = typeof p.command === 'string' ? p.command : undefined
           let cwdOverride: string | undefined
           if (typeof p.agentId === 'string') {
-            let preset
-            try {
-              preset = await presetStore.get(p.agentId)
-            } catch (err) {
-              const msg = err instanceof Error ? err.message : String(err)
-              console.error(`[den-server] agent registry unavailable: ${msg}`)
-              return json(res, 503, { error: 'agent registry unavailable' })
-            }
-            if (!preset) return json(res, 404, { error: 'agent not found' })
-            if (preset.node && preset.node !== config.nodeName) {
-              return json(res, 409, {
-                error: `agent "${preset.name}" is hosted on ${preset.node}`,
-                node: preset.node,
-              })
-            }
-            if (!preset.directory) {
-              return json(res, 409, { error: `agent "${preset.name}" has no directory` })
-            }
-            try {
-              ensureAgentDirectory(preset, {
-                ...(config.sharedRoot ? { sharedDir: config.sharedRoot } : {}),
-                log: (msg) => console.error(`[den-server] ${msg}`),
-              })
-            } catch (err) {
-              const msg = err instanceof Error ? err.message : String(err)
-              return json(res, 500, { error: `could not create agent directory: ${msg}` })
-            }
-            if (command === undefined) {
-              const fromHarness = rosterCommandFor(preset.harnessId)
-              if (!fromHarness) {
-                return json(res, 400, { error: 'agent has no harness and no command was given' })
-              }
-              command = fromHarness
-            }
-            if (modelTok === undefined && preset.model) {
-              const derived = token(preset.model, MODEL_TOKEN_RE)
-              if (derived === null) {
-                return json(res, 400, {
-                  error: `agent "${preset.name}" model must be a 1-64 token`,
-                })
-              }
-              modelTok = derived
-            }
-            if (effortTok === undefined && preset.effort) {
-              const derived = token(preset.effort, EFFORT_TOKEN_RE)
-              if (derived === null) {
-                return json(res, 400, {
-                  error: `agent "${preset.name}" effort must be a 1-64 token`,
-                })
-              }
-              effortTok = derived
-            }
-            // Normalised once: the record, the spawn, and the response all
-            // share it. A trailing slash or surrounding whitespace must not
-            // look like a different directory.
-            cwdOverride = validateDirectory(preset.directory)
-            if (!cwdOverride) {
-              return json(res, 409, { error: `agent "${preset.name}" has no directory` })
-            }
+            const launch = await resolveAgentLaunch(p.agentId, {
+              command,
+              model: modelTok,
+              effort: effortTok,
+            })
+            if (!launch.ok) return json(res, launch.status, launch.body)
+            command = launch.command
+            modelTok = launch.model
+            effortTok = launch.effort
+            cwdOverride = launch.cwd
           }
           const clamp = (v: unknown, lo: number, hi: number, dflt: number): number =>
             typeof v === 'number' && Number.isFinite(v)

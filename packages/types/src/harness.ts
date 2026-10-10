@@ -431,6 +431,8 @@ export interface DelegatedSessionLink {
 export type StartSessionOpts = {
   cwd?: string
   model?: string
+  /** Reasoning effort, for drivers that set it natively (ACP, Codex app-server). */
+  effort?: string
   /**
    * Client-minted canonical SessionId (immutable session ids, plan W1
    * stage 1). When the client supplies one, the control plane ACCEPTS it
