@@ -3,10 +3,14 @@ use std::str::FromStr;
 use serde::de::{self, Deserializer};
 use serde::ser::{SerializeMap, Serializer};
 use serde::{Deserialize, Serialize};
-use serde_json::Value;
 
+use protocol::js::JsValue;
+
+use crate::event::js_from_deserializer;
 use crate::ordered::OrderedMap;
-use crate::reducer::{DenState, RoomState, SessionInfo, initial_room_state, list_sessions};
+use crate::reducer::{
+    DenState, RoomState, SessionInfo, initial_room_state, list_sessions, room_from_js,
+};
 use crate::{JsNumber, PROTOCOL_VERSION};
 
 protocol::wire_enum! {
@@ -41,42 +45,68 @@ impl<'de> Deserialize<'de> for SnapshotFrame {
     where
         D: Deserializer<'de>,
     {
-        let value = Value::deserialize(deserializer)?;
+        let value = js_from_deserializer(deserializer)?;
         let obj = value
             .as_object()
             .ok_or_else(|| de::Error::custom("snapshot"))?;
         let kind = obj
             .get("type")
-            .and_then(Value::as_str)
+            .and_then(JsValue::as_str)
             .ok_or_else(|| de::Error::custom("type"))?;
         if SnapshotType::from_str(kind).ok().as_ref() != Some(&SnapshotType::Snapshot) {
             return Err(de::Error::custom("type"));
         }
-        let version = obj
-            .get("v")
-            .and_then(Value::as_f64)
-            .ok_or_else(|| de::Error::custom("v"))?;
+        let version = match obj.get("v") {
+            Some(JsValue::Number(number)) => *number,
+            _ => return Err(de::Error::custom("v")),
+        };
         if version != f64::from(PROTOCOL_VERSION) {
             return Err(de::Error::custom("v"));
         }
-        let sessions = serde_json::from_value(
+        let sessions = sessions_from_js(
             obj.get("sessions")
-                .cloned()
                 .ok_or_else(|| de::Error::custom("sessions"))?,
         )
-        .map_err(de::Error::custom)?;
-        let rooms = serde_json::from_value(
-            obj.get("rooms")
-                .cloned()
-                .ok_or_else(|| de::Error::custom("rooms"))?,
-        )
-        .map_err(de::Error::custom)?;
+        .ok_or_else(|| de::Error::custom("sessions"))?;
+        let rooms = rooms_from_js(obj.get("rooms").ok_or_else(|| de::Error::custom("rooms"))?)
+            .ok_or_else(|| de::Error::custom("rooms"))?;
         Ok(Self {
             v: JsNumber::from(version),
             sessions,
             rooms,
         })
     }
+}
+
+fn sessions_from_js(value: &JsValue) -> Option<Vec<SessionInfo>> {
+    value.as_array()?.iter().map(session_from_js).collect()
+}
+
+fn session_from_js(value: &JsValue) -> Option<SessionInfo> {
+    let object = value.as_object()?;
+    let harness = match object.get("harness") {
+        None | Some(JsValue::Null) => None,
+        Some(text) => Some(text.as_str()?.to_string()),
+    };
+    let last_event_ts = match object.get("lastEventTs") {
+        None | Some(JsValue::Null) => None,
+        Some(JsValue::Number(number)) if number.is_finite() => Some(JsNumber::from(*number)),
+        Some(_) => return None,
+    };
+    Some(SessionInfo {
+        id: object.get("id")?.as_str()?.to_string(),
+        name: object.get("name")?.as_str()?.to_string(),
+        harness,
+        last_event_ts,
+    })
+}
+
+fn rooms_from_js(value: &JsValue) -> Option<OrderedMap<RoomState>> {
+    let mut rooms = OrderedMap::new();
+    for (key, room) in value.as_object()?.iter() {
+        rooms.insert(key.to_utf8().to_string(), room_from_js(room)?);
+    }
+    Some(rooms)
 }
 
 pub fn snapshot_frame(state: &DenState, session: Option<&str>) -> SnapshotFrame {

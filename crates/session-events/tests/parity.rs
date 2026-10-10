@@ -1,9 +1,9 @@
 use serde_json::{Value, json};
 use session_events::{
-    ACTIVITIES, Activity, AgentEvent, AgentEventBody, DenState, EventType, JsNumber, LogEntry,
-    LogWho, PROTOCOL_VERSION, RoomState, SessionInfo, Task, TokenUsage, initial_den_state,
-    initial_room_state, list_sessions, parse_event, parse_event_str, reduce_den, reduce_room,
-    snapshot_frame, tool_activity,
+    ACTIVITIES, Activity, AgentEvent, AgentEventBody, DenState, EventType, JsNumber, JsString,
+    LogEntry, LogWho, PROTOCOL_VERSION, RoomState, SessionInfo, SnapshotFrame, Task, TokenUsage,
+    initial_den_state, initial_room_state, list_sessions, parse_event, parse_event_str, reduce_den,
+    reduce_room, snapshot_frame, tool_activity,
 };
 
 fn stamped(
@@ -13,11 +13,7 @@ fn stamped(
     name: Option<&str>,
     harness: Option<&str>,
 ) -> AgentEvent {
-    let mut event = AgentEvent::new(session, body);
-    event.ts = Some(JsNumber::from(ts));
-    event.name = name.map(str::to_string);
-    event.harness = harness.map(str::to_string);
-    event
+    AgentEvent::new(session, body).stamped(ts, name, harness)
 }
 
 fn run(events: Vec<AgentEvent>) -> DenState {
@@ -42,7 +38,7 @@ fn coding_session() -> Vec<AgentEvent> {
         stamped(
             "s1",
             AgentEventBody::SessionStart {
-                title: "fix the flaky test".to_string(),
+                title: "fix the flaky test".into(),
             },
             1,
             Some("rivet-claude"),
@@ -51,7 +47,7 @@ fn coding_session() -> Vec<AgentEvent> {
         stamped(
             "s1",
             AgentEventBody::MessageUser {
-                text: "fix the flaky test in ci".to_string(),
+                text: "fix the flaky test in ci".into(),
             },
             2,
             None,
@@ -60,7 +56,7 @@ fn coding_session() -> Vec<AgentEvent> {
         stamped(
             "s1",
             AgentEventBody::ThinkingDelta {
-                text: "Looking at the CI logs first… ".to_string(),
+                text: "Looking at the CI logs first… ".into(),
             },
             3,
             None,
@@ -69,11 +65,7 @@ fn coding_session() -> Vec<AgentEvent> {
         stamped(
             "s1",
             AgentEventBody::TaskPlan {
-                tasks: vec![
-                    "find flaky test".to_string(),
-                    "fix it".to_string(),
-                    "verify".to_string(),
-                ],
+                tasks: vec!["find flaky test".into(), "fix it".into(), "verify".into()],
             },
             4,
             None,
@@ -82,7 +74,7 @@ fn coding_session() -> Vec<AgentEvent> {
         stamped(
             "s1",
             AgentEventBody::ToolStart {
-                tool: "Grep".to_string(),
+                tool: "Grep".into(),
                 activity: None,
                 args: None,
             },
@@ -93,7 +85,7 @@ fn coding_session() -> Vec<AgentEvent> {
         stamped(
             "s1",
             AgentEventBody::ToolEnd {
-                tool: Some("Grep".to_string()),
+                tool: Some("Grep".into()),
             },
             6,
             None,
@@ -111,7 +103,7 @@ fn coding_session() -> Vec<AgentEvent> {
         stamped(
             "s1",
             AgentEventBody::ToolStart {
-                tool: "Edit".to_string(),
+                tool: "Edit".into(),
                 activity: None,
                 args: None,
             },
@@ -122,7 +114,7 @@ fn coding_session() -> Vec<AgentEvent> {
         stamped(
             "s1",
             AgentEventBody::ToolEnd {
-                tool: Some("Edit".to_string()),
+                tool: Some("Edit".into()),
             },
             9,
             None,
@@ -140,7 +132,7 @@ fn coding_session() -> Vec<AgentEvent> {
         stamped(
             "s1",
             AgentEventBody::ToolStart {
-                tool: "Bash".to_string(),
+                tool: "Bash".into(),
                 activity: None,
                 args: None,
             },
@@ -151,7 +143,7 @@ fn coding_session() -> Vec<AgentEvent> {
         stamped(
             "s1",
             AgentEventBody::TermLine {
-                text: "$ npm test".to_string(),
+                text: "$ npm test".into(),
             },
             12,
             None,
@@ -160,7 +152,7 @@ fn coding_session() -> Vec<AgentEvent> {
         stamped(
             "s1",
             AgentEventBody::TermLine {
-                text: "42 passing".to_string(),
+                text: "42 passing".into(),
             },
             13,
             None,
@@ -169,7 +161,7 @@ fn coding_session() -> Vec<AgentEvent> {
         stamped(
             "s1",
             AgentEventBody::ToolEnd {
-                tool: Some("Bash".to_string()),
+                tool: Some("Bash".into()),
             },
             14,
             None,
@@ -187,7 +179,7 @@ fn coding_session() -> Vec<AgentEvent> {
         stamped(
             "s1",
             AgentEventBody::MessageAgent {
-                text: "Fixed — all 42 tests pass.".to_string(),
+                text: "Fixed — all 42 tests pass.".into(),
                 usage: None,
                 model: None,
                 duration_ms: None,
@@ -313,11 +305,8 @@ fn parse_event_keeps_harness_session() {
         "harnessSession": "20260802_225647_6ad0b9"
     }))
     .unwrap();
-    assert_eq!(
-        event.harness_session.as_deref(),
-        Some("20260802_225647_6ad0b9")
-    );
-    assert_eq!(event.harness.as_deref(), Some("hermes"));
+    assert_eq!(event.harness_session(), Some("20260802_225647_6ad0b9"));
+    assert_eq!(event.harness(), Some("hermes"));
 }
 
 #[test]
@@ -332,7 +321,7 @@ fn parse_event_keeps_message_agent_turn_stats() {
         "durationMs": 1500
     }))
     .unwrap();
-    match event.body {
+    match event.body() {
         AgentEventBody::MessageAgent {
             usage,
             model,
@@ -393,9 +382,9 @@ fn parse_event_preserves_unknown_fields_and_unvalidated_args() {
         &json!({"v": 1, "session": "s1", "type": "tool.start", "tool": "Bash", "args": "nope"}),
     )
     .unwrap();
-    match started.body {
+    match started.body() {
         AgentEventBody::ToolStart { args, .. } => {
-            assert_eq!(args, Some(Value::String("nope".to_string())));
+            assert_eq!(args, Some(Value::String("nope".into())));
         }
         _ => panic!("tool.start"),
     }
@@ -438,13 +427,13 @@ fn reduce_room_tool_cycle_and_adapter_activity() {
         &AgentEvent::new(
             "s",
             AgentEventBody::ToolStart {
-                tool: "Bash".to_string(),
+                tool: "Bash".into(),
                 activity: None,
                 args: None,
             },
         ),
     );
-    assert_eq!(state.tool.as_deref(), Some("Bash"));
+    assert_eq!(state.tool.as_ref().map(JsString::to_utf8), Some("Bash"));
     assert_eq!(state.activity, Activity::EditingCode);
     state = reduce_room(
         state,
@@ -457,7 +446,7 @@ fn reduce_room_tool_cycle_and_adapter_activity() {
         &AgentEvent::new(
             "s",
             AgentEventBody::ToolStart {
-                tool: "CustomTool".to_string(),
+                tool: "CustomTool".into(),
                 activity: Some(Activity::SearchingWeb),
                 args: None,
             },
@@ -470,19 +459,14 @@ fn reduce_room_tool_cycle_and_adapter_activity() {
 fn reduce_room_session_start_keeps_only_the_log() {
     let mut state = reduce_room(
         initial_room_state(),
-        &AgentEvent::new(
-            "s",
-            AgentEventBody::MessageUser {
-                text: "hi".to_string(),
-            },
-        ),
+        &AgentEvent::new("s", AgentEventBody::MessageUser { text: "hi".into() }),
     );
     state = reduce_room(
         state,
         &AgentEvent::new(
             "s",
             AgentEventBody::ToolStart {
-                tool: "Bash".to_string(),
+                tool: "Bash".into(),
                 activity: None,
                 args: None,
             },
@@ -493,12 +477,12 @@ fn reduce_room_session_start_keeps_only_the_log() {
         &AgentEvent::new(
             "s",
             AgentEventBody::SessionStart {
-                title: "round 2".to_string(),
+                title: "round 2".into(),
             },
         ),
     );
     assert_eq!(state.log.len(), 1);
-    assert_eq!(state.title, "round 2");
+    assert_eq!(state.title.to_utf8(), "round 2");
     assert!(state.tasks.is_empty());
     assert!(state.tool.is_none());
     assert_eq!(state.activity, Activity::Idle);
@@ -515,13 +499,13 @@ fn reduce_room_thinking_window_trims_to_a_word_boundary() {
             &AgentEvent::new(
                 "s",
                 AgentEventBody::ThinkingDelta {
-                    text: format!("{} ", words[index % words.len()]),
+                    text: format!("{} ", words[index % words.len()]).into(),
                 },
             ),
         );
     }
-    assert!(state.thought.encode_utf16().count() <= 220);
-    for word in state.thought.trim_end_matches(' ').split(' ') {
+    assert!(state.thought.units().len() <= 220);
+    for word in state.thought.to_utf8().trim_end_matches(' ').split(' ') {
         assert!(words.contains(&word), "{word}");
     }
 }
@@ -531,30 +515,40 @@ fn reduce_room_spinner_lines_replace_the_bubble() {
     let text = format!("✳ {}", "z".repeat(300));
     let mut state = reduce_room(
         initial_room_state(),
-        &AgentEvent::new("s", AgentEventBody::ThinkingDelta { text: text.clone() }),
+        &AgentEvent::new(
+            "s",
+            AgentEventBody::ThinkingDelta {
+                text: text.as_str().into(),
+            },
+        ),
     );
-    assert_eq!(state.thought, text);
-    assert!(state.thought.encode_utf16().count() > 220);
+    assert_eq!(state.thought.to_utf8(), text);
+    assert!(state.thought.units().len() > 220);
     assert_eq!(state.activity, Activity::Thinking);
     assert!(state.tool.is_none());
     for prefix in ["✳", "✢", "✻", "✽", "·"] {
         let line = format!("{prefix} status");
         state = reduce_room(
             initial_room_state(),
-            &AgentEvent::new("s", AgentEventBody::ThinkingDelta { text: line.clone() }),
+            &AgentEvent::new(
+                "s",
+                AgentEventBody::ThinkingDelta {
+                    text: line.as_str().into(),
+                },
+            ),
         );
-        assert_eq!(state.thought, line);
+        assert_eq!(state.thought.to_utf8(), line);
     }
     state = reduce_room(
         initial_room_state(),
         &AgentEvent::new(
             "s",
             AgentEventBody::ThinkingDelta {
-                text: "✳status".to_string(),
+                text: "✳status".into(),
             },
         ),
     );
-    assert_eq!(state.thought, "✳status");
+    assert_eq!(state.thought.to_utf8(), "✳status");
 }
 
 #[test]
@@ -562,28 +556,28 @@ fn reduce_room_windows_by_utf16_units_and_trims_only_when_full() {
     let text = "😀".repeat(111);
     let state = reduce_room(
         initial_room_state(),
-        &AgentEvent::new("s", AgentEventBody::ThinkingDelta { text }),
+        &AgentEvent::new("s", AgentEventBody::ThinkingDelta { text: text.into() }),
     );
-    assert_eq!(state.thought.encode_utf16().count(), 220);
-    assert_eq!(state.thought.chars().count(), 110);
+    assert_eq!(state.thought.units().len(), 220);
+    assert_eq!(state.thought.to_utf8().chars().count(), 110);
     let short = reduce_room(
         initial_room_state(),
         &AgentEvent::new(
             "s",
             AgentEventBody::ThinkingDelta {
-                text: "zz hello".to_string(),
+                text: "zz hello".into(),
             },
         ),
     );
-    assert_eq!(short.thought, "zz hello");
+    assert_eq!(short.thought.to_utf8(), "zz hello");
     let head = "z".repeat(215);
     let full = format!("{head} word");
     assert_eq!(full.encode_utf16().count(), 220);
     let trimmed = reduce_room(
         initial_room_state(),
-        &AgentEvent::new("s", AgentEventBody::ThinkingDelta { text: full }),
+        &AgentEvent::new("s", AgentEventBody::ThinkingDelta { text: full.into() }),
     );
-    assert_eq!(trimmed.thought, "word");
+    assert_eq!(trimmed.thought.to_utf8(), "word");
 }
 
 #[test]
@@ -595,14 +589,14 @@ fn reduce_room_caps_log_and_term() {
             &AgentEvent::new(
                 "s",
                 AgentEventBody::MessageUser {
-                    text: index.to_string(),
+                    text: index.to_string().into(),
                 },
             ),
         );
     }
     assert_eq!(state.log.len(), 60);
-    assert_eq!(state.log[0].text, "5");
-    assert_eq!(state.log[59].text, "64");
+    assert_eq!(state.log[0].text.to_utf8(), "5");
+    assert_eq!(state.log[59].text.to_utf8(), "64");
     state = initial_room_state();
     for index in 0..8 {
         state = reduce_room(
@@ -610,12 +604,15 @@ fn reduce_room_caps_log_and_term() {
             &AgentEvent::new(
                 "s",
                 AgentEventBody::TermLine {
-                    text: index.to_string(),
+                    text: index.to_string().into(),
                 },
             ),
         );
     }
-    assert_eq!(state.term, vec!["2", "3", "4", "5", "6", "7"]);
+    assert_eq!(
+        state.term.iter().map(JsString::to_utf8).collect::<Vec<_>>(),
+        vec!["2", "3", "4", "5", "6", "7"]
+    );
 }
 
 #[test]
@@ -625,7 +622,7 @@ fn reduce_room_activity_speech_and_plan_follow_the_arms() {
         &AgentEvent::new(
             "s",
             AgentEventBody::ToolStart {
-                tool: "Bash".to_string(),
+                tool: "Bash".into(),
                 activity: None,
                 args: None,
             },
@@ -636,7 +633,7 @@ fn reduce_room_activity_speech_and_plan_follow_the_arms() {
         &AgentEvent::new(
             "s",
             AgentEventBody::ThinkingDelta {
-                text: "hello ".to_string(),
+                text: "hello ".into(),
             },
         ),
     );
@@ -651,13 +648,13 @@ fn reduce_room_activity_speech_and_plan_follow_the_arms() {
     );
     assert_eq!(state.activity, Activity::SearchingWeb);
     assert!(state.tool.is_none());
-    assert_eq!(state.thought, "");
+    assert_eq!(state.thought.to_utf8(), "");
     state = reduce_room(
         state,
         &AgentEvent::new(
             "s",
             AgentEventBody::ThinkingDelta {
-                text: "hello ".to_string(),
+                text: "hello ".into(),
             },
         ),
     );
@@ -670,24 +667,24 @@ fn reduce_room_activity_speech_and_plan_follow_the_arms() {
             },
         ),
     );
-    assert_eq!(state.thought, "hello ");
+    assert_eq!(state.thought.to_utf8(), "hello ");
     state = reduce_room(
         state,
         &AgentEvent::new(
             "s",
             AgentEventBody::TaskPlan {
-                tasks: vec!["a".to_string()],
+                tasks: vec!["a".into()],
             },
         ),
     );
     assert_eq!(state.activity, Activity::WritingPlan);
-    assert_eq!(state.thought, "hello ");
+    assert_eq!(state.thought.to_utf8(), "hello ");
     state = reduce_room(
         initial_room_state(),
         &AgentEvent::new(
             "s",
             AgentEventBody::ToolStart {
-                tool: "Bash".to_string(),
+                tool: "Bash".into(),
                 activity: None,
                 args: None,
             },
@@ -697,7 +694,7 @@ fn reduce_room_activity_speech_and_plan_follow_the_arms() {
         state,
         &AgentEvent::new("s", AgentEventBody::SpeechStt { active: false }),
     );
-    assert_eq!(state.tool.as_deref(), Some("Bash"));
+    assert_eq!(state.tool.as_ref().map(JsString::to_utf8), Some("Bash"));
     assert_eq!(state.activity, Activity::Thinking);
     state = reduce_room(
         state,
@@ -705,7 +702,7 @@ fn reduce_room_activity_speech_and_plan_follow_the_arms() {
     );
     assert!(state.tool.is_none());
     assert_eq!(state.activity, Activity::Listening);
-    assert_eq!(state.thought, "");
+    assert_eq!(state.thought.to_utf8(), "");
 }
 
 #[test]
@@ -715,7 +712,7 @@ fn reduce_room_turn_end_settles_to_idle() {
         &AgentEvent::new(
             "s",
             AgentEventBody::MessageAgent {
-                text: "done!".to_string(),
+                text: "done!".into(),
                 usage: None,
                 model: None,
                 duration_ms: None,
@@ -732,7 +729,7 @@ fn reduce_room_turn_end_settles_to_idle() {
         &AgentEvent::new(
             "s",
             AgentEventBody::MessageUser {
-                text: "next".to_string(),
+                text: "next".into(),
             },
         ),
     );
@@ -746,7 +743,7 @@ fn reduce_room_ignores_unknown_event_types() {
         &AgentEvent::new(
             "s",
             AgentEventBody::ToolStart {
-                tool: "Bash".to_string(),
+                tool: "Bash".into(),
                 activity: None,
                 args: None,
             },
@@ -757,7 +754,7 @@ fn reduce_room_ignores_unknown_event_types() {
         &AgentEvent::new(
             "s",
             AgentEventBody::Unknown {
-                kind: "confetti.burst".to_string(),
+                kind: "confetti.burst".into(),
             },
         ),
     );
@@ -786,12 +783,12 @@ fn reduce_room_ended_room_ignores_everything_but_session_start() {
         &AgentEvent::new(
             "s",
             AgentEventBody::SessionStart {
-                title: "back".to_string(),
+                title: "back".into(),
             },
         ),
     );
     assert!(!state.ended);
-    assert_eq!(state.title, "back");
+    assert_eq!(state.title.to_utf8(), "back");
 }
 
 #[test]
@@ -799,18 +796,14 @@ fn reduce_den_keeps_one_room_per_session() {
     let den = run(vec![
         stamped(
             "a",
-            AgentEventBody::SessionStart {
-                title: "A".to_string(),
-            },
+            AgentEventBody::SessionStart { title: "A".into() },
             100,
             Some("alpha"),
             None,
         ),
         stamped(
             "b",
-            AgentEventBody::SessionStart {
-                title: "B".to_string(),
-            },
+            AgentEventBody::SessionStart { title: "B".into() },
             200,
             None,
             None,
@@ -818,7 +811,7 @@ fn reduce_den_keeps_one_room_per_session() {
         stamped(
             "a",
             AgentEventBody::ToolStart {
-                tool: "Bash".to_string(),
+                tool: "Bash".into(),
                 activity: None,
                 args: None,
             },
@@ -837,18 +830,14 @@ fn list_sessions_orders_by_recency_and_keeps_name_and_harness() {
     let den = run(vec![
         stamped(
             "a",
-            AgentEventBody::SessionStart {
-                title: "A".to_string(),
-            },
+            AgentEventBody::SessionStart { title: "A".into() },
             100,
             Some("alpha"),
             Some("claude-code"),
         ),
         stamped(
             "b",
-            AgentEventBody::SessionStart {
-                title: "B".to_string(),
-            },
+            AgentEventBody::SessionStart { title: "B".into() },
             200,
             None,
             None,
@@ -871,18 +860,14 @@ fn last_event_ts_is_monotonic_and_floors_a_negative_first_timestamp() {
     let den = run(vec![
         stamped(
             "a",
-            AgentEventBody::SessionStart {
-                title: "A".to_string(),
-            },
+            AgentEventBody::SessionStart { title: "A".into() },
             100,
             None,
             None,
         ),
         stamped(
             "b",
-            AgentEventBody::SessionStart {
-                title: "B".to_string(),
-            },
+            AgentEventBody::SessionStart { title: "B".into() },
             200,
             None,
             None,
@@ -901,43 +886,34 @@ fn last_event_ts_is_monotonic_and_floors_a_negative_first_timestamp() {
             .collect::<Vec<_>>(),
         vec!["a", "b"]
     );
-    let mut negative = AgentEvent::new("c", AgentEventBody::SessionEnd);
-    negative.ts = Some(JsNumber::from(-5_i64));
+    let negative =
+        AgentEvent::new("c", AgentEventBody::SessionEnd).with_ts(Some(JsNumber::from(-5_i64)));
     let den = reduce_den(initial_den_state(), &negative);
     assert_eq!(
         den.sessions.get("c").unwrap().last_event_ts,
         Some(JsNumber::from(0_i64))
     );
-    let mut blank = AgentEvent::new(
-        "a",
-        AgentEventBody::SessionStart {
-            title: "A".to_string(),
-        },
-    );
-    blank.name = Some("alpha".to_string());
-    blank.harness = Some("claude-code".to_string());
+    let blank = AgentEvent::new("a", AgentEventBody::SessionStart { title: "A".into() })
+        .with_name(Some("alpha"))
+        .with_harness(Some("claude-code"));
     let den = reduce_den(initial_den_state(), &blank);
-    let mut follow = AgentEvent::new("a", AgentEventBody::ThinkingEnd);
-    follow.name = Some(String::new());
-    follow.harness = Some(String::new());
+    let follow = AgentEvent::new("a", AgentEventBody::ThinkingEnd)
+        .with_name(Some(""))
+        .with_harness(Some(""));
     let den = reduce_den(den, &follow);
     assert_eq!(den.sessions.get("a").unwrap().name, "alpha");
     assert_eq!(den.sessions.get("a").unwrap().harness.as_deref(), Some(""));
     let tied = run(vec![
         stamped(
             "a",
-            AgentEventBody::SessionStart {
-                title: "A".to_string(),
-            },
+            AgentEventBody::SessionStart { title: "A".into() },
             5,
             None,
             None,
         ),
         stamped(
             "b",
-            AgentEventBody::SessionStart {
-                title: "B".to_string(),
-            },
+            AgentEventBody::SessionStart { title: "B".into() },
             5,
             None,
             None,
@@ -958,45 +934,45 @@ fn golden_coding_session_matches_the_room_snapshot() {
     assert_eq!(
         den.rooms.get("s1").cloned().unwrap(),
         RoomState {
-            title: "fix the flaky test".to_string(),
+            title: "fix the flaky test".into(),
             activity: Activity::Speaking,
             tool: None,
             tasks: vec![
                 Task {
-                    label: "find flaky test".to_string(),
+                    label: "find flaky test".into(),
                     done: true,
                 },
                 Task {
-                    label: "fix it".to_string(),
+                    label: "fix it".into(),
                     done: true,
                 },
                 Task {
-                    label: "verify".to_string(),
+                    label: "verify".into(),
                     done: true,
                 },
             ],
             thought: String::new().into(),
-            last_message: "Fixed — all 42 tests pass.".to_string(),
+            last_message: "Fixed — all 42 tests pass.".into(),
             log: vec![
                 LogEntry {
                     who: LogWho::User,
-                    text: "fix the flaky test in ci".to_string(),
+                    text: "fix the flaky test in ci".into(),
                 },
                 LogEntry {
                     who: LogWho::Agent,
-                    text: "Fixed — all 42 tests pass.".to_string(),
+                    text: "Fixed — all 42 tests pass.".into(),
                 },
             ],
-            term: vec!["$ npm test".to_string(), "42 passing".to_string()],
+            term: vec!["$ npm test".into(), "42 passing".into()],
             ended: false,
         }
     );
     assert_eq!(
         den.sessions.get("s1").cloned().unwrap(),
         SessionInfo {
-            id: "s1".to_string(),
-            name: "rivet-claude".to_string(),
-            harness: Some("claude-code".to_string()),
+            id: "s1".into(),
+            name: "rivet-claude".into(),
+            harness: Some("claude-code".into()),
             last_event_ts: Some(JsNumber::from(16_i64)),
         }
     );
@@ -1026,7 +1002,7 @@ fn golden_voice_interruption_ends_asleep() {
         stamped(
             "s2",
             AgentEventBody::SessionStart {
-                title: "chatting".to_string(),
+                title: "chatting".into(),
             },
             1,
             None,
@@ -1049,7 +1025,7 @@ fn golden_voice_interruption_ends_asleep() {
         stamped(
             "s2",
             AgentEventBody::MessageAgent {
-                text: "On it.".to_string(),
+                text: "On it.".into(),
                 usage: None,
                 model: None,
                 duration_ms: None,
@@ -1063,18 +1039,18 @@ fn golden_voice_interruption_ends_asleep() {
     let room = den.rooms.get("s2").unwrap();
     assert_eq!(room.activity, Activity::Sleeping);
     assert!(room.ended);
-    assert_eq!(room.title, "chatting");
-    assert_eq!(room.last_message, "On it.");
+    assert_eq!(room.title.to_utf8(), "chatting");
+    assert_eq!(room.last_message.to_utf8(), "On it.");
     assert_eq!(
         room.log,
         vec![LogEntry {
             who: LogWho::Agent,
-            text: "On it.".to_string(),
+            text: "On it.".into(),
         }]
     );
     assert!(room.tasks.is_empty());
     assert!(room.term.is_empty());
-    assert_eq!(room.thought, "");
+    assert_eq!(room.thought.to_utf8(), "");
     assert!(room.tool.is_none());
     let info = den.sessions.get("s2").unwrap();
     assert_eq!(info.name, "s2");
@@ -1137,30 +1113,10 @@ fn accepted_event_keeps_original_property_order() {
 #[test]
 fn session_maps_enumerate_array_indexes_before_insertion_order() {
     let den = run(vec![
-        AgentEvent::new(
-            "10",
-            AgentEventBody::SessionStart {
-                title: "10".to_string(),
-            },
-        ),
-        AgentEvent::new(
-            "2",
-            AgentEventBody::SessionStart {
-                title: "2".to_string(),
-            },
-        ),
-        AgentEvent::new(
-            "b",
-            AgentEventBody::SessionStart {
-                title: "b".to_string(),
-            },
-        ),
-        AgentEvent::new(
-            "a",
-            AgentEventBody::SessionStart {
-                title: "a".to_string(),
-            },
-        ),
+        AgentEvent::new("10", AgentEventBody::SessionStart { title: "10".into() }),
+        AgentEvent::new("2", AgentEventBody::SessionStart { title: "2".into() }),
+        AgentEvent::new("b", AgentEventBody::SessionStart { title: "b".into() }),
+        AgentEvent::new("a", AgentEventBody::SessionStart { title: "a".into() }),
     ]);
     assert_eq!(
         list_sessions(&den)
@@ -1209,18 +1165,14 @@ fn session_filter_keeps_the_full_session_list() {
     let den = run(vec![
         stamped(
             "s1",
-            AgentEventBody::SessionStart {
-                title: "A".to_string(),
-            },
+            AgentEventBody::SessionStart { title: "A".into() },
             1,
             None,
             None,
         ),
         stamped(
             "s2",
-            AgentEventBody::SessionStart {
-                title: "B".to_string(),
-            },
+            AgentEventBody::SessionStart { title: "B".into() },
             2,
             None,
             None,
@@ -1235,5 +1187,210 @@ fn session_filter_keeps_the_full_session_list() {
     assert_eq!(
         missing.rooms.get("missing").cloned().unwrap(),
         initial_room_state()
+    );
+}
+
+#[test]
+fn stamped_event_serializes_metadata_and_keeps_extensions() {
+    let raw = r#"{"note":"x","v":1,"session":"s1","type":"session.end"}"#;
+    let event = parse_event_str(raw)
+        .unwrap()
+        .stamped(9_i64, Some("n"), Some("claude-code"));
+    assert_eq!(
+        serde_json::to_string(&event).unwrap(),
+        r#"{"note":"x","v":1,"session":"s1","type":"session.end","ts":9,"name":"n","harness":"claude-code"}"#
+    );
+    assert_eq!(event.ts(), Some(JsNumber::from(9_i64)));
+    assert_eq!(event.name(), Some("n"));
+    assert_eq!(event.harness(), Some("claude-code"));
+    let cleared = event.stamped(4_i64, None, None);
+    assert_eq!(
+        serde_json::to_string(&cleared).unwrap(),
+        r#"{"note":"x","v":1,"session":"s1","type":"session.end","ts":4}"#
+    );
+    assert_eq!(cleared.name(), None);
+    assert_eq!(cleared.harness(), None);
+}
+
+#[test]
+fn with_session_serializes_the_updated_session() {
+    let raw = r#"{"note":"x","v":1,"session":"s1","type":"session.end"}"#;
+    let event = parse_event_str(raw).unwrap().with_session("room");
+    assert_eq!(
+        serde_json::to_string(&event).unwrap(),
+        r#"{"note":"x","v":1,"session":"room","type":"session.end"}"#
+    );
+    assert_eq!(event.session(), "room");
+    let den = reduce_den(initial_den_state(), &event);
+    assert!(den.rooms.get("room").is_some());
+    assert!(den.rooms.get("s1").is_none());
+}
+
+#[test]
+fn with_name_serializes_the_updated_name() {
+    let raw = r#"{"note":"x","v":1,"session":"s1","type":"session.end","name":"old"}"#;
+    let event = parse_event_str(raw).unwrap().with_name(Some("next"));
+    assert_eq!(
+        serde_json::to_string(&event).unwrap(),
+        r#"{"note":"x","v":1,"session":"s1","type":"session.end","name":"next"}"#
+    );
+    assert_eq!(event.name(), Some("next"));
+    let cleared = event.with_name(None);
+    assert_eq!(
+        serde_json::to_string(&cleared).unwrap(),
+        r#"{"note":"x","v":1,"session":"s1","type":"session.end"}"#
+    );
+    assert_eq!(cleared.name(), None);
+}
+
+#[test]
+fn with_harness_serializes_the_updated_harness() {
+    let raw = r#"{"note":"x","v":1,"session":"s1","type":"session.end"}"#;
+    let event = parse_event_str(raw)
+        .unwrap()
+        .with_harness(Some("grok-build"));
+    assert_eq!(
+        serde_json::to_string(&event).unwrap(),
+        r#"{"note":"x","v":1,"session":"s1","type":"session.end","harness":"grok-build"}"#
+    );
+    assert_eq!(event.harness(), Some("grok-build"));
+    let cleared = event.with_harness(None);
+    assert_eq!(serde_json::to_string(&cleared).unwrap(), raw);
+    assert_eq!(cleared.harness(), None);
+}
+
+#[test]
+fn with_harness_session_serializes_the_updated_harness_session() {
+    let raw = r#"{"note":"x","v":1,"session":"s1","type":"session.end"}"#;
+    let event = parse_event_str(raw)
+        .unwrap()
+        .with_harness_session(Some("abc"));
+    assert_eq!(
+        serde_json::to_string(&event).unwrap(),
+        r#"{"note":"x","v":1,"session":"s1","type":"session.end","harnessSession":"abc"}"#
+    );
+    assert_eq!(event.harness_session(), Some("abc"));
+    let cleared = event.with_harness_session(None);
+    assert_eq!(serde_json::to_string(&cleared).unwrap(), raw);
+    assert_eq!(cleared.harness_session(), None);
+}
+
+#[test]
+fn with_ts_serializes_the_updated_timestamp() {
+    let raw = r#"{"note":"x","v":1,"session":"s1","type":"session.end","ts":1}"#;
+    let event = parse_event_str(raw)
+        .unwrap()
+        .with_ts(Some(JsNumber::from(-5_i64)));
+    assert_eq!(
+        serde_json::to_string(&event).unwrap(),
+        r#"{"note":"x","v":1,"session":"s1","type":"session.end","ts":-5}"#
+    );
+    assert_eq!(event.ts(), Some(JsNumber::from(-5_i64)));
+    let cleared = event.with_ts(None);
+    assert_eq!(
+        serde_json::to_string(&cleared).unwrap(),
+        r#"{"note":"x","v":1,"session":"s1","type":"session.end"}"#
+    );
+    assert_eq!(cleared.ts(), None);
+}
+
+#[test]
+fn long_thinking_delta_windows_the_tail() {
+    let mut state = reduce_room(
+        initial_room_state(),
+        &AgentEvent::new(
+            "s",
+            AgentEventBody::ThinkingDelta {
+                text: "b".repeat(100).into(),
+            },
+        ),
+    );
+    state = reduce_room(
+        state,
+        &AgentEvent::new(
+            "s",
+            AgentEventBody::ThinkingDelta {
+                text: "a".repeat(200_000).into(),
+            },
+        ),
+    );
+    assert_eq!(state.thought.units().len(), 220);
+    assert_eq!(state.thought.to_utf8(), "a".repeat(220));
+}
+
+#[test]
+fn thought_state_round_trips_a_split_surrogate() {
+    let letters = "a".repeat(219);
+    let raw = format!(
+        "{{\"v\":1,\"session\":\"s\",\"type\":\"thinking.delta\",\"text\":\"😀{letters}\"}}"
+    );
+    let event = parse_event_str(&raw).unwrap();
+    let state = reduce_room(initial_room_state(), &event);
+    let json = serde_json::to_string(&state).unwrap();
+    let parsed: RoomState = serde_json::from_str(&json).unwrap();
+    assert_eq!(parsed, state);
+    assert_eq!(parsed.thought.units().first().copied(), Some(0xDE00));
+    let den = reduce_den(initial_den_state(), &event);
+    let den_json = serde_json::to_string(&den).unwrap();
+    let den_parsed: DenState = serde_json::from_str(&den_json).unwrap();
+    assert_eq!(den_parsed, den);
+    let frame = snapshot_frame(&den, None);
+    let frame_json = serde_json::to_string(&frame).unwrap();
+    let frame_parsed: SnapshotFrame = serde_json::from_str(&frame_json).unwrap();
+    assert_eq!(serde_json::to_string(&frame_parsed).unwrap(), frame_json);
+    assert_eq!(
+        frame_parsed.rooms.get("s").unwrap().thought.units(),
+        state.thought.units()
+    );
+}
+
+#[test]
+fn hook_truncated_text_keeps_a_lone_surrogate_in_the_snapshot() {
+    let title = format!("{}\\ud83d", "a".repeat(47));
+    let label = format!("{}\\ud83d", "b".repeat(59));
+    let term = format!("{}\\ud83d", "c".repeat(79));
+    let user = format!("{}\\ud83d", "d".repeat(1999));
+    let agent = format!("{}\\ud83d", "e".repeat(1999));
+    let events = [
+        format!("{{\"v\":1,\"session\":\"s\",\"type\":\"session.start\",\"title\":\"{title}\"}}"),
+        format!("{{\"v\":1,\"session\":\"s\",\"type\":\"task.plan\",\"tasks\":[\"{label}\"]}}"),
+        format!("{{\"v\":1,\"session\":\"s\",\"type\":\"term.line\",\"text\":\"{term}\"}}"),
+        format!("{{\"v\":1,\"session\":\"s\",\"type\":\"message.user\",\"text\":\"{user}\"}}"),
+        format!("{{\"v\":1,\"session\":\"s\",\"type\":\"message.agent\",\"text\":\"{agent}\"}}"),
+    ];
+    let mut state = initial_room_state();
+    let mut den = initial_den_state();
+    for raw in &events {
+        let event = parse_event_str(raw).unwrap();
+        state = reduce_room(state, &event);
+        den = reduce_den(den, &event);
+    }
+    let json = serde_json::to_string(&state).unwrap();
+    assert!(json.contains(&format!("\"title\":\"{title}\"")), "{json}");
+    assert!(json.contains(&format!("\"label\":\"{label}\"")), "{json}");
+    assert!(json.contains(&format!("\"{term}\"")), "{json}");
+    assert!(json.contains(&format!("\"text\":\"{user}\"")), "{json}");
+    assert!(json.contains(&format!("\"text\":\"{agent}\"")), "{json}");
+    assert!(
+        json.contains(&format!("\"lastMessage\":\"{agent}\"")),
+        "{json}"
+    );
+    assert!(!json.contains("\\ufffd"), "{json}");
+    assert_eq!(state.title.units().last().copied(), Some(0xD83D));
+    assert_eq!(state.tasks[0].label.units().last().copied(), Some(0xD83D));
+    assert_eq!(state.term[0].units().last().copied(), Some(0xD83D));
+    assert_eq!(state.log[0].text.units().last().copied(), Some(0xD83D));
+    assert_eq!(state.log[1].text.units().last().copied(), Some(0xD83D));
+    assert_eq!(state.last_message.units().last().copied(), Some(0xD83D));
+    let parsed: RoomState = serde_json::from_str(&json).unwrap();
+    assert_eq!(parsed, state);
+    let frame = snapshot_frame(&den, None);
+    let frame_json = serde_json::to_string(&frame).unwrap();
+    assert!(!frame_json.contains("\\ufffd"), "{frame_json}");
+    let frame_parsed: SnapshotFrame = serde_json::from_str(&frame_json).unwrap();
+    assert_eq!(serde_json::to_string(&frame_parsed).unwrap(), frame_json);
+    assert_eq!(
+        frame_parsed.rooms.get("s").unwrap().last_message.units(),
+        state.last_message.units()
     );
 }

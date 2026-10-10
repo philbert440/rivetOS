@@ -1,10 +1,11 @@
 use std::str::FromStr;
 
 use serde::de::{self, Deserializer};
+use serde::ser::SerializeStruct;
 use serde::{Deserialize, Serialize, Serializer};
 use serde_json::Value;
 
-use protocol::js::{JsObject, JsValue};
+use protocol::js::{JsObject, JsString, JsValue};
 
 use crate::activity::Activity;
 use crate::{JsNumber, PROTOCOL_VERSION};
@@ -39,12 +40,12 @@ pub struct TokenUsage {
 #[derive(Debug, Clone, PartialEq)]
 pub enum AgentEventBody {
     SessionStart {
-        title: String,
+        title: JsString,
     },
     SessionEnd,
     TurnEnd,
     TaskPlan {
-        tasks: Vec<String>,
+        tasks: Vec<JsString>,
     },
     TaskCheck {
         index: JsNumber,
@@ -53,31 +54,31 @@ pub enum AgentEventBody {
         activity: Activity,
     },
     ToolStart {
-        tool: String,
+        tool: JsString,
         activity: Option<Activity>,
         args: Option<Value>,
     },
     ToolEnd {
-        tool: Option<String>,
+        tool: Option<JsString>,
     },
     ThinkingDelta {
-        text: String,
+        text: JsString,
     },
     ThinkingEnd,
     SpeechStt {
         active: bool,
     },
     MessageUser {
-        text: String,
+        text: JsString,
     },
     MessageAgent {
-        text: String,
+        text: JsString,
         usage: Option<TokenUsage>,
         model: Option<String>,
         duration_ms: Option<JsNumber>,
     },
     TermLine {
-        text: String,
+        text: JsString,
     },
     Unknown {
         kind: String,
@@ -108,41 +109,128 @@ impl AgentEventBody {
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct AgentEvent {
-    pub v: JsNumber,
-    pub session: String,
-    pub name: Option<String>,
-    pub harness: Option<String>,
-    pub harness_session: Option<String>,
-    pub ts: Option<JsNumber>,
-    pub body: AgentEventBody,
     raw: JsValue,
 }
 
+const JSON_RAW_VALUE: &str = "$serde_json::private::RawValue";
+
 impl AgentEvent {
-    pub fn new(session: impl Into<String>, body: AgentEventBody) -> Self {
-        let session = session.into();
-        let json = encode_event(&session, &body);
-        let raw = protocol::js::parse(&json).unwrap_or(JsValue::Null);
-        if let Some(event) = event_from_raw(raw.clone()) {
-            return event;
-        }
+    pub fn new(session: impl AsRef<str>, body: AgentEventBody) -> Self {
+        let mut object = JsObject::new();
+        put(
+            &mut object,
+            "v",
+            JsValue::Number(f64::from(PROTOCOL_VERSION)),
+        );
+        put(&mut object, "session", JsValue::from_text(session.as_ref()));
+        put(&mut object, "type", JsValue::from_text(body.type_name()));
+        insert_body(&mut object, body);
         Self {
-            v: JsNumber::from(PROTOCOL_VERSION),
-            session,
-            name: None,
-            harness: None,
-            harness_session: None,
-            ts: None,
-            body,
-            raw,
+            raw: JsValue::Object(object),
         }
     }
 
-    pub(crate) fn text_units(&self) -> Vec<u16> {
-        self.raw
-            .get("text")
-            .and_then(crate::utf16::units_of)
-            .unwrap_or_default()
+    pub fn v(&self) -> JsNumber {
+        match self.raw.get("v") {
+            Some(JsValue::Number(number)) => JsNumber::from(*number),
+            _ => JsNumber::from(PROTOCOL_VERSION),
+        }
+    }
+
+    pub fn session(&self) -> &str {
+        self.string_field("session").unwrap_or("")
+    }
+
+    pub fn name(&self) -> Option<&str> {
+        self.string_field("name")
+    }
+
+    pub fn harness(&self) -> Option<&str> {
+        self.string_field("harness")
+    }
+
+    pub fn harness_session(&self) -> Option<&str> {
+        self.string_field("harnessSession")
+    }
+
+    pub fn ts(&self) -> Option<JsNumber> {
+        match self.raw.get("ts") {
+            Some(JsValue::Number(number)) if number.is_finite() => Some(JsNumber::from(*number)),
+            _ => None,
+        }
+    }
+
+    pub fn body(&self) -> AgentEventBody {
+        let Some(object) = self.raw.as_object() else {
+            return AgentEventBody::Unknown {
+                kind: String::new(),
+            };
+        };
+        let kind = object.get("type").and_then(JsValue::as_str).unwrap_or("");
+        parse_body(kind, object).unwrap_or(AgentEventBody::Unknown {
+            kind: kind.to_string(),
+        })
+    }
+
+    pub fn with_session(mut self, session: impl AsRef<str>) -> Self {
+        if let Some(object) = self.raw.as_object_mut() {
+            put(object, "session", JsValue::from_text(session.as_ref()));
+        }
+        self
+    }
+
+    pub fn with_name(mut self, name: Option<&str>) -> Self {
+        self.set_string("name", name);
+        self
+    }
+
+    pub fn with_harness(mut self, harness: Option<&str>) -> Self {
+        self.set_string("harness", harness);
+        self
+    }
+
+    pub fn with_harness_session(mut self, harness_session: Option<&str>) -> Self {
+        self.set_string("harnessSession", harness_session);
+        self
+    }
+
+    pub fn with_ts(mut self, ts: Option<JsNumber>) -> Self {
+        if let Some(object) = self.raw.as_object_mut() {
+            match ts {
+                Some(ts) => put(object, "ts", JsValue::Number(ts.as_f64())),
+                None => {
+                    object.remove("ts");
+                }
+            }
+        }
+        self
+    }
+
+    pub fn stamped(
+        self,
+        ts: impl Into<JsNumber>,
+        name: Option<&str>,
+        harness: Option<&str>,
+    ) -> Self {
+        self.with_ts(Some(ts.into()))
+            .with_name(name)
+            .with_harness(harness)
+    }
+
+    fn string_field(&self, key: &str) -> Option<&str> {
+        self.raw.get(key).and_then(JsValue::as_str)
+    }
+
+    fn set_string(&mut self, key: &str, value: Option<&str>) {
+        let Some(object) = self.raw.as_object_mut() else {
+            return;
+        };
+        match value {
+            Some(text) => put(object, key, JsValue::from_text(text)),
+            None => {
+                object.remove(key);
+            }
+        }
     }
 }
 
@@ -151,7 +239,10 @@ impl Serialize for AgentEvent {
     where
         S: Serializer,
     {
-        crate::utf16::serialize_json_text(serializer, &protocol::js::stringify(&self.raw))
+        let json = protocol::js::stringify(&self.raw);
+        let mut state = serializer.serialize_struct(JSON_RAW_VALUE, 1)?;
+        state.serialize_field(JSON_RAW_VALUE, &json)?;
+        state.end()
     }
 }
 
@@ -160,7 +251,7 @@ impl<'de> Deserialize<'de> for AgentEvent {
     where
         D: Deserializer<'de>,
     {
-        let raw = <Box<serde_json::value::RawValue>>::deserialize(deserializer)?;
+        let raw = Box::<serde_json::value::RawValue>::deserialize(deserializer)?;
         parse_event_str(raw.get()).ok_or_else(|| de::Error::custom("not a valid v1 AgentEvent"))
     }
 }
@@ -172,41 +263,40 @@ pub fn parse_event(raw: &Value) -> Option<AgentEvent> {
 
 pub fn parse_event_str(text: &str) -> Option<AgentEvent> {
     let raw = protocol::js::parse(text).ok()?;
-    event_from_raw(raw)
+    validated(raw)
 }
 
-fn event_from_raw(raw: JsValue) -> Option<AgentEvent> {
-    let (session, name, harness, harness_session, ts, body) = {
-        let object = raw.as_object()?;
-        if !is_version(object.get("v")?) {
-            return None;
-        }
-        let session = required_session(object.get("session")?)?;
-        let kind = object.get("type")?.as_str()?;
-        let name = optional_string(object, "name")?;
-        let harness = optional_string(object, "harness")?;
-        let harness_session = optional_string(object, "harnessSession")?;
-        let ts = optional_finite(object, "ts")?;
-        let body = parse_body(kind, object)?;
-        (session, name, harness, harness_session, ts, body)
-    };
-    Some(AgentEvent {
-        v: JsNumber::from(PROTOCOL_VERSION),
-        session,
-        name,
-        harness,
-        harness_session,
-        ts,
-        body,
-        raw,
-    })
+pub(crate) fn js_from_deserializer<'de, D>(deserializer: D) -> Result<JsValue, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    let raw = Box::<serde_json::value::RawValue>::deserialize(deserializer)?;
+    protocol::js::parse(raw.get()).map_err(de::Error::custom)
+}
+
+fn validated(raw: JsValue) -> Option<AgentEvent> {
+    let object = raw.as_object()?;
+    if !is_version(object.get("v")?) {
+        return None;
+    }
+    let session = object.get("session")?.as_js_string()?;
+    if session.units().is_empty() {
+        return None;
+    }
+    let kind = object.get("type")?.as_str()?;
+    optional_string(object, "name")?;
+    optional_string(object, "harness")?;
+    optional_string(object, "harnessSession")?;
+    optional_finite(object, "ts")?;
+    parse_body(kind, object)?;
+    Some(AgentEvent { raw })
 }
 
 fn parse_body(kind: &str, object: &JsObject) -> Option<AgentEventBody> {
     let kind = EventType::from_str(kind).ok()?;
     Some(match kind {
         EventType::SessionStart => AgentEventBody::SessionStart {
-            title: required_string(object, "title")?,
+            title: required_js(object, "title")?,
         },
         EventType::SessionEnd => AgentEventBody::SessionEnd,
         EventType::TurnEnd => AgentEventBody::TurnEnd,
@@ -220,7 +310,7 @@ fn parse_body(kind: &str, object: &JsObject) -> Option<AgentEventBody> {
             activity: Activity::from_str(object.get("activity")?.as_str()?).ok()?,
         },
         EventType::ToolStart => AgentEventBody::ToolStart {
-            tool: required_string(object, "tool")?,
+            tool: required_js(object, "tool")?,
             activity: optional_activity(object)?,
             args: object
                 .get("args")
@@ -230,26 +320,26 @@ fn parse_body(kind: &str, object: &JsObject) -> Option<AgentEventBody> {
             tool: optional_tool(object)?,
         },
         EventType::ThinkingDelta => AgentEventBody::ThinkingDelta {
-            text: required_string(object, "text")?,
+            text: required_js(object, "text")?,
         },
         EventType::ThinkingEnd => AgentEventBody::ThinkingEnd,
         EventType::SpeechStt => AgentEventBody::SpeechStt {
             active: object.get("active")?.as_bool()?,
         },
         EventType::MessageUser => AgentEventBody::MessageUser {
-            text: required_string(object, "text")?,
+            text: required_js(object, "text")?,
         },
         EventType::MessageAgent => AgentEventBody::MessageAgent {
-            text: required_string(object, "text")?,
+            text: required_js(object, "text")?,
             usage: match object.get("usage") {
                 None => None,
                 Some(value) => Some(parse_usage(value)?),
             },
-            model: optional_string(object, "model")?,
+            model: optional_text(object, "model")?,
             duration_ms: optional_non_neg(object, "durationMs")?,
         },
         EventType::TermLine => AgentEventBody::TermLine {
-            text: required_string(object, "text")?,
+            text: required_js(object, "text")?,
         },
     })
 }
@@ -261,23 +351,18 @@ fn is_version(value: &JsValue) -> bool {
     }
 }
 
-fn required_session(value: &JsValue) -> Option<String> {
-    let text = value.as_str()?;
-    if text.is_empty() {
-        None
-    } else {
-        Some(text.to_string())
+fn required_js(object: &JsObject, key: &str) -> Option<JsString> {
+    object.get(key).and_then(JsValue::as_js_string).cloned()
+}
+
+fn optional_string(object: &JsObject, key: &str) -> Option<()> {
+    match object.get(key) {
+        None => Some(()),
+        Some(value) => value.as_js_string().map(|_| ()),
     }
 }
 
-fn required_string(object: &JsObject, key: &str) -> Option<String> {
-    object
-        .get(key)
-        .and_then(JsValue::as_str)
-        .map(ToOwned::to_owned)
-}
-
-fn optional_string(object: &JsObject, key: &str) -> Option<Option<String>> {
+fn optional_text(object: &JsObject, key: &str) -> Option<Option<String>> {
     match object.get(key) {
         None => Some(None),
         Some(value) => Some(Some(value.as_str()?.to_string())),
@@ -329,18 +414,18 @@ fn optional_activity(object: &JsObject) -> Option<Option<Activity>> {
     }
 }
 
-fn optional_tool(object: &JsObject) -> Option<Option<String>> {
+fn optional_tool(object: &JsObject) -> Option<Option<JsString>> {
     match object.get("tool") {
         None => Some(None),
-        Some(value) => Some(Some(value.as_str()?.to_string())),
+        Some(value) => Some(Some(value.as_js_string()?.clone())),
     }
 }
 
-fn parse_tasks(value: &JsValue) -> Option<Vec<String>> {
+fn parse_tasks(value: &JsValue) -> Option<Vec<JsString>> {
     value
         .as_array()?
         .iter()
-        .map(|item| item.as_str().map(ToOwned::to_owned))
+        .map(|item| item.as_js_string().cloned())
         .collect()
 }
 
@@ -357,73 +442,57 @@ fn json_value(value: &JsValue) -> Option<Value> {
     serde_json::from_str(&protocol::js::stringify(value)).ok()
 }
 
-fn encode_event(session: &str, body: &AgentEventBody) -> String {
-    let mut out = String::from("{\"v\":");
-    push_number(&mut out, JsNumber::from(PROTOCOL_VERSION));
-    out.push_str(",\"session\":");
-    push_string(&mut out, session);
-    out.push_str(",\"type\":");
-    push_string(&mut out, body.type_name());
+fn put(object: &mut JsObject, key: &str, value: JsValue) {
+    object.insert(JsString::from_text(key), value);
+}
+
+fn insert_body(object: &mut JsObject, body: AgentEventBody) {
     match body {
         AgentEventBody::SessionStart { title } => {
-            out.push_str(",\"title\":");
-            push_string(&mut out, title);
+            put(object, "title", JsValue::String(title));
         }
         AgentEventBody::SessionEnd
         | AgentEventBody::TurnEnd
         | AgentEventBody::ThinkingEnd
         | AgentEventBody::Unknown { .. } => {}
         AgentEventBody::TaskPlan { tasks } => {
-            out.push_str(",\"tasks\":[");
-            for (index, task) in tasks.iter().enumerate() {
-                if index > 0 {
-                    out.push(',');
-                }
-                push_string(&mut out, task);
-            }
-            out.push(']');
+            put(
+                object,
+                "tasks",
+                JsValue::Array(tasks.into_iter().map(JsValue::String).collect()),
+            );
         }
         AgentEventBody::TaskCheck { index } => {
-            out.push_str(",\"index\":");
-            push_number(&mut out, *index);
+            put(object, "index", JsValue::Number(index.as_f64()));
         }
         AgentEventBody::Activity { activity } => {
-            out.push_str(",\"activity\":");
-            push_string(&mut out, activity.as_str());
+            put(object, "activity", JsValue::from_text(activity.as_str()));
         }
         AgentEventBody::ToolStart {
             tool,
             activity,
             args,
         } => {
-            out.push_str(",\"tool\":");
-            push_string(&mut out, tool);
+            put(object, "tool", JsValue::String(tool));
             if let Some(activity) = activity {
-                out.push_str(",\"activity\":");
-                push_string(&mut out, activity.as_str());
+                put(object, "activity", JsValue::from_text(activity.as_str()));
             }
-            if let Some(args) = args
-                && let Ok(text) = serde_json::to_string(args)
-            {
-                out.push_str(",\"args\":");
-                out.push_str(&text);
+            if let Some(args) = args {
+                put(object, "args", protocol::js::from_serde(&args));
             }
         }
         AgentEventBody::ToolEnd { tool } => {
             if let Some(tool) = tool {
-                out.push_str(",\"tool\":");
-                push_string(&mut out, tool);
+                put(object, "tool", JsValue::String(tool));
             }
         }
         AgentEventBody::ThinkingDelta { text }
         | AgentEventBody::MessageUser { text }
         | AgentEventBody::TermLine { text } => {
-            out.push_str(",\"text\":");
-            push_string(&mut out, text);
+            put(object, "text", JsValue::String(text));
         }
         AgentEventBody::SpeechStt { active } => {
-            out.push_str(",\"active\":");
-            out.push_str(if *active { "true" } else { "false" });
+            put(object, "active", JsValue::Bool(active));
         }
         AgentEventBody::MessageAgent {
             text,
@@ -431,32 +500,36 @@ fn encode_event(session: &str, body: &AgentEventBody) -> String {
             model,
             duration_ms,
         } => {
-            out.push_str(",\"text\":");
-            push_string(&mut out, text);
-            if let Some(usage) = usage
-                && let Ok(text) = serde_json::to_string(usage)
-            {
-                out.push_str(",\"usage\":");
-                out.push_str(&text);
+            put(object, "text", JsValue::String(text));
+            if let Some(usage) = usage {
+                put(object, "usage", usage_value(&usage));
             }
             if let Some(model) = model {
-                out.push_str(",\"model\":");
-                push_string(&mut out, model);
+                put(object, "model", JsValue::from_text(&model));
             }
             if let Some(duration_ms) = duration_ms {
-                out.push_str(",\"durationMs\":");
-                push_number(&mut out, *duration_ms);
+                put(object, "durationMs", JsValue::Number(duration_ms.as_f64()));
             }
         }
     }
-    out.push('}');
-    out
 }
 
-fn push_string(out: &mut String, text: &str) {
-    out.push_str(&protocol::js::stringify(&JsValue::from_text(text)));
-}
-
-fn push_number(out: &mut String, number: JsNumber) {
-    out.push_str(&protocol::js::stringify(&JsValue::Number(number.as_f64())));
+fn usage_value(usage: &TokenUsage) -> JsValue {
+    let mut object = JsObject::new();
+    put(
+        &mut object,
+        "promptTokens",
+        JsValue::Number(usage.prompt_tokens.as_f64()),
+    );
+    put(
+        &mut object,
+        "completionTokens",
+        JsValue::Number(usage.completion_tokens.as_f64()),
+    );
+    put(
+        &mut object,
+        "cachedTokens",
+        JsValue::Number(usage.cached_tokens.as_f64()),
+    );
+    JsValue::Object(object)
 }
