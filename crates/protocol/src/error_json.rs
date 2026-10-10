@@ -1,6 +1,8 @@
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 
+use crate::JsNumber;
+
 crate::wire_enum! {
     pub enum ErrorSeverity {
         Fatal => "fatal",
@@ -16,18 +18,18 @@ pub struct ErrorJson {
     pub name: String,
     pub code: String,
     pub message: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub status_code: Option<JsNumber>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub provider_id: Option<String>,
     pub severity: ErrorSeverity,
     pub retryable: bool,
-    pub timestamp: i64,
+    pub timestamp: JsNumber,
     pub context: Map<String, Value>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub cause: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub stack: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub status_code: Option<i64>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub provider_id: Option<String>,
 }
 
 crate::wire_enum! {
@@ -189,14 +191,14 @@ fn base(
         name: name.to_string(),
         code: code.to_string(),
         message: build.message,
+        status_code: None,
+        provider_id: None,
         severity,
         retryable,
-        timestamp: build.timestamp,
+        timestamp: JsNumber::from(build.timestamp),
         context: build.context,
         cause: build.cause,
         stack: build.stack,
-        status_code: None,
-        provider_id: None,
     }
 }
 
@@ -306,13 +308,13 @@ pub fn provider_error_json(
         name: "ProviderError".to_string(),
         code: format!("PROVIDER_HTTP_{status_code}"),
         message: message.into(),
+        status_code: Some(JsNumber::from(status_code)),
+        provider_id: Some(provider_id.to_string()),
         severity: provider_severity(status_code),
         retryable: provider_retryable(status_code),
-        timestamp,
+        timestamp: JsNumber::from(timestamp),
         context,
         cause,
         stack,
-        status_code: Some(status_code),
-        provider_id: Some(provider_id.to_string()),
     }
 }

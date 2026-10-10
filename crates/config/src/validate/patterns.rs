@@ -52,7 +52,7 @@ pub(crate) fn has_control_char(text: &str) -> bool {
 }
 
 pub(crate) fn invalid_regex_message(source: &str) -> Option<String> {
-    match Regex::new(source) {
+    match regress::Regex::with_flags(source, "g") {
         Ok(_) => None,
         Err(err) => Some(format!("Invalid regex: {err}")),
     }

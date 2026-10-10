@@ -148,5 +148,19 @@ fn task_verdict_round_trips() {
 
 #[test]
 fn artifact_kind_round_trips() {
-    assert_wire_enum!(ArtifactKind, "ArtifactKind");
+    for (kind, wire) in [
+        (ArtifactKind::File, "file"),
+        (ArtifactKind::Url, "url"),
+        (ArtifactKind::Commit, "commit"),
+        (ArtifactKind::Message, "message"),
+    ] {
+        assert_eq!(kind.as_str(), wire);
+        let json = serde_json::to_string(&kind).unwrap();
+        assert_eq!(json, format!("\"{wire}\""));
+        assert_eq!(serde_json::from_str::<ArtifactKind>(&json).unwrap(), kind);
+    }
+    let other: ArtifactKind = serde_json::from_str("\"note\"").unwrap();
+    assert_eq!(other, ArtifactKind::Other("note".to_string()));
+    assert_eq!(other.as_str(), "note");
+    assert_eq!(serde_json::to_string(&other).unwrap(), "\"note\"");
 }

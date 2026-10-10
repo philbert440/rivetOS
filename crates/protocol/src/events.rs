@@ -1,8 +1,9 @@
 use serde::de::{self, Deserializer};
-use serde::ser::Serializer;
+use serde::ser::{SerializeMap, Serializer};
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 
+use crate::JsNumber;
 use crate::message::{Message, ToolCall};
 
 fn omit_false(value: &bool) -> bool {
@@ -60,10 +61,10 @@ pub struct SessionState {
     pub history: Vec<Message>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub system_prompt: Option<String>,
-    pub compaction_count: i64,
+    pub compaction_count: JsNumber,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub compaction_pending: Option<CompactionPending>,
-    pub nudges_fired: Vec<i64>,
+    pub nudges_fired: Vec<JsNumber>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -80,11 +81,11 @@ pub struct Attachment {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub mime_type: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub width: Option<i64>,
+    pub width: Option<JsNumber>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub height: Option<i64>,
+    pub height: Option<JsNumber>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub duration: Option<i64>,
+    pub duration: Option<JsNumber>,
 }
 
 crate::wire_enum! {
@@ -117,14 +118,14 @@ pub struct InboundMessage {
     pub attachments: Option<Vec<Attachment>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub metadata: Option<Map<String, Value>>,
-    pub timestamp: i64,
+    pub timestamp: JsNumber,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct QueuedMessage {
     pub message: InboundMessage,
-    pub received_at: i64,
+    pub received_at: JsNumber,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -136,7 +137,7 @@ pub struct DelegationRequest {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub context: Option<Vec<String>>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub timeout_ms: Option<i64>,
+    pub timeout_ms: Option<JsNumber>,
     #[serde(default, skip_serializing_if = "omit_false")]
     pub no_delegation: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -157,9 +158,9 @@ pub struct TokenUsage {
     pub agent: String,
     pub provider: String,
     pub model: String,
-    pub prompt_tokens: i64,
-    pub completion_tokens: i64,
-    pub timestamp: i64,
+    pub prompt_tokens: JsNumber,
+    pub completion_tokens: JsNumber,
+    pub timestamp: JsNumber,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -168,13 +169,13 @@ pub struct DelegationResult {
     pub status: DelegationStatus,
     pub response: String,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub iterations: Option<i64>,
+    pub iterations: Option<JsNumber>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub usage: Option<TokenUsage>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub tools_used: Option<Vec<String>>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub duration_ms: Option<i64>,
+    pub duration_ms: Option<JsNumber>,
 }
 
 crate::wire_enum! {
@@ -187,16 +188,16 @@ crate::wire_enum! {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct LlmUsage {
-    pub prompt_tokens: i64,
-    pub completion_tokens: i64,
+    pub prompt_tokens: JsNumber,
+    pub completion_tokens: JsNumber,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub reasoning_tokens: Option<i64>,
+    pub reasoning_tokens: Option<JsNumber>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub cached_tokens: Option<i64>,
+    pub cached_tokens: Option<JsNumber>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub cache_creation_tokens: Option<i64>,
+    pub cache_creation_tokens: Option<JsNumber>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub cache_read_tokens: Option<i64>,
+    pub cache_read_tokens: Option<JsNumber>,
 }
 
 crate::wire_enum! {
@@ -219,32 +220,95 @@ pub struct LlmResponse {
     pub usage: Option<LlmUsage>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub enum JsonField<T> {
+    #[default]
+    Absent,
+    Null,
+    Value(T),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct PartialToolCall {
-    pub id: Option<String>,
-    pub name: Option<String>,
-    pub arguments: Option<Map<String, Value>>,
-    pub thought_signature: Option<String>,
-    pub index: Option<i64>,
+    pub id: JsonField<String>,
+    pub name: JsonField<String>,
+    pub arguments: JsonField<Map<String, Value>>,
+    pub thought_signature: JsonField<String>,
+    pub index: JsonField<JsNumber>,
     order: Vec<String>,
 }
 
 const PARTIAL_TOOL_CALL_KEYS: &[&str] = &["id", "name", "arguments", "thoughtSignature", "index"];
 
-fn write_partial_field(map: &mut Map<String, Value>, key: &str, call: &PartialToolCall) {
-    if map.contains_key(key) {
-        return;
+impl PartialToolCall {
+    pub fn new() -> Self {
+        Self::default()
     }
-    let value = match key {
-        "id" => call.id.clone().map(Value::String),
-        "name" => call.name.clone().map(Value::String),
-        "arguments" => call.arguments.clone().map(Value::Object),
-        "thoughtSignature" => call.thought_signature.clone().map(Value::String),
-        "index" => call.index.map(|index| Value::Number(index.into())),
-        _ => None,
-    };
-    if let Some(value) = value {
-        map.insert(key.to_string(), value);
+
+    pub fn set_id(mut self, id: impl Into<String>) -> Self {
+        self.id = JsonField::Value(id.into());
+        self
+    }
+
+    pub fn set_name(mut self, name: impl Into<String>) -> Self {
+        self.name = JsonField::Value(name.into());
+        self
+    }
+
+    pub fn set_arguments(mut self, arguments: Map<String, Value>) -> Self {
+        self.arguments = JsonField::Value(arguments);
+        self
+    }
+
+    pub fn set_thought_signature(mut self, signature: impl Into<String>) -> Self {
+        self.thought_signature = JsonField::Value(signature.into());
+        self
+    }
+
+    pub fn set_index(mut self, index: impl Into<JsNumber>) -> Self {
+        self.index = JsonField::Value(index.into());
+        self
+    }
+}
+
+fn field_is_present<T>(field: &JsonField<T>) -> bool {
+    !matches!(field, JsonField::Absent)
+}
+
+fn partial_key_present(key: &str, call: &PartialToolCall) -> bool {
+    match key {
+        "id" => field_is_present(&call.id),
+        "name" => field_is_present(&call.name),
+        "arguments" => field_is_present(&call.arguments),
+        "thoughtSignature" => field_is_present(&call.thought_signature),
+        "index" => field_is_present(&call.index),
+        _ => false,
+    }
+}
+
+fn write_partial_entry<S>(map: &mut S, key: &str, call: &PartialToolCall) -> Result<(), S::Error>
+where
+    S: SerializeMap,
+{
+    match key {
+        "id" => write_field(map, key, &call.id),
+        "name" => write_field(map, key, &call.name),
+        "arguments" => write_field(map, key, &call.arguments),
+        "thoughtSignature" => write_field(map, key, &call.thought_signature),
+        "index" => write_field(map, key, &call.index),
+        _ => Ok(()),
+    }
+}
+
+fn write_field<S, T>(map: &mut S, key: &str, field: &JsonField<T>) -> Result<(), S::Error>
+where
+    S: SerializeMap,
+    T: Serialize,
+{
+    match field {
+        JsonField::Absent => Ok(()),
+        JsonField::Null => map.serialize_entry(key, &Value::Null),
+        JsonField::Value(value) => map.serialize_entry(key, value),
     }
 }
 
@@ -253,14 +317,22 @@ impl Serialize for PartialToolCall {
     where
         S: Serializer,
     {
-        let mut map = Map::new();
+        let mut keys = Vec::new();
         for key in &self.order {
-            write_partial_field(&mut map, key, self);
+            if partial_key_present(key, self) && !keys.iter().any(|seen: &String| seen == key) {
+                keys.push(key.clone());
+            }
         }
         for key in PARTIAL_TOOL_CALL_KEYS {
-            write_partial_field(&mut map, key, self);
+            if partial_key_present(key, self) && !keys.iter().any(|seen| seen == key) {
+                keys.push((*key).to_string());
+            }
         }
-        map.serialize(serializer)
+        let mut map = serializer.serialize_map(Some(keys.len()))?;
+        for key in &keys {
+            write_partial_entry(&mut map, key, self)?;
+        }
+        map.end()
     }
 }
 
@@ -271,48 +343,33 @@ impl<'de> Deserialize<'de> for PartialToolCall {
     {
         let map = Map::<String, Value>::deserialize(deserializer)?;
         let mut order = Vec::new();
-        for (key, value) in &map {
-            if value.is_null() {
-                continue;
-            }
+        for key in map.keys() {
             if !PARTIAL_TOOL_CALL_KEYS.contains(&key.as_str()) {
                 return Err(de::Error::unknown_field(key, PARTIAL_TOOL_CALL_KEYS));
             }
             order.push(key.clone());
         }
         Ok(PartialToolCall {
-            id: optional_string(&map, "id")?,
-            name: optional_string(&map, "name")?,
-            arguments: optional_object(&map, "arguments")?,
-            thought_signature: optional_string(&map, "thoughtSignature")?,
-            index: optional_i64(&map, "index")?,
+            id: read_json_field(&map, "id")?,
+            name: read_json_field(&map, "name")?,
+            arguments: read_json_field(&map, "arguments")?,
+            thought_signature: read_json_field(&map, "thoughtSignature")?,
+            index: read_json_field(&map, "index")?,
             order,
         })
     }
 }
 
-fn optional_string<E: de::Error>(map: &Map<String, Value>, key: &str) -> Result<Option<String>, E> {
+fn read_json_field<T, E>(map: &Map<String, Value>, key: &str) -> Result<JsonField<T>, E>
+where
+    T: de::DeserializeOwned,
+    E: de::Error,
+{
     match map.get(key) {
-        None | Some(Value::Null) => Ok(None),
-        Some(value) => String::deserialize(value).map(Some).map_err(E::custom),
-    }
-}
-
-fn optional_i64<E: de::Error>(map: &Map<String, Value>, key: &str) -> Result<Option<i64>, E> {
-    match map.get(key) {
-        None | Some(Value::Null) => Ok(None),
-        Some(value) => i64::deserialize(value).map(Some).map_err(E::custom),
-    }
-}
-
-fn optional_object<E: de::Error>(
-    map: &Map<String, Value>,
-    key: &str,
-) -> Result<Option<Map<String, Value>>, E> {
-    match map.get(key) {
-        None | Some(Value::Null) => Ok(None),
-        Some(value) => Map::<String, Value>::deserialize(value)
-            .map(Some)
+        None => Ok(JsonField::Absent),
+        Some(Value::Null) => Ok(JsonField::Null),
+        Some(value) => T::deserialize(value)
+            .map(JsonField::Value)
             .map_err(E::custom),
     }
 }

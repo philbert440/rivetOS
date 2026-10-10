@@ -263,6 +263,38 @@ err!(
 );
 
 #[test]
+fn javascript_regex_features_validate() {
+    let yaml = memory("  capture:\n    redaction:\n      patterns: ['foo(?=bar)', '(a)\\1']\n");
+    let value = config::parse_yaml(&yaml).unwrap();
+    let result = config::validate_config(&value);
+    assert!(
+        result
+            .errors
+            .iter()
+            .all(|issue| !issue.message.starts_with("Invalid regex:")),
+        "{:?}",
+        result.errors
+    );
+}
+
+#[test]
+fn sqlite_path_bom_is_empty_and_next_line_is_kept() {
+    let bom = memory("  sqlite:\n    path: \"\u{FEFF}\"\n");
+    assert_has_error(&bom, "\"memory.sqlite.path\" must be a non-empty file path");
+    let nel = memory("  sqlite:\n    path: \"\u{0085}\"\n");
+    let value = config::parse_yaml(&nel).unwrap();
+    let result = config::validate_config(&value);
+    assert!(
+        result
+            .errors
+            .iter()
+            .all(|issue| issue.message != "\"memory.sqlite.path\" must be a non-empty file path"),
+        "{:?}",
+        result.errors
+    );
+}
+
+#[test]
 fn invalid_regex_prefix() {
     let yaml = memory("  capture:\n    redaction:\n      patterns: [\"*\"]\n");
     let value = config::parse_yaml(&yaml).unwrap();

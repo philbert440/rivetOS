@@ -1,5 +1,8 @@
-use serde::{Deserialize, Serialize};
-use serde_json::Value;
+use serde::de::Deserializer;
+use serde::{Deserialize, Serialize, Serializer};
+use serde_json::{Map, Value};
+
+use crate::JsNumber;
 
 pub const TASK_RESULT_FENCE: &str = "TASK_RESULT";
 
@@ -33,37 +36,78 @@ crate::wire_enum! {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct TaskBudget {
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub max_usd: Option<f64>,
+    pub max_usd: Option<JsNumber>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub max_tokens: Option<f64>,
+    pub max_tokens: Option<JsNumber>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub max_turns: Option<f64>,
+    pub max_turns: Option<JsNumber>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub max_wall_clock_ms: Option<f64>,
+    pub max_wall_clock_ms: Option<JsNumber>,
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct TaskUsage {
-    pub input_tokens: f64,
-    pub output_tokens: f64,
-    pub total_tokens: f64,
+    pub input_tokens: JsNumber,
+    pub output_tokens: JsNumber,
+    pub total_tokens: JsNumber,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub cost_usd: Option<f64>,
-    pub turns: f64,
-    pub wall_clock_ms: f64,
+    pub cost_usd: Option<JsNumber>,
+    pub turns: JsNumber,
+    pub wall_clock_ms: JsNumber,
 }
 
-crate::wire_enum! {
-    pub enum ArtifactKind {
-        File => "file",
-        Url => "url",
-        Commit => "commit",
-        Message => "message",
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ArtifactKind {
+    File,
+    Url,
+    Commit,
+    Message,
+    Other(String),
+}
+
+impl ArtifactKind {
+    pub fn as_str(&self) -> &str {
+        match self {
+            Self::File => "file",
+            Self::Url => "url",
+            Self::Commit => "commit",
+            Self::Message => "message",
+            Self::Other(value) => value,
+        }
+    }
+}
+
+impl Serialize for ArtifactKind {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        serializer.serialize_str(self.as_str())
+    }
+}
+
+impl<'de> Deserialize<'de> for ArtifactKind {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let text = String::deserialize(deserializer)?;
+        Ok(artifact_kind_from(&text))
+    }
+}
+
+fn artifact_kind_from(text: &str) -> ArtifactKind {
+    match text {
+        "file" => ArtifactKind::File,
+        "url" => ArtifactKind::Url,
+        "commit" => ArtifactKind::Commit,
+        "message" => ArtifactKind::Message,
+        other => ArtifactKind::Other(other.to_string()),
     }
 }
 
@@ -86,7 +130,7 @@ pub struct CriterionSelfReport {
     pub evidence: Option<String>,
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct TaskResult {
     pub verdict: TaskVerdict,
@@ -101,6 +145,83 @@ pub struct TaskResult {
     pub error: Option<String>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ParsedArtifact {
+    object: Map<String, Value>,
+}
+
+impl ParsedArtifact {
+    pub fn kind(&self) -> Option<ArtifactKind> {
+        self.object
+            .get("kind")
+            .and_then(Value::as_str)
+            .map(artifact_kind_from)
+    }
+
+    pub fn r#ref(&self) -> Option<&str> {
+        self.object.get("ref").and_then(Value::as_str)
+    }
+
+    pub fn note(&self) -> Option<&Value> {
+        self.object.get("note")
+    }
+}
+
+impl Serialize for ParsedArtifact {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        self.object.serialize(serializer)
+    }
+}
+
+impl<'de> Deserialize<'de> for ParsedArtifact {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        Map::deserialize(deserializer).map(|object| Self { object })
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ParsedCriterion {
+    object: Map<String, Value>,
+}
+
+impl ParsedCriterion {
+    pub fn id(&self) -> Option<&str> {
+        self.object.get("id").and_then(Value::as_str)
+    }
+
+    pub fn met(&self) -> Option<bool> {
+        self.object.get("met").and_then(Value::as_bool)
+    }
+
+    pub fn evidence(&self) -> Option<&Value> {
+        self.object.get("evidence")
+    }
+}
+
+impl Serialize for ParsedCriterion {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        self.object.serialize(serializer)
+    }
+}
+
+impl<'de> Deserialize<'de> for ParsedCriterion {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        Map::deserialize(deserializer).map(|object| Self { object })
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ParsedTaskResult {
@@ -108,9 +229,9 @@ pub struct ParsedTaskResult {
     pub summary: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub output: Option<String>,
-    pub artifacts: Vec<TaskArtifact>,
+    pub artifacts: Vec<ParsedArtifact>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub criteria_self_report: Option<Vec<CriterionSelfReport>>,
+    pub criteria_self_report: Option<Vec<ParsedCriterion>>,
 }
 
 pub fn parse_task_result(text: &str) -> Option<ParsedTaskResult> {
@@ -166,14 +287,8 @@ fn validate_shape(raw: &Value) -> Option<ParsedTaskResult> {
         Some(Value::String(text)) => Some(text.clone()),
         _ => None,
     };
-    let artifacts = match obj.get("artifacts") {
-        Some(Value::Array(items)) => items.iter().filter_map(parse_artifact).collect(),
-        _ => Vec::new(),
-    };
-    let criteria_self_report = match obj.get("criteriaSelfReport") {
-        Some(Value::Array(items)) => Some(items.iter().filter_map(parse_criterion).collect()),
-        _ => None,
-    };
+    let artifacts = collect_artifacts(obj.get("artifacts"))?;
+    let criteria_self_report = collect_criteria(obj.get("criteriaSelfReport"))?;
     Some(ParsedTaskResult {
         verdict,
         summary,
@@ -193,24 +308,48 @@ fn coerce_verdict(verdict: &str) -> Option<TaskVerdict> {
     }
 }
 
-fn parse_artifact(value: &Value) -> Option<TaskArtifact> {
-    let obj = value.as_object()?;
-    let kind = obj.get("kind")?.as_str()?.parse().ok()?;
-    let r#ref = obj.get("ref")?.as_str()?.to_string();
-    let note = match obj.get("note") {
-        Some(Value::String(text)) => Some(text.clone()),
-        _ => None,
+fn collect_artifacts(value: Option<&Value>) -> Option<Vec<ParsedArtifact>> {
+    let Some(Value::Array(items)) = value else {
+        return Some(Vec::new());
     };
-    Some(TaskArtifact { kind, r#ref, note })
+    let mut artifacts = Vec::new();
+    for item in items {
+        if item.is_null() {
+            return None;
+        }
+        let Some(object) = item.as_object() else {
+            continue;
+        };
+        if object.get("ref").is_some_and(Value::is_string)
+            && object.get("kind").is_some_and(Value::is_string)
+        {
+            artifacts.push(ParsedArtifact {
+                object: object.clone(),
+            });
+        }
+    }
+    Some(artifacts)
 }
 
-fn parse_criterion(value: &Value) -> Option<CriterionSelfReport> {
-    let obj = value.as_object()?;
-    let id = obj.get("id")?.as_str()?.to_string();
-    let met = obj.get("met")?.as_bool()?;
-    let evidence = match obj.get("evidence") {
-        Some(Value::String(text)) => Some(text.clone()),
-        _ => None,
+fn collect_criteria(value: Option<&Value>) -> Option<Option<Vec<ParsedCriterion>>> {
+    let Some(Value::Array(items)) = value else {
+        return Some(None);
     };
-    Some(CriterionSelfReport { id, met, evidence })
+    let mut criteria = Vec::new();
+    for item in items {
+        if item.is_null() {
+            return None;
+        }
+        let Some(object) = item.as_object() else {
+            continue;
+        };
+        if object.get("id").is_some_and(Value::is_string)
+            && object.get("met").is_some_and(Value::is_boolean)
+        {
+            criteria.push(ParsedCriterion {
+                object: object.clone(),
+            });
+        }
+    }
+    Some(Some(criteria))
 }

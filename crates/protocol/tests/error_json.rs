@@ -135,7 +135,7 @@ fn provider_http_json() {
     assert_eq!(value.code, "PROVIDER_HTTP_401");
     assert_eq!(value.severity, ErrorSeverity::Fatal);
     assert!(!value.retryable);
-    assert_eq!(value.status_code, Some(401));
+    assert_eq!(value.status_code, Some(protocol::JsNumber::from(401)));
     let limited = provider_error_json("slow", 429, "xai", 10, None, None, Map::new());
     assert!(limited.retryable);
     assert_eq!(limited.severity, ErrorSeverity::Transient);
@@ -144,4 +144,21 @@ fn provider_http_json() {
     assert!(!gateway.retryable);
     let overloaded = provider_error_json("over", 529, "xai", 10, None, None, Map::new());
     assert!(overloaded.retryable);
+    let shaped = provider_error_json(
+        "slow down",
+        429,
+        "deepseek",
+        1_710_000_000_000,
+        Some("rate limit".to_string()),
+        Some("ProviderError: slow down".to_string()),
+        Map::new(),
+    );
+    assert_eq!(
+        serde_json::to_string(&shaped).unwrap(),
+        concat!(
+            r#"{"name":"ProviderError","code":"PROVIDER_HTTP_429","message":"slow down","#,
+            r#""statusCode":429,"providerId":"deepseek","severity":"transient","retryable":true,"#,
+            r#""timestamp":1710000000000,"context":{},"cause":"rate limit","stack":"ProviderError: slow down"}"#
+        )
+    );
 }
