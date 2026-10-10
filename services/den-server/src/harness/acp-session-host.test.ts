@@ -335,6 +335,17 @@ describe('AcpSessionHost', () => {
     expect(t.host.prompting(native)).toBe(false)
   })
 
+  it('skips an effort the agent has no setting for, but not an unknown model', async () => {
+    const t = setup()
+    const native = await t.host.newSession('/work')
+    await t.host.setConfig(native, 'model', 'opencode/big-pickle')
+    const state = t.requests.length
+    // Drop the effort option, as OpenCode's agent has none.
+    t.update(native, { sessionUpdate: 'config_option_update', configOptions: [MODEL_OPTIONS[0]] })
+    await expect(t.host.setConfig(native, 'thought_level', 'low')).resolves.toBeUndefined()
+    expect(t.requests.length).toBe(state)
+  })
+
   it("names Grok's tools from _meta rather than the command title", async () => {
     const t = setup()
     const native = await t.host.newSession('/work')

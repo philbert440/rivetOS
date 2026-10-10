@@ -137,6 +137,12 @@ export type HarnessCapabilities = {
   /** Structured staged image inputs. */
   imageAttachments?: boolean
   /**
+   * A new chat conversation should start through the control plane
+   * (`startSession`) rather than by spawning the TUI, because a live TUI pane
+   * would take ownership of the session's turns (ACP drivers).
+   */
+  protocolStart?: boolean
+  /**
    * Models this harness can run, from the harness's own source when it has
    * one (grok model cache, kimi config); static list otherwise.
    * Empty/absent = no picker.

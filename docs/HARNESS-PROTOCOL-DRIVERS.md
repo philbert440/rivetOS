@@ -211,13 +211,17 @@ because the agent runs as the den user.
 
 Live smoke (2026-10-09) through the driver classes: new session, a shell
 tool call, an approval (OpenCode with `permission.bash: ask`), then a fresh
-driver resuming the session with its context intact — on both agents.
+driver resuming the session with its context intact — on both agents. Through
+a den's HTTP API with terminals on (OpenCode): a terminal refused with 409
+mid-turn, the next turn typed into the open TUI, and after the pane was
+killed the ACP agent reloaded and knew the TUI's reply.
 
 Not done yet:
 
-- **Hub, new chats.** A new conversation's first send still spawns the TUI
-  (`termSpawn`), which makes it terminal-owned. It should call
-  `POST /api/harnesses/:id/sessions` for ACP harnesses instead.
+- **New chats with an agent preset**, or with no harness chosen, still spawn
+  the TUI first: the preset's directory and model are applied by the spawn
+  route. A new chat with a chosen ACP harness starts over the control plane
+  (the driver advertises `protocolStart`) and moves onto the agent's id.
 - **A pane that outlives a peek.** Opening the terminal once leaves the pane
   running, so chat stays on the PTY path until it exits.
 - **Grok approvals.** Confirm Grok sends `session/request_permission` for a

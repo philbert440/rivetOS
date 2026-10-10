@@ -90,7 +90,15 @@ class AcpRouting {
   }
 
   capabilities(base: HarnessCapabilities): HarnessCapabilities {
-    return { ...base, interrupt: true, resume: true, approvals: true, liveStream: true }
+    return {
+      ...base,
+      interrupt: true,
+      resume: true,
+      approvals: true,
+      liveStream: true,
+      turnOptions: true,
+      protocolStart: true,
+    }
   }
 
   private paneOpen(native: string): boolean {

@@ -226,6 +226,14 @@ export class AcpSessionHost {
   async setConfig(native: string, category: string, value: string): Promise<void> {
     const state = this.sessions.get(native)
     const option = state?.configOptions.find((o) => o.category === category)
+    // Effort is advisory: OpenCode's agent offers no thought_level option, and
+    // a picked effort must not fail the whole turn there.
+    if (state && !option && category === 'thought_level') {
+      this.deps.log(
+        `[den-server] acp: ${this.deps.productName} has no effort setting; ignoring ${value}`,
+      )
+      return
+    }
     if (!state || !option)
       throw new HarnessError(
         'capability_unsupported',

@@ -116,6 +116,13 @@ export class AcpClient implements AcpRpc {
       })
       this.child = child
       this.buffer = ''
+      // A den that exits without close() must not leave the agent behind. On
+      // SIGKILL this does not run; the agent then sees stdin close and exits.
+      const killOnExit = (): void => {
+        child.kill()
+      }
+      process.once('exit', killOnExit)
+      child.once('exit', () => process.removeListener('exit', killOnExit))
       child.stdout.setEncoding('utf8')
       child.stdout.on('data', (chunk: string) => this.onData(child, chunk))
       // Agents log to stderr; keep only a tail for the exit message.
