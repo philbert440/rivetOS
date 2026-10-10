@@ -71,9 +71,13 @@ impl JsString {
         }
     }
 
-    fn from_units(units: Vec<u16>) -> Self {
+    pub fn from_units(units: Vec<u16>) -> Self {
         let utf8 = utf8_from_units(&units);
         Self { units, utf8 }
+    }
+
+    pub fn units(&self) -> &[u16] {
+        &self.units
     }
 
     pub fn to_utf8(&self) -> &str {
@@ -109,13 +113,13 @@ impl PartialEq for JsObject {
 impl Eq for JsObject {}
 
 impl JsObject {
-    fn new() -> Self {
+    pub fn new() -> Self {
         Self {
             entries: Vec::new(),
         }
     }
 
-    fn insert(&mut self, key: JsString, value: JsValue) {
+    pub fn insert(&mut self, key: JsString, value: JsValue) {
         if let Some(slot) = self
             .entries
             .iter_mut()
@@ -125,6 +129,15 @@ impl JsObject {
         } else {
             self.entries.push((key, value));
         }
+    }
+
+    pub fn remove(&mut self, key: &str) -> Option<JsValue> {
+        let needle = JsString::from_text(key);
+        let index = self
+            .entries
+            .iter()
+            .position(|(existing, _)| existing == &needle)?;
+        Some(self.entries.remove(index).1)
     }
 
     pub fn get(&self, key: &str) -> Option<&JsValue> {
@@ -229,9 +242,23 @@ impl JsValue {
     pub fn get(&self, key: &str) -> Option<&JsValue> {
         self.as_object().and_then(|object| object.get(key))
     }
+
+    pub fn as_object_mut(&mut self) -> Option<&mut JsObject> {
+        match self {
+            Self::Object(object) => Some(object),
+            _ => None,
+        }
+    }
+
+    pub fn as_js_string(&self) -> Option<&JsString> {
+        match self {
+            Self::String(text) => Some(text),
+            _ => None,
+        }
+    }
 }
 
-pub(crate) fn from_serde(value: &Value) -> JsValue {
+pub fn from_serde(value: &Value) -> JsValue {
     match value {
         Value::Null => JsValue::Null,
         Value::Bool(value) => JsValue::Bool(*value),
@@ -509,6 +536,29 @@ impl<'a> Parser<'a> {
         literal
             .parse::<f64>()
             .map_err(|_| ParseError { message: "number" })
+    }
+}
+
+pub fn to_serde(value: &JsValue) -> Value {
+    match value {
+        JsValue::Null => Value::Null,
+        JsValue::Bool(item) => Value::Bool(*item),
+        JsValue::Number(number) => {
+            if !number.is_finite() {
+                return Value::Null;
+            }
+            let text = crate::js_number::json_number(*number);
+            serde_json::from_str(&text).unwrap_or(Value::Null)
+        }
+        JsValue::String(text) => Value::String(text.to_utf8().to_string()),
+        JsValue::Array(items) => Value::Array(items.iter().map(to_serde).collect()),
+        JsValue::Object(object) => {
+            let mut map = Map::new();
+            for (key, child) in object.iter() {
+                map.insert(key.to_utf8().to_string(), to_serde(child));
+            }
+            Value::Object(map)
+        }
     }
 }
 

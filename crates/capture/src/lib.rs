@@ -10,6 +10,7 @@ mod spool;
 mod timeutil;
 mod transport;
 mod types;
+mod wire;
 mod writer;
 
 pub use den_url::{

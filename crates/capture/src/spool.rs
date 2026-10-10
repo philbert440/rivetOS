@@ -57,9 +57,7 @@ fn prefix_num(name: &str) -> u128 {
 }
 
 pub async fn spool_batch(dir: &Path, batch: &CaptureBatch, now_ms: i64) -> io::Result<PathBuf> {
-    let body = serde_json::to_value(batch)
-        .map(|value| protocol::js::stringify(&value))
-        .map_err(|error| io::Error::new(ErrorKind::InvalidData, error.to_string()))?;
+    let body = protocol::js::stringify(&crate::wire::batch_to_js(batch));
     spool_text(dir, &body, now_ms).await
 }
 
