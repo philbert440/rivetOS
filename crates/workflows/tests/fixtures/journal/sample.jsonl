@@ -1,0 +1,2 @@
+{"type":"run_started","ts":"2026-01-01T00:00:00.000Z","runId":"r1","workflowId":"w","version":"1","input":{},"startedBy":{"type":"human"}}
+{"type":"step_finished","ts":"2026-01-01T00:00:01.000Z","stepId":"a#1","label":"a","seq":1,"kind":"agent","result":{"x":1}}
