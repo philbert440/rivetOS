@@ -157,6 +157,7 @@ describe('AcpSessionHost', () => {
       'tool-use',
       'tool-result',
       'assistant-delta',
+      'status',
     ])
     expect(t.events[2]).toMatchObject({
       toolCallId: 'c1',
@@ -288,6 +289,7 @@ describe('AcpSessionHost', () => {
     t.promptRequest().resolve({ stopReason: 'cancelled' })
     await t.tick()
     expect(t.turns.at(-1)).toBe(`end:${native}:interrupted`)
+    expect(t.events.at(-1)).toMatchObject({ type: 'status', status: 'idle' })
   })
 
   it('ends a running turn with an error when the agent exits', async () => {
@@ -295,7 +297,8 @@ describe('AcpSessionHost', () => {
     const native = await t.host.newSession('/work')
     await t.host.prompt(native, '/work', 'hi')
     t.frame({ method: '$disconnected', params: {} })
-    expect(t.events.at(-1)).toMatchObject({ type: 'error', code: 'harness_unavailable' })
+    expect(t.events.at(-2)).toMatchObject({ type: 'error', code: 'harness_unavailable' })
+    expect(t.events.at(-1)).toMatchObject({ type: 'status', status: 'idle' })
     expect(t.turns.at(-1)).toBe(`end:${native}:error`)
     // The late rejection of the prompt request must not end it twice.
     t.promptRequest().reject(new Error('gone'))
@@ -309,7 +312,7 @@ describe('AcpSessionHost', () => {
     await t.host.prompt(native, '/work', 'hi')
     t.promptRequest().reject(new Error('Internal error: No LLM provider configured'))
     await t.tick()
-    expect(t.events.at(-1)).toMatchObject({
+    expect(t.events.at(-2)).toMatchObject({
       type: 'error',
       message: expect.stringContaining('provider'),
     })

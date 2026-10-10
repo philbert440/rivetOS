@@ -219,6 +219,9 @@ export class AcpSessionHost {
     if (!state?.prompting) return
     state.prompting = false
     this.clearPermissions(native, 'external')
+    // An approval leaves a protocol status of blocked or working behind; the
+    // turn's end has to replace it, or the session reads busy from then on.
+    this.status(native)
     this.deps.turnEnded(native, stopReason)
   }
 
