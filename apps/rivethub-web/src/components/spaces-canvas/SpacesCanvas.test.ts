@@ -43,6 +43,7 @@ import { useChat } from '../../stores/chat.js'
 import { useChatSettings } from '../../stores/chat-settings.js'
 import { useConnection } from '../../stores/connection.js'
 import { useSpaces, withDefaultSpace } from '../../stores/spaces.js'
+import { useSessionNames } from '../../stores/session-names.js'
 import { canvasKeyClaims, performCanvasEffect, reduceCanvasCommand } from './canvas-input.js'
 import { SpacesCanvas } from './SpacesCanvas.js'
 import { setMiniCommitProbe, ThreadMini } from './ThreadMini.js'
@@ -420,6 +421,38 @@ describe('SpacesCanvas mount', () => {
     })
     expect(onOpen).not.toHaveBeenCalled()
     expect(host?.querySelector('[data-tile="d"]')?.getAttribute('data-selected')).toBe('true')
+  })
+
+  it('a tile pencil and the breadcrumb pencil both rename the thread', () => {
+    placeOnHome(['a'])
+    const base = useConnection.getState().baseUrl
+    mount([row('a', 'Alpha')], vi.fn())
+    const pencil = host?.querySelector('[data-tile-rename]')
+    if (!(pencil instanceof HTMLElement)) throw new Error('missing tile rename')
+    expect(pencil.getAttribute('data-act')).toBe('')
+    act(() => pencil.click())
+    const input = host?.querySelector('[data-tile="a"]')?.querySelector('input')
+    expect(input?.getAttribute('aria-label')).toBe('Conversation name')
+    act(() => {
+      input?.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }))
+    })
+    expect(host?.querySelector('[data-tile="a"]')?.querySelector('input')).toBeNull()
+    expect(useSessionNames.getState().byKey[storageKey(base, 'a')]).toBeUndefined()
+
+    act(() => useSessionNames.getState().set(storageKey(base, 'a'), 'Renamed'))
+    expect(host?.querySelector('[data-tile="a"]')?.textContent).toContain('Renamed')
+    const hit = host?.querySelector('[data-tile-hit="a"]')
+    if (!hit) throw new Error('missing tile')
+    act(() => pointerClick(hit))
+    const crumb = host?.querySelector('[data-crumb-thread]')
+    expect(crumb?.textContent).toBe('Renamed')
+    const crumbPencil = host
+      ?.querySelector('[aria-label="Location"]')
+      ?.querySelector('[aria-label="Rename Renamed"]')
+    if (!(crumbPencil instanceof HTMLElement)) throw new Error('missing crumb rename')
+    act(() => crumbPencil.click())
+    const crumbInput = host?.querySelector('[aria-label="Location"]')?.querySelector('input')
+    expect((crumbInput as HTMLInputElement | null)?.value).toBe('Renamed')
   })
 
   it('Enter on a focused location button activates it and the canvas does not claim it', () => {
