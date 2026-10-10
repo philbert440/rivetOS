@@ -139,6 +139,8 @@ import { createAllowedProbe, harnessNotAllowedMessage } from './harness/allowed.
 import { CodexDriver } from './harness/codex-driver.js'
 import { CodexProtocolDriver, codexThreadDefaults } from './harness/codex-protocol-driver.js'
 import { CodexRpcClient } from './harness/codex-rpc.js'
+import { AcpClient } from './harness/acp-rpc.js'
+import { GrokAcpDriver, OpencodeAcpDriver } from './harness/acp-drivers.js'
 import { createHarnessRoutes, harnessErrorStatus } from './harness/routes.js'
 import { denJoinKey } from './harness/session-key.js'
 import { createUploadRoutes } from './harness/uploads.js'
@@ -766,6 +768,23 @@ export function createDenServer(config: DenConfig, opts: DenServerOptions = {}):
     )
   }
   let codexProtocol: CodexProtocolDriver | undefined
+  const acpHarnesses = new Set(config.acpHarnesses ?? [])
+  for (const command of acpHarnesses) {
+    if (command !== 'grok' && command !== 'opencode')
+      throw new Error(`RIVETOS_ACP_HARNESSES: ${command} is not an ACP harness (grok, opencode)`)
+  }
+  if (acpHarnesses.size && config.usersRegistry) {
+    throw new Error(
+      'ACP harnesses require a single-owner node; the agent runs as the den user for every session',
+    )
+  }
+  /** Roster command → driver whose chat turn blocks opening a terminal. */
+  const acpDrivers = new Map<string, GrokAcpDriver | OpencodeAcpDriver>()
+  const acpClient = (command: 'grok' | 'opencode', args: string[]): AcpClient =>
+    new AcpClient({
+      argv: [rosterProvider.get().commands[command]?.cmd[0] ?? command, ...args],
+      log: console.error,
+    })
   let termManager: TermManager | null = null
   let onHerdrStatusRef:
     ((denSession: string, frame: import('@rivetos/types').HarnessStatusFrame) => void) | undefined =
@@ -918,7 +937,15 @@ export function createDenServer(config: DenConfig, opts: DenServerOptions = {}):
         transcript: opts.transcriptWatcher,
         screen: screenFor,
       }),
-      new GrokBuildDriver({
+      ((deps: ConstructorParameters<typeof GrokBuildDriver>[0]) => {
+        if (!acpHarnesses.has('grok')) return new GrokBuildDriver(deps)
+        const driver = new GrokAcpDriver({
+          ...deps,
+          acp: { rpc: acpClient('grok', ['agent', 'stdio']) },
+        })
+        acpDrivers.set('grok', driver)
+        return driver
+      })({
         store: harnessStore('grok'),
         pty: termEnabled ? () => ensureManager() : undefined,
         events: denEventTap,
@@ -1000,7 +1027,15 @@ export function createDenServer(config: DenConfig, opts: DenServerOptions = {}):
         screen: screenFor,
       }),
       new CoworkDriver(),
-      new OpencodeDriver({
+      ((deps: ConstructorParameters<typeof OpencodeDriver>[0]) => {
+        if (!acpHarnesses.has('opencode')) return new OpencodeDriver(deps)
+        const driver = new OpencodeAcpDriver({
+          ...deps,
+          acp: { rpc: acpClient('opencode', ['acp']) },
+        })
+        acpDrivers.set('opencode', driver)
+        return driver
+      })({
         store: harnessStore('opencode'),
         pty: termEnabled ? () => ensureManager() : undefined,
         events: denEventTap,
@@ -1975,6 +2010,15 @@ export function createDenServer(config: DenConfig, opts: DenServerOptions = {}):
             ) {
               return json(res, 409, {
                 error: `session runs in ${recorded}; edit the agent or start a new conversation`,
+              })
+            }
+            // Two writers on one session: the TUI would append to the store while
+            // the ACP agent is mid-turn on its own copy.
+            const acpBusyKey = resumeKey ?? sessionKey
+            if (acpBusyKey && acpDrivers.get(spawnCommand)?.chatTurnRunning(acpBusyKey)) {
+              return json(res, 409, {
+                error: 'a chat turn is running in this session; wait for it or interrupt it first',
+                code: 'chat_turn_in_flight',
               })
             }
             if (

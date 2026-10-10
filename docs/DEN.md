@@ -257,3 +257,7 @@ Two G7 knobs:
 Owner-only Codex protocol sessions can be enabled with
 `RIVETOS_CODEX_APP_SERVER_URL=ws://127.0.0.1:5175`. See
 [the app-server guide](CODEX-APP-SERVER.md).
+
+Grok Build and OpenCode chat turns can go over ACP when no terminal is open
+with `RIVETOS_ACP_HARNESSES=grok,opencode` (owner-only nodes). See
+[protocol drivers](HARNESS-PROTOCOL-DRIVERS.md).

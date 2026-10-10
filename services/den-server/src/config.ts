@@ -153,6 +153,11 @@ export interface DenConfig {
   /** Dedicated owner-only Codex app-server, loopback WebSocket. */
   codexAppServerUrl?: string
   /**
+   * Roster commands whose chat turns go over ACP when no terminal is open
+   * (`grok`, `opencode`). Env: RIVETOS_ACP_HARNESSES, comma-separated.
+   */
+  acpHarnesses?: string[]
+  /**
    * Phone pairing records written by `rivetos local --device` / `rivetos
    * pair` (pairing.ts). Unset = POST /api/devices/pair is off. Env:
    * RIVETOS_DEN_PAIRING_DIR, default `~/.rivetos/devices/pairing`.
@@ -360,6 +365,13 @@ export function loadConfig(
     },
     ...(env.RIVETOS_CODEX_APP_SERVER_URL
       ? { codexAppServerUrl: env.RIVETOS_CODEX_APP_SERVER_URL }
+      : {}),
+    ...(env.RIVETOS_ACP_HARNESSES?.trim()
+      ? {
+          acpHarnesses: env.RIVETOS_ACP_HARNESSES.split(',')
+            .map((s) => s.trim())
+            .filter(Boolean),
+        }
       : {}),
     stateDir: denStateDir(env),
     pairingDir:
