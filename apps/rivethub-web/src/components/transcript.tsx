@@ -8,6 +8,7 @@ import { copyTextToClipboard } from '../lib/clipboard.js'
 import { Markdown } from './markdown.js'
 import { SpeakMessage } from './speak-message.js'
 import { arrivalJump, scrollToEnd, type TranscriptEdge } from '../lib/transcript-follow.js'
+import { usePreferences } from '../stores/preferences.js'
 
 /** Transcript-sourced tool → the live stack's entry shape (same renderer). */
 function toLiveTool(t: HarnessTranscriptTool, id: string): LiveToolEntry {
@@ -435,6 +436,7 @@ export function Transcript(props: {
 
   // A reply, a send, a finished turn or the end of thinking re-pins even when
   // scrolled up — the newest response is where the reader wants to be.
+  // Settings → General can turn this off; a pinned view still follows.
   const edge: TranscriptEdge = {
     lastId: props.messages.at(-1)?.id,
     live: props.live !== undefined,
@@ -444,7 +446,7 @@ export function Transcript(props: {
   useEffect(() => {
     const prev = edgeRef.current
     edgeRef.current = edge
-    if (!arrivalJump(prev, edge)) return
+    if (!usePreferences.getState().autoScroll || !arrivalJump(prev, edge)) return
     pinnedRef.current = true
     setPinned(true)
     followSoon()

@@ -3,7 +3,8 @@
  * default. Esc / Cancel close without writing. From History hands the canvas
  * the target space; the panel places the chosen row.
  *
- * When the chosen space has defaults, the Prompt fields start from them.
+ * When the chosen space has defaults, the Prompt fields start from them;
+ * otherwise from Settings → General's new-conversation defaults.
  * The agent is seeded first; the space's model and effort are applied
  * after that. Preset model and effort are copied only when the user picks
  * an agent, so a space override is not replaced on open — cached roster
@@ -20,6 +21,7 @@ import { launchModelOptions } from '../../lib/conversation-model-options.js'
 import { urlLabel } from '../../lib/node-name.js'
 import { useRosterAgents } from '../../lib/use-agent-roster.js'
 import { useConnection } from '../../stores/connection.js'
+import { usePreferences } from '../../stores/preferences.js'
 import type { SpaceDefaults } from '../../stores/spaces.js'
 import { Select } from '../select.js'
 import { EffortPicker } from '../pickers/effort-picker.js'
@@ -33,7 +35,7 @@ import {
   type SpaceRosterAgent,
   canStartThread,
 } from './new-thread.js'
-import { startsInDirectory } from './space-defaults.js'
+import { startablePreset, startsInDirectory } from './space-defaults.js'
 
 export function NewThreadDialog(props: {
   spaceId?: string
@@ -59,7 +61,17 @@ export function NewThreadDialog(props: {
   // roster row is not known while that query is loading.
   const [seedReady, setSeedReady] = useState(false)
   const target = locked ?? spaceId
-  const defaults = props.spaces.find((space) => space.id === target)?.defaults
+  const newChat = usePreferences((s) => s.newChat)
+  // A space without defaults starts from Settings → General's. Their preset
+  // counts only while it is on the roster (or the roster is still loading),
+  // so an absent one is never offered as this space's deleted default.
+  const defaults: SpaceDefaults | undefined =
+    props.spaces.find((space) => space.id === target)?.defaults ??
+    (isLoading || startablePreset(newChat, agents)
+      ? newChat
+      : newChat.effort
+        ? { effort: newChat.effort }
+        : undefined)
   const agent: PromptAgent | undefined = agents.find((row) => row.id === agentId)
   const agentsRef = useRef(agents)
   agentsRef.current = agents
