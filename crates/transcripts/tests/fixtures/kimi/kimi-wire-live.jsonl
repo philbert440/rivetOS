@@ -1,0 +1,6 @@
+{"type":"metadata","protocol_version":"1.5"}
+{"type":"context.append_message","message":{"role":"user","content":[{"type":"text","text":"review the diff"}],"origin":{"kind":"user"}}}
+{"type":"llm.request","model":"kimi-k2","kind":"chat"}
+{"type":"context.append_loop_event","event":{"type":"step.begin","turnId":"0","step":1}}
+{"type":"context.append_loop_event","event":{"type":"content.part","turnId":"0","step":1,"part":{"type":"think","think":"weighing "}}}
+{"type":"context.append_loop_event","event":{"type":"content.part","turnId":"0","step":1,"part":{"type":"text","text":"looks "}}}
