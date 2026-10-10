@@ -90,6 +90,7 @@ export const KNOWN_DEN_KEYS = new Set([
   'allowed_origins',
   'allowed_hosts',
   'allowed_harnesses',
+  'acp_harnesses',
 ])
 
 export const KNOWN_DEN_DEVICES_KEYS = new Set([

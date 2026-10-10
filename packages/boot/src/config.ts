@@ -321,6 +321,11 @@ export interface DenSection {
    * registered harnesses. Empty = none. Unknown ids warn at validate time.
    */
   allowed_harnesses?: string[]
+  /**
+   * Harnesses whose chat runs over ACP instead of the TUI (`grok`,
+   * `opencode`). Single-owner nodes only. Maps to RIVETOS_DEN_ACP_HARNESSES.
+   */
+  acp_harnesses?: string[]
   /** Mesh device enrollment (Settings → Devices). Off unless `enabled`.
    *  With a shared roster (default when a shared export mount is present),
    *  any mesh node can add/revoke; each node still needs relay_ssh to mutate

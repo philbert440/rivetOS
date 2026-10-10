@@ -1330,6 +1330,14 @@ describe('den', () => {
     assertWarning(validateConfig(cfg), 'den.allowed_harnesses[1]', 'Unknown harness id')
   })
 
+  it('accepts den.acp_harnesses and rejects a harness without ACP', () => {
+    const cfg = validConfig()
+    cfg.den = { enabled: true, acp_harnesses: ['grok', 'opencode'] }
+    assertValid(validateConfig(cfg))
+    cfg.den = { enabled: true, acp_harnesses: ['claude'] }
+    assertError(validateConfig(cfg), 'den.acp_harnesses', 'must be a list of')
+  })
+
   it('accepts den.advertise_mdns (local-mode / PR 7 advertiser)', () => {
     const cfg = validConfig()
     cfg.den = { enabled: true, advertise_mdns: true }

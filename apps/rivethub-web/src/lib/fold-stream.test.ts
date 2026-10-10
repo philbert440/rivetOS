@@ -3,6 +3,7 @@ import {
   foldStream,
   nextReasoningText,
   REASONING_TEXT_MAX,
+  storedToolStatus,
   type LiveTurn,
 } from './fold-stream.js'
 import type { StreamEvent } from '@rivetos/types'
@@ -235,5 +236,14 @@ describe('nextReasoningText', () => {
     for (const w of text.trimEnd().split(' ')) {
       expect(words).toContain(w)
     }
+  })
+})
+
+describe('storedToolStatus', () => {
+  it('reads a stored running tool as interrupted once its turn is over', () => {
+    expect(storedToolStatus('running', true)).toBe('interrupted')
+    expect(storedToolStatus('running', false)).toBe('running')
+    expect(storedToolStatus('done', true)).toBe('done')
+    expect(storedToolStatus('error', true)).toBe('error')
   })
 })

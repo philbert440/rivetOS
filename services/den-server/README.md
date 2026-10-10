@@ -153,3 +153,8 @@ harness activity into protocol events and POST here.
 Owner-only Codex protocol sessions can be enabled with
 `RIVETOS_CODEX_APP_SERVER_URL=ws://127.0.0.1:5175`. See
 [the app-server guide](../../docs/CODEX-APP-SERVER.md).
+
+Grok Build and OpenCode chat turns can go over ACP when no terminal is open
+with `RIVETOS_DEN_ACP_HARNESSES=grok,opencode` (`den.acp_harnesses` in config.yaml
+when embedded; owner-only nodes). See
+[protocol drivers](../../docs/HARNESS-PROTOCOL-DRIVERS.md).

@@ -10,8 +10,20 @@ export interface LiveToolEntry {
   id: string
   name: string
   title: string
-  status: 'running' | 'done' | 'error'
+  /** `interrupted`: the store still says running, but the turn is over. */
+  status: 'running' | 'done' | 'error' | 'interrupted'
   args?: unknown
+}
+
+/**
+ * How a stored tool reads once its turn is `over`: the store can still say
+ * running when the harness was killed or cancelled before the result.
+ */
+export function storedToolStatus(
+  status: 'running' | 'done' | 'error',
+  over: boolean,
+): LiveToolEntry['status'] {
+  return over && status === 'running' ? 'interrupted' : status
 }
 
 export interface LiveTurn {
