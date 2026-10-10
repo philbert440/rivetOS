@@ -144,29 +144,69 @@ export const Tile = memo(function Tile(props: TileProps): JSX.Element {
         aria-pressed={props.selected}
         aria-label={`${chip}, ${title}, ${tilePill(status)}`}
       />
+      {/* Above the box: the label pill, with the rename pencil beside it. The
+          pencil shows on the selected tile and on hover; renaming swaps the
+          pill for the name box in the same spot. Hidden at Thread. */}
       <div
-        aria-hidden="true"
-        className="pointer-events-none absolute bottom-full z-[2] flex max-w-[90%] items-center rounded-full border border-line bg-panel font-mono"
+        data-tile-label=""
+        className="pointer-events-none absolute bottom-full z-[2] flex max-w-[90%] items-center font-mono"
         style={withVars(
           { '--ch': 'min(var(--inv, 1), 2.2)' },
           {
             left: 'calc(16px * var(--ch, 1))',
             marginBottom: 'calc(9px * var(--ch, 1))',
             fontSize: 'calc(12.5px * var(--ch, 1))',
-            gap: '0.55em',
-            padding: '0.32em 0.9em 0.32em 0.75em',
-            borderWidth: 'calc(1px * var(--ch, 1))',
-            opacity: props.altitude === 'thread' ? 0 : 'var(--live, 0)',
+            gap: '0.4em',
+            display: props.altitude === 'thread' ? 'none' : undefined,
           },
         )}
       >
-        <span
-          className="sc-accent shrink-0 rounded-full"
-          data-harness={harness}
-          style={{ width: '0.62em', height: '0.62em' }}
-        />
-        <b className="truncate">{chip}</b>
-        <span className="truncate text-ink-dim">{title}</span>
+        {renaming ? (
+          <span className="pointer-events-auto min-w-0" style={{ width: '22em' }}>
+            <RenameInput
+              nameKey={nameKey}
+              initial={title}
+              onDone={() => setRenaming(false)}
+              className="w-full min-w-0 rounded-full border border-em bg-panel-2 text-ink outline-none"
+              style={{ padding: '0.32em 0.9em', borderWidth: 'calc(1px * var(--ch, 1))' }}
+            />
+          </span>
+        ) : (
+          <>
+            <div
+              aria-hidden="true"
+              className="flex min-w-0 items-center rounded-full border border-line bg-panel"
+              style={{
+                gap: '0.55em',
+                padding: '0.32em 0.9em 0.32em 0.75em',
+                borderWidth: 'calc(1px * var(--ch, 1))',
+                opacity: 'var(--live, 0)',
+              }}
+            >
+              <span
+                className="sc-accent shrink-0 rounded-full"
+                data-harness={harness}
+                style={{ width: '0.62em', height: '0.62em' }}
+              />
+              <b className="truncate">{chip}</b>
+              <span className="truncate text-ink-dim">{title}</span>
+            </div>
+            <button
+              type="button"
+              data-act=""
+              data-tile-rename=""
+              aria-label={`Rename ${title}`}
+              title="Rename"
+              onClick={() => setRenaming(true)}
+              className={`pointer-events-auto shrink-0 rounded-full border border-line bg-panel text-ink-dim hover:border-em hover:text-em focus:opacity-100 ${
+                props.selected ? '' : 'opacity-0 group-hover:opacity-100'
+              }`}
+              style={{ padding: '0.4em', borderWidth: 'calc(1px * var(--ch, 1))' }}
+            >
+              <Pencil style={{ width: '1em', height: '1em' }} />
+            </button>
+          </>
+        )}
       </div>
       <div
         data-face="card"
@@ -223,43 +263,6 @@ export const Tile = memo(function Tile(props: TileProps): JSX.Element {
         ) : null}
       </div>
       {props.showMini ? <ThreadMini item={props.item} descriptors={props.descriptors} /> : null}
-      {props.altitude === 'thread' ? null : renaming ? (
-        <div
-          className="absolute inset-x-0 top-1/2 z-[3] flex -translate-y-1/2"
-          style={withVars(
-            { '--cs': 'min(var(--inv, 1), 4.4)' },
-            { padding: '0 calc(24px * var(--cs, 1))' },
-          )}
-        >
-          <RenameInput
-            nameKey={nameKey}
-            initial={title}
-            onDone={() => setRenaming(false)}
-            className="w-full min-w-0 border border-em bg-panel-2 text-ink outline-none"
-            style={{ fontSize: 'calc(13px * var(--cs, 1))', padding: '0.4em 0.6em' }}
-          />
-        </div>
-      ) : (
-        <button
-          type="button"
-          data-act=""
-          data-tile-rename=""
-          aria-label={`Rename ${title}`}
-          title="Rename"
-          onClick={() => setRenaming(true)}
-          className={`absolute top-0 right-0 z-[2] text-ink-dim hover:text-em focus:opacity-100 ${
-            props.selected ? '' : 'opacity-0 group-hover:opacity-100'
-          }`}
-          style={withVars(
-            { '--cs': 'min(var(--inv, 1), 4.4)' },
-            { padding: 'calc(8px * var(--cs, 1))' },
-          )}
-        >
-          <Pencil
-            style={{ width: 'calc(14px * var(--cs, 1))', height: 'calc(14px * var(--cs, 1))' }}
-          />
-        </button>
-      )}
       {props.showThread ? (
         <div
           data-thread-live=""
