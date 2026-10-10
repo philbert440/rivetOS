@@ -1,7 +1,6 @@
-use serde::de::{DeserializeOwned, Deserializer};
+use serde::de::{self, DeserializeOwned, Deserializer};
 use serde::ser::{SerializeMap, Serializer};
 use serde::{Deserialize, Serialize};
-use serde_json::{Map, Value};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct OrderedMap<T> {
@@ -90,11 +89,14 @@ where
     where
         D: Deserializer<'de>,
     {
-        let map = Map::<String, Value>::deserialize(deserializer)?;
+        let raw = Box::<serde_json::value::RawValue>::deserialize(deserializer)?;
+        let value = protocol::js::parse(raw.get()).map_err(de::Error::custom)?;
+        let object = value.as_object().ok_or_else(|| de::Error::custom("map"))?;
         let mut ordered = Self::new();
-        for (key, value) in map {
-            let parsed = serde_json::from_value(value).map_err(serde::de::Error::custom)?;
-            ordered.insert(key, parsed);
+        for (key, item) in object.iter() {
+            let json = protocol::js::stringify(item);
+            let parsed = serde_json::from_str(&json).map_err(de::Error::custom)?;
+            ordered.insert(key.to_utf8().to_string(), parsed);
         }
         Ok(ordered)
     }
