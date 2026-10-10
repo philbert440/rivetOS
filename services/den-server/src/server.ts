@@ -771,7 +771,9 @@ export function createDenServer(config: DenConfig, opts: DenServerOptions = {}):
   const acpHarnesses = new Set(config.acpHarnesses ?? [])
   for (const command of acpHarnesses) {
     if (command !== 'grok' && command !== 'opencode')
-      throw new Error(`RIVETOS_ACP_HARNESSES: ${command} is not an ACP harness (grok, opencode)`)
+      throw new Error(
+        `RIVETOS_DEN_ACP_HARNESSES: ${command} is not an ACP harness (grok, opencode)`,
+      )
   }
   if (acpHarnesses.size && config.usersRegistry) {
     throw new Error(

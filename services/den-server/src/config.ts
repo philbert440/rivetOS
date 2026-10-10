@@ -154,7 +154,7 @@ export interface DenConfig {
   codexAppServerUrl?: string
   /**
    * Roster commands whose chat turns go over ACP when no terminal is open
-   * (`grok`, `opencode`). Env: RIVETOS_ACP_HARNESSES, comma-separated.
+   * (`grok`, `opencode`). Env: RIVETOS_DEN_ACP_HARNESSES, comma-separated.
    */
   acpHarnesses?: string[]
   /**
@@ -366,9 +366,9 @@ export function loadConfig(
     ...(env.RIVETOS_CODEX_APP_SERVER_URL
       ? { codexAppServerUrl: env.RIVETOS_CODEX_APP_SERVER_URL }
       : {}),
-    ...(env.RIVETOS_ACP_HARNESSES?.trim()
+    ...(env.RIVETOS_DEN_ACP_HARNESSES?.trim()
       ? {
-          acpHarnesses: env.RIVETOS_ACP_HARNESSES.split(',')
+          acpHarnesses: env.RIVETOS_DEN_ACP_HARNESSES.split(',')
             .map((s) => s.trim())
             .filter(Boolean),
         }

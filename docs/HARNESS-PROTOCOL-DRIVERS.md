@@ -1,7 +1,7 @@
 # Protocol drivers for Claude Code, Grok Build and OpenCode
 
 Status: **ACP drivers for Grok Build and OpenCode implemented behind
-`RIVETOS_ACP_HARNESSES`; Claude Code driver still a proposal.** Written
+`RIVETOS_DEN_ACP_HARNESSES`; Claude Code driver still a proposal.** Written
 2026-10-09 against Claude Code 2.1.293, Grok Build 1.0.44 and OpenCode
 1.18.35. Items marked _unverified_ need a spike before anyone builds on them.
 
@@ -180,7 +180,8 @@ for terminal-owned sessions.
 `acp-rpc.ts` (JSON-RPC over the agent's stdio), `acp-session-host.ts` (load,
 prompt, cancel, permissions, update mapping) and `acp-drivers.ts`
 (`GrokAcpDriver`, `OpencodeAcpDriver`, subclasses of the PTY drivers).
-Enable with `RIVETOS_ACP_HARNESSES=grok,opencode`; single-owner nodes only,
+Enable with `den.acp_harnesses: [grok, opencode]` in config.yaml (or
+`RIVETOS_DEN_ACP_HARNESSES=grok,opencode` on a standalone den); single-owner nodes only,
 because the agent runs as the den user.
 
 - **Ownership.** No live TUI pane for the session → the turn goes over ACP.

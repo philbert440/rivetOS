@@ -155,5 +155,6 @@ Owner-only Codex protocol sessions can be enabled with
 [the app-server guide](../../docs/CODEX-APP-SERVER.md).
 
 Grok Build and OpenCode chat turns can go over ACP when no terminal is open
-with `RIVETOS_ACP_HARNESSES=grok,opencode` (owner-only nodes). See
+with `RIVETOS_DEN_ACP_HARNESSES=grok,opencode` (`den.acp_harnesses` in config.yaml
+when embedded; owner-only nodes). See
 [protocol drivers](../../docs/HARNESS-PROTOCOL-DRIVERS.md).

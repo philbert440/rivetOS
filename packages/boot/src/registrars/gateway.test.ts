@@ -76,6 +76,14 @@ describe('buildGatewayEnv — browser origin policy', () => {
   })
 })
 
+describe('buildGatewayEnv — ACP harnesses', () => {
+  it('wires den.acp_harnesses only when set', () => {
+    expect(buildGatewayEnv(base({}), '/opt/rivetos').RIVETOS_DEN_ACP_HARNESSES).toBeUndefined()
+    const env = buildGatewayEnv(base({ acp_harnesses: ['grok', 'opencode'] }), '/opt/rivetos')
+    expect(env.RIVETOS_DEN_ACP_HARNESSES).toBe('grok,opencode')
+  })
+})
+
 describe('buildGatewayEnv — device enrollment', () => {
   it('emits nothing when devices is absent or disabled', () => {
     expect(buildGatewayEnv(base({}), '/opt/rivetos').RIVETOS_DEN_DEVICES).toBeUndefined()
