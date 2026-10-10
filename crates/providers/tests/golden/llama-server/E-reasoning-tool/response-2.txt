@@ -1,0 +1,12 @@
+data: {"choices":[{"finish_reason":null,"index":0,"delta":{"role":"assistant","content":""}}],"created":1791590400,"id":"chatcmpl-golden-llama-E-2","model":"test-model","system_fingerprint":"b6700-golden","object":"chat.completion.chunk"}
+
+data: {"choices":[{"finish_reason":null,"index":0,"delta":{"content":"The echo tool returned "}}],"created":1791590400,"id":"chatcmpl-golden-llama-E-2","model":"test-model","system_fingerprint":"b6700-golden","object":"chat.completion.chunk"}
+
+data: {"choices":[{"finish_reason":null,"index":0,"delta":{"content":"hi."}}],"created":1791590400,"id":"chatcmpl-golden-llama-E-2","model":"test-model","system_fingerprint":"b6700-golden","object":"chat.completion.chunk"}
+
+data: {"choices":[{"finish_reason":"stop","index":0,"delta":{}}],"created":1791590400,"id":"chatcmpl-golden-llama-E-2","model":"test-model","system_fingerprint":"b6700-golden","object":"chat.completion.chunk"}
+
+data: {"choices":[],"created":1791590400,"id":"chatcmpl-golden-llama-E-2","model":"test-model","system_fingerprint":"b6700-golden","object":"chat.completion.chunk","usage":{"completion_tokens":9,"prompt_tokens":110,"total_tokens":119},"timings":{"cache_n":0,"prompt_n":110,"prompt_ms":12.5,"prompt_per_token_ms":0.5,"prompt_per_second":2000,"predicted_n":9,"predicted_ms":50.25,"predicted_per_token_ms":10.05,"predicted_per_second":99.5}}
+
+data: [DONE]
+

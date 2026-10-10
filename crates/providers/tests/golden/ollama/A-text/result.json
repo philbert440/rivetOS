@@ -1,0 +1,30 @@
+{
+  "turnResult": {
+    "response": "Hi there!",
+    "toolsUsed": [],
+    "iterations": 0,
+    "aborted": false,
+    "usage": {
+      "promptTokens": 25,
+      "completionTokens": 5
+    },
+    "hadSteer": false
+  },
+  "toolCalls": [],
+  "toolResults": [],
+  "chunkAccumulator": {
+    "usage": {
+      "promptTokens": 25,
+      "completionTokens": 5
+    },
+    "citations": [],
+    "hadTextContent": true,
+    "responseId": "<generated-id-2>"
+  },
+  "aiSdkWarnings": [],
+  "console": [],
+  "masks": {
+    "generatedIds": 2,
+    "generatedTimestampsInParts": 0
+  }
+}

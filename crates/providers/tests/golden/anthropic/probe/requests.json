@@ -1,0 +1,66 @@
+[
+  {
+    "index": 1,
+    "method": "POST",
+    "target": "/v1/messages",
+    "path": "/v1/messages",
+    "query": [],
+    "headers": [
+      [
+        "host",
+        "127.0.0.1:47811"
+      ],
+      [
+        "connection",
+        "keep-alive"
+      ],
+      [
+        "Content-Type",
+        "application/json"
+      ],
+      [
+        "x-api-key",
+        "<redacted>"
+      ],
+      [
+        "anthropic-version",
+        "2023-06-01"
+      ],
+      [
+        "accept",
+        "*/*"
+      ],
+      [
+        "accept-language",
+        "*"
+      ],
+      [
+        "sec-fetch-mode",
+        "cors"
+      ],
+      [
+        "user-agent",
+        "node"
+      ],
+      [
+        "accept-encoding",
+        "gzip, deflate"
+      ],
+      [
+        "content-length",
+        "99"
+      ]
+    ],
+    "body": "{\"model\":\"test-model\",\"max_tokens\":16,\"messages\":[{\"role\":\"user\",\"content\":\"ping\"}],\"stream\":false}",
+    "served": {
+      "status": 200,
+      "headers": [
+        [
+          "Content-Type",
+          "application/json"
+        ]
+      ],
+      "bodyFile": "response-1.txt"
+    }
+  }
+]

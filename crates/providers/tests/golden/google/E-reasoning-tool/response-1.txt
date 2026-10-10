@@ -1,0 +1,4 @@
+data: {"candidates":[{"content":{"parts":[{"text":"I should call the echo tool.","thought":true}],"role":"model"},"index":0}],"usageMetadata":{"promptTokenCount":60,"totalTokenCount":60,"promptTokensDetails":[{"modality":"TEXT","tokenCount":60}]},"modelVersion":"test-model","responseId":"golden-google-E-1"}
+
+data: {"candidates":[{"content":{"parts":[{"functionCall":{"name":"echo","args":{"text":"hi","n":1.0}},"thoughtSignature":"Z29sZGVuLXRob3VnaHQtc2lnbmF0dXJlLUUx"}],"role":"model"},"finishReason":"STOP","index":0}],"usageMetadata":{"promptTokenCount":60,"candidatesTokenCount":20,"totalTokenCount":100,"promptTokensDetails":[{"modality":"TEXT","tokenCount":60}],"candidatesTokensDetails":[{"modality":"TEXT","tokenCount":20}],"thoughtsTokenCount":20},"modelVersion":"test-model","responseId":"golden-google-E-1"}
+

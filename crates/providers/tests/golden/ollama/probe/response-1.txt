@@ -1,0 +1,1 @@
+{"models":[{"name":"test-model","model":"test-model","modified_at":"2026-10-10T00:00:00Z","size":1000000000,"digest":"golden","details":{"parent_model":"","format":"gguf","family":"test","families":["test"],"parameter_size":"1B","quantization_level":"Q4_K_M"}}]}

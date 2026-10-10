@@ -1,0 +1,254 @@
+[
+  {
+    "type": "start"
+  },
+  {
+    "type": "start-step",
+    "request": {
+      "body": {
+        "generationConfig": {
+          "thinkingConfig": {
+            "thinkingBudget": 32768,
+            "includeThoughts": true
+          }
+        },
+        "contents": [
+          {
+            "role": "user",
+            "parts": [
+              {
+                "text": "Say hi."
+              }
+            ]
+          }
+        ],
+        "systemInstruction": {
+          "parts": [
+            {
+              "text": "You are a test."
+            }
+          ]
+        },
+        "tools": [
+          {
+            "functionDeclarations": [
+              {
+                "name": "echo",
+                "description": "Echo the arguments back as JSON.",
+                "parameters": {
+                  "required": [
+                    "text"
+                  ],
+                  "type": "object",
+                  "properties": {
+                    "text": {
+                      "description": "Text to echo back.",
+                      "type": "string"
+                    },
+                    "n": {
+                      "description": "A number to echo back.",
+                      "type": "number"
+                    }
+                  }
+                }
+              },
+              {
+                "name": "compact_context",
+                "description": "Summarize and compact conversation history to free context window space. Provide ranges of messages to replace with summaries. Message indices are 0-based positions in the conversation history (index 0 = first user or assistant message; system messages are excluded from indexing).",
+                "parameters": {
+                  "required": [
+                    "replacements"
+                  ],
+                  "type": "object",
+                  "properties": {
+                    "replacements": {
+                      "description": "Message ranges to replace with summaries",
+                      "type": "array",
+                      "items": {
+                        "required": [
+                          "start_index",
+                          "end_index",
+                          "summary"
+                        ],
+                        "type": "object",
+                        "properties": {
+                          "start_index": {
+                            "description": "Start index in conversation history (0-based, inclusive)",
+                            "type": "number"
+                          },
+                          "end_index": {
+                            "description": "End index in conversation history (0-based, inclusive)",
+                            "type": "number"
+                          },
+                          "summary": {
+                            "description": "Brief summary replacing these messages. Include key decisions, outcomes, and any information still relevant.",
+                            "type": "string"
+                          }
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            ]
+          }
+        ],
+        "toolConfig": {
+          "functionCallingConfig": {
+            "mode": "AUTO"
+          }
+        }
+      }
+    },
+    "warnings": []
+  },
+  {
+    "type": "reasoning-start",
+    "id": "0"
+  },
+  {
+    "type": "reasoning-delta",
+    "id": "0",
+    "text": "The user wants a greeting."
+  },
+  {
+    "type": "reasoning-delta",
+    "id": "0",
+    "text": " Keep it short."
+  },
+  {
+    "type": "reasoning-end",
+    "id": "0"
+  },
+  {
+    "type": "text-start",
+    "id": "1",
+    "providerMetadata": {
+      "google": {
+        "thoughtSignature": "Z29sZGVuLXRob3VnaHQtc2lnbmF0dXJlLUMx"
+      }
+    }
+  },
+  {
+    "type": "text-delta",
+    "id": "1",
+    "text": "Hi",
+    "providerMetadata": {
+      "google": {
+        "thoughtSignature": "Z29sZGVuLXRob3VnaHQtc2lnbmF0dXJlLUMx"
+      }
+    }
+  },
+  {
+    "type": "text-delta",
+    "id": "1",
+    "text": "!",
+    "providerMetadata": {
+      "google": {
+        "thoughtSignature": "Z29sZGVuLXRob3VnaHQtc2lnbmF0dXJlLUMx"
+      }
+    }
+  },
+  {
+    "type": "text-end",
+    "id": "1"
+  },
+  {
+    "type": "finish-step",
+    "finishReason": "stop",
+    "rawFinishReason": "STOP",
+    "usage": {
+      "inputTokens": 25,
+      "inputTokenDetails": {
+        "noCacheTokens": 25,
+        "cacheReadTokens": 0
+      },
+      "outputTokens": 30,
+      "outputTokenDetails": {
+        "textTokens": 8,
+        "reasoningTokens": 22
+      },
+      "totalTokens": 55,
+      "raw": {
+        "thoughtsTokenCount": 22,
+        "promptTokenCount": 25,
+        "candidatesTokenCount": 8,
+        "totalTokenCount": 55,
+        "promptTokensDetails": [
+          {
+            "modality": "TEXT",
+            "tokenCount": 25
+          }
+        ],
+        "candidatesTokensDetails": [
+          {
+            "modality": "TEXT",
+            "tokenCount": 8
+          }
+        ]
+      },
+      "reasoningTokens": 22,
+      "cachedInputTokens": 0
+    },
+    "providerMetadata": {
+      "google": {
+        "promptFeedback": null,
+        "groundingMetadata": null,
+        "urlContextMetadata": null,
+        "safetyRatings": null,
+        "usageMetadata": {
+          "thoughtsTokenCount": 22,
+          "promptTokenCount": 25,
+          "candidatesTokenCount": 8,
+          "totalTokenCount": 55,
+          "promptTokensDetails": [
+            {
+              "modality": "TEXT",
+              "tokenCount": 25
+            }
+          ],
+          "candidatesTokensDetails": [
+            {
+              "modality": "TEXT",
+              "tokenCount": 8
+            }
+          ]
+        },
+        "finishMessage": null,
+        "serviceTier": null
+      }
+    },
+    "response": {
+      "id": "golden-google-C-1",
+      "timestamp": "<generated-timestamp>",
+      "modelId": "test-model",
+      "headers": {
+        "cache-control": "no-cache",
+        "connection": "keep-alive",
+        "content-type": "text/event-stream",
+        "keep-alive": "timeout=5",
+        "transfer-encoding": "chunked"
+      }
+    }
+  },
+  {
+    "type": "finish",
+    "finishReason": "stop",
+    "rawFinishReason": "STOP",
+    "totalUsage": {
+      "inputTokens": 25,
+      "inputTokenDetails": {
+        "noCacheTokens": 25,
+        "cacheReadTokens": 0
+      },
+      "outputTokens": 30,
+      "outputTokenDetails": {
+        "textTokens": 8,
+        "reasoningTokens": 22
+      },
+      "totalTokens": 55,
+      "reasoningTokens": 22,
+      "cachedInputTokens": 0
+    }
+  }
+]

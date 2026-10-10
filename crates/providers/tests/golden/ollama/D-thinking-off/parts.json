@@ -1,0 +1,150 @@
+[
+  {
+    "type": "start"
+  },
+  {
+    "type": "start-step",
+    "request": {
+      "body": {
+        "model": "test-model",
+        "messages": [
+          {
+            "role": "system",
+            "content": "You are a test."
+          },
+          {
+            "role": "user",
+            "content": "Say hi."
+          }
+        ],
+        "think": false,
+        "tools": [
+          {
+            "type": "function",
+            "function": {
+              "name": "echo",
+              "description": "Echo the arguments back as JSON.",
+              "parameters": {
+                "type": "object",
+                "properties": {
+                  "text": {
+                    "type": "string",
+                    "description": "Text to echo back."
+                  },
+                  "n": {
+                    "type": "number",
+                    "description": "A number to echo back."
+                  }
+                },
+                "required": [
+                  "text"
+                ]
+              }
+            }
+          },
+          {
+            "type": "function",
+            "function": {
+              "name": "compact_context",
+              "description": "Summarize and compact conversation history to free context window space. Provide ranges of messages to replace with summaries. Message indices are 0-based positions in the conversation history (index 0 = first user or assistant message; system messages are excluded from indexing).",
+              "parameters": {
+                "type": "object",
+                "properties": {
+                  "replacements": {
+                    "type": "array",
+                    "description": "Message ranges to replace with summaries",
+                    "items": {
+                      "type": "object",
+                      "properties": {
+                        "start_index": {
+                          "type": "number",
+                          "description": "Start index in conversation history (0-based, inclusive)"
+                        },
+                        "end_index": {
+                          "type": "number",
+                          "description": "End index in conversation history (0-based, inclusive)"
+                        },
+                        "summary": {
+                          "type": "string",
+                          "description": "Brief summary replacing these messages. Include key decisions, outcomes, and any information still relevant."
+                        }
+                      },
+                      "required": [
+                        "start_index",
+                        "end_index",
+                        "summary"
+                      ]
+                    }
+                  }
+                },
+                "required": [
+                  "replacements"
+                ]
+              }
+            }
+          }
+        ],
+        "tool_choice": "auto"
+      }
+    },
+    "warnings": []
+  },
+  {
+    "type": "text-start",
+    "id": "<generated-id-1>"
+  },
+  {
+    "type": "text-delta",
+    "id": "<generated-id-1>",
+    "text": "Hi"
+  },
+  {
+    "type": "text-delta",
+    "id": "<generated-id-1>",
+    "text": " there!"
+  },
+  {
+    "type": "text-end",
+    "id": "<generated-id-1>"
+  },
+  {
+    "type": "finish-step",
+    "finishReason": "stop",
+    "rawFinishReason": "stop",
+    "usage": {
+      "inputTokens": 25,
+      "inputTokenDetails": {},
+      "outputTokens": 5,
+      "outputTokenDetails": {},
+      "totalTokens": 30
+    },
+    "providerMetadata": {
+      "ollama": {
+        "responseId": null
+      }
+    },
+    "response": {
+      "id": "<generated-id-2>",
+      "timestamp": "2026-10-10T00:00:00.100Z",
+      "modelId": "test-model",
+      "headers": {
+        "connection": "keep-alive",
+        "content-type": "application/x-ndjson",
+        "keep-alive": "timeout=5",
+        "transfer-encoding": "chunked"
+      }
+    }
+  },
+  {
+    "type": "finish",
+    "finishReason": "stop",
+    "rawFinishReason": "stop",
+    "totalUsage": {
+      "inputTokens": 25,
+      "inputTokenDetails": {},
+      "outputTokens": 5,
+      "outputTokenDetails": {},
+      "totalTokens": 30
+    }
+  }
+]

@@ -1,0 +1,1 @@
+{"id":"msg_golden_probe","type":"message","role":"assistant","model":"test-model","content":[{"type":"text","text":"pong"}],"stop_reason":"end_turn","stop_sequence":null,"usage":{"input_tokens":8,"cache_creation_input_tokens":0,"cache_read_input_tokens":0,"output_tokens":2}}

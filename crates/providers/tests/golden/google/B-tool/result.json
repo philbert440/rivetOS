@@ -1,0 +1,52 @@
+{
+  "turnResult": {
+    "response": "The echo tool returned hi.",
+    "toolsUsed": [
+      "echo"
+    ],
+    "iterations": 1,
+    "aborted": false,
+    "usage": {
+      "promptTokens": 90,
+      "completionTokens": 18
+    },
+    "hadSteer": false
+  },
+  "toolCalls": [
+    {
+      "toolCallId": "<generated-id-1>",
+      "toolName": "echo",
+      "input": {
+        "text": "hi",
+        "n": 1
+      }
+    }
+  ],
+  "toolResults": [
+    {
+      "toolCallId": "<generated-id-1>",
+      "toolName": "echo",
+      "output": "{\"text\":\"hi\",\"n\":1}"
+    }
+  ],
+  "chunkAccumulator": {
+    "usage": {
+      "promptTokens": 90,
+      "completionTokens": 9
+    },
+    "citations": [],
+    "hadTextContent": true,
+    "responseId": "golden-google-B-2"
+  },
+  "aiSdkWarnings": [],
+  "console": [
+    {
+      "level": "info",
+      "text": "[Tool] echo args={\"text\":\"hi\",\"n\":1} → 19b in <ms>ms"
+    }
+  ],
+  "masks": {
+    "generatedIds": 1,
+    "generatedTimestampsInParts": 2
+  }
+}

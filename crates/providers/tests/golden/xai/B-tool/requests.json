@@ -1,0 +1,138 @@
+[
+  {
+    "index": 1,
+    "method": "POST",
+    "target": "/v1/responses",
+    "path": "/v1/responses",
+    "query": [],
+    "headers": [
+      [
+        "host",
+        "127.0.0.1:47812"
+      ],
+      [
+        "connection",
+        "keep-alive"
+      ],
+      [
+        "authorization",
+        "Bearer <redacted>"
+      ],
+      [
+        "content-type",
+        "application/json"
+      ],
+      [
+        "user-agent",
+        "ai-sdk/xai/3.0.114 ai-sdk/provider-utils/4.0.41 runtime/node.js/22"
+      ],
+      [
+        "x-grok-conv-id",
+        "test-session"
+      ],
+      [
+        "accept",
+        "*/*"
+      ],
+      [
+        "accept-language",
+        "*"
+      ],
+      [
+        "sec-fetch-mode",
+        "cors"
+      ],
+      [
+        "accept-encoding",
+        "gzip, deflate"
+      ],
+      [
+        "content-length",
+        "1415"
+      ]
+    ],
+    "body": "{\"model\":\"test-model\",\"input\":[{\"role\":\"system\",\"content\":\"You are a test.\"},{\"role\":\"user\",\"content\":[{\"type\":\"input_text\",\"text\":\"Say hi.\"}]}],\"tools\":[{\"type\":\"function\",\"name\":\"echo\",\"description\":\"Echo the arguments back as JSON.\",\"parameters\":{\"type\":\"object\",\"properties\":{\"text\":{\"type\":\"string\",\"description\":\"Text to echo back.\"},\"n\":{\"type\":\"number\",\"description\":\"A number to echo back.\"}},\"required\":[\"text\"]}},{\"type\":\"function\",\"name\":\"compact_context\",\"description\":\"Summarize and compact conversation history to free context window space. Provide ranges of messages to replace with summaries. Message indices are 0-based positions in the conversation history (index 0 = first user or assistant message; system messages are excluded from indexing).\",\"parameters\":{\"type\":\"object\",\"properties\":{\"replacements\":{\"type\":\"array\",\"description\":\"Message ranges to replace with summaries\",\"items\":{\"type\":\"object\",\"properties\":{\"start_index\":{\"type\":\"number\",\"description\":\"Start index in conversation history (0-based, inclusive)\"},\"end_index\":{\"type\":\"number\",\"description\":\"End index in conversation history (0-based, inclusive)\"},\"summary\":{\"type\":\"string\",\"description\":\"Brief summary replacing these messages. Include key decisions, outcomes, and any information still relevant.\"}},\"required\":[\"start_index\",\"end_index\",\"summary\"]}}},\"required\":[\"replacements\"]}}],\"tool_choice\":\"auto\",\"stream\":true}",
+    "served": {
+      "status": 200,
+      "headers": [
+        [
+          "Content-Type",
+          "text/event-stream; charset=utf-8"
+        ],
+        [
+          "Cache-Control",
+          "no-cache"
+        ]
+      ],
+      "bodyFile": "response-1.txt"
+    }
+  },
+  {
+    "index": 2,
+    "method": "POST",
+    "target": "/v1/responses",
+    "path": "/v1/responses",
+    "query": [],
+    "headers": [
+      [
+        "host",
+        "127.0.0.1:47812"
+      ],
+      [
+        "connection",
+        "keep-alive"
+      ],
+      [
+        "authorization",
+        "Bearer <redacted>"
+      ],
+      [
+        "content-type",
+        "application/json"
+      ],
+      [
+        "user-agent",
+        "ai-sdk/xai/3.0.114 ai-sdk/provider-utils/4.0.41 runtime/node.js/22"
+      ],
+      [
+        "x-grok-conv-id",
+        "test-session"
+      ],
+      [
+        "accept",
+        "*/*"
+      ],
+      [
+        "accept-language",
+        "*"
+      ],
+      [
+        "sec-fetch-mode",
+        "cors"
+      ],
+      [
+        "accept-encoding",
+        "gzip, deflate"
+      ],
+      [
+        "content-length",
+        "1672"
+      ]
+    ],
+    "body": "{\"model\":\"test-model\",\"input\":[{\"role\":\"system\",\"content\":\"You are a test.\"},{\"role\":\"user\",\"content\":[{\"type\":\"input_text\",\"text\":\"Say hi.\"}]},{\"type\":\"function_call\",\"id\":\"call_golden_echo_1\",\"call_id\":\"call_golden_echo_1\",\"name\":\"echo\",\"arguments\":\"{\\\"text\\\":\\\"hi\\\",\\\"n\\\":1}\",\"status\":\"completed\"},{\"type\":\"function_call_output\",\"call_id\":\"call_golden_echo_1\",\"output\":\"{\\\"text\\\":\\\"hi\\\",\\\"n\\\":1}\"}],\"tools\":[{\"type\":\"function\",\"name\":\"echo\",\"description\":\"Echo the arguments back as JSON.\",\"parameters\":{\"type\":\"object\",\"properties\":{\"text\":{\"type\":\"string\",\"description\":\"Text to echo back.\"},\"n\":{\"type\":\"number\",\"description\":\"A number to echo back.\"}},\"required\":[\"text\"]}},{\"type\":\"function\",\"name\":\"compact_context\",\"description\":\"Summarize and compact conversation history to free context window space. Provide ranges of messages to replace with summaries. Message indices are 0-based positions in the conversation history (index 0 = first user or assistant message; system messages are excluded from indexing).\",\"parameters\":{\"type\":\"object\",\"properties\":{\"replacements\":{\"type\":\"array\",\"description\":\"Message ranges to replace with summaries\",\"items\":{\"type\":\"object\",\"properties\":{\"start_index\":{\"type\":\"number\",\"description\":\"Start index in conversation history (0-based, inclusive)\"},\"end_index\":{\"type\":\"number\",\"description\":\"End index in conversation history (0-based, inclusive)\"},\"summary\":{\"type\":\"string\",\"description\":\"Brief summary replacing these messages. Include key decisions, outcomes, and any information still relevant.\"}},\"required\":[\"start_index\",\"end_index\",\"summary\"]}}},\"required\":[\"replacements\"]}}],\"tool_choice\":\"auto\",\"stream\":true}",
+    "served": {
+      "status": 200,
+      "headers": [
+        [
+          "Content-Type",
+          "text/event-stream; charset=utf-8"
+        ],
+        [
+          "Cache-Control",
+          "no-cache"
+        ]
+      ],
+      "bodyFile": "response-2.txt"
+    }
+  }
+]
