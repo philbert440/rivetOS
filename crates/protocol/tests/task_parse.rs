@@ -166,6 +166,21 @@ fn non_finite_artifact_note_stringifies_as_null() {
 }
 
 #[test]
+fn signed_or_spaced_unicode_escape_is_not_a_task() {
+    assert!(parse_task_result_json(r#"{"verdict":"completed","summary":"\u+041"}"#).is_none());
+    assert!(parse_task_result_json(r#"{"verdict":"completed","summary":"\u 041"}"#).is_none());
+    let parsed = parse_task_result_json(r#"{"verdict":"completed","summary":"\u0041"}"#).unwrap();
+    assert_eq!(parsed.summary, "A");
+    let plus = "```TASK_RESULT\n{\"verdict\":\"completed\",\"summary\":\"\\u+041\"}\n```";
+    assert!(parse_task_result(plus).is_none());
+    let space = "```TASK_RESULT\n{\"verdict\":\"completed\",\"summary\":\"\\u 041\"}\n```";
+    assert!(parse_task_result(space).is_none());
+    let letter = "```TASK_RESULT\n{\"verdict\":\"completed\",\"summary\":\"\\u0041\"}\n```";
+    let parsed = parse_task_result(letter).unwrap();
+    assert_eq!(parsed.summary, "A");
+}
+
+#[test]
 fn lone_surrogate_summary_is_replacement_and_kept() {
     let parsed = parse_task_result_json(r#"{"verdict":"completed","summary":"\ud83d"}"#).unwrap();
     assert_eq!(parsed.summary, "\u{FFFD}");

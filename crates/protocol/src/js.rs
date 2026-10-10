@@ -252,7 +252,7 @@ fn object_from_map(map: &Map<String, Value>) -> JsObject {
 
 pub fn parse(text: &str) -> Result<JsValue, ParseError> {
     let mut parser = Parser {
-        bytes: text.as_bytes(),
+        text,
         index: 0,
         depth: 0,
     };
@@ -271,18 +271,18 @@ pub fn parse(text: &str) -> Result<JsValue, ParseError> {
 }
 
 struct Parser<'a> {
-    bytes: &'a [u8],
+    text: &'a str,
     index: usize,
     depth: u32,
 }
 
 impl<'a> Parser<'a> {
     fn done(&self) -> bool {
-        self.index >= self.bytes.len()
+        self.index >= self.text.len()
     }
 
     fn peek(&self) -> Option<u8> {
-        self.bytes.get(self.index).copied()
+        self.text.as_bytes().get(self.index).copied()
     }
 
     fn skip_ws(&mut self) {
@@ -304,9 +304,9 @@ impl<'a> Parser<'a> {
     fn parse_value_inner(&mut self) -> Result<JsValue, ParseError> {
         self.skip_ws();
         match self.peek() {
-            Some(b'n') => self.literal(b"null", JsValue::Null),
-            Some(b't') => self.literal(b"true", JsValue::Bool(true)),
-            Some(b'f') => self.literal(b"false", JsValue::Bool(false)),
+            Some(b'n') => self.literal("null", JsValue::Null),
+            Some(b't') => self.literal("true", JsValue::Bool(true)),
+            Some(b'f') => self.literal("false", JsValue::Bool(false)),
             Some(b'"') => Ok(JsValue::String(self.parse_string()?)),
             Some(b'[') => self.parse_array(),
             Some(b'{') => self.parse_object(),
@@ -315,8 +315,11 @@ impl<'a> Parser<'a> {
         }
     }
 
-    fn literal(&mut self, word: &[u8], value: JsValue) -> Result<JsValue, ParseError> {
-        if self.bytes[self.index..].starts_with(word) {
+    fn literal(&mut self, word: &str, value: JsValue) -> Result<JsValue, ParseError> {
+        let Some(rest) = self.text.get(self.index..) else {
+            return Err(ParseError { message: "literal" });
+        };
+        if rest.starts_with(word) {
             self.index += word.len();
             Ok(value)
         } else {
@@ -421,11 +424,10 @@ impl<'a> Parser<'a> {
 
     fn bump_char(&mut self) -> Result<char, ParseError> {
         let rest = self
-            .bytes
+            .text
             .get(self.index..)
             .ok_or(ParseError { message: "utf8" })?;
-        let text = std::str::from_utf8(rest).map_err(|_| ParseError { message: "utf8" })?;
-        let ch = text.chars().next().ok_or(ParseError { message: "utf8" })?;
+        let ch = rest.chars().next().ok_or(ParseError { message: "utf8" })?;
         self.index += ch.len_utf8();
         Ok(ch)
     }
@@ -452,11 +454,18 @@ impl<'a> Parser<'a> {
     }
 
     fn hex4(&mut self) -> Result<u16, ParseError> {
-        if self.index + 4 > self.bytes.len() {
+        let bytes = self.text.as_bytes();
+        if self.index + 4 > bytes.len() {
             return Err(ParseError { message: "hex" });
         }
-        let text = std::str::from_utf8(&self.bytes[self.index..self.index + 4])
-            .map_err(|_| ParseError { message: "hex" })?;
+        let digits = &bytes[self.index..self.index + 4];
+        if !digits.iter().all(|byte| byte.is_ascii_hexdigit()) {
+            return Err(ParseError { message: "hex" });
+        }
+        let text = self
+            .text
+            .get(self.index..self.index + 4)
+            .ok_or(ParseError { message: "hex" })?;
         let value = u16::from_str_radix(text, 16).map_err(|_| ParseError { message: "hex" })?;
         self.index += 4;
         Ok(value)
@@ -504,8 +513,10 @@ impl<'a> Parser<'a> {
                 return Err(ParseError { message: "number" });
             }
         }
-        let literal = std::str::from_utf8(&self.bytes[start..self.index])
-            .map_err(|_| ParseError { message: "number" })?;
+        let literal = self
+            .text
+            .get(start..self.index)
+            .ok_or(ParseError { message: "number" })?;
         literal
             .parse::<f64>()
             .map_err(|_| ParseError { message: "number" })

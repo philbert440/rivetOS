@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
@@ -16,6 +16,8 @@ struct Template {
 struct Hit {
     file: String,
     line: usize,
+    function: String,
+    at: usize,
     template: Template,
 }
 
@@ -110,6 +112,7 @@ fn normalize(parts: Vec<Part>) -> Template {
 
 fn rust_messages(source: &str, file: &str) -> Vec<Hit> {
     let bytes = source.as_bytes();
+    let spans = rust_function_spans(source);
     let mut index = 0;
     let mut hits = Vec::new();
     while index < bytes.len() {
@@ -130,7 +133,7 @@ fn rust_messages(source: &str, file: &str) -> Vec<Hit> {
         if is_raw_start(bytes, index)
             && let Some((text, next)) = parse_raw(bytes, index)
         {
-            consider_rust(&mut hits, file, source, index, &text, next);
+            consider_rust(&mut hits, file, source, index, &text, next, &spans);
             index = next;
             continue;
         }
@@ -138,7 +141,7 @@ fn rust_messages(source: &str, file: &str) -> Vec<Hit> {
             && !byte_string(bytes, index)
             && let Some((text, next)) = parse_rust_string(bytes, index)
         {
-            consider_rust(&mut hits, file, source, index, &text, next);
+            consider_rust(&mut hits, file, source, index, &text, next, &spans);
             index = next;
             continue;
         }
@@ -154,6 +157,7 @@ fn consider_rust(
     start: usize,
     text: &str,
     _end: usize,
+    spans: &[(usize, usize, String)],
 ) {
     if !interesting(text) || !binding_or_arg(source.as_bytes(), start) {
         return;
@@ -172,6 +176,8 @@ fn consider_rust(
     hits.push(Hit {
         file: file.to_string(),
         line: line_of(source, start),
+        function: function_at(spans, start),
+        at: start,
         template,
     });
 }
@@ -419,6 +425,7 @@ fn parse_rust_string(bytes: &[u8], start: usize) -> Option<(String, usize)> {
 
 fn ts_messages(source: &str, file: &str) -> Vec<Hit> {
     let chars: Vec<char> = source.chars().collect();
+    let spans = ts_function_spans(&chars);
     let mut index = 0;
     let mut hits = Vec::new();
     while index < chars.len() {
@@ -440,6 +447,9 @@ fn ts_messages(source: &str, file: &str) -> Vec<Hit> {
             continue;
         }
         index += 1;
+    }
+    for hit in &mut hits {
+        hit.function = function_at(&spans, hit.at);
     }
     hits
 }
@@ -684,6 +694,8 @@ fn push_hit(hits: &mut Vec<Hit>, file: &str, chars: &[char], index: usize, templ
     hits.push(Hit {
         file: file.to_string(),
         line: char_line(chars, index),
+        function: String::new(),
+        at: index,
         template,
     });
 }
@@ -1051,23 +1063,49 @@ fn located(hits: &[Hit], template: &Template) -> String {
     spots.join(" ")
 }
 
-fn counts(hits: &[Hit]) -> HashMap<Template, usize> {
-    let mut map = HashMap::new();
-    for hit in hits {
-        *map.entry(hit.template.clone()).or_default() += 1;
-    }
-    map
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+struct Site {
+    file: String,
+    function: String,
+}
+
+struct Counterpart {
+    needle: &'static str,
+    ts_file: &'static str,
+    ts_function: &'static str,
+    rust_file: &'static str,
+    rust_function: &'static str,
+    multiplicity: usize,
+}
+
+fn counterparts() -> &'static [Counterpart] {
+    &[
+        Counterpart {
+            needle: "Unknown harness id",
+            ts_file: "packages/boot/src/validate/sections.ts",
+            ts_function: "validateDen",
+            rust_file: "crates/config/src/validate/den.rs",
+            rust_function: "validate_harnesses",
+            multiplicity: 1,
+        },
+        Counterpart {
+            needle: "Unknown harness id",
+            ts_file: "packages/boot/src/validate/sections.ts",
+            ts_function: "validateTasksHarnesses",
+            rust_file: "crates/config/src/validate/tasks.rs",
+            rust_function: "validate_harnesses",
+            multiplicity: 1,
+        },
+    ]
 }
 
 fn site_problems(ts: &[Hit], rust: &[Hit]) -> Vec<String> {
-    let ts_counts = counts(ts);
-    let rust_counts = counts(rust);
     let ts_table = ts_exemptions();
     let rust_table = rust_exemptions();
-    let mut templates: Vec<Template> = ts_counts
-        .keys()
-        .chain(rust_counts.keys())
-        .cloned()
+    let mut templates: Vec<Template> = ts
+        .iter()
+        .chain(rust.iter())
+        .map(|hit| hit.template.clone())
         .collect();
     templates.sort_by_key(show);
     templates.dedup();
@@ -1078,16 +1116,7 @@ fn site_problems(ts: &[Hit], rust: &[Hit]) -> Vec<String> {
         {
             continue;
         }
-        let ts_count = ts_counts.get(&template).copied().unwrap_or(0);
-        let rust_count = rust_counts.get(&template).copied().unwrap_or(0);
-        if ts_count != rust_count {
-            problems.push(format!(
-                "site count ts {ts_count} [{}] rust {rust_count} [{}]: {}",
-                located(ts, &template),
-                located(rust, &template),
-                show(&template)
-            ));
-        }
+        problems.extend(template_site_problems(&template, ts, rust));
     }
     for item in &ts_table {
         let found = ts.iter().any(|hit| hit.template == item.template);
@@ -1106,8 +1135,422 @@ fn site_problems(ts: &[Hit], rust: &[Hit]) -> Vec<String> {
     problems
 }
 
+fn template_site_problems(template: &Template, ts: &[Hit], rust: &[Hit]) -> Vec<String> {
+    let ts_rows: Vec<&Hit> = ts.iter().filter(|hit| hit.template == *template).collect();
+    let rust_rows: Vec<&Hit> = rust
+        .iter()
+        .filter(|hit| hit.template == *template)
+        .collect();
+    let ts_sites = group_sites(&ts_rows);
+    let rust_sites = group_sites(&rust_rows);
+    if ts_sites.len() <= 1 && rust_sites.len() <= 1 {
+        let ts_count = ts_rows.len();
+        let rust_count = rust_rows.len();
+        if ts_count != rust_count {
+            return vec![format!(
+                "site count ts {ts_count} [{}] rust {rust_count} [{}]: {}",
+                located(ts, template),
+                located(rust, template),
+                show(template)
+            )];
+        }
+        return Vec::new();
+    }
+    let mut problems = Vec::new();
+    let mut claimed = HashSet::new();
+    let mut ts_keys: Vec<&Site> = ts_sites.keys().collect();
+    ts_keys.sort_by(|left, right| {
+        left.file
+            .cmp(&right.file)
+            .then(left.function.cmp(&right.function))
+    });
+    for site in ts_keys {
+        let ts_count = ts_sites.get(site).copied().unwrap_or(0);
+        let Some(link) = counterpart(template, &site.file, &site.function) else {
+            problems.push(format!(
+                "typescript site {}:{} has no rust counterpart for {}",
+                site.file,
+                site.function,
+                show(template)
+            ));
+            continue;
+        };
+        if ts_count != link.multiplicity {
+            problems.push(format!(
+                "typescript site {}:{} multiplicity {ts_count} != {} for {}",
+                site.file,
+                site.function,
+                link.multiplicity,
+                show(template)
+            ));
+        }
+        let rust_site = Site {
+            file: link.rust_file.to_string(),
+            function: link.rust_function.to_string(),
+        };
+        let rust_count = rust_sites.get(&rust_site).copied().unwrap_or(0);
+        if rust_count != link.multiplicity {
+            problems.push(format!(
+                "rust site {}:{} multiplicity {rust_count} != {} for typescript {}:{} ({})",
+                link.rust_file,
+                link.rust_function,
+                link.multiplicity,
+                site.file,
+                site.function,
+                show(template)
+            ));
+        }
+        claimed.insert(rust_site);
+    }
+    let mut rust_keys: Vec<&Site> = rust_sites.keys().collect();
+    rust_keys.sort_by(|left, right| {
+        left.file
+            .cmp(&right.file)
+            .then(left.function.cmp(&right.function))
+    });
+    for site in rust_keys {
+        if !claimed.contains(site) {
+            problems.push(format!(
+                "rust site {}:{} is not mapped to its own typescript site for {}",
+                site.file,
+                site.function,
+                show(template)
+            ));
+        }
+    }
+    problems
+}
+
+fn group_sites(hits: &[&Hit]) -> HashMap<Site, usize> {
+    let mut map = HashMap::new();
+    for hit in hits {
+        let site = Site {
+            file: hit.file.clone(),
+            function: hit.function.clone(),
+        };
+        *map.entry(site).or_default() += 1;
+    }
+    map
+}
+
+fn counterpart(template: &Template, file: &str, function: &str) -> Option<&'static Counterpart> {
+    counterparts().iter().find(|item| {
+        item.ts_file == file
+            && item.ts_function == function
+            && template
+                .parts
+                .iter()
+                .any(|part| matches!(part, Part::Lit(text) if text.contains(item.needle)))
+    })
+}
+
+fn function_at(spans: &[(usize, usize, String)], index: usize) -> String {
+    let mut best: Option<(usize, &str)> = None;
+    for (start, end, name) in spans {
+        if index >= *start && index < *end {
+            let width = end - start;
+            match best {
+                Some((best_width, _)) if width >= best_width => {}
+                _ => best = Some((width, name)),
+            }
+        }
+    }
+    best.map(|(_, name)| name.to_string()).unwrap_or_default()
+}
+
+fn rust_function_spans(source: &str) -> Vec<(usize, usize, String)> {
+    let bytes = source.as_bytes();
+    let mut index = 0;
+    let mut depth = 0i32;
+    let mut pending: Option<(String, i32)> = None;
+    let mut stack: Vec<(String, i32, usize)> = Vec::new();
+    let mut spans = Vec::new();
+    while index < bytes.len() {
+        if bytes[index] == b'/' && index + 1 < bytes.len() && bytes[index + 1] == b'/' {
+            while index < bytes.len() && bytes[index] != b'\n' {
+                index += 1;
+            }
+            continue;
+        }
+        if bytes[index] == b'/' && index + 1 < bytes.len() && bytes[index + 1] == b'*' {
+            index += 2;
+            while index + 1 < bytes.len() && !(bytes[index] == b'*' && bytes[index + 1] == b'/') {
+                index += 1;
+            }
+            index = (index + 2).min(bytes.len());
+            continue;
+        }
+        if is_raw_start(bytes, index)
+            && let Some((_, next)) = parse_raw(bytes, index)
+        {
+            index = next;
+            continue;
+        }
+        if bytes[index] == b'"'
+            && let Some((_, next)) = parse_rust_string(bytes, index)
+        {
+            index = next;
+            continue;
+        }
+        if bytes[index] == b'\'' {
+            index = skip_rust_char(bytes, index);
+            continue;
+        }
+        if bytes[index] == b'{' {
+            if let Some((name, at)) = pending.take() {
+                if depth == at {
+                    stack.push((name, depth + 1, index));
+                } else {
+                    pending = Some((name, at));
+                }
+            }
+            depth += 1;
+            index += 1;
+            continue;
+        }
+        if bytes[index] == b'}' {
+            if depth > 0 {
+                depth -= 1;
+            }
+            if let Some((name, body_depth, start)) = stack.last()
+                && depth < *body_depth
+            {
+                let name = name.clone();
+                let start = *start;
+                stack.pop();
+                spans.push((start, index + 1, name));
+            }
+            index += 1;
+            continue;
+        }
+        if is_fn_keyword(bytes, index)
+            && let Some((name, next)) = read_fn_name(bytes, index)
+        {
+            pending = Some((name, depth));
+            index = next;
+            continue;
+        }
+        index += 1;
+    }
+    spans
+}
+
+fn is_fn_keyword(bytes: &[u8], index: usize) -> bool {
+    index + 2 <= bytes.len()
+        && &bytes[index..index + 2] == b"fn"
+        && (index == 0 || !is_ident_byte(bytes[index - 1]))
+        && (index + 2 == bytes.len() || !is_ident_byte(bytes[index + 2]))
+}
+
+fn read_fn_name(bytes: &[u8], index: usize) -> Option<(String, usize)> {
+    let mut cursor = index + 2;
+    while cursor < bytes.len() && bytes[cursor].is_ascii_whitespace() {
+        cursor += 1;
+    }
+    let start = cursor;
+    if cursor >= bytes.len() || !is_ident_byte(bytes[cursor]) || bytes[cursor].is_ascii_digit() {
+        return None;
+    }
+    while cursor < bytes.len() && is_ident_byte(bytes[cursor]) {
+        cursor += 1;
+    }
+    let name = std::str::from_utf8(&bytes[start..cursor]).ok()?.to_string();
+    Some((name, cursor))
+}
+
+fn skip_rust_char(bytes: &[u8], index: usize) -> usize {
+    if index + 1 >= bytes.len() {
+        return index + 1;
+    }
+    let mut cursor = index + 1;
+    if bytes[cursor] == b'\\' {
+        cursor += 1;
+        if cursor < bytes.len() && bytes[cursor] == b'u' {
+            cursor += 1;
+            if cursor < bytes.len() && bytes[cursor] == b'{' {
+                cursor += 1;
+                while cursor < bytes.len() && bytes[cursor] != b'}' {
+                    cursor += 1;
+                }
+            }
+        }
+        if cursor < bytes.len() {
+            cursor += 1;
+        }
+    } else {
+        cursor += 1;
+    }
+    if cursor < bytes.len() && bytes[cursor] == b'\'' {
+        cursor += 1;
+    }
+    cursor
+}
+
+fn ts_function_spans(chars: &[char]) -> Vec<(usize, usize, String)> {
+    let mut index = 0;
+    let mut depth = 0i32;
+    let mut pending: Option<(String, i32)> = None;
+    let mut stack: Vec<(String, i32, usize)> = Vec::new();
+    let mut spans = Vec::new();
+    while index < chars.len() {
+        let next = skip_syntax(chars, index);
+        if next != index {
+            index = next;
+            continue;
+        }
+        if chars[index] == '{' {
+            if let Some((name, at)) = pending.take() {
+                if depth == at {
+                    stack.push((name, depth + 1, index));
+                } else {
+                    pending = Some((name, at));
+                }
+            }
+            depth += 1;
+            index += 1;
+            continue;
+        }
+        if chars[index] == '}' {
+            if depth > 0 {
+                depth -= 1;
+            }
+            if let Some((name, body_depth, start)) = stack.last()
+                && depth < *body_depth
+            {
+                let name = name.clone();
+                let start = *start;
+                stack.pop();
+                spans.push((start, index + 1, name));
+            }
+            index += 1;
+            continue;
+        }
+        if starts_ident(chars, index, "function")
+            && let Some((name, name_end)) = read_ts_function_name(chars, index)
+            && let Some(body) = ts_body_open(chars, name_end)
+        {
+            pending = Some((name, depth));
+            index = body;
+            continue;
+        }
+        index += 1;
+    }
+    spans
+}
+
+fn read_ts_function_name(chars: &[char], index: usize) -> Option<(String, usize)> {
+    let mut cursor = skip_ws_and_comments(chars, index + "function".len());
+    if cursor >= chars.len() || !ident_start(chars[cursor]) {
+        return None;
+    }
+    let start = cursor;
+    cursor += 1;
+    while cursor < chars.len() && ident_char(chars[cursor]) {
+        cursor += 1;
+    }
+    Some((chars[start..cursor].iter().collect(), cursor))
+}
+
+fn ident_start(ch: char) -> bool {
+    ch.is_ascii_alphabetic() || ch == '_' || ch == '$'
+}
+
+fn ts_body_open(chars: &[char], name_end: usize) -> Option<usize> {
+    let mut cursor = skip_ws_and_comments(chars, name_end);
+    if chars.get(cursor) == Some(&'<') {
+        cursor = skip_balanced(chars, cursor, '<', '>')?;
+        cursor = skip_ws_and_comments(chars, cursor);
+    }
+    if chars.get(cursor) != Some(&'(') {
+        return None;
+    }
+    cursor = skip_balanced(chars, cursor, '(', ')')?;
+    cursor = skip_ws_and_comments(chars, cursor);
+    if chars.get(cursor) == Some(&':') {
+        return type_then_body(chars, cursor + 1);
+    }
+    if chars.get(cursor) == Some(&'{') {
+        Some(cursor)
+    } else {
+        None
+    }
+}
+
+fn type_then_body(chars: &[char], mut cursor: usize) -> Option<usize> {
+    while cursor < chars.len() {
+        cursor = skip_ws_and_comments(chars, cursor);
+        if chars.get(cursor) == Some(&'{') {
+            let after = skip_balanced(chars, cursor, '{', '}')?;
+            let look = skip_ws_and_comments(chars, after);
+            if matches!(chars.get(look), Some('|' | '&' | '[' | '.')) {
+                cursor = after;
+                continue;
+            }
+            if chars.get(look) == Some(&'{') {
+                return Some(look);
+            }
+            return Some(cursor);
+        }
+        match chars.get(cursor) {
+            Some(';' | '=' | '}') | None => return None,
+            Some('(') => cursor = skip_balanced(chars, cursor, '(', ')')?,
+            Some('[') => cursor = skip_balanced(chars, cursor, '[', ']')?,
+            Some('<') => cursor = skip_balanced(chars, cursor, '<', '>')?,
+            _ => cursor += 1,
+        }
+    }
+    None
+}
+
+fn skip_balanced(chars: &[char], index: usize, open: char, close: char) -> Option<usize> {
+    if chars.get(index) != Some(&open) {
+        return None;
+    }
+    let mut depth = 0i32;
+    let mut cursor = index;
+    while cursor < chars.len() {
+        let next = skip_syntax(chars, cursor);
+        if next != cursor {
+            cursor = next;
+            continue;
+        }
+        if chars[cursor] == open {
+            depth += 1;
+        } else if chars[cursor] == close {
+            depth -= 1;
+            cursor += 1;
+            if depth == 0 {
+                return Some(cursor);
+            }
+            continue;
+        }
+        cursor += 1;
+    }
+    None
+}
+
+fn skip_ws_and_comments(chars: &[char], mut index: usize) -> usize {
+    loop {
+        index = skip_ws(chars, index);
+        if let Some(next) = skip_comment(chars, index) {
+            index = next;
+            continue;
+        }
+        return index;
+    }
+}
+
 fn den_unknown_harness(hit: &Hit) -> bool {
     hit.file.ends_with("crates/config/src/validate/den.rs")
+        && hit
+            .template
+            .parts
+            .iter()
+            .any(|part| matches!(part, Part::Lit(text) if text.contains("Unknown harness id")))
+}
+
+fn tasks_unknown_harness(hit: &Hit) -> bool {
+    hit.file.ends_with("crates/config/src/validate/tasks.rs")
         && hit
             .template
             .parts
@@ -1228,6 +1671,27 @@ fn deleting_the_den_unknown_harness_warning_fails() {
     assert!(
         !problems.is_empty(),
         "dropping den.rs unknown-harness warning stayed green"
+    );
+}
+
+#[test]
+fn moving_the_den_unknown_harness_warning_into_tasks_fails() {
+    let root = repo_root();
+    let ts = ts_hits(&root);
+    let rust = rust_hits(&root);
+    let mut moved = rust.clone();
+    let den_at = moved.iter().position(den_unknown_harness).unwrap();
+    let den_hit = moved.remove(den_at);
+    let tasks_at = moved.iter().position(tasks_unknown_harness).unwrap();
+    let mut copy = den_hit;
+    copy.file.clone_from(&moved[tasks_at].file);
+    copy.function.clone_from(&moved[tasks_at].function);
+    copy.line = moved[tasks_at].line + 1;
+    moved.push(copy);
+    let problems = site_problems(&ts, &moved);
+    assert!(
+        !problems.is_empty(),
+        "moving den.rs unknown-harness warning into tasks.rs stayed green"
     );
 }
 

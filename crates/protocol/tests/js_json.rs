@@ -85,6 +85,47 @@ fn lone_surrogate_round_trips_as_escape() {
 }
 
 #[test]
+fn unicode_escape_is_four_hex_digits() {
+    assert!(protocol::js::parse(r#""\u+041""#).is_err());
+    assert!(protocol::js::parse(r#""\u 041""#).is_err());
+    let value = protocol::js::parse(r#""\u0041""#).unwrap();
+    assert_eq!(value.as_str(), Some("A"));
+}
+
+#[test]
+fn two_mib_string_literal_parses_within_five_seconds() {
+    let mut text = String::with_capacity(2 * 1024 * 1024 + 2);
+    text.push('"');
+    text.extend(std::iter::repeat_n('a', 2 * 1024 * 1024));
+    text.push('"');
+    let started = std::time::Instant::now();
+    let value = protocol::js::parse(&text).unwrap();
+    assert!(started.elapsed() < std::time::Duration::from_secs(5));
+    assert_eq!(value.as_str().map(str::len), Some(2 * 1024 * 1024));
+}
+
+#[test]
+fn two_mib_document_of_short_strings_parses_within_five_seconds() {
+    let item = "\"ab\",";
+    let target = 2 * 1024 * 1024;
+    let mut text = String::from('[');
+    while text.len() < target {
+        text.push_str(item);
+    }
+    if text.ends_with(',') {
+        text.pop();
+    }
+    text.push(']');
+    assert!(text.len() >= target);
+    let started = std::time::Instant::now();
+    let value = protocol::js::parse(&text).unwrap();
+    assert!(started.elapsed() < std::time::Duration::from_secs(5));
+    let items = value.as_array().unwrap();
+    assert!(items.len() > 1_000);
+    assert_eq!(items[0].as_str(), Some("ab"));
+}
+
+#[test]
 fn non_finite_numbers_stringify_as_null() {
     let value = protocol::js::parse("1e400").unwrap();
     assert_eq!(protocol::js::stringify(&value), "null");

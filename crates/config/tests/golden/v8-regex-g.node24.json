@@ -342,6 +342,15 @@
     {
       "pattern": "(?<𝑥>a)",
       "ok": true
+    },
+    {
+      "pattern": "x{2147483648,1}",
+      "ok": false,
+      "message": "Invalid regular expression: /x{2147483648,1}/g: numbers out of order in {} quantifier"
+    },
+    {
+      "pattern": "x{0,2147483648}",
+      "ok": true
     }
   ]
 }

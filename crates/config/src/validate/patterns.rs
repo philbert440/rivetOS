@@ -62,14 +62,36 @@ fn prepare_pattern(source: &str) -> String {
     let mut out = String::new();
     let mut index = 0;
     let mut in_class = false;
+    let mut in_name = false;
     while index < chars.len() {
         let ch = chars[index];
+        if in_name {
+            out.push(ch);
+            index += 1;
+            if ch == '\\' && index < chars.len() {
+                out.push(chars[index]);
+                index += 1;
+                continue;
+            }
+            if ch == '>' {
+                in_name = false;
+            }
+            continue;
+        }
         if ch == '\\' {
             if index + 1 >= chars.len() {
                 out.push('\\');
                 break;
             }
             let next = chars[index + 1];
+            if next == 'k' && !in_class && chars.get(index + 2) == Some(&'<') {
+                out.push('\\');
+                out.push('k');
+                out.push('<');
+                index += 3;
+                in_name = true;
+                continue;
+            }
             if next == 'u' && chars.get(index + 2) == Some(&'{') {
                 out.push('u');
                 index += 2;
@@ -78,6 +100,14 @@ fn prepare_pattern(source: &str) -> String {
             out.push('\\');
             out.push(next);
             index += 2;
+            continue;
+        }
+        if ch == '(' && !in_class && named_capture_open(&chars, index) {
+            out.push('(');
+            out.push('?');
+            out.push('<');
+            index += 3;
+            in_name = true;
             continue;
         }
         if ch == '[' && !in_class {
@@ -100,52 +130,16 @@ fn prepare_pattern(source: &str) -> String {
             index += 1;
             continue;
         }
-        if ch == '{' && !in_class && oversized_quantifier(&chars, index) {
-            out.push('\\');
-            out.push('{');
-            index += 1;
-            continue;
-        }
         out.push(ch);
         index += 1;
     }
     out
 }
 
-fn oversized_quantifier(chars: &[char], brace: usize) -> bool {
-    let Some((_, mut index, mut over)) = read_bound(chars, brace + 1) else {
-        return false;
-    };
-    if index < chars.len() && chars[index] == ',' {
-        index += 1;
-        if let Some((_, max_end, max_over)) = read_bound(chars, index) {
-            over = over || max_over;
-            index = max_end;
-        }
-    }
-    index < chars.len() && chars[index] == '}' && over
-}
-
-fn read_bound(chars: &[char], start: usize) -> Option<(u64, usize, bool)> {
-    if start >= chars.len() || !chars[start].is_ascii_digit() {
-        return None;
-    }
-    let mut value = 0u64;
-    let mut over = false;
-    let mut index = start;
-    while index < chars.len() && chars[index].is_ascii_digit() {
-        let digit = u64::from(chars[index] as u8 - b'0');
-        if value > (u64::MAX - digit) / 10 {
-            over = true;
-        } else {
-            value = value * 10 + digit;
-            if value > 2_147_483_647 {
-                over = true;
-            }
-        }
-        index += 1;
-    }
-    Some((value, index, over))
+fn named_capture_open(chars: &[char], index: usize) -> bool {
+    chars.get(index + 1) == Some(&'?')
+        && chars.get(index + 2) == Some(&'<')
+        && !matches!(chars.get(index + 3), Some('=' | '!'))
 }
 
 fn v8_detail(source: &str, regress_text: &str) -> String {
@@ -305,7 +299,7 @@ mod v8_golden {
             serde_json::from_str(include_str!("../../tests/golden/v8-regex-g.node24.json"))
                 .unwrap();
         let rows = doc.get("rows").and_then(Value::as_array).unwrap();
-        assert_eq!(rows.len(), 78);
+        assert_eq!(rows.len(), 80);
         for row in rows {
             let pattern = row.get("pattern").and_then(Value::as_str).unwrap();
             let ok = row.get("ok").and_then(Value::as_bool).unwrap();
@@ -324,9 +318,15 @@ mod v8_golden {
 
     #[test]
     fn legacy_quantifiers_and_unicode_escapes_match_v8() {
-        let huge = regress::Regex::with_flags(&prepare_pattern("x{2147483648}"), "g").unwrap();
-        assert!(huge.find("x{2147483648}").is_some());
-        assert!(huge.find("x").is_none());
+        let reversed = invalid_regex_message("x{2147483648,1}").unwrap();
+        assert!(reversed.contains("numbers out of order in {} quantifier"));
+        let unbounded =
+            regress::Regex::with_flags(&prepare_pattern("x{0,2147483648}"), "g").unwrap();
+        assert_eq!(unbounded.find("x").unwrap().range(), 0..1);
+        assert_eq!(unbounded.find("").unwrap().range(), 0..0);
+        let exact = regress::Regex::with_flags(&prepare_pattern("x{2147483648}"), "g").unwrap();
+        assert!(exact.find("x").is_none());
+        assert!(exact.find("x{2147483648}").is_none());
         let escape = regress::Regex::with_flags(&prepare_pattern(r"\u{1F600}"), "g").unwrap();
         assert!(escape.find("u{1F600}").is_some());
         assert!(escape.find("\u{1F600}").is_none());
@@ -340,6 +340,23 @@ mod v8_golden {
         assert!(sensitive.find("A").is_none());
         let annex = regress::Regex::with_flags(&prepare_pattern("a{1,2,3}"), "g").unwrap();
         assert!(annex.find("a{1,2,3}").is_some());
+        assert_eq!(prepare_pattern(r"(?<\u{61}>x)"), r"(?<\u{61}>x)");
+        let named = regress::Regex::with_flags(&prepare_pattern(r"(?<\u{61}>x)"), "g").unwrap();
+        let hit = named.find("x").unwrap();
+        assert_eq!(hit.named_group("a").unwrap(), 0..1);
+        let paired = r"(?<\u0061>x)\k<\u{61}>";
+        assert_eq!(prepare_pattern(paired), paired);
+        let backref = regress::Regex::with_flags(&prepare_pattern(paired), "g").unwrap();
+        assert!(backref.find("xx").is_some());
+        assert!(backref.find("xy").is_none());
+        let brace_name = r"(?<\u{61}>x)\k<\u{61}>";
+        assert!(invalid_regex_message(brace_name).is_none());
+        let brace_ref = regress::Regex::with_flags(&prepare_pattern(brace_name), "g").unwrap();
+        assert_eq!(
+            brace_ref.find("xx").unwrap().named_group("a").unwrap(),
+            0..1
+        );
+        assert!(brace_ref.find("xy").is_none());
     }
 
     #[test]
