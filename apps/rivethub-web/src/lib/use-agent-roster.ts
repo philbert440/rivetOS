@@ -33,6 +33,19 @@ export function listedNodeDirectory(baseUrl: string): string | undefined {
   return nodeListMeta.get(baseUrl)?.directoryRoot
 }
 
+let latestRoster: readonly ResolvedRosterAgent[] = []
+
+/** The roster from the last render of any `useRosterAgents` caller, for code
+ *  outside React (a new conversation's default agent). Empty until one renders. */
+export function rosterSnapshot(): readonly ResolvedRosterAgent[] {
+  return latestRoster
+}
+
+/** Record the roster `rosterSnapshot` returns. The hook calls this each render. */
+export function noteRoster(agents: readonly ResolvedRosterAgent[]): void {
+  latestRoster = agents
+}
+
 /** Deduped roster, same query the agents rail owns. */
 export function useRosterAgents(): { agents: ResolvedRosterAgent[]; isLoading: boolean } {
   const { baseUrl, roster, transportEpoch } = useConnection()
@@ -93,5 +106,6 @@ export function useRosterAgents(): { agents: ResolvedRosterAgent[]; isLoading: b
       roster: rosterForResolve,
     }),
   )
+  noteRoster(agents)
   return { agents, isLoading: nodeQueries.isLoading }
 }

@@ -18,6 +18,11 @@ import { Select } from '../components/select.js'
 import { KeyBindingsSection } from '../components/key-bindings-section.js'
 import { DEFAULT_OMARCHY_PRESET, OMARCHY_PRESETS } from '../lib/omarchy-presets.js'
 import { useExperimental } from '../stores/experimental.js'
+import { usePreferences } from '../stores/preferences.js'
+import { useRosterAgents } from '../lib/use-agent-roster.js'
+import { canNotify, playChime, requestBrowserNotifications } from '../lib/os-notify.js'
+import { rivetShell } from '../lib/shell-bridge.js'
+import type { ThinkingLevel } from '@rivetos/types'
 import { SETTINGS_TABS, settingsTab } from '../lib/settings-tabs.js'
 import { cn } from '../lib/utils.js'
 
@@ -202,7 +207,13 @@ export function SettingsPage(): JSX.Element {
           data-settings-tab={tab}
           className="min-w-0 max-w-xl flex-1 [&>h2:first-child]:mt-0 [&>h2:first-child]:border-t-0 [&>h2:first-child]:pt-0"
         >
-          {tab === 'general' && <ConversationsSection />}
+          {tab === 'general' && (
+            <>
+              <NewConversationSection />
+              <ConversationsSection />
+              <NotificationsSection />
+            </>
+          )}
           {tab === 'appearance' && (
             <>
               <AppearanceSection />
@@ -497,6 +508,8 @@ function DatahubSection(): JSX.Element {
 function ConversationsSection(): JSX.Element {
   const defaultView = useConversationView((s) => s.defaultView)
   const setDefaultView = useConversationView((s) => s.setDefaultView)
+  const autoScroll = usePreferences((s) => s.autoScroll)
+  const setPrefs = usePreferences((s) => s.set)
   return (
     <>
       <h2 className={H2}>Conversations</h2>
@@ -530,6 +543,147 @@ function ConversationsSection(): JSX.Element {
         between Terminal and Chat inside a conversation is remembered for that conversation.
         Sessions that only run in a terminal always open there.
       </p>
+      <ToggleRow
+        id="pref-autoscroll"
+        label="Jump to the newest message"
+        value={autoScroll}
+        onChange={(on) => setPrefs({ autoScroll: on })}
+        hint="When a reply arrives or the agent finishes, Chat scrolls to it even if you scrolled up. Off: Chat only follows while you are already at the bottom."
+      />
+    </>
+  )
+}
+
+function ToggleRow(props: {
+  id: string
+  label: string
+  value: boolean
+  onChange: (on: boolean) => void
+  hint?: string
+  disabled?: boolean
+}): JSX.Element {
+  return (
+    <div className="mt-4">
+      <div className="flex items-center justify-between gap-3">
+        <label htmlFor={props.id} className="text-xs text-ink-dim">
+          {props.label}
+        </label>
+        <Toggle
+          id={props.id}
+          value={props.value}
+          onChange={props.onChange}
+          disabled={props.disabled}
+        />
+      </div>
+      {props.hint ? <p className="mt-1 text-xs text-ink-dim">{props.hint}</p> : null}
+    </div>
+  )
+}
+
+const EFFORT_OPTIONS: { value: ThinkingLevel | ''; label: string }[] = [
+  { value: '', label: "Agent's default" },
+  { value: 'off', label: 'Off' },
+  { value: 'low', label: 'Low' },
+  { value: 'medium', label: 'Medium' },
+  { value: 'high', label: 'High' },
+  { value: 'xhigh', label: 'X-High' },
+]
+
+/** What a new conversation starts with, outside a space that has defaults. */
+function NewConversationSection(): JSX.Element {
+  const newChat = usePreferences((s) => s.newChat)
+  const setNewChat = usePreferences((s) => s.setNewChat)
+  const { agents: roster, isLoading } = useRosterAgents()
+  const agents = roster.filter((row) => row.sourceNodeBaseUrl.length > 0)
+  const missing =
+    !isLoading && newChat.agentId !== undefined && !agents.some((a) => a.id === newChat.agentId)
+  return (
+    <>
+      <h2 className={H2}>New conversations</h2>
+      <div className="flex items-center justify-between gap-3">
+        <label htmlFor="pref-agent" className="text-xs text-ink-dim">
+          Agent
+        </label>
+        <Select
+          id="pref-agent"
+          aria-label="Default agent"
+          value={missing ? '' : (newChat.agentId ?? '')}
+          options={[
+            { value: '', label: 'None (plain chat)' },
+            ...agents.map((row) => ({ value: row.id, label: row.name })),
+          ]}
+          onChange={(id) =>
+            setNewChat({
+              agentId: id,
+              harnessId: agents.find((row) => row.id === id)?.harnessId,
+            })
+          }
+        />
+      </div>
+      <div className="mt-3 flex items-center justify-between gap-3">
+        <label htmlFor="pref-effort" className="text-xs text-ink-dim">
+          Thinking level
+        </label>
+        <Select
+          id="pref-effort"
+          aria-label="Default thinking level"
+          value={newChat.effort ?? ''}
+          options={EFFORT_OPTIONS}
+          onChange={(value) => setNewChat({ effort: (value || undefined) as ThinkingLevel })}
+        />
+      </div>
+      <p className="mt-2 text-xs text-ink-dim">
+        Used by + new and Ctrl+T. An agent picked in the sidebar, or a canvas space with its own
+        defaults, takes precedence.
+        {missing ? ' The saved agent is not on any connected node, so new chats start plain.' : ''}
+      </p>
+    </>
+  )
+}
+
+function NotificationsSection(): JSX.Element {
+  const desktop = usePreferences((s) => s.desktopNotifications)
+  const finished = usePreferences((s) => s.notifyAgentFinished)
+  const sound = usePreferences((s) => s.notificationSound)
+  const setPrefs = usePreferences((s) => s.set)
+  const [allowed, setAllowed] = useState(canNotify)
+  const browser = !rivetShell()
+  const turnOn = async (on: boolean): Promise<void> => {
+    if (on && browser) setAllowed(await requestBrowserNotifications())
+    setPrefs({ desktopNotifications: on })
+  }
+  return (
+    <>
+      <h2 className={H2}>Notifications</h2>
+      <ToggleRow
+        id="pref-notify"
+        label="Desktop notifications"
+        value={desktop}
+        onChange={(on) => void turnOn(on)}
+        hint={
+          browser && desktop && !allowed
+            ? 'This browser has not allowed notifications. Allow them for this site, or use the desktop app.'
+            : 'Escalations, workflow gates and the alerts below, while RivetHub is in the background. In-app toasts always show.'
+        }
+      />
+      <ToggleRow
+        id="pref-notify-finished"
+        label="When an agent finishes a reply"
+        value={finished}
+        disabled={!desktop}
+        onChange={(on) => setPrefs({ notifyAgentFinished: on })}
+        hint="Not for the conversation you are looking at."
+      />
+      <ToggleRow
+        id="pref-notify-sound"
+        label="Play a sound"
+        value={sound}
+        disabled={!desktop}
+        onChange={(on) => {
+          setPrefs({ notificationSound: on })
+          if (on) playChime()
+        }}
+      />
     </>
   )
 }

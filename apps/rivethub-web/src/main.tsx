@@ -20,6 +20,7 @@ import { hydrateSettingsIfEmpty, installSettingsSync } from './lib/settings-sync
 import { installOmarchySync } from './lib/omarchy-sync.js'
 import { adoptStoredRemoteUi } from './lib/remote-ui.js'
 import { useConnection } from './stores/connection.js'
+import { watchFinishedTurns } from './lib/turn-finished.js'
 
 // Selection copy (Ctrl/Cmd+C, context menu) must ride Tauri/Android IPC on
 // shells where the WebView's native clipboard is broken or absent.
@@ -34,6 +35,9 @@ installSettingsSync()
 const queryClient = new QueryClient({
   defaultOptions: { queries: { staleTime: 15_000, retry: 1 } },
 })
+
+// "Agent finished replying" OS notifications (Settings → General).
+watchFinishedTurns(queryClient)
 
 const router = createRouter({ routeTree })
 
