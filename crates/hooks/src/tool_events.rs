@@ -4,11 +4,11 @@ use std::pin::Pin;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
+use protocol::js::{JsObject, JsString, JsValue};
 use protocol::{ContentPart, StreamEvent, StreamEventType, ToolResult};
 use serde_json::{Map, Value};
 
 use crate::context::HookContext;
-use crate::js_text::{js_slice, utf16_len};
 use crate::pipeline::HookPipeline;
 use crate::time_format::epoch_ms;
 
@@ -273,13 +273,13 @@ pub async fn execute_tool(
         args = before.args.unwrap_or_default();
     }
     if let Some(stream) = binding.stream.as_ref() {
-        let mut metadata = Map::new();
-        metadata.insert("tool".to_string(), Value::String(tool.name.clone()));
-        metadata.insert("args".to_string(), Value::Object(summarize_args(&args)));
         stream.emit(&StreamEvent {
             r#type: StreamEventType::ToolStart,
-            content: format!("🔧 {}", tool.name),
-            metadata: Some(metadata),
+            content: JsString::from_text(&format!("🔧 {}", tool.name)),
+            metadata: Some(metadata_object([
+                ("tool", JsValue::from_text(&tool.name)),
+                ("args", summarize_args(&args)),
+            ])),
         });
     }
     let session = build_local_session(binding);
@@ -300,13 +300,10 @@ pub async fn execute_tool(
     let is_error = tool_result_is_error(&raw);
     if let Some(stream) = binding.stream.as_ref() {
         let mark = if is_error { "❌" } else { "✅" };
-        let preview = js_slice(&text, 0, Some(200));
-        let mut metadata = Map::new();
-        metadata.insert("tool".to_string(), Value::String(tool.name.clone()));
         stream.emit(&StreamEvent {
             r#type: StreamEventType::ToolResult,
-            content: format!("{mark} {}: {preview}", tool.name),
-            metadata: Some(metadata),
+            content: result_content(mark, &tool.name, &text),
+            metadata: Some(metadata_object([("tool", JsValue::from_text(&tool.name))])),
         });
     }
     if let Some(hooks) = binding.hooks.as_ref() {
@@ -319,19 +316,41 @@ pub async fn execute_tool(
     raw
 }
 
-pub fn summarize_args(args: &Map<String, Value>) -> Map<String, Value> {
-    let mut summary = Map::new();
+pub fn summarize_args(args: &Map<String, Value>) -> JsValue {
+    let mut summary = JsObject::new();
     for (key, value) in args {
-        if let Value::String(text) = value
-            && utf16_len(text) > 200
-        {
-            let cut = js_slice(text, 0, Some(200));
-            summary.insert(key.clone(), Value::String(format!("{cut}…")));
-            continue;
-        }
-        summary.insert(key.clone(), value.clone());
+        let stored = if let Value::String(text) = value {
+            let units: Vec<u16> = text.encode_utf16().collect();
+            if units.len() > 200 {
+                let mut cut = units[..200].to_vec();
+                cut.extend("…".encode_utf16());
+                JsValue::String(JsString::from_units(cut))
+            } else {
+                JsValue::String(JsString::from_units(units))
+            }
+        } else {
+            protocol::js::from_json(value)
+        };
+        summary.insert(JsString::from_text(key), stored);
     }
-    summary
+    JsValue::Object(summary)
+}
+
+fn metadata_object<const N: usize>(pairs: [(&str, JsValue); N]) -> JsValue {
+    let mut object = JsObject::new();
+    for (key, value) in pairs {
+        object.insert(JsString::from_text(key), value);
+    }
+    JsValue::Object(object)
+}
+
+fn result_content(mark: &str, name: &str, text: &str) -> JsString {
+    let prefix = format!("{mark} {name}: ");
+    let mut units: Vec<u16> = prefix.encode_utf16().collect();
+    let body: Vec<u16> = text.encode_utf16().collect();
+    let end = body.len().min(200);
+    units.extend_from_slice(&body[..end]);
+    JsString::from_units(units)
 }
 
 pub fn tool_result_text(result: &ToolResult) -> String {
@@ -433,8 +452,9 @@ mod tests {
         build_local_session_with_env, summarize_args, to_tool_result_output,
         tool_result_has_images, tool_result_images, tool_result_is_error, tool_result_text,
     };
+    use protocol::js::JsValue;
     use protocol::{ContentPart, ToolResult};
-    use serde_json::json;
+    use serde_json::{Number, Value, json};
 
     #[test]
     fn session_defaults_keep_empty_env_strings() {
@@ -477,14 +497,37 @@ mod tests {
         let summary = summarize_args(&args);
         let long = format!("{}…", "x".repeat(200));
         let exact = "y".repeat(200);
-        assert_eq!(summary.get("short"), Some(&json!("ok")));
+        assert_eq!(summary.get("short").and_then(JsValue::as_str), Some("ok"));
         assert_eq!(
-            summary.get("long").and_then(|value| value.as_str()),
+            summary.get("long").and_then(JsValue::as_str),
             Some(long.as_str())
         );
         assert_eq!(
-            summary.get("exact").and_then(|value| value.as_str()),
+            summary.get("exact").and_then(JsValue::as_str),
             Some(exact.as_str())
+        );
+        let mut ordered = serde_json::Map::new();
+        ordered.insert(
+            "amount".to_string(),
+            Value::Number(Number::from_f64(1.0).expect("finite")),
+        );
+        ordered.insert("10".to_string(), json!("a"));
+        ordered.insert("2".to_string(), json!("b"));
+        let wire = protocol::js::stringify(&summarize_args(&ordered));
+        assert_eq!(
+            wire, r#"{"2":"b","10":"a","amount":1}"#,
+            "array-index keys come first and JSON.stringify prints 1, not 1.0"
+        );
+        let preview = format!("{}😀", "a".repeat(199));
+        let mut wide = serde_json::Map::new();
+        wide.insert("blob".to_string(), Value::String(preview));
+        let cut = protocol::js::stringify(&summarize_args(&wide));
+        let mut expected = String::from("{\"blob\":\"");
+        expected.push_str(&"a".repeat(199));
+        expected.push_str("\\ud83d…\"}");
+        assert_eq!(
+            cut, expected,
+            "199 ASCII units plus the high surrogate of an emoji is the 200-unit slice, then the ellipsis"
         );
     }
 

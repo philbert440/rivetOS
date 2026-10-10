@@ -403,9 +403,9 @@ async fn thrown_errors_stream_events_and_session_identity() {
         .unwrap_or_else(|err| err.into_inner())
         .clone();
     assert_eq!(streamed[0].r#type, StreamEventType::ToolStart);
-    assert_eq!(streamed[0].content, "🔧 boom");
+    assert_eq!(streamed[0].content.to_utf8(), "🔧 boom");
     assert_eq!(streamed[1].r#type, StreamEventType::ToolResult);
-    assert_eq!(streamed[1].content, "❌ boom: Error: kaboom");
+    assert_eq!(streamed[1].content.to_utf8(), "❌ boom: Error: kaboom");
 
     let signal = AbortSignal::new();
     let seen_signal = Arc::new(Mutex::new(None));
@@ -484,14 +484,22 @@ async fn thrown_errors_stream_events_and_session_identity() {
     let metadata = streamed[0].metadata.clone().expect("metadata");
     let summary = metadata
         .get("args")
-        .and_then(Value::as_object)
+        .and_then(|value| value.as_object())
         .expect("args");
     let truncated = format!("{}…", "y".repeat(200));
     assert_eq!(
-        summary.get("blob").and_then(Value::as_str),
+        summary.get("blob").and_then(|value| value.as_str()),
         Some(truncated.as_str())
     );
-    assert_eq!(streamed[1].content, format!("✅ long: {}", "x".repeat(200)));
+    assert_eq!(
+        streamed[1].content.to_utf8(),
+        format!("✅ long: {}", "x".repeat(200))
+    );
+    let wire = serde_json::to_string(&streamed[0]).expect("event");
+    assert!(
+        wire.contains(r#""args":{"blob":"#),
+        "tool-start metadata stringifies arguments with JSON.stringify"
+    );
 
     let pipeline = Arc::new(HookPipeline::new());
     let flagged = Arc::new(Mutex::new(None));

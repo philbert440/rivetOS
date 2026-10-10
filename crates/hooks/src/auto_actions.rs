@@ -3,12 +3,13 @@ use std::sync::{Arc, OnceLock};
 use protocol::HookEventName;
 use regress::Regex;
 use serde_json::{Map, Value};
+use thiserror::Error;
 
 use crate::context::HookContext;
 use crate::handler::{HookErrorMode, HookFailure, HookHandler, HookSignal};
 use crate::js_text::{js_replace_all, js_slice, js_string, js_truthy};
 use crate::pipeline::HookRegistration;
-use crate::regex_util::{compile_regex, compile_static, is_match};
+use crate::regex_util::{compile_static, compile_user_pattern, is_match};
 use crate::shell::{ShellError, ShellExecutor, ShellOutput};
 
 #[derive(Clone)]
@@ -94,7 +95,10 @@ pub fn create_auto_git_check_hook(config: AutoActionConfig) -> HookRegistration 
     )
 }
 
-pub fn create_custom_action_hook(action: AutoAction, config: AutoActionConfig) -> HookRegistration {
+pub fn create_custom_action_hook(
+    action: AutoAction,
+    config: AutoActionConfig,
+) -> Result<HookRegistration, AutoActionError> {
     let id = format!("auto:{}", action.id);
     let description = action.description.clone();
     let tools = action.tools.clone();
@@ -103,30 +107,57 @@ pub fn create_custom_action_hook(action: AutoAction, config: AutoActionConfig) -
     } else {
         HookErrorMode::Abort
     };
-    let pattern = action.file_pattern.as_ref().and_then(|source| {
-        compile_regex(source, action.file_pattern_flags.as_deref().unwrap_or("")).ok()
-    });
-    auto_registration(&id, 70, tools, on_error, &description, move |ctx| {
-        if ctx.is_error == Some(true) {
-            return Box::pin(async { Ok(HookSignal::Continue) });
-        }
-        let selected = file_value(ctx.args.as_ref()).cloned();
-        if let (Some(regex), Some(value)) = (pattern.as_ref(), selected.as_ref())
-            && js_truthy(value)
-            && !is_match(regex, &js_string(value))
-        {
-            return Box::pin(async { Ok(HookSignal::Continue) });
-        }
-        let replacement = selected.as_ref().map(js_string).unwrap_or_default();
-        let command = js_replace_all(&action.command, "{{file}}", &replacement);
-        let action_id = action.id.clone();
-        let soft_fail = action.soft_fail;
-        let config = config.clone();
-        Box::pin(async move { finish_custom(ctx, &action_id, &command, soft_fail, &config).await })
-    })
+    let flags = action.file_pattern_flags.clone().unwrap_or_default();
+    let pattern = match action.file_pattern.clone() {
+        Some(source) => Some(compile_user_pattern(&source, &flags).map_err(AutoActionError::new)?),
+        None => None,
+    };
+    Ok(auto_registration(
+        &id,
+        70,
+        tools,
+        on_error,
+        &description,
+        move |ctx| {
+            if ctx.is_error == Some(true) {
+                return Box::pin(async { Ok(HookSignal::Continue) });
+            }
+            let selected = file_value(ctx.args.as_ref()).cloned();
+            if let (Some(regex), Some(value)) = (pattern.as_ref(), selected.as_ref())
+                && js_truthy(value)
+                && !is_match(regex, &js_string(value))
+            {
+                return Box::pin(async { Ok(HookSignal::Continue) });
+            }
+            let replacement = selected.as_ref().map(js_string).unwrap_or_default();
+            let command = js_replace_all(&action.command, "{{file}}", &replacement);
+            let action_id = action.id.clone();
+            let soft_fail = action.soft_fail;
+            let config = config.clone();
+            Box::pin(
+                async move { finish_custom(ctx, &action_id, &command, soft_fail, &config).await },
+            )
+        },
+    ))
 }
 
-pub fn create_auto_action_hooks(config: AutoActionsConfig) -> Vec<HookRegistration> {
+#[derive(Debug, Clone, PartialEq, Eq, Error)]
+#[error("{message}")]
+pub struct AutoActionError {
+    pub message: String,
+}
+
+impl AutoActionError {
+    pub fn new(message: impl Into<String>) -> Self {
+        Self {
+            message: message.into(),
+        }
+    }
+}
+
+pub fn create_auto_action_hooks(
+    config: AutoActionsConfig,
+) -> Result<Vec<HookRegistration>, AutoActionError> {
     let base = AutoActionConfig {
         shell: config.shell,
         cwd: config.cwd,
@@ -145,9 +176,9 @@ pub fn create_auto_action_hooks(config: AutoActionsConfig) -> Vec<HookRegistrati
         hooks.push(create_auto_git_check_hook(base.clone()));
     }
     for action in config.custom_actions {
-        hooks.push(create_custom_action_hook(action, base.clone()));
+        hooks.push(create_custom_action_hook(action, base.clone())?);
     }
-    hooks
+    Ok(hooks)
 }
 
 fn auto_registration<F>(

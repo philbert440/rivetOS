@@ -1,5 +1,7 @@
 use std::time::{SystemTime, UNIX_EPOCH};
 
+use chrono::Timelike;
+
 pub fn epoch_ms() -> i64 {
     match SystemTime::now().duration_since(UNIX_EPOCH) {
         Ok(duration) => i64::try_from(duration.as_millis()).unwrap_or(i64::MAX),
@@ -18,21 +20,15 @@ pub fn utc_date() -> String {
 }
 
 pub fn local_hhmm() -> String {
-    chrono::Local::now().format("%H:%M").to_string()
+    let now = chrono::Local::now();
+    protocol::js::en_us_hour24_hhmm(now.hour(), now.minute())
 }
 
 pub fn fixed_1(value: f64) -> String {
-    if value.is_nan() {
-        return "NaN".to_string();
+    match protocol::js::to_fixed(value, 1) {
+        Ok(text) => text,
+        Err(_) => "NaN".to_string(),
     }
-    if value.is_infinite() {
-        return if value.is_sign_negative() {
-            "-Infinity".to_string()
-        } else {
-            "Infinity".to_string()
-        };
-    }
-    format!("{value:.1}")
 }
 
 pub fn group_en_us(value: i64) -> String {
@@ -60,6 +56,12 @@ mod tests {
     fn formats_match_the_javascript_shapes_used_by_hooks() {
         assert_eq!(fixed_1(90.0), "90.0");
         assert_eq!(fixed_1(92.5), "92.5");
+        assert_eq!(
+            fixed_1(6.25),
+            "6.3",
+            "exact halfway 6.25 rounds away from zero under toFixed(1)"
+        );
+        assert_eq!(protocol::js::en_us_hour24_hhmm(0, 0), "24:00");
         assert_eq!(group_en_us(1500), "1,500");
         assert_eq!(group_en_us(1000), "1,000");
         assert_eq!(group_en_us(0), "0");

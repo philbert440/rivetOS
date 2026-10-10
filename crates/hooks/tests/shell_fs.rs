@@ -1,11 +1,13 @@
 use std::time::{Duration, Instant};
 
-use hooks::{FileWriter, FsFileWriter, OUTPUT_CAP, ProcessShell, SHELL_TIMEOUT, ShellExecutor};
+use hooks::{
+    FileWriter, FsFileWriter, OUTPUT_CAP, ProcessShell, SHELL_TIMEOUT, ShellExecutor, ShellOutput,
+};
 
 #[tokio::test]
 async fn process_shell_stays_inside_temp_dirs() {
     assert_eq!(SHELL_TIMEOUT, Duration::from_secs(30));
-    assert_eq!(OUTPUT_CAP, 8 * 1024 * 1024);
+    assert_eq!(OUTPUT_CAP, 1024 * 1024);
     let dir = super::common::make_temp().await;
     let shell = ProcessShell::new(&dir);
     let wrote = shell
@@ -33,13 +35,45 @@ async fn process_shell_stays_inside_temp_dirs() {
     assert_eq!(failed.stderr, "err");
     assert_eq!(failed.stdout, "");
     let capped = ProcessShell::new(&dir).with_output_cap(4);
-    let cut = capped.exec("printf 123456789", None).await.expect("cap");
+    let exact = capped.exec("printf 1234", None).await.expect("exact");
+    assert_eq!(exact.stdout, "1234");
+    assert_eq!(exact.stderr, "");
+    assert_eq!(exact.exit_code, 0);
+    let cut = ProcessShell::new(&dir)
+        .with_output_cap(4)
+        .exec("printf 123456789", None)
+        .await
+        .expect("cap");
     assert_eq!(cut.stdout, "1234");
-    assert_eq!(cut.exit_code, 0);
+    assert_eq!(cut.stderr, "");
+    assert_eq!(cut.exit_code, 1);
+    let err_cut = ProcessShell::new(&dir)
+        .with_output_cap(4)
+        .exec("printf 123456789 >&2", None)
+        .await
+        .expect("stderr cap");
+    assert_eq!(err_cut.stderr, "1234");
+    assert_eq!(err_cut.exit_code, 1);
+    let mixed = ProcessShell::new(&dir)
+        .with_output_cap(4)
+        .exec("printf 123456789; printf xyz >&2; exit 0", None)
+        .await
+        .expect("mixed cap");
+    assert_eq!(mixed.stdout, "1234");
+    assert_eq!(mixed.stderr, "xyz");
+    assert_eq!(mixed.exit_code, 1);
     let timed = ProcessShell::new(&dir).with_timeout(Duration::from_millis(200));
     let started = Instant::now();
     let timeout = timed.exec("sleep 30", None).await.expect("timeout");
     assert_eq!(timeout.exit_code, 1);
+    assert!(started.elapsed() < Duration::from_secs(5));
+    let started = Instant::now();
+    let background = ProcessShell::new(&dir)
+        .with_timeout(Duration::from_millis(300))
+        .exec("sleep 30 &", None)
+        .await
+        .expect("background");
+    assert_eq!(background.exit_code, 1);
     assert!(started.elapsed() < Duration::from_secs(5));
     let other = super::common::make_temp().await;
     let elsewhere = shell
@@ -57,8 +91,16 @@ async fn process_shell_stays_inside_temp_dirs() {
     let missing = dir.join("missing-dir");
     let rejected = shell
         .exec("printf hi", Some(missing.to_str().expect("utf8")))
-        .await;
-    assert!(rejected.is_err());
+        .await
+        .expect("cwd");
+    assert_eq!(
+        rejected,
+        ShellOutput {
+            stdout: String::new(),
+            stderr: String::new(),
+            exit_code: 1,
+        }
+    );
     let _ = tokio::fs::remove_dir_all(&dir).await;
     let _ = tokio::fs::remove_dir_all(&other).await;
 }

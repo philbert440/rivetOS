@@ -236,19 +236,22 @@ async fn auto_git_check_runs_tsc_after_commit() {
 async fn custom_actions_interpolate_filter_and_soft_fail() {
     let shell = ScriptShell::ok(0, "ok", "");
     let pipeline = HookPipeline::new();
-    pipeline.register(create_custom_action_hook(
-        AutoAction {
-            id: "my-action".to_string(),
-            description: "test action".to_string(),
-            tools: None,
-            file_pattern: None,
-            file_pattern_flags: None,
-            command: "echo {{file}}".to_string(),
-            timeout_ms: Some(5),
-            soft_fail: false,
-        },
-        config(shell.clone()),
-    ));
+    pipeline.register(
+        create_custom_action_hook(
+            AutoAction {
+                id: "my-action".to_string(),
+                description: "test action".to_string(),
+                tools: None,
+                file_pattern: None,
+                file_pattern_flags: None,
+                command: "echo {{file}}".to_string(),
+                timeout_ms: Some(5),
+                soft_fail: false,
+            },
+            config(shell.clone()),
+        )
+        .expect("hook"),
+    );
     let mut ctx = tool_after("file_write", json!({"path": "/test.ts"}), false);
     pipeline.run(&mut ctx).await;
     assert_eq!(shell.calls()[0].0, "echo /test.ts");
@@ -261,38 +264,44 @@ async fn custom_actions_interpolate_filter_and_soft_fail() {
 
     let shell = ScriptShell::ok(0, "", "");
     let pipeline = HookPipeline::new();
-    pipeline.register(create_custom_action_hook(
-        AutoAction {
-            id: "ts-only".to_string(),
-            description: "ts only".to_string(),
-            tools: None,
-            file_pattern: Some(r"\.ts$".to_string()),
-            file_pattern_flags: None,
-            command: "echo {{file}}".to_string(),
-            timeout_ms: None,
-            soft_fail: false,
-        },
-        config(shell.clone()),
-    ));
+    pipeline.register(
+        create_custom_action_hook(
+            AutoAction {
+                id: "ts-only".to_string(),
+                description: "ts only".to_string(),
+                tools: None,
+                file_pattern: Some(r"\.ts$".to_string()),
+                file_pattern_flags: None,
+                command: "echo {{file}}".to_string(),
+                timeout_ms: None,
+                soft_fail: false,
+            },
+            config(shell.clone()),
+        )
+        .expect("hook"),
+    );
     let mut ctx = tool_after("file_write", json!({"path": "/test.md"}), false);
     pipeline.run(&mut ctx).await;
     assert!(shell.calls().is_empty());
 
     let shell = ScriptShell::fail("boom");
     let pipeline = HookPipeline::new();
-    pipeline.register(create_custom_action_hook(
-        AutoAction {
-            id: "soft".to_string(),
-            description: "soft fail".to_string(),
-            tools: None,
-            file_pattern: None,
-            file_pattern_flags: None,
-            command: "exit 1".to_string(),
-            timeout_ms: Some(1),
-            soft_fail: true,
-        },
-        config(shell),
-    ));
+    pipeline.register(
+        create_custom_action_hook(
+            AutoAction {
+                id: "soft".to_string(),
+                description: "soft fail".to_string(),
+                tools: None,
+                file_pattern: None,
+                file_pattern_flags: None,
+                command: "exit 1".to_string(),
+                timeout_ms: Some(1),
+                soft_fail: true,
+            },
+            config(shell),
+        )
+        .expect("hook"),
+    );
     let mut ctx = tool_after("file_write", json!({"path": "/test.ts"}), false);
     let result = pipeline.run(&mut ctx).await;
     assert!(!result.aborted);
@@ -303,19 +312,22 @@ async fn custom_actions_interpolate_filter_and_soft_fail() {
 
     let shell = ScriptShell::fail("boom");
     let pipeline = HookPipeline::new();
-    pipeline.register(create_custom_action_hook(
-        AutoAction {
-            id: "hard".to_string(),
-            description: "hard fail".to_string(),
-            tools: Some(vec!["file_write".to_string()]),
-            file_pattern: None,
-            file_pattern_flags: None,
-            command: "echo {{file}}".to_string(),
-            timeout_ms: None,
-            soft_fail: false,
-        },
-        config(shell),
-    ));
+    pipeline.register(
+        create_custom_action_hook(
+            AutoAction {
+                id: "hard".to_string(),
+                description: "hard fail".to_string(),
+                tools: Some(vec!["file_write".to_string()]),
+                file_pattern: None,
+                file_pattern_flags: None,
+                command: "echo {{file}}".to_string(),
+                timeout_ms: None,
+                soft_fail: false,
+            },
+            config(shell),
+        )
+        .expect("hook"),
+    );
     let mut ctx = tool_after("file_write", json!({"path": "/tmp/$&"}), false);
     let result = pipeline.run(&mut ctx).await;
     assert!(result.aborted);
@@ -334,7 +346,7 @@ fn create_auto_action_hooks_is_opt_in() {
         auto_git_check: false,
         custom_actions: Vec::new(),
     };
-    assert!(create_auto_action_hooks(base).is_empty());
+    assert!(create_auto_action_hooks(base).expect("hooks").is_empty());
     let all = create_auto_action_hooks(AutoActionsConfig {
         shell: shell.clone() as Arc<dyn ShellExecutor>,
         cwd: Some("/work".to_string()),
@@ -343,7 +355,8 @@ fn create_auto_action_hooks_is_opt_in() {
         auto_test: true,
         auto_git_check: true,
         custom_actions: Vec::new(),
-    });
+    })
+    .expect("hooks");
     assert_eq!(all.len(), 4);
     assert_eq!(all[0].id, "auto:format");
     assert_eq!(all[0].priority, 60);
@@ -379,8 +392,34 @@ fn create_auto_action_hooks_is_opt_in() {
                 soft_fail: false,
             },
         ],
-    });
+    })
+    .expect("hooks");
     assert_eq!(custom.len(), 2);
     assert_eq!(custom[0].id, "auto:a");
     assert_eq!(custom[1].priority, 70);
+    let rejected = create_auto_action_hooks(AutoActionsConfig {
+        shell: ScriptShell::ok(0, "", "") as Arc<dyn ShellExecutor>,
+        cwd: None,
+        auto_format: false,
+        auto_lint: false,
+        auto_test: false,
+        auto_git_check: false,
+        custom_actions: vec![AutoAction {
+            id: "bad".to_string(),
+            description: "bad".to_string(),
+            tools: None,
+            file_pattern: Some("*.ts".to_string()),
+            file_pattern_flags: None,
+            command: "echo {{file}}".to_string(),
+            timeout_ms: None,
+            soft_fail: false,
+        }],
+    });
+    match rejected {
+        Err(err) => assert_eq!(
+            err.message,
+            "Invalid regular expression: /*.ts/: Nothing to repeat"
+        ),
+        Ok(_) => panic!("invalid filePattern must fail registration"),
+    }
 }

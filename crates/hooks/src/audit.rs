@@ -1,6 +1,7 @@
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
+use protocol::js::{JsObject, JsString, JsValue};
 use protocol::{HookEventName, JsNumber};
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
@@ -10,7 +11,6 @@ use tokio::io::AsyncWriteExt;
 
 use crate::context::HookContext;
 use crate::handler::{BoxFuture, HookErrorMode, HookFailure, HookHandler, HookSignal};
-use crate::js_text::{js_slice, utf16_len};
 use crate::pipeline::HookRegistration;
 use crate::time_format::iso_timestamp;
 
@@ -49,7 +49,7 @@ pub struct AuditEntry {
     pub timestamp: String,
     pub event: HookEventName,
     pub tool_name: String,
-    pub args: Map<String, Value>,
+    pub args: JsValue,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub agent_id: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -68,24 +68,27 @@ pub trait AuditWriter: Send + Sync {
     fn write<'a>(&'a self, entry: &'a AuditEntry) -> BoxFuture<'a, Result<(), AuditError>>;
 }
 
-pub fn sanitize_args(args: &Map<String, Value>) -> Map<String, Value> {
-    let mut sanitized = Map::new();
+pub fn sanitize_args(args: &Map<String, Value>) -> JsValue {
+    let mut sanitized = JsObject::new();
     for (key, value) in args {
-        if is_secret_key(key) {
-            sanitized.insert(key.clone(), Value::String("[REDACTED]".to_string()));
+        let stored = if is_secret_key(key) {
+            JsValue::from_text("[REDACTED]")
         } else if let Value::String(text) = value {
-            if utf16_len(text) > AUDIT_STRING_CAP {
-                let len = utf16_len(text);
-                let cut = js_slice(text, 0, Some(AUDIT_STRING_CAP as i64));
-                sanitized.insert(key.clone(), Value::String(format!("{cut}… [{len} chars]")));
+            let units: Vec<u16> = text.encode_utf16().collect();
+            if units.len() > AUDIT_STRING_CAP {
+                let mut cut = units[..AUDIT_STRING_CAP].to_vec();
+                let suffix = format!("… [{} chars]", units.len());
+                cut.extend(suffix.encode_utf16());
+                JsValue::String(JsString::from_units(cut))
             } else {
-                sanitized.insert(key.clone(), Value::String(text.clone()));
+                JsValue::String(JsString::from_units(units))
             }
         } else {
-            sanitized.insert(key.clone(), value.clone());
-        }
+            protocol::js::from_json(value)
+        };
+        sanitized.insert(JsString::from_text(key), stored);
     }
-    sanitized
+    JsValue::Object(sanitized)
 }
 
 fn is_secret_key(key: &str) -> bool {
@@ -227,7 +230,12 @@ async fn append_jsonl_inner(path: &Path, entry: &AuditEntry) -> Result<(), Audit
 #[cfg(test)]
 mod tests {
     use super::sanitize_args;
-    use serde_json::{Map, Value, json};
+    use protocol::js::{JsObject, JsValue, from_json, stringify};
+    use serde_json::{Map, Number, Value, json};
+
+    fn text_at(value: &JsValue, key: &str) -> Option<String> {
+        value.get(key).and_then(JsValue::as_str).map(str::to_string)
+    }
 
     #[test]
     fn secret_key_check_follows_the_typescript_set() {
@@ -242,30 +250,54 @@ mod tests {
         args.insert("command".to_string(), Value::String("test".to_string()));
         args.insert("nested".to_string(), json!({"token": "keep"}));
         let sanitized = sanitize_args(&args);
+        assert_eq!(text_at(&sanitized, "token").as_deref(), Some("[REDACTED]"));
+        assert_eq!(text_at(&sanitized, "apiKey").as_deref(), Some("abc"));
         assert_eq!(
-            sanitized.get("token"),
-            Some(&Value::String("[REDACTED]".to_string()))
+            text_at(&sanitized, "API_KEY").as_deref(),
+            Some("[REDACTED]")
         );
         assert_eq!(
-            sanitized.get("apiKey"),
-            Some(&Value::String("abc".to_string()))
+            text_at(&sanitized, "api_key").as_deref(),
+            Some("[REDACTED]")
         );
         assert_eq!(
-            sanitized.get("API_KEY"),
-            Some(&Value::String("[REDACTED]".to_string()))
+            sanitized.get("nested").map(stringify),
+            Some(stringify(&from_json(&json!({"token": "keep"}))))
         );
-        assert_eq!(
-            sanitized.get("api_key"),
-            Some(&Value::String("[REDACTED]".to_string()))
-        );
-        assert_eq!(sanitized.get("nested"), Some(&json!({"token": "keep"})));
         let long = "x".repeat(1000);
         args.insert("content".to_string(), Value::String(long));
         let truncated = sanitize_args(&args);
         let expected = format!("{}… [1000 chars]", "x".repeat(500));
         assert_eq!(
-            truncated.get("content").and_then(Value::as_str),
+            text_at(&truncated, "content").as_deref(),
             Some(expected.as_str())
+        );
+    }
+
+    #[test]
+    fn arguments_stringify_like_javascript() {
+        let mut args = Map::new();
+        args.insert(
+            "amount".to_string(),
+            Value::Number(Number::from_f64(1.0).expect("finite")),
+        );
+        args.insert("10".to_string(), Value::String("a".to_string()));
+        args.insert("2".to_string(), Value::String("b".to_string()));
+        let text = format!("{}😀", "a".repeat(499));
+        args.insert("note".to_string(), Value::String(text));
+        let sanitized = sanitize_args(&args);
+        let wire = stringify(&sanitized);
+        assert!(
+            wire.starts_with(r#"{"2":"b","10":"a","#),
+            "array-index keys are emitted before other keys, in numeric order"
+        );
+        assert!(
+            wire.contains(r#""amount":1"#) && !wire.contains("1.0"),
+            "JSON.stringify prints the integer 1 for the binary64 value 1"
+        );
+        assert!(
+            wire.contains(r#"\ud83d… [501 chars]"#) && !wire.contains("\\ude00"),
+            "slice(0, 500) keeps the lone high surrogate of an emoji that starts at unit 499"
         );
     }
 
@@ -275,7 +307,7 @@ mod tests {
             timestamp: "2026-10-10T00:00:00.000Z".to_string(),
             event: protocol::HookEventName::ToolAfter,
             tool_name: "shell".to_string(),
-            args: Map::new(),
+            args: JsValue::Object(JsObject::new()),
             agent_id: None,
             session_id: None,
             blocked: None,
@@ -288,5 +320,6 @@ mod tests {
         assert!(!text.contains("42.0"));
         assert!(!text.contains("agentId"));
         assert!(text.contains("\"isError\":false"));
+        assert!(text.contains("\"args\":{}"));
     }
 }

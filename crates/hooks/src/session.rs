@@ -1,5 +1,6 @@
 use std::sync::Arc;
 
+use chrono::Timelike;
 use protocol::HookEventName;
 use serde_json::{Map, Number, Value};
 
@@ -373,7 +374,10 @@ fn daily_note_path(workspace: &str) -> String {
 async fn clock_hhmm() -> String {
     match tokio::task::spawn_blocking(crate::time_format::local_hhmm).await {
         Ok(text) => text,
-        Err(_) => chrono::Utc::now().format("%H:%M").to_string(),
+        Err(_) => {
+            let now = chrono::Utc::now();
+            protocol::js::en_us_hour24_hhmm(now.hour(), now.minute())
+        }
     }
 }
 

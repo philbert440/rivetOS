@@ -170,12 +170,34 @@ async fn audit_hooks_redact_truncate_and_continue_after_write_failure() {
     pipeline.run(&mut secret).await;
     {
         let entries = writer.entries.lock().unwrap_or_else(|err| err.into_inner());
-        assert_eq!(entries[2].args.get("token"), Some(&json!("[REDACTED]")));
-        assert_eq!(entries[2].args.get("apiKey"), Some(&json!("abc")));
-        assert_eq!(entries[2].args.get("command"), Some(&json!("test")));
         assert_eq!(
-            entries[2].args.get("nested"),
-            Some(&json!({"token": "keep"}))
+            entries[2]
+                .args
+                .get("token")
+                .and_then(|value| value.as_str()),
+            Some("[REDACTED]")
+        );
+        assert_eq!(
+            entries[2]
+                .args
+                .get("apiKey")
+                .and_then(|value| value.as_str()),
+            Some("abc")
+        );
+        assert_eq!(
+            entries[2]
+                .args
+                .get("command")
+                .and_then(|value| value.as_str()),
+            Some("test")
+        );
+        assert_eq!(
+            entries[2]
+                .args
+                .get("nested")
+                .map(protocol::js::stringify)
+                .as_deref(),
+            Some(r#"{"token":"keep"}"#)
         );
     }
 

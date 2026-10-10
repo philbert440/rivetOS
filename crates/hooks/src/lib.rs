@@ -18,7 +18,7 @@ pub use audit::{
     AuditEntry, AuditError, AuditWriter, JsonlAuditWriter, create_audit_hooks, sanitize_args,
 };
 pub use auto_actions::{
-    AutoAction, AutoActionConfig, AutoActionsConfig, create_auto_action_hooks,
+    AutoAction, AutoActionConfig, AutoActionError, AutoActionsConfig, create_auto_action_hooks,
     create_auto_format_hook, create_auto_git_check_hook, create_auto_lint_hook,
     create_auto_test_hook, create_custom_action_hook,
 };

@@ -1,5 +1,6 @@
 use std::path::PathBuf;
 use std::process::Stdio;
+use std::sync::Mutex;
 use std::time::Duration;
 
 use thiserror::Error;
@@ -9,7 +10,7 @@ use tokio::process::Command;
 use crate::handler::BoxFuture;
 
 pub const SHELL_TIMEOUT: Duration = Duration::from_secs(30);
-pub const OUTPUT_CAP: usize = 8 * 1024 * 1024;
+pub const OUTPUT_CAP: usize = 1024 * 1024;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ShellOutput {
@@ -71,7 +72,7 @@ impl ProcessShell {
         cwd: Option<&str>,
     ) -> Result<ShellOutput, ShellError> {
         let dir = cwd.map_or_else(|| self.workspace.clone(), PathBuf::from);
-        let mut child = Command::new("sh")
+        let mut child = match Command::new("sh")
             .arg("-c")
             .arg(command)
             .current_dir(&dir)
@@ -81,55 +82,70 @@ impl ProcessShell {
             .kill_on_drop(true)
             .process_group(0)
             .spawn()
-            .map_err(|err| ShellError::new(err.to_string()))?;
+        {
+            Ok(child) => child,
+            Err(_) => return Ok(failed_spawn()),
+        };
+        let pid = child.id();
         let stdout = child.stdout.take();
         let stderr = child.stderr.take();
         let cap = self.output_cap;
-        let stdout_task = tokio::spawn(async move { read_capped(stdout, cap).await });
-        let stderr_task = tokio::spawn(async move { read_capped(stderr, cap).await });
-        match tokio::time::timeout(self.timeout, child.wait()).await {
-            Ok(Ok(status)) => {
-                let code = i64::from(status.code().unwrap_or(1));
-                let out = task_text(stdout_task).await;
-                let err = task_text(stderr_task).await;
-                if code == 0 {
+        let stdout_buf = std::sync::Arc::new(Mutex::new(CapBuf::default()));
+        let stderr_buf = std::sync::Arc::new(Mutex::new(CapBuf::default()));
+        let stdout_slot = std::sync::Arc::clone(&stdout_buf);
+        let stderr_slot = std::sync::Arc::clone(&stderr_buf);
+        let run = async move {
+            let out = read_capped(stdout, cap, stdout_slot, pid);
+            let err = read_capped(stderr, cap, stderr_slot, pid);
+            let waited = child.wait();
+            tokio::join!(waited, out, err)
+        };
+        match tokio::time::timeout(self.timeout, run).await {
+            Ok((Ok(status), _, _)) => {
+                let (stdout, stdout_over) = take_text(&stdout_buf);
+                let (stderr, stderr_over) = take_text(&stderr_buf);
+                if stdout_over || stderr_over {
+                    if let Some(pid) = pid {
+                        kill_group(pid).await;
+                    }
                     Ok(ShellOutput {
-                        stdout: out,
+                        stdout,
+                        stderr,
+                        exit_code: 1,
+                    })
+                } else if status.code() == Some(0) {
+                    Ok(ShellOutput {
+                        stdout,
                         stderr: String::new(),
                         exit_code: 0,
                     })
                 } else {
                     Ok(ShellOutput {
-                        stdout: out,
-                        stderr: err,
-                        exit_code: code,
+                        stdout,
+                        stderr,
+                        exit_code: status.code().map(i64::from).unwrap_or(1),
                     })
                 }
             }
-            Ok(Err(err)) => {
-                let _ = stdout_task.await;
-                let _ = stderr_task.await;
-                Err(ShellError::new(err.to_string()))
+            Ok((Err(_), _, _)) => {
+                let (stdout, _) = take_text(&stdout_buf);
+                let (stderr, _) = take_text(&stderr_buf);
+                Ok(ShellOutput {
+                    stdout,
+                    stderr,
+                    exit_code: 1,
+                })
             }
             Err(_) => {
                 tracing::warn!("shell command timed out");
-                if let Some(pid) = child.id() {
-                    let _ = tokio::time::timeout(
-                        Duration::from_secs(2),
-                        Command::new("kill")
-                            .args(["-s", "KILL", "--", &format!("-{pid}")])
-                            .stdin(Stdio::null())
-                            .stdout(Stdio::null())
-                            .stderr(Stdio::null())
-                            .status(),
-                    )
-                    .await;
+                if let Some(pid) = pid {
+                    kill_group(pid).await;
                 }
-                let _ = child.start_kill();
-                let _ = tokio::time::timeout(Duration::from_secs(2), child.wait()).await;
+                let (stdout, _) = take_text(&stdout_buf);
+                let (stderr, _) = take_text(&stderr_buf);
                 Ok(ShellOutput {
-                    stdout: bounded_text(stdout_task).await,
-                    stderr: bounded_text(stderr_task).await,
+                    stdout,
+                    stderr,
                     exit_code: 1,
                 })
             }
@@ -147,43 +163,87 @@ impl ShellExecutor for ProcessShell {
     }
 }
 
-async fn task_text(task: tokio::task::JoinHandle<Vec<u8>>) -> String {
-    match task.await {
-        Ok(bytes) => String::from_utf8_lossy(&bytes).into_owned(),
-        Err(_) => String::new(),
+fn failed_spawn() -> ShellOutput {
+    ShellOutput {
+        stdout: String::new(),
+        stderr: String::new(),
+        exit_code: 1,
     }
 }
 
-async fn bounded_text(mut task: tokio::task::JoinHandle<Vec<u8>>) -> String {
-    match tokio::time::timeout(Duration::from_secs(2), &mut task).await {
-        Ok(Ok(bytes)) => String::from_utf8_lossy(&bytes).into_owned(),
-        _ => {
-            task.abort();
-            String::new()
-        }
-    }
+#[derive(Default)]
+struct CapBuf {
+    bytes: Vec<u8>,
+    overflow: bool,
 }
 
-async fn read_capped<R>(pipe: Option<R>, cap: usize) -> Vec<u8>
+fn take_text(slot: &Mutex<CapBuf>) -> (String, bool) {
+    let guard = slot.lock().unwrap_or_else(|err| err.into_inner());
+    (
+        String::from_utf8_lossy(&guard.bytes).into_owned(),
+        guard.overflow,
+    )
+}
+
+async fn kill_group(pid: u32) {
+    let target = format!("-{pid}");
+    let _ = tokio::time::timeout(
+        Duration::from_secs(2),
+        Command::new("kill")
+            .args(["-s", "KILL", "--", &target])
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status(),
+    )
+    .await;
+}
+
+async fn read_capped<R>(
+    pipe: Option<R>,
+    cap: usize,
+    slot: std::sync::Arc<Mutex<CapBuf>>,
+    pid: Option<u32>,
+) -> bool
 where
     R: AsyncRead + Unpin,
 {
     let Some(mut reader) = pipe else {
-        return Vec::new();
+        return false;
     };
-    let mut stored = Vec::new();
     let mut chunk = [0_u8; 8192];
     loop {
         match reader.read(&mut chunk).await {
-            Ok(0) | Err(_) => break,
+            Ok(0) | Err(_) => return overflowed(&slot),
             Ok(count) => {
-                if stored.len() < cap {
-                    let room = cap - stored.len();
-                    let take = count.min(room);
-                    stored.extend_from_slice(&chunk[..take]);
+                let crossed = {
+                    let mut guard = slot.lock().unwrap_or_else(|err| err.into_inner());
+                    if guard.bytes.len() >= cap {
+                        guard.overflow = true;
+                        true
+                    } else {
+                        let room = cap - guard.bytes.len();
+                        let take = count.min(room);
+                        guard.bytes.extend_from_slice(&chunk[..take]);
+                        if take < count {
+                            guard.overflow = true;
+                            true
+                        } else {
+                            false
+                        }
+                    }
+                };
+                if crossed {
+                    if let Some(pid) = pid {
+                        kill_group(pid).await;
+                    }
+                    return true;
                 }
             }
         }
     }
-    stored
+}
+
+fn overflowed(slot: &Mutex<CapBuf>) -> bool {
+    slot.lock().unwrap_or_else(|err| err.into_inner()).overflow
 }

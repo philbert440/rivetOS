@@ -356,6 +356,22 @@ async fn compaction_hooks_carry_the_snapshot_and_ratio() {
             "compressionRatio": "92.5%"
         }))
     );
+
+    let pipeline = HookPipeline::new();
+    pipeline.register(create_post_compact_hook(context(None, None, None)));
+    let mut ctx = HookContext::compact_after(15);
+    ctx.metadata.insert(
+        "preCompactSnapshot".to_string(),
+        json!({"messageCount": 16, "timestamp": 1}),
+    );
+    pipeline.run(&mut ctx).await;
+    assert_eq!(
+        ctx.metadata
+            .get("compactionResult")
+            .and_then(|value| value.get("compressionRatio")),
+        Some(&json!("6.3%")),
+        "15 of 16 is exactly 6.25 percent and toFixed(1) is 6.3"
+    );
 }
 
 #[test]
