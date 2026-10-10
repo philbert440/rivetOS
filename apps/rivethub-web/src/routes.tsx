@@ -293,6 +293,13 @@ const settingsRoute = createRoute({
   component: SettingsPage,
 })
 
+/** One settings tab — `/settings/appearance`, `/settings/node`, … */
+const settingsTabRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: '/settings/$tab',
+  component: SettingsPage,
+})
+
 export const routeTree = rootRoute.addChildren([
   chatRoute,
   indexHtmlRoute,
@@ -308,4 +315,5 @@ export const routeTree = rootRoute.addChildren([
   workflowsRoute,
   workflowTriggerRoute,
   settingsRoute,
+  settingsTabRoute,
 ])
