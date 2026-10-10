@@ -10,6 +10,7 @@ mod spool;
 mod timeutil;
 mod transport;
 mod types;
+mod wire;
 mod writer;
 
 pub use den_url::{
@@ -28,8 +29,8 @@ pub use helpers::{
     load_env_file, safe_json, split_utf16, utf16_len, utf16_slice,
 };
 pub use lock::{
-    BeforeReaddir, FileLockOptions, LockError, ReadFault, hex_host, pid_dead, system_hostname,
-    with_file_lock,
+    BeforeReaddir, FileLockOptions, LockError, ReadFault, UnlinkHook, hex_host, pid_dead,
+    system_hostname, with_file_lock,
 };
 pub use redaction::{
     BuiltinDetectorId, OperatorPattern, REDACT_SCAN_LIMIT, RedactionApplyResult,

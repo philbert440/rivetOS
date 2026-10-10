@@ -224,7 +224,7 @@ pub fn claim_spool(path: &Path) -> Option<PathBuf> {
 
 pub fn write_spool_payload(payload: &Value, dir: &Path) -> std::io::Result<PathBuf> {
     ensure_private_dir(dir)?;
-    let body = protocol::js::stringify(payload);
+    let body = protocol::js::stringify(&protocol::js::from_serde(payload));
     let mut last = std::io::Error::other("spool name was not created");
     for _ in 0..8u32 {
         let token = base36_token();
@@ -255,7 +255,7 @@ pub async fn ingest_spool_file(spool_file: &Path, deps: &WorkerDeps) -> Result<(
     let claimed_read = claimed.clone();
     let payload = match spawn_io(move || std::fs::read_to_string(&claimed_read)).await? {
         Ok(text) => match protocol::js::parse(&text) {
-            Ok(value) => value,
+            Ok(value) => protocol::js::to_serde(&value),
             Err(error) => {
                 emit(
                     deps,
@@ -340,7 +340,10 @@ pub async fn run_hook(harness: &str) -> Result<(), String> {
     }
     let raw = read_stdin().await;
     let mut payload = match protocol::js::parse(&raw) {
-        Ok(Value::Object(map)) => Value::Object(map),
+        Ok(value) => match protocol::js::to_serde(&value) {
+            Value::Object(map) => Value::Object(map),
+            _ => return Ok(()),
+        },
         _ => return Ok(()),
     };
     let session = payload
@@ -355,6 +358,25 @@ pub async fn run_hook(harness: &str) -> Result<(), String> {
         return Ok(());
     }
     let task = resolve_task_context(&capture::ProcessEnv);
+    let herdr_pane = if capture::ProcessEnv.get("HERDR_ENV").as_deref() == Some("1") {
+        capture::ProcessEnv
+            .get("HERDR_PANE_ID")
+            .filter(|value| !value.is_empty())
+    } else {
+        None
+    };
+    let herdr_workspace = capture::ProcessEnv
+        .get("HERDR_WORKSPACE_ID")
+        .filter(|value| !value.is_empty());
+    let herdr_host = if herdr_pane.is_some() {
+        Some(
+            tokio::task::spawn_blocking(system_hostname)
+                .await
+                .unwrap_or_else(|_| "localhost".to_string()),
+        )
+    } else {
+        None
+    };
     if let Some(object) = payload.as_object_mut() {
         if let Some(key) = task.session_key_override {
             object.insert("rivetos_session_key".to_string(), Value::String(key));
@@ -362,19 +384,14 @@ pub async fn run_hook(harness: &str) -> Result<(), String> {
         if let Some(task_id) = task.task_id {
             object.insert("rivetos_task_id".to_string(), Value::String(task_id));
         }
-        if capture::ProcessEnv.get("HERDR_ENV").as_deref() == Some("1")
-            && let Some(pane) = capture::ProcessEnv
-                .get("HERDR_PANE_ID")
-                .filter(|value| !value.is_empty())
-        {
+        if let Some(pane) = herdr_pane {
             object.insert("herdr_pane_id".to_string(), Value::String(pane));
-            if let Some(workspace) = capture::ProcessEnv
-                .get("HERDR_WORKSPACE_ID")
-                .filter(|value| !value.is_empty())
-            {
+            if let Some(workspace) = herdr_workspace {
                 object.insert("herdr_workspace_id".to_string(), Value::String(workspace));
             }
-            object.insert("herdr_host".to_string(), Value::String(system_hostname()));
+            if let Some(host) = herdr_host {
+                object.insert("herdr_host".to_string(), Value::String(host));
+            }
         }
     }
     let dir = spool_dir(&capture::ProcessEnv);
@@ -608,7 +625,7 @@ async fn stamp_event_id(
             Value::String(resolved.event_id),
         );
     }
-    let text = protocol::js::stringify(payload);
+    let text = protocol::js::stringify(&protocol::js::from_serde(payload));
     let path = claimed.to_path_buf();
     tokio::task::spawn_blocking(move || std::fs::write(path, text))
         .await
@@ -1042,8 +1059,10 @@ fn is_stale(now: i64, mtime: i64, stale_after: u64) -> bool {
 fn read_settings(path: &Path) -> Result<Map<String, Value>, String> {
     match std::fs::read_to_string(path) {
         Ok(text) => match protocol::js::parse(&text) {
-            Ok(Value::Object(map)) => Ok(map),
-            Ok(_) => Ok(Map::new()),
+            Ok(value) => match protocol::js::to_serde(&value) {
+                Value::Object(map) => Ok(map),
+                _ => Ok(Map::new()),
+            },
             Err(error) => Err(error.to_string()),
         },
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(Map::new()),

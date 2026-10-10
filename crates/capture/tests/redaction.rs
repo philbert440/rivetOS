@@ -397,8 +397,33 @@ fn compiles_lookbehind_and_backreferences() {
         redact_text("xx aa yy", &resolved).text,
         "xx [REDACTED:pattern:1] yy"
     );
-    let skipped = patterns(&[r"(unclosed"], false);
-    assert!(skipped.patterns.is_empty());
+    let skipped = resolve_capture_redaction(Some(&CaptureRedactionOptions {
+        enabled: Some(true),
+        builtins: Some(false),
+        patterns: Some(vec!["(unclosed".to_string()]),
+    }));
+    assert!(skipped.is_none());
+}
+
+#[test]
+fn global_replace_keeps_trailing_empty_match() {
+    let resolved = patterns(&[r"a*"], false);
+    let a = redact_text("a", &resolved);
+    assert_eq!(a.count, 2);
+    assert_eq!(a.text, "[REDACTED:pattern:0][REDACTED:pattern:0]");
+    let b = redact_text("b", &resolved);
+    assert_eq!(b.count, 2);
+    assert_eq!(b.text, "[REDACTED:pattern:0]b[REDACTED:pattern:0]");
+}
+
+#[test]
+fn invalid_patterns_only_resolve_to_none() {
+    let resolved = resolve_capture_redaction(Some(&CaptureRedactionOptions {
+        enabled: Some(true),
+        builtins: Some(false),
+        patterns: Some(vec!["(".to_string()]),
+    }));
+    assert!(resolved.is_none());
 }
 
 #[test]

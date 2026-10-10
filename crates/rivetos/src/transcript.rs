@@ -927,9 +927,11 @@ fn parse_object(line: &str) -> Option<Map<String, Value>> {
     if trimmed.is_empty() {
         return None;
     }
-    protocol::js::parse(trimmed)
-        .ok()
-        .and_then(|value| value.as_object().cloned())
+    let value = protocol::js::to_serde(&protocol::js::parse(trimmed).ok()?);
+    match value {
+        Value::Object(map) => Some(map),
+        _ => None,
+    }
 }
 
 fn stringify_result_value(value: &Value) -> String {
@@ -952,7 +954,7 @@ fn stringify_result_value(value: &Value) -> String {
     if let Some(text) = value.as_str() {
         return text.to_string();
     }
-    protocol::js::stringify(value)
+    protocol::js::stringify(&protocol::js::from_serde(value))
 }
 
 fn stringify_result(value: &Value) -> Option<String> {

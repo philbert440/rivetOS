@@ -156,8 +156,9 @@ fn assert_same(case: &str, actual: &str, expected: &str) {
 
 #[tokio::test]
 async fn golden_writer_matches_the_typescript_runtime() {
-    let results: Value =
-        protocol::js::parse(&std::fs::read_to_string(fixture("results.json")).unwrap()).unwrap();
+    let results = protocol::js::to_serde(
+        &protocol::js::parse(&std::fs::read_to_string(fixture("results.json")).unwrap()).unwrap(),
+    );
     for case in [
         "single",
         "numbers_and_keys",
@@ -168,10 +169,12 @@ async fn golden_writer_matches_the_typescript_runtime() {
     ] {
         let raw = std::fs::read_to_string(fixture(&format!("{case}.input.json"))).unwrap();
         let input = protocol::js::parse(&raw).unwrap();
-        let expected: Value = protocol::js::parse(
-            &std::fs::read_to_string(fixture(&format!("{case}.posts.json"))).unwrap(),
-        )
-        .unwrap();
+        let expected = protocol::js::to_serde(
+            &protocol::js::parse(
+                &std::fs::read_to_string(fixture(&format!("{case}.posts.json"))).unwrap(),
+            )
+            .unwrap(),
+        );
         let server = Server::start();
         let spool = tempfile::tempdir().unwrap();
         let mut opts = CaptureWriterOptions::new(&server.url);

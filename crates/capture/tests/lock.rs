@@ -1,7 +1,7 @@
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
-use std::time::{Duration, SystemTime};
+use std::sync::{Arc, Condvar, Mutex};
+use std::time::{Duration, Instant, SystemTime};
 
 use capture::{
     BeforeReaddir, FileLockOptions, ReadFault, hex_host, pid_dead, system_hostname, with_file_lock,
@@ -834,9 +834,72 @@ async fn a_panicking_body_releases_the_holder() {
     .await;
     assert!(joined.is_err());
     assert!(lock_dir.is_dir());
-    assert!(holder_names(&lock_dir).is_empty());
+    let deadline = Instant::now() + Duration::from_secs(2);
+    while !holder_names(&lock_dir).is_empty() {
+        if Instant::now() >= deadline {
+            panic!("holder was not released");
+        }
+        std::thread::sleep(Duration::from_millis(10));
+    }
     with_file_lock(lock_dir.clone(), FileLockOptions::default(), || async {})
         .await
         .unwrap();
     assert!(lock_dir.is_dir());
+}
+
+#[test]
+fn stalled_unlink_lets_the_runtime_progress() {
+    let lock_dir = lock_path();
+    let entered = Arc::new(AtomicBool::new(false));
+    let progressed = Arc::new(AtomicBool::new(false));
+    let gate = Arc::new((Mutex::new(false), Condvar::new()));
+    let entered_hook = entered.clone();
+    let gate_hook = gate.clone();
+    let mut options = opts(1_000, 20);
+    options.unlink_hook = Some(Arc::new(move || {
+        entered_hook.store(true, Ordering::SeqCst);
+        let (lock, cv) = &*gate_hook;
+        let guard = lock.lock().unwrap();
+        let _ = cv.wait_timeout(guard, Duration::from_secs(3)).unwrap();
+    }));
+    let checker_entered = entered.clone();
+    let checker_progressed = progressed.clone();
+    let checker_gate = gate.clone();
+    let checker = std::thread::spawn(move || {
+        let start = Instant::now();
+        while !checker_entered.load(Ordering::SeqCst) {
+            if start.elapsed() > Duration::from_secs(2) {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        std::thread::sleep(Duration::from_millis(200));
+        let saw = checker_progressed.load(Ordering::SeqCst);
+        let (lock, cv) = &*checker_gate;
+        let mut guard = lock.lock().unwrap();
+        *guard = true;
+        cv.notify_all();
+        saw
+    });
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+    let progressed_task = progressed.clone();
+    let entered_task = entered.clone();
+    runtime.block_on(async move {
+        tokio::spawn(async move {
+            loop {
+                if entered_task.load(Ordering::SeqCst) {
+                    progressed_task.store(true, Ordering::SeqCst);
+                    break;
+                }
+                tokio::task::yield_now().await;
+            }
+        });
+        with_file_lock(lock_dir, options, || async {})
+            .await
+            .unwrap();
+    });
+    assert!(checker.join().unwrap());
 }

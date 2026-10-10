@@ -16,6 +16,7 @@ use crate::timeutil;
 use crate::types::LogFn;
 
 pub type BeforeReaddir = Arc<dyn Fn() -> Pin<Box<dyn Future<Output = ()> + Send>> + Send + Sync>;
+pub type UnlinkHook = Arc<dyn Fn() + Send + Sync>;
 
 const HOLDER_PREFIX: &str = "holder.";
 const PUBLISH_PREFIX: &str = ".holderpub.";
@@ -77,6 +78,7 @@ pub struct FileLockOptions {
     pub host: Option<String>,
     pub read_fault: Option<Arc<Mutex<Option<ReadFault>>>>,
     pub publish_fault: Option<Arc<AtomicBool>>,
+    pub unlink_hook: Option<UnlinkHook>,
 }
 
 impl std::fmt::Debug for FileLockOptions {
@@ -148,52 +150,65 @@ where
     let heartbeat_ms = (stale_ms / 3).max(1);
     let heartbeat = spawn_heartbeat(owner_path.clone(), heartbeat_ms, Arc::clone(&stop));
     let mut guard = HoldGuard {
-        path: owner_path,
+        path: Some(owner_path),
         stop,
         heartbeat: Some(heartbeat),
+        unlink_hook: opts.unlink_hook.clone(),
     };
     let value = body().await;
-    guard.release();
+    guard.release().await;
     Ok(value)
 }
 
 struct HoldGuard {
-    path: PathBuf,
+    path: Option<PathBuf>,
     stop: Arc<AtomicBool>,
     heartbeat: Option<JoinHandle<()>>,
+    unlink_hook: Option<UnlinkHook>,
 }
 
 impl HoldGuard {
-    fn release(&mut self) {
+    async fn release(&mut self) {
         self.stop.store(true, Ordering::SeqCst);
         if let Some(handle) = self.heartbeat.take() {
             handle.abort();
         }
-        unlink_path(&self.path);
+        if let Some(path) = self.path.take() {
+            unlink_await(path, self.unlink_hook.clone()).await;
+        }
     }
 }
 
 impl Drop for HoldGuard {
     fn drop(&mut self) {
-        self.release();
+        self.stop.store(true, Ordering::SeqCst);
+        if let Some(handle) = self.heartbeat.take() {
+            handle.abort();
+        }
+        if let Some(path) = self.path.take() {
+            schedule_unlink(path, self.unlink_hook.clone());
+        }
     }
 }
 
-fn unlink_path(path: &Path) {
-    let path = path.to_path_buf();
-    let work = move || {
-        let _ = std::fs::remove_file(&path);
-    };
+async fn unlink_await(path: PathBuf, hook: Option<UnlinkHook>) {
+    let _ = tokio::task::spawn_blocking(move || unlink_now(&path, hook.as_ref())).await;
+}
+
+fn schedule_unlink(path: PathBuf, hook: Option<UnlinkHook>) {
+    let work = move || unlink_now(&path, hook.as_ref());
     if let Ok(handle) = tokio::runtime::Handle::try_current() {
-        let (tx, rx) = std::sync::mpsc::sync_channel(1);
-        handle.spawn_blocking(move || {
-            work();
-            let _ = tx.send(());
-        });
-        let _ = rx.recv_timeout(Duration::from_secs(5));
+        drop(handle.spawn_blocking(work));
     } else {
-        work();
+        drop(std::thread::spawn(work));
     }
+}
+
+fn unlink_now(path: &Path, hook: Option<&UnlinkHook>) {
+    if let Some(hook) = hook {
+        hook();
+    }
+    let _ = std::fs::remove_file(path);
 }
 
 fn spawn_heartbeat(path: PathBuf, every_ms: u64, stop: Arc<AtomicBool>) -> JoinHandle<()> {
@@ -218,6 +233,16 @@ impl AttemptGuard {
     fn disarm(&mut self) {
         self.armed = false;
     }
+
+    async fn cleanup(&mut self) {
+        if !self.armed {
+            return;
+        }
+        self.armed = false;
+        for path in std::mem::take(&mut self.paths) {
+            unlink_await(path, None).await;
+        }
+    }
 }
 
 impl Drop for AttemptGuard {
@@ -225,8 +250,9 @@ impl Drop for AttemptGuard {
         if !self.armed {
             return;
         }
-        for path in &self.paths {
-            unlink_path(path);
+        self.armed = false;
+        for path in std::mem::take(&mut self.paths) {
+            schedule_unlink(path, None);
         }
     }
 }
@@ -271,6 +297,7 @@ async fn acquire(
                 attempt.disarm();
                 continue;
             }
+            attempt.cleanup().await;
             return Err(error);
         }
         let owned = owner_path.clone();
@@ -283,13 +310,18 @@ async fn acquire(
             }
             Ok(Turn::Retry) => {
                 if Instant::now() >= deadline {
+                    attempt.cleanup().await;
                     return Err(LockError::Timeout {
                         lock_dir: lock_dir.display().to_string(),
                     });
                 }
                 tokio::time::sleep(Duration::from_millis(poll_ms)).await;
+                attempt.cleanup().await;
             }
-            Err(error) => return Err(error),
+            Err(error) => {
+                attempt.cleanup().await;
+                return Err(error);
+            }
         }
     }
 }

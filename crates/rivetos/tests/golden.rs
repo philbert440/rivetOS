@@ -185,8 +185,9 @@ fn wait_until(label: &str, mut ready: impl FnMut() -> bool) {
 #[test]
 fn golden_hook_matches_the_typescript_runtime() {
     assert!(fixture("hook-rust.json").is_file());
-    let events: Value =
-        protocol::js::parse(&std::fs::read_to_string(fixture("hook-ts.json")).unwrap()).unwrap();
+    let events = protocol::js::to_serde(
+        &protocol::js::parse(&std::fs::read_to_string(fixture("hook-ts.json")).unwrap()).unwrap(),
+    );
     let (url, hits) = serve();
     let ingest_key = regex::Regex::new(r#""ingest_key":"([0-9]+-[0-9a-z]{6})""#).unwrap();
     for event in events.as_array().unwrap() {
@@ -202,19 +203,13 @@ fn golden_hook_matches_the_typescript_runtime() {
         let before = hits.lock().unwrap().len();
         let mut child = Command::new(env!("CARGO_BIN_EXE_rivetos"))
             .args(["capture", "hook", "--harness", "claude-code"])
+            .env_clear()
             .env("HOME", home.path())
+            .env("PATH", "/usr/bin:/bin")
             .env("RIVET_DEN_URL", &url)
+            .env("RIVETOS_CAPTURE_TRANSPORT", "den")
+            .env("RIVETOS_ROOT", "/tmp/rr-1-rivetos-root")
             .env("RIVETOS_CLAUDE_HOOK_SPOOL", &spool)
-            .env_remove("RIVET_DEN_CA")
-            .env_remove("RIVETOS_DEN_TLS_CA")
-            .env_remove("RIVETOS_DEN_TLS_CERT")
-            .env_remove("RIVETOS_DEN_TLS_KEY")
-            .env_remove("RIVETOS_PG_URL")
-            .env_remove("RIVETOS_CAPTURE_TRANSPORT")
-            .env_remove("RIVETOS_USER_ID")
-            .env_remove("RIVETOS_USER_TOKEN")
-            .env_remove("RIVETOS_CAPTURE_REDACTION")
-            .env_remove("RUST_LOG")
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())

@@ -240,7 +240,8 @@ fn mode_of(path: &Path) -> u32 {
 }
 
 fn json_len(value: &impl serde::Serialize) -> usize {
-    protocol::js::stringify(&serde_json::to_value(value).unwrap()).len()
+    let value = serde_json::to_value(value).unwrap();
+    protocol::js::stringify(&protocol::js::from_serde(&value)).len()
 }
 
 fn accept_and_drop() -> String {
@@ -1556,4 +1557,204 @@ async fn truncated_client_status_is_not_spooled() {
     let saved = built.writer.write(batch()).await;
     assert!(matches!(saved, Err(CaptureError::Client { status: 413 })));
     assert_eq!(std::fs::read_dir(&spool).unwrap().count(), 0);
+}
+
+#[tokio::test]
+async fn explicit_null_survives_post_and_spool() {
+    let raw = r#"{"agent":"a","session_key":"s","messages":[{"tool_args":null,"content":"hi","role":"user","event_id":"e","note":null}],"title":null}"#;
+    let input = protocol::js::parse(raw).unwrap();
+    let expected = protocol::js::stringify(&input);
+    assert!(expected.contains("\"tool_args\":null"));
+    assert!(expected.contains("\"note\":null"));
+    assert!(expected.contains("\"title\":null"));
+    assert!(expected.find("\"tool_args\"").unwrap() < expected.find("\"content\"").unwrap());
+    assert!(expected.find("\"agent\"").unwrap() < expected.find("\"session_key\"").unwrap());
+    let server = Server::start(|_| (200, ok_body(1, 0)));
+    let spool = tempfile::tempdir().unwrap().keep();
+    let built = open_writer(
+        &server.url,
+        spool,
+        1000,
+        None,
+        MapEnv::default(),
+        UserSource::Owner,
+        None,
+    );
+    let saved = built.writer.write_value(input).await.unwrap();
+    assert!(matches!(saved, WriteOutcome::Delivered { .. }));
+    assert_eq!(server.hits.lock().unwrap()[0].body, expected);
+
+    let mut typed = one();
+    typed.settings = Some(Value::Null);
+    typed.messages[0].tool_args = Some(Value::Null);
+    let typed_wire = serde_json::to_string(&typed).unwrap();
+    assert!(typed_wire.contains("\"tool_args\":null"));
+    assert!(typed_wire.contains("\"settings\":null"));
+    let refused = Server::start(|_| (503, String::new()));
+    let spool = tempfile::tempdir().unwrap().keep();
+    let built = open_writer(
+        &refused.url,
+        spool,
+        1000,
+        None,
+        MapEnv::default(),
+        UserSource::Owner,
+        None,
+    );
+    let saved = built.writer.write(typed.clone()).await.unwrap();
+    let WriteOutcome::Spooled { file, .. } = saved else {
+        panic!("expected spool");
+    };
+    assert_eq!(std::fs::read_to_string(&file).unwrap(), typed_wire);
+    assert_eq!(refused.hits.lock().unwrap()[0].body, typed_wire);
+}
+
+#[tokio::test]
+async fn global_replace_keeps_trailing_empty_match() {
+    let server = Server::start(|_| (200, ok_body(1, 0)));
+    let spool = tempfile::tempdir().unwrap().keep();
+    let built = open_writer(
+        &server.url,
+        spool,
+        1000,
+        None,
+        MapEnv::default(),
+        UserSource::Owner,
+        Some(CaptureRedactionOptions {
+            enabled: Some(true),
+            builtins: Some(false),
+            patterns: Some(vec![r"a*".to_string()]),
+        }),
+    );
+    let mut batch = one();
+    batch.messages[0].content = "a".to_string();
+    let saved = built.writer.write(batch).await.unwrap();
+    assert!(matches!(saved, WriteOutcome::Delivered { .. }));
+    let body = server.hits.lock().unwrap()[0].body.clone();
+    assert!(body.contains(r#""content":"[REDACTED:pattern:0][REDACTED:pattern:0]""#));
+    assert!(
+        built
+            .logs
+            .lock()
+            .unwrap()
+            .iter()
+            .any(|line| line == "redacted 2 spans")
+    );
+}
+
+#[tokio::test]
+async fn replacement_keeps_lone_surrogate() {
+    let raw = "{\"session_key\":\"s\",\"agent\":\"a\",\"messages\":[{\"event_id\":\"e\",\"role\":\"user\",\"content\":\"\u{1F600}\",\"tool_args\":{\"q\":\"\u{1F600}\"}}]}";
+    let input = protocol::js::parse(raw).unwrap();
+    let server = Server::start(|_| (200, ok_body(1, 0)));
+    let spool = tempfile::tempdir().unwrap().keep();
+    let built = open_writer(
+        &server.url,
+        spool.clone(),
+        1000,
+        None,
+        MapEnv::default(),
+        UserSource::Owner,
+        Some(CaptureRedactionOptions {
+            enabled: Some(true),
+            builtins: Some(false),
+            patterns: Some(vec![r"\uD83D".to_string()]),
+        }),
+    );
+    let saved = built.writer.write_value(input).await.unwrap();
+    assert!(matches!(saved, WriteOutcome::Delivered { .. }));
+    let body = server.hits.lock().unwrap()[0].body.clone();
+    let expected = r#"{"session_key":"s","agent":"a","messages":[{"event_id":"e","role":"user","content":"[REDACTED:pattern:0]\ude00","tool_args":{"q":"[REDACTED:pattern:0]\ude00"}}]}"#;
+    assert_eq!(body, expected);
+    let refused = Server::start(|_| (503, String::new()));
+    let built = open_writer(
+        &refused.url,
+        spool,
+        1000,
+        None,
+        MapEnv::default(),
+        UserSource::Owner,
+        Some(CaptureRedactionOptions {
+            enabled: Some(true),
+            builtins: Some(false),
+            patterns: Some(vec![r"\uD83D".to_string()]),
+        }),
+    );
+    let saved = built
+        .writer
+        .write_value(protocol::js::parse(raw).unwrap())
+        .await
+        .unwrap();
+    let WriteOutcome::Spooled { file, .. } = saved else {
+        panic!("expected spool");
+    };
+    assert_eq!(std::fs::read_to_string(&file).unwrap(), body);
+}
+
+#[tokio::test]
+async fn invalid_patterns_only_resolve_to_none() {
+    let server = Server::start(|_| (200, ok_body(1, 0)));
+    let spool = tempfile::tempdir().unwrap().keep();
+    let built = open_writer(
+        &server.url,
+        spool,
+        1000,
+        None,
+        MapEnv::default(),
+        UserSource::Owner,
+        Some(CaptureRedactionOptions {
+            enabled: Some(true),
+            builtins: Some(false),
+            patterns: Some(vec!["(".to_string()]),
+        }),
+    );
+    let mut batch = one();
+    batch.messages[0].tool_args = Some(json!({"password": "hunter2"}));
+    let saved = built.writer.write(batch).await.unwrap();
+    assert!(matches!(saved, WriteOutcome::Delivered { .. }));
+    let body = &server.hits.lock().unwrap()[0].body;
+    assert!(body.contains("hunter2"));
+    assert!(!body.contains("REDACTED"));
+    assert!(built.logs.lock().unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn extension_field_splits_like_the_posted_object() {
+    let extra = "z".repeat(400);
+    let first_message = r#"{"event_id":"e1","role":"user","content":"one"}"#;
+    let second_message = r#"{"event_id":"e2","role":"user","content":"two"}"#;
+    let both = format!(
+        r#"{{"session_key":"s","agent":"a","extra":"{extra}","messages":[{first_message},{second_message}]}}"#
+    );
+    let first = format!(
+        r#"{{"session_key":"s","agent":"a","extra":"{extra}","messages":[{first_message}]}}"#
+    );
+    let second = format!(
+        r#"{{"session_key":"s","agent":"a","extra":"{extra}","messages":[{second_message}]}}"#
+    );
+    let input = protocol::js::parse(&both).unwrap();
+    let both_len = protocol::js::stringify(&input).len();
+    let first_len = protocol::js::stringify(&protocol::js::parse(&first).unwrap()).len();
+    let second_len = protocol::js::stringify(&protocol::js::parse(&second).unwrap()).len();
+    let limit = first_len.max(second_len);
+    assert!(both_len > limit);
+    let server = Server::start(|_| (200, ok_body(1, 0)));
+    let spool = tempfile::tempdir().unwrap().keep();
+    let built = open_writer(
+        &server.url,
+        spool,
+        1000,
+        Some(limit as f64),
+        MapEnv::default(),
+        UserSource::Owner,
+        None,
+    );
+    let saved = built.writer.write_value(input).await.unwrap();
+    assert!(matches!(saved, WriteOutcome::Delivered { inserted: 2, .. }));
+    let hits = server.hits.lock().unwrap();
+    assert_eq!(hits.len(), 2);
+    assert_eq!(hits[0].body, first);
+    assert_eq!(hits[1].body, second);
+    assert!(hits[0].body.len() <= limit);
+    assert!(hits[1].body.len() <= limit);
 }
