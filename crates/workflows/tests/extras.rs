@@ -300,11 +300,74 @@ async fn validate_workflow_dir_accepts_a_clean_script() {
     let hello = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../workflows/hello-world");
     let hello_response = validate_workflow_dir(&hello).await;
     assert!(!hello_response.ok);
-    assert!(
-        hello_response
-            .diagnostics
-            .iter()
-            .any(|item| item.message.contains("no-date-now"))
+    let reported: Vec<_> = hello_response
+        .diagnostics
+        .iter()
+        .map(|item| {
+            (
+                item.file.as_str(),
+                item.line,
+                item.severity,
+                item.message.as_str(),
+            )
+        })
+        .collect();
+    assert_eq!(
+        reported,
+        vec![
+            (
+                "run.ts",
+                Some(4),
+                "error",
+                "no-date-now: Date.now() is nondeterministic — use a step if you need wall clock",
+            ),
+            (
+                "run.ts",
+                Some(4),
+                "error",
+                "no-math-random: Math.random() is nondeterministic — use a step if you need entropy",
+            ),
+        ]
+    );
+}
+
+#[test]
+fn hello_world_determinism_scan_matches_typescript() {
+    let source = std::fs::read_to_string(
+        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../workflows/hello-world/run.ts"),
+    )
+    .unwrap();
+    let findings = check_run_script_determinism(&source);
+    let reported: Vec<_> = findings
+        .iter()
+        .map(|item| {
+            (
+                item.line,
+                item.column,
+                item.rule,
+                item.message,
+                item.snippet.as_str(),
+            )
+        })
+        .collect();
+    assert_eq!(
+        reported,
+        vec![
+            (
+                4,
+                25,
+                "no-date-now",
+                "Date.now() is nondeterministic — use a step if you need wall clock",
+                "* DETERMINISM RULE: no Date.now(), Math.random(), or I/O outside step.* calls.",
+            ),
+            (
+                4,
+                37,
+                "no-math-random",
+                "Math.random() is nondeterministic — use a step if you need entropy",
+                "* DETERMINISM RULE: no Date.now(), Math.random(), or I/O outside step.* calls.",
+            ),
+        ]
     );
 }
 

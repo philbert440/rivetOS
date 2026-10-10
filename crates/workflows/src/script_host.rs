@@ -1,4 +1,6 @@
-use std::path::Path;
+use std::fmt;
+use std::os::unix::fs::PermissionsExt;
+use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use serde_json::{Map, Value};
@@ -8,7 +10,6 @@ use tokio::process::Command;
 use crate::error::WorkflowError;
 use crate::step::{AgentStepOpts, HumanStepOpts, ParallelBegin, RunStepOpts, Step, StepScope};
 
-const NODE_BIN: &str = "/usr/bin/node";
 const BRIDGE: &str = r#"
 import { createInterface } from 'node:readline'
 import { pathToFileURL } from 'node:url'
@@ -110,6 +111,36 @@ try {
 process.exit(0)
 "#;
 
+const DEFAULT_INSTALL_ROOT: &str = "/opt/rivetos";
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct NodeVersion {
+    major: u64,
+    minor: u64,
+    patch: u64,
+}
+
+impl fmt::Display for NodeVersion {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(formatter, "v{}.{}.{}", self.major, self.minor, self.patch)
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum TypeStrip {
+    None,
+    Flag,
+    Default,
+}
+
+struct LaunchPlan {
+    node: PathBuf,
+    strategy: &'static str,
+    detail: String,
+    args_prefix: Vec<&'static str>,
+    current_dir: Option<PathBuf>,
+}
+
 pub struct HostContext {
     pub run_id: String,
     pub input: Map<String, Value>,
@@ -118,7 +149,16 @@ pub struct HostContext {
 }
 
 pub async fn drive_node(run_path: &str, step: Step, ctx: HostContext) -> Result<(), WorkflowError> {
-    let mut child = Command::new(NODE_BIN)
+    let plan = launch_plan(run_path).await?;
+    tracing::info!(
+        strategy = plan.strategy,
+        node = %plan.node.display(),
+        detail = %plan.detail,
+        "workflow script loader"
+    );
+    let mut command = Command::new(&plan.node);
+    command
+        .args(&plan.args_prefix)
         .arg("--input-type=module")
         .arg("-e")
         .arg(BRIDGE)
@@ -126,14 +166,18 @@ pub async fn drive_node(run_path: &str, step: Step, ctx: HostContext) -> Result<
         .stdin(std::process::Stdio::piped())
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped())
-        .kill_on_drop(true)
-        .spawn()
-        .map_err(|err| {
-            WorkflowError::message(format!(
-                "failed to spawn node for {}: {err}",
-                Path::new(run_path).display()
-            ))
-        })?;
+        .kill_on_drop(true);
+    if let Some(root) = &plan.current_dir {
+        command.current_dir(root);
+    }
+    let mut child = command.spawn().map_err(|err| {
+        WorkflowError::message(format!(
+            "failed to spawn {} for {} (loader {}): {err}",
+            plan.node.display(),
+            Path::new(run_path).display(),
+            plan.strategy
+        ))
+    })?;
     let mut stdin = child
         .stdin
         .take()
@@ -513,4 +557,280 @@ fn parallel_begin_value(begin: ParallelBegin) -> Value {
     map.insert("token".to_string(), Value::String(begin.token));
     map.insert("branches".to_string(), Value::Array(branches));
     Value::Object(map)
+}
+
+async fn launch_plan(run_path: &str) -> Result<LaunchPlan, WorkflowError> {
+    let node = find_node().await?;
+    if !needs_typescript(run_path) {
+        return Ok(LaunchPlan {
+            node,
+            strategy: "plain",
+            detail: "javascript".to_string(),
+            args_prefix: Vec::new(),
+            current_dir: None,
+        });
+    }
+    if let Some(root) = find_tsx_root().await {
+        let detail = root.display().to_string();
+        return Ok(LaunchPlan {
+            node,
+            strategy: "tsx",
+            detail,
+            args_prefix: vec!["--import", "tsx"],
+            current_dir: Some(root),
+        });
+    }
+    match read_node_version(&node).await {
+        Ok(version) => match type_strip(version) {
+            TypeStrip::Flag => Ok(LaunchPlan {
+                node,
+                strategy: "strip-types",
+                detail: format!("{version} --experimental-strip-types"),
+                args_prefix: vec!["--experimental-strip-types"],
+                current_dir: None,
+            }),
+            TypeStrip::Default => Ok(LaunchPlan {
+                node,
+                strategy: "strip-types",
+                detail: format!("{version} default"),
+                args_prefix: Vec::new(),
+                current_dir: None,
+            }),
+            TypeStrip::None => Err(typescript_unavailable(run_path, &version.to_string())),
+        },
+        Err(err) => Err(typescript_unavailable(run_path, &err.to_string())),
+    }
+}
+
+fn typescript_unavailable(run_path: &str, detail: &str) -> WorkflowError {
+    WorkflowError::message(format!(
+        "cannot execute TypeScript run script {run_path}: tsx was not found at $RIVETOS_ROOT/node_modules/tsx or the install root node_modules, and Node type stripping is unavailable ({detail}). Install tsx and use node --import tsx, or use Node >= 22.18 or >= 23.6 (pass --experimental-strip-types where that version needs the flag; Node 24 strips erasable syntax by default)"
+    ))
+}
+
+fn needs_typescript(path: &str) -> bool {
+    let Some(ext) = Path::new(path).extension().and_then(|ext| ext.to_str()) else {
+        return false;
+    };
+    matches!(
+        ext.to_ascii_lowercase().as_str(),
+        "ts" | "mts" | "cts" | "tsx"
+    )
+}
+
+fn type_strip(version: NodeVersion) -> TypeStrip {
+    if version.major >= 24 {
+        return TypeStrip::Default;
+    }
+    if version.major == 23 && version.minor >= 6 {
+        return TypeStrip::Flag;
+    }
+    if version.major == 22 && version.minor >= 18 {
+        return TypeStrip::Flag;
+    }
+    TypeStrip::None
+}
+
+fn parse_node_version(text: &str) -> Option<NodeVersion> {
+    let text = text.trim();
+    let rest = text.strip_prefix('v').or_else(|| text.strip_prefix('V'))?;
+    let mut parts = rest.split('.');
+    let major = parts.next()?.parse().ok()?;
+    let minor = parts.next()?.parse().ok()?;
+    let patch_text = parts.next().unwrap_or("0");
+    let patch_digits: String = patch_text
+        .chars()
+        .take_while(|ch| ch.is_ascii_digit())
+        .collect();
+    let patch = if patch_digits.is_empty() {
+        0
+    } else {
+        patch_digits.parse().ok()?
+    };
+    Some(NodeVersion {
+        major,
+        minor,
+        patch,
+    })
+}
+
+fn env_trimmed(key: &str) -> Option<String> {
+    let value = std::env::var(key).ok()?;
+    let trimmed = value.trim();
+    if trimmed.is_empty() {
+        None
+    } else {
+        Some(trimmed.to_string())
+    }
+}
+
+async fn find_node() -> Result<PathBuf, WorkflowError> {
+    if let Some(overridden) = env_trimmed("RIVETOS_NODE") {
+        if let Some(path) = resolve_program(&overridden).await {
+            return Ok(path);
+        }
+        return Err(WorkflowError::message(format!(
+            "RIVETOS_NODE={overridden} is not an executable node binary"
+        )));
+    }
+    resolve_program("node").await.ok_or_else(|| {
+        WorkflowError::message("node was not found on PATH; set RIVETOS_NODE to the node binary")
+    })
+}
+
+async fn resolve_program(name: &str) -> Option<PathBuf> {
+    if name.contains('/') || name.contains('\\') {
+        let path = PathBuf::from(name);
+        if is_executable(&path).await {
+            return Some(path);
+        }
+        return None;
+    }
+    let paths = std::env::var_os("PATH")?;
+    for dir in std::env::split_paths(&paths) {
+        let candidate = dir.join(name);
+        if is_executable(&candidate).await {
+            return Some(candidate);
+        }
+    }
+    None
+}
+
+async fn is_executable(path: &Path) -> bool {
+    let Ok(meta) = tokio::fs::metadata(path).await else {
+        return false;
+    };
+    meta.is_file() && meta.permissions().mode() & 0o111 != 0
+}
+
+async fn find_tsx_root() -> Option<PathBuf> {
+    for root in tsx_roots() {
+        if has_tsx(&root).await {
+            return Some(root);
+        }
+    }
+    None
+}
+
+fn tsx_roots() -> Vec<PathBuf> {
+    let mut roots = Vec::new();
+    if let Some(root) = env_trimmed("RIVETOS_ROOT") {
+        push_unique(&mut roots, PathBuf::from(root));
+    }
+    push_unique(&mut roots, PathBuf::from(DEFAULT_INSTALL_ROOT));
+    if let Ok(cwd) = std::env::current_dir() {
+        let mut dir = cwd;
+        loop {
+            push_unique(&mut roots, dir.clone());
+            if !dir.pop() {
+                break;
+            }
+        }
+    }
+    roots
+}
+
+fn push_unique(roots: &mut Vec<PathBuf>, path: PathBuf) {
+    if path.as_os_str().is_empty() || roots.iter().any(|item| item == &path) {
+        return;
+    }
+    roots.push(path);
+}
+
+async fn has_tsx(root: &Path) -> bool {
+    let manifest = root.join("node_modules").join("tsx").join("package.json");
+    match tokio::fs::metadata(&manifest).await {
+        Ok(meta) => meta.is_file(),
+        Err(_) => false,
+    }
+}
+
+async fn read_node_version(node: &Path) -> Result<NodeVersion, WorkflowError> {
+    let mut command = Command::new(node);
+    command.arg("--version").kill_on_drop(true);
+    let output = match tokio::time::timeout(Duration::from_secs(10), command.output()).await {
+        Ok(Ok(output)) => output,
+        Ok(Err(err)) => {
+            return Err(WorkflowError::message(format!(
+                "failed to run node --version: {err}"
+            )));
+        }
+        Err(_) => return Err(WorkflowError::message("node --version timed out")),
+    };
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        return Err(WorkflowError::message(format!(
+            "node --version failed: {stderr}"
+        )));
+    }
+    let text = String::from_utf8_lossy(&output.stdout);
+    parse_node_version(&text).ok_or_else(|| {
+        WorkflowError::message(format!("could not parse node --version output: {text}"))
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{
+        NodeVersion, TypeStrip, needs_typescript, parse_node_version, type_strip,
+        typescript_unavailable,
+    };
+
+    fn version(major: u64, minor: u64, patch: u64) -> NodeVersion {
+        NodeVersion {
+            major,
+            minor,
+            patch,
+        }
+    }
+
+    #[test]
+    fn node_version_parse_accepts_the_cli_text() {
+        assert_eq!(parse_node_version("v22.18.0\n"), Some(version(22, 18, 0)));
+        assert_eq!(parse_node_version("v24.0.0"), Some(version(24, 0, 0)));
+        assert_eq!(parse_node_version("V23.6.1"), Some(version(23, 6, 1)));
+        assert_eq!(parse_node_version("v22.18"), Some(version(22, 18, 0)));
+        assert_eq!(
+            parse_node_version("v22.18.0-nightly"),
+            Some(version(22, 18, 0))
+        );
+        assert_eq!(parse_node_version("22.18.0"), None);
+    }
+
+    #[test]
+    fn type_stripping_follows_the_node_version_gate() {
+        assert_eq!(type_strip(version(22, 17, 9)), TypeStrip::None);
+        assert_eq!(type_strip(version(22, 18, 0)), TypeStrip::Flag);
+        assert_eq!(type_strip(version(22, 19, 1)), TypeStrip::Flag);
+        assert_eq!(type_strip(version(23, 5, 0)), TypeStrip::None);
+        assert_eq!(type_strip(version(23, 6, 0)), TypeStrip::Flag);
+        assert_eq!(type_strip(version(23, 11, 0)), TypeStrip::Flag);
+        assert_eq!(type_strip(version(24, 0, 0)), TypeStrip::Default);
+        assert_eq!(type_strip(version(25, 1, 0)), TypeStrip::Default);
+        assert_eq!(type_strip(version(18, 20, 0)), TypeStrip::None);
+    }
+
+    #[test]
+    fn typescript_extensions_are_the_ones_the_loader_must_execute() {
+        assert!(needs_typescript("/wf/run.ts"));
+        assert!(needs_typescript("/wf/run.mts"));
+        assert!(needs_typescript("/wf/run.cts"));
+        assert!(needs_typescript("/wf/run.tsx"));
+        assert!(needs_typescript("/wf/run.TS"));
+        assert!(!needs_typescript("/wf/run.js"));
+        assert!(!needs_typescript("/wf/run.mjs"));
+        assert!(!needs_typescript("/wf/run.ts.bak"));
+    }
+
+    #[test]
+    fn unavailable_typescript_names_both_loaders() {
+        let message = typescript_unavailable("/wf/run.ts", "v20.11.0").to_string();
+        assert!(message.contains("node --import tsx"), "{message}");
+        assert!(message.contains("--experimental-strip-types"), "{message}");
+        assert!(message.contains("22.18"), "{message}");
+        assert!(message.contains("23.6"), "{message}");
+        assert!(message.contains("Node 24"), "{message}");
+        assert!(message.contains("v20.11.0"), "{message}");
+        assert!(message.contains("/wf/run.ts"), "{message}");
+    }
 }

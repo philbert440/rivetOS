@@ -59,7 +59,7 @@ pub fn check_run_script_determinism(source: &str) -> Vec<DeterminismFinding> {
             let Some(found) = regex.find(&source[cursor..]) else {
                 break;
             };
-            let offset = cursor + found.start();
+            let offset = byte_offset_to_utf16(source, cursor + found.start());
             let (line, column) = offset_to_line_col(&lines, offset);
             let snippet = match lines.get((line as usize).saturating_sub(1)) {
                 Some(text) => js_trim(text).to_string(),
@@ -105,14 +105,45 @@ fn js_lines(source: &str) -> Vec<&str> {
     lines
 }
 
+fn utf16_len(text: &str) -> usize {
+    text.encode_utf16().count()
+}
+
+fn byte_offset_to_utf16(text: &str, byte_offset: usize) -> usize {
+    let end = text.floor_char_boundary(byte_offset.min(text.len()));
+    utf16_len(&text[..end])
+}
+
 fn offset_to_line_col(lines: &[&str], offset: usize) -> (i64, i64) {
     let mut remaining = offset;
     for (index, line) in lines.iter().enumerate() {
-        let len = line.len() + 1;
+        let len = utf16_len(line) + 1;
         if remaining < len {
             return (index as i64 + 1, remaining as i64 + 1);
         }
         remaining -= len;
     }
     (lines.len() as i64, 1)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::check_run_script_determinism;
+
+    #[test]
+    fn column_counts_utf16_units_like_javascript() {
+        let findings = check_run_script_determinism("→ Date.now()\n");
+        assert_eq!(findings.len(), 1);
+        assert_eq!(findings[0].rule, "no-date-now");
+        assert_eq!(findings[0].line, 1);
+        assert_eq!(findings[0].column, 3);
+    }
+
+    #[test]
+    fn crlf_columns_follow_the_javascript_split() {
+        let findings = check_run_script_determinism("a\r\nDate.now()\n");
+        assert_eq!(findings.len(), 1);
+        assert_eq!(findings[0].line, 2);
+        assert_eq!(findings[0].column, 2);
+    }
 }
