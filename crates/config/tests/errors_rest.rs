@@ -324,3 +324,138 @@ err!(
     with_base("deployment:\n  target: nope\n"),
     "Invalid deployment target \"nope\" — must be one of: docker, proxmox, kubernetes, manual"
 );
+
+#[test]
+fn mesh_advertise_host_rejects_javascript_whitespace() {
+    let bom = with_base("mesh:\n  advertise_host: \"a\u{FEFF}b\"\n");
+    assert_has_error(&bom, "mesh.advertise_host contains shell-unsafe characters");
+    let nel = with_base("mesh:\n  advertise_host: \"a\u{0085}b\"\n");
+    let value = config::parse_yaml(&nel).unwrap();
+    let result = config::validate_config(&value);
+    assert!(
+        result.errors.iter().all(|issue| {
+            issue.message != "mesh.advertise_host contains shell-unsafe characters"
+        }),
+        "{:?}",
+        result.errors
+    );
+}
+
+fn quote_or(names: &[&str]) -> String {
+    let mut quoted = names.iter().map(|name| format!("'{name}'"));
+    let Some(first) = quoted.next() else {
+        return String::new();
+    };
+    let Some(second) = quoted.next() else {
+        return first;
+    };
+    let rest: Vec<String> = quoted.collect();
+    if rest.is_empty() {
+        return format!("{first} or {second}");
+    }
+    let mut out = format!("{first}, {second}");
+    for (index, name) in rest.iter().enumerate() {
+        if index + 1 == rest.len() {
+            out.push_str(" or ");
+        } else {
+            out.push_str(", ");
+        }
+        out.push_str(name);
+    }
+    out
+}
+
+fn repo_sections() -> String {
+    let root = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..");
+    std::fs::read_to_string(root.join("packages/boot/src/validate/sections.ts")).unwrap()
+}
+
+fn assert_name_acceptance(
+    yaml_for: impl Fn(&str) -> String,
+    message: &str,
+    names: &[&str],
+    allowed: bool,
+) {
+    for name in names {
+        let yaml = yaml_for(name);
+        let value = config::parse_yaml(&yaml).unwrap();
+        let result = config::validate_config(&value);
+        let present = result.errors.iter().any(|issue| issue.message == message);
+        assert_eq!(present, !allowed, "{name} {message} {:?}", result.errors);
+    }
+}
+
+#[test]
+fn harness_effort_phrase_tracks_thinking_level() {
+    let included: Vec<&str> = protocol::ThinkingLevel::ALL
+        .iter()
+        .filter(|level| {
+            !matches!(
+                level,
+                protocol::ThinkingLevel::Off | protocol::ThinkingLevel::XHigh
+            )
+        })
+        .map(|level| level.as_str())
+        .collect();
+    let excluded: Vec<&str> = protocol::ThinkingLevel::ALL
+        .iter()
+        .filter(|level| {
+            matches!(
+                level,
+                protocol::ThinkingLevel::Off | protocol::ThinkingLevel::XHigh
+            )
+        })
+        .map(|level| level.as_str())
+        .collect();
+    let phrase = quote_or(&included);
+    let sections = repo_sections();
+    assert!(sections.contains(&format!("must be {phrase}")), "{phrase}");
+    let message = format!("\"tasks.harnesses.claude-code.effort\" must be {phrase}");
+    assert_has_error(&harness("      effort: max\n"), &message);
+    assert_name_acceptance(
+        |name| harness(&format!("      effort: \"{name}\"\n")),
+        &message,
+        &included,
+        true,
+    );
+    assert_name_acceptance(
+        |name| harness(&format!("      effort: \"{name}\"\n")),
+        &message,
+        &excluded,
+        false,
+    );
+}
+
+#[test]
+fn verifier_executor_phrase_tracks_task_executor_kind() {
+    let included: Vec<&str> = protocol::TaskExecutorKind::ALL
+        .iter()
+        .filter(|kind| **kind != protocol::TaskExecutorKind::Mesh)
+        .map(|kind| kind.as_str())
+        .collect();
+    let excluded: Vec<&str> = protocol::TaskExecutorKind::ALL
+        .iter()
+        .filter(|kind| **kind == protocol::TaskExecutorKind::Mesh)
+        .map(|kind| kind.as_str())
+        .collect();
+    let phrase = quote_or(&included);
+    let sections = repo_sections();
+    assert!(sections.contains(&format!("must be {phrase}")), "{phrase}");
+    let message = format!("\"tasks.eval.verifier.executor\" must be {phrase}");
+    assert_has_error(
+        &eval_fields("    verifier:\n      executor: nope\n"),
+        &message,
+    );
+    assert_name_acceptance(
+        |name| eval_fields(&format!("    verifier:\n      executor: \"{name}\"\n")),
+        &message,
+        &included,
+        true,
+    );
+    assert_name_acceptance(
+        |name| eval_fields(&format!("    verifier:\n      executor: \"{name}\"\n")),
+        &message,
+        &excluded,
+        false,
+    );
+}

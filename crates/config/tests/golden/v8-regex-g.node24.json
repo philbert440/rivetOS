@@ -1,0 +1,347 @@
+{
+  "node": "v24.20.0",
+  "v8": "13.6.233.17-node.53",
+  "flags": "g",
+  "rows": [
+    {
+      "pattern": "foo(?=bar)",
+      "ok": true
+    },
+    {
+      "pattern": "(?<=code=)[A-Z0-9]+",
+      "ok": true
+    },
+    {
+      "pattern": "(a)\\1",
+      "ok": true
+    },
+    {
+      "pattern": "(?<n>a)\\k<n>",
+      "ok": true
+    },
+    {
+      "pattern": "*",
+      "ok": false,
+      "message": "Invalid regular expression: /*/g: Nothing to repeat"
+    },
+    {
+      "pattern": "+a",
+      "ok": false,
+      "message": "Invalid regular expression: /+a/g: Nothing to repeat"
+    },
+    {
+      "pattern": "?",
+      "ok": false,
+      "message": "Invalid regular expression: /?/g: Nothing to repeat"
+    },
+    {
+      "pattern": "a**",
+      "ok": false,
+      "message": "Invalid regular expression: /a**/g: Nothing to repeat"
+    },
+    {
+      "pattern": "(",
+      "ok": false,
+      "message": "Invalid regular expression: /(/g: Unterminated group"
+    },
+    {
+      "pattern": ")",
+      "ok": false,
+      "message": "Invalid regular expression: /)/g: Unmatched ')'"
+    },
+    {
+      "pattern": "(a",
+      "ok": false,
+      "message": "Invalid regular expression: /(a/g: Unterminated group"
+    },
+    {
+      "pattern": "a)",
+      "ok": false,
+      "message": "Invalid regular expression: /a)/g: Unmatched ')'"
+    },
+    {
+      "pattern": "[",
+      "ok": false,
+      "message": "Invalid regular expression: /[/g: Unterminated character class"
+    },
+    {
+      "pattern": "[a",
+      "ok": false,
+      "message": "Invalid regular expression: /[a/g: Unterminated character class"
+    },
+    {
+      "pattern": "]",
+      "ok": true
+    },
+    {
+      "pattern": "a]",
+      "ok": true
+    },
+    {
+      "pattern": "{",
+      "ok": true
+    },
+    {
+      "pattern": "}",
+      "ok": true
+    },
+    {
+      "pattern": "a{",
+      "ok": true
+    },
+    {
+      "pattern": "a{1",
+      "ok": true
+    },
+    {
+      "pattern": "a{1,",
+      "ok": true
+    },
+    {
+      "pattern": "a{1,2",
+      "ok": true
+    },
+    {
+      "pattern": "a{1,2,3}",
+      "ok": true
+    },
+    {
+      "pattern": "a{2,1}",
+      "ok": false,
+      "message": "Invalid regular expression: /a{2,1}/g: numbers out of order in {} quantifier"
+    },
+    {
+      "pattern": "a{,5}",
+      "ok": true
+    },
+    {
+      "pattern": "{1}",
+      "ok": false,
+      "message": "Invalid regular expression: /{1}/g: Nothing to repeat"
+    },
+    {
+      "pattern": "x{1}{2}",
+      "ok": false,
+      "message": "Invalid regular expression: /x{1}{2}/g: Nothing to repeat"
+    },
+    {
+      "pattern": "\\",
+      "ok": false,
+      "message": "Invalid regular expression: /\\/g: \\ at end of pattern"
+    },
+    {
+      "pattern": "a\\",
+      "ok": false,
+      "message": "Invalid regular expression: /a\\/g: \\ at end of pattern"
+    },
+    {
+      "pattern": "\\c",
+      "ok": true
+    },
+    {
+      "pattern": "\\c1",
+      "ok": true
+    },
+    {
+      "pattern": "\\u12",
+      "ok": true
+    },
+    {
+      "pattern": "\\x1",
+      "ok": true
+    },
+    {
+      "pattern": "\\k<n>",
+      "ok": true
+    },
+    {
+      "pattern": "\\k",
+      "ok": true
+    },
+    {
+      "pattern": "(?<1>a)",
+      "ok": false,
+      "message": "Invalid regular expression: /(?<1>a)/g: Invalid capture group name"
+    },
+    {
+      "pattern": "(?<a>x)(?<a>y)",
+      "ok": false,
+      "message": "Invalid regular expression: /(?<a>x)(?<a>y)/g: Duplicate capture group name"
+    },
+    {
+      "pattern": "(?<a>x)|(?<a>y)",
+      "ok": true
+    },
+    {
+      "pattern": "(?:a",
+      "ok": false,
+      "message": "Invalid regular expression: /(?:a/g: Unterminated group"
+    },
+    {
+      "pattern": "(?=a",
+      "ok": false,
+      "message": "Invalid regular expression: /(?=a/g: Unterminated group"
+    },
+    {
+      "pattern": "(?!a",
+      "ok": false,
+      "message": "Invalid regular expression: /(?!a/g: Unterminated group"
+    },
+    {
+      "pattern": "(?<=a",
+      "ok": false,
+      "message": "Invalid regular expression: /(?<=a/g: Unterminated group"
+    },
+    {
+      "pattern": "(?<!a",
+      "ok": false,
+      "message": "Invalid regular expression: /(?<!a/g: Unterminated group"
+    },
+    {
+      "pattern": "(?i:secret)",
+      "ok": true
+    },
+    {
+      "pattern": "(?i-m:a)",
+      "ok": true
+    },
+    {
+      "pattern": "(?-i:a)",
+      "ok": true
+    },
+    {
+      "pattern": "(?x)a",
+      "ok": false,
+      "message": "Invalid regular expression: /(?x)a/g: Invalid group"
+    },
+    {
+      "pattern": "(?P<n>a)",
+      "ok": false,
+      "message": "Invalid regular expression: /(?P<n>a)/g: Invalid group"
+    },
+    {
+      "pattern": "[z-a]",
+      "ok": false,
+      "message": "Invalid regular expression: /[z-a]/g: Range out of order in character class"
+    },
+    {
+      "pattern": "[a-\\d]",
+      "ok": true
+    },
+    {
+      "pattern": "[\\d-a]",
+      "ok": true
+    },
+    {
+      "pattern": "\\p{L}",
+      "ok": true
+    },
+    {
+      "pattern": "\\P{L}",
+      "ok": true
+    },
+    {
+      "pattern": "\\p{Script=Greek}",
+      "ok": true
+    },
+    {
+      "pattern": "\\b{",
+      "ok": true
+    },
+    {
+      "pattern": "^*",
+      "ok": false,
+      "message": "Invalid regular expression: /^*/g: Nothing to repeat"
+    },
+    {
+      "pattern": "$+",
+      "ok": false,
+      "message": "Invalid regular expression: /$+/g: Nothing to repeat"
+    },
+    {
+      "pattern": "\\1(a)",
+      "ok": true
+    },
+    {
+      "pattern": "\\8",
+      "ok": true
+    },
+    {
+      "pattern": "\\08",
+      "ok": true
+    },
+    {
+      "pattern": "[\\b]",
+      "ok": true
+    },
+    {
+      "pattern": "\\cJ",
+      "ok": true
+    },
+    {
+      "pattern": "\\0",
+      "ok": true
+    },
+    {
+      "pattern": ".*?",
+      "ok": true
+    },
+    {
+      "pattern": "a{1}?",
+      "ok": true
+    },
+    {
+      "pattern": "(?<a>.)\\k<b>",
+      "ok": false,
+      "message": "Invalid regular expression: /(?<a>.)\\k<b>/g: Invalid named capture referenced"
+    },
+    {
+      "pattern": "[^]",
+      "ok": true
+    },
+    {
+      "pattern": "[]",
+      "ok": true
+    },
+    {
+      "pattern": "\\/",
+      "ok": true
+    },
+    {
+      "pattern": "/",
+      "ok": true
+    },
+    {
+      "pattern": "a|",
+      "ok": true
+    },
+    {
+      "pattern": "|",
+      "ok": true
+    },
+    {
+      "pattern": "(|a)",
+      "ok": true
+    },
+    {
+      "pattern": "x{2147483648}",
+      "ok": true
+    },
+    {
+      "pattern": "\\u{1F600}",
+      "ok": true
+    },
+    {
+      "pattern": "[\\u{1F600}]",
+      "ok": true
+    },
+    {
+      "pattern": "\\s\\S\\w\\W",
+      "ok": true
+    },
+    {
+      "pattern": "(?<𝑥>a)",
+      "ok": true
+    }
+  ]
+}

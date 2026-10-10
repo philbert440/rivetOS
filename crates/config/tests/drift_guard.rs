@@ -1,4 +1,4 @@
-use std::collections::HashSet;
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
@@ -1041,16 +1041,90 @@ fn show(template: &Template) -> String {
     out
 }
 
-fn report(kind: &str, hits: &[&Hit]) -> String {
-    let mut lines = vec![format!("{kind}: {}", hits.len())];
-    for hit in hits.iter().take(20) {
-        lines.push(format!("{}:{} {}", hit.file, hit.line, show(&hit.template)));
+fn located(hits: &[Hit], template: &Template) -> String {
+    let mut spots = Vec::new();
+    for hit in hits {
+        if hit.template == *template {
+            spots.push(format!("{}:{}", hit.file, hit.line));
+        }
     }
-    lines.join("\n")
+    spots.join(" ")
 }
 
-fn set_of(hits: &[Hit]) -> HashSet<Template> {
-    hits.iter().map(|hit| hit.template.clone()).collect()
+fn counts(hits: &[Hit]) -> HashMap<Template, usize> {
+    let mut map = HashMap::new();
+    for hit in hits {
+        *map.entry(hit.template.clone()).or_default() += 1;
+    }
+    map
+}
+
+fn site_problems(ts: &[Hit], rust: &[Hit]) -> Vec<String> {
+    let ts_counts = counts(ts);
+    let rust_counts = counts(rust);
+    let ts_table = ts_exemptions();
+    let rust_table = rust_exemptions();
+    let mut templates: Vec<Template> = ts_counts
+        .keys()
+        .chain(rust_counts.keys())
+        .cloned()
+        .collect();
+    templates.sort_by_key(show);
+    templates.dedup();
+    let mut problems = Vec::new();
+    for template in templates {
+        if find_exempt(&template, &ts_table).is_some()
+            || find_exempt(&template, &rust_table).is_some()
+        {
+            continue;
+        }
+        let ts_count = ts_counts.get(&template).copied().unwrap_or(0);
+        let rust_count = rust_counts.get(&template).copied().unwrap_or(0);
+        if ts_count != rust_count {
+            problems.push(format!(
+                "site count ts {ts_count} [{}] rust {rust_count} [{}]: {}",
+                located(ts, &template),
+                located(rust, &template),
+                show(&template)
+            ));
+        }
+    }
+    for item in &ts_table {
+        let found = ts.iter().any(|hit| hit.template == item.template);
+        let matched = rust.iter().any(|hit| hit.template == item.template);
+        if !(found && !matched) {
+            problems.push(format!("stale typescript exemption: {}", item.reason));
+        }
+    }
+    for item in &rust_table {
+        let found = rust.iter().any(|hit| hit.template == item.template);
+        let matched = ts.iter().any(|hit| hit.template == item.template);
+        if !(found && !matched) {
+            problems.push(format!("stale rust exemption: {}", item.reason));
+        }
+    }
+    problems
+}
+
+fn den_unknown_harness(hit: &Hit) -> bool {
+    hit.file.ends_with("crates/config/src/validate/den.rs")
+        && hit
+            .template
+            .parts
+            .iter()
+            .any(|part| matches!(part, Part::Lit(text) if text.contains("Unknown harness id")))
+}
+
+fn typescript_template_prefix(source: &str, prefix: &str) -> String {
+    let needle = format!("`{prefix}${{");
+    let start = source
+        .find(&needle)
+        .unwrap_or_else(|| panic!("missing {prefix}"));
+    let from = start + 1;
+    let hole = source[from..]
+        .find("${")
+        .unwrap_or_else(|| panic!("missing hole after {prefix}"));
+    source[from..from + hole].to_string()
 }
 
 fn ts_exemptions() -> Vec<Exempt> {
@@ -1130,70 +1204,46 @@ fn find_exempt<'a>(template: &Template, table: &'a [Exempt]) -> Option<&'a Exemp
 #[test]
 fn rust_message_templates_match_typescript() {
     let root = repo_root();
-    let rust = rust_hits(&root);
-    let ts = set_of(&ts_hits(&root));
-    let table = rust_exemptions();
-    let mut bad = Vec::new();
-    let mut seen = HashSet::new();
-    for hit in &rust {
-        if ts.contains(&hit.template) || find_exempt(&hit.template, &table).is_some() {
-            continue;
-        }
-        if seen.insert(hit.template.clone()) {
-            bad.push(hit);
-        }
-    }
-    assert!(
-        bad.is_empty(),
-        "{}",
-        report("rust templates with no typescript counterpart", &bad)
-    );
-    for item in &table {
-        let found = rust.iter().any(|hit| hit.template == item.template);
-        let matched = ts.contains(&item.template);
-        assert!(found && !matched, "stale rust exemption: {}", item.reason);
-    }
+    let problems = site_problems(&ts_hits(&root), &rust_hits(&root));
+    assert!(problems.is_empty(), "{}", problems.join("\n"));
 }
 
 #[test]
 fn typescript_messages_have_one_rust_counterpart() {
     let root = repo_root();
+    let problems = site_problems(&ts_hits(&root), &rust_hits(&root));
+    assert!(problems.is_empty(), "{}", problems.join("\n"));
+}
+
+#[test]
+fn deleting_the_den_unknown_harness_warning_fails() {
+    let root = repo_root();
     let ts = ts_hits(&root);
-    let rust = set_of(&rust_hits(&root));
-    let table = ts_exemptions();
-    let mut bad = Vec::new();
-    let mut seen = HashSet::new();
-    for hit in &ts {
-        if rust.contains(&hit.template) || find_exempt(&hit.template, &table).is_some() {
-            continue;
-        }
-        if seen.insert(hit.template.clone()) {
-            bad.push(hit);
-        }
-    }
+    let rust = rust_hits(&root);
+    let mut dropped = rust.clone();
+    let before = dropped.len();
+    dropped.retain(|hit| !den_unknown_harness(hit));
+    assert_eq!(before - dropped.len(), 1);
+    let problems = site_problems(&ts, &dropped);
     assert!(
-        bad.is_empty(),
-        "{}",
-        report("typescript messages without one rust counterpart", &bad)
+        !problems.is_empty(),
+        "dropping den.rs unknown-harness warning stayed green"
     );
-    for item in &table {
-        let found = ts.iter().any(|hit| hit.template == item.template);
-        let matched = rust.contains(&item.template);
-        assert!(
-            found && !matched,
-            "stale typescript exemption: {}",
-            item.reason
-        );
-    }
 }
 
 #[test]
 fn tool_result_prefixes_match_typescript_templates() {
     let root = repo_root();
-    let rust = std::fs::read_to_string(root.join("crates/protocol/src/tool_result.rs")).unwrap();
     let ts = std::fs::read_to_string(root.join("packages/core/src/domain/tools-aisdk.ts")).unwrap();
-    assert!(rust.contains("\"Blocked: \""), "{rust}");
-    assert!(rust.contains("\"Error: \""), "{rust}");
-    assert!(ts.contains("`Blocked: ${"), "{ts}");
-    assert!(ts.contains("`Error: ${"), "{ts}");
+    let blocked = typescript_template_prefix(&ts, "Blocked: ");
+    let error = typescript_template_prefix(&ts, "Error: ");
+    assert_eq!(protocol::BLOCKED_PREFIX, blocked);
+    assert_eq!(protocol::TOOL_ERROR_PREFIX, error);
+    let reason = "hook";
+    let rendered_blocked = format!("{}{reason}", protocol::BLOCKED_PREFIX);
+    let rendered_error = format!("{}{reason}", protocol::TOOL_ERROR_PREFIX);
+    assert_eq!(rendered_blocked, format!("{blocked}{reason}"));
+    assert_eq!(rendered_error, format!("{error}{reason}"));
+    assert!(rendered_blocked.starts_with(&blocked));
+    assert!(rendered_error.starts_with(&error));
 }

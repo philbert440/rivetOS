@@ -17,6 +17,7 @@ on:
       - packages/types/src/**
       - packages/cli/src/lib/**
       - packages/capture-core/src/**
+      - packages/core/src/**
       - plugins/providers/claude-cli/src/**
   pull_request:
     branches:
@@ -35,6 +36,7 @@ on:
       - packages/types/src/**
       - packages/cli/src/lib/**
       - packages/capture-core/src/**
+      - packages/core/src/**
       - plugins/providers/claude-cli/src/**
   workflow_dispatch: {}
 

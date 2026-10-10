@@ -155,12 +155,7 @@ fn validate_harness(
         }
     }
     if let Some(effort) = section.get("effort") {
-        let low = protocol::ThinkingLevel::Low.as_str();
-        let medium = protocol::ThinkingLevel::Medium.as_str();
-        let high = protocol::ThinkingLevel::High.as_str();
-        let ok = effort
-            .as_str()
-            .is_some_and(|text| text == low || text == medium || text == high);
+        let ok = effort.as_str().is_some_and(harness_effort_allowed);
         if !ok {
             issues.error(
                 format!("{path}.effort"),
@@ -340,11 +335,7 @@ fn validate_verifier(eval_section: &Map<String, Value>, issues: &mut Issues) {
     let Some(executor) = verifier.as_object().and_then(|map| map.get("executor")) else {
         return;
     };
-    let chat_loop = protocol::TaskExecutorKind::ChatLoop.as_str();
-    let harness_session = protocol::TaskExecutorKind::HarnessSession.as_str();
-    let ok = executor
-        .as_str()
-        .is_some_and(|text| text == chat_loop || text == harness_session);
+    let ok = executor.as_str().is_some_and(verifier_executor_allowed);
     if !ok {
         issues.error(
             format!("{path}.verifier.executor"),
@@ -374,4 +365,19 @@ fn validate_escalation(eval_section: &Map<String, Value>, issues: &mut Issues) {
             format!("\"{path}.escalation.channel\" must be a string"),
         );
     }
+}
+
+fn harness_effort_allowed(text: &str) -> bool {
+    protocol::ThinkingLevel::ALL.iter().any(|level| {
+        !matches!(
+            level,
+            protocol::ThinkingLevel::Off | protocol::ThinkingLevel::XHigh
+        ) && level.as_str() == text
+    })
+}
+
+fn verifier_executor_allowed(text: &str) -> bool {
+    protocol::TaskExecutorKind::ALL
+        .iter()
+        .any(|kind| *kind != protocol::TaskExecutorKind::Mesh && kind.as_str() == text)
 }

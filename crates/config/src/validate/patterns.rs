@@ -1,16 +1,18 @@
 use std::sync::OnceLock;
 
-use regex::Regex;
+fn compile(pattern: &str) -> Option<regress::Regex> {
+    regress::Regex::new(pattern).ok()
+}
 
-fn compile(pattern: &str) -> Option<Regex> {
-    Regex::new(pattern).ok()
+fn matches(pattern: &regress::Regex, text: &str) -> bool {
+    pattern.find(text).is_some()
 }
 
 pub(crate) fn is_hardcoded_api_key(key: &str) -> bool {
     if key.contains("${") {
         return false;
     }
-    static PATTERNS: OnceLock<Vec<Regex>> = OnceLock::new();
+    static PATTERNS: OnceLock<Vec<regress::Regex>> = OnceLock::new();
     PATTERNS
         .get_or_init(|| {
             [
@@ -24,37 +26,126 @@ pub(crate) fn is_hardcoded_api_key(key: &str) -> bool {
             .collect()
         })
         .iter()
-        .any(|pattern| pattern.is_match(key))
+        .any(|pattern| matches(pattern, key))
 }
 
 pub(crate) fn is_redos_pattern(source: &str) -> bool {
-    static PATTERN: OnceLock<Option<Regex>> = OnceLock::new();
+    static PATTERN: OnceLock<Option<regress::Regex>> = OnceLock::new();
     PATTERN
         .get_or_init(|| compile(r"\((?:[^\\)]|\\.)*[+*](?:[^\\)]|\\.)*\)(?:[+*?]|\{\d+,?\d*\})"))
         .as_ref()
-        .is_some_and(|pattern| pattern.is_match(source))
+        .is_some_and(|pattern| matches(pattern, source))
 }
 
 pub(crate) fn is_shell_unsafe(text: &str) -> bool {
-    static PATTERN: OnceLock<Option<Regex>> = OnceLock::new();
+    static PATTERN: OnceLock<Option<regress::Regex>> = OnceLock::new();
     PATTERN
         .get_or_init(|| compile(r#"[\s;&|`$<>()'"\\]"#))
         .as_ref()
-        .is_some_and(|pattern| pattern.is_match(text))
+        .is_some_and(|pattern| matches(pattern, text))
 }
 
 pub(crate) fn has_control_char(text: &str) -> bool {
-    static PATTERN: OnceLock<Option<Regex>> = OnceLock::new();
-    PATTERN
-        .get_or_init(|| compile(r"[\u{0000}-\u{001f}]"))
-        .as_ref()
-        .is_some_and(|pattern| pattern.is_match(text))
+    text.chars()
+        .any(|ch| ('\u{0000}'..='\u{001f}').contains(&ch))
 }
 
 pub(crate) fn invalid_regex_message(source: &str) -> Option<String> {
-    let err = regress::Regex::with_flags(source, "g").err()?;
+    let prepared = prepare_pattern(source);
+    let err = regress::Regex::with_flags(&prepared, "g").err()?;
     let detail = v8_detail(source, &err.to_string());
     Some(format!("Invalid regex: {detail}"))
+}
+
+fn prepare_pattern(source: &str) -> String {
+    let chars: Vec<char> = source.chars().collect();
+    let mut out = String::new();
+    let mut index = 0;
+    let mut in_class = false;
+    while index < chars.len() {
+        let ch = chars[index];
+        if ch == '\\' {
+            if index + 1 >= chars.len() {
+                out.push('\\');
+                break;
+            }
+            let next = chars[index + 1];
+            if next == 'u' && chars.get(index + 2) == Some(&'{') {
+                out.push('u');
+                index += 2;
+                continue;
+            }
+            out.push('\\');
+            out.push(next);
+            index += 2;
+            continue;
+        }
+        if ch == '[' && !in_class {
+            in_class = true;
+            out.push('[');
+            index += 1;
+            if chars.get(index) == Some(&'^') {
+                out.push('^');
+                index += 1;
+            }
+            if chars.get(index) == Some(&']') {
+                out.push(']');
+                index += 1;
+            }
+            continue;
+        }
+        if ch == ']' && in_class {
+            in_class = false;
+            out.push(']');
+            index += 1;
+            continue;
+        }
+        if ch == '{' && !in_class && oversized_quantifier(&chars, index) {
+            out.push('\\');
+            out.push('{');
+            index += 1;
+            continue;
+        }
+        out.push(ch);
+        index += 1;
+    }
+    out
+}
+
+fn oversized_quantifier(chars: &[char], brace: usize) -> bool {
+    let Some((_, mut index, mut over)) = read_bound(chars, brace + 1) else {
+        return false;
+    };
+    if index < chars.len() && chars[index] == ',' {
+        index += 1;
+        if let Some((_, max_end, max_over)) = read_bound(chars, index) {
+            over = over || max_over;
+            index = max_end;
+        }
+    }
+    index < chars.len() && chars[index] == '}' && over
+}
+
+fn read_bound(chars: &[char], start: usize) -> Option<(u64, usize, bool)> {
+    if start >= chars.len() || !chars[start].is_ascii_digit() {
+        return None;
+    }
+    let mut value = 0u64;
+    let mut over = false;
+    let mut index = start;
+    while index < chars.len() && chars[index].is_ascii_digit() {
+        let digit = u64::from(chars[index] as u8 - b'0');
+        if value > (u64::MAX - digit) / 10 {
+            over = true;
+        } else {
+            value = value * 10 + digit;
+            if value > 2_147_483_647 {
+                over = true;
+            }
+        }
+        index += 1;
+    }
+    Some((value, index, over))
 }
 
 fn v8_detail(source: &str, regress_text: &str) -> String {
@@ -74,13 +165,8 @@ fn v8_detail(source: &str, regress_text: &str) -> String {
 }
 
 fn v8_reason<'a>(source: &str, regress_text: &'a str) -> &'a str {
-    if regress_text == "Invalid atom character" {
-        if lone_quantifier_brackets(source) {
-            "Lone quantifier brackets"
-        } else {
-            "Nothing to repeat"
-        }
-    } else if regress_text == "Invalid braced quantifier"
+    if regress_text == "Invalid atom character"
+        || regress_text == "Invalid braced quantifier"
         || regress_text == "Quantifier not allowed here"
     {
         "Nothing to repeat"
@@ -90,18 +176,18 @@ fn v8_reason<'a>(source: &str, regress_text: &'a str) -> &'a str {
         } else {
             "Unterminated group"
         }
-    } else if regress_text == "Invalid token at named capture group identifier"
-        || regress_text == "Invalid group modifier"
-    {
+    } else if regress_text == "Invalid group modifier" {
         "Invalid group"
+    } else if regress_text == "Invalid token at named capture group identifier" {
+        if source.contains("(?<") {
+            "Invalid capture group name"
+        } else {
+            "Invalid group"
+        }
     } else if regress_text == "Unbalanced bracket" {
         "Unterminated character class"
-    } else if regress_text == "Incomplete escape"
-        || regress_text == "Unterminated escape"
-        || regress_text == "Invalid character escape"
-        || regress_text == "Invalid unicode escape"
-    {
-        "Invalid escape"
+    } else if regress_text == "Incomplete escape" {
+        "\\ at end of pattern"
     } else if regress_text == "Invalid named backreference syntax"
         || regress_text.starts_with("Backreference to invalid named capture group")
     {
@@ -109,7 +195,11 @@ fn v8_reason<'a>(source: &str, regress_text: &'a str) -> &'a str {
     } else if regress_text == "Duplicate capture group name" {
         "Duplicate capture group name"
     } else if regress_text == "Invalid quantifier" {
-        quantifier_reason(source)
+        if reversed_bounds(source) {
+            "numbers out of order in {} quantifier"
+        } else {
+            regress_text
+        }
     } else if regress_text
         == "Range values reversed, start char code is greater than end char code."
         || regress_text == "Invalid character range"
@@ -118,12 +208,6 @@ fn v8_reason<'a>(source: &str, regress_text: &'a str) -> &'a str {
     } else {
         regress_text
     }
-}
-
-fn lone_quantifier_brackets(source: &str) -> bool {
-    let brace = source.contains('{') || source.contains('}');
-    let repeat = source.contains('*') || source.contains('+') || source.contains('?');
-    brace && !repeat
 }
 
 fn unmatched_close(source: &str) -> bool {
@@ -156,16 +240,6 @@ fn unmatched_close(source: &str) -> bool {
     false
 }
 
-fn quantifier_reason(source: &str) -> &'static str {
-    if reversed_bounds(source) {
-        "numbers out of order in {} quantifier"
-    } else if incomplete_quantifier(source) {
-        "Incomplete quantifier"
-    } else {
-        "Lone quantifier brackets"
-    }
-}
-
 fn reversed_bounds(source: &str) -> bool {
     let bytes = source.as_bytes();
     let mut index = 0;
@@ -176,33 +250,6 @@ fn reversed_bounds(source: &str) -> bool {
             && min > max
         {
             return true;
-        }
-        index += 1;
-    }
-    false
-}
-
-fn incomplete_quantifier(source: &str) -> bool {
-    let bytes = source.as_bytes();
-    let mut index = 0;
-    while index < bytes.len() {
-        if bytes[index] == b'{' {
-            let mut cursor = index + 1;
-            let mut digits = false;
-            while cursor < bytes.len() && bytes[cursor].is_ascii_digit() {
-                digits = true;
-                cursor += 1;
-            }
-            if cursor < bytes.len() && bytes[cursor] == b',' {
-                digits = true;
-                cursor += 1;
-                while cursor < bytes.len() && bytes[cursor].is_ascii_digit() {
-                    cursor += 1;
-                }
-            }
-            if digits && (cursor >= bytes.len() || bytes[cursor] != b'}') {
-                return true;
-            }
         }
         index += 1;
     }
@@ -248,65 +295,65 @@ pub(crate) fn api_key_env_hint(name: &str) -> String {
 }
 
 #[cfg(test)]
-mod v8_map {
-    use super::v8_reason;
+mod v8_golden {
+    use super::{invalid_regex_message, is_shell_unsafe, prepare_pattern};
+    use serde_json::Value;
 
-    fn words(parts: &[&str]) -> String {
-        let mut out = String::new();
-        for (index, part) in parts.iter().enumerate() {
-            if index > 0 {
-                out.push(' ');
+    #[test]
+    fn node24_flag_g_matches_v8() {
+        let doc: Value =
+            serde_json::from_str(include_str!("../../tests/golden/v8-regex-g.node24.json"))
+                .unwrap();
+        let rows = doc.get("rows").and_then(Value::as_array).unwrap();
+        assert_eq!(rows.len(), 78);
+        for row in rows {
+            let pattern = row.get("pattern").and_then(Value::as_str).unwrap();
+            let ok = row.get("ok").and_then(Value::as_bool).unwrap();
+            let actual = invalid_regex_message(pattern);
+            if ok {
+                assert!(actual.is_none(), "{pattern:?}={actual:?}");
+            } else {
+                let message = row.get("message").and_then(Value::as_str).unwrap();
+                let mut expected = String::new();
+                expected.push_str("Invalid regex: ");
+                expected.push_str(message);
+                assert_eq!(actual.as_deref(), Some(expected.as_str()), "{pattern:?}");
             }
-            out.push_str(part);
         }
-        out
     }
 
     #[test]
-    fn unicode_only_reasons_follow_source_shape() {
-        let atom = words(&["Invalid", "atom", "character"]);
-        let quant = words(&["Invalid", "quantifier"]);
-        let lone = words(&["Lone", "quantifier", "brackets"]);
-        let incomplete = words(&["Incomplete", "quantifier"]);
-        let escape = words(&["Invalid", "escape"]);
-        let range = words(&["Range", "out", "of", "order", "in", "character", "class"]);
-        let named = words(&["Invalid", "named", "capture", "referenced"]);
-        assert_eq!(v8_reason("{", &atom), lone);
-        assert_eq!(v8_reason("}", &atom), lone);
-        assert_eq!(v8_reason("a{1", &quant), incomplete);
-        assert_eq!(
-            v8_reason("a{2,1}", &quant),
-            words(&["numbers", "out", "of", "order", "in", "{}", "quantifier"])
-        );
-        assert_eq!(v8_reason("\\", &words(&["Unterminated", "escape"])), escape);
-        assert_eq!(
-            v8_reason("\\", &words(&["Invalid", "character", "escape"])),
-            escape
-        );
-        assert_eq!(
-            v8_reason("\\", &words(&["Invalid", "unicode", "escape"])),
-            escape
-        );
-        assert_eq!(
-            v8_reason("[z-a]", &words(&["Invalid", "character", "range"])),
-            range
-        );
-        assert_eq!(
-            v8_reason(
-                "\\k",
-                &words(&["Invalid", "named", "backreference", "syntax"])
-            ),
-            named
-        );
-        let backref = words(&[
-            "Backreference",
-            "to",
-            "invalid",
-            "named",
-            "capture",
-            "group:",
-            "b",
-        ]);
-        assert_eq!(v8_reason("(?<a>x)\\k<b>", &backref), named);
+    fn legacy_quantifiers_and_unicode_escapes_match_v8() {
+        let huge = regress::Regex::with_flags(&prepare_pattern("x{2147483648}"), "g").unwrap();
+        assert!(huge.find("x{2147483648}").is_some());
+        assert!(huge.find("x").is_none());
+        let escape = regress::Regex::with_flags(&prepare_pattern(r"\u{1F600}"), "g").unwrap();
+        assert!(escape.find("u{1F600}").is_some());
+        assert!(escape.find("\u{1F600}").is_none());
+        let class = regress::Regex::with_flags(&prepare_pattern(r"[\u{1F600}]"), "g").unwrap();
+        assert!(class.find("u").is_some());
+        assert!(class.find("\u{1F600}").is_none());
+        let folded = regress::Regex::with_flags(&prepare_pattern("(?i:secret)"), "g").unwrap();
+        assert!(folded.find("SECRET").is_some());
+        let sensitive = regress::Regex::with_flags(&prepare_pattern("(?-i:a)"), "g").unwrap();
+        assert!(sensitive.find("a").is_some());
+        assert!(sensitive.find("A").is_none());
+        let annex = regress::Regex::with_flags(&prepare_pattern("a{1,2,3}"), "g").unwrap();
+        assert!(annex.find("a{1,2,3}").is_some());
+    }
+
+    #[test]
+    fn shell_unsafe_uses_javascript_whitespace() {
+        assert!(is_shell_unsafe("a\u{FEFF}b"));
+        let mut next_line = String::from("a");
+        next_line.push('\u{0085}');
+        next_line.push('b');
+        assert!(!is_shell_unsafe(&next_line));
+        let mut spaced = String::from("a");
+        spaced.push(' ');
+        spaced.push('b');
+        assert!(is_shell_unsafe(&spaced));
+        assert!(is_shell_unsafe("a;b"));
+        assert!(!is_shell_unsafe("ab"));
     }
 }

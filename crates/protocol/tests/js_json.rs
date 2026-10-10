@@ -1,5 +1,3 @@
-use serde_json::Value;
-
 #[test]
 fn golden_parse_then_stringify() {
     let input = r#"{"b":1.0,"2":2,"a":12345678901234567890,"1":0.1,"neg":-0,"big":1e21,"small":1.5e-7,"nested":{"z":1,"10":true,"9":null}}"#;
@@ -56,7 +54,10 @@ fn string_escapes_follow_json_stringify() {
     text.push('é');
     text.push('<');
     let expected = "\"\\\"\\\\\\b\\f\\n\\r\\t\\u0000\\u000b\\u001f/\u{2028}\u{2029}é<\"";
-    assert_eq!(protocol::js::stringify(&Value::String(text)), expected);
+    assert_eq!(
+        protocol::js::stringify(&protocol::js::JsValue::from_text(&text)),
+        expected
+    );
 }
 
 #[test]
@@ -66,8 +67,29 @@ fn paired_surrogates_stringify_as_the_scalar() {
 }
 
 #[test]
-fn parse_rejects_invalid_json_and_lone_surrogates() {
+fn parse_rejects_invalid_json() {
     assert!(protocol::js::parse("").is_err());
     assert!(protocol::js::parse("{").is_err());
-    assert!(protocol::js::parse(r#""\uD800""#).is_err());
+    assert!(protocol::js::parse("[").is_err());
+    assert!(protocol::js::parse("1e").is_err());
+    assert!(protocol::js::parse(r#""\u""#).is_err());
+}
+
+#[test]
+fn lone_surrogate_round_trips_as_escape() {
+    let value = protocol::js::parse(r#""\ud800""#).unwrap();
+    assert_eq!(protocol::js::stringify(&value), r#""\ud800""#);
+    assert_eq!(value.as_str(), Some("\u{FFFD}"));
+    let upper = protocol::js::parse(r#""\uD800""#).unwrap();
+    assert_eq!(protocol::js::stringify(&upper), r#""\ud800""#);
+}
+
+#[test]
+fn non_finite_numbers_stringify_as_null() {
+    let value = protocol::js::parse("1e400").unwrap();
+    assert_eq!(protocol::js::stringify(&value), "null");
+    let negative = protocol::js::parse("-1e400").unwrap();
+    assert_eq!(protocol::js::stringify(&negative), "null");
+    let object = protocol::js::parse(r#"{"n":1e400}"#).unwrap();
+    assert_eq!(protocol::js::stringify(&object), r#"{"n":null}"#);
 }

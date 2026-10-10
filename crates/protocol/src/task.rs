@@ -1,9 +1,10 @@
 use serde::de::Deserializer;
 use serde::ser::Error;
 use serde::{Deserialize, Serialize, Serializer};
-use serde_json::{Map, Value};
+use serde_json::Value;
 
 use crate::JsNumber;
+use crate::js::{JsObject, JsValue, from_serde};
 
 pub const TASK_RESULT_FENCE: &str = "TASK_RESULT";
 
@@ -148,22 +149,22 @@ pub struct TaskResult {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ParsedArtifact {
-    object: Map<String, Value>,
+    object: JsObject,
 }
 
 impl ParsedArtifact {
     pub fn kind(&self) -> Option<ArtifactKind> {
         self.object
             .get("kind")
-            .and_then(Value::as_str)
+            .and_then(JsValue::as_str)
             .map(artifact_kind_from)
     }
 
     pub fn r#ref(&self) -> Option<&str> {
-        self.object.get("ref").and_then(Value::as_str)
+        self.object.get("ref").and_then(JsValue::as_str)
     }
 
-    pub fn note(&self) -> Option<&Value> {
+    pub fn note(&self) -> Option<&JsValue> {
         self.object.get("note")
     }
 }
@@ -182,25 +183,29 @@ impl<'de> Deserialize<'de> for ParsedArtifact {
     where
         D: Deserializer<'de>,
     {
-        Map::deserialize(deserializer).map(|object| Self { object })
+        let value = Value::deserialize(deserializer)?;
+        match from_serde(&value) {
+            JsValue::Object(object) => Ok(Self { object }),
+            _ => Err(serde::de::Error::custom("artifact")),
+        }
     }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ParsedCriterion {
-    object: Map<String, Value>,
+    object: JsObject,
 }
 
 impl ParsedCriterion {
     pub fn id(&self) -> Option<&str> {
-        self.object.get("id").and_then(Value::as_str)
+        self.object.get("id").and_then(JsValue::as_str)
     }
 
     pub fn met(&self) -> Option<bool> {
-        self.object.get("met").and_then(Value::as_bool)
+        self.object.get("met").and_then(JsValue::as_bool)
     }
 
-    pub fn evidence(&self) -> Option<&Value> {
+    pub fn evidence(&self) -> Option<&JsValue> {
         self.object.get("evidence")
     }
 }
@@ -214,11 +219,11 @@ impl Serialize for ParsedCriterion {
     }
 }
 
-fn serialize_preserved<S>(object: &Map<String, Value>, serializer: S) -> Result<S::Ok, S::Error>
+fn serialize_preserved<S>(object: &JsObject, serializer: S) -> Result<S::Ok, S::Error>
 where
     S: Serializer,
 {
-    let text = crate::js::stringify(&Value::Object(object.clone()));
+    let text = crate::js::stringify(&JsValue::Object(object.clone()));
     match serde_json::value::RawValue::from_string(text) {
         Ok(raw) => raw.serialize(serializer),
         Err(err) => Err(S::Error::custom(err)),
@@ -230,7 +235,11 @@ impl<'de> Deserialize<'de> for ParsedCriterion {
     where
         D: Deserializer<'de>,
     {
-        Map::deserialize(deserializer).map(|object| Self { object })
+        let value = Value::deserialize(deserializer)?;
+        match from_serde(&value) {
+            JsValue::Object(object) => Ok(Self { object }),
+            _ => Err(serde::de::Error::custom("criterion")),
+        }
     }
 }
 
@@ -275,7 +284,7 @@ pub fn parse_task_result(text: &str) -> Option<ParsedTaskResult> {
 }
 
 pub fn parse_task_result_json(json: &str) -> Option<ParsedTaskResult> {
-    let value = serde_json::from_str::<Value>(json).ok()?;
+    let value = crate::js::parse(json).ok()?;
     validate_shape(&value)
 }
 
@@ -290,15 +299,15 @@ fn fence_content_offset(after_marker: &str) -> Option<usize> {
     Some(newline + 1)
 }
 
-fn validate_shape(raw: &Value) -> Option<ParsedTaskResult> {
+fn validate_shape(raw: &JsValue) -> Option<ParsedTaskResult> {
     let obj = raw.as_object()?;
     let verdict_text = obj.get("verdict")?.as_str()?;
     let verdict = coerce_verdict(verdict_text)?;
     let summary = obj.get("summary")?.as_str()?.to_string();
-    let output = match obj.get("output") {
-        Some(Value::String(text)) => Some(text.clone()),
-        _ => None,
-    };
+    let output = obj
+        .get("output")
+        .and_then(JsValue::as_str)
+        .map(str::to_string);
     let artifacts = collect_artifacts(obj.get("artifacts"))?;
     let criteria_self_report = collect_criteria(obj.get("criteriaSelfReport"))?;
     Some(ParsedTaskResult {
@@ -320,8 +329,8 @@ fn coerce_verdict(verdict: &str) -> Option<TaskVerdict> {
     }
 }
 
-fn collect_artifacts(value: Option<&Value>) -> Option<Vec<ParsedArtifact>> {
-    let Some(Value::Array(items)) = value else {
+fn collect_artifacts(value: Option<&JsValue>) -> Option<Vec<ParsedArtifact>> {
+    let Some(items) = value.and_then(JsValue::as_array) else {
         return Some(Vec::new());
     };
     let mut artifacts = Vec::new();
@@ -332,8 +341,8 @@ fn collect_artifacts(value: Option<&Value>) -> Option<Vec<ParsedArtifact>> {
         let Some(object) = item.as_object() else {
             continue;
         };
-        if object.get("ref").is_some_and(Value::is_string)
-            && object.get("kind").is_some_and(Value::is_string)
+        if object.get("ref").is_some_and(JsValue::is_string)
+            && object.get("kind").is_some_and(JsValue::is_string)
         {
             artifacts.push(ParsedArtifact {
                 object: object.clone(),
@@ -343,8 +352,8 @@ fn collect_artifacts(value: Option<&Value>) -> Option<Vec<ParsedArtifact>> {
     Some(artifacts)
 }
 
-fn collect_criteria(value: Option<&Value>) -> Option<Option<Vec<ParsedCriterion>>> {
-    let Some(Value::Array(items)) = value else {
+fn collect_criteria(value: Option<&JsValue>) -> Option<Option<Vec<ParsedCriterion>>> {
+    let Some(items) = value.and_then(JsValue::as_array) else {
         return Some(None);
     };
     let mut criteria = Vec::new();
@@ -355,8 +364,8 @@ fn collect_criteria(value: Option<&Value>) -> Option<Option<Vec<ParsedCriterion>
         let Some(object) = item.as_object() else {
             continue;
         };
-        if object.get("id").is_some_and(Value::is_string)
-            && object.get("met").is_some_and(Value::is_boolean)
+        if object.get("id").is_some_and(JsValue::is_string)
+            && object.get("met").is_some_and(JsValue::is_boolean)
         {
             criteria.push(ParsedCriterion {
                 object: object.clone(),

@@ -147,3 +147,29 @@ fn next_line_at_fence_tag_is_not_whitespace() {
     let text = "```TASK_RESULT\u{0085}\n{\"verdict\":\"completed\",\"summary\":\"s\"}\n```";
     assert!(parse_task_result(text).is_none());
 }
+
+#[test]
+fn lone_surrogate_in_artifact_note_is_kept() {
+    let raw = r#"{"verdict":"completed","summary":"ok","artifacts":[{"kind":"file","ref":"x","note":"\ud800"}]}"#;
+    let parsed = parse_task_result_json(raw).unwrap();
+    let note = parsed.artifacts[0].note().unwrap();
+    assert_eq!(protocol::js::stringify(note), r#""\ud800""#);
+    assert_eq!(note.as_str(), Some("\u{FFFD}"));
+}
+
+#[test]
+fn non_finite_artifact_note_stringifies_as_null() {
+    let raw = r#"{"verdict":"completed","summary":"ok","artifacts":[{"kind":"file","ref":"x","note":1e400}]}"#;
+    let parsed = parse_task_result_json(raw).unwrap();
+    let note = parsed.artifacts[0].note().unwrap();
+    assert_eq!(protocol::js::stringify(note), "null");
+}
+
+#[test]
+fn lone_surrogate_summary_is_replacement_and_kept() {
+    let parsed = parse_task_result_json(r#"{"verdict":"completed","summary":"\ud83d"}"#).unwrap();
+    assert_eq!(parsed.summary, "\u{FFFD}");
+    let fenced = "```TASK_RESULT\n{\"verdict\":\"completed\",\"summary\":\"\\ud83d\"}\n```";
+    let parsed = parse_task_result(fenced).unwrap();
+    assert_eq!(parsed.summary, "\u{FFFD}");
+}
