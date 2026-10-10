@@ -111,7 +111,9 @@ export function EffortPicker(props: {
                 }}
                 className={cn(
                   'flex w-full items-start gap-2.5 rounded-md px-2.5 py-2 text-left transition-colors',
-                  active ? 'bg-panel text-ink' : 'text-ink-dim hover:bg-panel hover:text-ink',
+                  active
+                    ? 'bg-em-container text-on-em-container classic:bg-panel classic:text-ink'
+                    : 'text-ink-dim hover:bg-ink/8 hover:text-ink classic:hover:bg-panel',
                 )}
               >
                 <Icon className={cn('mt-0.5 size-4 shrink-0', active && 'text-em')} />

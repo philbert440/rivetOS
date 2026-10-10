@@ -112,10 +112,22 @@ describe('omarchyAppTokens', () => {
       '--bad',
       '--user',
       '--mono',
+      // Derived in the classic style (theme.css @theme) from tokens Omarchy
+      // does emit, so an Omarchy palette flows through them; only the
+      // material style (never Omarchy) sets them literally.
+      '--color-on-em',
+      '--color-em-container',
+      '--color-on-em-container',
+      '--color-surface',
     ])
     for (const name of [...declared]) {
-      // Font and corner-radius tokens are type/shape, not palette.
-      if (name.startsWith('--font-') || name.startsWith('--radius') || aliases.has(name)) {
+      // Font, corner-radius and elevation tokens are type/shape, not palette.
+      if (
+        name.startsWith('--font-') ||
+        name.startsWith('--radius') ||
+        name.startsWith('--shadow-') ||
+        aliases.has(name)
+      ) {
         declared.delete(name)
       }
     }

@@ -309,30 +309,24 @@ export function FileEditor(props: FileEditorProps): JSX.Element {
           type="button"
           disabled={readOnly || saving || loading || Boolean(loadError)}
           onClick={() => void doSave()}
-          className="rounded border border-line px-2 py-0.5 font-mono text-[11px] hover:border-em disabled:opacity-40"
+          className="rounded-pill border border-line px-2 py-0.5 text-xs hover:bg-ink/6 disabled:opacity-40 classic:hover:bg-transparent classic:hover:border-em classic:text-[11px]"
           title="Save (Ctrl/Cmd+S)"
         >
           {saving ? 'Saving…' : 'Save'}
         </button>
       </div>
       {loadError && (
-        <div className="border-b border-line px-3 py-1.5 font-mono text-xs text-red">
-          {loadError}
-        </div>
+        <div className="border-b border-line px-3 py-1.5 text-xs text-red">{loadError}</div>
       )}
       {saveError && (
-        <div className="border-b border-line px-3 py-1.5 font-mono text-xs text-red">
-          {saveError}
-        </div>
+        <div className="border-b border-line px-3 py-1.5 text-xs text-red">{saveError}</div>
       )}
       {readOnlyReason && (
-        <div className="border-b border-line px-3 py-1.5 font-mono text-xs text-ink-dim">
+        <div className="border-b border-line px-3 py-1.5 text-xs text-ink-dim">
           {readOnlyReason}
         </div>
       )}
-      {loading && !loadError && (
-        <div className="px-3 py-2 font-mono text-xs text-ink-dim">loading…</div>
-      )}
+      {loading && !loadError && <div className="px-3 py-2 text-xs text-ink-dim">loading…</div>}
       <div
         ref={hostRef}
         className="min-h-0 flex-1 overflow-auto bg-panel-2/40"

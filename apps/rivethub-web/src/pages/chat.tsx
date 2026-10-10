@@ -134,12 +134,24 @@ import {
   DRAWER_WIDTH_MIN,
   SplitHandle,
 } from '../components/split-handle.js'
-import { Archive, ArchiveRestore, History, Menu, Pencil, Square, Trash2, X } from 'lucide-react'
+import {
+  Archive,
+  ArchiveRestore,
+  History,
+  Menu,
+  Pencil,
+  Plus,
+  Search,
+  Square,
+  Trash2,
+  X,
+} from 'lucide-react'
 import { Button } from '../components/ui/button.js'
 import { useSessionNames } from '../stores/session-names.js'
 import { useArchived } from '../stores/archived.js'
 import { useSidebarPrefs } from '../stores/sidebar-prefs.js'
 import { useAgentFilter } from '../stores/agent-filter.js'
+import { useUiStyle } from '../stores/theme.js'
 import { startNewConversation } from '../lib/new-conversation.js'
 import { discardDraft } from '../lib/discard-session.js'
 import { shouldCloseHistoryOnSelect } from '../lib/drawer-selection.js'
@@ -656,7 +668,7 @@ export function ChatPage(): JSX.Element {
               tabIndex={-1}
               aria-hidden={true}
               aria-label="Close conversations"
-              className="fixed inset-0 z-30 bg-bg/70"
+              className="fixed inset-0 z-30 bg-black/40 classic:bg-bg/70"
               onClick={() => setHistoryOpen(false)}
             />
           )}
@@ -668,7 +680,7 @@ export function ChatPage(): JSX.Element {
             tabIndex={-1}
             inert={!historyOpen ? true : undefined}
             className={cn(
-              'fixed inset-y-0 right-0 z-40 flex w-64 shrink-0 flex-col border-l border-line bg-panel',
+              'fixed inset-y-0 right-0 z-40 flex w-72 shrink-0 flex-col rounded-l-3xl bg-panel shadow-pop classic:border-l classic:border-line classic:w-64',
               'transition-transform duration-150 motion-reduce:transition-none',
               historyOpen ? 'translate-x-0' : 'translate-x-full',
             )}
@@ -735,7 +747,7 @@ function DrawerItem(props: {
           e.preventDefault()
           commit()
         }}
-        className="mb-1 flex items-center rounded bg-panel-2 px-3 py-1.5"
+        className="mb-0.5 flex items-center rounded-xl bg-panel-2 px-3 py-2 classic:mb-1 classic:py-1.5"
       >
         <input
           autoFocus
@@ -749,7 +761,7 @@ function DrawerItem(props: {
           }}
           onBlur={commit}
           placeholder={props.item.title}
-          className="min-w-0 flex-1 bg-transparent text-xs text-ink outline-none"
+          className="min-w-0 flex-1 bg-transparent text-[13px] text-ink outline-none classic:text-xs"
         />
       </form>
     )
@@ -763,8 +775,8 @@ function DrawerItem(props: {
   const visibleLabel = showTypePill ? typeLabel : (customName ?? props.item.title)
   return (
     <div
-      className={`group mb-1 flex items-center rounded ${
-        props.active ? 'bg-panel-2' : 'hover:bg-panel-2'
+      className={`group mb-0.5 flex items-center rounded-xl transition-colors ${
+        props.active ? 'bg-em-container' : 'hover:bg-ink/6 classic:hover:bg-panel-2'
       }`}
     >
       {props.onToggleNest && kids > 0 && (
@@ -776,7 +788,7 @@ function DrawerItem(props: {
             props.expanded ? 'collapse nested conversations' : 'expand nested conversations'
           }
           title={props.expanded ? 'collapse nested conversations' : 'expand nested conversations'}
-          className="px-1 py-2 font-mono text-[11px] text-ink-dim hover:text-ink"
+          className="px-1 py-2 text-xs text-ink-dim hover:text-ink classic:text-[11px]"
         >
           {props.expanded ? '▾' : '▸'}
         </button>
@@ -789,24 +801,29 @@ function DrawerItem(props: {
             : (props.item.sessionId ??
               (props.item.command ? `${props.item.command} · ${props.item.key}` : props.item.key))
         }
-        className={`flex min-w-0 flex-1 items-center gap-2 px-3 py-2 text-left text-xs ${
-          props.active ? 'text-em' : 'text-ink-dim group-hover:text-ink'
+        className={`flex min-w-0 flex-1 items-center gap-2.5 px-3 py-2.5 text-left text-[13px] classic:gap-2 classic:py-2 classic:text-xs ${
+          props.active
+            ? 'font-medium text-on-em-container classic:font-normal classic:text-em'
+            : 'text-ink-dim group-hover:text-ink'
         }`}
       >
         {props.nested && (
-          <span className="w-3 shrink-0 text-center font-mono text-[11px] text-ink-dim" aria-hidden>
+          <span
+            className="w-3 shrink-0 text-center text-xs text-ink-dim classic:text-[11px]"
+            aria-hidden
+          >
             └
           </span>
         )}
         {showTypePill && (
-          <span className="shrink-0 rounded bg-panel-2 px-1.5 font-mono text-[10px] text-ink">
+          <span className="shrink-0 rounded-md bg-panel-2 px-1.5 text-[11px] text-ink classic:text-[10px]">
             {typeLabel}
           </span>
         )}
         {/* same accent as the Agents rail dot (preset hex, else harness).
             On a nested row it sits after the type pill. */}
         <span
-          className="size-1.5 shrink-0 rounded-full"
+          className="size-2 shrink-0 rounded-full classic:size-1.5"
           style={{
             background: accentFor({
               presetColor: props.item.accent,
@@ -819,7 +836,7 @@ function DrawerItem(props: {
         {!showTypePill && <span className="min-w-0 truncate">{visibleLabel}</span>}
         {kids > 0 && !props.expanded && (
           <span
-            className="shrink-0 font-mono text-[10px] text-ink-dim"
+            className="shrink-0 text-[11px] text-ink-dim classic:text-[10px]"
             title="nested conversations"
           >
             {kids}
@@ -848,7 +865,7 @@ function DrawerItem(props: {
           return pill ? (
             <span
               title={tip}
-              className="shrink-0 rounded bg-panel-2 px-1 font-mono text-[9px] text-ink-dim"
+              className="shrink-0 rounded bg-panel-2 px-1 text-[10px] text-ink-dim classic:text-[9px]"
             >
               {pill}
             </span>
@@ -912,6 +929,7 @@ function SessionDrawer(props: {
 }): JSX.Element {
   const setActive = useChat((s) => s.setActive)
   const wsStatus = useChat((s) => s.wsStatus)
+  const material = useUiStyle() === 'material'
   const baseUrl = useConnection((s) => s.baseUrl)
   const names = useSessionNames((s) => s.byKey)
   const archivedKeys = useArchived((s) => s.keys)
@@ -984,6 +1002,9 @@ function SessionDrawer(props: {
       useSidebarPrefs.getState().setHistoryOpen(false)
     }
   }
+  const newTitle = agentFilter.name
+    ? `new session with ${agentFilter.name} (Ctrl+T)`
+    : 'new session (Ctrl+T)'
 
   const toggleNest = (key: string): void => {
     // A query force-opens every group. Recording that click would apply
@@ -1029,33 +1050,55 @@ function SessionDrawer(props: {
       id="conversations-pane"
       style={props.fullWidth ? undefined : { width: props.width }}
       className={cn(
-        'flex min-h-0 flex-col bg-panel/40',
-        props.fullWidth ? 'w-full flex-1' : 'shrink-0 border-r border-line',
+        'flex min-h-0 flex-col bg-panel classic:bg-panel/40',
+        props.fullWidth ? 'w-full flex-1' : 'shrink-0 classic:border-line classic:border-r',
       )}
     >
-      <div className="flex items-center justify-between px-3 py-3">
-        <span className="min-w-0 truncate font-mono text-xs text-ink-dim">
-          conversations{' '}
-          <span className={wsStatus === 'open' ? 'text-em' : 'text-red'}>
-            {wsStatus === 'open' ? '●' : '○'}
-          </span>{' '}
-          ({agentItems.length - archivedCount})
-        </span>
-        <button
-          onClick={startNew}
-          title={
-            agentFilter.name
-              ? `new session with ${agentFilter.name} (Ctrl+T)`
-              : 'new session (Ctrl+T)'
-          }
-          className="rounded border border-line px-2 py-1 text-xs text-ink-dim hover:border-em hover:text-em"
-        >
-          + new
-        </button>
-      </div>
+      {material ? (
+        <div className="flex items-center justify-between gap-2 px-4 pb-3 pt-4">
+          <span className="flex min-w-0 items-center gap-2 truncate text-base font-semibold text-ink">
+            Conversations
+            <span
+              className={cn(
+                'size-2 shrink-0 rounded-full',
+                wsStatus === 'open' ? 'bg-em' : 'bg-red',
+              )}
+              title={wsStatus === 'open' ? 'live' : 'disconnected'}
+            />
+            <span className="text-xs font-normal tabular-nums text-ink-dim">
+              {agentItems.length - archivedCount}
+            </span>
+          </span>
+          <button
+            onClick={startNew}
+            title={newTitle}
+            className="flex shrink-0 items-center gap-1 rounded-pill bg-em-container py-1.5 pl-2.5 pr-3.5 text-xs font-medium text-on-em-container hover:bg-em-container/80"
+          >
+            <Plus className="size-4" aria-hidden />
+            New
+          </button>
+        </div>
+      ) : (
+        <div className="flex items-center justify-between px-3 py-3">
+          <span className="min-w-0 truncate font-mono text-xs text-ink-dim">
+            conversations{' '}
+            <span className={wsStatus === 'open' ? 'text-em' : 'text-red'}>
+              {wsStatus === 'open' ? '●' : '○'}
+            </span>{' '}
+            ({agentItems.length - archivedCount})
+          </span>
+          <button
+            onClick={startNew}
+            title={newTitle}
+            className="rounded border border-line px-2 py-1 text-xs text-ink-dim hover:border-em hover:text-em"
+          >
+            + new
+          </button>
+        </div>
+      )}
       {agentFilter.agentId && (
         <div className="px-3 pb-2">
-          <span className="inline-flex max-w-full items-center gap-1.5 border border-line bg-panel px-2 py-0.5 font-mono text-[11px] text-ink">
+          <span className="inline-flex max-w-full items-center gap-1.5 rounded-lg border border-line bg-surface px-2.5 py-1 text-xs text-ink classic:bg-panel classic:px-2 classic:py-0.5 classic:text-[11px]">
             <span
               className="size-2 shrink-0"
               style={{ background: agentFilter.accent }}
@@ -1074,19 +1117,32 @@ function SessionDrawer(props: {
         </div>
       )}
       {(agentItems.length >= DRAWER_FILTER_MIN || q) && (
-        <div className="px-3 pb-2">
-          <input
-            value={filter}
-            onChange={(e) => setFilter(e.target.value)}
-            placeholder="filter…"
-            aria-label="filter conversations"
-            className="w-full rounded border border-line bg-panel px-2 py-1 text-xs text-ink outline-none placeholder:text-ink-dim/60 focus:border-em"
-          />
+        <div className={material ? 'px-3 pb-3' : 'px-3 pb-2'}>
+          {material ? (
+            <label className="flex items-center gap-2 rounded-pill border border-transparent bg-panel-2 px-3.5 py-2 text-ink-dim focus-within:border-em">
+              <Search className="size-4 shrink-0" aria-hidden />
+              <input
+                value={filter}
+                onChange={(e) => setFilter(e.target.value)}
+                placeholder="Search conversations"
+                aria-label="filter conversations"
+                className="w-full min-w-0 bg-transparent text-[13px] text-ink outline-none placeholder:text-ink-dim/80"
+              />
+            </label>
+          ) : (
+            <input
+              value={filter}
+              onChange={(e) => setFilter(e.target.value)}
+              placeholder="filter…"
+              aria-label="filter conversations"
+              className="w-full rounded border border-line bg-panel px-2 py-1 font-mono text-[11px] text-ink outline-none placeholder:text-ink-dim/60 focus:border-em"
+            />
+          )}
         </div>
       )}
-      {props.error && <div className="px-3 py-2 font-mono text-xs text-red">{props.error}</div>}
+      {props.error && <div className="px-3 py-2 text-xs text-red">{props.error}</div>}
       <div className="flex min-h-0 flex-1 flex-col">
-        <div className="flex-1 overflow-y-auto px-2">
+        <div className="flex-1 overflow-y-auto px-2 pb-2">
           {renderNodes(shown)}
           {shown.length === 0 && q && (
             <div className="px-3 py-2 text-xs text-ink-dim">no matches for “{filter.trim()}”</div>
@@ -1105,7 +1161,7 @@ function SessionDrawer(props: {
         {archivedCount > 0 && (
           <button
             onClick={() => setShowArchived((v) => !v)}
-            className="border-t border-line px-3 py-2 text-left font-mono text-[11px] text-ink-dim hover:text-ink"
+            className="mx-2 mb-2 rounded-xl px-3 py-2 classic:mx-0 classic:mb-0 text-left text-xs text-ink-dim hover:bg-ink/6 hover:text-ink classic:border-line classic:border-t classic:hover:bg-transparent classic:text-[11px]"
           >
             {showArchived ? '▾' : '▸'} archived ({archivedCount})
           </button>
@@ -2124,7 +2180,7 @@ function ActiveSession(props: {
       {isRemote && (
         <span
           title={`this conversation lives on ${remoteNodeName ?? urlLabel(sessionBase)} — the app stays connected to your node`}
-          className="shrink-0 rounded border border-em-dim/60 bg-em-dim/10 px-1.5 py-0.5 font-mono text-[10px] text-em"
+          className="shrink-0 rounded-pill bg-em-container px-2.5 py-0.5 text-[11px] font-medium text-on-em-container classic:bg-em-dim/10 classic:border classic:border-em-dim/60 classic:font-normal classic:px-1.5 classic:text-[10px] classic:text-em"
         >
           @{remoteNodeName ?? urlLabel(sessionBase)}
         </span>
@@ -2147,7 +2203,7 @@ function ActiveSession(props: {
         <button
           onClick={onInterrupt}
           title="cancel the in-flight turn"
-          className="flex shrink-0 items-center gap-1 rounded border border-line px-2 py-1 font-mono text-[11px] text-ink-dim hover:border-red hover:text-red"
+          className="flex shrink-0 items-center gap-1.5 rounded-pill border border-line px-3 py-1 text-xs font-medium text-ink-dim hover:border-red/60 hover:bg-red/10 hover:text-red classic:font-normal classic:gap-1 classic:hover:bg-transparent classic:hover:border-red classic:px-2 classic:text-[11px]"
         >
           <Square className="size-2.5 fill-current" aria-hidden />
           Stop
@@ -2179,12 +2235,12 @@ function ActiveSession(props: {
     <div className="relative flex min-w-0 flex-1 flex-col">
       {narrow ? (
         /* ONE 48px row on the phone — same tokens as the
-           desktop header below (border-b border-line, bg-panel/40, mono
-           text-xs title): ☰ · id (truncates) · ctx % · Stop · Terminal|Chat ·
+           desktop header below (flat on the page surface, medium-weight
+           title): ☰ · id (truncates) · ctx % · Stop · Terminal|Chat ·
            history. No back chevron: "back" is the right history drawer.
            ContextBar collapses to %; a 2px hairline track sits on the
            header's bottom edge (pct toward forced compaction). */
-        <div className="relative flex h-12 flex-nowrap items-center gap-2 border-b border-line bg-panel/40 px-2">
+        <div className="relative flex h-12 flex-nowrap items-center gap-2 px-2 classic:bg-panel/40 classic:border-b classic:border-line">
           <Button
             variant="ghost"
             size="icon"
@@ -2198,7 +2254,10 @@ function ActiveSession(props: {
           {/* The conversation's name (rename or derived title); the session id
               is the tooltip. flex-1 min-w-0: the name absorbs the squeeze so
               the row never wraps. */}
-          <span title={headerId} className="min-w-0 flex-1 truncate font-mono text-xs text-ink">
+          <span
+            title={headerId}
+            className="min-w-0 flex-1 truncate text-sm font-medium text-ink classic:font-normal classic:text-xs"
+          >
             {headerTitle}
           </span>
           {headerTail}
@@ -2215,12 +2274,15 @@ function ActiveSession(props: {
           </Button>
         </div>
       ) : (
-        <div className="flex max-md:flex-wrap items-center gap-3 border-b border-line bg-panel/40 px-4 py-1.5">
+        <div className="flex max-md:flex-wrap items-center gap-3 px-5 py-2.5 classic:bg-panel/40 classic:border-b classic:border-line classic:px-4 classic:py-1.5">
           {/* The conversation's name (rename or derived title); the session id
               is the tooltip. It takes the slack (flex-1) so the tail packs
               right — context box directly left of Terminal|Chat — and
               truncates first when the header wraps. */}
-          <span title={headerId} className="min-w-0 flex-1 truncate font-mono text-xs text-ink">
+          <span
+            title={headerId}
+            className="min-w-0 flex-1 truncate text-sm font-medium text-ink classic:font-normal classic:text-xs"
+          >
             {headerTitle}
           </span>
           {headerTail}
@@ -2229,7 +2291,7 @@ function ActiveSession(props: {
       {presetNotice && (
         <p
           role="status"
-          className="border-b border-line bg-panel-2/40 px-4 py-1.5 font-mono text-[11px] text-ink-dim"
+          className="mx-4 mb-2 rounded-xl classic:mx-0 classic:mb-0 bg-panel-2 px-4 py-2 text-xs text-ink-dim classic:bg-panel-2/40 classic:border-b classic:border-line classic:py-1.5 classic:text-[11px]"
         >
           {presetNotice}
         </p>
@@ -2252,19 +2314,19 @@ function ActiveSession(props: {
           {dialogDismissedAt !== undefined && (
             <div
               role="status"
-              className="border-t border-line bg-panel-2/40 px-4 py-1.5 font-mono text-[11px] text-ink-dim"
+              className="mx-4 mt-2 rounded-xl classic:mx-0 classic:mt-0 bg-panel-2 px-4 py-2 text-xs text-ink-dim classic:bg-panel-2/40 classic:border-line classic:border-t classic:py-1.5 classic:text-[11px]"
             >
               {DIALOG_DISMISSED_NOTICE}
             </div>
           )}
           {remoteDead && (
-            <div className="border-t border-line bg-panel-2/40 px-4 py-1.5 font-mono text-[11px] text-red">
+            <div className="mx-4 mt-2 rounded-xl classic:mx-0 classic:mt-0 bg-red/10 px-4 py-2 text-xs text-red classic:bg-panel-2/40 classic:border-line classic:border-t classic:py-1.5 classic:text-[11px]">
               this conversation's session no longer exists on{' '}
               {remoteNodeName ?? urlLabel(sessionBase)} — history stays readable; sends are disabled
             </div>
           )}
           {streamError && (
-            <div className="border-t border-line bg-panel-2/40 px-4 py-1.5 font-mono text-[11px] text-red">
+            <div className="mx-4 mt-2 rounded-xl classic:mx-0 classic:mt-0 bg-red/10 px-4 py-2 text-xs text-red classic:bg-panel-2/40 classic:border-line classic:border-t classic:py-1.5 classic:text-[11px]">
               harness stream: {streamError}
             </div>
           )}
@@ -2318,7 +2380,7 @@ function ActiveSession(props: {
         </>
       ) : termError ? (
         <div className="flex flex-1 flex-col items-center justify-center gap-1">
-          <span className="font-mono text-sm text-red">{termError}</span>
+          <span className="text-sm text-red">{termError}</span>
           <span className="text-xs text-ink-dim">click Terminal to retry</span>
         </div>
       ) : termPtyId ? (
@@ -2369,7 +2431,7 @@ function ChatLaunchLoading(): JSX.Element {
       <button
         type="button"
         onClick={startNew}
-        className="rounded border border-line px-3 py-1.5 text-xs text-ink-dim hover:border-em hover:text-em"
+        className="rounded-pill border border-line px-3 py-1.5 text-xs text-ink-dim hover:bg-ink/6 hover:text-em classic:hover:bg-transparent classic:hover:border-em"
       >
         New conversation
       </button>

@@ -133,7 +133,7 @@ export function BrowseView(props: {
                 {m.tags.map((t) => (
                   <span
                     key={t}
-                    className="rounded border border-em/40 bg-em/10 px-1.5 py-0.5 font-mono text-[10px] text-em"
+                    className="rounded border border-em/40 bg-em/10 px-1.5 py-0.5 text-[11px] text-em classic:text-[10px]"
                   >
                     {t}
                   </span>

@@ -32,10 +32,7 @@ export function WorkflowContractForm(props: {
         const help = f.description
         return (
           <div key={f.name}>
-            <label
-              htmlFor={id}
-              className="mb-1 flex items-baseline gap-2 font-mono text-xs text-ink"
-            >
+            <label htmlFor={id} className="mb-1 flex items-baseline gap-2 text-xs text-ink">
               <span>
                 {f.name}
                 {f.required !== false ? <span className="text-red"> *</span> : null}
@@ -63,7 +60,7 @@ export function WorkflowContractForm(props: {
                 spellCheck={false}
                 placeholder="{}"
                 onChange={(e) => onChange(f.name, e.target.value)}
-                className={`w-full rounded border bg-panel-2 px-3 py-2 font-mono text-sm text-ink outline-none focus:border-em ${
+                className={`w-full rounded border bg-panel-2 px-3 py-2 text-sm text-ink outline-none focus:border-em ${
                   issue ? 'border-red' : 'border-line'
                 }`}
               />
@@ -81,7 +78,7 @@ export function WorkflowContractForm(props: {
               />
             )}
             {help && !issue && <p className="mt-1 text-[11px] text-ink-dim">{help}</p>}
-            {issue && <p className="mt-1 font-mono text-[11px] text-red">{issue}</p>}
+            {issue && <p className="mt-1 text-xs text-red classic:text-[11px]">{issue}</p>}
           </div>
         )
       })}

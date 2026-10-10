@@ -59,7 +59,7 @@ describe('narrow session header wiring (chat.tsx source)', () => {
 
   it('renders ☰ before the id and history last, in one nowrap h-12 row', () => {
     const menu = src.indexOf('aria-label="Open menu"')
-    const title = src.indexOf('min-w-0 flex-1 truncate font-mono text-xs')
+    const title = src.indexOf('min-w-0 flex-1 truncate text-sm font-medium')
     const history = src.indexOf('id="hub-history-toggle"')
     expect(menu).toBeGreaterThan(-1)
     expect(title).toBeGreaterThan(menu)
