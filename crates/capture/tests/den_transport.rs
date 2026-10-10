@@ -1,8 +1,9 @@
 use std::path::Path;
 
 use capture::{
-    CaptureTransport, CaptureUser, DenConfigScalars, MapEnv, capture_user, capture_user_from_env,
-    den_tls_configured, guard_den_url, resolve_capture_transport, resolve_den_url,
+    CaptureTransport, CaptureUser, DenConfigScalars, MapEnv, acceptable_http_url, capture_user,
+    capture_user_from_env, den_tls_configured, guard_den_url, resolve_capture_transport,
+    resolve_den_url,
 };
 
 const DEN: &str = "https://127.0.0.1:5174";
@@ -487,6 +488,26 @@ fn defaults_to_pg_when_den_is_disabled() {
             || { Some("den:\n  port: invalid".to_string()) }
         ),
         pg(PG),
+    );
+}
+
+#[test]
+fn rejects_an_out_of_range_port_like_the_whatwg_parser() {
+    assert!(!acceptable_http_url("http://host:99999"));
+    assert!(acceptable_http_url("HTTP://127.0.0.1:5174"));
+    assert_eq!(
+        resolve_capture_transport(
+            &env(&[
+                ("RIVET_DEN_URL", "http://host:99999"),
+                ("RIVETOS_PG_URL", PG)
+            ]),
+            no_config,
+        ),
+        pg(PG),
+    );
+    assert_eq!(
+        resolve_capture_transport(&env(&[("RIVET_DEN_URL", "HTTP://127.0.0.1:9")]), no_config),
+        den("HTTP://127.0.0.1:9"),
     );
 }
 

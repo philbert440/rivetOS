@@ -1,0 +1,1 @@
+[{"method":"POST","url":"/api/capture","contentType":"application/json","body":"{\"session_key\":\"claude-code:11111111-1111-1111-1111-111111111111\",\"agent\":\"rivet-claude\",\"channel\":\"claude-code\",\"messages\":[{\"event_id\":\"e1\",\"role\":\"user\",\"content\":\"hello\",\"created_at\":\"2026-10-10T12:00:00.000Z\"}]}"}]

@@ -1,0 +1,1 @@
+{"session_key":"s-red","agent":"a","messages":[{"event_id":"e5","role":"user","content":"token Bearer abcdefghijklmnop1234 and AKIAABCDEFGHIJKLMNOP and code=SECRET42 and pass=hunter2","tool_args":{"api_key":"sk-12345678901234567890","nested":{"password":"p","ok":"fine"}}}]}

@@ -4,7 +4,7 @@ use std::process::ExitCode;
 use clap::{Parser, Subcommand};
 
 #[derive(Parser)]
-#[command(name = "rivetos")]
+#[command(name = "rivetos", about = "RivetOS command line")]
 struct Cli {
     #[command(subcommand)]
     command: Commands,
@@ -12,6 +12,7 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Commands {
+    #[command(about = "Capture Claude Code sessions into RivetOS")]
     Capture {
         #[command(subcommand)]
         action: CaptureCommand,
@@ -20,16 +21,21 @@ enum Commands {
 
 #[derive(Subcommand)]
 enum CaptureCommand {
+    #[command(about = "Read a Claude Code hook event from stdin and spool it")]
     Hook {
-        #[arg(long)]
+        #[arg(long, help = "Harness name (claude-code)")]
         harness: String,
     },
+    #[command(about = "Replay spooled capture batches")]
     Replay {
-        #[arg(long)]
+        #[arg(long, help = "Spool file to replay; omit to sweep stale spool files")]
         file: Option<PathBuf>,
     },
+    #[command(about = "Show whether Claude Code capture hooks are installed")]
     Status,
+    #[command(about = "Install Claude Code capture hooks")]
     Install,
+    #[command(about = "Remove Claude Code capture hooks")]
     Uninstall,
 }
 
@@ -37,11 +43,22 @@ enum CaptureCommand {
 async fn main() -> ExitCode {
     rivetos::init_logging();
     let cli = Cli::parse();
+    let hook = matches!(
+        cli.command,
+        Commands::Capture {
+            action: CaptureCommand::Hook { .. }
+        }
+    );
     match run(cli).await {
         Ok(code) => code,
         Err(error) => {
-            rivetos::log_fatal(&error.to_string());
-            ExitCode::SUCCESS
+            let message = error.to_string();
+            let _ = tokio::task::spawn_blocking(move || rivetos::log_fatal(&message)).await;
+            if hook {
+                ExitCode::SUCCESS
+            } else {
+                ExitCode::from(1)
+            }
         }
     }
 }
@@ -62,10 +79,12 @@ async fn run(cli: Cli) -> anyhow::Result<ExitCode> {
                 Ok(ExitCode::SUCCESS)
             }
             CaptureCommand::Status => {
-                println!(
-                    "{}",
-                    rivetos::status_text(&rivetos::settings_path(&capture::ProcessEnv))
-                );
+                let settings = rivetos::settings_path(&capture::ProcessEnv);
+                let text = tokio::task::spawn_blocking(move || rivetos::status_text(&settings))
+                    .await
+                    .map_err(|error| anyhow::Error::msg(error.to_string()))?
+                    .map_err(anyhow::Error::msg)?;
+                println!("{text}");
                 Ok(ExitCode::SUCCESS)
             }
             CaptureCommand::Install => {
@@ -74,14 +93,22 @@ async fn run(cli: Cli) -> anyhow::Result<ExitCode> {
                 let settings = rivetos::settings_path(&env);
                 let log = rivetos::log_path(&env);
                 let command = rivetos::hook_command(&exe);
-                println!("{}", rivetos::install_hooks(&settings, &command, &log));
+                let text = tokio::task::spawn_blocking(move || {
+                    rivetos::install_hooks(&settings, &command, &log)
+                })
+                .await
+                .map_err(|error| anyhow::Error::msg(error.to_string()))?
+                .map_err(anyhow::Error::msg)?;
+                println!("{text}");
                 Ok(ExitCode::SUCCESS)
             }
             CaptureCommand::Uninstall => {
-                println!(
-                    "{}",
-                    rivetos::uninstall_hooks(&rivetos::settings_path(&capture::ProcessEnv))
-                );
+                let settings = rivetos::settings_path(&capture::ProcessEnv);
+                let text = tokio::task::spawn_blocking(move || rivetos::uninstall_hooks(&settings))
+                    .await
+                    .map_err(|error| anyhow::Error::msg(error.to_string()))?
+                    .map_err(anyhow::Error::msg)?;
+                println!("{text}");
                 Ok(ExitCode::SUCCESS)
             }
         },

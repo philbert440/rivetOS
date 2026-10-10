@@ -1,0 +1,38 @@
+{
+  "single": {
+    "ok": true,
+    "conversation_id": "c-1",
+    "inserted": 1,
+    "skipped": 0
+  },
+  "numbers_and_keys": {
+    "ok": true,
+    "conversation_id": "c-1",
+    "inserted": 1,
+    "skipped": 0
+  },
+  "surrogate_cap": {
+    "ok": true,
+    "conversation_id": "c-1",
+    "inserted": 1,
+    "skipped": 0
+  },
+  "finalize_multi_chunk": {
+    "ok": true,
+    "conversation_id": "c-1",
+    "inserted": 6,
+    "skipped": 0
+  },
+  "elide_tool_args": {
+    "ok": true,
+    "conversation_id": "c-1",
+    "inserted": 1,
+    "skipped": 0
+  },
+  "redaction": {
+    "ok": true,
+    "conversation_id": "c-1",
+    "inserted": 1,
+    "skipped": 0
+  }
+}

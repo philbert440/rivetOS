@@ -240,7 +240,24 @@ fn mode_of(path: &Path) -> u32 {
 }
 
 fn json_len(value: &impl serde::Serialize) -> usize {
-    serde_json::to_string(value).unwrap().len()
+    protocol::js::stringify(&serde_json::to_value(value).unwrap()).len()
+}
+
+fn accept_and_drop() -> String {
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = listener.local_addr().unwrap().port();
+    std::thread::spawn(move || {
+        for _ in 0..64 {
+            let Ok((mut stream, _)) = listener.accept() else {
+                break;
+            };
+            let _ = stream.set_read_timeout(Some(Duration::from_secs(2)));
+            let mut buf = [0u8; 8192];
+            let _ = stream.read(&mut buf);
+            drop(stream);
+        }
+    });
+    format!("http://127.0.0.1:{port}")
 }
 
 #[tokio::test]
@@ -314,7 +331,7 @@ async fn spools_on_http_and_transport_failure() {
     assert_eq!(std::fs::read_dir(&spool).unwrap().count(), 1);
 
     let closed = open_writer(
-        "http://127.0.0.1:1",
+        &accept_and_drop(),
         spool,
         1000,
         None,
@@ -363,7 +380,7 @@ async fn reports_spool_failure_without_saving() {
         panic!("expected not saved");
     };
     assert!(error.contains("capture spool failed; batch was not saved:"));
-    assert!(error.contains(&blocked.display().to_string()));
+    assert!(!error.contains(&blocked.display().to_string()));
     let logs = built.logs.lock().unwrap().clone();
     assert!(logs.iter().any(|line| line == &error));
     assert!(logs.iter().any(|line| line == "Error: capture HTTP 503"));
@@ -465,7 +482,7 @@ async fn stops_replay_on_server_and_transport_errors() {
     assert_eq!(server.hits.lock().unwrap().len(), 1);
 
     let closed = open_writer(
-        "http://127.0.0.1:1",
+        &accept_and_drop(),
         spool,
         1000,
         None,
@@ -651,7 +668,7 @@ async fn returns_every_spooled_chunk() {
     let limit = json_len(&one_chunk);
     let spool = tempfile::tempdir().unwrap().keep();
     let built = open_writer(
-        "http://127.0.0.1:1",
+        &accept_and_drop(),
         spool.clone(),
         1000,
         Some(limit as f64),
@@ -1175,7 +1192,7 @@ async fn spools_redacted_bytes() {
         ..CaptureRedactionOptions::default()
     };
     let built = open_writer(
-        "http://127.0.0.1:1",
+        &accept_and_drop(),
         spool.clone(),
         1000,
         None,
@@ -1385,7 +1402,7 @@ async fn replays_chunked_files_in_write_order() {
     let limit = json_len(&one_chunk);
     let spool = tempfile::tempdir().unwrap().keep();
     let offline = open_writer(
-        "http://127.0.0.1:1",
+        &accept_and_drop(),
         spool.clone(),
         5000,
         Some(limit as f64),
@@ -1492,4 +1509,51 @@ async fn later_chunk_spool_failure_returns_not_saved() {
     assert!(error.contains("capture spool failed; batch was not saved:"));
     assert!(server.hits.lock().unwrap().len() >= 2);
     assert_eq!(std::fs::read_to_string(&blocked).unwrap(), "blocked");
+}
+
+#[tokio::test]
+async fn plain_http_does_not_read_the_ca_file() {
+    let server = Server::start(|_| (200, ok_body(1, 0)));
+    let spool = tempfile::tempdir().unwrap().keep();
+    let mut opts = CaptureWriterOptions::new(&server.url);
+    opts.spool_dir = Some(spool);
+    opts.user = UserSource::Owner;
+    opts.ca_path = Some(PathBuf::from("/no/such/capture-ca.pem"));
+    let writer = create_capture_writer(opts).unwrap();
+    let saved = writer.write(batch()).await.unwrap();
+    assert!(matches!(saved, WriteOutcome::Delivered { .. }));
+    assert_eq!(server.hits.lock().unwrap().len(), 1);
+}
+
+#[tokio::test]
+async fn truncated_client_status_is_not_spooled() {
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = listener.local_addr().unwrap().port();
+    std::thread::spawn(move || {
+        for _ in 0..8 {
+            let Ok((mut stream, _)) = listener.accept() else {
+                break;
+            };
+            let _ = stream.set_read_timeout(Some(Duration::from_secs(2)));
+            let mut buf = [0u8; 8192];
+            let _ = stream.read(&mut buf);
+            let _ = stream.write_all(
+                b"HTTP/1.1 413 Payload Too Large\r\nContent-Length: 100\r\nConnection: close\r\n\r\nhi",
+            );
+            drop(stream);
+        }
+    });
+    let spool = tempfile::tempdir().unwrap().keep();
+    let built = open_writer(
+        &format!("http://127.0.0.1:{port}"),
+        spool.clone(),
+        1000,
+        None,
+        MapEnv::default(),
+        UserSource::Owner,
+        None,
+    );
+    let saved = built.writer.write(batch()).await;
+    assert!(matches!(saved, Err(CaptureError::Client { status: 413 })));
+    assert_eq!(std::fs::read_dir(&spool).unwrap().count(), 0);
 }

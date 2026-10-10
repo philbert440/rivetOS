@@ -57,17 +57,22 @@ fn prefix_num(name: &str) -> u128 {
 }
 
 pub async fn spool_batch(dir: &Path, batch: &CaptureBatch, now_ms: i64) -> io::Result<PathBuf> {
-    let dir = dir.to_path_buf();
-    let batch = batch.clone();
-    with_timeout(async move { write_batch(&dir, &batch, now_ms).await }).await
+    let body = serde_json::to_value(batch)
+        .map(|value| protocol::js::stringify(&value))
+        .map_err(|error| io::Error::new(ErrorKind::InvalidData, error.to_string()))?;
+    spool_text(dir, &body, now_ms).await
 }
 
-async fn write_batch(dir: &Path, batch: &CaptureBatch, now_ms: i64) -> io::Result<PathBuf> {
+pub(crate) async fn spool_text(dir: &Path, body: &str, now_ms: i64) -> io::Result<PathBuf> {
+    let dir = dir.to_path_buf();
+    let body = body.to_string();
+    with_timeout(async move { write_text(&dir, &body, now_ms).await }).await
+}
+
+async fn write_text(dir: &Path, body: &str, now_ms: i64) -> io::Result<PathBuf> {
     ensure_dir(dir, 0o700).await?;
     let file = dir.join(format!("{now_ms}-{}.json", uuid::Uuid::new_v4()));
     let temp = PathBuf::from(format!("{}.tmp", file.display()));
-    let body = serde_json::to_string(batch)
-        .map_err(|error| io::Error::new(ErrorKind::InvalidData, error.to_string()))?;
     let write_result = write_exclusive(&temp, body.as_bytes()).await;
     if let Err(error) = write_result {
         let _ = tokio::fs::remove_file(&temp).await;
@@ -99,21 +104,37 @@ async fn sync_dir(dir: &Path) -> io::Result<()> {
 }
 
 async fn ensure_dir(path: &Path, mode: u32) -> io::Result<()> {
-    if tokio::fs::metadata(path).await.is_ok() {
+    if path.as_os_str().is_empty() || tokio::fs::metadata(path).await.is_ok() {
         return Ok(());
     }
-    if let Some(parent) = path.parent()
-        && !parent.as_os_str().is_empty()
-    {
-        tokio::fs::create_dir_all(parent).await?;
+    let mut missing = Vec::new();
+    let mut cursor = path.to_path_buf();
+    loop {
+        if cursor.as_os_str().is_empty() {
+            break;
+        }
+        if tokio::fs::metadata(&cursor).await.is_ok() {
+            break;
+        }
+        missing.push(cursor.clone());
+        match cursor.parent() {
+            Some(parent) if parent != cursor.as_path() => cursor = parent.to_path_buf(),
+            _ => break,
+        }
     }
-    let mut builder = tokio::fs::DirBuilder::new();
-    builder.mode(mode);
-    match builder.create(path).await {
-        Ok(()) => Ok(()),
-        Err(error) if error.kind() == ErrorKind::AlreadyExists => Ok(()),
-        Err(error) => Err(error),
+    for dir in missing.iter().rev() {
+        let mut builder = tokio::fs::DirBuilder::new();
+        builder.mode(mode);
+        match builder.create(dir).await {
+            Ok(()) => {
+                let _ =
+                    tokio::fs::set_permissions(dir, std::fs::Permissions::from_mode(mode)).await;
+            }
+            Err(error) if error.kind() == ErrorKind::AlreadyExists => {}
+            Err(error) => return Err(error),
+        }
     }
+    Ok(())
 }
 
 pub async fn dead_letter(dir: &Path, file: &str) -> io::Result<()> {

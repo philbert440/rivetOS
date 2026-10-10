@@ -378,6 +378,48 @@ fn scans_tool_args_past_the_content_limit() {
 }
 
 #[test]
+fn redacts_bearer_across_nbsp() {
+    let text = "Authorization: Bearer\u{00a0}aaaabbbbccccdddd1234";
+    let result = redact_text(text, &enabled());
+    assert!(result.text.contains("[REDACTED:bearer]"));
+    assert!(!result.text.contains("aaaabbbbccccdddd1234"));
+}
+
+#[test]
+fn compiles_lookbehind_and_backreferences() {
+    let resolved = patterns(&[r"(?<=code=)[A-Z0-9]+", r"(a)\1"], false);
+    assert_eq!(resolved.patterns.len(), 2);
+    assert_eq!(
+        redact_text("code=SECRET42", &resolved).text,
+        "code=[REDACTED:pattern:0]"
+    );
+    assert_eq!(
+        redact_text("xx aa yy", &resolved).text,
+        "xx [REDACTED:pattern:1] yy"
+    );
+    let skipped = patterns(&[r"(unclosed"], false);
+    assert!(skipped.patterns.is_empty());
+}
+
+#[test]
+fn scan_window_may_split_a_surrogate_pair() {
+    let resolved = patterns(&[r"\bCUSTOM-[A-Z0-9]{8}\b"], false);
+    let secret = "CUSTOM-ABCD1234";
+    let text = format!("{}😀{secret}", "a".repeat(REDACT_SCAN_LIMIT - 1));
+    let result = redact_text(&text, &resolved);
+    assert!(result.text.contains('😀'));
+    assert!(result.text.contains(secret));
+}
+
+#[test]
+fn full_length_keys_reject_line_separators() {
+    assert!(capture::keep_metadata_key("full_content_length"));
+    assert!(!capture::keep_metadata_key("full_a\rb_length"));
+    assert!(!capture::keep_metadata_key("full_a\u{2028}b_length"));
+    assert!(!capture::keep_metadata_key("full_a\u{2029}b_length"));
+}
+
+#[test]
 fn unchanged_message_compares_equal() {
     let input = message("hello world");
     let original = input.clone();

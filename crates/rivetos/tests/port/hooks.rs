@@ -106,7 +106,10 @@ async fn deadline_invokes_exit_and_closes_clients() {
     assert!(!exit.load(Ordering::SeqCst));
     tokio::task::yield_now().await;
     tokio::time::advance(Duration::from_millis(DEFAULT_WORKER_DEADLINE_MS)).await;
-    tokio::task::yield_now().await;
+    let wall = std::time::Instant::now() + Duration::from_secs(2);
+    while !close.load(Ordering::SeqCst) && std::time::Instant::now() < wall {
+        tokio::task::yield_now().await;
+    }
     assert!(close.load(Ordering::SeqCst));
     assert!(exit.load(Ordering::SeqCst));
     assert_eq!(
@@ -439,12 +442,28 @@ async fn spool_stem_is_the_idempotency_key() {
 #[test]
 fn write_spool_payload_uses_private_permissions() {
     let dir = tempfile::tempdir().unwrap();
-    let nested = dir.path().join("spool");
+    let nested = dir.path().join("a").join("spool");
     let file = write_spool_payload(&prompt_payload(), &nested).unwrap();
+    let parent_mode = std::fs::metadata(nested.parent().unwrap())
+        .unwrap()
+        .permissions()
+        .mode()
+        & 0o777;
     let dir_mode = std::fs::metadata(&nested).unwrap().permissions().mode() & 0o777;
     let file_mode = std::fs::metadata(&file).unwrap().permissions().mode() & 0o777;
+    assert_eq!(parent_mode, 0o700);
     assert_eq!(dir_mode, 0o700);
     assert_eq!(file_mode, 0o600);
+    let name = file.file_name().unwrap().to_string_lossy().to_string();
+    assert!(name.ends_with(".a1.json"));
+    let stem = name.trim_end_matches(".a1.json");
+    let (_ms, token) = stem.split_once('-').unwrap();
+    assert_eq!(token.len(), 6);
+    assert!(
+        token
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || byte.is_ascii_lowercase())
+    );
     assert!(file.exists());
 }
 
@@ -470,7 +489,7 @@ fn is_direct_cli_follows_a_symlink_and_rejects_other_paths() {
 fn importing_the_library_does_not_run_main() {
     let dir = tempfile::tempdir().unwrap();
     let settings = dir.path().join("settings.json");
-    let text = status_text(&settings);
+    let text = status_text(&settings).unwrap();
     assert!(text.contains("installed") || text.to_ascii_lowercase().contains("capture"));
     assert!(text.contains("not installed"));
     assert!(text.contains("Capture incomplete."));
@@ -483,7 +502,7 @@ fn install_status_and_uninstall_round_trip() {
     let settings = dir.path().join("settings.json");
     let log = dir.path().join("claude-capture.log");
     let command = hook_command(Path::new("/usr/bin/rivetos"));
-    let installed = install_hooks(&settings, &command, &log);
+    let installed = install_hooks(&settings, &command, &log).unwrap();
     assert_eq!(
         installed,
         format!(
@@ -492,11 +511,22 @@ fn install_status_and_uninstall_round_trip() {
             log.display()
         )
     );
-    assert!(status_text(&settings).contains("Capture hooks active."));
-    assert_eq!(uninstall_hooks(&settings), "Removed RivetOS capture hooks.");
-    assert!(status_text(&settings).contains("Capture incomplete."));
+    assert!(
+        status_text(&settings)
+            .unwrap()
+            .contains("Capture hooks active.")
+    );
     assert_eq!(
-        uninstall_hooks(&settings),
+        uninstall_hooks(&settings).unwrap(),
+        "Removed RivetOS capture hooks."
+    );
+    assert!(
+        status_text(&settings)
+            .unwrap()
+            .contains("Capture incomplete.")
+    );
+    assert_eq!(
+        uninstall_hooks(&settings).unwrap(),
         "No hooks configured — nothing to remove."
     );
 }
@@ -525,7 +555,11 @@ fn status_recognizes_the_legacy_hook_marker() {
         format!("{}\n", serde_json::to_string_pretty(&root).unwrap()),
     )
     .unwrap();
-    assert!(status_text(&settings).contains("Capture hooks active."));
+    assert!(
+        status_text(&settings)
+            .unwrap()
+            .contains("Capture hooks active.")
+    );
 }
 
 use std::os::unix::fs::PermissionsExt;

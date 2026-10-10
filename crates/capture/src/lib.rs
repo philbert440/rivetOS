@@ -14,8 +14,8 @@ mod writer;
 
 pub use den_url::{
     DEFAULT_CA_PATH, DEFAULT_DEN_PORT, DenConfigScalars, ExistsFn, GuardedDenUrl, ResolvedDenUrl,
-    acceptable_http_url, default_config_reader, den_settings, den_tls_configured, guard_den_url,
-    path_exists, resolve_den_url,
+    acceptable_http_url, default_config_reader, den_scheme_is_https, den_settings,
+    den_tls_configured, guard_den_url, path_exists, resolve_den_url,
 };
 pub use env::{EnvLookup, MapEnv, ProcessEnv, trimmed};
 pub use error::{CaptureError, ReplayReport, WriteOutcome};

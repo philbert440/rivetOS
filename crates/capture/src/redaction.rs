@@ -1,10 +1,11 @@
 use std::sync::OnceLock;
 
-use regex::bytes::Regex;
+use regex::bytes::Regex as BytesRegex;
+use regress::Regex;
 use serde_json::{Map, Value};
 
 use crate::env::EnvLookup;
-use crate::helpers::{self, CONTENT_LIMIT};
+use crate::helpers::CONTENT_LIMIT;
 use crate::types::{CaptureMessage, CaptureRedactionOptions};
 
 pub const REDACT_SCAN_LIMIT: usize = CONTENT_LIMIT;
@@ -44,10 +45,15 @@ pub struct RedactionApplyResult {
     pub count: usize,
 }
 
+struct Detector {
+    regex: Regex,
+    replacement: &'static str,
+}
+
 pub fn is_unsafe_regex_source(source: &str) -> bool {
-    static RE: OnceLock<Option<Regex>> = OnceLock::new();
+    static RE: OnceLock<Option<BytesRegex>> = OnceLock::new();
     RE.get_or_init(|| {
-        Regex::new(r"(?-u)\((?:[^\\)]|\\.)*[+*](?:[^\\)]|\\.)*\)(?:[+*?]|\{\d+,?\d*\})").ok()
+        BytesRegex::new(r"(?-u)\((?:[^\\)]|\\.)*[+*](?:[^\\)]|\\.)*\)(?:[+*?]|\{\d+,?\d*\})").ok()
     })
     .as_ref()
     .is_some_and(|regex| regex.is_match(source.as_bytes()))
@@ -56,11 +62,11 @@ pub fn is_unsafe_regex_source(source: &str) -> bool {
 pub fn secret_key_matches(key: &str) -> bool {
     static RE: OnceLock<Option<Regex>> = OnceLock::new();
     let source = format!(
-        r"(?i-u)^(?:[\w-]*[_-](?:{SECRET_STEM}|key|auth)|(?:{SECRET_STEM}|auth_token|client_secret))$"
+        r"^(?:[\w-]*[_-](?:{SECRET_STEM}|key|auth)|(?:{SECRET_STEM}|auth_token|client_secret))$"
     );
-    RE.get_or_init(|| Regex::new(&source).ok())
+    RE.get_or_init(|| Regex::with_flags(&source, "i").ok())
         .as_ref()
-        .is_some_and(|regex| regex.is_match(key.as_bytes()))
+        .is_some_and(|regex| regex.find(key).is_some())
 }
 
 fn truthy_env(value: Option<&str>) -> bool {
@@ -81,18 +87,17 @@ pub fn resolve_capture_redaction(
         return None;
     }
     let builtins = input.builtins != Some(false);
+    let supplied = input
+        .patterns
+        .as_ref()
+        .is_some_and(|sources| !sources.is_empty());
     let mut patterns = Vec::new();
     if let Some(sources) = &input.patterns {
         for (index, source) in sources.iter().enumerate() {
             if source.is_empty() || is_unsafe_regex_source(source) {
                 continue;
             }
-            let prefixed = if source.starts_with("(?") {
-                source.clone()
-            } else {
-                format!("(?-u){source}")
-            };
-            if let Ok(regex) = Regex::new(&prefixed) {
+            if let Ok(regex) = Regex::with_flags(source, "g") {
                 patterns.push(OperatorPattern {
                     source: source.clone(),
                     regex,
@@ -101,7 +106,7 @@ pub fn resolve_capture_redaction(
             }
         }
     }
-    if !builtins && patterns.is_empty() {
+    if !builtins && patterns.is_empty() && !supplied {
         return None;
     }
     Some(ResolvedCaptureRedaction {
@@ -123,367 +128,146 @@ pub fn capture_redaction_from_env(env: &dyn EnvLookup) -> Option<CaptureRedactio
 }
 
 pub fn redact_text(text: &str, resolved: &ResolvedCaptureRedaction) -> RedactionApplyResult {
-    if helpers::utf16_len(text) <= REDACT_SCAN_LIMIT {
-        return redact_text_body(text, resolved);
+    let units: Vec<u16> = text.encode_utf16().collect();
+    if units.len() <= REDACT_SCAN_LIMIT {
+        return finish_units(redact_units(&units, resolved));
     }
-    let (head, tail) = helpers::split_utf16(text, REDACT_SCAN_LIMIT);
-    let result = redact_text_body(head, resolved);
-    RedactionApplyResult {
-        text: format!("{}{tail}", result.text),
-        count: result.count,
-    }
+    let (mut head, count) = redact_units(&units[..REDACT_SCAN_LIMIT], resolved);
+    head.extend_from_slice(&units[REDACT_SCAN_LIMIT..]);
+    finish_units((head, count))
 }
 
 fn redact_text_body(text: &str, resolved: &ResolvedCaptureRedaction) -> RedactionApplyResult {
-    let mut current = text.to_string();
-    let mut count = 0;
+    let units: Vec<u16> = text.encode_utf16().collect();
+    finish_units(redact_units(&units, resolved))
+}
+
+fn finish_units(pair: (Vec<u16>, usize)) -> RedactionApplyResult {
+    let (units, count) = pair;
+    let text = String::from_utf16(&units).unwrap_or_else(|_| String::from_utf16_lossy(&units));
+    RedactionApplyResult { text, count }
+}
+
+fn redact_units(units: &[u16], resolved: &ResolvedCaptureRedaction) -> (Vec<u16>, usize) {
+    let mut current = units.to_vec();
+    let mut count = 0usize;
     if resolved.builtins {
-        for apply in [
-            redact_bearer,
-            redact_pem,
-            redact_aws,
-            redact_github,
-            redact_slack,
-            redact_sk,
-            redact_jwt,
-            redact_assignment,
-        ] {
-            let result = apply(&current);
-            current = result.text;
-            count += result.count;
+        for detector in builtin_detectors() {
+            let (next, added) = apply_units(&current, &detector.regex, detector.replacement);
+            current = next;
+            count += added;
         }
     }
     for pattern in &resolved.patterns {
-        let result = apply_regex(
-            &current,
-            &pattern.regex,
-            &format!("[REDACTED:pattern:{}]", pattern.index),
-        );
-        current = result.text;
-        count += result.count;
+        let replacement = format!("[REDACTED:pattern:{}]", pattern.index);
+        let (next, added) = apply_units(&current, &pattern.regex, &replacement);
+        current = next;
+        count += added;
     }
-    RedactionApplyResult {
-        text: current,
-        count,
-    }
+    (current, count)
 }
 
-fn apply_regex(text: &str, regex: &Regex, replacement: &str) -> RedactionApplyResult {
-    let mut count = 0usize;
-    let mut out = String::new();
+fn apply_units(units: &[u16], regex: &Regex, replacement: &str) -> (Vec<u16>, usize) {
+    let mut out = Vec::with_capacity(units.len());
     let mut last = 0usize;
-    for caps in regex.captures_iter(text.as_bytes()) {
-        let Some(whole) = caps.get(0) else {
-            continue;
-        };
-        let start = whole.start();
-        let end = whole.end();
-        if start < last || !text.is_char_boundary(start) || !text.is_char_boundary(end) {
-            continue;
-        }
-        out.push_str(&text[last..start]);
-        count += 1;
-        if replacement.contains("$1") {
-            let group = caps
-                .get(1)
-                .and_then(|item| std::str::from_utf8(item.as_bytes()).ok())
-                .unwrap_or("");
-            out.push_str(&replacement.replace("$1", group));
-        } else {
-            out.push_str(replacement);
-        }
-        last = end;
-    }
-    if text.is_char_boundary(last) {
-        out.push_str(&text[last..]);
-    }
-    RedactionApplyResult { text: out, count }
-}
-
-fn regex_named(name: &str) -> Option<&'static Regex> {
-    match name {
-        "pem" => once_regex(
-            "pem",
-            r"(?-u)-----BEGIN [A-Z0-9 ]*PRIVATE KEY-----(?s:.*?)-----END [A-Z0-9 ]*PRIVATE KEY-----",
-        ),
-        "aws" => once_regex("aws", r"(?-u)\b(?:AKIA|ASIA)[0-9A-Z]{16}\b"),
-        "github" => once_regex(
-            "github",
-            r"(?-u)\b(?:gh[pousr]_|github_pat_)[A-Za-z0-9_]{20,}\b",
-        ),
-        "slack" => once_regex("slack", r"(?-u)\bxox[a-z]-[\w-]{10,}\b"),
-        "sk" => once_regex("sk", r"(?-u)\bsk-[A-Za-z0-9_-]{16,}\b"),
-        "jwt" => once_regex("jwt", r"(?-u)\beyJ[\w-]{8,}\.[\w-]+\.[\w-]+\b"),
-        "assign" => once_regex(
-            "assign",
-            &format!(
-                r"(?i-u)\b((?:[\w-]*[_-](?:{SECRET_STEM}|key|auth)|(?:{SECRET_STEM}))\s*[=:]\s*)"
-            ),
-        ),
-        _ => None,
-    }
-}
-
-fn once_regex(slot: &str, source: &str) -> Option<&'static Regex> {
-    match slot {
-        "pem" => leak_slot(0, source),
-        "aws" => leak_slot(1, source),
-        "github" => leak_slot(2, source),
-        "slack" => leak_slot(3, source),
-        "sk" => leak_slot(4, source),
-        "jwt" => leak_slot(5, source),
-        "assign" => leak_slot(6, source),
-        _ => None,
-    }
-}
-
-fn leak_slot(index: usize, source: &str) -> Option<&'static Regex> {
-    static SLOTS: [OnceLock<Option<Regex>>; 7] = [
-        OnceLock::new(),
-        OnceLock::new(),
-        OnceLock::new(),
-        OnceLock::new(),
-        OnceLock::new(),
-        OnceLock::new(),
-        OnceLock::new(),
-    ];
-    SLOTS[index]
-        .get_or_init(|| Regex::new(source).ok())
-        .as_ref()
-}
-
-fn redact_pem(text: &str) -> RedactionApplyResult {
-    apply_fixed(text, "pem", "[REDACTED:pem_private_key]")
-}
-
-fn redact_aws(text: &str) -> RedactionApplyResult {
-    apply_fixed(text, "aws", "[REDACTED:aws_access_key]")
-}
-
-fn redact_github(text: &str) -> RedactionApplyResult {
-    apply_fixed(text, "github", "[REDACTED:github_token]")
-}
-
-fn redact_slack(text: &str) -> RedactionApplyResult {
-    apply_fixed(text, "slack", "[REDACTED:slack_token]")
-}
-
-fn redact_sk(text: &str) -> RedactionApplyResult {
-    apply_fixed(text, "sk", "[REDACTED:sk_token]")
-}
-
-fn redact_jwt(text: &str) -> RedactionApplyResult {
-    apply_fixed(text, "jwt", "[REDACTED:jwt]")
-}
-
-fn apply_fixed(text: &str, name: &str, placeholder: &str) -> RedactionApplyResult {
-    let Some(regex) = regex_named(name) else {
-        return RedactionApplyResult {
-            text: text.to_string(),
-            count: 0,
-        };
-    };
-    apply_regex(text, regex, placeholder)
-}
-
-fn redact_bearer(text: &str) -> RedactionApplyResult {
-    let bytes = text.as_bytes();
-    let mut out = String::new();
-    let mut count = 0usize;
-    let mut index = 0usize;
-    while index < bytes.len() {
-        if let Some(end) = bearer_match(bytes, index) {
-            out.push_str("[REDACTED:bearer]");
-            count += 1;
-            index = end;
-        } else {
-            let width = next_char_len(text, index);
-            let end = (index + width).min(text.len());
-            out.push_str(&text[index..end]);
-            index = end;
-        }
-    }
-    RedactionApplyResult { text: out, count }
-}
-
-fn next_char_len(text: &str, index: usize) -> usize {
-    text[index..]
-        .chars()
-        .next()
-        .map(|ch| ch.len_utf8())
-        .unwrap_or(1)
-}
-
-fn bearer_match(bytes: &[u8], index: usize) -> Option<usize> {
-    if !word_boundary(bytes, index) {
-        return None;
-    }
-    if starts_with_ignore_ascii(bytes, index, b"bearer") {
-        return bearer_token_end(bytes, index + 6);
-    }
-    if starts_with_ignore_ascii(bytes, index, b"basic") {
-        return basic_token_end(bytes, index + 5);
-    }
-    None
-}
-
-fn bearer_token_end(bytes: &[u8], mut index: usize) -> Option<usize> {
-    let ws = take_ascii_ws(bytes, index);
-    if ws == index {
-        return None;
-    }
-    index = ws;
-    let start = index;
-    while index < bytes.len() && is_bearer_token_byte(bytes[index]) {
-        index += 1;
-    }
-    let token = &bytes[start..index];
-    if token.len() < 8 || !token.iter().any(|byte| is_bearer_symbol(*byte)) {
-        return None;
-    }
-    Some(index)
-}
-
-fn basic_token_end(bytes: &[u8], mut index: usize) -> Option<usize> {
-    let ws = take_ascii_ws(bytes, index);
-    if ws == index {
-        return None;
-    }
-    index = ws;
-    let start = index;
-    while index < bytes.len() && is_basic_byte(bytes[index]) {
-        index += 1;
-    }
-    if index - start < 16 {
-        return None;
-    }
-    let mut equals = 0;
-    while equals < 2 && index < bytes.len() && bytes[index] == b'=' {
-        equals += 1;
-        index += 1;
-    }
-    if index < bytes.len() && is_basic_lookahead(bytes[index]) {
-        return None;
-    }
-    Some(index)
-}
-
-fn is_bearer_token_byte(byte: u8) -> bool {
-    byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'-' | b'+' | b'/' | b'=')
-}
-
-fn is_bearer_symbol(byte: u8) -> bool {
-    byte.is_ascii_digit() || matches!(byte, b'_' | b'-' | b'+' | b'/' | b'=')
-}
-
-fn is_basic_byte(byte: u8) -> bool {
-    byte.is_ascii_alphanumeric() || matches!(byte, b'+' | b'/')
-}
-
-fn is_basic_lookahead(byte: u8) -> bool {
-    byte.is_ascii_alphanumeric() || matches!(byte, b'+' | b'/' | b'=')
-}
-
-fn take_ascii_ws(bytes: &[u8], mut index: usize) -> usize {
-    let start = index;
-    while index < bytes.len() && is_ascii_ws(bytes[index]) {
-        index += 1;
-    }
-    if index == start { start } else { index }
-}
-
-fn is_ascii_ws(byte: u8) -> bool {
-    matches!(byte, b' ' | b'\t' | b'\n' | b'\r' | 0x0c | 0x0b)
-}
-
-fn word_boundary(bytes: &[u8], index: usize) -> bool {
-    let prev = index > 0 && is_word_byte(bytes[index - 1]);
-    let current = index < bytes.len() && is_word_byte(bytes[index]);
-    prev != current
-}
-
-fn is_word_byte(byte: u8) -> bool {
-    byte.is_ascii_alphanumeric() || byte == b'_'
-}
-
-fn starts_with_ignore_ascii(bytes: &[u8], index: usize, literal: &[u8]) -> bool {
-    if index + literal.len() > bytes.len() {
-        return false;
-    }
-    bytes[index..index + literal.len()]
-        .iter()
-        .zip(literal)
-        .all(|(&have, &want)| have.eq_ignore_ascii_case(&want))
-}
-
-fn redact_assignment(text: &str) -> RedactionApplyResult {
-    let Some(regex) = regex_named("assign") else {
-        return RedactionApplyResult {
-            text: text.to_string(),
-            count: 0,
-        };
-    };
-    let bytes = text.as_bytes();
-    let mut out = String::new();
     let mut count = 0usize;
     let mut cursor = 0usize;
-    while cursor < bytes.len() {
-        let Some(mat) = regex.find_at(bytes, cursor) else {
+    while let Some(found) = regex.find_from_utf16(units, cursor).next() {
+        let start = found.start();
+        let end = found.end();
+        if start < last || start > units.len() {
             break;
-        };
-        let end = mat.end();
-        if text[end..].starts_with("[REDACTED") || consume_value(bytes, end) == end {
-            let next = mat.start() + next_char_len(text, mat.start());
-            out.push_str(&text[cursor..next.min(text.len())]);
-            cursor = next.min(text.len());
+        }
+        out.extend_from_slice(&units[last..start.min(units.len())]);
+        count += 1;
+        out.extend(expand_replacement(&found, units, replacement).encode_utf16());
+        if end <= start {
+            if start >= units.len() {
+                last = start;
+                break;
+            }
+            out.push(units[start]);
+            last = start + 1;
+            cursor = start + 1;
             continue;
         }
-        let value_end = consume_value(bytes, end);
-        out.push_str(&text[cursor..mat.start()]);
-        let group = regex
-            .captures_at(bytes, mat.start())
-            .and_then(|caps| caps.get(1))
-            .and_then(|item| std::str::from_utf8(item.as_bytes()).ok())
-            .unwrap_or("")
-            .to_string();
-        out.push_str(&group);
-        out.push_str("[REDACTED:assignment]");
-        count += 1;
-        cursor = value_end;
-    }
-    out.push_str(&text[cursor..]);
-    RedactionApplyResult { text: out, count }
-}
-
-fn consume_value(bytes: &[u8], mut index: usize) -> usize {
-    let start = index;
-    if index >= bytes.len() || !is_value_byte(bytes[index]) {
-        return start;
-    }
-    while index < bytes.len() && is_value_byte(bytes[index]) {
-        index += 1;
-    }
-    loop {
-        let mut probe = index;
-        if probe >= bytes.len() || !matches!(bytes[probe], b' ' | b'\t') {
+        let end = end.min(units.len());
+        last = end;
+        cursor = end;
+        if cursor >= units.len() {
             break;
         }
-        while probe < bytes.len() && matches!(bytes[probe], b' ' | b'\t') {
-            probe += 1;
-        }
-        if probe >= bytes.len() || !is_value_byte(bytes[probe]) {
-            break;
-        }
-        while probe < bytes.len() && is_value_byte(bytes[probe]) {
-            probe += 1;
-        }
-        index = probe;
     }
-    index
+    if last < units.len() {
+        out.extend_from_slice(&units[last..]);
+    }
+    (out, count)
 }
 
-fn is_value_byte(byte: u8) -> bool {
-    !is_ascii_ws(byte) && !matches!(byte, b',' | b';' | b'[' | b']')
+fn expand_replacement(found: &regress::Match, units: &[u16], replacement: &str) -> String {
+    if !replacement.contains("$1") {
+        return replacement.to_string();
+    }
+    let group = found
+        .group(1)
+        .map(|range| {
+            let start = range.start.min(units.len());
+            let end = range.end.min(units.len());
+            String::from_utf16_lossy(&units[start..end])
+        })
+        .unwrap_or_default();
+    replacement.replace("$1", &group)
+}
+
+fn builtin_detectors() -> &'static [Detector] {
+    static SLOTS: OnceLock<Vec<Detector>> = OnceLock::new();
+    SLOTS.get_or_init(|| {
+        let specs = [
+            (
+                r"\b(?:Bearer\s+(?=[A-Za-z0-9_\-+/=]*[0-9_\-+/=])[A-Za-z0-9_\-+/=]{8,}|Basic\s+[A-Za-z0-9+/]{16,}={0,2})(?![A-Za-z0-9+/=])",
+                "gi",
+                "[REDACTED:bearer]",
+            ),
+            (
+                r"-----BEGIN [A-Z0-9 ]*PRIVATE KEY-----[\s\S]*?-----END [A-Z0-9 ]*PRIVATE KEY-----",
+                "g",
+                "[REDACTED:pem_private_key]",
+            ),
+            (
+                r"\b(?:AKIA|ASIA)[0-9A-Z]{16}\b",
+                "g",
+                "[REDACTED:aws_access_key]",
+            ),
+            (
+                r"\b(?:gh[pousr]_|github_pat_)[A-Za-z0-9_]{20,}\b",
+                "g",
+                "[REDACTED:github_token]",
+            ),
+            (r"\bxox[a-z]-[\w-]{10,}\b", "g", "[REDACTED:slack_token]"),
+            (r"\bsk-[A-Za-z0-9_-]{16,}\b", "g", "[REDACTED:sk_token]"),
+            (
+                r"\beyJ[\w-]{8,}\.[\w-]+\.[\w-]+\b",
+                "g",
+                "[REDACTED:jwt]",
+            ),
+        ];
+        let mut compiled = Vec::new();
+        for (source, flags, replacement) in specs {
+            if let Ok(regex) = Regex::with_flags(source, flags) {
+                compiled.push(Detector { regex, replacement });
+            }
+        }
+        let assignment = format!(
+            r"\b((?:[\w-]*[_-](?:{SECRET_STEM}|key|auth)|(?:{SECRET_STEM}))\s*[=:]\s*)(?!\[REDACTED)[^\s\n\r,;[\]]+(?:[ \t]+[^\s\n\r,;[\]]+)*"
+        );
+        if let Ok(regex) = Regex::with_flags(&assignment, "gi") {
+            compiled.push(Detector {
+                regex,
+                replacement: "$1[REDACTED:assignment]",
+            });
+        }
+        compiled
+    })
 }
 
 pub fn redact_message(
@@ -578,5 +362,8 @@ pub fn keep_metadata_key(key: &str) -> bool {
     else {
         return false;
     };
-    !middle.is_empty() && !middle.contains('\n')
+    !middle.is_empty()
+        && !middle
+            .chars()
+            .any(|ch| matches!(ch, '\n' | '\r' | '\u{2028}' | '\u{2029}'))
 }
