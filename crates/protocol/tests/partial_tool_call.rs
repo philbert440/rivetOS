@@ -19,6 +19,17 @@ fn null_fields_round_trip() {
 }
 
 #[test]
+fn equality_ignores_serialization_order() {
+    let built = PartialToolCall::new().set_name("x");
+    let parsed: PartialToolCall = serde_json::from_str(r#"{"name":"x"}"#).unwrap();
+    assert_eq!(built, parsed);
+    assert_eq!(
+        serde_json::to_string(&built).unwrap(),
+        serde_json::to_string(&parsed).unwrap()
+    );
+}
+
+#[test]
 fn index_keeps_javascript_spelling() {
     let call: PartialToolCall = serde_json::from_str(r#"{"index":1000}"#).unwrap();
     assert_eq!(serde_json::to_string(&call).unwrap(), r#"{"index":1000}"#);

@@ -169,8 +169,8 @@ pub(crate) fn json_number(value: f64) -> String {
     let negative = value.is_sign_negative();
     let mut buffer = ryu::Buffer::new();
     let printed = buffer.format_finite(value.abs());
-    let (digits, exp10) = significant(printed);
-    let body = layout(&digits, exp10);
+    let (digits, exp10) = extract_digits(printed);
+    let body = format_ecmascript_number(&digits, exp10);
     if negative {
         let mut out = String::with_capacity(body.len() + 1);
         out.push('-');
@@ -181,7 +181,7 @@ pub(crate) fn json_number(value: f64) -> String {
     }
 }
 
-fn significant(printed: &str) -> (String, i32) {
+fn extract_digits(printed: &str) -> (String, i32) {
     let printed = printed.strip_prefix('+').unwrap_or(printed);
     let printed = printed.strip_prefix('-').unwrap_or(printed);
     let bytes = printed.as_bytes();
@@ -230,7 +230,7 @@ fn significant(printed: &str) -> (String, i32) {
     (digits, exp10)
 }
 
-fn layout(digits: &str, exp10: i32) -> String {
+fn format_ecmascript_number(digits: &str, exp10: i32) -> String {
     let k = digits.len() as i32;
     let n = exp10 + k;
     if k <= n && n <= 21 {

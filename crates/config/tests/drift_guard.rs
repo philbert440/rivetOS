@@ -159,7 +159,7 @@ fn consider_rust(
     _end: usize,
     spans: &[(usize, usize, String)],
 ) {
-    if !interesting(text) || !binding_or_arg(source.as_bytes(), start) {
+    if !selects_message(text) || !binding_or_arg(source.as_bytes(), start) {
         return;
     }
     if ignored_argument(source.as_bytes(), start) {
@@ -182,7 +182,7 @@ fn consider_rust(
     });
 }
 
-fn interesting(text: &str) -> bool {
+fn selects_message(text: &str) -> bool {
     text == "Errors:" || text == "Warnings:" || text.chars().any(char::is_whitespace)
 }
 
@@ -1096,6 +1096,14 @@ fn counterparts() -> &'static [Counterpart] {
             rust_function: "validate_harnesses",
             multiplicity: 1,
         },
+        Counterpart {
+            needle: "Invalid regex:",
+            ts_file: "packages/boot/src/validate/sections.ts",
+            ts_function: "validateMemoryCaptureRedaction",
+            rust_file: "crates/config/src/validate/patterns.rs",
+            rust_function: "invalid_regex_message",
+            multiplicity: 1,
+        },
     ]
 }
 
@@ -1151,6 +1159,47 @@ fn template_site_problems(template: &Template, ts: &[Hit], rust: &[Hit]) -> Vec<
                 "site count ts {ts_count} [{}] rust {rust_count} [{}]: {}",
                 located(ts, template),
                 located(rust, template),
+                show(template)
+            )];
+        }
+        if ts_count == 0 {
+            return Vec::new();
+        }
+        let Some(ts_site) = ts_sites.keys().next() else {
+            return Vec::new();
+        };
+        let Some(rust_site) = rust_sites.keys().next() else {
+            return Vec::new();
+        };
+        if let Some(link) = counterpart(template, &ts_site.file, &ts_site.function) {
+            if link.rust_file != rust_site.file || link.rust_function != rust_site.function {
+                return vec![format!(
+                    "unique message rust site {}:{} != counterpart {}:{} for {}",
+                    rust_site.file,
+                    rust_site.function,
+                    link.rust_file,
+                    link.rust_function,
+                    show(template)
+                )];
+            }
+            return Vec::new();
+        }
+        let Some(expected) = rust_module_for_typescript(&ts_site.file, &ts_site.function) else {
+            return vec![format!(
+                "typescript site {}:{} has no rust module pin for {}",
+                ts_site.file,
+                ts_site.function,
+                show(template)
+            )];
+        };
+        if rust_site.file != expected {
+            return vec![format!(
+                "unique message moved from typescript {}:{} to rust {}:{} (expected {}) for {}",
+                ts_site.file,
+                ts_site.function,
+                rust_site.file,
+                rust_site.function,
+                expected,
                 show(template)
             )];
         }
@@ -1231,6 +1280,59 @@ fn group_sites(hits: &[&Hit]) -> HashMap<Site, usize> {
         *map.entry(site).or_default() += 1;
     }
     map
+}
+
+fn rust_module_for_typescript(file: &str, function: &str) -> Option<&'static str> {
+    match (file, function) {
+        ("packages/boot/src/validate/deployment.ts", _) => {
+            Some("crates/config/src/validate/deployment.rs")
+        }
+        ("packages/boot/src/validate/cross-refs.ts", _) => {
+            Some("crates/config/src/validate/cross.rs")
+        }
+        ("packages/boot/src/validate/index.ts", _) => Some("crates/config/src/validate/mod.rs"),
+        ("packages/boot/src/validate/sections.ts", "validateRuntime" | "validateHeartbeat") => {
+            Some("crates/config/src/validate/runtime.rs")
+        }
+        ("packages/boot/src/validate/sections.ts", "validateAgents") => {
+            Some("crates/config/src/validate/agents.rs")
+        }
+        (
+            "packages/boot/src/validate/sections.ts",
+            "validateTokenCommand" | "validateTokenCommandFields",
+        ) => Some("crates/config/src/validate/token.rs"),
+        ("packages/boot/src/validate/sections.ts", "validateProviders") => {
+            Some("crates/config/src/validate/providers.rs")
+        }
+        ("packages/boot/src/validate/sections.ts", "validateChannels") => {
+            Some("crates/config/src/validate/channels.rs")
+        }
+        (
+            "packages/boot/src/validate/sections.ts",
+            "validateMemory"
+            | "validateMemorySqlite"
+            | "validateMemoryCapture"
+            | "validateMemoryCaptureRedaction"
+            | "validateMemoryEmbedded",
+        ) => Some("crates/config/src/validate/memory.rs"),
+        ("packages/boot/src/validate/sections.ts", "validateMesh") => {
+            Some("crates/config/src/validate/mesh.rs")
+        }
+        ("packages/boot/src/validate/sections.ts", "validateDen") => {
+            Some("crates/config/src/validate/den.rs")
+        }
+        (
+            "packages/boot/src/validate/sections.ts",
+            "validateTasks" | "validateTasksHarnesses" | "validateTasksEval" | "validateWorkflows",
+        ) => Some("crates/config/src/validate/tasks.rs"),
+        ("packages/types/src/harness-session-id.ts", _) => {
+            Some("crates/protocol/src/session_id.rs")
+        }
+        ("packages/cli/src/lib/embedded.ts", _) => Some("crates/config/src/embedded.rs"),
+        ("packages/boot/src/config.ts", _) => Some("crates/config/src/error.rs"),
+        ("packages/boot/src/validate/types.ts", _) => Some("crates/config/src/validate/keys.rs"),
+        _ => None,
+    }
 }
 
 fn counterpart(template: &Template, file: &str, function: &str) -> Option<&'static Counterpart> {
@@ -1549,6 +1651,17 @@ fn den_unknown_harness(hit: &Hit) -> bool {
             .any(|part| matches!(part, Part::Lit(text) if text.contains("Unknown harness id")))
 }
 
+fn den_files_open(hit: &Hit) -> bool {
+    hit.file.ends_with("crates/config/src/validate/den.rs")
+        && hit.template.parts.iter().any(|part| {
+            matches!(part, Part::Lit(text) if text.contains("\"den.files_open\" must be a boolean"))
+        })
+}
+
+fn tasks_validator(hit: &Hit) -> bool {
+    hit.file.ends_with("crates/config/src/validate/tasks.rs") && hit.function == "validate_tasks"
+}
+
 fn tasks_unknown_harness(hit: &Hit) -> bool {
     hit.file.ends_with("crates/config/src/validate/tasks.rs")
         && hit
@@ -1671,6 +1784,30 @@ fn deleting_the_den_unknown_harness_warning_fails() {
     assert!(
         !problems.is_empty(),
         "dropping den.rs unknown-harness warning stayed green"
+    );
+}
+
+#[test]
+fn moving_the_den_files_open_error_into_tasks_fails() {
+    let root = repo_root();
+    let ts = ts_hits(&root);
+    let rust = rust_hits(&root);
+    let mut moved = rust.clone();
+    let den_at = moved.iter().position(den_files_open).unwrap();
+    let den_hit = moved.remove(den_at);
+    let tasks_at = moved.iter().position(tasks_validator).unwrap();
+    let mut copy = den_hit;
+    copy.file.clone_from(&moved[tasks_at].file);
+    copy.function.clone_from(&moved[tasks_at].function);
+    copy.line = moved[tasks_at].line + 1;
+    moved.push(copy);
+    let problems = site_problems(&ts, &moved);
+    assert!(
+        problems
+            .iter()
+            .any(|problem| problem.contains("den.files_open")),
+        "moving den.files_open into tasks stayed green:\n{}",
+        problems.join("\n")
     );
 }
 

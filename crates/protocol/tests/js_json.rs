@@ -126,6 +126,65 @@ fn two_mib_document_of_short_strings_parses_within_five_seconds() {
 }
 
 #[test]
+fn hundred_thousand_nested_arrays_fit_in_two_mib_stack() {
+    let depth = 100_000usize;
+    let mut text = String::with_capacity(depth * 2 + 1);
+    for _ in 0..depth {
+        text.push('[');
+    }
+    text.push('1');
+    for _ in 0..depth {
+        text.push(']');
+    }
+    let handle = std::thread::Builder::new()
+        .stack_size(2 * 1024 * 1024)
+        .spawn(move || {
+            let value = protocol::js::parse(&text).unwrap();
+            let rendered = protocol::js::stringify(&value);
+            assert_eq!(rendered, text);
+            let cloned = value.clone();
+            assert_eq!(protocol::js::stringify(&cloned), text);
+        })
+        .unwrap();
+    handle.join().unwrap();
+}
+
+#[test]
+fn hundred_thousand_key_object_parses_within_five_seconds() {
+    let count = 100_000usize;
+    let mut text = String::with_capacity(count * 16);
+    text.push('{');
+    for index in 0..count {
+        if index > 0 {
+            text.push(',');
+        }
+        text.push('"');
+        text.push('k');
+        text.push_str(&index.to_string());
+        text.push('"');
+        text.push(':');
+        text.push_str(&index.to_string());
+    }
+    text.push('}');
+    let started = std::time::Instant::now();
+    let value = protocol::js::parse(&text).unwrap();
+    assert!(started.elapsed() < std::time::Duration::from_secs(5));
+    let object = value.as_object().unwrap();
+    assert_eq!(object.iter().count(), count);
+    assert_eq!(
+        object.get("k0").and_then(protocol::js::JsValue::as_i64),
+        Some(0)
+    );
+    assert_eq!(
+        object.get("k99999").and_then(protocol::js::JsValue::as_i64),
+        Some(99_999)
+    );
+    let rendered = protocol::js::stringify(&value);
+    assert!(rendered.starts_with(r#"{"k0":0,"k1":1,"#));
+    assert!(rendered.ends_with(r#","k99999":99999}"#));
+}
+
+#[test]
 fn non_finite_numbers_stringify_as_null() {
     let value = protocol::js::parse("1e400").unwrap();
     assert_eq!(protocol::js::stringify(&value), "null");

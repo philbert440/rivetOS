@@ -228,7 +228,7 @@ pub enum JsonField<T> {
     Value(T),
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, Eq, Default)]
 pub struct PartialToolCall {
     pub id: JsonField<String>,
     pub name: JsonField<String>,
@@ -239,6 +239,16 @@ pub struct PartialToolCall {
 }
 
 const PARTIAL_TOOL_CALL_KEYS: &[&str] = &["id", "name", "arguments", "thoughtSignature", "index"];
+
+impl PartialEq for PartialToolCall {
+    fn eq(&self, other: &Self) -> bool {
+        self.id == other.id
+            && self.name == other.name
+            && self.arguments == other.arguments
+            && self.thought_signature == other.thought_signature
+            && self.index == other.index
+    }
+}
 
 impl PartialToolCall {
     pub fn new() -> Self {

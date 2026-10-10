@@ -1,3 +1,5 @@
+use std::collections::HashMap;
+
 use serde_json::{Map, Value};
 
 pub fn js_trim(text: &str) -> &str {
@@ -87,9 +89,10 @@ fn utf8_from_units(units: &[u16]) -> String {
         .collect()
 }
 
-#[derive(Clone, Debug)]
+#[derive(Debug)]
 pub struct JsObject {
     entries: Vec<(JsString, JsValue)>,
+    lookup: HashMap<Vec<u16>, usize>,
 }
 
 impl PartialEq for JsObject {
@@ -99,40 +102,50 @@ impl PartialEq for JsObject {
         }
         self.entries.iter().all(|(key, value)| {
             other
-                .entries
-                .iter()
-                .any(|(other_key, other_value)| key == other_key && value == other_value)
+                .lookup
+                .get(&key.units)
+                .and_then(|index| other.entries.get(*index))
+                .is_some_and(|(_, other_value)| value == other_value)
         })
     }
 }
 
 impl Eq for JsObject {}
 
+impl Clone for JsObject {
+    fn clone(&self) -> Self {
+        let mut object = JsObject::new();
+        for (key, value) in &self.entries {
+            object.insert(key.clone(), value.clone());
+        }
+        object
+    }
+}
+
 impl JsObject {
     fn new() -> Self {
         Self {
             entries: Vec::new(),
+            lookup: HashMap::new(),
         }
     }
 
     fn insert(&mut self, key: JsString, value: JsValue) {
-        if let Some(slot) = self
-            .entries
-            .iter_mut()
-            .find(|(existing, _)| existing == &key)
-        {
-            slot.1 = value;
-        } else {
-            self.entries.push((key, value));
+        if let Some(index) = self.lookup.get(&key.units).copied() {
+            if let Some(slot) = self.entries.get_mut(index) {
+                slot.1 = value;
+            }
+            return;
         }
+        let index = self.entries.len();
+        self.lookup.insert(key.units.clone(), index);
+        self.entries.push((key, value));
     }
 
     pub fn get(&self, key: &str) -> Option<&JsValue> {
         let needle = JsString::from_text(key);
-        self.entries
-            .iter()
-            .find(|(existing, _)| existing == &needle)
-            .map(|(_, value)| value)
+        let index = *self.lookup.get(&needle.units)?;
+        self.entries.get(index).map(|(_, value)| value)
     }
 
     pub fn iter(&self) -> impl Iterator<Item = (&JsString, &JsValue)> {
@@ -140,7 +153,7 @@ impl JsObject {
     }
 }
 
-#[derive(Clone, Debug)]
+#[derive(Debug)]
 pub enum JsValue {
     Null,
     Bool(bool),
@@ -229,6 +242,13 @@ impl JsValue {
     pub fn get(&self, key: &str) -> Option<&JsValue> {
         self.as_object().and_then(|object| object.get(key))
     }
+
+    pub(crate) fn into_object(mut self) -> Option<JsObject> {
+        match &mut self {
+            Self::Object(object) => Some(std::mem::replace(object, JsObject::new())),
+            _ => None,
+        }
+    }
 }
 
 pub(crate) fn from_serde(value: &Value) -> JsValue {
@@ -254,26 +274,51 @@ pub fn parse(text: &str) -> Result<JsValue, ParseError> {
     let mut parser = Parser {
         text,
         index: 0,
-        depth: 0,
+        stack: Vec::new(),
     };
     parser.skip_ws();
     if parser.done() {
         return Err(ParseError { message: "empty" });
     }
-    let value = parser.parse_value()?;
-    parser.skip_ws();
-    if !parser.done() {
-        return Err(ParseError {
-            message: "trailing",
-        });
+    let mut state = ParseState::Need;
+    loop {
+        state = match state {
+            ParseState::Need => parser.start_value()?,
+            ParseState::Have(value) => {
+                if parser.stack.is_empty() {
+                    parser.skip_ws();
+                    if !parser.done() {
+                        return Err(ParseError {
+                            message: "trailing",
+                        });
+                    }
+                    return Ok(value);
+                }
+                parser.adopt(value)?
+            }
+        };
     }
-    Ok(value)
+}
+
+enum ParseState {
+    Need,
+    Have(JsValue),
+}
+
+enum Frame {
+    Array(Vec<JsValue>),
+    Object(Box<ObjectFrame>),
+}
+
+struct ObjectFrame {
+    object: JsObject,
+    key: Option<JsString>,
 }
 
 struct Parser<'a> {
     text: &'a str,
     index: usize,
-    depth: u32,
+    stack: Vec<Frame>,
 }
 
 impl<'a> Parser<'a> {
@@ -291,27 +336,109 @@ impl<'a> Parser<'a> {
         }
     }
 
-    fn parse_value(&mut self) -> Result<JsValue, ParseError> {
-        self.depth += 1;
-        if self.depth > 10_000 {
-            return Err(ParseError { message: "depth" });
-        }
-        let value = self.parse_value_inner()?;
-        self.depth -= 1;
-        Ok(value)
-    }
-
-    fn parse_value_inner(&mut self) -> Result<JsValue, ParseError> {
+    fn start_value(&mut self) -> Result<ParseState, ParseError> {
         self.skip_ws();
         match self.peek() {
-            Some(b'n') => self.literal("null", JsValue::Null),
-            Some(b't') => self.literal("true", JsValue::Bool(true)),
-            Some(b'f') => self.literal("false", JsValue::Bool(false)),
-            Some(b'"') => Ok(JsValue::String(self.parse_string()?)),
-            Some(b'[') => self.parse_array(),
-            Some(b'{') => self.parse_object(),
-            Some(b'-') | Some(b'0'..=b'9') => Ok(JsValue::Number(self.parse_number()?)),
+            Some(b'n') => Ok(ParseState::Have(self.literal("null", JsValue::Null)?)),
+            Some(b't') => Ok(ParseState::Have(self.literal("true", JsValue::Bool(true))?)),
+            Some(b'f') => Ok(ParseState::Have(
+                self.literal("false", JsValue::Bool(false))?,
+            )),
+            Some(b'"') => Ok(ParseState::Have(JsValue::String(self.parse_string()?))),
+            Some(b'[') => self.open_array(),
+            Some(b'{') => self.open_object(),
+            Some(b'-') | Some(b'0'..=b'9') => {
+                Ok(ParseState::Have(JsValue::Number(self.parse_number()?)))
+            }
             _ => Err(ParseError { message: "value" }),
+        }
+    }
+
+    fn open_array(&mut self) -> Result<ParseState, ParseError> {
+        self.index += 1;
+        self.skip_ws();
+        if self.peek() == Some(b']') {
+            self.index += 1;
+            return Ok(ParseState::Have(JsValue::Array(Vec::new())));
+        }
+        self.stack.push(Frame::Array(Vec::new()));
+        Ok(ParseState::Need)
+    }
+
+    fn open_object(&mut self) -> Result<ParseState, ParseError> {
+        self.index += 1;
+        self.skip_ws();
+        if self.peek() == Some(b'}') {
+            self.index += 1;
+            return Ok(ParseState::Have(JsValue::Object(JsObject::new())));
+        }
+        let key = self.parse_key()?;
+        self.stack.push(Frame::Object(Box::new(ObjectFrame {
+            object: JsObject::new(),
+            key: Some(key),
+        })));
+        Ok(ParseState::Need)
+    }
+
+    fn parse_key(&mut self) -> Result<JsString, ParseError> {
+        self.skip_ws();
+        if self.peek() != Some(b'"') {
+            return Err(ParseError { message: "key" });
+        }
+        let key = self.parse_string()?;
+        self.skip_ws();
+        if self.peek() != Some(b':') {
+            return Err(ParseError { message: "colon" });
+        }
+        self.index += 1;
+        Ok(key)
+    }
+
+    fn adopt(&mut self, value: JsValue) -> Result<ParseState, ParseError> {
+        match self.stack.last_mut() {
+            Some(Frame::Array(items)) => items.push(value),
+            Some(Frame::Object(frame)) => {
+                let Some(key) = frame.key.take() else {
+                    return Err(ParseError { message: "key" });
+                };
+                frame.object.insert(key, value);
+            }
+            None => return Err(ParseError { message: "value" }),
+        }
+        self.skip_ws();
+        let closing = match self.stack.last() {
+            Some(Frame::Array(_)) => b']',
+            Some(Frame::Object(_)) => b'}',
+            None => return Err(ParseError { message: "value" }),
+        };
+        match self.peek() {
+            Some(b',') => {
+                self.index += 1;
+                self.skip_ws();
+                if self.peek() == Some(closing) {
+                    return Err(ParseError { message: "comma" });
+                }
+                if matches!(self.stack.last(), Some(Frame::Object(_))) {
+                    let key = self.parse_key()?;
+                    if let Some(Frame::Object(frame)) = self.stack.last_mut() {
+                        frame.key = Some(key);
+                    }
+                }
+                Ok(ParseState::Need)
+            }
+            Some(byte) if byte == closing => {
+                self.index += 1;
+                match self.stack.pop() {
+                    Some(Frame::Array(items)) => Ok(ParseState::Have(JsValue::Array(items))),
+                    Some(Frame::Object(frame)) => {
+                        Ok(ParseState::Have(JsValue::Object(frame.object)))
+                    }
+                    None => Err(ParseError { message: "value" }),
+                }
+            }
+            _ => Err(ParseError {
+                message: if closing == b']' { "array" } else { "object" },
+            }),
         }
     }
 
@@ -325,75 +452,6 @@ impl<'a> Parser<'a> {
         } else {
             Err(ParseError { message: "literal" })
         }
-    }
-
-    fn parse_array(&mut self) -> Result<JsValue, ParseError> {
-        self.index += 1;
-        self.skip_ws();
-        let mut items = Vec::new();
-        if self.peek() == Some(b']') {
-            self.index += 1;
-            return Ok(JsValue::Array(items));
-        }
-        loop {
-            items.push(self.parse_value()?);
-            self.skip_ws();
-            match self.peek() {
-                Some(b',') => {
-                    self.index += 1;
-                    self.skip_ws();
-                    if self.peek() == Some(b']') {
-                        return Err(ParseError { message: "comma" });
-                    }
-                }
-                Some(b']') => {
-                    self.index += 1;
-                    break;
-                }
-                _ => return Err(ParseError { message: "array" }),
-            }
-        }
-        Ok(JsValue::Array(items))
-    }
-
-    fn parse_object(&mut self) -> Result<JsValue, ParseError> {
-        self.index += 1;
-        self.skip_ws();
-        let mut object = JsObject::new();
-        if self.peek() == Some(b'}') {
-            self.index += 1;
-            return Ok(JsValue::Object(object));
-        }
-        loop {
-            self.skip_ws();
-            if self.peek() != Some(b'"') {
-                return Err(ParseError { message: "key" });
-            }
-            let key = self.parse_string()?;
-            self.skip_ws();
-            if self.peek() != Some(b':') {
-                return Err(ParseError { message: "colon" });
-            }
-            self.index += 1;
-            let value = self.parse_value()?;
-            object.insert(key, value);
-            self.skip_ws();
-            match self.peek() {
-                Some(b',') => {
-                    self.index += 1;
-                    self.skip_ws();
-                    if self.peek() == Some(b'}') {
-                        return Err(ParseError { message: "comma" });
-                    }
-                }
-                Some(b'}') => {
-                    self.index += 1;
-                    break;
-                }
-                _ => return Err(ParseError { message: "object" }),
-            }
-        }
-        Ok(JsValue::Object(object))
     }
 
     fn parse_string(&mut self) -> Result<JsString, ParseError> {
@@ -525,20 +583,105 @@ impl<'a> Parser<'a> {
 
 pub fn stringify(value: &JsValue) -> String {
     let mut out = String::new();
-    write_value(value, &mut out);
+    let mut jobs = vec![WriteJob::Value(value)];
+    while let Some(job) = jobs.pop() {
+        match job {
+            WriteJob::Value(current) => write_opened(current, &mut out, &mut jobs),
+            WriteJob::Array { items, next } => {
+                if next >= items.len() {
+                    out.push(']');
+                    continue;
+                }
+                if next > 0 {
+                    out.push(',');
+                }
+                let child = &items[next];
+                jobs.push(WriteJob::Array {
+                    items,
+                    next: next + 1,
+                });
+                jobs.push(WriteJob::Value(child));
+            }
+            WriteJob::Object { pairs, next } => {
+                if next >= pairs.len() {
+                    out.push('}');
+                    continue;
+                }
+                if next > 0 {
+                    out.push(',');
+                }
+                let (key, child) = pairs[next];
+                write_units(&key.units, &mut out);
+                out.push(':');
+                jobs.push(WriteJob::Object {
+                    pairs,
+                    next: next + 1,
+                });
+                jobs.push(WriteJob::Value(child));
+            }
+        }
+    }
     out
 }
 
-fn write_value(value: &JsValue, out: &mut String) {
+enum WriteJob<'a> {
+    Value(&'a JsValue),
+    Array {
+        items: &'a [JsValue],
+        next: usize,
+    },
+    Object {
+        pairs: Vec<(&'a JsString, &'a JsValue)>,
+        next: usize,
+    },
+}
+
+fn write_opened<'a>(value: &'a JsValue, out: &mut String, jobs: &mut Vec<WriteJob<'a>>) {
     match value {
         JsValue::Null => out.push_str("null"),
         JsValue::Bool(true) => out.push_str("true"),
         JsValue::Bool(false) => out.push_str("false"),
         JsValue::Number(number) => write_number(*number, out),
         JsValue::String(text) => write_units(&text.units, out),
-        JsValue::Array(items) => write_array(items, out),
-        JsValue::Object(object) => write_object(object, out),
+        JsValue::Array(items) => {
+            out.push('[');
+            if items.is_empty() {
+                out.push(']');
+            } else {
+                jobs.push(WriteJob::Array { items, next: 0 });
+            }
+        }
+        JsValue::Object(object) => {
+            out.push('{');
+            if object.entries.is_empty() {
+                out.push('}');
+            } else {
+                jobs.push(WriteJob::Object {
+                    pairs: ordered_pairs(object),
+                    next: 0,
+                });
+            }
+        }
     }
+}
+
+fn ordered_pairs(object: &JsObject) -> Vec<(&JsString, &JsValue)> {
+    let mut indexed = Vec::new();
+    let mut rest = Vec::new();
+    for (key, value) in &object.entries {
+        if let Some(index) = array_index(key) {
+            indexed.push((index, key, value));
+        } else {
+            rest.push((key, value));
+        }
+    }
+    indexed.sort_by_key(|(index, _, _)| *index);
+    let mut pairs = Vec::with_capacity(indexed.len() + rest.len());
+    for (_, key, value) in indexed {
+        pairs.push((key, value));
+    }
+    pairs.extend(rest);
+    pairs
 }
 
 fn write_number(number: f64, out: &mut String) {
@@ -549,47 +692,101 @@ fn write_number(number: f64, out: &mut String) {
     out.push_str(&crate::js_number::json_number(number));
 }
 
-fn write_array(items: &[JsValue], out: &mut String) {
-    out.push('[');
-    for (index, item) in items.iter().enumerate() {
-        if index > 0 {
-            out.push(',');
-        }
-        write_value(item, out);
+impl Clone for JsValue {
+    fn clone(&self) -> Self {
+        clone_value(self)
     }
-    out.push(']');
 }
 
-fn write_object(object: &JsObject, out: &mut String) {
-    out.push('{');
-    let mut indexed = Vec::new();
-    let mut rest = Vec::new();
-    for (key, value) in object.iter() {
-        if let Some(index) = array_index(key) {
-            indexed.push((index, key, value));
-        } else {
-            rest.push((key, value));
+impl Drop for JsValue {
+    fn drop(&mut self) {
+        let mut stack = Vec::new();
+        take_children(self, &mut stack);
+        while let Some(mut child) = stack.pop() {
+            take_children(&mut child, &mut stack);
         }
     }
-    indexed.sort_by_key(|(index, _, _)| *index);
-    let mut first = true;
-    for (_, key, value) in indexed {
-        write_entry(key, value, &mut first, out);
-    }
-    for (key, value) in rest {
-        write_entry(key, value, &mut first, out);
-    }
-    out.push('}');
 }
 
-fn write_entry(key: &JsString, value: &JsValue, first: &mut bool, out: &mut String) {
-    if !*first {
-        out.push(',');
+fn take_children(value: &mut JsValue, stack: &mut Vec<JsValue>) {
+    match value {
+        JsValue::Array(items) => stack.append(items),
+        JsValue::Object(object) => {
+            object.lookup.clear();
+            for (_, child) in object.entries.drain(..) {
+                stack.push(child);
+            }
+        }
+        JsValue::Null | JsValue::Bool(_) | JsValue::Number(_) | JsValue::String(_) => {}
     }
-    *first = false;
-    write_units(&key.units, out);
-    out.push(':');
-    write_value(value, out);
+}
+
+enum Walk<'a> {
+    Enter(&'a JsValue),
+    Leave(&'a JsValue),
+}
+
+enum Flat {
+    Leaf(JsValue),
+    Array(usize),
+    Object(Vec<JsString>),
+}
+
+fn clone_value(root: &JsValue) -> JsValue {
+    let mut flat = Vec::new();
+    let mut walk = vec![Walk::Enter(root)];
+    while let Some(step) = walk.pop() {
+        match step {
+            Walk::Enter(value) => match value {
+                JsValue::Array(items) => {
+                    walk.push(Walk::Leave(value));
+                    for item in items.iter().rev() {
+                        walk.push(Walk::Enter(item));
+                    }
+                }
+                JsValue::Object(object) => {
+                    walk.push(Walk::Leave(value));
+                    for (_, child) in object.entries.iter().rev() {
+                        walk.push(Walk::Enter(child));
+                    }
+                }
+                JsValue::Null => flat.push(Flat::Leaf(JsValue::Null)),
+                JsValue::Bool(flag) => flat.push(Flat::Leaf(JsValue::Bool(*flag))),
+                JsValue::Number(number) => flat.push(Flat::Leaf(JsValue::Number(*number))),
+                JsValue::String(text) => flat.push(Flat::Leaf(JsValue::String(text.clone()))),
+            },
+            Walk::Leave(JsValue::Array(items)) => flat.push(Flat::Array(items.len())),
+            Walk::Leave(JsValue::Object(object)) => {
+                let keys = object.entries.iter().map(|(key, _)| key.clone()).collect();
+                flat.push(Flat::Object(keys));
+            }
+            Walk::Leave(_) => {}
+        }
+    }
+    let mut built = Vec::new();
+    for item in flat {
+        match item {
+            Flat::Leaf(value) => built.push(value),
+            Flat::Array(count) => {
+                let start = built.len().saturating_sub(count);
+                let items = built.split_off(start);
+                built.push(JsValue::Array(items));
+            }
+            Flat::Object(keys) => {
+                let start = built.len().saturating_sub(keys.len());
+                let values = built.split_off(start);
+                let mut object = JsObject::new();
+                for (key, value) in keys.into_iter().zip(values) {
+                    object.insert(key, value);
+                }
+                built.push(JsValue::Object(object));
+            }
+        }
+    }
+    match built.pop() {
+        Some(value) => value,
+        None => JsValue::Null,
+    }
 }
 
 fn array_index(key: &JsString) -> Option<u32> {
@@ -671,7 +868,7 @@ fn push_hex(unit: u32, out: &mut String) {
 
 #[cfg(test)]
 mod code_units {
-    use super::{JsString, JsValue, parse, stringify};
+    use super::{JsString, parse, stringify};
 
     #[test]
     fn lone_surrogates_escape() {
@@ -680,10 +877,6 @@ mod code_units {
         assert_eq!(value.as_str(), Some("\u{FFFD}"));
         let high = parse(r#""\udfff""#).unwrap();
         assert_eq!(stringify(&high), r#""\udfff""#);
-        let JsValue::String(text) = value else {
-            panic!("string");
-        };
-        assert_eq!(text.to_utf8(), "\u{FFFD}");
         let built = JsString::from_units(vec![0xD800]);
         assert_eq!(built.to_utf8(), "\u{FFFD}");
     }

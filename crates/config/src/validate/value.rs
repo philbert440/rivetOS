@@ -88,23 +88,7 @@ fn number_to_string(number: &Number) -> String {
 }
 
 fn float_to_string(float: f64) -> String {
-    if float.is_nan() {
-        return "NaN".to_string();
-    }
-    if float.is_infinite() {
-        return if float.is_sign_positive() {
-            "Infinity".to_string()
-        } else {
-            "-Infinity".to_string()
-        };
-    }
-    if float.fract() == 0.0 && float.abs() < 1e21 {
-        let integer = float as i64;
-        if integer as f64 == float {
-            return integer.to_string();
-        }
-    }
-    format!("{float}")
+    protocol::JsNumber::from(float).to_string()
 }
 
 pub(crate) use protocol::js::js_trim;

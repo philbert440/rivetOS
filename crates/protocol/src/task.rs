@@ -184,9 +184,9 @@ impl<'de> Deserialize<'de> for ParsedArtifact {
         D: Deserializer<'de>,
     {
         let value = Value::deserialize(deserializer)?;
-        match from_serde(&value) {
-            JsValue::Object(object) => Ok(Self { object }),
-            _ => Err(serde::de::Error::custom("artifact")),
+        match from_serde(&value).into_object() {
+            Some(object) => Ok(Self { object }),
+            None => Err(serde::de::Error::custom("artifact")),
         }
     }
 }
@@ -236,9 +236,9 @@ impl<'de> Deserialize<'de> for ParsedCriterion {
         D: Deserializer<'de>,
     {
         let value = Value::deserialize(deserializer)?;
-        match from_serde(&value) {
-            JsValue::Object(object) => Ok(Self { object }),
-            _ => Err(serde::de::Error::custom("criterion")),
+        match from_serde(&value).into_object() {
+            Some(object) => Ok(Self { object }),
+            None => Err(serde::de::Error::custom("criterion")),
         }
     }
 }

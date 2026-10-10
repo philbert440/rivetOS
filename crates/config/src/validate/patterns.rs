@@ -51,13 +51,24 @@ pub(crate) fn has_control_char(text: &str) -> bool {
 }
 
 pub(crate) fn invalid_regex_message(source: &str) -> Option<String> {
-    let prepared = prepare_pattern(source);
-    let err = regress::Regex::with_flags(&prepared, "g").err()?;
-    let detail = v8_detail(source, &err.to_string());
+    let reason = match prepare_pattern_checked(source) {
+        Ok(text) => {
+            let err = regress::Regex::with_flags(&text, "g").err()?;
+            err.to_string()
+        }
+        Err(reason) => reason.to_string(),
+    };
+    let detail = v8_detail(source, &reason);
     Some(format!("Invalid regex: {detail}"))
 }
 
-fn prepare_pattern(source: &str) -> String {
+const QUANTIFIER_LIMIT: u32 = 2_147_483_647;
+
+fn invalid_unicode_escape() -> &'static str {
+    "Invalid Unicode escape sequence"
+}
+
+fn prepare_pattern_checked(source: &str) -> Result<String, &'static str> {
     let chars: Vec<char> = source.chars().collect();
     let mut out = String::new();
     let mut index = 0;
@@ -69,6 +80,9 @@ fn prepare_pattern(source: &str) -> String {
             out.push(ch);
             index += 1;
             if ch == '\\' && index < chars.len() {
+                if chars[index] == 'u' {
+                    validate_group_name_unicode(&chars, index)?;
+                }
                 out.push(chars[index]);
                 index += 1;
                 continue;
@@ -121,7 +135,16 @@ fn prepare_pattern(source: &str) -> String {
             if chars.get(index) == Some(&']') {
                 out.push(']');
                 index += 1;
+                in_class = false;
             }
+            continue;
+        }
+        if ch == '{'
+            && !in_class
+            && let Some((next, text)) = clamped_quantifier(&chars, index)
+        {
+            out.push_str(&text);
+            index = next;
             continue;
         }
         if ch == ']' && in_class {
@@ -133,7 +156,93 @@ fn prepare_pattern(source: &str) -> String {
         out.push(ch);
         index += 1;
     }
-    out
+    Ok(out)
+}
+
+fn validate_group_name_unicode(chars: &[char], u_index: usize) -> Result<(), &'static str> {
+    let after = u_index + 1;
+    if chars.get(after) == Some(&'{') {
+        let mut cursor = after + 1;
+        if cursor >= chars.len() || chars[cursor] == '}' {
+            return Err(invalid_unicode_escape());
+        }
+        while cursor < chars.len() && chars[cursor] != '}' {
+            if !chars[cursor].is_ascii_hexdigit() {
+                return Err(invalid_unicode_escape());
+            }
+            cursor += 1;
+        }
+        if cursor >= chars.len() || chars[cursor] != '}' {
+            return Err(invalid_unicode_escape());
+        }
+        return Ok(());
+    }
+    if after + 4 > chars.len()
+        || !chars[after..after + 4]
+            .iter()
+            .all(|ch| ch.is_ascii_hexdigit())
+    {
+        return Err(invalid_unicode_escape());
+    }
+    Ok(())
+}
+
+fn clamped_quantifier(chars: &[char], index: usize) -> Option<(usize, String)> {
+    if chars.get(index) != Some(&'{') {
+        return None;
+    }
+    let mut cursor = index + 1;
+    let min = read_quantifier_bound(chars, &mut cursor)?;
+    let (has_comma, max) = if chars.get(cursor) == Some(&',') {
+        cursor += 1;
+        if chars.get(cursor) == Some(&'}') {
+            (true, None)
+        } else {
+            (true, Some(read_quantifier_bound(chars, &mut cursor)?))
+        }
+    } else {
+        (false, None)
+    };
+    if chars.get(cursor) != Some(&'}') {
+        return None;
+    }
+    cursor += 1;
+    let mut text = String::new();
+    text.push('{');
+    text.push_str(&min.to_string());
+    if has_comma {
+        text.push(',');
+        if let Some(max) = max {
+            text.push_str(&max.to_string());
+        }
+    }
+    text.push('}');
+    Some((cursor, text))
+}
+
+fn read_quantifier_bound(chars: &[char], cursor: &mut usize) -> Option<u32> {
+    if *cursor >= chars.len() || !chars[*cursor].is_ascii_digit() {
+        return None;
+    }
+    let mut value = 0u32;
+    let mut saturated = false;
+    while *cursor < chars.len() && chars[*cursor].is_ascii_digit() {
+        let digit = u32::from(chars[*cursor] as u8 - b'0');
+        if !saturated {
+            match value
+                .checked_mul(10)
+                .and_then(|next| next.checked_add(digit))
+            {
+                Some(next) if next <= QUANTIFIER_LIMIT => value = next,
+                _ => {
+                    value = QUANTIFIER_LIMIT;
+                    saturated = true;
+                }
+            }
+        }
+        *cursor += 1;
+    }
+    Some(value)
 }
 
 fn named_capture_open(chars: &[char], index: usize) -> bool {
@@ -241,7 +350,7 @@ fn reversed_bounds(source: &str) -> bool {
         if bytes[index] == b'{'
             && let Some((min, max)) = braced_bounds(bytes, index)
             && let Some(max) = max
-            && min > max
+            && clamp_bound(min) > clamp_bound(max)
         {
             return true;
         }
@@ -264,6 +373,10 @@ fn braced_bounds(bytes: &[u8], start: usize) -> Option<(usize, Option<usize>)> {
     } else {
         None
     }
+}
+
+fn clamp_bound(value: usize) -> usize {
+    value.min(2_147_483_647)
 }
 
 fn read_usize(bytes: &[u8], cursor: &mut usize) -> Option<usize> {
@@ -290,8 +403,24 @@ pub(crate) fn api_key_env_hint(name: &str) -> String {
 
 #[cfg(test)]
 mod v8_golden {
-    use super::{invalid_regex_message, is_shell_unsafe, prepare_pattern};
+    use super::{invalid_regex_message, is_shell_unsafe, prepare_pattern_checked};
     use serde_json::Value;
+
+    fn prepared(source: &str) -> String {
+        match prepare_pattern_checked(source) {
+            Ok(text) => text,
+            Err(_) => source.to_string(),
+        }
+    }
+
+    fn regex_diagnostic(source: &str) -> String {
+        let mut out = String::new();
+        out.push_str("Invalid regex: Invalid regular expression: /");
+        out.push_str(source);
+        out.push_str("/g: ");
+        out.push_str("Invalid Unicode escape sequence");
+        out
+    }
 
     #[test]
     fn node24_flag_g_matches_v8() {
@@ -320,43 +449,74 @@ mod v8_golden {
     fn legacy_quantifiers_and_unicode_escapes_match_v8() {
         let reversed = invalid_regex_message("x{2147483648,1}").unwrap();
         assert!(reversed.contains("numbers out of order in {} quantifier"));
-        let unbounded =
-            regress::Regex::with_flags(&prepare_pattern("x{0,2147483648}"), "g").unwrap();
+        let unbounded = regress::Regex::with_flags(&prepared("x{0,2147483648}"), "g").unwrap();
         assert_eq!(unbounded.find("x").unwrap().range(), 0..1);
         assert_eq!(unbounded.find("").unwrap().range(), 0..0);
-        let exact = regress::Regex::with_flags(&prepare_pattern("x{2147483648}"), "g").unwrap();
+        let exact = regress::Regex::with_flags(&prepared("x{2147483648}"), "g").unwrap();
         assert!(exact.find("x").is_none());
         assert!(exact.find("x{2147483648}").is_none());
-        let escape = regress::Regex::with_flags(&prepare_pattern(r"\u{1F600}"), "g").unwrap();
+        let escape = regress::Regex::with_flags(&prepared(r"\u{1F600}"), "g").unwrap();
         assert!(escape.find("u{1F600}").is_some());
         assert!(escape.find("\u{1F600}").is_none());
-        let class = regress::Regex::with_flags(&prepare_pattern(r"[\u{1F600}]"), "g").unwrap();
+        let class = regress::Regex::with_flags(&prepared(r"[\u{1F600}]"), "g").unwrap();
         assert!(class.find("u").is_some());
         assert!(class.find("\u{1F600}").is_none());
-        let folded = regress::Regex::with_flags(&prepare_pattern("(?i:secret)"), "g").unwrap();
+        let folded = regress::Regex::with_flags(&prepared("(?i:secret)"), "g").unwrap();
         assert!(folded.find("SECRET").is_some());
-        let sensitive = regress::Regex::with_flags(&prepare_pattern("(?-i:a)"), "g").unwrap();
+        let sensitive = regress::Regex::with_flags(&prepared("(?-i:a)"), "g").unwrap();
         assert!(sensitive.find("a").is_some());
         assert!(sensitive.find("A").is_none());
-        let annex = regress::Regex::with_flags(&prepare_pattern("a{1,2,3}"), "g").unwrap();
+        let annex = regress::Regex::with_flags(&prepared("a{1,2,3}"), "g").unwrap();
         assert!(annex.find("a{1,2,3}").is_some());
-        assert_eq!(prepare_pattern(r"(?<\u{61}>x)"), r"(?<\u{61}>x)");
-        let named = regress::Regex::with_flags(&prepare_pattern(r"(?<\u{61}>x)"), "g").unwrap();
+        assert_eq!(prepared(r"(?<\u{61}>x)"), r"(?<\u{61}>x)");
+        let named = regress::Regex::with_flags(&prepared(r"(?<\u{61}>x)"), "g").unwrap();
         let hit = named.find("x").unwrap();
         assert_eq!(hit.named_group("a").unwrap(), 0..1);
         let paired = r"(?<\u0061>x)\k<\u{61}>";
-        assert_eq!(prepare_pattern(paired), paired);
-        let backref = regress::Regex::with_flags(&prepare_pattern(paired), "g").unwrap();
+        assert_eq!(prepared(paired), paired);
+        let backref = regress::Regex::with_flags(&prepared(paired), "g").unwrap();
         assert!(backref.find("xx").is_some());
         assert!(backref.find("xy").is_none());
         let brace_name = r"(?<\u{61}>x)\k<\u{61}>";
         assert!(invalid_regex_message(brace_name).is_none());
-        let brace_ref = regress::Regex::with_flags(&prepare_pattern(brace_name), "g").unwrap();
+        let brace_ref = regress::Regex::with_flags(&prepared(brace_name), "g").unwrap();
         assert_eq!(
             brace_ref.find("xx").unwrap().named_group("a").unwrap(),
             0..1
         );
         assert!(brace_ref.find("xy").is_none());
+    }
+
+    #[test]
+    fn v8_quantifier_saturation_empty_class_and_signed_name_escapes() {
+        let saturated = "x{2147483648,2147483647}";
+        assert_eq!(prepared(saturated), "x{2147483647,2147483647}");
+        assert!(invalid_regex_message(saturated).is_none());
+        let compiled = regress::Regex::with_flags(&prepared(saturated), "g").unwrap();
+        assert!(compiled.find("x").is_none());
+        assert!(compiled.find("").is_none());
+        let pattern = r"[^](?<\u{61}>x)";
+        assert_eq!(prepared(pattern), pattern);
+        assert!(invalid_regex_message(pattern).is_none());
+        let named = regress::Regex::with_flags(&prepared(pattern), "g").unwrap();
+        let hit = named.find("yx").unwrap();
+        assert_eq!(hit.range(), 0..2);
+        assert_eq!(hit.named_group("a").unwrap(), 1..2);
+        let plus = r"(?<\u+061>x)";
+        assert_eq!(
+            invalid_regex_message(plus).as_deref(),
+            Some(regex_diagnostic(plus).as_str())
+        );
+        let brace = r"(?<\u{+61}>x)";
+        assert_eq!(
+            invalid_regex_message(brace).as_deref(),
+            Some(regex_diagnostic(brace).as_str())
+        );
+        let backref = r"(?<\u0061>x)\k<\u+061>";
+        assert_eq!(
+            invalid_regex_message(backref).as_deref(),
+            Some(regex_diagnostic(backref).as_str())
+        );
     }
 
     #[test]
