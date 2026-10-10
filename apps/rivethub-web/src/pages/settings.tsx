@@ -228,13 +228,13 @@ export function SettingsPage(): JSX.Element {
             <>
               <ExperimentalSection />
               <UpdatesSection />
+              {/* Build stamp — the desktop shell bakes this dist in at build time, so
+                  this line is how you tell whether a binary has gone stale. */}
+              <div className="mt-10 border-t border-line pt-3 font-mono text-[11px] text-ink-dim">
+                RivetHub v{BUILD_INFO.version} · dist {BUILD_INFO.sha} · built {BUILD_INFO.builtAt}
+              </div>
             </>
           )}
-          {/* Build stamp — the desktop shell bakes this dist in at build time, so
-              this line is how you tell whether a binary has gone stale. */}
-          <div className="mt-10 border-t border-line pt-3 font-mono text-[11px] text-ink-dim">
-            RivetHub v{BUILD_INFO.version} · dist {BUILD_INFO.sha} · built {BUILD_INFO.builtAt}
-          </div>
         </div>
       </div>
     </div>
