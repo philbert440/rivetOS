@@ -1,13 +1,13 @@
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "lowercase")]
-pub enum ErrorSeverity {
-    Fatal,
-    Error,
-    Warning,
-    Transient,
+crate::wire_enum! {
+    pub enum ErrorSeverity {
+        Fatal => "fatal",
+        Error => "error",
+        Warning => "warning",
+        Transient => "transient",
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -30,26 +30,17 @@ pub struct ErrorJson {
     pub provider_id: Option<String>,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ChannelErrorCode {
-    ChannelDisconnected,
-    ChannelSendFailed,
-    ChannelAuthFailed,
-    ChannelRateLimited,
-    ChannelStartFailed,
+crate::wire_enum! {
+    pub enum ChannelErrorCode {
+        ChannelDisconnected => "CHANNEL_DISCONNECTED",
+        ChannelSendFailed => "CHANNEL_SEND_FAILED",
+        ChannelAuthFailed => "CHANNEL_AUTH_FAILED",
+        ChannelRateLimited => "CHANNEL_RATE_LIMITED",
+        ChannelStartFailed => "CHANNEL_START_FAILED",
+    }
 }
 
 impl ChannelErrorCode {
-    pub const fn as_str(self) -> &'static str {
-        match self {
-            ChannelErrorCode::ChannelDisconnected => "CHANNEL_DISCONNECTED",
-            ChannelErrorCode::ChannelSendFailed => "CHANNEL_SEND_FAILED",
-            ChannelErrorCode::ChannelAuthFailed => "CHANNEL_AUTH_FAILED",
-            ChannelErrorCode::ChannelRateLimited => "CHANNEL_RATE_LIMITED",
-            ChannelErrorCode::ChannelStartFailed => "CHANNEL_START_FAILED",
-        }
-    }
-
     pub const fn defaults(self) -> (ErrorSeverity, bool) {
         match self {
             ChannelErrorCode::ChannelDisconnected => (ErrorSeverity::Transient, true),
@@ -61,24 +52,16 @@ impl ChannelErrorCode {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum MemoryErrorCode {
-    MemoryConnectionFailed,
-    MemoryQueryFailed,
-    MemoryMigrationFailed,
-    MemoryEmbedFailed,
+crate::wire_enum! {
+    pub enum MemoryErrorCode {
+        MemoryConnectionFailed => "MEMORY_CONNECTION_FAILED",
+        MemoryQueryFailed => "MEMORY_QUERY_FAILED",
+        MemoryMigrationFailed => "MEMORY_MIGRATION_FAILED",
+        MemoryEmbedFailed => "MEMORY_EMBED_FAILED",
+    }
 }
 
 impl MemoryErrorCode {
-    pub const fn as_str(self) -> &'static str {
-        match self {
-            MemoryErrorCode::MemoryConnectionFailed => "MEMORY_CONNECTION_FAILED",
-            MemoryErrorCode::MemoryQueryFailed => "MEMORY_QUERY_FAILED",
-            MemoryErrorCode::MemoryMigrationFailed => "MEMORY_MIGRATION_FAILED",
-            MemoryErrorCode::MemoryEmbedFailed => "MEMORY_EMBED_FAILED",
-        }
-    }
-
     pub const fn defaults(self) -> (ErrorSeverity, bool) {
         match self {
             MemoryErrorCode::MemoryConnectionFailed => (ErrorSeverity::Fatal, true),
@@ -89,46 +72,34 @@ impl MemoryErrorCode {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ConfigErrorCode {
-    ConfigInvalid,
-    ConfigMissing,
-    ConfigParseFailed,
+crate::wire_enum! {
+    pub enum ConfigErrorCode {
+        ConfigInvalid => "CONFIG_INVALID",
+        ConfigMissing => "CONFIG_MISSING",
+        ConfigParseFailed => "CONFIG_PARSE_FAILED",
+    }
 }
 
 impl ConfigErrorCode {
-    pub const fn as_str(self) -> &'static str {
-        match self {
-            ConfigErrorCode::ConfigInvalid => "CONFIG_INVALID",
-            ConfigErrorCode::ConfigMissing => "CONFIG_MISSING",
-            ConfigErrorCode::ConfigParseFailed => "CONFIG_PARSE_FAILED",
-        }
-    }
-
     pub const fn defaults(self) -> (ErrorSeverity, bool) {
-        let _ = self;
-        (ErrorSeverity::Fatal, false)
+        match self {
+            ConfigErrorCode::ConfigInvalid
+            | ConfigErrorCode::ConfigMissing
+            | ConfigErrorCode::ConfigParseFailed => (ErrorSeverity::Fatal, false),
+        }
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ToolErrorCode {
-    ToolExecutionFailed,
-    ToolNotFound,
-    ToolTimeout,
-    ToolBlocked,
+crate::wire_enum! {
+    pub enum ToolErrorCode {
+        ToolExecutionFailed => "TOOL_EXECUTION_FAILED",
+        ToolNotFound => "TOOL_NOT_FOUND",
+        ToolTimeout => "TOOL_TIMEOUT",
+        ToolBlocked => "TOOL_BLOCKED",
+    }
 }
 
 impl ToolErrorCode {
-    pub const fn as_str(self) -> &'static str {
-        match self {
-            ToolErrorCode::ToolExecutionFailed => "TOOL_EXECUTION_FAILED",
-            ToolErrorCode::ToolNotFound => "TOOL_NOT_FOUND",
-            ToolErrorCode::ToolTimeout => "TOOL_TIMEOUT",
-            ToolErrorCode::ToolBlocked => "TOOL_BLOCKED",
-        }
-    }
-
     pub const fn defaults(self) -> (ErrorSeverity, bool) {
         match self {
             ToolErrorCode::ToolExecutionFailed => (ErrorSeverity::Error, false),
@@ -139,22 +110,15 @@ impl ToolErrorCode {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum DelegationErrorCode {
-    DelegationTimeout,
-    DelegationAgentNotFound,
-    DelegationFailed,
+crate::wire_enum! {
+    pub enum DelegationErrorCode {
+        DelegationTimeout => "DELEGATION_TIMEOUT",
+        DelegationAgentNotFound => "DELEGATION_AGENT_NOT_FOUND",
+        DelegationFailed => "DELEGATION_FAILED",
+    }
 }
 
 impl DelegationErrorCode {
-    pub const fn as_str(self) -> &'static str {
-        match self {
-            DelegationErrorCode::DelegationTimeout => "DELEGATION_TIMEOUT",
-            DelegationErrorCode::DelegationAgentNotFound => "DELEGATION_AGENT_NOT_FOUND",
-            DelegationErrorCode::DelegationFailed => "DELEGATION_FAILED",
-        }
-    }
-
     pub const fn defaults(self) -> (ErrorSeverity, bool) {
         match self {
             DelegationErrorCode::DelegationTimeout => (ErrorSeverity::Error, true),
@@ -164,20 +128,14 @@ impl DelegationErrorCode {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum RuntimeErrorCode {
-    RuntimeStartFailed,
-    RuntimeShutdownError,
+crate::wire_enum! {
+    pub enum RuntimeErrorCode {
+        RuntimeStartFailed => "RUNTIME_START_FAILED",
+        RuntimeShutdownError => "RUNTIME_SHUTDOWN_ERROR",
+    }
 }
 
 impl RuntimeErrorCode {
-    pub const fn as_str(self) -> &'static str {
-        match self {
-            RuntimeErrorCode::RuntimeStartFailed => "RUNTIME_START_FAILED",
-            RuntimeErrorCode::RuntimeShutdownError => "RUNTIME_SHUTDOWN_ERROR",
-        }
-    }
-
     pub const fn defaults(self) -> (ErrorSeverity, bool) {
         match self {
             RuntimeErrorCode::RuntimeStartFailed => (ErrorSeverity::Fatal, false),
@@ -186,49 +144,33 @@ impl RuntimeErrorCode {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum HarnessErrorCode {
-    InvalidSessionId,
-    SessionIdCollision,
-    CapabilityUnsupported,
-    UnknownApproval,
-    UnknownPrompt,
-    BadRequest,
-    TurnInFlight,
+crate::wire_enum! {
+    pub enum HarnessErrorCode {
+        InvalidSessionId => "invalid_session_id",
+        SessionIdCollision => "session_id_collision",
+        CapabilityUnsupported => "capability_unsupported",
+        UnknownApproval => "unknown_approval",
+        UnknownPrompt => "unknown_prompt",
+        BadRequest => "bad_request",
+        TurnInFlight => "turn_in_flight",
+    }
 }
 
 impl HarnessErrorCode {
-    pub const ALL: [HarnessErrorCode; 7] = [
-        HarnessErrorCode::InvalidSessionId,
-        HarnessErrorCode::SessionIdCollision,
-        HarnessErrorCode::CapabilityUnsupported,
-        HarnessErrorCode::UnknownApproval,
-        HarnessErrorCode::UnknownPrompt,
-        HarnessErrorCode::BadRequest,
-        HarnessErrorCode::TurnInFlight,
-    ];
-
-    pub const fn as_str(self) -> &'static str {
-        match self {
-            HarnessErrorCode::InvalidSessionId => "invalid_session_id",
-            HarnessErrorCode::SessionIdCollision => "session_id_collision",
-            HarnessErrorCode::CapabilityUnsupported => "capability_unsupported",
-            HarnessErrorCode::UnknownApproval => "unknown_approval",
-            HarnessErrorCode::UnknownPrompt => "unknown_prompt",
-            HarnessErrorCode::BadRequest => "bad_request",
-            HarnessErrorCode::TurnInFlight => "turn_in_flight",
-        }
-    }
-
     pub const fn defaults(self) -> (ErrorSeverity, bool) {
         match self {
             HarnessErrorCode::TurnInFlight => (ErrorSeverity::Transient, true),
-            _ => (ErrorSeverity::Error, false),
+            HarnessErrorCode::InvalidSessionId
+            | HarnessErrorCode::SessionIdCollision
+            | HarnessErrorCode::CapabilityUnsupported
+            | HarnessErrorCode::UnknownApproval
+            | HarnessErrorCode::UnknownPrompt
+            | HarnessErrorCode::BadRequest => (ErrorSeverity::Error, false),
         }
     }
 }
 
-pub struct ErrorBuild {
+pub struct ErrorDetails {
     pub message: String,
     pub timestamp: i64,
     pub cause: Option<String>,
@@ -241,7 +183,7 @@ fn base(
     code: &str,
     severity: ErrorSeverity,
     retryable: bool,
-    build: ErrorBuild,
+    build: ErrorDetails,
 ) -> ErrorJson {
     ErrorJson {
         name: name.to_string(),
@@ -268,7 +210,7 @@ fn put_nonempty(context: &mut Map<String, Value>, key: &str, value: Option<&str>
 
 pub fn channel_error_json(
     code: ChannelErrorCode,
-    build: ErrorBuild,
+    build: ErrorDetails,
     channel_id: Option<&str>,
     platform: Option<&str>,
 ) -> ErrorJson {
@@ -279,14 +221,14 @@ pub fn channel_error_json(
     built
 }
 
-pub fn memory_error_json(code: MemoryErrorCode, build: ErrorBuild) -> ErrorJson {
+pub fn memory_error_json(code: MemoryErrorCode, build: ErrorDetails) -> ErrorJson {
     let (severity, retryable) = code.defaults();
     base("MemoryError", code.as_str(), severity, retryable, build)
 }
 
 pub fn config_error_json(
     code: ConfigErrorCode,
-    build: ErrorBuild,
+    build: ErrorDetails,
     path: Option<&str>,
 ) -> ErrorJson {
     let (severity, retryable) = code.defaults();
@@ -297,7 +239,7 @@ pub fn config_error_json(
 
 pub fn tool_error_json(
     code: ToolErrorCode,
-    build: ErrorBuild,
+    build: ErrorDetails,
     tool_name: Option<&str>,
 ) -> ErrorJson {
     let (severity, retryable) = code.defaults();
@@ -308,7 +250,7 @@ pub fn tool_error_json(
 
 pub fn delegation_error_json(
     code: DelegationErrorCode,
-    build: ErrorBuild,
+    build: ErrorDetails,
     from_agent: Option<&str>,
     to_agent: Option<&str>,
 ) -> ErrorJson {
@@ -319,14 +261,14 @@ pub fn delegation_error_json(
     built
 }
 
-pub fn runtime_error_json(code: RuntimeErrorCode, build: ErrorBuild) -> ErrorJson {
+pub fn runtime_error_json(code: RuntimeErrorCode, build: ErrorDetails) -> ErrorJson {
     let (severity, retryable) = code.defaults();
     base("RuntimeError", code.as_str(), severity, retryable, build)
 }
 
 pub fn harness_error_json(
     code: HarnessErrorCode,
-    build: ErrorBuild,
+    build: ErrorDetails,
     harness_id: Option<&str>,
     session_id: Option<&str>,
 ) -> ErrorJson {

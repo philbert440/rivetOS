@@ -10,10 +10,10 @@ pub struct TextPart {
     pub text: String,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-pub enum TextType {
-    #[serde(rename = "text")]
-    Text,
+crate::wire_enum! {
+    pub enum TextType {
+        Text => "text",
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -29,10 +29,10 @@ pub struct ImagePart {
     pub mime_type: Option<String>,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-pub enum ImageType {
-    #[serde(rename = "image")]
-    Image,
+crate::wire_enum! {
+    pub enum ImageType {
+        Image => "image",
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -48,10 +48,10 @@ pub struct VideoPart {
     pub mime_type: Option<String>,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-pub enum VideoType {
-    #[serde(rename = "video")]
-    Video,
+crate::wire_enum! {
+    pub enum VideoType {
+        Video => "video",
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -86,16 +86,13 @@ pub enum MessageContent {
     Parts(Vec<ContentPart>),
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-pub enum MessageRole {
-    #[serde(rename = "system")]
-    System,
-    #[serde(rename = "user")]
-    User,
-    #[serde(rename = "assistant")]
-    Assistant,
-    #[serde(rename = "tool")]
-    Tool,
+crate::wire_enum! {
+    pub enum MessageRole {
+        System => "system",
+        User => "user",
+        Assistant => "assistant",
+        Tool => "tool",
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

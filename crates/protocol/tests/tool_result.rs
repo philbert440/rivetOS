@@ -1,5 +1,5 @@
 use protocol::{
-    BLOCKED_PREFIX, ContentPart, ERROR_PREFIX, ToolResult, is_blocked, is_thrown_error,
+    BLOCKED_PREFIX, ContentPart, TOOL_ERROR_PREFIX, ToolResult, is_blocked, is_thrown_error,
 };
 
 #[test]
@@ -14,7 +14,7 @@ fn string_result_round_trips() {
 
 #[test]
 fn thrown_error_prefix() {
-    let parsed: ToolResult = serde_json::from_str(&format!("\"{ERROR_PREFIX}boom\"")).unwrap();
+    let parsed: ToolResult = serde_json::from_str(&format!("\"{TOOL_ERROR_PREFIX}boom\"")).unwrap();
     assert!(is_thrown_error(&parsed));
     assert!(!is_blocked(&parsed));
 }

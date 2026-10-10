@@ -9,63 +9,26 @@ fn omit_false(value: &bool) -> bool {
     !*value
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-pub enum ThinkingLevel {
-    #[serde(rename = "off")]
-    Off,
-    #[serde(rename = "low")]
-    Low,
-    #[serde(rename = "medium")]
-    Medium,
-    #[serde(rename = "high")]
-    High,
-    #[serde(rename = "xhigh")]
-    XHigh,
+crate::wire_enum! {
+    pub enum ThinkingLevel {
+        Off => "off",
+        Low => "low",
+        Medium => "medium",
+        High => "high",
+        XHigh => "xhigh",
+    }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-pub enum StreamEventType {
-    #[serde(rename = "text")]
-    Text,
-    #[serde(rename = "reasoning")]
-    Reasoning,
-    #[serde(rename = "tool_start")]
-    ToolStart,
-    #[serde(rename = "tool_result")]
-    ToolResult,
-    #[serde(rename = "status")]
-    Status,
-    #[serde(rename = "interrupt")]
-    Interrupt,
-    #[serde(rename = "done")]
-    Done,
-    #[serde(rename = "error")]
-    Error,
-}
-
-impl StreamEventType {
-    pub const ALL: [StreamEventType; 8] = [
-        StreamEventType::Text,
-        StreamEventType::Reasoning,
-        StreamEventType::ToolStart,
-        StreamEventType::ToolResult,
-        StreamEventType::Status,
-        StreamEventType::Interrupt,
-        StreamEventType::Done,
-        StreamEventType::Error,
-    ];
-
-    pub const fn as_str(self) -> &'static str {
-        match self {
-            StreamEventType::Text => "text",
-            StreamEventType::Reasoning => "reasoning",
-            StreamEventType::ToolStart => "tool_start",
-            StreamEventType::ToolResult => "tool_result",
-            StreamEventType::Status => "status",
-            StreamEventType::Interrupt => "interrupt",
-            StreamEventType::Done => "done",
-            StreamEventType::Error => "error",
-        }
+crate::wire_enum! {
+    pub enum StreamEventType {
+        Text => "text",
+        Reasoning => "reasoning",
+        ToolStart => "tool_start",
+        ToolResult => "tool_result",
+        Status => "status",
+        Interrupt => "interrupt",
+        Done => "done",
+        Error => "error",
     }
 }
 
@@ -79,14 +42,12 @@ pub struct StreamEvent {
     pub metadata: Option<Map<String, Value>>,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-pub enum CompactionPending {
-    #[serde(rename = "soft-40")]
-    Soft40,
-    #[serde(rename = "soft-70")]
-    Soft70,
-    #[serde(rename = "hard")]
-    Hard,
+crate::wire_enum! {
+    pub enum CompactionPending {
+        Soft40 => "soft-40",
+        Soft70 => "soft-70",
+        Hard => "hard",
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -126,16 +87,13 @@ pub struct Attachment {
     pub duration: Option<i64>,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-pub enum AttachmentType {
-    #[serde(rename = "photo")]
-    Photo,
-    #[serde(rename = "voice")]
-    Voice,
-    #[serde(rename = "document")]
-    Document,
-    #[serde(rename = "video")]
-    Video,
+crate::wire_enum! {
+    pub enum AttachmentType {
+        Photo => "photo",
+        Voice => "voice",
+        Document => "document",
+        Video => "video",
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -185,14 +143,12 @@ pub struct DelegationRequest {
     pub model: Option<String>,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-pub enum DelegationStatus {
-    #[serde(rename = "completed")]
-    Completed,
-    #[serde(rename = "failed")]
-    Failed,
-    #[serde(rename = "timeout")]
-    Timeout,
+crate::wire_enum! {
+    pub enum DelegationStatus {
+        Completed => "completed",
+        Failed => "failed",
+        Timeout => "timeout",
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -221,12 +177,11 @@ pub struct DelegationResult {
     pub duration_ms: Option<i64>,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-pub enum SilentResponse {
-    #[serde(rename = "NO_REPLY")]
-    NoReply,
-    #[serde(rename = "HEARTBEAT_OK")]
-    HeartbeatOk,
+crate::wire_enum! {
+    pub enum SilentResponse {
+        NoReply => "NO_REPLY",
+        HeartbeatOk => "HEARTBEAT_OK",
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -244,12 +199,11 @@ pub struct LlmUsage {
     pub cache_read_tokens: Option<i64>,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-pub enum LlmResponseType {
-    #[serde(rename = "text")]
-    Text,
-    #[serde(rename = "tool_calls")]
-    ToolCalls,
+crate::wire_enum! {
+    pub enum LlmResponseType {
+        Text => "text",
+        ToolCalls => "tool_calls",
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -363,49 +317,16 @@ fn optional_object<E: de::Error>(
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-pub enum LlmChunkType {
-    #[serde(rename = "text")]
-    Text,
-    #[serde(rename = "reasoning")]
-    Reasoning,
-    #[serde(rename = "tool_call_start")]
-    ToolCallStart,
-    #[serde(rename = "tool_call_delta")]
-    ToolCallDelta,
-    #[serde(rename = "tool_call_done")]
-    ToolCallDone,
-    #[serde(rename = "status")]
-    Status,
-    #[serde(rename = "done")]
-    Done,
-    #[serde(rename = "error")]
-    Error,
-}
-
-impl LlmChunkType {
-    pub const ALL: [LlmChunkType; 8] = [
-        LlmChunkType::Text,
-        LlmChunkType::Reasoning,
-        LlmChunkType::ToolCallStart,
-        LlmChunkType::ToolCallDelta,
-        LlmChunkType::ToolCallDone,
-        LlmChunkType::Status,
-        LlmChunkType::Done,
-        LlmChunkType::Error,
-    ];
-
-    pub const fn as_str(self) -> &'static str {
-        match self {
-            LlmChunkType::Text => "text",
-            LlmChunkType::Reasoning => "reasoning",
-            LlmChunkType::ToolCallStart => "tool_call_start",
-            LlmChunkType::ToolCallDelta => "tool_call_delta",
-            LlmChunkType::ToolCallDone => "tool_call_done",
-            LlmChunkType::Status => "status",
-            LlmChunkType::Done => "done",
-            LlmChunkType::Error => "error",
-        }
+crate::wire_enum! {
+    pub enum LlmChunkType {
+        Text => "text",
+        Reasoning => "reasoning",
+        ToolCallStart => "tool_call_start",
+        ToolCallDelta => "tool_call_delta",
+        ToolCallDone => "tool_call_done",
+        Status => "status",
+        Done => "done",
+        Error => "error",
     }
 }
 

@@ -1,15 +1,13 @@
 mod embedded;
 mod error;
 mod resolve;
-mod tracing_init;
 mod validate;
 
 pub use embedded::assert_embedded_port;
 pub use error::ConfigError;
 pub use resolve::{resolve_env_vars, resolve_env_vars_with};
-pub use tracing_init::init_tracing;
 pub use validate::{
-    KNOWN_MEMORY_SQLITE_KEYS, LoadedConfig, Severity, ValidationIssue, ValidationResult,
+    KNOWN_MEMORY_SQLITE_KEYS, LoadedConfig, ValidationIssue, ValidationResult, ValidationSeverity,
     format_validation_result, validate_config,
 };
 

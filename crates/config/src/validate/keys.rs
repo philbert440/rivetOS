@@ -61,7 +61,13 @@ pub(crate) const KNOWN_RUNTIME: &[&str] = &[
 pub(crate) const KNOWN_AGENT: &[&str] =
     &["provider", "model", "default_thinking", "local", "tools"];
 
-pub(crate) const THINKING_LEVELS: &[&str] = &["off", "low", "medium", "high", "xhigh"];
+pub(crate) const THINKING_LEVELS: &[&str] = &[
+    protocol::ThinkingLevel::Off.as_str(),
+    protocol::ThinkingLevel::Low.as_str(),
+    protocol::ThinkingLevel::Medium.as_str(),
+    protocol::ThinkingLevel::High.as_str(),
+    protocol::ThinkingLevel::XHigh.as_str(),
+];
 
 pub(crate) const CLI_HARNESS_PROVIDERS: &[&str] = &[
     "grok-cli",

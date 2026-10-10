@@ -20,14 +20,14 @@ use serde_json::{Map, Value};
 use self::value::{is_falsy, js_trim, js_typeof};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Severity {
+pub enum ValidationSeverity {
     Error,
     Warning,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ValidationIssue {
-    pub severity: Severity,
+    pub severity: ValidationSeverity,
     pub path: String,
     pub message: String,
 }
@@ -52,14 +52,19 @@ pub(crate) struct Issues {
 
 impl Issues {
     pub(crate) fn error(&mut self, path: impl Into<String>, message: impl Into<String>) {
-        self.push(Severity::Error, path, message);
+        self.push(ValidationSeverity::Error, path, message);
     }
 
     pub(crate) fn warning(&mut self, path: impl Into<String>, message: impl Into<String>) {
-        self.push(Severity::Warning, path, message);
+        self.push(ValidationSeverity::Warning, path, message);
     }
 
-    fn push(&mut self, severity: Severity, path: impl Into<String>, message: impl Into<String>) {
+    fn push(
+        &mut self,
+        severity: ValidationSeverity,
+        path: impl Into<String>,
+        message: impl Into<String>,
+    ) {
         self.items.push(ValidationIssue {
             severity,
             path: path.into(),
@@ -72,8 +77,8 @@ impl Issues {
         let mut warnings = Vec::new();
         for issue in self.items {
             match issue.severity {
-                Severity::Error => errors.push(issue),
-                Severity::Warning => warnings.push(issue),
+                ValidationSeverity::Error => errors.push(issue),
+                ValidationSeverity::Warning => warnings.push(issue),
             }
         }
         ValidationResult {

@@ -1,48 +1,36 @@
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-pub const TASK_RESULT: &str = "TASK_RESULT";
+pub const TASK_RESULT_FENCE: &str = "TASK_RESULT";
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-pub enum TaskExecutorKind {
-    #[serde(rename = "chat-loop")]
-    ChatLoop,
-    #[serde(rename = "harness-session")]
-    HarnessSession,
-    #[serde(rename = "mesh")]
-    Mesh,
+crate::wire_enum! {
+    pub enum TaskExecutorKind {
+        ChatLoop => "chat-loop",
+        HarnessSession => "harness-session",
+        Mesh => "mesh",
+    }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-pub enum TaskStatus {
-    #[serde(rename = "queued")]
-    Queued,
-    #[serde(rename = "running")]
-    Running,
-    #[serde(rename = "awaiting-input")]
-    AwaitingInput,
-    #[serde(rename = "completed")]
-    Completed,
-    #[serde(rename = "failed")]
-    Failed,
-    #[serde(rename = "killed")]
-    Killed,
-    #[serde(rename = "timeout")]
-    Timeout,
+crate::wire_enum! {
+    pub enum TaskStatus {
+        Queued => "queued",
+        Running => "running",
+        AwaitingInput => "awaiting-input",
+        Completed => "completed",
+        Failed => "failed",
+        Killed => "killed",
+        Timeout => "timeout",
+    }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-pub enum TaskVerdict {
-    #[serde(rename = "completed")]
-    Completed,
-    #[serde(rename = "failed")]
-    Failed,
-    #[serde(rename = "killed")]
-    Killed,
-    #[serde(rename = "timeout")]
-    Timeout,
-    #[serde(rename = "budget-exceeded")]
-    BudgetExceeded,
+crate::wire_enum! {
+    pub enum TaskVerdict {
+        Completed => "completed",
+        Failed => "failed",
+        Killed => "killed",
+        Timeout => "timeout",
+        BudgetExceeded => "budget-exceeded",
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -70,27 +58,12 @@ pub struct TaskUsage {
     pub wall_clock_ms: f64,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-pub enum ArtifactKind {
-    #[serde(rename = "file")]
-    File,
-    #[serde(rename = "url")]
-    Url,
-    #[serde(rename = "commit")]
-    Commit,
-    #[serde(rename = "message")]
-    Message,
-}
-
-impl ArtifactKind {
-    fn parse(value: &str) -> Option<Self> {
-        match value {
-            "file" => Some(ArtifactKind::File),
-            "url" => Some(ArtifactKind::Url),
-            "commit" => Some(ArtifactKind::Commit),
-            "message" => Some(ArtifactKind::Message),
-            _ => None,
-        }
+crate::wire_enum! {
+    pub enum ArtifactKind {
+        File => "file",
+        Url => "url",
+        Commit => "commit",
+        Message => "message",
     }
 }
 
@@ -140,8 +113,8 @@ pub struct ParsedTaskResult {
     pub criteria_self_report: Option<Vec<CriterionSelfReport>>,
 }
 
-pub fn parse(text: &str) -> Option<ParsedTaskResult> {
-    let marker = format!("```{TASK_RESULT}");
+pub fn parse_task_result(text: &str) -> Option<ParsedTaskResult> {
+    let marker = format!("```{TASK_RESULT_FENCE}");
     let mut last_body: Option<&str> = None;
     let mut search_from = 0;
     while let Some(rel) = text[search_from..].find(&marker) {
@@ -165,10 +138,10 @@ pub fn parse(text: &str) -> Option<ParsedTaskResult> {
         }
         search_from = next;
     }
-    parse_json(last_body?)
+    parse_task_result_json(last_body?)
 }
 
-pub fn parse_json(json: &str) -> Option<ParsedTaskResult> {
+pub fn parse_task_result_json(json: &str) -> Option<ParsedTaskResult> {
     let value = serde_json::from_str::<Value>(json).ok()?;
     validate_shape(&value)
 }
@@ -211,16 +184,18 @@ fn validate_shape(raw: &Value) -> Option<ParsedTaskResult> {
 }
 
 fn coerce_verdict(verdict: &str) -> Option<TaskVerdict> {
-    match verdict {
-        "completed" => Some(TaskVerdict::Completed),
-        "failed" | "killed" | "timeout" | "budget-exceeded" => Some(TaskVerdict::Failed),
-        _ => None,
+    match verdict.parse::<TaskVerdict>().ok()? {
+        TaskVerdict::Completed => Some(TaskVerdict::Completed),
+        TaskVerdict::Failed
+        | TaskVerdict::Killed
+        | TaskVerdict::Timeout
+        | TaskVerdict::BudgetExceeded => Some(TaskVerdict::Failed),
     }
 }
 
 fn parse_artifact(value: &Value) -> Option<TaskArtifact> {
     let obj = value.as_object()?;
-    let kind = ArtifactKind::parse(obj.get("kind")?.as_str()?)?;
+    let kind = obj.get("kind")?.as_str()?.parse().ok()?;
     let r#ref = obj.get("ref")?.as_str()?.to_string();
     let note = match obj.get("note") {
         Some(Value::String(text)) => Some(text.clone()),

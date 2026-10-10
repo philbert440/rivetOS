@@ -1,13 +1,13 @@
 use protocol::{
-    ChannelErrorCode, ConfigErrorCode, DelegationErrorCode, ErrorBuild, ErrorSeverity,
+    ChannelErrorCode, ConfigErrorCode, DelegationErrorCode, ErrorDetails, ErrorSeverity,
     HarnessErrorCode, MemoryErrorCode, RuntimeErrorCode, ToolErrorCode, channel_error_json,
     config_error_json, delegation_error_json, harness_error_json, memory_error_json,
     provider_error_json, runtime_error_json, tool_error_json,
 };
 use serde_json::Map;
 
-fn build(message: &str) -> ErrorBuild {
-    ErrorBuild {
+fn build(message: &str) -> ErrorDetails {
+    ErrorDetails {
         message: message.to_string(),
         timestamp: 10,
         cause: None,

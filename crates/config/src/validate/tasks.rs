@@ -155,13 +155,16 @@ fn validate_harness(
         }
     }
     if let Some(effort) = section.get("effort") {
+        let low = protocol::ThinkingLevel::Low.as_str();
+        let medium = protocol::ThinkingLevel::Medium.as_str();
+        let high = protocol::ThinkingLevel::High.as_str();
         let ok = effort
             .as_str()
-            .is_some_and(|text| matches!(text, "low" | "medium" | "high"));
+            .is_some_and(|text| text == low || text == medium || text == high);
         if !ok {
             issues.error(
                 format!("{path}.effort"),
-                format!("\"{path}.effort\" must be 'low', 'medium' or 'high'"),
+                format!("\"{path}.effort\" must be '{low}', '{medium}' or '{high}'"),
             );
         }
     }
@@ -335,13 +338,17 @@ fn validate_verifier(eval_section: &Map<String, Value>, issues: &mut Issues) {
     let Some(executor) = verifier.as_object().and_then(|map| map.get("executor")) else {
         return;
     };
+    let chat_loop = protocol::TaskExecutorKind::ChatLoop.as_str();
+    let harness_session = protocol::TaskExecutorKind::HarnessSession.as_str();
     let ok = executor
         .as_str()
-        .is_some_and(|text| text == "chat-loop" || text == "harness-session");
+        .is_some_and(|text| text == chat_loop || text == harness_session);
     if !ok {
         issues.error(
             "tasks.eval.verifier.executor",
-            "\"tasks.eval.verifier.executor\" must be 'chat-loop' or 'harness-session'",
+            format!(
+                "\"tasks.eval.verifier.executor\" must be '{chat_loop}' or '{harness_session}'"
+            ),
         );
     }
 }

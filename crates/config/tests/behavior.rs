@@ -199,9 +199,3 @@ fn validation_failure_does_not_resolve_env() {
     let err = config::load_str("[]\n").unwrap_err();
     assert_eq!(err.to_string(), "Config validation failed");
 }
-
-#[test]
-fn init_tracing_can_be_called_twice() {
-    config::init_tracing();
-    config::init_tracing();
-}
