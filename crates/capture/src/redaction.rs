@@ -1,5 +1,6 @@
 use std::sync::OnceLock;
 
+use protocol::js::{JsObject, JsString, JsValue};
 use regex::bytes::Regex as BytesRegex;
 use regress::Regex;
 use serde_json::{Map, Value};
@@ -87,10 +88,6 @@ pub fn resolve_capture_redaction(
         return None;
     }
     let builtins = input.builtins != Some(false);
-    let supplied = input
-        .patterns
-        .as_ref()
-        .is_some_and(|sources| !sources.is_empty());
     let mut patterns = Vec::new();
     if let Some(sources) = &input.patterns {
         for (index, source) in sources.iter().enumerate() {
@@ -106,7 +103,7 @@ pub fn resolve_capture_redaction(
             }
         }
     }
-    if !builtins && patterns.is_empty() && !supplied {
+    if !builtins && patterns.is_empty() {
         return None;
     }
     Some(ResolvedCaptureRedaction {
@@ -172,7 +169,7 @@ fn apply_units(units: &[u16], regex: &Regex, replacement: &str) -> (Vec<u16>, us
     let mut last = 0usize;
     let mut count = 0usize;
     let mut cursor = 0usize;
-    while let Some(found) = regex.find_from_utf16(units, cursor).next() {
+    while let Some(found) = regex.find_from_ucs2(units, cursor).next() {
         let start = found.start();
         let end = found.end();
         if start < last || start > units.len() {
@@ -194,9 +191,6 @@ fn apply_units(units: &[u16], regex: &Regex, replacement: &str) -> (Vec<u16>, us
         let end = end.min(units.len());
         last = end;
         cursor = end;
-        if cursor >= units.len() {
-            break;
-        }
     }
     if last < units.len() {
         out.extend_from_slice(&units[last..]);
@@ -268,6 +262,90 @@ fn builtin_detectors() -> &'static [Detector] {
         }
         compiled
     })
+}
+
+pub(crate) fn redact_message_js(
+    message: JsValue,
+    resolved: &ResolvedCaptureRedaction,
+) -> (JsValue, usize) {
+    let Some(object) = message.as_object() else {
+        return (message, 0);
+    };
+    let mut count = 0usize;
+    let mut next = message.clone();
+    if let Some(content) = object.get("content") {
+        let (redacted, added) = redact_js(content, resolved, true);
+        count += added;
+        insert_field(&mut next, "content", redacted);
+    }
+    if let Some(tool_result) = object.get("tool_result")
+        && matches!(tool_result, JsValue::String(_))
+    {
+        let (redacted, added) = redact_js(tool_result, resolved, true);
+        count += added;
+        insert_field(&mut next, "tool_result", redacted);
+    }
+    if let Some(tool_args) = object.get("tool_args") {
+        let (redacted, added) = redact_js(tool_args, resolved, false);
+        count += added;
+        insert_field(&mut next, "tool_args", redacted);
+    }
+    if count == 0 {
+        return (message, 0);
+    }
+    (next, count)
+}
+
+fn insert_field(message: &mut JsValue, name: &str, value: JsValue) {
+    if let Some(object) = message.as_object_mut() {
+        object.insert(JsString::from_text(name), value);
+    }
+}
+
+fn redact_js(
+    value: &JsValue,
+    resolved: &ResolvedCaptureRedaction,
+    limited: bool,
+) -> (JsValue, usize) {
+    match value {
+        JsValue::String(text) => {
+            let units = text.units();
+            let (next, count) = if limited && units.len() > REDACT_SCAN_LIMIT {
+                let (mut head, count) = redact_units(&units[..REDACT_SCAN_LIMIT], resolved);
+                head.extend_from_slice(&units[REDACT_SCAN_LIMIT..]);
+                (head, count)
+            } else {
+                redact_units(units, resolved)
+            };
+            (JsValue::String(JsString::from_units(next)), count)
+        }
+        JsValue::Array(items) => {
+            let mut count = 0usize;
+            let mut next = Vec::with_capacity(items.len());
+            for item in items {
+                let (child, added) = redact_js(item, resolved, limited);
+                count += added;
+                next.push(child);
+            }
+            (JsValue::Array(next), count)
+        }
+        JsValue::Object(object) => {
+            let mut count = 0usize;
+            let mut out = JsObject::new();
+            for (name, child) in object.iter() {
+                if secret_key_matches(name.to_utf8()) && matches!(child, JsValue::String(_)) {
+                    out.insert(name.clone(), JsValue::from_text("[REDACTED:secret_key]"));
+                    count += 1;
+                    continue;
+                }
+                let (redacted, added) = redact_js(child, resolved, limited);
+                out.insert(name.clone(), redacted);
+                count += added;
+            }
+            (JsValue::Object(out), count)
+        }
+        other => (other.clone(), 0),
+    }
 }
 
 pub fn redact_message(

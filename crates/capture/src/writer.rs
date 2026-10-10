@@ -2,21 +2,22 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
 
+use protocol::js::{JsObject, JsString, JsValue};
 use reqwest::header::{CONTENT_TYPE, HeaderValue};
-use serde_json::{Map, Value};
 use sha2::{Digest, Sha256};
 use tokio::sync::OnceCell;
 
 use crate::env::EnvLookup;
 use crate::error::{CaptureError, ReplayReport, WriteOutcome};
-use crate::helpers::{self, json_utf8_len};
+use crate::helpers::CONTENT_LIMIT;
 use crate::redaction::{self, ResolvedCaptureRedaction, keep_metadata_key};
 use crate::spool;
 use crate::timeutil;
 use crate::transport::{self, CaptureUser};
 use crate::types::{
-    CaptureBatch, CaptureMessage, CaptureResult, CaptureWriterOptions, HttpReply, LogFn, UserSource,
+    CaptureBatch, CaptureResult, CaptureWriterOptions, HttpReply, LogFn, UserSource,
 };
+use crate::wire;
 
 pub const DEFAULT_CHUNK_BYTES: usize = 768 * 1024;
 pub const CHUNK_OVER_LIMIT: &str = "chunk exceeds maxChunkBytes after elision";
@@ -186,34 +187,23 @@ impl CaptureWriter {
     }
 
     pub async fn write(&self, batch: CaptureBatch) -> Result<WriteOutcome, CaptureError> {
-        let value = serde_json::to_value(&batch).unwrap_or(Value::Null);
-        self.write_value(value).await
+        self.write_value(wire::batch_to_js(&batch)).await
     }
 
-    pub async fn write_value(&self, batch: Value) -> Result<WriteOutcome, CaptureError> {
+    pub async fn write_value(&self, mut batch: JsValue) -> Result<WriteOutcome, CaptureError> {
         self.replay(ReplayOptions { max: Some(50.0) }).await;
-        let original = match &batch {
-            Value::Object(map) => map.clone(),
-            _ => Map::new(),
-        };
-        let prepared = match serde_json::from_value::<CaptureBatch>(Value::Object(original.clone()))
-        {
-            Ok(mut parsed) => {
-                parsed.messages = self.prepare_messages(std::mem::take(&mut parsed.messages));
-                parsed
-            }
-            Err(_) => empty_batch(),
-        };
-        let chunks = split_chunks(prepared, self.max_chunk_bytes, &self.log);
+        if batch.as_object().is_none() {
+            batch = wire::batch_to_js(&empty_batch());
+        }
+        prepare_batch(&mut batch, self.redaction.as_ref(), &self.log);
+        let chunks = split_chunks(&mut batch, self.max_chunk_bytes, &self.log);
         let base = (self.now_ms)();
         let mut inserted = 0u64;
         let mut skipped = 0u64;
         let mut conversation_id = String::new();
         let mut files = Vec::new();
-        let chunk_count = chunks.len();
         for (index, chunk) in chunks.iter().enumerate() {
-            let body_value = project_chunk(&original, chunk, index + 1 == chunk_count);
-            let body = protocol::js::stringify(&body_value);
+            let body = protocol::js::stringify(chunk);
             if body.len() > self.max_chunk_bytes {
                 self.emit(CHUNK_OVER_LIMIT);
                 return Ok(WriteOutcome::NotSaved {
@@ -259,26 +249,6 @@ impl CaptureWriter {
             inserted,
             skipped,
         })
-    }
-
-    fn prepare_messages(&self, messages: Vec<CaptureMessage>) -> Vec<CaptureMessage> {
-        let Some(redaction) = &self.redaction else {
-            return messages.into_iter().map(cap_message).collect();
-        };
-        let mut spans = 0usize;
-        let redacted = messages
-            .into_iter()
-            .map(|message| {
-                let (next, count) = redaction::redact_message(message, redaction);
-                spans += count;
-                next
-            })
-            .map(cap_message)
-            .collect();
-        if spans > 0 {
-            self.emit(&format!("redacted {spans} spans"));
-        }
-        redacted
     }
 
     async fn replay_one(&self, file: &str) -> ReplayStep {
@@ -475,67 +445,169 @@ async fn older_than(path: &Path, max_age_ms: u64) -> bool {
     age.as_millis() > u128::from(max_age_ms)
 }
 
-fn cap_message(message: CaptureMessage) -> CaptureMessage {
-    let content = helpers::cap_field(&message.content);
-    let tool = message
-        .tool_result
-        .as_ref()
-        .map(|text| helpers::cap_field(text));
+struct CappedUnits {
+    text: Vec<u16>,
+    truncated: bool,
+    full_length: usize,
+}
+
+fn cap_units(units: &[u16]) -> CappedUnits {
+    let full_length = units.len();
+    if full_length <= CONTENT_LIMIT {
+        return CappedUnits {
+            text: units.to_vec(),
+            truncated: false,
+            full_length,
+        };
+    }
+    let mut cut = CONTENT_LIMIT;
+    if cut > 0 && (0xD800..=0xDBFF).contains(&units[cut - 1]) {
+        cut -= 1;
+    }
+    CappedUnits {
+        text: units[..cut].to_vec(),
+        truncated: true,
+        full_length,
+    }
+}
+
+fn string_units(value: Option<&JsValue>) -> Option<Vec<u16>> {
+    value
+        .and_then(JsValue::as_js_string)
+        .map(|text| text.units().to_vec())
+}
+
+fn cap_message_js(message: JsValue) -> JsValue {
+    let Some(object) = message.as_object() else {
+        return message;
+    };
+    let content = string_units(object.get("content")).map(|units| cap_units(&units));
+    let tool = match object.get("tool_result") {
+        Some(JsValue::String(text)) => Some(cap_units(text.units())),
+        _ => None,
+    };
+    let content_truncated = content.as_ref().is_some_and(|item| item.truncated);
     let tool_truncated = tool.as_ref().is_some_and(|item| item.truncated);
-    if !content.truncated && !tool_truncated {
+    if !content_truncated && !tool_truncated {
         return message;
     }
-    let mut metadata = message.metadata.clone().unwrap_or_default();
-    if content.truncated {
+    let mut metadata = spread_metadata(object.get("metadata"));
+    if content_truncated && let Some(item) = &content {
         metadata.insert(
-            "full_content_length".to_string(),
-            json_usize(content.full_length),
+            wire::key("full_content_length"),
+            wire::number_value(item.full_length),
         );
     }
-    if tool_truncated && let Some(tool) = &tool {
+    if tool_truncated && let Some(item) = &tool {
         metadata.insert(
-            "full_tool_result_length".to_string(),
-            json_usize(tool.full_length),
+            wire::key("full_tool_result_length"),
+            wire::number_value(item.full_length),
         );
     }
-    metadata.insert("truncated".to_string(), Value::Bool(true));
+    metadata.insert(wire::key("truncated"), JsValue::Bool(true));
     let mut next = message;
-    next.content = content.text;
-    if let Some(tool) = tool {
-        next.tool_result = Some(tool.text);
+    if let Some(item) = content {
+        insert_field(
+            &mut next,
+            "content",
+            JsValue::String(JsString::from_units(item.text)),
+        );
     }
-    next.metadata = Some(metadata);
+    if let Some(item) = tool {
+        insert_field(
+            &mut next,
+            "tool_result",
+            JsValue::String(JsString::from_units(item.text)),
+        );
+    }
+    insert_field(&mut next, "metadata", JsValue::Object(metadata));
     next
 }
 
-fn json_usize(value: usize) -> Value {
-    Value::from(u64::try_from(value).unwrap_or(u64::MAX))
+fn spread_metadata(value: Option<&JsValue>) -> JsObject {
+    match value {
+        Some(JsValue::Object(object)) => object.clone(),
+        Some(JsValue::Array(items)) => {
+            let mut object = JsObject::new();
+            for (index, item) in items.iter().enumerate() {
+                object.insert(JsString::from_text(&index.to_string()), item.clone());
+            }
+            object
+        }
+        _ => JsObject::new(),
+    }
+}
+
+fn insert_field(message: &mut JsValue, name: &str, value: JsValue) {
+    if let Some(object) = message.as_object_mut() {
+        object.insert(JsString::from_text(name), value);
+    }
+}
+
+fn field_text(message: &JsValue, name: &str) -> String {
+    message
+        .get(name)
+        .and_then(JsValue::as_str)
+        .unwrap_or("")
+        .to_string()
+}
+
+fn prepare_batch(
+    batch: &mut JsValue,
+    redaction: Option<&ResolvedCaptureRedaction>,
+    log: &Option<LogFn>,
+) {
+    let Some(messages) = batch
+        .get("messages")
+        .and_then(JsValue::as_array)
+        .map(|items| items.to_vec())
+    else {
+        return;
+    };
+    let mut spans = 0usize;
+    let mut prepared = Vec::with_capacity(messages.len());
+    for message in messages {
+        let next = if let Some(redaction) = redaction {
+            let (redacted, count) = redaction::redact_message_js(message, redaction);
+            spans += count;
+            redacted
+        } else {
+            message
+        };
+        prepared.push(cap_message_js(next));
+    }
+    if spans > 0 {
+        emit(log, &format!("redacted {spans} spans"));
+    }
+    insert_field(batch, "messages", JsValue::Array(prepared));
 }
 
 #[derive(Clone)]
 struct Tracked {
-    message: CaptureMessage,
+    message: JsValue,
     args_done: bool,
     meta_done: bool,
 }
 
-fn split_chunks(batch: CaptureBatch, limit: usize, log: &Option<LogFn>) -> Vec<CaptureBatch> {
-    let mut batch = batch;
-    if batch.settings.is_some()
-        && encoded_len(&chunk_for(&batch, Vec::new(), true)) > limit
-        && let Some(settings) = &batch.settings
-    {
-        let bytes = json_utf8_len(settings);
+fn split_chunks(batch: &mut JsValue, limit: usize, log: &Option<LogFn>) -> Vec<JsValue> {
+    if batch.get("settings").is_some() && encoded_messages(batch, &[], true) > limit {
+        let bytes = batch
+            .get("settings")
+            .map(|value| protocol::js::stringify(value).len())
+            .unwrap_or(0);
         emit(log, &format!("elided settings ({bytes} bytes)"));
-        batch.settings = Some(elided_value(bytes));
+        insert_field(batch, "settings", elided_value(bytes));
     }
-    if batch.messages.is_empty() {
-        return vec![chunk_for(&batch, Vec::new(), true)];
+    let messages = batch
+        .get("messages")
+        .and_then(JsValue::as_array)
+        .map(|items| items.to_vec())
+        .unwrap_or_default();
+    if messages.is_empty() {
+        return vec![project_chunk(batch, &[], true)];
     }
-    let messages: Vec<Tracked> = batch
-        .messages
-        .iter()
-        .cloned()
+    let messages: Vec<Tracked> = messages
+        .into_iter()
         .map(|message| Tracked {
             message,
             args_done: false,
@@ -545,8 +617,8 @@ fn split_chunks(batch: CaptureBatch, limit: usize, log: &Option<LogFn>) -> Vec<C
     let mut groups: Vec<Vec<Tracked>> = Vec::new();
     let mut current: Vec<Tracked> = Vec::new();
     for original in messages {
-        let alone = message_fits(&batch, &original.message, false, limit)
-            || message_fits(&batch, &original.message, true, limit);
+        let alone = message_fits(batch, &original.message, false, limit)
+            || message_fits(batch, &original.message, true, limit);
         let message = if alone {
             original
         } else {
@@ -555,7 +627,7 @@ fn split_chunks(batch: CaptureBatch, limit: usize, log: &Option<LogFn>) -> Vec<C
         let solo = !alone;
         let overflows = !current.is_empty()
             && !fits_messages(
-                &batch,
+                batch,
                 &current,
                 std::slice::from_ref(&message),
                 false,
@@ -577,7 +649,7 @@ fn split_chunks(batch: CaptureBatch, limit: usize, log: &Option<LogFn>) -> Vec<C
     while guard < guard_limit && !groups.is_empty() {
         guard += 1;
         let last_index = groups.len() - 1;
-        if fits_group(&batch, &groups[last_index], true, limit) {
+        if fits_group(batch, &groups[last_index], true, limit) {
             break;
         }
         if groups[last_index].len() <= 1 {
@@ -585,7 +657,7 @@ fn split_chunks(batch: CaptureBatch, limit: usize, log: &Option<LogFn>) -> Vec<C
                 Some(only) => only.clone(),
                 None => break,
             };
-            let next = shrink_singleton(only.clone(), true, &batch, limit, log);
+            let next = shrink_singleton(only.clone(), true, batch, limit, log);
             if same_tracked(&only, &next) {
                 break;
             }
@@ -603,18 +675,18 @@ fn split_chunks(batch: CaptureBatch, limit: usize, log: &Option<LogFn>) -> Vec<C
             continue;
         }
         let is_last = index + 1 == group_count;
-        if fits_group(&batch, group, is_last, limit) {
+        if fits_group(batch, group, is_last, limit) {
             continue;
         }
         let only = group[0].clone();
-        *group = vec![shrink_singleton(only, is_last, &batch, limit, log)];
+        *group = vec![shrink_singleton(only, is_last, batch, limit, log)];
     }
     groups
         .into_iter()
         .enumerate()
         .map(|(index, group)| {
-            let messages = group.into_iter().map(|item| item.message).collect();
-            chunk_for(&batch, messages, index + 1 == group_count)
+            let messages: Vec<JsValue> = group.into_iter().map(|item| item.message).collect();
+            project_chunk(batch, &messages, index + 1 == group_count)
         })
         .collect()
 }
@@ -632,16 +704,14 @@ fn same_tracked(left: &Tracked, right: &Tracked) -> bool {
         && message_wire(&left.message) == message_wire(&right.message)
 }
 
-fn message_wire(message: &CaptureMessage) -> Option<String> {
-    serde_json::to_value(message)
-        .ok()
-        .map(|value| protocol::js::stringify(&value))
+fn message_wire(message: &JsValue) -> String {
+    protocol::js::stringify(message)
 }
 
 fn shrink_singleton(
     mut current: Tracked,
     is_last: bool,
-    batch: &CaptureBatch,
+    batch: &JsValue,
     limit: usize,
     log: &Option<LogFn>,
 ) -> Tracked {
@@ -664,27 +734,30 @@ fn elide_tool_args(current: Tracked, log: &Option<LogFn>) -> Tracked {
     if current.args_done {
         return current;
     }
-    if current.message.tool_args.is_none() {
+    if current.message.get("tool_args").is_none() {
         let mut next = current;
         next.args_done = true;
         return next;
     }
-    let Some(tool_args) = current.message.tool_args.clone() else {
+    let Some(tool_args) = current.message.get("tool_args").cloned() else {
         return current;
     };
-    let bytes = json_utf8_len(&tool_args);
+    let bytes = protocol::js::stringify(&tool_args).len();
     emit(
         log,
         &format!(
             "elided tool_args for event {} ({bytes} bytes)",
-            current.message.event_id
+            field_text(&current.message, "event_id")
         ),
     );
-    let mut metadata = current.message.metadata.clone().unwrap_or_default();
-    metadata.insert("full_tool_args_length".to_string(), json_usize(bytes));
+    let mut metadata = spread_metadata(current.message.get("metadata"));
+    metadata.insert(
+        wire::key("full_tool_args_length"),
+        wire::number_value(bytes),
+    );
     let mut message = current.message;
-    message.tool_args = Some(elided_value(bytes));
-    message.metadata = Some(metadata);
+    insert_field(&mut message, "tool_args", elided_value(bytes));
+    insert_field(&mut message, "metadata", JsValue::Object(metadata));
     Tracked {
         message,
         args_done: true,
@@ -696,25 +769,29 @@ fn elide_metadata(current: Tracked, log: &Option<LogFn>) -> Tracked {
     if current.meta_done {
         return current;
     }
-    let metadata = current.message.metadata.clone().unwrap_or_default();
-    let bytes = json_utf8_len(&metadata);
+    let source = match current.message.get("metadata") {
+        Some(JsValue::Null) | None => JsValue::Object(JsObject::new()),
+        Some(value) => value.clone(),
+    };
+    let bytes = protocol::js::stringify(&source).len();
     emit(
         log,
         &format!(
             "elided metadata for event {} ({bytes} bytes)",
-            current.message.event_id
+            field_text(&current.message, "event_id")
         ),
     );
-    let mut kept = Map::new();
-    for (key, value) in &metadata {
-        if keep_metadata_key(key) {
-            kept.insert(key.clone(), value.clone());
+    let metadata = spread_metadata(current.message.get("metadata"));
+    let mut kept = JsObject::new();
+    for (name, value) in metadata.iter() {
+        if keep_metadata_key(name.to_utf8()) {
+            kept.insert(name.clone(), value.clone());
         }
     }
-    kept.insert("metadata_elided".to_string(), Value::Bool(true));
-    kept.insert("full_metadata_bytes".to_string(), json_usize(bytes));
+    kept.insert(wire::key("metadata_elided"), JsValue::Bool(true));
+    kept.insert(wire::key("full_metadata_bytes"), wire::number_value(bytes));
     let mut message = current.message;
-    message.metadata = Some(kept);
+    insert_field(&mut message, "metadata", JsValue::Object(kept));
     Tracked {
         message,
         args_done: true,
@@ -722,24 +799,19 @@ fn elide_metadata(current: Tracked, log: &Option<LogFn>) -> Tracked {
     }
 }
 
-fn elided_value(bytes: usize) -> Value {
-    let mut map = Map::new();
-    map.insert("_elided".to_string(), Value::Bool(true));
-    map.insert("bytes".to_string(), json_usize(bytes));
-    Value::Object(map)
+fn elided_value(bytes: usize) -> JsValue {
+    let mut map = JsObject::new();
+    map.insert(wire::key("_elided"), JsValue::Bool(true));
+    map.insert(wire::key("bytes"), wire::number_value(bytes));
+    JsValue::Object(map)
 }
 
-fn message_fits(
-    batch: &CaptureBatch,
-    message: &CaptureMessage,
-    is_last: bool,
-    limit: usize,
-) -> bool {
-    encoded_len(&chunk_for(batch, vec![message.clone()], is_last)) <= limit
+fn message_fits(batch: &JsValue, message: &JsValue, is_last: bool, limit: usize) -> bool {
+    encoded_messages(batch, std::slice::from_ref(message), is_last) <= limit
 }
 
 fn fits_messages(
-    batch: &CaptureBatch,
+    batch: &JsValue,
     current: &[Tracked],
     extra: &[Tracked],
     is_last: bool,
@@ -750,28 +822,31 @@ fn fits_messages(
         .map(|item| item.message.clone())
         .collect::<Vec<_>>();
     messages.extend(extra.iter().map(|item| item.message.clone()));
-    encoded_len(&chunk_for(batch, messages, is_last)) <= limit
+    encoded_messages(batch, &messages, is_last) <= limit
 }
 
-fn fits_group(batch: &CaptureBatch, group: &[Tracked], is_last: bool, limit: usize) -> bool {
-    let messages = group.iter().map(|item| item.message.clone()).collect();
-    encoded_len(&chunk_for(batch, messages, is_last)) <= limit
+fn fits_group(batch: &JsValue, group: &[Tracked], is_last: bool, limit: usize) -> bool {
+    let messages = group
+        .iter()
+        .map(|item| item.message.clone())
+        .collect::<Vec<_>>();
+    encoded_messages(batch, &messages, is_last) <= limit
 }
 
-fn chunk_for(batch: &CaptureBatch, messages: Vec<CaptureMessage>, is_last: bool) -> CaptureBatch {
-    let mut out = batch.clone();
-    out.messages = messages;
-    if !is_last && out.finalize.is_some() {
-        out.finalize = None;
+fn encoded_messages(batch: &JsValue, messages: &[JsValue], is_last: bool) -> usize {
+    protocol::js::stringify(&project_chunk(batch, messages, is_last)).len()
+}
+
+fn project_chunk(batch: &JsValue, messages: &[JsValue], is_last: bool) -> JsValue {
+    let Some(object) = batch.as_object() else {
+        return JsValue::Object(JsObject::new());
+    };
+    let mut out = object.clone();
+    if !is_last && out.get("finalize").is_some() {
+        out.remove("finalize");
     }
-    out
-}
-
-fn encoded_len(batch: &CaptureBatch) -> usize {
-    match serde_json::to_value(batch) {
-        Ok(value) => protocol::js::stringify(&value).len(),
-        Err(_) => usize::MAX,
-    }
+    out.insert(wire::key("messages"), JsValue::Array(messages.to_vec()));
+    JsValue::Object(out)
 }
 
 fn empty_batch() -> CaptureBatch {
@@ -787,37 +862,6 @@ fn empty_batch() -> CaptureBatch {
         updated_at: None,
         messages: Vec::new(),
     }
-}
-
-fn project_chunk(original: &Map<String, Value>, chunk: &CaptureBatch, is_last: bool) -> Value {
-    let mut out = if original.is_empty() {
-        serde_json::to_value(chunk)
-            .ok()
-            .and_then(|value| value.as_object().cloned())
-            .unwrap_or_default()
-    } else {
-        original.clone()
-    };
-    if !is_last || chunk.finalize.is_none() {
-        out.shift_remove("finalize");
-    } else if let Some(flag) = chunk.finalize {
-        out.insert("finalize".to_string(), Value::Bool(flag));
-    }
-    match &chunk.settings {
-        Some(value) => {
-            out.insert("settings".to_string(), value.clone());
-        }
-        None => {
-            out.shift_remove("settings");
-        }
-    }
-    let messages = chunk
-        .messages
-        .iter()
-        .map(|message| serde_json::to_value(message).unwrap_or(Value::Null))
-        .collect();
-    out.insert("messages".to_string(), Value::Array(messages));
-    Value::Object(out)
 }
 
 fn emit(log: &Option<LogFn>, line: &str) {

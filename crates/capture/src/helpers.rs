@@ -16,7 +16,7 @@ pub fn as_string(value: &Value) -> Option<&str> {
 }
 
 pub fn safe_json(value: &Value) -> String {
-    protocol::js::stringify(value)
+    protocol::js::stringify(&protocol::js::from_serde(value))
 }
 
 pub struct CappedText {
@@ -137,7 +137,7 @@ fn strip_one_quote(value: &str) -> String {
 
 pub fn json_utf8_len(value: &impl serde::Serialize) -> usize {
     match serde_json::to_value(value) {
-        Ok(parsed) => protocol::js::stringify(&parsed).len(),
+        Ok(parsed) => protocol::js::stringify(&protocol::js::from_serde(&parsed)).len(),
         Err(_) => 0,
     }
 }
