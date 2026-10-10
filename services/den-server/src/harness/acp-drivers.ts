@@ -54,6 +54,7 @@ interface DriverAccess {
   emit(native: string, event: HarnessEvent): void
   beginTurn(native: string): void
   endTurn(native: string, stopReason: string): void
+  syncTranscript(native: string): void
   armQuietWindow(native: string): void
   ensureLive(native: string): LiveState
   liveSummary(native: string, status: 'idle'): HarnessSessionSummary
@@ -79,7 +80,12 @@ class AcpRouting {
       sid: (native) => d.sid(native),
       emit: (native, event) => d.emit(native, event),
       turnStarted: (native) => d.beginTurn(native),
-      turnEnded: (native, reason) => d.endTurn(native, reason),
+      turnEnded: (native, reason) => {
+        d.endTurn(native, reason)
+        // The turn is committed to the store; the watcher of a new session
+        // may not have found its file yet.
+        d.syncTranscript(native)
+      },
       activity: (native) => d.armQuietWindow(native),
       log: (msg) => d.log(msg),
     })
@@ -220,6 +226,7 @@ export class GrokAcpDriver extends GrokBuildDriver {
       emit: (n, e) => this.emit(n, e),
       beginTurn: (n) => this.beginTurn(n),
       endTurn: (n, r) => this.endTurn(n, r),
+      syncTranscript: (n) => this.syncTranscript(this.sid(n)),
       armQuietWindow: (n) => this.armQuietWindow(n),
       ensureLive: (n) => this.ensureLive(n),
       liveSummary: (n, s) => this.liveSummary(n, s),
@@ -320,6 +327,7 @@ export class OpencodeAcpDriver extends OpencodeDriver {
       emit: (n, e) => this.emit(n, e),
       beginTurn: (n) => this.beginTurn(n),
       endTurn: (n, r) => this.endTurn(n, r),
+      syncTranscript: (n) => this.syncTranscript(this.sid(n)),
       armQuietWindow: (n) => this.armQuietWindow(n),
       ensureLive: (n) => this.ensureLive(n),
       liveSummary: (n, s) => this.liveSummary(n, s),
