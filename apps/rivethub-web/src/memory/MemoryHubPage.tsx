@@ -41,7 +41,8 @@ export function MemoryHubPage(): JSX.Element {
           the mesh.
         </p>
         <Link
-          to="/settings"
+          to="/settings/$tab"
+          params={{ tab: 'node' }}
           className="rounded bg-em-dim px-4 py-2 text-sm font-medium text-bg hover:bg-em"
         >
           Open Settings

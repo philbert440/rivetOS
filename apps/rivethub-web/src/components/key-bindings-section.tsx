@@ -1,12 +1,11 @@
 /**
- * Settings → Keyboard shortcuts. Collapsed by default. One row per action:
+ * Settings → Keyboard. One row per action:
  * its current keys (× removes one), + records another, Reset restores the
  * default. A recorded key that would collide or swallow typing is refused
  * with the reason (lib/hub-keys `bindingProblem`). Esc cancels a recording.
  */
 
 import { useEffect, useState, type JSX } from 'react'
-import { ChevronDown, ChevronRight } from 'lucide-react'
 import {
   bindingProblem,
   CANVAS_KEYS,
@@ -92,7 +91,6 @@ function BindingRow(props: {
 }
 
 export function KeyBindingsSection(): JSX.Element {
-  const [open, setOpen] = useState(false)
   const [recordingId, setRecordingId] = useState<string | null>(null)
   const [problem, setProblem] = useState<string | undefined>()
   const overrides = useKeyBindings((s) => s.overrides)
@@ -155,55 +153,37 @@ export function KeyBindingsSection(): JSX.Element {
   return (
     <>
       <h2 className="mt-10 mb-3 border-t border-line pt-6 font-mono text-sm font-semibold text-em">
-        <button
-          type="button"
-          aria-expanded={open}
-          aria-controls="key-bindings"
-          className="flex items-center gap-1.5 hover:text-ink"
-          onClick={() => {
-            setOpen((o) => !o)
-            setRecordingId(null)
-          }}
-        >
-          {open ? (
-            <ChevronDown aria-hidden="true" className="size-4" />
-          ) : (
-            <ChevronRight aria-hidden="true" className="size-4" />
-          )}
-          Keyboard shortcuts
-          {changedCount > 0 ? (
-            <span className="font-normal text-ink-dim">· {changedCount} changed</span>
-          ) : null}
-        </button>
+        Keyboard shortcuts
+        {changedCount > 0 ? (
+          <span className="font-normal text-ink-dim"> · {changedCount} changed</span>
+        ) : null}
       </h2>
-      {open ? (
-        <div id="key-bindings">
-          <p className="text-xs text-ink-dim">
-            Click + and press a key to add a shortcut; × removes one. App shortcuts and the canvas
-            zoom keys work while you type, so they need Ctrl, Alt or Super. Saved for this app on
-            this device.
+      <div id="key-bindings">
+        <p className="text-xs text-ink-dim">
+          Click + and press a key to add a shortcut; × removes one. App shortcuts and the canvas
+          zoom keys work while you type, so they need Ctrl, Alt or Super. Saved for this app on this
+          device.
+        </p>
+        {problem ? (
+          <p role="alert" data-binding-problem="" className="mt-2 text-xs text-warn">
+            {problem}
           </p>
-          {problem ? (
-            <p role="alert" data-binding-problem="" className="mt-2 text-xs text-warn">
-              {problem}
-            </p>
-          ) : null}
-          {group('App', HUB_KEYS)}
-          {group('Canvas', CANVAS_KEYS)}
-          {changedCount > 0 ? (
-            <button
-              type="button"
-              className="mt-4 rounded border border-line bg-panel-2 px-3 py-1.5 text-xs hover:border-em"
-              onClick={() => {
-                setRecordingId(null)
-                resetAll()
-              }}
-            >
-              Reset all to defaults
-            </button>
-          ) : null}
-        </div>
-      ) : null}
+        ) : null}
+        {group('App', HUB_KEYS)}
+        {group('Canvas', CANVAS_KEYS)}
+        {changedCount > 0 ? (
+          <button
+            type="button"
+            className="mt-4 rounded border border-line bg-panel-2 px-3 py-1.5 text-xs hover:border-em"
+            onClick={() => {
+              setRecordingId(null)
+              resetAll()
+            }}
+          >
+            Reset all to defaults
+          </button>
+        ) : null}
+      </div>
     </>
   )
 }

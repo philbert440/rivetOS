@@ -1,5 +1,6 @@
 import { useEffect, useState, type JSX } from 'react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
+import { Link, useParams } from '@tanstack/react-router'
 import { isValidGatewayUrl, useConnection } from '../stores/connection.js'
 import { useTheme } from '../stores/theme.js'
 import { useConversationView } from '../stores/conversation-view.js'
@@ -17,6 +18,11 @@ import { Select } from '../components/select.js'
 import { KeyBindingsSection } from '../components/key-bindings-section.js'
 import { DEFAULT_OMARCHY_PRESET, OMARCHY_PRESETS } from '../lib/omarchy-presets.js'
 import { useExperimental } from '../stores/experimental.js'
+import { SETTINGS_TABS, settingsTab } from '../lib/settings-tabs.js'
+import { cn } from '../lib/utils.js'
+
+/** Section heading; a tab's first one drops the rule above it. */
+const H2 = 'mt-10 mb-3 border-t border-line pt-6 font-mono text-sm font-semibold text-em'
 
 type ProbeState =
   | { kind: 'idle' }
@@ -65,9 +71,7 @@ function SavedNodesSection(): JSX.Element {
 
   return (
     <>
-      <h2 className="mt-10 mb-3 border-t border-line pt-6 font-mono text-sm font-semibold text-em">
-        Saved nodes
-      </h2>
+      <h2 className={H2}>Saved nodes</h2>
       {roster.length === 0 && <p className="text-xs text-ink-dim">No saved nodes yet.</p>}
       {roster.map((n) =>
         editing === n.baseUrl ? (
@@ -147,9 +151,7 @@ function AgentsSettingsBlock(): JSX.Element {
   )
   return (
     <>
-      <h2 className="mt-10 mb-3 border-t border-line pt-6 font-mono text-sm font-semibold text-em">
-        Agents
-      </h2>
+      <h2 className={H2}>Agents</h2>
       <p className="mb-3 text-xs text-ink-dim">
         The shared directory comes from <span className="font-mono">RIVETOS_SHARED_DIR</span> /{' '}
         <span className="font-mono">mesh.storage_dir</span> on the node.
@@ -169,18 +171,79 @@ function AgentsSettingsBlock(): JSX.Element {
 }
 
 export function SettingsPage(): JSX.Element {
+  const tab = settingsTab(useParams({ strict: false }).tab)
+  return (
+    <div className="mx-auto max-w-4xl px-4 py-8 md:px-6">
+      <h1 className="mb-6 font-mono text-lg font-semibold text-em">Settings</h1>
+      <div className="flex flex-col gap-6 md:flex-row md:gap-10">
+        <nav
+          aria-label="Settings"
+          className="-mx-4 flex shrink-0 gap-1 overflow-x-auto px-4 md:mx-0 md:w-40 md:flex-col md:overflow-visible md:px-0"
+        >
+          {SETTINGS_TABS.map((t) => (
+            <Link
+              key={t.id}
+              to="/settings/$tab"
+              params={{ tab: t.id }}
+              aria-current={t.id === tab ? 'page' : undefined}
+              className={cn(
+                'shrink-0 rounded px-3 py-1.5 text-sm whitespace-nowrap',
+                t.id === tab
+                  ? 'bg-panel-2 font-medium text-em'
+                  : 'text-ink-dim hover:bg-panel-2 hover:text-ink',
+              )}
+            >
+              {t.label}
+            </Link>
+          ))}
+        </nav>
+        {/* The first heading of a tab sits at the top: no rule above it. */}
+        <div
+          data-settings-tab={tab}
+          className="min-w-0 max-w-xl flex-1 [&>h2:first-child]:mt-0 [&>h2:first-child]:border-t-0 [&>h2:first-child]:pt-0"
+        >
+          {tab === 'general' && <ConversationsSection />}
+          {tab === 'appearance' && (
+            <>
+              <AppearanceSection />
+              <TerminalSection />
+            </>
+          )}
+          {tab === 'keyboard' && <KeyBindingsSection />}
+          {tab === 'node' && (
+            <>
+              <GatewaySection />
+              <SavedNodesSection />
+              <AgentsSettingsBlock />
+              <DatahubSection />
+            </>
+          )}
+          {tab === 'devices' && (
+            <>
+              <PhonePairingSection />
+              <DevicesSection />
+            </>
+          )}
+          {tab === 'advanced' && (
+            <>
+              <ExperimentalSection />
+              <UpdatesSection />
+            </>
+          )}
+          {/* Build stamp — the desktop shell bakes this dist in at build time, so
+              this line is how you tell whether a binary has gone stale. */}
+          <div className="mt-10 border-t border-line pt-3 font-mono text-[11px] text-ink-dim">
+            RivetHub v{BUILD_INFO.version} · dist {BUILD_INFO.sha} · built {BUILD_INFO.builtAt}
+          </div>
+        </div>
+      </div>
+    </div>
+  )
+}
+
+/** The connected node's gateway: type an origin, probe it, save it. */
+function GatewaySection(): JSX.Element {
   const { baseUrl, setConnection } = useConnection()
-  const themePreference = useTheme((s) => s.preference)
-  const setThemePreference = useTheme((s) => s.setPreference)
-  const omarchy = useTheme((s) => s.omarchy)
-  const applyPreset = useTheme((s) => s.applyPreset)
-  const liveOmarchy = omarchy?.source === 'live'
-  const presetId =
-    OMARCHY_PRESETS.find((p) => p.name === omarchy?.name)?.id ?? DEFAULT_OMARCHY_PRESET
-  const experimental = useExperimental((s) => s.experimental)
-  const setFiles = useExperimental((s) => s.setFiles)
-  const setTasks = useExperimental((s) => s.setTasks)
-  const setWorkflows = useExperimental((s) => s.setWorkflows)
   const queryClient = useQueryClient()
   const [draftUrl, setDraftUrl] = useState(baseUrl)
   // The Saved Nodes editor below can repoint baseUrl from within this page —
@@ -189,9 +252,6 @@ export function SettingsPage(): JSX.Element {
     setDraftUrl(baseUrl)
   }, [baseUrl])
   const [probe, setProbe] = useState<ProbeState>({ kind: 'idle' })
-  const { wikiBaseUrl, setWikiBaseUrl } = useWikiSettings()
-  const [draftWiki, setDraftWiki] = useState(wikiBaseUrl)
-  const [wikiNotice, setWikiNotice] = useState('')
 
   const test = async (): Promise<void> => {
     setProbe({ kind: 'testing' })
@@ -231,9 +291,8 @@ export function SettingsPage(): JSX.Element {
   }
 
   return (
-    <div className="mx-auto max-w-xl px-4 py-8 md:px-6">
-      <h1 className="mb-6 font-mono text-lg font-semibold text-em">Settings</h1>
-
+    <>
+      <h2 className={H2}>Gateway</h2>
       <label className="mb-1 block text-xs text-ink-dim">Gateway URL (origin only)</label>
       <input
         value={draftUrl}
@@ -271,10 +330,21 @@ export function SettingsPage(): JSX.Element {
         )}
         {probe.kind === 'fail' && <span className="text-red">✗ {probe.message}</span>}
       </div>
+    </>
+  )
+}
 
-      <h2 className="mt-10 mb-3 border-t border-line pt-6 font-mono text-sm font-semibold text-em">
-        Appearance
-      </h2>
+function AppearanceSection(): JSX.Element {
+  const themePreference = useTheme((s) => s.preference)
+  const setThemePreference = useTheme((s) => s.setPreference)
+  const omarchy = useTheme((s) => s.omarchy)
+  const applyPreset = useTheme((s) => s.applyPreset)
+  const liveOmarchy = omarchy?.source === 'live'
+  const presetId =
+    OMARCHY_PRESETS.find((p) => p.name === omarchy?.name)?.id ?? DEFAULT_OMARCHY_PRESET
+  return (
+    <>
+      <h2 className={H2}>Theme</h2>
       <div className="flex items-center gap-3">
         <div className="flex gap-2" role="group" aria-label="Theme">
           {(
@@ -331,18 +401,30 @@ export function SettingsPage(): JSX.Element {
         desktop app, or a built-in Omarchy palette anywhere else. With no choice made, RivetHub
         follows Omarchy whenever it finds it.
       </p>
+    </>
+  )
+}
 
-      <ConversationsSection />
-      <KeyBindingsSection />
-
-      <TerminalSection />
-
-      <h2 className="mt-10 mb-3 border-t border-line pt-6 font-mono text-sm font-semibold text-em">
-        Experimental features
-      </h2>
+/** Unfinished features, off until turned on here. */
+function ExperimentalSection(): JSX.Element {
+  const experimental = useExperimental((s) => s.experimental)
+  const setFiles = useExperimental((s) => s.setFiles)
+  const setTasks = useExperimental((s) => s.setTasks)
+  const setWorkflows = useExperimental((s) => s.setWorkflows)
+  const canvasEnabled = useConversationView((s) => s.canvasEnabled)
+  const setCanvasEnabled = useConversationView((s) => s.setCanvasEnabled)
+  return (
+    <>
+      <h2 className={H2}>Experimental features</h2>
       <p className="mb-3 text-xs text-ink-dim">These are unfinished — turn them on to try them.</p>
       {(
         [
+          [
+            'spaces-canvas',
+            'Spaces canvas — on a wide screen, conversations open on a zoomable canvas instead of the list',
+            canvasEnabled,
+            setCanvasEnabled,
+          ],
           ['exp-files', 'Files', experimental.files, setFiles],
           ['exp-tasks', 'Tasks', experimental.tasks, setTasks],
           ['exp-workflows', 'Workflows', experimental.workflows, setWorkflows],
@@ -355,14 +437,18 @@ export function SettingsPage(): JSX.Element {
           <Toggle id={id} value={value} onChange={onChange} />
         </div>
       ))}
+    </>
+  )
+}
 
-      <SavedNodesSection />
-
-      <AgentsSettingsBlock />
-
-      <h2 className="mt-10 mb-3 border-t border-line pt-6 font-mono text-sm font-semibold text-em">
-        Memory wiki (datahub)
-      </h2>
+/** Where memory Search / Browse / Stats / wiki are read from. */
+function DatahubSection(): JSX.Element {
+  const { wikiBaseUrl, setWikiBaseUrl } = useWikiSettings()
+  const [draftWiki, setDraftWiki] = useState(wikiBaseUrl)
+  const [wikiNotice, setWikiNotice] = useState('')
+  return (
+    <>
+      <h2 className={H2}>Memory wiki (datahub)</h2>
       <p className="mb-3 text-xs text-ink-dim">
         Datahub holds memory Search, Browse, Stats, and the wiki. Hub reads{' '}
         <span className="font-mono">/api/memory</span> and{' '}
@@ -403,19 +489,7 @@ export function SettingsPage(): JSX.Element {
           {wikiNotice}
         </span>
       </div>
-
-      <PhonePairingSection />
-
-      <DevicesSection />
-
-      <UpdatesSection />
-
-      {/* Build stamp — the desktop shell bakes this dist in at build time, so
-          this line is how you tell whether a binary has gone stale. */}
-      <div className="mt-10 border-t border-line pt-3 font-mono text-[11px] text-ink-dim">
-        RivetHub v{BUILD_INFO.version} · dist {BUILD_INFO.sha} · built {BUILD_INFO.builtAt}
-      </div>
-    </div>
+    </>
   )
 }
 
@@ -423,13 +497,9 @@ export function SettingsPage(): JSX.Element {
 function ConversationsSection(): JSX.Element {
   const defaultView = useConversationView((s) => s.defaultView)
   const setDefaultView = useConversationView((s) => s.setDefaultView)
-  const canvasEnabled = useConversationView((s) => s.canvasEnabled)
-  const setCanvasEnabled = useConversationView((s) => s.setCanvasEnabled)
   return (
     <>
-      <h2 className="mt-10 mb-3 border-t border-line pt-6 font-mono text-sm font-semibold text-em">
-        Conversations
-      </h2>
+      <h2 className={H2}>Conversations</h2>
       <div className="flex items-center gap-3">
         <span className="text-xs text-ink-dim">Default view</span>
         <div className="flex gap-2" role="group" aria-label="Default view">
@@ -459,15 +529,6 @@ function ConversationsSection(): JSX.Element {
         Where a conversation opens: new ones, and older ones you have not switched. Switching
         between Terminal and Chat inside a conversation is remembered for that conversation.
         Sessions that only run in a terminal always open there.
-      </p>
-      <div className="mt-4 flex items-center justify-between gap-3">
-        <label htmlFor="spaces-canvas" className="text-xs text-ink-dim">
-          Spaces canvas (preview)
-        </label>
-        <Toggle id="spaces-canvas" value={canvasEnabled} onChange={setCanvasEnabled} />
-      </div>
-      <p className="mt-2 text-xs text-ink-dim">
-        On a wide screen, conversations open on a zoomable canvas instead of the list.
       </p>
     </>
   )
