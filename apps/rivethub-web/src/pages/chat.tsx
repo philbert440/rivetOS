@@ -2293,6 +2293,7 @@ function ActiveSession(props: {
             outbound={outboundStatus}
             outboundNotes={outboundNotes}
             statusLine={statusLine}
+            idle={!liveBusy && displayLive === undefined}
           />
           <QueuedStrip items={outbound} onInject={onInjectOutbound} onCancel={onCancelOutbound} />
           {dialogDismissedAt !== undefined && (
