@@ -1,0 +1,56 @@
+{
+  "turnResult": {
+    "response": "The echo tool returned hi.",
+    "toolsUsed": [
+      "echo"
+    ],
+    "iterations": 1,
+    "aborted": false,
+    "usage": {
+      "promptTokens": 90,
+      "completionTokens": 18
+    },
+    "hadSteer": false
+  },
+  "toolCalls": [
+    {
+      "toolCallId": "call_golden_echo_1",
+      "toolName": "echo",
+      "input": {
+        "text": "hi",
+        "n": 1
+      }
+    }
+  ],
+  "toolResults": [
+    {
+      "toolCallId": "call_golden_echo_1",
+      "toolName": "echo",
+      "output": "{\"text\":\"hi\",\"n\":1}"
+    }
+  ],
+  "chunkAccumulator": {
+    "usage": {
+      "promptTokens": 90,
+      "completionTokens": 9
+    },
+    "citations": [],
+    "hadTextContent": true,
+    "responseId": "chatcmpl-golden-vllm-B-2"
+  },
+  "aiSdkWarnings": [],
+  "console": [
+    {
+      "level": "info",
+      "text": "[Tool] echo args={\"text\":\"hi\",\"n\":1} → 19b in <ms>ms"
+    }
+  ],
+  "providerStateAfterTurn": {
+    "model": "test-model",
+    "contextWindow": 0
+  },
+  "masks": {
+    "generatedIds": 0,
+    "generatedTimestampsInParts": 0
+  }
+}

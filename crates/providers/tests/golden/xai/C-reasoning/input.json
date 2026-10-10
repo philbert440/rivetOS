@@ -1,0 +1,55 @@
+{
+  "provider": "xai",
+  "scenario": "C-reasoning",
+  "description": "Reasoning/thinking content, then text (Anthropic thinking, xAI reasoning summary, Gemini thoughts, reasoning_content, Ollama thinking).",
+  "instantiation": "manifest.register(ctx) with the config slice; base_url is a known xai key but the manifest does not pass it to XAIProvider, so the harness then sets provider.baseUrl (constructor option, read at request time).",
+  "pluginConfig": {
+    "model": "test-model",
+    "api_key": "<redacted>",
+    "base_url": "http://127.0.0.1:47812/v1"
+  },
+  "baseUrlOverride": "http://127.0.0.1:47812/v1",
+  "registrationLog": [],
+  "agent": {
+    "id": "test-agent",
+    "provider": "xai",
+    "default_thinking": "high"
+  },
+  "loop": {
+    "systemPrompt": "You are a test.",
+    "thinking": "high",
+    "modelOverride": null,
+    "agentId": "test-agent",
+    "sessionId": "test-session",
+    "userId": null,
+    "hooks": "new HookPipelineImpl() (no hooks registered)",
+    "maxSteps": "default (stepCountIs(50))",
+    "turnTimeout": "default (1800000 ms)",
+    "contextWindow": 0
+  },
+  "userMessage": "Say hi.",
+  "history": [],
+  "tools": [
+    {
+      "name": "echo",
+      "description": "Echo the arguments back as JSON.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "text": {
+            "type": "string",
+            "description": "Text to echo back."
+          },
+          "n": {
+            "type": "number",
+            "description": "A number to echo back."
+          }
+        },
+        "required": [
+          "text"
+        ]
+      }
+    }
+  ],
+  "fakeServer": "http://127.0.0.1:47812"
+}

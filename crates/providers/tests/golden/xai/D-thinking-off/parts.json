@@ -1,0 +1,174 @@
+[
+  {
+    "type": "start"
+  },
+  {
+    "type": "start-step",
+    "request": {
+      "body": {
+        "model": "test-model",
+        "input": [
+          {
+            "role": "system",
+            "content": "You are a test."
+          },
+          {
+            "role": "user",
+            "content": [
+              {
+                "type": "input_text",
+                "text": "Say hi."
+              }
+            ]
+          }
+        ],
+        "tools": [
+          {
+            "type": "function",
+            "name": "echo",
+            "description": "Echo the arguments back as JSON.",
+            "parameters": {
+              "type": "object",
+              "properties": {
+                "text": {
+                  "type": "string",
+                  "description": "Text to echo back."
+                },
+                "n": {
+                  "type": "number",
+                  "description": "A number to echo back."
+                }
+              },
+              "required": [
+                "text"
+              ]
+            }
+          },
+          {
+            "type": "function",
+            "name": "compact_context",
+            "description": "Summarize and compact conversation history to free context window space. Provide ranges of messages to replace with summaries. Message indices are 0-based positions in the conversation history (index 0 = first user or assistant message; system messages are excluded from indexing).",
+            "parameters": {
+              "type": "object",
+              "properties": {
+                "replacements": {
+                  "type": "array",
+                  "description": "Message ranges to replace with summaries",
+                  "items": {
+                    "type": "object",
+                    "properties": {
+                      "start_index": {
+                        "type": "number",
+                        "description": "Start index in conversation history (0-based, inclusive)"
+                      },
+                      "end_index": {
+                        "type": "number",
+                        "description": "End index in conversation history (0-based, inclusive)"
+                      },
+                      "summary": {
+                        "type": "string",
+                        "description": "Brief summary replacing these messages. Include key decisions, outcomes, and any information still relevant."
+                      }
+                    },
+                    "required": [
+                      "start_index",
+                      "end_index",
+                      "summary"
+                    ]
+                  }
+                }
+              },
+              "required": [
+                "replacements"
+              ]
+            }
+          }
+        ],
+        "tool_choice": "auto",
+        "stream": true
+      }
+    },
+    "warnings": []
+  },
+  {
+    "type": "text-start",
+    "id": "text-msg_golden_A_1"
+  },
+  {
+    "type": "text-delta",
+    "id": "text-msg_golden_A_1",
+    "text": "Hi"
+  },
+  {
+    "type": "text-delta",
+    "id": "text-msg_golden_A_1",
+    "text": " there!"
+  },
+  {
+    "type": "text-end",
+    "id": "text-msg_golden_A_1"
+  },
+  {
+    "type": "finish-step",
+    "finishReason": "stop",
+    "rawFinishReason": "completed",
+    "usage": {
+      "inputTokens": 25,
+      "inputTokenDetails": {
+        "noCacheTokens": 15,
+        "cacheReadTokens": 10
+      },
+      "outputTokens": 5,
+      "outputTokenDetails": {
+        "textTokens": 5,
+        "reasoningTokens": 0
+      },
+      "totalTokens": 30,
+      "raw": {
+        "input_tokens": 25,
+        "output_tokens": 5,
+        "total_tokens": 30,
+        "input_tokens_details": {
+          "cached_tokens": 10
+        },
+        "output_tokens_details": {
+          "reasoning_tokens": 0
+        }
+      },
+      "reasoningTokens": 0,
+      "cachedInputTokens": 10
+    },
+    "response": {
+      "id": "resp_golden_A_1",
+      "timestamp": "2026-10-10T00:00:00.000Z",
+      "modelId": "test-model",
+      "headers": {
+        "cache-control": "no-cache",
+        "connection": "keep-alive",
+        "content-type": "text/event-stream; charset=utf-8",
+        "keep-alive": "timeout=5",
+        "transfer-encoding": "chunked"
+      }
+    }
+  },
+  {
+    "type": "finish",
+    "finishReason": "stop",
+    "rawFinishReason": "completed",
+    "totalUsage": {
+      "inputTokens": 25,
+      "inputTokenDetails": {
+        "noCacheTokens": 15,
+        "cacheReadTokens": 10
+      },
+      "outputTokens": 5,
+      "outputTokenDetails": {
+        "textTokens": 5,
+        "reasoningTokens": 0
+      },
+      "totalTokens": 30,
+      "reasoningTokens": 0,
+      "cachedInputTokens": 10
+    }
+  }
+]

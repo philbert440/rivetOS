@@ -1,0 +1,50 @@
+[
+  {
+    "index": 1,
+    "method": "GET",
+    "target": "/api/tags",
+    "path": "/api/tags",
+    "query": [],
+    "headers": [
+      [
+        "host",
+        "127.0.0.1:47816"
+      ],
+      [
+        "connection",
+        "keep-alive"
+      ],
+      [
+        "accept",
+        "*/*"
+      ],
+      [
+        "accept-language",
+        "*"
+      ],
+      [
+        "sec-fetch-mode",
+        "cors"
+      ],
+      [
+        "user-agent",
+        "node"
+      ],
+      [
+        "accept-encoding",
+        "gzip, deflate"
+      ]
+    ],
+    "body": "",
+    "served": {
+      "status": 200,
+      "headers": [
+        [
+          "Content-Type",
+          "application/json"
+        ]
+      ],
+      "bodyFile": "response-1.txt"
+    }
+  }
+]

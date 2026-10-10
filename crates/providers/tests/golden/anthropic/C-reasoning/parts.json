@@ -1,0 +1,224 @@
+[
+  {
+    "type": "start"
+  },
+  {
+    "type": "start-step",
+    "request": {
+      "body": {
+        "model": "test-model",
+        "max_tokens": 54096,
+        "thinking": {
+          "type": "enabled",
+          "budget_tokens": 50000
+        },
+        "cache_control": {
+          "type": "ephemeral"
+        },
+        "system": [
+          {
+            "type": "text",
+            "text": "You are a test."
+          }
+        ],
+        "messages": [
+          {
+            "role": "user",
+            "content": [
+              {
+                "type": "text",
+                "text": "Say hi."
+              }
+            ]
+          }
+        ],
+        "tools": [
+          {
+            "name": "echo",
+            "description": "Echo the arguments back as JSON.",
+            "input_schema": {
+              "type": "object",
+              "properties": {
+                "text": {
+                  "type": "string",
+                  "description": "Text to echo back."
+                },
+                "n": {
+                  "type": "number",
+                  "description": "A number to echo back."
+                }
+              },
+              "required": [
+                "text"
+              ]
+            },
+            "eager_input_streaming": true
+          },
+          {
+            "name": "compact_context",
+            "description": "Summarize and compact conversation history to free context window space. Provide ranges of messages to replace with summaries. Message indices are 0-based positions in the conversation history (index 0 = first user or assistant message; system messages are excluded from indexing).",
+            "input_schema": {
+              "type": "object",
+              "properties": {
+                "replacements": {
+                  "type": "array",
+                  "description": "Message ranges to replace with summaries",
+                  "items": {
+                    "type": "object",
+                    "properties": {
+                      "start_index": {
+                        "type": "number",
+                        "description": "Start index in conversation history (0-based, inclusive)"
+                      },
+                      "end_index": {
+                        "type": "number",
+                        "description": "End index in conversation history (0-based, inclusive)"
+                      },
+                      "summary": {
+                        "type": "string",
+                        "description": "Brief summary replacing these messages. Include key decisions, outcomes, and any information still relevant."
+                      }
+                    },
+                    "required": [
+                      "start_index",
+                      "end_index",
+                      "summary"
+                    ]
+                  }
+                }
+              },
+              "required": [
+                "replacements"
+              ]
+            },
+            "eager_input_streaming": true
+          }
+        ],
+        "tool_choice": {
+          "type": "auto"
+        },
+        "stream": true
+      }
+    },
+    "warnings": [
+      {
+        "type": "compatibility",
+        "feature": "maxOutputTokens",
+        "details": "The model \"test-model\" is unknown. The max output tokens have been limited to 4096. Set maxOutputTokens explicitly to override this limit."
+      }
+    ]
+  },
+  {
+    "type": "reasoning-start",
+    "id": "0"
+  },
+  {
+    "type": "reasoning-delta",
+    "id": "0",
+    "text": "The user wants a greeting."
+  },
+  {
+    "type": "reasoning-delta",
+    "id": "0",
+    "text": " Keep it short."
+  },
+  {
+    "type": "reasoning-delta",
+    "id": "0",
+    "text": "",
+    "providerMetadata": {
+      "anthropic": {
+        "signature": "golden-thinking-signature-C1"
+      }
+    }
+  },
+  {
+    "type": "reasoning-end",
+    "id": "0"
+  },
+  {
+    "type": "text-start",
+    "id": "1"
+  },
+  {
+    "type": "text-delta",
+    "id": "1",
+    "text": "Hi"
+  },
+  {
+    "type": "text-delta",
+    "id": "1",
+    "text": "!"
+  },
+  {
+    "type": "text-end",
+    "id": "1"
+  },
+  {
+    "type": "finish-step",
+    "finishReason": "stop",
+    "rawFinishReason": "end_turn",
+    "usage": {
+      "inputTokens": 25,
+      "inputTokenDetails": {
+        "noCacheTokens": 25,
+        "cacheReadTokens": 0,
+        "cacheWriteTokens": 0
+      },
+      "outputTokens": 30,
+      "outputTokenDetails": {},
+      "totalTokens": 55,
+      "raw": {
+        "input_tokens": 25,
+        "cache_creation_input_tokens": 0,
+        "cache_read_input_tokens": 0,
+        "output_tokens": 30
+      },
+      "cachedInputTokens": 0
+    },
+    "providerMetadata": {
+      "anthropic": {
+        "usage": {
+          "input_tokens": 25,
+          "cache_creation_input_tokens": 0,
+          "cache_read_input_tokens": 0,
+          "output_tokens": 30
+        },
+        "cacheCreationInputTokens": 0,
+        "stopSequence": null,
+        "iterations": null,
+        "container": null,
+        "contextManagement": null
+      }
+    },
+    "response": {
+      "id": "msg_golden_C_1",
+      "timestamp": "<generated-timestamp>",
+      "modelId": "test-model",
+      "headers": {
+        "cache-control": "no-cache",
+        "connection": "keep-alive",
+        "content-type": "text/event-stream; charset=utf-8",
+        "keep-alive": "timeout=5",
+        "transfer-encoding": "chunked"
+      }
+    }
+  },
+  {
+    "type": "finish",
+    "finishReason": "stop",
+    "rawFinishReason": "end_turn",
+    "totalUsage": {
+      "inputTokens": 25,
+      "inputTokenDetails": {
+        "noCacheTokens": 25,
+        "cacheReadTokens": 0,
+        "cacheWriteTokens": 0
+      },
+      "outputTokens": 30,
+      "outputTokenDetails": {},
+      "totalTokens": 55,
+      "cachedInputTokens": 0
+    }
+  }
+]

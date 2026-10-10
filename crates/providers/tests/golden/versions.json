@@ -1,0 +1,105 @@
+{
+  "generatedBy": "provider-goldens.mjs",
+  "node": "v22.22.2",
+  "commit": "c72e851fcce336be1bac4d7357323c4f751f7f06",
+  "core": {
+    "ai": {
+      "version": "6.0.241",
+      "path": "node_modules/ai"
+    },
+    "@ai-sdk/provider-utils": {
+      "version": "4.0.41",
+      "path": "node_modules/@ai-sdk/provider-utils"
+    },
+    "@ai-sdk/provider": {
+      "version": "3.0.14",
+      "path": "node_modules/@ai-sdk/provider"
+    }
+  },
+  "providers": {
+    "anthropic": {
+      "@ai-sdk/anthropic": {
+        "version": "3.0.105",
+        "path": "node_modules/@ai-sdk/anthropic"
+      },
+      "@ai-sdk/provider-utils (as resolved by the SDK package)": {
+        "version": "4.0.41",
+        "path": "node_modules/@ai-sdk/provider-utils"
+      },
+      "@ai-sdk/provider (as resolved by the SDK package)": {
+        "version": "3.0.14",
+        "path": "node_modules/@ai-sdk/provider"
+      }
+    },
+    "xai": {
+      "@ai-sdk/xai": {
+        "version": "3.0.114",
+        "path": "node_modules/@ai-sdk/xai"
+      },
+      "@ai-sdk/provider-utils (as resolved by the SDK package)": {
+        "version": "4.0.41",
+        "path": "node_modules/@ai-sdk/provider-utils"
+      },
+      "@ai-sdk/provider (as resolved by the SDK package)": {
+        "version": "3.0.14",
+        "path": "node_modules/@ai-sdk/provider"
+      }
+    },
+    "google": {
+      "@ai-sdk/google": {
+        "version": "3.0.103",
+        "path": "node_modules/@ai-sdk/google"
+      },
+      "@ai-sdk/provider-utils (as resolved by the SDK package)": {
+        "version": "4.0.41",
+        "path": "node_modules/@ai-sdk/provider-utils"
+      },
+      "@ai-sdk/provider (as resolved by the SDK package)": {
+        "version": "3.0.14",
+        "path": "node_modules/@ai-sdk/provider"
+      }
+    },
+    "vllm": {
+      "@ai-sdk/openai-compatible": {
+        "version": "2.0.63",
+        "path": "node_modules/@ai-sdk/openai-compatible"
+      },
+      "@ai-sdk/provider-utils (as resolved by the SDK package)": {
+        "version": "4.0.41",
+        "path": "node_modules/@ai-sdk/provider-utils"
+      },
+      "@ai-sdk/provider (as resolved by the SDK package)": {
+        "version": "3.0.14",
+        "path": "node_modules/@ai-sdk/provider"
+      }
+    },
+    "llama-server": {
+      "@ai-sdk/openai-compatible": {
+        "version": "2.0.63",
+        "path": "node_modules/@ai-sdk/openai-compatible"
+      },
+      "@ai-sdk/provider-utils (as resolved by the SDK package)": {
+        "version": "4.0.41",
+        "path": "node_modules/@ai-sdk/provider-utils"
+      },
+      "@ai-sdk/provider (as resolved by the SDK package)": {
+        "version": "3.0.14",
+        "path": "node_modules/@ai-sdk/provider"
+      }
+    },
+    "ollama": {
+      "ollama-ai-provider-v2": {
+        "version": "3.6.0",
+        "path": "node_modules/ollama-ai-provider-v2"
+      },
+      "@ai-sdk/provider-utils (as resolved by the SDK package)": {
+        "version": "4.0.41",
+        "path": "node_modules/@ai-sdk/provider-utils"
+      },
+      "@ai-sdk/provider (as resolved by the SDK package)": {
+        "version": "3.0.14",
+        "path": "node_modules/@ai-sdk/provider"
+      }
+    }
+  }
+}

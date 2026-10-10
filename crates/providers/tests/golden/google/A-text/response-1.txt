@@ -1,0 +1,4 @@
+data: {"candidates":[{"content":{"parts":[{"text":"Hi"}],"role":"model"},"index":0}],"usageMetadata":{"promptTokenCount":25,"totalTokenCount":25,"promptTokensDetails":[{"modality":"TEXT","tokenCount":25}]},"modelVersion":"test-model","responseId":"golden-google-A-1"}
+
+data: {"candidates":[{"content":{"parts":[{"text":" there!"}],"role":"model"},"finishReason":"STOP","index":0}],"usageMetadata":{"promptTokenCount":25,"candidatesTokenCount":5,"totalTokenCount":30,"cachedContentTokenCount":10,"promptTokensDetails":[{"modality":"TEXT","tokenCount":25}],"cacheTokensDetails":[{"modality":"TEXT","tokenCount":10}],"candidatesTokensDetails":[{"modality":"TEXT","tokenCount":5}]},"modelVersion":"test-model","responseId":"golden-google-A-1"}
+

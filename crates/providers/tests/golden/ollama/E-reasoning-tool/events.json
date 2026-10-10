@@ -1,0 +1,32 @@
+[
+  {
+    "type": "reasoning",
+    "content": "I should call the echo tool."
+  },
+  {
+    "type": "tool_start",
+    "content": "🔧 echo",
+    "metadata": {
+      "tool": "echo",
+      "args": {
+        "text": "hi",
+        "n": 1
+      }
+    }
+  },
+  {
+    "type": "tool_result",
+    "content": "✅ echo: {\"text\":\"hi\",\"n\":1}",
+    "metadata": {
+      "tool": "echo"
+    }
+  },
+  {
+    "type": "text",
+    "content": "The echo tool returned "
+  },
+  {
+    "type": "text",
+    "content": "hi."
+  }
+]

@@ -1,0 +1,194 @@
+[
+  {
+    "type": "start"
+  },
+  {
+    "type": "start-step",
+    "request": {
+      "body": {
+        "model": "test-model",
+        "max_tokens": 4096,
+        "temperature": 0.7,
+        "top_p": 0.95,
+        "messages": [
+          {
+            "role": "system",
+            "content": "You are a test."
+          },
+          {
+            "role": "user",
+            "content": "Say hi."
+          }
+        ],
+        "tools": [
+          {
+            "type": "function",
+            "function": {
+              "name": "echo",
+              "description": "Echo the arguments back as JSON.",
+              "parameters": {
+                "type": "object",
+                "properties": {
+                  "text": {
+                    "type": "string",
+                    "description": "Text to echo back."
+                  },
+                  "n": {
+                    "type": "number",
+                    "description": "A number to echo back."
+                  }
+                },
+                "required": [
+                  "text"
+                ]
+              }
+            }
+          },
+          {
+            "type": "function",
+            "function": {
+              "name": "compact_context",
+              "description": "Summarize and compact conversation history to free context window space. Provide ranges of messages to replace with summaries. Message indices are 0-based positions in the conversation history (index 0 = first user or assistant message; system messages are excluded from indexing).",
+              "parameters": {
+                "type": "object",
+                "properties": {
+                  "replacements": {
+                    "type": "array",
+                    "description": "Message ranges to replace with summaries",
+                    "items": {
+                      "type": "object",
+                      "properties": {
+                        "start_index": {
+                          "type": "number",
+                          "description": "Start index in conversation history (0-based, inclusive)"
+                        },
+                        "end_index": {
+                          "type": "number",
+                          "description": "End index in conversation history (0-based, inclusive)"
+                        },
+                        "summary": {
+                          "type": "string",
+                          "description": "Brief summary replacing these messages. Include key decisions, outcomes, and any information still relevant."
+                        }
+                      },
+                      "required": [
+                        "start_index",
+                        "end_index",
+                        "summary"
+                      ]
+                    }
+                  }
+                },
+                "required": [
+                  "replacements"
+                ]
+              }
+            }
+          }
+        ],
+        "tool_choice": "auto",
+        "stream": true,
+        "stream_options": {
+          "include_usage": true
+        }
+      }
+    },
+    "warnings": []
+  },
+  {
+    "type": "reasoning-start",
+    "id": "reasoning-0"
+  },
+  {
+    "type": "reasoning-delta",
+    "id": "reasoning-0",
+    "text": "The user wants a greeting."
+  },
+  {
+    "type": "reasoning-delta",
+    "id": "reasoning-0",
+    "text": " Keep it short."
+  },
+  {
+    "type": "reasoning-end",
+    "id": "reasoning-0"
+  },
+  {
+    "type": "text-start",
+    "id": "txt-0"
+  },
+  {
+    "type": "text-delta",
+    "id": "txt-0",
+    "text": "Hi"
+  },
+  {
+    "type": "text-delta",
+    "id": "txt-0",
+    "text": "!"
+  },
+  {
+    "type": "text-end",
+    "id": "txt-0"
+  },
+  {
+    "type": "finish-step",
+    "finishReason": "stop",
+    "rawFinishReason": "stop",
+    "usage": {
+      "inputTokens": 25,
+      "inputTokenDetails": {
+        "noCacheTokens": 25,
+        "cacheReadTokens": 0
+      },
+      "outputTokens": 30,
+      "outputTokenDetails": {
+        "textTokens": 30,
+        "reasoningTokens": 0
+      },
+      "totalTokens": 55,
+      "raw": {
+        "prompt_tokens": 25,
+        "completion_tokens": 30,
+        "total_tokens": 55
+      },
+      "reasoningTokens": 0,
+      "cachedInputTokens": 0
+    },
+    "providerMetadata": {
+      "llama-server": {}
+    },
+    "response": {
+      "id": "chatcmpl-golden-llama-C-1",
+      "timestamp": "2026-10-10T00:00:00.000Z",
+      "modelId": "test-model",
+      "headers": {
+        "cache-control": "no-cache",
+        "connection": "keep-alive",
+        "content-type": "text/event-stream; charset=utf-8",
+        "keep-alive": "timeout=5",
+        "transfer-encoding": "chunked"
+      }
+    }
+  },
+  {
+    "type": "finish",
+    "finishReason": "stop",
+    "rawFinishReason": "stop",
+    "totalUsage": {
+      "inputTokens": 25,
+      "inputTokenDetails": {
+        "noCacheTokens": 25,
+        "cacheReadTokens": 0
+      },
+      "outputTokens": 30,
+      "outputTokenDetails": {
+        "textTokens": 30,
+        "reasoningTokens": 0
+      },
+      "totalTokens": 55,
+      "reasoningTokens": 0,
+      "cachedInputTokens": 0
+    }
+  }
+]

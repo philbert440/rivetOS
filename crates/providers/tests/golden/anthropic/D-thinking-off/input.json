@@ -1,0 +1,54 @@
+{
+  "provider": "anthropic",
+  "scenario": "D-thinking-off",
+  "description": "Same canned bytes as A-text with default_thinking off (request-shape delta only).",
+  "instantiation": "manifest.register(ctx) with the config slice; the manifest does not read base_url (not a known anthropic key), so the harness then sets provider.baseUrl (the AnthropicProvider constructor option, read at request time).",
+  "pluginConfig": {
+    "model": "test-model",
+    "api_key": "<redacted>"
+  },
+  "baseUrlOverride": "http://127.0.0.1:47811",
+  "registrationLog": [],
+  "agent": {
+    "id": "test-agent",
+    "provider": "anthropic",
+    "default_thinking": "off"
+  },
+  "loop": {
+    "systemPrompt": "You are a test.",
+    "thinking": "off",
+    "modelOverride": null,
+    "agentId": "test-agent",
+    "sessionId": "test-session",
+    "userId": null,
+    "hooks": "new HookPipelineImpl() (no hooks registered)",
+    "maxSteps": "default (stepCountIs(50))",
+    "turnTimeout": "default (1800000 ms)",
+    "contextWindow": 0
+  },
+  "userMessage": "Say hi.",
+  "history": [],
+  "tools": [
+    {
+      "name": "echo",
+      "description": "Echo the arguments back as JSON.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "text": {
+            "type": "string",
+            "description": "Text to echo back."
+          },
+          "n": {
+            "type": "number",
+            "description": "A number to echo back."
+          }
+        },
+        "required": [
+          "text"
+        ]
+      }
+    }
+  ],
+  "fakeServer": "http://127.0.0.1:47811"
+}

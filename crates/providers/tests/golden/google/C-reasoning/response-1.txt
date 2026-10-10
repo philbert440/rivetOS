@@ -1,0 +1,8 @@
+data: {"candidates":[{"content":{"parts":[{"text":"The user wants a greeting.","thought":true}],"role":"model"},"index":0}],"usageMetadata":{"promptTokenCount":25,"totalTokenCount":25,"promptTokensDetails":[{"modality":"TEXT","tokenCount":25}]},"modelVersion":"test-model","responseId":"golden-google-C-1"}
+
+data: {"candidates":[{"content":{"parts":[{"text":" Keep it short.","thought":true}],"role":"model"},"index":0}],"usageMetadata":{"promptTokenCount":25,"totalTokenCount":25,"promptTokensDetails":[{"modality":"TEXT","tokenCount":25}]},"modelVersion":"test-model","responseId":"golden-google-C-1"}
+
+data: {"candidates":[{"content":{"parts":[{"text":"Hi","thoughtSignature":"Z29sZGVuLXRob3VnaHQtc2lnbmF0dXJlLUMx"}],"role":"model"},"index":0}],"usageMetadata":{"promptTokenCount":25,"totalTokenCount":25,"promptTokensDetails":[{"modality":"TEXT","tokenCount":25}]},"modelVersion":"test-model","responseId":"golden-google-C-1"}
+
+data: {"candidates":[{"content":{"parts":[{"text":"!"}],"role":"model"},"finishReason":"STOP","index":0}],"usageMetadata":{"promptTokenCount":25,"candidatesTokenCount":8,"totalTokenCount":55,"promptTokensDetails":[{"modality":"TEXT","tokenCount":25}],"candidatesTokensDetails":[{"modality":"TEXT","tokenCount":8}],"thoughtsTokenCount":22},"modelVersion":"test-model","responseId":"golden-google-C-1"}
+
