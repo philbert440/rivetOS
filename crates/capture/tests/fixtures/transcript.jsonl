@@ -1,0 +1,4 @@
+{"type":"user","sessionId":"sess-1","uuid":"u1","timestamp":"2026-09-01T00:00:00.000Z","message":{"role":"user","content":"hello"}}
+{"type":"assistant","sessionId":"sess-1","uuid":"a1","timestamp":"2026-09-01T00:00:01.000Z","message":{"role":"assistant","content":[{"type":"text","text":"hi"},{"type":"tool_use","id":"toolu_1","name":"Bash","input":{"command":"ls"}}]}}
+{"type":"user","sessionId":"sess-1","uuid":"u2","timestamp":"2026-09-01T00:00:02.000Z","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"toolu_1","content":"ok"}]}}
+{"type":"assistant","sessionId":"sess-1","timestamp":"2026-09-01T00:00:03.000Z","message":{"role":"assistant","content":"no uuid"}}

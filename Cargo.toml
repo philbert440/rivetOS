@@ -1,6 +1,6 @@
 [workspace]
 resolver = "3"
-members = ["crates/protocol", "crates/config"]
+members = ["crates/protocol", "crates/config", "crates/capture", "crates/rivetos"]
 
 [workspace.package]
 edition = "2024"
@@ -13,6 +13,17 @@ serde = { version = "1", features = ["derive"] }
 serde_json = { version = "1", features = ["preserve_order", "raw_value", "float_roundtrip"] }
 serde_saphyr = { package = "serde-saphyr", version = "0.0.16" }
 thiserror = "2"
+regex = "1"
+anyhow = "1"
+clap = { version = "4", features = ["derive"] }
+hex = "0.4"
+reqwest = { version = "0.13", default-features = false, features = ["json", "rustls"] }
+sha2 = "0.10"
+tempfile = "3"
+tokio = { version = "1", features = ["fs", "io-util", "macros", "net", "rt-multi-thread", "sync", "time"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
+uuid = { version = "1", features = ["v4"] }
 
 [workspace.lints.rust]
 unsafe_code = "deny"
