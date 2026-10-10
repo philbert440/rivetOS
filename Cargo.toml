@@ -1,0 +1,21 @@
+[workspace]
+resolver = "3"
+members = ["crates/protocol", "crates/config"]
+
+[workspace.package]
+edition = "2024"
+license = "Apache-2.0"
+publish = false
+version = "0.1.0"
+
+[workspace.dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = { version = "1", features = ["preserve_order"] }
+serde_saphyr = { package = "serde-saphyr", version = "0.0.16" }
+thiserror = "2"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
+regex = "1"
+
+[workspace.lints.rust]
+unsafe_code = "deny"

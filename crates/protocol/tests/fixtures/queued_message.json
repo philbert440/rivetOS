@@ -1,0 +1,12 @@
+{
+  "message": {
+    "id": "m1",
+    "userId": "u1",
+    "channelId": "c1",
+    "chatType": "direct",
+    "text": "hello",
+    "platform": "agent",
+    "timestamp": 1710000000
+  },
+  "receivedAt": 1710000000123
+}

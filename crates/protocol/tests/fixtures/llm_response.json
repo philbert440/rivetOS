@@ -1,0 +1,13 @@
+{
+  "type": "tool_calls",
+  "content": "calling",
+  "toolCalls": [
+    {
+      "id": "call_1",
+      "name": "search",
+      "arguments": { "q": "rivet" },
+      "thoughtSignature": "sig-gemini"
+    }
+  ],
+  "usage": { "promptTokens": 1, "completionTokens": 2 }
+}
