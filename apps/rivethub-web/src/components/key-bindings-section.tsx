@@ -41,7 +41,7 @@ function BindingRow(props: {
         {combos.map((c) => (
           <span
             key={formatCombo(c)}
-            className="inline-flex items-center gap-1 rounded border border-line bg-panel-2 px-2 py-0.5 font-mono text-xs text-em"
+            className="inline-flex items-center gap-1 rounded border border-line bg-panel-2 px-2 py-0.5 text-xs text-em"
           >
             {formatCombo(c)}
             <button
@@ -60,17 +60,14 @@ function BindingRow(props: {
           </span>
         ))}
         {props.recording ? (
-          <span
-            data-recording=""
-            className="rounded border border-em px-2 py-0.5 font-mono text-xs text-em"
-          >
+          <span data-recording="" className="rounded border border-em px-2 py-0.5 text-xs text-em">
             Press keys… (Esc cancels)
           </span>
         ) : (
           <button
             type="button"
             aria-label={`Add a shortcut for ${props.entry.name}`}
-            className="rounded border border-dashed border-line px-2 py-0.5 font-mono text-xs text-ink-dim hover:border-em hover:text-em"
+            className="rounded-pill border border-dashed border-line px-2 py-0.5 text-xs text-ink-dim hover:bg-ink/6 hover:text-em classic:hover:bg-transparent classic:hover:border-em"
             onClick={props.onRecord}
           >
             +
@@ -133,7 +130,7 @@ export function KeyBindingsSection(): JSX.Element {
   const changedCount = Object.keys(overrides).length
   const group = (title: string, entries: readonly Entry[]): JSX.Element => (
     <div className="mt-4">
-      <h3 className="mb-1 font-mono text-xs font-semibold text-ink-dim">{title}</h3>
+      <h3 className="mb-1 text-xs font-semibold text-ink-dim">{title}</h3>
       <ul className="divide-y divide-line">
         {entries.map((entry) => (
           <BindingRow
@@ -174,7 +171,7 @@ export function KeyBindingsSection(): JSX.Element {
         {changedCount > 0 ? (
           <button
             type="button"
-            className="mt-4 rounded border border-line bg-panel-2 px-3 py-1.5 text-xs hover:border-em"
+            className="mt-4 rounded-pill border border-line bg-panel-2 px-3 py-1.5 text-xs hover:bg-ink/6 classic:hover:border-em"
             onClick={() => {
               setRecordingId(null)
               resetAll()
