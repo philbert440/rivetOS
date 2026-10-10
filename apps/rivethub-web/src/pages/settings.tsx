@@ -311,7 +311,7 @@ function GatewaySection(): JSX.Element {
         placeholder="https://node-host:5174"
         className="mb-2 w-full rounded border border-line bg-panel px-3 py-2 font-mono text-sm outline-none focus:border-em"
       />
-      <p className="mb-6 text-xs text-ink-dim">
+      <p className="mb-6 pl-4 text-xs text-ink-dim">
         Auth is a Rivet CA <span className="font-mono">device:</span> client certificate installed
         on this browser/OS (see <span className="font-mono">docs/GATEWAY-MTLS.md</span>). Bearer
         tokens are no longer used.
@@ -389,7 +389,7 @@ function AppearanceSection(): JSX.Element {
       </div>
       {themePreference === 'omarchy' &&
         (liveOmarchy ? (
-          <p className="mt-3 text-xs text-ink-dim">
+          <p className="mt-3 pl-4 text-xs text-ink-dim">
             Following your Omarchy theme{omarchy.name ? ` — ${omarchy.name}` : ''}. Switch themes in
             Omarchy and RivetHub restyles right away.
           </p>
@@ -407,7 +407,7 @@ function AppearanceSection(): JSX.Element {
             />
           </div>
         ))}
-      <p className="mt-2 text-xs text-ink-dim">
+      <p className="mt-2 pl-4 text-xs text-ink-dim">
         System follows the OS light/dark setting. Omarchy follows your live Omarchy theme on the
         desktop app, or a built-in Omarchy palette anywhere else. With no choice made, RivetHub
         follows Omarchy whenever it finds it.
@@ -538,7 +538,7 @@ function ConversationsSection(): JSX.Element {
           ))}
         </div>
       </div>
-      <p className="mt-2 text-xs text-ink-dim">
+      <p className="mt-2 pl-4 text-xs text-ink-dim">
         Where a conversation opens: new ones, and older ones you have not switched. Switching
         between Terminal and Chat inside a conversation is remembered for that conversation.
         Sessions that only run in a terminal always open there.
@@ -575,7 +575,7 @@ function ToggleRow(props: {
           disabled={props.disabled}
         />
       </div>
-      {props.hint ? <p className="mt-1 text-xs text-ink-dim">{props.hint}</p> : null}
+      {props.hint ? <p className="mt-1 pl-4 text-xs text-ink-dim">{props.hint}</p> : null}
     </div>
   )
 }
@@ -632,7 +632,7 @@ function NewConversationSection(): JSX.Element {
           onChange={(value) => setNewChat({ effort: (value || undefined) as ThinkingLevel })}
         />
       </div>
-      <p className="mt-2 text-xs text-ink-dim">
+      <p className="mt-2 pl-4 text-xs text-ink-dim">
         Used by + new and Ctrl+T. An agent picked in the sidebar, or a canvas space with its own
         defaults, takes precedence.
         {missing ? ' The saved agent is not on any connected node, so new chats start plain.' : ''}
