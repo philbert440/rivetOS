@@ -19,7 +19,7 @@ import {
   type ReactNode,
 } from 'react'
 import * as Dialog from '@radix-ui/react-dialog'
-import { Keyboard } from 'lucide-react'
+import { Keyboard, Pencil } from 'lucide-react'
 import { useQueryClient } from '@tanstack/react-query'
 import type { HarnessDescriptor } from '@rivetos/types'
 import type { ChatItem } from '../../lib/harness-chat.js'
@@ -42,6 +42,7 @@ import { useConnection } from '../../stores/connection.js'
 import { useSidebarPrefs } from '../../stores/sidebar-prefs.js'
 import { useSpaces } from '../../stores/spaces.js'
 import { ConversationEmpty } from '../conversation-empty.js'
+import { RenameInput, useSessionTitle } from '../session-rename.js'
 import { isRowArchived, rowMembershipKey } from '../drawer-item.js'
 import { Popover, PopoverContent, PopoverTrigger } from '../ui/popover.js'
 import {
@@ -1511,13 +1512,7 @@ export function SpacesCanvas(props: {
           {crumbThread ? (
             <>
               <span aria-hidden="true">›</span>
-              <button
-                type="button"
-                className="truncate px-2 py-1 text-ink hover:text-ink"
-                onClick={() => beginThread(crumbThread.key)}
-              >
-                {crumbThread.title}
-              </button>
+              <ThreadCrumb item={crumbThread} onOpen={() => beginThread(crumbThread.key)} />
             </>
           ) : null}
         </nav>
@@ -1999,5 +1994,44 @@ function RemoveDialog(props: {
         </Dialog.Content>
       </Dialog.Portal>
     </Dialog.Root>
+  )
+}
+
+/** Breadcrumb's thread: click opens it; the pencil or a double-click renames. */
+function ThreadCrumb(props: { item: ChatItem; onOpen: () => void }): JSX.Element {
+  const { title, nameKey } = useSessionTitle(props.item)
+  const [renaming, setRenaming] = useState(false)
+  if (renaming) {
+    return (
+      <RenameInput
+        nameKey={nameKey}
+        initial={title}
+        onDone={() => setRenaming(false)}
+        className="w-64 min-w-0 border border-em bg-panel-2 px-2 py-0.5 text-sm text-ink outline-none"
+      />
+    )
+  }
+  return (
+    <span className="flex min-w-0 items-center">
+      <button
+        type="button"
+        data-crumb-thread=""
+        className="truncate px-2 py-1 text-ink hover:text-ink"
+        title="Double-click to rename"
+        onClick={props.onOpen}
+        onDoubleClick={() => setRenaming(true)}
+      >
+        {title}
+      </button>
+      <button
+        type="button"
+        aria-label={`Rename ${title}`}
+        title="Rename"
+        className="shrink-0 px-1 py-1 text-ink-dim hover:text-em"
+        onClick={() => setRenaming(true)}
+      >
+        <Pencil aria-hidden="true" className="size-3.5" />
+      </button>
+    </span>
   )
 }
