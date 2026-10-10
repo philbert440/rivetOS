@@ -1,6 +1,6 @@
 [workspace]
 resolver = "3"
-members = ["crates/protocol", "crates/config"]
+members = ["crates/protocol", "crates/config", "crates/capture", "crates/rivetos"]
 
 [workspace.package]
 edition = "2024"
@@ -51,7 +51,7 @@ sha2 = "0.10"
 signature = { version = "3", features = ["alloc"] }
 sqlx = { version = "0.9", default-features = false, features = ["runtime-tokio", "tls-rustls", "postgres", "uuid", "chrono", "json"] }
 thiserror = "2"
-tokio = "1.47.1"
+tokio = { version = "1", features = ["fs", "io-util", "macros", "net", "rt-multi-thread", "sync", "time"] }
 tokio-rustls = "0.26"
 tokio-util = "0.7.16"
 tower = "0.5"
@@ -62,6 +62,14 @@ uuid = { version = "1", features = ["v4"] }
 x509-cert = { version = "0.3.0", features = ["builder", "pem", "std"] }
 x509-parser = "0.18.1"
 zstd = "0.13"
+regex = "1"
+anyhow = "1"
+clap = { version = "4", features = ["derive"] }
+hex = "0.4"
+reqwest = { version = "0.13", default-features = false, features = ["json", "rustls"] }
+sha2 = "0.10"
+tempfile = "3"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
 
 [workspace.lints.rust]
 unsafe_code = "deny"

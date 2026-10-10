@@ -1,0 +1,36 @@
+[package]
+name = "rivetos"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[lib]
+name = "rivetos"
+path = "src/lib.rs"
+
+[[bin]]
+name = "rivetos"
+path = "src/main.rs"
+
+[dependencies]
+anyhow.workspace = true
+capture = { path = "../capture" }
+clap.workspace = true
+hex.workspace = true
+protocol = { path = "../protocol" }
+regex.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+sha2.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+
+[dev-dependencies]
+serde_json.workspace = true
+tempfile.workspace = true
+tokio = { workspace = true, features = ["test-util"] }
+
+[lints]
+workspace = true
