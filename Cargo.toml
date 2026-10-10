@@ -2,6 +2,7 @@
 resolver = "3"
 members = ["crates/protocol", "crates/config", "crates/capture", "crates/rivetos"]
 members = ["crates/protocol", "crates/config", "crates/providers"]
+members = ["crates/protocol", "crates/config", "crates/agents"]
 
 [workspace.package]
 edition = "2024"

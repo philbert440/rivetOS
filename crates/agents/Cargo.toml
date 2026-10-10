@@ -1,0 +1,25 @@
+[package]
+name = "agents"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+chrono = { version = "0.4", default-features = false, features = ["std"] }
+protocol = { path = "../protocol" }
+serde.workspace = true
+serde_json.workspace = true
+sqlx = { version = "0.8", default-features = false, features = ["chrono", "postgres", "runtime-tokio"] }
+thiserror.workspace = true
+tokio = { version = "1", features = ["fs", "io-util", "macros", "rt-multi-thread", "sync", "time"] }
+tracing = "0.1"
+uuid = { version = "1", features = ["v4"] }
+
+[dev-dependencies]
+chrono = { version = "0.4", default-features = false, features = ["std"] }
+sqlx = { version = "0.8", default-features = false, features = ["chrono", "postgres", "runtime-tokio"] }
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "sync", "time"] }
+
+[lints]
+workspace = true
