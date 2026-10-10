@@ -432,6 +432,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "wiki"
+version = "0.1.0"
+dependencies = [
+ "protocol",
+ "serde",
+ "serde-saphyr",
+ "serde_json",
+ "thiserror",
+]
+
+[[package]]
 name = "wit-bindgen"
 version = "0.57.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
