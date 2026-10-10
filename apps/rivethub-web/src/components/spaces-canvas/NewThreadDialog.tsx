@@ -175,7 +175,7 @@ export function NewThreadDialog(props: {
       <Dialog.Portal>
         <Dialog.Overlay className="fixed inset-0 z-50 bg-black/40 classic:bg-bg/70" />
         <Dialog.Content
-          className="fixed top-1/2 left-1/2 z-50 w-[28rem] max-w-[calc(100%-2rem)] -translate-x-1/2 -translate-y-1/2 border border-line bg-panel p-4 font-mono shadow-lg outline-none"
+          className="fixed top-1/2 left-1/2 z-50 w-[28rem] max-w-[calc(100%-2rem)] -translate-x-1/2 -translate-y-1/2 border border-line bg-panel p-4 shadow-pop outline-none material:rounded-3xl material:border-transparent material:bg-surface material:p-6"
           title={startsIn}
           onOpenAutoFocus={(event) => {
             event.preventDefault()
@@ -195,7 +195,7 @@ export function NewThreadDialog(props: {
               type="button"
               role="tab"
               aria-selected="true"
-              className="border border-em bg-em/15 px-3 py-1.5 text-xs text-em"
+              className="border border-em bg-em/15 px-3 py-1.5 text-xs text-em material:rounded-pill material:border-transparent material:bg-em-container material:text-on-em-container"
             >
               Prompt
             </button>
@@ -204,7 +204,7 @@ export function NewThreadDialog(props: {
               role="tab"
               aria-selected="false"
               disabled={!target}
-              className="border border-line px-3 py-1.5 text-xs text-ink-dim hover:border-em hover:text-em disabled:opacity-40"
+              className="border border-line px-3 py-1.5 text-xs text-ink-dim hover:bg-ink/6 hover:text-em disabled:opacity-40 classic:hover:bg-transparent classic:hover:border-em material:rounded-pill"
               onClick={() => {
                 if (target) props.onPickHistory(target)
               }}
@@ -269,7 +269,7 @@ export function NewThreadDialog(props: {
             }}
             rows={4}
             placeholder="What should it do?"
-            className="mb-3 w-full resize-none border border-line bg-bg px-2 py-1.5 text-sm text-ink outline-none placeholder:text-ink-dim"
+            className="mb-3 w-full resize-none border border-line bg-bg px-2 py-1.5 text-sm text-ink outline-none placeholder:text-ink-dim material:rounded-lg"
           />
           <div className="mb-4 flex flex-wrap items-center gap-1">
             <ModelPicker
@@ -284,7 +284,7 @@ export function NewThreadDialog(props: {
             <button
               type="button"
               onClick={props.onClose}
-              className="border border-line px-3 py-1.5 text-xs text-ink-dim hover:text-ink"
+              className="border border-line px-3 py-1.5 text-xs text-ink-dim hover:text-ink material:rounded-pill material:hover:bg-ink/6"
             >
               Cancel
             </button>
@@ -292,7 +292,7 @@ export function NewThreadDialog(props: {
               type="button"
               disabled={!canStart}
               onClick={start}
-              className="bg-em-dim px-3 py-1.5 text-xs font-medium text-bg hover:bg-em disabled:opacity-40"
+              className="bg-em px-3 py-1.5 text-xs font-medium text-on-em hover:bg-em-dim disabled:opacity-40 classic:bg-em-dim classic:hover:bg-em classic:text-bg"
             >
               Start
             </button>

@@ -262,7 +262,7 @@ export const ThreadMini = memo(function ThreadMini(props: {
     <div
       data-face="mini"
       data-remembered={remembered}
-      className="pointer-events-none absolute inset-0 flex min-h-0 flex-col overflow-hidden bg-panel"
+      className="pointer-events-none absolute inset-0 flex min-h-0 flex-col overflow-hidden bg-panel material:rounded-2xl"
       style={{ opacity: 'var(--live, 0)' }}
     >
       <Transcript

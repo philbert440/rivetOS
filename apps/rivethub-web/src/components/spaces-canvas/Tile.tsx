@@ -114,7 +114,7 @@ export const Tile = memo(function Tile(props: TileProps): JSX.Element {
       data-status={status}
       data-selected={props.selected ? 'true' : 'false'}
       role="gridcell"
-      className={`st-${status} group absolute flex min-h-0 flex-col border border-line bg-panel${
+      className={`st-${status} group absolute flex min-h-0 flex-col border border-line bg-panel material:rounded-2xl material:border-line/50${
         focused ? ' focus' : ''
       }`}
       style={{
@@ -149,7 +149,7 @@ export const Tile = memo(function Tile(props: TileProps): JSX.Element {
           pill for the name box in the same spot. Hidden at Thread. */}
       <div
         data-tile-label=""
-        className="pointer-events-none absolute bottom-full z-[2] flex max-w-[90%] items-center font-mono"
+        className="pointer-events-none absolute bottom-full z-[2] flex max-w-[90%] items-center"
         style={withVars(
           { '--ch': 'min(var(--inv, 1), 2.2)' },
           {
@@ -222,7 +222,7 @@ export const Tile = memo(function Tile(props: TileProps): JSX.Element {
         )}
       >
         <div
-          className="flex items-center font-mono text-ink"
+          className="flex items-center text-ink"
           style={{ fontSize: 'calc(24px * var(--cs, 1))', gap: '0.4em' }}
         >
           <span
@@ -266,7 +266,7 @@ export const Tile = memo(function Tile(props: TileProps): JSX.Element {
       {props.showThread ? (
         <div
           data-thread-live=""
-          className="absolute inset-0 z-[3] flex min-h-0 flex-col overflow-hidden bg-bg"
+          className="absolute inset-0 z-[3] flex min-h-0 flex-col overflow-hidden bg-bg material:rounded-2xl material:bg-surface"
         >
           {props.renderThread(id)}
         </div>

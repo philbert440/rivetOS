@@ -149,7 +149,7 @@ export function HistoryPanel(props: {
       data-history-panel=""
       aria-label={props.pick ? props.pick.title : 'History'}
       data-history-mode={props.pick ? 'pick' : 'browse'}
-      className="absolute inset-y-0 left-0 z-30 flex w-60 flex-col border border-line bg-panel font-mono"
+      className="absolute inset-y-0 left-0 z-30 flex w-60 flex-col border border-line bg-panel material:rounded-2xl material:border-line/40 material:shadow-pop"
       style={{
         outline: props.highlighted ? '2px solid var(--color-em)' : undefined,
       }}
@@ -162,7 +162,7 @@ export function HistoryPanel(props: {
           <button
             type="button"
             onClick={props.pick.onCancel}
-            className="border border-line px-2 py-1 text-xs text-ink-dim hover:border-em hover:text-em"
+            className="border border-line px-2 py-1 text-xs text-ink-dim hover:bg-ink/6 hover:text-em classic:hover:bg-transparent classic:hover:border-em material:rounded-pill"
           >
             Cancel
           </button>
@@ -170,7 +170,7 @@ export function HistoryPanel(props: {
           <button
             type="button"
             onClick={() => startNewConversation()}
-            className="border border-line px-2 py-1 text-xs text-ink-dim hover:border-em hover:text-em"
+            className="border border-line px-2 py-1 text-xs text-ink-dim hover:bg-ink/6 hover:text-em classic:hover:bg-transparent classic:hover:border-em material:rounded-pill"
           >
             + new
           </button>

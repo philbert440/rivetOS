@@ -1225,7 +1225,7 @@ export function SpacesCanvas(props: {
     <div
       ref={rootRef}
       data-altitude={altitude}
-      className="spaces-canvas relative h-full min-h-0 min-w-0 flex-1 overflow-hidden bg-bg font-mono text-ink"
+      className="spaces-canvas relative h-full min-h-0 min-w-0 flex-1 overflow-hidden bg-bg text-ink"
     >
       {altitude === 'space' && !paintMini
         ? framedRows.map((row) => <WarmLease key={row.key} item={row} descriptors={descriptors} />)
@@ -1287,7 +1287,7 @@ export function SpacesCanvas(props: {
                 role="presentation"
                 inert={hidden ? true : undefined}
                 aria-hidden={hidden ? true : undefined}
-                className={`sc-region absolute border border-line ${dashed ? 'border-dashed' : 'border-solid'}`}
+                className={`sc-region absolute border border-line material:rounded-3xl ${dashed ? 'border-dashed' : 'border-solid'}`}
                 style={{
                   left: region.rect.x,
                   top: region.rect.y,
@@ -1324,7 +1324,7 @@ export function SpacesCanvas(props: {
                     {chip ? (
                       <span
                         data-space-default=""
-                        className="border border-line px-1.5 text-ink-dim"
+                        className="border border-line px-1.5 text-ink-dim material:rounded-pill material:hover:bg-ink/6"
                       >
                         {chip.name}
                         {chip.directoryBase ? ` · ${chip.directoryBase}` : ''}
@@ -1407,7 +1407,7 @@ export function SpacesCanvas(props: {
                 data-empty-thread={empty ? '' : undefined}
                 inert={hidden ? true : undefined}
                 aria-hidden={hidden ? true : undefined}
-                className={`absolute border border-dashed border-line text-sm text-ink-dim hover:border-em hover:text-em${
+                className={`absolute border border-dashed border-line text-sm text-ink-dim hover:border-em hover:text-em material:rounded-3xl${
                   empty ? ' flex items-center justify-center' : ''
                 }`}
                 style={{
@@ -1473,7 +1473,7 @@ export function SpacesCanvas(props: {
       {ghost ? (
         <div
           data-drag-ghost=""
-          className="sc-ghost pointer-events-none fixed z-50 border border-em bg-panel px-3 py-2 font-mono text-sm text-ink"
+          className="sc-ghost pointer-events-none fixed z-50 border border-em bg-panel px-3 py-2 text-sm text-ink material:rounded-2xl material:border-line/40 material:shadow-pop"
           style={{ left: ghost.x + 12, top: ghost.y + 12 }}
         >
           {ghost.title}
@@ -1485,7 +1485,7 @@ export function SpacesCanvas(props: {
         <nav
           data-hud=""
           aria-label="Location"
-          className="pointer-events-auto absolute top-4 left-4 flex max-w-[60%] items-center gap-1 border border-line bg-panel px-1 py-1 text-sm text-ink-dim"
+          className="pointer-events-auto absolute top-4 left-4 flex max-w-[60%] items-center gap-1 border border-line bg-panel px-1 py-1 text-sm text-ink-dim material:rounded-2xl material:border-line/40 material:shadow-pop"
         >
           <button
             type="button"
@@ -1519,7 +1519,7 @@ export function SpacesCanvas(props: {
         <nav
           data-hud=""
           aria-label="Zoom level"
-          className="pointer-events-auto absolute top-1/2 right-4 flex -translate-y-1/2 flex-col gap-0.5 border border-line bg-panel p-1"
+          className="pointer-events-auto absolute top-1/2 right-4 flex -translate-y-1/2 flex-col gap-0.5 border border-line bg-panel p-1 material:rounded-2xl material:border-line/40 material:shadow-pop"
         >
           {(
             [
@@ -1575,7 +1575,7 @@ export function SpacesCanvas(props: {
           <div
             data-hud=""
             data-dock-bar=""
-            className="pointer-events-auto absolute right-2 bottom-11 flex max-h-[calc(100%-4rem)] flex-col items-stretch gap-0.5 overflow-y-auto border border-line bg-panel p-1 [&>button]:flex [&>button]:items-baseline [&>button]:gap-2 [&>button]:text-left"
+            className="pointer-events-auto absolute right-2 bottom-11 flex max-h-[calc(100%-4rem)] flex-col items-stretch gap-0.5 overflow-y-auto border border-line bg-panel p-1 [&>button]:flex [&>button]:items-baseline [&>button]:gap-2 [&>button]:text-left material:rounded-2xl material:border-line/40 material:shadow-pop"
           >
             <button
               type="button"
@@ -1644,7 +1644,7 @@ export function SpacesCanvas(props: {
                     Move
                   </button>
                 </PopoverTrigger>
-                <PopoverContent align="center" className="w-56 p-1 font-mono">
+                <PopoverContent align="center" className="w-56 p-1">
                   <div className="px-3 py-2 text-xs text-ink-dim">Move to…</div>
                   {spaces.map((space) => (
                     <button
@@ -1699,7 +1699,7 @@ export function SpacesCanvas(props: {
                 placeholder="Agent, thread or space"
                 value={findQuery}
                 onChange={(event) => setFindQuery(event.target.value)}
-                className="w-56 border border-line bg-bg px-2 py-1.5 text-sm text-ink outline-none placeholder:text-ink-dim"
+                className="w-56 border border-line bg-bg px-2 py-1.5 text-sm text-ink outline-none placeholder:text-ink-dim material:rounded-lg"
               />
             ) : null}
             <button
@@ -1742,7 +1742,7 @@ export function SpacesCanvas(props: {
           <p
             role="status"
             data-roster-notice=""
-            className="absolute top-16 left-1/2 z-40 max-w-md -translate-x-1/2 border border-line bg-panel px-3 py-2 text-center font-mono text-sm text-ink-dim"
+            className="absolute top-16 left-1/2 z-40 max-w-md -translate-x-1/2 border border-line bg-panel px-3 py-2 text-center text-sm text-ink-dim material:rounded-2xl material:border-line/40 material:shadow-pop"
           >
             {rosterNotice}
           </p>
@@ -1756,7 +1756,7 @@ export function SpacesCanvas(props: {
             <button
               key={toast.id}
               type="button"
-              className="sc-toast pointer-events-auto border border-warn bg-panel px-3 py-2 text-left text-sm text-ink"
+              className="sc-toast pointer-events-auto border border-warn bg-panel px-3 py-2 text-left text-sm text-ink material:rounded-pill material:hover:bg-ink/6"
               onClick={() => {
                 setToasts((prev) => prev.filter((item) => item.id !== toast.id))
                 beginThread(toast.rowKey)
@@ -1769,7 +1769,7 @@ export function SpacesCanvas(props: {
         {mruStep > 0 ? (
           <div
             data-mru=""
-            className="pointer-events-none absolute top-16 right-4 flex max-w-sm gap-1 border border-line bg-panel p-1 text-xs"
+            className="pointer-events-none absolute top-16 right-4 flex max-w-sm gap-1 border border-line bg-panel p-1 text-xs material:rounded-2xl material:border-line/40 material:shadow-pop"
           >
             {mruShown.map((id) => (
               <span
@@ -1813,7 +1813,7 @@ export function SpacesCanvas(props: {
             <Dialog.Content
               id="keys"
               data-keys-panel=""
-              className="fixed top-1/2 left-1/2 z-50 max-h-[calc(100%-2rem)] w-[40rem] max-w-[calc(100%-2rem)] -translate-x-1/2 -translate-y-1/2 overflow-y-auto border border-line bg-panel p-4 font-mono shadow-lg outline-none"
+              className="fixed top-1/2 left-1/2 z-50 max-h-[calc(100%-2rem)] w-[40rem] max-w-[calc(100%-2rem)] -translate-x-1/2 -translate-y-1/2 overflow-y-auto border border-line bg-panel p-4 shadow-pop outline-none material:rounded-3xl material:border-transparent material:bg-surface material:p-6"
             >
               <Dialog.Title className="mb-1 text-sm text-ink">Keys</Dialog.Title>
               <Dialog.Description className="mb-3 text-xs text-ink-dim">
@@ -1914,7 +1914,7 @@ function NameDialog(props: {
     >
       <Dialog.Portal>
         <Dialog.Overlay className="fixed inset-0 z-50 bg-black/40 classic:bg-bg/70" />
-        <Dialog.Content className="fixed top-1/2 left-1/2 z-50 w-80 max-w-[calc(100%-2rem)] -translate-x-1/2 -translate-y-1/2 border border-line bg-panel p-4 font-mono shadow-lg outline-none">
+        <Dialog.Content className="fixed top-1/2 left-1/2 z-50 w-80 max-w-[calc(100%-2rem)] -translate-x-1/2 -translate-y-1/2 border border-line bg-panel p-4 shadow-pop outline-none material:rounded-3xl material:border-transparent material:bg-surface material:p-6">
           <Dialog.Title className="mb-5 text-sm leading-relaxed text-ink-dim classic:mb-3 classic:text-ink">
             {props.title}
           </Dialog.Title>
@@ -1933,20 +1933,20 @@ function NameDialog(props: {
               value={value}
               onChange={(event) => setValue(event.target.value)}
               placeholder="Space name"
-              className="mb-3 w-full border border-line bg-bg px-2 py-1.5 text-sm text-ink outline-none"
+              className="mb-3 w-full border border-line bg-bg px-2 py-1.5 text-sm text-ink outline-none material:rounded-lg"
             />
             <div className="flex justify-end gap-2">
               <button
                 type="button"
                 onClick={props.onCancel}
-                className="border border-line px-3 py-1.5 text-xs text-ink-dim hover:text-ink"
+                className="border border-line px-3 py-1.5 text-xs text-ink-dim hover:text-ink material:rounded-pill material:hover:bg-ink/6"
               >
                 Cancel
               </button>
               <button
                 type="submit"
                 disabled={!value.trim()}
-                className="bg-em-dim px-3 py-1.5 text-xs font-medium text-bg hover:bg-em disabled:opacity-40"
+                className="bg-em px-3 py-1.5 text-xs font-medium text-on-em hover:bg-em-dim disabled:opacity-40 classic:bg-em-dim classic:hover:bg-em classic:text-bg"
               >
                 {props.confirm}
               </button>
@@ -1972,7 +1972,7 @@ function RemoveDialog(props: {
     >
       <Dialog.Portal>
         <Dialog.Overlay className="fixed inset-0 z-50 bg-black/40 classic:bg-bg/70" />
-        <Dialog.Content className="fixed top-1/2 left-1/2 z-50 w-96 max-w-[calc(100%-2rem)] -translate-x-1/2 -translate-y-1/2 border border-line bg-panel p-4 font-mono shadow-lg outline-none">
+        <Dialog.Content className="fixed top-1/2 left-1/2 z-50 w-96 max-w-[calc(100%-2rem)] -translate-x-1/2 -translate-y-1/2 border border-line bg-panel p-4 shadow-pop outline-none material:rounded-3xl material:border-transparent material:bg-surface material:p-6">
           <Dialog.Title className="mb-5 text-sm leading-relaxed text-ink-dim classic:mb-3 classic:text-ink">
             Remove space
           </Dialog.Title>
@@ -1983,14 +1983,14 @@ function RemoveDialog(props: {
             <button
               type="button"
               onClick={props.onCancel}
-              className="border border-line px-3 py-1.5 text-xs text-ink-dim hover:text-ink"
+              className="border border-line px-3 py-1.5 text-xs text-ink-dim hover:text-ink material:rounded-pill material:hover:bg-ink/6"
             >
               Cancel
             </button>
             <button
               type="button"
               onClick={props.onConfirm}
-              className="border border-red/40 px-3 py-1.5 text-xs text-red hover:border-red"
+              className="border border-red/40 px-3 py-1.5 text-xs text-red hover:border-red material:rounded-pill material:hover:bg-ink/6"
             >
               Remove
             </button>
@@ -2011,7 +2011,7 @@ function ThreadCrumb(props: { item: ChatItem; onOpen: () => void }): JSX.Element
         nameKey={nameKey}
         initial={title}
         onDone={() => setRenaming(false)}
-        className="w-64 min-w-0 border border-em bg-panel-2 px-2 py-0.5 text-sm text-ink outline-none"
+        className="w-64 min-w-0 border border-em bg-panel-2 px-2 py-0.5 text-sm text-ink outline-none material:rounded-lg"
       />
     )
   }

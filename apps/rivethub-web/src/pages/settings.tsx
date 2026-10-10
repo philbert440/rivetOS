@@ -27,7 +27,8 @@ import { SETTINGS_TABS, settingsTab } from '../lib/settings-tabs.js'
 import { cn } from '../lib/utils.js'
 
 /** Section heading; a tab's first one drops the rule above it. */
-const H2 = 'mt-10 mb-3 border-t border-line pt-6 font-mono text-sm font-semibold text-em'
+const H2 =
+  'mt-10 mb-3 border-t border-line/60 pt-6 text-base font-semibold text-ink classic:border-line classic:text-em classic:text-sm'
 
 type ProbeState =
   | { kind: 'idle' }
@@ -80,7 +81,10 @@ function SavedNodesSection(): JSX.Element {
       {roster.length === 0 && <p className="text-xs text-ink-dim">No saved nodes yet.</p>}
       {roster.map((n) =>
         editing === n.baseUrl ? (
-          <div key={n.baseUrl} className="mb-2 rounded border border-line bg-panel p-2">
+          <div
+            key={n.baseUrl}
+            className="mb-2 rounded-xl border border-transparent bg-panel-2 p-3 classic:border-line classic:bg-panel classic:p-2"
+          >
             <input
               value={draftName}
               onChange={(e) => setDraftName(e.target.value)}
@@ -179,7 +183,9 @@ export function SettingsPage(): JSX.Element {
   const tab = settingsTab(useParams({ strict: false }).tab)
   return (
     <div className="mx-auto max-w-4xl px-4 py-8 md:px-6">
-      <h1 className="mb-6 font-mono text-lg font-semibold text-em">Settings</h1>
+      <h1 className="mb-6 text-[22px] font-semibold text-ink classic:text-em classic:text-lg">
+        Settings
+      </h1>
       <div className="flex flex-col gap-6 md:flex-row md:gap-10">
         <nav
           aria-label="Settings"
@@ -192,10 +198,10 @@ export function SettingsPage(): JSX.Element {
               params={{ tab: t.id }}
               aria-current={t.id === tab ? 'page' : undefined}
               className={cn(
-                'shrink-0 rounded px-3 py-1.5 text-sm whitespace-nowrap',
+                'shrink-0 rounded-pill px-4 py-2 text-sm font-medium whitespace-nowrap transition-colors classic:px-3 classic:py-1.5 classic:font-normal',
                 t.id === tab
-                  ? 'bg-panel-2 font-medium text-em'
-                  : 'text-ink-dim hover:bg-panel-2 hover:text-ink',
+                  ? 'bg-em-container text-on-em-container classic:font-medium classic:text-em'
+                  : 'text-ink-dim hover:bg-ink/8 hover:text-ink classic:hover:bg-panel-2',
               )}
             >
               {t.label}
@@ -241,7 +247,7 @@ export function SettingsPage(): JSX.Element {
               <UpdatesSection />
               {/* Build stamp — the desktop shell bakes this dist in at build time, so
                   this line is how you tell whether a binary has gone stale. */}
-              <div className="mt-10 border-t border-line pt-3 font-mono text-[11px] text-ink-dim">
+              <div className="mt-10 border-t border-line pt-3 text-xs text-ink-dim classic:text-[11px]">
                 RivetHub v{BUILD_INFO.version} · dist {BUILD_INFO.sha} · built {BUILD_INFO.builtAt}
               </div>
             </>
