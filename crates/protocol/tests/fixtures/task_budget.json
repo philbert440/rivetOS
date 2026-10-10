@@ -1,0 +1,6 @@
+{
+  "maxUsd": 1.5,
+  "maxTokens": 1000,
+  "maxTurns": 4,
+  "maxWallClockMs": 60000
+}

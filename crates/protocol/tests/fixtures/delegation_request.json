@@ -1,0 +1,9 @@
+{
+  "fromAgent": "main",
+  "toAgent": "worker",
+  "task": "summarize",
+  "context": ["note"],
+  "timeoutMs": 1000,
+  "noDelegation": true,
+  "model": "grok"
+}

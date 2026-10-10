@@ -1,0 +1,8 @@
+{
+  "inputTokens": 10,
+  "outputTokens": 4,
+  "totalTokens": 14,
+  "costUsd": 0.01,
+  "turns": 2,
+  "wallClockMs": 1500
+}

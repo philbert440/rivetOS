@@ -1,0 +1,10 @@
+{
+  "type": "photo",
+  "url": "https://example.test/p.jpg",
+  "fileId": "f1",
+  "fileName": "p.jpg",
+  "mimeType": "image/jpeg",
+  "width": 10,
+  "height": 20,
+  "duration": 0
+}
