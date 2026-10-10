@@ -1,9 +1,10 @@
 use std::str::FromStr;
 
 use serde::de::{self, Deserializer};
-use serde::ser::SerializeMap;
 use serde::{Deserialize, Serialize, Serializer};
-use serde_json::{Map, Value};
+use serde_json::Value;
+
+use protocol::js::{JsObject, JsValue};
 
 use crate::activity::Activity;
 use crate::{JsNumber, PROTOCOL_VERSION};
@@ -114,21 +115,34 @@ pub struct AgentEvent {
     pub harness_session: Option<String>,
     pub ts: Option<JsNumber>,
     pub body: AgentEventBody,
-    pub extra: Map<String, Value>,
+    raw: JsValue,
 }
 
 impl AgentEvent {
     pub fn new(session: impl Into<String>, body: AgentEventBody) -> Self {
+        let session = session.into();
+        let json = encode_event(&session, &body);
+        let raw = protocol::js::parse(&json).unwrap_or(JsValue::Null);
+        if let Some(event) = event_from_raw(raw.clone()) {
+            return event;
+        }
         Self {
             v: JsNumber::from(PROTOCOL_VERSION),
-            session: session.into(),
+            session,
             name: None,
             harness: None,
             harness_session: None,
             ts: None,
             body,
-            extra: Map::new(),
+            raw,
         }
+    }
+
+    pub(crate) fn text_units(&self) -> Vec<u16> {
+        self.raw
+            .get("text")
+            .and_then(crate::utf16::units_of)
+            .unwrap_or_default()
     }
 }
 
@@ -137,87 +151,7 @@ impl Serialize for AgentEvent {
     where
         S: Serializer,
     {
-        let mut map = serializer.serialize_map(None)?;
-        map.serialize_entry("v", &self.v)?;
-        map.serialize_entry("session", &self.session)?;
-        map.serialize_entry("type", self.body.type_name())?;
-        match &self.body {
-            AgentEventBody::SessionStart { title } => {
-                map.serialize_entry("title", title)?;
-            }
-            AgentEventBody::SessionEnd
-            | AgentEventBody::TurnEnd
-            | AgentEventBody::ThinkingEnd
-            | AgentEventBody::Unknown { .. } => {}
-            AgentEventBody::TaskPlan { tasks } => {
-                map.serialize_entry("tasks", tasks)?;
-            }
-            AgentEventBody::TaskCheck { index } => {
-                map.serialize_entry("index", index)?;
-            }
-            AgentEventBody::Activity { activity } => {
-                map.serialize_entry("activity", activity)?;
-            }
-            AgentEventBody::ToolStart {
-                tool,
-                activity,
-                args,
-            } => {
-                map.serialize_entry("tool", tool)?;
-                if let Some(activity) = activity {
-                    map.serialize_entry("activity", activity)?;
-                }
-                if let Some(args) = args {
-                    map.serialize_entry("args", args)?;
-                }
-            }
-            AgentEventBody::ToolEnd { tool } => {
-                if let Some(tool) = tool {
-                    map.serialize_entry("tool", tool)?;
-                }
-            }
-            AgentEventBody::ThinkingDelta { text }
-            | AgentEventBody::MessageUser { text }
-            | AgentEventBody::TermLine { text } => {
-                map.serialize_entry("text", text)?;
-            }
-            AgentEventBody::SpeechStt { active } => {
-                map.serialize_entry("active", active)?;
-            }
-            AgentEventBody::MessageAgent {
-                text,
-                usage,
-                model,
-                duration_ms,
-            } => {
-                map.serialize_entry("text", text)?;
-                if let Some(usage) = usage {
-                    map.serialize_entry("usage", usage)?;
-                }
-                if let Some(model) = model {
-                    map.serialize_entry("model", model)?;
-                }
-                if let Some(duration_ms) = duration_ms {
-                    map.serialize_entry("durationMs", duration_ms)?;
-                }
-            }
-        }
-        if let Some(name) = &self.name {
-            map.serialize_entry("name", name)?;
-        }
-        if let Some(harness) = &self.harness {
-            map.serialize_entry("harness", harness)?;
-        }
-        if let Some(harness_session) = &self.harness_session {
-            map.serialize_entry("harnessSession", harness_session)?;
-        }
-        if let Some(ts) = &self.ts {
-            map.serialize_entry("ts", ts)?;
-        }
-        for (key, value) in &self.extra {
-            map.serialize_entry(key, value)?;
-        }
-        map.end()
+        crate::utf16::serialize_json_text(serializer, &protocol::js::stringify(&self.raw))
     }
 }
 
@@ -226,33 +160,36 @@ impl<'de> Deserialize<'de> for AgentEvent {
     where
         D: Deserializer<'de>,
     {
-        let value = Value::deserialize(deserializer)?;
-        parse_event(&value).ok_or_else(|| de::Error::custom("not a valid v1 AgentEvent"))
+        let raw = serde_json::value::RawValue::deserialize(deserializer)?;
+        parse_event_str(raw.get()).ok_or_else(|| de::Error::custom("not a valid v1 AgentEvent"))
     }
 }
 
-const ENVELOPE: &[&str] = &[
-    "v",
-    "session",
-    "type",
-    "name",
-    "harness",
-    "harnessSession",
-    "ts",
-];
-
 pub fn parse_event(raw: &Value) -> Option<AgentEvent> {
-    let obj = raw.as_object()?;
-    if !is_version(obj.get("v")?) {
-        return None;
-    }
-    let session = required_session(obj.get("session")?)?.to_string();
-    let kind = obj.get("type")?.as_str()?;
-    let name = optional_string(obj, "name")?;
-    let harness = optional_string(obj, "harness")?;
-    let harness_session = optional_string(obj, "harnessSession")?;
-    let ts = optional_finite(obj, "ts")?;
-    let (body, body_keys) = parse_body(kind, obj)?;
+    let text = serde_json::to_string(raw).ok()?;
+    parse_event_str(&text)
+}
+
+pub fn parse_event_str(text: &str) -> Option<AgentEvent> {
+    let raw = protocol::js::parse(text).ok()?;
+    event_from_raw(raw)
+}
+
+fn event_from_raw(raw: JsValue) -> Option<AgentEvent> {
+    let (session, name, harness, harness_session, ts, body) = {
+        let object = raw.as_object()?;
+        if !is_version(object.get("v")?) {
+            return None;
+        }
+        let session = required_session(object.get("session")?)?;
+        let kind = object.get("type")?.as_str()?;
+        let name = optional_string(object, "name")?;
+        let harness = optional_string(object, "harness")?;
+        let harness_session = optional_string(object, "harnessSession")?;
+        let ts = optional_finite(object, "ts")?;
+        let body = parse_body(kind, object)?;
+        (session, name, harness, harness_session, ts, body)
+    };
     Some(AgentEvent {
         v: JsNumber::from(PROTOCOL_VERSION),
         session,
@@ -261,166 +198,143 @@ pub fn parse_event(raw: &Value) -> Option<AgentEvent> {
         harness_session,
         ts,
         body,
-        extra: extra_fields(obj, body_keys),
+        raw,
     })
 }
 
-fn parse_body(
-    kind: &str,
-    obj: &Map<String, Value>,
-) -> Option<(AgentEventBody, &'static [&'static str])> {
+fn parse_body(kind: &str, object: &JsObject) -> Option<AgentEventBody> {
     let kind = EventType::from_str(kind).ok()?;
     Some(match kind {
-        EventType::SessionStart => {
-            let title = required_string(obj, "title")?;
-            (AgentEventBody::SessionStart { title }, &["title"])
-        }
-        EventType::SessionEnd => (AgentEventBody::SessionEnd, &[]),
-        EventType::TurnEnd => (AgentEventBody::TurnEnd, &[]),
-        EventType::TaskPlan => {
-            let tasks = parse_tasks(obj.get("tasks")?)?;
-            (AgentEventBody::TaskPlan { tasks }, &["tasks"])
-        }
-        EventType::TaskCheck => {
-            let index = required_index(obj.get("index")?)?;
-            (AgentEventBody::TaskCheck { index }, &["index"])
-        }
-        EventType::Activity => {
-            let activity = Activity::from_str(obj.get("activity")?.as_str()?).ok()?;
-            (AgentEventBody::Activity { activity }, &["activity"])
-        }
-        EventType::ToolStart => {
-            let tool = required_string(obj, "tool")?;
-            let activity = optional_activity(obj)?;
-            let args = obj.get("args").cloned();
-            (
-                AgentEventBody::ToolStart {
-                    tool,
-                    activity,
-                    args,
-                },
-                &["tool", "activity", "args"],
-            )
-        }
-        EventType::ToolEnd => {
-            let tool = optional_tool(obj)?;
-            (AgentEventBody::ToolEnd { tool }, &["tool"])
-        }
-        EventType::ThinkingDelta => {
-            let text = required_string(obj, "text")?;
-            (AgentEventBody::ThinkingDelta { text }, &["text"])
-        }
-        EventType::ThinkingEnd => (AgentEventBody::ThinkingEnd, &[]),
-        EventType::SpeechStt => {
-            let active = obj.get("active")?.as_bool()?;
-            (AgentEventBody::SpeechStt { active }, &["active"])
-        }
-        EventType::MessageUser => {
-            let text = required_string(obj, "text")?;
-            (AgentEventBody::MessageUser { text }, &["text"])
-        }
-        EventType::MessageAgent => {
-            let text = required_string(obj, "text")?;
-            let model = optional_string(obj, "model")?;
-            let duration_ms = optional_non_neg(obj, "durationMs")?;
-            let usage = match obj.get("usage") {
+        EventType::SessionStart => AgentEventBody::SessionStart {
+            title: required_string(object, "title")?,
+        },
+        EventType::SessionEnd => AgentEventBody::SessionEnd,
+        EventType::TurnEnd => AgentEventBody::TurnEnd,
+        EventType::TaskPlan => AgentEventBody::TaskPlan {
+            tasks: parse_tasks(object.get("tasks")?)?,
+        },
+        EventType::TaskCheck => AgentEventBody::TaskCheck {
+            index: required_index(object.get("index")?)?,
+        },
+        EventType::Activity => AgentEventBody::Activity {
+            activity: Activity::from_str(object.get("activity")?.as_str()?).ok()?,
+        },
+        EventType::ToolStart => AgentEventBody::ToolStart {
+            tool: required_string(object, "tool")?,
+            activity: optional_activity(object)?,
+            args: match object.get("args") {
+                None => None,
+                Some(value) => Some(json_value(value).unwrap_or(Value::Null)),
+            },
+        },
+        EventType::ToolEnd => AgentEventBody::ToolEnd {
+            tool: optional_tool(object)?,
+        },
+        EventType::ThinkingDelta => AgentEventBody::ThinkingDelta {
+            text: required_string(object, "text")?,
+        },
+        EventType::ThinkingEnd => AgentEventBody::ThinkingEnd,
+        EventType::SpeechStt => AgentEventBody::SpeechStt {
+            active: object.get("active")?.as_bool()?,
+        },
+        EventType::MessageUser => AgentEventBody::MessageUser {
+            text: required_string(object, "text")?,
+        },
+        EventType::MessageAgent => AgentEventBody::MessageAgent {
+            text: required_string(object, "text")?,
+            usage: match object.get("usage") {
                 None => None,
                 Some(value) => Some(parse_usage(value)?),
-            };
-            (
-                AgentEventBody::MessageAgent {
-                    text,
-                    usage,
-                    model,
-                    duration_ms,
-                },
-                &["text", "usage", "model", "durationMs"],
-            )
-        }
-        EventType::TermLine => {
-            let text = required_string(obj, "text")?;
-            (AgentEventBody::TermLine { text }, &["text"])
-        }
+            },
+            model: optional_string(object, "model")?,
+            duration_ms: optional_non_neg(object, "durationMs")?,
+        },
+        EventType::TermLine => AgentEventBody::TermLine {
+            text: required_string(object, "text")?,
+        },
     })
 }
 
-fn is_version(value: &Value) -> bool {
-    value
-        .as_f64()
-        .is_some_and(|number| number == f64::from(PROTOCOL_VERSION))
+fn is_version(value: &JsValue) -> bool {
+    match value {
+        JsValue::Number(number) => *number == f64::from(PROTOCOL_VERSION),
+        _ => false,
+    }
 }
 
-fn required_session(value: &Value) -> Option<&str> {
+fn required_session(value: &JsValue) -> Option<String> {
     let text = value.as_str()?;
-    if text.is_empty() { None } else { Some(text) }
+    if text.is_empty() {
+        None
+    } else {
+        Some(text.to_string())
+    }
 }
 
-fn required_string(obj: &Map<String, Value>, key: &str) -> Option<String> {
-    obj.get(key).and_then(Value::as_str).map(ToOwned::to_owned)
+fn required_string(object: &JsObject, key: &str) -> Option<String> {
+    object.get(key).and_then(JsValue::as_str).map(ToOwned::to_owned)
 }
 
-fn optional_string(obj: &Map<String, Value>, key: &str) -> Option<Option<String>> {
-    match obj.get(key) {
+fn optional_string(object: &JsObject, key: &str) -> Option<Option<String>> {
+    match object.get(key) {
         None => Some(None),
-        Some(Value::String(text)) => Some(Some(text.clone())),
+        Some(value) => Some(Some(value.as_str()?.to_string())),
+    }
+}
+
+fn optional_finite(object: &JsObject, key: &str) -> Option<Option<JsNumber>> {
+    match object.get(key) {
+        None => Some(None),
+        Some(JsValue::Number(number)) if number.is_finite() => Some(Some(JsNumber::from(*number))),
         Some(_) => None,
     }
 }
 
-fn optional_finite(obj: &Map<String, Value>, key: &str) -> Option<Option<JsNumber>> {
-    match obj.get(key) {
-        None => Some(None),
-        Some(Value::Number(number)) => {
-            let value = number.as_f64()?;
-            if !value.is_finite() {
-                return None;
-            }
-            Some(Some(JsNumber::from(value)))
-        }
-        Some(_) => None,
-    }
-}
-
-fn optional_non_neg(obj: &Map<String, Value>, key: &str) -> Option<Option<JsNumber>> {
-    match obj.get(key) {
+fn optional_non_neg(object: &JsObject, key: &str) -> Option<Option<JsNumber>> {
+    match object.get(key) {
         None => Some(None),
         Some(value) => Some(Some(required_non_neg(value)?)),
     }
 }
 
-fn required_non_neg(value: &Value) -> Option<JsNumber> {
-    let number = value.as_f64()?;
-    if !number.is_finite() || number < 0.0 {
+fn required_non_neg(value: &JsValue) -> Option<JsNumber> {
+    let JsValue::Number(number) = value else {
+        return None;
+    };
+    if !number.is_finite() || *number < 0.0 {
         return None;
     }
-    Some(JsNumber::from(number))
+    Some(JsNumber::from(*number))
 }
 
-fn required_index(value: &Value) -> Option<JsNumber> {
-    let number = value.as_f64()?;
-    if !number.is_finite() || number.fract() != 0.0 || number < 0.0 {
+fn required_index(value: &JsValue) -> Option<JsNumber> {
+    let JsValue::Number(number) = value else {
+        return None;
+    };
+    if !number.is_finite() || number.fract() != 0.0 || *number < 0.0 {
         return None;
     }
-    Some(JsNumber::from(number))
+    Some(JsNumber::from(*number))
 }
 
-fn optional_activity(obj: &Map<String, Value>) -> Option<Option<Activity>> {
-    match obj.get("activity") {
+fn optional_activity(object: &JsObject) -> Option<Option<Activity>> {
+    match object.get("activity") {
         None => Some(None),
-        Some(Value::String(text)) => Activity::from_str(text).ok().map(Some),
-        Some(_) => None,
+        Some(value) => {
+            let text = value.as_str()?;
+            Some(Some(Activity::from_str(text).ok()?))
+        }
     }
 }
 
-fn optional_tool(obj: &Map<String, Value>) -> Option<Option<String>> {
-    match obj.get("tool") {
+fn optional_tool(object: &JsObject) -> Option<Option<String>> {
+    match object.get("tool") {
         None => Some(None),
-        Some(Value::String(text)) => Some(Some(text.clone())),
-        Some(_) => None,
+        Some(value) => Some(Some(value.as_str()?.to_string())),
     }
 }
 
-fn parse_tasks(value: &Value) -> Option<Vec<String>> {
+fn parse_tasks(value: &JsValue) -> Option<Vec<String>> {
     value
         .as_array()?
         .iter()
@@ -428,22 +342,119 @@ fn parse_tasks(value: &Value) -> Option<Vec<String>> {
         .collect()
 }
 
-fn parse_usage(value: &Value) -> Option<TokenUsage> {
-    let obj = value.as_object()?;
+fn parse_usage(value: &JsValue) -> Option<TokenUsage> {
+    let object = value.as_object()?;
     Some(TokenUsage {
-        prompt_tokens: required_non_neg(obj.get("promptTokens")?)?,
-        completion_tokens: required_non_neg(obj.get("completionTokens")?)?,
-        cached_tokens: required_non_neg(obj.get("cachedTokens")?)?,
+        prompt_tokens: required_non_neg(object.get("promptTokens")?)?,
+        completion_tokens: required_non_neg(object.get("completionTokens")?)?,
+        cached_tokens: required_non_neg(object.get("cachedTokens")?)?,
     })
 }
 
-fn extra_fields(obj: &Map<String, Value>, body_keys: &[&str]) -> Map<String, Value> {
-    let mut extra = Map::new();
-    for (key, value) in obj {
-        if ENVELOPE.contains(&key.as_str()) || body_keys.contains(&key.as_str()) {
-            continue;
+fn json_value(value: &JsValue) -> Option<Value> {
+    serde_json::from_str(&protocol::js::stringify(value)).ok()
+}
+
+fn encode_event(session: &str, body: &AgentEventBody) -> String {
+    let mut out = String::from("{\"v\":");
+    push_number(&mut out, JsNumber::from(PROTOCOL_VERSION));
+    out.push_str(",\"session\":");
+    push_string(&mut out, session);
+    out.push_str(",\"type\":");
+    push_string(&mut out, body.type_name());
+    match body {
+        AgentEventBody::SessionStart { title } => {
+            out.push_str(",\"title\":");
+            push_string(&mut out, title);
         }
-        extra.insert(key.clone(), value.clone());
+        AgentEventBody::SessionEnd
+        | AgentEventBody::TurnEnd
+        | AgentEventBody::ThinkingEnd
+        | AgentEventBody::Unknown { .. } => {}
+        AgentEventBody::TaskPlan { tasks } => {
+            out.push_str(",\"tasks\":[");
+            for (index, task) in tasks.iter().enumerate() {
+                if index > 0 {
+                    out.push(',');
+                }
+                push_string(&mut out, task);
+            }
+            out.push(']');
+        }
+        AgentEventBody::TaskCheck { index } => {
+            out.push_str(",\"index\":");
+            push_number(&mut out, *index);
+        }
+        AgentEventBody::Activity { activity } => {
+            out.push_str(",\"activity\":");
+            push_string(&mut out, activity.as_str());
+        }
+        AgentEventBody::ToolStart {
+            tool,
+            activity,
+            args,
+        } => {
+            out.push_str(",\"tool\":");
+            push_string(&mut out, tool);
+            if let Some(activity) = activity {
+                out.push_str(",\"activity\":");
+                push_string(&mut out, activity.as_str());
+            }
+            if let Some(args) = args
+                && let Ok(text) = serde_json::to_string(args)
+            {
+                out.push_str(",\"args\":");
+                out.push_str(&text);
+            }
+        }
+        AgentEventBody::ToolEnd { tool } => {
+            if let Some(tool) = tool {
+                out.push_str(",\"tool\":");
+                push_string(&mut out, tool);
+            }
+        }
+        AgentEventBody::ThinkingDelta { text }
+        | AgentEventBody::MessageUser { text }
+        | AgentEventBody::TermLine { text } => {
+            out.push_str(",\"text\":");
+            push_string(&mut out, text);
+        }
+        AgentEventBody::SpeechStt { active } => {
+            out.push_str(",\"active\":");
+            out.push_str(if *active { "true" } else { "false" });
+        }
+        AgentEventBody::MessageAgent {
+            text,
+            usage,
+            model,
+            duration_ms,
+        } => {
+            out.push_str(",\"text\":");
+            push_string(&mut out, text);
+            if let Some(usage) = usage
+                && let Ok(text) = serde_json::to_string(usage)
+            {
+                out.push_str(",\"usage\":");
+                out.push_str(&text);
+            }
+            if let Some(model) = model {
+                out.push_str(",\"model\":");
+                push_string(&mut out, model);
+            }
+            if let Some(duration_ms) = duration_ms {
+                out.push_str(",\"durationMs\":");
+                push_number(&mut out, *duration_ms);
+            }
+        }
     }
-    extra
+    out.push('}');
+    out
+}
+
+fn push_string(out: &mut String, text: &str) {
+    out.push_str(&protocol::js::stringify(&JsValue::from_text(text)));
+}
+
+fn push_number(out: &mut String, number: JsNumber) {
+    out.push_str(&protocol::js::stringify(&JsValue::Number(number.as_f64())));
 }
