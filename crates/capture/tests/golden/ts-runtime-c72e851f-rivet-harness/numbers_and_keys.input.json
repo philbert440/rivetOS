@@ -1,0 +1,1 @@
+{"session_key":"s-num","agent":"a","messages":[{"event_id":"e2","role":"assistant","content":"","tool_name":"Bash","tool_args":{"1":0.1,"2":2,"b":1,"a":12345678901234567000,"neg":0,"big":1e+21,"small":1.5e-7,"nested":{"9":null,"10":true,"z":1}},"metadata":{"source":"golden"}}]}

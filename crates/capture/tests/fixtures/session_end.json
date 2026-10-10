@@ -1,0 +1,7 @@
+{
+  "hook_event_name": "SessionEnd",
+  "session_id": "sess-1",
+  "transcript_path": "/tmp/claude/projects/demo/sess-1.jsonl",
+  "cwd": "/srv/code/rivetos",
+  "reason": "session_end"
+}
