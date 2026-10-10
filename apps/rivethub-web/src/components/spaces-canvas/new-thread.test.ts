@@ -21,7 +21,14 @@ import { useChat } from '../../stores/chat.js'
 import { useChatSettings } from '../../stores/chat-settings.js'
 import { useConnection } from '../../stores/connection.js'
 import { useSpaces } from '../../stores/spaces.js'
-import { bindSpaceThreadStarter, startNewConversation } from '../../lib/new-conversation.js'
+import { usePreferences } from '../../stores/preferences.js'
+import { noteRoster, type ResolvedRosterAgent } from '../../lib/use-agent-roster.js'
+import {
+  bindFocusedSpace,
+  bindSpaceThreadStarter,
+  placeNewDraft,
+  startNewConversation,
+} from '../../lib/new-conversation.js'
 import {
   applyChooser,
   initialThreadFields,
@@ -45,7 +52,10 @@ beforeEach(() => {
   useChatSettings.setState({ byKey: {} })
   useAgentFilter.getState().clear()
   bindSpaceThreadStarter(null)
+  bindFocusedSpace(null)
   takeOffRosterNotice()
+  usePreferences.setState({ newChat: {} })
+  noteRoster([])
 })
 
 function listOnRoster(baseUrl: string, name: string): void {
@@ -599,6 +609,35 @@ describe('new thread in a space', () => {
     })
   })
 
+  it('a new conversation outside the canvas lands in the default space', () => {
+    const base = useConnection.getState().baseUrl
+    const id = startNewConversation()
+    expect(id).toBeTruthy()
+    if (!id) return
+    const [general] = useSpaces.getState().spaces
+    expect(general?.name).toBe('General')
+    expect(useSpaces.getState().spaceOf(`${base}::${id}`)).toBe(general?.id)
+  })
+
+  it('a new conversation lands in the focused space, even without defaults', () => {
+    const base = useConnection.getState().baseUrl
+    useSpaces.getState().addSpace('Work')
+    const home = useSpaces.getState().addSpace('Home')
+    bindFocusedSpace(() => home)
+    const id = startNewConversation()
+    if (!id) throw new Error('no draft')
+    expect(useSpaces.getState().spaceOf(`${base}::${id}`)).toBe(home)
+  })
+
+  it('places a node-bound draft under its node key', () => {
+    const base = useConnection.getState().baseUrl
+    const remote = 'https://remote.example:5174'
+    const work = useSpaces.getState().addSpace('Work')
+    setSessionNodeBinding('n1', remote, base)
+    placeNewDraft('n1')
+    expect(useSpaces.getState().spaceOf(`${remote}::n1`)).toBe(work)
+  })
+
   it('directoryBasename is the last path segment', () => {
     expect(directoryBasename('/home/rivet/src/rivetOS/')).toBe('rivetOS')
     expect(directoryBasename('')).toBe('')
@@ -640,5 +679,55 @@ describe('canStartThread', () => {
     expect(canStartThread({ prompt: 'ship it', target: 'sp1', seedReady: true })).toBe(true)
     expect(canStartThread({ prompt: '   ', target: 'sp1', seedReady: true })).toBe(false)
     expect(canStartThread({ prompt: 'ship it', target: undefined, seedReady: true })).toBe(false)
+  })
+})
+
+describe('Settings → General new-conversation defaults', () => {
+  const rosterRow = {
+    ...PRESET,
+    listedBaseUrl: PRESET.sourceNodeBaseUrl,
+  } as unknown as ResolvedRosterAgent
+
+  it('starts with the default preset and thinking level', () => {
+    const base = useConnection.getState().baseUrl
+    listOnRoster(PRESET.sourceNodeBaseUrl, 'den-a')
+    noteRoster([rosterRow])
+    usePreferences
+      .getState()
+      .setNewChat({ agentId: PRESET.id, harnessId: 'claude-code', effort: 'high' })
+    const id = startNewConversation()
+    if (!id) throw new Error('no draft')
+    const key = `${PRESET.sourceNodeBaseUrl}::${id}`
+    expect(useChatSettings.getState().byKey[key]).toMatchObject({
+      agentId: PRESET.id,
+      effort: 'high',
+    })
+    expect(useSpaces.getState().spaceOf(key)).toBe(useSpaces.getState().spaces[0]?.id)
+    expect(base).not.toBe(PRESET.sourceNodeBaseUrl)
+  })
+
+  it('a preset that is not on the roster is skipped; the thinking level still applies', () => {
+    const base = useConnection.getState().baseUrl
+    usePreferences.getState().setNewChat({ agentId: 'gone', effort: 'low' })
+    const id = startNewConversation()
+    if (!id) throw new Error('no draft')
+    const settings = useChatSettings.getState().byKey[`${base}::${id}`]
+    expect(settings).toMatchObject({ effort: 'low' })
+    expect(settings?.agentId).toBeUndefined()
+  })
+
+  it('an agent picked in the rail wins over the defaults', () => {
+    const startNew = vi.fn()
+    useAgentFilter.getState().select({ agentId: 'rail', name: 'Rail', accent: '#abc', startNew })
+    usePreferences.getState().setNewChat({ effort: 'high' })
+    startNewConversation()
+    expect(startNew).toHaveBeenCalledOnce()
+  })
+
+  it('no defaults keeps the bare draft', () => {
+    const base = useConnection.getState().baseUrl
+    const id = startNewConversation()
+    if (!id) throw new Error('no draft')
+    expect(useChatSettings.getState().byKey[`${base}::${id}`]).toBeUndefined()
   })
 })

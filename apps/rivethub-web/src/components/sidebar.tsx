@@ -3,7 +3,6 @@ import { Link, useNavigate, useRouterState } from '@tanstack/react-router'
 import {
   Bell,
   Folder,
-  History,
   Library,
   ListChecks,
   Menu,
@@ -16,23 +15,23 @@ import { useExperimental } from '../stores/experimental.js'
 import { useSidebarPrefs } from '../stores/sidebar-prefs.js'
 import { shouldCloseDrawerOnSelection } from '../lib/drawer-selection.js'
 import { focusInForeignDialog, matchHubKey } from '../lib/hub-keys.js'
+import { useKeyLabel } from '../lib/use-key-label.js'
 import { startNewConversation } from '../lib/new-conversation.js'
 import { visibleNav } from '../lib/visible-nav.js'
 import { useIsNarrow } from '../lib/use-narrow.js'
 import { cn } from '../lib/utils.js'
-import { hubPageTitle, railHeaderClass, railToggle } from './sidebar-chrome.js'
+import { hubPageTitle, navItemActive, railHeaderClass, railToggle } from './sidebar-chrome.js'
 import { NodeSwitcher } from './node-switcher.js'
 import { RhMark, Wordmark } from './brand.js'
 import { AgentsSection } from './agents-section.js'
 import { Button } from './ui/button.js'
 import { Tooltip } from './ui/tooltip.js'
 
-/** Primary views after Conversations. Sessions sits where Terminal used to
- *  (standalone Terminal is gone — chat embeds it as a per-session mode).
- *  Memory and Files are the day-to-day workspace. Icons are Lucide. */
+/** Primary views after Conversations: Memory and Files are the day-to-day
+ *  workspace. Sessions is a tab inside Memory (`also`), not a rail item —
+ *  Spaces and History cover finding a conversation. Icons are Lucide. */
 const PRIMARY_NAV = [
-  { to: '/sessions', label: 'Sessions', icon: History },
-  { to: '/memory', label: 'Memory', icon: Library },
+  { to: '/memory', label: 'Memory', icon: Library, also: ['/sessions'] },
   { to: '/files', label: 'Files', icon: Folder },
 ] as const
 
@@ -56,15 +55,14 @@ function NavLink(props: {
   to: string
   label: string
   icon: typeof MessageSquare
+  /** Routes this item hosts as tabs; it stays active on them. */
+  also?: readonly string[]
   collapsed: boolean
 }): JSX.Element {
   const Icon = props.icon
   const pathname = useRouterState({ select: (s) => s.location.pathname })
   const narrow = useIsNarrow()
-  const active =
-    props.to === '/'
-      ? pathname === '/'
-      : pathname === props.to || pathname.startsWith(`${props.to}/`)
+  const active = navItemActive(pathname, props.to, props.also)
   return (
     <Tooltip label={props.label} disabled={!props.collapsed} block>
       <Link
@@ -193,6 +191,8 @@ export function Sidebar(): JSX.Element {
   const collapsed = narrow ? false : railCollapsed
   const toggle = railToggle(collapsed)
   const logoLabel = narrow ? (drawerOpen ? 'Close sidebar' : 'Open sidebar') : toggle.label
+  const label = useKeyLabel()
+  const panesKey = label('toggle-sidebar')
   const logoExpanded = narrow ? drawerOpen : toggle.ariaExpanded
 
   // Ctrl+Shift+E collapses every side pane — the rail AND the conversations
@@ -255,7 +255,7 @@ export function Sidebar(): JSX.Element {
       }
     >
       <div className={railHeaderClass(collapsed)}>
-        <Tooltip label={`${logoLabel} · Ctrl+Shift+E hides all panes`}>
+        <Tooltip label={panesKey ? `${logoLabel} · ${panesKey} hides all panes` : logoLabel}>
           <Button
             variant="ghost"
             size="icon"

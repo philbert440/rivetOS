@@ -5,14 +5,13 @@
  * exposes the name.
  */
 
-import { memo, useEffect, type CSSProperties, type JSX, type ReactNode } from 'react'
+import { memo, useEffect, useState, type CSSProperties, type JSX, type ReactNode } from 'react'
 import type { HarnessDescriptor, SessionMessage } from '@rivetos/types'
+import { Pencil } from 'lucide-react'
 import { harnessAccentKey } from '../../lib/agent-accent.js'
-import { denRoomKey, type ChatItem } from '../../lib/harness-chat.js'
-import { storageKey } from '../../lib/session-rekey.js'
+import type { ChatItem } from '../../lib/harness-chat.js'
 import { useChat } from '../../stores/chat.js'
-import { useConnection } from '../../stores/connection.js'
-import { useSessionNames } from '../../stores/session-names.js'
+import { RenameInput, useSessionTitle } from '../session-rename.js'
 import { ThreadMini } from './ThreadMini.js'
 import { tilePill, tileStatus, type TileStatus } from './tile-status.js'
 import type { Altitude } from './camera.js'
@@ -20,17 +19,6 @@ import type { Altitude } from './camera.js'
 function oneLine(text: string): string {
   const flat = text.replace(/\s+/g, ' ').trim()
   return flat.length > 180 ? `${flat.slice(0, 179)}…` : flat
-}
-
-function persistedName(
-  byKey: Record<string, string | undefined>,
-  baseUrl: string,
-  key: string,
-): string | undefined {
-  const own = byKey[storageKey(baseUrl, key)]
-  if (own !== undefined) return own
-  const native = denRoomKey(key)
-  return native === key ? undefined : byKey[storageKey(baseUrl, native)]
 }
 
 /** Custom props are not in CSSProperties' closed index. */
@@ -94,10 +82,8 @@ interface TileProps {
 export const Tile = memo(function Tile(props: TileProps): JSX.Element {
   const id = props.item.key
   const status: TileStatus = tileStatus(props.item.status, props.blocked)
-  const baseUrl = useConnection((s) => s.baseUrl)
-  const nameBase = props.item.pinNodeBaseUrl ?? baseUrl
-  const customName = useSessionNames((s) => persistedName(s.byKey, nameBase, id))
-  const title = customName ?? props.item.title
+  const { title, nameKey } = useSessionTitle(props.item)
+  const [renaming, setRenaming] = useState(false)
   const last = useChat((s) => {
     const key = s.resolveSessionKey(id)
     const liveText = s.live[key]?.text
@@ -128,7 +114,7 @@ export const Tile = memo(function Tile(props: TileProps): JSX.Element {
       data-status={status}
       data-selected={props.selected ? 'true' : 'false'}
       role="gridcell"
-      className={`st-${status} absolute flex min-h-0 flex-col border border-line bg-panel${
+      className={`st-${status} group absolute flex min-h-0 flex-col border border-line bg-panel${
         focused ? ' focus' : ''
       }`}
       style={{
@@ -158,29 +144,69 @@ export const Tile = memo(function Tile(props: TileProps): JSX.Element {
         aria-pressed={props.selected}
         aria-label={`${chip}, ${title}, ${tilePill(status)}`}
       />
+      {/* Above the box: the label pill, with the rename pencil beside it. The
+          pencil shows on the selected tile and on hover; renaming swaps the
+          pill for the name box in the same spot. Hidden at Thread. */}
       <div
-        aria-hidden="true"
-        className="pointer-events-none absolute bottom-full z-[2] flex max-w-[90%] items-center rounded-full border border-line bg-panel font-mono"
+        data-tile-label=""
+        className="pointer-events-none absolute bottom-full z-[2] flex max-w-[90%] items-center font-mono"
         style={withVars(
           { '--ch': 'min(var(--inv, 1), 2.2)' },
           {
             left: 'calc(16px * var(--ch, 1))',
             marginBottom: 'calc(9px * var(--ch, 1))',
             fontSize: 'calc(12.5px * var(--ch, 1))',
-            gap: '0.55em',
-            padding: '0.32em 0.9em 0.32em 0.75em',
-            borderWidth: 'calc(1px * var(--ch, 1))',
-            opacity: props.altitude === 'thread' ? 0 : 'var(--live, 0)',
+            gap: '0.4em',
+            display: props.altitude === 'thread' ? 'none' : undefined,
           },
         )}
       >
-        <span
-          className="sc-accent shrink-0 rounded-full"
-          data-harness={harness}
-          style={{ width: '0.62em', height: '0.62em' }}
-        />
-        <b className="truncate">{chip}</b>
-        <span className="truncate text-ink-dim">{title}</span>
+        {renaming ? (
+          <span className="pointer-events-auto min-w-0" style={{ width: '22em' }}>
+            <RenameInput
+              nameKey={nameKey}
+              initial={title}
+              onDone={() => setRenaming(false)}
+              className="w-full min-w-0 rounded-full border border-em bg-panel-2 text-ink outline-none"
+              style={{ padding: '0.32em 0.9em', borderWidth: 'calc(1px * var(--ch, 1))' }}
+            />
+          </span>
+        ) : (
+          <>
+            <div
+              aria-hidden="true"
+              className="flex min-w-0 items-center rounded-full border border-line bg-panel"
+              style={{
+                gap: '0.55em',
+                padding: '0.32em 0.9em 0.32em 0.75em',
+                borderWidth: 'calc(1px * var(--ch, 1))',
+                opacity: 'var(--live, 0)',
+              }}
+            >
+              <span
+                className="sc-accent shrink-0 rounded-full"
+                data-harness={harness}
+                style={{ width: '0.62em', height: '0.62em' }}
+              />
+              <b className="truncate">{chip}</b>
+              <span className="truncate text-ink-dim">{title}</span>
+            </div>
+            <button
+              type="button"
+              data-act=""
+              data-tile-rename=""
+              aria-label={`Rename ${title}`}
+              title="Rename"
+              onClick={() => setRenaming(true)}
+              className={`pointer-events-auto shrink-0 rounded-full border border-line bg-panel text-ink-dim hover:border-em hover:text-em focus:opacity-100 ${
+                props.selected ? '' : 'opacity-0 group-hover:opacity-100'
+              }`}
+              style={{ padding: '0.4em', borderWidth: 'calc(1px * var(--ch, 1))' }}
+            >
+              <Pencil style={{ width: '1em', height: '1em' }} />
+            </button>
+          </>
+        )}
       </div>
       <div
         data-face="card"

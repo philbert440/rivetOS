@@ -10,6 +10,7 @@ import type { NotificationFrame } from '@rivetos/types'
 import type { Subscription } from '@rivetos/gateway-client'
 import { isValidGatewayUrl, useConnection } from './connection.js'
 import { rivetShell } from '../lib/shell-bridge.js'
+import { osNotify, windowInFront } from '../lib/os-notify.js'
 
 export interface NotificationEntry {
   id: string
@@ -33,14 +34,12 @@ function notifyPayload(frame: NotificationFrame): { title: string; body: string 
 }
 
 function nativeNotify(frame: NotificationFrame): void {
-  const shell = rivetShell()
   // Skip the OS notification only when the window is truly foreground —
   // visible AND focused — where the in-app toast already covers it. A
   // visible-but-unfocused window (behind another, other monitor) still gets
   // the native ping (#306 review: the visibilityState-only gate missed it).
-  if (!shell || (document.visibilityState === 'visible' && document.hasFocus())) return
-  // Electron main-process notifications need no permission handshake.
-  void shell.sendNotification(notifyPayload(frame)).catch(() => undefined)
+  if (windowInFront()) return
+  osNotify(notifyPayload(frame))
 }
 
 /** Mirror the unread count to the desktop shell's tray (feature-detected —

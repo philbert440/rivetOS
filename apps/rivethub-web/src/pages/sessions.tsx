@@ -14,6 +14,7 @@ import type {
   SessionMessage,
 } from '@rivetos/types'
 import { NotConnected, useGatewayReady } from '../components/not-connected.js'
+import { MemoryHubNav } from '../memory/MemoryHubNav.js'
 import { Select } from '../components/select.js'
 import { ContextBar } from '../components/context-bar.js'
 import { Transcript } from '../components/transcript.js'
@@ -342,218 +343,223 @@ export function SessionsPage(): JSX.Element {
   }
 
   return (
-    <div className="mx-auto flex max-w-5xl flex-col gap-4 px-4 py-8 md:px-6">
-      <div className="flex flex-wrap items-end justify-between gap-3">
-        <div>
-          <h1 className="font-mono text-lg font-semibold text-em">Sessions</h1>
-          {listResyncedAt !== undefined && (
-            <p className="mt-0.5 font-mono text-[11px] text-ink-dim">
-              list resynced {formatClock(listResyncedAt)}
+    <div className="flex h-full min-h-0 flex-col">
+      <MemoryHubNav tab="sessions" />
+      <div className="min-h-0 flex-1 overflow-y-auto">
+        <div className="mx-auto flex max-w-5xl flex-col gap-4 px-4 py-8 md:px-6">
+          <div className="flex flex-wrap items-end justify-between gap-3">
+            <div>
+              <h1 className="font-mono text-lg font-semibold text-em">Sessions</h1>
+              {listResyncedAt !== undefined && (
+                <p className="mt-0.5 font-mono text-[11px] text-ink-dim">
+                  list resynced {formatClock(listResyncedAt)}
+                </p>
+              )}
+            </div>
+            <div className="flex flex-wrap items-center gap-2">
+              <Select
+                value={harnessFilter}
+                title="harness filter"
+                label="Harness"
+                onChange={setHarnessFilter}
+                options={harnessOptions}
+              />
+              <Select
+                value={statusFilter}
+                title="status filter"
+                label="Status"
+                onChange={(v) => setStatusFilter(v as SessionStatusFilter)}
+                options={[
+                  { value: 'all', label: 'All' },
+                  { value: 'live', label: 'Live' },
+                  { value: 'ended', label: 'Ended' },
+                ]}
+              />
+              {tagEndpoint && (
+                <Select
+                  value={tagFilter}
+                  title="tag filter"
+                  label="Tag"
+                  onChange={setTagFilter}
+                  options={tagFilterOptions}
+                />
+              )}
+              {tagEndpoint && tagKeyChoices.length > 0 && (
+                <Select
+                  value={groupKey}
+                  title="group by tag key"
+                  label="Group"
+                  onChange={setGroupKey}
+                  options={[
+                    { value: '', label: 'no grouping' },
+                    ...tagKeyChoices.map((k) => ({ value: k, label: `by ${k}` })),
+                  ]}
+                />
+              )}
+              <input
+                type="search"
+                value={textFilter}
+                onChange={(e) => setTextFilter(e.target.value)}
+                placeholder="Filter title / cwd"
+                aria-label="Filter title or cwd"
+                className="min-w-[10rem] rounded border border-line bg-panel px-2 py-1.5 text-sm text-ink placeholder:text-ink-dim"
+              />
+            </div>
+          </div>
+
+          {(planeQuery.isError || legacyQuery.isError) && (
+            <div className="font-mono text-sm text-red">
+              {planeQuery.error?.message ?? legacyQuery.error?.message ?? 'failed to load sessions'}
+            </div>
+          )}
+
+          {tagEndpoint && tagLookupError && (
+            <div className="font-mono text-[11px] text-warn" role="alert">
+              tags unavailable: {tagLookupError.message}. Sessions are listed without them.
+            </div>
+          )}
+          {tagEndpoint && tagMutations.error && (
+            <div className="font-mono text-[11px] text-warn" role="alert">
+              tag update failed: {tagMutations.error.message}
+            </div>
+          )}
+
+          {narrow ? (
+            <ul className="flex flex-col gap-2">
+              {(groups ?? [{ label: '', identity: '', rows: tagged }]).map((group) => (
+                <li key={group.identity || '__all'} className="flex flex-col gap-2">
+                  {group.label && (
+                    <div className="mt-2 font-mono text-[11px] text-ink-dim">
+                      {group.label} · {group.rows.length}
+                    </div>
+                  )}
+                  <ul className="flex flex-col gap-2">
+                    {group.rows.map((row) => (
+                      <li
+                        key={row.key}
+                        className="flex flex-col gap-1 rounded border border-line bg-panel hover:border-em"
+                      >
+                        {/* The row opens the session; chips are siblings of that
+                        button, never nested inside it. */}
+                        <button
+                          type="button"
+                          onClick={() => openRow(row)}
+                          className="flex w-full flex-col gap-1 px-4 pt-3 text-left"
+                        >
+                          <span className="truncate text-sm text-ink">
+                            {row.title || shortNativeId(row.key)}
+                          </span>
+                          <span className="flex flex-wrap items-center gap-2">
+                            <HarnessBadge harnessId={row.harnessId} command={row.command} />
+                            <StatusPill status={row.status} blocked={row.blocked} />
+                            <span className="font-mono text-[11px] text-ink-dim">
+                              {relativeUpdated(row.updatedAt)}
+                            </span>
+                          </span>
+                        </button>
+                        {rowTags(row).length > 0 && (
+                          <div className="px-4 pb-3">
+                            <TagChips
+                              tags={rowTags(row)}
+                              max={4}
+                              onClick={onTagClick}
+                              onAccept={(id) => void tagMutations.decide([id], 'accepted')}
+                              onReject={(id) => void tagMutations.decide([id], 'rejected')}
+                              busy={tagMutations.busy}
+                            />
+                          </div>
+                        )}
+                      </li>
+                    ))}
+                  </ul>
+                </li>
+              ))}
+            </ul>
+          ) : (
+            <div className="overflow-x-auto rounded border border-line">
+              <table className="w-full min-w-[40rem] border-collapse text-left text-sm">
+                <thead className="border-b border-line bg-panel-2/60 font-mono text-[11px] text-ink-dim">
+                  <tr>
+                    <th className="px-3 py-2 font-medium">Title</th>
+                    <th className="px-3 py-2 font-medium">Harness</th>
+                    <th className="px-3 py-2 font-medium">Status</th>
+                    <th className="px-3 py-2 font-medium">Updated</th>
+                    {tagEndpoint && <th className="px-3 py-2 font-medium">Tags</th>}
+                    <th className="px-3 py-2 font-medium">cwd</th>
+                    <th className="px-3 py-2 font-medium">Id</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {(groups ?? [{ label: '', identity: '', rows: tagged }]).flatMap((group) => [
+                    ...(group.label
+                      ? [
+                          <tr
+                            key={`g-${group.identity || 'untagged'}`}
+                            className="border-b border-line/60 bg-panel-2/30"
+                          >
+                            <td
+                              colSpan={tagEndpoint ? 7 : 6}
+                              className="px-3 py-1.5 font-mono text-[11px] text-ink-dim"
+                            >
+                              {group.label} · {group.rows.length}
+                            </td>
+                          </tr>,
+                        ]
+                      : []),
+                    ...group.rows.map((row) => (
+                      <tr
+                        key={`${group.identity}/${row.key}`}
+                        className="cursor-pointer border-b border-line/60 hover:bg-panel-2/40"
+                        onClick={() => openRow(row)}
+                      >
+                        <td className="max-w-[14rem] truncate px-3 py-2 text-ink">
+                          {row.title || shortNativeId(row.key)}
+                        </td>
+                        <td className="px-3 py-2">
+                          <HarnessBadge harnessId={row.harnessId} command={row.command} />
+                        </td>
+                        <td className="px-3 py-2">
+                          <StatusPill status={row.status} blocked={row.blocked} />
+                        </td>
+                        <td className="px-3 py-2 font-mono text-[11px] text-ink-dim">
+                          {relativeUpdated(row.updatedAt)}
+                        </td>
+                        {tagEndpoint && (
+                          <td className="max-w-[16rem] px-3 py-2">
+                            <TagChips
+                              tags={rowTags(row)}
+                              max={3}
+                              onClick={onTagClick}
+                              onAccept={(id) => void tagMutations.decide([id], 'accepted')}
+                              onReject={(id) => void tagMutations.decide([id], 'rejected')}
+                              busy={tagMutations.busy}
+                            />
+                          </td>
+                        )}
+                        <td className="max-w-[8rem] truncate px-3 py-2 font-mono text-[11px] text-ink-dim">
+                          {cwdBasename(row.cwd) ?? '—'}
+                        </td>
+                        <td className="px-3 py-2 font-mono text-[11px] text-ink-dim">
+                          {shortNativeId(row.sessionId ?? row.key)}
+                        </td>
+                      </tr>
+                    )),
+                  ])}
+                </tbody>
+              </table>
+            </div>
+          )}
+
+          {tagged.length === 0 && (
+            <p className="text-sm text-ink-dim">
+              no sessions
+              {harnessFilter || statusFilter !== 'all' || textFilter.trim() || tagFilter
+                ? ' match these filters'
+                : ''}
             </p>
           )}
         </div>
-        <div className="flex flex-wrap items-center gap-2">
-          <Select
-            value={harnessFilter}
-            title="harness filter"
-            label="Harness"
-            onChange={setHarnessFilter}
-            options={harnessOptions}
-          />
-          <Select
-            value={statusFilter}
-            title="status filter"
-            label="Status"
-            onChange={(v) => setStatusFilter(v as SessionStatusFilter)}
-            options={[
-              { value: 'all', label: 'All' },
-              { value: 'live', label: 'Live' },
-              { value: 'ended', label: 'Ended' },
-            ]}
-          />
-          {tagEndpoint && (
-            <Select
-              value={tagFilter}
-              title="tag filter"
-              label="Tag"
-              onChange={setTagFilter}
-              options={tagFilterOptions}
-            />
-          )}
-          {tagEndpoint && tagKeyChoices.length > 0 && (
-            <Select
-              value={groupKey}
-              title="group by tag key"
-              label="Group"
-              onChange={setGroupKey}
-              options={[
-                { value: '', label: 'no grouping' },
-                ...tagKeyChoices.map((k) => ({ value: k, label: `by ${k}` })),
-              ]}
-            />
-          )}
-          <input
-            type="search"
-            value={textFilter}
-            onChange={(e) => setTextFilter(e.target.value)}
-            placeholder="Filter title / cwd"
-            aria-label="Filter title or cwd"
-            className="min-w-[10rem] rounded border border-line bg-panel px-2 py-1.5 text-sm text-ink placeholder:text-ink-dim"
-          />
-        </div>
       </div>
-
-      {(planeQuery.isError || legacyQuery.isError) && (
-        <div className="font-mono text-sm text-red">
-          {planeQuery.error?.message ?? legacyQuery.error?.message ?? 'failed to load sessions'}
-        </div>
-      )}
-
-      {tagEndpoint && tagLookupError && (
-        <div className="font-mono text-[11px] text-warn" role="alert">
-          tags unavailable: {tagLookupError.message}. Sessions are listed without them.
-        </div>
-      )}
-      {tagEndpoint && tagMutations.error && (
-        <div className="font-mono text-[11px] text-warn" role="alert">
-          tag update failed: {tagMutations.error.message}
-        </div>
-      )}
-
-      {narrow ? (
-        <ul className="flex flex-col gap-2">
-          {(groups ?? [{ label: '', identity: '', rows: tagged }]).map((group) => (
-            <li key={group.identity || '__all'} className="flex flex-col gap-2">
-              {group.label && (
-                <div className="mt-2 font-mono text-[11px] text-ink-dim">
-                  {group.label} · {group.rows.length}
-                </div>
-              )}
-              <ul className="flex flex-col gap-2">
-                {group.rows.map((row) => (
-                  <li
-                    key={row.key}
-                    className="flex flex-col gap-1 rounded border border-line bg-panel hover:border-em"
-                  >
-                    {/* The row opens the session; chips are siblings of that
-                        button, never nested inside it. */}
-                    <button
-                      type="button"
-                      onClick={() => openRow(row)}
-                      className="flex w-full flex-col gap-1 px-4 pt-3 text-left"
-                    >
-                      <span className="truncate text-sm text-ink">
-                        {row.title || shortNativeId(row.key)}
-                      </span>
-                      <span className="flex flex-wrap items-center gap-2">
-                        <HarnessBadge harnessId={row.harnessId} command={row.command} />
-                        <StatusPill status={row.status} blocked={row.blocked} />
-                        <span className="font-mono text-[11px] text-ink-dim">
-                          {relativeUpdated(row.updatedAt)}
-                        </span>
-                      </span>
-                    </button>
-                    {rowTags(row).length > 0 && (
-                      <div className="px-4 pb-3">
-                        <TagChips
-                          tags={rowTags(row)}
-                          max={4}
-                          onClick={onTagClick}
-                          onAccept={(id) => void tagMutations.decide([id], 'accepted')}
-                          onReject={(id) => void tagMutations.decide([id], 'rejected')}
-                          busy={tagMutations.busy}
-                        />
-                      </div>
-                    )}
-                  </li>
-                ))}
-              </ul>
-            </li>
-          ))}
-        </ul>
-      ) : (
-        <div className="overflow-x-auto rounded border border-line">
-          <table className="w-full min-w-[40rem] border-collapse text-left text-sm">
-            <thead className="border-b border-line bg-panel-2/60 font-mono text-[11px] text-ink-dim">
-              <tr>
-                <th className="px-3 py-2 font-medium">Title</th>
-                <th className="px-3 py-2 font-medium">Harness</th>
-                <th className="px-3 py-2 font-medium">Status</th>
-                <th className="px-3 py-2 font-medium">Updated</th>
-                {tagEndpoint && <th className="px-3 py-2 font-medium">Tags</th>}
-                <th className="px-3 py-2 font-medium">cwd</th>
-                <th className="px-3 py-2 font-medium">Id</th>
-              </tr>
-            </thead>
-            <tbody>
-              {(groups ?? [{ label: '', identity: '', rows: tagged }]).flatMap((group) => [
-                ...(group.label
-                  ? [
-                      <tr
-                        key={`g-${group.identity || 'untagged'}`}
-                        className="border-b border-line/60 bg-panel-2/30"
-                      >
-                        <td
-                          colSpan={tagEndpoint ? 7 : 6}
-                          className="px-3 py-1.5 font-mono text-[11px] text-ink-dim"
-                        >
-                          {group.label} · {group.rows.length}
-                        </td>
-                      </tr>,
-                    ]
-                  : []),
-                ...group.rows.map((row) => (
-                  <tr
-                    key={`${group.identity}/${row.key}`}
-                    className="cursor-pointer border-b border-line/60 hover:bg-panel-2/40"
-                    onClick={() => openRow(row)}
-                  >
-                    <td className="max-w-[14rem] truncate px-3 py-2 text-ink">
-                      {row.title || shortNativeId(row.key)}
-                    </td>
-                    <td className="px-3 py-2">
-                      <HarnessBadge harnessId={row.harnessId} command={row.command} />
-                    </td>
-                    <td className="px-3 py-2">
-                      <StatusPill status={row.status} blocked={row.blocked} />
-                    </td>
-                    <td className="px-3 py-2 font-mono text-[11px] text-ink-dim">
-                      {relativeUpdated(row.updatedAt)}
-                    </td>
-                    {tagEndpoint && (
-                      <td className="max-w-[16rem] px-3 py-2">
-                        <TagChips
-                          tags={rowTags(row)}
-                          max={3}
-                          onClick={onTagClick}
-                          onAccept={(id) => void tagMutations.decide([id], 'accepted')}
-                          onReject={(id) => void tagMutations.decide([id], 'rejected')}
-                          busy={tagMutations.busy}
-                        />
-                      </td>
-                    )}
-                    <td className="max-w-[8rem] truncate px-3 py-2 font-mono text-[11px] text-ink-dim">
-                      {cwdBasename(row.cwd) ?? '—'}
-                    </td>
-                    <td className="px-3 py-2 font-mono text-[11px] text-ink-dim">
-                      {shortNativeId(row.sessionId ?? row.key)}
-                    </td>
-                  </tr>
-                )),
-              ])}
-            </tbody>
-          </table>
-        </div>
-      )}
-
-      {tagged.length === 0 && (
-        <p className="text-sm text-ink-dim">
-          no sessions
-          {harnessFilter || statusFilter !== 'all' || textFilter.trim() || tagFilter
-            ? ' match these filters'
-            : ''}
-        </p>
-      )}
     </div>
   )
 }
@@ -880,6 +886,7 @@ export function SessionDetailPage(): JSX.Element {
 
   return (
     <div className="flex h-full min-h-0 flex-col">
+      <MemoryHubNav tab="sessions" />
       <ConnectionStrip strip={strip} />
 
       <div

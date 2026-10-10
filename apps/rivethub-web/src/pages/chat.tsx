@@ -141,6 +141,7 @@ import { useArchived } from '../stores/archived.js'
 import { useSidebarPrefs } from '../stores/sidebar-prefs.js'
 import { useAgentFilter } from '../stores/agent-filter.js'
 import { startNewConversation } from '../lib/new-conversation.js'
+import { useKeyLabel } from '../lib/use-key-label.js'
 import { discardDraft } from '../lib/discard-session.js'
 import { shouldCloseHistoryOnSelect } from '../lib/drawer-selection.js'
 import { narrowLaunchTarget } from '../lib/launch-session.js'
@@ -292,11 +293,14 @@ export function ChatPage(): JSX.Element {
   // Pin enrichment below reads the house-agents cache by peek (getQueriesData
   // is not a subscription), so track those queries explicitly — a freshly
   // minted pin would otherwise show the raw agentId and no swatch until some
-  // other dep of the items memo happened to change.
+  // other dep of the items memo happened to change. Only cache changes count:
+  // observer events fire on every render of a roster subscriber, and the
+  // canvas renders one under this page — reacting to those loops forever.
   const [houseTick, setHouseTick] = useState(0)
   useEffect(
     () =>
       queryClient.getQueryCache().subscribe((event) => {
+        if (event.type !== 'added' && event.type !== 'removed' && event.type !== 'updated') return
         const key: unknown = (event.query.queryKey as readonly unknown[])[0]
         if (key === 'agents-all-nodes') setHouseTick((t) => t + 1)
       }),
@@ -425,7 +429,11 @@ export function ChatPage(): JSX.Element {
       setActive(sessionFromUrl)
       return
     }
-    const urlTarget = active !== undefined && !drafts.includes(active) ? active : undefined
+    // Read the store, not the render's `active`: StrictMode re-runs this
+    // effect with the pre-setActive closure, which would write `/` back and
+    // drop a deep link on first load.
+    const current = useChat.getState().active
+    const urlTarget = current !== undefined && !drafts.includes(current) ? current : undefined
     if (urlTarget !== sessionFromUrl) {
       lastUrlRef.current = urlTarget
       void navigate({ to: '/', search: urlTarget ? { session: urlTarget } : {}, replace: true })
@@ -721,6 +729,7 @@ function SessionDrawer(props: {
   error?: string
   fullWidth?: boolean
 }): JSX.Element {
+  const newKey = useKeyLabel()('new-conversation')
   const setActive = useChat((s) => s.setActive)
   const wsStatus = useChat((s) => s.wsStatus)
   const baseUrl = useConnection((s) => s.baseUrl)
@@ -859,8 +868,8 @@ function SessionDrawer(props: {
           onClick={startNew}
           title={
             agentFilter.name
-              ? `new session with ${agentFilter.name} (Ctrl+T)`
-              : 'new session (Ctrl+T)'
+              ? `new session with ${agentFilter.name}${newKey ? ` (${newKey})` : ''}`
+              : `new session${newKey ? ` (${newKey})` : ''}`
           }
           className="rounded border border-line px-2 py-1 text-xs text-ink-dim hover:border-em hover:text-em"
         >
@@ -1894,7 +1903,7 @@ function ActiveSession(props: {
   )
 
   return (
-    <div className="relative flex min-w-0 flex-1 flex-col">
+    <div className="relative flex min-h-0 min-w-0 flex-1 flex-col">
       {narrow ? (
         /* ONE 48px row on the phone — same tokens as the
            desktop header below (border-b border-line, bg-panel/40, mono

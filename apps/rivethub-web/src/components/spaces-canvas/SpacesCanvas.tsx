@@ -1,7 +1,7 @@
 /**
  * Desktop conversations canvas. One region per space, in store order, plus a
- * dashed "+ New space". With no spaces stored, that placeholder and a History
- * hint are the whole canvas — unplaced threads stay in History. Thread
+ * dashed "+ New space". The store always holds at least one space (General),
+ * and unplaced threads stay in History. Thread
  * altitude freezes tile order so a recency update cannot move the focused
  * tile out from under the fly.
  */
@@ -19,6 +19,7 @@ import {
   type ReactNode,
 } from 'react'
 import * as Dialog from '@radix-ui/react-dialog'
+import { Keyboard, Pencil } from 'lucide-react'
 import { useQueryClient } from '@tanstack/react-query'
 import type { HarnessDescriptor } from '@rivetos/types'
 import type { ChatItem } from '../../lib/harness-chat.js'
@@ -31,7 +32,8 @@ import {
   matchCanvasNav,
   type CanvasAction,
 } from '../../lib/hub-keys.js'
-import { bindSpaceThreadStarter } from '../../lib/new-conversation.js'
+import { bindFocusedSpace, bindSpaceThreadStarter } from '../../lib/new-conversation.js'
+import { useKeyLabel } from '../../lib/use-key-label.js'
 import { storageKey } from '../../lib/session-rekey.js'
 import { useRosterAgents } from '../../lib/use-agent-roster.js'
 import { useArchived } from '../../stores/archived.js'
@@ -40,6 +42,7 @@ import { useConnection } from '../../stores/connection.js'
 import { useSidebarPrefs } from '../../stores/sidebar-prefs.js'
 import { useSpaces } from '../../stores/spaces.js'
 import { ConversationEmpty } from '../conversation-empty.js'
+import { RenameInput, useSessionTitle } from '../session-rename.js'
 import { isRowArchived, rowMembershipKey } from '../drawer-item.js'
 import { Popover, PopoverContent, PopoverTrigger } from '../ui/popover.js'
 import {
@@ -235,6 +238,11 @@ interface PaintedTile {
   rowLabel: string
 }
 
+/** The dock's key column: each button leads with its current binding. */
+function DockKey(props: { label: string }): JSX.Element {
+  return <kbd className="w-24 shrink-0 text-left text-ink-dim">{props.label}</kbd>
+}
+
 export function SpacesCanvas(props: {
   rows: ChatItem[]
   activeId?: string
@@ -284,6 +292,11 @@ export function SpacesCanvas(props: {
   const [mruStep, setMruStep] = useState(0)
   const [toasts, setToasts] = useState<NeedsToast[]>([])
   const [keysOpen, setKeysOpen] = useState(false)
+  // The dock is tucked behind a corner toggle and opens as a column upward,
+  // leaving the width to the thread. Find and Move live in it, so it shows
+  // while either is open even when tucked.
+  const [dockOpen, setDockOpen] = useState(false)
+  const label = useKeyLabel()
   const [rosterNotice, setRosterNotice] = useState<string | undefined>()
   const localOpen = useRef<string | undefined>(undefined)
   const navBridge = useRef(false)
@@ -1002,6 +1015,11 @@ export function SpacesCanvas(props: {
   }, [])
 
   useEffect(() => {
+    bindFocusedSpace(() => spaceInFocusRef.current())
+    return () => bindFocusedSpace(null)
+  }, [])
+
+  useEffect(() => {
     const hitAt = (clientX: number, clientY: number): DropHit => {
       const stage = stageRef.current
       if (!stage) return { kind: 'none' }
@@ -1222,22 +1240,6 @@ export function SpacesCanvas(props: {
       {rows.length === 0 ? (
         <div className="pointer-events-none absolute inset-0 z-10 flex items-center justify-center">
           <ConversationEmpty />
-        </div>
-      ) : spaces.length === 0 ? (
-        <div
-          data-empty-spaces=""
-          className="pointer-events-none absolute top-1/2 left-1/2 z-10 flex max-w-sm -translate-x-1/2 -translate-y-1/2 flex-col items-center gap-3 text-center"
-        >
-          <p className="text-sm text-ink-dim">No spaces yet. Threads live in History.</p>
-          <button
-            type="button"
-            data-act=""
-            data-empty-new-space=""
-            className="pointer-events-auto text-sm text-ink-dim hover:text-em"
-            onClick={() => setNamePrompt({ mode: 'create' })}
-          >
-            + New space
-          </button>
         </div>
       ) : null}
       <p className="sr-only" aria-live="polite" data-altitude-live="">
@@ -1510,13 +1512,7 @@ export function SpacesCanvas(props: {
           {crumbThread ? (
             <>
               <span aria-hidden="true">›</span>
-              <button
-                type="button"
-                className="truncate px-2 py-1 text-ink hover:text-ink"
-                onClick={() => beginThread(crumbThread.key)}
-              >
-                {crumbThread.title}
-              </button>
+              <ThreadCrumb item={crumbThread} onOpen={() => beginThread(crumbThread.key)} />
             </>
           ) : null}
         </nav>
@@ -1556,160 +1552,192 @@ export function SpacesCanvas(props: {
             {zoomPct}%
           </div>
         </nav>
-        <div
+        <button
+          type="button"
           data-hud=""
-          className="pointer-events-auto absolute bottom-4 left-1/2 flex max-w-[calc(100%-2rem)] -translate-x-1/2 flex-wrap justify-center gap-1 border border-line bg-panel p-1"
+          data-dock-toggle=""
+          aria-expanded={dockOpen}
+          aria-label={dockOpen ? 'Hide shortcuts' : 'Show shortcuts'}
+          title={dockOpen ? 'Hide shortcuts' : 'Show shortcuts'}
+          className={`pointer-events-auto absolute right-2 bottom-2 flex items-center gap-1 border border-line bg-panel p-1.5 hover:bg-em/15 ${
+            dockOpen ? 'text-em' : 'text-ink-dim hover:text-ink'
+          }`}
+          onClick={() => setDockOpen((open) => !open)}
         >
-          <button
-            type="button"
-            data-dock="history"
-            aria-pressed={historyWanted}
-            className={`px-3 py-2 text-sm hover:bg-em/15 ${historyWanted ? 'text-em' : 'text-ink'}`}
-            onClick={() => {
-              if (pick) return
-              setHistoryWanted((open) => !open)
-            }}
+          <Keyboard aria-hidden="true" className="size-4" />
+          {!dockOpen && needsCount > 0 ? (
+            <span data-dock-needs="" className="text-xs text-warn">
+              {needsCount}
+            </span>
+          ) : null}
+        </button>
+        {dockOpen || findOpen || moveOpen ? (
+          <div
+            data-hud=""
+            data-dock-bar=""
+            className="pointer-events-auto absolute right-2 bottom-11 flex max-h-[calc(100%-4rem)] flex-col items-stretch gap-0.5 overflow-y-auto border border-line bg-panel p-1 [&>button]:flex [&>button]:items-baseline [&>button]:gap-2 [&>button]:text-left"
           >
-            History <kbd className="text-ink-dim">H</kbd>
-          </button>
-          <button
-            type="button"
-            data-dock="needs"
-            className="px-3 py-2 text-sm text-ink hover:bg-em/15"
-            onClick={() => {
-              const id = nextWaitingId(waiting, openId, altitude === 'thread')
-              if (id !== undefined) beginThread(id)
-            }}
-          >
-            Needs you{' '}
-            <span className={needsCount > 0 ? 'text-warn' : 'text-ink-dim'}>{needsCount}</span>
-          </button>
-          <button
-            type="button"
-            data-dock="recent"
-            className="px-3 py-2 text-sm text-ink hover:bg-em/15 disabled:opacity-40"
-            disabled={mru.length < 2}
-            onClick={() => {
-              // Previous thread — the way to step back at Thread, where Ctrl+` is
-              // left to the terminal. mru[1], not the wrapping preview helper.
-              const id = mru[1]
-              if (id !== undefined) beginThread(id)
-            }}
-          >
-            Recent
-          </button>
-          <button
-            type="button"
-            data-dock="thread"
-            className="px-3 py-2 text-sm text-ink hover:bg-em/15"
-            title={dockStartsIn}
-            onClick={() => setNewThread({ spaceId: spaceYouAreIn() })}
-          >
-            + Thread <kbd className="text-ink-dim">T</kbd>
-          </button>
-          {moveOpen && selectedPlaced ? (
-            <Popover
-              open
-              onOpenChange={(open) => {
-                if (!open) setMoveOpen(false)
+            <button
+              type="button"
+              data-dock="history"
+              aria-pressed={historyWanted}
+              className={`px-3 py-2 text-sm hover:bg-em/15 ${historyWanted ? 'text-em' : 'text-ink'}`}
+              onClick={() => {
+                if (pick) return
+                setHistoryWanted((open) => !open)
               }}
             >
-              <PopoverTrigger asChild>
-                <button
-                  type="button"
-                  data-dock="move"
-                  className="px-3 py-2 text-sm text-em hover:bg-em/15"
-                >
-                  Move <kbd className="text-ink-dim">M</kbd>
-                </button>
-              </PopoverTrigger>
-              <PopoverContent align="center" className="w-56 p-1 font-mono">
-                <div className="px-3 py-2 text-xs text-ink-dim">Move to…</div>
-                {spaces.map((space) => (
+              <DockKey label={label('history')} />
+              History
+            </button>
+            <button
+              type="button"
+              data-dock="needs"
+              className="px-3 py-2 text-sm text-ink hover:bg-em/15"
+              onClick={() => {
+                const id = nextWaitingId(waiting, openId, altitude === 'thread')
+                if (id !== undefined) beginThread(id)
+              }}
+            >
+              <DockKey label={label('next-waiting')} />
+              Needs you{' '}
+              <span className={needsCount > 0 ? 'text-warn' : 'text-ink-dim'}>{needsCount}</span>
+            </button>
+            <button
+              type="button"
+              data-dock="recent"
+              className="px-3 py-2 text-sm text-ink hover:bg-em/15 disabled:opacity-40"
+              disabled={mru.length < 2}
+              onClick={() => {
+                // Previous thread — the way to step back at Thread, where Ctrl+` is
+                // left to the terminal. mru[1], not the wrapping preview helper.
+                const id = mru[1]
+                if (id !== undefined) beginThread(id)
+              }}
+            >
+              <DockKey label={label('mru')} />
+              Recent
+            </button>
+            <button
+              type="button"
+              data-dock="thread"
+              className="px-3 py-2 text-sm text-ink hover:bg-em/15"
+              title={dockStartsIn}
+              onClick={() => setNewThread({ spaceId: spaceYouAreIn() })}
+            >
+              <DockKey label={label('new-thread')} />+ Thread
+            </button>
+            {moveOpen && selectedPlaced ? (
+              <Popover
+                open
+                onOpenChange={(open) => {
+                  if (!open) setMoveOpen(false)
+                }}
+              >
+                <PopoverTrigger asChild>
                   <button
-                    key={space.id}
+                    type="button"
+                    data-dock="move"
+                    className="px-3 py-2 text-sm text-em hover:bg-em/15"
+                  >
+                    <DockKey label={label('move')} />
+                    Move
+                  </button>
+                </PopoverTrigger>
+                <PopoverContent align="center" className="w-56 p-1 font-mono">
+                  <div className="px-3 py-2 text-xs text-ink-dim">Move to…</div>
+                  {spaces.map((space) => (
+                    <button
+                      key={space.id}
+                      type="button"
+                      className="block w-full px-3 py-1.5 text-left text-sm text-ink hover:bg-em/15"
+                      onClick={() => {
+                        useSpaces
+                          .getState()
+                          .place(
+                            rowMembershipKey(baseUrl, selectedPlaced.row, membership),
+                            space.id,
+                          )
+                        setMoveOpen(false)
+                      }}
+                    >
+                      {space.name}
+                    </button>
+                  ))}
+                  <button
                     type="button"
                     className="block w-full px-3 py-1.5 text-left text-sm text-ink hover:bg-em/15"
                     onClick={() => {
                       useSpaces
                         .getState()
-                        .place(rowMembershipKey(baseUrl, selectedPlaced.row, membership), space.id)
+                        .unplace(rowMembershipKey(baseUrl, selectedPlaced.row, membership))
                       setMoveOpen(false)
                     }}
                   >
-                    {space.name}
+                    History
                   </button>
-                ))}
-                <button
-                  type="button"
-                  className="block w-full px-3 py-1.5 text-left text-sm text-ink hover:bg-em/15"
-                  onClick={() => {
-                    useSpaces
-                      .getState()
-                      .unplace(rowMembershipKey(baseUrl, selectedPlaced.row, membership))
-                    setMoveOpen(false)
-                  }}
-                >
-                  History
-                </button>
-              </PopoverContent>
-            </Popover>
-          ) : (
+                </PopoverContent>
+              </Popover>
+            ) : (
+              <button
+                type="button"
+                data-dock="move"
+                className="px-3 py-2 text-sm text-ink hover:bg-em/15"
+                onClick={() => {
+                  if (selectedPlaced) setMoveOpen(true)
+                }}
+              >
+                <DockKey label={label('move')} />
+                Move
+              </button>
+            )}
+            {findOpen ? (
+              <input
+                ref={findInputRef}
+                data-dock="find"
+                aria-label="Find an agent"
+                placeholder="Agent, thread or space"
+                value={findQuery}
+                onChange={(event) => setFindQuery(event.target.value)}
+                className="w-56 border border-line bg-bg px-2 py-1.5 text-sm text-ink outline-none placeholder:text-ink-dim"
+              />
+            ) : null}
             <button
               type="button"
-              data-dock="move"
               className="px-3 py-2 text-sm text-ink hover:bg-em/15"
               onClick={() => {
-                if (selectedPlaced) setMoveOpen(true)
+                const effect = reduceCanvasCommand(
+                  { altitude, selectedId },
+                  { chord: 'zoom-toggle' },
+                  tilesRef.current,
+                )
+                performCanvasEffect(effect, actionsRef.current)
               }}
             >
-              Move <kbd className="text-ink-dim">M</kbd>
+              <DockKey label={label('zoom-toggle')} />
+              {altitude === 'thread' ? 'Zoom out' : 'Zoom in'}
             </button>
-          )}
-          {findOpen ? (
-            <input
-              ref={findInputRef}
-              data-dock="find"
-              aria-label="Find an agent"
-              placeholder="Agent, thread or space"
-              value={findQuery}
-              onChange={(event) => setFindQuery(event.target.value)}
-              className="w-56 border border-line bg-bg px-2 py-1.5 text-sm text-ink outline-none placeholder:text-ink-dim"
-            />
-          ) : null}
-          <button
-            type="button"
-            className="px-3 py-2 text-sm text-ink hover:bg-em/15"
-            onClick={() => {
-              const effect = reduceCanvasCommand(
-                { altitude, selectedId },
-                { chord: 'zoom-toggle' },
-                tilesRef.current,
-              )
-              performCanvasEffect(effect, actionsRef.current)
-            }}
-          >
-            {altitude === 'thread' ? 'Zoom out' : 'Zoom in'}{' '}
-            <kbd className="text-ink-dim">Ctrl Space</kbd>
-          </button>
-          <button
-            type="button"
-            className="px-3 py-2 text-sm text-ink hover:bg-em/15"
-            onClick={() => leaveTo('everything')}
-          >
-            Everything <kbd className="text-ink-dim">Ctrl 0</kbd>
-          </button>
-          <button
-            type="button"
-            data-dock="keys"
-            aria-pressed={keysOpen}
-            aria-label="Keys"
-            className={`px-3 py-2 text-sm hover:bg-em/15 ${keysOpen ? 'text-em' : 'text-ink'}`}
-            onClick={() => setKeysOpen((open) => !open)}
-          >
-            ? <kbd className="text-ink-dim">Keys</kbd>
-          </button>
-        </div>
+            <button
+              type="button"
+              className="px-3 py-2 text-sm text-ink hover:bg-em/15"
+              onClick={() => leaveTo('everything')}
+            >
+              <DockKey label={label('everything')} />
+              Everything
+            </button>
+            <button
+              type="button"
+              data-dock="keys"
+              aria-pressed={keysOpen}
+              aria-label="Keys"
+              className={`px-3 py-2 text-sm hover:bg-em/15 ${keysOpen ? 'text-em' : 'text-ink'}`}
+              onClick={() => setKeysOpen((open) => !open)}
+            >
+              <DockKey label={label('keys')} />
+              Keys
+            </button>
+          </div>
+        ) : null}
         {rosterNotice ? (
           <p
             role="status"
@@ -1802,7 +1830,9 @@ export function SpacesCanvas(props: {
                 <tbody>
                   {CANVAS_KEYS.map((entry) => (
                     <tr key={entry.id} data-key-row={entry.id} className="align-top text-ink">
-                      <td className="py-1 pr-3 whitespace-nowrap text-em">{entry.keys}</td>
+                      <td className="py-1 pr-3 whitespace-nowrap text-em">
+                        {label(entry.id) || 'unbound'}
+                      </td>
                       <td className="py-1 pr-3 text-ink-dim">{entry.summary}</td>
                       <td className="py-1 text-ink-dim">{entry.thread}</td>
                     </tr>
@@ -1964,5 +1994,44 @@ function RemoveDialog(props: {
         </Dialog.Content>
       </Dialog.Portal>
     </Dialog.Root>
+  )
+}
+
+/** Breadcrumb's thread: click opens it; the pencil or a double-click renames. */
+function ThreadCrumb(props: { item: ChatItem; onOpen: () => void }): JSX.Element {
+  const { title, nameKey } = useSessionTitle(props.item)
+  const [renaming, setRenaming] = useState(false)
+  if (renaming) {
+    return (
+      <RenameInput
+        nameKey={nameKey}
+        initial={title}
+        onDone={() => setRenaming(false)}
+        className="w-64 min-w-0 border border-em bg-panel-2 px-2 py-0.5 text-sm text-ink outline-none"
+      />
+    )
+  }
+  return (
+    <span className="flex min-w-0 items-center">
+      <button
+        type="button"
+        data-crumb-thread=""
+        className="truncate px-2 py-1 text-ink hover:text-ink"
+        title="Double-click to rename"
+        onClick={props.onOpen}
+        onDoubleClick={() => setRenaming(true)}
+      >
+        {title}
+      </button>
+      <button
+        type="button"
+        aria-label={`Rename ${title}`}
+        title="Rename"
+        className="shrink-0 px-1 py-1 text-ink-dim hover:text-em"
+        onClick={() => setRenaming(true)}
+      >
+        <Pencil aria-hidden="true" className="size-3.5" />
+      </button>
+    </span>
   )
 }

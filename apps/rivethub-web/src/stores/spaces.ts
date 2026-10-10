@@ -9,6 +9,10 @@
  *
  * `defaults` pre-fill a new thread. There is no directory field: the den
  * derives cwd from the preset id, and `node` is only a den base URL.
+ *
+ * There is always at least one space: an empty list (first run, or the last
+ * space removed) is seeded with a fresh "General", which is deletable like
+ * any other. `defaultSpaceId` is where a thread started outside a space goes.
  */
 
 import { HARNESS_IDS, type HarnessId, type ThinkingLevel } from '@rivetos/types'
@@ -19,6 +23,7 @@ import { useArchived } from './archived.js'
 
 const KEY = 'rivethub.spaces'
 const MAX_MEMBERSHIP = 2000
+export const DEFAULT_SPACE_NAME = 'General'
 const THINKING_LEVELS: readonly ThinkingLevel[] = ['off', 'low', 'medium', 'high', 'xhigh']
 
 /** Optional starting point for threads minted inside this space. */
@@ -53,7 +58,8 @@ interface SpacesState {
   membership: Record<string, string>
   addSpace: (name: string) => string
   renameSpace: (id: string, name: string) => void
-  /** Drops the space. Its threads lose membership (they return to History). */
+  /** Drops the space. Its threads lose membership (they return to History).
+   *  Removing the last space seeds a fresh General. */
   removeSpace: (id: string) => void
   reorderSpace: (id: string, order: number) => void
   /** `undefined` on a present key clears that default. Unknown id is a no-op. */
@@ -63,6 +69,8 @@ interface SpacesState {
   /** Move a membership entry when a draft's chat key is adopted. No-op if `from` is absent. */
   rekey: (from: string, to: string) => void
   spaceOf: (rowKey: string) => string | undefined
+  /** First space in order — where threads started outside a space land. */
+  defaultSpaceId: () => string
 }
 
 type Persisted = Pick<SpacesState, 'spaces' | 'membership'>
@@ -210,6 +218,15 @@ export function normalizeSpaces(raw: unknown): SpaceDef[] {
   return spaces
 }
 
+function generalSpace(): SpaceDef {
+  return { id: uuidv4(), name: DEFAULT_SPACE_NAME, order: 0, createdAt: Date.now() }
+}
+
+/** Never empty: no spaces means a fresh General. */
+export function withDefaultSpace(spaces: SpaceDef[]): SpaceDef[] {
+  return spaces.length > 0 ? spaces : [generalSpace()]
+}
+
 export function normalizeMembership(raw: unknown): Record<string, string> {
   if (!isPlainObject(raw)) return {}
   const next: Record<string, string> = {}
@@ -222,7 +239,7 @@ export function normalizeMembership(raw: unknown): Record<string, string> {
 export const useSpaces = create<SpacesState>()(
   persist(
     (set, get) => ({
-      spaces: [],
+      spaces: [generalSpace()],
       membership: {},
       addSpace: (name) => {
         const trimmed = name.trim()
@@ -255,7 +272,10 @@ export const useSpaces = create<SpacesState>()(
           for (const [key, spaceId] of Object.entries(s.membership)) {
             if (spaceId !== id) membership[key] = spaceId
           }
-          return { spaces: s.spaces.filter((space) => space.id !== id), membership }
+          return {
+            spaces: withDefaultSpace(s.spaces.filter((space) => space.id !== id)),
+            membership,
+          }
         })
       },
       reorderSpace: (id, order) => {
@@ -316,6 +336,11 @@ export const useSpaces = create<SpacesState>()(
         if (id === undefined) return undefined
         return get().spaces.some((space) => space.id === id) ? id : undefined
       },
+      defaultSpaceId: () => {
+        const spaces = withDefaultSpace(get().spaces)
+        if (spaces !== get().spaces) set({ spaces })
+        return [...spaces].sort((a, b) => a.order - b.order || a.createdAt - b.createdAt)[0].id
+      },
     }),
     {
       name: KEY,
@@ -347,13 +372,11 @@ export const useSpaces = create<SpacesState>()(
       partialize: (s): Persisted => ({ spaces: s.spaces, membership: s.membership }),
       merge: (persisted, current) => {
         const blob = persisted as Partial<Persisted> | undefined
+        const stored = normalizeSpaces(blob?.spaces)
         return {
           ...current,
-          spaces: normalizeSpaces(blob?.spaces),
-          membership: pruneMembership(
-            normalizeMembership(blob?.membership),
-            normalizeSpaces(blob?.spaces),
-          ),
+          spaces: withDefaultSpace(stored),
+          membership: pruneMembership(normalizeMembership(blob?.membership), stored),
         }
       },
     },

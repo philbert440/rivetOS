@@ -7,6 +7,8 @@ import { formatSpinnerMeta, parseSpinnerMeta } from '../lib/spinner-meta.js'
 import { copyTextToClipboard } from '../lib/clipboard.js'
 import { Markdown } from './markdown.js'
 import { SpeakMessage } from './speak-message.js'
+import { arrivalJump, scrollToEnd, type TranscriptEdge } from '../lib/transcript-follow.js'
+import { usePreferences } from '../stores/preferences.js'
 
 /** Transcript-sourced tool → the live stack's entry shape (same renderer). */
 function toLiveTool(t: HarnessTranscriptTool, id: string): LiveToolEntry {
@@ -391,7 +393,7 @@ export function Transcript(props: {
   accent?: string
 }): JSX.Element {
   const scrollRef = useRef<HTMLDivElement>(null)
-  const endRef = useRef<HTMLDivElement>(null)
+  const contentRef = useRef<HTMLDivElement>(null)
   // Stick-to-bottom: auto-scroll ONLY while the user is already at (or near)
   // the bottom. Scrolling up to reread during a streaming reply must not be
   // yanked back down on every frame. The ref mirrors the state so the content
@@ -418,17 +420,47 @@ export function Transcript(props: {
   const jumpToLatest = (): void => {
     pinnedRef.current = true
     setPinned(true)
-    endRef.current?.scrollIntoView({ block: 'end' })
+    if (scrollRef.current) scrollToEnd(scrollRef.current)
   }
 
-  useEffect(() => {
+  const followSoon = (): void => {
     if (!pinnedRef.current) return
     if (rafRef.current !== undefined) cancelAnimationFrame(rafRef.current)
     rafRef.current = requestAnimationFrame(() => {
       rafRef.current = undefined
-      if (pinnedRef.current) endRef.current?.scrollIntoView({ block: 'end' })
+      if (pinnedRef.current && scrollRef.current) scrollToEnd(scrollRef.current)
     })
-  }, [count, liveLen, toolN, reasonLen, outboundN])
+  }
+
+  useEffect(followSoon, [count, liveLen, toolN, reasonLen, outboundN])
+
+  // A reply, a send, a finished turn or the end of thinking re-pins even when
+  // scrolled up — the newest response is where the reader wants to be.
+  // Settings → General can turn this off; a pinned view still follows.
+  const edge: TranscriptEdge = {
+    lastId: props.messages.at(-1)?.id,
+    live: props.live !== undefined,
+    reasoning: props.live?.reasoning ?? false,
+  }
+  const edgeRef = useRef(edge)
+  useEffect(() => {
+    const prev = edgeRef.current
+    edgeRef.current = edge
+    if (!usePreferences.getState().autoScroll || !arrivalJump(prev, edge)) return
+    pinnedRef.current = true
+    setPinned(true)
+    followSoon()
+  }, [edge.lastId, edge.live, edge.reasoning])
+
+  // Heights also change without a count change — markdown and code settling,
+  // the reasoning block folding away. Follow the content's real size.
+  useEffect(() => {
+    const el = contentRef.current
+    if (!el || typeof ResizeObserver === 'undefined') return
+    const observer = new ResizeObserver(followSoon)
+    observer.observe(el)
+    return () => observer.disconnect()
+  }, [])
   useEffect(
     () => () => {
       if (rafRef.current !== undefined) cancelAnimationFrame(rafRef.current)
@@ -439,7 +471,7 @@ export function Transcript(props: {
   return (
     <div className="relative min-h-0 flex-1">
       <div ref={scrollRef} onScroll={onScroll} className="h-full overflow-y-auto">
-        <div className="mx-auto flex max-w-3xl flex-col gap-5 px-6 py-4">
+        <div ref={contentRef} className="mx-auto flex max-w-3xl flex-col gap-5 px-6 py-4">
           {props.messages.map((m, i) => (
             <Bubble
               accent={props.accent}
@@ -454,7 +486,6 @@ export function Transcript(props: {
           {!props.live && props.statusLine && (
             <AgentStatusLine text={props.statusLine.text} tool={props.statusLine.tool} />
           )}
-          <div ref={endRef} />
         </div>
       </div>
       {!pinned && (

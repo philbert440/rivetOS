@@ -1,31 +1,39 @@
 import type { JSX } from 'react'
 import { useNavigate } from '@tanstack/react-router'
-import { BarChart3, BookOpen, Clock, Search, Tags } from 'lucide-react'
+import { BarChart3, BookOpen, Clock, History, Search, Tags } from 'lucide-react'
 import type { RivetGateway } from '@rivetos/gateway-client'
 import { useIsNarrow } from '../lib/use-narrow.js'
 import { cn } from '../lib/utils.js'
 import { HealthTile } from './HealthTile.js'
 
 export type MemoryTab = 'search' | 'wiki' | 'browse' | 'tags' | 'stats'
+/** Sessions is a hub tab with its own routes (`/sessions`, `/sessions/$id`). */
+export type MemoryHubTab = MemoryTab | 'sessions'
 
-const TABS: { id: MemoryTab; label: string; icon: typeof Search }[] = [
+const TABS: { id: MemoryHubTab; label: string; icon: typeof Search }[] = [
   { id: 'search', label: 'Search', icon: Search },
   { id: 'wiki', label: 'Wiki', icon: BookOpen },
   { id: 'browse', label: 'Browse', icon: Clock },
+  { id: 'sessions', label: 'Sessions', icon: History },
   { id: 'tags', label: 'Tags', icon: Tags },
   { id: 'stats', label: 'Stats', icon: BarChart3 },
 ]
 
-/** Shared tab strip — also mounted on `/memory/$slug` so a topic is still the hub. */
+/** Shared tab strip — also mounted on `/memory/$slug` so a topic is still the
+ *  hub, and on the Sessions pages, which are the hub's Sessions tab. */
 export function MemoryHubNav(props: {
-  tab: MemoryTab
+  tab: MemoryHubTab
   gateway?: RivetGateway
   /** Datahub identity the health tile keys its queries on. */
   baseUrl?: string
 }): JSX.Element {
   const navigate = useNavigate()
   const narrow = useIsNarrow()
-  function setTab(next: MemoryTab): void {
+  function setTab(next: MemoryHubTab): void {
+    if (next === 'sessions') {
+      void navigate({ to: '/sessions' })
+      return
+    }
     void navigate({
       to: '/memory',
       search: next === 'search' ? {} : { tab: next },
