@@ -783,6 +783,12 @@ export function createDenServer(config: DenConfig, opts: DenServerOptions = {}):
   const acpClient = (command: 'grok' | 'opencode', args: string[]): AcpClient =>
     new AcpClient({
       argv: [rosterProvider.get().commands[command]?.cmd[0] ?? command, ...args],
+      // The agent's den hooks report to this den, as a spawned TUI's do
+      // (term manager: same scheme predicate as tlsReady).
+      env: {
+        ...process.env,
+        RIVET_DEN_URL: `${tlsReady ? 'https' : 'http'}://127.0.0.1:${String(config.port)}`,
+      },
       log: console.error,
     })
   let termManager: TermManager | null = null
