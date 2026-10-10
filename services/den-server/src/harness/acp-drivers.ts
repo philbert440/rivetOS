@@ -122,6 +122,24 @@ class AcpRouting {
   }
 
   /**
+   * With no pane open, ACP knows whether a turn runs; the transcript does not
+   * always. Grok writes no closing message for a turn that stopped on a
+   * rejected or cancelled tool, so its transcript reads busy from then on.
+   */
+  correctStatus(native: string, event: HarnessEvent): HarnessEvent {
+    if (event.type !== 'status' || event.source !== 'transcript' || event.status === 'idle')
+      return event
+    if (this.paneOpen(native) || this.host.prompting(native)) return event
+    return {
+      type: 'status',
+      sessionId: event.sessionId,
+      status: 'idle',
+      since: event.since,
+      source: event.source,
+    }
+  }
+
+  /**
    * `false` → let the PTY driver handle the den event. Reads the event's own
    * id fields rather than `nativeFor`, which binds rooms as a side effect.
    */
@@ -213,6 +231,16 @@ export class GrokAcpDriver extends GrokBuildDriver {
     }
   }
 
+  protected override emit(native: string, event: HarnessEvent): void {
+    // The base constructor can emit before `acp` is assigned.
+    // eslint-disable-next-line @typescript-eslint/no-unnecessary-condition
+    super.emit(native, this.acp ? this.acp.correctStatus(native, event) : event)
+  }
+
+  protected override emitStatusSnapshot(native: string, sink: (e: HarnessEvent) => void): void {
+    super.emitStatusSnapshot(native, (e) => sink(this.acp.correctStatus(native, e)))
+  }
+
   override get capabilities(): HarnessCapabilities {
     // The base constructor reads capabilities before `acp` is assigned.
     // eslint-disable-next-line @typescript-eslint/no-unnecessary-condition
@@ -301,6 +329,16 @@ export class OpencodeAcpDriver extends OpencodeDriver {
       recordSessionCwd: (n, c) => this.deps.recordSessionCwd?.(this.rosterCommand, n, c),
       log: (m) => this.log(m),
     }
+  }
+
+  protected override emit(native: string, event: HarnessEvent): void {
+    // The base constructor can emit before `acp` is assigned.
+    // eslint-disable-next-line @typescript-eslint/no-unnecessary-condition
+    super.emit(native, this.acp ? this.acp.correctStatus(native, event) : event)
+  }
+
+  protected override emitStatusSnapshot(native: string, sink: (e: HarnessEvent) => void): void {
+    super.emitStatusSnapshot(native, (e) => sink(this.acp.correctStatus(native, e)))
   }
 
   override get capabilities(): HarnessCapabilities {

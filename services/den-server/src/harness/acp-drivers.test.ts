@@ -153,6 +153,27 @@ describe('GrokAcpDriver', () => {
     expect(t.events.filter((e) => e.type === 'assistant-delta')).toHaveLength(1)
   })
 
+  it('trusts ACP over a transcript that reads busy after a rejected tool', async () => {
+    const t = grok()
+    await t.driver.startSession()
+    t.driver.subscribe(t.sid, (e) => t.events.push(e))
+    const emit = (t.driver as unknown as { emit(n: string, e: HarnessEvent): void }).emit.bind(
+      t.driver,
+    )
+    const working: HarnessEvent = {
+      type: 'status',
+      sessionId: t.sid,
+      status: 'working',
+      since: 1,
+      source: 'transcript',
+    }
+    emit(UUID, working)
+    expect(t.events.at(-1)).toMatchObject({ status: 'idle', source: 'transcript' })
+    t.pty.live.set(UUID, 'pty-tui')
+    emit(UUID, working)
+    expect(t.events.at(-1)).toMatchObject({ status: 'working' })
+  })
+
   it('cancels a running ACP turn instead of sending Esc', async () => {
     const t = grok()
     await t.driver.startSession()
