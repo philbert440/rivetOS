@@ -2,8 +2,8 @@ use serde_json::{Value, json};
 use session_events::{
     ACTIVITIES, Activity, AgentEvent, AgentEventBody, DenState, EventType, JsNumber, LogEntry,
     LogWho, PROTOCOL_VERSION, RoomState, SessionInfo, Task, TokenUsage, initial_den_state,
-    initial_room_state, list_sessions, parse_event, reduce_den, reduce_room, snapshot_frame,
-    tool_activity,
+    initial_room_state, list_sessions, parse_event, parse_event_str, reduce_den, reduce_room,
+    snapshot_frame, tool_activity,
 };
 
 fn stamped(
@@ -387,7 +387,7 @@ fn parse_event_preserves_unknown_fields_and_unvalidated_args() {
     let event = parse_event(&raw).unwrap();
     assert_eq!(
         serde_json::to_string(&event).unwrap(),
-        r#"{"v":1,"session":"s1","type":"session.end","note":"x","b":1,"a":2}"#
+        r#"{"note":"x","v":1,"session":"s1","type":"session.end","b":1,"a":2}"#
     );
     let started = parse_event(
         &json!({"v": 1, "session": "s1", "type": "tool.start", "tool": "Bash", "args": "nope"}),
@@ -975,7 +975,7 @@ fn golden_coding_session_matches_the_room_snapshot() {
                     done: true,
                 },
             ],
-            thought: String::new(),
+            thought: String::new().into(),
             last_message: "Fixed — all 42 tests pass.".to_string(),
             log: vec![
                 LogEntry {
@@ -1087,7 +1087,7 @@ fn event_fixtures_roundtrip_bytes() {
     for kind in EventType::ALL {
         let name = format!("{}.json", kind.as_str());
         let text = read_fixture(&name);
-        let body = text.trim_end_matches('\n');
+        let body = text.strip_suffix('\n').unwrap_or(text.as_str());
         let value: Value = serde_json::from_str(body).unwrap();
         let event = parse_event(&value).unwrap_or_else(|| panic!("{name}"));
         assert_eq!(serde_json::to_string(&event).unwrap(), body, "{name}");
@@ -1103,5 +1103,137 @@ fn event_fixtures_roundtrip_bytes() {
     assert_eq!(
         serde_json::to_string(&empty).unwrap(),
         r#"{"type":"snapshot","v":1,"sessions":[],"rooms":{}}"#
+    );
+}
+
+#[test]
+fn accepted_event_keeps_nested_usage_extensions() {
+    let raw = r#"{"v":1,"session":"s1","type":"message.agent","text":"hi","usage":{"promptTokens":1,"completionTokens":2,"cachedTokens":0,"providerDetail":"x"}}"#;
+    let event = parse_event_str(raw).unwrap();
+    assert_eq!(serde_json::to_string(&event).unwrap(), raw);
+}
+
+#[test]
+fn accepted_event_numbers_use_javascript_spelling() {
+    let raw = r#"{"v":1,"session":"s1","type":"tool.start","tool":"Bash","args":{"timeout":1000.0,"wide":1.50,"n":9007199254740993,"z":-0,"exp":1e21},"extraNum":1000.0}"#;
+    let expected = r#"{"v":1,"session":"s1","type":"tool.start","tool":"Bash","args":{"timeout":1000,"wide":1.5,"n":9007199254740992,"z":0,"exp":1e+21},"extraNum":1000}"#;
+    let event = parse_event_str(raw).unwrap();
+    assert_eq!(serde_json::to_string(&event).unwrap(), expected);
+}
+
+#[test]
+fn accepted_event_keeps_original_property_order() {
+    let raw = r#"{"note":"x","v":1,"session":"s1","type":"session.end"}"#;
+    let event = parse_event_str(raw).unwrap();
+    assert_eq!(serde_json::to_string(&event).unwrap(), raw);
+    let indexed = r#"{"10":1,"note":"x","2":2,"v":1,"session":"s1","type":"session.end"}"#;
+    let indexed_event = parse_event_str(indexed).unwrap();
+    assert_eq!(
+        serde_json::to_string(&indexed_event).unwrap(),
+        r#"{"2":2,"10":1,"note":"x","v":1,"session":"s1","type":"session.end"}"#
+    );
+}
+
+#[test]
+fn session_maps_enumerate_array_indexes_before_insertion_order() {
+    let den = run(vec![
+        AgentEvent::new(
+            "10",
+            AgentEventBody::SessionStart {
+                title: "10".to_string(),
+            },
+        ),
+        AgentEvent::new(
+            "2",
+            AgentEventBody::SessionStart {
+                title: "2".to_string(),
+            },
+        ),
+        AgentEvent::new(
+            "b",
+            AgentEventBody::SessionStart {
+                title: "b".to_string(),
+            },
+        ),
+        AgentEvent::new(
+            "a",
+            AgentEventBody::SessionStart {
+                title: "a".to_string(),
+            },
+        ),
+    ]);
+    assert_eq!(
+        list_sessions(&den)
+            .iter()
+            .map(|info| info.id.as_str())
+            .collect::<Vec<_>>(),
+        vec!["2", "10", "b", "a"]
+    );
+    let frame = snapshot_frame(&den, None);
+    let room = |title: &str| {
+        format!(
+            "{{\"title\":\"{title}\",\"activity\":\"idle\",\"tool\":null,\"tasks\":[],\"thought\":\"\",\"lastMessage\":\"\",\"log\":[],\"term\":[],\"ended\":false}}"
+        )
+    };
+    let info = |id: &str| format!("{{\"id\":\"{id}\",\"name\":\"{id}\"}}");
+    let expected = format!(
+        "{{\"type\":\"snapshot\",\"v\":1,\"sessions\":[{},{},{},{}],\"rooms\":{{\"2\":{},\"10\":{},\"b\":{},\"a\":{}}}}}",
+        info("2"),
+        info("10"),
+        info("b"),
+        info("a"),
+        room("2"),
+        room("10"),
+        room("b"),
+        room("a"),
+    );
+    assert_eq!(serde_json::to_string(&frame).unwrap(), expected);
+}
+
+#[test]
+fn thought_window_keeps_a_split_surrogate() {
+    let letters = "a".repeat(219);
+    let raw = format!(
+        "{{\"v\":1,\"session\":\"s\",\"type\":\"thinking.delta\",\"text\":\"😀{letters}\"}}"
+    );
+    let event = parse_event_str(&raw).unwrap();
+    let state = reduce_room(initial_room_state(), &event);
+    let expected = format!(
+        "{{\"title\":\"\",\"activity\":\"thinking\",\"tool\":null,\"tasks\":[],\"thought\":\"\\ude00{letters}\",\"lastMessage\":\"\",\"log\":[],\"term\":[],\"ended\":false}}"
+    );
+    assert_eq!(serde_json::to_string(&state).unwrap(), expected);
+}
+
+#[test]
+fn session_filter_keeps_the_full_session_list() {
+    let den = run(vec![
+        stamped(
+            "s1",
+            AgentEventBody::SessionStart {
+                title: "A".to_string(),
+            },
+            1,
+            None,
+            None,
+        ),
+        stamped(
+            "s2",
+            AgentEventBody::SessionStart {
+                title: "B".to_string(),
+            },
+            2,
+            None,
+            None,
+        ),
+    ]);
+    let filtered = snapshot_frame(&den, Some("s1"));
+    assert_eq!(filtered.sessions.len(), 2);
+    assert_eq!(filtered.rooms.keys().collect::<Vec<_>>(), vec!["s1"]);
+    let missing = snapshot_frame(&den, Some("missing"));
+    assert_eq!(missing.sessions.len(), 2);
+    assert_eq!(missing.rooms.keys().collect::<Vec<_>>(), vec!["missing"]);
+    assert_eq!(
+        missing.rooms.get("missing").cloned().unwrap(),
+        initial_room_state()
     );
 }
